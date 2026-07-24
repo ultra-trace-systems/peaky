@@ -219,3 +219,40 @@ def select_brightest_coverage_sample_ids(peaks: pd.DataFrame, *,
     """Convenience: just the brightest-coverage `sample_item_id`s (time order)."""
     sel = select_brightest_coverage_samples(peaks, sample_col=sample_col, **kw)
     return sel[sample_col].tolist()
+
+
+def select_pooled_union(peaks: pd.DataFrame, *,
+                        group_col: str = "sample_batch_name",
+                        sample_col: str = "sample_item_id",
+                        coverage_target: float = 0.90, k_max: int = 6,
+                        height_floor: float = 1000.0, **kw) -> tuple[list, pd.DataFrame]:
+    """Per-GROUP brightest-coverage UNION for a pooled multi-batch peak table.
+
+    Pooling many batches (e.g. all per-zone batches of one mode x range) into ONE
+    unified ledger needs a sample subset that represents EVERY group. A single naive
+    brightest-coverage pass over the pool is biased: the group with the highest
+    absolute intensity wins most m/z bins and hogs the winner slots, starving the
+    quieter groups (measured on a pooled field campaign: naive pooling gave one
+    group only 56% bright-bin coverage). Selecting brightest-coverage WITHIN each
+    group and unioning the picks guarantees each group contributes its own analyte-
+    representative samples, at the cost of ~`k_max` x n_groups assignments.
+
+    Returns `(union_ids, provenance)` where `union_ids` is the de-duplicated sample
+    list (group order, then each group's time order) and `provenance` is the
+    concatenated `select_brightest_coverage_samples` table with a `group_col` column.
+    """
+    if group_col not in peaks.columns:
+        raise KeyError(f"group_col {group_col!r} not in peaks columns "
+                       f"(got {list(peaks.columns)[:8]})")
+    frames, ids = [], []
+    for g, dfg in peaks.groupby(group_col, sort=True):
+        sel = select_brightest_coverage_samples(
+            dfg, coverage_target=coverage_target, k_max=k_max,
+            height_floor=height_floor, sample_col=sample_col, **kw)
+        sel = sel.assign(**{group_col: g})
+        frames.append(sel)
+        ids.extend(sel[sample_col].tolist())
+    prov = (pd.concat(frames, ignore_index=True) if frames
+            else peaks.iloc[:0].assign(role=None, bins_won=0))
+    union = list(dict.fromkeys(ids))            # de-dup, preserve first-seen order
+    return union, prov

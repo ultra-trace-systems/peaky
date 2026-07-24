@@ -391,6 +391,29 @@ def fetch_batch_peaks(client, dataset: str, batch: str, *, save_path: str | None
     return peaks
 
 
+def fetch_pooled_peaks(client, dataset: str, batches_regex: str, *,
+                       save_path: str | None = None) -> pd.DataFrame:
+    """Load the peak time-series of EVERY batch whose name matches `batches_regex`
+    in ONE bulk call, pooling them into a single frame that keeps `sample_batch_name`
+    so the caller can regroup. Unlike `fetch_batch_peaks`, the regex is passed to
+    the SDK UNescaped — the whole point is a multi-batch match (e.g.
+    `'HR-CIMS 100-500.*zone'` pools the per-zone batches of one mode x range).
+    WAF-retried; confirm_above=None so a large pool never prompts."""
+    peaks = _with_waf_retry(
+        lambda: client.load_peaks(dataset=dataset, batches=batches_regex,
+                                  confirm_above=None))
+    if peaks is None or len(peaks) == 0:
+        raise RuntimeError(
+            f"no peaks matched /{batches_regex}/ in dataset {dataset!r}")
+    if "sample_batch_name" not in peaks.columns:
+        raise RuntimeError(
+            "pooled load returned no 'sample_batch_name' column -- cannot regroup "
+            f"(got {list(peaks.columns)[:8]})")
+    if save_path:
+        peaks.to_parquet(os.path.expanduser(save_path))
+    return peaks
+
+
 # ---------------------------------------------------------------------------
 # Peaks
 # ---------------------------------------------------------------------------

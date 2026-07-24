@@ -6,6 +6,7 @@ Subcommands:
   list           discover data on the server (workspaces / datasets / batches / samples)
   assign         single-sample multi-pass assignment -> ledger/xlsx/md/json/gka.html
   batch          whole-batch pipeline: assign subset -> merge -> cluster -> Van Krevelen -> PDF
+  pool           pool many same-chemistry batches (regex) into ONE unified ledger + per-group reports
   report         regenerate figures + PDF from an existing run folder (offline)
   gka            build the interactive rotating-GKA HTML from a ledger CSV (offline)
   curate         organise data (write API): create/rename/copy/move workspaces,
@@ -225,6 +226,28 @@ def cmd_batch(args) -> None:
         print(f"  report (small): {res['report_pdf_small']}")
 
 
+def cmd_pool(args) -> None:
+    _require_creds()
+    from peaky import pipeline as PL
+
+    res = PL.run_pooled_batches(
+        batches=args.batches, dataset=args.dataset, reagent=args.reagent,
+        base_out=resolve_out_dir(args.out_dir), out_name=args.out_name,
+        group_by=args.group_by, ts=args.ts, subject=args.subject,
+        do_report=not args.no_report,
+        per_group_reports=not args.no_group_reports, config=args.reagent_config,
+        coverage_target=args.coverage_target, k_max=args.k_max,
+        height_floor=args.height_floor, n_jobs=args.jobs)
+    ctx = res["ctx"]
+    print(f"\n[pool] unified ledger -> {ctx.out_dir}")
+    if res.get("report_pdf"):
+        print(f"  report: {res['report_pdf']}")
+    if res.get("group_runs"):
+        print(f"  {len(res['group_runs'])} per-group reports:")
+        for gr in res["group_runs"]:
+            print(f"    {gr}")
+
+
 def cmd_report(args) -> None:
     # offline: regenerate cluster figures + Van Krevelen + the PDF report from an
     # existing run folder's ledgers (no assignment, no network).
@@ -423,6 +446,46 @@ def build_parser() -> argparse.ArgumentParser:
                          "1 = the serial path; env PEAKY_JOBS also honored). Output "
                          "is byte-identical to a serial run.")
     pb.set_defaults(func=cmd_batch)
+
+    pp = sub.add_parser("pool",
+                        help="pool many same-chemistry batches (regex) into ONE "
+                             "unified ledger + whole-pool report + per-group reports")
+    pp.add_argument("--batches", required=True,
+                    help="REGEX over batch names to pool, e.g. "
+                         "'HR-CIMS 100-500.*zone' (matches the per-zone batches "
+                         "of one mode x range). Passed to the server UNescaped.")
+    pp.add_argument("--dataset", default=None, help="dataset (workspace) name")
+    pp.add_argument("--reagent", default="auto", help="auto | Br | Ur | NO3 | NO3_15N | ...")
+    pp.add_argument("--reagent-config", default=None,
+                    help="JSON/TOML file registering extra reagent profiles")
+    pp.add_argument("--out-name", default=None,
+                    help="run-folder label for the unified pool (default: derived "
+                         "from the regex)")
+    pp.add_argument("--group-by", default="sample_batch_name",
+                    help="pooled-peaks column that splits groups for the per-group "
+                         "brightest union + per-group reports (default sample_batch_name)")
+    pp.add_argument("--out-dir", default=None,
+                    help="base output dir for the versioned run folders. Default: "
+                         "$PEAKY_OUTPUT_DIR else ~/peaky-output")
+    pp.add_argument("--ts", default=None,
+                    help="cached pooled TS parquet (must carry --group-by; else "
+                         "fetched live for the whole regex)")
+    pp.add_argument("--subject", default=None, help="optional subject phrase for the VK title")
+    pp.add_argument("--no-report", action="store_true",
+                    help="skip every PDF report (assignment + merge only)")
+    pp.add_argument("--no-group-reports", action="store_true",
+                    help="only the whole-pool report; skip the per-group ones")
+    pp.add_argument("--coverage-target", type=float, default=0.90,
+                    help="per group: fraction of significant m/z bins to cover (default 0.90)")
+    pp.add_argument("--k-max", type=int, default=6,
+                    help="per group: max winner samples PER GROUP (default 6; the "
+                         "union across groups is what gets assigned)")
+    pp.add_argument("--height-floor", type=float, default=1000.0,
+                    help="a bin is significant if its max height >= this (cps)")
+    pp.add_argument("--jobs", "-j", type=int, default=None,
+                    help="assign the union in parallel across N worker processes "
+                         "(default: physical cores; env PEAKY_JOBS honored)")
+    pp.set_defaults(func=cmd_pool)
 
     pr = sub.add_parser("report",
                         help="regenerate figures + PDF report from an existing run folder (offline)")

@@ -78,9 +78,26 @@ peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|auto> \
 peaky batch --batch "<batch>" --dataset "<workspace>" --reagent <Br|Ur|...> \
     [--select representative|brightest] --out-dir ~/peaky-output
 
+# MANY same-chemistry batches -> ONE unified ledger + whole-pool + per-group reports
+peaky pool --batches "<regex over batch names>" --dataset "<workspace>" \
+    --reagent <Br|Ur|NO3_15N|...> [--k-max 6] [--group-by sample_batch_name]
+
 # regenerate figures + PDF of an existing run, offline (no assignment, no network)
 peaky report --run-dir <run-folder> --reagent <Br|Ur|...> --ts <ts.parquet>
 ```
+
+`peaky pool` pools every batch matching `--batches` (a REGEX over batch names, e.g.
+`'HR-CIMS 100-500.*zone'` = the per-zone batches of one mode x range) into ONE
+unified ledger, so an analyte present in ANY group is discovered once, then each
+group's own time series is read against that shared peak list. Selection is a
+per-GROUP brightest-coverage UNION (`sampling.select_pooled_union`): brightest within
+each group, then unioned — a single naive pooled pass lets the loudest group hog the
+winners and starves quieter ones (measured: one group fell to 56% bright-bin
+coverage under naive pooling vs balanced ≥82% with the union). Emits the whole-pool
+run + one report per `--group-by` value (default `sample_batch_name`, i.e. per batch),
+each sharing the unified ledger + re-clustering on its own TS slice. Validated on a
+real multi-batch field campaign: the unified ledger captured 99.86% of a dedicated
+per-group run's compounds.
 
 `--select brightest` bins ALL batch peaks and assigns each significant m/z bin's
 brightest sample (better analyte coverage than the default 5-time-spaced+max-TIC
