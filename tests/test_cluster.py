@@ -217,6 +217,20 @@ check("diurnal_eta2 low for a structureless trace",
 check("diurnal_eta2 = 0 when the span is < ~2 diel cycles",
       CL.diurnal_eta2(_diel[:60], _h[:60]) == 0.0)
 
+# WEAK diel analyte (Ur+ regime): a real but noisy diel wave scores eta2 ~0.30-0.50
+# -- below the old 0.50 gate (so it was BURIED in the flat panel, its wave leaking
+# into the flat median) but above the tuned DIURNAL_ETA2, so it now surfaces as
+# STRUCTURED. Guards the 2026-07 tune against silently drifting back up.
+_hd = np.arange(0, 168, 0.5)
+_weak = 1000.0 * 10 ** (0.18 * np.sin(2 * np.pi * _hd / 24)
+                        + 0.15 * np.random.default_rng(0).standard_normal(len(_hd)))
+_weak_eta2 = CL.diurnal_eta2(_weak, _hd)
+check("weak diel analyte lands in the 0.30-0.50 band (missed by the old 0.50 gate)",
+      0.30 <= _weak_eta2 < 0.50, _weak_eta2)
+check("tuned DIURNAL_ETA2 surfaces the weak diel analyte (structured, not flat)",
+      _weak_eta2 >= CL.DIURNAL_ETA2 and CL.DIURNAL_ETA2 < 0.50,
+      (_weak_eta2, CL.DIURNAL_ETA2))
+
 _tr = pd.DataFrame({"diel": _diel, "noise": _flatn})
 check("diel wave fails the amplitude gates (cv + burst range) without hours",
       not CL.trace_varies(_tr, "diel"))

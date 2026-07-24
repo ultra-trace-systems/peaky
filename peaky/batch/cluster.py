@@ -55,12 +55,17 @@ BIG_CHANGE_FOLD = 3.0    # a single channel whose smoothed max/median is >= this
 BIG_CHANGE_FOLD_BRIGHT = 2.0    # a BRIGHT channel (median >= BIG_CHANGE_BRIGHT_CPS) surfaces
 BIG_CHANGE_BRIGHT_CPS = 1000.0  # at this lower fold: a 2-3x move of a ~10k-cps ion is a real,
                          # visible excursion that must not hide in the flat-background bunch
-DIURNAL_ETA2 = 0.50      # fraction of a trace's log-variance explained by hour-of-day
+DIURNAL_ETA2 = 0.30      # fraction of a trace's log-variance explained by hour-of-day
                          # at/above which it counts as STRUCTURED (a coherent diel wave).
                          # The cv/range gates are amplitude-only and blind to this: a real
-                         # low-amplitude diurnal analyte reads "flat" to them (measured on
-                         # a validation dataset: diel channels eta2 0.57-0.72 vs structureless
-                         # background ~0.1 — clean separation at 0.5).
+                         # low-amplitude diurnal analyte reads "flat" to them. Two field
+                         # batches bracket it: strong diel analytes score 0.57-0.72 (a
+                         # nitrate-CIMS batch) but WEAK ones only 0.30-0.50 (a positive
+                         # urea-CIMS batch — e.g. TPPO C18H15OP eta2 0.47, oxidation products
+                         # C17-20 O2), while structureless
+                         # background stays ~0.1. 0.50 buried the weak analytes in the flat
+                         # panel (their diel wave then dominated the flat MEDIAN); 0.30 clears
+                         # the ~0.1 background AND surfaces the weak analytes into structured.
 DIURNAL_MIN_RANGE = 1.15 # ...but a structured trace must also MOVE at least this much
                          # (smoothed max/median) to be promoted — a numerically-coherent
                          # microscopic ripple stays background.

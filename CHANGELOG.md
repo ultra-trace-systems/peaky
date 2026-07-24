@@ -6,6 +6,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — report refactor
 
+### Fixed (clustering — weak diel analytes buried in the flat panel)
+- **Diel-structure gate lowered `DIURNAL_ETA2` 0.50 → 0.30** (`batch/cluster.py`).
+  The 0.50 bar was set where diel analytes score 0.57–0.72, but weak ones (a real
+  low-amplitude daily wave, diurnal η² 0.30–0.50 — e.g. TPPO C18H15OP, C17–20 O2
+  oxidation products, organonitrates) fell under it and were bunched into the
+  "flat background" panel, where their shared wave leaked into the flat median.
+  0.30 still clears the ~0.1 structureless background, so both regimes hold; the
+  weak analytes now surface into the structured-background / family pages. The
+  residual gentle wave in the flat median is pervasive common-mode (boundary-layer
+  breathing shared by all ambient channels), which a per-channel gate cannot
+  remove, so the panel is retitled **"Low-amplitude / common-mode background"** and
+  its subtitle notes the median wave is the shared boundary layer, not a hidden
+  analyte.
+
 ### Fixed (phantom heteroatom assignments — Si / P)
 - **Silicon isotope gate** (`passes/config.py` `het_iso_penalty_Si`,
   `passes/core.py` `_DIAG`). Si now sits in the isotope-evidence gate alongside

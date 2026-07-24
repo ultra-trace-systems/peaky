@@ -440,12 +440,16 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
                 f"{np.median([eta2[c] for c in cols]):.2f}")
     CL.render_flat_panel(truly_flat, traces_raw, grid,
                          f"{FIG}/clusters_flat_{tag}_p{len(_pages)+1}.png", ion_lbl,
-                         label=f"{label} · flat background (uncorrelated + flat families + Si)", ylim=ylim,
-                         title=f"{label} · Flat background — {len(truly_flat)} ion channels (bunched)",
-                         subtitle=(f"n={len(truly_flat)} — channels with no real family dynamics AND no "
-                                   f"time-of-day structure (diurnal eta2 < {CL.DIURNAL_ETA2:g}): "
-                                   "uncorrelated, or in a co-varying cluster whose mean is flat, + Si "
-                                   "contamination; bunched so they don't bloat the cluster count"))
+                         label=f"{label} · low-amplitude / common-mode background", ylim=ylim,
+                         title=f"{label} · Low-amplitude / common-mode background — "
+                               f"{len(truly_flat)} ion channels (bunched)",
+                         subtitle=(f"n={len(truly_flat)} — no real family dynamics AND individually "
+                                   f"sub-threshold (per-channel diurnal eta2 < {CL.DIURNAL_ETA2:g}): "
+                                   "uncorrelated, or in a co-varying cluster whose mean is flat, + Si. "
+                                   "The median's gentle daily wave is the SHARED boundary-layer breathing "
+                                   "(common-mode), not a hidden analyte — real analytes surface on the "
+                                   "structured-background / family pages. Bunched so they don't bloat the "
+                                   "cluster count"))
     pd.DataFrame({"ion": [ion_lbl(c) for c in flat_cols],
                   "member_type": [meta[c]["member_type"] for c in flat_cols],
                   "neutral_formula": [c.split("|")[0] for c in flat_cols],   # "?<mz>" for unknowns, never ""
