@@ -492,6 +492,18 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         f"-> tables/plausibility_audit_{prof.name}.csv")
     merged.to_csv(os.path.join(out_dir, "merged_ledger.csv"), index=False)
     jitter.to_csv(os.path.join(TAB, "jitter.csv"), index=False)
+    # Stamp the batch time-series peaks with their assigned formula/channel and write
+    # the FINAL per_file/_batch_ts.parquet (in parallel mode this overwrites the raw
+    # worker-transfer copy). Downstream time-series analysis then has neutral_formula /
+    # adduct / tier / ion_mz per peak, not just m/z. No-op when ts_peaks is unavailable.
+    if ts_peaks is not None:
+        from peaky.batch import timeseries as _TS
+        ts_annot = _TS.annotate_peaks(ts_peaks, merged, tol_ppm=tol_ppm)
+        ts_annot.to_parquet(os.path.join(pfdir, "_batch_ts.parquet"))
+        _n_ass = int(ts_annot["neutral_formula"].notna().sum())
+        log(f"[assign_batch] _batch_ts.parquet: {len(ts_annot)} peaks, {_n_ass} "
+            f"({_n_ass / max(len(ts_annot), 1):.0%}) matched to an assigned "
+            f"formula/channel (tol {tol_ppm:.0f} ppm)")
 
     summary = {
         "reagent": prof.name, "label": prof.label, "context": context,

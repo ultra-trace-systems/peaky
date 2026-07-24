@@ -6,6 +6,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — report refactor
 
+### Added (time-series parquet now carries the assignment)
+- **`per_file/_batch_ts.parquet` peaks are stamped with their assigned formula/channel**
+  (`batch/timeseries.py::annotate_peaks`, wired into `batch/assign_batch.py`). Each ts
+  peak gains four columns — `neutral_formula`, `adduct` (the ionisation channel),
+  `tier`, and `ion_mz` (the matched assigned m/z) — by nearest-m/z match to the final
+  merged ledger within `max(mz·tol_ppm, 1.5 mDa)`; unmatched peaks keep `<NA>`.
+  Vectorised (searchsorted), ~2 s on a 4 M-row batch. The file is now written in **both**
+  the serial and parallel paths (previously only an internal, un-annotated worker-transfer
+  artifact in parallel mode), so downstream time-series analysis has the formula per peak,
+  not just `m/z`. (`tests/test_timeseries.py`.)
+
 ### Fixed (clustering — weak diel analytes buried in the flat panel)
 - **Diel-structure gate lowered `DIURNAL_ETA2` 0.50 → 0.30** (`batch/cluster.py`).
   The 0.50 bar was set where diel analytes score 0.57–0.72, but weak ones (a real

@@ -145,6 +145,44 @@ check("trace tol_ppm window returns nothing for an absent mass",
       len(TS.trace(_rd, 250.0)) == 0)
 
 
+# --- annotate_peaks: stamp ts peaks with assigned formula/channel ----------
+_ann_ts = pd.DataFrame({
+    "sample_item_id": ["s1", "s1", "s2", "s1", "s2"],
+    "mz": [202.1438,          # exact match  -> C10H16O3 [M+NH4]+
+           202.1450,          # +5.9 ppm     -> still within 6 ppm
+           186.1489,          # match        -> C10H16O2 [M+H]+
+           202.2000,          # +278 ppm     -> too far, unmatched
+           999.9999],         # no ledger ion nearby, unmatched
+    "height": [100, 90, 50, 30, 10],
+})
+_ann_led = pd.DataFrame({
+    "mz": [202.1438, 186.1489],
+    "neutral_formula": ["C10H16O3", "C10H16O2"],
+    "adduct": ["[M+NH4]+", "[M+H]+"],
+    "tier": ["Assigned", "Candidate"],
+})
+_ann = TS.annotate_peaks(_ann_ts, _ann_led, tol_ppm=6.0)
+check("annotate: columns added",
+      all(c in _ann.columns for c in ("neutral_formula", "adduct", "tier", "ion_mz")))
+check("annotate: exact match -> formula+channel",
+      _ann.loc[0, "neutral_formula"] == "C10H16O3" and _ann.loc[0, "adduct"] == "[M+NH4]+")
+check("annotate: within-tol match kept",
+      _ann.loc[1, "neutral_formula"] == "C10H16O3")
+check("annotate: second ion matched",
+      _ann.loc[2, "neutral_formula"] == "C10H16O2" and _ann.loc[2, "tier"] == "Candidate")
+check("annotate: out-of-tol -> NA",
+      pd.isna(_ann.loc[3, "neutral_formula"]) and pd.isna(_ann.loc[3, "ion_mz"]))
+check("annotate: no-neighbour -> NA",
+      pd.isna(_ann.loc[4, "neutral_formula"]))
+check("annotate: ion_mz is the matched ledger m/z",
+      abs(_ann.loc[0, "ion_mz"] - 202.1438) < 1e-9)
+check("annotate: original rows/columns preserved",
+      len(_ann) == len(_ann_ts) and _ann["height"].tolist() == _ann_ts["height"].tolist())
+check("annotate: empty ledger -> all NA, no crash",
+      TS.annotate_peaks(_ann_ts, pd.DataFrame(columns=["mz", "neutral_formula"]))
+      ["neutral_formula"].isna().all())
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 
