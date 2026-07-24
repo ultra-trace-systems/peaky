@@ -93,6 +93,56 @@ def build_matrix(peaks: pd.DataFrame, *, tol_ppm: float = DEFAULT_TOL_PPM,
     return mat, bin_mz
 
 
+def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
+                   tol_ppm: float = DEFAULT_TOL_PPM, mz_floor_da: float = 1.5e-3,
+                   mz_col: str = "mz") -> pd.DataFrame:
+    """Stamp every time-series peak with the assigned formula/channel of the nearest
+    ledger ion within tolerance. Returns a COPY of ``peaks`` with four added columns:
+
+      * ``neutral_formula`` -- the assigned neutral formula (or <NA> if unmatched)
+      * ``adduct``          -- the ionisation channel (e.g. ``[M+H]+`` / ``[M+NH4]+``)
+      * ``tier``            -- the ledger tier (Assigned / Candidate / ...)
+      * ``ion_mz``          -- the matched ledger ion m/z (NaN if unmatched)
+
+    A raw ts peak is matched to the *nearest* assigned ion whose m/z is within
+    ``max(mz*tol_ppm*1e-6, mz_floor_da)`` -- the mDa floor absorbs the small
+    raw-vs-calibrated offset at low m/z. Nearest-wins so dense regions don't
+    mis-fan-out. Fully vectorised (searchsorted); safe on multi-million-row batch
+    time-series. A peak matching no assigned ion keeps <NA>/NaN (unassigned)."""
+    out = peaks.copy()
+    n = len(out)
+    nf = np.full(n, None, dtype=object)
+    ad = np.full(n, None, dtype=object)
+    ti = np.full(n, None, dtype=object)
+    im = np.full(n, np.nan, dtype=float)
+    cols = getattr(ledger, "columns", None)
+    if n and cols is not None and "mz" in cols and mz_col in out.columns:
+        led = ledger.dropna(subset=["mz"]).sort_values("mz").reset_index(drop=True)
+        if len(led):
+            lmz = led["mz"].to_numpy(dtype=float)
+            pmz = pd.to_numeric(out[mz_col], errors="coerce").to_numpy(dtype=float)
+            j = np.searchsorted(lmz, pmz)
+            jl = np.clip(j - 1, 0, len(lmz) - 1)
+            jr = np.clip(j, 0, len(lmz) - 1)
+            near = np.where(np.abs(lmz[jl] - pmz) <= np.abs(lmz[jr] - pmz), jl, jr)
+            tol = np.maximum(pmz * tol_ppm * 1e-6, mz_floor_da)
+            ok = np.isfinite(pmz) & (np.abs(lmz[near] - pmz) <= tol)
+            lnf = led["neutral_formula"].to_numpy()
+            lad = (led["adduct"].to_numpy() if "adduct" in led.columns
+                   else np.full(len(led), None, dtype=object))
+            lti = (led["tier"].to_numpy() if "tier" in led.columns
+                   else np.full(len(led), None, dtype=object))
+            nf[ok] = lnf[near[ok]]
+            ad[ok] = lad[near[ok]]
+            ti[ok] = lti[near[ok]]
+            im[ok] = lmz[near[ok]]
+    out["neutral_formula"] = nf
+    out["adduct"] = ad
+    out["tier"] = ti
+    out["ion_mz"] = im
+    return out
+
+
 def reagent_total(mat: pd.DataFrame, bin_mz: pd.Series, reagent_mzs, *, tol_ppm=8.0):
     """Per-sample sum of the reagent bins (the normaliser). reagent_mzs is a list
     of reagent ion m/z (e.g. the Br3- isotopologues)."""
