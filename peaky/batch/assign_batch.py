@@ -400,6 +400,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         log(f"[assign_batch] reference lists active: {[rl.id for rl in reflists_active]} "
             f"(context {sorted(_tags) or 'contaminants-only'})")
     per_file, offsets, per_stats = {}, {}, []
+    identified_aux: list = []  # per-file identified-ion rows (reagent/iso/artifact
+                               # + analyte ion_formula) for the parquet stamp
     plaus_audit: list = []     # per-file O-monster / carbon-cluster demotes, pooled
     protected_neutrals: set = set()   # curated/cross-channel identities the amine
     #   gate must not re-read (reflist / known-species / certified provenance) --
@@ -415,6 +417,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         plaus_audit.extend(plaus)
         protected_neutrals.update(_protected_neutrals(led))
         per_file[sid] = _m0(led)
+        from peaky.batch import timeseries as _TSI
+        identified_aux.append(_TSI.identified_rows(led))
         try:
             offsets[sid] = IO.estimate_offset(IO.fetch_peaks(client, sid, use_cache=True))
         except Exception:
@@ -507,12 +511,22 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # adduct / tier / ion_mz per peak, not just m/z. No-op when ts_peaks is unavailable.
     if ts_peaks is not None:
         from peaky.batch import timeseries as _TS
-        ts_annot = _TS.annotate_peaks(ts_peaks, merged, tol_ppm=tol_ppm)
+        # union stamping frame: merged analytes + every identified NON-analyte
+        # ion (reagent ladder / isotope satellites / ringing artifacts) from the
+        # per-file ledgers -- so `ion_formula` marks every KNOWN ion, analyte or
+        # not, and only true unknowns stay blank (in an iodide spectrum the 10
+        # reagent tracks alone are ~77% of total signal).
+        _aux = (pd.concat(identified_aux, ignore_index=True)
+                if identified_aux else None)
+        _stamp = _TS.stamping_frame(merged, _aux)
+        ts_annot = _TS.annotate_peaks(ts_peaks, _stamp, tol_ppm=tol_ppm)
         ts_annot.to_parquet(os.path.join(pfdir, "_batch_ts.parquet"))
         _n_ass = int(ts_annot["neutral_formula"].notna().sum())
+        _n_ion = int(ts_annot["ion_formula"].notna().sum())
         log(f"[assign_batch] _batch_ts.parquet: {len(ts_annot)} peaks, {_n_ass} "
             f"({_n_ass / max(len(ts_annot), 1):.0%}) matched to an assigned "
-            f"formula/channel (tol {tol_ppm:.0f} ppm)")
+            f"formula/channel, {_n_ion} ({_n_ion / max(len(ts_annot), 1):.0%}) "
+            f"to a known ion incl. reagent/isotope (tol {tol_ppm:.0f} ppm)")
         # one-to-one guarantee: each (sample, ion) is stamped on at most ONE peak,
         # so a downstream groupby(formula, adduct) sees one trace per sample. The
         # shoulder/split peaks that lost are kept, unstamped, flagged dup_candidate.

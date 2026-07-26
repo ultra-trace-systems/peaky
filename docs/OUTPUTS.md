@@ -91,27 +91,36 @@ fetched — `sample_item_id`, `mz` and `height` are always there):
 | `sparsity` | `double` | Mascope peak-shape/quality metric. |
 
 **Assignment columns** (added by `timeseries.annotate_peaks`, `_batch_ts.parquet`
-only). All are `<NA>`/`NaN` on a peak that matched no assigned ion — which is
-normal: ~29 % of raw peaks are unassigned:
+only). All are `<NA>`/`NaN` on a peak that matched no known ion:
 
 | Column | Arrow type | Meaning |
 |---|---|---|
-| `neutral_formula` | `large_string` | Assigned neutral formula, e.g. `C8H4O3`. |
+| `neutral_formula` | `large_string` | Assigned neutral formula, e.g. `C8H4O3`. Analyte M0s only. |
 | `adduct` | `large_string` | Ionisation channel, e.g. `[M+H]+`, `[M+I]-`. |
 | `tier` | `large_string` | `Assigned` (trust it) or `Candidate` (tentative). |
 | `ion_mz` | `double` | The **calibrated ledger m/z** this peak was matched to. Join key: all rows sharing an `ion_mz` are the same ion. |
-| `dup_candidate` | `bool` | `True` for a peak that fell inside an ion's mass window but **lost** the one-to-one contest. Its four columns above stay `<NA>`. An audit trail — the row is never dropped. |
+| `role` | `large_string` | What kind of known ion: `M0` (analyte), `reagent` (reagent-cluster ladder), `iso_child` (heavy-isotope satellite), `artifact` (FT ringing ghost — not an ion at all). `<NA>` = unknown track. |
+| `ion_formula` | `large_string` | **The detected ION's formula for EVERY identified ion, analyte or not** — `CH3IO2-` (analyte), `I3-` (reagent), the parent's ion formula on an isotope satellite. `ion_formula.notna()` = identified; `neutral_formula.notna()` = analyte with a molecular reading. In a reagent-dominated spectrum this is the column that shows the file is ~97 % signal-characterised, not ~20 %. |
+| `iso_label` | `large_string` | Isotopologue qualifier: `13C`/`81Br`/… on satellites, the reagent line's tag (`79Br+81Br`, `127I+127I`) on multi-isotopologue reagent formulas — so one `ion_formula` can carry several distinct heavy lines without colliding. |
+| `dup_candidate` | `bool` | `True` for a peak that fell inside an ion's mass window but **lost** the one-to-one contest. Its identity columns stay `<NA>`. An audit trail — the row is never dropped. |
 | `intensity_suspect` | `bool` | **Trust the formula, do not quantify this channel.** The ion's m/z lands on the ringing sidelobe of a saturating neighbour, so the height here is the neighbour's, not the analyte's. Carried from the merged ledger's own column. |
 
 ### The one-to-one guarantee
 
-Within one sample, a given `(neutral_formula, adduct)` is stamped on **at most one
+Within one sample, a given ion — `(neutral_formula, adduct)` for analytes,
+`(role, ion_formula, iso_label)` in general — is stamped on **at most one
 peak**. So
 
 ```python
 df = pd.read_parquet("per_file/_batch_ts.parquet")
-trace = (df[df.neutral_formula.notna()]
+# analyte quantification (M0 channels only — satellites deliberately carry no
+# neutral_formula, so per-neutral sums cannot double-count them):
+trace = (df[df.neutral_formula.notna() & ~df.dup_candidate]
            .groupby(["neutral_formula", "adduct", "datetime_utc"])["height"].sum())
+# every known ion, reagent ladder included:
+ions = (df[df.ion_formula.notna() & ~df.dup_candidate]
+          .groupby(["role", "ion_formula", "iso_label", "datetime_utc"],
+                   dropna=False)["height"].sum())
 ```
 
 yields exactly one point per ion per sample — no double counting.

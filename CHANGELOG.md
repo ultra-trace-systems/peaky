@@ -7,6 +7,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased] — report refactor
 
 ### Added
+- **`_batch_ts.parquet` stamps every KNOWN ion, analyte or not** (`batch/timeseries.py`
+  `identified_rows`/`stamping_frame`, `batch/assign_batch.py`). Three new columns:
+  `role` (M0 / reagent / iso_child / artifact), `ion_formula` (the detected ion's
+  formula — from the ledger for reagent clusters, the PARENT's for isotope
+  satellites) and `iso_label` (13C/81Br satellite labels; the reagent line's
+  isotopologue tag, e.g. `79Br+81Br`, so heavy lines of one formula stay distinct
+  traces). Motivation: on the 2026-07-21 iodide batch 465 of 695 m/z tracks looked
+  "unassigned" when only 206 were actually unknown — the 10 reagent-ladder tracks
+  alone are 76.7 % of batch signal and fully identified in the ledger. The file
+  goes from ~20 % to ~96.5 % signal-labelled for external consumers; satellites
+  deliberately carry NO `neutral_formula` so per-neutral sums cannot double-count.
+  The one-to-one/consensus contest now also dedups the non-analyte tracks
+  (`dup_candidate` semantics unchanged). Consumer contract:
+  `ion_formula.notna()` = identified, `neutral_formula.notna()` = analyte.
 - **`[M-H+I2]-` — the deprotonated-acid · I₂ cluster channel (iodide CIMS)**
   (`chem/chemistry.py`, `chem/profiles.py`, `assignment/passes/{core,directors}.py`,
   `assignment/series_gka.py`). After the off-grid iodine fix (below), the I₂

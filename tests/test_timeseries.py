@@ -460,6 +460,76 @@ check("sidelobe: unmatched rows default to False, never <NA>",
       _ann_sus.intensity_suspect.dtype == bool)
 
 
+# --- identified_rows / stamping_frame: ion identity for NON-analyte tracks ----
+# The parquet should stamp EVERY known ion (reagent ladder, isotope satellites,
+# artifacts), not just analytes -- in an iodide spectrum the reagent tracks alone
+# are ~77% of signal and looked "unassigned" before.
+_full_led = pd.DataFrame({
+    "peak_id": ["p1", "p2", "p3", "p4", "p5"],
+    "mz": [172.9106, 253.8094, 173.9139, 126.9072, 401.5],
+    "role": ["M0", "reagent", "iso_child", "artifact", "unexplained"],
+    "neutral_formula": ["CH2O2", None, None, None, None],
+    "adduct": ["[M+I]-", None, None, None, None],
+    "ion_formula": ["CH3IO2-", "I2-", None, None, None],
+    "iso_label": [None, None, "13C", None, None],
+    "parent_peak_id": [None, None, "p1", None, None],
+    "commentary": ["Pass 1", "reagent ion: [I2]-. (127I+127I) (-0.3 ppm)",
+                   None, "FT ringing/sidelobe of 126.9051", None],
+})
+_idr = TS.identified_rows(_full_led)
+check("identified_rows: one row per identified ion (unexplained excluded)",
+      len(_idr) == 4 and set(_idr.role) == {"M0", "reagent", "iso_child", "artifact"},
+      _idr.role.tolist())
+check("identified_rows: reagent carries ion_formula + isotopologue tag",
+      _idr.loc[_idr.role == "reagent", "ion_formula"].iloc[0] == "I2-"
+      and _idr.loc[_idr.role == "reagent", "iso_label"].iloc[0] == "127I+127I")
+check("identified_rows: iso child inherits the PARENT ion formula",
+      _idr.loc[_idr.role == "iso_child", "ion_formula"].iloc[0] == "CH3IO2-"
+      and _idr.loc[_idr.role == "iso_child", "iso_label"].iloc[0] == "13C")
+check("identified_rows: iso child does NOT carry the neutral (no double-count)",
+      pd.isna(_idr.loc[_idr.role == "iso_child", "neutral_formula"].iloc[0]))
+check("identified_rows: ledger without role column -> empty",
+      len(TS.identified_rows(pd.DataFrame({"mz": [1.0]}))) == 0)
+
+_merged_sf = pd.DataFrame({"mz": [172.9106], "neutral_formula": ["CH2O2"],
+                           "adduct": ["[M+I]-"], "tier": ["Assigned"]})
+# two files: same reagent line twice (median mz), artifacts 1 mDa apart (one
+# track) and 5 mDa away (a second track)
+_aux2 = pd.concat([_idr, _idr.assign(mz=_idr.mz + 0.0002)], ignore_index=True)
+_aux2 = pd.concat([_aux2, pd.DataFrame([{"mz": 126.9122, "role": "artifact",
+                                         "ion_formula": None, "iso_label": None,
+                                         "neutral_formula": None, "adduct": None}])],
+                  ignore_index=True)
+_sf = TS.stamping_frame(_merged_sf, _aux2)
+check("stamping_frame: analyte row gains role=M0 + modal per-file ion_formula",
+      _sf.loc[_sf.role == "M0", "ion_formula"].iloc[0] == "CH3IO2-")
+check("stamping_frame: one aggregated row per (reagent ion, iso tag)",
+      (_sf.role == "reagent").sum() == 1)
+check("stamping_frame: artifact m/z-gap clustering (1 mDa merges, 5 mDa splits)",
+      (_sf.role == "artifact").sum() == 2,
+      _sf.loc[_sf.role == "artifact", "mz"].tolist())
+
+# annotate_peaks stamps the identity columns from a union frame
+_uts = pd.DataFrame({"sample_item_id": ["s1"] * 3,
+                     "mz": [253.8095, 172.9107, 300.0],
+                     "height": [9e6, 5e4, 200.0]})
+_ust = TS.annotate_peaks(_uts, _sf, tol_ppm=6.0)
+check("annotate: reagent track stamped ion_formula+role, NO neutral",
+      _ust.loc[0, "ion_formula"] == "I2-" and _ust.loc[0, "role"] == "reagent"
+      and pd.isna(_ust.loc[0, "neutral_formula"]))
+check("annotate: analyte track carries neutral AND ion_formula",
+      _ust.loc[1, "neutral_formula"] == "CH2O2"
+      and _ust.loc[1, "ion_formula"] == "CH3IO2-" and _ust.loc[1, "role"] == "M0")
+check("annotate: unknown track stays blank", pd.isna(_ust.loc[2, "ion_formula"]))
+# backward compat: an analyte-only ledger (no role columns) still emits the
+# identity columns, all-<NA>
+_bc = TS.annotate_peaks(_uts, _merged_sf[["mz", "neutral_formula", "adduct", "tier"]],
+                        tol_ppm=6.0)
+check("annotate: legacy ledger -> identity columns exist, empty",
+      {"role", "ion_formula", "iso_label"} <= set(_bc.columns)
+      and _bc["ion_formula"].isna().all())
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

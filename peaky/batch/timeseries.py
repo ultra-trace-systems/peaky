@@ -360,6 +360,112 @@ def _resolve_one_to_one(peaks: pd.DataFrame, ok: np.ndarray, near: np.ndarray,
     return winner, loser, cons
 
 
+def identified_rows(ledger: pd.DataFrame) -> pd.DataFrame:
+    """Per-file summary of every IDENTIFIED ion in a full ledger -- analyte or
+    not -- for the parquet ion-formula stamp (`stamping_frame`).
+
+    Returns columns (mz, role, ion_formula, iso_label, neutral_formula, adduct):
+
+      * M0        -- assigned analytes; carries neutral/adduct AND ion_formula.
+      * reagent   -- reagent-cluster ions; ion_formula from the ledger (the
+                     labeler records it: known formula = assigned, whatever the
+                     class). iso_label = the isotopologue tag parsed from the
+                     label commentary ('79Br+81Br', '127I+127I', ...) so the
+                     heavy lines of one reagent formula stay distinct rows.
+      * iso_child -- isotope satellites; ion_formula = the PARENT ion's formula
+                     (joined via parent_peak_id), iso_label its own (13C, 81Br).
+                     neutral_formula stays empty ON PURPOSE: quantification
+                     sums per neutral must not silently double-count satellites.
+      * artifact  -- FT ringing sidelobes: no ion (they are ghosts of a bright
+                     neighbour), role only.
+    """
+    cols = ["mz", "role", "ion_formula", "iso_label", "neutral_formula", "adduct"]
+    if ledger is None or not len(ledger) or "role" not in ledger.columns:
+        return pd.DataFrame(columns=cols)
+    led = ledger
+    out = []
+    m0 = led[led["role"] == "M0"]
+    for _, r in m0.iterrows():
+        out.append((r["mz"], "M0", r.get("ion_formula"), None,
+                    r.get("neutral_formula"), r.get("adduct")))
+    ionf_of = dict(zip(led["peak_id"], led.get("ion_formula", pd.Series(dtype=object)))) \
+        if "peak_id" in led.columns else {}
+
+    def _iso_tag(commentary) -> str | None:
+        # 'reagent ion: [I2]-. (127I+127I) (-0.3 ppm)' -> '127I+127I'
+        for g in re.findall(r"\(([^)]+)\)", str(commentary or "")):
+            if "ppm" not in g:
+                return g
+        return None
+
+    for _, r in led[led["role"] == "reagent"].iterrows():
+        f = r.get("ion_formula")
+        if pd.notna(f) and f:
+            out.append((r["mz"], "reagent", f, _iso_tag(r.get("commentary")),
+                        None, None))
+    for _, r in led[led["role"] == "iso_child"].iterrows():
+        pf = ionf_of.get(r.get("parent_peak_id"))
+        if pd.notna(pf) and pf:
+            out.append((r["mz"], "iso_child", pf, r.get("iso_label"), None, None))
+    for _, r in led[led["role"] == "artifact"].iterrows():
+        out.append((r["mz"], "artifact", None, None, None, None))
+    return pd.DataFrame(out, columns=cols)
+
+
+def stamping_frame(merged: pd.DataFrame,
+                   identified: pd.DataFrame | None) -> pd.DataFrame:
+    """Union frame for `annotate_peaks`: the merged ANALYTE ledger plus one row
+    per identified NON-analyte ion, so the parquet stamp distinguishes
+    'identified non-analyte' (reagent ladder, isotope satellites, artifacts)
+    from 'unknown'. `identified` is the concat of `identified_rows()` over the
+    per-file ledgers (None/empty -> analytes only, with role/ion_formula/
+    iso_label stamped on them).
+
+    Analyte rows keep every merged column and gain role='M0' + the modal
+    per-file ion_formula for their (neutral_formula, adduct) key. Non-analyte
+    rows are aggregated across files: reagent / iso_child by (ion_formula,
+    iso_label) at the median m/z; artifacts (no formula key) by m/z gap
+    clustering (>3 mDa starts a new track)."""
+    stamp = merged.copy()
+    stamp["role"] = "M0"
+    if "ion_formula" not in stamp.columns:
+        stamp["ion_formula"] = None
+    stamp["iso_label"] = None
+    if identified is None or not len(identified):
+        return stamp
+    idf = identified
+    # modal per-file ion_formula onto the merged analyte rows
+    m0 = idf[(idf["role"] == "M0") & idf["ion_formula"].notna()]
+    if len(m0):
+        mode = (m0.groupby(["neutral_formula", "adduct"])["ion_formula"]
+                  .agg(lambda s: s.mode().iloc[0]))
+        key = list(zip(stamp["neutral_formula"], stamp["adduct"]))
+        stamp["ion_formula"] = [
+            mode.get(k) if pd.isna(v) else v
+            for k, v in zip(key, stamp["ion_formula"])
+        ]
+    aux = []
+    for (f, tag), grp in idf[idf["role"].isin(("reagent", "iso_child"))].groupby(
+            ["ion_formula", "iso_label"], dropna=False):
+        role = grp["role"].iloc[0]
+        aux.append({"mz": float(grp["mz"].median()), "role": role,
+                    "ion_formula": f,
+                    "iso_label": None if pd.isna(tag) else tag})
+    art = idf.loc[idf["role"] == "artifact", "mz"].dropna().sort_values()
+    if len(art):
+        start = 0
+        vals = art.to_numpy()
+        for i in range(1, len(vals) + 1):
+            if i == len(vals) or vals[i] - vals[i - 1] > 3e-3:
+                aux.append({"mz": float(np.median(vals[start:i])),
+                            "role": "artifact", "ion_formula": None,
+                            "iso_label": None})
+                start = i
+    if aux:
+        stamp = pd.concat([stamp, pd.DataFrame(aux)], ignore_index=True)
+    return stamp
+
+
 def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
                    tol_ppm: float = DEFAULT_TOL_PPM, mz_floor_da: float = 1.5e-3,
                    mz_col: str = "mz", sample_col: str = "sample_item_id",
@@ -379,6 +485,15 @@ def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
                                (`flag_sidelobe_channels`): the formula is trusted
                                but this channel's HEIGHT is a bright neighbour's
                                ringing sidelobe — exclude it from quantification
+      * ``role`` / ``ion_formula`` / ``iso_label`` -- identity for EVERY known
+                               ion, analyte or not, when the ledger frame carries
+                               them (see `stamping_frame`): the reagent ladder
+                               ([I3]-, [Br2]-.), isotope satellites (parent ion +
+                               13C/81Br/...) and ringing artifacts stop looking
+                               like unknowns. `ion_formula.notna()` = identified;
+                               `neutral_formula.notna()` = analyte with a
+                               molecular reading. Ledgers without the columns
+                               (plain merged analytes) emit them all-<NA>.
 
     A raw ts peak is matched to the *nearest* assigned ion whose m/z is within
     ``max(mz*tol_ppm*1e-6, mz_floor_da)`` -- the mDa floor absorbs the small
@@ -414,6 +529,9 @@ def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
     im = np.full(n, np.nan, dtype=float)
     dup = np.zeros(n, dtype=bool)
     sus = np.zeros(n, dtype=bool)
+    ro = np.full(n, None, dtype=object)
+    io = np.full(n, None, dtype=object)
+    il = np.full(n, None, dtype=object)
     cols = getattr(ledger, "columns", None)
     if n and cols is not None and "mz" in cols and mz_col in out.columns:
         led = ledger.dropna(subset=["mz"]).sort_values("mz").reset_index(drop=True)
@@ -447,12 +565,18 @@ def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
             ti[ok] = lti[near[ok]]
             im[ok] = lmz[near[ok]]
             sus[ok] = lsus[near[ok]]
+            for arr, col in ((ro, "role"), (io, "ion_formula"), (il, "iso_label")):
+                if col in led.columns:
+                    arr[ok] = led[col].to_numpy()[near[ok]]
     out["neutral_formula"] = nf
     out["adduct"] = ad
     out["tier"] = ti
     out["ion_mz"] = im
     out["dup_candidate"] = dup
     out["intensity_suspect"] = sus
+    out["role"] = ro
+    out["ion_formula"] = io
+    out["iso_label"] = il
     return out
 
 
