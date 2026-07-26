@@ -67,6 +67,35 @@ check("cluster: covalent-tie count reported", out_clu.get("covalent_ties", 0) >=
 check("cluster: no false 'no covalent reading' when a tie exists",
       "no covalent reading" not in note_b)
 
+# ---- run_cleanup gates label_bromide_clusters on the reagent element ----
+# the defect+1.998-twin heuristic reads ANY heavy-halogen region as "bromide";
+# under iodide (reagent_element='I') it grabbed the I2NO2-/IBr.I- neighborhood
+# with a false bromide note, so run_cleanup must skip it for non-Br reagents.
+from peaky import profiles as PRF                                  # noqa: E402
+_gled = mk([("clu", 296.7588, 3.7e3), ("twin", 298.7568, 3.5e3)])
+_gcfg = P.PassConfig(); _gcfg.reagent_element = "I"
+_gout = CU.run_cleanup(None, "SID", _gled, PRF.resolve("I"), _gcfg,
+                       log=lambda *a: None)
+check("run_cleanup: bromide-cluster labeler SKIPPED under reagent_element='I'",
+      _gout["clusters"] == 0 and L.role_of(_gled, "clu") == L.ROLE_UNEXPLAINED,
+      _gout)
+_gled2 = mk([("clu", 296.7588, 3.7e3), ("twin", 298.7568, 3.5e3)])
+_gcfg2 = P.PassConfig(); _gcfg2.reagent_element = "Br"
+_gout2 = CU.run_cleanup(None, "SID", _gled2, PRF.resolve("Br"), _gcfg2,
+                        log=lambda *a: None)
+check("run_cleanup: bromide-cluster labeler still RUNS under reagent_element='Br'",
+      _gout2["clusters"] == 2 and L.role_of(_gled2, "clu") == L.ROLE_REAGENT,
+      _gout2)
+# no reagent element at all (molecular reagent / undetected) -> also skipped:
+# the heuristic is bromide-specific, not generic-negative-mode
+_gled3 = mk([("clu", 296.7588, 3.7e3), ("twin", 298.7568, 3.5e3)])
+_gcfg3 = P.PassConfig(); _gcfg3.reagent_element = None
+_gout3 = CU.run_cleanup(None, "SID", _gled3, PRF.resolve("Br"), _gcfg3,
+                        log=lambda *a: None)
+check("run_cleanup: bromide-cluster labeler skipped when reagent_element=None",
+      _gout3["clusters"] == 0 and L.role_of(_gled3, "clu") == L.ROLE_UNEXPLAINED,
+      _gout3)
+
 # ---- isotope-confirmed recovery (mock oracle) ----
 # a 1-Br ion C5H10BrO3- (= C5H10O3 [M+Br]-) + its 81Br twin at ~0.97x
 mz = C.neutral_mass("C5H10O3") + C.ADDUCT_SHIFTS["[M+Br]-"]

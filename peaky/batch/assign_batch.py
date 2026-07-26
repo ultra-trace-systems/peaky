@@ -490,6 +490,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     n_audit = PL.write_audit(plaus_audit, os.path.join(TAB, f"plausibility_audit_{prof.name}.csv"))
     log(f"[assign_batch] plausibility audit: {n_audit} touched peaks "
         f"-> tables/plausibility_audit_{prof.name}.csv")
+    # Sidelobe-contaminated CHANNELS: an assigned ion whose m/z lands on the ringing
+    # sidelobe of a saturating neighbour keeps its formula (the neutral is usually
+    # corroborated on another channel) but its HEIGHT is the neighbour's, not the
+    # analyte's. Only the time series separates that from a real ion that merely sits
+    # near a bright peak, so it is decided HERE, not in per-file cleanup.
+    # Called unconditionally so the merged-ledger SCHEMA is stable: without a TS it
+    # no-ops and the two columns are still present (all False / NaN).
+    from peaky.batch import timeseries as _TSF
+    _TSF.flag_sidelobe_channels(merged, ts_peaks, log=log)
     merged.to_csv(os.path.join(out_dir, "merged_ledger.csv"), index=False)
     jitter.to_csv(os.path.join(TAB, "jitter.csv"), index=False)
     # Stamp the batch time-series peaks with their assigned formula/channel and write
@@ -504,6 +513,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         log(f"[assign_batch] _batch_ts.parquet: {len(ts_annot)} peaks, {_n_ass} "
             f"({_n_ass / max(len(ts_annot), 1):.0%}) matched to an assigned "
             f"formula/channel (tol {tol_ppm:.0f} ppm)")
+        # one-to-one guarantee: each (sample, ion) is stamped on at most ONE peak,
+        # so a downstream groupby(formula, adduct) sees one trace per sample. The
+        # shoulder/split peaks that lost are kept, unstamped, flagged dup_candidate.
+        _n_dup = int(ts_annot["dup_candidate"].sum())
+        if _n_dup:
+            _ions = ts_annot.loc[ts_annot["dup_candidate"], "mz"].round(3).nunique()
+            log(f"[assign_batch] one-to-one: {_n_dup} near-duplicate peak(s) at "
+                f"~{_ions} m/z left unstamped (flagged dup_candidate) so no ion is "
+                f"stamped twice in one sample")
 
     summary = {
         "reagent": prof.name, "label": prof.label, "context": context,
