@@ -82,6 +82,13 @@ ADDUCT_SHIFTS: dict[str, float] = {
     "[M+Br]-":  M["Br"] + M_E,
     "[M+Cl]-":  M["Cl"] + M_E,
     "[M+I]-":   M["I"] + M_E,
+    # iodide-CIMS poly-iodide analyte clusters (server mechanisms +I2- / +I3-,
+    # already in ADDUCT_TO_MECH). I is monoisotopic, so these are the ONLY way a
+    # neutral picks up 2/3 iodines -- the reagent I2⁻·/I3⁻ ladder clustering onto
+    # an analyte (mostly small inorganics: NO2/Cl/O give the bright I2NO2⁻/I2Cl⁻/
+    # I2O⁻ source-background lines). The bare In⁻ clusters are labelled reagent.
+    "[M+I2]-":  2 * M["I"] + M_E,
+    "[M+I3]-":  3 * M["I"] + M_E,
     "[M+NO3]-": M["N"] + 3 * M["O"] + M_E,
     # ¹⁵N-labelled nitrate reagent cluster (server mechanism '+^NO3-'); the added
     # N is ¹⁵N, so this is +62.9855, not the +61.9885 of the ¹⁴N adduct above.

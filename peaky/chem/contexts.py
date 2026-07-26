@@ -115,7 +115,17 @@ _AMBIENT = ContextProfile(
     # 2+2/Ceff, so 2.75 only admits the C3 glycols the old 2.6 wrongly clipped
     # (they slipped in here ONLY via the pass-4 iso-pair bypass).
     h_to_c=(0.7, 2.75), o_to_c=(0.0, 1.5), n_to_c=(0.0, 0.4), dbe_to_c=(0.0, 0.75),
-    max_N=3, max_S=1, max_P=0, max_F=0, max_Si=1, max_Cl=2, max_Br=2, max_I=1,
+    # max_I=0 for the SAME reason as max_F/max_P=0: ¹²⁷I is monoisotopic, so a
+    # covalent iodine in a neutral can never be isotope-confirmed. In an iodide-CIMS
+    # source every such formula is also exactly degenerate with an [acid−H+I₂]⁻
+    # reagent cluster -- the first iodide batch had the series passes extrapolate
+    # CHIO2 / C2H3IO2 / CHIO3 / C2H3IO3 / INO4 off the pass-0 iodine anchors, each
+    # one really the I₂ cluster of an acid already in the ledger (CHIO2 [M+I]⁻ ==
+    # [HCOOH−H+I₂]⁻). Ambient iodine chemistry reaches a neutral through the
+    # pass-0 reactive_iodine known-species list, which bypasses this filter --
+    # exactly the PFCA/organophosphate precedent for F and P. (The `water` context
+    # keeps max_I=2: iodinated disinfection byproducts are the analyte there.)
+    max_N=3, max_S=1, max_P=0, max_F=0, max_Si=1, max_Cl=2, max_Br=2, max_I=0,
     min_C_for={"Br": 5, "Cl": 5, "F": 3},
     reagent_adducts=("[M-H]-", "[M+NO3]-"),
     pass3_families=("organosulfate", "nitrate", "siloxane", "amine"),

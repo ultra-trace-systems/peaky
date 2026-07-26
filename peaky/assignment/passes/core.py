@@ -386,6 +386,20 @@ _DIFF_TO_ADDUCT = {
     # are mislabeled (positive-mode urea-CIMS: ~1/3 of the backbone is this
     # channel). diff sorts alphabetically C,H,N,O.
     (("C", 1), ("H", 5), ("N", 2), ("O", 1)): "[M+(CH4N2O)H]+",
+    # MULTI-ATOM HALIDE CLUSTER CHANNELS. Same trap as the urea entry above: a
+    # channel registered in a profile but missing HERE does not error -- it falls
+    # through the `.get(diff, "[M-H]-")` default below and is silently written to
+    # the ledger as a DEPROTONATION, which also inflates the [M-H]- census. Found
+    # on the first iodide batch: 2 ions (CN2, C2H2O5) committed on [M+I2]- were
+    # reported as [M-H]-. The Br cluster channels had the same latent gap.
+    # Diff tuples sort alphabetically by element: Br < C < H < I < N < O.
+    (("I", 2),): "[M+I2]-",
+    (("I", 3),): "[M+I3]-",
+    (("Br", 2),): "[M+Br2]-",
+    (("Br", 3),): "[M+Br3]-",
+    (("Br", 2), ("H", 1)): "[M+HBr+Br]-",
+    (("Br", 3), ("H", 1)): "[M+HBr+Br2]-",
+    (("Br", 1), ("C", 1), ("H", 1), ("O", 3)): "[M+HBr+CO3]-",
 }
 
 

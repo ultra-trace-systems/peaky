@@ -135,6 +135,37 @@ def _known_species(polarity: str = "negative") -> dict:
         "HNO2": "nitrous acid",
         "HNO4": "peroxynitric acid",
     }
+    # REACTIVE IODINE species -- the canonical iodide-CIMS analytes, detected as
+    # [M+I]- (I2X- ions). Covalent iodine is monoisotopic and OFF the organic grid
+    # (like F/P), so these must be supplied as known formulas. Safe on exact mass
+    # alone (the PFCA precedent): at defect -0.19..-0.27 around m/z 270-335 no
+    # grid-reachable organic exists, so the only degeneracy is other iodine
+    # species. ICl/IBr additionally get their 37Cl/81Br envelope attached by the
+    # oracle (both confirmed on the 2026-07-21 batch: I2Cl- 288.778 with
+    # a 0.31-ratio 37Cl twin, I2Br- 332.728 with a 0.96-ratio 81Br twin). HOI and
+    # INO2 are time-VARYING there (photochemical HOI 55x over 7 h) -- ambient
+    # analytes, not source background, which is why they are NOT in the reagent
+    # cluster library. In a non-iodide run the [M+I]- channel is absent from
+    # cfg.mechanism_ids, so this family self-gates to iodide sources.
+    # The oxyacids ALSO own their deprotonation lines: IO-/IO2-/IO3- are the
+    # [M-H]- ions of HOI/HIO2/HIO3 (iodate IO3- is iodic acid's DOMINANT channel
+    # -- the NPF tracer), which is why build_library skips the generic IOx-
+    # reagent-oxide entries for iodine. OIO (the IO2 radical, a canonical daytime
+    # iodine species) commits via [OIO+I]- = I2O2- (285.799). The IO radical
+    # itself is NOT listed: its [IO+I]- is composition-identical to the locked
+    # I2O- source cluster (see the reagents.py caveat).
+    reactive_iodine = {
+        "HOI": "hypoiodous acid",
+        "HIO2": "iodous acid",
+        "HIO3": "iodic acid",
+        "IO2": "iodine dioxide radical (OIO)",
+        "INO2": "iodine nitrite (nighttime I + NO2 reservoir)",
+        "INO3": "iodine nitrate",
+        "CNI": "iodine cyanide (ICN)",
+        "CINO": "iodine isocyanate (INCO)",
+        "ICl": "iodine monochloride",
+        "IBr": "iodine monobromide",
+    }
     # Atmospheric nitroaromatics (brown-carbon tracers from NOx + aromatic VOC /
     # biomass burning), detected as [M-H]-. These are H-POOR / high-DBE, so the
     # ambient Van Krevelen floor + DBE/C ceiling block them from the organic grid
@@ -178,6 +209,7 @@ def _known_species(polarity: str = "negative") -> dict:
                 )
     return {
         "atmospheric": atmos,
+        "reactive_iodine": reactive_iodine,
         "nitroaromatic": nitroaromatic,
         "perfluoroacid": perfluoroacid,
         "chlorinated_paraffin": chlorinated_paraffin,
@@ -315,6 +347,8 @@ def run_pass0_known(
             tag = (
                 "atmospheric"
                 if fam == "atmospheric"
+                else "reactive-iodine"
+                if fam == "reactive_iodine"
                 else "nitroaromatic"
                 if fam == "nitroaromatic"
                 else "organophosphate"
@@ -928,6 +962,16 @@ def _family_ok(formula: str, ranges: dict[str, tuple[int, int]]) -> bool:
 
 
 def _context_filter(formulas, context: str) -> list[str]:
+    """Context plausibility gate for the generic passes.
+
+    This is also where the OFF-GRID ELEMENT invariant is enforced, via the context's
+    own heteroatom caps: `ambient-air` sets max_F/max_P/max_I = 0 because those
+    elements are monoisotopic (or, for P, otherwise unconfirmable), so a neutral
+    containing them can never be isotope-confirmed. They may enter a neutral ONLY
+    through the curated pass-0 known-species list, which does not pass through here.
+    Without that, the SERIES passes extrapolate off pass-0 anchors and invent them:
+    the first iodide batch produced 8 covalent-organoiodine neutrals (CHIO2,
+    C2H3IO2, INO4, ...), each really an [acid-H+I2]- reagent cluster."""
     out = []
     for f in formulas:
         keep, _ = X.filter_by_context(f, context)

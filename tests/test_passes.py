@@ -50,6 +50,56 @@ check("suffix applied", P.confidence_label(0.75, 0.5, 0, False, CFG, "series") =
 check("_mech_to_adduct 14N nitrate -> [M+NO3]-",
       P._mech_to_adduct({"ion_formula": "C6H5N2O6-", "compound_formula": "C6H5NO3"})
       == "[M+NO3]-")
+# EVERY channel of EVERY registered profile must round-trip through
+# _mech_to_adduct. A channel missing from _DIFF_TO_ADDUCT does not raise -- it hits
+# the `.get(diff, "[M-H]-")` default and is silently written to the ledger as a
+# DEPROTONATION (found on the first iodide batch: [M+I2]- commits reported as
+# [M-H]-, which also inflated the [M-H]- census). This loop is the guard.
+from peaky import profiles as _PRF          # noqa: E402
+from peaky import chemistry as _CH          # noqa: E402
+_ADDUCT_DELTA = {          # ion composition minus neutral composition
+    "[M-H]-": {"H": -1}, "[M+Br]-": {"Br": 1}, "[M+Cl]-": {"Cl": 1},
+    "[M+I]-": {"I": 1}, "[M+I2]-": {"I": 2}, "[M+I3]-": {"I": 3},
+    "[M+NO3]-": {"N": 1, "O": 3}, "[M+Br2]-": {"Br": 2}, "[M+Br3]-": {"Br": 3},
+    "[M+HBr+Br]-": {"H": 1, "Br": 2}, "[M+HBr+Br2]-": {"H": 1, "Br": 3},
+    "[M+HBr+CO3]-": {"H": 1, "Br": 1, "C": 1, "O": 3},
+    "[M+CO3]-": {"C": 1, "O": 3}, "[M+H]+": {"H": 1}, "[M+NH4]+": {"N": 1, "H": 4},
+    "[M+Na]+": {"Na": 1}, "[M+(CH4N2O)H]+": {"C": 1, "H": 5, "N": 2, "O": 1},
+}
+for _p in _PRF.PROFILES.values():
+    for _a in _p.adducts:
+        if _a == "[M+^NO3]-":
+            continue                        # heavy-isotope label, covered above
+        _d = _ADDUCT_DELTA.get(_a)
+        check(f"{_p.name}: channel {_a} has a known element delta in the test map",
+              _d is not None, _a)
+        if _d is None:
+            continue
+        _base = {"C": 6, "H": 8, "O": 4}    # an arbitrary neutral to build an ion on
+        _ion = dict(_base)
+        for _el, _n in _d.items():
+            _ion[_el] = _ion.get(_el, 0) + _n
+        _got = P._mech_to_adduct({
+            "ion_formula": _CH.format_formula(_ion),
+            "compound_formula": _CH.format_formula(_base)})
+        check(f"{_p.name}: {_a} round-trips through _mech_to_adduct (not silently [M-H]-)",
+              _got == _a, f"got {_got}")
+
+# OFF-GRID ELEMENT INVARIANT: covalent iodine must not reach a neutral through the
+# generic passes. Enforced by the CONTEXT cap (ambient-air max_I=0, exactly like
+# max_F/max_P=0) -- 127I is monoisotopic so it can never be isotope-confirmed, and in
+# an iodide source every such formula is degenerate with an [acid-H+I2]- cluster.
+# Real regression: the first iodide batch produced CHIO2, CHIO3, C2H3IO2, C2H3IO3,
+# INO4 from series extrapolation off the pass-0 iodine anchors.
+for _f in ("CHIO2", "CHIO3", "C2H3IO2", "C2H3IO3", "INO4"):
+    check(f"off-grid: {_f} rejected by ambient-air (max_I=0)",
+          P._context_filter([_f], "ambient-air") == [], _f)
+check("off-grid: ordinary CHO/CHON neutrals still pass ambient-air",
+      set(P._context_filter(["C6H8O4", "C10H16O3", "C5H7NO4"], "ambient-air"))
+      == {"C6H8O4", "C10H16O3", "C5H7NO4"})
+check("off-grid: the water context still ALLOWS iodine (iodinated DBPs are the "
+      "analyte there)", P._context_filter(["C2H3IO2"], "water") == ["C2H3IO2"])
+
 check("_mech_to_adduct 15N nitrate (^N) -> [M+^NO3]-",
       P._mech_to_adduct({"ion_formula": "C6H5NO6^N-", "compound_formula": "C6H5NO3"})
       == "[M+^NO3]-")
@@ -909,6 +959,71 @@ check("pass0 commits dinitrophenol [M-H]- (no Br twin gate)",
       sn["committed"] == 1
       and ledn.loc[ledn.peak_id == "DNP", "neutral_formula"].iloc[0] == "C6H4N2O5"
       and ledn.loc[ledn.peak_id == "DNP", "method"].iloc[0] == "known:nitroaromatic", sn)
+
+# pass0 reactive iodine (iodide-CIMS): covalent I is monoisotopic + off-grid, so
+# INO2 (via [M+I]- = I2NO2-, the 299.802 line) must be supplied as a
+# known species. No Br in the ion -> no twin gate; exact-mass + score commit.
+check("INO2 in the known-species reactive_iodine family",
+      P._known_species().get("reactive_iodine", {}).get("INO2") is not None)
+check("HOI in the known-species reactive_iodine family",
+      P._known_species().get("reactive_iodine", {}).get("HOI") is not None)
+check("OIO (IO2 radical) in the reactive_iodine family",
+      P._known_species().get("reactive_iodine", {}).get("IO2") is not None)
+check("iodic acid (HIO3) in the reactive_iodine family (owns IO3- via [M-H]-)",
+      P._known_species().get("reactive_iodine", {}).get("HIO3") is not None)
+mz_ino2 = CH.ion_mz("INO2", "[M+I]-")
+# non-circular anchor: the server-observed I2NO2- line (299.8025)
+check("INO2 [M+I]- lands on the observed 299.8025 line",
+      abs(mz_ino2 - 299.8025) < 0.001, mz_ino2)
+ledi = mk_ledger([("INO2", mz_ino2, 2.8e6)])
+
+def fake_ino2(client, sample_id, formulas, *, mechanism_ids=None, **kw):
+    if "INO2" not in formulas:
+        return pd.DataFrame([])
+    return pd.DataFrame([dict(
+        compound_formula="INO2", compound_score=0.99,
+        ion_formula="I2NO2-", ion_score=0.99, iso_label="M0",
+        is_base=True, theo_mz=mz_ino2, rel_abundance=1.0, iso_score=0.99,
+        sample_peak_id="INO2", sample_peak_mz=mz_ino2,
+        sample_peak_intensity=2.8e6, ppm_error=0.34, abundance_error=0.0)])
+
+si = P.run_pass0_known(None, "SID", ledi, PROF5, ACFG, ["[M+I]-", "[M-H]-"],
+                       score_fn=fake_ino2, log=lambda *a: None)
+check("pass0 commits INO2 [M+I]- (reactive iodine, off-grid covalent I)",
+      si["committed"] == 1
+      and ledi.loc[ledi.peak_id == "INO2", "neutral_formula"].iloc[0] == "INO2"
+      and ledi.loc[ledi.peak_id == "INO2", "method"].iloc[0] == "known:reactive_iodine", si)
+check("pass0 locks the reactive-iodine commit", L.is_locked(ledi, "INO2"))
+
+# IBr via [M+I]- = I2Br-: 'Br' in the ion formula -> the pass-0 self-twin gate
+# applies; the 0.96-ratio 81Br twin (the 332.728/334.726 pair) passes.
+mz_ibr = CH.ion_mz("IBr", "[M+I]-")
+# non-circular anchor: the server-observed I2Br- line (332.7278)
+check("IBr [M+I]- lands on the observed 332.7278 line",
+      abs(mz_ibr - 332.7278) < 0.001, mz_ibr)
+ledb = mk_ledger([("IBR", mz_ibr, 5716.0), ("IBRtw", mz_ibr + 1.99795, 5503.0)])
+
+def fake_ibr(client, sample_id, formulas, *, mechanism_ids=None, **kw):
+    if "IBr" not in formulas:
+        return pd.DataFrame([])
+    return pd.DataFrame([
+        dict(compound_formula="IBr", compound_score=0.99, ion_formula="BrI2-",
+             ion_score=0.99, iso_label="M0", is_base=True, theo_mz=mz_ibr,
+             rel_abundance=1.0, iso_score=0.99, sample_peak_id="IBR",
+             sample_peak_mz=mz_ibr, sample_peak_intensity=5716.0,
+             ppm_error=-0.1, abundance_error=0.0),
+        dict(compound_formula="IBr", compound_score=0.99, ion_formula="BrI2-",
+             ion_score=0.99, iso_label="81Br", is_base=False,
+             theo_mz=mz_ibr + 1.99795, rel_abundance=0.97, iso_score=0.95,
+             sample_peak_id="IBRtw", sample_peak_mz=mz_ibr + 1.99795,
+             sample_peak_intensity=5503.0, ppm_error=0.04, abundance_error=0.02)])
+
+sb = P.run_pass0_known(None, "SID", ledb, PROF5, ACFG, ["[M+I]-", "[M-H]-"],
+                       score_fn=fake_ibr, log=lambda *a: None)
+check("pass0 commits IBr [M+I]- (81Br self-twin ratio 0.96 passes the gate)",
+      sb["committed"] == 1
+      and ledb.loc[ledb.peak_id == "IBR", "neutral_formula"].iloc[0] == "IBr", sb)
+check("pass0 attaches the IBr 81Br child", L.role_of(ledb, "IBRtw") == L.ROLE_ISO, sb)
 
 # ---------- pass0 known-species gate is offset-aware (prior_offset) ----------
 # a silanediol at -2.3 ppm: rejected when the instrument offset is unknown

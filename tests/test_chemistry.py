@@ -54,6 +54,20 @@ check("15N nitrate is +0.997035 vs 14N",
       C.ADDUCT_SHIFTS["[M+^NO3]-"] - C.ADDUCT_SHIFTS["[M+NO3]-"])
 check("nitrophenol [M+^NO3]- ion m/z ~ 202.0123 (server-observed)",
       approx(C.ion_mz("C6H5NO3", "[M+^NO3]-"), 202.0123, 2e-3), C.ion_mz("C6H5NO3", "[M+^NO3]-"))
+# iodide adducts: [M+I]- adds I (126.9045), and the poly-iodide analyte channels
+# [M+I2]-/[M+I3]- add 2/3 iodines (the reagent I2-./I3- clustering onto a neutral).
+check("[M+I]- shift ~ +126.9050", approx(C.ADDUCT_SHIFTS["[M+I]-"], 126.9050, 1e-3),
+      C.ADDUCT_SHIFTS["[M+I]-"])
+check("[M+I2]- shift ~ +253.8095", approx(C.ADDUCT_SHIFTS["[M+I2]-"], 253.8095, 1e-3),
+      C.ADDUCT_SHIFTS["[M+I2]-"])
+check("[M+I3]- shift ~ +380.7140", approx(C.ADDUCT_SHIFTS["[M+I3]-"], 380.7140, 1e-3),
+      C.ADDUCT_SHIFTS["[M+I3]-"])
+check("[M+I2]- is one iodine (126.9045) heavier than [M+I]-",
+      approx(C.ADDUCT_SHIFTS["[M+I2]-"] - C.ADDUCT_SHIFTS["[M+I]-"], 126.90447, 1e-4),
+      C.ADDUCT_SHIFTS["[M+I2]-"] - C.ADDUCT_SHIFTS["[M+I]-"])
+# HNO3 seen as the [M+I]- cluster == the server-observed HINO3- at 189.90
+check("HNO3 [M+I]- ion m/z ~ 189.9004 (server-observed)",
+      approx(C.ion_mz("HNO3", "[M+I]-"), 189.9004, 2e-3), C.ion_mz("HNO3", "[M+I]-"))
 # [M+H]+ of H2O -> 19.018
 check("[M+H]+ of H2O ~ 19.0178", approx(C.ion_mz("H2O", "[M+H]+"), 19.0178, 1e-3),
       C.ion_mz("H2O", "[M+H]+"))

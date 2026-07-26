@@ -30,14 +30,16 @@ _HALOGEN_ISO = {
 _M_E = C.M_E
 
 # small neutrals that cluster onto the reagent anion. ONLY genuine reagent /
-# background species belong here -- water and the HBr the reagent itself sheds.
-# Organic acids (HCOOH/CH3COOH/pyruvic/pinic/...) were REMOVED 2026-06-12: a
-# [Br1+acid]- ion IS [acid+Br]- = the primary [M+Br]- ANALYTE channel, so the
-# labeler was stealing real ambient-acid analytes (formic acid's 232k-cps line
-# among them) and burying them as "reagent". They are now left for the
-# assignment passes, exactly like the HNO3/HNO2 ruling.
+# background species belong here -- water and the hydrogen halide the reagent
+# itself sheds (HBr for Br-CIMS, HI for I-CIMS: resolved per reagent in
+# build_library, so an iodide library no longer carries phantom [In+HBr]-
+# entries). Organic acids (HCOOH/CH3COOH/pyruvic/pinic/...) were REMOVED
+# 2026-06-12: a [Br1+acid]- ion IS [acid+Br]- = the primary [M+Br]- ANALYTE
+# channel, so the labeler was stealing real ambient-acid analytes (formic
+# acid's 232k-cps line among them) and burying them as "reagent". They are now
+# left for the assignment passes, exactly like the HNO3/HNO2 ruling.
 _CLUSTER_NEUTRALS = {
-    "H2O": "H2O", "HBr": "HBr",
+    "H2O": "H2O",
     # HF clusters onto bromide as [Br+HF]- = BrHF- (m/z 98.925). HF is a
     # background/contaminant volatile (released by the fluorinated instrument
     # background, abundant in this source), not an analyte -- it was the only
@@ -45,6 +47,27 @@ _CLUSTER_NEUTRALS = {
     # so it belongs in the inorganic/halogen background-cluster list, not as an
     # organic. Extra Br_n.HF entries are harmless (labeled only if present).
     "HF": "HF",
+}
+
+
+# Iodine-source poly-iodide background clusters. Learned from the
+# 2026-07-21 iodide batch (docs/REAGENTS.md): besides the bare In⁻ ladder and the
+# IOₓ⁻ oxides (both generated below), an iodide source throws bright + time-STABLE
+# pure-iodine-oxide clusters I₂O⁻ (269.80, ~2M cps) and I₃O⁻ (396.71). These are
+# source background, so they are LABELLED (immovable) rather than left in the
+# residual or mis-read as exotic organoiodines (I is off the neutral grid).
+# HOI₂⁻ and I₂NO₂⁻ are deliberately NOT here: they are the [M+I]- analyte reading
+# of HOI / INO₂ (time-VARYING ambient reactive-iodine species, 55x/2.3x over the
+# 2026-07-21 batch) -- pass-0 `reactive_iodine` known species, the same ruling as
+# the reagent-acid clusters below. ⚠ CAVEAT (mirror of the I₃⁻/ambient-I₂ blind
+# spot): I₂O⁻ is composition-identical to [IO+I]-, so a locked I₂O⁻ hides any
+# ambient IO radical -- a campaign targeting IO must check I₂O⁻/I₂⁻ ratio drift
+# before trusting this label. Iodine-specific -- generated only for
+# reagent == "I". Formula = the ION composition (anion: +1 electron added by
+# build_library, so the dict here is the neutral atom count).
+_IODINE_BACKGROUND: dict[str, dict[str, int]] = {
+    "[I2O]-": {"I": 2, "O": 1},
+    "[I3O]-": {"I": 3, "O": 1},
 }
 
 
@@ -138,9 +161,13 @@ def build_library(reagent: str = "Br", *, max_n: int = 4, max_neutral: int = 1
             out.append((label, mass, f_core))
             core_masses.append((label, mass, n))
 
-    # R_n^- . (neutral)_k clusters -- neutrals adduct onto each bare core
+    # R_n^- . (neutral)_k clusters -- neutrals adduct onto each bare core.
+    # The shed hydrogen halide is the REAGENT'S OWN (HBr / HCl / HI), not a
+    # fixed HBr: [I+HI]- is the iodide analog of the Br-CIMS [Br+HBr]-.
+    neutrals = dict(_CLUSTER_NEUTRALS)
+    neutrals["H" + reagent] = "H" + reagent
     for label, core_mz, n in core_masses:
-        for name, formula in _CLUSTER_NEUTRALS.items():
+        for name, formula in neutrals.items():
             nm = C.neutral_mass(formula)
             for k in range(1, max_neutral + 1):
                 d = {reagent: n}
@@ -152,11 +179,24 @@ def build_library(reagent: str = "Br", *, max_n: int = 4, max_neutral: int = 1
     # reagent-halogen oxide anions RO-/RO2-/RO3- -- BOTH halogen isotopologues
     # (the 81Br twin of BrO- at 96.91 was previously dropped: only isos[0] was
     # used, so [81BrO]- never entered the library and sat in 'unexplained').
-    for no in (1, 2, 3):
-        f_ox = C.format_formula({reagent: 1, "O": no}) + "-"
-        for biso_mass, biso_tag in isos:
-            out.append((f"[{reagent}O{no if no > 1 else ''}]- ({biso_tag})",
-                        biso_mass + no * C.M["O"] + _M_E, f_ox))
+    # Br/Cl ONLY: for iodine the IOx- anions are ion-identical to the [M-H]-
+    # deprotonation of the iodine OXYACIDS (IO- == [HOI-H]-, IO2- == [HIO2-H]-,
+    # IO3- == [HIO3-H]- -- and iodate is the SIGNATURE of iodic acid, THE key
+    # iodide-CIMS analyte for new-particle formation). Labelling them reagent
+    # would lock the acids' dominant channel away from pass-0 `reactive_iodine`
+    # -- the HNO3/NO3- ruling, applied to iodine oxides.
+    if reagent != "I":
+        for no in (1, 2, 3):
+            f_ox = C.format_formula({reagent: 1, "O": no}) + "-"
+            for biso_mass, biso_tag in isos:
+                out.append((f"[{reagent}O{no if no > 1 else ''}]- ({biso_tag})",
+                            biso_mass + no * C.M["O"] + _M_E, f_ox))
+
+    # iodine-source poly-iodide background clusters (I₂O⁻/HOI₂⁻/I₂NO₂⁻/I₃O⁻) --
+    # the bright non-ladder iodine ions this source throws. Iodine-specific.
+    if reagent == "I":
+        for label, d in _IODINE_BACKGROUND.items():
+            out.append((label, C.neutral_mass(d) + _M_E, C.format_formula(d) + "-"))
     return out
 
 

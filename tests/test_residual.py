@@ -225,6 +225,22 @@ check("BrCl enumeration recovers the Cl neutral via [M+Br]-",
 check("every BrCl candidate carries exactly the pinned halogens",
       all((C.parse_formula(f).get("Cl", 0) == 1) for f in bc), sorted(bc)[:5])
 
+# --- off-grid element invariant in the deep-series stage ---------------------
+# stage_b_series applied only the STRUCTURAL gates (DBE + oxygen cap), so it walked
+# +CO / +C2H2O / +O off the pass-0 iodine anchors (HOI/HIO2/INO3) into CHIO2, CHIO3,
+# C2H3IO2, C2H3IO3, INO4 -- each really the I2 cluster of an acid already assigned.
+# It now applies filter_by_context too, so ambient-air's max_I=0 rejects them.
+from peaky import contexts as _X2   # noqa: E402
+for _f in ("CHIO2", "CHIO3", "C2H3IO2", "C2H3IO3", "INO4"):
+    _keep, _why = _X2.filter_by_context(_f, "ambient-air")
+    check(f"residual off-grid: {_f} rejected by ambient-air ({_why})", not _keep)
+for _f in ("C6H8O4", "C10H16O3", "C5H7NO4"):
+    check(f"residual off-grid: {_f} still accepted",
+          _X2.filter_by_context(_f, "ambient-air")[0])
+check("residual off-grid: DBE/oxygen gates alone would NOT have caught CHIO2",
+      C.dbe_ok("CHIO2")[0] and C.oxygen_ok("CHIO2")[0])
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 
