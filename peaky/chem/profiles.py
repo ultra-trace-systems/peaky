@@ -109,11 +109,44 @@ NO3_15N = ReagentProfile(
     ),
 )
 
+# Iodide (I⁻) CIMS — negative mode. A SOFT chemical ionisation: most analytes are
+# detected as the [M+I]⁻ adduct cluster, and strong acids (HNO3, HCOOH, ...) ALSO
+# appear on the deprotonation channel [M-H]⁻ (both server-confirmed on the
+# 2026-07-21 batch — see docs/REAGENTS.md). The reagent-ion ladder is
+# I⁻ (127) / I₂⁻· (254, the BRIGHTEST ion in every sample) / I₃⁻ (381), plus the
+# pure-iodine-oxide poly-iodide (I₂O⁻/I₃O⁻) source-background clusters (labelled
+# by reagents.build_library("I")). The IOₓ⁻ oxide anions are NOT labelled: they
+# are the [M-H]⁻ ions of the iodine oxyacids (IO₃⁻ = iodic acid's dominant
+# channel). The AMBIENT reactive-iodine species (HOI, HIO2, HIO3, OIO, INO2,
+# ICl, IBr, ICN, INCO ...) are pass-0 `reactive_iodine` known species on the
+# [M+I]⁻ / [M-H]⁻ channels — covalent iodine is MONOISOTOPIC (only ¹²⁷I), so it
+# cannot be isotope-confirmed and is kept OFF the neutral grid (no I in
+# `ranges`, like F/P): iodine reaches a neutral only via the adduct or the
+# known-species list. [M+I2]⁻ is kept as a secondary analyte channel (server
+# mechanism +I2-). [M-H+I2]⁻ (conjugate base · I₂, e.g. [HCOOH-H+I2]⁻ @298.807)
+# is a cluster-DECOMPOSITION alias like the Br-CIMS [M+HBr+Br]⁻ -- no server
+# mechanism; pass 3 scores the covalent alias (M-H+I) [M+I]⁻ (the same ion) and
+# commits the acid reading. The In⁻ ladder is in the measured 40-600 window, so
+# the correlation layer normalises on the reagent ion.
+IODIDE = ReagentProfile(
+    name="I",
+    label="I- CIMS",
+    polarity="-",
+    adducts=["[M+I]-", "[M-H]-", "[M+I2]-", "[M-H+I2]-"],
+    normaliser="reagent",
+    reagent_ion_re=r"I\d*-$",
+    ranges="C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1",
+    detect_adduct="[M+I]-",
+    context="ambient-air",
+    aliases=("i", "iodide", "iodide-cims", "i-", "i-cims", "iodine"),
+)
+
 PROFILES: dict[str, ReagentProfile] = {
     BR.name: BR,
     UR.name: UR,
     NO3.name: NO3,
     NO3_15N.name: NO3_15N,
+    IODIDE.name: IODIDE,
 }
 _BY_ALIAS = {a: p for p in PROFILES.values() for a in (p.name.lower(), *p.aliases)}
 

@@ -46,6 +46,50 @@ try:
 except KeyError:
     check("unknown reagent raises KeyError", True)
 
+# ---- iodide (I⁻ CIMS) built-in ----------------------------------------------
+check("resolve('I') built-in", P.resolve("I").name == "I")
+for _a in ("i", "iodide", "iodine", "i-", "i-cims", "iodide-cims"):
+    check(f"alias {_a!r} -> I", P.resolve(_a).name == "I")
+check("iodide is negative mode", P.resolve("iodide").polarity == "-")
+check("iodide primary channel is [M+I]-", "[M+I]-" in P.resolve("I").adducts)
+check("iodide keeps deprotonation channel [M-H]-", "[M-H]-" in P.resolve("I").adducts)
+check("iodide keeps the poly-iodide [M+I2]- channel", "[M+I2]-" in P.resolve("I").adducts)
+check("iodide registers the deprotonated-acid.I2 channel [M-H+I2]-",
+      "[M-H+I2]-" in P.resolve("I").adducts)
+check("iodide detect_adduct is [M+I]-", P.resolve("I").detect_adduct == "[M+I]-")
+check("iodide normalises on the (in-window) reagent ion",
+      P.resolve("I").normaliser == "reagent")
+check("covalent iodine is OFF the neutral grid (monoisotopic)",
+      "I" not in P.resolve("I").ranges)
+
+# ---- every built-in profile adduct must be resolvable where it matters -------
+# Hard invariants: (1) every profile adduct needs an ADDUCT_SHIFTS entry (ion_mz
+# raises otherwise); (2) every detect_adduct needs an ADDUCT_TO_MECH mapping
+# (auto-detect reads MECH_TO_ADDUCT -- unmapped means detection can NEVER fire).
+# NB: not every adduct needs a mechanism -- [M+HBr+Br]- is a cluster-DECOMPOSITION
+# adduct (same ion as a covalent reading, relabel-only, deliberately unmapped).
+# assign.py filters channels with `if a in ADDUCT_TO_MECH`, so for the iodide
+# profile (three server-scored channels + the [M-H+I2]- decomposition alias)
+# pin each mapping explicitly: a dropped mapping silently disables the channel
+# in live runs.
+from peaky import io_mascope as IOM   # noqa: E402
+from peaky import chemistry as CHEM   # noqa: E402
+for _p in P.PROFILES.values():
+    check(f"{_p.name}: all adducts in ADDUCT_SHIFTS",
+          all(a in CHEM.ADDUCT_SHIFTS for a in _p.adducts),
+          [a for a in _p.adducts if a not in CHEM.ADDUCT_SHIFTS])
+    check(f"{_p.name}: detect_adduct is mechanism-mapped (auto-detect works)",
+          _p.detect_adduct in IOM.ADDUCT_TO_MECH, _p.detect_adduct)
+for _a, _m in (("[M+I]-", "+I-"), ("[M-H]-", "-H+"), ("[M+I2]-", "+I2-"),
+               ("[M+I3]-", "+I3-")):
+    check(f"iodide channel {_a} maps to server mechanism {_m}",
+          IOM.ADDUCT_TO_MECH.get(_a) == _m)
+# [M-H+I2]- is relabel-only, like [M+HBr+Br]-: pass 3 scores its covalent alias
+# (A-H+I) [M+I]- instead. A mapping appearing here would send an unparseable
+# mixed +/- mechanism to the scorers -- keep it OUT.
+check("iodide [M-H+I2]- is a decomposition alias: deliberately NOT mechanism-mapped",
+      "[M-H+I2]-" not in IOM.ADDUCT_TO_MECH)
+
 # ---- register a new profile in code -----------------------------------------
 acet = P.ReagentProfile(
     name="Ac", label="Acetate⁻", polarity="-", adducts=["[M+CH3COO]-", "[M-H]-"],
@@ -58,13 +102,13 @@ check("register() -> resolve by alias", P.resolve("acetate").name == "Ac")
 # ---- config-driven loading (JSON + TOML) ------------------------------------
 with tempfile.TemporaryDirectory() as d:
     cfgj = os.path.join(d, "r.json")
-    json.dump([{"name": "Iod", "label": "I⁻ CIMS", "polarity": "-",
-                "adducts": ["[M+I]-", "[M-H]-"], "normaliser": "reagent",
-                "reagent_ion_re": "I-?$", "ranges": "C0-30 H0-50 O0-12",
-                "detect_adduct": "[M+I]-", "aliases": ["iodide"]}], open(cfgj, "w"))
+    json.dump([{"name": "Cust", "label": "custom⁻", "polarity": "-",
+                "adducts": ["[M+X]-", "[M-H]-"], "normaliser": "reagent",
+                "reagent_ion_re": "X-?$", "ranges": "C0-30 H0-50 O0-12",
+                "detect_adduct": "[M+X]-", "aliases": ["custom-reagent"]}], open(cfgj, "w"))
     P.load_config(cfgj)
-    check("load_config(JSON list) registers", P.resolve("iodide").name == "Iod")
-    check("loaded aliases are a tuple", isinstance(P.resolve("Iod").aliases, tuple))
+    check("load_config(JSON list) registers", P.resolve("custom-reagent").name == "Cust")
+    check("loaded aliases are a tuple", isinstance(P.resolve("Cust").aliases, tuple))
 
     cfgw = os.path.join(d, "r2.json")
     json.dump({"reagents": [{"name": "Qx", "label": "Qx", "polarity": "-",
@@ -79,11 +123,24 @@ with tempfile.TemporaryDirectory() as d:
     P.load_config(cfgt)
     check("load_config(TOML) registers", P.resolve("Tz").name == "Tz")
 
+    # a user config may deliberately SHADOW a built-in alias (register overwrite
+    # semantics): 'iodide' -> the custom profile until the registry is restored.
+    cfgs = os.path.join(d, "shadow.json")
+    json.dump([{"name": "MyI", "label": "my iodide", "polarity": "-",
+                "adducts": ["[M+I]-"], "normaliser": "tic", "reagent_ion_re": None,
+                "ranges": "C0-10 H0-20", "detect_adduct": "[M+I]-",
+                "aliases": ["iodide"]}], open(cfgs, "w"))
+    P.load_config(cfgs)
+    check("user config SHADOWS the built-in 'iodide' alias",
+          P.resolve("iodide").name == "MyI")
+    check("built-in name 'I' itself is untouched by the alias shadow",
+          P.resolve("I").name == "I")
+
 # ---- restore the registry (no cross-test pollution) -------------------------
 P.PROFILES.clear(); P.PROFILES.update(_SAVED[0])
 P._BY_ALIAS.clear(); P._BY_ALIAS.update(_SAVED[1])
 check("registry restored (Ac gone after cleanup)", "Ac" not in P.PROFILES and "ac-" not in P._BY_ALIAS)
-check("built-ins intact after restore", {"Br", "Ur", "NO3", "NO3_15N"} <= set(P.PROFILES))
+check("built-ins intact after restore", {"Br", "Ur", "NO3", "NO3_15N", "I"} <= set(P.PROFILES))
 
 
 def test_all():

@@ -95,6 +95,94 @@ check("81BrO- peak (96.91) now labeled reagent, not unexplained",
 check("81BrO- peak carries ion_formula BrO-",
       str(led2.loc[led2.peak_id == "bo", "ion_formula"].iloc[0]) == "BrO-")
 
+# --- IODIDE (I⁻ CIMS) reagent library ---------------------------------------
+# learned from the 2026-07-21 batch: the In⁻ ladder + IOₓ⁻ + poly-iodide
+# source-background clusters. I is monoisotopic (127I only), so no isotope branching.
+ilib = RG.build_library("I")
+check("I- present ~126.9050", bool(near(ilib, 126.9050)), near(ilib, 126.9050))
+# I2-. radical anion = 2*126.9045 + e = 253.8095 (the BRIGHTEST ion in the source)
+check("[I2]-. present ~253.8095", bool(near(ilib, 253.8095)), near(ilib, 253.8095))
+check("[I3]- present ~380.7140", bool(near(ilib, 380.7140)), near(ilib, 380.7140))
+# iodine oxides IOx- are NOT reagent entries: IO-/IO2-/IO3- are ion-identical to
+# the [M-H]- deprotonation of HOI/HIO2/HIO3 (iodate = iodic acid's DOMINANT
+# channel, the NPF tracer) -- left for pass-0 reactive_iodine, the HNO3 ruling.
+check("IO- (142.90) NOT in I library (it is [HOI-H]-)",
+      not near(ilib, 142.8999), near(ilib, 142.8999))
+check("IO2- (158.89) NOT in I library (it is [HIO2-H]-)",
+      not near(ilib, 158.8948), near(ilib, 158.8948))
+check("IO3- (174.89) NOT in I library (it is [HIO3-H]-, iodic acid's main line)",
+      not near(ilib, 174.8897), near(ilib, 174.8897))
+# ... but the Br oxides are untouched by the iodine gate
+check("BrO- still in Br library after the IOx ruling", bool(near(lib, 94.9138)))
+# I . H2O cluster ~ 126.9050 + 18.0106 = 144.9156
+check("[I+H2O]- present ~144.9156", bool(near(ilib, 144.9156)), near(ilib, 144.9156))
+# poly-iodide source-background clusters: only the time-STABLE pure iodine oxides
+check("[I2O]- present ~269.8044", bool(near(ilib, 269.8044)), near(ilib, 269.8044))
+check("[I3O]- present ~396.7089", bool(near(ilib, 396.7089)), near(ilib, 396.7089))
+check("[I2O]- carries ion_formula I2O-", "I2O-" in near_f(ilib, 269.8044), near_f(ilib, 269.8044))
+# reagent-acid clusters are the [M+I]- ANALYTE channel, NOT reagent (like the Br
+# organic-acid ruling): I.HNO3 (189.90), I.H2O2 (160.91), I.HCOOH (172.91) stay out.
+check("[I+HNO3]- (189.90) NOT in reagent library (it is the [M+I]- HNO3 analyte)",
+      not near(ilib, 189.9007), near(ilib, 189.9007))
+check("[I+H2O2]- (160.91) NOT in reagent library (it is the [M+I]- H2O2 analyte)",
+      not near(ilib, 160.9105), near(ilib, 160.9105))
+check("[I+HCOOH]- (172.91) NOT in reagent library (it is the [M+I]- formic analyte)",
+      not near(ilib, 172.9106), near(ilib, 172.9106))
+# reactive-iodine AMBIENT species are pass-0 known species, NOT reagent background:
+# HOI (via HOI2- 270.81, 55x time-varying) and INO2 (via I2NO2- 299.80) stay out.
+check("[HOI2]- (270.81) NOT in reagent library (it is the [M+I]- HOI analyte)",
+      not near(ilib, 270.8122), near(ilib, 270.8122))
+check("[I2NO2]- (299.80) NOT in reagent library (it is the [M+I]- INO2 analyte)",
+      not near(ilib, 299.8024), near(ilib, 299.8024))
+# the poly-iodide background is iodine-specific: it must NOT leak into the Br library
+check("iodine background NOT in Br library ([I2O]- absent)", not near(lib, 269.8044))
+# the shed hydrogen halide is the REAGENT'S OWN: the I library carries [I+HI]-
+# (254.8173), NOT the Br-CIMS [I+HBr]- (206.832) phantom
+check("[I+HI]- present ~254.8173 (reagent's own hydride)",
+      bool(near(ilib, 254.8173)), near(ilib, 254.8173))
+check("NO [I+HBr]- phantom (~206.832) in the I library",
+      not near(ilib, 206.8318), near(ilib, 206.8318))
+check("no Br in any I-library ion formula",
+      not any("Br" in f for _l, _m, f in ilib),
+      [f for _l, _m, f in ilib if "Br" in f])
+check("Br library still carries [Br+HBr]- (160.843)", bool(near(lib, 160.843)))
+check("no I in any Br-library ion formula",
+      not any("I" in f for _l, _m, f in lib), [f for _l, _m, f in lib if "I" in f])
+
+# --- Cl library: the shed hydride follows the reagent there too ---------------
+clib = RG.build_library("Cl")
+check("[Cl+HCl]- present ~70.9461", bool(near(clib, 70.9461)), near(clib, 70.9461))
+check("[Cl+HCl]- 37Cl isotopologue ~72.9431", bool(near(clib, 72.9431)), near(clib, 72.9431))
+check("no Br in any Cl-library ion formula",
+      not any("Br" in f for _l, _m, f in clib), [f for _l, _m, f in clib if "Br" in f])
+# stability snapshots: pin the library sizes so a future _CLUSTER_NEUTRALS /
+# oxide-rule change is a CONSCIOUS edit here, not a silent behavior shift
+check("Br library size snapshot (62)", len(lib) == 62, len(lib))
+check("Cl library size snapshot (62)", len(clib) == 62, len(clib))
+check("I library size snapshot (18: no isotope branching, no IOx oxides)",
+      len(ilib) == 18, len(ilib))
+
+# the labeler pulls the bright iodide clusters out of the residual, leaves analytes
+iled = L.new_ledger(pd.DataFrame({
+    "peak_id": ["i1", "i2", "i3", "i2o", "i2no2", "hno3", "org"],
+    "mz": [126.9050, 253.8095, 380.7140, 269.8044, 299.8024, 189.9007, 89.0244],
+    "height": [3e6, 1.9e7, 9e6, 2.2e6, 2.8e6, 1.7e4, 2e5],
+}))
+ni = RG.label_reagents(iled, "I", ppm=15)
+check("labels >=4 iodide reagent peaks", ni >= 4, ni)
+check("I2-. peak labeled reagent", L.role_of(iled, "i2") == L.ROLE_REAGENT, L.role_of(iled, "i2"))
+check("I2O- background peak labeled reagent", L.role_of(iled, "i2o") == L.ROLE_REAGENT,
+      L.role_of(iled, "i2o"))
+check("I2NO2- (INO2 analyte) NOT labeled reagent -- left for pass-0 reactive iodine",
+      L.role_of(iled, "i2no2") == L.ROLE_UNEXPLAINED, L.role_of(iled, "i2no2"))
+check("I.HNO3 (HNO3 analyte) NOT labeled reagent -- left for [M+I]- assignment",
+      L.role_of(iled, "hno3") == L.ROLE_UNEXPLAINED, L.role_of(iled, "hno3"))
+check("organic acid peak NOT labeled reagent",
+      L.role_of(iled, "org") == L.ROLE_UNEXPLAINED, L.role_of(iled, "org"))
+check("I2-. reagent row records ion_formula I2-",
+      str(iled.loc[iled.peak_id == "i2", "ion_formula"].iloc[0]) == "I2-",
+      iled.loc[iled.peak_id == "i2", "ion_formula"].iloc[0])
+
 # --- does not touch assigned peaks ---
 led2 = L.new_ledger(peaks)
 L.commit_assignment(led2, "b3", neutral_formula="C5H8O2", adduct="[M-H]-",

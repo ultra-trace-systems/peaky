@@ -418,7 +418,7 @@ def build_parser() -> argparse.ArgumentParser:
     pb = sub.add_parser("batch", help="assign + cluster + Van Krevelen + report for a whole batch")
     pb.add_argument("--batch", required=True, help="sample-batch name")
     pb.add_argument("--dataset", default=None, help="dataset (workspace) name")
-    pb.add_argument("--reagent", default="auto", help="auto | Br | Ur | NO3 | ...")
+    pb.add_argument("--reagent", default="auto", help="auto | Br | Ur | NO3 | I | ...")
     pb.add_argument("--reagent-config", default=None,
                     help="JSON/TOML file registering extra reagent profiles")
     pb.add_argument("--out-dir", default=None,
@@ -455,7 +455,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "'HR-CIMS 100-500.*zone' (matches the per-zone batches "
                          "of one mode x range). Passed to the server UNescaped.")
     pp.add_argument("--dataset", default=None, help="dataset (workspace) name")
-    pp.add_argument("--reagent", default="auto", help="auto | Br | Ur | NO3 | NO3_15N | ...")
+    pp.add_argument("--reagent", default="auto", help="auto | Br | Ur | NO3 | NO3_15N | I | ...")
     pp.add_argument("--reagent-config", default=None,
                     help="JSON/TOML file registering extra reagent profiles")
     pp.add_argument("--out-name", default=None,

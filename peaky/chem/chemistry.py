@@ -82,6 +82,23 @@ ADDUCT_SHIFTS: dict[str, float] = {
     "[M+Br]-":  M["Br"] + M_E,
     "[M+Cl]-":  M["Cl"] + M_E,
     "[M+I]-":   M["I"] + M_E,
+    # iodide-CIMS poly-iodide analyte clusters (server mechanisms +I2- / +I3-,
+    # already in ADDUCT_TO_MECH). I is monoisotopic, so these are the ONLY way a
+    # neutral picks up 2/3 iodines -- the reagent I2⁻·/I3⁻ ladder clustering onto
+    # an analyte (mostly small inorganics: NO2/Cl/O give the bright I2NO2⁻/I2Cl⁻/
+    # I2O⁻ source-background lines). The bare In⁻ clusters are labelled reagent.
+    "[M+I2]-":  2 * M["I"] + M_E,
+    "[M+I3]-":  3 * M["I"] + M_E,
+    # DEPROTONATED-acid + I2 cluster (A⁻·I₂): ion = M - H + 2 I. The iodide
+    # analog of [M+HBr+Br]- -- a cluster-DECOMPOSITION alias, NOT a server
+    # mechanism (deliberately absent from ADDUCT_TO_MECH; scoring goes through
+    # the covalent alias (M-H+I) [M+I]-, the SAME ion). Acids the run already
+    # believes on [M+I]-/[M-H]- also appear as their conjugate base bound to I₂
+    # (I₂⁻· is the brightest reagent ion): [HCOOH-H+I2]- @298.807 -- exactly
+    # degenerate with the off-grid covalent CHIO2 [M+I]- reading the series
+    # passes once invented. [M+I2]- of A-H can never claim these (A-H is a
+    # radical, blocked by integer-DBE), which is why they sat unexplained.
+    "[M-H+I2]-": 2 * M["I"] - M["H"] + M_E,
     "[M+NO3]-": M["N"] + 3 * M["O"] + M_E,
     # ¹⁵N-labelled nitrate reagent cluster (server mechanism '+^NO3-'); the added
     # N is ¹⁵N, so this is +62.9855, not the +61.9885 of the ¹⁴N adduct above.

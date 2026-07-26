@@ -59,7 +59,25 @@ def flag_ringing_artifacts(ledger: pd.DataFrame, *, factor: float = RING_FACTOR,
     cps) that is >=`factor`x brighter sits within `dmz`. The tight dmz + the
     brightness floor + the high factor together ensure only sub-resolution
     sidelobes of a saturating ion are flagged, never a resolved independent
-    neighbour."""
+    neighbour.
+
+    ⚠ UNEXPLAINED PEAKS ONLY -- AND DELIBERATELY SO. A pass that already committed
+    an M0 onto a sidelobe makes it invisible here (this runs post-pass-6), which
+    looks like an obvious bug to fix by also displacing committed M0s. DO NOT: it
+    was measured and it is catastrophic. The static evidence available at this
+    point -- Δm/z, satellite fraction, brightness ratio -- CANNOT distinguish a
+    sidelobe from a real ion that merely sits beside a bright peak. Over the
+    TC2026 campaign the rule "displace an unlocked, uncorroborated M0 within dmz of
+    a >=factor x parent" selects 74 commits across 30 runs, and scoring every one
+    of them against the time-series oracle (a sidelobe holds a ~constant ratio to
+    its parent; ratio-cv < 0.06) gives **0/53 correct, 51 false positives** --
+    C12H16O6, C13H29NO9, C4H8N2P2S, the siloxanes, all real.
+
+    The contaminated cases are caught instead by
+    `timeseries.flag_sidelobe_channels`, which runs at MERGE level where the batch
+    TS exists and can measure that ratio (6/6 caught, 0 false positives of 72). It
+    keeps the formula and flags `intensity_suspect` when the neutral is corroborated
+    on another channel, and demotes Assigned->Candidate when it is not."""
     pk = ledger.dropna(subset=["mz"]).sort_values("mz")
     mzs = pk["mz"].tolist(); hts = pk["height"].tolist()
     n = 0
@@ -1029,7 +1047,13 @@ def run_cleanup(client, sample_id, ledger, profile, cfg, *, log=print) -> dict:
     """Orchestrate the cleanup steps (recovery first, so a recovered molecule
     isn't then mislabelled a cluster/artifact; satellite reclaim last)."""
     rec = recover_isotope_gated(client, sample_id, ledger, profile, cfg, log=log)
-    clu = label_bromide_clusters(ledger, client, sample_id, log=log)
+    # Br-CIMS only: the defect+1.998-twin heuristic reads ANY heavy-halogen
+    # cluster region as "bromide" (under iodide it grabbed the I2NO2-/IBr.I-
+    # neighborhood with a false bromide note), so gate on the reagent element.
+    if getattr(cfg, "reagent_element", None) == "Br":
+        clu = label_bromide_clusters(ledger, client, sample_id, log=log)
+    else:
+        clu = {"labelled": 0, "covalent_ties": 0}
     rhc = relabel_reagent_halocarbons(ledger, reagent=getattr(cfg, "reagent_element", None),
                                       log=log)
     art = flag_ringing_artifacts(ledger, log=log)

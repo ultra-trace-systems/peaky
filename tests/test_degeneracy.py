@@ -35,6 +35,11 @@ check("uncalibrated -> empty", D.measure_degeneracy(
 a1 = D._canonical_ion("C2H3BrO2", "[M+Br]-")     # ion C2H3Br2O2
 a2 = D._canonical_ion("C2H2O2", "[M+HBr+Br]-")    # +H +Br +Br -> C2H3Br2O2
 check("covalent/cluster aliases share one canonical ion", a1 == a2 and a1 is not None, (a1, a2))
+# iodide analog with a MIXED-sign adduct: acid.I2 cluster vs covalent [M+I]-
+a3 = D._canonical_ion("CH2O2", "[M-H+I2]-")       # -H +I +I -> CHI2O2
+a4 = D._canonical_ion("CHIO2", "[M+I]-")          # +I        -> CHI2O2
+check("acid.I2 / covalent-I aliases share one canonical ion",
+      a3 == a4 and a3 is not None, (a3, a4))
 
 prof = D.relaxed_profile(__import__("peaky.chem.contexts", fromlist=["get_context"]).get_context("ambient-air"))
 check("relaxed profile lifts the F cap", prof.max_F >= 10 and prof.max_Si >= 6)

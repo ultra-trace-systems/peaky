@@ -79,7 +79,36 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
    count; drives the heavy-isotope rescue in `labeled.py`). Built-ins: **`BR`**
    (Br⁻, neg, normalise on reagent), **`UR`** (urea/uronium, pos, normalise on
    TIC), **`NO3`** (nitrate, neg, reagent), **`NO3_15N`** (¹⁵N nitrate, neg, TIC,
-   `purity 0.98`, `label_isotope='^N'`, `label_max=2`).
+   `purity 0.98`, `label_isotope='^N'`, `label_max=2`), **`IODIDE`**
+   (I⁻, neg, normalise on reagent; adducts `[M+I]⁻`/`[M-H]⁻`/`[M+I2]⁻`/
+   `[M-H+I2]⁻`).
+
+   > **Iodide is a soft adduct source with a monoisotopic reagent.** Most analytes
+   > appear as the `[M+I]⁻` cluster; strong acids also deprotonate to `[M-H]⁻` (both
+   > server-confirmed on the 2026-07-21 batch — HNO₃ as `[HNO3+I]⁻` *and*
+   > `NO3⁻`, formic/acetic acid as `[M-H]⁻`). Because ¹²⁷I is the **only** iodine
+   > isotope, covalent iodine cannot be isotope-confirmed and is kept **OFF the
+   > neutral grid** (no `I` in `IODIDE.ranges`, like F/P) — iodine reaches a neutral
+   > only via the adduct or the pass-0 `reactive_iodine` known-species family (HOI,
+   > HIO₂, HIO₃, OIO, INO₂, INO₃, ICN, INCO, ICl, IBr — the canonical iodide-CIMS
+   > analytes; 8 committed at <0.6 ppm on the 2026-07-21 batch; ICl/IBr carry
+   > their ³⁷Cl/⁸¹Br envelope). The oxyacids also own their `[M-H]⁻` lines
+   > (IO⁻/IO₂⁻/IO₃⁻ are **not** reagent-oxide labels under iodide). `[M+I2]⁻` is
+   > kept as a secondary channel (server mechanism `+I2-`); the time-stable
+   > pure-iodine oxides (I₂O⁻/I₃O⁻) are pre-labelled reagent background, so that
+   > channel does not run wild on them.
+   >
+   > **`[M-H+I2]⁻` — the deprotonated-acid · I₂ cluster.** Acids the run already
+   > believes on `[M+I]⁻`/`[M-H]⁻` ALSO appear as the conjugate base bound to I₂
+   > (I₂⁻· is the brightest reagent ion): `[HCOOH-H+I2]⁻` @298.807, acetic
+   > @312.823, carbonic @314.802, glycolic @328.818, HNO₄ @331.792. A
+   > relabel-only decomposition alias like the Br `[M+HBr+Br]⁻` — **no server
+   > mechanism**; the pass-3 resolver (`_resolve_acid_i2_clusters`) scores the
+   > covalent alias `(A-H+I) [M+I]⁻` (the identical ion — the `CHIO2`-style
+   > reading the series passes once invented) and commits the acid. It claims
+   > UNEXPLAINED peaks only and skips iodine-bearing / O-free anchors, so the
+   > pass-0 reactive-iodine species keep their I₂X⁻ lines (`HOI2⁻`/`I2NO2⁻`
+   > were ruled ambient analytes on TIME behaviour, not acid clusters).
 
    > **¹⁵N-nitrate ¹⁴NO₃-cluster hazard.** In a NOx-oxidation run the chamber holds
    > abundant *unlabelled* ¹⁴NO₃⁻, so a highly-oxygenated analyte X forms
@@ -102,8 +131,18 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
      (`combinations_with_replacement`); **odd n** are closed-shell anions (R⁻,
      R₃⁻), **even n** are radical anions (R₂⁻·, R₄⁻·); each anion adds `M_E`.
    - **Rₙ⁻·(neutral)ₖ**, `k = 1..max_neutral (1)`, over `_CLUSTER_NEUTRALS`
-     (`H2O`, `HBr`, `HF` only).
-   - **reagent-oxide anions** RO⁻/RO₂⁻/RO₃⁻, *both* halogen isotopologues.
+     (`H2O`, `HF`) plus the reagent's **own** shed hydride (`HBr`/`HCl`/`HI` —
+     an iodide library carries `[I+HI]⁻`, never a phantom `[I+HBr]⁻`).
+   - **reagent-oxide anions** RO⁻/RO₂⁻/RO₃⁻, *both* halogen isotopologues —
+     **Br/Cl only**: for iodine the IOₓ⁻ anions are ion-identical to the `[M-H]⁻`
+     deprotonation of the iodine oxyacids (IO₃⁻ **is** iodic acid's dominant
+     channel — the NPF tracer), so they are left for pass-0 `reactive_iodine`
+     (the HNO₃/NO₃⁻ ruling, applied to iodine oxides).
+   - **iodine only:** the pure-iodine-oxide background clusters `_IODINE_BACKGROUND`
+     (`I₂O⁻` ~2M cps, `I₃O⁻`) — bright, time-stable source ions. The time-VARYING
+     poly-iodide ions (HOI₂⁻ 55×, I₂NO₂⁻ 2.3× over the 2026-07-21 batch) are
+     deliberately NOT here: they are the `[M+I]⁻` reading of the ambient
+     reactive-iodine analytes HOI / INO₂ (pass-0 `reactive_iodine` family).
 
    For a **molecular reagent** (urea): the protonated series **[Rₙ+H]⁺**,
    `n = 1..max_n (6)` (`_build_positive_library`) — a cation (lose an electron),
@@ -143,7 +182,8 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
 | constant | value | role |
 | --- | --- | --- |
 | `_HALOGEN_ISO` | Br: ⁷⁹/⁸¹ · Cl: ³⁵/³⁷ · I: ¹²⁷ | reagent-halogen isotope masses/labels |
-| `_CLUSTER_NEUTRALS` | `H2O`, `HBr`, `HF` | neutrals that cluster on a halide core (organic acids deliberately removed) |
+| `_CLUSTER_NEUTRALS` | `H2O`, `HF` + the reagent's own hydride (`HBr`/`HCl`/`HI`, added per reagent in `build_library`) | neutrals that cluster on a halide core (organic acids deliberately removed) |
+| `_IODINE_BACKGROUND` | `I2O`, `I3O` | iodine-only pure-oxide source-background clusters (added to the `"I"` library; HOI₂⁻/I₂NO₂⁻ are pass-0 analytes, not background) |
 | `_POSITIVE_REAGENTS` | `{urea: CH4N2O}` | molecular positive reagents (protonated series) |
 | reagent-N cluster `[M+NH4]⁺` | `{N:1, H:3}` over `[M+H]⁺` | ammonium cluster adduct N/O added to the ion (isobar gate / re-read) |
 | reagent-N cluster `[M+(CH4N2O)H]⁺` | `{C:1, H:4, N:2, O:1}` | uronium/urea cluster adduct atoms added to the ion (isobar gate / re-read) |
@@ -156,6 +196,7 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
 | `UR.ranges` | `C0-40 H0-90 N0-8 O0-15 S0-2` | uronium grid box |
 | `NO3.ranges` / `NO3_15N.ranges` | `C0-40 H0-60 N0-3 O0-25 S0-2` | nitrate grid box |
 | `NO3_15N.purity` | 0.98 | ~98 % ¹⁵N reagent (→ `predict_isotopes`) |
+| `IODIDE.ranges` | `C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1` | iodide grid box (**no I** — covalent iodine is monoisotopic, off-grid) |
 
 ---
 
@@ -200,8 +241,32 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
   ambient acids (formic acid's 232k-cps line among them) and bury them as reagent.
   `_CLUSTER_NEUTRALS` is now water + the reagent's own HBr + background HF only.
 - **Both Rₙ parities are real** reagent ions: odd = closed-shell anion, even =
-  radical anion (e.g. the Br₂⁻· di-bromide). All are pure reagent → labeled, not
-  left in the residual.
+  radical anion (e.g. the Br₂⁻· di-bromide, the I₂⁻· di-iodide — the brightest ion
+  in an iodide source). All are pure reagent → labeled, not left in the residual.
+- **Iodide reagent-acid clusters are the analyte channel, not reagent.** Exactly
+  like the Br organic-acid ruling: `[HNO3+I]⁻` (189.90), `[H2O2+I]⁻` (160.91),
+  `[HCOOH+I]⁻` (172.91) are the `[M+I]⁻` analyte reading of HNO₃/H₂O₂/formic acid
+  (server-confirmed), so they are **left for assignment**, not stolen into the
+  cluster library. Only `H2O` clusters onto the iodide core (`_CLUSTER_NEUTRALS`).
+  What *is* pre-labelled is the bare Iₙ⁻ ladder, IOₓ⁻, and the pure-iodine
+  `_IODINE_BACKGROUND` clusters.
+- **Reagent-vs-analyte for poly-iodide ions is decided by TIME behavior.** On the
+  2026-07-21 batch the bare ladder (I⁻/I₂⁻·/I₃⁻) and I₂O⁻/I₃O⁻ are stable (<±10%)
+  → source background; HOI₂⁻ swings 55× (photochemical daytime HOI) and I₂NO₂⁻
+  2.3× → ambient analytes, committed by pass 0 as HOI/INO₂ `[M+I]⁻`. Caveat:
+  ambient I₂ is detected as `[I2+I]⁻` = **the same I₃⁻ the source makes** — a
+  bright, stable I₃⁻ hides any ambient-I₂ contribution; if a campaign targets I₂,
+  check I₃⁻/I₂⁻ ratio drift before trusting the reagent label. The same blind
+  spot applies to the **IO radical**: `[IO+I]⁻` is composition-identical to the
+  locked `I₂O⁻` source cluster — check I₂O⁻/I₂⁻ ratio drift if IO matters. (OIO
+  is covered: `[OIO+I]⁻` = I₂O₂⁻ at 285.799 is a `reactive_iodine` known species.)
+- **Iodine is monoisotopic → off-grid, and its Br-specific isotope machinery is
+  inert.** `_DIAG` (the diagnostic-isotope map) has no `I`, so the complexity prior
+  on a covalent I is *never* iso-waived; the Br-doublet clear-both, the
+  `relabel_reagent_halocarbons` relabel, and `_prefer_adduct_reading` (needs `HI` in
+  `REPEAT_UNITS`) are all `Br`-gated and go inert with `reagent_element='I'`. The
+  composite `M+1` test still runs (`has_halogen_adduct` is true for I) and is in fact
+  *cleaner* under iodide — a monoisotopic reagent adds nothing to the `M+1` region.
 - **A molecular reagent puts no halogen in the neutral.** `reagent_for_adducts`
   returns the *library key*; `reagent_element` (the arbitration complexity element)
   is set only for halogen reagents — never for urea.

@@ -386,6 +386,25 @@ _DIFF_TO_ADDUCT = {
     # are mislabeled (positive-mode urea-CIMS: ~1/3 of the backbone is this
     # channel). diff sorts alphabetically C,H,N,O.
     (("C", 1), ("H", 5), ("N", 2), ("O", 1)): "[M+(CH4N2O)H]+",
+    # MULTI-ATOM HALIDE CLUSTER CHANNELS. Same trap as the urea entry above: a
+    # channel registered in a profile but missing HERE does not error -- it falls
+    # through the `.get(diff, "[M-H]-")` default below and is silently written to
+    # the ledger as a DEPROTONATION, which also inflates the [M-H]- census. Found
+    # on the first iodide batch: 2 ions (CN2, C2H2O5) committed on [M+I2]- were
+    # reported as [M-H]-. The Br cluster channels had the same latent gap.
+    # Diff tuples sort alphabetically by element: Br < C < H < I < N < O.
+    (("I", 2),): "[M+I2]-",
+    (("I", 3),): "[M+I3]-",
+    # deprotonated-acid + I2 cluster (A⁻·I₂). MIXED-sign diff: the ion is one H
+    # SHORT of the neutral plus two iodines. Without this entry a committed
+    # [M-H+I2]- row whose label is re-derived from (ion, compound) falls through
+    # to "[M-H]-" -- the same silent-mislabel trap as the [M+I2]- gap above.
+    (("H", -1), ("I", 2)): "[M-H+I2]-",
+    (("Br", 2),): "[M+Br2]-",
+    (("Br", 3),): "[M+Br3]-",
+    (("Br", 2), ("H", 1)): "[M+HBr+Br]-",
+    (("Br", 3), ("H", 1)): "[M+HBr+Br2]-",
+    (("Br", 1), ("C", 1), ("H", 1), ("O", 3)): "[M+HBr+CO3]-",
 }
 
 
@@ -601,6 +620,23 @@ def commit_winners(
     }
 
 
+_RI_CACHE: set | None = None
+
+
+def _reactive_iodine_formulas() -> set:
+    """Formulas the pass-0 registry declares REAL covalent-iodine species
+    (HOI, INO2, INO3, ICl, CINO, ...). Their I2X- lines were ruled ambient
+    analytes on TIME behaviour (the HOI2-/I2NO2- ruling, docs/REAGENTS.md), so
+    the acid-cluster relabel must never re-read them -- an O-bearing subset
+    (INO2 -> "HNO2", CINO -> "CHNO") would otherwise slip through the generic
+    oxy-acid guard. The registry, not a hand copy, is the authority."""
+    global _RI_CACHE
+    if _RI_CACHE is None:
+        from .directors import _known_species  # lazy: core loads before directors
+        _RI_CACHE = set(_known_species("negative").get("reactive_iodine", {}))
+    return _RI_CACHE
+
+
 def _prefer_adduct_reading(w, cfg: PassConfig):
     """Relabel a winner whose NEUTRAL carries the reagent halogen so the Br
     sits in the adduct/cluster, not the neutral (user reagent rule). With
@@ -610,6 +646,9 @@ def _prefer_adduct_reading(w, cfg: PassConfig):
       X(Br) [M+<chan>]-  -> Y [M+HBr+<chan>]-   (covalent+air-ion == HBr cluster
                                                  on the same background channel,
                                                  e.g. the 426.976 CO3 case)
+    Iodide-specific (acids only; see the inline guard):
+      X(I)  [M+I]-       -> M [M-H+I2]-         (M = X with I->H; covalent ==
+                                                 conjugate-base . I2 cluster)
     The ion formula, score and ppm are unchanged -- only the decomposition is.
     A relabel onto a cluster adduct only fires when that adduct's exact mass is
     registered, so we never invent an unmodelled channel."""
@@ -617,8 +656,42 @@ def _prefer_adduct_reading(w, cfg: PassConfig):
     if not el:
         return w
     x = w["neutral"]
-    if C.parse_formula(x).get(el, 0) < 1:
+    cx = C.parse_formula(x)
+    if cx.get(el, 0) < 1:
         return w
+    # Iodide: the preferred decomposition of a covalent MONO-iodine winner on
+    # [M+I]- is the deprotonated-acid + I2 cluster, NOT the Br-style intact-
+    # molecule HX cluster (which would report M-HI, e.g. formic -> "CO2").
+    # With M = X with its I swapped for H (same DBE), the ion is identical:
+    #   X(I) [M+I]-  ->  M [M-H+I2]-      (covalent == conjugate-base . I2)
+    # and M is the acid the run already believes on [M+I]-/[M-H]-. Guards: a
+    # real oxy-acid only -- O>=1 AND a C/N/S skeleton atom -- so HOI (-> "H2O"),
+    # HIO3 (-> "H2O3") and ICl/IBr/ICN stay covalent: the pass-0 reactive-
+    # iodine species must never be re-read (their I2X- lines were ruled ambient
+    # analytes on time behaviour, docs/REAGENTS.md).
+    if el == "I" and w["adduct"] == "[M+I]-" and cx.get("I", 0) == 1:
+        m = dict(cx)
+        m["I"] -= 1
+        m["H"] = m.get("H", 0) + 1
+        m = {k: v for k, v in m.items() if v > 0}
+        if (
+            m.get("O", 0) >= 1
+            and any(m.get(e, 0) for e in ("C", "N", "S"))
+            and C.dbe_ok(m)[0]
+            and C.oxygen_ok(m)[0]
+            and "[M-H+I2]-" in C.ADDUCT_SHIFTS
+            and x not in _reactive_iodine_formulas()
+        ):
+            w = w.copy()
+            w["adduct"] = "[M-H+I2]-"
+            w["neutral"] = C.format_formula(m)
+            w["_relabel_note"] = (
+                f" Ion identical to covalent {x} [M+I]-; deprotonated-acid + I2 "
+                f"cluster reading preferred (I assigned to the cluster, not the "
+                f"neutral)."
+            )
+            return w
+        # not an acid -> fall through to the generic HX-subtraction rules
     hx = "H" + el
     if hx not in G.REPEAT_UNITS:
         return w

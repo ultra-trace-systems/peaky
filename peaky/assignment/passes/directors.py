@@ -27,6 +27,7 @@ __all__ = [
     "build_ranges",
     "ranges_to_string",
     "_resolve_hx_clusters",
+    "_resolve_acid_i2_clusters",
     "_target_peaks",
     "_family_ok",
     "_context_filter",
@@ -135,6 +136,37 @@ def _known_species(polarity: str = "negative") -> dict:
         "HNO2": "nitrous acid",
         "HNO4": "peroxynitric acid",
     }
+    # REACTIVE IODINE species -- the canonical iodide-CIMS analytes, detected as
+    # [M+I]- (I2X- ions). Covalent iodine is monoisotopic and OFF the organic grid
+    # (like F/P), so these must be supplied as known formulas. Safe on exact mass
+    # alone (the PFCA precedent): at defect -0.19..-0.27 around m/z 270-335 no
+    # grid-reachable organic exists, so the only degeneracy is other iodine
+    # species. ICl/IBr additionally get their 37Cl/81Br envelope attached by the
+    # oracle (both confirmed on the 2026-07-21 batch: I2Cl- 288.778 with
+    # a 0.31-ratio 37Cl twin, I2Br- 332.728 with a 0.96-ratio 81Br twin). HOI and
+    # INO2 are time-VARYING there (photochemical HOI 55x over 7 h) -- ambient
+    # analytes, not source background, which is why they are NOT in the reagent
+    # cluster library. In a non-iodide run the [M+I]- channel is absent from
+    # cfg.mechanism_ids, so this family self-gates to iodide sources.
+    # The oxyacids ALSO own their deprotonation lines: IO-/IO2-/IO3- are the
+    # [M-H]- ions of HOI/HIO2/HIO3 (iodate IO3- is iodic acid's DOMINANT channel
+    # -- the NPF tracer), which is why build_library skips the generic IOx-
+    # reagent-oxide entries for iodine. OIO (the IO2 radical, a canonical daytime
+    # iodine species) commits via [OIO+I]- = I2O2- (285.799). The IO radical
+    # itself is NOT listed: its [IO+I]- is composition-identical to the locked
+    # I2O- source cluster (see the reagents.py caveat).
+    reactive_iodine = {
+        "HOI": "hypoiodous acid",
+        "HIO2": "iodous acid",
+        "HIO3": "iodic acid",
+        "IO2": "iodine dioxide radical (OIO)",
+        "INO2": "iodine nitrite (nighttime I + NO2 reservoir)",
+        "INO3": "iodine nitrate",
+        "CNI": "iodine cyanide (ICN)",
+        "CINO": "iodine isocyanate (INCO)",
+        "ICl": "iodine monochloride",
+        "IBr": "iodine monobromide",
+    }
     # Atmospheric nitroaromatics (brown-carbon tracers from NOx + aromatic VOC /
     # biomass burning), detected as [M-H]-. These are H-POOR / high-DBE, so the
     # ambient Van Krevelen floor + DBE/C ceiling block them from the organic grid
@@ -178,6 +210,7 @@ def _known_species(polarity: str = "negative") -> dict:
                 )
     return {
         "atmospheric": atmos,
+        "reactive_iodine": reactive_iodine,
         "nitroaromatic": nitroaromatic,
         "perfluoroacid": perfluoroacid,
         "chlorinated_paraffin": chlorinated_paraffin,
@@ -315,6 +348,8 @@ def run_pass0_known(
             tag = (
                 "atmospheric"
                 if fam == "atmospheric"
+                else "reactive-iodine"
+                if fam == "reactive_iodine"
                 else "nitroaromatic"
                 if fam == "nitroaromatic"
                 else "organophosphate"
@@ -904,6 +939,180 @@ def _resolve_hx_clusters(
     return out
 
 
+def _resolve_acid_i2_clusters(
+    client,
+    sample_id: str,
+    ledger: pd.DataFrame,
+    profile,
+    cfg: PassConfig,
+    *,
+    score_fn=None,
+    log=print,
+) -> dict:
+    """Iodide CIMS: explain unassigned peaks as I2 clusters of DEPROTONATED
+    acids the run already believes ([A-H+I2]- = A⁻ · I₂).
+
+    I₂⁻· is the brightest reagent ion in an iodide source, and acids A that are
+    in the ledger on [M+I]-/[M-H]- ALSO appear as the conjugate base bound to
+    I2, at A - H + 2*126.9045 (e.g. [HCOOH-H+I2]- @298.807, [CH3COOH-H+I2]-
+    @312.823, [HNO4-H+I2]- @331.792). On the registered channels that ion is
+    only reachable as covalent (A-H+I) [M+I]- -- the off-grid organoiodine
+    reading the series passes used to invent (CHIO2 et al.) -- while [M+I2]- of
+    A-H is an open-shell radical (integer-DBE blocked), so after the off-grid
+    fix these peaks sit in the unexplained residual. The iodide analog of
+    `_resolve_hx_clusters`, with the DEPROTONATED stoichiometry: score the
+    covalent alias X = A - H + I under [M+I]- (the identical ion), commit
+    neutral = A, adduct = '[M-H+I2]-'.
+
+    Anchor eligibility: M0 neutrals (plus their context-plausible +/-CH2
+    homologs) with an abstractable H, O>=1 AND a C/N/S skeleton atom (acidity
+    proxy -- keeps H2O and HCl out) and NO iodine (the poly-iodide space
+    belongs to the reagent labeler and pass-0). Claims UNEXPLAINED peaks only,
+    so the pass-0 reactive-iodine species (HOI/INO2/ICl/IBr..., committed +
+    LOCKED before any of this runs) always keep their I2X- lines: the
+    contested inorganic clusters (HOI2-, I2NO2-) were ruled ambient analytes
+    on TIME behaviour (docs/REAGENTS.md), and this resolver must never re-read
+    them -- the Br organic-acid lesson, inverted."""
+    out = {"committed": 0, "locked": 0, "iso_attached": 0, "claimed_formulas": set()}
+    anchors = ledger.loc[ledger["role"] == L.ROLE_M0, ["peak_id", "neutral_formula"]]
+    anchor_by_formula = dict(zip(anchors["neutral_formula"], anchors["peak_id"]))
+    if not anchor_by_formula:
+        return out
+    if "[M-H+I2]-" not in C.ADDUCT_SHIFTS or "[M+I]-" not in C.ADDUCT_SHIFTS:
+        return out
+
+    def _acid_ok(f: str) -> bool:
+        cnt = C.parse_formula(f)
+        return (
+            cnt.get("H", 0) >= 1
+            and cnt.get("O", 0) >= 1
+            and any(cnt.get(e, 0) for e in ("C", "N", "S"))
+            and cnt.get("I", 0) == 0
+        )
+
+    # cluster bases: acid anchors plus their +/-CH2 homologs (GKA-validated
+    # bridge, as in the HBr resolver).
+    ys: dict[str, tuple[object, str]] = {
+        y: (apid, "anchor")
+        for y, apid in anchor_by_formula.items()
+        if _acid_ok(y)
+    }
+    for y, (apid, _n) in list(ys.items()):
+        for s in (+1, -1):
+            y2 = G.formula_add(y, "CH2", s)
+            if y2 and y2 not in ys and y2 not in anchor_by_formula and _acid_ok(y2):
+                keep, _ = X.filter_by_context(y2, profile.label)
+                if keep:
+                    ys[y2] = (apid, f"homolog of anchor {y} ({s:+d}CH2)")
+    if not ys:
+        return out
+    tgt = _target_peaks(ledger, cfg)
+    tmz = sorted(tgt["mz"].tolist())
+    import bisect as _bs
+
+    # propose where a target peak sits at the [A-H+I2]- base line (iodine is
+    # monoisotopic: no heavy-twin fallback line, unlike the Br2 envelopes)
+    proposals: dict[str, tuple[str, object, str]] = {}  # X -> (A, anchor_pid, note)
+    for y, (apid, note) in ys.items():
+        cnt = dict(C.parse_formula(y))
+        cnt["H"] -= 1
+        cnt["I"] = cnt.get("I", 0) + 1
+        cnt = {k: v for k, v in cnt.items() if v > 0}
+        x = C.format_formula(cnt)
+        line = C.ion_mz(y, "[M-H+I2]-")   # == C.ion_mz(x, "[M+I]-")
+        tol = line * cfg.series_ppm * 1e-6
+        j = _bs.bisect_left(tmz, line - tol)
+        if j < len(tmz) and tmz[j] <= line + tol:
+            proposals[x] = (y, apid, note)
+    if not proposals:
+        return out
+    score_fn = score_fn or IO.score_candidates
+    scored = score_fn(
+        client, sample_id, sorted(proposals), mechanism_ids=cfg.mechanism_ids
+    )
+    if scored is None or len(scored) == 0:
+        return out
+    n_committed = 0
+    n_iso = 0
+    want_x = scored["compound_formula"].isin(proposals)
+    for (x, ion_f), grp in scored[want_x].groupby(["compound_formula", "ion_formula"]):
+        # only the CLUSTER ion form (I count = covalent alias's + 1 from the
+        # [M+I]- adduct, i.e. the neutral acid's + 2)
+        if (
+            C.parse_formula(ion_f).get("I", 0)
+            != C.parse_formula(x).get("I", 0) + 1
+        ):
+            continue
+        y, apid, note = proposals[x]
+        brow = grp[grp["is_base"]].iloc[0] if grp["is_base"].any() else None
+        if brow is None:
+            continue
+        ion_score = brow["ion_score"]
+        if pd.isna(ion_score) or float(ion_score) < cfg.series_min_score:
+            continue
+        pid = brow["sample_peak_id"]
+        if pid is None or pd.isna(pid):
+            continue
+        ppm_err = _f(brow["ppm_error"])
+        attributed_iso = grp[
+            (~grp["is_base"])
+            & grp["sample_peak_id"].notna()
+            & (pd.to_numeric(grp["iso_score"], errors="coerce").fillna(0) > 0.4)
+        ]
+        try:
+            if L.is_locked(ledger, pid) or L.role_of(ledger, pid) != L.ROLE_UNEXPLAINED:
+                continue
+            score = float(ion_score)
+            conf = confidence_label(
+                score, ppm_err, len(attributed_iso), False, cfg, suffix="I2-cluster"
+            )
+            if conf == "Reject":
+                continue
+            L.commit_assignment(
+                ledger,
+                pid,
+                neutral_formula=y,
+                adduct="[M-H+I2]-",
+                ion_formula=ion_f,
+                ion_score=score,
+                compound_score=_f(brow["compound_score"]),
+                ppm_error=ppm_err,
+                pass_no=3,
+                method="cluster:I2",
+                confidence=conf,
+                commentary=(
+                    f"Pass 3 (cluster): I2 cluster of deprotonated {y} ({note}, "
+                    f"ref peak {apid}); ion {ion_f} scored {score:.2f} by "
+                    f"Mascope via the covalent alias {x} [M+I]- (identical "
+                    f"ion); conjugate-base . I2 reading preferred."
+                ),
+                anchor_peak_id=apid,
+            )
+            out["claimed_formulas"].add(x)
+            n_committed += 1
+            for _, k in attributed_iso.iterrows():
+                kp = k["sample_peak_id"]
+                if kp == pid:
+                    continue
+                try:
+                    L.attach_isotopologue(
+                        ledger,
+                        kp,
+                        pid,
+                        iso_label=k["iso_label"],
+                        iso_match_score=_f(k["iso_score"]),
+                    )
+                    n_iso += 1
+                except L.LedgerError:
+                    continue
+        except L.LedgerError:
+            continue
+    out["committed"] = n_committed
+    out["iso_attached"] = n_iso
+    log(f"[pass3:cluster-I2] {{'committed': {n_committed}, 'iso_attached': {n_iso}}}")
+    return out
+
+
 def _target_peaks(ledger: pd.DataFrame, cfg: PassConfig) -> pd.DataFrame:
     un = L.unassigned_peaks(ledger)
     return un[un["height"].fillna(0) >= cfg.height_cutoff]
@@ -928,6 +1137,16 @@ def _family_ok(formula: str, ranges: dict[str, tuple[int, int]]) -> bool:
 
 
 def _context_filter(formulas, context: str) -> list[str]:
+    """Context plausibility gate for the generic passes.
+
+    This is also where the OFF-GRID ELEMENT invariant is enforced, via the context's
+    own heteroatom caps: `ambient-air` sets max_F/max_P/max_I = 0 because those
+    elements are monoisotopic (or, for P, otherwise unconfirmable), so a neutral
+    containing them can never be isotope-confirmed. They may enter a neutral ONLY
+    through the curated pass-0 known-species list, which does not pass through here.
+    Without that, the SERIES passes extrapolate off pass-0 anchors and invent them:
+    the first iodide batch produced 8 covalent-organoiodine neutrals (CHIO2,
+    C2H3IO2, INO4, ...), each really an [acid-H+I2]- reagent cluster."""
     out = []
     for f in formulas:
         keep, _ = X.filter_by_context(f, context)
@@ -1111,6 +1330,15 @@ def run_pass3(
         hx = "H" + reagent
         s = _resolve_hx_clusters(
             client, sample_id, ledger, profile, cfg, reagent, hx, log=log
+        )
+        for k in total:
+            total[k] += s[k]
+        cluster_claimed = s.get("claimed_formulas", set())
+    elif reagent == "I":
+        # iodide: the cluster stoichiometry is DEPROTONATED (A- . I2), not the
+        # Br-style intact-molecule Y.HX.X- -- see _resolve_acid_i2_clusters.
+        s = _resolve_acid_i2_clusters(
+            client, sample_id, ledger, profile, cfg, log=log
         )
         for k in total:
             total[k] += s[k]

@@ -6,6 +6,207 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — report refactor
 
+### Added
+- **`_batch_ts.parquet` stamps every KNOWN ion, analyte or not** (`batch/timeseries.py`
+  `identified_rows`/`stamping_frame`, `batch/assign_batch.py`). Three new columns:
+  `role` (M0 / reagent / iso_child / artifact), `ion_formula` (the detected ion's
+  formula — from the ledger for reagent clusters, the PARENT's for isotope
+  satellites) and `iso_label` (13C/81Br satellite labels; the reagent line's
+  isotopologue tag, e.g. `79Br+81Br`, so heavy lines of one formula stay distinct
+  traces). Motivation: on the 2026-07-21 iodide batch 465 of 695 m/z tracks looked
+  "unassigned" when only 206 were actually unknown — the 10 reagent-ladder tracks
+  alone are 76.7 % of batch signal and fully identified in the ledger. The file
+  goes from ~20 % to ~96.5 % signal-labelled for external consumers; satellites
+  deliberately carry NO `neutral_formula` so per-neutral sums cannot double-count.
+  The one-to-one/consensus contest now also dedups the non-analyte tracks
+  (`dup_candidate` semantics unchanged). Consumer contract:
+  `ion_formula.notna()` = identified, `neutral_formula.notna()` = analyte.
+- **`[M-H+I2]-` — the deprotonated-acid · I₂ cluster channel (iodide CIMS)**
+  (`chem/chemistry.py`, `chem/profiles.py`, `assignment/passes/{core,directors}.py`,
+  `assignment/series_gka.py`). After the off-grid iodine fix (below), the I₂
+  clusters of ledger acids sat in the unexplained residual: 298.8073
+  (`[HCOOH-H+I2]-`), 312.8229 (acetic), 314.8020 (carbonic), 328.8179 (glycolic),
+  331.7921 (HNO₄) — each exactly degenerate with the covalent organo-iodine
+  `[M+I]-` reading the series passes used to invent (`CHIO2` et al.), and
+  unreachable as `[M+I2]-` because the deprotonated neutral is an open-shell
+  radical. Follows the `[M+HBr+Br]-` pattern: a relabel-only decomposition alias
+  (registered in `ADDUCT_SHIFTS` + `_DIFF_TO_ADDUCT`, deliberately NOT in
+  `ADDUCT_TO_MECH`), claimed by a pass-3 resolver (`_resolve_acid_i2_clusters`)
+  that scores the covalent alias `(A-H+I) [M+I]-` — the identical ion — and
+  commits `neutral = A, adduct = [M-H+I2]-` onto UNEXPLAINED peaks only, for
+  acid anchors (O≥1, C/N/S≥1, H≥1, no I) and their ±CH₂ homologs.
+  `_prefer_adduct_reading` gains the matching iodide branch (covalent mono-I
+  `[M+I]-` winner → acid `[M-H+I2]-`; `[M-H]-` winner → the generic HI
+  subtraction, `CIO2- == CO2·I-`), guarded so the pass-0 `reactive_iodine`
+  registry species (HOI, INO₂, INO₃, CINO, ICl…) are NEVER re-read — commit
+  order (pass 0 locks first) plus the registry guard keep the contested
+  `HOI2-`/`I2NO2-` lines with the time-behaviour ruling: ambient iodine
+  analytes, not acid clusters. The inverse of the Br organic-acid lesson: the
+  new cluster channel must not bury real analytes, and the real iodine species
+  must not be dissolved into clusters.
+
+### Fixed (found by the first end-to-end iodide batch)
+- **A profile channel missing from `_DIFF_TO_ADDUCT` was silently relabelled
+  `[M-H]-`** (`assignment/passes/core.py`). The map turns an ion-vs-neutral element
+  difference back into an adduct label and falls through `.get(diff, "[M-H]-")`, so
+  a registered-but-unmapped channel does not error — it writes a DEPROTONATION to
+  the ledger and inflates the `[M-H]-` census. `[M+I2]-` commits were reported as
+  `[M-H]-` (2 merged ions, ~51 TS rows). Added `[M+I2]-`/`[M+I3]-` **and the five
+  Br cluster channels that had the same latent gap** (`[M+Br2]-`, `[M+Br3]-`,
+  `[M+HBr+Br]-`, `[M+HBr+Br2]-`, `[M+HBr+CO3]-`), plus a test that round-trips
+  EVERY channel of EVERY registered profile so the class of bug cannot recur.
+- **Covalent iodine could reach a neutral through the series passes**
+  (`chem/contexts.py`, `assignment/residual.py`). `ambient-air` had `max_I=1` while
+  `max_F`/`max_P` were already 0, and `min_C_for` (the reagent-alias guard that
+  protects Br and Cl) had no `I` entry — so pass-2/pass-4 extrapolated `+CO`,
+  `+C2H2O`, `+O` off the pass-0 iodine anchors into `CHIO2`, `CHIO3`, `C2H3IO2`,
+  `C2H3IO3`, `INO4`. Each is really the I₂ cluster of an acid already in the ledger
+  (`CHIO2 [M+I]-` ≡ `[HCOOH−H+I₂]-`) and is un-confirmable, ¹²⁷I being
+  monoisotopic. Now `max_I=0`, consistent with the F/P policy; `run_pass0_known`
+  bypasses the context filter so the real reactive-iodine chemistry is untouched,
+  and the `water` context keeps `max_I=2` (iodinated DBPs are the analyte there).
+  `residual.stage_b_series` additionally applies `filter_by_context` — it had only
+  the STRUCTURAL gates (DBE + oxygen cap), which is why the pass-0 species became
+  springboards; a test pins that DBE/oxygen alone do not reject `CHIO2`.
+  Batch verification: iodine-bearing neutrals 20 → 12 (all pass-0), **leaks 8 → 0**.
+
+### Added (sidelobe-contaminated ion channels — trust the formula, not the height)
+- **`timeseries.flag_sidelobe_channels`** + two new merged-ledger columns,
+  **`intensity_suspect`** (bool) and **`sidelobe_parent_mz`** (float), carried onto
+  every stamped row of `_batch_ts.parquet`. A saturating peak rings, and when an
+  assigned ion's m/z lands on a sidelobe the FORMULA can be right while the HEIGHT
+  is the neighbour's: `C18H30O6` is clean on `[M+H]+` (343.211) but its urea adduct
+  (403.244) rides 11.5 mDa from a 520k-cps `C20H34O8` at a locked 0.71 %, so that
+  trace tracks the wrong compound. The assignment is **never** altered — no
+  retraction, no tier change — only quantification is flagged.
+- **Why it lives at merge level, not in per-file cleanup**: static features cannot
+  detect it. Over a labelled set of **25 498 raw tracks / 30 runs**, contaminated
+  channels look *identical* to real ions near a bright peak — satellite fraction
+  0.69 % vs 0.23 % (the artifact is the BIGGER one), |Δm/z| 11.5 vs 10.1 mDa. Only
+  the time series separates them (ratio-to-parent cv 0.033–0.051 vs 0.21–1.09, an
+  empty gap between). `SIDELOBE_CV = 0.08` sits in that gap. Scored on the labelled
+  set: **6/6 caught, 0 false positives of 72.**
+- The rule evaluates **every** raw track carrying ≥`SIDELOBE_MIN_FRAC` of an ion's
+  samples, not just the most-sampled one — `C18H30O6`'s dominant track (n=475,
+  cv 0.106) hides the locked one (n=288, cv 0.033), and the exported trace mixes
+  both. (Found by scoring an earlier draft against the test set.)
+- **Uncorroborated sidelobe assignments are now demoted** (`demote_uncorroborated`,
+  default on): when a flagged channel's neutral has no OTHER ion channel, nothing
+  but the sidelobe supports the compound, so Assigned -> Candidate (demoted, never
+  deleted — the ledger's no-drop rule). Campaign-wide: 81 channels checked, 7
+  flagged, 1 demoted; `C18H30O6` keeps Assigned in all 4 runs because `[M+H]+` at
+  343.211 corroborates it, while `C8H19NO9`/`C31H30` — single-channel — do not.
+- **`cleanup.flag_ringing_artifacts` documented as unexplained-peaks-ONLY, on
+  purpose.** It runs post-pass-6, so a pass that already claimed a sidelobe hides
+  it — which looks like an obvious bug to fix by also displacing committed M0s.
+  Measured: that rule selects 74 commits across 30 runs and scores **0/53 correct,
+  51 false positives** against the TS oracle (C12H16O6, C13H29NO9, C4H8N2P2S, the
+  siloxanes — all real). The docstring now carries that number so the "fix" is not
+  reintroduced; the TS-gated merge-level pass is the correct home for it.
+
+### Fixed (time-series parquet: one ion, one peak, one trace)
+- **`_batch_ts.parquet` no longer stamps one formula onto two peaks**
+  (`batch/timeseries.py` `annotate_peaks`). The stamp is a mass match, not a
+  peak-identity join, and it was many-to-one: neighbouring raw peaks each grabbed
+  their nearest ledger ion, so a shoulder/split peak inside the same window got the
+  SAME `neutral_formula`+`adduct` as the real peak and a downstream
+  `groupby(formula, adduct)` saw two traces for one ion in one sample. Measured on
+  a 2.4 M-row uronium batch: **2385 duplicated (sample, ion) pairs across 61 ions →
+  0**. The assignment itself never did this (9784 per-file M0 keys, zero owned by
+  >1 peak — the shoulder is left `unexplained`), so this only ever affected the
+  parquet. Two rules, both default-on and individually switchable
+  (`one_to_one=` / `consensus=`):
+  - **one-to-one** — per `(sample, ion)` keep the single best peak; ties break to
+    the brighter, then lowest row index (deterministic → byte-reproducible).
+  - **consensus** (`_consensus_offsets`) — "best" is nearest the ion's consensus
+    m/z, not the bare ledger mass, which otherwise makes the winner flip between two
+    raw tracks sample by sample, splicing two different peaks into one trace (232
+    and 378 flips for two ions). Candidates are split into tracks (gap > `halfwin`),
+    then one is chosen by **brightest member** (not summed height) with the **ledger
+    mass anchored** (`ANCHOR_MARGIN` 2×). Both rules come from real failures found
+    in adversarial review: scoring by summed height handed `C12H19NO6 [M+H]+` to an
+    **FT ringing sidelobe** — ubiquitous-but-dim (1576 cps × 559 samples) and
+    already flagged `role=artifact` by the assignment's own cleanup — over the real
+    peak (2390 cps × 70), i.e. worse than the bug being fixed. The anchor encodes
+    that offset 0 is the assignment's own answer, not an estimate; a decisively
+    brighter track (`C19H34O6Si`, 1205 vs 473 cps) still wins, a marginal one
+    (`C14H28O3Si`, 1.86×) does not.
+- **New `dup_candidate` column** (`bool`) — `True` for a peak that fell inside an
+  ion's window but lost. Its assignment columns stay `<NA>`; **no row is ever
+  dropped** and heights are untouched, so the drops are auditable. Adds ~0 bytes
+  after compression. Full parquet schema now documented in
+  [`docs/OUTPUTS.md`](docs/OUTPUTS.md). (`tests/test_timeseries.py`, +25 checks.)
+- **Known residual, now documented honestly** — a stamp is a mass match, not proof
+  of identity: where a sample's real peak is absent, a neighbour inside tolerance
+  (sometimes a ringing sidelobe) still collects it, because the assignment's
+  `role=artifact` verdict exists only for the ~6 assigned samples and cannot be
+  carried to the other ~989. Measured: 0.28 % of stamped rows sit >1 mDa from their
+  ledger mass; 10 ions of 2127 span >0.5 mDa. (An earlier draft of this note
+  claimed the residual was a benign "bistable peak-fit"; the per-file ledgers'
+  own FT-sidelobe commentary disproves that, and the note is corrected.)
+
+### Added (iodide reagent profile — I⁻ CIMS as a built-in)
+- **`IODIDE` `ReagentProfile`** (`chem/profiles.py`, name `I`, aliases
+  `iodide`/`iodine`/`i-`/`i-cims`): negative mode, analyte channels
+  `[M+I]-` / `[M-H]-` / `[M+I2]-`, `detect_adduct` `[M+I]-`, normalise on the
+  in-window reagent ion (`reagent_ion_re` `I\d*-$`). Chemistry learned from the
+  `2026-07-21 Iodide negative m/z 40-600 acquisition` batch
+  (server-confirmed channels: HNO₃ as both `HINO3-` and `NO3-`, formic/acetic as
+  `[M-H]-`, formic also as `CH2IO2-`). **Covalent iodine is OFF the neutral grid**
+  (`ranges` has no I): ¹²⁷I is iodine's only isotope, so an in-neutral I can never
+  be isotope-confirmed — same policy as F/P. The Br-specific isotope machinery
+  (doublet clear-both, halocarbon relabel, `_prefer_adduct_reading`) is `Br`-gated
+  and stays inert under `reagent_element='I'`.
+- **`[M+I2]-` / `[M+I3]-` adduct shifts** (`chem/chemistry.py`) — the poly-iodide
+  cluster channels; their server mechanisms (`+I2-`/`+I3-`) were already in
+  `ADDUCT_TO_MECH`.
+- **`_IODINE_BACKGROUND` pure-iodine-oxide source clusters** (`chem/reagents.py`,
+  `build_library("I")` only): `I2O-` (269.80, ~2M cps) and `I3O-` (396.71) —
+  bright, time-STABLE source ions, on top of the generic In⁻ ladder (I⁻/I₂⁻·/I₃⁻
+  = #4/#1/#2 by height), IOₓ⁻ oxides and I·H₂O. Reagent-acid clusters (`HINO3-`,
+  `IH2O2-`, `CH2IO2-`) are **deliberately NOT** in the library — they are the
+  `[M+I]-` analyte reading of HNO₃/H₂O₂/HCOOH (the Br organic-acid ruling,
+  applied to iodide).
+- **Pass-0 `reactive_iodine` known-species family** (`assignment/passes/
+  directors.py`): HOI, HIO₂, HIO₃, INO₂, INO₃, ICN (`CNI`), INCO (`CINO`), ICl,
+  IBr — the canonical iodide-CIMS analytes, detected as `[M+I]-`. Covalent iodine
+  is monoisotopic + off-grid, so they must be supplied as known formulas (the
+  PFCA precedent: at defect −0.19..−0.27 no grid-reachable organic exists, so
+  exact-mass commit is safe). Reagent-vs-analyte for poly-iodide ions decided by
+  TIME behavior: HOI₂⁻ swings 55× (photochemical HOI), I₂NO₂⁻ 2.3× → analytes;
+  the bare ladder and I₂O⁻/I₃O⁻ are stable → source background. Validated live
+  on a representative sample: 8 species committed at <0.6 ppm (ICl with its
+  0.31-ratio ³⁷Cl twin, IBr with its 0.96-ratio ⁸¹Br twin, ICN cross-channel via
+  `[M+I]-` + `[M]-.`); unexplained signal 6.2% → 3.8%.
+- **`label_bromide_clusters` is now Br-gated** (`assignment/cleanup.py`
+  `run_cleanup`): the defect+1.998-twin heuristic reads ANY heavy-halogen cluster
+  region as "bromide" — under iodide it grabbed the I₂NO₂⁻/IBr·I⁻ neighborhood
+  with a false bromide note — so it only runs when `cfg.reagent_element == "Br"`.
+- **The shed hydrogen halide in the cluster library follows the reagent**
+  (`chem/reagents.py` `build_library`): `HBr` was a fixed `_CLUSTER_NEUTRALS`
+  entry, so `build_library("I")` emitted phantom `[In+HBr]-` ions (and a Cl
+  library would have too). Now the hydride is `H<reagent>` (HBr / HCl / HI):
+  the I library carries `[I+HI]-` (254.817) and zero Br-bearing formulas.
+- **IOₓ⁻ oxide anions are NOT reagent labels under iodide** (adversarial-review
+  catch): `build_library` skips the generic RO⁻/RO₂⁻/RO₃⁻ entries for
+  `reagent == "I"` — IO⁻/IO₂⁻/IO₃⁻ are ion-identical to the `[M-H]-` ions of the
+  iodine oxyacids, and **iodate IO₃⁻ is iodic acid's dominant channel** (the
+  new-particle-formation tracer); labelling it reagent locked THE key
+  iodide-CIMS analyte away from assignment (the HNO₃/NO₃⁻ ruling, applied to
+  iodine oxides). Br/Cl oxide entries unchanged.
+- **OIO added to `reactive_iodine`** (`IO2`, via `[OIO+I]-` = I₂O₂⁻ 285.799);
+  the IO radical is deliberately NOT listed — `[IO+I]-` is composition-identical
+  to the locked I₂O⁻ source cluster, a blind spot now documented in
+  `docs/REAGENTS.md` beside the I₃⁻/ambient-I₂ one (check I₂O⁻/I₂⁻ ratio drift).
+- **Coverage hardening from the review**: Cl-library tests (`[Cl+HCl]-` + ³⁷Cl
+  twin, no-Br guard) + Br/Cl/I library-size snapshots; a consistency pin that
+  every built-in profile adduct resolves in BOTH `ADDUCT_TO_MECH` and
+  `ADDUCT_SHIFTS` (a dropped mapping silently disables a channel); the
+  `run_cleanup` Br-gate pinned in all three directions (Br runs / I skipped /
+  None skipped); the full six-alias iodide loop.
+  (`tests/test_profiles.py`, `tests/test_reagents.py`, `tests/test_chemistry.py`,
+  `tests/test_passes.py`, `tests/test_cleanup.py`; docs in `docs/REAGENTS.md`.)
+
 ### Added (time-series parquet now carries the assignment)
 - **`per_file/_batch_ts.parquet` peaks are stamped with their assigned formula/channel**
   (`batch/timeseries.py::annotate_peaks`, wired into `batch/assign_batch.py`). Each ts

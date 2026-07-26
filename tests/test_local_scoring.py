@@ -31,6 +31,15 @@ check("multi-add [M+HBr+Br]- -> +HBrBr-", LS.adduct_to_mech("[M+HBr+Br]-") == "+
 check("multi-add [M+HBr+CO3]- -> +HBrCO3-", LS.adduct_to_mech("[M+HBr+CO3]-") == "+HBrCO3-",
       LS.adduct_to_mech("[M+HBr+CO3]-"))
 
+# mixed +/- decomposition aliases have NO mechanism string BY DESIGN: the
+# iodide [M-H+I2]- channel is scored through its covalent alias (A-H+I) [M+I]-
+# (pass 3), never sent to a scorer directly. The raise is the contract.
+try:
+    LS.adduct_to_mech("[M-H+I2]-")
+    check("adduct_to_mech([M-H+I2]-) raises (relabel-only channel)", False)
+except ValueError:
+    check("adduct_to_mech([M-H+I2]-) raises (relabel-only channel)", True)
+
 # unrecognised input raises
 try:
     LS.adduct_to_mech("not-an-adduct")

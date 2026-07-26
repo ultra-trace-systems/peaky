@@ -38,6 +38,7 @@ import numpy as np
 import pandas as pd
 
 from peaky.chem import chemistry as C
+from peaky.chem import contexts as X
 from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
 from peaky.assignment import series_gka as G
@@ -434,6 +435,18 @@ def stage_b_series(client, sample_id: str, ledger: pd.DataFrame, profile,
                                        ppm=cfg.residual_ppm_pattern,
                                        max_steps=cfg.residual_max_steps):
             f = prop.neutral_formula
+            # This stage applied only the STRUCTURAL gates (DBE + oxygen cap), never
+            # the context's chemical plausibility, so it could walk a heteroatom the
+            # context forbids into a neutral. Pass-0 known species are legitimate
+            # ANCHORS but must not be springboards: on the first iodide batch it
+            # extrapolated +CO / +C2H2O / +O off HOI / HIO2 / INO3 into CHIO2, CHIO3,
+            # C2H3IO2, C2H3IO3 and INO4 -- each really the I2 cluster of an acid
+            # already in the ledger (CHIO2 [M+I]- == [HCOOH-H+I2]-) and
+            # un-confirmable, 127I being monoisotopic. ambient-air's max_I=0 rejects
+            # them here now, exactly as max_F/max_P=0 handle F and P.
+            keep, _why = X.filter_by_context(f, profile.label)
+            if not keep:
+                continue
             ok, _why = C.dbe_ok(f)        # structural gates: DBE + oxygen cap
             if ok:
                 ok, _why = C.oxygen_ok(f)

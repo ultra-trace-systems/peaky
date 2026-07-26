@@ -39,6 +39,8 @@ REPEAT_UNITS: dict[str, dict[str, int]] = {
     "CF2":    {"C": 1, "F": 2},                       # fluorinated / PFAS
     "HBr":    {"H": 1, "Br": 1},   # cluster unit (halide CIMS), not growth
     "HCl":    {"H": 1, "Cl": 1},   # cluster unit
+    "HI":     {"H": 1, "I": 1},    # cluster unit (iodide CIMS; also lets
+                                   # _prefer_adduct_reading strip covalent I)
     "C2H4O2": {"C": 2, "H": 4, "O": 2},   # acetic-acid cluster / esterification
     "C2F4":   {"C": 2, "F": 4},           # double-CF2 step (PFAS ladders)
     "C2H4O":  {"C": 2, "H": 4, "O": 1},   # PEG / ethoxylate ladder

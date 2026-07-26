@@ -50,6 +50,57 @@ check("suffix applied", P.confidence_label(0.75, 0.5, 0, False, CFG, "series") =
 check("_mech_to_adduct 14N nitrate -> [M+NO3]-",
       P._mech_to_adduct({"ion_formula": "C6H5N2O6-", "compound_formula": "C6H5NO3"})
       == "[M+NO3]-")
+# EVERY channel of EVERY registered profile must round-trip through
+# _mech_to_adduct. A channel missing from _DIFF_TO_ADDUCT does not raise -- it hits
+# the `.get(diff, "[M-H]-")` default and is silently written to the ledger as a
+# DEPROTONATION (found on the first iodide batch: [M+I2]- commits reported as
+# [M-H]-, which also inflated the [M-H]- census). This loop is the guard.
+from peaky import profiles as _PRF          # noqa: E402
+from peaky import chemistry as _CH          # noqa: E402
+_ADDUCT_DELTA = {          # ion composition minus neutral composition
+    "[M-H]-": {"H": -1}, "[M+Br]-": {"Br": 1}, "[M+Cl]-": {"Cl": 1},
+    "[M+I]-": {"I": 1}, "[M+I2]-": {"I": 2}, "[M+I3]-": {"I": 3},
+    "[M+NO3]-": {"N": 1, "O": 3}, "[M+Br2]-": {"Br": 2}, "[M+Br3]-": {"Br": 3},
+    "[M+HBr+Br]-": {"H": 1, "Br": 2}, "[M+HBr+Br2]-": {"H": 1, "Br": 3},
+    "[M+HBr+CO3]-": {"H": 1, "Br": 1, "C": 1, "O": 3},
+    "[M-H+I2]-": {"H": -1, "I": 2},   # deprotonated-acid . I2 (mixed-sign diff)
+    "[M+CO3]-": {"C": 1, "O": 3}, "[M+H]+": {"H": 1}, "[M+NH4]+": {"N": 1, "H": 4},
+    "[M+Na]+": {"Na": 1}, "[M+(CH4N2O)H]+": {"C": 1, "H": 5, "N": 2, "O": 1},
+}
+for _p in _PRF.PROFILES.values():
+    for _a in _p.adducts:
+        if _a == "[M+^NO3]-":
+            continue                        # heavy-isotope label, covered above
+        _d = _ADDUCT_DELTA.get(_a)
+        check(f"{_p.name}: channel {_a} has a known element delta in the test map",
+              _d is not None, _a)
+        if _d is None:
+            continue
+        _base = {"C": 6, "H": 8, "O": 4}    # an arbitrary neutral to build an ion on
+        _ion = dict(_base)
+        for _el, _n in _d.items():
+            _ion[_el] = _ion.get(_el, 0) + _n
+        _got = P._mech_to_adduct({
+            "ion_formula": _CH.format_formula(_ion),
+            "compound_formula": _CH.format_formula(_base)})
+        check(f"{_p.name}: {_a} round-trips through _mech_to_adduct (not silently [M-H]-)",
+              _got == _a, f"got {_got}")
+
+# OFF-GRID ELEMENT INVARIANT: covalent iodine must not reach a neutral through the
+# generic passes. Enforced by the CONTEXT cap (ambient-air max_I=0, exactly like
+# max_F/max_P=0) -- 127I is monoisotopic so it can never be isotope-confirmed, and in
+# an iodide source every such formula is degenerate with an [acid-H+I2]- cluster.
+# Real regression: the first iodide batch produced CHIO2, CHIO3, C2H3IO2, C2H3IO3,
+# INO4 from series extrapolation off the pass-0 iodine anchors.
+for _f in ("CHIO2", "CHIO3", "C2H3IO2", "C2H3IO3", "INO4"):
+    check(f"off-grid: {_f} rejected by ambient-air (max_I=0)",
+          P._context_filter([_f], "ambient-air") == [], _f)
+check("off-grid: ordinary CHO/CHON neutrals still pass ambient-air",
+      set(P._context_filter(["C6H8O4", "C10H16O3", "C5H7NO4"], "ambient-air"))
+      == {"C6H8O4", "C10H16O3", "C5H7NO4"})
+check("off-grid: the water context still ALLOWS iodine (iodinated DBPs are the "
+      "analyte there)", P._context_filter(["C2H3IO2"], "water") == ["C2H3IO2"])
+
 check("_mech_to_adduct 15N nitrate (^N) -> [M+^NO3]-",
       P._mech_to_adduct({"ion_formula": "C6H5NO6^N-", "compound_formula": "C6H5NO3"})
       == "[M+^NO3]-")
@@ -174,6 +225,36 @@ check("unmodelled cluster channel keeps the covalent reading",
 # no reagent element set -> never relabel
 check("no relabel without a reagent element",
       P._prefer_adduct_reading(dict(w_co3), P.PassConfig())["adduct"] == "[M+CO3]-")
+
+# ---------- iodide: covalent-I winner decomposes to deprotonated-acid + I2 ----------
+# [A-H+I2]- is the SAME ion as covalent (A-H+I) [M+I]- -- the reading the series
+# passes used to invent (CHIO2 @298.807 et al.). The relabel reports the acid.
+cfg_i = P.PassConfig(reagent_element="I")
+for cov, acid in [("CHIO2", "CH2O2"), ("INO4", "HNO4"), ("C2H3IO3", "C2H4O3")]:
+    r_i = P._prefer_adduct_reading({"neutral": cov, "adduct": "[M+I]-",
+                                    "ion_formula": "x"}, cfg_i)
+    check(f"iodide acid rule: {cov} [M+I]- -> {acid} [M-H+I2]-",
+          r_i["neutral"] == acid and r_i["adduct"] == "[M-H+I2]-",
+          (r_i["neutral"], r_i["adduct"]))
+# ion mass identity of the decomposition (exactly degenerate readings)
+check("[HCOOH-H+I2]- is the covalent CHIO2 [M+I]- ion, exactly",
+      abs(_CH.ion_mz("CH2O2", "[M-H+I2]-") - _CH.ion_mz("CHIO2", "[M+I]-")) < 1e-9)
+# the pass-0 reactive-iodine species must NEVER be re-read (no C/N/S oxy-acid
+# behind them: HOI -> "H2O", HIO3 -> "H2O3"; ICl/IBr/ICN have no O) -- their
+# I2X- lines were ruled ambient analytes on time behaviour (HOI2-/I2NO2-).
+for keep in ("HOI", "HIO2", "HIO3", "ICl", "IBr", "CNI", "INO2", "INO3",
+             "CINO", "CH3I"):
+    r_k = P._prefer_adduct_reading({"neutral": keep, "adduct": "[M+I]-",
+                                    "ion_formula": "x"}, cfg_i)
+    check(f"iodide relabel keeps {keep} covalent (not an oxy-acid cluster)",
+          r_k["neutral"] == keep and r_k["adduct"] == "[M+I]-",
+          (r_k["neutral"], r_k["adduct"]))
+# [M-H]- winners fall through to the generic HI-subtraction (CIO2- == CO2.I-)
+r_dep = P._prefer_adduct_reading({"neutral": "CHIO2", "adduct": "[M-H]-",
+                                  "ion_formula": "x"}, cfg_i)
+check("iodide [M-H]- covalent falls through to the HI-subtraction rule",
+      r_dep["neutral"] == "CO2" and r_dep["adduct"] == "[M+I]-",
+      (r_dep["neutral"], r_dep["adduct"]))
 
 # ---------- commit into ledger end-to-end ----------
 peaks = pd.DataFrame({"peak_id": ["A", "B", "C"], "mz": [200.1, 201.1, 191.0],
@@ -910,6 +991,71 @@ check("pass0 commits dinitrophenol [M-H]- (no Br twin gate)",
       and ledn.loc[ledn.peak_id == "DNP", "neutral_formula"].iloc[0] == "C6H4N2O5"
       and ledn.loc[ledn.peak_id == "DNP", "method"].iloc[0] == "known:nitroaromatic", sn)
 
+# pass0 reactive iodine (iodide-CIMS): covalent I is monoisotopic + off-grid, so
+# INO2 (via [M+I]- = I2NO2-, the 299.802 line) must be supplied as a
+# known species. No Br in the ion -> no twin gate; exact-mass + score commit.
+check("INO2 in the known-species reactive_iodine family",
+      P._known_species().get("reactive_iodine", {}).get("INO2") is not None)
+check("HOI in the known-species reactive_iodine family",
+      P._known_species().get("reactive_iodine", {}).get("HOI") is not None)
+check("OIO (IO2 radical) in the reactive_iodine family",
+      P._known_species().get("reactive_iodine", {}).get("IO2") is not None)
+check("iodic acid (HIO3) in the reactive_iodine family (owns IO3- via [M-H]-)",
+      P._known_species().get("reactive_iodine", {}).get("HIO3") is not None)
+mz_ino2 = CH.ion_mz("INO2", "[M+I]-")
+# non-circular anchor: the server-observed I2NO2- line (299.8025)
+check("INO2 [M+I]- lands on the observed 299.8025 line",
+      abs(mz_ino2 - 299.8025) < 0.001, mz_ino2)
+ledi = mk_ledger([("INO2", mz_ino2, 2.8e6)])
+
+def fake_ino2(client, sample_id, formulas, *, mechanism_ids=None, **kw):
+    if "INO2" not in formulas:
+        return pd.DataFrame([])
+    return pd.DataFrame([dict(
+        compound_formula="INO2", compound_score=0.99,
+        ion_formula="I2NO2-", ion_score=0.99, iso_label="M0",
+        is_base=True, theo_mz=mz_ino2, rel_abundance=1.0, iso_score=0.99,
+        sample_peak_id="INO2", sample_peak_mz=mz_ino2,
+        sample_peak_intensity=2.8e6, ppm_error=0.34, abundance_error=0.0)])
+
+si = P.run_pass0_known(None, "SID", ledi, PROF5, ACFG, ["[M+I]-", "[M-H]-"],
+                       score_fn=fake_ino2, log=lambda *a: None)
+check("pass0 commits INO2 [M+I]- (reactive iodine, off-grid covalent I)",
+      si["committed"] == 1
+      and ledi.loc[ledi.peak_id == "INO2", "neutral_formula"].iloc[0] == "INO2"
+      and ledi.loc[ledi.peak_id == "INO2", "method"].iloc[0] == "known:reactive_iodine", si)
+check("pass0 locks the reactive-iodine commit", L.is_locked(ledi, "INO2"))
+
+# IBr via [M+I]- = I2Br-: 'Br' in the ion formula -> the pass-0 self-twin gate
+# applies; the 0.96-ratio 81Br twin (the 332.728/334.726 pair) passes.
+mz_ibr = CH.ion_mz("IBr", "[M+I]-")
+# non-circular anchor: the server-observed I2Br- line (332.7278)
+check("IBr [M+I]- lands on the observed 332.7278 line",
+      abs(mz_ibr - 332.7278) < 0.001, mz_ibr)
+ledb = mk_ledger([("IBR", mz_ibr, 5716.0), ("IBRtw", mz_ibr + 1.99795, 5503.0)])
+
+def fake_ibr(client, sample_id, formulas, *, mechanism_ids=None, **kw):
+    if "IBr" not in formulas:
+        return pd.DataFrame([])
+    return pd.DataFrame([
+        dict(compound_formula="IBr", compound_score=0.99, ion_formula="BrI2-",
+             ion_score=0.99, iso_label="M0", is_base=True, theo_mz=mz_ibr,
+             rel_abundance=1.0, iso_score=0.99, sample_peak_id="IBR",
+             sample_peak_mz=mz_ibr, sample_peak_intensity=5716.0,
+             ppm_error=-0.1, abundance_error=0.0),
+        dict(compound_formula="IBr", compound_score=0.99, ion_formula="BrI2-",
+             ion_score=0.99, iso_label="81Br", is_base=False,
+             theo_mz=mz_ibr + 1.99795, rel_abundance=0.97, iso_score=0.95,
+             sample_peak_id="IBRtw", sample_peak_mz=mz_ibr + 1.99795,
+             sample_peak_intensity=5503.0, ppm_error=0.04, abundance_error=0.02)])
+
+sb = P.run_pass0_known(None, "SID", ledb, PROF5, ACFG, ["[M+I]-", "[M-H]-"],
+                       score_fn=fake_ibr, log=lambda *a: None)
+check("pass0 commits IBr [M+I]- (81Br self-twin ratio 0.96 passes the gate)",
+      sb["committed"] == 1
+      and ledb.loc[ledb.peak_id == "IBR", "neutral_formula"].iloc[0] == "IBr", sb)
+check("pass0 attaches the IBr 81Br child", L.role_of(ledb, "IBRtw") == L.ROLE_ISO, sb)
+
 # ---------- pass0 known-species gate is offset-aware (prior_offset) ----------
 # a silanediol at -2.3 ppm: rejected when the instrument offset is unknown
 # (|2.3|>2.0), committed once the rough offset (-1.9) is seeded -- the
@@ -1378,6 +1524,83 @@ check("pass7 counts a same-formula weak incumbent as corroborated, not displaced
       s_cb["corroborated_existing"] == 1 and s_cb["displaced"] == 0
       and led_cb.loc[led_cb.peak_id == "n1", "neutral_formula"].iloc[0] == "C10H15NO2S",
       s_cb)
+
+
+# ---------- pass 3: acid.I2 cluster resolver (iodide) ----------
+# Anchored acids reappear as conjugate-base . I2 at A - H + 2*126.9045; the
+# resolver scores the covalent alias (A-H+I) [M+I]- and commits the acid.
+_mz_fa = _CH.ion_mz("CH2O2", "[M+I]-")        # formic anchor, 172.9123
+_mz_fa_i2 = _CH.ion_mz("CH2O2", "[M-H+I2]-")  # its I2 rung, 298.8071
+_mz_ac_i2 = _CH.ion_mz("C2H4O2", "[M-H+I2]-")  # acetic rung (CH2 homolog bridge)
+_mz_hno2 = _CH.ion_mz("HNO2", "[M+I]-")        # HNO2 anchor
+_mz_ino2 = _CH.ion_mz("INO2", "[M+I]-")        # == [HNO2-H+I2]- exactly (contested)
+
+
+def _i2_row(x, ion, mz, pid):
+    return dict(compound_formula=x, compound_score=0.85, ion_formula=ion,
+                ion_score=0.88, iso_label="M0", is_base=True, theo_mz=mz,
+                rel_abundance=1.0, iso_score=0.88, sample_peak_id=pid,
+                sample_peak_mz=mz, sample_peak_intensity=30000.0, ppm_error=0.10,
+                abundance_error=0.0, mechanism_id="+I-")
+
+
+def fake_i2_score(client, sid, formulas, *, mechanism_ids=None, **kw):
+    rows = []
+    if "CHIO2" in formulas:      # covalent alias of formic's I2 rung
+        rows.append(_i2_row("CHIO2", "CHI2O2-", _mz_fa_i2, "t1"))
+    if "C2H3IO2" in formulas:    # covalent alias of the acetic homolog rung
+        rows.append(_i2_row("C2H3IO2", "C2H3I2O2-", _mz_ac_i2, "t2"))
+    return pd.DataFrame(rows)
+
+
+led_i2 = mk_ledger([("fa", _mz_fa, 80000.0), ("t1", _mz_fa_i2, 30000.0),
+                    ("t2", _mz_ac_i2, 12000.0), ("hn", _mz_hno2, 60000.0),
+                    ("ino2", _mz_ino2, 250000.0), ("bg", 401.4012, 5000.0)])
+for pid, nf in [("fa", "CH2O2"), ("hn", "HNO2")]:
+    L.commit_assignment(led_i2, pid, neutral_formula=nf, adduct="[M+I]-",
+                        ion_formula="x-", ion_score=0.9, ppm_error=0.1,
+                        pass_no=1, method="grid", confidence="Good",
+                        commentary="anchor")
+# the contested I2NO2- line: pass-0 reactive-iodine INO2, committed + LOCKED
+# first (ruled an ambient analyte on TIME behaviour) -- must never be re-read
+# as [HNO2-H+I2]- even though the ion is identical.
+L.commit_assignment(led_i2, "ino2", neutral_formula="INO2", adduct="[M+I]-",
+                    ion_formula="I2NO2-", ion_score=0.95, ppm_error=0.1,
+                    pass_no=0, method="known:reactive-iodine",
+                    confidence="High", commentary="pass 0")
+L.lock_peaks(led_i2, ["ino2"])
+ICFG = P.PassConfig(height_cutoff=100.0, reagent_element="I")
+s_i2 = P._resolve_acid_i2_clusters(None, "S", led_i2, PROF5, ICFG,
+                                   score_fn=fake_i2_score, log=lambda *a: None)
+check("acid.I2 resolver commits both rungs", s_i2["committed"] == 2, s_i2)
+check("formic I2 rung: neutral is the ACID on [M-H+I2]-",
+      led_i2.loc[led_i2.peak_id == "t1", "neutral_formula"].iloc[0] == "CH2O2"
+      and led_i2.loc[led_i2.peak_id == "t1", "adduct"].iloc[0] == "[M-H+I2]-")
+check("acetic rung reached via the CH2 homolog bridge",
+      led_i2.loc[led_i2.peak_id == "t2", "neutral_formula"].iloc[0] == "C2H4O2"
+      and led_i2.loc[led_i2.peak_id == "t2", "adduct"].iloc[0] == "[M-H+I2]-")
+check("commit method is cluster:I2",
+      led_i2.loc[led_i2.peak_id == "t1", "method"].iloc[0] == "cluster:I2")
+check("commentary names the covalent alias",
+      "CHIO2" in str(led_i2.loc[led_i2.peak_id == "t1", "commentary"].iloc[0]))
+check("locked pass-0 INO2 is NOT re-read as [HNO2-H+I2]-",
+      led_i2.loc[led_i2.peak_id == "ino2", "neutral_formula"].iloc[0] == "INO2"
+      and led_i2.loc[led_i2.peak_id == "ino2", "adduct"].iloc[0] == "[M+I]-")
+check("unrelated peak stays unexplained", L.role_of(led_i2, "bg") == L.ROLE_UNEXPLAINED)
+check("resolver ledger validates clean", L.validate(led_i2) == [], L.validate(led_i2))
+
+# anchors that are NOT acids never propose: iodine-bearing / O-free anchors
+led_i2b = mk_ledger([("a1", _CH.ion_mz("HIO3", "[M+I]-"), 50000.0),
+                     ("t3", _CH.ion_mz("HIO3", "[M-H+I2]-"), 8000.0)])
+L.commit_assignment(led_i2b, "a1", neutral_formula="HIO3", adduct="[M+I]-",
+                    ion_formula="HI2O3-", ion_score=0.9, ppm_error=0.1,
+                    pass_no=0, method="known:reactive-iodine",
+                    confidence="High", commentary="pass 0")
+s_i2b = P._resolve_acid_i2_clusters(None, "S", led_i2b, PROF5, ICFG,
+                                    score_fn=fake_i2_score, log=lambda *a: None)
+check("iodine-bearing anchor (HIO3) never seeds an I2-cluster proposal",
+      s_i2b["committed"] == 0
+      and L.role_of(led_i2b, "t3") == L.ROLE_UNEXPLAINED, s_i2b)
 
 
 def test_all():
