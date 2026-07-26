@@ -123,13 +123,16 @@ NO3_15N = ReagentProfile(
 # cannot be isotope-confirmed and is kept OFF the neutral grid (no I in
 # `ranges`, like F/P): iodine reaches a neutral only via the adduct or the
 # known-species list. [M+I2]⁻ is kept as a secondary analyte channel (server
-# mechanism +I2-). The In⁻ ladder is in the measured 40-600 window, so the
-# correlation layer normalises on the reagent ion.
+# mechanism +I2-). [M-H+I2]⁻ (conjugate base · I₂, e.g. [HCOOH-H+I2]⁻ @298.807)
+# is a cluster-DECOMPOSITION alias like the Br-CIMS [M+HBr+Br]⁻ -- no server
+# mechanism; pass 3 scores the covalent alias (M-H+I) [M+I]⁻ (the same ion) and
+# commits the acid reading. The In⁻ ladder is in the measured 40-600 window, so
+# the correlation layer normalises on the reagent ion.
 IODIDE = ReagentProfile(
     name="I",
     label="I- CIMS",
     polarity="-",
-    adducts=["[M+I]-", "[M-H]-", "[M+I2]-"],
+    adducts=["[M+I]-", "[M-H]-", "[M+I2]-", "[M-H+I2]-"],
     normaliser="reagent",
     reagent_ion_re=r"I\d*-$",
     ranges="C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1",

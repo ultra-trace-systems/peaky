@@ -215,6 +215,11 @@ def _adduct_of(row, adducts: list[str]) -> str:
     mech = str(row.get("mechanism_id", ""))
     from peaky.io.local_scoring import adduct_to_mech
     for a in adducts:
-        if adduct_to_mech(a) == mech:
-            return a
+        try:
+            if adduct_to_mech(a) == mech:
+                return a
+        except ValueError:
+            # decomposition-alias channels ([M-H+I2]-, mixed +/- terms) have no
+            # mechanism string by design -- they can never be the scored mech
+            continue
     return adducts[0] if adducts else "[M-H]-"

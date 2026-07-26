@@ -80,7 +80,8 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
    (Br⁻, neg, normalise on reagent), **`UR`** (urea/uronium, pos, normalise on
    TIC), **`NO3`** (nitrate, neg, reagent), **`NO3_15N`** (¹⁵N nitrate, neg, TIC,
    `purity 0.98`, `label_isotope='^N'`, `label_max=2`), **`IODIDE`**
-   (I⁻, neg, normalise on reagent; adducts `[M+I]⁻`/`[M-H]⁻`/`[M+I2]⁻`).
+   (I⁻, neg, normalise on reagent; adducts `[M+I]⁻`/`[M-H]⁻`/`[M+I2]⁻`/
+   `[M-H+I2]⁻`).
 
    > **Iodide is a soft adduct source with a monoisotopic reagent.** Most analytes
    > appear as the `[M+I]⁻` cluster; strong acids also deprotonate to `[M-H]⁻` (both
@@ -96,6 +97,18 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
    > kept as a secondary channel (server mechanism `+I2-`); the time-stable
    > pure-iodine oxides (I₂O⁻/I₃O⁻) are pre-labelled reagent background, so that
    > channel does not run wild on them.
+   >
+   > **`[M-H+I2]⁻` — the deprotonated-acid · I₂ cluster.** Acids the run already
+   > believes on `[M+I]⁻`/`[M-H]⁻` ALSO appear as the conjugate base bound to I₂
+   > (I₂⁻· is the brightest reagent ion): `[HCOOH-H+I2]⁻` @298.807, acetic
+   > @312.823, carbonic @314.802, glycolic @328.818, HNO₄ @331.792. A
+   > relabel-only decomposition alias like the Br `[M+HBr+Br]⁻` — **no server
+   > mechanism**; the pass-3 resolver (`_resolve_acid_i2_clusters`) scores the
+   > covalent alias `(A-H+I) [M+I]⁻` (the identical ion — the `CHIO2`-style
+   > reading the series passes once invented) and commits the acid. It claims
+   > UNEXPLAINED peaks only and skips iodine-bearing / O-free anchors, so the
+   > pass-0 reactive-iodine species keep their I₂X⁻ lines (`HOI2⁻`/`I2NO2⁻`
+   > were ruled ambient analytes on TIME behaviour, not acid clusters).
 
    > **¹⁵N-nitrate ¹⁴NO₃-cluster hazard.** In a NOx-oxidation run the chamber holds
    > abundant *unlabelled* ¹⁴NO₃⁻, so a highly-oxygenated analyte X forms

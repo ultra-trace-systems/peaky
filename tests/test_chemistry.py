@@ -81,6 +81,20 @@ check("[M+HBr+Br]- of C15H22O3 ~ 409.0019 (the lattice peak)",
       C.ion_mz("C15H22O3", "[M+HBr+Br]-"))
 check("[M+HBr+Br]- is one H heavier than [M+Br2]-",
       approx(C.ADDUCT_SHIFTS["[M+HBr+Br]-"] - C.ADDUCT_SHIFTS["[M+Br2]-"], 1.00783, 1e-4))
+# deprotonated-acid + I2 cluster frames (2026-07-26). [M-H+I2]- = M - H + 2*I + e
+# (one H LIGHTER than [M+I2]-). The unexplained-residual masses of the 2026-07-21
+# iodide batch are I2 clusters of ledger acids: formic 298.807, acetic 312.823,
+# carbonic 314.802, glycolic 328.818, HNO4 331.792.
+check("[M-H+I2]- is one H lighter than [M+I2]-",
+      approx(C.ADDUCT_SHIFTS["[M+I2]-"] - C.ADDUCT_SHIFTS["[M-H+I2]-"], 1.00783, 1e-4))
+check("[HCOOH-H+I2]- ~ 298.8071 (the residual peak)",
+      approx(C.ion_mz("CH2O2", "[M-H+I2]-"), 298.8071, 2e-3),
+      C.ion_mz("CH2O2", "[M-H+I2]-"))
+check("[HNO4-H+I2]- ~ 331.7922 (the residual peak)",
+      approx(C.ion_mz("HNO4", "[M-H+I2]-"), 331.7922, 2e-3),
+      C.ion_mz("HNO4", "[M-H+I2]-"))
+check("[M-H+I2]- of the acid == [M+I]- of its covalent-I alias (exact degeneracy)",
+      approx(C.ion_mz("C2H4O2", "[M-H+I2]-"), C.ion_mz("C2H3IO2", "[M+I]-"), 1e-9))
 
 # --- DBE on the neutral ---
 check("DBE C10H16O4 == 3", C.dbe("C10H16O4") == 3, C.dbe("C10H16O4"))   # pinonic-ish

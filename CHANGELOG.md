@@ -6,6 +6,31 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — report refactor
 
+### Added
+- **`[M-H+I2]-` — the deprotonated-acid · I₂ cluster channel (iodide CIMS)**
+  (`chem/chemistry.py`, `chem/profiles.py`, `assignment/passes/{core,directors}.py`,
+  `assignment/series_gka.py`). After the off-grid iodine fix (below), the I₂
+  clusters of ledger acids sat in the unexplained residual: 298.8073
+  (`[HCOOH-H+I2]-`), 312.8229 (acetic), 314.8020 (carbonic), 328.8179 (glycolic),
+  331.7921 (HNO₄) — each exactly degenerate with the covalent organo-iodine
+  `[M+I]-` reading the series passes used to invent (`CHIO2` et al.), and
+  unreachable as `[M+I2]-` because the deprotonated neutral is an open-shell
+  radical. Follows the `[M+HBr+Br]-` pattern: a relabel-only decomposition alias
+  (registered in `ADDUCT_SHIFTS` + `_DIFF_TO_ADDUCT`, deliberately NOT in
+  `ADDUCT_TO_MECH`), claimed by a pass-3 resolver (`_resolve_acid_i2_clusters`)
+  that scores the covalent alias `(A-H+I) [M+I]-` — the identical ion — and
+  commits `neutral = A, adduct = [M-H+I2]-` onto UNEXPLAINED peaks only, for
+  acid anchors (O≥1, C/N/S≥1, H≥1, no I) and their ±CH₂ homologs.
+  `_prefer_adduct_reading` gains the matching iodide branch (covalent mono-I
+  `[M+I]-` winner → acid `[M-H+I2]-`; `[M-H]-` winner → the generic HI
+  subtraction, `CIO2- == CO2·I-`), guarded so the pass-0 `reactive_iodine`
+  registry species (HOI, INO₂, INO₃, CINO, ICl…) are NEVER re-read — commit
+  order (pass 0 locks first) plus the registry guard keep the contested
+  `HOI2-`/`I2NO2-` lines with the time-behaviour ruling: ambient iodine
+  analytes, not acid clusters. The inverse of the Br organic-acid lesson: the
+  new cluster channel must not bury real analytes, and the real iodine species
+  must not be dissolved into clusters.
+
 ### Fixed (found by the first end-to-end iodide batch)
 - **A profile channel missing from `_DIFF_TO_ADDUCT` was silently relabelled
   `[M-H]-`** (`assignment/passes/core.py`). The map turns an ion-vs-neutral element

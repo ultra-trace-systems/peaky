@@ -54,6 +54,8 @@ check("iodide is negative mode", P.resolve("iodide").polarity == "-")
 check("iodide primary channel is [M+I]-", "[M+I]-" in P.resolve("I").adducts)
 check("iodide keeps deprotonation channel [M-H]-", "[M-H]-" in P.resolve("I").adducts)
 check("iodide keeps the poly-iodide [M+I2]- channel", "[M+I2]-" in P.resolve("I").adducts)
+check("iodide registers the deprotonated-acid.I2 channel [M-H+I2]-",
+      "[M-H+I2]-" in P.resolve("I").adducts)
 check("iodide detect_adduct is [M+I]-", P.resolve("I").detect_adduct == "[M+I]-")
 check("iodide normalises on the (in-window) reagent ion",
       P.resolve("I").normaliser == "reagent")
@@ -67,8 +69,9 @@ check("covalent iodine is OFF the neutral grid (monoisotopic)",
 # NB: not every adduct needs a mechanism -- [M+HBr+Br]- is a cluster-DECOMPOSITION
 # adduct (same ion as a covalent reading, relabel-only, deliberately unmapped).
 # assign.py filters channels with `if a in ADDUCT_TO_MECH`, so for the iodide
-# profile (all three channels server-scored) pin each mapping explicitly: a
-# dropped mapping silently disables the channel in live runs.
+# profile (three server-scored channels + the [M-H+I2]- decomposition alias)
+# pin each mapping explicitly: a dropped mapping silently disables the channel
+# in live runs.
 from peaky import io_mascope as IOM   # noqa: E402
 from peaky import chemistry as CHEM   # noqa: E402
 for _p in P.PROFILES.values():
@@ -81,6 +84,11 @@ for _a, _m in (("[M+I]-", "+I-"), ("[M-H]-", "-H+"), ("[M+I2]-", "+I2-"),
                ("[M+I3]-", "+I3-")):
     check(f"iodide channel {_a} maps to server mechanism {_m}",
           IOM.ADDUCT_TO_MECH.get(_a) == _m)
+# [M-H+I2]- is relabel-only, like [M+HBr+Br]-: pass 3 scores its covalent alias
+# (A-H+I) [M+I]- instead. A mapping appearing here would send an unparseable
+# mixed +/- mechanism to the scorers -- keep it OUT.
+check("iodide [M-H+I2]- is a decomposition alias: deliberately NOT mechanism-mapped",
+      "[M-H+I2]-" not in IOM.ADDUCT_TO_MECH)
 
 # ---- register a new profile in code -----------------------------------------
 acet = P.ReagentProfile(
