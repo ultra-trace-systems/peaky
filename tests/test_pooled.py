@@ -1,7 +1,8 @@
 """Offline tests for the multi-batch POOLING path: per-group brightest union
-(sampling.select_pooled_union), the pool-name helper, the unescaped regex loader
+(sampling.select_pooled_union), the pool-name helper, the un-escaped regex loader
 (io_mascope.fetch_pooled_peaks), and `peaky pool` CLI parsing. No network.
 Run: python3 tests/test_pooled.py"""
+import re as _re
 import sys
 from pathlib import Path
 
@@ -109,7 +110,9 @@ with tempfile.TemporaryDirectory() as d:
     check("_stage_pool_child: writes the group's selected_samples.csv",
           _os.path.exists(_os.path.join(child, "tables", "selected_samples.csv")))
 
-# --- fetch_pooled_peaks passes the regex UNescaped (the whole point) ----------
+# --- fetch_pooled_peaks compiles the regex UN-escaped (the whole point): the
+# SDK treats a plain string as a literal substring, so only a compiled pattern
+# keeps its regex meaning ----------
 class _FakeClient:
     def __init__(self): self.seen = {}
     def load_peaks(self, *, dataset, batches, confirm_above):
@@ -119,8 +122,10 @@ class _FakeClient:
 
 fc = _FakeClient()
 out = IO.fetch_pooled_peaks(fc, "DS", "HR-CIMS 100-500.*zone")
-check("fetch_pooled_peaks: regex passed through UNescaped",
-      fc.seen["batches"] == "HR-CIMS 100-500.*zone", fc.seen)
+check("fetch_pooled_peaks: regex compiled un-escaped (keeps its regex meaning)",
+      isinstance(fc.seen["batches"], _re.Pattern)
+      and fc.seen["batches"].pattern == "HR-CIMS 100-500.*zone"
+      and (fc.seen["batches"].flags & _re.IGNORECASE), fc.seen)
 check("fetch_pooled_peaks: never prompts (confirm_above=None)",
       fc.seen["confirm_above"] is None, fc.seen)
 check("fetch_pooled_peaks: returns the pooled frame", len(out) == 1, len(out))
