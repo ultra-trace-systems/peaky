@@ -36,7 +36,7 @@ the heavy scoring maths live in [`SCORING.md`](SCORING.md).
  │ single sample                      │ whole batch
  │ fetch_peaks(sample_id)             │ fetch_batch_samples (one row/sample, no peaks)
  │   get_peaks(matches=True)          │ fetch_batch_peaks → load_peaks(dataset,
- │   cache → ~/.mascope-assign-cache  │   literal_batch_pattern(batch))
+ │   cache → ~/.mascope-assign-cache  │   batch)  [raw name, literal match]
  ▼                                    ▼
  raw peak table ──► detect_adducts ──► adduct list   ([M-H]⁻ fallback)
       │         ──► estimate_offset ──► seed ppm offset (median, |ppm|≤10)
@@ -78,7 +78,7 @@ the heavy scoring maths live in [`SCORING.md`](SCORING.md).
    write fails); `use_cache=True` reuses it.
 
 3. **Fetch time series — whole batch** (`fetch_batch_peaks`). Uses the SDK
-   `load_peaks(dataset=, batches=literal_batch_pattern(batch), confirm_above=None)`
+   `load_peaks(dataset=, batches=batch, confirm_above=None)`
    — one row per (sample × peak), enough for the TS/cluster layer.
    `confirm_above=None` never prompts (batches exceed 100 samples).
    `fetch_batch_samples` returns one row per sample
@@ -184,9 +184,10 @@ All in `peaky/io/io_mascope.py`.
 
 - **`flatten_match_tree` is pure** (no network) and unit-tested against a captured
   fixture — the contract the offline test suite locks.
-- **Batch names are matched as a case-insensitive REGEX** (`str.contains`). A
-  literal name with metacharacters — `Sample run (Ur+ CIMS)`, a `^Nitrate`
-  prefix — silently matches nothing unless run through `escape_batch` (`re.escape`).
+- **Batch names are matched as a case-insensitive LITERAL substring**
+  (mascope-sdk's unified name contract): metacharacters — `Sample run (Ur+ CIMS)`,
+  a `^Nitrate` prefix — carry no regex meaning, so names are passed RAW. Only a
+  compiled `re.Pattern` is a regex (the multi-batch pool path uses this).
 - **`-H+` is not a cation.** The server names deprotonation `-H+` (the *removed*
   species' sign), but it yields an anion. `_mechanism_names` normalizes the
   trailing sign to the mechanism's polarity (`-H+` → `-H-`) before handing it to
@@ -215,7 +216,7 @@ All in `peaky/io/io_mascope.py`.
 | `connect` | build a `MascopeClient` from the resolved `.env` (precedence above) |
 | `_find_env` | credential search (precedence above) |
 | `list_workspaces` / `list_datasets` / `list_batches` | discovery |
-| `escape_batch` / `literal_batch_pattern` | literal batch-name matching (the SDK's two filter contracts) |
+| `fetch_batch_samples` | one row per sample in a batch (raw-name literal match) |
 | `fetch_peaks` | single-sample raw peaks (+ matches), cached parquet |
 | `fetch_batch_peaks` | whole-batch peak time series |
 | `fetch_batch_samples` | per-sample table (no peaks) for sample selection |

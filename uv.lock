@@ -671,7 +671,7 @@ mcp = [
 
 [package.metadata]
 requires-dist = [
-    { name = "mascope-sdk", specifier = ">=2026.7.7" },
+    { name = "mascope-sdk", specifier = ">=2026.8.12" },
     { name = "mascope-tools", specifier = ">=2026.6.25" },
     { name = "matplotlib", specifier = ">=3.7" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },
@@ -689,7 +689,7 @@ provides-extras = ["dev", "compress", "mcp", "local-scoring"]
 
 [[package]]
 name = "mascope-sdk"
-version = "2026.7.7"
+version = "2026.8.12"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "loguru" },
@@ -698,9 +698,9 @@ dependencies = [
     { name = "requests" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/98/b6/558402c6c428f94c153a8d0097245cb854b04f5da717b777a0f3ab982639/mascope_sdk-2026.7.7.tar.gz", hash = "sha256:2da3394cdb2d504beca8e0ae81fa52af2db313f7e1dcb36bd9614bcddacceb33", size = 57141, upload-time = "2026-07-08T10:56:47.531Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4b/8f/b743810e58ff3c71dc06b8a7c967f742595ba8c725781026a7c95cedb365/mascope_sdk-2026.8.12.tar.gz", hash = "sha256:d540d7384ed1b20308ca467240c330eb5222905489f2c1f4e2f0b8067fcbf9bb", size = 66875, upload-time = "2026-08-12T14:06:35.526Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b7/68/9f93a31cf61f73f6c62a87f1cef768919955d7ae507775938144013c55a1/mascope_sdk-2026.7.7-py3-none-any.whl", hash = "sha256:37f3aea60e5e65b0020021acc22ca7e771c3a6518c9b8c4e653bd1d3d863e244", size = 76476, upload-time = "2026-07-08T10:56:46.185Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/0d/62fb6172c76cdeb1ea4e6cfd144e04f213e827c38bfcac6524f1c98acbf2/mascope_sdk-2026.8.12-py3-none-any.whl", hash = "sha256:3c301cf9eb852cad214f2ac4dc083c0ff96108313db555793d3ccee15839f9c3", size = 86898, upload-time = "2026-08-12T14:06:34.447Z" },
 ]
 
 [[package]]

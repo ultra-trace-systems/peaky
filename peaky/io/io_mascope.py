@@ -24,8 +24,8 @@ from pathlib import Path
 
 import pandas as pd
 
-__version__ = "0.4.0"  # modern (datasets-based) servers only; split batch-name
-#                          filter contracts (escape_batch / literal_batch_pattern)
+__version__ = "0.4.0"  # modern (datasets-based) servers only; raw batch names
+#                          (the SDK's unified literal name-matching contract)
 
 # Credential .env search order. The long-running MCP server holds a STALE in-memory
 # token and 401s; the SDK reads the live file, so always load from disk.
@@ -107,24 +107,13 @@ def connect(env_path: str | None = None, workspace: str | None = None):
         raise
 
 
-def escape_batch(name: str) -> str:
-    """Escaped batch-name string for SDK filters that treat a plain string as a
-    RAW case-insensitive regex (`samples.list(batch=)` / `resolve_id`): without
-    escaping, metacharacters in a literal name (the ^ in '^Nitrate', the parens
-    + '+' in '(Ur+ CIMS)') silently match nothing. Do NOT pass this to
-    `load_peaks(batches=)` — that filter escapes plain strings itself; use
-    `literal_batch_pattern` there."""
-    return re.escape(name)
-
-
-def literal_batch_pattern(name: str) -> "re.Pattern[str]":
-    """Compiled literal batch-name pattern for `load_peaks(batches=)`, whose
-    name filter escapes a plain string itself (a pre-escaped STRING would be
-    escaped twice — `\\-` matching a literal backslash — and silently match
-    nothing) but uses a compiled pattern as-is. Case-insensitive to match the
-    SDK's own string handling. The `samples.list(batch=)` filter is the
-    opposite contract (rejects compiled patterns) — use `escape_batch` there."""
-    return re.compile(re.escape(name), re.IGNORECASE)
+# Batch-name matching follows the SDK's unified contract (mascope-sdk >= 2026.8.12):
+# a plain string is a case-insensitive LITERAL substring on every name filter
+# (metacharacters like the ^ in '^Nitrate' or the parens in '(Ur+ CIMS)' carry no
+# regex meaning), and only a compiled re.Pattern is a regex. Pass batch names RAW —
+# pre-escaping them re-escapes the backslashes into literals that match nothing
+# (it only still "works" via the SDK's deprecation shim, which re-reads a
+# nothing-matching string as a regex under a DeprecationWarning).
 
 
 def list_workspaces() -> pd.DataFrame:
@@ -171,7 +160,7 @@ def fetch_batch_samples(client, batch: str, *, dataset: str | None = None,
     """Per-sample table for a batch (one row per sample). Carries `sample_item_id`,
     `sample_item_name`, `datetime_utc`, `tic`, `polarity`, ... — enough for
     representative-sample selection WITHOUT loading every peak."""
-    sl = client.samples.list(batch=escape_batch(batch), dataset=dataset,
+    sl = client.samples.list(batch=batch, dataset=dataset,
                              drop_columns=[] if drop_columns is None else drop_columns)
     if sl is None or not len(sl):
         raise RuntimeError(f"no samples for batch {batch!r} in dataset {dataset!r}")
@@ -220,15 +209,11 @@ def fetch_batch_peaks(client, dataset: str, batch: str, *, save_path: str | None
     """Load the per-sample peak time-series for a whole batch (the TS / cluster /
     correlation layer). Distinct from fetch_peaks (one assignment sample). Uses the
     SDK batch loader (dataset=, not the deprecated workspace=)."""
-    # batches= must be a compiled literal pattern (literal_batch_pattern): a plain
-    # string would be re-escaped by the SDK and a raw regex would misread meta-
-    # characters (the ^ in '... ^Nitrate ...' or '(Ur+ CIMS)').
     # confirm_above=None: never prompt (non-interactive; batches can exceed 100
     # samples). WAF-retry so a burst 521/403 doesn't kill a long batch load;
     # non-transient errors propagate unmasked.
     peaks = _with_waf_retry(
-        lambda: client.load_peaks(dataset=dataset,
-                                  batches=literal_batch_pattern(batch),
+        lambda: client.load_peaks(dataset=dataset, batches=batch,
                                   confirm_above=None))
     if peaks is None or len(peaks) == 0:
         raise RuntimeError(f"no peaks for batch {batch!r} in dataset {dataset!r}")
