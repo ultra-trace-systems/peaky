@@ -671,7 +671,7 @@ mcp = [
 
 [package.metadata]
 requires-dist = [
-    { name = "mascope-sdk", specifier = ">=2026.6.12" },
+    { name = "mascope-sdk", specifier = ">=2026.7.7" },
     { name = "mascope-tools", specifier = ">=2026.6.25" },
     { name = "matplotlib", specifier = ">=3.7" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },
@@ -689,7 +689,7 @@ provides-extras = ["dev", "compress", "mcp", "local-scoring"]
 
 [[package]]
 name = "mascope-sdk"
-version = "2026.7.2"
+version = "2026.7.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "loguru" },
@@ -698,9 +698,9 @@ dependencies = [
     { name = "requests" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/71/20/08331db3a3aaf1ed703ad4afd3822b7ce1b592bb126f1f33228668155bc3/mascope_sdk-2026.7.2.tar.gz", hash = "sha256:99f6ae8ef002748a96c2baa89b781bd9d588e841bd1732b1d1e47bfdd1d59b30", size = 55866, upload-time = "2026-07-02T14:05:18.869Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/98/b6/558402c6c428f94c153a8d0097245cb854b04f5da717b777a0f3ab982639/mascope_sdk-2026.7.7.tar.gz", hash = "sha256:2da3394cdb2d504beca8e0ae81fa52af2db313f7e1dcb36bd9614bcddacceb33", size = 57141, upload-time = "2026-07-08T10:56:47.531Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f3/1a/5971918609057eabbb0752da91c01a675f347a82a6574ec3312d8e0c01fd/mascope_sdk-2026.7.2-py3-none-any.whl", hash = "sha256:438a4575f9e677794e3c0ca58d1377068a4ff8dc9de8ccf55506cfa3264adc7e", size = 75216, upload-time = "2026-07-02T14:05:17.382Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/68/9f93a31cf61f73f6c62a87f1cef768919955d7ae507775938144013c55a1/mascope_sdk-2026.7.7-py3-none-any.whl", hash = "sha256:37f3aea60e5e65b0020021acc22ca7e771c3a6518c9b8c4e653bd1d3d863e244", size = 76476, upload-time = "2026-07-08T10:56:46.185Z" },
 ]
 
 [[package]]
@@ -1546,14 +1546,14 @@ wheels = [
 
 [[package]]
 name = "tqdm"
-version = "4.68.3"
+version = "4.70.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/87/d7/0535a28b1f5f24f6612fb3ff1e89fb1a8d160fee0f976e0aa6803862134b/tqdm-4.68.3.tar.gz", hash = "sha256:00dfa48452b6b6cfae3dd9885636c23d3422d1ec97c66d96818cbd5e0821d482", size = 170596, upload-time = "2026-06-17T07:36:52.105Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/21/3b/6c24bec5be5e743ffd99576daa5cc077722fc7d5bbc00bd133fa0c698dc6/tqdm-4.70.0.tar.gz", hash = "sha256:55b0b0dbd97462d06ebee91e4dac24ed4d4702be82b24f07e6c1d27e08cea220", size = 795438, upload-time = "2026-07-27T11:33:15.271Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d8/8e/bb97bb0c71802080bfc8952937d174e49cfc50de5c951dd47b2496f0dcdb/tqdm-4.68.3-py3-none-any.whl", hash = "sha256:39832cc2def2789a6f29df83f172db7416cea70052c0907a57801c5f2fdccb03", size = 78337, upload-time = "2026-06-17T07:36:50.132Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/1c/01bfd571a64e7f270e6bab5e33777debe0edc56759233ce84f27dec92d14/tqdm-4.70.0-py3-none-any.whl", hash = "sha256:7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953", size = 80184, upload-time = "2026-07-27T11:33:13.167Z" },
 ]
 
 [[package]]
