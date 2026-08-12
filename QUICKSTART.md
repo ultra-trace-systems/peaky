@@ -7,7 +7,7 @@ Mascope data. For depth see [SKILL.md](SKILL.md); for dev/iteration see
 ## 1. Install + set up the workspace
 
 ```bash
-git clone https://github.com/karsa-oy/peaky.git && cd peaky
+git clone https://github.com/ultra-trace-systems/peaky.git && cd peaky
 python3 -m pip install -e .   # pulls mascope-sdk + pandas/numpy/scipy/matplotlib/openpyxl; registers `peaky`
 peaky setup                   # creates .env + output/, verifies, prints what to do next
 ```

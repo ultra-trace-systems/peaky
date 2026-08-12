@@ -58,7 +58,7 @@ mcp = ["mcp>=1.2"]
 local-scoring = []
 
 [project.urls]
-Repository = "https://github.com/karsa-oy/peaky"
+Repository = "https://github.com/ultra-trace-systems/peaky"
 
 [project.scripts]
 peaky = "peaky.cli:main"

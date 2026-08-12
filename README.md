@@ -60,7 +60,7 @@ offline tests.** (On PyPI the distribution is **`mascope-peaky`** — `peaky` wa
 taken; the import package and CLI are still `peaky`.)
 
 ```bash
-git clone https://github.com/karsa-oy/peaky.git
+git clone https://github.com/ultra-trace-systems/peaky.git
 cd peaky
 python3 -m pip install -e .          # registers the `peaky` command (and `mascope-assign` alias)
 peaky setup                          # creates .env + output/, verifies, prints what to do next
@@ -213,7 +213,7 @@ CI runs the suite on Python 3.12–3.13 with no credentials.
 
 Peaky is released under the **[Apache License 2.0](LICENSE)** — see [`LICENSE`](LICENSE)
 for the full text and [`NOTICE`](NOTICE) for attribution. `mascope-sdk` and the Mascope /
-Karsa platform are separately licensed and owned by their respective owners.
+Ultra Trace Systems platform are separately licensed and owned by their respective owners.
 
 ## Citation
 
