@@ -4,7 +4,28 @@ All notable changes to Peaky are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — report refactor
+## [Unreleased] — 0.6.0 (report refactor + modern-server-only I/O)
+
+### Removed (legacy workspace-server support)
+- **The legacy (workspace-based) server code paths are gone** (`io/io_mascope.py`):
+  `_patch_datasets_list_for_legacy_servers` (no callers), the `_legacy_*` raw-endpoint
+  helpers, `resolve_batch_id`, `_legacy_load_batch_peaks`, and the silent fallback arms
+  in `list_datasets` / `list_batches` / `fetch_batch_samples` / `fetch_batch_peaks`.
+  Every current server is datasets-based; the fallbacks actively harmed debugging —
+  each modern-path failure was swallowed by a bare `except Exception` and re-surfaced
+  as the legacy path's own unrelated error (a bare `/api/sample/batches` GET that
+  modern servers reject with 422), masking the real cause. The helpers now make one
+  modern call, raise a clear error on an empty result, and let SDK errors propagate
+  unmasked (regression-tested). Committed run outputs (root-level report PDFs, figure
+  PNGs, class time-series CSVs) were also removed from the repository — runs belong in
+  the git-ignored `output/`.
+
+### Changed
+- **Brand**: Karsa Oy → Ultra Trace Systems Oy (NOTICE, CITATION.cff, repository URLs).
+- **A real-SDK contract tripwire** in `tests/test_io_mascope.py` runs peaky's filter
+  helpers through the installed SDK's actual matching code offline, so an SDK contract
+  change fails CI the day it lands. The suite now also passes on Windows (tempdir-cwd
+  teardown, hardcoded `/tmp` paths).
 
 ### Fixed (batch-name resolution vs the current mascope-sdk)
 - **`peaky batch` matched no batch on current SDKs and died on a legacy-endpoint
