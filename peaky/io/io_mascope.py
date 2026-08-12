@@ -138,11 +138,23 @@ def _patch_datasets_list_for_legacy_servers() -> None:
 
 
 def escape_batch(name: str) -> str:
-    """The SDK resolves `batch=`/`batches=` as a case-insensitive REGEX via
-    str.contains, so a literal batch name with regex metacharacters (e.g.
-    'Sample run (Ur+ CIMS)' — parens + '+') silently fails to match. Escape
-    it to match literally."""
+    """Escaped batch-name string for SDK filters that treat a plain string as a
+    RAW case-insensitive regex (`samples.list(batch=)` / `resolve_id`): without
+    escaping, metacharacters in a literal name (the ^ in '^Nitrate', the parens
+    + '+' in '(Ur+ CIMS)') silently match nothing. Do NOT pass this to
+    `load_peaks(batches=)` — that filter escapes plain strings itself; use
+    `literal_batch_pattern` there."""
     return re.escape(name)
+
+
+def literal_batch_pattern(name: str) -> "re.Pattern[str]":
+    """Compiled literal batch-name pattern for `load_peaks(batches=)`, whose
+    name filter escapes a plain string itself (a pre-escaped STRING would be
+    escaped twice — `\\-` matching a literal backslash — and silently match
+    nothing) but uses a compiled pattern as-is. Case-insensitive to match the
+    SDK's own string handling. The `samples.list(batch=)` filter is the
+    opposite contract (rejects compiled patterns) — use `escape_batch` there."""
+    return re.compile(re.escape(name), re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -369,16 +381,17 @@ def fetch_batch_peaks(client, dataset: str, batch: str, *, save_path: str | None
     """Load the per-sample peak time-series for a whole batch (the TS / cluster /
     correlation layer). Distinct from fetch_peaks (one assignment sample). Uses the
     SDK batch loader (dataset=, not the deprecated workspace=)."""
-    # batches= is resolved as a case-insensitive REGEX (str.contains), so a literal
-    # name with metacharacters (e.g. the ^ in '... ^Nitrate ...' or '(Ur+ CIMS)')
-    # must be escaped or it silently matches nothing -- same as fetch_batch_samples.
+    # batches= must be a compiled literal pattern (literal_batch_pattern): a plain
+    # string would be re-escaped by the SDK and a raw regex would misread meta-
+    # characters (the ^ in '... ^Nitrate ...' or '(Ur+ CIMS)').
     # confirm_above=None: never prompt (non-interactive; batches can exceed 100 samples).
     # Bulk load is the live default path (local scoring means match_compounds is off
     # by default); WAF-retry it so a burst 521/403 doesn't drop us onto the slow
     # per-sample legacy loader (which then hangs over ~2000 samples).
     try:
         peaks = _with_waf_retry(
-            lambda: client.load_peaks(dataset=dataset, batches=escape_batch(batch),
+            lambda: client.load_peaks(dataset=dataset,
+                                      batches=literal_batch_pattern(batch),
                                       confirm_above=None))
     except Exception:
         peaks = None  # legacy server (no /api/datasets) or exhausted -> per-sample loader below
@@ -395,12 +408,15 @@ def fetch_pooled_peaks(client, dataset: str, batches_regex: str, *,
                        save_path: str | None = None) -> pd.DataFrame:
     """Load the peak time-series of EVERY batch whose name matches `batches_regex`
     in ONE bulk call, pooling them into a single frame that keeps `sample_batch_name`
-    so the caller can regroup. Unlike `fetch_batch_peaks`, the regex is passed to
-    the SDK UNescaped — the whole point is a multi-batch match (e.g.
-    `'HR-CIMS 100-500.*zone'` pools the per-zone batches of one mode x range).
-    WAF-retried; confirm_above=None so a large pool never prompts."""
+    so the caller can regroup. Unlike `fetch_batch_peaks`, the regex is compiled
+    UN-escaped — the whole point is a multi-batch match (e.g.
+    `'HR-CIMS 100-500.*zone'` pools the per-zone batches of one mode x range);
+    the SDK treats a plain string as a literal substring, so only a compiled
+    pattern keeps its regex meaning. WAF-retried; confirm_above=None so a large
+    pool never prompts."""
     peaks = _with_waf_retry(
-        lambda: client.load_peaks(dataset=dataset, batches=batches_regex,
+        lambda: client.load_peaks(dataset=dataset,
+                                  batches=re.compile(batches_regex, re.IGNORECASE),
                                   confirm_above=None))
     if peaks is None or len(peaks) == 0:
         raise RuntimeError(

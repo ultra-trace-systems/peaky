@@ -6,6 +6,7 @@ Run: python3 tests/test_io_mascope.py   [MASCOPE_LIVE=1 for live]
 """
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -114,9 +115,10 @@ finally:
     else:
         os.environ["PEAKY_LOCAL_SCORING"] = _prev_local
 
-# ---------- fetch_batch_peaks escapes regex metacharacters in the batch name -----
-# The ^ in a '^Nitrate' (15N) batch name is a regex anchor; the TS loader must
-# escape it (like fetch_batch_samples) or the SDK str.contains matches nothing.
+# ---------- fetch_batch_peaks passes a compiled literal batch-name pattern -----
+# The SDK escapes plain strings itself but uses a compiled pattern as-is; a
+# pre-escaped STRING would be escaped twice and silently match nothing. The ^ in
+# a '^Nitrate' (15N) batch name must reach the SDK escaped inside a Pattern.
 class _LP:
     seen = None
     def load_peaks(self, *, dataset, batches, **kwargs):   # **kwargs: tolerate confirm_above=
@@ -124,8 +126,24 @@ class _LP:
         return pd.DataFrame({"mz": [100.0], "height": [1.0], "sample_item_id": ["s"]})
 _name = "^Nitrate (synthetic) m/z 100-200"
 IO.fetch_batch_peaks(_LP(), "DS", _name)
-check("fetch_batch_peaks escapes the ^ regex anchor in the batch name",
-      _LP.seen == IO.escape_batch(_name) and r"\^" in _LP.seen, _LP.seen)
+check("fetch_batch_peaks passes a compiled, escaped batch-name pattern",
+      isinstance(_LP.seen, re.Pattern) and _LP.seen.pattern == re.escape(_name)
+      and (_LP.seen.flags & re.IGNORECASE), _LP.seen)
+
+# ---------- fetch_batch_samples passes an escaped STRING batch name -----------
+# The opposite SDK contract: samples.list treats a plain string as a RAW regex
+# (so it must arrive escaped) and REJECTS compiled patterns (pandas cannot
+# combine case=False with a compiled pattern).
+class _SL:
+    seen = None
+    def list(self, *, batch, dataset=None, drop_columns=None):   # noqa: A001
+        _SL.seen = batch
+        return pd.DataFrame({"sample_item_id": ["s"]})
+class _CS:
+    samples = _SL()
+IO.fetch_batch_samples(_CS(), _name)
+check("fetch_batch_samples passes an escaped string batch name",
+      isinstance(_SL.seen, str) and _SL.seen == re.escape(_name), _SL.seen)
 
 # ---------- flatten_match_tree re-anchors a 100%-labelled (^N) reagent ----------
 # The 15N nitrate adduct: server tags the all-light 14N form as the M0 base (no
