@@ -210,12 +210,17 @@ try:
         proj = os.path.join(_d, ".env"); open(proj, "w").write("MASCOPE_URL=x\n")
         other = os.path.join(_d, "other.env"); open(other, "w").write("MASCOPE_URL=y\n")
         os.chdir(_d)
-        IO.ENV_SEARCH = [".env"]                       # isolate from home/repo paths
-        check("_find_env: explicit path wins", IO._find_env(other) == other)
-        os.environ["MASCOPE_ENV"] = other
-        check("_find_env: $MASCOPE_ENV honored (no explicit)", IO._find_env() == other)
-        os.environ.pop("MASCOPE_ENV", None)
-        check("_find_env: finds a project-local ./.env", os.path.samefile(IO._find_env(), proj))
+        try:
+            IO.ENV_SEARCH = [".env"]                   # isolate from home/repo paths
+            check("_find_env: explicit path wins", IO._find_env(other) == other)
+            os.environ["MASCOPE_ENV"] = other
+            check("_find_env: $MASCOPE_ENV honored (no explicit)", IO._find_env() == other)
+            os.environ.pop("MASCOPE_ENV", None)
+            check("_find_env: finds a project-local ./.env",
+                  os.path.samefile(IO._find_env(), proj))
+        finally:
+            # leave the tempdir BEFORE its cleanup: Windows cannot delete the cwd
+            os.chdir(_cwd0)
 finally:
     os.chdir(_cwd0); IO.ENV_SEARCH = _search0
     if _menv0 is not None:
@@ -224,66 +229,49 @@ check("_REPO_ENV points at the repo-root .env (next to the package)",
       IO._REPO_ENV == os.path.join(
           os.path.dirname(os.path.dirname(os.path.abspath(IO.__file__))), ".env"))
 
-# ---------- legacy (workspace-based) server resolution (offline, monkeypatched) ----------
-_WS = pd.DataFrame([
-    {"workspace_name": "Demo acquisitions", "workspace_id": "WACQ", "workspace_type": "ACQUISITION"},
-    {"workspace_name": "Sandbox", "workspace_id": "WSBX", "workspace_type": "ANALYSIS"},
-])
-_BATCHES = pd.DataFrame([
-    {"workspace_id": "WACQ", "sample_batch_name": "Sample run Uronium acquisition",
-     "sample_batch_id": "BURO", "polarity": "+"},
-    {"workspace_id": "WSBX", "sample_batch_name": "Chamber tests", "sample_batch_id": "BCHM", "polarity": "+-"},
-    {"workspace_id": "WSBX", "sample_batch_name": "Uronium scratch copy", "sample_batch_id": "BDUP", "polarity": "+"},
-])
+# ---------- listing helpers raise (no silent fallback) on empty results ----------
+class _EmptyDS:
+    def list(self):
+        return None
+class _EmptyBS:
+    def list(self, dataset=None):
+        return pd.DataFrame()
+class _EmptySL:
+    def list(self, *, batch, dataset=None, drop_columns=None):
+        return None
+class _EmptyClient:
+    datasets = _EmptyDS()
+    batches = _EmptyBS()
+    samples = _EmptySL()
 
-_orig_batches, _orig_ws = IO._legacy_all_batches, IO._legacy_workspaces
-IO._legacy_all_batches = lambda client: _BATCHES.copy()
-IO._legacy_workspaces = lambda client: _WS.copy()
-try:
-    check("resolve_batch_id exact match",
-          IO.resolve_batch_id(None, "Sample run Uronium acquisition") == "BURO")
-    check("resolve_batch_id case-insensitive substring",
-          IO.resolve_batch_id(None, "chamber TESTS") == "BCHM")
-    amb = False                                  # 'Uronium' substring hits two batches
+for _label, _call in [
+    ("list_datasets raises on empty (no fallback)",
+     lambda: IO.list_datasets(_EmptyClient())),
+    ("list_batches raises on empty (no fallback)",
+     lambda: IO.list_batches(_EmptyClient(), dataset="DS")),
+    ("fetch_batch_samples raises on empty (no fallback)",
+     lambda: IO.fetch_batch_samples(_EmptyClient(), "B", dataset="DS")),
+]:
+    _raised = False
     try:
-        IO.resolve_batch_id(None, "Uronium")
-    except RuntimeError as e:
-        amb = "disambiguate" in str(e)
-    check("resolve_batch_id ambiguous raises", amb)
-    check("resolve_batch_id workspace-scoped disambiguates",
-          IO.resolve_batch_id(None, "Uronium", dataset="Sandbox") == "BDUP")
-    nf = False
-    try:
-        IO.resolve_batch_id(None, "no such batch")
+        _call()
     except RuntimeError:
-        nf = True
-    check("resolve_batch_id not-found raises", nf)
+        _raised = True
+    check(_label, _raised)
 
-    class _FakeDS:
-        def list(self):
-            return None              # legacy server: /api/datasets absent
-
-    class _FakeClient:
-        datasets = _FakeDS()
-
-        def __getattr__(self, _):    # batches.list(...) -> AttributeError -> legacy fallback
-            raise AttributeError
-
-    ds = IO.list_datasets(_FakeClient())
-    check("list_datasets falls back to workspaces (reshaped)",
-          list(ds["dataset_name"]) == ["Demo acquisitions", "Sandbox"]
-          and "dataset_id" in ds.columns and "dataset_type" in ds.columns)
-    lb = IO.list_batches(_FakeClient(), dataset="Demo acquisitions")
-    check("list_batches legacy fallback filters by workspace",
-          len(lb) == 1 and lb.iloc[0]["sample_batch_id"] == "BURO")
-finally:
-    IO._legacy_all_batches, IO._legacy_workspaces = _orig_batches, _orig_ws
-
-IO._patch_datasets_list_for_legacy_servers()     # idempotent + swallows NotFoundError
-IO._patch_datasets_list_for_legacy_servers()
-from mascope_sdk.resources.datasets import DatasetsResource as _DSR  # noqa: E402
-check("legacy datasets.list patch installed + idempotent",
-      getattr(_DSR.list, "_legacy_safe", False))
+# An SDK error propagates unmasked -- there is no legacy path to fall into.
+class _BoomSL:
+    def list(self, *, batch, dataset=None, drop_columns=None):
+        raise ValueError("case and flags cannot be set for compiled regex")
+class _BoomClient:
+    samples = _BoomSL()
+_boom = None
+try:
+    IO.fetch_batch_samples(_BoomClient(), "B", dataset="DS")
+except ValueError as e:
+    _boom = e
+check("fetch_batch_samples propagates the SDK error unmasked",
+      isinstance(_boom, ValueError) and "compiled regex" in str(_boom))
 
 
 # ---------- live smoke (opt-in) ----------

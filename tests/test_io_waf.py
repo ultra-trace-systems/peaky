@@ -35,18 +35,17 @@ def flaky():
 res = IO._with_waf_retry(flaky, tries=4, base_delay=0)
 check("retries a transient 521 twice then returns", res == "ok" and calls["n"] == 3, calls)
 
-# --- non-transient (404 legacy endpoint) re-raises immediately so the caller's
-#     per-sample legacy fallback still fires ---
+# --- non-transient (404 missing endpoint) re-raises immediately, unmasked ---
 calls2 = {"n": 0}
 def missing_endpoint():
     calls2["n"] += 1
-    raise ValueError("404 no /api/datasets on this legacy server")
+    raise ValueError("404 no such endpoint on this server")
 try:
     IO._with_waf_retry(missing_endpoint, tries=4, base_delay=0)
     ok = False
 except ValueError:
     ok = True
-check("non-transient 404 re-raises immediately (1 call, legacy fallthrough)",
+check("non-transient 404 re-raises immediately (1 call, no retry)",
       ok and calls2["n"] == 1, calls2)
 
 # --- persistent WAF challenge exhausts retries then raises ---
