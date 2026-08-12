@@ -4,7 +4,8 @@
 language and get reproducible peak assignments, figures, and reports from
 high-resolution CIMS mass-spec data — without writing notebook code.
 
-Peaky sits on top of **Mascope** (the data platform / database) and turns
+Peaky sits on top of [**Mascope**](https://github.com/ultra-trace-systems/mascope)
+(the open-source data platform / database) and turns
 post-processing into a conversation: you ask, [Claude Code](https://claude.com/claude-code)
 drives Peaky's deterministic pipeline, and the numbers come out the same every time.
 
@@ -13,6 +14,9 @@ Mascope   →  data platform   (the app + database; system of record)
 Peaky     →  analysis layer   (this toolbox; assignment, clustering, reports)
 Claude    →  the interface    (you drive Peaky by asking in plain language)
 ```
+
+*Peaky is part of the [Mascope ecosystem](https://github.com/ultra-trace-systems/mascope)
+— the SDK-powered, AI-driven power-user path alongside the Mascope web app.*
 
 ## Getting started (2 minutes)
 
