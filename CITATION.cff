@@ -15,10 +15,10 @@ authors:
   - given-names: Aleksei
     family-names: Shcherbinin
     email: aleksei.shcherbinin@karsa.fi
-    affiliation: Karsa Oy
+    affiliation: Ultra Trace Systems Oy
     orcid: "https://orcid.org/0009-0002-5128-5627"
-repository-code: "https://github.com/karsa-oy/peaky"
-url: "https://github.com/karsa-oy/peaky"
+repository-code: "https://github.com/ultra-trace-systems/peaky"
+url: "https://github.com/ultra-trace-systems/peaky"
 license: Apache-2.0
 version: 0.5.0
 date-released: "2026-06-30"

@@ -1,5 +1,5 @@
 Peaky
-Copyright 2026 Karsa Oy
+Copyright 2026 Ultra Trace Systems Oy
 
 Developed by Aleksei Scherbinin.
 
@@ -8,5 +8,5 @@ You may obtain a copy of the License in the LICENSE file in this repository or a
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-Peaky reads data from Mascope, the mass-spectrometry data platform by Karsa Oy,
-via the separately-licensed `mascope-sdk` package.
+Peaky reads data from Mascope, the mass-spectrometry data platform by
+Ultra Trace Systems Oy, via the separately-licensed `mascope-sdk` package.
