@@ -14,6 +14,21 @@ Peaky     →  analysis layer   (this toolbox; assignment, clustering, reports)
 Claude    →  the interface    (you drive Peaky by asking in plain language)
 ```
 
+## Getting started (2 minutes)
+
+Using [Claude Code](https://claude.com/claude-code) or another coding agent?
+Clone the repo, open your agent inside it, and paste:
+
+> *"Set up Peaky from this clone: install it, run `peaky setup`, install the
+> Claude Code skill (`peaky install-skill`), and tell me what to put in `.env`."*
+
+Restart your agent so the skill loads, then just ask:
+*"List my Mascope datasets"* → *"Assign formulas for `<your batch>` with the
+bromide reagent."*
+
+Prefer to do it by hand? Follow **[QUICKSTART.md](QUICKSTART.md)**, or the
+[Install](#install) section below.
+
 ## What it does
 
 - **Chemical-formula assignment** — multi-pass, isotope-pattern-aware peak → formula
