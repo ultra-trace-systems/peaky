@@ -36,7 +36,7 @@ the heavy scoring maths live in [`SCORING.md`](SCORING.md).
  │ single sample                      │ whole batch
  │ fetch_peaks(sample_id)             │ fetch_batch_samples (one row/sample, no peaks)
  │   get_peaks(matches=True)          │ fetch_batch_peaks → load_peaks(dataset,
- │   cache → ~/.mascope-assign-cache  │   escape_batch(batch))  [legacy per-sample fallback]
+ │   cache → ~/.mascope-assign-cache  │   literal_batch_pattern(batch))
  ▼                                    ▼
  raw peak table ──► detect_adducts ──► adduct list   ([M-H]⁻ fallback)
       │         ──► estimate_offset ──► seed ppm offset (median, |ppm|≤10)
@@ -55,7 +55,7 @@ the heavy scoring maths live in [`SCORING.md`](SCORING.md).
 - A **server + token** from a `.env` (or process env): `MASCOPE_URL`,
   `MASCOPE_ACCESS_TOKEN`, optional `MASCOPE_WORKSPACE`.
 - A **`sample_id`** (single-sample assignment) or a **`(dataset, batch)`** pair
-  (batch time series). `dataset` maps to a *workspace name* on a legacy server.
+  (batch time series).
 - For scoring: a list of candidate **neutral formulas** and resolved
   **`mechanism_ids`** (from `resolve_mechanism_ids`).
 
@@ -69,9 +69,7 @@ the heavy scoring maths live in [`SCORING.md`](SCORING.md).
    `~/.claude/skills/mascope-sdk/.env`) → a cwd walk-up (`find_dotenv`) →
    `CANONICAL_ENV`. The file is read from **disk every time** — the long-running
    MCP server holds a stale in-memory token and 401s, so the live file wins.
-   Multi-workspace servers require `--workspace`; a legacy build (no
-   `/api/datasets`) is tolerated by `_patch_datasets_list_for_legacy_servers`
-   (the constructor's `datasets.list()` health-check 404 is degraded to `None`).
+   Multi-workspace servers require `--workspace`.
 
 2. **Fetch peaks — single sample** (`fetch_peaks`). `get_peaks(matches=True)`
    pulls the raw peak table *with Mascope's own matches flattened in* (so it is
@@ -80,13 +78,10 @@ the heavy scoring maths live in [`SCORING.md`](SCORING.md).
    write fails); `use_cache=True` reuses it.
 
 3. **Fetch time series — whole batch** (`fetch_batch_peaks`). Uses the SDK
-   `load_peaks(dataset=, batches=escape_batch(batch), confirm_above=None)` — one
-   row per (sample × peak), enough for the TS/cluster layer. `confirm_above=None`
-   never prompts (batches exceed 100 samples). On a legacy server (no
-   `/api/datasets`) it falls back to `_legacy_load_batch_peaks`, which resolves
-   the `sample_batch_id` from the raw `sample/batches` endpoint then runs the
-   SDK's own per-sample fetch loop (`matches=False` there — the TS only needs
-   mz/height/datetime/peak-id). `fetch_batch_samples` returns one row per sample
+   `load_peaks(dataset=, batches=literal_batch_pattern(batch), confirm_above=None)`
+   — one row per (sample × peak), enough for the TS/cluster layer.
+   `confirm_above=None` never prompts (batches exceed 100 samples).
+   `fetch_batch_samples` returns one row per sample
    (id, name, `datetime_utc`, `tic`, polarity) **without** loading peaks — enough
    for representative-sample selection.
 
@@ -218,11 +213,11 @@ All in `peaky/io/io_mascope.py`.
 | function | role |
 | --- | --- |
 | `connect` | build a `MascopeClient` from the resolved `.env` (precedence above) |
-| `_find_env` / `_patch_datasets_list_for_legacy_servers` | credential search; legacy health-check tolerance |
-| `list_workspaces` / `list_datasets` / `list_batches` | discovery (with legacy fallbacks) |
-| `resolve_batch_id` / `escape_batch` | legacy batch-name → id; regex-safe name escaping |
+| `_find_env` | credential search (precedence above) |
+| `list_workspaces` / `list_datasets` / `list_batches` | discovery |
+| `escape_batch` / `literal_batch_pattern` | literal batch-name matching (the SDK's two filter contracts) |
 | `fetch_peaks` | single-sample raw peaks (+ matches), cached parquet |
-| `fetch_batch_peaks` / `_legacy_load_batch_peaks` | whole-batch peak time series (modern + legacy) |
+| `fetch_batch_peaks` | whole-batch peak time series |
 | `fetch_batch_samples` | per-sample table (no peaks) for sample selection |
 | `resolve_mechanism_ids` / `detect_adducts` | mechanism name↔id; infer adduct system |
 | `estimate_offset` | coarse median-ppm offset to seed pre-cal gates |

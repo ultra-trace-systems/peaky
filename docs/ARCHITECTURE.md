@@ -279,8 +279,8 @@ full per-artifact reference** (batch + single-sample, one line each).
 Grouped by responsibility (full table in [`SKILL.md`](../SKILL.md#module-map-peaky)):
 
 **I/O & scoring** — `io_mascope.py` (the only Mascope *read* I/O: peaks, cheminfo,
-parallel `match_compounds` + per-isotopologue parser, offset estimation; legacy
-workspace-server fallback), `curate.py` (the *write* counterpart — `CurationClient`:
+parallel `match_compounds` + per-isotopologue parser, offset estimation),
+`curate.py` (the *write* counterpart — `CurationClient`:
 create/rename/copy/move/delete of workspaces, datasets, batches, samples over the
 reverse-engineered Mascope write API; dry-run-safe, delete-gated, session-cookie auth;
 see [`DATA_CURATION.md`](DATA_CURATION.md)).

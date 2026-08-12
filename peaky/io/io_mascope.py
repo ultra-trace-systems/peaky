@@ -24,8 +24,8 @@ from pathlib import Path
 
 import pandas as pd
 
-__version__ = "0.3.0"  # + legacy workspace-server support (connect health-check
-#                          bypass, raw sample/batches resolution, list fallbacks)
+__version__ = "0.4.0"  # modern (datasets-based) servers only; split batch-name
+#                          filter contracts (escape_batch / literal_batch_pattern)
 
 # Credential .env search order. The long-running MCP server holds a STALE in-memory
 # token and 401s; the SDK reads the live file, so always load from disk.
@@ -107,36 +107,6 @@ def connect(env_path: str | None = None, workspace: str | None = None):
         raise
 
 
-def _patch_datasets_list_for_legacy_servers() -> None:
-    """Tolerate OLDER Mascope builds that predate the 'datasets' concept.
-
-    On a legacy server the top-level object is a WORKSPACE and there is no
-    ``/api/datasets`` endpoint, so ``DatasetsResource.list`` 404s. That is fatal
-    because ``MascopeClient.__init__`` calls ``datasets.list()`` as an early
-    health check -> the client can't even be constructed. Wrap the method so a
-    NotFoundError degrades to ``None``; the client then builds and the legacy
-    workspace/batch resolution below (``_legacy_*`` / ``resolve_batch_id``) uses
-    the raw endpoints that DO exist (``workspaces`` / ``sample/batches`` /
-    ``samples?sample_batch_id=``). No-op on a modern server (datasets.list works
-    normally). Idempotent."""
-    try:
-        from mascope_sdk.resources.datasets import DatasetsResource
-        from mascope_sdk.exceptions import NotFoundError
-    except Exception:
-        return
-    if getattr(DatasetsResource.list, "_legacy_safe", False):
-        return
-    _orig = DatasetsResource.list
-
-    def list(self):                       # noqa: A001  (mirror SDK method name)
-        try:
-            return _orig(self)
-        except NotFoundError:
-            return None
-    list._legacy_safe = True
-    DatasetsResource.list = list
-
-
 def escape_batch(name: str) -> str:
     """Escaped batch-name string for SDK filters that treat a plain string as a
     RAW case-insensitive regex (`samples.list(batch=)` / `resolve_id`): without
@@ -155,104 +125,6 @@ def literal_batch_pattern(name: str) -> "re.Pattern[str]":
     SDK's own string handling. The `samples.list(batch=)` filter is the
     opposite contract (rejects compiled patterns) — use `escape_batch` there."""
     return re.compile(re.escape(name), re.IGNORECASE)
-
-
-# ---------------------------------------------------------------------------
-# Legacy (workspace-based) server support
-# ---------------------------------------------------------------------------
-# Older Mascope builds expose `workspaces` + `sample/batches` + `samples` but NOT
-# `datasets`, and `sample/batches` IGNORES its dataset_id param (returns every
-# batch). These helpers hit those raw endpoints via the SDK's own http_get so the
-# pipeline works on both server generations. `dataset` in this package's public
-# API maps to a WORKSPACE name on a legacy server.
-def _legacy_get(client, path: str, **params) -> list[dict]:
-    from mascope_sdk._http import http_get
-    r = http_get(client.url, path, client.access_token,
-                 params=params or None, timeout=(15, 60))
-    return (r.json() or {}).get("data", []) or []
-
-
-def _legacy_workspaces(client) -> pd.DataFrame:
-    return pd.DataFrame(_legacy_get(client, "workspaces"))
-
-
-def _legacy_all_batches(client) -> pd.DataFrame:
-    """Every sample batch on a legacy server (the dataset_id filter is ignored).
-    Columns: workspace_id, sample_batch_name, sample_batch_id, polarity, status,
-    sample_batch_utc_created, ..."""
-    return pd.DataFrame(_legacy_get(client, "sample/batches"))
-
-
-def resolve_batch_id(client, batch: str, *, dataset: str | None = None) -> str:
-    """Legacy-server batch-name -> sample_batch_id. Exact case-insensitive name
-    match first, then substring; if `dataset` is given it is treated as a
-    WORKSPACE name and constrains the search. Raises with the candidate list on
-    no/ambiguous match (so a CLI user can disambiguate)."""
-    bdf = _legacy_all_batches(client)
-    if bdf is None or not len(bdf):
-        raise RuntimeError("no batches returned from /api/sample/batches")
-    if dataset:
-        ws = _legacy_workspaces(client)
-        wid = ws.loc[ws["workspace_name"].str.casefold() == dataset.casefold(),
-                     "workspace_id"]
-        if len(wid):
-            bdf = bdf[bdf["workspace_id"] == wid.iloc[0]]
-    names = bdf["sample_batch_name"].astype(str)
-    key = batch.casefold()
-    hit = bdf[names.str.casefold() == key]
-    if not len(hit):
-        hit = bdf[names.str.casefold().str.contains(re.escape(key))]
-    if len(hit) == 1:
-        return str(hit.iloc[0]["sample_batch_id"])
-    if not len(hit):
-        avail = ", ".join(sorted(names)[:30])
-        raise RuntimeError(f"no batch matching {batch!r}. Available (first 30): {avail}")
-    opts = "; ".join(f"{r.sample_batch_name!r} [{r.polarity}] ws={r.workspace_id}"
-                     for r in hit.itertuples())
-    raise RuntimeError(
-        f"{len(hit)} batches match {batch!r}; pass dataset=<workspace name> to "
-        f"disambiguate: {opts}")
-
-
-def _legacy_load_batch_peaks(client, batch: str, *, dataset: str | None = None,
-                             matches: bool = False, areas: bool = True,
-                             heights: bool = True, average: bool = True,
-                             max_workers: int = 8) -> pd.DataFrame | None:
-    """Legacy-server equivalent of `client.load_peaks(dataset, batches)` for ONE
-    batch: resolve the `sample_batch_id` from the raw `sample/batches` endpoint
-    (the modern loader's only break is its datasets-based batch resolution), then
-    run the SDK's own per-sample fetch+enrich loop. Produces the SAME column shape
-    as load_peaks (get_peaks columns + sample_batch_name/sample_item_name/
-    datetime_utc). `matches=False` by default: the cluster/TS layer keys formulas
-    off the merged ledger and only needs mz/height/datetime/sample_item_id from the
-    TS, so the match tree is skipped (far lighter over ~1000 samples)."""
-    from mascope_sdk._concurrent import run_concurrent
-    bid = resolve_batch_id(client, batch, dataset=dataset)
-    bdf = _legacy_all_batches(client)
-    nm = bdf.loc[bdf["sample_batch_id"] == bid, "sample_batch_name"]
-    batch_name = str(nm.iloc[0]) if len(nm) else batch
-    samples = client.samples._list_by_id(bid)
-    if samples is None or not len(samples):
-        return None
-
-    def _fetch(sample_row, batch_name):
-        peaks = client.samples.get_peaks(sample_row["sample_item_id"], matches=matches,
-                                         areas=areas, heights=heights, average=average)
-        if peaks is None or peaks.empty:
-            return None
-        peaks.insert(0, "sample_batch_name", batch_name)
-        peaks.insert(peaks.columns.get_loc("sample_item_id") + 1, "sample_item_name",
-                     sample_row["sample_item_name"])
-        if "datetime_utc" in sample_row.index:
-            peaks.insert(peaks.columns.get_loc("sample_item_name") + 1, "datetime_utc",
-                         sample_row["datetime_utc"])
-        return peaks
-
-    tasks = [(row, batch_name) for _, row in samples.iterrows()]
-    frames = run_concurrent(_fetch, tasks, max_workers=max_workers,
-                            desc="Loading peaks (legacy)", unit="sample")
-    frames = [f.dropna(axis=1, how="all") for f in frames if f is not None]
-    return pd.concat(frames, ignore_index=True) if frames else None
 
 
 def list_workspaces() -> pd.DataFrame:
@@ -277,73 +149,40 @@ def list_workspaces() -> pd.DataFrame:
 
 
 def list_datasets(client) -> pd.DataFrame:
-    """All datasets visible to the token. On a legacy server (no /api/datasets)
-    this returns the WORKSPACES, reshaped to the dataset column names so the rest
-    of the package/CLI is server-agnostic. Powers `list datasets` discovery."""
+    """All datasets visible to the token. Powers `list datasets` discovery."""
     ds = client.datasets.list()
-    if ds is not None and len(ds):
-        return ds
-    ws = _legacy_workspaces(client)
-    if ws is None or not len(ws):
-        raise RuntimeError("no datasets/workspaces returned (check MASCOPE_URL / token)")
-    return ws.rename(columns={"workspace_name": "dataset_name",
-                              "workspace_id": "dataset_id",
-                              "workspace_type": "dataset_type"})
+    if ds is None or not len(ds):
+        raise RuntimeError("no datasets returned (check MASCOPE_URL / token)")
+    return ds
 
 
 def list_batches(client, dataset: str | None = None) -> pd.DataFrame:
-    """Sample batches (optionally in one dataset/workspace). Columns include
-    `sample_batch_name` / `polarity` / `sample_batch_id` / `status`. Falls back to
-    the legacy `sample/batches` endpoint (filtered client-side by workspace name)
-    when the server has no `datasets` concept."""
-    try:
-        bs = client.batches.list(dataset=dataset)
-        if bs is not None and len(bs):
-            return bs
-    except Exception:
-        pass
-    bdf = _legacy_all_batches(client)
-    if bdf is None or not len(bdf):
-        raise RuntimeError("no batches returned from the server")
-    if dataset:
-        ws = _legacy_workspaces(client)
-        wid = ws.loc[ws["workspace_name"].str.casefold() == dataset.casefold(),
-                     "workspace_id"]
-        if len(wid):
-            bdf = bdf[bdf["workspace_id"] == wid.iloc[0]]
-        if not len(bdf):
-            raise RuntimeError(f"no batches for dataset/workspace {dataset!r}")
-    return bdf.reset_index(drop=True)
+    """Sample batches (optionally in one dataset). Columns include
+    `sample_batch_name` / `polarity` / `sample_batch_id` / `status`."""
+    bs = client.batches.list(dataset=dataset)
+    if bs is None or not len(bs):
+        raise RuntimeError(
+            f"no batches returned for dataset {dataset!r} (see `peaky list datasets`)")
+    return bs
 
 
 def fetch_batch_samples(client, batch: str, *, dataset: str | None = None,
                         drop_columns=None) -> pd.DataFrame:
     """Per-sample table for a batch (one row per sample). Carries `sample_item_id`,
     `sample_item_name`, `datetime_utc`, `tic`, `polarity`, ... — enough for
-    representative-sample selection WITHOUT loading every peak. Tries the modern
-    `samples.list` (name resolution via datasets) and, on a legacy server where
-    that resolution path 404s, resolves the `sample_batch_id` from the raw
-    `sample/batches` endpoint and lists by id. Both paths return the SAME
-    datetime-coerced frame (the modern single-batch path is itself `_list_by_id`)."""
-    try:
-        sl = client.samples.list(batch=escape_batch(batch), dataset=dataset,
-                                 drop_columns=[] if drop_columns is None else drop_columns)
-        if sl is not None and len(sl):
-            return sl
-    except Exception:
-        pass  # legacy server -> resolve by sample_batch_id below
-    bid = resolve_batch_id(client, batch, dataset=dataset)
-    sl = client.samples._list_by_id(bid)
+    representative-sample selection WITHOUT loading every peak."""
+    sl = client.samples.list(batch=escape_batch(batch), dataset=dataset,
+                             drop_columns=[] if drop_columns is None else drop_columns)
     if sl is None or not len(sl):
-        raise RuntimeError(f"no samples for batch {batch!r} (id {bid})")
+        raise RuntimeError(f"no samples for batch {batch!r} in dataset {dataset!r}")
     return sl
 
 
 # Cloudflare-WAF / origin-5xx / read-timeout signatures that CLEAR on retry. A
 # Mascope origin behind Cloudflare throws these under burst load (521/522 origin
 # down, 403 "Attention Required" WAF challenge, 429 rate-limit, gateway 5xx, read
-# timeouts). Distinct from a genuinely-missing endpoint (404 on a legacy server),
-# which must NOT be retried -- it falls through to the per-sample loader.
+# timeouts). Anything else (404, 422, auth, client bugs) must NOT be retried --
+# it re-raises immediately so the real failure surfaces.
 _TRANSIENT_SIGNS = ("403", "429", "500", "502", "503", "504", "521", "522",
                     "attention required", "timed out", "timeout",
                     "temporarily unavailable", "bad gateway")
@@ -357,7 +196,7 @@ def _is_transient(exc: Exception) -> bool:
 def _with_waf_retry(fn, *, tries: int = 4, base_delay: float = 2.0):
     """Call ``fn()``; on a transient WAF/5xx/timeout error back off (base_delay·2ⁿ:
     2s, 4s, 8s) and retry up to ``tries`` times. A NON-transient error re-raises
-    immediately so the legacy-server fallback in the caller still fires. Tests pass
+    immediately so the real failure surfaces unmasked. Tests pass
     ``base_delay=0`` to avoid real sleeps."""
     for attempt in range(tries):
         try:
@@ -384,19 +223,13 @@ def fetch_batch_peaks(client, dataset: str, batch: str, *, save_path: str | None
     # batches= must be a compiled literal pattern (literal_batch_pattern): a plain
     # string would be re-escaped by the SDK and a raw regex would misread meta-
     # characters (the ^ in '... ^Nitrate ...' or '(Ur+ CIMS)').
-    # confirm_above=None: never prompt (non-interactive; batches can exceed 100 samples).
-    # Bulk load is the live default path (local scoring means match_compounds is off
-    # by default); WAF-retry it so a burst 521/403 doesn't drop us onto the slow
-    # per-sample legacy loader (which then hangs over ~2000 samples).
-    try:
-        peaks = _with_waf_retry(
-            lambda: client.load_peaks(dataset=dataset,
-                                      batches=literal_batch_pattern(batch),
-                                      confirm_above=None))
-    except Exception:
-        peaks = None  # legacy server (no /api/datasets) or exhausted -> per-sample loader below
-    if peaks is None or len(peaks) == 0:
-        peaks = _legacy_load_batch_peaks(client, batch, dataset=dataset)
+    # confirm_above=None: never prompt (non-interactive; batches can exceed 100
+    # samples). WAF-retry so a burst 521/403 doesn't kill a long batch load;
+    # non-transient errors propagate unmasked.
+    peaks = _with_waf_retry(
+        lambda: client.load_peaks(dataset=dataset,
+                                  batches=literal_batch_pattern(batch),
+                                  confirm_above=None))
     if peaks is None or len(peaks) == 0:
         raise RuntimeError(f"no peaks for batch {batch!r} in dataset {dataset!r}")
     if save_path:
