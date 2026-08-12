@@ -418,6 +418,13 @@ the open quality work + lessons.
 
 ## Gotchas
 
+- **Keep `mascope-sdk` at the latest release** (`pip install -U mascope-sdk`, or
+  re-run `uv tool install` for a tool install). peaky's I/O layer tracks the
+  SDK's matching contracts — `load_peaks(batches=)` wants a compiled literal
+  pattern, `samples.list(batch=)` wants an escaped string used as a raw regex —
+  and version skew makes batch resolution silently match nothing, then fall
+  through to a legacy endpoint modern servers reject (HTTP 422). After an SDK
+  bump, `tests/test_io_mascope.py` pins both contracts.
 - `match_compounds` (plural); integer `mz_tolerance`; batched at 200, now scored
   concurrently (5 workers).
 - `cheminfo` is flaky/slow and OFF by default (`cfg.use_cheminfo`) — the local
