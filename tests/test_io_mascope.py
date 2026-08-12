@@ -115,10 +115,11 @@ finally:
     else:
         os.environ["PEAKY_LOCAL_SCORING"] = _prev_local
 
-# ---------- fetch_batch_peaks passes a compiled literal batch-name pattern -----
-# The SDK escapes plain strings itself but uses a compiled pattern as-is; a
-# pre-escaped STRING would be escaped twice and silently match nothing. The ^ in
-# a '^Nitrate' (15N) batch name must reach the SDK escaped inside a Pattern.
+# ---------- batch names reach the SDK RAW (unified literal contract) ----------
+# mascope-sdk >= 2026.8.12: a plain string is a case-insensitive LITERAL
+# substring on every name filter; only a compiled Pattern is a regex. Pre-
+# escaping a name would re-escape its backslashes into literals that match
+# nothing (surviving only via the SDK's deprecation shim).
 class _LP:
     seen = None
     def load_peaks(self, *, dataset, batches, **kwargs):   # **kwargs: tolerate confirm_above=
@@ -126,14 +127,9 @@ class _LP:
         return pd.DataFrame({"mz": [100.0], "height": [1.0], "sample_item_id": ["s"]})
 _name = "^Nitrate (synthetic) m/z 100-200"
 IO.fetch_batch_peaks(_LP(), "DS", _name)
-check("fetch_batch_peaks passes a compiled, escaped batch-name pattern",
-      isinstance(_LP.seen, re.Pattern) and _LP.seen.pattern == re.escape(_name)
-      and (_LP.seen.flags & re.IGNORECASE), _LP.seen)
+check("fetch_batch_peaks passes the raw batch name",
+      _LP.seen == _name, _LP.seen)
 
-# ---------- fetch_batch_samples passes an escaped STRING batch name -----------
-# The opposite SDK contract: samples.list treats a plain string as a RAW regex
-# (so it must arrive escaped) and REJECTS compiled patterns (pandas cannot
-# combine case=False with a compiled pattern).
 class _SL:
     seen = None
     def list(self, *, batch, dataset=None, drop_columns=None):   # noqa: A001
@@ -142,33 +138,38 @@ class _SL:
 class _CS:
     samples = _SL()
 IO.fetch_batch_samples(_CS(), _name)
-check("fetch_batch_samples passes an escaped string batch name",
-      isinstance(_SL.seen, str) and _SL.seen == re.escape(_name), _SL.seen)
+check("fetch_batch_samples passes the raw batch name",
+      _SL.seen == _name, _SL.seen)
 
 # ---------- REAL-SDK contract tripwire (offline, no network) ------------------
-# Run peaky's helper outputs through the INSTALLED SDK's actual matching code
-# over synthetic frames. The mocked checks above pin what peaky sends; these pin
+# Run peaky's calls through the INSTALLED SDK's actual matching code over
+# synthetic frames. The mocked checks above pin what peaky sends; these pin
 # that the SDK still interprets it the intended way -- an SDK contract change
 # fails CI the day it lands instead of a live batch run weeks later. Importing
 # SDK internals is deliberate: a moved/renamed module is itself a drift signal.
+import warnings  # noqa: E402
 import mascope_sdk._loaders as _sdk_loaders                       # noqa: E402
 from mascope_sdk._resolve import resolve_id as _sdk_resolve_id    # noqa: E402
-# the mask helper is name_mask or _name_mask depending on the SDK build
+# the mask helper was public name_mask in older SDK builds
 _sdk_name_mask = getattr(_sdk_loaders, "name_mask", None) or _sdk_loaders._name_mask
 
 _tricky = "^Nitrate (Ur+ CIMS) m/z 40-600 acquisition"
 _names = pd.Series([_tricky, "Nitrate plain batch"])
-_mask = _sdk_name_mask(_names, IO.literal_batch_pattern(_tricky), exact=False)
-check("REAL SDK name_mask: literal_batch_pattern matches its batch literally",
-      list(_mask) == [True, False], list(_mask))
-
-_items = pd.DataFrame({"sample_batch_id": ["B1", "B2"],
-                       "sample_batch_name": [_tricky, "Nitrate plain batch"]})
-_rid = _sdk_resolve_id(IO.escape_batch(_tricky), _items,
-                       id_column="sample_batch_id",
-                       name_column="sample_batch_name", entity_label="batch")
-check("REAL SDK resolve_id: escape_batch resolves a metacharacter-laden name",
-      _rid == "B1", _rid)
+with warnings.catch_warnings():
+    warnings.simplefilter("error")     # a DeprecationWarning here = contract drift
+    _mask = _sdk_name_mask(_names, _tricky, exact=False)
+    check("REAL SDK name mask: a raw metacharacter-laden name matches literally",
+          list(_mask) == [True, False], list(_mask))
+    _items = pd.DataFrame({"sample_batch_id": ["B1", "B2"],
+                           "sample_batch_name": [_tricky, "Nitrate plain batch"]})
+    _rid = _sdk_resolve_id(_tricky, _items, id_column="sample_batch_id",
+                           name_column="sample_batch_name", entity_label="batch")
+    check("REAL SDK resolve_id: a raw name resolves without a deprecation shim",
+          _rid == "B1", _rid)
+    _re_mask = _sdk_name_mask(_names, re.compile("nitrate plain", re.IGNORECASE),
+                              exact=False)
+    check("REAL SDK name mask: a compiled pattern stays a regex (pool path)",
+          list(_re_mask) == [False, True], list(_re_mask))
 
 # ---------- flatten_match_tree re-anchors a 100%-labelled (^N) reagent ----------
 # The 15N nitrate adduct: server tags the all-light 14N form as the M0 base (no

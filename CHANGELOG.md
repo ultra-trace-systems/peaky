@@ -29,18 +29,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed (batch-name resolution vs the current mascope-sdk)
 - **`peaky batch` matched no batch on current SDKs and died on a legacy-endpoint
-  422** (`io/io_mascope.py`). The SDK resolves its two batch filters with OPPOSITE
-  conventions — `load_peaks(batches=)` escapes a plain string itself (literal
-  substring; only a compiled pattern is a regex), `samples.list(batch=)` uses a
-  plain string as a RAW regex and rejects compiled patterns — so the previous
-  one-size `re.escape()`d string was escaped twice by `load_peaks`, silently
-  matched nothing, and every batch run fell through to the legacy
-  `/api/sample/batches` fallback, which modern servers reject (dataset_id
-  required). `escape_batch()` (escaped string) now feeds `samples.list`;
-  the new `literal_batch_pattern()` (compiled, IGNORECASE) feeds `load_peaks`;
-  `fetch_pooled_peaks` compiles its user regex un-escaped. Both contracts are
-  pinned by offline regression tests, and `mascope-sdk>=2026.7.7` is the floor
-  they are written against — keep the SDK at the latest release (SKILL.md gotcha).
+  422** (`io/io_mascope.py`). SDKs through 2026.7.7 resolved their two batch
+  filters with OPPOSITE conventions — `load_peaks(batches=)` escaped a plain
+  string itself (literal substring; only a compiled pattern was a regex), while
+  `samples.list(batch=)` used a plain string as a RAW regex and crashed on
+  compiled patterns — so the previous one-size `re.escape()`d string was escaped
+  twice by `load_peaks`, silently matched nothing, and every batch run fell
+  through to the legacy `/api/sample/batches` fallback, which modern servers
+  reject (dataset_id required). **mascope-sdk 2026.8.12 unified the contract**
+  (a plain string is a case-insensitive literal substring on every name filter;
+  only a compiled `re.Pattern` is a regex), so batch names are now passed RAW —
+  the interim `escape_batch()` / `literal_batch_pattern()` split introduced on
+  this branch is gone again; `fetch_pooled_peaks` still compiles its user regex
+  un-escaped. The contract is pinned by a real-SDK offline tripwire (which also
+  fails on the SDK's deprecation shim), and `mascope-sdk>=2026.8.12` is the
+  floor — keep the SDK at the latest release (SKILL.md gotcha).
 
 ### Added
 - **`_batch_ts.parquet` stamps every KNOWN ion, analyte or not** (`batch/timeseries.py`

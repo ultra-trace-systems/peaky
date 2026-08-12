@@ -24,12 +24,11 @@ classifiers = [
 ]
 
 dependencies = [
-    # Keep at the LATEST release. peaky/io tracks the SDK's batch-name filter
-    # contracts (load_peaks takes a compiled literal pattern; samples.list takes
-    # an escaped string used as a raw regex) -- 2026.7.7 is the floor those
-    # contracts are written against. When the SDK moves, upgrade and run
-    # tests/test_io_mascope.py rather than pinning back.
-    "mascope-sdk>=2026.7.7",
+    # Keep at the LATEST release. peaky/io tracks the SDK's unified name-matching
+    # contract (raw names match as literal substrings; only a compiled re.Pattern
+    # is a regex) -- 2026.8.12 is the release that unified it. When the SDK moves,
+    # upgrade and run tests/test_io_mascope.py rather than pinning back.
+    "mascope-sdk>=2026.8.12",
     # In-process scoring backend, now the DEFAULT (PEAKY_LOCAL_SCORING=0 falls back
     # to the network match_compounds path). >=2026.6.25 carries the 15N-labelled
     # custom-element isotope prediction. See docs/MASCOPE_TOOLS_INTEGRATION.md.
