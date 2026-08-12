@@ -145,6 +145,31 @@ IO.fetch_batch_samples(_CS(), _name)
 check("fetch_batch_samples passes an escaped string batch name",
       isinstance(_SL.seen, str) and _SL.seen == re.escape(_name), _SL.seen)
 
+# ---------- REAL-SDK contract tripwire (offline, no network) ------------------
+# Run peaky's helper outputs through the INSTALLED SDK's actual matching code
+# over synthetic frames. The mocked checks above pin what peaky sends; these pin
+# that the SDK still interprets it the intended way -- an SDK contract change
+# fails CI the day it lands instead of a live batch run weeks later. Importing
+# SDK internals is deliberate: a moved/renamed module is itself a drift signal.
+import mascope_sdk._loaders as _sdk_loaders                       # noqa: E402
+from mascope_sdk._resolve import resolve_id as _sdk_resolve_id    # noqa: E402
+# the mask helper is name_mask or _name_mask depending on the SDK build
+_sdk_name_mask = getattr(_sdk_loaders, "name_mask", None) or _sdk_loaders._name_mask
+
+_tricky = "^Nitrate (Ur+ CIMS) m/z 40-600 acquisition"
+_names = pd.Series([_tricky, "Nitrate plain batch"])
+_mask = _sdk_name_mask(_names, IO.literal_batch_pattern(_tricky), exact=False)
+check("REAL SDK name_mask: literal_batch_pattern matches its batch literally",
+      list(_mask) == [True, False], list(_mask))
+
+_items = pd.DataFrame({"sample_batch_id": ["B1", "B2"],
+                       "sample_batch_name": [_tricky, "Nitrate plain batch"]})
+_rid = _sdk_resolve_id(IO.escape_batch(_tricky), _items,
+                       id_column="sample_batch_id",
+                       name_column="sample_batch_name", entity_label="batch")
+check("REAL SDK resolve_id: escape_batch resolves a metacharacter-laden name",
+      _rid == "B1", _rid)
+
 # ---------- flatten_match_tree re-anchors a 100%-labelled (^N) reagent ----------
 # The 15N nitrate adduct: server tags the all-light 14N form as the M0 base (no
 # signal) and the single-15N line (the REAL monoisotopic ion) as a '15N' child.
