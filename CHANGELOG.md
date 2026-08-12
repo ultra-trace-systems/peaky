@@ -6,6 +6,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — report refactor
 
+### Fixed (batch-name resolution vs the current mascope-sdk)
+- **`peaky batch` matched no batch on current SDKs and died on a legacy-endpoint
+  422** (`io/io_mascope.py`). The SDK resolves its two batch filters with OPPOSITE
+  conventions — `load_peaks(batches=)` escapes a plain string itself (literal
+  substring; only a compiled pattern is a regex), `samples.list(batch=)` uses a
+  plain string as a RAW regex and rejects compiled patterns — so the previous
+  one-size `re.escape()`d string was escaped twice by `load_peaks`, silently
+  matched nothing, and every batch run fell through to the legacy
+  `/api/sample/batches` fallback, which modern servers reject (dataset_id
+  required). `escape_batch()` (escaped string) now feeds `samples.list`;
+  the new `literal_batch_pattern()` (compiled, IGNORECASE) feeds `load_peaks`;
+  `fetch_pooled_peaks` compiles its user regex un-escaped. Both contracts are
+  pinned by offline regression tests, and `mascope-sdk>=2026.7.7` is the floor
+  they are written against — keep the SDK at the latest release (SKILL.md gotcha).
+
 ### Added
 - **`_batch_ts.parquet` stamps every KNOWN ion, analyte or not** (`batch/timeseries.py`
   `identified_rows`/`stamping_frame`, `batch/assign_batch.py`). Three new columns:
