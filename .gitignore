@@ -24,6 +24,11 @@ __pycache__/
 checkpoints/
 *_assignments.xlsx
 *_ledger.csv
-*_gka.html
+*_gka*.html
 *_manifest.json
 *_summary.md
+# figure / report / table exports at the repo root (runs belong in output/)
+/*.png
+/*.pdf
+/*.csv
+/*.xlsx
