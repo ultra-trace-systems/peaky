@@ -98,9 +98,11 @@ check("summary has tier rows", (ss["section"] == "Tiers").any())
 check("summary has sample id", (ss["value"] == "TEST").any())
 
 # excel write (needs openpyxl)
+import tempfile  # noqa: E402
+_TMP = Path(tempfile.gettempdir())
 try:
     import openpyxl  # noqa: F401
-    out = Path("/tmp/_report_test.xlsx")
+    out = _TMP / "_report_test.xlsx"
     R.write_excel(led, out, "ambient-air")
     check("excel written", out.exists() and out.stat().st_size > 0)
     out.unlink(missing_ok=True)
@@ -112,7 +114,7 @@ from peaky import tiers as T  # noqa: E402
 T.apply_tiers(led)
 result = {"ledger": led, "stats": L.stats(led), "sample_id": "TEST",
           "context": "ambient-air", "prescan": {"has_Br": False}, "problems": []}
-mdp = R.write_markdown(result, "/tmp/_report_test.md")
+mdp = R.write_markdown(result, str(_TMP / "_report_test.md"))
 md = mdp.read_text()
 check("markdown has top assignments", "C10H16O4" in md)
 check("markdown reports signal explained", "Signal explained" in md)
