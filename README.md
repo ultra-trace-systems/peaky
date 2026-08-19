@@ -244,4 +244,4 @@ button) or the archived Zenodo release:
 
 **Mascope** has its own DOI:
 
-> Mascope at Zenodo: https://zenodo.org/records/21037635
+> Mascope at Zenodo: https://doi.org/10.5281/zenodo.21037634
