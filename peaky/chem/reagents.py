@@ -84,7 +84,7 @@ _POSITIVE_REAGENTS = {
 
 # EasyIC⁺ source ions -- the Orbitrap's internal-calibration (EASY-IC)
 # fluoranthene cation beam used as a LOW-PRESSURE charge-transfer reagent
-# (KORBI2 EasyIC+ batches, 2026). Three ion classes, all pure source -- no
+# (2026 EasyIC+ acquisition batches). Three ion classes, all pure source -- no
 # analyte atoms -- so they must be LABELLED, not left red in the residual:
 #   * the fluoranthene ladder: C16H10+. itself (202.0776, the reagent ion;
 #     server 'test compound'), its H-loss fragment C16H9+, protonated C16H11+

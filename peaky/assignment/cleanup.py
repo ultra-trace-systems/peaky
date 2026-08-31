@@ -68,7 +68,7 @@ def flag_ringing_artifacts(ledger: pd.DataFrame, *, factor: float = RING_FACTOR,
     was measured and it is catastrophic. The static evidence available at this
     point -- Δm/z, satellite fraction, brightness ratio -- CANNOT distinguish a
     sidelobe from a real ion that merely sits beside a bright peak. Over the
-    TC2026 campaign the rule "displace an unlocked, uncorroborated M0 within dmz of
+    2026 field campaign the rule "displace an unlocked, uncorroborated M0 within dmz of
     a >=factor x parent" selects 74 commits across 30 runs, and scoring every one
     of them against the time-series oracle (a sidelobe holds a ~constant ratio to
     its parent; ratio-cv < 0.06) gives **0/53 correct, 51 false positives** --
@@ -744,7 +744,7 @@ def annotate_easyic_ambiguity(ledger: pd.DataFrame, *, ts_peaks=None,
                               ts_r_min: float = 0.9, log=print) -> dict:
     """EasyIC⁺ fragmentation ambiguity (easyic context only). A low-pressure
     charge-transfer source FRAGMENTS, so three MS1-irreducible readings recur
-    (all three observed on the 2026-08-31 KORBI2 gin run):
+    (all three observed on the 2026-08-31 gin headspace run):
 
       1. A CnH2n "[M+H]+" commit (the alkene reading) is the SAME ion as an
          alcohol's in-source dehydration [CnH2n+2O + H - H2O]+. When that

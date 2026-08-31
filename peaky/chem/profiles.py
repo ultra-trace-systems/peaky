@@ -143,7 +143,7 @@ IODIDE = ReagentProfile(
 
 # EasyIC⁺ -- the Orbitrap's internal-calibration (EASY-IC) fluoranthene cation
 # beam used as a LOW-PRESSURE, mildly fragmenting charge-transfer CI source
-# (KORBI2 EasyIC+ batches, 2026). Three ionization channels:
+# (2026 EasyIC+ acquisition batches). Three ionization channels:
 #   [M]+.   charge transfer -- aromatics keep the intact skeleton as RADICAL
 #           molecular cations (server mechanism '+': toluene 92.0621 and the
 #           C16H10+. reagent ion itself are server-matched on the 2026-02-26
