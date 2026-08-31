@@ -179,7 +179,7 @@ def _stage_reagent_post(st):
 def _stage_timeseries(st):
     """Time-resolved disposition when a batch TS is supplied (runs last)."""
     ts_reagent_mzs = None
-    if st.reagent in reagents._POSITIVE_REAGENTS:
+    if st.reagent in reagents._POSITIVE_REAGENTS or st.reagent == "EasyIC":
         ts_reagent_mzs = [m for (_l, m, _f) in reagents.build_library(st.reagent)]
     return timeseries.apply_timeseries(
         st.led, st.ts_peaks, reagent_mzs=ts_reagent_mzs, log=st.log)

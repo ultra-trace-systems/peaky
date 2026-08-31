@@ -310,6 +310,21 @@ check("iso-reagent: bright analyte-on-top (5M cps at the ¹⁸O mass) NOT stolen
       L.role_of(iled, "d18o_analyte"))
 check("iso-reagent: count", out_iso["iso_reagent"] == 2, out_iso)
 
+# --- EasyIC⁺ source-ion library ----------------------------------------------
+easy = RG.build_library("EasyIC")
+check("EasyIC: fluoranthene C16H10+. @202.0777 labelled",
+      any("C16H10]+." in l for l in near(easy, 202.0777)), near(easy, 202.0777))
+check("EasyIC: N3+ air-plasma ion @42.0087", bool(near(easy, 42.0087)))
+check("EasyIC: NO2+ air-plasma ion @45.9924", bool(near(easy, 45.9924)))
+check("EasyIC: urea crossover [urea+H]+ @61.0396 merged in",
+      bool(near(easy, 61.0396)))
+check("EasyIC: urea-dimer crossover @121.0720 merged in",
+      bool(near(easy, 121.0720)))
+check("EasyIC: every library ion is a cation",
+      all(f.endswith("+") for _l, _m, f in easy))
+check("reagent_for_adducts: the [M]+. channel keys the EasyIC library",
+      RG.reagent_for_adducts(["[M]+.", "[M-H]+", "[M+H]+"]) == "EasyIC")
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

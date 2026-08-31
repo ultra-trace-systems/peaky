@@ -141,6 +141,18 @@ ADDUCT_SHIFTS: dict[str, float] = {
     # positive-mode source: [M + (CH4N2O) + H]+ = M + urea + proton (server
     # mechanism '+(CH4N2O)H+'). Shift = C + 5H + 2N + O - e  (= 61.0396).
     "[M+(CH4N2O)H]+": M["C"] + 5 * M["H"] + 2 * M["N"] + M["O"] - M_E,
+    # EasyIC⁺ (fluoranthene-cation charge transfer, low pressure) channels:
+    #   [M]+.   molecular RADICAL cation (server mechanism '+') -- charge
+    #           transfer keeps aromatics intact (benzene 78.0464, toluene
+    #           92.0621); the positive twin of the [M]-. above
+    #   [M-H]+  HYDRIDE abstraction: ion = M - H⁻ (alcohols/alkanes -- ethanol's
+    #           ONLY channel, C2H5O+ @45.0335). NO server mechanism (the
+    #           [M-H+I2]- ruling: deliberately absent from ADDUCT_TO_MECH, a
+    #           local-scoring channel). Writing the ion as [M-H]+ of the intact
+    #           molecule keeps the NEUTRAL closed-shell, so the integer-DBE
+    #           gate holds ([M]+. of the M-H radical is the same ion, blocked).
+    "[M]+.": -M_E,
+    "[M-H]+": -(M["H"]) - M_E,
 }
 
 

@@ -167,6 +167,22 @@ check("neutral Br hits cap 0.20", C.complexity_penalty("C10H15BrO4") == 0.20,
 check("penalty monotone: CHON < CHOS",
       C.complexity_penalty("C5H10NO3") < C.complexity_penalty("C5H10O3S"))
 
+# --- EasyIC⁺ channels: molecular cation + hydride abstraction ---
+check("[M]+. of benzene = 78.0464 (electron off, skeleton intact)",
+      approx(C.ion_mz("C6H6", "[M]+."), 78.04640, 5e-5))
+check("[M]+. of toluene = 92.0621",
+      approx(C.ion_mz("C7H8", "[M]+."), 92.06205, 5e-5))
+check("[M]+. of fluoranthene = 202.0777 (the EasyIC reagent ion)",
+      approx(C.ion_mz("C16H10", "[M]+."), 202.07770, 5e-5))
+check("[M-H]+ of ethanol = C2H5O+ @45.0335 (hydride abstraction)",
+      approx(C.ion_mz("C2H6O", "[M-H]+"), 45.03349, 5e-5))
+check("[M+H]+ and [M-H]+ sit exactly 2 H apart",
+      approx(C.ion_mz("C2H6O", "[M+H]+") - C.ion_mz("C2H6O", "[M-H]+"),
+             2 * C.M["H"], 1e-9))
+check("[M]+. is the two-electron mirror of [M]-.",
+      approx(C.ion_mz("C6H6", "[M]-.") - C.ion_mz("C6H6", "[M]+."),
+             2 * 0.000548579909, 1e-9))
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 
