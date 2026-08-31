@@ -712,6 +712,96 @@ def relabel_radical_anions(ledger: pd.DataFrame, *, log=print) -> dict:
     return {"radical_relabeled": n, "radical_corroborated": nc}
 
 
+def annotate_easyic_ambiguity(ledger: pd.DataFrame, *, log=print) -> dict:
+    """EasyIC⁺ fragmentation ambiguity (easyic context only). A low-pressure
+    charge-transfer source FRAGMENTS, so three MS1-irreducible readings recur
+    (all three observed on the 2026-08-31 KORBI2 gin run):
+
+      1. A CnH2n "[M+H]+" commit (the alkene reading) is the SAME ion as an
+         alcohol's in-source dehydration [CnH2n+2O + H - H2O]+. When that
+         alcohol is independently committed on its own hydride channel [M-H]+
+         (its ion sits exactly +O away), the dehydration reading is
+         corroborated -> RELABEL onto the alcohol (the radical-anion ruling:
+         stays a visible Candidate). Uncorroborated -> keep the alkene,
+         append the ambiguity note. (Gin: C4H8/C5H10 [M+H]+ were dehydrated
+         butanol/amyl alcohol -- the C4H9O+/C5H11O+ partners were present.)
+      2. Any heteroatom-free CxHyOz "[M+H]+" is ion-identical to
+         [CxH(y+2)Oz - H]+: protonated CARBONYL vs hydride-abstracted ALCOHOL
+         (59.049 = acetone AND propanol, both real in the gin). Commentary
+         only -- MS1 cannot split them, and both may contribute.
+      3. A pure-hydrocarbon cation with DBE >= 2 may be a FRAGMENT of a larger
+         analyte (monoterpenes fragment; C7H9+ etc.), not the intact neutral.
+         Commentary only.
+
+    Locked rows are skipped (the pass-0 ethanol hydride lock already carries
+    its own observation-based commentary)."""
+    if "neutral_formula" not in ledger.columns or "adduct" not in ledger.columns:
+        return {"easyic_dehydration": 0, "easyic_dual": 0, "easyic_fragment": 0}
+    out = {"easyic_dehydration": 0, "easyic_dual": 0, "easyic_fragment": 0}
+    # alcohols committed on the hydride channel corroborate a dehydration ion
+    alcohols = {str(ledger.at[j, "neutral_formula"] or "")
+                for j in ledger.index
+                if str(ledger.at[j, "adduct"]) == "[M-H]+"
+                and str(ledger.at[j, "role"]) == L.ROLE_M0}
+    target = (ledger.index[ledger["role"] == L.ROLE_M0]
+              if "role" in ledger.columns else ledger.index)
+    for i in target:
+        if "locked" in ledger.columns and bool(ledger.at[i, "locked"]):
+            continue
+        add = str(ledger.at[i, "adduct"])
+        nf = str(ledger.at[i, "neutral_formula"] or "")
+        if not nf or nf == "nan":
+            continue
+        cnt = C.parse_formula(nf)
+        hetero = sum(cnt.get(e, 0)
+                     for e in ("N", "S", "P", "F", "Cl", "Br", "I", "Si"))
+        nC, nH, nO = cnt.get("C", 0), cnt.get("H", 0), cnt.get("O", 0)
+        note = None
+        if add == "[M+H]+" and hetero == 0 and nO == 0 and nC >= 3 \
+                and nH == 2 * nC:
+            alc = C.format_formula({"C": nC, "H": nH + 2, "O": 1})
+            if alc in alcohols:
+                ledger.at[i, "neutral_formula"] = alc
+                ledger.at[i, "adduct"] = "[M+H-H2O]+"
+                if "dbe" in ledger.columns:
+                    ledger.at[i, "dbe"] = C.dbe(alc)
+                if str(ledger.at[i, "tier"]) == "Assigned":
+                    ledger.at[i, "tier"] = "Candidate"
+                if "confidence" in ledger.columns:
+                    ledger.at[i, "confidence"] = \
+                        "Good (easyic dehydration, corroborated)"
+                note = (f"in-source dehydration of {alc}: same ion as the {nf} "
+                        f"[M+H]+ alkene reading; corroborated by {alc} committed "
+                        "on its own hydride channel [M-H]+ (EasyIC fragments "
+                        "alcohols)")
+                out["easyic_dehydration"] += 1
+            else:
+                note = (f"EasyIC ambiguity: this ion is {nf} [M+H]+ (alkene) OR "
+                        f"an alcohol's in-source dehydration [{alc}+H-H2O]+ "
+                        f"(no corroborating {alc} [M-H]+ in this sample)")
+                out["easyic_dual"] += 1
+        elif add == "[M+H]+" and hetero == 0 and nO >= 1:
+            alc = C.format_formula({"C": nC, "H": nH + 2, "O": nO})
+            note = (f"EasyIC ambiguity: same ion is [{nf}+H]+ (carbonyl/ether) "
+                    f"and [{alc}-H]+ (alcohol via hydride abstraction) -- MS1 "
+                    "cannot distinguish; both may contribute")
+            out["easyic_dual"] += 1
+        elif add in ("[M+H]+", "[M]+.") and hetero == 0 and nO == 0 \
+                and C.dbe(cnt) >= 2:
+            note = (f"fragmenting source: {nf} may be a FRAGMENT of a larger "
+                    "analyte (monoterpenes/aromatics fragment under EasyIC), "
+                    "not the intact neutral")
+            out["easyic_fragment"] += 1
+        if note and "commentary" in ledger.columns:
+            prev = str(ledger.at[i, "commentary"] or "")
+            ledger.at[i, "commentary"] = \
+                (prev + "; " + note) if prev and prev != "nan" else note
+    log(f"[cleanup] easyic ambiguity: {out['easyic_dehydration']} dehydration "
+        f"relabels, {out['easyic_dual']} dual-reading notes, "
+        f"{out['easyic_fragment']} fragment notes")
+    return out
+
+
 # Positive-mode N-carrying reagent-cluster cations. A PURE HYDROCARBON has no
 # site to bind these (and would show [M+H]+ if it ionized at all), so the
 # cluster's N(/O) belongs to the ANALYTE: re-read as [M+H]+ of the N-heterocycle

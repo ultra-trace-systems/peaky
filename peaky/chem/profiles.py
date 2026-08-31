@@ -160,6 +160,13 @@ IODIDE = ReagentProfile(
 # urea crossover from the alternating uronium source) are labelled by
 # reagents.build_library("EasyIC"). Auto-detect: the server's bare '+' stamp
 # maps to [M]+.; Ur batches carry +(CH4N2O)H+ and resolve first (dict order).
+# FRAGMENTATION AMBIGUITY: because the source fragments, three readings are
+# MS1-irreducible (carbonyl [M+H]+ vs alcohol [M-H]+; alkene [M+H]+ vs alcohol
+# [M+H-H2O]+ dehydration; hydrocarbon cation vs fragment-of-larger-analyte).
+# cleanup.annotate_easyic_ambiguity (easyic context only) relabels
+# corroborated dehydrations and stamps the rest into commentary -- the
+# 2026-08-31 gin-run lessons (59.049 was acetone AND propanol; C4H8 [M+H]+
+# was dehydrated butanol, its C4H9O+ hydride partner present at x50).
 EASYIC = ReagentProfile(
     name="EasyIC",
     label="EasyIC+ CT",

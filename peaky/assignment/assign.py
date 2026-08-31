@@ -284,6 +284,13 @@ _STAGES = [
     _Stage("relabel_reagent_n",
            lambda st: cleanup.relabel_reagent_n_adducts(st.led, log=st.log),
            safe=False, store=False),
+    # EasyIC⁺ fragmentation ambiguity: relabel corroborated alcohol-dehydration
+    # ions ([CnH2n+H]+ -> [CnH2n+2O+H-H2O]+) and stamp the MS1-irreducible
+    # carbonyl-vs-alcohol / fragment-vs-intact dual readings into commentary.
+    _Stage("easyic_ambiguity",
+           lambda st: cleanup.annotate_easyic_ambiguity(st.led, log=st.log),
+           when=lambda st: getattr(st.profile, "label", "") == "easyic",
+           safe=False, store=False),
     # ¹⁵N-nitrate isobar arbitration: a covalent organonitrate [Y−H]- whose cluster
     # parent X = Y−HNO₃ is independently detected is really the chamber-¹⁴NO₃ cluster
     # [X+NO₃]- (exact isobar; ¹⁴NO₃ is off the labelled scoring grid). Tier preserved.

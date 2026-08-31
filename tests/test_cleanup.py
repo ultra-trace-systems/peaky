@@ -491,6 +491,52 @@ lednc2 = pd.DataFrame([
 check("nitrate: no corroborating parents -> no-op",
       CU.relabel_nitrate_clusters(lednc2, log=lambda *a: None) == {"nitrate_cluster_relabeled": 0})
 
+# ---- EasyIC fragmentation ambiguity (2026-08-31 gin-run lessons) ----
+lede = pd.DataFrame([
+    # "butene" [M+H]+ with its alcohol committed on the hydride channel -> relabel
+    dict(peak_id="butene", role="M0", neutral_formula="C4H8", adduct="[M+H]+",
+         tier="Assigned", confidence="Good", commentary="", ion_formula="C4H9+",
+         dbe=1.0, locked=False),
+    dict(peak_id="butanol", role="M0", neutral_formula="C4H10O", adduct="[M-H]+",
+         tier="Assigned", confidence="Good", commentary="", ion_formula="C4H9O+",
+         dbe=0.0, locked=False),
+    # "pentene" with NO alcohol partner -> ambiguity note only
+    dict(peak_id="pentene", role="M0", neutral_formula="C5H10", adduct="[M+H]+",
+         tier="Assigned", confidence="Good", commentary="", ion_formula="C5H11+",
+         dbe=1.0, locked=False),
+    # protonated acetone == hydride-abstracted propanol -> dual-reading note
+    dict(peak_id="acetone", role="M0", neutral_formula="C3H6O", adduct="[M+H]+",
+         tier="Assigned", confidence="High", commentary="", ion_formula="C3H7O+",
+         dbe=1.0, locked=False),
+    # aromatic hydrocarbon cation -> fragment note
+    dict(peak_id="c7h8", role="M0", neutral_formula="C7H8", adduct="[M+H]+",
+         tier="Assigned", confidence="Good", commentary="", ion_formula="C7H9+",
+         dbe=4.0, locked=False),
+    # pass-0 ethanol hydride lock -> untouched
+    dict(peak_id="etoh", role="M0", neutral_formula="C2H6O", adduct="[M-H]+",
+         tier="Assigned", confidence="Good", commentary="pass0", ion_formula="C2H5O+",
+         dbe=0.0, locked=True),
+])
+oute = CU.annotate_easyic_ambiguity(lede, log=lambda *a: None)
+check("easyic: corroborated alkene relabeled to alcohol dehydration",
+      lede.loc[lede.peak_id == "butene", "neutral_formula"].iloc[0] == "C4H10O"
+      and lede.loc[lede.peak_id == "butene", "adduct"].iloc[0] == "[M+H-H2O]+")
+check("easyic: relabeled dehydration is a visible Candidate",
+      lede.loc[lede.peak_id == "butene", "tier"].iloc[0] == "Candidate")
+check("easyic: uncorroborated alkene keeps its reading + gets the note",
+      lede.loc[lede.peak_id == "pentene", "neutral_formula"].iloc[0] == "C5H10"
+      and "C5H12O" in lede.loc[lede.peak_id == "pentene", "commentary"].iloc[0])
+check("easyic: carbonyl/alcohol dual reading stamped (C3H8O alternative)",
+      "C3H8O" in lede.loc[lede.peak_id == "acetone", "commentary"].iloc[0])
+check("easyic: DBE>=2 hydrocarbon flagged as possible fragment",
+      "FRAGMENT" in lede.loc[lede.peak_id == "c7h8", "commentary"].iloc[0])
+check("easyic: locked pass-0 hydride row untouched",
+      lede.loc[lede.peak_id == "etoh", "commentary"].iloc[0] == "pass0")
+check("easyic: counts", oute == {"easyic_dehydration": 1, "easyic_dual": 2,
+                                 "easyic_fragment": 1}, oute)
+check("easyic: [M+H-H2O]+ shift registered (butanol dehydration ion = 57.0699)",
+      abs(C.ion_mz("C4H10O", "[M+H-H2O]+") - 57.06988) < 5e-5)
+
 
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"

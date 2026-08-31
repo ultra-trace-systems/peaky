@@ -153,6 +153,12 @@ ADDUCT_SHIFTS: dict[str, float] = {
     #           gate holds ([M]+. of the M-H radical is the same ion, blocked).
     "[M]+.": -M_E,
     "[M-H]+": -(M["H"]) - M_E,
+    # in-source DEHYDRATION of an alcohol (protonate, lose water): ion =
+    # M + H - H2O. Same ion as the bare alkene's [M+H]+ -- an EasyIC
+    # fragmentation alias, so like [M-H]+ it has NO server mechanism; it is
+    # written by cleanup.annotate_easyic_ambiguity when the alcohol is
+    # corroborated on its own hydride channel, never enumerated directly.
+    "[M+H-H2O]+": -(M["H"]) - M["O"] - M_E,
 }
 
 
