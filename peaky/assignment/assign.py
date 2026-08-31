@@ -287,8 +287,12 @@ _STAGES = [
     # EasyIC⁺ fragmentation ambiguity: relabel corroborated alcohol-dehydration
     # ions ([CnH2n+H]+ -> [CnH2n+2O+H-H2O]+) and stamp the MS1-irreducible
     # carbonyl-vs-alcohol / fragment-vs-intact dual readings into commentary.
+    # With a batch TS, the dehydration pair (ion and its +O hydride partner)
+    # can ALSO be corroborated by time-correlation -- one spectrum cannot tell
+    # butene+MEK from dehydrated butanol, but the batch can.
     _Stage("easyic_ambiguity",
-           lambda st: cleanup.annotate_easyic_ambiguity(st.led, log=st.log),
+           lambda st: cleanup.annotate_easyic_ambiguity(
+               st.led, ts_peaks=st.ts_peaks, log=st.log),
            when=lambda st: getattr(st.profile, "label", "") == "easyic",
            safe=False, store=False),
     # ¹⁵N-nitrate isobar arbitration: a covalent organonitrate [Y−H]- whose cluster

@@ -537,6 +537,47 @@ check("easyic: counts", oute == {"easyic_dehydration": 1, "easyic_dual": 2,
 check("easyic: [M+H-H2O]+ shift registered (butanol dehydration ion = 57.0699)",
       abs(C.ion_mz("C4H10O", "[M+H-H2O]+") - 57.06988) < 5e-5)
 
+# ---- EasyIC time-series corroboration: the batch tells the pair apart ----
+# 8 samples; the butene ion (57.0699) and its +O hydride partner (73.0648)
+# step up TOGETHER at sample 5 (event pair); the pentene ion (71.0856) steps
+# up while its partner (87.0804) stays flat noise -> no corroboration.
+_rows = []
+for k in range(8):
+    ev = 1 if k >= 4 else 0
+    _rows += [
+        (f"s{k}", f"p57_{k}", 57.0699, 900 + ev * 9000 + 40 * k),
+        (f"s{k}", f"p73_{k}", 73.0648, 600 + ev * 26000 + 60 * k),
+        (f"s{k}", f"p71_{k}", 71.0856, 400 + ev * 2200 + 20 * k),
+        (f"s{k}", f"p87_{k}", 87.0804, 350 + 30 * ((k * 7) % 5)),
+    ]
+_ts = pd.DataFrame(_rows, columns=["sample_item_id", "peak_id", "mz", "height"])
+ledt = pd.DataFrame([
+    dict(peak_id="butene", mz=57.0699, role="M0", neutral_formula="C4H8",
+         adduct="[M+H]+", tier="Assigned", confidence="Good", commentary="",
+         ion_formula="C4H9+", dbe=1.0, locked=False),
+    dict(peak_id="mek", mz=73.0648, role="M0", neutral_formula="C4H8O",
+         adduct="[M+H]+", tier="Assigned", confidence="Good", commentary="",
+         ion_formula="C4H9O+", dbe=1.0, locked=False),
+    dict(peak_id="pentene", mz=71.0856, role="M0", neutral_formula="C5H10",
+         adduct="[M+H]+", tier="Assigned", confidence="Good", commentary="",
+         ion_formula="C5H11+", dbe=1.0, locked=False),
+])
+outt = CU.annotate_easyic_ambiguity(ledt, ts_peaks=_ts, log=lambda *a: None)
+check("easyic-ts: co-varying pair promotes the alkene to the alcohol dehydration",
+      ledt.loc[ledt.peak_id == "butene", "neutral_formula"].iloc[0] == "C4H10O"
+      and ledt.loc[ledt.peak_id == "butene", "adduct"].iloc[0] == "[M+H-H2O]+")
+check("easyic-ts: relabel commentary cites the time-correlation",
+      "time-correlation" in ledt.loc[ledt.peak_id == "butene", "commentary"].iloc[0])
+check("easyic-ts: the carbonyl commit on the partner mass keeps its reading",
+      ledt.loc[ledt.peak_id == "mek", "neutral_formula"].iloc[0] == "C4H8O")
+check("easyic-ts: ...but gains the alcohol-contribution evidence",
+      "C4H10O [M-H]+" in ledt.loc[ledt.peak_id == "mek", "commentary"].iloc[0])
+check("easyic-ts: non-correlated pair stays an ambiguity note",
+      ledt.loc[ledt.peak_id == "pentene", "neutral_formula"].iloc[0] == "C5H10"
+      and "C5H12O" in ledt.loc[ledt.peak_id == "pentene", "commentary"].iloc[0])
+check("easyic-ts: counts", outt["easyic_dehydration"] == 1
+      and outt["easyic_dual"] >= 2, outt)
+
 
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
