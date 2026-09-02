@@ -6,6 +6,55 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — 0.6.0 (report refactor + modern-server-only I/O)
 
+### Added
+- **`peaky publish` — upload a finished ledger into Mascope's peak-assignment run
+  ledger** (`io/publish.py`, `docs/PUBLISH.md`). This closes the loop peaky was
+  missing: a run stops being a local file and becomes a run in the same store the
+  in-app engine writes to, visible in the run selector, the peak inspector, the
+  batch Assignments overview and the verification loop — which is what makes the
+  two engines comparable on one sample. Implements the client half of Mascope's
+  run-import contract: chunked assembly sized by serialized bytes as well as row
+  count, a row-offset `chunk.index` and an `import_id` so a retried chunk is a
+  replay rather than a duplicate, and resume via `--import-id`.
+
+  Three parts of the translation are **not** field-for-field, and each is a place
+  a naive mapping is silently wrong:
+  - **Two tiers, and neither is a copy of the other.** peaky tiers mechanically
+    (window uniqueness, corroboration, degeneracy, O-count); Mascope tiers by
+    thresholding a row's *evidence* — fit weighted by the formula's chemical
+    plausibility — against the run's declared bands. The published row carries
+    both: `engine_tier` is peaky's verdict, on committed M0 rows only (null
+    elsewhere, and absence is not agreement), while `tier` is **not sent at
+    all** — it is a pure function of inputs the server already holds, so the
+    server derives it and the two implementations cannot drift apart at a band
+    edge. On a real ledger this preserved 195 disagreements that were
+    previously flattened away. `--dry-run` reports both distributions and the
+    disagreement count.
+  - **The intensity is instrument-determined**: heights for Orbitrap, areas for
+    TOF. It scales the sample's consensus vote in the batch view while the unit
+    label is derived separately, so the wrong one mis-weights the sample with
+    nothing able to detect it. `--intensity auto` reads the instrument and
+    refuses to guess when it cannot classify it.
+  - **Vocabularies differ where the shared lineage suggests they would not**:
+    peaky's `unexplained` role is Mascope's `unassigned`, and peaky's capitalized
+    tiers are not the server's spellings.
+
+  Synthetic de-blending sub-peaks are excluded (they exist in no Mascope peak
+  file), an `iso_child` publishes its owner's formula and `parent_peak_id` as the
+  owner reference, non-finite floats become nulls, and the reserved provenance
+  keys the server strips are dropped locally so the summary says so. Verified
+  end to end against a Mascope dev server: 1319 rows over two chunked requests,
+  every owner link resolved, the server's derived evidence written on exactly the
+  scored rows, no reserved key stored, and the batch fold-in run.
+
+  Cosmetic gap, reported by the command itself: `--dry-run`'s preview of the
+  tiers Mascope will derive needs
+  `mascope_tools.composition.heuristic_filter.formula_plausibility`, which is not
+  in the 2026.6.25 release the dependency resolves to. Without it the preview
+  assumes a plausibility of 1.0 and reads high for a formula the server weighs
+  down. Nothing is at risk — the tier is derived server-side and the preview is
+  not published. Upgrade `mascope-tools` once a release exports it.
+
 ### Removed (legacy workspace-server support)
 - **The legacy (workspace-based) server code paths are gone** (`io/io_mascope.py`):
   `_patch_datasets_list_for_legacy_servers` (no callers), the `_legacy_*` raw-endpoint

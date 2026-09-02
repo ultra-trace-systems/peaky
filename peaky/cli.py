@@ -9,6 +9,9 @@ Subcommands:
   pool           pool many same-chemistry batches (regex) into ONE unified ledger + per-group reports
   report         regenerate figures + PDF from an existing run folder (offline)
   gka            build the interactive rotating-GKA HTML from a ledger CSV (offline)
+  publish        upload a ledger into Mascope's peak-assignment run ledger, so a
+                 peaky run lands beside the in-app engine's (run selector, peak
+                 inspector, batch overview, verification loop)
   curate         organise data (write API): create/rename/copy/move workspaces,
                  datasets, batches, samples (--dry-run previews; deletes need --yes)
   mcp            serve the pipeline over MCP (ChatGPT / Claude Desktop / Cursor)
@@ -281,6 +284,141 @@ def cmd_gka(args) -> None:
     print(f"wrote {out}  ({len(pts)} points)")
 
 
+def cmd_publish(args) -> None:
+    """Publish a finished ledger into Mascope's peak-assignment run ledger.
+
+    The translation is the interesting half and it runs offline, so --dry-run
+    (with an explicit --intensity) is a complete check of everything except the
+    two rules that genuinely need the server: that every peak belongs to this
+    sample, and that no other run is in flight for it."""
+    import pandas as pd
+
+    from peaky.io import publish as P
+
+    led = pd.read_csv(args.ledger_csv)
+
+    sample_id = args.sample_id
+    if not sample_id:
+        ids = sorted({str(s) for s in led.get("sample_item_id", pd.Series(dtype=str))
+                      .dropna().unique()})
+        if len(ids) != 1:
+            sys.exit(
+                "Could not tell which sample this ledger belongs to "
+                f"({len(ids)} sample_item_id value(s) in the file). "
+                "An import targets exactly one sample -- pass --sample-id, or "
+                "publish a per-sample ledger rather than a merged one.")
+        sample_id = ids[0]
+
+    manifest = None
+    mpath = args.manifest
+    if mpath is None:
+        guess = Path(str(args.ledger_csv).replace("_ledger.csv", "_manifest.json"))
+        mpath = str(guess) if guess.exists() and guess != Path(args.ledger_csv) else None
+    if mpath:
+        # peaky writes the manifest with the stdlib encoder, which emits bare
+        # NaN; that is not valid JSON, so parse permissively and sanitize.
+        manifest = json.loads(Path(mpath).read_text(encoding="utf-8"),
+                              parse_constant=lambda _c: None)
+        print(f"[publish] config from {mpath}")
+
+    bands = P.normalize_bands({"assigned": args.assigned_band,
+                               "candidate": args.candidate_band})
+
+    client = None
+    mechanism_ids = None
+    if args.intensity in ("height", "area"):
+        intensity, kind = args.intensity, "declared"
+    else:
+        _require_creds()
+        from peaky.io import io_mascope
+        client = io_mascope.connect(workspace=args.workspace)
+        intensity, kind = P.intensity_column_for(client.samples.get(sample_id))
+    print(f"[publish] intensity column '{intensity}' ({kind})")
+
+    if args.resolve_mechanisms:
+        if client is None:
+            _require_creds()
+            from peaky.io import io_mascope
+            client = io_mascope.connect(workspace=args.workspace)
+        from peaky.io import io_mascope
+        adducts = sorted({str(a) for a in led.get("adduct", pd.Series(dtype=str))
+                          .dropna().unique()})
+        names = {io_mascope.ADDUCT_TO_MECH[a]: a
+                 for a in adducts if a in io_mascope.ADDUCT_TO_MECH}
+        by_name = io_mascope.resolve_mechanism_ids(client, list(names))
+        mechanism_ids = {names[n]: i for n, i in by_name.items()}
+        print(f"[publish] resolved {len(mechanism_ids)}/{len(adducts)} adduct(s) "
+              "to ionization-mechanism ids")
+
+    rows, summary = P.build_rows(led, intensity_column=intensity, bands=bands,
+                                 mechanism_ids=mechanism_ids)
+
+    print(f"\nsample     {sample_id}")
+    print(f"bands      assigned >= {bands['assigned']}, candidate >= {bands['candidate']}"
+          "  (evidence scale = fit x plausibility)")
+    print(f"rows       {summary['rows']} of {len(led)} ledger row(s)")
+    print(f"by role    {summary['by_role']}")
+    # peaky's own verdict is what gets published; Mascope's tier is derived
+    # server-side, so the second line is a preview of what will land, not input.
+    print(f"peaky tier {summary['by_engine_tier'] or '(peaky tiered no rows)'}")
+    print(f"mascope    {summary['by_predicted_tier']}  (predicted, derived server-side)")
+    if summary["engine_tier_disagreements"]:
+        print(f"disagree   {summary['engine_tier_disagreements']} row(s) where peaky's "
+              "tier differs from the one Mascope will derive -- the rows worth "
+              "comparing, filterable in the app with tier_disagrees")
+    for label, key in (("skipped synthetic", "dropped_synthetic"),
+                       ("skipped incomplete", "dropped_incomplete"),
+                       ("iso formulas inherited", "inherited_formulas")):
+        if summary[key]:
+            print(f"{label:<10} {summary[key]}")
+    if summary["unknown_roles"]:
+        print(f"UNKNOWN ROLES (skipped): {summary['unknown_roles']}")
+    if summary["reserved_provenance_dropped"]:
+        print("note       dropped reserved provenance key(s) "
+              f"{', '.join(summary['reserved_provenance_dropped'])} -- the server "
+              "presents those as its own judgement; peaky's numbers ride in "
+              "provenance.engine_provenance")
+    if not summary["exact_plausibility"]:
+        print(f"\nNote: {P.PLAUSIBILITY_UNAVAILABLE_NOTE}")
+
+    problems = P.validate_rows(rows)
+    if summary["oversized"]:
+        problems.append("value(s) longer than the column: "
+                        + ", ".join(summary["oversized"][:5]))
+    if problems:
+        print("\nThis ledger cannot be published as it stands:")
+        for p in problems:
+            print(f"  - {p}")
+        sys.exit(1)
+
+    calibration = P.build_calibration(manifest, note=args.calibration_note)
+    config = P.build_config(manifest)
+    version = args.engine_version or P.engine_version(manifest)
+
+    if args.dry_run:
+        print(f"\n[dry-run] nothing sent. engine_version {version}")
+        if args.out:
+            Path(args.out).write_text(json.dumps(
+                {"engine": P.ENGINE, "engine_version": version, "tier_bands": bands,
+                 "calibration": calibration, "config": config, "rows": rows},
+                indent=2, default=str), encoding="utf-8")
+            print(f"[dry-run] wrote the payload to {args.out}")
+        return
+
+    if client is None:
+        _require_creds()
+        from peaky.io import io_mascope
+        client = io_mascope.connect(workspace=args.workspace)
+
+    state = P.publish(client, sample_id, rows, tier_bands=bands,
+                      calibration=calibration, config=config, version=version,
+                      import_id=args.import_id, max_rows=args.max_rows)
+    print(f"\npublished run {state['peak_assignment_run_id']} "
+          f"({state['rows']} rows, {state['run_status']})")
+    print("It is now the sample's latest completed run: the app's run selector "
+          "shows it under the 'peaky' engine badge.")
+
+
 # --------------------------------------------------------------------------- #
 # parser + entry point
 # --------------------------------------------------------------------------- #
@@ -505,6 +643,46 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("-o", "--out", default=None)
     pg.add_argument("--ppm", type=float, default=2.0, help="mass accuracy for band width")
     pg.set_defaults(func=cmd_gka)
+
+    pp = sub.add_parser("publish",
+                        help="publish a ledger CSV into Mascope's peak-assignment "
+                             "run ledger (run selector / inspector / batch overview)")
+    pp.add_argument("ledger_csv", help="a per-sample ledger written by `peaky assign`")
+    pp.add_argument("--sample-id", default=None,
+                    help="target sample (default: the ledger's own sample_item_id)")
+    pp.add_argument("--manifest", default=None,
+                    help="run manifest to publish as the run config "
+                         "(default: the *_manifest.json beside the ledger)")
+    pp.add_argument("--intensity", default="auto", choices=("auto", "height", "area"),
+                    help="which intensity to publish. Mascope expects HEIGHTS for "
+                         "Orbitrap and AREAS for TOF, and the wrong one silently "
+                         "mis-weights this sample in the batch overview; 'auto' "
+                         "reads the instrument type off the sample (needs the "
+                         "server), so name it explicitly to translate offline.")
+    pp.add_argument("--assigned-band", type=float, default=0.75,
+                    help="evidence at or above which a row publishes as 'assigned' "
+                         "(default 0.75, the in-app engine's own band)")
+    pp.add_argument("--candidate-band", type=float, default=0.45,
+                    help="evidence at or above which a row publishes as 'candidate' "
+                         "(default 0.45, the in-app engine's own band)")
+    pp.add_argument("--resolve-mechanisms", action="store_true",
+                    help="resolve adduct notation to this deployment's ionization-"
+                         "mechanism ids (default: send null, which is allowed)")
+    pp.add_argument("--engine-version", default=None,
+                    help="version string to stamp on the run (default: peaky's own)")
+    pp.add_argument("--calibration-note", default=None,
+                    help="extra text for the run's calibration disclosure")
+    pp.add_argument("--import-id", default=None,
+                    help="idempotency key; re-use one to resume an interrupted "
+                         "upload instead of creating a second run")
+    pp.add_argument("--max-rows", type=int, default=1000,
+                    help="rows per request (default 1000; the server lowers it if "
+                         "the deployment caps tighter)")
+    pp.add_argument("--dry-run", action="store_true",
+                    help="translate and validate only -- send nothing")
+    pp.add_argument("-o", "--out", default=None,
+                    help="with --dry-run, write the payload here for inspection")
+    pp.set_defaults(func=cmd_publish)
 
     ps = sub.add_parser("setup", help="one-command workspace bootstrap "
                                       "(.env + output/ + verify; run once after install)")

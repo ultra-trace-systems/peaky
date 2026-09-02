@@ -178,6 +178,11 @@ peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|auto> \
 peaky batch  --batch "<your batch>" --dataset "<your workspace>" \
     --reagent <Br|Ur|NO3|NO3_15N|auto> --out-dir ~/peaky-output --jobs 6
 
+# publish a finished ledger back into Mascope's run ledger (run selector,
+# peak inspector, batch overview) — --dry-run translates and checks, sends nothing
+peaky publish output/<run>/<sample>_<stamp>_ledger.csv --dry-run
+peaky publish output/<run>/<sample>_<stamp>_ledger.csv
+
 # organise data — the write API (--dry-run previews, sends nothing; deletes need --yes)
 peaky curate tree --deep                                  # read the workspace/dataset/batch layout
 peaky curate new-dataset  --workspace "<ws>" --name "<name>"
@@ -190,6 +195,14 @@ mis-detects as negative). `--jobs/-j N` (or `PEAKY_JOBS`) assigns the selected
 samples across `N` worker processes — ~3.5× faster on multicore, output identical
 to a serial run; default is your physical-core count, `--jobs 1` is the serial
 path. `mascope-assign` is kept as an alias of `peaky`.
+`peaky publish` uploads a ledger into Mascope so a peaky run sits beside the
+in-app engine's own on the same sample. The row carries **two** tiers: peaky's
+own verdict (`engine_tier`) and Mascope's banding of the evidence (`tier`,
+derived server-side and never sent). Mascope tiers by threshold where peaky
+tiers mechanically, so the two disagree on real rows — which is the point, and
+the app can filter on it. Details and failure modes:
+**[docs/PUBLISH.md](docs/PUBLISH.md)**.
+
 Step-by-step walkthrough: **[QUICKSTART.md](QUICKSTART.md)**. Reagent depth, the
 module map, and chemistry rules: **[SKILL.md](SKILL.md)**.
 
