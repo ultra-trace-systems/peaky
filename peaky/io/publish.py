@@ -436,6 +436,56 @@ def _json_cell(value: Any) -> Any:
         return None
 
 
+#: peaky's own keys on an alternative entry, kept but moved aside so the entry
+#: reads as Mascope's shape at the top level.
+_ALTERNATIVE_ENGINE_KEYS = ("adduct", "ion_score", "raw_score", "eff_score", "ppm")
+
+
+def _alternatives(value: Any) -> list | None:
+    """peaky's runner-up list, in the shape the peak inspector reads.
+
+    The two engines name this field's contents differently and only one of them
+    is the one the app renders. Mascope writes ``assigned_formula`` per entry;
+    peaky writes ``formula``. Published verbatim, every close alternative shows
+    as "?" in the inspector - the formula is there, under a name nothing looks
+    for. This is the one place the "compatibility is by construction" claim does
+    not hold, because `alternatives` is opaque JSON that no schema validates, so
+    nothing refuses the mismatch and it surfaces as a blank instead of an error.
+
+    ``source`` is set to 'untargeted' to match the row itself: it says which kind
+    of search produced the candidate, and peaky's grid search is the untargeted
+    one. It also makes the entry eligible for the inspector's score-on-request
+    path, which needs a formula-only alternative carrying no ion or target id.
+
+    Plausibility is deliberately absent rather than guessed: it is this server's
+    reading of the chemistry, and the inspector renders a dash for an entry that
+    has none, which is the honest answer for a candidate peaky never weighed.
+
+    :param value: The ledger cell, JSON text or a live list.
+    :return: Entries in Mascope's shape, or None.
+    """
+    entries = _json_cell(value)
+    if not isinstance(entries, list):
+        return None
+    out = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        formula = _text(entry.get("formula") or entry.get("assigned_formula"))
+        if formula is None:
+            continue
+        engine_detail = {
+            key: _sanitize(entry[key])
+            for key in _ALTERNATIVE_ENGINE_KEYS
+            if entry.get(key) is not None
+        }
+        mapped: dict[str, Any] = {"assigned_formula": formula, "source": "untargeted"}
+        if engine_detail:
+            mapped["engine_provenance"] = engine_detail
+        out.append(mapped)
+    return out or None
+
+
 def _sanitize(value: Any) -> Any:
     """Recursively replace non-finite floats with None.
 
@@ -625,6 +675,7 @@ def build_rows(
         predicted = derive_tier(fit, formula, role, bands)
         target_compound_id = _text(row.get("target_compound_id"))
         adduct = _text(row.get("adduct"))
+        ion_formula = _text(row.get("ion_formula"))
 
         provenance = {"engine_provenance": _engine_provenance(row, engine_tier)}
         supplied = _json_cell(row.get("provenance"))
@@ -642,12 +693,20 @@ def build_rows(
             "sample_peak_tof": None,
             "role": role,
             "assigned_formula": formula,
-            "ion_formula": _text(row.get("ion_formula")),
+            "ion_formula": ion_formula,
             "ionization_mechanism_id": (
                 (mechanism_ids or {}).get(adduct) if adduct else None
             ),
-            "isotope_label": _text(row.get("iso_label")),
-            "isotope_formula": None,
+            # An M0 row's isotope label is the string "M0", not nothing: that is
+            # the in-app engine's convention and what the ledger's isotope
+            # column renders. Left null, peaky's main peaks read as "-" beside
+            # in-app rows that say M0 for the same thing. Children keep peaky's
+            # own label (13C, 81Br, ...), which is the same vocabulary.
+            "isotope_label": _text(row.get("iso_label"))
+            or ("M0" if role == "M0" else None),
+            # And the M0's own isotopologue formula is its ion formula - the
+            # isotopologue a main peak stands for is the unlabelled one.
+            "isotope_formula": ion_formula if role == "M0" else None,
             "source": "database" if target_compound_id else "untargeted",
             "fit_score": fit,
             "mz_error_ppm": _finite(row.get("ppm_error")),
@@ -657,7 +716,7 @@ def build_rows(
             "target_compound_id": target_compound_id,
             "target_ion_id": _text(row.get("target_ion_id")),
             "owner_sample_peak_id": owner,
-            "alternatives": _json_cell(row.get("alternatives")),
+            "alternatives": _alternatives(row.get("alternatives")),
             "provenance": provenance,
         }
 

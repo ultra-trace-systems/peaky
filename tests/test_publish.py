@@ -224,6 +224,44 @@ check("the predicted tiers are reported separately from peaky's",
       and _summary["by_engine_tier"] == {"candidate": 1, "assigned": 1})
 
 
+# ---- rendering in Mascope's own shapes ---------------------------------------
+# Three fields where publishing peaky's own spelling produced a blank rather
+# than an error, because nothing validates them: the ledger's isotope column,
+# the isotope formula, and the inspector's close-alternatives list.
+check("an M0 row is labelled M0, not left blank", m0["isotope_label"] == "M0")
+check("an M0 row's isotope formula is its ion formula",
+      m0["isotope_formula"] == "C10H17O2+")
+check("an iso_child keeps peaky's own isotope label",
+      iso["isotope_label"] == "13C")
+check("an iso_child gets no isotope formula peaky did not compute",
+      iso["isotope_formula"] is None)
+check("a row with no role-derived label has none",
+      by_id["P0000000000000unexp"]["isotope_label"] is None)
+
+# The inspector reads `assigned_formula` off each alternative; peaky writes
+# `formula`, so published verbatim every runner-up renders as "?".
+_alts = P._alternatives(json.dumps([
+    {"formula": "C8H18O2", "adduct": "[M+Na]+", "ion_score": 0.4, "ppm": 1.2},
+    {"formula": "C5H13NO4", "adduct": "[M+NH4]+", "ion_score": 0.0, "ppm": None},
+]))
+check("an alternative carries the formula where the app looks for it",
+      [a["assigned_formula"] for a in _alts] == ["C8H18O2", "C5H13NO4"])
+check("an alternative says which search produced it",
+      all(a["source"] == "untargeted" for a in _alts))
+check("peaky's own numbers ride along under their own name",
+      _alts[0]["engine_provenance"] == {"adduct": "[M+Na]+", "ion_score": 0.4, "ppm": 1.2})
+check("a null field is dropped rather than published as null",
+      "ppm" not in _alts[1]["engine_provenance"])
+# Plausibility is the server's reading of the chemistry; peaky never weighed
+# these, and the inspector shows a dash for an entry that has none.
+check("no plausibility is invented", all("plausibility" not in a for a in _alts))
+check("an already-Mascope-shaped entry passes through",
+      P._alternatives([{"assigned_formula": "C6H6"}])[0]["assigned_formula"] == "C6H6")
+check("an entry with no formula is dropped", P._alternatives([{"ppm": 1.0}]) is None)
+check("an empty list publishes as nothing", P._alternatives([]) is None)
+check("a non-list publishes as nothing", P._alternatives("not json") is None)
+
+
 # ---- reserved provenance keys ------------------------------------------------
 # The server strips these because the app renders what it derives from them as
 # its own calibrated judgement; sending them is not an error, just not honoured.
