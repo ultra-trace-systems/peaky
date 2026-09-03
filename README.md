@@ -15,20 +15,20 @@ Peaky     →  analysis layer   (this toolbox; assignment, clustering, reports)
 Claude    →  the interface    (you drive Peaky by asking in plain language)
 ```
 
-*Peaky is part of the [Mascope ecosystem](https://github.com/ultra-trace-systems/mascope)
-— the SDK-powered, AI-driven power-user path alongside the Mascope web app.*
+_Peaky is part of the [Mascope ecosystem](https://github.com/ultra-trace-systems/mascope)
+— the SDK-powered, AI-driven power-user path alongside the Mascope web app._
 
 ## Getting started (2 minutes)
 
 Using [Claude Code](https://claude.com/claude-code) or another coding agent?
 Clone the repo, open your agent inside it, and paste:
 
-> *"Set up Peaky from this clone: install it, run `peaky setup`, install the
-> Claude Code skill (`peaky install-skill`), and tell me what to put in `.env`."*
+> _"Set up Peaky from this clone: install it, run `peaky setup`, install the
+> Claude Code skill (`peaky install-skill`), and tell me what to put in `.env`."_
 
 Restart your agent so the skill loads, then just ask:
-*"List my Mascope datasets"* → *"Assign formulas for `<your batch>` with the
-bromide reagent."*
+_"List my Mascope datasets"_ → _"Assign formulas for `<your batch>` with the
+bromide reagent."_
 
 Prefer to do it by hand? Follow **[QUICKSTART.md](QUICKSTART.md)**, or the
 [Install](#install) section below.
@@ -49,7 +49,7 @@ Prefer to do it by hand? Follow **[QUICKSTART.md](QUICKSTART.md)**, or the
   mass-matched unexplained peaks, always re-scored by Mascope before commit — they
   never override the isotope evidence.
 - **Data curation** — the write side of the Mascope API (create / rename / copy / move
-  workspaces, datasets, batches, samples), so you can *organise* a campaign, not just
+  workspaces, datasets, batches, samples), so you can _organise_ a campaign, not just
   analyse it: split a run by time window, pull background/zero samples into their own
   batch, copy a subset into a new dataset. Name-driven, dry-run-safe, delete-gated.
   See **[docs/DATA_CURATION.md](docs/DATA_CURATION.md)**.
@@ -135,8 +135,8 @@ Then, in Claude Code, ask in plain language — the skill triggers automatically
 Claude reads `SKILL.md`, picks the right reagent and parameters, runs the
 deterministic pipeline locally, and shows you the assignments / figures / report.
 
-**The mental model** (paste this if a fresh Claude needs orienting): *Mascope =
-data + scorer. Peaky = analysis. Claude = interface.* Mascope's `match_compounds`
+**The mental model** (paste this if a fresh Claude needs orienting): _Mascope =
+data + scorer. Peaky = analysis. Claude = interface._ Mascope's `match_compounds`
 is the **only** scorer — Peaky enumerates candidate formulas, hands them to
 Mascope, and arbitrates; the chemistry gates are structural; **no LLM is in the
 assignment loop**, so every run is reproducible and auditable. Claude orchestrates
@@ -240,7 +240,7 @@ CI runs the suite on Python 3.12–3.13 with no credentials.
   **[SKILL.md](SKILL.md)**.
 - **Development history + open items**: **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 - **Release notes**: **[CHANGELOG.md](CHANGELOG.md)**.
-- **Contributing** — setup, tests, conventions, and the one-time Contributor
+- **Contributing**: setup, tests, conventions, and the one-time Contributor
   License Agreement: **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 ## License

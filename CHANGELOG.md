@@ -4,9 +4,12 @@ All notable changes to Peaky are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — 0.7.0 (publish a peaky run into Mascope)
+## [Unreleased]
+
+### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
 
 ### Added
+
 - **Contributor License Agreement** — external contributors now accept the Ultra
   Trace Systems Individual Contributor License Agreement once, on their first
   pull request, by replying to the CLA assistant's comment
@@ -28,7 +31,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a naive mapping is silently wrong:
   - **Two tiers, and neither is a copy of the other.** peaky tiers mechanically
     (window uniqueness, corroboration, degeneracy, O-count); Mascope tiers by
-    thresholding a row's *evidence* — fit weighted by the formula's chemical
+    thresholding a row's _evidence_ — fit weighted by the formula's chemical
     plausibility — against the run's declared bands. The published row carries
     both: `engine_tier` is peaky's verdict, on committed M0 rows only (null
     elsewhere, and absence is not agreement), while `tier` is **not sent at
@@ -74,6 +77,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.6.0] — 2026-08-12 (report refactor + modern-server-only I/O)
 
 ### Removed (legacy workspace-server support)
+
 - **The legacy (workspace-based) server code paths are gone** (`io/io_mascope.py`):
   `_patch_datasets_list_for_legacy_servers` (no callers), the `_legacy_*` raw-endpoint
   helpers, `resolve_batch_id`, `_legacy_load_batch_peaks`, and the silent fallback arms
@@ -88,6 +92,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the git-ignored `output/`.
 
 ### Changed
+
 - **Brand**: Karsa Oy → Ultra Trace Systems Oy (NOTICE, CITATION.cff, repository URLs).
 - **A real-SDK contract tripwire** in `tests/test_io_mascope.py` runs peaky's filter
   helpers through the installed SDK's actual matching code offline, so an SDK contract
@@ -95,6 +100,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   teardown, hardcoded `/tmp` paths).
 
 ### Fixed (batch-name resolution vs the current mascope-sdk)
+
 - **`peaky batch` matched no batch on current SDKs and died on a legacy-endpoint
   422** (`io/io_mascope.py`). SDKs through 2026.7.7 resolved their two batch
   filters with OPPOSITE conventions — `load_peaks(batches=)` escaped a plain
@@ -113,6 +119,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   floor — keep the SDK at the latest release (SKILL.md gotcha).
 
 ### Added
+
 - **`_batch_ts.parquet` stamps every KNOWN ion, analyte or not** (`batch/timeseries.py`
   `identified_rows`/`stamping_frame`, `batch/assign_batch.py`). Three new columns:
   `role` (M0 / reagent / iso_child / artifact), `ion_formula` (the detected ion's
@@ -152,6 +159,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   must not be dissolved into clusters.
 
 ### Fixed (found by the first end-to-end iodide batch)
+
 - **A profile channel missing from `_DIFF_TO_ADDUCT` was silently relabelled
   `[M-H]-`** (`assignment/passes/core.py`). The map turns an ion-vs-neutral element
   difference back into an adduct label and falls through `.get(diff, "[M-H]-")`, so
@@ -177,6 +185,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Batch verification: iodine-bearing neutrals 20 → 12 (all pass-0), **leaks 8 → 0**.
 
 ### Added (sidelobe-contaminated ion channels — trust the formula, not the height)
+
 - **`timeseries.flag_sidelobe_channels`** + two new merged-ledger columns,
   **`intensity_suspect`** (bool) and **`sidelobe_parent_mz`** (float), carried onto
   every stamped row of `_batch_ts.parquet`. A saturating peak rings, and when an
@@ -187,7 +196,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   retraction, no tier change — only quantification is flagged.
 - **Why it lives at merge level, not in per-file cleanup**: static features cannot
   detect it. Over a labelled set of **25 498 raw tracks / 30 runs**, contaminated
-  channels look *identical* to real ions near a bright peak — satellite fraction
+  channels look _identical_ to real ions near a bright peak — satellite fraction
   0.69 % vs 0.23 % (the artifact is the BIGGER one), |Δm/z| 11.5 vs 10.1 mDa. Only
   the time series separates them (ratio-to-parent cv 0.033–0.051 vs 0.21–1.09, an
   empty gap between). `SIDELOBE_CV = 0.08` sits in that gap. Scored on the labelled
@@ -211,6 +220,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reintroduced; the TS-gated merge-level pass is the correct home for it.
 
 ### Fixed (time-series parquet: one ion, one peak, one trace)
+
 - **`_batch_ts.parquet` no longer stamps one formula onto two peaks**
   (`batch/timeseries.py` `annotate_peaks`). The stamp is a mass match, not a
   peak-identity join, and it was many-to-one: neighbouring raw peaks each grabbed
@@ -219,9 +229,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `groupby(formula, adduct)` saw two traces for one ion in one sample. Measured on
   a 2.4 M-row uronium batch: **2385 duplicated (sample, ion) pairs across 61 ions →
   0**. The assignment itself never did this (9784 per-file M0 keys, zero owned by
-  >1 peak — the shoulder is left `unexplained`), so this only ever affected the
-  parquet. Two rules, both default-on and individually switchable
-  (`one_to_one=` / `consensus=`):
+  > 1 peak — the shoulder is left `unexplained`), so this only ever affected the
+  > parquet. Two rules, both default-on and individually switchable
+  > (`one_to_one=` / `consensus=`):
   - **one-to-one** — per `(sample, ion)` keep the single best peak; ties break to
     the brighter, then lowest row index (deterministic → byte-reproducible).
   - **consensus** (`_consensus_offsets`) — "best" is nearest the ion's consensus
@@ -252,6 +262,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   own FT-sidelobe commentary disproves that, and the note is corrected.)
 
 ### Added (iodide reagent profile — I⁻ CIMS as a built-in)
+
 - **`IODIDE` `ReagentProfile`** (`chem/profiles.py`, name `I`, aliases
   `iodide`/`iodine`/`i-`/`i-cims`): negative mode, analyte channels
   `[M+I]-` / `[M-H]-` / `[M+I2]-`, `detect_adduct` `[M+I]-`, normalise on the
@@ -274,7 +285,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `[M+I]-` analyte reading of HNO₃/H₂O₂/HCOOH (the Br organic-acid ruling,
   applied to iodide).
 - **Pass-0 `reactive_iodine` known-species family** (`assignment/passes/
-  directors.py`): HOI, HIO₂, HIO₃, INO₂, INO₃, ICN (`CNI`), INCO (`CINO`), ICl,
+directors.py`): HOI, HIO₂, HIO₃, INO₂, INO₃, ICN (`CNI`), INCO (`CINO`), ICl,
   IBr — the canonical iodide-CIMS analytes, detected as `[M+I]-`. Covalent iodine
   is monoisotopic + off-grid, so they must be supplied as known formulas (the
   PFCA precedent: at defect −0.19..−0.27 no grid-reachable organic exists, so
@@ -314,6 +325,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `tests/test_passes.py`, `tests/test_cleanup.py`; docs in `docs/REAGENTS.md`.)
 
 ### Added (time-series parquet now carries the assignment)
+
 - **`per_file/_batch_ts.parquet` peaks are stamped with their assigned formula/channel**
   (`batch/timeseries.py::annotate_peaks`, wired into `batch/assign_batch.py`). Each ts
   peak gains four columns — `neutral_formula`, `adduct` (the ionisation channel),
@@ -325,6 +337,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   not just `m/z`. (`tests/test_timeseries.py`.)
 
 ### Fixed (clustering — weak diel analytes buried in the flat panel)
+
 - **Diel-structure gate lowered `DIURNAL_ETA2` 0.50 → 0.30** (`batch/cluster.py`).
   The 0.50 bar was set where diel analytes score 0.57–0.72, but weak ones (a real
   low-amplitude daily wave, diurnal η² 0.30–0.50 — e.g. TPPO C18H15OP, C17–20 O2
@@ -339,6 +352,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   analyte.
 
 ### Fixed (phantom heteroatom assignments — Si / P)
+
 - **Silicon isotope gate** (`passes/config.py` `het_iso_penalty_Si`,
   `passes/core.py` `_DIAG`). Si now sits in the isotope-evidence gate alongside
   S/Cl/Br: an unconfirmed Si formula (no matched ²⁹Si/³⁰Si satellite) pays a
@@ -354,6 +368,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   satellite).
 
 ### Fixed (exhaustive isotopologue claiming — no leaked satellites)
+
 - **Faint diagnostic satellites are now claimed** (`chem/isotopes.py`
   `diag_min_rel` + `D_15N`/`D_30SI`; `passes/postprocess.py`; `assignment/cleanup.py`
   `reclaim_satellites`). The M+1/M+2 lines of ¹⁵N (0.36 %/N), ¹⁸O, and a single
@@ -369,6 +384,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`tests/test_phantom_guards.py`, 27 checks.)
 
 ### Added (batch performance — sample-level parallelism)
+
 - **`peaky batch --jobs/-j N`** (`batch/assign_batch.py`, `cli.py`, `pipeline.py`;
   env `PEAKY_JOBS`). Assigns the selected samples across a spawn process pool —
   ~3.5× faster on multicore. Byte-identical to a serial run: results are reduced in
@@ -379,6 +395,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the sample count. (`tests/test_batch_parallel.py`, 16 checks.)
 
 ### Changed (clustering — residual-space / common-mode redesign)
+
 - **Cluster figures now cluster on de-glued residual correlation**
   (`batch/cluster.py`, `batch/clustering.py`, `reporting/pdf_report.py`). Raw
   pairwise correlation was dominated by a shared diel common-mode wave, collapsing
@@ -392,8 +409,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `tests/test_clustering.py`.)
 
 ### Added (off-grid discovery: certified-neutral + organothiophosphates)
+
 - **MCP server** (`peaky/mcp_server.py`, `peaky mcp`; extra `pip install
-  'mascope-peaky[mcp]'`; see `docs/MCP.md`). Drives the pipeline from any MCP
+'mascope-peaky[mcp]'`; see `docs/MCP.md`). Drives the pipeline from any MCP
   client (ChatGPT Developer Mode, Claude Desktop, Cursor) without a shell —
   tools: `health`, `list_workspaces/datasets/batches/samples`, `certify_neutrals`
   (offline), `assign_sample`/`run_batch` (background jobs → `job_status`).
@@ -405,11 +423,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `run_pass_certified`, `scripts/certify_neutrals.py`; see `docs/CERTIFIED_NEUTRAL.md`).
   When ≥2 distinct ion channels in one spectrum converge on the same neutral core mass
   (different adducts, or reagent-cluster ladder rungs `[M+nUrea+H]+`, urea step 60.0324),
-  those are N independent mass constraints on one unknown — a *certificate* that licenses
+  those are N independent mass constraints on one unknown — a _certificate_ that licenses
   enumerating the expanded element box (P/S/Cl, past the per-peak caps) for that mass
   only, oracle-scored, isotope-gated (³⁴S/³⁷Cl/⁸¹Br; ¹³C never), committed onto every
   member peak under its own channel label. The pass-5 inverse: cross-channel evidence
-  *licenses* new formula space instead of *completing* known formulas — so off-grid
+  _licenses_ new formula space instead of _completing_ known formulas — so off-grid
   families (organophosphate pesticides, sulfonamide plasticizers) are discoverable
   generically, with no whitelist. Also interrogates weak M0 incumbents: a strong
   certificate (iso-confirmed or ≥3 channels) displaces a bogus single-channel fit (e.g.
@@ -418,11 +436,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (→ C₁₀H₁₅NO₂S) and cross-channel malathion (C₁₀H₁₉O₆PS₂); first real-ledger run
   blind-rediscovered benzothiazole (C₇H₅NS).
 - **Organothiophosphate pesticide family** in positive pass-0 (`_known_species`): malathion
-  + homologs + des-ethyl TP + ~14 common OP-thioate insecticides. P is off the grid and S
-  above `max_S`, so these were structurally invisible; committed under a ≥2-channel **or**
-  diagnostic-isotope gate (the fast-path/naming layer; certified-neutral is the generic path).
+  - homologs + des-ethyl TP + ~14 common OP-thioate insecticides. P is off the grid and S
+    above `max_S`, so these were structurally invisible; committed under a ≥2-channel **or**
+    diagnostic-isotope gate (the fast-path/naming layer; certified-neutral is the generic path).
 
 ### Changed (corroboration + I/O robustness)
+
 - **Generalized the pass-0 P-corroboration gate**: any confirmed diagnostic heavy-isotope
   envelope (³⁴S/³⁷Cl/⁸¹Br) substitutes for the 2nd ion channel — not a hard-coded
   `organothiophosphate`+³⁴S special case. ¹³C is explicitly excluded (every C formula has a
@@ -434,6 +453,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   burst 521 from dropping whole-batch TS loads onto the per-sample loader (which hangs).
 
 ### Fixed (docs reconciliation)
+
 - Pass-0 docs now list the organothiophosphate family + the isotope waiver; the "flat
   background" cluster panels are documented as amplitude-only (a coherent low-amplitude
   diurnal wave can be mislabeled flat); reagent-is-flat caveat added (reagent normalisation
@@ -441,6 +461,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   citations re-anchored by function name to `passes/{directors,core,postprocess,config}.py`.
 
 ### Added (¹⁵N-labelled nitrate CIMS)
+
 - **Labelled-reagent covalent-product rescue** (`peaky/assignment/labeled.py`, pipeline
   stage `labeled_15n`). In a ¹⁵N-nitrate run a covalent ¹⁵N-organonitrate product sits
   *j·*0.997 Da off any grid formula, so it is left unexplained or absorbed by a
@@ -459,6 +480,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   preserved (exact isobar → same ion/mass/score). Gated on the labelled-nitrate profile.
 
 ### Fixed (¹⁵N over-reach + clustering)
+
 - **Fluorine F/H-coherence cap** (`tiers.F_H_COHERENCE`). A partially-fluorinated M0
   (`F≥1 & F<2·H`, H-rich, sub-PFAS F) is the classic absorber of a mass shift the grid
   cannot express (¹⁵N-organonitrates in a ¹⁵N run); ¹⁹F is monoisotopic, so the fluorine
@@ -480,6 +502,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `sample_peak_id` then raised `KeyError`. Now tolerated.
 
 ### Changed (BREAKING — output schema)
+
 - **Report tier `Identified` renamed to `Assigned`.** The top assignment tier is now
   labelled **Assigned** everywhere it surfaces: the `tier` column values in
   `merged_ledger.csv` (and every per-file ledger), the workbook **Assigned** sheet
@@ -492,6 +515,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   unchanged.
 
 ### Added (plausibility hardening — Stage 3, demote-only)
+
 - **One shared plausibility oracle** (`peaky/plausibility.py`): `is_oxygen_monster`
   (`O/C > 1.3`) and `is_carbon_cluster` (`DBE/C >= 1.0`, F-free, C≥2, half-integer-DBE
   radicals EXEMPT) now back BOTH the scrutiny `implausible()`/`scan()` flags and the
@@ -501,15 +525,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   all sit below 1.0 and are spared).
 - **Per-file demotes** (`demote_oxygen_monsters`, `demote_carbon_clusters`, wired into
   `assign.run` after tiering): an oxygen-lattice monster (`O/C > 1.3` AND degeneracy
-  mass-saturated — *not* niso-gated, since a ¹³C confirms carbon count, not the O count)
+  mass-saturated — _not_ niso-gated, since a ¹³C confirms carbon count, not the O count)
   or a carbon cluster is demoted Assigned→Candidate + `below_assignability`. Never
   deletes a row.
 - **New artifact `tables/plausibility_audit_<tag>.csv`** — one row per touched peak
   (`mz, neutral_formula, before_tier, after_tier_or_role, reason, evidence, degeneracy_note,
-  n_iso`); always written (header-only when nothing was touched) so the artifact set is
+n_iso`); always written (header-only when nothing was touched) so the artifact set is
   stable.
 
 ### Fixed (off-calibration degenerate-winner displacement)
+
 - **The winner-selection / cross-file merge could pick a mass-degenerate competitor
   that the pipeline's own tiering step then flags as off-calibration with no
   corroboration — displacing a better, corroborated assignment entirely.** Two
@@ -518,7 +543,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   only at report time:
   - **Per-file re-arbitration** (`passes.rearbitrate_offcal_degenerate`, new
     `rearbitrate` stage after `siloxane`, before `degeneracy`/`tiers`). Pass 1
-    commits the highest-`eff_score` candidate *before* the mass calibration is
+    commits the highest-`eff_score` candidate _before_ the mass calibration is
     fitted, so the off-cal arbitration penalty never sees it; with the local
     in-process scorer (`PEAKY_LOCAL_SCORING`, default in 0.5.0) a sub-ppm-coincident
     off-cal high-DBE/heteroatom "monster" can out-score the real on-trend molecule.
@@ -546,6 +571,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     aromatic monster (DBE 21–35) → on-cal oxygenated molecule, zero false positives.
 
 ### Deferred
+
 - **In-source fragment auto-detection.** A batch-level heuristic that relabelled an
   adduct-less protonated M0 as an `in-source fragment` of a heavier co-varying parent
   (full adduct-ratio + facile-loss + time-series triangulation), plus a companion
@@ -565,6 +591,7 @@ chemical-plausibility gaps surfaced by manual review and a cross-pipeline
 isotope evidence + ionization chemistry actually support each Assigned formula.
 
 ### Added
+
 - **Reference peaklists** (`peaky/reflists.py` + `peaky/data/peaklists/`): a curated,
   self-describing catalog (metadata + version + references + provenance) of known
   molecules per chemical system — seeded with α-pinene OH-oxidation HOM (Kang, FZJ
@@ -574,29 +601,31 @@ isotope evidence + ionization chemistry actually support each Assigned formula.
   in arbitration; (2) **rescue-verify** — unexplained peaks matched by mass are scored
   with the server and committed if confirmed (or kept as a tentative low-quality
   Candidate when too dim to confirm); (3) **report** corroboration/rescue section
-  + `tables/reflist_matches_*.csv`. Lists are context-gated by run metadata
-  (contaminants always active).
+  - `tables/reflist_matches_*.csv`. Lists are context-gated by run metadata
+    (contaminants always active).
 - `docs/ASSIGNMENT_DETAIL.md` — exhaustive per-pass / per-gate pipeline reference.
 
 ### Changed (chemical-plausibility hardening)
+
 - **Reagent-halocarbon relabel** — bromomethane reagent fragments mis-read as a bare
   element + reagent-cluster (e.g. CHBr₂⁻ as "C" via `[M+HBr+Br]-`) are reclassified
   on the invariant ion composition (CH₂Br₂→reagent, dibromoacetic acid→named).
 - **Confirmed-isotope F-demote exemption** — a high-F formula is exempted only when a
-  Cl/Br/S anchor's diagnostic isotope (³⁴S/³⁷Cl/⁸¹Br) is *confirmed*, not merely in
+  Cl/Br/S anchor's diagnostic isotope (³⁴S/³⁷Cl/⁸¹Br) is _confirmed_, not merely in
   the formula (a reagent-Br adduct's ⁸¹Br does not count).
 - **Si-count intensity gate** (siloxane ladder **and** pass-0 silanediol) — a Si-rich
-  commit requires its ²⁹Si M+1 to *match* the Si count, not just be matched; stops a
+  commit requires its ²⁹Si M+1 to _match_ the Si count, not just be matched; stops a
   high-O HOM (e.g. C₁₀H₁₈O₁₁) being claimed as a siloxane on a too-weak envelope.
 - **New tier demotes** (post-tiering, never deletes): carbon-cluster (F-free H/C<0.35),
   implausible-ionization (heteroatom-free hydrocarbon via an anion channel that needs
-  an acidic/H-bond site), and speculative-residual (residual:* commits resting on
+  an acidic/H-bond site), and speculative-residual (residual:\* commits resting on
   off-cal z, uncorroborated multi-N, 0-anchor series, or a sole minor channel).
-- **Scrutiny page** — F-flag wording corrected (¹⁹F is monoisotopic — the F *count* is
+- **Scrutiny page** — F-flag wording corrected (¹⁹F is monoisotopic — the F _count_ is
   unconfirmable; any ¹³C/⁸¹Br satellites confirm only carbon/the adduct), per-row
   evidence (score · ppm · isotopes · sane-alternative), and pagination.
 
 ### Fixed
+
 - Report cover now states the **actual** sample-selection method (single-sample /
   brightest-coverage / representative) and a peak census (total / assigned /
   unexplained) from the ledger; reference-list section paginated (no clipping);
@@ -609,6 +638,7 @@ install, content-stable reproducibility, organized outputs, a brightest-coverage
 batch mode, and a full design-doc set.
 
 ### Added
+
 - **`peaky setup`** — one-command workspace bootstrap: creates `.env` from the
   template, points outputs at the workspace's `output/` folder (`PEAKY_OUTPUT_DIR`),
   creates it, verifies the install (+ the Mascope connection if creds are set), and
@@ -621,7 +651,7 @@ batch mode, and a full design-doc set.
   and `docs/OUTPUTS.md` (every artifact, where + what).
 - `CHANGELOG.md` (this file).
 - **Brightest-coverage batch selection** (`--select brightest`, the "bin-then-assign"
-  mode). Bins all batch peaks by m/z and assigns each significant bin's *brightest*
+  mode). Bins all batch peaks by m/z and assigns each significant bin's _brightest_
   sample (greedy set-cover, `--coverage-target`/`--k-max`/`--height-floor`). Better
   analyte coverage than the time-grid+max-TIC default (which a reagent-CIMS run's
   reagent ion dominates); feeds the same assign → merge → report chain, so outputs
@@ -631,6 +661,7 @@ batch mode, and a full design-doc set.
   endpoints. Additive and gated — modern servers are unaffected.
 
 ### Changed
+
 - **Import package renamed `mascope_assign` → `peaky`.** A `mascope_assign`
   back-compat shim aliases the old import path — including submodules — to the same
   `peaky` objects, so existing `import mascope_assign` code keeps working unchanged.
@@ -647,6 +678,7 @@ batch mode, and a full design-doc set.
 - Repository URL → `github.com/karsa-oy/peaky` (the public home).
 
 ### Fixed
+
 - **Reproducibility: content is a pure function of inputs; only the report timestamp
   varies.** `pipeline.stamp_source_date_epoch()` pins `SOURCE_DATE_EPOCH` to a FIXED
   content epoch (`CONTENT_EPOCH`, 1980-01-01Z), so matplotlib PNG/PDF metadata and the
@@ -670,6 +702,7 @@ batch mode, and a full design-doc set.
   targets is absorbed upstream); kept but no longer implicitly trusted.
 
 ### Changed (outputs)
+
 - **Run folders are organized into subdirectories.** A new `paths.RunPaths` is the single
   source of truth for the layout, shared by the writers and the report reader so their
   filename contract can't drift: `.png` → `figures/`, `.csv`/`.xlsx` → `tables/`, the PDF
