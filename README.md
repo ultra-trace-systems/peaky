@@ -240,12 +240,17 @@ CI runs the suite on Python 3.12–3.13 with no credentials.
   **[SKILL.md](SKILL.md)**.
 - **Development history + open items**: **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 - **Release notes**: **[CHANGELOG.md](CHANGELOG.md)**.
+- **Contributing** — setup, tests, conventions, and the one-time Contributor
+  License Agreement: **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 ## License
 
 Peaky is released under the **[Apache License 2.0](LICENSE)** — see [`LICENSE`](LICENSE)
 for the full text and [`NOTICE`](NOTICE) for attribution. `mascope-sdk` and the Mascope /
 Ultra Trace Systems platform are separately licensed and owned by their respective owners.
+Contributions are accepted under the
+[Individual Contributor License Agreement](https://github.com/ultra-trace-systems/cla/blob/main/ICLA.md)
+— see [CONTRIBUTING.md](CONTRIBUTING.md#contributor-license-agreement).
 
 ## Citation
 
