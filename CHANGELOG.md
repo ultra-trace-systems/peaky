@@ -7,6 +7,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased] — 0.7.0 (publish a peaky run into Mascope)
 
 ### Added
+- **Contributor License Agreement** — external contributors now accept the Ultra
+  Trace Systems Individual Contributor License Agreement once, on their first
+  pull request, by replying to the CLA assistant's comment
+  (`.github/workflows/cla.yml`); the `CLA Assistant` check blocks merging until
+  every commit author has. The agreement and the signature register are shared
+  with Mascope in [ultra-trace-systems/cla](https://github.com/ultra-trace-systems/cla),
+  so one acceptance covers both projects. New `CONTRIBUTING.md` explains it.
 - **`peaky publish` — upload a finished ledger into Mascope's peak-assignment run
   ledger** (`io/publish.py`, `docs/PUBLISH.md`). This closes the loop peaky was
   missing: a run stops being a local file and becomes a run in the same store the
