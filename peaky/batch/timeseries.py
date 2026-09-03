@@ -103,7 +103,7 @@ ANCHOR_MARGIN = 2.0     # how much brighter an off-ledger track must be to displ
 # Quantifying from it tracks the wrong compound.
 #
 # Static features CANNOT separate this from a real ion that merely sits near a
-# bright peak. Measured over 25498 raw tracks / 30 runs of the TC2026 campaign:
+# bright peak. Measured over 25498 raw tracks / 30 runs of the 2026 field campaign:
 #   satellite fraction  artifact 0.69% vs independent 0.23%  (artifact is BIGGER)
 #   |Δm/z| to parent    artifact 11.5 mDa vs independent 10.1 mDa
 # Only the TIME SERIES separates them — a sidelobe holds a ~constant ratio to its

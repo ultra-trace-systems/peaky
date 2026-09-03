@@ -141,12 +141,52 @@ IODIDE = ReagentProfile(
     aliases=("i", "iodide", "iodide-cims", "i-", "i-cims", "iodine"),
 )
 
+# EasyIC⁺ -- the Orbitrap's internal-calibration (EASY-IC) fluoranthene cation
+# beam used as a LOW-PRESSURE, mildly fragmenting charge-transfer CI source
+# (2026 EasyIC+ acquisition batches). Three ionization channels:
+#   [M]+.   charge transfer -- aromatics keep the intact skeleton as RADICAL
+#           molecular cations (server mechanism '+': toluene 92.0621 and the
+#           C16H10+. reagent ion itself are server-matched on the 2026-02-26
+#           mz40-500 batch); monoterpenes and larger aliphatics FRAGMENT, so
+#           their CxHy+ pieces land on this channel (odd-electron) or on...
+#   [M-H]+  ...HYDRIDE abstraction (even-electron): alcohols' primary channel
+#           -- ethanol is C2H5O+ @45.0335 ONLY ([M+H]+ 47.049 absent). No
+#           server mechanism, so it is a local-scoring channel (the [M-H+I2]-
+#           ruling) and stays out of ADDUCT_TO_MECH.
+#   [M+H]+  a real secondary channel (protonated acetone 59.049 observed).
+# The C16H10+. reagent ion (202.0776) is in-window only for the mz40-500
+# batches -- mz40-160 misses it -- so the correlation layer normalises on TIC
+# (the NO3_15N ruling). Source ions (fluoranthene ladder, N3+/NO2+ air plasma,
+# urea crossover from the alternating uronium source) are labelled by
+# reagents.build_library("EasyIC"). Auto-detect: the server's bare '+' stamp
+# maps to [M]+.; Ur batches carry +(CH4N2O)H+ and resolve first (dict order).
+# FRAGMENTATION AMBIGUITY: because the source fragments, three readings are
+# MS1-irreducible (carbonyl [M+H]+ vs alcohol [M-H]+; alkene [M+H]+ vs alcohol
+# [M+H-H2O]+ dehydration; hydrocarbon cation vs fragment-of-larger-analyte).
+# cleanup.annotate_easyic_ambiguity (easyic context only) relabels
+# corroborated dehydrations and stamps the rest into commentary -- the
+# 2026-08-31 gin-run lessons (59.049 was acetone AND propanol; C4H8 [M+H]+
+# was dehydrated butanol, its C4H9O+ hydride partner present at x50).
+EASYIC = ReagentProfile(
+    name="EasyIC",
+    label="EasyIC+ CT",
+    polarity="+",
+    adducts=["[M]+.", "[M-H]+", "[M+H]+"],
+    normaliser="tic",
+    reagent_ion_re=None,
+    ranges="C0-40 H0-80 N0-5 O0-15 S0-2",
+    detect_adduct="[M]+.",
+    context="easyic",
+    aliases=("easyic", "easy-ic", "easyic+", "fluoranthene", "charge-transfer"),
+)
+
 PROFILES: dict[str, ReagentProfile] = {
     BR.name: BR,
     UR.name: UR,
     NO3.name: NO3,
     NO3_15N.name: NO3_15N,
     IODIDE.name: IODIDE,
+    EASYIC.name: EASYIC,
 }
 _BY_ALIAS = {a: p for p in PROFILES.values() for a in (p.name.lower(), *p.aliases)}
 

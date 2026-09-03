@@ -82,6 +82,43 @@ _POSITIVE_REAGENTS = {
 }
 
 
+# EasyIC⁺ source ions -- the Orbitrap's internal-calibration (EASY-IC)
+# fluoranthene cation beam used as a LOW-PRESSURE charge-transfer reagent
+# (2026 EasyIC+ acquisition batches). Three ion classes, all pure source -- no
+# analyte atoms -- so they must be LABELLED, not left red in the residual:
+#   * the fluoranthene ladder: C16H10+. itself (202.0776, the reagent ion;
+#     server 'test compound'), its H-loss fragment C16H9+, protonated C16H11+
+#     and the dimer cation (C32H20+., in-window only for mz40-500);
+#   * the air-plasma cations the discharge throws: N3+ (42.0087) and NO2+
+#     (45.9924) are the bright in-window pair (both server-matched on the
+#     2026-02-26 mz40-500 batch); NO+/O2+. sit below a 40 Da window start but
+#     are kept for wider windows;
+#   * urea CROSSOVER: the instrument alternates with the uronium source, and
+#     [urea_n+H]+ (61.0396 / 121.0720) DOMINATE the mz40-160 EasyIC batches --
+#     the urea positive library is merged in so they read as source ions, not
+#     analytes. Formula dicts here are the NEUTRAL composition; build adds the
+#     cation charge (lose an electron).
+_EASYIC_SOURCE_IONS: dict[str, dict[str, int]] = {
+    "[C16H10]+. (fluoranthene)": {"C": 16, "H": 10},
+    "[C16H10-H]+ (fluoranthene fragment)": {"C": 16, "H": 9},
+    "[C16H10+H]+ (fluoranthene)": {"C": 16, "H": 11},
+    "[(C16H10)2]+. (fluoranthene dimer)": {"C": 32, "H": 20},
+    "[N3]+ (air plasma)": {"N": 3},
+    "[NO2]+ (air plasma)": {"N": 1, "O": 2},
+    "[NO]+ (air plasma)": {"N": 1, "O": 1},
+    "[O2]+. (air plasma)": {"O": 2},
+}
+
+
+def _build_easyic_library() -> list[tuple[str, float, str]]:
+    """[(label, ion_mz, ion_formula)] for the EasyIC⁺ source ions + the urea
+    crossover series (see _EASYIC_SOURCE_IONS)."""
+    out = [(label, C.neutral_mass(d) - _M_E, C.format_formula(d) + "+")
+           for label, d in _EASYIC_SOURCE_IONS.items()]
+    out.extend(_build_positive_library("urea"))
+    return out
+
+
 def _proton() -> float:
     return C.M["H"] - _M_E   # H+ = proton (one H atom minus its electron)
 
@@ -139,6 +176,8 @@ def build_library(reagent: str = "Br", *, max_n: int = 4, max_neutral: int = 1
     has a KNOWN formula, so it must be recorded as an assignment, not left blank:
     known formula -> assigned, regardless of whether the species is an analyte or
     an ion-source cluster (it's just a different class)."""
+    if reagent == "EasyIC":
+        return _build_easyic_library()
     if reagent in _POSITIVE_REAGENTS:
         return _build_positive_library(reagent)
     if reagent not in _HALOGEN_ISO:
@@ -392,6 +431,9 @@ def reagent_for_adducts(adducts: list[str]) -> str | None:
         # positive molecular reagents: the urea adduct [M+(CH4N2O)H]+
         if "CH4N2O" in a:
             return "urea"
+        # EasyIC fluoranthene charge transfer: the molecular-cation channel
+        if a == "[M]+.":
+            return "EasyIC"
         if "Br" in a:
             return "Br"
         if a.endswith("I]-") or "+I" in a:

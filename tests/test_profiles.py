@@ -62,6 +62,33 @@ check("iodide normalises on the (in-window) reagent ion",
 check("covalent iodine is OFF the neutral grid (monoisotopic)",
       "I" not in P.resolve("I").ranges)
 
+# ---- EasyIC⁺ (fluoranthene charge transfer) built-in -------------------------
+check("resolve('EasyIC') built-in", P.resolve("EasyIC").name == "EasyIC")
+for _a in ("easyic", "easy-ic", "easyic+", "fluoranthene", "charge-transfer"):
+    check(f"alias {_a!r} -> EasyIC", P.resolve(_a).name == "EasyIC")
+check("EasyIC is positive mode", P.resolve("easyic").polarity == "+")
+check("EasyIC primary channel is the molecular cation [M]+.",
+      P.resolve("EasyIC").adducts[0] == "[M]+.")
+check("EasyIC keeps the hydride-abstraction channel [M-H]+",
+      "[M-H]+" in P.resolve("EasyIC").adducts)
+check("EasyIC keeps the secondary protonation channel [M+H]+",
+      "[M+H]+" in P.resolve("EasyIC").adducts)
+check("EasyIC detect_adduct is [M]+.", P.resolve("EasyIC").detect_adduct == "[M]+.")
+check("EasyIC normalises on TIC (C16H10+. out of the mz40-160 window)",
+      P.resolve("EasyIC").normaliser == "tic")
+check("EasyIC uses the easyic context", P.resolve("EasyIC").context == "easyic")
+
+# auto-detect from the server's own mechanism stamps: a bare '+' (molecular
+# cation) is the EasyIC signature; a uronium batch also stamps +(CH4N2O)H+ and
+# must keep resolving Ur FIRST (registry insertion order is the tiebreak).
+import pandas as _pd  # noqa: E402
+check("auto-detect: bare '+' stamps -> EasyIC",
+      P.resolve("auto", _pd.DataFrame({"ionization_mechanism": ["+", None]})).name
+      == "EasyIC")
+check("auto-detect: uronium batch with stray '+' stamps still resolves Ur",
+      P.resolve("auto", _pd.DataFrame(
+          {"ionization_mechanism": ["+(CH4N2O)H+", "+", "+H+"]})).name == "Ur")
+
 # ---- every built-in profile adduct must be resolvable where it matters -------
 # Hard invariants: (1) every profile adduct needs an ADDUCT_SHIFTS entry (ion_mz
 # raises otherwise); (2) every detect_adduct needs an ADDUCT_TO_MECH mapping
@@ -89,6 +116,12 @@ for _a, _m in (("[M+I]-", "+I-"), ("[M-H]-", "-H+"), ("[M+I2]-", "+I2-"),
 # mixed +/- mechanism to the scorers -- keep it OUT.
 check("iodide [M-H+I2]- is a decomposition alias: deliberately NOT mechanism-mapped",
       "[M-H+I2]-" not in IOM.ADDUCT_TO_MECH)
+check("EasyIC [M]+. maps to the server's bare '+' mechanism",
+      IOM.ADDUCT_TO_MECH.get("[M]+.") == "+")
+# Hydride abstraction has no server mechanism: like [M-H+I2]-, it is scored
+# locally -- a mapping here would query the server with a nonexistent name.
+check("EasyIC [M-H]+ is a local-scoring channel: deliberately NOT mechanism-mapped",
+      "[M-H]+" not in IOM.ADDUCT_TO_MECH)
 
 # ---- register a new profile in code -----------------------------------------
 acet = P.ReagentProfile(
@@ -140,7 +173,8 @@ with tempfile.TemporaryDirectory() as d:
 P.PROFILES.clear(); P.PROFILES.update(_SAVED[0])
 P._BY_ALIAS.clear(); P._BY_ALIAS.update(_SAVED[1])
 check("registry restored (Ac gone after cleanup)", "Ac" not in P.PROFILES and "ac-" not in P._BY_ALIAS)
-check("built-ins intact after restore", {"Br", "Ur", "NO3", "NO3_15N", "I"} <= set(P.PROFILES))
+check("built-ins intact after restore",
+      {"Br", "Ur", "NO3", "NO3_15N", "I", "EasyIC"} <= set(P.PROFILES))
 
 
 def test_all():

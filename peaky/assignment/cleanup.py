@@ -23,6 +23,7 @@ from __future__ import annotations
 import bisect
 import json
 
+import numpy as np
 import pandas as pd
 
 from peaky.chem import chemistry as C
@@ -67,7 +68,7 @@ def flag_ringing_artifacts(ledger: pd.DataFrame, *, factor: float = RING_FACTOR,
     was measured and it is catastrophic. The static evidence available at this
     point -- Δm/z, satellite fraction, brightness ratio -- CANNOT distinguish a
     sidelobe from a real ion that merely sits beside a bright peak. Over the
-    TC2026 campaign the rule "displace an unlocked, uncorroborated M0 within dmz of
+    2026 field campaign the rule "displace an unlocked, uncorroborated M0 within dmz of
     a >=factor x parent" selects 74 commits across 30 runs, and scoring every one
     of them against the time-series oracle (a sidelobe holds a ~constant ratio to
     its parent; ratio-cv < 0.06) gives **0/53 correct, 51 false positives** --
@@ -710,6 +711,167 @@ def relabel_radical_anions(ledger: pd.DataFrame, *, log=print) -> dict:
     log(f"[cleanup] relabeled {n} hydrocarbon FG-cluster anions as radical anions M-. "
         f"({nc} corroborated by [M-H]-/[M+Br]-)")
     return {"radical_relabeled": n, "radical_corroborated": nc}
+
+
+def _ts_pair_r(ts_peaks, mz_a: float, mz_b: float, *, tol: float = 0.004,
+               min_partner: float = 300.0, min_seen: int = 4):
+    """Batch time-correlation of two ion masses: Pearson r on log1p per-sample
+    max heights (absent sample = 0 -- co-absence is signal for an event pair).
+    Returns (r, n_samples) or (None, n) when the partner is not genuinely
+    present (max < min_partner or seen in < min_seen samples) or a series is
+    constant."""
+    pk = ts_peaks
+    if "peak_id" in pk.columns:
+        pk = pk.drop_duplicates(["sample_item_id", "peak_id"])
+    smp = pk["sample_item_id"].unique()
+    if len(smp) < 6:
+        return None, len(smp)
+    prof = {}
+    for key, mz0 in (("a", mz_a), ("b", mz_b)):
+        d = pk[(pk["mz"] - mz0).abs() <= tol]
+        ts = d.groupby("sample_item_id")["height"].max()
+        prof[key] = np.array([float(ts.get(s, 0.0)) for s in smp])
+    b = prof["b"]
+    if b.max() < min_partner or int((b > 0).sum()) < min_seen:
+        return None, len(smp)
+    a, b = np.log1p(prof["a"]), np.log1p(b)
+    if a.std() == 0 or b.std() == 0:
+        return None, len(smp)
+    return float(np.corrcoef(a, b)[0, 1]), len(smp)
+
+
+def annotate_easyic_ambiguity(ledger: pd.DataFrame, *, ts_peaks=None,
+                              ts_r_min: float = 0.9, log=print) -> dict:
+    """EasyIC⁺ fragmentation ambiguity (easyic context only). A low-pressure
+    charge-transfer source FRAGMENTS, so three MS1-irreducible readings recur
+    (all three observed on the 2026-08-31 gin headspace run):
+
+      1. A CnH2n "[M+H]+" commit (the alkene reading) is the SAME ion as an
+         alcohol's in-source dehydration [CnH2n+2O + H - H2O]+. When that
+         alcohol is independently committed on its own hydride channel [M-H]+
+         (its ion sits exactly +O away), the dehydration reading is
+         corroborated -> RELABEL onto the alcohol (the radical-anion ruling:
+         stays a visible Candidate). Uncorroborated -> keep the alkene,
+         append the ambiguity note. (Gin: C4H8/C5H10 [M+H]+ were dehydrated
+         butanol/amyl alcohol -- the C4H9O+/C5H11O+ partners were present.)
+      2. Any heteroatom-free CxHyOz "[M+H]+" is ion-identical to
+         [CxH(y+2)Oz - H]+: protonated CARBONYL vs hydride-abstracted ALCOHOL
+         (59.049 = acetone AND propanol, both real in the gin). Commentary
+         only -- MS1 cannot split them, and both may contribute.
+      3. A pure-hydrocarbon cation with DBE >= 2 may be a FRAGMENT of a larger
+         analyte (monoterpenes fragment; C7H9+ etc.), not the intact neutral.
+         Commentary only.
+
+    Locked rows are skipped (the pass-0 ethanol hydride lock already carries
+    its own observation-based commentary).
+
+    With a batch `ts_peaks` table, a SECOND corroboration route opens: a
+    single spectrum cannot tell genuine-butene + genuine-MEK from dehydrated
+    butanol + its hydride ion, but the BATCH can -- the dehydration pair
+    (CnH2n·H+ and CnH2n+1O+, exactly +O apart) rises and falls together.
+    Pearson r on log heights across the batch >= `ts_r_min` (with the partner
+    genuinely present) promotes the note to the relabel, and the carbonyl
+    commit sitting ON the partner mass gets the correlation evidence appended
+    to its dual-reading note (the alcohol contributes on that channel too)."""
+    if "neutral_formula" not in ledger.columns or "adduct" not in ledger.columns:
+        return {"easyic_dehydration": 0, "easyic_dual": 0, "easyic_fragment": 0}
+    out = {"easyic_dehydration": 0, "easyic_dual": 0, "easyic_fragment": 0}
+    # alcohols committed on the hydride channel corroborate a dehydration ion
+    alcohols = {str(ledger.at[j, "neutral_formula"] or "")
+                for j in ledger.index
+                if str(ledger.at[j, "adduct"]) == "[M-H]+"
+                and str(ledger.at[j, "role"]) == L.ROLE_M0}
+    target = (ledger.index[ledger["role"] == L.ROLE_M0]
+              if "role" in ledger.columns else ledger.index)
+    partner_hits = []   # (partner_mz, alkene_mz, alcohol_formula, r, n)
+    for i in target:
+        if "locked" in ledger.columns and bool(ledger.at[i, "locked"]):
+            continue
+        add = str(ledger.at[i, "adduct"])
+        nf = str(ledger.at[i, "neutral_formula"] or "")
+        if not nf or nf == "nan":
+            continue
+        cnt = C.parse_formula(nf)
+        hetero = sum(cnt.get(e, 0)
+                     for e in ("N", "S", "P", "F", "Cl", "Br", "I", "Si"))
+        nC, nH, nO = cnt.get("C", 0), cnt.get("H", 0), cnt.get("O", 0)
+        note = None
+        if add == "[M+H]+" and hetero == 0 and nO == 0 and nC >= 3 \
+                and nH == 2 * nC:
+            alc = C.format_formula({"C": nC, "H": nH + 2, "O": 1})
+            basis = None
+            if alc in alcohols:
+                basis = (f"corroborated by {alc} committed on its own hydride "
+                         "channel [M-H]+")
+            elif ts_peaks is not None and len(ts_peaks) and "mz" in ledger.columns:
+                # the batch can tell the pair apart: the dehydration ion and
+                # its +O hydride partner rise and fall TOGETHER; independent
+                # butene + MEK would not.
+                mz_i = float(ledger.at[i, "mz"])
+                r, nsm = _ts_pair_r(ts_peaks, mz_i, mz_i + C.M["O"])
+                if r is not None and r >= ts_r_min:
+                    basis = ("corroborated by batch time-correlation with its "
+                             f"hydride-channel ion at m/z {mz_i + C.M['O']:.4f} "
+                             f"(r={r:.2f} over {nsm} samples)")
+                    partner_hits.append((mz_i + C.M["O"], mz_i, alc, r, nsm))
+            if basis:
+                ledger.at[i, "neutral_formula"] = alc
+                ledger.at[i, "adduct"] = "[M+H-H2O]+"
+                if "dbe" in ledger.columns:
+                    ledger.at[i, "dbe"] = C.dbe(alc)
+                if str(ledger.at[i, "tier"]) == "Assigned":
+                    ledger.at[i, "tier"] = "Candidate"
+                if "confidence" in ledger.columns:
+                    ledger.at[i, "confidence"] = \
+                        "Good (easyic dehydration, corroborated)"
+                note = (f"in-source dehydration of {alc}: same ion as the {nf} "
+                        f"[M+H]+ alkene reading; {basis} (EasyIC fragments "
+                        "alcohols)")
+                out["easyic_dehydration"] += 1
+            else:
+                note = (f"EasyIC ambiguity: this ion is {nf} [M+H]+ (alkene) OR "
+                        f"an alcohol's in-source dehydration [{alc}+H-H2O]+ "
+                        f"(no corroborating {alc} [M-H]+ in this sample)")
+                out["easyic_dual"] += 1
+        elif add == "[M+H]+" and hetero == 0 and nO >= 1:
+            alc = C.format_formula({"C": nC, "H": nH + 2, "O": nO})
+            note = (f"EasyIC ambiguity: same ion is [{nf}+H]+ (carbonyl/ether) "
+                    f"and [{alc}-H]+ (alcohol via hydride abstraction) -- MS1 "
+                    "cannot distinguish; both may contribute")
+            out["easyic_dual"] += 1
+        elif add in ("[M+H]+", "[M]+.") and hetero == 0 and nO == 0 \
+                and C.dbe(cnt) >= 2:
+            note = (f"fragmenting source: {nf} may be a FRAGMENT of a larger "
+                    "analyte (monoterpenes/aromatics fragment under EasyIC), "
+                    "not the intact neutral")
+            out["easyic_fragment"] += 1
+        if note and "commentary" in ledger.columns:
+            prev = str(ledger.at[i, "commentary"] or "")
+            ledger.at[i, "commentary"] = \
+                (prev + "; " + note) if prev and prev != "nan" else note
+    # symmetric upgrade: the carbonyl commit sitting ON a time-corroborated
+    # partner mass carries an alcohol contribution too -- append the evidence
+    # to its dual-reading note (reading kept; the batch cannot apportion the
+    # carbonyl/alcohol split, only prove the alcohol is in there).
+    if partner_hits and "commentary" in ledger.columns and "mz" in ledger.columns:
+        for pmz, amz, alc, r, nsm in partner_hits:
+            near = ledger.index[(ledger["mz"] - pmz).abs() <= 0.004]
+            for j in near:
+                if str(ledger.at[j, "role"]) != L.ROLE_M0 \
+                        or str(ledger.at[j, "adduct"]) != "[M+H]+":
+                    continue
+                extra = (f"batch time-correlation with the -H2O dehydration ion "
+                         f"at m/z {amz:.4f} (r={r:.2f} over {nsm} samples) -- a "
+                         f"significant {alc} [M-H]+ (alcohol) contribution on "
+                         "this channel")
+                prev = str(ledger.at[j, "commentary"] or "")
+                ledger.at[j, "commentary"] = \
+                    (prev + "; " + extra) if prev and prev != "nan" else extra
+    log(f"[cleanup] easyic ambiguity: {out['easyic_dehydration']} dehydration "
+        f"relabels, {out['easyic_dual']} dual-reading notes, "
+        f"{out['easyic_fragment']} fragment notes"
+        + (f", {len(partner_hits)} TS-corroborated pairs" if partner_hits else ""))
+    return out
 
 
 # Positive-mode N-carrying reagent-cluster cations. A PURE HYDROCARBON has no
