@@ -11,10 +11,14 @@ description: >-
   scores, a peak-ownership audit, and an interactive rotating-GKA widget. Also runs
   a representative-sample BATCH pipeline (5 time-spaced + max-TIC samples assigned
   and merged), time-series correlation clustering, a full Van Krevelen, and a
-  standard iterable PDF assignment report. Triggers: "assign formulas", "peak
+  standard iterable PDF assignment report. Can also PUBLISH a finished ledger
+  back into Mascope as a first-class assignment run, so a peaky run sits beside
+  the in-app engine's on the same sample and the two can be compared where they
+  disagree. Triggers: "assign formulas", "peak
   assignment", "what's in sample X", "annotate spectrum", "unassigned peaks",
   "Kendrick / GKA", "homologous series", "CIMS", "HOM", "PFAS / contaminants",
-  "assign a batch", "Van Krevelen", "cluster figures", "PDF report".
+  "assign a batch", "Van Krevelen", "cluster figures", "PDF report",
+  "publish to Mascope", "import the ledger", "compare peaky with Mascope".
 ---
 
 # Mascope multi-pass peak assignment
@@ -84,6 +88,11 @@ peaky pool --batches "<regex over batch names>" --dataset "<workspace>" \
 
 # regenerate figures + PDF of an existing run, offline (no assignment, no network)
 peaky report --run-dir <run-folder> --reagent <Br|Ur|...> --ts <ts.parquet>
+
+# publish a finished ledger back into Mascope as an assignment run
+# (--dry-run translates + validates offline and sends nothing)
+peaky publish <run-folder>/<sample>_<stamp>_ledger.csv --dry-run
+peaky publish <run-folder>/<sample>_<stamp>_ledger.csv
 ```
 
 `peaky pool` pools every batch matching `--batches` (a REGEX over batch names, e.g.
@@ -392,6 +401,7 @@ directly instead of `--run-dir`.
 | `degeneracy.py`       | honest cross-family mass-degeneracy measurement (`degeneracy_density`/note)                                                                                                                                                                                                                                                                                                                                              |
 | `cleanup.py`          | residual cleanup: isotope-confirmed recovery, bromide-cluster labelling, ringing-artifact flagging, satellite reclaim, **`prefer_amine_over_ammonium`** (positive: THREE-WAY time-tracking gate — keep `[M+NH4]+` adduct that tracks a shaped parent, re-read to the `[M+H]+` amine when it fails to track / the parent is absent, cap Candidate when weak-or-flat; Si + `protected`-provenance + valence overrides); **plausibility demotes** `demote_implausible_carbon` / `demote_implausible_ionization` / `demote_speculative_residual` + `relabel_reagent_halocarbons` (Br-reagent-gated)                                                                                                                                                                               |
 | **`reflists.py`**     | curated, self-describing **reference-peaklist** catalog (`peaky/data/peaklists/`: metadata + version + references + provenance) — `load_catalog`/`active_lists` (context-gated; contaminants always on), `match_assigned` (selection-prior corroboration), `rescue_unexplained_by_reflist` (mass-match → server re-score → commit-if-confirmed, else tentative Candidate). Soft + provenance-tagged; never overrides an isotope-scored Assigned |
+| **`io/publish.py`**   | `peaky publish` -- translate a ledger into Mascope's run-import contract and upload it (chunked assembly, row-offset idempotency, resume via `--import-id`). Sends peaky's own verdict as `engine_tier` and **no** `tier` (the server derives that), resolves adducts to ionization-mechanism ids, excludes synthetic sub-peaks. See `docs/PUBLISH.md` |
 | **`sampling.py`**     | THE RULE — `select_representative_samples` (5 evenly-time-spaced + max-TIC) for batch assignment                                                                                                                                                                                                                                                                                                                         |
 | **`assign_batch.py`** | `run(batch\|peaks, ts_peaks=, amine_r_min=)` — assign the reps, keep per-file ledgers, offset-aware merge (`align`) + jitter table; applies the positive amine gate at merge level (three-way time-tracking)                                                                                                                                                                                                                                       |
 | **`cluster.py`**      | correlation clustering (log-corr, COMPLETE linkage r>0.6, signed distance) → `render_a4` A4-portrait paginated panels + remaining-peaks overview. **Flatness gate** `split_varying`/`render_flat_panel` (cv<`FLAT_CV` bunched, not clustered). `render_changers` = A4-portrait big-standalone-changers page. `write_cluster_workbook(when=)` — byte-reproducible per-cluster XLSX (timestamps pinned to a FIXED content epoch, not the run time) |
@@ -415,6 +425,61 @@ runs the suite on 3.12–3.13 with no credentials. Add a test with each change; 
 See `docs/ARCHITECTURE.md` for the design (ledger model, pass sequence, data
 flow), `README.md` for the dev loop, and `docs/ROADMAP.md` for current state +
 the open quality work + lessons.
+
+## Publishing a run back into Mascope (`peaky publish`)
+
+A finished ledger can be uploaded into Mascope as a first-class
+`PeakAssignmentRun` -- same tables, same read model, same batch fold-in as an
+in-app run, always attributed to the `peaky` engine. It then appears in the run
+selector, the peak inspector, the batch Assignments overview and the
+verification loop, beside whatever the in-app engine made of the same sample.
+Full contract: `docs/PUBLISH.md`; the server's side is Mascope's
+`docs/dev/sdk_peak_assignment.md` section 8.
+
+**The point is the comparison, not the upload.** A published row carries TWO
+tiers and they mean different things:
+
+- `engine_tier` -- peaky's own verdict, on committed M0 rows only (null
+  elsewhere, and absence is not agreement). peaky tiers mechanically: window
+  uniqueness, corroboration, the degeneracy audit, O-count, F/H coherence.
+- `tier` -- Mascope's banding of the row's *evidence* (fit x chemical
+  plausibility) against the run's declared bands. **peaky does not send this
+  at all**; the server derives it. Do not try to compute or supply one -- it
+  would be a second copy of the server's own rule, and a copy that disagrees at
+  a band edge refuses the whole import.
+
+Rows where the two differ are the interesting ones (on a real run: 383 of 1412
+verdicts, nearly all peaky demoting a peak Mascope's banding calls `assigned`).
+The app filters on it with `tier_disagrees=true`.
+
+Things that bite:
+
+- **Always `--dry-run` first.** It translates and validates offline and reports
+  what will land: rows, roles, both tier distributions, the disagreement count,
+  and anything dropped. The only rules it cannot check without the server are
+  peak existence and whether another run is in flight.
+- **The ledger must be for ONE sample and the sample it was computed against.**
+  Peak ids come from the sample's peak file; a merged/pooled ledger is refused,
+  and a ledger computed before the sample's peaks were re-detected will fail
+  peak existence (ids are not stable across a recompute).
+- **Intensity is instrument-determined** -- heights for Orbitrap, areas for TOF.
+  `--intensity auto` reads it off the sample and refuses to guess. Never
+  override it to make an import go through: the wrong quantity silently
+  mis-weights the sample in the batch overview and nothing can detect it.
+- **Republishing creates a NEW run** (imports are append-only). Mascope keeps
+  only the newest few completed runs per (sample, engine), so repeated
+  publishing evicts older runs on that sample. Re-using `--import-id` resumes an
+  interrupted upload; it does not overwrite a finished one.
+- **An interrupted upload leaves an `importing` run that blocks the sample** --
+  every later import and in-app assign for it -- until it is resumed with the
+  same `--import-id` or deleted. The error message says which.
+- Mascope owns the confidence numbers: `p_correct` and friends stay empty on an
+  imported row, and `evidence` / `plausibility` are the server's own. peaky's
+  numbers ride along under `provenance.engine_provenance`.
+
+Contract drift against a real server is covered by
+`tests/test_publish_contract.py` (opt-in: `MASCOPE_LIVE=1 MASCOPE_SID=<id>`).
+It writes, so point it at a test or demo deployment.
 
 ## Gotchas
 
