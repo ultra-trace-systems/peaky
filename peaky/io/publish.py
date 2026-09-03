@@ -615,6 +615,18 @@ def build_rows(
             if text:
                 formula_by_peak[str(peak_id)] = text
 
+    # ...and its owner's adduct, for the same reason and from the same row. The
+    # in-app engine writes the M0's ionization mechanism onto every child of the
+    # family, so a child left without one is not "unknown" but a gap this
+    # translation opened: peaky records the adduct once, on the M0 that was
+    # arbitrated, and its children carry none of their own.
+    adduct_by_peak: dict[str, str] = {}
+    if "adduct" in frame.columns:
+        for peak_id, adduct in zip(frame["peak_id"], frame["adduct"]):
+            text = _text(adduct)
+            if text:
+                adduct_by_peak[str(peak_id)] = text
+
     rows: list[dict] = []
     dropped_no_peak_id = 0
     unknown_roles: dict[str, int] = {}
@@ -625,6 +637,7 @@ def build_rows(
     role_counts: dict[str, int] = {}
     reserved_seen: set[str] = set()
     inherited_formulas = 0
+    resolved_mechanisms = 0
 
     for _, row in frame.iterrows():
         peak_id = _text(row.get("peak_id"))
@@ -674,8 +687,13 @@ def build_rows(
         # server-side and cannot disagree.
         predicted = derive_tier(fit, formula, role, bands)
         target_compound_id = _text(row.get("target_compound_id"))
-        adduct = _text(row.get("adduct"))
+        adduct = _text(row.get("adduct")) or (
+            adduct_by_peak.get(owner) if owner is not None else None
+        )
         ion_formula = _text(row.get("ion_formula"))
+        mechanism_id = (mechanism_ids or {}).get(adduct) if adduct else None
+        if mechanism_id is not None:
+            resolved_mechanisms += 1
 
         provenance = {"engine_provenance": _engine_provenance(row, engine_tier)}
         supplied = _json_cell(row.get("provenance"))
@@ -694,9 +712,7 @@ def build_rows(
             "role": role,
             "assigned_formula": formula,
             "ion_formula": ion_formula,
-            "ionization_mechanism_id": (
-                (mechanism_ids or {}).get(adduct) if adduct else None
-            ),
+            "ionization_mechanism_id": mechanism_id,
             # An M0 row's isotope label is the string "M0", not nothing: that is
             # the in-app engine's convention and what the ledger's isotope
             # column renders. Left null, peaky's main peaks read as "-" beside
@@ -749,6 +765,7 @@ def build_rows(
         "unknown_roles": unknown_roles,
         "oversized": oversized,
         "inherited_formulas": inherited_formulas,
+        "resolved_mechanisms": resolved_mechanisms,
         "reserved_provenance_dropped": sorted(reserved_seen),
         "exact_plausibility": EXACT_PLAUSIBILITY,
     }

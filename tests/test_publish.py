@@ -262,6 +262,42 @@ check("an empty list publishes as nothing", P._alternatives([]) is None)
 check("a non-list publishes as nothing", P._alternatives("not json") is None)
 
 
+# ---- ionization mechanism ----------------------------------------------------
+# Not a display detail: the mechanism id is part of an assignment's verification
+# identity (sample_peak_id|assigned_formula|ionization_mechanism_id) and the fit
+# view refuses to open without one, so a null costs more than a blank column.
+MECH = {"[M+H]+": "mech-h"}
+_led = _ledger([
+    {"peak_id": "P0000000000000000M0", "role": "M0", "neutral_formula": "C10H16O2",
+     "ion_formula": "C10H17O2+", "adduct": "[M+H]+", "ion_score": 0.99},
+    {"peak_id": "P000000000000000iso", "role": "iso_child",
+     "parent_peak_id": "P0000000000000000M0", "iso_match_score": 0.98,
+     "iso_label": "13C"},
+    {"peak_id": "P0000000000000unexp", "role": "unexplained"},
+])
+_rows, _sum = P.build_rows(_led, intensity_column="height", bands=BANDS,
+                           mechanism_ids=MECH)
+_by = {r["sample_peak_id"]: r for r in _rows}
+check("an M0 carries the resolved mechanism",
+      _by["P0000000000000000M0"]["ionization_mechanism_id"] == "mech-h")
+# The in-app engine writes the M0's mechanism onto every child of the family;
+# peaky records the adduct once, on the M0 that was arbitrated.
+check("an iso_child inherits its owner's mechanism",
+      _by["P000000000000000iso"]["ionization_mechanism_id"] == "mech-h")
+check("a row with no family and no adduct carries none",
+      _by["P0000000000000unexp"]["ionization_mechanism_id"] is None)
+check("resolved rows are counted", _sum["resolved_mechanisms"] == 2)
+
+# An adduct this deployment does not know publishes as null rather than a guess:
+# a supplied id must exist and match the sample's polarity or the whole import
+# is refused.
+_rows2, _sum2 = P.build_rows(_led, intensity_column="height", bands=BANDS,
+                             mechanism_ids={})
+check("an unresolvable adduct publishes as null",
+      all(r["ionization_mechanism_id"] is None for r in _rows2)
+      and _sum2["resolved_mechanisms"] == 0)
+
+
 # ---- reserved provenance keys ------------------------------------------------
 # The server strips these because the app renders what it derives from them as
 # its own calibrated judgement; sending them is not an error, just not honoured.

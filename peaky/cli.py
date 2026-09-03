@@ -366,6 +366,9 @@ def cmd_publish(args) -> None:
         print(f"disagree   {summary['engine_tier_disagreements']} row(s) where peaky's "
               "tier differs from the one Mascope will derive -- the rows worth "
               "comparing, filterable in the app with tier_disagrees")
+    if summary.get("resolved_mechanisms"):
+        print(f"ionization {summary['resolved_mechanisms']} row(s) carry a mechanism "
+              "id -- the fit view needs one, and it is part of a verification's identity")
     for label, key in (("skipped synthetic", "dropped_synthetic"),
                        ("skipped incomplete", "dropped_incomplete"),
                        ("iso formulas inherited", "inherited_formulas")):
@@ -665,9 +668,13 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--candidate-band", type=float, default=0.45,
                     help="evidence at or above which a row publishes as 'candidate' "
                          "(default 0.45, the in-app engine's own band)")
-    pp.add_argument("--resolve-mechanisms", action="store_true",
-                    help="resolve adduct notation to this deployment's ionization-"
-                         "mechanism ids (default: send null, which is allowed)")
+    pp.add_argument("--no-resolve-mechanisms", dest="resolve_mechanisms",
+                    action="store_false",
+                    help="do not resolve adduct notation to this deployment's "
+                         "ionization-mechanism ids. Resolving is the default: the id "
+                         "is part of an assignment's verification identity and is "
+                         "required by the fit view, so a null one costs more than a "
+                         "blank column. Unmappable adducts still publish as null.")
     pp.add_argument("--engine-version", default=None,
                     help="version string to stamp on the run (default: peaky's own)")
     pp.add_argument("--calibration-note", default=None,

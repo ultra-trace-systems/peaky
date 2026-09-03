@@ -105,6 +105,25 @@ family that way; peaky's child row carries none of its own) and is scored by its
 `iso_match_score`. Its `parent_peak_id` becomes `owner_sample_peak_id`, which
 the server resolves to the minted owner id when the import finalizes.
 
+### 3b. The ionization mechanism, and why it is resolved by default
+
+peaky names adducts by notation (`[M+H]+`); Mascope keys them by a per-deployment
+`ionization_mechanism_id`. The contract permits sending null, and that is a real
+fallback &mdash; but it costs more than an empty column. The mechanism id is part
+of an assignment's **verification identity**
+(`sample_peak_id|assigned_formula|ionization_mechanism_id`), so a null one makes
+an imported row a different identity from the in-app row for the same peak and
+formula, and a verdict on one does not carry to the other. The **fit view** also
+refuses to open without it.
+
+So publish resolves by default: peaky's adduct labels map to the server's
+mechanism names, and those are looked up on the deployment. Only ids that exist
+there are sent, so an adduct this deployment does not know publishes as null
+rather than as a guess &mdash; a supplied id must exist *and* carry the sample's
+polarity or the whole import is refused. An `iso_child` inherits its owner's
+mechanism, the way it inherits the owner's formula and the way the in-app engine
+writes the family.
+
 ### 4. Rows that cannot be published
 
 - **Synthetic sub-peaks** from composite de-blending are dropped: they exist in
@@ -180,7 +199,7 @@ becomes `unassigned` rows — unless you specifically want otherwise.
 | `--manifest` | run config to publish (default: the `*_manifest.json` beside the ledger) |
 | `--intensity auto\|height\|area` | which intensity to publish; `auto` reads the instrument |
 | `--assigned-band` / `--candidate-band` | evidence-scale bands to tier and declare |
-| `--resolve-mechanisms` | resolve adduct notation to this deployment's mechanism ids (default: send null, which is allowed) |
+| `--no-resolve-mechanisms` | stop resolving adduct notation to this deployment's ionization-mechanism ids. Resolving is the default |
 | `--engine-version` | version string stamped on the run |
 | `--calibration-note` | extra text for the calibration disclosure |
 | `--import-id` | idempotency key; re-use to resume an interrupted upload |
