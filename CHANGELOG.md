@@ -47,6 +47,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   every owner link resolved, the server's derived evidence written on exactly the
   scored rows, no reserved key stored, and the batch fold-in run.
 
+  A **live contract tripwire** (`tests/test_publish_contract.py`, opt-in behind
+  `MASCOPE_LIVE=1` like the existing live smoke, which CI asserts is unset) runs
+  the real protocol against a real server and reads every contract point back:
+  the server-derived tier, the engine tier, the resolved mechanism, the owner
+  link, the alternatives shape, the server's own evidence and plausibility, and
+  the absence of the reserved keys. The offline suite pins what peaky sends;
+  only this catches the server's contract moving underneath a client that owns
+  a private copy of it.
+
   Cosmetic gap, reported by the command itself: `--dry-run`'s preview of the
   tiers Mascope will derive needs
   `mascope_tools.composition.heuristic_filter.formula_plausibility`, which is not

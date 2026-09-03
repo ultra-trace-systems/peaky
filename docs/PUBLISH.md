@@ -206,6 +206,33 @@ becomes `unassigned` rows — unless you specifically want otherwise.
 | `--max-rows` | rows per request (the server lowers it if the deployment caps tighter) |
 | `--dry-run` / `-o` | translate and validate only; optionally write the payload out |
 
+## Testing
+
+`tests/test_publish.py` is offline and pins what publish *sends*. It cannot
+catch the failure that actually threatens this feature &mdash; **Mascope's
+contract moving underneath us** &mdash; because peaky owns a private
+implementation of somebody else's wire protocol.
+
+`tests/test_publish_contract.py` is the tripwire for that. It is opt-in and
+needs a server, gated the same way as the live smoke in `test_io_mascope.py`
+(CI asserts `MASCOPE_LIVE` is unset, so it never runs there):
+
+```bash
+MASCOPE_LIVE=1 MASCOPE_SID=<sample id> python3 tests/test_publish_contract.py
+```
+
+It builds a small ledger over the sample's **real** peak ids, exercises the
+assembly protocol on a run it abandons itself (offsets, replay-is-a-no-op, a
+gap refused), then publishes a complete run and reads every contract point back
+off the server: the derived tier, the engine tier including the pre-rename
+spelling, the resolved and inherited mechanism, the M0 isotope label, the owner
+link, the alternatives shape, the server-written evidence and plausibility, and
+the absence of the reserved keys.
+
+**Point it at a test or demo deployment.** An import is a write: it leaves one
+small completed run on the named sample, and Mascope's retention keeps only the
+newest few runs per (sample, engine), so repeated runs evict older ones there.
+
 ## Failure modes worth recognising
 
 - **422 on tier coherence** — you should not see this, because `publish` sends
