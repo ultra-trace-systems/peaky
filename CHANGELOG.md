@@ -4,7 +4,7 @@ All notable changes to Peaky are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — 0.6.0 (report refactor + modern-server-only I/O)
+## [Unreleased] — 0.7.0 (publish a peaky run into Mascope)
 
 ### Added
 - **`peaky publish` — upload a finished ledger into Mascope's peak-assignment run
@@ -63,6 +63,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   assumes a plausibility of 1.0 and reads high for a formula the server weighs
   down. Nothing is at risk — the tier is derived server-side and the preview is
   not published. Upgrade `mascope-tools` once a release exports it.
+
+## [0.6.0] — 2026-08-12 (report refactor + modern-server-only I/O)
 
 ### Removed (legacy workspace-server support)
 - **The legacy (workspace-based) server code paths are gone** (`io/io_mascope.py`):

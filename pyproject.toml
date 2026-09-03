@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 # `peaky` (dist != import, like scikit-learn/sklearn): `pip install mascope-peaky`
 # then `import peaky` / run `peaky`.
 name = "mascope-peaky"
-version = "0.6.0"
+version = "0.7.0"
 description = "Peaky — AI-native analysis toolbox for Mascope: reproducible CIMS peak assignment, clustering, and reporting."
 readme = "README.md"
 requires-python = ">=3.12"  # mascope-tools (core dep) requires >=3.12
