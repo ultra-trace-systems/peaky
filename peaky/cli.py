@@ -422,6 +422,114 @@ def cmd_publish(args) -> None:
           "shows it under the 'peaky' engine badge.")
 
 
+def cmd_publish_batch(args) -> None:
+    """Publish a `peaky batch` run's merged ledger onto Mascope's BATCH ledger,
+    as a batch run of its own.
+
+    The per-sample publish lands one file's ledger as that sample's run; this
+    lands the batch's merged result - one identity per m/z - on the batch peaks
+    themselves. The server matches each row to the nearest batch peak and then
+    MEASURES the formula against every sample that holds the peak, so what the
+    ledger shows is Mascope's own fit of peaky's formula, under peaky's name.
+    peaky's tiers, scores and jitter stay in the run directory; --dry-run is a
+    complete check of the translation."""
+    import pandas as pd
+
+    from peaky.io import publish as P
+
+    loaded = P.load_batch_run(args.run_dir)
+    merged, summary = loaded["merged"], loaded["summary"]
+    if summary:
+        print(f"[publish-batch] {summary.get('batch_name')}: {summary.get('n_files')} "
+              f"file(s), reagent {summary.get('reagent')}, "
+              f"{summary.get('merged_M0')} merged M0")
+    else:
+        print("[publish-batch] no batch_summary.json beside the ledger; the run "
+              "publishes without peaky's record of its parameters")
+
+    client = None
+    mechanism_ids = None
+    if args.resolve_mechanisms:
+        _require_creds()
+        from peaky.io import io_mascope
+        client = io_mascope.connect(workspace=args.workspace)
+        adducts = sorted({str(a) for a in merged.get("adduct", pd.Series(dtype=str))
+                          .dropna().unique()})
+        names = {io_mascope.ADDUCT_TO_MECH[a]: a
+                 for a in adducts if a in io_mascope.ADDUCT_TO_MECH}
+        by_name = io_mascope.resolve_mechanism_ids(client, list(names))
+        mechanism_ids = {names[n]: i for n, i in by_name.items()}
+        print(f"[publish-batch] resolved {len(mechanism_ids)}/{len(adducts)} adduct(s) "
+              "to ionization-mechanism ids")
+
+    rows, rs = P.build_batch_rows(merged, mechanism_ids=mechanism_ids,
+                                  ion_formulas=loaded["ion_formulas"])
+    print(f"\nrows       {rs['rows']} of {len(merged)} merged row(s)")
+    if rs["dropped_no_formula"]:
+        print(f"skipped    {rs['dropped_no_formula']} row(s) without a formula")
+    print(f"ionization {rs['resolved_mechanisms']} row(s) carry a mechanism id -- the "
+          "server measures a row through its mechanism, so a row without one is "
+          "counted as unmeasurable rather than assigned")
+    if rs["unresolved_adducts"]:
+        print(f"unresolved {rs['unresolved_adducts']}")
+    if rs["derived_ion_formulas"]:
+        print(f"ion formulas derived from neutral + adduct: {rs['derived_ion_formulas']}")
+    if not rows:
+        sys.exit("Nothing to publish: no merged row carries a formula.")
+
+    version = args.engine_version or P.engine_version(None)
+    config = P.batch_config(summary)
+
+    if args.dry_run:
+        print(f"\n[dry-run] nothing sent. engine_version {version}, "
+              f"tolerance {args.tolerance_ppm} ppm")
+        if args.out:
+            Path(args.out).write_text(json.dumps(
+                {"engine": P.ENGINE, "engine_version": version, "config": config,
+                 "mz_tolerance_ppm": args.tolerance_ppm, "rows": rows},
+                indent=2, default=str), encoding="utf-8")
+            print(f"[dry-run] wrote the payload to {args.out}")
+        return
+
+    if client is None:
+        _require_creds()
+        from peaky.io import io_mascope
+        client = io_mascope.connect(workspace=args.workspace)
+
+    batch_id = args.batch_id
+    if not batch_id:
+        sample_ids = list((summary or {}).get("sample_ids") or [])
+        if not sample_ids:
+            sys.exit("Could not tell which batch this run belongs to (no sample_ids "
+                     "in batch_summary.json) -- pass --batch-id.")
+        sample = client.samples.get(sample_ids[0]) or {}
+        batch_id = sample.get("sample_batch_id")
+        if not batch_id:
+            sys.exit(f"Sample {sample_ids[0]} carries no batch on the server -- "
+                     "pass --batch-id.")
+        print(f"[publish-batch] batch {batch_id} (from the run's first sample)")
+
+    run = P.publish_batch(client, batch_id, rows, version=version, config=config,
+                          tolerance_ppm=args.tolerance_ppm, wait=not args.no_wait)
+    status = run.get("status")
+    print(f"\nbatch run {run.get('batch_peak_run_id')}: {status}")
+    if status == "completed":
+        s = run.get("summary") or {}
+        print(f"  {s.get('anchors_matched')} of {s.get('rows')} row(s) landed on a batch "
+              f"peak; {s.get('members_measured')} member peak(s) across "
+              f"{s.get('samples_rescored')} sample(s) measured against them")
+        if s.get("rows_skipped_by_reason"):
+            print(f"  skipped by reason: {s['rows_skipped_by_reason']}")
+        print("It is now the batch's current run: the Batch peaks pane's run selector "
+              "shows it under the 'peaky' engine badge, with the ledger as it was "
+              "under the previous run.")
+    elif status == "failed":
+        sys.exit(f"  the server marked the run failed: {run.get('error')}")
+    else:
+        print("  still running server-side; the batch's run selector shows it when "
+              "it completes")
+
+
 # --------------------------------------------------------------------------- #
 # parser + entry point
 # --------------------------------------------------------------------------- #
@@ -690,6 +798,35 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("-o", "--out", default=None,
                     help="with --dry-run, write the payload here for inspection")
     pp.set_defaults(func=cmd_publish)
+
+    pb = sub.add_parser("publish-batch",
+                        help="publish a `peaky batch` run's merged ledger onto Mascope's "
+                             "BATCH ledger, as a batch run (the batch-level run selector)")
+    pb.add_argument("run_dir", help="a `peaky batch` output directory (merged_ledger.csv, "
+                                    "batch_summary.json, per_file/)")
+    pb.add_argument("--batch-id", default=None,
+                    help="target sample batch (default: the batch of the run's first "
+                         "representative sample, from batch_summary.json)")
+    pb.add_argument("--tolerance-ppm", type=float, default=5.0,
+                    help="how far a merged m/z may sit from the batch peak it lands on "
+                         "(default 5)")
+    pb.add_argument("--no-resolve-mechanisms", dest="resolve_mechanisms",
+                    action="store_false",
+                    help="do not resolve adduct notation to this deployment's "
+                         "ionization-mechanism ids. Resolving is the default and here "
+                         "it matters more than for a per-sample publish: the server "
+                         "measures a row THROUGH its mechanism, so a row without one "
+                         "lands nothing.")
+    pb.add_argument("--engine-version", default=None,
+                    help="version string to stamp on the run (default: peaky's own)")
+    pb.add_argument("--no-wait", action="store_true",
+                    help="return as soon as the server opened the run instead of "
+                         "waiting for it to complete")
+    pb.add_argument("--dry-run", action="store_true",
+                    help="translate and validate only -- send nothing")
+    pb.add_argument("-o", "--out", default=None,
+                    help="with --dry-run, write the payload here for inspection")
+    pb.set_defaults(func=cmd_publish_batch)
 
     ps = sub.add_parser("setup", help="one-command workspace bootstrap "
                                       "(.env + output/ + verify; run once after install)")

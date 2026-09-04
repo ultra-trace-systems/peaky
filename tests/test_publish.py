@@ -539,3 +539,52 @@ def test_all():
 if __name__ == "__main__":
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
+
+
+# --- batch-level publish -------------------------------------------------------
+merged = pd.DataFrame([
+    {"mz": 181.0707, "neutral_formula": "C6H12O6", "adduct": "[M+H]+", "tier": "Assigned",
+     "ion_score": 0.9, "n_files": 3},
+    {"mz": 300.5, "neutral_formula": None, "adduct": None, "tier": None,
+     "ion_score": None, "n_files": 1},
+    {"mz": 250.1, "neutral_formula": "C10H20O5", "adduct": "[M+Zz]+", "tier": "Candidate",
+     "ion_score": 0.5, "n_files": 2},
+    {"mz": 203.0526, "neutral_formula": "C6H12O6", "adduct": "[M+Na]+", "tier": "Candidate",
+     "ion_score": 0.6, "n_files": 1},
+])
+brows, bsum = P.build_batch_rows(
+    merged,
+    mechanism_ids={"[M+H]+": "mech-h", "[M+Na]+": "mech-na"},
+    ion_formulas={("C6H12O6", "[M+H]+"): "C6H13O6+"},
+)
+check("batch rows carry exactly the four fields the server reads",
+      brows[0] == {"mz": 181.0707, "formula": "C6H12O6", "ion_formula": "C6H13O6+",
+                   "ionization_mechanism_id": "mech-h"})
+check("a merged row without a formula is dropped and counted",
+      bsum["dropped_no_formula"] == 1 and bsum["rows"] == 3 and len(brows) == 3)
+check("an unmappable adduct publishes with a null mechanism and is named",
+      brows[1]["ionization_mechanism_id"] is None
+      and bsum["unresolved_adducts"] == {"[M+Zz]+": 1}
+      and bsum["resolved_mechanisms"] == 2)
+check("an ion formula the per-file ledgers do not hold is derived from neutral + adduct",
+      brows[2]["ion_formula"] == "C6H12NaO6+" and bsum["derived_ion_formulas"] >= 1)
+check("a derived ion formula keeps the adduct's charge sign",
+      P.ion_formula_for("C6H12O6", "[M+H]+") == "C6H13O6+"
+      and P.ion_formula_for("C6H12O6", "[M-H]-") == "C6H11O6-")
+check("the batch config keeps the profile and parameters, not the per-file statistics",
+      P.batch_config({"reagent": "acetate", "n_files": 3, "per_file": {"a": 1},
+                      "sample_ids": ["s1"]})
+      == {"reagent": "acetate", "n_files": 3, "sample_ids": ["s1"],
+          "engine": "peaky", "pipeline": "batch"})
+check("no summary still yields a config that names the engine",
+      P.batch_config(None) == {"engine": "peaky", "pipeline": "batch"})
+check("a 409 on the batch import says another operation holds the ledger",
+      "still rewriting" in P._batch_failure_message(RuntimeError("[HTTP 409] in flight"), None))
+check("a 422 on the batch import points at the message and spares unmappable adducts",
+      "unmappable adduct" in P._batch_failure_message(RuntimeError("[HTTP 422] nope"), None))
+
+batch_parser = cli.build_parser()
+bargs = batch_parser.parse_args(["publish-batch", "out/run", "--dry-run", "--tolerance-ppm", "3"])
+check("publish-batch parses its run directory and tolerance",
+      bargs.run_dir == "out/run" and bargs.tolerance_ppm == 3.0 and bargs.dry_run
+      and bargs.resolve_mechanisms and not bargs.no_wait and bargs.batch_id is None)
