@@ -51,7 +51,10 @@ from __future__ import annotations
 
 import json
 import math
+import time
 import uuid
+from collections import Counter
+from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
@@ -1139,3 +1142,297 @@ def _upload_failure_message(exc: Exception, run_id: str | None, offset: int) -> 
         f" (run {run_id}, {offset} row(s) staged)" if run_id else " (no run created)"
     )
     return f"import refused{where}: {text}{hint}"
+
+
+# --------------------------------------------------------------------------- #
+# batch-level publish: a `peaky batch` run's merged ledger onto the BATCH ledger
+# --------------------------------------------------------------------------- #
+#: Rows one batch import may carry (the server's MAX_BATCH_IMPORT_ROWS). A
+#: merged ledger is one row per m/z cluster, so this is a batch's whole result.
+MAX_BATCH_ROWS = 5000
+
+#: How far, in ppm, a merged m/z may sit from the batch peak it lands on. The
+#: merged m/z is the mean of the representative files' raw readings; the batch
+#: peak's is Mascope's frozen anchor. A few ppm covers both.
+DEFAULT_BATCH_TOLERANCE_PPM = 5.0
+
+
+def ion_formula_for(neutral: str, adduct: str) -> str | None:
+    """The ion's formula for a (neutral, adduct) reading, signed as the ledger
+    writes it (``C6H13O6+``); None when the adduct cannot be parsed.
+
+    The merged ledger carries the neutral formula and the adduct but not the
+    ion, which the per-file ledgers do; this is the fallback for a reading no
+    per-file ledger happens to hold.
+    """
+    try:
+        from peaky.assignment.passes.postprocess import _ion_formula_str
+
+        composition = _ion_formula_str(neutral, adduct)
+    except Exception:  # noqa: BLE001 - an unparseable adduct is a blank, not a crash
+        return None
+    if not composition:
+        return None
+    tail = str(adduct).strip()[-1:]
+    return composition + (tail if tail in "+-" else "")
+
+
+def load_batch_run(run_dir: str) -> dict:
+    """What a `peaky batch` run left on disk, for publishing.
+
+    :param run_dir: The run's output directory.
+    :return: ``merged`` (the merged ledger), ``summary`` (``batch_summary.json``,
+        or None), ``ion_formulas`` ((neutral, adduct) -> ion formula gathered
+        from the per-file ledgers) and ``root``.
+    :raises PublishError: When the directory holds no merged ledger.
+    """
+    root = Path(run_dir).expanduser()
+    merged_path = root / "merged_ledger.csv"
+    if not merged_path.exists():
+        raise PublishError(
+            f"{run_dir} holds no merged_ledger.csv - point at a `peaky batch` "
+            "output directory"
+        )
+    merged = pd.read_csv(merged_path)
+    summary = None
+    summary_path = root / "batch_summary.json"
+    if summary_path.exists():
+        # Written with the stdlib encoder, which emits bare NaN: parse permissively.
+        summary = json.loads(
+            summary_path.read_text(encoding="utf-8"), parse_constant=lambda _c: None
+        )
+    ion_formulas: dict[tuple[str, str], str] = {}
+    per_file = root / "per_file"
+    if per_file.is_dir():
+        for path in sorted(per_file.glob("*_ledger.csv")):
+            ledger = pd.read_csv(path)
+            if not {"neutral_formula", "adduct", "ion_formula"} <= set(ledger.columns):
+                continue
+            for neutral, adduct, ion in zip(
+                ledger["neutral_formula"], ledger["adduct"], ledger["ion_formula"]
+            ):
+                key = (_text(neutral), _text(adduct))
+                value = _text(ion)
+                if key[0] and key[1] and value:
+                    ion_formulas.setdefault(key, value)
+    return {
+        "merged": merged,
+        "summary": summary,
+        "ion_formulas": ion_formulas,
+        "root": str(root),
+    }
+
+
+def build_batch_rows(
+    merged: pd.DataFrame,
+    *,
+    mechanism_ids: dict[str, str] | None = None,
+    ion_formulas: dict[tuple[str, str], str] | None = None,
+) -> tuple[list[dict], dict]:
+    """Translate a merged batch ledger - one M0 per m/z cluster - into the
+    batch import's rows.
+
+    The server reads four things of a row: the m/z, the neutral formula, the
+    ion formula and the adduct as this deployment's mechanism id. Everything
+    else the merged ledger knows (tier, ion score, file count, jitter) is
+    peaky's own reading and stays here: the server MEASURES the formula
+    against every member of the batch peak it lands on, and a row without a
+    mechanism id cannot be measured, so an unmappable adduct is reported.
+
+    :param merged: The merged ledger (``merged_ledger.csv``).
+    :param mechanism_ids: Adduct notation -> mechanism id, as resolved against
+        the deployment; an unmapped adduct sends null.
+    :param ion_formulas: (neutral, adduct) -> ion formula from the per-file
+        ledgers; a reading absent there is derived from the two.
+    :return: ``(rows, summary)``.
+    """
+    rows: list[dict] = []
+    summary: dict[str, Any] = {
+        "rows": 0,
+        "dropped_no_formula": 0,
+        "resolved_mechanisms": 0,
+        "unresolved_adducts": Counter(),
+        "derived_ion_formulas": 0,
+    }
+    for _, row in merged.iterrows():
+        formula = _text(row.get("neutral_formula"))
+        mz = _finite(row.get("mz"))
+        if not formula or mz is None or mz <= 0:
+            summary["dropped_no_formula"] += 1
+            continue
+        adduct = _text(row.get("adduct"))
+        mechanism_id = (mechanism_ids or {}).get(adduct) if adduct else None
+        if adduct and mechanism_id is None:
+            summary["unresolved_adducts"][adduct] += 1
+        elif mechanism_id is not None:
+            summary["resolved_mechanisms"] += 1
+        ion_formula = _text(row.get("ion_formula"))
+        if ion_formula is None and adduct:
+            ion_formula = (ion_formulas or {}).get((formula, adduct))
+            if ion_formula is None:
+                ion_formula = ion_formula_for(formula, adduct)
+                if ion_formula is not None:
+                    summary["derived_ion_formulas"] += 1
+        rows.append(
+            {
+                "mz": mz,
+                "formula": formula,
+                "ion_formula": ion_formula,
+                "ionization_mechanism_id": mechanism_id,
+            }
+        )
+    summary["rows"] = len(rows)
+    summary["unresolved_adducts"] = dict(summary["unresolved_adducts"])
+    return rows, summary
+
+
+#: What of the batch summary travels as the run's config: the profile and the
+#: parameters that produced the merged ledger, and its headline counts - not
+#: the per-file statistics, which the server would re-serve on every listing.
+BATCH_CONFIG_KEYS = (
+    "reagent",
+    "label",
+    "context",
+    "batch_name",
+    "select",
+    "coverage_target",
+    "n_files",
+    "sample_ids",
+    "tol_ppm",
+    "offsets_ppm",
+    "merged_M0",
+    "merged_tiers",
+    "n_in_all_files",
+    "n_single_file",
+    "formula_disagreements",
+)
+
+
+def batch_config(summary: dict | None, log: Callable[[str], None] = print) -> dict:
+    """The batch run's config for the run record, capped like a manifest."""
+    config = {k: summary[k] for k in BATCH_CONFIG_KEYS if summary and k in summary}
+    config.setdefault("engine", ENGINE)
+    config.setdefault("pipeline", "batch")
+    return _capped(_sanitize(config), "config", log) or {"engine": ENGINE}
+
+
+def _batch_failure_message(exc: Exception, run_id: str | None) -> str:
+    text = str(exc)
+    if "409" in text:
+        return (
+            f"the server refused the import: {text}\n"
+            "Another batch-level operation (a rebuild, a search, an import) is "
+            "still rewriting this batch's ledger. Wait for it to finish - the run "
+            "selector shows it - and publish again."
+        )
+    if "422" in text:
+        return (
+            f"the server refused the import: {text}\n"
+            "The message names what it cannot honour - an unknown mechanism id "
+            "or a reserved engine name. Rows with an unmappable adduct are fine "
+            "(they publish with a null mechanism and are skipped as unmeasurable)."
+        )
+    if "413" in text:
+        return (
+            f"the server refused the body: {text}\n"
+            "The proxy's body limit. A merged ledger this large is unusual; "
+            "split it or raise client_max_body_size on the deployment."
+        )
+    where = f" (run {run_id} opened)" if run_id else ""
+    return f"upload failed{where}: {text}"
+
+
+def publish_batch(
+    client,
+    batch_id: str,
+    rows: list[dict],
+    *,
+    version: str,
+    config: dict,
+    tolerance_ppm: float = DEFAULT_BATCH_TOLERANCE_PPM,
+    wait: bool = True,
+    poll_interval: float = 2.0,
+    max_wait: float = 900.0,
+    timeout=(15, 300),
+    log: Callable[[str], None] = print,
+) -> dict:
+    """Upload translated batch rows as one batch run on the batch ledger.
+
+    One request: the server validates, opens the run (snapshotting the ledger
+    as it was) and returns it at once; the matching and the measurement run in
+    the background. With ``wait`` the run is polled to its close and the
+    closed record - ``completed`` with its ``summary``, or ``failed`` with its
+    ``error`` - is returned.
+
+    :param client: A connected MascopeClient.
+    :param batch_id: The sample batch the run belongs to.
+    :param rows: Translated rows (:func:`build_batch_rows`).
+    :param version: The engine version string to stamp.
+    :param config: The batch's record for the run (:func:`batch_config`).
+    :param tolerance_ppm: How far a row's m/z may sit from its batch peak.
+    :param wait: Poll until the run closes.
+    :param poll_interval: Seconds between polls.
+    :param max_wait: Seconds to poll before giving up (the run still finishes
+        server-side).
+    :param timeout: Connect/read timeout for each request.
+    :param log: Progress sink.
+    :return: The run record.
+    :raises PublishError: If the server refuses the import, or the poll gives up.
+    """
+    from mascope_sdk._http import http_get, http_post
+
+    if len(rows) > MAX_BATCH_ROWS:
+        raise PublishError(
+            f"{len(rows)} rows is more than one batch import carries "
+            f"({MAX_BATCH_ROWS}); a merged ledger this large is unusual"
+        )
+    body = {
+        "engine": ENGINE,
+        "engine_version": version,
+        "config": config,
+        "mz_tolerance_ppm": tolerance_ppm,
+        "rows": rows,
+    }
+    try:
+        response = http_post(
+            client.url,
+            f"batch-peaks/batch/{batch_id}/runs/import",
+            client.access_token,
+            _sanitize(body),
+            timeout=timeout,
+        )
+    except Exception as exc:  # noqa: BLE001 - every refusal is reported the same way
+        raise PublishError(_batch_failure_message(exc, None)) from exc
+    data = (response.json() or {}).get("data") or []
+    if not data:
+        raise PublishError("import response carried no run record")
+    run = data[0]
+    run_id = run.get("batch_peak_run_id")
+    log(f"[publish-batch] run {run_id} opened with {len(rows)} row(s); the server "
+        "is matching and measuring them")
+    if not wait:
+        return run
+    deadline = time.monotonic() + max_wait
+    while True:
+        time.sleep(poll_interval)
+        try:
+            listing = http_get(
+                client.url,
+                f"batch-peaks/batch/{batch_id}/runs",
+                client.access_token,
+                timeout=timeout,
+            ).json() or {}
+        except Exception as exc:  # noqa: BLE001 - a poll may hit a transient
+            log(f"[publish-batch] poll failed ({exc}); retrying")
+            listing = {}
+        latest = next(
+            (r for r in (listing.get("data") or []) if r.get("batch_peak_run_id") == run_id),
+            None,
+        )
+        if latest is not None and latest.get("status") != "running":
+            return latest
+        if time.monotonic() > deadline:
+            raise PublishError(
+                f"run {run_id} is still running after {max_wait:.0f} s; it finishes "
+                "server-side - the batch's run selector shows it when it does"
+            )
