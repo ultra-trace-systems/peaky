@@ -6,6 +6,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`peaky publish-batch <run_dir>`** - publish a `peaky batch` run's merged ledger
+  onto Mascope's batch ledger as a batch run of its own (Mascope's
+  `POST /api/batch-peaks/batch/{id}/runs/import`). Each merged m/z lands on the
+  nearest batch peak and the server measures peaky's formula against every sample
+  that holds the peak, so the batch ledger shows Mascope's fit under the `peaky`
+  name; adducts are resolved to mechanism ids by default (a row without one lands
+  nothing), ion formulas come from the per-file ledgers or are derived, and
+  `--dry-run` shows the payload. `docs/PUBLISH.md` gained a section.
+
 ### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
 
 ### Added

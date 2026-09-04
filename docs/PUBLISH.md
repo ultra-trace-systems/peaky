@@ -191,6 +191,42 @@ that sample's other peaks from the batch overview and can delete anchors it alon
 supported. Publish the whole ledger — including the unexplained residual, which
 becomes `unassigned` rows — unless you specifically want otherwise.
 
+## Batch-level publish
+
+`peaky publish` lands one file's ledger as that sample's run. A `peaky batch` run ends
+with something else as well: `merged_ledger.csv`, one identity per m/z cluster across the
+representative files. `peaky publish-batch <run_dir>` lands that on Mascope's **batch
+ledger** - the batch peaks themselves - as a batch run of its own, through
+`POST /api/batch-peaks/batch/{id}/runs/import`.
+
+The server does the deciding. Each row is matched to the batch peak nearest its m/z
+(within `--tolerance-ppm`, default 5) and of the polarity its mechanism implies, and the
+formula is then **measured** against every sample that holds that peak with the server's
+seeded scorer - the same path its own untargeted search propagates through - so what the
+ledger shows is Mascope's fit of peaky's formula, tiered under the ledger's bands, with
+`peaky` named as the source. peaky's tiers, ion scores, file counts and jitter stay in the
+run directory; `--dry-run` shows exactly what will be sent.
+
+Three consequences worth knowing:
+
+- **Resolve mechanisms.** The server builds the ion from the mechanism, so a row whose
+  adduct did not resolve to a mechanism id lands nothing (it is counted as unmeasurable in
+  the run's summary rather than refused). Resolving is the default; the command names the
+  adducts it could not map.
+- **Curated and isotopologue batch peaks are left alone**, and so is any batch peak no row
+  lands on. Batch peaks the in-app engine had assigned *are* re-pointed where peaky's
+  formula measures - the import is peaky's view of the batch, and the ledger as it was is
+  kept under the previous run in the batch's run selector, so the two can be compared.
+  *Rebuild batch ledger* puts Mascope's own view back.
+- **One request, then a wait.** The server opens the run at once and matches and measures
+  in the background; the command polls until the run completes (or `--no-wait` returns
+  the running record). The batch is taken from the run's first representative sample, or
+  `--batch-id`.
+
+The ion formula is not in the merged ledger; it is read from the per-file ledgers
+(`per_file/*_ledger.csv`) for the same (neutral, adduct) reading, and derived from the
+two when no per-file ledger holds it.
+
 ## Options
 
 | flag | meaning |
