@@ -7,6 +7,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `PEAKY_MATCH_PPM` widens the local scorer's line-matching window per run, so a TOF reference run (5-15 ppm accuracy) is not emptied by the Orbitrap-sized 5 ppm default.
 
 - **A privacy scan that refuses internal identifiers, run by the suite and by CI.**
   Peaky is public; the servers, workspaces, datasets and batches a run touches are
