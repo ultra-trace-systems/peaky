@@ -7,6 +7,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `PEAKY_MATCH_PPM` widens the local scorer's line-matching window per run, so a TOF reference run (5-15 ppm accuracy) is not emptied by the Orbitrap-sized 5 ppm default.
 
 - **A source-solvent cluster channel for positive-mode sources, kept off the covalent
   grid on purpose.** A low-pressure positive source running on solvent vapour does not
