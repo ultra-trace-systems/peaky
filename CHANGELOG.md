@@ -7,6 +7,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `PEAKY_MATCH_PPM` widens the local scorer's line-matching window per run, so a TOF reference run (5-15 ppm accuracy) is not emptied by the Orbitrap-sized 5 ppm default.
 
 - **`peaky publish-batch <run_dir>`** - publish a `peaky batch` run's merged ledger
   onto Mascope's batch ledger as a batch run of its own (Mascope's

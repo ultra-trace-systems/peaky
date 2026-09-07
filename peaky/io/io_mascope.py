@@ -555,7 +555,12 @@ def _score_candidates_local(client, sample_id, formulas, mechanism_ids):
 
     raw = fetch_peaks(client, sample_id)                      # cached; mz/height/peak_id
     mechs = _mechanism_names(client, mechanism_ids)
-    out = local_scoring.score_candidates_local(raw, formulas, mechanisms=mechs)
+    # The line-matching window is Orbitrap-sized by default (5 ppm). A TOF sits at
+    # 5-15 ppm accuracy, so its M0 would fall outside the window and every
+    # candidate be dropped before scoring; PEAKY_MATCH_PPM widens it per run.
+    ppm_env = os.environ.get("PEAKY_MATCH_PPM")
+    kwargs = {"ppm": float(ppm_env)} if ppm_env else {}
+    out = local_scoring.score_candidates_local(raw, formulas, mechanisms=mechs, **kwargs)
     out.attrs["match_batches"] = 0
     out.attrs["match_batch_failures"] = []
     out.attrs["match_formulas"] = len(formulas)
