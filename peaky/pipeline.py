@@ -370,6 +370,9 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                 # the trace reconciliation of the merged ledger (`traces`)
                 "admission": summ.get("admission"),
                 "gate": summ.get("gate"), "traces": summ.get("traces")},
+        # Keyed by sample: a batch run describes many, and what publishes into
+        # Mascope is one sample's run, which has to say what scored it.
+        extra={"pattern_scoring": summ.get("pattern_scoring") or {}},
         created_utc=ctx.when.isoformat(), log=log)
     elapsed = round(time.time() - t_start, 1)
     log(f"[batch] pipeline finished in {elapsed:.1f}s "
@@ -599,6 +602,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                 "selection": summ.get("selection"),
                 "admission": summ.get("admission"),
                 "gate": summ.get("gate"), "traces": summ.get("traces")},
+        extra={"pattern_scoring": summ.get("pattern_scoring") or {}},
         created_utc=ctx.when.isoformat(), log=log)
     elapsed = round(time.time() - t_start, 1)
     log(f"[pool] pipeline finished in {elapsed:.1f}s "
