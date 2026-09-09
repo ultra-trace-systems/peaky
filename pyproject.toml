@@ -32,9 +32,17 @@ dependencies = [
     # In-process scoring backend, now the DEFAULT (PEAKY_LOCAL_SCORING=0 falls back
     # to the network match_compounds path). >=2026.6.25 carries the 15N-labelled
     # custom-element isotope prediction. See docs/MASCOPE_TOOLS_INTEGRATION.md.
-    # 2026.9.2 is the release that carries PatternScoring, the mass-accuracy
-    # fit and the instrument-class widths the local scorer is built on.
-    "mascope-tools>=2026.9.2",
+    # THE EPIC BRANCH'S COUPLING. The scorer is built on library API that exists
+    # only on Mascope's assignment-quality epic: PatternScoring, the
+    # mass-accuracy fit and the instrument-class widths. PyPI's newest
+    # mascope-tools (2026.6.25) predates all of it, and the peaks endpoint only
+    # started sending signal_to_noise in the same epic, so this branch pins the
+    # library by revision - the one the reference runs were scored with, which
+    # the plan's step 2.1b names. A direct reference rather than a
+    # [tool.uv.sources] entry so pip and uv install the same thing, and so this
+    # branch cannot be released by accident (PyPI refuses direct references).
+    # The merge into main replaces it with the released lower bound.
+    "mascope-tools @ git+https://github.com/ultra-trace-systems/mascope@fc25575daff1ada188f9f4ae3db68f3bb52b85d4#subdirectory=libraries/tools",
     "pandas>=2.1",
     "pyarrow>=14",          # parquet engine — the per-batch TS (*_ts.parquet) is read/written across the pipeline
     "numpy>=1.24",
