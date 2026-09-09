@@ -22,6 +22,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 __version__ = "0.5.0"  # modern (datasets-based) servers only; raw batch names
@@ -44,6 +45,16 @@ CACHE_ROOT = Path(os.path.expanduser("~/.mascope-assign-cache"))
 #: The fit score every candidate is scored with. Stamped on a published run so
 #: a v1 reference and a v2 one are told apart in the store rather than by date.
 SCORE_VERSION = 2
+
+#: Anchors below which no offset is claimed either. A median and a robust spread
+#: are not the same measurement: the spread needs a distribution
+#: (`MASS_ACCURACY_MIN_ANCHORS`), the median needs only a few points that agree.
+#: Discarding the offset because the width could not be fitted is not the
+#: cautious choice it looks like - it asserts the instrument sits on calibration,
+#: which on a source that sits 1.2 ppm low charges that error to every candidate
+#: and to none of its rivals equally, since the rival with the compensating error
+#: then scores best.
+MIN_OFFSET_ANCHORS = 3
 
 #: Per-sample `(PatternScoring, snapshot)`, keyed by sample id (see
 #: `scoring_for_sample` and `scoring_snapshot`).
@@ -454,6 +465,10 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
     # so it is not evidence about its accuracy either.
     anchors = sample_mass_errors(raw, max_abs_ppm=window)
     mu, sigma = fit_mass_accuracy(anchors)
+    if sigma is None and len(anchors) >= MIN_OFFSET_ANCHORS:
+        # The fit reports no width and, with it, no offset. The width is
+        # genuinely unmeasurable here; the offset is not.
+        mu = float(np.median(anchors))
     scoring = PatternScoring(
         sigma_ppm=scoring_sigma_ppm(sigma, resolve_fallback_sigma_ppm(kind)),
         mu_ppm=mu,
@@ -466,6 +481,10 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
         # "fitted" means this sample measured its own width; "instrument_class"
         # means too few known ions matched to fit one and the class stood in.
         "sigma_source": "fitted" if sigma is not None else "instrument_class",
+        # The offset stands on its own: a sample can measure one and not a width.
+        "mu_source": (
+            "fitted" if len(anchors) >= MIN_OFFSET_ANCHORS else "assumed_zero"
+        ),
         "fitted_anchors": len(anchors),
         "mz_tolerance_ppm": float(scoring.mz_tolerance_ppm),
         "abundance_floor": float(scoring.abundance_floor),

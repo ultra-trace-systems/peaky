@@ -192,3 +192,34 @@ class TestTheAnchor:
         # And every line's abundance is relative to that one, so the brightest
         # runs above 1 rather than being scaled to it.
         assert flat["rel_abundance"].max() > 1.0
+
+
+class TestTheSampleFit:
+    """What a sample can measure about itself, and what it cannot."""
+
+    def test_the_offset_survives_a_width_that_cannot_be_fitted(self):
+        # Six anchors are too few for a robust spread and plenty for a median.
+        # A source sitting 1.2 ppm low is a fact about the run; scoring as if it
+        # sat on calibration charges that error to every candidate, and the one
+        # whose own error compensates it then wins the peak.
+        from mascope_tools.composition import fit_mass_accuracy
+
+        from peaky.io.io_mascope import MIN_OFFSET_ANCHORS
+
+        anchors = [-1.95, -1.66, -1.52, -0.84, -0.80, -0.72]
+        mu, sigma = fit_mass_accuracy(anchors)
+
+        assert sigma is None and mu == 0.0  # the library reports neither
+        assert len(anchors) >= MIN_OFFSET_ANCHORS
+        assert float(np.median(anchors)) == pytest.approx(-1.18, abs=0.01)
+
+    def test_a_shifted_sample_scores_its_own_candidate_best(self):
+        # The whole point of subtracting the offset: with it, the candidate that
+        # IS the peak wins; without it, the reading whose error cancels the
+        # instrument's does.
+        peaks = _spectrum(ppm_shift=-1.18, snr=50.0)
+        centred = PatternScoring(sigma_ppm=0.58, mu_ppm=-1.18, mz_tolerance_ppm=5.0)
+        uncentred = PatternScoring(sigma_ppm=0.58, mu_ppm=0.0, mz_tolerance_ppm=5.0)
+
+        assert _score(peaks, centred) > 0.8
+        assert _score(peaks, uncentred) < 0.2
