@@ -282,6 +282,9 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                 "n_samples": summ.get("n_files"),
                 "select": summ.get("select"),
                 "coverage_target": summ.get("coverage_target")},
+        # Keyed by sample: a batch run describes many, and what publishes into
+        # Mascope is one sample's run, which has to say what scored it.
+        extra={"pattern_scoring": summ.get("pattern_scoring") or {}},
         created_utc=ctx.when.isoformat(), log=log)
     return {"ctx": ctx, "assign": res, **gen}
 
@@ -418,6 +421,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                 "merged_tiers": summ.get("merged_tiers"),
                 "n_samples": summ.get("n_files"), "n_groups": len(groups),
                 "select": "pooled-union", "coverage_target": coverage_target},
+        extra={"pattern_scoring": summ.get("pattern_scoring") or {}},
         created_utc=ctx.when.isoformat(), log=log)
     return {"ctx": ctx, "assign": res, "groups": groups, "group_runs": group_runs,
             "selection": prov, **gen}

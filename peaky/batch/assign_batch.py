@@ -400,6 +400,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         log(f"[assign_batch] reference lists active: {[rl.id for rl in reflists_active]} "
             f"(context {sorted(_tags) or 'contaminants-only'})")
     per_file, offsets, per_stats = {}, {}, []
+    scorings: dict = {}        # per-sample pattern_scoring, for the run manifest
     identified_aux: list = []  # per-file identified-ion rows (reagent/iso/artifact
                                # + analyte ion_formula) for the parquet stamp
     plaus_audit: list = []     # per-file O-monster / carbon-cluster demotes, pooled
@@ -423,6 +424,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             offsets[sid] = IO.estimate_offset(IO.fetch_peaks(client, sid, use_cache=True))
         except Exception:
             offsets[sid] = None
+        # What this sample's candidates were scored at. Read here rather than
+        # carried back from the worker: it is a property of the sample and its
+        # peaks are cached, so the parent computes the same answer the worker did.
+        try:
+            scorings[sid] = IO.scoring_snapshot(client, sid)
+        except Exception:      # provenance must not fail a completed sample
+            scorings[sid] = None
         st = dict(stats)
         st.update(sample_id=sid, offset_ppm=offsets[sid],
                   n_M0=int((led["role"] == "M0").sum()) if "role" in led.columns else None)
@@ -544,6 +552,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "coverage_target": (coverage_target if select == "brightest" else None),
         "n_files": len(sample_ids), "sample_ids": sample_ids,
         "tol_ppm": tol_ppm, "offsets_ppm": offsets,
+        "pattern_scoring": scorings,
         "merged_M0": int(len(merged)),
         "merged_tiers": merged["tier"].value_counts().to_dict() if len(merged) else {},
         "n_in_all_files": int((merged["n_files"] == len(sample_ids)).sum()) if len(merged) else 0,
