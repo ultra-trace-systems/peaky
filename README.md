@@ -64,7 +64,7 @@ Peaky is a deterministic Python toolbox with two faces:
 - a **CLI** (`peaky`) for scripted / headless runs.
 
 Mascope's scoring maths is the only scorer — run in-process by default via
-`mascope_tools` (same IsoSpec + `score_pattern`), with the network `match_compounds`
+`mascope_tools` (same IsoSpec + `score_pattern_v2`), with the network `match_compounds`
 as an opt-in fallback — and the chemistry gates (integer DBE, Senior, O-cap,
 evidence-gated heteroatoms/halogens) are structural. **No LLM is in the assignment
 loop** — the AI orchestrates, it never does the chemistry — which is

@@ -1,7 +1,7 @@
 # Local scoring via `mascope_tools`
 
 Status: **DEFAULT.** Local in-process scoring replaced the network `match_compounds`
-hot loop (same Mascope scoring maths — IsoSpec + `score_pattern` — run locally). Opt
+hot loop (same Mascope scoring maths — IsoSpec + `score_pattern_v2` — run locally). Opt
 back to the server path with `PEAKY_LOCAL_SCORING=0`. `mascope-tools` is now a core
 dependency. Full-pipeline validated on Bromide (0.932 agreement) + Uronium (no OOM,
 0.986); one integration bug found & fixed (deprotonation charge, below); the +0.052

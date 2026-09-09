@@ -39,6 +39,9 @@ ENV_SEARCH = [_REPO_ENV, ".env", CANONICAL_ENV, "~/mascope-mcp/.env",
               "~/.claude/skills/mascope-sdk/.env"]
 CACHE_ROOT = Path(os.path.expanduser("~/.mascope-assign-cache"))
 
+#: Per-sample `PatternScoring`, keyed by sample id (see `scoring_for_sample`).
+_SCORING_CACHE: dict = {}
+
 
 def _find_env(explicit: str | None = None) -> str:
     # precedence: explicit arg (e.g. CLI --env) > $MASCOPE_ENV > the search list.
@@ -255,9 +258,14 @@ def fetch_peaks(client, sample_id: str, *, use_cache: bool = True,
                 cache_root: Path = CACHE_ROOT) -> pd.DataFrame:
     """Pull the raw peak table (with Mascope's own matches flattened in) and
     cache it. Returns the full multi-row-per-peak frame; dedup is the ledger's
-    job."""
+    job.
+
+    The cache file is versioned because the peaks payload gained the per-peak
+    `signal_to_noise` the scorer judges a faint line by: a frame cached before
+    the server sent it has no such column, and silently scoring without it is
+    the difference between charging an absent isotopologue and excusing it."""
     cdir = Path(cache_root) / sample_id
-    cfile = cdir / "peaks.parquet"
+    cfile = cdir / "peaks.v2.parquet"
     if use_cache and cfile.exists():
         return pd.read_parquet(cfile)
     peaks = client.samples.get_peaks(sample_id=sample_id, matches=True)
@@ -320,18 +328,26 @@ def detect_adducts(peaks: pd.DataFrame) -> list[str]:
     return out or ["[M-H]-"]
 
 
-def estimate_offset(peaks: pd.DataFrame, *, min_n: int = 8) -> float | None:
-    """Rough median ppm mass-offset from the sample's OWN server matches (base
-    ions only). The pass-1 self-calibration is the authoritative fit, but it runs
-    AFTER pass 0 / pass 1 -- so a source with a large systematic offset (the
-    instrument sits at e.g. -1.9 ppm) is blind to it in pass 0's |ppm|<=2 known-
-    species gate, which then drops real contaminants whose on-trend mass is just
-    past 2 ppm and lets pass 1 grab the peak with an off-trend mass-coincidence.
-    This seeds those pre-calibration gates. None when too few matches to trust."""
+def sample_mass_errors(peaks: pd.DataFrame, *,
+                       max_abs_ppm: float = 10.0) -> list[float]:
+    """The ppm mass errors of the sample's OWN server matches (base ions only).
+
+    The sample's anchors: peaks Mascope already attributed to a known species,
+    whose error against the theoretical mass is a measurement of this run's mass
+    accuracy rather than of any assignment peaky makes. One collection feeds both
+    readings of them - the rough offset the pre-calibration gates need, and the
+    (mu, sigma) the fit score is judged at - so the two cannot drift apart.
+
+    :param peaks: The raw peaks frame, matches flattened in.
+    :param max_abs_ppm: Gross-outlier guard. The default is a compromise for the
+        offset; a caller that knows the instrument class should pass its
+        matching window, since an anchor outside that window is not a match.
+    :return: The errors in ppm, in the frame's order.
+    """
     from peaky.chem import chemistry as C
     cols = {"target_compound_formula", "ionization_mechanism", "mz"}
     if peaks is None or not cols <= set(peaks.columns):
-        return None
+        return []
     iso_col = "target_isotope_formula" in peaks.columns
     ppms: list[float] = []
     for r in peaks.dropna(subset=["target_compound_formula", "mz",
@@ -346,13 +362,104 @@ def estimate_offset(peaks: pd.DataFrame, *, min_n: int = 8) -> float | None:
         except Exception:
             continue
         p = (float(r.mz) - theo) / theo * 1e6
-        if abs(p) <= 10:                             # gross-outlier guard
+        if abs(p) <= max_abs_ppm:
             ppms.append(p)
+    return ppms
+
+
+def estimate_offset(peaks: pd.DataFrame, *, min_n: int = 8) -> float | None:
+    """Rough median ppm mass-offset from the sample's OWN server matches (base
+    ions only). The pass-1 self-calibration is the authoritative fit, but it runs
+    AFTER pass 0 / pass 1 -- so a source with a large systematic offset (the
+    instrument sits at e.g. -1.9 ppm) is blind to it in pass 0's |ppm|<=2 known-
+    species gate, which then drops real contaminants whose on-trend mass is just
+    past 2 ppm and lets pass 1 grab the peak with an off-trend mass-coincidence.
+    This seeds those pre-calibration gates. None when too few matches to trust."""
+    ppms = sorted(sample_mass_errors(peaks))
     if len(ppms) < min_n:
         return None
-    ppms.sort()
     n = len(ppms)
     return (ppms[n // 2] if n % 2 else (ppms[n // 2 - 1] + ppms[n // 2]) / 2)
+
+
+def instrument_type_for(sample: dict | None) -> str | None:
+    """The sample's instrument class, 'orbi' or 'tof'.
+
+    The record's own field first - the class the reader wrote when it converted
+    the file - then the instrument name and the file name, which is the order
+    Mascope itself resolves it in. None when nothing says, and the caller then
+    takes the more forgiving of the two class widths.
+    """
+    from peaky.io.publish import instrument_type_from_filename, resolve_instrument_type
+
+    record = sample or {}
+    declared = str(record.get("instrument_type") or "").strip().lower()
+    if declared in ("orbi", "tof"):
+        return declared
+    if record.get("instrument"):
+        kind = resolve_instrument_type(str(record["instrument"]))
+        if kind:
+            return kind
+    if record.get("filename"):
+        return instrument_type_from_filename(str(record["filename"]))
+    return None
+
+
+def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None,
+                       *, refresh: bool = False):
+    """What this sample's candidates are scored at: a `PatternScoring`.
+
+    Three statements about the sample, each read the way Mascope's own engine
+    reads it (`engine.pattern_scoring_for`), so that a reference run and an
+    in-app run judge the same spectrum by the same measurement:
+
+      * the width - the sample's own anchors fitted by the library's
+        `fit_mass_accuracy`, widened for prediction and centroiding, falling
+        back to the instrument class where too few anchors matched to measure
+        anything. This is what a TOF needed: at the Orbitrap-shaped default a
+        TOF's every candidate is several sigma out and scores near zero.
+      * the offset - the same anchors' median, subtracted before a mass error is
+        scored, so an instrument sitting at -1.5 ppm does not charge it to every
+        candidate.
+      * the window a predicted line may be matched in, the instrument class's.
+
+    Cached per sample: the passes score many batches against one sample, and the
+    fit is a property of the sample rather than of the batch.
+    """
+    from mascope_tools.composition import (
+        PatternScoring,
+        fit_mass_accuracy,
+        resolve_fallback_sigma_ppm,
+        resolve_match_tolerance_ppm,
+        scoring_sigma_ppm,
+    )
+
+    if not refresh and sample_id in _SCORING_CACHE:
+        return _SCORING_CACHE[sample_id]
+    try:
+        record = client.samples.get(sample_id)
+    except Exception:
+        record = None
+    kind = instrument_type_for(record if isinstance(record, dict) else None)
+    window = resolve_match_tolerance_ppm(kind)
+    raw = fetch_peaks(client, sample_id) if peaks is None else peaks
+    # An anchor outside the matching window is not a match at this instrument,
+    # so it is not evidence about its accuracy either.
+    mu, sigma = fit_mass_accuracy(sample_mass_errors(raw, max_abs_ppm=window))
+    scoring = PatternScoring(
+        sigma_ppm=scoring_sigma_ppm(sigma, resolve_fallback_sigma_ppm(kind)),
+        mu_ppm=mu,
+        mz_tolerance_ppm=window,
+    )
+    _SCORING_CACHE[sample_id] = scoring
+    return scoring
+
+
+def describe_scoring(scoring, *, instrument_type: str | None = None) -> str:
+    """One line naming what a sample was judged at, for the run log."""
+    return (f"sigma={scoring.sigma_ppm:.2f} ppm mu={scoring.mu_ppm:+.2f} ppm "
+            f"window={scoring.mz_tolerance_ppm:.0f} ppm"
+            + (f" instrument={instrument_type}" if instrument_type else ""))
 
 
 # ---------------------------------------------------------------------------
@@ -550,17 +657,19 @@ def _local_scoring_enabled() -> bool:
 def _score_candidates_local(client, sample_id, formulas, mechanism_ids):
     """Local, in-process scoring (no match_compounds round-trip) producing the same
     flat per-isotopologue schema as the backend path. Peaks from the cached
-    fetch_peaks; channels from the reverse-mapped mechanism names."""
+    fetch_peaks; channels from the reverse-mapped mechanism names; the sample's
+    own fitted width, offset and class window from `scoring_for_sample`."""
     from peaky.io import local_scoring
 
-    raw = fetch_peaks(client, sample_id)                      # cached; mz/height/peak_id
+    raw = fetch_peaks(client, sample_id)          # cached; mz/height/peak_id/snr
     mechs = _mechanism_names(client, mechanism_ids)
-    # The line-matching window is Orbitrap-sized by default (5 ppm). A TOF sits at
-    # 5-15 ppm accuracy, so its M0 would fall outside the window and every
-    # candidate be dropped before scoring; PEAKY_MATCH_PPM widens it per run.
-    ppm_env = os.environ.get("PEAKY_MATCH_PPM")
-    kwargs = {"ppm": float(ppm_env)} if ppm_env else {}
-    out = local_scoring.score_candidates_local(raw, formulas, mechanisms=mechs, **kwargs)
+    # The window is the instrument class's, so PEAKY_MATCH_PPM is gone: an
+    # operator setting 15 for a TOF was saying what the class already knows,
+    # and nothing said it for the width the mass is then scored against.
+    out = local_scoring.score_candidates_local(
+        raw, formulas, mechanisms=mechs,
+        scoring=scoring_for_sample(client, sample_id, raw),
+    )
     out.attrs["match_batches"] = 0
     out.attrs["match_batch_failures"] = []
     out.attrs["match_formulas"] = len(formulas)

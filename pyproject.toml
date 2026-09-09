@@ -32,7 +32,9 @@ dependencies = [
     # In-process scoring backend, now the DEFAULT (PEAKY_LOCAL_SCORING=0 falls back
     # to the network match_compounds path). >=2026.6.25 carries the 15N-labelled
     # custom-element isotope prediction. See docs/MASCOPE_TOOLS_INTEGRATION.md.
-    "mascope-tools>=2026.6.25",
+    # 2026.9.2 is the release that carries PatternScoring, the mass-accuracy
+    # fit and the instrument-class widths the local scorer is built on.
+    "mascope-tools>=2026.9.2",
     "pandas>=2.1",
     "pyarrow>=14",          # parquet engine — the per-batch TS (*_ts.parquet) is read/written across the pipeline
     "numpy>=1.24",

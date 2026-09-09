@@ -1,4 +1,4 @@
-# Peaky — Scoring (in-process IsoSpec + `score_pattern`)
+# Peaky — Scoring (in-process IsoSpec + `score_pattern_v2`)
 
 This document explains **how a candidate neutral formula gets a match score** —
 the in-process backend that replaced the network `match_compounds` round-trip.
@@ -30,9 +30,20 @@ primitive — per `(formula × adduct)` it computes the full theoretical envelop
 returns the whole matched-**and-unmatched** tree, `O(candidates × adducts ×
 envelope)` work and tens of thousands of rows for an `O(matches)` signal. That
 drove the timeouts and OOM. The local path computes the identical envelope with
-**IsoSpec** (`predict_isotopes`), scores it with the identical
-**`score_pattern`** (`0.6·mass + 0.2·pattern + 0.2·intensity`), and emits **only
-matched isotopologues** — no network, no 30k-row trees.
+**IsoSpec** (`predict_isotopes`), scores it with Mascope's own
+**`score_pattern_v2`** — a Gaussian mass likelihood at the sample's fitted width
+times an intensity likelihood at the peak's own signal-to-noise, charging a
+predicted line that is absent where the noise says it should have been visible —
+and emits **only matched isotopologues** — no network, no 30k-row trees.
+
+What a sample is judged at arrives as a **`PatternScoring`**
+(`io_mascope.scoring_for_sample`): the width and offset fitted from the sample's
+own anchors, and the line-matching window of its instrument class. Its
+predecessor `score_pattern` scaled the mass term by a fixed 5 ppm and averaged
+its terms over the lines a candidate *matched*, so an envelope that predicted
+three lines and found one cost nothing — and on a TOF, whose ordinary error is a
+whole Orbitrap window, every candidate scored near zero and a reference run
+committed almost nothing.
 
 ```
 sample peaks (mz, height, peak_id)        candidate neutral formulas
@@ -42,11 +53,12 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
         combine_formula_and_ionization → ion formula
                        ▼
         predict_isotopes (IsoSpec) → (pred_mz, pred_int, labels)
+                       ▼   anchor_on_monoisotopic: the ion's own line first
                        ▼   pred_rel = pred_int / pred_int[0]
-        match M0 in ±ppm window  ── not found ──► drop candidate
+        match M0 in ±scoring.mz_tolerance_ppm  ── not found ──► drop candidate
                        │ found
                        ▼   match each isotope; keep if intensity-error ≤ tol
-        score_pattern(obs_mz, obs_mz_err, obs_int, obs_int_err, pred_rel)
+        score_pattern_v2(obs_ppm − mu, obs_int, obs_snr, pred_rel, sigma_ppm)
                        ▼   one score per ion, copied onto every iso row
         flat per-isotopologue rows  (matched: peak id + ppm; else None)
 ```
@@ -55,9 +67,19 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
 
 ## 2. Inputs
 
-- **`peaks`** — the sample's raw peaks. Only `mz` / `height` / `peak_id` are read;
-  rows are **deduped on `peak_id`** (raw server peaks repeat per match) and sorted
-  by m/z so the window search can use `np.searchsorted`.
+- **`peaks`** — the sample's raw peaks. `mz` / `height` / `peak_id` are read, and
+  `signal_to_noise` where the server sends it; rows are **deduped on `peak_id`**
+  (raw server peaks repeat per match) and sorted by m/z so the window search can
+  use `np.searchsorted`. Without the noise column the score runs in its no-SNR
+  mode and charges an absent line on predicted abundance alone, which is a
+  different reading of every faint line — so `fetch_peaks` caches to a versioned
+  file rather than reusing a frame from before the column existed.
+- **`scoring`** — a `mascope_tools.composition.PatternScoring`, built per sample
+  by `io_mascope.scoring_for_sample`: `sigma_ppm` and `mu_ppm` from
+  `fit_mass_accuracy` over the sample's own targeted matches (falling back to the
+  instrument class's `resolve_fallback_sigma_ppm` below eight anchors), and
+  `mz_tolerance_ppm` from `resolve_match_tolerance_ppm` — 5 ppm Orbitrap, 15 TOF.
+  Passing nothing scores at the library's defaults, which are an Orbitrap's.
 - **`formulas`** — candidate neutral formulas (the grid + cheminfo union).
 - **channels** — either peaky `adducts` (labels like `[M+Br]-`) or already-resolved
   mascope **`mechanisms`** strings (`+Br-`); the dispatcher passes the latter, which
@@ -79,14 +101,20 @@ All thresholds are the named constants from `local_scoring.py` (see §4).
    concatenating the added pieces: `[M+HBr+Br]-` → `+HBrBr-` (= +HBr₂).
 
 3. **Predict the envelope** (`predict_isotopes`, IsoSpec). → `pred_mz`,
-   `pred_int`, `labels` for the charged ion. Normalize to the base:
-   **`pred_rel = pred_int / pred_int[0]`**. Empty envelope → skip.
+   `pred_int`, `labels` for the charged ion, then **`anchor_on_monoisotopic`**:
+   the ion's own line is moved first, whatever order IsoSpec returned it in.
+   Everything downstream reads index 0 as the ion — the intensity the envelope is
+   normalized to, the anchor every score term is measured against, `is_base` —
+   and for a dibromide the most abundant configuration is the mixed 79/81 line
+   two mass units up, which is not the peak the candidate was proposed for.
+   Normalize to that line: **`pred_rel = pred_int / pred_int[0]`**, so a brighter
+   satellite runs above 1. Empty envelope → skip.
 
 4. **Match the monoisotopic base (i = 0).** Window half-width
-   `d = pred_mz · ppm · 1e-6` with **`ppm` = `MATCH_MZ_TOLERANCE_PPM` (5.0)**;
-   `searchsorted` for `[mz−d, mz+d]`, take the **closest** peak. **If M0 is not
-   detected, the candidate is dropped entirely** (`base_int is None` → not a
-   candidate at all) — there is no scoring an isotope envelope with no anchor.
+   `d = pred_mz · scoring.mz_tolerance_ppm · 1e-6`; `searchsorted` for
+   `[mz−d, mz+d]`, take the **closest** peak. **If M0 is not detected, the
+   candidate is dropped entirely** (`base_int is None` → not a candidate at all)
+   — there is no scoring an isotope envelope with no anchor.
 
 5. **Match each heavier isotope (i > 0).** Same window + closest peak, but a peak
    is **accepted only if its intensity matches**: relative observed
@@ -96,14 +124,24 @@ All thresholds are the named constants from `local_scoring.py` (see §4).
    `ISOTOPE_MATCHING_INTENSITY_TOLERANCE`). A peak in the mass window with the
    wrong abundance is **not** attributed — it stays unmatched.
 
-6. **Score the ion** (`score_pattern`). One score per ion from the matched
-   pattern: `0.6·(mass term) + 0.2·(pattern term) + 0.2·(intensity term)`. The
-   same `compound_score` / `ion_score` is copied onto every isotopologue row of
-   that ion.
+6. **Score the ion** (`score_pattern_v2`). One score per ion, on
+   `(obs_ppm − scoring.mu_ppm, obs_int, obs_snr, pred_rel)` at
+   `sigma_ppm=scoring.sigma_ppm`: each line contributes a Gaussian mass
+   likelihood times an intensity likelihood whose tolerance is set by that
+   peak's signal-to-noise, an **absent** line contributes a miss penalty iff the
+   noise says it should have been visible (`pred_rel[i]·SNR_base ≥ 3`) and is
+   excluded otherwise, and the per-line likelihoods combine as a
+   predicted-abundance-weighted geometric mean. Reported `ppm_error` stays the
+   raw measured error: the offset belongs to the calibration, not to the row.
+   The same `compound_score` / `ion_score` is copied onto every isotopologue row
+   of that ion.
 
 7. **Categorize** (`_category`). `score ≥ PROBABLE_THRESHOLD (0.8)` → `probable`;
-   `≥ POSSIBLE_THRESHOLD (0.4)` → `possible`; else `unlikely`. These mirror the
-   network scorer's `probable/possible_match_threshold`.
+   `≥ POSSIBLE_THRESHOLD (0.4)` → `possible`; else `unlikely`. Bands on the fit's
+   scale: v1 put a correct assignment near 0.95 whatever its envelope did, while
+   the fit charges a missing line and a mass off the sample's own width, so a
+   correct ion with a lone unremarkable peak lands in the 0.5–0.8 range these
+   bands split.
 
 8. **Emit rows.** One row per predicted isotopologue. Matched rows carry the
    attributed `sample_peak_id`, `sample_peak_mz/intensity`, and a real
@@ -118,19 +156,23 @@ All in `peaky/io/local_scoring.py`.
 
 | constant | value | role |
 | --- | --- | --- |
-| `PROBABLE_THRESHOLD` | 0.8 | score ≥ → `probable` (matches `DEFAULT_MATCH_PARAMS`) |
+| `PROBABLE_THRESHOLD` | 0.8 | score ≥ → `probable`, on the fit's scale |
 | `POSSIBLE_THRESHOLD` | 0.4 | score ≥ → `possible`; below → `unlikely` |
-| `MATCH_MZ_TOLERANCE_PPM` | 5.0 | half-window for matching a predicted line to a peak |
 | `INTENSITY_TOLERANCE` | 0.4 | max relative abundance error to attribute an isotope (= `ISOTOPE_MATCHING_INTENSITY_TOLERANCE`) |
-| `score_pattern` weights | 0.6 / 0.2 / 0.2 | mass / pattern / intensity terms of the ion score (in `mascope_tools`) |
+| `scoring.mz_tolerance_ppm` | 5 / 15 | half-window for matching a predicted line to a peak, from the instrument class (`resolve_match_tolerance_ppm`) |
+| `scoring.sigma_ppm` | fitted | the mass term's width: the sample's own, else its class's `resolve_fallback_sigma_ppm` (0.3 Orbitrap, 3.0 TOF), widened by `PRED_SIGMA_PPM` |
+| `k_detect` / `miss_penalty` | 3.0 / 0.3 | when an absent line is charged, and what it costs (in `mascope_tools`) |
 
 ---
 
 ## 5. Metrics, defined
 
-- **ion score** — `score_pattern(obs_mz, obs_mz_err, obs_int, obs_int_err,
-  pred_rel)`: a single 0–1 number, **0.6 mass + 0.2 pattern + 0.2 intensity**.
-  The whole arbitration downstream ranks on this.
+- **ion score** — `score_pattern_v2(obs_ppm − mu, obs_int, obs_snr, pred_rel,
+  sigma_ppm=…)`: a single 0–1 number, the fit quality of the envelope against
+  this sample's own measurement. The whole arbitration downstream ranks on this.
+  It is the same number Mascope's assignment engine ranks and tiers on, from the
+  same library function, so a comparison between the two engines is a comparison
+  of their assignments rather than of their scorers.
 - **`pred_rel`** — predicted isotope intensities normalized to the base
   (`pred_int / pred_int[0]`); the reference the observed pattern is judged against.
 - **`ierr` (intensity error)** — `|pred_rel − rel_obs| / pred_rel`; the gate that
@@ -195,6 +237,6 @@ so callers see a uniform shape across both backends.
 | `_category` | score → `probable` / `possible` / `unlikely` |
 | `utils.parse_ionization` / `combine_formula_and_ionization` (mascope_tools) | parse channel; build the ion formula |
 | `predict_isotopes` (mascope_tools, IsoSpec) | theoretical isotope envelope of the ion |
-| `score_pattern` (mascope_tools) | the 0.6/0.2/0.2 mass/pattern/intensity ion score |
+| `score_pattern_v2` (mascope_tools) | the fit score: mass and intensity likelihoods per line, a detectability-gated charge for an absent one, combined as an abundance-weighted geometric mean |
 | `io_mascope.score_candidates` | backend dispatcher (local default ↔ `match_compounds`) |
 | `io_mascope._score_candidates_local` / `_local_scoring_enabled` | local bridge (peaks from cache, mechanism names) + `PEAKY_LOCAL_SCORING` switch |

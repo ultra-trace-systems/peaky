@@ -39,7 +39,7 @@ Canonical home and iteration repo: `~/.claude/skills/mascope-peak-assign/`.
 Division of labor is the core design decision:
 
 - **Mascope is the scoring oracle.** Its isotope-scored maths runs **in-process by
-  default** via `mascope_tools` (`local_scoring.py`; IsoSpec + `score_pattern`),
+  default** via `mascope_tools` (`local_scoring.py`; IsoSpec + `score_pattern_v2`),
   with the network `match_compounds` as an opt-in fallback (`PEAKY_LOCAL_SCORING=0`).
   Either way we get, per candidate ion, a per-isotopologue verdict (each
   isotopologue's `match_score` + the attributed `sample_peak_id`). We never invent a

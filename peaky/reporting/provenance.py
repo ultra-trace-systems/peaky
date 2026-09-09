@@ -66,7 +66,13 @@ def git_info(repo_path: str) -> dict:
         return {}
 
 
-def dep_versions(names=("mascope-sdk", "pandas", "numpy")) -> dict:
+def dep_versions(names=("mascope-sdk", "mascope-tools", "pandas", "numpy")) -> dict:
+    """Versions of the dependencies a run's result depends on.
+
+    `mascope-tools` is in the list because it IS the scorer: the fit score, the
+    isotope prediction and the class widths a candidate is judged at all come
+    from it, so a run's numbers are not reproducible without naming its version.
+    """
     from importlib.metadata import PackageNotFoundError, version
     out = {}
     for n in names:

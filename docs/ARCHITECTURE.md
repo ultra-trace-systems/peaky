@@ -38,7 +38,7 @@ below:
    enumerates candidate formulas, scores them with Mascope's *own* scoring maths,
    and arbitrates among the results. That scoring now runs **in-process by
    default** via `mascope_tools` (`local_scoring.py` — same IsoSpec +
-   `score_pattern` maths, released by the Mascope authors), with the network
+   `score_pattern_v2` maths, released by the Mascope authors), with the network
    `match_compounds` endpoint kept as an opt-in fallback (`PEAKY_LOCAL_SCORING=0`).
    See [`MASCOPE_TOOLS_INTEGRATION.md`](MASCOPE_TOOLS_INTEGRATION.md).
 2. **The chemistry gates are structural, not statistical.** Integer DBE, Senior's

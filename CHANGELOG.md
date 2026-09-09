@@ -6,8 +6,44 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The local scorer judges a candidate at the sample's own measurement, not at a
+  fixed Orbitrap's.** It scored with `score_pattern`, which scaled its mass term
+  by a flat 5 ppm and averaged its terms over the lines a candidate *matched* - so
+  an envelope that predicted three lines and found one cost nothing, and on a TOF,
+  whose ordinary mass error is a whole Orbitrap window, every candidate scored near
+  zero and a run committed almost nothing. It now scores with Mascope's
+  `score_pattern_v2` and a `PatternScoring` built per sample
+  (`io_mascope.scoring_for_sample`): the width and offset fitted from the sample's
+  own targeted matches - the library's `fit_mass_accuracy`, falling back to the
+  instrument class below eight anchors - and the line-matching window of that class
+  (5 ppm Orbitrap, 15 TOF). The peaks frame carries each peak's `signal_to_noise`
+  into the score, so a predicted line that is missing is charged where the noise
+  says it should have been visible and excused where it says it could not.
+
+  This is the same function, the same fit and the same widths Mascope's own
+  assignment engine uses, so a peaky run and an in-app run of one sample can be
+  compared as two sets of assignments rather than as two scorers. It needs
+  `mascope-tools >= 2026.9.2`.
+
+- **The predicted envelope is anchored on the ion's own line.** IsoSpec returns
+  the most abundant configuration first, which for a dibromide is the mixed 79/81
+  line two mass units above the peak the candidate was proposed for - and every
+  index-0 reading downstream (the intensity the envelope is normalised to, the
+  score's anchor, `is_base`) then described the wrong line. `anchor_on_monoisotopic`
+  puts M0 first, which is also how the network path derives `is_base`, so the two
+  backends now agree about which row is the ion's.
+
+- **A run's manifest records the `mascope-tools` version.** The library is the
+  scorer - the fit, the isotope prediction and the class widths all come from it -
+  so a run's numbers are not reproducible without naming it.
+
 ### Added
-- `PEAKY_MATCH_PPM` widens the local scorer's line-matching window per run, so a TOF reference run (5-15 ppm accuracy) is not emptied by the Orbitrap-sized 5 ppm default.
+- `PEAKY_MATCH_PPM` widened the local scorer's line-matching window per run, so a TOF
+  reference run (5-15 ppm accuracy) was not emptied by the Orbitrap-sized 5 ppm default.
+  **Removed again in the same release**: the window is now the instrument class's
+  (`resolve_match_tolerance_ppm`), which is what an operator was saying by setting it.
 
 - **`peaky publish-batch <run_dir>`** - publish a `peaky batch` run's merged ledger
   onto Mascope's batch ledger as a batch run of its own (Mascope's

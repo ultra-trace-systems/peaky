@@ -374,6 +374,11 @@ def run(sample_id: str, context: str = "ambient-air", *,
     log(f"[run] {len(led)} unique peaks; context={profile.label}; "
         f"polarity={polarity}; prior_offset={cfg.prior_offset:+.2f} ppm; "
         f"adducts={adducts}; mechanisms={sorted(mech_map)}")
+    # What every candidate of this sample is scored at, resolved once and cached
+    # for the passes. Logged because a run's assignments cannot be read without
+    # it: the same envelope scores differently at 0.3 ppm and at 3.
+    scoring = io_mascope.scoring_for_sample(client, sample_id, raw)
+    log(f"[run] scoring {io_mascope.describe_scoring(scoring)}")
 
     pre = isotopes.prescan(led)
     log(f"[run] prescan {pre.as_dict()}")
