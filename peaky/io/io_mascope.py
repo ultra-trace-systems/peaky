@@ -24,8 +24,10 @@ from pathlib import Path
 
 import pandas as pd
 
-__version__ = "0.4.0"  # modern (datasets-based) servers only; raw batch names
-#                          (the SDK's unified literal name-matching contract)
+__version__ = "0.5.0"  # modern (datasets-based) servers only; raw batch names
+#                          (the SDK's unified literal name-matching contract);
+#                          the peaks read carries signal_to_noise and the sample
+#                          carries a fitted PatternScoring
 
 # Credential .env search order. The long-running MCP server holds a STALE in-memory
 # token and 401s; the SDK reads the live file, so always load from disk.
@@ -39,7 +41,12 @@ ENV_SEARCH = [_REPO_ENV, ".env", CANONICAL_ENV, "~/mascope-mcp/.env",
               "~/.claude/skills/mascope-sdk/.env"]
 CACHE_ROOT = Path(os.path.expanduser("~/.mascope-assign-cache"))
 
-#: Per-sample `PatternScoring`, keyed by sample id (see `scoring_for_sample`).
+#: The fit score every candidate is scored with. Stamped on a published run so
+#: a v1 reference and a v2 one are told apart in the store rather than by date.
+SCORE_VERSION = 2
+
+#: Per-sample `(PatternScoring, snapshot)`, keyed by sample id (see
+#: `scoring_for_sample` and `scoring_snapshot`).
 _SCORING_CACHE: dict = {}
 
 
@@ -435,7 +442,7 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
     )
 
     if not refresh and sample_id in _SCORING_CACHE:
-        return _SCORING_CACHE[sample_id]
+        return _SCORING_CACHE[sample_id][0]
     try:
         record = client.samples.get(sample_id)
     except Exception:
@@ -445,14 +452,39 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
     raw = fetch_peaks(client, sample_id) if peaks is None else peaks
     # An anchor outside the matching window is not a match at this instrument,
     # so it is not evidence about its accuracy either.
-    mu, sigma = fit_mass_accuracy(sample_mass_errors(raw, max_abs_ppm=window))
+    anchors = sample_mass_errors(raw, max_abs_ppm=window)
+    mu, sigma = fit_mass_accuracy(anchors)
     scoring = PatternScoring(
         sigma_ppm=scoring_sigma_ppm(sigma, resolve_fallback_sigma_ppm(kind)),
         mu_ppm=mu,
         mz_tolerance_ppm=window,
     )
-    _SCORING_CACHE[sample_id] = scoring
+    snapshot = {
+        "score_version": SCORE_VERSION,
+        "sigma_ppm": round(float(scoring.sigma_ppm), 4),
+        "mu_ppm": round(float(scoring.mu_ppm), 4),
+        # "fitted" means this sample measured its own width; "instrument_class"
+        # means too few known ions matched to fit one and the class stood in.
+        "sigma_source": "fitted" if sigma is not None else "instrument_class",
+        "fitted_anchors": len(anchors),
+        "mz_tolerance_ppm": float(scoring.mz_tolerance_ppm),
+        "abundance_floor": float(scoring.abundance_floor),
+        "instrument_type": kind,
+        "has_signal_to_noise": bool("signal_to_noise" in getattr(raw, "columns", [])),
+    }
+    _SCORING_CACHE[sample_id] = (scoring, snapshot)
     return scoring
+
+
+def scoring_snapshot(client, sample_id: str, peaks: pd.DataFrame | None = None) -> dict:
+    """What a run records about the width it judged a mass error against.
+
+    The same keys the in-app engine stamps on its own run config, so a reader
+    holding both runs of one sample can see whether they were judged alike -
+    which is the first question about any disagreement between them.
+    """
+    scoring_for_sample(client, sample_id, peaks)
+    return dict(_SCORING_CACHE[sample_id][1])
 
 
 def describe_scoring(scoring, *, instrument_type: str | None = None) -> str:

@@ -395,7 +395,27 @@ def cmd_publish(args) -> None:
         sys.exit(1)
 
     calibration = P.build_calibration(manifest, note=args.calibration_note)
-    config = P.build_config(manifest)
+    # What scored this sample. From the run's own manifest where it recorded one;
+    # otherwise measured again from the sample, which is the same computation on
+    # the same cached peaks - a published reference run that cannot say what
+    # width it was judged at is not comparable with anything.
+    scoring_block = P.pattern_scoring_of(manifest, sample_id)
+    if scoring_block is None and client is not None:
+        try:
+            from peaky.io import io_mascope
+            scoring_block = io_mascope.scoring_snapshot(client, sample_id)
+            print("[publish] pattern_scoring measured from the sample "
+                  "(the run's manifest predates it)")
+        except Exception as exc:  # noqa: BLE001 - provenance must not fail a publish
+            print(f"[publish] pattern_scoring unavailable: {exc}")
+    if scoring_block:
+        print(f"scoring    sigma={scoring_block['sigma_ppm']} ppm "
+              f"mu={scoring_block['mu_ppm']} ppm "
+              f"({scoring_block['sigma_source']}, "
+              f"{scoring_block['fitted_anchors']} anchors), "
+              f"window {scoring_block['mz_tolerance_ppm']} ppm, "
+              f"score v{scoring_block['score_version']}")
+    config = P.build_config(manifest, pattern_scoring=scoring_block)
     version = args.engine_version or P.engine_version(manifest)
 
     if args.dry_run:

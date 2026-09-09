@@ -29,7 +29,9 @@ from peaky.assignment import siloxane
 from peaky.assignment import tiers
 from peaky.batch import timeseries
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"  # every candidate scored with the v2 fit at the sample's
+#                        own mass width, so no run of this version is comparable
+#                        with a 0.4.0 one; it is what a published run stamps.
 
 MODULE_VERSIONS = {
     "assign": __version__,
@@ -378,7 +380,10 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # for the passes. Logged because a run's assignments cannot be read without
     # it: the same envelope scores differently at 0.3 ppm and at 3.
     scoring = io_mascope.scoring_for_sample(client, sample_id, raw)
-    log(f"[run] scoring {io_mascope.describe_scoring(scoring)}")
+    scoring_snapshot = io_mascope.scoring_snapshot(client, sample_id, raw)
+    log(f"[run] scoring {io_mascope.describe_scoring(scoring)}"
+        f" ({scoring_snapshot['sigma_source']}, {scoring_snapshot['fitted_anchors']}"
+        " anchors)")
 
     pre = isotopes.prescan(led)
     log(f"[run] prescan {pre.as_dict()}")
@@ -425,6 +430,10 @@ def run(sample_id: str, context: str = "ambient-air", *,
             "plausibility_audit": plaus_audit,
             "module_versions": MODULE_VERSIONS,
             "module_hashes": _module_hashes(), "context": profile.label,
+            # What this sample's candidates were scored at. A run's assignments
+            # cannot be read without it: the same envelope scores differently at
+            # 0.3 ppm and at 3, and a published run carries it into the store.
+            "pattern_scoring": scoring_snapshot,
             "sample_id": sample_id}
 
 
