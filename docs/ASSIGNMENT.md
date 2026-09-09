@@ -28,7 +28,7 @@ Peaky **never invents a mass or isotope score.** It owns *candidate generation*
 (which formulas are worth asking about), *chemistry plausibility*, *series
 logic*, and *arbitration* (which answer wins a peak). For scoring it uses
 Mascope's own maths — by default **in-process** via `mascope_tools` (IsoSpec
-envelope + `score_pattern`), with the network `match_compounds` as an opt-in
+envelope + `score_pattern_v2`), with the network `match_compounds` as an opt-in
 fallback (`PEAKY_LOCAL_SCORING=0`). Either way it gets, per candidate ion, a
 per-isotopologue verdict (each isotopologue's `match_score` + the attributed
 peak), which Peaky reads. See `docs/MASCOPE_TOOLS_INTEGRATION.md`.
