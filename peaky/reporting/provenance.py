@@ -175,6 +175,7 @@ def record_run(*, run_dir: str, base_out: str, batch_name: str,
                dataset: str | None, sample_ids, reagent: str, cfg,
                ts_path: str | None = None, counts: dict | None = None,
                created_utc: str | None = None, batch_id: str | None = None,
+               extra: dict | None = None,
                log=print) -> dict:
     """Write the per-run manifest AND append the cross-run registry row. Returns
     the manifest. Never raises into the pipeline -- provenance must not break a
@@ -183,7 +184,8 @@ def record_run(*, run_dir: str, base_out: str, batch_name: str,
         manifest = build_manifest(
             run_dir=run_dir, batch_name=batch_name, dataset=dataset,
             sample_ids=sample_ids, reagent=reagent, cfg=cfg, ts_path=ts_path,
-            counts=counts, created_utc=created_utc, batch_id=batch_id)
+            counts=counts, created_utc=created_utc, batch_id=batch_id,
+            extra=extra)
         write_manifest(run_dir, manifest)
         idx = append_registry(os.path.join(base_out, "index.jsonl"), manifest)
         commit = (manifest["code"]["git"] or {}).get("commit") or "no-git"
