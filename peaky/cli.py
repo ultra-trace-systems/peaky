@@ -313,7 +313,16 @@ def cmd_publish(args) -> None:
     mpath = args.manifest
     if mpath is None:
         guess = Path(str(args.ledger_csv).replace("_ledger.csv", "_manifest.json"))
-        mpath = str(guess) if guess.exists() and guess != Path(args.ledger_csv) else None
+        if guess.exists() and guess != Path(args.ledger_csv):
+            mpath = str(guess)
+        else:
+            # A batch run's per-sample ledger sits in per_file/ and its manifest
+            # is the run's own, at the run root. Without it the published run
+            # loses everything the manifest carries - the module versions its
+            # engine version is built from, the commit, the sample's scoring -
+            # and a batch publish then records less than a single-sample one.
+            batch = Path(args.ledger_csv).resolve().parent.parent / "run_manifest.json"
+            mpath = str(batch) if batch.exists() else None
     if mpath:
         # peaky writes the manifest with the stdlib encoder, which emits bare
         # NaN; that is not valid JSON, so parse permissively and sanitize.
