@@ -91,6 +91,13 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   1.2 ppm low with six anchors, scoring at `mu = 0` charged that error to every
   candidate and handed the peak to whichever reading's own error cancelled it —
   the reference committed a third of what it had, and disagreed where it did.
+
+  The minimum is five rather than three because an anchor is a peak the server
+  matched within the instrument's *matching* window — 15 ppm on a TOF, five times
+  its accuracy — so a mis-matched anchor sits in the set looking like a
+  measurement. On a bromide TOF sample with three anchors, two mis-matched to the
+  same wrong species, the median landed at −10.4 ppm for a source the engine
+  measures within 0.3 ppm of calibration.
 - **`formulas`** — candidate neutral formulas (the grid + cheminfo union).
 - **channels** — either peaky `adducts` (labels like `[M+Br]-`) or already-resolved
   mascope **`mechanisms`** strings (`+Br-`); the dispatcher passes the latter, which
@@ -172,7 +179,7 @@ All in `peaky/io/local_scoring.py`.
 | `INTENSITY_TOLERANCE` | 0.4 | max relative abundance error to attribute an isotope (= `ISOTOPE_MATCHING_INTENSITY_TOLERANCE`) |
 | `scoring.mz_tolerance_ppm` | 5 / 15 | half-window for matching a predicted line to a peak, from the instrument class (`resolve_match_tolerance_ppm`) |
 | `scoring.sigma_ppm` | fitted | the mass term's width: the sample's own, else its class's `resolve_fallback_sigma_ppm` (0.3 Orbitrap, 3.0 TOF), widened by `PRED_SIGMA_PPM` |
-| `MIN_OFFSET_ANCHORS` | 3 | anchors below which no offset is claimed either; above it the median stands even when the width cannot be fitted |
+| `MIN_OFFSET_ANCHORS` | 5 | anchors below which no offset is claimed either; above it the median stands even when the width cannot be fitted. Five because an anchor is a match within the instrument's *matching* window, so a mis-match can sit in the set - and two of them cannot carry a median of five |
 | `k_detect` / `miss_penalty` | 3.0 / 0.3 | when an absent line is charged, and what it costs (in `mascope_tools`) |
 
 ---
