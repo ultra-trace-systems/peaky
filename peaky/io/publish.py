@@ -962,8 +962,17 @@ def _engine_commit(manifest: dict | None) -> str | None:
 
 
 def engine_version(manifest: dict | None) -> str:
-    """peaky's version string for the run record."""
-    versions = (manifest or {}).get("module_versions") or {}
+    """peaky's version string for the run record.
+
+    A single sample's manifest carries the module versions at the top; a batch
+    run's carries them under `code`, and reading only the first shape published
+    a batch run under a shorter version string than a single-sample one of the
+    same code.
+    """
+    m = manifest or {}
+    versions = m.get("module_versions") or (m.get("code") or {}).get(
+        "module_versions"
+    ) or {}
     try:
         from peaky import __version__ as pkg_version
     except Exception:  # noqa: BLE001 - version reporting must not fail a publish
