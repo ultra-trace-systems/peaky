@@ -31,7 +31,23 @@ still works without eagerly importing matplotlib or the Mascope SDK.
 """
 from __future__ import annotations
 
-__version__ = "0.5.0"
+def _package_version() -> str:
+    """The installed distribution's version, which is the one that ships.
+
+    A literal here goes stale the moment pyproject is bumped, and it is not a
+    private detail: a run published into Mascope stamps it as the engine version,
+    so a stale one makes two different peaky releases indistinguishable in the
+    store. Falls back to "unknown" for a source tree that was never installed.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("mascope-peaky")
+    except PackageNotFoundError:  # a bare checkout, not an install
+        return "unknown"
+
+
+__version__ = _package_version()
 
 # public API name -> (dotted submodule path, attribute)
 _LAZY = {

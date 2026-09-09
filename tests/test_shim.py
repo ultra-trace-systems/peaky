@@ -39,10 +39,17 @@ from mascope_assign import PassConfig  # noqa: E402
 from peaky import PassConfig as _PC  # noqa: E402
 check("from mascope_assign import PassConfig works", PassConfig is _PC)
 
-# version is the renamed package's version
+# version is the renamed package's version, and that is the INSTALLED one: a
+# literal here went stale against pyproject and got stamped on published runs
+# as the engine version, making two releases indistinguishable in the store.
+from importlib.metadata import version as _dist_version  # noqa: E402
+
 check("mascope_assign.__version__ == peaky.__version__",
-      mascope_assign.__version__ == peaky.__version__ == "0.5.0",
+      mascope_assign.__version__ == peaky.__version__,
       f"{mascope_assign.__version__} / {peaky.__version__}")
+check("peaky.__version__ is the installed distribution's",
+      peaky.__version__ == _dist_version("mascope-peaky"),
+      f"{peaky.__version__} / {_dist_version('mascope-peaky')}")
 
 
 def test_all():

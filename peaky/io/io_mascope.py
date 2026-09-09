@@ -501,7 +501,16 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
         "mz_tolerance_ppm": float(scoring.mz_tolerance_ppm),
         "abundance_floor": float(scoring.abundance_floor),
         "instrument_type": kind,
-        "has_signal_to_noise": bool("signal_to_noise" in getattr(raw, "columns", [])),
+        # Whether any peak of this sample actually carries an estimate, not
+        # whether the column is there: the endpoint sends the column with nulls
+        # for a file that stores none, and the two are the difference between a
+        # score that charges an absent line by the noise and one that charges it
+        # by abundance alone.
+        "has_signal_to_noise": bool(
+            pd.to_numeric(raw["signal_to_noise"], errors="coerce").notna().any()
+        )
+        if "signal_to_noise" in getattr(raw, "columns", [])
+        else False,
     }
     _SCORING_CACHE[sample_id] = (scoring, snapshot)
     return scoring

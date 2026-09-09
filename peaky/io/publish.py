@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
 import uuid
 from collections import Counter
@@ -933,7 +934,31 @@ def build_config(
     if pattern_scoring:
         config["pattern_scoring"] = dict(pattern_scoring)
         config.setdefault("score_version", pattern_scoring.get("score_version"))
+    # The commit, at the top level where a reader looks rather than inside a
+    # manifest the cap may drop. A published run says what scored it - version,
+    # width, score version - and the commit is the last part of that answer;
+    # without it a section of a plan has to assert what the store cannot show.
+    commit = _engine_commit(manifest)
+    if commit:
+        config.setdefault("engine_commit", commit)
     return _capped(config, "config", log) or {"engine": ENGINE}
+
+
+def _engine_commit(manifest: dict | None) -> str | None:
+    """The commit that produced this run: the manifest's, else this checkout's."""
+    git = ((manifest or {}).get("code") or {}).get("git") or {}
+    commit = git.get("commit")
+    if commit:
+        return f"{commit}-dirty" if git.get("dirty") else str(commit)
+    try:
+        from peaky.reporting.provenance import git_info
+
+        here = git_info(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if here.get("commit"):
+            return f"{here['commit']}-dirty" if here.get("dirty") else here["commit"]
+    except Exception:  # noqa: BLE001 - provenance must not fail a publish
+        pass
+    return None
 
 
 def engine_version(manifest: dict | None) -> str:
