@@ -48,13 +48,20 @@ SCORE_VERSION = 2
 
 #: Anchors below which no offset is claimed either. A median and a robust spread
 #: are not the same measurement: the spread needs a distribution
-#: (`MASS_ACCURACY_MIN_ANCHORS`), the median needs only a few points that agree.
-#: Discarding the offset because the width could not be fitted is not the
-#: cautious choice it looks like - it asserts the instrument sits on calibration,
-#: which on a source that sits 1.2 ppm low charges that error to every candidate
-#: and to none of its rivals equally, since the rival with the compensating error
-#: then scores best.
-MIN_OFFSET_ANCHORS = 3
+#: (`MASS_ACCURACY_MIN_ANCHORS`), the median needs fewer points. Discarding the
+#: offset because the width could not be fitted is not the cautious choice it
+#: looks like - it asserts the instrument sits on calibration, which on a source
+#: that sits 1.2 ppm low charges that error to every candidate and to none of its
+#: rivals equally, since the rival with the compensating error then scores best.
+#:
+#: Five, not three, and the reason is what an anchor can be. An anchor is a peak
+#: the server matched to a known species within the instrument's MATCHING window,
+#: which on a TOF is 15 ppm - five times its accuracy - so a mis-match sits in
+#: the set looking like a measurement. Three anchors, two of them mis-matched to
+#: the same wrong species, put the median on the mis-match: on a bromide TOF that
+#: produced an offset of -10.4 ppm for a source the engine measures within 0.3
+#: ppm of calibration. Two bad anchors cannot carry a median of five.
+MIN_OFFSET_ANCHORS = 5
 
 #: Per-sample `(PatternScoring, snapshot)`, keyed by sample id (see
 #: `scoring_for_sample` and `scoring_snapshot`).

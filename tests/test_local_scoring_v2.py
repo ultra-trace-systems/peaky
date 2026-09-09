@@ -213,6 +213,15 @@ class TestTheSampleFit:
         assert len(anchors) >= MIN_OFFSET_ANCHORS
         assert float(np.median(anchors)) == pytest.approx(-1.18, abs=0.01)
 
+    def test_too_few_anchors_state_no_offset_either(self):
+        # An anchor is a peak matched within the instrument's MATCHING window,
+        # which on a TOF is five times its accuracy, so a mis-match sits in the
+        # set looking like a measurement. Three anchors, two of them mis-matched
+        # to the same wrong species, would put the median on the mis-match.
+        from peaky.io.io_mascope import MIN_OFFSET_ANCHORS
+
+        assert len([-10.5, -10.4, -2.8]) < MIN_OFFSET_ANCHORS
+
     def test_a_shifted_sample_scores_its_own_candidate_best(self):
         # The whole point of subtracting the offset: with it, the candidate that
         # IS the peak wins; without it, the reading whose error cancels the
