@@ -24,8 +24,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   This is the same function, the same fit and the same widths Mascope's own
   assignment engine uses, so a peaky run and an in-app run of one sample can be
-  compared as two sets of assignments rather than as two scorers. It needs
-  `mascope-tools >= 2026.9.2`.
+  compared as two sets of assignments rather than as two scorers.
+
+  **This lives on an epic branch, and the branch owns the coupling.** The library
+  API it is built on exists only on Mascope's assignment-quality epic - PyPI's
+  newest `mascope-tools` predates the v2 scorer, and released servers do not send
+  the per-peak `signal_to_noise` the score reads - so `pyproject.toml` pins the
+  library by revision, the one the reference runs were scored with. The merge
+  into main replaces the pin with a released lower bound; until then main is
+  untouched and keeps scoring with `score_pattern`.
+
+- **A published run says what scored it.** Its config carries `score_version` and
+  a `pattern_scoring` block - width, offset, whether the width was fitted or the
+  instrument class's, the anchors behind it, the matching window, the envelope
+  floor - in the same keys Mascope's engine stamps on its own runs. Two runs of
+  one sample disagreeing is a different fact when they were judged at different
+  widths, and neither said so before.
 
 - **The predicted envelope is anchored on the ion's own line.** IsoSpec returns
   the most abundant configuration first, which for a dibromide is the mixed 79/81
