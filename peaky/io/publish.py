@@ -894,15 +894,45 @@ def build_calibration(
     return disclosure
 
 
-def build_config(manifest: dict | None, log: Callable[[str], None] = print) -> dict:
+def pattern_scoring_of(manifest: dict | None, sample_id: str | None = None) -> dict | None:
+    """What the run says it scored this sample at, if it says.
+
+    A batch manifest describes many samples, so it may carry the block keyed by
+    sample id; a single run's manifest carries one. Returns None for a manifest
+    written before runs recorded it, and the caller then measures it again from
+    the sample rather than publishing a run that cannot say how it was judged.
+    """
+    block = (manifest or {}).get("pattern_scoring")
+    if not isinstance(block, dict):
+        return None
+    if sample_id and sample_id in block and isinstance(block[sample_id], dict):
+        return dict(block[sample_id])
+    return None if "sigma_ppm" not in block else dict(block)
+
+
+def build_config(
+    manifest: dict | None,
+    log: Callable[[str], None] = print,
+    *,
+    pattern_scoring: dict | None = None,
+) -> dict:
     """The engine's run configuration, stored verbatim and never read.
 
     peaky's manifest is the natural carrier -- pass summaries, module versions
     and hashes make the run reproducible -- but it is unbounded and the server
     re-serves it on every run listing, so it is capped.
+
+    `pattern_scoring` is the one part of it a reader does go looking for: the
+    width, offset and window this sample's candidates were scored at, in the
+    same keys the in-app engine stamps on its own runs. Two runs of one sample
+    disagreeing is a different fact when they were judged at different widths,
+    and neither run says so unless both record it.
     """
     config = dict(manifest or {})
     config.setdefault("engine", ENGINE)
+    if pattern_scoring:
+        config["pattern_scoring"] = dict(pattern_scoring)
+        config.setdefault("score_version", pattern_scoring.get("score_version"))
     return _capped(config, "config", log) or {"engine": ENGINE}
 
 
