@@ -209,7 +209,10 @@ class TestTheSampleFit:
         anchors = [-1.95, -1.66, -1.52, -0.84, -0.80, -0.72]
         mu, sigma = fit_mass_accuracy(anchors)
 
-        assert sigma is None and mu == 0.0  # the library reports neither
+        # The library reports neither, and says so by answering None for both:
+        # an offset it did not measure is not an offset of zero, which is the
+        # distinction a caller needs to decide whether to fall back at all.
+        assert sigma is None and mu is None
         assert len(anchors) >= MIN_OFFSET_ANCHORS
         assert float(np.median(anchors)) == pytest.approx(-1.18, abs=0.01)
 

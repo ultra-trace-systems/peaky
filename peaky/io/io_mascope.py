@@ -481,6 +481,13 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
         # The fit reports no width and, with it, no offset. The width is
         # genuinely unmeasurable here; the offset is not.
         mu = float(np.median(anchors))
+    if mu is None:
+        # The library answers None for an offset it did not measure, and a
+        # sample can have too few anchors even for the rule above - a TOF file
+        # whose matches were just cleared has none at all. Scoring at zero is
+        # the only honest reading of "no offset measured", and the snapshot
+        # says `assumed_zero` so nothing downstream reads it as a measurement.
+        mu = 0.0
     scoring = PatternScoring(
         sigma_ppm=scoring_sigma_ppm(sigma, resolve_fallback_sigma_ppm(kind)),
         mu_ppm=mu,
