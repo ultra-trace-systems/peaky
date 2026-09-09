@@ -80,6 +80,17 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   instrument class's `resolve_fallback_sigma_ppm` below eight anchors), and
   `mz_tolerance_ppm` from `resolve_match_tolerance_ppm` — 5 ppm Orbitrap, 15 TOF.
   Passing nothing scores at the library's defaults, which are an Orbitrap's.
+
+  **The width and the offset have different bars.** The library reports both or
+  neither, and below its minimum it returns `(0.0, None)` — a zero offset that
+  reads exactly like a measured one. A robust spread needs a distribution; a
+  median needs a few points that agree. So the offset is taken from the anchors
+  whenever there are at least `MIN_OFFSET_ANCHORS` (3) of them, even where the
+  width falls back to the class, and `pattern_scoring` records `sigma_source` and
+  `mu_source` separately. This is not cosmetic: on a nitrate source sitting
+  1.2 ppm low with six anchors, scoring at `mu = 0` charged that error to every
+  candidate and handed the peak to whichever reading's own error cancelled it —
+  the reference committed a third of what it had, and disagreed where it did.
 - **`formulas`** — candidate neutral formulas (the grid + cheminfo union).
 - **channels** — either peaky `adducts` (labels like `[M+Br]-`) or already-resolved
   mascope **`mechanisms`** strings (`+Br-`); the dispatcher passes the latter, which
@@ -161,6 +172,7 @@ All in `peaky/io/local_scoring.py`.
 | `INTENSITY_TOLERANCE` | 0.4 | max relative abundance error to attribute an isotope (= `ISOTOPE_MATCHING_INTENSITY_TOLERANCE`) |
 | `scoring.mz_tolerance_ppm` | 5 / 15 | half-window for matching a predicted line to a peak, from the instrument class (`resolve_match_tolerance_ppm`) |
 | `scoring.sigma_ppm` | fitted | the mass term's width: the sample's own, else its class's `resolve_fallback_sigma_ppm` (0.3 Orbitrap, 3.0 TOF), widened by `PRED_SIGMA_PPM` |
+| `MIN_OFFSET_ANCHORS` | 3 | anchors below which no offset is claimed either; above it the median stands even when the width cannot be fitted |
 | `k_detect` / `miss_penalty` | 3.0 / 0.3 | when an absent line is charged, and what it costs (in `mascope_tools`) |
 
 ---
