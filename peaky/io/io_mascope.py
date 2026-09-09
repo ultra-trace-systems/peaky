@@ -443,6 +443,11 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
 
     Cached per sample: the passes score many batches against one sample, and the
     fit is a property of the sample rather than of the batch.
+
+    The pre-calibration pass gates keep their own, more conservative rule
+    (`estimate_offset`, eight matches before it states an offset at all). They
+    decide which candidates are considered rather than how a considered one
+    scores, and widening that is a change to the search.
     """
     from mascope_tools.composition import (
         PatternScoring,
