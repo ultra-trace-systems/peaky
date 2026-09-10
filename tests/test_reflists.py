@@ -32,6 +32,15 @@ check("active set includes a context list + the always-active contaminants",
 check("no context -> still get the always_active contaminants",
       len(RL.active_lists(cat, context_tags=set())) >= 1)
 
+# ---- isoprene oxidation list (Wennberg 2018): loads, gated by the isoprene context ----
+iso = cat.get("isoprene_ox_wennberg2018")
+check("isoprene list is in the catalog with 27 closed-shell neutrals", iso is not None and len(iso.formulas) == 27, iso)
+check("isoprene list carries the dihydroxy-dinitrate and ISOPN", iso is not None and {"C5H10N2O8", "C5H9NO4"} <= set(iso.formulas), None)
+iso_tags = RL.resolve_context_tags("Isoprene + OH chamber (NO3- CIMS)")
+check("'isoprene' batch name unlocks the isoprene context", "isoprene_ox" in iso_tags, iso_tags)
+check("isoprene list active under the isoprene context", any(rl.id == "isoprene_ox_wennberg2018" for rl in RL.active_lists(cat, context_tags=iso_tags)), None)
+check("isoprene list NOT active under a monoterpene-only context", not any(rl.id == "isoprene_ox_wennberg2018" for rl in RL.active_lists(cat, context_tags={"monoterpene_ox"})), None)
+
 
 # ---- rescue-verify decision logic (injected oracle) ----
 def mk(rows):

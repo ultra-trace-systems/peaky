@@ -16,6 +16,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   name; adducts are resolved to mechanism ids by default (a row without one lands
   nothing), ion formulas come from the per-file ledgers or are derived, and
   `--dry-run` shows the payload. `docs/PUBLISH.md` gained a section.
+- Reference peaklist `isoprene_ox_wennberg2018` (27 closed-shell isoprene oxidation products, Wennberg et al. 2018) added to `peaky/data/peaklists/`, gated by the new `isoprene_ox` context (batch keywords isoprene/ISOPN/IEPOX/ISOPOOH/methacrolein) and `biogenic_soa`/`ambient_summer`; rescues the isoprene dihydroxy-dinitrate C5H10N2O8 as an isotope-confirmed Assigned in the 2026 field-campaign ¹⁵NO₃⁻ data.
 
 ### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
 

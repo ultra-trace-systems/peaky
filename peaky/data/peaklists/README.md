@@ -60,3 +60,5 @@ globs this directory. **Only add credible, citable sources**, and fill `referenc
 | id | system | n | source |
 |----|--------|---|--------|
 | `monoterpene_hom_kang2024` | monoterpene OH-oxidation HOM | 830 | Kang, FZ Jülich E&U 557 (2022), App. A |
+| `isoprene_ox_wennberg2018` | isoprene OH/HO₂, OH/NO and NO₃ oxidation products (reduced mechanism, closed-shell neutrals) | 27 | Wennberg et al., Chem. Rev. 118, 3337 (2018) |
+| `contaminants_keller2008` | MS background / contaminant ions | 59 | Keller et al., Anal. Chim. Acta 627, 71 (2008) |
