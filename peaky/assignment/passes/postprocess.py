@@ -175,6 +175,25 @@ def complete_isotope_envelopes(
                     except L.LedgerError:
                         pass
             elif role_j == L.ROLE_M0:
+                # the LABELLED-reagent impurity line (14N at -0.997 of a ^N adduct):
+                # a fit sitting exactly at the predicted 2 % of a >=10x brighter
+                # labelled parent is that parent's satellite whatever its own
+                # score/lock -- the CHON [M+H]+ mass-fit on the 14N line of a
+                # bright [M+^NH4]+ is the phantom this absorbs (pass-1 locks it as
+                # High before the parent's envelope is known). Pass-0 known-species
+                # locks are kept.
+                if label == "14N" and 0.5 <= ratio <= 2.0 and ph >= 10 * th \
+                        and int(pd.to_numeric(ledger.at[j, "pass_no"], errors="coerce") or 1) != 0:
+                    try:
+                        if bool(ledger.at[j, "locked"]):
+                            ledger.at[j, "locked"] = False
+                        L.displace_to_isotopologue(
+                            ledger, tpid, pid, iso_label=label, iso_match_score=score
+                        )
+                        out["displaced"] += 1
+                    except L.LedgerError:
+                        pass
+                    continue
                 if bool(ledger.at[j, "locked"]) or \
                         str(ledger.at[j, "confidence"]).startswith("High"):
                     # locked, or a High-confidence fit that earned it via its OWN

@@ -43,6 +43,8 @@ R_15N_PER_N = 0.003640        # 15N/14N (faint: 0.36% per N)
 R_18O_PER_O = 0.002050        # 18O/16O (faint: 0.20% per O)
 
 
+LABEL_PURITY_15N = 0.98   # isotopic purity of the ^N reagents (NO3_15N / NH4_15N)
+
 # Per-atom isotope distributions: element -> [(mass_shift_from_lightest, abundance)].
 # Only isotopes that move the M+1/M+2/... envelope are listed (2H, 17O kept tiny).
 # Masses are heavy-minus-light exact deltas; abundances are natural fractions.
@@ -55,12 +57,20 @@ _ISO_DIST: dict[str, list[tuple[float, float]]] = {
     "Cl": [(0.0, 0.757600), (1.997050, 0.242400)],
     "Br": [(0.0, 0.506900), (1.9979521, 0.493100)],
     "Si": [(0.0, 0.922230), (0.999568, 0.046850), (1.996840, 0.030920)],
+    # LABELLED reagent nitrogen ('^N' = 15N at the reagent's isotopic purity): the
+    # "monoisotopic" line is the HEAVY isotope, so the impurity sits at a NEGATIVE
+    # shift (-0.99703, the 14N line). 2 % = the nominal 98 atom % of both the
+    # 15N-nitrate and the 15N-ammonium reagents (measured 0.018-0.021 on the
+    # 2026-09-10 ^NH4+ file). Lets the envelope-completion sweep CLAIM that line
+    # (else it floats free and a CHON [M+H]+ mass-fit grabs it).
+    "^N": [(0.0, LABEL_PURITY_15N), (-0.997035, 1.0 - LABEL_PURITY_15N)],
 }
 _HEAVY_ELEMENTS = ("Br", "Cl", "Si", "S")   # the M+2 drivers
 
 
 # (mass shift, label, {element: min count required to form it})
 _LABEL_TABLE = [
+    (-0.997035, "14N", {"^N": 1}),      # labelled-reagent impurity line (BELOW M0)
     (1.003355, "13C", {"C": 1}),
     (0.999568, "29Si", {"Si": 1}),
     (0.997035, "15N", {"N": 1}),
@@ -151,10 +161,11 @@ def isotope_pattern(ion_formula: str, *, min_rel: float = 0.03,
     # raw lines (mass, prob) above a loose floor, sorted by mass
     raw = []
     for k, (p, wm) in sorted(dist.items()):
-        if k <= 0:
+        if k == 0:
             continue
         dmass = wm / p
-        if dmass <= 0.4 or dmass > max_shift:
+        # negative shifts exist only for a labelled element (the ^N 14N line)
+        if abs(dmass) <= 0.4 or dmass > max_shift or dmass < -1.5:
             continue
         raw.append([dmass, p])
     # merge lines closer than merge_da -- the peak picker resolves them as ONE
@@ -167,7 +178,7 @@ def isotope_pattern(ion_formula: str, *, min_rel: float = 0.03,
         else:
             merged.append([p, p * dmass])
     # single-heteroatom diagnostic lines whose floor diag_min_rel can lower
-    _DIAG_LABELS = ("13C", "15N", "29Si", "30Si", "34S", "18O", "37Cl", "81Br")
+    _DIAG_LABELS = ("13C", "14N", "15N", "29Si", "30Si", "34S", "18O", "37Cl", "81Br")
     out = []
     for p, wm in merged:
         dmass = wm / p

@@ -428,6 +428,14 @@ _DIFF_TO_ADDUCT = {
     (("H", 1),): "[M+H]+",
     (("Na", 1),): "[M+Na]+",
     (("H", 4), ("N", 1)): "[M+NH4]+",
+    # ¹⁵N-ammonium in-source dehydration alias [M+^NH4-H2O]+ (ion = M + ^NH4 -
+    # H2O): folded diff (H+2, N+1, O-1). Only the labelled-ammonium profile
+    # writes it (cleanup.relabel_ammonium_dehydration).
+    (("H", 2), ("N", 1), ("O", -1)): "[M+^NH4-H2O]+",
+    # protonated-then-dehydrated alias [M+H-H2O]+ (EasyIC and labelled-ammonium
+    # in-source dehydration): diff (H-1, O-1). Without it a relabelled row whose
+    # label is re-derived from (ion, compound) falls through to "[M-H]-".
+    (("H", -1), ("O", -1)): "[M+H-H2O]+",
     (("K", 1),): "[M+K]+",
     # protonated-urea (uronium) adduct: ion = neutral + CH4N2O + H. Without this
     # entry the urea-channel assignments fall through to the "[M-H]-" default and
@@ -478,6 +486,10 @@ def _mech_to_adduct(row) -> str:
     # and the +61.99 (¹⁴N) shift puts ion_mz / jitter ~1 Da off.
     if add == "[M+NO3]-" and "^N" in ion:
         return "[M+^NO3]-"
+    # same blindness for the ¹⁵N-ammonium cluster: (H+4, N+1) is the ¹⁴N diff,
+    # the '^N' in the ion string is what makes it the +19.0309 labelled adduct.
+    if add == "[M+NH4]+" and "^N" in ion:
+        return "[M+^NH4]+"
     # Nor can it see polarity: the pipeline's Br-CIMS roots read every diff
     # negative by default, but a CATION row must flip the EasyIC channels -- an
     # EMPTY diff is charge transfer [M]+. (not electron attachment [M]-., a

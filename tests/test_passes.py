@@ -67,6 +67,9 @@ _ADDUCT_DELTA = {          # ion composition minus neutral composition
     "[M+CO3]-": {"C": 1, "O": 3}, "[M+H]+": {"H": 1}, "[M+NH4]+": {"N": 1, "H": 4},
     "[M+Na]+": {"Na": 1}, "[M+(CH4N2O)H]+": {"C": 1, "H": 5, "N": 2, "O": 1},
     "[M]+.": {}, "[M-H]+": {"H": -1},   # EasyIC: charge transfer / hydride off
+    # 15N-ammonium cluster: the caret ^N in the ion string is what upgrades the
+    # folded (H+4, N+1) diff from [M+NH4]+ to the labelled channel
+    "[M+^NH4]+": {"^N": 1, "H": 4},
 }
 for _p in _PRF.PROFILES.values():
     for _a in _p.adducts:

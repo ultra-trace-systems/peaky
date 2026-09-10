@@ -256,6 +256,16 @@ def stage_a_iso_pairs(client, sample_id: str, ledger: pd.DataFrame, profile,
     score_fn = score_fn or IO.score_candidates
     out = {"committed": 0, "locked": 0, "iso_attached": 0}
     pairs = find_iso_pairs(ledger, min_height=cfg.height_cutoff)
+    # the context decides which halogens a NEUTRAL may carry: a ~1.998-Da doublet
+    # in a halogen-free positive run (max_Br = max_Cl = 0) is 34S / 30Si / 13C2
+    # structure, never a Br/Cl pair -- 7 "C5H7BrO3 [M+^NH4]+" phantoms on the
+    # 2026-09-10 15N-ammonium file came through here.
+    allowed = {e for e in ("Br", "Cl") if getattr(profile, f"max_{e}", 99) >= 1}
+    if len(pairs) and not pairs["element"].isin(allowed).all():
+        n_drop = int((~pairs["element"].isin(allowed)).sum())
+        pairs = pairs[pairs["element"].isin(allowed)]
+        log(f"[pass4.A] {n_drop} doublets ignored: context caps "
+            f"{sorted({'Br', 'Cl'} - allowed)} at 0 (not a halogen pair)")
     if len(pairs) == 0:
         log("[pass4.A] no isotope pairs in residual")
         return out

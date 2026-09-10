@@ -16,6 +16,52 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   name; adducts are resolved to mechanism ids by default (a row without one lands
   nothing), ion formulas come from the per-file ledgers or are derived, and
   `--dry-run` shows the payload. `docs/PUBLISH.md` gained a section.
+- **¹⁵N-labelled ammonium reagent profile `NH4_15N`** (`^NH4+` ionisation mode, server mechanism
+  `+^NH4+`; aliases `15nh4`, `^nh4+`, `ammonium-15n`, …) with the `[M+^NH4]+` adduct
+  (+19.0309, `chemistry.ADDUCT_SHIFTS`), both mechanism maps, the `ammonium-15n` context,
+  an `ammonium15N` reagent-cluster library (`[(^NH3)n+H]+` + hydrates + the ¹⁴N monomer),
+  `[M+^NH4]+` on the siloxane/PDMS/phthalate/PEG families, and the relabel-only
+  dehydration aliases `[M+^NH4-H2O]+` / `[M+H-H2O]+` in `_DIFF_TO_ADDUCT`. Built from the
+  2026-09-10 exploratory file: ¹⁴N/¹⁵N adduct pairs 0.018–0.021 → purity 0.98, reagent
+  ions below the 40 Da window → TIC normaliser, `label_isotope=None`. `assign.run` drops
+  `[M+NH4]+` from the opportunistic channels on a labelled-ammonium run (it would only
+  re-claim the 2 % ¹⁴N satellites). New post-tier stage `nh4_dehydration`
+  (`cleanup.relabel_ammonium_dehydration`): the MS2-proven declustering cascade
+  `[M+^NH4]+ → [M+H]+ → [M+H-H2O]+` / `[M+^NH4-H2O]+` re-reads the alkene/enone
+  readings of X−H2O onto the corroborated hydrate X (own-adduct-weakness gate, second
+  loss annotated only). `docs/REAGENTS.md` callout, `docs/ASSIGNMENT_DETAIL.md` §3.7b,
+  `tests/test_nh4_15n.py`.
+- **Labelled-reagent ¹⁴N line in the envelope predictor** (`isotopes._ISO_DIST["^N"]`,
+  purity `LABEL_PURITY_15N` 0.98): a `^N` ion now predicts its −0.997 Da `14N` satellite, so
+  `complete_isotope_envelopes` claims it — and displaces a pass-1 CHON `[M+H]+` mass-fit
+  sitting on it when it matches the predicted 2 % of a ≥10× brighter labelled parent
+  (pass-0 locks kept). Before, only 7 of the ~340 `[M+^NH4]+` satellites were attached.
+- **Pass-4 iso-pairs respect the context halogen caps** (`residual.stage_a_iso_pairs`): a
+  ~1.998-Da doublet in a halogen-free positive run (max_Br = max_Cl = 0) is no longer
+  read as a Br/Cl pair (7 `C5H7BrO3 [M+^NH4]+` phantoms on the ammonium file).
+- **Positive pass-0 known species**: `cyclosiloxane` (D3–D7, L2–L5; gate ≥2 channels OR a
+  confirmed ²⁹Si/³⁰Si envelope + the Si-count M+1 check) and `indoor_sulfur`
+  (benzothiazoles, dithiocarbamate ester, thiazoles, DMSO/DMSO₂, DMDS/DMTS, thiophenes,
+  sulfolane, NBBS; gate ≥2 channels OR a confirmed ³⁴S envelope). Passes 1/2 are CHO(N)-only
+  and no positive pass-3 family opens S, so benzothiazole `[M+H]+` (68 kcps, MS2: −HCN →
+  C6H5S⁺) was unexplained and D4 only a low siloxane-ladder Candidate.
+- Labelled-ammonium runs score NO opportunistic channel: `[M+Na]+` sits 0.2 mDa from
+  `[(X−O2+C2H4)+^NH4]+` (Na − ^NH4 = 3.9584 Da vs C2H4 − O2 = 3.9585 Da), so every ^NH4
+  adduct of an O≥2 neutral had a hydrocarbon·Na twin the complexity prior preferred
+  (114 Na fits; palmitic acid read as C18H36·Na⁺). Pass-3 family adduct lists drop
+  `[M+NH4]+`/`[M+Na]+` on such runs too. The `ammonium-15n` context admits H/C up to 3.0
+  (C3–C4 amines). The `ammonium15N` library adds the urea crossover and the reagent-derived
+  CO/CO₂ clusters ((¹⁵NH₃)₂H⁺·CO at 65.049 = the doubly-labelled "formamide" ion) and the
+  reagent-made ¹⁵N-acetamide ions (61.041 protonated, 79.065 as its ¹⁵NH₄⁺ adduct: the
+  79/61 ratio 0.18 equals the ambient ¹⁴N acetamide's 78.068/60.044 = 0.21, so 61.041 is
+  the amide, not ambient ketene·¹⁵NH₄⁺ of the same composition).
+- `relabel_ammonium_dehydration` brightness ceiling: a dehydration product may not exceed
+  1.5× its parent's strongest form (adduct or protonated) — a 2 kcps C3H8O2 parent no
+  longer claims 9 kcps acetone `[M+H]+` as its water loss (ambiguity note instead).
+- Pass-3 family `organosulfur` (S 1–2 on `[M+H]+`/`[M+^NH4]+`/`[M+NH4]+`/urea; opened by the
+  `ammonium-15n` context, ³⁴S-gated by the tier engine): reaches the C5H12N2S / C9H18N2S /
+  C11H22N2S `[M+H]+` thioureas (each with a 4 % ³⁴S line) that no other positive pass can;
+  tetramethylthiourea (C5H12N2S) added to the `indoor_sulfur` known list.
 - **Mass-dependent calibration centre** (`peaky/assignment/masscal.py`, new): the pass-1
   self-calibration and the tier gate now also fit `ppm = a + b·1000/mz` (b = the constant
   absolute offset in mDa) on the backbone, accepted only when the slope is significant;

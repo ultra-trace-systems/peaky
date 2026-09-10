@@ -431,6 +431,8 @@ _ADDUCT_DESC = {
     "[M+(CH4N2O)H]+": "urea cluster", "[M+Na]+": "Na+ adduct", "[M+NH4]+": "NH4+ adduct",
     "[M+Cl]-": "Cl- cluster", "[M+I]-": "I- cluster",
     "[M+NO3]-": "NO3- cluster", "[M+^NO3]-": "[15N]O3- cluster",
+    "[M+^NH4]+": "[15N]H4+ adduct", "[M+^NH4-H2O]+": "[15N]H4+ adduct, dehydrated",
+    "[M+H-H2O]+": "protonated, dehydrated",
 }
 
 

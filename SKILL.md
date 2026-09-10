@@ -75,7 +75,7 @@ peaky list datasets
 peaky list samples --batch "<batch>" --dataset "<workspace>"
 
 # one sample
-peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|auto> \
+peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto> \
     --height-cutoff 100 --output-dir ~/peaky-output/<name>
 
 # a whole batch (assign subset -> merge -> cluster -> Van Krevelen -> PDF report)
@@ -145,6 +145,17 @@ The pipeline was built negative-mode Br-specialized; positive-mode support
   gated on a halogen adduct (its M+1 test misfires without one); the carbon-clamp
   skips Si (²⁹Si dominates the M+1, not ¹³C); di-bromide / iso-pair / `reagent_element`
   logic goes inert when no halogen is in the adduct.
+- **`NH4_15N` profile / `ammonium-15n` context (¹⁵N-labelled ammonium⁺, 
+  `^NH4+` ionisation mode):** server mechanism `+^NH4+`; channels `[M+^NH4]+` (+19.0309) and
+  `[M+H]+` (a DECLUSTERING product, 0.3–0.95× the adduct). The ¹⁵N label puts the
+  adduct 0.997 Da above any unlabelled ion, so the `[M+NH4]+`/amine `[M+H]+`
+  degeneracy and the reagent-N isobar gate do not apply; ambient amines are read on
+  `[M+H]+` at their ¹⁴N mass. The ¹⁴N reagent impurity (2 %, measured 0.018–0.021
+  on the 2026-09-10 file) is the scorer's `^N` purity satellite, so `[M+NH4]+` is
+  dropped from the opportunistic channels. Oxygenates dehydrate in-source
+  (`[M+H-H2O]+`, `[M+^NH4-H2O]+`, both MS2-proven): `cleanup.relabel_ammonium_dehydration`
+  re-reads those alkene/enone readings onto the corroborated hydrate. Reagent ions
+  (19.03/37.04/37.05) sit below a 40 Da window → TIC normaliser.
 - **`NO3_15N` context (¹⁵N-labelled nitrate⁻):** server mechanism `+^NO3-`; adduct
   `[M+^NO3]-` adds ¹⁵NO₃ (+62.985, not the ¹⁴N +61.988). The server models the
   reagent ¹⁵N as natural-abundance, so it tags the real 100%-¹⁵N peak as a non-base
@@ -161,7 +172,10 @@ grid so the clean low-F acids would otherwise be missed); **chlorinated paraffin
 `CnH(2n+2-x)Clx` (SCCP/MCCP/LCCP, committed+locked **only** with a confirmed ³⁷Cl
 envelope ≥2 satellites → Assigned, bypassing the ¹⁵N-depressed compound_score);
 positive pass-0 adds **organophosphates** (TEP/TBP/TPPO…, cross-channel-gated since
-P is monoisotopic) **and organothiophosphate/-dithioate insecticides** (~19 OP-thioates:
+P is monoisotopic), **volatile methylsiloxanes** (D3–D7, L2–L5; ≥2 channels or a
+²⁹Si/³⁰Si envelope + Si-count M+1 check), **indoor/rubber organosulfur** (benzothiazoles,
+dithiocarbamate ester, thiazoles, DMSO/DMSO₂, sulfides, thiophenes, sulfolane, NBBS; ≥2
+channels or a ³⁴S envelope) **and organothiophosphate/-dithioate insecticides** (~19 OP-thioates:
 malathion `C10H19O6PS2` ±CH₂ homologs + des-ethyl product, chlorpyrifos, diazinon,
 parathion, phorate, dimethoate, phosmet…; P off the grid, S₂/S₃ above `max_S`). The
 P-bearing corroboration gate: a known P species commits with **≥2 ion channels OR** a

@@ -81,7 +81,8 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
    TIC), **`NO3`** (nitrate, neg, reagent), **`NO3_15N`** (¹⁵N nitrate, neg, TIC,
    `purity 0.98`, `label_isotope='^N'`, `label_max=2`), **`IODIDE`**
    (I⁻, neg, normalise on reagent; adducts `[M+I]⁻`/`[M-H]⁻`/`[M+I2]⁻`/
-   `[M-H+I2]⁻`).
+   `[M-H+I2]⁻`), **`NH4_15N`** (¹⁵N-labelled ammonium, pos, TIC, `purity 0.98`,
+   adducts `[M+^NH4]⁺`/`[M+H]⁺`, `label_isotope=None`).
 
    > **Iodide is a soft adduct source with a monoisotopic reagent.** Most analytes
    > appear as the `[M+I]⁻` cluster; strong acids also deprotonate to `[M-H]⁻` (both
@@ -119,6 +120,48 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
    > covalent organonitrate as the cluster only when the parent X is independently
    > corroborated (ASSIGNMENT_DETAIL §3.9). The ¹⁵N cluster channel is the ordinary
    > `[M+^NO3]-`.
+
+   > **¹⁵N-labelled ammonium (`NH4_15N`, `^NH4+` ionisation mode, server mechanism
+   > `+^NH4+`).** Built from the 2026-09-10 exploratory acquisition
+   > (one 19-min file, m/z 40–600, interleaved MS1/MS2). The analyte cluster is
+   > `[M+^NH4]⁺` (+19.0309); `[M+H]⁺` is a **declustering** product (the proton
+   > stays on the analyte when the cluster splits) at 0.3–0.95× the adduct for
+   > esters, ketones and aromatics. **Why the label:** with ¹⁴NH₄⁺ the adduct of a
+   > CHO neutral X is mass- and isotope-identical to `[M+H]⁺` of the amine X+NH₃
+   > (the degeneracy `prefer_amine_over_ammonium` arbitrates by time behaviour);
+   > with ¹⁵N the adduct sits +0.99703 Da from every unlabelled ion, so each
+   > `[M+^NH4]⁺` commit is free of it, `tiers.N_DONOR_ADDUCTS` does not apply, and
+   > ambient amines are still read on `[M+H]⁺` at their ¹⁴N mass (C9H18N2O /
+   > C11H22N2O `[M+H]⁺` were the 4th/10th brightest ions of the file).
+   > **Measured facts that shaped the profile:** (i) the ¹⁴N satellite / ¹⁵N
+   > adduct ratio is 0.018–0.021 on the 20 brightest adducts → effective purity
+   > 0.98 = the reagent's nominal 98 atom %, ambient ¹⁴NH₃ contributes nothing
+   > detectable, so **`[M+NH4]⁺` is not a channel** (assign.run drops it from the
+   > opportunistic set — it would only re-claim the satellites as bogus M0s), and
+   > **neither is `[M+Na]⁺`**: Na − ^NH4 = 3.9584 Da while C2H4 − O2 = 3.9585 Da, so
+   > `[X+Na]⁺` of a hydrocarbon sits 0.2 mDa from `[(X−C2H4+O2)+^NH4]⁺` and the
+   > complexity prior picks the hydrocarbon (palmitic acid read as C18H36·Na⁺; 114
+   > such fits on the exploratory file, unresolvable at R 60k) — a CI source makes
+   > no Na⁺, so the labelled reagent reading is the parsimonious one;
+   > (ii) the bare reagent ions `^NH4⁺` 19.031 / `^NH4⁺·H2O` 37.041 /
+   > `(^NH3)2H⁺` 37.054 sit **below** the window and none of their in-window
+   > hydrates (55.05–55.08, 73.06–73.10) is present above 1 kcps → normaliser
+   > `tic`; `build_library("ammonium15N")` still enumerates them for wider
+   > windows; (iii) **in-source dehydration is strong**: C11H14O2 shows
+   > `[M+H-H2O]⁺` at 0.9× `[M+H]⁺`, and C12H18O2 shows *no* surviving `[M+H]⁺` at
+   > all — only `[M+H-H2O]⁺` (113 kcps) and `[M+^NH4-H2O]⁺` (43 kcps). MS2 of the
+   > parents reproduces the cascade (197.130 → 179.107 → 161.096; 213.162 →
+   > 195.151 / 177.127). `cleanup.relabel_ammonium_dehydration` (stage
+   > `nh4_dehydration`, ASSIGNMENT_DETAIL §3.7b) re-reads the alkene/enone `[M+H]⁺`
+   > and `[M+^NH4]⁺` of X−H2O onto the hydrate X when X owns the labelled channel
+   > and a declustering product is present; (iv) a uronium crossover `[urea+H]⁺`
+   > (61.040, the source alternates with the urea module) is present but no
+   > analyte urea adduct was seen, so the urea channel is not in `adducts`;
+   > (v) `label_isotope=None`: an ammonium reagent adds no covalent ¹⁵N to a
+   > product, so the labeled.py rescue must not run. MS2-confirmed identities on
+   > that file: benzothiazole `[M+H]⁺` (HCN loss → C6H5S⁺), succinic acid
+   > `[M+^NH4]⁺`, octamethylcyclotetrasiloxane (D4) on both channels, a C11H14O2
+   > acetate ester (acetylium 43.018 + acetic-acid loss → C9H11⁺).
 
 3. **Pick the cluster-library key** (`reagent_for_adducts`). From the analyte
    adducts: `CH4N2O` → `"urea"`; `Br` → `"Br"`; `I` → `"I"`; `Cl` → `"Cl"`. This
@@ -197,6 +240,11 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
 | `NO3.ranges` / `NO3_15N.ranges` | `C0-40 H0-60 N0-3 O0-25 S0-2` | nitrate grid box |
 | `NO3_15N.purity` | 0.98 | ~98 % ¹⁵N reagent (→ `predict_isotopes`) |
 | `IODIDE.ranges` | `C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1` | iodide grid box (**no I** — covalent iodine is monoisotopic, off-grid) |
+| `NH4_15N.ranges` | `C0-40 H0-90 N0-6 O0-15 S0-2` | ¹⁵N-ammonium grid box (uronium-like positive box) |
+| `NH4_15N.purity` | 0.98 | ¹⁵N fraction of the ammonium reagent — measured 0.018–0.021 ¹⁴N/¹⁵N on the 2026-09-10 file (= nominal 98 atom %) |
+| `_AMMONIUM_15N_KEY` | `ammonium15N` | cluster-library key for `[M+^NH4]+` sources: `[(^NH3)n+H]+` n≤4, hydrates k≤3, + the ¹⁴N monomer twin |
+| `relabel_ammonium_dehydration` `ppm` / `own_adduct_max` / ceiling | 4.0 / 0.5 / 1.5× | dehydration-site match window; the alkene reading is re-read only while its OWN `[M+^NH4]+` is < 0.5× its `[M+H]+`, and never when the product is brighter than 1.5× the parent's strongest form |
+| `PassConfig.cal_abs_floor_mda` / `tiers.CAL_ABS_FLOOR_MDA` | 0.03 mDa | absolute floor on the mass-dependent calibration sigma (masscal), active below ~m/z 120 |
 
 ---
 

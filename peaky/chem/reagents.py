@@ -123,6 +123,60 @@ def _proton() -> float:
     return C.M["H"] - _M_E   # H+ = proton (one H atom minus its electron)
 
 
+# ¹⁵N-labelled ammonium source ('^NH4+' ionisation mode). The reagent ions are
+# the protonated ¹⁵N-ammonia clusters and their hydrates:
+#   [(^NH3)n+H]+   19.031 / 37.054 / 55.078 / 73.101
+#   [^NH4+(H2O)k]+ 37.041 / 55.052 / 73.063  and the mixed (^NH3)2H+·H2O 55.065,
+#   (^NH3)2H+·(H2O)2 73.076, (^NH3)3H+·H2O 73.088
+# plus the ¹⁴N impurity twin of the bare monomer (18.034). On the 2026-09-10
+# exploratory file (m/z 40-600) NONE of the in-window members (55.05-
+# 55.08, 73.06-73.10) is present above 1 kcps -- the reagent lives below the
+# window start -- so this library matters for wider windows only; it is kept so
+# the labeler is complete, not because those peaks dominate the residual.
+_AMMONIUM_15N_KEY = "ammonium15N"
+
+
+def _build_ammonium_library(*, max_n: int = 4, max_water: int = 3
+                            ) -> list[tuple[str, float, str]]:
+    """[(label, ion_mz, ion_formula)] for the ¹⁵N-ammonia reagent-cluster ions
+    (see _AMMONIUM_15N_KEY). Cations: lose an electron."""
+    out: list[tuple[str, float, str]] = []
+    unit = {"^N": 1, "H": 3}                      # ^NH3
+    for n in range(1, max_n + 1):
+        for k in range(0, max_water + 1):
+            if n + k > max_n:                      # cluster size cap (n ammonia + k water)
+                continue
+            d = {"^N": n, "H": 3 * n + 1 + 2 * k, "O": k}
+            mz = C.neutral_mass(d) - _M_E
+            water = f"+{k}xH2O" if k else ""
+            out.append((f"[(^NH3){n}+H{water}]+", mz, C.format_formula(d) + "+"))
+    # the ¹⁴N impurity twin of the bare reagent ion (~2 % of ^NH4+)
+    out.append(("[NH4]+ (14N impurity)", C.neutral_mass({"N": 1, "H": 4}) - _M_E,
+                "H4N+"))
+    # reagent-DERIVED source clusters: CO / CO2 on the bare ion and on the
+    # ammonia dimer. (^NH3)2H+·CO at 65.0494 (= 15N-formamide·^NH4+, the same
+    # composition) was the 5th brightest sub-80 ion of the 2026-09-10 file; it
+    # carries TWO 15N so it cannot be an ambient analyte. The others are listed
+    # so the labeler is complete (they match only if present, ±15 ppm).
+    # ... and KETENE: 15N-acetamide forms in the source (ketene/acetyl + ^NH3).
+    # Proof on the 2026-09-10 file: 15N-acetamide.^NH4+ (79.065, doubly labelled,
+    # impossible for an ambient neutral) / 15N-acetamide.H+ (61.041) = 0.18,
+    # equal to the ambient 14N acetamide's adduct/protonated ratio 78.068/60.044 =
+    # 0.21 -- so 61.041 is the protonated reagent-made amide, not ketene.^NH4+
+    # (the same composition). Both are labelled here, never assigned.
+    for n in (1, 2):
+        for name, add in (("CO", {"C": 1, "O": 1}), ("CO2", {"C": 1, "O": 2}),
+                          ("C2H2O", {"C": 2, "H": 2, "O": 1})):
+            d = {"^N": n, "H": 3 * n + 1 + add.get("H", 0), "C": add["C"], "O": add["O"]}
+            out.append((f"[(^NH3){n}+H+{name}]+ (reagent-derived)",
+                        C.neutral_mass(d) - _M_E, C.format_formula(d) + "+"))
+    # uronium CROSSOVER: the source alternates with the urea module and
+    # [urea+H]+ (61.040, 23 kcps on the 2026-09-10 file) survives the switch --
+    # the EasyIC precedent; merged so it reads as a source ion, not an analyte.
+    out.extend(_build_positive_library("urea"))
+    return out
+
+
 def _build_positive_library(reagent: str, *, max_n: int = 6
                             ) -> list[tuple[str, float, str]]:
     """[(label, ion_mz, ion_formula)] for the protonated-reagent cluster series,
@@ -178,6 +232,8 @@ def build_library(reagent: str = "Br", *, max_n: int = 4, max_neutral: int = 1
     an ion-source cluster (it's just a different class)."""
     if reagent == "EasyIC":
         return _build_easyic_library()
+    if reagent == _AMMONIUM_15N_KEY:
+        return _build_ammonium_library()
     if reagent in _POSITIVE_REAGENTS:
         return _build_positive_library(reagent)
     if reagent not in _HALOGEN_ISO:
@@ -428,6 +484,9 @@ def reagent_for_adducts(adducts: list[str]) -> str | None:
     (a molecular reagent puts no halogen in the neutral, so assign.run sets
     cfg.reagent_element only for the halogen keys)."""
     for a in adducts:
+        # ¹⁵N-labelled ammonium source: the [M+^NH4]+ cluster channel
+        if "^NH4" in a:
+            return _AMMONIUM_15N_KEY
         # positive molecular reagents: the urea adduct [M+(CH4N2O)H]+
         if "CH4N2O" in a:
             return "urea"

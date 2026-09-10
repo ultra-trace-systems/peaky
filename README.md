@@ -171,12 +171,12 @@ peaky list batches  --dataset "<your workspace>"
 peaky list samples  --batch "<your batch>" --dataset "<your workspace>"
 
 # one sample
-peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|auto> \
+peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto> \
     --height-cutoff 100 --output-dir ~/peaky-output/<name>
 
 # a whole batch (representative subset -> merge -> clusters -> Van Krevelen -> PDF)
 peaky batch  --batch "<your batch>" --dataset "<your workspace>" \
-    --reagent <Br|Ur|NO3|NO3_15N|auto> --out-dir ~/peaky-output --jobs 6
+    --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto> --out-dir ~/peaky-output --jobs 6
 
 # publish a finished ledger back into Mascope's run ledger (run selector,
 # peak inspector, batch overview) — --dry-run translates and checks, sends nothing

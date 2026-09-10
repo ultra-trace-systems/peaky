@@ -180,6 +180,62 @@ EASYIC = ReagentProfile(
     aliases=("easyic", "easy-ic", "easyic+", "fluoranthene", "charge-transfer"),
 )
 
+# ¹⁵N-labelled AMMONIUM CIMS ('^NH4+' ionisation mode, server mechanism
+# '+^NH4+'; first file: the 2026-09-10 exploratory acquisition).
+# Positive mode; the analyte cluster is [M+^NH4]+ (+19.0309). Why the label:
+# with ¹⁴NH4+ the adduct of a CHO neutral X is mass- AND isotope-identical to
+# [M+H]+ of the amine X+NH3 (the uronium/NH4 degeneracy that
+# prefer_amine_over_ammonium has to arbitrate by time behaviour). With ¹⁵N the
+# adduct sits +0.99703 Da from any unlabelled ion, so every [M+^NH4]+ commit is
+# free of that degeneracy and the isobar gate (tiers.N_DONOR_ADDUCTS) does not
+# apply. Ambient amines still appear on [M+H]+ at their ¹⁴N mass.
+# Measured on the exploratory file:
+#   * ¹⁴N satellite / ¹⁵N adduct = 0.018-0.021 on the 20 brightest adducts ->
+#     effective purity 0.98 (= the reagent's nominal 98 atom %); ambient ¹⁴NH₃
+#     is not visible, so [M+NH4]+ is NOT an analyte channel here (it would only
+#     re-claim the satellites; assign.run drops it from the opportunistic set).
+#   * the bare reagent ions (^NH4+ 19.031, ^NH4+·H2O 37.041, (^NH3)2H+ 37.054)
+#     sit BELOW the m/z 40-600 window and no water/ammonia cluster of them is
+#     seen in-window -> the correlation layer normalises on TIC (the NO3_15N /
+#     uronium ruling). reagents.build_library("ammonium15N") still labels them
+#     for wider windows.
+#   * DECLUSTERING is strong: [M+H]+ of the same neutral at 0.3-0.95 x the
+#     adduct for esters/ketones/aromatics, and oxygenates go on to lose water
+#     ([M+H-H2O]+ at 0.9 x [M+H]+ for C11H14O2; C12H18O2 shows NO surviving
+#     [M+H]+ at all, only [M+H-H2O]+ / [M+^NH4-H2O]+). MS2 of the parents
+#     reproduces the cascade (197.130 -> 179.107 -> 161.096). Handled by
+#     cleanup.relabel_ammonium_dehydration (the ammonium-15n context stage).
+#   * a uronium crossover [urea+H]+ (61.040, the source alternates with the
+#     urea module) is present but no analyte urea adduct was seen; the urea
+#     channel is therefore not in `adducts`.
+# label_isotope stays None: an ammonium reagent adds no covalent ¹⁵N to a
+# product (no radical chemistry), so the labeled.py rescue must not run.
+NH4_15N = ReagentProfile(
+    name="NH4_15N",
+    label="[15N]H4+ CIMS",
+    polarity="+",
+    adducts=["[M+^NH4]+", "[M+H]+"],
+    normaliser="tic",
+    reagent_ion_re=None,
+    ranges="C0-40 H0-90 N0-6 O0-15 S0-2",
+    detect_adduct="[M+^NH4]+",
+    context="ammonium-15n",
+    purity=0.98,          # measured 0.98 (14N/15N adduct pairs), = nominal 98 atom %
+    label_isotope=None,   # no covalent 15N products from an ammonium reagent
+    aliases=(
+        "nh4-15n",
+        "15nh4",
+        "15nh4+",
+        "^nh4",
+        "^nh4+",
+        "nh4_15n",
+        "ammonium-15n",
+        "15n-ammonium",
+        "ammonium-15n-cims",
+        "labelled-ammonium",
+    ),
+)
+
 PROFILES: dict[str, ReagentProfile] = {
     BR.name: BR,
     UR.name: UR,
@@ -187,6 +243,7 @@ PROFILES: dict[str, ReagentProfile] = {
     NO3_15N.name: NO3_15N,
     IODIDE.name: IODIDE,
     EASYIC.name: EASYIC,
+    NH4_15N.name: NH4_15N,
 }
 _BY_ALIAS = {a: p for p in PROFILES.values() for a in (p.name.lower(), *p.aliases)}
 
@@ -205,6 +262,10 @@ _CONFIG_FIELDS = (
     "detect_adduct",
     "context",
     "aliases",
+    # labelled-reagent fields (NO3_15N / NH4_15N style profiles from a config)
+    "purity",
+    "label_isotope",
+    "label_max",
 )
 
 

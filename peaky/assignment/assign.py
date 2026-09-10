@@ -284,6 +284,15 @@ _STAGES = [
     _Stage("relabel_reagent_n",
            lambda st: cleanup.relabel_reagent_n_adducts(st.led, log=st.log),
            safe=False, store=False),
+    # ¹⁵N-ammonium in-source DECLUSTERING cascade: [M+^NH4]+ -> [M+H]+ ->
+    # [M+H-H2O]+, and [M+^NH4]+ -> [M+^NH4-H2O]+ (both product routes seen in
+    # MS2 of the 2026-09-10 exploratory file). The dehydration ions are ion-
+    # identical to the alkene/enone X-H2O on [M+H]+ / [M+^NH4]+; re-read them
+    # onto the hydrate X when X is corroborated on its own labelled channel.
+    _Stage("nh4_dehydration",
+           lambda st: cleanup.relabel_ammonium_dehydration(st.led, log=st.log),
+           when=lambda st: any("^NH4" in str(a) for a in st.adducts),
+           safe=False, store=False),
     # EasyIC⁺ fragmentation ambiguity: relabel corroborated alcohol-dehydration
     # ions ([CnH2n+H]+ -> [CnH2n+2O+H-H2O]+) and stamp the MS1-irreducible
     # carbonyl-vs-alcohol / fragment-vs-intact dual readings into commentary.
@@ -364,7 +373,20 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # 40 base M0s (incl. TFA) for 0 gains (heavier per-formula scoring times out
     # batches; Br3- is the dominant reagent ion). Positive (urea-CIMS): the
     # alkali / ammonium adducts the source also produces.
-    opportunistic = (["[M+Na]+", "[M+NH4]+"] if polarity == "positive"
+    # LABELLED-AMMONIUM run: the ¹⁴N [M+NH4]+ adduct is the reagent's ~2 % ¹⁴N
+    # impurity satellite (-0.99703 Da, modelled by the scorer's ^N purity), not
+    # an analyte channel -- enumerating it would only re-claim those satellites
+    # as bogus M0s. Ambient ¹⁴NH₃ was not detectable above the impurity on the
+    # 2026-09-10 file (see profiles.NH4_15N). Keep the alkali adduct.
+    # ... and NO alkali channel either: [X+Na]+ sits 0.2 mDa from
+    # [(X-O2+C2H4)+^NH4]+ (Na - ^NH4 = 3.9584 Da; C2H4 - O2 = 3.9585 Da), so every
+    # ^NH4 adduct of an O>=2 neutral has a Na-adduct hydrocarbon twin that the
+    # complexity prior then prefers (palmitic acid became "C18H36 [M+Na]+" -- 114
+    # Na fits on the 2026-09-10 file, unresolvable at R 60k). A CI source makes no
+    # Na+; the labelled reagent reading is the parsimonious one.
+    labelled_nh4 = any("^NH4" in str(a) for a in adducts)
+    opportunistic = (([] if labelled_nh4 else ["[M+Na]+", "[M+NH4]+"])
+                     if polarity == "positive"
                      else ["[M+CO3]-", "[M+Br2]-"])
     extra_channels = [a for a in opportunistic
                       if io_mascope.resolve_mechanism_ids(

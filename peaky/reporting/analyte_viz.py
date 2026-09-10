@@ -171,6 +171,7 @@ def time_traces(ts_peaks: pd.DataFrame, formulas, adducts, *, mode: str = "raw",
 ADDUCT_SUFFIX = {
     "[M+H]+": "+H⁺", "[M-H]-": "−H⁻",
     "[M+(CH4N2O)H]+": "+Ur⁺", "[M+NH4]+": "+NH₄⁺", "[M+Na]+": "+Na⁺",
+    "[M+^NH4]+": "+¹⁵NH₄⁺", "[M+^NH4-H2O]+": "+¹⁵NH₄⁺−H₂O", "[M+H-H2O]+": "+H⁺−H₂O",
     "[M+Br]-": "+Br⁻", "[M+HBr+Br]-": "+Br₂H⁻", "[M+Br2]-": "+Br₂⁻",
     "[M+CO3]-": "+CO₃⁻", "[M+HBr+CO3]-": "+HBrCO₃⁻", "[M+HSO4]-": "+HSO₄⁻",
     "[M+Cl]-": "+Cl⁻", "[M+I]-": "+I⁻",

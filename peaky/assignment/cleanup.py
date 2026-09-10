@@ -950,6 +950,230 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
     return {"reagent_n_relabeled": n}
 
 
+# ¹⁵N-labelled ammonium CIMS: the in-source DECLUSTERING cascade. At the
+# transfer RF of the 2026-09-10 exploratory file the [M+^NH4]+ cluster
+# splits with the proton staying on the analyte ([M+H]+ at 0.3-0.95 x the
+# adduct), and the protonated oxygenate then loses water ([M+H-H2O]+); a second
+# route keeps the ammonium and loses water ([M+^NH4-H2O]+). MS2 of the
+# C11H14O2 parent showed exactly this (197.130 -> 179.107 -> 161.096, plus
+# 179.120), and the C12H18O2 parent (213.162 -> 195.151 / 177.127) had NO
+# surviving [M+H]+ at all. In MS1 the dehydration ions are ion-identical to the
+# [M+H]+ / [M+^NH4]+ of the alkene/enone X-H2O, so the assigner reads them as a
+# SECOND neutral. This pass re-reads them onto the hydrate X -- the EasyIC
+# dehydration ruling with the labelled adduct as the corroborating channel:
+#   * X must own an M0 on the labelled channel [M+^NH4]+, AND either its
+#     protonated form [M+H]+ or its ammonium-retaining water loss
+#     [M+^NH4-H2O]+ must be present (so a dehydration is expected);
+#   * an UNEXPLAINED peak at X's [M+H-H2O]+ / [M+^NH4-H2O]+ mass is committed
+#     to X on that alias (Candidate);
+#   * the alkene reading Y=X-H2O sitting on those masses is relabelled only when
+#     Y's OWN labelled adduct is weak relative to its protonated form
+#     (I[Y+^NH4] < own_adduct_max x I[Y+H]) -- a genuine oxygenate in this source
+#     shows its adduct at >= its protonated form; otherwise the row keeps Y and
+#     gets the ambiguity note. Relabelled rows stay visible (Assigned ->
+#     Candidate). A second water loss is annotated, never relabelled.
+_DEHYDRATION_ALIASES = ("[M+H-H2O]+", "[M+^NH4-H2O]+")
+
+
+def relabel_ammonium_dehydration(ledger: pd.DataFrame, *, adduct: str = "[M+^NH4]+",
+                                 ppm: float = 4.0, own_adduct_max: float = 0.5,
+                                 log=print) -> dict:
+    """Re-read the in-source dehydration ions of ¹⁵N-ammonium-adduct parents (see
+    the module note above). Returns counts."""
+    out = {"nh4_deh_committed": 0, "nh4_deh_relabeled": 0, "nh4_deh_ambiguous": 0,
+           "nh4_deh_parents": 0}
+    need = {"mz", "height", "role", "adduct", "neutral_formula", "peak_id"}
+    if not need.issubset(ledger.columns):
+        return out
+    mz = ledger["mz"].to_numpy(dtype=float)
+    hts = ledger["height"].to_numpy(dtype=float)
+    idx = np.asarray(ledger.index)
+    has_tier = "tier" in ledger.columns
+
+    def reason(i, msg: str):
+        # NA-safe tier_reason append (the ledger default is pd.NA, which the
+        # generic _note helper cannot truth-test)
+        if "tier_reason" not in ledger.columns:
+            return
+        prev = ledger.at[i, "tier_reason"]
+        prev = "" if prev is None or prev is pd.NA or (isinstance(prev, float) and np.isnan(prev)) \
+            else str(prev)
+        if prev in ("nan", "<NA>"):
+            prev = ""
+        ledger.at[i, "tier_reason"] = (prev + " | " + msg) if prev else msg
+
+    def rows_at(target: float) -> list:
+        tol = target * ppm * 1e-6
+        return [idx[k] for k in np.where(np.abs(mz - target) <= tol)[0]]
+
+    def height(i) -> float:
+        v = ledger.at[i, "height"]
+        return 0.0 if pd.isna(v) else float(v)
+
+    def locked(i) -> bool:
+        # only a PASS-0 (known-species) lock is immutable here: the pass-1 backbone
+        # lock is score-based and the re-read keeps the SAME ion (a different
+        # neutral reading of it), so the hydrate's own labelled channel outranks it
+        if not ("locked" in ledger.columns and bool(ledger.at[i, "locked"])):
+            return False
+        p = pd.to_numeric(ledger.at[i, "pass_no"], errors="coerce") if "pass_no" in ledger.columns else 1
+        return (not pd.isna(p)) and int(p) == 0
+
+    def set_alias(i, X: str, alias: str, note: str, *, relabel: bool):
+        cnt = C.parse_formula(X)
+        ion = dict(cnt)
+        if alias == "[M+H-H2O]+":
+            ion["H"] = ion.get("H", 0) - 1; ion["O"] = ion.get("O", 0) - 1
+        else:                                   # [M+^NH4-H2O]+
+            ion["H"] = ion.get("H", 0) + 2; ion["O"] = ion.get("O", 0) - 1
+            ion["^N"] = ion.get("^N", 0) + 1
+        ion = {k: v for k, v in ion.items() if v}
+        theo = C.ion_mz(X, alias)
+        if relabel:
+            ledger.at[i, "neutral_formula"] = X
+            ledger.at[i, "adduct"] = alias
+            ledger.at[i, "ion_formula"] = C.format_formula(ion) + "+"
+            if "dbe" in ledger.columns:
+                ledger.at[i, "dbe"] = C.dbe(X)
+            if "ppm_error" in ledger.columns:
+                ledger.at[i, "ppm_error"] = (float(ledger.at[i, "mz"]) - theo) / theo * 1e6
+            if "method" in ledger.columns:
+                prev = str(ledger.at[i, "method"] or "")
+                ledger.at[i, "method"] = (prev + "; nh4-dehydration") if prev and prev != "nan" \
+                    else "nh4-dehydration"
+            if "confidence" in ledger.columns:
+                ledger.at[i, "confidence"] = "Good (in-source dehydration, corroborated)"
+        else:
+            L.commit_assignment(
+                ledger, ledger.at[i, "peak_id"], neutral_formula=X, adduct=alias,
+                ion_formula=C.format_formula(ion) + "+", ion_score=0.0,
+                ppm_error=(float(ledger.at[i, "mz"]) - theo) / theo * 1e6,
+                pass_no=8, method="nh4-dehydration",
+                confidence="Good (in-source dehydration, corroborated)", commentary=note)
+        if has_tier:
+            if str(ledger.at[i, "tier"]) in ("Assigned", "nan", "None", ""):
+                ledger.at[i, "tier"] = "Candidate"
+            if "tier_reason" in ledger.columns:
+                ledger.at[i, "tier_reason"] = ("in-source dehydration alias of a labelled-"
+                                               "adduct parent (relabel-only channel)")
+        if relabel:
+            reason(i, note)
+            if "commentary" in ledger.columns:
+                prev = str(ledger.at[i, "commentary"] or "")
+                ledger.at[i, "commentary"] = (prev + "; " + note) if prev and prev != "nan" else note
+
+    m0 = ledger["role"].astype(str).eq(L.ROLE_M0)
+    parents = [i for i in ledger.index[m0 & ledger["adduct"].astype(str).eq(adduct)]
+               if not (has_tier and str(ledger.at[i, "tier"]) not in ("Assigned", "Candidate"))]
+    for i in parents:
+        if str(ledger.at[i, "adduct"]) != adduct:
+            continue                    # re-read onto a hydrate by an earlier parent
+        X = _norm_formula(ledger.at[i, "neutral_formula"])
+        if not X:
+            continue
+        cnt = C.parse_formula(X)
+        if cnt.get("O", 0) < 1 or cnt.get("H", 0) < 2 or cnt.get("C", 0) < 1:
+            continue
+        ycnt = dict(cnt); ycnt["H"] -= 2; ycnt["O"] -= 1
+        ycnt = {k: v for k, v in ycnt.items() if v}
+        if not C.dbe_ok(ycnt)[0]:
+            continue
+        Y = C.format_formula(ycnt)
+        hX = height(i)
+        mz_mh = C.ion_mz(X, "[M+H]+")
+        mz_d = C.ion_mz(X, "[M+H-H2O]+")
+        mz_ad = C.ion_mz(X, "[M+^NH4-H2O]+")
+        rows_mh, rows_d, rows_ad = rows_at(mz_mh), rows_at(mz_d), rows_at(mz_ad)
+        h_mh = max((height(j) for j in rows_mh), default=0.0)
+        h_ad = max((height(k) for k in rows_ad), default=0.0)
+        if h_mh <= 0 and h_ad <= 0:
+            continue                    # no declustering product -> no dehydration expected
+        # a dehydration product cannot much exceed its parent's brightest form:
+        # C12H18O2 gave [M+H-H2O]+ at 0.84x its adduct, C11H14O2 at 0.30x -- a
+        # 2 kcps parent must not claim 9 kcps acetone as "propanediol - H2O"
+        ceiling = 1.5 * max(hX, h_mh)
+        out["nh4_deh_parents"] += 1
+        basis = (f"parent {X} owns [M+^NH4]+ at m/z {float(ledger.at[i, 'mz']):.4f} "
+                 f"({hX:.3g} cps)" + (f", its [M+H]+ is present ({h_mh:.3g} cps)" if h_mh > 0 else "")
+                 + (f", its [M+^NH4-H2O]+ is present ({h_ad:.3g} cps)" if h_ad > 0 else ""))
+        # (b) the ammonium-retaining water-loss site == Y's own labelled adduct
+        for k in rows_ad:
+            if locked(k):
+                continue
+            role = str(ledger.at[k, "role"])
+            nf = _norm_formula(ledger.at[k, "neutral_formula"])
+            if height(k) > ceiling:
+                if role == L.ROLE_M0 and nf == Y:
+                    reason(k, f"ambiguity: same ion as the in-source dehydration [M+^NH4-H2O]+ "
+                              f"of {X}, but brighter ({height(k):.3g} cps) than 1.5x that parent's "
+                              f"strongest form ({max(hX, h_mh):.3g} cps); kept as {Y}")
+                    out["nh4_deh_ambiguous"] += 1
+                continue
+            if role == L.ROLE_UNEXPLAINED:
+                set_alias(k, X, "[M+^NH4-H2O]+",
+                          f"in-source dehydration [M+^NH4-H2O]+ of {X}: {basis}", relabel=False)
+                out["nh4_deh_committed"] += 1
+            elif role == L.ROLE_M0 and str(ledger.at[k, "adduct"]) == adduct and nf == Y:
+                h_yh = max((height(j) for j in rows_d
+                            if str(ledger.at[j, "role"]) == L.ROLE_M0
+                            and str(ledger.at[j, "adduct"]) == "[M+H]+"
+                            and _norm_formula(ledger.at[j, "neutral_formula"]) == Y),
+                           default=0.0)
+                weak_own = h_yh > 0 and height(k) < own_adduct_max * h_yh
+                if weak_own or height(k) <= own_adduct_max * hX:
+                    set_alias(k, X, "[M+^NH4-H2O]+",
+                              f"re-read as the in-source dehydration [M+^NH4-H2O]+ of {X} "
+                              f"(was {Y} [M+^NH4]+, the same ion): {basis}; {Y}'s own "
+                              f"adduct is {height(k):.3g} cps vs {h_yh:.3g} cps protonated"
+                              f"{'' if h_yh else ' (no protonated form)'}", relabel=True)
+                    out["nh4_deh_relabeled"] += 1
+                else:
+                    reason(k, f"ambiguity: {Y} [M+^NH4]+ is the same ion as the "
+                                     f"in-source dehydration [M+^NH4-H2O]+ of {X} ({basis}); "
+                                     f"kept as {Y} (its own adduct is strong)")
+                    out["nh4_deh_ambiguous"] += 1
+        # (a) the protonated-then-dehydrated site == Y's [M+H]+
+        for j in rows_d:
+            if locked(j):
+                continue
+            role = str(ledger.at[j, "role"])
+            nf = _norm_formula(ledger.at[j, "neutral_formula"])
+            if height(j) > ceiling:
+                if role == L.ROLE_M0 and nf == Y:
+                    reason(j, f"ambiguity: same ion as the in-source dehydration [M+H-H2O]+ of "
+                              f"{X}, but brighter ({height(j):.3g} cps) than 1.5x that parent's "
+                              f"strongest form ({max(hX, h_mh):.3g} cps); kept as {Y}")
+                    out["nh4_deh_ambiguous"] += 1
+                continue
+            if role == L.ROLE_UNEXPLAINED:
+                set_alias(j, X, "[M+H-H2O]+",
+                          f"in-source dehydration [M+H-H2O]+ of {X}: {basis}", relabel=False)
+                out["nh4_deh_committed"] += 1
+            elif role == L.ROLE_M0 and str(ledger.at[j, "adduct"]) == "[M+H]+" and nf == Y:
+                if h_ad < own_adduct_max * height(j):
+                    set_alias(j, X, "[M+H-H2O]+",
+                              f"re-read as the in-source dehydration [M+H-H2O]+ of {X} (was "
+                              f"{Y} [M+H]+, the same ion): {basis}; {Y}'s own [M+^NH4]+ is "
+                              f"only {h_ad:.3g} cps vs {height(j):.3g} cps here", relabel=True)
+                    out["nh4_deh_relabeled"] += 1
+                else:
+                    reason(j, f"ambiguity: {Y} [M+H]+ is the same ion as the in-source "
+                                     f"dehydration [M+H-H2O]+ of {X} ({basis}); kept as {Y} "
+                                     f"(its own [M+^NH4]+ is {h_ad:.3g} cps)")
+                    out["nh4_deh_ambiguous"] += 1
+        # a SECOND water loss is annotated on the parent only
+        mz_d2 = mz_d - C.neutral_mass("H2O")
+        h_d2 = max((height(j) for j in rows_at(mz_d2)), default=0.0)
+        if h_d2 > 0:
+            reason(i, f"second in-source water loss [M+H-2H2O]+ present at m/z "
+                             f"{mz_d2:.4f} ({h_d2:.3g} cps)")
+    log(f"[cleanup] nh4 dehydration: {out['nh4_deh_parents']} labelled-adduct parents with a "
+        f"declustering product; {out['nh4_deh_committed']} unexplained dehydration ions "
+        f"committed, {out['nh4_deh_relabeled']} alkene readings re-read, "
+        f"{out['nh4_deh_ambiguous']} left ambiguous")
+    return out
+
+
 def _norm_formula(f) -> str:
     """Canonicalise a neutral formula string (re-parse + re-format) so parent
     lookups compare like-for-like regardless of element ordering."""

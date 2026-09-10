@@ -293,6 +293,18 @@ Runs after cleanup + siloxane but **BEFORE degeneracy and tiers** (`passes.rearb
 
 Runs among the **post-tier** stages (after `relabel_radicals`, before `demote_ionization`; `cleanup.relabel_reagent_n_adducts`, cleanup.py:685–747). A **pure hydrocarbon** (parses to C/H only — no O/N/S/P/halogen/Si) assigned via an N-carrying reagent cluster is implausible: a hydrocarbon has no basic/polar site to bind the cluster and a real one would ionize as `[M+H]+`. It is re-read as `[M+H]+` of the N-heterocycle **M′ = M + (cluster − H)**, where the cluster mass comes from `_REAGENT_N_CLUSTERS = {"[M+NH4]+": {N:1, H:3}, "[M+(CH4N2O)H]+": {C:1, H:4, N:2, O:1}}` (cleanup.py:679–682) — e.g. `C5H6 [M+(CH4N2O)H]+ → C6H10N2O [M+H]+`; `C5H6 [M+NH4]+ → C5H9N [M+H]+`. Guards: M′ must pass `dbe_ok`/`oxygen_ok`; **SKIPPED** when the same hydrocarbon also has its own genuine `[M+H]+` row (a real terpene that legitimately forms `[M+NH4]+`). The re-read row is tiered **Candidate + `below_assignability`**, `confidence="Low (reagent-N re-read)"` (the specific N-heterocycle is rarely cross-channel-confirmed and the region is often reagent background, but the protonated-heterocycle label is the saner best-guess and stays visible). Positive adducts only (negative reagents never hit these).
 
+### 3.7b ¹⁵N-ammonium in-source dehydration re-read (`relabel_ammonium_dehydration`, pipeline stage `nh4_dehydration`)
+
+**Gated on a labelled-ammonium run** (`when: "[M+^NH4]+" in st.adducts`); runs right after `relabel_reagent_n`. In the `^NH4+` source the `[M+^NH4]+` cluster DECLUSTERS in transfer — the proton stays on the analyte (`[M+H]+` at 0.3–0.95× the adduct) — and the protonated oxygenate then loses water (`[M+H-H2O]+`); a second route keeps the ammonium and loses water (`[M+^NH4-H2O]+`). Both routes are MS2-proven on the 2026-09-10 exploratory file (C11H14O2: 197.130 → 179.107 → 161.096, plus 179.120; C12H18O2: 213.162 → 195.151 / 177.127, with **no** surviving `[M+H]+`). In MS1 the dehydration ions are ion-identical to `[M+H]+` / `[M+^NH4]+` of the alkene/enone **Y = X − H2O**, so the passes read them as a second neutral. The re-read is the EasyIC dehydration ruling (§3.7a-style: relabel only when the hydrate is *independently* corroborated) with the labelled adduct as the corroborating channel:
+
+- **parent gate:** X owns an M0 on `[M+^NH4]+` (Assigned or Candidate) **and** either its `[M+H]+` or its `[M+^NH4-H2O]+` is present (so a dehydration is expected); a labelled adduct with no declustering product does nothing;
+- an **unexplained** peak at X's `[M+H-H2O]+` / `[M+^NH4-H2O]+` mass is committed to X on that alias (method `nh4-dehydration`, Candidate);
+- the alkene reading **Y** sitting on those masses is relabelled onto X only while Y's **own** labelled adduct is weak relative to its protonated form (`I[Y+^NH4] < own_adduct_max (0.5) × I[Y+H]`, or ≤ 0.5× the parent adduct when Y has no protonated form) — a genuine oxygenate in this source shows its adduct at ≥ its protonated form; otherwise the row keeps Y and carries the ambiguity note (`tier_reason` + commentary);
+- **brightness ceiling:** a product brighter than 1.5× the parent's strongest form (adduct or `[M+H]+`) is never claimed — C12H18O2 gave `[M+H-H2O]+` at 0.84× its adduct and C11H14O2 at 0.30×, while a 2 kcps C3H8O2 parent must not absorb 9 kcps acetone `[M+H]+` (ambiguity note instead);
+- relabelled rows stay visible (Assigned → Candidate, `confidence "Good (in-source dehydration, corroborated)"`); a **second** water loss is only annotated on the parent, never relabelled; rows already re-read by an earlier parent are skipped. Only a **pass-0** (known-species) lock is immutable here: the pass-1 backbone lock is score-based and the re-read keeps the same ion, so the hydrate's own labelled channel outranks it.
+
+The aliases `[M+H-H2O]+` / `[M+^NH4-H2O]+` have **no server mechanism** (relabel-only, like `[M-H+I2]-`); `passes/core._DIFF_TO_ADDUCT` carries their element diffs so a re-derived label does not fall through to `[M-H]-`. Regression: `tests/test_nh4_15n.py`.
+
 ### 3.8 Labelled-reagent heavy-isotope rescue (`labeled.rescue_labeled`, pipeline stage `labeled_15n`, assign.py)
 
 **No-op unless `profile.label_isotope` is set** (only `NO3_15N` declares `label_isotope='^N'`, `label_max=2`). In a labelled-reagent run the reagent radical can add to a VOC and leave a *covalent* heavy atom in the product — a ¹⁵N-organonitrate. The formula grid enumerates only the light isotope, so every such product sits *j·Δ* off any expressible formula (Δ = m(¹⁵N) − m(¹⁴N) = 0.99703 Da) and the peak is either left unexplained or absorbed by a flexible partially-fluorinated CHONF fit (see the F/H-coherence cap in §4). Runs **before degeneracy/tiers** so the filled/re-read peaks tier normally.
@@ -606,6 +618,7 @@ REARBITRATE off-cal degenerate winners (displace aromatic-monster M0s; skip if u
 DEGENERACY → TIERS (apply_tiers; stamp ppm_error_cal) → post-tier demotes:
         demote_fluorine → demote_carbon → relabel_radicals →
         relabel_reagent_n (HC via N-cluster → [M+H]+ of N-heterocycle) →
+        nh4_dehydration (¹⁵NH₄⁺ runs: X−H2O alkene readings → hydrate X aliases) →
         demote_ionization → demote_speculative → plausibility
   ▼
 [opt] TIME-SERIES annotate/demote

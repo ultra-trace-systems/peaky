@@ -136,6 +136,20 @@ ADDUCT_SHIFTS: dict[str, float] = {
     "[M+H]+":   M["H"] - M_E,
     "[M+Na]+":  22.9897692820 - M_E,
     "[M+NH4]+": M["N"] + 4 * M["H"] - M_E,
+    # ¹⁵N-labelled AMMONIUM reagent cluster (server mechanism '+^NH4+'): the
+    # added N is ¹⁵N, so the shift is +19.0309, not the +18.0338 of the ¹⁴N
+    # adduct above. The ~2 % ¹⁴N reagent impurity shows as a -0.99703 satellite
+    # (modelled by the scorer's ^N purity), NOT as a second analyte channel --
+    # measured 0.018-0.021 on the 20 brightest adducts of the 2026-09-10
+    # exploratory file, i.e. ambient ¹⁴NH₃ adds nothing detectable.
+    "[M+^NH4]+": _M_15N + 4 * M["H"] - M_E,
+    # in-source dehydration of the labelled-ammonium cluster: the ion keeps
+    # ^NH4+ and loses H2O (M + ^NH4 - H2O). Same ion as [M+^NH4]+ of the
+    # alkene/enone X-H2O -- a relabel-only alias with NO server mechanism (the
+    # [M+H-H2O]+ ruling), written by cleanup.relabel_ammonium_dehydration when
+    # the hydrate X is corroborated on its own labelled channel. MS2 of the
+    # C12H18O2 parent (213.162 -> 195.151) is the direct evidence.
+    "[M+^NH4-H2O]+": _M_15N + 4 * M["H"] - M["O"] - 2 * M["H"] - M_E,
     "[M+K]+":   38.9637064864 - M_E,
     # protonated-urea (URONIUM) adduct -- the analyte channel of a urea-CIMS
     # positive-mode source: [M + (CH4N2O) + H]+ = M + urea + proton (server

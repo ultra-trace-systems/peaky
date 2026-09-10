@@ -120,10 +120,59 @@ def _known_species(polarity: str = "negative", context: str | None = None) -> di
         ambient_inorganic = {
             "H3N": "ammonia (ambient; via urea adduct)",
         }
+        # VOLATILE METHYLSILOXANES: the cyclic D3-D7 and linear L2-L5 PDMS
+        # monomers/oligomers, THE ubiquitous indoor/lab contaminant (personal-care
+        # products, silicone tubing). The generic siloxane ladder pass reaches them
+        # only as a low Candidate; here they commit like any known species, gated
+        # on >=2 ion channels OR a confirmed 29Si/30Si envelope (Si is isotope-
+        # confirmable) PLUS the Si-count M+1 consistency check below. D4 on the
+        # 2026-09-10 15N-ammonium file: [M+H]+ 297.082 + [M+^NH4]+ 315.106 within
+        # 1 ppm, Si4 envelope (M+1 18 %, M+2 13 %), MS2 = -^NH3 then -CH4.
+        cyclosiloxane = {
+            "C6H18O3Si3": "hexamethylcyclotrisiloxane (D3)",
+            "C8H24O4Si4": "octamethylcyclotetrasiloxane (D4)",
+            "C10H30O5Si5": "decamethylcyclopentasiloxane (D5)",
+            "C12H36O6Si6": "dodecamethylcyclohexasiloxane (D6)",
+            "C14H42O7Si7": "tetradecamethylcycloheptasiloxane (D7)",
+            "C6H18OSi2": "hexamethyldisiloxane (L2)",
+            "C8H24O2Si3": "octamethyltrisiloxane (L3)",
+            "C10H30O3Si4": "decamethyltetrasiloxane (L4)",
+            "C12H36O4Si5": "dodecamethylpentasiloxane (L5)",
+        }
+        # INDOOR / RUBBER ORGANOSULFUR: benzothiazoles (tyre/rubber vulcanisation
+        # accelerators), dithiocarbamate esters, thiazoles, DMSO/DMSO2, dimethyl
+        # (di/tri)sulfide, thiophenes, sulfolane, NBBS. Passes 1/2 are CHO(N)-
+        # only and no positive pass-3 family opens S, so these were unexplained
+        # (benzothiazole [M+H]+ 136.0215 at 68 kcps on the 2026-09-10 file, MS2:
+        # -HCN -> C6H5S+ 109.011; the C4H9NS2 ester at 136.025, MS2: -CH3SH ->
+        # C3H6NS+ 88.022). Gated like the thiophosphates: >=2 channels OR a
+        # confirmed 34S envelope.
+        indoor_sulfur = {
+            "C7H5NS": "benzothiazole",
+            "C8H7NS": "2-methylbenzothiazole",
+            "C7H5NS2": "2-mercaptobenzothiazole",
+            "C7H5NOS": "2(3H)-benzothiazolone",
+            "C8H7NS2": "2-(methylthio)benzothiazole",
+            "C4H9NS2": "dithiocarbamate methyl ester (methyl dimethyldithiocarbamate-type)",
+            "C3H3NS": "thiazole",
+            "C4H5NS": "methylthiazole",
+            "C2H6OS": "dimethyl sulfoxide (DMSO)",
+            "C2H6O2S": "dimethyl sulfone",
+            "C2H6S2": "dimethyl disulfide",
+            "C2H6S3": "dimethyl trisulfide",
+            "C4H4S": "thiophene",
+            "C5H6S": "methylthiophene",
+            "C8H6S": "benzothiophene",
+            "C4H8O2S": "sulfolane",
+            "C10H15NO2S": "N-butylbenzenesulfonamide (NBBS)",
+            "C5H12N2S": "tetramethylthiourea (TMTU, rubber accelerator)",
+        }
         out = {
             "organophosphate": organophosphate,
             "organothiophosphate": organothiophosphate,
             "ambient_inorganic": ambient_inorganic,
+            "cyclosiloxane": cyclosiloxane,
+            "indoor_sulfur": indoor_sulfur,
         }
         # EasyIC⁺ HYDRIDE-abstraction species. The scorer only reaches
         # mechanism-mapped channels, so the hydride ion is scored as the
@@ -314,6 +363,14 @@ def run_pass0_known(
             "compound_formula"
         ].unique()
     )
+    # silicon IS isotope-confirmable (29Si 4.7 %, 30Si 3.1 % per Si): for the
+    # methylsiloxane family a matched 29Si/30Si envelope stands in for the 2nd
+    # channel (the Si-count M+1 consistency check below still applies)
+    iso_confirmed_si = set(
+        kids[kids["iso_label"].astype(str).str.contains("29Si|30Si", na=False)][
+            "compound_formula"
+        ].unique()
+    )
     mzs = ledger["mz"]
     for _, r in base.iterrows():
         ppm = r["ppm_error"]
@@ -357,14 +414,28 @@ def run_pass0_known(
             # excluded upstream in `iso_confirmed`.
             _iso_ok = r["compound_formula"] in iso_confirmed
             if (
-                fam in ("organophosphate", "organothiophosphate")
+                fam == "cyclosiloxane"
+                and ope_channels.get(r["compound_formula"], 0) < 2
+                and r["compound_formula"] not in iso_confirmed_si
+            ):
+                log(
+                    f"[pass0] skip {r['compound_formula']} @{float(r['sample_peak_mz']):.4f}: "
+                    "single ion channel, no 29Si/30Si envelope (methylsiloxane needs "
+                    ">=2 channels or the Si envelope)"
+                )
+                continue
+            if (
+                fam in ("organophosphate", "organothiophosphate", "indoor_sulfur")
                 and ope_channels.get(r["compound_formula"], 0) < 2
                 and not _iso_ok
             ):
                 log(
                     f"[pass0] skip {r['compound_formula']} @{float(r['sample_peak_mz']):.4f}: "
-                    f"single ion channel, no diagnostic-isotope (³⁴S/³⁷Cl/⁸¹Br) "
-                    f"envelope (P needs >=2 channels or an isotope twin to corroborate)"
+                    f"single ion channel, no diagnostic-isotope (³⁴S/³⁷Cl/⁸¹Br) envelope ("
+                    + ("an off-grid S species needs >=2 channels or a ³⁴S twin"
+                       if fam == "indoor_sulfur"
+                       else "P needs >=2 channels or an isotope twin")
+                    + " to corroborate)"
                 )
                 continue
             tag = (
@@ -386,6 +457,10 @@ def run_pass0_known(
                 if fam == "ambient_inorganic"
                 else "easyic-hydride"
                 if fam == "easyic_hydride"
+                else "methylsiloxane"
+                if fam == "cyclosiloxane"
+                else "indoor-sulfur"
+                if fam == "indoor_sulfur"
                 else "contaminant"
             )
             fam_kids = kids[kids["compound_formula"] == r["compound_formula"]]
@@ -482,6 +557,22 @@ def run_pass0_known(
                         else "; chlorinated paraffin (Cl off the grid); ³⁷Cl "
                         f"envelope confirmed ({n_kids} satellites), isotope-locked"
                         if fam == "chlorinated_paraffin"
+                        else "; volatile methylsiloxane (PDMS monomer/oligomer, "
+                        "indoor/lab contaminant); corroborated by "
+                        + (
+                            f"{ope_channels.get(r['compound_formula'], 0)} ion channels"
+                            if ope_channels.get(r["compound_formula"], 0) >= 2
+                            else "a confirmed 29Si/30Si envelope (single channel)"
+                        )
+                        if fam == "cyclosiloxane"
+                        else "; indoor/rubber organosulfur (S unreachable by the "
+                        "positive grid); corroborated by "
+                        + (
+                            f"{ope_channels.get(r['compound_formula'], 0)} ion channels"
+                            if ope_channels.get(r["compound_formula"], 0) >= 2
+                            else "a confirmed ³⁴S envelope (single channel)"
+                        )
+                        if fam == "indoor_sulfur"
                         else ""
                     )
                 ),
@@ -1427,10 +1518,16 @@ def run_pass3(
             ranges = build_ranges(
                 profile, pre, include_N=True, extra_elements=fam["add"]
             )
-            # family-specific adducts unioned with the sample's reagent adducts
+            # family-specific adducts unioned with the sample's reagent adducts.
+            # A LABELLED-ammonium run excludes the 14N ammonium and the alkali
+            # channels the family lists carry (see assign.run: the 14N adduct is
+            # the 2 % impurity satellite, Na is a 0.2 mDa twin of the ^NH4 adduct).
+            _excl = ({"[M+NH4]+", "[M+Na]+"} if any("^NH4" in str(a) for a in adducts)
+                     else set())
             fam_adducts = list(
                 dict.fromkeys(
-                    [a for a in fam["adducts"] if a in C.ADDUCT_SHIFTS] + adducts
+                    [a for a in fam["adducts"] if a in C.ADDUCT_SHIFTS and a not in _excl]
+                    + adducts
                 )
             )
             mech_ids = _mech_ids_for(client, fam_adducts)
