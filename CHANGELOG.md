@@ -16,6 +16,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   name; adducts are resolved to mechanism ids by default (a row without one lands
   nothing), ion formulas come from the per-file ledgers or are derived, and
   `--dry-run` shows the payload. `docs/PUBLISH.md` gained a section.
+- **Mass-dependent calibration centre** (`peaky/assignment/masscal.py`, new): the pass-1
+  self-calibration and the tier gate now also fit `ppm = a + b·1000/mz` (b = the constant
+  absolute offset in mDa) on the backbone, accepted only when the slope is significant;
+  `z_of(ppm, cfg, mz=)` and `tiers._cal_z` judge a peak against the centre at ITS m/z.
+  On the 2026-09-10 file the Orbitrap's low-mass residual was −0.12 mDa (−2 ppm at m/z 61
+  vs −0.2 ppm above 160, MAD 0.13–0.22 ppm), so the constant centre rejected every bright
+  sub-80 ion (ketene·¹⁵NH₄⁺, urea·H⁺, acetamide, acetic acid, the amines) at z = 6. Callers
+  without an m/z keep the constant model unchanged; a flat source keeps it exactly.
+- `cal_abs_floor_mda` (0.03 mDa, `PassConfig` / `tiers.CAL_ABS_FLOOR_MDA`): an absolute
+  floor on the trend sigma, active only below ~m/z 120, where the Orbitrap's residual
+  curves faster than 1/mz (dimethylamine `[M+H]+` at 46.065 sat 0.9 ppm = 0.04 mDa off the
+  fitted trend). `confidence_label(..., mz=)` / `cal_center` grade against the trend centre
+  too, so an on-trend −2 ppm sub-80 ion is Good, not Low.
 - Reference peaklist `isoprene_ox_wennberg2018` (27 closed-shell isoprene oxidation products, Wennberg et al. 2018) added to `peaky/data/peaklists/`, gated by the new `isoprene_ox` context (batch keywords isoprene/ISOPN/IEPOX/ISOPOOH/methacrolein) and `biogenic_soa`/`ambient_summer`; rescues the isoprene dihydroxy-dinitrate C5H10N2O8 as an isotope-confirmed Assigned in the 2026 field-campaign ¹⁵NO₃⁻ data.
 
 ### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)

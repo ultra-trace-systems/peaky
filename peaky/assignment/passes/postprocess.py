@@ -464,7 +464,7 @@ def demote_massgate_monsters(
     for _, r in ledger[
         (ledger["role"] == L.ROLE_M0) & ~ledger["locked"].astype(bool)
     ].iterrows():
-        z = z_of(r["ppm_error"], cfg)
+        z = z_of(r["ppm_error"], cfg, r.get("mz"))
         if z is not None and z > cfg.cal_z_pattern:
             try:
                 L.clear_assignment(
@@ -692,7 +692,7 @@ def audit_mass_gate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> dict
     for _, r in m0.iterrows():
         weak = not str(r["confidence"]).startswith(("High", "Good"))
         has_kids = r["peak_id"] in parents_with_kids
-        z = z_of(r["ppm_error"], cfg)
+        z = z_of(r["ppm_error"], cfg, r.get("mz"))
         try:
             if z is None:
                 if pd.isna(r["ppm_error"]) and weak and not has_kids:

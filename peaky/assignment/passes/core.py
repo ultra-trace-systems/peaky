@@ -39,13 +39,17 @@ def confidence_label(
     tied: bool,
     cfg: PassConfig,
     suffix: str = "",
+    mz=None,
 ) -> str:
     # ppm proximity is judged against the CALIBRATED mass center when known, so a
     # uniform instrument offset (e.g. the -2.4 ppm of the uronium source) does not
     # read as "off-mass" and cap every commit at Low. Pre-calibration commits
     # (pass 1, cal_mu still None) use 0 and are re-graded by relabel_confidence
-    # once calibrate() has fitted the center.
-    center = cfg.cal_mu if cfg.cal_mu is not None else 0.0
+    # once calibrate() has fitted the center. With the peak's m/z the centre is
+    # the mass-dependent one (masscal): a -2 ppm sub-80 ion on a -0.12 mDa
+    # instrument trend is ON-centre, not "Low".
+    center = cal_center(cfg, mz)
+    center = 0.0 if center is None else center
     a = abs(ppm - center) if ppm is not None and pd.notna(ppm) else 99.0
     if score >= cfg.tau_high and a <= cfg.ppm * 1.5 and n_iso >= 1 and not tied:
         lab = "High"
@@ -107,16 +111,55 @@ def calibrate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> tuple | No
         f"..{mu + cfg.cal_z_accept * sigma:+.2f} ppm), pattern-evidence up to "
         f"|z|<={cfg.cal_z_pattern}"
     )
+    # MASS-DEPENDENT centre (masscal): the Orbitrap's low-mass residual is an
+    # absolute offset, i.e. ppm ~ 1/mz. Fitted on the same backbone; accepted
+    # only when the slope is significant, so a flat source keeps the constant
+    # model. Consumers that know the peak's m/z get z against this centre.
+    from peaky.assignment import masscal as MC
+    fit = MC.fit_mass_trend(
+        m0.loc[ppm.index, "mz"].astype(float).to_numpy(), ppm.to_numpy(),
+        min_n=cfg.cal_min_n, sigma_floor=cfg.cal_sigma_floor)
+    if fit is not None:
+        a, b, sig_t, n_used = fit
+        cfg.cal_a, cfg.cal_b, cfg.cal_sigma_trend = a, b, sig_t
+        log(
+            f"[calibrate] mass trend: ppm = {a:+.3f} {b:+.3f}*1000/mz (abs offset "
+            f"{b:+.3f} mDa; n={n_used}, sigma={sig_t:.3f}) -> centre "
+            f"{MC.centre(a, b, 60):+.2f} ppm @60, {MC.centre(a, b, 100):+.2f} @100, "
+            f"{MC.centre(a, b, 200):+.2f} @200, {MC.centre(a, b, 400):+.2f} @400"
+        )
+    else:
+        cfg.cal_a = cfg.cal_b = cfg.cal_sigma_trend = None
+        log("[calibrate] mass trend not significant; constant centre kept")
     return mu, sigma, len(ppm)
 
 
-def z_of(ppm, cfg: PassConfig) -> float | None:
-    """Calibrated z-score of a ppm error; None when uncalibrated or ppm is NaN."""
+def z_of(ppm, cfg: PassConfig, mz=None) -> float | None:
+    """Calibrated z-score of a ppm error; None when uncalibrated or ppm is NaN.
+    With the peak's `mz` and a fitted mass trend (cfg.cal_b) the centre is
+    mass-dependent (masscal); without an m/z the constant centre applies."""
     if cfg.cal_mu is None or cfg.cal_sigma is None:
         return None
     if ppm is None or pd.isna(ppm):
         return None
+    b = getattr(cfg, "cal_b", None)
+    if mz is not None and b is not None and not pd.isna(mz) and float(mz) > 0:
+        mu = cfg.cal_a + b * 1000.0 / float(mz)
+        sig = max(cfg.cal_sigma_trend or cfg.cal_sigma,
+                  getattr(cfg, "cal_abs_floor_mda", 0.0) * 1000.0 / float(mz))
+        return abs(float(ppm) - mu) / sig
     return abs(float(ppm) - cfg.cal_mu) / cfg.cal_sigma
+
+
+def cal_center(cfg: PassConfig, mz=None) -> float | None:
+    """The calibrated ppm centre: mass-dependent at `mz` when the trend is fitted,
+    else the constant cal_mu; None when uncalibrated."""
+    if cfg.cal_mu is None:
+        return None
+    b = getattr(cfg, "cal_b", None)
+    if mz is not None and b is not None and not pd.isna(mz) and float(mz) > 0:
+        return cfg.cal_a + b * 1000.0 / float(mz)
+    return cfg.cal_mu
 
 
 def _conf_suffix(conf) -> str:
@@ -166,6 +209,7 @@ def relabel_confidence(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> i
             tied,
             cfg,
             _conf_suffix(r.get("confidence")),
+            mz=r.get("mz"),
         )
         if new != str(r.get("confidence")):
             ledger.at[i, "confidence"] = new
@@ -281,11 +325,15 @@ def arbitrate(scored: pd.DataFrame, cfg: PassConfig) -> dict:
     # at commit -- leaving the peak unexplained instead of taking the on-trend
     # formula (the mass-degenerate high-Si PDMS failure at the uronium -2.45 ppm
     # offset). Pre-calibration (pass 1) cal_mu is None -> no penalty.
-    def _cal_offtrend(ppm):
-        z = z_of(ppm, cfg)
+    def _cal_offtrend(ppm, mz=None):
+        z = z_of(ppm, cfg, mz)
         return 0.0 if z is None else max(0.0, z - cfg.cal_z_accept) * CAL_ARB_WEIGHT
 
-    base["cal_penalty"] = base["ppm_error"].map(_cal_offtrend)
+    _mzcol = "sample_peak_mz" if "sample_peak_mz" in base.columns else None
+    base["cal_penalty"] = (
+        base.apply(lambda r: _cal_offtrend(r["ppm_error"], r[_mzcol]), axis=1)
+        if _mzcol and len(base) else base["ppm_error"].map(_cal_offtrend)
+    )
     base["eff_score"] = (
         base["raw_score"]
         - base["penalty"]
@@ -490,7 +538,7 @@ def commit_winners(
         # real accuracy, not a fixed window. Pattern evidence (a Mascope-
         # confirmed isotopologue or a series-derived proposal) buys the
         # 2..4 sigma band; nothing buys more.
-        z = z_of(w["ppm_error"], cfg)
+        z = z_of(w["ppm_error"], cfg, w.get("sample_peak_mz"))
         if z is not None:
             pattern = (w["n_iso"] or 0) >= 1 or series_like
             if z > cfg.cal_z_pattern or (z > cfg.cal_z_accept and not pattern):
@@ -540,6 +588,7 @@ def commit_winners(
             w["tied"],
             cfg,
             suffix=confidence_suffix,
+            mz=w.get("sample_peak_mz"),
         )
         if conf == "Reject":
             continue

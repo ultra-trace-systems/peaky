@@ -79,6 +79,19 @@ class PassConfig:
     # with NO ppm at all carries no mass evidence and is never committed.
     cal_mu: float | None = None
     cal_sigma: float | None = None
+    # mass-dependent centre ppm = cal_a + cal_b * 1000/mz (masscal.fit_mass_trend;
+    # cal_b is the constant absolute offset in mDa). None = constant model. Used
+    # by z_of ONLY when the caller passes the peak's m/z; cal_sigma_trend is the
+    # residual sigma of that model (floored like cal_sigma).
+    cal_a: float | None = None
+    cal_b: float | None = None
+    cal_sigma_trend: float | None = None
+    # absolute floor (mDa) on the trend sigma, active only where it exceeds the
+    # ppm sigma (below ~m/z 120 at sigma 0.25 ppm): the Orbitrap's residual at
+    # the low-mass edge curves faster than 1/mz (46.065 sat 0.9 ppm = 0.04 mDa off
+    # the fitted trend), and 0.03 mDa is the absolute-accuracy floor the backbone
+    # itself shows (mDa MAD 0.01-0.05 across the range).
+    cal_abs_floor_mda: float = 0.03
     # rough mass offset (ppm) seeded from the sample's own matches BEFORE the
     # pass-1 self-calibration, so the pre-calibration pass-0 known-species gate is
     # not blind to a large systematic instrument offset (set by assign.run).

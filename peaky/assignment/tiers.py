@@ -85,6 +85,7 @@ F_H_COHERENCE = 2        # an F-bearing formula with H>1 needs F >= this x H to
 Z_TAIL_DEMOTE = 2.6      # |z| beyond which an UNCORROBORATED commit is demoted
 CAL_MIN_N = 20           # need this many core peaks to trust the calibration
 CAL_SIGMA_FLOOR = 0.15   # ppm; a lucky-tight core must not reject everything
+CAL_ABS_FLOOR_MDA = 0.03  # mDa; absolute floor on the mass-dependent sigma (passes.config)
 
 # Background air-ion channels: opportunistic adducts the enumerator tries on top
 # of the sample's real reagent ions (carbonate / superoxide / electron
@@ -302,6 +303,16 @@ def density_text(density: int, capped: bool) -> str:
     return f">={density}" if capped else str(density)
 
 
+class _Cal(tuple):
+    """(mu, sigma) of the ppm error -- a plain 2-tuple for every `mu, sigma = cal`
+    consumer -- that also carries the mass trend (masscal) as attributes:
+    `a`, `b`, `sigma_t` (ppm = a + b*1000/mz; None = constant model)."""
+    def __new__(cls, mu, sigma, a=None, b=None, sigma_t=None):
+        obj = super().__new__(cls, (mu, sigma))
+        obj.a, obj.b, obj.sigma_t = a, b, sigma_t
+        return obj
+
+
 def _calibrate(m0: pd.DataFrame, kids_of: pd.Series) -> tuple[float, float] | None:
     """(mu, sigma) of the ppm-error distribution from the corroborated CHO/CHON
     core, or None if the core is too small. Robust (median + scaled MAD). The
@@ -309,6 +320,7 @@ def _calibrate(m0: pd.DataFrame, kids_of: pd.Series) -> tuple[float, float] | No
     isotopologue-backed -- the assignments we are most certain are correct, so
     their mass errors define the instrument's real accuracy for this run."""
     ppms = []
+    mzs = []
     for _, r in m0.iterrows():
         counts = C.parse_formula(str(r.get("neutral_formula") or ""))
         if any(counts.get(e, 0) for e in ("F", "Cl", "Br", "Si", "S")):
@@ -323,6 +335,7 @@ def _calibrate(m0: pd.DataFrame, kids_of: pd.Series) -> tuple[float, float] | No
         if p is None or pd.isna(p) or abs(float(p)) > 15:   # gross-garbage guard
             continue
         ppms.append(float(p))
+        mzs.append(float(r.get("mz")) if r.get("mz") is not None and not pd.isna(r.get("mz")) else np.nan)
     if len(ppms) < CAL_MIN_N:
         return None
     s = pd.Series(ppms)
@@ -335,9 +348,28 @@ def _calibrate(m0: pd.DataFrame, kids_of: pd.Series) -> tuple[float, float] | No
     core = s[(s - center).abs() <= 2.0]
     if len(core) < CAL_MIN_N:
         core = s
+    _keep = list(core.index)
     mu = float(core.median())
     sigma = max(float(1.4826 * (core - mu).abs().median()), CAL_SIGMA_FLOOR)
-    return mu, sigma
+    # mass-dependent centre (masscal): fitted on the same core, when significant
+    from peaky.assignment import masscal as MC
+    fit = MC.fit_mass_trend(np.asarray(mzs, dtype=float)[np.asarray(_keep)],
+                            np.asarray(ppms, dtype=float)[np.asarray(_keep)],
+                            min_n=CAL_MIN_N, sigma_floor=CAL_SIGMA_FLOOR)
+    if fit is not None:
+        return _Cal(mu, sigma, fit[0], fit[1], fit[2])
+    return _Cal(mu, sigma)
+
+
+def _cal_z(cal, ppm, mz=None) -> float:
+    """z of a ppm error against the tier calibration; mass-dependent centre
+    when the fit exists and an m/z is given, else the constant one."""
+    mu, sigma = cal[0], cal[1]
+    b = getattr(cal, "b", None)
+    if b is not None and mz is not None and not pd.isna(mz):
+        mu = cal.a + b * 1000.0 / float(mz)
+        sigma = max(cal.sigma_t or sigma, CAL_ABS_FLOOR_MDA * 1000.0 / float(mz))
+    return (float(ppm) - mu) / sigma
 
 
 def compute_tiers(ledger: pd.DataFrame) -> pd.DataFrame:
@@ -487,8 +519,8 @@ def compute_tiers(ledger: pd.DataFrame) -> pd.DataFrame:
                       "corroboration (an unsupported +CO3/+O2 mass fit)")
         elif (cal is not None and not corroborated
               and pd.notna(r.get("ppm_error"))
-              and abs((float(r["ppm_error"]) - cal[0]) / cal[1]) > Z_TAIL_DEMOTE):
-            z = (float(r["ppm_error"]) - cal[0]) / cal[1]
+              and abs(_cal_z(cal, r["ppm_error"], r.get("mz"))) > Z_TAIL_DEMOTE):
+            z = _cal_z(cal, r["ppm_error"], r.get("mz"))
             tier = TIER_CANDIDATE
             reason = (f"mass error {float(r['ppm_error']):+.2f} ppm is {z:+.1f}"
                       f"σ off the calibrated instrument accuracy "
@@ -564,6 +596,8 @@ def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
     cal = _calibrate(m0, kids_of)
     if cal is not None:
         mu, sigma = cal
+        if getattr(cal, "b", None) is not None:
+            ledger.attrs["cal_a"], ledger.attrs["cal_b"] = cal.a, cal.b
     else:
         assigned = pd.to_numeric(
             m0.loc[m0.get("tier") == TIER_ASSIGNED, "ppm_error"],
