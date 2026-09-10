@@ -248,16 +248,16 @@ check("importing progress.py pulls in no GUI toolkit at import time",
 
 
 # ---- 6. CLI wiring: the reporter really reaches the pipeline ----------------
-# Stubs pipeline.run_batch, so this needs no server. What it pins is that
-# cmd_batch passes `log=` (without it the window would never move) and calls
-# finish() with the RETURNED summary (not something scraped from the log).
+# Stubs pipeline.run_batch AND cli._require_creds, so this needs no server and
+# no credentials at all (CI asserts that no ~/.mascope/.env or token exists, and
+# the suite runs in one process, so seeding the env here is not reliable). What
+# it pins is that cmd_batch passes `log=` (without it the window would never
+# move) and calls finish() with the RETURNED summary (not something scraped
+# from the log).
 import types  # noqa: E402
 
 from peaky import cli as CLI  # noqa: E402
 from peaky import pipeline as PL  # noqa: E402
-
-os.environ.setdefault("MASCOPE_URL", "http://example.invalid")
-os.environ.setdefault("MASCOPE_ACCESS_TOKEN", "test-token")
 
 SUMMARY = {"merged_M0": 42, "merged_tiers": {"Assigned": 40}, "n_files": 2,
            "n_in_all_files": 10, "n_single_file": 1, "formula_disagreements": 0,
@@ -272,8 +272,9 @@ def _fake_run_batch(**kw):
     return {"ctx": types.SimpleNamespace(out_dir="/tmp/run"), "elapsed_s": 30.0,
             "assign": {"summary": SUMMARY}}
 
-_real = PL.run_batch
+_real, _real_creds = PL.run_batch, CLI._require_creds
 PL.run_batch = _fake_run_batch
+CLI._require_creds = lambda: None      # cmd_batch resolves the name at call time
 try:
     args = CLI.build_parser().parse_args(
         ["batch", "--batch", "B", "--dataset", "D", "--out-dir", "/tmp"])
@@ -288,6 +289,7 @@ try:
           rep.ui is None and rep.hold is False)
 finally:
     PL.run_batch = _real
+    CLI._require_creds = _real_creds
 
 
 def test_all():
