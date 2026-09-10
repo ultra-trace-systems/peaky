@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -216,13 +217,16 @@ def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
 
     out: dict = {"ctx": ctx}
     if do_cluster:
+        log("[phase] cluster")
         out["cluster"] = CLU.cluster_batch(ctx.out_dir, ts, ctx.profile,
                                            tag=ctx.tag, label=ctx.label, log=log)
     if do_vk:
+        log("[phase] vankrevelen")
         out["vk"] = V.van_krevelen_batch(ctx.out_dir, ts, ctx.profile, tag=ctx.tag,
                                          label=ctx.label, batch_name=ctx.batch_name,
                                          subject=subject, log=log)
     if do_report:
+        log("[phase] report")
         out["report_pdf"] = R.build(ctx.out_dir, tag=ctx.tag, label=ctx.label,
                                      ts_path=ctx.ts_path, batch_name=ctx.batch_name,
                                      run_id=ctx.run_id, generated=ctx.generated)
@@ -268,11 +272,13 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                       height_cutoff_cps=height_cutoff_cps)
     assign_kw["cfg"] = cfg
 
+    t_start = time.time()          # whole-pipeline wall clock -> returned elapsed_s
     ts_src = None
     if isinstance(ts, str):
         ts_src = os.path.expanduser(ts)            # an on-disk parquet we can reference
         ts = pd.read_parquet(ts_src)
     if ts is None:
+        log("[phase] fetch")
         log(f"[batch] fetching full-batch time series for {batch!r} ...")
         ts = load(batch=batch, dataset=dataset)
     prof = P.resolve(reagent, ts, config=config)
@@ -291,6 +297,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         ctx.ts_path = ts_src     # reference the caller's parquet; don't re-copy it into the run dir
     log(f"[batch] {ctx.run_id} -> {ctx.out_dir}")
 
+    log("[phase] assign")
     res = AB.run(batch=batch, dataset=dataset, reagent=prof.name,
                  out_dir=ctx.out_dir, ts_peaks=ts, amine_r_min=amine_r_min,
                  k_min=k_min, k_max=k_max, min_gain=min_gain,
@@ -301,6 +308,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     # output hash, and append it to the cross-run registry. Best-effort (never
     # fatal). Runs LAST so ts_path / merged_ledger.csv exist to be hashed.
     from peaky.reporting import provenance as PV
+    log("[phase] provenance")
     summ = res.get("summary", {}) if isinstance(res, dict) else {}
     PV.record_run(
         run_dir=ctx.out_dir, base_out=os.path.expanduser(base_out),
@@ -318,7 +326,10 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                 # lives here next to the other run-derived counts
                 "admission": summ.get("admission")},
         created_utc=ctx.when.isoformat(), log=log)
-    return {"ctx": ctx, "assign": res, **gen}
+    elapsed = round(time.time() - t_start, 1)
+    log(f"[batch] pipeline finished in {elapsed:.1f}s "
+        f"(assign {summ.get('elapsed_s', '?')}s)")
+    return {"ctx": ctx, "assign": res, "elapsed_s": elapsed, **gen}
 
 
 def gate_config(cfg=None, *, occurrence_min=None, height_cutoff_x_edge=None,
@@ -410,6 +421,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     """
     from peaky.batch import assign_batch as AB
 
+    t_start = time.time()                        # whole-pipeline wall clock
     cfg = gate_config(assign_kw.pop("cfg", None), occurrence_min=occurrence_min,
                       height_cutoff_x_edge=height_cutoff_x_edge,
                       height_cutoff_cps=height_cutoff_cps)
@@ -463,6 +475,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     # batch= carries the pool identity: it names batch_summary AND is what
     # reflists.resolve_context_tags reads to unlock chemistry-specific reference
     # lists (a chamber pool named e.g. 'apinene ...' -> the monoterpene list).
+    log("[phase] assign")
     res = AB.run(peaks=ts[ts_cols], ts_peaks=ts[ts_cols], reagent=prof.name,
                  batch=pool_label, sample_ids=union, selection_meta=selection,
                  out_dir=ctx.out_dir, amine_r_min=amine_r_min, n_jobs=n_jobs,
@@ -497,5 +510,8 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                 "selection": summ.get("selection"),
                 "admission": summ.get("admission")},
         created_utc=ctx.when.isoformat(), log=log)
+    elapsed = round(time.time() - t_start, 1)
+    log(f"[pool] pipeline finished in {elapsed:.1f}s "
+        f"(assign {summ.get('elapsed_s', '?')}s)")
     return {"ctx": ctx, "assign": res, "groups": groups, "group_runs": group_runs,
-            "selection": prov, **gen}
+            "selection": prov, "elapsed_s": elapsed, **gen}

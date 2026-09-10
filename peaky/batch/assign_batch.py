@@ -25,6 +25,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import time
 
 import numpy as np
 import pandas as pd
@@ -356,6 +357,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     from peaky.assignment import assign as A
     from peaky.io import io_mascope as IO
 
+    t_start = time.time()          # wall clock for summary['elapsed_s'] (see below)
     out_dir = os.path.expanduser(out_dir)
     TAB = PT.run_paths(out_dir).ensure().tables    # .csv tables -> tables/
     pfdir = os.path.join(out_dir, "per_file")
@@ -625,6 +627,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "plausibility": summary_plaus,
         "plausibility_audit_rows": n_audit,
         "per_file": per_stats,
+        # RUN-TIME metadata, not material data: how long the assignment actually
+        # took, alongside the n_jobs that produced it (a duration is meaningless
+        # without it). Safe to keep here -- batch_summary.json is a counts/offsets
+        # file and is NOT part of the reproducibility fingerprint, which hashes
+        # merged_ledger.csv and the input TS (see reporting/provenance.py).
+        "elapsed_s": round(time.time() - t_start, 1),
+        "n_jobs": n_jobs,
     }
     with open(os.path.join(out_dir, "batch_summary.json"), "w") as fh:
         json.dump(summary, fh, indent=2, default=str)
@@ -632,6 +641,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         f"({summary['merged_tiers']}); {summary['n_in_all_files']} in all files, "
         f"{summary['n_single_file']} single-file, "
         f"{summary['formula_disagreements']} formula disagreements")
+    log(f"[assign_batch] assigned {len(sample_ids)} samples in "
+        f"{summary['elapsed_s']:.1f}s (n_jobs={n_jobs})")
     return {"profile": prof, "context": context, "sample_ids": sample_ids,
             "per_file": per_file, "offsets": offsets, "merged": merged,
             "jitter": jitter, "summary": summary, "out_dir": out_dir}

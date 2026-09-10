@@ -297,6 +297,36 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   --ts-batch` computes the table for a single sample. `batch` / `pool` also
   gained the absolute `--height-cutoff` override and `--height-cutoff-x-edge`,
   which only `assign` had (the three flags are defined once for all three).
+- **`--progress`: a live progress window for a run** (`peaky/progress.py`, new).
+  `peaky assign|batch|pool --progress` opens a small Tk window with a samples bar,
+  a within-sample stage bar, elapsed + ETA, and — when the run ends — the run's
+  own stats (merged M0, tiers, in-all-files, single-file, formula disagreements)
+  next to how long it took. Opt-in, so scripted and skill-driven runs are
+  untouched; `PEAKY_PROGRESS=1` also enables it. The window stays up until closed
+  so the finished numbers can be read, and everything in it is also on stdout.
+
+  It is a **`log` wrapper, not a pipeline change**: peaky already threads
+  `log=print` from `run_batch` down to each assignment stage, so `Reporter` is a
+  drop-in for `print` that forwards every line untouched and reads the lines it
+  recognises into a progress model. Nothing in the pipeline imports `progress.py`
+  or knows a window exists — the log stream is the whole interface, and
+  `tests/test_progress.py` pins the literal log strings the pipeline emits
+  against the patterns parsed here so a rewording fails a test instead of
+  silently flat-lining the bar. Never fatal: no display, no tkinter, or any UI
+  exception degrades to a one-line terminal status and then to silence.
+
+  Parallel runs (`--jobs > 1`) report at **sample granularity only** and say so
+  ("N workers" in place of the stage bar): workers buffer their logs and the
+  parent replays them after the reduce, so a stage bar driven from them would
+  animate a lie.
+- **Runs are timed.** `batch_summary.json` gains `elapsed_s` (+ the `n_jobs` that
+  produced it — a duration is meaningless without it), and `run_batch` /
+  `run_pooled_batches` return a whole-pipeline `elapsed_s` and log it. Run-time
+  metadata only: the reproducibility fingerprint hashes `merged_ledger.csv` and
+  the input TS, not the summary, so determinism is unaffected.
+- **`[phase] <name>` log markers** for the pipeline steps with no per-item
+  progress of their own (fetch / assign / cluster / vankrevelen / report /
+  provenance) — readable in a plain log, and what the window's phase line reads.
 
 ### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
 

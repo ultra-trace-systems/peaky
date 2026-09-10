@@ -157,14 +157,37 @@ def _resolve_reagent(args, *, with_profile: bool = False):
                     "detection — pass --reagent explicitly for a positive/sparse sample"))
 
 
+def _add_progress_flag(p) -> None:
+    """`--progress`, shared by assign / batch / pool."""
+    p.add_argument("--progress", action="store_true",
+                   help="open a live progress window (Tk) for the run: sample/stage "
+                        "bars, elapsed + ETA, and the run's stats + total runtime when "
+                        "it finishes. Falls back to a one-line terminal status with no "
+                        "display. The window stays up until closed (everything in it is "
+                        "also on stdout). Env PEAKY_PROGRESS=1 also enables it.")
+
+
+def _progress_hold_note(prog) -> None:
+    """`--progress` keeps the window up after the run so the stats panel can be
+    READ; the command therefore returns when the window is closed. Say so, or it
+    looks like a hang. Everything above is already on stdout, so closing the
+    window (or Ctrl-C) loses nothing."""
+    try:
+        if prog.ui is not None and prog.hold and prog.ui.alive():
+            print("\n[progress] run complete — close the progress window to exit "
+                  "(or press Ctrl-C).", flush=True)
+    except Exception:
+        pass
+
+
 def cmd_assign(args) -> None:
     _require_creds()
     from peaky.assignment import assign
-    from peaky.reporting import gka_widget
     from peaky.io import io_mascope
     from peaky.assignment import passes
     from peaky.chem import profiles
     from peaky.reporting import report
+    from peaky import progress as PG
 
     # the reagent first: the profile may carry its own height-gate multiple, and
     # the flag (default None = not given) outranks it.
@@ -207,14 +230,29 @@ def cmd_assign(args) -> None:
                  # same account `peaky batch` gives of the same batch
                  else f"persistence path off: {ADM.why_off(cfg, occurrence)}"))
 
-    out = assign.run(args.sample_id, context, cfg=cfg, use_cache=not args.no_cache,
-                     do_pass2=not args.no_pass2, do_pass3=not args.no_pass3,
-                     do_pass4=not args.no_pass4, do_pass5=not args.no_pass5,
-                     adducts=adducts, ts_peaks=ts_peaks, label_purity=purity,
-                     occurrence=occurrence,
-                     checkpoint_dir=str(od / "checkpoints"))
-    led = out["ledger"]
+    # `prog` IS the log callable (a transparent pass-through to print unless
+    # --progress is on), so the run below is identical either way.
+    with PG.open_progress(f"peaky \u00b7 assign {args.sample_id}",
+                          flag=args.progress, n_samples=1) as prog:
+        out = assign.run(args.sample_id, context, cfg=cfg, use_cache=not args.no_cache,
+                         do_pass2=not args.no_pass2, do_pass3=not args.no_pass3,
+                         do_pass4=not args.no_pass4, do_pass5=not args.no_pass5,
+                         adducts=adducts, ts_peaks=ts_peaks, label_purity=purity,
+                         occurrence=occurrence,
+                         log=prog, checkpoint_dir=str(od / "checkpoints"))
+        prog.phase("report")            # writing xlsx/md/gka is not "done" yet
+        _write_assign_outputs(args, out, base)
+        prog.finish(out.get("stats"))
+        _progress_hold_note(prog)
 
+
+def _write_assign_outputs(args, out, base) -> None:
+    """Write the single-sample run's artifacts + print its summary. Split out of
+    cmd_assign so the progress window stays open across the write + report."""
+    from peaky.reporting import gka_widget
+    from peaky.reporting import report
+
+    led = out["ledger"]
     led.to_csv(f"{base}_ledger.csv", index=False)
     report.write_excel(led, f"{base}_assignments.xlsx", out["context"],
                        sample_id=args.sample_id)
@@ -248,45 +286,57 @@ def cmd_assign(args) -> None:
 def cmd_batch(args) -> None:
     _require_creds()
     from peaky import pipeline as PL
+    from peaky import progress as PG
 
-    res = PL.run_batch(batch=args.batch, dataset=args.dataset, reagent=args.reagent,
-                       base_out=resolve_out_dir(args.out_dir), ts=args.ts,
-                       subject=args.subject, do_report=not args.no_report,
-                       config=args.reagent_config, k_min=args.k_min,
-                       k_max=args.k_max, min_gain=args.min_gain,
-                       occurrence_min=args.occurrence_min,
-                       height_cutoff_x_edge=args.height_cutoff_x_edge,
-                       height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs)
-    ctx = res["ctx"]
-    print(f"\n[batch] done -> {ctx.out_dir}")
-    if res.get("report_pdf"):
-        print(f"  report: {res['report_pdf']}")
-    if res.get("report_pdf_small"):
-        print(f"  report (small): {res['report_pdf_small']}")
+    with PG.open_progress(f"peaky \u00b7 batch {args.batch}", flag=args.progress) as prog:
+        res = PL.run_batch(batch=args.batch, dataset=args.dataset, reagent=args.reagent,
+                           base_out=resolve_out_dir(args.out_dir), ts=args.ts,
+                           subject=args.subject, do_report=not args.no_report,
+                           config=args.reagent_config, k_min=args.k_min,
+                           k_max=args.k_max, min_gain=args.min_gain,
+                           occurrence_min=args.occurrence_min,
+                           height_cutoff_x_edge=args.height_cutoff_x_edge,
+                           height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
+                           log=prog)
+        # the window's final numbers come from the RETURNED summary, never from
+        # parsing the log -- exact by construction.
+        prog.finish((res.get("assign") or {}).get("summary"))
+        ctx = res["ctx"]
+        print(f"\n[batch] done -> {ctx.out_dir} in {res.get('elapsed_s', '?')}s")
+        if res.get("report_pdf"):
+            print(f"  report: {res['report_pdf']}")
+        if res.get("report_pdf_small"):
+            print(f"  report (small): {res['report_pdf_small']}")
+        _progress_hold_note(prog)
 
 
 def cmd_pool(args) -> None:
     _require_creds()
     from peaky import pipeline as PL
+    from peaky import progress as PG
 
-    res = PL.run_pooled_batches(
-        batches=args.batches, dataset=args.dataset, reagent=args.reagent,
-        base_out=resolve_out_dir(args.out_dir), out_name=args.out_name,
-        group_by=args.group_by, ts=args.ts, subject=args.subject,
-        do_report=not args.no_report,
-        per_group_reports=not args.no_group_reports, config=args.reagent_config,
-        k_min=args.k_min, k_max=args.k_max, min_gain=args.min_gain,
-        occurrence_min=args.occurrence_min,
-        height_cutoff_x_edge=args.height_cutoff_x_edge,
-        height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs)
-    ctx = res["ctx"]
-    print(f"\n[pool] unified ledger -> {ctx.out_dir}")
-    if res.get("report_pdf"):
-        print(f"  report: {res['report_pdf']}")
-    if res.get("group_runs"):
-        print(f"  {len(res['group_runs'])} per-group reports:")
-        for gr in res["group_runs"]:
-            print(f"    {gr}")
+    with PG.open_progress(f"peaky \u00b7 pool {args.batches}",
+                          flag=args.progress) as prog:
+        res = PL.run_pooled_batches(
+            batches=args.batches, dataset=args.dataset, reagent=args.reagent,
+            base_out=resolve_out_dir(args.out_dir), out_name=args.out_name,
+            group_by=args.group_by, ts=args.ts, subject=args.subject,
+            do_report=not args.no_report,
+            per_group_reports=not args.no_group_reports, config=args.reagent_config,
+            k_min=args.k_min, k_max=args.k_max, min_gain=args.min_gain,
+            occurrence_min=args.occurrence_min,
+            height_cutoff_x_edge=args.height_cutoff_x_edge,
+            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs, log=prog)
+        prog.finish((res.get("assign") or {}).get("summary"))
+        ctx = res["ctx"]
+        print(f"\n[pool] unified ledger -> {ctx.out_dir} in {res.get('elapsed_s', '?')}s")
+        if res.get("report_pdf"):
+            print(f"  report: {res['report_pdf']}")
+        if res.get("group_runs"):
+            print(f"  {len(res['group_runs'])} per-group reports:")
+            for gr in res["group_runs"]:
+                print(f"    {gr}")
+        _progress_hold_note(prog)
 
 
 def cmd_report(args) -> None:
@@ -756,6 +806,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="batch name to load as the time series (optional TS step)")
     pa.add_argument("--ts-dataset", default=None, help="dataset for --ts-batch")
     _add_admission_args(pa)
+    _add_progress_flag(pa)
     pa.set_defaults(func=cmd_assign)
 
     pb = sub.add_parser("batch", help="assign + cluster + Van Krevelen + report for a whole batch")
@@ -779,6 +830,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "(default: physical cores, capped at the sample count; "
                          "1 = the serial path; env PEAKY_JOBS also honored). Output "
                          "is byte-identical to a serial run.")
+    _add_progress_flag(pb)
     pb.set_defaults(func=cmd_batch)
 
     pp = sub.add_parser("pool",
@@ -814,6 +866,7 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "
                          "(default: physical cores; env PEAKY_JOBS honored)")
+    _add_progress_flag(pp)
     pp.set_defaults(func=cmd_pool)
 
     pr = sub.add_parser("report",
