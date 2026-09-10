@@ -430,6 +430,20 @@ def _mech_to_adduct(row) -> str:
     # and the +61.99 (¹⁴N) shift puts ion_mz / jitter ~1 Da off.
     if add == "[M+NO3]-" and "^N" in ion:
         return "[M+^NO3]-"
+    # Nor can it see polarity: the pipeline's Br-CIMS roots read every diff
+    # negative by default, but a CATION row must flip the EasyIC channels -- an
+    # EMPTY diff is charge transfer [M]+. (not electron attachment [M]-., a
+    # -0.0011 two-electron mass error on every anchor) and an H-1 diff is
+    # HYDRIDE abstraction [M-H]+ (not deprotonation). The charge sign comes off
+    # the ion formula itself ('C16H10+'), falling back to the server's bare '+'
+    # mechanism stamp.
+    positive = ion.rstrip(".").endswith("+") or (
+        str(row.get("ionization_mechanism") or "") == "+")
+    if positive:
+        if add == "[M]-.":
+            return "[M]+."
+        if diff == (("H", -1),):
+            return "[M-H]+"
     return add
 
 

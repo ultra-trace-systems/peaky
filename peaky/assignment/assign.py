@@ -179,7 +179,7 @@ def _stage_reagent_post(st):
 def _stage_timeseries(st):
     """Time-resolved disposition when a batch TS is supplied (runs last)."""
     ts_reagent_mzs = None
-    if st.reagent in reagents._POSITIVE_REAGENTS:
+    if st.reagent in reagents._POSITIVE_REAGENTS or st.reagent == "EasyIC":
         ts_reagent_mzs = [m for (_l, m, _f) in reagents.build_library(st.reagent)]
     return timeseries.apply_timeseries(
         st.led, st.ts_peaks, reagent_mzs=ts_reagent_mzs, log=st.log)
@@ -283,6 +283,17 @@ _STAGES = [
     # cluster ([M+NH4]+ / uronium) is re-read as [M+H]+ of an N-heterocycle.
     _Stage("relabel_reagent_n",
            lambda st: cleanup.relabel_reagent_n_adducts(st.led, log=st.log),
+           safe=False, store=False),
+    # EasyIC⁺ fragmentation ambiguity: relabel corroborated alcohol-dehydration
+    # ions ([CnH2n+H]+ -> [CnH2n+2O+H-H2O]+) and stamp the MS1-irreducible
+    # carbonyl-vs-alcohol / fragment-vs-intact dual readings into commentary.
+    # With a batch TS, the dehydration pair (ion and its +O hydride partner)
+    # can ALSO be corroborated by time-correlation -- one spectrum cannot tell
+    # butene+MEK from dehydrated butanol, but the batch can.
+    _Stage("easyic_ambiguity",
+           lambda st: cleanup.annotate_easyic_ambiguity(
+               st.led, ts_peaks=st.ts_peaks, log=st.log),
+           when=lambda st: getattr(st.profile, "label", "") == "easyic",
            safe=False, store=False),
     # ¹⁵N-nitrate isobar arbitration: a covalent organonitrate [Y−H]- whose cluster
     # parent X = Y−HNO₃ is independently detected is really the chamber-¹⁴NO₃ cluster

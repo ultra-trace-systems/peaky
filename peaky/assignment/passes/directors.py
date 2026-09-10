@@ -46,7 +46,7 @@ def _silanediol_series(n_max: int = 8) -> list[str]:
     return [f"C{2 * n}H{6 * n + 2}O{n + 1}Si{n}" for n in range(1, n_max + 1)]
 
 
-def _known_species(polarity: str = "negative") -> dict:
+def _known_species(polarity: str = "negative", context: str | None = None) -> dict:
     # The known-species privilege is reagent/polarity-specific. The lists below
     # are NEGATIVE-mode (Br/halide-CIMS): small atmospheric acids/radicals seen
     # as Br- adducts, [M-H]- nitroaromatics, and the silanediol [M+Br]-/[M-H]-
@@ -120,11 +120,28 @@ def _known_species(polarity: str = "negative") -> dict:
         ambient_inorganic = {
             "H3N": "ammonia (ambient; via urea adduct)",
         }
-        return {
+        out = {
             "organophosphate": organophosphate,
             "organothiophosphate": organothiophosphate,
             "ambient_inorganic": ambient_inorganic,
         }
+        # EasyIC⁺ HYDRIDE-abstraction species. The scorer only reaches
+        # mechanism-mapped channels, so the hydride ion is scored as the
+        # RADICAL's bare cation on the '+' mechanism (C2H5O+ -- the same ion,
+        # the [M-H+I2]- ruling); run_pass0_known then commits the MEANINGFUL
+        # neutral, the parent alcohol as [M-H]+ (the ammonia-via-urea-adduct
+        # ruling). Without this pin the exact-mass degenerate [M+H]+ reading
+        # wins (C2H5O+ read as protonated ACETALDEHYDE) -- but ethanol's
+        # [M+H]+ (47.049) is absent from the EasyIC batches: hydride
+        # abstraction is its ONLY channel, so the pin is observation, not
+        # taste. C3H7O+ is deliberately NOT listed: protonated acetone owns
+        # that composition (its [M+H]+ reading is the high-PA default), and a
+        # locked propanol claim would steal it.
+        if context == "easyic":
+            out["easyic_hydride"] = {
+                "C2H5O": "ethanol via hydride abstraction ([C2H6O-H]+)",
+            }
+        return out
     atmos = {
         # small atmospheric acids / radicals detected as Br- adducts -- the
         # PRIMARY analytes of a Br-CIMS, all invisible to the organic grid:
@@ -243,7 +260,12 @@ def run_pass0_known(
     consistency check, so a composite collision is refused, not locked."""
     score_fn = score_fn or IO.score_candidates
     out = {"committed": 0, "locked": 0, "iso_attached": 0}
-    registry = _known_species(getattr(profile, "polarity", "negative"))
+    # `profile` here is the CONTEXT profile (assign.run resolves the reagent's
+    # context and threads that), so the context key is its label, not a
+    # `.context` attribute (which only the ReagentProfile has).
+    registry = _known_species(
+        getattr(profile, "polarity", "negative"), getattr(profile, "label", None)
+    )
     label_of = {f: (fam, lbl) for fam, d in registry.items() for f, lbl in d.items()}
     formulas = sorted(label_of)
     if not formulas:  # positive mode: pass 0 is a no-op
@@ -362,6 +384,8 @@ def run_pass0_known(
                 if fam == "chlorinated_paraffin"
                 else "ambient"
                 if fam == "ambient_inorganic"
+                else "easyic-hydride"
+                if fam == "easyic_hydride"
                 else "contaminant"
             )
             fam_kids = kids[kids["compound_formula"] == r["compound_formula"]]
@@ -409,11 +433,19 @@ def run_pass0_known(
                 if float(r["ion_score"]) >= 0.7 or n_kids >= 2
                 else f"Low ({tag})"
             )
+            # easyic_hydride is scored as the RADICAL's bare cation (the only
+            # mechanism-mapped reading of the ion) but committed as the parent
+            # alcohol's [M-H]+ -- the MEANINGFUL neutral (see _known_species).
+            _neutral, _adduct = r["compound_formula"], _mech_to_adduct(r)
+            if fam == "easyic_hydride":
+                _dh = C.parse_formula(_neutral)
+                _dh["H"] = _dh.get("H", 0) + 1
+                _neutral, _adduct = C.format_formula(_dh), "[M-H]+"
             L.commit_assignment(
                 ledger,
                 pid,
-                neutral_formula=r["compound_formula"],
-                adduct=_mech_to_adduct(r),
+                neutral_formula=_neutral,
+                adduct=_adduct,
                 ion_formula=r["ion_formula"],
                 ion_score=float(r["ion_score"]),
                 compound_score=_f(r.get("compound_score")),
@@ -422,8 +454,8 @@ def run_pass0_known(
                 method=f"known:{fam}",
                 confidence=conf,
                 commentary=(
-                    f"Pass 0 (known {tag}): {r['compound_formula']} "
-                    f"{_mech_to_adduct(r)} = {lbl}, ppm "
+                    f"Pass 0 (known {tag}): {_neutral} "
+                    f"{_adduct} = {lbl}, ppm "
                     f"{float(ppm):.2f}, ion score {float(r['ion_score']):.2f}"
                     + (
                         "; excluded from the organic grid (radical / C0 inorganic)"

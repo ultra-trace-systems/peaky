@@ -66,6 +66,7 @@ _ADDUCT_DELTA = {          # ion composition minus neutral composition
     "[M-H+I2]-": {"H": -1, "I": 2},   # deprotonated-acid . I2 (mixed-sign diff)
     "[M+CO3]-": {"C": 1, "O": 3}, "[M+H]+": {"H": 1}, "[M+NH4]+": {"N": 1, "H": 4},
     "[M+Na]+": {"Na": 1}, "[M+(CH4N2O)H]+": {"C": 1, "H": 5, "N": 2, "O": 1},
+    "[M]+.": {}, "[M-H]+": {"H": -1},   # EasyIC: charge transfer / hydride off
 }
 for _p in _PRF.PROFILES.values():
     for _a in _p.adducts:
@@ -80,8 +81,12 @@ for _p in _PRF.PROFILES.values():
         _ion = dict(_base)
         for _el, _n in _d.items():
             _ion[_el] = _ion.get(_el, 0) + _n
+        # server ion formulas carry the charge sign ('C6H5N2O6-', 'C16H10+') --
+        # and the sign is load-bearing: it is how _mech_to_adduct tells the
+        # EasyIC cation channels ([M]+., [M-H]+) from their negative diff-twins.
+        _sign = "+" if _a.rstrip(".").endswith("+") else "-"
         _got = P._mech_to_adduct({
-            "ion_formula": _CH.format_formula(_ion),
+            "ion_formula": _CH.format_formula(_ion) + _sign,
             "compound_formula": _CH.format_formula(_base)})
         check(f"{_p.name}: {_a} round-trips through _mech_to_adduct (not silently [M-H]-)",
               _got == _a, f"got {_got}")
@@ -1114,6 +1119,12 @@ check("_known_species(positive) carries the organophosphate family",
       and "C6H15O4P" in P._known_species("positive")["organophosphate"])
 check("_known_species(positive) registers ambient ammonia (H3N) as a known species",
       "H3N" in P._known_species("positive").get("ambient_inorganic", {}))
+check("_known_species(positive, 'easyic') pins ethanol hydride abstraction (C2H5O)",
+      "C2H5O" in P._known_species("positive", "easyic").get("easyic_hydride", {}))
+check("_known_species(positive) without the easyic context has NO hydride family",
+      "easyic_hydride" not in P._known_species("positive"))
+check("easyic hydride family excludes C3H7O (protonated acetone owns that ion)",
+      "C3H7O" not in P._known_species("positive", "easyic").get("easyic_hydride", {}))
 check("_known_species(negative) has NO ammonia entry (urea-adduct channel is +mode)",
       "ambient_inorganic" not in P._known_species("negative"))
 check("_known_species(negative) keeps the atmospheric list",

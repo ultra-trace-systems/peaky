@@ -301,6 +301,10 @@ ADDUCT_TO_MECH = {
     "[M+NH4]+": "+NH4+",
     "[M+CO3]-": "+CO3-",
     "[M+(CH4N2O)H]+": "+(CH4N2O)H+",   # protonated-urea (uronium) adduct channel
+    # bare molecular cation (EasyIC⁺ fluoranthene charge transfer). The hydride-
+    # abstraction twin [M-H]+ has NO server mechanism and stays off this map
+    # (the [M-H+I2]- ruling) -- it is a local-scoring channel only.
+    "[M]+.": "+",
 }
 MECH_TO_ADDUCT = {v: k for k, v in ADDUCT_TO_MECH.items()}
 

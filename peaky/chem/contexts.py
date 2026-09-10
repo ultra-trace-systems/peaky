@@ -219,6 +219,30 @@ _URONIUM = ContextProfile(
     pass3_families=("amine", "siloxane", "pdms", "glycol_peg", "phthalate"),
 )
 
+_EASYIC = ContextProfile(
+    label="easyic",
+    description=("EasyIC⁺ fluoranthene charge transfer (low-pressure, mildly "
+                 "fragmenting). Aromatics survive as [M]+. molecular radical "
+                 "cations; alcohols/alkanes lose a hydride ([M-H]+, ethanol -> "
+                 "C2H5O+); monoterpenes and larger aliphatics FRAGMENT into "
+                 "even-electron CxHy(O)+ pieces. Reduced, hydrocarbon-rich "
+                 "chemistry -- not an oxidation-product source."),
+    polarity="positive",
+    # VK windows span the CT-selective space: PAHs down at H/C 0.6 / DBE/C 0.75
+    # (fluoranthene-class analytes; benzene 1.0 / 0.67), alkyl fragments up at
+    # H/C ~2.3. O/C 1.2 covers oxygenated VOC without opening the HOM corner
+    # (charge transfer is not an oxidation-product channel); DBE/C 1.0 admits
+    # the full aromatic/PAH ladder.
+    h_to_c=(0.3, 2.6), o_to_c=(0.0, 1.2), n_to_c=(0.0, 0.6), dbe_to_c=(0.0, 1.0),
+    # same positive-mode inlet reality as uronium: PDMS ladder reachable, no
+    # halogens in the neutral (nothing brings them in without a halide reagent).
+    max_N=5, max_S=2, max_P=1, max_F=0, max_Si=12, max_Cl=0, max_Br=0, max_I=0,
+    # mz40-500 windows -> neutrals <= ~500 Da; the ambient 40/30 box covers it.
+    min_C_for={"Si": 2},
+    reagent_adducts=("[M]+.", "[M-H]+", "[M+H]+"),
+    pass3_families=("amine", "siloxane", "pdms", "glycol_peg", "phthalate"),
+)
+
 _NONE = ContextProfile(
     label="none",
     description="Structural gates only (integer DBE>=0, Senior's rule).",
@@ -233,6 +257,7 @@ CONTEXTS: dict[str, ContextProfile] = {
     "water": _WATER, "wastewater": _WATER,
     "food": _FOOD, "wine": _FOOD, "beverage": _FOOD,
     "uronium": _URONIUM, "urea-cims": _URONIUM, "urea": _URONIUM,
+    "easyic": _EASYIC, "easy-ic": _EASYIC, "charge-transfer": _EASYIC,
     "none": _NONE,
 }
 
