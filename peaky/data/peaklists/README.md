@@ -42,7 +42,7 @@ globs this directory. **Only add credible, citable sources**, and fill `referenc
   "species": [
     { "formula": "C10H16O7",               // NEUTRAL formula (matchable)
       "conditions": ["pure","NOx"],        // sub-experiments it appeared in (optional)
-      "radical": false }                   // odd-H radical HOM -> excluded from default matching
+      "radical": false }                   // claim checked against DBE parity (default false)
   ]
 }
 ```
@@ -50,9 +50,18 @@ globs this directory. **Only add credible, citable sources**, and fill `referenc
 ### Conventions
 - `formula` is always the **neutral** molecule. Lists published as detected ions
   (e.g. `[M+NO3]-` clusters or `[M-H]-`) must be normalized to the neutral on import.
-- `radical: true` marks odd-electron / odd-H species (RO•, RO2•). These are excluded
-  from default matching (the pipeline assigns closed-shell neutrals); enable with
+- Radical status follows **DBE parity**, read off the formula:
+  DBE = 1 + Σ nᵢ(vᵢ − 2)/2 with valences C, Si 4; N, P 3; O, S 2; H and the
+  halogens 1. A half-integer DBE is an odd-electron neutral (RO•, RO2•). The H
+  count is not the rule once N or P is present: the organic nitrate C10H15NO8 has
+  odd H and an integer DBE, so it is closed-shell. Radicals are excluded from
+  default matching (the pipeline assigns closed-shell neutrals); enable with
   `include_radicals=True` if a run targets radical chemistry.
+- `radical` (false when absent) is the author's claim; the formula decides.
+  `load_catalog()` warns when a list's claims disagree with parity, and
+  `tests/test_peaklists.py` fails a bundled list whose claims disagree or which
+  holds a species with a negative DBE: that is an ion or a salt (a
+  quaternary-ammonium chloride sits at −1), not a molecule.
 - Masses are **not** stored — they are recomputed (`chemistry.ion_mz`) for whatever
   reagent adduct the run uses, so one list serves Br⁻ / NO3⁻ / I⁻ / urea⁺ runs alike.
 
@@ -61,4 +70,4 @@ globs this directory. **Only add credible, citable sources**, and fill `referenc
 |----|--------|---|--------|
 | `monoterpene_hom_kang2024` | monoterpene OH-oxidation HOM | 830 | Kang, FZ Jülich E&U 557 (2022), App. A |
 | `isoprene_ox_wennberg2018` | isoprene OH/HO₂, OH/NO and NO₃ oxidation products (reduced mechanism, closed-shell neutrals) | 27 | Wennberg et al., Chem. Rev. 118, 3337 (2018) |
-| `contaminants_keller2008` | MS background / contaminant ions | 59 | Keller et al., Anal. Chim. Acta 627, 71 (2008) |
+| `contaminants_keller2008` | MS background contaminants (always active) | 50 | Keller et al., Anal. Chim. Acta 627 (2008) 71–81 |
