@@ -68,6 +68,33 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nothing), ion formulas come from the per-file ledgers or are derived, and
   `--dry-run` shows the payload. `docs/PUBLISH.md` gained a section.
 
+### Fixed
+
+- **A reference list's radicals are read off the formula, not the hydrogen count.**
+  `reflists.load_catalog` sorted each species into the closed-shell pool (matched by
+  default) or the radical pool (skipped unless `include_radicals=True`) by a
+  hand-set `radical` flag, and the monoterpene HOM list had set that flag from an
+  odd hydrogen count, which is wrong once nitrogen is present. Its 118 organic
+  nitrates (C10H15NO8, C10H13NO10, ...), the main HOM class under NOx, sat in the
+  radical pool, where the selection prior, the rescue and the report's
+  corroboration never looked, and three nitrogen-bearing radicals were matched
+  instead. The loader now reads radical status off DBE parity (a half-integer DBE
+  is an odd-electron neutral) and treats the flag as a claim, warning when a list
+  disagrees. The list's flags are corrected: 573 closed-shell and 257 radicals,
+  where they said 458 and 372 (`data_version` 2024.2).
+
+- **The Keller contaminant list holds molecules only.** Nine entries were ions or
+  salts: the CN fragment of acetonitrile, the tetrabutylammonium, trityl and
+  monomethoxytrityl cations, and five quaternary-ammonium chlorides, four of them
+  at a negative DBE. They are dropped. NMP, entered as its protonated ion, is the
+  neutral C5H9NO, and acetic and propionic acid are named for the acids rather
+  than the iron complexes the source saw. The list goes from 59 species to 50
+  (`data_version` 2008.2), the split Mascope's reference seed uses.
+
+- `tests/test_peaklists.py` loads every bundled list and fails on a species with
+  a negative DBE or a radical claim its parity contradicts. Mascope keeps the same
+  test on its own copy of the lists.
+
 ### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
 
 ### Added

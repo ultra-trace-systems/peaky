@@ -24,6 +24,7 @@ import bisect
 import glob
 import json
 import os
+import warnings
 from dataclasses import dataclass
 
 from peaky.chem import chemistry as C
@@ -60,7 +61,7 @@ class ReferenceList:
     applies_to_contexts: tuple
     references: tuple
     formulas: frozenset            # closed-shell neutral formulas (matchable)
-    radicals: frozenset            # odd-H radical formulas (excluded by default)
+    radicals: frozenset            # odd-electron (half-integer DBE) formulas (excluded by default)
     conditions_of: dict            # formula -> tuple(conditions)
     source_file: str
     always_active: bool = False    # universal lists (e.g. contaminants) ignore context gating
@@ -79,25 +80,47 @@ class ReferenceList:
 
 
 # ---------------------------------------------------------------------------
+def is_radical(formula: str) -> bool:
+    """True for an odd-electron neutral: a half-integer DBE (`chemistry.dbe`).
+    Parity is the rule, not the H count -- an organic nitrate like C10H15NO8 has
+    odd H and an integer DBE, so it is closed-shell."""
+    d = C.dbe(formula)
+    return abs(d - round(d)) > 1e-9
+
+
 def load_catalog(directory: str | None = None) -> dict:
     """Load every *.json reference list under `directory` (default: packaged
-    data/peaklists). Returns {id: ReferenceList}."""
+    data/peaklists). Returns {id: ReferenceList}.
+
+    A species goes to `formulas` or `radicals` by its formula's DBE parity
+    (`is_radical`). Its `radical` value (false when absent) is the author's
+    claim, checked but never deciding: a list whose claims disagree with parity
+    loads with a warning naming them."""
     directory = directory or _DIR
     out: dict = {}
     for p in sorted(glob.glob(os.path.join(directory, "*.json"))):
         with open(p, encoding="utf-8") as fh:
             d = json.load(fh)
         sp = d.get("species", [])
-        closed, rad, cond, meta = set(), set(), {}, {}
+        closed, rad, cond, meta, wrong = set(), set(), {}, {}, []
         for s in sp:
             f = s.get("formula")
             if not f:
                 continue
-            (rad if s.get("radical") else closed).add(f)
+            radical = is_radical(f)
+            if bool(s.get("radical", False)) != radical:
+                wrong.append(f)
+            (rad if radical else closed).add(f)
             cond[f] = tuple(s.get("conditions", ()))
             extra = {k: s[k] for k in ("name", "origin", "modes") if k in s}
             if extra:
                 meta[f] = extra
+        if wrong:
+            warnings.warn(
+                f"{os.path.basename(p)}: the radical flag (false when absent) of "
+                f"{len(wrong)} species disagrees with its formula's DBE parity "
+                f"({', '.join(wrong[:5])}"
+                f"{', ...' if len(wrong) > 5 else ''}); parity decides", stacklevel=2)
         out[d["id"]] = ReferenceList(
             id=d["id"], system=d.get("system", ""), label=d.get("label", d["id"]),
             data_version=str(d.get("data_version", "")),

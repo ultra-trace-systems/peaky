@@ -3,7 +3,7 @@
  "id": "monoterpene_hom_kang2024",
  "system": "monoterpene_OH_oxidation",
  "label": "Monoterpene OH-oxidation HOM (α-pinene proxy)",
- "data_version": "2024.1",
+ "data_version": "2024.2",
  "polarity": "negative",
  "native_detection": "[M+NO3]-",
  "applies_to_contexts": [
@@ -27,7 +27,7 @@
  "provenance": {
   "extracted_from": "Energie_Umwelt_557.pdf pages 148-181",
   "verification": "724 even-H CHO neutrals reproduce Kang's detected [M+NO3]- mass to <0.005 ppm",
-  "caveat": "α-pinene & limonene are isomeric C10H16 with strongly overlapping OH-oxidation HOM; use as a monoterpene-HOM PROXY, not a limonene-specific list. Odd-H entries are radical HOM (RO/RO2), excluded from closed-shell matching by default."
+  "caveat": "α-pinene & limonene are isomeric C10H16 with strongly overlapping OH-oxidation HOM; use as a monoterpene-HOM PROXY, not a limonene-specific list. Radical status follows DBE parity, not the H count: half-integer-DBE entries are radical HOM (RO/RO2), excluded from closed-shell matching by default, while odd-H organic nitrates such as C10H15NO8 have an integer DBE and are closed-shell."
  },
  "n_species": 830,
  "species": [
@@ -85,42 +85,42 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H13NO11",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H13NO12",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H13NO7",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H13NO8",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H13NO9",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H13O6",
@@ -216,77 +216,77 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H15NO11",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H15NO12",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H15NO13",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H15NO14",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H15NO15",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H15NO16",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H15NO6",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H15NO7",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H15NO8",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H15NO9",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H15O10",
@@ -440,49 +440,49 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H17NO12",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H17NO13",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H17NO14",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H17NO15",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H17NO7",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H17NO8",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C10H17O10",
@@ -692,21 +692,21 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C11H15NO13",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C11H15NO14",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C11H15O13",
@@ -930,7 +930,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C12H15O12",
@@ -1077,7 +1077,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C12H20O12",
@@ -1133,14 +1133,14 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C13H17NO12",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C13H17O10",
@@ -1210,7 +1210,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C13H19O10",
@@ -1618,7 +1618,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C15H19O16",
@@ -1675,7 +1675,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C15H21O10",
@@ -1778,7 +1778,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C15H23O10",
@@ -1883,7 +1883,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C15H25O10",
@@ -2172,14 +2172,14 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C16H25NO17",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C16H25O11",
@@ -2293,14 +2293,14 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C16H27NO17",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C16H27O13",
@@ -2393,14 +2393,14 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C17H23NO15",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C17H23O11",
@@ -2840,28 +2840,28 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C18H25NO16",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C18H25NO19",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C18H25NO20",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C18H25O12",
@@ -2974,7 +2974,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C18H27O11",
@@ -3120,7 +3120,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C18H29O11",
@@ -3236,35 +3236,35 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C19H25NO14",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C19H25NO16",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C19H25NO18",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C19H25NO19",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C19H25O8",
@@ -3491,14 +3491,14 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C19H29NO19",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C19H29O10",
@@ -3727,28 +3727,28 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C20H27NO16",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C20H27NO17",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C20H27NO18",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C20H27O12",
@@ -3860,49 +3860,49 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C20H29NO13",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C20H29NO14",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C20H29NO15",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C20H29NO16",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C20H29NO17",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C20H29NO18",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C20H29O10",
@@ -4288,7 +4288,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C4H4O7",
@@ -4304,14 +4304,14 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C4H5NO7",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C4H5O7",
@@ -4325,7 +4325,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": false
+   "radical": true
   },
   {
    "formula": "C4H6O10",
@@ -4353,7 +4353,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C4H7O10",
@@ -4367,7 +4367,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": false
+   "radical": true
   },
   {
    "formula": "C5H10O7",
@@ -4395,14 +4395,14 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C5H5NO9",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C5H5O7",
@@ -4459,28 +4459,28 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C5H7NO7",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C5H7NO8",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C5H7NO9",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C5H7O10",
@@ -4524,7 +4524,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": false
+   "radical": true
   },
   {
    "formula": "C5H8O11",
@@ -4560,7 +4560,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C5H9O10",
@@ -4635,7 +4635,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C6H11NO6",
@@ -4644,14 +4644,14 @@
     "isoprene",
     "pure"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C6H11NO7",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C6H11O10",
@@ -4680,7 +4680,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C6H6O5",
@@ -4719,14 +4719,14 @@
    "conditions": [
     "isoprene"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C6H7NO8",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C6H7O10",
@@ -4832,14 +4832,14 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C6H9NO6",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C6H9O11",
@@ -4941,14 +4941,14 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C7H11NO7",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C7H11O10",
@@ -5090,28 +5090,28 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C7H7NO6",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C7H7NO7",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C7H7NO8",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C7H7O8",
@@ -5204,42 +5204,42 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C7H9NO11",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C7H9NO6",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C7H9NO7",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C7H9NO8",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C7H9NO9",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C7H9O10",
@@ -5367,42 +5367,42 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C8H11NO11",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C8H11NO12",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C8H11NO13",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C8H11NO6",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C8H11NO7",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C8H11O11",
@@ -5553,28 +5553,28 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C8H13NO6",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C8H13NO8",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C8H13NO9",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C8H13O10",
@@ -5740,7 +5740,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C8H9O10",
@@ -5770,7 +5770,7 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C9H11O11",
@@ -5878,28 +5878,28 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C9H13NO5",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C9H13NO8",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C9H13NO9",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C9H13O15",
@@ -6021,35 +6021,35 @@
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C9H15NO13",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C9H15NO5",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C9H15NO6",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C9H15NO9",
    "conditions": [
     "NOx"
    ],
-   "radical": true
+   "radical": false
   },
   {
    "formula": "C9H15O10",
