@@ -302,8 +302,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a within-sample stage bar, elapsed + ETA, and — when the run ends — the run's
   own stats (merged M0, tiers, in-all-files, single-file, formula disagreements)
   next to how long it took. Opt-in, so scripted and skill-driven runs are
-  untouched; `PEAKY_PROGRESS=1` also enables it. The window stays up until closed
-  so the finished numbers can be read, and everything in it is also on stdout.
+  untouched; `PEAKY_PROGRESS=1` also enables it. Everything in the window is also
+  on stdout, so nothing is lost by never seeing it.
+
+  **The hold is for a person at a terminal, and it is bounded.** A finished run
+  keeps its window up so the stats panel can be READ — but only when stdin and
+  stdout are both a tty, and only until you close the window, press Ctrl-C, or
+  `PEAKY_PROGRESS_HOLD_S` seconds pass (default 600; `0` disables the hold
+  entirely). A pipe, a CI job or a skill-driven run therefore never waits on a
+  window, whatever `PEAKY_PROGRESS` says, and Ctrl-C during a run closes the
+  window immediately, with no stats panel and no wait.
 
   It is a **`log` wrapper, not a pipeline change**: peaky already threads
   `log=print` from `run_batch` down to each assignment stage, so `Reporter` is a
@@ -314,6 +322,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   against the patterns parsed here so a rewording fails a test instead of
   silently flat-lining the bar. Never fatal: no display, no tkinter, or any UI
   exception degrades to a one-line terminal status and then to silence.
+  **macOS always takes that fallback**: the window runs on a daemon thread, and
+  Tk/Cocoa driven off the process's main thread aborts the process outright —
+  not an exception any guard could catch — so on Darwin the progress window
+  would kill the run it reports on. There is no window there, by design.
 
   Parallel runs (`--jobs > 1`) report at **sample granularity only** and say so
   ("N workers" in place of the stage bar): workers buffer their logs and the

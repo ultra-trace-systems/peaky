@@ -163,8 +163,11 @@ def _add_progress_flag(p) -> None:
                    help="open a live progress window (Tk) for the run: sample/stage "
                         "bars, elapsed + ETA, and the run's stats + total runtime when "
                         "it finishes. Falls back to a one-line terminal status with no "
-                        "display. The window stays up until closed (everything in it is "
-                        "also on stdout). Env PEAKY_PROGRESS=1 also enables it.")
+                        "display, and always on macOS. On an interactive terminal the "
+                        "finished window is held open to be read for at most "
+                        "PEAKY_PROGRESS_HOLD_S seconds (default 600; 0 disables the "
+                        "hold); Ctrl-C closes it at once, and everything in it is also "
+                        "on stdout. Env PEAKY_PROGRESS=1 also enables it.")
 
 
 def _progress_hold_note(prog) -> None:

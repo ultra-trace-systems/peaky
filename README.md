@@ -197,9 +197,13 @@ samples across `N` worker processes — ~3.5× faster on multicore, output ident
 to a serial run; default is your physical-core count, `--jobs 1` is the serial
 path. `--progress` (or `PEAKY_PROGRESS=1`) opens a live progress window —
 sample/stage bars, elapsed + ETA, and the run's stats + total runtime when it
-finishes; it stays up until you close it, falls back to a one-line terminal
-status with no display, and is off unless asked for, so scripted runs are
-unchanged. `mascope-assign` is kept as an alias of `peaky`.
+finishes. **Only on an interactive terminal** does it then stay up so those
+numbers can be read, and only until you close it, press Ctrl-C (which closes it
+at once), or `PEAKY_PROGRESS_HOLD_S` seconds pass (default 600; `0` disables the
+hold) — a pipe, a CI job or a skill-driven run never waits on a window.
+With no display it falls back to a one-line terminal status, as it always does
+on **macOS**, where Tk driven off the process's main thread aborts the run
+rather than raising. It is off unless asked for, so scripted runs are unchanged. `mascope-assign` is kept as an alias of `peaky`.
 `peaky publish` uploads a ledger into Mascope so a peaky run sits beside the
 in-app engine's own on the same sample. The row carries **two** tiers: peaky's
 own verdict (`engine_tier`) and Mascope's banding of the evidence (`tier`,

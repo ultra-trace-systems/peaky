@@ -297,6 +297,26 @@ check("run_batch returns a whole-pipeline elapsed_s",
       '"elapsed_s": elapsed' in (PKG / "pipeline.py").read_text())
 
 
+# ---- 3b. the DOCUMENTED contract -------------------------------------------
+# The hold's bounds and the macOS fallback are promises made to whoever types
+# --progress; an undocumented bound reads as a hang, and an undocumented macOS
+# fallback reads as a broken feature.
+ROOT = PKG.parent
+CHANGELOG = (ROOT / "CHANGELOG.md").read_text()
+for _name, _txt in (("README.md", (ROOT / "README.md").read_text()),
+                    ("CHANGELOG.md", CHANGELOG)):
+    check(f"{_name}: the hold is bounded by PEAKY_PROGRESS_HOLD_S",
+          "PEAKY_PROGRESS_HOLD_S" in _txt)
+    check(f"{_name}: the hold needs an interactive terminal",
+          "interactive terminal" in _txt or "a tty" in _txt)
+    check(f"{_name}: Ctrl-C closes the window at once", "Ctrl-C" in _txt)
+    check(f"{_name}: macOS falls back to the terminal status", "macOS" in _txt)
+check("the --progress bullets are under [Unreleased], not a released version",
+      "PEAKY_PROGRESS_HOLD_S" in CHANGELOG.split("## [Unreleased]")[1].split("\n### [")[0])
+check("--progress --help names the hold env var",
+      "PEAKY_PROGRESS_HOLD_S seconds" in (PKG / "cli.py").read_text())
+
+
 # ---- 4. never fatal: the Reporter is a transparent log wrapper ---------------
 seen = []
 rep = PG.Reporter("t", log=seen.append, ui=None)
