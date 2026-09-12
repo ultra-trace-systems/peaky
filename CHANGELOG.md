@@ -345,10 +345,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   metadata only: the reproducibility fingerprint hashes `merged_ledger.csv` and
   the input TS, not the summary, so determinism is unaffected.
 - **`[phase] <name>` log markers** for the pipeline steps with no per-item
-  progress of their own (fetch / assign / cluster / vankrevelen / report /
-  provenance) — readable in a plain log, and what the window's phase line reads.
-  `run_batch` and `run_pooled_batches` emit the same set, so the phase line is
-  as truthful on a pooled run as on a single-batch one.
+  progress of their own (fetch / select / assign / cluster / vankrevelen /
+  report / provenance) — readable in a plain log, and what the window's phase
+  line reads. `run_batch` and `run_pooled_batches` emit the same set, so the
+  phase line is as truthful on a pooled run as on a single-batch one; `select`
+  comes from whichever side runs the set-cover (the pooled pipeline itself, or
+  `assign_batch.run` when it picks the cover for one batch, which brackets it
+  back to `assign` as soon as the picks are in).
 
 ### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
 

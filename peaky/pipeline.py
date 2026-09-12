@@ -444,6 +444,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     log(f"[pool] {len(ts):,} peak rows, {ts['sample_item_id'].nunique()} samples, "
         f"{ts[group_by].nunique()} groups by {group_by!r}")
 
+    log("[phase] select")
     prov = SS.select_cover_samples(ts, group_col=group_by, k_min=k_min, k_max=k_max,
                                    min_gain=min_gain, tol_ppm=SS.BATCH_TOL_PPM)
     selection = dict(prov.attrs.get("selection", {}))

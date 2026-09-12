@@ -281,7 +281,8 @@ check("NOMINAL_STAGES counts the stages of assign.run that TIME themselves",
       PG.NOMINAL_STAGES == len(_timed), f"{PG.NOMINAL_STAGES} != {len(_timed)}")
 check("  -> i.e. fewer than the stage table's rows (the untimed ones log nothing)",
       len(_timed) < len(_A._STAGES), f"{len(_timed)} of {len(_A._STAGES)}")
-for ph_name in ("cluster", "vankrevelen", "report", "assign", "fetch", "provenance"):
+for ph_name in ("cluster", "vankrevelen", "report", "assign", "fetch", "provenance",
+                "select"):
     check(f"pipeline emits [phase] {ph_name}", emits("pipeline.py", f'log("[phase] {ph_name}")'))
     # PHASE_LABEL.get() falls back to the bare name, so a phase missing from it
     # shows as "vankrevelen" rather than "Van Krevelen" and nothing else notices.
@@ -313,6 +314,20 @@ _gen = _func_src(pipe_src, "generate_report")
 for ph_name in ("cluster", "vankrevelen", "report"):
     check(f"generate_report ITSELF emits [phase] {ph_name} (both paths share it)",
           f'log("[phase] {ph_name}")' in _gen)
+
+# the pooled path picks its own cover, before the run dir even exists
+_pool_body = _func_src(pipe_src, "run_pooled_batches")
+check("the pooled pipeline marks the select phase around its own set-cover",
+      '[phase] select' in _pool_body
+      and _pool_body.index('[phase] select') < _pool_body.index("SS.select_cover_samples("))
+
+# and the label that marker looks up is part of the interface, not decoration
+sel_st = PG.ProgressState(title="t")
+sel_st.feed("[phase] select")
+check("a select marker reads as 'selecting samples'",
+      sel_st.phase == "select"
+      and sel_st.snapshot()["phase_label"] == "selecting samples",
+      sel_st.snapshot()["phase_label"])
 
 # and the reconstructed lines really do match the patterns
 for line, rx, what in [
@@ -356,6 +371,33 @@ check("the SERIAL branch itself logs the per-sample 'done' line",
 check("  -> after the sample is applied (inside the per-sample loop)",
       "_apply(" in serial_src
       and serial_src.index("_apply(") < serial_src.index("done {sid}"))
+
+
+# On the single-batch path the pipeline delegates selection to assign_batch, so
+# THAT is where the select phase begins and ends. The branch brackets itself:
+# without the closing marker the window would go on reading "selecting samples"
+# through the admission table and the reference lists that follow it.
+def _if_branch_src(module_src: str, fname: str, test_src: str) -> str:
+    """Body source of the first `if <test_src>:` inside the function `fname`."""
+    import ast
+    for fn in ast.walk(ast.parse(module_src)):
+        if not (isinstance(fn, ast.FunctionDef) and fn.name == fname):
+            continue
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.If)
+                    and ast.get_source_segment(module_src, node.test) == test_src):
+                return "\n".join(ast.get_source_segment(module_src, s) for s in node.body)
+    return ""
+
+
+sel_src = _if_branch_src(src, "run", "sample_ids is None")
+check("assign_batch.run has the `if sample_ids is None:` selection branch", bool(sel_src))
+check("the SELECTION branch opens with the select phase marker",
+      '[phase] select' in sel_src
+      and sel_src.index('[phase] select') < sel_src.index("SS.select_cover_samples("))
+check("  -> and hands the phase back to assign once the cover is picked",
+      'log("[phase] assign")' in sel_src
+      and sel_src.rindex('[phase] assign') > sel_src.index("SS.select_cover_samples("))
 
 # `peaky assign` calls one sample's assign.run directly: no pipeline runs on that
 # path, so nothing logs `[phase] assign` and the header would read "fetching time

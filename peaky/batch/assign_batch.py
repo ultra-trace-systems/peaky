@@ -385,6 +385,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     if sample_ids is None:
         # greedy presence set-cover over the batch's m/z bins. Needs the per-PEAK
         # table: the pipeline passes it as ts_peaks; `peaks` may already be one.
+        # The cover runs before any sample is assigned and is not quick on a big
+        # batch, so it owns the phase for its duration (the caller already said
+        # `assign`); the marker is handed back below, once the picks are in.
+        log("[phase] select")
         src = ts_peaks if ts_peaks is not None else peaks
         if not SS.is_per_peak(src):
             raise ValueError("sample selection needs the per-peak batch table "
@@ -400,6 +404,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         _warn = SS.k_max_warning(selection)
         if _warn:
             log(f"[assign_batch] WARNING: {_warn}")
+        log("[phase] assign")     # cover picked; everything past here is the run
     log(f"[assign_batch] {prof.label} context={context!r}: "
         f"{len(sample_ids)} selected files -> {pfdir}")
 
