@@ -157,6 +157,20 @@ class ProgressState:
         if not self.parallel and self.stage_idx:
             self.n_stages = self.stage_idx
 
+    def mark_sample_done(self, count: int = 1) -> None:
+        """Record completed samples that no `(i/N) done` line announced.
+
+        `peaky assign` runs ONE sample through `assign.run` directly -- there is
+        no assign_batch on that path, so the log stream is stage lines and
+        nothing else, and the samples bar would sit at 0/1 for the whole run
+        while the stage bar never learned how many stages this run really has.
+        The same two effects the `done` line has, minus the stage-bar reset:
+        this is the last sample, so the stage bar stays full rather than
+        dropping to zero at the very end."""
+        self.samples_done = max(self.samples_done, int(count))
+        self.n_samples = max(self.n_samples, self.samples_done)
+        self._learn_stages()
+
     def feed(self, line: str) -> bool:
         """Read one log line into the model. Returns True if anything changed.
         Unrecognised lines only refresh `last_line` (the window's activity tail)."""
@@ -638,6 +652,17 @@ class Reporter:
         Guarded like __call__: a progress call can never raise into the run."""
         try:
             self.state.phase = str(name)
+            self._push()
+        except Exception:
+            pass
+
+    def sample_done(self, count: int = 1) -> None:
+        """Mark samples complete from OUTSIDE the log stream, for a caller that
+        assigns a sample itself instead of going through `assign_batch` (the
+        only emitter of the `(i/N) done` line). Guarded like `phase()`: a
+        progress call can never raise into the run."""
+        try:
+            self.state.mark_sample_done(count)
             self._push()
         except Exception:
             pass

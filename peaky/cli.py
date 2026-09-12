@@ -248,6 +248,10 @@ def cmd_assign(args) -> None:
                          adducts=adducts, ts_peaks=ts_peaks, label_purity=purity,
                          occurrence=occurrence,
                          log=prog, checkpoint_dir=str(od / "checkpoints"))
+        # Nothing on this path logs the `(i/N) done` line assign_batch emits, so
+        # say it directly: the one sample is in (samples bar 1/1) and the stages
+        # that just ran are this run's real stage count (stage bar full).
+        prog.sample_done()
         prog.phase("report")            # writing xlsx/md/gka is not "done" yet
         _write_assign_outputs(args, out, base)
         prog.finish(out.get("stats"))

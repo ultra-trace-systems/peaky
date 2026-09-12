@@ -82,6 +82,28 @@ one = PG.ProgressState(title="t", n_samples=1)
 one.feed("[run] pass0 took 0.2s")
 check("a stage line alone puts the phase at 'assigning' (single-sample runs)",
       one.phase == "assign" and one.stage_idx == 1)
+# ...and it logs no 'done' line either, so nothing in that stream ever completes
+# a sample: the samples bar would read 0/1 for the whole run and the stage bar
+# would stay against the NOMINAL count instead of this run's real one. The
+# command says it itself (cmd_assign -> prog.sample_done()).
+for _n in ("pass1", "cleanup"):
+    one.feed(f"[run] {_n} took 0.2s")
+check("  -> a single-sample stream alone never advances the samples bar",
+      one.samples_done == 0 and one.sample_frac == 0.0)
+check("  -> and its stage bar is against the nominal count, so it cannot fill",
+      one.n_stages == PG.NOMINAL_STAGES and one.stage_frac < 1.0)
+one.mark_sample_done()
+check("mark_sample_done() completes the sample with no log line to do it",
+      one.samples_done == 1 and one.n_samples == 1 and one.sample_frac == 1.0)
+check("  -> and learns the stage count from the stages that just ran (k=3)",
+      one.n_stages == 3 and one.stage_frac == 1.0)
+check("  -> without resetting the stage bar: this was the LAST sample",
+      one.stage_idx == 3 and one.stage_name == "cleanup")
+_buf = io.StringIO()
+with contextlib.redirect_stdout(_buf):
+    PG.TerminalStatus().push(one.snapshot())
+check("  -> so the terminal fallback reports 1/1 samples, not 0/1",
+      "1/1 samples" in _buf.getvalue(), _buf.getvalue())
 
 # the ETA clock starts with assignment, not with the window: the TS fetch and
 # sample selection before the first 'assigning' line are not per-sample work
@@ -331,6 +353,14 @@ check("  -> and marks the assign phase as its FIRST act inside that block",
       bool(ca_body) and ca_body[0].startswith('prog.phase("assign")'), ca_body[:1])
 check("  -> i.e. before assign.run, not after it",
       any("assign.run(" in s for s in ca_body[1:]))
+# and it has to COMPLETE that sample once assign.run returns -- no `(i/N) done`
+# line reaches this path, so without it the samples bar ends at 0/1 and the
+# stage bar never learns how many stages the run really had.
+_i_run = next((i for i, s in enumerate(ca_body) if "assign.run(" in s), -1)
+_i_done = next((i for i, s in enumerate(ca_body) if s.startswith("prog.sample_done(")), -1)
+_i_rep = next((i for i, s in enumerate(ca_body) if s.startswith('prog.phase("report")')), -1)
+check("  -> and marks its ONE sample done between assign.run and the report phase",
+      -1 < _i_run < _i_done < _i_rep, ca_body)
 
 check("assign_batch records elapsed_s in batch_summary", '"elapsed_s": round(time.time() - t_start, 1)' in src)
 check("assign_batch records n_jobs beside it (a duration needs its job count)",
@@ -661,6 +691,53 @@ def test_serial_branch_logs_done_per_sample(monkeypatch):
     for ln in lines:
         st.feed(ln)
     assert (st.samples_done, st.n_samples, st.n_stages) == (3, 3, 3), st.snapshot()
+
+
+# ---- 7b. the SINGLE-SAMPLE command EXECUTED: both bars reach the end --------
+def test_single_sample_command_fills_both_bars(monkeypatch):
+    """`peaky assign` driven for real with assign.run stubbed (no network, no
+    credentials): the window must end at 1/1 samples with a FULL stage bar.
+
+    A source check cannot see this -- the bars are numbers that exist only once
+    the command has run -- and this is the command whose samples bar sat dead at
+    0/1, with the stage bar frozen part-way, for the whole of every run."""
+    import tempfile
+
+    from peaky.assignment import assign as A
+
+    stages = [st_.name for st_ in A._STAGES if st_.safe]   # the ones that log a time
+
+    def _fake_assign(sid, context="ambient-air", *, log=print, **kw):
+        for name in stages:
+            log(f"[run] {name} took 0.1s")
+        return {"ledger": None, "stats": {"n_peaks": 7}}
+
+    made = {}
+    _real_open = PG.open_progress
+
+    def _spy_open(*a, **kw):
+        made["rep"] = _real_open(*a, **kw)
+        return made["rep"]
+
+    monkeypatch.setattr(A, "run", _fake_assign)
+    monkeypatch.setattr(PG, "open_progress", _spy_open)
+    monkeypatch.setattr(CLI, "_require_creds", lambda: None)
+    monkeypatch.setattr(CLI, "_write_assign_outputs", lambda args, out, base: None)
+
+    with tempfile.TemporaryDirectory() as td:
+        args = CLI.build_parser().parse_args(
+            ["assign", "--sample-id", "s1", "--reagent", "Br", "--output-dir", td])
+        with contextlib.redirect_stdout(io.StringIO()):
+            CLI.cmd_assign(args)
+
+    snap = made["rep"].state.snapshot()
+    assert (snap["samples_done"], snap["n_samples"]) == (1, 1), snap
+    assert snap["sample_frac"] == 1.0, snap
+    # the load-bearing one: `finished` alone pins the SAMPLES bar at 100%, so
+    # only the stage bar can tell whether the stage count was really learned
+    assert snap["stage_frac"] == 1.0, snap
+    assert (snap["stage_idx"], snap["n_stages"]) == (len(stages), len(stages)), snap
+    assert snap["finished"] and snap["stats"] == {"n_peaks": 7}, snap
 
 
 # ---- 8. the hold is for a PERSON at a terminal, and it is bounded ------------
