@@ -454,6 +454,15 @@ _DIFF_TO_ADDUCT = {
     # ¹⁵N-ammonium in-source dehydration alias [M+^NH4-H2O]+ (ion = M + ^NH4 -
     # H2O): folded diff (H+2, N+1, O-1). Only the labelled-ammonium profile
     # writes it (cleanup.relabel_ammonium_dehydration).
+    # UNLIKE the [M+NO3]- / [M+NH4]+ entries, this one maps the ISOTOPE-FOLDED
+    # diff straight to the LABELLED adduct instead of keying the ¹⁴N form and
+    # upgrading on the '^N' in the ion string. That is safe only because there is
+    # no ¹⁴N counterpart to confuse it with: peaky has no [M+NH4-H2O]+ adduct (not
+    # in chemistry.ADDUCT_SHIFTS, no profile, no pass), so nothing can present
+    # this diff except the labelled alias, and there is no unlabelled label to
+    # fall back to. If a ¹⁴N ammonium dehydration alias is ever added, key IT here
+    # and move this one behind the '^N' upgrade below, like its neighbours --
+    # otherwise a ¹⁴N ion would be labelled ¹⁵N and read 1 Da off.
     (("H", 2), ("N", 1), ("O", -1)): "[M+^NH4-H2O]+",
     # protonated-then-dehydrated alias [M+H-H2O]+ (EasyIC and labelled-ammonium
     # in-source dehydration): diff (H-1, O-1). Without it a relabelled row whose
