@@ -176,6 +176,15 @@ def select_cover_samples(peaks: pd.DataFrame, *, k_min: int = K_MIN, k_max: int 
         gate = prev >= 1
     A = A_all[:, gate]
     n_bins = int(A.shape[1])
+    if n_bins == 0:
+        # EVERY bin gated out, which the >=1 fallback above leaves possible only
+        # when no peak anywhere has a positive height. An empty universe has no
+        # coverage to report: `covered.mean()` is NaN (plus numpy warnings), and
+        # that NaN would reach `coverage`, `achieved_coverage` and a bare `NaN`
+        # token in batch_summary.json. Nothing to cover -> nothing to select,
+        # the same answer as the empty matrix above.
+        meta.update(n_bins_total=int(A_all.shape[1]), n_bins_gated=int((~gate).sum()))
+        return _empty(tab, meta)
     gain_floor = float(min_gain) * n_bins
 
     # gain_floor is a fraction of the GATED universe (n_bins), not of all bins:

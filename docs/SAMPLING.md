@@ -199,6 +199,10 @@ modes of one instrument. Selection is deterministic (identical picks on re-run).
 - **`k_max` is a budget, not a target.** If it binds, coverage is incomplete and
   the run says so; raise it rather than trusting the ledger to be complete.
 - **Few-samples shortcut.** `n == 0` → empty; `n ≤ K_MIN` → take all.
+- **An empty universe selects nothing.** No m/z bins at all, or no peak with a
+  positive height anywhere (so not even the `≥ 1` prevalence fallback finds a
+  bin) → an empty selection with `k = 0` and `achieved_coverage = 0.0`, never a
+  padded subset whose coverage is NaN.
 - **Both tie-breaks are deterministic.** Equal-gain cover picks go to the
   lexicographically smallest `sample_item_id`; equal-TIC pads keep that same
   order (stable sort). Shuffling the input rows cannot change the result.

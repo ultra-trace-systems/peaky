@@ -1,5 +1,6 @@
 """Offline tests for batch/sampling.py -- greedy presence set-cover selection.
 Run: python3 tests/test_sampling.py"""
+import json
 import sys
 from pathlib import Path
 
@@ -296,6 +297,23 @@ esel = SS.select_cover_samples(empty)
 check("empty peaks -> empty selection with role column + meta",
       len(esel) == 0 and "role" in esel.columns and esel.attrs["selection"]["k"] == 0,
       list(esel.columns))
+# degenerate batch: every picked peak has zero height, so no bin clears ANY
+# prevalence gate -- not even the >= 1 fallback -- and the universe is empty.
+# It must come back empty like an empty matrix, NOT pad k_min samples whose
+# coverage is the mean of an empty array (NaN, which json writes as a bare
+# `NaN` token that strict parsers reject).
+zed = make_batch({"a": bg, "b": bg, "c": bg}, height=0.0)
+zsel = SS.select_cover_samples(zed, k_min=2)
+zm = zsel.attrs["selection"]
+check("all-zero heights -> empty selection, finite coverage",
+      len(zsel) == 0 and zm["k"] == 0 and zm["achieved_coverage"] == 0.0, zm)
+check("all-zero heights -> the empty universe is still reported",
+      zm["n_bins"] == 0 and zm["n_bins_total"] == 20 and zm["n_bins_gated"] == 20, zm)
+try:
+    check("all-zero heights -> the meta round-trips through strict JSON",
+          json.loads(json.dumps(zm, allow_nan=False))["n_bins"] == 0, zm)
+except ValueError as exc:
+    check("all-zero heights -> the meta round-trips through strict JSON", False, str(exc))
 nc = make_batch(spec3).drop(columns=["datetime_utc", "sample_item_name"])
 check("no clock / name columns -> still selects", len(SS.select_cover_samples(nc)) >= 3)
 

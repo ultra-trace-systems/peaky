@@ -62,6 +62,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instances of 'str' and 'float'`. Ungrouped samples stay selectable — their bins
   are real — and group under `sampling.UNGROUPED` (`"(ungrouped)"`), which no
   per-group report matches.
+- **A batch whose peaks all have zero height no longer produces a NaN coverage.**
+  Every bin failed both prevalence gates, the universe was empty, and the mean of
+  that empty array became the `coverage` column, `selection.achieved_coverage` and
+  a bare `NaN` token in `batch_summary.json` (rejected by strict JSON parsers),
+  with numpy warnings on the way. An empty universe now returns an empty selection,
+  like a batch with no bins at all.
 - **The brightest-coverage selector silently never reached its coverage
   target**: every run on disk had assigned exactly `k_max` + 2 samples at
   0.39–0.61 achieved coverage while `batch_summary.json` recorded the *requested*
