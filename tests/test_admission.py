@@ -165,6 +165,68 @@ check("otsu on a clean two-cluster distribution lands mid-gap",
       ADM.otsu_threshold(np.r_[np.zeros(80) + 0.05, np.ones(20) * 0.95]))
 
 # ---------------------------------------------------------------------------
+# THE CLAMP. Otsu always returns a split, even for a distribution that has no
+# two modes to separate -- it then cuts inside the single mode and the "derived"
+# threshold is meaningless. [AUTO_MIN, AUTO_MAX] is what keeps such a batch from
+# admitting (unimodal-low) or rejecting (unimodal-high) essentially everything.
+# Both raw splits sit far OUTSIDE the clamp, so deleting the clamp fails here.
+# ---------------------------------------------------------------------------
+_r = np.random.default_rng(3)
+uni_low = np.clip(_r.normal(0.05, 0.02, 400), 0, 1)     # nothing persists
+uni_high = np.clip(_r.normal(0.95, 0.02, 400), 0, 1)    # everything persists
+raw_low, raw_high = ADM.otsu_threshold(uni_low), ADM.otsu_threshold(uni_high)
+check("unimodal LOW: the raw Otsu split is below the clamp, auto_threshold returns AUTO_MIN",
+      raw_low < ADM.AUTO_MIN and ADM.auto_threshold(uni_low) == ADM.AUTO_MIN,
+      (raw_low, ADM.auto_threshold(uni_low)))
+check("unimodal HIGH: the raw Otsu split is above the clamp, auto_threshold returns AUTO_MAX",
+      raw_high > ADM.AUTO_MAX and ADM.auto_threshold(uni_high) == ADM.AUTO_MAX,
+      (raw_high, ADM.auto_threshold(uni_high)))
+check("the clamp is what bounds it: every auto threshold lands inside [AUTO_MIN, AUTO_MAX]",
+      all(ADM.AUTO_MIN <= ADM.auto_threshold(v) <= ADM.AUTO_MAX
+          for v in (uni_low, uni_high, tab["occurrence"].to_numpy())))
+# all-equal: there is no split to make. otsu returns None and the run must treat
+# that as PATH OFF, not as a 0.0 threshold (which would admit every peak).
+flat = np.full(200, 0.5)
+check("all-equal occurrences: otsu None -> auto None -> resolve None (path off, not 0.0)",
+      ADM.otsu_threshold(flat) is None and ADM.auto_threshold(flat) is None,
+      (ADM.otsu_threshold(flat), ADM.auto_threshold(flat)))
+_flat_tab = pd.DataFrame({"mz": np.linspace(200, 400, 200), "occurrence": flat,
+                          "n_samples": np.full(200, 50)})
+_flat_tab.attrs.update(tol_ppm=6.0, n_samples=50, auto_threshold=ADM.auto_threshold(flat))
+check("...and a whole batch of all-equal bins resolves to None -> nothing admitted by persistence",
+      ADM.resolve_threshold(cfg_auto, _flat_tab) is None, ADM.resolve_threshold(cfg_auto, _flat_tab))
+_fl = L.new_ledger(pd.DataFrame({"peak_id": ["weak", "bright"], "mz": [250.0, 300.0],
+                                 "height": [2.0, 500.0]}))
+_fc = ADM.stamp_admission(_fl, P.PassConfig(height_cutoff_cps=100.0), _flat_tab)
+_fby = _fl.set_index("peak_id")["admitted_by"]
+check("...stamping on that batch admits by height only (the 0.5 bins admit nobody)",
+      _fc["occurrence"] == 0 and _fc["occurrence_threshold"] is None
+      and _fby["bright"] == "height" and _fby["weak"] == "", (_fc, _fby.to_dict()))
+
+# ---------------------------------------------------------------------------
+# THE BOUNDARY. The gate is `occurrence >= threshold`, inclusive: a bin sitting
+# EXACTLY on the derived threshold is admitted. (A `>` gate passes every other
+# test in this file; only this one sees the difference.)
+# ---------------------------------------------------------------------------
+THR = 0.44
+bl = L.new_ledger(pd.DataFrame({"peak_id": ["on", "under", "over"],
+                                "mz": [250.0, 260.0, 270.0],
+                                "height": [2.0, 2.0, 2.0]}))     # all below the height gate
+_btab = pd.DataFrame({"mz": [250.0, 260.0, 270.0],
+                      "occurrence": [THR, np.nextafter(THR, 0.0), np.nextafter(THR, 1.0)],
+                      "n_samples": [44, 43, 45]})
+_btab.attrs.update(tol_ppm=6.0, n_samples=100)
+cfg_b = P.PassConfig(height_cutoff_cps=100.0, occurrence_min=THR)
+ADM.stamp_admission(bl, cfg_b, _btab)
+_by = bl.set_index("peak_id")["admitted_by"]
+check("occurrence EXACTLY == threshold is admitted (>= not >)", _by["on"] == "occurrence", _by.to_dict())
+check("one ulp under the threshold is not admitted", _by["under"] == "", _by.to_dict())
+check("one ulp over the threshold is admitted", _by["over"] == "occurrence", _by.to_dict())
+_am = ADM.admissible(bl, cfg_b)
+check("admissible() agrees with the stamp at the boundary",
+      (_am == (bl["admitted_by"] != "")).all() and bool(_am[bl["peak_id"] == "on"].iloc[0]))
+
+# ---------------------------------------------------------------------------
 # tiering: persistence gates ENTRY, corroboration gates the TIER. An
 # occurrence-admitted M0 with no isotopologue / channel / series corroboration is
 # capped at Candidate ('persistent-weak'); with a 13C child it is not.
@@ -190,6 +252,43 @@ check("tier cap: occurrence-admitted but isotope-corroborated -> not capped by t
       not str(t.at["W", "tier_reason"]).startswith("persistent-weak"), t.loc["W"].to_dict())
 check("tier cap: height-admitted uncorroborated Good stays as the other rules decide (not persistent-weak)",
       not str(t.at["Z", "tier_reason"]).startswith("persistent-weak"), t.loc["Z"].to_dict())
+
+# ...and the other two corroboration sources lift the cap exactly as the isotope
+# child does: a SECOND CHANNEL carrying the same neutral, and a SERIES ANCHOR.
+# (C = occurrence-admitted on [M-H]-, with C2 the same neutral on [M+Br]-;
+# S = occurrence-admitted with a series unit; N = neither, the control.)
+tl2 = L.new_ledger(pd.DataFrame({"peak_id": ["C", "C2", "S", "N", "K"],
+                                 "mz": [264.0361, 343.9540, 278.0519, 292.0675, 306.0832],
+                                 "height": [2.0, 2.1, 2.2, 2.3, 2.4]}))
+tl2["admitted_by"] = "occurrence"
+tl2["occurrence"] = 0.91
+_rows = (("C", "C8H10O6", "[M-H]-", "cheminfo+grid", None),
+         ("C2", "C8H10O6", "[M+Br]-", "cheminfo+grid", None),   # same neutral, 2nd channel
+         ("S", "C9H12O6", "[M-H]-", "series-gka", "CH2"),       # series anchor
+         ("N", "C10H14O6", "[M-H]-", "cheminfo+grid", None),    # control: neither
+         ("K", "C2H4O3", "[M-H]-", "known:atmospheric-acid", None))   # pass-0 known species
+for pid, f, add, meth, unit in _rows:
+    L.commit_assignment(tl2, pid, neutral_formula=f, adduct=add,
+                        ion_score=0.90, compound_score=0.90, eff_score=0.88, eff_margin=0.2,
+                        tied=False, ppm_error=0.3, pass_no=1, method=meth,
+                        confidence="Good", commentary="fixture", alternatives=[],
+                        series_unit=unit)
+t2 = TR.compute_tiers(tl2).set_index("peak_id")
+check("tier cap control: occurrence-admitted with no corroboration at all -> persistent-weak",
+      t2.at["N", "tier"] == "Candidate" and str(t2.at["N", "tier_reason"]).startswith("persistent-weak"),
+      t2.loc["N"].to_dict())
+check("tier cap EXEMPTION: a second channel on the same neutral lifts it",
+      not str(t2.at["C", "tier_reason"]).startswith("persistent-weak")
+      and not str(t2.at["C2", "tier_reason"]).startswith("persistent-weak"),
+      t2.loc[["C", "C2"]].to_dict("index"))
+check("tier cap EXEMPTION: a series anchor lifts it",
+      not str(t2.at["S", "tier_reason"]).startswith("persistent-weak"), t2.loc["S"].to_dict())
+# PRECEDENCE: the pass-0 known-species branch is tested BEFORE the persistence
+# cap, so a curated identity stays Assigned even when it was admitted by
+# persistence alone -- its evidence is the locked list, not this peak's height.
+check("tier cap PRECEDENCE: a pass-0 known species stays Assigned despite persistence-only admission",
+      t2.at["K", "tier"] == "Assigned" and str(t2.at["K", "tier_reason"]).startswith("known species"),
+      t2.loc["K"].to_dict())
 
 # empty / degenerate inputs
 e = ADM.bin_occurrence(ts.iloc[:0])
