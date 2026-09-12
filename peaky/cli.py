@@ -625,17 +625,22 @@ def cmd_mcp(args) -> None:
 
 def _add_selection_args(sp) -> None:
     """The presence-cover selection knobs shared by `batch` and `pool` (see
-    docs/SAMPLING.md). Defaults mirror peaky.batch.sampling.K_MIN/K_MAX/MIN_GAIN."""
-    sp.add_argument("--k-max", type=int, default=30,
+    docs/SAMPLING.md). The defaults ARE `sampling.K_MIN/K_MAX/MIN_GAIN` -- imported,
+    not retyped, so the help text and the selector can never disagree."""
+    from peaky.batch import sampling as SS
+
+    sp.add_argument("--k-max", type=int, default=SS.K_MAX,
                     help="wall-clock budget: at most this many samples are assigned "
-                         "(default 30). A run that hits it while still gaining is "
-                         "flagged in batch_summary.json['selection'].")
-    sp.add_argument("--k-min", type=int, default=6,
+                         f"(default {SS.K_MAX}). A run that hits it while still gaining "
+                         "is flagged in batch_summary.json['selection'].")
+    sp.add_argument("--k-min", type=int, default=SS.K_MIN,
                     help="assign at least this many samples before the marginal-gain "
-                         "stop applies (default 6)")
-    sp.add_argument("--min-gain", type=float, default=0.005,
+                         f"stop applies (default {SS.K_MIN})")
+    sp.add_argument("--min-gain", type=float, default=SS.MIN_GAIN,
                     help="stop when the next sample would add fewer than this fraction "
-                         "of the batch's m/z bins (default 0.005 = 0.5%%)")
+                         f"of the batch's m/z bins (default {SS.MIN_GAIN:g} = "
+                         # argparse %-expands help text, so a literal percent is %%
+                         f"{SS.MIN_GAIN * 100:g}%%)")
 
 
 def build_parser() -> argparse.ArgumentParser:

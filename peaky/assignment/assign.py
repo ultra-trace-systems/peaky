@@ -489,6 +489,10 @@ def main(argv=None):
     ap.add_argument("--search-ppm", type=float, default=3.0)
     ap.add_argument("--height-cutoff", type=float, default=None,
                     help="absolute cps override; default = 1x the sample's noise edge")
+    ap.add_argument("--height-cutoff-x-edge", type=float, default=1.0,
+                    help="height gate as a multiple of the sample's own noise edge "
+                         "(default 1.0 = keep every picked peak but the bottom 1%%); "
+                         "ignored when --height-cutoff is given")
     ap.add_argument("--no-cache", action="store_true")
     ap.add_argument("--no-pass2", action="store_true")
     ap.add_argument("--no-pass3", action="store_true")
@@ -496,7 +500,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     cfg = passes.PassConfig(ppm=args.ppm, search_ppm=args.search_ppm,
-                            height_cutoff_cps=args.height_cutoff)
+                            height_cutoff_cps=args.height_cutoff,
+                            height_cutoff_x_edge=args.height_cutoff_x_edge)
     out = run(args.sample_id, args.context, cfg=cfg, use_cache=not args.no_cache,
               do_pass2=not args.no_pass2, do_pass3=not args.no_pass3)
     # report.py will own file outputs; for now write the ledger + manifest
