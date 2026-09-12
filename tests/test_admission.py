@@ -201,6 +201,41 @@ except ValueError:
     check("bin_occurrence without height raises ValueError", True)
 
 # ---------------------------------------------------------------------------
+# ONE binning tolerance: the table is built at sampling.BATCH_TOL_PPM by default
+# (the same rule the selection and the merge use), the lookup reads the table's
+# own stamped tolerance, and a table without it is refused rather than guessed.
+# ---------------------------------------------------------------------------
+from peaky.batch import sampling as SS  # noqa: E402
+check("bin_occurrence default tol == sampling.BATCH_TOL_PPM (6.0)",
+      tab.attrs["tol_ppm"] == SS.BATCH_TOL_PPM == 6.0, tab.attrs)
+tab6 = ADM.bin_occurrence(ts, tol_ppm=6.0)
+check("a table built at 6 ppm and the default table agree bin-for-bin",
+      len(tab6) == len(tab) and np.allclose(tab6["mz"], tab["mz"])
+      and np.allclose(tab6["occurrence"], tab["occurrence"]))
+# a peak 4 ppm off a bin centre is inside a 6-ppm lookup; the lookup must use the
+# table's tolerance (6), not any other number: at 3 ppm it would be NaN
+probe = 264.0361 * (1 + 4e-6)
+v6 = ADM.lookup_occurrence([probe], tab6)[0]
+check("lookup matches by the table's own tol (4 ppm off, inside 6 ppm)", np.isfinite(v6) and v6 > 0.85, v6)
+tab3 = tab6.copy(); tab3.attrs.update(tab6.attrs); tab3.attrs["tol_ppm"] = 3.0
+check("...and would not at 3 ppm (the lookup really reads attrs['tol_ppm'])",
+      np.isnan(ADM.lookup_occurrence([probe], tab3)[0]))
+bare = pd.DataFrame({"mz": [300.0], "occurrence": [0.9]})     # no attrs at all
+try:
+    ADM.lookup_occurrence([300.0], bare)
+    check("lookup on a table without attrs['tol_ppm'] raises", False, "no error")
+except ValueError as _e:
+    check("lookup on a table without attrs['tol_ppm'] raises ValueError", "tol_ppm" in str(_e), _e)
+# 1-bin table: no bracketing pair exists -- the single bin is the only candidate
+one_bin = pd.DataFrame({"mz": [300.0], "occurrence": [0.9]}); one_bin.attrs["tol_ppm"] = 6.0
+v1 = ADM.lookup_occurrence([300.0, 300.0 * (1 + 4e-6), 300.0 * (1 + 20e-6), 150.0], one_bin)
+check("1-bin table: inside-tol probes hit it, outside-tol probes are NaN (no index wrap)",
+      v1[0] == 0.9 and v1[1] == 0.9 and np.isnan(v1[2]) and np.isnan(v1[3]), v1)
+check("stamp_admission returns the resolved brightness gate as 'height_gate_cps'",
+      "height_gate_cps" in counts and counts["height_gate_cps"] == 100.0 and "height_cutoff" not in counts,
+      counts)
+
+# ---------------------------------------------------------------------------
 # CLI surface
 # ---------------------------------------------------------------------------
 from peaky import cli  # noqa: E402

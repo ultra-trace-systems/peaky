@@ -19,10 +19,24 @@ sub-count, so an occurrence-admitted peak normally lands as a Candidate -- that
 is correct, and the isotope rules are untouched.
 
   occurrence(bin) = fraction of the batch's spectra in which that m/z bin holds a
-                    peak (bins = `timeseries.build_matrix`, the same ppm
-                    gap-clustering the selection and the time series use)
-  admitted        = height >= cfg.height_cutoff  OR  occurrence >= cfg.occurrence_min
-  admitted_by     = 'height' | 'occurrence' (persistence only) | '' (not eligible)
+                    peak (bins = `timeseries.build_matrix` at `sampling.
+                    BATCH_TOL_PPM`, the one tolerance the selection, this table
+                    and the merge share -- so a peak, its bin and its merged
+                    cluster are the same object at the same m/z rule)
+  admitted        = height >= cfg.height_cutoff  OR  occurrence >= threshold
+                    (threshold = `resolve_threshold`: the number given as
+                    `cfg.occurrence_min`, or the batch's Otsu split for "auto";
+                    stored on `cfg.occurrence_threshold`)
+  admitted_by     = 'height' | 'occurrence' (persistence only) | '' (below the
+                    gate the gated passes use)
+
+WHICH PASSES ARE GATED. `admissible()` is consulted by exactly four sites:
+pass-1 grid enumeration (passes/directors), the pass-6 ladder gap-fill
+(ladders), residual stage B (residual) and the siloxane ladder (siloxane, both
+the work set and the seed test). `admitted_by` describes eligibility at THOSE
+sites. Not yet gated (still brightness-only, `height >= cfg.height_cutoff`):
+pass-2/3 series growth, residual stage A (the ~2-Da isotope-doublet scan) and
+the reflist rescue -- a documented follow-up, not a promise this module makes.
 
 The threshold is DERIVED FROM THE BATCH, not a constant: the bin-occurrence
 distribution is cleanly bimodal (transient bins pile up below 0.1, persistent
@@ -42,7 +56,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-__version__ = "0.1.0"
+from peaky.batch import sampling as SS
+
+__version__ = "0.2.0"  # one batch tolerance (BATCH_TOL_PPM); lookup requires the table's tol
 
 DEFAULT_OCCURRENCE_MIN = "auto"   # Otsu split of the batch's bin-occurrence distribution
 AUTO_MIN, AUTO_MAX = 0.25, 0.75   # clamp for the derived threshold
@@ -52,17 +68,20 @@ ADMIT_OCCURRENCE = "occurrence"
 ADMIT_NONE = ""
 
 
-def bin_occurrence(ts_peaks: pd.DataFrame, *, tol_ppm: float | None = None,
+def bin_occurrence(ts_peaks: pd.DataFrame, *, tol_ppm: float = SS.BATCH_TOL_PPM,
                    sample_col: str = "sample_item_id", mz_col: str = "mz",
                    height_col: str = "height") -> pd.DataFrame:
     """Per-bin occurrence from the full-batch per-peak table: one row per m/z bin
     with `mz` (height-weighted bin centre), `occurrence` (fraction of samples in
     which the bin holds a peak) and `n_samples` (count). Bins come from
-    `timeseries.build_matrix` (ppm gap-clustering; default `DEFAULT_TOL_PPM`).
-    `.attrs` carries `tol_ppm` and the batch's `n_samples`."""
+    `timeseries.build_matrix` (ppm gap-clustering) at `tol_ppm`, which defaults
+    to `sampling.BATCH_TOL_PPM` -- the same tolerance the selection and the
+    merge use, so `batch` and `assign --ts-batch` bin identically. `.attrs`
+    carries `tol_ppm` (required by `lookup_occurrence`) and the batch's
+    `n_samples`."""
     from peaky.batch import timeseries as TS
 
-    tol = float(tol_ppm if tol_ppm is not None else TS.DEFAULT_TOL_PPM)
+    tol = float(tol_ppm)
     cols = [c for c in (sample_col, mz_col, height_col) if c in ts_peaks.columns]
     if len(cols) < 3:
         raise ValueError(f"bin_occurrence needs {sample_col!r}, {mz_col!r}, {height_col!r} "
@@ -140,15 +159,20 @@ def resolve_threshold(cfg, table: pd.DataFrame | None) -> float | None:
     return om if om > 0 else None
 
 
-def lookup_occurrence(mz, table: pd.DataFrame | None, *, tol_ppm: float | None = None) -> np.ndarray:
-    """Occurrence of the nearest bin within `tol_ppm` of each m/z (NaN when no bin
-    is that close, or without a table). `tol_ppm` defaults to the table's own
-    binning tolerance so a peak matches its bin by the same rule it was binned."""
+def lookup_occurrence(mz, table: pd.DataFrame | None) -> np.ndarray:
+    """Occurrence of the nearest bin within the table's OWN binning tolerance of
+    each m/z (NaN when no bin is that close, or without a table). The tolerance
+    is `table.attrs["tol_ppm"]`, stamped by `bin_occurrence`, so a peak matches
+    its bin by exactly the rule it was binned with; a table without it is
+    refused rather than guessed at."""
     mz = np.asarray(mz, dtype=float)
     out = np.full(mz.shape, np.nan)
     if table is None or len(table) == 0:
         return out
-    tol = float(tol_ppm if tol_ppm is not None else table.attrs.get("tol_ppm", 6.0))
+    if table.attrs.get("tol_ppm") is None:
+        raise ValueError("occurrence table lacks attrs['tol_ppm'] (build it with "
+                         "admission.bin_occurrence, which stamps the binning tolerance)")
+    tol = float(table.attrs["tol_ppm"])
     bm = table["mz"].to_numpy(dtype=float)
     occ = table["occurrence"].to_numpy(dtype=float)
     order = np.argsort(bm)
@@ -156,9 +180,12 @@ def lookup_occurrence(mz, table: pd.DataFrame | None, *, tol_ppm: float | None =
     ok = np.isfinite(mz)
     if not ok.any():
         return out
-    j = np.clip(np.searchsorted(bs, mz[ok]), 1, len(bs) - 1)
-    left, right = j - 1, j
-    pick = np.where(np.abs(bs[left] - mz[ok]) <= np.abs(bs[right] - mz[ok]), left, right)
+    if len(bs) == 1:                      # one bin: nothing to bracket, it is the only candidate
+        pick = np.zeros(int(ok.sum()), dtype=int)
+    else:
+        j = np.clip(np.searchsorted(bs, mz[ok]), 1, len(bs) - 1)
+        left, right = j - 1, j
+        pick = np.where(np.abs(bs[left] - mz[ok]) <= np.abs(bs[right] - mz[ok]), left, right)
     near = np.abs(bs[pick] - mz[ok]) / mz[ok] * 1e6 <= tol
     vals = np.where(near, os_[pick], np.nan)
     out[ok] = vals
@@ -166,10 +193,12 @@ def lookup_occurrence(mz, table: pd.DataFrame | None, *, tol_ppm: float | None =
 
 
 def admissible(ledger: pd.DataFrame, cfg) -> pd.Series:
-    """Boolean mask: `height >= cfg.height_cutoff` OR `occurrence >= cfg.occurrence_min`.
+    """Boolean mask: `height >= cfg.height_cutoff` OR `occurrence >= threshold`,
+    where the threshold is `cfg.occurrence_threshold` (resolved by
+    `stamp_admission`) or, on an unstamped cfg, a numeric `cfg.occurrence_min`.
     The persistence path needs an `occurrence` column (stamped by
-    `stamp_admission`) and `cfg.occurrence_min > 0`; otherwise this is exactly the
-    brightness gate."""
+    `stamp_admission`) and a threshold; otherwise this is exactly the brightness
+    gate."""
     hcut = float(getattr(cfg, "height_cutoff", 0.0) or 0.0)
     h = ledger["height"].fillna(0).astype(float) >= hcut if "height" in ledger.columns \
         else pd.Series(False, index=ledger.index)
@@ -189,7 +218,8 @@ def stamp_admission(ledger: pd.DataFrame, cfg, table: pd.DataFrame | None = None
     the cfg's RESOLVED `height_cutoff` (call after the noise edge is stamped) and
     the persistence threshold resolved from `cfg.occurrence_min` + the table
     (stored on `cfg.occurrence_threshold` for `admissible`). Returns the counts
-    {height, occurrence, rejected, n_bins, occurrence_threshold, height_cutoff}."""
+    {height, occurrence, rejected, n_bins, occurrence_min, occurrence_threshold,
+    height_gate_cps} (the last = the resolved brightness gate in cps)."""
     ledger["occurrence"] = lookup_occurrence(ledger["mz"].to_numpy(dtype=float), table) \
         if "mz" in ledger.columns else np.nan
     hcut = float(getattr(cfg, "height_cutoff", 0.0) or 0.0)
@@ -206,4 +236,4 @@ def stamp_admission(ledger: pd.DataFrame, cfg, table: pd.DataFrame | None = None
             "rejected": int((~by_h & ~by_o).sum()),
             "n_bins": int(len(table)) if table is not None else 0,
             "occurrence_min": getattr(cfg, "occurrence_min", None),
-            "occurrence_threshold": thr, "height_cutoff": hcut}
+            "occurrence_threshold": thr, "height_gate_cps": hcut}

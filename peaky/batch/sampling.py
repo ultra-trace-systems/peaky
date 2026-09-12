@@ -67,6 +67,9 @@ STOP_GAIN = "gain-floor"
 STOP_KMAX = "k_max"
 STOP_EXHAUSTED = "exhausted"
 
+BATCH_TOL_PPM = 6.0    # the one m/z binning tolerance for every batch-level operation:
+                       # sample selection, the admission table and the merge
+
 
 def sample_table(peaks: pd.DataFrame, *, sample_col: str = "sample_item_id",
                  time_col: str = "datetime_utc", name_col: str = "sample_item_name",

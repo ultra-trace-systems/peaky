@@ -193,11 +193,19 @@ def cmd_assign(args) -> None:
     occurrence = None
     if ts_peaks is not None and (isinstance(args.occurrence_min, str) or args.occurrence_min > 0):
         from peaky.assignment import admission as ADM
-        occurrence = ADM.bin_occurrence(ts_peaks)
+        from peaky.batch import sampling as SS
+        # binned at the one batch tolerance so this table equals the one `peaky
+        # batch` builds for the same batch (same bins, same Otsu split)
+        occurrence = ADM.bin_occurrence(ts_peaks, tol_ppm=SS.BATCH_TOL_PPM)
         _thr = ADM.resolve_threshold(cfg, occurrence)
-        print(f"[ts] admission: threshold {_thr} ({args.occurrence_min!r}); "
-              + (f"{int((occurrence['occurrence'] >= _thr).sum())} of {len(occurrence)} m/z bins "
-                 f"persist above it" if _thr is not None else "persistence path off"))
+        _nsp = int(occurrence.attrs.get("n_samples", 0))
+        print(f"[ts] admission: threshold {_thr} ({args.occurrence_min!r}, "
+              f"{len(occurrence)} m/z bins at {SS.BATCH_TOL_PPM:g} ppm over {_nsp} spectra); "
+              + (f"{int((occurrence['occurrence'] >= _thr).sum())} of {len(occurrence)} bins "
+                 f"persist above it" if _thr is not None
+                 else ("persistence path off: fewer than "
+                       f"{ADM.MIN_SPECTRA} spectra ({_nsp})" if _nsp < ADM.MIN_SPECTRA
+                       else f"persistence path off: occurrence_min={args.occurrence_min!r}")))
 
     out = assign.run(args.sample_id, context, cfg=cfg, use_cache=not args.no_cache,
                      do_pass2=not args.no_pass2, do_pass3=not args.no_pass3,

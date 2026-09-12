@@ -423,8 +423,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # Admission gate, persistence path: the batch's per-bin occurrence table
     # (fraction of spectra in which each m/z bin holds a peak), computed ONCE
     # from the batch time series and handed to every per-sample run. A peak
-    # whose bin recurs in >= cfg.occurrence_min of the spectra is eligible for
-    # formula search even below the height gate (see assignment/admission.py).
+    # whose bin recurs in >= the resolved threshold (a number given as
+    # occurrence_min, or the batch's Otsu split for "auto") of the spectra is
+    # eligible for formula search even below the height gate (see
+    # assignment/admission.py). Binned at this run's `tol_ppm` -- the same
+    # tolerance the merge below uses (default sampling.BATCH_TOL_PPM).
     from peaky.assignment import admission as ADM
     from peaky.assignment import passes as _PA
     _cfg = assign_kw.get("cfg")
@@ -434,13 +437,14 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     occurrence_min = getattr(_cfg, "occurrence_min", ADM.DEFAULT_OCCURRENCE_MIN)
     _on = isinstance(occurrence_min, str) or (occurrence_min is not None and float(occurrence_min) > 0)
     occ_info = {"occurrence_min": occurrence_min, "occurrence_threshold": None,
-                "n_bins": 0, "n_persistent_bins": 0, "n_spectra": 0}
+                "n_bins": 0, "n_persistent_bins": 0, "n_spectra": 0, "tol_ppm": tol_ppm}
     if _on and ts_peaks is not None and assign_kw.get("occurrence") is None:
         _occ = ADM.bin_occurrence(ts_peaks, tol_ppm=tol_ppm)
         assign_kw["occurrence"] = _occ
         _thr = ADM.resolve_threshold(_cfg, _occ)
         occ_info.update(n_bins=int(len(_occ)), occurrence_threshold=_thr,
                         n_spectra=int(_occ.attrs.get("n_samples", 0)),
+                        tol_ppm=float(_occ.attrs.get("tol_ppm", tol_ppm)),
                         n_persistent_bins=int((_occ["occurrence"] >= _thr).sum()) if _thr is not None else 0)
         if _thr is None:
             log(f"[assign_batch] admission: persistence path off ({occ_info['n_spectra']} spectra "
