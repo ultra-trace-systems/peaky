@@ -309,7 +309,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   merged ledger carries the winner's, `batch_summary.json` gains an `admission`
   block (`occurrence_min` = the knob, `occurrence_threshold` = the resolved
   fraction, `n_bins`, `n_persistent_bins`, `n_spectra`, `tol_ppm`) and per-file
-  `admitted` counts, `run_manifest.json` records that block under `counts`,
+  `admitted` counts, `run_manifest.json` records that block under `counts` and
+  the module version under `code.module_versions`, a run whose persistence path
+  is off logs which of the four reasons applies (`admission.why_off`),
   and the report cover states how many merged peaks were eligible by
   persistence only (with the resolved threshold and the knob).
   `PassConfig.occurrence_min`; `assign.run(occurrence=)`; `peaky assign
