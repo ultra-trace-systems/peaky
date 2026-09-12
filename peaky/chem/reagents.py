@@ -149,8 +149,7 @@ def _build_ammonium_library(*, max_n: int = 4, max_water: int = 3
     """[(label, ion_mz, ion_formula)] for the ¹⁵N-ammonia reagent-cluster ions
     (see _AMMONIUM_15N_KEY). Cations: lose an electron."""
     out: list[tuple[str, float, str]] = []
-    unit = {"^N": 1, "H": 3}                      # ^NH3
-    for n in range(1, max_n + 1):
+    for n in range(1, max_n + 1):          # ^NH3 units, built inline as `d` below
         for k in range(0, max_water + 1):
             if n + k > max_n:                      # cluster size cap (n ammonia + k water)
                 continue

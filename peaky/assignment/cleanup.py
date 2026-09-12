@@ -991,7 +991,6 @@ def relabel_ammonium_dehydration(ledger: pd.DataFrame, *, adduct: str = "[M+^NH4
     if not need.issubset(ledger.columns):
         return out
     mz = ledger["mz"].to_numpy(dtype=float)
-    hts = ledger["height"].to_numpy(dtype=float)
     idx = np.asarray(ledger.index)
     has_tier = "tier" in ledger.columns
 
