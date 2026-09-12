@@ -209,8 +209,11 @@ try:
         a = PARSER.parse_args(["batch", "--batch", "B", "--out-dir", d, "--no-report"])
         cli.cmd_batch(a)
         kw = calls[-1]
-        check("batch defaults: 'auto' knob, 1.0x edge, no absolute cutoff",
-              kw.get("occurrence_min") == "auto" and kw.get("height_cutoff_x_edge") == 1.0
+        # the edge multiple is NOT resolved at the CLI: the flag defaults to None so
+        # the reagent profile's own multiple can win, and the package default applies
+        # only when neither is given. The pipeline resolves it where the profile is.
+        check("batch defaults: 'auto' knob, multiple left to the profile, no absolute cutoff",
+              kw.get("occurrence_min") == "auto" and kw.get("height_cutoff_x_edge") is None
               and kw.get("height_cutoff_cps") is None, kw)
 
         a = PARSER.parse_args(["pool", "--batches", "B1,B2", "--out-dir", d, "--no-report",
