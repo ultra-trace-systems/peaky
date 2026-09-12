@@ -93,7 +93,10 @@ def fake_assign_run(sample_id, context="ambient-air", *, cfg=None, occurrence=No
                             eff_margin=0.2, tied=False, ppm_error=0.4, pass_no=1,
                             method="cheminfo+grid", confidence="Good",
                             commentary="stub", alternatives=[])
-    st = {"noise_edge_cps": cfg.noise_edge_cps, "height_cutoff_cps": cfg.height_cutoff,
+    # cfg.height_cutoff is the RESOLVED gate (x_edge x edge), and assign.run
+    # stamps it under that name -- `height_cutoff_cps` is the absolute-override
+    # KNOB, which is not what this is.
+    st = {"noise_edge_cps": cfg.noise_edge_cps, "height_gate_cps": cfg.height_cutoff,
           "admitted": {k: adm[k] for k in ("height", "occurrence", "rejected")}}
     return {"ledger": led, "stats": st, "plausibility_audit": []}
 
@@ -160,6 +163,13 @@ check("per-file stats record the admitted counts by path",
       all(set(s["admitted"]) == {"height", "occurrence", "rejected"}
           and s["admitted"]["occurrence"] > 0 for s in res["summary"]["per_file"]),
       [s.get("admitted") for s in res["summary"]["per_file"]])
+# assign_batch copies the per-sample stats dict into the summary verbatim, so a
+# stub that spells the gate wrong ships a dead key in batch_summary.json. Same
+# contract tests/test_assign_batch.py pins for a real run.
+check("per-file stats carry the RESOLVED gate as height_gate_cps, not the knob's name",
+      all("height_gate_cps" in s and "height_cutoff_cps" not in s
+          for s in res["summary"]["per_file"]),
+      [sorted(s) for s in res["summary"]["per_file"]])
 shutil.rmtree(RUN_DIR, ignore_errors=True)
 
 
