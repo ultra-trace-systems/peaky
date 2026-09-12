@@ -409,10 +409,16 @@ try:
     check("lookup on a table without attrs['tol_ppm'] raises", False, "no error")
 except ValueError as _e:
     check("lookup on a table without attrs['tol_ppm'] raises ValueError", "tol_ppm" in str(_e), _e)
-# 1-bin table: no bracketing pair exists -- the single bin is the only candidate
+# 1-bin table (a degenerate but reachable batch): the single bin is the only
+# candidate, inside tolerance and NaN outside. NOTE what this does NOT pin: the
+# `len(bs) == 1` branch in lookup_occurrence is behaviour-neutral -- with it
+# deleted, np.clip's crossed bounds give left = -1 and at length 1 `bs[-1]` IS
+# `bs[0]`, so the general path returns exactly these four values. The branch is
+# kept as explicitness, and no test can discriminate it; this check pins the
+# ANSWER for a one-bin table, which is what callers depend on.
 one_bin = pd.DataFrame({"mz": [300.0], "occurrence": [0.9]}); one_bin.attrs["tol_ppm"] = 6.0
 v1 = ADM.lookup_occurrence([300.0, 300.0 * (1 + 4e-6), 300.0 * (1 + 20e-6), 150.0], one_bin)
-check("1-bin table: inside-tol probes hit it, outside-tol probes are NaN (no index wrap)",
+check("1-bin table: inside-tol probes hit it, outside-tol probes are NaN",
       v1[0] == 0.9 and v1[1] == 0.9 and np.isnan(v1[2]) and np.isnan(v1[3]), v1)
 check("stamp_admission returns the resolved brightness gate as 'height_gate_cps'",
       "height_gate_cps" in counts and counts["height_gate_cps"] == 100.0 and "height_cutoff" not in counts,

@@ -217,7 +217,14 @@ def lookup_occurrence(mz, table: pd.DataFrame | None) -> np.ndarray:
     ok = np.isfinite(mz)
     if not ok.any():
         return out
-    if len(bs) == 1:                      # one bin: nothing to bracket, it is the only candidate
+    # A one-bin table has no bracketing PAIR, so say so explicitly. This is
+    # readability, not a bug fix: the general path below happens to give the same
+    # answer, because np.clip's bounds cross (1 > len-1 = 0, so j = 0 and
+    # left = -1) and at length 1 `bs[-1] IS bs[0]` -- the wrap addresses the only
+    # element there is, and the tolerance test still NaNs a far probe. Deleting
+    # this branch changes nothing; relying on that coincidence to stay true
+    # across numpy versions is what it buys out of.
+    if len(bs) == 1:
         pick = np.zeros(int(ok.sum()), dtype=int)
     else:
         j = np.clip(np.searchsorted(bs, mz[ok]), 1, len(bs) - 1)
