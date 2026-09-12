@@ -394,41 +394,97 @@ check("hold=False never waits, finished or not", rec.closes == [False], rec.clos
 
 
 # ---- 5. enable/disable + headless behaviour ---------------------------------
+# Every env var this section touches is put back: the suite runs in ONE process,
+# so a var left set here leaks into every later test (and into the rest of the
+# file, where `open_progress(flag=False)` would suddenly open a window).
 import os  # noqa: E402
 
+_saved_flag = os.environ.get("PEAKY_PROGRESS")
 os.environ.pop("PEAKY_PROGRESS", None)
-check("disabled by default", PG.enabled(None) is False and PG.enabled(False) is False)
-check("--progress enables", PG.enabled(True) is True)
-os.environ["PEAKY_PROGRESS"] = "1"
-check("PEAKY_PROGRESS=1 enables", PG.enabled(None) is True)
-os.environ["PEAKY_PROGRESS"] = "0"
-check("PEAKY_PROGRESS=0 does not", PG.enabled(None) is False)
-os.environ.pop("PEAKY_PROGRESS", None)
-
-off = PG.open_progress("t", flag=False, log=seen.append)
-check("disabled -> a pass-through Reporter with no UI and no hold",
-      off.ui is None and off.hold is False)
-off("[assign_batch] (1/1) done s"); off.finish({}); off.close()
-
-saved = {k: os.environ.pop(k, None) for k in ("DISPLAY", "WAYLAND_DISPLAY")}
 try:
-    check("no DISPLAY -> display_available() is False",
-          PG.display_available() is False or sys.platform.startswith(("win", "darwin")))
-    head = PG.open_progress("t", flag=True, log=seen.append)
-    check("headless + --progress falls back to the terminal status, does not crash",
-          isinstance(head.ui, PG.TerminalStatus))
-    head("[assign_batch] (1/1) assigning s ...")
-    head("[assign_batch] (1/1) done s")
-    head.finish({"merged_M0": 5})
-    head.close()
-    check("terminal fallback reports no window to close", head.ui.alive() is False)
+    check("disabled by default", PG.enabled(None) is False and PG.enabled(False) is False)
+    check("--progress enables", PG.enabled(True) is True)
+    os.environ["PEAKY_PROGRESS"] = "1"
+    check("PEAKY_PROGRESS=1 enables", PG.enabled(None) is True)
+    os.environ["PEAKY_PROGRESS"] = "0"
+    check("PEAKY_PROGRESS=0 does not", PG.enabled(None) is False)
+    os.environ.pop("PEAKY_PROGRESS", None)
+
+    off = PG.open_progress("t", flag=False, log=seen.append)
+    check("disabled -> a pass-through Reporter with no UI and no hold",
+          off.ui is None and off.hold is False)
+    off("[assign_batch] (1/1) done s"); off.finish({}); off.close()
 finally:
-    for k, v in saved.items():
-        if v is not None:
-            os.environ[k] = v
+    os.environ.pop("PEAKY_PROGRESS", None)
+    if _saved_flag is not None:
+        os.environ["PEAKY_PROGRESS"] = _saved_flag
 
 check("importing progress.py pulls in no GUI toolkit at import time",
       "tkinter" not in sys.modules)
+
+
+# ---- 5b. the three ways the window cannot open, all -> the terminal status ---
+# NEVER by unsetting $DISPLAY: on a developer's machine (and on Windows) that
+# leaves `display_available()` True, and the test would open a REAL window and
+# then block the suite on closing it. Patch the probe, and the toolkit with it.
+def _ran_headless(rep) -> bool:
+    """Drive a whole miniature run through the fallback and report it survived."""
+    rep("[assign_batch] (1/1) assigning s ...")
+    rep("[assign_batch] (1/1) done s")
+    rep.finish({"merged_M0": 5})
+    rep.close()
+    return rep.ui.alive() is False      # nothing to close -> the CLI stays quiet
+
+
+def test_no_display_falls_back_to_terminal_status(monkeypatch):
+    """No DISPLAY/WAYLAND_DISPLAY, or macOS: never even try Tk."""
+    monkeypatch.setattr(PG, "display_available", lambda: False)
+    rep = PG.open_progress("t", flag=True, log=seen.append)
+    assert isinstance(rep.ui, PG.TerminalStatus), rep.ui
+    assert _ran_headless(rep)
+
+
+def test_display_announced_but_dead_falls_back(monkeypatch):
+    """A display the environment ANNOUNCES but Tk cannot use: a stale $DISPLAY,
+    an X server refusing the connection, a broken theme. `Tk()` raises on the UI
+    thread, which `start()` must report as False rather than let escape."""
+    import types as _types
+
+    monkeypatch.setattr(PG, "display_available", lambda: True)
+
+    class _DeadTk:
+        def __init__(self, *a, **k):
+            raise RuntimeError('couldn\'t connect to display ":0"')
+
+    fake = _types.ModuleType("tkinter")
+    fake.Tk = _DeadTk
+    fake.ttk = _types.ModuleType("tkinter.ttk")
+    monkeypatch.setitem(sys.modules, "tkinter", fake)
+    monkeypatch.setitem(sys.modules, "tkinter.ttk", fake.ttk)
+
+    ui = PG.TkWindow("t")
+    assert ui.start() is False                  # reported, not raised
+    rep = PG.open_progress("t", flag=True, log=seen.append)
+    assert isinstance(rep.ui, PG.TerminalStatus), rep.ui
+    assert _ran_headless(rep)
+
+
+def test_no_tkinter_at_all_falls_back(monkeypatch):
+    """The interpreter has no tkinter (a python-tk-less distro build, a slim
+    container). The import is inside the UI thread precisely so this is a
+    fallback and not an ImportError at `import peaky.progress`."""
+    import time as _time
+
+    monkeypatch.setattr(PG, "display_available", lambda: True)
+    monkeypatch.setitem(sys.modules, "tkinter", None)   # import -> ImportError
+    ui, t = PG.TkWindow("t"), _time.monotonic()
+    assert ui.start() is False
+    # the ImportError is CAUGHT and the ready event set: an uncaught one kills the
+    # UI thread silently and start() burns its whole 5 s timeout before saying so
+    assert _time.monotonic() - t < 2.0, _time.monotonic() - t
+    rep = PG.open_progress("t", flag=True, log=seen.append)
+    assert isinstance(rep.ui, PG.TerminalStatus), rep.ui
+    assert _ran_headless(rep)
 
 
 # ---- 6. CLI wiring: the reporter really reaches the pipeline ----------------
