@@ -326,7 +326,7 @@ def _resolve_jobs(n_jobs, n_samples: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# network: assign each representative file, keep per-file records, combine
+# network: assign each selected file, keep per-file records, combine
 # ---------------------------------------------------------------------------
 def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         reagent: str = "auto", context: str | None = None,

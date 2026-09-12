@@ -1,4 +1,4 @@
-"""Standard PDF report for a representative-batch assignment run.
+"""Standard PDF report for a cover-selected batch assignment run.
 
 Assembles the assignment findings into one PDF per batch: cover + headline,
 coverage stats (assigned vs unassigned, by count AND signal), composition / full
@@ -87,7 +87,7 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
         gs = merged.groupby("tier")["ion_score"].mean()
         ctx["score_by_tier"] = {t: float(gs[t]) for t in gs.index}
     ctx["adduct_counts"] = merged["adduct"].value_counts().to_dict()   # actual channels
-    # the representative sample NAMES (timestamps), not just ids
+    # the selected sample NAMES (timestamps), not just ids
     ss = f"{TAB}/selected_samples.csv"
     if os.path.exists(ss):
         s = pd.read_csv(ss)
@@ -106,7 +106,7 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
     if rows:
         a = pd.concat(rows, ignore_index=True)
         ctx["role_count"] = a["role"].value_counts().to_dict()
-        # the BRIGHTEST representative full ledger (max total height) — the
+        # the BRIGHTEST selected-sample full ledger (max total height) — the
         # mass-defect / mass-error QC figure (qc_massdefect) reads it whole (all
         # roles incl iso_child + unexplained), not the M0-only merged ledger.
         ctx["bright_ledger"] = max(rows, key=lambda r: float(r["h"].sum()))
@@ -129,7 +129,7 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
                                        "mz"].dropna().to_numpy())
         ctx["_flag_ev_src"] = a          # kept for scrutiny-evidence enrichment below
         # isotopes confirmed per (neutral, channel) — union of isotopologue labels
-        # across the representative files (each M0 row carries an `isotopologues`
+        # across the selected files (each M0 row carries an `isotopologues`
         # JSON list of {label, score, peak_id}). Feeds the assignment appendix.
         iso_by_channel: dict = {}
         if "isotopologues" in a.columns:
@@ -147,7 +147,7 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
                     iso_by_channel.setdefault((nf, ad), set()).update(labs)
         ctx["iso_by_channel"] = iso_by_channel
         # max observed intensity (cps) per (neutral, channel): the brightest M0
-        # height for that channel across the representative files. Heights live in
+        # height for that channel across the selected files. Heights live in
         # the per-file ledgers (not the m/z-only merged ledger), so pool them here.
         if {"neutral_formula", "adduct"} <= set(a.columns):
             _m0h = a[a["role"] == "M0"]
@@ -242,7 +242,7 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
         binsig = mat.sum(axis=0)
         # batch-wide MAX intensity per assigned channel: the brightest this ion gets
         # in ANY sample of the FULL batch (the appendix's `max cps`). The per-file
-        # value computed above only saw the ~12 representative samples; override it
+        # value computed above only saw the cover-selected samples; override it
         # with the whole-batch max by matching each channel's ion m/z to its TS bin.
         _bmax = mat.max(axis=0)
         _bins = list(mat.columns)
@@ -280,7 +280,7 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
                      "tot_signal": float(binsig.sum())}
         # event overview: per-sample total signal vs wall-clock over the FULL batch
         # (the reader needs to SEE the burst; the cluster pages only show a
-        # normalised 0-1 'hour' axis). Mark where the representative files sit.
+        # normalised 0-1 'hour' axis). Mark where the selected files sit.
         try:
             tt = pd.to_datetime(ts["datetime_utc"], utc=True)
             tstamp = tt.groupby(ts["sample_item_id"]).first()
@@ -936,7 +936,7 @@ def gka(ctx, pdf):
 
 def qc_massdefect(ctx, pdf):
     """Two-panel mass-defect / mass-error QC figure, rendered from the BRIGHTEST
-    representative sample's FULL ledger (all roles, incl iso_child + unexplained) —
+    selected sample's FULL ledger (all roles, incl iso_child + unexplained) —
     NOT the M0-only merged ledger. Panel (a): mass defect vs m/z over the five
     tier/role categories (Assigned/Candidate · parent/iso-child + unexplained);
     panel (b): ppm mass error vs m/z for the Assigned + Candidate M0 rows with a
@@ -1170,7 +1170,7 @@ def assignments_table(ctx, pdf):
     several adducts lists each channel separately, with the neutral printed once
     per group. Channels are ordered within a compound; compounds are ordered by
     neutral mass. 'isotopes' = the isotopologue labels the server confirmed for
-    that channel (union across the representative files). Paginated; the full data
+    that channel (union across the selected files). Paginated; the full data
     is also in merged_ledger.csv + the per-file ledgers."""
     import matplotlib.pyplot as plt
 
@@ -1206,7 +1206,7 @@ def assignments_table(ctx, pdf):
     NW, AW, IW = 15, 19, 36                  # neutral / adduct / isotopes field widths
     _scope = ("brightest height of the channel in ANY sample of the full batch"
               if ctx.get("max_h_scope") == "batch"
-              else "brightest height of the channel across the representative samples")
+              else "brightest height of the channel across the selected samples")
     head = (f"{'neutral':<{NW}}{'m/z':>10}  {'channel':<{AW}}{'tier':<11}{'score':>6}"
             f"{'max cps':>8}{'  f':>4}  isotopes")
     rows: list = [("m", head),

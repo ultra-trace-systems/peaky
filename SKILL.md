@@ -525,6 +525,6 @@ It writes, so point it at a test or demo deployment.
   magnitudes / disposition timing; use RAW when no good normaliser exists.
 - **Per-file assignment ≠ experiment assignment.** `assign.run` assigns ONE
   sample; a time-series event peak weak in that file is missed. For an experiment,
-  assign representative files (background + event-extreme) and merge by m/z.
+  assign the cover-selected subset of files and merge by m/z (`peaky batch`).
 - **Cross-CIMS comparison is ionisation-selective**: Br⁻ and urea⁺ detect
   different compound sets; a matching formula need not be the same molecule.

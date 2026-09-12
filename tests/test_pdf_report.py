@@ -71,7 +71,7 @@ with tempfile.TemporaryDirectory() as d:
           ("C3H2F6O", "[M+Br]-") not in ctx.get("max_h_by_channel", {}),
           ctx.get("max_h_by_channel"))
     # max cps = the WHOLE-BATCH max (from the TS), not just the ~rep files. Write a
-    # tiny TS where a NON-representative sample (s2) is brighter than the rep file.
+    # tiny TS where an UNSELECTED sample (s2) is brighter than the assigned file.
     pd.DataFrame([
         dict(sample_item_id="s1", datetime_utc="2026-06-20T00:00:00Z", mz=169.1223, height=10000.0),
         dict(sample_item_id="s2", datetime_utc="2026-06-20T02:00:00Z", mz=169.1223, height=30000.0),

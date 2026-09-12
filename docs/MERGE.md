@@ -19,7 +19,7 @@ assignment loop and writes the run artifacts.
 ## 1. What this stage does
 
 `match_compounds` is per-sample — a synthetic union spectrum can't be scored — so
-the batch path assigns each representative file **separately** and then **combines
+the batch path assigns each cover-selected file **separately** and then **combines
 the real per-file ledgers by m/z**. The combine is **offset-aware**: each file
 carries a median mass offset, alignment happens on offset-corrected m/z so a
 genuine same-peak isn't split by per-file calibration drift, and the report
@@ -56,7 +56,7 @@ selected sample_ids (SAMPLING.md)
 
 ## 3. The transformation, stage by stage
 
-1. **Assign each representative file** (`run`). Loop the selected `sample_ids`,
+1. **Assign each selected file** (`run`). Loop the selected `sample_ids`,
    `A.run(sid, …)` each, write `per_file/<sid>_ledger.csv`, keep the M0 rows, and
    record the file's `estimate_offset`. The reagent's analyte channels are forced
    at batch level (`assign_kw.setdefault("adducts", prof.adducts)`) so a per-sample
