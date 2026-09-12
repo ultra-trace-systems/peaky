@@ -67,36 +67,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `assign_sample(height_cutoff=)` likewise. Per-file `noise_edge_cps` and the
   resolved gate `height_gate_cps` are recorded in `batch_summary.json`
   (`height_cutoff_cps` in `run_manifest.json['config']` stays the knob).
-
-- **Admission gate: persistence OR brightness** (`assignment/admission.py`).
-  Every formula-hunting pass (pass-1 grid, ladders, siloxane, residual) now
-  draws its candidate peaks from `height >= height_cutoff OR occurrence >=
-  threshold`, where occurrence is the fraction of the batch's spectra whose m/z
-  bin holds a peak (bins = `timeseries.build_matrix`, the same binner the
-  selection uses; computed once per batch from the time series) and the
-  threshold is **derived from the batch** (`--occurrence-min auto`: Otsu's split
-  of the bimodal bin-occurrence distribution, 0.40–0.55 on every instrument
-  measured; a fixed 0.8 was tried first and discarded two-thirds of the
-  recurring weak ions; a number overrides, `0` disables, < 10 spectra switch it
-  off).
-  Noise does not recur at a fixed m/z; ions do: on a 230-spectrum mixed-reagent
-  TOF batch the old absolute cutoff kept 32 of 4025 bins while ~500 recur in
-  > 80 % of spectra at a median 3–4 cps, and 21 highly oxygenated molecules an
-  Orbitrap saw on the same air all sit in that recurrent population at ~2 cps
-  (mass-shifted decoys: none). The path is additive and admits peaks for
-  consideration only — confirmation rules are unchanged, and **persistence
-  gates entry while only corroboration gates the tier**: an occurrence-admitted
-  M0 with no isotopologue / cross-channel / series corroboration is capped at
-  Candidate (`tier_reason` `persistent-weak`), because at that intensity
-  nothing constrains which formula the real ion got. Per-file ledgers record
-  `occurrence` and `admitted_by`
-  (`height` / `occurrence` / empty), the merged ledger carries the winner's,
-  `batch_summary.json` gains an `admission` block and per-file `admitted`
-  counts, and the report states how many merged peaks were eligible by
-  persistence only. `PassConfig.occurrence_min`; `assign.run(occurrence=)`;
-  `peaky assign --ts-batch` computes the table for a single sample. `batch` /
-  `pool` also gained the absolute `--height-cutoff` override and
-  `--height-cutoff-x-edge`, which only `assign` had.
 - **Eight formula-hunting sites draw their candidates from the admission gate
   instead of brightness alone**: the pass-1 grid, pass-2 series growth, pass-3
   contaminant families and pass-3's two cluster resolvers (HX, acid·I₂) — those
