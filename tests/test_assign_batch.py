@@ -236,6 +236,23 @@ try:
                   == "the BrPick reagent profile",
                   {k: summ3.get(k) for k in ("height_cutoff_x_edge",
                                              "height_cutoff_x_edge_source")})
+        # an EXPLICIT cfg multiple outranks the profile at this layer -- including
+        # one that equals the package default, which is the value a caller is
+        # most likely to type and the one a `!= 1.0` test cannot distinguish from
+        # "unset". (PassConfig.height_cutoff_x_edge is None when unset.)
+        with tempfile.TemporaryDirectory() as _d5:
+            _SEEN_CFG.clear()
+            AB.run(peaks=_PK, ts_peaks=_PK, reagent="BrPick", batch="test batch",
+                   out_dir=_d5, k_min=2, k_max=3, min_gain=0.0, n_jobs=1,
+                   cfg=_PASSES.PassConfig(height_cutoff_x_edge=1.0),
+                   log=lambda *a: None)
+            summ4 = json.load(open(os.path.join(_d5, "batch_summary.json")))
+            check("run: an explicit 1.0 beats a profile that says 5.0",
+                  all(c.height_cutoff_x_edge == 1.0 for c in _SEEN_CFG)
+                  and summ4.get("height_cutoff_x_edge") == 1.0
+                  and "explicit" in summ4.get("height_cutoff_x_edge_source", ""),
+                  {k: summ4.get(k) for k in ("height_cutoff_x_edge",
+                                             "height_cutoff_x_edge_source")})
     finally:
         P_PROF.PROFILES.clear(); P_PROF.PROFILES.update(_snap[0])
         P_PROF._BY_ALIAS.clear(); P_PROF._BY_ALIAS.update(_snap[1])

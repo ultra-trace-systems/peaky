@@ -34,8 +34,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Height thresholds in the passes are multiples of the sample's own noise
   edge**, not absolute cps. `assign.run` computes `noise_edge_cps` (the 1st
   percentile of the sample's picked heights) once per sample; `PassConfig.
-  height_cutoff` is now a read-only property = `height_cutoff_x_edge` (default
-  1.0) × that edge, with `height_cutoff_cps` as an explicit absolute override
+  height_cutoff` is now a read-only property = `height_cutoff_x_edge` (`None` =
+  unset, resolving to 1.0) × that edge, with `height_cutoff_cps` as an override
   for offline callers. `peaky assign --height-cutoff` becomes that override
   (default none) and `--height-cutoff-x-edge` sets the multiple; the MCP
   `assign_sample(height_cutoff=)` likewise. Per-file `noise_edge_cps` and the
@@ -222,9 +222,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   of which 3307 were seen in a single file only, where 5.0 kept 57 % of the
   picked peaks and 74 % of the assigned ones, i.e. a tighter candidate list for
   the height-gated passes. So the global default stays **1.0** (now the single
-  constant `passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE`, read by both the
-  `PassConfig` field default and the fallback), **no bundled profile sets the
-  field** (pinned by a test), and behaviour out of the box is unchanged. A site
+  constant `passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE`, read by both
+  `PassConfig.height_cutoff_x_edge_resolved` and the fallback), **no bundled
+  profile sets the field** (pinned by a test), and behaviour out of the box is
+  unchanged. A site
   raises it for its own instrument from a `--reagent-config` file —
   `height_cutoff_x_edge` is now a loadable reagent-config field — with no code
   change. `profiles.resolve_height_cutoff_x_edge` implements the order once —
@@ -232,8 +233,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   package default — and every entry point that resolves a profile and builds a
   `PassConfig` applies it (`peaky assign`, `assign.main`, `assign_batch.run`,
   `pipeline.run` / `run_batch` / `run_pooled_batches`, the MCP `assign_sample`).
-  `peaky assign --height-cutoff-x-edge` now defaults to *unset* (so an explicit
-  value is distinguishable) rather than to 1.0. The resolved multiple is
+  `peaky assign --height-cutoff-x-edge` and `PassConfig.height_cutoff_x_edge`
+  both default to *unset* (`None`) rather than to 1.0, so explicitness is read
+  off the value instead of guessed by comparing it to the default: an explicit
+  multiple that happens to **equal** the global default still outranks a profile
+  that carries a higher one. The resolved multiple is
   recorded: `batch_summary.json` gains `height_cutoff_x_edge` +
   `height_cutoff_x_edge_source` (and each file's `height_cutoff_x_edge` beside
   its `height_gate_cps`), and it stays in the `run_manifest.json['config']`

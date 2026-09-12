@@ -37,15 +37,22 @@ check("noise_edge of nothing is None", C.noise_edge([]) is None and C.noise_edge
 check("noise_edge accepts a Series", np.isclose(C.noise_edge(pd.Series(orbi)), e_orbi))
 
 cfg = P.PassConfig()
-check("PassConfig has NO absolute height_cutoff default (x_edge 1.0, cps None)",
-      cfg.height_cutoff_x_edge == 1.0 and cfg.height_cutoff_cps is None
+check("PassConfig has NO absolute height_cutoff default (x_edge unset, cps None)",
+      cfg.height_cutoff_x_edge is None and cfg.height_cutoff_cps is None
       and cfg.noise_edge_cps is None)
-# ONE home for the global default: the dataclass default IS the constant the
-# profile-level resolution falls back to, so the two cannot drift apart.
-check("the x_edge default IS passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE",
-      cfg.height_cutoff_x_edge == C.DEFAULT_HEIGHT_CUTOFF_X_EDGE == 1.0
+# ONE home for the global default: an UNSET x_edge resolves to the same constant
+# the profile-level resolution falls back to, so the two cannot drift apart.
+# Unset is None, NOT a pre-filled 1.0 -- otherwise a caller who deliberately asks
+# for 1.0 is indistinguishable from one who asked for nothing, and a reagent
+# profile carrying its own multiple would silently outrank the request
+# (profiles.apply_height_cutoff_x_edge).
+check("an unset x_edge resolves to passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE",
+      cfg.height_cutoff_x_edge_resolved == C.DEFAULT_HEIGHT_CUTOFF_X_EDGE == 1.0
       and P.DEFAULT_HEIGHT_CUTOFF_X_EDGE == C.DEFAULT_HEIGHT_CUTOFF_X_EDGE,
-      (cfg.height_cutoff_x_edge, C.DEFAULT_HEIGHT_CUTOFF_X_EDGE))
+      (cfg.height_cutoff_x_edge_resolved, C.DEFAULT_HEIGHT_CUTOFF_X_EDGE))
+check("an explicit 1.0 is a VALUE the config carries, not the unset state",
+      P.PassConfig(height_cutoff_x_edge=1.0).height_cutoff_x_edge == 1.0
+      and P.PassConfig().height_cutoff_x_edge is None)
 # fail closed: no edge stamped + no override -> there is no gate to resolve, and a
 # silent 0 would un-gate every height-gated pass for an offline caller
 try:

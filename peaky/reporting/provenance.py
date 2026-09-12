@@ -82,6 +82,7 @@ def build_manifest(*, run_dir: str, batch_name: str, dataset: str | None,
     import peaky                                # the real package version (peaky.__version__)
     from peaky.assignment import assign as A   # per-module versions + hashes (incl. assign's own)
     from peaky.assignment.passes import PassConfig
+    from peaky.assignment.passes.config import DEFAULT_HEIGHT_CUTOFF_X_EDGE
 
     pkg_dir = os.path.dirname(__file__)
     cfg_d = asdict(cfg) if is_dataclass(cfg) else dict(cfg or {})
@@ -89,6 +90,12 @@ def build_manifest(*, run_dir: str, batch_name: str, dataset: str | None,
     # are declared on the config itself so the fingerprint can't drift from it
     for k in getattr(cfg, "RUNTIME_FIELDS", PassConfig.RUNTIME_FIELDS):
         cfg_d.pop(k, None)
+    # `height_cutoff_x_edge` is None when UNSET (the package default applies).
+    # Fingerprint the number in force, not the absence -- otherwise the same gate
+    # hashes two ways depending on whether the resolver happened to stamp it.
+    if cfg_d.get("height_cutoff_x_edge") is None and "height_cutoff_x_edge" in cfg_d:
+        cfg_d["height_cutoff_x_edge"] = getattr(
+            cfg, "height_cutoff_x_edge_resolved", DEFAULT_HEIGHT_CUTOFF_X_EDGE)
     merged = os.path.join(run_dir, "merged_ledger.csv")
     return {
         "run_id": os.path.basename(run_dir.rstrip("/")),

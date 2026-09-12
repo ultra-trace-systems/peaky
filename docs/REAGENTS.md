@@ -183,6 +183,15 @@ an explicit --height-cutoff-x-edge / cfg value
         > DEFAULT_HEIGHT_CUTOFF_X_EDGE (1.0)
 ```
 
+Both "explicit" levels are **unset by default** — the flag and
+`PassConfig.height_cutoff_x_edge` are `None`, not a pre-filled 1.0 — so
+explicitness is read off the value rather than guessed by comparing it to the
+default. An explicit multiple that happens to equal the global default therefore
+still wins: asking for `1.0` against a profile that says `5.0` gets you `1.0`,
+and re-resolving that config further down the pipeline does not flip it back.
+Read the multiple in force off `PassConfig.height_cutoff_x_edge_resolved`, never
+off the field.
+
 **No bundled profile sets it** (they are all `None`), so out of the box every run
 gates exactly as before. What the right multiple depends on is the **peak
 picker**, not the reagent chemistry, which is why this is a site's setting:

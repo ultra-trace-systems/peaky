@@ -19,7 +19,7 @@ __all__ = [
 NOISE_EDGE_Q = 0.01   # the sample's noise edge = this quantile of its picked heights
 
 # The PACKAGE default height gate, as a multiple of the sample's noise edge, and
-# the only home for that number: the `PassConfig.height_cutoff_x_edge` default
+# the only home for that number: `PassConfig.height_cutoff_x_edge_resolved`
 # below and `profiles.resolve_height_cutoff_x_edge` (the explicit > profile >
 # default fallback) both read it, so the two cannot drift apart.
 # 1.0 = every picked peak but the bottom 1 % is a candidate. That is right where
@@ -64,13 +64,19 @@ class PassConfig:
     # value was a no-op on modes whose edge sits above it and blinded the passes
     # on modes whose edge sits far below it (EasyIC: 87 % of picked peaks under
     # the old 100 cps; TOF: 97 %). 1.0 = every picked peak but the bottom 1 % is
-    # eligible. The default is DEFAULT_HEIGHT_CUTOFF_X_EDGE above -- a reagent
-    # profile may carry a higher one for its own peak picker, resolved by
-    # `profiles.resolve_height_cutoff_x_edge` before this config is built.
+    # eligible.
+    #
+    # None = UNSET, and unset falls through to DEFAULT_HEIGHT_CUTOFF_X_EDGE above
+    # (read it back through `height_cutoff_x_edge_resolved`, never off the field).
+    # The distinction matters: a reagent profile may carry a higher multiple for
+    # its own peak picker, and `profiles.apply_height_cutoff_x_edge` treats a
+    # multiple this config ALREADY carries as the caller's explicit choice, which
+    # outranks the profile -- so a caller who deliberately asks for 1.0 against a
+    # profile that says 5.0 must be distinguishable from one who asked for
+    # nothing. A `0.0` default here would have been a value, not an absence.
     # `height_cutoff_cps` is an explicit ABSOLUTE override (offline callers /
-    # tests); when set it wins. Read the resolved value via the `height_cutoff`
-    # property.
-    height_cutoff_x_edge: float = DEFAULT_HEIGHT_CUTOFF_X_EDGE
+    # tests); when set it wins. Read the resolved gate via `height_cutoff`.
+    height_cutoff_x_edge: float | None = None
     height_cutoff_cps: float | None = None
     noise_edge_cps: float | None = None   # runtime: set per sample by assign.run
     limit_per_peak: int = 25
@@ -193,16 +199,24 @@ class PassConfig:
         "cal_mu", "cal_sigma")
 
     @property
+    def height_cutoff_x_edge_resolved(self) -> float:
+        """The gate multiple actually in force: the field when it is set, else the
+        package default. Everything that MULTIPLIES by the multiple (or reports
+        it) reads this, so an unset config gates exactly like one stamped 1.0."""
+        x = self.height_cutoff_x_edge
+        return float(DEFAULT_HEIGHT_CUTOFF_X_EDGE if x is None else x)
+
+    @property
     def height_cutoff(self) -> float:
         """The resolved height gate in cps: the absolute override if given, else
-        `height_cutoff_x_edge` x the sample's noise edge. FAILS CLOSED: before
-        assign.run has stamped an edge (and without an override) there is no
-        gate to resolve, and returning 0 here would silently un-gate every
+        `height_cutoff_x_edge_resolved` x the sample's noise edge. FAILS CLOSED:
+        before assign.run has stamped an edge (and without an override) there is
+        no gate to resolve, and returning 0 here would silently un-gate every
         height-gated pass -- so this raises instead."""
         if self.height_cutoff_cps is not None:
             return float(self.height_cutoff_cps)
         if self.noise_edge_cps is not None:
-            return float(self.height_cutoff_x_edge) * float(self.noise_edge_cps)
+            return self.height_cutoff_x_edge_resolved * float(self.noise_edge_cps)
         raise RuntimeError(
             "height gate unresolved: assign.run stamps noise_edge_cps from the "
             "sample's picked heights; offline callers pass "

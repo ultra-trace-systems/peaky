@@ -361,12 +361,23 @@ def height_cutoff_x_edge_source(explicit: float | None = None,
                                 profile: "ReagentProfile | None" = None) -> str:
     """Where `resolve_height_cutoff_x_edge` took its value from, for the run log
     and the batch summary -- so a reader can tell a profile-supplied multiple
-    from the package default. An explicit value that merely repeats the profile's
-    (a config already stamped once) is still credited to the profile."""
+    from the package default.
+
+    This is the LABEL, not the value, and a run resolves more than once on the
+    way down (the pipeline stamps the cfg, assign_batch re-resolves that same
+    cfg): a second pass must not relabel the first. So an explicit value that
+    merely repeats what it would have got anyway -- the profile's multiple, or
+    the package default when no profile carries one -- keeps that credit."""
+    from peaky.assignment.passes.config import DEFAULT_HEIGHT_CUTOFF_X_EDGE
+
     from_profile = getattr(profile, "height_cutoff_x_edge", None)
-    if explicit is not None and (from_profile is None
-                                 or float(explicit) != float(from_profile)):
-        return "an explicit --height-cutoff-x-edge / cfg value"
+    if explicit is not None:
+        same_as_profile = (from_profile is not None
+                           and float(explicit) == float(from_profile))
+        same_as_default = (from_profile is None
+                           and float(explicit) == float(DEFAULT_HEIGHT_CUTOFF_X_EDGE))
+        if not (same_as_profile or same_as_default):
+            return "an explicit --height-cutoff-x-edge / cfg value"
     if from_profile is not None:
         return f"the {getattr(profile, 'name', '?')} reagent profile"
     return "the package default"
@@ -376,17 +387,17 @@ def apply_height_cutoff_x_edge(cfg, profile: "ReagentProfile | None" = None, *,
                                explicit: float | None = None,
                                log=None) -> tuple[float, str]:
     """Stamp the resolved multiple onto a PassConfig; return (value, source).
-    A cfg that ALREADY carries a non-default multiple was set deliberately by its
-    caller, so it counts as explicit and outranks the profile. `log` prints the
-    one-line 'which gate, from where' record for the run -- skipped when an
-    absolute `height_cutoff_cps` override is in force, since the multiple is then
-    not what gates (assign.run reports that override itself)."""
-    from peaky.assignment.passes.config import DEFAULT_HEIGHT_CUTOFF_X_EDGE
-
+    A cfg that ALREADY carries a multiple was set deliberately by its caller (or
+    stamped by an earlier call on the way down), so it counts as explicit and
+    outranks the profile -- INCLUDING a multiple that happens to equal the package
+    default, which is why `PassConfig.height_cutoff_x_edge` is None when unset
+    rather than pre-filled with the default: explicitness is read off the field,
+    never guessed by comparing it to 1.0. `log` prints the one-line 'which gate,
+    from where' record for the run -- skipped when an absolute `height_cutoff_cps`
+    override is in force, since the multiple is then not what gates (assign.run
+    reports that override itself)."""
     if explicit is None:
-        have = getattr(cfg, "height_cutoff_x_edge", None)
-        if have is not None and float(have) != float(DEFAULT_HEIGHT_CUTOFF_X_EDGE):
-            explicit = float(have)
+        explicit = getattr(cfg, "height_cutoff_x_edge", None)
     value = resolve_height_cutoff_x_edge(explicit, profile)
     source = height_cutoff_x_edge_source(explicit, profile)
     cfg.height_cutoff_x_edge = value

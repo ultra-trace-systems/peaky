@@ -170,10 +170,28 @@ _cfg3 = _PC.PassConfig(height_cutoff_x_edge=3.0)
 check("a cfg the caller already set outranks the profile",
       P.apply_height_cutoff_x_edge(_cfg3, _picker)[0] == 3.0
       and _cfg3.height_cutoff_x_edge == 3.0)
+# the case a `!= DEFAULT` test cannot see: explicitness is read off the field
+# (None = unset), so a caller who deliberately asks for the GLOBAL DEFAULT still
+# outranks a profile that says 5.0. Without this, "explicit beats the profile"
+# would be true at every value except the one users are most likely to type.
+_cfg1 = _PC.PassConfig(height_cutoff_x_edge=1.0)
+_v1, _s1 = P.apply_height_cutoff_x_edge(_cfg1, _picker)
+check("an explicit value EQUAL to the package default still beats the profile",
+      (_v1, _cfg1.height_cutoff_x_edge) == (1.0, 1.0) and "explicit" in _s1,
+      (_v1, _s1))
+check("...and re-resolving that cfg downstream does not flip it back",
+      P.apply_height_cutoff_x_edge(_cfg1, _picker)[0] == 1.0
+      and _cfg1.height_cutoff_x_edge == 1.0)
 _cfg4 = _PC.PassConfig()
 check("a profile-less cfg keeps the package default",
       P.apply_height_cutoff_x_edge(_cfg4, _plain)[0] == 1.0
       and _cfg4.height_cutoff_x_edge == 1.0)
+# the label survives the second resolution too (the pipeline stamps the cfg, then
+# assign_batch re-resolves that same cfg): repeating what you would have got
+# anyway is not "explicit".
+check("a re-resolved default-gate cfg is still credited to the package default",
+      P.apply_height_cutoff_x_edge(_cfg4, _plain)[1] == "the package default",
+      P.apply_height_cutoff_x_edge(_cfg4, _plain)[1])
 # the one-per-run log line, and its silence when the multiple is not what gates
 _lines: list = []
 P.apply_height_cutoff_x_edge(_PC.PassConfig(), _picker, log=_lines.append)

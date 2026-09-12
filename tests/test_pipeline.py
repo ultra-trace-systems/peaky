@@ -67,6 +67,7 @@ with tempfile.TemporaryDirectory() as d:
 import pandas as pd  # noqa: E402
 
 from peaky.batch import assign_batch as _AB  # noqa: E402
+from peaky.assignment import passes as _PA  # noqa: E402
 from peaky.reporting import provenance as _PV  # noqa: E402
 
 _snap = (dict(P.PROFILES), dict(P._BY_ALIAS))
@@ -118,6 +119,18 @@ try:
               _got["ab"]["cfg"].height_cutoff_x_edge == 5.0
               and _got["rec"]["cfg"].height_cutoff_x_edge == 5.0
               and _got["rec"]["cfg"].cal_mu is None, _got["ab"].get("cfg"))
+    # an explicit cfg multiple beats the profile through the pipeline too -- at
+    # the value (1.0) that is also the package default, so "explicit" cannot be
+    # inferred from the number alone.
+    with tempfile.TemporaryDirectory() as d:
+        _got.clear()
+        PL.run_batch(batch="B", dataset="D", reagent="TofP", base_out=d, ts=_TS,
+                     when=WHEN, do_report=False, log=lambda *a: None,
+                     cfg=_PA.PassConfig(height_cutoff_x_edge=1.0))
+        check("run_batch: an explicit 1.0 outranks a profile that says 5.0",
+              _got["ab"]["cfg"].height_cutoff_x_edge == 1.0
+              and _got["rec"]["cfg"].height_cutoff_x_edge == 1.0,
+              _got["ab"]["cfg"].height_cutoff_x_edge)
     # a bundled profile has no opinion -> the package default, unchanged
     with tempfile.TemporaryDirectory() as d:
         _got.clear()

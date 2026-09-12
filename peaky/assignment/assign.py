@@ -374,7 +374,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
     log(f"[run] noise edge {cfg.noise_edge_cps if cfg.noise_edge_cps is None else round(cfg.noise_edge_cps, 3)} cps "
         f"-> height_cutoff {cfg.height_cutoff:.3g} cps "
         + ("(absolute override)" if cfg.height_cutoff_cps is not None
-           else f"({cfg.height_cutoff_x_edge:g}x edge)"))
+           else f"({cfg.height_cutoff_x_edge_resolved:g}x edge)"))
     # Adducts are normally detected from the sample's own server matches (the
     # SKILL design rule for mixed-reagent datasets). But a batch with a KNOWN
     # reagent can pass `adducts=` to force the analyte channels: per-sample match
@@ -474,7 +474,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
     st["height_gate_cps"] = cfg.height_cutoff     # RESOLVED gate (the knob is cfg.height_cutoff_cps)
     # the multiple the gate was resolved FROM (profile-supplied or the package
     # default) -- the gate in cps alone cannot be read back without it.
-    st["height_cutoff_x_edge"] = cfg.height_cutoff_x_edge
+    st["height_cutoff_x_edge"] = cfg.height_cutoff_x_edge_resolved
     log(f"[run] stats {json.dumps(st)}")
     return {"ledger": led, "stats": st, "summaries": summaries,
             "prescan": pre.as_dict(), "problems": problems,
