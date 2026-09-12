@@ -79,13 +79,16 @@ class PassConfig:
     height_cutoff_x_edge: float | None = None
     height_cutoff_cps: float | None = None
     noise_edge_cps: float | None = None   # runtime: set per sample by assign.run
-    # Persistence path of the admission gate (assignment/admission.py): a peak
-    # whose m/z bin holds a peak in >= this fraction of the batch's spectra is
-    # eligible for formula search even below the height gate. Noise does not
-    # recur at a fixed m/z; ions do. "auto" = Otsu's split of the batch's
-    # (bimodal) bin-occurrence distribution, 0.40-0.55 on every instrument
-    # measured; a number overrides; 0 disables. Needs the batch occurrence table
-    # (a batch run passes it; a single-sample run has none -> brightness only).
+    # Persistence path of the admission gate (assignment/admission.py). This is
+    # the KNOB: "auto" (default) = Otsu's split of the batch's (bimodal)
+    # bin-occurrence distribution, 0.40-0.55 on every instrument measured; a
+    # number is used as-is; 0 disables the path. The value the gate actually
+    # compares against is the RESOLVED `occurrence_threshold` below (set per
+    # run by admission.stamp_admission): a peak whose m/z bin holds a peak in
+    # >= that fraction of the batch's spectra is eligible for formula search
+    # even below the height gate. Noise does not recur at a fixed m/z; ions do.
+    # Needs the batch occurrence table (a batch run passes it; a single-sample
+    # run has none -> brightness only).
     occurrence_min: float | str = "auto"
     occurrence_threshold: float | None = None   # runtime: the resolved value, set per run
     limit_per_peak: int = 25

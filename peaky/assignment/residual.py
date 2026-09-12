@@ -45,7 +45,7 @@ from peaky.assignment import series_gka as G
 from peaky.assignment.passes import (PassConfig, arbitrate, confidence_label, z_of, _f,
                      _prefer_adduct_reading)
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"  # stage B draws from the admission gate (persistence OR brightness)
 
 # isotope spacings
 D_PAIR_BR = 1.997795

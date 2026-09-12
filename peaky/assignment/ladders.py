@@ -38,7 +38,7 @@ from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
 from peaky.assignment.passes import PassConfig, confidence_label, z_of, _prefer_adduct_reading
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"  # gap-fill draws from the admission gate (persistence OR brightness)
 
 _D_BR = 1.99795
 _D_13C = 1.0033548

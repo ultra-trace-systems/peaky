@@ -690,17 +690,22 @@ def _auto_or_float(v: str):
 
 
 def _add_admission_args(sp) -> None:
-    """The admission gate (assignment/admission.py): brightness OR persistence."""
-    if not any(a.dest == "height_cutoff_x_edge" for a in sp._actions):
-        sp.add_argument("--height-cutoff-x-edge", type=float, default=1.0,
-                        help="brightness path of the admission gate as a multiple of each "
-                             "sample's noise edge (1st percentile of its picked heights; "
-                             "default 1.0 = every picked peak). Raise it on a picker that "
-                             "picks into the noise; the persistence path keeps the "
-                             "recurring weak ions.")
-    if not any(a.dest == "height_cutoff" for a in sp._actions):
-        sp.add_argument("--height-cutoff", type=float, default=None,
-                        help="ABSOLUTE brightness gate in cps (overrides --height-cutoff-x-edge)")
+    """The admission gate (assignment/admission.py): brightness OR persistence.
+    Defined ONCE here for `assign`, `batch` and `pool` -- the three flags are one
+    gate and must read the same on every subcommand."""
+    sp.add_argument("--height-cutoff-x-edge", type=float, default=None,
+                    help="brightness path of the admission gate as a multiple of each "
+                         "sample's noise edge (the 1st percentile of its picked peak "
+                         "heights). Instrument-independent: the edge is ~0.8 cps on a "
+                         "TOF and ~800 cps on a reagent-in-range Orbitrap mode. Raise "
+                         "it on a picker that picks into the noise; the persistence "
+                         "path keeps the recurring weak ions. Default: the reagent "
+                         "profile's own multiple when it carries one, else the package "
+                         "default (passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE); "
+                         "ignored when --height-cutoff is given")
+    sp.add_argument("--height-cutoff", type=float, default=None,
+                    help="ABSOLUTE brightness gate in cps for the height-gated passes "
+                         "(overrides --height-cutoff-x-edge; default: none, edge-relative)")
     sp.add_argument("--occurrence-min", type=_auto_or_float, default="auto",
                     help="persistence path: a peak whose m/z bin holds a peak in at least "
                          "this fraction of the batch's spectra is eligible for formula "
@@ -741,19 +746,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="JSON/TOML file registering extra reagent profiles")
     pa.add_argument("--ppm", type=float, default=1.0)
     pa.add_argument("--search-ppm", type=float, default=3.0)
-    pa.add_argument("--height-cutoff", type=float, default=None,
-                    help="ABSOLUTE peak-height cutoff (cps) for the height-gated "
-                         "passes; default: relative to the sample's own noise edge "
-                         "(see --height-cutoff-x-edge)")
-    pa.add_argument("--height-cutoff-x-edge", type=float, default=None,
-                    help="height cutoff as a multiple of the sample's noise edge "
-                         "(the 1st percentile of its picked peak heights). "
-                         "Instrument-independent: the edge is 0.8 cps on a TOF and "
-                         "~800 cps on a reagent-in-range Orbitrap mode. Default: the "
-                         "reagent profile's own multiple when it carries one, else "
-                         "the package default (passes.config."
-                         "DEFAULT_HEIGHT_CUTOFF_X_EDGE); "
-                         "ignored when --height-cutoff is given")
     pa.add_argument("--no-cache", action="store_true")
     pa.add_argument("--no-pass2", action="store_true")
     pa.add_argument("--no-pass3", action="store_true")

@@ -33,7 +33,7 @@ from peaky import paths as PT
 from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
 
-__version__ = "0.4.0"  # batch_summary: selection.tol_ppm + per_file height_gate_cps
+__version__ = "0.5.0"  # batch_summary: selection.tol_ppm + per_file height_gate_cps + admission block
 
 # the merge's m/z tolerance IS the selector's binning tolerance (one constant for
 # every batch-level binning; see sampling.BATCH_TOL_PPM)

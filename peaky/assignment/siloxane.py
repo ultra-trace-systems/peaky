@@ -32,7 +32,7 @@ from peaky.chem import chemistry as C
 from peaky.assignment import ledger as L
 from peaky.assignment.passes import PassConfig, z_of, _mech_to_adduct, _f
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"  # work set + seed test draw from the admission gate
 
 SILOXANE_UNIT = "C2H6OSi"
 UNIT_MASS = C.neutral_mass(SILOXANE_UNIT)        # 74.01879

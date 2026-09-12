@@ -311,7 +311,12 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
                 "n_samples": summ.get("n_files"),
-                "selection": summ.get("selection")},
+                "selection": summ.get("selection"),
+                # the admission gate as RESOLVED for this run (knob, threshold,
+                # n_bins, n_persistent_bins, n_spectra, tol_ppm) -- the config
+                # fingerprint keeps only the knob, so the derived threshold
+                # lives here next to the other run-derived counts
+                "admission": summ.get("admission")},
         created_utc=ctx.when.isoformat(), log=log)
     return {"ctx": ctx, "assign": res, **gen}
 
@@ -493,7 +498,8 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
                 "n_samples": summ.get("n_files"), "n_groups": len(groups),
-                "selection": summ.get("selection")},
+                "selection": summ.get("selection"),
+                "admission": summ.get("admission")},
         created_utc=ctx.when.isoformat(), log=log)
     return {"ctx": ctx, "assign": res, "groups": groups, "group_runs": group_runs,
             "selection": prov, **gen}
