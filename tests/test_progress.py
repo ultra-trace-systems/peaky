@@ -287,6 +287,33 @@ for ph_name in ("cluster", "vankrevelen", "report", "assign", "fetch", "provenan
     # shows as "vankrevelen" rather than "Van Krevelen" and nothing else notices.
     check(f"  -> progress.py has a header label for {ph_name}", ph_name in PG.PHASE_LABEL)
 
+
+# `emits()` is a substring test over the WHOLE module, so it cannot tell that a
+# marker lives in `run_batch` only -- which is exactly how the pooled pipeline
+# shipped: it announced the assign phase and nothing else, leaving the phase
+# line on a stale label through the pooled fetch and the provenance write. Both
+# entry points run the same shape of run, so both emit the same markers.
+def _func_src(module_src: str, fname: str) -> str:
+    """Source of the body of the function `fname` (not its nested defs)."""
+    import ast
+    for fn in ast.walk(ast.parse(module_src)):
+        if isinstance(fn, ast.FunctionDef) and fn.name == fname:
+            return "\n".join(ast.get_source_segment(module_src, s) for s in fn.body)
+    return ""
+
+
+pipe_src = (PKG / "pipeline.py").read_text()
+for _fn in ("run_batch", "run_pooled_batches"):
+    _body = _func_src(pipe_src, _fn)
+    check(f"pipeline.{_fn} is a top-level function", bool(_body))
+    for ph_name in ("fetch", "assign", "provenance"):
+        check(f"  -> {_fn} ITSELF emits [phase] {ph_name}",
+              f'log("[phase] {ph_name}")' in _body)
+_gen = _func_src(pipe_src, "generate_report")
+for ph_name in ("cluster", "vankrevelen", "report"):
+    check(f"generate_report ITSELF emits [phase] {ph_name} (both paths share it)",
+          f'log("[phase] {ph_name}")' in _gen)
+
 # and the reconstructed lines really do match the patterns
 for line, rx, what in [
     ("[assign_batch] (2/7) assigning kZ9 ...", PG.RE_ASSIGNING, "assigning"),

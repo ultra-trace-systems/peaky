@@ -430,6 +430,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     if isinstance(ts, str):
         ts = pd.read_parquet(os.path.expanduser(ts))
     if ts is None:
+        log("[phase] fetch")
         log(f"[pool] loading pooled TS for /{batches}/ in {dataset!r} ...")
         ts = IO.fetch_pooled_peaks(IO.connect(), dataset, batches)
     if group_by not in ts.columns:
@@ -499,6 +500,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
 
     # provenance parity with run_batch: pin the pool run to its code/data/config/output.
     from peaky.reporting import provenance as PV
+    log("[phase] provenance")
     summ = res.get("summary", {}) if isinstance(res, dict) else {}
     PV.record_run(
         run_dir=ctx.out_dir, base_out=os.path.expanduser(base_out),

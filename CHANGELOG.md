@@ -347,6 +347,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`[phase] <name>` log markers** for the pipeline steps with no per-item
   progress of their own (fetch / assign / cluster / vankrevelen / report /
   provenance) — readable in a plain log, and what the window's phase line reads.
+  `run_batch` and `run_pooled_batches` emit the same set, so the phase line is
+  as truthful on a pooled run as on a single-batch one.
 
 ### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
 
