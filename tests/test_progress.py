@@ -72,6 +72,54 @@ check("finished pins the sample bar at 100%",
           PG.ProgressState(title="t")) == 1.0)
 
 
+# ---- 1b. the LITERAL serial stream, as `assign_batch.run` logs it with --jobs 1
+# (assigning -> k stage lines -> the offset line -> done -> next assigning). The
+# same stream WITHOUT the 'done' lines is what an emitter that forgot them looks
+# like; the samples bar must advance on the next 'assigning' regardless.
+def _serial_stream(n: int, k: int, with_done: bool):
+    for i in range(1, n + 1):
+        yield f"[assign_batch] ({i}/{n}) assigning s{i} ..."
+        for j in range(k):
+            yield f"[run] stage{j} took 0.5s"
+        yield f"[assign_batch]   s{i}: offset=0.3"
+        if with_done:
+            yield f"[assign_batch] ({i}/{n}) done s{i}"
+    yield ("[assign_batch] DONE: 9 merged M0 ({}); 1 in all files, 0 single-file, "
+           "0 formula disagreements")
+
+
+for with_done in (True, False):
+    tag = "with" if with_done else "WITHOUT"
+    ser = PG.ProgressState(title="t")
+    ok_done = ok_eta = ok_stages = True
+    for ln in _serial_stream(3, 4, with_done):
+        ser.feed(ln)
+        if (m := PG.RE_ASSIGNING.match(ln)):
+            i = int(m.group(1))
+            ok_done &= ser.samples_done == i - 1
+            ok_eta &= ((ser.eta is not None) if i >= 2 else (ser.eta is None))
+            ok_stages &= (ser.n_stages == 4) if i >= 2 else True
+    check(f"serial stream {tag} 'done': samples_done == i-1 at each 'assigning'", ok_done)
+    check(f"  -> ({tag}) ETA exists from the second sample on, not before", ok_eta)
+    check(f"  -> ({tag}) stage count learned from the first sample (k=4)",
+          ok_stages and ser.n_stages == 4, ser.n_stages)
+    check(f"  -> ({tag}) every sample in at DONE", ser.samples_done == 3)
+
+# parallel: the banner, then one 'done' per finished future, then the workers'
+# buffered logs replayed in a burst. Sample granularity only.
+pl = PG.ProgressState(title="t")
+pl.feed("[phase] assign")
+pl.feed("[assign_batch] parallel: 3 worker processes (match-workers/proc=4) over 5 samples")
+for i, sid in enumerate(("s4", "s1", "s5", "s2", "s3"), 1):     # completion order
+    pl.feed(f"[assign_batch] ({i}/5) done {sid}")
+check("parallel: samples bar reaches N/N from the 'done' lines", pl.samples_done == 5)
+for ln in _serial_stream(5, 6, with_done=False):
+    if ln.startswith("[run]"):
+        pl.feed(ln)                                              # the replay burst
+check("parallel: replayed stage lines do not move the stage bar or the count",
+      pl.stage_idx == 0 and pl.samples_done == 5 and pl.n_stages == PG.NOMINAL_STAGES)
+
+
 # ---- 2. stats panel: both shapes a run returns ------------------------------
 batch_rows = dict(PG.summary_rows(
     {"merged_M0": 812, "merged_tiers": {"Assigned": 700, "Candidate": 112},
@@ -154,6 +202,33 @@ for line, rx, what in [
 
 # batch-level timing must actually reach the summary the window reads
 src = (PKG / "batch/assign_batch.py").read_text()
+
+
+# The 'done' line must be logged by the SERIAL branch too: `emits()` is a
+# substring test over the whole module and cannot tell that a line lives in the
+# parallel branch only (which is exactly how --jobs 1 shipped with a dead bar).
+def _serial_branch_src(module_src: str) -> str:
+    """Source of the body of `if n_jobs <= 1:` inside assign_batch.run."""
+    import ast
+    for fn in ast.walk(ast.parse(module_src)):
+        if not (isinstance(fn, ast.FunctionDef) and fn.name == "run"):
+            continue
+        for node in ast.walk(fn):
+            t = getattr(node, "test", None)
+            if (isinstance(node, ast.If) and isinstance(t, ast.Compare)
+                    and isinstance(t.left, ast.Name) and t.left.id == "n_jobs"
+                    and len(t.ops) == 1 and isinstance(t.ops[0], ast.LtE)):
+                return "\n".join(ast.get_source_segment(module_src, s) for s in node.body)
+    return ""
+
+
+serial_src = _serial_branch_src(src)
+check("assign_batch.run has the `if n_jobs <= 1:` serial branch", bool(serial_src))
+check("the SERIAL branch itself logs the per-sample 'done' line",
+      'log(f"[assign_batch] ({i}/{len(sample_ids)}) done {sid}")' in serial_src)
+check("  -> after the sample is applied (inside the per-sample loop)",
+      "_apply(" in serial_src
+      and serial_src.index("_apply(") < serial_src.index("done {sid}"))
 check("assign_batch records elapsed_s in batch_summary", '"elapsed_s": round(time.time() - t_start, 1)' in src)
 check("assign_batch records n_jobs beside it (a duration needs its job count)",
       '"n_jobs": n_jobs,' in src)
@@ -292,10 +367,76 @@ finally:
     CLI._require_creds = _real_creds
 
 
+# ---- 7. the serial branch EXECUTED: one 'done' line per sample --------------
+# pytest-style (monkeypatch fixture) so every stub is undone; the __main__ runner
+# below drives these with a MonkeyPatch of its own.
+def test_serial_branch_logs_done_per_sample(monkeypatch):
+    """assign_batch.run(n_jobs=1) over three stubbed samples -- assign.run and
+    the Mascope IO replaced, no network -- and the captured log stream read back
+    through ProgressState: the bar must reach 3/3 from that stream alone."""
+    import tempfile
+
+    import pandas as pd
+
+    from peaky.assignment import assign as A
+    from peaky.batch import assign_batch as AB
+    from peaky.io import io_mascope as IO
+
+    def _fake_assign(sid, context="ambient-air", *, log=print, **kw):
+        for stage in ("pass0", "pass1", "cleanup"):
+            log(f"[run] {stage} took 0.1s")
+        led = pd.DataFrame({
+            "peak_id": [f"{sid}-p1"], "mz": [217.1200 + int(sid[1:]) * 1e-4],
+            "height": [1e4], "role": ["M0"], "neutral_formula": ["C10H16O2"],
+            "adduct": ["[M+Br]-"], "ion_formula": ["C10H16O2Br-"],
+            "tier": ["Assigned"], "ion_score": [0.9], "method": ["pass1"]})
+        return {"ledger": led, "plausibility_audit": [], "stats": {"n_peaks": 1}}
+
+    def _offline(*a, **k):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(A, "run", _fake_assign)
+    monkeypatch.setattr(IO, "connect", lambda **kw: "CLIENT")
+    monkeypatch.setattr(IO, "fetch_peaks", _offline)   # offsets -> None (guarded in _apply)
+    sids = ["s1", "s2", "s3"]
+    peaks = pd.DataFrame({"sample_item_id": sids, "polarity": ["-"] * 3})
+    lines: list = []
+    with tempfile.TemporaryDirectory() as td:
+        AB.run(peaks=peaks, reagent="Br", sample_ids=sids, out_dir=td, n_jobs=1,
+               log=lines.append)
+
+    done = [PG.RE_SAMPLE_DONE.match(ln) for ln in lines if PG.RE_SAMPLE_DONE.match(ln)]
+    assert [m.groups() for m in done] == \
+        [("1", "3", "s1"), ("2", "3", "s2"), ("3", "3", "s3")], lines
+    # ... and each 'done' lands before the NEXT sample's 'assigning'
+    order = [(ln.split(") ")[1].split()[0], int(ln.split("(")[1].split("/")[0]))
+             for ln in lines if PG.RE_ASSIGNING.match(ln) or PG.RE_SAMPLE_DONE.match(ln)]
+    assert order == [("assigning", 1), ("done", 1), ("assigning", 2), ("done", 2),
+                     ("assigning", 3), ("done", 3)], order
+
+    st = PG.ProgressState(title="t")
+    for ln in lines:
+        st.feed(ln)
+    assert (st.samples_done, st.n_samples, st.n_stages) == (3, 3, 3), st.snapshot()
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 
 
 if __name__ == "__main__":
+    import pytest
+    for _fn in [v for k, v in list(globals().items())
+                if k.startswith("test_") and k != "test_all" and callable(v)]:
+        _mp = pytest.MonkeyPatch()
+        try:
+            _fn(_mp)
+            PASS += 1
+            print(f"  ok  {_fn.__name__}")
+        except Exception as e:      # noqa: BLE001
+            FAIL += 1
+            print(f"FAIL  {_fn.__name__}  {e!r}")
+        finally:
+            _mp.undo()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)

@@ -506,6 +506,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                         reflists_active=reflists_active, **kw)
             _apply(sid, res["ledger"], res.get("plausibility_audit") or [],
                    dict(res.get("stats", {})))
+            # same line the parallel branch logs per completed future: it is what
+            # advances a progress reader's samples bar (peaky/progress.py)
+            log(f"[assign_batch] ({i}/{len(sample_ids)}) done {sid}")
     else:
         # Write the batch TS to disk once so workers load it from the parquet
         # rather than re-pickling the full-batch DataFrame into every process.

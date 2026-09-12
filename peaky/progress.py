@@ -127,6 +127,13 @@ class ProgressState:
             return 0.0
         return min(1.0, self.stage_idx / self.n_stages)
 
+    def _learn_stages(self) -> None:
+        """Learn the real stage count from the sample that just completed -- the
+        stages are gated by reagent/context, so the count is a property of the
+        run, not a constant. Only a serial run has live stage lines to count."""
+        if not self.parallel and self.stage_idx:
+            self.n_stages = self.stage_idx
+
     def feed(self, line: str) -> bool:
         """Read one log line into the model. Returns True if anything changed.
         Unrecognised lines only refresh `last_line` (the window's activity tail)."""
@@ -136,17 +143,24 @@ class ProgressState:
         self.last_line = line[:160]
 
         if (m := RE_ASSIGNING.match(line)):
+            i = int(m.group(1))
             self.phase = "assign"
             self.n_samples = int(m.group(2))
             self.current_sid = m.group(3)
+            if i > 1:
+                # The i-th 'assigning' means i-1 samples are complete, whether or
+                # not a per-sample 'done' line was logged in between (an emitter
+                # without one must not leave the samples bar dead), and the stage
+                # lines seen since the last reset are the previous sample's count.
+                self.samples_done = max(self.samples_done, i - 1)
+                self._learn_stages()
             self.stage_idx, self.stage_name = 0, ""   # new sample -> restart stage bar
             return True
         if (m := RE_SAMPLE_DONE.match(line)):
             self.phase = "assign"
             self.samples_done, self.n_samples = int(m.group(1)), int(m.group(2))
             self.current_sid = m.group(3)
-            if not self.parallel and self.stage_idx:
-                self.n_stages = self.stage_idx          # learn the real stage count
+            self._learn_stages()
             self.stage_idx, self.stage_name = 0, ""
             return True
         if (m := RE_PARALLEL.match(line)):
