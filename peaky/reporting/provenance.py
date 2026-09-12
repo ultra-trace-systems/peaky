@@ -23,8 +23,18 @@ __version__ = "0.1.0"
 
 # per-sample fields that assign.run stamps onto the shared cfg at runtime -- they
 # are run-derived, not user knobs, so they don't belong in the reproducible config
-# fingerprint (offsets live in batch_summary.json already).
-_RUNTIME_CFG_FIELDS = ("mechanism_ids", "prior_offset", "reagent_element")
+# fingerprint (offsets live in batch_summary.json already). The cal_* entries are
+# the self-calibration's own output: passes.calibrate writes the fitted mass trend
+# (cal_a / cal_b / cal_sigma_trend and the backbone coverage cal_mz_lo / cal_mz_hi)
+# back onto the shared cfg, so whichever sample ran LAST would otherwise leak its
+# data-derived numbers into the manifest and make two identical re-runs of the same
+# batch fingerprint differently. NB cal_mu / cal_sigma are equally data-derived but
+# are deliberately NOT dropped: they predate this list and manifests in the wild
+# carry them as the record of the run's calibration centre, so removing them would
+# be a manifest schema change rather than a fix.
+_RUNTIME_CFG_FIELDS = ("mechanism_ids", "prior_offset", "reagent_element",
+                       "cal_a", "cal_b", "cal_sigma_trend",
+                       "cal_mz_lo", "cal_mz_hi")
 
 
 def _rel_or_abs(path: str | None, base: str) -> str | None:

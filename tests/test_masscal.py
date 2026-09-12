@@ -2,12 +2,28 @@
 masscal.py): the acceptance rule on a flat source, the backbone-range clamp,
 and the end-to-end path calibrate() -> PassConfig -> compute_tiers on a real
 1/mz trend (every earlier test hand-set the trend on the cfg)."""
+import warnings
+
 import numpy as np
 import pandas as pd
 
 from peaky.assignment import ledger as L, masscal as MC, tiers as T
 from peaky.assignment.passes import config as PCfg, core as PC
 from peaky.chem import chemistry as C
+
+
+def test_calibrate_on_a_too_small_backbone_is_clean_not_just_quiet():
+    """The CHON backbone mask is built with .map over a string column. On an
+    EMPTY result there is nothing to infer from, so pandas hands back the str
+    dtype and `(score >= tau) & chon` becomes a bool/str logical op -- a
+    Pandas4Warning today and a raise in pandas 4. Any ledger whose backbone
+    filters to nothing takes that path."""
+    # no commits at all -> every ppm_error is NA -> the backbone frame is EMPTY
+    led = L.new_ledger(pd.DataFrame(
+        [{"peak_id": f"p{i}", "mz": 100.0 + i, "height": 1e4} for i in range(3)]))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")             # any warning here fails the test
+        assert PC.calibrate(led, PCfg.PassConfig(), log=lambda *a: None) is None
 
 
 def _flat_acceptances(n_seeds: int, n_rows: int = 30) -> int:

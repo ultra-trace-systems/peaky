@@ -277,6 +277,25 @@ def test_envelope_completion_claims_the_14n_satellite_even_from_a_locked_amine()
     assert at("s13", "role") == L.ROLE_ISO and at("s13", "iso_label") == "13C"
 
 
+def test_the_14n_displacement_survives_a_missing_pass_no():
+    """The pass-0 exemption read the cell as `int(pd.to_numeric(...) or 1)`:
+    NaN is TRUTHY so it survives the `or` and int(nan) raises, and pd.NA raises
+    on the truth-test itself. A row with no pass_no must read as a normal pass."""
+    assert PP._pass_no(pd.NA) == 1 and PP._pass_no(float("nan")) == 1
+    assert PP._pass_no("not a number") == 1          # coerced, then defaulted
+    assert PP._pass_no(0) == 0 and PP._pass_no("3") == 3 and PP._pass_no(7.0) == 7
+
+    X = "C11H14O2"
+    led = _ledger([("p1", C.ion_mz(X, "[M+^NH4]+"), 670_000, X, "[M+^NH4]+"),
+                   ("s14", C.ion_mz(X, "[M+^NH4]+") - 0.99703, 12_200,
+                    "C11H17NO2", "[M+H]+")])
+    led.loc[led.peak_id == "s14", "pass_no"] = pd.NA      # e.g. a CSV round-trip
+    L.lock_peaks(led, ["s14"])
+    PP.complete_isotope_envelopes(led, PCfg.PassConfig(), log=lambda *a: None)
+    s14 = led.loc[led["peak_id"] == "s14"].iloc[0]
+    assert s14["role"] == L.ROLE_ISO and s14["iso_label"] == "14N"
+
+
 def test_dehydration_relabel_overrides_a_pass1_lock_but_not_a_pass0_lock():
     X1, Y1 = "C11H14O2", "C11H12O"
     led = _ledger([("p1", C.ion_mz(X1, "[M+^NH4]+"), 670_000, X1, "[M+^NH4]+"),

@@ -60,6 +60,16 @@ _R29SI = 0.0468  # 29Si natural abundance per Si
 SI_M1_MIN_FRAC = 0.6  # observed (M+1)/(M0) must be >= this * predicted Si M+1
 
 
+def _pass_no(v, default: int = 1) -> int:
+    """A ledger pass_no cell as an int. `int(pd.to_numeric(v, ...) or 1)` looks
+    equivalent and is not: NaN is TRUTHY, so it survives the `or` and int(nan)
+    raises ValueError, and pd.NA raises on the truth-test itself. A row with no
+    pass_no reads as `default` (1 = a normal pass), never as the pass-0
+    known-species lock."""
+    n = pd.to_numeric(v, errors="coerce")
+    return default if pd.isna(n) else int(n)
+
+
 def _peak_near(mzs: "pd.Series", target: float, ppm: float = 5.0):
     """Index of the closest ledger peak within ppm of target, else None."""
     tol = target * ppm * 1e-6
@@ -183,7 +193,7 @@ def complete_isotope_envelopes(
                 # High before the parent's envelope is known). Pass-0 known-species
                 # locks are kept.
                 if label == "14N" and 0.5 <= ratio <= 2.0 and ph >= 10 * th \
-                        and int(pd.to_numeric(ledger.at[j, "pass_no"], errors="coerce") or 1) != 0:
+                        and _pass_no(ledger.at[j, "pass_no"]) != 0:
                     try:
                         if bool(ledger.at[j, "locked"]):
                             ledger.at[j, "locked"] = False

@@ -97,6 +97,11 @@ def calibrate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> tuple | No
                 and set(C.parse_formula(f)) <= _BACKBONE_ELEMENTS
             )
         )
+        # .map over an EMPTY (or all-NA) string column has nothing to infer from
+        # and hands back the str dtype, so `bool_mask & chon` is a bool/str
+        # logical op: a Pandas4Warning today, a raise in pandas 4. A small
+        # ledger whose backbone filters to nothing hits exactly that path.
+        .astype(bool)
     )
     ppm = m0.loc[(score >= cfg.tau_good) & chon, "ppm_error"].astype(float)
     if len(ppm) < cfg.cal_min_n:

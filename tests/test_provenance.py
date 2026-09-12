@@ -51,6 +51,25 @@ check("output hashes merged_ledger.csv + carries counts",
 check("config fingerprint keeps user knobs, drops run-derived fields",
       m["config"].get("height_cutoff") == 100.0 and m["config"].get("ppm") == 1.0
       and "mechanism_ids" not in m["config"] and "prior_offset" not in m["config"])
+
+# passes.calibrate writes the fitted mass trend back onto the SHARED cfg, so the
+# last sample's data-derived numbers would otherwise land in the fingerprint and
+# make two identical re-runs of the same batch differ.
+_cal_cfg = P.PassConfig()
+_cal_cfg.cal_a, _cal_cfg.cal_b, _cal_cfg.cal_sigma_trend = -0.25, -0.12, 0.25
+_cal_cfg.cal_mz_lo, _cal_cfg.cal_mz_hi = 59.0, 397.0
+_mc = PV.build_manifest(run_dir=_rd, batch_name="B", dataset="D", sample_ids=["s1"],
+                        reagent="NO3_15N", cfg=_cal_cfg, ts_path=_tsp,
+                        created_utc="2026-01-01T00:00:00Z")
+check("config fingerprint drops the self-calibration's fitted mass trend",
+      not any(k in _mc["config"] for k in
+              ("cal_a", "cal_b", "cal_sigma_trend", "cal_mz_lo", "cal_mz_hi")),
+      {k: v for k, v in _mc["config"].items() if k.startswith("cal_")})
+check("... so a fitted trend does not change the config fingerprint",
+      _mc["config"] == m["config"])
+check("the cal knobs the user CAN set are still fingerprinted",
+      _mc["config"].get("cal_min_n") == P.PassConfig().cal_min_n
+      and "cal_abs_floor_mda" in _mc["config"] and "cal_z_accept" in _mc["config"])
 check("git_info is best-effort and returns a dict", isinstance(
     PV.git_info(str(Path(PV.__file__).parent)), dict))
 
