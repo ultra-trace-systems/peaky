@@ -13,9 +13,21 @@ from peaky.assignment import masscal
 __all__ = [
     "PassConfig",
     "noise_edge",
+    "DEFAULT_HEIGHT_CUTOFF_X_EDGE",
 ]
 
 NOISE_EDGE_Q = 0.01   # the sample's noise edge = this quantile of its picked heights
+
+# The PACKAGE default height gate, as a multiple of the sample's noise edge, and
+# the only home for that number: the `PassConfig.height_cutoff_x_edge` default
+# below and `profiles.resolve_height_cutoff_x_edge` (the explicit > profile >
+# default fallback) both read it, so the two cannot drift apart.
+# 1.0 = every picked peak but the bottom 1 % is a candidate. That is right where
+# a picker that stops AT the noise edge leaves off (on an Orbitrap, rare real
+# ions sit at 1-3x the edge, so raising it would discard them). A picker that
+# picks INTO the noise wants more, which is what a reagent profile's own
+# `height_cutoff_x_edge` supplies (see profiles.ReagentProfile).
+DEFAULT_HEIGHT_CUTOFF_X_EDGE = 1.0
 
 
 def noise_edge(heights, q: float = NOISE_EDGE_Q) -> float | None:
@@ -52,10 +64,13 @@ class PassConfig:
     # value was a no-op on modes whose edge sits above it and blinded the passes
     # on modes whose edge sits far below it (EasyIC: 87 % of picked peaks under
     # the old 100 cps; TOF: 97 %). 1.0 = every picked peak but the bottom 1 % is
-    # eligible. `height_cutoff_cps` is an explicit ABSOLUTE override (offline
-    # callers / tests); when set it wins. Read the resolved value via the
-    # `height_cutoff` property.
-    height_cutoff_x_edge: float = 1.0
+    # eligible. The default is DEFAULT_HEIGHT_CUTOFF_X_EDGE above -- a reagent
+    # profile may carry a higher one for its own peak picker, resolved by
+    # `profiles.resolve_height_cutoff_x_edge` before this config is built.
+    # `height_cutoff_cps` is an explicit ABSOLUTE override (offline callers /
+    # tests); when set it wins. Read the resolved value via the `height_cutoff`
+    # property.
+    height_cutoff_x_edge: float = DEFAULT_HEIGHT_CUTOFF_X_EDGE
     height_cutoff_cps: float | None = None
     noise_edge_cps: float | None = None   # runtime: set per sample by assign.run
     limit_per_peak: int = 25

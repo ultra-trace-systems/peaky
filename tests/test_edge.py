@@ -40,6 +40,12 @@ cfg = P.PassConfig()
 check("PassConfig has NO absolute height_cutoff default (x_edge 1.0, cps None)",
       cfg.height_cutoff_x_edge == 1.0 and cfg.height_cutoff_cps is None
       and cfg.noise_edge_cps is None)
+# ONE home for the global default: the dataclass default IS the constant the
+# profile-level resolution falls back to, so the two cannot drift apart.
+check("the x_edge default IS passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE",
+      cfg.height_cutoff_x_edge == C.DEFAULT_HEIGHT_CUTOFF_X_EDGE == 1.0
+      and P.DEFAULT_HEIGHT_CUTOFF_X_EDGE == C.DEFAULT_HEIGHT_CUTOFF_X_EDGE,
+      (cfg.height_cutoff_x_edge, C.DEFAULT_HEIGHT_CUTOFF_X_EDGE))
 # fail closed: no edge stamped + no override -> there is no gate to resolve, and a
 # silent 0 would un-gate every height-gated pass for an offline caller
 try:
