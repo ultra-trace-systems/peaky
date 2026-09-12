@@ -385,6 +385,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     if getattr(prof, "label_isotope", None):
         assign_kw.setdefault("label_isotope", prof.label_isotope)
         assign_kw.setdefault("label_max", prof.label_max)
+    # the bottle's isotopic purity -> the '^X' impurity line in both the local
+    # scorer's envelope and peaky's own (isotopes.set_label_purity). None => default.
+    if getattr(prof, "purity", None) is not None:
+        assign_kw.setdefault("label_purity", prof.purity)
     # thread the batch TS to the per-sample run so pass-7 (certified-neutral)
     # can use member-channel co-variation as OPTIONAL corroboration. Guarded:
     # the pass is fully functional with ts_peaks=None (single-sample runs, or

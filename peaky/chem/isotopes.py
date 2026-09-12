@@ -43,7 +43,30 @@ R_15N_PER_N = 0.003640        # 15N/14N (faint: 0.36% per N)
 R_18O_PER_O = 0.002050        # 18O/16O (faint: 0.20% per O)
 
 
-LABEL_PURITY_15N = 0.98   # isotopic purity of the ^N reagents (NO3_15N / NH4_15N)
+# Isotopic purity of the '^' labelled reagents -- the DEFAULT only. The value in
+# force for a run is the active reagent profile's `purity` (ReagentProfile.purity,
+# published by assign.run via set_label_purity); both consumers read it through
+# `label_purity()`: this module's envelope predictor (`isotope_pattern`, the '^N'
+# per-atom distribution below) and the local scorer's `predict_isotopes` call
+# (io.local_scoring.score_candidates_local). Process-global on purpose: batch runs
+# fan out over PROCESSES, so one active reagent per interpreter holds.
+LABEL_PURITY_15N = 0.98
+
+_ACTIVE_LABEL_PURITY = LABEL_PURITY_15N
+
+
+def set_label_purity(purity: float | None) -> float:
+    """Publish the active reagent's isotopic purity (None restores the default).
+    Returns the value now in force."""
+    global _ACTIVE_LABEL_PURITY
+    _ACTIVE_LABEL_PURITY = (LABEL_PURITY_15N if purity is None
+                            else min(max(float(purity), 0.0), 1.0))
+    return _ACTIVE_LABEL_PURITY
+
+
+def label_purity() -> float:
+    """The active labelled-reagent isotopic purity (see set_label_purity)."""
+    return _ACTIVE_LABEL_PURITY
 
 # Per-atom isotope distributions: element -> [(mass_shift_from_lightest, abundance)].
 # Only isotopes that move the M+1/M+2/... envelope are listed (2H, 17O kept tiny).
@@ -57,15 +80,27 @@ _ISO_DIST: dict[str, list[tuple[float, float]]] = {
     "Cl": [(0.0, 0.757600), (1.997050, 0.242400)],
     "Br": [(0.0, 0.506900), (1.9979521, 0.493100)],
     "Si": [(0.0, 0.922230), (0.999568, 0.046850), (1.996840, 0.030920)],
-    # LABELLED reagent nitrogen ('^N' = 15N at the reagent's isotopic purity): the
-    # "monoisotopic" line is the HEAVY isotope, so the impurity sits at a NEGATIVE
-    # shift (-0.99703, the 14N line). 2 % = the nominal 98 atom % of both the
-    # 15N-nitrate and the 15N-ammonium reagents (measured 0.018-0.021 on the
-    # 2026-09-10 ^NH4+ file). Lets the envelope-completion sweep CLAIM that line
-    # (else it floats free and a CHON [M+H]+ mass-fit grabs it).
-    "^N": [(0.0, LABEL_PURITY_15N), (-0.997035, 1.0 - LABEL_PURITY_15N)],
+    # NB no '^N' entry -- a labelled element's distribution depends on the REAGENT
+    # BOTTLE, not on nature, so it is built per lookup in _per_atom() from the
+    # active purity rather than frozen into this natural-abundance table.
 }
 _HEAVY_ELEMENTS = ("Br", "Cl", "Si", "S")   # the M+2 drivers
+
+
+def _per_atom(el: str) -> list[tuple[float, float]] | None:
+    """Per-atom isotope distribution of an element, or None when the element does
+    not move the envelope. A caret element ('^N' = 15N) is LABELLED: its
+    "monoisotopic" line is the HEAVY isotope, so the reagent's unlabelled impurity
+    sits at a NEGATIVE shift (-0.99703, the 14N line) at 1 - purity. Built from the
+    ACTIVE purity (label_purity()) so a profile declaring a different bottle moves
+    the line. Claiming it matters: left unpredicted it floats free and a CHON
+    [M+H]+ mass-fit grabs it."""
+    if el.startswith("^"):
+        if el != "^N":
+            return None
+        p = label_purity()
+        return [(0.0, p), (-0.997035, 1.0 - p)]
+    return _ISO_DIST.get(el)
 
 
 # (mass shift, label, {element: min count required to form it})
@@ -132,7 +167,7 @@ def isotope_pattern(ion_formula: str, *, min_rel: float = 0.03,
     # the M+4 height and the silanediol M+4 wrongly survives as a contaminant)
     PRUNE = 1e-6
     for el, n in counts.items():
-        per = _ISO_DIST.get(el)
+        per = _per_atom(el)
         if per is None or n <= 0:
             continue
         for _ in range(n):

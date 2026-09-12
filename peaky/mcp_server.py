@@ -254,7 +254,8 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
         adducts = list(rp.adducts) if rp else None
         ctx = context or (rp.context if rp else "ambient-air")
         cfg = passes.PassConfig(height_cutoff=height_cutoff)
-        res = assign.run(sample_id, ctx, cfg=cfg, adducts=adducts, log=log)
+        res = assign.run(sample_id, ctx, cfg=cfg, adducts=adducts, log=log,
+                         label_purity=getattr(rp, "purity", None))
         led = res["ledger"]
         path = os.path.join(out_dir, f"{sample_id}_ledger.csv")
         led.to_csv(path, index=False)

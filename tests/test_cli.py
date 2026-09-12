@@ -84,18 +84,18 @@ finally:
 
 # ---- reagent resolution: explicit profile name needs NO network --------------
 ns = SimpleNamespace(adducts=None, reagent="Br", context=None, sample_id="X", no_cache=False)
-ad, ctx, note = cli._resolve_reagent(ns)
+ad, ctx, note, pur = cli._resolve_reagent(ns)
 check("resolve --reagent Br -> Br adducts", ad == list(profiles.BR.adducts), ad)
 check("resolve --reagent Br -> Br context", ctx == profiles.BR.context, ctx)
 check("resolve --reagent Br -> labelled note", "Br" in note, note)
 
 ns = SimpleNamespace(adducts=None, reagent="uronium", context=None, sample_id="X", no_cache=False)
-ad, ctx, note = cli._resolve_reagent(ns)
+ad, ctx, note, pur = cli._resolve_reagent(ns)
 check("resolve alias 'uronium' -> Ur context", ctx == profiles.UR.context, ctx)
 
 # explicit --adducts overrides reagent, no network
 ns = SimpleNamespace(adducts=["[M+Na]+"], reagent="auto", context="chamber", sample_id="X", no_cache=False)
-ad, ctx, note = cli._resolve_reagent(ns)
+ad, ctx, note, pur = cli._resolve_reagent(ns)
 check("explicit --adducts wins", ad == ["[M+Na]+"] and ctx == "chamber", (ad, ctx))
 
 # ---- friendly server-error hints ---------------------------------------------

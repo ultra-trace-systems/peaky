@@ -342,9 +342,14 @@ def run(sample_id: str, context: str = "ambient-air", *,
         do_pass2: bool = True, do_pass3: bool = True, do_pass4: bool = True,
         do_pass5: bool = True, do_pass_certified: bool = True,
         ts_peaks=None, adducts=None, reflists_active=None,
-        label_isotope=None, label_max=2,
+        label_isotope=None, label_max=2, label_purity=None,
         log=print, checkpoint_dir=None) -> dict:
     cfg = cfg or passes.PassConfig()
+    # the reagent bottle's isotopic purity (ReagentProfile.purity), published for
+    # the two consumers that model a '^X' ion's unlabelled impurity line: the
+    # local scorer's predict_isotopes call and this package's own envelope
+    # predictor (isotopes.isotope_pattern). None restores the default.
+    purity = isotopes.set_label_purity(label_purity)
     # reference-list selection prior: a candidate neutral on an active reference
     # peaklist wins a near-tie over a mass coincidence (arbitrate reads this set).
     if reflists_active:
@@ -408,7 +413,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
     cfg.prior_offset = prior if prior is not None else 0.0
     log(f"[run] {len(led)} unique peaks; context={profile.label}; "
         f"polarity={polarity}; prior_offset={cfg.prior_offset:+.2f} ppm; "
-        f"adducts={adducts}; mechanisms={sorted(mech_map)}")
+        f"adducts={adducts}; mechanisms={sorted(mech_map)}"
+        + (f"; label purity={purity:.3f}" if any("^" in str(a) for a in adducts) else ""))
 
     pre = isotopes.prescan(led)
     log(f"[run] prescan {pre.as_dict()}")

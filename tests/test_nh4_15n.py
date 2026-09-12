@@ -225,6 +225,43 @@ def test_envelope_predictor_has_the_14n_line_for_a_labelled_ion():
     assert not any(d < 0 for d, _, _ in ISO.isotope_pattern("C11H18NO2+", diag_min_rel=0.001))
 
 
+def test_the_active_profile_purity_drives_both_purity_consumers():
+    """ReagentProfile.purity used to be inert: nothing read it, the envelope
+    predictor hard-coded 0.98 and the scorer passed no purity at all."""
+    from peaky.io import local_scoring as LS
+
+    def impurity(ion):
+        return {l: r for _, r, l in ISO.isotope_pattern(ion, min_rel=0.0005,
+                                                        diag_min_rel=0.0005)}["14N"]
+
+    try:
+        assert ISO.label_purity() == ISO.LABEL_PURITY_15N        # the default
+        # the 14N line is (1 - purity)/purity of M0 -- 2.0 % at the 0.98 default ...
+        assert abs(impurity("C11H18^NO2+") - 0.02 / 0.98) < 0.002
+        # ... and a 90 %-pure bottle moves it, in the ENVELOPE PREDICTOR ...
+        assert ISO.set_label_purity(0.90) == 0.90
+        assert abs(impurity("C11H18^NO2+") - 0.10 / 0.90) < 0.005
+        # ... and in the SCORER's predicted envelope (purity unset = the active value)
+        peaks = pd.DataFrame([
+            {"peak_id": "a", "mz": C.ion_mz("C11H14O2", "[M+^NH4]+"), "height": 1e5},
+            {"peak_id": "b", "mz": C.ion_mz("C11H14O2", "[M+^NH4]+") - 0.99703,
+             "height": 1e4},
+        ])
+        def scored_14n_rel(**kw):
+            got = LS.score_candidates_local(peaks, ["C11H14O2"], ["[M+^NH4]+"], **kw)
+            m0 = got.loc[got["is_base"].astype(bool), "theo_mz"].iloc[0]
+            line = got[(got["theo_mz"] - (m0 - 0.99703)).abs() < 0.002]
+            assert len(line) == 1, got[["iso_label", "theo_mz", "rel_abundance"]]
+            return float(line["rel_abundance"].iloc[0])
+
+        assert scored_14n_rel() > 0.08                 # 10 %, not the 2 % default
+        # an explicit purity still wins over the active value
+        assert scored_14n_rel(purity=0.98) < 0.04
+    finally:
+        ISO.set_label_purity(None)
+    assert ISO.label_purity() == ISO.LABEL_PURITY_15N
+
+
 def test_envelope_completion_claims_the_14n_satellite_even_from_a_locked_amine():
     X = "C11H14O2"
     rows = [("p1", C.ion_mz(X, "[M+^NH4]+"), 670_000, X, "[M+^NH4]+"),
