@@ -284,6 +284,44 @@ check("an exception in the run still propagates (window must not swallow it)", c
 check("  -> and is recorded for the window to display", "ValueError" in r.state.error)
 
 
+# the hold vs. the ways a run can end -- seen by a UI that records close(wait=)
+class _Rec:
+    def __init__(self): self.closes = []
+    def push(self, snap): pass
+    def close(self, wait): self.closes.append(wait)
+    def alive(self): return True
+
+
+def _exit_with(exc):
+    rec = _Rec()
+    try:
+        with PG.Reporter("t", log=seen.append, ui=rec, hold=True) as rr:
+            rr("[assign_batch] (1/2) assigning s1 ...")
+            if exc is not None:
+                raise exc
+            rr.finish({"merged_M0": 1})
+    except BaseException as e:      # noqa: BLE001
+        assert isinstance(e, type(exc)), e
+    return rec, rr
+
+
+rec, rr = _exit_with(KeyboardInterrupt())
+check("Ctrl-C: the window is closed WITHOUT waiting", rec.closes == [False], rec.closes)
+check("  -> and no stats panel is shown for an interrupted run", rr.state.finished is False)
+rec, rr = _exit_with(SystemExit(1))
+check("SystemExit: closed without waiting, no stats panel",
+      rec.closes == [False] and rr.state.finished is False, rec.closes)
+rec, rr = _exit_with(None)
+check("a finished run with hold=True waits on the window", rec.closes == [True], rec.closes)
+rec, rr = _exit_with(ValueError("run blew up"))
+check("a failed run holds too (the error panel is there to be read)",
+      rec.closes == [True] and rr.state.finished and "ValueError" in rr.state.error)
+rec = _Rec()
+with PG.Reporter("t", log=seen.append, ui=rec, hold=False) as rr:
+    rr.finish({})
+check("hold=False never waits, finished or not", rec.closes == [False], rec.closes)
+
+
 # ---- 5. enable/disable + headless behaviour ---------------------------------
 import os  # noqa: E402
 
@@ -418,6 +456,92 @@ def test_serial_branch_logs_done_per_sample(monkeypatch):
     for ln in lines:
         st.feed(ln)
     assert (st.samples_done, st.n_samples, st.n_stages) == (3, 3, 3), st.snapshot()
+
+
+# ---- 8. the hold is for a PERSON at a terminal, and it is bounded ------------
+import io  # noqa: E402
+
+
+class _Stream(io.StringIO):
+    """A stdin/stdout stand-in that answers isatty() the way the test wants."""
+    def __init__(self, tty: bool):
+        super().__init__()
+        self._tty = tty
+
+    def isatty(self):
+        return self._tty
+
+
+def _open_headless(monkeypatch, *, stdin_tty: bool, stdout_tty: bool):
+    monkeypatch.setattr(PG, "display_available", lambda: False)    # no Tk anywhere
+    monkeypatch.setattr(sys, "stdin", _Stream(stdin_tty))
+    monkeypatch.setattr(sys, "stdout", _Stream(stdout_tty))
+    return PG.open_progress("t", flag=True, log=seen.append)
+
+
+def test_hold_only_on_an_interactive_tty(monkeypatch):
+    monkeypatch.delenv("PEAKY_PROGRESS_HOLD_S", raising=False)
+    assert _open_headless(monkeypatch, stdin_tty=True, stdout_tty=True).hold is True
+    assert _open_headless(monkeypatch, stdin_tty=False, stdout_tty=True).hold is False
+    assert _open_headless(monkeypatch, stdin_tty=True, stdout_tty=False).hold is False
+    monkeypatch.setenv("PEAKY_PROGRESS_HOLD_S", "0")
+    assert _open_headless(monkeypatch, stdin_tty=True, stdout_tty=True).hold is False
+    monkeypatch.setenv("PEAKY_PROGRESS_HOLD_S", "30")
+    assert _open_headless(monkeypatch, stdin_tty=True, stdout_tty=True).hold is True
+    # an explicit hold=False from the call site is never overridden
+    assert PG.open_progress("t", flag=True, log=seen.append, hold=False).hold is False
+
+
+def test_hold_seconds_parsing(monkeypatch):
+    monkeypatch.delenv("PEAKY_PROGRESS_HOLD_S", raising=False)
+    assert PG.hold_seconds() == PG.HOLD_S_DEFAULT == 600.0
+    for raw, want in (("0", 0.0), ("30", 30.0), ("2.5", 2.5), ("-5", 0.0),
+                      ("  45 ", 45.0), ("ten", 600.0), ("", 600.0)):
+        monkeypatch.setenv("PEAKY_PROGRESS_HOLD_S", raw)
+        assert PG.hold_seconds() == want, (raw, PG.hold_seconds())
+
+
+def test_tk_close_is_bounded(monkeypatch):
+    """TkWindow.close with a stand-in for the Tk thread (one that exits on the
+    queued 'quit', like mainloop does): a hold ends after PEAKY_PROGRESS_HOLD_S
+    even if nobody closes the window, and close() never returns with the UI
+    thread still alive."""
+    import threading
+    import time
+
+    def _window():
+        w = PG.TkWindow("t")
+        w._ok = True
+
+        def _ui():                          # stand-in mainloop
+            while True:
+                kind, _ = w.q.get()
+                if kind == "quit":
+                    return
+        w._thread = threading.Thread(target=_ui, daemon=True)
+        w._thread.start()
+        return w
+
+    monkeypatch.setenv("PEAKY_PROGRESS_HOLD_S", "0.3")
+    w = _window()
+    t = time.monotonic()
+    w.close(wait=True)
+    dt = time.monotonic() - t
+    assert 0.3 <= dt < 3.0, dt
+    assert not w.alive()
+
+    w = _window()
+    t = time.monotonic()
+    w.close(wait=False)
+    assert time.monotonic() - t < 1.0 and not w.alive()
+
+    w = _window()
+    w.close(wait=True, timeout=0.05)        # explicit bound wins over the env
+    assert not w.alive()
+
+    w = PG.TkWindow("t")                    # never started: nothing to close
+    w.close(wait=True)
+    assert not w.alive()
 
 
 def test_all():

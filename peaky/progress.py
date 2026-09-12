@@ -302,18 +302,29 @@ class TkWindow:
     def push(self, snap: dict) -> None:
         self.q.put(("state", snap))
 
-    def close(self, wait: bool) -> None:
-        """`wait=True` keeps the process alive until the user closes the window --
-        the point of a finished run's stats panel is that it can be READ. Ctrl-C
-        during the wait just stops waiting; the run is already complete."""
+    def close(self, wait: bool, timeout: float | None = None) -> None:
+        """Take the window down. `wait=True` keeps it up until the user closes it
+        or `timeout` seconds pass (default `hold_seconds()`, i.e. env
+        `PEAKY_PROGRESS_HOLD_S`) -- the point of a finished run's stats panel is
+        that it can be READ, but never at the price of a process that cannot end
+        on its own. Ctrl-C during the hold, or `wait=False`, closes it now.
+
+        Always ends by joining the UI thread (bounded): the Tcl interpreter must
+        be destroyed on ITS thread before the process exits (see `_teardown`),
+        and a `quit` merely queued for the next 120 ms poll is a race with
+        interpreter shutdown."""
         if not self._ok or not self._thread:
             return
-        if not wait:
-            self.q.put(("quit", None))
+        if wait:
+            try:
+                self._thread.join(hold_seconds() if timeout is None else timeout)
+            except KeyboardInterrupt:
+                pass
+        self.q.put(("quit", None))
         try:
-            self._thread.join()
+            self._thread.join(1.0)
         except KeyboardInterrupt:
-            self.q.put(("quit", None))
+            pass
 
     def alive(self) -> bool:
         return bool(self._ok and self._thread and self._thread.is_alive())
@@ -579,12 +590,17 @@ class Reporter:
         self.state.finished = True
         self._push()
 
-    def close(self) -> None:
-        # Guarded like every other UI call site: teardown runs from __exit__, and
-        # an exception here would REPLACE a real exception from the run itself.
+    def close(self, wait: bool | None = None) -> None:
+        """Close the UI. `wait` defaults to "hold, if the run finished" -- the
+        hold exists so a finished run's numbers can be read, never for an
+        unfinished one. Guarded like every other UI call site: teardown runs
+        from __exit__, and an exception here would REPLACE a real exception
+        from the run itself."""
         if self.ui:
             try:
-                self.ui.close(wait=self.hold and self.state.finished)
+                if wait is None:
+                    wait = self.hold and self.state.finished
+                self.ui.close(wait=bool(wait))
             except Exception:
                 pass
 
@@ -592,6 +608,11 @@ class Reporter:
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None and issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
+            # The user (or the process) wants OUT: no stats panel, no hold --
+            # a Ctrl-C that then waits on a window is a hang with extra steps.
+            self.close(wait=False)
+            return False
         if exc_type is not None and not self.state.finished:
             self.finish(self.state.stats, error=f"{exc_type.__name__}: {exc}")
         self.close()
@@ -605,11 +626,40 @@ def enabled(flag: bool | None = None) -> bool:
     return os.environ.get("PEAKY_PROGRESS", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+HOLD_S_DEFAULT = 600.0
+
+
+def hold_seconds() -> float:
+    """How long a finished run keeps its window up to be read: env
+    `PEAKY_PROGRESS_HOLD_S` in seconds (default 600; 0 = no hold at all).
+    Unparseable -> the default, so a typo can neither hang nor skip the hold."""
+    raw = os.environ.get("PEAKY_PROGRESS_HOLD_S", "").strip()
+    if not raw:
+        return HOLD_S_DEFAULT
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return HOLD_S_DEFAULT
+
+
+def _interactive() -> bool:
+    """A person at a terminal? Only then is anyone there to read a held window."""
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except Exception:           # stdin/stdout replaced or closed (pythonw, pipes)
+        return False
+
+
 def open_progress(title: str, *, flag: bool | None = None, log=print,
                   hold: bool = True, n_samples: int = 0) -> Reporter:
     """The one entry point the CLI uses. Returns a `log`-compatible Reporter --
     disabled, it is a transparent pass-through to `log`, so call sites need no
-    branch of their own."""
+    branch of their own.
+
+    `hold` (keep the finished window up to be read) is honoured only on an
+    interactive terminal and only while `PEAKY_PROGRESS_HOLD_S` > 0: a pipe, a
+    CI job or a skill-driven run has nobody to read a window and must never
+    wait on one, whatever `PEAKY_PROGRESS` says."""
     if not enabled(flag):
         return Reporter(title, log=log, ui=None, hold=False, n_samples=n_samples)
     ui = TkWindow(title)
@@ -617,6 +667,7 @@ def open_progress(title: str, *, flag: bool | None = None, log=print,
         print("[progress] no usable display for a window; "
               "falling back to terminal status", flush=True)
         ui = TerminalStatus()
+    hold = bool(hold and hold_seconds() > 0 and _interactive())
     rep = Reporter(title, log=log, ui=ui, hold=hold, n_samples=n_samples)
     rep._push()
     return rep

@@ -168,14 +168,18 @@ def _add_progress_flag(p) -> None:
 
 
 def _progress_hold_note(prog) -> None:
-    """`--progress` keeps the window up after the run so the stats panel can be
-    READ; the command therefore returns when the window is closed. Say so, or it
+    """`--progress` on an interactive terminal keeps the window up after the run
+    so the stats panel can be READ; the command therefore returns when the
+    window is closed (or after PEAKY_PROGRESS_HOLD_S seconds). Say so, or it
     looks like a hang. Everything above is already on stdout, so closing the
-    window (or Ctrl-C) loses nothing."""
+    window (or Ctrl-C) loses nothing. Prints only when the hold is actually on:
+    `prog.hold` is already False for a pipe / CI / a zero hold."""
     try:
         if prog.ui is not None and prog.hold and prog.ui.alive():
+            from peaky import progress as PG
             print("\n[progress] run complete — close the progress window to exit "
-                  "(or press Ctrl-C).", flush=True)
+                  f"(or press Ctrl-C; it closes itself after {PG.hold_seconds():.0f} s, "
+                  "PEAKY_PROGRESS_HOLD_S).", flush=True)
     except Exception:
         pass
 
