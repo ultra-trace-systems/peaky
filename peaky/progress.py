@@ -287,6 +287,23 @@ def _single_sample_rows(s: dict, elapsed: float | None) -> list:
     return [(k, str(v)) for k, v in rows]
 
 
+def stage_text(s: dict) -> str:
+    """The label beside the stage bar, from a snapshot alone -- no Tk, so it is
+    testable on a headless machine.
+
+    A parallel run has no live stage stream (workers buffer their logs and the
+    parent replays them after the reduce), so the slot says what IS knowable --
+    how many workers are on it -- rather than animating a lie. A serial run
+    names the running stage out of the learned count, and says nothing at all
+    until the first stage of a sample lands."""
+    n = int(s.get("parallel") or 0)
+    if n:
+        return f"{n} worker" + ("s" if n != 1 else "")
+    if not s.get("stage_idx"):
+        return "--"
+    return f"{s.get('stage_name') or '--'} {s['stage_idx']}/{s.get('n_stages') or '?'}"
+
+
 # --------------------------------------------------------------------------- #
 # 3. the Tk window. Owns its OWN thread and its own `Tk()`; the run thread only
 #    ever puts snapshots on a queue, which is the only thread-safe way to drive
@@ -509,14 +526,9 @@ class TkWindow:
         self.pb_sample["value"] = 1000 * s["sample_frac"]
         self.v_sample.set(f"{done}/{n}" if n else "--")
 
-        if s["parallel"]:
-            # honest about what is knowable: no live stage stream in parallel mode
-            self.pb_stage["value"] = 0
-            self.v_stage.set(f"{s['parallel']} workers")
-        else:
-            self.pb_stage["value"] = 1000 * s["stage_frac"]
-            self.v_stage.set(f"{s['stage_name'] or '--'} {s['stage_idx']}/{s['n_stages']}"
-                             if s["stage_idx"] else "--")
+        # stage_frac is already 0 in parallel mode (no live stage stream)
+        self.pb_stage["value"] = 1000 * s["stage_frac"]
+        self.v_stage.set(stage_text(s))
 
         sid = f" · {s['current_sid']}" if s["current_sid"] else ""
         self.v_phase.set(("error: " + s["error"]) if s["error"]

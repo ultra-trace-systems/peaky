@@ -202,6 +202,22 @@ check("empty summary renders placeholders, never raises",
 check("clock formats", (PG._hms(92), PG._hms(3730), PG._hms(None))
       == ("01:32", "1:02:10", "--:--"))
 
+# the stage-bar label: a pure snapshot -> text function, so the branch the UI
+# used to hide (parallel -> "N workers") is checkable with no display at all
+_sn = PG.ProgressState(title="t").snapshot()
+check("stage label before any stage line is '--'", PG.stage_text(_sn) == "--")
+_sn.update(stage_idx=7, n_stages=36, stage_name="pass2")
+check("stage label names the stage out of the count",
+      PG.stage_text(_sn) == "pass2 7/36", PG.stage_text(_sn))
+_sn.update(parallel=5, stage_idx=0)
+check("parallel: the stage slot counts WORKERS (no live stage stream)",
+      PG.stage_text(_sn) == "5 workers", PG.stage_text(_sn))
+_sn.update(parallel=5, stage_idx=7)
+check("  -> even with replayed stage lines behind it", PG.stage_text(_sn) == "5 workers")
+check("  -> and it says 'worker', singular, for one",
+      PG.stage_text({"parallel": 1}) == "1 worker")
+check("stage label survives a snapshot missing every key", PG.stage_text({}) == "--")
+
 
 # ---- 3. THE CONTRACT: the pipeline's literal log strings still parse ---------
 # Read the emitting source and reconstruct the line the f-string produces. If
