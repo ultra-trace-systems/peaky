@@ -162,6 +162,77 @@ check("run_batch's docstring names the constant, not a literal default",
       and f"default {SS.K_MAX})" not in (M.run_batch.__doc__ or ""),
       M.run_batch.__doc__)
 
+# ---------- the assign tool RESOLVES the profile's own gate multiple ----------
+# The MCP path is one of the entry points that resolve the height-gate multiple
+# where the profile is (profiles.apply_height_cutoff_x_edge); nothing else in the
+# suite covers it, so deleting that call from assign_sample left everything green.
+# Mirrors the cmd_assign checks in test_cli.py: register a profile carrying a
+# RAISED multiple, stub the assignment run, and read the multiple off the cfg the
+# run was handed. A missing resolution leaves the field None -> this FAILS (it
+# does not error), which is what a revert should look like.
+import tempfile  # noqa: E402
+
+from peaky.assignment import assign as _A  # noqa: E402
+from peaky.chem import profiles as _PR  # noqa: E402
+
+_seen_assign = {}
+_orig_assign_run = _A.run
+
+
+def _fake_assign_run(sample_id, context="ambient-air", *, cfg=None, **kw):
+    _seen_assign["cfg"] = cfg
+    _seen_assign["context"] = context
+    _seen_assign["adducts"] = kw.get("adducts")
+    return {"ledger": pd.DataFrame({"peak_id": ["p0"], "mz": [100.0076],
+                                    "height": [9.0], "role": ["M0"],
+                                    "neutral_formula": ["C5H8O"],
+                                    "adduct": ["[M-H]-"]}),
+            "stats": {"n_peaks": 1}}
+
+
+_pick = _PR.ReagentProfile(
+    name="TofPickMCP", label="tof picker", polarity="-", adducts=["[M-H]-"],
+    normaliser="tic", reagent_ion_re=None, ranges="C0-10 H0-20",
+    detect_adduct=None, height_cutoff_x_edge=5.0)
+_prof_snap = (dict(_PR.PROFILES), dict(_PR._BY_ALIAS))
+_PR.register(_pick)
+_A.run = _fake_assign_run
+_saved = M.JOBS
+M.JOBS = M.JobManager()
+try:
+    with tempfile.TemporaryDirectory() as _d:
+        aj = M.assign_sample("sid1", reagent="TofPickMCP", output_dir=_d)
+        for _ in range(200):
+            if M.JOBS.get(aj["job_id"]).status in ("done", "error"):
+                break
+            time.sleep(0.02)
+        _ajob = M.JOBS.get(aj["job_id"])
+        check("assign_sample job completes with assign.run stubbed",
+              _ajob.status == "done", _ajob.view())
+        _acfg = _seen_assign.get("cfg")
+        check("assign_sample takes the gate multiple from the reagent profile",
+              _acfg is not None and _acfg.height_cutoff_x_edge == 5.0,
+              vars(_acfg) if _acfg is not None else _ajob.view())
+        check("assign_sample's absolute height_cutoff stays the cps override",
+              _acfg is not None and _acfg.height_cutoff_cps is None, _acfg)
+        _seen_assign.clear()
+        aj2 = M.assign_sample("sid1", reagent="TofPickMCP", height_cutoff=250.0,
+                              output_dir=_d)
+        for _ in range(200):
+            if M.JOBS.get(aj2["job_id"]).status in ("done", "error"):
+                break
+            time.sleep(0.02)
+        _acfg2 = _seen_assign.get("cfg")
+        check("assign_sample(height_cutoff=) gates absolutely, multiple inert",
+              _acfg2 is not None and _acfg2.height_cutoff_cps == 250.0
+              and _acfg2.height_cutoff == 250.0,
+              vars(_acfg2) if _acfg2 is not None else None)
+finally:
+    _A.run = _orig_assign_run
+    M.JOBS = _saved
+    _PR.PROFILES.clear(); _PR.PROFILES.update(_prof_snap[0])
+    _PR._BY_ALIAS.clear(); _PR._BY_ALIAS.update(_prof_snap[1])
+
 # ---------- build_server degrades cleanly without the mcp package ----------
 try:
     import mcp.server.fastmcp  # noqa: F401
