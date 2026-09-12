@@ -114,6 +114,7 @@ check("git_info is best-effort and returns a dict", isinstance(
 # fingerprint differently on two batches. It belongs under counts.admission.
 _cfg_adm = P.PassConfig(occurrence_min="auto")
 _cfg_adm.occurrence_threshold = 0.44          # what stamp_admission sets per run
+_cfg_adm.occurrence_resolved = True           # ...and the marker that says it is final
 _adm_block = {"occurrence_min": "auto", "occurrence_threshold": 0.44, "n_bins": 4025,
               "n_persistent_bins": 512, "n_spectra": 230, "tol_ppm": 6.0}
 m_adm = PV.build_manifest(run_dir=_rd, batch_name="B", dataset="D",
@@ -129,6 +130,13 @@ check("the resolved threshold is recorded instead under output.counts.admission"
       m_adm["output"]["counts"])
 check("occurrence_threshold is listed as a runtime field, next to noise_edge_cps",
       "occurrence_threshold" in PV._RUNTIME_CFG_FIELDS, PV._RUNTIME_CFG_FIELDS)
+# `occurrence_resolved` is the same kind of thing: stamp_admission sets it on the
+# shared cfg so `admissible` can tell "resolved OFF" from "never stamped". It is
+# run state, not a knob, and would otherwise flip the fingerprint of an identical
+# configuration depending on whether the run had reached the gate.
+check("occurrence_resolved is a runtime field too, and stays out of the fingerprint",
+      "occurrence_resolved" in PV._RUNTIME_CFG_FIELDS
+      and "occurrence_resolved" not in m_adm["config"], m_adm["config"])
 # the gate is a module of its own; its version must be pinned like every other
 # assignment module (module_hashes catches edits, module_versions names them)
 from peaky.assignment import admission as _ADM  # noqa: E402

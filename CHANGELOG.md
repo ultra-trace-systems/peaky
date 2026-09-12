@@ -293,7 +293,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`--occurrence-min auto`: Otsu's split of the bimodal bin-occurrence
   distribution, clamped to 0.25–0.75, 0.40–0.55 on every instrument measured;
   a fixed 0.8 was tried first and discarded two-thirds of the recurring weak
-  ions; a number overrides, `0` disables, < 10 spectra switch it off).
+  ions; a number overrides, `0` disables, < 10 spectra switch it off). The
+  resolver's decision is FINAL: when it switches the path off, the gate stays
+  off, so a numeric `--occurrence-min` cannot re-open a path the spectrum count
+  (or an occurrence distribution with no split) closed. That is what makes an
+  empty `admitted_by` mean exactly "not eligible at the gated sites".
   Noise does not recur at a fixed m/z; ions do: on a 230-spectrum mixed-reagent
   TOF batch the old absolute cutoff kept 32 of 4025 bins while ~500 recur in
   > 80 % of spectra at a median 3–4 cps, and 21 highly oxygenated molecules an

@@ -261,6 +261,32 @@ _am = ADM.admissible(bl, cfg_b)
 check("admissible() agrees with the stamp at the boundary",
       (_am == (bl["admitted_by"] != "")).all() and bool(_am[bl["peak_id"] == "on"].iloc[0]))
 
+# ...and they must still agree when the resolver switched the path OFF while the
+# knob is a NUMBER. `admitted_by == ''` is DEFINED as "not admissible at the
+# gated sites", so the gate may not fall back to the raw `occurrence_min` the
+# resolver already rejected -- a 5-spectrum batch would otherwise re-admit every
+# persistent-weak peak at all of them, silently bypassing the MIN_SPECTRA guard.
+_ftab = pd.DataFrame({"mz": [250.0, 260.0], "occurrence": [0.93, 0.93], "n_samples": [5, 5]})
+_ftab.attrs.update(tol_ppm=6.0, n_samples=5)               # < ADM.MIN_SPECTRA
+cfg_f = P.PassConfig(height_cutoff_cps=100.0, occurrence_min=0.6)
+fl = L.new_ledger(pd.DataFrame({"peak_id": ["weak", "bright"], "mz": [250.0, 260.0],
+                                "height": [2.0, 500.0]}))
+_fc = ADM.stamp_admission(fl, cfg_f, _ftab)
+check("too few spectra: the resolver gives no threshold even for a numeric knob",
+      cfg_f.occurrence_threshold is None and cfg_f.occurrence_resolved is True
+      and "spectra" in ADM.why_off(cfg_f, _ftab), (cfg_f.occurrence_threshold, _fc))
+_fm = pd.Series(ADM.admissible(fl, cfg_f).to_numpy(), index=fl["peak_id"])
+check("resolved-OFF path stays off in admissible(): the persistent weak peak is NOT eligible",
+      (ADM.admissible(fl, cfg_f).to_numpy() == (fl["admitted_by"] != "").to_numpy()).all()
+      and not bool(_fm["weak"]) and bool(_fm["bright"]),
+      (list(fl["peak_id"]), list(fl["admitted_by"]), list(_fm)))
+# the documented fallback survives where it is meant to: a cfg NEVER stamped has
+# no resolved decision to honour, so a numeric knob is still read.
+_un = P.PassConfig(height_cutoff_cps=100.0, occurrence_min=0.6)
+_um = pd.Series(ADM.admissible(fl, _un).to_numpy(), index=fl["peak_id"])
+check("an UNSTAMPED cfg still honours a numeric occurrence_min",
+      bool(_um["weak"]) and _un.occurrence_resolved is False)
+
 # ---------------------------------------------------------------------------
 # tiering: persistence gates ENTRY, corroboration gates the TIER. An
 # occurrence-admitted M0 with no isotopologue / channel / series corroboration is

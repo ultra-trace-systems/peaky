@@ -58,8 +58,9 @@ import pandas as pd
 
 from peaky.batch import sampling as SS
 
-__version__ = "0.3.0"  # one batch tolerance (BATCH_TOL_PPM); lookup requires the
-                       # table's tol; why_off() explains a disabled path
+__version__ = "0.4.0"  # one batch tolerance (BATCH_TOL_PPM); lookup requires the
+                       # table's tol; why_off() explains a disabled path;
+                       # admissible() honours a resolved-OFF persistence path
 
 DEFAULT_OCCURRENCE_MIN = "auto"   # Otsu split of the batch's bin-occurrence distribution
 AUTO_MIN, AUTO_MAX = 0.25, 0.75   # clamp for the derived threshold
@@ -217,9 +218,17 @@ def lookup_occurrence(mz, table: pd.DataFrame | None) -> np.ndarray:
 
 
 def admissible(ledger: pd.DataFrame, cfg) -> pd.Series:
-    """Boolean mask: `height >= cfg.height_cutoff` OR `occurrence >= threshold`,
-    where the threshold is `cfg.occurrence_threshold` (resolved by
-    `stamp_admission`) or, on an unstamped cfg, a numeric `cfg.occurrence_min`.
+    """Boolean mask: `height >= cfg.height_cutoff` OR `occurrence >= threshold`.
+
+    The threshold is whatever `stamp_admission` RESOLVED for this run
+    (`cfg.occurrence_threshold`), including its decision to switch the path off
+    (`None`) -- that is what makes `admitted_by == ''` mean "not admissible".
+    The raw `cfg.occurrence_min` knob is consulted only on a cfg that was never
+    stamped (`occurrence_resolved` False), where there is no resolved decision
+    to honour; otherwise a batch that resolved OFF (too few spectra, or an
+    occurrence distribution with no split) would be silently re-admitted at
+    every gated site by the knob the resolver had already rejected.
+
     The persistence path needs an `occurrence` column (stamped by
     `stamp_admission`) and a threshold; otherwise this is exactly the brightness
     gate."""
@@ -227,8 +236,8 @@ def admissible(ledger: pd.DataFrame, cfg) -> pd.Series:
     h = ledger["height"].fillna(0).astype(float) >= hcut if "height" in ledger.columns \
         else pd.Series(False, index=ledger.index)
     thr = getattr(cfg, "occurrence_threshold", None)
-    if thr is None:                       # no stamped run: a numeric occurrence_min still counts
-        om = getattr(cfg, "occurrence_min", 0.0)
+    if thr is None and not getattr(cfg, "occurrence_resolved", False):
+        om = getattr(cfg, "occurrence_min", 0.0)   # unstamped cfg: the knob still counts
         thr = float(om) if not isinstance(om, str) and om and float(om) > 0 else None
     if thr is not None and "occurrence" in ledger.columns:
         occ = pd.to_numeric(ledger["occurrence"], errors="coerce").fillna(-1.0)
@@ -241,7 +250,9 @@ def stamp_admission(ledger: pd.DataFrame, cfg, table: pd.DataFrame | None = None
     without batch context) and `admitted_by` ('height' | 'occurrence' | ''), using
     the cfg's RESOLVED `height_cutoff` (call after the noise edge is stamped) and
     the persistence threshold resolved from `cfg.occurrence_min` + the table
-    (stored on `cfg.occurrence_threshold` for `admissible`). Returns the counts
+    (stored on `cfg.occurrence_threshold`, with `cfg.occurrence_resolved = True`
+    to mark the decision final -- `admissible` then honours it, threshold or no
+    threshold, so `admitted_by == ''` is exactly "not admissible"). Returns the counts
     {height, occurrence, rejected, n_bins, occurrence_min, occurrence_threshold,
     height_gate_cps} (the last = the resolved brightness gate in cps)."""
     ledger["occurrence"] = lookup_occurrence(ledger["mz"].to_numpy(dtype=float), table) \
@@ -250,6 +261,7 @@ def stamp_admission(ledger: pd.DataFrame, cfg, table: pd.DataFrame | None = None
     thr = resolve_threshold(cfg, table)
     try:
         cfg.occurrence_threshold = thr
+        cfg.occurrence_resolved = True   # `thr is None` now means OFF, not "unstamped"
     except AttributeError:
         pass
     by_h = ledger["height"].fillna(0).astype(float) >= hcut

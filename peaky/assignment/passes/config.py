@@ -91,6 +91,12 @@ class PassConfig:
     # run has none -> brightness only).
     occurrence_min: float | str = "auto"
     occurrence_threshold: float | None = None   # runtime: the resolved value, set per run
+    # runtime: True once stamp_admission has resolved the knob against the batch.
+    # It is what separates "the path resolved OFF" (threshold None, admit by
+    # brightness only) from "this cfg was never stamped" (where `admissible`
+    # still honours a numeric occurrence_min) -- without it a batch the resolver
+    # switched off would be re-admitted by the raw knob at every gated site.
+    occurrence_resolved: bool = False
     limit_per_peak: int = 25
     workers: int = 12
     # confidence thresholds (on the RAW min(ion,compound) score)
@@ -211,7 +217,7 @@ class PassConfig:
         # and batch_summary.json still reports the per-file offsets).
         "cal_a", "cal_b", "cal_sigma_trend", "cal_mz_lo", "cal_mz_hi",
         "cal_mu", "cal_sigma",
-        "occurrence_threshold")
+        "occurrence_threshold", "occurrence_resolved")
 
     @property
     def height_cutoff_x_edge_resolved(self) -> float:
