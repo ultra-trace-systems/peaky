@@ -259,7 +259,6 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     override; occurrence 0 = brightness only).
     Returns {ctx, assign, cluster, vk, report_pdf}."""
     from peaky.batch import assign_batch as AB
-    from peaky.assignment import passes as PA
 
     cfg = gate_config(assign_kw.pop("cfg", None), occurrence_min=occurrence_min,
                       height_cutoff_x_edge=height_cutoff_x_edge,
@@ -274,12 +273,10 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         log(f"[batch] fetching full-batch time series for {batch!r} ...")
         ts = load(batch=batch, dataset=dataset)
     prof = P.resolve(reagent, ts, config=config)
-    # One height-gate multiple for the whole run, stamped on the cfg that BOTH
-    # the assignment and the provenance manifest below use (assign_batch.run
-    # re-resolves it onto the same cfg and logs it once).
-    from peaky.assignment import passes as PA
-
-    assign_kw["cfg"] = cfg = assign_kw.get("cfg") or PA.PassConfig()
+    # One height-gate multiple for the whole run, stamped on the SAME cfg the
+    # gate knobs above went onto -- the one the assignment and the provenance
+    # manifest below both use (assign_batch.run re-resolves it onto that cfg
+    # and logs it once).
     P.apply_height_cutoff_x_edge(cfg, prof)
     # The manifest fingerprints a snapshot taken HERE, before the assign runs: it
     # pins the run to the configuration it was GIVEN, never to what the assign
@@ -409,7 +406,6 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     Returns {ctx, assign, groups, group_runs, selection, cluster, vk, report_pdf}.
     """
     from peaky.batch import assign_batch as AB
-    from peaky.assignment import passes as PA
 
     cfg = gate_config(assign_kw.pop("cfg", None), occurrence_min=occurrence_min,
                       height_cutoff_x_edge=height_cutoff_x_edge,
@@ -453,10 +449,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     ts_cols = [c for c in ("sample_item_id", "mz", "height", "datetime_utc")
                if c in ts.columns]
     prof = P.resolve(reagent, ts[ts_cols], config=config)
-    # same one-multiple-per-run rule as run_batch (see there)
-    from peaky.assignment import passes as PA
-
-    assign_kw["cfg"] = cfg = assign_kw.get("cfg") or PA.PassConfig()
+    # same one-multiple-per-run rule as run_batch, onto the same cfg (see there)
     P.apply_height_cutoff_x_edge(cfg, prof)
     cfg_snapshot = copy.deepcopy(cfg)        # pre-assign, as in run_batch (see there)
     pool_label = out_name or pool_name(batches)
