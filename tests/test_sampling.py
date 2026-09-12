@@ -82,6 +82,46 @@ check("select_cover_sample_ids == table ids",
       SS.select_cover_sample_ids(make_batch(spec), k_min=2, min_gain=0.5) == order)
 
 # ---------------------------------------------------------------------------
+# the tolerance is not just a LABEL: BATCH_TOL_PPM must be what the universe was
+# actually binned at. `meta['tol_ppm']` is copied from the parameter, so it stays
+# 6.0 even if the call silently fell back to timeseries.DEFAULT_TOL_PPM -- and a
+# false provenance record is worse than none. Pin the BINS instead.
+#
+# Fixture: 4 well-separated m/z, each with a partner 5.5 ppm away -- BETWEEN the
+# two tolerances. At 6.0 ppm each pair gap-chains into ONE bin (universe 4); at
+# 5.0 ppm the pairs split (universe 8). `a_low` holds every low member, `b_high`
+# every high one, `c_both` all eight -- ids ordered so the 6.0 ppm three-way tie
+# resolves to `a_low` and the 5.0 ppm universe forces `c_both`, making the PICK
+# itself, not only the bin count, report which tolerance was used.
+# ---------------------------------------------------------------------------
+from peaky.batch import timeseries as TS  # noqa: E402
+check("the two tolerances still differ (this test is vacuous if they converge)",
+      TS.DEFAULT_TOL_PPM != SS.BATCH_TOL_PPM, (TS.DEFAULT_TOL_PPM, SS.BATCH_TOL_PPM))
+_lo = [100.0, 150.0, 200.0, 250.0]
+_hi = [m * (1 + 5.5e-6) for m in _lo]            # +5.5 ppm: merges at 6.0, splits at 5.0
+pk_tol = make_batch({"c_both": _lo + _hi, "b_high": _hi, "a_low": _lo})
+n_at_batch = TS.build_matrix(pk_tol, tol_ppm=SS.BATCH_TOL_PPM)[0].shape[1]
+n_at_default = TS.build_matrix(pk_tol, tol_ppm=TS.DEFAULT_TOL_PPM)[0].shape[1]
+check("tol fixture: the two tolerances really give different universes (4 vs 8)",
+      (n_at_batch, n_at_default) == (4, 8), (n_at_batch, n_at_default))
+sel_tol = SS.select_cover_samples(pk_tol, k_min=1, min_gain=0.5)
+mt = sel_tol.attrs["selection"]
+check("tol: the universe is the one BATCH_TOL_PPM bins, not the timeseries default",
+      mt["n_bins_total"] == n_at_batch and mt["n_bins_total"] != n_at_default, mt)
+check("tol: and the PICK follows -- at 6.0 ppm 'a_low' alone covers all 4 bins",
+      sel_tol["sample_item_id"].tolist() == ["a_low"]
+      and sel_tol["bins_new"].tolist() == [4], sel_tol["sample_item_id"].tolist())
+# the parameter is threaded too, not just the constant: ask for the default
+# tolerance and the universe (and the pick) change to the split one.
+sel_tol5 = SS.select_cover_samples(pk_tol, k_min=1, min_gain=0.5,
+                                   tol_ppm=TS.DEFAULT_TOL_PPM)
+m5t = sel_tol5.attrs["selection"]
+check("tol: an explicit tol_ppm reaches build_matrix (8 bins, only 'c_both' has them)",
+      m5t["n_bins_total"] == n_at_default and m5t["tol_ppm"] == TS.DEFAULT_TOL_PPM
+      and sel_tol5["sample_item_id"].tolist() == ["c_both"],
+      (m5t, sel_tol5["sample_item_id"].tolist()))
+
+# ---------------------------------------------------------------------------
 # prevalence gate: a bin seen in ONE sample only never enters the universe, and
 # coverage is computed over the gated universe.
 # ---------------------------------------------------------------------------
