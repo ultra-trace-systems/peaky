@@ -694,7 +694,7 @@ L.commit_assignment(led, "Mp2", neutral_formula="C8H12ClF6NO2S", adduct="[M+CO3]
 L.attach_isotopologue(led, "Mp4", "Mp2", iso_label="37Cl(pair)")
 from peaky.assignment import tiers as _T  # noqa: E402
 _T.apply_tiers(led)
-out = P.complete_isotope_envelopes(led, P.PassConfig(), log=lambda *a: None)
+out = P.complete_isotope_envelopes(led, P.PassConfig(height_cutoff_cps=100.0), log=lambda *a: None)
 check("envelope: silanediol M+2 (395) displaced off its phantom formula",
       L.role_of(led, "Mp2") == L.ROLE_ISO and out["displaced"] >= 1, out)
 check("envelope: 395 re-parented to the silanediol 393",
@@ -713,7 +713,7 @@ L.commit_assignment(ledd, "core", neutral_formula="C10H14O4", adduct="[M+HBr+Br]
                     pass_no=6, method="ladder:gapfill", confidence="Good (ladder)",
                     commentary="di-bromide SOA core")
 _T.apply_tiers(ledd)
-outd = P.complete_isotope_envelopes(ledd, P.PassConfig(), log=lambda *a: None)
+outd = P.complete_isotope_envelopes(ledd, P.PassConfig(height_cutoff_cps=100.0), log=lambda *a: None)
 check("envelope: di-bromide M+2 (358.93) attached to the core",
       L.role_of(ledd, "m2") == L.ROLE_ISO
       and ledd.loc[ledd.peak_id == "m2", "parent_peak_id"].iloc[0] == "core", outd)
@@ -727,7 +727,7 @@ led2 = mk_ledger([("a", 200.0, 1e5), ("b", 202.0, 5e4)])
 commit(led2, "a", "C10H16O4", "C10H15O4-")   # CHO ion, no Br/Cl/Si
 commit(led2, "b", "C9H12O5", "C9H11O5-")      # independent neighbour
 _T.apply_tiers(led2)
-out2 = P.complete_isotope_envelopes(led2, P.PassConfig(), log=lambda *a: None)
+out2 = P.complete_isotope_envelopes(led2, P.PassConfig(height_cutoff_cps=100.0), log=lambda *a: None)
 check("envelope: CHO ion does not claim a coincidental +2 neighbour",
       L.role_of(led2, "b") == L.ROLE_M0 and out2["displaced"] == 0, out2)
 
@@ -740,7 +740,7 @@ L.commit_assignment(led3, "q", neutral_formula="C12H20O8", adduct="[M-H]-",
                     ion_formula="C12H19O8-", ion_score=0.95, ppm_error=0.2,
                     pass_no=1, method="cheminfo+grid", confidence="High",
                     commentary="strong standalone fit")
-outg = P.complete_isotope_envelopes(led3, P.PassConfig(), log=lambda *a: None)
+outg = P.complete_isotope_envelopes(led3, P.PassConfig(height_cutoff_cps=100.0), log=lambda *a: None)
 check("envelope: a High/strong-score victim is NOT displaced (tier-NA safe)",
       L.role_of(led3, "q") == L.ROLE_M0 and outg["displaced"] == 0, outg)
 

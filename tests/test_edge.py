@@ -1,7 +1,8 @@
 """Offline tests for the noise-edge height gate (passes/config.py): the edge is
 the 1st percentile of the sample's picked heights, `cfg.height_cutoff` resolves
-to x_edge * edge, an absolute override wins, and the default keeps every picked
-peak (but the bottom 1 %) eligible on ANY instrument.
+to x_edge * edge, an absolute override wins, the gate FAILS CLOSED (raises) while
+unresolved, and the default keeps every picked peak (but the bottom 1 %)
+eligible on ANY instrument.
 Run: python3 tests/test_edge.py"""
 import sys
 from pathlib import Path
@@ -39,7 +40,17 @@ cfg = P.PassConfig()
 check("PassConfig has NO absolute height_cutoff default (x_edge 1.0, cps None)",
       cfg.height_cutoff_x_edge == 1.0 and cfg.height_cutoff_cps is None
       and cfg.noise_edge_cps is None)
-check("before an edge is stamped the gate is 0 (no gate)", cfg.height_cutoff == 0.0)
+# fail closed: no edge stamped + no override -> there is no gate to resolve, and a
+# silent 0 would un-gate every height-gated pass for an offline caller
+try:
+    cfg.height_cutoff
+    check("unresolved gate RAISES (no edge, no override)", False, "returned a value")
+except RuntimeError as e:
+    check("unresolved gate RAISES (no edge, no override)", "height_cutoff_cps" in str(e), str(e))
+check("absolute override resolves without an edge: PassConfig(height_cutoff_cps=5) -> 5",
+      P.PassConfig(height_cutoff_cps=5).height_cutoff == 5.0)
+_c3 = P.PassConfig(height_cutoff_x_edge=3.0); _c3.noise_edge_cps = 2.0
+check("stamped edge 2 x x_edge 3 -> gate 6", _c3.height_cutoff == 6.0, _c3.height_cutoff)
 cfg.noise_edge_cps = e_tof
 check("height_cutoff property = x_edge * edge (TOF)", np.isclose(cfg.height_cutoff, e_tof))
 check("default gate keeps 99% of picked TOF peaks eligible (old 100 cps kept ~3%)",

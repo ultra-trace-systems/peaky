@@ -364,6 +364,13 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # gate in the passes (cfg.height_cutoff = x_edge * edge): absolute cps
     # thresholds do not transfer between instruments/modes (see passes.config).
     cfg.noise_edge_cps = passes.noise_edge(led["height"]) if "height" in led.columns else None
+    if cfg.noise_edge_cps is None and cfg.height_cutoff_cps is None:
+        # fail closed here, with the sample named, rather than deep inside the
+        # first height-gated pass (PassConfig.height_cutoff raises when unresolved)
+        raise RuntimeError(
+            f"sample {sample_id!r} has no finite peak heights, so its noise edge cannot "
+            "be measured and the height gate cannot be resolved -- pass "
+            "PassConfig(height_cutoff_cps=...) to gate on an absolute value")
     log(f"[run] noise edge {cfg.noise_edge_cps if cfg.noise_edge_cps is None else round(cfg.noise_edge_cps, 3)} cps "
         f"-> height_cutoff {cfg.height_cutoff:.3g} cps "
         + ("(absolute override)" if cfg.height_cutoff_cps is not None

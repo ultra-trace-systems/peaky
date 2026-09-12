@@ -48,7 +48,7 @@ def iso_row(**kw):
     return base
 
 
-CFG = P.PassConfig()
+CFG = P.PassConfig(height_cutoff_cps=100.0)   # offline: explicit absolute gate (no edge stamped)
 
 # ============================================================================
 # (a) arbitration het-iso gate for Si  (mirrors the existing 34S gate)

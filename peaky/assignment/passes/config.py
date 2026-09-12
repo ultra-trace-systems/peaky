@@ -160,10 +160,15 @@ class PassConfig:
     @property
     def height_cutoff(self) -> float:
         """The resolved height gate in cps: the absolute override if given, else
-        `height_cutoff_x_edge` x the sample's noise edge; 0.0 (no gate) before
-        assign.run has stamped an edge."""
+        `height_cutoff_x_edge` x the sample's noise edge. FAILS CLOSED: before
+        assign.run has stamped an edge (and without an override) there is no
+        gate to resolve, and returning 0 here would silently un-gate every
+        height-gated pass -- so this raises instead."""
         if self.height_cutoff_cps is not None:
             return float(self.height_cutoff_cps)
         if self.noise_edge_cps is not None:
             return float(self.height_cutoff_x_edge) * float(self.noise_edge_cps)
-        return 0.0
+        raise RuntimeError(
+            "height gate unresolved: assign.run stamps noise_edge_cps from the "
+            "sample's picked heights; offline callers pass "
+            "PassConfig(height_cutoff_cps=...)")

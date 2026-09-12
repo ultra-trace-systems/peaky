@@ -204,7 +204,7 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
     sigma = getattr(cfg, "cal_sigma", None) or 0.5
     z_acc = getattr(cfg, "cal_z_accept", 2.0)
     floor = getattr(cfg, "tau_low", 0.70)
-    hcut = getattr(cfg, "height_cutoff", 100.0)
+    hcut = cfg.height_cutoff          # resolved gate (raises if unresolved: fail closed)
     rescued = tentative = 0
     for pid, (formula, adduct, lid) in want.items():
         idx = ledger.index[ledger["peak_id"] == pid]
