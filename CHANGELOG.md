@@ -36,7 +36,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   for offline callers. `peaky assign --height-cutoff` becomes that override
   (default none) and `--height-cutoff-x-edge` sets the multiple; the MCP
   `assign_sample(height_cutoff=)` likewise. Per-file `noise_edge_cps` and the
-  resolved `height_cutoff_cps` are recorded in `batch_summary.json`.
+  resolved gate `height_gate_cps` are recorded in `batch_summary.json`
+  (`height_cutoff_cps` in `run_manifest.json['config']` stays the knob).
 
 ### Removed
 

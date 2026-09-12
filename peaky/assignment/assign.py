@@ -471,7 +471,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
         log(f"[run] LEDGER VALIDATION PROBLEMS: {problems}")
     st = ledger.stats(led)
     st["noise_edge_cps"] = cfg.noise_edge_cps
-    st["height_cutoff_cps"] = cfg.height_cutoff
+    st["height_gate_cps"] = cfg.height_cutoff     # RESOLVED gate (the knob is cfg.height_cutoff_cps)
     log(f"[run] stats {json.dumps(st)}")
     return {"ledger": led, "stats": st, "summaries": summaries,
             "prescan": pre.as_dict(), "problems": problems,
