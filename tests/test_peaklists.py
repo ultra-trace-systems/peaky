@@ -145,3 +145,28 @@ def test_parity_not_the_flag_decides_and_a_wrong_flag_warns(tmp_path):
     assert L.formulas == {"C10H16O7", "C10H15NO8"}
     assert L.radicals == {"C10H16NO9", "C10H15O8"}
     assert L.pool() == L.formulas
+
+
+def test_a_salt_or_an_ion_is_skipped_before_the_parity_test(tmp_path):
+    # chemistry.dbe scores an unknown element as divalent (sodium acetate would
+    # come out DBE 1.5, a "radical"), and parse_formula drops charge notation
+    # (the ion would load as a closed-shell neutral): neither may reach a pool
+    (tmp_path / "t.json").write_text(json.dumps({"id": "t", "species": [
+        {"formula": "C2H3NaO2"},                    # sodium acetate
+        {"formula": "[C10H14NO8]-"},                # a bracketed ion
+        {"formula": "C16H36N"},                     # tetrabutylammonium: DBE -0.5
+        {"formula": "C10H16O7"},
+        {"formula": "C10H15O8", "radical": True},
+    ]}), encoding="utf-8")
+    with pytest.warns(UserWarning, match=(r"t\.json: 3 species skipped.*C2H3NaO2: element Na"
+                                          r".*\[C10H14NO8\]-: does not read back as C10H14NO8"
+                                          r".*C16H36N: DBE -0\.5")) as rec:
+        L = RL.load_catalog(str(tmp_path))["t"]
+    assert len(rec) == 1                            # no radical-flag warning on top
+    assert L.skipped == ("C2H3NaO2", "[C10H14NO8]-", "C16H36N")
+    assert L.formulas == {"C10H16O7"}
+    assert L.radicals == {"C10H15O8"}
+
+
+def test_the_bundled_lists_skip_nothing():
+    assert all(L.skipped == () for L in RL.load_catalog().values())
