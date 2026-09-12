@@ -271,6 +271,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   than the iron complexes the source saw. The list goes from 59 species to 50
   (`data_version` 2008.2), the split Mascope's reference seed uses.
 
+- **`peaky assign` unlocks its reference lists.** Only the batch path ever called
+  `active_lists`, so a single-sample run passed `reflists_active=None`: the
+  selection prior was empty, the rescue-verify pass never fired, and the manifest
+  key above was `[]` on the one path that writes a manifest. `reflists.activate`
+  is now the single unlock step (`resolve_context_tags` → `active_lists`, tags
+  returned so the caller can log them) and `cli.cmd_assign`, the MCP
+  `assign_sample` tool and `assign_batch.run` all go through it. A lone sample has
+  no batch name, so it activates the always-active lab-contaminant list and
+  nothing chemistry-specific — `peaky batch` is still the way to unlock a HOM list.
+
 - **A formula is validated before its parity is trusted.** `chemistry.dbe` scores
   an element outside the mass table as divalent — sodium acetate comes out at
   DBE 1.5 and would have pooled as a radical with no message — and
