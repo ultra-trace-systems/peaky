@@ -26,8 +26,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hog a presence objective; per-group achieved coverage is recorded) instead of
   a per-group union. `batch_summary.json` / `run_manifest.json` gain a
   `selection` block (`k`, `n_bins`, `achieved_coverage`, `stop_reason`,
-  `next_gain`, `coverage_by_group`); `tables/selected_samples.csv` is now in
-  pick order with `pick`, `role` (`cover` / `pad`), `bins_new`, `coverage`.
+  `next_gain`, `tol_ppm`, `coverage_by_group`); `tables/selected_samples.csv` is
+  now in pick order with `pick`, `role` (`cover` / `pad`), `bins_new`,
+  `coverage`. `sampling.BATCH_TOL_PPM` (6 ppm) is the one m/z binning tolerance
+  for every batch-level operation — the selector bins on it and
+  `assign_batch.DEFAULT_TOL_PPM` *is* it, so selection and merge bin identically.
 - **Height thresholds in the passes are multiples of the sample's own noise
   edge**, not absolute cps. `assign.run` computes `noise_edge_cps` (the 1st
   percentile of the sample's picked heights) once per sample; `PassConfig.

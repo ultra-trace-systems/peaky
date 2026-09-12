@@ -68,8 +68,9 @@ selected sample_ids (SAMPLING.md)
 
 3. **Gap-cluster** (`_cluster_mz`). Sort by `_mz_adj`; consecutive-gap
    single-linkage: `gaps = diff(mz)/mz · 1e6`, `cluster_id = cumsum(gaps >
-   tol_ppm)` with **`tol_ppm` = `DEFAULT_TOL_PPM` (6.0)**. One cluster ≈ one
-   physical peak across files.
+   tol_ppm)` with **`tol_ppm` = `DEFAULT_TOL_PPM` (6.0 = `sampling.BATCH_TOL_PPM`,
+   the tolerance the selector binned on — see [`SAMPLING.md`](SAMPLING.md))**.
+   One cluster ≈ one physical peak across files.
 
 4. **Pick the consensus row.** Within a cluster, rank by tier
    (`TIER_RANK = {Assigned:2, Candidate:1}`, else 0) then `ion_score`, both
@@ -104,7 +105,7 @@ All in `peaky/batch/assign_batch.py`.
 
 | constant | value | role |
 | --- | --- | --- |
-| `DEFAULT_TOL_PPM` | 6.0 | single-linkage gap tolerance for cross-file m/z clustering |
+| `DEFAULT_TOL_PPM` | 6.0 (`= sampling.BATCH_TOL_PPM`) | single-linkage gap tolerance for cross-file m/z clustering — the same constant the selector bins on |
 | `TIER_RANK` | `{Assigned:2, Candidate:1}` | consensus-row preference (then `ion_score`) |
 | `_M0_COLS` | `[mz, neutral_formula, adduct, tier, ion_score]` | the per-file M0 schema aligned |
 | `run` `amine_r_min` | 0.7 | min trace correlation for the positive amine re-read |

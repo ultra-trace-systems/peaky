@@ -51,6 +51,12 @@ K_MAX = 30             # wall-clock budget (a run that hits it is flagged)
 MIN_GAIN = 0.005       # stop when the next pick adds < this fraction of the universe
 MIN_PREVALENCE = 2     # a bin enters the universe if present in >= this many samples
 
+# The ONE m/z binning tolerance for every batch-level operation: sample selection
+# (the presence cover's bins), the admission table and the merge
+# (`assign_batch.DEFAULT_TOL_PPM` is this constant). Keep selection and merge
+# binning identical: a bin the selector covered must be the bin the merge sees.
+BATCH_TOL_PPM = 6.0
+
 ROLE_COVER = "cover"   # a greedy pick (adds bins_new uncovered bins)
 ROLE_PAD = "pad"       # richest-TIC pad up to k_min after the greedy exhausted the bins
 STOP_GAIN = "gain-floor"
@@ -107,7 +113,7 @@ def _empty(tab: pd.DataFrame, meta: dict) -> pd.DataFrame:
 
 def select_cover_samples(peaks: pd.DataFrame, *, k_min: int = K_MIN, k_max: int = K_MAX,
                          min_gain: float = MIN_GAIN, min_prevalence: int = MIN_PREVALENCE,
-                         group_col: str | None = None, tol_ppm: float | None = None,
+                         group_col: str | None = None, tol_ppm: float = BATCH_TOL_PPM,
                          sample_col: str = "sample_item_id", **table_kw) -> pd.DataFrame:
     """Greedy presence set-cover over the batch's m/z bins (THE RULE; module note).
 
@@ -122,8 +128,10 @@ def select_cover_samples(peaks: pd.DataFrame, *, k_min: int = K_MIN, k_max: int 
       <group_col>  the sample's group, when `group_col` is given
 
     and `.attrs['selection']` = {method, k, n_samples, n_bins, n_bins_total,
-    n_bins_gated, min_prevalence, achieved_coverage, stop_reason, next_gain,
-    k_min, k_max, min_gain[, coverage_by_group, picks_by_group]}.
+    n_bins_gated, min_prevalence, tol_ppm, achieved_coverage, stop_reason,
+    next_gain, k_min, k_max, min_gain[, coverage_by_group, picks_by_group]}.
+    `tol_ppm` is the m/z binning tolerance (default `BATCH_TOL_PPM`, the merge's
+    tolerance too -- pass the same value to both).
 
     Stop reasons: 'gain-floor' (next pick < min_gain of the universe, k >= k_min),
     'k_max' (budget hit while still gaining -- WARN, see `k_max_warning`),
@@ -143,14 +151,15 @@ def select_cover_samples(peaks: pd.DataFrame, *, k_min: int = K_MIN, k_max: int 
     n = len(tab)
     meta: dict = {"method": "presence-cover", "k": 0, "n_samples": int(n),
                   "n_bins": 0, "n_bins_total": 0, "n_bins_gated": 0,
-                  "min_prevalence": min_prevalence, "achieved_coverage": 0.0,
-                  "stop_reason": STOP_EXHAUSTED, "next_gain": 0.0,
-                  "k_min": k_min, "k_max": k_max, "min_gain": float(min_gain)}
+                  "min_prevalence": min_prevalence, "tol_ppm": float(tol_ppm),
+                  "achieved_coverage": 0.0, "stop_reason": STOP_EXHAUSTED,
+                  "next_gain": 0.0, "k_min": k_min, "k_max": k_max,
+                  "min_gain": float(min_gain)}
     if n == 0:
         return _empty(tab, meta)
 
-    kw = {"tol_ppm": tol_ppm} if tol_ppm is not None else {}
-    mat, _bin_mz = TS.build_matrix(peaks, sample_col=sample_col, **kw)  # samples x bins
+    mat, _bin_mz = TS.build_matrix(peaks, sample_col=sample_col,
+                                   tol_ppm=float(tol_ppm))   # samples x bins
     if mat.shape[1] == 0:
         return _empty(tab, meta)
     A_all = (mat > 0).to_numpy()                       # presence; NaN -> False

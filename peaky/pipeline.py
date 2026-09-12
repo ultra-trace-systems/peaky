@@ -122,7 +122,7 @@ def run(*, batch: str | None = None, dataset: str | None = None,
     prof = P.resolve(reagent, pk)
     n_samples = pk["sample_item_id"].nunique() if "sample_item_id" in pk.columns else None
     assign_samples = SS.select_cover_samples(pk, k_min=k_min, k_max=k_max,
-                                             min_gain=min_gain)
+                                             min_gain=min_gain, tol_ppm=SS.BATCH_TOL_PPM)
     out: dict = {"profile": prof, "peaks": pk, "n_samples": n_samples,
                  "assign_samples": assign_samples,
                  "assign_sample_ids": assign_samples["sample_item_id"].tolist()
@@ -371,7 +371,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
         f"{ts[group_by].nunique()} groups by {group_by!r}")
 
     prov = SS.select_cover_samples(ts, group_col=group_by, k_min=k_min, k_max=k_max,
-                                   min_gain=min_gain)
+                                   min_gain=min_gain, tol_ppm=SS.BATCH_TOL_PPM)
     selection = dict(prov.attrs.get("selection", {}))
     union = prov["sample_item_id"].tolist()
     # every group gets a report, picked-from or not (a group can be fully covered

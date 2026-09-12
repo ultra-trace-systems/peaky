@@ -32,9 +32,11 @@ from peaky import paths as PT
 from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
 
-__version__ = "0.3.0"  # + sample-level process parallelism (--jobs)
+__version__ = "0.4.0"  # batch_summary: selection.tol_ppm + per_file height_gate_cps
 
-DEFAULT_TOL_PPM = 6.0
+# the merge's m/z tolerance IS the selector's binning tolerance (one constant for
+# every batch-level binning; see sampling.BATCH_TOL_PPM)
+DEFAULT_TOL_PPM = SS.BATCH_TOL_PPM
 TIER_ASSIGNED = "Assigned"
 TIER_RANK = {"Assigned": 2, "Candidate": 1}
 _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score"]
@@ -374,7 +376,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                              "(mz + height per peak): pass ts_peaks= (the batch "
                              "time series) or a per-peak peaks=")
         sel = SS.select_cover_samples(src, k_min=k_min, k_max=k_max,
-                                      min_gain=min_gain, min_prevalence=min_prevalence)
+                                      min_gain=min_gain, min_prevalence=min_prevalence,
+                                      tol_ppm=tol_ppm)      # = the merge's tolerance
         selection = dict(sel.attrs.get("selection", {}))
         sample_ids = sel["sample_item_id"].tolist()
         sel.to_csv(os.path.join(TAB, "selected_samples.csv"), index=False)

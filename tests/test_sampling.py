@@ -70,6 +70,11 @@ check("cover: meta records method/k/n_bins/achieved_coverage/stop_reason",
       meta["method"] == "presence-cover" and meta["k"] == len(sel)
       and meta["n_bins"] == 83 and np.isclose(meta["achieved_coverage"], 1.0)
       and meta["stop_reason"] in (SS.STOP_GAIN, SS.STOP_EXHAUSTED), meta)
+check("cover: meta records the binning tolerance = BATCH_TOL_PPM (the merge's too)",
+      meta["tol_ppm"] == SS.BATCH_TOL_PPM == 6.0, meta.get("tol_ppm"))
+from peaky.batch import assign_batch as _AB  # noqa: E402
+check("assign_batch.DEFAULT_TOL_PPM IS sampling.BATCH_TOL_PPM (selection == merge binning)",
+      _AB.DEFAULT_TOL_PPM == SS.BATCH_TOL_PPM)
 check("cover: schema has sample_item_id/role/pick/bins_new/coverage",
       {"sample_item_id", "role", "pick", "bins_new", "coverage"} <= set(sel.columns),
       list(sel.columns))

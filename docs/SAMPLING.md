@@ -13,7 +13,9 @@ the selector bins on).
 per-sample, so a synthetic union spectrum can't be scored.
 
 > Keep this in sync with the code. Every threshold below is a named constant in
-> `sampling.py`; if you change one there, change it here.
+> `sampling.py`; if you change one there, change it here. `BATCH_TOL_PPM` is
+> shared with the merge (`assign_batch.DEFAULT_TOL_PPM` *is* it) — selection and
+> merge must bin identically, so change it in one place only.
 
 ---
 
@@ -62,8 +64,10 @@ per-peak batch table (sample_item_id, mz, height[, datetime_utc, name])
 1. **`sample_table`.** Collapse to one row per sample: `sample_item_id`,
    `datetime_utc`, `sample_item_name`, `tic` (= Σ heights), `n_peaks`.
 
-2. **Bin.** `timeseries.build_matrix` gap-clusters every peak by m/z (6 ppm) and
-   pivots to a samples × bins height matrix. Presence = `height > 0`.
+2. **Bin.** `timeseries.build_matrix` gap-clusters every peak by m/z at
+   `BATCH_TOL_PPM` (6 ppm — passed explicitly; it is also the merge's tolerance,
+   so a bin the selector covered is the bin the merge sees) and pivots to a
+   samples × bins height matrix. Presence = `height > 0`.
 
 3. **Universe (the prevalence gate).** A bin enters the universe if it is present
    in **≥ `MIN_PREVALENCE` (2) samples**. There is **no height floor**: the
@@ -119,7 +123,7 @@ mirrors them for `batch` and `pool`.
 | `K_MIN` | 6 | picks taken before the marginal-gain stop applies; pad target |
 | `MIN_GAIN` | 0.005 | stop when the next pick adds < this fraction of the universe |
 | `K_MAX` | 30 | budget; hitting it while still gaining → `stop_reason='k_max'` + warning |
-| `build_matrix` `tol_ppm` (reused) | 6.0 | m/z gap-clustering tolerance for the bins |
+| `BATCH_TOL_PPM` | 6.0 | m/z gap-clustering tolerance for the bins — the one tolerance for every batch-level binning (selection, admission, merge: `assign_batch.DEFAULT_TOL_PPM = BATCH_TOL_PPM`); recorded as `selection.tol_ppm` |
 
 ---
 
@@ -144,7 +148,7 @@ mirrors them for `batch` and `pool`.
 | `select_cover_samples` | selected `sample_table` rows in pick order: `pick`, `role ∈ {cover, pad}`, `bins_new`, `coverage` (+ the group column); `.attrs['selection']` = the meta dict |
 | `select_cover_sample_ids` | just the `sample_item_id`s (pick order) |
 | `tables/selected_samples.csv` | the chosen subset written by `assign_batch.run` (the pool writes it from its own selection table, plus `selection_provenance.csv` at the run root) |
-| `batch_summary.json['selection']` | `method, k, n_samples, n_bins, n_bins_total, n_bins_gated, min_prevalence, achieved_coverage, stop_reason, next_gain, k_min, k_max, min_gain[, coverage_by_group, picks_by_group]` — also copied into `run_manifest.json['output']['counts']` |
+| `batch_summary.json['selection']` | `method, k, n_samples, n_bins, n_bins_total, n_bins_gated, min_prevalence, tol_ppm, achieved_coverage, stop_reason, next_gain, k_min, k_max, min_gain[, coverage_by_group, picks_by_group]` — also copied into `run_manifest.json['output']['counts']` |
 | `k_max_warning(meta)` / `describe(meta)` | the warning text / one-line log summary the callers print |
 
 ---
@@ -196,4 +200,4 @@ modes of one instrument. Selection is deterministic (identical picks on re-run).
 | `select_cover_samples` | THE RULE: greedy presence set-cover with the marginal-gain stop (+ per-group coverage) |
 | `select_cover_sample_ids` | id-list convenience wrapper |
 | `k_max_warning` / `describe` | the warning text / log line for a selection meta dict |
-| `timeseries.build_matrix` (reused) | the samples × m/z-bin matrix the cover bins on |
+| `timeseries.build_matrix` (reused, at `BATCH_TOL_PPM`) | the samples × m/z-bin matrix the cover bins on |
