@@ -96,18 +96,18 @@ finally:
 
 # ---- reagent resolution: explicit profile name needs NO network --------------
 ns = SimpleNamespace(adducts=None, reagent="Br", context=None, sample_id="X", no_cache=False)
-ad, ctx, note, pur = cli._resolve_reagent(ns)
+ad, ctx, note = cli._resolve_reagent(ns)
 check("resolve --reagent Br -> Br adducts", ad == list(profiles.BR.adducts), ad)
 check("resolve --reagent Br -> Br context", ctx == profiles.BR.context, ctx)
 check("resolve --reagent Br -> labelled note", "Br" in note, note)
 
 ns = SimpleNamespace(adducts=None, reagent="uronium", context=None, sample_id="X", no_cache=False)
-ad, ctx, note, pur = cli._resolve_reagent(ns)
+ad, ctx, note = cli._resolve_reagent(ns)
 check("resolve alias 'uronium' -> Ur context", ctx == profiles.UR.context, ctx)
 
 # explicit --adducts overrides reagent, no network
 ns = SimpleNamespace(adducts=["[M+Na]+"], reagent="auto", context="chamber", sample_id="X", no_cache=False)
-ad, ctx, note, pur = cli._resolve_reagent(ns)
+ad, ctx, note = cli._resolve_reagent(ns)
 check("explicit --adducts wins", ad == ["[M+Na]+"] and ctx == "chamber", (ad, ctx))
 
 # with_profile= is opt-in: the 3-tuple callers above are untouched, and the 4th
@@ -120,6 +120,13 @@ check("with_profile=True appends the resolved profile",
 ns = SimpleNamespace(adducts=["[M+Na]+"], reagent="auto", context=None, sample_id="X", no_cache=False)
 check("forced --adducts surfaces NO profile (nothing to read a multiple from)",
       cli._resolve_reagent(ns, with_profile=True)[3] is None)
+
+# the labelled-reagent isotopic purity rides on that same profile -- cmd_assign
+# reads it off the 4th item rather than from a 4-tuple of its own.
+ns = SimpleNamespace(adducts=None, reagent="NO3_15N", context=None, sample_id="X", no_cache=False)
+_pr = cli._resolve_reagent(ns, with_profile=True)[3]
+check("a labelled profile still surfaces its purity through with_profile=",
+      _pr is not None and _pr.purity == profiles.NO3_15N.purity, getattr(_pr, "purity", None))
 
 # ---- friendly server-error hints ---------------------------------------------
 check("403 -> WAF hint", "WAF" in (cli._friendly_server_error(RuntimeError("HTTP 403 Attention Required")) or ""))
