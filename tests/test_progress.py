@@ -383,6 +383,11 @@ for _name, _txt in (("README.md", (ROOT / "README.md").read_text()),
           "interactive terminal" in _txt or "a tty" in _txt)
     check(f"{_name}: Ctrl-C closes the window at once", "Ctrl-C" in _txt)
     check(f"{_name}: macOS falls back to the terminal status", "macOS" in _txt)
+    # `peaky assign` is the one-sample case: its bars DO fill, but an ETA over
+    # completed samples cannot exist for it. Undocumented, a missing ETA reads
+    # as the same bug the filled bars just stopped being.
+    check(f"{_name}: says why a single-sample run shows no ETA",
+          "completes when the run does" in _txt)
 check("the --progress bullets are under [Unreleased], not a released version",
       "PEAKY_PROGRESS_HOLD_S" in CHANGELOG.split("## [Unreleased]")[1].split("\n### [")[0])
 check("--progress --help names the hold env var",

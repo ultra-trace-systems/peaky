@@ -197,7 +197,9 @@ samples across `N` worker processes — ~3.5× faster on multicore, output ident
 to a serial run; default is your physical-core count, `--jobs 1` is the serial
 path. `--progress` (or `PEAKY_PROGRESS=1`) opens a live progress window —
 sample/stage bars, elapsed + ETA, and the run's stats + total runtime when it
-finishes. **Only on an interactive terminal** does it then stay up so those
+finishes. The ETA is extrapolated over completed samples, so a single-sample
+`peaky assign` shows elapsed alone (its one sample completes when the run does);
+its bars still fill. **Only on an interactive terminal** does it then stay up so those
 numbers can be read, and only until you close it, press Ctrl-C (which closes it
 at once), or `PEAKY_PROGRESS_HOLD_S` seconds pass (default 600; `0` disables the
 hold) — a pipe, a CI job or a skill-driven run never waits on a window.

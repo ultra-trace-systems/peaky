@@ -305,6 +305,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   untouched; `PEAKY_PROGRESS=1` also enables it. Everything in the window is also
   on stdout, so nothing is lost by never seeing it.
 
+  **`peaky assign` is a one-sample run and reports as one.** Its samples bar
+  reaches 1/1 and its stage bar fills when `assign.run` returns: the `(i/N) done`
+  line that drives both comes from `assign_batch`, which that path never goes
+  through, so the command marks its own sample complete. It shows **no ETA** —
+  an ETA is extrapolated over completed samples, and the only sample here
+  completes when the run does; the window omits the field rather than printing a
+  clock that cannot move.
+
   **The hold is for a person at a terminal, and it is bounded.** A finished run
   keeps its window up so the stats panel can be READ — but only when stdin and
   stdout are both a tty, and only until you close the window, press Ctrl-C, or
