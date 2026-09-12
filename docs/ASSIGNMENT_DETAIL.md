@@ -177,7 +177,7 @@ Pre-calibration (`cal_mu=None`) the center is 0 ppm. The method suffix (e.g. `se
 **Purpose**: assign and **lock** the high-confidence CHO/CHON backbone before calibration.
 
 **Flow:**
-1. `_target_peaks` = unexplained peaks with `height ≥ height_cutoff (100.0 cps)`.
+1. `_target_peaks` = unexplained peaks with `height ≥ height_cutoff` (the resolved gate: `height_cutoff_x_edge` × the sample's noise edge, 1× by default, or an absolute `height_cutoff_cps` override).
 2. `build_ranges(profile, pre, include_N=True)` → CHO(N) box; C capped at `min(grid_c_max, max(12, est_max_C+4))`.
 3. `_enumerate` → candidates via `candidates_for_peaks` (grid at `search_ppm=3.0`) + optional cheminfo (`use_cheminfo`, default False).
 4. `_context_filter` prunes against the profile's O/DBE/H/N/Cl/Br/I ceilings.
@@ -564,7 +564,7 @@ A reference list is used in **three** places, all soft and provenance-tagged (a 
 | `cleanup.py` | Pass-7 residual reclassification: ringing artifacts, bromide clusters, reagent-halocarbon relabel, isotope-gated recovery, satellite/envelope reclaim, fluorine demotion, carbon-cluster demotion, reagent-N re-read (HC via N-cluster → protonated N-heterocycle), amine re-read |
 | `isotopes.py` | Per-atom isotope-distribution convolution → predicted envelope `(dmass, rel, label)` |
 | `assign_batch.py` | Per-file assignment + offset-aware m/z merge into the merged ledger; jitter report |
-| `sampling.py` | Sample selection: time-grid (5 + max-TIC) and brightest-coverage |
+| `sampling.py` | Sample selection: greedy presence set-cover over the batch's m/z bins with a marginal-gain stop (`docs/SAMPLING.md`) |
 | `timeseries.py` | Matrix binning, reagent normalization, native cadence, TS annotation/demotion, reproducible single-compound trace |
 | `cluster.py` | Correlation, complete-linkage clustering, merge, flat-split, big-changers, panel median |
 | `clustering.py` | Cluster orchestrator: assigned + unassigned funnel, channel-agreement QC, `clusters_summary.json` |
@@ -626,6 +626,6 @@ DEGENERACY → TIERS (apply_tiers; stamp ppm_error_cal) → post-tier demotes:
 VALIDATE invariants + STATS  →  per-sample ledger
 ```
 
-**Batch layer** (`assign_batch.run`): select samples (5 time-grid + max-TIC, or brightest-coverage) → run the per-sample chain above for each → estimate per-file offset → `align()` clusters M0s by offset-corrected m/z (6 ppm), best by tier→score, flags formula disagreement → merged ledger → (positive uronium) amine re-read → cluster_batch + Van Krevelen + 12-section PDF, all under a deterministic content epoch.
+**Batch layer** (`assign_batch.run`): select samples (greedy presence set-cover over the batch's m/z bins, marginal-gain stop, `BATCH_TOL_PPM` = the merge tolerance) → run the per-sample chain above for each → estimate per-file offset → `align()` clusters M0s by offset-corrected m/z (6 ppm), best by tier→score, flags formula disagreement → merged ledger → (positive uronium) amine re-read → cluster_batch + Van Krevelen + 12-section PDF, all under a deterministic content epoch.
 
 **Pass count**: pass 0 (known) + pass 1 (backbone) + pass 2 (GKA) + pass 3 (contaminants/clusters) + pass 4 (residual) + pass 5 (completion) + pass 6 (ladder) + pass 7 (cleanup) = **8 numbered stages**, with the isotope-envelope completion running 3 times and the post-run audits, composites, degeneracy, and tiering interleaved as shown.

@@ -518,9 +518,7 @@ def cover(ctx, pdf):
     fig.text(0.08, 0.895, batch, fontsize=14, color=INK)
     _bsel = (ctx.get("batch") or {}).get("selection") or {}
     _pipe = ("single-sample" if ctx.get("n_files", 1) <= 1
-             else "presence-cover" if _bsel.get("method") == "presence-cover"
-             else "brightest-coverage" if str(ctx.get("batch", {}).get("select")) == "brightest"
-             else "representative-sample")
+             else _bsel.get("method") or "batch")   # the recorded selector, never a hard-coded rule
     fig.text(0.08, 0.872, f"{ctx['label']} · {_pipe} pipeline", fontsize=11, color=GREY)
     meta = ctx.get("version", "")
     if ctx.get("generated"):
@@ -564,7 +562,6 @@ def cover(ctx, pdf):
                              f"unexplained {rf['unexplained']*100:.0f}%")]
     nf = ctx.get("n_files", 1)
     bsel = (ctx.get("batch") or {}).get("selection") or {}
-    sel = str(ctx.get("batch", {}).get("select", "representative"))
     if nf <= 1:
         sel_txt = "Single sample assigned (no merge)."
     elif bsel.get("method") == "presence-cover":
@@ -575,11 +572,9 @@ def cover(ctx, pdf):
                    + (f" (budget k_max={bsel.get('k_max')} hit while still gaining — "
                       "coverage is incomplete)" if bsel.get("stop_reason") == "k_max" else "")
                    + "; merged by m/z.")
-    elif sel == "brightest":
-        sel_txt = (f"{nf} files: brightest-coverage selection — each significant m/z bin "
-                   "assigned in the sample where it is brightest, merged by m/z.")
-    else:
-        sel_txt = (f"{nf} files: 5 evenly time-spaced + the max-TIC sample, merged by m/z.")
+    else:                                   # a run folder without a selection record
+        sel_txt = (f"{nf} files assigned and merged by m/z (this run's batch_summary.json "
+                   "carries no selection record).")
     head += [("gap", 1), ("h", "Samples assigned"), ("gap", 0.3), ("b", sel_txt)]
     for name, role in ctx.get("samples", [])[:8]:
         head.append(("m", f"   {name}   [{role}]"))
@@ -1069,15 +1064,40 @@ def clusters(ctx, pdf):
             _image_page(pdf, p, "")
 
 
+def _selection_lines(ctx) -> list:
+    """The Methods-page bullet for how the assigned subset was chosen, rendered
+    from `batch_summary.json['selection']` (the recorded selector -- never a
+    hard-coded rule, so the page cannot go stale against the code)."""
+    if ctx.get("n_files", 1) <= 1:
+        return [("b", "• Single sample assigned: no subset selection, no merge.")]
+    b = (ctx.get("batch") or {}).get("selection") or {}
+    if b.get("method") != "presence-cover":
+        return [("b", "• Sample subset: the assigned files were merged by m/z (this run's"),
+                ("b", "  batch_summary.json carries no selection record).")]
+    out = [
+        ("b", f"• Sample selection: greedy presence set-cover — k = {b.get('k', '?')} of "
+              f"{b.get('n_samples', '?')} samples cover {b.get('achieved_coverage', 0):.0%} of the"),
+        ("b", f"  {b.get('n_bins', '?')} m/z bins present in ≥{b.get('min_prevalence', 2)} samples "
+              f"(no height floor; bins at {b.get('tol_ppm', '?')} ppm); stopped on "
+              f"'{b.get('stop_reason', '?')}'"),
+        ("b", f"  (k_min {b.get('k_min', '?')}, k_max {b.get('k_max', '?')}, min gain "
+              f"{b.get('min_gain', 0):.1%} of the bins); then merged by m/z — a single averaged"),
+        ("b", "  file misses analytes present only part of the run."),
+    ]
+    if b.get("stop_reason") == "k_max":
+        out.append(("b", f"  WARNING: the k_max={b.get('k_max')} budget bound while the batch was still "
+                         f"gaining ({b.get('next_gain', 0):.2%} of the bins per extra sample) — "
+                         "coverage is incomplete; raise --k-max."))
+    return out
+
+
 def methods(ctx, pdf):
     import matplotlib.pyplot as plt
     fig = plt.figure(figsize=A4)
     fig.text(0.08, 0.93, "Methods & caveats", fontsize=15, weight="bold", color=INK)
     lines = [
         ("h", "Pipeline"), ("gap", 0.3),
-        ("b", "• Representative-sample rule: assign 5 evenly time-spaced samples + the"),
-        ("b", "  max-TIC sample per batch, then merge by m/z — a single averaged file"),
-        ("b", "  misses analytes present only part of the run."),
+        *_selection_lines(ctx),
         ("b", "• Each file: multi-pass formula assignment, server isotope-scored matching"),
         ("b", "  (match_compounds), isotope-envelope completion, calibrated tiering."),
         ("b", "• Clusters: log-correlation (raw or reagent-normalised) of the full-batch"),

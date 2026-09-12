@@ -158,8 +158,9 @@ def list_batches(client, dataset: str | None = None) -> pd.DataFrame:
 def fetch_batch_samples(client, batch: str, *, dataset: str | None = None,
                         drop_columns=None) -> pd.DataFrame:
     """Per-sample table for a batch (one row per sample). Carries `sample_item_id`,
-    `sample_item_name`, `datetime_utc`, `tic`, `polarity`, ... — enough for
-    representative-sample selection WITHOUT loading every peak."""
+    `sample_item_name`, `datetime_utc`, `tic`, `polarity`, ... — the sample
+    roster, WITHOUT loading every peak. (Cover selection needs the per-PEAK table;
+    this one cannot be binned -- see sampling.is_per_peak.)"""
     sl = client.samples.list(batch=batch, dataset=dataset,
                              drop_columns=[] if drop_columns is None else drop_columns)
     if sl is None or not len(sl):

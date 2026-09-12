@@ -9,9 +9,10 @@ description: >-
   match_compounds; produces an 11-sheet tiered Excel (Assigned / Candidates /
   below-assignability) with commentary, close alternatives, per-isotopologue
   scores, a peak-ownership audit, and an interactive rotating-GKA widget. Also runs
-  a representative-sample BATCH pipeline (5 time-spaced + max-TIC samples assigned
-  and merged), time-series correlation clustering, a full Van Krevelen, and a
-  standard iterable PDF assignment report. Can also PUBLISH a finished ledger
+  a BATCH pipeline (a greedy presence set-cover picks the samples that together
+  hold the batch's m/z bins, assigned and merged), time-series correlation
+  clustering, a full Van Krevelen, and a standard iterable PDF assignment
+  report. Can also PUBLISH a finished ledger
   back into Mascope as a first-class assignment run, so a peaky run sits beside
   the in-app engine's on the same sample and the two can be compared where they
   disagree. Triggers: "assign formulas", "peak
@@ -198,12 +199,14 @@ can't refute an off-grid P) standing in for the 2nd channel.
 ### Key flags
 
 `--ppm` (m/z trust, default 1.0) · `--search-ppm` (enumeration tol, 3.0) ·
-`--height-cutoff` (cps, 100) · `--no-pass2/3/4` · `--no-cache`.
+`--height-cutoff` (absolute cps override; default = 1x the sample's own noise
+edge) · `--height-cutoff-x-edge` (that multiple, 1.0) · `--no-pass2/3/4` ·
+`--no-cache`.
 
-## Representative-sample batch pipeline (assign a whole batch, not one file)
+## Batch pipeline (assign a whole batch, not one file)
 
 A single averaged file misses analytes present only part of a run. The batch
-pipeline assigns a **representative subset and merges by m/z**:
+pipeline assigns a **presence-cover subset and merges by m/z**:
 
 - **`sampling.select_cover_samples(peaks)`** — THE RULE: greedy presence set-cover
   over the batch's m/z bins (universe = bins present in ≥2 samples, no height

@@ -403,7 +403,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                  batch=pool_label, sample_ids=union, selection_meta=selection,
                  out_dir=ctx.out_dir, amine_r_min=amine_r_min, n_jobs=n_jobs,
                  log=log, **assign_kw)
-    # the report's representative-sample section reads tables/selected_samples.csv;
+    # the report's selected-samples section reads tables/selected_samples.csv;
     # the sample_ids= path skips AB.run's own writer, so emit it from the union prov.
     _write_selected_samples(ctx.out_dir, prov)
     gen = generate_report(ctx, ts[ts_cols], subject=subject, do_report=do_report, log=log)

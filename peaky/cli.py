@@ -727,7 +727,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "from the regex)")
     pp.add_argument("--group-by", default="sample_batch_name",
                     help="pooled-peaks column that splits groups for the per-group "
-                         "brightest union + per-group reports (default sample_batch_name)")
+                         "coverage record + per-group reports (default sample_batch_name)")
     pp.add_argument("--out-dir", default=None,
                     help="base output dir for the versioned run folders. Default: "
                          "$PEAKY_OUTPUT_DIR else ~/peaky-output")

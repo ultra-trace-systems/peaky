@@ -39,8 +39,9 @@ Prefer to do it by hand? Follow **[QUICKSTART.md](QUICKSTART.md)**, or the
   annotation. Produces a tiered Excel (Assigned / Candidate / below-assignability)
   with commentary, close alternatives, per-isotopologue scores, and a peak-ownership
   audit, plus an interactive rotating-GKA widget.
-- **Batch pipeline** — assigns a representative subset (5 time-spaced + max-TIC
-  samples), merges them, then builds time-series correlation clusters, a full
+- **Batch pipeline** — assigns the presence set-cover subset (the samples that
+  together hold the batch's m/z bins, chosen greedily with a marginal-gain stop),
+  merges them, then builds time-series correlation clusters, a full
   Van Krevelen, and an iterable PDF report.
 - **Reagent-aware** — bromide (Br⁻), urea/uronium (Ur⁺), and nitrate (¹⁴N / ¹⁵N)
   CIMS reagents are built in; add your own with a small JSON/TOML file, no code changes.
@@ -172,9 +173,9 @@ peaky list samples  --batch "<your batch>" --dataset "<your workspace>"
 
 # one sample
 peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto> \
-    --height-cutoff 100 --output-dir ~/peaky-output/<name>
+    --output-dir ~/peaky-output/<name>
 
-# a whole batch (representative subset -> merge -> clusters -> Van Krevelen -> PDF)
+# a whole batch (presence-cover subset -> merge -> clusters -> Van Krevelen -> PDF)
 peaky batch  --batch "<your batch>" --dataset "<your workspace>" \
     --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto> --out-dir ~/peaky-output --jobs 6
 
@@ -209,7 +210,7 @@ module map, and chemistry rules: **[SKILL.md](SKILL.md)**.
 ## Validation
 
 Peaky is validated end-to-end on a representative two-reagent CIMS oxidation
-experiment (representative-sample assign → merge → clustering → Van Krevelen →
+experiment (cover-selected subset assigned → merged → clustering → Van Krevelen →
 PDF report):
 
 - **Br⁻ CIMS run** — 80 samples / ~96 min → merged **502 M0**

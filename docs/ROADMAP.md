@@ -262,8 +262,9 @@ that clears after 15-30 min of NO traffic (polling EXTENDS it). For a blocked li
 
 **PIPELINE — all built + tested this session (`peaky/`):**
 - `profiles.py` — ReagentProfile (Br/Ur: polarity/adducts/normaliser/`context`) + `resolve('auto')`.
-- `sampling.py` — THE RULE: assign **5 evenly-TIME-spaced samples + the max-TIC sample**, then
-  merge (a single averaged file misses part-of-run analytes). Selecting in TIME not row-index.
+- `sampling.py` — THE RULE (as built then; **superseded 2026-09-12 by the greedy presence
+  set-cover, see `docs/SAMPLING.md`**): assign 5 evenly-TIME-spaced samples + the max-TIC
+  sample, then merge (a single averaged file misses part-of-run analytes).
 - `assign_batch.py` — `run(batch|peaks, reagent='auto', out_dir, ts_peaks=, amine_r_min=0.7)`:
   select reps → `assign.run` per file (keeps `per_file/<sid>_ledger.csv`) → OFFSET-AWARE merge
   (`align`) + JITTER table; positive reagents get the NH4→amine gate (below). `assign.run` gained
