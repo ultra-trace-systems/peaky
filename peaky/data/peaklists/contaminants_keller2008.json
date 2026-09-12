@@ -24,7 +24,7 @@
  ],
  "provenance": {
   "extracted_from": "1-s2.0-S0003267008007605-mmc1-3.xls, sheets '+ve Ions' & '-ve Ions'",
-  "verification": "47/50 neutral formulas reproduce the listed singly-charged ion mass to <=5 ppm under their stated adduct",
+  "verification": "48/50 neutral formulas reproduce the listed singly-charged ion mass to <=5 ppm under their stated adduct",
   "caveat": "Distinct ORGANIC neutral monomers only; PEG/PPG/Triton/Tween polymer ladders and metal-salt clusters were not expanded into single neutrals. Match is by neutral formula under the run's reagent adducts. Entries the source lists as ions or salts (the CN fragment of acetonitrile, the tetrabutylammonium, trityl and monomethoxytrityl cations, and the quaternary-ammonium chlorides) are left out; NMP, which the source gives as its protonated ion, is entered as the neutral C5H9NO."
  },
  "n_species": 50,
@@ -109,7 +109,7 @@
    "modes": [
     "ESI+"
    ],
-   "validated": false
+   "validated": true
   },
   {
    "formula": "C6H15N",

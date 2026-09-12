@@ -233,6 +233,53 @@ def test_the_corrected_pool_reaches_the_matchers_and_the_prior():
     assert RL.prior_formulas([]) == frozenset()             # a run with no lists
 
 
+KELLER = next(p for p in LIST_FILES if p.stem == "contaminants_keller2008")
+
+# Rows of the source table (Keller 2008 mmc1, sheet '+ve Ions'), verbatim: the
+# m/z it prints and the adduct it states, against the neutral this list carries.
+# The source's formula column is not consistently the neutral -- for NMP it
+# prints the protonated ion (C5H10NO), which is what the extraction took -- so
+# the m/z is the thing to hold the neutral to.
+KELLER_SOURCE_IONS = [
+    # neutral,  source m/z,  stated adduct
+    ("C5H9NO",   100.07569,  "[M+H]+"),      # NMP, printed as the ion C5H10NO
+    ("C2H6OS",    79.02121,  "[M+H]+"),      # DMSO, printed as the neutral
+    ("C6H15N",   102.12773,  "[M+H]+"),      # TEA, printed as the neutral
+]
+
+
+@pytest.mark.parametrize(("neutral", "mz", "adduct"), KELLER_SOURCE_IONS,
+                         ids=[r[0] for r in KELLER_SOURCE_IONS])
+def test_a_keller_neutral_reproduces_the_source_ion_mass(neutral, mz, adduct):
+    sp = {s["formula"]: s for s in read(KELLER)["species"]}
+    assert neutral in sp, f"{neutral} is not on the list"
+    ppm = (C.ion_mz(neutral, adduct) - mz) / mz * 1e6
+    assert abs(ppm) <= 5.0, f"{neutral} {adduct} is {ppm:.2f} ppm off {mz}"
+    assert sp[neutral]["validated"] is True, \
+        f"{neutral} reproduces the source ion mass, so it counts as verified"
+
+
+def test_nmp_is_the_neutral_and_the_neutral_is_what_verifies():
+    # the entry used to be the source's printed ion formula, which is a proton
+    # heavier: as a "neutral" it put [M+H]+ at 101.084, a Da off the 100.07569 the
+    # source measured, and that is why the entry was carried as unverified
+    sp = {s["formula"] for s in read(KELLER)["species"]}
+    assert "C5H9NO" in sp and "C5H10NO" not in sp
+    assert abs(C.ion_mz("C5H10NO", "[M+H]+") - 100.07569) > 1.0
+
+
+def test_the_verified_count_is_the_number_of_verified_entries():
+    # `provenance.verification` is the number quoted for the list; the flags are
+    # where it comes from, so a correction that verifies an entry moves both
+    d = read(KELLER)
+    n = sum(1 for s in d["species"] if s.get("validated", False))
+    assert d["provenance"]["verification"].startswith(f"{n}/{d['n_species']} ")
+    # the two left unverified are the ones the source saw as something else: an
+    # iron complex at m/z 621.97291 and a sodiated phthalate-ester fragment
+    assert [s["formula"] for s in d["species"] if not s.get("validated", False)] == \
+        ["C3H6O2", "C8H4O3"]
+
+
 def test_a_run_records_which_list_versions_were_active():
     # assign.run puts this next to the selection prior it builds from the same
     # lists, and the CLI writes it into the sample's manifest as `reflists_active`

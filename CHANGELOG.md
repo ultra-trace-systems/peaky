@@ -267,8 +267,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   salts: the CN fragment of acetonitrile, the tetrabutylammonium, trityl and
   monomethoxytrityl cations, and five quaternary-ammonium chlorides, four of them
   at a negative DBE. They are dropped. NMP, entered as its protonated ion, is the
-  neutral C5H9NO, and acetic and propionic acid are named for the acids rather
-  than the iron complexes the source saw. The list goes from 59 species to 50
+  neutral C5H9NO — which puts its [M+H]+ back on the m/z 100.07569 the source
+  measured, so the list is 48 of 50 verified against the source masses rather
+  than 47 — and acetic and propionic acid are named for the acids rather than the
+  iron complexes the source saw. The list goes from 59 species to 50
   (`data_version` 2008.2), the split Mascope's reference seed uses.
 
 - **`peaky assign` unlocks its reference lists.** Only the batch path ever called
