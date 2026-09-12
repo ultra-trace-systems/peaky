@@ -141,5 +141,11 @@ def centre(a: float, b: float, mz: float,
 
 def sigma_at(sigma_ppm: float, mz: float, abs_floor_mda: float = ABS_FLOOR_MDA) -> float:
     """The trend sigma at m/z: the ppm sigma, floored by the absolute floor
-    expressed in ppm at that mass (active only where the floor exceeds it)."""
+    expressed in ppm at that mass (active only where the floor exceeds it).
+
+    Deliberately NOT clamped to the backbone range the way `centre` is. Below
+    `mz_lo` the centre is frozen at the low edge and may therefore be wrong by
+    an unknown amount; letting the floor keep widening there (0.03 mDa is 0.49
+    ppm at m/z 61 against a 0.25 ppm trend sigma) errs toward admitting such an
+    ion rather than rejecting it on a centre the backbone never measured."""
     return max(float(sigma_ppm), float(abs_floor_mda) * 1000.0 / float(mz))
