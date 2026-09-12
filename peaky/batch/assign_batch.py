@@ -355,9 +355,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     batch_summary.json at the run root, per_file/<sid>_ledger.csv, and
     tables/{selected_samples,jitter}.csv."""
     from peaky.assignment import assign as A
+    from peaky.batch import timeseries as _TSN
     from peaky.io import io_mascope as IO
 
     t_start = time.time()          # wall clock for summary['elapsed_s'] (see below)
+    # ONE row per physical peak before anything reads the time series: Mascope
+    # returns one row per target MATCH, which would double-count every peak two
+    # targets claim (selection, the amine gate, sidelobe flagging and the
+    # _batch_ts.parquet this writes). No-op on an already-collapsed frame.
+    ts_peaks = _TSN.collapse_peak_matches(ts_peaks, log=log)
     out_dir = os.path.expanduser(out_dir)
     TAB = PT.run_paths(out_dir).ensure().tables    # .csv tables -> tables/
     pfdir = os.path.join(out_dir, "per_file")

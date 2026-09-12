@@ -71,6 +71,82 @@ def auto_bin_minutes(ts: pd.DataFrame, *, target_bins: int = 50,
 
 
 # ---------------------------------------------------------------------------
+# match-flattened -> one row per physical peak
+# ---------------------------------------------------------------------------
+# Mascope's peak loaders return the MATCH-FLATTENED table: "when a peak matches
+# multiple isotopes it is expanded into one row per match" (SDK `load_peaks` /
+# `samples.get_peaks`, both `matches=True` by default). The batch time series is a
+# table of PHYSICAL peaks -- one row per (sample, peak) -- so a peak that two
+# targets both claim comes back twice with byte-identical mz/area/height and only
+# the advisory `target_*` columns differing.
+#
+# Two targets collide exactly when they imply the SAME ion: a neutral read as
+# [M+NO3]- and a neutral one HNO3 heavier read as [M-H]- are the same ion formula,
+# so both score ~1.0 on the same peak. The pair is then separated by exactly
+# 0.00 ppm and survives every mass-based filter downstream.
+#
+# Left in, each such peak is counted twice: `build_matrix` sums heights per
+# (sample, bin) so that bin's intensity doubles, and a per-trace peak count reads
+# 2.0 peaks/sample for one ion -- which looks like two merged ions (measured:
+# 0.29% and 0.42% of rows on two field batches, always pairs).
+#
+# Ranking columns, most decisive first; the target ids are the final tie-break so
+# the winner is fixed by content, never by the order the server returned rows in.
+_MATCH_SCORE_COLS = ("match_score_compound", "match_score_ion", "match_score_isotope")
+_MATCH_ID_COLS = ("target_isotope_id", "target_ion_id", "target_compound_id")
+
+
+def collapse_peak_matches(peaks: pd.DataFrame, *, log=None) -> pd.DataFrame:
+    """Collapse Mascope's match-expanded rows to ONE row per physical peak.
+
+    Keyed on (sample_item_id, peak_id) -- or (sample_item_id, mz) for a frame
+    trimmed to the TS columns, which carries no peak_id. The surviving row is the
+    one whose match scores are highest, so the (advisory) Mascope identity in the
+    `target_*` / `ionization_mechanism` columns stays the best one on offer;
+    peaky's own `neutral_formula` / `adduct` / `tier`, stamped later by
+    `annotate_peaks` from the merged ledger, are the authoritative assignment.
+
+    Row ORDER is preserved and a frame that is already one-row-per-peak comes back
+    unchanged (not even copied), so this is free on clean input and idempotent on
+    its own output -- safe to call at every point a time series enters."""
+    if peaks is None or not hasattr(peaks, "columns") or not len(peaks):
+        return peaks
+    cols = peaks.columns
+    if "peak_id" in cols and not peaks["peak_id"].isna().any():
+        peak_key = "peak_id"
+    elif "mz" in cols:
+        peak_key = "mz"
+    else:
+        return peaks            # nothing identifies a peak; never key on the sample
+    key = (["sample_item_id", peak_key] if "sample_item_id" in cols else [peak_key])
+    d = peaks.reset_index(drop=True)
+    if not d.duplicated(subset=key, keep=False).any():
+        return peaks
+    rank, asc = [], []
+    for c in _MATCH_SCORE_COLS:
+        if c in cols:
+            rank.append(c)
+            asc.append(False)                      # best score first
+    for c in _MATCH_ID_COLS:
+        if c in cols:
+            rank.append(c)
+            asc.append(True)                       # deterministic final tie-break
+    if rank:
+        # mergesort == stable, so unmatched peaks (all-NaN scores) keep their order
+        order = d.sort_values(rank, ascending=asc, kind="mergesort",
+                              na_position="last").index.to_numpy()
+    else:
+        order = np.arange(len(d))
+    lost = d.iloc[order].duplicated(subset=key, keep="first").to_numpy()
+    out = d.iloc[np.sort(order[~lost])].reset_index(drop=True)
+    if log:
+        log(f"[ts] collapsed {int(lost.sum())} match-expanded row(s) -> "
+            f"{len(out)} physical peaks (a peak claimed by >1 target came back "
+            f"once per target, at identical m/z and height)")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # matrix construction
 # ---------------------------------------------------------------------------
 def build_matrix(peaks: pd.DataFrame, *, tol_ppm: float = DEFAULT_TOL_PPM,

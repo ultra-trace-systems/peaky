@@ -93,12 +93,17 @@ def load(*, batch: str | None = None, dataset: str | None = None,
          peaks: "str | pd.DataFrame | None" = None, save_path: str | None = None
          ) -> pd.DataFrame:
     """Get the batch peak time-series — from a parquet/DataFrame if given (offline,
-    cached), else fetched from Mascope via the SDK."""
+    cached), else fetched from Mascope via the SDK. Always one row per PHYSICAL
+    peak: Mascope hands back one row per target MATCH, which
+    `TS.collapse_peak_matches` folds back down (it is a no-op on a clean frame, so
+    an already-collapsed parquet is returned untouched)."""
     if peaks is not None:
-        return pd.read_parquet(os.path.expanduser(peaks)) if isinstance(peaks, str) else peaks
+        got = pd.read_parquet(os.path.expanduser(peaks)) if isinstance(peaks, str) else peaks
+        return TS.collapse_peak_matches(got)
     if not (batch and dataset):
         raise ValueError("need peaks=, or both batch= and dataset=")
-    return IO.fetch_batch_peaks(IO.connect(), dataset, batch, save_path=save_path)
+    return TS.collapse_peak_matches(
+        IO.fetch_batch_peaks(IO.connect(), dataset, batch, save_path=save_path))
 
 
 def run(*, batch: str | None = None, dataset: str | None = None,
@@ -207,7 +212,8 @@ def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
     if isinstance(ts, str):
         ctx.ts_path = os.path.expanduser(ts)        # reference an existing parquet, never copy
         ts = pd.read_parquet(ctx.ts_path)
-    elif ctx.ts_path is None:
+    ts = TS.collapse_peak_matches(ts, log=log)
+    if ctx.ts_path is None:
         # ts was fetched live (no on-disk source) — keep ONE copy with the run, in
         # data/, so the report/provenance can read it. (When the caller passed a
         # parquet path, run_batch points ctx.ts_path at it instead of copying.)
@@ -281,6 +287,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         log("[phase] fetch")
         log(f"[batch] fetching full-batch time series for {batch!r} ...")
         ts = load(batch=batch, dataset=dataset)
+    ts = TS.collapse_peak_matches(ts, log=log)
     prof = P.resolve(reagent, ts, config=config)
     # One height-gate multiple for the whole run, stamped on the SAME cfg the
     # gate knobs above went onto -- the one the assignment and the provenance
@@ -433,6 +440,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
         log("[phase] fetch")
         log(f"[pool] loading pooled TS for /{batches}/ in {dataset!r} ...")
         ts = IO.fetch_pooled_peaks(IO.connect(), dataset, batches)
+    ts = TS.collapse_peak_matches(ts, log=log)
     if group_by not in ts.columns:
         raise ValueError(f"group_by {group_by!r} not in pooled peaks "
                          f"(got {list(ts.columns)[:8]})")

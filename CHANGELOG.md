@@ -353,6 +353,31 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `assign_batch.run` when it picks the cover for one batch, which brackets it
   back to `assign` as soon as the picks are in).
 
+### Fixed
+
+- **The batch time series carried a peak once per MATCH, not once per peak.** Mascope's
+  peak loaders expand a peak into one row per target isotope it matches
+  (`load_peaks` / `samples.get_peaks`, `matches=True` by default), and nothing in the
+  batch path folded that back down — so `per_file/_batch_ts.parquet` held two rows for
+  every peak two targets claimed: same `sample_item_id`, same `peak_id`, byte-identical
+  `mz` / `area` / `height`, only the advisory `target_*` columns differing. Targets
+  collide exactly when they imply the SAME ion (a neutral read as `[M+NO3]-` and a
+  neutral one HNO3 heavier read as `[M-H]-` are one ion formula), so the pair sits at
+  exactly 0.00 ppm and no mass filter separates it. Everything downstream counted the
+  peak twice: `build_matrix` sums heights per (sample, m/z bin), so that bin's intensity
+  doubled, and a per-trace peak count read **2.0 peaks/sample for a single ion** — which
+  reads as two merged ions rather than one peak listed twice. Measured on two field
+  batches: 0.29 % and 0.42 % of rows, always pairs. New
+  `timeseries.collapse_peak_matches` keys on `(sample_item_id, peak_id)` — or
+  `(sample_item_id, mz)` for a frame trimmed to the TS columns — and keeps the
+  best-scoring match's `target_*` columns, ranking on the match scores with the target
+  ids as a final tie-break so the winner is fixed by content rather than by the order
+  the server returned rows in. Row order is preserved and a clean frame comes back
+  untouched, so it is a no-op on collapsed input and idempotent; it runs wherever a time
+  series enters (`pipeline.load` / `run_batch` / `run_pool` / `generate_report` and
+  `assign_batch.run`), which also protects sample selection, the amine gate and sidelobe
+  flagging. Existing parquets are repaired on read.
+
 ### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
 
 ### Added
