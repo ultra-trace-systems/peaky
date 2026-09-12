@@ -339,9 +339,32 @@ except ValueError:
 # (the same rule the selection and the merge use), the lookup reads the table's
 # own stamped tolerance, and a table without it is refused rather than guessed.
 # ---------------------------------------------------------------------------
-from peaky.batch import sampling as SS  # noqa: E402
+from peaky.batch import sampling as SS       # noqa: E402
+from peaky.batch import assign_batch as AB  # noqa: E402
 check("bin_occurrence default tol == sampling.BATCH_TOL_PPM (6.0)",
       tab.attrs["tol_ppm"] == SS.BATCH_TOL_PPM == 6.0, tab.attrs)
+# ...and the OTHER two batch-level binnings are bound to the same constant, not
+# to independent literals: the merge's default tolerance and the selector's.
+check("the merge's DEFAULT_TOL_PPM tracks sampling.BATCH_TOL_PPM",
+      AB.DEFAULT_TOL_PPM == SS.BATCH_TOL_PPM, AB.DEFAULT_TOL_PPM)
+import inspect  # noqa: E402
+check("select_cover_samples bins at BATCH_TOL_PPM by default",
+      inspect.signature(SS.select_cover_samples).parameters["tol_ppm"].default
+      == SS.BATCH_TOL_PPM,
+      inspect.signature(SS.select_cover_samples).parameters["tol_ppm"].default)
+# behavioural: two m/z 5.5 ppm apart are ONE bin at 6 ppm and two bins at 3 ppm,
+# so the default really is 6 (the selector used to bin at timeseries' 5.0 while
+# the admission table and the merge binned at 6, and a bin the selector covered
+# was then not the bin the merge saw)
+_a = 300.0
+_b = 300.0 * (1 + 5.5e-6)
+_tw = pd.DataFrame({"sample_item_id": ["s0", "s0", "s1", "s1"],
+                    "mz": [_a, _b, _a, _b], "height": [10.0, 10.0, 10.0, 10.0]})
+check("selector default binning merges a 5.5 ppm pair into one bin (6 ppm)",
+      SS.select_cover_samples(_tw, k_min=1).attrs["selection"]["n_bins_total"] == 1,
+      SS.select_cover_samples(_tw, k_min=1).attrs["selection"])
+check("...and splits it at tol_ppm=3 (the argument is really honoured)",
+      SS.select_cover_samples(_tw, k_min=1, tol_ppm=3.0).attrs["selection"]["n_bins_total"] == 2)
 tab6 = ADM.bin_occurrence(ts, tol_ppm=6.0)
 check("a table built at 6 ppm and the default table agree bin-for-bin",
       len(tab6) == len(tab) and np.allclose(tab6["mz"], tab["mz"])
