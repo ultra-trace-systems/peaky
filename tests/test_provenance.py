@@ -129,13 +129,13 @@ check("the resolved threshold is recorded instead under output.counts.admission"
       and m_adm["output"]["counts"]["admission"]["tol_ppm"] == 6.0,
       m_adm["output"]["counts"])
 check("occurrence_threshold is listed as a runtime field, next to noise_edge_cps",
-      "occurrence_threshold" in PV._RUNTIME_CFG_FIELDS, PV._RUNTIME_CFG_FIELDS)
+      "occurrence_threshold" in P.PassConfig.RUNTIME_FIELDS, P.PassConfig.RUNTIME_FIELDS)
 # `occurrence_resolved` is the same kind of thing: stamp_admission sets it on the
 # shared cfg so `admissible` can tell "resolved OFF" from "never stamped". It is
 # run state, not a knob, and would otherwise flip the fingerprint of an identical
 # configuration depending on whether the run had reached the gate.
 check("occurrence_resolved is a runtime field too, and stays out of the fingerprint",
-      "occurrence_resolved" in PV._RUNTIME_CFG_FIELDS
+      "occurrence_resolved" in P.PassConfig.RUNTIME_FIELDS
       and "occurrence_resolved" not in m_adm["config"], m_adm["config"])
 # the gate is a module of its own; its version must be pinned like every other
 # assignment module (module_hashes catches edits, module_versions names them)
