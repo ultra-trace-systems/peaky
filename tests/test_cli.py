@@ -60,6 +60,32 @@ check("assign: --height-cutoff and --height-cutoff-x-edge both default to None",
 a = P.parse_args(["assign", "--sample-id", "X", "--height-cutoff-x-edge", "5"])
 check("assign: --height-cutoff-x-edge parses as a float", a.height_cutoff_x_edge == 5.0)
 
+# ---- one flag, two parsers: `peaky assign` and assign.main (the module entry
+# point) both expose --height-cutoff-x-edge, and PassConfig.height_cutoff returns
+# the absolute height_cutoff_cps whenever it is set -- so BOTH help texts have to
+# tell the reader that passing --height-cutoff makes the multiple inert. They had
+# drifted: only assign.main said it.
+import argparse as _argparse  # noqa: E402
+import contextlib as _contextlib  # noqa: E402
+import io as _io  # noqa: E402
+
+from peaky.assignment import assign as _assign_mod  # noqa: E402
+
+_sub = next(x for x in P._actions if isinstance(x, _argparse._SubParsersAction))
+_cli_x_help = next(x.help for x in _sub.choices["assign"]._actions
+                   if x.dest == "height_cutoff_x_edge")
+_buf = _io.StringIO()
+try:
+    with _contextlib.redirect_stdout(_buf):
+        _assign_mod.main(["--help"])
+except SystemExit:
+    pass
+_mod_help = " ".join(_buf.getvalue().split())
+_INERT = "ignored when --height-cutoff is given"
+check("both --height-cutoff-x-edge help texts say the absolute cutoff wins",
+      _INERT in " ".join((_cli_x_help or "").split()) and _INERT in _mod_help,
+      {"cli": _cli_x_help, "assign.main says it": _INERT in _mod_help})
+
 # subcommand is required
 try:
     P.parse_args([])

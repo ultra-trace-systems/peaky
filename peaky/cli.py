@@ -698,7 +698,8 @@ def build_parser() -> argparse.ArgumentParser:
                          "~800 cps on a reagent-in-range Orbitrap mode. Default: the "
                          "reagent profile's own multiple when it carries one, else "
                          "the package default (passes.config."
-                         "DEFAULT_HEIGHT_CUTOFF_X_EDGE).")
+                         "DEFAULT_HEIGHT_CUTOFF_X_EDGE); "
+                         "ignored when --height-cutoff is given")
     pa.add_argument("--no-cache", action="store_true")
     pa.add_argument("--no-pass2", action="store_true")
     pa.add_argument("--no-pass3", action="store_true")
