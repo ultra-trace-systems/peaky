@@ -228,7 +228,9 @@ check("assign emits the per-stage timing line progress.py parses",
       emits("assignment/assign.py", 'st.log(f"[run] {tag} took {s[\'elapsed_s\']}s")'))
 for ph_name in ("cluster", "vankrevelen", "report", "assign", "fetch", "provenance"):
     check(f"pipeline emits [phase] {ph_name}", emits("pipeline.py", f'log("[phase] {ph_name}")'))
-    check(f"  -> progress.py knows the phase {ph_name}", ph_name in PG.PHASES)
+    # PHASE_LABEL.get() falls back to the bare name, so a phase missing from it
+    # shows as "vankrevelen" rather than "Van Krevelen" and nothing else notices.
+    check(f"  -> progress.py has a header label for {ph_name}", ph_name in PG.PHASE_LABEL)
 
 # and the reconstructed lines really do match the patterns
 for line, rx, what in [

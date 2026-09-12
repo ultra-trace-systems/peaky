@@ -44,13 +44,13 @@ __version__ = "0.1.0"
 # importing `assign` just to count `_STAGES`.
 NOMINAL_STAGES = 36
 
-# Phase order for the header. `assign` is the long pole; the rest are the tail.
-PHASES = ("fetch", "select", "assign", "merge", "cluster", "vankrevelen",
-          "report", "provenance", "done")
+# Every phase the window can show, in run order (`assign` is the long pole; the
+# rest are the tail). A phase with no entry here falls back to its bare name, so
+# the contract test checks each `[phase]` marker the pipeline emits is present.
 PHASE_LABEL = {
     "fetch": "fetching time series", "select": "selecting samples",
-    "assign": "assigning", "merge": "merging ledgers", "merged": "ledgers merged",
-    "cluster": "clustering",
+    "assign": "assigning", "merge": "merging ledgers",
+    "merged": "ledgers merged", "cluster": "clustering",
     "vankrevelen": "Van Krevelen", "report": "building report",
     "provenance": "recording provenance", "done": "done",
 }
@@ -63,7 +63,7 @@ PHASE_LABEL = {
 RE_ASSIGNING = re.compile(r"^\[assign_batch\] \((\d+)/(\d+)\) assigning (\S+)")
 RE_SAMPLE_DONE = re.compile(r"^\[assign_batch\] \((\d+)/(\d+)\) done (\S+)")
 RE_PARALLEL = re.compile(r"^\[assign_batch\] parallel: (\d+) worker processes .*over (\d+) samples")
-RE_ASSIGN_DONE = re.compile(r"^\[assign_batch\] DONE: (\d+) merged M0")
+RE_ASSIGN_DONE = re.compile(r"^\[assign_batch\] DONE: \d+ merged M0")
 RE_STAGE = re.compile(r"^\[run\] (\S+) took ([\d.]+)s")
 RE_PHASE = re.compile(r"^\[phase\] (\w+)")
 RE_RUNDIR = re.compile(r"^\[(?:batch|pool)\] (\S+) -> (\S+)$")
@@ -322,7 +322,6 @@ class TkWindow:
         self._thread: threading.Thread | None = None
         self._last: dict = {}
         self.root = None
-        self._widgets: list = []      # every Tk object we hold, for _teardown
         self._stats_labels: dict = {}
 
     # -- run-thread side --------------------------------------------------- #
@@ -403,7 +402,6 @@ class TkWindow:
         except Exception:
             pass
         self.root = None
-        self._widgets.clear()
         self._stats_labels.clear()
         for attr in ("pb_sample", "pb_stage", "v_sample", "v_stage", "v_head",
                      "v_phase", "v_clock", "v_tail", "btn", "stats_frame"):
@@ -417,7 +415,6 @@ class TkWindow:
         pad = {"padx": 12, "pady": 3}
         mono = ("TkFixedFont", 10)
 
-        self._widgets = [r]           # everything Tk-owned, dropped in _teardown
         self.v_head = tk.StringVar(value=self.title)
         tk.Label(r, textvariable=self.v_head, anchor="w",
                  font=("TkDefaultFont", 11, "bold")).pack(fill="x", padx=12, pady=(12, 2))
@@ -555,8 +552,8 @@ class TkWindow:
 #    terminal, so a `\r` bar would fight it. One compact line per sample instead.
 # --------------------------------------------------------------------------- #
 class TerminalStatus:
-    def start(self, timeout: float = 0.0) -> bool:
-        return True
+    # No start(): `open_progress` only ever starts a TkWindow, and reaches for
+    # this one exactly when that failed -- there is nothing here to bring up.
 
     def push(self, s: dict) -> None:
         key = (s["samples_done"], s["n_samples"], s["phase"])
