@@ -248,6 +248,17 @@ check("assign_batch emits the DONE line progress.py parses",
       emits("batch/assign_batch.py", 'log(f"[assign_batch] DONE: {summary[\'merged_M0\']} merged M0 '))
 check("assign emits the per-stage timing line progress.py parses",
       emits("assignment/assign.py", 'st.log(f"[run] {tag} took {s[\'elapsed_s\']}s")'))
+# That line comes from `_safe`, so ONLY a `safe=True` stage is countable -- and
+# NOMINAL_STAGES is the denominator of the stage bar until a completed sample
+# replaces it, which on the `peaky assign` path happens only at the very end.
+# A nominal counting all the table's rows put the bar at 20/36 for a whole run.
+from peaky.assignment import assign as _A  # noqa: E402
+
+_timed = [_s.name for _s in _A._STAGES if _s.safe]
+check("NOMINAL_STAGES counts the stages of assign.run that TIME themselves",
+      PG.NOMINAL_STAGES == len(_timed), f"{PG.NOMINAL_STAGES} != {len(_timed)}")
+check("  -> i.e. fewer than the stage table's rows (the untimed ones log nothing)",
+      len(_timed) < len(_A._STAGES), f"{len(_timed)} of {len(_A._STAGES)}")
 for ph_name in ("cluster", "vankrevelen", "report", "assign", "fetch", "provenance"):
     check(f"pipeline emits [phase] {ph_name}", emits("pipeline.py", f'log("[phase] {ph_name}")'))
     # PHASE_LABEL.get() falls back to the bare name, so a phase missing from it

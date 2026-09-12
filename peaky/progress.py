@@ -41,8 +41,15 @@ __version__ = "0.1.0"
 # Stage count for the within-sample bar before a first sample has finished. The
 # real number is LEARNED from the first completed sample (stages are gated by
 # reagent/context, so it legitimately varies), which keeps this module from
-# importing `assign` just to count `_STAGES`.
-NOMINAL_STAGES = 36
+# importing `assign` just to count its stage table.
+#
+# What it counts is the stages that TIME THEMSELVES: only an `assign._STAGES`
+# entry with `safe=True` emits `[run] <tag> took Xs`, and that line is the
+# parser's only cue. Counting all 36 table rows (20 of which are timed) capped
+# the bar at 56% for any run that never got to learn the real number -- i.e.
+# every `peaky assign` run. tests/test_progress.py pins this against the real
+# stage table, so adding a timed stage fails a test rather than skewing the bar.
+NOMINAL_STAGES = 20
 
 # Every phase the window can show, in run order (`assign` is the long pole; the
 # rest are the tail). A phase with no entry here falls back to its bare name, so
