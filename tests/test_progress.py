@@ -662,6 +662,15 @@ def test_hold_only_on_an_interactive_tty(monkeypatch):
     # an explicit hold=False from the call site is never overridden
     assert PG.open_progress("t", flag=True, log=seen.append, hold=False).hold is False
 
+    # a closed or absent stream (pythonw, a daemonised run): isatty() RAISES
+    # rather than answering, and an unreadable window must not be held either
+    class _Closed(io.StringIO):
+        def isatty(self): raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr(sys, "stdin", _Closed())
+    assert PG._interactive() is False
+    assert PG.open_progress("t", flag=True, log=seen.append).hold is False
+
 
 def test_display_available_by_platform(monkeypatch):
     """macOS is NEVER a display for this module: Tk off the main thread aborts
