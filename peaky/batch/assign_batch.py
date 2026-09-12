@@ -22,6 +22,7 @@ assignment loop.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 
@@ -457,8 +458,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     if n_jobs <= 1:
         for i, sid in enumerate(sample_ids, 1):
             log(f"[assign_batch] ({i}/{len(sample_ids)}) assigning {sid} ...")
+            # Per-file cfg COPY -- the same isolation the worker pool gets in
+            # _assign_one. A.run mutates the cfg it is handed (noise edge,
+            # mechanism ids, and the fitted cal_mu/cal_sigma), and `calibrate`
+            # LEAVES A PREVIOUS FIT IN PLACE when this file's backbone is
+            # smaller than cal_min_n -- so one shared object would gate file
+            # N+1's mass z-scores on file N's calibration.
+            kw = dict(assign_kw, cfg=copy.deepcopy(cfg))
             res = A.run(sid, context=context, log=log,
-                        reflists_active=reflists_active, **assign_kw)
+                        reflists_active=reflists_active, **kw)
             _apply(sid, res["ledger"], res.get("plausibility_audit") or [],
                    dict(res.get("stats", {})))
     else:

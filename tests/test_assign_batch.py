@@ -122,6 +122,7 @@ import tempfile  # noqa: E402
 from peaky.io import io_mascope as IO  # noqa: E402
 from peaky.assignment import assign as _A  # noqa: E402
 from peaky.assignment import ledger as _L  # noqa: E402
+from peaky.assignment import passes as _PASSES  # noqa: E402
 from peaky.assignment import tiers as _T  # noqa: E402
 from peaky.batch import sampling as SS  # noqa: E402
 from peaky.chem import chemistry as _C  # noqa: E402
@@ -238,6 +239,41 @@ try:
     finally:
         P_PROF.PROFILES.clear(); P_PROF.PROFILES.update(_snap[0])
         P_PROF._BY_ALIAS.clear(); P_PROF._BY_ALIAS.update(_snap[1])
+
+    # ---- per-file cfg ISOLATION on the serial path (--jobs 1) ---------------
+    # A.run MUTATES the cfg it is handed (noise edge, mechanism ids, the fitted
+    # cal_mu/cal_sigma), and passes.calibrate RETURNS EARLY -- leaving the
+    # previous fit in place -- when a file's backbone is smaller than cal_min_n.
+    # The worker pool copies in _assign_one; the serial loop must do the same, or
+    # file N+1 runs the calibrated mass gate on file N's calibration.
+    _SEEN_CFG.clear()
+    _seen_cal: list = []
+
+    def _calibrating_assign(sid, context="ambient-air", **kw):
+        _cfg = kw.get("cfg")
+        _seen_cal.append(getattr(_cfg, "cal_mu", "no cfg"))
+        _out = _fake_assign(sid, context, **kw)
+        _cfg.cal_mu, _cfg.cal_sigma = -2.45, 0.3      # what calibrate() stamps
+        return _out
+
+    _A.run = _calibrating_assign
+    try:
+        with tempfile.TemporaryDirectory() as _d4:
+            _parent = _PASSES.PassConfig()
+            AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch",
+                   out_dir=_d4, k_min=2, k_max=3, min_gain=0.0, n_jobs=1,
+                   cfg=_parent, log=lambda *a: None)
+        check("serial run: every file is handed its OWN cfg object",
+              len(_SEEN_CFG) == 3 and len({id(c) for c in _SEEN_CFG}) == 3
+              and all(c is not _parent for c in _SEEN_CFG),
+              [id(c) for c in _SEEN_CFG])
+        check("serial run: one file's fitted calibration never reaches the next",
+              _seen_cal == [None, None, None], _seen_cal)
+        check("serial run: the caller's cfg comes back unmutated by the assign",
+              _parent.cal_mu is None and _parent.cal_sigma is None,
+              (_parent.cal_mu, _parent.cal_sigma))
+    finally:
+        _A.run = _fake_assign
 
     # a per-SAMPLE table (samples.list) cannot be binned: selection refuses it
     # rather than silently falling back to some other rule.
