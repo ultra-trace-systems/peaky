@@ -125,8 +125,11 @@ def _resolve_reagent(args, *, with_profile: bool = False):
 
     `with_profile=True` appends the resolved ReagentProfile itself (None when
     --adducts forced the channels, or auto-detect found no known profile), which
-    the caller needs for the profile's own tuning: the noise-edge gate multiple
-    and the labelled-reagent isotopic purity.
+    the caller needs for the profile's own tuning: the noise-edge gate multiple,
+    the labelled-reagent isotopic purity, and the profile's label -- the second
+    piece of run metadata the reference-list unlock reads, exactly as
+    `assign_batch.run` and the MCP `assign_sample` tool pass it, so the same run
+    activates the same lists whichever entry point starts it.
     Opt-in so the plain 3-tuple callers are untouched."""
     from peaky.chem import profiles
 
@@ -214,11 +217,13 @@ def cmd_assign(args) -> None:
     # context-unlock the reference peaklists, exactly as the batch path does, so a
     # single-sample run gets the same selection prior + rescue-verify and its
     # manifest records which list versions shaped them. A lone sample has no batch
-    # name, so its only metadata is the context label -> contaminants-only unless
-    # that label names a chemistry.
+    # name, so its metadata is the context + the reagent label -- the same pair the
+    # MCP tool passes, and the batch path's minus the batch name -- so it is
+    # contaminants-only unless one of them names a chemistry.
     from peaky.assignment import reflists as RL
 
-    reflists_active, tags = RL.activate(context)
+    reagent_label = getattr(prof, "label", "") or ""
+    reflists_active, tags = RL.activate(context, reagent_label)
     if reflists_active:
         print(f"[reflists] active: {RL.active_versions(reflists_active)} "
               f"(context {sorted(tags) or 'contaminants-only'})")
