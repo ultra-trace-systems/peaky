@@ -8,6 +8,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The positive pass-0 `cyclosiloxane` and `indoor_sulfur` families apply to EVERY
+  positive context**, not only to the labelled-ammonium runs they were seeded from:
+  `directors._known_species("positive", …)` returns them regardless of context, so
+  uronium and EasyIC runs now also get `known:` locks for D3–D7 / L2–L5 siloxanes and
+  for the benzothiazole / DMSO / thiophene / sulfolane / NBBS set. The commit gates are
+  unchanged (≥2 channels, or a confirmed ²⁹Si/³⁰Si envelope + the Si-count M+1 check,
+  or a confirmed ³⁴S envelope), so this adds locks only where the evidence is already
+  there — but a previously Candidate D4 or benzothiazole can now come out Assigned.
+- **The pass-4 halogen cap applies in every context, not just positive ones.**
+  `residual.stage_a_iso_pairs` drops a ~1.998-Da doublet whenever the context caps that
+  halogen at zero (`max_Br` = `max_Cl` = 0) — the rule is written against the context
+  profile, so any halogen-free context gets it.
+- **The labelled-nitrogen ¹⁴N envelope line is emitted for every `^N`-bearing ion**, so
+  it reaches the ¹⁵N-NITRATE profile as well as the ammonium one it was built for: a
+  `[M+^NO3]⁻` cluster now predicts a −0.997 Da satellite at `(1 − purity)/purity` of M0
+  and `complete_isotope_envelopes` will claim it. **Caveat, to be validated on a
+  labelled-nitrate batch:** a labelled-nitrate source can carry a *real* `[X+¹⁴NO₃]⁻`
+  analyte channel from the reagent's unlabelled fraction, and it sits at exactly that
+  mass and at a comparable 0.6–7 % of the labelled cluster. Such a channel would now be
+  attached as an isotope child of the labelled reading rather than standing as its own
+  M0. Gating the line per profile is deliberately NOT done here (see the open items).
+- `ReagentProfile.purity` is no longer inert. `assign.run` publishes it
+  (`isotopes.set_label_purity`) and it now drives BOTH the local scorer's
+  `predict_isotopes` call and peaky's own envelope predictor; `isotopes.LABEL_PURITY_15N`
+  remains the default. Behaviour-neutral at 0.98, which is also mascope_tools' default.
+
 - **Batch sample selection is one greedy presence set-cover** (`sampling.
   select_cover_samples`, `docs/SAMPLING.md`), replacing the 5-time-spaced+max-TIC
   rule and the brightest arg-max cover. Universe = the batch's m/z bins present
@@ -185,33 +211,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   gate together.
 - Reference peaklist `isoprene_ox_wennberg2018` (27 closed-shell isoprene oxidation products, Wennberg et al. 2018) added to `peaky/data/peaklists/`, gated by the new `isoprene_ox` context (batch keywords isoprene/ISOPN/IEPOX/ISOPOOH/methacrolein) and `biogenic_soa`/`ambient_summer`; rescues the isoprene dihydroxy-dinitrate C5H10N2O8 as an isotope-confirmed Assigned in the 2026 field-campaign ¹⁵NO₃⁻ data.
 
-### Changed
-
-- **The positive pass-0 `cyclosiloxane` and `indoor_sulfur` families apply to EVERY
-  positive context**, not only to the labelled-ammonium runs they were seeded from:
-  `directors._known_species("positive", …)` returns them regardless of context, so
-  uronium and EasyIC runs now also get `known:` locks for D3–D7 / L2–L5 siloxanes and
-  for the benzothiazole / DMSO / thiophene / sulfolane / NBBS set. The commit gates are
-  unchanged (≥2 channels, or a confirmed ²⁹Si/³⁰Si envelope + the Si-count M+1 check,
-  or a confirmed ³⁴S envelope), so this adds locks only where the evidence is already
-  there — but a previously Candidate D4 or benzothiazole can now come out Assigned.
-- **The pass-4 halogen cap applies in every context, not just positive ones.**
-  `residual.stage_a_iso_pairs` drops a ~1.998-Da doublet whenever the context caps that
-  halogen at zero (`max_Br` = `max_Cl` = 0) — the rule is written against the context
-  profile, so any halogen-free context gets it.
-- **The labelled-nitrogen ¹⁴N envelope line is emitted for every `^N`-bearing ion**, so
-  it reaches the ¹⁵N-NITRATE profile as well as the ammonium one it was built for: a
-  `[M+^NO3]⁻` cluster now predicts a −0.997 Da satellite at `(1 − purity)/purity` of M0
-  and `complete_isotope_envelopes` will claim it. **Caveat, to be validated on a
-  labelled-nitrate batch:** a labelled-nitrate source can carry a *real* `[X+¹⁴NO₃]⁻`
-  analyte channel from the reagent's unlabelled fraction, and it sits at exactly that
-  mass and at a comparable 0.6–7 % of the labelled cluster. Such a channel would now be
-  attached as an isotope child of the labelled reading rather than standing as its own
-  M0. Gating the line per profile is deliberately NOT done here (see the open items).
-- `ReagentProfile.purity` is no longer inert. `assign.run` publishes it
-  (`isotopes.set_label_purity`) and it now drives BOTH the local scorer's
-  `predict_isotopes` call and peaky's own envelope predictor; `isotopes.LABEL_PURITY_15N`
-  remains the default. Behaviour-neutral at 0.98, which is also mascope_tools' default.
 - **A reagent profile can carry its own height-gate multiple**
   (`ReagentProfile.height_cutoff_x_edge`, `docs/REAGENTS.md` §3a). The gate is a
   multiple of the sample's own noise edge, and the right multiple belongs to the
