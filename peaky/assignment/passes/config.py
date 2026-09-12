@@ -173,17 +173,24 @@ class PassConfig:
     reflist_formulas: frozenset = frozenset()
     reflist_prior: float = 0.04
 
-    # Fields assign.run stamps onto the shared cfg PER SAMPLE at runtime. They are
-    # run-derived, not user knobs, so the reproducibility fingerprint
-    # (provenance.build_manifest) drops exactly these -- declared here, next to
-    # the fields, so a new runtime field is added in one place. A ClassVar, not a
-    # dataclass field: asdict()/pickle/deepcopy are unaffected.
+    # Fields a RUN stamps onto the cfg PER SAMPLE -- assign.run directly, and
+    # `calibrate` for the fitted cal_mu/cal_sigma. They are run-derived (they
+    # come out of the DATA, not the user), so the reproducibility fingerprint
+    # (provenance.build_manifest) drops exactly these: a manifest that absorbed
+    # a fitted mass calibration would vary with the data it is meant to pin the
+    # configuration against. Declared here, next to the fields, so a new runtime
+    # field is added in one place. A ClassVar, not a dataclass field:
+    # asdict()/pickle/deepcopy are unaffected.
     RUNTIME_FIELDS: ClassVar[tuple[str, ...]] = (
         "mechanism_ids", "prior_offset", "reagent_element", "noise_edge_cps",
-        # passes.calibrate fits these onto the shared cfg during a run: they are
-        # the calibration's OUTPUT, not user knobs, so two identical re-runs must
-        # not fingerprint differently because a different sample finished last.
-        "cal_a", "cal_b", "cal_sigma_trend", "cal_mz_lo", "cal_mz_hi")
+        # passes.calibrate fits these onto the cfg during a run: they are the
+        # calibration's OUTPUT, not user knobs. The pipeline now hands the same
+        # cfg to the provenance manifest, so leaving any of them in would make
+        # two identical re-runs fingerprint differently depending on which
+        # sample finished last. Dropping cal_mu / cal_sigma is a manifest schema
+        # change: older manifests carry them as a record of the run's centre.
+        "cal_a", "cal_b", "cal_sigma_trend", "cal_mz_lo", "cal_mz_hi",
+        "cal_mu", "cal_sigma")
 
     @property
     def height_cutoff(self) -> float:

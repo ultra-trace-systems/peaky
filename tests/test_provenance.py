@@ -63,9 +63,20 @@ check("a resolved (non-default) x_edge is fingerprinted, not runtime-excluded",
       _mx["config"].get("height_cutoff_x_edge") == 5.0
       and "height_cutoff_x_edge" not in P.PassConfig.RUNTIME_FIELDS,
       _mx["config"].get("height_cutoff_x_edge"))
-_RT = {"noise_edge_cps", "mechanism_ids", "prior_offset", "reagent_element"}
-check("PassConfig.RUNTIME_FIELDS declares (at least) the four run-stamped fields",
+_RT = {"noise_edge_cps", "mechanism_ids", "prior_offset", "reagent_element",
+       "cal_mu", "cal_sigma"}
+check("PassConfig.RUNTIME_FIELDS declares the run-stamped fields",
       _RT <= set(P.PassConfig.RUNTIME_FIELDS), P.PassConfig.RUNTIME_FIELDS)
+# a FITTED mass calibration is data, not configuration: a fingerprint that
+# absorbed it would vary with the sample it is meant to pin the config against.
+_mc = P.PassConfig(); _mc.cal_mu, _mc.cal_sigma = -2.45, 0.30
+_mcal = PV.build_manifest(run_dir=_rd, batch_name="B", dataset="D", sample_ids=["s1"],
+                          reagent="Br", cfg=_mc, ts_path=_tsp, counts={},
+                          created_utc="2026-01-01T00:00:00Z")
+check("a fitted cal_mu/cal_sigma never reaches the config fingerprint",
+      "cal_mu" not in _mcal["config"] and "cal_sigma" not in _mcal["config"]
+      and _mcal["config"]["cal_z_accept"] == 2.0,     # the KNOBS stay
+      {k: v for k, v in _mcal["config"].items() if k.startswith("cal_")})
 import dataclasses as _dc  # noqa: E402
 _FIELDS = {f.name for f in _dc.fields(P.PassConfig)}      # real fields (ClassVar excluded)
 check("RUNTIME_FIELDS is a ClassVar, not a dataclass field (asdict/pickle untouched)",

@@ -11,6 +11,7 @@ are folded in as their scratch logic is consolidated into the package.
 """
 from __future__ import annotations
 
+import copy
 import os
 import re
 from dataclasses import dataclass
@@ -269,6 +270,11 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
 
     assign_kw["cfg"] = cfg = assign_kw.get("cfg") or PA.PassConfig()
     P.apply_height_cutoff_x_edge(cfg, prof)
+    # The manifest fingerprints a snapshot taken HERE, before the assign runs: it
+    # pins the run to the configuration it was GIVEN, never to what the assign
+    # fitted from the data (the calibrated cal_mu/cal_sigma land on this same cfg
+    # -- see PassConfig.RUNTIME_FIELDS, which drops them from the fingerprint too).
+    cfg_snapshot = copy.deepcopy(cfg)
     ctx = make_run_context(base_out, batch, prof, when=when, dataset=dataset)
     if ts_src:
         ctx.ts_path = ts_src     # reference the caller's parquet; don't re-copy it into the run dir
@@ -289,7 +295,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         run_dir=ctx.out_dir, base_out=os.path.expanduser(base_out),
         batch_name=batch, dataset=dataset,
         sample_ids=(res.get("sample_ids") if isinstance(res, dict) else None),
-        reagent=prof.name, cfg=cfg,          # carries the resolved x_edge
+        reagent=prof.name, cfg=cfg_snapshot,   # carries the resolved x_edge
         ts_path=ctx.ts_path,
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
@@ -407,6 +413,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
 
     assign_kw["cfg"] = cfg = assign_kw.get("cfg") or PA.PassConfig()
     P.apply_height_cutoff_x_edge(cfg, prof)
+    cfg_snapshot = copy.deepcopy(cfg)        # pre-assign, as in run_batch (see there)
     pool_label = out_name or pool_name(batches)
     ctx = make_run_context(base_out, pool_label, prof, when=when, dataset=dataset)
     log(f"[pool] {ctx.run_id} -> {ctx.out_dir}")
@@ -442,7 +449,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     PV.record_run(
         run_dir=ctx.out_dir, base_out=os.path.expanduser(base_out),
         batch_name=pool_label, dataset=dataset, sample_ids=union, reagent=prof.name,
-        cfg=cfg, ts_path=ctx.ts_path,        # cfg carries the resolved x_edge
+        cfg=cfg_snapshot, ts_path=ctx.ts_path,       # carries the resolved x_edge
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
                 "n_samples": summ.get("n_files"), "n_groups": len(groups),

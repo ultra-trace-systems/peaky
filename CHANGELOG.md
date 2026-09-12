@@ -170,10 +170,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   excludes `cal_a` / `cal_b` / `cal_sigma_trend` / `cal_mz_lo` / `cal_mz_hi`: `calibrate`
   writes them onto the shared `cfg`, so without that the last sample's numbers land in
   `run_manifest.json` and two identical re-runs of a batch fingerprint differently.
-  `cal_mu` / `cal_sigma` are equally data-derived but are deliberately kept — they predate
-  the exclusion list and manifests in the wild carry them as the record of the run's
-  calibration centre — **so two identical re-runs can still differ in those two fields**;
-  dropping them would be a manifest schema change rather than a fix.
+  `cal_mu` / `cal_sigma` are excluded for the same reason, now that the pipeline hands the
+  provenance manifest the same `cfg` the per-sample loop fits: leaving them in would keep
+  the fingerprint dependent on whichever sample finished last. This is a manifest schema
+  change — manifests written before it carry the two fields as a record of the run's
+  calibration centre, and `batch_summary.json` still reports the per-file offsets.
 - `cal_abs_floor_mda` (0.03 mDa, `PassConfig`, default `masscal.ABS_FLOOR_MDA`): an absolute
   floor on the trend sigma, active only below ~m/z 120, where the Orbitrap's residual
   curves faster than 1/mz (dimethylamine `[M+H]+` at 46.065 sat 0.9 ppm = 0.04 mDa off the

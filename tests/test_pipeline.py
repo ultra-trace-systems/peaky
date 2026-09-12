@@ -80,6 +80,9 @@ _got: dict = {}
 
 def _fake_ab(**kw):
     _got["ab"] = kw
+    # stand in for what the assign does to the cfg it is handed: fit and stamp a
+    # mass calibration on it (passes.calibrate).
+    kw["cfg"].cal_mu, kw["cfg"].cal_sigma = -2.45, 0.30
     return {"summary": {}, "sample_ids": []}
 
 
@@ -95,8 +98,17 @@ try:
                      when=WHEN, do_report=False, log=lambda *a: None)
         check("run_batch hands assign_batch a cfg carrying the profile's multiple",
               _got["ab"]["cfg"].height_cutoff_x_edge == 5.0, _got["ab"].get("cfg"))
-        check("run_batch fingerprints THAT cfg (same object, resolved value)",
-              _got["rec"]["cfg"] is _got["ab"]["cfg"], _got["rec"].get("cfg"))
+        # the fingerprint is a SNAPSHOT of the resolved configuration: same knobs,
+        # but nothing the assign derived from the data (a manifest that absorbed a
+        # fitted cal_mu would vary with the sample, not the config).
+        check("run_batch fingerprints that cfg's resolved knobs",
+              _got["rec"]["cfg"].height_cutoff_x_edge == 5.0
+              and _got["rec"]["cfg"] is not _got["ab"]["cfg"],
+              _got["rec"].get("cfg"))
+        check("run_batch does NOT fingerprint a calibration fitted during the run",
+              _got["rec"]["cfg"].cal_mu is None
+              and _got["ab"]["cfg"].cal_mu == -2.45,
+              (_got["rec"]["cfg"].cal_mu, _got["ab"]["cfg"].cal_mu))
     with tempfile.TemporaryDirectory() as d:
         _got.clear()
         PL.run_pooled_batches(batches="b.*", dataset="D", reagent="TofP", base_out=d,
@@ -104,7 +116,8 @@ try:
                               per_group_reports=False, log=lambda *a: None)
         check("run_pooled_batches resolves the same multiple onto its cfg",
               _got["ab"]["cfg"].height_cutoff_x_edge == 5.0
-              and _got["rec"]["cfg"] is _got["ab"]["cfg"], _got["ab"].get("cfg"))
+              and _got["rec"]["cfg"].height_cutoff_x_edge == 5.0
+              and _got["rec"]["cfg"].cal_mu is None, _got["ab"].get("cfg"))
     # a bundled profile has no opinion -> the package default, unchanged
     with tempfile.TemporaryDirectory() as d:
         _got.clear()
