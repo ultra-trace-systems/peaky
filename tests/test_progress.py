@@ -932,6 +932,98 @@ def test_tk_close_is_bounded(monkeypatch):
     assert not w.alive()
 
 
+# ---- 9. the clock KEEPS TICKING between log lines ---------------------------
+# `snapshot()` freezes elapsed/eta at the instant it is taken, and Reporter only
+# takes one when a log line arrives. A --jobs>1 run logs NOTHING between the
+# worker banner and the first completed future (workers buffer, the parent
+# replays after the reduce), so on a real batch the window went perfectly still
+# for minutes -- clock, ETA and both bars -- which reads as a hung run. Observed
+# live on a 5-worker batch against a real server: two screenshots 18 s apart
+# both read "elapsed 00:34". These pin the re-tick that fixes it.
+
+class _FakeRoot:
+    """Just enough root for _drain: it only ever calls .after()."""
+    def after(self, *a, **kw):
+        return None
+
+
+def _stale_snapshot(monkeypatch, *, age_s, done=0, n=11, assign_age_s=None, finished=False):
+    """A snapshot taken `age_s` ago, as the run thread would have pushed it."""
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(PG.time, "monotonic", lambda: clock["t"])
+    st = PG.ProgressState(title="t", n_samples=n)
+    # t0's default_factory captured the REAL time.monotonic at class-definition
+    # time, so the patch above cannot reach it -- pin the origin explicitly.
+    st.t0 = clock["t"]
+    st.parallel, st.samples_done, st.finished = 5, done, finished
+    if assign_age_s is not None:
+        st.t_assign = clock["t"] - assign_age_s
+    snap = st.snapshot()                      # frozen here
+    clock["t"] += age_s                       # ... and now time passes, silently
+    return snap, clock
+
+
+def test_retick_advances_the_clock_between_log_lines(monkeypatch):
+    snap, _ = _stale_snapshot(monkeypatch, age_s=18.0)
+    check("snapshot freezes elapsed at the moment it is taken", snap["elapsed"] == 0.0)
+    fresh = PG.retick(snap)
+    check("retick moves elapsed forward by the silence (18 s)",
+          abs(fresh["elapsed"] - 18.0) < 1e-6, fresh["elapsed"])
+    check("retick leaves the run's FACTS alone (counts/phase/bars)",
+          (fresh["samples_done"], fresh["n_samples"], fresh["phase"], fresh["sample_frac"])
+          == (snap["samples_done"], snap["n_samples"], snap["phase"], snap["sample_frac"]))
+
+
+def test_retick_advances_the_eta_too(monkeypatch):
+    # 2 of 10 done, assignment started 20 s before the snapshot -> 10 s/sample,
+    # eta 80 s. 10 s of silence later the same 2 samples took 30 s -> eta 120 s.
+    snap, _ = _stale_snapshot(monkeypatch, age_s=10.0, done=2, n=10, assign_age_s=20.0)
+    check("frozen eta extrapolates over the assign clock", abs(snap["eta"] - 80.0) < 1e-6,
+          snap["eta"])
+    fresh = PG.retick(snap)
+    check("retick re-extrapolates the eta over the silence", abs(fresh["eta"] - 120.0) < 1e-6,
+          fresh["eta"])
+
+
+def test_retick_freezes_a_finished_run(monkeypatch):
+    snap, _ = _stale_snapshot(monkeypatch, age_s=30.0, done=11, n=11, finished=True)
+    check("a finished run's clock is a RESULT and must not drift",
+          PG.retick(snap)["elapsed"] == snap["elapsed"])
+    check("a snapshot with no time base is returned untouched",
+          PG.retick({"finished": False})["finished"] is False)
+
+
+def test_drain_hands_the_ui_a_reticked_snapshot(monkeypatch):
+    """The bug was here, not in retick: _drain re-applied the FROZEN dict every
+    120 ms, so the repaint was a no-op. Drive _drain with no Tk at all."""
+    snap, _ = _stale_snapshot(monkeypatch, age_s=18.0)
+    w = PG.TkWindow("t")                       # __init__ touches no Tk
+    w.root, w._last = _FakeRoot(), snap
+    seen = []
+    w._apply = seen.append
+    w._drain()
+    check("_drain applied exactly one snapshot", len(seen) == 1, seen)
+    check("_drain's snapshot has the ADVANCED clock, not the frozen one",
+          seen and abs(seen[0]["elapsed"] - 18.0) < 1e-6,
+          seen[0]["elapsed"] if seen else None)
+
+
+def test_drain_still_drains_the_queue_and_reschedules(monkeypatch):
+    snap, _ = _stale_snapshot(monkeypatch, age_s=1.0)
+    w = PG.TkWindow("t")
+    w.root = _FakeRoot()
+    seen = []
+    w._apply = seen.append
+    w.push(snap)                               # newest state arrives via the queue
+    w._drain()
+    check("_drain takes the newest queued state", len(seen) == 1 and seen[0]["n_samples"] == 11)
+    quits = []
+    w._quit = lambda: quits.append(1)
+    w.q.put(("quit", None))
+    w._drain()
+    check("_drain still honours a quit message", quits == [1])
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

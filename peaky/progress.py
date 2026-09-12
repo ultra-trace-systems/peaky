@@ -255,7 +255,40 @@ class ProgressState:
                 "stage_frac": self.stage_frac, "elapsed": self.elapsed,
                 "eta": self.eta, "out_dir": self.out_dir,
                 "last_line": self.last_line, "stats": dict(self.stats),
-                "finished": self.finished, "error": self.error}
+                "finished": self.finished, "error": self.error,
+                # The TIME BASE, not just the derived clock: `elapsed`/`eta` above
+                # are frozen at the instant this snapshot is taken, and a snapshot
+                # is only taken when a log line arrives. `retick` needs the origin
+                # to recompute them against the current time between log lines.
+                "t0": self.t0, "t_assign": self.t_assign}
+
+
+def retick(s: dict) -> dict:
+    """A copy of snapshot `s` with `elapsed`/`eta` recomputed against the CURRENT
+    time; `s` itself when it is finished or carries no time base.
+
+    `snapshot()` freezes the clock at the moment it is taken, and `Reporter`
+    only takes one when a log line arrives. A PARALLEL run logs nothing at all
+    between the worker banner and the first completed future -- workers buffer
+    their output and the parent replays it after the reduce -- so on a real
+    batch that silence runs to minutes. Without this the window's clock, its
+    ETA and both bars sit perfectly still for that whole stretch, which is
+    indistinguishable from a hung run: precisely the stretch the window exists
+    to reassure the watcher through, failing in precisely the way that matters.
+
+    Only the wall-clock fields move here. Counts, phase and bars are facts about
+    the run and may only change when the run says so."""
+    if not isinstance(s, dict) or s.get("finished") or s.get("t0") is None:
+        return s
+    out = dict(s)
+    now = time.monotonic()
+    out["elapsed"] = now - s["t0"]
+    done, n = s.get("samples_done") or 0, s.get("n_samples") or 0
+    if done and n and done < n:
+        # same extrapolation as ProgressState.eta, over the ASSIGN clock
+        base = s.get("t_assign") or s["t0"]
+        out["eta"] = max(0.0, (now - base) / done * (n - done))
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -536,7 +569,10 @@ class TkWindow:
             return                      # torn down; nothing left to draw on
         try:
             if self._last:
-                self._apply(self._last)
+                # RE-TICKED, not replayed: `self._last` is frozen at the last log
+                # line, so re-applying it verbatim repaints identical numbers and
+                # the clock stands still through every silent stretch.
+                self._apply(retick(self._last))
         except Exception:
             pass
         try:
