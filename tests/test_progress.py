@@ -9,6 +9,8 @@ breaks a TEST instead of the window.
 
 Run: python3 tests/test_progress.py   (or `pytest tests/test_progress.py`)
 """
+import contextlib
+import io
 import re
 import sys
 from pathlib import Path
@@ -54,8 +56,6 @@ par.feed("[assign_batch] parallel: 5 worker processes (match-workers/proc=2) ove
 check("parallel banner parses", par.parallel == 5)
 check("  -> the banner alone tells the sample count (no 'assigning' line precedes it)",
       par.n_samples == 6 and par.phase == "assign")
-import contextlib  # noqa: E402
-import io  # noqa: E402
 _buf = io.StringIO()
 with contextlib.redirect_stdout(_buf):
     PG.TerminalStatus().push(par.snapshot())
@@ -630,9 +630,6 @@ def test_serial_branch_logs_done_per_sample(monkeypatch):
 
 
 # ---- 8. the hold is for a PERSON at a terminal, and it is bounded ------------
-import io  # noqa: E402
-
-
 class _Stream(io.StringIO):
     """A stdin/stdout stand-in that answers isatty() the way the test wants."""
     def __init__(self, tty: bool):
