@@ -236,6 +236,20 @@ check("pad: padded to k_min=3, pads are role 'pad' with bins_new 0",
 check("pad: richest remaining sample (h) is the first pad",
       sel5["sample_item_id"].iloc[1] == "h", sel5["sample_item_id"].tolist())
 
+# the pad's OTHER tie-break: equal-TIC samples keep the matrix's (sorted-id) row
+# order, which needs the sort to be STABLE. Small ties hide this -- numpy falls
+# back to insertion sort below ~16 elements, which is stable whatever `kind` says
+# -- so tie on 24 samples, with ONE richer sample to give an unstable sort
+# something to partition around.
+spec5b = {f"s{i:02d}": bg for i in range(24)}   # identical: every sample covers all
+pk5b = make_batch(spec5b)
+pk5b.loc[pk5b.sample_item_id == "s05", "height"] = 5000.0    # the one rich sample
+sel5b = SS.select_cover_samples(pk5b, k_min=5, min_gain=0.005)
+check("pad: equal-TIC pads follow sorted sample_item_id (the sort is stable)",
+      sel5b["sample_item_id"].tolist() == ["s00", "s05", "s01", "s02", "s03"]
+      and sel5b["role"].tolist() == ["cover"] + ["pad"] * 4,
+      sel5b["sample_item_id"].tolist())
+
 # (e) n <= k_min -> all samples taken
 tiny = make_batch({"a": bg, "b": bg + [60], "c": bg + [60]})
 selt = SS.select_cover_samples(tiny)
