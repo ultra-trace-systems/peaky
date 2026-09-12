@@ -107,6 +107,29 @@ check("the cal knobs the user CAN set are still fingerprinted",
 check("git_info is best-effort and returns a dict", isinstance(
     PV.git_info(str(Path(PV.__file__).parent)), dict))
 
+# --- the admission gate: KNOB in the config fingerprint, RESOLVED value out of it.
+# `occurrence_threshold` is derived from the batch at run time (the Otsu split),
+# so it is not part of the configuration that would reproduce the run -- it is an
+# OUTPUT. Keeping it in `config` would make two identical configurations
+# fingerprint differently on two batches. It belongs under counts.admission.
+_cfg_adm = P.PassConfig(occurrence_min="auto")
+_cfg_adm.occurrence_threshold = 0.44          # what stamp_admission sets per run
+_adm_block = {"occurrence_min": "auto", "occurrence_threshold": 0.44, "n_bins": 4025,
+              "n_persistent_bins": 512, "n_spectra": 230, "tol_ppm": 6.0}
+m_adm = PV.build_manifest(run_dir=_rd, batch_name="B", dataset="D",
+                          sample_ids=["s1"], reagent="NO3_15N", cfg=_cfg_adm,
+                          ts_path=_tsp, counts={"merged_M0": 7, "admission": _adm_block})
+check("config fingerprint keeps the admission KNOB (occurrence_min)",
+      m_adm["config"].get("occurrence_min") == "auto", m_adm["config"])
+check("config fingerprint DROPS the run-derived occurrence_threshold",
+      "occurrence_threshold" not in m_adm["config"], m_adm["config"])
+check("the resolved threshold is recorded instead under output.counts.admission",
+      m_adm["output"]["counts"]["admission"]["occurrence_threshold"] == 0.44
+      and m_adm["output"]["counts"]["admission"]["tol_ppm"] == 6.0,
+      m_adm["output"]["counts"])
+check("occurrence_threshold is listed as a runtime field, next to noise_edge_cps",
+      "occurrence_threshold" in PV._RUNTIME_CFG_FIELDS, PV._RUNTIME_CFG_FIELDS)
+
 PV.write_manifest(_rd, m)
 check("write_manifest writes run_manifest.json",
       os.path.exists(os.path.join(_rd, "run_manifest.json")))
