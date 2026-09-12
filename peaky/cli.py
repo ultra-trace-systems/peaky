@@ -203,9 +203,9 @@ def cmd_assign(args) -> None:
               f"{len(occurrence)} m/z bins at {SS.BATCH_TOL_PPM:g} ppm over {_nsp} spectra); "
               + (f"{int((occurrence['occurrence'] >= _thr).sum())} of {len(occurrence)} bins "
                  f"persist above it" if _thr is not None
-                 else ("persistence path off: fewer than "
-                       f"{ADM.MIN_SPECTRA} spectra ({_nsp})" if _nsp < ADM.MIN_SPECTRA
-                       else f"persistence path off: occurrence_min={args.occurrence_min!r}")))
+                 # say WHICH of the four reasons, not just that it is off -- the
+                 # same account `peaky batch` gives of the same batch
+                 else f"persistence path off: {ADM.why_off(cfg, occurrence)}"))
 
     out = assign.run(args.sample_id, context, cfg=cfg, use_cache=not args.no_cache,
                      do_pass2=not args.no_pass2, do_pass3=not args.no_pass3,

@@ -447,8 +447,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                         tol_ppm=float(_occ.attrs.get("tol_ppm", tol_ppm)),
                         n_persistent_bins=int((_occ["occurrence"] >= _thr).sum()) if _thr is not None else 0)
         if _thr is None:
-            log(f"[assign_batch] admission: persistence path off ({occ_info['n_spectra']} spectra "
-                f"< {ADM.MIN_SPECTRA}, or occurrence_min={occurrence_min!r})")
+            log(f"[assign_batch] admission: persistence path off -- {ADM.why_off(_cfg, _occ)}")
         else:
             log(f"[assign_batch] admission: {occ_info['n_persistent_bins']} of {occ_info['n_bins']} "
                 f"m/z bins persist in >= {_thr:.2f} of {occ_info['n_spectra']} spectra "

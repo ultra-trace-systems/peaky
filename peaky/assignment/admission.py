@@ -58,7 +58,8 @@ import pandas as pd
 
 from peaky.batch import sampling as SS
 
-__version__ = "0.2.0"  # one batch tolerance (BATCH_TOL_PPM); lookup requires the table's tol
+__version__ = "0.3.0"  # one batch tolerance (BATCH_TOL_PPM); lookup requires the
+                       # table's tol; why_off() explains a disabled path
 
 DEFAULT_OCCURRENCE_MIN = "auto"   # Otsu split of the batch's bin-occurrence distribution
 AUTO_MIN, AUTO_MAX = 0.25, 0.75   # clamp for the derived threshold
@@ -157,6 +158,29 @@ def resolve_threshold(cfg, table: pd.DataFrame | None) -> float | None:
         return float(t) if t is not None else None
     om = float(om)
     return om if om > 0 else None
+
+
+def why_off(cfg, table: pd.DataFrame | None) -> str:
+    """Why `resolve_threshold` gave no threshold, as one human phrase (`''` when
+    it gave one). There are FOUR distinct reasons and a log line that says
+    "path off" without saying which is unactionable -- a batch that is one
+    spectrum short of MIN_SPECTRA and a batch whose occurrences carry no split
+    need opposite responses. Every caller that reports the path being off should
+    use this so `assign` and `batch` give the same account of the same run."""
+    om = getattr(cfg, "occurrence_min", DEFAULT_OCCURRENCE_MIN)
+    # the knob first: 0 disables the path whatever the table says
+    if not isinstance(om, str) and (om is None or float(om) <= 0):
+        return f"occurrence_min={om!r} -- the knob switches it off"
+    if table is None or len(table) == 0:
+        return ("no batch occurrence table (a single-sample run without "
+                "--ts-batch has no batch context)")
+    n = int(table.attrs.get("n_samples", 0) or 0)
+    if n < MIN_SPECTRA:
+        return f"only {n} spectra, fewer than the {MIN_SPECTRA} an occurrence needs to mean anything"
+    if isinstance(om, str) and resolve_threshold(cfg, table) is None:
+        return (f"{len(table)} bins over {n} spectra, but their occurrences carry no "
+                "split for 'auto' to derive a threshold from")
+    return ""
 
 
 def lookup_occurrence(mz, table: pd.DataFrame | None) -> np.ndarray:

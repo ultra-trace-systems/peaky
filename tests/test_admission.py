@@ -204,6 +204,41 @@ check("...stamping on that batch admits by height only (the 0.5 bins admit nobod
       and _fby["bright"] == "height" and _fby["weak"] == "", (_fc, _fby.to_dict()))
 
 # ---------------------------------------------------------------------------
+# WHY the path is off. Four different situations resolve to no threshold, and
+# they call for opposite responses (raise the knob / pass --ts-batch / assign a
+# longer batch / accept that this batch has no split). A log line saying only
+# "path off" -- or worse, "X spectra < 10, OR occurrence_min=..." -- is
+# unactionable, so every reporting caller goes through why_off().
+# ---------------------------------------------------------------------------
+check("why_off: a zero knob names the knob (not the table)",
+      "occurrence_min" in ADM.why_off(P.PassConfig(occurrence_min=0), tab)
+      and "knob" in ADM.why_off(P.PassConfig(occurrence_min=0), tab),
+      ADM.why_off(P.PassConfig(occurrence_min=0), tab))
+check("why_off: a zero knob is named even when there IS no table (the knob wins)",
+      "occurrence_min" in ADM.why_off(P.PassConfig(occurrence_min=0), None),
+      ADM.why_off(P.PassConfig(occurrence_min=0), None))
+check("why_off: no table names the missing batch context (--ts-batch)",
+      "--ts-batch" in ADM.why_off(cfg_auto, None), ADM.why_off(cfg_auto, None))
+check("why_off: too few spectra names the count and the minimum",
+      f"{ADM.MIN_SPECTRA}" in ADM.why_off(cfg_auto, small) and "5 spectra" in ADM.why_off(cfg_auto, small),
+      ADM.why_off(cfg_auto, small))
+check("why_off: a table with no split says so -- NOT 'too few spectra'",
+      "no split" in ADM.why_off(cfg_auto, _flat_tab)
+      and "spectra, fewer than" not in ADM.why_off(cfg_auto, _flat_tab),
+      ADM.why_off(cfg_auto, _flat_tab))
+check("why_off: the four reasons are four DIFFERENT strings",
+      len({ADM.why_off(P.PassConfig(occurrence_min=0), tab), ADM.why_off(cfg_auto, None),
+           ADM.why_off(cfg_auto, small), ADM.why_off(cfg_auto, _flat_tab)}) == 4)
+check("why_off: empty when the path is ON (there is nothing to explain)",
+      ADM.why_off(cfg_auto, tab) == "" and ADM.why_off(P.PassConfig(occurrence_min=0.6), tab) == "",
+      (ADM.why_off(cfg_auto, tab), ADM.why_off(P.PassConfig(occurrence_min=0.6), tab)))
+check("why_off is non-empty exactly when resolve_threshold is None",
+      all((ADM.why_off(c, t) != "") == (ADM.resolve_threshold(c, t) is None)
+          for c, t in ((cfg_auto, tab), (cfg_auto, None), (cfg_auto, small),
+                       (cfg_auto, _flat_tab), (P.PassConfig(occurrence_min=0), tab),
+                       (P.PassConfig(occurrence_min=0.6), tab))))
+
+# ---------------------------------------------------------------------------
 # THE BOUNDARY. The gate is `occurrence >= threshold`, inclusive: a bin sitting
 # EXACTLY on the derived threshold is admitted. (A `>` gate passes every other
 # test in this file; only this one sees the difference.)
