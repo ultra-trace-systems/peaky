@@ -82,7 +82,7 @@ peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto
 
 # a whole batch (assign subset -> merge -> cluster -> Van Krevelen -> PDF report)
 peaky batch --batch "<batch>" --dataset "<workspace>" --reagent <Br|Ur|...> \
-    [--k-max 30 --k-min 6 --min-gain 0.005] [--occurrence-min auto --height-cutoff-x-edge 1.0] \
+    [--k-max 30 --k-min 6 --min-gain 0.005] [--occurrence-min auto] \
     --out-dir ~/peaky-output
 
 # MANY same-chemistry batches -> ONE unified ledger + whole-pool + per-group reports
