@@ -705,7 +705,13 @@ def test_single_sample_command_fills_both_bars(monkeypatch):
 
     from peaky.assignment import assign as A
 
-    stages = [st_.name for st_ in A._STAGES if st_.safe]   # the ones that log a time
+    # The stages that log a time, MINUS a few: a real run emits fewer than the
+    # nominal (stages are gated by reagent, context and the --no-passN flags),
+    # which is why the count is learned at all -- and it is what makes the
+    # stage-bar assertion below load-bearing, since a denominator left at
+    # NOMINAL_STAGES cannot reach 100% however many stages ran.
+    stages = [st_.name for st_ in A._STAGES if st_.safe][:-4]
+    assert 0 < len(stages) < PG.NOMINAL_STAGES, stages
 
     def _fake_assign(sid, context="ambient-air", *, log=print, **kw):
         for name in stages:
