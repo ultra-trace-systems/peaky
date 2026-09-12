@@ -492,6 +492,23 @@ def test_hold_only_on_an_interactive_tty(monkeypatch):
     assert PG.open_progress("t", flag=True, log=seen.append, hold=False).hold is False
 
 
+def test_display_available_by_platform(monkeypatch):
+    """macOS is NEVER a display for this module: Tk off the main thread aborts
+    the process there, so the terminal fallback is the only safe answer."""
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert PG.display_available() is False
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert PG.display_available() is True
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert PG.display_available() is True
+    monkeypatch.delenv("DISPLAY")
+    assert PG.display_available() is True           # Wayland alone is enough
+    monkeypatch.delenv("WAYLAND_DISPLAY")
+    assert PG.display_available() is False
+
+
 def test_hold_seconds_parsing(monkeypatch):
     monkeypatch.delenv("PEAKY_PROGRESS_HOLD_S", raising=False)
     assert PG.hold_seconds() == PG.HOLD_S_DEFAULT == 600.0

@@ -265,9 +265,17 @@ def _single_sample_rows(s: dict, elapsed: float | None) -> list:
 #    Tk from elsewhere.
 # --------------------------------------------------------------------------- #
 def display_available() -> bool:
-    """Is there a display to open a window on? X11/Wayland on Linux; assumed on
-    macOS/Windows (no env var announces it there)."""
-    if sys.platform.startswith(("win", "darwin")):
+    """Is there a display we can SAFELY open a Tk window on?
+
+    macOS: no. The window runs on a daemon thread (`TkWindow.start`), and on
+    macOS Tk/Cocoa must be driven from the process's main thread -- off it, Tk
+    aborts the whole process (a hard crash, not a Python exception any guard
+    here could catch), i.e. the progress window would kill the run it reports
+    on. macOS gets the terminal status line instead.
+    Windows: assumed (no env var announces a display). Linux: X11 or Wayland."""
+    if sys.platform == "darwin":
+        return False
+    if sys.platform.startswith("win"):
         return True
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
