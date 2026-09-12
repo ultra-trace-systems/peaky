@@ -26,6 +26,12 @@ import traceback
 import uuid
 from dataclasses import dataclass, field
 
+# the selection budget is the sampling constant, not a retyped number (the CLI's
+# --k-max default comes from the same place). A tool signature's default binds at
+# def time, so this one import sits at module level; everything else in this
+# module is imported lazily inside the tool bodies.
+from peaky.batch.sampling import K_MAX as _K_MAX
+
 __all__ = [
     "health", "list_workspaces", "list_datasets", "list_batches", "list_samples",
     "certify_neutrals", "assign_sample", "run_batch", "job_status", "list_jobs",
@@ -277,13 +283,14 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
 
 
 def run_batch(batch: str, dataset: str = "", reagent: str = "auto",
-              k_max: int = 30, subject: str = "",
+              k_max: int = _K_MAX, subject: str = "",
               output_dir: str = "") -> dict:
     """Run the whole-batch pipeline (assign the presence-cover subset -> merge ->
     cluster -> Van Krevelen -> PDF). Returns a job_id immediately; poll
     `job_status`. On completion the result carries the versioned run folder + the
     PDF/merged-ledger paths and the batch summary (incl. `selection`: achieved
-    coverage + stop reason). `k_max` is the sample budget (default 30)."""
+    coverage + stop reason). `k_max` is the sample budget (default
+    `sampling.K_MAX`)."""
     base_out = os.path.expanduser(output_dir or _OUT_DEFAULT)
 
     def work(log):

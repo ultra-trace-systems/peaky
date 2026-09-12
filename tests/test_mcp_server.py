@@ -4,6 +4,7 @@ No network and NO `mcp` package required: the tool functions are plain Python
 (FastMCP is only imported by build_server). IO is monkeypatched. Run:
     python3 tests/test_mcp_server.py
 """
+import inspect
 import sys
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from peaky import mcp_server as M  # noqa: E402
+from peaky.batch import sampling as SS  # noqa: E402
 from peaky.io import io_mascope as IO  # noqa: E402
 
 PASS = FAIL = 0
@@ -147,6 +149,18 @@ try:
 finally:
     PL.run_batch = _orig_run_batch
     M.JOBS = _saved
+
+# ---------- and its DEFAULT is the sampling constant, not a retyped number ----
+# The CLI takes --k-max from SS.K_MAX; the tool must not drift from it when the
+# constant moves, and the docstring must name the constant rather than today's
+# value (a literal in the docstring is what goes stale silently).
+check("run_batch's k_max default tracks sampling.K_MAX",
+      inspect.signature(M.run_batch).parameters["k_max"].default == SS.K_MAX,
+      inspect.signature(M.run_batch).parameters["k_max"].default)
+check("run_batch's docstring names the constant, not a literal default",
+      "K_MAX" in (M.run_batch.__doc__ or "")
+      and f"default {SS.K_MAX})" not in (M.run_batch.__doc__ or ""),
+      M.run_batch.__doc__)
 
 # ---------- build_server degrades cleanly without the mcp package ----------
 try:
