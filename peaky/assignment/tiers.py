@@ -607,6 +607,16 @@ def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
     column is kept as the provenance of record. Falls back to the Assigned-M0
     median when the core is too small to calibrate. No tier decision reads this
     column (tiering is already calibration-aware), so counts are unchanged.
+
+    The centre removed here is DELIBERATELY the constant one, also on a run whose
+    backbone accepted a mass trend (masscal): panel (b) of the QC figure plots this
+    column against m/z precisely to expose the instrument's residual drift, and
+    subtracting the fitted 1/mz centre would subtract the very structure that panel
+    exists to show -- flattening it whether or not the fit was any good. The
+    mass-dependent centre belongs to the GATES, not to the display: it rides on
+    `_Cal` / `PassConfig` (`cal_a` / `cal_b` / `cal_mz_lo` / `cal_mz_hi`) and is
+    applied per peak by `_cal_z` and `passes.core.z_of`.
+
     Returns (mu, sigma) and stashes them in ledger.attrs, or None if uncalibrable."""
     if "ppm_error" not in ledger.columns:
         return None
@@ -616,9 +626,6 @@ def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
     cal = _calibrate(m0, kids_of)
     if cal is not None:
         mu, sigma = cal
-        if getattr(cal, "b", None) is not None:
-            ledger.attrs["cal_a"], ledger.attrs["cal_b"] = cal.a, cal.b
-            ledger.attrs["cal_mz_lo"], ledger.attrs["cal_mz_hi"] = cal.mz_lo, cal.mz_hi
     else:
         assigned = pd.to_numeric(
             m0.loc[m0.get("tier") == TIER_ASSIGNED, "ppm_error"],
