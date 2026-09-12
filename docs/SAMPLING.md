@@ -137,7 +137,7 @@ mirrors them for `batch` and `pool`.
 | `K_MIN` | 6 | picks taken before the marginal-gain stop applies; pad target |
 | `MIN_GAIN` | 0.005 | stop when the next pick adds < this fraction of the universe |
 | `K_MAX` | 30 | budget; hitting it while still gaining → `stop_reason='k_max'` + warning |
-| `BATCH_TOL_PPM` | 6.0 | m/z gap-clustering tolerance for the bins — the one tolerance for every batch-level binning (selection, admission, merge: `assign_batch.DEFAULT_TOL_PPM = BATCH_TOL_PPM`); recorded as `selection.tol_ppm` |
+| `BATCH_TOL_PPM` | 6.0 | m/z gap-clustering tolerance for the bins — the one tolerance for every batch-level binning (selection and merge: `assign_batch.DEFAULT_TOL_PPM = BATCH_TOL_PPM`); recorded as `selection.tol_ppm` |
 
 ---
 
@@ -195,7 +195,9 @@ modes of one instrument. Selection is deterministic (identical picks on re-run).
   not height-gated — the same code covers a TOF (edge 0.8 cps) and an Orbitrap
   mode with the reagent ion in range (edge 800 cps).
 - **A time grid / max-TIC add nothing.** The clock is uncorrelated with the air,
-  and the first greedy pick is the richest sample anyway.
+  and the first greedy pick is already the sample carrying the most distinct
+  bins. That count is the objective, never brightness — *richest* (§3.6) means
+  total ion current and ranks the **pads** only.
 - **`k_max` is a budget, not a target.** If it binds, coverage is incomplete and
   the run says so; raise it rather than trusting the ledger to be complete.
 - **Few-samples shortcut.** `n == 0` → empty; `n ≤ K_MIN` → take all.

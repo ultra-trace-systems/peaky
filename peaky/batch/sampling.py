@@ -20,7 +20,9 @@ selectors):
     bins. Presence cover is submodular, so plain greedy is near-optimal and can
     trade redundancy (two near-identical rich samples are not both taken). A
     time grid / max-TIC add nothing: the clock is uncorrelated with the air and
-    the first greedy pick is the richest sample anyway.
+    the first greedy pick is already the sample carrying the most distinct bins
+    (the objective is that COUNT, never brightness -- 'richest' below means
+    total ion current and ranks the pads only).
   * Stop on MARGINAL GAIN: once `k_min` (6) samples are taken, stop when the
     next sample would add fewer than `min_gain` (0.5 %) of the universe. `k_max`
     (30) is a wall-clock budget only; a run that hits it is flagged
@@ -53,9 +55,9 @@ MIN_GAIN = 0.005       # stop when the next pick adds < this fraction of the uni
 MIN_PREVALENCE = 2     # a bin enters the universe if present in >= this many samples
 
 # The ONE m/z binning tolerance for every batch-level operation: sample selection
-# (the presence cover's bins), the admission table and the merge
-# (`assign_batch.DEFAULT_TOL_PPM` is this constant). Keep selection and merge
-# binning identical: a bin the selector covered must be the bin the merge sees.
+# (the presence cover's bins) and the merge (`assign_batch.DEFAULT_TOL_PPM` is
+# this constant). Keep selection and merge binning identical: a bin the selector
+# covered must be the bin the merge sees.
 BATCH_TOL_PPM = 6.0
 
 ROLE_COVER = "cover"   # a greedy pick (adds bins_new uncovered bins)

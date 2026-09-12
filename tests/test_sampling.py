@@ -57,7 +57,8 @@ spec["richB"] = spec["richB"] + bg
 sel = SS.select_cover_samples(make_batch(spec), k_min=2, min_gain=0.5)
 meta = sel.attrs["selection"]
 order = sel["sample_item_id"].tolist()
-check("cover: first pick is the richest sample", order[0] == "richA", order)
+check("cover: first pick is the sample holding the most distinct bins",
+      order[0] == "richA", order)
 check("cover: second pick is a SPARSE sample (unique bins), not the twin rich one",
       order[1] in ("sparse", "dupS") and "richB" not in order[:2], order)
 check("cover: bins_new records the marginal gain (80 then 3)",
