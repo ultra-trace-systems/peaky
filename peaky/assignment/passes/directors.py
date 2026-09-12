@@ -1238,7 +1238,14 @@ def _resolve_acid_i2_clusters(
 
 def _target_peaks(ledger: pd.DataFrame, cfg: PassConfig) -> pd.DataFrame:
     """The unexplained peaks ELIGIBLE for formula search: bright enough for the
-    height gate OR persistent across the batch (admission.admissible)."""
+    height gate OR persistent across the batch (admission.admissible).
+
+    FIVE pass functions share this helper -- `run_pass1`, `run_pass2`,
+    `run_pass3` and pass-3's two cluster resolvers (`_resolve_hx_clusters`,
+    `_resolve_acid_i2_clusters`) -- so one call to `admissible` here gates five
+    of the eight gated sites. Anything added or removed from that caller list
+    changes what an empty `admitted_by` means to a reader of the ledger; keep
+    `admission.py`'s module note (and the docs it feeds) in step."""
     from peaky.assignment import admission as ADM
     un = L.unassigned_peaks(ledger)
     return un[ADM.admissible(un, cfg)]

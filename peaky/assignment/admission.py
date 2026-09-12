@@ -27,16 +27,28 @@ is correct, and the isotope rules are untouched.
                     (threshold = `resolve_threshold`: the number given as
                     `cfg.occurrence_min`, or the batch's Otsu split for "auto";
                     stored on `cfg.occurrence_threshold`)
-  admitted_by     = 'height' | 'occurrence' (persistence only) | '' (below the
-                    gate the gated passes use)
+  admitted_by     = 'height' | 'occurrence' (persistence only) | '' (not eligible
+                    at the gated sites below)
 
-WHICH PASSES ARE GATED. `admissible()` is consulted by exactly four sites:
-pass-1 grid enumeration (passes/directors), the pass-6 ladder gap-fill
-(ladders), residual stage B (residual) and the siloxane ladder (siloxane, both
-the work set and the seed test). `admitted_by` describes eligibility at THOSE
-sites. Not yet gated (still brightness-only, `height >= cfg.height_cutoff`):
-pass-2/3 series growth, residual stage A (the ~2-Da isotope-doublet scan) and
-the reflist rescue -- a documented follow-up, not a promise this module makes.
+WHICH PASSES ARE GATED -- and how to re-derive it. `admissible()` has four call
+sites, but one of them is `passes/directors._target_peaks`, the shared
+target-peak helper of FIVE pass functions, so the gate reaches EIGHT pass-level
+sites. Count the callers of `_target_peaks`, never the calls to `admissible`:
+
+  via `_target_peaks`   the pass-1 grid enumeration (`run_pass1`), pass-2 series
+                        growth (`run_pass2`), pass-3 contaminant families
+                        (`run_pass3`) and pass-3's two cluster resolvers
+                        (`_resolve_hx_clusters`, `_resolve_acid_i2_clusters`)
+  direct                the pass-6 ladder gap-fill (ladders), residual stage B
+                        (residual), the siloxane ladder (siloxane -- both the
+                        work set and the seed test)
+
+`admitted_by` describes eligibility at THOSE sites. Still brightness-only
+(`height >= cfg.height_cutoff`), a documented follow-up and not a promise this
+module makes: residual stage A (the ~2-Da isotope-doublet scan), the reflist
+rescue, pass-3's series DETECTION statistics (`series_detect`, which counts a
+series' members rather than proposing formulas for a peak) and the
+isotope-satellite tests in `passes/postprocess`.
 
 The threshold is DERIVED FROM THE BATCH, not a constant: the bin-occurrence
 distribution is cleanly bimodal (transient bins pile up below 0.1, persistent

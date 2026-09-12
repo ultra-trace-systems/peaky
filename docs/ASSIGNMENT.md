@@ -49,10 +49,12 @@ the achieved coverage and why the selection stopped.
 
 ## Admission: which peaks are eligible (persistence OR brightness)
 
-Four formula-hunting sites draw their candidate peaks through one gate
-(`assignment/admission.py`): the **pass-1 grid**, the **pass-6 ladder gap-fill**,
-**residual stage B** and the **siloxane ladder** (its work set *and* its seed
-test). A peak is **eligible** there if it is bright enough
+Eight formula-hunting sites draw their candidate peaks through one gate
+(`assignment/admission.py`): the **pass-1 grid**, **pass-2 series growth**,
+**pass-3 contaminant families** and pass-3's two **cluster resolvers** (HX,
+acid·I₂) — those five share `directors._target_peaks` — plus the **pass-6 ladder
+gap-fill**, **residual stage B** and the **siloxane ladder** (its work set *and*
+its seed test). A peak is **eligible** there if it is bright enough
 (`height ≥ height_cutoff`, an edge multiple — see above) **or** persistent:
 its m/z bin holds a peak in at least a threshold fraction of the batch's spectra
 (bins at `sampling.BATCH_TOL_PPM` = 6 ppm, the one tolerance the selection, this
@@ -84,16 +86,21 @@ corroborates the formula. A pass-0 known species is exempt: that branch is
 tested first, so a curated identity stays Assigned — its evidence is the locked
 list, not this peak's height. Each per-file ledger row records `occurrence` (float
 in [0, 1], NaN without batch context or when no bin is within tolerance) and
-`admitted_by` (`height` / `occurrence` = persistence only / `''` = below the
-gate those four sites use); the merged ledger carries them for the winning row.
+`admitted_by` (`height` / `occurrence` = persistence only / `''` = not eligible
+at those eight sites); the merged ledger carries them for the winning row.
 Batch runs compute the occurrence table from the batch time series; a
 single-sample run without `--ts-batch` has no batch context and is
 brightness-only. `--occurrence-min 0` disables the path.
 
-**Not yet gated (brightness-only, `height ≥ height_cutoff`)**: pass-2/3 series
-growth, residual stage A (the ~2-Da isotope-doublet scan) and the reflist
-rescue. `admitted_by` says nothing about those; converting them is a documented
-follow-up, kept out of this change so the validated behaviour is unchanged.
+**Not yet gated (brightness-only, `height ≥ height_cutoff`)**: residual stage A
+(the ~2-Da isotope-doublet scan), the reflist rescue, pass-3's series
+*detection* statistics (`series_detect` counts a series' members rather than
+proposing formulas for a peak — pass-3's own target peaks *are* gated) and the
+isotope-satellite tests in `passes/postprocess`. `admitted_by` says nothing
+about those; converting them is a documented follow-up, kept out of this change
+so the validated behaviour is unchanged. The gated set is the callers of
+`directors._target_peaks` plus the three direct `admissible()` call sites —
+re-derive it that way, not by grepping for `admissible(`.
 
 ## The pass sequence
 

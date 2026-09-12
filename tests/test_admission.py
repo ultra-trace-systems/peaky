@@ -446,6 +446,51 @@ try:
 except ValueError:
     check("gate_config rejects an unknown string", True)
 
+# ---------------------------------------------------------------------------
+# WHICH SITES ARE GATED -- pinned, because it is the meaning of an empty
+# `admitted_by` in every ledger this package writes, and it CANNOT be read off a
+# grep for `admissible(`: one of the four call sites is `directors._target_peaks`,
+# the shared target-peak helper of five pass functions. Counting call sites
+# instead of callers under-reports the gated set by four and mislabels pass-2/3
+# as brightness-only. If this list changes, the module note in admission.py,
+# docs/ASSIGNMENT.md, docs/ARCHITECTURE.md, docs/OUTPUTS.md, SKILL.md and the
+# CHANGELOG all describe the wrong set and must be re-derived with it.
+# ---------------------------------------------------------------------------
+import ast  # noqa: E402
+
+_PKG = Path(ADM.__file__).resolve().parent
+_dsrc = (_PKG / "passes" / "directors.py").read_text()
+_tree = ast.parse(_dsrc)
+_via_helper = {
+    fn.name for fn in ast.walk(_tree) if isinstance(fn, ast.FunctionDef)
+    and any(isinstance(n, ast.Name) and n.id == "_target_peaks"
+            for n in ast.walk(fn)) and fn.name != "_target_peaks"
+}
+check("five pass functions share directors._target_peaks (pass-1/2/3 + both pass-3 cluster resolvers)",
+      _via_helper == {"run_pass1", "run_pass2", "run_pass3",
+                      "_resolve_hx_clusters", "_resolve_acid_i2_clusters"}, _via_helper)
+_direct = sorted(f.relative_to(_PKG).as_posix() for f in _PKG.rglob("*.py")
+                 if f.name != "admission.py" and "admissible(" in f.read_text())
+check("the direct admissible() callers are exactly ladders / residual / siloxane / directors",
+      _direct == ["ladders.py", "passes/directors.py", "residual.py", "siloxane.py"], _direct)
+# ...and the helper really passes a persistence-only peak through, so pass-2's
+# and pass-3's target lists contain sub-gate peaks (the claim that would be
+# false if `_target_peaks` still filtered on height alone)
+from peaky.assignment.passes import directors as _DIR  # noqa: E402
+_gl = L.new_ledger(pd.DataFrame({"peak_id": ["weak", "bright"], "mz": [250.0, 260.0],
+                                 "height": [2.0, 500.0]}))
+_gtab = pd.DataFrame({"mz": [250.0, 260.0], "occurrence": [0.93, 0.93], "n_samples": [93, 93]})
+_gtab.attrs.update(tol_ppm=6.0, n_samples=100)
+_cfg_g = P.PassConfig(height_cutoff_cps=100.0, occurrence_min=0.8)
+ADM.stamp_admission(_gl, _cfg_g, _gtab)
+_tp = set(_DIR._target_peaks(_gl, _cfg_g)["peak_id"])
+check("_target_peaks admits the persistence-only peak (so pass-1/2/3 all see it)",
+      _tp == {"weak", "bright"}, (_tp, dict(zip(_gl["peak_id"], _gl["admitted_by"]))))
+_cfg_h = P.PassConfig(height_cutoff_cps=100.0, occurrence_min=0.0)
+ADM.stamp_admission(_gl, _cfg_h, _gtab)
+check("...and drops it when the persistence path is off (brightness alone)",
+      set(_DIR._target_peaks(_gl, _cfg_h)["peak_id"]) == {"bright"})
+
 
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
@@ -454,3 +499,4 @@ def test_all():
 if __name__ == "__main__":
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
+
