@@ -129,6 +129,12 @@ check("the resolved threshold is recorded instead under output.counts.admission"
       m_adm["output"]["counts"])
 check("occurrence_threshold is listed as a runtime field, next to noise_edge_cps",
       "occurrence_threshold" in PV._RUNTIME_CFG_FIELDS, PV._RUNTIME_CFG_FIELDS)
+# the gate is a module of its own; its version must be pinned like every other
+# assignment module (module_hashes catches edits, module_versions names them)
+from peaky.assignment import admission as _ADM  # noqa: E402
+check("module_versions pins the admission module",
+      m_adm["code"]["module_versions"].get("admission") == _ADM.__version__,
+      m_adm["code"]["module_versions"])
 
 PV.write_manifest(_rd, m)
 check("write_manifest writes run_manifest.json",

@@ -10,6 +10,7 @@ import argparse
 import json
 from dataclasses import dataclass, field
 
+from peaky.assignment import admission
 from peaky.chem import chemistry
 from peaky.assignment import cleanup
 from peaky.chem import contexts
@@ -30,10 +31,11 @@ from peaky.assignment import siloxane
 from peaky.assignment import tiers
 from peaky.batch import timeseries
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"  # + admission stamp before the passes (run(occurrence=))
 
 MODULE_VERSIONS = {
     "assign": __version__,
+    "admission": admission.__version__,
     "chemistry": chemistry.__version__,
     "contexts": contexts.__version__,
     "ledger": ledger.__version__,
@@ -378,8 +380,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # Admission gate: brightness OR persistence. `occurrence` is the batch's
     # per-bin occurrence table (assign_batch computes it from the batch time
     # series); without it the gate is brightness alone (single-sample runs).
-    from peaky.assignment import admission as ADM
-    adm = ADM.stamp_admission(led, cfg, occurrence)
+    adm = admission.stamp_admission(led, cfg, occurrence)
     _thr = adm.get("occurrence_threshold")
     log(f"[run] admission: {adm['height']} peaks by height, {adm['occurrence']} by "
         f"persistence only ("
