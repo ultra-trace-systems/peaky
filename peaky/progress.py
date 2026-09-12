@@ -613,18 +613,26 @@ class Reporter:
 
     # -- lifecycle ---------------------------------------------------------- #
     def phase(self, name: str) -> None:
-        """Set the phase directly (for callers outside the logged pipeline)."""
-        self.state.phase = name
-        self._push()
+        """Set the phase directly (for callers outside the logged pipeline).
+        Guarded like __call__: a progress call can never raise into the run."""
+        try:
+            self.state.phase = str(name)
+            self._push()
+        except Exception:
+            pass
 
     def finish(self, summary: dict | None = None, error: str = "") -> None:
         """Freeze the window on the run's real numbers. `summary` is the dict the
-        pipeline RETURNS (batch_summary), so nothing here depends on parsing."""
-        self.state.stats = dict(summary or {})
-        self.state.error = error
-        self.state.phase = "done"
-        self.state.finished = True
-        self._push()
+        pipeline RETURNS (batch_summary), so nothing here depends on parsing.
+        Anything that is not a dict is shown as no stats rather than raised."""
+        try:
+            self.state.stats = dict(summary) if isinstance(summary, dict) else {}
+            self.state.error = str(error or "")
+            self.state.phase = "done"
+            self.state.finished = True
+            self._push()
+        except Exception:
+            pass
 
     def close(self, wait: bool | None = None) -> None:
         """Close the UI. `wait` defaults to "hold, if the run finished" -- the

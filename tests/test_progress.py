@@ -304,6 +304,16 @@ except Exception as e:      # noqa: BLE001
     ok = False
 check("a UI that raises on every call cannot break the run", ok)
 
+for bad in (None, "oops", 42, ["x"]):
+    try:
+        fin = PG.Reporter("t", log=seen.append, ui=_Boom())
+        fin.finish(bad)
+        fin.phase(None)
+        ok = fin.state.finished and fin.state.stats == {}
+    except Exception:       # noqa: BLE001
+        ok = False
+    check(f"finish({bad!r}) / phase(None) never raise (not-a-dict -> no stats)", ok)
+
 def _bad_log(*a, **k): raise RuntimeError("log exploded")
 try:
     PG.Reporter("t", log=_bad_log, ui=None)("x")
