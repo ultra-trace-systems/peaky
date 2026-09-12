@@ -78,9 +78,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reflist rescue, pass-3's series *detection* statistics (`series_detect`) and
   the isotope-satellite tests in `passes/postprocess`. Re-derive the gated set
   from the callers of `_target_peaks`, not from a grep for `admissible(`.
-  One m/z binning tolerance, `sampling.BATCH_TOL_PPM` (6 ppm),
-  now serves every batch-level operation — selection, the admission table and
-  the merge — so `batch` and `assign --ts-batch` bin identically.
+  The admission table joins selection and the merge on `sampling.BATCH_TOL_PPM`
+  (above), so `batch` and `assign --ts-batch` bin a peak the same way.
 
 ### Removed
 
