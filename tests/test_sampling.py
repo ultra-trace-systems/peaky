@@ -145,6 +145,41 @@ check("k_max_warning: text names k_max and the achieved coverage",
 check("describe: one line mentioning the stop reason",
       "stop=k_max" in SS.describe(m4), SS.describe(m4))
 
+# (c2) the gain-floor BOUNDARY. The stop test is `gain < floor`, so a pick adding
+# EXACTLY the floor is still taken. 100 universe bins at min_gain 0.05 -> floor 5.
+core90 = list(range(1000, 1090))                 # 90 bins, in s0 AND s1
+blkA, blkB = list(range(1100, 1105)), list(range(1200, 1205))    # 5 bins each, paired
+spec_f = {"s0": core90, "s1": core90, "s2": blkA, "s3": blkA, "s4": blkB, "s5": blkB}
+self_ = SS.select_cover_samples(make_batch(spec_f), k_min=1, min_gain=0.05)
+mf = self_.attrs["selection"]
+check("floor: 100 universe bins, so min_gain 0.05 is a 5-bin floor",
+      mf["n_bins"] == 100, mf)
+check("floor: a pick adding EXACTLY the floor (5 of 100) is ACCEPTED",
+      mf["k"] == 3 and self_["bins_new"].tolist() == [90, 5, 5]
+      and mf["stop_reason"] == SS.STOP_EXHAUSTED, (mf, self_["bins_new"].tolist()))
+# the same shape one bin below the floor stops instead
+core92 = list(range(1000, 1092))                 # 92 bins
+blkA2, blkB2 = list(range(1100, 1104)), list(range(1200, 1204))  # 4 bins each
+spec_g = {"s0": core92, "s1": core92, "s2": blkA2, "s3": blkA2, "s4": blkB2, "s5": blkB2}
+mg = SS.select_cover_samples(make_batch(spec_g), k_min=1, min_gain=0.05).attrs["selection"]
+check("floor: a pick one bin BELOW the floor (4 of 100) stops with gain-floor",
+      mg["n_bins"] == 100 and mg["k"] == 1 and mg["stop_reason"] == SS.STOP_GAIN
+      and np.isclose(mg["next_gain"], 0.04)
+      and np.isclose(mg["achieved_coverage"], 0.92), mg)
+
+# the floor is a fraction of the GATED universe, not of every bin: 400 singletons
+# (prevalence 1) are gated out. Taken over n_bins_total (500) the floor would be
+# 25 bins and the 5-bin picks above would be rejected.
+spec_h = {k: list(v) for k, v in spec_f.items()}
+_singles = list(range(9000, 9400))               # 400 bins, each in ONE sample
+for i, sid in enumerate(spec_h):
+    spec_h[sid] = spec_h[sid] + _singles[i * 67:(i + 1) * 67]
+mh_ = SS.select_cover_samples(make_batch(spec_h), k_min=1, min_gain=0.05).attrs["selection"]
+check("floor: singletons are gated out of the universe (100 of 500 bins kept)",
+      mh_["n_bins"] == 100 and mh_["n_bins_total"] == 500 and mh_["n_bins_gated"] == 400, mh_)
+check("floor: the floor scales with the GATED universe, so the 5-bin picks still stand",
+      mh_["k"] == 3 and mh_["stop_reason"] == SS.STOP_EXHAUSTED, mh_)
+
 # (d) exhausted: every universe bin covered before k_min -> pad to k_min with the
 # richest remaining samples, role 'pad', bins_new 0
 spec5 = {"a": bg + [50, 51], "b": bg + [50, 51], "c": bg, "d": bg, "e": bg, "f": bg,
@@ -179,6 +214,24 @@ a2 = SS.select_cover_samples(make_batch(spec3))
 check("deterministic: identical picks on re-run",
       a1["sample_item_id"].tolist() == a2["sample_item_id"].tolist()
       and a1.attrs["selection"] == a2.attrs["selection"])
+# tie-break: equal-gain samples resolve to the lexicographically smallest id (the
+# matrix is pivoted on the sample id and argmax takes the first maximum).
+twin20 = list(range(600, 620))                  # the SAME 20 bins in both samples
+tb = SS.select_cover_samples(make_batch({"aaa": twin20, "bbb": twin20}),
+                             k_min=1, min_gain=0.5)
+check("tie-break: two identical samples -> the smaller sample_item_id is picked",
+      tb["sample_item_id"].tolist() == ["aaa"], tb["sample_item_id"].tolist())
+tb2 = SS.select_cover_samples(make_batch({"zzz": twin20, "bbb": twin20}),
+                              k_min=1, min_gain=0.5)
+check("tie-break: renaming the winner flips the pick (id order, not input order)",
+      tb2["sample_item_id"].tolist() == ["bbb"], tb2["sample_item_id"].tolist())
+a_sh = SS.select_cover_samples(
+    make_batch(spec3).sample(frac=1.0, random_state=7).reset_index(drop=True))
+check("tie-break: shuffled input rows give an identical selection",
+      a_sh["sample_item_id"].tolist() == a1["sample_item_id"].tolist()
+      and a_sh["bins_new"].tolist() == a1["bins_new"].tolist()
+      and a_sh.attrs["selection"] == a1.attrs["selection"],
+      a_sh["sample_item_id"].tolist())
 try:
     SS.select_cover_samples(tab)                # per-sample table -> no mz/height
     check("per-sample table raises ValueError", False, "no error")
@@ -225,6 +278,39 @@ try:
     check("pool: missing group_col raises KeyError", False, "no error")
 except KeyError:
     check("pool: missing group_col raises KeyError", True)
+
+# per-group coverage below 1.0: a budget too small to reach the quiet group's
+# exclusive blocks must report the SHORTFALL. 4 loud blocks of 50 bins and 3
+# quiet blocks of 10, every block held by exactly 2 samples (so all pass the
+# prevalence gate); k_max 5 buys the 4 loud blocks and ONE quiet block.
+spec7 = {}
+for i in range(4):
+    spec7[f"L{i}a"] = list(range(200 + 50 * i, 250 + 50 * i))
+    spec7[f"L{i}b"] = list(spec7[f"L{i}a"])
+for i in range(3):
+    spec7[f"Q{i}a"] = list(range(600 + 10 * i, 610 + 10 * i))
+    spec7[f"Q{i}b"] = list(spec7[f"Q{i}a"])
+pool7 = make_batch(spec7)
+pool7["sample_batch_name"] = np.where(
+    pool7["sample_item_id"].str.startswith("L"), LOUD, QUIET)
+pool7.loc[pool7.sample_batch_name == LOUD, "height"] *= 100     # loud = 100x brighter
+sel7 = SS.select_cover_samples(pool7, group_col="sample_batch_name",
+                               k_min=2, k_max=5, min_gain=0.0)
+m7 = sel7.attrs["selection"]
+check("pool: the budget binds before the quiet blocks are covered",
+      m7["stop_reason"] == SS.STOP_KMAX and m7["k"] == 5
+      and m7["n_bins"] == 230, m7)
+check("pool: the quiet group's coverage is the EXACT covered fraction (10 of 30)",
+      np.isclose(m7["coverage_by_group"][QUIET], round(10 / 30, 4))
+      and m7["coverage_by_group"][LOUD] == 1.0, m7["coverage_by_group"])
+check("pool: picks_by_group splits 4 loud / 1 quiet",
+      m7["picks_by_group"] == {LOUD: 4, QUIET: 1}, m7["picks_by_group"])
+check("pool: achieved coverage is the pooled fraction (210 of 230), not a group's",
+      np.isclose(m7["achieved_coverage"], round(210 / 230, 4)), m7["achieved_coverage"])
+check("pool: the shortfall is the budget -- k_max 8 covers every group",
+      all(v == 1.0 for v in SS.select_cover_samples(
+          pool7, group_col="sample_batch_name", k_min=2, k_max=8, min_gain=0.0
+      ).attrs["selection"]["coverage_by_group"].values()))
 
 
 def test_all():
