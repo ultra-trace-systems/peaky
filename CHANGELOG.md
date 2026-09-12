@@ -16,6 +16,119 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   name; adducts are resolved to mechanism ids by default (a row without one lands
   nothing), ion formulas come from the per-file ledgers or are derived, and
   `--dry-run` shows the payload. `docs/PUBLISH.md` gained a section.
+- **¹⁵N-labelled ammonium reagent profile `NH4_15N`** (`^NH4+` ionisation mode, server mechanism
+  `+^NH4+`; aliases `15nh4`, `^nh4+`, `ammonium-15n`, …) with the `[M+^NH4]+` adduct
+  (+19.0309, `chemistry.ADDUCT_SHIFTS`), both mechanism maps, the `ammonium-15n` context
+  (every context alias names the label — there is no bare `ammonium` / `nh4` / `nh4-cims`
+  alias that would hand an unlabelled-ammonium user the ¹⁵N channels; an unknown context
+  raises), an `ammonium15N` reagent-cluster library (`[(^NH3)n+H]+` + hydrates + the ¹⁴N
+  monomer), `[M+^NH4]+` on the siloxane/PDMS/phthalate/PEG families, and the relabel-only
+  dehydration aliases `[M+^NH4-H2O]+` / `[M+H-H2O]+` in `_DIFF_TO_ADDUCT`. Built from the
+  2026-09-10 exploratory file: ¹⁴N/¹⁵N adduct pairs 0.018–0.021 → purity 0.98, reagent
+  ions below the 40 Da window → TIC normaliser, `label_isotope=None`. `assign.run` drops
+  `[M+NH4]+` from the opportunistic channels on a labelled-ammonium run (it would only
+  re-claim the 2 % ¹⁴N satellites). New post-tier stage `nh4_dehydration`
+  (`cleanup.relabel_ammonium_dehydration`): the MS2-proven declustering cascade
+  `[M+^NH4]+ → [M+H]+ → [M+H-H2O]+` / `[M+^NH4-H2O]+` re-reads the alkene/enone
+  readings of X−H2O onto the corroborated hydrate X (own-adduct-weakness gate — the
+  parent-relative fallback applies only to an alkene with no protonated form of its own —
+  second loss annotated only). `docs/REAGENTS.md` callout, `docs/ASSIGNMENT_DETAIL.md` §3.7b,
+  `tests/test_nh4_15n.py`.
+- **Labelled-reagent ¹⁴N line in the envelope predictor** (`isotopes._per_atom("^N")`, at
+  the active reagent purity, default `LABEL_PURITY_15N` 0.98): a `^N` ion now predicts its
+  −0.997 Da `14N` satellite, so
+  `complete_isotope_envelopes` claims it — and displaces a pass-1 CHON `[M+H]+` mass-fit
+  sitting on it when it matches the predicted 2 % of a ≥10× brighter labelled parent
+  (pass-0 locks kept). Before, only 7 of the ~340 `[M+^NH4]+` satellites were attached.
+- **Pass-4 iso-pairs respect the context halogen caps** (`residual.stage_a_iso_pairs`): a
+  ~1.998-Da doublet in a halogen-free positive run (max_Br = max_Cl = 0) is no longer
+  read as a Br/Cl pair (7 `C5H7BrO3 [M+^NH4]+` phantoms on the ammonium file).
+- **Positive pass-0 known species**: `cyclosiloxane` (D3–D7, L2–L5; gate ≥2 channels OR a
+  confirmed ²⁹Si/³⁰Si envelope + the Si-count M+1 check) and `indoor_sulfur`
+  (benzothiazoles, dithiocarbamate ester, thiazoles, DMSO/DMSO₂, DMDS/DMTS, thiophenes,
+  sulfolane, NBBS; gate ≥2 channels OR a confirmed ³⁴S envelope). Passes 1/2 are CHO(N)-only
+  and no positive pass-3 family opens S, so benzothiazole `[M+H]+` (68 kcps, MS2: −HCN →
+  C6H5S⁺) was unexplained and D4 only a low siloxane-ladder Candidate.
+- Labelled-ammonium runs score NO opportunistic channel: `[M+Na]+` sits 0.2 mDa from
+  `[(X−O2+C2H4)+^NH4]+` (Na − ^NH4 = 3.9584 Da vs C2H4 − O2 = 3.9585 Da), so every ^NH4
+  adduct of an O≥2 neutral had a hydrocarbon·Na twin the complexity prior preferred
+  (114 Na fits; palmitic acid read as C18H36·Na⁺). Pass-3 family adduct lists drop
+  `[M+NH4]+`/`[M+Na]+` on such runs too. The `ammonium-15n` context admits H/C up to 3.0
+  (C3–C4 amines). The `ammonium15N` library adds the urea crossover and the reagent-derived
+  CO/CO₂ clusters ((¹⁵NH₃)₂H⁺·CO at 65.049 = the doubly-labelled "formamide" ion) and the
+  reagent-made ¹⁵N-acetamide ions (61.041 protonated, 79.065 as its ¹⁵NH₄⁺ adduct: the
+  79/61 ratio 0.18 equals the ambient ¹⁴N acetamide's 78.068/60.044 = 0.21, so 61.041 is
+  the amide, not ambient ketene·¹⁵NH₄⁺ of the same composition).
+- `relabel_ammonium_dehydration` brightness ceiling: a dehydration product may not exceed
+  1.5× its parent's strongest form (adduct or protonated) — a 2 kcps C3H8O2 parent no
+  longer claims 9 kcps acetone `[M+H]+` as its water loss (ambiguity note instead).
+- Pass-3 family `organosulfur` (S 1–2 on `[M+H]+`/`[M+^NH4]+`/`[M+NH4]+`/urea; opened by the
+  `ammonium-15n` context, ³⁴S-gated by the tier engine): reaches the C5H12N2S / C9H18N2S /
+  C11H22N2S `[M+H]+` thioureas (each with a 4 % ³⁴S line) that no other positive pass can;
+  tetramethylthiourea (C5H12N2S) added to the `indoor_sulfur` known list.
+- **Mass-dependent calibration centre** (`peaky/assignment/masscal.py`, new): the pass-1
+  self-calibration and the tier gate now also fit `ppm = a + b·1000/mz` (b = the constant
+  absolute offset in mDa) on the backbone; `z_of(ppm, cfg, mz=)` and `tiers._cal_z` judge a
+  peak against the centre at ITS m/z, clamped to the backbone's own m/z coverage
+  (`cal_mz_lo` / `cal_mz_hi`), so the trend is never extrapolated onto masses the backbone
+  never saw. On the 2026-09-10 file the Orbitrap's low-mass residual was −0.12 mDa (−2 ppm
+  at m/z 61 vs −0.2 ppm above 160, MAD 0.13–0.22 ppm), so a constant centre rejects every
+  bright sub-80 ion (ketene·¹⁵NH₄⁺, urea·H⁺, acetamide, acetic acid, the amines) at z = 6.
+  Callers without an m/z keep the constant model unchanged; a flat source keeps it exactly.
+  **The fit is accepted only when** `|b| > 3·SE(b)` (`SLOPE_MIN_SE`) **and** the trimmed
+  residual RMS is ≤ 0.8× the constant model's on the same points (`TREND_SIGMA_RATIO_MAX`)
+  **and** `|b| ≤ 0.5 mDa` (`MAX_ABS_OFFSET_MDA`, a physical cap on the calibration curve's
+  residual absolute offset) **and** each half of the fitted `1000/mz` range holds ≥ 5 kept
+  points (`MIN_SIDE_N`, the lever guard): a 2-SE rule would be a 5 % two-sided test, i.e. a
+  phantom trend on a FLAT source in ~6–7 % of samples at any n (Monte Carlo, 21–300 rows),
+  and a backbone whose only low-`1000/mz` point is one corroborated outlier is a lever, not
+  a trend. `masscal.centre` / `sigma_at` are the single implementation behind
+  `passes.core.cal_center` / `cal_sigma_at` / `z_of` and `tiers._cal_z`.
+  The fitted trend is run-derived, so `provenance`'s reproducible config fingerprint
+  excludes `cal_a` / `cal_b` / `cal_sigma_trend` / `cal_mz_lo` / `cal_mz_hi`: `calibrate`
+  writes them onto the shared `cfg`, so without that the last sample's numbers land in
+  `run_manifest.json` and two identical re-runs of a batch fingerprint differently.
+  `cal_mu` / `cal_sigma` are equally data-derived but are deliberately kept — they predate
+  the exclusion list and manifests in the wild carry them as the record of the run's
+  calibration centre — **so two identical re-runs can still differ in those two fields**;
+  dropping them would be a manifest schema change rather than a fix.
+- `cal_abs_floor_mda` (0.03 mDa, `PassConfig`, default `masscal.ABS_FLOOR_MDA`): an absolute
+  floor on the trend sigma, active only below ~m/z 120, where the Orbitrap's residual
+  curves faster than 1/mz (dimethylamine `[M+H]+` at 46.065 sat 0.9 ppm = 0.04 mDa off the
+  fitted trend). `confidence_label(..., mz=)` / `cal_center` grade against the trend centre
+  too, so an on-trend −2 ppm sub-80 ion is Good, not Low. `PassConfig.cal_abs_floor_mda` is
+  the single owner of the floor: `apply_tiers` / `compute_tiers` take the run's `cfg` and
+  carry the value onto `tiers._Cal`, so overriding it moves the commit gates and the tier
+  gate together.
+- Reference peaklist `isoprene_ox_wennberg2018` (27 closed-shell isoprene oxidation products, Wennberg et al. 2018) added to `peaky/data/peaklists/`, gated by the new `isoprene_ox` context (batch keywords isoprene/ISOPN/IEPOX/ISOPOOH/methacrolein) and `biogenic_soa`/`ambient_summer`; rescues the isoprene dihydroxy-dinitrate C5H10N2O8 as an isotope-confirmed Assigned in the 2026 field-campaign ¹⁵NO₃⁻ data.
+
+### Changed
+
+- **The positive pass-0 `cyclosiloxane` and `indoor_sulfur` families apply to EVERY
+  positive context**, not only to the labelled-ammonium runs they were seeded from:
+  `directors._known_species("positive", …)` returns them regardless of context, so
+  uronium and EasyIC runs now also get `known:` locks for D3–D7 / L2–L5 siloxanes and
+  for the benzothiazole / DMSO / thiophene / sulfolane / NBBS set. The commit gates are
+  unchanged (≥2 channels, or a confirmed ²⁹Si/³⁰Si envelope + the Si-count M+1 check,
+  or a confirmed ³⁴S envelope), so this adds locks only where the evidence is already
+  there — but a previously Candidate D4 or benzothiazole can now come out Assigned.
+- **The pass-4 halogen cap applies in every context, not just positive ones.**
+  `residual.stage_a_iso_pairs` drops a ~1.998-Da doublet whenever the context caps that
+  halogen at zero (`max_Br` = `max_Cl` = 0) — the rule is written against the context
+  profile, so any halogen-free context gets it.
+- **The labelled-nitrogen ¹⁴N envelope line is emitted for every `^N`-bearing ion**, so
+  it reaches the ¹⁵N-NITRATE profile as well as the ammonium one it was built for: a
+  `[M+^NO3]⁻` cluster now predicts a −0.997 Da satellite at `(1 − purity)/purity` of M0
+  and `complete_isotope_envelopes` will claim it. **Caveat, to be validated on a
+  labelled-nitrate batch:** a labelled-nitrate source can carry a *real* `[X+¹⁴NO₃]⁻`
+  analyte channel from the reagent's unlabelled fraction, and it sits at exactly that
+  mass and at a comparable 0.6–7 % of the labelled cluster. Such a channel would now be
+  attached as an isotope child of the labelled reading rather than standing as its own
+  M0. Gating the line per profile is deliberately NOT done here (see the open items).
+- `ReagentProfile.purity` is no longer inert. `assign.run` publishes it
+  (`isotopes.set_label_purity`) and it now drives BOTH the local scorer's
+  `predict_isotopes` call and peaky's own envelope predictor; `isotopes.LABEL_PURITY_15N`
+  remains the default. Behaviour-neutral at 0.98, which is also mascope_tools' default.
 
 ### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
 

@@ -218,7 +218,7 @@ def candidates_for_pair(light_mz: float, element: str, n_halogen: int,
 
 
 def _accept(score: float, ppm: float | None, has_pattern: bool,
-            cfg: PassConfig) -> tuple[bool, str]:
+            cfg: PassConfig, mz: float | None = None) -> tuple[bool, str]:
     """The Pass-4 acceptance rule. Returns (accept, reason).
 
     When the run is self-calibrated (cfg.cal_mu/cal_sigma fitted on the pass-1
@@ -228,7 +228,7 @@ def _accept(score: float, ppm: float | None, has_pattern: bool,
         return False, "score below floor"
     if ppm is None or pd.isna(ppm):
         return False, "no mass error reported"
-    z = z_of(ppm, cfg)
+    z = z_of(ppm, cfg, mz)
     if z is not None:
         if z <= cfg.cal_z_accept:
             return True, f"z={z:.1f} within calibrated accuracy"
@@ -256,6 +256,16 @@ def stage_a_iso_pairs(client, sample_id: str, ledger: pd.DataFrame, profile,
     score_fn = score_fn or IO.score_candidates
     out = {"committed": 0, "locked": 0, "iso_attached": 0}
     pairs = find_iso_pairs(ledger, min_height=cfg.height_cutoff)
+    # the context decides which halogens a NEUTRAL may carry: a ~1.998-Da doublet
+    # in a halogen-free positive run (max_Br = max_Cl = 0) is 34S / 30Si / 13C2
+    # structure, never a Br/Cl pair -- 7 "C5H7BrO3 [M+^NH4]+" phantoms on the
+    # 2026-09-10 15N-ammonium file came through here.
+    allowed = {e for e in ("Br", "Cl") if getattr(profile, f"max_{e}", 99) >= 1}
+    if len(pairs) and not pairs["element"].isin(allowed).all():
+        n_drop = int((~pairs["element"].isin(allowed)).sum())
+        pairs = pairs[pairs["element"].isin(allowed)]
+        log(f"[pass4.A] {n_drop} doublets ignored: context caps "
+            f"{sorted({'Br', 'Cl'} - allowed)} at 0 (not a halogen pair)")
     if len(pairs) == 0:
         log("[pass4.A] no isotope pairs in residual")
         return out
@@ -342,7 +352,8 @@ def stage_a_iso_pairs(client, sample_id: str, ledger: pd.DataFrame, profile,
         # Br-adduct peak, v17). A carbon-clamped fit is also pattern-supported.
         has_pattern = (w["n_iso"] >= 1 or p["n_halogen"] >= 1
                        or carbon_count_from_13c(ledger, pid) is not None)
-        ok, why = _accept(w["raw_score"], w["ppm_error"], has_pattern, cfg)
+        ok, why = _accept(w["raw_score"], w["ppm_error"], has_pattern, cfg,
+                          w.get("sample_peak_mz"))
         if not ok:
             continue
         try:
@@ -350,7 +361,7 @@ def stage_a_iso_pairs(client, sample_id: str, ledger: pd.DataFrame, profile,
                 continue
             conf = _cap_conf(confidence_label(
                 w["raw_score"], w["ppm_error"], w["n_iso"], w["tied"], cfg,
-                suffix="iso-pair"))
+                suffix="iso-pair", mz=w.get("sample_peak_mz")))
             if conf == "Reject":
                 continue
             # reagent-halogen reading: a covalent Y(Br) [M+Br]- iso-pair winner
@@ -475,7 +486,8 @@ def stage_b_series(client, sample_id: str, ledger: pd.DataFrame, profile,
         if meta is None:
             continue
         has_pattern = (w["n_iso"] >= 1) or (meta["support"] >= 2)
-        ok, why = _accept(w["raw_score"], w["ppm_error"], has_pattern, cfg)
+        ok, why = _accept(w["raw_score"], w["ppm_error"], has_pattern, cfg,
+                          w.get("sample_peak_mz"))
         if not ok:
             continue
         pid = w["peak_id"]
@@ -484,7 +496,7 @@ def stage_b_series(client, sample_id: str, ledger: pd.DataFrame, profile,
                 continue
             conf = _cap_conf(confidence_label(
                 w["raw_score"], w["ppm_error"], w["n_iso"], w["tied"], cfg,
-                suffix="deep-series"))
+                suffix="deep-series", mz=w.get("sample_peak_mz")))
             if conf == "Reject":
                 continue
             L.commit_assignment(

@@ -157,7 +157,7 @@ def assign_siloxane_ladder(client, sample_id: str, ledger: pd.DataFrame,
         if sub.empty:
             continue
         # on-trend only (calibrated); Si-isotope envelope must corroborate
-        sub["z"] = sub["ppm_error"].map(lambda p: z_of(p, cfg))
+        sub["z"] = sub.apply(lambda r: z_of(r["ppm_error"], cfg, r["sample_peak_mz"]), axis=1)
         sub = sub[sub["z"].notna() & (sub["z"] <= cfg.cal_z_pattern)]
         sub["si_ok"] = sub.apply(
             lambda r: (r["compound_formula"], r["ion_formula"]) in si_confirmed, axis=1)

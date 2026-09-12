@@ -299,6 +299,7 @@ ADDUCT_TO_MECH = {
     "[M+H]+": "+H+",
     "[M+Na]+": "+Na+",
     "[M+NH4]+": "+NH4+",
+    "[M+^NH4]+": "+^NH4+",          # ¹⁵N-labelled ammonium reagent cluster
     "[M+CO3]-": "+CO3-",
     "[M+(CH4N2O)H]+": "+(CH4N2O)H+",   # protonated-urea (uronium) adduct channel
     # bare molecular cation (EasyIC⁺ fluoranthene charge transfer). The hydride-

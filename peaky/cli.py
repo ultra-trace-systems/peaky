@@ -119,19 +119,21 @@ def cmd_list(args) -> None:
 
 
 def _resolve_reagent(args):
-    """Return (adducts, context, note). Forces the analyte channels so a positive
-    or sparse-match sample never silently falls back to [M-H]- (wrong polarity).
-    adducts=None means 'let assign.run auto-detect from the sample'."""
+    """Return (adducts, context, note, purity). Forces the analyte channels so a
+    positive or sparse-match sample never silently falls back to [M-H]- (wrong
+    polarity). adducts=None means 'let assign.run auto-detect from the sample';
+    purity is the profile's labelled-reagent isotopic purity (None = unlabelled
+    reagent, or no profile, so the isotopes default applies)."""
     from peaky.chem import profiles
 
     config = getattr(args, "reagent_config", None)
     if args.adducts:
         return list(args.adducts), (args.context or "ambient-air"), \
-            f"forced adducts={list(args.adducts)}"
+            f"forced adducts={list(args.adducts)}", None
     if args.reagent and args.reagent.lower() != "auto":
         prof = profiles.resolve(args.reagent, config=config)   # name/alias, no peaks needed
         return list(prof.adducts), (args.context or prof.context), \
-            f"{prof.name} ({prof.label})"
+            f"{prof.name} ({prof.label})", prof.purity
     # auto: detect from the sample's own peaks (cached, so assign.run reuses it)
     from peaky.io import io_mascope as IO
 
@@ -140,11 +142,11 @@ def _resolve_reagent(args):
     try:
         prof = profiles.resolve("auto", raw, config=config)
         return list(prof.adducts), (args.context or prof.context), \
-            f"auto-detected {prof.name} ({prof.label})"
+            f"auto-detected {prof.name} ({prof.label})", prof.purity
     except Exception as e:                           # noqa: BLE001
         return None, (args.context or "ambient-air"), \
             (f"auto-detect found no known profile ({e}); using per-sample adduct "
-             "detection — pass --reagent explicitly for a positive/sparse sample")
+             "detection — pass --reagent explicitly for a positive/sparse sample"), None
 
 
 def cmd_assign(args) -> None:
@@ -162,7 +164,7 @@ def cmd_assign(args) -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
     base = od / f"{args.sample_id}_{stamp}"
 
-    adducts, context, note = _resolve_reagent(args)
+    adducts, context, note, purity = _resolve_reagent(args)
     print(f"[reagent] {note}; adducts={adducts}; context={context}")
 
     ts_peaks = None
@@ -177,7 +179,7 @@ def cmd_assign(args) -> None:
     out = assign.run(args.sample_id, context, cfg=cfg, use_cache=not args.no_cache,
                      do_pass2=not args.no_pass2, do_pass3=not args.no_pass3,
                      do_pass4=not args.no_pass4, do_pass5=not args.no_pass5,
-                     adducts=adducts, ts_peaks=ts_peaks,
+                     adducts=adducts, ts_peaks=ts_peaks, label_purity=purity,
                      checkpoint_dir=str(od / "checkpoints"))
     led = out["ledger"]
 

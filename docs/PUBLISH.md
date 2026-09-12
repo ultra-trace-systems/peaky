@@ -212,7 +212,19 @@ Three consequences worth knowing:
 - **Resolve mechanisms.** The server builds the ion from the mechanism, so a row whose
   adduct did not resolve to a mechanism id lands nothing (it is counted as unmeasurable in
   the run's summary rather than refused). Resolving is the default; the command names the
-  adducts it could not map.
+  adducts it could not map. What is mappable is exactly `io_mascope.ADDUCT_TO_MECH`;
+  every peaky channel outside that map is always reported unmappable, **including**:
+  the in-source dehydration adducts `[M+H-H2O]+` and `[M+^NH4-H2O]+` (written by
+  `cleanup.relabel_ammonium_dehydration` on a labelled-ammonium run — relabel-only
+  readings of a parent's water-loss ion, not an ionization route the server can
+  rebuild) and the EasyIC hydride-abstraction twin `[M-H]+`; the cluster-decomposition
+  aliases `[M-H+I2]-`, `[M+HBr+Br]-`, `[M+HBr+Br2]-` and `[M+HBr+CO3]-` (the reagent
+  cluster written out so the reported neutral stays halogen-free — the server scores
+  the covalent twin instead); and the minor/background channels `[M+CHO2]-`,
+  `[M+C2H3O2]-`, `[M+O2]-`, `[M]-.` and `[M+K]+`, which peaky scores locally and has
+  never mapped (some may well exist on a given deployment; until they are in the map
+  they publish nothing). All of these are local-scoring channels: their rows stay in
+  the peaky ledger and simply do not land in the Mascope run.
 - **Curated and isotopologue batch peaks are left alone**, and so is any batch peak no row
   lands on. Batch peaks the in-app engine had assigned *are* re-pointed where peaky's
   formula measures - the import is peaky's view of the batch, and the ledger as it was is

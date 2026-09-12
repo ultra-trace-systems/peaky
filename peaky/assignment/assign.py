@@ -19,6 +19,7 @@ from peaky.chem import isotopes
 from peaky.assignment import labeled
 from peaky.assignment import ladders
 from peaky.assignment import ledger
+from peaky.assignment import masscal
 from peaky.assignment import passes
 from peaky.assignment import plausibility
 from peaky.chem import reagents
@@ -41,6 +42,7 @@ MODULE_VERSIONS = {
     "series_gka": series_gka.__version__,
     "reagents": reagents.__version__,
     "passes": passes.__version__,
+    "masscal": masscal.__version__,
     "residual": residual.__version__,
     "ladders": ladders.__version__,
     "tiers": tiers.__version__,
@@ -266,7 +268,7 @@ _STAGES = [
     _Stage("degeneracy", lambda st: _degen_summary(
         degeneracy.apply_degeneracy(st.led, context=st.profile.label, log=st.log))),
     # report tier, then the post-tier de-risking demotes (each gets the last word).
-    _Stage("tiers", lambda st: tiers.apply_tiers(st.led), safe=False, store=False),
+    _Stage("tiers", lambda st: tiers.apply_tiers(st.led, cfg=st.cfg), safe=False, store=False),
     _Stage("demote_fluorine",
            lambda st: cleanup.demote_unconfirmed_fluorine(st.led, log=st.log),
            safe=False, store=False),
@@ -283,6 +285,15 @@ _STAGES = [
     # cluster ([M+NH4]+ / uronium) is re-read as [M+H]+ of an N-heterocycle.
     _Stage("relabel_reagent_n",
            lambda st: cleanup.relabel_reagent_n_adducts(st.led, log=st.log),
+           safe=False, store=False),
+    # ¹⁵N-ammonium in-source DECLUSTERING cascade: [M+^NH4]+ -> [M+H]+ ->
+    # [M+H-H2O]+, and [M+^NH4]+ -> [M+^NH4-H2O]+ (both product routes seen in
+    # MS2 of the 2026-09-10 exploratory file). The dehydration ions are ion-
+    # identical to the alkene/enone X-H2O on [M+H]+ / [M+^NH4]+; re-read them
+    # onto the hydrate X when X is corroborated on its own labelled channel.
+    _Stage("nh4_dehydration",
+           lambda st: cleanup.relabel_ammonium_dehydration(st.led, log=st.log),
+           when=lambda st: any("^NH4" in str(a) for a in st.adducts),
            safe=False, store=False),
     # EasyIC⁺ fragmentation ambiguity: relabel corroborated alcohol-dehydration
     # ions ([CnH2n+H]+ -> [CnH2n+2O+H-H2O]+) and stamp the MS1-irreducible
@@ -331,9 +342,14 @@ def run(sample_id: str, context: str = "ambient-air", *,
         do_pass2: bool = True, do_pass3: bool = True, do_pass4: bool = True,
         do_pass5: bool = True, do_pass_certified: bool = True,
         ts_peaks=None, adducts=None, reflists_active=None,
-        label_isotope=None, label_max=2,
+        label_isotope=None, label_max=2, label_purity=None,
         log=print, checkpoint_dir=None) -> dict:
     cfg = cfg or passes.PassConfig()
+    # the reagent bottle's isotopic purity (ReagentProfile.purity), published for
+    # the two consumers that model a '^X' ion's unlabelled impurity line: the
+    # local scorer's predict_isotopes call and this package's own envelope
+    # predictor (isotopes.isotope_pattern). None restores the default.
+    purity = isotopes.set_label_purity(label_purity)
     # reference-list selection prior: a candidate neutral on an active reference
     # peaklist wins a near-tie over a mass coincidence (arbitrate reads this set).
     if reflists_active:
@@ -364,7 +380,20 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # 40 base M0s (incl. TFA) for 0 gains (heavier per-formula scoring times out
     # batches; Br3- is the dominant reagent ion). Positive (urea-CIMS): the
     # alkali / ammonium adducts the source also produces.
-    opportunistic = (["[M+Na]+", "[M+NH4]+"] if polarity == "positive"
+    # LABELLED-AMMONIUM run: the ¹⁴N [M+NH4]+ adduct is the reagent's ~2 % ¹⁴N
+    # impurity satellite (-0.99703 Da, modelled by the scorer's ^N purity), not
+    # an analyte channel -- enumerating it would only re-claim those satellites
+    # as bogus M0s. Ambient ¹⁴NH₃ was not detectable above the impurity on the
+    # 2026-09-10 file (see profiles.NH4_15N). Keep the alkali adduct.
+    # ... and NO alkali channel either: [X+Na]+ sits 0.2 mDa from
+    # [(X-O2+C2H4)+^NH4]+ (Na - ^NH4 = 3.9584 Da; C2H4 - O2 = 3.9585 Da), so every
+    # ^NH4 adduct of an O>=2 neutral has a Na-adduct hydrocarbon twin that the
+    # complexity prior then prefers (palmitic acid became "C18H36 [M+Na]+" -- 114
+    # Na fits on the 2026-09-10 file, unresolvable at R 60k). A CI source makes no
+    # Na+; the labelled reagent reading is the parsimonious one.
+    labelled_nh4 = any("^NH4" in str(a) for a in adducts)
+    opportunistic = (([] if labelled_nh4 else ["[M+Na]+", "[M+NH4]+"])
+                     if polarity == "positive"
                      else ["[M+CO3]-", "[M+Br2]-"])
     extra_channels = [a for a in opportunistic
                       if io_mascope.resolve_mechanism_ids(
@@ -384,7 +413,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
     cfg.prior_offset = prior if prior is not None else 0.0
     log(f"[run] {len(led)} unique peaks; context={profile.label}; "
         f"polarity={polarity}; prior_offset={cfg.prior_offset:+.2f} ppm; "
-        f"adducts={adducts}; mechanisms={sorted(mech_map)}")
+        f"adducts={adducts}; mechanisms={sorted(mech_map)}"
+        + (f"; label purity={purity:.3f}" if any("^" in str(a) for a in adducts) else ""))
 
     pre = isotopes.prescan(led)
     log(f"[run] prescan {pre.as_dict()}")

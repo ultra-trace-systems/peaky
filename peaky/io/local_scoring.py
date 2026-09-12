@@ -108,6 +108,15 @@ def score_candidates_local(
         score_pattern,
     )
 
+    from peaky.chem import isotopes as ISO
+
+    # A '^X' candidate's envelope carries the reagent's unlabelled impurity line,
+    # whose height is 1 - the bottle's isotopic purity. Unset => the run's active
+    # reagent purity (ReagentProfile.purity, published by assign.run), which
+    # defaults to isotopes.LABEL_PURITY_15N. Inert for non-labelled ions.
+    if purity is None:
+        purity = ISO.label_purity()
+
     peaks = (
         peaks[[mz_col, intensity_col, peak_id_col]]
         .dropna(subset=[mz_col])

@@ -380,6 +380,43 @@ kids_mix = pd.concat([kids_off, pd.Series({"big": 1})])
 cal_mix = T._calibrate(m0_mix, kids_mix)
 check("tiers _calibrate median robust to a gross outlier",
       cal_mix is not None and abs(cal_mix[0] + 2.4) < 0.3, cal_mix)
+# --- the stamped ppm_error_cal is the CONSTANT-centre view, by design ---------
+# A backbone that DOES accept a masscal mass trend (ppm = a + b*1000/mz, here
+# b = -0.12 mDa, so -2.24 ppm at m/z 61 and -0.56 at m/z 390). The gates judge
+# such a peak against the centre at ITS m/z; the displayed/exported column
+# deliberately removes only the constant offset, so the QC panel can still show
+# the residual drift the trend models. Nothing reads a trend off ledger.attrs.
+tr_mz = [61, 66, 72, 78, 85, 92, 99] + [115, 130, 150, 170, 190, 210, 230,
+                                        250, 270, 290, 310, 330, 350, 370, 390]
+tr_ppm = [-0.25 - 0.12 * 1000 / m + (0.02 if i % 2 else -0.02)
+          for i, m in enumerate(tr_mz)]
+tr_ids = [f"T{i:02d}" for i in range(len(tr_mz))]
+led_tr = L.new_ledger(pd.DataFrame({"peak_id": tr_ids, "mz": tr_mz,
+                                    "height": [1e4] * len(tr_ids)}))
+for i, pid in enumerate(tr_ids):
+    L.commit_assignment(led_tr, pid, neutral_formula=f"C{5 + i}H{10 + i}O3",
+                        adduct="[M+H]+", ion_formula=f"C{5 + i}H{11 + i}O3+",
+                        ion_score=0.95, compound_score=0.95, eff_score=0.93,
+                        eff_margin=0.3, tied=False, ppm_error=tr_ppm[i],
+                        pass_no=1, method="cheminfo+grid", confidence="Good",
+                        commentary="trend backbone",
+                        isotopologues=[{"label": "13C", "score": 0.9, "peak_id": "z"}])
+kids_tr = led_tr.loc[led_tr["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
+cal_tr = T._calibrate(led_tr[led_tr["role"] == "M0"], kids_tr)
+check("this backbone does accept a mass trend",
+      cal_tr is not None and cal_tr.b is not None and abs(cal_tr.b + 0.12) < 0.02,
+      getattr(cal_tr, "b", None))
+mu_tr, _sig_tr = T.stamp_calibrated_ppm(led_tr)
+_low = led_tr.loc[led_tr["peak_id"] == "T00"].iloc[0]          # m/z 61
+_trend_centre = cal_tr.a + cal_tr.b * 1000 / 61                # ~= -2.22 ppm
+check("ppm_error_cal removes the CONSTANT centre even when a trend was accepted",
+      abs(_low["ppm_error_cal"] - (_low["ppm_error"] - mu_tr)) < 1e-9
+      and abs(_low["ppm_error_cal"] - (_low["ppm_error"] - _trend_centre)) > 1.0,
+      (_low["ppm_error"], _low["ppm_error_cal"], mu_tr, _trend_centre))
+check("stamp_calibrated_ppm stashes only the centre the column used",
+      {k for k in led_tr.attrs if k.startswith("cal_")} == {"cal_mu", "cal_sigma"},
+      dict(led_tr.attrs))
+
 
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"

@@ -43,6 +43,7 @@ CONTEXT_KEYWORDS = {
                        "carene", "sabinene", "myrcene"),
     "limonene_ox": ("limonene", "orange", "d-limonene"),
     "ap_ox": ("pinene", "a-pinene", "α-pinene", "apinene"),
+    "isoprene_ox": ("isoprene", "isopn", "iepox", "isopooh", "methacrolein"),
     # NB a bare "AP" abbreviation (e.g. "AP Low temperature") is intentionally NOT a
     # keyword (too many false positives like "soap"/"grape"); tag such runs via the
     # explicit context/--reagent-config path instead.

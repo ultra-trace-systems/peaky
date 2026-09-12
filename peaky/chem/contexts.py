@@ -74,11 +74,12 @@ CONTAMINANT_FAMILIES: dict[str, dict] = {
                       "adducts": ("[M-H]-", "[M+NO3]-", "[M+^NO3]-"),
                       "note": "organonitrate"},
     "siloxane":      {"add": {"Si": (1, 6), "O": (1, 6), "C": (2, 12), "H": (6, 36)},
-                      "adducts": ("[M+H]+", "[M+NH4]+", "[M-H]-"),
+                      "adducts": ("[M+H]+", "[M+NH4]+", "[M+^NH4]+", "[M-H]-"),
                       "note": "PDMS / siloxane column bleed (D3..D6)"},
     "pdms":          {"add": {"Si": (4, 12), "O": (3, 14), "C": (8, 26),
                               "H": (18, 78), "N": (0, 2)},
-                      "adducts": ("[M+H]+", "[M+NH4]+", "[M+Na]+", "[M+(CH4N2O)H]+"),
+                      "adducts": ("[M+H]+", "[M+NH4]+", "[M+^NH4]+", "[M+Na]+",
+                                  "[M+(CH4N2O)H]+"),
                       "note": "long-chain polydimethylsiloxane / silicone bleed "
                               "(Si-O-Si(CH3)2 ladder, +C2H6OSi = +74.019); the "
                               "Si>6 oligomers the short siloxane family can't reach"},
@@ -89,12 +90,23 @@ CONTAMINANT_FAMILIES: dict[str, dict] = {
                               "doublet peaks"},
     "halogen_dbp":   {"add": {"Cl": (1, 4), "Br": (1, 2)}, "adducts": ("[M-H]-",),
                       "note": "halogenated disinfection by-product"},
-    "phthalate":     {"add": {"O": (4, 4)}, "adducts": ("[M+H]+", "[M+NH4]+"),
+    "phthalate":     {"add": {"O": (4, 4)}, "adducts": ("[M+H]+", "[M+NH4]+", "[M+^NH4]+"),
                       "note": "phthalate plasticiser (CnH(2n-6)O4)"},
-    "glycol_peg":    {"add": {"O": (2, 12)}, "adducts": ("[M+H]+", "[M+NH4]+", "[M+Na]+"),
+    "glycol_peg":    {"add": {"O": (2, 12)},
+                      "adducts": ("[M+H]+", "[M+NH4]+", "[M+^NH4]+", "[M+Na]+"),
                       "note": "PEG / PPG (+C2H4O repeat)"},
     "amine":         {"add": {"N": (1, 3)}, "adducts": ("[M+H]+",),
                       "note": "aliphatic / aromatic amine"},
+    # REDUCED organosulfur (thioureas, thioethers, thiazoles, sulfoxides): the
+    # positive grid is CHO(N)-only, so S reaches a neutral only here (or via the
+    # pass-0 indoor_sulfur list). Committed on score, then held to the tier
+    # engine's isotopologue gate -- a neutral S needs its confirmed 34S line.
+    # Opened by the 2026-09-10 15N-ammonium file: C5H12N2S / C9H18N2S / C11H22N2S
+    # [M+H]+ (the thio-analogues of the C9H18N2O / C11H22N2O ureas) each with a
+    # 4 % 34S satellite, unreachable by any other pass.
+    "organosulfur":  {"add": {"S": (1, 2)},
+                      "adducts": ("[M+H]+", "[M+^NH4]+", "[M+NH4]+", "[M+(CH4N2O)H]+"),
+                      "note": "reduced organosulfur (thiourea / thioether / thiazole; 34S-gated)"},
     "bromo_organic": {"add": {"Br": (1, 2)}, "adducts": ("[M-H]-",),
                       "note": "covalent organobromine (iso-gated on 81Br)"},
     "chloro_organic": {"add": {"Cl": (1, 2)}, "adducts": ("[M-H]-",),
@@ -248,6 +260,36 @@ _NONE = ContextProfile(
     description="Structural gates only (integer DBE>=0, Senior's rule).",
 )
 
+# ¹⁵N-labelled ammonium CIMS (profiles.NH4_15N). Same positive-mode inlet
+# reality and N-heavy analyte space as uronium (oxygenated VOC, esters, ketones,
+# amines, siloxanes), but the reagent cluster is [M+^NH4]+ (+19.0309) and the
+# proton-transfer product [M+H]+ is a DECLUSTERING channel that dehydrates
+# readily ([M+H-H2O]+ / [M+^NH4-H2O]+, see cleanup.relabel_ammonium_dehydration).
+# The ¹⁵N label removes the [M+NH4]+ / amine [M+H]+ degeneracy, so the amine
+# time-tracking gate and the reagent-N isobar gate are both moot for the
+# labelled channel; ambient amines are still read on [M+H]+ at their ¹⁴N mass.
+# Built from the 2026-09-10 exploratory file (m/z 40-600).
+_AMMONIUM_15N = ContextProfile(
+    label="ammonium-15n",
+    description=("¹⁵N-ammonium CIMS POSITIVE mode ([M+^NH4]+ cluster reagent, "
+                 "+19.0309). Oxygenated VOC, esters, ketones, acids seen as "
+                 "[M+^NH4]+ with strong declustering to [M+H]+ and in-source "
+                 "dehydration; amines / N-bases as [M+H]+; siloxanes (D4) on "
+                 "both channels. The 15N label breaks the NH4-adduct / amine "
+                 "isobar. Background/inlet-characterisation sample."),
+    polarity="positive",
+    # H/C up to 3.0 (not 2.6): saturated amines CnH(2n+3)N are 3.0 at C3 and
+    # 2.75 at C4 -- the 2.6 ceiling of the uronium context silently dropped
+    # C3H9N/C4H11N [M+H]+ (29 kcps diethylamine/butylamine on the 2026-09-10
+    # file), and an ammonium source is exactly where N-bases are expected.
+    h_to_c=(0.4, 3.0), o_to_c=(0.0, 1.5), n_to_c=(0.0, 0.6), dbe_to_c=(0.0, 1.1),
+    max_N=5, max_S=2, max_P=1, max_F=0, max_Si=12, max_Cl=0, max_Br=0, max_I=0,
+    grid_c_max=46, grid_o_max=32,
+    min_C_for={"Si": 2},
+    reagent_adducts=("[M+^NH4]+", "[M+H]+"),
+    pass3_families=("amine", "organosulfur", "siloxane", "pdms", "glycol_peg", "phthalate"),
+)
+
 CONTEXTS: dict[str, ContextProfile] = {
     "ambient-air": _AMBIENT, "ambient": _AMBIENT, "atmospheric": _AMBIENT,
     "chamber": _CHAMBER, "smog-chamber": _CHAMBER, "flow-tube": _CHAMBER,
@@ -258,6 +300,13 @@ CONTEXTS: dict[str, ContextProfile] = {
     "food": _FOOD, "wine": _FOOD, "beverage": _FOOD,
     "uronium": _URONIUM, "urea-cims": _URONIUM, "urea": _URONIUM,
     "easyic": _EASYIC, "easy-ic": _EASYIC, "charge-transfer": _EASYIC,
+    # LABELLED ammonium only. The bare "ammonium" / "nh4" / "nh4-cims" spellings
+    # used to resolve here, so an UNLABELLED ammonium user silently got the ¹⁵N
+    # channels ([M+^NH4]+, the ¹⁴N impurity satellite, the labelled known-species
+    # locks) and no error to say so. An unknown context raises in get_context,
+    # which is the honest answer until an unlabelled ammonium context exists.
+    "ammonium-15n": _AMMONIUM_15N, "15nh4": _AMMONIUM_15N,
+    "15n-ammonium": _AMMONIUM_15N, "nh4-15n": _AMMONIUM_15N,
     "none": _NONE,
 }
 

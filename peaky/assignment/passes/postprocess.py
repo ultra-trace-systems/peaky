@@ -60,6 +60,16 @@ _R29SI = 0.0468  # 29Si natural abundance per Si
 SI_M1_MIN_FRAC = 0.6  # observed (M+1)/(M0) must be >= this * predicted Si M+1
 
 
+def _pass_no(v, default: int = 1) -> int:
+    """A ledger pass_no cell as an int. `int(pd.to_numeric(v, ...) or 1)` looks
+    equivalent and is not: NaN is TRUTHY, so it survives the `or` and int(nan)
+    raises ValueError, and pd.NA raises on the truth-test itself. A row with no
+    pass_no reads as `default` (1 = a normal pass), never as the pass-0
+    known-species lock."""
+    n = pd.to_numeric(v, errors="coerce")
+    return default if pd.isna(n) else int(n)
+
+
 def _peak_near(mzs: "pd.Series", target: float, ppm: float = 5.0):
     """Index of the closest ledger peak within ppm of target, else None."""
     tol = target * ppm * 1e-6
@@ -175,6 +185,25 @@ def complete_isotope_envelopes(
                     except L.LedgerError:
                         pass
             elif role_j == L.ROLE_M0:
+                # the LABELLED-reagent impurity line (14N at -0.997 of a ^N adduct):
+                # a fit sitting exactly at the predicted 2 % of a >=10x brighter
+                # labelled parent is that parent's satellite whatever its own
+                # score/lock -- the CHON [M+H]+ mass-fit on the 14N line of a
+                # bright [M+^NH4]+ is the phantom this absorbs (pass-1 locks it as
+                # High before the parent's envelope is known). Pass-0 known-species
+                # locks are kept.
+                if label == "14N" and 0.5 <= ratio <= 2.0 and ph >= 10 * th \
+                        and _pass_no(ledger.at[j, "pass_no"]) != 0:
+                    try:
+                        if bool(ledger.at[j, "locked"]):
+                            ledger.at[j, "locked"] = False
+                        L.displace_to_isotopologue(
+                            ledger, tpid, pid, iso_label=label, iso_match_score=score
+                        )
+                        out["displaced"] += 1
+                    except L.LedgerError:
+                        pass
+                    continue
                 if bool(ledger.at[j, "locked"]) or \
                         str(ledger.at[j, "confidence"]).startswith("High"):
                     # locked, or a High-confidence fit that earned it via its OWN
@@ -464,7 +493,7 @@ def demote_massgate_monsters(
     for _, r in ledger[
         (ledger["role"] == L.ROLE_M0) & ~ledger["locked"].astype(bool)
     ].iterrows():
-        z = z_of(r["ppm_error"], cfg)
+        z = z_of(r["ppm_error"], cfg, r.get("mz"))
         if z is not None and z > cfg.cal_z_pattern:
             try:
                 L.clear_assignment(
@@ -692,7 +721,7 @@ def audit_mass_gate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> dict
     for _, r in m0.iterrows():
         weak = not str(r["confidence"]).startswith(("High", "Good"))
         has_kids = r["peak_id"] in parents_with_kids
-        z = z_of(r["ppm_error"], cfg)
+        z = z_of(r["ppm_error"], cfg, r.get("mz"))
         try:
             if z is None:
                 if pd.isna(r["ppm_error"]) and weak and not has_kids:
@@ -789,11 +818,10 @@ def rearbitrate_offcal_degenerate(
     if not len(m0):
         return out
     kids_of = ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
-    cal = T._calibrate(m0, kids_of)
+    cal = T._calibrate(m0, kids_of, abs_floor_mda=cfg.cal_abs_floor_mda)
     if cal is None:
         log("[rearbitrate] uncalibrated; off-cal winner re-arbitration skipped")
         return out
-    mu, sigma = cal
     chan_count = m0.groupby("neutral_formula")["adduct"].nunique()
     reflist = cfg.reflist_formulas or frozenset()
 
@@ -808,7 +836,8 @@ def rearbitrate_offcal_degenerate(
         ppm = r.get("ppm_error")
         if ppm is None or pd.isna(ppm):
             continue
-        z_win = (float(ppm) - mu) / sigma
+        # the tier engine's own z (mass-dependent centre when the trend is fitted)
+        z_win = T._cal_z(cal, ppm, r.get("mz"))
         if abs(z_win) <= T.Z_TAIL_DEMOTE:
             continue  # winner on-calibration -> the committed reading stands
         # corroboration (same definition as tiers): the evidence that would break
@@ -830,7 +859,7 @@ def rearbitrate_offcal_degenerate(
             af, ad, pa = a.get("formula"), a.get("adduct"), a.get("ppm")
             if not af or pa is None:
                 continue
-            z_alt = (float(pa) - mu) / sigma
+            z_alt = T._cal_z(cal, pa, r.get("mz"))     # same peak, same m/z
             if abs(z_alt) > cfg.cal_z_accept:          # alternative must be on-cal
                 continue
             if C.dbe(C.parse_formula(str(af))) >= dbe_w:  # only toward LESS unsaturation

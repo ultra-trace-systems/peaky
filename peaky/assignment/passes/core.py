@@ -8,6 +8,7 @@ import pandas as pd
 
 from peaky.chem import chemistry as C
 from peaky.assignment import ledger as L
+from peaky.assignment import masscal as MC
 from peaky.assignment import series_gka as G
 
 
@@ -19,6 +20,8 @@ __all__ = [
     "CAL_ARB_WEIGHT",
     "calibrate",
     "z_of",
+    "cal_center",
+    "cal_sigma_at",
     "_conf_suffix",
     "relabel_confidence",
     "arbitrate",
@@ -39,13 +42,17 @@ def confidence_label(
     tied: bool,
     cfg: PassConfig,
     suffix: str = "",
+    mz=None,
 ) -> str:
     # ppm proximity is judged against the CALIBRATED mass center when known, so a
     # uniform instrument offset (e.g. the -2.4 ppm of the uronium source) does not
     # read as "off-mass" and cap every commit at Low. Pre-calibration commits
     # (pass 1, cal_mu still None) use 0 and are re-graded by relabel_confidence
-    # once calibrate() has fitted the center.
-    center = cfg.cal_mu if cfg.cal_mu is not None else 0.0
+    # once calibrate() has fitted the center. With the peak's m/z the centre is
+    # the mass-dependent one (masscal): a -2 ppm sub-80 ion on a -0.12 mDa
+    # instrument trend is ON-centre, not "Low".
+    center = cal_center(cfg, mz)
+    center = 0.0 if center is None else center
     a = abs(ppm - center) if ppm is not None and pd.notna(ppm) else 99.0
     if score >= cfg.tau_high and a <= cfg.ppm * 1.5 and n_iso >= 1 and not tied:
         lab = "High"
@@ -90,6 +97,11 @@ def calibrate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> tuple | No
                 and set(C.parse_formula(f)) <= _BACKBONE_ELEMENTS
             )
         )
+        # .map over an EMPTY (or all-NA) string column has nothing to infer from
+        # and hands back the str dtype, so `bool_mask & chon` is a bool/str
+        # logical op: a Pandas4Warning today, a raise in pandas 4. A small
+        # ledger whose backbone filters to nothing hits exactly that path.
+        .astype(bool)
     )
     ppm = m0.loc[(score >= cfg.tau_good) & chon, "ppm_error"].astype(float)
     if len(ppm) < cfg.cal_min_n:
@@ -107,16 +119,70 @@ def calibrate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> tuple | No
         f"..{mu + cfg.cal_z_accept * sigma:+.2f} ppm), pattern-evidence up to "
         f"|z|<={cfg.cal_z_pattern}"
     )
+    # MASS-DEPENDENT centre (masscal): the Orbitrap's low-mass residual is an
+    # absolute offset, i.e. ppm ~ 1/mz. Fitted on the same backbone; accepted
+    # only under masscal's rule (3-SE slope, beats the constant model, |b| cap),
+    # so a flat source keeps the constant model. Consumers that know the peak's
+    # m/z get z against this centre, held constant outside the backbone range.
+    fit = MC.fit_mass_trend(
+        m0.loc[ppm.index, "mz"].astype(float).to_numpy(), ppm.to_numpy(),
+        min_n=cfg.cal_min_n, sigma_floor=cfg.cal_sigma_floor)
+    if fit is not None:
+        cfg.cal_a, cfg.cal_b, cfg.cal_sigma_trend = fit.a, fit.b, fit.sigma
+        cfg.cal_mz_lo, cfg.cal_mz_hi = fit.mz_lo, fit.mz_hi
+        log(
+            f"[calibrate] mass trend: ppm = {fit.a:+.3f} {fit.b:+.3f}*1000/mz (abs "
+            f"offset {fit.b:+.3f} mDa; n={fit.n}, sigma={fit.sigma:.3f}, backbone "
+            f"m/z {fit.mz_lo:.0f}-{fit.mz_hi:.0f}) -> centre "
+            + ", ".join(f"{cal_center(cfg, m):+.2f} @{m}" for m in (60, 100, 200, 400))
+            + " ppm"
+        )
+    else:
+        cfg.cal_a = cfg.cal_b = cfg.cal_sigma_trend = None
+        cfg.cal_mz_lo = cfg.cal_mz_hi = None
+        log("[calibrate] mass trend not accepted; constant centre kept")
     return mu, sigma, len(ppm)
 
 
-def z_of(ppm, cfg: PassConfig) -> float | None:
-    """Calibrated z-score of a ppm error; None when uncalibrated or ppm is NaN."""
+def _has_trend_at(cfg: PassConfig, mz) -> bool:
+    return (mz is not None and getattr(cfg, "cal_b", None) is not None
+            and not pd.isna(mz) and float(mz) > 0)
+
+
+def cal_center(cfg: PassConfig, mz=None) -> float | None:
+    """The calibrated ppm centre: mass-dependent at `mz` when the trend is fitted
+    (masscal.centre, clamped to the backbone's m/z coverage), else the constant
+    cal_mu; None when uncalibrated."""
+    if cfg.cal_mu is None:
+        return None
+    if _has_trend_at(cfg, mz):
+        return MC.centre(cfg.cal_a, cfg.cal_b, mz,
+                         getattr(cfg, "cal_mz_lo", None), getattr(cfg, "cal_mz_hi", None))
+    return cfg.cal_mu
+
+
+def cal_sigma_at(cfg: PassConfig, mz=None) -> float | None:
+    """The calibrated ppm sigma: the trend sigma with the absolute floor at `mz`
+    when the trend is fitted (masscal.sigma_at), else the constant cal_sigma;
+    None when uncalibrated."""
+    if cfg.cal_sigma is None:
+        return None
+    if _has_trend_at(cfg, mz):
+        return MC.sigma_at(cfg.cal_sigma_trend or cfg.cal_sigma, mz,
+                           getattr(cfg, "cal_abs_floor_mda", MC.ABS_FLOOR_MDA))
+    return cfg.cal_sigma
+
+
+def z_of(ppm, cfg: PassConfig, mz=None) -> float | None:
+    """Calibrated z-score of a ppm error; None when uncalibrated or ppm is NaN.
+    With the peak's `mz` and a fitted mass trend (cfg.cal_b) the centre and
+    sigma are mass-dependent (cal_center / cal_sigma_at -> masscal); without an
+    m/z the constant centre applies."""
     if cfg.cal_mu is None or cfg.cal_sigma is None:
         return None
     if ppm is None or pd.isna(ppm):
         return None
-    return abs(float(ppm) - cfg.cal_mu) / cfg.cal_sigma
+    return abs(float(ppm) - cal_center(cfg, mz)) / cal_sigma_at(cfg, mz)
 
 
 def _conf_suffix(conf) -> str:
@@ -166,6 +232,7 @@ def relabel_confidence(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> i
             tied,
             cfg,
             _conf_suffix(r.get("confidence")),
+            mz=r.get("mz"),
         )
         if new != str(r.get("confidence")):
             ledger.at[i, "confidence"] = new
@@ -281,11 +348,15 @@ def arbitrate(scored: pd.DataFrame, cfg: PassConfig) -> dict:
     # at commit -- leaving the peak unexplained instead of taking the on-trend
     # formula (the mass-degenerate high-Si PDMS failure at the uronium -2.45 ppm
     # offset). Pre-calibration (pass 1) cal_mu is None -> no penalty.
-    def _cal_offtrend(ppm):
-        z = z_of(ppm, cfg)
+    def _cal_offtrend(ppm, mz=None):
+        z = z_of(ppm, cfg, mz)
         return 0.0 if z is None else max(0.0, z - cfg.cal_z_accept) * CAL_ARB_WEIGHT
 
-    base["cal_penalty"] = base["ppm_error"].map(_cal_offtrend)
+    _mzcol = "sample_peak_mz" if "sample_peak_mz" in base.columns else None
+    base["cal_penalty"] = (
+        base.apply(lambda r: _cal_offtrend(r["ppm_error"], r[_mzcol]), axis=1)
+        if _mzcol and len(base) else base["ppm_error"].map(_cal_offtrend)
+    )
     base["eff_score"] = (
         base["raw_score"]
         - base["penalty"]
@@ -380,6 +451,23 @@ _DIFF_TO_ADDUCT = {
     (("H", 1),): "[M+H]+",
     (("Na", 1),): "[M+Na]+",
     (("H", 4), ("N", 1)): "[M+NH4]+",
+    # ¹⁵N-ammonium in-source dehydration alias [M+^NH4-H2O]+ (ion = M + ^NH4 -
+    # H2O): folded diff (H+2, N+1, O-1). Only the labelled-ammonium profile
+    # writes it (cleanup.relabel_ammonium_dehydration).
+    # UNLIKE the [M+NO3]- / [M+NH4]+ entries, this one maps the ISOTOPE-FOLDED
+    # diff straight to the LABELLED adduct instead of keying the ¹⁴N form and
+    # upgrading on the '^N' in the ion string. That is safe only because there is
+    # no ¹⁴N counterpart to confuse it with: peaky has no [M+NH4-H2O]+ adduct (not
+    # in chemistry.ADDUCT_SHIFTS, no profile, no pass), so nothing can present
+    # this diff except the labelled alias, and there is no unlabelled label to
+    # fall back to. If a ¹⁴N ammonium dehydration alias is ever added, key IT here
+    # and move this one behind the '^N' upgrade below, like its neighbours --
+    # otherwise a ¹⁴N ion would be labelled ¹⁵N and read 1 Da off.
+    (("H", 2), ("N", 1), ("O", -1)): "[M+^NH4-H2O]+",
+    # protonated-then-dehydrated alias [M+H-H2O]+ (EasyIC and labelled-ammonium
+    # in-source dehydration): diff (H-1, O-1). Without it a relabelled row whose
+    # label is re-derived from (ion, compound) falls through to "[M-H]-".
+    (("H", -1), ("O", -1)): "[M+H-H2O]+",
     (("K", 1),): "[M+K]+",
     # protonated-urea (uronium) adduct: ion = neutral + CH4N2O + H. Without this
     # entry the urea-channel assignments fall through to the "[M-H]-" default and
@@ -430,6 +518,10 @@ def _mech_to_adduct(row) -> str:
     # and the +61.99 (¹⁴N) shift puts ion_mz / jitter ~1 Da off.
     if add == "[M+NO3]-" and "^N" in ion:
         return "[M+^NO3]-"
+    # same blindness for the ¹⁵N-ammonium cluster: (H+4, N+1) is the ¹⁴N diff,
+    # the '^N' in the ion string is what makes it the +19.0309 labelled adduct.
+    if add == "[M+NH4]+" and "^N" in ion:
+        return "[M+^NH4]+"
     # Nor can it see polarity: the pipeline's Br-CIMS roots read every diff
     # negative by default, but a CATION row must flip the EasyIC channels -- an
     # EMPTY diff is charge transfer [M]+. (not electron attachment [M]-., a
@@ -490,7 +582,7 @@ def commit_winners(
         # real accuracy, not a fixed window. Pattern evidence (a Mascope-
         # confirmed isotopologue or a series-derived proposal) buys the
         # 2..4 sigma band; nothing buys more.
-        z = z_of(w["ppm_error"], cfg)
+        z = z_of(w["ppm_error"], cfg, w.get("sample_peak_mz"))
         if z is not None:
             pattern = (w["n_iso"] or 0) >= 1 or series_like
             if z > cfg.cal_z_pattern or (z > cfg.cal_z_accept and not pattern):
@@ -540,6 +632,7 @@ def commit_winners(
             w["tied"],
             cfg,
             suffix=confidence_suffix,
+            mz=w.get("sample_peak_mz"),
         )
         if conf == "Reject":
             continue
