@@ -244,8 +244,6 @@ check("assign_batch emits the parallel banner progress.py parses",
       emits("batch/assign_batch.py", 'log(f"[assign_batch] parallel: {n_jobs} worker processes '))
 check("  -> and the banner carries the sample count the parser takes N from",
       emits("batch/assign_batch.py", 'f"over {len(sample_ids)} samples")'))
-check("cmd_assign marks the assign phase itself (nothing on that path logs [phase] assign)",
-      'prog.phase("assign")' in (PKG / "cli.py").read_text())
 check("assign_batch emits the DONE line progress.py parses",
       emits("batch/assign_batch.py", 'log(f"[assign_batch] DONE: {summary[\'merged_M0\']} merged M0 '))
 check("assign emits the per-stage timing line progress.py parses",
@@ -298,6 +296,31 @@ check("the SERIAL branch itself logs the per-sample 'done' line",
 check("  -> after the sample is applied (inside the per-sample loop)",
       "_apply(" in serial_src
       and serial_src.index("_apply(") < serial_src.index("done {sid}"))
+
+# `peaky assign` calls one sample's assign.run directly: no pipeline runs on that
+# path, so nothing logs `[phase] assign` and the header would read "fetching time
+# series" for the entire assignment. cmd_assign has to say so itself -- and WHERE
+# it says it is the whole point, so read the structure, not the text.
+def _progress_with_body(module_src: str, fname: str) -> list:
+    """Statements of the `with ... open_progress(...) as prog:` body in `fname`."""
+    import ast
+    for fn in ast.walk(ast.parse(module_src)):
+        if not (isinstance(fn, ast.FunctionDef) and fn.name == fname):
+            continue
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.With) and node.items
+                    and "open_progress" in ast.dump(node.items[0].context_expr)):
+                return [ast.get_source_segment(module_src, s) for s in node.body]
+    return []
+
+
+ca_body = _progress_with_body((PKG / "cli.py").read_text(), "cmd_assign")
+check("cmd_assign wraps the run in open_progress()", bool(ca_body))
+check("  -> and marks the assign phase as its FIRST act inside that block",
+      bool(ca_body) and ca_body[0].startswith('prog.phase("assign")'), ca_body[:1])
+check("  -> i.e. before assign.run, not after it",
+      any("assign.run(" in s for s in ca_body[1:]))
+
 check("assign_batch records elapsed_s in batch_summary", '"elapsed_s": round(time.time() - t_start, 1)' in src)
 check("assign_batch records n_jobs beside it (a duration needs its job count)",
       '"n_jobs": n_jobs,' in src)
