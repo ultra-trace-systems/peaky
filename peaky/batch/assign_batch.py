@@ -429,11 +429,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # assignment/admission.py). Binned at this run's `tol_ppm` -- the same
     # tolerance the merge below uses (default sampling.BATCH_TOL_PPM).
     from peaky.assignment import admission as ADM
-    from peaky.assignment import passes as _PA
-    _cfg = assign_kw.get("cfg")
-    if _cfg is None:
-        _cfg = _PA.PassConfig()
-        assign_kw["cfg"] = _cfg
+    # READ the cfg built + height-resolved above; never rebuild one here, which
+    # would gate the batch on a config that skipped that resolution.
+    _cfg = assign_kw["cfg"]
     occurrence_min = getattr(_cfg, "occurrence_min", ADM.DEFAULT_OCCURRENCE_MIN)
     _on = isinstance(occurrence_min, str) or (occurrence_min is not None and float(occurrence_min) > 0)
     occ_info = {"occurrence_min": occurrence_min, "occurrence_threshold": None,
