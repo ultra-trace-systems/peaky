@@ -202,6 +202,15 @@ def active_lists(catalog: dict, *, context_tags=()) -> list:
             if L.always_active or (tags and set(L.applies_to_contexts) & tags)]
 
 
+def prior_formulas(lists) -> frozenset:
+    """The SELECTION-PRIOR set: every closed-shell formula on the active lists
+    (`assign.run` hands it to `cfg.reflist_formulas`, which `arbitrate` reads as
+    a near-tie tie-break). Radicals are deliberately absent -- the prior may only
+    nudge arbitration toward a neutral the pipeline is allowed to assign, and the
+    closed-shell grid never offers a radical to nudge toward."""
+    return frozenset().union(*(L.formulas for L in lists)) if lists else frozenset()
+
+
 def active_versions(lists) -> list:
     """`[(id, data_version), ...]` of the lists a run had active -- the manifest
     line that says which list versions shaped its selection prior and rescue

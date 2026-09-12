@@ -357,8 +357,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # The manifest records which list versions built it (`reflists_active`).
     reflist_versions = reflists.active_versions(reflists_active)
     if reflists_active:
-        cfg.reflist_formulas = frozenset().union(
-            *(set(rl.formulas) for rl in reflists_active)) or frozenset()
+        cfg.reflist_formulas = reflists.prior_formulas(reflists_active)
     profile = contexts.get_context(context)
     client = io_mascope.connect()
 
