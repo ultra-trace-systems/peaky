@@ -137,7 +137,7 @@ All in `peaky/batch/assign_batch.py`.
 | `tables/jitter.csv` | long form, one row per (cluster, file): `cluster`, `src`, `mz`, formula, adduct, tier, `ion_score` |
 | `per_file/<sid>_ledger.csv` | each assigned file's full single-sample ledger (audit / re-merge) |
 | `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role`, `bins_new`, `coverage`) |
-| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason), per-file offsets + noise edges, merged tier counts, agreement counts |
+| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason), the resolved height gate (`height_cutoff_x_edge` + its source), per-file offsets + noise edges, merged tier counts, agreement counts |
 | `jitter_report()` dict | `{offsets, by_formula, by_mz, summary}` — the standalone jitter analysis |
 
 ---

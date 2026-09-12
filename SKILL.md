@@ -77,7 +77,7 @@ peaky list samples --batch "<batch>" --dataset "<workspace>"
 
 # one sample
 peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto> \
-    [--height-cutoff-x-edge 1.0] --output-dir ~/peaky-output/<name>
+    [--height-cutoff-x-edge 2.5] --output-dir ~/peaky-output/<name>
 
 # a whole batch (assign subset -> merge -> cluster -> Van Krevelen -> PDF report)
 peaky batch --batch "<batch>" --dataset "<workspace>" --reagent <Br|Ur|...> \
@@ -199,8 +199,10 @@ can't refute an off-grid P) standing in for the 2nd channel.
 ### Key flags
 
 `--ppm` (m/z trust, default 1.0) · `--search-ppm` (enumeration tol, 3.0) ·
-`--height-cutoff` (absolute cps override; default = 1x the sample's own noise
-edge) · `--height-cutoff-x-edge` (that multiple, 1.0) · `--no-pass2/3/4` ·
+`--height-cutoff` (absolute cps override; default = a multiple of the sample's
+own noise edge) · `--height-cutoff-x-edge` (that multiple; default = the reagent
+profile's own value, else the package default 1.0 — see `docs/REAGENTS.md` §3a
+for raising it for a peak picker that picks into the noise) · `--no-pass2/3/4` ·
 `--no-cache`.
 
 ## Batch pipeline (assign a whole batch, not one file)
