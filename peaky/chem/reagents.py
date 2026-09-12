@@ -6,8 +6,16 @@ clusters (water, HNO3, small acids). These otherwise land in 'unexplained' and
 dominate the residual by signal. This module enumerates the cluster m/z (with
 halogen isotopologue combinations) and labels matching ledger peaks as reagent.
 
-It is keyed on the reagent detected from the sample's adducts, so a Br-CIMS run
-gets the Br_n / Br.(acid) library and an I-CIMS run gets the I_n library.
+It is keyed on the reagent detected from the sample's adducts (see
+`reagent_for_adducts` -> `build_library`), so a Br-CIMS run gets the Br_n /
+Br.(acid) library and an I-CIMS run gets the I_n library. The keys are:
+
+  * "Br" / "Cl" / "I"   halide anion clusters (all isotopologue combinations)
+  * "urea"              the protonated uronium/urea cluster series [R_n+H]+
+  * "EasyIC"            the fluoranthene charge-transfer reagent
+  * "ammonium15N"       (_AMMONIUM_15N_KEY) the 15N-labelled ammonium source:
+                        [(^NH3)n+H]+ up to n=4, their water clusters up to k=3,
+                        and the bare monomer's ~2 % 14N impurity twin
 """
 from __future__ import annotations
 
@@ -479,7 +487,8 @@ def reagent_for_adducts(adducts: list[str]) -> str | None:
     """Pick the reagent-cluster library key implied by the sample's adducts.
 
     Returns a halogen symbol ("Br"/"Cl"/"I") for a halide-CIMS source, or a
-    positive molecular-reagent key ("urea") for a urea-CIMS / uronium source.
+    positive reagent key: "ammonium15N" (_AMMONIUM_15N_KEY) for a ¹⁵N-labelled
+    ammonium source, "urea" for a urea-CIMS / uronium source.
     NB: this is the CLUSTER-LIBRARY key, not the arbitration `reagent_element`
     (a molecular reagent puts no halogen in the neutral, so assign.run sets
     cfg.reagent_element only for the halogen keys)."""

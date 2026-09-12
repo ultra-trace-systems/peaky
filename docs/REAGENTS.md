@@ -73,8 +73,11 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
    [`CHEMISTRY.md`](CHEMISTRY.md)), `normaliser` (`reagent` or `tic`, for the
    TS/correlation layer), `reagent_ion_re` (regex on `ion_formula` picking reagent
    ions), `detect_adduct`, `context` (the assign-time mode + VK priors + caps), and
-   `purity` (a labelled reagent's isotopic purity, threaded to
-   `predict_isotopes`), and — for labelled reagents — `label_isotope` /
+   `purity` (a labelled reagent's isotopic purity — `assign.run` publishes it via
+   `isotopes.set_label_purity`, and it then sets the height of a `^X` ion's
+   unlabelled impurity line in both the local scorer's `predict_isotopes` call and
+   peaky's own envelope predictor `isotopes.isotope_pattern`; unset ⇒
+   `isotopes.LABEL_PURITY_15N` = 0.98), and — for labelled reagents — `label_isotope` /
    `label_max` (the caret heavy isotope a *covalent product* can carry and its max
    count; drives the heavy-isotope rescue in `labeled.py`). Built-ins: **`BR`**
    (Br⁻, neg, normalise on reagent), **`UR`** (urea/uronium, pos, normalise on
@@ -164,10 +167,12 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
    > acetate ester (acetylium 43.018 + acetic-acid loss → C9H11⁺).
 
 3. **Pick the cluster-library key** (`reagent_for_adducts`). From the analyte
-   adducts: `CH4N2O` → `"urea"`; `Br` → `"Br"`; `I` → `"I"`; `Cl` → `"Cl"`. This
-   is the **cluster-library key, not** the arbitration `reagent_element` (a
-   molecular reagent puts no halogen in the neutral, so `assign.run` sets
-   `reagent_element` only for the halogen keys).
+   adducts: `^NH4` → `"ammonium15N"` (`_AMMONIUM_15N_KEY`); `CH4N2O` → `"urea"`;
+   `Br` → `"Br"`; `I` → `"I"`; `Cl` → `"Cl"`. (`"EasyIC"` is selected by the
+   charge-transfer profile rather than by an adduct.) This is the
+   **cluster-library key, not** the arbitration `reagent_element` (a molecular
+   reagent puts no halogen in the neutral, so `assign.run` sets `reagent_element`
+   only for the halogen keys).
 
 4. **Build the cluster library** (`build_library`). For a **halide** (Br/Cl/I):
    - **bare Rₙ⁻**, `n = 1..max_n (4)`, every isotopologue combination
@@ -238,13 +243,12 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
 | `BR.ranges` | `C0-40 H0-80 N0-3 O0-18 S0-2 Cl0-2 Br0-2` | bromide grid box |
 | `UR.ranges` | `C0-40 H0-90 N0-8 O0-15 S0-2` | uronium grid box |
 | `NO3.ranges` / `NO3_15N.ranges` | `C0-40 H0-60 N0-3 O0-25 S0-2` | nitrate grid box |
-| `NO3_15N.purity` | 0.98 | ~98 % ¹⁵N reagent (→ `predict_isotopes`) |
+| `NO3_15N.purity` | 0.98 | ~98 % ¹⁵N reagent. Published by `assign.run` via `isotopes.set_label_purity`; read by BOTH the local scorer's `predict_isotopes` call and peaky's own envelope predictor (`isotopes.isotope_pattern`). `isotopes.LABEL_PURITY_15N` is only the fallback default |
 | `IODIDE.ranges` | `C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1` | iodide grid box (**no I** — covalent iodine is monoisotopic, off-grid) |
 | `NH4_15N.ranges` | `C0-40 H0-90 N0-6 O0-15 S0-2` | ¹⁵N-ammonium grid box (uronium-like positive box) |
-| `NH4_15N.purity` | 0.98 | ¹⁵N fraction of the ammonium reagent — measured 0.018–0.021 ¹⁴N/¹⁵N on the 2026-09-10 file (= nominal 98 atom %) |
+| `NH4_15N.purity` | 0.98 | ¹⁵N fraction of the ammonium reagent — measured 0.018–0.021 ¹⁴N/¹⁵N on the 2026-09-10 file (= nominal 98 atom %). Same two consumers as `NO3_15N.purity` |
 | `_AMMONIUM_15N_KEY` | `ammonium15N` | cluster-library key for `[M+^NH4]+` sources: `[(^NH3)n+H]+` n≤4, hydrates k≤3, + the ¹⁴N monomer twin |
 | `relabel_ammonium_dehydration` `ppm` / `own_adduct_max` / ceiling | 4.0 / 0.5 / 1.5× | dehydration-site match window; the alkene reading is re-read only while its OWN `[M+^NH4]+` is < 0.5× its `[M+H]+`, and never when the product is brighter than 1.5× the parent's strongest form |
-| `PassConfig.cal_abs_floor_mda` / `tiers.CAL_ABS_FLOOR_MDA` | 0.03 mDa | absolute floor on the mass-dependent calibration sigma (masscal), active below ~m/z 120 |
 
 ---
 
@@ -335,7 +339,8 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
   alone.
 - **`detect_adduct` disambiguates isotopic twins.** `NO3` vs `NO3_15N` differ only
   by their diagnostic adduct (`[M+NO3]⁻` vs `[M+^NO3]⁻`), so auto-detect picks the
-  right one; `purity` then flows to the labelled-reagent envelope predictor.
+  right one; `purity` then flows to both purity consumers (the scorer's
+  `predict_isotopes` and `isotopes.isotope_pattern`).
 - **A reagent cluster is an assignment, not a blank.** Its formula is known, so it
   is committed with that `ion_formula` (a distinct class), never red in the report.
 - **New reagent = a `ReagentProfile`, no fork.** `register` / `from_dict` /

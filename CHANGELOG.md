@@ -31,8 +31,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   readings of X−H2O onto the corroborated hydrate X (own-adduct-weakness gate, second
   loss annotated only). `docs/REAGENTS.md` callout, `docs/ASSIGNMENT_DETAIL.md` §3.7b,
   `tests/test_nh4_15n.py`.
-- **Labelled-reagent ¹⁴N line in the envelope predictor** (`isotopes._ISO_DIST["^N"]`,
-  purity `LABEL_PURITY_15N` 0.98): a `^N` ion now predicts its −0.997 Da `14N` satellite, so
+- **Labelled-reagent ¹⁴N line in the envelope predictor** (`isotopes._per_atom("^N")`, at
+  the active reagent purity, default `LABEL_PURITY_15N` 0.98): a `^N` ion now predicts its
+  −0.997 Da `14N` satellite, so
   `complete_isotope_envelopes` claims it — and displaces a pass-1 CHON `[M+H]+` mass-fit
   sitting on it when it matches the predicted 2 % of a ≥10× brighter labelled parent
   (pass-0 locks kept). Before, only 7 of the ~340 `[M+^NH4]+` satellites were attached.
@@ -64,18 +65,70 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tetramethylthiourea (C5H12N2S) added to the `indoor_sulfur` known list.
 - **Mass-dependent calibration centre** (`peaky/assignment/masscal.py`, new): the pass-1
   self-calibration and the tier gate now also fit `ppm = a + b·1000/mz` (b = the constant
-  absolute offset in mDa) on the backbone, accepted only when the slope is significant;
-  `z_of(ppm, cfg, mz=)` and `tiers._cal_z` judge a peak against the centre at ITS m/z.
+  absolute offset in mDa) on the backbone, under the acceptance rule below;
+  `z_of(ppm, cfg, mz=)` and `tiers._cal_z` judge a peak against the centre at ITS m/z,
+  clamped to the backbone's own m/z coverage (`cal_mz_lo` / `cal_mz_hi`).
   On the 2026-09-10 file the Orbitrap's low-mass residual was −0.12 mDa (−2 ppm at m/z 61
   vs −0.2 ppm above 160, MAD 0.13–0.22 ppm), so the constant centre rejected every bright
   sub-80 ion (ketene·¹⁵NH₄⁺, urea·H⁺, acetamide, acetic acid, the amines) at z = 6. Callers
   without an m/z keep the constant model unchanged; a flat source keeps it exactly.
-- `cal_abs_floor_mda` (0.03 mDa, `PassConfig` / `tiers.CAL_ABS_FLOOR_MDA`): an absolute
+- `cal_abs_floor_mda` (0.03 mDa, `PassConfig`, default `masscal.ABS_FLOOR_MDA`): an absolute
   floor on the trend sigma, active only below ~m/z 120, where the Orbitrap's residual
   curves faster than 1/mz (dimethylamine `[M+H]+` at 46.065 sat 0.9 ppm = 0.04 mDa off the
   fitted trend). `confidence_label(..., mz=)` / `cal_center` grade against the trend centre
   too, so an on-trend −2 ppm sub-80 ion is Good, not Low.
 - Reference peaklist `isoprene_ox_wennberg2018` (27 closed-shell isoprene oxidation products, Wennberg et al. 2018) added to `peaky/data/peaklists/`, gated by the new `isoprene_ox` context (batch keywords isoprene/ISOPN/IEPOX/ISOPOOH/methacrolein) and `biogenic_soa`/`ambient_summer`; rescues the isoprene dihydroxy-dinitrate C5H10N2O8 as an isotope-confirmed Assigned in the 2026 field-campaign ¹⁵NO₃⁻ data.
+
+### Changed
+
+- **The positive pass-0 `cyclosiloxane` and `indoor_sulfur` families apply to EVERY
+  positive context**, not only to the labelled-ammonium runs they were seeded from:
+  `directors._known_species("positive", …)` returns them regardless of context, so
+  uronium and EasyIC runs now also get `known:` locks for D3–D7 / L2–L5 siloxanes and
+  for the benzothiazole / DMSO / thiophene / sulfolane / NBBS set. The commit gates are
+  unchanged (≥2 channels, or a confirmed ²⁹Si/³⁰Si envelope + the Si-count M+1 check,
+  or a confirmed ³⁴S envelope), so this adds locks only where the evidence is already
+  there — but a previously Candidate D4 or benzothiazole can now come out Assigned.
+- **The pass-4 halogen cap applies in every context, not just positive ones.**
+  `residual.stage_a_iso_pairs` drops a ~1.998-Da doublet whenever the context caps that
+  halogen at zero (`max_Br` = `max_Cl` = 0) — the rule is written against the context
+  profile, so any halogen-free context gets it.
+- **The labelled-nitrogen ¹⁴N envelope line is emitted for every `^N`-bearing ion**, so
+  it reaches the ¹⁵N-NITRATE profile as well as the ammonium one it was built for: a
+  `[M+^NO3]⁻` cluster now predicts a −0.997 Da satellite at `(1 − purity)/purity` of M0
+  and `complete_isotope_envelopes` will claim it. **Caveat, to be validated on a
+  labelled-nitrate batch:** a labelled-nitrate source can carry a *real* `[X+¹⁴NO₃]⁻`
+  analyte channel from the reagent's unlabelled fraction, and it sits at exactly that
+  mass and at a comparable 0.6–7 % of the labelled cluster. Such a channel would now be
+  attached as an isotope child of the labelled reading rather than standing as its own
+  M0. Gating the line per profile is deliberately NOT done here (see the open items).
+- **The mass-trend acceptance rule is much stricter** (`masscal.fit_mass_trend`). It was
+  `|b| > 2·SE(b)` — a 5 % two-sided test, so a FLAT source grew a phantom trend in ~6–7 %
+  of samples at any n (Monte Carlo, 21–300 rows), and a 21-row backbone whose only
+  low-`1000/mz` point was one corroborated outlier fitted a centre of +2.25 ppm at m/z 61.
+  A trend is now accepted only when `|b| > 3·SE(b)` (`SLOPE_MIN_SE`) **and** the trimmed
+  residual RMS is ≤ 0.8× the constant model's on the same points (`TREND_SIGMA_RATIO_MAX`)
+  **and** `|b| ≤ 0.5 mDa` (`MAX_ABS_OFFSET_MDA`, a physical cap on the calibration curve's
+  residual absolute offset) **and** each half of the fitted `1000/mz` range holds ≥ 5 kept
+  points (`MIN_SIDE_N`, the lever guard). The fit also records the backbone's m/z coverage
+  and `masscal.centre` clamps into it, so the trend is never extrapolated onto masses the
+  backbone never saw. `masscal.centre` / `sigma_at` are now the single implementation
+  behind `passes.core.cal_center` / `cal_sigma_at` / `z_of` and `tiers._cal_z`.
+- `PassConfig.cal_abs_floor_mda` is the **single owner** of the absolute sigma floor.
+  `tiers.CAL_ABS_FLOOR_MDA` was a second, independent copy, so overriding the config moved
+  the commit gates but left the tier gate on the module constant; `apply_tiers` /
+  `compute_tiers` now take the run's `cfg` and carry the value onto `tiers._Cal`.
+- `ReagentProfile.purity` is no longer inert. `assign.run` publishes it
+  (`isotopes.set_label_purity`) and it now drives BOTH the local scorer's
+  `predict_isotopes` call and peaky's own envelope predictor; `isotopes.LABEL_PURITY_15N`
+  remains the default. Behaviour-neutral at 0.98, which is also mascope_tools' default.
+- **The bare `ammonium` / `nh4` / `nh4-cims` context aliases were removed.** They resolved
+  to the LABELLED `ammonium-15n` context, so an unlabelled-ammonium user silently got the
+  ¹⁵N channels; an unknown context now raises. Every remaining alias names the label.
+- `provenance`'s reproducible config fingerprint drops the self-calibration's fitted mass
+  trend (`cal_a` / `cal_b` / `cal_sigma_trend` / `cal_mz_lo` / `cal_mz_hi`) — `calibrate`
+  writes them onto the shared `cfg`, so the last sample's data-derived numbers were landing
+  in `run_manifest.json` and two identical re-runs of a batch fingerprinted differently.
 
 ### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
 

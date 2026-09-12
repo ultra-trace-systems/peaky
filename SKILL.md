@@ -145,7 +145,7 @@ The pipeline was built negative-mode Br-specialized; positive-mode support
   gated on a halogen adduct (its M+1 test misfires without one); the carbon-clamp
   skips Si (²⁹Si dominates the M+1, not ¹³C); di-bromide / iso-pair / `reagent_element`
   logic goes inert when no halogen is in the adduct.
-- **`NH4_15N` profile / `ammonium-15n` context (¹⁵N-labelled ammonium⁺, 
+- **`NH4_15N` profile / `ammonium-15n` context (¹⁵N-labelled ammonium⁺,
   `^NH4+` ionisation mode):** server mechanism `+^NH4+`; channels `[M+^NH4]+` (+19.0309) and
   `[M+H]+` (a DECLUSTERING product, 0.3–0.95× the adduct). The ¹⁵N label puts the
   adduct 0.997 Da above any unlabelled ion, so the `[M+NH4]+`/amine `[M+H]+`

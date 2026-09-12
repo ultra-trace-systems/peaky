@@ -24,8 +24,11 @@ class ReagentProfile:
     ranges: str  # grid element ranges for local enumeration
     detect_adduct: str | None  # presence of this adduct => this reagent (auto-detect)
     context: str = "ambient-air"  # default assign.run context (mode + VK priors + caps)
-    # isotopic purity of a labelled reagent (0.98 = 98% 15N); threaded to local
-    # scoring's predict_isotopes for '^X' adducts
+    # isotopic purity of a labelled reagent (0.98 = 98 % 15N). assign.run
+    # publishes it via isotopes.set_label_purity; it then sets the height of a
+    # '^X' ion's unlabelled impurity line in BOTH consumers -- the local scorer's
+    # predict_isotopes call and peaky's own envelope predictor
+    # (isotopes.isotope_pattern). None => isotopes.LABEL_PURITY_15N (0.98).
     purity: float | None = None
     # labelled-reagent covalent-product rescue (labeled.py): the caret heavy
     # isotope a product can carry ('^N' = 15N organonitrate) and the max count.
@@ -291,8 +294,10 @@ def load_config(path: str) -> list:
     """Register reagent profiles from a JSON or TOML file (so users add reagents
     without editing the package). Accepts a top-level list of entries, a
     `{"reagents": [...]}` wrapper, or a `{name: {fields...}}` mapping. Each entry
-    carries the ReagentProfile fields (name/label/polarity/adducts/normaliser/
-    reagent_ion_re/ranges/detect_adduct, + optional context/aliases)."""
+    carries the ReagentProfile fields listed in `_CONFIG_FIELDS`: the required
+    name/label/polarity/adducts/normaliser/reagent_ion_re/ranges/detect_adduct,
+    plus optional context/aliases and the labelled-reagent trio purity /
+    label_isotope / label_max."""
     import json
     import os
 

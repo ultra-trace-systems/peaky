@@ -164,7 +164,7 @@ commitments the previous ones justify. (Condensed; the authoritative table is in
 | **6**        | `ladders`         | **anchored ladder gap-fill**: walk +O/+CH₂/+CO₂/−H₂O diagonals out from Assigned anchors (Candidate tier) |
 | iso-env      | `isotopes`        | claim each committed peak's full predicted M+2/M+4 envelope; displaces weak M0s that are really a parent's satellite |
 | siloxane     | `siloxane`        | dedicated PDMS/siloxane ladder on spacing + ²⁹Si/³⁰Si envelope (CHON monsters out-score the true Si formula otherwise) |
-| cleanup      | `cleanup`         | isotope-confirmed recovery, bromide-cluster labelling, ringing/sidelobe artifact flagging; **plausibility demotes** (carbon-cluster / implausible-ionization / speculative-residual, post-tier) + reagent-halocarbon relabel (Br runs) + **positive-mode reagent-N re-read** (a pure hydrocarbon via an NH₄/urea cluster → `[M+H]⁺` of an N-heterocycle `M+(cluster−H)`, Ur runs) |
+| cleanup      | `cleanup`         | isotope-confirmed recovery, bromide-cluster labelling, ringing/sidelobe artifact flagging; **plausibility demotes** (carbon-cluster / implausible-ionization / speculative-residual, post-tier) + reagent-halocarbon relabel (Br runs) + **positive-mode reagent-N re-read** (a pure hydrocarbon via an NH₄/urea cluster → `[M+H]⁺` of an N-heterocycle `M+(cluster−H)`, Ur runs) + **`nh4_dehydration`** (labelled-ammonium runs): the in-source declustering cascade `[M+^NH4]⁺ → [M+H]⁺ → [M+H−H₂O]⁺` and `[M+^NH4]⁺ → [M+^NH4−H₂O]⁺` — an alkene/alkyne reading sitting on a hydrate's water-loss ion is re-read as the parent's dehydration alias (relabel-only, so such rows are capped at Candidate), a second water loss is annotated only |
 | reflist      | `reflists`        | **reference peaklists** (context-gated; contaminants always on): near-tie selection prior + mass-match **rescue** re-scored by the server — soft, provenance-tagged, never overrides an isotope-scored Assigned |
 | rearbitrate  | `passes`          | **off-cal degenerate re-arbitration**: applies the tier engine's calibration-sigma + corroboration gate AT WINNER-SELECTION — an off-cal (>\|2.6\|σ), uncorroborated, high-DBE/C aromatic-monster winner is displaced by an on-cal, plausible, lower-DBE stored alternative (so a degenerate competitor the scorer over-ranked can't keep an M0 slot it would only be tier-demoted out of) |
 | degeneracy   | `degeneracy`      | honest cross-family mass-degeneracy density; an uncorroborated mass-degenerate commit is capped at Candidate |
@@ -198,9 +198,11 @@ fit" alone never wins:
 
 ## 6. Reagent profiles
 
-`profiles.py` defines one `ReagentProfile` per reagent system (bromide `Br⁻`,
-urea/uronium `Ur⁺`, nitrate `NO3` / `NO3_15N`), bundling polarity, adducts,
-normaliser ion, and the chemistry context. `resolve('auto', peaks)` detects the
+`profiles.py` defines one `ReagentProfile` per reagent system — bromide `Br⁻`,
+urea/uronium `Ur⁺`, nitrate `NO3` / ¹⁵N-nitrate `NO3_15N`, iodide `IODIDE`,
+charge-transfer `EASYIC`, ¹⁵N-ammonium `NH4_15N` — bundling polarity, adducts,
+normaliser ion, the chemistry context, and (for a labelled reagent) its isotopic
+`purity` and covalent-label fields. `resolve('auto', peaks)` detects the
 reagent from the spectrum; passing `--reagent` forces it (a sparse positive sample
 otherwise mis-detects as negative). New reagents are added from a JSON/TOML file
 via `register()` / `load_config()` (`--reagent-config`) **without forking the
