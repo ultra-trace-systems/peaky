@@ -972,7 +972,6 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
 #     shows its adduct at >= its protonated form; otherwise the row keeps Y and
 #     gets the ambiguity note. Relabelled rows stay visible (Assigned ->
 #     Candidate). A second water loss is annotated, never relabelled.
-_DEHYDRATION_ALIASES = ("[M+H-H2O]+", "[M+^NH4-H2O]+")
 
 
 def relabel_ammonium_dehydration(ledger: pd.DataFrame, *, adduct: str = "[M+^NH4]+",
@@ -989,18 +988,6 @@ def relabel_ammonium_dehydration(ledger: pd.DataFrame, *, adduct: str = "[M+^NH4
     hts = ledger["height"].to_numpy(dtype=float)
     idx = np.asarray(ledger.index)
     has_tier = "tier" in ledger.columns
-
-    def reason(i, msg: str):
-        # NA-safe tier_reason append (the ledger default is pd.NA, which the
-        # generic _note helper cannot truth-test)
-        if "tier_reason" not in ledger.columns:
-            return
-        prev = ledger.at[i, "tier_reason"]
-        prev = "" if prev is None or prev is pd.NA or (isinstance(prev, float) and np.isnan(prev)) \
-            else str(prev)
-        if prev in ("nan", "<NA>"):
-            prev = ""
-        ledger.at[i, "tier_reason"] = (prev + " | " + msg) if prev else msg
 
     def rows_at(target: float) -> list:
         tol = target * ppm * 1e-6
@@ -1051,13 +1038,18 @@ def relabel_ammonium_dehydration(ledger: pd.DataFrame, *, adduct: str = "[M+^NH4
                 pass_no=8, method="nh4-dehydration",
                 confidence="Good (in-source dehydration, corroborated)", commentary=note)
         if has_tier:
-            if str(ledger.at[i, "tier"]) in ("Assigned", "nan", "None", ""):
+            # an alias reading is never Assigned-grade: an Assigned row drops to
+            # Candidate and a row committed from an UNEXPLAINED peak (tier still
+            # the ledger default pd.NA, whose str() is '<NA>') gets Candidate too;
+            # a row already in another tier keeps it
+            t = ledger.at[i, "tier"]
+            if _is_na(t) or str(t) in ("Assigned", "nan", "None", ""):
                 ledger.at[i, "tier"] = "Candidate"
             if "tier_reason" in ledger.columns:
                 ledger.at[i, "tier_reason"] = ("in-source dehydration alias of a labelled-"
                                                "adduct parent (relabel-only channel)")
         if relabel:
-            reason(i, note)
+            _note(ledger, i, note)
             if "commentary" in ledger.columns:
                 prev = str(ledger.at[i, "commentary"] or "")
                 ledger.at[i, "commentary"] = (prev + "; " + note) if prev and prev != "nan" else note
@@ -1104,7 +1096,7 @@ def relabel_ammonium_dehydration(ledger: pd.DataFrame, *, adduct: str = "[M+^NH4
             nf = _norm_formula(ledger.at[k, "neutral_formula"])
             if height(k) > ceiling:
                 if role == L.ROLE_M0 and nf == Y:
-                    reason(k, f"ambiguity: same ion as the in-source dehydration [M+^NH4-H2O]+ "
+                    _note(ledger, k, f"ambiguity: same ion as the in-source dehydration [M+^NH4-H2O]+ "
                               f"of {X}, but brighter ({height(k):.3g} cps) than 1.5x that parent's "
                               f"strongest form ({max(hX, h_mh):.3g} cps); kept as {Y}")
                     out["nh4_deh_ambiguous"] += 1
@@ -1128,7 +1120,7 @@ def relabel_ammonium_dehydration(ledger: pd.DataFrame, *, adduct: str = "[M+^NH4
                               f"{'' if h_yh else ' (no protonated form)'}", relabel=True)
                     out["nh4_deh_relabeled"] += 1
                 else:
-                    reason(k, f"ambiguity: {Y} [M+^NH4]+ is the same ion as the "
+                    _note(ledger, k, f"ambiguity: {Y} [M+^NH4]+ is the same ion as the "
                                      f"in-source dehydration [M+^NH4-H2O]+ of {X} ({basis}); "
                                      f"kept as {Y} (its own adduct is strong)")
                     out["nh4_deh_ambiguous"] += 1
@@ -1140,7 +1132,7 @@ def relabel_ammonium_dehydration(ledger: pd.DataFrame, *, adduct: str = "[M+^NH4
             nf = _norm_formula(ledger.at[j, "neutral_formula"])
             if height(j) > ceiling:
                 if role == L.ROLE_M0 and nf == Y:
-                    reason(j, f"ambiguity: same ion as the in-source dehydration [M+H-H2O]+ of "
+                    _note(ledger, j, f"ambiguity: same ion as the in-source dehydration [M+H-H2O]+ of "
                               f"{X}, but brighter ({height(j):.3g} cps) than 1.5x that parent's "
                               f"strongest form ({max(hX, h_mh):.3g} cps); kept as {Y}")
                     out["nh4_deh_ambiguous"] += 1
@@ -1157,7 +1149,7 @@ def relabel_ammonium_dehydration(ledger: pd.DataFrame, *, adduct: str = "[M+^NH4
                               f"only {h_ad:.3g} cps vs {height(j):.3g} cps here", relabel=True)
                     out["nh4_deh_relabeled"] += 1
                 else:
-                    reason(j, f"ambiguity: {Y} [M+H]+ is the same ion as the in-source "
+                    _note(ledger, j, f"ambiguity: {Y} [M+H]+ is the same ion as the in-source "
                                      f"dehydration [M+H-H2O]+ of {X} ({basis}); kept as {Y} "
                                      f"(its own [M+^NH4]+ is {h_ad:.3g} cps)")
                     out["nh4_deh_ambiguous"] += 1
@@ -1165,7 +1157,7 @@ def relabel_ammonium_dehydration(ledger: pd.DataFrame, *, adduct: str = "[M+^NH4
         mz_d2 = mz_d - C.neutral_mass("H2O")
         h_d2 = max((height(j) for j in rows_at(mz_d2)), default=0.0)
         if h_d2 > 0:
-            reason(i, f"second in-source water loss [M+H-2H2O]+ present at m/z "
+            _note(ledger, i, f"second in-source water loss [M+H-2H2O]+ present at m/z "
                              f"{mz_d2:.4f} ({h_d2:.3g} cps)")
     log(f"[cleanup] nh4 dehydration: {out['nh4_deh_parents']} labelled-adduct parents with a "
         f"declustering product; {out['nh4_deh_committed']} unexplained dehydration ions "
@@ -1564,10 +1556,22 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
     return counts
 
 
+def _is_na(v) -> bool:
+    """Scalar NA test that is safe on the ledger's mixed object cells (pd.NA
+    raises on truth-testing, so `cell or ""` is not an option)."""
+    return v is None or v is pd.NA or (isinstance(v, float) and np.isnan(v))
+
+
 def _note(ledger, i, msg):
-    if "tier_reason" in ledger.columns:
-        ledger.at[i, "tier_reason"] = (
-            str(ledger.at[i, "tier_reason"] or "") + f" | {msg}").strip(" |")
+    """Append `msg` to the row's tier_reason (' | '-joined); NA-safe -- the
+    ledger default is pd.NA."""
+    if "tier_reason" not in ledger.columns:
+        return
+    prev = ledger.at[i, "tier_reason"]
+    prev = "" if _is_na(prev) else str(prev)
+    if prev in ("nan", "<NA>", "None"):
+        prev = ""
+    ledger.at[i, "tier_reason"] = f"{prev} | {msg}" if prev else str(msg)
 
 
 def _covariation_verdict(ledger, ts_peaks, r_min, r_reject, min_overlap):

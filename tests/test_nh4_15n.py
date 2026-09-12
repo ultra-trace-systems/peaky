@@ -122,12 +122,14 @@ def _ledger(rows):
     """rows: (peak_id, mz, height, neutral|None, adduct|None)"""
     peaks = pd.DataFrame([{"peak_id": pid, "mz": mz, "height": h} for pid, mz, h, *_ in rows])
     led = L.new_ledger(peaks)
-    led["tier"] = "Assigned"
     for pid, mz, h, nf, ad in rows:
         if nf:
             L.commit_assignment(led, pid, neutral_formula=nf, adduct=ad, ion_formula=_ion(nf, ad),
                                 ion_score=0.9, pass_no=1, method="test", confidence="High",
                                 commentary="test")
+            # as production leaves it after apply_tiers: M0 rows tiered, every
+            # other row (unexplained included) still at the ledger default pd.NA
+            led.loc[led["peak_id"] == pid, "tier"] = "Assigned"
     return led
 
 
@@ -156,6 +158,9 @@ def test_dehydration_relabel_reads_the_cascade_onto_the_hydrate():
     assert at("p3", "tier") == "Candidate"
     assert (at("p4", "neutral_formula"), at("p4", "adduct")) == (X1, "[M+^NH4-H2O]+")
     assert (at("p6", "role"), at("p6", "neutral_formula"), at("p6", "adduct")) == (L.ROLE_M0, X2, "[M+^NH4-H2O]+")
+    # committed from an UNEXPLAINED peak (tier was pd.NA): lands in Candidate with a reason
+    assert at("p6", "tier") == "Candidate"
+    assert isinstance(at("p6", "tier_reason"), str) and "dehydration" in at("p6", "tier_reason")
     assert (at("p7", "neutral_formula"), at("p7", "adduct")) == (X2, "[M+H-H2O]+")
     assert at("p8", "role") == L.ROLE_UNEXPLAINED           # second loss: note only
     assert "second in-source water loss" in str(at("p5", "tier_reason"))
