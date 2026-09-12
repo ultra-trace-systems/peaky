@@ -366,7 +366,8 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     n_ungrouped = int(ts[group_by].isna().sum())
     if n_ungrouped:
         log(f"[pool] WARNING: {n_ungrouped} peak rows have no {group_by!r} value "
-            f"-- those samples are excluded from selection and reports")
+            f"-- their samples still count for selection (their bins are real), "
+            f"but they group under {SS.UNGROUPED!r} and get no per-group report")
     log(f"[pool] {len(ts):,} peak rows, {ts['sample_item_id'].nunique()} samples, "
         f"{ts[group_by].nunique()} groups by {group_by!r}")
 

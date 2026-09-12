@@ -55,6 +55,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A missing `--group-by` value no longer crashes pooled selection.**
+  `sampling.select_cover_samples(group_col=…)` now normalises the group labels to
+  strings before it sorts them: on pandas ≥ 3 `astype(str)` leaves NaN alone, so a
+  group column holding any null value raised `TypeError: '<' not supported between
+  instances of 'str' and 'float'`. Ungrouped samples stay selectable — their bins
+  are real — and group under `sampling.UNGROUPED` (`"(ungrouped)"`), which no
+  per-group report matches.
 - **The brightest-coverage selector silently never reached its coverage
   target**: every run on disk had assigned exactly `k_max` + 2 samples at
   0.39–0.61 achieved coverage while `batch_summary.json` recorded the *requested*

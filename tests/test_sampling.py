@@ -366,6 +366,25 @@ check("pool: the shortfall is the budget -- k_max 8 covers every group",
           pool7, group_col="sample_batch_name", k_min=2, k_max=8, min_gain=0.0
       ).attrs["selection"]["coverage_by_group"].values()))
 
+# a NULL group value is a real state: the pool hands the selector the whole table
+# and only drops the ungrouped rows when it builds its own group list. The labels
+# must be normalised to str BEFORE the sort (on pandas >= 3 `astype(str)` keeps
+# NaN, so a str/float mix raises TypeError in sorted(set(...))).
+pool8 = pool7.copy()
+pool8["sample_batch_name"] = pool8["sample_item_id"].map(
+    lambda sid: LOUD if sid.startswith("L") else None)      # every quiet sample ungrouped
+sel8 = SS.select_cover_samples(pool8, group_col="sample_batch_name",
+                               k_min=2, k_max=8, min_gain=0.0)
+m8 = sel8.attrs["selection"]
+check("pool: a missing group value does not crash the sort",
+      set(m8["coverage_by_group"]) == {LOUD, SS.UNGROUPED}, m8.get("coverage_by_group"))
+check("pool: ungrouped samples are still selected and still covered",
+      m8["picks_by_group"].get(SS.UNGROUPED, 0) == 3
+      and np.isclose(m8["coverage_by_group"][SS.UNGROUPED], 1.0), m8)
+check("pool: the group column on the selected rows is all strings",
+      all(isinstance(g, str) for g in sel8["sample_batch_name"]),
+      sel8["sample_batch_name"].tolist())
+
 
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"

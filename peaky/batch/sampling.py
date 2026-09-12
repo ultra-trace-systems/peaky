@@ -60,6 +60,7 @@ BATCH_TOL_PPM = 6.0
 
 ROLE_COVER = "cover"   # a greedy pick (adds bins_new uncovered bins)
 ROLE_PAD = "pad"       # richest-TIC pad up to k_min after the greedy exhausted the bins
+UNGROUPED = "(ungrouped)"   # `group_col` label for a sample whose group value is missing
 STOP_GAIN = "gain-floor"
 STOP_KMAX = "k_max"
 STOP_EXHAUSTED = "exhausted"
@@ -126,7 +127,8 @@ def select_cover_samples(peaks: pd.DataFrame, *, k_min: int = K_MIN, k_max: int 
       role       'cover' (a greedy pick) | 'pad' (richest-TIC pad up to k_min)
       bins_new   universe bins this pick covered for the first time (marginal gain)
       coverage   cumulative fraction of the universe covered after this pick
-      <group_col>  the sample's group, when `group_col` is given
+      <group_col>  the sample's group as a string, when `group_col` is given
+                   (a missing group value becomes `UNGROUPED`)
 
     and `.attrs['selection']` = {method, k, n_samples, n_bins, n_bins_total,
     n_bins_gated, min_prevalence, tol_ppm, achieved_coverage, stop_reason,
@@ -241,8 +243,15 @@ def select_cover_samples(peaks: pd.DataFrame, *, k_min: int = K_MIN, k_max: int 
         if group_col not in peaks.columns:
             raise KeyError(f"group_col {group_col!r} not in peaks columns "
                            f"(got {list(peaks.columns)[:8]})")
-        grp = (peaks.groupby(sample_col)[group_col].first()
-               .reindex(samples).astype(str).to_numpy())
+        # Normalise the labels to str ONCE, before the set and the sort: a missing
+        # group value is a real state (the pool warns about ungrouped peak rows
+        # and leaves them in the table it hands us), and on pandas >= 3
+        # `astype(str)` no longer turns NaN into "nan", so the labels would stay
+        # a str/float mix and `sorted(set(...))` would raise. Ungrouped samples
+        # still carry bins and are still selectable; they just group under
+        # UNGROUPED, which no per-group report matches.
+        gser = peaks.groupby(sample_col)[group_col].first().reindex(samples)
+        grp = gser.astype(str).where(gser.notna(), UNGROUPED).to_numpy()
         sel[group_col] = grp[picked]
         cov_by, picks_by = {}, {}
         pick_mask = np.zeros(len(samples), dtype=bool)
