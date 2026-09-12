@@ -202,6 +202,14 @@ def active_lists(catalog: dict, *, context_tags=()) -> list:
             if L.always_active or (tags and set(L.applies_to_contexts) & tags)]
 
 
+def active_versions(lists) -> list:
+    """`[(id, data_version), ...]` of the lists a run had active -- the manifest
+    line that says which list versions shaped its selection prior and rescue
+    (a list's split changes with its `data_version`, e.g. the HOM list's 2024.2
+    parity correction moved 118 nitrates into the matched pool)."""
+    return [(L.id, L.data_version) for L in (lists or ())]
+
+
 # ---------------------------------------------------------------------------
 def match_assigned(neutral_formulas, lists, *, include_radicals: bool = False) -> dict:
     """Formula-membership corroboration: which assigned neutrals appear on a list.

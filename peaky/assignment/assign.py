@@ -354,6 +354,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
     purity = isotopes.set_label_purity(label_purity)
     # reference-list selection prior: a candidate neutral on an active reference
     # peaklist wins a near-tie over a mass coincidence (arbitrate reads this set).
+    # The manifest records which list versions built it (`reflists_active`).
+    reflist_versions = reflists.active_versions(reflists_active)
     if reflists_active:
         cfg.reflist_formulas = frozenset().union(
             *(set(rl.formulas) for rl in reflists_active)) or frozenset()
@@ -496,6 +498,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
             "plausibility_audit": plaus_audit,
             "module_versions": MODULE_VERSIONS,
             "module_hashes": _module_hashes(), "context": profile.label,
+            "reflists_active": reflist_versions,     # [(id, data_version), ...]
             "sample_id": sample_id}
 
 

@@ -519,7 +519,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     _tags = RL.resolve_context_tags(batch or "", dataset or "", getattr(prof, "label", ""))
     reflists_active = RL.active_lists(RL.load_catalog(), context_tags=_tags)
     if reflists_active:
-        log(f"[assign_batch] reference lists active: {[rl.id for rl in reflists_active]} "
+        log(f"[assign_batch] reference lists active: {RL.active_versions(reflists_active)} "
             f"(context {sorted(_tags) or 'contaminants-only'})")
     per_file, offsets, per_stats = {}, {}, []
     identified_aux: list = []  # per-file identified-ion rows (reagent/iso/artifact
@@ -711,6 +711,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "formula_disagreements": int((~merged["formula_agree"]).sum()) if len(merged) else 0,
         "plausibility": summary_plaus,
         "plausibility_audit_rows": n_audit,
+        "reflists_active": RL.active_versions(reflists_active),   # [(id, data_version)]
         "per_file": per_stats,
         # RUN-TIME metadata, not material data: how long the assignment actually
         # took, alongside the n_jobs that produced it (a duration is meaningless

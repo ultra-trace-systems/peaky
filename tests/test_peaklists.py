@@ -170,3 +170,12 @@ def test_a_salt_or_an_ion_is_skipped_before_the_parity_test(tmp_path):
 
 def test_the_bundled_lists_skip_nothing():
     assert all(L.skipped == () for L in RL.load_catalog().values())
+
+
+def test_a_run_records_which_list_versions_were_active():
+    # assign.run puts this next to the selection prior it builds from the same
+    # lists, and the CLI writes it into the sample's manifest as `reflists_active`
+    act = RL.active_lists(RL.load_catalog(), context_tags={"monoterpene_ox"})
+    assert RL.active_versions(act) == [("contaminants_keller2008", "2008.2"),
+                                       ("monoterpene_hom_kang2024", "2024.2")]
+    assert RL.active_versions(None) == []           # a run with no lists
