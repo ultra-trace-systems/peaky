@@ -231,7 +231,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   an explicit `--height-cutoff-x-edge` / cfg value > the profile's value > the
   package default — and every entry point that resolves a profile and builds a
   `PassConfig` applies it (`peaky assign`, `assign.main`, `assign_batch.run`,
-  `pipeline.run` / `run_batch` / `run_pooled_batches`, the MCP `assign_sample`).
+  `pipeline.run_batch` / `run_pooled_batches`, the MCP `assign_sample`,
+  `scripts/certify_neutrals.py`). `pipeline.run` builds no `PassConfig` of its
+  own; it resolves the profile and *reports* the multiple the assign stage will
+  use as `height_cutoff_x_edge` in its return value.
   `peaky assign --height-cutoff-x-edge` and `PassConfig.height_cutoff_x_edge`
   both default to *unset* (`None`) rather than to 1.0, so explicitness is read
   off the value instead of guessed by comparing it to the default: an explicit
