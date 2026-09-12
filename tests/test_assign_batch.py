@@ -111,6 +111,50 @@ check("_protected_neutrals: reflist/known/certified in; grid/siloxane out",
 check("_protected_neutrals: missing columns -> empty set",
       AB._protected_neutrals(pd.DataFrame({"x": [1]})) == set())
 
+# --- admission provenance survives the merge --------------------------------
+# The merged ledger is the deliverable: a reader must be able to see that a row
+# only ever entered formula search because its m/z bin persists. The winning row
+# donates `admitted_by` / `occurrence` along with its formula, so the provenance
+# that is carried is the WINNER's, not an arbitrary file's.
+def m0a(rows):
+    return pd.DataFrame(rows, columns=["mz", "neutral_formula", "adduct", "tier",
+                                       "ion_score", "admitted_by", "occurrence"])
+
+
+# G: weak, persistence-admitted, Candidate. H: the same peak in a second file,
+# also persistence-admitted, plus a bright height-admitted peak of its own.
+G = m0a([(264.0361, "C8H10O6", "[M-H]-", "Candidate", 0.71, "occurrence", 0.93)])
+H = m0a([(264.0365, "C8H10O6", "[M-H]-", "Candidate", 0.68, "occurrence", 0.91),
+         (300.0000, "C10H16O4", "[M-H]-", "Assigned", 0.95, "height", 0.44)])
+mGH, _ = AB.align({"G": G, "H": H}, tol_ppm=6.0)
+check("merge carries admitted_by / occurrence for every row",
+      {"admitted_by", "occurrence"} <= set(mGH.columns), list(mGH.columns))
+_g = mGH[mGH["neutral_formula"] == "C8H10O6"].iloc[0]
+check("merged persistence-only peak keeps admitted_by='occurrence' (2 files)",
+      _g["n_files"] == 2 and _g["admitted_by"] == "occurrence" and _g["occurrence"] > 0.9,
+      _g.to_dict())
+check("the WINNING row donates it: G wins on ion_score, so G's occurrence (0.93) is carried",
+      abs(float(_g["occurrence"]) - 0.93) < 1e-9, _g.to_dict())
+check("a height-admitted merged peak keeps admitted_by='height'",
+      mGH[mGH["neutral_formula"] == "C10H16O4"].iloc[0]["admitted_by"] == "height")
+
+# backward compatibility: per-file ledgers written before the gate existed have
+# neither column. They must still merge, with the admission columns present and
+# empty rather than the merge failing on a missing key.
+mOld, jOld = AB.align({"A": A, "B": B}, tol_ppm=6.0)          # A/B: the old 5-column schema
+check("a frame WITHOUT the admission columns still merges (3 clusters, as before)",
+      len(mOld) == 3 and len(jOld) == 4, (len(mOld), len(jOld)))
+check("...and the merged schema still carries both columns, all-null",
+      {"admitted_by", "occurrence"} <= set(mOld.columns)
+      and mOld["admitted_by"].isna().all() and mOld["occurrence"].isna().all(),
+      mOld[["admitted_by", "occurrence"]].to_dict("records"))
+# mixed: one old-schema file, one new -> the new file's provenance still lands
+mMix, _ = AB.align({"old": m0([(264.0361, "C8H10O6", "[M-H]-", "Candidate", 0.60)]),
+                    "new": G}, tol_ppm=6.0)
+check("old + new schema in one merge: the new file's row wins and keeps its provenance",
+      len(mMix) == 1 and mMix.iloc[0]["admitted_by"] == "occurrence", mMix.to_dict("records"))
+
+
 # ---------------------------------------------------------------------------
 # the SELECTION block end to end through run(): the per-sample assign and the IO
 # layer are stubbed, so this exercises the real selector -> summary -> CSV path.
