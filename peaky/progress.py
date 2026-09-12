@@ -62,7 +62,11 @@ PHASE_LABEL = {
 # --------------------------------------------------------------------------- #
 RE_ASSIGNING = re.compile(r"^\[assign_batch\] \((\d+)/(\d+)\) assigning (\S+)")
 RE_SAMPLE_DONE = re.compile(r"^\[assign_batch\] \((\d+)/(\d+)\) done (\S+)")
-RE_PARALLEL = re.compile(r"^\[assign_batch\] parallel: (\d+) worker processes .*over (\d+) samples")
+# the sample count is OPTIONAL on purpose: losing it costs an early samples bar,
+# but failing to match the banner at all would let replayed worker stage lines
+# drive the stage bar, which is the one thing parallel mode must never do.
+RE_PARALLEL = re.compile(r"^\[assign_batch\] parallel: (\d+) worker processes"
+                         r"(?:.*?\bover (\d+) samples)?")
 RE_ASSIGN_DONE = re.compile(r"^\[assign_batch\] DONE: \d+ merged M0")
 RE_STAGE = re.compile(r"^\[run\] (\S+) took ([\d.]+)s")
 RE_PHASE = re.compile(r"^\[phase\] (\w+)")
@@ -190,7 +194,8 @@ class ProgressState:
             # being live here. Freeze the stage bar rather than animate a lie.
             self._start_assign_clock()
             self.parallel = int(m.group(1))
-            self.n_samples = int(m.group(2))
+            if m.group(2):          # "... over N samples": nothing else says N
+                self.n_samples = int(m.group(2))
             self.phase = "assign"
             self.current_sid = ""
             self.stage_idx, self.stage_name = 0, ""

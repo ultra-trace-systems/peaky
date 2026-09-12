@@ -69,6 +69,14 @@ par.feed("[assign_batch] (1/6) done kZ9")
 check("parallel 'done' does not name a CURRENT sample (it is the one that just ended)",
       par.samples_done == 1 and par.current_sid == "")
 
+# a banner whose "over N samples" tail was reworded away still has to FREEZE the
+# stage bar -- an early samples bar is worth less than not animating a lie
+par2 = PG.ProgressState(title="t")
+par2.feed("[assign_batch] parallel: 4 worker processes (match-workers/proc=3)")
+par2.feed("[run] pass0 took 1.0s")
+check("a banner without the sample count still switches to parallel mode",
+      par2.parallel == 4 and par2.stage_idx == 0 and par2.n_samples == 0)
+
 # `peaky assign` logs no 'assigning' line at all: the stage lines are the cue
 one = PG.ProgressState(title="t", n_samples=1)
 one.feed("[run] pass0 took 0.2s")
