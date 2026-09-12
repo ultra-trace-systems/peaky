@@ -970,7 +970,13 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
 #     Y's OWN labelled adduct is weak relative to its protonated form
 #     (I[Y+^NH4] < own_adduct_max x I[Y+H]) -- a genuine oxygenate in this source
 #     shows its adduct at >= its protonated form; otherwise the row keeps Y and
-#     gets the ambiguity note. Relabelled rows stay visible (Assigned ->
+#     gets the ambiguity note. When Y has NO protonated form at all there is
+#     nothing to measure its adduct against, and the fallback is parent-relative:
+#     the row is relabelled only while it is <= own_adduct_max x the PARENT's
+#     adduct, i.e. a minor satellite of X. That fallback applies ONLY in the
+#     no-[Y+H]+ case -- a Y that has a protonated form is judged on the weakness
+#     gate alone, which is what protects a genuine oxygenate sitting next to a
+#     bright hydrate. Relabelled rows stay visible (Assigned ->
 #     Candidate). A second water loss is annotated, never relabelled.
 
 
@@ -1112,7 +1118,14 @@ def relabel_ammonium_dehydration(ledger: pd.DataFrame, *, adduct: str = "[M+^NH4
                             and _norm_formula(ledger.at[j, "neutral_formula"]) == Y),
                            default=0.0)
                 weak_own = h_yh > 0 and height(k) < own_adduct_max * h_yh
-                if weak_own or height(k) <= own_adduct_max * hX:
+                # the parent-relative fallback is ONLY for a Y with no protonated
+                # form of its own: with no [Y+H]+ there is nothing to measure the
+                # adduct against, so the evidence left is that the row is a minor
+                # satellite of the parent's adduct. A Y that HAS a [M+H]+ is judged
+                # on the weakness gate alone -- otherwise a genuine oxygenate whose
+                # adduct is healthy (0.6x its own protonated form) would still be
+                # eaten by any brighter hydrate parent next to it.
+                if weak_own or (h_yh <= 0 and height(k) <= own_adduct_max * hX):
                     set_alias(k, X, "[M+^NH4-H2O]+",
                               f"re-read as the in-source dehydration [M+^NH4-H2O]+ of {X} "
                               f"(was {Y} [M+^NH4]+, the same ion): {basis}; {Y}'s own "

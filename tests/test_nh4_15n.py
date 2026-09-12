@@ -380,3 +380,37 @@ def test_library_labels_the_reagent_made_acetamide_and_context_opens_organosulfu
     assert "organosulfur" in ctx.pass3_families
     assert X.CONTAMINANT_FAMILIES["organosulfur"]["add"] == {"S": (1, 2)}
     assert "C5H12N2S" in D._known_species("positive")["indoor_sulfur"]
+
+
+def test_dehydration_relabel_keeps_a_genuine_oxygenate_that_has_a_protonated_form():
+    """The own-adduct-weakness gate is what protects a genuine oxygenate, so the
+    parent-relative fallback must stay confined to the no-[Y+H]+ case. Y here has
+    a bright protonated form and a healthy adduct (0.6x it) -- NOT weak -- but its
+    adduct is only 0.3x the hydrate's, so an unconditional parent-relative OR
+    would relabel it onto X and delete the oxygenate the gate exists to keep."""
+    Xh, Y = "C6H12O2", "C6H10O"
+    rows = [
+        ("p1", C.ion_mz(Xh, "[M+^NH4]+"), 200_000, Xh, "[M+^NH4]+"),
+        ("p2", C.ion_mz(Xh, "[M+H]+"), 20_000, Xh, "[M+H]+"),       # declustering product
+        ("p3", C.ion_mz(Y, "[M+H]+"), 100_000, Y, "[M+H]+"),        # == Xh [M+H-H2O]+
+        ("p4", C.ion_mz(Y, "[M+^NH4]+"), 60_000, Y, "[M+^NH4]+"),   # == Xh [M+^NH4-H2O]+
+    ]
+    led = _ledger(rows)
+    out = cleanup.relabel_ammonium_dehydration(led, log=lambda *a: None)
+    at = lambda pid, col: led.loc[led["peak_id"] == pid, col].iloc[0]
+    assert (at("p4", "neutral_formula"), at("p4", "adduct")) == (Y, "[M+^NH4]+")
+    assert (at("p3", "neutral_formula"), at("p3", "adduct")) == (Y, "[M+H]+")
+    assert "ambiguity" in str(at("p4", "tier_reason"))
+    assert "ambiguity" in str(at("p3", "tier_reason"))
+    assert out["nh4_deh_relabeled"] == 0 and out["nh4_deh_committed"] == 0
+    assert out["nh4_deh_ambiguous"] == 2
+
+    # ... and the fallback still fires when Y has NO protonated form: the same
+    # 60 kcps adduct row, now with nothing of its own to be measured against, is
+    # a minor satellite (0.3x) of the parent's adduct and is re-read onto Xh.
+    led2 = _ledger([r for r in rows if r[0] != "p3"])
+    out2 = cleanup.relabel_ammonium_dehydration(led2, log=lambda *a: None)
+    at2 = lambda pid, col: led2.loc[led2["peak_id"] == pid, col].iloc[0]
+    assert (at2("p4", "neutral_formula"), at2("p4", "adduct")) == (Xh, "[M+^NH4-H2O]+")
+    assert "no protonated form" in str(at2("p4", "commentary"))
+    assert out2["nh4_deh_relabeled"] == 1

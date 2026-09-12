@@ -248,7 +248,7 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
 | `NH4_15N.ranges` | `C0-40 H0-90 N0-6 O0-15 S0-2` | ¹⁵N-ammonium grid box (uronium-like positive box) |
 | `NH4_15N.purity` | 0.98 | ¹⁵N fraction of the ammonium reagent — measured 0.018–0.021 ¹⁴N/¹⁵N on the 2026-09-10 file (= nominal 98 atom %). Same two consumers as `NO3_15N.purity` |
 | `_AMMONIUM_15N_KEY` | `ammonium15N` | cluster-library key for `[M+^NH4]+` sources: `[(^NH3)n+H]+` n≤4, hydrates k≤3, + the ¹⁴N monomer twin |
-| `relabel_ammonium_dehydration` `ppm` / `own_adduct_max` / ceiling | 4.0 / 0.5 / 1.5× | dehydration-site match window; the alkene reading is re-read only while its OWN `[M+^NH4]+` is < 0.5× its `[M+H]+`, and never when the product is brighter than 1.5× the parent's strongest form |
+| `relabel_ammonium_dehydration` `ppm` / `own_adduct_max` / ceiling | 4.0 / 0.5 / 1.5× | dehydration-site match window; the alkene reading is re-read only while its OWN `[M+^NH4]+` is < 0.5× its `[M+H]+` (or, when it has no `[M+H]+` at all, ≤ 0.5× the parent's adduct), and never when the product is brighter than 1.5× the parent's strongest form |
 
 ---
 
