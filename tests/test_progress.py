@@ -360,6 +360,22 @@ for bad in (None, "oops", 42, ["x"]):
         ok = False
     check(f"finish({bad!r}) / phase(None) never raise (not-a-dict -> no stats)", ok)
 
+
+class _BadStr:
+    """The only thing the outer try/except in finish()/phase() actually buys:
+    an argument that raises while being turned into text."""
+    def __str__(self): raise RuntimeError("__str__ exploded")
+
+
+try:
+    fin = PG.Reporter("t", log=seen.append, ui=_Boom())
+    fin.phase(_BadStr())
+    fin.finish({"merged_M0": 1}, error=_BadStr())
+    ok = True
+except Exception:           # noqa: BLE001
+    ok = False
+check("an argument whose __str__ raises cannot break the run either", ok)
+
 def _bad_log(*a, **k): raise RuntimeError("log exploded")
 try:
     PG.Reporter("t", log=_bad_log, ui=None)("x")
