@@ -108,6 +108,46 @@ lj = M.list_jobs()
 check("list_jobs lists both", len(lj["jobs"]) == 2, lj)
 M.JOBS = _saved
 
+# ---------- the batch tool actually FORWARDS its selection budget ----------
+# The job runs for real here, with the pipeline stubbed, so a k_max that never
+# left the tool signature is caught.
+from types import SimpleNamespace  # noqa: E402
+from peaky import pipeline as PL  # noqa: E402
+
+_seen_kw = {}
+_orig_run_batch = PL.run_batch
+
+
+def _fake_run_batch(**kw):
+    _seen_kw.update(kw)
+    return {"ctx": SimpleNamespace(out_dir="/tmp/peaky-mcp-test", run_id="rid"),
+            "report_pdf": None, "assign": {"merged_M0": 3}}
+
+
+PL.run_batch = _fake_run_batch
+_saved = M.JOBS
+M.JOBS = M.JobManager()
+try:
+    rj = M.run_batch("some batch", dataset="A", reagent="Ur", k_max=7)
+    for _ in range(100):
+        if M.JOBS.get(rj["job_id"]).status in ("done", "error"):
+            break
+        time.sleep(0.02)
+    _job = M.JOBS.get(rj["job_id"])
+    check("run_batch job completes with the pipeline stubbed",
+          _job.status == "done", _job.view())
+    check("run_batch forwards k_max to pipeline.run_batch",
+          _seen_kw.get("k_max") == 7, _seen_kw)
+    check("run_batch forwards the batch/dataset/reagent it was called with",
+          (_seen_kw.get("batch"), _seen_kw.get("dataset"), _seen_kw.get("reagent"))
+          == ("some batch", "A", "Ur"), _seen_kw)
+    check("run_batch records k_max in the job's params (visible in job_status)",
+          M.JOBS.get(rj["job_id"]).view()["params"]["k_max"] == 7,
+          M.JOBS.get(rj["job_id"]).view().get("params"))
+finally:
+    PL.run_batch = _orig_run_batch
+    M.JOBS = _saved
+
 # ---------- build_server degrades cleanly without the mcp package ----------
 try:
     import mcp.server.fastmcp  # noqa: F401

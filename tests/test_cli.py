@@ -125,6 +125,79 @@ with tempfile.TemporaryDirectory() as d:
           os.path.exists(out) and "<html" in Path(out).read_text(encoding="utf-8"))
     check("--env sets MASCOPE_ENV", os.environ.get("MASCOPE_ENV") == os.path.join(d, "creds.env"))
 
+# ---- reach-through: the parsed flags actually reach the pipeline ------------
+# The checks above are parse-only, so swapping two flags in cmd_batch would pass.
+# Drive the real cmd_* with the credential check and the pipeline stubbed, and
+# read back the kwargs the command handed over.
+from peaky import pipeline as PL  # noqa: E402
+from peaky.assignment import assign as _A  # noqa: E402
+
+_seen = {}
+_saved = {"require": cli._require_creds, "run_batch": PL.run_batch,
+          "run_pooled": PL.run_pooled_batches, "assign_run": _A.run}
+
+
+def _rec(name):
+    def f(**kw):
+        _seen[name] = kw
+        return {"ctx": SimpleNamespace(out_dir="/tmp/peaky-test-run", run_id="rid")}
+    return f
+
+
+class _StopAssign(Exception):
+    """Cut cmd_assign off right after it builds the config."""
+
+
+def _capture_cfg(sample_id, context="ambient-air", *, cfg=None, **kw):
+    _seen["assign"] = {"sample_id": sample_id, "context": context, "cfg": cfg, **kw}
+    raise _StopAssign
+
+
+cli._require_creds = lambda: None
+PL.run_batch, PL.run_pooled_batches = _rec("batch"), _rec("pool")
+_A.run = _capture_cfg
+try:
+    cli.cmd_batch(P.parse_args(["batch", "--batch", "B", "--dataset", "D",
+                                "--k-max", "12", "--k-min", "4", "--min-gain", "0.02"]))
+    check("cmd_batch forwards k_max / k_min / min_gain to pipeline.run_batch",
+          (_seen["batch"]["k_max"], _seen["batch"]["k_min"], _seen["batch"]["min_gain"])
+          == (12, 4, 0.02), _seen.get("batch"))
+    cli.cmd_batch(P.parse_args(["batch", "--batch", "B"]))
+    check("cmd_batch forwards the sampling DEFAULTS when no flag is given",
+          (_seen["batch"]["k_max"], _seen["batch"]["k_min"], _seen["batch"]["min_gain"])
+          == (_SS.K_MAX, _SS.K_MIN, _SS.MIN_GAIN), _seen.get("batch"))
+    cli.cmd_pool(P.parse_args(["pool", "--batches", "chamber.*", "--k-max", "9",
+                               "--k-min", "5", "--min-gain", "0.03"]))
+    check("cmd_pool forwards k_max / k_min / min_gain to run_pooled_batches",
+          (_seen["pool"]["k_max"], _seen["pool"]["k_min"], _seen["pool"]["min_gain"])
+          == (9, 5, 0.03), _seen.get("pool"))
+    check("cmd_pool forwards --group-by too (the knobs are not positional luck)",
+          _seen["pool"]["group_by"] == "sample_batch_name", _seen.get("pool"))
+    with tempfile.TemporaryDirectory() as _d:
+        try:
+            cli.cmd_assign(P.parse_args(["assign", "--sample-id", "X", "--reagent", "Br",
+                                         "--height-cutoff-x-edge", "2.5",
+                                         "--output-dir", _d]))
+            check("cmd_assign reaches assign.run", False, "no call")
+        except _StopAssign:
+            _cfg = _seen["assign"]["cfg"]
+            check("cmd_assign passes --height-cutoff-x-edge into the PassConfig",
+                  _cfg.height_cutoff_x_edge == 2.5 and _cfg.height_cutoff_cps is None,
+                  vars(_cfg) if _cfg is not None else None)
+        try:
+            cli.cmd_assign(P.parse_args(["assign", "--sample-id", "X", "--reagent", "Br",
+                                         "--height-cutoff", "250", "--output-dir", _d]))
+        except _StopAssign:
+            _cfg = _seen["assign"]["cfg"]
+            check("cmd_assign passes --height-cutoff as the ABSOLUTE override",
+                  _cfg.height_cutoff_cps == 250.0 and _cfg.height_cutoff == 250.0,
+                  vars(_cfg) if _cfg is not None else None)
+finally:
+    cli._require_creds = _saved["require"]
+    PL.run_batch, PL.run_pooled_batches = _saved["run_batch"], _saved["run_pooled"]
+    _A.run = _saved["assign_run"]
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 
