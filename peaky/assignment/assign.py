@@ -360,6 +360,14 @@ def run(sample_id: str, context: str = "ambient-air", *,
 
     raw = io_mascope.fetch_peaks(client, sample_id, use_cache=use_cache)
     led = ledger.new_ledger(raw)
+    # The sample's noise edge (p1 of its picked heights) anchors every height
+    # gate in the passes (cfg.height_cutoff = x_edge * edge): absolute cps
+    # thresholds do not transfer between instruments/modes (see passes.config).
+    cfg.noise_edge_cps = passes.noise_edge(led["height"]) if "height" in led.columns else None
+    log(f"[run] noise edge {cfg.noise_edge_cps if cfg.noise_edge_cps is None else round(cfg.noise_edge_cps, 3)} cps "
+        f"-> height_cutoff {cfg.height_cutoff:.3g} cps "
+        + ("(absolute override)" if cfg.height_cutoff_cps is not None
+           else f"({cfg.height_cutoff_x_edge:g}x edge)"))
     # Adducts are normally detected from the sample's own server matches (the
     # SKILL design rule for mixed-reagent datasets). But a batch with a KNOWN
     # reagent can pass `adducts=` to force the analyte channels: per-sample match
@@ -455,6 +463,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
     if problems:
         log(f"[run] LEDGER VALIDATION PROBLEMS: {problems}")
     st = ledger.stats(led)
+    st["noise_edge_cps"] = cfg.noise_edge_cps
+    st["height_cutoff_cps"] = cfg.height_cutoff
     log(f"[run] stats {json.dumps(st)}")
     return {"ledger": led, "stats": st, "summaries": summaries,
             "prescan": pre.as_dict(), "problems": problems,
@@ -470,7 +480,8 @@ def main(argv=None):
     ap.add_argument("--context", default="ambient-air")
     ap.add_argument("--ppm", type=float, default=1.0)
     ap.add_argument("--search-ppm", type=float, default=3.0)
-    ap.add_argument("--height-cutoff", type=float, default=100.0)
+    ap.add_argument("--height-cutoff", type=float, default=None,
+                    help="absolute cps override; default = 1x the sample's noise edge")
     ap.add_argument("--no-cache", action="store_true")
     ap.add_argument("--no-pass2", action="store_true")
     ap.add_argument("--no-pass3", action="store_true")
@@ -478,7 +489,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     cfg = passes.PassConfig(ppm=args.ppm, search_ppm=args.search_ppm,
-                            height_cutoff=args.height_cutoff)
+                            height_cutoff_cps=args.height_cutoff)
     out = run(args.sample_id, args.context, cfg=cfg, use_cache=not args.no_cache,
               do_pass2=not args.no_pass2, do_pass3=not args.no_pass3)
     # report.py will own file outputs; for now write the ledger + manifest

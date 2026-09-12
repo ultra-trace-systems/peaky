@@ -606,7 +606,7 @@ def commit(led, pid, neutral, ion, conf="Good", score=0.9):
                         pass_no=3, method="test", confidence=conf,
                         commentary="t")
 
-ACFG = P.PassConfig(height_cutoff=100.0)
+ACFG = P.PassConfig(height_cutoff_cps=100.0)
 
 # v16 case: 462.99/464.99 — two Good M0s 1.99795 apart, ~1:1; light ion has Br
 led = mk_ledger([("La", 462.9933, 26882.0), ("Hb", 464.9913, 25609.0),
@@ -621,7 +621,7 @@ check("audit: 13C satellite swept up as evidence",
 
 # doublet where NEITHER formula carries Br -> both cleared, but ONLY in Br-CIMS
 # (where a ~1:1 1.998 doublet is strong evidence of an unassigned bromine).
-ACFG_BR = P.PassConfig(height_cutoff=100.0, reagent_element="Br")
+ACFG_BR = P.PassConfig(height_cutoff_cps=100.0, reagent_element="Br")
 led = mk_ledger([("Lc", 284.0501, 641.0), ("Hd", 286.0480, 543.0)])
 commit(led, "Lc", "C9H20NO4", "C9H20NO4-")    # no Br anywhere
 commit(led, "Hd", "C14H10O3", "C15H10O6-")
@@ -1583,7 +1583,7 @@ L.commit_assignment(led_i2, "ino2", neutral_formula="INO2", adduct="[M+I]-",
                     pass_no=0, method="known:reactive-iodine",
                     confidence="High", commentary="pass 0")
 L.lock_peaks(led_i2, ["ino2"])
-ICFG = P.PassConfig(height_cutoff=100.0, reagent_element="I")
+ICFG = P.PassConfig(height_cutoff_cps=100.0, reagent_element="I")
 s_i2 = P._resolve_acid_i2_clusters(None, "S", led_i2, PROF5, ICFG,
                                    score_fn=fake_i2_score, log=lambda *a: None)
 check("acid.I2 resolver commits both rungs", s_i2["committed"] == 2, s_i2)

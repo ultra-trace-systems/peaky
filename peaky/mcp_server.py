@@ -240,10 +240,12 @@ def certify_neutrals(ledger_csv: str, reagent: str = "auto",
 # long-running pipeline tools (background jobs)
 # --------------------------------------------------------------------------- #
 def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
-                  height_cutoff: float = 100.0, output_dir: str = "") -> dict:
+                  height_cutoff: float | None = None, output_dir: str = "") -> dict:
     """Assign one sample (multi-pass). Returns a job_id immediately; poll
     `job_status`. On completion the result carries the assignment counts, top
-    species, and the written ledger CSV path."""
+    species, and the written ledger CSV path. `height_cutoff` is an ABSOLUTE cps
+    override of the height-gated passes; default = 1x the sample's own noise
+    edge (instrument-independent)."""
     out_dir = os.path.expanduser(output_dir or os.path.join(_OUT_DEFAULT, "mcp-assign"))
 
     def work(log):
@@ -253,7 +255,7 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
         rp = profiles.resolve(reagent) if reagent != "auto" else None
         adducts = list(rp.adducts) if rp else None
         ctx = context or (rp.context if rp else "ambient-air")
-        cfg = passes.PassConfig(height_cutoff=height_cutoff)
+        cfg = passes.PassConfig(height_cutoff_cps=height_cutoff)
         res = assign.run(sample_id, ctx, cfg=cfg, adducts=adducts, log=log,
                          label_purity=getattr(rp, "purity", None))
         led = res["ledger"]
@@ -275,18 +277,19 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
 
 
 def run_batch(batch: str, dataset: str = "", reagent: str = "auto",
-              select: str = "representative", subject: str = "",
+              k_max: int = 30, subject: str = "",
               output_dir: str = "") -> dict:
-    """Run the whole-batch pipeline (assign subset -> merge -> cluster -> Van
-    Krevelen -> PDF). Returns a job_id immediately; poll `job_status`. On
-    completion the result carries the versioned run folder + the PDF/merged-
-    ledger paths and the batch summary."""
+    """Run the whole-batch pipeline (assign the presence-cover subset -> merge ->
+    cluster -> Van Krevelen -> PDF). Returns a job_id immediately; poll
+    `job_status`. On completion the result carries the versioned run folder + the
+    PDF/merged-ledger paths and the batch summary (incl. `selection`: achieved
+    coverage + stop reason). `k_max` is the sample budget (default 30)."""
     base_out = os.path.expanduser(output_dir or _OUT_DEFAULT)
 
     def work(log):
         from peaky import pipeline as PL
         res = PL.run_batch(batch=batch, dataset=dataset or None, reagent=reagent,
-                           base_out=base_out, select=select,
+                           base_out=base_out, k_max=k_max,
                            subject=subject or None, log=log)
         ctx = res.get("ctx")
         run_dir = getattr(ctx, "out_dir", None)
@@ -300,7 +303,7 @@ def run_batch(batch: str, dataset: str = "", reagent: str = "auto",
 
     jid = JOBS.submit("run_batch", work,
                       {"batch": batch, "dataset": dataset, "reagent": reagent,
-                       "select": select, "output_dir": base_out})
+                       "k_max": k_max, "output_dir": base_out})
     return {"job_id": jid, "status": "queued",
             "note": "batch pipeline runs many minutes; poll job_status(job_id)."}
 

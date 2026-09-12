@@ -38,15 +38,14 @@ and auditable.
 ## Sample selection (batch)
 
 `match_compounds` scores against one real server sample's peaks, so a whole-batch
-assignment assigns a **subset of samples** and merges by m/z. Two strategies:
-
-- **`representative` (default)** — 5 samples evenly spaced in *time* + the max-TIC
-  sample. Catches analytes that appear/disappear over the run.
-- **`brightest`** (`--select brightest`) — bin *all* batch peaks by m/z and assign
-  each significant bin's *brightest* sample. Coverage tracks where analyte signal
-  actually is (a reagent-CIMS max-TIC pick is dominated by the reagent ion and
-  misses the analyte burst). A coverage play, not a speed play. Same merge, same
-  outputs — only *which* samples get assigned changes.
+assignment assigns a **subset of samples** and merges by m/z. The subset is a
+greedy **presence set-cover** over the batch's m/z bins (bins present in ≥ 2
+samples, no height floor; each pick covers the most not-yet-covered bins; stop
+when the next pick adds < 0.5 %, after at least 6 picks; `--k-max` 30 is a
+flagged budget). Because the merge keeps whatever any assigned sample contained,
+this selection is what decides recall — see [`SAMPLING.md`](SAMPLING.md) for the
+measurements. Same merge, same outputs; `batch_summary.json['selection']` records
+the achieved coverage and why the selection stopped.
 
 ## The pass sequence
 

@@ -20,8 +20,8 @@ shared by the writers and the report reader so the filenames can't drift.
 | Artifact | What it is / what it's for |
 |---|---|
 | `merged_ledger.csv` | **The result.** Every merged peak (one row each): role, neutral formula + adduct, scores, ppm, confidence, tier, provenance. The provenance anchor. |
-| `run_manifest.json` | **Reproducibility manifest.** Pins the run to its exact code (package + per-module version + content hash + git commit), input-data hash (`ts_sha1`), resolved config (incl. `select` / `coverage_target`), and output hash (`merged_ledger_sha1`). |
-| `batch_summary.json` | Run counts + per-file calibration offsets (M0/tier counts, n_files, offsets) and the selection strategy used (`select`, `coverage_target`). |
+| `run_manifest.json` | **Reproducibility manifest.** Pins the run to its exact code (package + per-module version + content hash + git commit), input-data hash (`ts_sha1`), resolved config (incl. `height_cutoff_x_edge`), the selection block under `counts`, and output hash (`merged_ledger_sha1`). |
+| `batch_summary.json` | Run counts + per-file calibration offsets (M0/tier counts, n_files, offsets; per-file `noise_edge_cps` + resolved `height_cutoff_cps`) and the **`selection`** block: `k`, `n_bins`, `achieved_coverage`, `stop_reason` (`gain-floor` / `k_max` / `exhausted`), `next_gain`, `k_min`/`k_max`/`min_gain` (+ `coverage_by_group` for a pool). |
 | `per_file/<sid>_ledger.csv` | The full single-sample ledger for **each** assigned sample, kept for audit / re-merge. |
 | `index.jsonl` | **At the `--out-dir` base, not inside the run folder.** Cross-run registry — one compact row per run, loadable with `pandas.read_json(lines=True)` to find or diff runs. |
 
@@ -41,7 +41,7 @@ shared by the writers and the report reader so the filenames can't drift.
 
 | Artifact | What it is |
 |---|---|
-| `selected_samples.csv` | Which samples were assigned + why: a `role` (`time-grid` / `max-TIC`, or `coverage-winner` for `--select brightest`) and `bins_won` (significant m/z bins the sample is brightest for). |
+| `selected_samples.csv` | Which samples were assigned + why, in pick order: `pick`, `role` (`cover` = a greedy pick, `pad` = richest-TIC pad up to `k_min`), `bins_new` (m/z bins this pick covered first — its marginal gain) and `coverage` (cumulative fraction of the batch's bins covered). |
 | `jitter.csv` | Per-(cluster, file) mass-jitter table — raw vs calibration-adjusted ppm spread of each merged assignment. |
 | `van_krevelen_full_<tag>.csv` | The full-VK data behind the figure (one row per assigned neutral). |
 | `clusters_changing_<tag>.csv` / `.xlsx` | Cluster membership; the XLSX has one tab per cluster (formula / channel / m/z / match_score / tier). |

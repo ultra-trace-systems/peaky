@@ -4,12 +4,32 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from peaky.assignment import masscal
 
 
 __all__ = [
     "PassConfig",
+    "noise_edge",
 ]
+
+NOISE_EDGE_Q = 0.01   # the sample's noise edge = this quantile of its picked heights
+
+
+def noise_edge(heights, q: float = NOISE_EDGE_Q) -> float | None:
+    """The sample's peak-picker detection edge: the `q` quantile (1st percentile)
+    of its picked peak heights. This is the only height scale that transfers
+    between instruments and modes -- measured 0.8 cps on a TOF, 9-11 cps on
+    Orbitrap EasyIC modes, 140-180 cps on a urea 122-600 mode and 640-870 cps
+    with the reagent ion in range (an ~1000x spread, stable to 2-16 % within one
+    mode across weeks). Every height threshold in the passes is a multiple of it.
+    None when there are no finite heights."""
+    h = np.asarray(heights, dtype=float)
+    h = h[np.isfinite(h)]
+    if h.size == 0:
+        return None
+    return float(np.percentile(h, 100.0 * q))
 
 
 @dataclass
@@ -24,7 +44,19 @@ class PassConfig:
     # can never be scored); match_compounds keeps its 5 ppm window so it still
     # attributes real 29Si/81Br satellites, and the z-gate owns ppm rejection.
     search_ppm: float = 3.0  # grid enumeration tolerance
-    height_cutoff: float = 100.0
+    # Height gate for the height-gated passes (ladders, siloxane, residual,
+    # reflist rescue, isotope-satellite checks). Expressed as a MULTIPLE of the
+    # sample's own noise edge (`noise_edge`: the 1st percentile of its picked
+    # heights, stamped onto `noise_edge_cps` by assign.run) -- an absolute cps
+    # value was a no-op on modes whose edge sits above it and blinded the passes
+    # on modes whose edge sits far below it (EasyIC: 87 % of picked peaks under
+    # the old 100 cps; TOF: 97 %). 1.0 = every picked peak but the bottom 1 % is
+    # eligible. `height_cutoff_cps` is an explicit ABSOLUTE override (offline
+    # callers / tests); when set it wins. Read the resolved value via the
+    # `height_cutoff` property.
+    height_cutoff_x_edge: float = 1.0
+    height_cutoff_cps: float | None = None
+    noise_edge_cps: float | None = None   # runtime: set per sample by assign.run
     limit_per_peak: int = 25
     workers: int = 12
     # confidence thresholds (on the RAW min(ion,compound) score)
@@ -124,3 +156,14 @@ class PassConfig:
     # the run's context-active reference lists (reflists.active_lists).
     reflist_formulas: frozenset = frozenset()
     reflist_prior: float = 0.04
+
+    @property
+    def height_cutoff(self) -> float:
+        """The resolved height gate in cps: the absolute override if given, else
+        `height_cutoff_x_edge` x the sample's noise edge; 0.0 (no gate) before
+        assign.run has stamped an edge."""
+        if self.height_cutoff_cps is not None:
+            return float(self.height_cutoff_cps)
+        if self.noise_edge_cps is not None:
+            return float(self.height_cutoff_x_edge) * float(self.noise_edge_cps)
+        return 0.0

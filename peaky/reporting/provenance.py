@@ -33,6 +33,7 @@ __version__ = "0.1.0"
 # carry them as the record of the run's calibration centre, so removing them would
 # be a manifest schema change rather than a fix.
 _RUNTIME_CFG_FIELDS = ("mechanism_ids", "prior_offset", "reagent_element",
+                       "noise_edge_cps",
                        "cal_a", "cal_b", "cal_sigma_trend",
                        "cal_mz_lo", "cal_mz_hi")
 

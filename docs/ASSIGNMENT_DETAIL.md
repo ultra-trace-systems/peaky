@@ -421,13 +421,11 @@ Soft and provenance-tagged (every commit records the source list); only `ROLE_UN
 
 ## 6. Batch Pipeline (assign_batch.py + sampling.py)
 
-`assign_batch.run(...)` assigns a representative subset SEPARATELY, then offset-aware merges their M0 peaks into a merged ledger.
+`assign_batch.run(...)` assigns a presence-cover subset SEPARATELY, then offset-aware merges their M0 peaks into a merged ledger.
 
 ### 6.1 Sample selection (sampling.py)
 
-**THE RULE — `select_representative_samples(n_time=N_TIME=5, include_max_tic=True)`** (sampling.py:69–117): `N_TIME=5` evenly TIME-spaced samples (both endpoints always included; nearest distinct sample to each `linspace` target) + the max-TIC sample. Falls back to all samples if `n_samples ≤ n_time` or no `datetime_utc`. Adds `role` = `time-grid` / `max-TIC` / `time-grid+max-TIC`.
-
-**COVERAGE — `select_brightest_coverage_samples(coverage_target=0.85, k_max=10, k_min=N_TIME+1=6, height_floor=1000.0)`** (sampling.py:146–213): bins all batch peaks by m/z; a bin is significant if its max height across samples `≥ 1000 cps`; greedily picks samples that are the brightest for the most significant bins until `0.85` of significant bins are covered, bounded `[6, 10]`; pads with richest remaining; adds time-grid endpoints. Role = `coverage-winner` / `time-grid` / `coverage+time-grid` + `bins_won`.
+**THE RULE — `select_cover_samples(k_min=K_MIN=6, k_max=K_MAX=30, min_gain=MIN_GAIN=0.005, min_prevalence=MIN_PREVALENCE=2, group_col=None)`** (sampling.py): bins all batch peaks by m/z (`timeseries.build_matrix`, 6 ppm); the universe is every bin PRESENT in `≥ 2` samples (no height floor — the picker edge spans ~1000× across instruments/modes); greedily picks the sample holding the most not-yet-covered universe bins; stops when the next pick would add `< 0.5 %` of the universe once `≥ 6` picks are taken (`stop_reason='gain-floor'`), or at the `30`-sample budget (`'k_max'`, warned), or when nothing is left (`'exhausted'`, padded to `k_min` with the richest-TIC samples, `role='pad'`). Returns the picks in order with `pick`, `role` (`cover`/`pad`), `bins_new` (marginal gain), `coverage` (cumulative) and `.attrs['selection']` (k, n_bins, achieved_coverage, stop_reason, next_gain; `coverage_by_group`/`picks_by_group` when `group_col` is given — the pool path). Fewer than `k_min` samples → all taken. Deterministic. See `docs/SAMPLING.md` for the measurements behind each choice.
 
 ### 6.2 Offset-aware merge (assign_batch.align, assign_batch.py:52–107)
 

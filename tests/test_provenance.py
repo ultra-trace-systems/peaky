@@ -49,8 +49,10 @@ check("input hashes the ts parquet (== streaming sha1) + records provenance",
 check("output hashes merged_ledger.csv + carries counts",
       m["output"]["merged_ledger_sha1"] and m["output"]["counts"]["merged_M0"] == 42)
 check("config fingerprint keeps user knobs, drops run-derived fields",
-      m["config"].get("height_cutoff") == 100.0 and m["config"].get("ppm") == 1.0
-      and "mechanism_ids" not in m["config"] and "prior_offset" not in m["config"])
+      m["config"].get("height_cutoff_x_edge") == 1.0 and m["config"].get("ppm") == 1.0
+      and "height_cutoff_cps" in m["config"]
+      and "mechanism_ids" not in m["config"] and "prior_offset" not in m["config"]
+      and "noise_edge_cps" not in m["config"], m["config"])
 
 # passes.calibrate writes the fitted mass trend back onto the SHARED cfg, so the
 # last sample's data-derived numbers would otherwise land in the fingerprint and

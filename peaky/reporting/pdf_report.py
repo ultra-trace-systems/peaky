@@ -516,7 +516,9 @@ def cover(ctx, pdf):
     batch = ctx.get("batch_name") or ctx["label"]
     fig.text(0.08, 0.93, "Peak Assignment Report", fontsize=20, weight="bold", color=INK)
     fig.text(0.08, 0.895, batch, fontsize=14, color=INK)
+    _bsel = (ctx.get("batch") or {}).get("selection") or {}
     _pipe = ("single-sample" if ctx.get("n_files", 1) <= 1
+             else "presence-cover" if _bsel.get("method") == "presence-cover"
              else "brightest-coverage" if str(ctx.get("batch", {}).get("select")) == "brightest"
              else "representative-sample")
     fig.text(0.08, 0.872, f"{ctx['label']} · {_pipe} pipeline", fontsize=11, color=GREY)
@@ -561,9 +563,18 @@ def cover(ctx, pdf):
                              f"{rf['analyte']*100:.0f}%,  reagent ion {rf['reagent']*100:.0f}%,  "
                              f"unexplained {rf['unexplained']*100:.0f}%")]
     nf = ctx.get("n_files", 1)
+    bsel = (ctx.get("batch") or {}).get("selection") or {}
     sel = str(ctx.get("batch", {}).get("select", "representative"))
     if nf <= 1:
         sel_txt = "Single sample assigned (no merge)."
+    elif bsel.get("method") == "presence-cover":
+        sel_txt = (f"{nf} files: presence set-cover selection — greedy over the "
+                   f"{bsel.get('n_bins', '?')} m/z bins present in ≥{bsel.get('min_prevalence', 2)} "
+                   f"samples (no height floor); {bsel.get('achieved_coverage', 0):.0%} of "
+                   f"them covered, stopped on {bsel.get('stop_reason', '?')}"
+                   + (f" (budget k_max={bsel.get('k_max')} hit while still gaining — "
+                      "coverage is incomplete)" if bsel.get("stop_reason") == "k_max" else "")
+                   + "; merged by m/z.")
     elif sel == "brightest":
         sel_txt = (f"{nf} files: brightest-coverage selection — each significant m/z bin "
                    "assigned in the sample where it is brightest, merged by m/z.")

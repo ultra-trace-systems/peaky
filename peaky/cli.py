@@ -158,7 +158,8 @@ def cmd_assign(args) -> None:
     from peaky.reporting import report
 
     cfg = passes.PassConfig(ppm=args.ppm, search_ppm=args.search_ppm,
-                            height_cutoff=args.height_cutoff)
+                            height_cutoff_cps=args.height_cutoff,
+                            height_cutoff_x_edge=args.height_cutoff_x_edge)
     od = Path(args.output_dir).expanduser()
     od.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
@@ -220,9 +221,8 @@ def cmd_batch(args) -> None:
     res = PL.run_batch(batch=args.batch, dataset=args.dataset, reagent=args.reagent,
                        base_out=resolve_out_dir(args.out_dir), ts=args.ts,
                        subject=args.subject, do_report=not args.no_report,
-                       config=args.reagent_config, select=args.select,
-                       coverage_target=args.coverage_target, k_max=args.k_max,
-                       height_floor=args.height_floor, n_jobs=args.jobs)
+                       config=args.reagent_config, k_min=args.k_min,
+                       k_max=args.k_max, min_gain=args.min_gain, n_jobs=args.jobs)
     ctx = res["ctx"]
     print(f"\n[batch] done -> {ctx.out_dir}")
     if res.get("report_pdf"):
@@ -241,8 +241,8 @@ def cmd_pool(args) -> None:
         group_by=args.group_by, ts=args.ts, subject=args.subject,
         do_report=not args.no_report,
         per_group_reports=not args.no_group_reports, config=args.reagent_config,
-        coverage_target=args.coverage_target, k_max=args.k_max,
-        height_floor=args.height_floor, n_jobs=args.jobs)
+        k_min=args.k_min, k_max=args.k_max, min_gain=args.min_gain,
+        n_jobs=args.jobs)
     ctx = res["ctx"]
     print(f"\n[pool] unified ledger -> {ctx.out_dir}")
     if res.get("report_pdf"):
@@ -623,6 +623,21 @@ def cmd_mcp(args) -> None:
     mcp_server.serve(host=args.host, port=args.port, transport=args.transport)
 
 
+def _add_selection_args(sp) -> None:
+    """The presence-cover selection knobs shared by `batch` and `pool` (see
+    docs/SAMPLING.md). Defaults mirror peaky.batch.sampling.K_MIN/K_MAX/MIN_GAIN."""
+    sp.add_argument("--k-max", type=int, default=30,
+                    help="wall-clock budget: at most this many samples are assigned "
+                         "(default 30). A run that hits it while still gaining is "
+                         "flagged in batch_summary.json['selection'].")
+    sp.add_argument("--k-min", type=int, default=6,
+                    help="assign at least this many samples before the marginal-gain "
+                         "stop applies (default 6)")
+    sp.add_argument("--min-gain", type=float, default=0.005,
+                    help="stop when the next sample would add fewer than this fraction "
+                         "of the batch's m/z bins (default 0.005 = 0.5%%)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="peaky",
@@ -654,7 +669,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="JSON/TOML file registering extra reagent profiles")
     pa.add_argument("--ppm", type=float, default=1.0)
     pa.add_argument("--search-ppm", type=float, default=3.0)
-    pa.add_argument("--height-cutoff", type=float, default=100.0)
+    pa.add_argument("--height-cutoff", type=float, default=None,
+                    help="ABSOLUTE peak-height cutoff (cps) for the height-gated "
+                         "passes; default: relative to the sample's own noise edge "
+                         "(see --height-cutoff-x-edge)")
+    pa.add_argument("--height-cutoff-x-edge", type=float, default=1.0,
+                    help="height cutoff as a multiple of the sample's noise edge "
+                         "(the 1st percentile of its picked peak heights; default 1.0). "
+                         "Instrument-independent: the edge is 0.8 cps on a TOF and "
+                         "~800 cps on a reagent-in-range Orbitrap mode.")
     pa.add_argument("--no-cache", action="store_true")
     pa.add_argument("--no-pass2", action="store_true")
     pa.add_argument("--no-pass3", action="store_true")
@@ -680,17 +703,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="cached full-batch TS parquet (else fetched live from the server)")
     pb.add_argument("--subject", default=None, help="optional subject phrase for the VK title")
     pb.add_argument("--no-report", action="store_true", help="skip the PDF report")
-    pb.add_argument("--select", choices=["representative", "brightest"],
-                    default="representative",
-                    help="sample-selection strategy: 'representative' (5 time-spaced + "
-                         "max-TIC) or 'brightest' (bin all peaks, assign each significant "
-                         "m/z bin's brightest sample — better analyte coverage)")
-    pb.add_argument("--coverage-target", type=float, default=0.85,
-                    help="brightest: fraction of significant m/z bins to cover (default 0.85)")
-    pb.add_argument("--k-max", type=int, default=10,
-                    help="brightest: max number of winner samples to assign (default 10)")
-    pb.add_argument("--height-floor", type=float, default=1000.0,
-                    help="brightest: a bin is significant if its max height >= this (cps)")
+    _add_selection_args(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "
@@ -726,13 +739,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="skip every PDF report (assignment + merge only)")
     pp.add_argument("--no-group-reports", action="store_true",
                     help="only the whole-pool report; skip the per-group ones")
-    pp.add_argument("--coverage-target", type=float, default=0.90,
-                    help="per group: fraction of significant m/z bins to cover (default 0.90)")
-    pp.add_argument("--k-max", type=int, default=6,
-                    help="per group: max winner samples PER GROUP (default 6; the "
-                         "union across groups is what gets assigned)")
-    pp.add_argument("--height-floor", type=float, default=1000.0,
-                    help="a bin is significant if its max height >= this (cps)")
+    _add_selection_args(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "
                          "(default: physical cores; env PEAKY_JOBS honored)")

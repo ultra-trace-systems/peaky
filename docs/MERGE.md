@@ -108,7 +108,7 @@ All in `peaky/batch/assign_batch.py`.
 | `TIER_RANK` | `{Assigned:2, Candidate:1}` | consensus-row preference (then `ion_score`) |
 | `_M0_COLS` | `[mz, neutral_formula, adduct, tier, ion_score]` | the per-file M0 schema aligned |
 | `run` `amine_r_min` | 0.7 | min trace correlation for the positive amine re-read |
-| `run` `n_time` / `k_max` / `coverage_target` / `height_floor` | 5 / 10 / 0.85 / 1000.0 | passed through to `sampling` (see [`SAMPLING.md`](SAMPLING.md)) |
+| `run` `k_min` / `k_max` / `min_gain` / `min_prevalence` | 6 / 30 / 0.005 / 2 | passed through to `sampling.select_cover_samples` (see [`SAMPLING.md`](SAMPLING.md)) |
 
 ---
 
@@ -135,8 +135,8 @@ All in `peaky/batch/assign_batch.py`.
 | `merged_ledger.csv` (run root) | one row per m/z cluster: consensus mz, best assignment, `n_files`, `srcs`, `formula_agree`, `mz_jitter_ppm_raw/caldj` — **the result** |
 | `tables/jitter.csv` | long form, one row per (cluster, file): `cluster`, `src`, `mz`, formula, adduct, tier, `ion_score` |
 | `per_file/<sid>_ledger.csv` | each assigned file's full single-sample ledger (audit / re-merge) |
-| `tables/selected_samples.csv` | the selected subset (role + bins_won) |
-| `batch_summary.json` (run root) | reagent/context, `select`, per-file offsets, merged tier counts, agreement counts |
+| `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role`, `bins_new`, `coverage`) |
+| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason), per-file offsets + noise edges, merged tier counts, agreement counts |
 | `jitter_report()` dict | `{offsets, by_formula, by_mz, summary}` — the standalone jitter analysis |
 
 ---

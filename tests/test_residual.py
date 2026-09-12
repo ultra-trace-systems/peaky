@@ -13,7 +13,7 @@ from peaky import isotopes as ISO  # noqa: E402
 from peaky.assignment.passes import PassConfig  # noqa: E402
 
 PASS = FAIL = 0
-CFG = PassConfig(height_cutoff=100)
+CFG = PassConfig(height_cutoff_cps=100)
 PROF = X.get_context("ambient-air")
 PRE = ISO.PrescanResult(estimated_max_C=20)
 

@@ -82,8 +82,9 @@ the heavy scoring maths live in [`SCORING.md`](SCORING.md).
    — one row per (sample × peak), enough for the TS/cluster layer.
    `confirm_above=None` never prompts (batches exceed 100 samples).
    `fetch_batch_samples` returns one row per sample
-   (id, name, `datetime_utc`, `tic`, polarity) **without** loading peaks — enough
-   for representative-sample selection.
+   (id, name, `datetime_utc`, `tic`, polarity) **without** loading peaks — the
+   live, valid id list the batch run assigns from (selection itself bins the
+   per-peak `fetch_batch_peaks` table, see `SAMPLING.md`).
 
 4. **Detect adducts** (`detect_adducts`). Read the distinct
    `ionization_mechanism` values off the sample's own matches and reverse-map
@@ -219,7 +220,7 @@ All in `peaky/io/io_mascope.py`.
 | `fetch_batch_samples` | one row per sample in a batch (raw-name literal match) |
 | `fetch_peaks` | single-sample raw peaks (+ matches), cached parquet |
 | `fetch_batch_peaks` | whole-batch peak time series |
-| `fetch_batch_samples` | per-sample table (no peaks) for sample selection |
+| `fetch_batch_samples` | per-sample table (no peaks): the live id list + reagent detection for a batch run |
 | `resolve_mechanism_ids` / `detect_adducts` | mechanism name↔id; infer adduct system |
 | `estimate_offset` | coarse median-ppm offset to seed pre-cal gates |
 | `query_candidates` / `query_candidates_bulk` | cheminfo neutral-formula enumeration |

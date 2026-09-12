@@ -24,7 +24,7 @@ from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
 from peaky.batch import timeseries as TS
 
-__version__ = "0.2.0"  # + representative-sample selection (5 time-grid + max-TIC)
+__version__ = "0.3.0"  # presence set-cover sample selection (one selector, batch + pool)
 
 # Content-stable epoch for SOURCE_DATE_EPOCH. NOT the run time: figures, workbooks
 # and the ledger are a PURE FUNCTION of the input data, so their embedded metadata
@@ -102,7 +102,8 @@ def load(*, batch: str | None = None, dataset: str | None = None,
 def run(*, batch: str | None = None, dataset: str | None = None,
         peaks: "str | pd.DataFrame | None" = None, reagent: str = "auto",
         stages: tuple = ("matrix",), out_dir: str | None = None,
-        n_time: int = SS.N_TIME, include_max_tic: bool = True) -> dict:
+        k_min: int = SS.K_MIN, k_max: int = SS.K_MAX,
+        min_gain: float = SS.MIN_GAIN) -> dict:
     """Run the pipeline on one batch.
 
     Returns a dict with at least {profile, peaks, n_samples, assign_samples}
@@ -110,16 +111,18 @@ def run(*, batch: str | None = None, dataset: str | None = None,
     from the data.
 
     THE RULE (always computed, regardless of stages): `assign_samples` is the
-    representative subset to assign + merge — `n_time` samples evenly spaced in
-    TIME plus the max-TIC sample (see sampling.py). `assign_sample_ids` is the
-    bare id list. Assignment runs on these, not on a single averaged file, so the
-    merged peak list covers analytes that only appear at part of the run.
+    presence-cover subset to assign + merge -- the greedy set-cover over the
+    batch's m/z bins with a marginal-gain stop (see sampling.py); its
+    `.attrs['selection']` carries the achieved coverage and stop reason.
+    `assign_sample_ids` is the bare id list. Assignment runs on these, not on a
+    single averaged file, so the merged peak list covers analytes that only
+    appear at part of the run.
     """
     pk = load(batch=batch, dataset=dataset, peaks=peaks)
     prof = P.resolve(reagent, pk)
     n_samples = pk["sample_item_id"].nunique() if "sample_item_id" in pk.columns else None
-    assign_samples = SS.select_representative_samples(
-        pk, n_time=n_time, include_max_tic=include_max_tic)
+    assign_samples = SS.select_cover_samples(pk, k_min=k_min, k_max=k_max,
+                                             min_gain=min_gain)
     out: dict = {"profile": prof, "peaks": pk, "n_samples": n_samples,
                  "assign_samples": assign_samples,
                  "assign_sample_ids": assign_samples["sample_item_id"].tolist()
@@ -232,17 +235,18 @@ def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
 def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               base_out: str, ts=None, when=None, subject: str | None = None,
               amine_r_min: float = 0.6, do_report=True, config: str | None = None,
-              select: str = "representative", coverage_target: float = 0.85,
-              k_max: int = 10, height_floor: float = 1000.0,
+              k_min: int = SS.K_MIN, k_max: int = SS.K_MAX,
+              min_gain: float = SS.MIN_GAIN,
               n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Full batch pipeline in ONE call: sample-subset ASSIGN (live match_compounds)
     -> merge -> cluster figures -> Van Krevelen -> PDF report, into one versioned run
     folder. `ts` is the full-batch per-sample peak time series (DataFrame or parquet
-    path); if None it is fetched live and reused for the amine gate + clustering.
+    path); if None it is fetched live and reused for selection, the amine gate and
+    clustering.
 
-    `select` picks the assigned-sample strategy: 'representative' (THE RULE: 5
-    time-spaced + max-TIC) or 'brightest' (bin all peaks -> assign each significant
-    m/z bin's brightest sample; `coverage_target`/`k_max`/`height_floor` tune it).
+    The assigned subset is the greedy presence set-cover over the batch's m/z bins
+    (sampling.select_cover_samples): `k_min`/`k_max`/`min_gain` tune the stop rule;
+    the achieved coverage + stop reason land in batch_summary.json['selection'].
     Returns {ctx, assign, cluster, vk, report_pdf}."""
     from peaky.batch import assign_batch as AB
 
@@ -261,8 +265,8 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
 
     res = AB.run(batch=batch, dataset=dataset, reagent=prof.name,
                  out_dir=ctx.out_dir, ts_peaks=ts, amine_r_min=amine_r_min,
-                 select=select, coverage_target=coverage_target, k_max=k_max,
-                 height_floor=height_floor, n_jobs=n_jobs, log=log, **assign_kw)
+                 k_min=k_min, k_max=k_max, min_gain=min_gain,
+                 n_jobs=n_jobs, log=log, **assign_kw)
     gen = generate_report(ctx, ts, subject=subject, do_report=do_report, log=log)
 
     # provenance: pin this run to its exact code + input-data hash + config +
@@ -280,8 +284,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
                 "n_samples": summ.get("n_files"),
-                "select": summ.get("select"),
-                "coverage_target": summ.get("coverage_target")},
+                "selection": summ.get("selection")},
         created_utc=ctx.when.isoformat(), log=log)
     return {"ctx": ctx, "assign": res, **gen}
 
@@ -296,7 +299,7 @@ def pool_name(batches_regex: str) -> str:
 
 
 def _write_selected_samples(run_dir: str, prov) -> None:
-    """Emit tables/selected_samples.csv (the report's representative-sample section
+    """Emit tables/selected_samples.csv (the report's assigned-samples section
     reads it). The pooled path passes sample_ids= to assign_batch.run, which skips
     that module's own writer, so we write the union provenance here instead."""
     tab = PT.run_paths(run_dir).ensure().tables
@@ -325,8 +328,8 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                        group_by: str = "sample_batch_name", ts=None, when=None,
                        subject: str | None = None, amine_r_min: float = 0.6,
                        do_report: bool = True, per_group_reports: bool = True,
-                       config: str | None = None, coverage_target: float = 0.90,
-                       k_max: int = 6, height_floor: float = 1000.0,
+                       config: str | None = None, k_min: int = SS.K_MIN,
+                       k_max: int = SS.K_MAX, min_gain: float = SS.MIN_GAIN,
                        n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Pool the batches matching `batches` (a regex over batch names) into ONE
     unified ledger, then emit a whole-pool report plus one report per group.
@@ -334,11 +337,14 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     The value: for a campaign split into many batches of the SAME chemistry (e.g.
     per-zone / per-segment batches of one mode x range), a single unified ledger is the
     right peak list -- every analyte present ANYWHERE is discovered once, and each
-    group's own time series is then read against that shared list. Selection uses a
-    per-GROUP brightest-coverage UNION (`sampling.select_pooled_union`) so no group
-    is starved by a louder one (see that function). `A.run` fetches each selected
-    sample's peaks from the server itself; the pooled `ts` only drives selection,
-    clustering and the amine gate, so it is trimmed to the TS columns for the workers.
+    group's own time series is then read against that shared list. Selection is ONE
+    greedy presence set-cover over the pooled table (`sampling.select_cover_samples`
+    with `group_col`): because the objective is presence, not brightness, a loud
+    group cannot hog the picks, and the per-group achieved coverage is recorded in
+    `batch_summary.json['selection']['coverage_by_group']` so a starved group would
+    be visible. `A.run` fetches each selected sample's peaks from the server itself;
+    the pooled `ts` only drives selection, clustering and the amine gate, so it is
+    trimmed to the TS columns for the workers.
 
     `group_by` is the column that splits the pool (default `sample_batch_name`: one
     group per matched batch). Per-group reports share the unified `merged_ledger.csv`
@@ -364,14 +370,21 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     log(f"[pool] {len(ts):,} peak rows, {ts['sample_item_id'].nunique()} samples, "
         f"{ts[group_by].nunique()} groups by {group_by!r}")
 
-    union, prov = SS.select_pooled_union(
-        ts, group_col=group_by, coverage_target=coverage_target, k_max=k_max,
-        height_floor=height_floor)
-    # group iteration order == selection order (prov is groupby-sorted), so the
-    # per-group reports and selection_provenance never disagree on ordering.
-    groups = list(dict.fromkeys(prov[group_by].astype(str)))
-    log(f"[pool] per-group brightest union: {len(union)} samples (k_max={k_max})\n"
-        + prov.groupby(group_by).size().to_string())
+    prov = SS.select_cover_samples(ts, group_col=group_by, k_min=k_min, k_max=k_max,
+                                   min_gain=min_gain)
+    selection = dict(prov.attrs.get("selection", {}))
+    union = prov["sample_item_id"].tolist()
+    # every group gets a report, picked-from or not (a group can be fully covered
+    # by another group's samples); sorted so the order is stable across runs.
+    groups = sorted(ts[group_by].dropna().astype(str).unique())
+    log(f"[pool] {SS.describe(selection)}")
+    log("[pool] per group: " + "; ".join(
+        f"{g}: {selection.get('picks_by_group', {}).get(g, 0)} picks, "
+        f"{selection.get('coverage_by_group', {}).get(g, 0):.0%} of its bins covered"
+        for g in groups))
+    _warn = SS.k_max_warning(selection)
+    if _warn:
+        log(f"[pool] WARNING: {_warn}")
 
     # trim to the TS columns so the worker-side parquet stays small (A.run fetches
     # each sample's assignment peaks itself; ts only drives selection/cluster/amine).
@@ -387,8 +400,9 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     # reflists.resolve_context_tags reads to unlock chemistry-specific reference
     # lists (a chamber pool named e.g. 'apinene ...' -> the monoterpene list).
     res = AB.run(peaks=ts[ts_cols], ts_peaks=ts[ts_cols], reagent=prof.name,
-                 batch=pool_label, sample_ids=union, out_dir=ctx.out_dir,
-                 amine_r_min=amine_r_min, n_jobs=n_jobs, log=log, **assign_kw)
+                 batch=pool_label, sample_ids=union, selection_meta=selection,
+                 out_dir=ctx.out_dir, amine_r_min=amine_r_min, n_jobs=n_jobs,
+                 log=log, **assign_kw)
     # the report's representative-sample section reads tables/selected_samples.csv;
     # the sample_ids= path skips AB.run's own writer, so emit it from the union prov.
     _write_selected_samples(ctx.out_dir, prov)
@@ -417,7 +431,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
                 "n_samples": summ.get("n_files"), "n_groups": len(groups),
-                "select": "pooled-union", "coverage_target": coverage_target},
+                "selection": summ.get("selection")},
         created_utc=ctx.when.isoformat(), log=log)
     return {"ctx": ctx, "assign": res, "groups": groups, "group_runs": group_runs,
             "selection": prov, **gen}

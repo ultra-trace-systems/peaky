@@ -6,6 +6,70 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Batch sample selection is one greedy presence set-cover** (`sampling.
+  select_cover_samples`, `docs/SAMPLING.md`), replacing the 5-time-spaced+max-TIC
+  rule and the brightest arg-max cover. Universe = the batch's m/z bins present
+  in ≥ 2 samples — **no height floor**, because the peak picker's detection edge
+  spans ~1000× between instruments and modes (0.8 cps on a TOF, ~800 cps on an
+  Orbitrap mode with the reagent ion in range), so any absolute floor is a no-op
+  on one and blinds the selector on another. Each pick is the sample holding the
+  most not-yet-covered bins; the run stops when the next pick would add
+  < `--min-gain` (0.5 %) after `--k-min` (6) picks, and `--k-max` (30) is a
+  flagged budget rather than a target. The merge keeps whatever any assigned
+  sample contained and nothing else, so this selection is what decides recall:
+  on a pooled 5036-sample field-campaign table the cover lands at k = 15 and
+  holds 94 % of the rare (< 5 % prevalence) ions of a dedicated sub-batch run,
+  vs 54 % for the old default and 91 % for the old 12-sample arg-max cap.
+  `pool` runs the same single cover over the pooled table (a loud group cannot
+  hog a presence objective; per-group achieved coverage is recorded) instead of
+  a per-group union. `batch_summary.json` / `run_manifest.json` gain a
+  `selection` block (`k`, `n_bins`, `achieved_coverage`, `stop_reason`,
+  `next_gain`, `coverage_by_group`); `tables/selected_samples.csv` is now in
+  pick order with `pick`, `role` (`cover` / `pad`), `bins_new`, `coverage`.
+- **Height thresholds in the passes are multiples of the sample's own noise
+  edge**, not absolute cps. `assign.run` computes `noise_edge_cps` (the 1st
+  percentile of the sample's picked heights) once per sample; `PassConfig.
+  height_cutoff` is now a read-only property = `height_cutoff_x_edge` (default
+  1.0) × that edge, with `height_cutoff_cps` as an explicit absolute override
+  for offline callers. `peaky assign --height-cutoff` becomes that override
+  (default none) and `--height-cutoff-x-edge` sets the multiple; the MCP
+  `assign_sample(height_cutoff=)` likewise. Per-file `noise_edge_cps` and the
+  resolved `height_cutoff_cps` are recorded in `batch_summary.json`.
+
+### Removed
+
+- `peaky batch --select / --coverage-target / --height-floor` and
+  `peaky pool --coverage-target / --height-floor` (`--k-max` stays, default 30;
+  `--k-min` / `--min-gain` added to both). `sampling.select_representative_samples`,
+  `select_brightest_coverage_samples`, `select_pooled_union` and the `*_sample_ids`
+  wrappers; `assign_batch.run(select=, coverage_target=, height_floor=, n_time=,
+  include_max_tic=)`, `pipeline.run_batch(select=, …)`, `run_pooled_batches(
+  coverage_target=, height_floor=)`; `PassConfig(height_cutoff=)` (use
+  `height_cutoff_cps=`); the MCP `run_batch(select=)` (now `k_max=`).
+
+### Fixed
+
+- **The brightest-coverage selector silently never reached its coverage
+  target**: every run on disk had assigned exactly `k_max` + 2 samples at
+  0.39–0.61 achieved coverage while `batch_summary.json` recorded the *requested*
+  0.85. The new selector records the achieved coverage and the stop reason, and
+  warns (log, report, summary) when the `k_max` budget binds while the batch is
+  still gaining.
+- **The absolute 100 cps `height_cutoff` blinded the height-gated passes
+  (ladders, siloxane, residual, reflist rescue, isotope-satellite checks) on
+  low-edge modes**: it excluded 97 % of picked TOF peaks and 87 % of an EasyIC
+  mode's, while being a no-op on modes whose picker edge sits above it. The
+  edge-relative gate keeps every picked peak but the bottom 1 % eligible on any
+  instrument. The gate also bounds which unassigned peaks pass 1 enumerates, so
+  on a TOF batch the primary pass had been committing ~2 grid assignments per
+  file; with the edge gate it commits ~370 (self-calibration backbone 220–460
+  peaks, median |ppm| 0.87 vs 1.13 before), most of them Candidate-tier leads
+  at 1–5× the edge — a TOF ledger now carries that Candidate tail by design,
+  and `--height-cutoff-x-edge` raises the bar when a tighter list is wanted.
+  An EasyIC batch went from 63 to 119 merged M0 with no formula disagreements.
+
 ### Added
 
 - **`peaky publish-batch <run_dir>`** - publish a `peaky batch` run's merged ledger

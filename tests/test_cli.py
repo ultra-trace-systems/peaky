@@ -37,16 +37,24 @@ check("parse `assign --adducts` (multi)", a.adducts == ["[M+Br]-", "[M-H]-"] and
 a = P.parse_args(["--env", "/tmp/x.env", "list", "datasets"])
 check("top-level --env is parsed", a.env == "/tmp/x.env")
 
-# ---- batch selection strategy flags -----------------------------------------
+# ---- batch selection knobs (presence set-cover; one selector, no strategy flag) ----
+from peaky.batch import sampling as _SS  # noqa: E402
 a = P.parse_args(["batch", "--batch", "B"])
-check("batch defaults to representative selection",
-      a.func is cli.cmd_batch and a.select == "representative"
-      and a.coverage_target == 0.85 and a.k_max == 10 and a.height_floor == 1000.0)
-a = P.parse_args(["batch", "--batch", "B", "--select", "brightest",
-                  "--coverage-target", "0.9", "--k-max", "8", "--height-floor", "500"])
-check("parse `batch --select brightest` + knobs",
-      a.select == "brightest" and a.coverage_target == 0.9
-      and a.k_max == 8 and a.height_floor == 500.0)
+check("batch selection defaults mirror sampling.K_MIN/K_MAX/MIN_GAIN",
+      a.func is cli.cmd_batch and a.k_min == _SS.K_MIN and a.k_max == _SS.K_MAX
+      and a.min_gain == _SS.MIN_GAIN, vars(a))
+a = P.parse_args(["batch", "--batch", "B", "--k-max", "12", "--k-min", "4", "--min-gain", "0.01"])
+check("parse `batch --k-max/--k-min/--min-gain`",
+      a.k_max == 12 and a.k_min == 4 and a.min_gain == 0.01)
+for flag in ("--select", "--coverage-target", "--height-floor"):
+    try:
+        P.parse_args(["batch", "--batch", "B", flag, "x"])
+        check(f"removed flag {flag} is rejected", False, "parsed")
+    except SystemExit:
+        check(f"removed flag {flag} is rejected", True)
+a = P.parse_args(["assign", "--sample-id", "X"])
+check("assign: --height-cutoff defaults to None (edge-relative), x-edge 1.0",
+      a.height_cutoff is None and a.height_cutoff_x_edge == 1.0)
 
 # subcommand is required
 try:

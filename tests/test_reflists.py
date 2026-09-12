@@ -86,7 +86,7 @@ def oracle(client, sample_id, formulas, *, allow_partial=True, mechanism_ids=Non
     return pd.DataFrame(rows)
 
 
-cfg = P.PassConfig(); cfg.cal_mu, cfg.cal_sigma = 0.0, 0.3; cfg.mechanism_ids = None
+cfg = P.PassConfig(height_cutoff_cps=100.0); cfg.cal_mu, cfg.cal_sigma = 0.0, 0.3; cfg.mechanism_ids = None  # offline: absolute gate (the synthetic heights are calibrated to 100 cps)
 out = RL.rescue_unexplained_by_reflist(None, "S", led, None, cfg, [rl], ["[M-H]-"],
                                        score_fn=oracle, log=lambda *a: None)
 check("rescue: 1 confirmed + 1 tentative", out == {"rescued": 1, "tentative": 1}, out)
@@ -103,7 +103,7 @@ check("rescue: ledger valid", L.validate(led) == [])
 
 # off-cal match is rejected even if mass-near
 led2 = mk([("oc", mh(F_CONF), 1.0e5)])
-cfg2 = P.PassConfig(); cfg2.cal_mu, cfg2.cal_sigma = 5.0, 0.3   # peak sits ~17 sigma off
+cfg2 = P.PassConfig(height_cutoff_cps=100.0); cfg2.cal_mu, cfg2.cal_sigma = 5.0, 0.3   # peak sits ~17 sigma off
 out2 = RL.rescue_unexplained_by_reflist(None, "S", led2, None, cfg2, [rl], ["[M-H]-"],
                                         score_fn=oracle, log=lambda *a: None)
 check("rescue: off-calibration match rejected", out2["rescued"] == 0 and out2["tentative"] == 0, out2)
