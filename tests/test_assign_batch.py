@@ -205,8 +205,8 @@ try:
                   for pf in summ["per_file"]), summ["per_file"][:1])
         check("run: a profile with no opinion leaves the package default gate",
               all(c is not None and c.height_cutoff_x_edge == 1.0 for c in _SEEN_CFG)
-              and summ["height_cutoff_x_edge"] == 1.0
-              and summ["height_cutoff_x_edge_source"] == "the package default", summ.get(
+              and summ.get("height_cutoff_x_edge") == 1.0
+              and summ.get("height_cutoff_x_edge_source") == "the package default", summ.get(
                   "height_cutoff_x_edge_source"))
 
     # ... and a profile that carries its own multiple hands it to every per-file
@@ -230,8 +230,9 @@ try:
                   and all(c.height_cutoff_x_edge == 5.0 for c in _SEEN_CFG),
                   [getattr(c, "height_cutoff_x_edge", None) for c in _SEEN_CFG])
             check("run: batch_summary records the multiple AND where it came from",
-                  summ3["height_cutoff_x_edge"] == 5.0
-                  and summ3["height_cutoff_x_edge_source"] == "the BrPick reagent profile",
+                  summ3.get("height_cutoff_x_edge") == 5.0
+                  and summ3.get("height_cutoff_x_edge_source")
+                  == "the BrPick reagent profile",
                   {k: summ3.get(k) for k in ("height_cutoff_x_edge",
                                              "height_cutoff_x_edge_source")})
     finally:

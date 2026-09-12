@@ -60,7 +60,7 @@ _mx = PV.build_manifest(run_dir=_rd, batch_name="B", dataset="D", sample_ids=["s
                         reagent="Br", cfg=P.PassConfig(height_cutoff_x_edge=5.0),
                         ts_path=_tsp, counts={}, created_utc="2026-01-01T00:00:00Z")
 check("a resolved (non-default) x_edge is fingerprinted, not runtime-excluded",
-      _mx["config"]["height_cutoff_x_edge"] == 5.0
+      _mx["config"].get("height_cutoff_x_edge") == 5.0
       and "height_cutoff_x_edge" not in P.PassConfig.RUNTIME_FIELDS,
       _mx["config"].get("height_cutoff_x_edge"))
 _RT = {"noise_edge_cps", "mechanism_ids", "prior_offset", "reagent_element"}
