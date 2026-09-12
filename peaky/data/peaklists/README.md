@@ -28,7 +28,7 @@ globs this directory. **Only add credible, citable sources**, and fill `referenc
   "id": "monoterpene_hom_kang2024",        // unique, file-name-safe
   "system": "monoterpene_OH_oxidation",    // free-text system family
   "label": "Monoterpene OH-oxidation HOM (α-pinene proxy)",
-  "data_version": "2024.1",                // bump when the data changes
+  "data_version": "2024.2",                // bump when the data changes
   "polarity": "negative",                  // native measurement polarity (informational)
   "native_detection": "[M+NO3]-",          // how the SOURCE detected them (informational)
   "applies_to_contexts": ["monoterpene_ox","limonene_ox","ap_ox","biogenic_soa"],
@@ -55,13 +55,23 @@ globs this directory. **Only add credible, citable sources**, and fill `referenc
   halogens 1. A half-integer DBE is an odd-electron neutral (RO•, RO2•). The H
   count is not the rule once N or P is present: the organic nitrate C10H15NO8 has
   odd H and an integer DBE, so it is closed-shell. Radicals are excluded from
-  default matching (the pipeline assigns closed-shell neutrals); enable with
-  `include_radicals=True` if a run targets radical chemistry.
+  default matching (the pipeline assigns closed-shell neutrals); API callers may
+  pass `include_radicals=True` to `match_by_mass` / `match_assigned` (a keyword
+  argument on those two functions, not a run-level switch).
 - `radical` (false when absent) is the author's claim; the formula decides.
   `load_catalog()` warns when a list's claims disagree with parity, and
   `tests/test_peaklists.py` fails a bundled list whose claims disagree or which
-  holds a species with a negative DBE: that is an ion or a salt (a
-  quaternary-ammonium chloride sits at −1), not a molecule.
+  holds a species with a negative DBE. A negative DBE is what a cation entered
+  with its extra proton gives — the tetrabutylammonium cation `C16H36N` sits at
+  −0.5, a quaternary-ammonium chloride written as one formula at −1 — so that
+  test catches protonated cations and their salts, not ions in general: a
+  deprotonated anion written without its charge (`C10H14NO8` for `[M-H]-`) has a
+  non-negative DBE and would read as a radical instead.
+- The loader refuses (warns and skips, `ReferenceList.skipped`) an entry whose
+  formula uses an element off `chemistry.M` (`chemistry.dbe` would score it as
+  divalent: sodium acetate `C2H3NaO2` comes out DBE 1.5), does not round-trip as
+  a neutral Hill formula (charge or bracket notation, `[C10H14NO8]-`), or has a
+  negative DBE. Parity is only read off a formula that passes.
 - Masses are **not** stored — they are recomputed (`chemistry.ion_mz`) for whatever
   reagent adduct the run uses, so one list serves Br⁻ / NO3⁻ / I⁻ / urea⁺ runs alike.
 

@@ -27,7 +27,7 @@
  "provenance": {
   "extracted_from": "Energie_Umwelt_557.pdf pages 148-181",
   "verification": "724 even-H CHO neutrals reproduce Kang's detected [M+NO3]- mass to <0.005 ppm",
-  "caveat": "α-pinene & limonene are isomeric C10H16 with strongly overlapping OH-oxidation HOM; use as a monoterpene-HOM PROXY, not a limonene-specific list. Radical status follows DBE parity, not the H count: half-integer-DBE entries are radical HOM (RO/RO2), excluded from closed-shell matching by default, while odd-H organic nitrates such as C10H15NO8 have an integer DBE and are closed-shell."
+  "caveat": "α-pinene & limonene are isomeric C10H16 with strongly overlapping OH-oxidation HOM; use as a monoterpene-HOM PROXY, not a limonene-specific list. Radical status follows DBE parity, not the H count: half-integer-DBE entries are radical HOM (RO/RO2), excluded from closed-shell matching by default, while odd-H organic nitrates such as C10H15NO8 have an integer DBE and are closed-shell. Reading parity instead of the H count (data_version 2024.2) moved 118 organic nitrates into the closed-shell pool and the three nitrogen-bearing radicals C4H6NO7, C4H8NO6 and C5H8NO7 out of it -- the only entries default matching no longer sees."
  },
  "n_species": 830,
  "species": [

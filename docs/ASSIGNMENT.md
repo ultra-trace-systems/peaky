@@ -229,7 +229,7 @@ an isotope-scored Assigned:
 
 Lists are **context-gated** by the run's metadata (the common-contaminant list is
 always active). Seeded with α-pinene OH-oxidation HOM (Kang et al., 830 neutrals) and
-the Keller (2008) MS-contaminant list (59 neutrals); add your own as a self-describing
+the Keller (2008) MS-contaminant list (50 neutrals); add your own as a self-describing
 JSON file under `peaky/data/peaklists/`. A literature match never *invents* confidence —
 Mascope still scores every commit, so the honesty principle holds.
 
