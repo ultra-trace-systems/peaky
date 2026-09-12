@@ -15,6 +15,14 @@ __pycache__/
 # local agent settings
 .claude/
 
+# coverage artefacts. NB: a .coverage file is a SQLite db holding the ABSOLUTE
+# path of every measured source file -- i.e. the developer's home directory and
+# username -- so committing one leaks a local path into a public repo.
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
 # generated run outputs (contain campaign data / private identifiers — never commit).
 # NB: keep the comment on its OWN line — an inline "# ..." after a pattern becomes part
 # of the pattern (git only treats a line STARTING with # as a comment), which silently
