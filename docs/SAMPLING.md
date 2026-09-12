@@ -13,9 +13,10 @@ the selector bins on).
 per-sample, so a synthetic union spectrum can't be scored.
 
 > Keep this in sync with the code. Every threshold below is a named constant in
-> `sampling.py`; if you change one there, change it here. `BATCH_TOL_PPM` is
-> shared with the merge (`assign_batch.DEFAULT_TOL_PPM` *is* it) — selection and
-> merge must bin identically, so change it in one place only.
+> `sampling.py`; if you change one there, change it here. `BATCH_TOL_PPM` serves
+> every batch-level operation — sample selection, the admission table and the
+> merge (`assign_batch.DEFAULT_TOL_PPM` *is* it) — and all three must bin
+> identically, so change it in one place only.
 
 ---
 
