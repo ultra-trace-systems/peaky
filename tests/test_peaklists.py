@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from peaky import chemistry as C
 from peaky import reflists as RL
 from peaky.paths import pkg_data
 
@@ -67,6 +68,25 @@ def test_the_lists_are_found():
 def test_radical_status_is_read_off_the_formula(formula, radical):
     assert RL.is_radical(formula) is radical
     assert odd_electron(formula) is radical
+
+
+@pytest.mark.parametrize(("formula", "radical"), [
+    ("C10H16O7", False),
+    ("HO2", True),
+    ("C10H15NO8", False),   # odd H, integer DBE: the case the H count gets wrong
+    ("C10H16NO9", True),    # even H, half-integer DBE: the other way round
+    ("H3N", False),
+    ("C6H15O4P", False),    # P counts with N
+    ("IO2", True),          # I counts with H
+])
+def test_odd_electron_is_the_one_parity_helper(formula, radical):
+    # chemistry.odd_electron is what the grid gate (dbe_ok), the plausibility
+    # radical exemption and the list loader share; the valence table above is
+    # its independent oracle. Both call forms, a formula and its counts.
+    assert C.odd_electron(formula) is radical
+    assert C.odd_electron(C.parse_formula(formula)) is radical
+    assert odd_electron(formula) is radical
+    assert C.dbe_ok(formula)[0] is (not radical)
 
 
 def test_an_ion_or_a_salt_has_a_negative_dbe():

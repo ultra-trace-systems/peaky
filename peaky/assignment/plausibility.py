@@ -89,10 +89,9 @@ def is_carbon_cluster(cnt: dict) -> bool:
     nc = cnt.get("C", 0)
     if nc < 2:
         return False
-    d = C.dbe(cnt)
-    if abs(d - round(d)) > 1e-9:       # half-integer DBE -> radical, EXEMPT
+    if C.odd_electron(cnt):            # half-integer DBE -> radical, EXEMPT
         return False
-    return d / nc >= DBE_PER_C_MONSTER
+    return C.dbe(cnt) / nc >= DBE_PER_C_MONSTER
 
 
 def implausible(neutral_formula: str, *, tier: str | None = None,

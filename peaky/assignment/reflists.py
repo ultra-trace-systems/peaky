@@ -87,11 +87,11 @@ class ReferenceList:
 
 # ---------------------------------------------------------------------------
 def is_radical(formula: str) -> bool:
-    """True for an odd-electron neutral: a half-integer DBE (`chemistry.dbe`).
-    Parity is the rule, not the H count -- an organic nitrate like C10H15NO8 has
-    odd H and an integer DBE, so it is closed-shell."""
-    d = C.dbe(formula)
-    return abs(d - round(d)) > 1e-9
+    """True for an odd-electron neutral: a half-integer DBE, read by
+    `chemistry.odd_electron` (the parity test the grid gate and the plausibility
+    exemption share). Parity is the rule, not the H count -- an organic nitrate
+    like C10H15NO8 has odd H and an integer DBE, so it is closed-shell."""
+    return C.odd_electron(formula)
 
 
 def load_catalog(directory: str | None = None) -> dict:
