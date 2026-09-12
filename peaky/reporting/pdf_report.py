@@ -1066,28 +1066,30 @@ def clusters(ctx, pdf):
 
 def _selection_lines(ctx) -> list:
     """The Methods-page bullet for how the assigned subset was chosen, rendered
-    from `batch_summary.json['selection']` (the recorded selector -- never a
-    hard-coded rule, so the page cannot go stale against the code)."""
+    from `batch_summary.json['selection']` (the recorded selector — never a
+    hard-coded rule, so the page cannot go stale against the code). One line per
+    statement; `_text_lines` wraps them to the page width."""
     if ctx.get("n_files", 1) <= 1:
         return [("b", "• Single sample assigned: no subset selection, no merge.")]
     b = (ctx.get("batch") or {}).get("selection") or {}
     if b.get("method") != "presence-cover":
-        return [("b", "• Sample subset: the assigned files were merged by m/z (this run's"),
-                ("b", "  batch_summary.json carries no selection record).")]
+        return [("b", "• Sample subset: the assigned files were merged by m/z; this run's "
+                      "batch_summary.json carries no selection record.")]
     out = [
         ("b", f"• Sample selection: greedy presence set-cover — k = {b.get('k', '?')} of "
-              f"{b.get('n_samples', '?')} samples cover {b.get('achieved_coverage', 0):.0%} of the"),
-        ("b", f"  {b.get('n_bins', '?')} m/z bins present in ≥{b.get('min_prevalence', 2)} samples "
-              f"(no height floor; bins at {b.get('tol_ppm', '?')} ppm); stopped on "
-              f"'{b.get('stop_reason', '?')}'"),
-        ("b", f"  (k_min {b.get('k_min', '?')}, k_max {b.get('k_max', '?')}, min gain "
-              f"{b.get('min_gain', 0):.1%} of the bins); then merged by m/z — a single averaged"),
-        ("b", "  file misses analytes present only part of the run."),
+              f"{b.get('n_samples', '?')} samples cover {b.get('achieved_coverage', 0):.0%} "
+              f"of the {b.get('n_bins', '?')} m/z bins present in "
+              f"≥{b.get('min_prevalence', 2)} samples (no height floor; bins at "
+              f"{b.get('tol_ppm', '?')} ppm, the merge tolerance), then merged by m/z — "
+              "a single averaged file misses analytes present only part of the run."),
+        ("b", f"• Selection stopped on '{b.get('stop_reason', '?')}' "
+              f"(k_min {b.get('k_min', '?')}, k_max {b.get('k_max', '?')}, min gain "
+              f"{b.get('min_gain', 0):.1%} of the bins)."),
     ]
     if b.get("stop_reason") == "k_max":
-        out.append(("b", f"  WARNING: the k_max={b.get('k_max')} budget bound while the batch was still "
-                         f"gaining ({b.get('next_gain', 0):.2%} of the bins per extra sample) — "
-                         "coverage is incomplete; raise --k-max."))
+        out.append(("b", f"• WARNING: the k_max={b.get('k_max')} budget bound while the batch was "
+                         f"still gaining ({b.get('next_gain', 0):.2%} of the bins per extra "
+                         "sample) — coverage is incomplete; raise --k-max."))
     return out
 
 
