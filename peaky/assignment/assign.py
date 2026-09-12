@@ -19,6 +19,7 @@ from peaky.chem import isotopes
 from peaky.assignment import labeled
 from peaky.assignment import ladders
 from peaky.assignment import ledger
+from peaky.assignment import masscal
 from peaky.assignment import passes
 from peaky.assignment import plausibility
 from peaky.chem import reagents
@@ -41,6 +42,7 @@ MODULE_VERSIONS = {
     "series_gka": series_gka.__version__,
     "reagents": reagents.__version__,
     "passes": passes.__version__,
+    "masscal": masscal.__version__,
     "residual": residual.__version__,
     "ladders": ladders.__version__,
     "tiers": tiers.__version__,
@@ -266,7 +268,7 @@ _STAGES = [
     _Stage("degeneracy", lambda st: _degen_summary(
         degeneracy.apply_degeneracy(st.led, context=st.profile.label, log=st.log))),
     # report tier, then the post-tier de-risking demotes (each gets the last word).
-    _Stage("tiers", lambda st: tiers.apply_tiers(st.led), safe=False, store=False),
+    _Stage("tiers", lambda st: tiers.apply_tiers(st.led, cfg=st.cfg), safe=False, store=False),
     _Stage("demote_fluorine",
            lambda st: cleanup.demote_unconfirmed_fluorine(st.led, log=st.log),
            safe=False, store=False),

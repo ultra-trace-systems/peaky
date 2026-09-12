@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from peaky.assignment import masscal
+
 
 __all__ = [
     "PassConfig",
@@ -82,16 +84,20 @@ class PassConfig:
     # mass-dependent centre ppm = cal_a + cal_b * 1000/mz (masscal.fit_mass_trend;
     # cal_b is the constant absolute offset in mDa). None = constant model. Used
     # by z_of ONLY when the caller passes the peak's m/z; cal_sigma_trend is the
-    # residual sigma of that model (floored like cal_sigma).
+    # residual sigma of that model (floored like cal_sigma). cal_mz_lo/hi are
+    # the backbone's m/z coverage: outside it the centre is held at the nearest
+    # edge (masscal.centre), never a 1/mz extrapolation onto masses the fit
+    # never saw (a 150-480 backbone would put +2.25 ppm on m/z 61).
     cal_a: float | None = None
     cal_b: float | None = None
     cal_sigma_trend: float | None = None
+    cal_mz_lo: float | None = None
+    cal_mz_hi: float | None = None
     # absolute floor (mDa) on the trend sigma, active only where it exceeds the
-    # ppm sigma (below ~m/z 120 at sigma 0.25 ppm): the Orbitrap's residual at
-    # the low-mass edge curves faster than 1/mz (46.065 sat 0.9 ppm = 0.04 mDa off
-    # the fitted trend), and 0.03 mDa is the absolute-accuracy floor the backbone
-    # itself shows (mDa MAD 0.01-0.05 across the range).
-    cal_abs_floor_mda: float = 0.03
+    # ppm sigma (below ~m/z 120 at sigma 0.25 ppm) -- see masscal.ABS_FLOOR_MDA
+    # for the physics. This field is the single runtime owner of the value; the
+    # tier engine reads it via apply_tiers(cfg=) / _calibrate(abs_floor_mda=).
+    cal_abs_floor_mda: float = masscal.ABS_FLOOR_MDA
     # rough mass offset (ppm) seeded from the sample's own matches BEFORE the
     # pass-1 self-calibration, so the pre-calibration pass-0 known-species gate is
     # not blind to a large systematic instrument offset (set by assign.run).

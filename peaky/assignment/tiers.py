@@ -54,8 +54,9 @@ import pandas as pd
 
 from peaky.chem import chemistry as C
 from peaky.assignment import ledger as L
+from peaky.assignment import masscal as MC
 
-__version__ = "0.7.0"  # + Si/P phantom demote (uncorroborated Si + mono-isotopic P/I -> Candidate)
+__version__ = "0.7.1"  # mass-dependent z via masscal (range clamp; floor owned by PassConfig)
 
 TIER_ASSIGNED = "Assigned"
 TIER_CANDIDATE = "Candidate"
@@ -85,7 +86,9 @@ F_H_COHERENCE = 2        # an F-bearing formula with H>1 needs F >= this x H to
 Z_TAIL_DEMOTE = 2.6      # |z| beyond which an UNCORROBORATED commit is demoted
 CAL_MIN_N = 20           # need this many core peaks to trust the calibration
 CAL_SIGMA_FLOOR = 0.15   # ppm; a lucky-tight core must not reject everything
-CAL_ABS_FLOOR_MDA = 0.03  # mDa; absolute floor on the mass-dependent sigma (passes.config)
+# The absolute (mDa) floor on the mass-dependent sigma is owned by
+# PassConfig.cal_abs_floor_mda (default masscal.ABS_FLOOR_MDA); apply_tiers /
+# compute_tiers take the cfg and _calibrate carries the value on the _Cal.
 
 # Background air-ion channels: opportunistic adducts the enumerator tries on top
 # of the sample's real reagent ions (carbonate / superoxide / electron
@@ -306,19 +309,28 @@ def density_text(density: int, capped: bool) -> str:
 class _Cal(tuple):
     """(mu, sigma) of the ppm error -- a plain 2-tuple for every `mu, sigma = cal`
     consumer -- that also carries the mass trend (masscal) as attributes:
-    `a`, `b`, `sigma_t` (ppm = a + b*1000/mz; None = constant model)."""
-    def __new__(cls, mu, sigma, a=None, b=None, sigma_t=None):
+    `a`, `b`, `sigma_t`, `mz_lo`, `mz_hi` (ppm = a + b*1000/mz on the backbone's
+    m/z coverage; None = constant model) and `abs_floor_mda`, the absolute floor
+    on the trend sigma (from PassConfig.cal_abs_floor_mda)."""
+    def __new__(cls, mu, sigma, a=None, b=None, sigma_t=None, mz_lo=None, mz_hi=None,
+                abs_floor_mda=MC.ABS_FLOOR_MDA):
         obj = super().__new__(cls, (mu, sigma))
         obj.a, obj.b, obj.sigma_t = a, b, sigma_t
+        obj.mz_lo, obj.mz_hi = mz_lo, mz_hi
+        obj.abs_floor_mda = abs_floor_mda
         return obj
 
 
-def _calibrate(m0: pd.DataFrame, kids_of: pd.Series) -> tuple[float, float] | None:
+def _calibrate(m0: pd.DataFrame, kids_of: pd.Series, *,
+               abs_floor_mda: float = MC.ABS_FLOOR_MDA) -> _Cal | None:
     """(mu, sigma) of the ppm-error distribution from the corroborated CHO/CHON
-    core, or None if the core is too small. Robust (median + scaled MAD). The
-    core is deliberately pure-organic (no halogen/Si/S, N<=1), High/Good, and
+    core (a _Cal, which also carries the masscal trend when accepted), or None
+    if the core is too small. Robust (median + scaled MAD). The core is
+    deliberately pure-organic (no halogen/Si/S, N<=1), High/Good, and
     isotopologue-backed -- the assignments we are most certain are correct, so
-    their mass errors define the instrument's real accuracy for this run."""
+    their mass errors define the instrument's real accuracy for this run.
+    `abs_floor_mda` is PassConfig.cal_abs_floor_mda (its default when the
+    caller has no cfg, e.g. a report-time re-tier)."""
     ppms = []
     mzs = []
     for _, r in m0.iterrows():
@@ -351,30 +363,37 @@ def _calibrate(m0: pd.DataFrame, kids_of: pd.Series) -> tuple[float, float] | No
     _keep = list(core.index)
     mu = float(core.median())
     sigma = max(float(1.4826 * (core - mu).abs().median()), CAL_SIGMA_FLOOR)
-    # mass-dependent centre (masscal): fitted on the same core, when significant
-    from peaky.assignment import masscal as MC
+    # mass-dependent centre (masscal): fitted on the same core, when accepted
     fit = MC.fit_mass_trend(np.asarray(mzs, dtype=float)[np.asarray(_keep)],
                             np.asarray(ppms, dtype=float)[np.asarray(_keep)],
                             min_n=CAL_MIN_N, sigma_floor=CAL_SIGMA_FLOOR)
     if fit is not None:
-        return _Cal(mu, sigma, fit[0], fit[1], fit[2])
-    return _Cal(mu, sigma)
+        return _Cal(mu, sigma, fit.a, fit.b, fit.sigma, fit.mz_lo, fit.mz_hi,
+                    abs_floor_mda=abs_floor_mda)
+    return _Cal(mu, sigma, abs_floor_mda=abs_floor_mda)
 
 
 def _cal_z(cal, ppm, mz=None) -> float:
-    """z of a ppm error against the tier calibration; mass-dependent centre
-    when the fit exists and an m/z is given, else the constant one."""
+    """Signed z of a ppm error against the tier calibration; mass-dependent
+    centre and sigma (masscal.centre / sigma_at, clamped to the backbone range)
+    when the fit exists and an m/z is given, else the constant ones."""
     mu, sigma = cal[0], cal[1]
     b = getattr(cal, "b", None)
     if b is not None and mz is not None and not pd.isna(mz):
-        mu = cal.a + b * 1000.0 / float(mz)
-        sigma = max(cal.sigma_t or sigma, CAL_ABS_FLOOR_MDA * 1000.0 / float(mz))
+        mu = MC.centre(cal.a, b, mz, cal.mz_lo, cal.mz_hi)
+        sigma = MC.sigma_at(cal.sigma_t or sigma, mz, cal.abs_floor_mda)
     return (float(ppm) - mu) / sigma
 
 
-def compute_tiers(ledger: pd.DataFrame) -> pd.DataFrame:
+def _abs_floor(cfg) -> float:
+    """PassConfig.cal_abs_floor_mda, or its default when no cfg is given."""
+    return float(getattr(cfg, "cal_abs_floor_mda", MC.ABS_FLOOR_MDA))
+
+
+def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
     """One row per M0 peak: [peak_id, tier, tier_reason, candidate_density,
-    density_capped]. Pure; does not mutate the ledger."""
+    density_capped]. Pure; does not mutate the ledger. `cfg` (a PassConfig)
+    supplies cal_abs_floor_mda for the mass-error gate; None = its default."""
     m0 = ledger[ledger["role"] == L.ROLE_M0]
     # corroboration sources
     kids_of = ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
@@ -384,7 +403,8 @@ def compute_tiers(ledger: pd.DataFrame) -> pd.DataFrame:
     # only N-donating channels (hollow diversity). See N_DONOR_ADDUCTS.
     adducts_of = m0.groupby("neutral_formula")["adduct"].agg(
         lambda s: set(s.dropna().astype(str)))
-    cal = _calibrate(m0, kids_of)   # (mu, sigma) ppm, or None when uncalibrated
+    # (mu, sigma) ppm [+ the masscal trend], or None when uncalibrated
+    cal = _calibrate(m0, kids_of, abs_floor_mda=_abs_floor(cfg))
     # primary detected channels = adducts carrying the High pass-1 backbone
     # (the unambiguous real reagent ions). A background channel that shows up
     # here (a genuine CO3-CIMS run) is treated as primary, not demoted.
@@ -598,6 +618,7 @@ def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
         mu, sigma = cal
         if getattr(cal, "b", None) is not None:
             ledger.attrs["cal_a"], ledger.attrs["cal_b"] = cal.a, cal.b
+            ledger.attrs["cal_mz_lo"], ledger.attrs["cal_mz_hi"] = cal.mz_lo, cal.mz_hi
     else:
         assigned = pd.to_numeric(
             m0.loc[m0.get("tier") == TIER_ASSIGNED, "ppm_error"],
@@ -612,9 +633,10 @@ def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
     return mu, sigma
 
 
-def apply_tiers(ledger: pd.DataFrame) -> pd.DataFrame:
+def apply_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
     """Stamp tier / tier_reason / candidate_density onto the M0 rows of the
-    ledger (in place; returns the ledger). Non-M0 rows keep NA."""
+    ledger (in place; returns the ledger). Non-M0 rows keep NA. `cfg` (the run's
+    PassConfig) supplies cal_abs_floor_mda; None = its default (report re-tier)."""
     for col in ("tier", "tier_reason", "candidate_density"):
         if col not in ledger.columns:
             ledger[col] = pd.Series(pd.NA, index=ledger.index, dtype="object")
@@ -622,7 +644,7 @@ def apply_tiers(ledger: pd.DataFrame) -> pd.DataFrame:
             # candidate_density holds '>=N' strings; a float column (e.g. an
             # all-NaN CSV round-trip) must widen before the stamp
             ledger[col] = ledger[col].astype("object")
-    t = compute_tiers(ledger)
+    t = compute_tiers(ledger, cfg=cfg)
     if not len(t):
         return ledger
     idx = ledger.index[ledger["peak_id"].isin(t["peak_id"])]

@@ -197,9 +197,10 @@ def test_mass_trend_fit_recovers_an_absolute_offset():
     rng = np.random.default_rng(0)
     mz = rng.uniform(60, 420, 300)
     ppm = -0.25 + (-0.12) * 1000 / mz + rng.normal(0, 0.15, 300)
-    a, b, sig, n = MC.fit_mass_trend(mz, ppm, min_n=20, sigma_floor=0.1)
-    assert abs(a + 0.25) < 0.08 and abs(b + 0.12) < 0.02 and n > 250
-    # a FLAT source keeps the constant model (slope not significant)
+    fit = MC.fit_mass_trend(mz, ppm, min_n=20, sigma_floor=0.1)
+    assert abs(fit.a + 0.25) < 0.08 and abs(fit.b + 0.12) < 0.02 and fit.n > 250
+    assert 60 <= fit.mz_lo < 70 and 410 < fit.mz_hi <= 420   # backbone coverage recorded
+    # a FLAT source keeps the constant model (trend not accepted)
     assert MC.fit_mass_trend(mz, -0.3 + rng.normal(0, 0.15, 300), min_n=20) is None
 
 

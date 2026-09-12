@@ -808,11 +808,10 @@ def rearbitrate_offcal_degenerate(
     if not len(m0):
         return out
     kids_of = ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
-    cal = T._calibrate(m0, kids_of)
+    cal = T._calibrate(m0, kids_of, abs_floor_mda=cfg.cal_abs_floor_mda)
     if cal is None:
         log("[rearbitrate] uncalibrated; off-cal winner re-arbitration skipped")
         return out
-    mu, sigma = cal
     chan_count = m0.groupby("neutral_formula")["adduct"].nunique()
     reflist = cfg.reflist_formulas or frozenset()
 
@@ -827,7 +826,8 @@ def rearbitrate_offcal_degenerate(
         ppm = r.get("ppm_error")
         if ppm is None or pd.isna(ppm):
             continue
-        z_win = (float(ppm) - mu) / sigma
+        # the tier engine's own z (mass-dependent centre when the trend is fitted)
+        z_win = T._cal_z(cal, ppm, r.get("mz"))
         if abs(z_win) <= T.Z_TAIL_DEMOTE:
             continue  # winner on-calibration -> the committed reading stands
         # corroboration (same definition as tiers): the evidence that would break
@@ -849,7 +849,7 @@ def rearbitrate_offcal_degenerate(
             af, ad, pa = a.get("formula"), a.get("adduct"), a.get("ppm")
             if not af or pa is None:
                 continue
-            z_alt = (float(pa) - mu) / sigma
+            z_alt = T._cal_z(cal, pa, r.get("mz"))     # same peak, same m/z
             if abs(z_alt) > cfg.cal_z_accept:          # alternative must be on-cal
                 continue
             if C.dbe(C.parse_formula(str(af))) >= dbe_w:  # only toward LESS unsaturation
