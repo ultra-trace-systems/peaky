@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 import numpy as np
 
@@ -156,6 +157,18 @@ class PassConfig:
     # the run's context-active reference lists (reflists.active_lists).
     reflist_formulas: frozenset = frozenset()
     reflist_prior: float = 0.04
+
+    # Fields assign.run stamps onto the shared cfg PER SAMPLE at runtime. They are
+    # run-derived, not user knobs, so the reproducibility fingerprint
+    # (provenance.build_manifest) drops exactly these -- declared here, next to
+    # the fields, so a new runtime field is added in one place. A ClassVar, not a
+    # dataclass field: asdict()/pickle/deepcopy are unaffected.
+    RUNTIME_FIELDS: ClassVar[tuple[str, ...]] = (
+        "mechanism_ids", "prior_offset", "reagent_element", "noise_edge_cps",
+        # passes.calibrate fits these onto the shared cfg during a run: they are
+        # the calibration's OUTPUT, not user knobs, so two identical re-runs must
+        # not fingerprint differently because a different sample finished last.
+        "cal_a", "cal_b", "cal_sigma_trend", "cal_mz_lo", "cal_mz_hi")
 
     @property
     def height_cutoff(self) -> float:

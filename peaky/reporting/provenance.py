@@ -19,23 +19,7 @@ import subprocess
 import sys
 from dataclasses import asdict, is_dataclass
 
-__version__ = "0.1.0"
-
-# per-sample fields that assign.run stamps onto the shared cfg at runtime -- they
-# are run-derived, not user knobs, so they don't belong in the reproducible config
-# fingerprint (offsets live in batch_summary.json already). The cal_* entries are
-# the self-calibration's own output: passes.calibrate writes the fitted mass trend
-# (cal_a / cal_b / cal_sigma_trend and the backbone coverage cal_mz_lo / cal_mz_hi)
-# back onto the shared cfg, so whichever sample ran LAST would otherwise leak its
-# data-derived numbers into the manifest and make two identical re-runs of the same
-# batch fingerprint differently. NB cal_mu / cal_sigma are equally data-derived but
-# are deliberately NOT dropped: they predate this list and manifests in the wild
-# carry them as the record of the run's calibration centre, so removing them would
-# be a manifest schema change rather than a fix.
-_RUNTIME_CFG_FIELDS = ("mechanism_ids", "prior_offset", "reagent_element",
-                       "noise_edge_cps",
-                       "cal_a", "cal_b", "cal_sigma_trend",
-                       "cal_mz_lo", "cal_mz_hi")
+__version__ = "0.1.1"  # runtime cfg fields come from PassConfig.RUNTIME_FIELDS
 
 
 def _rel_or_abs(path: str | None, base: str) -> str | None:
@@ -97,10 +81,13 @@ def build_manifest(*, run_dir: str, batch_name: str, dataset: str | None,
     exact data + result alongside the exact code that produced it."""
     import peaky                                # the real package version (peaky.__version__)
     from peaky.assignment import assign as A   # per-module versions + hashes (incl. assign's own)
+    from peaky.assignment.passes import PassConfig
 
     pkg_dir = os.path.dirname(__file__)
     cfg_d = asdict(cfg) if is_dataclass(cfg) else dict(cfg or {})
-    for k in _RUNTIME_CFG_FIELDS:
+    # per-sample fields assign.run stamps at runtime (run-derived, not user knobs)
+    # are declared on the config itself so the fingerprint can't drift from it
+    for k in getattr(cfg, "RUNTIME_FIELDS", PassConfig.RUNTIME_FIELDS):
         cfg_d.pop(k, None)
     merged = os.path.join(run_dir, "merged_ledger.csv")
     return {

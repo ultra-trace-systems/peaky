@@ -53,6 +53,17 @@ check("config fingerprint keeps user knobs, drops run-derived fields",
       and "height_cutoff_cps" in m["config"]
       and "mechanism_ids" not in m["config"] and "prior_offset" not in m["config"]
       and "noise_edge_cps" not in m["config"], m["config"])
+_RT = {"noise_edge_cps", "mechanism_ids", "prior_offset", "reagent_element"}
+check("PassConfig.RUNTIME_FIELDS declares (at least) the four run-stamped fields",
+      _RT <= set(P.PassConfig.RUNTIME_FIELDS), P.PassConfig.RUNTIME_FIELDS)
+import dataclasses as _dc  # noqa: E402
+_FIELDS = {f.name for f in _dc.fields(P.PassConfig)}      # real fields (ClassVar excluded)
+check("RUNTIME_FIELDS is a ClassVar, not a dataclass field (asdict/pickle untouched)",
+      "RUNTIME_FIELDS" not in _FIELDS and "RUNTIME_FIELDS" not in m["config"])
+check("build_manifest's config excludes every RUNTIME_FIELDS entry and nothing else",
+      not (set(P.PassConfig.RUNTIME_FIELDS) & set(m["config"]))
+      and set(m["config"]) == _FIELDS - set(P.PassConfig.RUNTIME_FIELDS),
+      sorted(_FIELDS ^ set(m["config"])))
 
 # passes.calibrate writes the fitted mass trend back onto the SHARED cfg, so the
 # last sample's data-derived numbers would otherwise land in the fingerprint and
