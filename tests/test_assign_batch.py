@@ -2,6 +2,7 @@
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -109,6 +110,109 @@ check("_protected_neutrals: reflist/known/certified in; grid/siloxane out",
       _prot == {"C10H15NO2S", "C10H19O6PS2", "C6H10O2"}, _prot)
 check("_protected_neutrals: missing columns -> empty set",
       AB._protected_neutrals(pd.DataFrame({"x": [1]})) == set())
+
+# ---------------------------------------------------------------------------
+# the SELECTION block end to end through run(): the per-sample assign and the IO
+# layer are stubbed, so this exercises the real selector -> summary -> CSV path.
+# ---------------------------------------------------------------------------
+import json  # noqa: E402
+import os  # noqa: E402
+import tempfile  # noqa: E402
+
+from peaky.io import io_mascope as IO  # noqa: E402
+from peaky.assignment import assign as _A  # noqa: E402
+from peaky.assignment import ledger as _L  # noqa: E402
+from peaky.assignment import tiers as _T  # noqa: E402
+from peaky.batch import sampling as SS  # noqa: E402
+from peaky.chem import chemistry as _C  # noqa: E402
+
+_T0 = pd.Timestamp("2025-10-01 21:00:00", tz="UTC")
+
+
+def _batch_table(spec, height=500.0):
+    """Per-peak batch table: sample id -> the m/z values present in that sample."""
+    rows = []
+    for i, (sid, mzs) in enumerate(spec.items()):
+        t = _T0 + pd.Timedelta(minutes=10 * i)
+        rows += [dict(sample_item_id=sid, sample_item_name=f"n_{sid}", datetime_utc=t,
+                      mz=float(mz), height=height) for mz in mzs]
+    return pd.DataFrame(rows)
+
+
+_BG = list(range(100, 120))                    # 20 bins every sample shares
+_SPEC = {}
+for _i in range(4):                            # 4 exclusive 20-bin blocks, each a PAIR
+    _SPEC[f"a{_i}"] = _BG + list(range(200 + 20 * _i, 220 + 20 * _i))
+    _SPEC[f"b{_i}"] = _BG + list(range(200 + 20 * _i, 220 + 20 * _i))
+_PK = _batch_table(_SPEC)
+_F = "C10H16O5"
+
+
+def _fake_assign(sid, context="ambient-air", **kw):
+    """Stand-in for assign.run: one assigned M0, the real ledger schema."""
+    led = _L.new_ledger(pd.DataFrame([("p1", _C.ion_mz(_F, "[M-H]-"), 1.0e5)],
+                                     columns=["peak_id", "mz", "height"]))
+    _L.commit_assignment(led, "p1", neutral_formula=_F, adduct="[M-H]-",
+                         ion_formula="C10H15O5-", ion_score=0.9, compound_score=0.9,
+                         ppm_error=0.1, pass_no=1, method="cheminfo+grid",
+                         confidence="High", commentary="stub")
+    _T.apply_tiers(led)
+    return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+            "plausibility_audit": [], "summaries": {}, "problems": []}
+
+
+_saved = {"connect": IO.connect, "fetch_peaks": IO.fetch_peaks,
+          "estimate_offset": IO.estimate_offset, "run": _A.run}
+IO.connect = lambda *a, **k: "CLIENT"
+IO.fetch_peaks = lambda client, sid, use_cache=True: pd.DataFrame(
+    {"peak_id": ["p1"], "mz": [_C.ion_mz(_F, "[M-H]-")], "height": [1.0e5]})
+IO.estimate_offset = lambda raw: 0.0
+_A.run = _fake_assign
+try:
+    with tempfile.TemporaryDirectory() as _d:
+        res = AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch",
+                     out_dir=_d, k_min=2, k_max=3, min_gain=0.0, n_jobs=1,
+                     log=lambda *a: None)
+        summ = json.load(open(os.path.join(_d, "batch_summary.json")))
+        s = summ["selection"]
+        check("run: batch_summary carries the selection block",
+              s["method"] == "presence-cover" and s["k"] == 3 and s["n_samples"] == 8
+              and s["n_bins"] == 100, s)
+        check("run: the k_max budget bound and is recorded with its rejected gain",
+              s["stop_reason"] == "k_max" and s["k_max"] == 3
+              and np.isclose(s["achieved_coverage"], 0.8)
+              and np.isclose(s["next_gain"], 0.2), s)
+        check("run: the selection's binning tolerance IS the merge tolerance",
+              s["tol_ppm"] == summ["tol_ppm"] == SS.BATCH_TOL_PPM, (s.get("tol_ppm"),
+                                                                    summ.get("tol_ppm")))
+        sel = pd.read_csv(os.path.join(_d, "tables", "selected_samples.csv"))
+        check("run: selected_samples.csv is in pick order with the cover columns",
+              sel["pick"].tolist() == [1, 2, 3] and sel["role"].tolist() == ["cover"] * 3
+              and sel["bins_new"].tolist() == [40, 20, 20]
+              and np.isclose(sel["coverage"].tolist(), [0.4, 0.6, 0.8]).all(),
+              sel.to_dict("records"))
+        check("run: the CSV order IS the assignment order recorded in the summary",
+              sel["sample_item_id"].tolist() == summ["sample_ids"] == res["sample_ids"],
+              (sel["sample_item_id"].tolist(), summ["sample_ids"]))
+        check("run: per-file stats keep the RESOLVED gate under height_gate_cps",
+              all("height_gate_cps" in pf and "height_cutoff_cps" not in pf
+                  for pf in summ["per_file"]), summ["per_file"][:1])
+
+    # a per-SAMPLE table (samples.list) cannot be binned: selection refuses it
+    # rather than silently falling back to some other rule.
+    with tempfile.TemporaryDirectory() as _d2:
+        try:
+            AB.run(peaks=SS.sample_table(_PK), reagent="Br", out_dir=_d2,
+                   n_jobs=1, log=lambda *a: None)
+            check("run: per-sample peaks and no time series raises ValueError",
+                  False, "no error")
+        except ValueError as e:
+            check("run: per-sample peaks and no time series raises ValueError",
+                  "per-peak" in str(e), str(e))
+finally:
+    IO.connect, IO.fetch_peaks = _saved["connect"], _saved["fetch_peaks"]
+    IO.estimate_offset, _A.run = _saved["estimate_offset"], _saved["run"]
+
 
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
