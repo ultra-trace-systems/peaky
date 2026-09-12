@@ -68,6 +68,10 @@ check("assign.run records the RESOLVED gate as height_gate_cps = x_edge x edge",
                                                          X_EDGE * EDGE))
 check("the resolved gate is NOT filed under the knob's name (height_cutoff_cps)",
       "height_cutoff_cps" not in st, sorted(st))
+# the cps gate cannot be read back without the multiple it was resolved from, so
+# the run records that too (it reaches batch_summary.json's per_file block).
+check("assign.run records the multiple it resolved the gate from",
+      st["height_cutoff_x_edge"] == X_EDGE, st.get("height_cutoff_x_edge"))
 check("the run resolved the gate from the edge, not from an override",
       st["height_gate_cps"] != st["noise_edge_cps"] and X_EDGE != 1.0)
 

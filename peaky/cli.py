@@ -118,22 +118,30 @@ def cmd_list(args) -> None:
         print(sl[cols].to_string(index=False) if cols else sl.to_string(index=False))
 
 
-def _resolve_reagent(args):
-    """Return (adducts, context, note, purity). Forces the analyte channels so a
-    positive or sparse-match sample never silently falls back to [M-H]- (wrong
-    polarity). adducts=None means 'let assign.run auto-detect from the sample';
-    purity is the profile's labelled-reagent isotopic purity (None = unlabelled
-    reagent, or no profile, so the isotopes default applies)."""
+def _resolve_reagent(args, *, with_profile: bool = False):
+    """Return (adducts, context, note). Forces the analyte channels so a positive
+    or sparse-match sample never silently falls back to [M-H]- (wrong polarity).
+    adducts=None means 'let assign.run auto-detect from the sample'.
+
+    `with_profile=True` appends the resolved ReagentProfile itself (None when
+    --adducts forced the channels, or auto-detect found no known profile), which
+    the caller needs for the profile's own tuning: the noise-edge gate multiple
+    and the labelled-reagent isotopic purity.
+    Opt-in so the plain 3-tuple callers are untouched."""
     from peaky.chem import profiles
+
+    def out(adducts, context, note, prof=None):
+        return (adducts, context, note, prof) if with_profile \
+            else (adducts, context, note)
 
     config = getattr(args, "reagent_config", None)
     if args.adducts:
-        return list(args.adducts), (args.context or "ambient-air"), \
-            f"forced adducts={list(args.adducts)}", None
+        return out(list(args.adducts), (args.context or "ambient-air"),
+                   f"forced adducts={list(args.adducts)}")
     if args.reagent and args.reagent.lower() != "auto":
         prof = profiles.resolve(args.reagent, config=config)   # name/alias, no peaks needed
-        return list(prof.adducts), (args.context or prof.context), \
-            f"{prof.name} ({prof.label})", prof.purity
+        return out(list(prof.adducts), (args.context or prof.context),
+                   f"{prof.name} ({prof.label})", prof)
     # auto: detect from the sample's own peaks (cached, so assign.run reuses it)
     from peaky.io import io_mascope as IO
 
@@ -141,12 +149,12 @@ def _resolve_reagent(args):
     raw = IO.fetch_peaks(client, args.sample_id, use_cache=not args.no_cache)
     try:
         prof = profiles.resolve("auto", raw, config=config)
-        return list(prof.adducts), (args.context or prof.context), \
-            f"auto-detected {prof.name} ({prof.label})", prof.purity
+        return out(list(prof.adducts), (args.context or prof.context),
+                   f"auto-detected {prof.name} ({prof.label})", prof)
     except Exception as e:                           # noqa: BLE001
-        return None, (args.context or "ambient-air"), \
-            (f"auto-detect found no known profile ({e}); using per-sample adduct "
-             "detection — pass --reagent explicitly for a positive/sparse sample"), None
+        return out(None, (args.context or "ambient-air"),
+                   (f"auto-detect found no known profile ({e}); using per-sample adduct "
+                    "detection — pass --reagent explicitly for a positive/sparse sample"))
 
 
 def cmd_assign(args) -> None:
@@ -155,18 +163,23 @@ def cmd_assign(args) -> None:
     from peaky.reporting import gka_widget
     from peaky.io import io_mascope
     from peaky.assignment import passes
+    from peaky.chem import profiles
     from peaky.reporting import report
 
+    # the reagent first: the profile may carry its own height-gate multiple, and
+    # the flag (default None = not given) outranks it.
+    adducts, context, note, prof = _resolve_reagent(args, with_profile=True)
+    print(f"[reagent] {note}; adducts={adducts}; context={context}")
     cfg = passes.PassConfig(ppm=args.ppm, search_ppm=args.search_ppm,
-                            height_cutoff_cps=args.height_cutoff,
-                            height_cutoff_x_edge=args.height_cutoff_x_edge)
+                            height_cutoff_cps=args.height_cutoff)
+    profiles.apply_height_cutoff_x_edge(cfg, prof,
+                                        explicit=args.height_cutoff_x_edge, log=print)
+    # the labelled-reagent purity rides on the same resolved profile
+    purity = getattr(prof, "purity", None)
     od = Path(args.output_dir).expanduser()
     od.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
     base = od / f"{args.sample_id}_{stamp}"
-
-    adducts, context, note, purity = _resolve_reagent(args)
-    print(f"[reagent] {note}; adducts={adducts}; context={context}")
 
     ts_peaks = None
     if args.ts_batch:
@@ -678,11 +691,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="ABSOLUTE peak-height cutoff (cps) for the height-gated "
                          "passes; default: relative to the sample's own noise edge "
                          "(see --height-cutoff-x-edge)")
-    pa.add_argument("--height-cutoff-x-edge", type=float, default=1.0,
+    pa.add_argument("--height-cutoff-x-edge", type=float, default=None,
                     help="height cutoff as a multiple of the sample's noise edge "
-                         "(the 1st percentile of its picked peak heights; default 1.0). "
+                         "(the 1st percentile of its picked peak heights). "
                          "Instrument-independent: the edge is 0.8 cps on a TOF and "
-                         "~800 cps on a reagent-in-range Orbitrap mode.")
+                         "~800 cps on a reagent-in-range Orbitrap mode. Default: the "
+                         "reagent profile's own multiple when it carries one, else "
+                         "the package default (passes.config."
+                         "DEFAULT_HEIGHT_CUTOFF_X_EDGE).")
     pa.add_argument("--no-cache", action="store_true")
     pa.add_argument("--no-pass2", action="store_true")
     pa.add_argument("--no-pass3", action="store_true")

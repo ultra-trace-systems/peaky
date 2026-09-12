@@ -472,6 +472,9 @@ def run(sample_id: str, context: str = "ambient-air", *,
     st = ledger.stats(led)
     st["noise_edge_cps"] = cfg.noise_edge_cps
     st["height_gate_cps"] = cfg.height_cutoff     # RESOLVED gate (the knob is cfg.height_cutoff_cps)
+    # the multiple the gate was resolved FROM (profile-supplied or the package
+    # default) -- the gate in cps alone cannot be read back without it.
+    st["height_cutoff_x_edge"] = cfg.height_cutoff_x_edge
     log(f"[run] stats {json.dumps(st)}")
     return {"ledger": led, "stats": st, "summaries": summaries,
             "prescan": pre.as_dict(), "problems": problems,
@@ -488,20 +491,27 @@ def main(argv=None):
     ap.add_argument("--ppm", type=float, default=1.0)
     ap.add_argument("--search-ppm", type=float, default=3.0)
     ap.add_argument("--height-cutoff", type=float, default=None,
-                    help="absolute cps override; default = 1x the sample's noise edge")
-    ap.add_argument("--height-cutoff-x-edge", type=float, default=1.0,
+                    help="absolute cps override; default = a multiple of the "
+                         "sample's own noise edge")
+    ap.add_argument("--height-cutoff-x-edge", type=float, default=None,
                     help="height gate as a multiple of the sample's own noise edge "
-                         "(default 1.0 = keep every picked peak but the bottom 1%%); "
-                         "ignored when --height-cutoff is given")
+                         "(1.0 = keep every picked peak but the bottom 1%%); "
+                         "default: the reagent profile's own multiple, else the "
+                         "package default; ignored when --height-cutoff is given")
     ap.add_argument("--no-cache", action="store_true")
     ap.add_argument("--no-pass2", action="store_true")
     ap.add_argument("--no-pass3", action="store_true")
     ap.add_argument("--output-dir", default=".")
     args = ap.parse_args(argv)
 
+    # no --reagent here (this entry point takes a context, not a profile), so the
+    # resolution is the flag if given, else the package default.
+    from peaky.chem import profiles as PR
+
     cfg = passes.PassConfig(ppm=args.ppm, search_ppm=args.search_ppm,
-                            height_cutoff_cps=args.height_cutoff,
-                            height_cutoff_x_edge=args.height_cutoff_x_edge)
+                            height_cutoff_cps=args.height_cutoff)
+    PR.apply_height_cutoff_x_edge(cfg, None, explicit=args.height_cutoff_x_edge,
+                                  log=print)
     out = run(args.sample_id, args.context, cfg=cfg, use_cache=not args.no_cache,
               do_pass2=not args.no_pass2, do_pass3=not args.no_pass3)
     # report.py will own file outputs; for now write the ledger + manifest

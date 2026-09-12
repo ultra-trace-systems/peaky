@@ -53,6 +53,16 @@ check("config fingerprint keeps user knobs, drops run-derived fields",
       and "height_cutoff_cps" in m["config"]
       and "mechanism_ids" not in m["config"] and "prior_offset" not in m["config"]
       and "noise_edge_cps" not in m["config"], m["config"])
+# the gate multiple is a USER KNOB (a profile or the command line sets it), so a
+# profile-supplied value must reach the fingerprint and never the runtime-excluded
+# set -- otherwise two runs with different gates hash the same config.
+_mx = PV.build_manifest(run_dir=_rd, batch_name="B", dataset="D", sample_ids=["s1"],
+                        reagent="Br", cfg=P.PassConfig(height_cutoff_x_edge=5.0),
+                        ts_path=_tsp, counts={}, created_utc="2026-01-01T00:00:00Z")
+check("a resolved (non-default) x_edge is fingerprinted, not runtime-excluded",
+      _mx["config"]["height_cutoff_x_edge"] == 5.0
+      and "height_cutoff_x_edge" not in P.PassConfig.RUNTIME_FIELDS,
+      _mx["config"].get("height_cutoff_x_edge"))
 _RT = {"noise_edge_cps", "mechanism_ids", "prior_offset", "reagent_element"}
 check("PassConfig.RUNTIME_FIELDS declares (at least) the four run-stamped fields",
       _RT <= set(P.PassConfig.RUNTIME_FIELDS), P.PassConfig.RUNTIME_FIELDS)

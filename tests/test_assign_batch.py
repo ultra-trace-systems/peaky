@@ -125,6 +125,7 @@ from peaky.assignment import ledger as _L  # noqa: E402
 from peaky.assignment import tiers as _T  # noqa: E402
 from peaky.batch import sampling as SS  # noqa: E402
 from peaky.chem import chemistry as _C  # noqa: E402
+from peaky.chem import profiles as P_PROF  # noqa: E402
 
 _T0 = pd.Timestamp("2025-10-01 21:00:00", tz="UTC")
 
@@ -148,8 +149,13 @@ _PK = _batch_table(_SPEC)
 _F = "C10H16O5"
 
 
+_SEEN_CFG = []
+
+
 def _fake_assign(sid, context="ambient-air", **kw):
-    """Stand-in for assign.run: one assigned M0, the real ledger schema."""
+    """Stand-in for assign.run: one assigned M0, the real ledger schema. Keeps
+    the cfg it was handed, so the gate resolution can be read back."""
+    _SEEN_CFG.append(kw.get("cfg"))
     led = _L.new_ledger(pd.DataFrame([("p1", _C.ion_mz(_F, "[M-H]-"), 1.0e5)],
                                      columns=["peak_id", "mz", "height"]))
     _L.commit_assignment(led, "p1", neutral_formula=_F, adduct="[M-H]-",
@@ -197,6 +203,40 @@ try:
         check("run: per-file stats keep the RESOLVED gate under height_gate_cps",
               all("height_gate_cps" in pf and "height_cutoff_cps" not in pf
                   for pf in summ["per_file"]), summ["per_file"][:1])
+        check("run: a profile with no opinion leaves the package default gate",
+              all(c is not None and c.height_cutoff_x_edge == 1.0 for c in _SEEN_CFG)
+              and summ["height_cutoff_x_edge"] == 1.0
+              and summ["height_cutoff_x_edge_source"] == "the package default", summ.get(
+                  "height_cutoff_x_edge_source"))
+
+    # ... and a profile that carries its own multiple hands it to every per-file
+    # run and says so in the summary (the config-file path for a picker that
+    # picks into the noise).
+    _snap = (dict(P_PROF.PROFILES), dict(P_PROF._BY_ALIAS))
+    P_PROF.register(P_PROF.ReagentProfile(
+        name="BrPick", label="Br- picker", polarity="-",
+        adducts=list(P_PROF.BR.adducts), normaliser="reagent",
+        reagent_ion_re=P_PROF.BR.reagent_ion_re, ranges=P_PROF.BR.ranges,
+        detect_adduct=None, height_cutoff_x_edge=5.0))
+    try:
+        with tempfile.TemporaryDirectory() as _d3:
+            _SEEN_CFG.clear()
+            AB.run(peaks=_PK, ts_peaks=_PK, reagent="BrPick", batch="test batch",
+                   out_dir=_d3, k_min=2, k_max=3, min_gain=0.0, n_jobs=1,
+                   log=lambda *a: None)
+            summ3 = json.load(open(os.path.join(_d3, "batch_summary.json")))
+            check("run: the profile's multiple reaches every per-file PassConfig",
+                  len(_SEEN_CFG) == 3
+                  and all(c.height_cutoff_x_edge == 5.0 for c in _SEEN_CFG),
+                  [getattr(c, "height_cutoff_x_edge", None) for c in _SEEN_CFG])
+            check("run: batch_summary records the multiple AND where it came from",
+                  summ3["height_cutoff_x_edge"] == 5.0
+                  and summ3["height_cutoff_x_edge_source"] == "the BrPick reagent profile",
+                  {k: summ3.get(k) for k in ("height_cutoff_x_edge",
+                                             "height_cutoff_x_edge_source")})
+    finally:
+        P_PROF.PROFILES.clear(); P_PROF.PROFILES.update(_snap[0])
+        P_PROF._BY_ALIAS.clear(); P_PROF._BY_ALIAS.update(_snap[1])
 
     # a per-SAMPLE table (samples.list) cannot be binned: selection refuses it
     # rather than silently falling back to some other rule.

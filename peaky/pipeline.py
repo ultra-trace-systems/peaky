@@ -124,6 +124,10 @@ def run(*, batch: str | None = None, dataset: str | None = None,
     assign_samples = SS.select_cover_samples(pk, k_min=k_min, k_max=k_max,
                                              min_gain=min_gain, tol_ppm=SS.BATCH_TOL_PPM)
     out: dict = {"profile": prof, "peaks": pk, "n_samples": n_samples,
+                 # the height gate the assign stage will use on every selected
+                 # sample: the profile's own multiple of that sample's noise edge
+                 # when it carries one, else the package default.
+                 "height_cutoff_x_edge": P.resolve_height_cutoff_x_edge(profile=prof),
                  "assign_samples": assign_samples,
                  "assign_sample_ids": assign_samples["sample_item_id"].tolist()
                  if "sample_item_id" in assign_samples.columns else [],
@@ -258,6 +262,13 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         log(f"[batch] fetching full-batch time series for {batch!r} ...")
         ts = load(batch=batch, dataset=dataset)
     prof = P.resolve(reagent, ts, config=config)
+    # One height-gate multiple for the whole run, stamped on the cfg that BOTH
+    # the assignment and the provenance manifest below use (assign_batch.run
+    # re-resolves it onto the same cfg and logs it once).
+    from peaky.assignment import passes as PA
+
+    assign_kw["cfg"] = cfg = assign_kw.get("cfg") or PA.PassConfig()
+    P.apply_height_cutoff_x_edge(cfg, prof)
     ctx = make_run_context(base_out, batch, prof, when=when, dataset=dataset)
     if ts_src:
         ctx.ts_path = ts_src     # reference the caller's parquet; don't re-copy it into the run dir
@@ -272,14 +283,13 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     # provenance: pin this run to its exact code + input-data hash + config +
     # output hash, and append it to the cross-run registry. Best-effort (never
     # fatal). Runs LAST so ts_path / merged_ledger.csv exist to be hashed.
-    from peaky.assignment import passes as PA
     from peaky.reporting import provenance as PV
     summ = res.get("summary", {}) if isinstance(res, dict) else {}
     PV.record_run(
         run_dir=ctx.out_dir, base_out=os.path.expanduser(base_out),
         batch_name=batch, dataset=dataset,
         sample_ids=(res.get("sample_ids") if isinstance(res, dict) else None),
-        reagent=prof.name, cfg=assign_kw.get("cfg") or PA.PassConfig(),
+        reagent=prof.name, cfg=cfg,          # carries the resolved x_edge
         ts_path=ctx.ts_path,
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
@@ -392,6 +402,11 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     ts_cols = [c for c in ("sample_item_id", "mz", "height", "datetime_utc")
                if c in ts.columns]
     prof = P.resolve(reagent, ts[ts_cols], config=config)
+    # same one-multiple-per-run rule as run_batch (see there)
+    from peaky.assignment import passes as PA
+
+    assign_kw["cfg"] = cfg = assign_kw.get("cfg") or PA.PassConfig()
+    P.apply_height_cutoff_x_edge(cfg, prof)
     pool_label = out_name or pool_name(batches)
     ctx = make_run_context(base_out, pool_label, prof, when=when, dataset=dataset)
     log(f"[pool] {ctx.run_id} -> {ctx.out_dir}")
@@ -422,13 +437,12 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
             log(f"[pool] group {g!r} report -> {gctx.out_dir}")
 
     # provenance parity with run_batch: pin the pool run to its code/data/config/output.
-    from peaky.assignment import passes as PA
     from peaky.reporting import provenance as PV
     summ = res.get("summary", {}) if isinstance(res, dict) else {}
     PV.record_run(
         run_dir=ctx.out_dir, base_out=os.path.expanduser(base_out),
         batch_name=pool_label, dataset=dataset, sample_ids=union, reagent=prof.name,
-        cfg=assign_kw.get("cfg") or PA.PassConfig(), ts_path=ctx.ts_path,
+        cfg=cfg, ts_path=ctx.ts_path,        # cfg carries the resolved x_edge
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
                 "n_samples": summ.get("n_files"), "n_groups": len(groups),

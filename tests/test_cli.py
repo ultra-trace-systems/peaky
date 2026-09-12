@@ -53,8 +53,12 @@ for flag in ("--select", "--coverage-target", "--height-floor"):
     except SystemExit:
         check(f"removed flag {flag} is rejected", True)
 a = P.parse_args(["assign", "--sample-id", "X"])
-check("assign: --height-cutoff defaults to None (edge-relative), x-edge 1.0",
-      a.height_cutoff is None and a.height_cutoff_x_edge == 1.0)
+# BOTH default to None: the absolute gate is opt-in, and an unset x-edge is what
+# lets the resolution fall through to the reagent profile / the package default.
+check("assign: --height-cutoff and --height-cutoff-x-edge both default to None",
+      a.height_cutoff is None and a.height_cutoff_x_edge is None)
+a = P.parse_args(["assign", "--sample-id", "X", "--height-cutoff-x-edge", "5"])
+check("assign: --height-cutoff-x-edge parses as a float", a.height_cutoff_x_edge == 5.0)
 
 # subcommand is required
 try:
@@ -105,6 +109,17 @@ check("resolve alias 'uronium' -> Ur context", ctx == profiles.UR.context, ctx)
 ns = SimpleNamespace(adducts=["[M+Na]+"], reagent="auto", context="chamber", sample_id="X", no_cache=False)
 ad, ctx, note, pur = cli._resolve_reagent(ns)
 check("explicit --adducts wins", ad == ["[M+Na]+"] and ctx == "chamber", (ad, ctx))
+
+# with_profile= is opt-in: the 3-tuple callers above are untouched, and the 4th
+# item is the profile the gate multiple is read from (None when it was forced).
+ns = SimpleNamespace(adducts=None, reagent="Br", context=None, sample_id="X", no_cache=False)
+_r4 = cli._resolve_reagent(ns, with_profile=True)
+check("with_profile=True appends the resolved profile",
+      len(_r4) == 4 and _r4[:3] == cli._resolve_reagent(ns)
+      and _r4[3] is profiles.BR, _r4)
+ns = SimpleNamespace(adducts=["[M+Na]+"], reagent="auto", context=None, sample_id="X", no_cache=False)
+check("forced --adducts surfaces NO profile (nothing to read a multiple from)",
+      cli._resolve_reagent(ns, with_profile=True)[3] is None)
 
 # ---- friendly server-error hints ---------------------------------------------
 check("403 -> WAF hint", "WAF" in (cli._friendly_server_error(RuntimeError("HTTP 403 Attention Required")) or ""))
@@ -192,6 +207,39 @@ try:
             check("cmd_assign passes --height-cutoff as the ABSOLUTE override",
                   _cfg.height_cutoff_cps == 250.0 and _cfg.height_cutoff == 250.0,
                   vars(_cfg) if _cfg is not None else None)
+        # no flag + a bundled profile -> the package default, unchanged
+        try:
+            cli.cmd_assign(P.parse_args(["assign", "--sample-id", "X", "--reagent", "Br",
+                                         "--output-dir", _d]))
+        except _StopAssign:
+            check("cmd_assign with no x-edge flag keeps the package default",
+                  _seen["assign"]["cfg"].height_cutoff_x_edge == 1.0)
+        # ... but a profile that carries its own multiple supplies it
+        _pick = profiles.ReagentProfile(
+            name="TofPick", label="tof picker", polarity="-", adducts=["[M-H]-"],
+            normaliser="tic", reagent_ion_re=None, ranges="C0-10 H0-20",
+            detect_adduct=None, height_cutoff_x_edge=5.0)
+        _snap = (dict(profiles.PROFILES), dict(profiles._BY_ALIAS))
+        profiles.register(_pick)
+        try:
+            try:
+                cli.cmd_assign(P.parse_args(["assign", "--sample-id", "X",
+                                             "--reagent", "TofPick", "--output-dir", _d]))
+            except _StopAssign:
+                check("cmd_assign takes the multiple from the reagent profile",
+                      _seen["assign"]["cfg"].height_cutoff_x_edge == 5.0,
+                      vars(_seen["assign"]["cfg"]))
+            try:
+                cli.cmd_assign(P.parse_args(["assign", "--sample-id", "X",
+                                             "--reagent", "TofPick",
+                                             "--height-cutoff-x-edge", "2.5",
+                                             "--output-dir", _d]))
+            except _StopAssign:
+                check("an explicit --height-cutoff-x-edge outranks the profile",
+                      _seen["assign"]["cfg"].height_cutoff_x_edge == 2.5)
+        finally:
+            profiles.PROFILES.clear(); profiles.PROFILES.update(_snap[0])
+            profiles._BY_ALIAS.clear(); profiles._BY_ALIAS.update(_snap[1])
 finally:
     cli._require_creds = _saved["require"]
     PL.run_batch, PL.run_pooled_batches = _saved["run_batch"], _saved["run_pooled"]

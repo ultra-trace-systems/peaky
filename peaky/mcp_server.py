@@ -250,8 +250,9 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
     """Assign one sample (multi-pass). Returns a job_id immediately; poll
     `job_status`. On completion the result carries the assignment counts, top
     species, and the written ledger CSV path. `height_cutoff` is an ABSOLUTE cps
-    override of the height-gated passes; default = 1x the sample's own noise
-    edge (instrument-independent)."""
+    override of the height-gated passes; default = a multiple of the sample's own
+    noise edge (instrument-independent) — the reagent profile's own multiple when
+    it carries one, else the package default (1x)."""
     out_dir = os.path.expanduser(output_dir or os.path.join(_OUT_DEFAULT, "mcp-assign"))
 
     def work(log):
@@ -262,6 +263,9 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
         adducts = list(rp.adducts) if rp else None
         ctx = context or (rp.context if rp else "ambient-air")
         cfg = passes.PassConfig(height_cutoff_cps=height_cutoff)
+        # relative gate: the profile's own multiple of the sample's noise edge
+        # when it carries one, else the package default (logged once).
+        profiles.apply_height_cutoff_x_edge(cfg, rp, log=log)
         res = assign.run(sample_id, ctx, cfg=cfg, adducts=adducts, log=log,
                          label_purity=getattr(rp, "purity", None))
         led = res["ledger"]

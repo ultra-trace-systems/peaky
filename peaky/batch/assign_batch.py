@@ -366,6 +366,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
 
     prof = P.resolve(reagent, peaks)
     context = context or prof.context
+    # The height-gated passes gate on a MULTIPLE of each sample's own noise edge.
+    # Resolve that multiple ONCE for the batch -- the profile's own value when it
+    # carries one, else the package default; a cfg the caller already set wins --
+    # so every per-file run gates identically and the summary can record it.
+    from peaky.assignment import passes as PA
+
+    cfg = assign_kw.get("cfg") or PA.PassConfig()
+    x_edge, x_edge_source = P.apply_height_cutoff_x_edge(cfg, prof, log=log)
+    assign_kw["cfg"] = cfg
     selection = dict(selection_meta or {})
     if sample_ids is None:
         # greedy presence set-cover over the batch's m/z bins. Needs the per-PEAK
@@ -558,6 +567,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "batch_name": batch,
         "selection": selection,
         "n_files": len(sample_ids), "sample_ids": sample_ids,
+        # the gate actually used, and where the multiple came from (a
+        # profile-supplied value reads differently from the package default);
+        # the resolved cps gate per file is in per_file[].height_gate_cps.
+        "height_cutoff_x_edge": x_edge,
+        "height_cutoff_x_edge_source": x_edge_source,
         "tol_ppm": tol_ppm, "offsets_ppm": offsets,
         "merged_M0": int(len(merged)),
         "merged_tiers": merged["tier"].value_counts().to_dict() if len(merged) else {},
