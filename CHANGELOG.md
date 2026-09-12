@@ -70,8 +70,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   on a TOF batch the primary pass had been committing ~2 grid assignments per
   file; with the edge gate it commits ~370 (self-calibration backbone 220–460
   peaks, median |ppm| 0.87 vs 1.13 before), most of them Candidate-tier leads
-  at 1–5× the edge — a TOF ledger now carries that Candidate tail by design,
-  and `--height-cutoff-x-edge` raises the bar when a tighter list is wanted.
+  at 1–5× the edge — a TOF ledger now carries that Candidate tail by design.
+  `peaky assign --height-cutoff-x-edge` (the single-sample command; `batch` and
+  `pool` gate at the 1.0× default) raises the bar when a tighter list is wanted.
   An EasyIC batch went from 63 to 119 merged M0 with no formula disagreements.
 
 ### Added

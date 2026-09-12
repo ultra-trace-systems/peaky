@@ -76,31 +76,45 @@ per-peak batch table (sample_item_id, mz, height[, datetime_utc, name])
    range ~800), so any absolute cps floor is a no-op on one mode and blinds the
    selector on another. The prevalence gate is the noise filter and has no units
    — a bin seen in exactly one sample is a singleton, and singletons are 6–14 % of
-   Orbitrap bins and ~47 % of TOF bins. (A 1-sample batch relaxes the gate to 1.)
+   Orbitrap bins and ~47 % of TOF bins. (If **no** bin reaches the prevalence — a
+   1-sample batch, but also any batch whose samples share no m/z at this
+   tolerance — the gate relaxes to 1 rather than leaving an empty universe that
+   covers trivially and picks nothing.)
 
 4. **Greedy cover.** Each pick is the sample with the most universe bins not yet
    covered (`bins_new`, the marginal gain); `coverage` is the cumulative fraction
    of the universe covered. Presence cover is *submodular*, so plain greedy is
    near-optimal and — unlike an arg-max-by-brightness ranking, whose winner sets
    are disjoint — it can trade redundancy: two near-identical rich samples are
-   not both taken. Ties go to the first sample in `build_matrix`'s (sorted-id)
-   row order, so the pick is deterministic.
+   not both taken. **Tie-break:** equal-gain samples resolve to the first row of
+   `build_matrix`'s matrix, which is pivoted on the sample id — i.e. the
+   **lexicographically smallest `sample_item_id`**. The pick is therefore
+   deterministic and independent of the input row order.
 
 5. **Stop rule = marginal gain.** After `K_MIN` (6) picks, stop when the next
    sample would add **< `MIN_GAIN` (0.5 %) of the universe** → `stop_reason =
-   'gain-floor'`, `next_gain` records the rejected fraction. `K_MAX` (30) is a
-   wall-clock **budget only**: a run that reaches it while the next gain is still
-   ≥ the floor stops with `'k_max'` and is **warned** in the log, the report and
+   'gain-floor'`, `next_gain` records the rejected fraction. The floor is
+   `MIN_GAIN × n_bins` over the **gated** universe: the singletons the prevalence
+   gate dropped are not coverable, so counting them would scale the floor by an
+   irrelevant, instrument-dependent number. `K_MAX` (30) is a wall-clock
+   **budget only**: a run that reaches it while the next gain is still ≥ the
+   floor stops with `'k_max'` and is **warned** in the log, the report and
    `batch_summary.json` — it means the batch was still gaining and `--k-max`
    should be raised. When every universe bin is covered (or every sample is
    taken) the reason is `'exhausted'`. A *coverage-target* stop does not exist:
    measured on real batches it is trivially met behind a height floor and never
    met without one.
 
+   **Stop-check precedence** (the order the loop tests them): *exhausted* →
+   *gain-floor* → *k_max*. A pick that adds nothing is never taken, even below
+   `K_MIN`; the budget is the last word, and only while the batch is still
+   gaining above the floor.
+
 6. **Pad.** If the greedy ended before `K_MIN` (a tiny batch, or the bins ran
    out), the richest remaining samples by `tic` are added with `role = 'pad'`
    and `bins_new = 0` — cheap cross-file corroboration, never fewer than
-   `min(K_MIN, n)`.
+   `min(K_MIN, n)`. **Tie-break:** a *stable* sort on descending `tic`, so
+   equal-TIC samples keep the matrix's (sorted-id) row order.
 
 7. **Groups (pooling).** With `group_col`, the same single greedy runs over the
    whole pool and the meta additionally records `coverage_by_group` (the fraction
@@ -185,6 +199,9 @@ modes of one instrument. Selection is deterministic (identical picks on re-run).
 - **`k_max` is a budget, not a target.** If it binds, coverage is incomplete and
   the run says so; raise it rather than trusting the ledger to be complete.
 - **Few-samples shortcut.** `n == 0` → empty; `n ≤ K_MIN` → take all.
+- **Both tie-breaks are deterministic.** Equal-gain cover picks go to the
+  lexicographically smallest `sample_item_id`; equal-TIC pads keep that same
+  order (stable sort). Shuffling the input rows cannot change the result.
 - **Pick order is assignment order.** `assign_batch.run` assigns the ids in the
   order returned (and `align()` has order-sensitive tie-breaks), so the CSV's
   `pick` column is also the merge order.

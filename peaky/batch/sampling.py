@@ -28,13 +28,14 @@ selectors):
     A coverage-target stop is broken both ways (trivially met with a floor,
     never met without one), so none exists.
 
-Measured on a pooled 5036-sample field-campaign table: this lands at k=16 and
-holds 94 % of the rare (<5 % prevalence) ledger ions of a dedicated sub-batch
-run, vs 54 % for the old 6-sample time grid and 91 % for the 12-sample arg-max
-cap (which never reached its coverage target on any real batch). A single
-greedy over a pooled multi-batch table also does NOT starve quiet groups
-(per-group coverage 88-94 %), so pooling uses the same selector; per-group
-achieved coverage is recorded when `group_col` is given.
+Measured on a pooled 5036-sample field-campaign table (the numbers are
+docs/SAMPLING.md section 7; keep the two in step): this lands at k=15 and holds
+94 % of the rare (<5 % prevalence) ledger ions of a dedicated sub-batch run, vs
+54 % for the old 6-sample time grid and 91 % for the 12-sample arg-max cap
+(which never reached its coverage target on any real batch). A single greedy
+over a pooled multi-batch table also does NOT starve quiet groups (per-group
+coverage 87-93 %), so pooling uses the same selector; per-group achieved
+coverage is recorded when `group_col` is given.
 
 Pure pandas/numpy; no network. The selected `sample_item_id`s feed `assign.run`
 one at a time (in pick order), then the ledgers are merged (assign_batch.py).
@@ -166,12 +167,18 @@ def select_cover_samples(peaks: pd.DataFrame, *, k_min: int = K_MIN, k_max: int 
     samples = np.asarray(mat.index)
     prev = A_all.sum(axis=0)
     gate = prev >= min_prevalence
-    if not gate.any():                                 # e.g. a 1-sample batch: keep the bins
+    if not gate.any():
+        # NO bin reaches min_prevalence -- a 1-sample batch, but also any batch
+        # whose samples share no m/z at this tolerance. An empty universe would
+        # cover trivially and pick nothing, so fall back to every bin.
         gate = prev >= 1
     A = A_all[:, gate]
     n_bins = int(A.shape[1])
     gain_floor = float(min_gain) * n_bins
 
+    # gain_floor is a fraction of the GATED universe (n_bins), not of all bins:
+    # the singletons the prevalence gate dropped are not coverable, so counting
+    # them would scale the floor by an irrelevant, instrument-dependent number.
     covered = np.zeros(n_bins, dtype=bool)
     picked: list[int] = []
     gains: list[int] = []
@@ -181,8 +188,14 @@ def select_cover_samples(peaks: pd.DataFrame, *, k_min: int = K_MIN, k_max: int 
         g = (A & ~covered[None, :]).sum(axis=1)
         if picked:
             g[picked] = -1
+        # TIE-BREAK: argmax returns the FIRST maximum, and build_matrix pivots on
+        # the sample id, so equal-gain samples resolve to the lexicographically
+        # smallest sample_item_id. Deterministic and input-order independent.
         j = int(g.argmax())
         gj = int(g[j])
+        # stop-check precedence: exhausted, then gain-floor, then k_max (a pick
+        # that adds nothing is never taken, even below k_min; the budget is the
+        # last word only while the batch is still gaining above the floor).
         if gj <= 0:
             stop, next_gain = STOP_EXHAUSTED, 0
             break
@@ -203,6 +216,8 @@ def select_cover_samples(peaks: pd.DataFrame, *, k_min: int = K_MIN, k_max: int 
     if len(picked) < min(k_min, len(samples)):
         tic = (tab.set_index(sample_col)["tic"].reindex(samples).fillna(0.0).to_numpy()
                if "tic" in tab.columns else np.zeros(len(samples)))
+        # TIE-BREAK: a stable sort on descending tic, so equal-TIC samples keep
+        # the matrix's (sorted-id) row order -- same determinism as the cover.
         for j in np.argsort(-tic, kind="stable"):
             j = int(j)
             if j in picked:
