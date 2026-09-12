@@ -238,6 +238,7 @@ def cmd_assign(args) -> None:
     # --progress is on), so the run below is identical either way.
     with PG.open_progress(f"peaky \u00b7 assign {args.sample_id}",
                           flag=args.progress, n_samples=1) as prog:
+        prog.phase("assign")            # the TS fetch above is already over
         out = assign.run(args.sample_id, context, cfg=cfg, use_cache=not args.no_cache,
                          do_pass2=not args.no_pass2, do_pass3=not args.no_pass3,
                          do_pass4=not args.no_pass4, do_pass5=not args.no_pass5,

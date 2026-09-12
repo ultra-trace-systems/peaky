@@ -49,13 +49,46 @@ check("ETA exists once a sample has completed", st.eta is not None)
 
 # parallel: worker logs are replayed AFTER the reduce, so stage lines are not live
 par = PG.ProgressState(title="t")
-par.feed("[assign_batch] (1/6) assigning x ...")
+par.feed("[phase] assign")
 par.feed("[assign_batch] parallel: 5 worker processes (match-workers/proc=2) over 6 samples")
+check("parallel banner parses", par.parallel == 5)
+check("  -> the banner alone tells the sample count (no 'assigning' line precedes it)",
+      par.n_samples == 6 and par.phase == "assign")
+import contextlib  # noqa: E402
+import io  # noqa: E402
+_buf = io.StringIO()
+with contextlib.redirect_stdout(_buf):
+    PG.TerminalStatus().push(par.snapshot())
+check("  -> so the terminal status has something to say right after the banner",
+      "0/6 samples" in _buf.getvalue(), _buf.getvalue())
 par.feed("[run] pass0 took 1.0s")
 par.feed("[run] pass1 took 1.0s")
-check("parallel banner parses", par.parallel == 5)
 check("parallel mode does NOT drive the stage bar (replayed logs would lie)",
       par.stage_idx == 0 and par.stage_frac == 0.0)
+par.feed("[assign_batch] (1/6) done kZ9")
+check("parallel 'done' does not name a CURRENT sample (it is the one that just ended)",
+      par.samples_done == 1 and par.current_sid == "")
+
+# `peaky assign` logs no 'assigning' line at all: the stage lines are the cue
+one = PG.ProgressState(title="t", n_samples=1)
+one.feed("[run] pass0 took 0.2s")
+check("a stage line alone puts the phase at 'assigning' (single-sample runs)",
+      one.phase == "assign" and one.stage_idx == 1)
+
+# the ETA clock starts with assignment, not with the window: the TS fetch and
+# sample selection before the first 'assigning' line are not per-sample work
+import time  # noqa: E402
+clk = PG.ProgressState(title="t")
+clk.t0 = time.monotonic() - 1000.0           # pretend a 1000 s fetch preceded us
+check("no assign clock before assignment starts", clk.t_assign is None)
+clk.feed("[assign_batch] (1/3) assigning s1 ...")
+clk.feed("[assign_batch] (1/3) done s1")
+check("ETA extrapolates from the ASSIGN clock, not the whole-window clock",
+      clk.eta is not None and clk.eta < 5.0, clk.eta)
+check("  -> while elapsed still counts the whole run", clk.elapsed > 999.0)
+clk2 = PG.ProgressState(title="t")
+clk2.feed("[assign_batch] parallel: 2 worker processes (match-workers/proc=6) over 4 samples")
+check("the parallel banner starts the assign clock too", clk2.t_assign is not None)
 
 ph = PG.ProgressState(title="t")
 check("phase marker parses", ph.feed("[phase] cluster") and ph.phase == "cluster")
@@ -135,14 +168,20 @@ check("no total-runtime row while a run is still going",
       "total runtime" not in dict(PG.summary_rows({"elapsed_s": 754.0})))
 
 eta_st = PG.ProgressState(title="t")
+eta_st.feed("[assign_batch] (1/3) assigning s1 ...")
+eta_st.feed("[assign_batch] (1/3) done s1")
+check("sample id survives between samples (it names the last one completed)",
+      eta_st.current_sid == "s1" and eta_st.phase == "assign")
 eta_st.feed("[assign_batch] (3/3) assigning s3 ...")
 eta_st.feed("[assign_batch] (3/3) done s3")
 check("no ETA once every sample is in (the report tail is not modelled)",
       eta_st.eta is None)
-check("sample id survives between samples (it names the last one completed)",
-      eta_st.current_sid == "s3")
+check("the last 'done' opens the MERGE (align runs next), with no current sample",
+      eta_st.phase == "merge" and eta_st.current_sid == "")
 eta_st.feed("[assign_batch] DONE: 9 merged M0 ({}); 1 in all files, 0 single-file, 0 formula disagreements")
-check("sample id cleared once assignment as a whole ends", eta_st.current_sid == "")
+check("the DONE line (logged after align) means the merge is OVER, not starting",
+      eta_st.phase == "merged" and eta_st.current_sid == ""
+      and PG.PHASE_LABEL["merged"] != PG.PHASE_LABEL["merge"])
 sid_st = PG.ProgressState(title="t")
 sid_st.feed("[assign_batch] (1/2) assigning s1 ...")
 sid_st.feed("[phase] cluster")
@@ -179,6 +218,10 @@ check("assign_batch emits the 'done' line progress.py parses",
             '''log(f"[assign_batch] ({done}/{len(sample_ids)}) done {out['sid']}")'''))
 check("assign_batch emits the parallel banner progress.py parses",
       emits("batch/assign_batch.py", 'log(f"[assign_batch] parallel: {n_jobs} worker processes '))
+check("  -> and the banner carries the sample count the parser takes N from",
+      emits("batch/assign_batch.py", 'f"over {len(sample_ids)} samples")'))
+check("cmd_assign marks the assign phase itself (nothing on that path logs [phase] assign)",
+      'prog.phase("assign")' in (PKG / "cli.py").read_text())
 check("assign_batch emits the DONE line progress.py parses",
       emits("batch/assign_batch.py", 'log(f"[assign_batch] DONE: {summary[\'merged_M0\']} merged M0 '))
 check("assign emits the per-stage timing line progress.py parses",

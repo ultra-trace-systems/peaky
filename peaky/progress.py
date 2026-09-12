@@ -49,7 +49,8 @@ PHASES = ("fetch", "select", "assign", "merge", "cluster", "vankrevelen",
           "report", "provenance", "done")
 PHASE_LABEL = {
     "fetch": "fetching time series", "select": "selecting samples",
-    "assign": "assigning", "merge": "merging ledgers", "cluster": "clustering",
+    "assign": "assigning", "merge": "merging ledgers", "merged": "ledgers merged",
+    "cluster": "clustering",
     "vankrevelen": "Van Krevelen", "report": "building report",
     "provenance": "recording provenance", "done": "done",
 }
@@ -61,7 +62,7 @@ PHASE_LABEL = {
 # --------------------------------------------------------------------------- #
 RE_ASSIGNING = re.compile(r"^\[assign_batch\] \((\d+)/(\d+)\) assigning (\S+)")
 RE_SAMPLE_DONE = re.compile(r"^\[assign_batch\] \((\d+)/(\d+)\) done (\S+)")
-RE_PARALLEL = re.compile(r"^\[assign_batch\] parallel: (\d+) worker processes")
+RE_PARALLEL = re.compile(r"^\[assign_batch\] parallel: (\d+) worker processes .*over (\d+) samples")
 RE_ASSIGN_DONE = re.compile(r"^\[assign_batch\] DONE: (\d+) merged M0")
 RE_STAGE = re.compile(r"^\[run\] (\S+) took ([\d.]+)s")
 RE_PHASE = re.compile(r"^\[phase\] (\w+)")
@@ -93,6 +94,7 @@ class ProgressState:
     stage_idx: int = 0
     n_stages: int = NOMINAL_STAGES
     t0: float = field(default_factory=time.monotonic)
+    t_assign: float | None = None  # assign-phase clock (first assigning line / parallel banner)
     out_dir: str = ""
     last_line: str = ""
     stats: dict = field(default_factory=dict)
@@ -105,6 +107,12 @@ class ProgressState:
         return time.monotonic() - self.t0
 
     @property
+    def assign_elapsed(self) -> float:
+        """Seconds since assignment proper began -- the per-sample rate must not
+        be diluted by the time-series fetch and sample selection before it."""
+        return time.monotonic() - (self.t0 if self.t_assign is None else self.t_assign)
+
+    @property
     def eta(self) -> float | None:
         """Linear extrapolation over COMPLETED samples. None until one lands --
         an ETA from zero completions is a guess dressed as a number."""
@@ -112,7 +120,7 @@ class ProgressState:
             return None
         if self.samples_done >= self.n_samples:
             return None            # samples all in; the report tail is not modelled
-        per = self.elapsed / self.samples_done
+        per = self.assign_elapsed / self.samples_done
         return max(0.0, per * (self.n_samples - self.samples_done))
 
     @property
@@ -126,6 +134,10 @@ class ProgressState:
         if self.parallel or not self.n_stages:
             return 0.0
         return min(1.0, self.stage_idx / self.n_stages)
+
+    def _start_assign_clock(self) -> None:
+        if self.t_assign is None:
+            self.t_assign = time.monotonic()
 
     def _learn_stages(self) -> None:
         """Learn the real stage count from the sample that just completed -- the
@@ -144,6 +156,7 @@ class ProgressState:
 
         if (m := RE_ASSIGNING.match(line)):
             i = int(m.group(1))
+            self._start_assign_clock()
             self.phase = "assign"
             self.n_samples = int(m.group(2))
             self.current_sid = m.group(3)
@@ -157,24 +170,39 @@ class ProgressState:
             self.stage_idx, self.stage_name = 0, ""   # new sample -> restart stage bar
             return True
         if (m := RE_SAMPLE_DONE.match(line)):
-            self.phase = "assign"
+            self._start_assign_clock()
             self.samples_done, self.n_samples = int(m.group(1)), int(m.group(2))
-            self.current_sid = m.group(3)
+            # In parallel mode this names the sample that just FINISHED while
+            # others are still running; under an "assigning" header it would
+            # read as the current one. Only a serial run has a current sample.
+            self.current_sid = "" if self.parallel else m.group(3)
             self._learn_stages()
             self.stage_idx, self.stage_name = 0, ""
+            if self.samples_done >= self.n_samples:
+                # last sample in -> what runs next is the merge (align + guards
+                # + TS stamp), up to the DONE line
+                self.phase, self.current_sid = "merge", ""
+            else:
+                self.phase = "assign"
             return True
         if (m := RE_PARALLEL.match(line)):
             # Workers replay their logs only after the reduce, so stage lines stop
             # being live here. Freeze the stage bar rather than animate a lie.
+            self._start_assign_clock()
             self.parallel = int(m.group(1))
+            self.n_samples = int(m.group(2))
             self.phase = "assign"
+            self.current_sid = ""
+            self.stage_idx, self.stage_name = 0, ""
             return True
         if RE_ASSIGN_DONE.match(line):
+            # logged AFTER align(): the merge is over, the report tail is next
             self.samples_done = self.n_samples or self.samples_done
-            self.phase = "merge"
+            self.phase = "merged"
             self.current_sid = ""          # no longer inside any one sample
             return True
         if (m := RE_STAGE.match(line)) and not self.parallel:
+            self.phase = "assign"          # `peaky assign` has no 'assigning' line
             self.stage_name = m.group(1)
             self.stage_idx += 1
             self.n_stages = max(self.n_stages, self.stage_idx)
