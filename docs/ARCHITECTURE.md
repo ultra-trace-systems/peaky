@@ -86,7 +86,10 @@ Mascope sample_id
 reagent + prescan                       profiles.resolve / reagents.label / isotopes.prescan
    │                                     detect adducts, label reagent-ion clusters, build grid constraints
    ▼
-candidate generation                    chemistry.py grid (integer-DBE / Senior / O-cap) per peak
+admission gate                          admission.stamp_admission: eligible = height ≥ edge-multiple
+   │                                     OR bin occurrence ≥ batch threshold (table from the batch run;
+   ▼                                     none on a single sample → brightness only); stamps admitted_by
+candidate generation                    chemistry.py grid (integer-DBE / Senior / O-cap) per eligible peak
    │
    ▼
 SCORING  ── local_scoring ────►         io_mascope.score_candidates: in-process mascope_tools (default)
@@ -122,7 +125,10 @@ batch + reagent
 sampling.select_cover_samples            pick the sample subset (presence set-cover, gain stop)
    │
    ▼
-assign each rep (assign.run)             per-file ledgers kept
+admission.bin_occurrence                 per-bin occurrence table from the batch time series (once,
+   │                                     at sampling.BATCH_TOL_PPM) + the Otsu-derived threshold
+   ▼
+assign each rep (assign.run)             per-file ledgers kept (each stamped with occurrence / admitted_by)
    │
    ▼
 assign_batch.run  → merge                offset-aware align + jitter table; positive amine gate at merge
@@ -153,6 +159,7 @@ commitments the previous ones justify. (Condensed; the authoritative table is in
 | stage        | module            | what it commits                                                                 |
 | ------------ | ----------------- | ------------------------------------------------------------------------------- |
 | **Pre**      | `reagents`/`isotopes` | detect reagent adducts; prescan isotope fingerprint; label reagent-ion clusters (Brₙ, BrO/BrO₂/BrO₃, ⁷⁹/⁸¹Br) so they are never candidates |
+| gate         | `admission`       | **admission gate** (nothing committed): stamps each peak's `occurrence` + `admitted_by`; the pass-1 grid, the pass-6 ladder gap-fill, residual stage B and the siloxane ladder draw candidates from `height ≥ edge-multiple OR occurrence ≥ batch threshold` (pass-2/3 series growth, residual stage A and the reflist rescue are still brightness-only) |
 | **0**        | `passes`          | **known species** (committed + locked, first): atmospheric acids, nitroaromatics, PFCAs, ³⁷Cl-confirmed chlorinated paraffins, silanediols, +mode organophosphates — families the generic grid would miss |
 | **1**        | `passes`          | lock the high-confidence **CHO/CHON backbone**: enumerate → score → arbitrate → commit M0 owners + isotopologue children |
 | **2**        | `passes` (`series_gka`) | **iterative GKA series** expansion from locked anchors (CH₂/O/H₂O/CO/CO₂/…) |
@@ -289,7 +296,9 @@ see [`DATA_CURATION.md`](DATA_CURATION.md)).
 complexity penalty), `isotopes.py` (prescan → grid constraints, envelope
 predictor), `reagents.py` / `profiles.py` (reagent library + per-reagent config).
 
-**Assignment** — `ledger.py` (state + invariants + commit API), `passes/`
+**Assignment** — `ledger.py` (state + invariants + commit API), `admission.py`
+(the admission gate: batch occurrence table, Otsu-derived persistence threshold,
+`admissible` = height OR persistence, per-peak `admitted_by`), `passes/`
 (the pass package: arbitration + pass director + calibration; `directors.py` / `core.py` / `postprocess.py` / `config.py`), `series_gka.py` / `series_detect.py`
 / `ladders.py` (series math, detection, ladder gap-fill), `residual.py` (pass 4),
 `siloxane.py` (PDMS ladder), `cleanup.py` (residual cleanup + plausibility

@@ -107,7 +107,7 @@ All in `peaky/batch/assign_batch.py`.
 | --- | --- | --- |
 | `DEFAULT_TOL_PPM` | 6.0 (`= sampling.BATCH_TOL_PPM`) | single-linkage gap tolerance for cross-file m/z clustering — the same constant the selector bins on |
 | `TIER_RANK` | `{Assigned:2, Candidate:1}` | consensus-row preference (then `ion_score`) |
-| `_M0_COLS` | `[mz, neutral_formula, adduct, tier, ion_score]` | the per-file M0 schema aligned |
+| `_M0_COLS` | `[mz, neutral_formula, adduct, tier, ion_score, admitted_by, occurrence]` | the per-file M0 schema aligned (the last two = admission provenance, carried for the winning row; absent columns are tolerated) |
 | `run` `amine_r_min` | 0.7 | min trace correlation for the positive amine re-read |
 | `run` `k_min` / `k_max` / `min_gain` / `min_prevalence` | 6 / 30 / 0.005 / 2 | passed through to `sampling.select_cover_samples` (see [`SAMPLING.md`](SAMPLING.md)) |
 

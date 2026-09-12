@@ -49,11 +49,14 @@ the achieved coverage and why the selection stopped.
 
 ## Admission: which peaks are eligible (persistence OR brightness)
 
-Every pass that hunts for new formulas (the pass-1 grid, the ladder / siloxane /
-residual explainers) draws its candidate peaks through one gate
-(`assignment/admission.py`). A peak is **eligible** if it is bright enough
+Four formula-hunting sites draw their candidate peaks through one gate
+(`assignment/admission.py`): the **pass-1 grid**, the **pass-6 ladder gap-fill**,
+**residual stage B** and the **siloxane ladder** (its work set *and* its seed
+test). A peak is **eligible** there if it is bright enough
 (`height ≥ height_cutoff`, an edge multiple — see above) **or** persistent:
-its m/z bin holds a peak in at least a threshold fraction of the batch's spectra.
+its m/z bin holds a peak in at least a threshold fraction of the batch's spectra
+(bins at `sampling.BATCH_TOL_PPM` = 6 ppm, the one tolerance the selection, this
+table and the merge share, so `batch` and `assign --ts-batch` bin identically).
 That threshold is **derived from the batch** (`occurrence_min = "auto"`): the
 bin-occurrence distribution is cleanly bimodal on every instrument measured
 (transient bins pile up below 0.1, persistent ones above 0.9), and Otsu's split of
@@ -72,12 +75,18 @@ peaks normally land as Candidates, and the isotope rules are untouched.
 occurrence-admitted peak is a real ion, but nothing constrains *which* formula
 it got, so the tier engine caps it at Candidate (`tier_reason`
 `persistent-weak`) unless an isotopologue, a second channel or a series anchor
-corroborates the formula. Each per-file ledger row records `occurrence` and
-`admitted_by` (`height` /
-`occurrence` / empty = not eligible); the merged ledger carries them for the
-winning row. Batch runs compute the occurrence table from the batch time
-series; a single-sample run without `--ts-batch` has no batch context and is
+corroborates the formula. Each per-file ledger row records `occurrence` (float
+in [0, 1], NaN without batch context or when no bin is within tolerance) and
+`admitted_by` (`height` / `occurrence` = persistence only / `''` = below the
+gate those four sites use); the merged ledger carries them for the winning row.
+Batch runs compute the occurrence table from the batch time series; a
+single-sample run without `--ts-batch` has no batch context and is
 brightness-only. `--occurrence-min 0` disables the path.
+
+**Not yet gated (brightness-only, `height ≥ height_cutoff`)**: pass-2/3 series
+growth, residual stage A (the ~2-Da isotope-doublet scan) and the reflist
+rescue. `admitted_by` says nothing about those; converting them is a documented
+follow-up, kept out of this change so the validated behaviour is unchanged.
 
 ## The pass sequence
 

@@ -97,6 +97,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `peaky assign --ts-batch` computes the table for a single sample. `batch` /
   `pool` also gained the absolute `--height-cutoff` override and
   `--height-cutoff-x-edge`, which only `assign` had.
+- **Four formula-hunting sites draw their candidates from the admission gate
+  instead of brightness alone**: the pass-1 grid, the pass-6 ladder gap-fill,
+  residual stage B and the siloxane ladder (its work set *and* its seed test —
+  the lowest rung of a weak ladder is exactly a persistent sub-gate peak, and a
+  brightness-only seed test left it a 2-member run). Pass-2/3 series growth,
+  residual stage A and the reflist rescue remain brightness-only (a documented
+  follow-up). One m/z binning tolerance, `sampling.BATCH_TOL_PPM` (6 ppm),
+  now serves every batch-level operation — selection, the admission table and
+  the merge — so `batch` and `assign --ts-batch` bin identically.
 
 ### Removed
 
@@ -274,6 +283,39 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `height_cutoff_x_edge_source` (and each file's `height_cutoff_x_edge` beside
   its `height_gate_cps`), and it stays in the `run_manifest.json['config']`
   fingerprint, which one log line per run mirrors.
+- **Admission gate: persistence OR brightness** (`assignment/admission.py`).
+  A peak is eligible for formula search at the gated sites (pass-1 grid, ladder
+  gap-fill, residual stage B, siloxane ladder — see *Changed*) if `height >=
+  height_cutoff OR occurrence >= threshold`, where occurrence is the fraction
+  of the batch's spectra whose m/z bin holds a peak (bins = `timeseries.
+  build_matrix` at `sampling.BATCH_TOL_PPM`; computed once per batch from the
+  time series) and the threshold is **derived from the batch**
+  (`--occurrence-min auto`: Otsu's split of the bimodal bin-occurrence
+  distribution, clamped to 0.25–0.75, 0.40–0.55 on every instrument measured;
+  a fixed 0.8 was tried first and discarded two-thirds of the recurring weak
+  ions; a number overrides, `0` disables, < 10 spectra switch it off).
+  Noise does not recur at a fixed m/z; ions do: on a 230-spectrum mixed-reagent
+  TOF batch the old absolute cutoff kept 32 of 4025 bins while ~500 recur in
+  > 80 % of spectra at a median 3–4 cps, and 21 highly oxygenated molecules an
+  Orbitrap saw on the same air all sit in that recurrent population at ~2 cps
+  (mass-shifted decoys: none). The path is additive and admits peaks for
+  consideration only — confirmation rules are unchanged, and **persistence
+  gates entry while only corroboration gates the tier**: an occurrence-admitted
+  M0 with no isotopologue / cross-channel / series corroboration is capped at
+  Candidate (`tier_reason` `persistent-weak`), because at that intensity
+  nothing constrains which formula the real ion got. Per-file ledgers record
+  `occurrence` (float in [0, 1], NaN without batch context) and `admitted_by`
+  (`height` / `occurrence` / `''` = below the gate the gated sites use), the
+  merged ledger carries the winner's, `batch_summary.json` gains an `admission`
+  block (`occurrence_min` = the knob, `occurrence_threshold` = the resolved
+  fraction, `n_bins`, `n_persistent_bins`, `n_spectra`, `tol_ppm`) and per-file
+  `admitted` counts, `run_manifest.json` records that block under `counts`,
+  and the report cover states how many merged peaks were eligible by
+  persistence only (with the resolved threshold and the knob).
+  `PassConfig.occurrence_min`; `assign.run(occurrence=)`; `peaky assign
+  --ts-batch` computes the table for a single sample. `batch` / `pool` also
+  gained the absolute `--height-cutoff` override and `--height-cutoff-x-edge`,
+  which only `assign` had (the three flags are defined once for all three).
 
 ### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
 
