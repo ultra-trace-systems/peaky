@@ -271,9 +271,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   than the iron complexes the source saw. The list goes from 59 species to 50
   (`data_version` 2008.2), the split Mascope's reference seed uses.
 
+- **A formula is validated before its parity is trusted.** `chemistry.dbe` scores
+  an element outside the mass table as divalent — sodium acetate comes out at
+  DBE 1.5 and would have pooled as a radical with no message — and
+  `parse_formula` ignores charge and bracket notation, so an anion written
+  `[C10H14NO8]-` would have loaded as a closed-shell neutral. `load_catalog` now
+  warns and skips (counted, on `ReferenceList.skipped`) any species whose formula
+  uses an unknown element, does not round-trip as a Hill-notation neutral, or has
+  a negative DBE. The bundled lists skip nothing.
+
+- **One parity test for the whole package.** `chemistry.odd_electron` is now the
+  single DBE-parity helper the closed-shell grid gate (`dbe_ok`), the
+  plausibility radical exemption and the reference-list loader all call, instead
+  of three copies of the same half-integer test; `dbe_ok` calls a half-integer
+  DBE "odd-electron (radical) — blocked on the closed-shell grid" rather than
+  "not a valid neutral", which is what the reference lists had always called it.
+
 - `tests/test_peaklists.py` loads every bundled list and fails on a species with
-  a negative DBE or a radical claim its parity contradicts. Mascope keeps the same
-  test on its own copy of the lists.
+  a negative DBE or a radical claim its parity contradicts, and holds the
+  corrected pool to its consumers: an organic nitrate's ion mass is matched by
+  `match_by_mass` / `match_assigned` and carried into the selection prior, a real
+  nitrogen-bearing radical's is not, and both are only with
+  `include_radicals=True`. Mascope keeps the same test on its own copy of the
+  lists.
 
 ### Added
 
@@ -393,6 +413,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   carry the value onto `tiers._Cal`, so overriding it moves the commit gates and the tier
   gate together.
 - Reference peaklist `isoprene_ox_wennberg2018` (27 closed-shell isoprene oxidation products, Wennberg et al. 2018) added to `peaky/data/peaklists/`, gated by the new `isoprene_ox` context (batch keywords isoprene/ISOPN/IEPOX/ISOPOOH/methacrolein) and `biogenic_soa`/`ambient_summer`; rescues the isoprene dihydroxy-dinitrate C5H10N2O8 as an isotope-confirmed Assigned in the 2026 field-campaign ¹⁵NO₃⁻ data.
+- **A run records which reference lists it had active** — `reflists.active_versions`
+  puts `reflists_active: [(id, data_version), ...]` in the single-sample manifest
+  (beside the selection prior it builds from the same lists) and in
+  `batch_summary.json`. A list's closed-shell/radical split changes with its
+  `data_version`, so a ledger now says which revision shaped its prior and its
+  rescue instead of silently depending on the installed copy.
 
 - **A reagent profile can carry its own height-gate multiple**
   (`ReagentProfile.height_cutoff_x_edge`, `docs/REAGENTS.md` §3a). The gate is a
