@@ -184,13 +184,13 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
             ctx["adduct_signal"] = {k: float(v) / tot for k, v in asig.items()}
 
         # REFERENCE-LIST prior: unlock literature peaklists from the run's context
-        # (batch-name/label metadata), then (1) corroborate Candidate-tier neutrals
+        # (batch-name/label metadata) through the same one-step `activate` the
+        # assigning entry points use, then (1) corroborate Candidate-tier neutrals
         # by formula membership and (2) rescue UNEXPLAINED peaks by mass under the
         # actual reagent adducts. Soft + provenance-tagged; never overrides a tier.
         try:
-            tags = RL.resolve_context_tags(ctx.get("batch_name") or "", ctx.get("dataset") or "",
-                                           ctx.get("label") or "")
-            lists = RL.active_lists(RL.load_catalog(), context_tags=tags)
+            lists, tags = RL.activate(ctx.get("batch_name") or "", ctx.get("dataset") or "",
+                                      ctx.get("label") or "")
             if lists:
                 cand = merged.loc[merged.get("tier") == "Candidate", "neutral_formula"].dropna()
                 corr = RL.match_assigned(cand.unique(), lists)
