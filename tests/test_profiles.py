@@ -174,6 +174,15 @@ _cfg4 = _PC.PassConfig()
 check("a profile-less cfg keeps the package default",
       P.apply_height_cutoff_x_edge(_cfg4, _plain)[0] == 1.0
       and _cfg4.height_cutoff_x_edge == 1.0)
+# the one-per-run log line, and its silence when the multiple is not what gates
+_lines: list = []
+P.apply_height_cutoff_x_edge(_PC.PassConfig(), _picker, log=_lines.append)
+check("apply logs the value AND its source, once",
+      len(_lines) == 1 and "5x" in _lines[0] and "Tof reagent profile" in _lines[0],
+      _lines)
+P.apply_height_cutoff_x_edge(_PC.PassConfig(height_cutoff_cps=250.0), _picker,
+                             log=_lines.append)
+check("no gate line when an ABSOLUTE override is what gates", len(_lines) == 1, _lines)
 
 # ---- register a new profile in code -----------------------------------------
 acet = P.ReagentProfile(

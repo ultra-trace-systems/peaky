@@ -378,7 +378,9 @@ def apply_height_cutoff_x_edge(cfg, profile: "ReagentProfile | None" = None, *,
     """Stamp the resolved multiple onto a PassConfig; return (value, source).
     A cfg that ALREADY carries a non-default multiple was set deliberately by its
     caller, so it counts as explicit and outranks the profile. `log` prints the
-    one-line 'which gate, from where' record for the run."""
+    one-line 'which gate, from where' record for the run -- skipped when an
+    absolute `height_cutoff_cps` override is in force, since the multiple is then
+    not what gates (assign.run reports that override itself)."""
     from peaky.assignment.passes.config import DEFAULT_HEIGHT_CUTOFF_X_EDGE
 
     if explicit is None:
@@ -388,7 +390,7 @@ def apply_height_cutoff_x_edge(cfg, profile: "ReagentProfile | None" = None, *,
     value = resolve_height_cutoff_x_edge(explicit, profile)
     source = height_cutoff_x_edge_source(explicit, profile)
     cfg.height_cutoff_x_edge = value
-    if log is not None:
+    if log is not None and getattr(cfg, "height_cutoff_cps", None) is None:
         log(f"[gate] height cutoff = {value:g}x the sample's noise edge "
             f"(from {source})")
     return value, source
