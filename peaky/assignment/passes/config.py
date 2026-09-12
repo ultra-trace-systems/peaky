@@ -193,8 +193,10 @@ class PassConfig:
         # calibration's OUTPUT, not user knobs. The pipeline now hands the same
         # cfg to the provenance manifest, so leaving any of them in would make
         # two identical re-runs fingerprint differently depending on which
-        # sample finished last. Dropping cal_mu / cal_sigma is a manifest schema
-        # change: older manifests carry them as a record of the run's centre.
+        # sample finished last. cal_mu / cal_sigma are dropped here for that
+        # reason -- a deliberate manifest schema change (manifests written
+        # earlier carry the two as a record of the run's calibration centre,
+        # and batch_summary.json still reports the per-file offsets).
         "cal_a", "cal_b", "cal_sigma_trend", "cal_mz_lo", "cal_mz_hi",
         "cal_mu", "cal_sigma")
 
