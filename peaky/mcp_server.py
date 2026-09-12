@@ -257,6 +257,7 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
 
     def work(log):
         from peaky.assignment import assign, passes
+        from peaky.assignment import reflists as RL
         from peaky.chem import profiles
         os.makedirs(out_dir, exist_ok=True)
         rp = profiles.resolve(reagent) if reagent != "auto" else None
@@ -266,7 +267,14 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
         # relative gate: the profile's own multiple of the sample's noise edge
         # when it carries one, else the package default (logged once).
         profiles.apply_height_cutoff_x_edge(cfg, rp, log=log)
-        res = assign.run(sample_id, ctx, cfg=cfg, adducts=adducts, log=log,
+        # same context-unlock as `peaky assign` / `peaky batch`: one sample's only
+        # metadata is its context + reagent label, so this is contaminants-only
+        # unless one of them names a chemistry.
+        lists, _tags = RL.activate(ctx, getattr(rp, "label", "") or "")
+        if lists:
+            log(f"[reflists] active: {RL.active_versions(lists)}")
+        res = assign.run(sample_id, ctx, cfg=cfg, adducts=adducts,
+                         reflists_active=lists, log=log,
                          label_purity=getattr(rp, "purity", None))
         led = res["ledger"]
         path = os.path.join(out_dir, f"{sample_id}_ledger.csv")
@@ -278,7 +286,8 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
             top = m0.head(10)[["mz", "neutral_formula", "adduct"]].to_dict("records")
         return {"ledger_csv": path, "context": ctx,
                 "roles": {k: int(v) for k, v in roles.items()},
-                "top_species": top, "stats": res.get("stats", {})}
+                "top_species": top, "stats": res.get("stats", {}),
+                "reflists_active": res.get("reflists_active", [])}
 
     jid = JOBS.submit("assign_sample", work,
                       {"sample_id": sample_id, "reagent": reagent, "output_dir": out_dir})

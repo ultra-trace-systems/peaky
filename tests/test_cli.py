@@ -1,6 +1,7 @@
 """Offline tests for the CLI (cli.py): parser wiring, reagent resolution for
 explicit profiles (no network), friendly server-error hints, the --env override,
 and the offline `gka` subcommand. Run: python3 tests/test_cli.py"""
+import json
 import os
 import sys
 import tempfile
@@ -11,6 +12,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from peaky import cli, gka_widget, profiles  # noqa: E402
+from peaky import reflists as RL             # noqa: E402
 
 PASS = FAIL = 0
 def check(name, cond, detail=""):
@@ -279,6 +281,68 @@ finally:
     cli._require_creds = _saved["require"]
     PL.run_batch, PL.run_pooled_batches = _saved["run_batch"], _saved["run_pooled"]
     _A.run = _saved["assign_run"]
+
+
+# ---- `peaky assign` unlocks the reference lists, and says which ---------------
+# The batch path has always done this; the single-sample path used to call
+# assign.run without `reflists_active`, which left the selection prior and the
+# rescue-verify pass switched off and wrote `"reflists_active": []` into every
+# manifest it produced. These pin both halves: the kwarg goes in, the versions
+# come out.
+def _assign_args(out_dir):
+    """Parser-built args for `peaky assign`. `--adducts` short-circuits reagent
+    resolution, so nothing here needs the server."""
+    return cli.build_parser().parse_args(
+        ["assign", "--sample-id", "S1", "--adducts", "[M-H]-",
+         "--context", "ambient-air", "--output-dir", out_dir])
+
+
+def _run_cmd_assign(monkeypatch, out_dir):
+    """Drive cmd_assign with every network/IO collaborator stubbed. The reference
+    catalog is NOT stubbed — loading it is the behaviour under test. Returns the
+    kwargs assign.run was called with."""
+    from peaky.assignment import assign as A
+    from peaky.reporting import gka_widget as GW
+    from peaky.reporting import report as R
+
+    seen = {}
+    led = pd.DataFrame({"mz": [200.1], "height": [1e5], "role": ["M0"],
+                        "tier": ["Assigned"], "neutral_formula": ["C6H12O6"]})
+    stats = {"by_role": {"M0": 1, "iso_child": 0, "reagent": 0, "unexplained": 0},
+             "signal_by_role": {"M0": 1.0, "iso_child": 0.0, "reagent": 0.0},
+             "count_frac_by_role": {"unexplained": 0.0}}
+
+    def fake_run(sample_id, context="ambient-air", **kw):
+        seen.update(kw); seen["sample_id"] = sample_id
+        # mirror the real run: the manifest carries (id, data_version) pairs
+        return {"ledger": led, "stats": stats, "problems": [], "context": context,
+                "sample_id": sample_id,
+                "reflists_active": RL.active_versions(kw.get("reflists_active"))}
+
+    monkeypatch.setattr(cli, "_require_creds", lambda *a, **k: None)
+    monkeypatch.setattr(A, "run", fake_run)
+    monkeypatch.setattr(R, "write_excel", lambda *a, **k: None)
+    monkeypatch.setattr(R, "write_markdown", lambda *a, **k: None)
+    monkeypatch.setattr(GW, "build_points", lambda *a, **k: [])
+    monkeypatch.setattr(GW, "render_html", lambda *a, **k: "<html></html>")
+    cli.cmd_assign(_assign_args(out_dir))
+    return seen
+
+
+def test_a_single_sample_assign_activates_the_reference_lists(monkeypatch, tmp_path):
+    seen = _run_cmd_assign(monkeypatch, str(tmp_path))
+    lists = seen.get("reflists_active")
+    assert lists, "cmd_assign passed no reference lists to assign.run"
+    assert {rl.id for rl in lists} == {"contaminants_keller2008"}, \
+        "a lone sample has no batch name, so only the always-active lists unlock"
+    assert all(rl.always_active for rl in lists)
+
+
+def test_the_single_sample_manifest_names_the_list_versions(monkeypatch, tmp_path):
+    _run_cmd_assign(monkeypatch, str(tmp_path))
+    man = json.loads(next(Path(tmp_path).glob("S1_*_manifest.json")).read_text())
+    assert man["reflists_active"], "the manifest recorded no active lists"
+    assert ["contaminants_keller2008", "2008.2"] in [list(x) for x in man["reflists_active"]]
 
 
 def test_all():

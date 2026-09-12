@@ -202,6 +202,19 @@ def active_lists(catalog: dict, *, context_tags=()) -> list:
             if L.always_active or (tags and set(L.applies_to_contexts) & tags)]
 
 
+def activate(*texts: str) -> tuple[list, set]:
+    """The one activation step every entry point runs: infer the context tags from
+    whatever metadata the run has, then select the lists those tags unlock.
+    Returns `(lists, tags)` so the caller can log what the metadata bought it.
+
+    A run whose metadata names no chemistry — a single-sample `peaky assign`,
+    whose only text is a context label like 'ambient-air' — still gets the
+    `always_active` lists (the lab contaminants); only `peaky batch`, which has a
+    batch name to read, can unlock a chemistry-specific list."""
+    tags = resolve_context_tags(*texts)
+    return active_lists(load_catalog(), context_tags=tags), tags
+
+
 def prior_formulas(lists) -> frozenset:
     """The SELECTION-PRIOR set: every closed-shell formula on the active lists
     (`assign.run` hands it to `cfg.reflist_formulas`, which `arbitrate` reads as

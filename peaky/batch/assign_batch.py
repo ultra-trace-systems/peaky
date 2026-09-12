@@ -516,8 +516,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # specific lists when the batch OR DATASET name -- the chemistry often lives
     # only in the latter -- matches) -> selection prior + rescue.
     from peaky.assignment import reflists as RL
-    _tags = RL.resolve_context_tags(batch or "", dataset or "", getattr(prof, "label", ""))
-    reflists_active = RL.active_lists(RL.load_catalog(), context_tags=_tags)
+    reflists_active, _tags = RL.activate(batch or "", dataset or "", getattr(prof, "label", ""))
     if reflists_active:
         log(f"[assign_batch] reference lists active: {RL.active_versions(reflists_active)} "
             f"(context {sorted(_tags) or 'contaminants-only'})")

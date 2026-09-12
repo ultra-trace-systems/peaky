@@ -211,6 +211,18 @@ def cmd_assign(args) -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
     base = od / f"{args.sample_id}_{stamp}"
 
+    # context-unlock the reference peaklists, exactly as the batch path does, so a
+    # single-sample run gets the same selection prior + rescue-verify and its
+    # manifest records which list versions shaped them. A lone sample has no batch
+    # name, so its only metadata is the context label -> contaminants-only unless
+    # that label names a chemistry.
+    from peaky.assignment import reflists as RL
+
+    reflists_active, tags = RL.activate(context)
+    if reflists_active:
+        print(f"[reflists] active: {RL.active_versions(reflists_active)} "
+              f"(context {sorted(tags) or 'contaminants-only'})")
+
     ts_peaks = None
     if args.ts_batch:
         client = io_mascope.connect()
@@ -245,7 +257,7 @@ def cmd_assign(args) -> None:
                          do_pass2=not args.no_pass2, do_pass3=not args.no_pass3,
                          do_pass4=not args.no_pass4, do_pass5=not args.no_pass5,
                          adducts=adducts, ts_peaks=ts_peaks, label_purity=purity,
-                         occurrence=occurrence,
+                         occurrence=occurrence, reflists_active=reflists_active,
                          log=prog, checkpoint_dir=str(od / "checkpoints"))
         # Nothing on this path logs the `(i/N) done` line assign_batch emits, so
         # say it directly: the one sample is in (samples bar 1/1) and the stages

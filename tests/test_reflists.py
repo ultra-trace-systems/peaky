@@ -62,6 +62,18 @@ check("'isoprene' batch name unlocks the isoprene context", "isoprene_ox" in iso
 check("isoprene list active under the isoprene context", any(rl.id == "isoprene_ox_wennberg2018" for rl in RL.active_lists(cat, context_tags=iso_tags)), None)
 check("isoprene list NOT active under a monoterpene-only context", not any(rl.id == "isoprene_ox_wennberg2018" for rl in RL.active_lists(cat, context_tags={"monoterpene_ox"})), None)
 
+# `activate` is the one step every entry point runs (batch, `peaky assign`, MCP):
+# resolve tags -> select lists, returning both so the caller can log the unlock.
+_a_lists, _a_tags = RL.activate("Orange peeling (Br- CIMS)", "Br⁻ CIMS")
+check("activate() == resolve_context_tags + active_lists",
+      _a_tags == tags and {rl.id for rl in _a_lists} == {rl.id for rl in act},
+      (sorted(_a_tags), [rl.id for rl in _a_lists]))
+# a single-sample run's only metadata is a context label, which names no chemistry
+_c_lists, _c_tags = RL.activate("ambient-air")
+check("a context label alone unlocks nothing chemistry-specific", _c_tags == set(), _c_tags)
+check("...but still activates the contaminants (so a lone sample is never list-free)",
+      _c_lists and all(rl.always_active for rl in _c_lists), [rl.id for rl in _c_lists])
+
 
 # ---- rescue-verify decision logic (injected oracle) ----
 def mk(rows):
