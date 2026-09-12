@@ -368,9 +368,12 @@ serial_src = _serial_branch_src(src)
 check("assign_batch.run has the `if n_jobs <= 1:` serial branch", bool(serial_src))
 check("the SERIAL branch itself logs the per-sample 'done' line",
       'log(f"[assign_batch] ({i}/{len(sample_ids)}) done {sid}")' in serial_src)
+# `find` not `index`: a deleted marker must FAIL this check, not raise out of the
+# module and take the whole contract section down as a collection error.
+_i_apply = serial_src.find("_apply(")
+_i_done = serial_src.find("done {sid}")
 check("  -> after the sample is applied (inside the per-sample loop)",
-      "_apply(" in serial_src
-      and serial_src.index("_apply(") < serial_src.index("done {sid}"))
+      0 <= _i_apply < _i_done, f"_apply at {_i_apply}, 'done' at {_i_done}")
 
 
 # On the single-batch path the pipeline delegates selection to assign_batch, so
