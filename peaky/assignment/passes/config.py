@@ -79,6 +79,15 @@ class PassConfig:
     height_cutoff_x_edge: float | None = None
     height_cutoff_cps: float | None = None
     noise_edge_cps: float | None = None   # runtime: set per sample by assign.run
+    # Persistence path of the admission gate (assignment/admission.py): a peak
+    # whose m/z bin holds a peak in >= this fraction of the batch's spectra is
+    # eligible for formula search even below the height gate. Noise does not
+    # recur at a fixed m/z; ions do. "auto" = Otsu's split of the batch's
+    # (bimodal) bin-occurrence distribution, 0.40-0.55 on every instrument
+    # measured; a number overrides; 0 disables. Needs the batch occurrence table
+    # (a batch run passes it; a single-sample run has none -> brightness only).
+    occurrence_min: float | str = "auto"
+    occurrence_threshold: float | None = None   # runtime: the resolved value, set per run
     limit_per_peak: int = 25
     workers: int = 12
     # confidence thresholds (on the RAW min(ion,compound) score)
@@ -198,7 +207,8 @@ class PassConfig:
         # earlier carry the two as a record of the run's calibration centre,
         # and batch_summary.json still reports the per-file offsets).
         "cal_a", "cal_b", "cal_sigma_trend", "cal_mz_lo", "cal_mz_hi",
-        "cal_mu", "cal_sigma")
+        "cal_mu", "cal_sigma",
+        "occurrence_threshold")
 
     @property
     def height_cutoff_x_edge_resolved(self) -> float:

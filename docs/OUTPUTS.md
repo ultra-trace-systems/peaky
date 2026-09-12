@@ -19,10 +19,10 @@ shared by the writers and the report reader so the filenames can't drift.
 
 | Artifact | What it is / what it's for |
 |---|---|
-| `merged_ledger.csv` | **The result.** Every merged peak (one row each): role, neutral formula + adduct, scores, ppm, confidence, tier, provenance. The provenance anchor. |
+| `merged_ledger.csv` | **The result.** Every merged peak (one row each): role, neutral formula + adduct, scores, ppm, confidence, tier, provenance, and the winning row's `admitted_by` / `occurrence`. The provenance anchor. |
 | `run_manifest.json` | **Reproducibility manifest.** Pins the run to its exact code (package + per-module version + content hash + git commit), input-data hash (`ts_sha1`), resolved config (incl. `height_cutoff_x_edge`), the selection block under `counts`, and output hash (`merged_ledger_sha1`). |
-| `batch_summary.json` | Run counts + per-file calibration offsets (M0/tier counts, n_files, offsets; per-file `noise_edge_cps` + the resolved gate `height_gate_cps` + the `height_cutoff_x_edge` it came from), the batch-level `height_cutoff_x_edge` + `height_cutoff_x_edge_source` (profile-supplied or the package default), and the **`selection`** block: `k`, `n_bins`, `achieved_coverage`, `stop_reason` (`gain-floor` / `k_max` / `exhausted`), `next_gain`, `tol_ppm` (the binning tolerance, = the merge's), `k_min`/`k_max`/`min_gain` (+ `coverage_by_group` for a pool). |
-| `per_file/<sid>_ledger.csv` | The full single-sample ledger for **each** assigned sample, kept for audit / re-merge. |
+| `batch_summary.json` | Run counts + per-file calibration offsets (M0/tier counts, n_files, offsets; per-file `noise_edge_cps` + the resolved gate `height_gate_cps` + the `height_cutoff_x_edge` it came from + `admitted` counts by path), the batch-level `height_cutoff_x_edge` + `height_cutoff_x_edge_source` (profile-supplied or the package default), the **`admission`** block (`occurrence_min`, `n_bins`, `n_persistent_bins`) and the **`selection`** block: `k`, `n_bins`, `achieved_coverage`, `stop_reason` (`gain-floor` / `k_max` / `exhausted`), `next_gain`, `tol_ppm` (the binning tolerance, = the merge's), `k_min`/`k_max`/`min_gain` (+ `coverage_by_group` for a pool). |
+| `per_file/<sid>_ledger.csv` | The full single-sample ledger for **each** assigned sample, kept for audit / re-merge. Carries the admission provenance per peak: `occurrence` (fraction of the batch's spectra whose m/z bin holds a peak) and `admitted_by` (`height` / `occurrence` = persistence only / empty = not eligible for formula search). |
 | `index.jsonl` | **At the `--out-dir` base, not inside the run folder.** Cross-run registry — one compact row per run, loadable with `pandas.read_json(lines=True)` to find or diff runs. |
 
 ### `figures/` — all `.png`

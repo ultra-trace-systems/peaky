@@ -56,7 +56,9 @@ from peaky.chem import chemistry as C
 from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
 
-__version__ = "0.7.1"  # mass-dependent z via masscal (range clamp; floor owned by PassConfig)
+__version__ = "0.8.0"  # mass-dependent z via masscal (range clamp; floor owned by
+                       # PassConfig) + persistent-weak cap (occurrence-admitted,
+                       # uncorroborated -> Candidate)
 
 TIER_ASSIGNED = "Assigned"
 TIER_CANDIDATE = "Candidate"
@@ -446,6 +448,12 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
             cross_channel = nfree_sib or nh4_urea  # hollow N-only diversity doesn't count
         corroborated = iso_ev or cross_channel or has_anchor
         degen_density, mass_degenerate = _degeneracy(r)
+        # admission provenance: a peak that was eligible for formula search only
+        # because its m/z bin PERSISTS across the batch (below the height gate)
+        # is a real ion, but at that intensity the isotopologues are sub-count,
+        # so nothing constrains WHICH formula it got. Persistence gates entry;
+        # only corroboration may gate the tier (see assignment/admission.py).
+        persist_only = str(r.get("admitted_by") or "") == "occurrence"
 
         method = str(r.get("method") or "")
         tier, reason = TIER_ASSIGNED, ""
@@ -456,6 +464,14 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
             tier = TIER_CANDIDATE
             reason = (f"{base} confidence: score/mass evidence below the "
                       "identification bar")
+        elif persist_only and not corroborated:
+            tier = TIER_CANDIDATE
+            _occ = r.get("occurrence")
+            reason = ("persistent-weak: eligible by persistence only (m/z bin in "
+                      + (f"{float(_occ):.0%} of spectra" if pd.notna(_occ) else "the batch")
+                      + ", below the height gate) with no isotopologue / cross-channel "
+                      "/ series corroboration -- the ion is real, the formula is a "
+                      "mass-only claim")
         elif counts.get("O", 0) > O_MAX_IDENTIFIED:
             tier = TIER_CANDIDATE
             reason = (f"O{counts['O']} exceeds validated chemistry for this "

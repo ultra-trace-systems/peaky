@@ -342,7 +342,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
         do_pass2: bool = True, do_pass3: bool = True, do_pass4: bool = True,
         do_pass5: bool = True, do_pass_certified: bool = True,
         ts_peaks=None, adducts=None, reflists_active=None,
-        label_isotope=None, label_max=2, label_purity=None,
+        label_isotope=None, label_max=2, label_purity=None, occurrence=None,
         log=print, checkpoint_dir=None) -> dict:
     cfg = cfg or passes.PassConfig()
     # the reagent bottle's isotopic purity (ReagentProfile.purity), published for
@@ -375,6 +375,18 @@ def run(sample_id: str, context: str = "ambient-air", *,
         f"-> height_cutoff {cfg.height_cutoff:.3g} cps "
         + ("(absolute override)" if cfg.height_cutoff_cps is not None
            else f"({cfg.height_cutoff_x_edge_resolved:g}x edge)"))
+    # Admission gate: brightness OR persistence. `occurrence` is the batch's
+    # per-bin occurrence table (assign_batch computes it from the batch time
+    # series); without it the gate is brightness alone (single-sample runs).
+    from peaky.assignment import admission as ADM
+    adm = ADM.stamp_admission(led, cfg, occurrence)
+    _thr = adm.get("occurrence_threshold")
+    log(f"[run] admission: {adm['height']} peaks by height, {adm['occurrence']} by "
+        f"persistence only ("
+        + (f"bin occurrence >= {_thr:.2f} [{adm.get('occurrence_min')}] of "
+           f"{occurrence.attrs.get('n_samples', '?')} spectra" if _thr is not None
+           else ("persistence path off" if occurrence is not None else "no batch table"))
+        + f"), {adm['rejected']} not eligible")
     # Adducts are normally detected from the sample's own server matches (the
     # SKILL design rule for mixed-reagent datasets). But a batch with a KNOWN
     # reagent can pass `adducts=` to force the analyte channels: per-sample match
@@ -475,6 +487,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # the multiple the gate was resolved FROM (profile-supplied or the package
     # default) -- the gate in cps alone cannot be read back without it.
     st["height_cutoff_x_edge"] = cfg.height_cutoff_x_edge_resolved
+    st["admitted"] = {"height": adm["height"], "occurrence": adm["occurrence"],
+                      "rejected": adm["rejected"]}
     log(f"[run] stats {json.dumps(st)}")
     return {"ledger": led, "stats": st, "summaries": summaries,
             "prescan": pre.as_dict(), "problems": problems,

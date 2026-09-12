@@ -124,8 +124,9 @@ def run_ladder_gapfill(client, sample_id: str, ledger: pd.DataFrame, profile,
     # bromine-free neutrals already seen at [M+Br]- -- the +HBr pairing evidence
     # that lets a di-bromide [M+HBr+Br]- gap commit at a lower score
     br_neutrals = set(m0.loc[m0["adduct"].astype(str) == "[M+Br]-", "neutral_formula"].dropna())
+    from peaky.assignment import admission as ADM
     tgt = ledger[(ledger["role"].isin([L.ROLE_UNEXPLAINED, L.ROLE_M0]))
-                 & (ledger["height"].fillna(0) >= cfg.height_cutoff)]
+                 & ADM.admissible(ledger, cfg)]
     tmz = tgt["mz"].to_numpy()
     torder = np.argsort(tmz)
     tmz_s = tmz[torder]

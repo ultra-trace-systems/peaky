@@ -115,7 +115,8 @@ def assign_siloxane_ladder(client, sample_id: str, ledger: pd.DataFrame,
     adducts = adducts or list(profile.reagent_adducts)
     gad = [a for a in adducts if a in C.ADDUCT_SHIFTS]
 
-    work = ledger[ledger["height"].fillna(0) >= cfg.height_cutoff]
+    from peaky.assignment import admission as ADM
+    work = ledger[ADM.admissible(ledger, cfg)]
     mzs = work["mz"].tolist(); hts = work["height"].tolist()
     chains = _find_ladders(mzs, hts, min_height=cfg.height_cutoff)
     if not chains:

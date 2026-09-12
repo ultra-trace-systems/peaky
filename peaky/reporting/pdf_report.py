@@ -87,6 +87,8 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
         gs = merged.groupby("tier")["ion_score"].mean()
         ctx["score_by_tier"] = {t: float(gs[t]) for t in gs.index}
     ctx["adduct_counts"] = merged["adduct"].value_counts().to_dict()   # actual channels
+    if "admitted_by" in merged.columns:   # admission provenance (persistence path)
+        ctx["n_admitted_occurrence"] = int((merged["admitted_by"] == "occurrence").sum())
     # the selected sample NAMES (timestamps), not just ids
     ss = f"{TAB}/selected_samples.csv"
     if os.path.exists(ss):
@@ -578,6 +580,11 @@ def cover(ctx, pdf):
     head += [("gap", 1), ("h", "Samples assigned"), ("gap", 0.3), ("b", sel_txt)]
     for name, role in ctx.get("samples", [])[:8]:
         head.append(("m", f"   {name}   [{role}]"))
+    _adm = (ctx.get("batch") or {}).get("admission") or {}
+    if ctx.get("n_admitted_occurrence"):
+        head.append(("dim", f"   {ctx['n_admitted_occurrence']} of {ctx.get('n_m0', '?')} merged "
+                            f"peaks were eligible by persistence only (bin present in "
+                            f"≥{_adm.get('occurrence_min', 0.8):.0%} of spectra, below the height gate)"))
     j = ctx.get("jitter", {})
     if j:
         nm = ctx.get("n_multifile")

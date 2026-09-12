@@ -77,11 +77,13 @@ peaky list samples --batch "<batch>" --dataset "<workspace>"
 
 # one sample
 peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto> \
-    [--height-cutoff-x-edge 2.5] --output-dir ~/peaky-output/<name>
+    [--height-cutoff-x-edge 2.5] [--ts-batch "<batch>" --occurrence-min auto] \
+    --output-dir ~/peaky-output/<name>
 
 # a whole batch (assign subset -> merge -> cluster -> Van Krevelen -> PDF report)
 peaky batch --batch "<batch>" --dataset "<workspace>" --reagent <Br|Ur|...> \
-    [--k-max 30 --k-min 6 --min-gain 0.005] --out-dir ~/peaky-output
+    [--k-max 30 --k-min 6 --min-gain 0.005] [--occurrence-min auto --height-cutoff-x-edge 1.0] \
+    --out-dir ~/peaky-output
 
 # MANY same-chemistry batches -> ONE unified ledger + whole-pool + per-group reports
 peaky pool --batches "<regex over batch names>" --dataset "<workspace>" \
@@ -113,7 +115,18 @@ batch's m/z bins: bins present in ≥2 samples (no height floor), each pick the
 sample covering the most not-yet-covered bins, stop when the next pick would add
 < `--min-gain` (0.5 %) after `--k-min` (6) picks; `--k-max` (30) is a budget and a
 run that hits it is flagged (`selection.stop_reason == "k_max"`). The achieved
-coverage is in `batch_summary.json['selection']`. Single-sample `assign` writes `<ID>_<UTC>_{ledger.csv, assignments.xlsx, summary.md,
+coverage is in `batch_summary.json['selection']`.
+
+Admission (which peaks are eligible for formula search) is **persistence OR
+brightness**: `height >= height_cutoff` (an edge multiple, `--height-cutoff-x-edge`)
+OR the peak's m/z bin recurs in >= `--occurrence-min` of the batch's spectra
+(`auto` = Otsu's split of the batch's own bimodal occurrence distribution, 0.4–0.55
+in practice; a number fixes it; `0` = brightness only). Noise does not recur at a
+fixed m/z; ions do — on a low-sensitivity TOF the recurrent weak population is the
+real chemistry and sits far below any height gate. Persistence admits a peak for
+consideration only: an occurrence-admitted peak is capped at Candidate
+(`persistent-weak`) unless an isotopologue / second channel / series anchor
+corroborates the formula; per-file ledgers record `admitted_by`. Single-sample `assign` writes `<ID>_<UTC>_{ledger.csv, assignments.xlsx, summary.md,
 manifest.json, gka.html}` + per-pass checkpoints (~5 min on a ~1000-peak Br-CIMS
 sample). Batch writes one versioned run folder — see **Outputs** below and
 `docs/OUTPUTS.md`.

@@ -438,8 +438,8 @@ def stage_b_series(client, sample_id: str, ledger: pd.DataFrame, profile,
     units = tuple(G.ORGANIC_UNITS) + ("C2H4O2",)
     if reagent in ("Br", "Cl"):
         units = units + ("H" + reagent,)
-    un = ledger[(ledger["role"] == L.ROLE_UNEXPLAINED)
-                & (ledger["height"].fillna(0) >= cfg.height_cutoff)]
+    from peaky.assignment import admission as ADM
+    un = ledger[(ledger["role"] == L.ROLE_UNEXPLAINED) & ADM.admissible(ledger, cfg)]
     proposals: dict[str, dict] = {}
     for _, prow in un.iterrows():
         for prop in G.propose_for_peak(prow["mz"], anchors, adducts, units=units,

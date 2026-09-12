@@ -241,7 +241,9 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               base_out: str, ts=None, when=None, subject: str | None = None,
               amine_r_min: float = 0.6, do_report=True, config: str | None = None,
               k_min: int = SS.K_MIN, k_max: int = SS.K_MAX,
-              min_gain: float = SS.MIN_GAIN,
+              min_gain: float = SS.MIN_GAIN, occurrence_min: float | None = None,
+              height_cutoff_x_edge: float | None = None,
+              height_cutoff_cps: float | None = None,
               n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Full batch pipeline in ONE call: sample-subset ASSIGN (live match_compounds)
     -> merge -> cluster figures -> Van Krevelen -> PDF report, into one versioned run
@@ -252,8 +254,17 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     The assigned subset is the greedy presence set-cover over the batch's m/z bins
     (sampling.select_cover_samples): `k_min`/`k_max`/`min_gain` tune the stop rule;
     the achieved coverage + stop reason land in batch_summary.json['selection'].
+    `occurrence_min` / `height_cutoff_x_edge` / `height_cutoff_cps` set the admission
+    gate on the run's PassConfig (None = the config defaults: 'auto', 1.0, no absolute
+    override; occurrence 0 = brightness only).
     Returns {ctx, assign, cluster, vk, report_pdf}."""
     from peaky.batch import assign_batch as AB
+    from peaky.assignment import passes as PA
+
+    cfg = gate_config(assign_kw.pop("cfg", None), occurrence_min=occurrence_min,
+                      height_cutoff_x_edge=height_cutoff_x_edge,
+                      height_cutoff_cps=height_cutoff_cps)
+    assign_kw["cfg"] = cfg
 
     ts_src = None
     if isinstance(ts, str):
@@ -305,6 +316,27 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     return {"ctx": ctx, "assign": res, **gen}
 
 
+def gate_config(cfg=None, *, occurrence_min=None, height_cutoff_x_edge=None,
+                height_cutoff_cps=None):
+    """The run's PassConfig with the admission-gate knobs applied. `occurrence_min`
+    is 'auto' (the batch-derived threshold), a number, or 0 (path off); None keeps
+    the config default. The height knobs are numbers or None."""
+    from peaky.assignment import passes as PA
+    cfg = cfg or PA.PassConfig()
+    if occurrence_min is not None:
+        if isinstance(occurrence_min, str):
+            if occurrence_min.strip().lower() != "auto":
+                raise ValueError(f"occurrence_min must be 'auto' or a number, got {occurrence_min!r}")
+            cfg.occurrence_min = "auto"
+        else:
+            cfg.occurrence_min = float(occurrence_min)
+    if height_cutoff_x_edge is not None:
+        cfg.height_cutoff_x_edge = float(height_cutoff_x_edge)
+    if height_cutoff_cps is not None:
+        cfg.height_cutoff_cps = float(height_cutoff_cps)
+    return cfg
+
+
 def pool_name(batches_regex: str) -> str:
     """A readable run-folder label from a pooling regex: strip metacharacters,
     collapse whitespace, tag as pooled. `'HR-CIMS 100-500.*zone'` ->
@@ -346,6 +378,9 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                        do_report: bool = True, per_group_reports: bool = True,
                        config: str | None = None, k_min: int = SS.K_MIN,
                        k_max: int = SS.K_MAX, min_gain: float = SS.MIN_GAIN,
+                       occurrence_min: float | None = None,
+                       height_cutoff_x_edge: float | None = None,
+                       height_cutoff_cps: float | None = None,
                        n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Pool the batches matching `batches` (a regex over batch names) into ONE
     unified ledger, then emit a whole-pool report plus one report per group.
@@ -369,7 +404,12 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     Returns {ctx, assign, groups, group_runs, selection, cluster, vk, report_pdf}.
     """
     from peaky.batch import assign_batch as AB
+    from peaky.assignment import passes as PA
 
+    cfg = gate_config(assign_kw.pop("cfg", None), occurrence_min=occurrence_min,
+                      height_cutoff_x_edge=height_cutoff_x_edge,
+                      height_cutoff_cps=height_cutoff_cps)
+    assign_kw["cfg"] = cfg
     when = when or datetime.now(timezone.utc)     # ONE stamp: pool + every group ctx agree
     if isinstance(ts, str):
         ts = pd.read_parquet(os.path.expanduser(ts))
