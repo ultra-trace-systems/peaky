@@ -193,7 +193,6 @@ def cmd_assign(args) -> None:
     from peaky.io import io_mascope
     from peaky.assignment import passes
     from peaky.chem import profiles
-    from peaky.reporting import report
     from peaky import progress as PG
 
     # the reagent first: the profile may carry its own height-gate multiple, and
