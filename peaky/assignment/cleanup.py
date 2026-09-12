@@ -1132,9 +1132,13 @@ def relabel_ammonium_dehydration(ledger: pd.DataFrame, *, adduct: str = "[M+^NH4
                               f"{'' if h_yh else ' (no protonated form)'}", relabel=True)
                     out["nh4_deh_relabeled"] += 1
                 else:
+                    why = (f"its own adduct is strong: {height(k):.3g} cps vs "
+                           f"{h_yh:.3g} cps protonated") if h_yh > 0 else (
+                           f"it has no protonated form and is not a minor satellite of the "
+                           f"parent adduct: {height(k):.3g} cps vs {hX:.3g} cps")
                     _note(ledger, k, f"ambiguity: {Y} [M+^NH4]+ is the same ion as the "
                                      f"in-source dehydration [M+^NH4-H2O]+ of {X} ({basis}); "
-                                     f"kept as {Y} (its own adduct is strong)")
+                                     f"kept as {Y} ({why})")
                     out["nh4_deh_ambiguous"] += 1
         # (a) the protonated-then-dehydrated site == Y's [M+H]+
         for j in rows_d:

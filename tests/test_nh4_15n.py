@@ -402,6 +402,8 @@ def test_dehydration_relabel_keeps_a_genuine_oxygenate_that_has_a_protonated_for
     assert (at("p3", "neutral_formula"), at("p3", "adduct")) == (Y, "[M+H]+")
     assert "ambiguity" in str(at("p4", "tier_reason"))
     assert "ambiguity" in str(at("p3", "tier_reason"))
+    # the note says WHICH clause kept Y (the weakness gate, not the parent ratio)
+    assert "its own adduct is strong" in str(at("p4", "tier_reason"))
     assert out["nh4_deh_relabeled"] == 0 and out["nh4_deh_committed"] == 0
     assert out["nh4_deh_ambiguous"] == 2
 
