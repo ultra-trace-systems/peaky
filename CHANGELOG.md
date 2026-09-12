@@ -274,14 +274,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`peaky assign` unlocks its reference lists.** Only the batch path ever called
   `active_lists`, so a single-sample run passed `reflists_active=None`: the
   selection prior was empty, the rescue-verify pass never fired, and the manifest
-  key above was `[]` on the one path that writes a manifest. `reflists.activate`
-  is now the single unlock step (`resolve_context_tags` → `active_lists`, tags
-  returned so the caller can log them), and `cli.cmd_assign`, the MCP
-  `assign_sample` tool, `assign_batch.run` and the report path all go through it.
-  A lone sample has no batch name — its metadata is the context plus the reagent
-  profile's label, the same pair on both single-sample paths — so it activates the
-  always-active lab-contaminant list and nothing chemistry-specific unless one of
-  those names a chemistry; `peaky batch` is still the way to unlock a HOM list.
+  key above — new in this same release, so it never shipped empty — would have
+  landed `[]` on the single-sample path. `reflists.activate` is now the single
+  unlock step (`resolve_context_tags` → `active_lists`, tags returned so the
+  caller can log them), and `cli.cmd_assign`, the MCP `assign_sample` tool,
+  `assign_batch.run` and the report path all go through it. A lone sample has no
+  batch name — its metadata is the context plus the reagent profile's label, the
+  same pair on both single-sample paths — so it activates the always-active
+  lab-contaminant list and nothing chemistry-specific unless one of those names a
+  chemistry; `peaky batch` is still the way to unlock a HOM list.
 
 - **A formula is validated before its parity is trusted.** `chemistry.dbe` scores
   an element outside the mass table as divalent — sodium acetate comes out at
