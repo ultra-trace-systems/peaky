@@ -231,6 +231,45 @@ for bad in ("maybe", "auto"):
         check(f"--height-cutoff-x-edge {bad!r} is rejected by the parser", e.code == 2, e.code)
 
 
+# ---------------------------------------------------------------------------
+# ONE batch tolerance, end to end. The occurrence table and the merge bin at the
+# run's `tol_ppm`; the SELECTOR must bin at the same number, or a bin the cover
+# was chosen to reach is not the bin the table and the merge see. (It used to
+# fall through to timeseries' 5 ppm while both of those used 6.)
+# ---------------------------------------------------------------------------
+from peaky.batch import sampling as SS   # noqa: E402
+
+check("the merge's default tolerance IS the one batch constant",
+      AB.DEFAULT_TOL_PPM == SS.BATCH_TOL_PPM, AB.DEFAULT_TOL_PPM)
+_sel_kw: list = []
+
+
+def fake_select(peaks, **kw):
+    _sel_kw.append(kw)
+    out = pd.DataFrame({"sample_item_id": list(REPS), "pick": [1, 2],
+                        "role": ["cover", "cover"], "bins_new": [10, 2],
+                        "coverage": [0.8, 1.0]})
+    out.attrs["selection"] = {"method": "presence-cover", "k": 2}
+    return out
+
+
+_real_sel, SS.select_cover_samples = SS.select_cover_samples, fake_select
+A.run, _real_connect = fake_assign_run, IO.connect
+IO.connect = lambda *a, **k: SimpleNamespace(name="stub-client")
+RUN_DIR2 = tempfile.mkdtemp(prefix="peaky-admission-sel-")
+try:
+    AB.run(peaks=TS, reagent="Br", out_dir=RUN_DIR2, ts_peaks=TS, n_jobs=1,
+           log=lambda *a: None)
+finally:
+    SS.select_cover_samples = _real_sel
+    A.run, IO.connect = _real["assign_run"], _real_connect
+    shutil.rmtree(RUN_DIR2, ignore_errors=True)
+
+check("assign_batch hands the selector the run's own binning tolerance",
+      len(_sel_kw) == 1 and _sel_kw[0].get("tol_ppm") == AB.DEFAULT_TOL_PPM
+      == SS.BATCH_TOL_PPM, _sel_kw)
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 
