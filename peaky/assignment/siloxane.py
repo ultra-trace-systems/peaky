@@ -118,7 +118,11 @@ def assign_siloxane_ladder(client, sample_id: str, ledger: pd.DataFrame,
     from peaky.assignment import admission as ADM
     work = ledger[ADM.admissible(ledger, cfg)]
     mzs = work["mz"].tolist(); hts = work["height"].tolist()
-    chains = _find_ladders(mzs, hts, min_height=cfg.height_cutoff)
+    # `work` IS the admission-gated set (brightness OR persistence), so every
+    # member may seed a chain: a persistent sub-gate peak admitted into `work`
+    # must not be refused as a seed by a second, brightness-only test (the
+    # lowest rung of a weak ladder is exactly such a peak).
+    chains = _find_ladders(mzs, hts, min_height=0.0)
     if not chains:
         return out
     member_mz = sorted({mzs[i] for ch in chains for i in ch})
