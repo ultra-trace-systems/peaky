@@ -255,8 +255,11 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     (sampling.select_cover_samples): `k_min`/`k_max`/`min_gain` tune the stop rule;
     the achieved coverage + stop reason land in batch_summary.json['selection'].
     `occurrence_min` / `height_cutoff_x_edge` / `height_cutoff_cps` set the admission
-    gate on the run's PassConfig (None = the config defaults: 'auto', 1.0, no absolute
-    override; occurrence 0 = brightness only).
+    gate on the run's PassConfig. None leaves each knob UNSET, which is not the same
+    as a value: `occurrence_min` then keeps the PassConfig default ('auto' = the
+    batch-derived threshold; 0 = brightness only), `height_cutoff_x_edge` falls
+    through to the reagent profile's own multiple and only then to the package
+    default, and `height_cutoff_cps` means no absolute override.
     Returns {ctx, assign, cluster, vk, report_pdf}."""
     from peaky.batch import assign_batch as AB
 
