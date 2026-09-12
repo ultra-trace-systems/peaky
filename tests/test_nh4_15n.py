@@ -82,6 +82,12 @@ def test_context_and_families():
     assert ctx.polarity == "positive"
     assert "[M+^NH4]+" in ctx.reagent_adducts and "[M+H]+" in ctx.reagent_adducts
     assert X.get_context("15nh4") is ctx
+    # every alias SAYS labelled: a bare "ammonium" must NOT silently hand an
+    # unlabelled-ammonium user the 15N channels
+    assert all("15n" in a or "^" in a for a in X.CONTEXTS if X.CONTEXTS[a] is ctx)
+    for bare in ("ammonium", "nh4", "nh4-cims"):
+        with pytest.raises(ValueError):
+            X.get_context(bare)
     for fam in ("siloxane", "pdms", "phthalate", "glycol_peg"):
         assert "[M+^NH4]+" in X.CONTAMINANT_FAMILIES[fam]["adducts"], fam
     # ammonium adduct of D4 passes the context (Si only as a siloxane scaffold)

@@ -300,8 +300,13 @@ CONTEXTS: dict[str, ContextProfile] = {
     "food": _FOOD, "wine": _FOOD, "beverage": _FOOD,
     "uronium": _URONIUM, "urea-cims": _URONIUM, "urea": _URONIUM,
     "easyic": _EASYIC, "easy-ic": _EASYIC, "charge-transfer": _EASYIC,
-    "ammonium-15n": _AMMONIUM_15N, "ammonium": _AMMONIUM_15N, "nh4": _AMMONIUM_15N,
-    "15nh4": _AMMONIUM_15N, "nh4-cims": _AMMONIUM_15N,
+    # LABELLED ammonium only. The bare "ammonium" / "nh4" / "nh4-cims" spellings
+    # used to resolve here, so an UNLABELLED ammonium user silently got the ¹⁵N
+    # channels ([M+^NH4]+, the ¹⁴N impurity satellite, the labelled known-species
+    # locks) and no error to say so. An unknown context raises in get_context,
+    # which is the honest answer until an unlabelled ammonium context exists.
+    "ammonium-15n": _AMMONIUM_15N, "15nh4": _AMMONIUM_15N,
+    "15n-ammonium": _AMMONIUM_15N, "nh4-15n": _AMMONIUM_15N,
     "none": _NONE,
 }
 
