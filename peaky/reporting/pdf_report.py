@@ -580,11 +580,17 @@ def cover(ctx, pdf):
     head += [("gap", 1), ("h", "Samples assigned"), ("gap", 0.3), ("b", sel_txt)]
     for name, role in ctx.get("samples", [])[:8]:
         head.append(("m", f"   {name}   [{role}]"))
+    # persistence path of the admission gate: state the RESOLVED threshold (the
+    # fraction the run actually compared against) and the knob it came from --
+    # `occurrence_min` is the knob ('auto' by default) and cannot be formatted
+    # as a percentage; `occurrence_threshold` is None when the path was off.
     _adm = (ctx.get("batch") or {}).get("admission") or {}
-    if ctx.get("n_admitted_occurrence"):
+    _thr = _adm.get("occurrence_threshold")
+    if ctx.get("n_admitted_occurrence") and _thr is not None:
         head.append(("dim", f"   {ctx['n_admitted_occurrence']} of {ctx.get('n_m0', '?')} merged "
-                            f"peaks were eligible by persistence only (bin present in "
-                            f"≥{_adm.get('occurrence_min', 0.8):.0%} of spectra, below the height gate)"))
+                            f"peaks were eligible by persistence only: m/z bin present in "
+                            f"≥{float(_thr):.0%} of spectra (occurrence-min "
+                            f"{_adm.get('occurrence_min', 'auto')}), below the height gate"))
     j = ctx.get("jitter", {})
     if j:
         nm = ctx.get("n_multifile")

@@ -23,13 +23,15 @@ with tempfile.TemporaryDirectory() as d:
     # minimal merged ledger (M0 rows) spanning a few classes; C10H19NO2 is the
     # NH3-shifted shadow of C10H16O2 (the ammonium/amine degeneracy), and one row
     # has formula_agree=False (drives the single-source disagreement count).
+    # `admitted_by` / `occurrence` = the admission provenance the merge carries;
+    # exactly one row was eligible by persistence only (drives the cover line).
     pd.DataFrame([
-        dict(mz=169.1223, neutral_formula="C10H16O2", adduct="[M+H]+", tier="Assigned", ion_score=0.9, n_files=6, formula_agree=True),
-        dict(mz=200.0, neutral_formula="C10H19NO2", adduct="[M+NH4]+", tier="Candidate", ion_score=0.7, n_files=3, formula_agree=False),
-        dict(mz=183.0, neutral_formula="C9H10N2O", adduct="[M+H]+", tier="Candidate", ion_score=0.6, n_files=2, formula_agree=True),
-        dict(mz=223.06, neutral_formula="C6H18O3Si3", adduct="[M+H]+", tier="Candidate", ion_score=0.5, n_files=1, formula_agree=True),
-        dict(mz=247.0, neutral_formula="C3H2F6O", adduct="[M+Br]-", tier="Assigned", ion_score=0.8, n_files=4, formula_agree=True),
-        dict(mz=400.0, neutral_formula="C9H12N4O12", adduct="[M+Na]+", tier="Candidate", ion_score=0.94, n_files=1, formula_agree=True),  # N-monster, flagged
+        dict(mz=169.1223, neutral_formula="C10H16O2", adduct="[M+H]+", tier="Assigned", ion_score=0.9, n_files=6, formula_agree=True, admitted_by="height", occurrence=0.98),
+        dict(mz=200.0, neutral_formula="C10H19NO2", adduct="[M+NH4]+", tier="Candidate", ion_score=0.7, n_files=3, formula_agree=False, admitted_by="height", occurrence=0.41),
+        dict(mz=183.0, neutral_formula="C9H10N2O", adduct="[M+H]+", tier="Candidate", ion_score=0.6, n_files=2, formula_agree=True, admitted_by="occurrence", occurrence=0.93),
+        dict(mz=223.06, neutral_formula="C6H18O3Si3", adduct="[M+H]+", tier="Candidate", ion_score=0.5, n_files=1, formula_agree=True, admitted_by="height", occurrence=0.12),
+        dict(mz=247.0, neutral_formula="C3H2F6O", adduct="[M+Br]-", tier="Assigned", ion_score=0.8, n_files=4, formula_agree=True, admitted_by="height", occurrence=0.77),
+        dict(mz=400.0, neutral_formula="C9H12N4O12", adduct="[M+Na]+", tier="Candidate", ion_score=0.94, n_files=1, formula_agree=True, admitted_by="height", occurrence=float("nan")),  # N-monster, flagged
     ]).to_csv(f"{d}/merged_ledger.csv", index=False)
     # one per-file ledger with roles (drives the role breakdown); the M0 row
     # carries a tier + ppm_error + peak_id so the mass-defect/mass-error QC figure
@@ -127,6 +129,65 @@ with tempfile.TemporaryDirectory() as d:
     out2 = R.build(d, tag="Ur", label="Ur⁺ CIMS", out_pdf=f"{d}/r2.pdf",
                    sections=[R.cover, boom, R.methods])
     check("build: resilient to a failing section", os.path.exists(out2) and os.path.getsize(out2) > 3000)
+
+    # --- cover: the persistence-admission line on the DEFAULT config ---------------
+    # batch_summary.json['admission'] stores the KNOB ('auto' by default) under
+    # occurrence_min and the RESOLVED fraction under occurrence_threshold; the
+    # cover once formatted the knob with :.0% -> ValueError, swallowed by build(),
+    # which replaced the whole cover page. Call the section DIRECTLY (outside
+    # build's try/except) so the exception, if any, surfaces here.
+    import json
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    def _cover_lines(ctx):
+        """Render R.cover into a throwaway PDF and capture the text lines it emits."""
+        captured = []
+        orig = R._text_lines
+        R._text_lines = lambda fig, lines, **kw: (captured.extend(lines), orig(fig, lines, **kw))
+        try:
+            with PdfPages(f"{d}/cover_probe.pdf") as pdf:
+                R.cover(ctx, pdf)
+        finally:
+            R._text_lines = orig
+        return [t for s, t in captured if isinstance(t, str)]
+
+    json.dump({"admission": {"occurrence_min": "auto", "occurrence_threshold": 0.44,
+                             "n_bins": 4025, "n_persistent_bins": 512, "n_spectra": 230,
+                             "tol_ppm": 6.0}}, open(f"{d}/batch_summary.json", "w"))
+    ctx_a = R.load_context(d, tag="Ur", label="Ur⁺ CIMS")
+    check("load_context counts the persistence-only merged peaks (admitted_by == 'occurrence')",
+          ctx_a.get("n_admitted_occurrence") == 1, ctx_a.get("n_admitted_occurrence"))
+    try:
+        lines_a = _cover_lines(ctx_a)
+        pl = [t for t in lines_a if "persistence only" in t]
+        check("cover renders on the default config (occurrence_min='auto') without raising",
+              True)
+        check("cover states the RESOLVED threshold (44%) and the knob in brackets, not 0.8",
+              len(pl) == 1 and "≥44%" in pl[0] and "occurrence-min auto" in pl[0]
+              and "1 of 6" in pl[0] and "80%" not in pl[0], pl)
+    except Exception as e:  # noqa: BLE001
+        check("cover renders on the default config (occurrence_min='auto') without raising",
+              False, repr(e))
+    # path off (occurrence_threshold None): no persistence line, no error
+    json.dump({"admission": {"occurrence_min": 0, "occurrence_threshold": None,
+                             "n_bins": 0, "n_persistent_bins": 0, "n_spectra": 230,
+                             "tol_ppm": 6.0}}, open(f"{d}/batch_summary.json", "w"))
+    ctx_o = R.load_context(d, tag="Ur", label="Ur⁺ CIMS")
+    try:
+        lines_o = _cover_lines(ctx_o)
+        check("cover with the persistence path off renders without the persistence line",
+              not any("persistence only" in t for t in lines_o))
+    except Exception as e:  # noqa: BLE001
+        check("cover with the persistence path off renders without the persistence line",
+              False, repr(e))
+    # a summary without an admission block at all (older run folders) is also fine
+    json.dump({"selection": {}}, open(f"{d}/batch_summary.json", "w"))
+    try:
+        lines_n = _cover_lines(R.load_context(d, tag="Ur", label="Ur⁺ CIMS"))
+        check("cover without an admission block renders (no persistence line)",
+              not any("persistence only" in t for t in lines_n))
+    except Exception as e:  # noqa: BLE001
+        check("cover without an admission block renders (no persistence line)", False, repr(e))
 
     # run versioning: run_id + a date+time 'generated' on the cover (title page)
     RID = "Sample-run-Ur-CIMS_2026-06-20_143512"
