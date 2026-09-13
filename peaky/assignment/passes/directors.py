@@ -465,6 +465,25 @@ def run_pass0_known(
             )
             fam_kids = kids[kids["compound_formula"] == r["compound_formula"]]
             n_kids = int((fam_kids["sample_peak_id"] != pid).sum())
+            # The Mascope-scored satellites this commit RESTS ON. For a
+            # single-channel P / S / Si species these ARE the licensing evidence --
+            # the ³⁴S/³⁷Cl/⁸¹Br (or ²⁹Si/³⁰Si) envelope that stood in for the 2nd ion
+            # channel in the gate above -- so recording them is what makes that gate
+            # auditable from the ledger instead of from this source file. Same
+            # {label, score, peak_id} shape core.py's `_iso_list` writes, and the same
+            # set the attach loop below walks, so `isotopologues` is empty exactly
+            # when no satellite was matched. The gate itself judges the compound
+            # across channels (`iso_confirmed` is keyed on compound_formula alone),
+            # so the recorded evidence is scoped the same way.
+            _iso_ev = [
+                {
+                    "label": k["iso_label"],
+                    "score": _f(k["iso_score"]),
+                    "peak_id": k["sample_peak_id"],
+                }
+                for _, k in fam_kids.iterrows()
+                if k["sample_peak_id"] != pid
+            ]
             # chlorinated paraffins (Cl is off the organic grid at Cl>2): commit ONLY
             # when the ³⁷Cl envelope is confirmed (>=2 matched ³⁷Cl satellites), so a
             # CnHmClx mass coincidence is rejected. Cl IS isotope-confirmable (unlike
@@ -528,6 +547,7 @@ def run_pass0_known(
                 pass_no=0,
                 method=f"known:{fam}",
                 confidence=conf,
+                isotopologues=_iso_ev,
                 commentary=(
                     f"Pass 0 (known {tag}): {_neutral} "
                     f"{_adduct} = {lbl}, ppm "
@@ -720,6 +740,14 @@ def _recover_isotope_locked_known(
             pass_no=0,
             method=f"known:{fam}",
             confidence="Good (chlorinated-paraffin, recovered)",
+            # this commit rests ENTIRELY on the ³⁷Cl envelope (the server score was
+            # too low to anchor), so the envelope belongs on the row. Confirmed
+            # against the LEDGER rather than the server, hence no per-line score --
+            # the same distinction the commentary draws.
+            isotopologues=[
+                {"label": "37Cl", "score": None, "peak_id": spid}
+                for spid in sat_pids
+            ],
             commentary=(
                 f"Pass 0 (known chlorinated-paraffin, RECOVERED): {cf} "
                 f"{adduct} = {lbl}, ppm {led_ppm:.2f}; the server "

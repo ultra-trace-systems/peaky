@@ -8,7 +8,8 @@ so no pass can corrupt the shared state:
   I1. Each peak has exactly one role: 'unexplained' | 'M0' | 'iso_child'
       | 'reagent' | 'artifact'.
   I2. An 'iso_child' row points (parent_peak_id) to a peak that owns an M0
-      assignment.
+      assignment, and carries that owner's identity (parent_neutral_formula /
+      parent_adduct) so the satellite names what it is a satellite OF.
   I3. A peak that is already locked is immutable to later passes.
   I4. No peak is claimed twice (an iso_child cannot also be an M0 owner).
   I5. Every M0 / series / contaminant assignment records pass + method +
@@ -25,7 +26,7 @@ import pandas as pd
 
 from peaky.chem import chemistry as C
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"   # iso_child rows carry their parent's identity
 
 ROLE_UNEXPLAINED = "unexplained"
 ROLE_M0 = "M0"
@@ -63,6 +64,14 @@ _ASSIGN_COLS: dict[str, object] = {
     "co_halogen": pd.NA,       # co-component halogen guess (Br / BrCl / Br2)
     "role": ROLE_UNEXPLAINED,
     "parent_peak_id": pd.NA,
+    # ...and WHO that parent is. parent_peak_id alone makes a satellite auditable
+    # only by joining it back to the M0 row, and the ledger is read (and exported,
+    # and published) ROW BY ROW -- a satellite that cannot name its owner leaves
+    # the evidence for an isotope-licensed commit invisible in the output. Stamped
+    # by attach_isotopologue from the parent's own row, cleared whenever the row
+    # stops being a child (commit_assignment / clear_assignment).
+    "parent_neutral_formula": pd.NA,
+    "parent_adduct": pd.NA,
     "iso_label": pd.NA,
     "iso_match_score": np.nan,
     "pass_no": pd.NA,
@@ -109,6 +118,18 @@ def _row_index(ledger: pd.DataFrame, peak_id) -> int:
     if len(idx) > 1:
         raise LedgerError(f"peak_id {peak_id!r} is duplicated in ledger")
     return int(idx[0])
+
+
+def _stamp_parent_identity(ledger: pd.DataFrame, ci: int, pi: int | None) -> None:
+    """Copy the M0 owner's identity onto its satellite row, or clear it (pi=None)
+    when the row stops being a child. Kept beside parent_peak_id so an iso_child
+    row is self-describing: "34S satellite of C8H13O5PS2 [M+H]+", not a peak_id to
+    join. Tolerates a ledger that predates the columns (an old CSV re-tiered)."""
+    for col, src in (("parent_neutral_formula", "neutral_formula"),
+                     ("parent_adduct", "adduct")):
+        if col not in ledger.columns:
+            continue
+        ledger.at[ci, col] = pd.NA if pi is None else ledger.at[pi, src]
 
 
 def is_locked(ledger: pd.DataFrame, peak_id) -> bool:
@@ -185,6 +206,7 @@ def commit_assignment(
     ledger.at[i, "confidence"] = confidence
     ledger.at[i, "role"] = ROLE_M0
     ledger.at[i, "parent_peak_id"] = pd.NA
+    _stamp_parent_identity(ledger, i, None)
     ledger.at[i, "iso_label"] = pd.NA
     ledger.at[i, "iso_match_score"] = np.nan
     ledger.at[i, "pass_no"] = int(pass_no)
@@ -221,6 +243,7 @@ def attach_isotopologue(
         raise LedgerError(f"peak {child_peak_id!r} is locked")
     ledger.at[ci, "role"] = ROLE_ISO
     ledger.at[ci, "parent_peak_id"] = parent_peak_id
+    _stamp_parent_identity(ledger, ci, pi)
     ledger.at[ci, "iso_label"] = iso_label
     ledger.at[ci, "iso_match_score"] = (np.nan if iso_match_score is None else float(iso_match_score))
     return ledger
@@ -251,6 +274,7 @@ def clear_assignment(ledger: pd.DataFrame, peak_id, *, reason: str) -> pd.DataFr
     for ci in ledger.index[ledger["parent_peak_id"] == peak_id]:
         ledger.at[ci, "role"] = ROLE_UNEXPLAINED
         ledger.at[ci, "parent_peak_id"] = pd.NA
+        _stamp_parent_identity(ledger, ci, None)
         ledger.at[ci, "iso_label"] = pd.NA
         ledger.at[ci, "iso_match_score"] = np.nan
     old = ledger.at[i, "commentary"]
@@ -281,8 +305,10 @@ def displace_to_isotopologue(
     if str(ledger.at[ci, "role"]) != ROLE_M0:
         raise LedgerError(f"peak {child_peak_id!r} does not own an M0 assignment")
     old = ledger.at[ci, "commentary"]
+    pgi = _row_index(ledger, parent_peak_id)
     for gi in ledger.index[ledger["parent_peak_id"] == child_peak_id]:
         ledger.at[gi, "parent_peak_id"] = parent_peak_id
+        _stamp_parent_identity(ledger, gi, pgi)
         glab = str(ledger.at[gi, "iso_label"])
         ledger.at[gi, "iso_label"] = "+".join(sorted(set(
             glab.split("+") + iso_label.split("+"))))
@@ -342,15 +368,24 @@ def validate(ledger: pd.DataFrame) -> list[str]:
                                        ROLE_REAGENT, ROLE_ARTIFACT}
     if bad_roles:
         problems.append(f"unknown roles: {bad_roles}")
-    # I2: every iso_child points to an M0 owner
+    # I2: every iso_child points to an M0 owner AND names it. The stamped
+    # identity is what makes a satellite auditable row-by-row, so a stamp that
+    # disagrees with the parent's own row is as much a violation as a dangling
+    # parent_peak_id -- it would send a reviewer to the wrong compound.
     m0_ids = set(ledger.loc[ledger["role"] == ROLE_M0, "peak_id"])
+    nf_by_pid = dict(zip(ledger["peak_id"], ledger["neutral_formula"]))
     iso = ledger[ledger["role"] == ROLE_ISO]
+    has_stamp = "parent_neutral_formula" in ledger.columns
     for _, r in iso.iterrows():
         p = r["parent_peak_id"]
         if p is pd.NA or pd.isna(p):
             problems.append(f"iso_child {r['peak_id']!r} has no parent")
         elif p not in m0_ids:
             problems.append(f"iso_child {r['peak_id']!r} parent {p!r} is not an M0 owner")
+        elif has_stamp and str(r["parent_neutral_formula"]) != str(nf_by_pid.get(p)):
+            problems.append(
+                f"iso_child {r['peak_id']!r} names parent "
+                f"{r['parent_neutral_formula']!r} but {p!r} owns {nf_by_pid.get(p)!r}")
     # I5: M0 rows carry provenance
     m0 = ledger[ledger["role"] == ROLE_M0]
     miss = m0[m0["commentary"].isna() | m0["method"].isna() | m0["confidence"].isna()]

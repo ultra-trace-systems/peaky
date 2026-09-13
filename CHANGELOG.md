@@ -223,6 +223,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The 0.5.0 section heading, which still read "Unreleased", is retitled to name the
   release and its date (2026-06-30): 0.5.0 was tagged and released, and a released
   section labelled unreleased made this file's own history unreadable.
+- **The isotope bookkeeping lost the parent↔satellite link, which made the P/S
+  corroboration gate unauditable from a run's own output.** Two halves of one defect,
+  measured on a urea-MPCI 122-600 batch: (a) all 453 `iso_child` rows in one file
+  recorded `parent_peak_id` but nothing about WHO that parent is, so reading a satellite meant
+  joining it back to the M0 row; and (b) known-species (pass-0) commits wrote
+  `isotopologues: []` even when a matched satellite was the evidence that *licensed*
+  them. `C8H13O5PS2` (malathion transformation product, −C2H6O) commits at m/z
+  285.00145 on a SINGLE ion channel, so it can only have passed the
+  organophosphate/-thiophosphate/indoor-sulfur gate — ≥2 ion channels OR a confirmed
+  diagnostic ³⁴S/³⁷Cl/⁸¹Br envelope — via the isotope route, and both its satellites
+  were picked and attached (¹³C at 286.0048, ³⁴S at 286.9973, expected 286.9972); the
+  ledger recorded none of it. Confirming the commit was legitimate took reading
+  `directors.py` and computing the +1.99580 ³⁴S offset by hand. Now:
+  `attach_isotopologue` stamps the owner's identity onto the satellite
+  (`parent_neutral_formula` / `parent_adduct`, new columns beside `parent_peak_id`),
+  so every attach path — `complete_isotope_envelopes`, the siloxane/residual/cleanup
+  attachers, `displace_to_isotopologue`'s re-parented grandchildren — yields a row
+  that reads "³⁴S satellite of C8H13O5PS2 [M+H]+" on its own, and `validate` treats a
+  stamp disagreeing with its parent as an I2 violation; the pass-0 commit path records
+  the Mascope-scored satellites it rested on, and the isotope-locked chlorinated-paraffin
+  recovery records the ³⁷Cl envelope it was locked on; and `tier_reason` now names the
+  route, `"; corroborated by 1 ion channel + a confirmed ³⁴S satellite"` versus
+  `"; corroborated by 2 ion channels"`, read off the ledger's own columns (channels
+  from the M0 rows sharing the neutral, satellites from `isotopologues` **and** from
+  the `iso_child` rows pointing back), so it is right on ledgers written before this
+  fix too. Re-tiering that batch's untouched ledger reports all three of its
+  single-channel isotope-licensed commits (the malathion TP, `C2H6OS`, `C8H7NS2`)
+  correctly. The gate
+  had not leaked — it was simply impossible to tell from the output.
 - **The persistence path was inert at the shipped default, and the TOF ledger was a
   flood.** With `height_cutoff_x_edge = 1.0` the brightness path admitted ~99 % of a
   TOF's picked peaks (0.12 % of admissions came from persistence), and the merged

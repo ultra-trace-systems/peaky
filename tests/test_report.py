@@ -65,6 +65,13 @@ check("isotopologues joined to parent formula",
       (sheets["Isotopologues"]["parent_formula"] == "C10H16O4").any())
 check("ownership covers all 5 peaks", len(sheets["Peak ownership"]) == 5)
 check("ownership carries tier", "tier" in sheets["Peak ownership"].columns)
+# the ownership audit answers "who claimed this peak?" -- for a satellite that means
+# naming the owner, not handing back a peak_id to go look up
+_own = sheets["Peak ownership"].set_index("peak_id")
+check("ownership names a satellite's owner, not just its peak_id",
+      _own.at["B", "parent_neutral_formula"] == "C10H16O4"
+      and _own.at["B", "parent_adduct"] == "[M-H]-",
+      _own.loc["B", ["parent_peak_id", "parent_neutral_formula", "parent_adduct"]].to_dict())
 check("unassigned has D", "D" in set(sheets["Unassigned"]["peak_id"]))
 check("unassigned evidence interpreted",
       sheets["Unassigned"]["interpretation"].notna().all())
