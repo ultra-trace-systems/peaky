@@ -168,25 +168,33 @@ def _add_progress_flag(p) -> None:
     decide. `store_true` would have made every run an explicit opt-out."""
     p.add_argument("--progress", action=argparse.BooleanOptionalAction, default=None,
                    help="live progress window (Tk) for the run: sample/stage bars, "
-                        "elapsed + ETA, and the run's stats + total runtime when it "
-                        "finishes. ON by default at an interactive terminal; "
-                        "--no-progress turns it off, and it is off anyway for a pipe, "
-                        "a CI job or a skill-driven run. Falls back to a one-line "
-                        "terminal status with no display, and always on macOS. On an "
-                        "interactive terminal the finished window is held open to be "
-                        "read for at most PEAKY_PROGRESS_HOLD_S seconds (default 600; "
-                        "0 disables the hold); Ctrl-C closes it at once, and everything "
-                        "in it is also on stdout. Env PEAKY_PROGRESS=0/1 overrides the "
+                        "elapsed + ETA, running per-file totals (M0, tiers, unexplained "
+                        "share, admitted by occurrence) while the files are assigned, "
+                        "and the run's merged stats + total runtime when it finishes. "
+                        "ON by default at an interactive terminal; --no-progress turns "
+                        "it off, and it is off anyway for a pipe, a CI job or a "
+                        "skill-driven run. Falls back to a one-line terminal status "
+                        "with no display, and always on macOS. The finished window is "
+                        "held open to be read for at most PEAKY_PROGRESS_HOLD_S seconds "
+                        "(default 600; 0 disables the hold) at an interactive terminal, "
+                        "and also off one whenever it was asked for explicitly (this "
+                        "flag, or PEAKY_PROGRESS=1) and a window actually opened, e.g. "
+                        "a nohup run with DISPLAY set; Close or Ctrl-C ends the hold at "
+                        "once, and everything in it is also on stdout. The terminal "
+                        "fallback never waits. Env PEAKY_PROGRESS=0/1 overrides the "
                         "default.")
 
 
 def _progress_hold_note(prog) -> None:
-    """`--progress` on an interactive terminal keeps the window up after the run
-    so the stats panel can be READ; the command therefore returns when the
-    window is closed (or after PEAKY_PROGRESS_HOLD_S seconds). Say so, or it
-    looks like a hang. Everything above is already on stdout, so closing the
-    window (or Ctrl-C) loses nothing. Prints only when the hold is actually on:
-    `prog.hold` is already False for a pipe / CI / a zero hold."""
+    """A held window (`progress.hold_wanted`: an interactive terminal, or a
+    window asked for explicitly that really came up) stays up after the run so
+    the stats panel can be READ; the command therefore returns when the window
+    is closed (or after PEAKY_PROGRESS_HOLD_S seconds). Say so, or it looks
+    like a hang -- on a nohup run this lands in the log, which is where whoever
+    wonders why the process is still alive will look. Everything above is
+    already on stdout, so closing the window (or Ctrl-C) loses nothing. Prints
+    only when the hold is actually on: `prog.hold` is already False for a
+    pipe / CI / the terminal fallback / a zero hold."""
     try:
         if prog.ui is not None and prog.hold and prog.ui.alive():
             from peaky import progress as PG
