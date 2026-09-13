@@ -241,6 +241,34 @@ C10H16O9 0.135 → 0.857; two Orbitrap batches 0.754 → 0.754 and 0.542 → 0.5
 | `STAMP_TOL_SIGMA` / `STAMP_TOL_MAX_X` | 2.5 / 2.0 | window = this many σ, never wider than this × the merge tolerance |
 | `traces.SCATTER_Q` | 0.75 | the per-trace scatter quantile that sizes the window |
 | `traces.MZ_FLOOR_DA` | 1.5 mDa | every window is ±max(tol ppm, this) — the stamp's own floor, shared by occurrence and trace |
+| `PRED_SAT_LABELS` | 13C 81Br 37Cl 15N 34S 29Si 30Si 18O | the diagnostic satellite lines the stamp PREDICTS for every merged M0 (`cleanup.reclaim_satellites`' set) |
+| `PRED_RATIO_MIN` / `PRED_RATIO_MAX` | 0.3 / 3.5 | a TS peak takes a predicted label only if height / (parent height × rel) in the SAME sample lies in this window (the per-file envelope passes' own) |
+| `PRED_TRACK_MIN_N` / `PRED_TRACK_MIN_SHARE` | 10 / 0.5 | track coherence: a predicted line judged in ≥ MIN_N samples keeps its stamps only if ≥ MIN_SHARE of them passed the window; otherwise the whole track stays unexplained |
+
+**Predicted satellites in the stamp.** The stamping frame (`stamping_frame`)
+carries every identified ion of the per-file ledgers, but a ledger claims a
+satellite only where its picker picked it, and the faint diagnostic lines (15N,
+18O, a single 34S / 29Si / 30Si) sit below the picker's edge in most files — so a
+parent Assigned everywhere still left those tracks unexplained wherever a plume
+lifted them (Texas Ur 122-600: C12H27O4P [M+(CH4N2O)H]+ with its 15N line in 109
+of 6154 spectra, up to 1.1 kcps, picked in none of the 15 assigned files).
+`predicted_satellite_rows` adds one `iso_child` row per (parent, label) for the
+`PRED_SAT_LABELS` lines of every M0 with a known ion formula, at the parent's
+stamped m/z + the line's exact shift (`chem.isotopes.isotope_pattern`, merged at
+0.5 mDa so 18O keeps its own line instead of the 13C2 centroid), tagged
+`stamp_source = predicted`. An observed satellite of the same (ion, label)
+supersedes it, and no predicted row is minted within the stamping window of any
+known row. `annotate_peaks` matches known rows first, offers predicted lines only
+to the peaks no known row claimed, and stamps one only where the parent was
+stamped in the same sample with the height ratio inside `PRED_RATIO_MIN..MAX`,
+and only on lines that pass **coherently**: a true satellite's ratio is a
+constant of nature, so it passes in nearly every judged sample, while an
+independent compound on the line fails in most and passes in the few where its
+height happens to fit (two live runs: 7 and 8 such tracks at 1–26 % pass share,
+24 and 268 stamps the per-sample gate alone handed out). Once judged in
+`PRED_TRACK_MIN_N` samples a line keeps its stamps only if `PRED_TRACK_MIN_SHARE`
+of them passed; `tables/predicted_satellites.csv` is the per-line audit. The
+one-to-one contest for a predicted line runs among the surviving candidates.
 
 ---
 
@@ -257,4 +285,5 @@ C10H16O9 0.135 → 0.857; two Orbitrap batches 0.754 → 0.754 and 0.542 → 0.5
 | `apply_timeseries` | stamp `ts_*` columns; conservative flat-background demote |
 | `find_ts_parquet` / `trace` | locate the run's TS parquet; one-compound reproducible trace |
 | `recentre_ledger` / `collapse_trace_labels` / `stamp_tolerance` | §9: re-centre merged anchors on their traces, collapse competing labels, size the stamp window |
+| `identified_rows` / `stamping_frame` / `predicted_satellite_rows` / `annotate_peaks` | the parquet stamp: every identified ion per file → one union frame (analytes + observed reagent / satellite / artifact rows + the PREDICTED diagnostic satellites of every M0, `stamp_source`) → every TS peak stamped, known rows first, predicted lines gated on the parent's same-sample height |
 | `collapse_peak_matches` | one row per physical peak (Mascope's match-expanded rows folded back) |

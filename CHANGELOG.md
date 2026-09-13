@@ -528,6 +528,57 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The batch stamp predicts the diagnostic isotope satellites of every merged analyte**
+  (`timeseries.predicted_satellite_rows`, called by `stamping_frame`; stamped by
+  `annotate_peaks`). A per-file ledger claims a satellite only where that file's picker
+  picked it, and the faint diagnostic lines — 15N (0.36 % per N), 18O (0.20 % per O), a
+  single 34S / 29Si / 30Si — sit below the picker's ~150–220 cps edge in most files, so a
+  parent Assigned in every assigned file still left its 15N / 18O tracks unexplained
+  wherever a plume lifted them into view (Texas Ur 122-600, 6154 spectra, 15 assigned:
+  C12H27O4P [M+(CH4N2O)H]+ and C12H14O [M+NH4]+ Assigned in every ledger with only their
+  13C claimed; the 15N line at m/z 328.2013 stood in 109 spectra up to 1.1 kcps and the
+  18O line at 194.1425 in 4, picked in none of the 15 files — while a targeted
+  single-sample assign of a plume file claimed both, so the per-file logic was right and
+  only the batch stamp was blind). The stamp now adds one `iso_child` row per (parent,
+  label) for the 13C / 81Br / 37Cl / 15N / 34S / 29Si / 30Si / 18O lines
+  (`cleanup.reclaim_satellites`' diagnostic set) of every M0 with a known ion formula, at
+  the parent's stamped m/z (its trace centre, so the instrument offset carries over) plus
+  the line's exact shift, with the pattern's atom-count-aware relative abundance
+  (`chem.isotopes.isotope_pattern`, merged at 0.5 mDa rather than its 6 mDa default,
+  which folds 18O into the 13C2 centroid 13 ppm away at m/z 194). Precedence: a satellite
+  a per-file ledger observed supersedes the predicted one of the same (ion, label), and no
+  predicted row is minted within the stamping window of any known row — an assigned
+  analyte at a satellite offset is an analyte. `annotate_peaks` matches every known row
+  first (a peak inside any known row's window, winner or one-to-one loser, is never
+  offered to a predicted line) and stamps a predicted line only under the per-file
+  passes' intensity gate: the parent must be stamped in the **same sample** and
+  height / (parent height × rel) must lie in 0.3–3.5; the one-to-one contest then runs
+  among the gated candidates, so a shoulder that fails the gate cannot take the label from
+  the real satellite. On top of the per-sample gate sits a **track-coherence rule** it
+  cannot express: a true satellite's ratio is a constant of nature and passes the window
+  in nearly every judged sample, whereas an independent compound on the line fails in
+  most and passes in the few where its height happens to fit — measured on two live
+  runs, 7 and 8 such tracks at 1–26 % pass share, 24 and 268 mislabelled peaks that the
+  per-sample gate alone handed out. Once a line has been judged in ≥ 10 samples (parent
+  present, a candidate on the line; `PRED_TRACK_MIN_N`) it keeps its stamps only if ≥ 50 %
+  of them passed (`PRED_TRACK_MIN_SHARE`); otherwise the whole track stays unexplained,
+  unstamped and unflagged. Lines judged in fewer samples stand on the per-sample gate.
+  `_batch_ts.parquet` gains `stamp_source` (`M0` / `observed` / `predicted`);
+  `tables/predicted_satellites.csv` audits every predicted line that had a candidate
+  (samples judged / passed, pass share, judged, kept, peaks stamped);
+  `batch_summary.json['traces']['stamp']` counts the stamped peaks by source
+  (`n_iso_observed` apart from `n_iso_predicted`), the predicted tracks stamped / judged /
+  rejected and the predicted rows minted and superseded;
+  `stamping_frame(..., predict_satellites=False)` restores the observed-only stamp. A track
+  explained as a predicted satellite carries an `ion_formula`, so the residual stage (which
+  reads the cover's stamp) no longer targets it as an unexplained bin. The per-file ledgers and their coverage figures are untouched. Re-stamped
+  offline on three finished batches: every previously stamped peak kept its stamp and its
+  `dup_candidate` flag; 6 766 of 969 135 peaks (10-file uronium batch, 60 tracks),
+  7 423 of 3.29 M (12-file uronium, 229 tracks) and 2 309 of 1.96 M (12-file labelled
+  nitrate, 118 tracks) were newly explained, with a median measured / predicted height
+  ratio of 0.79–0.91 — the 34S lines of the two brightest thio-compounds in every one of
+  1 397 spectra among them; the coherence rule then removed 0, 24 and 268 of those stamps,
+  every one on a track whose median ratio also sat outside 0.5–2.
 - **`peaky/batch/traces.py`** — the one trace primitive over the m/z-sorted batch peak
   list: `PeakIndex` (exact-duplicate rows dropped, deterministic sample codes;
   `occurrence` — the per-peak distinct-spectrum sweep; `occurrence_at`; `coverage_at`;

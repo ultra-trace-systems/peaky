@@ -49,6 +49,7 @@ shared by the writers and the report reader so the filenames can't drift.
 | `clusters_flat_<tag>.csv`, `clusters_changers_<tag>.csv`, `clusters_unassigned_<tag>.csv` | Membership for the flat / changers / unassigned figures. |
 | `channel_agreement_<tag>.csv` | QC: how often a multi-channel neutral's ion channels agree in time. |
 | `plausibility_audit_<tag>.csv` | One row per peak the hardened plausibility layer touched (demoted or relabelled): `before_tier`, `after_tier_or_role`, the `reason`, the supporting `evidence` (O/C or DBE/C or series r), the `degeneracy_note`, and `n_iso`. Always written (header-only when nothing was touched). |
+| `predicted_satellites.csv` | One row per **predicted** isotope-satellite line of the batch stamp that had a candidate peak (`timeseries.annotate_peaks`): `ion_formula` (the parent's), `iso_label`, `ion_mz` (the predicted m/z), `iso_rel` (predicted height relative to the parent), `n_candidates` (peaks in the window), `n_eval` / `n_pass` (samples in which the parent was stamped and a candidate sat on the line / passed the height gate), `pass_share`, `judged`, `kept` (the track-coherence verdict) and `n_stamped`. Always written (header-only when no line had a candidate). |
 
 ### `report/` — the PDF
 
@@ -103,8 +104,38 @@ only). All are `<NA>`/`NaN` on a peak that matched no known ion:
 | `role` | `large_string` | What kind of known ion: `M0` (analyte), `reagent` (reagent-cluster ladder), `iso_child` (heavy-isotope satellite), `artifact` (FT ringing ghost — not an ion at all). `<NA>` = unknown track. |
 | `ion_formula` | `large_string` | **The detected ION's formula for EVERY identified ion, analyte or not** — `CH3IO2-` (analyte), `I3-` (reagent), the parent's ion formula on an isotope satellite. `ion_formula.notna()` = identified; `neutral_formula.notna()` = analyte with a molecular reading. In a reagent-dominated spectrum this is the column that shows the file is ~97 % signal-characterised, not ~20 %. |
 | `iso_label` | `large_string` | Isotopologue qualifier: `13C`/`81Br`/… on satellites, the reagent line's tag (`79Br+81Br`, `127I+127I`) on multi-isotopologue reagent formulas — so one `ion_formula` can carry several distinct heavy lines without colliding. |
+| `stamp_source` | `large_string` | Where the stamped identity came from: `M0` (a merged analyte), `observed` (an ion a per-file ledger identified: the reagent ladder, a claimed satellite, an artifact) or `predicted` — a diagnostic isotope satellite (13C / 81Br / 37Cl / 15N / 34S / 29Si / 30Si / 18O) predicted from its parent's ion formula that no per-file ledger claimed, stamped only where the parent was stamped in the **same sample** and this peak's height / (parent height × predicted relative abundance) lies in 0.3–3.5, the per-file passes' own window (see below). `<NA>` on an unstamped row. |
 | `dup_candidate` | `bool` | `True` for a peak that fell inside an ion's mass window but **lost** the one-to-one contest. Its identity columns stay `<NA>`. An audit trail — the row is never dropped. |
 | `intensity_suspect` | `bool` | **Trust the formula, do not quantify this channel.** The ion's m/z lands on the ringing sidelobe of a saturating neighbour, so the height here is the neighbour's, not the analyte's. Carried from the merged ledger's own column. |
+
+### Predicted satellites
+
+A per-file ledger claims a satellite only where that file's picker picked it, and
+the faint diagnostic lines — 15N (0.36 % per N), 18O (0.20 % per O), a single
+34S / 29Si / 30Si — sit below the picker's edge in most files. So a parent
+Assigned in every assigned file could still leave its 15N / 18O tracks
+unexplained wherever a plume lifted them into view. `timeseries.stamping_frame`
+therefore adds one **predicted** `iso_child` row per (parent, label) for the
+diagnostic lines of every merged M0 with a known `ion_formula`, at the parent's
+stamped m/z (its trace centre, so the instrument offset carries over) plus the
+line's exact shift. Precedence is fixed: a satellite a per-file ledger observed
+supersedes the predicted one, and a predicted line is never minted on a track an
+M0 / reagent / observed satellite / artifact already holds — an assigned analyte
+at a satellite offset is an analyte. `annotate_peaks` then matches every known
+row **first** (a peak inside any known row's window is never offered to a
+predicted line) and stamps a predicted line only under the intensity gate above,
+plus a **track-coherence** rule the per-sample gate cannot express: a true
+satellite's ratio is a constant of nature and passes the window in nearly every
+judged sample, whereas an independent compound on the line fails in most and
+passes in the few where its height happens to fit. Once a line has been judged in
+at least 10 samples (parent present, a candidate on the line) it keeps its stamps
+only if at least half of them passed; otherwise the whole track stays unexplained.
+`tables/predicted_satellites.csv` holds one audit row per predicted line that had
+a candidate (samples judged / passed, pass share, judged, kept, peaks stamped).
+`batch_summary.json['traces']['stamp']` counts the stamped peaks by source
+(`n_iso_observed` apart from `n_iso_predicted`), the predicted tracks stamped /
+judged / rejected, and the predicted rows minted and superseded. The per-file
+ledgers and their coverage figures are untouched.
 
 ### The one-to-one guarantee
 
