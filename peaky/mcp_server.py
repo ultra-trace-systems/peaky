@@ -180,8 +180,9 @@ def list_batches(dataset: str, workspace: str = "") -> dict:
 
 
 def list_samples(dataset: str, batch: str, workspace: str = "", limit: int = 50) -> dict:
-    """List samples in a batch. Capped at `limit` rows (batches can hold
-    thousands) — the count is always exact; increase `limit` to see more."""
+    """List samples in a batch (`batch` is a name or id; an exact name beats a
+    substring, an ambiguous one is refused). Capped at `limit` rows (batches can
+    hold thousands) — the count is always exact; increase `limit` to see more."""
     from peaky.io import io_mascope as IO
     sl = IO.fetch_batch_samples(_connect(workspace), batch, dataset=dataset)
     cols = [c for c in ("sample_item_id", "sample_item_name", "datetime_utc",
@@ -299,7 +300,9 @@ def run_batch(batch: str, dataset: str = "", reagent: str = "auto",
               k_max: int = _K_MAX, subject: str = "",
               output_dir: str = "") -> dict:
     """Run the whole-batch pipeline (assign the presence-cover subset -> merge ->
-    cluster -> Van Krevelen -> PDF). Returns a job_id immediately; poll
+    cluster -> Van Krevelen -> PDF). `batch` is a batch name or id (an exact name
+    beats a substring; an ambiguous one is refused, never pooled); the run folder
+    and report carry the batch's display name either way. Returns a job_id immediately; poll
     `job_status`. On completion the result carries the versioned run folder + the
     PDF/merged-ledger paths and the batch summary (incl. `selection`: achieved
     coverage + stop reason). `k_max` is the sample budget (default

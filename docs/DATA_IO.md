@@ -185,9 +185,18 @@ All in `peaky/io/io_mascope.py`.
 
 - **`flatten_match_tree` is pure** (no network) and unit-tested against a captured
   fixture — the contract the offline test suite locks.
-- **Batch names are matched as a case-insensitive LITERAL substring**
-  (mascope-sdk's unified name contract): metacharacters — `Sample run (Ur+ CIMS)`,
-  a `^Nitrate` prefix — carry no regex meaning, so names are passed RAW. Only a
+- **A batch is settled ONCE, by `resolve_batch`: exact id > exact (casefolded)
+  name > unique literal substring; anything ambiguous raises with the candidates.**
+  The SDK alone matches a plain string as a case-insensitive literal substring and
+  applies that rule differently on the two calls a batch run makes — `load_peaks`
+  keeps *every* batch the string occurs in, `samples.list` demands a unique match —
+  so a batch whose name is a prefix of its siblings' (`Site A Ur 122-600` beside
+  `Site A Ur 122-600 11`) used to pool all three into the time series and then die
+  at the roster. Now both fetchers go through the resolver: the roster is asked by
+  id, the time series by the resolved name with `exact=True`, and a name several
+  batches share is refused for the time series (a name-addressed loader cannot
+  isolate it) rather than pooled. Names are still passed RAW — metacharacters
+  (`Sample run (Ur+ CIMS)`, a `^Nitrate` prefix) carry no regex meaning; only a
   compiled `re.Pattern` is a regex (the multi-batch pool path uses this).
 - **`-H+` is not a cation.** The server names deprotonation `-H+` (the *removed*
   species' sign), but it yields an anion. `_mechanism_names` normalizes the
@@ -217,7 +226,7 @@ All in `peaky/io/io_mascope.py`.
 | `connect` | build a `MascopeClient` from the resolved `.env` (precedence above) |
 | `_find_env` | credential search (precedence above) |
 | `list_workspaces` / `list_datasets` / `list_batches` | discovery |
-| `fetch_batch_samples` | one row per sample in a batch (raw-name literal match) |
+| `resolve_batch` | batch id or name → one `ResolvedBatch(id, name, how, n_same_name)`: exact id > exact name > unique substring; ambiguity raises |
 | `fetch_peaks` | single-sample raw peaks (+ matches), cached parquet |
 | `fetch_batch_peaks` | whole-batch peak time series |
 | `fetch_batch_samples` | per-sample table (no peaks): the live id list + reagent detection for a batch run |

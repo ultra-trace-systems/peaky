@@ -69,6 +69,7 @@ import pandas as pd  # noqa: E402
 from peaky.batch import assign_batch as _AB  # noqa: E402
 from peaky.batch import sampling as _SS  # noqa: E402
 from peaky.assignment import passes as _PA  # noqa: E402
+from peaky.io import io_mascope as _IO  # noqa: E402
 from peaky.reporting import provenance as _PV  # noqa: E402
 
 _snap = (dict(P.PROFILES), dict(P._BY_ALIAS))
@@ -76,8 +77,21 @@ P.register(P.ReagentProfile(
     name="TofP", label="tof picker", polarity="-", adducts=["[M-H]-"],
     normaliser="tic", reagent_ion_re=None, ranges="C0-10 H0-20",
     detect_adduct=None, height_cutoff_x_edge=5.0))
-_savedf = {"ab": _AB.run, "gen": PL.generate_report, "rec": _PV.record_run}
+_savedf = {"ab": _AB.run, "gen": PL.generate_report, "rec": _PV.record_run,
+           "connect": _IO.connect}
 _got: dict = {}
+
+
+# run_batch settles `batch` against the server's batch listing before anything
+# else (io_mascope.resolve_batch), so the pipeline needs a client that lists one:
+# batch "B" in dataset "D". No network.
+class _FakeBatches:
+    def list(self, dataset=None):   # noqa: A001
+        return pd.DataFrame({"sample_batch_id": ["B-id"], "sample_batch_name": ["B"]})
+
+
+class _FakeClient:
+    batches = _FakeBatches()
 
 
 def _fake_ab(**kw):
@@ -91,6 +105,7 @@ def _fake_ab(**kw):
 _AB.run = _fake_ab
 PL.generate_report = lambda ctx, ts, **kw: {}
 _PV.record_run = lambda **kw: _got.__setitem__("rec", kw)
+_IO.connect = lambda *a, **k: _FakeClient()
 _TS = pd.DataFrame({"sample_item_id": ["s1", "s1", "s2", "s2"],
                     "mz": [100.0, 200.0, 100.0, 300.0], "height": [5.0] * 4,
                     "sample_batch_name": ["b1", "b1", "b2", "b2"]})
@@ -209,8 +224,8 @@ try:
           PL.run(peaks=_TS, reagent="TofP")["height_cutoff_x_edge"] == 5.0
           and PL.run(peaks=_TS, reagent="Br")["height_cutoff_x_edge"] == "auto")
 finally:
-    _AB.run, PL.generate_report, _PV.record_run = (
-        _savedf["ab"], _savedf["gen"], _savedf["rec"])
+    _AB.run, PL.generate_report, _PV.record_run, _IO.connect = (
+        _savedf["ab"], _savedf["gen"], _savedf["rec"], _savedf["connect"])
     P.PROFILES.clear(); P.PROFILES.update(_snap[0])
     P._BY_ALIAS.clear(); P._BY_ALIAS.update(_snap[1])
 

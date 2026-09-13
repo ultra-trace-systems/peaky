@@ -268,7 +268,7 @@ pipeline assigns a **presence-cover subset and merges by m/z**:
     `paths.RunPaths`: `.png`→`figures/`, `.csv`/`.xlsx`→`tables/`, the PDF→`report/`,
     a live-fetched TS→`data/` (a TS passed by path is referenced, not copied).
 - IDs must be fetched FRESH from the live server (`io_mascope.fetch_batch_samples`,
-  regex-escape the batch name) — cached `sample_item_id`s 404 when a server copy is
+  by batch id or name) — cached `sample_item_id`s 404 when a server copy is
   renamed.
 
 ### Reagent-aware chemistry
@@ -554,8 +554,14 @@ It writes, so point it at a test or demo deployment.
   SDK's unified name-matching contract — batch names are passed RAW and match as
   case-insensitive literal substrings; only a compiled `re.Pattern` is a regex
   (the pool path) — and version skew makes batch resolution silently match
-  nothing. After an SDK bump, `tests/test_io_mascope.py`'s real-SDK tripwire
-  pins the contract.
+  nothing. After an SDK bump, the real-SDK tripwires in `tests/test_io_mascope.py`
+  and `tests/test_batch_resolution.py` pin the contract.
+- **`--batch` takes a batch name or id and is settled ONCE** (exact id > exact
+  name > unique substring; an ambiguous name is refused, never pooled): the time
+  series is loaded by the exact resolved name and the roster by id, so a batch
+  whose name is a prefix of a sibling's (`Site A Ur 122-600` beside
+  `Site A Ur 122-600 11`) selects itself alone, and a run addressed by id still
+  gets a run folder and report cover named after the batch.
 - `match_compounds` (plural); integer `mz_tolerance`; batched at 200, now scored
   concurrently (5 workers).
 - `cheminfo` is flaky/slow and OFF by default (`cfg.use_cheminfo`) — the local

@@ -547,9 +547,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Assign the presence-cover subset of a batch and combine, keeping per-file
     ledgers. Provide EITHER `peaks` (a batch peak/sample table) OR `batch` (a
-    batch name; the per-sample list is fetched fresh from the live server, which
-    also guarantees the selected sample ids are valid for get_peaks — cached ids
-    go stale / 404 when the server copy is renamed). Selection needs the per-PEAK
+    batch id or name -- exact id > exact name > unique substring, an ambiguous
+    string raises; the per-sample list is fetched fresh from the live server,
+    which also guarantees the selected sample ids are valid for get_peaks — cached
+    ids go stale / 404 when the server copy is renamed). Selection needs the per-PEAK
     table: pass it as `ts_peaks` (the full-batch time series) or as a per-peak
     `peaks`. `k_min`/`k_max`/`min_gain`/`min_prevalence` tune the cover (see
     sampling.py). `sample_ids` skips selection (the pooled path); pass its
@@ -589,8 +590,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     if peaks is None:
         if not batch:
             raise ValueError("need peaks= or batch=")
-        peaks = IO.fetch_batch_samples(client, batch, dataset=dataset)
-        log(f"[assign_batch] fetched {len(peaks)} samples for batch {batch!r}")
+        # settle the batch once (exact id > exact name > unique substring): the
+        # roster is fetched by id, and the DISPLAY name is what the reference
+        # lists read and batch_summary records, so a run addressed by id still
+        # reads as its batch
+        rb = IO.resolve_batch(client, batch, dataset=dataset)
+        peaks = IO.fetch_batch_samples(client, rb.id, dataset=dataset)
+        batch = rb.name
+        log(f"[assign_batch] fetched {len(peaks)} samples for batch {batch!r} "
+            f"(id {rb.id})")
 
     prof = P.resolve(reagent, peaks)
     context = context or prof.context

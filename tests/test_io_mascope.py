@@ -119,16 +119,23 @@ finally:
 # mascope-sdk >= 2026.8.12: a plain string is a case-insensitive LITERAL
 # substring on every name filter; only a compiled Pattern is a regex. Pre-
 # escaping a name would re-escape its backslashes into literals that match
-# nothing (surviving only via the SDK's deprecation shim).
+# nothing (surviving only via the SDK's deprecation shim). peaky settles the
+# batch itself first (resolve_batch; tests/test_batch_resolution.py pins the
+# rule): the time series is then asked for by the RAW resolved name with
+# exact=True, the roster by the batch id.
+_name = "^Nitrate (synthetic) m/z 100-200"
+class _BL:
+    def list(self, dataset=None):   # noqa: A001
+        return pd.DataFrame({"sample_batch_id": ["B1"], "sample_batch_name": [_name]})
 class _LP:
     seen = None
+    batches = _BL()
     def load_peaks(self, *, dataset, batches, **kwargs):   # **kwargs: tolerate confirm_above=
-        _LP.seen = batches
+        _LP.seen = (batches, kwargs.get("exact"))
         return pd.DataFrame({"mz": [100.0], "height": [1.0], "sample_item_id": ["s"]})
-_name = "^Nitrate (synthetic) m/z 100-200"
 IO.fetch_batch_peaks(_LP(), "DS", _name)
-check("fetch_batch_peaks passes the raw batch name",
-      _LP.seen == _name, _LP.seen)
+check("fetch_batch_peaks passes the raw batch name, and asks for it EXACTLY",
+      _LP.seen == (_name, True), _LP.seen)
 
 class _SL:
     seen = None
@@ -137,9 +144,10 @@ class _SL:
         return pd.DataFrame({"sample_item_id": ["s"]})
 class _CS:
     samples = _SL()
-IO.fetch_batch_samples(_CS(), _name)
-check("fetch_batch_samples passes the raw batch name",
-      _SL.seen == _name, _SL.seen)
+    batches = _BL()
+IO.fetch_batch_samples(_CS(), _name, dataset="DS")
+check("fetch_batch_samples settles the raw batch name and asks the SDK by id",
+      _SL.seen == "B1", _SL.seen)
 
 # ---------- REAL-SDK contract tripwire (offline, no network) ------------------
 # Run peaky's calls through the INSTALLED SDK's actual matching code over
@@ -289,8 +297,12 @@ for _label, _call in [
 class _BoomSL:
     def list(self, *, batch, dataset=None, drop_columns=None):
         raise ValueError("case and flags cannot be set for compiled regex")
+class _BoomBL:
+    def list(self, dataset=None):
+        return pd.DataFrame({"sample_batch_id": ["B1"], "sample_batch_name": ["B"]})
 class _BoomClient:
     samples = _BoomSL()
+    batches = _BoomBL()
 _boom = None
 try:
     IO.fetch_batch_samples(_BoomClient(), "B", dataset="DS")

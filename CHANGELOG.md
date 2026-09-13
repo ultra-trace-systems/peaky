@@ -257,6 +257,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`peaky batch --batch` settles the batch ONCE, and the time series can no longer
+  pool sibling batches.** The SDK matches a plain string as a case-insensitive literal
+  SUBSTRING and applied that rule differently on the two calls a batch run makes:
+  `load_peaks` (the time series) kept *every* batch the string occurred in, while
+  `samples.list` (the roster) demanded a unique match. On a dataset where one batch's
+  name is a prefix of its siblings' (`Site A Ur 122-600` beside `Site A Ur 122-600 11`
+  and `... wind zone 1`), `--batch "Site A Ur 122-600"` silently pooled all three
+  batches' peaks into the time series and then died at the roster with "Multiple
+  batchs matching"; addressed by id, the roster resolved but the time series found
+  nothing and the run died with "no peaks for batch". `io_mascope.resolve_batch` now
+  settles `--batch` up front — an exact batch id, else an exact (case-insensitive)
+  name, else a unique literal substring; an ambiguous string raises with the
+  candidates, before any run folder exists — and both fetchers go through it: the
+  roster is asked by id and the time series by the resolved name with `exact=True`.
+  A name several batches in the dataset share is refused for the time series (the
+  SDK loader addresses batches by name only, so it cannot be isolated) rather than
+  pooled. The resolved DISPLAY name now titles the run folder, the report cover,
+  `batch_summary.json` and the manifest even when the run was addressed by id (the
+  id is recorded beside it as `input.batch_id` / `RunContext.batch_id`), so the
+  `--batch <id> --ts <parquet>` workaround no longer produces a folder named after
+  an opaque id. `peaky list samples --batch` and the MCP `list_samples` / `run_batch`
+  tools take a name or id the same way; `peaky list batches` and the regex-driven
+  `peaky pool` are unchanged.
 - **The merge is a vote, and the merged row shows it.** `assign_batch.align` now
   decides each m/z cluster in two stages. *Which ion*: the ion (neutral + adduct
   composition, `_ion_key`) carried by the most FILES wins, with the Assigned-file

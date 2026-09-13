@@ -21,11 +21,13 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import NamedTuple
 
 import pandas as pd
 
-__version__ = "0.4.0"  # modern (datasets-based) servers only; raw batch names
-#                          (the SDK's unified literal name-matching contract)
+__version__ = "0.5.0"  # modern (datasets-based) servers only; a batch is settled
+#                          ONCE (exact id > exact name > unique substring) and the
+#                          time series is loaded by that exact name (resolve_batch)
 
 # Credential .env search order. The long-running MCP server holds a STALE in-memory
 # token and 401s; the SDK reads the live file, so always load from disk.
@@ -114,6 +116,19 @@ def connect(env_path: str | None = None, workspace: str | None = None):
 # pre-escaping them re-escapes the backslashes into literals that match nothing
 # (it only still "works" via the SDK's deprecation shim, which re-reads a
 # nothing-matching string as a regex under a DeprecationWarning).
+#
+# The SDK applies that substring rule DIFFERENTLY on the two calls a batch run
+# makes. load_peaks (the time series) keeps EVERY batch whose name contains the
+# string; samples.list (the roster) demands a UNIQUE match. A batch whose name is
+# a prefix of its siblings' ("Site A Ur 122-600" beside "Site A Ur 122-600 11")
+# therefore pooled three batches' peaks into one time series and then died at
+# the roster with "Multiple batchs matching"; addressed by id, the roster
+# resolved but the time series found nothing. resolve_batch() settles the batch
+# ONCE -- exact id, else exact (casefolded) name, else a unique literal substring;
+# anything ambiguous RAISES with the candidates -- and both fetchers go through
+# it: the roster is asked by id, the time series by the resolved name with
+# exact=True. The pool path (fetch_pooled_peaks) is the deliberate exception: a
+# compiled regex there is MEANT to match many batches.
 
 
 def list_workspaces() -> pd.DataFrame:
@@ -155,16 +170,106 @@ def list_batches(client, dataset: str | None = None) -> pd.DataFrame:
     return bs
 
 
+class ResolvedBatch(NamedTuple):
+    """One batch, settled by `resolve_batch`: its server id, its display name, and
+    which rule found it (`how`: 'id' / 'name' / 'substring'). `n_same_name` counts
+    the batches in the listing that share its casefolded name -- 1 unless the
+    dataset holds duplicates, which a loader that addresses batches by NAME
+    (the SDK's load_peaks) cannot tell apart."""
+    id: str
+    name: str
+    how: str
+    n_same_name: int = 1
+
+
+def _all_batches(client, dataset: str | None) -> pd.DataFrame:
+    """The listing `resolve_batch` matches against: one dataset's batches when
+    `dataset` is given (a name, substring or id -- the SDK settles it), else every
+    dataset's, as the SDK's own samples.list does without a dataset. Only the
+    listing calls are WAF-retried; the matching is not, because an error that
+    quotes a batch name like 'HR-CIMS 100-500' would read as a transient 500."""
+    if dataset is not None:
+        bs = _with_waf_retry(lambda: client.batches.list(dataset=dataset))
+        frames = [bs] if bs is not None and len(bs) else []
+    else:
+        ds = _with_waf_retry(lambda: client.datasets.list())
+        if ds is None or not len(ds):
+            raise RuntimeError("no datasets returned (check MASCOPE_URL / token)")
+        frames = []
+        for did in ds["dataset_id"].tolist():
+            bs = _with_waf_retry(lambda did=did: client.batches.list(dataset=did))
+            if bs is not None and len(bs):
+                frames.append(bs)
+    if not frames:
+        where = f"dataset {dataset!r}" if dataset is not None else "any dataset"
+        raise RuntimeError(f"no batches returned for {where} (see `peaky list batches`)")
+    return pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+
+
+def resolve_batch(client, batch: str, *, dataset: str | None = None) -> ResolvedBatch:
+    """Settle `batch` -- a batch id or a batch name -- to ONE batch.
+
+    Precedence: an exact `sample_batch_id`; else an exact case-insensitive name;
+    else a unique case-insensitive LITERAL substring (the SDK's own rule, kept as
+    the last resort). Zero matches, or several, RAISE with the candidates: the
+    resolver never picks one of several and never hands back a set. Same
+    precedence as curate's resolve_batch_id.
+
+    The exact-name step is what the SDK lacks: 'Site A Ur 122-600' is a substring
+    of its sibling 'Site A Ur 122-600 11', so on the SDK alone it either pools the
+    two (load_peaks) or is refused (samples.list); here the exact name wins
+    outright, and the caller passes the id / the exact name on to the SDK."""
+    if not isinstance(batch, str):
+        raise TypeError(f"batch must be a batch id or name (str), got "
+                        f"{type(batch).__name__}; a compiled pattern is the pool "
+                        "path (fetch_pooled_peaks)")
+    bs = _all_batches(client, dataset)
+    names = bs["sample_batch_name"].astype(str)
+    folded = names.str.casefold()
+    where = f"in dataset {dataset!r}" if dataset is not None else "in any dataset"
+
+    def _one(row, how):
+        name = str(row["sample_batch_name"])
+        return ResolvedBatch(id=str(row["sample_batch_id"]), name=name, how=how,
+                             n_same_name=int((folded == name.casefold()).sum()))
+
+    hit = bs[bs["sample_batch_id"].astype(str) == batch]
+    if len(hit) == 1:
+        return _one(hit.iloc[0], "id")
+    hit, how = bs[folded == batch.casefold()], "name"
+    if not len(hit):
+        # the SDK's substring rule, verbatim (_name_mask with exact=False)
+        hit, how = bs[names.str.contains(re.escape(batch), case=False, na=False)], "substring"
+    if len(hit) == 1:
+        return _one(hit.iloc[0], how)
+    if not len(hit):
+        avail = sorted(names.tolist())
+        shown = ", ".join(repr(n) for n in avail[:30]) + (" ..." if len(avail) > 30 else "")
+        raise ValueError(f"No batch matching {batch!r} {where}. "
+                         f"Available batches: {shown}")
+    opts = "; ".join(f"{n!r} (id {i})" for n, i in
+                     zip(hit["sample_batch_name"], hit["sample_batch_id"]))
+    if how == "name":
+        raise ValueError(f"{len(hit)} batches {where} are named {batch!r}: {opts}. "
+                         "Pass the batch id (`peaky list batches` shows it).")
+    raise ValueError(f"Multiple batches matching {batch!r} {where}: {opts}. Pass the "
+                     "exact name or the batch id (`peaky list batches` shows both).")
+
+
 def fetch_batch_samples(client, batch: str, *, dataset: str | None = None,
                         drop_columns=None) -> pd.DataFrame:
     """Per-sample table for a batch (one row per sample). Carries `sample_item_id`,
     `sample_item_name`, `datetime_utc`, `tic`, `polarity`, ... — the sample
     roster, WITHOUT loading every peak. (Cover selection needs the per-PEAK table;
-    this one cannot be binned -- see sampling.is_per_peak.)"""
-    sl = client.samples.list(batch=batch, dataset=dataset,
+    this one cannot be binned -- see sampling.is_per_peak.) `batch` is a batch id
+    or name, settled by `resolve_batch`; the SDK is then asked by ID, so a name
+    that is a prefix of a sibling's no longer trips its unique-substring rule."""
+    rb = resolve_batch(client, batch, dataset=dataset)
+    sl = client.samples.list(batch=rb.id, dataset=dataset,
                              drop_columns=[] if drop_columns is None else drop_columns)
     if sl is None or not len(sl):
-        raise RuntimeError(f"no samples for batch {batch!r} in dataset {dataset!r}")
+        raise RuntimeError(f"no samples for batch {rb.name!r} (id {rb.id}) "
+                           f"in dataset {dataset!r}")
     return sl
 
 
@@ -209,15 +314,29 @@ def fetch_batch_peaks(client, dataset: str, batch: str, *, save_path: str | None
                       ) -> pd.DataFrame:
     """Load the per-sample peak time-series for a whole batch (the TS / cluster /
     correlation layer). Distinct from fetch_peaks (one assignment sample). Uses the
-    SDK batch loader (dataset=, not the deprecated workspace=)."""
+    SDK batch loader (dataset=, not the deprecated workspace=). `batch` is a batch
+    id or name, settled ONCE by `resolve_batch`; the loader is then asked for that
+    exact name (exact=True), so a name that is a prefix of a sibling's selects one
+    batch and never a silent pool of them. The loader addresses batches by NAME
+    only, so a name several batches share is refused rather than pooled -- rename
+    one of them, or hand the run a per-batch parquet."""
+    rb = resolve_batch(client, batch, dataset=dataset)
+    if rb.n_same_name > 1:
+        raise RuntimeError(
+            f"{rb.n_same_name} batches in dataset {dataset!r} are named {rb.name!r} "
+            f"(id {rb.id} is one of them); the SDK time-series loader selects batches "
+            "by name, so this batch's peaks cannot be isolated -- rename one of them, "
+            "or pass the batch time series as a parquet (--ts)")
     # confirm_above=None: never prompt (non-interactive; batches can exceed 100
-    # samples). WAF-retry so a burst 521/403 doesn't kill a long batch load;
+    # samples). exact=True: the name must EQUAL the batch's, not merely occur in
+    # it. WAF-retry so a burst 521/403 doesn't kill a long batch load;
     # non-transient errors propagate unmasked.
     peaks = _with_waf_retry(
-        lambda: client.load_peaks(dataset=dataset, batches=batch,
+        lambda: client.load_peaks(dataset=dataset, batches=rb.name, exact=True,
                                   confirm_above=None))
     if peaks is None or len(peaks) == 0:
-        raise RuntimeError(f"no peaks for batch {batch!r} in dataset {dataset!r}")
+        raise RuntimeError(f"no peaks for batch {rb.name!r} (id {rb.id}) "
+                           f"in dataset {dataset!r}")
     if save_path:
         peaks.to_parquet(os.path.expanduser(save_path))
     return peaks

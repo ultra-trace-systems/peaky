@@ -75,10 +75,12 @@ def dep_versions(names=("mascope-sdk", "pandas", "numpy")) -> dict:
 def build_manifest(*, run_dir: str, batch_name: str, dataset: str | None,
                    sample_ids, reagent: str, cfg, ts_path: str | None = None,
                    counts: dict | None = None, created_utc: str | None = None,
-                   extra: dict | None = None) -> dict:
+                   extra: dict | None = None, batch_id: str | None = None) -> dict:
     """Assemble the reproducibility manifest for a finished run. Hashes the run's
     ts parquet (input) and merged_ledger.csv (output) so the run is pinned to its
-    exact data + result alongside the exact code that produced it."""
+    exact data + result alongside the exact code that produced it. `batch_name`
+    is the batch's DISPLAY name; `batch_id` its server id when the run had one
+    (None for a pool label), so a renamed batch stays traceable."""
     import peaky                                # the real package version (peaky.__version__)
     from peaky.assignment import assign as A   # per-module versions + hashes (incl. assign's own)
     from peaky.assignment.passes import PassConfig
@@ -114,6 +116,7 @@ def build_manifest(*, run_dir: str, batch_name: str, dataset: str | None,
         "input": {
             "dataset": dataset,
             "batch_name": batch_name,
+            "batch_id": batch_id,
             "reagent": reagent,
             "sample_ids": list(sample_ids or []),
             "ts_parquet": _rel_or_abs(ts_path, run_dir),
@@ -144,6 +147,7 @@ def append_registry(index_path: str, manifest: dict) -> str:
         "run_dir": manifest.get("run_dir"),
         "created_utc": manifest.get("created_utc"),
         "batch_name": manifest["input"]["batch_name"],
+        "batch_id": manifest["input"].get("batch_id"),
         "dataset": manifest["input"]["dataset"],
         "reagent": manifest["input"]["reagent"],
         "n_samples": len(manifest["input"]["sample_ids"]),
@@ -164,7 +168,8 @@ def append_registry(index_path: str, manifest: dict) -> str:
 def record_run(*, run_dir: str, base_out: str, batch_name: str,
                dataset: str | None, sample_ids, reagent: str, cfg,
                ts_path: str | None = None, counts: dict | None = None,
-               created_utc: str | None = None, log=print) -> dict:
+               created_utc: str | None = None, batch_id: str | None = None,
+               log=print) -> dict:
     """Write the per-run manifest AND append the cross-run registry row. Returns
     the manifest. Never raises into the pipeline -- provenance must not break a
     completed run; failures are logged and swallowed."""
@@ -172,7 +177,7 @@ def record_run(*, run_dir: str, base_out: str, batch_name: str,
         manifest = build_manifest(
             run_dir=run_dir, batch_name=batch_name, dataset=dataset,
             sample_ids=sample_ids, reagent=reagent, cfg=cfg, ts_path=ts_path,
-            counts=counts, created_utc=created_utc)
+            counts=counts, created_utc=created_utc, batch_id=batch_id)
         write_manifest(run_dir, manifest)
         idx = append_registry(os.path.join(base_out, "index.jsonl"), manifest)
         commit = (manifest["code"]["git"] or {}).get("commit") or "no-git"
