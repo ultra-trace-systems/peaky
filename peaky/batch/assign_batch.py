@@ -25,6 +25,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import time
 
 import numpy as np
 import pandas as pd
@@ -356,6 +357,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     from peaky.assignment import assign as A
     from peaky.io import io_mascope as IO
 
+    t_start = time.time()          # wall clock for summary['elapsed_s'] (see below)
     out_dir = os.path.expanduser(out_dir)
     TAB = PT.run_paths(out_dir).ensure().tables    # .csv tables -> tables/
     pfdir = os.path.join(out_dir, "per_file")
@@ -383,6 +385,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     if sample_ids is None:
         # greedy presence set-cover over the batch's m/z bins. Needs the per-PEAK
         # table: the pipeline passes it as ts_peaks; `peaks` may already be one.
+        # The cover runs before any sample is assigned and is not quick on a big
+        # batch, so it owns the phase for its duration (the caller already said
+        # `assign`); the marker is handed back below, once the picks are in.
+        log("[phase] select")
         src = ts_peaks if ts_peaks is not None else peaks
         if not SS.is_per_peak(src):
             raise ValueError("sample selection needs the per-peak batch table "
@@ -398,6 +404,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         _warn = SS.k_max_warning(selection)
         if _warn:
             log(f"[assign_batch] WARNING: {_warn}")
+        log("[phase] assign")     # cover picked; everything past here is the run
     log(f"[assign_batch] {prof.label} context={context!r}: "
         f"{len(sample_ids)} selected files -> {pfdir}")
 
@@ -504,6 +511,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                         reflists_active=reflists_active, **kw)
             _apply(sid, res["ledger"], res.get("plausibility_audit") or [],
                    dict(res.get("stats", {})))
+            # same line the parallel branch logs per completed future: it is what
+            # advances a progress reader's samples bar (peaky/progress.py)
+            log(f"[assign_batch] ({i}/{len(sample_ids)}) done {sid}")
     else:
         # Write the batch TS to disk once so workers load it from the parquet
         # rather than re-pickling the full-batch DataFrame into every process.
@@ -625,6 +635,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "plausibility": summary_plaus,
         "plausibility_audit_rows": n_audit,
         "per_file": per_stats,
+        # RUN-TIME metadata, not material data: how long the assignment actually
+        # took, alongside the n_jobs that produced it (a duration is meaningless
+        # without it). Safe to keep here -- batch_summary.json is a counts/offsets
+        # file and is NOT part of the reproducibility fingerprint, which hashes
+        # merged_ledger.csv and the input TS (see reporting/provenance.py).
+        "elapsed_s": round(time.time() - t_start, 1),
+        "n_jobs": n_jobs,
     }
     with open(os.path.join(out_dir, "batch_summary.json"), "w") as fh:
         json.dump(summary, fh, indent=2, default=str)
@@ -632,6 +649,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         f"({summary['merged_tiers']}); {summary['n_in_all_files']} in all files, "
         f"{summary['n_single_file']} single-file, "
         f"{summary['formula_disagreements']} formula disagreements")
+    log(f"[assign_batch] assigned {len(sample_ids)} samples in "
+        f"{summary['elapsed_s']:.1f}s (n_jobs={n_jobs})")
     return {"profile": prof, "context": context, "sample_ids": sample_ids,
             "per_file": per_file, "offsets": offsets, "merged": merged,
             "jitter": jitter, "summary": summary, "out_dir": out_dir}

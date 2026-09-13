@@ -297,6 +297,61 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   --ts-batch` computes the table for a single sample. `batch` / `pool` also
   gained the absolute `--height-cutoff` override and `--height-cutoff-x-edge`,
   which only `assign` had (the three flags are defined once for all three).
+- **`--progress`: a live progress window for a run** (`peaky/progress.py`, new).
+  `peaky assign|batch|pool --progress` opens a small Tk window with a samples bar,
+  a within-sample stage bar, elapsed + ETA, and — when the run ends — the run's
+  own stats (merged M0, tiers, in-all-files, single-file, formula disagreements)
+  next to how long it took. Opt-in, so scripted and skill-driven runs are
+  untouched; `PEAKY_PROGRESS=1` also enables it. Everything in the window is also
+  on stdout, so nothing is lost by never seeing it.
+
+  **`peaky assign` is a one-sample run and reports as one.** Its samples bar
+  reaches 1/1 and its stage bar fills when `assign.run` returns: the `(i/N) done`
+  line that drives both comes from `assign_batch`, which that path never goes
+  through, so the command marks its own sample complete. It shows **no ETA** —
+  an ETA is extrapolated over completed samples, and the only sample here
+  completes when the run does; the window omits the field rather than printing a
+  clock that cannot move.
+
+  **The hold is for a person at a terminal, and it is bounded.** A finished run
+  keeps its window up so the stats panel can be READ — but only when stdin and
+  stdout are both a tty, and only until you close the window, press Ctrl-C, or
+  `PEAKY_PROGRESS_HOLD_S` seconds pass (default 600; `0` disables the hold
+  entirely). A pipe, a CI job or a skill-driven run therefore never waits on a
+  window, whatever `PEAKY_PROGRESS` says, and Ctrl-C during a run closes the
+  window immediately, with no stats panel and no wait.
+
+  It is a **`log` wrapper, not a pipeline change**: peaky already threads
+  `log=print` from `run_batch` down to each assignment stage, so `Reporter` is a
+  drop-in for `print` that forwards every line untouched and reads the lines it
+  recognises into a progress model. Nothing in the pipeline imports `progress.py`
+  or knows a window exists — the log stream is the whole interface, and
+  `tests/test_progress.py` pins the literal log strings the pipeline emits
+  against the patterns parsed here so a rewording fails a test instead of
+  silently flat-lining the bar. Never fatal: no display, no tkinter, or any UI
+  exception degrades to a one-line terminal status and then to silence.
+  **macOS always takes that fallback**: the window runs on a daemon thread, and
+  Tk/Cocoa driven off the process's main thread aborts the process outright —
+  not an exception any guard could catch — so on Darwin the progress window
+  would kill the run it reports on. There is no window there, by design.
+
+  Parallel runs (`--jobs > 1`) report at **sample granularity only** and say so
+  ("N workers" in place of the stage bar): workers buffer their logs and the
+  parent replays them after the reduce, so a stage bar driven from them would
+  animate a lie.
+- **Runs are timed.** `batch_summary.json` gains `elapsed_s` (+ the `n_jobs` that
+  produced it — a duration is meaningless without it), and `run_batch` /
+  `run_pooled_batches` return a whole-pipeline `elapsed_s` and log it. Run-time
+  metadata only: the reproducibility fingerprint hashes `merged_ledger.csv` and
+  the input TS, not the summary, so determinism is unaffected.
+- **`[phase] <name>` log markers** for the pipeline steps with no per-item
+  progress of their own (fetch / select / assign / cluster / vankrevelen /
+  report / provenance) — readable in a plain log, and what the window's phase
+  line reads. `run_batch` and `run_pooled_batches` emit the same set, so the
+  phase line is as truthful on a pooled run as on a single-batch one; `select`
+  comes from whichever side runs the set-cover (the pooled pipeline itself, or
+  `assign_batch.run` when it picks the cover for one batch, which brackets it
+  back to `assign` as soon as the picks are in).
 
 ### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
 
