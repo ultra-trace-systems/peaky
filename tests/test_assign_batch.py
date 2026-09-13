@@ -248,11 +248,16 @@ try:
         check("run: per-file stats keep the RESOLVED gate under height_gate_cps",
               all("height_gate_cps" in pf and "height_cutoff_cps" not in pf
                   for pf in summ["per_file"]), summ["per_file"][:1])
-        check("run: a profile with no opinion leaves the package default gate",
+        # 8 samples: fewer than the 10 spectra the persistence table needs, so the
+        # 'auto' policy has nothing to derive the floor from and falls back to the
+        # numeric default -- stamped as a NUMBER on every per-file cfg, with a
+        # source that says why
+        check("run: a profile with no opinion + nothing to derive from -> the package default 1x",
               all(c is not None and c.height_cutoff_x_edge == 1.0 for c in _SEEN_CFG)
               and summ.get("height_cutoff_x_edge") == 1.0
-              and summ.get("height_cutoff_x_edge_source") == "the package default", summ.get(
-                  "height_cutoff_x_edge_source"))
+              and summ.get("height_cutoff_x_edge_source", "").startswith("the package default 1x")
+              and "nothing to derive" in summ.get("height_cutoff_x_edge_source", "")
+              and summ.get("gate") == {}, summ.get("height_cutoff_x_edge_source"))
 
     # ... and a profile that carries its own multiple hands it to every per-file
     # run and says so in the summary (the config-file path for a picker that

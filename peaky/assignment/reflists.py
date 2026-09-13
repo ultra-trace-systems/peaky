@@ -40,9 +40,14 @@ _DIR = pkg_data("peaklists")
 CONTEXT_KEYWORDS = {
     "monoterpene_ox": ("monoterpene", "pinene", "a-pinene", "α-pinene", "apinene",
                        "b-pinene", "β-pinene", "limonene", "terpene", "orange",
-                       "carene", "sabinene", "myrcene"),
+                       "carene", "sabinene", "myrcene", "ap oxidation",
+                       "ap-oxidation", "ap_oxidation"),
     "limonene_ox": ("limonene", "orange", "d-limonene"),
-    "ap_ox": ("pinene", "a-pinene", "α-pinene", "apinene"),
+    # "ap oxidation" as a PHRASE: a dataset named for the chemistry ("AP oxidation
+    # demo-set") must unlock the alpha-pinene lists; the bare abbreviation may not
+    # (see below).
+    "ap_ox": ("pinene", "a-pinene", "α-pinene", "apinene", "ap oxidation",
+              "ap-oxidation", "ap_oxidation"),
     "isoprene_ox": ("isoprene", "isopn", "iepox", "isopooh", "methacrolein"),
     # NB a bare "AP" abbreviation (e.g. "AP Low temperature") is intentionally NOT a
     # keyword (too many false positives like "soap"/"grape"); tag such runs via the
@@ -112,9 +117,14 @@ def load_catalog(directory: str | None = None) -> dict:
 
 
 def resolve_context_tags(*texts: str) -> set:
-    """Infer experimental-context tags from run metadata (batch name / label).
-    This is the 'unlock with metadata' step — only the matched contexts' lists
-    become active, keeping precision high on unrelated samples."""
+    """Infer experimental-context tags from run metadata: the batch name, the
+    DATASET name and the reagent label, all passed as `texts`. This is the
+    'unlock with metadata' step — only the matched contexts' lists become active,
+    keeping precision high on unrelated samples. Pass the dataset name too: on a
+    campaign whose batch names describe instrument and reagent ("... TOF NO3_Br
+    mixed ...") the chemistry lives only in the dataset name ("AP oxidation
+    demo-set"), and a resolver that never saw it left the alpha-pinene reference
+    list inactive on alpha-pinene data."""
     blob = " ".join(t for t in texts if t).lower()
     return {tag for tag, kws in CONTEXT_KEYWORDS.items()
             if any(k.lower() in blob for k in kws)}

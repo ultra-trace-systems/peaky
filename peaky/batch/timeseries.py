@@ -31,7 +31,7 @@ import pandas as pd
 
 from peaky.assignment import ledger as L
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"  # trace re-centring / collapse / stamp window
 
 DEFAULT_TOL_PPM = 5.0
 FLAT_CV = 0.25          # cv_norm below this == flat / background
@@ -68,6 +68,82 @@ def auto_bin_minutes(ts: pd.DataFrame, *, target_bins: int = 50,
             return max(1, int(np.ceil(cadence_min)))
     span_min = (t.max() - t.min()).total_seconds() / 60.0 if len(t) >= 2 else 30.0
     return max(1, int(round(span_min / target_bins)))
+
+
+# ---------------------------------------------------------------------------
+# match-flattened -> one row per physical peak
+# ---------------------------------------------------------------------------
+# Mascope's peak loaders return the MATCH-FLATTENED table: "when a peak matches
+# multiple isotopes it is expanded into one row per match" (SDK `load_peaks` /
+# `samples.get_peaks`, both `matches=True` by default). The batch time series is a
+# table of PHYSICAL peaks -- one row per (sample, peak) -- so a peak that two
+# targets both claim comes back twice with byte-identical mz/area/height and only
+# the advisory `target_*` columns differing.
+#
+# Two targets collide exactly when they imply the SAME ion: a neutral read as
+# [M+NO3]- and a neutral one HNO3 heavier read as [M-H]- are the same ion formula,
+# so both score ~1.0 on the same peak. The pair is then separated by exactly
+# 0.00 ppm and survives every mass-based filter downstream.
+#
+# Left in, each such peak is counted twice: `build_matrix` sums heights per
+# (sample, bin) so that bin's intensity doubles, and a per-trace peak count reads
+# 2.0 peaks/sample for one ion -- which looks like two merged ions (measured:
+# 0.29% and 0.42% of rows on two field batches, always pairs).
+#
+# Ranking columns, most decisive first; the target ids are the final tie-break so
+# the winner is fixed by content, never by the order the server returned rows in.
+_MATCH_SCORE_COLS = ("match_score_compound", "match_score_ion", "match_score_isotope")
+_MATCH_ID_COLS = ("target_isotope_id", "target_ion_id", "target_compound_id")
+
+
+def collapse_peak_matches(peaks: pd.DataFrame, *, log=None) -> pd.DataFrame:
+    """Collapse Mascope's match-expanded rows to ONE row per physical peak.
+
+    Keyed on (sample_item_id, peak_id) -- or (sample_item_id, mz) for a frame
+    trimmed to the TS columns, which carries no peak_id. The surviving row is the
+    one whose match scores are highest, so the (advisory) Mascope identity in the
+    `target_*` / `ionization_mechanism` columns stays the best one on offer;
+    peaky's own `neutral_formula` / `adduct` / `tier`, stamped later by
+    `annotate_peaks` from the merged ledger, are the authoritative assignment.
+
+    Row ORDER is preserved and a frame that is already one-row-per-peak comes back
+    unchanged (not even copied), so this is free on clean input and idempotent on
+    its own output -- safe to call at every point a time series enters."""
+    if peaks is None or not hasattr(peaks, "columns") or not len(peaks):
+        return peaks
+    cols = peaks.columns
+    if "peak_id" in cols and not peaks["peak_id"].isna().any():
+        peak_key = "peak_id"
+    elif "mz" in cols:
+        peak_key = "mz"
+    else:
+        return peaks            # nothing identifies a peak; never key on the sample
+    key = (["sample_item_id", peak_key] if "sample_item_id" in cols else [peak_key])
+    d = peaks.reset_index(drop=True)
+    if not d.duplicated(subset=key, keep=False).any():
+        return peaks
+    rank, asc = [], []
+    for c in _MATCH_SCORE_COLS:
+        if c in cols:
+            rank.append(c)
+            asc.append(False)                      # best score first
+    for c in _MATCH_ID_COLS:
+        if c in cols:
+            rank.append(c)
+            asc.append(True)                       # deterministic final tie-break
+    if rank:
+        # mergesort == stable, so unmatched peaks (all-NaN scores) keep their order
+        order = d.sort_values(rank, ascending=asc, kind="mergesort",
+                              na_position="last").index.to_numpy()
+    else:
+        order = np.arange(len(d))
+    lost = d.iloc[order].duplicated(subset=key, keep="first").to_numpy()
+    out = d.iloc[np.sort(order[~lost])].reset_index(drop=True)
+    if log:
+        log(f"[ts] collapsed {int(lost.sum())} match-expanded row(s) -> "
+            f"{len(out)} physical peaks (a peak claimed by >1 target came back "
+            f"once per target, at identical m/z and height)")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +436,220 @@ def _resolve_one_to_one(peaks: pd.DataFrame, ok: np.ndarray, near: np.ndarray,
     return winner, loser, cons
 
 
+# --- trace-level reconciliation of the merged ledger ---------------------------
+# The merged ledger's m/z is an ANCHOR minted from the few assigned samples. On a
+# TOF the assignment snaps that anchor to theory (a formula is only committed
+# where a sample's draw lands near it): real anchors sit 1.8 ppm (sd) from the
+# theoretical mass while a same-size anchor drawn at random from the ion's own
+# trace sits 5.7 ppm away -- the trace genuinely lives ~5.8 ppm off theory, and a
+# window centred on the anchor misses most of it (22.6 % of one TOF batch's
+# anchors were outside their own trace's +-6 ppm window; C10H16O9 [M+NO3]- kept
+# 40 % of its spectra from the anchor and 81 % from the trace centre). Two winner
+# samples also mint two competing rows for ONE ion when their draws differ by
+# more than the merge tolerance (26.8 % of well-populated TOF rows shared a trace).
+# Re-centring every anchor on its own trace lifted mean coverage 61 -> 74 % over
+# 867 TOF ions, gains > 5 pp on 41 %, losses on 3.5 %; the same pass moved an
+# Orbitrap ledger by 0.11 ppm and changed nothing -- the no-op that validates it.
+# So, between the merge and the stamp: re-centre (batch.traces.PeakIndex.mean_shift
+# from each anchor), collapse the rows that converge on one trace, and stamp from
+# the trace centres with a window sized to the batch's own per-ion scatter.
+RECENTRE_MAX_DRIFT_PPM = 10.0   # an anchor may move at most this far (measured: the
+                                # median move is 2.7 ppm; +-10 ppm delivers +11.6 of the
+                                # +12.7 pp total and the uncorroborated landings live beyond)
+RECENTRE_GUARD_COV = 0.10       # an anchor covering < this share of spectra ...
+RECENTRE_GUARD_PPM = 6.0        # ... may not move further than this uncorroborated
+                                # (one such row re-centred to 84 % coverage on peaks
+                                # that tracked nothing, r 0.19)
+STAMP_TOL_SIGMA = 2.5           # stamping half-window = this many per-ion sigmas ...
+STAMP_TOL_MAX_X = 2.0           # ... never wider than this x the merge tolerance
+TRACE_WINNER, TRACE_COLLAPSED, TRACE_SINGLE = "winner", "collapsed", "single"
+
+
+def _trace_index(ts_peaks, index, tol_ppm):
+    from peaky.batch import traces as TR
+    if index is not None:
+        return index
+    if ts_peaks is None or not len(ts_peaks):
+        return None
+    return TR.PeakIndex(ts_peaks, tol_ppm=tol_ppm)
+
+
+def recentre_ledger(merged: pd.DataFrame, ts_peaks: pd.DataFrame | None = None, *,
+                    index=None, tol_ppm: float = DEFAULT_TOL_PPM,
+                    max_drift_ppm: float = RECENTRE_MAX_DRIFT_PPM,
+                    guard_cov: float = RECENTRE_GUARD_COV,
+                    guard_ppm: float = RECENTRE_GUARD_PPM, log=print) -> dict:
+    """Re-centre every merged row on its own TRACE (in place). Adds
+
+      mz_anchor         the merge's m/z (what the assignment committed)
+      mz_trace          the trace centre the stamp should use (= mz_anchor when
+                        the row did not move)
+      trace_offset_ppm  mz_trace vs mz_anchor
+      trace_cov_anchor  share of spectra with a peak within tol of the anchor
+      trace_cov         ... of the trace centre
+      trace_moved       the row moved (the trace centre covers strictly more)
+      trace_guarded     the move was refused by the low-evidence guard
+
+    A row moves only where the re-centred window covers MORE spectra than the
+    anchor's (never fewer), by at most `max_drift_ppm`. Guard: an anchor covering
+    < `guard_cov` of the spectra that wants to move > `guard_ppm` must be
+    corroborated (seen in >= 2 assigned files, or Assigned) -- an almost-empty
+    anchor plus a large jump is how a label lands on a neighbour's trace. Without
+    a time series this is a no-op that still adds the columns."""
+    idx = _trace_index(ts_peaks, index, tol_ppm)
+    n = len(merged)
+    mz = pd.to_numeric(merged["mz"], errors="coerce").to_numpy(dtype=float) if "mz" in merged.columns \
+        else np.full(n, np.nan)
+    merged["mz_anchor"] = mz
+    merged["mz_trace"] = mz
+    merged["trace_offset_ppm"] = 0.0
+    merged["trace_cov_anchor"] = np.nan
+    merged["trace_cov"] = np.nan
+    merged["trace_moved"] = False
+    merged["trace_guarded"] = False
+    out = {"n_rows": int(n), "n_recentred": 0, "n_guarded": 0,
+           "median_abs_move_ppm": 0.0, "mean_cov_anchor": None, "mean_cov_trace": None,
+           "max_drift_ppm": float(max_drift_ppm), "tol_ppm": float(tol_ppm)}
+    if idx is None or n == 0 or len(idx) == 0:
+        return out
+    nf = pd.to_numeric(merged.get("n_files", pd.Series(1, index=merged.index)),
+                       errors="coerce").fillna(1).to_numpy()
+    tier = merged["tier"].astype(str).to_numpy() if "tier" in merged.columns \
+        else np.full(n, "", dtype=object)
+    cov_a = np.full(n, np.nan); cov_t = np.full(n, np.nan)
+    mzt = mz.copy(); moved = np.zeros(n, dtype=bool); guarded = np.zeros(n, dtype=bool)
+    for i in range(n):
+        a = mz[i]
+        if not np.isfinite(a):
+            continue
+        cov_a[i] = idx.coverage_at(a, tol_ppm)
+        c = idx.mean_shift(a, tol_ppm=tol_ppm, max_drift_ppm=max_drift_ppm)
+        cov_c = idx.coverage_at(c, tol_ppm)
+        move = abs(c - a) / a * 1e6
+        if cov_c > cov_a[i] and move > 0:
+            corroborated = (nf[i] >= 2) or (tier[i] == "Assigned")
+            if cov_a[i] < guard_cov and move > guard_ppm and not corroborated:
+                guarded[i] = True
+                cov_t[i] = cov_a[i]
+                continue
+            mzt[i] = c; cov_t[i] = cov_c; moved[i] = True
+        else:
+            cov_t[i] = cov_a[i]
+    merged["mz_trace"] = mzt
+    merged["trace_offset_ppm"] = np.where(np.isfinite(mz) & (mz > 0), (mzt - mz) / mz * 1e6, 0.0)
+    merged["trace_cov_anchor"] = cov_a
+    merged["trace_cov"] = cov_t
+    merged["trace_moved"] = moved
+    merged["trace_guarded"] = guarded
+    ok = np.isfinite(cov_a)
+    out.update(n_recentred=int(moved.sum()), n_guarded=int(guarded.sum()),
+               median_abs_move_ppm=round(float(np.median(np.abs(merged.loc[moved, "trace_offset_ppm"])))
+                                         if moved.any() else 0.0, 3),
+               mean_cov_anchor=round(float(np.nanmean(cov_a)), 4) if ok.any() else None,
+               mean_cov_trace=round(float(np.nanmean(cov_t)), 4) if ok.any() else None)
+    if log:
+        log(f"[traces] re-centred {out['n_recentred']} of {n} ledger rows on their own "
+            f"trace (median move {out['median_abs_move_ppm']} ppm, cap {max_drift_ppm:g}); "
+            f"{out['n_guarded']} low-evidence moves refused; mean spectra coverage "
+            f"{out['mean_cov_anchor']} -> {out['mean_cov_trace']}")
+    return out
+
+
+_TIER_RANK_TRACE = {"Assigned": 2, "Candidate": 1}
+
+
+def collapse_trace_labels(merged: pd.DataFrame, *, tol_ppm: float = DEFAULT_TOL_PPM,
+                          log=print) -> dict:
+    """Rows whose trace centres fall within `tol_ppm` of each other are competing
+    labels for ONE ion (in place). Adds `trace_id` (gap-cluster of `mz_trace`) and
+    `trace_role`: 'single' (alone on its trace), 'winner' (the label kept), or
+    'collapsed' (a competing label the stamp must not use). The winner is chosen
+    by the MERGE's own ordering -- most assigned files, then tier, then ion_score
+    -- with proximity to the trace centre only as a deterministic tie-break
+    before the m/z itself. Never ion_score FIRST: per-file, it is blind to
+    reproducibility, and on a TOF batch it handed a 1-file C14H17NO4S [M-H]-
+    (0.878) the trace of the Orbitrap-confirmed C10H16O6 [M+NO3]- seen in 6 files
+    (0.832). And never proximity BEFORE the score: on a TOF the anchors were
+    snapped to theory by the assignment, so which label's anchor sits nearer the
+    trace centre says nothing about which label is right -- on a live batch it
+    handed the trace of the known monomer C10H16O9 to a 1-file C15H21NO3 [M+Br]-
+    whose anchor happened to land 0.25 ppm from the centre (score 0.846 vs 0.960);
+    the score ordering picked the reference-list label in 4 of the 4 same-file,
+    same-tier ties where exactly one label was on the list. Nothing is dropped:
+    collapsed rows stay in the ledger, flagged, exactly like `dup_candidate`
+    peaks."""
+    n = len(merged)
+    merged["trace_id"] = -1
+    merged["trace_role"] = TRACE_SINGLE
+    out = {"n_traces": 0, "n_collapsed": 0, "n_multi_label_traces": 0}
+    if n == 0 or "mz_trace" not in merged.columns:
+        return out
+    mzt = pd.to_numeric(merged["mz_trace"], errors="coerce").to_numpy(dtype=float)
+    ok = np.isfinite(mzt)
+    if not ok.any():
+        return out
+    pos = np.flatnonzero(ok)
+    order = pos[np.argsort(mzt[pos], kind="mergesort")]
+    srt = mzt[order]
+    tid = np.zeros(len(order), dtype=np.int64)
+    if len(order) > 1:
+        gaps = np.diff(srt) / srt[:-1] * 1e6
+        tid[1:] = np.cumsum(gaps > tol_ppm)
+    trace_id = np.full(n, -1, dtype=np.int64)
+    trace_id[order] = tid
+    merged["trace_id"] = trace_id
+    role = np.full(n, TRACE_SINGLE, dtype=object)
+    nf = pd.to_numeric(merged.get("n_files", pd.Series(1, index=merged.index)),
+                       errors="coerce").fillna(0).to_numpy()
+    tr = merged["tier"].astype(str).map(_TIER_RANK_TRACE).fillna(0).to_numpy() \
+        if "tier" in merged.columns else np.zeros(n)
+    off = np.abs(pd.to_numeric(merged.get("trace_offset_ppm", pd.Series(0.0, index=merged.index)),
+                               errors="coerce").fillna(0).to_numpy())
+    sc = pd.to_numeric(merged.get("ion_score", pd.Series(0.0, index=merged.index)),
+                       errors="coerce").fillna(0).to_numpy()
+    multi = 0
+    for t in np.unique(tid):
+        rows = order[tid == t]
+        if len(rows) < 2:
+            continue
+        multi += 1
+        # lexsort: last key is primary -- n_files, tier, ion_score, then proximity
+        # to the trace centre, then the row's m/z (deterministic).
+        k = np.lexsort((mzt[rows], off[rows], -sc[rows], -tr[rows], -nf[rows]))
+        win = rows[k[0]]
+        role[rows] = TRACE_COLLAPSED
+        role[win] = TRACE_WINNER
+    merged["trace_role"] = role
+    out.update(n_traces=int(len(np.unique(tid))), n_collapsed=int((role == TRACE_COLLAPSED).sum()),
+               n_multi_label_traces=int(multi))
+    if log and out["n_collapsed"]:
+        log(f"[traces] {out['n_collapsed']} competing label(s) collapsed: {n} ledger rows "
+            f"sit on {out['n_traces']} traces ({multi} traces carried more than one label)")
+    return out
+
+
+def stamp_tolerance(index, centres, *, tol_ppm: float = DEFAULT_TOL_PPM,
+                    k_sigma: float = STAMP_TOL_SIGMA, max_x: float = STAMP_TOL_MAX_X) -> tuple[float, float]:
+    """The stamping half-window for this batch, from its own per-ion mass scatter:
+    max(tol_ppm, min(max_x * tol_ppm, k_sigma * sigma)), where sigma is the third
+    quartile of the robust per-trace scatter at `centres` (batch.traces.
+    batch_scatter_ppm -- the dimmer traces, which a window sized from the bright
+    ones loses). Returns (stamp_tol_ppm, sigma_ppm); sigma NaN (and the window =
+    tol_ppm) when no trace is populated enough to measure. An Orbitrap (third
+    quartile 0.24-0.34 ppm) keeps the merge tolerance; a TOF (3.8-4.2 ppm) gets a
+    ~10 ppm window, near the +-12 ppm membership cap the trace-batching bake-off
+    settled on -- the per-ion cloud is wider than the merge tolerance there, and
+    a window that cuts through it loses real spectra to the one-to-one contest
+    (measured on a 230-spectrum TOF batch: a 12 ppm window doubled the share of
+    ions gaining > 5 pp of coverage over a 6 ppm one, 21 -> 42 %, with the share
+    losing unchanged at 3.7 %)."""
+    from peaky.batch import traces as TR
+    sigma = TR.batch_scatter_ppm(index, centres, tol_ppm=tol_ppm) if index is not None else float("nan")
+    if not np.isfinite(sigma):
+        return float(tol_ppm), float("nan")
+    return float(max(tol_ppm, min(max_x * tol_ppm, k_sigma * sigma))), round(float(sigma), 3)
+
+
 def identified_rows(ledger: pd.DataFrame) -> pd.DataFrame:
     """Per-file summary of every IDENTIFIED ion in a full ledger -- analyte or
     not -- for the parquet ion-formula stamp (`stamping_frame`).
@@ -427,6 +717,14 @@ def stamping_frame(merged: pd.DataFrame,
     iso_label) at the median m/z; artifacts (no formula key) by m/z gap
     clustering (>3 mDa starts a new track)."""
     stamp = merged.copy()
+    # trace-level reconciliation (recentre_ledger / collapse_trace_labels): stamp
+    # from each ion's TRACE CENTRE, not the merge anchor, and never from a
+    # collapsed competing label -- its trace already has a winner.
+    if "trace_role" in stamp.columns:
+        stamp = stamp[stamp["trace_role"].astype(str) != TRACE_COLLAPSED].copy()
+    if "mz_trace" in stamp.columns:
+        mzt = pd.to_numeric(stamp["mz_trace"], errors="coerce")
+        stamp["mz"] = mzt.where(mzt.notna(), stamp["mz"])
     stamp["role"] = "M0"
     if "ion_formula" not in stamp.columns:
         stamp["ion_formula"] = None
@@ -477,7 +775,10 @@ def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
       * ``neutral_formula`` -- the assigned neutral formula (or <NA> if unmatched)
       * ``adduct``          -- the ionisation channel (e.g. ``[M+H]+`` / ``[M+NH4]+``)
       * ``tier``            -- the ledger tier (Assigned / Candidate / ...)
-      * ``ion_mz``          -- the matched ledger ion m/z (NaN if unmatched)
+      * ``ion_mz``          -- the matched ledger ion m/z (NaN if unmatched); when
+                               the ledger was trace-reconciled this is the ion's
+                               TRACE CENTRE (`mz_trace`), and its merge anchor is
+                               the ledger's `mz_anchor`
       * ``dup_candidate``   -- True for a peak that fell inside an ion's window but
                                LOST the one-to-one contest (its four columns above
                                stay <NA>); an audit trail, never a second stamp

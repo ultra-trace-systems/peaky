@@ -171,30 +171,39 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
 
 The height-gated passes gate on a **multiple of the sample's own noise edge**
 (the 1st percentile of its picked peak heights — see
-[`ASSIGNMENT_DETAIL.md`](ASSIGNMENT_DETAIL.md) §3.1). The package default is
-`passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE` = **1.0**, and a profile may carry
-its own `height_cutoff_x_edge` to raise it. Resolution order, implemented once in
-`profiles.resolve_height_cutoff_x_edge` and applied wherever a profile is
+[`ASSIGNMENT_DETAIL.md`](ASSIGNMENT_DETAIL.md) §3.1). The package policy is
+`passes.config.AUTO_HEIGHT_CUTOFF_X_EDGE` = **`"auto"`**: a batch run derives the
+multiple from the batch's own peaks (`admission.derive_height_cutoff_x_edge` —
+the smallest of 1 / 1.5 / 2 / 3 / 5 / 8 / 12 / 20 at which the peaks it admits are
+at most 20 % transient), a single sample with no batch reads it as
+`DEFAULT_HEIGHT_CUTOFF_X_EDGE` = **1.0**. A profile may carry its own number (or
+`"auto"`) to pin the behaviour for its instrument. Resolution order, implemented
+once in `profiles.resolve_height_cutoff_x_edge` and applied wherever a profile is
 resolved and a `PassConfig` is built:
 
 ```
-an explicit --height-cutoff-x-edge / cfg value
-    > the reagent profile's height_cutoff_x_edge
-        > DEFAULT_HEIGHT_CUTOFF_X_EDGE (1.0)
+an explicit --height-cutoff-x-edge / cfg value   (a number, or "auto")
+    > the reagent profile's height_cutoff_x_edge  (a number, or "auto")
+        > AUTO_HEIGHT_CUTOFF_X_EDGE ("auto": derived per batch; 1.0 without one)
 ```
 
 Both "explicit" levels are **unset by default** — the flag and
-`PassConfig.height_cutoff_x_edge` are `None`, not a pre-filled 1.0 — so
-explicitness is read off the value rather than guessed by comparing it to the
-default. An explicit multiple that happens to equal the global default therefore
-still wins: asking for `1.0` against a profile that says `5.0` gets you `1.0`,
-and re-resolving that config further down the pipeline does not flip it back.
-Read the multiple in force off `PassConfig.height_cutoff_x_edge_resolved`, never
-off the field.
+`PassConfig.height_cutoff_x_edge` are `None` — so explicitness is read off the
+value rather than guessed by comparing it to a default. An explicit multiple
+therefore always wins: asking for `1.0` against a profile that says `5.0` gets
+you `1.0`, asking for `auto` gets the derivation, and re-resolving that config
+further down the pipeline does not flip it back. The batch path replaces the
+`"auto"` token by the derived NUMBER on the config every per-file run copies
+(so `PassConfig.height_cutoff_x_edge` holds a number by the time any pass gates),
+and the reproducibility manifest fingerprints the *token*, never the derived
+number (which lives in `counts`, like the persistence threshold). Read the
+multiple in force off `PassConfig.height_cutoff_x_edge_resolved`, never off the
+field.
 
-**No bundled profile sets it** (they are all `None`), so out of the box every run
-gates exactly as before. What the right multiple depends on is the **peak
-picker**, not the reagent chemistry, which is why this is a site's setting:
+**No bundled profile sets it** (they are all `None`), so out of the box every
+batch derives its floor and every single sample gates at 1×. What the right
+multiple depends on is the **peak picker**, not the reagent chemistry, which is
+why the derivation reads the batch and why a pinned value is a site's setting:
 
 - A picker that stops **at** the noise edge (Orbitrap) wants **1.0**. Rare real
   ions sit at 1–3× the edge there, so raising it would discard them.
@@ -203,8 +212,23 @@ picker**, not the reagent chemistry, which is why this is a site's setting:
   ions of which 3307 were seen in a single file only, while **5.0** kept 57 % of
   the picked peaks and 74 % of the assigned ones. Raising the multiple there
   hands the passes a tighter candidate list.
+- The derivation tells the two apart from the batch itself, on two statistics.
+  The picker tail: the share of peaks below 0.75× their sample's 1st-percentile
+  edge is at most 1 in 10 000 on every Orbitrap mode (a hard threshold leaves
+  nothing under it) and 31 in 10 000 on the TOF (a soft tail — the picker keeps
+  picking into the noise); only a share above 5 in 10 000 qualifies a batch for a
+  raised floor. Then the transient share: at 1×
+  the peaks a clean Orbitrap mode admits are 8–16 % transient (occurrence below
+  the persistence threshold), a TOF's 34 %, and the smallest grid multiple
+  bringing the TOF's share to ≤ 20 % is 5×. A reagent-in-range Orbitrap mode is
+  50 % transient at 1× (the reagent ion's noise skirt plus a scan-edge pile-up)
+  yet keeps 1× on the tail condition — a 2× floor there removed 45 pile-up rows
+  but also 14 multi-file Assigned ions at 1–2× the edge. The persistence path
+  keeps the recurring weak ions a raised floor drops. A live sweep on that TOF
+  batch put the precision optimum at 8–12× with recall flat from 5× up, so a
+  site wanting the tighter list pins 8 or 12 here.
 
-Set it for your own instrument from a `--reagent-config` file, no fork needed:
+Pin it for your own instrument from a `--reagent-config` file, no fork needed:
 
 ```json
 [{"name": "Br-tof", "label": "Br- CIMS (TOF)", "polarity": "-",
@@ -215,8 +239,9 @@ Set it for your own instrument from a `--reagent-config` file, no fork needed:
 ```
 
 The resolved multiple is recorded per run: `batch_summary.json`
-(`height_cutoff_x_edge` + `height_cutoff_x_edge_source`, plus each file's
-resolved `height_gate_cps`) and `run_manifest.json['config']`.
+(`height_cutoff_x_edge` + `height_cutoff_x_edge_source`, the `gate` block with the
+derivation's transient-share table, plus each file's resolved `height_gate_cps`)
+and `run_manifest.json['config']` (the knob: a number, or `"auto"`).
 
 3. **Pick the cluster-library key** (`reagent_for_adducts`). From the analyte
    adducts: `^NH4` → `"ammonium15N"` (`_AMMONIUM_15N_KEY`); `CH4N2O` → `"urea"`;
@@ -292,8 +317,11 @@ resolved `height_gate_cps`) and `run_manifest.json['config']`.
 | `label_reagents` `ppm` | 15.0 | reagent-cluster mass-match window |
 | `label_reagents` `only_unexplained` | True | only relabels still-unexplained peaks |
 | `ReagentProfile.normaliser` | `reagent` / `tic` | TS/correlation normalisation basis |
-| `ReagentProfile.height_cutoff_x_edge` | `None` in every built-in | the profile's own height gate, as a multiple of the sample's noise edge (§3a); `None` = use the package default |
-| `passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE` | 1.0 | that package default — the ONE home for the number (the `PassConfig` field default and the fallback both read it) |
+| `ReagentProfile.height_cutoff_x_edge` | `None` in every built-in | the profile's own height gate, as a multiple of the sample's noise edge, or `"auto"` (§3a); `None` = the package policy |
+| `passes.config.AUTO_HEIGHT_CUTOFF_X_EDGE` | `"auto"` | the package policy: derive the multiple from the batch (`admission.derive_height_cutoff_x_edge`); 1.0 without a batch |
+| `passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE` | 1.0 | the numeric fallback — the ONE home for the number (`PassConfig.height_cutoff_x_edge_resolved` reads it for an unset or `"auto"` field) |
+| `admission.X_EDGE_GRID` / `MAX_TRANSIENT_SHARE` | 1, 1.5, 2, 3, 5, 8, 12, 20 / 0.20 | the derivation's grid and the largest transient share the brightness-admitted peaks may have |
+| `admission.PICKER_TAIL_X` / `PICKER_INTO_NOISE_FRACTION` | 0.75 / 0.0005 | the picker-tail statistic (the share of the batch's peaks below this multiple of their sample's 1st-percentile edge) and the share above which a picker counts as picking into the noise — the second condition for a raised floor |
 | `BR.ranges` | `C0-40 H0-80 N0-3 O0-18 S0-2 Cl0-2 Br0-2` | bromide grid box |
 | `UR.ranges` | `C0-40 H0-90 N0-8 O0-15 S0-2` | uronium grid box |
 | `NO3.ranges` / `NO3_15N.ranges` | `C0-40 H0-60 N0-3 O0-25 S0-2` | nitrate grid box |
@@ -403,8 +431,8 @@ resolved `height_gate_cps`) and `run_manifest.json['config']`.
 - **`height_cutoff_x_edge` is the peak picker's setting, not the reagent's.** No
   bundled profile sets one (the built-ins are reagent chemistry, and the same
   reagent runs on both a TOF and an Orbitrap), so it is left `None` = the package
-  default and a site raises it for its own instrument in a `--reagent-config`
-  profile (§3a).
+  policy — derive it from the batch — and a site pins it for its own instrument
+  in a `--reagent-config` profile (§3a).
 - **Auto-detect needs peaks**; with no diagnostic adduct it falls back to polarity,
   and a sparse positive sample can mis-detect as negative — pass `--reagent` to
   force it.

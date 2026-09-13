@@ -93,12 +93,17 @@ def load(*, batch: str | None = None, dataset: str | None = None,
          peaks: "str | pd.DataFrame | None" = None, save_path: str | None = None
          ) -> pd.DataFrame:
     """Get the batch peak time-series — from a parquet/DataFrame if given (offline,
-    cached), else fetched from Mascope via the SDK."""
+    cached), else fetched from Mascope via the SDK. Always one row per PHYSICAL
+    peak: Mascope hands back one row per target MATCH, which
+    `TS.collapse_peak_matches` folds back down (it is a no-op on a clean frame, so
+    an already-collapsed parquet is returned untouched)."""
     if peaks is not None:
-        return pd.read_parquet(os.path.expanduser(peaks)) if isinstance(peaks, str) else peaks
+        got = pd.read_parquet(os.path.expanduser(peaks)) if isinstance(peaks, str) else peaks
+        return TS.collapse_peak_matches(got)
     if not (batch and dataset):
         raise ValueError("need peaks=, or both batch= and dataset=")
-    return IO.fetch_batch_peaks(IO.connect(), dataset, batch, save_path=save_path)
+    return TS.collapse_peak_matches(
+        IO.fetch_batch_peaks(IO.connect(), dataset, batch, save_path=save_path))
 
 
 def run(*, batch: str | None = None, dataset: str | None = None,
@@ -207,7 +212,8 @@ def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
     if isinstance(ts, str):
         ctx.ts_path = os.path.expanduser(ts)        # reference an existing parquet, never copy
         ts = pd.read_parquet(ctx.ts_path)
-    elif ctx.ts_path is None:
+    ts = TS.collapse_peak_matches(ts, log=log)
+    if ctx.ts_path is None:
         # ts was fetched live (no on-disk source) — keep ONE copy with the run, in
         # data/, so the report/provenance can read it. (When the caller passed a
         # parquet path, run_batch points ctx.ts_path at it instead of copying.)
@@ -229,6 +235,7 @@ def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
         log("[phase] report")
         out["report_pdf"] = R.build(ctx.out_dir, tag=ctx.tag, label=ctx.label,
                                      ts_path=ctx.ts_path, batch_name=ctx.batch_name,
+                                     dataset=ctx.dataset,
                                      run_id=ctx.run_id, generated=ctx.generated)
         log(f"[report] wrote {out['report_pdf']}")
         # also emit a size-reduced companion for emailing (optional deps; no-op if
@@ -281,6 +288,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         log("[phase] fetch")
         log(f"[batch] fetching full-batch time series for {batch!r} ...")
         ts = load(batch=batch, dataset=dataset)
+    ts = TS.collapse_peak_matches(ts, log=log)
     prof = P.resolve(reagent, ts, config=config)
     # One height-gate multiple for the whole run, stamped on the SAME cfg the
     # gate knobs above went onto -- the one the assignment and the provenance
@@ -321,10 +329,13 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                 "n_samples": summ.get("n_files"),
                 "selection": summ.get("selection"),
                 # the admission gate as RESOLVED for this run (knob, threshold,
-                # n_bins, n_persistent_bins, n_spectra, tol_ppm) -- the config
-                # fingerprint keeps only the knob, so the derived threshold
-                # lives here next to the other run-derived counts
-                "admission": summ.get("admission")},
+                # n_peaks, n_persistent_peaks, n_persistent_traces, n_spectra,
+                # tol_ppm) -- the config fingerprint keeps only the knob, so the
+                # derived threshold lives here next to the other run-derived
+                # counts; likewise the batch-derived brightness floor (`gate`) and
+                # the trace reconciliation of the merged ledger (`traces`)
+                "admission": summ.get("admission"),
+                "gate": summ.get("gate"), "traces": summ.get("traces")},
         created_utc=ctx.when.isoformat(), log=log)
     elapsed = round(time.time() - t_start, 1)
     log(f"[batch] pipeline finished in {elapsed:.1f}s "
@@ -336,7 +347,9 @@ def gate_config(cfg=None, *, occurrence_min=None, height_cutoff_x_edge=None,
                 height_cutoff_cps=None):
     """The run's PassConfig with the admission-gate knobs applied. `occurrence_min`
     is 'auto' (the batch-derived threshold), a number, or 0 (path off); None keeps
-    the config default. The height knobs are numbers or None."""
+    the config default. `height_cutoff_x_edge` is 'auto' (derived from the batch),
+    a number, or None (unset: the profile's value, else the 'auto' policy);
+    `height_cutoff_cps` a number or None."""
     from peaky.assignment import passes as PA
     cfg = cfg or PA.PassConfig()
     if occurrence_min is not None:
@@ -347,7 +360,12 @@ def gate_config(cfg=None, *, occurrence_min=None, height_cutoff_x_edge=None,
         else:
             cfg.occurrence_min = float(occurrence_min)
     if height_cutoff_x_edge is not None:
-        cfg.height_cutoff_x_edge = float(height_cutoff_x_edge)
+        from peaky.assignment.passes.config import AUTO_HEIGHT_CUTOFF_X_EDGE, is_auto_x_edge
+        if isinstance(height_cutoff_x_edge, str) and not is_auto_x_edge(height_cutoff_x_edge):
+            raise ValueError("height_cutoff_x_edge must be 'auto' or a number, "
+                             f"got {height_cutoff_x_edge!r}")
+        cfg.height_cutoff_x_edge = (AUTO_HEIGHT_CUTOFF_X_EDGE if is_auto_x_edge(height_cutoff_x_edge)
+                                    else float(height_cutoff_x_edge))
     if height_cutoff_cps is not None:
         cfg.height_cutoff_cps = float(height_cutoff_cps)
     return cfg
@@ -433,6 +451,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
         log("[phase] fetch")
         log(f"[pool] loading pooled TS for /{batches}/ in {dataset!r} ...")
         ts = IO.fetch_pooled_peaks(IO.connect(), dataset, batches)
+    ts = TS.collapse_peak_matches(ts, log=log)
     if group_by not in ts.columns:
         raise ValueError(f"group_by {group_by!r} not in pooled peaks "
                          f"(got {list(ts.columns)[:8]})")
@@ -474,12 +493,14 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     log(f"[pool] {ctx.run_id} -> {ctx.out_dir}")
     prov.to_csv(os.path.join(ctx.out_dir, "selection_provenance.csv"), index=False)
 
-    # batch= carries the pool identity: it names batch_summary AND is what
-    # reflists.resolve_context_tags reads to unlock chemistry-specific reference
-    # lists (a chamber pool named e.g. 'apinene ...' -> the monoterpene list).
+    # batch= carries the pool identity: it names batch_summary AND -- with the
+    # dataset name -- is what reflists.resolve_context_tags reads to unlock
+    # chemistry-specific reference lists (a pool or dataset named e.g.
+    # 'apinene ...' -> the monoterpene list).
     log("[phase] assign")
     res = AB.run(peaks=ts[ts_cols], ts_peaks=ts[ts_cols], reagent=prof.name,
-                 batch=pool_label, sample_ids=union, selection_meta=selection,
+                 batch=pool_label, dataset=dataset, sample_ids=union,
+                 selection_meta=selection,
                  out_dir=ctx.out_dir, amine_r_min=amine_r_min, n_jobs=n_jobs,
                  log=log, **assign_kw)
     # the report's selected-samples section reads tables/selected_samples.csv;
@@ -511,7 +532,8 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                 "merged_tiers": summ.get("merged_tiers"),
                 "n_samples": summ.get("n_files"), "n_groups": len(groups),
                 "selection": summ.get("selection"),
-                "admission": summ.get("admission")},
+                "admission": summ.get("admission"),
+                "gate": summ.get("gate"), "traces": summ.get("traces")},
         created_utc=ctx.when.isoformat(), log=log)
     elapsed = round(time.time() - t_start, 1)
     log(f"[pool] pipeline finished in {elapsed:.1f}s "

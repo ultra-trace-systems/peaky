@@ -530,6 +530,98 @@ check("annotate: legacy ledger -> identity columns exist, empty",
       and _bc["ion_formula"].isna().all())
 
 
+# --- match-expanded rows collapse to ONE row per physical peak ---------------
+# Regression (2026-09-12): Mascope expands a peak into one row per target match,
+# so a peak two targets both claim came back twice -- same sample_item_id, same
+# mz, same height, only the advisory target_* columns differing -- and the batch
+# TS carried both. A per-trace peak count then read 2.0 peaks/sample for a single
+# ion, which looks like two merged ions (0.29% / 0.42% of rows on two real
+# batches, always pairs at exactly 0.00 ppm), and build_matrix doubled that bin.
+def _mrow(sid, pid, mz, h, comp, mech, sc, iso_id):
+    return dict(sample_item_id=sid, peak_id=pid, mz=mz, height=h, area=h * 2.7,
+                target_isotope_id=iso_id, target_compound_formula=comp,
+                ionization_mechanism=mech, match_score_compound=sc,
+                match_score_isotope=0.997)
+
+
+# p1/p3 are claimed by two targets whose ions coincide (C10H16O6+NO3 == C10H17NO9-H);
+# p2 by one. The weaker-scoring copy is listed FIRST so a naive keep='first' fails.
+_dup = pd.DataFrame([
+    _mrow("s0", "p1", 294.0832, 1e4, "C10H17NO9", "-H+", 0.71, "iso_b"),
+    _mrow("s0", "p1", 294.0832, 1e4, "C10H16O6", "+NO3-", 0.93, "iso_a"),
+    _mrow("s0", "p2", 310.0781, 8e3, "C10H16O7", "+NO3-", 0.88, "iso_c"),
+    _mrow("s1", "p3", 294.0836, 9e3, "C10H17NO9", "-H+", 0.64, "iso_b"),
+    _mrow("s1", "p3", 294.0836, 9e3, "C10H16O6", "+NO3-", 0.90, "iso_a"),
+])
+_col = TS.collapse_peak_matches(_dup)
+check("collapse: one row per physical peak", len(_col) == 3, len(_col))
+check("collapse: no exact (sample_item_id, mz) duplicates",
+      not _col.duplicated(subset=["sample_item_id", "mz"]).any())
+check("collapse: best-scoring match survives",
+      list(_col["target_compound_formula"]) == ["C10H16O6", "C10H16O7", "C10H16O6"],
+      list(_col["target_compound_formula"]))
+check("collapse: heights are not summed or altered",
+      list(_col["height"]) == [1e4, 8e3, 9e3], list(_col["height"]))
+check("collapse: rows stay in input order (ascending m/z within sample)",
+      list(_col["peak_id"]) == ["p1", "p2", "p3"], list(_col["peak_id"]))
+# the winner is decided by CONTENT, so the order the server returned rows in
+# cannot change the output
+_rev = TS.collapse_peak_matches(_dup.iloc[::-1].reset_index(drop=True))
+check("collapse: winner independent of input row order",
+      sorted(_rev["target_compound_formula"]) == sorted(_col["target_compound_formula"]),
+      list(_rev["target_compound_formula"]))
+check("collapse: clean frame returned unchanged (no-op, not a copy)",
+      TS.collapse_peak_matches(_col) is _col)
+check("collapse: idempotent", len(TS.collapse_peak_matches(_col)) == 3)
+check("collapse: tolerates None / empty", TS.collapse_peak_matches(None) is None
+      and len(TS.collapse_peak_matches(pd.DataFrame())) == 0)
+# unmatched peaks carry no target/score columns at all -- they must all survive
+_un = pd.DataFrame([dict(sample_item_id="s0", peak_id=f"u{i}", mz=200.0 + i, height=10.0)
+                    for i in range(4)])
+check("collapse: unmatched peaks all survive", len(TS.collapse_peak_matches(_un)) == 4)
+# the pooled/trimmed TS frame has no peak_id -> key falls back to (sample, mz)
+_nopid = _dup.drop(columns=["peak_id"])
+_colp = TS.collapse_peak_matches(_nopid)
+check("collapse: frame without peak_id keys on (sample_item_id, mz)",
+      len(_colp) == 3 and not _colp.duplicated(subset=["sample_item_id", "mz"]).any(),
+      len(_colp))
+
+# a frame that identifies no peak at all must be left alone -- keying on the
+# sample column alone would collapse every sample to a single row
+_nokey = pd.DataFrame([dict(sample_item_id="s0", height=1.0),
+                       dict(sample_item_id="s0", height=2.0)])
+check("collapse: no peak key -> frame untouched (never keys on sample alone)",
+      len(TS.collapse_peak_matches(_nokey)) == 2)
+# a partly-null peak_id falls back to m/z rather than trusting the id column
+_halfid = _dup.copy()
+_halfid.loc[0, "peak_id"] = None
+check("collapse: partly-null peak_id falls back to (sample_item_id, mz)",
+      len(TS.collapse_peak_matches(_halfid)) == 3,
+      len(TS.collapse_peak_matches(_halfid)))
+
+# end-to-end shape of per_file/_batch_ts.parquet: collapse -> annotate_peaks.
+# annotate_peaks is row-preserving, so the parquet is duplicate-free iff the TS
+# handed to it was collapsed first.
+_dled = pd.DataFrame([
+    dict(mz=294.0832, neutral_formula="C10H16O6", adduct="[M+NO3]-", tier="Assigned"),
+    dict(mz=310.0781, neutral_formula="C10H16O7", adduct="[M+NO3]-", tier="Assigned"),
+])
+_dts = TS.annotate_peaks(TS.collapse_peak_matches(_dup), _dled, tol_ppm=6.0)
+check("batch TS: no exact (sample_item_id, mz) duplicates",
+      not _dts.duplicated(subset=["sample_item_id", "mz"]).any(),
+      _dts.loc[_dts.duplicated(subset=["sample_item_id", "mz"], keep=False),
+               ["sample_item_id", "mz"]].to_dict("records"))
+_tr = _dts[_dts["neutral_formula"] == "C10H16O6"]
+check("batch TS: one peak per sample on a stamped trace",
+      len(_tr) == _tr["sample_item_id"].nunique() == 2, len(_tr))
+# and the m/z-bin intensity is no longer double-counted
+_m, _ = TS.build_matrix(_dup)
+_mc, _ = TS.build_matrix(TS.collapse_peak_matches(_dup))
+check("build_matrix: duplicate rows doubled a bin, collapsed does not",
+      _m.loc["s0"].max() == 2e4 and _mc.loc["s0"].max() == 1e4,
+      (float(_m.loc["s0"].max()), float(_mc.loc["s0"].max())))
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

@@ -134,16 +134,20 @@ check("the cfg handed to assign carries the resolved threshold after stamping",
 
 # --- the summary block ------------------------------------------------------
 adm = res["summary"]["admission"]
-check("batch_summary admission block carries all six keys",
-      {"occurrence_min", "occurrence_threshold", "n_bins", "n_persistent_bins",
-       "n_spectra", "tol_ppm"} == set(adm), sorted(adm))
+check("batch_summary admission block carries all seven keys",
+      {"occurrence_min", "occurrence_threshold", "n_peaks", "n_persistent_peaks",
+       "n_persistent_traces", "n_spectra", "tol_ppm"} == set(adm), sorted(adm))
 check("admission.occurrence_min is the KNOB as given ('auto' by default)",
       adm["occurrence_min"] == "auto", adm)
 check("admission.occurrence_threshold is a resolved number inside the clamp",
       adm["occurrence_threshold"] is not None
       and ADM.AUTO_MIN <= adm["occurrence_threshold"] <= ADM.AUTO_MAX, adm)
-check("admission.n_persistent_bins is non-zero (the recurrent population was found)",
-      adm["n_persistent_bins"] >= len(RECUR) and adm["n_persistent_bins"] < adm["n_bins"], adm)
+check("admission.n_persistent_peaks is non-zero (the recurrent population was found)",
+      adm["n_persistent_peaks"] >= len(RECUR) and adm["n_persistent_peaks"] < adm["n_peaks"], adm)
+# the trace-weighted count reads as IONS: the 4 recurrent ions (+ at most the 3
+# half-time bright ones, which sit right at the split), never their ~150 peaks
+check("admission.n_persistent_traces counts persistent IONS, not their peaks",
+      len(RECUR) <= adm["n_persistent_traces"] <= len(RECUR) + len(BRIGHT), adm)
 check("admission.n_spectra is the whole batch, tol_ppm the shared tolerance",
       adm["n_spectra"] == N_SPECTRA and adm["tol_ppm"] == 6.0, adm)
 
@@ -236,12 +240,26 @@ for bad in ("maybe", "0.4.4", ""):
         check(f"--occurrence-min {bad!r} is rejected by the parser", False, "parsed")
     except SystemExit as e:
         check(f"--occurrence-min {bad!r} is rejected by the parser", e.code == 2, e.code)
-for bad in ("maybe", "auto"):
+for bad in ("maybe", "1.2.3"):
     try:
         PARSER.parse_args(["pool", "--batches", "B", "--height-cutoff-x-edge", bad])
         check(f"--height-cutoff-x-edge {bad!r} is rejected by the parser", False, "parsed")
     except SystemExit as e:
         check(f"--height-cutoff-x-edge {bad!r} is rejected by the parser", e.code == 2, e.code)
+# 'auto' is a VALUE for the multiple too: derive the floor from the batch's own
+# peaks (the package policy when nothing is set; typed explicitly it outranks a
+# profile's number)
+_a = PARSER.parse_args(["pool", "--batches", "B", "--height-cutoff-x-edge", "AUTO"])
+check("--height-cutoff-x-edge auto is accepted (any case) as the policy token",
+      _a.height_cutoff_x_edge == "auto", _a.height_cutoff_x_edge)
+check("gate_config carries an explicit 'auto' multiple onto the cfg",
+      PL.gate_config(height_cutoff_x_edge="auto").height_cutoff_x_edge == "auto"
+      and PL.gate_config(height_cutoff_x_edge=2).height_cutoff_x_edge == 2.0)
+try:
+    PL.gate_config(height_cutoff_x_edge="never")
+    check("gate_config rejects an unknown string multiple", False)
+except ValueError:
+    check("gate_config rejects an unknown string multiple", True)
 
 
 # ---------------------------------------------------------------------------

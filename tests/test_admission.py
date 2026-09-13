@@ -107,9 +107,9 @@ check("occurrence_min=0: gate == height gate, nothing by occurrence",
       and (led["admitted_by"] != "occurrence").all())
 led_nb = L.new_ledger(one[["peak_id", "mz", "height"]])            # no batch context
 c = ADM.stamp_admission(led_nb, cfg, None)
-check("no table: occurrence NaN, admitted_by height-only, n_bins 0",
+check("no table: occurrence NaN, admitted_by height-only, n_peaks 0",
       led_nb["occurrence"].isna().all() and (ADM.admissible(led_nb, cfg) == (led_nb["height"] >= 100)).all()
-      and c["n_bins"] == 0)
+      and c["n_peaks"] == 0)
 plain = one[["peak_id", "mz", "height"]].copy()
 check("admissible on a ledger without an occurrence column = height gate",
       (ADM.admissible(plain, cfg) == (plain["height"] >= 100)).all())
@@ -395,14 +395,23 @@ tab6 = ADM.bin_occurrence(ts, tol_ppm=6.0)
 check("a table built at 6 ppm and the default table agree bin-for-bin",
       len(tab6) == len(tab) and np.allclose(tab6["mz"], tab["mz"])
       and np.allclose(tab6["occurrence"], tab["occurrence"]))
-# a peak 4 ppm off a bin centre is inside a 6-ppm lookup; the lookup must use the
-# table's tolerance (6), not any other number: at 3 ppm it would be NaN
+# the lookup is the table's own rule -- distinct spectra within the table's
+# tolerance of the PROBE -- so a probe 4 ppm off the ion's centre sees most, not
+# all, of its 2-ppm-sigma cloud at 6 ppm ([-2, +10] ppm of it), and the same
+# probe read at 12 ppm ([-8, +16]) sees the whole cloud: the lookup really reads
+# attrs['tol_ppm'], and no other number. (The window carries the stamp's 1.5 mDa
+# floor -- traces.MZ_FLOOR_DA -- so at m/z 264 nothing NARROWER than ~5.7 ppm can
+# be told apart, which is why the discriminating probe widens rather than narrows.)
 probe = 264.0361 * (1 + 4e-6)
 v6 = ADM.lookup_occurrence([probe], tab6)[0]
-check("lookup matches by the table's own tol (4 ppm off, inside 6 ppm)", np.isfinite(v6) and v6 > 0.85, v6)
-tab3 = tab6.copy(); tab3.attrs.update(tab6.attrs); tab3.attrs["tol_ppm"] = 3.0
-check("...and would not at 3 ppm (the lookup really reads attrs['tol_ppm'])",
-      np.isnan(ADM.lookup_occurrence([probe], tab3)[0]))
+check("lookup by the table's own tol: 4 ppm off-centre reads most (not all) of the cloud at 6 ppm",
+      np.isfinite(v6) and 0.6 < v6 < ADM.lookup_occurrence([264.0361], tab6)[0], v6)
+tab12 = tab6.copy(); tab12.attrs.update(tab6.attrs); tab12.attrs["tol_ppm"] = 12.0
+v12 = ADM.lookup_occurrence([probe], tab12)[0]
+check("...and the whole cloud at 12 ppm (the lookup really reads attrs['tol_ppm'])",
+      np.isfinite(v12) and v12 > v6 and v12 > 0.85, (v12, v6))
+check("a per-peak table carries its sample codes (the lookup's rule needs them)",
+      "sample" in tab6.columns and tab6.attrs.get("kind") == "per-peak")
 bare = pd.DataFrame({"mz": [300.0], "occurrence": [0.9]})     # no attrs at all
 try:
     ADM.lookup_occurrence([300.0], bare)

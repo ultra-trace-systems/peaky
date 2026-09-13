@@ -48,8 +48,9 @@ check("input hashes the ts parquet (== streaming sha1) + records provenance",
       and m["input"]["reagent"] == "NO3_15N")
 check("output hashes merged_ledger.csv + carries counts",
       m["output"]["merged_ledger_sha1"] and m["output"]["counts"]["merged_M0"] == 42)
-check("config fingerprint keeps user knobs, drops run-derived fields",
-      m["config"].get("height_cutoff_x_edge") == 1.0 and m["config"].get("ppm") == 1.0
+check("config fingerprint keeps user knobs, drops run-derived fields (an unset gate "
+      "multiple fingerprints as the 'auto' policy, never as the batch-derived number)",
+      m["config"].get("height_cutoff_x_edge") == "auto" and m["config"].get("ppm") == 1.0
       and "height_cutoff_cps" in m["config"]
       and "mechanism_ids" not in m["config"] and "prior_offset" not in m["config"]
       and "noise_edge_cps" not in m["config"], m["config"])
@@ -115,8 +116,9 @@ check("git_info is best-effort and returns a dict", isinstance(
 _cfg_adm = P.PassConfig(occurrence_min="auto")
 _cfg_adm.occurrence_threshold = 0.44          # what stamp_admission sets per run
 _cfg_adm.occurrence_resolved = True           # ...and the marker that says it is final
-_adm_block = {"occurrence_min": "auto", "occurrence_threshold": 0.44, "n_bins": 4025,
-              "n_persistent_bins": 512, "n_spectra": 230, "tol_ppm": 6.0}
+_adm_block = {"occurrence_min": "auto", "occurrence_threshold": 0.44, "n_peaks": 318589,
+              "n_persistent_peaks": 209523, "n_persistent_traces": 1280, "n_spectra": 230,
+              "tol_ppm": 6.0}
 m_adm = PV.build_manifest(run_dir=_rd, batch_name="B", dataset="D",
                           sample_ids=["s1"], reagent="NO3_15N", cfg=_cfg_adm,
                           ts_path=_tsp, counts={"merged_M0": 7, "admission": _adm_block})

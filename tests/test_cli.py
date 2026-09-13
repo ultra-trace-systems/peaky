@@ -245,8 +245,10 @@ try:
             cli.cmd_assign(P.parse_args(["assign", "--sample-id", "X", "--reagent", "Br",
                                          "--output-dir", _d]))
         except _StopAssign:
-            check("cmd_assign with no x-edge flag keeps the package default",
-                  _seen["assign"]["cfg"].height_cutoff_x_edge == 1.0)
+            check("cmd_assign with no x-edge flag carries the package policy ('auto'; "
+                  "1x the edge for a single sample with no batch table)",
+                  _seen["assign"]["cfg"].height_cutoff_x_edge == "auto"
+                  and _seen["assign"]["cfg"].height_cutoff_x_edge_resolved == 1.0)
         # ... but a profile that carries its own multiple supplies it
         _pick = profiles.ReagentProfile(
             name="TofPick", label="tof picker", polarity="-", adducts=["[M-H]-"],

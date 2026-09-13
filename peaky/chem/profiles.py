@@ -37,15 +37,16 @@ class ReagentProfile:
     label_max: int = 2
     # The profile's recommended height gate for the height-gated assignment
     # passes, as a MULTIPLE of the sample's own noise edge (the 1st percentile of
-    # its picked peak heights). None = use the package default
-    # (passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE, 1.0).
+    # its picked peak heights). None = use the package policy
+    # (passes.config.AUTO_HEIGHT_CUTOFF_X_EDGE): on a batch the multiple is DERIVED
+    # from the batch's own peaks -- 1.0 for a picker that stops at the noise edge,
+    # higher where the picker demonstrably picks into the noise (see
+    # admission.derive_height_cutoff_x_edge) -- and 1.0 for a single sample.
     # What decides this number is the PEAK PICKER, not the reagent chemistry, so
-    # every bundled profile leaves it None. Raise it -- in a --reagent-config
-    # profile written for your own instrument -- when the picker picks INTO the
-    # noise, so that 1x the edge admits nearly everything it found: a higher
-    # multiple hands the passes a tighter candidate list. Leave it at None for a
-    # picker that stops at the noise edge, where rare real ions sit at 1-3x it.
-    height_cutoff_x_edge: float | None = None
+    # every bundled profile leaves it None. Pin a number here -- in a
+    # --reagent-config profile written for your own instrument -- only to override
+    # the derivation for that instrument.
+    height_cutoff_x_edge: float | str | None = None
     aliases: tuple = field(default_factory=tuple)
 
 
@@ -299,6 +300,8 @@ def from_dict(entry: dict) -> "ReagentProfile":
     kw = {k: entry[k] for k in _CONFIG_FIELDS if k in entry}
     if "aliases" in kw:
         kw["aliases"] = tuple(kw["aliases"])
+    if kw.get("height_cutoff_x_edge") is not None:
+        kw["height_cutoff_x_edge"] = _x_edge_value(kw["height_cutoff_x_edge"])  # 'auto' or a number
     return ReagentProfile(**kw)
 
 
@@ -341,20 +344,31 @@ def load_config(path: str) -> list:
 # The default constant lives with the gate it defaults (passes/config.py) and is
 # imported lazily here: this module is the chemistry layer and must not import
 # the assignment layer at module scope.
-def resolve_height_cutoff_x_edge(explicit: float | None = None,
-                                 profile: "ReagentProfile | None" = None) -> float:
+def _x_edge_value(v):
+    """A multiple as stored: the 'auto' token stays a token, anything else a float."""
+    from peaky.assignment.passes.config import AUTO_HEIGHT_CUTOFF_X_EDGE, is_auto_x_edge
+
+    return AUTO_HEIGHT_CUTOFF_X_EDGE if is_auto_x_edge(v) else float(v)
+
+
+def resolve_height_cutoff_x_edge(explicit: float | str | None = None,
+                                 profile: "ReagentProfile | None" = None) -> float | str:
     """The height gate as a multiple of the sample's own noise edge: `explicit`
-    if given, else the profile's own value, else the package default. `None` at
-    either level means UNSET and falls through -- 0.0 is a value, not an
-    absence."""
+    if given, else the profile's own value, else the package POLICY -- the
+    'auto' token, which the batch path resolves to a number from the batch's own
+    peaks (admission.derive_height_cutoff_x_edge) and a single-sample run reads
+    as DEFAULT_HEIGHT_CUTOFF_X_EDGE (PassConfig.height_cutoff_x_edge_resolved).
+    `None` at either level means UNSET and falls through -- 0.0 is a value, not
+    an absence; 'auto' is a value too (an explicit request for the derivation,
+    which outranks a profile's number)."""
     if explicit is not None:
-        return float(explicit)
+        return _x_edge_value(explicit)
     from_profile = getattr(profile, "height_cutoff_x_edge", None)
     if from_profile is not None:
-        return float(from_profile)
-    from peaky.assignment.passes.config import DEFAULT_HEIGHT_CUTOFF_X_EDGE
+        return _x_edge_value(from_profile)
+    from peaky.assignment.passes.config import AUTO_HEIGHT_CUTOFF_X_EDGE
 
-    return float(DEFAULT_HEIGHT_CUTOFF_X_EDGE)
+    return AUTO_HEIGHT_CUTOFF_X_EDGE
 
 
 def height_cutoff_x_edge_source(explicit: float | None = None,
@@ -368,19 +382,22 @@ def height_cutoff_x_edge_source(explicit: float | None = None,
     cfg): a second pass must not relabel the first. So an explicit value that
     merely repeats what it would have got anyway -- the profile's multiple, or
     the package default when no profile carries one -- keeps that credit."""
-    from peaky.assignment.passes.config import DEFAULT_HEIGHT_CUTOFF_X_EDGE
+    from peaky.assignment.passes.config import is_auto_x_edge
 
     from_profile = getattr(profile, "height_cutoff_x_edge", None)
     if explicit is not None:
         same_as_profile = (from_profile is not None
-                           and float(explicit) == float(from_profile))
-        same_as_default = (from_profile is None
-                           and float(explicit) == float(DEFAULT_HEIGHT_CUTOFF_X_EDGE))
+                           and _x_edge_value(explicit) == _x_edge_value(from_profile))
+        # the package policy is 'auto': an explicit 'auto' against a profile with
+        # no opinion merely repeats what it would have got anyway
+        same_as_default = from_profile is None and is_auto_x_edge(explicit)
         if not (same_as_profile or same_as_default):
-            return "an explicit --height-cutoff-x-edge / cfg value"
+            return ("an explicit --height-cutoff-x-edge auto"
+                    if is_auto_x_edge(explicit)
+                    else "an explicit --height-cutoff-x-edge / cfg value")
     if from_profile is not None:
         return f"the {getattr(profile, 'name', '?')} reagent profile"
-    return "the package default"
+    return "the package default (auto)"
 
 
 def apply_height_cutoff_x_edge(cfg, profile: "ReagentProfile | None" = None, *,
@@ -396,14 +413,20 @@ def apply_height_cutoff_x_edge(cfg, profile: "ReagentProfile | None" = None, *,
     from where' record for the run -- skipped when an absolute `height_cutoff_cps`
     override is in force, since the multiple is then not what gates (assign.run
     reports that override itself)."""
+    from peaky.assignment.passes.config import is_auto_x_edge
+
     if explicit is None:
         explicit = getattr(cfg, "height_cutoff_x_edge", None)
     value = resolve_height_cutoff_x_edge(explicit, profile)
     source = height_cutoff_x_edge_source(explicit, profile)
     cfg.height_cutoff_x_edge = value
     if log is not None and getattr(cfg, "height_cutoff_cps", None) is None:
-        log(f"[gate] height cutoff = {value:g}x the sample's noise edge "
-            f"(from {source})")
+        if is_auto_x_edge(value):
+            log(f"[gate] height cutoff = auto: derived per batch from the persistence "
+                f"table, 1x the sample's noise edge without one (from {source})")
+        else:
+            log(f"[gate] height cutoff = {value:g}x the sample's noise edge "
+                f"(from {source})")
     return value, source
 
 

@@ -14,6 +14,8 @@ __all__ = [
     "PassConfig",
     "noise_edge",
     "DEFAULT_HEIGHT_CUTOFF_X_EDGE",
+    "AUTO_HEIGHT_CUTOFF_X_EDGE",
+    "is_auto_x_edge",
 ]
 
 NOISE_EDGE_Q = 0.01   # the sample's noise edge = this quantile of its picked heights
@@ -28,6 +30,23 @@ NOISE_EDGE_Q = 0.01   # the sample's noise edge = this quantile of its picked he
 # picks INTO the noise wants more, which is what a reagent profile's own
 # `height_cutoff_x_edge` supplies (see profiles.ReagentProfile).
 DEFAULT_HEIGHT_CUTOFF_X_EDGE = 1.0
+
+# The POLICY an unset multiple resolves to. "auto" = derive the multiple from the
+# batch's own peaks (assignment/admission.derive_height_cutoff_x_edge: for a
+# picker that leaves peaks well below its own 1st-percentile edge -- one that
+# picks INTO the noise -- the smallest grid multiple whose brightness-admitted
+# population is at most MAX_TRANSIENT_SHARE transient; a hard-threshold picker
+# keeps DEFAULT_HEIGHT_CUTOFF_X_EDGE whatever its transient share). Without a
+# batch table (a single-sample run) "auto" falls back to
+# DEFAULT_HEIGHT_CUTOFF_X_EDGE. Measured on five batches: every Orbitrap mode
+# stays at 1.0, a TOF lands at 5x (live sweep: recall flat from 5x up, precision
+# optimum 8-12x).
+AUTO_HEIGHT_CUTOFF_X_EDGE = "auto"
+
+
+def is_auto_x_edge(value) -> bool:
+    """True when `value` is the 'auto' policy token (case-insensitive)."""
+    return isinstance(value, str) and value.strip().lower() == AUTO_HEIGHT_CUTOFF_X_EDGE
 
 
 def noise_edge(heights, q: float = NOISE_EDGE_Q) -> float | None:
@@ -66,8 +85,12 @@ class PassConfig:
     # the old 100 cps; TOF: 97 %). 1.0 = every picked peak but the bottom 1 % is
     # eligible.
     #
-    # None = UNSET, and unset falls through to DEFAULT_HEIGHT_CUTOFF_X_EDGE above
-    # (read it back through `height_cutoff_x_edge_resolved`, never off the field).
+    # None = UNSET. Unset resolves to the AUTO policy on a batch (assign_batch
+    # derives the multiple from the batch's own peaks and stamps the number here
+    # before any sample runs) and to DEFAULT_HEIGHT_CUTOFF_X_EDGE without one; the
+    # literal "auto" asks for that derivation explicitly (it outranks a profile's
+    # number). Read the number in force through `height_cutoff_x_edge_resolved`,
+    # never off the field.
     # The distinction matters: a reagent profile may carry a higher multiple for
     # its own peak picker, and `profiles.apply_height_cutoff_x_edge` treats a
     # multiple this config ALREADY carries as the caller's explicit choice, which
@@ -76,7 +99,7 @@ class PassConfig:
     # nothing. A `0.0` default here would have been a value, not an absence.
     # `height_cutoff_cps` is an explicit ABSOLUTE override (offline callers /
     # tests); when set it wins. Read the resolved gate via `height_cutoff`.
-    height_cutoff_x_edge: float | None = None
+    height_cutoff_x_edge: float | str | None = None
     height_cutoff_cps: float | None = None
     noise_edge_cps: float | None = None   # runtime: set per sample by assign.run
     # Persistence path of the admission gate (assignment/admission.py). This is
@@ -221,11 +244,16 @@ class PassConfig:
 
     @property
     def height_cutoff_x_edge_resolved(self) -> float:
-        """The gate multiple actually in force: the field when it is set, else the
-        package default. Everything that MULTIPLIES by the multiple (or reports
-        it) reads this, so an unset config gates exactly like one stamped 1.0."""
+        """The gate multiple actually in force: the field when it holds a number,
+        else the package default -- also for the "auto" token, which is a request
+        the batch path answers by stamping the derived number onto this field
+        before any sample runs (a single-sample run has no batch to derive from).
+        Everything that MULTIPLIES by the multiple (or reports it) reads this, so
+        an unset config gates exactly like one stamped 1.0."""
         x = self.height_cutoff_x_edge
-        return float(DEFAULT_HEIGHT_CUTOFF_X_EDGE if x is None else x)
+        if x is None or is_auto_x_edge(x):
+            return float(DEFAULT_HEIGHT_CUTOFF_X_EDGE)
+        return float(x)
 
     @property
     def height_cutoff(self) -> float:

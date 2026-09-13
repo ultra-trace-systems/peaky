@@ -87,8 +87,8 @@ reagent + prescan                       profiles.resolve / reagents.label / isot
    │                                     detect adducts, label reagent-ion clusters, build grid constraints
    ▼
 admission gate                          admission.stamp_admission: eligible = height ≥ edge-multiple
-   │                                     OR bin occurrence ≥ batch threshold (table from the batch run;
-   ▼                                     none on a single sample → brightness only); stamps admitted_by
+   │                                     OR occurrence ≥ batch threshold (per-peak table from the batch
+   ▼                                     run; none on a single sample → brightness only); stamps admitted_by
 candidate generation                    chemistry.py grid (integer-DBE / Senior / O-cap) per eligible peak
    │
    ▼
@@ -125,14 +125,20 @@ batch + reagent
 sampling.select_cover_samples            pick the sample subset (presence set-cover, gain stop)
    │
    ▼
-admission.bin_occurrence                 per-bin occurrence table from the batch time series (once,
-   │                                     at sampling.BATCH_TOL_PPM) + the Otsu-derived threshold
-   ▼
+traces.PeakIndex → admission.bin_occurrence   ONE m/z-sorted index of the batch's peaks; per-PEAK
+   │                                     occurrence table (once, at sampling.BATCH_TOL_PPM) + the
+   │                                     trace-weighted Otsu threshold + the batch-derived brightness
+   ▼                                     floor (admission.derive_height_cutoff_x_edge, "auto")
 assign each rep (assign.run)             per-file ledgers kept (each stamped with occurrence / admitted_by)
    │
    ▼
 assign_batch.run  → merge                offset-aware align + jitter table; positive amine gate at merge
    │  (merged_ledger.csv)
+   ▼
+timeseries.recentre_ledger /             re-centre each merged anchor on its own trace (mean shift over
+collapse_trace_labels /                  the index, ≤ 10 ppm), collapse competing labels per trace
+stamp_tolerance → annotate_peaks         (n_files first), size the stamp window to the batch's per-ion
+   │  (_batch_ts.parquet)                scatter; stamp every spectrum from the trace centres
    ▼
 generate_report (offline, no network):
    ├─ clustering.cluster_batch           correlation clusters of the batch time-series → A4 figure panels
@@ -297,8 +303,9 @@ complexity penalty), `isotopes.py` (prescan → grid constraints, envelope
 predictor), `reagents.py` / `profiles.py` (reagent library + per-reagent config).
 
 **Assignment** — `ledger.py` (state + invariants + commit API), `admission.py`
-(the admission gate: batch occurrence table, Otsu-derived persistence threshold,
-`admissible` = height OR persistence, per-peak `admitted_by`), `passes/`
+(the admission gate: per-peak batch occurrence table, trace-weighted Otsu
+persistence threshold, the batch-derived brightness floor, `admissible` = height
+OR persistence, per-peak `admitted_by`), `passes/`
 (the pass package: arbitration + pass director + calibration; `directors.py` / `core.py` / `postprocess.py` / `config.py`), `series_gka.py` / `series_detect.py`
 / `ladders.py` (series math, detection, ladder gap-fill), `residual.py` (pass 4),
 `siloxane.py` (PDMS ladder), `cleanup.py` (residual cleanup + plausibility
@@ -309,8 +316,10 @@ catalog in `data/peaklists/` → near-tie selection prior + mass-match rescue-ve
 `local_scoring.py` (in-process mascope_tools scoring backend).
 
 **Batch** — `sampling.py` (sample selection: greedy presence set-cover with a
-marginal-gain stop), `assign_batch.py`
-(assign reps + offset-aware merge), `timeseries.py` (time-resolved disposition),
+marginal-gain stop), `traces.py` (the one trace primitive over the m/z-sorted
+batch: per-peak occurrence, mean-shift re-centring, coverage, per-ion scatter),
+`assign_batch.py` (assign reps + offset-aware merge + trace reconciliation),
+`timeseries.py` (time-resolved disposition, trace re-centring / collapse / stamp),
 `clustering.py` + `cluster.py` (correlation-cluster figures), `composition.py`
 (signal-weighted composition accounting).
 

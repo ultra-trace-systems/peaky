@@ -57,6 +57,7 @@ def _skill_version() -> str:
 
 def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = None,
                  generated: str = "", batch_name: str | None = None,
+                 dataset: str | None = None,
                  run_id: str | None = None) -> dict:
     from peaky.reporting import analyte_viz as V
     from peaky.chem import chemistry as C
@@ -65,7 +66,7 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
     FIG, TAB = RP.figures, RP.tables       # MUST mirror the writers (clustering/analyte_viz)
     ctx: dict = {"out_dir": out_dir, "fig_dir": FIG, "tag": tag, "label": label,
                  "fig": {}, "generated": generated, "version": _skill_version(),
-                 "batch_name": batch_name, "run_id": run_id}
+                 "batch_name": batch_name, "dataset": dataset, "run_id": run_id}
 
     merged = pd.read_csv(f"{out_dir}/merged_ledger.csv")
     ctx["merged"] = merged
@@ -108,6 +109,13 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
     if rows:
         a = pd.concat(rows, ignore_index=True)
         ctx["role_count"] = a["role"].value_counts().to_dict()
+        # the persistence path's ACTIVITY is per file: the merge keeps the highest
+        # tier then score, so an occurrence-admitted row almost always loses to a
+        # height-admitted one in the same bin, and the merged count (0-3 on real
+        # batches) under-reports per-file admissions (14-63) by an order of
+        # magnitude -- on one batch it suppressed the cover line entirely.
+        if "admitted_by" in a.columns:
+            ctx["n_admitted_occurrence_files"] = int((a["admitted_by"] == "occurrence").sum())
         # the BRIGHTEST selected-sample full ledger (max total height) — the
         # mass-defect / mass-error QC figure (qc_massdefect) reads it whole (all
         # roles incl iso_child + unexplained), not the M0-only merged ledger.
@@ -180,7 +188,8 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
         # by formula membership and (2) rescue UNEXPLAINED peaks by mass under the
         # actual reagent adducts. Soft + provenance-tagged; never overrides a tier.
         try:
-            tags = RL.resolve_context_tags(ctx.get("batch_name") or "", ctx.get("label") or "")
+            tags = RL.resolve_context_tags(ctx.get("batch_name") or "", ctx.get("dataset") or "",
+                                           ctx.get("label") or "")
             lists = RL.active_lists(RL.load_catalog(), context_tags=tags)
             if lists:
                 cand = merged.loc[merged.get("tier") == "Candidate", "neutral_formula"].dropna()
@@ -586,11 +595,29 @@ def cover(ctx, pdf):
     # as a percentage; `occurrence_threshold` is None when the path was off.
     _adm = (ctx.get("batch") or {}).get("admission") or {}
     _thr = _adm.get("occurrence_threshold")
-    if ctx.get("n_admitted_occurrence") and _thr is not None:
-        head.append(("dim", f"   {ctx['n_admitted_occurrence']} of {ctx.get('n_m0', '?')} merged "
-                            f"peaks were eligible by persistence only: m/z bin present in "
-                            f"≥{float(_thr):.0%} of spectra (occurrence-min "
+    _n_occ_files = ctx.get("n_admitted_occurrence_files")
+    if (ctx.get("n_admitted_occurrence") or _n_occ_files) and _thr is not None:
+        # per-file rows are the path's real activity; the merged count is what
+        # survived the merge's tier-then-score consensus (see load_context)
+        _pf = (f"{_n_occ_files} per-file peak rows, " if _n_occ_files is not None else "")
+        head.append(("dim", f"   {_pf}{ctx.get('n_admitted_occurrence', 0)} of {ctx.get('n_m0', '?')} "
+                            f"merged peaks were eligible by persistence only: a peak within "
+                            f"tolerance in ≥{float(_thr):.0%} of spectra (occurrence-min "
                             f"{_adm.get('occurrence_min', 'auto')}), below the height gate"))
+    _gate = (ctx.get("batch") or {}).get("gate") or {}
+    if _gate.get("x_edge") is not None:
+        head.append(("dim", f"   brightness floor derived from the batch: {_gate['x_edge']:g}x the "
+                            f"noise edge ({_gate.get('share_at_x', 0):.0%} of the admitted peaks "
+                            f"transient, ≤{_gate.get('max_transient_share', 0):.0%} allowed; "
+                            f"{(_gate.get('share_at_1') or 0):.0%} at 1x)"))
+    _tr = (ctx.get("batch") or {}).get("traces") or {}
+    if _tr.get("n_rows"):
+        head.append(("dim", f"   traces: {_tr.get('n_recentred', 0)} of {_tr['n_rows']} ledger anchors "
+                            f"re-centred on their own trace (median move "
+                            f"{_tr.get('median_abs_move_ppm', 0)} ppm), {_tr.get('n_collapsed', 0)} "
+                            f"competing labels collapsed onto {_tr.get('n_traces', '?')} traces; "
+                            f"stamping window ±{_tr.get('stamp_tol_ppm', '?')} ppm "
+                            f"(per-ion scatter {_tr.get('sigma_ppm', 'n/a')} ppm)"))
     j = ctx.get("jitter", {})
     if j:
         nm = ctx.get("n_multifile")
@@ -1266,6 +1293,7 @@ SECTIONS = [cover, findings, coverage, composition, scrutiny, reference_lists, g
 
 def build(out_dir: str, *, tag: str, label: str, ts_path: str | None = None,
           out_pdf: str | None = None, generated: str = "", batch_name: str | None = None,
+          dataset: str | None = None,
           run_id: str | None = None, sections=SECTIONS) -> str:
     """Build the PDF report for one batch run. `out_dir` holds the run artifacts.
     `batch_name` titles the report (else taken from the TS, else the reagent label).
@@ -1274,7 +1302,8 @@ def build(out_dir: str, *, tag: str, label: str, ts_path: str | None = None,
     matplotlib.use("Agg")
     from matplotlib.backends.backend_pdf import PdfPages
     ctx = load_context(out_dir, tag=tag, label=label, ts_path=ts_path,
-                       generated=generated, batch_name=batch_name, run_id=run_id)
+                       generated=generated, batch_name=batch_name, dataset=dataset,
+                       run_id=run_id)
     if out_pdf is None:
         # name the PDF with the Report ID when we have one, so the file is
         # self-identifying even when moved out of its run folder.
