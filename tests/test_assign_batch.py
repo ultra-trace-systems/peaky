@@ -914,6 +914,30 @@ try:
         check("residual run: ...and at 12x the 10x bins are below it: nothing targeted",
               r["floor"]["min_x_edge"] == 12.0 and r["n_bins_residual"] == 0 and r["k"] == 0, r)
 
+    # ---- sidelobe tiers through run(): a suspect is targeted LAST, and recorded ----
+    # a saturating peak 5 mDa above bin 500 in every file (covered, in a0); bin 500
+    # in z1 is 200x dimmer than it and shares only 2 samples with it -> a static-rule
+    # suspect; bin 502 stays clean -> z2 (clean) is assigned before z1 (suspect)
+    _RSPEC_SL = {sid: {**mzh, 500.005: 1.0e6} for sid, mzh in _RSPEC.items()}
+    _RPK_SL = _batch_table_h(_RSPEC_SL)
+    with tempfile.TemporaryDirectory() as _d:
+        lines = []
+        res = AB.run(peaks=_RPK_SL, ts_peaks=_RPK_SL, reagent="Br", batch="test batch",
+                     out_dir=_d, k_min=2, k_max=2, min_gain=0.0, n_jobs=1, log=lines.append)
+        summ = json.load(open(os.path.join(_d, "batch_summary.json")))
+        r = summ["selection"]["residual"]
+        rb = pd.read_csv(os.path.join(_d, "tables", "residual_bins.csv"))
+        check("residual run: the static-rule suspect is counted and targeted after the clean bin",
+              r["n_suspect"] == 1 and r["n_sidelobe"] == 0 and r["n_bins_residual"] == 2
+              and r["sample_ids"] == ["z2", "z1"] and summ["sample_ids"] == ["a0", "a1", "z2", "z1"],
+              r)
+        check("residual run: residual_bins.csv carries the tier, the neighbour and the pairs",
+              rb["tier"].tolist() == ["suspect", "clean"] and rb["covered_by"].tolist() == ["z1", "z2"]
+              and rb["sidelobe_of"].round(3).tolist()[:1] == [500.005] and rb["n_pairs"].tolist() == [2, 0],
+              rb.to_dict("records"))
+        check("residual run: the log names the suspect",
+              any("1 static-rule sidelobe suspect(s), covered last" in ln for ln in lines))
+
     # ---- (b) a bin the whole-batch stamp explains is not re-targeted ----------------
     _EXTRA_M0[:] = [(500.0, "C20H20O10")]     # every cover ledger assigns an ion AT bin 500
     with tempfile.TemporaryDirectory() as _d:

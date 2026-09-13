@@ -275,6 +275,50 @@ with tempfile.TemporaryDirectory() as d:
           "WARNING" in _mtxt and "k_max=2" in _mtxt and "raise --k-max" in _mtxt, _mtxt)
     check("methods: no stale hard-coded rule text",
           "time-spaced" not in _mtxt and "max-TIC" not in _mtxt, _mtxt)
+    # --- the cover with a residual stage: the file split and a per-stage preview ---
+    ctx_r = dict(ctx_s)
+    ctx_r["n_files"] = 15
+    ctx_r["batch"] = dict(ctx_s.get("batch") or {})
+    ctx_r["batch"]["selection"] = dict(
+        ctx_r["batch"]["selection"], stop_reason="gain-floor",
+        residual={"n_bins_residual": 5, "n_uncovered": 135, "n_explained": 0,
+                  "n_below_floor": 130, "n_sidelobe": 1, "n_suspect": 1,
+                  "floor": {"min_x_edge": 5.0, "min_cps": None}, "frac_of_max": 0.5,
+                  "k": 5, "k_max": 10, "coverage_of_residual": 1.0,
+                  "stop_reason": "exhausted", "sample_ids": [f"r{i}" for i in range(5)]})
+    ctx_r["batch"]["n_files_by_stage"] = {"cover": 10, "residual": 5}
+    ctx_r["samples"] = ([(f"2026-06-16 {i:02d}:00:00", "cover") for i in range(10)]
+                        + [(f"2026-06-17 {i:02d}:00:00", "residual") for i in range(5)])
+    _cl = _cover_lines(ctx_r)
+    _sel_line = next((t for t in _cl if "presence set-cover selection" in t), "")
+    check("cover: the selection line splits the files by stage",
+          _sel_line.startswith("15 files (10 cover + 5 residual): presence set-cover")
+          and "1 confirmed sidelobe(s) dropped" in _sel_line, _sel_line)
+    _rows = [t for t in _cl if t.startswith("   ") and ("[cover]" in t or "[residual]" in t
+                                                        or "more" in t)]
+    check("cover: the preview shows 5 cover rows, 'and 5 more', 3 residual rows, 'and 2 more'",
+          [("[cover]" in t, "[residual]" in t, "more" in t) for t in _rows]
+          == [(True, False, False)] * 5 + [(False, False, True)] + [(False, True, False)] * 3
+          + [(False, False, True)]
+          and "and 5 more cover files" in _rows[5] and "and 2 more residual files" in _rows[-1],
+          _rows)
+    ctx_r["samples"] = [(f"2026-06-16 {i:02d}:00:00", "cover") for i in range(10)]
+    ctx_r["batch"]["selection"].pop("residual"); ctx_r["batch"].pop("n_files_by_stage")
+    ctx_r["n_files"] = 10
+    _cl0 = _cover_lines(ctx_r)
+    _rows0 = [t for t in _cl0 if t.startswith("   ") and ("[cover]" in t or "more" in t)]
+    check("cover: without a residual stage the preview is the first 8 rows, as before",
+          len(_rows0) == 8 and all("[cover]" in t for t in _rows0)
+          and any(t.startswith("10 files: presence") for t in _cl0), _rows0)
+    _mtxt_r = " ".join(t for _s, t in R._selection_lines(
+        {"n_files": 15, "batch": {"selection": dict(ctx_s["batch"]["selection"], residual={
+            "n_uncovered": 135, "n_explained": 0, "n_below_floor": 130, "n_bins_residual": 5,
+            "n_sidelobe": 1, "n_suspect": 1, "floor": {"min_x_edge": 5.0}, "k": 5,
+            "k_max": 10, "coverage_of_residual": 1.0, "stop_reason": "exhausted"})}})
+        if isinstance(t, str))
+    check("methods: the sidelobe guard gets its own bullet when it acted",
+          "Sidelobe guard: 1 candidate bin(s)" in _mtxt_r and "1 met only the static rule" in _mtxt_r,
+          _mtxt_r)
     out5 = R.build(d, tag="Ur", label="Ur⁺ CIMS", out_pdf=f"{d}/r5.pdf",
                    sections=[R.cover, R.methods])
     check("build: cover + methods with a selection record -> PDF",

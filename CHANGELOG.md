@@ -42,6 +42,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `timeseries.bin_ids` (new) is the row-aligned bin rule `build_matrix` now pivots on,
   so the residual universe is read off the long table, bin by bin, at a fraction of
   the dense matrix's memory and can never bin differently from the cover.
+  **Sidelobe guard.** A live run on a 1397-sample Ur+ batch of the same campaign spent one of
+  its five residual files on a bin the per-file cleanup then labelled an FT ringing
+  sidelobe (1 mDa from a 584 kcps peak). Residual candidates are now tiered against a
+  saturating neighbour as `flag_sidelobe_channels` tiers a channel — except that a
+  neighbour qualifies by its maximum, not the batch median: the live parent (700 kcps
+  at most) has a 15.6 kcps median over the 1397 samples and rings only in the plume,
+  1.5 mDa from its sidelobe: a candidate/neighbour height ratio locked across ≥ 20
+  shared samples (cv < 0.08, the neighbour ≥ 50 kcps and ≥ 100× over them) is a
+  confirmed sidelobe and is dropped
+  (`n_sidelobe`, rows kept in `residual_bins.csv` with `tier = 'sidelobe'`); a
+  candidate that only meets cleanup's static rule in the sample where it peaks, with
+  too few shared samples to test the ratio, is a *suspect* (`n_suspect`) — kept,
+  because a real ion near a bright peak does get assigned, but covered last: the
+  residual cover's gain is lexicographic, one clean bin outranks any number of
+  suspects. `residual_bins.csv` gains `tier`, `sidelobe_of`, `n_pairs`, `ratio_cv`.
+  The report cover now says "15 files (10 cover + 5 residual)" and previews both
+  stages (5 cover rows and 3 residual rows, each with an "and N more" line) instead of
+  the first 8 picks, which never reached the residual ones; without a residual stage
+  it reads as before.
 
 ### Changed
 

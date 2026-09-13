@@ -53,7 +53,16 @@ absolute cps floor can override). Each such bin must be assigned where it is
 bright, so a sample counts for a bin only where the bin stands at
 >= `RESIDUAL_FRAC_OF_MAX` (50 %) of its own campaign maximum (and above that
 sample's admission gate); the greedy cover over that relation stops at
-`RESIDUAL_K_MAX` (10) picks or when the next sample adds no bin. Measured on the
+`RESIDUAL_K_MAX` (10) picks or when the next sample adds no bin. A candidate that
+is the FT ringing sidelobe of a saturating neighbour is not worth a file: the
+per-file cleanup would only label it an artifact. Its tier is read the way
+`timeseries.flag_sidelobe_channels` reads a channel -- a parent within
+SIDELOBE_DMZ (12 mDa) at >= 100x, and the candidate/parent height ratio LOCKED
+across >= 20 shared samples (cv < 0.08) -- and a confirmed sidelobe is dropped;
+one that only meets cleanup's static rule in the sample where it peaks, with too
+few shared samples to test the ratio, is kept as a SUSPECT and covered last (a
+clean bin outranks any number of suspects), since a real ion that merely sits
+near a bright peak does get assigned. Measured on the
 campaign above: the 36 bright bins needed 21 samples at 50 % of their maximum,
 and assigning them gave 6 Assigned + 10 Candidate + 8 isotope satellites of
 already-assigned parents + 1 sidelobe + 11 unexplained -- the bright end of the
@@ -100,6 +109,11 @@ STOP_GAIN = "gain-floor"
 STOP_KMAX = "k_max"
 STOP_EXHAUSTED = "exhausted"
 STOP_EMPTY = "empty"         # residual stage: no bin to target
+# residual-bin tiers (residual_universe): a clean target, a static-rule sidelobe
+# SUSPECT (kept, covered last), a ratio-locked CONFIRMED sidelobe (dropped)
+TIER_CLEAN = "clean"
+TIER_SUSPECT = "suspect"
+TIER_SIDELOBE = "sidelobe"
 
 
 def sample_table(peaks: pd.DataFrame, *, sample_col: str = "sample_item_id",
@@ -380,26 +394,57 @@ def residual_universe(peaks: pd.DataFrame, *, assigned, stamped=None,
           `min_cps`. Either bound may be None (not applied); the caller passes
           an absolute `min_cps` to override the edge-relative rule.
 
+    A bin that passes all three is then TIERED against any saturating neighbour
+    (a bin within `timeseries.SIDELOBE_DMZ` that reaches `SIDELOBE_MIN_PARENT`
+    somewhere -- its MAXIMUM, not the batch median the channel flagger uses: a
+    plume ion saturates only in the samples where its sidelobe appears), the way
+    `flag_sidelobe_channels` tiers a channel:
+
+      * `TIER_SIDELOBE` -- over the samples holding both, the neighbour's median
+        clears SIDELOBE_MIN_PARENT and >= SIDELOBE_FACTOR x the bin's, there are
+        >= SIDELOBE_MIN_PAIRS of them, and the height ratio is locked
+        (cv < SIDELOBE_CV): a confirmed ringing sidelobe.
+        DROPPED (a file would only label it an artifact); returned in
+        `.attrs['sidelobes']`, counted as `n_sidelobe`.
+      * `TIER_SUSPECT` -- too few shared samples to test the ratio, but cleanup's
+        static rule holds in the sample where the bin peaks (a neighbour there at
+        >= SIDELOBE_MIN_PARENT and >= SIDELOBE_FACTOR x the bin). KEPT: a real
+        ion near a bright peak does get assigned; `select_residual_cover` covers
+        suspects last. Counted as `n_suspect`.
+      * `TIER_CLEAN` -- no such neighbour, or the ratio was measured and varies
+        (an independent ion; its `ratio_cv` is still recorded).
+
     Returns one row per residual bin, ascending m/z: `bin` (the bin number, =
     the column of `build_matrix` for the same table), `bin_mz` (height-weighted
     mean, like `build_matrix`), `prevalence` (samples present), `max_cps`,
     `max_x_edge` (the maximum as a multiple of its sample's edge),
-    `sample_at_max` (where it peaks; ties -> the smallest sample id). The frame's
-    `.attrs['residual']` records the funnel -- n_universe, n_uncovered,
-    n_explained, n_below_floor, n_residual, the floor and the median edge -- and
-    `.attrs['edge_cps']` the per-sample edge (a Series by sample id) so the
-    caller can size a per-sample admission gate without recomputing it."""
+    `sample_at_max` (where it peaks; ties -> the smallest sample id), `tier`,
+    `sidelobe_of` (the neighbour's m/z that decided the tier, NaN if none),
+    `n_pairs` (samples holding both) and `ratio_cv` (NaN when not measurable).
+    The frame's `.attrs['residual']` records the funnel -- n_universe,
+    n_uncovered, n_explained, n_below_floor, n_sidelobe, n_suspect, n_residual
+    (= the rows, clean + suspect), the floor and the median edge --
+    `.attrs['sidelobes']` the dropped rows (a list of records, same columns,
+    tier 'sidelobe') and `.attrs['edge_cps']` the per-sample edge ({sample id
+    -> cps}) so the caller can size a per-sample admission gate without
+    recomputing it. Plain containers on purpose: pandas compares `.attrs`
+    when it concatenates or rounds a frame, and a Series there raises."""
     from peaky.batch import timeseries as TS
 
-    cols = ["bin", "bin_mz", "prevalence", "max_cps", "max_x_edge", "sample_at_max"]
+    cols = ["bin", "bin_mz", "prevalence", "max_cps", "max_x_edge", "sample_at_max",
+            "tier", "sidelobe_of", "n_pairs", "ratio_cv"]
     meta: dict = {"n_universe": 0, "n_uncovered": 0, "n_explained": 0, "n_below_floor": 0,
+                  "n_sidelobe": 0, "n_suspect": 0,
                   "n_residual": 0, "min_x_edge": min_x_edge, "min_cps": min_cps,
                   "min_prevalence": int(min_prevalence), "tol_ppm": float(tol_ppm),
                   "edge_median_cps": None}
 
-    def _out(rows: pd.DataFrame, edge: pd.Series) -> pd.DataFrame:
+    def _out(rows: pd.DataFrame, edge: pd.Series,
+             sidelobes: pd.DataFrame | None = None) -> pd.DataFrame:
         rows.attrs["residual"] = meta
-        rows.attrs["edge_cps"] = edge
+        rows.attrs["edge_cps"] = {k: float(v) for k, v in edge.items()}
+        rows.attrs["sidelobes"] = (sidelobes.to_dict("records")
+                                   if sidelobes is not None else [])
         return rows
 
     if peaks is None or not len(peaks) or not is_per_peak(peaks, mz_col=mz_col, height_col=height_col):
@@ -461,11 +506,98 @@ def residual_universe(peaks: pd.DataFrame, *, assigned, stamped=None,
     at = (pd.DataFrame({"bin": b[sub], "h": h[sub], "s": s_[sub]})
             .sort_values(["bin", "h", "s"], ascending=[True, False, True], kind="mergesort")
             .drop_duplicates("bin").set_index("bin")["s"])
+    # sidelobe tiers against any saturating neighbour (docstring)
+    tier, sl_of, n_pairs, r_cv = _sidelobe_tiers(
+        rid, bin_mz, hmax, b, s_, h, at,
+        dmz=TS.SIDELOBE_DMZ, factor=TS.SIDELOBE_FACTOR, min_parent=TS.SIDELOBE_MIN_PARENT,
+        cv_max=TS.SIDELOBE_CV, min_pairs=TS.SIDELOBE_MIN_PAIRS)
     rows = pd.DataFrame({"bin": rid, "bin_mz": bin_mz[rid], "prevalence": prev[rid],
                          "max_cps": hmax[rid], "max_x_edge": np.round(xmax[rid], 3),
-                         "sample_at_max": at.reindex(rid).to_numpy()})
+                         "sample_at_max": at.reindex(rid).to_numpy(),
+                         "tier": tier, "sidelobe_of": sl_of, "n_pairs": n_pairs,
+                         "ratio_cv": r_cv})
     rows = rows.sort_values("bin_mz", kind="mergesort").reset_index(drop=True)
-    return _out(rows, edge)
+    drop = (rows["tier"] == TIER_SIDELOBE).to_numpy()
+    sidelobes = rows[drop].reset_index(drop=True)
+    rows = rows[~drop].reset_index(drop=True)
+    meta.update(n_sidelobe=int(drop.sum()),
+                n_suspect=int((rows["tier"] == TIER_SUSPECT).sum()),
+                n_residual=int(len(rows)))
+    return _out(rows, edge, sidelobes)
+
+
+def _sidelobe_tiers(rid, bin_mz, hmax, b, s_, h, at_max, *, dmz: float, factor: float,
+                    min_parent: float, cv_max: float, min_pairs: int):
+    """Tier each candidate bin in `rid` against the bins within `dmz` that reach
+    `min_parent` somewhere (`hmax`, per bin) (module note / `residual_universe`).
+    Returns four arrays aligned with `rid`: tier (TIER_*), the deciding
+    neighbour's m/z (NaN if none), the number of samples holding both, and the
+    candidate/neighbour height-ratio cv (NaN when not measurable). Per neighbour
+    the outcome is: ratio measured over >= `min_pairs` shared samples in which
+    the neighbour's median clears `min_parent` and >= `factor` x the candidate's
+    -> 'sidelobe' if locked (cv < `cv_max`) else 'independent'; otherwise
+    cleanup's static rule in the sample where the candidate peaks (the neighbour
+    there >= `min_parent` and >= `factor` x the candidate) -> 'suspect'; else
+    nothing. The bin's tier is SIDELOBE if any neighbour confirms one, else
+    SUSPECT if any neighbour is a static suspect, else CLEAN (a measured
+    independent neighbour is still recorded, for the reader)."""
+    n = len(rid)
+    tier = np.array([TIER_CLEAN] * n, dtype=object)
+    parent = np.full(n, np.nan)
+    npairs = np.zeros(n, dtype=int)
+    rcv = np.full(n, np.nan)
+    if n == 0:
+        return tier, parent, npairs, rcv
+    bright = np.flatnonzero(np.nan_to_num(hmax, nan=0.0) >= min_parent)
+    if not len(bright):
+        return tier, parent, npairs, rcv
+    pmz = bin_mz[bright]                                 # ascending (bins are)
+    cands: dict[int, list[int]] = {}
+    for k, c in enumerate(rid):
+        lo, hi = np.searchsorted(pmz, [bin_mz[c] - dmz, bin_mz[c] + dmz])
+        # every saturating bin within dmz except the candidate's own: bins are
+        # distinct by the gap rule, and a ringing sidelobe at m/z 100 sits only
+        # ~1-1.5 mDa from its parent (the channel flagger's 1.5 mDa exclusion
+        # skips a merged ION's own track, which has no analogue here)
+        ps = [int(bright[j]) for j in range(lo, hi) if int(bright[j]) != int(c)]
+        if ps:
+            cands[k] = ps
+    if not cands:
+        return tier, parent, npairs, rcv
+    need = sorted({int(rid[k]) for k in cands} | {p for ps in cands.values() for p in ps})
+    sub = np.isin(b, need)
+    H = (pd.DataFrame({"s": s_[sub], "b": b[sub], "h": h[sub]})
+           .pivot_table(index="s", columns="b", values="h", aggfunc="sum"))
+    for k, ps in cands.items():
+        c = int(rid[k])
+        if c not in H.columns:
+            continue
+        hc = H[c].fillna(0.0)
+        s_max = at_max.get(c)
+        verdicts = []                       # (rank, parent_mz, n_pairs, cv); rank 2 sidelobe, 1 suspect, 0 independent
+        for p in ps:
+            if p not in H.columns:
+                continue
+            hp = H[p].fillna(0.0)
+            both = (hc > 0) & (hp > 0)
+            npair = int(both.sum())
+            if (npair >= min_pairs and float(hp[both].median()) >= min_parent
+                    and float(hp[both].median()) >= factor * float(hc[both].median())):
+                ratio = (hc[both] / hp[both]).replace([np.inf, -np.inf], np.nan).dropna()
+                if len(ratio) >= min_pairs and ratio.mean() > 0:
+                    cv = float(ratio.std() / ratio.mean())
+                    verdicts.append((2 if cv < cv_max else 0, float(bin_mz[p]), npair, cv))
+                    continue
+            if s_max is not None and s_max in H.index:
+                hp_s, hc_s = float(hp.get(s_max, 0.0)), float(hc.get(s_max, 0.0))
+                if hp_s >= min_parent and hc_s > 0 and hp_s >= factor * hc_s:
+                    verdicts.append((1, float(bin_mz[p]), npair, np.nan))
+        if not verdicts:
+            continue
+        rank, pm, npair, cv = max(verdicts, key=lambda v: (v[0], -abs(v[1] - bin_mz[c])))
+        tier[k] = {2: TIER_SIDELOBE, 1: TIER_SUSPECT, 0: TIER_CLEAN}[rank]
+        parent[k], npairs[k], rcv[k] = pm, npair, cv
+    return tier, parent, npairs, rcv
 
 
 def select_residual_cover(peaks: pd.DataFrame, bins: pd.DataFrame, *,
@@ -482,9 +614,12 @@ def select_residual_cover(peaks: pd.DataFrame, bins: pd.DataFrame, *,
     and, when `min_height` (a mapping sample id -> cps: the per-file admission
     gate) is given, at or above that sample's own value (a missing/NaN entry
     binds nothing). Each pick is the sample counting for the most not-yet-
-    covered bins; stop at `k_max` picks ('k_max') or when the next sample would
-    add no bin ('exhausted'); no bins -> nothing ('empty'). Tie-break as the
-    cover's: the lexicographically smallest sample id.
+    covered bins, CLEAN bins first: a `tier` column marks the sidelobe
+    SUSPECTS (`residual_universe`), and the gain is lexicographic -- one clean
+    bin outranks any number of suspects -- so budget goes to suspects only once
+    no sample adds a clean bin. Stop at `k_max` picks ('k_max') or when the
+    next sample would add no bin ('exhausted'); no bins -> nothing ('empty').
+    Tie-break as the cover's: the lexicographically smallest sample id.
 
     Returns the same table shape as `select_cover_samples` -- the
     `sample_table` rows in pick order with `pick`, `role` (`ROLE_RESIDUAL`),
@@ -523,6 +658,10 @@ def select_residual_cover(peaks: pd.DataFrame, bins: pd.DataFrame, *,
         bound = np.isfinite(mh)
         good[bound] &= M[bound] >= mh[bound][:, None]
     n_t = len(target)
+    # lexicographic weights: a clean bin is worth more than every suspect together
+    susp = ((bins["tier"].astype(str) == TIER_SUSPECT).to_numpy()
+            if "tier" in bins.columns else np.zeros(n_t, dtype=bool))
+    weight = np.where(susp, 1, n_t + 1)
     covered = np.zeros(n_t, dtype=bool)
     covered_by: dict = {}
     picked: list[int] = []
@@ -530,12 +669,13 @@ def select_residual_cover(peaks: pd.DataFrame, bins: pd.DataFrame, *,
     covs: list[float] = []
     stop, next_gain = STOP_EXHAUSTED, 0
     while len(picked) < len(samples):
-        g = (good & ~covered[None, :]).sum(axis=1)
+        fresh = good & ~covered[None, :]
+        g = (fresh * weight[None, :]).sum(axis=1)
         if picked:
             g[picked] = -1
         j = int(g.argmax())              # first maximum = smallest sample id
-        gj = int(g[j])
-        if gj <= 0:
+        gj = int(fresh[j].sum())         # bins this pick would add (any tier)
+        if g[j] <= 0:
             stop, next_gain = STOP_EXHAUSTED, 0
             break
         if len(picked) >= k_max:
@@ -579,7 +719,10 @@ def describe_residual(meta: dict | None, universe: dict | None = None) -> str:
     s = (f"residual: {u.get('n_uncovered', 0)} of {u.get('n_universe', 0)} universe bins are in "
          f"no assigned file; {u.get('n_explained', 0)} explained by the stamp, "
          f"{u.get('n_below_floor', 0)} below the floor ({' and '.join(floor) or 'none'}), "
-         f"{u.get('n_residual', 0)} targeted")
+         f"{u.get('n_sidelobe', 0)} dropped as confirmed sidelobes of a saturating neighbour, "
+         f"{u.get('n_residual', 0)} targeted"
+         + (f" ({u['n_suspect']} static-rule sidelobe suspect(s), covered last)"
+            if u.get("n_suspect") else ""))
     if m.get("n_bins", 0):
         s += (f"; {m.get('k', 0)} sample(s) at >= {m.get('frac_of_max', 0):.0%} of each bin's "
               f"maximum cover {m.get('achieved_coverage', 0):.0%} of them; stop={m.get('stop_reason')}")

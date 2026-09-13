@@ -573,10 +573,15 @@ def cover(ctx, pdf):
                              f"unexplained {rf['unexplained']*100:.0f}%")]
     nf = ctx.get("n_files", 1)
     bsel = (ctx.get("batch") or {}).get("selection") or {}
+    # "15 files (10 cover + 5 residual)" once the residual stage has added files
+    _res_k = int((bsel.get("residual") or {}).get("k") or 0)
+    _by_stage = (ctx.get("batch") or {}).get("n_files_by_stage") or {}
+    _n_res = int(_by_stage.get("residual", _res_k)) if _res_k else 0
+    files_txt = f"{nf} files ({nf - _n_res} cover + {_n_res} residual)" if _n_res else f"{nf} files"
     if nf <= 1:
         sel_txt = "Single sample assigned (no merge)."
     elif bsel.get("method") == "presence-cover":
-        sel_txt = (f"{nf} files: presence set-cover selection — greedy over the "
+        sel_txt = (f"{files_txt}: presence set-cover selection — greedy over the "
                    f"{bsel.get('n_bins', '?')} m/z bins present in ≥{bsel.get('min_prevalence', 2)} "
                    f"samples (no height floor); {bsel.get('achieved_coverage', 0):.0%} of "
                    f"them covered, stopped on {bsel.get('stop_reason', '?')}"
@@ -587,8 +592,7 @@ def cover(ctx, pdf):
         sel_txt = (f"{nf} files assigned and merged by m/z (this run's batch_summary.json "
                    "carries no selection record).")
     head += [("gap", 1), ("h", "Samples assigned"), ("gap", 0.3), ("b", sel_txt)]
-    for name, role in ctx.get("samples", [])[:8]:
-        head.append(("m", f"   {name}   [{role}]"))
+    head += _sample_preview(ctx.get("samples", []))
     # persistence path of the admission gate: state the RESOLVED threshold (the
     # fraction the run actually compared against) and the knob it came from --
     # `occurrence_min` is the knob ('auto' by default) and cannot be formatted
@@ -1104,6 +1108,26 @@ def clusters(ctx, pdf):
             _image_page(pdf, p, "")
 
 
+def _sample_preview(samples, *, n_rows: int = 8, n_cover: int = 5, n_residual: int = 3) -> list:
+    """The cover's sample rows: the first `n_rows` picks as before -- unless the
+    residual stage added files, in which case both stages get a share (up to
+    `n_cover` cover/pad rows, then up to `n_residual` residual rows, each
+    followed by an "and N more" line when truncated) so the extra files are
+    visible on the cover without growing the block. `samples` is the
+    (name, role) list read from tables/selected_samples.csv."""
+    rows = [(str(n), str(r)) for n, r in samples]
+    res = [x for x in rows if x[1] == "residual"]
+    if not res:
+        return [("m", f"   {name}   [{role}]") for name, role in rows[:n_rows]]
+    cov = [x for x in rows if x[1] != "residual"]
+    out = []
+    for group, quota, label in ((cov, n_cover, "cover"), (res, n_residual, "residual")):
+        out += [("m", f"   {name}   [{role}]") for name, role in group[:quota]]
+        if len(group) > quota:
+            out.append(("m", f"   … and {len(group) - quota} more {label} files"))
+    return out
+
+
 def _residual_floor_text(r: dict) -> str:
     """'5× the sample's noise edge' / '1000 cps' / both, from the residual block's
     `floor` record (`batch_summary.json['selection']['residual']`)."""
@@ -1128,7 +1152,9 @@ def _residual_cover_text(bsel: dict) -> str:
         return (f" Residual stage: none of the {r.get('n_uncovered', 0)} bins in no assigned "
                 f"file reached the floor ({_residual_floor_text(r)}) unexplained — no extra file.")
     return (f" Residual stage: {nb} of the {r.get('n_uncovered', 0)} bins in no assigned file "
-            f"reach {_residual_floor_text(r)} unexplained; {k} extra file(s), each where "
+            f"reach {_residual_floor_text(r)} unexplained"
+            + (f" ({r['n_sidelobe']} confirmed sidelobe(s) dropped)" if r.get("n_sidelobe") else "")
+            + f"; {k} extra file(s), each where "
             f"its bins stand at ≥{r.get('frac_of_max', 0.5):.0%} of their maximum, cover "
             f"{r.get('coverage_of_residual', 0):.0%} of them (stopped on "
             f"{r.get('stop_reason', '?')}).")
@@ -1173,6 +1199,12 @@ def _selection_lines(ctx) -> list:
                          f"of them, stopped on '{r.get('stop_reason', '?')}' "
                          f"(k_max {r.get('k_max', '?')}). Merged rows carry `stage` = cover | "
                          "residual (the stage that first held the ion)."))
+        if r.get("n_sidelobe") or r.get("n_suspect"):
+            out.append(("b", f"• Sidelobe guard: {r.get('n_sidelobe', 0)} candidate bin(s) whose height "
+                             "ratio to a ≥100× brighter neighbour within 12 mDa is locked across "
+                             "≥20 samples were dropped as ringing sidelobes (a file would only "
+                             f"label them artifacts); {r.get('n_suspect', 0)} met only the static "
+                             "rule in the sample where they peak and were targeted last."))
     return out
 
 

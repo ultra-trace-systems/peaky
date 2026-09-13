@@ -969,8 +969,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             umeta = dict(bins.attrs.get("residual", {}))
             # a sample counts for a bin only where its OWN gate would admit it:
             # the multiple x that sample's edge, or the absolute gate everywhere
-            edge = bins.attrs.get("edge_cps")
-            edge = edge if edge is not None else pd.Series(dtype=float)
+            edge = pd.Series(bins.attrs.get("edge_cps") or {}, dtype=float)
             min_height = (pd.Series(float(gate_cps), index=edge.index) if gate_cps is not None
                           else edge * gate_x)
             rsel = SS.select_residual_cover(ts_peaks, bins, frac_of_max=residual_frac_of_max,
@@ -985,6 +984,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 "n_uncovered": int(umeta.get("n_uncovered", 0)),
                 "n_explained": int(umeta.get("n_explained", 0)),
                 "n_below_floor": int(umeta.get("n_below_floor", 0)),
+                "n_sidelobe": int(umeta.get("n_sidelobe", 0)),
+                "n_suspect": int(umeta.get("n_suspect", 0)),
                 "floor": {"min_x_edge": min_x, "min_cps": min_cps,
                           "edge_median_cps": umeta.get("edge_median_cps"),
                           "source": floor_src},
@@ -995,10 +996,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 "next_gain": float(smeta.get("next_gain", 0.0)),
                 "sample_ids": residual_ids,
             }
-            # the targeted bins, each with the pick that carries it (empty = none did)
+            # the targeted bins, each with the pick that carries it (empty = none
+            # did), then the confirmed sidelobes the stage dropped (tier 'sidelobe')
             cb = rsel.attrs.get("covered_by", {})
             rb = bins.copy()
             rb["covered_by"] = [cb.get(int(b_), "") for b_ in rb["bin"]] if len(rb) else []
+            _sl = bins.attrs.get("sidelobes") or []
+            if _sl:
+                rb = pd.concat([rb, pd.DataFrame(_sl).assign(covered_by="")],
+                               ignore_index=True)
             rb.to_csv(os.path.join(TAB, "residual_bins.csv"), index=False)
             if residual_ids:
                 if sel is not None:

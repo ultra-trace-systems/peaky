@@ -162,13 +162,32 @@ CLI `--residual` / `--no-residual`, **on by default**):
      a bin no file would admit is not worth a file; the absolute gate
      (`--height-cutoff`) is a floor as well. On the campaign above the 36 bright
      bins sit ≥ 6.5× the median edge.
+   Each survivor is then **tiered against a saturating neighbour** — a bin within
+   `timeseries.SIDELOBE_DMZ` (12 mDa) that reaches `SIDELOBE_MIN_PARENT`
+   (50 kcps) somewhere (its maximum, not the batch median the channel flagger
+   uses: a plume ion saturates only in the samples where its sidelobe appears,
+   and can sit a single mDa away at m/z 100) — as `flag_sidelobe_channels` tiers
+   a merged channel ([`TIMESERIES.md`](TIMESERIES.md)): with ≥
+   `SIDELOBE_MIN_PAIRS` (20) samples holding both, the neighbour's median over
+   them ≥ 50 kcps and ≥ `SIDELOBE_FACTOR` (100×) the bin's, a height ratio
+   **locked** across those samples (cv <
+   `SIDELOBE_CV`, 0.08) makes it a **confirmed sidelobe** (`tier = 'sidelobe'`):
+   dropped, since a file would only label it an artifact (`n_sidelobe`; the rows
+   are still written to `residual_bins.csv`). A varying ratio means an
+   independent ion → `'clean'`, `ratio_cv` recorded. With too few shared samples
+   to measure, cleanup's static rule in the sample where the bin peaks (a
+   neighbour there ≥ 50 kcps and ≥ 100× the bin) makes it a **suspect**
+   (`'suspect'`, `n_suspect`): *kept*, because a real ion that merely sits near
+   a bright peak does get assigned, but covered last (below).
 2. **Residual cover** (`select_residual_cover`). A sample *counts* for a bin only
    where the bin's height (summed per sample and bin, as the matrix does) is
    ≥ `RESIDUAL_FRAC_OF_MAX` (50 %) of the bin's maximum — the bin is assigned
    where it stands tall, with its isotopes visible — **and** at or above that
    sample's own gate. Greedy over that relation: each pick is the sample counting
-   for the most not-yet-covered residual bins; stop at `RESIDUAL_K_MAX` (10)
-   picks (`'k_max'`, `--residual-k-max`) or when the next sample adds no bin
+   for the most not-yet-covered residual bins, **clean bins first** — the gain is
+   lexicographic, one clean bin outranks any number of suspects, so budget goes
+   to suspects only once no sample adds a clean bin; stop at `RESIDUAL_K_MAX`
+   (10) picks (`'k_max'`, `--residual-k-max`) or when the next sample adds no bin
    (`'exhausted'`); no bins → `'empty'`. Tie-break as the cover's (smallest
    `sample_item_id`). `bins_new` and `coverage` are of the **residual** universe.
 3. **Assign + one merge.** The picks go through the same per-file path (serial
@@ -255,10 +274,10 @@ mirrors them for `batch` and `pool`.
 | `tables/selected_samples.csv` | the chosen subset written by `assign_batch.run` (the pool writes it from its own selection table, plus `selection_provenance.csv` at the run root) |
 | `batch_summary.json['selection']` | `method, k, n_samples, n_bins, n_bins_total, n_bins_gated, min_prevalence, tol_ppm, achieved_coverage, stop_reason, next_gain, k_min, k_max, min_gain[, coverage_by_group, picks_by_group]` — also copied into `run_manifest.json['output']['counts']` |
 | `k_max_warning(meta)` / `describe(meta)` | the warning text / one-line log summary the callers print |
-| `residual_universe` | the residual bins (`bin`, `bin_mz`, `prevalence`, `max_cps`, `max_x_edge`, `sample_at_max`); `.attrs['residual']` = the funnel + floor, `.attrs['edge_cps']` = the per-sample edge |
+| `residual_universe` | the residual bins (`bin`, `bin_mz`, `prevalence`, `max_cps`, `max_x_edge`, `sample_at_max`, `tier` ∈ clean / suspect, `sidelobe_of`, `n_pairs`, `ratio_cv`); `.attrs['residual']` = the funnel (incl. `n_sidelobe`, `n_suspect`) + floor, `.attrs['sidelobes']` = the dropped rows (records), `.attrs['edge_cps']` = the per-sample edge ({id → cps}) |
 | `select_residual_cover` | the extra picks, same shape as `select_cover_samples` with `role = 'residual'`; `.attrs['selection']` = {method 'residual-cover', k, n_bins, frac_of_max, k_max, achieved_coverage, stop_reason, next_gain}, `.attrs['covered_by']` = {bin → pick} |
 | `tables/residual_bins.csv` | the targeted bins + `covered_by` (written by `assign_batch.run` when the stage is on) |
-| `batch_summary.json['selection']['residual']` | `n_bins_residual, n_universe, n_uncovered, n_explained, n_below_floor, floor{min_x_edge, min_cps, edge_median_cps, source}, frac_of_max, k, k_max, coverage_of_residual, stop_reason, next_gain, sample_ids` (`skipped` when there was no time series) |
+| `batch_summary.json['selection']['residual']` | `n_bins_residual, n_universe, n_uncovered, n_explained, n_below_floor, n_sidelobe, n_suspect, floor{min_x_edge, min_cps, edge_median_cps, source}, frac_of_max, k, k_max, coverage_of_residual, stop_reason, next_gain, sample_ids` (`skipped` when there was no time series) |
 
 ---
 
@@ -322,6 +341,9 @@ modes of one instrument. Selection is deterministic (identical picks on re-run).
   order returned (and `align()` has order-sensitive tie-breaks), so the CSV's
   `pick` column is also the merge order — the residual picks continue the
   numbering after the cover's.
+- **A confirmed sidelobe never costs a file; a mere suspect never loses one to a
+  clean bin.** The ratio-lock test is the same one the channel flagger trusts;
+  the static rule alone only orders the greedy.
 - **The residual stage cannot re-target what the ledger explains.** Its universe
   is read off the annotated time series *after* the cover's stamp, so an ion the
   ledger names anywhere — analyte, satellite, reagent line, artifact — is not a
