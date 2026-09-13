@@ -18,10 +18,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   write `[progress]` lines into captured output — so scripted runs are unchanged.
   Relatedly, the "no usable display, falling back to terminal status" note now prints
   only when the window was actually ASKED for; defaulted on, the one-line status
-  speaks for itself instead of complaining on every run. The hold is untouched: a
-  finished window still stays up only on an interactive terminal, still for at most
-  `PEAKY_PROGRESS_HOLD_S` seconds (default 600; `0` disables it), and Ctrl-C still
-  closes it at once. macOS still goes straight to the terminal status.
+  speaks for itself instead of complaining on every run. The hold stays bounded by
+  `PEAKY_PROGRESS_HOLD_S` seconds (default 600; `0` disables it) and Ctrl-C still
+  closes it at once; when it applies is widened under *Fixed* below. macOS still goes
+  straight to the terminal status.
+- **The progress window's stats panel is live.** It was filled only by the returned
+  summary at the very end — every row read `--` for the whole run — so a window that
+  closed on finishing never showed a number at all. `progress.py` now also reads the
+  two summary lines `assign.run` logs as each file finishes (`[run] tiers {...}` and
+  `[run] stats {...}`, the M0 tier counts and `ledger.stats` + the admission counts)
+  and shows running per-file totals while the files are assigned: samples done, M0
+  (sum), tiers (sum), the unexplained-peak share, peaks admitted by persistence. The
+  merge-level rows (merged M0, tiers, in all files, single-file, formula
+  disagreements) read `pending merge` until the merge, take a provisional reading from
+  the `DONE:` line through the cluster / Van Krevelen / report tail, and are replaced
+  by the exact summary when the run finishes — the final numbers are still never
+  parsed. A file counts once, when its stats line lands; a line that fails to parse is
+  not counted. `peaky assign` gets its coverage rows as soon as its one stats line
+  lands, ahead of the report writes. The terminal fallback is unchanged (one line per
+  sample). `tests/test_progress.py` replays the log of the 15-file Texas run whose
+  window sat on `--` for 74 minutes and checks the totals against an independent parse.
 
 - **The admission table is per PEAK, and the lookup is the table's own rule.**
   `admission.bin_occurrence` no longer gap-clusters the batch into bins: it is built on
@@ -185,6 +201,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **An explicitly requested progress window closed unread when the run was launched
+  off a terminal.** The post-run hold was gated on a tty alone, so `setsid nohup peaky
+  batch ... --progress` with `DISPLAY` set opened a real window on the desktop and tore
+  it down the instant the run finished — 74 minutes of bars, and the stats panel it was
+  opened for never visible. `progress.hold_wanted` now holds a finished window at an
+  interactive terminal OR wherever the window was asked for explicitly (`--progress`,
+  or `PEAKY_PROGRESS` truthy) and a Tk window actually came up — still for at most
+  `PEAKY_PROGRESS_HOLD_S` seconds (default 600; `0` disables it), still ended at once
+  by Close or Ctrl-C. The implicit default and the terminal fallback never hold, so a
+  script or a CI job cannot wait on a window it did not ask for or could not show. The
+  `--progress` help text and the README say so.
 - **`run_manifest.json` stamped the wrong package version on every run.**
   `peaky.__version__` restated `"0.5.0"` as a literal while `pyproject.toml` had moved
   to `0.7.0`, so `code.package_version` — the field that exists to tell one run folder's

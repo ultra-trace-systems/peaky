@@ -270,6 +270,41 @@ check("assign_batch emits the DONE line progress.py parses",
       emits("batch/assign_batch.py", 'log(f"[assign_batch] DONE: {summary[\'merged_M0\']} merged M0 '))
 check("assign emits the per-stage timing line progress.py parses",
       emits("assignment/assign.py", 'st.log(f"[run] {tag} took {s[\'elapsed_s\']}s")'))
+# the two per-file summary lines the LIVE stats panel sums (section 10 below)
+check("assign emits the per-file tiers line progress.py sums into the live panel",
+      emits("assignment/assign.py", 'log(f"[run] tiers {tc}")'))
+check("assign emits the per-file stats line progress.py sums into the live panel",
+      emits("assignment/assign.py", 'log(f"[run] stats {json.dumps(st)}")'))
+check("  -> and stamps the admission counts on it (the 'admitted by occurrence' row)",
+      emits("assignment/assign.py",
+            'st["admitted"] = {"height": adm["height"], "occurrence": adm["occurrence"],'))
+check("assign_batch's DONE line carries the merge numbers the panel reads provisionally",
+      emits("batch/assign_batch.py",
+            '''f"({summary['merged_tiers']}); {summary['n_in_all_files']} in all files, "''')
+      and emits("batch/assign_batch.py", '''f"{summary['n_single_file']} single-file, "''')
+      and emits("batch/assign_batch.py",
+                '''f"{summary['formula_disagreements']} formula disagreements")'''))
+# The keys the totals are summed from come from ledger.stats ITSELF, dumped the
+# way assign.run dumps them: a renamed key would otherwise zero a row of the panel
+# with nothing failing anywhere.
+import json as _json  # noqa: E402
+
+import pandas as _pd  # noqa: E402
+
+from peaky.assignment import ledger as _L  # noqa: E402
+
+_led = _pd.DataFrame({"role": ["M0", "M0", "iso_child", "unexplained"],
+                      "height": [10.0, 5.0, 1.0, 2.0],
+                      "tier": ["Assigned", "Candidate", None, None]})
+_st = _L.stats(_led)
+check("ledger.stats names n_peaks / by_role / by_tier the way the live panel reads them",
+      _st.get("n_peaks") == 4 and (_st.get("by_role") or {}).get("M0") == 2
+      and _st["by_role"].get("unexplained") == 1
+      and _st.get("by_tier") == {"Assigned": 1, "Candidate": 1}, _st)
+_lt = PG.LiveTotals()
+check("  -> and its json.dumps round-trips into one file's totals",
+      _lt.read_stats(_json.dumps(_st)) and (_lt.files, _lt.m0, _lt.peaks, _lt.unexplained)
+      == (1, 2, 4, 1) and _lt.tiers == {"Assigned": 1, "Candidate": 1}, _lt)
 # That line comes from `_safe`, so ONLY a `safe=True` stage is countable -- and
 # NOMINAL_STAGES is the denominator of the stage bar until a completed sample
 # replaces it, which on the `peaky assign` path happens only at the very end.
@@ -1070,6 +1105,358 @@ def test_drain_still_drains_the_queue_and_reschedules(monkeypatch):
     w.q.put(("quit", None))
     w._drain()
     check("_drain still honours a quit message", quits == [1])
+
+
+# ---- 10. the stats panel is LIVE --------------------------------------------
+# A 74-minute `peaky batch ... --jobs 1 --progress` run (15 files, 2026-09-13,
+# launched under `setsid nohup` with DISPLAY set) opened a real window whose
+# stats rows read '--' from start to finish: they were filled only by finish(),
+# from the returned summary, and the window closed the instant the run ended.
+# The fixture is that run's own log, cut to the lines the parser reads (the
+# head and files 1-2 verbatim -- SDK noise, a validation-problems line and all
+# -- then the marker + summary lines of files 3-15 and the tail), with the
+# operator's home directory in the paths replaced by a neutral prefix.
+FIXTURE_LOG = Path(__file__).resolve().parent / "fixtures" / "progress_run_batch_excerpt.txt"
+
+
+def _fixture_lines() -> list:
+    return FIXTURE_LOG.read_text(encoding="utf-8").splitlines()
+
+
+def _fixture_stats() -> list:
+    """The per-file stats dicts, parsed INDEPENDENTLY of progress.py."""
+    import json
+    return [json.loads(ln[len("[run] stats "):]) for ln in _fixture_lines()
+            if ln.startswith("[run] stats ")]
+
+
+def _replay(lines, until_done: int | None = None) -> "PG.ProgressState":
+    """Feed `lines` into a fresh state; stop right after sample `until_done` is done."""
+    st = PG.ProgressState(title="t")
+    for ln in lines:
+        st.feed(ln)
+        if (until_done is not None and PG.RE_SAMPLE_DONE.match(ln)
+                and st.samples_done >= until_done):
+            break
+    return st
+
+
+def _sum(stats, get) -> int:
+    return sum(get(s) for s in stats)
+
+
+def test_live_totals_from_the_captured_texas_log(monkeypatch):
+    """The whole run replayed: the totals equal an independent parse of the
+    fixture's own stats lines, the first file's numbers read by eye off the log,
+    and the DONE line's merge numbers land provisionally."""
+    lines, stats = _fixture_lines(), _fixture_stats()
+    assert len(stats) == 15
+    st = _replay(lines)
+    lv = st.snapshot()["live"]
+    assert st.is_batch and lv["is_batch"]
+    assert (st.samples_done, st.n_samples, lv["files"]) == (15, 15, 15)
+    assert st.n_stages == 19            # this run's real stage count, learned from file 1
+    assert lv["m0"] == _sum(stats, lambda s: s["by_role"]["M0"])
+    assert lv["peaks"] == _sum(stats, lambda s: s["n_peaks"])
+    assert lv["unexplained"] == _sum(stats, lambda s: s["by_role"]["unexplained"])
+    want_tiers: dict = {}
+    for s in stats:
+        for k, v in s["by_tier"].items():
+            want_tiers[k] = want_tiers.get(k, 0) + v
+    assert lv["tiers"] == want_tiers and set(want_tiers) == {"Assigned", "Candidate"}
+    assert lv["admitted"] == {k: _sum(stats, lambda s, k=k: s["admitted"][k])
+                              for k in ("height", "occurrence", "rejected")}
+    assert lv["last"] == stats[-1]
+    # the first file, read by eye off the log
+    first = _replay(lines, until_done=1).snapshot()["live"]
+    assert (first["files"], first["m0"], first["peaks"], first["unexplained"]) == (1, 1869, 2715, 276)
+    assert first["tiers"] == {"Assigned": 1451, "Candidate": 418}
+    assert first["admitted"] == {"height": 2687, "occurrence": 9, "rejected": 19}
+    # the DONE line: provisional merge numbers, and the phase moves as before
+    assert lv["merged"] == {"merged_M0": 2636,
+                            "merged_tiers": {"Assigned": 1692, "Candidate": 944},
+                            "n_in_all_files": 846, "n_single_file": 375,
+                            "formula_disagreements": 73}
+    assert st.phase == "provenance"
+    assert st.out_dir.endswith("BkKhjKMnAFVXFCUm_2026-09-13T120802Z")
+
+
+def test_batch_panel_reads_pending_merge_then_the_exact_summary(monkeypatch):
+    lines, stats = _fixture_lines(), _fixture_stats()
+    # before the first file is in: the block says so rather than showing zeros
+    early = dict(PG.panel_rows(_replay(lines[:25]).snapshot()))
+    assert early["samples"] == "0/15 done" and early["per-file M0 (sum)"] == "--", early
+    assert early["merged M0"] == "pending merge", early
+    # at 3/15 -- minute ~15 of the run: the per-file block is live, the merge block waits
+    rows = dict(PG.panel_rows(_replay(lines, until_done=3).snapshot()))
+    top = stats[:3]
+    assert rows["samples"] == "3/15 done", rows
+    assert rows["per-file M0 (sum)"] == str(_sum(top, lambda s: s["by_role"]["M0"]))
+    assert rows["per-file tiers (sum)"] == (
+        f"Assigned {_sum(top, lambda s: s['by_tier']['Assigned'])}  "
+        f"Candidate {_sum(top, lambda s: s['by_tier']['Candidate'])}"), rows
+    un, pk = _sum(top, lambda s: s["by_role"]["unexplained"]), _sum(top, lambda s: s["n_peaks"])
+    assert rows["unexplained peaks"] == f"{100 * un / pk:.1f}%", rows
+    assert rows["admitted by occurrence"] == str(_sum(top, lambda s: s["admitted"]["occurrence"]))
+    for k in ("merged M0", "tiers", "in all files", "single-file", "formula disagreements"):
+        assert rows[k] == "pending merge", (k, rows[k])
+    assert rows["assignment"] == "--" and "total runtime" not in rows
+    # after the DONE line, through the report tail: the merge numbers are readable
+    # (provisionally, off the log) before finish() ever runs
+    st = _replay(lines)
+    snap = st.snapshot()
+    rows = dict(PG.panel_rows(snap))
+    assert not snap["finished"] and "total runtime" not in rows
+    assert (rows["merged M0"], rows["in all files"], rows["single-file"],
+            rows["formula disagreements"]) == ("2636", "846", "375", "73"), rows
+    assert rows["tiers"] == "Assigned 1692  Candidate 944" and rows["samples"] == "15/15 done"
+    # finish(): the exact summary replaces them -- numbers deliberately DIFFERENT
+    # from the log's, to prove which source the final panel reads -- and the
+    # per-file block stays beside it
+    rep = PG.Reporter("t", log=seen.append, ui=None)
+    rep.state = st
+    rep.finish({"merged_M0": 2600, "merged_tiers": {"Assigned": 1700, "Candidate": 900},
+                "n_files": 15, "n_in_all_files": 800, "n_single_file": 300,
+                "formula_disagreements": 70, "elapsed_s": 4205.6})
+    rows = dict(PG.panel_rows(st.snapshot()))
+    assert (rows["merged M0"], rows["in all files"], rows["samples"]) == ("2600", "800", "15")
+    assert rows["tiers"] == "Assigned 1700  Candidate 900"
+    assert rows["assignment"] == "1:10:05" and rows["total runtime"] != "--"
+    assert rows["per-file M0 (sum)"] == str(_sum(stats, lambda s: s["by_role"]["M0"]))
+    # a run that FAILED before any summary has nothing pending: its gaps read '--'
+    fail = _replay(lines, until_done=3)
+    rep = PG.Reporter("t", log=seen.append, ui=None)
+    rep.state = fail
+    rep.finish({}, error="RuntimeError: boom")
+    rows = dict(PG.panel_rows(fail.snapshot()))
+    assert rows["merged M0"] == "--" and rows["per-file M0 (sum)"] != "--", rows
+
+
+_STATS_LINE = ('[run] stats {"n_peaks": 100, "by_role": {"M0": 60, "iso_child": 20, '
+               '"reagent": 0, "artifact": 0, "unexplained": 20}, '
+               '"by_tier": {"Assigned": 50, "Candidate": 10}, '
+               '"admitted": {"height": 95, "occurrence": 5, "rejected": 3}}')
+
+
+def test_per_file_summary_lines_count_a_file_once(monkeypatch):
+    st = PG.ProgressState(title="t")
+    st.feed("[assign_batch] (1/4) assigning s1 ...")
+    assert st.feed("[run] tiers {'Assigned': 55, 'Candidate': 5}")
+    lv = st.snapshot()["live"]
+    assert lv["files"] == 0 and lv["tiers"] == {}       # a tiers line alone counts nothing yet
+    assert st.feed(_STATS_LINE)
+    lv = st.snapshot()["live"]
+    # the tiers line is taken over the stats line's own by_tier, and counted ONCE
+    assert lv["files"] == 1 and lv["tiers"] == {"Assigned": 55, "Candidate": 5}, lv
+    assert (lv["m0"], lv["peaks"], lv["unexplained"]) == (60, 100, 20)
+    assert lv["admitted"] == {"height": 95, "occurrence": 5, "rejected": 3}
+    # no tiers line ahead of the stats line: its by_tier is the fallback
+    st.feed("[assign_batch] (1/4) done s1")
+    st.feed("[assign_batch] (2/4) assigning s2 ...")
+    st.feed(_STATS_LINE)
+    lv = st.snapshot()["live"]
+    assert lv["files"] == 2 and lv["tiers"] == {"Assigned": 105, "Candidate": 15}, lv
+    # a file that logs its tiers and then fails before its stats line is not
+    # half-counted, and its tiers are not charged to the next file either
+    st.feed("[assign_batch] (3/4) assigning s3 ...")
+    st.feed("[run] tiers {'Assigned': 999}")
+    st.feed("[assign_batch] (4/4) assigning s4 ...")
+    st.feed(_STATS_LINE)
+    lv = st.snapshot()["live"]
+    assert lv["files"] == 3 and lv["tiers"] == {"Assigned": 155, "Candidate": 25}, lv
+    # parallel mode: the per-file lines arrive in the replay burst after the
+    # reduce, and unlike the stage lines they ARE read there
+    par = PG.ProgressState(title="t")
+    par.feed("[assign_batch] parallel: 3 worker processes (match-workers/proc=4) over 2 samples")
+    par.feed("[run] pass0 took 1.0s")
+    par.feed(_STATS_LINE)
+    par.feed(_STATS_LINE)
+    assert par.stage_idx == 0 and par.snapshot()["live"]["m0"] == 120
+
+
+def test_garbled_summary_lines_are_not_counted(monkeypatch):
+    st = PG.ProgressState(title="t")
+    st.feed("[assign_batch] (1/2) assigning s1 ...")
+    st.feed(_STATS_LINE)
+    for bad in ('[run] stats {"n_peaks": ', "[run] stats []", "[run] stats {\"n_peaks\": \"many\"}",
+                "[run] tiers {'Assigned': ", "[run] tiers 7", "[run] tiers [1, 2]",
+                "[run] tiers {'Assigned': 'lots'}"):
+        assert st.feed(bad) is False, bad
+    lv = st.snapshot()["live"]
+    assert lv["files"] == 1 and lv["m0"] == 60 and lv["tiers"] == {"Assigned": 50, "Candidate": 10}
+    # a DONE line whose tail was reworded still moves the phase; the rows just wait
+    assert st.feed("[assign_batch] DONE: 7 merged M0 and then something else")
+    assert st.phase == "merged" and lv["merged"] == {} and st.snapshot()["live"]["merged"] == {}
+    # ... and the Reporter wrapper stays never-fatal around all of it
+    rep = PG.Reporter("t", log=seen.append, ui=_Boom())
+    rep('[run] stats {"n_peaks": 1, "by_role": {"M0": "x"}}')
+    rep("[run] tiers {'A': 1}")
+    assert rep.state.live.files == 0
+
+
+def test_single_sample_panel_fills_from_its_own_stats_line(monkeypatch):
+    """`peaky assign` logs no batch marker at all, so its panel must never say
+    'pending merge' -- and its one stats line IS the final panel, so it shows as
+    soon as the line lands, before the report writes."""
+    one = PG.ProgressState(title="t", n_samples=1)
+    one.feed("[run] pass0 took 0.2s")
+    rows = dict(PG.panel_rows(one.snapshot()))
+    assert "pending merge" not in rows.values() and rows["merged M0"] == "--", rows
+    one.feed("[run] tiers {'Assigned': 250, 'Candidate': 50}")
+    one.feed('[run] stats {"n_peaks": 1000, "by_role": {"M0": 300, "iso_child": 100, '
+             '"reagent": 50, "unexplained": 550}, "signal_by_role": {"M0": 0.5, '
+             '"iso_child": 0.1, "reagent": 0.3}, "count_frac_by_role": {"unexplained": 0.55}}')
+    snap = one.snapshot()
+    assert not snap["is_batch"]
+    rows = dict(PG.panel_rows(snap))
+    assert rows["assigned M0"] == "300" and rows["peaks explained"] == "45.0%", rows
+    assert rows["signal explained"] == "90.0%" and rows["total runtime"] == "--", rows
+    one.mark_sample_done()
+    one.stats, one.finished = dict(snap["live"]["last"]), True
+    rows = dict(PG.panel_rows(one.snapshot()))
+    assert rows["assigned M0"] == "300" and rows["total runtime"] != "--", rows
+
+
+def test_window_grid_is_live_before_finish(monkeypatch):
+    """The Tk path itself, with tkinter faked: `_apply` must put the running
+    totals into the stats grid on an UNFINISHED snapshot -- this is the grid
+    that read '--' for 74 minutes -- and swap in the summary at finish()."""
+    import types as _types
+
+    class _Var:
+        def __init__(self, value=""): self.value = value
+        def set(self, v): self.value = v
+        def get(self): return self.value
+
+    class _Widget:
+        def __init__(self, *a, **k): pass
+        def grid(self, *a, **k): pass
+
+    class _Frame:
+        def winfo_children(self): return []
+        def grid_columnconfigure(self, *a, **k): pass
+
+    class _Btn:
+        def __init__(self): self.states = []
+        def state(self, s): self.states.append(tuple(s))
+        def focus_set(self): pass
+
+    fake = _types.ModuleType("tkinter")
+    fake.StringVar, fake.Label = _Var, _Widget
+    monkeypatch.setitem(sys.modules, "tkinter", fake)
+    w = PG.TkWindow("t")                                   # __init__ touches no Tk
+    for attr in ("v_head", "v_sample", "v_stage", "v_phase", "v_clock", "v_tail"):
+        setattr(w, attr, _Var())
+    w.pb_sample, w.pb_stage, w.stats_frame, w.btn = {}, {}, _Frame(), _Btn()
+
+    lines, stats = _fixture_lines(), _fixture_stats()
+    st = _replay(lines, until_done=3)
+    w._apply(st.snapshot())
+    grid = {k: v.get() for k, v in w._stats_labels.items()}
+    assert grid["samples"] == "3/15 done", grid
+    assert grid["per-file M0 (sum)"] == str(_sum(stats[:3], lambda s: s["by_role"]["M0"])), grid
+    assert grid["merged M0"] == "pending merge", grid
+    assert w.v_sample.get() == "3/15" and w.btn.states == []    # unfinished: Close stays disabled
+    # finish(): the exact numbers, the runtime row, Close enabled
+    rep = PG.Reporter("t", log=seen.append, ui=None)
+    rep.state = st
+    rep.finish({"merged_M0": 2636, "merged_tiers": {"Assigned": 1692, "Candidate": 944},
+                "n_files": 15, "n_in_all_files": 846, "n_single_file": 375,
+                "formula_disagreements": 73, "elapsed_s": 4205.6})
+    w._apply(st.snapshot())
+    grid = {k: v.get() for k, v in w._stats_labels.items()}
+    assert grid["merged M0"] == "2636" and grid["samples"] == "15", grid
+    assert grid["per-file M0 (sum)"] == str(_sum(stats[:3], lambda s: s["by_role"]["M0"]))
+    assert "total runtime" in grid and w.v_phase.get() == "done"
+    assert w.btn.states == [("!disabled",)]
+
+
+# ---- 11. the hold: a person at a terminal, OR a window that was asked for -----
+# The run above was launched under `setsid nohup` with DISPLAY set: `--progress`
+# was passed, a real window came up, and the hold was refused for want of a tty,
+# so the window vanished the instant the run finished.
+def test_hold_decision_table(monkeypatch):
+    monkeypatch.delenv("PEAKY_PROGRESS_HOLD_S", raising=False)
+    table = [
+        # flag,  env,  tty,   window, want
+        (True,  None, False, True,  True),    # --progress under nohup with DISPLAY: the reported case
+        (None,  "1",  False, True,  True),    # PEAKY_PROGRESS=1 is the same request
+        (None,  "yes", False, True, True),
+        (None,  None, False, True,  False),   # not asked for: never wait off a terminal
+        (None,  "0",  False, True,  False),   # an explicit OFF is not a request either
+        (True,  None, False, False, False),   # asked for, but only the terminal fallback came up
+        (None,  "1",  False, False, False),
+        (None,  None, True,  True,  True),    # a person at a terminal: as before
+        (None,  None, True,  False, True),    # (moot for the terminal fallback, which ignores it)
+        (True,  None, True,  True,  True),
+        (False, "1",  False, True,  False),   # --no-progress is not a request
+    ]
+    for flag, env, tty, window, want in table:
+        if env is None:
+            monkeypatch.delenv("PEAKY_PROGRESS", raising=False)
+        else:
+            monkeypatch.setenv("PEAKY_PROGRESS", env)
+        monkeypatch.setattr(PG, "_interactive", lambda tty=tty: tty)
+        assert PG.hold_wanted(flag, window_up=window) is want, (flag, env, tty, window)
+    # the bounds win over everything: a zero hold, or the call site saying no
+    monkeypatch.delenv("PEAKY_PROGRESS", raising=False)
+    monkeypatch.setattr(PG, "_interactive", lambda: True)
+    assert PG.hold_wanted(True, window_up=True, hold=False) is False
+    monkeypatch.setenv("PEAKY_PROGRESS_HOLD_S", "0")
+    assert PG.hold_wanted(True, window_up=True) is False
+    monkeypatch.setenv("PEAKY_PROGRESS_HOLD_S", "30")
+    assert PG.hold_wanted(True, window_up=True) is True
+
+
+class _UpWindow:
+    """A TkWindow stand-in that comes up whenever the display probe says one
+    can (so the headless branch is still reachable), and records how it was
+    closed."""
+    def __init__(self, title): self.title, self.closed_with = title, None
+    def start(self, timeout=5.0): return PG.display_available()
+    def alive(self): return True
+    def push(self, snap): pass
+    def close(self, wait, timeout=None): self.closed_with = wait
+
+
+def test_open_progress_holds_an_explicit_window_off_a_tty(monkeypatch):
+    monkeypatch.setattr(PG, "TkWindow", _UpWindow)
+    monkeypatch.setattr(PG, "_interactive", lambda: False)
+    monkeypatch.delenv("PEAKY_PROGRESS_HOLD_S", raising=False)
+    monkeypatch.delenv("PEAKY_PROGRESS", raising=False)
+    rep = PG.open_progress("t", flag=True, log=seen.append)
+    assert isinstance(rep.ui, _UpWindow) and rep.hold is True
+    with rep:
+        rep("[assign_batch] (1/1) assigning s ...")
+        rep("[assign_batch] (1/1) done s")
+        rep.finish({"merged_M0": 1})
+    assert rep.ui.closed_with is True          # __exit__ waited (bounded by hold_seconds)
+    # ... and the CLI says so, since the process is now visibly still alive
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        CLI._progress_hold_note(rep)
+    assert "close the progress window" in buf.getvalue(), buf.getvalue()
+    monkeypatch.setenv("PEAKY_PROGRESS", "1")
+    assert PG.open_progress("t", flag=None, log=seen.append).hold is True
+    monkeypatch.delenv("PEAKY_PROGRESS")
+    # a Ctrl-C mid-run still closes WITHOUT waiting, hold or no hold
+    rep = PG.open_progress("t", flag=True, log=seen.append)
+    try:
+        with rep:
+            raise KeyboardInterrupt()
+    except KeyboardInterrupt:
+        pass
+    assert rep.ui.closed_with is False
+    # the terminal fallback under the same explicit request never waits (the
+    # existing rule): nothing came up that could be read
+    monkeypatch.setattr(PG, "display_available", lambda: False)
+    monkeypatch.setenv("PEAKY_PROGRESS", "1")
+    rep = PG.open_progress("t", flag=True, log=seen.append)
+    assert isinstance(rep.ui, PG.TerminalStatus) and rep.hold is False
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        CLI._progress_hold_note(rep)
+    assert buf.getvalue() == ""
 
 
 def test_all():

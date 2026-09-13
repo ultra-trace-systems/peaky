@@ -1,0 +1,412 @@
+START 2026-09-13T12:07:20Z pid=56666 head=047973f dirty=0
+peaky from /srv/peaky/src/peaky/__init__.py 0.7.0
+[ts] collapsed 57611 match-expanded row(s) -> 14645406 physical peaks (a peak claimed by >1 target came back once per target, at identical m/z and height)
+[batch] BkKhjKMnAFVXFCUm_2026-09-13T120802Z -> /srv/peaky/output/BkKhjKMnAFVXFCUm_2026-09-13T120802Z
+[phase] assign
+[32m2026-09-13 15:08:09.929[0m | [1mINFO    [0m | [36mmascope_sdk.resources.workspaces[0m:[36mlist[0m:[36m45[0m - [1mFetching workspaces[0m
+[32m2026-09-13 15:08:10.719[0m | [1mINFO    [0m | [36mmascope_sdk.resources.workspaces[0m:[36mlist[0m:[36m50[0m - [1mFound 3 workspace(s)[0m
+[32m2026-09-13 15:08:10.720[0m | [1mINFO    [0m | [36mmascope_sdk.client[0m:[36m_resolve_workspace[0m:[36m373[0m - [1mSelected workspace 'System Workspace' (RG46ECWFqwRowLKP)[0m
+[32m2026-09-13 15:08:10.720[0m | [1mINFO    [0m | [36mmascope_sdk.resources.datasets[0m:[36mlist[0m:[36m45[0m - [1mFetching datasets[0m
+[32m2026-09-13 15:08:11.273[0m | [1mINFO    [0m | [36mmascope_sdk.resources.datasets[0m:[36mlist[0m:[36m50[0m - [1mFound 5 dataset(s)[0m
+[32m2026-09-13 15:08:11.274[0m | [1mINFO    [0m | [36mmascope_sdk.resources.batches[0m:[36m_list_by_id[0m:[36m74[0m - [1mFetching batches for dataset 'AwZdDOnDsEXgvUiE'[0m
+[32m2026-09-13 15:08:11.592[0m | [1mINFO    [0m | [36mmascope_sdk.resources.batches[0m:[36m_list_by_id[0m:[36m79[0m - [1mFound 27 batch(es)[0m
+[assign_batch] fetched 6154 samples for batch 'BkKhjKMnAFVXFCUm'
+[gate] height cutoff = auto: derived per batch from the persistence table, 1x the sample's noise edge without one (from the package default (auto))
+[phase] select
+[assign_batch] presence-cover: 15 samples of 6154 cover 82.0% of 4702 m/z bins (present in >=2 samples; 340 singleton bins gated out); stop=gain-floor (next pick would add 0.49%)
+[phase] assign
+[assign_batch] Ur+ CIMS context='uronium': 15 selected files -> /srv/peaky/output/BkKhjKMnAFVXFCUm_2026-09-13T120802Z/per_file
+[assign_batch] admission: 13479812 of 14645406 batch peaks (~2316 ions) persist in >= 0.50 of 6154 spectra (threshold 'auto' = Otsu split 0.50) -> eligible below the height gate
+[gate] height cutoff = 1x the sample's noise edge (from derived from the batch's own peaks: the picker stops at the noise edge (0.0 in 10 000 peaks sit below 0.75x their sample's edge, threshold 5), so the floor stays 1x (7% of the peaks above it are transient) -- requested by the package default (auto))
+[assign_batch] reference lists active: [('contaminants_keller2008', '2008.2')] (context contaminants-only)
+[assign_batch] (1/15) assigning p5hMpZqHOux2KzHF ...
+[32m2026-09-13 15:08:38.861[0m | [1mINFO    [0m | [36mmascope_sdk.resources.workspaces[0m:[36mlist[0m:[36m45[0m - [1mFetching workspaces[0m
+[32m2026-09-13 15:08:39.172[0m | [1mINFO    [0m | [36mmascope_sdk.resources.workspaces[0m:[36mlist[0m:[36m50[0m - [1mFound 3 workspace(s)[0m
+[32m2026-09-13 15:08:39.173[0m | [1mINFO    [0m | [36mmascope_sdk.client[0m:[36m_resolve_workspace[0m:[36m373[0m - [1mSelected workspace 'System Workspace' (RG46ECWFqwRowLKP)[0m
+[run] noise edge 221.004 cps -> height_cutoff 221 cps (1x edge)
+[run] admission: 2687 peaks by height, 9 by persistence only (bin occurrence >= 0.50 [auto] of 6154 spectra), 19 not eligible
+[run] 2715 unique peaks; context=uronium; polarity=positive; prior_offset=-0.05 ppm; adducts=['[M+H]+', '[M+(CH4N2O)H]+', '[M+NH4]+']; mechanisms=['+(CH4N2O)H+', '+H+', '+NH4+']
+[run] prescan {'has_Br': True, 'has_Cl': True, 'has_S': True, 'has_Si': True, 'has_multi_Br': False, 'estimated_max_C': 38, 'n_evidence': 103}
+[run] pre-labeled 1 reagent-cluster peaks (urea)
+[run] pass0 took 0.3s
+[run] pass1 took 4.7s
+[run] pass2 took 23.6s
+[run] pass3 took 1.1s
+[run] iso_env_pre4 took 1.0s
+[run] carbon_clamp_pre4 took 1.9s
+[run] pass4 took 22.8s
+[run] pass5 took 0.3s
+[run] pass_certified took 184.1s
+[run] iso_env_post took 0.8s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.8s
+[run] cleanup took 3.5s
+[run] siloxane took 8.0s
+[run] rearbitrate took 0.4s
+[run] degeneracy took 34.8s
+[plausibility] demoted 1 oxygen-lattice monsters (O/C>1.3, mass-saturated)
+[plausibility] demoted 6 carbon clusters (DBE/C>=1.0, integer-DBE)
+[reflist] rescue-verify: 1 confirmed + 1 tentative (of 2 reference-matched unexplained)
+[run] reflist_rescue took 0.0s
+[iso-envelope] attached 1 unclaimed satellites, displaced 0 mis-assigned satellites onto their true parents
+[run] iso_env_final took 0.9s
+/srv/peaky/src/.venv/lib/python3.13/site-packages/numpy/lib/_function_base_impl.py:3028: RuntimeWarning: Degrees of freedom <= 0 for slice
+  c = cov(x, y, rowvar, dtype=dtype)
+[timeseries] {'annotated': 1869, 'demoted': 0, 'ambient': 1847, 'background': 5}
+[run] timeseries took 10.1s
+[run] tiers {'Assigned': 1451, 'Candidate': 418}
+[run] LEDGER VALIDATION PROBLEMS: ["iso_child 'SJFR0eXS7o1spz2U3Foq' names parent 'C8H14' but 'yfPVoVl7KRK2jisr3mmy' owns 'C9H18N2O'", "iso_child '8eDLTDfZJqCl30GD16Le' names parent 'C12H12' but 'JqEiBu7kr5vVQL3LGXkE' owns 'C12H15N'", "iso_child 'xL3y5ow8kLJHgl2A2hN4' names parent 'C16H10' but 'WSkXXqjFqwUSNcNxEbnm' owns 'C16H13N'", "iso_child 'lLKilTXEnguER8bOiVSJ' names parent 'C10H18' but 'girKUjrWcMdTKUauK2KG' owns 'C11H22N2O'", "iso_child 'bCXjqkSDq2qURZo7qvWV' names parent 'C11H8' but 'gYhiI0wyzKJj5wbPfVXY' owns 'C11H11N'", "iso_child 'GtXJ9JxZUNCP1RKJmb7W' names parent 'C8H14' but 'yfPVoVl7KRK2jisr3mmy' owns 'C9H18N2O'"]
+[run] stats {"n_peaks": 2715, "by_role": {"M0": 1869, "iso_child": 561, "reagent": 1, "artifact": 8, "unexplained": 276}, "signal_by_role": {"M0": 0.8472676493287767, "iso_child": 0.10463318224247076, "reagent": 2.3369939315330757e-05, "artifact": 0.0007057637773011738, "unexplained": 0.047370034712136196}, "count_frac_by_role": {"M0": 0.6883977900552486, "iso_child": 0.20662983425414364, "reagent": 0.00036832412523020257, "artifact": 0.0029465930018416206, "unexplained": 0.10165745856353592}, "n_synthetic": 0, "by_confidence": {"Good": 1581, "High": 192, "Low (reagent-N re-read)": 34, "Good (series)": 16, "Low": 9, "Good (indoor-sulfur)": 6, "Good (organophosphate)": 6, "Low (certified)": 5, "Good (deep-series)": 5, "Good (completion)": 4, "Good (siloxane)": 3, "High (series)": 2, "Good (certified)": 2, "Good (literature)": 1, "Good (methylsiloxane)": 1, "Candidate (literature, dim)": 1, "Good (pdms)": 1}, "by_tier": {"Assigned": 1451, "Candidate": 418}, "noise_edge_cps": 221.00434766198651, "height_gate_cps": 221.00434766198651, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2687, "occurrence": 9, "rejected": 19}}
+[assign_batch]   p5hMpZqHOux2KzHF: offset=-0.04792184900835924
+[assign_batch] (1/15) done p5hMpZqHOux2KzHF
+[assign_batch] (2/15) assigning H6FCktu26s1Ebx0y ...
+[32m2026-09-13 15:13:44.394[0m | [1mINFO    [0m | [36mmascope_sdk.resources.workspaces[0m:[36mlist[0m:[36m45[0m - [1mFetching workspaces[0m
+[32m2026-09-13 15:13:44.984[0m | [1mINFO    [0m | [36mmascope_sdk.resources.workspaces[0m:[36mlist[0m:[36m50[0m - [1mFound 3 workspace(s)[0m
+[32m2026-09-13 15:13:44.986[0m | [1mINFO    [0m | [36mmascope_sdk.client[0m:[36m_resolve_workspace[0m:[36m373[0m - [1mSelected workspace 'System Workspace' (RG46ECWFqwRowLKP)[0m
+[run] pass0 took 0.1s
+[run] pass1 took 4.9s
+[run] pass2 took 21.3s
+[run] pass3 took 1.1s
+[run] iso_env_pre4 took 0.9s
+[run] carbon_clamp_pre4 took 1.6s
+[run] pass4 took 16.7s
+[run] pass5 took 0.2s
+[run] pass_certified took 171.1s
+[run] iso_env_post took 0.8s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.8s
+[run] cleanup took 6.0s
+[run] siloxane took 5.3s
+[run] rearbitrate took 0.3s
+[run] degeneracy took 34.2s
+[run] reflist_rescue took 0.0s
+[run] iso_env_final took 0.8s
+[run] timeseries took 9.9s
+[run] tiers {'Assigned': 1480, 'Candidate': 335}
+[run] stats {"n_peaks": 2618, "by_role": {"M0": 1815, "iso_child": 543, "reagent": 3, "artifact": 12, "unexplained": 245}, "signal_by_role": {"M0": 0.8606990024357963, "iso_child": 0.09753657282446827, "reagent": 0.0001019045913764781, "artifact": 0.0008696968111784482, "unexplained": 0.04079282333718041}, "count_frac_by_role": {"M0": 0.6932773109243697, "iso_child": 0.20741023682200152, "reagent": 0.001145912910618793, "artifact": 0.004583651642475172, "unexplained": 0.09358288770053476}, "n_synthetic": 0, "by_confidence": {"Good": 1502, "High": 197, "Low (reagent-N re-read)": 43, "Good (series)": 20, "Good (siloxane)": 12, "Low (certified)": 7, "Good (completion)": 7, "Good (indoor-sulfur)": 6, "Good (organophosphate)": 6, "Low": 5, "Good (organothiophosphate)": 3, "Good (certified)": 2, "Good (deep-series)": 2, "High (series)": 1, "Good (literature)": 1, "Candidate (literature, dim)": 1}, "by_tier": {"Assigned": 1480, "Candidate": 335}, "noise_edge_cps": 188.83668534029852, "height_gate_cps": 188.83668534029852, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2591, "occurrence": 12, "rejected": 15}}
+[assign_batch]   H6FCktu26s1Ebx0y: offset=-0.02697851882076668
+[assign_batch] (2/15) done H6FCktu26s1Ebx0y
+[assign_batch] (3/15) assigning wnT11MlsSdAwRqQl ...
+[run] pass0 took 0.1s
+[run] pass1 took 4.3s
+[run] pass2 took 24.0s
+[run] pass3 took 0.8s
+[run] iso_env_pre4 took 0.7s
+[run] carbon_clamp_pre4 took 1.4s
+[run] pass4 took 20.5s
+[run] pass5 took 0.2s
+[run] pass_certified took 130.8s
+[run] iso_env_post took 0.6s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.6s
+[run] cleanup took 6.4s
+[run] siloxane took 5.0s
+[run] rearbitrate took 0.3s
+[run] degeneracy took 34.8s
+[run] reflist_rescue took 0.0s
+[run] iso_env_final took 0.7s
+[run] timeseries took 10.6s
+[run] tiers {'Assigned': 1192, 'Candidate': 351}
+[run] stats {"n_peaks": 2347, "by_role": {"M0": 1543, "iso_child": 459, "reagent": 1, "artifact": 23, "unexplained": 321}, "signal_by_role": {"M0": 0.8339103187538034, "iso_child": 0.10596755372208391, "reagent": 3.7539322513644975e-05, "artifact": 0.0018579418213507445, "unexplained": 0.058226646380248215}, "count_frac_by_role": {"M0": 0.6574350234341713, "iso_child": 0.19556881124840222, "reagent": 0.00042607584149978694, "artifact": 0.0097997443544951, "unexplained": 0.1367703451214316}, "n_synthetic": 0, "by_confidence": {"Good": 1302, "High": 141, "Low (reagent-N re-read)": 34, "Good (series)": 18, "Low (certified)": 7, "Good (indoor-sulfur)": 6, "Good (organophosphate)": 6, "Good (deep-series)": 6, "Good (siloxane)": 6, "Good (completion)": 5, "Low": 3, "High (series)": 2, "Good (certified)": 2, "Good (organothiophosphate)": 2, "High (siloxane)": 1, "Low (deep-series)": 1, "Candidate (literature, dim)": 1}, "by_tier": {"Assigned": 1192, "Candidate": 351}, "noise_edge_cps": 180.35752444118228, "height_gate_cps": 180.35752444118228, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2323, "occurrence": 13, "rejected": 11}}
+[assign_batch]   wnT11MlsSdAwRqQl: offset=-0.10798105104620322
+[assign_batch] (3/15) done wnT11MlsSdAwRqQl
+[assign_batch] (4/15) assigning BY5yPxfEcf2VBfcQ ...
+[run] pass0 took 0.5s
+[run] pass1 took 5.4s
+[run] pass2 took 21.6s
+[run] pass3 took 1.1s
+[run] iso_env_pre4 took 1.0s
+[run] carbon_clamp_pre4 took 1.7s
+[run] pass4 took 20.2s
+[run] pass5 took 0.3s
+[run] pass_certified took 186.6s
+[run] iso_env_post took 0.9s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.8s
+[run] cleanup took 6.5s
+[run] siloxane took 8.5s
+[run] rearbitrate took 0.4s
+[run] degeneracy took 37.1s
+[run] reflist_rescue took 0.0s
+[run] iso_env_final took 0.9s
+[run] timeseries took 10.5s
+[run] tiers {'Assigned': 1430, 'Candidate': 410}
+[run] stats {"n_peaks": 2637, "by_role": {"M0": 1840, "iso_child": 537, "reagent": 0, "artifact": 10, "unexplained": 250}, "signal_by_role": {"M0": 0.8538227794938845, "iso_child": 0.10552596662229137, "reagent": 0.0, "artifact": 0.0010182339467026049, "unexplained": 0.039633019937121594}, "count_frac_by_role": {"M0": 0.6977626090254077, "iso_child": 0.2036405005688282, "reagent": 0.0, "artifact": 0.0037921880925293893, "unexplained": 0.09480470231323473}, "n_synthetic": 0, "by_confidence": {"Good": 1566, "High": 186, "Low (reagent-N re-read)": 29, "Good (series)": 10, "Good (indoor-sulfur)": 6, "Low": 6, "Good (organophosphate)": 6, "Good (completion)": 6, "Good (deep-series)": 5, "Good (certified)": 4, "Low (certified)": 4, "Good (organothiophosphate)": 4, "Good (siloxane)": 3, "High (series)": 1, "Low (siloxane)": 1, "Candidate (literature, dim)": 1, "Suspect (amine)": 1, "Good (pdms)": 1}, "by_tier": {"Assigned": 1430, "Candidate": 410}, "noise_edge_cps": 230.64872585913918, "height_gate_cps": 230.64872585913918, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2610, "occurrence": 8, "rejected": 19}}
+[assign_batch]   BY5yPxfEcf2VBfcQ: offset=-0.025001903434280718
+[assign_batch] (4/15) done BY5yPxfEcf2VBfcQ
+[assign_batch] (5/15) assigning 2SOMElUsstFxgK0x ...
+[run] pass0 took 0.1s
+[run] pass1 took 4.5s
+[run] pass2 took 20.5s
+[run] pass3 took 3.5s
+[run] iso_env_pre4 took 0.8s
+[run] carbon_clamp_pre4 took 1.5s
+[run] pass4 took 17.3s
+[run] pass5 took 0.2s
+[run] pass_certified took 150.6s
+[run] iso_env_post took 0.7s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.7s
+[run] cleanup took 3.1s
+[run] siloxane took 3.3s
+[run] rearbitrate took 0.3s
+[run] degeneracy took 37.4s
+[run] reflist_rescue took 0.0s
+[run] iso_env_final took 0.8s
+[run] timeseries took 10.4s
+[run] tiers {'Assigned': 1174, 'Candidate': 341}
+[run] stats {"n_peaks": 2179, "by_role": {"M0": 1515, "iso_child": 421, "reagent": 1, "artifact": 17, "unexplained": 225}, "signal_by_role": {"M0": 0.8552470901976209, "iso_child": 0.0998971394675802, "reagent": 0.0003270369890815575, "artifact": 0.001609151465696711, "unexplained": 0.042919581880020555}, "count_frac_by_role": {"M0": 0.695273061037173, "iso_child": 0.1932078935291418, "reagent": 0.0004589261128958238, "artifact": 0.007801743919229004, "unexplained": 0.10325837540156035}, "n_synthetic": 0, "by_confidence": {"Good": 1284, "High": 131, "Low (reagent-N re-read)": 37, "Good (series)": 17, "Good (indoor-sulfur)": 7, "Good (organothiophosphate)": 6, "Good (organophosphate)": 6, "Good (deep-series)": 6, "Low": 5, "Good (siloxane)": 5, "Low (certified)": 5, "Good (certified)": 2, "Good (completion)": 2, "High (series)": 1, "Suspect (amine)": 1}, "by_tier": {"Assigned": 1174, "Candidate": 341}, "noise_edge_cps": 164.0280239288038, "height_gate_cps": 164.0280239288038, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2157, "occurrence": 18, "rejected": 4}}
+[assign_batch]   2SOMElUsstFxgK0x: offset=-0.058885697667584266
+[assign_batch] (5/15) done 2SOMElUsstFxgK0x
+[assign_batch] (6/15) assigning GXXtH3nTUJWgXwSs ...
+[run] pass0 took 0.1s
+[run] pass1 took 5.1s
+[run] pass2 took 22.6s
+[run] pass3 took 3.9s
+[run] iso_env_pre4 took 1.0s
+[run] carbon_clamp_pre4 took 2.1s
+[run] pass4 took 18.3s
+[run] pass5 took 0.3s
+[run] pass_certified took 166.0s
+[run] iso_env_post took 0.8s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.8s
+[run] cleanup took 3.0s
+[run] siloxane took 6.0s
+[run] rearbitrate took 0.4s
+[run] degeneracy took 37.2s
+[run] reflist_rescue took 0.0s
+[run] iso_env_final took 0.9s
+[run] timeseries took 10.4s
+[run] tiers {'Assigned': 1377, 'Candidate': 389}
+[run] stats {"n_peaks": 2511, "by_role": {"M0": 1766, "iso_child": 507, "reagent": 2, "artifact": 14, "unexplained": 222}, "signal_by_role": {"M0": 0.8596916784851506, "iso_child": 0.10007945855065642, "reagent": 8.292903939895013e-05, "artifact": 0.0014735369798516667, "unexplained": 0.03867239694494221}, "count_frac_by_role": {"M0": 0.703305455993628, "iso_child": 0.2019115890083632, "reagent": 0.0007964954201513341, "artifact": 0.005575467941059339, "unexplained": 0.0884109916367981}, "n_synthetic": 0, "by_confidence": {"Good": 1489, "High": 156, "Low (reagent-N re-read)": 52, "Good (series)": 21, "Good (indoor-sulfur)": 6, "Low": 6, "Good (organophosphate)": 6, "Low (certified)": 6, "Good (deep-series)": 5, "Good (siloxane)": 4, "Good (completion)": 4, "Good (organothiophosphate)": 3, "High (series)": 2, "Good (certified)": 2, "High (siloxane)": 1, "Low (methylsiloxane)": 1, "Candidate (literature, dim)": 1, "Suspect (amine)": 1}, "by_tier": {"Assigned": 1377, "Candidate": 389}, "noise_edge_cps": 183.93068656085555, "height_gate_cps": 183.93068656085555, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2485, "occurrence": 7, "rejected": 19}}
+[assign_batch]   GXXtH3nTUJWgXwSs: offset=-0.1163710160373063
+[assign_batch] (6/15) done GXXtH3nTUJWgXwSs
+[assign_batch] (7/15) assigning MNYcgd4HGx7zByur ...
+[run] pass0 took 0.5s
+[run] pass1 took 5.3s
+[run] pass2 took 22.7s
+[run] pass3 took 1.2s
+[run] iso_env_pre4 took 0.9s
+[run] carbon_clamp_pre4 took 1.7s
+[run] pass4 took 17.6s
+[run] pass5 took 0.2s
+[run] pass_certified took 179.5s
+[run] iso_env_post took 0.8s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.8s
+[run] cleanup took 6.2s
+[run] siloxane took 5.5s
+[run] rearbitrate took 0.4s
+[run] degeneracy took 38.1s
+[run] reflist_rescue took 0.0s
+[run] iso_env_final took 0.9s
+[run] timeseries took 10.7s
+[run] tiers {'Assigned': 1442, 'Candidate': 276}
+[run] stats {"n_peaks": 2524, "by_role": {"M0": 1718, "iso_child": 540, "reagent": 0, "artifact": 14, "unexplained": 252}, "signal_by_role": {"M0": 0.8501358574384538, "iso_child": 0.09969200515725245, "reagent": 0.0, "artifact": 0.0013993586695937954, "unexplained": 0.048772778734699894}, "count_frac_by_role": {"M0": 0.6806656101426307, "iso_child": 0.21394611727416799, "reagent": 0.0, "artifact": 0.005546751188589541, "unexplained": 0.09984152139461172}, "n_synthetic": 0, "by_confidence": {"Good": 1426, "High": 191, "Low (reagent-N re-read)": 39, "Good (series)": 19, "Good (indoor-sulfur)": 7, "Good (organophosphate)": 6, "Good (siloxane)": 6, "Low (certified)": 5, "Good (deep-series)": 5, "Good (certified)": 4, "Low": 3, "Good (organothiophosphate)": 3, "Suspect (amine)": 2, "High (series)": 1, "Good (completion)": 1}, "by_tier": {"Assigned": 1442, "Candidate": 276}, "noise_edge_cps": 160.12548394656633, "height_gate_cps": 160.12548394656633, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2498, "occurrence": 10, "rejected": 16}}
+[assign_batch]   MNYcgd4HGx7zByur: offset=-0.02602440851032406
+[assign_batch] (7/15) done MNYcgd4HGx7zByur
+[assign_batch] (8/15) assigning tFJlouDBtfnt4aGp ...
+[run] pass0 took 0.1s
+[run] pass1 took 5.1s
+[run] pass2 took 24.5s
+[run] pass3 took 1.2s
+[run] iso_env_pre4 took 0.8s
+[run] carbon_clamp_pre4 took 1.4s
+[run] pass4 took 19.0s
+[run] pass5 took 0.2s
+[run] pass_certified took 111.3s
+[run] iso_env_post took 0.7s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.7s
+[run] cleanup took 6.4s
+[run] siloxane took 3.7s
+[run] rearbitrate took 0.3s
+[run] degeneracy took 38.3s
+[run] reflist_rescue took 0.0s
+[run] iso_env_final took 0.8s
+[run] timeseries took 10.6s
+[run] tiers {'Assigned': 1126, 'Candidate': 360}
+[run] stats {"n_peaks": 2212, "by_role": {"M0": 1486, "iso_child": 453, "reagent": 0, "artifact": 20, "unexplained": 253}, "signal_by_role": {"M0": 0.8372377835501815, "iso_child": 0.11307949378833365, "reagent": 0.0, "artifact": 0.0020881894460680864, "unexplained": 0.04759453321541663}, "count_frac_by_role": {"M0": 0.6717902350813744, "iso_child": 0.20479204339963833, "reagent": 0.0, "artifact": 0.009041591320072333, "unexplained": 0.11437613019891502}, "n_synthetic": 0, "by_confidence": {"Good": 1218, "High": 157, "Low (reagent-N re-read)": 31, "Good (series)": 24, "Good (organothiophosphate)": 10, "Low (certified)": 10, "Good (indoor-sulfur)": 7, "Good (organophosphate)": 6, "Good (deep-series)": 6, "Good (siloxane)": 5, "Good (completion)": 5, "Low": 3, "High (series)": 2, "Good (certified)": 2}, "by_tier": {"Assigned": 1126, "Candidate": 360}, "noise_edge_cps": 153.09233583580377, "height_gate_cps": 153.09233583580377, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2189, "occurrence": 17, "rejected": 6}}
+[assign_batch]   tFJlouDBtfnt4aGp: offset=-0.03562607984931536
+[assign_batch] (8/15) done tFJlouDBtfnt4aGp
+[assign_batch] (9/15) assigning iv6a779NbhmXQakK ...
+[run] pass0 took 0.1s
+[run] pass1 took 5.3s
+[run] pass2 took 27.4s
+[run] pass3 took 1.0s
+[run] iso_env_pre4 took 0.9s
+[run] carbon_clamp_pre4 took 1.6s
+[run] pass4 took 22.4s
+[run] pass5 took 0.3s
+[run] pass_certified took 151.6s
+[run] iso_env_post took 0.8s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.8s
+[run] cleanup took 6.7s
+[run] siloxane took 6.2s
+[run] rearbitrate took 0.4s
+[run] degeneracy took 38.3s
+[run] reflist_rescue took 0.0s
+[run] iso_env_final took 0.8s
+[run] timeseries took 10.4s
+[run] tiers {'Assigned': 1309, 'Candidate': 347}
+[run] stats {"n_peaks": 2461, "by_role": {"M0": 1656, "iso_child": 510, "reagent": 1, "artifact": 10, "unexplained": 284}, "signal_by_role": {"M0": 0.840490025842475, "iso_child": 0.10601574861216179, "reagent": 2.970487512237885e-05, "artifact": 0.0010738852309272347, "unexplained": 0.05239063543931368}, "count_frac_by_role": {"M0": 0.6728971962616822, "iso_child": 0.20723283218203983, "reagent": 0.0004063388866314506, "artifact": 0.0040633888663145065, "unexplained": 0.11540024380333198}, "n_synthetic": 0, "by_confidence": {"Good": 1382, "High": 171, "Low (reagent-N re-read)": 37, "Good (series)": 15, "Good (indoor-sulfur)": 6, "Low (certified)": 6, "Good (organophosphate)": 6, "Low": 5, "Good (organothiophosphate)": 5, "Good (siloxane)": 5, "Good (completion)": 5, "Good (deep-series)": 4, "Low (siloxane)": 2, "High (series)": 2, "Good (certified)": 2, "Candidate (literature, dim)": 1, "Suspect (amine)": 1, "Suspect (siloxane)": 1}, "by_tier": {"Assigned": 1309, "Candidate": 347}, "noise_edge_cps": 187.06660998753898, "height_gate_cps": 187.06660998753898, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2436, "occurrence": 8, "rejected": 17}}
+[assign_batch]   iv6a779NbhmXQakK: offset=-0.09106637847080282
+[assign_batch] (9/15) done iv6a779NbhmXQakK
+[assign_batch] (10/15) assigning xW4s5oDCFvUtghhO ...
+[run] pass0 took 0.1s
+[run] pass1 took 4.6s
+[run] pass2 took 21.1s
+[run] pass3 took 3.6s
+[run] iso_env_pre4 took 0.9s
+[run] carbon_clamp_pre4 took 1.9s
+[run] pass4 took 18.7s
+[run] pass5 took 0.3s
+[run] pass_certified took 143.8s
+[run] iso_env_post took 0.9s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.8s
+[run] cleanup took 3.5s
+[run] siloxane took 5.8s
+[run] rearbitrate took 0.4s
+[run] degeneracy took 38.7s
+[run] reflist_rescue took 0.0s
+[run] iso_env_final took 1.0s
+[run] timeseries took 10.9s
+[run] tiers {'Assigned': 1369, 'Candidate': 358}
+[run] stats {"n_peaks": 2522, "by_role": {"M0": 1727, "iso_child": 527, "reagent": 0, "artifact": 10, "unexplained": 258}, "signal_by_role": {"M0": 0.8459891871272058, "iso_child": 0.1039101371145837, "reagent": 0.0, "artifact": 0.001383689805761757, "unexplained": 0.04871698595244889}, "count_frac_by_role": {"M0": 0.6847739888977002, "iso_child": 0.20896114195083268, "reagent": 0.0, "artifact": 0.003965107057890563, "unexplained": 0.10229976209357652}, "n_synthetic": 0, "by_confidence": {"Good": 1445, "High": 191, "Low (reagent-N re-read)": 32, "Good (series)": 17, "Good (organophosphate)": 8, "Good (indoor-sulfur)": 7, "Low": 6, "Good (completion)": 5, "Good (deep-series)": 4, "Low (certified)": 3, "Good (certified)": 2, "Good (siloxane)": 2, "Good (organothiophosphate)": 2, "High (series)": 1, "Candidate (literature, dim)": 1, "Suspect (completion)": 1}, "by_tier": {"Assigned": 1369, "Candidate": 358}, "noise_edge_cps": 162.6097578030844, "height_gate_cps": 162.6097578030844, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2496, "occurrence": 11, "rejected": 15}}
+[assign_batch]   xW4s5oDCFvUtghhO: offset=-0.04829927212581673
+[assign_batch] (10/15) done xW4s5oDCFvUtghhO
+[assign_batch] (11/15) assigning 6KKxqA46MIeaIC1j ...
+[run] pass0 took 0.1s
+[run] pass1 took 6.9s
+[run] pass2 took 20.3s
+[run] pass3 took 4.3s
+[run] iso_env_pre4 took 0.9s
+[run] carbon_clamp_pre4 took 1.9s
+[run] pass4 took 15.7s
+[run] pass5 took 0.3s
+[run] pass_certified took 180.7s
+[run] iso_env_post took 0.8s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.8s
+[run] cleanup took 2.7s
+[run] siloxane took 5.3s
+[run] rearbitrate took 0.3s
+[run] degeneracy took 36.4s
+[run] reflist_rescue took 0.0s
+[run] iso_env_final took 0.8s
+[run] timeseries took 10.3s
+[run] tiers {'Assigned': 1369, 'Candidate': 312}
+[run] stats {"n_peaks": 2439, "by_role": {"M0": 1681, "iso_child": 542, "reagent": 1, "artifact": 11, "unexplained": 204}, "signal_by_role": {"M0": 0.866984638011382, "iso_child": 0.10171389975364421, "reagent": 3.653554463384151e-05, "artifact": 0.0008413710635087412, "unexplained": 0.03042355562683135}, "count_frac_by_role": {"M0": 0.6892168921689217, "iso_child": 0.2222222222222222, "reagent": 0.0004100041000410004, "artifact": 0.004510045100451004, "unexplained": 0.08364083640836409}, "n_synthetic": 0, "by_confidence": {"Good": 1408, "High": 169, "Low (reagent-N re-read)": 37, "Good (series)": 16, "Good (siloxane)": 9, "Good (indoor-sulfur)": 6, "Good (organophosphate)": 6, "Low (certified)": 6, "Good (completion)": 6, "Low": 4, "Good (deep-series)": 4, "Good (certified)": 3, "Suspect (amine)": 2, "Candidate (literature, dim)": 1, "Good (methylsiloxane)": 1, "Good (literature)": 1, "High (series)": 1, "Suspect (series)": 1}, "by_tier": {"Assigned": 1369, "Candidate": 312}, "noise_edge_cps": 228.85321380974264, "height_gate_cps": 228.85321380974264, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2414, "occurrence": 12, "rejected": 13}}
+[assign_batch]   6KKxqA46MIeaIC1j: offset=-0.09640196277062532
+[assign_batch] (11/15) done 6KKxqA46MIeaIC1j
+[assign_batch] (12/15) assigning VHX1wodEQWuQIm7E ...
+[run] pass0 took 0.1s
+[run] pass1 took 5.3s
+[run] pass2 took 22.7s
+[run] pass3 took 0.9s
+[run] iso_env_pre4 took 0.9s
+[run] carbon_clamp_pre4 took 1.6s
+[run] pass4 took 20.0s
+[run] pass5 took 0.3s
+[run] pass_certified took 162.8s
+[run] iso_env_post took 0.8s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.8s
+[run] cleanup took 5.7s
+[run] siloxane took 6.2s
+[run] rearbitrate took 0.4s
+[run] degeneracy took 36.4s
+[run] reflist_rescue took 0.0s
+[run] iso_env_final took 0.9s
+[run] timeseries took 10.6s
+[run] tiers {'Assigned': 1413, 'Candidate': 351}
+[run] stats {"n_peaks": 2577, "by_role": {"M0": 1764, "iso_child": 546, "reagent": 2, "artifact": 10, "unexplained": 255}, "signal_by_role": {"M0": 0.8563495643194925, "iso_child": 0.09784631638187641, "reagent": 6.854382282053261e-05, "artifact": 0.0005288226545704554, "unexplained": 0.04520675282124032}, "count_frac_by_role": {"M0": 0.6845168800931315, "iso_child": 0.21187427240977882, "reagent": 0.0007760962359332557, "artifact": 0.0038804811796662787, "unexplained": 0.0989522700814901}, "n_synthetic": 0, "by_confidence": {"Good": 1465, "High": 210, "Low (reagent-N re-read)": 28, "Good (series)": 9, "Low": 7, "Good (siloxane)": 7, "Good (deep-series)": 7, "Good (indoor-sulfur)": 6, "Good (organophosphate)": 6, "Good (certified)": 5, "Low (certified)": 5, "Good (completion)": 4, "Good (organothiophosphate)": 3, "High (series)": 1, "Candidate (literature, dim)": 1}, "by_tier": {"Assigned": 1413, "Candidate": 351}, "noise_edge_cps": 164.73933096360125, "height_gate_cps": 164.73933096360125, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2551, "occurrence": 9, "rejected": 17}}
+[assign_batch]   VHX1wodEQWuQIm7E: offset=-0.026095577716639874
+[assign_batch] (12/15) done VHX1wodEQWuQIm7E
+[assign_batch] (13/15) assigning 3QXz3dGiXHFOm0PZ ...
+[run] pass0 took 0.1s
+[run] pass1 took 5.8s
+[run] pass2 took 26.9s
+[run] pass3 took 1.2s
+[run] iso_env_pre4 took 1.0s
+[run] carbon_clamp_pre4 took 1.7s
+[run] pass4 took 21.2s
+[run] pass5 took 0.3s
+[run] pass_certified took 188.1s
+[run] iso_env_post took 0.9s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.8s
+[run] cleanup took 6.0s
+[run] siloxane took 8.0s
+[run] rearbitrate took 0.3s
+[run] degeneracy took 33.4s
+[run] reflist_rescue took 0.0s
+[run] iso_env_final took 0.8s
+[run] timeseries took 9.9s
+[run] tiers {'Assigned': 1454, 'Candidate': 421}
+[run] stats {"n_peaks": 2714, "by_role": {"M0": 1875, "iso_child": 566, "reagent": 1, "artifact": 19, "unexplained": 253}, "signal_by_role": {"M0": 0.8545313229164957, "iso_child": 0.10420463452912931, "reagent": 2.0660451831156933e-05, "artifact": 0.0012088888099248247, "unexplained": 0.04003449329261893}, "count_frac_by_role": {"M0": 0.6908621960206337, "iso_child": 0.20854826823876196, "reagent": 0.00036845983787767134, "artifact": 0.007000736919675755, "unexplained": 0.09322033898305085}, "n_synthetic": 0, "by_confidence": {"Good": 1592, "High": 194, "Low (reagent-N re-read)": 31, "Low": 10, "Good (series)": 10, "Good (deep-series)": 8, "Good (indoor-sulfur)": 6, "Good (organophosphate)": 6, "Good (siloxane)": 5, "Good (completion)": 5, "Low (certified)": 3, "Good (certified)": 2, "High (series)": 1, "Suspect (amine)": 1, "Candidate (literature, dim)": 1}, "by_tier": {"Assigned": 1454, "Candidate": 421}, "noise_edge_cps": 225.5024020236655, "height_gate_cps": 225.5024020236655, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2686, "occurrence": 8, "rejected": 20}}
+[assign_batch]   3QXz3dGiXHFOm0PZ: offset=-0.03444165254833296
+[assign_batch] (13/15) done 3QXz3dGiXHFOm0PZ
+[assign_batch] (14/15) assigning 2Ryru11g1xmwrzEJ ...
+[run] pass0 took 0.1s
+[run] pass1 took 4.2s
+[run] pass2 took 19.7s
+[run] pass3 took 3.2s
+[run] iso_env_pre4 took 0.7s
+[run] carbon_clamp_pre4 took 1.3s
+[run] pass4 took 15.8s
+[run] pass5 took 0.3s
+[run] pass_certified took 107.9s
+[run] iso_env_post took 0.6s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.6s
+[run] cleanup took 3.0s
+[run] siloxane took 4.2s
+[run] rearbitrate took 0.3s
+[run] degeneracy took 33.5s
+[run] reflist_rescue took 0.0s
+[run] iso_env_final took 0.7s
+[run] timeseries took 10.2s
+[run] tiers {'Assigned': 1180, 'Candidate': 342}
+[run] stats {"n_peaks": 2253, "by_role": {"M0": 1522, "iso_child": 464, "reagent": 2, "artifact": 15, "unexplained": 250}, "signal_by_role": {"M0": 0.8460661331717947, "iso_child": 0.10566766894230085, "reagent": 6.608311185320466e-05, "artifact": 0.001476915937927883, "unexplained": 0.04672319883612346}, "count_frac_by_role": {"M0": 0.6755437194851309, "iso_child": 0.20594762538837105, "reagent": 0.000887705281846427, "artifact": 0.006657789613848202, "unexplained": 0.11096316023080337}, "n_synthetic": 0, "by_confidence": {"Good": 1260, "High": 158, "Low (reagent-N re-read)": 38, "Good (series)": 21, "Good (indoor-sulfur)": 7, "Low": 6, "Good (organophosphate)": 6, "Low (certified)": 5, "Good (certified)": 4, "Good (deep-series)": 4, "Good (completion)": 3, "Good (siloxane)": 3, "Good (organothiophosphate)": 2, "Low (siloxane)": 1, "High (series)": 1, "Good (literature)": 1, "Suspect (series)": 1, "Candidate (literature, dim)": 1}, "by_tier": {"Assigned": 1180, "Candidate": 342}, "noise_edge_cps": 144.17573622091095, "height_gate_cps": 144.17573622091095, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2230, "occurrence": 13, "rejected": 10}}
+[assign_batch]   2Ryru11g1xmwrzEJ: offset=-0.08024273162266027
+[assign_batch] (14/15) done 2Ryru11g1xmwrzEJ
+[assign_batch] (15/15) assigning ko3Qbll7JfHUuvIL ...
+[run] pass0 took 0.1s
+[run] pass1 took 4.3s
+[run] pass2 took 19.5s
+[run] pass3 took 0.8s
+[run] iso_env_pre4 took 0.8s
+[run] carbon_clamp_pre4 took 1.4s
+[run] pass4 took 15.7s
+[run] pass5 took 0.2s
+[run] pass_certified took 129.8s
+[run] iso_env_post took 0.7s
+[run] pass6_ladder took 0.0s
+[run] iso_env_post6 took 0.7s
+[run] cleanup took 5.3s
+[run] siloxane took 4.8s
+[run] rearbitrate took 0.3s
+[run] degeneracy took 33.9s
+[run] reflist_rescue took 0.0s
+[run] iso_env_final took 0.7s
+[run] timeseries took 9.8s
+[run] tiers {'Assigned': 1296, 'Candidate': 357}
+[run] stats {"n_peaks": 2404, "by_role": {"M0": 1653, "iso_child": 501, "reagent": 0, "artifact": 7, "unexplained": 243}, "signal_by_role": {"M0": 0.8500733611560731, "iso_child": 0.10116971020799397, "reagent": 0.0, "artifact": 0.001000238404283934, "unexplained": 0.0477566902316487}, "count_frac_by_role": {"M0": 0.687603993344426, "iso_child": 0.2084026622296173, "reagent": 0.0, "artifact": 0.0029118136439267887, "unexplained": 0.10108153078202994}, "n_synthetic": 0, "by_confidence": {"Good": 1380, "High": 171, "Low (reagent-N re-read)": 39, "Good (series)": 21, "Good (indoor-sulfur)": 6, "Good (organophosphate)": 6, "Low": 5, "Low (certified)": 5, "Good (siloxane)": 4, "Good (deep-series)": 4, "Good (completion)": 3, "Good (organothiophosphate)": 3, "Good (certified)": 2, "High (series)": 1, "Good (literature)": 1, "Candidate (literature, dim)": 1, "Good (pdms)": 1}, "by_tier": {"Assigned": 1296, "Candidate": 357}, "noise_edge_cps": 141.40795995583397, "height_gate_cps": 141.40795995583397, "height_cutoff_x_edge": 1.0, "admitted": {"height": 2379, "occurrence": 9, "rejected": 16}}
+[assign_batch]   ko3Qbll7JfHUuvIL: offset=-0.12267896698575886
+[assign_batch] (15/15) done ko3Qbll7JfHUuvIL
+[assign_batch] plausibility audit: 120 touched peaks -> tables/plausibility_audit_Ur.csv
+[assign_batch] _batch_ts.parquet: 14645406 peaks, 10661587 (73%) matched to an assigned formula/channel, 13124316 (90%) to a known ion incl. reagent/isotope (window +-6 ppm around each ion's trace centre)
+[assign_batch] one-to-one: 16644 near-duplicate peak(s) at ~212 m/z left unstamped (flagged dup_candidate) so no ion is stamped twice in one sample
+[assign_batch] DONE: 2636 merged M0 ({'Assigned': 1692, 'Candidate': 944}); 846 in all files, 375 single-file, 73 formula disagreements
+[assign_batch] assigned 15 samples in 4205.6s (n_jobs=1)
+[phase] cluster
+[phase] vankrevelen
+[phase] report
+[phase] provenance
+[batch] pipeline finished in 4421.7s (assign 4205.6s)
+[batch] done -> /srv/peaky/output/BkKhjKMnAFVXFCUm_2026-09-13T120802Z in 4421.7s
+END 2026-09-13T13:21:07Z rc=0 elapsed=4427s

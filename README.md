@@ -200,16 +200,21 @@ total runtime when it finishes — **opens by default** when you run peaky at an
 interactive terminal. `--no-progress` (or `PEAKY_PROGRESS=0`) turns it off, and
 `--progress` / `PEAKY_PROGRESS=1` forces it on. The ETA is extrapolated over
 completed samples, so a single-sample `peaky assign` shows elapsed alone (its one
-sample completes when the run does); its bars still fill. **Only on an interactive
-terminal** does it then stay up so those numbers can be read, and only until you
-close it, press Ctrl-C (which closes it at once), or `PEAKY_PROGRESS_HOLD_S`
-seconds pass (default 600; `0` disables the hold) — a pipe, a CI job or a
-skill-driven run never waits on a window. With no display it falls back to a
-one-line terminal status, as it always does on **macOS**, where Tk driven off the
-process's main thread aborts the run rather than raising. The default is
-interactive-only for the same reason: a pipe, a CI job or a skill-driven run has
-nobody to read a window, so scripted runs are unchanged. `mascope-assign` is kept
-as an alias of `peaky`.
+sample completes when the run does); its bars still fill. While a batch's files are
+being assigned the stats panel shows running per-file totals — samples done, M0 and
+tiers (summed), the unexplained-peak share, peaks admitted by persistence — and reads
+`pending merge` for the merge-level numbers, which the finished run fills in exactly
+from its own summary. The finished window then stays up so those numbers can be read
+— **at an interactive terminal**, or anywhere it was asked for explicitly
+(`--progress` / `PEAKY_PROGRESS=1`) and a window actually opened, a `nohup` run with
+`DISPLAY` set included — until you close it, press Ctrl-C (which closes it at once),
+or `PEAKY_PROGRESS_HOLD_S` seconds pass (default 600; `0` disables the hold); the
+terminal fallback never waits, so a pipe, a CI job or a skill-driven run cannot hang
+on a window it cannot show. With no display it falls back to a one-line terminal
+status, as it always does on **macOS**, where Tk driven off the process's main thread
+aborts the run rather than raising. The default is interactive-only for the same
+reason: a pipe, a CI job or a skill-driven run has nobody to read a window, so
+scripted runs are unchanged. `mascope-assign` is kept as an alias of `peaky`.
 `peaky publish` uploads a ledger into Mascope so a peaky run sits beside the
 in-app engine's own on the same sample. The row carries **two** tiers: peaky's
 own verdict (`engine_tier`) and Mascope's banding of the evidence (`tier`,

@@ -5,10 +5,12 @@ a pipe, a CI job or a skill-driven run (see `enabled`).
 Peaky already threads a `log=print` callable through every level of a run
 (`pipeline.run_batch` -> `assign_batch.run` -> `assign.run` -> each of its ~36
 stages), and the lines that callable receives already carry the run's shape:
-`(i/N) assigning <sid>`, `(i/N) done <sid>`, `[run] <stage> took Xs`. So this
-module is nothing more than a **`log` wrapper**: it forwards every line untouched
-to the real log and, on the side, reads those lines into a progress model that
-drives a small Tk window.
+`(i/N) assigning <sid>`, `(i/N) done <sid>`, `[run] <stage> took Xs`, and at the
+end of every file the two summary lines `[run] tiers {...}` / `[run] stats {...}`
+that the stats panel sums into running per-file totals. So this module is
+nothing more than a **`log` wrapper**: it forwards every line untouched to the
+real log and, on the side, reads those lines into a progress model that drives
+a small Tk window.
 
 THE DEPENDENCY IS ONE-WAY ON PURPOSE. Nothing in the pipeline imports this module
 or knows a window exists -- the LOG STREAM is the entire interface, and `Reporter`
@@ -30,6 +32,8 @@ parser detects the parallel banner and stops driving the stage bar from then on.
 """
 from __future__ import annotations
 
+import ast
+import json
 import os
 import queue
 import re
@@ -76,8 +80,19 @@ RE_SAMPLE_DONE = re.compile(r"^\[assign_batch\] \((\d+)/(\d+)\) done (\S+)")
 # drive the stage bar, which is the one thing parallel mode must never do.
 RE_PARALLEL = re.compile(r"^\[assign_batch\] parallel: (\d+) worker processes"
                          r"(?:.*?\bover (\d+) samples)?")
-RE_ASSIGN_DONE = re.compile(r"^\[assign_batch\] DONE: \d+ merged M0")
+# The prefix alone moves the phase (it is all the parser needed before the panel
+# went live); the tail is OPTIONAL and gives the merge numbers a provisional
+# reading through the report tail, until `finish()` brings the exact summary.
+RE_ASSIGN_DONE = re.compile(
+    r"^\[assign_batch\] DONE: (\d+) merged M0"
+    r"(?: \((\{.*\})\); (\d+) in all files, (\d+) single-file, "
+    r"(\d+) formula disagreements)?")
 RE_STAGE = re.compile(r"^\[run\] (\S+) took ([\d.]+)s")
+# The two lines `assign.run` logs as a file ends: the M0 tier counts as a dict
+# repr, then `ledger.stats` (+ the admission counts) as JSON. Each is read whole
+# and summed into `LiveTotals`; a line that fails to parse is simply not counted.
+RE_FILE_TIERS = re.compile(r"^\[run\] tiers (\{.*\})$")
+RE_FILE_STATS = re.compile(r"^\[run\] stats (\{.*\})$")
 RE_PHASE = re.compile(r"^\[phase\] (\w+)")
 RE_RUNDIR = re.compile(r"^\[(?:batch|pool)\] (\S+) -> (\S+)$")
 
@@ -90,6 +105,103 @@ def _hms(sec: float | None) -> str:
     h, rem = divmod(sec, 3600)
     m, s = divmod(rem, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+@dataclass
+class LiveTotals:
+    """Running per-file totals for the stats panel, summed from the two summary
+    lines `assign.run` logs at the end of every file: `[run] tiers {...}` (the
+    M0 tier counts, a dict repr) and `[run] stats {...}` (the JSON of
+    `ledger.stats` plus the admission counts). They are PARSED, unlike the
+    numbers `finish()` brings, and shown for what they are -- sums over the
+    files done so far -- so a batch window has something to say during the
+    hour its files take instead of a column of '--' (which is all a panel fed
+    by the final summary alone could show, and on a run that closed on
+    finishing all anyone ever saw).
+
+    A file counts ONCE, when its stats line lands: the tiers line just ahead of
+    it is kept aside and folded in with the rest, so the totals never move in
+    two half-steps and a file that never reaches its stats line (a failure in
+    between) is not half-counted. The `by_tier` inside the stats line is the
+    fallback for a tiers line that never came. The merge-level numbers (merged
+    M0, in all files, single-file, formula disagreements) do not exist until
+    `align()` has run; the DONE line then gives them a provisional reading
+    (`merged`), replaced by the exact summary at `finish()`."""
+
+    files: int = 0                  # files whose stats line has been read
+    m0: int = 0                     # sum of by_role.M0
+    peaks: int = 0                  # sum of n_peaks
+    unexplained: int = 0            # sum of by_role.unexplained
+    tiers: dict = field(default_factory=dict)      # per-file M0 tier counts, summed
+    admitted: dict = field(default_factory=dict)   # admitted.{height,occurrence,rejected}, summed
+    last: dict = field(default_factory=dict)       # the last file's stats, verbatim
+    merged: dict = field(default_factory=dict)     # provisional, from the DONE line
+    pending_tiers: dict | None = None              # this file's tiers line, awaiting its stats line
+
+    def new_file(self) -> None:
+        """A file is starting: a tiers line left over from one that never
+        reached its stats line must not be charged to this one."""
+        self.pending_tiers = None
+
+    def read_tiers(self, payload: str) -> bool:
+        try:
+            d = ast.literal_eval(payload)
+            if not isinstance(d, dict):
+                return False
+            self.pending_tiers = {str(k): int(v) for k, v in d.items()}
+        except Exception:
+            return False
+        return True
+
+    def read_stats(self, payload: str) -> bool:
+        try:
+            st = json.loads(payload)
+            if not isinstance(st, dict):
+                return False
+            role = st.get("by_role") or {}
+            tiers = (self.pending_tiers if self.pending_tiers is not None
+                     else (st.get("by_tier") or {}))
+            # read EVERY field before touching the sums: a half-parsed file
+            # must not skew them
+            m0 = int(role.get("M0", 0))
+            peaks = int(st.get("n_peaks", 0))
+            unexplained = int(role.get("unexplained", 0))
+            tiers = {str(k): int(v) for k, v in dict(tiers).items()}
+            admitted = {str(k): int(v) for k, v in dict(st.get("admitted") or {}).items()}
+        except Exception:
+            return False
+        self.files += 1
+        self.m0 += m0
+        self.peaks += peaks
+        self.unexplained += unexplained
+        for k, v in tiers.items():
+            self.tiers[k] = self.tiers.get(k, 0) + v
+        for k, v in admitted.items():
+            self.admitted[k] = self.admitted.get(k, 0) + v
+        self.last = st
+        self.pending_tiers = None
+        return True
+
+    def read_done(self, m: re.Match) -> None:
+        """The DONE line's merge numbers -- provisional until `finish()`. A
+        reworded tail (no groups) still moves the phase; the rows then wait."""
+        if m.group(3) is None:
+            return
+        try:
+            tiers = ast.literal_eval(m.group(2))
+        except Exception:
+            tiers = {}
+        self.merged = {"merged_M0": int(m.group(1)),
+                       "merged_tiers": tiers if isinstance(tiers, dict) else {},
+                       "n_in_all_files": int(m.group(3)),
+                       "n_single_file": int(m.group(4)),
+                       "formula_disagreements": int(m.group(5))}
+
+    def as_dict(self) -> dict:
+        return {"files": self.files, "m0": self.m0, "peaks": self.peaks,
+                "unexplained": self.unexplained, "tiers": dict(self.tiers),
+                "admitted": dict(self.admitted), "last": dict(self.last),
+                "merged": dict(self.merged)}
 
 
 @dataclass
@@ -113,6 +225,11 @@ class ProgressState:
     stats: dict = field(default_factory=dict)
     finished: bool = False
     error: str = ""
+    live: LiveTotals = field(default_factory=LiveTotals)
+    # Only a batch/pool run logs `[assign_batch]`, `[phase]`, `[batch]`/`[pool]`
+    # lines; `peaky assign` never does. The panel needs to know which it is
+    # looking at: a merge is only "pending" where there is going to be one.
+    is_batch: bool = False
 
     # -- derived ----------------------------------------------------------- #
     @property
@@ -180,6 +297,8 @@ class ProgressState:
         if not line:
             return False
         self.last_line = line[:160]
+        if line.startswith(("[assign_batch]", "[phase]", "[batch]", "[pool]")):
+            self.is_batch = True
 
         if (m := RE_ASSIGNING.match(line)):
             i = int(m.group(1))
@@ -187,6 +306,7 @@ class ProgressState:
             self.phase = "assign"
             self.n_samples = int(m.group(2))
             self.current_sid = m.group(3)
+            self.live.new_file()
             if i > 1:
                 # The i-th 'assigning' means i-1 samples are complete, whether or
                 # not a per-sample 'done' line was logged in between (an emitter
@@ -223,12 +343,20 @@ class ProgressState:
             self.current_sid = ""
             self.stage_idx, self.stage_name = 0, ""
             return True
-        if RE_ASSIGN_DONE.match(line):
+        if (m := RE_ASSIGN_DONE.match(line)):
             # logged AFTER align(): the merge is over, the report tail is next
             self.samples_done = self.n_samples or self.samples_done
             self.phase = "merged"
             self.current_sid = ""          # no longer inside any one sample
+            self.live.read_done(m)         # provisional; finish() brings the exact numbers
             return True
+        # The per-file summary lines are exact per-file numbers whenever they
+        # arrive -- in a parallel run that is the replay burst after the reduce,
+        # so unlike the stage lines they are read in parallel mode too.
+        if (m := RE_FILE_TIERS.match(line)):
+            return self.live.read_tiers(m.group(1))
+        if (m := RE_FILE_STATS.match(line)):
+            return self.live.read_stats(m.group(1))
         if (m := RE_STAGE.match(line)) and not self.parallel:
             self.phase = "assign"          # `peaky assign` has no 'assigning' line
             self.stage_name = m.group(1)
@@ -258,6 +386,12 @@ class ProgressState:
                 "eta": self.eta, "out_dir": self.out_dir,
                 "last_line": self.last_line, "stats": dict(self.stats),
                 "finished": self.finished, "error": self.error,
+                "is_batch": self.is_batch,
+                # the running totals, plus the run shape they are read against
+                # (`summary_rows` takes this dict alone)
+                "live": {**self.live.as_dict(), "is_batch": self.is_batch,
+                         "samples_done": self.samples_done,
+                         "n_samples": self.n_samples},
                 # The TIME BASE, not just the derived clock: `elapsed`/`eta` above
                 # are frozen at the instant this snapshot is taken, and a snapshot
                 # is only taken when a log line arrives. `retick` needs the origin
@@ -294,27 +428,71 @@ def retick(s: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# 2. summary -> the stats panel. Reads the dict `assign_batch.run` returns, so
-#    the final numbers are EXACT (never parsed out of the log).
+# 2. summary -> the stats panel. The FINAL numbers come from the dict
+#    `assign_batch.run` returns, so they are EXACT (never parsed out of the
+#    log); while the run is going the panel shows the running per-file totals
+#    (`LiveTotals`, parsed) and says which numbers are still to come.
 # --------------------------------------------------------------------------- #
-def summary_rows(summary: dict | None, elapsed: float | None = None) -> list:
+def summary_rows(summary: dict | None, elapsed: float | None = None,
+                 live: dict | None = None) -> list:
     """[(label, value)] for the stats panel. Handles BOTH shapes a run returns:
     a batch summary (`assign_batch.run`) and a single sample's ledger stats
     (`ledger.stats`, keyed by role) -- `peaky assign` and `peaky batch` count
     different things, and showing a column of '--' for the other one is worse
-    than showing the numbers that sample actually has."""
+    than showing the numbers that sample actually has.
+
+    `live` is `snapshot()["live"]`: the running per-file totals plus the run
+    shape they are read against. With no summary yet, a batch panel is built
+    from them, and a single-sample run's one stats line IS its final panel, so
+    it shows as soon as the line lands rather than after the report writes.
+    `elapsed` is given only once the run is over (it is the window's own
+    clock), so `elapsed is None` is also how a row knows it may say "pending"."""
     s = summary or {}
+    lv = live or {}
     if "by_role" in s:
         return _single_sample_rows(s, elapsed)
-    tiers = s.get("merged_tiers") or {}
-    tier_txt = "  ".join(f"{k} {v}" for k, v in tiers.items()) or "--"
+    if not s and lv.get("files") and not lv.get("is_batch"):
+        return _single_sample_rows(lv.get("last") or {}, elapsed)
+    return _batch_rows(s, elapsed, lv)
+
+
+def _tier_text(tiers: dict) -> str:
+    return "  ".join(f"{k} {v}" for k, v in (tiers or {}).items())
+
+
+def _batch_rows(s: dict, elapsed: float | None, lv: dict) -> list:
+    """The batch panel: the per-file block first (what is knowable while the
+    files are still being assigned -- sums over the files done so far), then
+    the merge block, then the two clocks.
+
+    The merge rows read "pending merge" only while the run is going, only for a
+    run that IS a batch (a single-sample run has no merge to wait for) and only
+    until some merge numbers exist: the DONE line's provisional ones through
+    the report tail, then the exact summary. A finished run with no summary
+    (a failure) has nothing pending, so its gaps read '--'."""
+    running = elapsed is None
+    files = int(lv.get("files") or 0)
+    done, n = int(lv.get("samples_done") or 0), int(lv.get("n_samples") or 0)
+    peaks, unexpl = int(lv.get("peaks") or 0), int(lv.get("unexplained") or 0)
+    admitted = lv.get("admitted") or {}
+    # the exact summary once it exists, else the DONE line's provisional reading
+    merged = s or lv.get("merged") or {}
+    gap = "pending merge" if (running and lv.get("is_batch") and not merged) else "--"
+    if s.get("n_files") is not None:
+        samples = s["n_files"]
+    else:
+        samples = f"{done}/{n} done" if n else "--"
     rows = [
-        ("merged M0", s.get("merged_M0", "--")),
-        ("tiers", tier_txt),
-        ("samples", s.get("n_files", "--")),
-        ("in all files", s.get("n_in_all_files", "--")),
-        ("single-file", s.get("n_single_file", "--")),
-        ("formula disagreements", s.get("formula_disagreements", "--")),
+        ("samples", samples),
+        ("per-file M0 (sum)", lv.get("m0") if files else "--"),
+        ("per-file tiers (sum)", (_tier_text(lv.get("tiers")) or "--") if files else "--"),
+        ("unexplained peaks", f"{100 * unexpl / peaks:.1f}%" if peaks else "--"),
+        ("admitted by occurrence", admitted.get("occurrence", "--") if files else "--"),
+        ("merged M0", merged.get("merged_M0", gap)),
+        ("tiers", _tier_text(merged.get("merged_tiers")) or gap),
+        ("in all files", merged.get("n_in_all_files", gap)),
+        ("single-file", merged.get("n_single_file", gap)),
+        ("formula disagreements", merged.get("formula_disagreements", gap)),
     ]
     # TWO different durations, both worth seeing: the assignment itself (measured
     # by assign_batch, in the summary) and the whole command (measured by the
@@ -324,6 +502,15 @@ def summary_rows(summary: dict | None, elapsed: float | None = None) -> list:
     if elapsed is not None:
         rows.append(("total runtime", _hms(elapsed)))
     return [(k, str(v)) for k, v in rows]
+
+
+def panel_rows(s: dict) -> list:
+    """The stats panel for a snapshot: the running totals while the run is
+    going, the exact summary (with the totals kept beside it) once `finish()`
+    has landed. Pure -- no Tk -- so the live panel is testable headless."""
+    if s.get("finished"):
+        return summary_rows(s.get("stats"), s.get("elapsed"), live=s.get("live"))
+    return summary_rows(None, None, live=s.get("live"))
 
 
 def _single_sample_rows(s: dict, elapsed: float | None) -> list:
@@ -603,8 +790,11 @@ class TkWindow:
                          else f"{elapsed}   eta ~{_hms(eta)}")
         self.v_tail.set(s["out_dir"] or s["last_line"])
 
+        # LIVE, not only at the end: the per-file totals fill in as files finish
+        # (the label set is stable through a run, so this is a value update, not
+        # a rebuild); finish() then swaps in the exact summary.
+        self._render_stats(panel_rows(s), tk)
         if s["finished"]:
-            self._render_stats(summary_rows(s["stats"], s["elapsed"]), tk)
             self.v_phase.set(("FAILED: " + s["error"]) if s["error"] else "done")
             try:
                 self.btn.state(["!disabled"])
@@ -792,6 +982,34 @@ def explicitly_requested(flag: bool | None = None) -> bool:
 HOLD_S_DEFAULT = 600.0
 
 
+def hold_wanted(flag: bool | None, *, window_up: bool, hold: bool = True) -> bool:
+    """Should the finished window be held open to be read? The decision table,
+    in order:
+
+    - the call site said no (`hold=False`), or `PEAKY_PROGRESS_HOLD_S` is 0:
+      never, whatever else is true;
+    - a person at a terminal (`_interactive()`): yes -- the case the hold was
+      built for;
+    - the window was ASKED for (`--progress`, or `PEAKY_PROGRESS` truthy) AND a
+      Tk window actually came up: yes, tty or not. A `setsid nohup peaky batch
+      ... --progress` run with DISPLAY set opens a real window on the desktop;
+      with the hold gated on a tty alone that window closed the instant the run
+      finished, so its stats panel -- the thing it was opened for -- was never
+      seen at all;
+    - anything else: no. That is the implicit default off a terminal and the
+      terminal fallback (which has nothing to hold), so a script, a CI job or a
+      skill-driven run never waits on a window it did not ask for or could not
+      show.
+
+    Bounded either way: the hold ends at `hold_seconds()`, on Close, or on
+    Ctrl-C (`TkWindow.close`)."""
+    if not hold or hold_seconds() <= 0:
+        return False
+    if _interactive():
+        return True
+    return bool(window_up and explicitly_requested(flag))
+
+
 def hold_seconds() -> float:
     """How long a finished run keeps its window up to be read: env
     `PEAKY_PROGRESS_HOLD_S` in seconds (default 600; 0 = no hold at all).
@@ -811,10 +1029,11 @@ def open_progress(title: str, *, flag: bool | None = None, log=print,
     disabled, it is a transparent pass-through to `log`, so call sites need no
     branch of their own.
 
-    `hold` (keep the finished window up to be read) is honoured only on an
-    interactive terminal and only while `PEAKY_PROGRESS_HOLD_S` > 0: a pipe, a
-    CI job or a skill-driven run has nobody to read a window and must never
-    wait on one, whatever `PEAKY_PROGRESS` says."""
+    `hold` (keep the finished window up to be read) is decided by
+    `hold_wanted`: on an interactive terminal, or wherever the window was asked
+    for explicitly and really came up, and only while `PEAKY_PROGRESS_HOLD_S`
+    > 0. The terminal fallback never waits, so a pipe, a CI job or a
+    skill-driven run cannot hang on a window it cannot show."""
     if not enabled(flag):
         return Reporter(title, log=log, ui=None, hold=False, n_samples=n_samples)
     ui = TkWindow(title)
@@ -826,7 +1045,7 @@ def open_progress(title: str, *, flag: bool | None = None, log=print,
             print("[progress] no usable display for a window; "
                   "falling back to terminal status", flush=True)
         ui = TerminalStatus()
-    hold = bool(hold and hold_seconds() > 0 and _interactive())
+    hold = hold_wanted(flag, window_up=ui.alive(), hold=hold)
     rep = Reporter(title, log=log, ui=ui, hold=hold, n_samples=n_samples)
     rep._push()
     return rep
