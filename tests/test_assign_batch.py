@@ -554,6 +554,38 @@ try:
     finally:
         _A.run = _fake_assign
 
+    # a batch addressed by ID: the roster is fetched by that id (io_mascope.
+    # resolve_batch settles the batch against the server's listing first) and
+    # batch_summary records the batch's DISPLAY name, so a run addressed by id
+    # still reads as its batch. Listing + roster surfaces are faked; no network.
+    class _IdBatches:
+        def list(self, dataset=None):   # noqa: A001
+            return pd.DataFrame({"sample_batch_id": ["BID"],
+                                 "sample_batch_name": ["Texas Ur 122-600"]})
+
+    class _IdSamples:
+        seen: list = []
+
+        def list(self, *, batch, dataset=None, drop_columns=None):   # noqa: A001
+            _IdSamples.seen.append(batch)
+            return SS.sample_table(_PK)          # the roster: one row per sample
+
+    class _IdClient:
+        batches, samples = _IdBatches(), _IdSamples()
+
+    IO.connect = lambda *a, **k: _IdClient()
+    try:
+        with tempfile.TemporaryDirectory() as _d5:
+            AB.run(batch="BID", dataset="DS", ts_peaks=_PK, reagent="Br", out_dir=_d5,
+                   k_min=2, k_max=3, min_gain=0.0, n_jobs=1, log=lambda *a: None)
+            summ5 = json.load(open(os.path.join(_d5, "batch_summary.json")))
+        check("run: a batch addressed by id fetches its roster by that id",
+              _IdSamples.seen == ["BID"], _IdSamples.seen)
+        check("run: ... and batch_summary records the batch's DISPLAY name, not the id",
+              summ5["batch_name"] == "Texas Ur 122-600", summ5.get("batch_name"))
+    finally:
+        IO.connect = lambda *a, **k: "CLIENT"
+
     # a per-SAMPLE table (samples.list) cannot be binned: selection refuses it
     # rather than silently falling back to some other rule.
     with tempfile.TemporaryDirectory() as _d2:

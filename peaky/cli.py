@@ -858,7 +858,7 @@ def build_parser() -> argparse.ArgumentParser:
     pl = sub.add_parser("list", help="discover workspaces / datasets / batches / samples")
     pl.add_argument("what", choices=["workspaces", "datasets", "batches", "samples"])
     pl.add_argument("--dataset", default=None, help="dataset name (see `peaky list datasets`)")
-    pl.add_argument("--batch", default=None, help="sample-batch name (for `samples`)")
+    pl.add_argument("--batch", default=None, help="sample-batch name or id (for `samples`)")
     pl.set_defaults(func=cmd_list)
 
     pa = sub.add_parser("assign", help="assign one sample")
@@ -888,7 +888,10 @@ def build_parser() -> argparse.ArgumentParser:
     pa.set_defaults(func=cmd_assign)
 
     pb = sub.add_parser("batch", help="assign + cluster + Van Krevelen + report for a whole batch")
-    pb.add_argument("--batch", required=True, help="sample-batch name")
+    pb.add_argument("--batch", required=True,
+                    help="sample-batch name or id (an exact id or exact name wins; "
+                         "a unique substring also works; an ambiguous one is refused, "
+                         "never pooled)")
     pb.add_argument("--dataset", default=None, help="dataset (workspace) name")
     pb.add_argument("--reagent", default="auto", help="auto | Br | Ur | NO3 | I | ...")
     pb.add_argument("--reagent-config", default=None,

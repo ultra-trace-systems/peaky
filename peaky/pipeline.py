@@ -91,20 +91,24 @@ def make_run_dir(base: str, batch_name: str, when: datetime | None = None) -> st
 
 
 def load(*, batch: str | None = None, dataset: str | None = None,
-         peaks: "str | pd.DataFrame | None" = None, save_path: str | None = None
-         ) -> pd.DataFrame:
+         peaks: "str | pd.DataFrame | None" = None, save_path: str | None = None,
+         client=None) -> pd.DataFrame:
     """Get the batch peak time-series — from a parquet/DataFrame if given (offline,
     cached), else fetched from Mascope via the SDK. Always one row per PHYSICAL
     peak: Mascope hands back one row per target MATCH, which
     `TS.collapse_peak_matches` folds back down (it is a no-op on a clean frame, so
-    an already-collapsed parquet is returned untouched)."""
+    an already-collapsed parquet is returned untouched). `batch` is a batch id or
+    name (io_mascope.resolve_batch settles it; an ambiguous name raises rather
+    than pooling its siblings). `client` reuses an open connection."""
     if peaks is not None:
         got = pd.read_parquet(os.path.expanduser(peaks)) if isinstance(peaks, str) else peaks
         return TS.collapse_peak_matches(got)
     if not (batch and dataset):
         raise ValueError("need peaks=, or both batch= and dataset=")
+    if client is None:
+        client = IO.connect()
     return TS.collapse_peak_matches(
-        IO.fetch_batch_peaks(IO.connect(), dataset, batch, save_path=save_path))
+        IO.fetch_batch_peaks(client, dataset, batch, save_path=save_path))
 
 
 def run(*, batch: str | None = None, dataset: str | None = None,
@@ -181,18 +185,22 @@ class RunContext:
     profile: object = None       # ReagentProfile
     dataset: str | None = None
     ts_path: str | None = None   # parquet the report reads for the event TIC
+    batch_id: str | None = None  # the server id behind batch_name (None for a
+                                 # pool label or an offline report)
 
 
 def make_run_context(base_out: str, batch_name: str, profile, *, when=None,
-                     tag=None, label=None, dataset=None) -> RunContext:
+                     tag=None, label=None, dataset=None, batch_id=None) -> RunContext:
     """Create a fresh timestamped run folder and the context that identifies it.
-    Pass ONE `when` per run so folder / run_id / cover stamp all agree."""
+    Pass ONE `when` per run so folder / run_id / cover stamp all agree.
+    `batch_name` is the DISPLAY name (it slugs the folder and titles the cover);
+    a run addressed by id passes the resolved name here and the id as `batch_id`."""
     when = when or datetime.now(timezone.utc)
     return RunContext(
         out_dir=make_run_dir(base_out, batch_name, when), batch_name=batch_name,
         tag=tag or profile.name, label=label or profile.label, when=when,
         run_id=run_id(batch_name, when), generated=run_stamp(when)[1],
-        profile=profile, dataset=dataset)
+        profile=profile, dataset=dataset, batch_id=batch_id)
 
 
 def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
@@ -263,9 +271,12 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Full batch pipeline in ONE call: sample-subset ASSIGN (live match_compounds)
     -> merge -> cluster figures -> Van Krevelen -> PDF report, into one versioned run
-    folder. `ts` is the full-batch per-sample peak time series (DataFrame or parquet
-    path); if None it is fetched live and reused for selection, the amine gate and
-    clustering.
+    folder. `batch` is a batch id or name: it is settled ONCE, up front (exact id >
+    exact name > unique substring; an ambiguous name raises before any run folder
+    exists), the id addresses every server call and the display name titles the
+    run folder, the report cover and the manifest. `ts` is the full-batch
+    per-sample peak time series (DataFrame or parquet path); if None it is fetched
+    live and reused for selection, the amine gate and clustering.
 
     The assigned subset is the greedy presence set-cover over the batch's m/z bins
     (sampling.select_cover_samples): `k_min`/`k_max`/`min_gain` tune the stop rule;
@@ -291,14 +302,23 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     assign_kw["cfg"] = cfg
 
     t_start = time.time()          # whole-pipeline wall clock -> returned elapsed_s
+    # Settle the batch ONCE, before anything is fetched or written: the id goes
+    # to every server call below (the time series, the roster) and the display
+    # name to the run folder / cover / manifest, so a run addressed by id still
+    # reads as its batch. A parquet-fed run resolves too -- the assign stage
+    # fetches the roster live regardless, and its folder deserves a name.
+    client = IO.connect()
+    rb = IO.resolve_batch(client, batch, dataset=dataset)
+    if rb.name != batch:
+        log(f"[batch] batch {batch!r} resolved to {rb.name!r} (id {rb.id})")
     ts_src = None
     if isinstance(ts, str):
         ts_src = os.path.expanduser(ts)            # an on-disk parquet we can reference
         ts = pd.read_parquet(ts_src)
     if ts is None:
         log("[phase] fetch")
-        log(f"[batch] fetching full-batch time series for {batch!r} ...")
-        ts = load(batch=batch, dataset=dataset)
+        log(f"[batch] fetching full-batch time series for {rb.name!r} ...")
+        ts = load(batch=rb.id, dataset=dataset, client=client)
     ts = TS.collapse_peak_matches(ts, log=log)
     prof = P.resolve(reagent, ts, config=config)
     # One height-gate multiple for the whole run, stamped on the SAME cfg the
@@ -311,13 +331,14 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     # fitted from the data (the calibrated cal_mu/cal_sigma land on this same cfg
     # -- see PassConfig.RUNTIME_FIELDS, which drops them from the fingerprint too).
     cfg_snapshot = copy.deepcopy(cfg)
-    ctx = make_run_context(base_out, batch, prof, when=when, dataset=dataset)
+    ctx = make_run_context(base_out, rb.name, prof, when=when, dataset=dataset,
+                           batch_id=rb.id)
     if ts_src:
         ctx.ts_path = ts_src     # reference the caller's parquet; don't re-copy it into the run dir
     log(f"[batch] {ctx.run_id} -> {ctx.out_dir}")
 
     log("[phase] assign")
-    res = AB.run(batch=batch, dataset=dataset, reagent=prof.name,
+    res = AB.run(batch=rb.id, dataset=dataset, reagent=prof.name,
                  out_dir=ctx.out_dir, ts_peaks=ts, amine_r_min=amine_r_min,
                  k_min=k_min, k_max=k_max, min_gain=min_gain,
                  residual=residual, residual_min_x_edge=residual_min_x_edge,
@@ -333,7 +354,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     summ = res.get("summary", {}) if isinstance(res, dict) else {}
     PV.record_run(
         run_dir=ctx.out_dir, base_out=os.path.expanduser(base_out),
-        batch_name=batch, dataset=dataset,
+        batch_name=rb.name, batch_id=rb.id, dataset=dataset,
         sample_ids=(res.get("sample_ids") if isinstance(res, dict) else None),
         reagent=prof.name, cfg=cfg_snapshot,   # carries the resolved x_edge
         ts_path=ctx.ts_path,
