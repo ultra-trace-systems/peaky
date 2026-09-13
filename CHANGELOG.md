@@ -6,7 +6,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.8.0] — 2026-09-13 (per-peak admission, trace-stamped time series, batch-derived floor)
+## [0.8.0] — 2026-09-13 (per-peak admission, batch-derived floor, trace-stamped time series, the merge vote, the residual stage)
 
 ### Added
 
