@@ -77,11 +77,13 @@ peaky list samples --batch "<batch>" --dataset "<workspace>"
 
 # one sample
 peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto> \
-    [--height-cutoff-x-edge 2.5] --output-dir ~/peaky-output/<name>
+    [--height-cutoff-x-edge 2.5] [--ts-batch "<batch>" --occurrence-min auto] \
+    --output-dir ~/peaky-output/<name>
 
 # a whole batch (assign subset -> merge -> cluster -> Van Krevelen -> PDF report)
 peaky batch --batch "<batch>" --dataset "<workspace>" --reagent <Br|Ur|...> \
-    [--k-max 30 --k-min 6 --min-gain 0.005] --out-dir ~/peaky-output
+    [--k-max 30 --k-min 6 --min-gain 0.005] [--occurrence-min auto] \
+    --out-dir ~/peaky-output
 
 # MANY same-chemistry batches -> ONE unified ledger + whole-pool + per-group reports
 peaky pool --batches "<regex over batch names>" --dataset "<workspace>" \
@@ -113,7 +115,26 @@ batch's m/z bins: bins present in ≥2 samples (no height floor), each pick the
 sample covering the most not-yet-covered bins, stop when the next pick would add
 < `--min-gain` (0.5 %) after `--k-min` (6) picks; `--k-max` (30) is a budget and a
 run that hits it is flagged (`selection.stop_reason == "k_max"`). The achieved
-coverage is in `batch_summary.json['selection']`. Single-sample `assign` writes `<ID>_<UTC>_{ledger.csv, assignments.xlsx, summary.md,
+coverage is in `batch_summary.json['selection']`.
+
+Admission (which peaks are eligible for formula search at the eight gated sites:
+the pass-1 grid, pass-2 series growth, pass-3 contaminant families and pass-3's
+two cluster resolvers — those five share `directors._target_peaks` — plus the
+pass-6 ladder gap-fill, residual stage B and the siloxane ladder) is
+**persistence OR brightness**: `height >= height_cutoff` (an edge multiple,
+`--height-cutoff-x-edge`) OR the peak's m/z bin recurs in >= `--occurrence-min`
+of the batch's spectra (`auto` = Otsu's split of the batch's own bimodal
+occurrence distribution, 0.4–0.55 in practice; a number fixes it; `0` = brightness
+only; bins at 6 ppm, the one batch tolerance). Noise does not recur at a fixed
+m/z; ions do — on a low-sensitivity TOF the recurrent weak population is the real
+chemistry and sits far below any height gate. Persistence admits a peak for
+consideration only: an occurrence-admitted peak is capped at Candidate
+(`persistent-weak`) unless an isotopologue / second channel / series anchor
+corroborates the formula; per-file ledgers record `admitted_by` (`height` /
+`occurrence` / `''` = not eligible at those sites). Residual stage A, the
+reflist rescue, pass-3's series *detection* statistics and the isotope-satellite
+tests in `passes/postprocess` are still brightness-only (follow-up).
+Single-sample `assign` writes `<ID>_<UTC>_{ledger.csv, assignments.xlsx, summary.md,
 manifest.json, gka.html}` + per-pass checkpoints (~5 min on a ~1000-peak Br-CIMS
 sample). Batch writes one versioned run folder — see **Outputs** below and
 `docs/OUTPUTS.md`.
@@ -424,6 +445,7 @@ directly instead of `--run-dir`.
 | `cleanup.py`          | residual cleanup: isotope-confirmed recovery, bromide-cluster labelling, ringing-artifact flagging, satellite reclaim, **`prefer_amine_over_ammonium`** (positive: THREE-WAY time-tracking gate — keep `[M+NH4]+` adduct that tracks a shaped parent, re-read to the `[M+H]+` amine when it fails to track / the parent is absent, cap Candidate when weak-or-flat; Si + `protected`-provenance + valence overrides); **plausibility demotes** `demote_implausible_carbon` / `demote_implausible_ionization` / `demote_speculative_residual` + `relabel_reagent_halocarbons` (Br-reagent-gated)                                                                                                                                                                               |
 | **`reflists.py`**     | curated, self-describing **reference-peaklist** catalog (`peaky/data/peaklists/`: metadata + version + references + provenance) — `load_catalog`/`active_lists` (context-gated; contaminants always on), `match_assigned` (selection-prior corroboration), `rescue_unexplained_by_reflist` (mass-match → server re-score → commit-if-confirmed, else tentative Candidate). Soft + provenance-tagged; never overrides an isotope-scored Assigned |
 | **`io/publish.py`**   | `peaky publish` -- translate a ledger into Mascope's run-import contract and upload it (chunked assembly, row-offset idempotency, resume via `--import-id`). Sends peaky's own verdict as `engine_tier` and **no** `tier` (the server derives that), resolves adducts to ionization-mechanism ids, excludes synthetic sub-peaks. See `docs/PUBLISH.md` |
+| **`admission.py`**    | the admission gate — which peaks are ELIGIBLE for formula search at the eight gated sites (pass-1 grid, pass-2 series growth, pass-3 families + its two cluster resolvers — the five callers of `directors._target_peaks` — plus ladder gap-fill, residual stage B, siloxane ladder): `bin_occurrence` (per-bin occurrence table from the batch time series at `sampling.BATCH_TOL_PPM`), `otsu_threshold`/`auto_threshold`/`resolve_threshold` (the batch-derived persistence threshold, clamped 0.25–0.75), `lookup_occurrence`, `admissible` (height ≥ gate OR occurrence ≥ threshold), `stamp_admission` (per-peak `occurrence` + `admitted_by`), `why_off` (which of the four reasons the persistence path is off) |
 | **`sampling.py`**     | THE RULE — `select_cover_samples` (greedy presence set-cover over m/z bins, prevalence ≥2, marginal-gain stop) for batch + pool assignment                                                                                                                                                                                                                                                                                              |
 | **`assign_batch.py`** | `run(batch\|peaks, ts_peaks=, amine_r_min=)` — assign the reps, keep per-file ledgers, offset-aware merge (`align`) + jitter table; applies the positive amine gate at merge level (three-way time-tracking)                                                                                                                                                                                                                                       |
 | **`cluster.py`**      | correlation clustering (log-corr, COMPLETE linkage r>0.6, signed distance) → `render_a4` A4-portrait paginated panels + remaining-peaks overview. **Flatness gate** `split_varying`/`render_flat_panel` (cv<`FLAT_CV` bunched, not clustered). `render_changers` = A4-portrait big-standalone-changers page. `write_cluster_workbook(when=)` — byte-reproducible per-cluster XLSX (timestamps pinned to a FIXED content epoch, not the run time) |

@@ -55,9 +55,10 @@ MIN_GAIN = 0.005       # stop when the next pick adds < this fraction of the uni
 MIN_PREVALENCE = 2     # a bin enters the universe if present in >= this many samples
 
 # The ONE m/z binning tolerance for every batch-level operation: sample selection
-# (the presence cover's bins) and the merge (`assign_batch.DEFAULT_TOL_PPM` is
-# this constant). Keep selection and merge binning identical: a bin the selector
-# covered must be the bin the merge sees.
+# (the presence cover's bins), the admission table (`admission.bin_occurrence`)
+# and the merge (`assign_batch.DEFAULT_TOL_PPM` is this constant). All three bin
+# identically or the run is incoherent: a bin the selector covered must be the
+# bin the merge sees, and a peak's `occurrence` must be read off its own bin.
 BATCH_TOL_PPM = 6.0
 
 ROLE_COVER = "cover"   # a greedy pick (adds bins_new uncovered bins)

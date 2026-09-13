@@ -33,14 +33,15 @@ from peaky import paths as PT
 from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
 
-__version__ = "0.4.0"  # batch_summary: selection.tol_ppm + per_file height_gate_cps
+__version__ = "0.5.0"  # batch_summary: selection.tol_ppm + per_file height_gate_cps + admission block
 
 # the merge's m/z tolerance IS the selector's binning tolerance (one constant for
 # every batch-level binning; see sampling.BATCH_TOL_PPM)
 DEFAULT_TOL_PPM = SS.BATCH_TOL_PPM
 TIER_ASSIGNED = "Assigned"
 TIER_RANK = {"Assigned": 2, "Candidate": 1}
-_M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score"]
+_M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score",
+            "admitted_by", "occurrence"]   # the last two: admission provenance, when present
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +82,8 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
         frames.append(d)
     if not frames:
         return (pd.DataFrame(columns=["mz", "neutral_formula", "adduct", "tier",
-                                      "ion_score", "n_files", "srcs", "formula_agree",
+                                      "ion_score", "admitted_by", "occurrence",
+                                      "n_files", "srcs", "formula_agree",
                                       "mz_jitter_ppm_raw", "mz_jitter_ppm_caldj"]),
                 pd.DataFrame(columns=["cluster", "src", *_M0_COLS]))
     allm = pd.concat(frames, ignore_index=True).sort_values("_mz_adj").reset_index(drop=True)
@@ -115,6 +117,7 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
             mz=float(g["mz"].mean()), neutral_formula=best["neutral_formula"],
             adduct=best.get("adduct"), tier=best["tier"],
             ion_score=best.get("ion_score"),
+            admitted_by=best.get("admitted_by"), occurrence=best.get("occurrence"),
             n_files=int(g["src"].nunique()), srcs=",".join(sorted(set(g["src"]))),
             formula_agree=(len(forms) <= 1),
             mz_jitter_ppm_raw=round(_spread(mz_raw), 3),
@@ -417,6 +420,38 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # batches whose mass range excludes the reagent ions).
     if ts_peaks is not None:
         assign_kw.setdefault("ts_peaks", ts_peaks)
+    # Admission gate, persistence path: the batch's per-bin occurrence table
+    # (fraction of spectra in which each m/z bin holds a peak), computed ONCE
+    # from the batch time series and handed to every per-sample run. A peak
+    # whose bin recurs in >= the resolved threshold (a number given as
+    # occurrence_min, or the batch's Otsu split for "auto") of the spectra is
+    # eligible for formula search even below the height gate (see
+    # assignment/admission.py). Binned at this run's `tol_ppm` -- the same
+    # tolerance the merge below uses (default sampling.BATCH_TOL_PPM).
+    from peaky.assignment import admission as ADM
+    # READ the cfg built + height-resolved above; never rebuild one here, which
+    # would gate the batch on a config that skipped that resolution.
+    _cfg = assign_kw["cfg"]
+    occurrence_min = getattr(_cfg, "occurrence_min", ADM.DEFAULT_OCCURRENCE_MIN)
+    _on = isinstance(occurrence_min, str) or (occurrence_min is not None and float(occurrence_min) > 0)
+    occ_info = {"occurrence_min": occurrence_min, "occurrence_threshold": None,
+                "n_bins": 0, "n_persistent_bins": 0, "n_spectra": 0, "tol_ppm": tol_ppm}
+    if _on and ts_peaks is not None and assign_kw.get("occurrence") is None:
+        _occ = ADM.bin_occurrence(ts_peaks, tol_ppm=tol_ppm)
+        assign_kw["occurrence"] = _occ
+        _thr = ADM.resolve_threshold(_cfg, _occ)
+        occ_info.update(n_bins=int(len(_occ)), occurrence_threshold=_thr,
+                        n_spectra=int(_occ.attrs.get("n_samples", 0)),
+                        tol_ppm=float(_occ.attrs.get("tol_ppm", tol_ppm)),
+                        n_persistent_bins=int((_occ["occurrence"] >= _thr).sum()) if _thr is not None else 0)
+        if _thr is None:
+            log(f"[assign_batch] admission: persistence path off -- {ADM.why_off(_cfg, _occ)}")
+        else:
+            log(f"[assign_batch] admission: {occ_info['n_persistent_bins']} of {occ_info['n_bins']} "
+                f"m/z bins persist in >= {_thr:.2f} of {occ_info['n_spectra']} spectra "
+                f"(threshold {occurrence_min!r}"
+                + (f" = Otsu split {_occ.attrs.get('auto_threshold'):.2f}" if isinstance(occurrence_min, str) else "")
+                + ") -> eligible below the height gate")
     # context-unlock the reference peaklists (contaminants always; chemistry-
     # specific lists when the batch metadata matches) -> selection prior + rescue.
     from peaky.assignment import reflists as RL
@@ -574,6 +609,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "reagent": prof.name, "label": prof.label, "context": context,
         "batch_name": batch,
         "selection": selection,
+        "admission": occ_info,
         "n_files": len(sample_ids), "sample_ids": sample_ids,
         # the gate actually used, and where the multiple came from (a
         # profile-supplied value reads differently from the package default);

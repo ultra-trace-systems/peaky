@@ -171,7 +171,8 @@ def cmd_assign(args) -> None:
     adducts, context, note, prof = _resolve_reagent(args, with_profile=True)
     print(f"[reagent] {note}; adducts={adducts}; context={context}")
     cfg = passes.PassConfig(ppm=args.ppm, search_ppm=args.search_ppm,
-                            height_cutoff_cps=args.height_cutoff)
+                            height_cutoff_cps=args.height_cutoff,
+                            occurrence_min=args.occurrence_min)
     profiles.apply_height_cutoff_x_edge(cfg, prof,
                                         explicit=args.height_cutoff_x_edge, log=print)
     # the labelled-reagent purity rides on the same resolved profile
@@ -189,11 +190,28 @@ def cmd_assign(args) -> None:
                                      average=False, confirm_above=None)
         print(f"[ts] loaded {len(ts_peaks)} peaks across "
               f"{ts_peaks['sample_item_id'].nunique()} samples")
+    occurrence = None
+    if ts_peaks is not None and (isinstance(args.occurrence_min, str) or args.occurrence_min > 0):
+        from peaky.assignment import admission as ADM
+        from peaky.batch import sampling as SS
+        # binned at the one batch tolerance so this table equals the one `peaky
+        # batch` builds for the same batch (same bins, same Otsu split)
+        occurrence = ADM.bin_occurrence(ts_peaks, tol_ppm=SS.BATCH_TOL_PPM)
+        _thr = ADM.resolve_threshold(cfg, occurrence)
+        _nsp = int(occurrence.attrs.get("n_samples", 0))
+        print(f"[ts] admission: threshold {_thr} ({args.occurrence_min!r}, "
+              f"{len(occurrence)} m/z bins at {SS.BATCH_TOL_PPM:g} ppm over {_nsp} spectra); "
+              + (f"{int((occurrence['occurrence'] >= _thr).sum())} of {len(occurrence)} bins "
+                 f"persist above it" if _thr is not None
+                 # say WHICH of the four reasons, not just that it is off -- the
+                 # same account `peaky batch` gives of the same batch
+                 else f"persistence path off: {ADM.why_off(cfg, occurrence)}"))
 
     out = assign.run(args.sample_id, context, cfg=cfg, use_cache=not args.no_cache,
                      do_pass2=not args.no_pass2, do_pass3=not args.no_pass3,
                      do_pass4=not args.no_pass4, do_pass5=not args.no_pass5,
                      adducts=adducts, ts_peaks=ts_peaks, label_purity=purity,
+                     occurrence=occurrence,
                      checkpoint_dir=str(od / "checkpoints"))
     led = out["ledger"]
 
@@ -235,7 +253,10 @@ def cmd_batch(args) -> None:
                        base_out=resolve_out_dir(args.out_dir), ts=args.ts,
                        subject=args.subject, do_report=not args.no_report,
                        config=args.reagent_config, k_min=args.k_min,
-                       k_max=args.k_max, min_gain=args.min_gain, n_jobs=args.jobs)
+                       k_max=args.k_max, min_gain=args.min_gain,
+                       occurrence_min=args.occurrence_min,
+                       height_cutoff_x_edge=args.height_cutoff_x_edge,
+                       height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs)
     ctx = res["ctx"]
     print(f"\n[batch] done -> {ctx.out_dir}")
     if res.get("report_pdf"):
@@ -255,7 +276,9 @@ def cmd_pool(args) -> None:
         do_report=not args.no_report,
         per_group_reports=not args.no_group_reports, config=args.reagent_config,
         k_min=args.k_min, k_max=args.k_max, min_gain=args.min_gain,
-        n_jobs=args.jobs)
+        occurrence_min=args.occurrence_min,
+        height_cutoff_x_edge=args.height_cutoff_x_edge,
+        height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs)
     ctx = res["ctx"]
     print(f"\n[pool] unified ledger -> {ctx.out_dir}")
     if res.get("report_pdf"):
@@ -656,6 +679,42 @@ def _add_selection_args(sp) -> None:
                          f"{SS.MIN_GAIN * 100:g}%%)")
 
 
+def _auto_or_float(v: str):
+    """argparse type for --occurrence-min: 'auto' or a number."""
+    if str(v).strip().lower() == "auto":
+        return "auto"
+    try:
+        return float(v)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected 'auto' or a number, got {v!r}")
+
+
+def _add_admission_args(sp) -> None:
+    """The admission gate (assignment/admission.py): brightness OR persistence.
+    Defined ONCE here for `assign`, `batch` and `pool` -- the three flags are one
+    gate and must read the same on every subcommand."""
+    sp.add_argument("--height-cutoff-x-edge", type=float, default=None,
+                    help="brightness path of the admission gate as a multiple of each "
+                         "sample's noise edge (the 1st percentile of its picked peak "
+                         "heights). Instrument-independent: the edge is ~0.8 cps on a "
+                         "TOF and ~800 cps on a reagent-in-range Orbitrap mode. Raise "
+                         "it on a picker that picks into the noise; the persistence "
+                         "path keeps the recurring weak ions. Default: the reagent "
+                         "profile's own multiple when it carries one, else the package "
+                         "default (passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE); "
+                         "ignored when --height-cutoff is given")
+    sp.add_argument("--height-cutoff", type=float, default=None,
+                    help="ABSOLUTE brightness gate in cps for the height-gated passes "
+                         "(overrides --height-cutoff-x-edge; default: none, edge-relative)")
+    sp.add_argument("--occurrence-min", type=_auto_or_float, default="auto",
+                    help="persistence path: a peak whose m/z bin holds a peak in at least "
+                         "this fraction of the batch's spectra is eligible for formula "
+                         "search even below the height gate. 'auto' (default) derives the "
+                         "split from the batch's own bimodal occurrence distribution "
+                         "(Otsu; typically 0.4-0.55); a number fixes it; 0 = brightness "
+                         "only. Needs the batch time series (batch/pool, or assign --ts-batch).")
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="peaky",
@@ -687,19 +746,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="JSON/TOML file registering extra reagent profiles")
     pa.add_argument("--ppm", type=float, default=1.0)
     pa.add_argument("--search-ppm", type=float, default=3.0)
-    pa.add_argument("--height-cutoff", type=float, default=None,
-                    help="ABSOLUTE peak-height cutoff (cps) for the height-gated "
-                         "passes; default: relative to the sample's own noise edge "
-                         "(see --height-cutoff-x-edge)")
-    pa.add_argument("--height-cutoff-x-edge", type=float, default=None,
-                    help="height cutoff as a multiple of the sample's noise edge "
-                         "(the 1st percentile of its picked peak heights). "
-                         "Instrument-independent: the edge is 0.8 cps on a TOF and "
-                         "~800 cps on a reagent-in-range Orbitrap mode. Default: the "
-                         "reagent profile's own multiple when it carries one, else "
-                         "the package default (passes.config."
-                         "DEFAULT_HEIGHT_CUTOFF_X_EDGE); "
-                         "ignored when --height-cutoff is given")
     pa.add_argument("--no-cache", action="store_true")
     pa.add_argument("--no-pass2", action="store_true")
     pa.add_argument("--no-pass3", action="store_true")
@@ -709,6 +755,7 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--ts-batch", default=None,
                     help="batch name to load as the time series (optional TS step)")
     pa.add_argument("--ts-dataset", default=None, help="dataset for --ts-batch")
+    _add_admission_args(pa)
     pa.set_defaults(func=cmd_assign)
 
     pb = sub.add_parser("batch", help="assign + cluster + Van Krevelen + report for a whole batch")
@@ -726,6 +773,7 @@ def build_parser() -> argparse.ArgumentParser:
     pb.add_argument("--subject", default=None, help="optional subject phrase for the VK title")
     pb.add_argument("--no-report", action="store_true", help="skip the PDF report")
     _add_selection_args(pb)
+    _add_admission_args(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "
@@ -762,6 +810,7 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--no-group-reports", action="store_true",
                     help="only the whole-pool report; skip the per-group ones")
     _add_selection_args(pp)
+    _add_admission_args(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "
                          "(default: physical cores; env PEAKY_JOBS honored)")

@@ -136,6 +136,40 @@ s3 = SX.assign_siloxane_ladder(None, "SID", led3, PROF, cfg, adducts=["[M+H]+"],
 check("Si-intensity gate: under-intensity M+1 -> NOT committed (over-claimed Si skipped)",
       s3["committed"] == 0 and s3.get("si_underclaimed", 0) >= 1, s3)
 
+# --- admission gate: the SEED test uses the same mask as the work set ---------
+# The lowest rung (462) is 10x below the 100-cps brightness gate but its m/z bin
+# persists across the batch (occurrence 0.9 >= occurrence_min 0.8), so it is
+# admitted into `work` by persistence. It must also be allowed to SEED the chain:
+# refusing it leaves a 2-member run (536, 610) < MIN_LADDER and no ladder at all.
+rows4 = []
+for i, f in enumerate(FORMS):
+    h0 = 10.0 if i == 0 else 1e5
+    rows4.append({"peak_id": f"m0_{i}", "mz": round(pmz[f], 5), "height": h0})
+    rows4.append({"peak_id": f"m1_{i}", "mz": round(m1[f], 5), "height": _m1h(f) * h0 / 1e5})
+led4 = L.new_ledger(pd.DataFrame(rows4))
+led4["occurrence"] = led4["peak_id"].map(lambda p: 0.9 if p == "m0_0" else 0.5)
+led4["admitted_by"] = led4["peak_id"].map(lambda p: "occurrence" if p == "m0_0" else "height")
+cfg_p = P.PassConfig(height_cutoff_cps=100.0, occurrence_min=0.8)
+cfg_p.cal_mu, cfg_p.cal_sigma = -2.45, 0.27
+cfg_p.mechanism_ids = ["m"]
+s4 = SX.assign_siloxane_ladder(None, "SID", led4, PROF, cfg_p, adducts=["[M+H]+"],
+                               score_fn=fake_score, log=lambda *a: None)
+check("persistence-admitted sub-gate rung SEEDS the ladder (3 members, all committed)",
+      s4["ladders"] == 1 and s4["members"] == 3 and s4["committed"] == 3, s4)
+check("...the weak rung itself is committed as a siloxane",
+      led4.loc[led4.peak_id == "m0_0", "neutral_formula"].iloc[0] == "C12H39NO6Si6")
+# control: with the persistence path off the same rung is not admitted at all ->
+# only a 2-member run remains -> no ladder (this is what the seed fix recovers)
+led5 = L.new_ledger(pd.DataFrame(rows4))
+led5["occurrence"] = led4["occurrence"].values; led5["admitted_by"] = ""
+cfg_0 = P.PassConfig(height_cutoff_cps=100.0, occurrence_min=0.0)
+cfg_0.cal_mu, cfg_0.cal_sigma = -2.45, 0.27
+cfg_0.mechanism_ids = ["m"]
+s5 = SX.assign_siloxane_ladder(None, "SID", led5, PROF, cfg_0, adducts=["[M+H]+"],
+                               score_fn=fake_score, log=lambda *a: None)
+check("control: persistence off -> the weak rung is not admitted, 2-member run is no ladder",
+      s5["ladders"] == 0 and s5["committed"] == 0, s5)
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

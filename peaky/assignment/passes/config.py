@@ -79,6 +79,24 @@ class PassConfig:
     height_cutoff_x_edge: float | None = None
     height_cutoff_cps: float | None = None
     noise_edge_cps: float | None = None   # runtime: set per sample by assign.run
+    # Persistence path of the admission gate (assignment/admission.py). This is
+    # the KNOB: "auto" (default) = Otsu's split of the batch's (bimodal)
+    # bin-occurrence distribution, 0.40-0.55 on every instrument measured; a
+    # number is used as-is; 0 disables the path. The value the gate actually
+    # compares against is the RESOLVED `occurrence_threshold` below (set per
+    # run by admission.stamp_admission): a peak whose m/z bin holds a peak in
+    # >= that fraction of the batch's spectra is eligible for formula search
+    # even below the height gate. Noise does not recur at a fixed m/z; ions do.
+    # Needs the batch occurrence table (a batch run passes it; a single-sample
+    # run has none -> brightness only).
+    occurrence_min: float | str = "auto"
+    occurrence_threshold: float | None = None   # runtime: the resolved value, set per run
+    # runtime: True once stamp_admission has resolved the knob against the batch.
+    # It is what separates "the path resolved OFF" (threshold None, admit by
+    # brightness only) from "this cfg was never stamped" (where `admissible`
+    # still honours a numeric occurrence_min) -- without it a batch the resolver
+    # switched off would be re-admitted by the raw knob at every gated site.
+    occurrence_resolved: bool = False
     limit_per_peak: int = 25
     workers: int = 12
     # confidence thresholds (on the RAW min(ion,compound) score)
@@ -198,7 +216,8 @@ class PassConfig:
         # earlier carry the two as a record of the run's calibration centre,
         # and batch_summary.json still reports the per-file offsets).
         "cal_a", "cal_b", "cal_sigma_trend", "cal_mz_lo", "cal_mz_hi",
-        "cal_mu", "cal_sigma")
+        "cal_mu", "cal_sigma",
+        "occurrence_threshold", "occurrence_resolved")
 
     @property
     def height_cutoff_x_edge_resolved(self) -> float:

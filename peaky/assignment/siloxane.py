@@ -32,7 +32,7 @@ from peaky.chem import chemistry as C
 from peaky.assignment import ledger as L
 from peaky.assignment.passes import PassConfig, z_of, _mech_to_adduct, _f
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"  # work set + seed test draw from the admission gate
 
 SILOXANE_UNIT = "C2H6OSi"
 UNIT_MASS = C.neutral_mass(SILOXANE_UNIT)        # 74.01879
@@ -115,9 +115,14 @@ def assign_siloxane_ladder(client, sample_id: str, ledger: pd.DataFrame,
     adducts = adducts or list(profile.reagent_adducts)
     gad = [a for a in adducts if a in C.ADDUCT_SHIFTS]
 
-    work = ledger[ledger["height"].fillna(0) >= cfg.height_cutoff]
+    from peaky.assignment import admission as ADM
+    work = ledger[ADM.admissible(ledger, cfg)]
     mzs = work["mz"].tolist(); hts = work["height"].tolist()
-    chains = _find_ladders(mzs, hts, min_height=cfg.height_cutoff)
+    # `work` IS the admission-gated set (brightness OR persistence), so every
+    # member may seed a chain: a persistent sub-gate peak admitted into `work`
+    # must not be refused as a seed by a second, brightness-only test (the
+    # lowest rung of a weak ladder is exactly such a peak).
+    chains = _find_ladders(mzs, hts, min_height=0.0)
     if not chains:
         return out
     member_mz = sorted({mzs[i] for ch in chains for i in ch})

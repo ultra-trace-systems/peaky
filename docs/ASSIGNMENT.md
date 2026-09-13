@@ -47,6 +47,61 @@ this selection is what decides recall — see [`SAMPLING.md`](SAMPLING.md) for t
 measurements. Same merge, same outputs; `batch_summary.json['selection']` records
 the achieved coverage and why the selection stopped.
 
+## Admission: which peaks are eligible (persistence OR brightness)
+
+Eight formula-hunting sites draw their candidate peaks through one gate
+(`assignment/admission.py`): the **pass-1 grid**, **pass-2 series growth**,
+**pass-3 contaminant families** and pass-3's two **cluster resolvers** (HX,
+acid·I₂) — those five share `directors._target_peaks` — plus the **pass-6 ladder
+gap-fill**, **residual stage B** and the **siloxane ladder** (its work set *and*
+its seed test). A peak is **eligible** there if it is bright enough
+(`height ≥ height_cutoff`, an edge multiple — see above) **or** persistent:
+its m/z bin holds a peak in at least a threshold fraction of the batch's spectra
+(bins at `sampling.BATCH_TOL_PPM` = 6 ppm, the one tolerance the selection, this
+table and the merge share, so `batch` and `assign --ts-batch` bin identically).
+That threshold is **derived from the batch** (`occurrence_min = "auto"`): the
+bin-occurrence distribution is cleanly bimodal on every instrument measured
+(transient bins pile up below 0.1, persistent ones above 0.9), and Otsu's split of
+it lands at 0.40–0.55 everywhere; a fixed 0.8 was tried first and discarded
+two-thirds of the recurring weak ions the path exists to recover. The derived
+value is **clamped to [0.25, 0.75]**, because Otsu returns a split even for a
+batch with no two modes to separate: a unimodal-low distribution would derive
+~0.06 (admit everything) and a unimodal-high one ~0.96 (admit nothing). An
+all-equal distribution has no split at all and switches the path off rather
+than defaulting to 0. A number overrides the derivation, `0` disables the path,
+and fewer than 10 spectra switch it off.
+Noise does not recur at a fixed m/z across hundreds of spectra; ions do — on a
+mixed-reagent TOF batch ~500 bins recur in > 80 % of 230 spectra at a median
+3–4 cps, and the exact masses of 21 highly oxygenated molecules an Orbitrap saw
+on the same air all sit in that recurrent population while mass-shifted decoys
+hit nothing. The persistence path is purely additive (no bright bin is
+transient) and **only admits peaks for consideration; it does not lower the bar
+for confirming them** — at 2–3 cps the isotopologues are sub-count, so such
+peaks normally land as Candidates, and the isotope rules are untouched.
+**Persistence gates entry; only corroboration gates the tier**: an
+occurrence-admitted peak is a real ion, but nothing constrains *which* formula
+it got, so the tier engine caps it at Candidate (`tier_reason`
+`persistent-weak`) unless an isotopologue, a second channel or a series anchor
+corroborates the formula. A pass-0 known species is exempt: that branch is
+tested first, so a curated identity stays Assigned — its evidence is the locked
+list, not this peak's height. Each per-file ledger row records `occurrence` (float
+in [0, 1], NaN without batch context or when no bin is within tolerance) and
+`admitted_by` (`height` / `occurrence` = persistence only / `''` = not eligible
+at those eight sites); the merged ledger carries them for the winning row.
+Batch runs compute the occurrence table from the batch time series; a
+single-sample run without `--ts-batch` has no batch context and is
+brightness-only. `--occurrence-min 0` disables the path.
+
+**Not yet gated (brightness-only, `height ≥ height_cutoff`)**: residual stage A
+(the ~2-Da isotope-doublet scan), the reflist rescue, pass-3's series
+*detection* statistics (`series_detect` counts a series' members rather than
+proposing formulas for a peak — pass-3's own target peaks *are* gated) and the
+isotope-satellite tests in `passes/postprocess`. `admitted_by` says nothing
+about those; converting them is a documented follow-up, kept out of this change
+so the validated behaviour is unchanged. The gated set is the callers of
+`directors._target_peaks` plus the three direct `admissible()` call sites —
+re-derive it that way, not by grepping for `admissible(`.
+
 ## The pass sequence
 
 Assignment is multi-pass; each pass only adds commitments the previous ones

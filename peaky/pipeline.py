@@ -241,7 +241,9 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               base_out: str, ts=None, when=None, subject: str | None = None,
               amine_r_min: float = 0.6, do_report=True, config: str | None = None,
               k_min: int = SS.K_MIN, k_max: int = SS.K_MAX,
-              min_gain: float = SS.MIN_GAIN,
+              min_gain: float = SS.MIN_GAIN, occurrence_min: float | None = None,
+              height_cutoff_x_edge: float | None = None,
+              height_cutoff_cps: float | None = None,
               n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Full batch pipeline in ONE call: sample-subset ASSIGN (live match_compounds)
     -> merge -> cluster figures -> Van Krevelen -> PDF report, into one versioned run
@@ -252,8 +254,19 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     The assigned subset is the greedy presence set-cover over the batch's m/z bins
     (sampling.select_cover_samples): `k_min`/`k_max`/`min_gain` tune the stop rule;
     the achieved coverage + stop reason land in batch_summary.json['selection'].
+    `occurrence_min` / `height_cutoff_x_edge` / `height_cutoff_cps` set the admission
+    gate on the run's PassConfig. None leaves each knob UNSET, which is not the same
+    as a value: `occurrence_min` then keeps the PassConfig default ('auto' = the
+    batch-derived threshold; 0 = brightness only), `height_cutoff_x_edge` falls
+    through to the reagent profile's own multiple and only then to the package
+    default, and `height_cutoff_cps` means no absolute override.
     Returns {ctx, assign, cluster, vk, report_pdf}."""
     from peaky.batch import assign_batch as AB
+
+    cfg = gate_config(assign_kw.pop("cfg", None), occurrence_min=occurrence_min,
+                      height_cutoff_x_edge=height_cutoff_x_edge,
+                      height_cutoff_cps=height_cutoff_cps)
+    assign_kw["cfg"] = cfg
 
     ts_src = None
     if isinstance(ts, str):
@@ -263,12 +276,10 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         log(f"[batch] fetching full-batch time series for {batch!r} ...")
         ts = load(batch=batch, dataset=dataset)
     prof = P.resolve(reagent, ts, config=config)
-    # One height-gate multiple for the whole run, stamped on the cfg that BOTH
-    # the assignment and the provenance manifest below use (assign_batch.run
-    # re-resolves it onto the same cfg and logs it once).
-    from peaky.assignment import passes as PA
-
-    assign_kw["cfg"] = cfg = assign_kw.get("cfg") or PA.PassConfig()
+    # One height-gate multiple for the whole run, stamped on the SAME cfg the
+    # gate knobs above went onto -- the one the assignment and the provenance
+    # manifest below both use (assign_batch.run re-resolves it onto that cfg
+    # and logs it once).
     P.apply_height_cutoff_x_edge(cfg, prof)
     # The manifest fingerprints a snapshot taken HERE, before the assign runs: it
     # pins the run to the configuration it was GIVEN, never to what the assign
@@ -300,9 +311,35 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
                 "n_samples": summ.get("n_files"),
-                "selection": summ.get("selection")},
+                "selection": summ.get("selection"),
+                # the admission gate as RESOLVED for this run (knob, threshold,
+                # n_bins, n_persistent_bins, n_spectra, tol_ppm) -- the config
+                # fingerprint keeps only the knob, so the derived threshold
+                # lives here next to the other run-derived counts
+                "admission": summ.get("admission")},
         created_utc=ctx.when.isoformat(), log=log)
     return {"ctx": ctx, "assign": res, **gen}
+
+
+def gate_config(cfg=None, *, occurrence_min=None, height_cutoff_x_edge=None,
+                height_cutoff_cps=None):
+    """The run's PassConfig with the admission-gate knobs applied. `occurrence_min`
+    is 'auto' (the batch-derived threshold), a number, or 0 (path off); None keeps
+    the config default. The height knobs are numbers or None."""
+    from peaky.assignment import passes as PA
+    cfg = cfg or PA.PassConfig()
+    if occurrence_min is not None:
+        if isinstance(occurrence_min, str):
+            if occurrence_min.strip().lower() != "auto":
+                raise ValueError(f"occurrence_min must be 'auto' or a number, got {occurrence_min!r}")
+            cfg.occurrence_min = "auto"
+        else:
+            cfg.occurrence_min = float(occurrence_min)
+    if height_cutoff_x_edge is not None:
+        cfg.height_cutoff_x_edge = float(height_cutoff_x_edge)
+    if height_cutoff_cps is not None:
+        cfg.height_cutoff_cps = float(height_cutoff_cps)
+    return cfg
 
 
 def pool_name(batches_regex: str) -> str:
@@ -346,6 +383,9 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                        do_report: bool = True, per_group_reports: bool = True,
                        config: str | None = None, k_min: int = SS.K_MIN,
                        k_max: int = SS.K_MAX, min_gain: float = SS.MIN_GAIN,
+                       occurrence_min: float | None = None,
+                       height_cutoff_x_edge: float | None = None,
+                       height_cutoff_cps: float | None = None,
                        n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Pool the batches matching `batches` (a regex over batch names) into ONE
     unified ledger, then emit a whole-pool report plus one report per group.
@@ -370,6 +410,10 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     """
     from peaky.batch import assign_batch as AB
 
+    cfg = gate_config(assign_kw.pop("cfg", None), occurrence_min=occurrence_min,
+                      height_cutoff_x_edge=height_cutoff_x_edge,
+                      height_cutoff_cps=height_cutoff_cps)
+    assign_kw["cfg"] = cfg
     when = when or datetime.now(timezone.utc)     # ONE stamp: pool + every group ctx agree
     if isinstance(ts, str):
         ts = pd.read_parquet(os.path.expanduser(ts))
@@ -408,10 +452,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     ts_cols = [c for c in ("sample_item_id", "mz", "height", "datetime_utc")
                if c in ts.columns]
     prof = P.resolve(reagent, ts[ts_cols], config=config)
-    # same one-multiple-per-run rule as run_batch (see there)
-    from peaky.assignment import passes as PA
-
-    assign_kw["cfg"] = cfg = assign_kw.get("cfg") or PA.PassConfig()
+    # same one-multiple-per-run rule as run_batch, onto the same cfg (see there)
     P.apply_height_cutoff_x_edge(cfg, prof)
     cfg_snapshot = copy.deepcopy(cfg)        # pre-assign, as in run_batch (see there)
     pool_label = out_name or pool_name(batches)
@@ -453,7 +494,8 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
                 "n_samples": summ.get("n_files"), "n_groups": len(groups),
-                "selection": summ.get("selection")},
+                "selection": summ.get("selection"),
+                "admission": summ.get("admission")},
         created_utc=ctx.when.isoformat(), log=log)
     return {"ctx": ctx, "assign": res, "groups": groups, "group_runs": group_runs,
             "selection": prov, **gen}

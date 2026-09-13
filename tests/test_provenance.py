@@ -107,6 +107,43 @@ check("the cal knobs the user CAN set are still fingerprinted",
 check("git_info is best-effort and returns a dict", isinstance(
     PV.git_info(str(Path(PV.__file__).parent)), dict))
 
+# --- the admission gate: KNOB in the config fingerprint, RESOLVED value out of it.
+# `occurrence_threshold` is derived from the batch at run time (the Otsu split),
+# so it is not part of the configuration that would reproduce the run -- it is an
+# OUTPUT. Keeping it in `config` would make two identical configurations
+# fingerprint differently on two batches. It belongs under counts.admission.
+_cfg_adm = P.PassConfig(occurrence_min="auto")
+_cfg_adm.occurrence_threshold = 0.44          # what stamp_admission sets per run
+_cfg_adm.occurrence_resolved = True           # ...and the marker that says it is final
+_adm_block = {"occurrence_min": "auto", "occurrence_threshold": 0.44, "n_bins": 4025,
+              "n_persistent_bins": 512, "n_spectra": 230, "tol_ppm": 6.0}
+m_adm = PV.build_manifest(run_dir=_rd, batch_name="B", dataset="D",
+                          sample_ids=["s1"], reagent="NO3_15N", cfg=_cfg_adm,
+                          ts_path=_tsp, counts={"merged_M0": 7, "admission": _adm_block})
+check("config fingerprint keeps the admission KNOB (occurrence_min)",
+      m_adm["config"].get("occurrence_min") == "auto", m_adm["config"])
+check("config fingerprint DROPS the run-derived occurrence_threshold",
+      "occurrence_threshold" not in m_adm["config"], m_adm["config"])
+check("the resolved threshold is recorded instead under output.counts.admission",
+      m_adm["output"]["counts"]["admission"]["occurrence_threshold"] == 0.44
+      and m_adm["output"]["counts"]["admission"]["tol_ppm"] == 6.0,
+      m_adm["output"]["counts"])
+check("occurrence_threshold is listed as a runtime field, next to noise_edge_cps",
+      "occurrence_threshold" in P.PassConfig.RUNTIME_FIELDS, P.PassConfig.RUNTIME_FIELDS)
+# `occurrence_resolved` is the same kind of thing: stamp_admission sets it on the
+# shared cfg so `admissible` can tell "resolved OFF" from "never stamped". It is
+# run state, not a knob, and would otherwise flip the fingerprint of an identical
+# configuration depending on whether the run had reached the gate.
+check("occurrence_resolved is a runtime field too, and stays out of the fingerprint",
+      "occurrence_resolved" in P.PassConfig.RUNTIME_FIELDS
+      and "occurrence_resolved" not in m_adm["config"], m_adm["config"])
+# the gate is a module of its own; its version must be pinned like every other
+# assignment module (module_hashes catches edits, module_versions names them)
+from peaky.assignment import admission as _ADM  # noqa: E402
+check("module_versions pins the admission module",
+      m_adm["code"]["module_versions"].get("admission") == _ADM.__version__,
+      m_adm["code"]["module_versions"])
+
 PV.write_manifest(_rd, m)
 check("write_manifest writes run_manifest.json",
       os.path.exists(os.path.join(_rd, "run_manifest.json")))

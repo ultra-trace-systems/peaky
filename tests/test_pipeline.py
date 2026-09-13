@@ -110,15 +110,38 @@ try:
               _got["rec"]["cfg"].cal_mu is None
               and _got["ab"]["cfg"].cal_mu == -2.45,
               (_got["rec"]["cfg"].cal_mu, _got["ab"]["cfg"].cal_mu))
+    # ONE cfg per run: the gate knobs (gate_config) and the profile's multiple
+    # (apply_height_cutoff_x_edge) are stamped on the SAME object, which is what
+    # reaches the per-sample runs and, as a snapshot, the manifest. A second cfg
+    # built after gate_config would silently drop the admission knobs.
+    with tempfile.TemporaryDirectory() as d:
+        _got.clear()
+        PL.run_batch(batch="B", dataset="D", reagent="TofP", base_out=d, ts=_TS,
+                     when=WHEN, do_report=False, log=lambda *a: None,
+                     occurrence_min=0.42, height_cutoff_cps=7.0)
+        check("run_batch: gate knobs AND the profile multiple ride one cfg into the assign",
+              _got["ab"]["cfg"].occurrence_min == 0.42
+              and _got["ab"]["cfg"].height_cutoff_cps == 7.0
+              and _got["ab"]["cfg"].height_cutoff_x_edge == 5.0,
+              _got["ab"].get("cfg"))
+        check("run_batch: the manifest fingerprints those same gate knobs",
+              _got["rec"]["cfg"].occurrence_min == 0.42
+              and _got["rec"]["cfg"].height_cutoff_cps == 7.0
+              and _got["rec"]["cfg"].height_cutoff_x_edge == 5.0,
+              _got["rec"].get("cfg"))
     with tempfile.TemporaryDirectory() as d:
         _got.clear()
         PL.run_pooled_batches(batches="b.*", dataset="D", reagent="TofP", base_out=d,
                               ts=_TS, when=WHEN, do_report=False,
-                              per_group_reports=False, log=lambda *a: None)
+                              per_group_reports=False, occurrence_min=0.42,
+                              log=lambda *a: None)
         check("run_pooled_batches resolves the same multiple onto its cfg",
               _got["ab"]["cfg"].height_cutoff_x_edge == 5.0
               and _got["rec"]["cfg"].height_cutoff_x_edge == 5.0
               and _got["rec"]["cfg"].cal_mu is None, _got["ab"].get("cfg"))
+        check("run_pooled_batches: the gate knob rides that same cfg, assign + manifest",
+              _got["ab"]["cfg"].occurrence_min == 0.42
+              and _got["rec"]["cfg"].occurrence_min == 0.42, _got["ab"].get("cfg"))
     # an explicit cfg multiple beats the profile through the pipeline too -- at
     # the value (1.0) that is also the package default, so "explicit" cannot be
     # inferred from the number alone.
