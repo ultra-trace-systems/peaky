@@ -25,7 +25,8 @@ from dataclasses import dataclass
 
 from peaky.chem import chemistry as C
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"  # propose_for_peak: anchors walked in sorted order, ties broken by
+                       # fewest steps then anchor / unit / adduct text -- never by set order
 
 # Repeat units as element-count deltas.
 REPEAT_UNITS: dict[str, dict[str, int]] = {
@@ -111,9 +112,19 @@ def propose_for_peak(target_mz: float,
                      max_steps: int = 1) -> list[Proposal]:
     """Propose neutral formulas for one unassigned peak m/z by stepping each
     anchor by +/- n*unit (n up to max_steps) and checking the ion m/z under
-    each adduct against the target within ppm."""
+    each adduct against the target within ppm.
+
+    The order of the result is a pure function of the arguments: anchors are
+    walked in sorted order and the final sort breaks a support / ppm tie by the
+    fewest steps, then the anchor, unit and adduct text. Two anchors that reach
+    the SAME candidate (C4H6O4 + CH2 and C6H10O4 - CH2 both give C5H8O4)
+    produce proposals with identical support and ppm; before this the winner was
+    whichever anchor the set happened to yield first, i.e. PYTHONHASHSEED, and
+    the deep-series commentary of a run could name a different anchor path on
+    every process (#8). The nearest anchor is also the better explanation;
+    between two one-step anchors the lower formula text wins."""
     out: list[Proposal] = []
-    for anchor in anchor_formulas:
+    for anchor in sorted(anchor_formulas):
         for unit in units:
             for n in range(-max_steps, max_steps + 1):
                 if n == 0:
@@ -135,8 +146,10 @@ def propose_for_peak(target_mz: float,
     # support count: how many anchors sit one unit away (below/above) from cand
     for p in out:
         p.n_supporting_anchors = _support_count(p.neutral_formula, anchor_formulas)
-    # best ppm first, then more-supported
-    out.sort(key=lambda p: (-(p.n_supporting_anchors), abs(p.ppm_error)))
+    # more-supported first, then best ppm, then the shortest path; the text keys
+    # make the order total (a pure function of the inputs, never of set order)
+    out.sort(key=lambda p: (-(p.n_supporting_anchors), abs(p.ppm_error),
+                            abs(p.n_steps), p.anchor_formula, p.unit, p.adduct))
     return out
 
 
