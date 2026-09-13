@@ -6,6 +6,114 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The positive pass-0 `cyclosiloxane` and `indoor_sulfur` families apply to EVERY
+  positive context**, not only to the labelled-ammonium runs they were seeded from:
+  `directors._known_species("positive", …)` returns them regardless of context, so
+  uronium and EasyIC runs now also get `known:` locks for D3–D7 / L2–L5 siloxanes and
+  for the benzothiazole / DMSO / thiophene / sulfolane / NBBS set. The commit gates are
+  unchanged (≥2 channels, or a confirmed ²⁹Si/³⁰Si envelope + the Si-count M+1 check,
+  or a confirmed ³⁴S envelope), so this adds locks only where the evidence is already
+  there — but a previously Candidate D4 or benzothiazole can now come out Assigned.
+- **The pass-4 halogen cap applies in every context, not just positive ones.**
+  `residual.stage_a_iso_pairs` drops a ~1.998-Da doublet whenever the context caps that
+  halogen at zero (`max_Br` = `max_Cl` = 0) — the rule is written against the context
+  profile, so any halogen-free context gets it.
+- **The labelled-nitrogen ¹⁴N envelope line is emitted for every `^N`-bearing ion**, so
+  it reaches the ¹⁵N-NITRATE profile as well as the ammonium one it was built for: a
+  `[M+^NO3]⁻` cluster now predicts a −0.997 Da satellite at `(1 − purity)/purity` of M0
+  and `complete_isotope_envelopes` will claim it. **Caveat, to be validated on a
+  labelled-nitrate batch:** a labelled-nitrate source can carry a *real* `[X+¹⁴NO₃]⁻`
+  analyte channel from the reagent's unlabelled fraction, and it sits at exactly that
+  mass and at a comparable 0.6–7 % of the labelled cluster. Such a channel would now be
+  attached as an isotope child of the labelled reading rather than standing as its own
+  M0. Gating the line per profile is deliberately NOT done here (see the open items).
+- `ReagentProfile.purity` is no longer inert. `assign.run` publishes it
+  (`isotopes.set_label_purity`) and it now drives BOTH the local scorer's
+  `predict_isotopes` call and peaky's own envelope predictor; `isotopes.LABEL_PURITY_15N`
+  remains the default. Behaviour-neutral at 0.98, which is also mascope_tools' default.
+
+- **Batch sample selection is one greedy presence set-cover** (`sampling.
+  select_cover_samples`, `docs/SAMPLING.md`), replacing the 5-time-spaced+max-TIC
+  rule and the brightest arg-max cover. Universe = the batch's m/z bins present
+  in ≥ 2 samples — **no height floor**, because the peak picker's detection edge
+  spans ~1000× between instruments and modes (0.8 cps on a TOF, ~800 cps on an
+  Orbitrap mode with the reagent ion in range), so any absolute floor is a no-op
+  on one and blinds the selector on another. Each pick is the sample holding the
+  most not-yet-covered bins; the run stops when the next pick would add
+  < `--min-gain` (0.5 %) after `--k-min` (6) picks, and `--k-max` (30) is a
+  flagged budget rather than a target. The merge keeps whatever any assigned
+  sample contained and nothing else, so this selection is what decides recall:
+  on a pooled 5036-sample field-campaign table the cover lands at k = 15 and
+  holds 94 % of the rare (< 5 % prevalence) ions of a dedicated sub-batch run,
+  vs 54 % for the old default and 91 % for the old 12-sample arg-max cap.
+  `pool` runs the same single cover over the pooled table (a loud group cannot
+  hog a presence objective; per-group achieved coverage is recorded) instead of
+  a per-group union. `batch_summary.json` / `run_manifest.json` gain a
+  `selection` block (`k`, `n_bins`, `achieved_coverage`, `stop_reason`,
+  `next_gain`, `tol_ppm`, `coverage_by_group`); `tables/selected_samples.csv` is
+  now in pick order with `pick`, `role` (`cover` / `pad`), `bins_new`,
+  `coverage`. `sampling.BATCH_TOL_PPM` (6 ppm) is the one m/z binning tolerance
+  for every batch-level operation — the selector bins on it and
+  `assign_batch.DEFAULT_TOL_PPM` *is* it, so selection and merge bin identically.
+- **Height thresholds in the passes are multiples of the sample's own noise
+  edge**, not absolute cps. `assign.run` computes `noise_edge_cps` (the 1st
+  percentile of the sample's picked heights) once per sample; `PassConfig.
+  height_cutoff` is now a read-only property = `height_cutoff_x_edge` (`None` =
+  unset, resolving to 1.0) × that edge, with `height_cutoff_cps` as an override
+  for offline callers. `peaky assign --height-cutoff` becomes that override
+  (default none) and `--height-cutoff-x-edge` sets the multiple; the MCP
+  `assign_sample(height_cutoff=)` likewise. Per-file `noise_edge_cps` and the
+  resolved gate `height_gate_cps` are recorded in `batch_summary.json`
+  (`height_cutoff_cps` in `run_manifest.json['config']` stays the knob).
+
+### Removed
+
+- `peaky batch --select / --coverage-target / --height-floor` and
+  `peaky pool --coverage-target / --height-floor` (`--k-max` stays, default 30;
+  `--k-min` / `--min-gain` added to both). `sampling.select_representative_samples`,
+  `select_brightest_coverage_samples`, `select_pooled_union` and the `*_sample_ids`
+  wrappers; `assign_batch.run(select=, coverage_target=, height_floor=, n_time=,
+  include_max_tic=)`, `pipeline.run_batch(select=, …)`, `run_pooled_batches(
+  coverage_target=, height_floor=)`; `PassConfig(height_cutoff=)` (use
+  `height_cutoff_cps=`); the MCP `run_batch(select=)` (now `k_max=`).
+
+### Fixed
+
+- **A missing `--group-by` value no longer crashes pooled selection.**
+  `sampling.select_cover_samples(group_col=…)` now normalises the group labels to
+  strings before it sorts them: on pandas ≥ 3 `astype(str)` leaves NaN alone, so a
+  group column holding any null value raised `TypeError: '<' not supported between
+  instances of 'str' and 'float'`. Ungrouped samples stay selectable — their bins
+  are real — and group under `sampling.UNGROUPED` (`"(ungrouped)"`), which no
+  per-group report matches.
+- **A batch whose peaks all have zero height no longer produces a NaN coverage.**
+  Every bin failed both prevalence gates, the universe was empty, and the mean of
+  that empty array became the `coverage` column, `selection.achieved_coverage` and
+  a bare `NaN` token in `batch_summary.json` (rejected by strict JSON parsers),
+  with numpy warnings on the way. An empty universe now returns an empty selection,
+  like a batch with no bins at all.
+- **The brightest-coverage selector silently never reached its coverage
+  target**: every run on disk had assigned exactly `k_max` + 2 samples at
+  0.39–0.61 achieved coverage while `batch_summary.json` recorded the *requested*
+  0.85. The new selector records the achieved coverage and the stop reason, and
+  warns (log, report, summary) when the `k_max` budget binds while the batch is
+  still gaining.
+- **The absolute 100 cps `height_cutoff` blinded the height-gated passes
+  (ladders, siloxane, residual, reflist rescue, isotope-satellite checks) on
+  low-edge modes**: it excluded 97 % of picked TOF peaks and 87 % of an EasyIC
+  mode's, while being a no-op on modes whose picker edge sits above it. The
+  edge-relative gate keeps every picked peak but the bottom 1 % eligible on any
+  instrument. The gate also bounds which unassigned peaks pass 1 enumerates, so
+  on a TOF batch the primary pass had been committing ~2 grid assignments per
+  file; with the edge gate it commits ~370 (self-calibration backbone 220–460
+  peaks, median |ppm| 0.87 vs 1.13 before), most of them Candidate-tier leads
+  at 1–5× the edge — a TOF ledger now carries that Candidate tail by design.
+  `peaky assign --height-cutoff-x-edge` (the single-sample command; `batch` and
+  `pool` gate at the 1.0× default) raises the bar when a tighter list is wanted.
+  An EasyIC batch went from 63 to 119 merged M0 with no formula disagreements.
+
 ### Added
 
 - **`peaky publish-batch <run_dir>`** - publish a `peaky batch` run's merged ledger
@@ -88,10 +196,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   excludes `cal_a` / `cal_b` / `cal_sigma_trend` / `cal_mz_lo` / `cal_mz_hi`: `calibrate`
   writes them onto the shared `cfg`, so without that the last sample's numbers land in
   `run_manifest.json` and two identical re-runs of a batch fingerprint differently.
-  `cal_mu` / `cal_sigma` are equally data-derived but are deliberately kept — they predate
-  the exclusion list and manifests in the wild carry them as the record of the run's
-  calibration centre — **so two identical re-runs can still differ in those two fields**;
-  dropping them would be a manifest schema change rather than a fix.
+  `cal_mu` / `cal_sigma` are excluded for the same reason, now that the pipeline hands the
+  provenance manifest the same `cfg` the per-sample loop fits: leaving them in would keep
+  the fingerprint dependent on whichever sample finished last. This is a manifest schema
+  change — manifests written before it carry the two fields as a record of the run's
+  calibration centre, and `batch_summary.json` still reports the per-file offsets.
 - `cal_abs_floor_mda` (0.03 mDa, `PassConfig`, default `masscal.ABS_FLOOR_MDA`): an absolute
   floor on the trend sigma, active only below ~m/z 120, where the Orbitrap's residual
   curves faster than 1/mz (dimethylamine `[M+H]+` at 46.065 sat 0.9 ppm = 0.04 mDa off the
@@ -102,33 +211,39 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   gate together.
 - Reference peaklist `isoprene_ox_wennberg2018` (27 closed-shell isoprene oxidation products, Wennberg et al. 2018) added to `peaky/data/peaklists/`, gated by the new `isoprene_ox` context (batch keywords isoprene/ISOPN/IEPOX/ISOPOOH/methacrolein) and `biogenic_soa`/`ambient_summer`; rescues the isoprene dihydroxy-dinitrate C5H10N2O8 as an isotope-confirmed Assigned in the 2026 field-campaign ¹⁵NO₃⁻ data.
 
-### Changed
-
-- **The positive pass-0 `cyclosiloxane` and `indoor_sulfur` families apply to EVERY
-  positive context**, not only to the labelled-ammonium runs they were seeded from:
-  `directors._known_species("positive", …)` returns them regardless of context, so
-  uronium and EasyIC runs now also get `known:` locks for D3–D7 / L2–L5 siloxanes and
-  for the benzothiazole / DMSO / thiophene / sulfolane / NBBS set. The commit gates are
-  unchanged (≥2 channels, or a confirmed ²⁹Si/³⁰Si envelope + the Si-count M+1 check,
-  or a confirmed ³⁴S envelope), so this adds locks only where the evidence is already
-  there — but a previously Candidate D4 or benzothiazole can now come out Assigned.
-- **The pass-4 halogen cap applies in every context, not just positive ones.**
-  `residual.stage_a_iso_pairs` drops a ~1.998-Da doublet whenever the context caps that
-  halogen at zero (`max_Br` = `max_Cl` = 0) — the rule is written against the context
-  profile, so any halogen-free context gets it.
-- **The labelled-nitrogen ¹⁴N envelope line is emitted for every `^N`-bearing ion**, so
-  it reaches the ¹⁵N-NITRATE profile as well as the ammonium one it was built for: a
-  `[M+^NO3]⁻` cluster now predicts a −0.997 Da satellite at `(1 − purity)/purity` of M0
-  and `complete_isotope_envelopes` will claim it. **Caveat, to be validated on a
-  labelled-nitrate batch:** a labelled-nitrate source can carry a *real* `[X+¹⁴NO₃]⁻`
-  analyte channel from the reagent's unlabelled fraction, and it sits at exactly that
-  mass and at a comparable 0.6–7 % of the labelled cluster. Such a channel would now be
-  attached as an isotope child of the labelled reading rather than standing as its own
-  M0. Gating the line per profile is deliberately NOT done here (see the open items).
-- `ReagentProfile.purity` is no longer inert. `assign.run` publishes it
-  (`isotopes.set_label_purity`) and it now drives BOTH the local scorer's
-  `predict_isotopes` call and peaky's own envelope predictor; `isotopes.LABEL_PURITY_15N`
-  remains the default. Behaviour-neutral at 0.98, which is also mascope_tools' default.
+- **A reagent profile can carry its own height-gate multiple**
+  (`ReagentProfile.height_cutoff_x_edge`, `docs/REAGENTS.md` §3a). The gate is a
+  multiple of the sample's own noise edge, and the right multiple belongs to the
+  **peak picker**, not to the reagent: a picker that stops at the noise edge
+  wants 1.0 (rare real ions sit at 1–3× the edge there, so raising it discards
+  them), while a picker that picks *into* the noise admits nearly everything it
+  found at 1.0 — on one 230-spectrum time-of-flight batch, 1.0 merged 4346 ions
+  of which 3307 were seen in a single file only, where 5.0 kept 57 % of the
+  picked peaks and 74 % of the assigned ones, i.e. a tighter candidate list for
+  the height-gated passes. So the global default stays **1.0** (now the single
+  constant `passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE`, read by both
+  `PassConfig.height_cutoff_x_edge_resolved` and the fallback), **no bundled
+  profile sets the field** (pinned by a test), and behaviour out of the box is
+  unchanged. A site
+  raises it for its own instrument from a `--reagent-config` file —
+  `height_cutoff_x_edge` is now a loadable reagent-config field — with no code
+  change. `profiles.resolve_height_cutoff_x_edge` implements the order once —
+  an explicit `--height-cutoff-x-edge` / cfg value > the profile's value > the
+  package default — and every entry point that resolves a profile and builds a
+  `PassConfig` applies it (`peaky assign`, `assign.main`, `assign_batch.run`,
+  `pipeline.run_batch` / `run_pooled_batches`, the MCP `assign_sample`,
+  `scripts/certify_neutrals.py`). `pipeline.run` builds no `PassConfig` of its
+  own; it resolves the profile and *reports* the multiple the assign stage will
+  use as `height_cutoff_x_edge` in its return value.
+  `peaky assign --height-cutoff-x-edge` and `PassConfig.height_cutoff_x_edge`
+  both default to *unset* (`None`) rather than to 1.0, so explicitness is read
+  off the value instead of guessed by comparing it to the default: an explicit
+  multiple that happens to **equal** the global default still outranks a profile
+  that carries a higher one. The resolved multiple is
+  recorded: `batch_summary.json` gains `height_cutoff_x_edge` +
+  `height_cutoff_x_edge_source` (and each file's `height_cutoff_x_edge` beside
+  its `height_gate_cps`), and it stays in the `run_manifest.json['config']`
+  fingerprint, which one log line per run mirrors.
 
 ### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
 

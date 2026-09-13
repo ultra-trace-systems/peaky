@@ -40,7 +40,7 @@ check("a 2-member run is not a ladder", len(short) == 0, short)
 # --- assign_siloxane_ladder: commit on Si-isotope corroboration, displace an
 #     UNLOCKED monster, never override a LOCKED id ---
 PROF = X.get_context("uronium")
-cfg = P.PassConfig(height_cutoff=100.0)
+cfg = P.PassConfig(height_cutoff_cps=100.0)
 cfg.cal_mu, cfg.cal_sigma = -2.45, 0.27          # the uronium offset
 cfg.mechanism_ids = ["m"]
 

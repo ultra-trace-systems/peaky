@@ -2,6 +2,7 @@
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -109,6 +110,203 @@ check("_protected_neutrals: reflist/known/certified in; grid/siloxane out",
       _prot == {"C10H15NO2S", "C10H19O6PS2", "C6H10O2"}, _prot)
 check("_protected_neutrals: missing columns -> empty set",
       AB._protected_neutrals(pd.DataFrame({"x": [1]})) == set())
+
+# ---------------------------------------------------------------------------
+# the SELECTION block end to end through run(): the per-sample assign and the IO
+# layer are stubbed, so this exercises the real selector -> summary -> CSV path.
+# ---------------------------------------------------------------------------
+import json  # noqa: E402
+import os  # noqa: E402
+import tempfile  # noqa: E402
+
+from peaky.io import io_mascope as IO  # noqa: E402
+from peaky.assignment import assign as _A  # noqa: E402
+from peaky.assignment import ledger as _L  # noqa: E402
+from peaky.assignment import passes as _PASSES  # noqa: E402
+from peaky.assignment import tiers as _T  # noqa: E402
+from peaky.batch import sampling as SS  # noqa: E402
+from peaky.chem import chemistry as _C  # noqa: E402
+from peaky.chem import profiles as P_PROF  # noqa: E402
+
+_T0 = pd.Timestamp("2025-10-01 21:00:00", tz="UTC")
+
+
+def _batch_table(spec, height=500.0):
+    """Per-peak batch table: sample id -> the m/z values present in that sample."""
+    rows = []
+    for i, (sid, mzs) in enumerate(spec.items()):
+        t = _T0 + pd.Timedelta(minutes=10 * i)
+        rows += [dict(sample_item_id=sid, sample_item_name=f"n_{sid}", datetime_utc=t,
+                      mz=float(mz), height=height) for mz in mzs]
+    return pd.DataFrame(rows)
+
+
+_BG = list(range(100, 120))                    # 20 bins every sample shares
+_SPEC = {}
+for _i in range(4):                            # 4 exclusive 20-bin blocks, each a PAIR
+    _SPEC[f"a{_i}"] = _BG + list(range(200 + 20 * _i, 220 + 20 * _i))
+    _SPEC[f"b{_i}"] = _BG + list(range(200 + 20 * _i, 220 + 20 * _i))
+_PK = _batch_table(_SPEC)
+_F = "C10H16O5"
+
+
+_SEEN_CFG = []
+
+
+def _fake_assign(sid, context="ambient-air", **kw):
+    """Stand-in for assign.run: one assigned M0, the real ledger schema. Keeps
+    the cfg it was handed, so the gate resolution can be read back."""
+    _SEEN_CFG.append(kw.get("cfg"))
+    led = _L.new_ledger(pd.DataFrame([("p1", _C.ion_mz(_F, "[M-H]-"), 1.0e5)],
+                                     columns=["peak_id", "mz", "height"]))
+    _L.commit_assignment(led, "p1", neutral_formula=_F, adduct="[M-H]-",
+                         ion_formula="C10H15O5-", ion_score=0.9, compound_score=0.9,
+                         ppm_error=0.1, pass_no=1, method="cheminfo+grid",
+                         confidence="High", commentary="stub")
+    _T.apply_tiers(led)
+    return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+            "plausibility_audit": [], "summaries": {}, "problems": []}
+
+
+_saved = {"connect": IO.connect, "fetch_peaks": IO.fetch_peaks,
+          "estimate_offset": IO.estimate_offset, "run": _A.run}
+IO.connect = lambda *a, **k: "CLIENT"
+IO.fetch_peaks = lambda client, sid, use_cache=True: pd.DataFrame(
+    {"peak_id": ["p1"], "mz": [_C.ion_mz(_F, "[M-H]-")], "height": [1.0e5]})
+IO.estimate_offset = lambda raw: 0.0
+_A.run = _fake_assign
+try:
+    with tempfile.TemporaryDirectory() as _d:
+        res = AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch",
+                     out_dir=_d, k_min=2, k_max=3, min_gain=0.0, n_jobs=1,
+                     log=lambda *a: None)
+        summ = json.load(open(os.path.join(_d, "batch_summary.json")))
+        s = summ["selection"]
+        check("run: batch_summary carries the selection block",
+              s["method"] == "presence-cover" and s["k"] == 3 and s["n_samples"] == 8
+              and s["n_bins"] == 100, s)
+        check("run: the k_max budget bound and is recorded with its rejected gain",
+              s["stop_reason"] == "k_max" and s["k_max"] == 3
+              and np.isclose(s["achieved_coverage"], 0.8)
+              and np.isclose(s["next_gain"], 0.2), s)
+        check("run: the selection's binning tolerance IS the merge tolerance",
+              s["tol_ppm"] == summ["tol_ppm"] == SS.BATCH_TOL_PPM, (s.get("tol_ppm"),
+                                                                    summ.get("tol_ppm")))
+        sel = pd.read_csv(os.path.join(_d, "tables", "selected_samples.csv"))
+        check("run: selected_samples.csv is in pick order with the cover columns",
+              sel["pick"].tolist() == [1, 2, 3] and sel["role"].tolist() == ["cover"] * 3
+              and sel["bins_new"].tolist() == [40, 20, 20]
+              and np.isclose(sel["coverage"].tolist(), [0.4, 0.6, 0.8]).all(),
+              sel.to_dict("records"))
+        check("run: the CSV order IS the assignment order recorded in the summary",
+              sel["sample_item_id"].tolist() == summ["sample_ids"] == res["sample_ids"],
+              (sel["sample_item_id"].tolist(), summ["sample_ids"]))
+        check("run: per-file stats keep the RESOLVED gate under height_gate_cps",
+              all("height_gate_cps" in pf and "height_cutoff_cps" not in pf
+                  for pf in summ["per_file"]), summ["per_file"][:1])
+        check("run: a profile with no opinion leaves the package default gate",
+              all(c is not None and c.height_cutoff_x_edge == 1.0 for c in _SEEN_CFG)
+              and summ.get("height_cutoff_x_edge") == 1.0
+              and summ.get("height_cutoff_x_edge_source") == "the package default", summ.get(
+                  "height_cutoff_x_edge_source"))
+
+    # ... and a profile that carries its own multiple hands it to every per-file
+    # run and says so in the summary (the config-file path for a picker that
+    # picks into the noise).
+    _snap = (dict(P_PROF.PROFILES), dict(P_PROF._BY_ALIAS))
+    P_PROF.register(P_PROF.ReagentProfile(
+        name="BrPick", label="Br- picker", polarity="-",
+        adducts=list(P_PROF.BR.adducts), normaliser="reagent",
+        reagent_ion_re=P_PROF.BR.reagent_ion_re, ranges=P_PROF.BR.ranges,
+        detect_adduct=None, height_cutoff_x_edge=5.0))
+    try:
+        with tempfile.TemporaryDirectory() as _d3:
+            _SEEN_CFG.clear()
+            AB.run(peaks=_PK, ts_peaks=_PK, reagent="BrPick", batch="test batch",
+                   out_dir=_d3, k_min=2, k_max=3, min_gain=0.0, n_jobs=1,
+                   log=lambda *a: None)
+            summ3 = json.load(open(os.path.join(_d3, "batch_summary.json")))
+            check("run: the profile's multiple reaches every per-file PassConfig",
+                  len(_SEEN_CFG) == 3
+                  and all(c.height_cutoff_x_edge == 5.0 for c in _SEEN_CFG),
+                  [getattr(c, "height_cutoff_x_edge", None) for c in _SEEN_CFG])
+            check("run: batch_summary records the multiple AND where it came from",
+                  summ3.get("height_cutoff_x_edge") == 5.0
+                  and summ3.get("height_cutoff_x_edge_source")
+                  == "the BrPick reagent profile",
+                  {k: summ3.get(k) for k in ("height_cutoff_x_edge",
+                                             "height_cutoff_x_edge_source")})
+        # an EXPLICIT cfg multiple outranks the profile at this layer -- including
+        # one that equals the package default, which is the value a caller is
+        # most likely to type and the one a `!= 1.0` test cannot distinguish from
+        # "unset". (PassConfig.height_cutoff_x_edge is None when unset.)
+        with tempfile.TemporaryDirectory() as _d5:
+            _SEEN_CFG.clear()
+            AB.run(peaks=_PK, ts_peaks=_PK, reagent="BrPick", batch="test batch",
+                   out_dir=_d5, k_min=2, k_max=3, min_gain=0.0, n_jobs=1,
+                   cfg=_PASSES.PassConfig(height_cutoff_x_edge=1.0),
+                   log=lambda *a: None)
+            summ4 = json.load(open(os.path.join(_d5, "batch_summary.json")))
+            check("run: an explicit 1.0 beats a profile that says 5.0",
+                  all(c.height_cutoff_x_edge == 1.0 for c in _SEEN_CFG)
+                  and summ4.get("height_cutoff_x_edge") == 1.0
+                  and "explicit" in summ4.get("height_cutoff_x_edge_source", ""),
+                  {k: summ4.get(k) for k in ("height_cutoff_x_edge",
+                                             "height_cutoff_x_edge_source")})
+    finally:
+        P_PROF.PROFILES.clear(); P_PROF.PROFILES.update(_snap[0])
+        P_PROF._BY_ALIAS.clear(); P_PROF._BY_ALIAS.update(_snap[1])
+
+    # ---- per-file cfg ISOLATION on the serial path (--jobs 1) ---------------
+    # A.run MUTATES the cfg it is handed (noise edge, mechanism ids, the fitted
+    # cal_mu/cal_sigma), and passes.calibrate RETURNS EARLY -- leaving the
+    # previous fit in place -- when a file's backbone is smaller than cal_min_n.
+    # The worker pool copies in _assign_one; the serial loop must do the same, or
+    # file N+1 runs the calibrated mass gate on file N's calibration.
+    _SEEN_CFG.clear()
+    _seen_cal: list = []
+
+    def _calibrating_assign(sid, context="ambient-air", **kw):
+        _cfg = kw.get("cfg")
+        _seen_cal.append(getattr(_cfg, "cal_mu", "no cfg"))
+        _out = _fake_assign(sid, context, **kw)
+        _cfg.cal_mu, _cfg.cal_sigma = -2.45, 0.3      # what calibrate() stamps
+        return _out
+
+    _A.run = _calibrating_assign
+    try:
+        with tempfile.TemporaryDirectory() as _d4:
+            _parent = _PASSES.PassConfig()
+            AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch",
+                   out_dir=_d4, k_min=2, k_max=3, min_gain=0.0, n_jobs=1,
+                   cfg=_parent, log=lambda *a: None)
+        check("serial run: every file is handed its OWN cfg object",
+              len(_SEEN_CFG) == 3 and len({id(c) for c in _SEEN_CFG}) == 3
+              and all(c is not _parent for c in _SEEN_CFG),
+              [id(c) for c in _SEEN_CFG])
+        check("serial run: one file's fitted calibration never reaches the next",
+              _seen_cal == [None, None, None], _seen_cal)
+        check("serial run: the caller's cfg comes back unmutated by the assign",
+              _parent.cal_mu is None and _parent.cal_sigma is None,
+              (_parent.cal_mu, _parent.cal_sigma))
+    finally:
+        _A.run = _fake_assign
+
+    # a per-SAMPLE table (samples.list) cannot be binned: selection refuses it
+    # rather than silently falling back to some other rule.
+    with tempfile.TemporaryDirectory() as _d2:
+        try:
+            AB.run(peaks=SS.sample_table(_PK), reagent="Br", out_dir=_d2,
+                   n_jobs=1, log=lambda *a: None)
+            check("run: per-sample peaks and no time series raises ValueError",
+                  False, "no error")
+        except ValueError as e:
+            check("run: per-sample peaks and no time series raises ValueError",
+                  "per-peak" in str(e), str(e))
+finally:
+    IO.connect, IO.fetch_peaks = _saved["connect"], _saved["fetch_peaks"]
+    IO.estimate_offset, _A.run = _saved["estimate_offset"], _saved["run"]
+
 
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"

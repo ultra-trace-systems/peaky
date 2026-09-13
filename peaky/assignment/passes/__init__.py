@@ -8,4 +8,4 @@ from .core import *  # noqa: F401,F403
 from .postprocess import *  # noqa: F401,F403
 from .directors import *  # noqa: F401,F403
 
-__version__ = "0.10.0"  # + Si isotope gate; strong-phantom satellite displacement
+__version__ = "0.11.0"  # fail-closed edge-relative height gate; RUNTIME_FIELDS on PassConfig

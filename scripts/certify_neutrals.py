@@ -110,6 +110,13 @@ def main(argv=None):
         client = IO.connect()
         led_run = L.new_ledger(un[["peak_id", "mz", "height"]].reset_index(drop=True))
         cfg = P.PassConfig()
+        # Pass 7 is not height-gated (it reads the residual's peaks, never
+        # cfg.height_cutoff), so this resolution changes nothing today. It is
+        # here so that this entry point -- which resolves a profile and builds a
+        # PassConfig, like every other one -- is not the single exception if the
+        # pass ever starts gating. One rule, one place (REAGENTS.md 3a). No
+        # `log=`: a "[gate] ..." line here would announce a gate that isn't used.
+        PR.apply_height_cutoff_x_edge(cfg, rp)
         cfg.mechanism_ids = IO.resolve_mechanism_ids(client, list(rp.adducts))
         s = P.run_pass_certified(client, args.sample_id, led_run, profile, cfg,
                                  list(rp.adducts), reagent=cluster_reagent,

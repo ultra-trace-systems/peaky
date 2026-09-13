@@ -48,7 +48,7 @@ REPORTING    ledger → figures + PDF                 VANKREVELEN · GKA · QC_A
 
 | doc | module | transform |
 | --- | --- | --- |
-| [`SAMPLING.md`](SAMPLING.md) | `batch/sampling.py` | which real samples get assigned: time-representative or brightest-coverage set-cover |
+| [`SAMPLING.md`](SAMPLING.md) | `batch/sampling.py` | which real samples get assigned: greedy presence set-cover over the batch's m/z bins with a marginal-gain stop |
 | [`MERGE.md`](MERGE.md) | `batch/assign_batch.py` | assign each rep file, then offset-aware m/z merge + the file-to-file jitter accounting |
 | [`TIMESERIES.md`](TIMESERIES.md) | `batch/timeseries.py` | the samples × m/z-bin matrix, reagent-normalised variability, and TS disposition |
 

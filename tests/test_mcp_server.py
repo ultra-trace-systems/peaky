@@ -4,6 +4,7 @@ No network and NO `mcp` package required: the tool functions are plain Python
 (FastMCP is only imported by build_server). IO is monkeypatched. Run:
     python3 tests/test_mcp_server.py
 """
+import inspect
 import sys
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from peaky import mcp_server as M  # noqa: E402
+from peaky.batch import sampling as SS  # noqa: E402
 from peaky.io import io_mascope as IO  # noqa: E402
 
 PASS = FAIL = 0
@@ -107,6 +109,129 @@ check("assign_sample returns a queued job_id", "job_id" in a, a)
 lj = M.list_jobs()
 check("list_jobs lists both", len(lj["jobs"]) == 2, lj)
 M.JOBS = _saved
+
+# ---------- the batch tool actually FORWARDS its selection budget ----------
+# The job runs for real here, with the pipeline stubbed, so a k_max that never
+# left the tool signature is caught.
+from types import SimpleNamespace  # noqa: E402
+from peaky import pipeline as PL  # noqa: E402
+
+_seen_kw = {}
+_orig_run_batch = PL.run_batch
+
+
+def _fake_run_batch(**kw):
+    _seen_kw.update(kw)
+    return {"ctx": SimpleNamespace(out_dir="/tmp/peaky-mcp-test", run_id="rid"),
+            "report_pdf": None, "assign": {"merged_M0": 3}}
+
+
+PL.run_batch = _fake_run_batch
+_saved = M.JOBS
+M.JOBS = M.JobManager()
+try:
+    rj = M.run_batch("some batch", dataset="A", reagent="Ur", k_max=7)
+    for _ in range(100):
+        if M.JOBS.get(rj["job_id"]).status in ("done", "error"):
+            break
+        time.sleep(0.02)
+    _job = M.JOBS.get(rj["job_id"])
+    check("run_batch job completes with the pipeline stubbed",
+          _job.status == "done", _job.view())
+    check("run_batch forwards k_max to pipeline.run_batch",
+          _seen_kw.get("k_max") == 7, _seen_kw)
+    check("run_batch forwards the batch/dataset/reagent it was called with",
+          (_seen_kw.get("batch"), _seen_kw.get("dataset"), _seen_kw.get("reagent"))
+          == ("some batch", "A", "Ur"), _seen_kw)
+    check("run_batch records k_max in the job's params (visible in job_status)",
+          M.JOBS.get(rj["job_id"]).view()["params"]["k_max"] == 7,
+          M.JOBS.get(rj["job_id"]).view().get("params"))
+finally:
+    PL.run_batch = _orig_run_batch
+    M.JOBS = _saved
+
+# ---------- and its DEFAULT is the sampling constant, not a retyped number ----
+# The CLI takes --k-max from SS.K_MAX; the tool must not drift from it when the
+# constant moves, and the docstring must name the constant rather than today's
+# value (a literal in the docstring is what goes stale silently).
+check("run_batch's k_max default tracks sampling.K_MAX",
+      inspect.signature(M.run_batch).parameters["k_max"].default == SS.K_MAX,
+      inspect.signature(M.run_batch).parameters["k_max"].default)
+check("run_batch's docstring names the constant, not a literal default",
+      "K_MAX" in (M.run_batch.__doc__ or "")
+      and f"default {SS.K_MAX})" not in (M.run_batch.__doc__ or ""),
+      M.run_batch.__doc__)
+
+# ---------- the assign tool RESOLVES the profile's own gate multiple ----------
+# The MCP path is one of the entry points that resolve the height-gate multiple
+# where the profile is (profiles.apply_height_cutoff_x_edge); nothing else in the
+# suite covers it, so deleting that call from assign_sample left everything green.
+# Mirrors the cmd_assign checks in test_cli.py: register a profile carrying a
+# RAISED multiple, stub the assignment run, and read the multiple off the cfg the
+# run was handed. A missing resolution leaves the field None -> this FAILS (it
+# does not error), which is what a revert should look like.
+import tempfile  # noqa: E402
+
+from peaky.assignment import assign as _A  # noqa: E402
+from peaky.chem import profiles as _PR  # noqa: E402
+
+_seen_assign = {}
+_orig_assign_run = _A.run
+
+
+def _fake_assign_run(sample_id, context="ambient-air", *, cfg=None, **kw):
+    _seen_assign["cfg"] = cfg
+    _seen_assign["context"] = context
+    _seen_assign["adducts"] = kw.get("adducts")
+    return {"ledger": pd.DataFrame({"peak_id": ["p0"], "mz": [100.0076],
+                                    "height": [9.0], "role": ["M0"],
+                                    "neutral_formula": ["C5H8O"],
+                                    "adduct": ["[M-H]-"]}),
+            "stats": {"n_peaks": 1}}
+
+
+_pick = _PR.ReagentProfile(
+    name="TofPickMCP", label="tof picker", polarity="-", adducts=["[M-H]-"],
+    normaliser="tic", reagent_ion_re=None, ranges="C0-10 H0-20",
+    detect_adduct=None, height_cutoff_x_edge=5.0)
+_prof_snap = (dict(_PR.PROFILES), dict(_PR._BY_ALIAS))
+_PR.register(_pick)
+_A.run = _fake_assign_run
+_saved = M.JOBS
+M.JOBS = M.JobManager()
+try:
+    with tempfile.TemporaryDirectory() as _d:
+        aj = M.assign_sample("sid1", reagent="TofPickMCP", output_dir=_d)
+        for _ in range(200):
+            if M.JOBS.get(aj["job_id"]).status in ("done", "error"):
+                break
+            time.sleep(0.02)
+        _ajob = M.JOBS.get(aj["job_id"])
+        check("assign_sample job completes with assign.run stubbed",
+              _ajob.status == "done", _ajob.view())
+        _acfg = _seen_assign.get("cfg")
+        check("assign_sample takes the gate multiple from the reagent profile",
+              _acfg is not None and _acfg.height_cutoff_x_edge == 5.0,
+              vars(_acfg) if _acfg is not None else _ajob.view())
+        check("assign_sample's absolute height_cutoff stays the cps override",
+              _acfg is not None and _acfg.height_cutoff_cps is None, _acfg)
+        _seen_assign.clear()
+        aj2 = M.assign_sample("sid1", reagent="TofPickMCP", height_cutoff=250.0,
+                              output_dir=_d)
+        for _ in range(200):
+            if M.JOBS.get(aj2["job_id"]).status in ("done", "error"):
+                break
+            time.sleep(0.02)
+        _acfg2 = _seen_assign.get("cfg")
+        check("assign_sample(height_cutoff=) gates absolutely, multiple inert",
+              _acfg2 is not None and _acfg2.height_cutoff_cps == 250.0
+              and _acfg2.height_cutoff == 250.0,
+              vars(_acfg2) if _acfg2 is not None else None)
+finally:
+    _A.run = _orig_assign_run
+    M.JOBS = _saved
+    _PR.PROFILES.clear(); _PR.PROFILES.update(_prof_snap[0])
+    _PR._BY_ALIAS.clear(); _PR._BY_ALIAS.update(_prof_snap[1])
 
 # ---------- build_server degrades cleanly without the mcp package ----------
 try:

@@ -1,10 +1,12 @@
-"""Batch assignment over a REPRESENTATIVE sample subset, with per-file records.
+"""Batch assignment over a PRESENCE-COVER sample subset, with per-file records.
 
 This realises the sample-selection RULE (see sampling.py): rather than assign a
 single averaged file (which misses analytes present only part of the run), we
-assign each of the representative files SEPARATELY and combine. match_compounds
-is per-sample — a synthetic union spectrum can't be scored — so combining real
-per-file ledgers is the only principled path.
+assign each selected file SEPARATELY and combine. match_compounds is per-sample
+— a synthetic union spectrum can't be scored — so combining real per-file
+ledgers is the only principled path. The subset is a greedy presence set-cover
+over the batch's m/z bins (no height floor, prevalence >= 2, marginal-gain stop);
+the achieved coverage and the stop reason are recorded in batch_summary.json.
 
 We keep every per-file ledger on disk (out_dir/per_file/<sid>_ledger.csv) so the
 file-to-file JITTER can be investigated: does the same m/z get the same formula /
@@ -20,6 +22,7 @@ assignment loop.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 
@@ -30,9 +33,11 @@ from peaky import paths as PT
 from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
 
-__version__ = "0.3.0"  # + sample-level process parallelism (--jobs)
+__version__ = "0.4.0"  # batch_summary: selection.tol_ppm + per_file height_gate_cps
 
-DEFAULT_TOL_PPM = 6.0
+# the merge's m/z tolerance IS the selector's binning tolerance (one constant for
+# every batch-level binning; see sampling.BATCH_TOL_PPM)
+DEFAULT_TOL_PPM = SS.BATCH_TOL_PPM
 TIER_ASSIGNED = "Assigned"
 TIER_RANK = {"Assigned": 2, "Candidate": 1}
 _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score"]
@@ -322,24 +327,29 @@ def _resolve_jobs(n_jobs, n_samples: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# network: assign each representative file, keep per-file records, combine
+# network: assign each selected file, keep per-file records, combine
 # ---------------------------------------------------------------------------
 def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         reagent: str = "auto", context: str | None = None,
-        n_time: int = SS.N_TIME, include_max_tic: bool = True,
-        select: str = "representative", coverage_target: float = 0.85,
-        k_max: int = 10, height_floor: float = 1000.0,
+        k_min: int = SS.K_MIN, k_max: int = SS.K_MAX, min_gain: float = SS.MIN_GAIN,
+        min_prevalence: int = SS.MIN_PREVALENCE,
         out_dir: str, tol_ppm: float = DEFAULT_TOL_PPM,
-        sample_ids: list | None = None, ts_peaks=None, amine_r_min: float = 0.6,
+        sample_ids: list | None = None, selection_meta: dict | None = None,
+        ts_peaks=None, amine_r_min: float = 0.6,
         n_jobs: int | None = None, log=print, **assign_kw) -> dict:
-    """Assign the representative subset of a batch and combine, keeping per-file
+    """Assign the presence-cover subset of a batch and combine, keeping per-file
     ledgers. Provide EITHER `peaks` (a batch peak/sample table) OR `batch` (a
     batch name; the per-sample list is fetched fresh from the live server, which
     also guarantees the selected sample ids are valid for get_peaks — cached ids
-    go stale / 404 when the server copy is renamed). `context` defaults to the
-    reagent profile's context. Extra kwargs pass through to assign.run. Writes
-    (see paths.RunPaths): merged_ledger.csv + batch_summary.json at the run root,
-    per_file/<sid>_ledger.csv, and tables/{selected_samples,jitter}.csv."""
+    go stale / 404 when the server copy is renamed). Selection needs the per-PEAK
+    table: pass it as `ts_peaks` (the full-batch time series) or as a per-peak
+    `peaks`. `k_min`/`k_max`/`min_gain`/`min_prevalence` tune the cover (see
+    sampling.py). `sample_ids` skips selection (the pooled path); pass its
+    `selection_meta` so batch_summary still records how they were chosen.
+    `context` defaults to the reagent profile's context. Extra kwargs pass
+    through to assign.run. Writes (see paths.RunPaths): merged_ledger.csv +
+    batch_summary.json at the run root, per_file/<sid>_ledger.csv, and
+    tables/{selected_samples,jitter}.csv."""
     from peaky.assignment import assign as A
     from peaky.io import io_mascope as IO
 
@@ -357,24 +367,36 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
 
     prof = P.resolve(reagent, peaks)
     context = context or prof.context
+    # The height-gated passes gate on a MULTIPLE of each sample's own noise edge.
+    # Resolve that multiple ONCE for the batch -- the profile's own value when it
+    # carries one, else the package default; a cfg the caller already set wins --
+    # so every per-file run gates identically and the summary can record it.
+    from peaky.assignment import passes as PA
+
+    cfg = assign_kw.get("cfg") or PA.PassConfig()
+    x_edge, x_edge_source = P.apply_height_cutoff_x_edge(cfg, prof, log=log)
+    assign_kw["cfg"] = cfg
+    selection = dict(selection_meta or {})
     if sample_ids is None:
-        if select == "brightest":
-            # bin ALL batch peaks -> assign each significant bin's BRIGHTEST sample.
-            # Needs the per-PEAK table (height per peak): the pipeline passes it as
-            # ts_peaks; fall back to `peaks` if it already is per-peak.
-            src = ts_peaks if ts_peaks is not None else peaks
-            sel = SS.select_brightest_coverage_samples(
-                src, coverage_target=coverage_target, k_max=k_max,
-                height_floor=height_floor)
-            log(f"[assign_batch] brightest-coverage: {len(sel)} winner samples "
-                f"(target {coverage_target:.0%}, floor {height_floor:g} cps)")
-        else:
-            sel = SS.select_representative_samples(peaks, n_time=n_time,
-                                                   include_max_tic=include_max_tic)
+        # greedy presence set-cover over the batch's m/z bins. Needs the per-PEAK
+        # table: the pipeline passes it as ts_peaks; `peaks` may already be one.
+        src = ts_peaks if ts_peaks is not None else peaks
+        if not SS.is_per_peak(src):
+            raise ValueError("sample selection needs the per-peak batch table "
+                             "(mz + height per peak): pass ts_peaks= (the batch "
+                             "time series) or a per-peak peaks=")
+        sel = SS.select_cover_samples(src, k_min=k_min, k_max=k_max,
+                                      min_gain=min_gain, min_prevalence=min_prevalence,
+                                      tol_ppm=tol_ppm)      # = the merge's tolerance
+        selection = dict(sel.attrs.get("selection", {}))
         sample_ids = sel["sample_item_id"].tolist()
         sel.to_csv(os.path.join(TAB, "selected_samples.csv"), index=False)
+        log(f"[assign_batch] {SS.describe(selection)}")
+        _warn = SS.k_max_warning(selection)
+        if _warn:
+            log(f"[assign_batch] WARNING: {_warn}")
     log(f"[assign_batch] {prof.label} context={context!r}: "
-        f"{len(sample_ids)} representative files -> {pfdir}")
+        f"{len(sample_ids)} selected files -> {pfdir}")
 
     # Force the reagent's analyte channels (we know the reagent at batch level) so
     # a per-sample match gap can't flip polarity / mis-assign a file. Caller can
@@ -436,8 +458,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     if n_jobs <= 1:
         for i, sid in enumerate(sample_ids, 1):
             log(f"[assign_batch] ({i}/{len(sample_ids)}) assigning {sid} ...")
+            # Per-file cfg COPY -- the same isolation the worker pool gets in
+            # _assign_one. A.run mutates the cfg it is handed (noise edge,
+            # mechanism ids, and the fitted cal_mu/cal_sigma), and `calibrate`
+            # LEAVES A PREVIOUS FIT IN PLACE when this file's backbone is
+            # smaller than cal_min_n -- so one shared object would gate file
+            # N+1's mass z-scores on file N's calibration.
+            kw = dict(assign_kw, cfg=copy.deepcopy(cfg))
             res = A.run(sid, context=context, log=log,
-                        reflists_active=reflists_active, **assign_kw)
+                        reflists_active=reflists_active, **kw)
             _apply(sid, res["ledger"], res.get("plausibility_audit") or [],
                    dict(res.get("stats", {})))
     else:
@@ -544,9 +573,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     summary = {
         "reagent": prof.name, "label": prof.label, "context": context,
         "batch_name": batch,
-        "select": select,
-        "coverage_target": (coverage_target if select == "brightest" else None),
+        "selection": selection,
         "n_files": len(sample_ids), "sample_ids": sample_ids,
+        # the gate actually used, and where the multiple came from (a
+        # profile-supplied value reads differently from the package default);
+        # the resolved cps gate per file is in per_file[].height_gate_cps.
+        "height_cutoff_x_edge": x_edge,
+        "height_cutoff_x_edge_source": x_edge_source,
         "tol_ppm": tol_ppm, "offsets_ppm": offsets,
         "merged_M0": int(len(merged)),
         "merged_tiers": merged["tier"].value_counts().to_dict() if len(merged) else {},

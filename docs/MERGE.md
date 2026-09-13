@@ -19,7 +19,7 @@ assignment loop and writes the run artifacts.
 ## 1. What this stage does
 
 `match_compounds` is per-sample — a synthetic union spectrum can't be scored — so
-the batch path assigns each representative file **separately** and then **combines
+the batch path assigns each cover-selected file **separately** and then **combines
 the real per-file ledgers by m/z**. The combine is **offset-aware**: each file
 carries a median mass offset, alignment happens on offset-corrected m/z so a
 genuine same-peak isn't split by per-file calibration drift, and the report
@@ -56,7 +56,7 @@ selected sample_ids (SAMPLING.md)
 
 ## 3. The transformation, stage by stage
 
-1. **Assign each representative file** (`run`). Loop the selected `sample_ids`,
+1. **Assign each selected file** (`run`). Loop the selected `sample_ids`,
    `A.run(sid, …)` each, write `per_file/<sid>_ledger.csv`, keep the M0 rows, and
    record the file's `estimate_offset`. The reagent's analyte channels are forced
    at batch level (`assign_kw.setdefault("adducts", prof.adducts)`) so a per-sample
@@ -68,8 +68,9 @@ selected sample_ids (SAMPLING.md)
 
 3. **Gap-cluster** (`_cluster_mz`). Sort by `_mz_adj`; consecutive-gap
    single-linkage: `gaps = diff(mz)/mz · 1e6`, `cluster_id = cumsum(gaps >
-   tol_ppm)` with **`tol_ppm` = `DEFAULT_TOL_PPM` (6.0)**. One cluster ≈ one
-   physical peak across files.
+   tol_ppm)` with **`tol_ppm` = `DEFAULT_TOL_PPM` (6.0 = `sampling.BATCH_TOL_PPM`,
+   the tolerance the selector binned on — see [`SAMPLING.md`](SAMPLING.md))**.
+   One cluster ≈ one physical peak across files.
 
 4. **Pick the consensus row.** Within a cluster, rank by tier
    (`TIER_RANK = {Assigned:2, Candidate:1}`, else 0) then `ion_score`, both
@@ -104,11 +105,11 @@ All in `peaky/batch/assign_batch.py`.
 
 | constant | value | role |
 | --- | --- | --- |
-| `DEFAULT_TOL_PPM` | 6.0 | single-linkage gap tolerance for cross-file m/z clustering |
+| `DEFAULT_TOL_PPM` | 6.0 (`= sampling.BATCH_TOL_PPM`) | single-linkage gap tolerance for cross-file m/z clustering — the same constant the selector bins on |
 | `TIER_RANK` | `{Assigned:2, Candidate:1}` | consensus-row preference (then `ion_score`) |
 | `_M0_COLS` | `[mz, neutral_formula, adduct, tier, ion_score]` | the per-file M0 schema aligned |
 | `run` `amine_r_min` | 0.7 | min trace correlation for the positive amine re-read |
-| `run` `n_time` / `k_max` / `coverage_target` / `height_floor` | 5 / 10 / 0.85 / 1000.0 | passed through to `sampling` (see [`SAMPLING.md`](SAMPLING.md)) |
+| `run` `k_min` / `k_max` / `min_gain` / `min_prevalence` | 6 / 30 / 0.005 / 2 | passed through to `sampling.select_cover_samples` (see [`SAMPLING.md`](SAMPLING.md)) |
 
 ---
 
@@ -135,8 +136,8 @@ All in `peaky/batch/assign_batch.py`.
 | `merged_ledger.csv` (run root) | one row per m/z cluster: consensus mz, best assignment, `n_files`, `srcs`, `formula_agree`, `mz_jitter_ppm_raw/caldj` — **the result** |
 | `tables/jitter.csv` | long form, one row per (cluster, file): `cluster`, `src`, `mz`, formula, adduct, tier, `ion_score` |
 | `per_file/<sid>_ledger.csv` | each assigned file's full single-sample ledger (audit / re-merge) |
-| `tables/selected_samples.csv` | the selected subset (role + bins_won) |
-| `batch_summary.json` (run root) | reagent/context, `select`, per-file offsets, merged tier counts, agreement counts |
+| `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role`, `bins_new`, `coverage`) |
+| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason), the resolved height gate (`height_cutoff_x_edge` + its source), per-file offsets + noise edges, merged tier counts, agreement counts |
 | `jitter_report()` dict | `{offsets, by_formula, by_mz, summary}` — the standalone jitter analysis |
 
 ---

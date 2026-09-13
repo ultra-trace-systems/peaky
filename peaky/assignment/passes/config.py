@@ -3,13 +3,46 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
+
+import numpy as np
 
 from peaky.assignment import masscal
 
 
 __all__ = [
     "PassConfig",
+    "noise_edge",
+    "DEFAULT_HEIGHT_CUTOFF_X_EDGE",
 ]
+
+NOISE_EDGE_Q = 0.01   # the sample's noise edge = this quantile of its picked heights
+
+# The PACKAGE default height gate, as a multiple of the sample's noise edge, and
+# the only home for that number: `PassConfig.height_cutoff_x_edge_resolved`
+# below and `profiles.resolve_height_cutoff_x_edge` (the explicit > profile >
+# default fallback) both read it, so the two cannot drift apart.
+# 1.0 = every picked peak but the bottom 1 % is a candidate. That is right where
+# a picker that stops AT the noise edge leaves off (on an Orbitrap, rare real
+# ions sit at 1-3x the edge, so raising it would discard them). A picker that
+# picks INTO the noise wants more, which is what a reagent profile's own
+# `height_cutoff_x_edge` supplies (see profiles.ReagentProfile).
+DEFAULT_HEIGHT_CUTOFF_X_EDGE = 1.0
+
+
+def noise_edge(heights, q: float = NOISE_EDGE_Q) -> float | None:
+    """The sample's peak-picker detection edge: the `q` quantile (1st percentile)
+    of its picked peak heights. This is the only height scale that transfers
+    between instruments and modes -- measured 0.8 cps on a TOF, 9-11 cps on
+    Orbitrap EasyIC modes, 140-180 cps on a urea 122-600 mode and 640-870 cps
+    with the reagent ion in range (an ~1000x spread, stable to 2-16 % within one
+    mode across weeks). Every height threshold in the passes is a multiple of it.
+    None when there are no finite heights."""
+    h = np.asarray(heights, dtype=float)
+    h = h[np.isfinite(h)]
+    if h.size == 0:
+        return None
+    return float(np.percentile(h, 100.0 * q))
 
 
 @dataclass
@@ -24,7 +57,28 @@ class PassConfig:
     # can never be scored); match_compounds keeps its 5 ppm window so it still
     # attributes real 29Si/81Br satellites, and the z-gate owns ppm rejection.
     search_ppm: float = 3.0  # grid enumeration tolerance
-    height_cutoff: float = 100.0
+    # Height gate for the height-gated passes (ladders, siloxane, residual,
+    # reflist rescue, isotope-satellite checks). Expressed as a MULTIPLE of the
+    # sample's own noise edge (`noise_edge`: the 1st percentile of its picked
+    # heights, stamped onto `noise_edge_cps` by assign.run) -- an absolute cps
+    # value was a no-op on modes whose edge sits above it and blinded the passes
+    # on modes whose edge sits far below it (EasyIC: 87 % of picked peaks under
+    # the old 100 cps; TOF: 97 %). 1.0 = every picked peak but the bottom 1 % is
+    # eligible.
+    #
+    # None = UNSET, and unset falls through to DEFAULT_HEIGHT_CUTOFF_X_EDGE above
+    # (read it back through `height_cutoff_x_edge_resolved`, never off the field).
+    # The distinction matters: a reagent profile may carry a higher multiple for
+    # its own peak picker, and `profiles.apply_height_cutoff_x_edge` treats a
+    # multiple this config ALREADY carries as the caller's explicit choice, which
+    # outranks the profile -- so a caller who deliberately asks for 1.0 against a
+    # profile that says 5.0 must be distinguishable from one who asked for
+    # nothing. A `0.0` default here would have been a value, not an absence.
+    # `height_cutoff_cps` is an explicit ABSOLUTE override (offline callers /
+    # tests); when set it wins. Read the resolved gate via `height_cutoff`.
+    height_cutoff_x_edge: float | None = None
+    height_cutoff_cps: float | None = None
+    noise_edge_cps: float | None = None   # runtime: set per sample by assign.run
     limit_per_peak: int = 25
     workers: int = 12
     # confidence thresholds (on the RAW min(ion,compound) score)
@@ -124,3 +178,48 @@ class PassConfig:
     # the run's context-active reference lists (reflists.active_lists).
     reflist_formulas: frozenset = frozenset()
     reflist_prior: float = 0.04
+
+    # Fields a RUN stamps onto the cfg PER SAMPLE -- assign.run directly, and
+    # `calibrate` for the fitted cal_mu/cal_sigma. They are run-derived (they
+    # come out of the DATA, not the user), so the reproducibility fingerprint
+    # (provenance.build_manifest) drops exactly these: a manifest that absorbed
+    # a fitted mass calibration would vary with the data it is meant to pin the
+    # configuration against. Declared here, next to the fields, so a new runtime
+    # field is added in one place. A ClassVar, not a dataclass field:
+    # asdict()/pickle/deepcopy are unaffected.
+    RUNTIME_FIELDS: ClassVar[tuple[str, ...]] = (
+        "mechanism_ids", "prior_offset", "reagent_element", "noise_edge_cps",
+        # passes.calibrate fits these onto the cfg during a run: they are the
+        # calibration's OUTPUT, not user knobs. The pipeline now hands the same
+        # cfg to the provenance manifest, so leaving any of them in would make
+        # two identical re-runs fingerprint differently depending on which
+        # sample finished last. cal_mu / cal_sigma are dropped here for that
+        # reason -- a deliberate manifest schema change (manifests written
+        # earlier carry the two as a record of the run's calibration centre,
+        # and batch_summary.json still reports the per-file offsets).
+        "cal_a", "cal_b", "cal_sigma_trend", "cal_mz_lo", "cal_mz_hi",
+        "cal_mu", "cal_sigma")
+
+    @property
+    def height_cutoff_x_edge_resolved(self) -> float:
+        """The gate multiple actually in force: the field when it is set, else the
+        package default. Everything that MULTIPLIES by the multiple (or reports
+        it) reads this, so an unset config gates exactly like one stamped 1.0."""
+        x = self.height_cutoff_x_edge
+        return float(DEFAULT_HEIGHT_CUTOFF_X_EDGE if x is None else x)
+
+    @property
+    def height_cutoff(self) -> float:
+        """The resolved height gate in cps: the absolute override if given, else
+        `height_cutoff_x_edge_resolved` x the sample's noise edge. FAILS CLOSED:
+        before assign.run has stamped an edge (and without an override) there is
+        no gate to resolve, and returning 0 here would silently un-gate every
+        height-gated pass -- so this raises instead."""
+        if self.height_cutoff_cps is not None:
+            return float(self.height_cutoff_cps)
+        if self.noise_edge_cps is not None:
+            return self.height_cutoff_x_edge_resolved * float(self.noise_edge_cps)
+        raise RuntimeError(
+            "height gate unresolved: assign.run stamps noise_edge_cps from the "
+            "sample's picked heights; offline callers pass "
+            "PassConfig(height_cutoff_cps=...)")

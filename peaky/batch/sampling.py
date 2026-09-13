@@ -1,37 +1,71 @@
-"""Representative-sample selection for batch assignment — THE RULE.
+"""Which real samples get assigned for a batch: greedy PRESENCE SET-COVER.
 
-A single averaged / single-file spectrum misses peaks that are only present at
-certain times: `assign.run` scores ONE sample, so an analyte that spikes during
-an event window is never in the candidate list when the chosen file predates the
-spike. This bit us on the uronium 24-h run — the 08:20 snapshot sat at hour 11.3,
-BEFORE the hour 18-22 event, so the event-only analytes (C10H19NO2, C9H14O2, ...)
-were invisible until event files were assigned and merged.
+`assign.run` scores ONE sample at a time (match_compounds is per-sample; a
+synthetic union spectrum cannot be scored), so a whole-batch ledger is the merge
+of a small subset of per-sample assignments. The merge has no prevalence filter:
+a compound is in the ledger iff some ASSIGNED sample contained it. Selection is
+therefore the whole recall story -- an analyte present in samples that were never
+assigned is simply missing.
 
-THE RULE (agent-peaky, set 2026-06-19): to get a peak list representative of the
-WHOLE batch, assign a small fixed subset and merge it, where the subset is
+THE RULE (2026-09-12, replacing the time-grid+max-TIC and brightest-arg-max
+selectors):
 
-  * N_TIME (=5) samples evenly spaced across the batch's TIME range — catches
-    peaks that appear / disappear over the run; the time endpoints are always
-    included, so the start and end of the experiment are covered; PLUS
-  * the single MAX-TIC sample — the richest spectrum, the most peaks above the
-    detection floor in one shot.
+  * Universe = the batch's m/z bins (`timeseries.build_matrix`) that are PRESENT
+    in at least `min_prevalence` (2) samples. No height floor anywhere: the
+    peak picker's own detection edge varies ~1000x between instruments and
+    modes (TOF 0.8 cps vs a reagent-in-range Orbitrap mode 800 cps), so any
+    absolute cps floor is a no-op on one mode and blinds another. The prevalence
+    gate is the noise filter and has no units.
+  * Greedy: each pick is the sample that holds the most NOT-YET-COVERED universe
+    bins. Presence cover is submodular, so plain greedy is near-optimal and can
+    trade redundancy (two near-identical rich samples are not both taken). A
+    time grid / max-TIC add nothing: the clock is uncorrelated with the air and
+    the first greedy pick is already the sample carrying the most distinct bins
+    (the objective is that COUNT, never brightness -- 'richest' below means
+    total ion current and ranks the pads only).
+  * Stop on MARGINAL GAIN: once `k_min` (6) samples are taken, stop when the
+    next sample would add fewer than `min_gain` (0.5 %) of the universe. `k_max`
+    (30) is a wall-clock budget only; a run that hits it is flagged
+    (`stop_reason == 'k_max'`) because it means the batch was still gaining.
+    A coverage-target stop is broken both ways (trivially met with a floor,
+    never met without one), so none exists.
 
-Selecting in TIME (not by row index) matters: an irregularly-sampled run (dense
-early, a lone late file, or a gap) must still place a pick on the sparse late
-region. The downstream merge (by m/z) of the per-sample assignments is the
-representative peak matrix.
+Measured on a pooled 5036-sample field-campaign table (the numbers are
+docs/SAMPLING.md section 7; keep the two in step): this lands at k=15 and holds
+94 % of the rare (<5 % prevalence) ledger ions of a dedicated sub-batch run, vs
+54 % for the old 6-sample time grid and 91 % for the 12-sample arg-max cap
+(which never reached its coverage target on any real batch). A single greedy
+over a pooled multi-batch table also does NOT starve quiet groups (per-group
+coverage 87-93 %), so pooling uses the same selector; per-group achieved
+coverage is recorded when `group_col` is given.
 
 Pure pandas/numpy; no network. The selected `sample_item_id`s feed `assign.run`
-one at a time (match_compounds is per-sample), then the ledgers are merged.
+one at a time (in pick order), then the ledgers are merged (assign_batch.py).
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"  # presence set-cover replaces representative + brightest
 
-N_TIME = 5  # evenly-time-spaced samples per batch (the rule)
+K_MIN = 6              # take at least this many samples before the gain stop applies
+K_MAX = 30             # wall-clock budget (a run that hits it is flagged)
+MIN_GAIN = 0.005       # stop when the next pick adds < this fraction of the universe
+MIN_PREVALENCE = 2     # a bin enters the universe if present in >= this many samples
+
+# The ONE m/z binning tolerance for every batch-level operation: sample selection
+# (the presence cover's bins) and the merge (`assign_batch.DEFAULT_TOL_PPM` is
+# this constant). Keep selection and merge binning identical: a bin the selector
+# covered must be the bin the merge sees.
+BATCH_TOL_PPM = 6.0
+
+ROLE_COVER = "cover"   # a greedy pick (adds bins_new uncovered bins)
+ROLE_PAD = "pad"       # richest-TIC pad up to k_min after the greedy exhausted the bins
+UNGROUPED = "(ungrouped)"   # `group_col` label for a sample whose group value is missing
+STOP_GAIN = "gain-floor"
+STOP_KMAX = "k_max"
+STOP_EXHAUSTED = "exhausted"
 
 
 def sample_table(peaks: pd.DataFrame, *, sample_col: str = "sample_item_id",
@@ -66,193 +100,211 @@ def sample_table(peaks: pd.DataFrame, *, sample_col: str = "sample_item_id",
     return tab.sort_values(sort_key).reset_index(drop=True)
 
 
-def select_representative_samples(peaks: pd.DataFrame, *, n_time: int = N_TIME,
-                                  include_max_tic: bool = True,
-                                  sample_col: str = "sample_item_id",
-                                  **table_kw) -> pd.DataFrame:
-    """Pick the representative sample subset for assignment (THE RULE).
-
-    Returns the selected rows of `sample_table()`, time-ordered, with an added
-    `role` column: 'time-grid', 'max-TIC', or 'time-grid+max-TIC' (when the
-    max-TIC sample is also a time-grid pick). Assign each id, then merge by m/z.
-
-    - `n_time` samples are chosen evenly across the batch TIME range: the nearest
-      DISTINCT sample to each of `n_time` equally-spaced target times (so the two
-      endpoints are always included and dense regions are not over-sampled).
-    - The single max-TIC sample is added (union; deduped against the grid).
-    - Fewer than `n_time` samples -> all are returned (max-TIC still flagged).
-    """
-    tab = sample_table(peaks, sample_col=sample_col, **table_kw)
-    n = len(tab)
-    if n == 0:
-        return tab.assign(role=pd.Series(dtype=str))
-    has_time = "datetime_utc" in tab.columns
-    has_tic = "tic" in tab.columns
-
-    # --- n_time evenly TIME-spaced picks (nearest distinct sample per target) ---
-    if not has_time or n <= n_time:
-        grid = list(range(n))                       # too few to thin, or no clock
-    else:
-        t = tab["datetime_utc"].astype("int64").to_numpy()   # ns since epoch
-        targets = np.linspace(t[0], t[-1], n_time)
-        grid, used = [], set()
-        for tg in targets:
-            for j in np.argsort(np.abs(t - tg)):     # nearest sample not yet taken
-                j = int(j)
-                if j not in used:
-                    used.add(j)
-                    grid.append(j)
-                    break
-    roles = {i: "time-grid" for i in grid}
-
-    # --- max-TIC (the richest single spectrum) ---
-    if include_max_tic and has_tic:
-        mi = int(np.asarray(tab["tic"]).argmax())
-        roles[mi] = "time-grid+max-TIC" if mi in roles else "max-TIC"
-
-    keep = sorted(roles)
-    sel = tab.loc[keep].copy()
-    sel["role"] = [roles[i] for i in keep]
-    sort_key = "datetime_utc" if has_time else sample_col
-    return sel.sort_values(sort_key).reset_index(drop=True)
+def is_per_peak(peaks, *, mz_col: str = "mz", height_col: str = "height") -> bool:
+    """True when `peaks` is a per-PEAK table (m/z + height per row) -- what the
+    cover needs. A per-sample table (`samples.list`) has neither."""
+    cols = set(getattr(peaks, "columns", []))
+    return mz_col in cols and height_col in cols
 
 
-def select_representative_sample_ids(peaks: pd.DataFrame, *,
-                                     sample_col: str = "sample_item_id",
-                                     **kw) -> list:
-    """Convenience: just the selected `sample_item_id`s (time order)."""
-    sel = select_representative_samples(peaks, sample_col=sample_col, **kw)
-    return sel[sample_col].tolist()
+def _empty(tab: pd.DataFrame, meta: dict) -> pd.DataFrame:
+    out = tab.iloc[:0].assign(pick=pd.Series(dtype=int), role=pd.Series(dtype=str),
+                              bins_new=pd.Series(dtype=int),
+                              coverage=pd.Series(dtype=float))
+    out.attrs["selection"] = meta
+    return out
 
 
-# ---------------------------------------------------------------------------
-# Strategy 2: BRIGHTEST-COVERAGE (the "bin-then-assign" realization).
-#
-# THE RULE picks samples by TIME; but match_compounds can only commit a peak in a
-# sample where that peak's isotope envelope is actually present, i.e. where it is
-# bright. On a reagent-CIMS run the max-TIC pick is dominated by the (huge) reagent
-# ion, so it is the brightest sample for only a small fraction of ANALYTE peaks
-# (measured: 13% on a representative Br- batch) and event-only analytes stay unexplained.
-#
-# Brightest-coverage instead bins ALL batch peaks by m/z (timeseries.build_matrix),
-# and for each significant bin takes the sample where it is BRIGHTEST. Because each
-# bin has exactly one brightest (arg-max) sample, the winner sets are DISJOINT, so
-# the optimal cover is simply: take winner samples in descending bins-won order
-# until `coverage_target` of significant bins is covered (capped at k_max, floored
-# at k_min). The selected ids feed the SAME assign.run + merge as THE RULE — only
-# WHICH real samples get assigned changes, never the scoring or the merge. It is a
-# COVERAGE play (catches more analyte peaks), not a speed play (~k_max assigns).
-# ---------------------------------------------------------------------------
-def select_brightest_coverage_samples(
-        peaks: pd.DataFrame, *, coverage_target: float = 0.85, k_max: int = 10,
-        k_min: int = N_TIME + 1, height_floor: float = 1000.0,
-        include_time_grid: bool = True, sample_col: str = "sample_item_id",
-        **table_kw) -> pd.DataFrame:
-    """Pick the winner-sample subset that COVERS the brightest occurrence of as many
-    significant m/z bins as possible (brightest-coverage strategy; see module note).
+def select_cover_samples(peaks: pd.DataFrame, *, k_min: int = K_MIN, k_max: int = K_MAX,
+                         min_gain: float = MIN_GAIN, min_prevalence: int = MIN_PREVALENCE,
+                         group_col: str | None = None, tol_ppm: float = BATCH_TOL_PPM,
+                         sample_col: str = "sample_item_id", **table_kw) -> pd.DataFrame:
+    """Greedy presence set-cover over the batch's m/z bins (THE RULE; module note).
 
-    Returns the selected `sample_table()` rows, time-ordered, with a `role` column
-    ('coverage-winner' / 'time-grid' / 'coverage+time-grid') and a `bins_won` int
-    (significant bins this sample is the brightest for). Feed `[sample_item_id]`
-    straight into `assign_batch.run(sample_ids=...)`.
+    `peaks` must be the per-PEAK batch table (`sample_item_id`, `mz`, `height`;
+    optionally `datetime_utc`, `sample_item_name`). Returns the selected
+    `sample_table()` rows in PICK order with
 
-    - `height_floor` (cps): a bin is "significant" if its max height across samples
-      is >= this. Reagent-relative — lower it for a quieter dataset.
-    - greedy cover by bins-won until `coverage_target` of significant bins is covered,
-      bounded `k_min` <= n <= `k_max`. Padded to `k_min` with the richest (max-TIC)
-      remaining samples so a too-high floor / quiet dataset never under-selects.
-    - `include_time_grid` unions the two TIME endpoints (cheap insurance the run
-      start/end are represented even if they win no bins).
+      pick       1-based greedy order
+      role       'cover' (a greedy pick) | 'pad' (richest-TIC pad up to k_min)
+      bins_new   universe bins this pick covered for the first time (marginal gain)
+      coverage   cumulative fraction of the universe covered after this pick
+      <group_col>  the sample's group as a string, when `group_col` is given
+                   (a missing group value becomes `UNGROUPED`)
+
+    and `.attrs['selection']` = {method, k, n_samples, n_bins, n_bins_total,
+    n_bins_gated, min_prevalence, tol_ppm, achieved_coverage, stop_reason,
+    next_gain, k_min, k_max, min_gain[, coverage_by_group, picks_by_group]}.
+    `tol_ppm` is the m/z binning tolerance (default `BATCH_TOL_PPM`, the merge's
+    tolerance too -- pass the same value to both).
+
+    Stop reasons: 'gain-floor' (next pick < min_gain of the universe, k >= k_min),
+    'k_max' (budget hit while still gaining -- WARN, see `k_max_warning`),
+    'exhausted' (every universe bin covered, or every sample taken).
+    Fewer than k_min samples -> all are taken. Deterministic for a given table.
     """
     from peaky.batch import timeseries as TS
 
-    k_min = min(k_min, k_max)            # k_max is the hard cap, even below the default floor
+    if not is_per_peak(peaks):
+        raise ValueError("presence-cover selection needs the per-peak batch table "
+                         "(a `mz` and a `height` column per peak); a per-sample "
+                         "table cannot be binned")
+    k_max = max(int(k_max), 1)
+    k_min = max(min(int(k_min), k_max), 1)
+    min_prevalence = max(int(min_prevalence), 1)
     tab = sample_table(peaks, sample_col=sample_col, **table_kw)
     n = len(tab)
+    meta: dict = {"method": "presence-cover", "k": 0, "n_samples": int(n),
+                  "n_bins": 0, "n_bins_total": 0, "n_bins_gated": 0,
+                  "min_prevalence": min_prevalence, "tol_ppm": float(tol_ppm),
+                  "achieved_coverage": 0.0, "stop_reason": STOP_EXHAUSTED,
+                  "next_gain": 0.0, "k_min": k_min, "k_max": k_max,
+                  "min_gain": float(min_gain)}
     if n == 0:
-        return tab.assign(role=pd.Series(dtype=str), bins_won=pd.Series(dtype=int))
-    if n <= k_min:                       # too few samples to be selective: take all
-        return tab.assign(role="coverage-winner", bins_won=0)
+        return _empty(tab, meta)
 
-    mat, _bin_mz = TS.build_matrix(peaks, sample_col=sample_col)   # samples x bins
-    maxh = mat.max(axis=0)                                         # per-bin max (skips NaN)
-    sig = maxh.index[maxh >= height_floor]                         # significant bins
-    win_counts = (mat[sig].idxmax(axis=0).value_counts()          # sample -> #bins won (desc)
-                  if len(sig) else pd.Series(dtype=int))
-    total = max(int(len(sig)), 1)
+    mat, _bin_mz = TS.build_matrix(peaks, sample_col=sample_col,
+                                   tol_ppm=float(tol_ppm))   # samples x bins
+    if mat.shape[1] == 0:
+        return _empty(tab, meta)
+    A_all = (mat > 0).to_numpy()                       # presence; NaN -> False
+    samples = np.asarray(mat.index)
+    prev = A_all.sum(axis=0)
+    gate = prev >= min_prevalence
+    if not gate.any():
+        # NO bin reaches min_prevalence -- a 1-sample batch, but also any batch
+        # whose samples share no m/z at this tolerance. An empty universe would
+        # cover trivially and pick nothing, so fall back to every bin.
+        gate = prev >= 1
+    A = A_all[:, gate]
+    n_bins = int(A.shape[1])
+    if n_bins == 0:
+        # EVERY bin gated out, which the >=1 fallback above leaves possible only
+        # when no peak anywhere has a positive height. An empty universe has no
+        # coverage to report: `covered.mean()` is NaN (plus numpy warnings), and
+        # that NaN would reach `coverage`, `achieved_coverage` and a bare `NaN`
+        # token in batch_summary.json. Nothing to cover -> nothing to select,
+        # the same answer as the empty matrix above.
+        meta.update(n_bins_total=int(A_all.shape[1]), n_bins_gated=int((~gate).sum()))
+        return _empty(tab, meta)
+    gain_floor = float(min_gain) * n_bins
 
-    selected: list = []
-    bins_won: dict = {}
-    covered = 0
-    for sid, cnt in win_counts.items():
-        if len(selected) >= k_max:
+    # gain_floor is a fraction of the GATED universe (n_bins), not of all bins:
+    # the singletons the prevalence gate dropped are not coverable, so counting
+    # them would scale the floor by an irrelevant, instrument-dependent number.
+    covered = np.zeros(n_bins, dtype=bool)
+    picked: list[int] = []
+    gains: list[int] = []
+    covs: list[float] = []
+    stop, next_gain = STOP_EXHAUSTED, 0
+    while len(picked) < len(samples):
+        g = (A & ~covered[None, :]).sum(axis=1)
+        if picked:
+            g[picked] = -1
+        # TIE-BREAK: argmax returns the FIRST maximum, and build_matrix pivots on
+        # the sample id, so equal-gain samples resolve to the lexicographically
+        # smallest sample_item_id. Deterministic and input-order independent.
+        j = int(g.argmax())
+        gj = int(g[j])
+        # stop-check precedence: exhausted, then gain-floor, then k_max (a pick
+        # that adds nothing is never taken, even below k_min; the budget is the
+        # last word only while the batch is still gaining above the floor).
+        if gj <= 0:
+            stop, next_gain = STOP_EXHAUSTED, 0
             break
-        selected.append(sid); bins_won[sid] = int(cnt); covered += int(cnt)
-        if covered / total >= coverage_target and len(selected) >= k_min:
+        if len(picked) >= k_min and gj < gain_floor:
+            stop, next_gain = STOP_GAIN, gj
             break
-    # pad to k_min with the richest remaining samples (robustness for a high floor)
-    if len(selected) < k_min:
-        order = (tab.sort_values("tic", ascending=False)[sample_col].tolist()
-                 if "tic" in tab.columns else tab[sample_col].tolist())
-        for sid in order:
-            if sid not in bins_won:
-                selected.append(sid); bins_won[sid] = 0
-                if len(selected) >= k_min:
-                    break
+        if len(picked) >= k_max:
+            stop, next_gain = STOP_KMAX, gj
+            break
+        picked.append(j)
+        covered |= A[j]
+        gains.append(gj)
+        covs.append(float(covered.mean()))
+    roles = [ROLE_COVER] * len(picked)
 
-    roles = {sid: "coverage-winner" for sid in selected}
-    if include_time_grid and "datetime_utc" in tab.columns and n >= 2:
-        for sid in (tab.iloc[0][sample_col], tab.iloc[-1][sample_col]):
-            roles[sid] = "coverage+time-grid" if sid in roles else "time-grid"
-            bins_won.setdefault(sid, 0)
+    # pad to k_min with the richest remaining samples (tiny batch, or the bins
+    # ran out early): cheap cross-file corroboration, never fewer than k_min.
+    if len(picked) < min(k_min, len(samples)):
+        tic = (tab.set_index(sample_col)["tic"].reindex(samples).fillna(0.0).to_numpy()
+               if "tic" in tab.columns else np.zeros(len(samples)))
+        # TIE-BREAK: a stable sort on descending tic, so equal-TIC samples keep
+        # the matrix's (sorted-id) row order -- same determinism as the cover.
+        for j in np.argsort(-tic, kind="stable"):
+            j = int(j)
+            if j in picked:
+                continue
+            picked.append(j); gains.append(0); roles.append(ROLE_PAD)
+            covs.append(float(covered.mean()))
+            if len(picked) >= min(k_min, len(samples)):
+                break
 
-    sel = tab[tab[sample_col].isin(roles)].copy()
-    sel["role"] = sel[sample_col].map(roles)
-    sel["bins_won"] = sel[sample_col].map(bins_won).fillna(0).astype(int)
-    sort_key = "datetime_utc" if "datetime_utc" in sel.columns else sample_col
-    return sel.sort_values(sort_key).reset_index(drop=True)
+    sel = tab.set_index(sample_col).loc[samples[picked]].reset_index()
+    sel["pick"] = np.arange(1, len(picked) + 1)
+    sel["role"] = roles
+    sel["bins_new"] = np.asarray(gains, dtype=int)
+    sel["coverage"] = np.round(np.asarray(covs, dtype=float), 4)
+    meta.update(k=int(len(picked)), n_bins=n_bins, n_bins_total=int(A_all.shape[1]),
+                n_bins_gated=int((~gate).sum()),
+                achieved_coverage=round(float(covered.mean()), 4), stop_reason=stop,
+                next_gain=round(next_gain / n_bins, 4) if n_bins else 0.0)
+
+    if group_col is not None:
+        if group_col not in peaks.columns:
+            raise KeyError(f"group_col {group_col!r} not in peaks columns "
+                           f"(got {list(peaks.columns)[:8]})")
+        # Normalise the labels to str ONCE, before the set and the sort: a missing
+        # group value is a real state (the pool warns about ungrouped peak rows
+        # and leaves them in the table it hands us), and on pandas >= 3
+        # `astype(str)` no longer turns NaN into "nan", so the labels would stay
+        # a str/float mix and `sorted(set(...))` would raise. Ungrouped samples
+        # still carry bins and are still selectable; they just group under
+        # UNGROUPED, which no per-group report matches.
+        gser = peaks.groupby(sample_col)[group_col].first().reindex(samples)
+        grp = gser.astype(str).where(gser.notna(), UNGROUPED).to_numpy()
+        sel[group_col] = grp[picked]
+        cov_by, picks_by = {}, {}
+        pick_mask = np.zeros(len(samples), dtype=bool)
+        pick_mask[picked] = True
+        for gname in sorted(set(grp)):
+            rows = grp == gname
+            gbins = A[rows].any(axis=0)
+            nb = int(gbins.sum())
+            cov_by[gname] = round(float((covered & gbins).sum() / nb), 4) if nb else 0.0
+            picks_by[gname] = int((rows & pick_mask).sum())
+        meta["coverage_by_group"] = cov_by
+        meta["picks_by_group"] = picks_by
+    sel.attrs["selection"] = meta
+    return sel
 
 
-def select_brightest_coverage_sample_ids(peaks: pd.DataFrame, *,
-                                         sample_col: str = "sample_item_id",
-                                         **kw) -> list:
-    """Convenience: just the brightest-coverage `sample_item_id`s (time order)."""
-    sel = select_brightest_coverage_samples(peaks, sample_col=sample_col, **kw)
-    return sel[sample_col].tolist()
+def select_cover_sample_ids(peaks: pd.DataFrame, *, sample_col: str = "sample_item_id",
+                            **kw) -> list:
+    """Convenience: just the selected `sample_item_id`s (pick order)."""
+    return select_cover_samples(peaks, sample_col=sample_col, **kw)[sample_col].tolist()
 
 
-def select_pooled_union(peaks: pd.DataFrame, *,
-                        group_col: str = "sample_batch_name",
-                        sample_col: str = "sample_item_id",
-                        coverage_target: float = 0.90, k_max: int = 6,
-                        height_floor: float = 1000.0, **kw) -> tuple[list, pd.DataFrame]:
-    """Per-GROUP brightest-coverage UNION for a pooled multi-batch peak table.
+def k_max_warning(meta: dict | None) -> str | None:
+    """The warning text for a selection that hit its `k_max` budget while the
+    batch was still gaining (the next sample would have added `next_gain` of the
+    universe); None otherwise."""
+    if not meta or meta.get("stop_reason") != STOP_KMAX:
+        return None
+    return (f"selection hit k_max={meta.get('k_max')} while still gaining "
+            f"({meta.get('next_gain', 0) * 100:.2f}% of {meta.get('n_bins')} bins per "
+            f"extra sample; achieved coverage {meta.get('achieved_coverage', 0):.1%}) "
+            f"-- raise --k-max to cover more of this batch")
 
-    Pooling many batches (e.g. all per-zone batches of one mode x range) into ONE
-    unified ledger needs a sample subset that represents EVERY group. A single naive
-    brightest-coverage pass over the pool is biased: the group with the highest
-    absolute intensity wins most m/z bins and hogs the winner slots, starving the
-    quieter groups (measured on a pooled field campaign: naive pooling gave one
-    group only 56% bright-bin coverage). Selecting brightest-coverage WITHIN each
-    group and unioning the picks guarantees each group contributes its own analyte-
-    representative samples, at the cost of ~`k_max` x n_groups assignments.
 
-    Returns `(union_ids, provenance)` where `union_ids` is the de-duplicated sample
-    list (group order, then each group's time order) and `provenance` is the
-    concatenated `select_brightest_coverage_samples` table with a `group_col` column.
-    """
-    if group_col not in peaks.columns:
-        raise KeyError(f"group_col {group_col!r} not in peaks columns "
-                       f"(got {list(peaks.columns)[:8]})")
-    frames, ids = [], []
-    for g, dfg in peaks.groupby(group_col, sort=True):
-        sel = select_brightest_coverage_samples(
-            dfg, coverage_target=coverage_target, k_max=k_max,
-            height_floor=height_floor, sample_col=sample_col, **kw)
-        sel = sel.assign(**{group_col: g})
-        frames.append(sel)
-        ids.extend(sel[sample_col].tolist())
-    prov = (pd.concat(frames, ignore_index=True) if frames
-            else peaks.iloc[:0].assign(role=None, bins_won=0))
-    union = list(dict.fromkeys(ids))            # de-dup, preserve first-seen order
-    return union, prov
+def describe(meta: dict | None) -> str:
+    """One log line for a selection meta dict."""
+    m = meta or {}
+    s = (f"presence-cover: {m.get('k', 0)} samples of {m.get('n_samples', '?')} cover "
+         f"{m.get('achieved_coverage', 0):.1%} of {m.get('n_bins', 0)} m/z bins "
+         f"(present in >={m.get('min_prevalence', MIN_PREVALENCE)} samples; "
+         f"{m.get('n_bins_gated', 0)} singleton bins gated out); "
+         f"stop={m.get('stop_reason')}")
+    if m.get("stop_reason") == STOP_GAIN:
+        s += f" (next pick would add {m.get('next_gain', 0):.2%})"
+    return s

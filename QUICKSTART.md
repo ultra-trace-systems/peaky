@@ -53,7 +53,7 @@ peaky list samples  --batch "<your batch>" --dataset "<your workspace>"
 
 ```bash
 peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|auto> \
-    --height-cutoff 100 --output-dir ~/peaky-output/<name>
+    --output-dir ~/peaky-output/<name>
 ```
 `--reagent` forces the analyte channels (a positive/sparse sample otherwise
 mis-detects as negative). Writes `<ID>_<UTC>_{ledger.csv, assignments.xlsx,
@@ -62,8 +62,9 @@ summary.md, manifest.json, gka.html}`. A ~1000-peak sample takes ≈5 min.
 ## 5. Assign a whole batch (recommended)
 
 A single averaged file misses analytes present only part of a run, so the batch
-flow assigns a representative subset (5 time-spaced + max-TIC) and merges, then
-builds cluster figures, a Van Krevelen and a PDF report:
+flow assigns a presence set-cover subset (greedily, the samples that together
+hold the batch's m/z bins; see `docs/SAMPLING.md`) and merges, then builds
+cluster figures, a Van Krevelen and a PDF report:
 
 ```bash
 peaky batch --batch "<your batch>" --dataset "<your workspace>" \

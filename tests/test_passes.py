@@ -606,7 +606,7 @@ def commit(led, pid, neutral, ion, conf="Good", score=0.9):
                         pass_no=3, method="test", confidence=conf,
                         commentary="t")
 
-ACFG = P.PassConfig(height_cutoff=100.0)
+ACFG = P.PassConfig(height_cutoff_cps=100.0)
 
 # v16 case: 462.99/464.99 — two Good M0s 1.99795 apart, ~1:1; light ion has Br
 led = mk_ledger([("La", 462.9933, 26882.0), ("Hb", 464.9913, 25609.0),
@@ -621,7 +621,7 @@ check("audit: 13C satellite swept up as evidence",
 
 # doublet where NEITHER formula carries Br -> both cleared, but ONLY in Br-CIMS
 # (where a ~1:1 1.998 doublet is strong evidence of an unassigned bromine).
-ACFG_BR = P.PassConfig(height_cutoff=100.0, reagent_element="Br")
+ACFG_BR = P.PassConfig(height_cutoff_cps=100.0, reagent_element="Br")
 led = mk_ledger([("Lc", 284.0501, 641.0), ("Hd", 286.0480, 543.0)])
 commit(led, "Lc", "C9H20NO4", "C9H20NO4-")    # no Br anywhere
 commit(led, "Hd", "C14H10O3", "C15H10O6-")
@@ -694,7 +694,7 @@ L.commit_assignment(led, "Mp2", neutral_formula="C8H12ClF6NO2S", adduct="[M+CO3]
 L.attach_isotopologue(led, "Mp4", "Mp2", iso_label="37Cl(pair)")
 from peaky.assignment import tiers as _T  # noqa: E402
 _T.apply_tiers(led)
-out = P.complete_isotope_envelopes(led, P.PassConfig(), log=lambda *a: None)
+out = P.complete_isotope_envelopes(led, P.PassConfig(height_cutoff_cps=100.0), log=lambda *a: None)
 check("envelope: silanediol M+2 (395) displaced off its phantom formula",
       L.role_of(led, "Mp2") == L.ROLE_ISO and out["displaced"] >= 1, out)
 check("envelope: 395 re-parented to the silanediol 393",
@@ -713,7 +713,7 @@ L.commit_assignment(ledd, "core", neutral_formula="C10H14O4", adduct="[M+HBr+Br]
                     pass_no=6, method="ladder:gapfill", confidence="Good (ladder)",
                     commentary="di-bromide SOA core")
 _T.apply_tiers(ledd)
-outd = P.complete_isotope_envelopes(ledd, P.PassConfig(), log=lambda *a: None)
+outd = P.complete_isotope_envelopes(ledd, P.PassConfig(height_cutoff_cps=100.0), log=lambda *a: None)
 check("envelope: di-bromide M+2 (358.93) attached to the core",
       L.role_of(ledd, "m2") == L.ROLE_ISO
       and ledd.loc[ledd.peak_id == "m2", "parent_peak_id"].iloc[0] == "core", outd)
@@ -727,7 +727,7 @@ led2 = mk_ledger([("a", 200.0, 1e5), ("b", 202.0, 5e4)])
 commit(led2, "a", "C10H16O4", "C10H15O4-")   # CHO ion, no Br/Cl/Si
 commit(led2, "b", "C9H12O5", "C9H11O5-")      # independent neighbour
 _T.apply_tiers(led2)
-out2 = P.complete_isotope_envelopes(led2, P.PassConfig(), log=lambda *a: None)
+out2 = P.complete_isotope_envelopes(led2, P.PassConfig(height_cutoff_cps=100.0), log=lambda *a: None)
 check("envelope: CHO ion does not claim a coincidental +2 neighbour",
       L.role_of(led2, "b") == L.ROLE_M0 and out2["displaced"] == 0, out2)
 
@@ -740,7 +740,7 @@ L.commit_assignment(led3, "q", neutral_formula="C12H20O8", adduct="[M-H]-",
                     ion_formula="C12H19O8-", ion_score=0.95, ppm_error=0.2,
                     pass_no=1, method="cheminfo+grid", confidence="High",
                     commentary="strong standalone fit")
-outg = P.complete_isotope_envelopes(led3, P.PassConfig(), log=lambda *a: None)
+outg = P.complete_isotope_envelopes(led3, P.PassConfig(height_cutoff_cps=100.0), log=lambda *a: None)
 check("envelope: a High/strong-score victim is NOT displaced (tier-NA safe)",
       L.role_of(led3, "q") == L.ROLE_M0 and outg["displaced"] == 0, outg)
 
@@ -1583,7 +1583,7 @@ L.commit_assignment(led_i2, "ino2", neutral_formula="INO2", adduct="[M+I]-",
                     pass_no=0, method="known:reactive-iodine",
                     confidence="High", commentary="pass 0")
 L.lock_peaks(led_i2, ["ino2"])
-ICFG = P.PassConfig(height_cutoff=100.0, reagent_element="I")
+ICFG = P.PassConfig(height_cutoff_cps=100.0, reagent_element="I")
 s_i2 = P._resolve_acid_i2_clusters(None, "S", led_i2, PROF5, ICFG,
                                    score_fn=fake_i2_score, log=lambda *a: None)
 check("acid.I2 resolver commits both rungs", s_i2["committed"] == 2, s_i2)

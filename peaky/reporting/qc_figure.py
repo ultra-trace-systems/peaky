@@ -230,7 +230,7 @@ def render_qc(ledger: pd.DataFrame, path: str, *, title: str = "", dpi: int = 15
     fig.suptitle(title or "Mass-defect & mass-error QC", x=0.095, y=0.975,
                  ha="left", fontsize=12.5, weight="bold", color=INK)
     fig.text(0.095, 0.945,
-             "from the brightest representative sample's full ledger (all roles)",
+             "from the brightest selected sample's full ledger (all roles)",
              ha="left", fontsize=7.8, color=GREY)
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)

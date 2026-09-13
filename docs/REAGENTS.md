@@ -79,7 +79,8 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
    peaky's own envelope predictor `isotopes.isotope_pattern`; unset ⇒
    `isotopes.LABEL_PURITY_15N` = 0.98), and — for labelled reagents — `label_isotope` /
    `label_max` (the caret heavy isotope a *covalent product* can carry and its max
-   count; drives the heavy-isotope rescue in `labeled.py`). Built-ins: **`BR`**
+   count; drives the heavy-isotope rescue in `labeled.py`), and the optional
+   `height_cutoff_x_edge` (§3a below). Built-ins: **`BR`**
    (Br⁻, neg, normalise on reagent), **`UR`** (urea/uronium, pos, normalise on
    TIC), **`NO3`** (nitrate, neg, reagent), **`NO3_15N`** (¹⁵N nitrate, neg, TIC,
    `purity 0.98`, `label_isotope='^N'`, `label_max=2`), **`IODIDE`**
@@ -166,6 +167,57 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
    > `[M+^NH4]⁺`, octamethylcyclotetrasiloxane (D4) on both channels, a C11H14O2
    > acetate ester (acetylium 43.018 + acetic-acid loss → C9H11⁺).
 
+### 3a. `height_cutoff_x_edge` — the one field a *site* sets, not the reagent
+
+The height-gated passes gate on a **multiple of the sample's own noise edge**
+(the 1st percentile of its picked peak heights — see
+[`ASSIGNMENT_DETAIL.md`](ASSIGNMENT_DETAIL.md) §3.1). The package default is
+`passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE` = **1.0**, and a profile may carry
+its own `height_cutoff_x_edge` to raise it. Resolution order, implemented once in
+`profiles.resolve_height_cutoff_x_edge` and applied wherever a profile is
+resolved and a `PassConfig` is built:
+
+```
+an explicit --height-cutoff-x-edge / cfg value
+    > the reagent profile's height_cutoff_x_edge
+        > DEFAULT_HEIGHT_CUTOFF_X_EDGE (1.0)
+```
+
+Both "explicit" levels are **unset by default** — the flag and
+`PassConfig.height_cutoff_x_edge` are `None`, not a pre-filled 1.0 — so
+explicitness is read off the value rather than guessed by comparing it to the
+default. An explicit multiple that happens to equal the global default therefore
+still wins: asking for `1.0` against a profile that says `5.0` gets you `1.0`,
+and re-resolving that config further down the pipeline does not flip it back.
+Read the multiple in force off `PassConfig.height_cutoff_x_edge_resolved`, never
+off the field.
+
+**No bundled profile sets it** (they are all `None`), so out of the box every run
+gates exactly as before. What the right multiple depends on is the **peak
+picker**, not the reagent chemistry, which is why this is a site's setting:
+
+- A picker that stops **at** the noise edge (Orbitrap) wants **1.0**. Rare real
+  ions sit at 1–3× the edge there, so raising it would discard them.
+- A picker that picks **into** the noise (time-of-flight) admits nearly
+  everything it found at 1.0: on one 230-spectrum TOF batch, 1.0 merged 4346
+  ions of which 3307 were seen in a single file only, while **5.0** kept 57 % of
+  the picked peaks and 74 % of the assigned ones. Raising the multiple there
+  hands the passes a tighter candidate list.
+
+Set it for your own instrument from a `--reagent-config` file, no fork needed:
+
+```json
+[{"name": "Br-tof", "label": "Br- CIMS (TOF)", "polarity": "-",
+  "adducts": ["[M+Br]-", "[M-H]-"], "normaliser": "reagent",
+  "reagent_ion_re": "Br\\d-$", "ranges": "C0-40 H0-80 N0-3 O0-18 S0-2 Br0-2",
+  "detect_adduct": "[M+Br]-", "height_cutoff_x_edge": 5.0,
+  "aliases": ["br-tof"]}]
+```
+
+The resolved multiple is recorded per run: `batch_summary.json`
+(`height_cutoff_x_edge` + `height_cutoff_x_edge_source`, plus each file's
+resolved `height_gate_cps`) and `run_manifest.json['config']`.
+
 3. **Pick the cluster-library key** (`reagent_for_adducts`). From the analyte
    adducts: `^NH4` → `"ammonium15N"` (`_AMMONIUM_15N_KEY`); `CH4N2O` → `"urea"`;
    `Br` → `"Br"`; `I` → `"I"`; `Cl` → `"Cl"`. (`"EasyIC"` is selected by the
@@ -240,6 +292,8 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
 | `label_reagents` `ppm` | 15.0 | reagent-cluster mass-match window |
 | `label_reagents` `only_unexplained` | True | only relabels still-unexplained peaks |
 | `ReagentProfile.normaliser` | `reagent` / `tic` | TS/correlation normalisation basis |
+| `ReagentProfile.height_cutoff_x_edge` | `None` in every built-in | the profile's own height gate, as a multiple of the sample's noise edge (§3a); `None` = use the package default |
+| `passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE` | 1.0 | that package default — the ONE home for the number (the `PassConfig` field default and the fallback both read it) |
 | `BR.ranges` | `C0-40 H0-80 N0-3 O0-18 S0-2 Cl0-2 Br0-2` | bromide grid box |
 | `UR.ranges` | `C0-40 H0-90 N0-8 O0-15 S0-2` | uronium grid box |
 | `NO3.ranges` / `NO3_15N.ranges` | `C0-40 H0-60 N0-3 O0-25 S0-2` | nitrate grid box |
@@ -346,6 +400,11 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
 - **New reagent = a `ReagentProfile`, no fork.** `register` / `from_dict` /
   `load_config` add reagents from JSON/TOML (`--reagent-config`); a top-level list,
   a `{"reagents": [...]}` wrapper, or a `{name: {fields}}` mapping all parse.
+- **`height_cutoff_x_edge` is the peak picker's setting, not the reagent's.** No
+  bundled profile sets one (the built-ins are reagent chemistry, and the same
+  reagent runs on both a TOF and an Orbitrap), so it is left `None` = the package
+  default and a site raises it for its own instrument in a `--reagent-config`
+  profile (§3a).
 - **Auto-detect needs peaks**; with no diagnostic adduct it falls back to polarity,
   and a sparse positive sample can mis-detect as negative — pass `--reagent` to
   force it.
@@ -359,6 +418,7 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
 | `profiles.ReagentProfile` | the frozen per-reagent config dataclass |
 | `profiles.resolve` | name/alias or `auto` (detect_adduct → polarity) → a profile |
 | `profiles.register` / `from_dict` / `load_config` | registry + JSON/TOML reagent loading |
+| `profiles.resolve_height_cutoff_x_edge` / `height_cutoff_x_edge_source` / `apply_height_cutoff_x_edge` | the height-gate multiple: resolve (explicit > profile > default), name its source, stamp it on a `PassConfig` |
 | `profiles._detect_polarity` | infer `+`/`−` from the peak table |
 | `reagents.reagent_for_adducts` | analyte adducts → cluster-library key |
 | `reagents.build_library` | enumerate the reagent-cluster ions (halide + positive) |

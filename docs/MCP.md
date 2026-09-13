@@ -67,7 +67,7 @@ ships in `io_mascope.fetch_batch_peaks`.
 | `list_samples(dataset, batch, limit=50)` | quick | samples; count exact, rows capped |
 | `certify_neutrals(ledger_csv, reagent, ts_parquet?)` | quick | **offline** certified-neutral table over a ledger CSV (no server) |
 | `assign_sample(sample_id, reagent, …)` | **job** | one-sample multi-pass assign → job_id |
-| `run_batch(batch, dataset, reagent, select, …)` | **job** | whole-batch pipeline → job_id |
+| `run_batch(batch, dataset, reagent, k_max, …)` | **job** | whole-batch pipeline → job_id |
 | `job_status(job_id)` | quick | status + recent log + result/paths |
 | `list_jobs()` | quick | recent jobs |
 

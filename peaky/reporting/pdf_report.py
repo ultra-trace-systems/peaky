@@ -1,4 +1,4 @@
-"""Standard PDF report for a representative-batch assignment run.
+"""Standard PDF report for a cover-selected batch assignment run.
 
 Assembles the assignment findings into one PDF per batch: cover + headline,
 coverage stats (assigned vs unassigned, by count AND signal), composition / full
@@ -87,7 +87,7 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
         gs = merged.groupby("tier")["ion_score"].mean()
         ctx["score_by_tier"] = {t: float(gs[t]) for t in gs.index}
     ctx["adduct_counts"] = merged["adduct"].value_counts().to_dict()   # actual channels
-    # the representative sample NAMES (timestamps), not just ids
+    # the selected sample NAMES (timestamps), not just ids
     ss = f"{TAB}/selected_samples.csv"
     if os.path.exists(ss):
         s = pd.read_csv(ss)
@@ -106,7 +106,7 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
     if rows:
         a = pd.concat(rows, ignore_index=True)
         ctx["role_count"] = a["role"].value_counts().to_dict()
-        # the BRIGHTEST representative full ledger (max total height) — the
+        # the BRIGHTEST selected-sample full ledger (max total height) — the
         # mass-defect / mass-error QC figure (qc_massdefect) reads it whole (all
         # roles incl iso_child + unexplained), not the M0-only merged ledger.
         ctx["bright_ledger"] = max(rows, key=lambda r: float(r["h"].sum()))
@@ -129,7 +129,7 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
                                        "mz"].dropna().to_numpy())
         ctx["_flag_ev_src"] = a          # kept for scrutiny-evidence enrichment below
         # isotopes confirmed per (neutral, channel) — union of isotopologue labels
-        # across the representative files (each M0 row carries an `isotopologues`
+        # across the selected files (each M0 row carries an `isotopologues`
         # JSON list of {label, score, peak_id}). Feeds the assignment appendix.
         iso_by_channel: dict = {}
         if "isotopologues" in a.columns:
@@ -147,7 +147,7 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
                     iso_by_channel.setdefault((nf, ad), set()).update(labs)
         ctx["iso_by_channel"] = iso_by_channel
         # max observed intensity (cps) per (neutral, channel): the brightest M0
-        # height for that channel across the representative files. Heights live in
+        # height for that channel across the selected files. Heights live in
         # the per-file ledgers (not the m/z-only merged ledger), so pool them here.
         if {"neutral_formula", "adduct"} <= set(a.columns):
             _m0h = a[a["role"] == "M0"]
@@ -242,7 +242,7 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
         binsig = mat.sum(axis=0)
         # batch-wide MAX intensity per assigned channel: the brightest this ion gets
         # in ANY sample of the FULL batch (the appendix's `max cps`). The per-file
-        # value computed above only saw the ~12 representative samples; override it
+        # value computed above only saw the cover-selected samples; override it
         # with the whole-batch max by matching each channel's ion m/z to its TS bin.
         _bmax = mat.max(axis=0)
         _bins = list(mat.columns)
@@ -280,7 +280,7 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
                      "tot_signal": float(binsig.sum())}
         # event overview: per-sample total signal vs wall-clock over the FULL batch
         # (the reader needs to SEE the burst; the cluster pages only show a
-        # normalised 0-1 'hour' axis). Mark where the representative files sit.
+        # normalised 0-1 'hour' axis). Mark where the selected files sit.
         try:
             tt = pd.to_datetime(ts["datetime_utc"], utc=True)
             tstamp = tt.groupby(ts["sample_item_id"]).first()
@@ -516,9 +516,9 @@ def cover(ctx, pdf):
     batch = ctx.get("batch_name") or ctx["label"]
     fig.text(0.08, 0.93, "Peak Assignment Report", fontsize=20, weight="bold", color=INK)
     fig.text(0.08, 0.895, batch, fontsize=14, color=INK)
+    _bsel = (ctx.get("batch") or {}).get("selection") or {}
     _pipe = ("single-sample" if ctx.get("n_files", 1) <= 1
-             else "brightest-coverage" if str(ctx.get("batch", {}).get("select")) == "brightest"
-             else "representative-sample")
+             else _bsel.get("method") or "batch")   # the recorded selector, never a hard-coded rule
     fig.text(0.08, 0.872, f"{ctx['label']} · {_pipe} pipeline", fontsize=11, color=GREY)
     meta = ctx.get("version", "")
     if ctx.get("generated"):
@@ -561,14 +561,20 @@ def cover(ctx, pdf):
                              f"{rf['analyte']*100:.0f}%,  reagent ion {rf['reagent']*100:.0f}%,  "
                              f"unexplained {rf['unexplained']*100:.0f}%")]
     nf = ctx.get("n_files", 1)
-    sel = str(ctx.get("batch", {}).get("select", "representative"))
+    bsel = (ctx.get("batch") or {}).get("selection") or {}
     if nf <= 1:
         sel_txt = "Single sample assigned (no merge)."
-    elif sel == "brightest":
-        sel_txt = (f"{nf} files: brightest-coverage selection — each significant m/z bin "
-                   "assigned in the sample where it is brightest, merged by m/z.")
-    else:
-        sel_txt = (f"{nf} files: 5 evenly time-spaced + the max-TIC sample, merged by m/z.")
+    elif bsel.get("method") == "presence-cover":
+        sel_txt = (f"{nf} files: presence set-cover selection — greedy over the "
+                   f"{bsel.get('n_bins', '?')} m/z bins present in ≥{bsel.get('min_prevalence', 2)} "
+                   f"samples (no height floor); {bsel.get('achieved_coverage', 0):.0%} of "
+                   f"them covered, stopped on {bsel.get('stop_reason', '?')}"
+                   + (f" (budget k_max={bsel.get('k_max')} hit while still gaining — "
+                      "coverage is incomplete)" if bsel.get("stop_reason") == "k_max" else "")
+                   + "; merged by m/z.")
+    else:                                   # a run folder without a selection record
+        sel_txt = (f"{nf} files assigned and merged by m/z (this run's batch_summary.json "
+                   "carries no selection record).")
     head += [("gap", 1), ("h", "Samples assigned"), ("gap", 0.3), ("b", sel_txt)]
     for name, role in ctx.get("samples", [])[:8]:
         head.append(("m", f"   {name}   [{role}]"))
@@ -930,7 +936,7 @@ def gka(ctx, pdf):
 
 def qc_massdefect(ctx, pdf):
     """Two-panel mass-defect / mass-error QC figure, rendered from the BRIGHTEST
-    representative sample's FULL ledger (all roles, incl iso_child + unexplained) —
+    selected sample's FULL ledger (all roles, incl iso_child + unexplained) —
     NOT the M0-only merged ledger. Panel (a): mass defect vs m/z over the five
     tier/role categories (Assigned/Candidate · parent/iso-child + unexplained);
     panel (b): ppm mass error vs m/z for the Assigned + Candidate M0 rows with a
@@ -1058,15 +1064,42 @@ def clusters(ctx, pdf):
             _image_page(pdf, p, "")
 
 
+def _selection_lines(ctx) -> list:
+    """The Methods-page bullet for how the assigned subset was chosen, rendered
+    from `batch_summary.json['selection']` (the recorded selector — never a
+    hard-coded rule, so the page cannot go stale against the code). One line per
+    statement; `_text_lines` wraps them to the page width."""
+    if ctx.get("n_files", 1) <= 1:
+        return [("b", "• Single sample assigned: no subset selection, no merge.")]
+    b = (ctx.get("batch") or {}).get("selection") or {}
+    if b.get("method") != "presence-cover":
+        return [("b", "• Sample subset: the assigned files were merged by m/z; this run's "
+                      "batch_summary.json carries no selection record.")]
+    out = [
+        ("b", f"• Sample selection: greedy presence set-cover — k = {b.get('k', '?')} of "
+              f"{b.get('n_samples', '?')} samples cover {b.get('achieved_coverage', 0):.0%} "
+              f"of the {b.get('n_bins', '?')} m/z bins present in "
+              f"≥{b.get('min_prevalence', 2)} samples (no height floor; bins at "
+              f"{b.get('tol_ppm', '?')} ppm, the merge tolerance), then merged by m/z — "
+              "a single averaged file misses analytes present only part of the run."),
+        ("b", f"• Selection stopped on '{b.get('stop_reason', '?')}' "
+              f"(k_min {b.get('k_min', '?')}, k_max {b.get('k_max', '?')}, min gain "
+              f"{b.get('min_gain', 0):.1%} of the bins)."),
+    ]
+    if b.get("stop_reason") == "k_max":
+        out.append(("b", f"• WARNING: the k_max={b.get('k_max')} budget bound while the batch was "
+                         f"still gaining ({b.get('next_gain', 0):.2%} of the bins per extra "
+                         "sample) — coverage is incomplete; raise --k-max."))
+    return out
+
+
 def methods(ctx, pdf):
     import matplotlib.pyplot as plt
     fig = plt.figure(figsize=A4)
     fig.text(0.08, 0.93, "Methods & caveats", fontsize=15, weight="bold", color=INK)
     lines = [
         ("h", "Pipeline"), ("gap", 0.3),
-        ("b", "• Representative-sample rule: assign 5 evenly time-spaced samples + the"),
-        ("b", "  max-TIC sample per batch, then merge by m/z — a single averaged file"),
-        ("b", "  misses analytes present only part of the run."),
+        *_selection_lines(ctx),
         ("b", "• Each file: multi-pass formula assignment, server isotope-scored matching"),
         ("b", "  (match_compounds), isotope-envelope completion, calibrated tiering."),
         ("b", "• Clusters: log-correlation (raw or reagent-normalised) of the full-batch"),
@@ -1137,7 +1170,7 @@ def assignments_table(ctx, pdf):
     several adducts lists each channel separately, with the neutral printed once
     per group. Channels are ordered within a compound; compounds are ordered by
     neutral mass. 'isotopes' = the isotopologue labels the server confirmed for
-    that channel (union across the representative files). Paginated; the full data
+    that channel (union across the selected files). Paginated; the full data
     is also in merged_ledger.csv + the per-file ledgers."""
     import matplotlib.pyplot as plt
 
@@ -1173,7 +1206,7 @@ def assignments_table(ctx, pdf):
     NW, AW, IW = 15, 19, 36                  # neutral / adduct / isotopes field widths
     _scope = ("brightest height of the channel in ANY sample of the full batch"
               if ctx.get("max_h_scope") == "batch"
-              else "brightest height of the channel across the representative samples")
+              else "brightest height of the channel across the selected samples")
     head = (f"{'neutral':<{NW}}{'m/z':>10}  {'channel':<{AW}}{'tier':<11}{'score':>6}"
             f"{'max cps':>8}{'  f':>4}  isotopes")
     rows: list = [("m", head),

@@ -9,9 +9,10 @@ description: >-
   match_compounds; produces an 11-sheet tiered Excel (Assigned / Candidates /
   below-assignability) with commentary, close alternatives, per-isotopologue
   scores, a peak-ownership audit, and an interactive rotating-GKA widget. Also runs
-  a representative-sample BATCH pipeline (5 time-spaced + max-TIC samples assigned
-  and merged), time-series correlation clustering, a full Van Krevelen, and a
-  standard iterable PDF assignment report. Can also PUBLISH a finished ledger
+  a BATCH pipeline (a greedy presence set-cover picks the samples that together
+  hold the batch's m/z bins, assigned and merged), time-series correlation
+  clustering, a full Van Krevelen, and a standard iterable PDF assignment
+  report. Can also PUBLISH a finished ledger
   back into Mascope as a first-class assignment run, so a peaky run sits beside
   the in-app engine's on the same sample and the two can be compared where they
   disagree. Triggers: "assign formulas", "peak
@@ -76,15 +77,15 @@ peaky list samples --batch "<batch>" --dataset "<workspace>"
 
 # one sample
 peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto> \
-    --height-cutoff 100 --output-dir ~/peaky-output/<name>
+    [--height-cutoff-x-edge 2.5] --output-dir ~/peaky-output/<name>
 
 # a whole batch (assign subset -> merge -> cluster -> Van Krevelen -> PDF report)
 peaky batch --batch "<batch>" --dataset "<workspace>" --reagent <Br|Ur|...> \
-    [--select representative|brightest] --out-dir ~/peaky-output
+    [--k-max 30 --k-min 6 --min-gain 0.005] --out-dir ~/peaky-output
 
 # MANY same-chemistry batches -> ONE unified ledger + whole-pool + per-group reports
 peaky pool --batches "<regex over batch names>" --dataset "<workspace>" \
-    --reagent <Br|Ur|NO3_15N|...> [--k-max 6] [--group-by sample_batch_name]
+    --reagent <Br|Ur|NO3_15N|...> [--k-max 30] [--group-by sample_batch_name]
 
 # regenerate figures + PDF of an existing run, offline (no assignment, no network)
 peaky report --run-dir <run-folder> --reagent <Br|Ur|...> --ts <ts.parquet>
@@ -98,20 +99,21 @@ peaky publish <run-folder>/<sample>_<stamp>_ledger.csv
 `peaky pool` pools every batch matching `--batches` (a REGEX over batch names, e.g.
 `'HR-CIMS 100-500.*zone'` = the per-zone batches of one mode x range) into ONE
 unified ledger, so an analyte present in ANY group is discovered once, then each
-group's own time series is read against that shared peak list. Selection is a
-per-GROUP brightest-coverage UNION (`sampling.select_pooled_union`): brightest within
-each group, then unioned — a single naive pooled pass lets the loudest group hog the
-winners and starves quieter ones (measured: one group fell to 56% bright-bin
-coverage under naive pooling vs balanced ≥82% with the union). Emits the whole-pool
-run + one report per `--group-by` value (default `sample_batch_name`, i.e. per batch),
-each sharing the unified ledger + re-clustering on its own TS slice. Validated on a
-real multi-batch field campaign: the unified ledger captured 99.86% of a dedicated
-per-group run's compounds.
+group's own time series is read against that shared peak list. Selection is ONE
+presence set-cover over the pooled table (`sampling.select_cover_samples` with the
+group column): the objective is presence, not brightness, so a loud group cannot
+hog the picks, and `batch_summary.json['selection']['coverage_by_group']` records
+each group's own achieved coverage (measured on a pooled 5-zone campaign: every
+zone 87–93 %, the smallest with zero explicit picks). Emits the whole-pool run + one
+report per `--group-by` value (default `sample_batch_name`, i.e. per batch), each
+sharing the unified ledger + re-clustering on its own TS slice.
 
-`--select brightest` bins ALL batch peaks and assigns each significant m/z bin's
-brightest sample (better analyte coverage than the default 5-time-spaced+max-TIC
-rule; `--coverage-target`/`--k-max`/`--height-floor` tune it). Single-sample
-`assign` writes `<ID>_<UTC>_{ledger.csv, assignments.xlsx, summary.md,
+Sample selection (batch and pool) is a greedy **presence set-cover** over the
+batch's m/z bins: bins present in ≥2 samples (no height floor), each pick the
+sample covering the most not-yet-covered bins, stop when the next pick would add
+< `--min-gain` (0.5 %) after `--k-min` (6) picks; `--k-max` (30) is a budget and a
+run that hits it is flagged (`selection.stop_reason == "k_max"`). The achieved
+coverage is in `batch_summary.json['selection']`. Single-sample `assign` writes `<ID>_<UTC>_{ledger.csv, assignments.xlsx, summary.md,
 manifest.json, gka.html}` + per-pass checkpoints (~5 min on a ~1000-peak Br-CIMS
 sample). Batch writes one versioned run folder — see **Outputs** below and
 `docs/OUTPUTS.md`.
@@ -197,17 +199,23 @@ can't refute an off-grid P) standing in for the 2nd channel.
 ### Key flags
 
 `--ppm` (m/z trust, default 1.0) · `--search-ppm` (enumeration tol, 3.0) ·
-`--height-cutoff` (cps, 100) · `--no-pass2/3/4` · `--no-cache`.
+`--height-cutoff` (absolute cps override; default = a multiple of the sample's
+own noise edge) · `--height-cutoff-x-edge` (that multiple; default = the reagent
+profile's own value, else the package default 1.0 — see `docs/REAGENTS.md` §3a
+for raising it for a peak picker that picks into the noise) · `--no-pass2/3/4` ·
+`--no-cache`.
 
-## Representative-sample batch pipeline (assign a whole batch, not one file)
+## Batch pipeline (assign a whole batch, not one file)
 
 A single averaged file misses analytes present only part of a run. The batch
-pipeline assigns a **representative subset and merges by m/z**:
+pipeline assigns a **presence-cover subset and merges by m/z**:
 
-- **`sampling.select_representative_samples(peaks)`** — THE RULE: 5 samples evenly
-  spaced in TIME (nearest distinct sample to each of 5 equally-spaced target times;
-  endpoints always in) **+ the max-TIC sample**. Selecting in time (not row index)
-  means a lone late file in an irregular run still gets a pick.
+- **`sampling.select_cover_samples(peaks)`** — THE RULE: greedy presence set-cover
+  over the batch's m/z bins (universe = bins present in ≥2 samples, no height
+  floor; marginal-gain stop at 0.5 % after 6 picks; 30 = flagged budget). Returns
+  the picks in order with `bins_new` / `coverage`, and `.attrs['selection']` with
+  the achieved coverage + stop reason. The merge has no prevalence filter, so this
+  selection is what decides recall.
 - **`assign_batch.run(batch=NAME | peaks=, reagent='auto', out_dir=, ts_peaks=, amine_r_min=0.6)`**
   — resolves the `profiles.ReagentProfile`, runs `assign.run` per selected file
   (keeps each `per_file/<sid>_ledger.csv`), then an **offset-aware merge** (`align`)
@@ -416,7 +424,7 @@ directly instead of `--run-dir`.
 | `cleanup.py`          | residual cleanup: isotope-confirmed recovery, bromide-cluster labelling, ringing-artifact flagging, satellite reclaim, **`prefer_amine_over_ammonium`** (positive: THREE-WAY time-tracking gate — keep `[M+NH4]+` adduct that tracks a shaped parent, re-read to the `[M+H]+` amine when it fails to track / the parent is absent, cap Candidate when weak-or-flat; Si + `protected`-provenance + valence overrides); **plausibility demotes** `demote_implausible_carbon` / `demote_implausible_ionization` / `demote_speculative_residual` + `relabel_reagent_halocarbons` (Br-reagent-gated)                                                                                                                                                                               |
 | **`reflists.py`**     | curated, self-describing **reference-peaklist** catalog (`peaky/data/peaklists/`: metadata + version + references + provenance) — `load_catalog`/`active_lists` (context-gated; contaminants always on), `match_assigned` (selection-prior corroboration), `rescue_unexplained_by_reflist` (mass-match → server re-score → commit-if-confirmed, else tentative Candidate). Soft + provenance-tagged; never overrides an isotope-scored Assigned |
 | **`io/publish.py`**   | `peaky publish` -- translate a ledger into Mascope's run-import contract and upload it (chunked assembly, row-offset idempotency, resume via `--import-id`). Sends peaky's own verdict as `engine_tier` and **no** `tier` (the server derives that), resolves adducts to ionization-mechanism ids, excludes synthetic sub-peaks. See `docs/PUBLISH.md` |
-| **`sampling.py`**     | THE RULE — `select_representative_samples` (5 evenly-time-spaced + max-TIC) for batch assignment                                                                                                                                                                                                                                                                                                                         |
+| **`sampling.py`**     | THE RULE — `select_cover_samples` (greedy presence set-cover over m/z bins, prevalence ≥2, marginal-gain stop) for batch + pool assignment                                                                                                                                                                                                                                                                                              |
 | **`assign_batch.py`** | `run(batch\|peaks, ts_peaks=, amine_r_min=)` — assign the reps, keep per-file ledgers, offset-aware merge (`align`) + jitter table; applies the positive amine gate at merge level (three-way time-tracking)                                                                                                                                                                                                                                       |
 | **`cluster.py`**      | correlation clustering (log-corr, COMPLETE linkage r>0.6, signed distance) → `render_a4` A4-portrait paginated panels + remaining-peaks overview. **Flatness gate** `split_varying`/`render_flat_panel` (cv<`FLAT_CV` bunched, not clustered). `render_changers` = A4-portrait big-standalone-changers page. `write_cluster_workbook(when=)` — byte-reproducible per-cluster XLSX (timestamps pinned to a FIXED content epoch, not the run time) |
 | **`composition.py`**  | report composition accounting (pure): `signal_by_backbone` (intensity-weighted CHO/CHON/CHOS), `amine_shadow_stats`/`collapsed_composition` (the [M+NH4]+/[M+H]+-amine degeneracy two-way), `top_species_by_signal`, `oligomer_flag` (high-C high-O HOM-dimer candidates)                                                                                                                                                |
@@ -519,6 +527,6 @@ It writes, so point it at a test or demo deployment.
   magnitudes / disposition timing; use RAW when no good normaliser exists.
 - **Per-file assignment ≠ experiment assignment.** `assign.run` assigns ONE
   sample; a time-series event peak weak in that file is missed. For an experiment,
-  assign representative files (background + event-extreme) and merge by m/z.
+  assign the cover-selected subset of files and merge by m/z (`peaky batch`).
 - **Cross-CIMS comparison is ionisation-selective**: Br⁻ and urea⁺ detect
   different compound sets; a matching formula need not be the same molecule.

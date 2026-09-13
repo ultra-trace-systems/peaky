@@ -26,6 +26,12 @@ import traceback
 import uuid
 from dataclasses import dataclass, field
 
+# the selection budget is the sampling constant, not a retyped number (the CLI's
+# --k-max default comes from the same place). A tool signature's default binds at
+# def time, so this one import sits at module level; everything else in this
+# module is imported lazily inside the tool bodies.
+from peaky.batch.sampling import K_MAX as _K_MAX
+
 __all__ = [
     "health", "list_workspaces", "list_datasets", "list_batches", "list_samples",
     "certify_neutrals", "assign_sample", "run_batch", "job_status", "list_jobs",
@@ -240,10 +246,13 @@ def certify_neutrals(ledger_csv: str, reagent: str = "auto",
 # long-running pipeline tools (background jobs)
 # --------------------------------------------------------------------------- #
 def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
-                  height_cutoff: float = 100.0, output_dir: str = "") -> dict:
+                  height_cutoff: float | None = None, output_dir: str = "") -> dict:
     """Assign one sample (multi-pass). Returns a job_id immediately; poll
     `job_status`. On completion the result carries the assignment counts, top
-    species, and the written ledger CSV path."""
+    species, and the written ledger CSV path. `height_cutoff` is an ABSOLUTE cps
+    override of the height-gated passes; default = a multiple of the sample's own
+    noise edge (instrument-independent) — the reagent profile's own multiple when
+    it carries one, else the package default (1x)."""
     out_dir = os.path.expanduser(output_dir or os.path.join(_OUT_DEFAULT, "mcp-assign"))
 
     def work(log):
@@ -253,7 +262,10 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
         rp = profiles.resolve(reagent) if reagent != "auto" else None
         adducts = list(rp.adducts) if rp else None
         ctx = context or (rp.context if rp else "ambient-air")
-        cfg = passes.PassConfig(height_cutoff=height_cutoff)
+        cfg = passes.PassConfig(height_cutoff_cps=height_cutoff)
+        # relative gate: the profile's own multiple of the sample's noise edge
+        # when it carries one, else the package default (logged once).
+        profiles.apply_height_cutoff_x_edge(cfg, rp, log=log)
         res = assign.run(sample_id, ctx, cfg=cfg, adducts=adducts, log=log,
                          label_purity=getattr(rp, "purity", None))
         led = res["ledger"]
@@ -275,18 +287,20 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
 
 
 def run_batch(batch: str, dataset: str = "", reagent: str = "auto",
-              select: str = "representative", subject: str = "",
+              k_max: int = _K_MAX, subject: str = "",
               output_dir: str = "") -> dict:
-    """Run the whole-batch pipeline (assign subset -> merge -> cluster -> Van
-    Krevelen -> PDF). Returns a job_id immediately; poll `job_status`. On
-    completion the result carries the versioned run folder + the PDF/merged-
-    ledger paths and the batch summary."""
+    """Run the whole-batch pipeline (assign the presence-cover subset -> merge ->
+    cluster -> Van Krevelen -> PDF). Returns a job_id immediately; poll
+    `job_status`. On completion the result carries the versioned run folder + the
+    PDF/merged-ledger paths and the batch summary (incl. `selection`: achieved
+    coverage + stop reason). `k_max` is the sample budget (default
+    `sampling.K_MAX`)."""
     base_out = os.path.expanduser(output_dir or _OUT_DEFAULT)
 
     def work(log):
         from peaky import pipeline as PL
         res = PL.run_batch(batch=batch, dataset=dataset or None, reagent=reagent,
-                           base_out=base_out, select=select,
+                           base_out=base_out, k_max=k_max,
                            subject=subject or None, log=log)
         ctx = res.get("ctx")
         run_dir = getattr(ctx, "out_dir", None)
@@ -300,7 +314,7 @@ def run_batch(batch: str, dataset: str = "", reagent: str = "auto",
 
     jid = JOBS.submit("run_batch", work,
                       {"batch": batch, "dataset": dataset, "reagent": reagent,
-                       "select": select, "output_dir": base_out})
+                       "k_max": k_max, "output_dir": base_out})
     return {"job_id": jid, "status": "queued",
             "note": "batch pipeline runs many minutes; poll job_status(job_id)."}
 

@@ -106,22 +106,20 @@ report                                  report.py / pdf — _ledger.csv, _assign
 A batch is many samples over time. `match_compounds` scores against one real
 server sample, so assigning one averaged spectrum would miss analytes that appear
 only briefly. The batch path assigns a **subset of samples** and merges by m/z.
-Two selection strategies (both feed the identical assign → merge → report chain):
-
-- **`representative`** (default) — `sampling.select_representative_samples`: 5
-  evenly time-spaced samples + the max-TIC sample.
-- **`brightest`** (`--select brightest`) — `sampling.select_brightest_coverage_samples`:
-  bin *all* batch peaks by m/z and assign each significant bin's *brightest*
-  sample (greedy set-cover). Coverage tracks analyte signal, not a fixed time grid
-  — on reagent-CIMS data the max-TIC pick is dominated by the reagent ion and is
-  the brightest sample for a small fraction of analyte peaks. A coverage play, not
-  a speed play.
+One selector (`sampling.select_cover_samples`, [`SAMPLING.md`](SAMPLING.md)):
+a greedy **presence set-cover** over the batch's m/z bins — universe = bins present
+in ≥ 2 samples (no height floor: the picker's edge varies ~1000× between
+instruments and modes), each pick is the sample holding the most not-yet-covered
+bins, stop when the next pick would add < 0.5 % of the universe (after 6 picks;
+30 is a flagged budget). The merge keeps whatever any assigned sample contained
+and nothing else, so selection *is* the recall story; the achieved coverage and
+the stop reason are recorded in `batch_summary.json['selection']`.
 
 ```
 batch + reagent
    │  pipeline.run_batch
    ▼
-sampling.select_*_samples                pick the sample subset (representative | brightest)
+sampling.select_cover_samples            pick the sample subset (presence set-cover, gain stop)
    │
    ▼
 assign each rep (assign.run)             per-file ledgers kept
@@ -301,8 +299,8 @@ catalog in `data/peaklists/` → near-tie selection prior + mass-match rescue-ve
 `assign.py` (single-sample orchestrator; `PassConfig` lives in `passes/config.py`),
 `local_scoring.py` (in-process mascope_tools scoring backend).
 
-**Batch** — `sampling.py` (sample selection: representative subset OR
-brightest-coverage), `assign_batch.py`
+**Batch** — `sampling.py` (sample selection: greedy presence set-cover with a
+marginal-gain stop), `assign_batch.py`
 (assign reps + offset-aware merge), `timeseries.py` (time-resolved disposition),
 `clustering.py` + `cluster.py` (correlation-cluster figures), `composition.py`
 (signal-weighted composition accounting).

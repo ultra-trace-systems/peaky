@@ -360,6 +360,21 @@ def run(sample_id: str, context: str = "ambient-air", *,
 
     raw = io_mascope.fetch_peaks(client, sample_id, use_cache=use_cache)
     led = ledger.new_ledger(raw)
+    # The sample's noise edge (p1 of its picked heights) anchors every height
+    # gate in the passes (cfg.height_cutoff = x_edge * edge): absolute cps
+    # thresholds do not transfer between instruments/modes (see passes.config).
+    cfg.noise_edge_cps = passes.noise_edge(led["height"]) if "height" in led.columns else None
+    if cfg.noise_edge_cps is None and cfg.height_cutoff_cps is None:
+        # fail closed here, with the sample named, rather than deep inside the
+        # first height-gated pass (PassConfig.height_cutoff raises when unresolved)
+        raise RuntimeError(
+            f"sample {sample_id!r} has no finite peak heights, so its noise edge cannot "
+            "be measured and the height gate cannot be resolved -- pass "
+            "PassConfig(height_cutoff_cps=...) to gate on an absolute value")
+    log(f"[run] noise edge {cfg.noise_edge_cps if cfg.noise_edge_cps is None else round(cfg.noise_edge_cps, 3)} cps "
+        f"-> height_cutoff {cfg.height_cutoff:.3g} cps "
+        + ("(absolute override)" if cfg.height_cutoff_cps is not None
+           else f"({cfg.height_cutoff_x_edge_resolved:g}x edge)"))
     # Adducts are normally detected from the sample's own server matches (the
     # SKILL design rule for mixed-reagent datasets). But a batch with a KNOWN
     # reagent can pass `adducts=` to force the analyte channels: per-sample match
@@ -455,6 +470,11 @@ def run(sample_id: str, context: str = "ambient-air", *,
     if problems:
         log(f"[run] LEDGER VALIDATION PROBLEMS: {problems}")
     st = ledger.stats(led)
+    st["noise_edge_cps"] = cfg.noise_edge_cps
+    st["height_gate_cps"] = cfg.height_cutoff     # RESOLVED gate (the knob is cfg.height_cutoff_cps)
+    # the multiple the gate was resolved FROM (profile-supplied or the package
+    # default) -- the gate in cps alone cannot be read back without it.
+    st["height_cutoff_x_edge"] = cfg.height_cutoff_x_edge_resolved
     log(f"[run] stats {json.dumps(st)}")
     return {"ledger": led, "stats": st, "summaries": summaries,
             "prescan": pre.as_dict(), "problems": problems,
@@ -470,15 +490,28 @@ def main(argv=None):
     ap.add_argument("--context", default="ambient-air")
     ap.add_argument("--ppm", type=float, default=1.0)
     ap.add_argument("--search-ppm", type=float, default=3.0)
-    ap.add_argument("--height-cutoff", type=float, default=100.0)
+    ap.add_argument("--height-cutoff", type=float, default=None,
+                    help="absolute cps override; default = a multiple of the "
+                         "sample's own noise edge")
+    ap.add_argument("--height-cutoff-x-edge", type=float, default=None,
+                    help="height gate as a multiple of the sample's own noise edge "
+                         "(1.0 = keep every picked peak but the bottom 1%%); "
+                         "default: the reagent profile's own multiple, else the "
+                         "package default; ignored when --height-cutoff is given")
     ap.add_argument("--no-cache", action="store_true")
     ap.add_argument("--no-pass2", action="store_true")
     ap.add_argument("--no-pass3", action="store_true")
     ap.add_argument("--output-dir", default=".")
     args = ap.parse_args(argv)
 
+    # no --reagent here (this entry point takes a context, not a profile), so the
+    # resolution is the flag if given, else the package default.
+    from peaky.chem import profiles as PR
+
     cfg = passes.PassConfig(ppm=args.ppm, search_ppm=args.search_ppm,
-                            height_cutoff=args.height_cutoff)
+                            height_cutoff_cps=args.height_cutoff)
+    PR.apply_height_cutoff_x_edge(cfg, None, explicit=args.height_cutoff_x_edge,
+                                  log=print)
     out = run(args.sample_id, args.context, cfg=cfg, use_cache=not args.no_cache,
               do_pass2=not args.no_pass2, do_pass3=not args.no_pass3)
     # report.py will own file outputs; for now write the ledger + manifest

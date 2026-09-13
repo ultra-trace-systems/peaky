@@ -35,6 +35,17 @@ class ReagentProfile:
     # None => no rescue (every unlabelled profile).
     label_isotope: str | None = None
     label_max: int = 2
+    # The profile's recommended height gate for the height-gated assignment
+    # passes, as a MULTIPLE of the sample's own noise edge (the 1st percentile of
+    # its picked peak heights). None = use the package default
+    # (passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE, 1.0).
+    # What decides this number is the PEAK PICKER, not the reagent chemistry, so
+    # every bundled profile leaves it None. Raise it -- in a --reagent-config
+    # profile written for your own instrument -- when the picker picks INTO the
+    # noise, so that 1x the edge admits nearly everything it found: a higher
+    # multiple hands the passes a tighter candidate list. Leave it at None for a
+    # picker that stops at the noise edge, where rare real ions sit at 1-3x it.
+    height_cutoff_x_edge: float | None = None
     aliases: tuple = field(default_factory=tuple)
 
 
@@ -264,6 +275,7 @@ _CONFIG_FIELDS = (
     "ranges",
     "detect_adduct",
     "context",
+    "height_cutoff_x_edge",
     "aliases",
     # labelled-reagent fields (NO3_15N / NH4_15N style profiles from a config)
     "purity",
@@ -296,8 +308,8 @@ def load_config(path: str) -> list:
     `{"reagents": [...]}` wrapper, or a `{name: {fields...}}` mapping. Each entry
     carries the ReagentProfile fields listed in `_CONFIG_FIELDS`: the required
     name/label/polarity/adducts/normaliser/reagent_ion_re/ranges/detect_adduct,
-    plus optional context/aliases and the labelled-reagent trio purity /
-    label_isotope / label_max."""
+    plus optional context/aliases, the labelled-reagent trio purity /
+    label_isotope / label_max, and height_cutoff_x_edge."""
     import json
     import os
 
@@ -318,6 +330,81 @@ def load_config(path: str) -> list:
     else:
         entries = data
     return [register(from_dict(e)) for e in entries]
+
+
+# --- the noise-edge height gate's multiple ---------------------------------
+# ONE resolution order, used by every entry point that resolves a profile and
+# builds a PassConfig (the CLI, assign_batch, the pipeline, the MCP tools):
+#     an explicit caller / command-line value
+#         > the reagent profile's own height_cutoff_x_edge
+#             > passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE.
+# The default constant lives with the gate it defaults (passes/config.py) and is
+# imported lazily here: this module is the chemistry layer and must not import
+# the assignment layer at module scope.
+def resolve_height_cutoff_x_edge(explicit: float | None = None,
+                                 profile: "ReagentProfile | None" = None) -> float:
+    """The height gate as a multiple of the sample's own noise edge: `explicit`
+    if given, else the profile's own value, else the package default. `None` at
+    either level means UNSET and falls through -- 0.0 is a value, not an
+    absence."""
+    if explicit is not None:
+        return float(explicit)
+    from_profile = getattr(profile, "height_cutoff_x_edge", None)
+    if from_profile is not None:
+        return float(from_profile)
+    from peaky.assignment.passes.config import DEFAULT_HEIGHT_CUTOFF_X_EDGE
+
+    return float(DEFAULT_HEIGHT_CUTOFF_X_EDGE)
+
+
+def height_cutoff_x_edge_source(explicit: float | None = None,
+                                profile: "ReagentProfile | None" = None) -> str:
+    """Where `resolve_height_cutoff_x_edge` took its value from, for the run log
+    and the batch summary -- so a reader can tell a profile-supplied multiple
+    from the package default.
+
+    This is the LABEL, not the value, and a run resolves more than once on the
+    way down (the pipeline stamps the cfg, assign_batch re-resolves that same
+    cfg): a second pass must not relabel the first. So an explicit value that
+    merely repeats what it would have got anyway -- the profile's multiple, or
+    the package default when no profile carries one -- keeps that credit."""
+    from peaky.assignment.passes.config import DEFAULT_HEIGHT_CUTOFF_X_EDGE
+
+    from_profile = getattr(profile, "height_cutoff_x_edge", None)
+    if explicit is not None:
+        same_as_profile = (from_profile is not None
+                           and float(explicit) == float(from_profile))
+        same_as_default = (from_profile is None
+                           and float(explicit) == float(DEFAULT_HEIGHT_CUTOFF_X_EDGE))
+        if not (same_as_profile or same_as_default):
+            return "an explicit --height-cutoff-x-edge / cfg value"
+    if from_profile is not None:
+        return f"the {getattr(profile, 'name', '?')} reagent profile"
+    return "the package default"
+
+
+def apply_height_cutoff_x_edge(cfg, profile: "ReagentProfile | None" = None, *,
+                               explicit: float | None = None,
+                               log=None) -> tuple[float, str]:
+    """Stamp the resolved multiple onto a PassConfig; return (value, source).
+    A cfg that ALREADY carries a multiple was set deliberately by its caller (or
+    stamped by an earlier call on the way down), so it counts as explicit and
+    outranks the profile -- INCLUDING a multiple that happens to equal the package
+    default, which is why `PassConfig.height_cutoff_x_edge` is None when unset
+    rather than pre-filled with the default: explicitness is read off the field,
+    never guessed by comparing it to 1.0. `log` prints the one-line 'which gate,
+    from where' record for the run -- skipped when an absolute `height_cutoff_cps`
+    override is in force, since the multiple is then not what gates (assign.run
+    reports that override itself)."""
+    if explicit is None:
+        explicit = getattr(cfg, "height_cutoff_x_edge", None)
+    value = resolve_height_cutoff_x_edge(explicit, profile)
+    source = height_cutoff_x_edge_source(explicit, profile)
+    cfg.height_cutoff_x_edge = value
+    if log is not None and getattr(cfg, "height_cutoff_cps", None) is None:
+        log(f"[gate] height cutoff = {value:g}x the sample's noise edge "
+            f"(from {source})")
+    return value, source
 
 
 def resolve(

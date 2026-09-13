@@ -71,7 +71,7 @@ with tempfile.TemporaryDirectory() as d:
           ("C3H2F6O", "[M+Br]-") not in ctx.get("max_h_by_channel", {}),
           ctx.get("max_h_by_channel"))
     # max cps = the WHOLE-BATCH max (from the TS), not just the ~rep files. Write a
-    # tiny TS where a NON-representative sample (s2) is brighter than the rep file.
+    # tiny TS where an UNSELECTED sample (s2) is brighter than the assigned file.
     pd.DataFrame([
         dict(sample_item_id="s1", datetime_utc="2026-06-20T00:00:00Z", mz=169.1223, height=10000.0),
         dict(sample_item_id="s2", datetime_utc="2026-06-20T02:00:00Z", mz=169.1223, height=30000.0),
@@ -146,6 +146,37 @@ with tempfile.TemporaryDirectory() as d:
         check("cover 'generated' carries date AND time", "2026-06-20 14:35" in cover, cover[:400])
     except ImportError:
         pass
+
+    # --- Methods + cover render the RECORDED selector (batch_summary['selection']),
+    # never a hard-coded rule: a 2-file run with a k_max-bound presence cover ---
+    import json as _json
+    import shutil as _sh
+    _sh.copy(f"{d}/per_file/s1_ledger.csv", f"{d}/per_file/s2_ledger.csv")
+    _json.dump({"selection": {"method": "presence-cover", "k": 2, "n_samples": 40,
+                              "n_bins": 1234, "min_prevalence": 2, "tol_ppm": 6.0,
+                              "achieved_coverage": 0.71, "stop_reason": "k_max",
+                              "next_gain": 0.012, "k_min": 6, "k_max": 2, "min_gain": 0.005},
+                "tol_ppm": 6.0}, open(f"{d}/batch_summary.json", "w"))
+    ctx_s = R.load_context(d, tag="Ur", label="Ur⁺ CIMS")
+    _mtxt = " ".join(t for _s, t in R._selection_lines(ctx_s) if isinstance(t, str))
+    check("methods: selection bullet is rendered from batch_summary['selection']",
+          "presence set-cover" in _mtxt and "k = 2 of 40" in _mtxt and "1234" in _mtxt
+          and "71%" in _mtxt and "6.0 ppm" in _mtxt, _mtxt)
+    check("methods: a k_max-bound selection is WARNED on the page",
+          "WARNING" in _mtxt and "k_max=2" in _mtxt and "raise --k-max" in _mtxt, _mtxt)
+    check("methods: no stale hard-coded rule text",
+          "time-spaced" not in _mtxt and "max-TIC" not in _mtxt, _mtxt)
+    out5 = R.build(d, tag="Ur", label="Ur⁺ CIMS", out_pdf=f"{d}/r5.pdf",
+                   sections=[R.cover, R.methods])
+    check("build: cover + methods with a selection record -> PDF",
+          os.path.exists(out5) and os.path.getsize(out5) > 3000)
+    _bs_single = {"selection": {}}
+    _json.dump(_bs_single, open(f"{d}/batch_summary.json", "w"))
+    _mtxt2 = " ".join(t for _s, t in R._selection_lines(R.load_context(d, tag="Ur", label="x"))
+                      if isinstance(t, str))
+    check("methods: a run folder without a selection record says so (no invented rule)",
+          "no selection record" in _mtxt2 and "time-spaced" not in _mtxt2, _mtxt2)
+    os.remove(f"{d}/per_file/s2_ledger.csv"); os.remove(f"{d}/batch_summary.json")
 
     # --- compress_pdf: optional size-reduced companion ---
     check("compress_pdf is a no-op when the input is already small (returns None)",

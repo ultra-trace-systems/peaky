@@ -118,22 +118,30 @@ def cmd_list(args) -> None:
         print(sl[cols].to_string(index=False) if cols else sl.to_string(index=False))
 
 
-def _resolve_reagent(args):
-    """Return (adducts, context, note, purity). Forces the analyte channels so a
-    positive or sparse-match sample never silently falls back to [M-H]- (wrong
-    polarity). adducts=None means 'let assign.run auto-detect from the sample';
-    purity is the profile's labelled-reagent isotopic purity (None = unlabelled
-    reagent, or no profile, so the isotopes default applies)."""
+def _resolve_reagent(args, *, with_profile: bool = False):
+    """Return (adducts, context, note). Forces the analyte channels so a positive
+    or sparse-match sample never silently falls back to [M-H]- (wrong polarity).
+    adducts=None means 'let assign.run auto-detect from the sample'.
+
+    `with_profile=True` appends the resolved ReagentProfile itself (None when
+    --adducts forced the channels, or auto-detect found no known profile), which
+    the caller needs for the profile's own tuning: the noise-edge gate multiple
+    and the labelled-reagent isotopic purity.
+    Opt-in so the plain 3-tuple callers are untouched."""
     from peaky.chem import profiles
+
+    def out(adducts, context, note, prof=None):
+        return (adducts, context, note, prof) if with_profile \
+            else (adducts, context, note)
 
     config = getattr(args, "reagent_config", None)
     if args.adducts:
-        return list(args.adducts), (args.context or "ambient-air"), \
-            f"forced adducts={list(args.adducts)}", None
+        return out(list(args.adducts), (args.context or "ambient-air"),
+                   f"forced adducts={list(args.adducts)}")
     if args.reagent and args.reagent.lower() != "auto":
         prof = profiles.resolve(args.reagent, config=config)   # name/alias, no peaks needed
-        return list(prof.adducts), (args.context or prof.context), \
-            f"{prof.name} ({prof.label})", prof.purity
+        return out(list(prof.adducts), (args.context or prof.context),
+                   f"{prof.name} ({prof.label})", prof)
     # auto: detect from the sample's own peaks (cached, so assign.run reuses it)
     from peaky.io import io_mascope as IO
 
@@ -141,12 +149,12 @@ def _resolve_reagent(args):
     raw = IO.fetch_peaks(client, args.sample_id, use_cache=not args.no_cache)
     try:
         prof = profiles.resolve("auto", raw, config=config)
-        return list(prof.adducts), (args.context or prof.context), \
-            f"auto-detected {prof.name} ({prof.label})", prof.purity
+        return out(list(prof.adducts), (args.context or prof.context),
+                   f"auto-detected {prof.name} ({prof.label})", prof)
     except Exception as e:                           # noqa: BLE001
-        return None, (args.context or "ambient-air"), \
-            (f"auto-detect found no known profile ({e}); using per-sample adduct "
-             "detection — pass --reagent explicitly for a positive/sparse sample"), None
+        return out(None, (args.context or "ambient-air"),
+                   (f"auto-detect found no known profile ({e}); using per-sample adduct "
+                    "detection — pass --reagent explicitly for a positive/sparse sample"))
 
 
 def cmd_assign(args) -> None:
@@ -155,17 +163,23 @@ def cmd_assign(args) -> None:
     from peaky.reporting import gka_widget
     from peaky.io import io_mascope
     from peaky.assignment import passes
+    from peaky.chem import profiles
     from peaky.reporting import report
 
+    # the reagent first: the profile may carry its own height-gate multiple, and
+    # the flag (default None = not given) outranks it.
+    adducts, context, note, prof = _resolve_reagent(args, with_profile=True)
+    print(f"[reagent] {note}; adducts={adducts}; context={context}")
     cfg = passes.PassConfig(ppm=args.ppm, search_ppm=args.search_ppm,
-                            height_cutoff=args.height_cutoff)
+                            height_cutoff_cps=args.height_cutoff)
+    profiles.apply_height_cutoff_x_edge(cfg, prof,
+                                        explicit=args.height_cutoff_x_edge, log=print)
+    # the labelled-reagent purity rides on the same resolved profile
+    purity = getattr(prof, "purity", None)
     od = Path(args.output_dir).expanduser()
     od.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
     base = od / f"{args.sample_id}_{stamp}"
-
-    adducts, context, note, purity = _resolve_reagent(args)
-    print(f"[reagent] {note}; adducts={adducts}; context={context}")
 
     ts_peaks = None
     if args.ts_batch:
@@ -220,9 +234,8 @@ def cmd_batch(args) -> None:
     res = PL.run_batch(batch=args.batch, dataset=args.dataset, reagent=args.reagent,
                        base_out=resolve_out_dir(args.out_dir), ts=args.ts,
                        subject=args.subject, do_report=not args.no_report,
-                       config=args.reagent_config, select=args.select,
-                       coverage_target=args.coverage_target, k_max=args.k_max,
-                       height_floor=args.height_floor, n_jobs=args.jobs)
+                       config=args.reagent_config, k_min=args.k_min,
+                       k_max=args.k_max, min_gain=args.min_gain, n_jobs=args.jobs)
     ctx = res["ctx"]
     print(f"\n[batch] done -> {ctx.out_dir}")
     if res.get("report_pdf"):
@@ -241,8 +254,8 @@ def cmd_pool(args) -> None:
         group_by=args.group_by, ts=args.ts, subject=args.subject,
         do_report=not args.no_report,
         per_group_reports=not args.no_group_reports, config=args.reagent_config,
-        coverage_target=args.coverage_target, k_max=args.k_max,
-        height_floor=args.height_floor, n_jobs=args.jobs)
+        k_min=args.k_min, k_max=args.k_max, min_gain=args.min_gain,
+        n_jobs=args.jobs)
     ctx = res["ctx"]
     print(f"\n[pool] unified ledger -> {ctx.out_dir}")
     if res.get("report_pdf"):
@@ -623,6 +636,26 @@ def cmd_mcp(args) -> None:
     mcp_server.serve(host=args.host, port=args.port, transport=args.transport)
 
 
+def _add_selection_args(sp) -> None:
+    """The presence-cover selection knobs shared by `batch` and `pool` (see
+    docs/SAMPLING.md). The defaults ARE `sampling.K_MIN/K_MAX/MIN_GAIN` -- imported,
+    not retyped, so the help text and the selector can never disagree."""
+    from peaky.batch import sampling as SS
+
+    sp.add_argument("--k-max", type=int, default=SS.K_MAX,
+                    help="wall-clock budget: at most this many samples are assigned "
+                         f"(default {SS.K_MAX}). A run that hits it while still gaining "
+                         "is flagged in batch_summary.json['selection'].")
+    sp.add_argument("--k-min", type=int, default=SS.K_MIN,
+                    help="assign at least this many samples before the marginal-gain "
+                         f"stop applies (default {SS.K_MIN})")
+    sp.add_argument("--min-gain", type=float, default=SS.MIN_GAIN,
+                    help="stop when the next sample would add fewer than this fraction "
+                         f"of the batch's m/z bins (default {SS.MIN_GAIN:g} = "
+                         # argparse %-expands help text, so a literal percent is %%
+                         f"{SS.MIN_GAIN * 100:g}%%)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="peaky",
@@ -654,7 +687,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="JSON/TOML file registering extra reagent profiles")
     pa.add_argument("--ppm", type=float, default=1.0)
     pa.add_argument("--search-ppm", type=float, default=3.0)
-    pa.add_argument("--height-cutoff", type=float, default=100.0)
+    pa.add_argument("--height-cutoff", type=float, default=None,
+                    help="ABSOLUTE peak-height cutoff (cps) for the height-gated "
+                         "passes; default: relative to the sample's own noise edge "
+                         "(see --height-cutoff-x-edge)")
+    pa.add_argument("--height-cutoff-x-edge", type=float, default=None,
+                    help="height cutoff as a multiple of the sample's noise edge "
+                         "(the 1st percentile of its picked peak heights). "
+                         "Instrument-independent: the edge is 0.8 cps on a TOF and "
+                         "~800 cps on a reagent-in-range Orbitrap mode. Default: the "
+                         "reagent profile's own multiple when it carries one, else "
+                         "the package default (passes.config."
+                         "DEFAULT_HEIGHT_CUTOFF_X_EDGE); "
+                         "ignored when --height-cutoff is given")
     pa.add_argument("--no-cache", action="store_true")
     pa.add_argument("--no-pass2", action="store_true")
     pa.add_argument("--no-pass3", action="store_true")
@@ -680,17 +725,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="cached full-batch TS parquet (else fetched live from the server)")
     pb.add_argument("--subject", default=None, help="optional subject phrase for the VK title")
     pb.add_argument("--no-report", action="store_true", help="skip the PDF report")
-    pb.add_argument("--select", choices=["representative", "brightest"],
-                    default="representative",
-                    help="sample-selection strategy: 'representative' (5 time-spaced + "
-                         "max-TIC) or 'brightest' (bin all peaks, assign each significant "
-                         "m/z bin's brightest sample — better analyte coverage)")
-    pb.add_argument("--coverage-target", type=float, default=0.85,
-                    help="brightest: fraction of significant m/z bins to cover (default 0.85)")
-    pb.add_argument("--k-max", type=int, default=10,
-                    help="brightest: max number of winner samples to assign (default 10)")
-    pb.add_argument("--height-floor", type=float, default=1000.0,
-                    help="brightest: a bin is significant if its max height >= this (cps)")
+    _add_selection_args(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "
@@ -714,7 +749,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "from the regex)")
     pp.add_argument("--group-by", default="sample_batch_name",
                     help="pooled-peaks column that splits groups for the per-group "
-                         "brightest union + per-group reports (default sample_batch_name)")
+                         "coverage record + per-group reports (default sample_batch_name)")
     pp.add_argument("--out-dir", default=None,
                     help="base output dir for the versioned run folders. Default: "
                          "$PEAKY_OUTPUT_DIR else ~/peaky-output")
@@ -726,13 +761,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="skip every PDF report (assignment + merge only)")
     pp.add_argument("--no-group-reports", action="store_true",
                     help="only the whole-pool report; skip the per-group ones")
-    pp.add_argument("--coverage-target", type=float, default=0.90,
-                    help="per group: fraction of significant m/z bins to cover (default 0.90)")
-    pp.add_argument("--k-max", type=int, default=6,
-                    help="per group: max winner samples PER GROUP (default 6; the "
-                         "union across groups is what gets assigned)")
-    pp.add_argument("--height-floor", type=float, default=1000.0,
-                    help="a bin is significant if its max height >= this (cps)")
+    _add_selection_args(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "
                          "(default: physical cores; env PEAKY_JOBS honored)")

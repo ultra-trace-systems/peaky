@@ -49,7 +49,7 @@ check("guard passes a genuine isolated peak",
 # the +O rung scores only 0.69 (weak 2-Br envelope), so it commits ONLY via the
 # +HBr pairing: its bromine-free neutral C15H22O4 is independently seen at
 # [M+Br]- (the 1-Br partner peak).
-cfg = P.PassConfig(height_cutoff=100.0)
+cfg = P.PassConfig(height_cutoff_cps=100.0)
 cfg.cal_mu, cfg.cal_sigma = 0.0, 0.5
 prof = type("Prof", (), {"label": "ambient-air"})()
 anchor_mz = C.ion_mz("C15H22O3", "[M+HBr+Br]-")    # 409.0019

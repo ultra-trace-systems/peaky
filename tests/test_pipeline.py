@@ -58,6 +58,97 @@ with tempfile.TemporaryDirectory() as d:
     check("make_run_context: out_dir created, profile attached",
           os.path.isdir(ctx.out_dir) and ctx.profile is P.BR)
 
+# ---------------------------------------------------------------------------
+# the batch + pooled entry points resolve the height-gate multiple ONCE, from
+# the profile, onto the cfg they hand to the assignment AND fingerprint in the
+# manifest. The expensive halves (assign, report, provenance) are stubbed, so
+# this reads back exactly what the pipeline handed over.
+# ---------------------------------------------------------------------------
+import pandas as pd  # noqa: E402
+
+from peaky.batch import assign_batch as _AB  # noqa: E402
+from peaky.assignment import passes as _PA  # noqa: E402
+from peaky.reporting import provenance as _PV  # noqa: E402
+
+_snap = (dict(P.PROFILES), dict(P._BY_ALIAS))
+P.register(P.ReagentProfile(
+    name="TofP", label="tof picker", polarity="-", adducts=["[M-H]-"],
+    normaliser="tic", reagent_ion_re=None, ranges="C0-10 H0-20",
+    detect_adduct=None, height_cutoff_x_edge=5.0))
+_savedf = {"ab": _AB.run, "gen": PL.generate_report, "rec": _PV.record_run}
+_got: dict = {}
+
+
+def _fake_ab(**kw):
+    _got["ab"] = kw
+    # stand in for what the assign does to the cfg it is handed: fit and stamp a
+    # mass calibration on it (passes.calibrate).
+    kw["cfg"].cal_mu, kw["cfg"].cal_sigma = -2.45, 0.30
+    return {"summary": {}, "sample_ids": []}
+
+
+_AB.run = _fake_ab
+PL.generate_report = lambda ctx, ts, **kw: {}
+_PV.record_run = lambda **kw: _got.__setitem__("rec", kw)
+_TS = pd.DataFrame({"sample_item_id": ["s1", "s1", "s2", "s2"],
+                    "mz": [100.0, 200.0, 100.0, 300.0], "height": [5.0] * 4,
+                    "sample_batch_name": ["b1", "b1", "b2", "b2"]})
+try:
+    with tempfile.TemporaryDirectory() as d:
+        PL.run_batch(batch="B", dataset="D", reagent="TofP", base_out=d, ts=_TS,
+                     when=WHEN, do_report=False, log=lambda *a: None)
+        check("run_batch hands assign_batch a cfg carrying the profile's multiple",
+              _got["ab"]["cfg"].height_cutoff_x_edge == 5.0, _got["ab"].get("cfg"))
+        # the fingerprint is a SNAPSHOT of the resolved configuration: same knobs,
+        # but nothing the assign derived from the data (a manifest that absorbed a
+        # fitted cal_mu would vary with the sample, not the config).
+        check("run_batch fingerprints that cfg's resolved knobs",
+              _got["rec"]["cfg"].height_cutoff_x_edge == 5.0
+              and _got["rec"]["cfg"] is not _got["ab"]["cfg"],
+              _got["rec"].get("cfg"))
+        check("run_batch does NOT fingerprint a calibration fitted during the run",
+              _got["rec"]["cfg"].cal_mu is None
+              and _got["ab"]["cfg"].cal_mu == -2.45,
+              (_got["rec"]["cfg"].cal_mu, _got["ab"]["cfg"].cal_mu))
+    with tempfile.TemporaryDirectory() as d:
+        _got.clear()
+        PL.run_pooled_batches(batches="b.*", dataset="D", reagent="TofP", base_out=d,
+                              ts=_TS, when=WHEN, do_report=False,
+                              per_group_reports=False, log=lambda *a: None)
+        check("run_pooled_batches resolves the same multiple onto its cfg",
+              _got["ab"]["cfg"].height_cutoff_x_edge == 5.0
+              and _got["rec"]["cfg"].height_cutoff_x_edge == 5.0
+              and _got["rec"]["cfg"].cal_mu is None, _got["ab"].get("cfg"))
+    # an explicit cfg multiple beats the profile through the pipeline too -- at
+    # the value (1.0) that is also the package default, so "explicit" cannot be
+    # inferred from the number alone.
+    with tempfile.TemporaryDirectory() as d:
+        _got.clear()
+        PL.run_batch(batch="B", dataset="D", reagent="TofP", base_out=d, ts=_TS,
+                     when=WHEN, do_report=False, log=lambda *a: None,
+                     cfg=_PA.PassConfig(height_cutoff_x_edge=1.0))
+        check("run_batch: an explicit 1.0 outranks a profile that says 5.0",
+              _got["ab"]["cfg"].height_cutoff_x_edge == 1.0
+              and _got["rec"]["cfg"].height_cutoff_x_edge == 1.0,
+              _got["ab"]["cfg"].height_cutoff_x_edge)
+    # a bundled profile has no opinion -> the package default, unchanged
+    with tempfile.TemporaryDirectory() as d:
+        _got.clear()
+        PL.run_batch(batch="B", dataset="D", reagent="Br", base_out=d, ts=_TS,
+                     when=WHEN, do_report=False, log=lambda *a: None)
+        check("a bundled profile leaves the package default in place",
+              _got["ab"]["cfg"].height_cutoff_x_edge == 1.0)
+    # pipeline.run (the selection-only entry point) reports the same resolution
+    check("pipeline.run reports the gate multiple its assign stage would use",
+          PL.run(peaks=_TS, reagent="TofP")["height_cutoff_x_edge"] == 5.0
+          and PL.run(peaks=_TS, reagent="Br")["height_cutoff_x_edge"] == 1.0)
+finally:
+    _AB.run, PL.generate_report, _PV.record_run = (
+        _savedf["ab"], _savedf["gen"], _savedf["rec"])
+    P.PROFILES.clear(); P.PROFILES.update(_snap[0])
+    P._BY_ALIAS.clear(); P._BY_ALIAS.update(_snap[1])
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

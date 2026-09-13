@@ -49,8 +49,42 @@ check("input hashes the ts parquet (== streaming sha1) + records provenance",
 check("output hashes merged_ledger.csv + carries counts",
       m["output"]["merged_ledger_sha1"] and m["output"]["counts"]["merged_M0"] == 42)
 check("config fingerprint keeps user knobs, drops run-derived fields",
-      m["config"].get("height_cutoff") == 100.0 and m["config"].get("ppm") == 1.0
-      and "mechanism_ids" not in m["config"] and "prior_offset" not in m["config"])
+      m["config"].get("height_cutoff_x_edge") == 1.0 and m["config"].get("ppm") == 1.0
+      and "height_cutoff_cps" in m["config"]
+      and "mechanism_ids" not in m["config"] and "prior_offset" not in m["config"]
+      and "noise_edge_cps" not in m["config"], m["config"])
+# the gate multiple is a USER KNOB (a profile or the command line sets it), so a
+# profile-supplied value must reach the fingerprint and never the runtime-excluded
+# set -- otherwise two runs with different gates hash the same config.
+_mx = PV.build_manifest(run_dir=_rd, batch_name="B", dataset="D", sample_ids=["s1"],
+                        reagent="Br", cfg=P.PassConfig(height_cutoff_x_edge=5.0),
+                        ts_path=_tsp, counts={}, created_utc="2026-01-01T00:00:00Z")
+check("a resolved (non-default) x_edge is fingerprinted, not runtime-excluded",
+      _mx["config"].get("height_cutoff_x_edge") == 5.0
+      and "height_cutoff_x_edge" not in P.PassConfig.RUNTIME_FIELDS,
+      _mx["config"].get("height_cutoff_x_edge"))
+_RT = {"noise_edge_cps", "mechanism_ids", "prior_offset", "reagent_element",
+       "cal_mu", "cal_sigma"}
+check("PassConfig.RUNTIME_FIELDS declares the run-stamped fields",
+      _RT <= set(P.PassConfig.RUNTIME_FIELDS), P.PassConfig.RUNTIME_FIELDS)
+# a FITTED mass calibration is data, not configuration: a fingerprint that
+# absorbed it would vary with the sample it is meant to pin the config against.
+_mc = P.PassConfig(); _mc.cal_mu, _mc.cal_sigma = -2.45, 0.30
+_mcal = PV.build_manifest(run_dir=_rd, batch_name="B", dataset="D", sample_ids=["s1"],
+                          reagent="Br", cfg=_mc, ts_path=_tsp, counts={},
+                          created_utc="2026-01-01T00:00:00Z")
+check("a fitted cal_mu/cal_sigma never reaches the config fingerprint",
+      "cal_mu" not in _mcal["config"] and "cal_sigma" not in _mcal["config"]
+      and _mcal["config"]["cal_z_accept"] == 2.0,     # the KNOBS stay
+      {k: v for k, v in _mcal["config"].items() if k.startswith("cal_")})
+import dataclasses as _dc  # noqa: E402
+_FIELDS = {f.name for f in _dc.fields(P.PassConfig)}      # real fields (ClassVar excluded)
+check("RUNTIME_FIELDS is a ClassVar, not a dataclass field (asdict/pickle untouched)",
+      "RUNTIME_FIELDS" not in _FIELDS and "RUNTIME_FIELDS" not in m["config"])
+check("build_manifest's config excludes every RUNTIME_FIELDS entry and nothing else",
+      not (set(P.PassConfig.RUNTIME_FIELDS) & set(m["config"]))
+      and set(m["config"]) == _FIELDS - set(P.PassConfig.RUNTIME_FIELDS),
+      sorted(_FIELDS ^ set(m["config"])))
 
 # passes.calibrate writes the fitted mass trend back onto the SHARED cfg, so the
 # last sample's data-derived numbers would otherwise land in the fingerprint and

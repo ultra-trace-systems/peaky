@@ -1,5 +1,6 @@
-"""Offline tests for the multi-batch POOLING path: per-group brightest union
-(sampling.select_pooled_union), the pool-name helper, the un-escaped regex loader
+"""Offline tests for the multi-batch POOLING path: one presence set-cover over
+the pooled table with per-group coverage (sampling.select_cover_samples with
+group_col), the pool-name helper, the un-escaped regex loader
 (io_mascope.fetch_pooled_peaks), and `peaky pool` CLI parsing. No network.
 Run: python3 tests/test_pooled.py"""
 import re as _re
@@ -11,7 +12,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from peaky import pipeline as PL           # noqa: E402
-from peaky import sampling as SS           # noqa: E402
+from peaky.batch import sampling as SS     # noqa: E402
 from peaky.io import io_mascope as IO      # noqa: E402
 
 PASS = FAIL = 0
@@ -21,62 +22,62 @@ def check(name, cond, detail=""):
     else: FAIL += 1; print(f"FAIL  {name}  {detail}")
 
 
-def make_pool(groups):
+def make_pool(groups, *, n_unique=3):
     """Build a pooled peak frame across groups. `groups` maps a batch name to a
-    list of per-sample TICs; each sample gets 6 peaks so it can be selective."""
+    list of per-sample intensity scales; every sample holds 6 shared bins plus
+    `n_unique` bins exclusive to its group (so each group has its own chemistry),
+    and each sample appears TWICE (a twin) so every bin passes the prevalence gate."""
     t0 = pd.Timestamp("2020-01-01 00:00:00", tz="UTC")
     rows, s = [], 0
-    for gname, tics in groups.items():
-        for j, tic in enumerate(tics):
-            sid = f"{gname[:2]}_s{s:02d}"; s += 1
-            t = t0 + pd.Timedelta(minutes=30 * s)
-            for k in range(6):
-                rows.append(dict(sample_item_id=sid, sample_batch_name=gname,
-                                 datetime_utc=t, mz=100.0 + k,
-                                 height=tic / 6 * (1 + 0.1 * k)))
+    for gi, (gname, scales) in enumerate(groups.items()):
+        for j, sc in enumerate(scales):
+            for twin in ("", "t"):
+                sid = f"{gname[:2]}_s{s:02d}{twin}"
+                t = t0 + pd.Timedelta(minutes=30 * s)
+                for k in range(6):
+                    rows.append(dict(sample_item_id=sid, sample_batch_name=gname,
+                                     datetime_utc=t, mz=100.0 + k, height=sc * (1 + 0.1 * k)))
+                for k in range(n_unique):
+                    rows.append(dict(sample_item_id=sid, sample_batch_name=gname,
+                                     datetime_utc=t, mz=200.0 + 10 * gi + k + 0.1 * j,
+                                     height=sc))
+            s += 1
     return pd.DataFrame(rows)
 
 
 # --- a LOUD group and a QUIET group -----------------------------------------
-# Group A intensities dwarf group B: a naive pooled brightest pass would let A win
-# most bins and under-represent B. The union must still cover BOTH.
+# Group A intensities dwarf group B. A brightness-driven selector would let A win
+# every bin and under-represent B; a PRESENCE cover is blind to intensity, so B's
+# own bins count exactly as much as A's.
 LOUD, QUIET = "HR-CIMS 100-500 zone 1", "HR-CIMS 100-500 zone 2"
 pool = make_pool({
-    LOUD: list(np.linspace(5e5, 9e5, 8)),    # loud group
-    QUIET: list(np.linspace(1e4, 3e4, 8)),   # quiet group
+    LOUD: list(np.linspace(5e5, 9e5, 4)),    # loud group
+    QUIET: list(np.linspace(1e4, 3e4, 4)),   # quiet group
 })
 
-union, prov = SS.select_pooled_union(pool, k_max=4, height_floor=1000.0)
-groups_in_prov = set(prov["sample_batch_name"])
+prov = SS.select_cover_samples(pool, group_col="sample_batch_name", k_min=2, min_gain=0.0)
+meta = prov.attrs["selection"]
+union = prov["sample_item_id"].tolist()
 per_group = prov.groupby("sample_batch_name")["sample_item_id"].nunique().to_dict()
 
-check("union: both groups represented in provenance",
-      groups_in_prov == set(pool["sample_batch_name"].unique()), groups_in_prov)
-check("union: the QUIET group still gets picks (not starved)",
+check("pool cover: both groups' bins fully covered (coverage_by_group == 1.0)",
+      all(np.isclose(v, 1.0) for v in meta["coverage_by_group"].values()),
+      meta["coverage_by_group"])
+check("pool cover: the QUIET group gets picks (its bins are unique to it)",
       per_group.get(QUIET, 0) >= 1, per_group)
-check("union: the LOUD group gets picks too",
-      per_group.get(LOUD, 0) >= 1, per_group)
-check("union: ids are de-duplicated", len(union) == len(set(union)), len(union))
-check("union: every id belongs to some group's samples",
-      set(union) <= set(pool["sample_item_id"].unique()), None)
-check("union: per group capped at k_max (+ <=2 time-grid endpoints)",
-      all(v <= 4 + 2 for v in per_group.values()), per_group)
-check("union: count == sum of distinct per-group picks (disjoint groups)",
-      len(union) == sum(per_group.values()), (len(union), per_group))
-
-# naive pooled brightest DOES starve the quiet group -> motivates the union
-naive = set(SS.select_brightest_coverage_sample_ids(pool, k_max=4, height_floor=1000.0))
-quiet_ids = set(pool.loc[pool.sample_batch_name == QUIET, "sample_item_id"])
-check("motivation: naive pooled brightest under-covers the quiet group vs union",
-      len(naive & quiet_ids) <= per_group.get(QUIET, 0),
-      (len(naive & quiet_ids), per_group))
+check("pool cover: the LOUD group gets picks too", per_group.get(LOUD, 0) >= 1, per_group)
+check("pool cover: ids are de-duplicated", len(union) == len(set(union)), len(union))
+check("pool cover: every id belongs to the pool", set(union) <= set(pool["sample_item_id"]))
+check("pool cover: picks_by_group agrees with the provenance rows",
+      meta["picks_by_group"] == per_group, (meta["picks_by_group"], per_group))
+check("pool cover: k recorded == rows", meta["k"] == len(prov), meta)
 
 # missing group column -> clear error
 try:
-    SS.select_pooled_union(pool.drop(columns=["sample_batch_name"]))
-    check("union: missing group_col raises", False, "no error")
+    SS.select_cover_samples(pool, group_col="no_such_col")
+    check("pool cover: missing group_col raises", False, "no error")
 except KeyError:
-    check("union: missing group_col raises KeyError", True)
+    check("pool cover: missing group_col raises KeyError", True)
 
 # --- pool_name: regex -> readable label -------------------------------------
 check("pool_name: strips metachars + tags pooled",
@@ -97,8 +98,8 @@ with tempfile.TemporaryDirectory() as d:
     for n in ("merged_ledger.csv", "batch_summary.json"):
         Path(pool, n).write_text("x")
     Path(pool, "per_file", "s1_ledger.csv").write_text("y")
-    gprov = pd.DataFrame({"sample_item_id": ["s1"], "role": ["coverage-winner"],
-                          "bins_won": [3], "sample_batch_name": ["zone 1"]})
+    gprov = pd.DataFrame({"sample_item_id": ["s1"], "role": ["cover"], "pick": [1],
+                          "bins_new": [3], "coverage": [0.5], "sample_batch_name": ["zone 1"]})
     PL._write_selected_samples(pool, gprov)
     check("_write_selected_samples: writes tables/selected_samples.csv",
           _os.path.exists(_os.path.join(pool, "tables", "selected_samples.csv")))
@@ -153,8 +154,9 @@ ns = cli.build_parser().parse_args(
     ["pool", "--batches", "HR-CIMS .*zone", "--dataset", "DS", "--reagent", "Ur"])
 check("cli pool: dispatches to cmd_pool", ns.func is cli.cmd_pool, getattr(ns, "func", None))
 check("cli pool: --batches captured", ns.batches == "HR-CIMS .*zone", ns.batches)
-check("cli pool: k_max default 6 (per group)", ns.k_max == 6, ns.k_max)
-check("cli pool: coverage-target default 0.90", ns.coverage_target == 0.90, ns.coverage_target)
+check("cli pool: k_max default == sampling.K_MAX (one cover over the pool)",
+      ns.k_max == SS.K_MAX, ns.k_max)
+check("cli pool: k_min / min_gain defaults", ns.k_min == SS.K_MIN and ns.min_gain == SS.MIN_GAIN)
 check("cli pool: group_by default sample_batch_name",
       ns.group_by == "sample_batch_name", ns.group_by)
 check("cli pool: --no-group-reports flag present", ns.no_group_reports is False, ns.no_group_reports)

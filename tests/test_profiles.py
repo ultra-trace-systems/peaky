@@ -123,6 +123,85 @@ check("EasyIC [M]+. maps to the server's bare '+' mechanism",
 check("EasyIC [M-H]+ is a local-scoring channel: deliberately NOT mechanism-mapped",
       "[M-H]+" not in IOM.ADDUCT_TO_MECH)
 
+# ---- the noise-edge height gate's multiple ----------------------------------
+# Resolution order: an explicit caller/CLI value > the profile's own value > the
+# package default. NO bundled profile sets one (the discriminator is the peak
+# picker, not the reagent), so out of the box every run keeps the default gate.
+from peaky.assignment.passes import config as _PC  # noqa: E402
+
+check("no BUNDLED profile sets height_cutoff_x_edge (default behaviour unchanged)",
+      all(p.height_cutoff_x_edge is None
+          for p in (P.BR, P.UR, P.NO3, P.NO3_15N, P.IODIDE, P.EASYIC)),
+      {p.name: p.height_cutoff_x_edge for p in P.PROFILES.values()})
+check("the registry's bundled set is exactly those six, all unset",
+      all(p.height_cutoff_x_edge is None for p in P.PROFILES.values()))
+
+_picker = P.ReagentProfile(
+    name="Tof", label="tof picker", polarity="-", adducts=["[M-H]-"],
+    normaliser="tic", reagent_ion_re=None, ranges="C0-10 H0-20",
+    detect_adduct=None, height_cutoff_x_edge=5.0)
+_plain = P.BR                                     # a profile with no opinion
+
+check("explicit value beats the profile's",
+      P.resolve_height_cutoff_x_edge(2.0, _picker) == 2.0)
+check("profile value beats the package default",
+      P.resolve_height_cutoff_x_edge(None, _picker) == 5.0)
+check("neither set -> the package default (one constant, not a literal)",
+      P.resolve_height_cutoff_x_edge(None, _plain) == _PC.DEFAULT_HEIGHT_CUTOFF_X_EDGE
+      == 1.0 and P.resolve_height_cutoff_x_edge() == 1.0)
+check("a profile's None is an ABSENCE, never 0.0",
+      P.resolve_height_cutoff_x_edge(None, _plain) != 0.0)
+check("an explicit 0.0 is a VALUE, not an absence",
+      P.resolve_height_cutoff_x_edge(0.0, _picker) == 0.0)
+check("source names where the value came from",
+      P.height_cutoff_x_edge_source(None, _picker) == "the Tof reagent profile"
+      and P.height_cutoff_x_edge_source(None, _plain) == "the package default"
+      and "explicit" in P.height_cutoff_x_edge_source(2.0, _picker))
+
+# apply_*: stamps a PassConfig, and a caller's own non-default cfg value wins
+_cfg = _PC.PassConfig()
+_v, _s = P.apply_height_cutoff_x_edge(_cfg, _picker)
+check("apply stamps the profile's multiple onto the cfg",
+      _cfg.height_cutoff_x_edge == 5.0 and (_v, _s) == (5.0, "the Tof reagent profile"))
+_v2, _s2 = P.apply_height_cutoff_x_edge(_cfg, _picker)     # re-applied downstream
+check("apply is idempotent and still credits the profile",
+      (_cfg.height_cutoff_x_edge, _v2, _s2) == (5.0, 5.0, "the Tof reagent profile"))
+_cfg3 = _PC.PassConfig(height_cutoff_x_edge=3.0)
+check("a cfg the caller already set outranks the profile",
+      P.apply_height_cutoff_x_edge(_cfg3, _picker)[0] == 3.0
+      and _cfg3.height_cutoff_x_edge == 3.0)
+# the case a `!= DEFAULT` test cannot see: explicitness is read off the field
+# (None = unset), so a caller who deliberately asks for the GLOBAL DEFAULT still
+# outranks a profile that says 5.0. Without this, "explicit beats the profile"
+# would be true at every value except the one users are most likely to type.
+_cfg1 = _PC.PassConfig(height_cutoff_x_edge=1.0)
+_v1, _s1 = P.apply_height_cutoff_x_edge(_cfg1, _picker)
+check("an explicit value EQUAL to the package default still beats the profile",
+      (_v1, _cfg1.height_cutoff_x_edge) == (1.0, 1.0) and "explicit" in _s1,
+      (_v1, _s1))
+check("...and re-resolving that cfg downstream does not flip it back",
+      P.apply_height_cutoff_x_edge(_cfg1, _picker)[0] == 1.0
+      and _cfg1.height_cutoff_x_edge == 1.0)
+_cfg4 = _PC.PassConfig()
+check("a profile-less cfg keeps the package default",
+      P.apply_height_cutoff_x_edge(_cfg4, _plain)[0] == 1.0
+      and _cfg4.height_cutoff_x_edge == 1.0)
+# the label survives the second resolution too (the pipeline stamps the cfg, then
+# assign_batch re-resolves that same cfg): repeating what you would have got
+# anyway is not "explicit".
+check("a re-resolved default-gate cfg is still credited to the package default",
+      P.apply_height_cutoff_x_edge(_cfg4, _plain)[1] == "the package default",
+      P.apply_height_cutoff_x_edge(_cfg4, _plain)[1])
+# the one-per-run log line, and its silence when the multiple is not what gates
+_lines: list = []
+P.apply_height_cutoff_x_edge(_PC.PassConfig(), _picker, log=_lines.append)
+check("apply logs the value AND its source, once",
+      len(_lines) == 1 and "5x" in _lines[0] and "Tof reagent profile" in _lines[0],
+      _lines)
+P.apply_height_cutoff_x_edge(_PC.PassConfig(height_cutoff_cps=250.0), _picker,
+                             log=_lines.append)
+check("no gate line when an ABSOLUTE override is what gates", len(_lines) == 1, _lines)
+
 # ---- register a new profile in code -----------------------------------------
 acet = P.ReagentProfile(
     name="Ac", label="Acetate⁻", polarity="-", adducts=["[M+CH3COO]-", "[M-H]-"],
@@ -155,6 +234,19 @@ with tempfile.TemporaryDirectory() as d:
         'normaliser="tic"\nreagent_ion_re=""\nranges="C0-5 H0-10"\ndetect_adduct="[M+Tz]-"\n')
     P.load_config(cfgt)
     check("load_config(TOML) registers", P.resolve("Tz").name == "Tz")
+
+    # a site raises the gate for ITS OWN peak picker from a config file, with no
+    # code change: height_cutoff_x_edge must be a loadable field.
+    cfgp = os.path.join(d, "picker.json")
+    json.dump([{"name": "Tofy", "label": "tof picker", "polarity": "-",
+                "adducts": ["[M-H]-"], "normaliser": "tic", "reagent_ion_re": None,
+                "ranges": "C0-10 H0-20", "detect_adduct": "[M-H]-",
+                "height_cutoff_x_edge": 5.0}], open(cfgp, "w"))
+    P.load_config(cfgp)
+    check("load_config carries height_cutoff_x_edge",
+          P.resolve("Tofy").height_cutoff_x_edge == 5.0)
+    check("a config-supplied multiple wins the resolution over the default",
+          P.resolve_height_cutoff_x_edge(None, P.resolve("Tofy")) == 5.0)
 
     # a user config may deliberately SHADOW a built-in alias (register overwrite
     # semantics): 'iodide' -> the custom profile until the registry is restored.
