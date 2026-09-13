@@ -7,6 +7,12 @@ __pycache__/
 .env
 .env*
 !.env.example
+# ...and the EDITOR SWAP FILES of those, which hold the file's contents but whose
+# names fall outside `.env*`: nano writes `..envSITE.swp` for `.envSITE` and vim
+# writes `.env.swp`, so a swap file of a creds file was committable. Both forms,
+# plus vim's numbered/extra swaps.
+*.sw[a-p]
+.*.sw[a-p]
 *.parquet
 *.npy
 *.log

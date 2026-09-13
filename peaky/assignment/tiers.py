@@ -146,6 +146,52 @@ def _alts(cell) -> list[dict]:
         return []
 
 
+#: heavy isotopes that CORROBORATE a known-species commit: a matched satellite
+#: here is independent evidence of the heteroatom and refutes a single-channel
+#: mass coincidence, which is why pass 0 accepts one in place of a 2nd ion
+#: channel. ¹³C is deliberately absent -- every carbon-bearing formula has one,
+#: so it discriminates nothing (passes/directors.run_pass0_known says the same).
+_DIAG_ISO = ("34S", "37Cl", "81Br", "29Si", "30Si")
+
+
+def _iso_labels(cell) -> list[str]:
+    """Isotope labels recorded on a row, composites split ('13C+81Br' -> both)."""
+    out: list[str] = []
+    for d in _alts(cell):
+        for part in str(d.get("label", "")).split("+"):
+            if part and part not in out:
+                out.append(part)
+    return out
+
+
+def _known_route(row, n_chan: int, kid_labels=()) -> str:
+    """How a pass-0 known-species commit earns its Assigned tier, in the terms of
+    its own gate: >=2 ion channels, or a single channel plus a confirmed
+    diagnostic isotope envelope standing in for the second (the P/S/Si families).
+
+    Every leg is read off the LEDGER -- channels from the M0 rows sharing this
+    neutral, satellites from this row's `isotopologues` AND from the iso_child
+    rows pointing back at it -- so the sentence is checkable in the file it
+    appears in, which is the whole point: the gate lives in directors.py, and a
+    reviewer auditing whether it leaked should not have to go read it. Both
+    satellite sources are used because they are two halves of the same
+    bookkeeping, and a ledger written before the commit path recorded its own
+    evidence still carries the attached children."""
+    labels = _iso_labels(row.get("isotopologues")) + [
+        part for lab in kid_labels for part in str(lab).split("+")]
+    diag = sorted({lab for lab in labels if lab in _DIAG_ISO})
+    twin = f"a confirmed {'/'.join(diag)} satellite" if diag else ""
+    if n_chan >= 2:
+        route = f"{n_chan} ion channels" + (f" + {twin}" if twin else "")
+    elif twin:
+        route = f"1 ion channel + {twin}"
+    elif n_chan >= 1:
+        route = "1 ion channel"
+    else:
+        return ""
+    return f"; corroborated by {route}"
+
+
 def _truthy(v) -> bool | None:
     """Robust bool for a ledger 'tied' cell that may have round-tripped CSV."""
     if v is None or (isinstance(v, float) and np.isnan(v)) or v is pd.NA:
@@ -399,6 +445,11 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
     m0 = ledger[ledger["role"] == L.ROLE_M0]
     # corroboration sources
     kids_of = ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
+    # ...and WHICH satellites, not just how many: a known-species commit that
+    # bought its tier with a 34S twin has to be able to say so (see _known_route).
+    kid_labels_of = (ledger.loc[ledger["role"] == L.ROLE_ISO]
+                     .groupby("parent_peak_id")["iso_label"]
+                     .agg(lambda s: sorted(set(s.dropna().astype(str)))).to_dict())
     chan_count = m0.groupby("neutral_formula")["adduct"].nunique()
     # the set of adducts each neutral is assigned under -- lets the reagent-N gate
     # ask whether a neutral has an N-FREE sibling channel (real discrimination) or
@@ -459,7 +510,9 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
         tier, reason = TIER_ASSIGNED, ""
         if method.startswith("known:"):
             reason = ("known species (pass-0 locked list, mass + own-twin "
-                      "self-consistency gated)")
+                      "self-consistency gated)"
+                      + _known_route(r, int(chan_count.get(formula, 0)),
+                                     kid_labels_of.get(r["peak_id"], ())))
         elif base in ("Low", "Suspect"):
             tier = TIER_CANDIDATE
             reason = (f"{base} confidence: score/mass evidence below the "

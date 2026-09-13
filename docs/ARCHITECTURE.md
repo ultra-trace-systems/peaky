@@ -63,6 +63,7 @@ and the evidence behind it:
 | column group        | meaning                                                              |
 | ------------------- | ------------------------------------------------------------------- |
 | `role`              | `M0` (monoisotopic owner) · `iso_child` · `reagent` · `artifact` · `unexplained` |
+| parent link         | an `iso_child`'s `parent_peak_id` plus the owner it names (`parent_neutral_formula` / `parent_adduct`) |
 | formula / adduct    | the committed neutral + ionization adduct (`ion_formula` for reagent ions) |
 | scores              | Mascope `match_score` plus arbitration `eff_score` / `eff_margin` / `tied` |
 | evidence            | ppm error, confidence label, isotopologue children, alternatives, commentary |

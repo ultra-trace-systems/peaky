@@ -56,8 +56,14 @@ def _iso_to_text(cell) -> str:
         iso = json.loads(cell) if isinstance(cell, str) else (cell or [])
     except Exception:
         return ""
-    return "; ".join(f"{i.get('label')}={i.get('score'):.2f}"
-                     for i in iso if i.get("score") is not None)
+    # a satellite confirmed against the LEDGER (the isotope-locked recovery path)
+    # carries no per-line server score; render its label rather than dropping it,
+    # so the evidence a commit rests on is never silently blank in the report.
+    return "; ".join(
+        f"{i.get('label')}={i.get('score'):.2f}" if i.get("score") is not None
+        else str(i.get("label"))
+        for i in iso if i.get("label")
+    )
 
 
 _RESIDUAL_INTERPRETATION = {
@@ -209,12 +215,16 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
                     "parent_peak_id", "peak_id"]]
                .sort_values(["parent_mz", "mz"]))
 
-    # ownership audit (one row per physical peak)
-    ownership = led[["peak_id", "mz", "height", "role", "tier",
-                     "neutral_formula", "adduct", "ion_score", "ppm_error",
-                     "confidence", "composite_note", "parent_peak_id",
-                     "iso_label", "pass_no", "method", "commentary"]
-                    ].sort_values("height", ascending=False)
+    # ownership audit (one row per physical peak). A satellite's row names its
+    # owner, not just its peak_id: this sheet is what a reviewer reads to ask who
+    # claimed a peak, and "iso_child of 4f9a..." does not answer that.
+    _own_cols = ["peak_id", "mz", "height", "role", "tier",
+                 "neutral_formula", "adduct", "ion_score", "ppm_error",
+                 "confidence", "composite_note", "parent_peak_id",
+                 "parent_neutral_formula", "parent_adduct",
+                 "iso_label", "pass_no", "method", "commentary"]
+    ownership = (led[[c for c in _own_cols if c in led.columns]]
+                 .sort_values("height", ascending=False))
 
     # target list (formula + adduct + best ppm), Assigned first
     # ('Assigned' < 'Candidate' lexically, hence the ascending tier sort)

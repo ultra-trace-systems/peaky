@@ -69,6 +69,13 @@ check("p2 is iso_child of p1", L.role_of(led, "p2") == L.ROLE_ISO
       and led.loc[led.peak_id == "p2", "parent_peak_id"].iloc[0] == "p1")
 check("attach to non-M0 parent raises",
       raises(lambda: L.attach_isotopologue(led, "p3", "p4", iso_label="13C1")))
+# a satellite names WHAT it is a satellite of, not just which peak_id: the row
+# has to be auditable on its own, because that is how the ledger is exported and
+# read (P/S corroboration audit, ledger CSV in output/per_file/).
+check("iso_child carries its parent's identity (formula + channel)",
+      led.loc[led.peak_id == "p2", "parent_neutral_formula"].iloc[0] == "C9H14O4"
+      and led.loc[led.peak_id == "p2", "parent_adduct"].iloc[0] == "[M-H]-",
+      led.loc[led.peak_id == "p2", ["parent_neutral_formula", "parent_adduct"]].to_dict())
 
 # --- locking + immutability (I3) ---
 L.lock_peaks(led, ["p1", "p2"])
@@ -100,6 +107,17 @@ L.attach_isotopologue(led2, "p2", "p1", iso_label="13C1", iso_match_score=0.94)
 problems = L.validate(led2)
 check("clean ledger validates", problems == [], problems)
 
+# a stamp that disagrees with the parent's own row would send a reviewer to the
+# wrong compound -- as much an I2 violation as a dangling parent_peak_id
+led2b = fresh()
+L.commit_assignment(led2b, "p1", neutral_formula="C9H14O4", adduct="[M-H]-",
+                    ion_score=0.97, pass_no=1, method="cheminfo", confidence="High",
+                    commentary="ok")
+L.attach_isotopologue(led2b, "p2", "p1", iso_label="13C1", iso_match_score=0.94)
+led2b.loc[led2b.peak_id == "p2", "parent_neutral_formula"] = "C8H10N2O"
+check("validate flags an iso_child naming the wrong parent formula",
+      any("names parent" in p for p in L.validate(led2b)), L.validate(led2b))
+
 # --- validate catches orphan iso_child ---
 led3 = fresh()
 led3.loc[led3.peak_id == "p3", "role"] = L.ROLE_ISO  # orphan: no parent / parent not M0
@@ -127,7 +145,8 @@ check("clear_assignment wipes formula",
 check("clear_assignment records reason",
       "mass-gate" in led4.loc[led4.peak_id == "p1", "commentary"].iloc[0])
 check("clear_assignment orphan child also cleared",
-      L.role_of(led4, "p2") == L.ROLE_UNEXPLAINED)
+      L.role_of(led4, "p2") == L.ROLE_UNEXPLAINED
+      and pd.isna(led4.loc[led4.peak_id == "p2", "parent_neutral_formula"].iloc[0]))
 check("cleared ledger validates clean", L.validate(led4) == [], L.validate(led4))
 check("clear_assignment refuses non-M0",
       raises(lambda: L.clear_assignment(led4, "p3", reason="x")))
@@ -152,6 +171,10 @@ check("displacement audit trail kept",
 check("grandchild re-parented with combined label",
       led5.loc[led5.peak_id == "p3", "parent_peak_id"].iloc[0] == "p1"
       and led5.loc[led5.peak_id == "p3", "iso_label"].iloc[0] == "13C+81Br")
+check("re-parented grandchild names the NEW parent, not the displaced one",
+      led5.loc[led5.peak_id == "p3", "parent_neutral_formula"].iloc[0] == "C10H16O5"
+      and led5.loc[led5.peak_id == "p2", "parent_neutral_formula"].iloc[0] == "C10H16O5",
+      led5.loc[:, ["peak_id", "parent_neutral_formula"]].to_dict("records"))
 check("displaced ledger validates clean", L.validate(led5) == [], L.validate(led5))
 led6 = fresh()
 L.commit_assignment(led6, "p1", neutral_formula="C5H10O", adduct="[M-H]-",

@@ -22,21 +22,21 @@ A ledger row carries (among others): `peak_id`, `mz`, `height`, `area`, `role`, 
 |---|---|---|
 | Unexplained | `ROLE_UNEXPLAINED` | Initial state; no assignment yet. Only this role may be claimed by passes 2–5 (`claim_unexplained_only=True`). |
 | M0 | `ROLE_M0` | Monoisotopic owner; owns `neutral_formula` + `adduct`; may own iso_children. |
-| Iso child | `ROLE_ISO` | Isotopologue child; points to a parent ROLE_M0 via `parent_peak_id`; carries `iso_label` / `iso_match_score`. |
+| Iso child | `ROLE_ISO` | Isotopologue child; points to a parent ROLE_M0 via `parent_peak_id` and names it via `parent_neutral_formula` / `parent_adduct`; carries `iso_label` / `iso_match_score`. |
 | Reagent | `ROLE_REAGENT` | Reagent-ion cluster (e.g. `[Br3]-`, `[urea_n+H]+`); labeled BEFORE passes so never a candidate. |
 | Artifact | `ROLE_ARTIFACT` | Instrumental noise (ringing/shoulder); only unexplained peaks may be reclassified. |
 
 ### 1.4 Ledger invariants
 
-- **I2**: every iso_child must have a parent that exists and owns M0 (enforced in `attach_isotopologue`, ledger.py:212).
+- **I2**: every iso_child must have a parent that exists and owns M0, and must name that owner: `parent_neutral_formula` has to agree with the parent row's `neutral_formula` (enforced in `attach_isotopologue`, audited by `validate`). A satellite row is read and exported on its own, so a stamp pointing at the wrong compound is as much a violation as a dangling `parent_peak_id`.
 - **I3/I4**: locked peaks are immutable; commit/clear/displace on a locked peak is refused. An iso_child of a locked parent refuses re-parenting.
 - **I5**: every M0 must carry provenance.
 - `ledger.validate(ledger) -> list[str]` runs the post-run audit (no duplicate peak_ids, valid roles, I2, I5); returns an empty list when healthy.
 
 ### 1.5 Ledger mutation API (ledger.py)
 
-- `commit_assignment(...)` — atomic commit of an M0 to a peak. Enforces I3/I4. Records `pass_no`, `method`, `confidence`, `commentary`, `alternatives`, `isotopologues`. Sets `role=ROLE_M0`, clears `iso_label`/`parent_peak_id`. `overwrite=False` by default.
-- `attach_isotopologue(...)` — marks `child_peak_id` as an isotopologue of a parent owning M0 (I2). Sets `role=ROLE_ISO`, `parent_peak_id`, `iso_label` (`13C` / `81Br` / `13C+81Br` / …), `iso_match_score`. Child must be unexplained or `overwrite=True`.
+- `commit_assignment(...)` — atomic commit of an M0 to a peak. Enforces I3/I4. Records `pass_no`, `method`, `confidence`, `commentary`, `alternatives`, `isotopologues`. Sets `role=ROLE_M0`, clears `iso_label`/`parent_peak_id`/`parent_neutral_formula`/`parent_adduct`. `overwrite=False` by default.
+- `attach_isotopologue(...)` — marks `child_peak_id` as an isotopologue of a parent owning M0 (I2). Sets `role=ROLE_ISO`, `parent_peak_id`, `parent_neutral_formula` + `parent_adduct` (copied from the parent's row, so the satellite is self-describing), `iso_label` (`13C` / `81Br` / `13C+81Br` / …), `iso_match_score`. Child must be unexplained or `overwrite=True`.
 - `clear_assignment(...)` — demotes an M0 owner back to unexplained, orphaning its iso_children. Forbidden on locked peaks. Records reason in commentary.
 - `displace_to_isotopologue(...)` — converts a peak that owns M0 into an isotopologue of a stronger parent; re-parents the child's former iso_children with combined labels (e.g. `13C+81Br`). Forbidden on locked peaks. Used in M0-vs-iso arbitration.
 - `mark_reagent(...)` / `mark_artifact(...)` / `lock_peaks(...)` — role/lock setters.

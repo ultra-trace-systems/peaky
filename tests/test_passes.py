@@ -1,4 +1,5 @@
 """Offline tests for passes.py arbitration + commit. Run: python3 tests/test_passes.py"""
+import json
 import sys
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from peaky import passes as P  # noqa: E402
 from peaky import ledger as L  # noqa: E402
+from peaky import tiers as T  # noqa: E402
 
 PASS = FAIL = 0
 CFG = P.PassConfig()
@@ -1201,6 +1203,16 @@ check("pass0 recovery locks the M0 and attaches its 37Cl satellites",
       L.is_locked(_ledr, "r0")
       and L.role_of(_ledr, "r1") == L.ROLE_ISO
       and L.role_of(_ledr, "r2") == L.ROLE_ISO)
+# this commit rests ENTIRELY on the ledger 37Cl envelope (the server score was too
+# low to anchor), so the envelope has to be ON the row -- confirmed against the
+# ledger, hence label-only with no per-line server score
+_r_iso = json.loads(_ledr.loc[_ledr.peak_id == "r0", "isotopologues"].iloc[0])
+check("pass0 recovery records the 37Cl envelope it was locked on",
+      [d["peak_id"] for d in _r_iso] == ["r1", "r2"]
+      and all(d["label"] == "37Cl" and d["score"] is None for d in _r_iso), _r_iso)
+check("recovered satellites name their parent",
+      set(_ledr.loc[_ledr.peak_id.isin(["r1", "r2"]), "parent_neutral_formula"])
+      == {"C11H18Cl6"})
 check("pass0 recovery flags the depressed-score recovery in the confidence label",
       "recovered" in str(_ledr.loc[_ledr.peak_id == "r0", "confidence"].iloc[0]))
 
@@ -1331,6 +1343,34 @@ s_de = P.run_pass0_known(None, "SID", led_de, PROF_URO, ACFG,
 check("pass0 commits a single-channel organothiophosphate with a confirmed 34S envelope",
       L.role_of(led_de, "deH") == L.ROLE_M0
       and led_de.loc[led_de.peak_id == "deH", "neutral_formula"].iloc[0] == "C8H13O5PS2", s_de)
+# ...and the ledger must SAY SO. The 34S twin is the whole licence for this commit
+# (1 ion channel, P off the grid), so a reviewer auditing whether the P-gate leaked
+# has to be able to see that evidence in the output instead of re-deriving the
+# +1.99580 offset by hand against directors.py. Two halves, one round trip:
+_de_iso = json.loads(led_de.loc[led_de.peak_id == "deH", "isotopologues"].iloc[0])
+check("the isotope-licensed commit records the satellite that licensed it",
+      any(d["label"] == "34S" and d["peak_id"] == "deS34" for d in _de_iso), _de_iso)
+check("and the satellite row points back at its parent by identity, not just peak_id",
+      L.role_of(led_de, "deS34") == L.ROLE_ISO
+      and led_de.loc[led_de.peak_id == "deS34", "parent_peak_id"].iloc[0] == "deH"
+      and led_de.loc[led_de.peak_id == "deS34", "parent_neutral_formula"].iloc[0] == "C8H13O5PS2"
+      and led_de.loc[led_de.peak_id == "deS34", "parent_adduct"].iloc[0] == "[M+H]+",
+      led_de.loc[led_de.peak_id == "deS34",
+                 ["parent_peak_id", "parent_neutral_formula", "parent_adduct"]].to_dict("records"))
+# the converse, so the column MEANS something: malathion above committed on two ion
+# channels with no satellite matched -> an empty list, not a missing record
+check("a cross-channel-licensed commit with no matched satellite records none",
+      json.loads(led_mal.loc[led_mal.peak_id == "malH", "isotopologues"].iloc[0]) == [])
+# and the tier explains which route it took, from the ledger's own columns
+_de_tier = T.compute_tiers(led_de).set_index("peak_id")
+check("tier_reason names the licensing route (1 channel + the 34S twin)",
+      _de_tier.at["deH", "tier"] == "Assigned"
+      and "1 ion channel + a confirmed 34S satellite" in _de_tier.at["deH", "tier_reason"],
+      _de_tier.at["deH", "tier_reason"])
+_mal_tier = T.compute_tiers(led_mal).set_index("peak_id")
+check("tier_reason names the cross-channel route when that is what licensed it",
+      "corroborated by 2 ion channels" in _mal_tier.at["malH", "tier_reason"],
+      _mal_tier.at["malH", "tier_reason"])
 # same single channel but NO 34S match -> still refused (guards the phosphate esters)
 def fake_de_nos34(client, sid, formulas, *, mechanism_ids=None, **kw):
     if "C8H13O5PS2" not in formulas:
