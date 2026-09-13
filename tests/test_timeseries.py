@@ -192,7 +192,7 @@ check("annotate: empty ledger -> all NA, no crash",
 
 # --- one-to-one stamping: THE invariant downstream software relies on ---------
 # a raw doublet (the real peak + a 1.2 mDa shoulder, as seen for C8H4O3 [M+H]+ at
-# m/z 149.0233 in every sample of the Wind-zone-2 batch) must yield ONE stamped
+# m/z 149.0233 in every sample of a 2.4 M-row uronium batch) must yield ONE stamped
 # trace per sample, not two.
 _dup_led = pd.DataFrame({
     "mz": [149.023307], "neutral_formula": ["C8H4O3"],
@@ -261,7 +261,7 @@ check("one-to-one: works without a sample column (single-spectrum table)",
       int(_nos.neutral_formula.notna().sum()) == 1 and bool(_nos.loc[1, "dup_candidate"]))
 
 # --- consensus: the SAME physical track must win in every sample --------------
-# Mirrors C18H30O6 [M+(CH4N2O)H]+ (ledger 403.24341) on the Wind-zone-2 batch: two
+# Mirrors C18H30O6 [M+(CH4N2O)H]+ (ledger 403.24341) on that batch: two
 # raw tracks, A at -1.2 mDa (dominant, bright) and B at +0.45 mDa (nearer the
 # ledger mass). Ranking on the bare ledger mass picks B wherever B exists and A
 # elsewhere -> the trace alternates between two peaks. Consensus locks onto A.
@@ -316,7 +316,7 @@ check("_consensus_offsets: no candidates -> 0.0 offset, no crash",
                             np.array([]), np.array([1e-3, 1e-3])).tolist() == [0.0, 0.0])
 
 # --- the sidelobe trap: ubiquitous-but-DIM must not outvote the ledger mass ----
-# Real regression (Wind-zone-2, C12H19NO6 [M+H]+ @ 274.12850): an FT ringing
+# Real regression (uronium batch, C12H19NO6 [M+H]+ @ 274.12850): an FT ringing
 # sidelobe of a 601146-cps neighbour 5 mDa away recurs in 559 samples at 1576 cps,
 # while the peak the ASSIGNMENT committed sits at the ledger mass in 70 samples at
 # 2390 cps. Scoring tracks by SUMMED height hands the ion to the artifact; scoring
@@ -355,7 +355,7 @@ check("consensus: lowering anchor_margin below 1.86 lets it through (the anchor 
 
 
 # --- flag_sidelobe_channels: trust the formula, distrust the channel ----------
-# Modelled on the real case (Wind-zone-2): C18H30O6 [M+(CH4N2O)H]+ @ 403.24341 sits
+# Modelled on the real case (uronium batch): C18H30O6 [M+(CH4N2O)H]+ @ 403.24341 sits
 # 11.5 mDa from a 520k-cps C20H34O8 [M+H]+ and holds a locked 0.71% of it (cv 0.033),
 # while genuinely independent neighbours of bright peaks run cv 0.21-1.09.
 _rng = np.random.default_rng(7)

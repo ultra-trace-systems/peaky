@@ -5,7 +5,7 @@ under which annotate_peaks stamps them. Run: python3 tests/test_predicted_satell
 The gap this closes: a per-file ledger claims a satellite only where the picker
 picked it, so the faint 15N / 18O lines of a parent Assigned in EVERY assigned
 file were missing from the batch stamp and surfaced as unexplained tracks
-wherever a plume lifted them (Texas Ur 122-600: C12H27O4P [M+(CH4N2O)H]+, 15N at
+wherever a plume lifted them (a 6154-spectrum uronium batch: C12H27O4P [M+(CH4N2O)H]+, 15N at
 m/z 328.2013 in 109 spectra; C12H14O [M+NH4]+, 18O at 194.1425). The stamp now
 predicts those lines and stamps them only where the parent's same-sample height
 licenses it. The per-file ledgers are never touched.
@@ -71,7 +71,7 @@ merged = pd.DataFrame({"mz": [MZ_U, MZ_A], "neutral_formula": ["C12H27O4P", "C12
                        "tier": ["Assigned", "Assigned"]})
 COLS = ["mz", "role", "ion_formula", "iso_label", "neutral_formula", "adduct"]
 # two per-file ledgers: both parents Assigned in both, only the 13C claimed (as
-# in every Texas Ur ledger)
+# in every ledger of that batch)
 idf = pd.DataFrame([
     (MZ_U, "M0", F_UREA, None, "C12H27O4P", "[M+(CH4N2O)H]+"),
     (MZ_A, "M0", F_NH4, None, "C12H14O", "[M+NH4]+"),

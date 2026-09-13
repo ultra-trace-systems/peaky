@@ -126,7 +126,7 @@ selected sample_ids (SAMPLING.md)
 
    *Why a vote.* The previous rule ranked the Assigned-file count first, so one
    file's Assigned reading outvoted many files' Candidate reading of a different
-   ion: on a 15-file Texas Ur⁺ run, 12 of 73 split clusters were decided by a
+   ion: on a 15-file uronium run, 12 of 73 split clusters were decided by a
    minority, and nothing on the merged row said so. *Why two stages.* Of those 73
    split clusters 43 were two labels of one ion and 30 were different ions; in 16
    of the 43 a pure count would hand the ion to a label nobody had corroborated

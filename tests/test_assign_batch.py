@@ -93,7 +93,7 @@ check("solo Assigned formula chosen (vote is a no-op without a competitor)",
       len(solo) == 1 and solo.iloc[0]["neutral_formula"] == "C20H30O8")
 
 # --- THE VOTE, stage 1: DIFFERENT IONS at one m/z -> the file count decides ----
-# The Texas Ur+ minority-winner defect: the old rule ranked Assigned-file count
+# The minority-winner defect (15-file uronium run): the old rule ranked Assigned-file count
 # first, so ONE file's Assigned reading outvoted FOURTEEN files' Candidate reading
 # of another ion. File count decides; tier and score only break ties; the losers
 # stay on the row.
@@ -121,7 +121,7 @@ check("vote: jitter.csv still carries every per-file reading (15 rows)",
       len(jv) == 15 and (jv["neutral_formula"] == "C9H12N2O").sum() == 1, len(jv))
 
 # --- stage 2: the SAME ION read two ways -> corroboration decides, not the count
-# m/z 252.123 on the Texas run: C13H14O4 [M+NH4]+ and C13H17NO4 [M+H]+ are ONE ion
+# m/z 252.123 on that run: C13H14O4 [M+NH4]+ and C13H17NO4 [M+H]+ are ONE ion
 # (C13H18NO4+, the reagent-N isobar). The tier engine marks such a reading Assigned
 # only when a discriminating channel was present in that file, and Candidate when
 # it had nothing to decide with -- so 6 Candidate files are 6 files that could not
@@ -627,7 +627,7 @@ _CALLS = []
 def _positive_assign(sid, context="ambient-air", **kw):
     """Three files: every file reads C15H22 [M+NH4]+ and C11H20 uronium; only the
     FIRST also holds C15H22 [M+H]+ -- per file, the re-read would then have fired
-    in two files and not the third (the Texas C15H22 case)."""
+    in two files and not the third (the C15H22 case)."""
     _CALLS.append(sid)
     rows = [("nh4", _HC_MZ, 8.0e4), ("ur", _UR_MZ, 5.0e4)]
     if len(_CALLS) == 1:

@@ -360,7 +360,7 @@ def _consensus_offsets(n_ions: int, ion: np.ndarray, signed: np.ndarray,
     ledger-ion position (0.0 for ions with no candidate).
 
     An ion's candidates are sometimes split into two distinct raw TRACKS either side
-    of the ledger mass (measured on the Wind-zone-2 uronium batch: C18H30O6
+    of the ledger mass (measured on a 2.4 M-row uronium batch: C18H30O6
     [M+(CH4N2O)H]+ has a track at -1.2 mDa in 475 samples and another at +0.45 mDa
     in 288, with an empty 1.0 mDa gap between them). A mean or median lands in that
     empty gap and belongs to neither, so the tracks are separated explicitly --
@@ -372,7 +372,7 @@ def _consensus_offsets(n_ions: int, ion: np.ndarray, signed: np.ndarray,
     * **Score a track by its BRIGHTEST member, not its summed height.** Summing
       conflates brightness with prevalence, and FT ringing sidelobes of a bright
       neighbour are ubiquitous-but-dim: they recur beside the parent in every
-      sample. On Wind-zone-2 that let the sidelobe track of C12H19NO6 [M+H]+
+      sample. On that batch this let the sidelobe track of C12H19NO6 [M+H]+
       (1576 cps in 559 samples, flagged `role=artifact` by the assignment's own
       cleanup as the sidelobe of a 601146-cps peak 5 mDa away) outvote the real
       track (2390 cps in 70). A track's claim rests on how bright it gets.
@@ -434,7 +434,7 @@ def _resolve_one_to_one(peaks: pd.DataFrame, ok: np.ndarray, near: np.ndarray,
     systematic offset from its calibrated ledger mass, and when a second (shoulder /
     split) track exists on the other side, "nearest the ledger mass" flips between
     the two tracks sample by sample -- whichever happens to be present -- splicing
-    two physically different peaks into one time series. Measured on the Wind-zone-2
+    two physically different peaks into one time series. Measured on the same 2.4 M-row
     uronium batch before this change: C18H30O6 [M+(CH4N2O)H]+ flipped 232 times and
     C19H34O6Si [M+NH4]+ 378 times between their two tracks.
 
@@ -741,8 +741,8 @@ def identified_rows(ledger: pd.DataFrame) -> pd.DataFrame:
 # -- 15N (0.36 % per N), 18O (0.20 % per O), a single 34S / 29Si / 30Si -- sit
 # below the picker's edge (~150-220 cps) in most files, so a parent Assigned in
 # every assigned file still leaves its 15N / 18O tracks unexplained wherever a
-# plume lifts them into view. Measured on the Texas Ur 122-600 batch (6154
-# spectra, 15 assigned): C12H27O4P [M+(CH4N2O)H]+ and C12H14O [M+NH4]+ are
+# plume lifts them into view. Measured on a 6154-spectrum uronium batch
+# (15 assigned): C12H27O4P [M+(CH4N2O)H]+ and C12H14O [M+NH4]+ are
 # Assigned in every per-file ledger with only their 13C satellite claimed; their
 # 15N line (m/z 328.2013, 109 spectra, up to 1.1 kcps) and 18O line (194.1425,
 # 4 spectra, up to 1.0 kcps) were picked in none of the 15 files, so the stamp
@@ -1203,7 +1203,7 @@ def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
     not the bare ledger mass. This is what keeps the SAME physical peak stamped in
     every sample: where an ion has two raw tracks, "nearest the ledger mass" picks
     whichever is present, alternating between them (measured: 232 and 378 flips for
-    two ions on the Wind-zone-2 batch). Pass ``consensus=False`` to rank on the bare
+    two ions on that batch). Pass ``consensus=False`` to rank on the bare
     ledger mass instead.
 
     PREDICTED SATELLITES (rows with ``stamp_source == 'predicted'``, built by

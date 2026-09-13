@@ -10,7 +10,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **The residual stage: a targeted second selection after the cover's merge.**
   The presence cover stops on marginal gain, so a tail of universe bins is never in
-  any assigned file — 18 % of 4702 bins on the 6154-sample Texas Ur+ campaign, almost all of it the noise-edge tail, but 36 of them reaching 1–3.4 kcps
+  any assigned file — 18 % of 4702 bins on a 6154-sample uronium campaign, almost all of it the noise-edge tail, but 36 of them reaching 1–3.4 kcps
   somewhere — and nothing in that tail can ever enter the ledger. `peaky batch` /
   `pool` now run a second, targeted selection once the cover is assigned, merged and
   stamped (`sampling.residual_universe` + `select_residual_cover`,
@@ -92,7 +92,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   parsed. A file counts once, when its stats line lands; a line that fails to parse is
   not counted. `peaky assign` gets its coverage rows as soon as its one stats line
   lands, ahead of the report writes. The terminal fallback is unchanged (one line per
-  sample). `tests/test_progress.py` replays the log of the 15-file Texas run whose
+  sample). `tests/test_progress.py` replays the log of a 15-file uronium run whose
   window sat on `--` for 74 minutes and checks the totals against an independent parse.
 
 - **The admission table is per PEAK, and the lookup is the table's own rule.**
@@ -304,7 +304,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Candidate when it had nothing to decide with, so counting Candidate files would
   be counting silence. The previous rule ranked the Assigned-file count first for
   everything, so one file's Assigned reading outvoted many files' Candidate
-  reading of a *different* ion: on a 15-file Texas Ur⁺ run 12 of the 73 split
+  reading of a *different* ion: on a 15-file uronium run 12 of the 73 split
   clusters were decided by a minority, and nothing on the merged row said so; of
   those 73, 43 were two labels of one ion and 30 different ions, and in 16 of the
   43 a pure count would have handed the ion to a label nobody had corroborated.
@@ -329,7 +329,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `cleanup.relabel_reagent_n_adducts` re-reads a pure hydrocarbon seen via
   `[M+NH4]+` / uronium as `[M+H]+` of the N-heterocycle unless the hydrocarbon also
   shows its own `[M+H]+` — a presence test that, per file, flips with S/N: on the
-  Texas run `C15H22 [M+NH4]+` was kept in the fourteen files holding
+  same run `C15H22 [M+NH4]+` was kept in the fourteen files holding
   `C15H22 [M+H]+` and re-read to `C15H25N [M+H]+` in the one that did not (the stage
   fired 31–52 times per file), a disagreement the spectra never had and, for the
   vote, a phantom minority. A batch now runs the per-file stage off
@@ -394,7 +394,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   section labelled unreleased made this file's own history unreadable.
 - **The isotope bookkeeping lost the parent↔satellite link, which made the P/S
   corroboration gate unauditable from a run's own output.** Two halves of one defect,
-  measured on a urea-MPCI 122-600 batch: (a) all 453 `iso_child` rows in one file
+  measured on a urea-reagent 122–600 Da batch: (a) all 453 `iso_child` rows in one file
   recorded `parent_peak_id` but nothing about WHO that parent is, so reading a satellite meant
   joining it back to the M0 row; and (b) known-species (pass-0) commits wrote
   `isotopologues: []` even when a matched satellite was the evidence that *licensed*
@@ -569,7 +569,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   picked it, and the faint diagnostic lines — 15N (0.36 % per N), 18O (0.20 % per O), a
   single 34S / 29Si / 30Si — sit below the picker's ~150–220 cps edge in most files, so a
   parent Assigned in every assigned file still left its 15N / 18O tracks unexplained
-  wherever a plume lifted them into view (Texas Ur 122-600, 6154 spectra, 15 assigned:
+  wherever a plume lifted them into view (a 6154-spectrum uronium batch, 15 assigned:
   C12H27O4P [M+(CH4N2O)H]+ and C12H14O [M+NH4]+ Assigned in every ledger with only their
   13C claimed; the 15N line at m/z 328.2013 stood in 109 spectra up to 1.1 kcps and the
   18O line at 194.1425 in 4, picked in none of the 15 files — while a targeted

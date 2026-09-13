@@ -149,7 +149,7 @@ def _vote(g: pd.DataFrame, curated: set):
        joint NH4+urea pair, a series anchor) and Candidate when it had nothing
        to decide with, so counting Candidate files would be counting silence.
        The label Assigned in the most files wins; file count and score break
-       ties. On the Texas Ur+ run 16 of the 43 same-ion splits had a majority
+       ties. On the 15-file uronium run 16 of the 43 same-ion splits had a majority
        label nobody had corroborated against a minority label some file had."""
     assigned = g["_r"] >= TIER_RANK[TIER_ASSIGNED]
     gg = g.assign(_asrc=g["src"].where(assigned),       # the file, when Assigned there
@@ -224,7 +224,7 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
 
     The previous rule ranked the number of ASSIGNED files first, which let one
     file's Assigned reading outvote many files' Candidate reading of a
-    different ion: on the Texas Ur+ run (15 files) 12 of the 73 split clusters
+    different ion: on the 15-file uronium run 12 of the 73 split clusters
     were decided that way -- and the merged row then carried nothing to show
     the other files had read it differently."""
     offsets = offsets or {}
@@ -646,7 +646,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # The hydrocarbon-on-N-cluster re-read (cleanup.relabel_reagent_n_adducts) is
     # decided ONCE on the merged ledger below, not per file. Its skip key -- does
     # this hydrocarbon show its own [M+H]+ -- is a presence test that flips with
-    # each file's S/N: on the Texas Ur+ run C15H22 [M+NH4]+ kept its reading in
+    # each file's S/N: on the 15-file uronium run C15H22 [M+NH4]+ kept its reading in
     # the 14 files that also held C15H22 [M+H]+ and was re-read to C15H25N [M+H]+
     # in the one file that did not -- a "disagreement" the spectra never had,
     # and a phantom minority reading for the vote. The merged ledger holds the

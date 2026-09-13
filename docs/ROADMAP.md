@@ -7,7 +7,7 @@ figures → PDF report. Memory: `agent-peaky` (+ `mascope-sdk-knowledge`, `masco
 ## SESSION 6 (2026-09-13) — the merge is a vote; presence-keyed rules move to the batch
 
 **Branch `fix/merge-majority-winner`** (worktree `../peaky-mergevote`, PR against main).
-Trigger: on the Texas Ur⁺ full-campaign run (15 files, 2636 merged rows, 73 split
+Trigger: on the 15-file uronium campaign run (15 files, 2636 merged rows, 73 split
 clusters) the merged reading was a per-file MINORITY in 23 clusters. Two causes, both
 fixed: `align` ranked the Assigned-file count first (one Assigned file outvoted fourteen
 Candidate files of another ion, 12 clusters), and the per-file hydrocarbon-on-N-cluster
@@ -26,9 +26,9 @@ file), a disagreement the spectra never had.
 - The reagent-N re-read is decided ONCE on the merged ledger
   (`assign.run(reagent_n_relabel=False)` on a batch); the merged row carries the notes of
   that pass, of the amine gate and of the vote.
-- Replay on the two finished runs (`output/_texas_full_logs/mergevote/replay.py <run>
-  --ts --defer`): Texas 73→63 split clusters (30 different-ion contests, 33 same-ion label
-  splits), 2/2636 readings change vs the original merge; MPCI 60→51, 1/2490. No
+- Replay on the two finished runs (a replay script over the run folder (`replay.py <run>
+  --ts --defer`): the uronium run 73→63 split clusters (30 different-ion contests, 33 same-ion label
+  splits), 2/2636 readings change vs the original merge; the second run 60→51, 1/2490. No
   unexplained count-minority winner remains; every one is noted on its row.
 
 ### OPEN follow-ups from session 6 (priority order)
@@ -47,7 +47,7 @@ file), a disagreement the spectra never had.
    track the parent (r < 0.6): `C15H22 [M+NH4]+` corroborated by a sibling in 14 files
    became `C15H25N [M+H]+`. The gate's policy ("the burden of proof is on the adduct")
    is deliberate, but the two rules never see each other's evidence. Measure on the
-   Texas TS how the 269 `kept_covary` and 348 `relabeled` rows split by sibling
+   that run's TS how the 269 `kept_covary` and 348 `relabeled` rows split by sibling
    corroboration before deciding whether a sibling-corroborated adduct should need
    tracking, or whether "presence-cap" (parent present, flat) should keep the adduct.
 3. **`_reagent_n_isobar` is one-directional.** It flags the winner only when the winner
@@ -58,14 +58,14 @@ file), a disagreement the spectra never had.
    only as honest as this flag; make it symmetric (a same-ion N-poorer alternative on
    an N-donor channel exists ⇒ the same corroboration bar applies).
 4. **Different-ion contests where count and corroboration disagree.** One case on
-   Texas (209.096: a 2-file Candidate `C5H17NOSi3 [M+NH4]+` beats a 1-file Assigned
+   that run (209.096: a 2-file Candidate `C5H17NOSi3 [M+NH4]+` beats a 1-file Assigned
    `C15H12O [M+H]+`). An Assigned-weighted count at the ion stage would flip it; not
    worth a rule for one weak cluster — revisit when more batches have `alternatives`.
 5. **`collapse_trace_labels` still ranks competing merged rows by `n_files`** (the
    cluster) rather than `n_files_winner` / the ion-aware vote. Align it with `_vote` so
    the trace-level contest and the cluster-level contest use one rule.
 6. **Reporting.** The PDF's "formula disagreements" (`formula_agree`) counts label splits
-   as disagreements (43 of 73 on Texas); split it into `ion_disagreements` (spectral)
+   as disagreements (43 of 73 on that run); split it into `ion_disagreements` (spectral)
    and same-ion label splits (interpretive), and show `alternatives` for the flagged rows.
 7. **Per-file ledgers in a batch now keep the hydrocarbon adduct labels** (the re-read is
    deferred). Anything that reads `per_file/*.csv` for a decided label — publishing a
