@@ -1,6 +1,7 @@
 """Offline tests for the CLI (cli.py): parser wiring, reagent resolution for
 explicit profiles (no network), friendly server-error hints, the --env override,
 and the offline `gka` subcommand. Run: python3 tests/test_cli.py"""
+import json
 import os
 import sys
 import tempfile
@@ -11,6 +12,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from peaky import cli, gka_widget, profiles  # noqa: E402
+from peaky import reflists as RL             # noqa: E402
 
 PASS = FAIL = 0
 def check(name, cond, detail=""):
@@ -126,15 +128,23 @@ ad, ctx, note = cli._resolve_reagent(ns)
 check("resolve --reagent Br -> Br adducts", ad == list(profiles.BR.adducts), ad)
 check("resolve --reagent Br -> Br context", ctx == profiles.BR.context, ctx)
 check("resolve --reagent Br -> labelled note", "Br" in note, note)
+# the label rides on the profile `with_profile=True` appends: it is the second
+# text the reference-list unlock reads, and the note (a display string) is not it.
+_prof = cli._resolve_reagent(ns, with_profile=True)[3]
+check("resolve --reagent Br -> the profile's label", getattr(_prof, "label", "") == profiles.BR.label, _prof)
 
 ns = SimpleNamespace(adducts=None, reagent="uronium", context=None, sample_id="X", no_cache=False)
 ad, ctx, note = cli._resolve_reagent(ns)
 check("resolve alias 'uronium' -> Ur context", ctx == profiles.UR.context, ctx)
+_prof = cli._resolve_reagent(ns, with_profile=True)[3]
+check("resolve alias 'uronium' -> Ur label", getattr(_prof, "label", "") == profiles.UR.label, _prof)
 
 # explicit --adducts overrides reagent, no network
 ns = SimpleNamespace(adducts=["[M+Na]+"], reagent="auto", context="chamber", sample_id="X", no_cache=False)
 ad, ctx, note = cli._resolve_reagent(ns)
 check("explicit --adducts wins", ad == ["[M+Na]+"] and ctx == "chamber", (ad, ctx))
+check("no profile resolved -> no label for the unlock (cmd_assign reads '' off a None profile)",
+      cli._resolve_reagent(ns, with_profile=True)[3] is None)
 
 # with_profile= is opt-in: the 3-tuple callers above are untouched, and the 4th
 # item is the profile the gate multiple is read from (None when it was forced).
@@ -279,6 +289,97 @@ finally:
     cli._require_creds = _saved["require"]
     PL.run_batch, PL.run_pooled_batches = _saved["run_batch"], _saved["run_pooled"]
     _A.run = _saved["assign_run"]
+
+
+# ---- `peaky assign` unlocks the reference lists, and says which ---------------
+# The batch path has always done this; the single-sample path used to call
+# assign.run without `reflists_active`, which left the selection prior and the
+# rescue-verify pass switched off and wrote `"reflists_active": []` into every
+# manifest it produced. These pin both halves: the kwarg goes in, the versions
+# come out.
+def _assign_args(out_dir, extra=()):
+    """Parser-built args for `peaky assign`. The default `--adducts` short-circuits
+    reagent resolution, so nothing here needs the server; `extra` replaces it for a
+    test that wants a profile resolved by name (offline too — a name/alias needs no
+    peaks)."""
+    return cli.build_parser().parse_args(
+        ["assign", "--sample-id", "S1", "--context", "ambient-air",
+         "--output-dir", out_dir] + (list(extra) or ["--adducts", "[M-H]-"]))
+
+
+def _run_cmd_assign(monkeypatch, out_dir, extra=()):
+    """Drive cmd_assign with every network/IO collaborator stubbed. The reference
+    catalog is NOT stubbed — loading it is the behaviour under test. Returns the
+    kwargs assign.run was called with."""
+    from peaky.assignment import assign as A
+    from peaky.reporting import gka_widget as GW
+    from peaky.reporting import report as R
+
+    seen = {}
+    led = pd.DataFrame({"mz": [200.1], "height": [1e5], "role": ["M0"],
+                        "tier": ["Assigned"], "neutral_formula": ["C6H12O6"]})
+    stats = {"by_role": {"M0": 1, "iso_child": 0, "reagent": 0, "unexplained": 0},
+             "signal_by_role": {"M0": 1.0, "iso_child": 0.0, "reagent": 0.0},
+             "count_frac_by_role": {"unexplained": 0.0}}
+
+    def fake_run(sample_id, context="ambient-air", **kw):
+        seen.update(kw); seen["sample_id"] = sample_id
+        # mirror the real run: the manifest carries (id, data_version) pairs
+        return {"ledger": led, "stats": stats, "problems": [], "context": context,
+                "sample_id": sample_id,
+                "reflists_active": RL.active_versions(kw.get("reflists_active"))}
+
+    monkeypatch.setattr(cli, "_require_creds", lambda *a, **k: None)
+    monkeypatch.setattr(A, "run", fake_run)
+    monkeypatch.setattr(R, "write_excel", lambda *a, **k: None)
+    monkeypatch.setattr(R, "write_markdown", lambda *a, **k: None)
+    monkeypatch.setattr(GW, "build_points", lambda *a, **k: [])
+    monkeypatch.setattr(GW, "render_html", lambda *a, **k: "<html></html>")
+    cli.cmd_assign(_assign_args(out_dir, extra))
+    return seen
+
+
+def test_a_single_sample_assign_activates_the_reference_lists(monkeypatch, tmp_path):
+    seen = _run_cmd_assign(monkeypatch, str(tmp_path))
+    lists = seen.get("reflists_active")
+    assert lists, "cmd_assign passed no reference lists to assign.run"
+    assert {rl.id for rl in lists} == {"contaminants_keller2008"}, \
+        "a lone sample has no batch name, so only the always-active lists unlock"
+    assert all(rl.always_active for rl in lists)
+
+
+def test_the_reagent_label_reaches_the_unlock_like_the_other_entry_points(
+        monkeypatch, tmp_path):
+    """`assign_batch.run` and the MCP `assign_sample` tool both hand the reagent
+    profile's LABEL to `reflists.activate` beside the context; `cmd_assign` used to
+    hand it the context alone, so one sample could resolve a different tag set
+    depending on which entry point started it. No bundled profile's label names a
+    chemistry (which is why the asymmetry was inert), so this registers one that
+    does, from the same --reagent-config a user would write."""
+    # `register` mutates the module-level registry; hand it copies to mutate.
+    monkeypatch.setattr(profiles, "PROFILES", dict(profiles.PROFILES))
+    monkeypatch.setattr(profiles, "_BY_ALIAS", dict(profiles._BY_ALIAS))
+    cfg = tmp_path / "reagent.json"
+    cfg.write_text(json.dumps([{
+        "name": "TestPinene", "label": "alpha-pinene oxidation (NO3- CIMS)",
+        "polarity": "-", "adducts": ["[M-H]-"], "normaliser": "reagent",
+        "reagent_ion_re": None, "ranges": "C0-40 H0-80 N0-3 O0-18",
+        "detect_adduct": None, "context": "ambient-air"}]), encoding="utf-8")
+
+    seen = _run_cmd_assign(monkeypatch, str(tmp_path),
+                           extra=["--reagent", "TestPinene",
+                                  "--reagent-config", str(cfg)])
+    ids = {rl.id for rl in seen["reflists_active"]}
+    assert "monoterpene_hom_kang2024" in ids, (
+        "the reagent label names a chemistry, so its list must unlock from "
+        f"`peaky assign` as it does from `peaky batch`; got {sorted(ids)}")
+
+
+def test_the_single_sample_manifest_names_the_list_versions(monkeypatch, tmp_path):
+    _run_cmd_assign(monkeypatch, str(tmp_path))
+    man = json.loads(next(Path(tmp_path).glob("S1_*_manifest.json")).read_text())
+    assert man["reflists_active"], "the manifest recorded no active lists"
+    assert ["contaminants_keller2008", "2008.2"] in [list(x) for x in man["reflists_active"]]
 
 
 def test_all():

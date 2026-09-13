@@ -250,6 +250,66 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `pool` gate at the 1.0× default) raises the bar when a tighter list is wanted.
   An EasyIC batch went from 63 to 119 merged M0 with no formula disagreements.
 
+- **A reference list's radicals are read off the formula, not the hydrogen count.**
+  `reflists.load_catalog` sorted each species into the closed-shell pool (matched by
+  default) or the radical pool (skipped unless `include_radicals=True`) by a
+  hand-set `radical` flag, and the monoterpene HOM list had set that flag from an
+  odd hydrogen count, which is wrong once nitrogen is present. Its 118 organic
+  nitrates (C10H15NO8, C10H13NO10, ...), the main HOM class under NOx, sat in the
+  radical pool, where the selection prior, the rescue and the report's
+  corroboration never looked, and three nitrogen-bearing radicals were matched
+  instead. The loader now reads radical status off DBE parity (a half-integer DBE
+  is an odd-electron neutral) and treats the flag as a claim, warning when a list
+  disagrees. The list's flags are corrected: 573 closed-shell and 257 radicals,
+  where they said 458 and 372 (`data_version` 2024.2).
+
+- **The Keller contaminant list holds molecules only.** Nine entries were ions or
+  salts: the CN fragment of acetonitrile, the tetrabutylammonium, trityl and
+  monomethoxytrityl cations, and five quaternary-ammonium chlorides, four of them
+  at a negative DBE. They are dropped. NMP, entered as its protonated ion, is the
+  neutral C5H9NO — which puts its [M+H]+ back on the m/z 100.07569 the source
+  measured, so the list is 48 of 50 verified against the source masses rather
+  than 47 — and acetic and propionic acid are named for the acids rather than the
+  iron complexes the source saw. The list goes from 59 species to 50
+  (`data_version` 2008.2), the split Mascope's reference seed uses.
+
+- **`peaky assign` unlocks its reference lists.** Only the batch path ever called
+  `active_lists`, so a single-sample run passed `reflists_active=None`: the
+  selection prior was empty, the rescue-verify pass never fired, and the manifest
+  key above — new in this same release, so it never shipped empty — would have
+  landed `[]` on the single-sample path. `reflists.activate` is now the single
+  unlock step (`resolve_context_tags` → `active_lists`, tags returned so the
+  caller can log them), and `cli.cmd_assign`, the MCP `assign_sample` tool,
+  `assign_batch.run` and the report path all go through it. A lone sample has no
+  batch name — its metadata is the context plus the reagent profile's label, the
+  same pair on both single-sample paths — so it activates the always-active
+  lab-contaminant list and nothing chemistry-specific unless one of those names a
+  chemistry; `peaky batch` is still the way to unlock a HOM list.
+
+- **A formula is validated before its parity is trusted.** `chemistry.dbe` scores
+  an element outside the mass table as divalent — sodium acetate comes out at
+  DBE 1.5 and would have pooled as a radical with no message — and
+  `parse_formula` ignores charge and bracket notation, so an anion written
+  `[C10H14NO8]-` would have loaded as a closed-shell neutral. `load_catalog` now
+  warns and skips (counted, on `ReferenceList.skipped`) any species whose formula
+  uses an unknown element, does not round-trip as a Hill-notation neutral, or has
+  a negative DBE. The bundled lists skip nothing.
+
+- **One parity test for the whole package.** `chemistry.odd_electron` is now the
+  single DBE-parity helper the closed-shell grid gate (`dbe_ok`), the
+  plausibility radical exemption and the reference-list loader all call, instead
+  of three copies of the same half-integer test; `dbe_ok` calls a half-integer
+  DBE "odd-electron (radical) — blocked on the closed-shell grid" rather than
+  "not a valid neutral", which is what the reference lists had always called it.
+
+- `tests/test_peaklists.py` loads every bundled list and fails on a species with
+  a negative DBE or a radical claim its parity contradicts, and holds the
+  corrected pool to its consumers: an organic nitrate's ion mass is matched by
+  `match_by_mass` / `match_assigned` and carried into the selection prior, a real
+  nitrogen-bearing radical's is not, and both are only with
+  `include_radicals=True`. Mascope keeps the same test on its own copy of the
+  lists.
+
 ### Added
 
 - **`peaky/batch/traces.py`** — the one trace primitive over the m/z-sorted batch peak
@@ -368,6 +428,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   carry the value onto `tiers._Cal`, so overriding it moves the commit gates and the tier
   gate together.
 - Reference peaklist `isoprene_ox_wennberg2018` (27 closed-shell isoprene oxidation products, Wennberg et al. 2018) added to `peaky/data/peaklists/`, gated by the new `isoprene_ox` context (batch keywords isoprene/ISOPN/IEPOX/ISOPOOH/methacrolein) and `biogenic_soa`/`ambient_summer`; rescues the isoprene dihydroxy-dinitrate C5H10N2O8 as an isotope-confirmed Assigned in the 2026 field-campaign ¹⁵NO₃⁻ data.
+- **A run records which reference lists it had active** — `reflists.active_versions`
+  puts `reflists_active: [(id, data_version), ...]` in the single-sample manifest
+  (beside the selection prior it builds from the same lists) and in
+  `batch_summary.json`. A list's closed-shell/radical split changes with its
+  `data_version`, so a ledger now says which revision shaped its prior and its
+  rescue instead of silently depending on the installed copy.
 
 - **A reagent profile can carry its own height-gate multiple**
   (`ReagentProfile.height_cutoff_x_edge`, `docs/REAGENTS.md` §3a). The gate is a

@@ -109,6 +109,10 @@ check("neutral nitrate C8H15NO12 has integer DBE -> ok", ok_neutral, f"{C.dbe('C
 ok_ion, why_i = C.dbe_ok("C8H14NO12")
 check("ion-form nitrate C8H14NO12 half-integer -> rejected as neutral",
       not ok_ion, f"{C.dbe('C8H14NO12')} {why_i}")
+check("dbe_ok names the block as odd-electron, not 'not a valid neutral'",
+      "odd-electron (radical)" in str(why_i), why_i)
+check("odd_electron: the ion form is, the neutral nitrate is not",
+      C.odd_electron("C8H14NO12") and not C.odd_electron("C8H15NO12"))
 
 # --- negative DBE rejected ---
 ok_neg, _ = C.dbe_ok("CH6")   # DBE = 1+1-3 = -1

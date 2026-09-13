@@ -24,6 +24,7 @@ import bisect
 import glob
 import json
 import os
+import warnings
 from dataclasses import dataclass
 
 from peaky.chem import chemistry as C
@@ -66,11 +67,12 @@ class ReferenceList:
     applies_to_contexts: tuple
     references: tuple
     formulas: frozenset            # closed-shell neutral formulas (matchable)
-    radicals: frozenset            # odd-H radical formulas (excluded by default)
+    radicals: frozenset            # odd-electron (half-integer DBE) formulas (excluded by default)
     conditions_of: dict            # formula -> tuple(conditions)
     source_file: str
     always_active: bool = False    # universal lists (e.g. contaminants) ignore context gating
     meta_of: dict = None           # formula -> {name, origin, ...} (display extras)
+    skipped: tuple = ()            # entries the loader refused: not a neutral molecule (`_not_a_neutral`)
 
     def pool(self, include_radicals: bool = False) -> frozenset:
         return self.formulas | self.radicals if include_radicals else self.formulas
@@ -85,25 +87,84 @@ class ReferenceList:
 
 
 # ---------------------------------------------------------------------------
+def is_radical(formula: str) -> bool:
+    """True for an odd-electron neutral: a half-integer DBE, read by
+    `chemistry.odd_electron` (the parity test the grid gate and the plausibility
+    exemption share). Parity is the rule, not the H count -- an organic nitrate
+    like C10H15NO8 has odd H and an integer DBE, so it is closed-shell."""
+    return C.odd_electron(formula)
+
+
+def _not_a_neutral(formula) -> str | None:
+    """Why `formula` cannot be handed to the parity test, or None when it can.
+
+    The parity test only means something for a neutral molecule written over the
+    mass table: `chemistry.dbe` scores an element it does not know as divalent
+    (sodium acetate C2H3NaO2 would come out DBE 1.5 and pool as a radical, with
+    no message), and `parse_formula` drops charge and bracket notation (the ion
+    '[C10H14NO8]-' would load as the closed-shell neutral C10H14NO8). So an entry
+    must round-trip `format_formula(parse_formula(f)) == f` (Hill notation, no
+    charge), use mass-table elements only, and have a non-negative DBE (a
+    negative one is an ion or a salt: a quaternary-ammonium cation sits at -0.5)."""
+    cnt = C.parse_formula(formula)
+    unknown = sorted(e for e in cnt if e not in C.M)
+    if unknown:
+        return f"element {', '.join(unknown)} not in the mass table"
+    if C.format_formula(cnt) != formula:
+        return (f"does not read back as {C.format_formula(cnt) or 'a formula'} "
+                "(charge, bracket or non-Hill notation)")
+    d = C.dbe(cnt)
+    if d < 0:
+        return f"DBE {d:g} < 0, an ion or a salt"
+    return None
+
+
 def load_catalog(directory: str | None = None) -> dict:
     """Load every *.json reference list under `directory` (default: packaged
-    data/peaklists). Returns {id: ReferenceList}."""
+    data/peaklists). Returns {id: ReferenceList}.
+
+    A species goes to `formulas` or `radicals` by its formula's DBE parity
+    (`is_radical`). Its `radical` value (false when absent) is the author's
+    claim, checked but never deciding: a list whose claims disagree with parity
+    loads with a warning naming them. An entry whose formula is not a neutral
+    molecule over the mass table (`_not_a_neutral`) is skipped with a warning
+    and recorded in `ReferenceList.skipped`, never pooled."""
     directory = directory or _DIR
     out: dict = {}
     for p in sorted(glob.glob(os.path.join(directory, "*.json"))):
         with open(p, encoding="utf-8") as fh:
             d = json.load(fh)
         sp = d.get("species", [])
-        closed, rad, cond, meta = set(), set(), {}, {}
+        closed, rad, cond, meta, wrong, skipped, why = set(), set(), {}, {}, [], [], []
         for s in sp:
             f = s.get("formula")
             if not f:
                 continue
-            (rad if s.get("radical") else closed).add(f)
+            reason = _not_a_neutral(f)
+            if reason:
+                skipped.append(f)
+                why.append(f"{f}: {reason}")
+                continue
+            radical = is_radical(f)
+            if bool(s.get("radical", False)) != radical:
+                wrong.append(f)
+            (rad if radical else closed).add(f)
             cond[f] = tuple(s.get("conditions", ()))
             extra = {k: s[k] for k in ("name", "origin", "modes") if k in s}
             if extra:
                 meta[f] = extra
+        if skipped:
+            warnings.warn(
+                f"{os.path.basename(p)}: {len(skipped)} species skipped, not a neutral "
+                f"molecule over the mass table ({'; '.join(why[:5])}"
+                f"{'; ...' if len(why) > 5 else ''})", stacklevel=2)
+        if wrong:
+            warnings.warn(
+                f"{os.path.basename(p)}: the radical flag (false when absent) of "
+                f"{len(wrong)} species disagrees with its formula's DBE parity "
+                f"({', '.join(wrong[:5])}"
+                f"{', ...' if len(wrong) > 5 else ''}); parity decides -- run "
+                "tests/test_peaklists.py for the full list", stacklevel=2)
         out[d["id"]] = ReferenceList(
             id=d["id"], system=d.get("system", ""), label=d.get("label", d["id"]),
             data_version=str(d.get("data_version", "")),
@@ -112,7 +173,8 @@ def load_catalog(directory: str | None = None) -> dict:
             references=tuple(d.get("references", ())),
             formulas=frozenset(closed), radicals=frozenset(rad), conditions_of=cond,
             source_file=os.path.basename(p),
-            always_active=bool(d.get("always_active", False)), meta_of=meta)
+            always_active=bool(d.get("always_active", False)), meta_of=meta,
+            skipped=tuple(skipped))
     return out
 
 
@@ -138,6 +200,38 @@ def active_lists(catalog: dict, *, context_tags=()) -> list:
     tags = set(context_tags)
     return [L for L in catalog.values()
             if L.always_active or (tags and set(L.applies_to_contexts) & tags)]
+
+
+def activate(*texts: str) -> tuple[list, set]:
+    """The one activation step every entry point runs: infer the context tags from
+    whatever metadata the run has, then select the lists those tags unlock.
+    Returns `(lists, tags)` so the caller can log what the metadata bought it.
+
+    A run whose metadata names no chemistry — a single-sample `peaky assign`,
+    whose texts are a context label like 'ambient-air' and the reagent label —
+    still gets the `always_active` lists (the lab contaminants); only `peaky
+    batch`, which has a batch name and a dataset name to read, can unlock a
+    chemistry-specific list (on a campaign whose batch names describe the
+    instrument and the reagent, the chemistry lives in the dataset name)."""
+    tags = resolve_context_tags(*texts)
+    return active_lists(load_catalog(), context_tags=tags), tags
+
+
+def prior_formulas(lists) -> frozenset:
+    """The SELECTION-PRIOR set: every closed-shell formula on the active lists
+    (`assign.run` hands it to `cfg.reflist_formulas`, which `arbitrate` reads as
+    a near-tie tie-break). Radicals are deliberately absent -- the prior may only
+    nudge arbitration toward a neutral the pipeline is allowed to assign, and the
+    closed-shell grid never offers a radical to nudge toward."""
+    return frozenset().union(*(L.formulas for L in lists)) if lists else frozenset()
+
+
+def active_versions(lists) -> list:
+    """`[(id, data_version), ...]` of the lists a run had active -- the manifest
+    line that says which list versions shaped its selection prior and rescue
+    (a list's split changes with its `data_version`, e.g. the HOM list's 2024.2
+    parity correction moved 118 nitrates into the matched pool)."""
+    return [(L.id, L.data_version) for L in (lists or ())]
 
 
 # ---------------------------------------------------------------------------

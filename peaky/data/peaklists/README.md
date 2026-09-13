@@ -28,7 +28,7 @@ globs this directory. **Only add credible, citable sources**, and fill `referenc
   "id": "monoterpene_hom_kang2024",        // unique, file-name-safe
   "system": "monoterpene_OH_oxidation",    // free-text system family
   "label": "Monoterpene OH-oxidation HOM (α-pinene proxy)",
-  "data_version": "2024.1",                // bump when the data changes
+  "data_version": "2024.2",                // bump when the data changes
   "polarity": "negative",                  // native measurement polarity (informational)
   "native_detection": "[M+NO3]-",          // how the SOURCE detected them (informational)
   "applies_to_contexts": ["monoterpene_ox","limonene_ox","ap_ox","biogenic_soa"],
@@ -42,7 +42,7 @@ globs this directory. **Only add credible, citable sources**, and fill `referenc
   "species": [
     { "formula": "C10H16O7",               // NEUTRAL formula (matchable)
       "conditions": ["pure","NOx"],        // sub-experiments it appeared in (optional)
-      "radical": false }                   // odd-H radical HOM -> excluded from default matching
+      "radical": false }                   // claim checked against DBE parity (default false)
   ]
 }
 ```
@@ -50,9 +50,28 @@ globs this directory. **Only add credible, citable sources**, and fill `referenc
 ### Conventions
 - `formula` is always the **neutral** molecule. Lists published as detected ions
   (e.g. `[M+NO3]-` clusters or `[M-H]-`) must be normalized to the neutral on import.
-- `radical: true` marks odd-electron / odd-H species (RO•, RO2•). These are excluded
-  from default matching (the pipeline assigns closed-shell neutrals); enable with
-  `include_radicals=True` if a run targets radical chemistry.
+- Radical status follows **DBE parity**, read off the formula:
+  DBE = 1 + Σ nᵢ(vᵢ − 2)/2 with valences C, Si 4; N, P 3; O, S 2; H and the
+  halogens 1. A half-integer DBE is an odd-electron neutral (RO•, RO2•). The H
+  count is not the rule once N or P is present: the organic nitrate C10H15NO8 has
+  odd H and an integer DBE, so it is closed-shell. Radicals are excluded from
+  default matching (the pipeline assigns closed-shell neutrals); API callers may
+  pass `include_radicals=True` to `match_by_mass` / `match_assigned` (a keyword
+  argument on those two functions, not a run-level switch).
+- `radical` (false when absent) is the author's claim; the formula decides.
+  `load_catalog()` warns when a list's claims disagree with parity, and
+  `tests/test_peaklists.py` fails a bundled list whose claims disagree or which
+  holds a species with a negative DBE. A negative DBE is what a cation entered
+  with its extra proton gives — the tetrabutylammonium cation `C16H36N` sits at
+  −0.5, a quaternary-ammonium chloride written as one formula at −1 — so that
+  test catches protonated cations and their salts, not ions in general: a
+  deprotonated anion written without its charge (`C10H14NO8` for `[M-H]-`) has a
+  non-negative DBE and would read as a radical instead.
+- The loader refuses (warns and skips, `ReferenceList.skipped`) an entry whose
+  formula uses an element off `chemistry.M` (`chemistry.dbe` would score it as
+  divalent: sodium acetate `C2H3NaO2` comes out DBE 1.5), does not round-trip as
+  a neutral Hill formula (charge or bracket notation, `[C10H14NO8]-`), or has a
+  negative DBE. Parity is only read off a formula that passes.
 - Masses are **not** stored — they are recomputed (`chemistry.ion_mz`) for whatever
   reagent adduct the run uses, so one list serves Br⁻ / NO3⁻ / I⁻ / urea⁺ runs alike.
 
@@ -61,4 +80,4 @@ globs this directory. **Only add credible, citable sources**, and fill `referenc
 |----|--------|---|--------|
 | `monoterpene_hom_kang2024` | monoterpene OH-oxidation HOM | 830 | Kang, FZ Jülich E&U 557 (2022), App. A |
 | `isoprene_ox_wennberg2018` | isoprene OH/HO₂, OH/NO and NO₃ oxidation products (reduced mechanism, closed-shell neutrals) | 27 | Wennberg et al., Chem. Rev. 118, 3337 (2018) |
-| `contaminants_keller2008` | MS background / contaminant ions | 59 | Keller et al., Anal. Chim. Acta 627, 71 (2008) |
+| `contaminants_keller2008` | MS background contaminants (always active) | 50 | Keller et al., Anal. Chim. Acta 627 (2008) 71–81 |

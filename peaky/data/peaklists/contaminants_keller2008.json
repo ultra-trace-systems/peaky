@@ -3,7 +3,7 @@
  "id": "contaminants_keller2008",
  "system": "lab_contaminants",
  "label": "MS background / contaminant ions (Keller 2008)",
- "data_version": "2008.1",
+ "data_version": "2008.2",
  "polarity": "both",
  "native_detection": "ESI+/ESI-",
  "always_active": true,
@@ -24,20 +24,11 @@
  ],
  "provenance": {
   "extracted_from": "1-s2.0-S0003267008007605-mmc1-3.xls, sheets '+ve Ions' & '-ve Ions'",
-  "verification": "47/59 neutral formulas reproduce the listed singly-charged ion mass to <=5 ppm under their stated adduct",
-  "caveat": "Distinct ORGANIC neutral monomers only; PEG/PPG/Triton/Tween polymer ladders and metal-salt clusters were not expanded into single neutrals. Match is by neutral formula under the run's reagent adducts."
+  "verification": "48/50 neutral formulas reproduce the listed singly-charged ion mass to <=5 ppm under their stated adduct",
+  "caveat": "Distinct ORGANIC neutral monomers only; PEG/PPG/Triton/Tween polymer ladders and metal-salt clusters were not expanded into single neutrals. Match is by neutral formula under the run's reagent adducts. Entries the source lists as ions or salts (the CN fragment of acetonitrile, the tetrabutylammonium, trityl and monomethoxytrityl cations, and the quaternary-ammonium chlorides) are left out; NMP, which the source gives as its protonated ion, is entered as the neutral C5H9NO."
  },
- "n_species": 59,
+ "n_species": 50,
  "species": [
-  {
-   "formula": "CN",
-   "name": "",
-   "origin": "Fragment from acetonitrile",
-   "modes": [
-    "ESI-"
-   ],
-   "validated": false
-  },
   {
    "formula": "CH4O",
    "name": "Methanol",
@@ -67,7 +58,7 @@
   },
   {
    "formula": "C2H4O2",
-   "name": "Acetic acid-Fe-O- complex",
+   "name": "Acetic acid",
    "origin": "Acetic Acid, Ac (anion)",
    "modes": [
     "ESI+",
@@ -86,7 +77,7 @@
   },
   {
    "formula": "C3H6O2",
-   "name": "Propionic acid Fe-O complex",
+   "name": "Propionic acid",
    "origin": "during ESI with metal tips and acetic acid",
    "modes": [
     "ESI+"
@@ -112,13 +103,13 @@
    "validated": true
   },
   {
-   "formula": "C5H10NO",
+   "formula": "C5H9NO",
    "name": "NMP",
    "origin": "N-methyl 2-pyrrolidone; solvent, floor stripper",
    "modes": [
     "ESI+"
    ],
-   "validated": false
+   "validated": true
   },
   {
    "formula": "C6H15N",
@@ -293,24 +284,6 @@
    "validated": true
   },
   {
-   "formula": "C16H36N",
-   "name": "TBA",
-   "origin": "Tetrabutylammonium, buffer",
-   "modes": [
-    "ESI+"
-   ],
-   "validated": false
-  },
-  {
-   "formula": "C19H15",
-   "name": "Trityl cation",
-   "origin": "Trityl cation, [Ph3C]+",
-   "modes": [
-    "ESI+"
-   ],
-   "validated": false
-  },
-  {
    "formula": "C16H32O2",
    "name": "",
    "origin": "Palmitic acid (carboxylate anion) C16:0",
@@ -327,15 +300,6 @@
     "ESI+"
    ],
    "validated": true
-  },
-  {
-   "formula": "C20H17O",
-   "name": "MMT",
-   "origin": "Monomethoxytrityl cation",
-   "modes": [
-    "ESI+"
-   ],
-   "validated": false
   },
   {
    "formula": "C18H15OP",
@@ -446,24 +410,6 @@
    "validated": true
   },
   {
-   "formula": "C22H47ClN2O",
-   "name": "",
-   "origin": "Palmitamidopropyl-trimonium chloride, personal care products additive",
-   "modes": [
-    "ESI+"
-   ],
-   "validated": false
-  },
-  {
-   "formula": "C25H54ClN",
-   "name": "BTAC-228",
-   "origin": "Behentrimonium chloride, personal care product additive",
-   "modes": [
-    "ESI+"
-   ],
-   "validated": false
-  },
-  {
    "formula": "C24H44N4O4",
    "name": "nylon",
    "origin": "Cyclic oligomer of polyamide 66, (adipic acid/hexylmethylene diamine condensation)",
@@ -480,15 +426,6 @@
     "ESI+"
    ],
    "validated": true
-  },
-  {
-   "formula": "C34H72ClN",
-   "name": "DPDMA",
-   "origin": "Dipalmityldimethylammonium chloride, catalyst, personal care products additive",
-   "modes": [
-    "ESI+"
-   ],
-   "validated": false
   },
   {
    "formula": "C30H58O5S",
@@ -516,24 +453,6 @@
     "ESI+"
    ],
    "validated": true
-  },
-  {
-   "formula": "C36H76ClN",
-   "name": "SPDMA",
-   "origin": "Stearyl-palmityldimethylammonium chloride, catalyst, personal care product additive",
-   "modes": [
-    "ESI+"
-   ],
-   "validated": false
-  },
-  {
-   "formula": "C38H80ClN",
-   "name": "DSDMA",
-   "origin": "Distearyldimethylammonium chloride, catalyst, personal care products additive",
-   "modes": [
-    "ESI+"
-   ],
-   "validated": false
   },
   {
    "formula": "C32H58N2O7S",

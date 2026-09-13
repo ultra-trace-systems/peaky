@@ -9,6 +9,7 @@ module builds on:
   * parse / format chemical formulas
   * neutral_mass(formula), ion_mz(neutral_mass, adduct)
   * dbe(formula)  -- Double Bond Equivalents of the NEUTRAL
+  * odd_electron(formula) -- the one DBE-parity (radical) test
   * dbe_ok / seniors_ok -- the hard structural gates
   * enumerate_grid(ranges) -- all plausible NEUTRAL formulas in a box
   * candidates_for_peaks(...) -- grid pre-filtered to observed peak m/z
@@ -289,6 +290,18 @@ def oxygen_ok(formula: str | dict[str, int]) -> tuple[bool, str | None]:
     return True, None
 
 
+def odd_electron(formula: str | dict[str, int], tol: float = 1e-9) -> bool:
+    """True when the neutral is odd-electron (a radical): its DBE is half-integer.
+
+    Parity is the rule, not the H count -- an organic nitrate like C10H15NO8 has
+    odd H and an integer DBE, so it is closed-shell, while HO2 and the RO/RO2
+    HOM radicals are half-integer. This is THE parity test: the closed-shell grid
+    gate (`dbe_ok`), the plausibility radical exemption and the reference-list
+    loader all call it rather than re-deriving it."""
+    d = dbe(formula)
+    return abs(d - round(d)) > tol
+
+
 def dbe_ok(formula: str | dict[str, int], tol: float = 1e-9) -> tuple[bool, str | None]:
     """Hard structural gate on the neutral: DBE must be a non-negative INTEGER
     and satisfy Senior's rule. Returns (ok, reason_if_not)."""
@@ -296,8 +309,8 @@ def dbe_ok(formula: str | dict[str, int], tol: float = 1e-9) -> tuple[bool, str 
     d = dbe(cnt)
     if d < -tol:
         return False, f"DBE={d:g} < 0"
-    if abs(d - round(d)) > tol:
-        return False, f"DBE={d:g} is half-integer (not a valid neutral)"
+    if odd_electron(cnt, tol):
+        return False, f"DBE={d:g}: odd-electron (radical) -- blocked on the closed-shell grid"
     cap = seniors_cap(cnt)
     if d > cap + tol:
         return False, f"DBE={d:g} > Senior cap {cap:g}"

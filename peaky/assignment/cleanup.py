@@ -628,10 +628,11 @@ _EA_ADDUCTS = {"[M]-.", "[M]-", "[M+O2]-"}
 # Functional-group cluster anions whose atoms, "absorbed" into a hydrocarbon
 # neutral, yield a CLOSED-SHELL oxygenated/N neutral whose radical anion M-. has
 # the same ion mass. A pure hydrocarbon cannot bind CO3-/NO3- (no polar site --
-# demote_implausible_ionization), but the SAME even-H CxHyOz- ion IS exactly the
-# radical anion of that closed-shell neutral: e.g. "C6H6 [M+CO3]-" == "C7H6O3
-# [M]-.". The [M-H]- reading is parity-forbidden (it would need a radical neutral
-# C7H7O3), so M-. is the only sane oxygenated identity.
+# demote_implausible_ionization), but the SAME CxHyOz- ion composition IS exactly
+# the radical anion of that closed-shell neutral: e.g. "C6H6 [M+CO3]-" == "C7H6O3
+# [M]-.". The gate is `dbe_ok` on the ion composition read as a neutral: when it
+# is closed-shell, M-. is the sane oxygenated identity (the [M-H]- reading of the
+# same ion would need the odd-electron neutral C7H7O3).
 _RADICAL_CLUSTER_ATOMS = {
     "[M+CO3]-": {"C": 1, "O": 3},
     "[M+NO3]-": {"N": 1, "O": 3},
@@ -645,8 +646,9 @@ _PRIMARY_ANION_CHANNELS = ("[M-H]-", "[M+Br]-", "[M+Cl]-")
 def relabel_radical_anions(ledger: pd.DataFrame, *, log=print) -> dict:
     """Relabel pure-hydrocarbon FG-cluster anions (e.g. C6H6 [M+CO3]-) as the
     radical anion M-. of the closed-shell oxygenated neutral that shares the ion
-    mass (C7H6O3 [M]-.). The even-H CxHyOz- ion cannot be [M-H]- (parity: that
-    needs a radical neutral) but IS exactly M-. of CxHyOz -- a sane oxygenated
+    mass (C7H6O3 [M]-.). The ion composition must pass `dbe_ok` read as a
+    neutral: it is then a closed-shell CxHyOz whose M-. is exactly this ion (its
+    [M-H]- reading would need an odd-electron neutral) -- a sane oxygenated
     molecule, not an impossible hydrocarbon carbonate adduct.
 
     Corroborated when that neutral is independently assigned via a functional-group
@@ -695,9 +697,10 @@ def relabel_radical_anions(ledger: pd.DataFrame, *, log=print) -> dict:
         if "confidence" in ledger.columns:
             ledger.at[i, "confidence"] = ("Good (radical anion, corroborated)"
                                           if is_corrob else "Low (radical anion)")
-        note = (f"radical anion M-. of {new_neutral}: the even-H {new_neutral}- ion "
-                "cannot be [M-H]- (would need a radical neutral) -- it is M-. of the "
-                "closed-shell neutral, not a hydrocarbon+CO3 adduct; "
+        note = (f"radical anion M-. of {new_neutral}: the {new_neutral}- ion composition "
+                "is a closed-shell neutral (dbe_ok), so its [M-H]- reading would need an "
+                "odd-electron neutral -- it is M-. of the closed-shell neutral, not a "
+                "hydrocarbon+CO3 adduct; "
                 + ("corroborated by an independent [M-H]-/[M+Br]- assignment of the same neutral"
                    if is_corrob else "uncorroborated best-guess (no [M-H]-/[M+Br]- partner)"))
         for col in ("commentary",):
