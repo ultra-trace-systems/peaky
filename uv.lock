@@ -643,7 +643,7 @@ wheels = [
 
 [[package]]
 name = "mascope-peaky"
-version = "0.7.0"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "mascope-sdk" },
@@ -1600,8 +1600,8 @@ name = "uvicorn"
 version = "0.50.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click", marker = "sys_platform != 'emscripten'" },
-    { name = "h11", marker = "sys_platform != 'emscripten'" },
+    { name = "click" },
+    { name = "h11" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9f/f6/cc9aadc0e481344a42095d222bfa764122fb8cfba708d1922917bd8bfb01/uvicorn-0.50.2.tar.gz", hash = "sha256:b92bf03509b82bcb9d49e7335b4fd364518ad021c2dc18b4e6a2fec8c955a0bb", size = 93716, upload-time = "2026-07-06T10:38:31.984Z" }
 wheels = [
