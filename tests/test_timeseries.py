@@ -622,6 +622,46 @@ check("build_matrix: duplicate rows doubled a bin, collapsed does not",
       (float(_m.loc["s0"].max()), float(_mc.loc["s0"].max())))
 
 
+# ---------------------------------------------------------------------------
+# bin_ids: the row-aligned bin rule build_matrix pivots on (the residual stage
+# reads the batch bin by bin off the long table with it)
+# ---------------------------------------------------------------------------
+_brng = np.random.default_rng(7)
+_bmzs = np.concatenate([100 + _brng.normal(0, 1e-4, 40), 200 + _brng.normal(0, 2e-4, 40),
+                        300 + _brng.normal(0, 1e-4, 20), [400.0, 400.0 * (1 + 5.5e-6)]])
+_bt = pd.DataFrame({"sample_item_id": _brng.choice(["a", "b", "c"], len(_bmzs)),
+                    "mz": _bmzs, "height": _brng.uniform(10, 1000, len(_bmzs))})
+_bt = _bt.sample(frac=1, random_state=3).reset_index(drop=True)      # shuffled rows
+_bmat, _bmz = TS.build_matrix(_bt, tol_ppm=6.0)
+_bid = TS.bin_ids(_bt, tol_ppm=6.0)
+check("bin_ids: one id per input row, numbered like the matrix's columns",
+      len(_bid) == len(_bt) and set(_bid.tolist()) == set(_bmat.columns.tolist()),
+      (len(_bid), sorted(set(_bid.tolist()))[:6], _bmat.columns.tolist()[:6]))
+_piv = (_bt.assign(_bin=_bid)
+           .pivot_table(index="sample_item_id", columns="_bin", values="height", aggfunc="sum"))
+check("bin_ids: pivoting on it reproduces build_matrix exactly (shuffled input rows)",
+      _piv.shape == _bmat.shape and _piv.columns.tolist() == _bmat.columns.tolist()
+      and np.allclose(_piv.to_numpy(), _bmat.to_numpy(), equal_nan=True),
+      (_piv.shape, _bmat.shape))
+_hi = (_bt["mz"] >= 399).to_numpy()
+check("bin_ids: honours the tolerance (a 5.5 ppm pair: one bin at 6 ppm, two at 5)",
+      len(set(_bid[_hi].tolist())) == 1
+      and len(set(TS.bin_ids(_bt, tol_ppm=5.0)[_hi].tolist())) == 2)
+# a row build_matrix drops (NaN height) is -1 and never bridges a gap: 500 and
+# 500(1+8ppm) are 8 ppm apart, so without the NaN middle row they are two bins
+_gap = pd.DataFrame({"sample_item_id": ["a", "a", "a"],
+                     "mz": [500.0, 500.0 * (1 + 4e-6), 500.0 * (1 + 8e-6)],
+                     "height": [1.0, np.nan, 1.0]})
+_gid = TS.bin_ids(_gap, tol_ppm=6.0)
+check("bin_ids: a dropped row is -1 and does not chain its neighbours into one bin",
+      _gid.tolist() == [0, -1, 1] and TS.build_matrix(_gap, tol_ppm=6.0)[0].shape[1] == 2,
+      _gid.tolist())
+check("bin_ids: an empty table -> an empty array",
+      len(TS.bin_ids(_gap.iloc[:0], tol_ppm=6.0)) == 0)
+check("bin_ids: an all-dropped table -> all -1",
+      TS.bin_ids(_gap.assign(height=np.nan), tol_ppm=6.0).tolist() == [-1, -1, -1])
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

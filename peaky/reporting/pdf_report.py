@@ -582,7 +582,7 @@ def cover(ctx, pdf):
                    f"them covered, stopped on {bsel.get('stop_reason', '?')}"
                    + (f" (budget k_max={bsel.get('k_max')} hit while still gaining — "
                       "coverage is incomplete)" if bsel.get("stop_reason") == "k_max" else "")
-                   + "; merged by m/z.")
+                   + "; merged by m/z." + _residual_cover_text(bsel))
     else:                                   # a run folder without a selection record
         sel_txt = (f"{nf} files assigned and merged by m/z (this run's batch_summary.json "
                    "carries no selection record).")
@@ -1104,6 +1104,36 @@ def clusters(ctx, pdf):
             _image_page(pdf, p, "")
 
 
+def _residual_floor_text(r: dict) -> str:
+    """'5× the sample's noise edge' / '1000 cps' / both, from the residual block's
+    `floor` record (`batch_summary.json['selection']['residual']`)."""
+    f = r.get("floor") or {}
+    parts = []
+    if f.get("min_x_edge") is not None:
+        parts.append(f"{f['min_x_edge']:g}× the sample's noise edge")
+    if f.get("min_cps") is not None:
+        parts.append(f"{f['min_cps']:g} cps")
+    return " and ".join(parts) or "no floor"
+
+
+def _residual_cover_text(bsel: dict) -> str:
+    """The cover page's clause for the residual stage (empty when the run had
+    none): how many of the bins the cover left behind were bright enough to
+    target, and how many extra files that took."""
+    r = bsel.get("residual") or {}
+    if not r:
+        return ""
+    k, nb = r.get("k", 0), r.get("n_bins_residual", 0)
+    if not nb:
+        return (f" Residual stage: none of the {r.get('n_uncovered', 0)} bins in no assigned "
+                f"file reached the floor ({_residual_floor_text(r)}) unexplained — no extra file.")
+    return (f" Residual stage: {nb} of the {r.get('n_uncovered', 0)} bins in no assigned file "
+            f"reach {_residual_floor_text(r)} unexplained; {k} extra file(s), each where "
+            f"its bins stand at ≥{r.get('frac_of_max', 0.5):.0%} of their maximum, cover "
+            f"{r.get('coverage_of_residual', 0):.0%} of them (stopped on "
+            f"{r.get('stop_reason', '?')}).")
+
+
 def _selection_lines(ctx) -> list:
     """The Methods-page bullet for how the assigned subset was chosen, rendered
     from `batch_summary.json['selection']` (the recorded selector — never a
@@ -1130,6 +1160,19 @@ def _selection_lines(ctx) -> list:
         out.append(("b", f"• WARNING: the k_max={b.get('k_max')} budget bound while the batch was "
                          f"still gaining ({b.get('next_gain', 0):.2%} of the bins per extra "
                          "sample) — coverage is incomplete; raise --k-max."))
+    r = b.get("residual") or {}
+    if r:
+        out.append(("b", f"• Residual stage: of the {r.get('n_uncovered', 0)} universe bins in no "
+                         f"assigned file, {r.get('n_explained', 0)} are explained by the "
+                         f"whole-batch stamp and {r.get('n_below_floor', 0)} never reach the "
+                         f"floor ({_residual_floor_text(r)}); the remaining "
+                         f"{r.get('n_bins_residual', 0)} were targeted — a sample counts for a "
+                         f"bin only where the bin stands at ≥{r.get('frac_of_max', 0.5):.0%} of "
+                         f"its maximum (and above that file's admission gate); "
+                         f"{r.get('k', 0)} extra file(s) cover {r.get('coverage_of_residual', 0):.0%} "
+                         f"of them, stopped on '{r.get('stop_reason', '?')}' "
+                         f"(k_max {r.get('k_max', '?')}). Merged rows carry `stage` = cover | "
+                         "residual (the stage that first held the ion)."))
     return out
 
 

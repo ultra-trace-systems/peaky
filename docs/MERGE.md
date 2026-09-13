@@ -156,11 +156,24 @@ selected sample_ids (SAMPLING.md)
      corroboration is complete.
    `batch_summary.json["merge_gates"]` records both gates' counts.
 
-6. **Pool the plausibility audit + write artifacts.** Per-file plausibility
+6. **The residual stage** (`residual=True`, the default; [`SAMPLING.md`](SAMPLING.md)
+   §3b). After the cover's merge and stamp, the universe bins in **no assigned
+   file**, unexplained by the stamp and bright somewhere (≥ 5× that sample's
+   noise edge, never below the run's gate) are covered by at most 10 more
+   samples — each counting for a bin only where the bin stands at ≥ 50 % of its
+   maximum — which go through the same per-file path. `align()` then runs
+   **once** over every per-file ledger (cover + residual), and the guards, the
+   trace reconciliation and the stamp are redone over that. Merged rows carry
+   `stage` (`cover` if any cover file holds the ion, else `residual`);
+   `selected_samples.csv` gains the picks (role `residual`),
+   `tables/residual_bins.csv` the targeted bins, and
+   `batch_summary.json['selection']['residual']` the record. Off, nothing changes.
+
+7. **Pool the plausibility audit + write artifacts.** Per-file plausibility
    demotes are pooled and written; `merged_ledger.csv` (root), `jitter.csv`
    (tables/), `selected_samples.csv`, and `batch_summary.json` are emitted.
 
-7. **Jitter report** (`jitter_report`, standalone analysis). Per-file offset =
+8. **Jitter report** (`jitter_report`, standalone analysis). Per-file offset =
    median observed-vs-theoretical ppm of its assignments (`_theo_ppm`). Then:
    - **`by_formula`** — same `(neutral_formula, adduct)` in ≥ 2 files:
      `mz_jitter_raw` (raw ppm spread) vs `mz_jitter_resid` (spread after removing
@@ -183,6 +196,8 @@ All in `peaky/batch/assign_batch.py`.
 | `run` `amine_r_min` | 0.6 | min trace correlation for the positive amine re-read |
 | `assign_kw` `reagent_n_relabel` | `False` (set by `run`) | the per-file hydrocarbon-on-N-cluster re-read stands down; `run` applies it once to the merged ledger |
 | `run` `k_min` / `k_max` / `min_gain` / `min_prevalence` | 6 / 30 / 0.005 / 2 | passed through to `sampling.select_cover_samples` (see [`SAMPLING.md`](SAMPLING.md)) |
+| `run` `residual` / `residual_min_x_edge` / `residual_min_cps` / `residual_k_max` / `residual_frac_of_max` | True / 5.0 / None / 10 / 0.5 | the residual stage (`sampling.residual_universe` / `select_residual_cover`; [`SAMPLING.md`](SAMPLING.md) §3b) |
+| `STAGE_COVER` / `STAGE_RESIDUAL` | `cover` / `residual` | the `stage` a merged row carries when the residual stage is on (`align(stages=)`) |
 
 ---
 
@@ -221,11 +236,12 @@ All in `peaky/batch/assign_batch.py`.
 
 | artifact | content |
 | --- | --- |
-| `merged_ledger.csv` (run root) | one row per m/z cluster: consensus mz, the winning reading, the vote (`n_files`, `n_files_ion`, `n_files_winner`, `alternatives`), `srcs`, `ion_agree`, `formula_agree`, `mz_jitter_ppm_raw/caldj`, the batch-level gates' `tier_reason`, plus the trace reconciliation columns (`mz_anchor`, `mz_trace`, `trace_offset_ppm`, `trace_cov_anchor`, `trace_cov`, `trace_moved`, `trace_guarded`, `trace_id`, `trace_role`; [`TIMESERIES.md`](TIMESERIES.md) §9) — **the result** |
+| `merged_ledger.csv` (run root) | one row per m/z cluster: consensus mz, the winning reading, the vote (`n_files`, `n_files_ion`, `n_files_winner`, `alternatives`), `srcs`, `ion_agree`, `formula_agree`, `mz_jitter_ppm_raw/caldj`, the batch-level gates' `tier_reason`, `stage` (`cover` / `residual`; only when the residual stage is on), plus the trace reconciliation columns (`mz_anchor`, `mz_trace`, `trace_offset_ppm`, `trace_cov_anchor`, `trace_cov`, `trace_moved`, `trace_guarded`, `trace_id`, `trace_role`; [`TIMESERIES.md`](TIMESERIES.md) §9) — **the result** |
 | `tables/jitter.csv` | long form, one row per (cluster, file): `cluster`, `src`, `mz`, formula, adduct, tier, `ion_score` |
 | `per_file/<sid>_ledger.csv` | each assigned file's full single-sample ledger (audit / re-merge) |
-| `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role`, `bins_new`, `coverage`) |
-| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason), the resolved height gate (`height_cutoff_x_edge` + its source, and the `gate` derivation block), the `admission` block, the `traces` block (re-centred / collapsed counts, per-ion scatter, stamp window), per-file offsets + noise edges, merged tier counts, agreement counts |
+| `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role` ∈ `cover` / `pad` / `residual`, `bins_new`, `coverage`) |
+| `tables/residual_bins.csv` | the residual stage's targeted bins (`bin_mz`, `prevalence`, `max_cps`, `max_x_edge`, `sample_at_max`, `covered_by`); written when the stage is on |
+| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason; `residual` sub-block: the funnel, the floor, k, coverage_of_residual, stop_reason, sample_ids), `n_files_by_stage` / `merged_by_stage` when the stage is on, the resolved height gate (`height_cutoff_x_edge` + its source, and the `gate` derivation block), the `admission` block, the `traces` block (re-centred / collapsed counts, per-ion scatter, stamp window), per-file offsets + noise edges, merged tier counts, agreement counts |
 | `jitter_report()` dict | `{offsets, by_formula, by_mz, summary}` — the standalone jitter analysis |
 
 ---

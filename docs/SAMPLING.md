@@ -2,7 +2,9 @@
 
 This document explains **how a many-sample batch is reduced to a small subset to
 assign**: one selector, a greedy **presence set-cover** over the batch's m/z bins
-with a marginal-gain stop, and the exact arithmetic it uses. It is a module
+with a marginal-gain stop, and the exact arithmetic it uses — followed by the
+**residual stage** (§3b), a second, targeted selection over the bins the cover
+left in no assigned file. It is a module
 deep-dive companion to [`ARCHITECTURE.md`](ARCHITECTURE.md) (the whole pipeline,
 the *Whole batch* flow), [`MERGE.md`](MERGE.md) (which combines the per-sample
 ledgers this selects), and [`TIMESERIES.md`](TIMESERIES.md) (whose `build_matrix`
@@ -127,9 +129,85 @@ per-peak batch table (sample_item_id, mz, height[, datetime_utc, name])
 
 ---
 
+## 3b. The residual stage (targeted second selection)
+
+The gain stop leaves a tail: bins present in ≥ 2 samples that no assigned file
+holds. Measured on a 6154-sample Texas Ur+ campaign run (15 cover files at the gain-floor stop): **18 % of 4702 universe bins** (846). Almost
+all of it is the noise-edge tail — 0.02 % of the universe's signal, median campaign
+maximum 299 cps against a ~154 cps median picker edge, 96 % never above 1 kcps —
+but **36 of those bins reach 1–3.4 kcps somewhere**, and nothing in the tail can
+ever enter the ledger, because the merge only holds what an assigned file
+contained. A whole-batch stamp cannot help either: it names ions the ledger
+already has.
+
+So `assign_batch.run` runs a **second, targeted selection after the cover's merge
+and stamp** (`residual_universe` + `select_residual_cover`; switch `residual`,
+CLI `--residual` / `--no-residual`, **on by default**):
+
+1. **Residual universe** (`residual_universe`). The cover's own bins
+   (`timeseries.bin_ids` at `BATCH_TOL_PPM` — the rule `build_matrix` pivots on,
+   read off the long table so no dense matrix is built) and the cover's own
+   prevalence gate. A universe bin is *residual* when it is
+   - **(a) absent from every assigned file** (no cover file holds a peak in it),
+   - **(b) unexplained by the whole-batch stamp**: no peak of the bin carries an
+     `ion_formula` in the annotated time series — so an isotope satellite, a
+     reagent line or an artifact the stamp already names is not re-targeted
+     (once predicted satellites are stamped, those drop out here too), and
+   - **(c) bright somewhere**: its maximum over the batch, as a multiple of *that
+     sample's* own noise edge (`EDGE_Q` = the 1st percentile of the sample's
+     heights, the statistic every height gate is a multiple of), is
+     ≥ `RESIDUAL_MIN_X_EDGE` (5) — `--residual-min-x-edge`; `--residual-min-cps`
+     is an absolute floor instead. The floor is **never below the run's own
+     admission-gate multiple** (`height_cutoff_x_edge`, [`ASSIGNMENT.md`](ASSIGNMENT.md)):
+     a bin no file would admit is not worth a file; the absolute gate
+     (`--height-cutoff`) is a floor as well. On the campaign above the 36 bright
+     bins sit ≥ 6.5× the median edge.
+2. **Residual cover** (`select_residual_cover`). A sample *counts* for a bin only
+   where the bin's height (summed per sample and bin, as the matrix does) is
+   ≥ `RESIDUAL_FRAC_OF_MAX` (50 %) of the bin's maximum — the bin is assigned
+   where it stands tall, with its isotopes visible — **and** at or above that
+   sample's own gate. Greedy over that relation: each pick is the sample counting
+   for the most not-yet-covered residual bins; stop at `RESIDUAL_K_MAX` (10)
+   picks (`'k_max'`, `--residual-k-max`) or when the next sample adds no bin
+   (`'exhausted'`); no bins → `'empty'`. Tie-break as the cover's (smallest
+   `sample_item_id`). `bins_new` and `coverage` are of the **residual** universe.
+3. **Assign + one merge.** The picks go through the same per-file path (serial
+   or the process pool, the same cfg and offsets), then `align()` runs **once**
+   over every per-file ledger — cover and residual together — so the merged
+   ledger, the trace reconciliation and the time-series stamp include them.
+   Merged rows carry **`stage`** (`cover` if any cover file holds the ion, else
+   `residual`: the stage that first put it in the ledger); `n_files` still counts
+   only files that contain the ion.
+
+Measured on the campaign above (the 21-sample manual experiment this stage
+replaces; `RESIDUAL_K_MAX` bounds the automatic run at 10): the 36 bright bins
+needed 21 samples at 50 % of their maximum; assigning them gave **6 Assigned +
+10 Candidate** (mostly "reagent-N isobar unresolved"), 8 isotope satellites of
+parents the cover already assigns (the stamp explains those once it carries
+predicted satellites), 1 sidelobe artifact and 11 unexplained — the bright end
+of the residual, at ~4 min per extra file.
+
+```
+cover merge + stamp
+        │  residual_universe: universe bins  ∖ present-in-an-assigned-file
+        │                                     ∖ stamped  ∩  max ≥ floor × edge
+        ▼
+ ┌────────────── residual cover ────────────────────────────────────────┐
+ │ sample counts for a bin iff height ≥ 50 % of the bin's max ∧ ≥ gate  │
+ │ repeat: pick the sample counting for the most uncovered residual bins│
+ │   stop at RESIDUAL_K_MAX (10) → 'k_max'  |  next adds none → 'exhausted'
+ └──────────────────────────────────────────────────────────────────────┘
+        ▼
+ assign the picks (same per-file path) → ONE align over cover + residual files
+ selected_samples.csv += picks (role 'residual'); residual_bins.csv; stage column
+```
+
+---
+
 ## 4. Constants reference
 
-All in `peaky/batch/sampling.py`; the CLI (`--k-min`, `--k-max`, `--min-gain`)
+All in `peaky/batch/sampling.py`; the CLI (`--k-min`, `--k-max`, `--min-gain`,
+`--residual`, `--residual-min-x-edge`, `--residual-min-cps`, `--residual-k-max`)
 mirrors them for `batch` and `pool`.
 
 | constant | value | role |
@@ -139,6 +217,11 @@ mirrors them for `batch` and `pool`.
 | `MIN_GAIN` | 0.005 | stop when the next pick adds < this fraction of the universe |
 | `K_MAX` | 30 | budget; hitting it while still gaining → `stop_reason='k_max'` + warning |
 | `BATCH_TOL_PPM` | 6.0 | m/z gap-clustering tolerance for the bins — the one tolerance for every batch-level binning (selection and merge: `assign_batch.DEFAULT_TOL_PPM = BATCH_TOL_PPM`); recorded as `selection.tol_ppm` |
+| `RESIDUAL_DEFAULT` | True | the residual stage runs unless `--no-residual`; off reproduces the cover-only run exactly |
+| `RESIDUAL_MIN_X_EDGE` | 5.0 | a residual bin must reach this × its sample's noise edge somewhere (never below the run's gate multiple) |
+| `RESIDUAL_FRAC_OF_MAX` | 0.5 | a sample counts for a residual bin only at ≥ this share of the bin's maximum |
+| `RESIDUAL_K_MAX` | 10 | budget of the residual stage; hitting it while still gaining → `stop_reason='k_max'` |
+| `EDGE_Q` | 0.01 | the noise edge: the 1st percentile of a sample's heights (= `passes.noise_edge`) |
 
 ---
 
@@ -153,6 +236,13 @@ mirrors them for `batch` and `pool`.
 - **`n_bins` / `n_bins_total` / `n_bins_gated`** — universe size, all bins, and
   the singletons the prevalence gate removed.
 - **`tic`** — Σ peak heights per sample; only used to rank pads.
+- **`n_uncovered` / `n_explained` / `n_below_floor` / `n_residual`** (residual
+  stage) — the funnel: universe bins in no assigned file; of those, the ones the
+  stamp explains; the ones never reaching the floor; the ones targeted.
+- **`max_x_edge`** — a residual bin's maximum height as a multiple of the edge
+  of the sample it peaks in (`residual_bins.csv`).
+- **`coverage_of_residual`** — the fraction of the residual universe the extra
+  picks cover (at ≥ `frac_of_max` of each bin's maximum).
 
 ---
 
@@ -165,6 +255,10 @@ mirrors them for `batch` and `pool`.
 | `tables/selected_samples.csv` | the chosen subset written by `assign_batch.run` (the pool writes it from its own selection table, plus `selection_provenance.csv` at the run root) |
 | `batch_summary.json['selection']` | `method, k, n_samples, n_bins, n_bins_total, n_bins_gated, min_prevalence, tol_ppm, achieved_coverage, stop_reason, next_gain, k_min, k_max, min_gain[, coverage_by_group, picks_by_group]` — also copied into `run_manifest.json['output']['counts']` |
 | `k_max_warning(meta)` / `describe(meta)` | the warning text / one-line log summary the callers print |
+| `residual_universe` | the residual bins (`bin`, `bin_mz`, `prevalence`, `max_cps`, `max_x_edge`, `sample_at_max`); `.attrs['residual']` = the funnel + floor, `.attrs['edge_cps']` = the per-sample edge |
+| `select_residual_cover` | the extra picks, same shape as `select_cover_samples` with `role = 'residual'`; `.attrs['selection']` = {method 'residual-cover', k, n_bins, frac_of_max, k_max, achieved_coverage, stop_reason, next_gain}, `.attrs['covered_by']` = {bin → pick} |
+| `tables/residual_bins.csv` | the targeted bins + `covered_by` (written by `assign_batch.run` when the stage is on) |
+| `batch_summary.json['selection']['residual']` | `n_bins_residual, n_universe, n_uncovered, n_explained, n_below_floor, floor{min_x_edge, min_cps, edge_median_cps, source}, frac_of_max, k, k_max, coverage_of_residual, stop_reason, next_gain, sample_ids` (`skipped` when there was no time series) |
 
 ---
 
@@ -226,7 +320,18 @@ modes of one instrument. Selection is deterministic (identical picks on re-run).
   order (stable sort). Shuffling the input rows cannot change the result.
 - **Pick order is assignment order.** `assign_batch.run` assigns the ids in the
   order returned (and `align()` has order-sensitive tie-breaks), so the CSV's
-  `pick` column is also the merge order.
+  `pick` column is also the merge order — the residual picks continue the
+  numbering after the cover's.
+- **The residual stage cannot re-target what the ledger explains.** Its universe
+  is read off the annotated time series *after* the cover's stamp, so an ion the
+  ledger names anywhere — analyte, satellite, reagent line, artifact — is not a
+  target, and the stage only ever adds files for bins no assigned file holds.
+- **A residual file is a full assignment.** The targeted sample is assigned like
+  any cover file (every peak, the same gate), so its background ions corroborate
+  the cover's rows (`n_files` grows) while the ions only it holds carry
+  `stage = 'residual'`.
+- **`--no-residual` is today's run.** Off, nothing changes: no `stage` column,
+  no `residual` block, no `residual_bins.csv`, byte-identical material outputs.
 
 ---
 
@@ -238,5 +343,9 @@ modes of one instrument. Selection is deterministic (identical picks on re-run).
 | `is_per_peak` | does the table carry `mz` + `height` per row (what the cover needs)? |
 | `select_cover_samples` | THE RULE: greedy presence set-cover with the marginal-gain stop (+ per-group coverage) |
 | `select_cover_sample_ids` | id-list convenience wrapper |
+| `residual_universe` | THE RESIDUAL STAGE, part 1: the universe bins in no assigned file, unexplained by the stamp, bright somewhere |
+| `select_residual_cover` | THE RESIDUAL STAGE, part 2: greedy cover of those bins by the samples in which each stands at ≥ 50 % of its maximum |
+| `describe_residual` | the one-line log summary of the funnel + the residual cover |
+| `timeseries.bin_ids` (reused, at `BATCH_TOL_PPM`) | the row-aligned bin rule `build_matrix` pivots on, read off the long table |
 | `k_max_warning` / `describe` | the warning text / log line for a selection meta dict |
 | `timeseries.build_matrix` (reused, at `BATCH_TOL_PPM`) | the samples × m/z-bin matrix the cover bins on |

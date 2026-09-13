@@ -31,7 +31,7 @@ import pandas as pd
 
 from peaky.assignment import ledger as L
 
-__version__ = "0.2.0"  # trace re-centring / collapse / stamp window
+__version__ = "0.2.1"  # bin_ids: the row-aligned bin rule build_matrix pivots on
 
 DEFAULT_TOL_PPM = 5.0
 FLAT_CV = 0.25          # cv_norm below this == flat / background
@@ -149,19 +149,50 @@ def collapse_peak_matches(peaks: pd.DataFrame, *, log=None) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # matrix construction
 # ---------------------------------------------------------------------------
+def bin_ids(peaks: pd.DataFrame, *, tol_ppm: float = DEFAULT_TOL_PPM,
+            mz_col="mz", height_col="height", sample_col="sample_item_id") -> np.ndarray:
+    """The m/z bin of every ROW of `peaks`, by the gap rule `build_matrix` pivots
+    on: sort the peaks by m/z and start a new bin wherever two consecutive m/z
+    are more than `tol_ppm` apart. Bins are numbered 0.. in ascending m/z -- the
+    same numbers as that matrix's columns for the same table and tolerance
+    (`build_matrix` calls this, so the two cannot drift). A row `build_matrix`
+    drops (a missing sample id, m/z or height) gets -1 and never bridges a gap,
+    so it cannot change where a bin ends for the rows that are kept.
+
+    This is what a batch-level operation uses to ask "which bin is this peak
+    in?" without pivoting the whole batch: the residual stage of
+    `assign_batch.run` (sampling.residual_universe) reads the per-peak stamp
+    and the per-sample heights off the long table, bin by bin, at a fraction
+    of the dense matrix's memory."""
+    n = len(peaks)
+    out = np.full(n, -1, dtype=np.int64)
+    if n == 0:
+        return out
+    d = peaks[[sample_col, mz_col, height_col]]
+    idx = np.flatnonzero(d.notna().all(axis=1).to_numpy())
+    if len(idx) == 0:
+        return out
+    mz = d[mz_col].to_numpy()[idx]           # native dtype: the same arithmetic
+    order = np.argsort(mz, kind="mergesort")  # as the matrix's sorted column
+    ms = mz[order]
+    b = np.zeros(len(ms), dtype=np.int64)
+    if len(ms) > 1:
+        gaps = np.diff(ms) / ms[:-1] * 1e6
+        b[1:] = np.cumsum(gaps > tol_ppm)
+    out[idx[order]] = b
+    return out
+
+
 def build_matrix(peaks: pd.DataFrame, *, tol_ppm: float = DEFAULT_TOL_PPM,
                  mz_col="mz", height_col="height", sample_col="sample_item_id"
                  ) -> tuple[pd.DataFrame, pd.Series]:
-    """Gap-cluster peaks into m/z bins (ppm tolerance) and pivot to a
-    samples x bin intensity matrix. Returns (matrix, bin_mz)."""
+    """Gap-cluster peaks into m/z bins (ppm tolerance; the rule is `bin_ids`)
+    and pivot to a samples x bin intensity matrix. Returns (matrix, bin_mz)."""
     d = peaks[[sample_col, mz_col, height_col]].dropna().sort_values(mz_col).reset_index(drop=True)
-    mz = d[mz_col].to_numpy()
-    if len(mz) == 0:
+    if len(d) == 0:
         return pd.DataFrame(), pd.Series(dtype=float)
-    gaps = np.diff(mz) / mz[:-1] * 1e6
-    binid = np.zeros(len(mz), dtype=np.int64)
-    binid[1:] = np.cumsum(gaps > tol_ppm)
-    d["_bin"] = binid
+    d["_bin"] = bin_ids(d, tol_ppm=tol_ppm, mz_col=mz_col, height_col=height_col,
+                        sample_col=sample_col)
     wsum = (d[mz_col] * d[height_col]).groupby(d["_bin"]).sum()
     hsum = d[height_col].groupby(d["_bin"]).sum()
     bin_mz = (wsum / hsum).rename("mz")

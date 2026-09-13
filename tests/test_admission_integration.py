@@ -107,8 +107,12 @@ IO.connect = lambda *a, **k: SimpleNamespace(name="stub-client")
 IO.fetch_peaks = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no network in tests"))
 RUN_DIR = tempfile.mkdtemp(prefix="peaky-admission-")
 try:
+    # residual=False: this test reads the admission table that crosses into the
+    # TWO given files. The residual stage (on by default) would rightly add a
+    # third -- the BRIGHT ions are absent from both -- which is not what is under
+    # test here (tests/test_assign_batch.py covers that stage).
     res = AB.run(peaks=TS, reagent="Br", out_dir=RUN_DIR, ts_peaks=TS,
-                 sample_ids=list(REPS), n_jobs=1, log=lambda *a: None)
+                 sample_ids=list(REPS), n_jobs=1, residual=False, log=lambda *a: None)
 finally:
     A.run, IO.connect, IO.fetch_peaks = (_real["assign_run"], _real["connect"],
                                          _real["fetch_peaks"])

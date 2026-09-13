@@ -272,6 +272,30 @@ check("empty -> empty merged + jitter with schema",
                         "tier_reason", "ion_agree"} <= set(me.columns)
       and "cluster" in je.columns)
 
+# --- stage provenance: which stage first put the ion in the ledger ------------
+# A and B are cover files, R a residual-stage file. The shared 217.12 ion is a
+# cover row even though R holds it too; R's own 500.0 ion is a residual row.
+R = m0([(217.1202, "C10H16O2", "[M+H]+", "Assigned", 0.90),
+        (500.0000, "C25H40O8", "[M+H]+", "Candidate", 0.70)])
+mS, _ = AB.align({"A": A, "B": B, "R": R}, tol_ppm=6.0,
+                 stages={"A": AB.STAGE_COVER, "B": AB.STAGE_COVER, "R": AB.STAGE_RESIDUAL})
+check("stages: a `stage` column sits right after `srcs`",
+      list(mS.columns).index("stage") == list(mS.columns).index("srcs") + 1, list(mS.columns))
+check("stages: an ion any cover file holds is a cover row, even when a residual file has it too",
+      mS[mS["neutral_formula"] == "C10H16O2"].iloc[0]["stage"] == "cover"
+      and mS[mS["neutral_formula"] == "C10H16O2"].iloc[0]["n_files"] == 3, mS.to_dict("records"))
+check("stages: an ion only residual files hold is a residual row",
+      mS[mS["neutral_formula"] == "C25H40O8"].iloc[0]["stage"] == "residual")
+check("stages: a file missing from the record counts as a cover file",
+      AB.align({"A": A, "R": R}, tol_ppm=6.0, stages={"R": AB.STAGE_RESIDUAL})[0]
+      .set_index("neutral_formula")["stage"].to_dict()
+      == {"C9H19NO": "cover", "C10H16O2": "cover", "C25H40O8": "residual"})
+check("stages: without the record the column is absent (a cover-only ledger is unchanged)",
+      "stage" not in merged.columns)
+check("stages: the empty merge carries the column iff the record is given",
+      "stage" in AB.align({}, stages={})[0].columns
+      and "stage" not in AB.align({})[0].columns)
+
 # --- _protected_neutrals: curated/known/certified provenance shields NH4 adducts
 _ledp = pd.DataFrame([
     dict(neutral_formula="C10H15NO2S", method="reflist-rescue:contaminants_keller2008"),  # NBBS
@@ -645,6 +669,326 @@ try:
               {"n_files_winner", "alternatives", "tier_reason"}
               <= set(pd.read_csv(os.path.join(_dp, "merged_ledger.csv"), nrows=1).columns))
 finally:
+    IO.connect, IO.fetch_peaks = _saved["connect"], _saved["fetch_peaks"]
+    IO.estimate_offset, _A.run = _saved["estimate_offset"], _saved["run"]
+
+
+# ---------------------------------------------------------------------------
+# THE RESIDUAL STAGE end to end through run(): stubbed assign + IO, the real
+# cover -> merge -> stamp -> residual universe -> residual cover -> second
+# assignment -> ONE align over both stages -> summary / CSV / ledger provenance.
+# ---------------------------------------------------------------------------
+import concurrent.futures as _CF  # noqa: E402
+import hashlib  # noqa: E402
+
+_F2 = "C12H20O5"          # what a residual file assigns: an ion only that stage can bring
+
+
+def _batch_table_h(spec):
+    """Per-peak batch table: sample id -> {m/z: height}."""
+    rows = []
+    for i, (sid, mzh) in enumerate(spec.items()):
+        t = _T0 + pd.Timedelta(minutes=10 * i)
+        rows += [dict(sample_item_id=sid, sample_item_name=f"n_{sid}", datetime_utc=t,
+                      mz=float(mz), height=float(h)) for mz, h in mzh.items()]
+    return pd.DataFrame(rows)
+
+
+# 3 exclusive 20-bin block PAIRS on a 20-bin background (every height 500 cps, so
+# every sample's noise edge is 500) -- the cover fixture -- plus two samples the
+# cover never picks (22 bins each < 40): bin 500 is bright in z1 (10x its edge),
+# bin 502 bright in z2, bin 501 dim in both (1.2x); each bright bin stands at 20 %
+# of its maximum in the other file. 8 samples keeps the persistence path off
+# (< 10 spectra), as in the cover fixture above.
+_BGH = {m: 500.0 for m in _BG}
+_RSPEC = {}
+for _i in range(3):
+    _blk = {m: 500.0 for m in range(200 + 20 * _i, 220 + 20 * _i)}
+    _RSPEC[f"a{_i}"] = {**_BGH, **_blk}
+    _RSPEC[f"b{_i}"] = {**_BGH, **_blk}
+_RSPEC["z1"] = {**_BGH, 500: 5000.0, 501: 600.0, 502: 1000.0}
+_RSPEC["z2"] = {**_BGH, 500: 1000.0, 501: 600.0, 502: 5000.0}
+_RPK = _batch_table_h(_RSPEC)
+_EXTRA_M0: list = []      # (mz, neutral) rows EVERY fake ledger also assigns (stamp probes)
+
+
+def _fake_assign_staged(sid, context="ambient-air", **kw):
+    """assign.run stand-in: every file assigns _F; a residual file (z*) assigns
+    _F2 as well -- a NEW ion the ledger can only gain through the residual stage."""
+    _SEEN_CFG.append(kw.get("cfg"))
+    rows = [("p1", _C.ion_mz(_F, "[M-H]-"), 1.0e5)]
+    if sid.startswith("z"):
+        rows.append(("p2", _C.ion_mz(_F2, "[M-H]-"), 5.0e3))
+    rows += [(f"x{i}", mz, 2.0e3) for i, (mz, _nf) in enumerate(_EXTRA_M0)]
+    led = _L.new_ledger(pd.DataFrame(rows, columns=["peak_id", "mz", "height"]))
+    _L.commit_assignment(led, "p1", neutral_formula=_F, adduct="[M-H]-",
+                         ion_formula="C10H15O5-", ion_score=0.9, compound_score=0.9,
+                         ppm_error=0.1, pass_no=1, method="cheminfo+grid",
+                         confidence="High", commentary="stub")
+    if sid.startswith("z"):
+        _L.commit_assignment(led, "p2", neutral_formula=_F2, adduct="[M-H]-",
+                             ion_formula="C12H19O5-", ion_score=0.8, compound_score=0.8,
+                             ppm_error=0.2, pass_no=1, method="cheminfo+grid",
+                             confidence="High", commentary="stub")
+    for i, (mz, nf) in enumerate(_EXTRA_M0):
+        _L.commit_assignment(led, f"x{i}", neutral_formula=nf, adduct="[M-H]-",
+                             ion_formula=nf + "-", ion_score=0.7, compound_score=0.7,
+                             ppm_error=0.3, pass_no=1, method="cheminfo+grid",
+                             confidence="Medium", commentary="stub")
+    _T.apply_tiers(led)
+    return {"ledger": led, "stats": {"noise_edge_cps": 500.0, "height_gate_cps": 500.0},
+            "plausibility_audit": [], "summaries": {}, "problems": []}
+
+
+class _FakePool:
+    """A ProcessPoolExecutor stand-in that runs the REAL worker entry points
+    (`_worker_init`, `_assign_one`) in this process -- so the stubbed assign is
+    visible to them -- and hands the futures back already finished, in an order
+    `as_completed` does not control. What it exercises is everything the pool
+    path does around the workers: the raw-TS parquet hand-off, the banner and
+    per-future 'done' lines, and the reduce in sample order."""
+
+    def __init__(self, max_workers=None, mp_context=None, initializer=None, initargs=()):
+        initializer(*initargs)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def submit(self, fn, *args):
+        f = _CF.Future()
+        f.set_result(fn(*args))
+        return f
+
+
+def _run_staged(d, **kw):
+    lines = []
+    res = AB.run(peaks=_RPK, ts_peaks=_RPK, reagent="Br", batch="test batch", out_dir=d,
+                 k_min=2, k_max=2, min_gain=0.0, log=lines.append, **kw)
+    summ = json.load(open(os.path.join(d, "batch_summary.json")))
+    return res, summ, lines
+
+
+def _sha(path):
+    return hashlib.sha256(open(path, "rb").read()).hexdigest()
+
+
+_ARTS = ("merged_ledger.csv", "tables/jitter.csv", "tables/selected_samples.csv",
+         "tables/residual_bins.csv")
+_saved_pool = _CF.ProcessPoolExecutor
+IO.connect = lambda *a, **k: "CLIENT"
+IO.fetch_peaks = lambda client, sid, use_cache=True: pd.DataFrame(
+    {"peak_id": ["p1"], "mz": [_C.ion_mz(_F, "[M-H]-")], "height": [1.0e5]})
+IO.estimate_offset = lambda raw: 0.0
+_A.run = _fake_assign_staged
+try:
+    # ---- residual ON (the default): the bright uncovered bins get their samples ----
+    with tempfile.TemporaryDirectory() as _d:
+        _SEEN_CFG.clear()
+        res, summ, lines = _run_staged(_d, n_jobs=1)
+        r = summ["selection"]["residual"]
+        check("residual run: the cover stops at k_max=2 (a0, a1) and the z files stay unpicked",
+              summ["selection"]["k"] == 2 and summ["selection"]["stop_reason"] == "k_max"
+              and summ["n_files_by_stage"] == {"cover": 2, "residual": 2},
+              (summ["selection"].get("k"), summ.get("n_files_by_stage")))
+        check("residual run: the funnel -- 23 bins in no assigned file, 21 below the 5x floor, 2 targeted",
+              r["n_universe"] == 83 and r["n_uncovered"] == 23 and r["n_below_floor"] == 21
+              and r["n_explained"] == 0 and r["n_bins_residual"] == 2, r)
+        check("residual run: the cover of those bins -- z1 then z2, 100 %, exhausted",
+              r["sample_ids"] == ["z1", "z2"] and r["k"] == 2 and r["k_max"] == SS.RESIDUAL_K_MAX
+              and np.isclose(r["coverage_of_residual"], 1.0) and r["stop_reason"] == "exhausted"
+              and r["frac_of_max"] == 0.5, r)
+        check("residual run: the floor is 5x the sample's edge (the gate is 1x, so not raised)",
+              r["floor"]["min_x_edge"] == 5.0 and r["floor"]["min_cps"] is None
+              and r["floor"]["edge_median_cps"] == 500.0
+              and "5x the sample's noise edge" in r["floor"]["source"], r["floor"])
+        check("residual run: n_files / sample_ids count BOTH stages, in assignment order",
+              summ["n_files"] == 4 and summ["sample_ids"] == ["a0", "a1", "z1", "z2"]
+              == res["sample_ids"], summ["sample_ids"])
+        check("residual run: every file went through the per-file path with its own cfg",
+              len(_SEEN_CFG) == 4 and len({id(c) for c in _SEEN_CFG}) == 4)
+        check("residual run: per-file ledgers exist for the residual files, with stage on their stats",
+              all(os.path.exists(os.path.join(_d, "per_file", f"{sid}_ledger.csv"))
+                  for sid in ("z1", "z2"))
+              and [pf["stage"] for pf in summ["per_file"]] == ["cover", "cover", "residual", "residual"],
+              [pf.get("stage") for pf in summ["per_file"]])
+        merged = pd.read_csv(os.path.join(_d, "merged_ledger.csv"))
+        row_c = merged[merged["neutral_formula"] == _F].iloc[0]
+        row_r = merged[merged["neutral_formula"] == _F2].iloc[0]
+        check("residual run: ONE align over both stages -- the cover ion now spans 4 files",
+              len(merged) == 2 and row_c["n_files"] == 4 and row_c["srcs"] == "a0,a1,z1,z2",
+              merged.to_dict("records"))
+        check("residual run: the merged ledger gains the residual files' ion with stage 'residual'",
+              row_r["stage"] == "residual" and row_r["n_files"] == 2 and row_r["srcs"] == "z1,z2"
+              and row_c["stage"] == "cover", merged[["neutral_formula", "stage", "n_files"]].to_dict("records"))
+        check("residual run: `stage` sits after `srcs` in the ledger, and the summary counts by stage",
+              list(merged.columns).index("stage") == list(merged.columns).index("srcs") + 1
+              and summ["merged_by_stage"] == {"cover": 1, "residual": 1}, summ.get("merged_by_stage"))
+        sel = pd.read_csv(os.path.join(_d, "tables", "selected_samples.csv"))
+        check("residual run: selected_samples.csv gains the picks, role 'residual', numbered on",
+              sel["sample_item_id"].tolist() == ["a0", "a1", "z1", "z2"]
+              and sel["pick"].tolist() == [1, 2, 3, 4]
+              and sel["role"].tolist() == ["cover", "cover", "residual", "residual"]
+              and sel["bins_new"].tolist() == [40, 20, 1, 1]
+              and np.isclose(sel["coverage"].tolist()[2:], [0.5, 1.0]).all(),
+              sel.to_dict("records"))
+        rb = pd.read_csv(os.path.join(_d, "tables", "residual_bins.csv"))
+        check("residual run: tables/residual_bins.csv lists the targeted bins and who carries each",
+              rb["bin_mz"].round(0).tolist() == [500.0, 502.0]
+              and rb["covered_by"].tolist() == ["z1", "z2"] and rb["max_x_edge"].tolist() == [10.0, 10.0],
+              rb.to_dict("records"))
+        check("residual run: the log counts on through the stage (progress.py reads these)",
+              "[phase] residual" in lines
+              and any(ln.startswith("[assign_batch] (3/4) assigning z1") for ln in lines)
+              and "[assign_batch] (4/4) done z2" in lines
+              and any(ln.startswith("[assign_batch] residual:") for ln in lines)
+              and lines.index("[phase] residual") < lines.index("[assign_batch] (4/4) done z2"),
+              [ln for ln in lines if "(3/4)" in ln or "(4/4)" in ln or "phase" in ln])
+        check("residual run: the result hands the picks and the stage record back",
+              res["residual_samples"]["sample_item_id"].tolist() == ["z1", "z2"]
+              and res["stages"] == {"a0": "cover", "a1": "cover", "z1": "residual", "z2": "residual"})
+        check("residual run: the stage's yield is logged on its own line after DONE",
+              any(ln.startswith("[assign_batch] residual stage: 2 file(s), 1 ion(s) it alone holds")
+                  for ln in lines)
+              and [i for i, ln in enumerate(lines) if ln.startswith("[assign_batch] DONE:")]
+              < [i for i, ln in enumerate(lines) if "ion(s) it alone holds" in ln],
+              [ln for ln in lines if "it alone holds" in ln or ln.startswith("[assign_batch] DONE")])
+        _sha_serial = {a: _sha(os.path.join(_d, a)) for a in _ARTS}
+        _sha_serial_pf = {sid: _sha(os.path.join(_d, "per_file", f"{sid}_ledger.csv"))
+                          for sid in ("a0", "a1", "z1", "z2")}
+
+    # ---- the budget caps the stage ----------------------------------------------
+    with tempfile.TemporaryDirectory() as _d:
+        _SEEN_CFG.clear()
+        res, summ, lines = _run_staged(_d, n_jobs=1, residual_k_max=1)
+        r = summ["selection"]["residual"]
+        merged = pd.read_csv(os.path.join(_d, "merged_ledger.csv"))
+        check("residual run: residual_k_max=1 caps the picks (z1 only), stop 'k_max', 50 %",
+              r["k"] == 1 and r["sample_ids"] == ["z1"] and r["stop_reason"] == "k_max"
+              and np.isclose(r["coverage_of_residual"], 0.5) and summ["n_files"] == 3
+              and len(_SEEN_CFG) == 3, r)
+        check("residual run: ...and the residual ion is then a single-file row",
+              merged[merged["neutral_formula"] == _F2].iloc[0]["n_files"] == 1
+              and merged[merged["neutral_formula"] == _F2].iloc[0]["stage"] == "residual")
+
+    # ---- the floor: excludes the dim bin; an absolute override; too high -> nothing ----
+    with tempfile.TemporaryDirectory() as _d:
+        res, summ, lines = _run_staged(_d, n_jobs=1, residual_min_x_edge=1.1)
+        r = summ["selection"]["residual"]
+        check("residual run: a 1.1x floor admits the 1.2x bin too (3 targeted), never the 1x tail",
+              r["n_bins_residual"] == 3 and r["n_below_floor"] == 20 and r["sample_ids"] == ["z1", "z2"],
+              r)
+    with tempfile.TemporaryDirectory() as _d:
+        res, summ, lines = _run_staged(_d, n_jobs=1, residual_min_cps=5000.0)
+        r = summ["selection"]["residual"]
+        check("residual run: --residual-min-cps is an absolute floor (5000 cps: the two bright bins)",
+              r["floor"]["min_x_edge"] is None and r["floor"]["min_cps"] == 5000.0
+              and r["n_bins_residual"] == 2 and r["sample_ids"] == ["z1", "z2"], r["floor"])
+    with tempfile.TemporaryDirectory() as _d:
+        _SEEN_CFG.clear()
+        res, summ, lines = _run_staged(_d, n_jobs=1, residual_min_x_edge=20.0)
+        r = summ["selection"]["residual"]
+        merged = pd.read_csv(os.path.join(_d, "merged_ledger.csv"))
+        check("residual run: a floor nothing reaches -> no target, no extra file, stop 'empty'",
+              r["n_bins_residual"] == 0 and r["k"] == 0 and r["stop_reason"] == "empty"
+              and r["sample_ids"] == [] and summ["n_files"] == 2 and len(_SEEN_CFG) == 2
+              and summ["n_files_by_stage"] == {"cover": 2, "residual": 0}, r)
+        check("residual run: ...the stage column is still there (all cover) and the bins table is empty",
+              merged["stage"].tolist() == ["cover"]
+              and len(pd.read_csv(os.path.join(_d, "tables", "residual_bins.csv"))) == 0
+              and pd.read_csv(os.path.join(_d, "tables", "selected_samples.csv"))["role"].tolist()
+              == ["cover", "cover"])
+    # a gate multiple above the floor raises the floor to it (a bin no file would
+    # admit is not worth a file)
+    with tempfile.TemporaryDirectory() as _d:
+        res, summ, lines = _run_staged(_d, n_jobs=1, cfg=_PASSES.PassConfig(height_cutoff_x_edge=8.0))
+        r = summ["selection"]["residual"]
+        check("residual run: the floor is never below the run's gate multiple (5x -> 8x, said so)",
+              r["floor"]["min_x_edge"] == 8.0 and "raised from 5x" in r["floor"]["source"]
+              and r["n_bins_residual"] == 2, r["floor"])
+    with tempfile.TemporaryDirectory() as _d:
+        res, summ, lines = _run_staged(_d, n_jobs=1, cfg=_PASSES.PassConfig(height_cutoff_x_edge=12.0))
+        r = summ["selection"]["residual"]
+        check("residual run: ...and at 12x the 10x bins are below it: nothing targeted",
+              r["floor"]["min_x_edge"] == 12.0 and r["n_bins_residual"] == 0 and r["k"] == 0, r)
+
+    # ---- (b) a bin the whole-batch stamp explains is not re-targeted ----------------
+    _EXTRA_M0[:] = [(500.0, "C20H20O10")]     # every cover ledger assigns an ion AT bin 500
+    with tempfile.TemporaryDirectory() as _d:
+        res, summ, lines = _run_staged(_d, n_jobs=1)
+        r = summ["selection"]["residual"]
+        check("residual run: bin 500 is stamped from the cover's ledger -> explained, only 502 targeted",
+              r["n_explained"] == 1 and r["n_bins_residual"] == 1 and r["sample_ids"] == ["z2"]
+              and summ["n_files"] == 3, r)
+    _EXTRA_M0[:] = []
+
+    # ---- residual OFF: today's cover-only run, byte for byte in its schema -------------
+    with tempfile.TemporaryDirectory() as _d:
+        _SEEN_CFG.clear()
+        res, summ, lines = _run_staged(_d, n_jobs=1, residual=False)
+        merged = pd.read_csv(os.path.join(_d, "merged_ledger.csv"))
+        sel = pd.read_csv(os.path.join(_d, "tables", "selected_samples.csv"))
+        check("residual off: two cover files only, no second stage anywhere in the summary",
+              summ["n_files"] == 2 and summ["sample_ids"] == ["a0", "a1"] and len(_SEEN_CFG) == 2
+              and "residual" not in summ["selection"] and "n_files_by_stage" not in summ
+              and "merged_by_stage" not in summ
+              and all("stage" not in pf for pf in summ["per_file"]), summ["selection"].keys())
+        check("residual off: no `stage` column, no residual_bins.csv, cover roles only",
+              "stage" not in merged.columns and len(merged) == 1
+              and not os.path.exists(os.path.join(_d, "tables", "residual_bins.csv"))
+              and sel["role"].tolist() == ["cover", "cover"] and sel["pick"].tolist() == [1, 2],
+              list(merged.columns))
+        check("residual off: no residual phase or stage lines in the log",
+              "[phase] residual" not in lines
+              and not any("it alone holds" in ln or ln.startswith("[assign_batch] residual")
+                          for ln in lines))
+        check("residual off: run() still hands back the (empty) stage fields",
+              res["residual_samples"] is None and res["stages"] == {"a0": "cover", "a1": "cover"})
+        _sha_off_serial = {a: _sha(os.path.join(_d, a)) for a in _ARTS if a != "tables/residual_bins.csv"}
+
+    # ---- determinism: the pool path is byte-identical to the serial one, both ways ----
+    _CF.ProcessPoolExecutor = _FakePool
+    with tempfile.TemporaryDirectory() as _d:
+        _SEEN_CFG.clear()
+        res, summ, lines = _run_staged(_d, n_jobs=2)
+        check("residual + pool: both stages ran through the pool path (two banners, N counted on)",
+              sum(ln.startswith("[assign_batch] parallel: 2 worker processes") for ln in lines) == 2
+              and any(ln.endswith("over 2 samples") for ln in lines)
+              and any(ln.endswith("over 4 samples") for ln in lines)
+              and ("[assign_batch] (4/4) done z2" in lines or "[assign_batch] (3/4) done z2" in lines),
+              [ln for ln in lines if "parallel" in ln or "done z" in ln])
+        check("residual + pool: merged / jitter / selected / residual_bins are byte-identical to serial",
+              {a: _sha(os.path.join(_d, a)) for a in _ARTS} == _sha_serial,
+              {a: (_sha(os.path.join(_d, a))[:8], _sha_serial[a][:8]) for a in _ARTS})
+        check("residual + pool: every per-file ledger is byte-identical to serial",
+              {sid: _sha(os.path.join(_d, "per_file", f"{sid}_ledger.csv"))
+               for sid in ("a0", "a1", "z1", "z2")} == _sha_serial_pf)
+        check("residual + pool: the final _batch_ts.parquet is the ANNOTATED one, not the worker copy",
+              "ion_formula" in pd.read_parquet(os.path.join(_d, "per_file", "_batch_ts.parquet")).columns)
+        check("residual + pool: n_jobs recorded is the run's, sample order unchanged",
+              summ["n_jobs"] == 2 and summ["sample_ids"] == ["a0", "a1", "z1", "z2"])
+    with tempfile.TemporaryDirectory() as _d:
+        res, summ, lines = _run_staged(_d, n_jobs=2, residual=False)
+        check("residual off + pool: byte-identical to the serial cover-only run",
+              {a: _sha(os.path.join(_d, a)) for a in _sha_off_serial} == _sha_off_serial)
+    _CF.ProcessPoolExecutor = _saved_pool
+
+    # ---- no time series: the stage has nothing to read and says so -------------------
+    with tempfile.TemporaryDirectory() as _d:
+        lines = []
+        AB.run(peaks=_RPK, ts_peaks=None, reagent="Br", batch="test batch", out_dir=_d,
+               k_min=2, k_max=2, min_gain=0.0, n_jobs=1, log=lines.append)
+        summ = json.load(open(os.path.join(_d, "batch_summary.json")))
+        r = summ["selection"]["residual"]
+        check("residual run without a TS: skipped, recorded as such, cover files only",
+              r["k"] == 0 and r["stop_reason"] == "empty" and "skipped" in r
+              and summ["n_files"] == 2 and "[phase] residual" in lines, r)
+finally:
+    _CF.ProcessPoolExecutor = _saved_pool
+    _EXTRA_M0[:] = []
+    os.environ.pop("PEAKY_MATCH_WORKERS", None)
     IO.connect, IO.fetch_peaks = _saved["connect"], _saved["fetch_peaks"]
     IO.estimate_offset, _A.run = _saved["estimate_offset"], _saved["run"]
 

@@ -356,6 +356,33 @@ check("the pooled pipeline marks the select phase around its own set-cover",
       '[phase] select' in _pool_body
       and _pool_body.index('[phase] select') < _pool_body.index("SS.select_cover_samples("))
 
+# the residual stage: assign_batch marks it, the window has a label for it, and
+# its (i/N) lines count ON from the cover's -- the samples bar grows, not resets
+check("assign_batch emits [phase] residual around the residual stage",
+      emits("batch/assign_batch.py", 'log("[phase] residual")')
+      and "residual" in PG.PHASE_LABEL)
+res_st = PG.ProgressState(title="t")
+for ln in ("[assign_batch] (1/2) assigning a0 ...", "[assign_batch] (1/2) done a0",
+           "[assign_batch] (2/2) assigning a1 ...", "[assign_batch] (2/2) done a1"):
+    res_st.feed(ln)
+check("residual stream: the cover's last 'done' reads as the merge",
+      res_st.phase == "merge" and res_st.samples_done == 2 and res_st.n_samples == 2)
+res_st.feed("[phase] residual")
+check("residual stream: the phase marker reads as 'targeting the residual'",
+      res_st.phase == "residual"
+      and res_st.snapshot()["phase_label"] == "targeting the residual",
+      res_st.snapshot()["phase_label"])
+res_st.feed("[phase] assign")
+res_st.feed("[assign_batch] (3/4) assigning z1 ...")
+check("residual stream: the first residual 'assigning' grows N and keeps the 2 done",
+      res_st.phase == "assign" and res_st.n_samples == 4 and res_st.samples_done == 2
+      and res_st.current_sid == "z1" and res_st.sample_frac == 0.5, res_st.snapshot())
+res_st.feed("[assign_batch] (3/4) done z1")
+res_st.feed("[assign_batch] (4/4) assigning z2 ...")
+res_st.feed("[assign_batch] (4/4) done z2")
+check("residual stream: ...and the stage's last 'done' is the (final) merge again",
+      res_st.phase == "merge" and res_st.samples_done == 4 and res_st.sample_frac == 1.0)
+
 # and the label that marker looks up is part of the interface, not decoration
 sel_st = PG.ProgressState(title="t")
 sel_st.feed("[phase] select")
