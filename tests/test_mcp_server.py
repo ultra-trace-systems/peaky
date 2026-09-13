@@ -77,38 +77,64 @@ check("certify_neutrals finds the NBBS urea ladder",
 check("certify_neutrals surfaces the off-grid C10H15NO2S candidate",
       any("C10H15NO2S" in c["offgrid_candidates"] for c in cn["certificates"]), cn)
 
+def _wait_jobs(manager, jids, timeout: float = 30.0) -> bool:
+    """Block until every job in `jids` is done or errored, or `timeout` seconds
+    pass -- a wall-clock deadline, not a fixed number of 20 ms polls: a loaded
+    CI runner is not this machine. Returns whether they all finished."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if all(manager.get(j).status in ("done", "error") for j in jids):
+            return True
+        time.sleep(0.02)
+    return False
+
+
 # ---------- JobManager lifecycle ----------
 jm = M.JobManager()
 jid = jm.submit("test", lambda log: (log("step1"), log("step2"), {"answer": 42})[-1], {"x": 1})
-for _ in range(50):
-    if jm.get(jid).status in ("done", "error"):
-        break
-    time.sleep(0.02)
+_wait_jobs(jm, [jid])
 job = jm.get(jid)
 check("job runs to done with result", job.status == "done" and job.result == {"answer": 42}, job.view())
 check("job captures log lines", job.log[:2] == ["step1", "step2"], job.log)
 
 jid2 = jm.submit("boom", lambda log: (_ for _ in ()).throw(RuntimeError("HTTP 403 attention required")), {})
-for _ in range(50):
-    if jm.get(jid2).status in ("done", "error"):
-        break
-    time.sleep(0.02)
+_wait_jobs(jm, [jid2])
 job2 = jm.get(jid2)
 check("job error is captured with a friendly hint",
       job2.status == "error" and "WAF" in (job2.error or ""), job2.view())
 check("job_status via manager returns a view", "job_id" in job2.view())
 
-# assign_sample / run_batch return a job_id immediately (work not run here)
-_saved = M.JOBS
+# assign_sample / run_batch return a job_id immediately. The work is NOT idle
+# meanwhile: `JobManager.submit` starts it on a daemon thread the moment it
+# returns, and both workers look their collaborator up at call time
+# (`pipeline.run_batch`, `assign.run`). A job left running here reached the
+# fakes the later sections install and overwrote the kwargs those sections
+# read -- one check failed in three of three 3.13 CI attempts on one commit.
+# So: stub both for this section's duration, write into a temp dir, and wait
+# for both jobs before anything is restored.
+import tempfile  # noqa: E402
+
+from peaky import pipeline as _PLq  # noqa: E402
+from peaky.assignment import assign as _Aq  # noqa: E402
+
+_q_saved = (M.JOBS, _PLq.run_batch, _Aq.run)
+_PLq.run_batch = lambda **kw: {"ctx": None}
+_Aq.run = lambda *a, **kw: {"ledger": pd.DataFrame(), "stats": {}}
 M.JOBS = M.JobManager()
-r = M.run_batch("some batch", dataset="A", reagent="Ur")
-check("run_batch returns a queued job_id", "job_id" in r and r["status"] == "queued", r)
-check("run_batch job is registered", M.JOBS.get(r["job_id"]) is not None)
-a = M.assign_sample("sid1", reagent="Ur")
-check("assign_sample returns a queued job_id", "job_id" in a, a)
-lj = M.list_jobs()
-check("list_jobs lists both", len(lj["jobs"]) == 2, lj)
-M.JOBS = _saved
+try:
+    with tempfile.TemporaryDirectory() as _qd:
+        r = M.run_batch("some batch", dataset="A", reagent="Ur", output_dir=_qd)
+        check("run_batch returns a queued job_id", "job_id" in r and r["status"] == "queued", r)
+        check("run_batch job is registered", M.JOBS.get(r["job_id"]) is not None)
+        a = M.assign_sample("sid1", reagent="Ur", output_dir=_qd)
+        check("assign_sample returns a queued job_id", "job_id" in a, a)
+        lj = M.list_jobs()
+        check("list_jobs lists both", len(lj["jobs"]) == 2, lj)
+        check("...and both jobs finish before this section hands the registry back",
+              _wait_jobs(M.JOBS, [r["job_id"], a["job_id"]]),
+              [M.JOBS.get(j["job_id"]).view() for j in (r, a)])
+finally:
+    M.JOBS, _PLq.run_batch, _Aq.run = _q_saved
 
 # ---------- the batch tool actually FORWARDS its selection budget ----------
 # The job runs for real here, with the pipeline stubbed, so a k_max that never
@@ -121,6 +147,7 @@ _orig_run_batch = PL.run_batch
 
 
 def _fake_run_batch(**kw):
+    print(f"  [dbg] fake PL.run_batch called: batch={kw.get('batch')!r} k_max={kw.get('k_max')!r}")
     _seen_kw.update(kw)
     return {"ctx": SimpleNamespace(out_dir="/tmp/peaky-mcp-test", run_id="rid"),
             "report_pdf": None, "assign": {"merged_M0": 3}}
@@ -131,10 +158,7 @@ _saved = M.JOBS
 M.JOBS = M.JobManager()
 try:
     rj = M.run_batch("some batch", dataset="A", reagent="Ur", k_max=7)
-    for _ in range(100):
-        if M.JOBS.get(rj["job_id"]).status in ("done", "error"):
-            break
-        time.sleep(0.02)
+    _wait_jobs(M.JOBS, [rj["job_id"]])
     _job = M.JOBS.get(rj["job_id"])
     check("run_batch job completes with the pipeline stubbed",
           _job.status == "done", _job.view())
@@ -180,6 +204,8 @@ _orig_assign_run = _A.run
 
 
 def _fake_assign_run(sample_id, context="ambient-air", *, cfg=None, **kw):
+    print(f"  [dbg] fake assign.run called: ctx={context!r} adducts={kw.get('adducts')!r} "
+          f"x_edge={getattr(cfg, 'height_cutoff_x_edge', None)!r} cps={getattr(cfg, 'height_cutoff_cps', None)!r}")
     _seen_assign["cfg"] = cfg
     _seen_assign["context"] = context
     _seen_assign["adducts"] = kw.get("adducts")
@@ -202,10 +228,7 @@ M.JOBS = M.JobManager()
 try:
     with tempfile.TemporaryDirectory() as _d:
         aj = M.assign_sample("sid1", reagent="TofPickMCP", output_dir=_d)
-        for _ in range(200):
-            if M.JOBS.get(aj["job_id"]).status in ("done", "error"):
-                break
-            time.sleep(0.02)
+        _wait_jobs(M.JOBS, [aj["job_id"]])
         _ajob = M.JOBS.get(aj["job_id"])
         check("assign_sample job completes with assign.run stubbed",
               _ajob.status == "done", _ajob.view())
@@ -218,10 +241,7 @@ try:
         _seen_assign.clear()
         aj2 = M.assign_sample("sid1", reagent="TofPickMCP", height_cutoff=250.0,
                               output_dir=_d)
-        for _ in range(200):
-            if M.JOBS.get(aj2["job_id"]).status in ("done", "error"):
-                break
-            time.sleep(0.02)
+        _wait_jobs(M.JOBS, [aj2["job_id"]])
         _acfg2 = _seen_assign.get("cfg")
         check("assign_sample(height_cutoff=) gates absolutely, multiple inert",
               _acfg2 is not None and _acfg2.height_cutoff_cps == 250.0
