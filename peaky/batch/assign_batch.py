@@ -929,8 +929,12 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     log(f"[assign_batch] DONE: {summary['merged_M0']} merged M0 "
         f"({summary['merged_tiers']}); {summary['n_in_all_files']} in all files, "
         f"{summary['n_single_file']} single-file, "
-        f"{summary['formula_disagreements']} formula disagreements "
-        f"({summary['ion_disagreements']} between different ions)")
+        f"{summary['formula_disagreements']} formula disagreements")
+    # the DONE line above is parsed by the progress panel (progress.RE_ASSIGN_DONE)
+    # and pinned by tests/test_progress.py, so the ion split goes on its own line
+    log(f"[assign_batch] disagreements: {summary['ion_disagreements']} between different "
+        f"ions, {summary['formula_disagreements'] - summary['ion_disagreements']} two "
+        f"labels of one ion (see ion_agree / alternatives on the merged ledger)")
     log(f"[assign_batch] assigned {len(sample_ids)} samples in "
         f"{summary['elapsed_s']:.1f}s (n_jobs={n_jobs})")
     return {"profile": prof, "context": context, "sample_ids": sample_ids,
