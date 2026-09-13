@@ -1,8 +1,10 @@
 """Offline tests for provenance.py. Run: python3 tests/test_provenance.py"""
 import json
 import os
+import re
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -35,6 +37,14 @@ check("manifest carries the core sections",
 check("code pins the REAL package version (peaky.__version__), not assign's module version",
       m["code"]["package_version"] == peaky.__version__,
       f'got {m["code"]["package_version"]!r}, want {peaky.__version__!r}')
+# ... and that version is pyproject's, so a run folder can be compared against
+# another by this field. It read 0.5.0 on 0.7.0 runs while __init__ restated it.
+_PYPROJECT_VERSION = tomllib.loads(
+    (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+)["project"]["version"]
+check("the stamped package_version IS pyproject's [project].version",
+      m["code"]["package_version"] == _PYPROJECT_VERSION,
+      f'manifest {m["code"]["package_version"]!r} / pyproject {_PYPROJECT_VERSION!r}')
 check("assign's own module version still lives under module_versions",
       m["code"]["module_versions"].get("assign") == _A.__version__)
 check("code carries a module-hash map",
@@ -145,6 +155,46 @@ from peaky.assignment import admission as _ADM  # noqa: E402
 check("module_versions pins the admission module",
       m_adm["code"]["module_versions"].get("admission") == _ADM.__version__,
       m_adm["code"]["module_versions"])
+# ... and so must EVERY other versioned module. The registry used to be hand
+# written and listed only what assign.py imports at module level, so it had gone
+# 17 modules stale: `traces` and `pipeline` -- the per-peak admission and
+# set-cover selection behaviour -- reported None in every manifest. It is now
+# read off the package tree, and these checks pin that it stays complete.
+from peaky.batch import traces as _TR  # noqa: E402
+from peaky import pipeline as _PL  # noqa: E402
+_MV = m_adm["code"]["module_versions"]
+check("module_versions pins the lazily-imported modules (traces, pipeline)",
+      _MV.get("traces") == _TR.__version__ and _MV.get("pipeline") == _PL.__version__, _MV)
+check("no registered module reports a None version",
+      [k for k, v in _MV.items() if v is None] == [], _MV)
+
+# the registry is DERIVED, so completeness is a property we can simply assert:
+# every peaky module carrying a literal __version__ must appear, with that value.
+_PKG = Path(_A.__file__).resolve().parents[1]
+_on_disk = {}
+for _py in sorted(_PKG.rglob("*.py")):
+    if _py.name == "__init__.py" and _py.parent == _PKG:
+        continue                       # the PACKAGE version -> code.package_version
+    _m = re.search(r'^__version__ = "([^"]+)"', _py.read_text(), re.M)
+    if _m:
+        _on_disk[_py.parent.name if _py.name == "__init__.py" else _py.stem] = _m.group(1)
+check("every versioned peaky module is registered, with its own version",
+      _on_disk and _MV == _on_disk,
+      {k: (v, _MV.get(k)) for k, v in _on_disk.items() if _MV.get(k) != v})
+_versioned_files = [p for p in _PKG.rglob("*.py")
+                    if not (p.name == "__init__.py" and p.parent == _PKG)
+                    and re.search(r'^__version__ = "', p.read_text(), re.M)]
+check("module names are unique, so no module is shadowed out of the registry",
+      len(_on_disk) == len(_versioned_files),
+      f"{len(_on_disk)} names for {len(_versioned_files)} files")
+# parsing must agree with importing: a module whose __version__ stopped being a
+# plain literal would be read wrong (or dropped) by the scan and never noticed.
+_imported = {n.rsplit(".", 1)[-1]: getattr(_mod, "__version__", None)
+             for n, _mod in list(sys.modules.items())
+             if n.startswith("peaky.") and getattr(_mod, "__version__", None)}
+check("the parsed version equals the imported one for every loaded peaky module",
+      all(_MV.get(k) == v for k, v in _imported.items() if k in _MV),
+      {k: (v, _MV.get(k)) for k, v in _imported.items() if k in _MV and _MV.get(k) != v})
 
 PV.write_manifest(_rd, m)
 check("write_manifest writes run_manifest.json",

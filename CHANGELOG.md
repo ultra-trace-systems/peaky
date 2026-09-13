@@ -8,6 +8,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+
 - **The admission table is per PEAK, and the lookup is the table's own rule.**
   `admission.bin_occurrence` no longer gap-clusters the batch into bins: it is built on
   the new `batch/traces.PeakIndex`, and every batch peak's `occurrence` is the fraction
@@ -170,6 +171,31 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`run_manifest.json` stamped the wrong package version on every run.**
+  `peaky.__version__` restated `"0.5.0"` as a literal while `pyproject.toml` had moved
+  to `0.7.0`, so `code.package_version` — the field that exists to tell one run folder's
+  code from another's — read 0.5.0 on runs produced by 0.7.0 code and could not
+  distinguish them at all. `__version__` is no longer declared in `peaky/__init__.py`:
+  it is resolved on first access from pyproject's `[project].version` (a source
+  checkout or editable install, name-checked so a vendored `peaky/` cannot inherit a
+  host tree's version), falling back to `importlib.metadata` for an installed wheel and
+  only then to a literal that `tests/test_shim.py` pins to pyproject. Resolution is lazy
+  and cached, so `import peaky` stays ~0.1 ms. `git.commit` / `branch` / `dirty` were
+  always correct and remain the way to trace an existing run folder.
+- **`code.module_versions` is derived from the package, and now names every module.**
+  The registry was a hand-written dict in `assignment/assign.py` listing only the
+  modules that file imports at module level, so it had gone 17 modules stale — among
+  them `traces`, `pipeline`, `sampling` and `assign_batch`, i.e. exactly the per-peak
+  admission and presence set-cover selection behaviour, all reporting `None`.
+  `assign.module_versions()` now walks the package and reads each module's
+  `__version__` from its AST (parsed, never imported: importing 38 modules to read a
+  string would drag matplotlib and the Mascope SDK into every run, and `assign.py`
+  cannot import the `pipeline` that calls it). All 38 modules are registered, the
+  result is cached per process, and `tests/test_provenance.py` asserts the registry
+  equals what is on disk — so a new module is fingerprinted without anyone
+  remembering to list it. `MODULE_VERSIONS` (the dict) is gone; call
+  `module_versions()`. `code.module_hashes` already pinned every file by sha1, so
+  past runs stayed reproducible — only the human-readable naming was missing.
 - **The persistence path was inert at the shipped default, and the TOF ledger was a
   flood.** With `height_cutoff_x_edge = 1.0` the brightness path admitted ~99 % of a
   TOF's picked peaks (0.12 % of admissions came from persistence), and the merged

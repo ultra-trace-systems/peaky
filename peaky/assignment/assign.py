@@ -11,7 +11,6 @@ import json
 from dataclasses import dataclass, field
 
 from peaky.assignment import admission
-from peaky.chem import chemistry
 from peaky.assignment import cleanup
 from peaky.chem import contexts
 from peaky.assignment import degeneracy
@@ -20,40 +19,93 @@ from peaky.chem import isotopes
 from peaky.assignment import labeled
 from peaky.assignment import ladders
 from peaky.assignment import ledger
-from peaky.assignment import masscal
 from peaky.assignment import passes
 from peaky.assignment import plausibility
 from peaky.chem import reagents
 from peaky.assignment import reflists
 from peaky.assignment import residual
-from peaky.assignment import series_gka
 from peaky.assignment import siloxane
 from peaky.assignment import tiers
 from peaky.batch import timeseries
 
 __version__ = "0.5.0"  # + admission stamp before the passes (run(occurrence=))
 
-MODULE_VERSIONS = {
-    "assign": __version__,
-    "admission": admission.__version__,
-    "chemistry": chemistry.__version__,
-    "contexts": contexts.__version__,
-    "ledger": ledger.__version__,
-    "io_mascope": io_mascope.__version__,
-    "isotopes": isotopes.__version__,
-    "series_gka": series_gka.__version__,
-    "reagents": reagents.__version__,
-    "passes": passes.__version__,
-    "masscal": masscal.__version__,
-    "residual": residual.__version__,
-    "ladders": ladders.__version__,
-    "tiers": tiers.__version__,
-    "degeneracy": degeneracy.__version__,
-    "cleanup": cleanup.__version__,
-    "plausibility": plausibility.__version__,
-    "siloxane": siloxane.__version__,
-    "timeseries": timeseries.__version__,
-}
+
+def _parsed_version(path: "Path") -> str | None:
+    """A module's ``__version__`` string, read from its AST -- never imported.
+
+    Importing 38 modules just to read a string would drag matplotlib, the Mascope
+    SDK and `pipeline` into every run, and `assign.py` cannot import the batch
+    orchestrator that CALLS it without inverting the dependency. Parsing sidesteps
+    both, and is why every module can be registered instead of the subset this
+    file happens to import.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(path.read_bytes(), filename=str(path))
+    except (OSError, SyntaxError):              # unreadable / not valid python
+        return None
+    for node in tree.body:                      # module scope only, like a reader
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == "__version__" for t in targets):
+            if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                return node.value.value
+    return None
+
+
+def _scan_module_versions() -> dict:
+    """Walk the package and collect every module `__version__`. Cached: the files
+    cannot change mid-process, and `run()` asks once per SAMPLE (a 230-spectrum
+    batch would otherwise re-parse the tree 230 times)."""
+    from pathlib import Path
+
+    from peaky import paths
+    root = Path(paths.PKG_ROOT)
+    out: dict[str, str] = {}
+    for py in sorted(root.rglob("*.py")):
+        if py.name == "__init__.py":
+            if py.parent == root:
+                continue        # peaky/__init__.py holds the PACKAGE version, which
+                                # the manifest records as code.package_version
+            name = py.parent.name              # a sub-package (assignment/passes)
+        else:
+            name = py.stem
+        version = _parsed_version(py)
+        if version is None:
+            continue
+        if name in out:         # two files share a stem -> keep BOTH, the second
+            name = py.relative_to(root).with_suffix("").as_posix()   # keyed by path
+        out[name] = version
+    return out
+
+
+_MODULE_VERSIONS_CACHE: dict | None = None
+
+
+def module_versions() -> dict:
+    """Every versioned peaky module, `name -> __version__`, for the run manifest.
+
+    DERIVED, not declared. The hand-written dict this replaces listed only the
+    modules `assign.py` imports at module level, so it had gone 17 modules stale
+    -- `traces` and `pipeline`, carrying the newest per-peak admission and
+    set-cover selection behaviour, reported `None` in every manifest. A registry
+    read off the package tree cannot drift from it.
+
+    Keys are module names (`assign`, `traces`), a sub-package taking its own name
+    (`passes`); `code.module_hashes` pins the same files by sha1 under their
+    package-relative paths. Returns a fresh dict -- the cache is not the caller's
+    to mutate.
+    """
+    global _MODULE_VERSIONS_CACHE
+    if _MODULE_VERSIONS_CACHE is None:
+        _MODULE_VERSIONS_CACHE = _scan_module_versions()
+    return dict(_MODULE_VERSIONS_CACHE)
 
 
 def _degen_summary(led) -> dict:
@@ -495,7 +547,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
     return {"ledger": led, "stats": st, "summaries": summaries,
             "prescan": pre.as_dict(), "problems": problems,
             "plausibility_audit": plaus_audit,
-            "module_versions": MODULE_VERSIONS,
+            "module_versions": module_versions(),
             "module_hashes": _module_hashes(), "context": profile.label,
             "reflists_active": reflist_versions,     # [(id, data_version), ...]
             "sample_id": sample_id}

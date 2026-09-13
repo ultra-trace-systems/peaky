@@ -31,7 +31,53 @@ still works without eagerly importing matplotlib or the Mascope SDK.
 """
 from __future__ import annotations
 
-__version__ = "0.5.0"
+# --- version -------------------------------------------------------------
+# `__version__` is NOT declared here: it is resolved from pyproject's
+# [project].version (the ONE source of truth) on first attribute access and
+# cached into this module's dict by __getattr__ below. Restating it as a literal
+# is exactly how run folders came to be stamped 0.5.0 by 0.7.0 code.
+#
+# Lazy on purpose: `import peaky` costs ~0.1 ms today (everything below is
+# PEP 562), while each resolution path costs 10-20 ms of stdlib import on its
+# own. Nothing should pay that just to `from peaky import chemistry`.
+_DIST_NAME = "mascope-peaky"   # the DISTRIBUTION name; the import name is `peaky`
+_FALLBACK_VERSION = "0.7.0"    # last resort only: neither pyproject NOR installed
+                               # metadata reachable (e.g. a vendored copy). Bump it
+                               # with pyproject in the release-prep commit, next to
+                               # CITATION.cff -- tests/test_shim.py fails otherwise.
+
+
+def _resolve_version() -> str:
+    """The package version, read from the single source of truth.
+
+    A source checkout / editable install is asked FIRST, via the
+    ``pyproject.toml`` sitting next to this package, because it describes the
+    tree the running code actually came from. Installed metadata is a snapshot
+    taken at INSTALL time: on an editable install it keeps reporting whatever
+    was current when ``pip install -e`` ran, so bumping pyproject without a
+    reinstall would re-open the same drift. A wheel has no adjacent pyproject
+    and falls through to metadata, which the build baked from that same field.
+    """
+    import os
+
+    pyproject = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pyproject.toml")
+    try:
+        import tomllib
+        with open(pyproject, "rb") as fh:
+            project = tomllib.load(fh).get("project") or {}
+        # name-checked: a `peaky/` vendored inside someone else's source tree
+        # must not inherit THAT tree's version.
+        if project.get("name") == _DIST_NAME and project.get("version"):
+            return str(project["version"])
+    except (OSError, ValueError, ImportError):
+        pass                                   # not a checkout (or an unreadable one)
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        return version(_DIST_NAME)
+    except (PackageNotFoundError, ImportError):
+        return _FALLBACK_VERSION
+
 
 # public API name -> (dotted submodule path, attribute)
 _LAZY = {
@@ -76,6 +122,9 @@ __all__ = ["__version__", *sorted(_LAZY), *sorted(_MODULES)]
 def __getattr__(name: str):
     import importlib
 
+    if name == "__version__":                  # resolve once, then cache in the
+        v = globals()["__version__"] = _resolve_version()   # module dict so later
+        return v                                            # reads skip __getattr__
     if name in _LAZY:
         mod, attr = _LAZY[name]
         return getattr(importlib.import_module(f".{mod}", __name__), attr)
