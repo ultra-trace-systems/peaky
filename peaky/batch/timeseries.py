@@ -23,6 +23,7 @@ All pure pandas/numpy; no network. Reference (2026-06-16 time-series unlock).
 from __future__ import annotations
 
 import bisect
+import functools
 import os
 import re
 
@@ -31,7 +32,8 @@ import pandas as pd
 
 from peaky.assignment import ledger as L
 
-__version__ = "0.2.1"  # bin_ids: the row-aligned bin rule build_matrix pivots on
+__version__ = "0.3.0"  # predicted diagnostic satellites in the batch stamp (stamp_source,
+                       # track coherence); 0.2.1: bin_ids, the row-aligned bin rule
 
 DEFAULT_TOL_PPM = 5.0
 FLAT_CV = 0.25          # cv_norm below this == flat / background
@@ -733,8 +735,173 @@ def identified_rows(ledger: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out, columns=cols)
 
 
+# --- predicted isotope satellites in the batch stamp ---------------------------
+# A per-file ledger claims a satellite only where that file's picker picked it,
+# and `identified_rows` carries only what was claimed. The faint diagnostic lines
+# -- 15N (0.36 % per N), 18O (0.20 % per O), a single 34S / 29Si / 30Si -- sit
+# below the picker's edge (~150-220 cps) in most files, so a parent Assigned in
+# every assigned file still leaves its 15N / 18O tracks unexplained wherever a
+# plume lifts them into view. Measured on the Texas Ur 122-600 batch (6154
+# spectra, 15 assigned): C12H27O4P [M+(CH4N2O)H]+ and C12H14O [M+NH4]+ are
+# Assigned in every per-file ledger with only their 13C satellite claimed; their
+# 15N line (m/z 328.2013, 109 spectra, up to 1.1 kcps) and 18O line (194.1425,
+# 4 spectra, up to 1.0 kcps) were picked in none of the 15 files, so the stamp
+# could not explain them -- while a targeted single-sample assign of a plume
+# file claimed both (the per-file logic is right; only the batch stamp was
+# blind). So the stamp PREDICTS every M0's diagnostic lines from its ion
+# formula, at the parent's stamped m/z (its trace centre, so the instrument
+# offset carries over) plus the line's exact shift, and `annotate_peaks` stamps
+# them under the same intensity-consistency gate the per-file envelope passes
+# use: a TS peak takes a predicted label only where the parent's track has a
+# peak in the SAME sample and height_child / (height_parent * rel) sits in the
+# window. The per-file ledgers are never touched -- this is the batch stamp only.
+PRED_SAT_LABELS = ("13C", "81Br", "37Cl", "15N", "34S", "29Si", "30Si", "18O")
+    # cleanup.reclaim_satellites' diagnostic set (its DELT table)
+PRED_SAT_MIN_REL = 0.001        # postprocess.complete_isotope_envelopes' diag_min_rel
+PRED_SAT_MAX_SHIFT = 2.5        # every line in the set is an M+1 / M+2
+PRED_SAT_MERGE_DA = 0.0005      # keep each substitution its own line (_predicted_lines)
+PRED_RATIO_MIN, PRED_RATIO_MAX = 0.3, 3.5
+    # the height_child / (height_parent * rel) window under which
+    # postprocess.complete_isotope_envelopes attaches an unexplained satellite
+PRED_TRACK_MIN_N, PRED_TRACK_MIN_SHARE = 10, 0.5
+    # track coherence: once a predicted line has been judged in >= MIN_N samples
+    # (parent present, a candidate on the line) it keeps its stamps only if
+    # >= MIN_SHARE of them passed the window (_predicted_track_coherence)
+STAMP_M0, STAMP_OBSERVED, STAMP_PREDICTED = "M0", "observed", "predicted"
+
+
+@functools.lru_cache(maxsize=8192)
+def _predicted_lines(ion_formula: str) -> tuple:
+    """((delta_mass, rel, label), ...) of an ION's diagnostic satellite lines --
+    PRED_SAT_LABELS only, one line per label, each at its EXACT shift.
+
+    The envelope is chem.isotopes.isotope_pattern's, but merged at 0.5 mDa
+    instead of its 6 mDa default: the default folds the 18O line (+2.0042) into
+    13C2 (+2.0067) on any carbon-rich ion and labels the centroid 13C2 -- outside
+    the diagnostic set, and 2.5 mDa (13 ppm at m/z 194) from the 18O peak an
+    Orbitrap resolves, so the C12H18NO+ 18O track this stamp exists to explain
+    would be missed. Each diagnostic label is then read off the pattern line
+    nearest its own shift (within 0.6 mDa): the m/z is the exact substitution,
+    the rel is the pattern's (atom-count aware, cross terms included). Two
+    labels landing on one unresolvable line (37Cl / 30Si, 0.2 mDa apart) keep
+    the one with the larger per-atom expectation. Cached: a batch stamps
+    thousands of parents, many alike."""
+    from peaky.chem import chemistry as C
+    from peaky.chem import isotopes as ISO
+    counts = C.parse_formula(ion_formula)
+    if not counts:
+        return ()
+    try:
+        pat = ISO.isotope_pattern(ion_formula, min_rel=PRED_SAT_MIN_REL,
+                                  max_shift=PRED_SAT_MAX_SHIFT,
+                                  merge_da=PRED_SAT_MERGE_DA,
+                                  diag_min_rel=PRED_SAT_MIN_REL)
+    except Exception:
+        return ()
+    if not pat:
+        return ()
+    table = [
+        (ISO.D_13C,  "13C",  "C",  ISO.R_13C_PER_C),
+        (ISO.D_81BR, "81Br", "Br", ISO.R_81BR_PER_BR),
+        (ISO.D_37CL, "37Cl", "Cl", ISO.R_37CL_PER_CL),
+        (ISO.D_15N,  "15N",  "N",  ISO.R_15N_PER_N),
+        (ISO.D_34S,  "34S",  "S",  ISO.R_34S_PER_S),
+        (ISO.D_29SI, "29Si", "Si", ISO.R_29SI_PER_SI),
+        (ISO.D_30SI, "30Si", "Si", ISO.R_30SI_PER_SI),
+        (ISO.D_18O,  "18O",  "O",  ISO.R_18O_PER_O),
+    ]
+    best: dict[int, tuple] = {}          # pattern line -> (weight, delta, rel, label)
+    for d, label, el, per in table:
+        nel = counts.get(el, 0)
+        if nel < 1:
+            continue
+        j = min(range(len(pat)), key=lambda k: abs(pat[k][0] - d))
+        if abs(pat[j][0] - d) > 0.0006:
+            continue
+        w = nel * per
+        if j not in best or w > best[j][0]:
+            best[j] = (w, float(d), float(pat[j][1]), label)
+    return tuple(sorted((d, rel, label) for _w, d, rel, label in best.values()))
+
+
+def predicted_satellite_rows(stamp: pd.DataFrame, *, tol_ppm: float = DEFAULT_TOL_PPM,
+                             mz_floor_da: float = 1.5e-3) -> tuple[pd.DataFrame, dict]:
+    """PREDICTED diagnostic-satellite rows for every M0 row of a stamping frame
+    that carries an ion_formula: one row per (parent, label) at the parent's
+    stamped m/z + the line's shift, role 'iso_child', the parent's ion_formula,
+    iso_label, iso_rel (the predicted height relative to the parent) and
+    stamp_source='predicted', linked to its parent by parent_stamp_id.
+
+    Precedence -- a predicted line never sits on a track something known already
+    explains:
+
+      * an OBSERVED satellite of the same (ion_formula, iso_label) supersedes it
+        (a per-file ledger claimed that line; its measured m/z stamps);
+      * any row already in the frame within the stamping window of the predicted
+        m/z supersedes it -- an M0 (an assigned analyte at a satellite offset IS
+        an analyte), a reagent line, another parent's observed satellite, an
+        artifact -- so a predicted line can never displace an assigned analyte.
+        `annotate_peaks` enforces the same order at stamping time.
+
+    Returns (rows, info); info counts parents, lines, both kinds of supersession
+    and the rows kept. The frame must already carry `stamp_id` (stamping_frame
+    assigns it before calling this); without it nothing is predicted."""
+    cols = ["mz", "role", "ion_formula", "iso_label", "iso_rel", "stamp_source",
+            "stamp_id", "parent_stamp_id"]
+    info = {"n_parents": 0, "n_lines": 0, "n_superseded_observed": 0,
+            "n_superseded_track": 0, "n_predicted": 0}
+    if stamp is None or not len(stamp) or "ion_formula" not in stamp.columns \
+            or "stamp_id" not in stamp.columns:
+        return pd.DataFrame(columns=cols), info
+    role = (stamp["role"].astype(str) if "role" in stamp.columns
+            else pd.Series("M0", index=stamp.index))
+    smz = pd.to_numeric(stamp["mz"], errors="coerce")
+    m0 = stamp[(role == "M0") & stamp["ion_formula"].notna() & smz.notna()]
+    observed: set = set()
+    if "iso_label" in stamp.columns:
+        o = stamp[(role == "iso_child") & stamp["iso_label"].notna()
+                  & stamp["ion_formula"].notna()]
+        observed = set(zip(o["ion_formula"].astype(str), o["iso_label"].astype(str)))
+    known = np.sort(smz.dropna().to_numpy(dtype=float))
+    rows = []
+    for pid, pmz, f in zip(m0["stamp_id"], smz.loc[m0.index], m0["ion_formula"]):
+        f = str(f).strip()
+        if not f:
+            continue
+        lines = _predicted_lines(f)
+        if not lines:
+            continue
+        info["n_parents"] += 1
+        for d, rel, label in lines:
+            info["n_lines"] += 1
+            if (f, label) in observed:
+                info["n_superseded_observed"] += 1
+                continue
+            rows.append((float(pmz) + d, f, label, rel, int(pid)))
+    if not rows:
+        return pd.DataFrame(columns=cols), info
+    pred = pd.DataFrame(rows, columns=["mz", "ion_formula", "iso_label", "iso_rel",
+                                       "parent_stamp_id"])
+    if len(known):
+        pm = pred["mz"].to_numpy(dtype=float)
+        j = np.searchsorted(known, pm)
+        jl = np.clip(j - 1, 0, len(known) - 1)
+        jr = np.clip(j, 0, len(known) - 1)
+        near = np.minimum(np.abs(known[jl] - pm), np.abs(known[jr] - pm))
+        taken = near <= np.maximum(pm * tol_ppm * 1e-6, mz_floor_da)
+        info["n_superseded_track"] = int(taken.sum())
+        pred = pred[~taken].reset_index(drop=True)
+    info["n_predicted"] = int(len(pred))
+    pred["role"] = "iso_child"
+    pred["stamp_source"] = STAMP_PREDICTED
+    pred["stamp_id"] = np.arange(len(pred)) + int(stamp["stamp_id"].max()) + 1
+    return pred[cols], info
+
+
 def stamping_frame(merged: pd.DataFrame,
-                   identified: pd.DataFrame | None) -> pd.DataFrame:
+                   identified: pd.DataFrame | None, *,
+                   tol_ppm: float = DEFAULT_TOL_PPM, mz_floor_da: float = 1.5e-3,
+                   predict_satellites: bool = True) -> pd.DataFrame:
     """Union frame for `annotate_peaks`: the merged ANALYTE ledger plus one row
     per identified NON-analyte ion, so the parquet stamp distinguishes
     'identified non-analyte' (reagent ladder, isotope satellites, artifacts)
@@ -746,7 +913,19 @@ def stamping_frame(merged: pd.DataFrame,
     per-file ion_formula for their (neutral_formula, adduct) key. Non-analyte
     rows are aggregated across files: reagent / iso_child by (ion_formula,
     iso_label) at the median m/z; artifacts (no formula key) by m/z gap
-    clustering (>3 mDa starts a new track)."""
+    clustering (>3 mDa starts a new track).
+
+    Every row carries `stamp_source`: 'M0' (a merged analyte), 'observed' (an
+    ion a per-file ledger identified) or 'predicted' -- the diagnostic isotope
+    satellites (`PRED_SAT_LABELS`) of every M0 with a known ion_formula that no
+    per-file ledger claimed, added by `predicted_satellite_rows` (which see for
+    the precedence: observed beats predicted, and a predicted line is dropped
+    from any track an M0 / reagent / observed satellite / artifact already
+    holds, within `tol_ppm` -- pass the STAMPING window, the one `annotate_peaks`
+    will use). `stamp_id` / `parent_stamp_id` link a predicted row to its parent
+    for the intensity gate; `iso_rel` is its predicted height relative to the
+    parent. `predict_satellites=False` restores the observed-only stamp. The
+    frame's `.attrs['predicted_satellites']` carries the prediction counts."""
     stamp = merged.copy()
     # trace-level reconciliation (recentre_ledger / collapse_trace_labels): stamp
     # from each ion's TRACE CENTRE, not the merge anchor, and never from a
@@ -760,48 +939,215 @@ def stamping_frame(merged: pd.DataFrame,
     if "ion_formula" not in stamp.columns:
         stamp["ion_formula"] = None
     stamp["iso_label"] = None
-    if identified is None or not len(identified):
-        return stamp
-    idf = identified
-    # modal per-file ion_formula onto the merged analyte rows
-    m0 = idf[(idf["role"] == "M0") & idf["ion_formula"].notna()]
-    if len(m0):
-        mode = (m0.groupby(["neutral_formula", "adduct"])["ion_formula"]
-                  .agg(lambda s: s.mode().iloc[0]))
-        key = list(zip(stamp["neutral_formula"], stamp["adduct"]))
-        stamp["ion_formula"] = [
-            mode.get(k) if pd.isna(v) else v
-            for k, v in zip(key, stamp["ion_formula"])
-        ]
-    aux = []
-    for (f, tag), grp in idf[idf["role"].isin(("reagent", "iso_child"))].groupby(
-            ["ion_formula", "iso_label"], dropna=False):
-        role = grp["role"].iloc[0]
-        aux.append({"mz": float(grp["mz"].median()), "role": role,
-                    "ion_formula": f,
-                    "iso_label": None if pd.isna(tag) else tag})
-    art = idf.loc[idf["role"] == "artifact", "mz"].dropna().sort_values()
-    if len(art):
-        start = 0
-        vals = art.to_numpy()
-        for i in range(1, len(vals) + 1):
-            if i == len(vals) or vals[i] - vals[i - 1] > 3e-3:
-                aux.append({"mz": float(np.median(vals[start:i])),
-                            "role": "artifact", "ion_formula": None,
-                            "iso_label": None})
-                start = i
-    if aux:
-        stamp = pd.concat([stamp, pd.DataFrame(aux)], ignore_index=True)
+    stamp["stamp_source"] = STAMP_M0
+    if identified is not None and len(identified):
+        idf = identified
+        # modal per-file ion_formula onto the merged analyte rows
+        m0 = idf[(idf["role"] == "M0") & idf["ion_formula"].notna()]
+        if len(m0):
+            mode = (m0.groupby(["neutral_formula", "adduct"])["ion_formula"]
+                      .agg(lambda s: s.mode().iloc[0]))
+            key = list(zip(stamp["neutral_formula"], stamp["adduct"]))
+            stamp["ion_formula"] = [
+                mode.get(k) if pd.isna(v) else v
+                for k, v in zip(key, stamp["ion_formula"])
+            ]
+        aux = []
+        for (f, tag), grp in idf[idf["role"].isin(("reagent", "iso_child"))].groupby(
+                ["ion_formula", "iso_label"], dropna=False):
+            role = grp["role"].iloc[0]
+            aux.append({"mz": float(grp["mz"].median()), "role": role,
+                        "ion_formula": f,
+                        "iso_label": None if pd.isna(tag) else tag,
+                        "stamp_source": STAMP_OBSERVED})
+        art = idf.loc[idf["role"] == "artifact", "mz"].dropna().sort_values()
+        if len(art):
+            start = 0
+            vals = art.to_numpy()
+            for i in range(1, len(vals) + 1):
+                if i == len(vals) or vals[i] - vals[i - 1] > 3e-3:
+                    aux.append({"mz": float(np.median(vals[start:i])),
+                                "role": "artifact", "ion_formula": None,
+                                "iso_label": None, "stamp_source": STAMP_OBSERVED})
+                    start = i
+        if aux:
+            stamp = pd.concat([stamp, pd.DataFrame(aux)], ignore_index=True)
+    stamp["stamp_id"] = np.arange(len(stamp))
+    stamp["parent_stamp_id"] = -1
+    stamp["iso_rel"] = np.nan
+    info: dict = {}
+    if predict_satellites:
+        pred, info = predicted_satellite_rows(stamp, tol_ppm=tol_ppm,
+                                              mz_floor_da=mz_floor_da)
+        if len(pred):
+            stamp = pd.concat([stamp, pred], ignore_index=True)
+    stamp.attrs["predicted_satellites"] = info
     return stamp
+
+
+def _nearest_ion(lmz: np.ndarray, pmz: np.ndarray, tol_ppm: float, mz_floor_da: float):
+    """Nearest ledger m/z for every peak (searchsorted): (near, signed, ok) --
+    ledger position, peak-minus-ledger offset, and 'within the window'."""
+    j = np.searchsorted(lmz, pmz)
+    jl = np.clip(j - 1, 0, len(lmz) - 1)
+    jr = np.clip(j, 0, len(lmz) - 1)
+    near = np.where(np.abs(lmz[jl] - pmz) <= np.abs(lmz[jr] - pmz), jl, jr)
+    tol = np.maximum(pmz * tol_ppm * 1e-6, mz_floor_da)
+    signed = pmz - lmz[near]                 # + == peak above ledger mass
+    ok = np.isfinite(pmz) & (np.abs(signed) <= tol)
+    return near, signed, ok
+
+
+def _predicted_ratio_gate(peaks: pd.DataFrame, led: pd.DataFrame, near_known: np.ndarray,
+                          ok_known: np.ndarray, near_pred: np.ndarray, cand: np.ndarray,
+                          sample_col: str, height_col: str,
+                          window: tuple[float, float]) -> tuple[np.ndarray, np.ndarray]:
+    """The per-sample intensity-consistency gate for PREDICTED satellite
+    candidates. Returns two masks over `peaks`, (passed, evaluable): `evaluable`
+    is True for a candidate (mask `cand`, matched to the predicted row at ledger
+    position `near_pred`) whose parent -- the row `parent_stamp_id` names -- was
+    stamped on a peak in the SAME sample (a tier-1 winner: `ok_known` /
+    `near_known`) with a finite ratio height_child / (height_parent * iso_rel),
+    i.e. the gate could be judged; `passed` is the subset whose ratio lies
+    inside `window`. Everything else is False on both: no parent peak in that
+    sample, no height column, a zero / missing height. This is the same
+    discriminator the per-file envelope passes rely on -- a real satellite sits
+    at the predicted height, an independent compound at a satellite offset does
+    not."""
+    n = len(peaks)
+    passed = np.zeros(n, dtype=bool)
+    evaluable = np.zeros(n, dtype=bool)
+    need = {"stamp_id", "parent_stamp_id", "iso_rel"}
+    if not cand.any() or height_col not in peaks.columns or not need <= set(led.columns):
+        return passed, evaluable
+    h = pd.to_numeric(peaks[height_col], errors="coerce").to_numpy(dtype=float)
+    if sample_col in peaks.columns:
+        samp = pd.factorize(peaks[sample_col].to_numpy(), use_na_sentinel=False)[0]
+    else:
+        samp = np.zeros(n, dtype=np.int64)
+    n_led = len(led)
+    # the parents' stamped heights, keyed by (sample, ledger position); with
+    # one_to_one off several peaks may carry one ion in a sample -> the brightest
+    win = ok_known & (near_known >= 0) & np.isfinite(h)
+    if not win.any():
+        return passed, evaluable
+    kw = samp[win].astype(np.int64) * n_led + near_known[win]
+    order = np.argsort(kw, kind="stable")
+    ks, hs = kw[order], h[win][order]
+    uniq, start = np.unique(ks, return_index=True)
+    hmax = np.maximum.reduceat(hs, start)
+    # each candidate's parent: stamp_id -> ledger position (a hand-built frame
+    # may repeat an id or leave it blank: first occurrence wins, blanks are no parent)
+    sid = pd.to_numeric(led["stamp_id"], errors="coerce").to_numpy(dtype=float)
+    keep = np.isfinite(sid)
+    pos_of = pd.Series(np.arange(n_led)[keep], index=sid[keep])
+    pos_of = pos_of[~pos_of.index.duplicated(keep="first")]
+    c = np.flatnonzero(cand)
+    par_id = pd.to_numeric(led["parent_stamp_id"], errors="coerce").to_numpy(dtype=float)[near_pred[c]]
+    ppos = pos_of.reindex(par_id).to_numpy(dtype=float)
+    has_parent = np.isfinite(ppos)
+    ppos_i = np.where(has_parent, ppos, 0).astype(np.int64)
+    key = samp[c].astype(np.int64) * n_led + ppos_i
+    j = np.searchsorted(uniq, key)
+    jj = np.minimum(j, len(uniq) - 1)
+    found = has_parent & (j < len(uniq)) & (uniq[jj] == key)
+    hp = np.where(found, hmax[jj], np.nan)
+    rel = pd.to_numeric(led["iso_rel"], errors="coerce").to_numpy(dtype=float)[near_pred[c]]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = h[c] / (hp * rel)
+    lo, hi = window
+    ev = found & np.isfinite(ratio)
+    good = ev & (ratio >= lo) & (ratio <= hi)
+    evaluable[c[ev]] = True
+    passed[c[good]] = True
+    return passed, evaluable
+
+
+def _predicted_track_coherence(peaks: pd.DataFrame, near_pred: np.ndarray, passed: np.ndarray,
+                               evaluable: np.ndarray, n_led: int, sample_col: str,
+                               min_n: int, min_share: float
+                               ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """The TRACK rule behind the per-sample gate, tallied per predicted ledger
+    row over SAMPLES (a shoulder beside the real peak is not a second vote):
+    n_eval = samples in which the parent was stamped and a candidate sat on the
+    line (the gate could be judged), n_pass = those in which a candidate passed
+    it. A track is JUDGED once n_eval >= min_n and KEPT when
+    n_pass >= min_share * n_eval; an unjudged track is kept on the per-sample
+    gate alone. min_n <= 0 or min_share <= 0 switches the rule off.
+
+    Why: a true satellite's height ratio is a constant of nature, so it passes
+    the per-sample window in (nearly) every sample where both peaks are seen;
+    an independent compound sitting on the line fails it in most samples and
+    passes in the few where its own height happens to dip into the window --
+    and those few would be mislabelled. The per-sample window cannot tell the
+    two apart; the batch can (measured on two live runs: 7 and 8 such tracks,
+    passing 1-26 % of their judged samples, every one with a median ratio
+    outside 0.5-2 -- 24 and 268 stamps that a per-sample gate alone hands out).
+
+    Returns (n_eval, n_pass, judged, kept), each indexed by ledger position."""
+    n = len(peaks)
+    if sample_col in peaks.columns:
+        samp = pd.factorize(peaks[sample_col].to_numpy(), use_na_sentinel=False)[0]
+    else:
+        samp = np.zeros(n, dtype=np.int64)
+
+    def _samples_per_row(mask: np.ndarray) -> np.ndarray:
+        if not mask.any():
+            return np.zeros(n_led, dtype=np.int64)
+        key = np.unique(samp[mask].astype(np.int64) * n_led + near_pred[mask])
+        return np.bincount(key % n_led, minlength=n_led)
+
+    n_eval = _samples_per_row(evaluable)
+    n_pass = _samples_per_row(passed)
+    if min_n > 0 and min_share > 0:
+        judged = n_eval >= int(min_n)
+    else:
+        judged = np.zeros(n_led, dtype=bool)
+    kept = ~judged | (n_pass >= float(min_share) * n_eval)
+    return n_eval, n_pass, judged, kept
+
+
+PRED_TRACK_COLS = ["stamp_id", "ion_formula", "iso_label", "ion_mz", "iso_rel", "n_candidates",
+                   "n_eval", "n_pass", "pass_share", "judged", "kept", "n_stamped"]
+
+
+def _predicted_track_table(led: pd.DataFrame, pos_pred: np.ndarray, near_pred: np.ndarray,
+                           cand: np.ndarray, stamped: np.ndarray, n_eval: np.ndarray,
+                           n_pass: np.ndarray, judged: np.ndarray, kept: np.ndarray) -> pd.DataFrame:
+    """One row per predicted line that had at least one candidate peak: the
+    audit behind `annotate_peaks(..., stats=)` (PRED_TRACK_COLS; `n_candidates`
+    counts peaks in the window in any sample, `n_eval` / `n_pass` count SAMPLES,
+    `n_stamped` the peaks that carry the label after one-to-one)."""
+    n_led = len(led)
+    n_cand = np.bincount(near_pred[cand], minlength=n_led)
+    n_st = np.bincount(near_pred[stamped], minlength=n_led)
+    rows = pos_pred[n_cand[pos_pred] > 0]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        share = np.where(n_eval[rows] > 0, n_pass[rows] / np.maximum(n_eval[rows], 1), np.nan)
+
+    def _col(name):
+        return (led[name].to_numpy()[rows] if name in led.columns
+                else np.full(len(rows), None, dtype=object))
+    return pd.DataFrame({
+        "stamp_id": _col("stamp_id"), "ion_formula": _col("ion_formula"),
+        "iso_label": _col("iso_label"), "ion_mz": led["mz"].to_numpy(dtype=float)[rows],
+        "iso_rel": _col("iso_rel"), "n_candidates": n_cand[rows], "n_eval": n_eval[rows],
+        "n_pass": n_pass[rows], "pass_share": share, "judged": judged[rows], "kept": kept[rows],
+        "n_stamped": n_st[rows],
+    })[PRED_TRACK_COLS]
 
 
 def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
                    tol_ppm: float = DEFAULT_TOL_PPM, mz_floor_da: float = 1.5e-3,
                    mz_col: str = "mz", sample_col: str = "sample_item_id",
                    height_col: str = "height",
-                   one_to_one: bool = True, consensus: bool = True) -> pd.DataFrame:
+                   one_to_one: bool = True, consensus: bool = True,
+                   pred_ratio: tuple[float, float] = (PRED_RATIO_MIN, PRED_RATIO_MAX),
+                   pred_track_min_n: int = PRED_TRACK_MIN_N,
+                   pred_track_min_share: float = PRED_TRACK_MIN_SHARE,
+                   stats: dict | None = None) -> pd.DataFrame:
     """Stamp every time-series peak with the assigned formula/channel of the nearest
-    ledger ion within tolerance. Returns a COPY of ``peaks`` with five added columns:
+    ledger ion within tolerance. Returns a COPY of ``peaks`` with these added columns:
 
       * ``neutral_formula`` -- the assigned neutral formula (or <NA> if unmatched)
       * ``adduct``          -- the ionisation channel (e.g. ``[M+H]+`` / ``[M+NH4]+``)
@@ -826,6 +1172,12 @@ def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
                                `neutral_formula.notna()` = analyte with a
                                molecular reading. Ledgers without the columns
                                (plain merged analytes) emit them all-<NA>.
+      * ``stamp_source``    -- where the stamped identity came from: 'M0' (a
+                               merged analyte), 'observed' (an ion a per-file
+                               ledger identified) or 'predicted' (a diagnostic
+                               isotope satellite predicted from its parent's ion
+                               formula, see below). <NA> on unstamped rows and on
+                               ledgers without the column.
 
     A raw ts peak is matched to the *nearest* assigned ion whose m/z is within
     ``max(mz*tol_ppm*1e-6, mz_floor_da)`` -- the mDa floor absorbs the small
@@ -852,7 +1204,43 @@ def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
     every sample: where an ion has two raw tracks, "nearest the ledger mass" picks
     whichever is present, alternating between them (measured: 232 and 378 flips for
     two ions on the Wind-zone-2 batch). Pass ``consensus=False`` to rank on the bare
-    ledger mass instead."""
+    ledger mass instead.
+
+    PREDICTED SATELLITES (rows with ``stamp_source == 'predicted'``, built by
+    `stamping_frame`). Three rules keep a predicted line from ever displacing a
+    known ion or mislabelling an analyte:
+
+      * **Known rows first.** The match runs in two tiers: every M0 / reagent /
+        observed-satellite / artifact row first, and a peak that fell inside ANY
+        known row's window -- winner or one-to-one loser -- is never offered to a
+        predicted line. Predicted rows are matched only among the peaks no known
+        row claimed. The consensus ordering within a tier is unchanged.
+      * **The per-sample intensity gate** (`pred_ratio`, the per-file passes'
+        0.3-3.5 window; `_predicted_ratio_gate`): a peak takes a predicted label
+        only when its parent was stamped on a peak in the SAME sample and
+        height / (height_parent * iso_rel) lies inside the window. A real
+        analyte sitting at a satellite offset fails it -- its height has nothing
+        to do with the parent's -- while a true satellite passes in every sample
+        where both are visible; with no parent peak in the sample, no label.
+      * **Track coherence** (`pred_track_min_n` / `pred_track_min_share`, the
+        module's PRED_TRACK_*; `_predicted_track_coherence`): a true satellite's
+        ratio is a constant of nature, so it passes the window in nearly every
+        judged sample, whereas an independent compound on the line fails in most
+        and passes in the few where its height happens to fit -- the mislabels
+        the per-sample gate alone would hand out. Once a line has been judged in
+        at least `pred_track_min_n` samples (parent present, a candidate on the
+        line) it keeps its stamps only if at least `pred_track_min_share` of
+        them passed; otherwise the WHOLE track is left unexplained (no stamp, no
+        dup flag). Lines judged in fewer samples stand on the per-sample gate.
+        Either value <= 0 switches the rule off.
+
+    The one-to-one contest for a predicted line then runs among the surviving
+    candidates only, so a shoulder that fails the gate cannot beat the real
+    satellite to the label. Pass a dict as ``stats`` to receive, under
+    ``'predicted_tracks'``, one audit row per predicted line that had a candidate
+    (PRED_TRACK_COLS: samples judged / passed, pass share, judged, kept, peaks
+    stamped) -- the batch writes it as tables/predicted_satellites.csv.
+    """
     out = peaks.copy()
     n = len(out)
     nf = np.full(n, None, dtype=object)
@@ -864,27 +1252,67 @@ def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
     ro = np.full(n, None, dtype=object)
     io = np.full(n, None, dtype=object)
     il = np.full(n, None, dtype=object)
+    ss = np.full(n, None, dtype=object)
+    if stats is not None:
+        stats["predicted_tracks"] = pd.DataFrame(columns=PRED_TRACK_COLS)
     cols = getattr(ledger, "columns", None)
     if n and cols is not None and "mz" in cols and mz_col in out.columns:
         led = ledger.dropna(subset=["mz"]).sort_values("mz").reset_index(drop=True)
         if len(led):
-            lmz = led["mz"].to_numpy(dtype=float)
+            lmz_all = led["mz"].to_numpy(dtype=float)
+            is_pred = ((led["stamp_source"].astype(str) == STAMP_PREDICTED).to_numpy()
+                       if "stamp_source" in led.columns else np.zeros(len(led), dtype=bool))
             pmz = pd.to_numeric(out[mz_col], errors="coerce").to_numpy(dtype=float)
-            j = np.searchsorted(lmz, pmz)
-            jl = np.clip(j - 1, 0, len(lmz) - 1)
-            jr = np.clip(j, 0, len(lmz) - 1)
-            near = np.where(np.abs(lmz[jl] - pmz) <= np.abs(lmz[jr] - pmz), jl, jr)
-            tol = np.maximum(pmz * tol_ppm * 1e-6, mz_floor_da)
-            signed = pmz - lmz[near]                 # + == peak above ledger mass
-            ok = np.isfinite(pmz) & (np.abs(signed) <= tol)
-            if one_to_one and ok.any():
-                # consensus half-window: a third of each ion's own tolerance, so two
-                # tracks separated by more than that stay resolved as separate modes
-                halfwin = np.maximum(lmz * tol_ppm * 1e-6, mz_floor_da) / 3.0
-                ok, dup, _cons = _resolve_one_to_one(
-                    out, ok, near, signed, len(lmz), halfwin,
-                    sample_col, height_col, consensus=consensus)
-            lnf = led["neutral_formula"].to_numpy()
+            ok = np.zeros(n, dtype=bool)           # stamped
+            near = np.full(n, -1, dtype=np.int64)  # ledger position (into led)
+            in_win_known = np.zeros(n, dtype=bool)
+            # tier 1: every KNOWN row -- analytes, reagent ladder, observed
+            # satellites, artifacts
+            pos1 = np.flatnonzero(~is_pred)
+            if len(pos1):
+                lmz1 = lmz_all[pos1]
+                nr1, sg1, ok1 = _nearest_ion(lmz1, pmz, tol_ppm, mz_floor_da)
+                in_win_known = ok1.copy()
+                if one_to_one and ok1.any():
+                    # consensus half-window: a third of each ion's own tolerance,
+                    # so two tracks separated by more than that stay resolved as
+                    # separate modes
+                    halfwin = np.maximum(lmz1 * tol_ppm * 1e-6, mz_floor_da) / 3.0
+                    ok1, dup1, _cons = _resolve_one_to_one(
+                        out, ok1, nr1, sg1, len(lmz1), halfwin,
+                        sample_col, height_col, consensus=consensus)
+                    dup[dup1] = True
+                ok[ok1] = True
+                near[ok1] = pos1[nr1[ok1]]
+            # tier 2: PREDICTED satellites, only for peaks no known row claimed,
+            # only where the parent's same-sample height licenses the label, and
+            # only on lines that pass coherently across the batch
+            pos2 = np.flatnonzero(is_pred)
+            if len(pos2) and not in_win_known.all():
+                lmz2 = lmz_all[pos2]
+                nr2, sg2, cand = _nearest_ion(lmz2, pmz, tol_ppm, mz_floor_da)
+                cand &= ~in_win_known
+                near2 = pos2[nr2]
+                if cand.any():
+                    passed, evaluable = _predicted_ratio_gate(
+                        out, led, near, ok, near2, cand, sample_col, height_col, pred_ratio)
+                    n_eval, n_pass, judged, kept = _predicted_track_coherence(
+                        out, near2, passed, evaluable, len(led), sample_col,
+                        pred_track_min_n, pred_track_min_share)
+                    ok2 = passed & kept[near2]
+                    if one_to_one and ok2.any():
+                        halfwin = np.maximum(lmz2 * tol_ppm * 1e-6, mz_floor_da) / 3.0
+                        ok2, dup2, _cons = _resolve_one_to_one(
+                            out, ok2, nr2, sg2, len(lmz2), halfwin,
+                            sample_col, height_col, consensus=consensus)
+                        dup[dup2] = True
+                    ok[ok2] = True
+                    near[ok2] = near2[ok2]
+                    if stats is not None:
+                        stats["predicted_tracks"] = _predicted_track_table(
+                            led, pos2, near2, cand, ok2, n_eval, n_pass, judged, kept)
+            lnf = led["neutral_formula"].to_numpy() if "neutral_formula" in led.columns \
+                else np.full(len(led), None, dtype=object)
             lad = (led["adduct"].to_numpy() if "adduct" in led.columns
                    else np.full(len(led), None, dtype=object))
             lti = (led["tier"].to_numpy() if "tier" in led.columns
@@ -895,9 +1323,10 @@ def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
             nf[ok] = lnf[near[ok]]
             ad[ok] = lad[near[ok]]
             ti[ok] = lti[near[ok]]
-            im[ok] = lmz[near[ok]]
+            im[ok] = lmz_all[near[ok]]
             sus[ok] = lsus[near[ok]]
-            for arr, col in ((ro, "role"), (io, "ion_formula"), (il, "iso_label")):
+            for arr, col in ((ro, "role"), (io, "ion_formula"), (il, "iso_label"),
+                             (ss, "stamp_source")):
                 if col in led.columns:
                     arr[ok] = led[col].to_numpy()[near[ok]]
     out["neutral_formula"] = nf
@@ -909,6 +1338,7 @@ def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
     out["role"] = ro
     out["ion_formula"] = io
     out["iso_label"] = il
+    out["stamp_source"] = ss
     return out
 
 

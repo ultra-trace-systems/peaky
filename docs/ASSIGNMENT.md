@@ -170,6 +170,18 @@ tolerance. So, between the merge and the stamp (`timeseries.recentre_ledger`,
 3. **Size the stamping window** to the batch's own per-ion scatter (the third
    quartile of the per-trace scatter, ×2.5, between 1× and 2× the merge
    tolerance): an Orbitrap keeps 6 ppm, a TOF gets ~10 ppm.
+4. **Predict the diagnostic satellites** of every merged analyte
+   (`predicted_satellite_rows`): a per-file ledger claims a satellite only where
+   its picker picked it, and the faint 15N / 18O / single-34S lines sit below the
+   edge in most files, so the stamp adds them itself — one row per (parent,
+   label) at the parent's trace centre + the exact shift, superseded by any
+   satellite a ledger did observe and by any known ion already on that track.
+   `annotate_peaks` stamps such a line only where the parent is stamped in the
+   same sample and the height ratio sits in the per-file passes' 0.3–3.5 window,
+   and only on lines that pass in at least half of the samples judged (an
+   independent compound on the line passes in a few samples by chance; a real
+   satellite passes in nearly all); `_batch_ts.parquet` says so in
+   `stamp_source`, `tables/predicted_satellites.csv` audits every line.
 
 The identity is still decided by the assignment on the bright samples; the trace
 only carries it to the faint ones. Measured on the same TOF batch this lifted the

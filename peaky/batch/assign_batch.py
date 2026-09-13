@@ -57,9 +57,11 @@ from peaky import paths as PT
 from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
 
-__version__ = "0.8.0"  # the targeted residual stage: a second selection + assignment
-                       # after the cover's merge, one align() over both, stage provenance
-                       # (0.7.0: the merge is a VOTE -- n_files_ion / n_files_winner /
+__version__ = "0.8.1"  # traces.stamp block + tables/predicted_satellites.csv: the stamp's
+                       # predicted satellites counted apart from observed, track coherence
+                       # (0.8.0: the targeted residual stage: a second selection + assignment
+                       # after the cover's merge, one align() over both, stage provenance;
+                       # 0.7.0: the merge is a VOTE -- n_files_ion / n_files_winner /
                        # alternatives / ion_agree, the batch-level gates' tier_reason)
 
 # the merge's m/z tolerance IS the selector's binning tolerance (one constant for
@@ -912,7 +914,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             log(f"[traces] per-ion mass scatter {_sigma if np.isfinite(_sigma) else 'n/a'} ppm -> "
                 f"stamping window +-{stamp_tol:g} ppm (merge tolerance {tol_ppm:g})")
         out = {"merged": merged, "jitter": jitter, "merge_gates": merge_gates,
-               "trace_info": trace_info, "stamp_tol": stamp_tol, "ts_annot": None}
+               "trace_info": trace_info, "stamp_tol": stamp_tol, "ts_annot": None,
+               "predicted_rows": {}, "predicted_tracks": None}
         # Stamp the batch time-series peaks with their assigned formula/channel.
         # Downstream time-series analysis then has neutral_formula / adduct / tier /
         # ion_mz per peak, not just m/z. No-op when ts_peaks is unavailable.
@@ -924,8 +927,25 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             # reagent tracks alone are ~77% of total signal).
             _aux = (pd.concat(identified_aux, ignore_index=True)
                     if identified_aux else None)
-            _stamp = _TS.stamping_frame(merged, _aux)
-            out["ts_annot"] = _TS.annotate_peaks(ts_peaks, _stamp, tol_ppm=stamp_tol)
+            # ... plus the PREDICTED diagnostic isotope satellites (13C / 81Br /
+            # 37Cl / 15N / 34S / 29Si / 30Si / 18O) of every merged M0 with a known
+            # ion formula that no per-file ledger claimed -- the faint 15N / 18O
+            # lines sit below the picker's edge in most files, so they were
+            # missing from the stamp even with the parent Assigned everywhere, and
+            # surfaced as unexplained tracks wherever a plume lifted them. Observed
+            # rows beat predicted ones, an M0 always beats a predicted line on its
+            # track, and annotate_peaks stamps a predicted line only where the
+            # parent's same-sample height licenses it (the per-file passes'
+            # 0.3-3.5 window) and only on lines that pass coherently across the
+            # batch. The per-file ledgers and their coverage figures are untouched.
+            # A track explained this way carries an ion_formula, so the residual
+            # stage (which reads the cover's stamp) no longer targets it.
+            _stamp = _TS.stamping_frame(merged, _aux, tol_ppm=stamp_tol)
+            _stats: dict = {}
+            out["ts_annot"] = _TS.annotate_peaks(ts_peaks, _stamp, tol_ppm=stamp_tol,
+                                                 stats=_stats)
+            out["predicted_rows"] = dict(_stamp.attrs.get("predicted_satellites") or {})
+            out["predicted_tracks"] = _stats.get("predicted_tracks")
         return out
 
     res_m = _merge()
@@ -1051,6 +1071,52 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             log(f"[assign_batch] one-to-one: {_n_dup} near-duplicate peak(s) at "
                 f"~{_ions} m/z left unstamped (flagged dup_candidate) so no ion is "
                 f"stamped twice in one sample")
+        # what explained the stamped peaks: analytes, per-file-observed ions and
+        # predicted satellites are counted apart, so the predicted share is
+        # auditable and the observed figures compare with earlier runs; plus one
+        # audit row per predicted line that had a candidate peak (samples judged /
+        # passed, whether the track was kept, peaks stamped), always written for a
+        # stable artifact set. These figures describe the FINAL stamp (cover +
+        # residual files); the residual stage read the cover's.
+        _tracks = res_m.get("predicted_tracks")
+        if _tracks is None:
+            _tracks = pd.DataFrame(columns=_TS.PRED_TRACK_COLS)
+        _tracks.to_csv(os.path.join(TAB, "predicted_satellites.csv"), index=False)
+        _role = ts_annot["role"].astype(object)
+        _src = ts_annot["stamp_source"].astype(object)
+        _pred_rows = dict(res_m.get("predicted_rows") or {})
+        _judged = _tracks["judged"].astype(bool) if len(_tracks) else pd.Series(dtype=bool)
+        _kept = _tracks["kept"].astype(bool) if len(_tracks) else pd.Series(dtype=bool)
+        _rej = _tracks[_judged & ~_kept] if len(_tracks) else _tracks
+        trace_info["stamp"] = {
+            "n_peaks": int(len(ts_annot)),
+            "n_M0": int((_role == "M0").sum()),
+            "n_reagent": int((_role == "reagent").sum()),
+            "n_artifact": int((_role == "artifact").sum()),
+            "n_iso_observed": int(((_role == "iso_child") & (_src == "observed")).sum()),
+            "n_iso_predicted": int((_src == "predicted").sum()),
+            "n_dup_candidate": int(ts_annot["dup_candidate"].sum()),
+            # the predicted lines as TRACKS: how many carry a stamp, how many the
+            # coherence rule could judge, how many it rejected, and the
+            # per-sample passes those rejections discarded
+            "n_tracks_predicted_stamped": int((_tracks["n_stamped"] > 0).sum()) if len(_tracks) else 0,
+            "n_tracks_judged": int(_judged.sum()),
+            "n_tracks_rejected": int(len(_rej)),
+            "n_samples_rejected": int(_rej["n_pass"].sum()) if len(_rej) else 0,
+            "track_min_n": _TS.PRED_TRACK_MIN_N,
+            "track_min_share": _TS.PRED_TRACK_MIN_SHARE,
+            "predicted_rows": _pred_rows,
+        }
+        _st = trace_info["stamp"]
+        log(f"[assign_batch] satellites: {_st['n_iso_observed']} peak(s) on tracks the "
+            f"per-file ledgers claimed, {_st['n_iso_predicted']} on PREDICTED lines "
+            f"({_st['n_tracks_predicted_stamped']} tracks; {_pred_rows.get('n_predicted', 0)} "
+            f"predicted rows for {_pred_rows.get('n_parents', 0)} parents; "
+            f"{_pred_rows.get('n_superseded_observed', 0)} superseded by an observed "
+            f"satellite, {_pred_rows.get('n_superseded_track', 0)} by a known track); "
+            f"coherence rule: {_st['n_tracks_rejected']} of {_st['n_tracks_judged']} judged "
+            f"track(s) rejected, {_st['n_samples_rejected']} per-sample pass(es) discarded "
+            f"-> tables/predicted_satellites.csv")
 
     if residual:
         # the record of the second stage, beside the cover's (`selection` is our
