@@ -105,7 +105,7 @@ def build_manifest(*, run_dir: str, batch_name: str, dataset: str | None,
         "created_utc": created_utc,
         "code": {
             "package_version": peaky.__version__,   # NOT A.__version__ (that is assign's
-            "module_versions": A.MODULE_VERSIONS,    # own module version, kept below)
+            "module_versions": A.module_versions(),  # own module version, kept below)
             "module_hashes": A._module_hashes(),
             "git": git_info(pkg_dir),
             "python": sys.version.split()[0],

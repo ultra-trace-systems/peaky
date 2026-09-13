@@ -8,6 +8,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The progress window opens by default at an interactive terminal.** `--progress`
+  is no longer an opt-in switch: `peaky assign` / `batch` / `pool` open the window
+  whenever a person is at a tty, and the flag became `--progress` / `--no-progress`
+  (tri-state, defaulting to unset) so a run can force it either way. `PEAKY_PROGRESS=0`
+  is the env off switch, `PEAKY_PROGRESS=1` the env on switch, and an explicit flag
+  beats the env. The default is deliberately interactive-only — a pipe, a CI job, an
+  MCP or skill-driven run has nobody to read a window and its terminal fallback would
+  write `[progress]` lines into captured output — so scripted runs are unchanged.
+  Relatedly, the "no usable display, falling back to terminal status" note now prints
+  only when the window was actually ASKED for; defaulted on, the one-line status
+  speaks for itself instead of complaining on every run. The hold is untouched: a
+  finished window still stays up only on an interactive terminal, still for at most
+  `PEAKY_PROGRESS_HOLD_S` seconds (default 600; `0` disables it), and Ctrl-C still
+  closes it at once. macOS still goes straight to the terminal status.
+
 - **The admission table is per PEAK, and the lookup is the table's own rule.**
   `admission.bin_occurrence` no longer gap-clusters the batch into bins: it is built on
   the new `batch/traces.PeakIndex`, and every batch peak's `occurrence` is the fraction
@@ -170,6 +185,44 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`run_manifest.json` stamped the wrong package version on every run.**
+  `peaky.__version__` restated `"0.5.0"` as a literal while `pyproject.toml` had moved
+  to `0.7.0`, so `code.package_version` — the field that exists to tell one run folder's
+  code from another's — read 0.5.0 on runs produced by 0.7.0 code and could not
+  distinguish them at all. `__version__` is no longer declared in `peaky/__init__.py`:
+  it is resolved on first access from pyproject's `[project].version` (a source
+  checkout or editable install, name-checked so a vendored `peaky/` cannot inherit a
+  host tree's version), falling back to `importlib.metadata` for an installed wheel and
+  only then to a literal that `tests/test_shim.py` pins to pyproject. Resolution is lazy
+  and cached, so `import peaky` stays ~0.1 ms. `git.commit` / `branch` / `dirty` were
+  always correct and remain the way to trace an existing run folder.
+- **`code.module_versions` is derived from the package, and now names every module.**
+  The registry was a hand-written dict in `assignment/assign.py` listing only the
+  modules that file imports at module level, so it had gone 17 modules stale — among
+  them `traces`, `pipeline`, `sampling` and `assign_batch`, i.e. exactly the per-peak
+  admission and presence set-cover selection behaviour, all reporting `None`.
+  `assign.module_versions()` now walks the package and reads each module's
+  `__version__` from its AST (parsed, never imported: importing 38 modules to read a
+  string would drag matplotlib and the Mascope SDK into every run, and `assign.py`
+  cannot import the `pipeline` that calls it). All 38 modules are registered, the
+  result is cached per process, and `tests/test_provenance.py` asserts the registry
+  equals what is on disk — so a new module is fingerprinted without anyone
+  remembering to list it. `MODULE_VERSIONS` (the dict) is gone; call
+  `module_versions()`. `code.module_hashes` already pinned every file by sha1, so
+  past runs stayed reproducible — only the human-readable naming was missing.
+- **The repo's version strings are pinned to each other.** A new
+  `tests/test_versioning.py` asserts the whole set agrees: `peaky.__version__` and
+  `_FALLBACK_VERSION` against pyproject, `uv.lock`'s pin against pyproject (so a bump
+  that forgot `uv lock` fails offline, not just under CI's `--frozen`), and
+  `CITATION.cff` against the CHANGELOG. `CITATION.cff` deliberately LAGS pyproject —
+  it names the last release actually tagged, published and archived, which a citation
+  has to resolve to, and as of 0.7.0 in pyproject that is still 0.6.0 — so it is
+  checked against a dated `## [x.y.z]` CHANGELOG heading (version and date both) and
+  for never running ahead of pyproject, rather than for equality with it. The comment
+  in the file now says so outright instead of leaving the gap to read as drift.
+  The 0.5.0 section heading, which still read "Unreleased", is retitled to name the
+  release and its date (2026-06-30): 0.5.0 was tagged and released, and a released
+  section labelled unreleased made this file's own history unreadable.
 - **The persistence path was inert at the shipped default, and the TOF ledger was a
   flood.** With `height_cutoff_x_edge = 1.0` the brightness path admitted ~99 % of a
   TOF's picked peaks (0.12 % of admissions came from persistence), and the merged
@@ -1141,7 +1194,7 @@ n_iso`); always written (header-only when nothing was touched) so the artifact s
   retained O-monster + carbon-cluster demotes and the `plausibility_audit` CSV are
   unaffected. Fragment detection may return once a more discriminating gate is found.
 
-## [Unreleased] — 0.5.0 (reference peaklists + chemical-plausibility hardening)
+## [0.5.0] — 2026-06-30 (reference peaklists + chemical-plausibility hardening)
 
 Adds a context-gated literature/contaminant peaklist layer and closes a set of
 chemical-plausibility gaps surfaced by manual review and a cross-pipeline

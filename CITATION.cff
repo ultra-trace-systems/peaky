@@ -22,10 +22,15 @@ url: "https://github.com/ultra-trace-systems/peaky"
 license: Apache-2.0
 version: 0.6.0
 date-released: "2026-08-12"
-# Bumped per release (in the same prep commit as the pyproject version):
-# `version` + `date-released` identify the release being cut. `doi` is the
-# concept DOI - it always resolves to the latest archived release and is what
-# the README badge links to. The per-version DOI exists only after Zenodo
-# archives the published release, so it is not tracked here; pick it off the
-# Zenodo record's version list when citing one exact release.
+# `version` + `date-released` name the last release that was actually TAGGED,
+# published and archived - what a citation has to resolve to. They therefore LAG
+# `pyproject.toml`, which carries the version under development, and that gap is
+# correct, not drift: as of 0.7.0 in pyproject, the newest cut release is 0.6.0.
+# Bump these two in the release-prep commit, to the version and date of the
+# `## [x.y.z] - <date>` CHANGELOG heading for the release being cut -- which
+# tests/test_versioning.py checks, so a wrong or invented date fails a test.
+# `doi` is the concept DOI - it always resolves to the latest archived release
+# and is what the README badge links to. The per-version DOI exists only after
+# Zenodo archives the published release, so it is not tracked here; pick it off
+# the Zenodo record's version list when citing one exact release.
 doi: "10.5281/zenodo.21058928"
