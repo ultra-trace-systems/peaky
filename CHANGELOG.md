@@ -202,18 +202,24 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - **The merge is a vote, and the merged row shows it.** `assign_batch.align` now
-  picks each m/z cluster's reading — a `(neutral_formula, adduct)` pair — by the
-  number of FILES carrying it, with the Assigned-file count and `ion_score` only as
-  tie-breaks (the order `collapse_trace_labels` already used for competing labels on
-  one trace), and the reading's own text as the last key so serial and parallel runs
-  stay byte-identical. The previous rule ranked the Assigned-file count first, so one
-  file's Assigned reading outvoted many files' Candidate reading of the same ion: on
-  a 15-file Texas Ur⁺ run 12 of the 73 split clusters were decided by a minority
-  (e.g. a 1-file Assigned `C5H6N2O3 [M+NH4]+` over a 4-file
-  `C4H5NO2 [M+(CH4N2O)H]+` at m/z 160.072), and nothing on the merged row said so.
+  decides each m/z cluster in two stages. *Which ion*: the ion (neutral + adduct
+  composition, `_ion_key`) carried by the most FILES wins, with the Assigned-file
+  count and `ion_score` only as tie-breaks (the order `collapse_trace_labels`
+  already used for competing labels on one trace) and the ion's own text as the
+  last key, so serial and parallel runs stay byte-identical. *Which label of it*:
+  the reading Assigned in the most files — on a same-ion pair such as
+  `C13H14O4 [M+NH4]+` vs `C13H17NO4 [M+H]+` (the reagent-N isobar) the tier engine
+  marks a file Assigned only when a discriminating channel was present and
+  Candidate when it had nothing to decide with, so counting Candidate files would
+  be counting silence. The previous rule ranked the Assigned-file count first for
+  everything, so one file's Assigned reading outvoted many files' Candidate
+  reading of a *different* ion: on a 15-file Texas Ur⁺ run 12 of the 73 split
+  clusters were decided by a minority, and nothing on the merged row said so; of
+  those 73, 43 were two labels of one ion and 30 different ions, and in 16 of the
+  43 a pure count would have handed the ion to a label nobody had corroborated.
   A curated identity — a reference-list rescue or the pass-0 known-species list
   (`_curated_neutrals`) — is exempt from the file count, not from corroboration:
-  Assigned in at least one file and in no fewer files than any grid reading, it is
+  Assigned in at least one file and in no fewer files than any grid ion, it is
   not outvoted by grid guesses. On that run the D7 cyclosiloxane urea adduct at m/z
   579.171 and tricresyl phosphate at 429.157, each locked in one file, would
   otherwise have lost to an O14 / N4O10 grid formula the per-file engine itself
@@ -221,11 +227,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   same list in one file, met fluorenone `C13H8O [M+H]+` Assigned in nine, and the
   count decided that one. (`certified:` neutrals get no exemption: a multi-channel
   certification is the file's own evidence for a grid formula, already credited by
-  its tier.) The merged
-  row records the vote — `n_files_winner` (files carrying the winner; `n_files` is
-  the cluster), `alternatives` (the losing readings, best first:
-  `C15H25N [M+H]+ x1 Candidate 0.97`) and, when the exemption decided it, a
-  `tier_reason` note — and `formula_agree` stays `False` on a split.
+  its tier.) The merged row records the vote — `n_files_ion` and `n_files_winner`
+  (files carrying the winning ion / reading; `n_files` is the cluster),
+  `alternatives` (the losing readings, best first: `C15H25N [M+H]+ x1 Candidate
+  0.97`), `ion_agree` beside `formula_agree` (a same-ion label split is not a
+  spectral disagreement), and a `tier_reason` note whenever the exemption or a
+  corroboration-over-count choice decided it — and `batch_summary.json` adds
+  `ion_disagreements` next to `formula_disagreements`.
 - **The hydrocarbon-on-N-cluster re-read is decided once per batch.**
   `cleanup.relabel_reagent_n_adducts` re-reads a pure hydrocarbon seen via
   `[M+NH4]+` / uronium as `[M+H]+` of the N-heterocycle unless the hydrocarbon also

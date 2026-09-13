@@ -17,9 +17,13 @@ The combine step is OFFSET-AWARE: each file carries a median mass offset
 genuine same-peak is not split by a per-file calibration shift, while the reported
 jitter separates the raw spread from the calibration-removed (residual) spread.
 
-Within a cluster the files VOTE: the (neutral_formula, adduct) reading carried by
-the most files wins, tier and ion_score break ties, and the losing readings stay
-on the merged row (`alternatives`, `n_files_winner`) as well as in jitter.csv.
+Within a cluster the files VOTE, in two stages: the ION carried by the most files
+wins (tier and ion_score break ties), and among that ion's labels -- the same
+ion read as C13H14O4 [M+NH4]+ or as C13H17NO4 [M+H]+ -- the one Assigned in the
+most files wins, because on such a pair Assigned means a discriminating channel
+was present and Candidate means the file had nothing to decide with. The losing
+readings stay on the merged row (`alternatives`, `n_files_ion`, `n_files_winner`,
+`ion_agree`) as well as in jitter.csv.
 The two positive-mode re-reads that can change a reading -- the hydrocarbon-on-
 N-cluster re-read and the ammonium/amine gate -- are decided ONCE on the merged
 ledger, from the union of every file's evidence, and say so in `tier_reason`.
@@ -41,9 +45,10 @@ from peaky import paths as PT
 from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
 
-__version__ = "0.7.0"  # the merge is a file-count VOTE (n_files_winner / alternatives),
-                       # the reagent-N re-read is decided once on the merged ledger,
-                       # and the merged row carries the batch-level gates' tier_reason
+__version__ = "0.7.0"  # the merge is a VOTE: the file count picks the ion, corroboration
+                       # picks its label (n_files_ion / n_files_winner / alternatives /
+                       # ion_agree); the reagent-N re-read is decided once on the merged
+                       # ledger; the merged row carries the batch-level gates' tier_reason
 
 # the merge's m/z tolerance IS the selector's binning tolerance (one constant for
 # every batch-level binning; see sampling.BATCH_TOL_PPM)
@@ -76,37 +81,85 @@ def _s(v) -> str:
     return str(v)
 
 
-def _vote(g: pd.DataFrame, curated: set) -> pd.DataFrame:
-    """Rank one cluster's (neutral_formula, adduct) readings. One row per reading
-    -- _nf, _ad, curated, n_files, n_assigned, best_ion -- best first.
+def _ion_key(nf: str, ad: str) -> str:
+    """The ION a reading names: the element counts of neutral + adduct (the tier
+    engine's own `_ion_counts`) as a Hill-ordered formula with the charge sign,
+    so the two labels of one ion -- C13H14O4 [M+NH4]+ and C13H17NO4 [M+H]+, both
+    'C13H18NO4+' -- share a key. A reading whose adduct cannot be parsed is its
+    own ion (the key is its text)."""
+    if not nf or not ad:
+        return f"{nf} {ad}"
+    from peaky.assignment import tiers as _TI
+    try:
+        cnt = _TI._ion_counts(nf, ad)
+    except Exception:          # noqa: BLE001 -- an odd adduct string is its own ion
+        cnt = None
+    if not cnt:
+        return f"{nf} {ad}"
+    order = sorted(cnt.items(), key=lambda kv: (kv[0] != "C", kv[0] != "H", kv[0]))
+    sign = "+" if "]+" in ad else "-" if "]-" in ad else ""
+    return "".join(f"{e}{n if n != 1 else ''}" for e, n in order) + sign
 
-    Keys, in order: curated, the number of FILES carrying the reading, the
-    number carrying it at Assigned tier, the best ion_score, and finally the
-    reading's own text -- so a full tie resolves the same way whatever order
-    the files arrived in (serial and parallel runs stay byte-identical). This
-    is the order collapse_trace_labels already applies to competing labels on
-    one trace: file count first, tier and score only as tie-breaks.
 
-    `curated` exempts a reading from the file count, not from corroboration: a
-    neutral whose identity comes from a curated list (`_curated_neutrals`) is
-    not outvoted by grid GUESSES, so its reading ranks first when it reached
-    Assigned in at least one file and in no fewer files than any grid reading
-    did. A grid reading the tier engine corroborated in more files is a real
-    contest, and the count decides it (sulfolane from the known list in one
-    file lost to fluorenone [M+H]+ Assigned in nine)."""
+def _vote(g: pd.DataFrame, curated: set):
+    """Rank one cluster's readings in two stages. Returns (ions, labels):
+    `ions` one row per ion (_ion, curated, n_files, n_assigned, best_ion), best
+    first; `labels` one row per (neutral_formula, adduct) reading of EVERY ion
+    (_ion, _nf, _ad, curated, n_files, n_assigned, best_ion), the winning ion's
+    readings ranked best first and listed first, the other ions' readings after
+    them in ion order.
+
+    1. WHICH ION sits at this m/z is what files can genuinely disagree on, and
+       the count decides it: the ion carried by the most FILES wins, the number
+       of files carrying it at Assigned tier and the best ion_score only break
+       ties, and the ion's own text is the last key -- so a full tie resolves
+       the same way whatever order the files arrived in (serial and parallel
+       runs stay byte-identical). This is the order collapse_trace_labels
+       already applies to competing labels on one trace.
+
+       `curated` exempts an ion from the file count, not from corroboration: an
+       ion one of whose labels is a neutral from a curated list
+       (`_curated_neutrals`) ranks first when that label reached Assigned in at
+       least one file and in no fewer files than any grid ion did, so a list
+       identity is not outvoted by grid GUESSES; a grid ion the tier engine
+       corroborated in more files is a real contest, and the count decides it
+       (sulfolane from the known list in one file lost to fluorenone [M+H]+
+       Assigned in nine).
+
+    2. WHICH LABEL of that ion -- the same ion read as C13H14O4 [M+NH4]+ or as
+       C13H17NO4 [M+H]+ (the reagent-N isobar) -- is decided by corroboration,
+       not by count: the tier engine marks such a reading Assigned only when a
+       discriminating channel was present in that file (an N-free sibling, the
+       joint NH4+urea pair, a series anchor) and Candidate when it had nothing
+       to decide with, so counting Candidate files would be counting silence.
+       The label Assigned in the most files wins; file count and score break
+       ties. On the Texas Ur+ run 16 of the 43 same-ion splits had a majority
+       label nobody had corroborated against a minority label some file had."""
     assigned = g["_r"] >= TIER_RANK[TIER_ASSIGNED]
-    supp = (g.assign(_asrc=g["src"].where(assigned),    # the file, when Assigned there
-                     _c=g["_nf"].isin(curated).astype(int))
-              .groupby(["_nf", "_ad"], sort=True)          # text order = last key
-              .agg(curated=("_c", "max"), n_files=("src", "nunique"),
-                   n_assigned=("_asrc", "nunique"),        # FILES at Assigned, not rows
+    gg = g.assign(_asrc=g["src"].where(assigned),       # the file, when Assigned there
+                  _c=g["_nf"].isin(curated).astype(int))
+    lab = (gg.groupby(["_ion", "_nf", "_ad"], sort=True)  # text order = last key
+             .agg(curated=("_c", "max"), n_files=("src", "nunique"),
+                  n_assigned=("_asrc", "nunique"),        # FILES at Assigned, not rows
+                  best_ion=("ion_score", "max"))
+             .reset_index())
+    ions = (gg.groupby("_ion", sort=True)
+              .agg(n_files=("src", "nunique"), n_assigned=("_asrc", "nunique"),
                    best_ion=("ion_score", "max"))
               .reset_index())
-    grid = supp["curated"] == 0
-    bar = max(1, int(supp.loc[grid, "n_assigned"].max()) if grid.any() else 1)
-    supp["curated"] = supp["curated"] * (supp["n_assigned"] >= bar).astype(int)
-    return supp.sort_values(["curated", "n_files", "n_assigned", "best_ion"],
+    cur_lab = lab[lab["curated"] == 1]
+    grid = ions[~ions["_ion"].isin(cur_lab["_ion"])]
+    bar = max(1, int(grid["n_assigned"].max()) if len(grid) else 1)
+    exempt = set(cur_lab.loc[cur_lab["n_assigned"] >= bar, "_ion"])
+    ions["curated"] = ions["_ion"].isin(exempt).astype(int)
+    ions = ions.sort_values(["curated", "n_files", "n_assigned", "best_ion"],
                             ascending=False, kind="mergesort")   # stable: keeps text order
+    rank = {k: i for i, k in enumerate(ions["_ion"])}
+    lab = (lab.assign(_k=lab["_ion"].map(rank))
+              .sort_values(["_k", "curated", "n_assigned", "n_files", "best_ion"],
+                           ascending=[True, False, False, False, False], kind="mergesort")
+              .drop(columns="_k"))
+    return ions, lab
 
 
 def _describe(r) -> str:
@@ -120,14 +173,15 @@ def _describe(r) -> str:
 def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
           offsets: dict | None = None, curated=None):
     """Align the M0 rows of several files by m/z and let the files VOTE on each
-    cluster's reading.
+    cluster's reading (see `_vote`: the count decides WHICH ION, corroboration
+    decides WHICH LABEL of it).
 
     per_file : {src -> DataFrame with _M0_COLS}. offsets : {src -> median ppm}
     (subtracted before clustering so a per-file calibration shift does not split
     a peak). curated : neutral formulas whose identity is a curated list's, not
     the grid's (a reference-peaklist rescue or the pass-0 known-species list --
-    see `_curated_neutrals`); a reading of one of these is not outvoted by grid
-    readings Assigned in fewer files than itself (see `_vote`), and the merged
+    see `_curated_neutrals`); an ion carrying one of these is not outvoted by
+    grid ions Assigned in fewer files than it (see `_vote`), and the merged
     row's tier_reason says so when that decided the cluster.
 
     Returns (merged, jitter):
@@ -135,23 +189,23 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
       merged  one row per m/z cluster: consensus mz; the WINNING reading's
               neutral_formula / adduct / tier / ion_score / admitted_by /
               occurrence (its best per-file row: tier, then ion_score, then
-              src); the vote -- n_files (files in the cluster), n_files_winner
-              (files carrying the winner), alternatives (the losing readings,
-              best first, '' when unanimous); tier_reason (NA unless the vote
-              had something to explain: the curated exemption); srcs,
-              formula_agree, mz_jitter_ppm_raw, mz_jitter_ppm_caldj.
+              src); the vote -- n_files (files in the cluster), n_files_ion
+              (files carrying the winning ion), n_files_winner (files carrying
+              the winning reading), alternatives (the losing readings, best
+              first, '' when unanimous), ion_agree (one ion in the cluster),
+              formula_agree (one neutral), tier_reason (NA unless the vote had
+              something to explain: the curated exemption, or a label chosen
+              by corroboration over a bigger count); srcs, mz_jitter_ppm_raw,
+              mz_jitter_ppm_caldj.
       jitter  long form, one row per (cluster, file): cluster, src, mz,
               neutral_formula, adduct, tier, ion_score -- every reading, winner
               or not.
 
-    THE VOTE (see `_vote`): a reading is a (neutral_formula, adduct) pair, and
-    the one carried by the most files wins; tier and ion_score only break ties.
     The previous rule ranked the number of ASSIGNED files first, which let one
-    file's Assigned reading outvote many files' Candidate reading of the same
-    ion: on the Texas Ur+ run (15 files) 12 of the 73 split clusters were
-    decided that way, e.g. a 1-file Assigned C5H6N2O3 [M+NH4]+ over a 4-file
-    C4H5NO2 [M+(CH4N2O)H]+ at m/z 160.072 -- and the merged row then carried
-    nothing to show the other files had read it differently."""
+    file's Assigned reading outvote many files' Candidate reading of a
+    different ion: on the Texas Ur+ run (15 files) 12 of the 73 split clusters
+    were decided that way -- and the merged row then carried nothing to show
+    the other files had read it differently."""
     offsets = offsets or {}
     curated = {str(p) for p in (curated or ())}
     frames = []
@@ -166,8 +220,9 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
     if not frames:
         return (pd.DataFrame(columns=["mz", "neutral_formula", "adduct", "tier",
                                       "ion_score", "admitted_by", "occurrence",
-                                      "n_files", "n_files_winner", "alternatives",
-                                      "tier_reason", "srcs", "formula_agree",
+                                      "n_files", "n_files_ion", "n_files_winner",
+                                      "alternatives", "tier_reason", "srcs",
+                                      "ion_agree", "formula_agree",
                                       "mz_jitter_ppm_raw", "mz_jitter_ppm_caldj"]),
                 pd.DataFrame(columns=["cluster", "src", *_M0_COLS]))
     allm = pd.concat(frames, ignore_index=True).sort_values("_mz_adj").reset_index(drop=True)
@@ -177,21 +232,31 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
     for cid, g in allm.groupby("cluster"):
         g = g.assign(_r=g["tier"].map(lambda t: TIER_RANK.get(str(t), 0)),
                      _nf=g["neutral_formula"].map(_s), _ad=g["adduct"].map(_s))
-        supp = _vote(g, curated)
-        win = supp.iloc[0]
-        # the exemption used: say so on the row (a 1-of-10 winner needs a reason)
-        outvoted = supp.iloc[1:]
-        note = pd.NA
-        if int(win["curated"]) and len(outvoted) and int(outvoted["n_files"].max()) > int(win["n_files"]):
-            top = outvoted.iloc[0]
-            note = (f"curated identity kept over the {int(top['n_files'])}-file "
-                    f"{top['_nf']} {top['_ad']} reading (vote {int(win['n_files'])} of "
-                    f"{int(g['src'].nunique())} files)")
+        g["_ion"] = [_ion_key(a, b) for a, b in zip(g["_nf"], g["_ad"])]
+        ions, lab = _vote(g, curated)
+        win_ion, win = ions.iloc[0], lab.iloc[0]
+        n_total = int(g["src"].nunique())
         gw = g[(g["_nf"] == win["_nf"]) & (g["_ad"] == win["_ad"])]
         # the winning reading's best per-file row donates tier / score / provenance;
         # src last so an exact tie is settled by name, not by arrival order
         best = gw.sort_values(["_r", "ion_score", "src"], ascending=[False, False, True],
                               kind="mergesort").iloc[0]
+        # what the vote had to explain, on the row (a 1-of-10 winner needs a reason)
+        notes = []
+        others = ions.iloc[1:]
+        if int(win_ion["curated"]) and len(others) and int(others["n_files"].max()) > int(win_ion["n_files"]):
+            top = others.iloc[0]
+            top_lab = lab[lab["_ion"] == top["_ion"]].iloc[0]
+            notes.append(f"curated identity kept over the {int(top['n_files'])}-file "
+                         f"{top_lab['_nf']} {top_lab['_ad']} reading (vote "
+                         f"{int(win_ion['n_files'])} of {n_total} files)")
+        same = lab[lab["_ion"] == win_ion["_ion"]]
+        if len(same) > 1 and int(same["n_files"].max()) > int(win["n_files"]):
+            big = same.iloc[1:].sort_values("n_files", ascending=False, kind="mergesort").iloc[0]
+            notes.append(f"same ion {win_ion['_ion']} read two ways: kept {win['_nf']} "
+                         f"{win['_ad']} (Assigned in {int(win['n_assigned'])} of its "
+                         f"{int(win['n_files'])} files) over the {int(big['n_files'])}-file "
+                         f"{big['_nf']} {big['_ad']} (Assigned in {int(big['n_assigned'])})")
         mz_raw = g["mz"].to_numpy(); mz_adj = g["_mz_adj"].to_numpy()
         def _spread(a):
             return float((a.max() - a.min()) / a.mean() * 1e6) if len(a) > 1 else 0.0
@@ -201,10 +266,12 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
             adduct=best.get("adduct"), tier=best["tier"],
             ion_score=best.get("ion_score"),
             admitted_by=best.get("admitted_by"), occurrence=best.get("occurrence"),
-            n_files=int(g["src"].nunique()), n_files_winner=int(win["n_files"]),
-            alternatives="; ".join(_describe(r) for _, r in supp.iloc[1:].iterrows()),
-            tier_reason=note,
+            n_files=n_total, n_files_ion=int(win_ion["n_files"]),
+            n_files_winner=int(win["n_files"]),
+            alternatives="; ".join(_describe(r) for _, r in lab.iloc[1:].iterrows()),
+            tier_reason=" | ".join(notes) if notes else pd.NA,
             srcs=",".join(sorted(set(g["src"]))),
+            ion_agree=(len(ions) <= 1),
             formula_agree=(len(forms) <= 1),
             mz_jitter_ppm_raw=round(_spread(mz_raw), 3),
             mz_jitter_ppm_caldj=round(_spread(mz_adj), 3)))
@@ -838,6 +905,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "n_in_all_files": int((merged["n_files"] == len(sample_ids)).sum()) if len(merged) else 0,
         "n_single_file": int((merged["n_files"] == 1).sum()) if len(merged) else 0,
         "formula_disagreements": int((~merged["formula_agree"]).sum()) if len(merged) else 0,
+        # ... of which clusters where the files named DIFFERENT IONS (the rest are
+        # two labels of one ion, e.g. the reagent-N isobar)
+        "ion_disagreements": int((~merged["ion_agree"]).sum()) if len(merged) else 0,
         # the batch-level re-reads applied to the merged ledger (positive mode):
         # what the reagent-N pass and the ammonium/amine gate each did, so the
         # counts are on record and not only in the log
@@ -859,7 +929,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     log(f"[assign_batch] DONE: {summary['merged_M0']} merged M0 "
         f"({summary['merged_tiers']}); {summary['n_in_all_files']} in all files, "
         f"{summary['n_single_file']} single-file, "
-        f"{summary['formula_disagreements']} formula disagreements")
+        f"{summary['formula_disagreements']} formula disagreements "
+        f"({summary['ion_disagreements']} between different ions)")
     log(f"[assign_batch] assigned {len(sample_ids)} samples in "
         f"{summary['elapsed_s']:.1f}s (n_jobs={n_jobs})")
     return {"profile": prof, "context": context, "sample_ids": sample_ids,
