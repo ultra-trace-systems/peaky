@@ -8,6 +8,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The progress window opens by default at an interactive terminal.** `--progress`
+  is no longer an opt-in switch: `peaky assign` / `batch` / `pool` open the window
+  whenever a person is at a tty, and the flag became `--progress` / `--no-progress`
+  (tri-state, defaulting to unset) so a run can force it either way. `PEAKY_PROGRESS=0`
+  is the env off switch, `PEAKY_PROGRESS=1` the env on switch, and an explicit flag
+  beats the env. The default is deliberately interactive-only — a pipe, a CI job, an
+  MCP or skill-driven run has nobody to read a window and its terminal fallback would
+  write `[progress]` lines into captured output — so scripted runs are unchanged.
+  Relatedly, the "no usable display, falling back to terminal status" note now prints
+  only when the window was actually ASKED for; defaulted on, the one-line status
+  speaks for itself instead of complaining on every run. The hold is untouched: a
+  finished window still stays up only on an interactive terminal, still for at most
+  `PEAKY_PROGRESS_HOLD_S` seconds (default 600; `0` disables it), and Ctrl-C still
+  closes it at once. macOS still goes straight to the terminal status.
 
 - **The admission table is per PEAK, and the lookup is the table's own rule.**
   `admission.bin_occurrence` no longer gap-clusters the batch into bins: it is built on

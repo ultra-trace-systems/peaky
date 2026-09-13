@@ -1,4 +1,6 @@
-"""Live progress window for a run — opt-in via `--progress` (or `PEAKY_PROGRESS=1`).
+"""Live progress window for a run — ON by default at an interactive terminal;
+`--no-progress` (or `PEAKY_PROGRESS=0`) turns it off, and it never defaults on for
+a pipe, a CI job or a skill-driven run (see `enabled`).
 
 Peaky already threads a `log=print` callable through every level of a run
 (`pipeline.run_batch` -> `assign_batch.run` -> `assign.run` -> each of its ~36
@@ -745,11 +747,46 @@ class Reporter:
         return False
 
 
+def _interactive() -> bool:
+    """A person at a terminal? Only then is anyone there to read a window."""
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except Exception:           # stdin/stdout replaced or closed (pythonw, pipes)
+        return False
+
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
 def enabled(flag: bool | None = None) -> bool:
-    """`--progress` wins; else `PEAKY_PROGRESS` (1/true/yes/on)."""
-    if flag:
-        return True
-    return os.environ.get("PEAKY_PROGRESS", "").strip().lower() in {"1", "true", "yes", "on"}
+    """Is the window on for this run?
+
+    `--progress` / `--no-progress` wins; else `PEAKY_PROGRESS` (truthy is on,
+    anything else set -- `0` included -- is an explicit off); else the DEFAULT:
+    on for a person at a terminal, off for everything else.
+
+    Interactive-only by design. A pipe, a CI job, an MCP or skill-driven run has
+    nobody to read a window, and the terminal fallback would write `[progress]`
+    lines into output somebody is capturing -- so "on by default" must never
+    mean "on in a script". `_interactive()` already draws exactly that line for
+    the hold, and this is the same question one step earlier.
+    """
+    if flag is not None:
+        return bool(flag)
+    env = os.environ.get("PEAKY_PROGRESS", "").strip().lower()
+    if env:
+        return env in _TRUTHY
+    return _interactive()
+
+
+def explicitly_requested(flag: bool | None = None) -> bool:
+    """Did someone ASK for the window, or did the default hand it to them?
+
+    Only an explicit request earns the "no usable display" note: unasked-for, it
+    is a complaint about something nobody requested, printed on every run."""
+    if flag is not None:
+        return bool(flag)
+    return os.environ.get("PEAKY_PROGRESS", "").strip().lower() in _TRUTHY
 
 
 HOLD_S_DEFAULT = 600.0
@@ -768,14 +805,6 @@ def hold_seconds() -> float:
         return HOLD_S_DEFAULT
 
 
-def _interactive() -> bool:
-    """A person at a terminal? Only then is anyone there to read a held window."""
-    try:
-        return bool(sys.stdin.isatty() and sys.stdout.isatty())
-    except Exception:           # stdin/stdout replaced or closed (pythonw, pipes)
-        return False
-
-
 def open_progress(title: str, *, flag: bool | None = None, log=print,
                   hold: bool = True, n_samples: int = 0) -> Reporter:
     """The one entry point the CLI uses. Returns a `log`-compatible Reporter --
@@ -790,8 +819,12 @@ def open_progress(title: str, *, flag: bool | None = None, log=print,
         return Reporter(title, log=log, ui=None, hold=False, n_samples=n_samples)
     ui = TkWindow(title)
     if not ui.start():
-        print("[progress] no usable display for a window; "
-              "falling back to terminal status", flush=True)
+        # Asked for and not delivered -> say why. Defaulted on, stay quiet: the
+        # one-line status speaks for itself, and a warning about a window nobody
+        # requested would print on every run on a headless box.
+        if explicitly_requested(flag):
+            print("[progress] no usable display for a window; "
+                  "falling back to terminal status", flush=True)
         ui = TerminalStatus()
     hold = bool(hold and hold_seconds() > 0 and _interactive())
     rep = Reporter(title, log=log, ui=ui, hold=hold, n_samples=n_samples)

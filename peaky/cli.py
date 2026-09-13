@@ -161,16 +161,23 @@ def _resolve_reagent(args, *, with_profile: bool = False):
 
 
 def _add_progress_flag(p) -> None:
-    """`--progress`, shared by assign / batch / pool."""
-    p.add_argument("--progress", action="store_true",
-                   help="open a live progress window (Tk) for the run: sample/stage "
-                        "bars, elapsed + ETA, and the run's stats + total runtime when "
-                        "it finishes. Falls back to a one-line terminal status with no "
-                        "display, and always on macOS. On an interactive terminal the "
-                        "finished window is held open to be read for at most "
-                        "PEAKY_PROGRESS_HOLD_S seconds (default 600; 0 disables the "
-                        "hold); Ctrl-C closes it at once, and everything in it is also "
-                        "on stdout. Env PEAKY_PROGRESS=1 also enables it.")
+    """`--progress` / `--no-progress`, shared by assign / batch / pool.
+
+    Default None, NOT False: the window is on by default at an interactive
+    terminal, so the parser must be able to say "unset" and let `progress.enabled`
+    decide. `store_true` would have made every run an explicit opt-out."""
+    p.add_argument("--progress", action=argparse.BooleanOptionalAction, default=None,
+                   help="live progress window (Tk) for the run: sample/stage bars, "
+                        "elapsed + ETA, and the run's stats + total runtime when it "
+                        "finishes. ON by default at an interactive terminal; "
+                        "--no-progress turns it off, and it is off anyway for a pipe, "
+                        "a CI job or a skill-driven run. Falls back to a one-line "
+                        "terminal status with no display, and always on macOS. On an "
+                        "interactive terminal the finished window is held open to be "
+                        "read for at most PEAKY_PROGRESS_HOLD_S seconds (default 600; "
+                        "0 disables the hold); Ctrl-C closes it at once, and everything "
+                        "in it is also on stdout. Env PEAKY_PROGRESS=0/1 overrides the "
+                        "default.")
 
 
 def _progress_hold_note(prog) -> None:
@@ -253,8 +260,8 @@ def cmd_assign(args) -> None:
                  # same account `peaky batch` gives of the same batch
                  else f"persistence path off: {ADM.why_off(cfg, occurrence)}"))
 
-    # `prog` IS the log callable (a transparent pass-through to print unless
-    # --progress is on), so the run below is identical either way.
+    # `prog` IS the log callable (a transparent pass-through to print whenever
+    # the window is off), so the run below is identical either way.
     with PG.open_progress(f"peaky \u00b7 assign {args.sample_id}",
                           flag=args.progress, n_samples=1) as prog:
         prog.phase("assign")            # the TS fetch above is already over

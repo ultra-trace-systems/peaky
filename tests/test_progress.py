@@ -455,6 +455,10 @@ for _name, _txt in (("README.md", (ROOT / "README.md").read_text()),
           "interactive terminal" in _txt or "a tty" in _txt)
     check(f"{_name}: Ctrl-C closes the window at once", "Ctrl-C" in _txt)
     check(f"{_name}: macOS falls back to the terminal status", "macOS" in _txt)
+    # the window now opens unasked, so the way to turn it OFF is part of the
+    # contract -- undocumented, a window nobody wanted has no visible off switch
+    check(f"{_name}: names --no-progress, the way to turn the window off",
+          "--no-progress" in _txt)
     # `peaky assign` is the one-sample case: its bars DO fill, but an ETA over
     # completed samples cannot exist for it. Undocumented, a missing ETA reads
     # as the same bug the filled bars just stopped being.
@@ -594,13 +598,49 @@ import os  # noqa: E402
 _saved_flag = os.environ.get("PEAKY_PROGRESS")
 os.environ.pop("PEAKY_PROGRESS", None)
 try:
-    check("disabled by default", PG.enabled(None) is False and PG.enabled(False) is False)
-    check("--progress enables", PG.enabled(True) is True)
+    check("--progress enables, --no-progress disables",
+          PG.enabled(True) is True and PG.enabled(False) is False)
     os.environ["PEAKY_PROGRESS"] = "1"
     check("PEAKY_PROGRESS=1 enables", PG.enabled(None) is True)
+    check("... and an explicit --no-progress still beats it", PG.enabled(False) is False)
     os.environ["PEAKY_PROGRESS"] = "0"
     check("PEAKY_PROGRESS=0 does not", PG.enabled(None) is False)
+    check("... and an explicit --progress still beats it", PG.enabled(True) is True)
     os.environ.pop("PEAKY_PROGRESS", None)
+
+    # Neither flag nor env: the DEFAULT, which asks whether a person is there.
+    # The window is ON for a terminal and must stay OFF everywhere else -- a CI
+    # job or a skill-driven run would otherwise get [progress] lines in output it
+    # is capturing, from a window nobody asked for and nobody can see.
+    _saved_tty = PG._interactive
+    try:
+        PG._interactive = lambda: True
+        check("on by default at an interactive terminal", PG.enabled(None) is True)
+        check("but that default is not an explicit REQUEST (so no display warning)",
+              PG.explicitly_requested(None) is False)
+        PG._interactive = lambda: False
+        check("off by default for a pipe / CI job / skill-driven run",
+              PG.enabled(None) is False)
+        os.environ["PEAKY_PROGRESS"] = "1"
+        check("PEAKY_PROGRESS=1 is an explicit request even with no terminal",
+              PG.enabled(None) is True and PG.explicitly_requested(None) is True)
+        os.environ.pop("PEAKY_PROGRESS", None)
+        check("--progress is an explicit request too",
+              PG.explicitly_requested(True) is True)
+    finally:
+        PG._interactive = _saved_tty
+        os.environ.pop("PEAKY_PROGRESS", None)
+
+    # The CLI flag must be TRI-state -- --progress / --no-progress / unset. A
+    # `store_true` default of False would read as an explicit opt-out on every
+    # ordinary run and the interactive default could never fire.
+    from peaky import cli as _CLI  # noqa: E402
+    _ap = _CLI.build_parser()
+    check("an unset --progress parses as None, so the default decides",
+          _ap.parse_args(["batch", "--batch", "B"]).progress is None)
+    check("--progress / --no-progress force it on / off",
+          _ap.parse_args(["batch", "--batch", "B", "--progress"]).progress is True
+          and _ap.parse_args(["batch", "--batch", "B", "--no-progress"]).progress is False)
 
     off = PG.open_progress("t", flag=False, log=seen.append)
     check("disabled -> a pass-through Reporter with no UI and no hold",
@@ -710,7 +750,8 @@ CLI._require_creds = lambda: None      # cmd_batch resolves the name at call tim
 try:
     args = CLI.build_parser().parse_args(
         ["batch", "--batch", "B", "--dataset", "D", "--out-dir", "/tmp"])
-    check("--progress defaults to off", args.progress is False)
+    check("--progress is unset here, so progress.enabled decides",
+          args.progress is None)
     CLI.cmd_batch(args)
     check("cmd_batch passes the reporter as log=", isinstance(captured["log"], PG.Reporter))
     rep = captured["log"]
