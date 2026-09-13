@@ -132,7 +132,7 @@ per-peak batch table (sample_item_id, mz, height[, datetime_utc, name])
 ## 3b. The residual stage (targeted second selection)
 
 The gain stop leaves a tail: bins present in ≥ 2 samples that no assigned file
-holds. Measured on a 6154-sample Texas Ur+ campaign run (15 cover files at the gain-floor stop): **18 % of 4702 universe bins** (846). Almost
+holds. Measured on a 6154-sample uronium campaign run (15 cover files at the gain-floor stop): **18 % of 4702 universe bins** (846). Almost
 all of it is the noise-edge tail — 0.02 % of the universe's signal, median campaign
 maximum 299 cps against a ~154 cps median picker edge, 96 % never above 1 kcps —
 but **36 of those bins reach 1–3.4 kcps somewhere**, and nothing in the tail can

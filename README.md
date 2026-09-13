@@ -41,8 +41,11 @@ Prefer to do it by hand? Follow **[QUICKSTART.md](QUICKSTART.md)**, or the
   audit, plus an interactive rotating-GKA widget.
 - **Batch pipeline** — assigns the presence set-cover subset (the samples that
   together hold the batch's m/z bins, chosen greedily with a marginal-gain stop),
-  merges them, then builds time-series correlation clusters, a full
-  Van Krevelen, and an iterable PDF report.
+  merges them with the files voting on each reading, runs a second, targeted
+  selection for the bright bins the cover never reached (the residual stage), stamps
+  every spectrum of the batch from the merged ledger — predicted isotope satellites
+  included — then builds time-series correlation clusters, a full Van Krevelen, and
+  an iterable PDF report.
 - **Reagent-aware** — bromide (Br⁻), urea/uronium (Ur⁺), and nitrate (¹⁴N / ¹⁵N)
   CIMS reagents are built in; add your own with a small JSON/TOML file, no code changes.
 - **Literature-aware** — curated, provenance-tagged reference peaklists (α-pinene
@@ -192,7 +195,8 @@ peaky curate copy-samples --sample-ids <ID...> \
 ```
 
 `--reagent` forces the analyte channels (a positive/sparse sample otherwise
-mis-detects as negative). `--jobs/-j N` (or `PEAKY_JOBS`) assigns the selected
+mis-detects as negative). `--no-residual` skips the second, targeted selection
+(`--residual-min-x-edge` / `--residual-min-cps` / `--residual-k-max` tune it). `--jobs/-j N` (or `PEAKY_JOBS`) assigns the selected
 samples across `N` worker processes — ~3.5× faster on multicore, output identical
 to a serial run; default is your physical-core count, `--jobs 1` is the serial
 path. A live progress window — sample/stage bars, elapsed + ETA, and the run's stats +

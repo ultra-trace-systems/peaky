@@ -84,7 +84,7 @@ All thresholds are the named constants from `cluster.py` (see §4).
 
    - **`episode`** (`gate="episode", min_run=3`) — the temporal gate: enter iff
      the channel is **detected (nonzero) in ≥ `min_run` consecutive time bins**,
-     computed by `_longest_detected_run` (`clustering.py:39-51`, longest run of
+     computed by `_longest_detected_run` (`clustering.py`, longest run of
      consecutive detected bins). This is **intensity-agnostic**: it rescues sharp
      low-abundance *episodes* (prompt accretion dimers, NPF bursts) that the median
      floor would discard, while still rejecting sporadic single-bin spikes (a run

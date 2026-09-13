@@ -67,16 +67,16 @@ Chains: fetch peaks → `new_ledger` → isotope prescan → reagent labeling �
 The lowest layer provides exact monoisotopic masses, Hill-notation formula parsing/formatting, neutral-mass and ion-m/z calculation across 11 adducts, DBE accounting, and the candidate grid.
 
 - `neutral_mass(formula)` — monoisotopic mass from `M[]` constants.
-- `ion_mz(neutral, adduct)` — `neutral_mass + ADDUCT_SHIFTS[adduct]` (chemistry.py:159–164).
+- `ion_mz(neutral, adduct)` — `neutral_mass + ADDUCT_SHIFTS[adduct]` (chemistry.py).
 - `dbe(cnt)` — `1 + (C+Si) + (N+P)/2 − (H+F+Cl+Br+I)/2`; O,S divalent contribute 0.
-- `seniors_cap` — `C + Si + N/2 + 1` (chemistry.py:184–186).
-- `oxygen_ok` — `O ≤ 2·(C+N+S+P) + 4` (chemistry.py:189–205); each O needs 2 skeleton bonds + 4 headroom.
-- `dbe_ok` — hard gate: DBE non-negative integer (±1e-9) and ≤ Senior cap (chemistry.py:208–220).
+- `seniors_cap` — `C + Si + N/2 + 1` (chemistry.py).
+- `oxygen_ok` — `O ≤ 2·(C+N+S+P) + 4` (chemistry.py); each O needs 2 skeleton bonds + 4 headroom.
+- `dbe_ok` — hard gate: DBE non-negative integer (±1e-9) and ≤ Senior cap (chemistry.py).
 
 ### 2.2 The grid
 
 `enumerate_grid(ranges, mass_min=30, mass_max=900)` emits all valid `(mass, formula)` tuples in an element box:
-- Loops C,Si,N,P,F,Cl,Br,I; for each computes Senior cap; loops `DBE∈[0,cap]` and **derives** `H = 2·(1+C+Si) + (N+P) − 2·DBE − halogens` (chemistry.py:266–268) — only integer-DBE neutrals are produced.
+- Loops C,Si,N,P,F,Cl,Br,I; for each computes Senior cap; loops `DBE∈[0,cap]` and **derives** `H = 2·(1+C+Si) + (N+P) − 2·DBE − halogens` (chemistry.py) — only integer-DBE neutrals are produced.
 - Checks H in bounds; loops S; caps O at `min(grid.O_hi, oxygen_ok limit)`; loops O; filters by mass bounds (30–900 Da).
 - Cached via `_grid_cached` (LRU, max 16 boxes), keyed on `(sorted ranges, round(mass_min,3), round(mass_max,3))`.
 
@@ -87,15 +87,15 @@ The lowest layer provides exact monoisotopic masses, Hill-notation formula parsi
 | Gate | Value | Effect / ref |
 |---|---|---|
 | `search_ppm` | **3.0 ppm** | Grid enumeration window (~8σ of 0.35 ppm instrument accuracy). Reduced 5→3 (v0.8.0), ~1.7× fewer candidates. `match_compounds` independently keeps a **5 ppm** window so real 29Si/81Br satellites are still found; the z-gate owns final rejection. (`PassConfig` in passes/config.py) |
-| Default grid C-max (ambient) | 40, auto-scaled `min(40, max(12, est_max_C+4))` | contexts.py:52; build_ranges |
-| Default grid O-max (ambient) | 30 (uronium: 32) | contexts.py:53,205 |
-| Uronium grid | C-max 46, O-max 32, max_Si 12, min_C_for{Si}=2 | contexts.py:186–210 |
-| Grid mass bounds | 30–900 Da | chemistry.py:238–239,286–287 |
+| Default grid C-max (ambient) | 40, auto-scaled `min(40, max(12, est_max_C+4))` | contexts.py; build_ranges |
+| Default grid O-max (ambient) | 30 (uronium: 32) | contexts.py,205 |
+| Uronium grid | C-max 46, O-max 32, max_Si 12, min_C_for{Si}=2 | contexts.py |
+| Grid mass bounds | 30–900 Da | chemistry.py,286–287 |
 | Pass 1/2 grid | CHO(N) only; S/P/Cl/Br/F/I = [0,0] | build_ranges; heteroatoms enter only via Pass-3 families |
 
 ### 2.4 Complexity penalty (heteroatom skepticism)
 
-`complexity_penalty(formula, scale=0.01, cap=0.20)` (chemistry.py:300–308):
+`complexity_penalty(formula, scale=0.01, cap=0.20)` (chemistry.py):
 - `_COMPLEXITY_WEIGHT = {N:3, S:8, P:25, Cl:50, Br:50, Si:80, I:80, F:30}`.
 - Penalty = `min(Σ weight[el]·count[el] · 0.01, 0.20)`. CHO forms face zero prior; Br/Cl/Si/I need a 0.05–0.20 eff_score margin over CHO to win.
 
@@ -202,7 +202,7 @@ Pre-calibration (`cal_mu=None`) the center is 0 ppm. The method suffix (e.g. `se
 
 `relabel_confidence(ledger, cfg)` (`relabel_confidence` in passes/core.py) then re-grades **unlocked** pass-1 M0s against `cal_mu` (vs 0 pre-calibration), preserving the method suffix. At a large offset the whole backbone reads Low pre-calibration; this recovers true High/Good. Locked commits (pass-0 known, siloxane, pass-1 High) are immune. `z_of(ppm, cfg, mz) = |ppm − cal_center(cfg, mz)| / cal_sigma_at(cfg, mz)` (`z_of` in passes/core.py) — the mass-dependent centre and sigma of item 5 when the trend was accepted AND the caller passes an m/z, otherwise the constant `|ppm − cal_mu|/cal_sigma`.
 
-**Persisted calibrated ppm (Q1)**: `tiers.stamp_calibrated_ppm(ledger)` (tiers.py:499–530, called from `apply_tiers` at tiers.py:555) writes a new ledger column **`ppm_error_cal = ppm_error − mu` (OFFSET ONLY)** on every row, where `mu` is the robust per-file mass offset the tier engine already fits from the corroborated CHO/CHON core (`tiers._calibrate` — median + scaled MAD; `CAL_MIN_N=20`, `CAL_SIGMA_FLOOR=0.15` ppm). The raw `ppm_error` stays as the theoretical error of record; `ppm_error_cal` re-centres the *displayed* accuracy without any new fitting (Ur ≈ +0.10 ppm, Br ≈ −0.13 ppm offsets removed). A per-file LINEAR (slope) term was tested and rejected. It falls back to the Assigned-M0 `ppm_error` median when the core is too small to calibrate, and stashes `(mu, sigma)` in `ledger.attrs` (nothing else: the column and the QC caption are the only consumers). The centre removed is the CONSTANT one even on a run whose backbone accepted a mass trend (masscal, §3 below) — QC panel (b) plots this column against m/z to expose the instrument's residual drift, and removing the fitted 1/mz centre would subtract exactly that structure. The mass-dependent centre is the gates' (`PassConfig.cal_a/cal_b`, `tiers._cal_z`), not the display's. **No tier decision reads this column** — tiering was already calibration-aware (`_calibrate` centres the z-gate on the robust median, not 0) — so it is display/provenance-only and tier counts are unchanged. The QC panel plots `ppm_error_cal` when present, raw otherwise.
+**Persisted calibrated ppm (Q1)**: `tiers.stamp_calibrated_ppm(ledger)` (tiers.py, called from `apply_tiers` at tiers.py) writes a new ledger column **`ppm_error_cal = ppm_error − mu` (OFFSET ONLY)** on every row, where `mu` is the robust per-file mass offset the tier engine already fits from the corroborated CHO/CHON core (`tiers._calibrate` — median + scaled MAD; `CAL_MIN_N=20`, `CAL_SIGMA_FLOOR=0.15` ppm). The raw `ppm_error` stays as the theoretical error of record; `ppm_error_cal` re-centres the *displayed* accuracy without any new fitting (Ur ≈ +0.10 ppm, Br ≈ −0.13 ppm offsets removed). A per-file LINEAR (slope) term was tested and rejected. It falls back to the Assigned-M0 `ppm_error` median when the core is too small to calibrate, and stashes `(mu, sigma)` in `ledger.attrs` (nothing else: the column and the QC caption are the only consumers). The centre removed is the CONSTANT one even on a run whose backbone accepted a mass trend (masscal, §3 below) — QC panel (b) plots this column against m/z to expose the instrument's residual drift, and removing the fitted 1/mz centre would subtract exactly that structure. The mass-dependent centre is the gates' (`PassConfig.cal_a/cal_b`, `tiers._cal_z`), not the display's. **No tier decision reads this column** — tiering was already calibration-aware (`_calibrate` centres the z-gate on the robust median, not 0) — so it is display/provenance-only and tier counts are unchanged. The QC panel plots `ppm_error_cal` when present, raw otherwise.
 
 ### Pre-Pass-4 Demotions and First Iso-Envelope
 
@@ -251,7 +251,7 @@ Isotope pairs + series chains, DBE-only plausibility (no `match_compounds`, just
 `score_fn` scores all targets → `arbitrate` → `commit_winners(claim_unexplained_only=True, only_peaks=union)`. The **`completion` method tag grants the pattern-evidence z-band** (z up to `cal_z_pattern=4.0`) because the neutral is already independently assigned (lines 455–456).
 
 **`complete_isotope_envelopes(ledger, cfg, min_rel=0.06, ppm=12.0)`** (in passes/postprocess.py). Runs **3 times** (before pass 4, after audits, after pass 6). Claims the FULL predicted isotope envelope of every committed M0:
-1. `isotope_pattern(ion_formula, min_rel=0.06, max_shift=12.0)` (isotopes.py:90–163) predicts `(dmass, rel_intensity, label)` lines ≥ 6% via per-atom convolution, merging within ~3 mDa.
+1. `isotope_pattern(ion_formula, min_rel=0.06, max_shift=12.0)` (isotopes.py) predicts `(dmass, rel_intensity, label)` lines ≥ 6% via per-atom convolution, merging within ~3 mDa.
 2. Process M0s in **ascending m/z** (line 1070–1071) so a satellite cannot claim a lighter parent.
 3. For each predicted line: `line_ppm = 5.0 if dmass < 2.5 else cfg.ppm (12.0)` (line 1096) — tight for M+1/M+2 to separate 13C (+1.00335) from 29Si (+0.99957, 3.8 mDa apart), loose for multi-isotope M+4+ centroids.
 4. **Attach** an unexplained peak as iso_child if `0.3 ≤ ratio ≤ 3.5` where `ratio = h_sat/(h_parent·rel)` (line 1110).
@@ -282,9 +282,9 @@ Isotope pairs + series chains, DBE-only plausibility (no `match_compounds`, just
 - `split_composites` (in passes/postprocess.py): de-blends — owner keeps `assigned_fraction` of measured height; a synthetic sub-peak `<id>.2` (same m/z, `synthetic=True`, `host_peak_id`) carries the co-component share + halogen guess. Signal conserved.
 - **Pass 6 (ladder)**: gapfill homolog/oxidation diagonals; then the 3rd `complete_isotope_envelopes`.
 
-### 3.6 Off-cal re-arbitration (`rearbitrate_offcal_degenerate`, pipeline stage `rearbitrate`, assign.py:236)
+### 3.6 Off-cal re-arbitration (`rearbitrate_offcal_degenerate`, pipeline stage `rearbitrate`, assign.py)
 
-Runs after cleanup + siloxane but **BEFORE degeneracy and tiers** (`passes.rearbitrate_offcal_degenerate`, passes/postprocess.py:757–865). It re-arbitrates OFF-CALIBRATION degenerate winners **at selection**, not just at tiering: an over-ranked off-cal "aromatic-monster" M0 winner is displaced so it cannot keep the M0 slot it would only ever be tier-demoted out of (degeneracy/tiers then see the corrected formula). It reuses `tiers._calibrate` (the same isotopologue-backed CHO/CHON core) so the off-cal gate is **identical** to the one the report tier engine applies. Per unlocked, non-`known:` M0 with finite `ppm_error`:
+Runs after cleanup + siloxane but **BEFORE degeneracy and tiers** (`passes.rearbitrate_offcal_degenerate`, passes/postprocess.py). It re-arbitrates OFF-CALIBRATION degenerate winners **at selection**, not just at tiering: an over-ranked off-cal "aromatic-monster" M0 winner is displaced so it cannot keep the M0 slot it would only ever be tier-demoted out of (degeneracy/tiers then see the corrected formula). It reuses `tiers._calibrate` (the same isotopologue-backed CHO/CHON core) so the off-cal gate is **identical** to the one the report tier engine applies. Per unlocked, non-`known:` M0 with finite `ppm_error`:
 1. `z_win = (ppm − mu)/sigma`; skip if `|z_win| ≤ Z_TAIL_DEMOTE (2.6)` — an on-cal winner stands.
 2. Skip if corroborated (iso_child/isotopologues, `≥2` channels for the neutral, or a series/`anchor_peak_id`) — never displace a corroborated winner.
 3. Skip unless the winner is in the aromatic-monster corner: `dbe/nC ≥ REARB_WINNER_DBE_PER_C (0.70)`.
@@ -293,9 +293,9 @@ Runs after cleanup + siloxane but **BEFORE degeneracy and tiers** (`passes.rearb
 
 **No-op when uncalibrated** (uncalibrated runs skip it). In the Ur/Br re-runs it produced no additional merged tier changes.
 
-### 3.7 Positive-mode reagent-N re-read (`relabel_reagent_n_adducts`, pipeline stage `relabel_reagent_n`, assign.py:257)
+### 3.7 Positive-mode reagent-N re-read (`relabel_reagent_n_adducts`, pipeline stage `relabel_reagent_n`, assign.py)
 
-Runs among the **post-tier** stages (after `relabel_radicals`, before `demote_ionization`; `cleanup.relabel_reagent_n_adducts`, cleanup.py:685–747). A **pure hydrocarbon** (parses to C/H only — no O/N/S/P/halogen/Si) assigned via an N-carrying reagent cluster is implausible: a hydrocarbon has no basic/polar site to bind the cluster and a real one would ionize as `[M+H]+`. It is re-read as `[M+H]+` of the N-heterocycle **M′ = M + (cluster − H)**, where the cluster mass comes from `_REAGENT_N_CLUSTERS = {"[M+NH4]+": {N:1, H:3}, "[M+(CH4N2O)H]+": {C:1, H:4, N:2, O:1}}` (cleanup.py:679–682) — e.g. `C5H6 [M+(CH4N2O)H]+ → C6H10N2O [M+H]+`; `C5H6 [M+NH4]+ → C5H9N [M+H]+`. Guards: M′ must pass `dbe_ok`/`oxygen_ok`; **SKIPPED** when the same hydrocarbon also has its own genuine `[M+H]+` row (a real terpene that legitimately forms `[M+NH4]+`). **On a batch this runs ONCE on the merged ledger** (`assign_batch.run`; the per-file stage is gated off by `assign.run(reagent_n_relabel=False)`): the skip key is a presence test that flips with each file's S/N, so per file it split one ion into two readings across the batch (C15H22 `[M+NH4]+` in 14 files, C15H25N `[M+H]+` in the 15th) — pooled, every file's `[M+H]+` rows decide together. The re-read row is tiered **Candidate + `below_assignability`**, `confidence="Low (reagent-N re-read)"` (the specific N-heterocycle is rarely cross-channel-confirmed and the region is often reagent background, but the protonated-heterocycle label is the saner best-guess and stays visible). Positive adducts only (negative reagents never hit these).
+Runs among the **post-tier** stages (after `relabel_radicals`, before `demote_ionization`; `cleanup.relabel_reagent_n_adducts`, cleanup.py). A **pure hydrocarbon** (parses to C/H only — no O/N/S/P/halogen/Si) assigned via an N-carrying reagent cluster is implausible: a hydrocarbon has no basic/polar site to bind the cluster and a real one would ionize as `[M+H]+`. It is re-read as `[M+H]+` of the N-heterocycle **M′ = M + (cluster − H)**, where the cluster mass comes from `_REAGENT_N_CLUSTERS = {"[M+NH4]+": {N:1, H:3}, "[M+(CH4N2O)H]+": {C:1, H:4, N:2, O:1}}` (cleanup.py) — e.g. `C5H6 [M+(CH4N2O)H]+ → C6H10N2O [M+H]+`; `C5H6 [M+NH4]+ → C5H9N [M+H]+`. Guards: M′ must pass `dbe_ok`/`oxygen_ok`; **SKIPPED** when the same hydrocarbon also has its own genuine `[M+H]+` row (a real terpene that legitimately forms `[M+NH4]+`). **On a batch this runs ONCE on the merged ledger** (`assign_batch.run`; the per-file stage is gated off by `assign.run(reagent_n_relabel=False)`): the skip key is a presence test that flips with each file's S/N, so per file it split one ion into two readings across the batch (C15H22 `[M+NH4]+` in 14 files, C15H25N `[M+H]+` in the 15th) — pooled, every file's `[M+H]+` rows decide together. The re-read row is tiered **Candidate + `below_assignability`**, `confidence="Low (reagent-N re-read)"` (the specific N-heterocycle is rarely cross-channel-confirmed and the region is often reagent background, but the protonated-heterocycle label is the saner best-guess and stays visible). Positive adducts only (negative reagents never hit these).
 
 ### 3.7b ¹⁵N-ammonium in-source dehydration re-read (`relabel_ammonium_dehydration`, pipeline stage `nh4_dehydration`)
 
@@ -331,27 +331,27 @@ Per peak: `eff_score = raw_score − complexity/iso penalty − minor-channel pe
 
 ### 4.2 Tier classification (tiers.py)
 
-`compute_tiers(ledger)` (tiers.py:293–419) / `apply_tiers(ledger)` (tiers.py:422–445). The tier engine **re-calibrates independently** (`tiers._calibrate`, median-centered, offset-aware outlier rejection) on the corroborated CHO/CHON backbone (High/Good + isotope, excluding halogen/Si/S/F, N≤1) — avoiding circular logic; its fit wins the tier verdict if it disagrees with the pass fit.
+`compute_tiers(ledger)` (tiers.py) / `apply_tiers(ledger)` (tiers.py). The tier engine **re-calibrates independently** (`tiers._calibrate`, median-centered, offset-aware outlier rejection) on the corroborated CHO/CHON backbone (High/Good + isotope, excluding halogen/Si/S/F, N≤1) — avoiding circular logic; its fit wins the tier verdict if it disagrees with the pass fit.
 
 **Tier gates:**
 
 | Gate | Value | Ref |
 |---|---|---|
-| `CLOSE_MARGIN` | 0.10 (alternatives within this eff_score count toward density; `candidate_density = 1 + #close`) | tiers.py:64 |
-| `O_MAX_IDENTIFIED` | 11 (O≥12 = lattice-monster → Candidate / below-assignability) | tiers.py:65–67 |
-| `Z_TAIL_DEMOTE` | 2.6 σ (uncorroborated M0 with `|z|>2.6` → Candidate) | tiers.py:77 |
-| `DEGEN_DEMOTE_DENSITY` | 2 (degenerate if `>2` distinct cross-family plausible ions, i.e. ≥3, OR MASS-SATURATED) | tiers.py:105 |
-| `TIE_MARGIN` | 0.05 (arbitrate's own near-tie window; a stored/recomputed tie within this eff_score → Candidate unless cross-channel/anchor rescues) | tiers.py:63 |
+| `CLOSE_MARGIN` | 0.10 (alternatives within this eff_score count toward density; `candidate_density = 1 + #close`) | tiers.py |
+| `O_MAX_IDENTIFIED` | 11 (O≥12 = lattice-monster → Candidate / below-assignability) | tiers.py |
+| `Z_TAIL_DEMOTE` | 2.6 σ (uncorroborated M0 with `|z|>2.6` → Candidate) | tiers.py |
+| `DEGEN_DEMOTE_DENSITY` | 2 (degenerate if `>2` distinct cross-family plausible ions, i.e. ≥3, OR MASS-SATURATED) | tiers.py |
+| `TIE_MARGIN` | 0.05 (arbitrate's own near-tie window; a stored/recomputed tie within this eff_score → Candidate unless cross-channel/anchor rescues) | tiers.py |
 
-**Same-ion decomposition-alias dedup** (`_drop_decomposition_aliases`, tiers.py:208–219, run per row at the top of the density computation). Before margin/density are counted, alternatives that are the **SAME ION** as the winner under a different neutral/adduct split (covalent-vs-cluster decomposition, e.g. a covalent di-bromo neutral vs `[M+HBr+Br]-` of the base neutral) are dropped — no spectral evidence can ever distinguish those readings, the adduct reading is preferred by policy, so they are not competing candidates and must not inflate ties or `candidate_density`. Ion element counts come from `_ion_counts(neutral, adduct)` (tiers.py:187–205), which parses the neutral then applies each signed adduct token. **Urea-parenthesis fix** (bceb7f3): `_ion_counts` now **flattens parentheses** (`replace("(", "").replace(")", "")`) before tokenising, so the urea cluster `[M+(CH4N2O)H]+` contributes its full `C1H4N2O1` — previously the parens swallowed the whole token and the reagent's 2 N were silently dropped, hiding every urea-channel isobar (674 assignments) from both this dedup and the reagent-N gate below. `n_aliased` (count removed) is tracked so a stored tie flag naming a now-removed alias is recomputed rather than trusted.
+**Same-ion decomposition-alias dedup** (`_drop_decomposition_aliases`, tiers.py, run per row at the top of the density computation). Before margin/density are counted, alternatives that are the **SAME ION** as the winner under a different neutral/adduct split (covalent-vs-cluster decomposition, e.g. a covalent di-bromo neutral vs `[M+HBr+Br]-` of the base neutral) are dropped — no spectral evidence can ever distinguish those readings, the adduct reading is preferred by policy, so they are not competing candidates and must not inflate ties or `candidate_density`. Ion element counts come from `_ion_counts(neutral, adduct)` (tiers.py), which parses the neutral then applies each signed adduct token. **Urea-parenthesis fix** (bceb7f3): `_ion_counts` now **flattens parentheses** (`replace("(", "").replace(")", "")`) before tokenising, so the urea cluster `[M+(CH4N2O)H]+` contributes its full `C1H4N2O1` — previously the parens swallowed the whole token and the reagent's 2 N were silently dropped, hiding every urea-channel isobar (674 assignments) from both this dedup and the reagent-N gate below. `n_aliased` (count removed) is tracked so a stored tie flag naming a now-removed alias is recomputed rather than trusted.
 
-**Reagent-N isobar demotion (D1)** (`_reagent_n_isobar`, tiers.py:222–244; applied in `compute_tiers` at tiers.py:379–386, gate at 409–418). In **positive mode** a CHO neutral seen via an N-donating reagent adduct — `N_DONOR_ADDUCTS = ("[M+NH4]+", "[M+(CH4N2O)H]+")` (tiers.py:99) — is **exactly isobaric** with the protonated form of an N-heavier neutral: e.g. `C12H14O4 [M+NH4]+` and `C12H17NO4 [M+H]+` are both the ion `C12H18NO4+`. The rule fires when a same-ion stored alternative reads the donated N as **analyte** N (strictly N-richer neutral). Because it is the *same ion*, **mass cannot separate them and isotopes cannot either** (identical ion → identical ¹³C pattern), so the reported nitrogen count / DBE / Van Krevelen class is a chemistry guess. The demotion sets `iso_ev=False` and downgrades `cross_channel` to the only discriminators that actually pin the nitrogen: an **N-free sibling channel** (the same neutral seen as `[M+H]+`/`[M+Na]+`/`[M+K]+`), the **jointly-unfakeable NH4+urea pair** (`{[M+NH4]+, [M+(CH4N2O)H]+}` both present — one neutral cannot forge both), or a **series anchor**. With none of these, the winner is **demoted to Candidate** with an honest `tier_reason` ("reagent-N isobar unresolved … isotopes cannot — identical ion") instead of the old false "unique in the calibrated window"; when resolved, the reason names *how* the nitrogen was fixed and never claims window-uniqueness. Returns False in negative mode (no N-donor adduct fires), so Br-CIMS is unaffected.
+**Reagent-N isobar demotion (D1)** (`_reagent_n_isobar`, tiers.py; applied in `compute_tiers` at tiers.py, gate at 409–418). In **positive mode** a CHO neutral seen via an N-donating reagent adduct — `N_DONOR_ADDUCTS = ("[M+NH4]+", "[M+(CH4N2O)H]+")` (tiers.py) — is **exactly isobaric** with the protonated form of an N-heavier neutral: e.g. `C12H14O4 [M+NH4]+` and `C12H17NO4 [M+H]+` are both the ion `C12H18NO4+`. The rule fires when a same-ion stored alternative reads the donated N as **analyte** N (strictly N-richer neutral). Because it is the *same ion*, **mass cannot separate them and isotopes cannot either** (identical ion → identical ¹³C pattern), so the reported nitrogen count / DBE / Van Krevelen class is a chemistry guess. The demotion sets `iso_ev=False` and downgrades `cross_channel` to the only discriminators that actually pin the nitrogen: an **N-free sibling channel** (the same neutral seen as `[M+H]+`/`[M+Na]+`/`[M+K]+`), the **jointly-unfakeable NH4+urea pair** (`{[M+NH4]+, [M+(CH4N2O)H]+}` both present — one neutral cannot forge both), or a **series anchor**. With none of these, the winner is **demoted to Candidate** with an honest `tier_reason` ("reagent-N isobar unresolved … isotopes cannot — identical ion") instead of the old false "unique in the calibrated window"; when resolved, the reason names *how* the nitrogen was fixed and never claims window-uniqueness. Returns False in negative mode (no N-donor adduct fires), so Br-CIMS is unaffected.
 
 **Assigned** (default) when: known/locked species; OR unique in the calibrated window (density=1) with isotope/cross-channel/series support or no close alternatives; OR `O ≤ 11`, mass on-trend (`|z| ≤ 2.6` or corroborated), not mass-degenerate or corroborated.
 
 **Candidate** when any of: base confidence Low/Suspect; `O ≥ 12`; mixed Br/Cl backbone ambiguity; **positive-mode reagent-N isobar with no N-free sibling / NH4+urea pair / anchor** (D1, above); **partially-fluorinated reading below PFAS F/H coherence** (`F/H` gate, below); tied without cross-channel/series corroboration; close alternatives (density>1) uncorroborated; background air-ion channel without primary status or corroboration; `|z| > 2.6` uncorroborated; mass-degenerate uncorroborated.
 
-**Fluorine F/H-coherence cap** (`F_H_COHERENCE=2`, tiers.py:68; gate at tiers.py:418). An F-bearing formula with `H>1` needs `F ≥ 2·H` to read as a real (per/poly)fluoro class; a **partially-fluorinated** reading (`F ≥ 1 & F < 2·H`, H-rich, sub-PFAS F) is the classic absorber of a mass shift the grid cannot express — e.g. a ¹⁵N-organonitrate product in a `[¹⁵N]`-nitrate run (see §3.8) — and ¹⁹F is monoisotopic, so **no isotope twin can ever confirm the fluorine count**. Such a winner is demoted to **Candidate** unless a **¹³C child** (`iso_ev`, which pins the carbon count) rescues it. PFCA/TFA (`H=1`) and true polyfluoro (`F≥2H`) pass untouched — so the flat chamber PFAS background (`CnHF(2n−1)O2`) stays Assigned (part of the "three fluorine exemptions" closure, d28bbf6, together with the plausibility carbon-cluster F-free-clause drop and the cleanup `(H+F)/C` carbon-rich floor).
+**Fluorine F/H-coherence cap** (`F_H_COHERENCE=2`, tiers.py; gate at tiers.py). An F-bearing formula with `H>1` needs `F ≥ 2·H` to read as a real (per/poly)fluoro class; a **partially-fluorinated** reading (`F ≥ 1 & F < 2·H`, H-rich, sub-PFAS F) is the classic absorber of a mass shift the grid cannot express — e.g. a ¹⁵N-organonitrate product in a `[¹⁵N]`-nitrate run (see §3.8) — and ¹⁹F is monoisotopic, so **no isotope twin can ever confirm the fluorine count**. Such a winner is demoted to **Candidate** unless a **¹³C child** (`iso_ev`, which pins the carbon count) rescues it. PFCA/TFA (`H=1`) and true polyfluoro (`F≥2H`) pass untouched — so the flat chamber PFAS background (`CnHF(2n−1)O2`) stays Assigned (part of the "three fluorine exemptions" closure, d28bbf6, together with the plausibility carbon-cluster F-free-clause drop and the cleanup `(H+F)/C` carbon-rich floor).
 
 **Below assignability** (flag): `O ≥ 11` AND mass-saturated.
 
@@ -363,11 +363,11 @@ The **degeneracy audit** (degeneracy.py) re-counts distinct plausible ions acros
 
 `run_cleanup` runs, in order: (1) `recover_isotope_gated`, (2) `label_bromide_clusters`, (2b) `relabel_reagent_halocarbons`, (3) `flag_ringing_artifacts`, (4) `reclaim_satellites`, (5) `reclaim_envelope_tails`. `demote_unconfirmed_fluorine` is **excluded** here — it must run AFTER `tiers.apply_tiers` (which re-promotes), called by `assign.run` post-tiering. All functions mutate the ledger in place (role/tier/commentary only); no new peaks.
 
-### 5.1 Ringing artifacts (cleanup.py:54–87)
+### 5.1 Ringing artifacts (cleanup.py)
 
 `flag_ringing_artifacts(factor=100.0, dmz=0.012, min_parent=50000.0)`: marks an unexplained peak as `ROLE_ARTIFACT` when a saturating parent (`≥ 50000 cps`) sits within `±0.012 Da` (~4.4 ppm at m/z 400, sub-resolution) and is `≥ 100×` brighter (satellite <1% of parent). Below 50k cps a peak cannot ring; the 100× gate distinguishes a true sidelobe from a resolved neighbor.
 
-### 5.2 Bromide clusters (cleanup.py:100–186)
+### 5.2 Bromide clusters (cleanup.py)
 
 `label_bromide_clusters(defect_max=-0.16, covalent_tau=0.70)`: labels strongly negative mass-defect peaks (`defect < -0.16`, i.e. ≥2 Br in the adduct region) carrying a Br isotope partner (1.998 Da, ratio 0.4–3.0) as `ROLE_REAGENT`. If an oracle is available, scores degenerate covalent di-/tri-bromo organics over box `C0-12 H0-22 N0-1 O0-8 S0-1 Cl0-1 Br1-3`; a fit `≥ 0.70` is recorded as a commentary alternative (reagent-adduct reading preferred per the fewest-halogens-in-neutral policy). Three-way honesty: tie found → record; oracle present, no tie → "not above threshold"; offline → defect-only note.
 
@@ -375,22 +375,22 @@ The **degeneracy audit** (degeneracy.py) re-counts distinct plausible ions acros
 
 A bromomethane reagent-precursor fragment (CH₂Br₂ → CHBr₂⁻, m/z 170.845) is **mass-degenerate** with an absurd bare-element + reagent-cluster reading (neutral `C` via `[M+HBr+Br]-`): the *same ion at the same mass*. Scoring ties exactly and the neutral-halogen complexity penalty then hands the win to the bare-element cluster, so the report names "neutral C". This step catches them on the **invariant ion composition** (parsed element counts, independent of the guessed neutral and robust to ion-formula string ordering): `CHBr2`/`CBr3` → `ROLE_REAGENT` (out of the analyte pool); `C2HBr2O2` → renamed to the real neutral **C₂H₂Br₂O₂ (dibromoacetic acid)** as `[M-H]-` with a background note. The ≥2 bromines are isotope-confirmable and the match is exact-composition, so this is safe. **Br-CIMS only** (no-op for other reagents). Reference: the F-monster / carbon-cluster "background" ions are *not* registered here — their composition (monoisotopic F, or bare carbon clusters) is unconfirmable, so they are left to the plausibility scan / `demote_unconfirmed_fluorine` rather than asserted as named species.
 
-### 5.3 Isotope-gated recovery (cleanup.py:223–311)
+### 5.3 Isotope-gated recovery (cleanup.py)
 
 `recover_isotope_gated(score_floor=0.65, z_max=2.5)`: revives low-complexity CHO (± ≤1 covalent Br/Cl) molecules dropped by an aggressive score gate, **only when the measured halogen isotope envelope confirms the halogen count**. Enumerates `RECOVERY_BOX='C0-20 H0-36 O0-12 Cl0-1 Br0-2'`, scores via oracle, filters by calibration (`|z| ≤ 2.5`, default σ=0.5 if uncalibrated), then `_pattern_ok`:
 - 1Br: `0.78 ≤ M+2/M0 ≤ 1.20`; 2Br: `1.55 ≤ r2 ≤ 2.35 ∧ 0.55 ≤ r4 ≤ 1.35`; 1Cl: `0.20 ≤ r2 ≤ 0.48`; 1Br1Cl: `1.10 ≤ r2 ≤ 1.55`; `(0,0)` → False (no corroboration).
 - Rejects any fit with N/S/P (`_het_types ≤ 2`, CHON/CHOS rejected — halogen isotope confirms the adduct halogen, not N/S). Commits `tier=Assigned`, confidence "Good (recovered)".
 - `_decompose` reverse-maps the ion to `(neutral, adduct)`, deterministically preferring fewest halogens in the neutral (Br-in-adduct `[M+Br]-` over covalent `[M-H]-`), iterating `RECOVERY_ADDUCTS=['[M-H]-','[M+Br]-']`.
 
-### 5.4 Satellite reclaim (cleanup.py:342–395)
+### 5.4 Satellite reclaim (cleanup.py)
 
 `reclaim_satellites(ppm=6.0)`: attaches clean monoisotopic satellites (13C, 81Br, 37Cl) of assigned M0s as iso_children. 13C gate carbon-aware: `0.3·(nC·0.0107) ≤ ratio ≤ 2.5·(nC·0.0107) ∧ ratio < 1.0`; 81Br `0.55 ≤ ratio ≤ 1.4·nBr`; 37Cl `0.18 ≤ ratio ≤ 0.5·nCl`. Touches only unexplained rows; never demotes M0s. Deltas: 13C=1.003355, 81Br=1.9979521, 37Cl=1.997050.
 
-### 5.5 Envelope tails (cleanup.py:398–460)
+### 5.5 Envelope tails (cleanup.py)
 
 `reclaim_envelope_tails(ppm=6.0)`: attaches deep multi-halogen envelopes (`k=2..10` of 37Cl/81Br) via binomial gate `0.35·C(nX,k)·p^k ≤ ratio ≤ 2.8·...` (`p_Cl=0.3199`, `p_Br=0.9728`). **KNOWN LIMITATION**: a no-op on real batches (the deep-tail leak is absorbed upstream by `reclaim_satellites` + isotope-locked known-species/CP recovery). Kept harmless; only synthetic tests exercise it.
 
-### 5.6 Fluorine demotion (cleanup.py:466–502)
+### 5.6 Fluorine demotion (cleanup.py)
 
 `demote_unconfirmed_fluorine(f_min=4)`: demotes M0s on unconfirmed high fluorine (`F ≥ 4`) from Assigned → Candidate + sets `below_assignability` (19F is monoisotopic, no twin). Exempts known PFCAs (`CnH F(2n-1) O2`, n≥2) and any fit with a Cl/Br/S anchor whose diagnostic isotope is **CONFIRMED** — `34S`/`37Cl`/`81Br` present in the row's `isotopologues` (not merely the element in the formula); a *reagent* Br adduct's `81Br` does **not** count (it confirms the adduct, not the neutral). On the merged ledger (no isotopologues) it falls back to element-presence. **Must run after `apply_tiers`** so demotion sticks. (Audit rule-gap 1 — caught the F7+S monster C₈H₁₃F₇N₂O₄S that was exempted only because S was in the formula.)
 
@@ -415,7 +415,7 @@ Runs **last** in `assign.run` (after the demotions, so it sets its own tier). Ma
 
 Soft and provenance-tagged (every commit records the source list); only `ROLE_UNEXPLAINED` peaks are touched, so it never overrides an existing assignment. Active only when `reflists_active` is supplied; every entry point resolves it from the run's metadata (`reflists.activate`), so a batch unlocks whatever its batch name names and a single sample gets the always-active lists. A caller that passes nothing still gets a no-op.
 
-### 5.7 Amine re-read (cleanup.py:522–618, uronium-only)
+### 5.7 Amine re-read (cleanup.py, uronium-only)
 
 `prefer_amine_over_ammonium(ts_peaks=None, r_min=0.7)`: `[M+NH4]+` of CHO neutral X is mass/isotope-identical to `[M+H]+` of amine X+NH3. Re-reads as the protonated amine UNLESS (1) X is corroborated — present as `[M+H]+` or `[M+(CH4N2O)H]+`, or time-series log-Pearson `r ≥ 0.7` co-variation (≥6 points) — OR (2) the amine is valence-impossible (negative DBE → NH4 forced). Touches only `neutral_formula`/`adduct`.
 
@@ -429,7 +429,7 @@ Soft and provenance-tagged (every commit records the source list); only `ROLE_UN
 
 **THE RULE — `select_cover_samples(k_min=K_MIN=6, k_max=K_MAX=30, min_gain=MIN_GAIN=0.005, min_prevalence=MIN_PREVALENCE=2, group_col=None)`** (sampling.py): bins all batch peaks by m/z (`timeseries.build_matrix`, 6 ppm); the universe is every bin PRESENT in `≥ 2` samples (no height floor — the picker edge spans ~1000× across instruments/modes); greedily picks the sample holding the most not-yet-covered universe bins; stops when the next pick would add `< 0.5 %` of the universe once `≥ 6` picks are taken (`stop_reason='gain-floor'`), or at the `30`-sample budget (`'k_max'`, warned), or when nothing is left (`'exhausted'`, padded to `k_min` with the richest-TIC samples, `role='pad'`). Returns the picks in order with `pick`, `role` (`cover`/`pad`), `bins_new` (marginal gain), `coverage` (cumulative) and `.attrs['selection']` (k, n_bins, achieved_coverage, stop_reason, next_gain; `coverage_by_group`/`picks_by_group` when `group_col` is given — the pool path). Fewer than `k_min` samples → all taken. Deterministic. See `docs/SAMPLING.md` for the measurements behind each choice.
 
-### 6.2 Offset-aware merge (assign_batch.align, assign_batch.py:52–107)
+### 6.2 Offset-aware merge (assign_batch.align, assign_batch.py)
 
 For each selected sample: `assign.run` → save `per_file/<sid>_ledger.csv` → `estimate_offset` (median ppm of the sample's own matches, None if <8) → extract M0 rows (`_M0_COLS = [mz, neutral_formula, adduct, tier, ion_score]`).
 
@@ -446,7 +446,7 @@ For each selected sample: `assign.run` → save `per_file/<sid>_ledger.csv` → 
 
 ## 7. Time-Series Clustering & the Unexplained Funnel (clustering.py, cluster.py, timeseries.py, analyte_viz.py)
 
-`cluster_batch(...)` (clustering.py:39–315) reads `merged_ledger` (M0 only) + `per_file/*` (all roles) + batch TS; produces three figure sets + QC + `clusters_summary.json` (which documents every threshold and the funnel counts — required by the PDF report).
+`cluster_batch(...)` (clustering.py) reads `merged_ledger` (M0 only) + `per_file/*` (all roles) + batch TS; produces three figure sets + QC + `clusters_summary.json` (which documents every threshold and the funnel counts — required by the PDF report).
 
 ### 7.1 Binning (timeseries.py)
 
@@ -461,7 +461,7 @@ For each selected sample: `assign.run` → save `per_file/<sid>_ledger.csv` → 
 5. `merge_similar(merge_r=MERGE_R=0.85, complete linkage on centroids)` — fold near-duplicate families.
 6. `split_flat_clusters(range_min=FLAT_CLUSTER_RANGE=1.4)` — demote families whose member-mean doesn't move (smoothed max/median < 1.4) to background.
 7. `big_changers(fold_min=BIG_CHANGE_FOLD=3.0, baseline=10th-percentile)` — standalone large changes regardless of co-variation.
-8. `panel_median` fills below-detection NaN to the detection floor (NOT dropped — nanmedian would have survivorship bias through zero-air dips, cluster.py:67).
+8. `panel_median` fills below-detection NaN to the detection floor (NOT dropped — nanmedian would have survivorship bias through zero-air dips, cluster.py).
 
 ### 7.3 Unexplained funnel (the gates)
 
@@ -469,11 +469,11 @@ A TS bin enters unassigned clustering only if: **median `≥ 50.0 cps`** AND `�
 
 ### 7.4 Channel-agreement QC
 
-`channel_agreement(floor=150.0, min_points=8)` (analyte_viz.py:258–305): for each neutral with ≥2 testable channels (median ≥ 150 cps, ≥8 points), correlates all channel pairs (log10). Verdict: `agree` (worst_r ≥ 0.7), `marginal` (≥ 0.4), `disagree` (< 0.4) — QC for the summing assumption.
+`channel_agreement(floor=150.0, min_points=8)` (analyte_viz.py): for each neutral with ≥2 testable channels (median ≥ 150 cps, ≥8 points), correlates all channel pairs (log10). Verdict: `agree` (worst_r ≥ 0.7), `marginal` (≥ 0.4), `disagree` (< 0.4) — QC for the summing assumption.
 
 ### 7.5 Time-series annotation
 
-`apply_timeseries(reagent_mzs, mono_anchor_mzs, formic_mz, tol_ppm=5.0, demote=True)` (timeseries.py:185–260) stamps M0s: `ts_cv_norm`, `ts_r_mono`, `ts_r_formic`, `ts_disposition`. Gates (on reagent-NORMALISED traces): `background` if `cv_norm < 0.25` (FLAT_CV); `ambient:biogenic-SOA` if `r_mono ≥ 0.70` (COVARY_R); `ambient:acid/oxygenate pool` if `r_formic ≥ 0.90`. If `demote=True` and an Assigned di-bromide/CO3 commit is flat → **tier demoted to Candidate** (formula unchanged). `trace(run_dir, query, tol_ppm=5.0)` (timeseries.py:275–330) is the reproducible single-compound query (reads the run's own parquet + merged ledger).
+`apply_timeseries(reagent_mzs, mono_anchor_mzs, formic_mz, tol_ppm=5.0, demote=True)` (timeseries.py) stamps M0s: `ts_cv_norm`, `ts_r_mono`, `ts_r_formic`, `ts_disposition`. Gates (on reagent-NORMALISED traces): `background` if `cv_norm < 0.25` (FLAT_CV); `ambient:biogenic-SOA` if `r_mono ≥ 0.70` (COVARY_R); `ambient:acid/oxygenate pool` if `r_formic ≥ 0.90`. If `demote=True` and an Assigned di-bromide/CO3 commit is flat → **tier demoted to Candidate** (formula unchanged). `trace(run_dir, query, tol_ppm=5.0)` (timeseries.py) is the reproducible single-compound query (reads the run's own parquet + merged ledger).
 
 ---
 
@@ -481,24 +481,24 @@ A TS bin enters unassigned clustering only if: **median `≥ 50.0 cps`** AND `�
 
 ### 8.1 Reagents (reagents.py)
 
-`build_library(reagent='Br', max_n=4, max_neutral=1)` (reagents.py:83–143) enumerates cluster-ion m/z: bare halide `R_n-` (odd-n closed-shell, even-n radical), `R_n·(H2O/HBr/HF)_k` (`_CLUSTER_NEUTRALS = {H2O, HBr, HF}` — organic acids and HNO3/HNO2 were removed because `[Br+acid]-` IS the analyte `[M+Br]-` channel), and halide oxides. **Isotopologues** enumerated via `combinations_with_replacement` over `_HALOGEN_ISO` (Br: 79Br/81Br; Cl: 35Cl/37Cl; I: 127I) — both BrO twins now in the library. Positive `_build_positive_library` (reagents.py:65–80) makes `[urea_n+H]+` (`_POSITIVE_REAGENTS = {urea: CH4N2O}`, n=1..6, mass = `neutral_mass(R_n+H) − electron_mass`).
+`build_library(reagent='Br', max_n=4, max_neutral=1)` (reagents.py) enumerates cluster-ion m/z: bare halide `R_n-` (odd-n closed-shell, even-n radical), `R_n·(H2O/HBr/HF)_k` (`_CLUSTER_NEUTRALS = {H2O, HBr, HF}` — organic acids and HNO3/HNO2 were removed because `[Br+acid]-` IS the analyte `[M+Br]-` channel), and halide oxides. **Isotopologues** enumerated via `combinations_with_replacement` over `_HALOGEN_ISO` (Br: 79Br/81Br; Cl: 35Cl/37Cl; I: 127I) — both BrO twins now in the library. Positive `_build_positive_library` (reagents.py) makes `[urea_n+H]+` (`_POSITIVE_REAGENTS = {urea: CH4N2O}`, n=1..6, mass = `neutral_mass(R_n+H) − electron_mass`).
 
-`label_reagents(reagent='Br', ppm=15.0, only_unexplained=True)` (reagents.py:146–174): binary-search the library within ±15 ppm; sets `role=ROLE_REAGENT`, records the known `ion_formula`. `reagent_for_adducts(adducts)` (reagents.py:177–195) infers the library key from detected adducts (returns None for `[M+NO3]-` since +NO3- is both reagent and analyte adduct — `resolve(peaks=df)` decides).
+`label_reagents(reagent='Br', ppm=15.0, only_unexplained=True)` (reagents.py): binary-search the library within ±15 ppm; sets `role=ROLE_REAGENT`, records the known `ion_formula`. `reagent_for_adducts(adducts)` (reagents.py) infers the library key from detected adducts (returns None for `[M+NO3]-` since +NO3- is both reagent and analyte adduct — `resolve(peaks=df)` decides).
 
 ### 8.2 Profiles (profiles.py)
 
-`ReagentProfile` (profiles.py:15–26): `name, label, polarity, adducts, normaliser ('reagent'|'tic'), reagent_ion_re, ranges, detect_adduct, context, aliases`. Built-ins BR, UR, NO3, NO3_15N (profiles.py:29–70). Br/NO3 use `normaliser='reagent'` ([Br3]- dominates); NO3_15N uses `'tic'` (15NO3 clusters below the acquisition window); UR uses `'tic'` (positive mode). `register`/`from_dict`/`load_config` (JSON/TOML) support user reagents. `resolve(reagent='auto', peaks, config)` (profiles.py:126–148) looks up by name/alias or auto-detects via `detect_adducts` then polarity.
+`ReagentProfile` (profiles.py): `name, label, polarity, adducts, normaliser ('reagent'|'tic'), reagent_ion_re, ranges, detect_adduct, context, aliases`. Built-ins BR, UR, NO3, NO3_15N (profiles.py). Br/NO3 use `normaliser='reagent'` ([Br3]- dominates); NO3_15N uses `'tic'` (15NO3 clusters below the acquisition window); UR uses `'tic'` (positive mode). `register`/`from_dict`/`load_config` (JSON/TOML) support user reagents. `resolve(reagent='auto', peaks, config)` (profiles.py) looks up by name/alias or auto-detects via `detect_adducts` then polarity.
 
 ### 8.3 Contexts (contexts.py)
 
-`ContextProfile` (contexts.py:25–60): Van Krevelen windows, heteroatom caps, grid bounds, `min_C_for`, `reagent_adducts`, `pass3_families`. `filter_by_profile(formula, profile)` (contexts.py:243–301) gate sequence: `dbe_ok` → no-C inorganic allowlist → heteroatom caps → `min_C_for` reagent-alias guard → Van Krevelen windows (C≥3 only; `Heff = H+F+Cl+Br+I`, `Ceff = C+Si`; C1-C2 special caps).
+`ContextProfile` (contexts.py): Van Krevelen windows, heteroatom caps, grid bounds, `min_C_for`, `reagent_adducts`, `pass3_families`. `filter_by_profile(formula, profile)` (contexts.py) gate sequence: `dbe_ok` → no-C inorganic allowlist → heteroatom caps → `min_C_for` reagent-alias guard → Van Krevelen windows (C≥3 only; `Heff = H+F+Cl+Br+I`, `Ceff = C+Si`; C1-C2 special caps).
 
 | Context | Key bounds |
 |---|---|
 | ambient-air | H/C [0.7,2.75], O/C [0,1.5], N/C [0,0.4], DBE/C [0,0.75]; N≤3, S≤1, P=0, F=0, Cl≤2, Br≤2, Si≤1; min_C_for {Br:5, Cl:5, F:3}; pass3 (organosulfate, nitrate, siloxane, amine) |
 | uronium | H/C 0.4–2.6, N≤5, Si≤12, max_Cl/Br=0; pass3 (amine, siloxane, pdms, glycol_peg, phthalate) |
 
-Context caps always win over family expansion (e.g. ambient `max_Si=1` clamps any pdms family `Si(4,12)`). `classify_compound(formula)` (contexts.py:356–374) returns class band / oxidation level / heteroatom tags for reports.
+Context caps always win over family expansion (e.g. ambient `max_Si=1` clamps any pdms family `Si(4,12)`). `classify_compound(formula)` (contexts.py) returns class band / oxidation level / heteroatom tags for reports.
 
 ### 8.4 Reference lists (reflists.py)
 
@@ -513,7 +513,7 @@ A reference list is used in **three** places, all soft and provenance-tagged (a 
 
 ### 8.5 Plausibility (plausibility.py)
 
-`implausible(formula, tier, polarity)` (plausibility.py:35–63) flags **Candidate-tier only** (Assigned never second-guessed): `N≥3 ∧ O/C≥1.0` (heteroatom coincidence); `N≥4 ∧ O≥8`; `F≥4` (no isotope twin); `F=0 ∧ H/C<0.35` (carbon-rich); `polarity='+' ∧ (Br>0 ∨ Cl>0)`. `scan(merged, polarity)` (plausibility.py:66–87) groups by neutral, skips any neutral Assigned in any channel, returns flagged set for the report Scrutiny sheet. Flagged formulas are KEPT, not removed.
+`implausible(formula, tier, polarity)` (plausibility.py) flags **Candidate-tier only** (Assigned never second-guessed): `N≥3 ∧ O/C≥1.0` (heteroatom coincidence); `N≥4 ∧ O≥8`; `F≥4` (no isotope twin); `F=0 ∧ H/C<0.35` (carbon-rich); `polarity='+' ∧ (Br>0 ∨ Cl>0)`. `scan(merged, polarity)` (plausibility.py) groups by neutral, skips any neutral Assigned in any channel, returns flagged set for the report Scrutiny sheet. Flagged formulas are KEPT, not removed.
 
 ---
 
@@ -521,28 +521,28 @@ A reference list is used in **three** places, all soft and provenance-tagged (a 
 
 ### 9.1 Pipeline orchestration (pipeline.py)
 
-- `run_batch(...)` (pipeline.py:232–286): one-call full pipeline — fetch/reuse TS → resolve profile → select samples → `assign_batch.run` per sample → merge → cluster → Van Krevelen → PDF. Returns `{ctx, assign, cluster, vk, report_pdf}`.
-- `make_run_context` / `run_id(batch, when)` (pipeline.py:64–66): one `when` per run → folder name = cover Report-ID = `batch_slug + YYYY-MM-DDTHHMMSSZ`.
-- `generate_report(ctx, ts, ...)` (pipeline.py:183–229): offline — pins `SOURCE_DATE_EPOCH` then `cluster_batch` → `van_krevelen_batch` → `pdf_report.build` → `provenance.record_run`.
+- `run_batch(...)` (pipeline.py): one-call full pipeline — fetch/reuse TS → resolve profile → select samples → `assign_batch.run` per sample → merge → cluster → Van Krevelen → PDF. Returns `{ctx, assign, cluster, vk, report_pdf}`.
+- `make_run_context` / `run_id(batch, when)` (pipeline.py): one `when` per run → folder name = cover Report-ID = `batch_slug + YYYY-MM-DDTHHMMSSZ`.
+- `generate_report(ctx, ts, ...)` (pipeline.py): offline — pins `SOURCE_DATE_EPOCH` then `cluster_batch` → `van_krevelen_batch` → `pdf_report.build` → `provenance.record_run`.
 
 ### 9.2 Determinism
 
-`stamp_source_date_epoch(when=None)` (pipeline.py:69–80) exports `CONTENT_EPOCH = 315532800` (1980-01-01Z) as `SOURCE_DATE_EPOCH`. matplotlib (PNG/PDF metadata) and the xlsx writer stamp this fixed epoch, so figures/tables are a pure function of input data — byte-identical re-runs. Run time appears only as visible cover text + folder name. If unset, matplotlib uses the system clock (non-reproducible).
+`stamp_source_date_epoch(when=None)` (pipeline.py) exports `CONTENT_EPOCH = 315532800` (1980-01-01Z) as `SOURCE_DATE_EPOCH`. matplotlib (PNG/PDF metadata) and the xlsx writer stamp this fixed epoch, so figures/tables are a pure function of input data — byte-identical re-runs. Run time appears only as visible cover text + folder name. If unset, matplotlib uses the system clock (non-reproducible).
 
 ### 9.3 I/O (io_mascope.py)
 
-- `connect(env_path)` (io_mascope.py:79–96): builds `MascopeClient` from `MASCOPE_URL` + `MASCOPE_ACCESS_TOKEN`; .env search precedence repo-root → cwd → `$MASCOPE_ENV` → `~/.mascope/.env`. Reads token from disk each call (avoids stale-token 401). Legacy-server patch degrades missing `/api/datasets` gracefully.
+- `connect(env_path)` (io_mascope.py): builds `MascopeClient` from `MASCOPE_URL` + `MASCOPE_ACCESS_TOKEN`; .env search precedence repo-root → cwd → `$MASCOPE_ENV` → `~/.mascope/.env`. Reads token from disk each call (avoids stale-token 401). Legacy-server patch degrades missing `/api/datasets` gracefully.
 - `fetch_batch_peaks` / `fetch_peaks(use_cache, CACHE_ROOT=~/.mascope-assign-cache)`.
-- `score_candidates(...)` (io_mascope.py:565–626): batches formulas (`MATCH_BATCH=200`, >500 timeouts) scored concurrently (`MATCH_WORKERS=5`); raises on partial unless `allow_partial=True`. `DEFAULT_MATCH_PARAMS = {mz_tolerance:5 ppm, isotope_ratio_tolerance:0.2, peak_min_intensity:0.0, min_isotope_abundance:0.15, min_isotope_correlation:0.7, probable_match_threshold:0.8, possible_match_threshold:0.4}`.
-- `flatten_match_tree(tree)` (io_mascope.py:483–539): pure; flattens compound→ion→isotope to one row per triplet; emits `ppm_error` only for genuinely matched peaks. **15N-labelled reagent re-anchor** (`_reanchor_labelled_reagent`, delta=0.997035 Da, label='15N', line 537): moves `is_base` from the phantom all-light M0 to the actual 15N monoisotopic line (the reagent is 100% 15N) — without it the `[M+15NO3]-` channel is dropped.
+- `score_candidates(...)` (io_mascope.py): batches formulas (`MATCH_BATCH=200`, >500 timeouts) scored concurrently (`MATCH_WORKERS=5`); raises on partial unless `allow_partial=True`. `DEFAULT_MATCH_PARAMS = {mz_tolerance:5 ppm, isotope_ratio_tolerance:0.2, peak_min_intensity:0.0, min_isotope_abundance:0.15, min_isotope_correlation:0.7, probable_match_threshold:0.8, possible_match_threshold:0.4}`.
+- `flatten_match_tree(tree)` (io_mascope.py): pure; flattens compound→ion→isotope to one row per triplet; emits `ppm_error` only for genuinely matched peaks. **15N-labelled reagent re-anchor** (`_reanchor_labelled_reagent`, delta=0.997035 Da, label='15N', line 537): moves `is_base` from the phantom all-light M0 to the actual 15N monoisotopic line (the reagent is 100% 15N) — without it the `[M+15NO3]-` channel is dropped.
 
 ### 9.4 PDF report (pdf_report.py)
 
-`build(out_dir, ...)` (pdf_report.py:1058–1084) iterates `SECTIONS = [cover, findings, coverage, composition, scrutiny, reference_lists, gka, families, changers, clusters, methods, assignments_table]`. `load_context` (pdf_report.py:57–276) reads all artifacts (merged ledger, per-file ledgers, figures, summaries, reflists, composition stats, plausibility flags), degrading silently on missing artifacts; one failed section renders an error page, the rest continue. Report-flag thresholds: reagent-signal note if `role_signal['reagent'] ≥ 0.05`; amine caveat if `[M+NH4]+`/`[M+(CH4N2O)H]+` present. `compress_pdf(max_px=850, quality=58, min_mb=2.0)` writes an optional companion (primary stays byte-deterministic).
+`build(out_dir, ...)` (pdf_report.py) iterates `SECTIONS = [cover, findings, coverage, composition, scrutiny, reference_lists, gka, families, changers, clusters, methods, assignments_table]`. `load_context` (pdf_report.py) reads all artifacts (merged ledger, per-file ledgers, figures, summaries, reflists, composition stats, plausibility flags), degrading silently on missing artifacts; one failed section renders an error page, the rest continue. Report-flag thresholds: reagent-signal note if `role_signal['reagent'] ≥ 0.05`; amine caveat if `[M+NH4]+`/`[M+(CH4N2O)H]+` present. `compress_pdf(max_px=850, quality=58, min_mb=2.0)` writes an optional companion (primary stays byte-deterministic).
 
 ### 9.5 Output layout (paths.RunPaths)
 
-`RunPaths(out_dir)` (paths.py:1–68): `root` (run folder), `figures/` (PNGs), `tables/` (CSV/XLSX), `report/` (PDF), `data/` (bulk TS), `per_file/` (per-sample ledgers). `place(filename)` routes by extension/role; `ROOT_ANCHORS` (paths.py:27) keep `merged_ledger.csv`, `run_manifest.json`, `batch_summary.json` at root.
+`RunPaths(out_dir)` (paths.py): `root` (run folder), `figures/` (PNGs), `tables/` (CSV/XLSX), `report/` (PDF), `data/` (bulk TS), `per_file/` (per-sample ledgers). `place(filename)` routes by extension/role; `ROOT_ANCHORS` (paths.py) keep `merged_ledger.csv`, `run_manifest.json`, `batch_summary.json` at root.
 
 ---
 

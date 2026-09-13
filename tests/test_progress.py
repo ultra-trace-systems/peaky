@@ -1172,7 +1172,7 @@ def _sum(stats, get) -> int:
     return sum(get(s) for s in stats)
 
 
-def test_live_totals_from_the_captured_texas_log(monkeypatch):
+def test_live_totals_from_the_captured_batch_log(monkeypatch):
     """The whole run replayed: the totals equal an independent parse of the
     fixture's own stats lines, the first file's numbers read by eye off the log,
     and the DONE line's merge numbers land provisionally."""
@@ -1205,7 +1205,7 @@ def test_live_totals_from_the_captured_texas_log(monkeypatch):
                             "n_in_all_files": 846, "n_single_file": 375,
                             "formula_disagreements": 73}
     assert st.phase == "provenance"
-    assert st.out_dir.endswith("BkKhjKMnAFVXFCUm_2026-09-13T120802Z")
+    assert st.out_dir.endswith("BATCHxxxxxxxxxxx_2026-09-13T120802Z")
 
 
 def test_batch_panel_reads_pending_merge_then_the_exact_summary(monkeypatch):

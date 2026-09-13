@@ -191,7 +191,7 @@ the raw behaviour.
 > **Known residual — a stamp is a mass match, not proof of identity.** Where a
 > sample's real peak is **absent**, a neighbour inside the tolerance still collects
 > the stamp, and that neighbour is sometimes an FT ringing sidelobe. Scale on the
-> Wind-zone-2 batch: **0.28 %** of stamped rows (4777 of 1.73 M) sit >1 mDa from
+> On a 1.73 M-row uronium batch: **0.28 %** of stamped rows (4777 of 1.73 M) sit >1 mDa from
 > their ledger mass, and **10 ions of 2127** span more than 0.5 mDa across the
 > batch. The worst of these — where the channel's whole intensity is a
 > neighbour's sidelobe — are now detected and marked `intensity_suspect`

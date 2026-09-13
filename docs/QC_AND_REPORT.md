@@ -203,7 +203,7 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
   on the same robust median rather than 0).
 - **The QC figure is one file, not the whole run.** It is always sourced from the
   single **brightest** representative ledger (`ctx["bright_ledger"]`,
-  `pdf_report.py:111`), so `cal_mu` and every panel-(b) number are that one file's
+  `pdf_report.py`), so `cal_mu` and every panel-(b) number are that one file's
   drift — not a run-wide average.
 
 ---

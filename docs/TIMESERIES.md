@@ -250,7 +250,7 @@ carries every identified ion of the per-file ledgers, but a ledger claims a
 satellite only where its picker picked it, and the faint diagnostic lines (15N,
 18O, a single 34S / 29Si / 30Si) sit below the picker's edge in most files — so a
 parent Assigned everywhere still left those tracks unexplained wherever a plume
-lifted them (Texas Ur 122-600: C12H27O4P [M+(CH4N2O)H]+ with its 15N line in 109
+lifted them (a 6154-spectrum uronium batch: C12H27O4P [M+(CH4N2O)H]+ with its 15N line in 109
 of 6154 spectra, up to 1.1 kcps, picked in none of the 15 assigned files).
 `predicted_satellite_rows` adds one `iso_child` row per (parent, label) for the
 `PRED_SAT_LABELS` lines of every M0 with a known ion formula, at the parent's

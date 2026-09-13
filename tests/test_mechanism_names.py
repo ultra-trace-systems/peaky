@@ -31,7 +31,7 @@ class _FakeClient:
 def _client():
     df = pd.DataFrame(
         [
-            # name, polarity, id  — mirrors the live Acquisitions-Orbion table
+            # name, polarity, id  — mirrors a live server's mechanism table
             ("-H+", "-", "dep"),  # deprotonation: anion despite trailing '+'
             ("+Br-", "-", "br"),
             ("+CO3-", "-", "co3"),
