@@ -460,8 +460,15 @@ for _name, _txt in (("README.md", (ROOT / "README.md").read_text()),
     # as the same bug the filled bars just stopped being.
     check(f"{_name}: says why a single-sample run shows no ETA",
           "completes when the run does" in _txt)
+# The top [Unreleased] section, sliced on LINE-ANCHORED `## [` headings. A plain
+# `split("## [Unreleased]")` also matched the string inside a bullet's prose --
+# the 0.5.0-retitle note quotes a heading -- which silently truncated the span
+# and failed this check for a reason that had nothing to do with --progress.
+_UNRELEASED = re.split(r"^## \[", CHANGELOG, flags=re.M)[1]
+check("the changelog slice really is the Unreleased section",
+      _UNRELEASED.startswith("Unreleased]"), _UNRELEASED[:40])
 check("the --progress bullets are under [Unreleased], not a released version",
-      "PEAKY_PROGRESS_HOLD_S" in CHANGELOG.split("## [Unreleased]")[1].split("\n### [")[0])
+      "PEAKY_PROGRESS_HOLD_S" in _UNRELEASED)
 check("--progress --help names the hold env var",
       "PEAKY_PROGRESS_HOLD_S seconds" in (PKG / "cli.py").read_text())
 

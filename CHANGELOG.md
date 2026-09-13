@@ -196,6 +196,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remembering to list it. `MODULE_VERSIONS` (the dict) is gone; call
   `module_versions()`. `code.module_hashes` already pinned every file by sha1, so
   past runs stayed reproducible — only the human-readable naming was missing.
+- **The repo's version strings are pinned to each other.** A new
+  `tests/test_versioning.py` asserts the whole set agrees: `peaky.__version__` and
+  `_FALLBACK_VERSION` against pyproject, `uv.lock`'s pin against pyproject (so a bump
+  that forgot `uv lock` fails offline, not just under CI's `--frozen`), and
+  `CITATION.cff` against the CHANGELOG. `CITATION.cff` deliberately LAGS pyproject —
+  it names the last release actually tagged, published and archived, which a citation
+  has to resolve to, and as of 0.7.0 in pyproject that is still 0.6.0 — so it is
+  checked against a dated `## [x.y.z]` CHANGELOG heading (version and date both) and
+  for never running ahead of pyproject, rather than for equality with it. The comment
+  in the file now says so outright instead of leaving the gap to read as drift.
+  The 0.5.0 section heading, which still read "Unreleased", is retitled to name the
+  release and its date (2026-06-30): 0.5.0 was tagged and released, and a released
+  section labelled unreleased made this file's own history unreadable.
 - **The persistence path was inert at the shipped default, and the TOF ledger was a
   flood.** With `height_cutoff_x_edge = 1.0` the brightness path admitted ~99 % of a
   TOF's picked peaks (0.12 % of admissions came from persistence), and the merged
@@ -1167,7 +1180,7 @@ n_iso`); always written (header-only when nothing was touched) so the artifact s
   retained O-monster + carbon-cluster demotes and the `plausibility_audit` CSV are
   unaffected. Fragment detection may return once a more discriminating gate is found.
 
-## [Unreleased] — 0.5.0 (reference peaklists + chemical-plausibility hardening)
+## [0.5.0] — 2026-06-30 (reference peaklists + chemical-plausibility hardening)
 
 Adds a context-gated literature/contaminant peaklist layer and closes a set of
 chemical-plausibility gaps surfaced by manual review and a cross-pipeline
