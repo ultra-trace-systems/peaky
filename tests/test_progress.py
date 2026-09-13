@@ -1411,7 +1411,8 @@ def test_hold_decision_table(monkeypatch):
 class _UpWindow:
     """A TkWindow stand-in that comes up whenever the display probe says one
     can (so the headless branch is still reachable), and records how it was
-    closed."""
+    closed. The probe is PATCHED by every test that uses this -- never left to
+    the machine: CI has no display, a developer's box does."""
     def __init__(self, title): self.title, self.closed_with = title, None
     def start(self, timeout=5.0): return PG.display_available()
     def alive(self): return True
@@ -1421,6 +1422,7 @@ class _UpWindow:
 
 def test_open_progress_holds_an_explicit_window_off_a_tty(monkeypatch):
     monkeypatch.setattr(PG, "TkWindow", _UpWindow)
+    monkeypatch.setattr(PG, "display_available", lambda: True)    # a window CAN come up
     monkeypatch.setattr(PG, "_interactive", lambda: False)
     monkeypatch.delenv("PEAKY_PROGRESS_HOLD_S", raising=False)
     monkeypatch.delenv("PEAKY_PROGRESS", raising=False)
