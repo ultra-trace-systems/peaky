@@ -159,12 +159,14 @@ try:
         _got.clear()
         PL.run_batch(batch="B", dataset="D", reagent="Br", base_out=d, ts=_TS,
                      when=WHEN, do_report=False, log=lambda *a: None)
-        check("a bundled profile leaves the package default in place",
-              _got["ab"]["cfg"].height_cutoff_x_edge == 1.0)
+        check("a bundled profile leaves the package POLICY in place ('auto': assign_batch "
+              "derives the multiple from the batch, or falls back to 1x)",
+              _got["ab"]["cfg"].height_cutoff_x_edge == "auto"
+              and _got["ab"]["cfg"].height_cutoff_x_edge_resolved == 1.0)
     # pipeline.run (the selection-only entry point) reports the same resolution
     check("pipeline.run reports the gate multiple its assign stage would use",
           PL.run(peaks=_TS, reagent="TofP")["height_cutoff_x_edge"] == 5.0
-          and PL.run(peaks=_TS, reagent="Br")["height_cutoff_x_edge"] == 1.0)
+          and PL.run(peaks=_TS, reagent="Br")["height_cutoff_x_edge"] == "auto")
 finally:
     _AB.run, PL.generate_report, _PV.record_run = (
         _savedf["ab"], _savedf["gen"], _savedf["rec"])

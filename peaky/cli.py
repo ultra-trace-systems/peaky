@@ -754,15 +754,18 @@ def _add_admission_args(sp) -> None:
     """The admission gate (assignment/admission.py): brightness OR persistence.
     Defined ONCE here for `assign`, `batch` and `pool` -- the three flags are one
     gate and must read the same on every subcommand."""
-    sp.add_argument("--height-cutoff-x-edge", type=float, default=None,
+    sp.add_argument("--height-cutoff-x-edge", type=_auto_or_float, default=None,
                     help="brightness path of the admission gate as a multiple of each "
                          "sample's noise edge (the 1st percentile of its picked peak "
                          "heights). Instrument-independent: the edge is ~0.8 cps on a "
-                         "TOF and ~800 cps on a reagent-in-range Orbitrap mode. Raise "
-                         "it on a picker that picks into the noise; the persistence "
-                         "path keeps the recurring weak ions. Default: the reagent "
-                         "profile's own multiple when it carries one, else the package "
-                         "default (passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE); "
+                         "TOF and ~800 cps on a reagent-in-range Orbitrap mode. "
+                         "'auto' derives the multiple from the batch's own peaks: the "
+                         "smallest of 1/1.5/2/3/5/8/12/20 at which the peaks it admits "
+                         "are at most 20%% transient (a picker that stops at the noise "
+                         "edge keeps 1.0; one that picks into the noise is raised, and "
+                         "the persistence path keeps the recurring weak ions). "
+                         "Default: the reagent profile's own multiple when it carries "
+                         "one, else 'auto' (1.0 for a single sample with no batch); "
                          "ignored when --height-cutoff is given")
     sp.add_argument("--height-cutoff", type=float, default=None,
                     help="ABSOLUTE brightness gate in cps for the height-gated passes "

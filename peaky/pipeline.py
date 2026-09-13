@@ -235,6 +235,7 @@ def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
         log("[phase] report")
         out["report_pdf"] = R.build(ctx.out_dir, tag=ctx.tag, label=ctx.label,
                                      ts_path=ctx.ts_path, batch_name=ctx.batch_name,
+                                     dataset=ctx.dataset,
                                      run_id=ctx.run_id, generated=ctx.generated)
         log(f"[report] wrote {out['report_pdf']}")
         # also emit a size-reduced companion for emailing (optional deps; no-op if
@@ -328,10 +329,13 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                 "n_samples": summ.get("n_files"),
                 "selection": summ.get("selection"),
                 # the admission gate as RESOLVED for this run (knob, threshold,
-                # n_bins, n_persistent_bins, n_spectra, tol_ppm) -- the config
-                # fingerprint keeps only the knob, so the derived threshold
-                # lives here next to the other run-derived counts
-                "admission": summ.get("admission")},
+                # n_peaks, n_persistent_peaks, n_persistent_traces, n_spectra,
+                # tol_ppm) -- the config fingerprint keeps only the knob, so the
+                # derived threshold lives here next to the other run-derived
+                # counts; likewise the batch-derived brightness floor (`gate`) and
+                # the trace reconciliation of the merged ledger (`traces`)
+                "admission": summ.get("admission"),
+                "gate": summ.get("gate"), "traces": summ.get("traces")},
         created_utc=ctx.when.isoformat(), log=log)
     elapsed = round(time.time() - t_start, 1)
     log(f"[batch] pipeline finished in {elapsed:.1f}s "
@@ -343,7 +347,9 @@ def gate_config(cfg=None, *, occurrence_min=None, height_cutoff_x_edge=None,
                 height_cutoff_cps=None):
     """The run's PassConfig with the admission-gate knobs applied. `occurrence_min`
     is 'auto' (the batch-derived threshold), a number, or 0 (path off); None keeps
-    the config default. The height knobs are numbers or None."""
+    the config default. `height_cutoff_x_edge` is 'auto' (derived from the batch),
+    a number, or None (unset: the profile's value, else the 'auto' policy);
+    `height_cutoff_cps` a number or None."""
     from peaky.assignment import passes as PA
     cfg = cfg or PA.PassConfig()
     if occurrence_min is not None:
@@ -354,7 +360,12 @@ def gate_config(cfg=None, *, occurrence_min=None, height_cutoff_x_edge=None,
         else:
             cfg.occurrence_min = float(occurrence_min)
     if height_cutoff_x_edge is not None:
-        cfg.height_cutoff_x_edge = float(height_cutoff_x_edge)
+        from peaky.assignment.passes.config import AUTO_HEIGHT_CUTOFF_X_EDGE, is_auto_x_edge
+        if isinstance(height_cutoff_x_edge, str) and not is_auto_x_edge(height_cutoff_x_edge):
+            raise ValueError("height_cutoff_x_edge must be 'auto' or a number, "
+                             f"got {height_cutoff_x_edge!r}")
+        cfg.height_cutoff_x_edge = (AUTO_HEIGHT_CUTOFF_X_EDGE if is_auto_x_edge(height_cutoff_x_edge)
+                                    else float(height_cutoff_x_edge))
     if height_cutoff_cps is not None:
         cfg.height_cutoff_cps = float(height_cutoff_cps)
     return cfg
@@ -482,12 +493,14 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     log(f"[pool] {ctx.run_id} -> {ctx.out_dir}")
     prov.to_csv(os.path.join(ctx.out_dir, "selection_provenance.csv"), index=False)
 
-    # batch= carries the pool identity: it names batch_summary AND is what
-    # reflists.resolve_context_tags reads to unlock chemistry-specific reference
-    # lists (a chamber pool named e.g. 'apinene ...' -> the monoterpene list).
+    # batch= carries the pool identity: it names batch_summary AND -- with the
+    # dataset name -- is what reflists.resolve_context_tags reads to unlock
+    # chemistry-specific reference lists (a pool or dataset named e.g.
+    # 'apinene ...' -> the monoterpene list).
     log("[phase] assign")
     res = AB.run(peaks=ts[ts_cols], ts_peaks=ts[ts_cols], reagent=prof.name,
-                 batch=pool_label, sample_ids=union, selection_meta=selection,
+                 batch=pool_label, dataset=dataset, sample_ids=union,
+                 selection_meta=selection,
                  out_dir=ctx.out_dir, amine_r_min=amine_r_min, n_jobs=n_jobs,
                  log=log, **assign_kw)
     # the report's selected-samples section reads tables/selected_samples.csv;
@@ -519,7 +532,8 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                 "merged_tiers": summ.get("merged_tiers"),
                 "n_samples": summ.get("n_files"), "n_groups": len(groups),
                 "selection": summ.get("selection"),
-                "admission": summ.get("admission")},
+                "admission": summ.get("admission"),
+                "gate": summ.get("gate"), "traces": summ.get("traces")},
         created_utc=ctx.when.isoformat(), log=log)
     elapsed = round(time.time() - t_start, 1)
     log(f"[pool] pipeline finished in {elapsed:.1f}s "

@@ -32,6 +32,27 @@ check("active set includes a context list + the always-active contaminants",
 check("no context -> still get the always_active contaminants",
       len(RL.active_lists(cat, context_tags=set())) >= 1)
 
+# ---- the DATASET name is metadata too. On a campaign whose batch names describe the
+# instrument and the reagent ("... TOF NO3_Br mixed ...") the chemistry lives only in
+# the dataset name ("AP oxidation demo-set"), and a resolver that never saw it left
+# the alpha-pinene list inactive on alpha-pinene data. The bare abbreviation "AP" is
+# still NOT a keyword (soap, grape); the PHRASE "ap oxidation" is.
+ds_tags = RL.resolve_context_tags("MIONtof TOF NO3_Br mixed 2026-08-10 - 08-14",
+                                  "AP oxidation demo-set", "Br- CIMS")
+check("the dataset name unlocks the alpha-pinene contexts when the batch name does not",
+      {"ap_ox", "monoterpene_ox"} <= ds_tags, ds_tags)
+check("...and the same texts without the dataset name unlock nothing",
+      RL.resolve_context_tags("MIONtof TOF NO3_Br mixed 2026-08-10 - 08-14", "", "Br- CIMS") == set())
+check("a bare 'AP' is still not a keyword (false positives: soap, grape, AP Low temperature)",
+      RL.resolve_context_tags("AP Low temperature", "soap and grape") == set())
+check("the phrase variants unlock too",
+      "ap_ox" in RL.resolve_context_tags("ap-oxidation chamber")
+      and "ap_ox" in RL.resolve_context_tags("AP_oxidation run 3"))
+check("the alpha-pinene HOM list activates under the dataset-derived tags",
+      any("hom" in rl.id.lower() or "pinene" in rl.id.lower() or "monoterpene" in rl.id.lower()
+          for rl in RL.active_lists(cat, context_tags=ds_tags)),
+      [rl.id for rl in RL.active_lists(cat, context_tags=ds_tags)])
+
 # ---- isoprene oxidation list (Wennberg 2018): loads, gated by the isoprene context ----
 iso = cat.get("isoprene_ox_wennberg2018")
 check("isoprene list is in the catalog with 27 closed-shell neutrals", iso is not None and len(iso.formulas) == 27, iso)

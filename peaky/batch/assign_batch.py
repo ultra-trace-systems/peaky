@@ -34,7 +34,8 @@ from peaky import paths as PT
 from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
 
-__version__ = "0.5.0"  # batch_summary: selection.tol_ppm + per_file height_gate_cps + admission block
+__version__ = "0.6.0"  # batch-derived height floor (gate block), per-peak admission
+                       # counts, trace re-centring/collapse before the stamp (traces block)
 
 # the merge's m/z tolerance IS the selector's binning tolerance (one constant for
 # every batch-level binning; see sampling.BATCH_TOL_PPM)
@@ -442,33 +443,80 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # assignment/admission.py). Binned at this run's `tol_ppm` -- the same
     # tolerance the merge below uses (default sampling.BATCH_TOL_PPM).
     from peaky.assignment import admission as ADM
+    from peaky.batch import traces as TR
     # READ the cfg built + height-resolved above; never rebuild one here, which
     # would gate the batch on a config that skipped that resolution.
     _cfg = assign_kw["cfg"]
     occurrence_min = getattr(_cfg, "occurrence_min", ADM.DEFAULT_OCCURRENCE_MIN)
     _on = isinstance(occurrence_min, str) or (occurrence_min is not None and float(occurrence_min) > 0)
     occ_info = {"occurrence_min": occurrence_min, "occurrence_threshold": None,
-                "n_bins": 0, "n_persistent_bins": 0, "n_spectra": 0, "tol_ppm": tol_ppm}
-    if _on and ts_peaks is not None and assign_kw.get("occurrence") is None:
-        _occ = ADM.bin_occurrence(ts_peaks, tol_ppm=tol_ppm)
+                "n_peaks": 0, "n_persistent_peaks": 0, "n_persistent_traces": 0,
+                "n_spectra": 0, "tol_ppm": tol_ppm}
+    # ONE m/z-sorted index of the batch's peaks (batch.traces.PeakIndex) serves the
+    # admission table here AND the trace reconciliation of the merged ledger below,
+    # so a peak's occurrence, its trace and its stamp are one object at one rule.
+    _idx = TR.PeakIndex(ts_peaks, tol_ppm=tol_ppm) if ts_peaks is not None and len(ts_peaks) else None
+    _occ, _thr = assign_kw.get("occurrence"), None
+    if _on and _idx is not None and _occ is None:
+        _occ = ADM.bin_occurrence(ts_peaks, tol_ppm=tol_ppm, index=_idx)
         assign_kw["occurrence"] = _occ
+    if _on and _occ is not None:
         _thr = ADM.resolve_threshold(_cfg, _occ)
-        occ_info.update(n_bins=int(len(_occ)), occurrence_threshold=_thr,
+        _n_pers = int((pd.to_numeric(_occ["occurrence"], errors="coerce") >= _thr).sum()) \
+            if _thr is not None else 0
+        occ_info.update(n_peaks=int(len(_occ)), occurrence_threshold=_thr,
                         n_spectra=int(_occ.attrs.get("n_samples", 0)),
                         tol_ppm=float(_occ.attrs.get("tol_ppm", tol_ppm)),
-                        n_persistent_bins=int((_occ["occurrence"] >= _thr).sum()) if _thr is not None else 0)
+                        n_persistent_peaks=_n_pers,
+                        n_persistent_traces=ADM.persistent_trace_count(_occ, _thr))
         if _thr is None:
             log(f"[assign_batch] admission: persistence path off -- {ADM.why_off(_cfg, _occ)}")
         else:
-            log(f"[assign_batch] admission: {occ_info['n_persistent_bins']} of {occ_info['n_bins']} "
-                f"m/z bins persist in >= {_thr:.2f} of {occ_info['n_spectra']} spectra "
-                f"(threshold {occurrence_min!r}"
+            log(f"[assign_batch] admission: {occ_info['n_persistent_peaks']} of {occ_info['n_peaks']} "
+                f"batch peaks (~{occ_info['n_persistent_traces']} ions) persist in >= {_thr:.2f} of "
+                f"{occ_info['n_spectra']} spectra (threshold {occurrence_min!r}"
                 + (f" = Otsu split {_occ.attrs.get('auto_threshold'):.2f}" if isinstance(occurrence_min, str) else "")
                 + ") -> eligible below the height gate")
+    # The brightness floor. An UNSET multiple resolved to the 'auto' policy above:
+    # derive it from this batch's own peaks (admission.derive_height_cutoff_x_edge
+    # -- the smallest grid multiple whose admitted peaks are at most
+    # MAX_TRANSIENT_SHARE transient), stamp the NUMBER on the cfg every per-file
+    # run copies, and say where it came from. No table to derive from (path off,
+    # too few spectra, no time series) -> the package default, and the source
+    # says why.
+    gate_info: dict = {}
+    if PA.is_auto_x_edge(_cfg.height_cutoff_x_edge):
+        _der = ADM.derive_height_cutoff_x_edge(_occ, _thr)
+        if _der is not None:
+            _cfg.height_cutoff_x_edge = x_edge = float(_der["x_edge"])
+            _pf = _der.get("picker_tail_fraction")
+            _pf_txt = "n/a" if _pf is None else f"{_pf * 1e4:.1f} in 10 000"
+            _tail = (f"{_pf_txt} peaks sit below {_der['picker_tail_x']:.2f}x their sample's edge, "
+                     f"threshold {_der['picker_fraction_min'] * 1e4:.0f}")
+            if _der.get("picker_into_noise"):
+                x_edge_source = (f"derived from the batch's own peaks: the picker picks into the noise "
+                                 f"({_tail}) and {_der['share_at_x']:.0%} of the peaks above {x_edge:g}x "
+                                 f"the noise edge are transient (at most {_der['max_transient_share']:.0%} "
+                                 f"allowed; {_der['share_at_1']:.0%} at 1x)"
+                                 + ("; the grid's top value still exceeded it" if _der.get("bound") else "")
+                                 + f" -- requested by {x_edge_source}")
+            else:
+                x_edge_source = (f"derived from the batch's own peaks: the picker stops at the noise edge "
+                                 f"({_tail}), so the floor stays {x_edge:g}x "
+                                 f"({_der['share_at_1']:.0%} of the peaks above it are transient)"
+                                 f" -- requested by {x_edge_source}")
+            gate_info = dict(_der, source=x_edge_source)
+        else:
+            _cfg.height_cutoff_x_edge = x_edge = float(PA.DEFAULT_HEIGHT_CUTOFF_X_EDGE)
+            _why = ADM.why_off(_cfg, _occ) if _on else "occurrence_min switches the persistence path off"
+            x_edge_source = (f"the package default {x_edge:g}x -- 'auto' had nothing to derive "
+                             f"from ({_why})")
+        log(f"[gate] height cutoff = {x_edge:g}x the sample's noise edge (from {x_edge_source})")
     # context-unlock the reference peaklists (contaminants always; chemistry-
-    # specific lists when the batch metadata matches) -> selection prior + rescue.
+    # specific lists when the batch OR DATASET name -- the chemistry often lives
+    # only in the latter -- matches) -> selection prior + rescue.
     from peaky.assignment import reflists as RL
-    _tags = RL.resolve_context_tags(batch or "", getattr(prof, "label", ""))
+    _tags = RL.resolve_context_tags(batch or "", dataset or "", getattr(prof, "label", ""))
     reflists_active = RL.active_lists(RL.load_catalog(), context_tags=_tags)
     if reflists_active:
         log(f"[assign_batch] reference lists active: {[rl.id for rl in reflists_active]} "
@@ -587,6 +635,22 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # no-ops and the two columns are still present (all False / NaN).
     from peaky.batch import timeseries as _TSF
     _TSF.flag_sidelobe_channels(merged, ts_peaks, log=log)
+    # Trace-level reconciliation (timeseries.recentre_ledger / collapse_trace_labels):
+    # re-centre every merged anchor on its own trace, collapse the rows that
+    # converge on one trace, and size the stamping window to the batch's own
+    # per-ion scatter. Columns are added on the merged ledger (mz_anchor, mz_trace,
+    # trace_offset_ppm, trace_cov_anchor, trace_cov, trace_moved, trace_guarded,
+    # trace_id, trace_role); the stamp below reads them. No-op without a TS.
+    trace_info: dict = {}
+    stamp_tol = tol_ppm
+    if _idx is not None and len(merged):
+        trace_info = _TSF.recentre_ledger(merged, index=_idx, tol_ppm=tol_ppm, log=log)
+        trace_info.update(_TSF.collapse_trace_labels(merged, tol_ppm=tol_ppm, log=log))
+        stamp_tol, _sigma = _TSF.stamp_tolerance(_idx, merged["mz_trace"], tol_ppm=tol_ppm)
+        trace_info.update(stamp_tol_ppm=float(stamp_tol),
+                          sigma_ppm=None if not np.isfinite(_sigma) else float(_sigma))
+        log(f"[traces] per-ion mass scatter {_sigma if np.isfinite(_sigma) else 'n/a'} ppm -> "
+            f"stamping window +-{stamp_tol:g} ppm (merge tolerance {tol_ppm:g})")
     merged.to_csv(os.path.join(out_dir, "merged_ledger.csv"), index=False)
     jitter.to_csv(os.path.join(TAB, "jitter.csv"), index=False)
     # Stamp the batch time-series peaks with their assigned formula/channel and write
@@ -603,14 +667,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         _aux = (pd.concat(identified_aux, ignore_index=True)
                 if identified_aux else None)
         _stamp = _TS.stamping_frame(merged, _aux)
-        ts_annot = _TS.annotate_peaks(ts_peaks, _stamp, tol_ppm=tol_ppm)
+        ts_annot = _TS.annotate_peaks(ts_peaks, _stamp, tol_ppm=stamp_tol)
         ts_annot.to_parquet(os.path.join(pfdir, "_batch_ts.parquet"))
         _n_ass = int(ts_annot["neutral_formula"].notna().sum())
         _n_ion = int(ts_annot["ion_formula"].notna().sum())
         log(f"[assign_batch] _batch_ts.parquet: {len(ts_annot)} peaks, {_n_ass} "
             f"({_n_ass / max(len(ts_annot), 1):.0%}) matched to an assigned "
             f"formula/channel, {_n_ion} ({_n_ion / max(len(ts_annot), 1):.0%}) "
-            f"to a known ion incl. reagent/isotope (tol {tol_ppm:.0f} ppm)")
+            f"to a known ion incl. reagent/isotope (window +-{stamp_tol:g} ppm around "
+            f"each ion's trace centre)")
         # one-to-one guarantee: each (sample, ion) is stamped on at most ONE peak,
         # so a downstream groupby(formula, adduct) sees one trace per sample. The
         # shoulder/split peaks that lost are kept, unstamped, flagged dup_candidate.
@@ -626,6 +691,12 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "batch_name": batch,
         "selection": selection,
         "admission": occ_info,
+        # the batch-derived brightness floor (empty when the multiple was pinned
+        # by a flag / cfg / profile, or could not be derived): the transient share
+        # per grid multiple and the one chosen
+        "gate": gate_info,
+        # the trace reconciliation of the merged ledger (empty without a TS)
+        "traces": trace_info,
         "n_files": len(sample_ids), "sample_ids": sample_ids,
         # the gate actually used, and where the multiple came from (a
         # profile-supplied value reads differently from the package default);

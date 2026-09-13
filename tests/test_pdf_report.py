@@ -152,7 +152,8 @@ with tempfile.TemporaryDirectory() as d:
         return [t for s, t in captured if isinstance(t, str)]
 
     json.dump({"admission": {"occurrence_min": "auto", "occurrence_threshold": 0.44,
-                             "n_bins": 4025, "n_persistent_bins": 512, "n_spectra": 230,
+                             "n_peaks": 318589, "n_persistent_peaks": 209523,
+                             "n_persistent_traces": 1280, "n_spectra": 230,
                              "tol_ppm": 6.0}}, open(f"{d}/batch_summary.json", "w"))
     ctx_a = R.load_context(d, tag="Ur", label="Ur⁺ CIMS")
     check("load_context counts the persistence-only merged peaks (admitted_by == 'occurrence')",
@@ -168,9 +169,56 @@ with tempfile.TemporaryDirectory() as d:
     except Exception as e:  # noqa: BLE001
         check("cover renders on the default config (occurrence_min='auto') without raising",
               False, repr(e))
+    # --- cover: the per-file persistence count, the derived floor, the traces --------
+    # The merge keeps the highest tier then score, so an occurrence-admitted row almost
+    # always loses to a height-admitted one in the same bin: the MERGED count (0-3 on
+    # real batches) under-reports per-file admissions (14-63) by an order of magnitude
+    # and on one batch suppressed the line entirely. The cover states both.
+    pd.DataFrame([
+        dict(peak_id=1, mz=169.1223, role="M0", neutral_formula="C10H16O2", adduct="[M+H]+",
+             height=10000, tier="Assigned", ppm_error=0.3, parent_peak_id=None, admitted_by="height"),
+        dict(peak_id=5, mz=183.0, role="M0", neutral_formula="C9H10N2O", adduct="[M+H]+",
+             height=3, tier="Candidate", ppm_error=0.5, parent_peak_id=None, admitted_by="occurrence"),
+        dict(peak_id=6, mz=311.0, role="M0", neutral_formula="C12H24O8", adduct="[M+H]+",
+             height=2, tier="Candidate", ppm_error=0.4, parent_peak_id=None, admitted_by="occurrence"),
+        dict(peak_id=4, mz=300.0, role="unexplained", neutral_formula=None, adduct=None, height=80,
+             tier=None, ppm_error=None, parent_peak_id=None, admitted_by=""),
+    ]).to_csv(f"{d}/per_file/s2_ledger.csv", index=False)
+    json.dump({"admission": {"occurrence_min": "auto", "occurrence_threshold": 0.44,
+                             "n_peaks": 318589, "n_persistent_peaks": 209523,
+                             "n_persistent_traces": 1280, "n_spectra": 230, "tol_ppm": 6.0},
+               "gate": {"x_edge": 5.0, "transient_share": {"1.0": 0.34, "5.0": 0.17},
+                        "share_at_1": 0.34, "share_at_x": 0.17, "max_transient_share": 0.2,
+                        "n_peaks": 318589, "bound": False, "source": "derived"},
+               "traces": {"n_rows": 1303, "n_recentred": 587, "n_guarded": 40,
+                          "median_abs_move_ppm": 3.56, "n_traces": 1234, "n_collapsed": 69,
+                          "sigma_ppm": 3.79, "stamp_tol_ppm": 9.48}},
+              open(f"{d}/batch_summary.json", "w"))
+    ctx_f = R.load_context(d, tag="Ur", label="Ur⁺ CIMS", dataset="AP oxidation demo-set")
+    check("load_context counts the PER-FILE persistence admissions (2 rows across the ledgers)",
+          ctx_f.get("n_admitted_occurrence_files") == 2, ctx_f.get("n_admitted_occurrence_files"))
+    check("load_context carries the dataset name (the reference-list unlock reads it)",
+          ctx_f.get("dataset") == "AP oxidation demo-set", ctx_f.get("dataset"))
+    try:
+        lines_f = _cover_lines(ctx_f)
+        pf = [t for t in lines_f if "persistence only" in t]
+        check("cover states the per-file total AND the merged count",
+              len(pf) == 1 and "2 per-file peak rows" in pf[0] and "1 of 6 merged" in pf[0], pf)
+        gl = [t for t in lines_f if "brightness floor derived" in t]
+        check("cover states the batch-derived floor with its transient shares",
+              len(gl) == 1 and "5x the noise edge" in gl[0] and "17%" in gl[0] and "34% at 1x" in gl[0], gl)
+        tl = [t for t in lines_f if t.strip().startswith("traces:")]
+        check("cover states the trace reconciliation and the stamp window",
+              len(tl) == 1 and "587 of 1303" in tl[0] and "69 competing labels" in tl[0]
+              and "±9.48 ppm" in tl[0], tl)
+    except Exception as e:  # noqa: BLE001
+        check("cover renders with the gate + traces blocks without raising", False, repr(e))
+    os.remove(f"{d}/per_file/s2_ledger.csv")
+
     # path off (occurrence_threshold None): no persistence line, no error
     json.dump({"admission": {"occurrence_min": 0, "occurrence_threshold": None,
-                             "n_bins": 0, "n_persistent_bins": 0, "n_spectra": 230,
+                             "n_peaks": 0, "n_persistent_peaks": 0, "n_persistent_traces": 0,
+                             "n_spectra": 230,
                              "tol_ppm": 6.0}}, open(f"{d}/batch_summary.json", "w"))
     ctx_o = R.load_context(d, tag="Ur", label="Ur⁺ CIMS")
     try:

@@ -146,17 +146,25 @@ check("explicit value beats the profile's",
       P.resolve_height_cutoff_x_edge(2.0, _picker) == 2.0)
 check("profile value beats the package default",
       P.resolve_height_cutoff_x_edge(None, _picker) == 5.0)
-check("neither set -> the package default (one constant, not a literal)",
-      P.resolve_height_cutoff_x_edge(None, _plain) == _PC.DEFAULT_HEIGHT_CUTOFF_X_EDGE
-      == 1.0 and P.resolve_height_cutoff_x_edge() == 1.0)
+check("neither set -> the package POLICY 'auto' (one constant, not a literal)",
+      P.resolve_height_cutoff_x_edge(None, _plain) == _PC.AUTO_HEIGHT_CUTOFF_X_EDGE
+      == "auto" and P.resolve_height_cutoff_x_edge() == "auto")
+check("...which a config with no batch reads as the numeric default 1.0",
+      _PC.PassConfig(height_cutoff_x_edge="auto").height_cutoff_x_edge_resolved
+      == _PC.DEFAULT_HEIGHT_CUTOFF_X_EDGE == 1.0)
+check("an explicit 'auto' (any case) is the token, an explicit number a float",
+      P.resolve_height_cutoff_x_edge("AUTO", _picker) == "auto"
+      and P.resolve_height_cutoff_x_edge("2", _picker) == 2.0)
 check("a profile's None is an ABSENCE, never 0.0",
       P.resolve_height_cutoff_x_edge(None, _plain) != 0.0)
 check("an explicit 0.0 is a VALUE, not an absence",
       P.resolve_height_cutoff_x_edge(0.0, _picker) == 0.0)
 check("source names where the value came from",
       P.height_cutoff_x_edge_source(None, _picker) == "the Tof reagent profile"
-      and P.height_cutoff_x_edge_source(None, _plain) == "the package default"
-      and "explicit" in P.height_cutoff_x_edge_source(2.0, _picker))
+      and P.height_cutoff_x_edge_source(None, _plain) == "the package default (auto)"
+      and "explicit" in P.height_cutoff_x_edge_source(2.0, _picker)
+      and "auto" in P.height_cutoff_x_edge_source("auto", _picker)
+      and P.height_cutoff_x_edge_source("auto", _plain) == "the package default (auto)")
 
 # apply_*: stamps a PassConfig, and a caller's own non-default cfg value wins
 _cfg = _PC.PassConfig()
@@ -183,14 +191,15 @@ check("...and re-resolving that cfg downstream does not flip it back",
       P.apply_height_cutoff_x_edge(_cfg1, _picker)[0] == 1.0
       and _cfg1.height_cutoff_x_edge == 1.0)
 _cfg4 = _PC.PassConfig()
-check("a profile-less cfg keeps the package default",
-      P.apply_height_cutoff_x_edge(_cfg4, _plain)[0] == 1.0
-      and _cfg4.height_cutoff_x_edge == 1.0)
+check("a profile-less cfg gets the package policy token ('auto')",
+      P.apply_height_cutoff_x_edge(_cfg4, _plain)[0] == "auto"
+      and _cfg4.height_cutoff_x_edge == "auto"
+      and _cfg4.height_cutoff_x_edge_resolved == 1.0)
 # the label survives the second resolution too (the pipeline stamps the cfg, then
 # assign_batch re-resolves that same cfg): repeating what you would have got
 # anyway is not "explicit".
 check("a re-resolved default-gate cfg is still credited to the package default",
-      P.apply_height_cutoff_x_edge(_cfg4, _plain)[1] == "the package default",
+      P.apply_height_cutoff_x_edge(_cfg4, _plain)[1] == "the package default (auto)",
       P.apply_height_cutoff_x_edge(_cfg4, _plain)[1])
 # the one-per-run log line, and its silence when the multiple is not what gates
 _lines: list = []
