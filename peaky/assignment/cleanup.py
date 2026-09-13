@@ -902,7 +902,16 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
     below_assignability: the specific N-heterocycle is rarely cross-channel-
     confirmed and the region is often reagent background, but the protonated-
     heterocycle label is the saner best-guess and stays visible. Positive adducts
-    only (negative reagents never hit these)."""
+    only (negative reagents never hit these).
+
+    That skip key is a PRESENCE test, so on a batch it is applied ONCE to the
+    merged ledger (assign_batch.run; the per-file stage is gated off with
+    assign.run(reagent_n_relabel=False)): per file, whether the hydrocarbon's own
+    [M+H]+ row was picked flips with each file's S/N, and the same ion then came
+    out as C15H22 [M+NH4]+ in fourteen files and C15H25N [M+H]+ in the fifteenth.
+    Works on a merged frame as it does on a ledger: `role` is optional, and the
+    columns it annotates (ion_formula, dbe, below_assignability, confidence,
+    commentary, tier_reason) are each written only when present."""
     if "neutral_formula" not in ledger.columns or "adduct" not in ledger.columns:
         return {"reagent_n_relabeled": 0}
     has_ba = "below_assignability" in ledger.columns
@@ -927,6 +936,7 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
         if not C.dbe_ok(m2)[0] or not C.oxygen_ok(m2)[0]:
             continue                                  # not a valid closed-shell neutral
         new = C.format_formula(m2)
+        add_label = str(ledger.at[i, "adduct"])       # the reading being replaced
         ledger.at[i, "neutral_formula"] = new
         ledger.at[i, "adduct"] = "[M+H]+"
         if "ion_formula" in ledger.columns:
@@ -939,10 +949,11 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
             ledger.at[i, "below_assignability"] = True
         if "confidence" in ledger.columns:
             ledger.at[i, "confidence"] = "Low (reagent-N re-read)"
-        note = (f"re-read as [M+H]+ of {new}: a pure hydrocarbon has no site to bind the "
-                "reagent N-cluster and would show [M+H]+ if it ionized -- the cluster N "
-                "belongs to the analyte (N-heterocycle), not [M+reagent]+ of a hydrocarbon; "
-                "tentative (this region is often reagent background)")
+        note = (f"re-read {f_raw} {add_label} as [M+H]+ "
+                f"of {new}: a pure hydrocarbon has no site to bind the reagent N-cluster and "
+                "would show [M+H]+ if it ionized -- the cluster N belongs to the analyte "
+                "(N-heterocycle), not [M+reagent]+ of a hydrocarbon; tentative (this region "
+                "is often reagent background)")
         if "commentary" in ledger.columns:
             prev = str(ledger.at[i, "commentary"] or "")
             ledger.at[i, "commentary"] = (prev + "; " + note) if prev and prev != "nan" else note

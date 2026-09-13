@@ -92,10 +92,185 @@ solo, _ = AB.align({"a": m0([(500.0, "C20H30O8", "[M+H]+", "Assigned", 0.9)])}, 
 check("solo Assigned formula chosen (vote is a no-op without a competitor)",
       len(solo) == 1 and solo.iloc[0]["neutral_formula"] == "C20H30O8")
 
+# --- THE VOTE, stage 1: DIFFERENT IONS at one m/z -> the file count decides ----
+# The Texas Ur+ minority-winner defect: the old rule ranked Assigned-file count
+# first, so ONE file's Assigned reading outvoted FOURTEEN files' Candidate reading
+# of another ion. File count decides; tier and score only break ties; the losers
+# stay on the row.
+def _files(n, mz, nf, ad, tier, ion, start=0):
+    return {f"v{start + i:02d}": m0([(mz + 1e-4 * i, nf, ad, tier, ion)]) for i in range(n)}
+
+
+vote = {**_files(14, 300.0, "C10H12O2", "[M+H]+", "Candidate", 0.90),
+        **_files(1, 300.0, "C9H12N2O", "[M+H]+", "Assigned", 0.99, start=14)}   # C10H13O2+ vs C9H13N2O+
+mv, jv = AB.align(vote, tol_ppm=6.0)
+_v = mv.iloc[0]
+check("vote: 14 Candidate files beat 1 Assigned file of a different ion",
+      len(mv) == 1 and _v["neutral_formula"] == "C10H12O2" and _v["adduct"] == "[M+H]+",
+      mv.to_dict("records"))
+check("vote: the merged tier / score are the WINNER's best row, not the loser's",
+      _v["tier"] == "Candidate" and abs(float(_v["ion_score"]) - 0.90) < 1e-9, _v.to_dict())
+check("vote: n_files / n_files_ion / n_files_winner record it (15 / 14 / 14)",
+      _v["n_files"] == 15 and _v["n_files_ion"] == 14 and _v["n_files_winner"] == 14, _v.to_dict())
+check("vote: the losing reading stays visible on the merged row",
+      _v["alternatives"] == "C9H12N2O [M+H]+ x1 Assigned 0.99", repr(_v["alternatives"]))
+check("vote: ion_agree and formula_agree are both False (two ions), no note needed",
+      not bool(_v["ion_agree"]) and not bool(_v["formula_agree"]) and pd.isna(_v["tier_reason"]),
+      _v.to_dict())
+check("vote: jitter.csv still carries every per-file reading (15 rows)",
+      len(jv) == 15 and (jv["neutral_formula"] == "C9H12N2O").sum() == 1, len(jv))
+
+# --- stage 2: the SAME ION read two ways -> corroboration decides, not the count
+# m/z 252.123 on the Texas run: C13H14O4 [M+NH4]+ and C13H17NO4 [M+H]+ are ONE ion
+# (C13H18NO4+, the reagent-N isobar). The tier engine marks such a reading Assigned
+# only when a discriminating channel was present in that file, and Candidate when
+# it had nothing to decide with -- so 6 Candidate files are 6 files that could not
+# tell, and the 5 files that could win.
+same = {**_files(6, 252.1230, "C13H17NO4", "[M+H]+", "Candidate", 0.98),
+        **_files(5, 252.1230, "C13H14O4", "[M+NH4]+", "Assigned", 0.97, start=6)}
+ms, _ = AB.align(same, tol_ppm=6.0)
+_s = ms.iloc[0]
+check("same ion: the label Assigned in 5 files beats the label Candidate in 6",
+      _s["neutral_formula"] == "C13H14O4" and _s["adduct"] == "[M+NH4]+" and _s["tier"] == "Assigned",
+      ms.to_dict("records"))
+check("same ion: n_files_ion counts the ion (11), n_files_winner the label (5)",
+      _s["n_files"] == 11 and _s["n_files_ion"] == 11 and _s["n_files_winner"] == 5, _s.to_dict())
+check("same ion: ion_agree True, formula_agree False (one ion, two neutrals)",
+      bool(_s["ion_agree"]) and not bool(_s["formula_agree"]), _s.to_dict())
+check("same ion: the row explains the choice",
+      _s["tier_reason"] == "same ion C13H18NO4+ read two ways: kept C13H14O4 [M+NH4]+ (Assigned in 5 "
+                           "of its 5 files) over the 6-file C13H17NO4 [M+H]+ (Assigned in 0)",
+      _s["tier_reason"])
+check("same ion: the losing label is listed", _s["alternatives"] == "C13H17NO4 [M+H]+ x6 Candidate 0.98",
+      repr(_s["alternatives"]))
+# the task's own spec case, 14 Candidate vs 1 Assigned, read both ways: as two
+# labels of ONE ion (m/z 160.072: C4H5NO2 uronium vs C5H6N2O3 [M+NH4]+, both
+# C5H10N3O3+) the corroborated file wins; as two DIFFERENT ions the count does.
+spec = {**_files(14, 160.0717, "C4H5NO2", "[M+(CH4N2O)H]+", "Candidate", 0.90),
+        **_files(1, 160.0717, "C5H6N2O3", "[M+NH4]+", "Assigned", 0.99, start=14)}
+msp, _ = AB.align(spec, tol_ppm=6.0)
+check("same ion, 14 Candidate vs 1 Assigned: the one file that could decide wins, and says so",
+      msp.iloc[0]["neutral_formula"] == "C5H6N2O3" and msp.iloc[0]["n_files_winner"] == 1
+      and msp.iloc[0]["n_files_ion"] == 15 and bool(msp.iloc[0]["ion_agree"])
+      and str(msp.iloc[0]["tier_reason"]).startswith("same ion C5H10N3O3+ read two ways"),
+      msp.iloc[0].to_dict())
+# same ion, nobody corroborated: the count decides, nothing to explain
+nobody = {**_files(4, 160.0717, "C4H5NO2", "[M+(CH4N2O)H]+", "Candidate", 0.90),
+          **_files(1, 160.0717, "C5H6N2O3", "[M+NH4]+", "Candidate", 0.99, start=4)}
+mnb, _ = AB.align(nobody, tol_ppm=6.0)
+check("same ion, no label Assigned anywhere: the count decides, no note",
+      mnb.iloc[0]["neutral_formula"] == "C4H5NO2" and mnb.iloc[0]["n_files_winner"] == 4
+      and pd.isna(mnb.iloc[0]["tier_reason"]), mnb.iloc[0].to_dict())
+# a corroborated MAJORITY label needs no explanation either
+maj = {**_files(14, 220.2059, "C15H22", "[M+NH4]+", "Assigned", 0.97),
+       **_files(1, 220.2059, "C15H25N", "[M+H]+", "Candidate", 0.97, start=14)}
+mmj, _ = AB.align(maj, tol_ppm=6.0)
+check("same ion, the majority label is the corroborated one: it wins, 14 of 15, no note",
+      mmj.iloc[0]["neutral_formula"] == "C15H22" and mmj.iloc[0]["n_files_winner"] == 14
+      and pd.isna(mmj.iloc[0]["tier_reason"]), mmj.iloc[0].to_dict())
+
+# a 1-vs-1 tie between different ions falls back to tier, then to ion_score
+tie_t, _ = AB.align({"a": m0([(300.0, "C10H12O2", "[M+H]+", "Candidate", 0.90)]),
+                     "b": m0([(300.0, "C9H12N2O", "[M+H]+", "Assigned", 0.85)])}, tol_ppm=6.0)
+check("vote 1-vs-1: tier breaks the tie (Assigned beats Candidate, whatever the score)",
+      tie_t.iloc[0]["neutral_formula"] == "C9H12N2O" and tie_t.iloc[0]["n_files_winner"] == 1,
+      tie_t.to_dict("records"))
+tie_s, _ = AB.align({"a": m0([(300.0, "C10H12O2", "[M+H]+", "Candidate", 0.90)]),
+                     "b": m0([(300.0, "C9H12N2O", "[M+H]+", "Candidate", 0.95)])}, tol_ppm=6.0)
+check("vote 1-vs-1, same tier: ion_score breaks the tie",
+      tie_s.iloc[0]["neutral_formula"] == "C9H12N2O", tie_s.to_dict("records"))
+check("vote 1-vs-1: the loser is listed with its own tier and score",
+      tie_s.iloc[0]["alternatives"] == "C10H12O2 [M+H]+ x1 Candidate 0.90",
+      repr(tie_s.iloc[0]["alternatives"]))
+# a 2-vs-2 tie: the ion Assigned in more files wins before any score
+tie_a, _ = AB.align({"a": m0([(300.0, "C10H12O2", "[M+H]+", "Assigned", 0.80)]),
+                     "b": m0([(300.0, "C10H12O2", "[M+H]+", "Candidate", 0.80)]),
+                     "c": m0([(300.0, "C9H12N2O", "[M+H]+", "Candidate", 0.99)]),
+                     "d": m0([(300.0, "C9H12N2O", "[M+H]+", "Candidate", 0.98)])}, tol_ppm=6.0)
+check("vote 2-vs-2: the Assigned-file count breaks the tie before ion_score",
+      tie_a.iloc[0]["neutral_formula"] == "C10H12O2" and tie_a.iloc[0]["tier"] == "Assigned",
+      tie_a.to_dict("records"))
+# unanimous: the vote is a no-op and the row says so
+check("vote: a unanimous cluster reports n_files_winner == n_files_ion == n_files, ion_agree, no alternatives",
+      shared["n_files_winner"] == 2 and shared["n_files_ion"] == 2 and bool(shared["ion_agree"])
+      and shared["alternatives"] == "", shared.to_dict())
+check("vote: the 5-file consensus case still wins, with the 2-file Na reading listed",
+      row["n_files_winner"] == 5 and row["n_files_ion"] == 5 and not bool(row["ion_agree"])
+      and row["alternatives"] == "C17H31N5O6 [M+Na]+ x2 Assigned 1.00", row.to_dict())
+
+# a CURATED identity (reference-list rescue / pass-0 known species: a list's
+# identity, not the grid's) that reached Assigned somewhere is never outvoted by
+# grid readings: at m/z 579.171 the D7 cyclosiloxane urea adduct, locked in ONE
+# file, faced a 9-file C27H30O14 the per-file engine itself flags as an O14 monster.
+prot = {**_files(9, 579.1710, "C27H30O14", "[M+H]+", "Candidate", 0.99),
+        **_files(1, 579.1710, "C14H42O7Si7", "[M+(CH4N2O)H]+", "Assigned", 0.83, start=9)}
+mp, _ = AB.align(prot, tol_ppm=6.0, curated={"C14H42O7Si7"})
+check("vote: a curated identity beats a grid majority, and the vote is still recorded",
+      mp.iloc[0]["neutral_formula"] == "C14H42O7Si7" and mp.iloc[0]["n_files_winner"] == 1
+      and mp.iloc[0]["n_files"] == 10
+      and mp.iloc[0]["alternatives"] == "C27H30O14 [M+H]+ x9 Candidate 0.99",
+      mp.to_dict("records"))
+check("vote: the exemption is explained on the row",
+      mp.iloc[0]["tier_reason"] == "curated identity kept over the 9-file C27H30O14 [M+H]+ "
+                                   "reading (vote 1 of 10 files)", mp.iloc[0]["tier_reason"])
+mnp, _ = AB.align(prot, tol_ppm=6.0)
+check("vote: without the curated set the same cluster goes to the majority, no note",
+      mnp.iloc[0]["neutral_formula"] == "C27H30O14" and pd.isna(mnp.iloc[0]["tier_reason"]),
+      mnp.to_dict("records"))
+# ... and the exemption is from the file COUNT, not from corroboration: sulfolane
+# (known list, 1 file, Assigned) at m/z 181.065 met fluorenone C13H8O [M+H]+
+# Assigned in 9 files -- a real contest, which the count decides.
+sulf = {**_files(9, 181.0647, "C13H8O", "[M+H]+", "Assigned", 0.99),
+        **_files(1, 181.0647, "C4H8O2S", "[M+(CH4N2O)H]+", "Assigned", 0.95, start=9)}
+msu, _ = AB.align(sulf, tol_ppm=6.0, curated={"C4H8O2S"})
+check("vote: a curated reading does NOT override a grid reading Assigned in more files",
+      msu.iloc[0]["neutral_formula"] == "C13H8O" and msu.iloc[0]["n_files_winner"] == 9
+      and pd.isna(msu.iloc[0]["tier_reason"])
+      and msu.iloc[0]["alternatives"] == "C4H8O2S [M+(CH4N2O)H]+ x1 Assigned 0.95",
+      msu.to_dict("records"))
+# ... but a curated reading that never reached Assigned has no claim on the vote
+weak = {**_files(3, 346.0741, "C4H23NO2Si6", "[M+(CH4N2O)H]+", "Candidate", 0.98),
+        **_files(1, 346.0741, "C19H8ClN", "[M+(CH4N2O)H]+", "Candidate", 0.90, start=3)}
+mw, _ = AB.align(weak, tol_ppm=6.0, curated={"C19H8ClN"})
+check("vote: a Candidate-only curated reading does not override the majority",
+      mw.iloc[0]["neutral_formula"] == "C4H23NO2Si6" and mw.iloc[0]["n_files_winner"] == 3,
+      mw.to_dict("records"))
+check("vote: a unanimous curated reading carries no exemption note",
+      pd.isna(AB.align({"a": m0([(500.0, "C21H21O4P", "[M+(CH4N2O)H]+", "Assigned", 0.9)])},
+                       curated={"C21H21O4P"})[0].iloc[0]["tier_reason"]))
+
+# an unparseable adduct is its own ion (no crash, no false merge of labels)
+odd, _ = AB.align({"a": m0([(320.145, "C6H19N4PS2", "[M+1R+NH4]+", "Candidate", 0.9)]),
+                   "b": m0([(320.145, "C11H17NO6", "[M+(CH4N2O)H]+", "Candidate", 0.95)])}, tol_ppm=6.0)
+check("vote: a reagent-cluster adduct string is handled and stays a distinct ion",
+      len(odd) == 1 and not bool(odd.iloc[0]["ion_agree"]) and odd.iloc[0]["n_files_winner"] == 1,
+      odd.to_dict("records"))
+
+# DETERMINISM: the vote must not depend on the order the files arrived in (the
+# parallel path reduces in sample order, but the rule itself is order-free)
+for _name, _d in (("different ions", vote), ("same ion", same)):
+    _m1, _j1 = AB.align(_d, tol_ppm=6.0)
+    _m2, _j2 = AB.align(dict(reversed(list(_d.items()))), tol_ppm=6.0)
+    check(f"vote ({_name}): reversed file order -> identical merged frame",
+          _m1.equals(_m2), (_m1.to_dict("records"), _m2.to_dict("records")))
+    check(f"vote ({_name}): reversed file order -> identical jitter frame",
+          _j1.reset_index(drop=True).equals(_j2.reset_index(drop=True)))
+# a FULL tie (same count, tier and score) resolves by the reading's own text, so a
+# serial and a parallel run cannot disagree on it
+full = {"x": m0([(300.0, "C9H12N2O", "[M+H]+", "Candidate", 0.90)]),
+        "y": m0([(300.0, "C10H12O2", "[M+H]+", "Candidate", 0.90)])}
+f1, _ = AB.align(full, tol_ppm=6.0)
+f2, _ = AB.align(dict(reversed(list(full.items()))), tol_ppm=6.0)
+check("vote: a full tie resolves the same way in either file order",
+      f1.iloc[0]["neutral_formula"] == f2.iloc[0]["neutral_formula"] == "C10H12O2",
+      (f1.iloc[0]["neutral_formula"], f2.iloc[0]["neutral_formula"]))
+
 # --- empty input ------------------------------------------------------------
 me, je = AB.align({})
 check("empty -> empty merged + jitter with schema",
-      len(me) == 0 and "n_files" in me.columns and "cluster" in je.columns)
+      len(me) == 0 and {"n_files", "n_files_ion", "n_files_winner", "alternatives",
+                        "tier_reason", "ion_agree"} <= set(me.columns)
+      and "cluster" in je.columns)
 
 # --- _protected_neutrals: curated/known/certified provenance shields NH4 adducts
 _ledp = pd.DataFrame([
@@ -110,6 +285,10 @@ check("_protected_neutrals: reflist/known/certified in; grid/siloxane out",
       _prot == {"C10H15NO2S", "C10H19O6PS2", "C6H10O2"}, _prot)
 check("_protected_neutrals: missing columns -> empty set",
       AB._protected_neutrals(pd.DataFrame({"x": [1]})) == set())
+# the vote's exemption is the CURATED subset: a list's identity, not the file's
+# own multi-channel evidence for a grid formula (that is already in the tier)
+check("_curated_neutrals: reflist/known in; certified (and grid/siloxane) out",
+      AB._curated_neutrals(_ledp) == {"C10H15NO2S", "C10H19O6PS2"}, AB._curated_neutrals(_ledp))
 
 # --- admission provenance survives the merge --------------------------------
 # The merged ledger is the deliverable: a reader must be able to see that a row
@@ -195,12 +374,14 @@ _F = "C10H16O5"
 
 
 _SEEN_CFG = []
+_SEEN_KW = []
 
 
 def _fake_assign(sid, context="ambient-air", **kw):
     """Stand-in for assign.run: one assigned M0, the real ledger schema. Keeps
     the cfg it was handed, so the gate resolution can be read back."""
     _SEEN_CFG.append(kw.get("cfg"))
+    _SEEN_KW.append(dict(kw))
     led = _L.new_ledger(pd.DataFrame([("p1", _C.ion_mz(_F, "[M-H]-"), 1.0e5)],
                                      columns=["peak_id", "mz", "height"]))
     _L.commit_assignment(led, "p1", neutral_formula=_F, adduct="[M-H]-",
@@ -248,6 +429,14 @@ try:
         check("run: per-file stats keep the RESOLVED gate under height_gate_cps",
               all("height_gate_cps" in pf and "height_cutoff_cps" not in pf
                   for pf in summ["per_file"]), summ["per_file"][:1])
+        check("run: every per-file run is told to leave the reagent-N re-read to the merge",
+              len(_SEEN_KW) == 3 and all(k.get("reagent_n_relabel") is False for k in _SEEN_KW),
+              [k.get("reagent_n_relabel") for k in _SEEN_KW])
+        check("run: the merged ledger carries the vote and a tier_reason column",
+              {"n_files_winner", "alternatives", "tier_reason"} <= set(res["merged"].columns),
+              list(res["merged"].columns))
+        check("run: batch_summary records the merged-level gates (none in negative mode)",
+              summ.get("merge_gates") == {}, summ.get("merge_gates"))
         # 8 samples: fewer than the 10 spectra the persistence table needs, so the
         # 'auto' policy has nothing to derive the floor from and falls back to the
         # numeric default -- stamped as a NUMBER on every per-file cfg, with a
@@ -352,6 +541,109 @@ try:
         except ValueError as e:
             check("run: per-sample peaks and no time series raises ValueError",
                   "per-peak" in str(e), str(e))
+finally:
+    IO.connect, IO.fetch_peaks = _saved["connect"], _saved["fetch_peaks"]
+    IO.estimate_offset, _A.run = _saved["estimate_offset"], _saved["run"]
+
+
+# ---------------------------------------------------------------------------
+# the POSITIVE path through run(): the hydrocarbon-on-N-cluster re-read and the
+# ammonium/amine gate are decided ONCE on the merged ledger, and the merged row
+# says what was done to it.
+# ---------------------------------------------------------------------------
+import inspect  # noqa: E402
+import types  # noqa: E402
+
+_stage = next(s_ for s_ in _A._STAGES if s_.name == "relabel_reagent_n")
+check("per-file stage relabel_reagent_n runs by default (single-sample runs unchanged)",
+      _stage.when(types.SimpleNamespace(reagent_n_relabel=True)))
+check("per-file stage relabel_reagent_n stands down when a batch says so",
+      not _stage.when(types.SimpleNamespace(reagent_n_relabel=False)))
+check("assign.run exposes reagent_n_relabel, default True",
+      inspect.signature(_A.run).parameters["reagent_n_relabel"].default is True)
+
+_HC, _HC_MZ = "C15H22", _C.ion_mz("C15H22", "[M+NH4]+")       # a sesquiterpene on NH4
+_HC_MH = _C.ion_mz("C15H22", "[M+H]+")                          # its own protonated form
+_UR, _UR_MZ = "C11H20", _C.ion_mz("C11H20", "[M+(CH4N2O)H]+")   # a hydrocarbon on urea
+_CALLS = []
+
+
+def _positive_assign(sid, context="ambient-air", **kw):
+    """Three files: every file reads C15H22 [M+NH4]+ and C11H20 uronium; only the
+    FIRST also holds C15H22 [M+H]+ -- per file, the re-read would then have fired
+    in two files and not the third (the Texas C15H22 case)."""
+    _CALLS.append(sid)
+    rows = [("nh4", _HC_MZ, 8.0e4), ("ur", _UR_MZ, 5.0e4)]
+    if len(_CALLS) == 1:
+        rows.append(("mh", _HC_MH, 3.0e4))
+    led = _L.new_ledger(pd.DataFrame(rows, columns=["peak_id", "mz", "height"]))
+    _L.commit_assignment(led, "nh4", neutral_formula=_HC, adduct="[M+NH4]+",
+                         ion_formula="C15H26N+", ion_score=0.97, compound_score=0.97,
+                         ppm_error=0.1, pass_no=1, method="cheminfo+grid",
+                         confidence="High", commentary="stub")
+    _L.commit_assignment(led, "ur", neutral_formula=_UR, adduct="[M+(CH4N2O)H]+",
+                         ion_formula="C12H25N2O+", ion_score=0.98, compound_score=0.98,
+                         ppm_error=0.1, pass_no=1, method="cheminfo+grid",
+                         confidence="High", commentary="stub")
+    if len(_CALLS) == 1:
+        _L.commit_assignment(led, "mh", neutral_formula=_HC, adduct="[M+H]+",
+                             ion_formula="C15H23+", ion_score=0.95, compound_score=0.95,
+                             ppm_error=0.1, pass_no=1, method="cheminfo+grid",
+                             confidence="High", commentary="stub")
+    _T.apply_tiers(led)
+    return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+            "plausibility_audit": [], "summaries": {}, "problems": []}
+
+
+IO.connect = lambda *a, **k: "CLIENT"
+IO.fetch_peaks = lambda client, sid, use_cache=True: pd.DataFrame(
+    {"peak_id": ["p1"], "mz": [_HC_MZ], "height": [1.0e5]})
+IO.estimate_offset = lambda raw: 0.0
+_A.run = _positive_assign
+try:
+    with tempfile.TemporaryDirectory() as _dp:
+        resp = AB.run(peaks=_PK, ts_peaks=_PK, reagent="Ur", batch="test batch",
+                      out_dir=_dp, k_min=2, k_max=3, min_gain=0.0, n_jobs=1,
+                      log=lambda *a: None)
+        mg = resp["merged"]
+        summp = json.load(open(os.path.join(_dp, "batch_summary.json")))
+        r_nh4 = mg.iloc[(mg["mz"] - _HC_MZ).abs().argmin()]
+        r_ur = mg.iloc[(mg["mz"] - _UR_MZ).abs().argmin()]
+        check("positive run: the per-file ledgers AGREE (no per-file re-read split the ion)",
+              bool(r_nh4["formula_agree"]) and bool(r_nh4["ion_agree"])
+              and r_nh4["n_files_winner"] == r_nh4["n_files_ion"] == r_nh4["n_files"] == 3
+              and r_nh4["alternatives"] == "", r_nh4.to_dict())
+        check("positive run: batch_summary counts ion disagreements (none here)",
+              summp.get("ion_disagreements") == 0 and summp.get("formula_disagreements") == 0,
+              (summp.get("ion_disagreements"), summp.get("formula_disagreements")))
+        pf = pd.concat([pd.read_csv(os.path.join(_dp, "per_file", f"{sid}_ledger.csv"))
+                        for sid in resp["sample_ids"]])
+        check("positive run: every per-file ledger on disk keeps C15H22 [M+NH4]+",
+              int(((pf["neutral_formula"] == _HC) & (pf["adduct"] == "[M+NH4]+")).sum()) == 3
+              and not (pf["neutral_formula"] == "C15H25N").any(), pf["neutral_formula"].tolist())
+        # C15H22 shows its own [M+H]+ in ONE file: pooled on the merged ledger, that
+        # keeps the ammonium reading through the reagent-N pass for the whole batch;
+        # the amine gate then has no trace to confirm the adduct against (the
+        # synthetic TS holds no such ion) and, by its default-to-CHON policy, reads
+        # it as the amine -- and SAYS so on the merged row.
+        check("positive run: the reagent-N pass re-read ONE reading (C11H20) and kept C15H22, which protonates in one file",
+              summp["merge_gates"]["reagent_n"] == {"reagent_n_relabeled": 1}, summp.get("merge_gates"))
+        check("positive run: the amine gate's re-read of C15H22 [M+NH4]+ is explained in tier_reason",
+              r_nh4["neutral_formula"] == "C15H25N" and r_nh4["adduct"] == "[M+H]+"
+              and r_nh4["tier"] == "Candidate"
+              and "protonated CHON" in str(r_nh4["tier_reason"]) and "C15H22" in str(r_nh4["tier_reason"]),
+              r_nh4.to_dict())
+        check("positive run: C11H20 uronium (no [M+H]+ anywhere) re-read ONCE, naming the reading it replaced",
+              r_ur["neutral_formula"] == "C12H24N2O" and r_ur["adduct"] == "[M+H]+"
+              and r_ur["tier"] == "Candidate" and r_ur["n_files_winner"] == 3
+              and str(r_ur["tier_reason"]).startswith("re-read C11H20 [M+(CH4N2O)H]+ as [M+H]+ of C12H24N2O"),
+              r_ur.to_dict())
+        check("positive run: batch_summary carries both gates' counts",
+              summp["merge_gates"]["amine"]["relabeled"] == 1
+              and summp["merge_gates"]["amine"]["kept_covary"] == 0, summp["merge_gates"])
+        check("positive run: merged_ledger.csv on disk has the vote + tier_reason columns",
+              {"n_files_winner", "alternatives", "tier_reason"}
+              <= set(pd.read_csv(os.path.join(_dp, "merged_ledger.csv"), nrows=1).columns))
 finally:
     IO.connect, IO.fetch_peaks = _saved["connect"], _saved["fetch_peaks"]
     IO.estimate_offset, _A.run = _saved["estimate_offset"], _saved["run"]

@@ -28,7 +28,8 @@ from peaky.assignment import siloxane
 from peaky.assignment import tiers
 from peaky.batch import timeseries
 
-__version__ = "0.5.0"  # + admission stamp before the passes (run(occurrence=))
+__version__ = "0.5.1"  # + reagent_n_relabel: a batch defers the hydrocarbon-on-N-cluster
+                       #   re-read to its merged ledger (run(reagent_n_relabel=False))
 
 
 def _parsed_version(path: "Path") -> str | None:
@@ -160,6 +161,10 @@ class _RunState:
     label_max: int
     log: object
     checkpoint_dir: object
+    # False on a batch: the hydrocarbon-on-N-cluster re-read is decided once on
+    # the merged ledger (assign_batch.run), not per file -- its skip key is a
+    # presence test that flips with each file's S/N.
+    reagent_n_relabel: bool = True
     summaries: dict = field(default_factory=dict)
     plaus_audit: list = field(default_factory=list)
 
@@ -337,8 +342,13 @@ _STAGES = [
            safe=False, store=False),
     # positive-mode arbitration: a pure hydrocarbon via an N-carrying reagent
     # cluster ([M+NH4]+ / uronium) is re-read as [M+H]+ of an N-heterocycle.
+    # Skipped on a batch (reagent_n_relabel=False): the rule's skip key -- does
+    # the hydrocarbon show its own [M+H]+ -- is a presence test that flips with
+    # each file's S/N, so per file it split one ion into two readings across the
+    # batch; assign_batch.run applies the same rule ONCE to the merged ledger.
     _Stage("relabel_reagent_n",
            lambda st: cleanup.relabel_reagent_n_adducts(st.led, log=st.log),
+           when=lambda st: bool(st.reagent_n_relabel),
            safe=False, store=False),
     # ¹⁵N-ammonium in-source DECLUSTERING cascade: [M+^NH4]+ -> [M+H]+ ->
     # [M+H-H2O]+, and [M+^NH4]+ -> [M+^NH4-H2O]+ (both product routes seen in
@@ -397,6 +407,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
         do_pass5: bool = True, do_pass_certified: bool = True,
         ts_peaks=None, adducts=None, reflists_active=None,
         label_isotope=None, label_max=2, label_purity=None, occurrence=None,
+        reagent_n_relabel: bool = True,
         log=print, checkpoint_dir=None) -> dict:
     cfg = cfg or passes.PassConfig()
     # the reagent bottle's isotopic purity (ReagentProfile.purity), published for
@@ -521,7 +532,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
         do_pass_certified=do_pass_certified,
         reflists_active=reflists_active, ts_peaks=ts_peaks,
         label_isotope=label_isotope, label_max=label_max, log=log,
-        checkpoint_dir=checkpoint_dir)
+        checkpoint_dir=checkpoint_dir, reagent_n_relabel=reagent_n_relabel)
     for stg in _STAGES:
         if not stg.when(st):
             continue

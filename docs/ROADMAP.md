@@ -1,8 +1,75 @@
-# PEAKY — DEV LOG / RESUME HERE (updated 2026-06-21, session 5)
+# PEAKY — DEV LOG / RESUME HERE (updated 2026-09-13, session 6)
 
 **Project:** consolidate the Mascope pipeline into ONE scalable, shareable Claude Code
 skill ("peaky"): representative-sample assignment → merge → time-series clustering →
 figures → PDF report. Memory: `agent-peaky` (+ `mascope-sdk-knowledge`, `mascope-assign-package`).
+
+## SESSION 6 (2026-09-13) — the merge is a vote; presence-keyed rules move to the batch
+
+**Branch `fix/merge-majority-winner`** (worktree `../peaky-mergevote`, PR against main).
+Trigger: on the Texas Ur⁺ full-campaign run (15 files, 2636 merged rows, 73 split
+clusters) the merged reading was a per-file MINORITY in 23 clusters. Two causes, both
+fixed: `align` ranked the Assigned-file count first (one Assigned file outvoted fourteen
+Candidate files of another ion, 12 clusters), and the per-file hydrocarbon-on-N-cluster
+re-read (`relabel_reagent_n_adducts`) keyed on whether the hydrocarbon's own `[M+H]+`
+row was picked IN THAT FILE — an S/N presence test — so one ion came out as
+`C15H22 [M+NH4]+` in 14 files and `C15H25N [M+H]+` in the 15th (31–52 firings per
+file), a disagreement the spectra never had.
+
+**What landed** (see `MERGE.md` §3–§5, CHANGELOG *Fixed*):
+- `align` votes in two stages: the file count picks the ION (curated exemption, then
+  Assigned-file count and score as tie-breaks, text as the deterministic last key), and
+  corroboration picks its LABEL (the reading Assigned in the most files — on a reagent-N
+  isobar pair Candidate means the file could not decide). New merged columns
+  `n_files_ion`, `n_files_winner`, `alternatives`, `ion_agree`, `tier_reason`;
+  `batch_summary["ion_disagreements"]`, `["merge_gates"]`.
+- The reagent-N re-read is decided ONCE on the merged ledger
+  (`assign.run(reagent_n_relabel=False)` on a batch); the merged row carries the notes of
+  that pass, of the amine gate and of the vote.
+- Replay on the two finished runs (`output/_texas_full_logs/mergevote/replay.py <run>
+  --ts --defer`): Texas 73→63 split clusters (30 different-ion contests, 33 same-ion label
+  splits), 2/2636 readings change vs the original merge; MPCI 60→51, 1/2490. No
+  unexplained count-minority winner remains; every one is noted on its row.
+
+### OPEN follow-ups from session 6 (priority order)
+
+1. **Batch-level known-species lock (retires the curated exemption).** The pass-0
+   lock (`known:cyclosiloxane`, `known:organophosphate`, `known:indoor_sulfur`) fires
+   in 1 of 10 files because its own-twin gate (²⁹Si/³⁰Si/³⁴S) is per file; the other
+   9 files then grid-fit the same peak as an O14 / N4O10 formula they themselves flag
+   Candidate. Pool the twin evidence across the selected files (the same deferral
+   pattern as the reagent-N re-read and the amine gate's TS test) so D7 cyclosiloxane
+   (579.171), tricresyl phosphate (429.157) and sulfolane (181.065) are decided once,
+   by evidence, instead of by the vote's exemption. Then drop `curated=` from `run()`.
+2. **Sibling-corroborated `[M+NH4]+` vs the amine gate.** The tier engine keeps an
+   ammonium adduct Assigned when the N-free sibling channel (`X [M+H]+`) is present;
+   the merged-level amine gate then re-reads it anyway when the adduct trace does not
+   track the parent (r < 0.6): `C15H22 [M+NH4]+` corroborated by a sibling in 14 files
+   became `C15H25N [M+H]+`. The gate's policy ("the burden of proof is on the adduct")
+   is deliberate, but the two rules never see each other's evidence. Measure on the
+   Texas TS how the 269 `kept_covary` and 348 `relabeled` rows split by sibling
+   corroboration before deciding whether a sibling-corroborated adduct should need
+   tracking, or whether "presence-cap" (parent present, flat) should keep the adduct.
+3. **`_reagent_n_isobar` is one-directional.** It flags the winner only when the winner
+   sits on an N-donating adduct; the amine-direction winner (`[M+H]+` of the N-richer
+   neutral) is not flagged, so it can reach Assigned as "unique formula in the calibrated
+   window" with no discriminating evidence (`C5H12N2S [M+H]+` Assigned in 2 files at
+   133.079 against `C5H9NS [M+NH4]+` Assigned in 10). The label stage of the vote is
+   only as honest as this flag; make it symmetric (a same-ion N-poorer alternative on
+   an N-donor channel exists ⇒ the same corroboration bar applies).
+4. **Different-ion contests where count and corroboration disagree.** One case on
+   Texas (209.096: a 2-file Candidate `C5H17NOSi3 [M+NH4]+` beats a 1-file Assigned
+   `C15H12O [M+H]+`). An Assigned-weighted count at the ion stage would flip it; not
+   worth a rule for one weak cluster — revisit when more batches have `alternatives`.
+5. **`collapse_trace_labels` still ranks competing merged rows by `n_files`** (the
+   cluster) rather than `n_files_winner` / the ion-aware vote. Align it with `_vote` so
+   the trace-level contest and the cluster-level contest use one rule.
+6. **Reporting.** The PDF's "formula disagreements" (`formula_agree`) counts label splits
+   as disagreements (43 of 73 on Texas); split it into `ion_disagreements` (spectral)
+   and same-ion label splits (interpretive), and show `alternatives` for the flagged rows.
+7. **Per-file ledgers in a batch now keep the hydrocarbon adduct labels** (the re-read is
+   deferred). Anything that reads `per_file/*.csv` for a decided label — publishing a
+   single file's ledger, jitter investigations — should take it from the merged ledger.
 
 ## SESSION 5 (2026-06-21) — ¹⁵N nitrate, native clustering, two-sided halogen handling
 **Server is now `<mascope-server>`** (<server> retired); creds in the repo-root `.env`.
@@ -836,6 +903,18 @@ time-series co-variation.
 
 ## Standing lessons (encode-don't-remember)
 
+- **A per-file rule keyed on a PRESENCE test is decided once per batch.** Whether the
+  hydrocarbon's own `[M+H]+`, the N-free sibling channel, the isotope twin or the
+  reflist match was PICKED in a given file flips with that file's S/N, so the rule
+  fires in some files and not others and the merge inherits a disagreement the
+  spectra never had. Pool the evidence on the merged ledger (union of the files'
+  rows, the batch time series) and decide there — the amine gate, the reagent-N
+  re-read; next the known-species lock (session 6). Per file, only count what the
+  file can actually see.
+- **Counting undecided files is counting silence.** On a same-ion pair (the reagent-N
+  isobar) a Candidate label records the absence of a discriminating channel; a vote
+  over such labels must weigh corroboration, not heads (`_vote`, session 6). A count
+  is the right tool only where files can genuinely disagree — which ION is at an m/z.
 - **TIME-SERIES: always reagent-normalize (analyte/Br3-) BEFORE correlating** —
   raw heights carry an instrument-sensitivity/reagent common-mode that inflates
   every correlation (a 234-bin "cluster" of everything). Normalization isolates

@@ -416,7 +416,8 @@ and `run_manifest.json['config']` (the knob: a number, or `"auto"`).
 - **A bare hydrocarbon has no N-cluster site.** `NH4⁺`/uronium bind at a polar/basic
   site a pure CₓHᵧ lacks; a hydrocarbon ionises as `[M+H]⁺`. An `[M+NH4]⁺` /
   `[M+(CH4N2O)H]⁺` reading of a hydrocarbon is therefore re-read as the N-heterocycle
-  `[M+(cluster−H)+H]⁺` (assignment, not this layer) — *unless* that hydrocarbon also
+  `[M+(cluster−H)+H]⁺` (assignment, not this layer; on a batch, decided once on the
+  merged ledger from every file's rows) — *unless* that hydrocarbon also
   has a genuine `[M+H]⁺` row (a real terpene forming `[M+NH4]⁺`), which is left
   alone.
 - **`detect_adduct` disambiguates isotopic twins.** `NO3` vs `NO3_15N` differ only
