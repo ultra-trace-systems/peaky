@@ -20,12 +20,12 @@ authors:
 repository-code: "https://github.com/ultra-trace-systems/peaky"
 url: "https://github.com/ultra-trace-systems/peaky"
 license: Apache-2.0
-version: 0.6.0
-date-released: "2026-08-12"
+version: 0.8.0
+date-released: "2026-09-13"
 # `version` + `date-released` name the last release that was actually TAGGED,
 # published and archived - what a citation has to resolve to. They therefore LAG
 # `pyproject.toml`, which carries the version under development, and that gap is
-# correct, not drift: as of 0.7.0 in pyproject, the newest cut release is 0.6.0.
+# correct, not drift, whenever a bump has landed but no release has been cut.
 # Bump these two in the release-prep commit, to the version and date of the
 # `## [x.y.z] - <date>` CHANGELOG heading for the release being cut -- which
 # tests/test_versioning.py checks, so a wrong or invented date fails a test.
