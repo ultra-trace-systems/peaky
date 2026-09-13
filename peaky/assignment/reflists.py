@@ -208,9 +208,11 @@ def activate(*texts: str) -> tuple[list, set]:
     Returns `(lists, tags)` so the caller can log what the metadata bought it.
 
     A run whose metadata names no chemistry — a single-sample `peaky assign`,
-    whose only text is a context label like 'ambient-air' — still gets the
-    `always_active` lists (the lab contaminants); only `peaky batch`, which has a
-    batch name to read, can unlock a chemistry-specific list."""
+    whose texts are a context label like 'ambient-air' and the reagent label —
+    still gets the `always_active` lists (the lab contaminants); only `peaky
+    batch`, which has a batch name and a dataset name to read, can unlock a
+    chemistry-specific list (on a campaign whose batch names describe the
+    instrument and the reagent, the chemistry lives in the dataset name)."""
     tags = resolve_context_tags(*texts)
     return active_lists(load_catalog(), context_tags=tags), tags
 
