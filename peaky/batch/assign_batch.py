@@ -17,6 +17,13 @@ The combine step is OFFSET-AWARE: each file carries a median mass offset
 genuine same-peak is not split by a per-file calibration shift, while the reported
 jitter separates the raw spread from the calibration-removed (residual) spread.
 
+Within a cluster the files VOTE: the (neutral_formula, adduct) reading carried by
+the most files wins, tier and ion_score break ties, and the losing readings stay
+on the merged row (`alternatives`, `n_files_winner`) as well as in jitter.csv.
+The two positive-mode re-reads that can change a reading -- the hydrocarbon-on-
+N-cluster re-read and the ammonium/amine gate -- are decided ONCE on the merged
+ledger, from the union of every file's evidence, and say so in `tier_reason`.
+
 `align()` / `merge_union()` are PURE (offline-tested). `run()` does the network
 assignment loop.
 """
@@ -34,8 +41,9 @@ from peaky import paths as PT
 from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
 
-__version__ = "0.6.0"  # batch-derived height floor (gate block), per-peak admission
-                       # counts, trace re-centring/collapse before the stamp (traces block)
+__version__ = "0.7.0"  # the merge is a file-count VOTE (n_files_winner / alternatives),
+                       # the reagent-N re-read is decided once on the merged ledger,
+                       # and the merged row carries the batch-level gates' tier_reason
 
 # the merge's m/z tolerance IS the selector's binning tolerance (one constant for
 # every batch-level binning; see sampling.BATCH_TOL_PPM)
@@ -58,21 +66,94 @@ def _cluster_mz(mz_sorted: np.ndarray, tol_ppm: float) -> np.ndarray:
     return cid
 
 
+def _s(v) -> str:
+    """A reading's label component as text: '' for any NA (None / NaN / pd.NA)."""
+    try:
+        if v is None or pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(v)
+
+
+def _vote(g: pd.DataFrame, curated: set) -> pd.DataFrame:
+    """Rank one cluster's (neutral_formula, adduct) readings. One row per reading
+    -- _nf, _ad, curated, n_files, n_assigned, best_ion -- best first.
+
+    Keys, in order: curated, the number of FILES carrying the reading, the
+    number carrying it at Assigned tier, the best ion_score, and finally the
+    reading's own text -- so a full tie resolves the same way whatever order
+    the files arrived in (serial and parallel runs stay byte-identical). This
+    is the order collapse_trace_labels already applies to competing labels on
+    one trace: file count first, tier and score only as tie-breaks.
+
+    `curated` exempts a reading from the file count, not from corroboration: a
+    neutral whose identity comes from a curated list (`_curated_neutrals`) is
+    not outvoted by grid GUESSES, so its reading ranks first when it reached
+    Assigned in at least one file and in no fewer files than any grid reading
+    did. A grid reading the tier engine corroborated in more files is a real
+    contest, and the count decides it (sulfolane from the known list in one
+    file lost to fluorenone [M+H]+ Assigned in nine)."""
+    assigned = g["_r"] >= TIER_RANK[TIER_ASSIGNED]
+    supp = (g.assign(_asrc=g["src"].where(assigned),    # the file, when Assigned there
+                     _c=g["_nf"].isin(curated).astype(int))
+              .groupby(["_nf", "_ad"], sort=True)          # text order = last key
+              .agg(curated=("_c", "max"), n_files=("src", "nunique"),
+                   n_assigned=("_asrc", "nunique"),        # FILES at Assigned, not rows
+                   best_ion=("ion_score", "max"))
+              .reset_index())
+    grid = supp["curated"] == 0
+    bar = max(1, int(supp.loc[grid, "n_assigned"].max()) if grid.any() else 1)
+    supp["curated"] = supp["curated"] * (supp["n_assigned"] >= bar).astype(int)
+    return supp.sort_values(["curated", "n_files", "n_assigned", "best_ion"],
+                            ascending=False, kind="mergesort")   # stable: keeps text order
+
+
+def _describe(r) -> str:
+    """One losing reading for the merged row: 'C15H25N [M+H]+ x1 Candidate 0.97'
+    (the best tier and score any file gave it)."""
+    tier = TIER_ASSIGNED if int(r["n_assigned"]) > 0 else "Candidate"
+    score = "" if pd.isna(r["best_ion"]) else f" {float(r['best_ion']):.2f}"
+    return f"{r['_nf']} {r['_ad']} x{int(r['n_files'])} {tier}{score}"
+
+
 def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
-          offsets: dict | None = None):
-    """Align the M0 rows of several files by m/z.
+          offsets: dict | None = None, curated=None):
+    """Align the M0 rows of several files by m/z and let the files VOTE on each
+    cluster's reading.
 
     per_file : {src -> DataFrame with _M0_COLS}. offsets : {src -> median ppm}
     (subtracted before clustering so a per-file calibration shift does not split
-    a peak). Returns (merged, jitter):
+    a peak). curated : neutral formulas whose identity is a curated list's, not
+    the grid's (a reference-peaklist rescue or the pass-0 known-species list --
+    see `_curated_neutrals`); a reading of one of these is not outvoted by grid
+    readings Assigned in fewer files than itself (see `_vote`), and the merged
+    row's tier_reason says so when that decided the cluster.
 
-      merged  one row per m/z cluster: consensus mz, best assignment
-              (Assigned>Candidate>ion_score), n_files, srcs, formula_agree,
-              mz_jitter_ppm_raw, mz_jitter_ppm_caldj.
+    Returns (merged, jitter):
+
+      merged  one row per m/z cluster: consensus mz; the WINNING reading's
+              neutral_formula / adduct / tier / ion_score / admitted_by /
+              occurrence (its best per-file row: tier, then ion_score, then
+              src); the vote -- n_files (files in the cluster), n_files_winner
+              (files carrying the winner), alternatives (the losing readings,
+              best first, '' when unanimous); tier_reason (NA unless the vote
+              had something to explain: the curated exemption); srcs,
+              formula_agree, mz_jitter_ppm_raw, mz_jitter_ppm_caldj.
       jitter  long form, one row per (cluster, file): cluster, src, mz,
-              neutral_formula, adduct, tier, ion_score.
-    """
+              neutral_formula, adduct, tier, ion_score -- every reading, winner
+              or not.
+
+    THE VOTE (see `_vote`): a reading is a (neutral_formula, adduct) pair, and
+    the one carried by the most files wins; tier and ion_score only break ties.
+    The previous rule ranked the number of ASSIGNED files first, which let one
+    file's Assigned reading outvote many files' Candidate reading of the same
+    ion: on the Texas Ur+ run (15 files) 12 of the 73 split clusters were
+    decided that way, e.g. a 1-file Assigned C5H6N2O3 [M+NH4]+ over a 4-file
+    C4H5NO2 [M+(CH4N2O)H]+ at m/z 160.072 -- and the merged row then carried
+    nothing to show the other files had read it differently."""
     offsets = offsets or {}
+    curated = {str(p) for p in (curated or ())}
     frames = []
     for src, df in per_file.items():
         if df is None or not len(df):
@@ -85,7 +166,8 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
     if not frames:
         return (pd.DataFrame(columns=["mz", "neutral_formula", "adduct", "tier",
                                       "ion_score", "admitted_by", "occurrence",
-                                      "n_files", "srcs", "formula_agree",
+                                      "n_files", "n_files_winner", "alternatives",
+                                      "tier_reason", "srcs", "formula_agree",
                                       "mz_jitter_ppm_raw", "mz_jitter_ppm_caldj"]),
                 pd.DataFrame(columns=["cluster", "src", *_M0_COLS]))
     allm = pd.concat(frames, ignore_index=True).sort_values("_mz_adj").reset_index(drop=True)
@@ -93,24 +175,23 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
 
     merged_rows, jitter_rows = [], []
     for cid, g in allm.groupby("cluster"):
-        g = g.assign(_r=g["tier"].map(lambda t: TIER_RANK.get(str(t), 0)))
-        # Cross-file consensus: prefer the formula with the broadest CORROBORATED
-        # (Assigned-tier) support across files, not the single highest per-file
-        # ion_score. Per-file mass-calibration jitter can flip a degenerate pair in
-        # one file (a competitor reads on-cal there, Assigned, with a marginally
-        # higher local score) while the other files agree on the real formula; the
-        # old "best (tier, ion_score) row" then let that single-file outlier
-        # displace a formula Assigned across many files. Rank formulas by
-        # (Assigned-file count, file count, best tier, best score), then take that
-        # formula's best per-file row. With one formula per cluster this is a no-op.
-        supp = (g.assign(_a=(g["_r"] >= TIER_RANK[TIER_ASSIGNED]).astype(int))
-                  .groupby("neutral_formula", dropna=False)
-                  .agg(n_assigned=("_a", "sum"), n_files=("src", "nunique"),
-                       best_r=("_r", "max"), best_ion=("ion_score", "max")))
-        win_formula = supp.sort_values(
-            ["n_assigned", "n_files", "best_r", "best_ion"], ascending=False).index[0]
-        gw = g[g["neutral_formula"] == win_formula] if win_formula == win_formula else g
-        best = gw.sort_values(["_r", "ion_score"], ascending=False).iloc[0]
+        g = g.assign(_r=g["tier"].map(lambda t: TIER_RANK.get(str(t), 0)),
+                     _nf=g["neutral_formula"].map(_s), _ad=g["adduct"].map(_s))
+        supp = _vote(g, curated)
+        win = supp.iloc[0]
+        # the exemption used: say so on the row (a 1-of-10 winner needs a reason)
+        outvoted = supp.iloc[1:]
+        note = pd.NA
+        if int(win["curated"]) and len(outvoted) and int(outvoted["n_files"].max()) > int(win["n_files"]):
+            top = outvoted.iloc[0]
+            note = (f"curated identity kept over the {int(top['n_files'])}-file "
+                    f"{top['_nf']} {top['_ad']} reading (vote {int(win['n_files'])} of "
+                    f"{int(g['src'].nunique())} files)")
+        gw = g[(g["_nf"] == win["_nf"]) & (g["_ad"] == win["_ad"])]
+        # the winning reading's best per-file row donates tier / score / provenance;
+        # src last so an exact tie is settled by name, not by arrival order
+        best = gw.sort_values(["_r", "ion_score", "src"], ascending=[False, False, True],
+                              kind="mergesort").iloc[0]
         mz_raw = g["mz"].to_numpy(); mz_adj = g["_mz_adj"].to_numpy()
         def _spread(a):
             return float((a.max() - a.min()) / a.mean() * 1e6) if len(a) > 1 else 0.0
@@ -120,7 +201,10 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
             adduct=best.get("adduct"), tier=best["tier"],
             ion_score=best.get("ion_score"),
             admitted_by=best.get("admitted_by"), occurrence=best.get("occurrence"),
-            n_files=int(g["src"].nunique()), srcs=",".join(sorted(set(g["src"]))),
+            n_files=int(g["src"].nunique()), n_files_winner=int(win["n_files"]),
+            alternatives="; ".join(_describe(r) for _, r in supp.iloc[1:].iterrows()),
+            tier_reason=note,
+            srcs=",".join(sorted(set(g["src"]))),
             formula_agree=(len(forms) <= 1),
             mz_jitter_ppm_raw=round(_spread(mz_raw), 3),
             mz_jitter_ppm_caldj=round(_spread(mz_adj), 3)))
@@ -251,14 +335,31 @@ def _m0(ledger: pd.DataFrame) -> pd.DataFrame:
 # the NH4-vs-parent tracking test. The merged ledger drops `method`, so the set is
 # gathered here from the full per-file ledgers.
 _PROTECTED_METHODS = ("reflist-rescue", "known:", "certified:")
+# the subset whose identity comes from OUTSIDE the formula grid -- a curated
+# reference peaklist or the pass-0 known-species list (mass + own-twin gate).
+# `certified:` is left out on purpose: a multi-channel certification is the
+# same file's own evidence for a grid formula, which the tier already credits
+# (and a Candidate-tier certified C19H8ClN once outvoted a 3-file reading).
+_CURATED_METHODS = ("reflist-rescue", "known:")
 
 
-def _protected_neutrals(ledger: pd.DataFrame) -> set:
+def _neutrals_by_method(ledger: pd.DataFrame, prefixes: tuple) -> set:
     if not {"method", "neutral_formula"} <= set(ledger.columns):
         return set()
     meth = ledger["method"].astype(str)
-    keep = meth.str.startswith(_PROTECTED_METHODS)
+    keep = meth.str.startswith(prefixes)
     return set(ledger.loc[keep, "neutral_formula"].dropna().astype(str)) - {"nan", ""}
+
+
+def _protected_neutrals(ledger: pd.DataFrame) -> set:
+    """Neutrals the amine gate must not re-read (see _PROTECTED_METHODS)."""
+    return _neutrals_by_method(ledger, _PROTECTED_METHODS)
+
+
+def _curated_neutrals(ledger: pd.DataFrame) -> set:
+    """Neutrals whose identity is a curated list's, not the grid's: the merge
+    vote's exemption (see align / _vote; _CURATED_METHODS)."""
+    return _neutrals_by_method(ledger, _CURATED_METHODS)
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +520,17 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # a per-sample match gap can't flip polarity / mis-assign a file. Caller can
     # still override via assign_kw['adducts'].
     assign_kw.setdefault("adducts", list(prof.adducts))
+    # The hydrocarbon-on-N-cluster re-read (cleanup.relabel_reagent_n_adducts) is
+    # decided ONCE on the merged ledger below, not per file. Its skip key -- does
+    # this hydrocarbon show its own [M+H]+ -- is a presence test that flips with
+    # each file's S/N: on the Texas Ur+ run C15H22 [M+NH4]+ kept its reading in
+    # the 14 files that also held C15H22 [M+H]+ and was re-read to C15H25N [M+H]+
+    # in the one file that did not -- a "disagreement" the spectra never had,
+    # and a phantom minority reading for the vote. The merged ledger holds the
+    # union of every file's [M+H]+ rows, so the same rule applied there gives the
+    # batch one answer. An explicit reagent_n_relabel=True in assign_kw restores
+    # the per-file re-read (and the merged-level pass then stands down).
+    assign_kw.setdefault("reagent_n_relabel", False)
     # labelled-reagent covalent-product rescue (e.g. 15N-organonitrates); no-op
     # for every unlabelled reagent profile.
     if getattr(prof, "label_isotope", None):
@@ -528,6 +640,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     #   gate must not re-read (reflist / known-species / certified provenance) --
     #   e.g. NBBS, whose weak isobar-contaminated NH4 trace fails the tracking test
     #   yet is a genuine Keller-list contaminant adduct.
+    curated_neutrals: set = set()     # the reflist / known-species subset: the merge
+    #   vote's exemption (a list identity is not outvoted by grid readings)
     n_jobs = _resolve_jobs(n_jobs, len(sample_ids))
 
     def _apply(sid, led, plaus, stats):
@@ -537,6 +651,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)
         plaus_audit.extend(plaus)
         protected_neutrals.update(_protected_neutrals(led))
+        curated_neutrals.update(_curated_neutrals(led))
         per_file[sid] = _m0(led)
         from peaky.batch import timeseries as _TSI
         identified_aux.append(_TSI.identified_rows(led))
@@ -602,7 +717,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 log(ln)
             _apply(sid, out["ledger"], out["plausibility_audit"], out["stats"])
 
-    merged, jitter = align(per_file, tol_ppm=tol_ppm, offsets=offsets)
+    merged, jitter = align(per_file, tol_ppm=tol_ppm, offsets=offsets,
+                           curated=curated_neutrals)
     # Merge guard: drop reagent-cluster ions a per-file pass mislabelled as analyte
     # (urea [R_n+H]+/[R_n+NH4]+ read as CHNO/CH4N2O on the [M+NH4]+/urea channel) --
     # they otherwise dominate the 'assigned' signal. Belt-and-braces with the
@@ -611,13 +727,27 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     _rgk = _RG.reagent_for_adducts(list(prof.adducts or []))
     if _rgk:
         merged, _rgstrip = _RG.strip_reagent_cluster_rows(merged, _rgk, log=log)
-    # Positive urea-CIMS: re-read uncorroborated [M+NH4]+ adducts as [M+H]+ of the
-    # +NH3 amine (mass/isotope-identical; simpler in an N-rich source). Done at the
-    # MERGED level where cross-channel corroboration is complete.
+    # The merged row's tier_reason (from align: the vote's exemption, else NA)
+    # also takes the batch-level gates' notes below (cleanup._note appends to
+    # it): a re-read can leave the merged formula different from EVERY per-file
+    # reading, and the row itself must say why.
+    if "tier_reason" not in merged.columns:
+        merged["tier_reason"] = pd.NA
+    merge_gates: dict = {}
     if prof.polarity == "+":
         from peaky.assignment import cleanup
-        cleanup.prefer_amine_over_ammonium(merged, ts_peaks=ts_peaks, r_min=amine_r_min,
-                                           protected=protected_neutrals, log=log)
+        # Hydrocarbon on an N-cluster channel -> [M+H]+ of the N-heterocycle,
+        # decided once here from the union of every file's [M+H]+ rows (the
+        # per-file stage was deferred above; it runs there instead only when the
+        # caller forced reagent_n_relabel=True, and then this pass stands down).
+        if not assign_kw.get("reagent_n_relabel"):
+            merge_gates["reagent_n"] = cleanup.relabel_reagent_n_adducts(merged, log=log)
+        # Re-read uncorroborated [M+NH4]+ adducts as [M+H]+ of the +NH3 amine
+        # (mass/isotope-identical; simpler in an N-rich source). Done at the
+        # MERGED level where cross-channel corroboration is complete.
+        merge_gates["amine"] = cleanup.prefer_amine_over_ammonium(
+            merged, ts_peaks=ts_peaks, r_min=amine_r_min,
+            protected=protected_neutrals, log=log)
     from peaky.assignment import plausibility as PL
     summary_plaus = {}
     # one audit row per touched peak (per-file O/C-monster + carbon-cluster demotes);
@@ -708,6 +838,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "n_in_all_files": int((merged["n_files"] == len(sample_ids)).sum()) if len(merged) else 0,
         "n_single_file": int((merged["n_files"] == 1).sum()) if len(merged) else 0,
         "formula_disagreements": int((~merged["formula_agree"]).sum()) if len(merged) else 0,
+        # the batch-level re-reads applied to the merged ledger (positive mode):
+        # what the reagent-N pass and the ammonium/amine gate each did, so the
+        # counts are on record and not only in the log
+        "merge_gates": merge_gates,
         "plausibility": summary_plaus,
         "plausibility_audit_rows": n_audit,
         "reflists_active": RL.active_versions(reflists_active),   # [(id, data_version)]

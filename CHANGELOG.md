@@ -201,6 +201,49 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The merge is a vote, and the merged row shows it.** `assign_batch.align` now
+  picks each m/z cluster's reading — a `(neutral_formula, adduct)` pair — by the
+  number of FILES carrying it, with the Assigned-file count and `ion_score` only as
+  tie-breaks (the order `collapse_trace_labels` already used for competing labels on
+  one trace), and the reading's own text as the last key so serial and parallel runs
+  stay byte-identical. The previous rule ranked the Assigned-file count first, so one
+  file's Assigned reading outvoted many files' Candidate reading of the same ion: on
+  a 15-file Texas Ur⁺ run 12 of the 73 split clusters were decided by a minority
+  (e.g. a 1-file Assigned `C5H6N2O3 [M+NH4]+` over a 4-file
+  `C4H5NO2 [M+(CH4N2O)H]+` at m/z 160.072), and nothing on the merged row said so.
+  A curated identity — a reference-list rescue or the pass-0 known-species list
+  (`_curated_neutrals`) — is exempt from the file count, not from corroboration:
+  Assigned in at least one file and in no fewer files than any grid reading, it is
+  not outvoted by grid guesses. On that run the D7 cyclosiloxane urea adduct at m/z
+  579.171 and tricresyl phosphate at 429.157, each locked in one file, would
+  otherwise have lost to an O14 / N4O10 grid formula the per-file engine itself
+  flags as implausible (Candidate in every file); sulfolane at 181.065, from the
+  same list in one file, met fluorenone `C13H8O [M+H]+` Assigned in nine, and the
+  count decided that one. (`certified:` neutrals get no exemption: a multi-channel
+  certification is the file's own evidence for a grid formula, already credited by
+  its tier.) The merged
+  row records the vote — `n_files_winner` (files carrying the winner; `n_files` is
+  the cluster), `alternatives` (the losing readings, best first:
+  `C15H25N [M+H]+ x1 Candidate 0.97`) and, when the exemption decided it, a
+  `tier_reason` note — and `formula_agree` stays `False` on a split.
+- **The hydrocarbon-on-N-cluster re-read is decided once per batch.**
+  `cleanup.relabel_reagent_n_adducts` re-reads a pure hydrocarbon seen via
+  `[M+NH4]+` / uronium as `[M+H]+` of the N-heterocycle unless the hydrocarbon also
+  shows its own `[M+H]+` — a presence test that, per file, flips with S/N: on the
+  Texas run `C15H22 [M+NH4]+` was kept in the fourteen files holding
+  `C15H22 [M+H]+` and re-read to `C15H25N [M+H]+` in the one that did not (the stage
+  fired 31–52 times per file), a disagreement the spectra never had and, for the
+  vote, a phantom minority. A batch now runs the per-file stage off
+  (`assign.run(reagent_n_relabel=False)`, set by `assign_batch.run`) and applies the
+  same rule once to the merged ledger, where every file's `[M+H]+` rows are pooled.
+  Single-sample runs are unchanged.
+- **The merged ledger explains its own re-reads.** The merged row carries
+  `tier_reason`, so the batch-level gates' notes land on the row a reader sees — a
+  merged formula could differ from every per-file reading with nothing on the row
+  to say why (`cleanup._note` found no such column and wrote nothing). The
+  reagent-N note names the reading it replaced
+  (`re-read C11H20 [M+(CH4N2O)H]+ as [M+H]+ of C12H24N2O: …`), and
+  `batch_summary.json["merge_gates"]` records both gates' counts.
 - **An explicitly requested progress window closed unread when the run was launched
   off a terminal.** The post-run hold was gated on a tty alone, so `setsid nohup peaky
   batch ... --progress` with `DISPLAY` set opened a real window on the desktop and tore

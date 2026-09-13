@@ -453,6 +453,32 @@ check("reagent-N: C5H4 [M+NH4]+ -> C5H7N [M+H]+", ledrn.loc[1, "neutral_formula"
 check("reagent-N: terpene C10H16 [M+NH4]+ KEPT (it has its own [M+H]+)",
       ledrn.loc[2, "neutral_formula"] == "C10H16" and ledrn.loc[2, "adduct"] == "[M+NH4]+")
 check("reagent-N: oxygenated C6H10O2 [M+NH4]+ untouched", ledrn.loc[4, "neutral_formula"] == "C6H10O2")
+check("reagent-N: the note names the reading it replaced",
+      str(ledrn.loc[0, "commentary"]).startswith("re-read C5H6 [M+(CH4N2O)H]+ as [M+H]+ of C6H10N2O"),
+      ledrn.loc[0, "commentary"])
+
+# ---- the same rule on a MERGED ledger (assign_batch.run applies it ONCE per batch):
+# no `role` column, the union of every file's [M+H]+ rows is the skip key, and the
+# note lands in tier_reason -- the columns a merged frame has.
+ledm = pd.DataFrame([
+    dict(mz=220.206, neutral_formula="C15H22", adduct="[M+NH4]+", tier="Assigned",
+         ion_score=0.99, n_files=15, tier_reason=pd.NA),     # kept: [M+H]+ below, seen in 14 of 15
+    dict(mz=203.179, neutral_formula="C15H22", adduct="[M+H]+", tier="Assigned",
+         ion_score=0.97, n_files=14, tier_reason=pd.NA),
+    dict(mz=213.196, neutral_formula="C11H20", adduct="[M+(CH4N2O)H]+", tier="Assigned",
+         ion_score=0.98, n_files=3, tier_reason=pd.NA),     # no [M+H]+ anywhere -> re-read
+])
+outm = CU.relabel_reagent_n_adducts(ledm, log=lambda *a: None)
+check("reagent-N merged: one re-read, the batch-wide [M+H]+ keeps the other",
+      outm == {"reagent_n_relabeled": 1}, outm)
+check("reagent-N merged: C15H22 [M+NH4]+ kept Assigned (its [M+H]+ is in the union)",
+      ledm.loc[0, "neutral_formula"] == "C15H22" and ledm.loc[0, "adduct"] == "[M+NH4]+"
+      and ledm.loc[0, "tier"] == "Assigned" and pd.isna(ledm.loc[0, "tier_reason"]))
+check("reagent-N merged: C11H20 uronium -> C12H24N2O [M+H]+ Candidate, noted in tier_reason",
+      ledm.loc[2, "neutral_formula"] == "C12H24N2O" and ledm.loc[2, "adduct"] == "[M+H]+"
+      and ledm.loc[2, "tier"] == "Candidate"
+      and str(ledm.loc[2, "tier_reason"]).startswith("re-read C11H20 [M+(CH4N2O)H]+ as [M+H]+ of C12H24N2O"),
+      ledm.loc[2].to_dict())
 
 
 # ---- ¹⁵N-nitrate isobar re-read (covalent organonitrate [M-H]- -> chamber ¹⁴NO₃ cluster) ----
