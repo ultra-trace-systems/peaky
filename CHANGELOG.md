@@ -257,6 +257,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The deep-series tie-break no longer depends on `PYTHONHASHSEED`** (#8). Residual
+  stage B collected its anchors into a set and `series_gka.propose_for_peak` walked that
+  set, so when two anchors reached the same candidate with identical support and mass
+  error (C4H6O4 + CH2 and C6H10O4 − CH2 both give C5H8O4) the anchor named in the Pass-4
+  commentary was whichever the set yielded first — a different one per process. The
+  formula, score and tier never varied; the ledger bytes did, against the determinism
+  contract in `ARCHITECTURE.md`. `propose_for_peak` now walks the anchors in sorted order
+  and breaks a support / ppm tie by the fewest steps, then the anchor, unit and adduct
+  text, so its result is a pure function of its arguments and the nearest anchor is the
+  one recorded; pass 5 walks its anchors sorted too. `tests/test_determinism_assign.py`
+  drives stage B in subprocesses under six different hash seeds and requires byte-identical
+  ledgers (on the previous code the same six seeds named three different anchors).
 - **`peaky batch --batch` settles the batch ONCE, and the time series can no longer
   pool sibling batches.** The SDK matches a plain string as a case-insensitive literal
   SUBSTRING and applied that rule differently on the two calls a batch run makes:

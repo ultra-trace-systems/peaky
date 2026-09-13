@@ -45,7 +45,8 @@ from peaky.assignment import series_gka as G
 from peaky.assignment.passes import (PassConfig, arbitrate, confidence_label, z_of, _f,
                      _prefer_adduct_reading)
 
-__version__ = "0.3.0"  # stage B draws from the admission gate (persistence OR brightness)
+__version__ = "0.3.1"  # stage B: deterministic anchor tie-break (#8); 0.3.0: stage B draws
+                       # from the admission gate (persistence OR brightness)
 
 # isotope spacings
 D_PAIR_BR = 1.997795
@@ -432,6 +433,9 @@ def stage_b_series(client, sample_id: str, ledger: pd.DataFrame, profile,
                    score_fn=None, log=print) -> dict:
     score_fn = score_fn or IO.score_candidates
     out = {"committed": 0, "locked": 0, "iso_attached": 0}
+    # a set for membership only: propose_for_peak walks it in sorted order and
+    # breaks ties by a total key, so the anchor recorded in the commentary below
+    # cannot depend on PYTHONHASHSEED (#8)
     anchors = set(ledger.loc[ledger["role"] == L.ROLE_M0, "neutral_formula"].dropna())
     if not anchors:
         return out

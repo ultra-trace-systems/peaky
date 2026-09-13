@@ -817,8 +817,8 @@ def run_pass5_completion(
 
     targets: dict[str, set] = {}
     n_cross = n_gap = 0
-    # (a) cross-channel partners of assigned neutrals
-    for nf in assigned:
+    # (a) cross-channel partners of assigned neutrals (sorted: never walk a set)
+    for nf in sorted(assigned):
         for ad in gadducts:
             try:
                 pid = un_peak_near(C.ion_mz(nf, ad))
