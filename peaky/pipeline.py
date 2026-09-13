@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import numpy as np
 import pandas as pd
 
 from peaky.io import io_mascope as IO
@@ -252,7 +253,11 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               base_out: str, ts=None, when=None, subject: str | None = None,
               amine_r_min: float = 0.6, do_report=True, config: str | None = None,
               k_min: int = SS.K_MIN, k_max: int = SS.K_MAX,
-              min_gain: float = SS.MIN_GAIN, occurrence_min: float | None = None,
+              min_gain: float = SS.MIN_GAIN, residual: bool = SS.RESIDUAL_DEFAULT,
+              residual_min_x_edge: float = SS.RESIDUAL_MIN_X_EDGE,
+              residual_min_cps: float | None = None,
+              residual_k_max: int = SS.RESIDUAL_K_MAX,
+              occurrence_min: float | None = None,
               height_cutoff_x_edge: float | None = None,
               height_cutoff_cps: float | None = None,
               n_jobs: int | None = None, log=print, **assign_kw) -> dict:
@@ -265,6 +270,12 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     The assigned subset is the greedy presence set-cover over the batch's m/z bins
     (sampling.select_cover_samples): `k_min`/`k_max`/`min_gain` tune the stop rule;
     the achieved coverage + stop reason land in batch_summary.json['selection'].
+    With `residual` (the default) a second, targeted selection follows the cover's
+    merge: the bins in no assigned file, unexplained by the stamp and bright
+    somewhere (`residual_min_x_edge` x that sample's noise edge, or
+    `residual_min_cps`) are assigned where they peak, at most `residual_k_max`
+    extra files (sampling.residual_universe / select_residual_cover); the block
+    lands in batch_summary.json['selection']['residual'].
     `occurrence_min` / `height_cutoff_x_edge` / `height_cutoff_cps` set the admission
     gate on the run's PassConfig. None leaves each knob UNSET, which is not the same
     as a value: `occurrence_min` then keeps the PassConfig default ('auto' = the
@@ -309,6 +320,8 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     res = AB.run(batch=batch, dataset=dataset, reagent=prof.name,
                  out_dir=ctx.out_dir, ts_peaks=ts, amine_r_min=amine_r_min,
                  k_min=k_min, k_max=k_max, min_gain=min_gain,
+                 residual=residual, residual_min_x_edge=residual_min_x_edge,
+                 residual_min_cps=residual_min_cps, residual_k_max=residual_k_max,
                  n_jobs=n_jobs, log=log, **assign_kw)
     gen = generate_report(ctx, ts, subject=subject, do_report=do_report, log=log)
 
@@ -380,6 +393,28 @@ def pool_name(batches_regex: str) -> str:
     return f"{base} (pooled)" if base else "pooled-batches"
 
 
+def _with_residual_picks(prov: pd.DataFrame, res, ts: pd.DataFrame,
+                         group_by: str) -> pd.DataFrame:
+    """The pooled selection table plus the residual stage's picks (assign_batch.run
+    returns them as `residual_samples`, role 'residual'), numbered after the cover
+    picks and labelled with their group -- the same rows `assign_batch.run` appends
+    to tables/selected_samples.csv on the single-batch path. Unchanged when the
+    stage picked nothing (or was off)."""
+    rsel = res.get("residual_samples") if isinstance(res, dict) else None
+    if rsel is None or not len(rsel):
+        return prov
+    rsel = rsel.copy()
+    rsel["pick"] = np.arange(len(prov) + 1, len(prov) + 1 + len(rsel))
+    by_sample = ts.drop_duplicates("sample_item_id").set_index("sample_item_id")
+    g = by_sample[group_by].reindex(rsel["sample_item_id"])
+    rsel[group_by] = g.astype(str).where(g.notna(), SS.UNGROUPED).to_numpy()
+    # the trimmed table AB.run selected from carries no names; the pooled one does
+    if "sample_item_name" in by_sample.columns and "sample_item_name" not in rsel.columns:
+        rsel["sample_item_name"] = by_sample["sample_item_name"].reindex(
+            rsel["sample_item_id"]).to_numpy()
+    return pd.concat([prov, rsel], ignore_index=True)
+
+
 def _write_selected_samples(run_dir: str, prov) -> None:
     """Emit tables/selected_samples.csv (the report's assigned-samples section
     reads it). The pooled path passes sample_ids= to assign_batch.run, which skips
@@ -412,6 +447,10 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                        do_report: bool = True, per_group_reports: bool = True,
                        config: str | None = None, k_min: int = SS.K_MIN,
                        k_max: int = SS.K_MAX, min_gain: float = SS.MIN_GAIN,
+                       residual: bool = SS.RESIDUAL_DEFAULT,
+                       residual_min_x_edge: float = SS.RESIDUAL_MIN_X_EDGE,
+                       residual_min_cps: float | None = None,
+                       residual_k_max: int = SS.RESIDUAL_K_MAX,
                        occurrence_min: float | None = None,
                        height_cutoff_x_edge: float | None = None,
                        height_cutoff_cps: float | None = None,
@@ -501,10 +540,15 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     res = AB.run(peaks=ts[ts_cols], ts_peaks=ts[ts_cols], reagent=prof.name,
                  batch=pool_label, dataset=dataset, sample_ids=union,
                  selection_meta=selection,
+                 residual=residual, residual_min_x_edge=residual_min_x_edge,
+                 residual_min_cps=residual_min_cps, residual_k_max=residual_k_max,
                  out_dir=ctx.out_dir, amine_r_min=amine_r_min, n_jobs=n_jobs,
                  log=log, **assign_kw)
     # the report's selected-samples section reads tables/selected_samples.csv;
-    # the sample_ids= path skips AB.run's own writer, so emit it from the union prov.
+    # the sample_ids= path skips AB.run's own writer, so emit it from the union prov
+    # -- plus the residual stage's picks, which AB.run hands back (the pooled table
+    # carries the group column, so they can be labelled and listed per group too).
+    prov = _with_residual_picks(prov, res, ts, group_by)
     _write_selected_samples(ctx.out_dir, prov)
     gen = generate_report(ctx, ts[ts_cols], subject=subject, do_report=do_report, log=log)
 

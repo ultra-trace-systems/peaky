@@ -67,6 +67,7 @@ with tempfile.TemporaryDirectory() as d:
 import pandas as pd  # noqa: E402
 
 from peaky.batch import assign_batch as _AB  # noqa: E402
+from peaky.batch import sampling as _SS  # noqa: E402
 from peaky.assignment import passes as _PA  # noqa: E402
 from peaky.reporting import provenance as _PV  # noqa: E402
 
@@ -110,6 +111,24 @@ try:
               _got["rec"]["cfg"].cal_mu is None
               and _got["ab"]["cfg"].cal_mu == -2.45,
               (_got["rec"]["cfg"].cal_mu, _got["ab"]["cfg"].cal_mu))
+        # the residual stage's knobs reach assign_batch.run, defaults = sampling's
+        check("run_batch forwards the residual knobs (defaults = sampling.RESIDUAL_*)",
+              _got["ab"]["residual"] == _SS.RESIDUAL_DEFAULT
+              and _got["ab"]["residual_min_x_edge"] == _SS.RESIDUAL_MIN_X_EDGE
+              and _got["ab"]["residual_min_cps"] is None
+              and _got["ab"]["residual_k_max"] == _SS.RESIDUAL_K_MAX,
+              {k: v for k, v in _got["ab"].items() if k.startswith("residual")})
+    with tempfile.TemporaryDirectory() as d:
+        _got.clear()
+        PL.run_batch(batch="B", dataset="D", reagent="TofP", base_out=d, ts=_TS,
+                     when=WHEN, do_report=False, log=lambda *a: None,
+                     residual=False, residual_k_max=3, residual_min_cps=800.0,
+                     residual_min_x_edge=7.0)
+        check("run_batch forwards explicit residual knobs unchanged",
+              (_got["ab"]["residual"], _got["ab"]["residual_k_max"],
+               _got["ab"]["residual_min_cps"], _got["ab"]["residual_min_x_edge"])
+              == (False, 3, 800.0, 7.0),
+              {k: v for k, v in _got["ab"].items() if k.startswith("residual")})
     # ONE cfg per run: the gate knobs (gate_config) and the profile's multiple
     # (apply_height_cutoff_x_edge) are stamped on the SAME object, which is what
     # reaches the per-sample runs and, as a snapshot, the manifest. A second cfg
@@ -142,6 +161,28 @@ try:
         check("run_pooled_batches: the gate knob rides that same cfg, assign + manifest",
               _got["ab"]["cfg"].occurrence_min == 0.42
               and _got["rec"]["cfg"].occurrence_min == 0.42, _got["ab"].get("cfg"))
+        check("run_pooled_batches forwards the residual knobs too",
+              _got["ab"]["residual"] == _SS.RESIDUAL_DEFAULT
+              and _got["ab"]["residual_k_max"] == _SS.RESIDUAL_K_MAX,
+              {k: v for k, v in _got["ab"].items() if k.startswith("residual")})
+    # the pooled path writes its own selection table: the residual picks AB.run
+    # hands back are appended, numbered on, labelled with their group and named
+    _prov = pd.DataFrame({"sample_item_id": ["s1"], "datetime_utc": [pd.NaT],
+                          "sample_item_name": ["one"], "tic": [10.0], "n_peaks": [2],
+                          "pick": [1], "role": ["cover"], "bins_new": [2], "coverage": [0.7],
+                          "sample_batch_name": ["b1"]})
+    _rsel = pd.DataFrame({"sample_item_id": ["s2"], "tic": [5.0], "n_peaks": [2],
+                          "pick": [1], "role": ["residual"], "bins_new": [1], "coverage": [1.0]})
+    _tsn = _TS.assign(sample_item_name=_TS["sample_item_id"].map({"s1": "one", "s2": "two"}))
+    _all = PL._with_residual_picks(_prov, {"residual_samples": _rsel}, _tsn, "sample_batch_name")
+    check("_with_residual_picks: appends the residual picks, numbered on, grouped and named",
+          len(_all) == 2 and _all["pick"].tolist() == [1, 2]
+          and _all["role"].tolist() == ["cover", "residual"]
+          and _all["sample_batch_name"].tolist() == ["b1", "b2"]
+          and _all["sample_item_name"].tolist() == ["one", "two"], _all.to_dict("records"))
+    check("_with_residual_picks: nothing to append -> the table untouched",
+          PL._with_residual_picks(_prov, {"residual_samples": None}, _tsn, "sample_batch_name") is _prov
+          and PL._with_residual_picks(_prov, {}, _tsn, "sample_batch_name") is _prov)
     # an explicit cfg multiple beats the profile through the pipeline too -- at
     # the value (1.0) that is also the package default, so "explicit" cannot be
     # inferred from the number alone.

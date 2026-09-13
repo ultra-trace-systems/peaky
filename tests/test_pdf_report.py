@@ -275,6 +275,50 @@ with tempfile.TemporaryDirectory() as d:
           "WARNING" in _mtxt and "k_max=2" in _mtxt and "raise --k-max" in _mtxt, _mtxt)
     check("methods: no stale hard-coded rule text",
           "time-spaced" not in _mtxt and "max-TIC" not in _mtxt, _mtxt)
+    # --- the cover with a residual stage: the file split and a per-stage preview ---
+    ctx_r = dict(ctx_s)
+    ctx_r["n_files"] = 15
+    ctx_r["batch"] = dict(ctx_s.get("batch") or {})
+    ctx_r["batch"]["selection"] = dict(
+        ctx_r["batch"]["selection"], stop_reason="gain-floor",
+        residual={"n_bins_residual": 5, "n_uncovered": 135, "n_explained": 0,
+                  "n_below_floor": 130, "n_sidelobe": 1, "n_suspect": 1,
+                  "floor": {"min_x_edge": 5.0, "min_cps": None}, "frac_of_max": 0.5,
+                  "k": 5, "k_max": 10, "coverage_of_residual": 1.0,
+                  "stop_reason": "exhausted", "sample_ids": [f"r{i}" for i in range(5)]})
+    ctx_r["batch"]["n_files_by_stage"] = {"cover": 10, "residual": 5}
+    ctx_r["samples"] = ([(f"2026-06-16 {i:02d}:00:00", "cover") for i in range(10)]
+                        + [(f"2026-06-17 {i:02d}:00:00", "residual") for i in range(5)])
+    _cl = _cover_lines(ctx_r)
+    _sel_line = next((t for t in _cl if "presence set-cover selection" in t), "")
+    check("cover: the selection line splits the files by stage",
+          _sel_line.startswith("15 files (10 cover + 5 residual): presence set-cover")
+          and "1 confirmed sidelobe(s) dropped" in _sel_line, _sel_line)
+    _rows = [t for t in _cl if t.startswith("   ") and ("[cover]" in t or "[residual]" in t
+                                                        or "more" in t)]
+    check("cover: the preview shows 5 cover rows, 'and 5 more', 3 residual rows, 'and 2 more'",
+          [("[cover]" in t, "[residual]" in t, "more" in t) for t in _rows]
+          == [(True, False, False)] * 5 + [(False, False, True)] + [(False, True, False)] * 3
+          + [(False, False, True)]
+          and "and 5 more cover files" in _rows[5] and "and 2 more residual files" in _rows[-1],
+          _rows)
+    ctx_r["samples"] = [(f"2026-06-16 {i:02d}:00:00", "cover") for i in range(10)]
+    ctx_r["batch"]["selection"].pop("residual"); ctx_r["batch"].pop("n_files_by_stage")
+    ctx_r["n_files"] = 10
+    _cl0 = _cover_lines(ctx_r)
+    _rows0 = [t for t in _cl0 if t.startswith("   ") and ("[cover]" in t or "more" in t)]
+    check("cover: without a residual stage the preview is the first 8 rows, as before",
+          len(_rows0) == 8 and all("[cover]" in t for t in _rows0)
+          and any(t.startswith("10 files: presence") for t in _cl0), _rows0)
+    _mtxt_r = " ".join(t for _s, t in R._selection_lines(
+        {"n_files": 15, "batch": {"selection": dict(ctx_s["batch"]["selection"], residual={
+            "n_uncovered": 135, "n_explained": 0, "n_below_floor": 130, "n_bins_residual": 5,
+            "n_sidelobe": 1, "n_suspect": 1, "floor": {"min_x_edge": 5.0}, "k": 5,
+            "k_max": 10, "coverage_of_residual": 1.0, "stop_reason": "exhausted"})}})
+        if isinstance(t, str))
+    check("methods: the sidelobe guard gets its own bullet when it acted",
+          "Sidelobe guard: 1 candidate bin(s)" in _mtxt_r and "1 met only the static rule" in _mtxt_r,
+          _mtxt_r)
     out5 = R.build(d, tag="Ur", label="Ur⁺ CIMS", out_pdf=f"{d}/r5.pdf",
                    sections=[R.cover, R.methods])
     check("build: cover + methods with a selection record -> PDF",
@@ -313,6 +357,50 @@ with tempfile.TemporaryDirectory() as d:
               and fitz.open(small).page_count == fitz.open(big).page_count)
     except ImportError:
         pass
+
+# --- the residual stage on the cover and the Methods page ----------------------
+# Rendered from batch_summary['selection']['residual'] alone (a plain ctx dict is
+# enough: the helpers read nothing else), so the wording is pinned here.
+_rsel = {"method": "presence-cover", "k": 15, "n_samples": 6154, "n_bins": 4702,
+         "achieved_coverage": 0.82, "stop_reason": "gain-floor", "min_prevalence": 2,
+         "tol_ppm": 6.0, "k_min": 6, "k_max": 30, "min_gain": 0.005, "next_gain": 0.004,
+         "residual": {"n_bins_residual": 36, "n_universe": 4702, "n_uncovered": 846,
+                      "n_explained": 12, "n_below_floor": 798,
+                      "floor": {"min_x_edge": 5.0, "min_cps": None,
+                                "edge_median_cps": 154.0, "source": "5x the sample's noise edge"},
+                      "frac_of_max": 0.5, "k": 10, "k_max": 10,
+                      "coverage_of_residual": 0.72, "stop_reason": "k_max",
+                      "next_gain": 0.05, "sample_ids": [f"z{i}" for i in range(10)]}}
+_rctx = {"n_files": 25, "batch": {"selection": _rsel}}
+_rtxt = " ".join(t for _s, t in R._selection_lines(_rctx) if isinstance(t, str))
+check("methods: the residual stage gets its own bullet, from the recorded block",
+      "Residual stage" in _rtxt and "846" in _rtxt and "12 are explained" in _rtxt
+      and "798 never reach" in _rtxt and "36 were targeted" in _rtxt
+      and "10 extra file(s) cover 72%" in _rtxt and "'k_max'" in _rtxt
+      and "5× the sample's noise edge" in _rtxt, _rtxt)
+_rcov = R._residual_cover_text(_rsel)
+check("cover: the selection line gains the residual clause (targets, files, coverage, stop)",
+      _rcov.startswith(" Residual stage: 36 of the 846 bins") and "10 extra file(s)" in _rcov
+      and "72%" in _rcov and "k_max" in _rcov, _rcov)
+_rnone = dict(_rsel, residual=dict(_rsel["residual"], n_bins_residual=0, k=0,
+                                   stop_reason="empty", sample_ids=[]))
+check("cover: a stage with nothing to target says so, without a file count",
+      "none of the 846 bins" in R._residual_cover_text(_rnone)
+      and "extra file(s)" not in R._residual_cover_text(_rnone), R._residual_cover_text(_rnone))
+check("cover: no residual block (a cover-only run) -> no clause at all",
+      R._residual_cover_text({k: v for k, v in _rsel.items() if k != "residual"}) == "")
+check("methods: no residual block -> no residual bullet",
+      "Residual stage" not in " ".join(
+          t for _s, t in R._selection_lines(
+              {"n_files": 15, "batch": {"selection": {k: v for k, v in _rsel.items()
+                                                       if k != "residual"}}})
+          if isinstance(t, str)))
+check("floor text: an absolute floor reads in cps, both bounds joined with 'and'",
+      R._residual_floor_text({"floor": {"min_x_edge": None, "min_cps": 1000.0}}) == "1000 cps"
+      and R._residual_floor_text({"floor": {"min_x_edge": 8.0, "min_cps": 700.0}})
+      == "8× the sample's noise edge and 700 cps"
+      and R._residual_floor_text({}) == "no floor")
+
 
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"

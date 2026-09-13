@@ -48,6 +48,18 @@ check("batch selection defaults mirror sampling.K_MIN/K_MAX/MIN_GAIN",
 a = P.parse_args(["batch", "--batch", "B", "--k-max", "12", "--k-min", "4", "--min-gain", "0.01"])
 check("parse `batch --k-max/--k-min/--min-gain`",
       a.k_max == 12 and a.k_min == 4 and a.min_gain == 0.01)
+# the residual stage's knobs (sampling.RESIDUAL_*): one tri-state switch + floor + budget
+a = P.parse_args(["batch", "--batch", "B"])
+check("batch: the residual defaults mirror sampling.RESIDUAL_DEFAULT/MIN_X_EDGE/K_MAX",
+      a.residual == _SS.RESIDUAL_DEFAULT and a.residual_min_x_edge == _SS.RESIDUAL_MIN_X_EDGE
+      and a.residual_min_cps is None and a.residual_k_max == _SS.RESIDUAL_K_MAX, vars(a))
+a = P.parse_args(["batch", "--batch", "B", "--no-residual"])
+check("parse `batch --no-residual`", a.residual is False)
+a = P.parse_args(["pool", "--batches", "x", "--residual", "--residual-min-x-edge", "8",
+                  "--residual-min-cps", "1000", "--residual-k-max", "4"])
+check("parse the residual knobs on `pool`",
+      a.residual is True and a.residual_min_x_edge == 8.0 and a.residual_min_cps == 1000.0
+      and a.residual_k_max == 4, vars(a))
 for flag in ("--select", "--coverage-target", "--height-floor"):
     try:
         P.parse_args(["batch", "--batch", "B", flag, "x"])
@@ -231,6 +243,24 @@ try:
           == (9, 5, 0.03), _seen.get("pool"))
     check("cmd_pool forwards --group-by too (the knobs are not positional luck)",
           _seen["pool"]["group_by"] == "sample_batch_name", _seen.get("pool"))
+    cli.cmd_batch(P.parse_args(["batch", "--batch", "B", "--no-residual", "--residual-k-max", "4",
+                                "--residual-min-cps", "900"]))
+    check("cmd_batch forwards the residual knobs to pipeline.run_batch",
+          _seen["batch"]["residual"] is False and _seen["batch"]["residual_k_max"] == 4
+          and _seen["batch"]["residual_min_cps"] == 900.0
+          and _seen["batch"]["residual_min_x_edge"] == _SS.RESIDUAL_MIN_X_EDGE,
+          {k: v for k, v in _seen["batch"].items() if k.startswith("residual")})
+    cli.cmd_batch(P.parse_args(["batch", "--batch", "B"]))
+    check("cmd_batch forwards the residual DEFAULTS when no flag is given",
+          _seen["batch"]["residual"] == _SS.RESIDUAL_DEFAULT
+          and _seen["batch"]["residual_k_max"] == _SS.RESIDUAL_K_MAX
+          and _seen["batch"]["residual_min_cps"] is None)
+    cli.cmd_pool(P.parse_args(["pool", "--batches", "chamber.*", "--residual-min-x-edge", "8"]))
+    check("cmd_pool forwards the residual knobs to run_pooled_batches",
+          _seen["pool"]["residual"] == _SS.RESIDUAL_DEFAULT
+          and _seen["pool"]["residual_min_x_edge"] == 8.0
+          and _seen["pool"]["residual_k_max"] == _SS.RESIDUAL_K_MAX,
+          {k: v for k, v in _seen["pool"].items() if k.startswith("residual")})
     with tempfile.TemporaryDirectory() as _d:
         try:
             cli.cmd_assign(P.parse_args(["assign", "--sample-id", "X", "--reagent", "Br",

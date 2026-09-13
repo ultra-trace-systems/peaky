@@ -45,7 +45,12 @@ when the next pick adds < 0.5 %, after at least 6 picks; `--k-max` 30 is a
 flagged budget). Because the merge keeps whatever any assigned sample contained,
 this selection is what decides recall — see [`SAMPLING.md`](SAMPLING.md) for the
 measurements. Same merge, same outputs; `batch_summary.json['selection']` records
-the achieved coverage and why the selection stopped.
+the achieved coverage and why the selection stopped. A **residual stage** then
+targets what the cover left behind: the bins in no assigned file that the stamp
+does not explain and that reach ≥ 5× their sample's noise edge somewhere are
+assigned where they peak, at most `--residual-k-max` (10) extra files, and one
+merge covers both stages (`stage` column; `--no-residual` turns it off —
+[`SAMPLING.md`](SAMPLING.md) §3b).
 
 ## Admission: which peaks are eligible (persistence OR brightness)
 

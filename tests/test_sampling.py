@@ -405,6 +405,211 @@ check("pool: the group column on the selected rows is all strings",
       sel8["sample_batch_name"].tolist())
 
 
+# ---------------------------------------------------------------------------
+# THE RESIDUAL STAGE: residual_universe (what the cover left behind, bright
+# somewhere, unexplained) + select_residual_cover (where to assign it)
+# ---------------------------------------------------------------------------
+def make_batch_h(spec: dict, *, minutes: int = 10):
+    """spec: sample_id -> {m/z: height}; samples stamped `minutes` apart."""
+    rows = []
+    for i, (sid, mzh) in enumerate(spec.items()):
+        t = T0 + pd.Timedelta(minutes=minutes * i)
+        for mz, h in mzh.items():
+            rows.append(dict(sample_item_id=sid, sample_item_name=str(t),
+                             datetime_utc=t, mz=float(mz), height=float(h)))
+    return pd.DataFrame(rows)
+
+
+_bgh = {m: 500.0 for m in bg}                # 20 background bins at 500 cps (= every edge)
+_blk = {m: 500.0 for m in range(200, 220)}   # 20 bins the cover's file holds
+_rspec = {"c0": {**_bgh, **_blk}, "c1": {**_bgh, **_blk},
+          "u0": {**_bgh, 400: 500.0, 401: 500.0},   # an uncovered pair at 1x the edge (dim)
+          "u1": {**_bgh, 400: 500.0, 401: 500.0},
+          # 500 is bright in z1 (10x its edge), 502 bright in z2; 501 dim everywhere
+          # (1.2x); each bright bin sits at 20 % of its maximum in the other file
+          "z1": {**_bgh, 500: 5000.0, 501: 600.0, 502: 1000.0},
+          "z2": {**_bgh, 500: 1000.0, 501: 600.0, 502: 5000.0}}
+_rpk = make_batch_h(_rspec)
+_rb = SS.residual_universe(_rpk, assigned=["c0"])
+_rm = _rb.attrs["residual"]
+check("residual universe: the bins in no assigned file that reach 5x the edge somewhere",
+      _rb["bin_mz"].round(0).tolist() == [500.0, 502.0], _rb["bin_mz"].tolist())
+check("residual universe: the funnel (universe 45, uncovered 5, 3 below the floor, 2 targeted)",
+      _rm["n_universe"] == 45 and _rm["n_uncovered"] == 5 and _rm["n_below_floor"] == 3
+      and _rm["n_explained"] == 0 and _rm["n_residual"] == 2, _rm)
+check("residual universe: per bin -- prevalence, maximum, maximum in edges, where it peaks",
+      _rb["prevalence"].tolist() == [2, 2] and _rb["max_cps"].tolist() == [5000.0, 5000.0]
+      and _rb["max_x_edge"].tolist() == [10.0, 10.0]
+      and _rb["sample_at_max"].tolist() == ["z1", "z2"], _rb.to_dict("records"))
+check("residual universe: the floor and the median edge are recorded",
+      _rm["min_x_edge"] == 5.0 and _rm["min_cps"] is None and _rm["edge_median_cps"] == 500.0
+      and _rm["tol_ppm"] == SS.BATCH_TOL_PPM and _rm["min_prevalence"] == 2, _rm)
+check("residual universe: the per-sample edge comes back for the caller's gate (plain dict)",
+      isinstance(_rb.attrs["edge_cps"], dict)
+      and [_rb.attrs["edge_cps"][k] for k in ("c0", "z1")] == [500.0, 500.0],
+      _rb.attrs["edge_cps"])
+check("residual universe: the frame survives pandas' attrs comparison (round / concat)",
+      len(_rb.round(2)) == 2 and len(pd.concat([_rb, _rb.copy()])) == 4)
+# (b) a bin the whole-batch stamp explains is not re-targeted
+_stamped = (_rpk["mz"] == 500).to_numpy()            # every peak of bin 500 carries a stamp
+_rb2 = SS.residual_universe(_rpk, assigned=["c0"], stamped=_stamped)
+check("residual universe: a stamped bin is explained, not targeted (500 out, 502 stays)",
+      _rb2["bin_mz"].round(0).tolist() == [502.0] and _rb2.attrs["residual"]["n_explained"] == 1
+      and _rb2.attrs["residual"]["n_residual"] == 1, _rb2.attrs["residual"])
+try:
+    SS.residual_universe(_rpk, assigned=["c0"], stamped=_stamped[:-1])
+    check("residual universe: a stamp mask of the wrong length is refused", False, "no error")
+except ValueError:
+    check("residual universe: a stamp mask of the wrong length is refused", True)
+# (c) the floor: edge-relative, absolute, or both
+_rb3 = SS.residual_universe(_rpk, assigned=["c0"], min_x_edge=None, min_cps=600.0)
+check("residual universe: an absolute floor alone (600 cps keeps 500, 501 and 502)",
+      _rb3["bin_mz"].round(0).tolist() == [500.0, 501.0, 502.0]
+      and _rb3.attrs["residual"]["n_below_floor"] == 2, _rb3["bin_mz"].tolist())
+_rb4 = SS.residual_universe(_rpk, assigned=["c0"], min_x_edge=5.0, min_cps=6000.0)
+check("residual universe: both bounds apply (a 6000 cps floor drops everything)",
+      len(_rb4) == 0 and _rb4.attrs["residual"]["n_below_floor"] == 5
+      and "bin_mz" in _rb4.columns, _rb4.attrs["residual"])
+_rb5 = SS.residual_universe(_rpk, assigned=["c0"], min_x_edge=1.1)
+check("residual universe: a 1.1x floor admits the 1.2x bin, still not the 1x pair",
+      _rb5["bin_mz"].round(0).tolist() == [500.0, 501.0, 502.0], _rb5["bin_mz"].tolist())
+# (a) covered means present in ANY assigned file; nothing assigned -> the whole tail
+check("residual universe: every bin covered -> nothing (assigned c0, z1, z2)",
+      len(SS.residual_universe(_rpk, assigned=["c0", "z1", "z2"])) == 0)
+check("residual universe: no assigned file -> the bright bins of the whole universe",
+      SS.residual_universe(_rpk, assigned=[])["bin_mz"].round(0).tolist() == [500.0, 502.0])
+check("residual universe: the singleton gate is the cover's (a bin in one sample is no target)",
+      len(SS.residual_universe(make_batch_h({"a": {100: 500.0, 101: 500.0},
+                                             "b": {100: 500.0, 900: 9000.0}}),
+                               assigned=["a"])) == 0)
+check("residual universe: a per-sample table is not per-peak -> empty, with the schema",
+      len(SS.residual_universe(SS.sample_table(_rpk), assigned=["c0"])) == 0)
+
+# ---- the residual cover ------------------------------------------------------
+_rs = SS.select_residual_cover(_rpk, _rb)
+_rsm = _rs.attrs["selection"]
+check("residual cover: each bin is taken where it stands at >= 50 % of its maximum -> z1, z2",
+      _rs["sample_item_id"].tolist() == ["z1", "z2"]
+      and _rs["role"].tolist() == [SS.ROLE_RESIDUAL] * 2
+      and _rs["pick"].tolist() == [1, 2] and _rs["bins_new"].tolist() == [1, 1]
+      and np.isclose(_rs["coverage"].tolist(), [0.5, 1.0]).all(), _rs.to_dict("records"))
+check("residual cover: the meta (method, k, n_bins, coverage 1.0, stop exhausted)",
+      _rsm["method"] == "residual-cover" and _rsm["k"] == 2 and _rsm["n_bins"] == 2
+      and _rsm["n_samples"] == 6 and np.isclose(_rsm["achieved_coverage"], 1.0)
+      and _rsm["stop_reason"] == SS.STOP_EXHAUSTED and _rsm["frac_of_max"] == 0.5
+      and _rsm["k_max"] == SS.RESIDUAL_K_MAX, _rsm)
+_bin_of = _rb.set_index("bin")["bin_mz"].round(0)
+check("residual cover: covered_by maps each bin to the pick that carries it",
+      {int(_bin_of[b]): s for b, s in _rs.attrs["covered_by"].items()} == {500: "z1", 502: "z2"},
+      _rs.attrs["covered_by"])
+check("residual cover: the same table shape as the presence cover",
+      list(_rs.columns) == list(SS.select_cover_samples(_rpk, k_min=1, min_gain=0.5).columns),
+      list(_rs.columns))
+_rs2 = SS.select_residual_cover(_rpk, _rb, frac_of_max=0.2)
+check("residual cover: a lower frac_of_max lets one sample carry both bins (z1 alone at 20 %)",
+      _rs2["sample_item_id"].tolist() == ["z1"] and _rs2["bins_new"].tolist() == [2]
+      and _rs2.attrs["selection"]["stop_reason"] == SS.STOP_EXHAUSTED, _rs2.to_dict("records"))
+_rs3 = SS.select_residual_cover(_rpk, _rb, k_max=1)
+check("residual cover: k_max=1 caps the picks and records the rejected gain",
+      _rs3["sample_item_id"].tolist() == ["z1"]
+      and _rs3.attrs["selection"]["stop_reason"] == SS.STOP_KMAX
+      and np.isclose(_rs3.attrs["selection"]["next_gain"], 0.5)
+      and np.isclose(_rs3.attrs["selection"]["achieved_coverage"], 0.5), _rs3.attrs["selection"])
+_rs4 = SS.select_residual_cover(_rpk, _rb, min_height={"z1": 6000.0})
+check("residual cover: a sample below its own gate counts for nothing (z1 gated -> z2 alone)",
+      _rs4["sample_item_id"].tolist() == ["z2"]
+      and np.isclose(_rs4.attrs["selection"]["achieved_coverage"], 0.5)
+      and _rs4.attrs["selection"]["stop_reason"] == SS.STOP_EXHAUSTED, _rs4.to_dict("records"))
+_rs5 = SS.select_residual_cover(_rpk, _rb.iloc[:0])
+check("residual cover: no bins -> no picks, stop 'empty', the schema still there",
+      len(_rs5) == 0 and _rs5.attrs["selection"]["stop_reason"] == SS.STOP_EMPTY
+      and {"role", "pick", "bins_new", "coverage"} <= set(_rs5.columns)
+      and _rs5.attrs["covered_by"] == {}, _rs5.attrs["selection"])
+_shuf = _rpk.sample(frac=1, random_state=5).reset_index(drop=True)
+check("residual stage: shuffled input rows -> the identical universe and picks",
+      SS.residual_universe(_shuf, assigned=["c0"])["bin_mz"].tolist() == _rb["bin_mz"].tolist()
+      and SS.select_residual_cover(_shuf, _rb)["sample_item_id"].tolist() == ["z1", "z2"])
+# tie-break: two samples equally bright on the same bins -> the smaller id
+_tie = make_batch_h({"c0": {**_bgh, **_blk}, "c1": {**_bgh, **_blk},
+                     "y2": {**_bgh, 600: 4000.0}, "y1": {**_bgh, 600: 4000.0}})
+_tb = SS.residual_universe(_tie, assigned=["c0"])
+check("residual cover: equal samples resolve to the smallest sample_item_id",
+      SS.select_residual_cover(_tie, _tb)["sample_item_id"].tolist() == ["y1"])
+_desc = SS.describe_residual(_rsm, _rm)
+# ---- sidelobe tiers -----------------------------------------------------------
+# A saturating parent at 300.0 (1.0-1.5e6 cps, present in the cover file c0 too, so
+# its bin is covered) with a satellite 5 mDa above it at a LOCKED 0.5 % of its
+# height (a ringing sidelobe) and an ion 8 mDa above it whose height varies on its
+# own (independent); 24 samples hold all three. Then a parent at 400.0 with two
+# satellites in only 3 samples (q0..q2): too few pairs to test the ratio, but the
+# static rule holds where they peak -> suspects, covered LAST.
+_par, _slob, _ind = 300.0, 300.005, 300.008
+_tspec = {"c0": {**_bgh, _par: 1.0e6, 400.0: 1.0e6}}
+for _i in range(24):
+    _ph = 1.0e6 * (1 + 0.5 * (_i % 4) / 3)
+    _tspec[f"p{_i:02d}"] = {**_bgh, _par: _ph, _slob: 0.005 * _ph,
+                            _ind: 2000.0 + 5000.0 * (_i % 3)}
+for _i in range(3):
+    _tspec[f"q{_i}"] = {**_bgh, 400.0: 1.0e6, 400.003: 4000.0, 400.007: 4000.0}
+_tpk = make_batch_h(_tspec)
+_tb = SS.residual_universe(_tpk, assigned=["c0"])
+_tm = _tb.attrs["residual"]
+_sl = pd.DataFrame(_tb.attrs["sidelobes"])
+check("tiers: the ratio-locked satellite is a confirmed sidelobe -> dropped, counted, listed",
+      _tm["n_sidelobe"] == 1 and len(_sl) == 1 and round(float(_sl["bin_mz"][0]), 3) == 300.005
+      and _sl["tier"][0] == SS.TIER_SIDELOBE and round(float(_sl["sidelobe_of"][0]), 3) == 300.0
+      and _sl["n_pairs"][0] == 24 and _sl["ratio_cv"][0] < 0.08,
+      (_tm, _sl.to_dict("records")))
+check("tiers: the independent ion next to the same parent is clean, its ratio recorded as varying",
+      _tb["bin_mz"].round(3).tolist() == [300.008, 400.003, 400.007]
+      and _tb["tier"].tolist() == [SS.TIER_CLEAN, SS.TIER_SUSPECT, SS.TIER_SUSPECT]
+      and round(float(_tb["sidelobe_of"][0]), 3) == 300.0 and _tb["n_pairs"][0] == 24
+      and _tb["ratio_cv"][0] > 0.08, _tb.to_dict("records"))
+check("tiers: the static-rule satellites with too few pairs are suspects (kept), counted",
+      _tm["n_suspect"] == 2 and _tm["n_residual"] == 3
+      and _tb["n_pairs"].tolist()[1:] == [3, 3] and _tb["ratio_cv"].isna().tolist()[1:] == [True, True]
+      and _tb["sidelobe_of"].round(1).tolist()[1:] == [400.0, 400.0], _tb.to_dict("records"))
+# the case that motivated the guard: a sidelobe 1.5 mDa from a 584 kcps parent at
+# m/z 100 (bins there are only ~0.6 mDa wide, so the two ARE distinct bins), seen
+# in 3 samples -> too few pairs, static rule holds where it peaks -> suspect
+_near = {"c0": {**_bgh, 100.0757: 15600.0}}
+for _i in range(30):                                  # the parent's median stays 15.6 kcps
+    _near[f"m{_i:02d}"] = {**_bgh, 100.0757: 15600.0}
+for _i in range(3):                                   # ... it saturates only in these
+    _near[f"n{_i}"] = {**_bgh, 100.0757: 5.84e5, 100.0772: 4023.0}
+_nb = SS.residual_universe(make_batch_h(_near), assigned=["c0"])
+check("tiers: a parent 1.5 mDa away that saturates only where the sidelobe is -> suspect (the 100.0772 case)",
+      _nb["bin_mz"].round(4).tolist() == [100.0772] and _nb["tier"].tolist() == [SS.TIER_SUSPECT]
+      and round(float(_nb["sidelobe_of"][0]), 4) == 100.0757 and _nb["n_pairs"][0] == 3
+      and _nb.attrs["residual"]["n_suspect"] == 1, _nb.to_dict("records"))
+_tsel = SS.select_residual_cover(_tpk, _tb)
+check("tiers: the cover takes the sample adding a CLEAN bin before the one adding two suspects",
+      _tsel["sample_item_id"].tolist() == ["p01", "q0"] and _tsel["bins_new"].tolist() == [1, 2]
+      and _tsel["coverage"].tolist() == [0.3333, 1.0]
+      and _tsel.attrs["selection"]["stop_reason"] == SS.STOP_EXHAUSTED, _tsel.to_dict("records"))
+_tsel1 = SS.select_residual_cover(_tpk, _tb, k_max=1)
+check("tiers: with k_max=1 the budget goes to the clean bin, the suspects are the rejected gain",
+      _tsel1["sample_item_id"].tolist() == ["p01"]
+      and _tsel1.attrs["selection"]["stop_reason"] == SS.STOP_KMAX
+      and _tsel1.attrs["selection"]["next_gain"] == 0.6667, _tsel1.attrs["selection"])
+check("tiers: a bins table without a tier column is all clean (plain greedy: q0's 2 bins first)",
+      SS.select_residual_cover(_tpk, _tb.drop(columns=["tier"]))["sample_item_id"].tolist()
+      == ["q0", "p01"])
+check("tiers: no saturating neighbour -> every target clean, nothing dropped, cv not measurable",
+      _rb["tier"].tolist() == [SS.TIER_CLEAN] * 2 and _rm["n_sidelobe"] == 0 and _rm["n_suspect"] == 0
+      and _rb["sidelobe_of"].isna().all() and _rb.attrs["sidelobes"] == [], _rb.to_dict("records"))
+check("describe_residual: names the dropped sidelobes and the suspects",
+      "1 dropped as confirmed sidelobes" in SS.describe_residual(_tsel.attrs["selection"], _tm)
+      and "2 static-rule sidelobe suspect(s), covered last" in SS.describe_residual(_tsel.attrs["selection"], _tm),
+      SS.describe_residual(_tsel.attrs["selection"], _tm))
+check("describe_residual: one line with the funnel and the cover",
+      "5 of 45" in _desc and "3 below the floor" in _desc and "2 sample(s)" in _desc
+      and "stop=exhausted" in _desc, _desc)
+check("residual constants: the switch is on, floor 5x, half of the maximum, budget 10",
+      SS.RESIDUAL_DEFAULT is True and SS.RESIDUAL_MIN_X_EDGE == 5.0
+      and SS.RESIDUAL_FRAC_OF_MAX == 0.5 and SS.RESIDUAL_K_MAX == 10 and SS.EDGE_Q == 0.01)
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

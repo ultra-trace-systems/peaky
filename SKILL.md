@@ -83,6 +83,7 @@ peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto
 # a whole batch (assign subset -> merge -> cluster -> Van Krevelen -> PDF report)
 peaky batch --batch "<batch>" --dataset "<workspace>" --reagent <Br|Ur|...> \
     [--k-max 30 --k-min 6 --min-gain 0.005] [--occurrence-min auto] \
+    [--no-residual | --residual-min-x-edge 5 --residual-min-cps N --residual-k-max 10] \
     --out-dir ~/peaky-output
 
 # MANY same-chemistry batches -> ONE unified ledger + whole-pool + per-group reports
@@ -115,7 +116,16 @@ batch's m/z bins: bins present in ≥2 samples (no height floor), each pick the
 sample covering the most not-yet-covered bins, stop when the next pick would add
 < `--min-gain` (0.5 %) after `--k-min` (6) picks; `--k-max` (30) is a budget and a
 run that hits it is flagged (`selection.stop_reason == "k_max"`). The achieved
-coverage is in `batch_summary.json['selection']`.
+coverage is in `batch_summary.json['selection']`. A **residual stage** (on by
+default; `--no-residual` reproduces the cover-only run) then targets the bins the
+cover left in no assigned file: those the whole-batch stamp does not explain and
+that reach `--residual-min-x-edge` (5×) their sample's noise edge somewhere (or
+`--residual-min-cps` absolute) are covered by at most `--residual-k-max` (10)
+more samples, each counting for a bin only where the bin stands at ≥ 50 % of its
+maximum; those files are assigned too and ONE merge covers both stages. Merged
+rows carry `stage` = `cover` | `residual`, `selected_samples.csv` the extra picks
+(role `residual`), `tables/residual_bins.csv` the targets, and
+`batch_summary.json['selection']['residual']` the record (`docs/SAMPLING.md` §3b).
 
 Admission (which peaks are eligible for formula search at the eight gated sites:
 the pass-1 grid, pass-2 series growth, pass-3 contaminant families and pass-3's

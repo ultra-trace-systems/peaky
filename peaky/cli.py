@@ -337,6 +337,10 @@ def cmd_batch(args) -> None:
                            subject=args.subject, do_report=not args.no_report,
                            config=args.reagent_config, k_min=args.k_min,
                            k_max=args.k_max, min_gain=args.min_gain,
+                           residual=args.residual,
+                           residual_min_x_edge=args.residual_min_x_edge,
+                           residual_min_cps=args.residual_min_cps,
+                           residual_k_max=args.residual_k_max,
                            occurrence_min=args.occurrence_min,
                            height_cutoff_x_edge=args.height_cutoff_x_edge,
                            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
@@ -367,6 +371,8 @@ def cmd_pool(args) -> None:
             do_report=not args.no_report,
             per_group_reports=not args.no_group_reports, config=args.reagent_config,
             k_min=args.k_min, k_max=args.k_max, min_gain=args.min_gain,
+            residual=args.residual, residual_min_x_edge=args.residual_min_x_edge,
+            residual_min_cps=args.residual_min_cps, residual_k_max=args.residual_k_max,
             occurrence_min=args.occurrence_min,
             height_cutoff_x_edge=args.height_cutoff_x_edge,
             height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs, log=prog)
@@ -770,6 +776,32 @@ def _add_selection_args(sp) -> None:
                          f"of the batch's m/z bins (default {SS.MIN_GAIN:g} = "
                          # argparse %-expands help text, so a literal percent is %%
                          f"{SS.MIN_GAIN * 100:g}%%)")
+    # the residual stage (sampling.py, THE RESIDUAL STAGE): a second, targeted
+    # selection after the cover's merge, over the bins no assigned file holds
+    sp.add_argument("--residual", action=argparse.BooleanOptionalAction,
+                    default=SS.RESIDUAL_DEFAULT,
+                    help="after the cover is assigned and merged, target the bins that are "
+                         "in NO assigned file, unexplained by the whole-batch stamp and "
+                         "bright somewhere (see --residual-min-x-edge): the fewest extra "
+                         "samples in which each such bin stands at >= "
+                         f"{SS.RESIDUAL_FRAC_OF_MAX:.0%} of its maximum are assigned too, "
+                         "and the merge, the trace reconciliation and the time-series "
+                         "stamp include them (merged rows carry `stage` = cover | "
+                         f"residual). {'ON' if SS.RESIDUAL_DEFAULT else 'OFF'} by default; "
+                         "--no-residual reproduces the cover-only run exactly.")
+    sp.add_argument("--residual-min-x-edge", type=float, default=SS.RESIDUAL_MIN_X_EDGE,
+                    help="brightness floor of the residual stage: a bin is targeted only if "
+                         "somewhere in the batch it reaches this multiple of THAT sample's "
+                         f"noise edge (default {SS.RESIDUAL_MIN_X_EDGE:g}; raised to the "
+                         "run's own admission-gate multiple when that is higher, so no "
+                         "sample is assigned for a bin its gate would drop)")
+    sp.add_argument("--residual-min-cps", type=float, default=None,
+                    help="ABSOLUTE floor for the residual stage in cps (overrides "
+                         "--residual-min-x-edge; default: none, edge-relative)")
+    sp.add_argument("--residual-k-max", type=int, default=SS.RESIDUAL_K_MAX,
+                    help="budget of the residual stage: at most this many extra samples "
+                         f"(default {SS.RESIDUAL_K_MAX}); a stage that hits it while still "
+                         "gaining is recorded in batch_summary.json['selection']['residual']")
 
 
 def _auto_or_float(v: str):

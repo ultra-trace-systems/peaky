@@ -6,6 +6,62 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The residual stage: a targeted second selection after the cover's merge.**
+  The presence cover stops on marginal gain, so a tail of universe bins is never in
+  any assigned file — 18 % of 4702 bins on the 6154-sample Texas Ur+ campaign, almost all of it the noise-edge tail, but 36 of them reaching 1–3.4 kcps
+  somewhere — and nothing in that tail can ever enter the ledger. `peaky batch` /
+  `pool` now run a second, targeted selection once the cover is assigned, merged and
+  stamped (`sampling.residual_universe` + `select_residual_cover`,
+  `assign_batch.run(residual=...)`): a universe bin is a target when it is absent
+  from every assigned file, unexplained by the whole-batch stamp (an isotope
+  satellite or reagent line the stamp names is not re-targeted) and bright somewhere
+  — at least `--residual-min-x-edge` (5) × *that* sample's own noise edge, never below
+  the run's admission-gate multiple, or `--residual-min-cps` as an absolute floor. A
+  sample counts for a bin only where the bin stands at ≥ 50 % of its maximum (and
+  above that file's gate), the greedy cover over that relation stops at
+  `--residual-k-max` (10) picks or when the next sample adds no bin, and the picks go
+  through the same per-file path (serial or the pool, same cfg and offsets). `align()`
+  then runs ONCE over every per-file ledger, cover and residual together, so the
+  merged ledger, the trace reconciliation and the time-series stamp include them.
+  Provenance: merged rows carry `stage` (`cover` if any cover file holds the ion,
+  else `residual`), `tables/selected_samples.csv` gains the picks with role
+  `residual` (numbered on), `tables/residual_bins.csv` lists the targets with the pick
+  that carries each, `batch_summary.json['selection']['residual']` records the funnel
+  (`n_uncovered` / `n_explained` / `n_below_floor` / `n_bins_residual`), the floor,
+  `k`, `coverage_of_residual`, `stop_reason` and `sample_ids` (plus
+  `n_files_by_stage`, `merged_by_stage`, a `stage` per `per_file` row), `n_files` and
+  `sample_ids` count both stages, the report cover and Methods page describe the
+  stage, and the progress window counts the extra files on (`[phase] residual`). ON
+  by default; `--no-residual` reproduces the cover-only run exactly (no `stage`
+  column, no residual block, no extra file), and serial vs pool output stays
+  byte-identical either way. Measured on the campaign above (manual, 21 files at 50 %
+  of the maximum): 6 Assigned + 10 Candidate + 8 isotope satellites of already-assigned
+  parents + 1 sidelobe + 11 unexplained out of the 36 bright bins, ~4 min per file.
+  `timeseries.bin_ids` (new) is the row-aligned bin rule `build_matrix` now pivots on,
+  so the residual universe is read off the long table, bin by bin, at a fraction of
+  the dense matrix's memory and can never bin differently from the cover.
+  **Sidelobe guard.** A live run on a 1397-sample Ur+ batch of the same campaign spent one of
+  its five residual files on a bin the per-file cleanup then labelled an FT ringing
+  sidelobe (1 mDa from a 584 kcps peak). Residual candidates are now tiered against a
+  saturating neighbour as `flag_sidelobe_channels` tiers a channel — except that a
+  neighbour qualifies by its maximum, not the batch median: the live parent (700 kcps
+  at most) has a 15.6 kcps median over the 1397 samples and rings only in the plume,
+  1.5 mDa from its sidelobe: a candidate/neighbour height ratio locked across ≥ 20
+  shared samples (cv < 0.08, the neighbour ≥ 50 kcps and ≥ 100× over them) is a
+  confirmed sidelobe and is dropped
+  (`n_sidelobe`, rows kept in `residual_bins.csv` with `tier = 'sidelobe'`); a
+  candidate that only meets cleanup's static rule in the sample where it peaks, with
+  too few shared samples to test the ratio, is a *suspect* (`n_suspect`) — kept,
+  because a real ion near a bright peak does get assigned, but covered last: the
+  residual cover's gain is lexicographic, one clean bin outranks any number of
+  suspects. `residual_bins.csv` gains `tier`, `sidelobe_of`, `n_pairs`, `ratio_cv`.
+  The report cover now says "15 files (10 cover + 5 residual)" and previews both
+  stages (5 cover rows and 3 residual rows, each with an "and N more" line) instead of
+  the first 8 picks, which never reached the residual ones; without a residual stage
+  it reads as before.
+
 ### Changed
 
 - **The progress window opens by default at an interactive terminal.** `--progress`

@@ -28,6 +28,18 @@ The two positive-mode re-reads that can change a reading -- the hydrocarbon-on-
 N-cluster re-read and the ammonium/amine gate -- are decided ONCE on the merged
 ledger, from the union of every file's evidence, and say so in `tier_reason`.
 
+THE RESIDUAL STAGE (sampling.py, THE RESIDUAL STAGE). The cover's merge is
+followed by a second, TARGETED selection over the universe bins that no assigned
+file holds, that the whole-batch stamp does not explain and that are bright
+somewhere; the samples in which those bins peak are assigned through the same
+per-file path, and `align()` then runs ONCE over every per-file ledger (cover +
+residual) so the merged ledger, the trace reconciliation and the time-series
+stamp include them. Merged rows carry `stage` (the stage that first held the
+ion), `tables/selected_samples.csv` the extra picks (role 'residual'),
+`tables/residual_bins.csv` the targeted bins, and
+`batch_summary.json['selection']['residual']` the record. `residual=False`
+reproduces the cover-only run exactly.
+
 `align()` / `merge_union()` are PURE (offline-tested). `run()` does the network
 assignment loop.
 """
@@ -45,15 +57,17 @@ from peaky import paths as PT
 from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
 
-__version__ = "0.7.0"  # the merge is a VOTE: the file count picks the ion, corroboration
-                       # picks its label (n_files_ion / n_files_winner / alternatives /
-                       # ion_agree); the reagent-N re-read is decided once on the merged
-                       # ledger; the merged row carries the batch-level gates' tier_reason
+__version__ = "0.8.0"  # the targeted residual stage: a second selection + assignment
+                       # after the cover's merge, one align() over both, stage provenance
+                       # (0.7.0: the merge is a VOTE -- n_files_ion / n_files_winner /
+                       # alternatives / ion_agree, the batch-level gates' tier_reason)
 
 # the merge's m/z tolerance IS the selector's binning tolerance (one constant for
 # every batch-level binning; see sampling.BATCH_TOL_PPM)
 DEFAULT_TOL_PPM = SS.BATCH_TOL_PPM
 TIER_ASSIGNED = "Assigned"
+STAGE_COVER = "cover"          # a file of the presence cover (incl. its k_min pads)
+STAGE_RESIDUAL = "residual"    # a file the residual stage targeted
 TIER_RANK = {"Assigned": 2, "Candidate": 1}
 _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score",
             "admitted_by", "occurrence"]   # the last two: admission provenance, when present
@@ -171,7 +185,7 @@ def _describe(r) -> str:
 
 
 def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
-          offsets: dict | None = None, curated=None):
+          offsets: dict | None = None, curated=None, stages: dict | None = None):
     """Align the M0 rows of several files by m/z and let the files VOTE on each
     cluster's reading (see `_vote`: the count decides WHICH ION, corroboration
     decides WHICH LABEL of it).
@@ -182,7 +196,12 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
     the grid's (a reference-peaklist rescue or the pass-0 known-species list --
     see `_curated_neutrals`); an ion carrying one of these is not outvoted by
     grid ions Assigned in fewer files than it (see `_vote`), and the merged
-    row's tier_reason says so when that decided the cluster.
+    row's tier_reason says so when that decided the cluster. stages : {src ->
+    STAGE_COVER | STAGE_RESIDUAL}, the stage that assigned each file
+    (assign_batch.run's record); when given, every merged row carries `stage`
+    -- STAGE_COVER if any file of the cluster is a cover file, else
+    STAGE_RESIDUAL: the stage that first put the ion in the ledger. None (the
+    default) leaves the column out, so a cover-only run's ledger is unchanged.
 
     Returns (merged, jitter):
 
@@ -195,8 +214,8 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
               first, '' when unanimous), ion_agree (one ion in the cluster),
               formula_agree (one neutral), tier_reason (NA unless the vote had
               something to explain: the curated exemption, or a label chosen
-              by corroboration over a bigger count); srcs, mz_jitter_ppm_raw,
-              mz_jitter_ppm_caldj.
+              by corroboration over a bigger count); srcs[, stage],
+              mz_jitter_ppm_raw, mz_jitter_ppm_caldj.
       jitter  long form, one row per (cluster, file): cluster, src, mz,
               neutral_formula, adduct, tier, ion_score -- every reading, winner
               or not.
@@ -222,6 +241,7 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
                                       "ion_score", "admitted_by", "occurrence",
                                       "n_files", "n_files_ion", "n_files_winner",
                                       "alternatives", "tier_reason", "srcs",
+                                      *(["stage"] if stages is not None else []),
                                       "ion_agree", "formula_agree",
                                       "mz_jitter_ppm_raw", "mz_jitter_ppm_caldj"]),
                 pd.DataFrame(columns=["cluster", "src", *_M0_COLS]))
@@ -261,7 +281,8 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
         def _spread(a):
             return float((a.max() - a.min()) / a.mean() * 1e6) if len(a) > 1 else 0.0
         forms = set(g["neutral_formula"].dropna())
-        merged_rows.append(dict(
+        srcs = sorted(set(g["src"]))
+        rec = dict(
             mz=float(g["mz"].mean()), neutral_formula=best["neutral_formula"],
             adduct=best.get("adduct"), tier=best["tier"],
             ion_score=best.get("ion_score"),
@@ -270,11 +291,18 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
             n_files_winner=int(win["n_files"]),
             alternatives="; ".join(_describe(r) for _, r in lab.iloc[1:].iterrows()),
             tier_reason=" | ".join(notes) if notes else pd.NA,
-            srcs=",".join(sorted(set(g["src"]))),
-            ion_agree=(len(ions) <= 1),
-            formula_agree=(len(forms) <= 1),
-            mz_jitter_ppm_raw=round(_spread(mz_raw), 3),
-            mz_jitter_ppm_caldj=round(_spread(mz_adj), 3)))
+            srcs=",".join(srcs))
+        if stages is not None:
+            # the stage that FIRST held the ion: a cover file anywhere in the
+            # cluster makes it a cover row; only an ion seen in residual files
+            # alone was found by the residual stage
+            rec["stage"] = (STAGE_COVER if any(stages.get(x, STAGE_COVER) == STAGE_COVER
+                                               for x in srcs) else STAGE_RESIDUAL)
+        rec.update(ion_agree=(len(ions) <= 1),
+                   formula_agree=(len(forms) <= 1),
+                   mz_jitter_ppm_raw=round(_spread(mz_raw), 3),
+                   mz_jitter_ppm_caldj=round(_spread(mz_adj), 3))
+        merged_rows.append(rec)
         for _, r in g.sort_values("src").iterrows():
             jitter_rows.append(dict(cluster=int(cid), src=r["src"], mz=float(r["mz"]),
                                     neutral_formula=r.get("neutral_formula"),
@@ -508,6 +536,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         min_prevalence: int = SS.MIN_PREVALENCE,
         out_dir: str, tol_ppm: float = DEFAULT_TOL_PPM,
         sample_ids: list | None = None, selection_meta: dict | None = None,
+        residual: bool = SS.RESIDUAL_DEFAULT,
+        residual_min_x_edge: float = SS.RESIDUAL_MIN_X_EDGE,
+        residual_min_cps: float | None = None,
+        residual_k_max: int = SS.RESIDUAL_K_MAX,
+        residual_frac_of_max: float = SS.RESIDUAL_FRAC_OF_MAX,
         ts_peaks=None, amine_r_min: float = 0.6,
         n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Assign the presence-cover subset of a batch and combine, keeping per-file
@@ -522,7 +555,19 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     `context` defaults to the reagent profile's context. Extra kwargs pass
     through to assign.run. Writes (see paths.RunPaths): merged_ledger.csv +
     batch_summary.json at the run root, per_file/<sid>_ledger.csv, and
-    tables/{selected_samples,jitter}.csv."""
+    tables/{selected_samples,jitter}.csv.
+
+    `residual` (default `sampling.RESIDUAL_DEFAULT`) runs the residual stage
+    after the cover's merge (module note): the universe bins in no assigned
+    file, unexplained by the stamp and reaching `residual_min_x_edge` x their
+    sample's noise edge somewhere (never below the run's own gate multiple;
+    `residual_min_cps` is an absolute floor instead) are covered by at most
+    `residual_k_max` more samples, each counting for a bin only where the bin
+    stands at >= `residual_frac_of_max` of its maximum and above that file's
+    admission gate. Those files go through the same per-file path, and the
+    merge + stamp are redone once over everything. Needs `ts_peaks`; the
+    pooled path (`sample_ids=`) gets the extra picks back as
+    `residual_samples` to append to its own selection table."""
     from peaky.assignment import assign as A
     from peaky.batch import timeseries as _TSN
     from peaky.io import io_mascope as IO
@@ -557,6 +602,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     x_edge, x_edge_source = P.apply_height_cutoff_x_edge(cfg, prof, log=log)
     assign_kw["cfg"] = cfg
     selection = dict(selection_meta or {})
+    sel = None                 # our own cover table (None on the sample_ids= path)
     if sample_ids is None:
         # greedy presence set-cover over the batch's m/z bins. Needs the per-PEAK
         # table: the pipeline passes it as ts_peaks; `peaks` may already be one.
@@ -709,9 +755,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     #   yet is a genuine Keller-list contaminant adduct.
     curated_neutrals: set = set()     # the reflist / known-species subset: the merge
     #   vote's exemption (a list identity is not outvoted by grid readings)
+    stages: dict = {}          # sid -> STAGE_COVER | STAGE_RESIDUAL (align() reads it)
     n_jobs = _resolve_jobs(n_jobs, len(sample_ids))
+    ts_path_written: list = []  # the raw-TS parquet the worker pool loads: written once
 
-    def _apply(sid, led, plaus, stats):
+    def _apply(sid, led, plaus, stats, stage):
         """Parent-side reduce (called in sample_ids order): write the per-file CSV
         and fold this sample into the accumulators. Order-fixed so align() -- which
         has order-sensitive tie-breaks -- yields byte-identical output either path."""
@@ -720,6 +768,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         protected_neutrals.update(_protected_neutrals(led))
         curated_neutrals.update(_curated_neutrals(led))
         per_file[sid] = _m0(led)
+        stages[sid] = stage
         from peaky.batch import timeseries as _TSI
         identified_aux.append(_TSI.identified_rows(led))
         try:
@@ -729,141 +778,262 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         st = dict(stats)
         st.update(sample_id=sid, offset_ppm=offsets[sid],
                   n_M0=int((led["role"] == "M0").sum()) if "role" in led.columns else None)
+        if residual:
+            st["stage"] = stage        # stage provenance rides with the switch
         per_stats.append(st)
         log(f"[assign_batch]   {sid}: offset={offsets[sid]}")
 
-    if n_jobs <= 1:
-        for i, sid in enumerate(sample_ids, 1):
-            log(f"[assign_batch] ({i}/{len(sample_ids)}) assigning {sid} ...")
-            # Per-file cfg COPY -- the same isolation the worker pool gets in
-            # _assign_one. A.run mutates the cfg it is handed (noise edge,
-            # mechanism ids, and the fitted cal_mu/cal_sigma), and `calibrate`
-            # LEAVES A PREVIOUS FIT IN PLACE when this file's backbone is
-            # smaller than cal_min_n -- so one shared object would gate file
-            # N+1's mass z-scores on file N's calibration.
-            kw = dict(assign_kw, cfg=copy.deepcopy(cfg))
-            res = A.run(sid, context=context, log=log,
-                        reflists_active=reflists_active, **kw)
-            _apply(sid, res["ledger"], res.get("plausibility_audit") or [],
-                   dict(res.get("stats", {})))
-            # same line the parallel branch logs per completed future: it is what
-            # advances a progress reader's samples bar (peaky/progress.py)
-            log(f"[assign_batch] ({i}/{len(sample_ids)}) done {sid}")
-    else:
-        # Write the batch TS to disk once so workers load it from the parquet
-        # rather than re-pickling the full-batch DataFrame into every process.
-        base_kw = {k: v for k, v in assign_kw.items() if k != "ts_peaks"}
-        ts_path = None
-        _ts = assign_kw.get("ts_peaks")
-        if _ts is not None:
-            ts_path = os.path.join(pfdir, "_batch_ts.parquet")
-            _ts.to_parquet(ts_path)
-        # Bound total match_compounds concurrency at the flaky server: each worker
-        # runs PEAKY_MATCH_WORKERS threads, so keep n_jobs * that modest (~12).
-        os.environ.setdefault("PEAKY_MATCH_WORKERS", str(max(2, 12 // n_jobs)))
-        import multiprocessing as _mp
-        from concurrent.futures import ProcessPoolExecutor, as_completed
-        log(f"[assign_batch] parallel: {n_jobs} worker processes "
-            f"(match-workers/proc={os.environ['PEAKY_MATCH_WORKERS']}) "
-            f"over {len(sample_ids)} samples")
-        results: dict = {}
-        with ProcessPoolExecutor(
-                max_workers=n_jobs, mp_context=_mp.get_context("spawn"),
-                initializer=_worker_init,
-                initargs=(context, reflists_active, base_kw, ts_path)) as ex:
-            futs = {ex.submit(_assign_one, sid): sid for sid in sample_ids}
-            for done, fut in enumerate(as_completed(futs), 1):
-                out = fut.result()
-                results[out["sid"]] = out
-                log(f"[assign_batch] ({done}/{len(sample_ids)}) done {out['sid']}")
-        # Reduce STRICTLY in sample_ids order (not completion order) so align()'s
-        # input is fixed and the merged output is byte-identical to a serial run.
-        for sid in sample_ids:
-            out = results[sid]
-            for ln in out["log"]:              # replay worker logs, grouped per sid
-                log(ln)
-            _apply(sid, out["ledger"], out["plausibility_audit"], out["stats"])
+    def _assign_files(ids: list, stage: str, n_jobs: int) -> None:
+        """Assign `ids` -- the TAIL of `sample_ids`, which already holds them, so
+        the (i/N) progress lines count on through the run whichever stage is on --
+        serially or across a process pool, and fold each into the accumulators
+        in id order (`_apply`). The cover stage and the residual stage share it."""
+        offset = len(sample_ids) - len(ids)
+        if n_jobs <= 1:
+            for i, sid in enumerate(ids, offset + 1):
+                log(f"[assign_batch] ({i}/{len(sample_ids)}) assigning {sid} ...")
+                # Per-file cfg COPY -- the same isolation the worker pool gets in
+                # _assign_one. A.run mutates the cfg it is handed (noise edge,
+                # mechanism ids, and the fitted cal_mu/cal_sigma), and `calibrate`
+                # LEAVES A PREVIOUS FIT IN PLACE when this file's backbone is
+                # smaller than cal_min_n -- so one shared object would gate file
+                # N+1's mass z-scores on file N's calibration.
+                kw = dict(assign_kw, cfg=copy.deepcopy(cfg))
+                res = A.run(sid, context=context, log=log,
+                            reflists_active=reflists_active, **kw)
+                _apply(sid, res["ledger"], res.get("plausibility_audit") or [],
+                       dict(res.get("stats", {})), stage)
+                # same line the parallel branch logs per completed future: it is what
+                # advances a progress reader's samples bar (peaky/progress.py)
+                log(f"[assign_batch] ({i}/{len(sample_ids)}) done {sid}")
+        else:
+            # Write the batch TS to disk once so workers load it from the parquet
+            # rather than re-pickling the full-batch DataFrame into every process.
+            base_kw = {k: v for k, v in assign_kw.items() if k != "ts_peaks"}
+            ts_path = None
+            _ts = assign_kw.get("ts_peaks")
+            if _ts is not None:
+                ts_path = os.path.join(pfdir, "_batch_ts.parquet")
+                if not ts_path_written:
+                    _ts.to_parquet(ts_path)
+                    ts_path_written.append(ts_path)
+            # Bound total match_compounds concurrency at the flaky server: each worker
+            # runs PEAKY_MATCH_WORKERS threads, so keep n_jobs * that modest (~12).
+            os.environ.setdefault("PEAKY_MATCH_WORKERS", str(max(2, 12 // n_jobs)))
+            import multiprocessing as _mp
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+            log(f"[assign_batch] parallel: {n_jobs} worker processes "
+                f"(match-workers/proc={os.environ['PEAKY_MATCH_WORKERS']}) "
+                f"over {len(sample_ids)} samples")
+            results: dict = {}
+            with ProcessPoolExecutor(
+                    max_workers=n_jobs, mp_context=_mp.get_context("spawn"),
+                    initializer=_worker_init,
+                    initargs=(context, reflists_active, base_kw, ts_path)) as ex:
+                futs = {ex.submit(_assign_one, sid): sid for sid in ids}
+                for done, fut in enumerate(as_completed(futs), offset + 1):
+                    out = fut.result()
+                    results[out["sid"]] = out
+                    log(f"[assign_batch] ({done}/{len(sample_ids)}) done {out['sid']}")
+            # Reduce STRICTLY in sample_ids order (not completion order) so align()'s
+            # input is fixed and the merged output is byte-identical to a serial run.
+            for sid in ids:
+                out = results[sid]
+                for ln in out["log"]:              # replay worker logs, grouped per sid
+                    log(ln)
+                _apply(sid, out["ledger"], out["plausibility_audit"], out["stats"], stage)
 
-    merged, jitter = align(per_file, tol_ppm=tol_ppm, offsets=offsets,
-                           curated=curated_neutrals)
-    # Merge guard: drop reagent-cluster ions a per-file pass mislabelled as analyte
-    # (urea [R_n+H]+/[R_n+NH4]+ read as CHNO/CH4N2O on the [M+NH4]+/urea channel) --
-    # they otherwise dominate the 'assigned' signal. Belt-and-braces with the
-    # per-file reagent lock/reclaim (older per-file ledgers predate that fix).
+    _assign_files(list(sample_ids), STAGE_COVER, n_jobs)
+
     from peaky.chem import reagents as _RG
-    _rgk = _RG.reagent_for_adducts(list(prof.adducts or []))
-    if _rgk:
-        merged, _rgstrip = _RG.strip_reagent_cluster_rows(merged, _rgk, log=log)
-    # The merged row's tier_reason (from align: the vote's exemption, else NA)
-    # also takes the batch-level gates' notes below (cleanup._note appends to
-    # it): a re-read can leave the merged formula different from EVERY per-file
-    # reading, and the row itself must say why.
-    if "tier_reason" not in merged.columns:
-        merged["tier_reason"] = pd.NA
-    merge_gates: dict = {}
-    if prof.polarity == "+":
-        from peaky.assignment import cleanup
-        # Hydrocarbon on an N-cluster channel -> [M+H]+ of the N-heterocycle,
-        # decided once here from the union of every file's [M+H]+ rows (the
-        # per-file stage was deferred above; it runs there instead only when the
-        # caller forced reagent_n_relabel=True, and then this pass stands down).
-        if not assign_kw.get("reagent_n_relabel"):
-            merge_gates["reagent_n"] = cleanup.relabel_reagent_n_adducts(merged, log=log)
-        # Re-read uncorroborated [M+NH4]+ adducts as [M+H]+ of the +NH3 amine
-        # (mass/isotope-identical; simpler in an N-rich source). Done at the
-        # MERGED level where cross-channel corroboration is complete.
-        merge_gates["amine"] = cleanup.prefer_amine_over_ammonium(
-            merged, ts_peaks=ts_peaks, r_min=amine_r_min,
-            protected=protected_neutrals, log=log)
     from peaky.assignment import plausibility as PL
+    from peaky.batch import timeseries as _TS
+    _rgk = _RG.reagent_for_adducts(list(prof.adducts or []))
+
+    def _merge() -> dict:
+        """align() over EVERY per-file ledger so far, then the merged-level
+        guards and re-reads, the trace reconciliation and the whole-batch stamp
+        -- returned as one record (merged, jitter, merge_gates, trace_info,
+        stamp_tol, ts_annot), nothing written. Runs once per stage: the cover's
+        record is what the residual universe is read from, and the last call
+        (cover + residual files, ONE align) is what the run writes."""
+        merged, jitter = align(per_file, tol_ppm=tol_ppm, offsets=offsets,
+                               curated=curated_neutrals,
+                               stages=stages if residual else None)
+        # Merge guard: drop reagent-cluster ions a per-file pass mislabelled as analyte
+        # (urea [R_n+H]+/[R_n+NH4]+ read as CHNO/CH4N2O on the [M+NH4]+/urea channel) --
+        # they otherwise dominate the 'assigned' signal. Belt-and-braces with the
+        # per-file reagent lock/reclaim (older per-file ledgers predate that fix).
+        if _rgk:
+            merged, _rgstrip = _RG.strip_reagent_cluster_rows(merged, _rgk, log=log)
+        # The merged row's tier_reason (from align: the vote's exemption, else NA)
+        # also takes the batch-level gates' notes below (cleanup._note appends to
+        # it): a re-read can leave the merged formula different from EVERY per-file
+        # reading, and the row itself must say why.
+        if "tier_reason" not in merged.columns:
+            merged["tier_reason"] = pd.NA
+        merge_gates: dict = {}
+        if prof.polarity == "+":
+            from peaky.assignment import cleanup
+            # Hydrocarbon on an N-cluster channel -> [M+H]+ of the N-heterocycle,
+            # decided once here from the union of every file's [M+H]+ rows (the
+            # per-file stage was deferred above; it runs there instead only when the
+            # caller forced reagent_n_relabel=True, and then this pass stands down).
+            if not assign_kw.get("reagent_n_relabel"):
+                merge_gates["reagent_n"] = cleanup.relabel_reagent_n_adducts(merged, log=log)
+            # Re-read uncorroborated [M+NH4]+ adducts as [M+H]+ of the +NH3 amine
+            # (mass/isotope-identical; simpler in an N-rich source). Done at the
+            # MERGED level where cross-channel corroboration is complete.
+            merge_gates["amine"] = cleanup.prefer_amine_over_ammonium(
+                merged, ts_peaks=ts_peaks, r_min=amine_r_min,
+                protected=protected_neutrals, log=log)
+        # Sidelobe-contaminated CHANNELS: an assigned ion whose m/z lands on the ringing
+        # sidelobe of a saturating neighbour keeps its formula (the neutral is usually
+        # corroborated on another channel) but its HEIGHT is the neighbour's, not the
+        # analyte's. Only the time series separates that from a real ion that merely sits
+        # near a bright peak, so it is decided HERE, not in per-file cleanup.
+        # Called unconditionally so the merged-ledger SCHEMA is stable: without a TS it
+        # no-ops and the two columns are still present (all False / NaN).
+        _TS.flag_sidelobe_channels(merged, ts_peaks, log=log)
+        # Trace-level reconciliation (timeseries.recentre_ledger / collapse_trace_labels):
+        # re-centre every merged anchor on its own trace, collapse the rows that
+        # converge on one trace, and size the stamping window to the batch's own
+        # per-ion scatter. Columns are added on the merged ledger (mz_anchor, mz_trace,
+        # trace_offset_ppm, trace_cov_anchor, trace_cov, trace_moved, trace_guarded,
+        # trace_id, trace_role); the stamp below reads them. No-op without a TS.
+        trace_info: dict = {}
+        stamp_tol = tol_ppm
+        if _idx is not None and len(merged):
+            trace_info = _TS.recentre_ledger(merged, index=_idx, tol_ppm=tol_ppm, log=log)
+            trace_info.update(_TS.collapse_trace_labels(merged, tol_ppm=tol_ppm, log=log))
+            stamp_tol, _sigma = _TS.stamp_tolerance(_idx, merged["mz_trace"], tol_ppm=tol_ppm)
+            trace_info.update(stamp_tol_ppm=float(stamp_tol),
+                              sigma_ppm=None if not np.isfinite(_sigma) else float(_sigma))
+            log(f"[traces] per-ion mass scatter {_sigma if np.isfinite(_sigma) else 'n/a'} ppm -> "
+                f"stamping window +-{stamp_tol:g} ppm (merge tolerance {tol_ppm:g})")
+        out = {"merged": merged, "jitter": jitter, "merge_gates": merge_gates,
+               "trace_info": trace_info, "stamp_tol": stamp_tol, "ts_annot": None}
+        # Stamp the batch time-series peaks with their assigned formula/channel.
+        # Downstream time-series analysis then has neutral_formula / adduct / tier /
+        # ion_mz per peak, not just m/z. No-op when ts_peaks is unavailable.
+        if ts_peaks is not None:
+            # union stamping frame: merged analytes + every identified NON-analyte
+            # ion (reagent ladder / isotope satellites / ringing artifacts) from the
+            # per-file ledgers -- so `ion_formula` marks every KNOWN ion, analyte or
+            # not, and only true unknowns stay blank (in an iodide spectrum the 10
+            # reagent tracks alone are ~77% of total signal).
+            _aux = (pd.concat(identified_aux, ignore_index=True)
+                    if identified_aux else None)
+            _stamp = _TS.stamping_frame(merged, _aux)
+            out["ts_annot"] = _TS.annotate_peaks(ts_peaks, _stamp, tol_ppm=stamp_tol)
+        return out
+
+    res_m = _merge()
+
+    # ---- the residual stage (module note) ---------------------------------------
+    residual_meta: dict = {}
+    rsel = None
+    n_cover = len(sample_ids)
+    if residual:
+        log("[phase] residual")
+        if ts_peaks is None:
+            residual_meta = {"n_bins_residual": 0, "k": 0, "coverage_of_residual": 0.0,
+                             "stop_reason": SS.STOP_EMPTY, "sample_ids": [],
+                             "skipped": "no batch time series to read the residual from"}
+            log("[residual] skipped: no batch time series to read the residual from")
+        else:
+            _annot = res_m["ts_annot"]
+            stamped = _annot["ion_formula"].notna().to_numpy() if _annot is not None else None
+            # THE FLOOR. Edge-relative by default, and never below the run's own
+            # gate multiple: a bin that no file would admit is not worth a file.
+            # An absolute --residual-min-cps replaces the multiple; an absolute
+            # gate (cfg.height_cutoff_cps) is a floor as well.
+            gate_x = float(_cfg.height_cutoff_x_edge_resolved)
+            gate_cps = _cfg.height_cutoff_cps
+            if residual_min_cps is not None:
+                min_x, min_cps = None, float(residual_min_cps)
+                floor_src = f"an absolute floor of {min_cps:g} cps (residual_min_cps)"
+            else:
+                min_x, min_cps = float(residual_min_x_edge), None
+                floor_src = f"{min_x:g}x the sample's noise edge (residual_min_x_edge)"
+                if gate_cps is None and gate_x > min_x:
+                    min_x = gate_x
+                    floor_src = (f"{min_x:g}x the sample's noise edge -- raised from "
+                                 f"{float(residual_min_x_edge):g}x to the run's admission gate")
+            if gate_cps is not None:
+                min_cps = max(float(gate_cps), min_cps if min_cps is not None else 0.0)
+                floor_src += f"; the absolute admission gate of {float(gate_cps):g} cps"
+            bins = SS.residual_universe(ts_peaks, assigned=sample_ids, stamped=stamped,
+                                        min_x_edge=min_x, min_cps=min_cps,
+                                        min_prevalence=min_prevalence, tol_ppm=tol_ppm)
+            umeta = dict(bins.attrs.get("residual", {}))
+            # a sample counts for a bin only where its OWN gate would admit it:
+            # the multiple x that sample's edge, or the absolute gate everywhere
+            edge = pd.Series(bins.attrs.get("edge_cps") or {}, dtype=float)
+            min_height = (pd.Series(float(gate_cps), index=edge.index) if gate_cps is not None
+                          else edge * gate_x)
+            rsel = SS.select_residual_cover(ts_peaks, bins, frac_of_max=residual_frac_of_max,
+                                            k_max=residual_k_max, min_height=min_height,
+                                            tol_ppm=tol_ppm)
+            smeta = dict(rsel.attrs.get("selection", {}))
+            log(f"[assign_batch] {SS.describe_residual(smeta, umeta)}")
+            residual_ids = rsel["sample_item_id"].tolist()
+            residual_meta = {
+                "n_bins_residual": int(umeta.get("n_residual", 0)),
+                "n_universe": int(umeta.get("n_universe", 0)),
+                "n_uncovered": int(umeta.get("n_uncovered", 0)),
+                "n_explained": int(umeta.get("n_explained", 0)),
+                "n_below_floor": int(umeta.get("n_below_floor", 0)),
+                "n_sidelobe": int(umeta.get("n_sidelobe", 0)),
+                "n_suspect": int(umeta.get("n_suspect", 0)),
+                "floor": {"min_x_edge": min_x, "min_cps": min_cps,
+                          "edge_median_cps": umeta.get("edge_median_cps"),
+                          "source": floor_src},
+                "frac_of_max": float(residual_frac_of_max),
+                "k": int(smeta.get("k", 0)), "k_max": int(residual_k_max),
+                "coverage_of_residual": float(smeta.get("achieved_coverage", 0.0)),
+                "stop_reason": smeta.get("stop_reason", SS.STOP_EMPTY),
+                "next_gain": float(smeta.get("next_gain", 0.0)),
+                "sample_ids": residual_ids,
+            }
+            # the targeted bins, each with the pick that carries it (empty = none
+            # did), then the confirmed sidelobes the stage dropped (tier 'sidelobe')
+            cb = rsel.attrs.get("covered_by", {})
+            rb = bins.copy()
+            rb["covered_by"] = [cb.get(int(b_), "") for b_ in rb["bin"]] if len(rb) else []
+            _sl = bins.attrs.get("sidelobes") or []
+            if _sl:
+                rb = pd.concat([rb, pd.DataFrame(_sl).assign(covered_by="")],
+                               ignore_index=True)
+            rb.to_csv(os.path.join(TAB, "residual_bins.csv"), index=False)
+            if residual_ids:
+                if sel is not None:
+                    # our own cover table gains the picks, numbered on from the cover
+                    extra = rsel.copy()
+                    extra["pick"] = np.arange(len(sel) + 1, len(sel) + 1 + len(extra))
+                    pd.concat([sel, extra], ignore_index=True).to_csv(
+                        os.path.join(TAB, "selected_samples.csv"), index=False)
+                log("[phase] assign")
+                log(f"[assign_batch] residual stage: {len(residual_ids)} more file(s) "
+                    f"-> {pfdir}")
+                sample_ids = list(sample_ids) + residual_ids
+                _assign_files(residual_ids, STAGE_RESIDUAL, min(n_jobs, len(residual_ids)))
+                res_m = _merge()          # ONE align over cover + residual files
+
+    # ---- write the run ------------------------------------------------------------
+    merged, jitter, merge_gates = res_m["merged"], res_m["jitter"], res_m["merge_gates"]
+    trace_info, stamp_tol, ts_annot = res_m["trace_info"], res_m["stamp_tol"], res_m["ts_annot"]
     summary_plaus = {}
     # one audit row per touched peak (per-file O/C-monster + carbon-cluster demotes);
     # always written for a stable artifact set.
     n_audit = PL.write_audit(plaus_audit, os.path.join(TAB, f"plausibility_audit_{prof.name}.csv"))
     log(f"[assign_batch] plausibility audit: {n_audit} touched peaks "
         f"-> tables/plausibility_audit_{prof.name}.csv")
-    # Sidelobe-contaminated CHANNELS: an assigned ion whose m/z lands on the ringing
-    # sidelobe of a saturating neighbour keeps its formula (the neutral is usually
-    # corroborated on another channel) but its HEIGHT is the neighbour's, not the
-    # analyte's. Only the time series separates that from a real ion that merely sits
-    # near a bright peak, so it is decided HERE, not in per-file cleanup.
-    # Called unconditionally so the merged-ledger SCHEMA is stable: without a TS it
-    # no-ops and the two columns are still present (all False / NaN).
-    from peaky.batch import timeseries as _TSF
-    _TSF.flag_sidelobe_channels(merged, ts_peaks, log=log)
-    # Trace-level reconciliation (timeseries.recentre_ledger / collapse_trace_labels):
-    # re-centre every merged anchor on its own trace, collapse the rows that
-    # converge on one trace, and size the stamping window to the batch's own
-    # per-ion scatter. Columns are added on the merged ledger (mz_anchor, mz_trace,
-    # trace_offset_ppm, trace_cov_anchor, trace_cov, trace_moved, trace_guarded,
-    # trace_id, trace_role); the stamp below reads them. No-op without a TS.
-    trace_info: dict = {}
-    stamp_tol = tol_ppm
-    if _idx is not None and len(merged):
-        trace_info = _TSF.recentre_ledger(merged, index=_idx, tol_ppm=tol_ppm, log=log)
-        trace_info.update(_TSF.collapse_trace_labels(merged, tol_ppm=tol_ppm, log=log))
-        stamp_tol, _sigma = _TSF.stamp_tolerance(_idx, merged["mz_trace"], tol_ppm=tol_ppm)
-        trace_info.update(stamp_tol_ppm=float(stamp_tol),
-                          sigma_ppm=None if not np.isfinite(_sigma) else float(_sigma))
-        log(f"[traces] per-ion mass scatter {_sigma if np.isfinite(_sigma) else 'n/a'} ppm -> "
-            f"stamping window +-{stamp_tol:g} ppm (merge tolerance {tol_ppm:g})")
     merged.to_csv(os.path.join(out_dir, "merged_ledger.csv"), index=False)
     jitter.to_csv(os.path.join(TAB, "jitter.csv"), index=False)
-    # Stamp the batch time-series peaks with their assigned formula/channel and write
     # the FINAL per_file/_batch_ts.parquet (in parallel mode this overwrites the raw
-    # worker-transfer copy). Downstream time-series analysis then has neutral_formula /
-    # adduct / tier / ion_mz per peak, not just m/z. No-op when ts_peaks is unavailable.
-    if ts_peaks is not None:
-        from peaky.batch import timeseries as _TS
-        # union stamping frame: merged analytes + every identified NON-analyte
-        # ion (reagent ladder / isotope satellites / ringing artifacts) from the
-        # per-file ledgers -- so `ion_formula` marks every KNOWN ion, analyte or
-        # not, and only true unknowns stay blank (in an iodide spectrum the 10
-        # reagent tracks alone are ~77% of total signal).
-        _aux = (pd.concat(identified_aux, ignore_index=True)
-                if identified_aux else None)
-        _stamp = _TS.stamping_frame(merged, _aux)
-        ts_annot = _TS.annotate_peaks(ts_peaks, _stamp, tol_ppm=stamp_tol)
+    # worker-transfer copy)
+    if ts_annot is not None:
         ts_annot.to_parquet(os.path.join(pfdir, "_batch_ts.parquet"))
         _n_ass = int(ts_annot["neutral_formula"].notna().sum())
         _n_ion = int(ts_annot["ion_formula"].notna().sum())
@@ -882,6 +1052,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 f"~{_ions} m/z left unstamped (flagged dup_candidate) so no ion is "
                 f"stamped twice in one sample")
 
+    if residual:
+        # the record of the second stage, beside the cover's (`selection` is our
+        # own dict: a caller's selection_meta was copied above)
+        selection["residual"] = residual_meta
     summary = {
         "reagent": prof.name, "label": prof.label, "context": context,
         "batch_name": batch,
@@ -924,6 +1098,12 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "elapsed_s": round(time.time() - t_start, 1),
         "n_jobs": n_jobs,
     }
+    if residual:
+        # files per stage, and the ions each stage brought in (`stage` column)
+        summary["n_files_by_stage"] = {STAGE_COVER: int(n_cover),
+                                       STAGE_RESIDUAL: int(len(sample_ids) - n_cover)}
+        summary["merged_by_stage"] = (merged["stage"].value_counts().to_dict()
+                                      if len(merged) and "stage" in merged.columns else {})
     with open(os.path.join(out_dir, "batch_summary.json"), "w") as fh:
         json.dump(summary, fh, indent=2, default=str)
     log(f"[assign_batch] DONE: {summary['merged_M0']} merged M0 "
@@ -935,8 +1115,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     log(f"[assign_batch] disagreements: {summary['ion_disagreements']} between different "
         f"ions, {summary['formula_disagreements'] - summary['ion_disagreements']} two "
         f"labels of one ion (see ion_agree / alternatives on the merged ledger)")
+    if residual:
+        # ... and so does the residual stage's yield
+        log(f"[assign_batch] residual stage: {summary['n_files_by_stage'][STAGE_RESIDUAL]} "
+            f"file(s), {summary['merged_by_stage'].get(STAGE_RESIDUAL, 0)} ion(s) it alone holds")
     log(f"[assign_batch] assigned {len(sample_ids)} samples in "
         f"{summary['elapsed_s']:.1f}s (n_jobs={n_jobs})")
     return {"profile": prof, "context": context, "sample_ids": sample_ids,
             "per_file": per_file, "offsets": offsets, "merged": merged,
-            "jitter": jitter, "summary": summary, "out_dir": out_dir}
+            "jitter": jitter, "summary": summary, "out_dir": out_dir,
+            "residual_samples": rsel, "stages": dict(stages)}

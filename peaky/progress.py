@@ -63,6 +63,7 @@ NOMINAL_STAGES = 20
 PHASE_LABEL = {
     "fetch": "fetching time series", "select": "selecting samples",
     "assign": "assigning", "merge": "merging ledgers",
+    "residual": "targeting the residual",
     "merged": "ledgers merged", "cluster": "clustering",
     "vankrevelen": "Van Krevelen", "report": "building report",
     "provenance": "recording provenance", "done": "done",
