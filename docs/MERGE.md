@@ -39,7 +39,11 @@ selected sample_ids (SAMPLING.md)
    n_files, srcs, formula_agree, mz_jitter_ppm_raw, mz_jitter_ppm_caldj
    │  (positive urea: prefer_amine_over_ammonium at the merged level)
    ▼
- merged_ledger.csv  +  jitter.csv  +  batch_summary.json
+ trace reconciliation (TIMESERIES.md §9): each row's anchor re-centred on its
+ own trace (mz_trace), competing labels on one trace collapsed (trace_role),
+ the stamp window sized to the batch's per-ion scatter
+   ▼
+ merged_ledger.csv  +  jitter.csv  +  batch_summary.json  →  _batch_ts.parquet stamp
 ```
 
 ---
@@ -133,11 +137,11 @@ All in `peaky/batch/assign_batch.py`.
 
 | artifact | content |
 | --- | --- |
-| `merged_ledger.csv` (run root) | one row per m/z cluster: consensus mz, best assignment, `n_files`, `srcs`, `formula_agree`, `mz_jitter_ppm_raw/caldj` — **the result** |
+| `merged_ledger.csv` (run root) | one row per m/z cluster: consensus mz, best assignment, `n_files`, `srcs`, `formula_agree`, `mz_jitter_ppm_raw/caldj`, plus the trace reconciliation columns (`mz_anchor`, `mz_trace`, `trace_offset_ppm`, `trace_cov_anchor`, `trace_cov`, `trace_moved`, `trace_guarded`, `trace_id`, `trace_role`; [`TIMESERIES.md`](TIMESERIES.md) §9) — **the result** |
 | `tables/jitter.csv` | long form, one row per (cluster, file): `cluster`, `src`, `mz`, formula, adduct, tier, `ion_score` |
 | `per_file/<sid>_ledger.csv` | each assigned file's full single-sample ledger (audit / re-merge) |
 | `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role`, `bins_new`, `coverage`) |
-| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason), the resolved height gate (`height_cutoff_x_edge` + its source), per-file offsets + noise edges, merged tier counts, agreement counts |
+| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason), the resolved height gate (`height_cutoff_x_edge` + its source, and the `gate` derivation block), the `admission` block, the `traces` block (re-centred / collapsed counts, per-ion scatter, stamp window), per-file offsets + noise edges, merged tier counts, agreement counts |
 | `jitter_report()` dict | `{offsets, by_formula, by_mz, summary}` — the standalone jitter analysis |
 
 ---

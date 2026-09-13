@@ -122,18 +122,29 @@ the pass-1 grid, pass-2 series growth, pass-3 contaminant families and pass-3's
 two cluster resolvers — those five share `directors._target_peaks` — plus the
 pass-6 ladder gap-fill, residual stage B and the siloxane ladder) is
 **persistence OR brightness**: `height >= height_cutoff` (an edge multiple,
-`--height-cutoff-x-edge`) OR the peak's m/z bin recurs in >= `--occurrence-min`
-of the batch's spectra (`auto` = Otsu's split of the batch's own bimodal
-occurrence distribution, 0.4–0.55 in practice; a number fixes it; `0` = brightness
-only; bins at 6 ppm, the one batch tolerance). Noise does not recur at a fixed
-m/z; ions do — on a low-sensitivity TOF the recurrent weak population is the real
-chemistry and sits far below any height gate. Persistence admits a peak for
-consideration only: an occurrence-admitted peak is capped at Candidate
-(`persistent-weak`) unless an isotopologue / second channel / series anchor
-corroborates the formula; per-file ledgers record `admitted_by` (`height` /
-`occurrence` / `''` = not eligible at those sites). Residual stage A, the
-reflist rescue, pass-3's series *detection* statistics and the isotope-satellite
-tests in `passes/postprocess` are still brightness-only (follow-up).
+`--height-cutoff-x-edge`; `auto` by default = derived from the batch: a picker
+that leaves more than 5 in 10 000 peaks below 0.75× the noise edge picks into the
+noise and gets the smallest of 1/1.5/2/3/5/8/12/20 whose admitted peaks are ≤ 20 %
+transient, e.g. a TOF 5×; a hard-threshold picker — every Orbitrap mode measured —
+keeps 1×) OR a peak within tolerance of *this* peak's m/z recurs
+in >= `--occurrence-min` of the batch's spectra (`auto` = the trace-weighted Otsu
+split of the batch's own bimodal occurrence distribution, 0.38–0.55 in practice;
+a number fixes it; `0` = brightness only; per-peak windows at 6 ppm, the one
+batch tolerance — no binner, so a peak's occurrence is read by the rule it was
+computed with). Noise does not recur at a fixed m/z; ions do — on a
+low-sensitivity TOF the recurrent weak population is the real chemistry and sits
+far below any height gate. Persistence admits a peak for consideration only: an
+occurrence-admitted peak is capped at Candidate (`persistent-weak`) unless an
+isotopologue / second channel / series anchor corroborates the formula; per-file
+ledgers record `admitted_by` (`height` / `occurrence` / `''` = not eligible at
+those sites). Residual stage A, the reflist rescue, pass-3's series *detection*
+statistics and the isotope-satellite tests in `passes/postprocess` are still
+brightness-only (follow-up). After the merge, each merged anchor is **re-centred
+on its own trace** and competing labels on one trace are collapsed (n_files
+first) before the batch time series is stamped from the trace centres with a
+window sized to the batch's per-ion scatter (`docs/TIMESERIES.md` §9) — on a
+TOF this is what carries a weak ion's identity from the assigned samples to the
+rest (C10H16O9 stamped in 14 % → 86 % of spectra; Orbitrap unchanged).
 Single-sample `assign` writes `<ID>_<UTC>_{ledger.csv, assignments.xlsx, summary.md,
 manifest.json, gka.html}` + per-pass checkpoints (~5 min on a ~1000-peak Br-CIMS
 sample). Batch writes one versioned run folder — see **Outputs** below and
@@ -221,9 +232,9 @@ can't refute an off-grid P) standing in for the 2nd channel.
 
 `--ppm` (m/z trust, default 1.0) · `--search-ppm` (enumeration tol, 3.0) ·
 `--height-cutoff` (absolute cps override; default = a multiple of the sample's
-own noise edge) · `--height-cutoff-x-edge` (that multiple; default = the reagent
-profile's own value, else the package default 1.0 — see `docs/REAGENTS.md` §3a
-for raising it for a peak picker that picks into the noise) · `--no-pass2/3/4` ·
+own noise edge) · `--height-cutoff-x-edge` (that multiple, a number or `auto`;
+default = the reagent profile's own value, else `auto` = derived from the batch,
+1.0 for a single sample — see `docs/REAGENTS.md` §3a) · `--no-pass2/3/4` ·
 `--no-cache`.
 
 ## Batch pipeline (assign a whole batch, not one file)
@@ -445,7 +456,8 @@ directly instead of `--run-dir`.
 | `cleanup.py`          | residual cleanup: isotope-confirmed recovery, bromide-cluster labelling, ringing-artifact flagging, satellite reclaim, **`prefer_amine_over_ammonium`** (positive: THREE-WAY time-tracking gate — keep `[M+NH4]+` adduct that tracks a shaped parent, re-read to the `[M+H]+` amine when it fails to track / the parent is absent, cap Candidate when weak-or-flat; Si + `protected`-provenance + valence overrides); **plausibility demotes** `demote_implausible_carbon` / `demote_implausible_ionization` / `demote_speculative_residual` + `relabel_reagent_halocarbons` (Br-reagent-gated)                                                                                                                                                                               |
 | **`reflists.py`**     | curated, self-describing **reference-peaklist** catalog (`peaky/data/peaklists/`: metadata + version + references + provenance) — `load_catalog`/`active_lists` (context-gated; contaminants always on), `match_assigned` (selection-prior corroboration), `rescue_unexplained_by_reflist` (mass-match → server re-score → commit-if-confirmed, else tentative Candidate). Soft + provenance-tagged; never overrides an isotope-scored Assigned |
 | **`io/publish.py`**   | `peaky publish` -- translate a ledger into Mascope's run-import contract and upload it (chunked assembly, row-offset idempotency, resume via `--import-id`). Sends peaky's own verdict as `engine_tier` and **no** `tier` (the server derives that), resolves adducts to ionization-mechanism ids, excludes synthetic sub-peaks. See `docs/PUBLISH.md` |
-| **`admission.py`**    | the admission gate — which peaks are ELIGIBLE for formula search at the eight gated sites (pass-1 grid, pass-2 series growth, pass-3 families + its two cluster resolvers — the five callers of `directors._target_peaks` — plus ladder gap-fill, residual stage B, siloxane ladder): `bin_occurrence` (per-bin occurrence table from the batch time series at `sampling.BATCH_TOL_PPM`), `otsu_threshold`/`auto_threshold`/`resolve_threshold` (the batch-derived persistence threshold, clamped 0.25–0.75), `lookup_occurrence`, `admissible` (height ≥ gate OR occurrence ≥ threshold), `stamp_admission` (per-peak `occurrence` + `admitted_by`), `why_off` (which of the four reasons the persistence path is off) |
+| **`admission.py`**    | the admission gate — which peaks are ELIGIBLE for formula search at the eight gated sites (pass-1 grid, pass-2 series growth, pass-3 families + its two cluster resolvers — the five callers of `directors._target_peaks` — plus ladder gap-fill, residual stage B, siloxane ladder): `bin_occurrence` (the per-PEAK occurrence table from the batch time series at `sampling.BATCH_TOL_PPM`, built on `batch/traces.PeakIndex`), `otsu_threshold`/`auto_threshold`/`resolve_threshold` (the batch-derived, trace-weighted persistence threshold, clamped 0.25–0.75), `lookup_occurrence` (the table's own rule), `derive_height_cutoff_x_edge` (the batch-derived brightness floor), `admissible` (height ≥ gate OR occurrence ≥ threshold), `stamp_admission` (per-peak `occurrence` + `admitted_by`), `why_off` (which of the four reasons the persistence path is off) |
+| **`batch/traces.py`** | the ONE trace primitive over the m/z-sorted batch peak list: `PeakIndex` (per-peak `occurrence` sweep, `occurrence_at`, `coverage_at`, `members`, `mean_shift` re-centring with a drift cap, `scatter_ppm`, per-sample noise edges), `batch_scatter_ppm` — serves the admission table and the trace reconciliation of the merged ledger (`timeseries.recentre_ledger` / `collapse_trace_labels` / `stamp_tolerance`) |
 | **`sampling.py`**     | THE RULE — `select_cover_samples` (greedy presence set-cover over m/z bins, prevalence ≥2, marginal-gain stop) for batch + pool assignment                                                                                                                                                                                                                                                                                              |
 | **`assign_batch.py`** | `run(batch\|peaks, ts_peaks=, amine_r_min=)` — assign the reps, keep per-file ledgers, offset-aware merge (`align`) + jitter table; applies the positive amine gate at merge level (three-way time-tracking)                                                                                                                                                                                                                                       |
 | **`cluster.py`**      | correlation clustering (log-corr, COMPLETE linkage r>0.6, signed distance) → `render_a4` A4-portrait paginated panels + remaining-peaks overview. **Flatness gate** `split_varying`/`render_flat_panel` (cv<`FLAT_CV` bunched, not clustered). `render_changers` = A4-portrait big-standalone-changers page. `write_cluster_workbook(when=)` — byte-reproducible per-cluster XLSX (timestamps pinned to a FIXED content epoch, not the run time) |

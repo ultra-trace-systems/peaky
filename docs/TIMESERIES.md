@@ -178,6 +178,72 @@ All in `peaky/batch/timeseries.py`.
 
 ---
 
+## 9. Trace reconciliation — between the merge and the stamp
+
+`recentre_ledger`, `collapse_trace_labels` and `stamp_tolerance` run in
+`assign_batch.run` after the merge (and the sidelobe flag) and before
+`annotate_peaks`; all three read the batch through `batch/traces.PeakIndex`, the
+same m/z-sorted index the admission table is built on.
+
+**Why.** The merged m/z is an *anchor* minted from the few assigned samples. On
+a TOF the assignment snaps it to theory — a formula is only committed where a
+sample's draw lands near it — so real anchors sit 1.8 ppm (sd) from the
+theoretical mass while a same-size anchor drawn at random from the ion's own
+trace sits 5.7 ppm away: the trace genuinely lives ~5.8 ppm off theory, and a
+±6 ppm window centred on the anchor misses most of it (measured on a
+230-spectrum TOF batch: 22.6 % of anchors outside their own trace's window;
+C10H16O9 `[M+NO3]-` 40 % of spectra from the anchor, 81 % from the trace centre;
+mean coverage 61 → 74 % over 867 ions, gains > 5 pp on 41 %, losses on 3.5 %).
+Two assigned samples whose draws differ by more than the merge tolerance also
+mint two competing rows for one ion (26.8 % of well-populated rows shared a
+trace). An Orbitrap ledger moved 0.11 ppm and changed nothing — the no-op that
+validates the diagnosis.
+
+1. **`recentre_ledger`** — for each row, `PeakIndex.mean_shift` from the anchor
+   (the robust median of the one-peak-per-spectrum window, iterated to the local
+   mode), never more than `RECENTRE_MAX_DRIFT_PPM` (10) away. The row moves only
+   where the re-centred window covers *more* spectra. Guard: an anchor covering
+   < `RECENTRE_GUARD_COV` (10 %) of the spectra that wants to move
+   > `RECENTRE_GUARD_PPM` (6 ppm) must be corroborated (≥ 2 assigned files, or
+   Assigned) — an almost-empty anchor plus a long jump is how a label lands on a
+   neighbour's trace. Adds `mz_anchor`, `mz_trace`, `trace_offset_ppm`,
+   `trace_cov_anchor`, `trace_cov`, `trace_moved`, `trace_guarded`.
+2. **`collapse_trace_labels`** — gap-cluster `mz_trace` at the merge tolerance
+   (`trace_id`); a trace with several rows keeps one `winner` by the merge's
+   own ordering — most assigned files → tier → `ion_score` — with proximity to
+   the trace centre only as a deterministic tie-break; the rest become
+   `collapsed` (kept, flagged, never stamped; `single` = alone). Never
+   `ion_score` first: per-file, it is blind to reproducibility and on that batch
+   it lost 2 of 14 known channels to one-file competitors. And never proximity
+   before the score: the anchors were snapped to theory, so on a live TOF batch
+   "nearest" handed the trace of the known monomer C10H16O9 to a one-file
+   C15H21NO3 whose anchor happened to sit 0.25 ppm from the centre (score 0.846
+   vs 0.960); the score ordering picked the reference-list label in 4 of 4
+   same-file, same-tier ties where exactly one label was on the list.
+3. **`stamp_tolerance`** — the stamping half-window = max(tol, min(2·tol,
+   2.5·σ)), σ = the **third quartile** of the per-trace robust scatter
+   (`traces.batch_scatter_ppm`; the dim traces scatter more — 3.6 vs 1.2 ppm on
+   the TOF — and are the ones a window sized from the bright ones loses; the top
+   decile on one Orbitrap mode is a scan-edge artefact 40× the median). An
+   Orbitrap (0.24–0.34 ppm) keeps 6 ppm; a TOF (3.8–4.2 ppm) gets ~10 ppm.
+   `annotate_peaks` then stamps from `stamping_frame`, which uses `mz_trace` and
+   skips collapsed rows; the one-to-one contest is unchanged.
+
+Measured on the real runs (scripts/eval_trace_stamping.py): TOF, all ions, mean
+stamped coverage 0.422 → 0.488 (38 % of ions gaining > 5 pp, 3.7 % losing),
+C10H16O9 0.135 → 0.857; two Orbitrap batches 0.754 → 0.754 and 0.542 → 0.542.
+`batch_summary.json['traces']` records the counts, σ and the window.
+
+| constant | value | role |
+| --- | --- | --- |
+| `RECENTRE_MAX_DRIFT_PPM` | 10.0 | an anchor may move at most this far (median move 2.7 ppm; ±10 delivers +11.6 of the +12.7 pp total) |
+| `RECENTRE_GUARD_COV` / `RECENTRE_GUARD_PPM` | 0.10 / 6.0 | the low-evidence guard: an anchor under 10 % coverage may not move > 6 ppm uncorroborated |
+| `STAMP_TOL_SIGMA` / `STAMP_TOL_MAX_X` | 2.5 / 2.0 | window = this many σ, never wider than this × the merge tolerance |
+| `traces.SCATTER_Q` | 0.75 | the per-trace scatter quantile that sizes the window |
+| `traces.MZ_FLOOR_DA` | 1.5 mDa | every window is ±max(tol ppm, this) — the stamp's own floor, shared by occurrence and trace |
+
+---
+
 ## 8. Code map
 
 | function | role |
@@ -190,3 +256,5 @@ All in `peaky/batch/timeseries.py`.
 | `_disposition` | formula + (cv, r_mono, r_formic) → background/ambient/intermediate |
 | `apply_timeseries` | stamp `ts_*` columns; conservative flat-background demote |
 | `find_ts_parquet` / `trace` | locate the run's TS parquet; one-compound reproducible trace |
+| `recentre_ledger` / `collapse_trace_labels` / `stamp_tolerance` | §9: re-centre merged anchors on their traces, collapse competing labels, size the stamp window |
+| `collapse_peak_matches` | one row per physical peak (Mascope's match-expanded rows folded back) |

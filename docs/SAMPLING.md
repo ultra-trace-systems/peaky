@@ -197,15 +197,19 @@ modes of one instrument. Selection is deterministic (identical picks on re-run).
   mode with the reagent ion in range (edge 800 cps).
 - **Selection has no height gate; ASSIGNMENT does.** Once the selected samples
   are assigned, the height-gated passes gate each one on a multiple of *its own*
-  noise edge (`height_cutoff_x_edge`, default 1.0 — the bottom 1 % of picked
-  peaks). That multiple is a property of the **peak picker**: a picker that stops
-  at the edge wants 1.0 (rare real ions sit at 1–3× it), while a picker that
-  picks *into* the noise admits almost everything it found at 1.0 — on one
-  230-spectrum TOF batch 1.0 merged 4346 ions, 3307 of them single-file, where
-  5.0 kept 57 % of the picked peaks and 74 % of the assigned ones, i.e. a tighter
-  candidate list. A site raises it for its own instrument via a
-  `--reagent-config` profile's `height_cutoff_x_edge`
-  ([`REAGENTS.md`](REAGENTS.md) §3a); no bundled profile sets one.
+  noise edge (`height_cutoff_x_edge`; 1.0 = the bottom 1 % of picked peaks). That
+  multiple is a property of the **peak picker**: a picker that stops at the edge
+  wants 1.0 (rare real ions sit at 1–3× it), while a picker that picks *into* the
+  noise admits almost everything it found at 1.0 — on one 230-spectrum TOF batch
+  1.0 merged 4346 ions, 3307 of them single-file, where 5.0 kept 57 % of the
+  picked peaks and 74 % of the assigned ones, i.e. a tighter candidate list. By
+  default (`"auto"`) a batch run **derives** the multiple from the batch's own
+  peaks — the smallest grid multiple whose admitted peaks are at most 20 %
+  transient, which keeps a picker that stops at the edge at exactly 1.0 and
+  raises one that picks into the noise ([`ASSIGNMENT.md`](ASSIGNMENT.md)); a site
+  pins a number for its own instrument via a `--reagent-config` profile's
+  `height_cutoff_x_edge` ([`REAGENTS.md`](REAGENTS.md) §3a); no bundled profile
+  sets one.
 - **A time grid / max-TIC add nothing.** The clock is uncorrelated with the air,
   and the first greedy pick is already the sample carrying the most distinct
   bins. That count is the objective, never brightness — *richest* (§3.6) means

@@ -8,6 +8,82 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The admission table is per PEAK, and the lookup is the table's own rule.**
+  `admission.bin_occurrence` no longer gap-clusters the batch into bins: it is built on
+  the new `batch/traces.PeakIndex`, and every batch peak's `occurrence` is the fraction
+  of spectra holding a peak within ±tolerance of *its* m/z (one O(n) sweep over the
+  m/z-sorted batch, one peak per spectrum; the window is ±max(tol ppm, 1.5 mDa), the
+  stamp's own floor). `lookup_occurrence` answers a ledger peak by exactly that rule, so
+  construction and lookup cannot disagree. The persistence threshold (`auto`) is Otsu's
+  split of that distribution weighted so each TRACE counts once (each peak by one over
+  its spectrum count): it reproduces the former bin-table split to ±0.02 on four
+  Orbitrap modes and reads 0.38 instead of 0.44 on a TOF batch; unweighted, the
+  per-peak histogram is dominated by persistent ions and splits ~0.1 too high.
+  `batch_summary.json['admission']` reports `n_peaks`, `n_persistent_peaks` and
+  `n_persistent_traces` (the trace-weighted count, ≈ the number of persistent ions)
+  in place of `n_bins` / `n_persistent_bins`, which counted bins under a rule the
+  admission decision did not use.
+- **The brightness floor is derived from the batch by default.** An unset
+  `height_cutoff_x_edge` now resolves to the policy token `"auto"`
+  (`passes.config.AUTO_HEIGHT_CUTOFF_X_EDGE`); `--height-cutoff-x-edge auto` asks for
+  it explicitly and a reagent profile may carry it. On a batch, `assign_batch.run`
+  resolves it to a number from the batch's own peaks
+  (`admission.derive_height_cutoff_x_edge`), on two conditions: the picker must pick
+  INTO the noise — more than 5 in 10 000 of the batch's peaks sit below 0.75× their
+  sample's 1st-percentile edge; a hard-threshold picker leaves essentially nothing under
+  its edge — and then the floor is the smallest of 1 / 1.5 / 2 / 3 / 5 / 8 / 12 / 20 at
+  which the peaks it would admit are at most 20 % transient (occurrence below the
+  persistence threshold). The number is stamped on the cfg every per-file run copies
+  and recorded with its source, both statistics and the whole transient-share table
+  (`batch_summary.json` `height_cutoff_x_edge`, `height_cutoff_x_edge_source`, `gate`).
+  A single sample with no batch reads `"auto"` as 1.0 (`DEFAULT_HEIGHT_CUTOFF_X_EDGE`),
+  and so does a batch too short for a persistence table (with a source saying why).
+  Measured live on five batches of two instruments: every Orbitrap mode keeps exactly
+  1.0 (tail share ≤ 1 in 10 000; three modes 8–16 % transient at 1×); the TOF (tail
+  share 31 in 10 000, 34 % transient at 1×) lands at 5× (17 %; inside the recall
+  plateau of the live sweep
+  — 17 of 18 findable target ions from 5× up — though below its 8–12× precision
+  optimum, which a site pins in its profile). The tail condition exists because the
+  reagent-in-range Orbitrap mode is 50 % transient at 1× (the reagent ion's noise skirt
+  plus a scan-edge pile-up) and the share alone raised it to 2×, which removed 45
+  pile-up rows and 12 skirt rows but also 14 multi-file Assigned ions at 1–2× the edge
+  (a C6H12O `[M+H]+` seen in 9 of 27 files among them) — there the edge is the picker's
+  relative threshold under a huge reagent ion, not noise. The reproducibility manifest
+  fingerprints the *token* for an unset multiple, never the derived number (which is
+  run-derived, like the persistence threshold, and lives in `counts`).
+- **The batch time series is stamped from each ion's TRACE, not from the merge
+  anchor.** Between the merge and `annotate_peaks`, `timeseries.recentre_ledger`
+  re-centres every merged row on its own trace (`PeakIndex.mean_shift` from the
+  anchor, at most 10 ppm; an anchor covering < 10 % of the spectra that wants to move
+  > 6 ppm must be seen in ≥ 2 files or be Assigned), `collapse_trace_labels` collapses
+  rows whose trace centres fall within the merge tolerance onto one winner (the
+  merge's own ordering: most assigned files, then tier, then `ion_score`, with
+  proximity to the trace centre only as a deterministic tie-break — never
+  `ion_score` first, which is per-file and blind to reproducibility, and never
+  proximity before the score, which on theory-snapped TOF anchors carries no
+  information and lost the known monomer C10H16O9 to a one-file competitor), and
+  `stamp_tolerance` sizes the stamping window to the batch's own per-ion scatter (2.5 ×
+  the third quartile of the per-trace robust scatter, between 1× and 2× the merge
+  tolerance). The merged ledger gains `mz_anchor`, `mz_trace`, `trace_offset_ppm`,
+  `trace_cov_anchor`, `trace_cov`, `trace_moved`, `trace_guarded`, `trace_id` and
+  `trace_role` (`single` / `winner` / `collapsed`; nothing is dropped);
+  `_batch_ts.parquet`'s `ion_mz` is now the trace centre; `batch_summary.json['traces']`
+  records the counts, the scatter and the window. Why: on a TOF the assignment snaps
+  the merge anchor to theory (a formula is only committed where a sample's draw lands
+  near it) while the ion's trace sits several ppm away — 22.6 % of one 230-spectrum TOF
+  batch's anchors were outside their own trace's window and 26.8 % of its well-populated
+  rows shared a trace with a competing label. Measured on that batch's real runs
+  (`scripts/eval_trace_stamping.py`): mean stamped coverage over all ions 0.422 → 0.488
+  with 38 % of ions gaining more than 5 points and 3.7 % losing, the highly oxygenated
+  monomer C10H16O9 0.135 → 0.857, window ±9.5 ppm; two Orbitrap batches moved by
+  0.16–0.34 ppm and changed nothing (0.754 → 0.754, 0.542 → 0.542; window ±6 ppm) —
+  the no-op that validates the diagnosis.
+- **Reference-list context tags are resolved from the batch name, the DATASET name and
+  the reagent label** (`assign_batch.run`, the pooled pipeline and the report all pass
+  the dataset), and the phrase "AP oxidation" (also `ap-oxidation` / `ap_oxidation`)
+  unlocks the alpha-pinene and monoterpene contexts. On a campaign whose batch names
+  describe instrument and reagent the chemistry lives only in the dataset name, and the
+  alpha-pinene HOM reference list had been silently inactive on alpha-pinene data.
 - **The positive pass-0 `cyclosiloxane` and `indoor_sulfur` families apply to EVERY
   positive context**, not only to the labelled-ammonium runs they were seeded from:
   `directors._known_species("positive", …)` returns them regardless of context, so
@@ -94,6 +170,53 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The persistence path was inert at the shipped default, and the TOF ledger was a
+  flood.** With `height_cutoff_x_edge = 1.0` the brightness path admitted ~99 % of a
+  TOF's picked peaks (0.12 % of admissions came from persistence), and the merged
+  ledger of a 230-spectrum TOF batch was 64 % single-file with 70 % formula
+  disagreement among multi-file rows. The batch-derived floor (above) raises that
+  batch to 5× — the live sweep measured 1988 merged rows instead of 5331, 55 %
+  single-file, recall of the known monomers unchanged or better — while leaving the
+  Orbitrap modes whose picker already stops at the noise edge at exactly 1.0.
+- **A peak could fail to find its own occurrence bin.** The table was built by
+  single-linkage chaining (a bin breaks only where consecutive peaks are more than
+  the tolerance apart) and read within ±tolerance of the bin's height-weighted centre:
+  on a TOF batch 91 % of the persistent bins were wider than the tolerance (median 51
+  peaks, one 134 ppm), so a large share of the persistence signal was the chaining and
+  3149 rows sitting inside persistent bins were denied the path at one operating point.
+  Matching the lookup to the bin span handed a chained bin's persistence to adjacent
+  noise; capping the bin width split one ion's jitter cloud across bins. The per-peak
+  rule (above) has neither failure.
+- **The report cover under-reported the persistence path** by an order of magnitude:
+  it counted MERGED rows admitted by persistence (0–3 on real batches), but the merge
+  keeps the highest tier then score so those rows almost always lose to a
+  height-admitted row in the same bin; per-file admissions were 14–63, and on one batch
+  the line was suppressed entirely. The cover now reports the per-file total alongside
+  the merged count, and states the batch-derived floor and the trace reconciliation.
+
+- **The batch time series carried a peak once per MATCH, not once per peak.** Mascope's
+  peak loaders expand a peak into one row per target isotope it matches
+  (`load_peaks` / `samples.get_peaks`, `matches=True` by default), and nothing in the
+  batch path folded that back down — so `per_file/_batch_ts.parquet` held two rows for
+  every peak two targets claimed: same `sample_item_id`, same `peak_id`, byte-identical
+  `mz` / `area` / `height`, only the advisory `target_*` columns differing. Targets
+  collide exactly when they imply the SAME ion (a neutral read as `[M+NO3]-` and a
+  neutral one HNO3 heavier read as `[M-H]-` are one ion formula), so the pair sits at
+  exactly 0.00 ppm and no mass filter separates it. Everything downstream counted the
+  peak twice: `build_matrix` sums heights per (sample, m/z bin), so that bin's intensity
+  doubled, and a per-trace peak count read **2.0 peaks/sample for a single ion** — which
+  reads as two merged ions rather than one peak listed twice. Measured on two field
+  batches: 0.29 % and 0.42 % of rows, always pairs. New
+  `timeseries.collapse_peak_matches` keys on `(sample_item_id, peak_id)` — or
+  `(sample_item_id, mz)` for a frame trimmed to the TS columns — and keeps the
+  best-scoring match's `target_*` columns, ranking on the match scores with the target
+  ids as a final tie-break so the winner is fixed by content rather than by the order
+  the server returned rows in. Row order is preserved and a clean frame comes back
+  untouched, so it is a no-op on collapsed input and idempotent; it runs wherever a time
+  series enters (`pipeline.load` / `run_batch` / `run_pool` / `generate_report` and
+  `assign_batch.run`), which also protects sample selection, the amine gate and sidelobe
+  flagging. Existing parquets are repaired on read.
+
 - **A missing `--group-by` value no longer crashes pooled selection.**
   `sampling.select_cover_samples(group_col=…)` now normalises the group labels to
   strings before it sorts them: on pandas ≥ 3 `astype(str)` leaves NaN alone, so a
@@ -128,6 +251,28 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   An EasyIC batch went from 63 to 119 merged M0 with no formula disagreements.
 
 ### Added
+
+- **`peaky/batch/traces.py`** — the one trace primitive over the m/z-sorted batch peak
+  list: `PeakIndex` (exact-duplicate rows dropped, deterministic sample codes;
+  `occurrence` — the per-peak distinct-spectrum sweep; `occurrence_at`; `coverage_at`;
+  `members` — the nearest peak per spectrum within the window; `mean_shift` — the
+  local mode of the peak density, capped in drift; `scatter_ppm` — the robust per-ion
+  mass scatter, re-measured in a wider window when the first estimate says the cloud
+  fills it; `sample_edge` / `height_in_edges`) and `batch_scatter_ppm`. Admission, the
+  trace reconciliation of the merged ledger and the stamp all read the batch through
+  it, so a peak's occurrence, its trace and its stamp are one object at one rule.
+- `admission.derive_height_cutoff_x_edge` / `persistent_trace_count`,
+  `timeseries.recentre_ledger` / `collapse_trace_labels` / `stamp_tolerance`, and
+  `scripts/eval_trace_stamping.py` (score the trace stamp against the anchor stamp on a
+  finished run, per ion and against a list of ions known to be present — the benchmark
+  rule for any stamping change is coverage of KNOWN ions, never how many rows were
+  admitted).
+- `tests/test_traces.py`: a TOF-like batch whose ledger anchor is snapped to theory
+  while its trace lives 6.5 ppm away (coverage rises from a minority to > 80 % of
+  spectra end to end), a phantom competitor on the same trace losing to the multi-file
+  label despite its higher `ion_score`, the low-evidence guard, an Orbitrap-like batch
+  where nothing moves, and the derived floor staying at 1× where the picker stops at
+  the noise edge and rising where it picks into the noise.
 
 - **`peaky publish-batch <run_dir>`** - publish a `peaky batch` run's merged ledger
   onto Mascope's batch ledger as a batch run of its own (Mascope's
@@ -353,32 +498,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `assign_batch.run` when it picks the cover for one batch, which brackets it
   back to `assign` as soon as the picks are in).
 
-### Fixed
-
-- **The batch time series carried a peak once per MATCH, not once per peak.** Mascope's
-  peak loaders expand a peak into one row per target isotope it matches
-  (`load_peaks` / `samples.get_peaks`, `matches=True` by default), and nothing in the
-  batch path folded that back down — so `per_file/_batch_ts.parquet` held two rows for
-  every peak two targets claimed: same `sample_item_id`, same `peak_id`, byte-identical
-  `mz` / `area` / `height`, only the advisory `target_*` columns differing. Targets
-  collide exactly when they imply the SAME ion (a neutral read as `[M+NO3]-` and a
-  neutral one HNO3 heavier read as `[M-H]-` are one ion formula), so the pair sits at
-  exactly 0.00 ppm and no mass filter separates it. Everything downstream counted the
-  peak twice: `build_matrix` sums heights per (sample, m/z bin), so that bin's intensity
-  doubled, and a per-trace peak count read **2.0 peaks/sample for a single ion** — which
-  reads as two merged ions rather than one peak listed twice. Measured on two field
-  batches: 0.29 % and 0.42 % of rows, always pairs. New
-  `timeseries.collapse_peak_matches` keys on `(sample_item_id, peak_id)` — or
-  `(sample_item_id, mz)` for a frame trimmed to the TS columns — and keeps the
-  best-scoring match's `target_*` columns, ranking on the match scores with the target
-  ids as a final tie-break so the winner is fixed by content rather than by the order
-  the server returned rows in. Row order is preserved and a clean frame comes back
-  untouched, so it is a no-op on collapsed input and idempotent; it runs wherever a time
-  series enters (`pipeline.load` / `run_batch` / `run_pool` / `generate_report` and
-  `assign_batch.run`), which also protects sample selection, the amine gate and sidelobe
-  flagging. Existing parquets are repaired on read.
-
-### [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
+## [0.7.0] - 2026-09-03 (publish a peaky run into Mascope)
 
 ### Added
 
