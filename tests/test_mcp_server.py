@@ -147,7 +147,6 @@ _orig_run_batch = PL.run_batch
 
 
 def _fake_run_batch(**kw):
-    print(f"  [dbg] fake PL.run_batch called: batch={kw.get('batch')!r} k_max={kw.get('k_max')!r}")
     _seen_kw.update(kw)
     return {"ctx": SimpleNamespace(out_dir="/tmp/peaky-mcp-test", run_id="rid"),
             "report_pdf": None, "assign": {"merged_M0": 3}}
@@ -204,8 +203,6 @@ _orig_assign_run = _A.run
 
 
 def _fake_assign_run(sample_id, context="ambient-air", *, cfg=None, **kw):
-    print(f"  [dbg] fake assign.run called: ctx={context!r} adducts={kw.get('adducts')!r} "
-          f"x_edge={getattr(cfg, 'height_cutoff_x_edge', None)!r} cps={getattr(cfg, 'height_cutoff_cps', None)!r}")
     _seen_assign["cfg"] = cfg
     _seen_assign["context"] = context
     _seen_assign["adducts"] = kw.get("adducts")
