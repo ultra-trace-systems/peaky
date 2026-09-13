@@ -13,6 +13,7 @@ import contextlib
 import io
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -464,15 +465,29 @@ for _name, _txt in (("README.md", (ROOT / "README.md").read_text()),
     # as the same bug the filled bars just stopped being.
     check(f"{_name}: says why a single-sample run shows no ETA",
           "completes when the run does" in _txt)
-# The top [Unreleased] section, sliced on LINE-ANCHORED `## [` headings. A plain
-# `split("## [Unreleased]")` also matched the string inside a bullet's prose --
-# the 0.5.0-retitle note quotes a heading -- which silently truncated the span
-# and failed this check for a reason that had nothing to do with --progress.
-_UNRELEASED = re.split(r"^## \[", CHANGELOG, flags=re.M)[1]
-check("the changelog slice really is the Unreleased section",
-      _UNRELEASED.startswith("Unreleased]"), _UNRELEASED[:40])
-check("the --progress bullets are under [Unreleased], not a released version",
-      "PEAKY_PROGRESS_HOLD_S" in _UNRELEASED)
+# The CURRENT release train: the [Unreleased] section plus the section for the
+# version pyproject names right now. The --progress bullets must be in one of
+# those -- still unreleased, or in the release actually shipping them -- and
+# never orphaned under an older version.
+#
+# Self-locating on purpose. Pinned to [Unreleased] alone, this check FAILED the
+# moment a release was cut and the bullets moved into their release section,
+# which is the one time nobody wants a spurious test failure. Sliced on
+# LINE-ANCHORED `## [` headings too: a plain `split("## [Unreleased]")` also
+# matches the string inside a bullet's prose -- the 0.5.0-retitle note quotes a
+# heading -- which silently truncated the span it searched.
+_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+_SECTIONS = re.split(r"^## \[", CHANGELOG, flags=re.M)[1:]
+# `Unreleased]\n` matches the BARE heading only: the legacy `## [Unreleased] —
+# 0.4.0` section (0.4.0 was never cut, so its heading stands) is an old release,
+# not the current train, and must not satisfy this check.
+_TRAIN = [s for s in _SECTIONS
+          if s.startswith("Unreleased]\n") or s.startswith(_VERSION + "]")]
+check("the changelog has an [Unreleased] section and one for the current version",
+      len(_TRAIN) == 2, [s[:30] for s in _TRAIN])
+check("the --progress bullets are under [Unreleased] or the version shipping them",
+      any("PEAKY_PROGRESS_HOLD_S" in s for s in _TRAIN),
+      [s[:30] for s in _TRAIN])
 check("--progress --help names the hold env var",
       "PEAKY_PROGRESS_HOLD_S seconds" in (PKG / "cli.py").read_text())
 

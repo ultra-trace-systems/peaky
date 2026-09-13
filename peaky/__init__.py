@@ -41,7 +41,7 @@ from __future__ import annotations
 # PEP 562), while each resolution path costs 10-20 ms of stdlib import on its
 # own. Nothing should pay that just to `from peaky import chemistry`.
 _DIST_NAME = "mascope-peaky"   # the DISTRIBUTION name; the import name is `peaky`
-_FALLBACK_VERSION = "0.7.0"    # last resort only: neither pyproject NOR installed
+_FALLBACK_VERSION = "0.8.0"    # last resort only: neither pyproject NOR installed
                                # metadata reachable (e.g. a vendored copy). Bump it
                                # with pyproject in the release-prep commit, next to
                                # CITATION.cff -- tests/test_shim.py fails otherwise.
