@@ -6,6 +6,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`peaky batch --help` and `peaky pool --help` crashed** with `TypeError: %o format:
+  an integer is required, not dict`. argparse %-expands every help string, and the
+  `--residual` help (shared by both subcommands) wrote its "50%" with an f-string
+  `{...:.0%}`, so a bare `%` reached argparse's formatter; every other percent in
+  `cli.py` was already `%%`. The literal is now escaped like its neighbours, and
+  `tests/test_cli.py` renders the help of every parser — the top level, each subcommand
+  and each nested `curate` verb — so a bare `%` in a help string fails the suite instead
+  of the user's `--help`.
+
 ## [0.8.0] — 2026-09-13 (per-peak admission, batch-derived floor, trace-stamped time series, the merge vote, the residual stage)
 
 ### Added

@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from peaky import cli, gka_widget, profiles  # noqa: E402
@@ -410,6 +411,51 @@ def test_the_single_sample_manifest_names_the_list_versions(monkeypatch, tmp_pat
     man = json.loads(next(Path(tmp_path).glob("S1_*_manifest.json")).read_text())
     assert man["reflists_active"], "the manifest recorded no active lists"
     assert ["contaminants_keller2008", "2008.2"] in [list(x) for x in man["reflists_active"]]
+
+
+# ---- every parser renders its --help -----------------------------------------
+# argparse %-expands help strings, so an f-string that puts a bare `%` into one
+# (`{x:.0%}`) only blows up when someone runs `peaky <cmd> --help`: `peaky batch
+# --help` and `peaky pool --help` died with `TypeError: %o format: an integer is
+# required, not dict` while this suite parsed their flags happily. Render every
+# parser's help, so a bare `%` fails here instead.
+def _walk_parsers(parser):
+    """Yield (prog, parser) for `parser` and every subparser under it, depth-first.
+    An alias maps to a parser already yielded and is skipped."""
+    yield parser.prog, parser
+    seen = set()
+    for action in parser._actions:
+        if isinstance(action, _argparse._SubParsersAction):
+            for sub in action.choices.values():
+                if id(sub) not in seen:
+                    seen.add(id(sub))
+                    yield from _walk_parsers(sub)
+
+
+def test_every_parser_renders_its_help():
+    parsers = dict(_walk_parsers(cli.build_parser()))
+    # the walk reaches the top level, each subcommand and the nested curate verbs
+    for prog in ("peaky", "peaky assign", "peaky batch", "peaky pool", "peaky curate",
+                 "peaky curate tree", "peaky curate delete-batch", "peaky mcp"):
+        assert prog in parsers, f"{prog!r} not reached; walked {sorted(parsers)}"
+    for prog, p in parsers.items():
+        text = p.format_help()      # a bare % raises TypeError / ValueError here
+        assert text.startswith("usage:"), prog
+    # the escaped literal renders as the number sampling.py holds, on both owners
+    want = f"{_SS.RESIDUAL_FRAC_OF_MAX * 100:g}% of its maximum"
+    for prog in ("peaky batch", "peaky pool"):
+        assert want in " ".join(parsers[prog].format_help().split()), prog
+
+
+def test_the_module_entry_points_render_their_help():
+    """`assign.main` and `gka_widget.main` build their own parsers; `--help` must
+    print the usage and exit 0 before either touches a file or the server."""
+    for mod in (_assign_mod, gka_widget):
+        buf = _io.StringIO()
+        with _contextlib.redirect_stdout(buf), pytest.raises(SystemExit) as exc:
+            mod.main(["--help"])
+        assert exc.value.code == 0, mod.__name__
+        assert buf.getvalue().startswith("usage:"), mod.__name__
 
 
 def test_all():

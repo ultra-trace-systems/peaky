@@ -784,7 +784,8 @@ def _add_selection_args(sp) -> None:
                          "in NO assigned file, unexplained by the whole-batch stamp and "
                          "bright somewhere (see --residual-min-x-edge): the fewest extra "
                          "samples in which each such bin stands at >= "
-                         f"{SS.RESIDUAL_FRAC_OF_MAX:.0%} of its maximum are assigned too, "
+                         # argparse %-expands help text, so a literal percent is %%
+                         f"{SS.RESIDUAL_FRAC_OF_MAX * 100:g}%% of its maximum are assigned too, "
                          "and the merge, the trace reconciliation and the time-series "
                          "stamp include them (merged rows carry `stage` = cover | "
                          f"residual). {'ON' if SS.RESIDUAL_DEFAULT else 'OFF'} by default; "
