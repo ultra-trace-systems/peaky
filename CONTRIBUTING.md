@@ -38,6 +38,32 @@ ships with a test, and the suite must stay green.
 - Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
   `type(scope): description`, for example `fix(io): ...` or `docs(readme): ...`.
 
+## No internal identifiers
+
+Peaky is public; the servers, workspaces, datasets, batches and samples a run
+touches are not. Keep them out of code, comments, docs, fixtures, commit messages
+**and the pull request's own title and body** - describe the *shape* of a case
+instead ("the batch under study is a prefix of two siblings' names"), and use
+same-shape placeholders for ids (`DSxxxxxxxxxxxxxx`).
+
+`scripts/privacy_scan.py` enforces this. It runs over every tracked file (and
+every file you are about to add) from `tests/test_privacy.py`, which is part of the
+required suite, and it matches *shapes* - a service hostname, a private address, a
+16-character Mascope id, a date-ranged batch name, a workspace named after a person
+- never a list of real names, which would have to live in this public repository to
+work.
+
+A pull request's title and body are not files, so nothing checks them for you yet;
+run the scanner over your own PR text before you open it.
+
+```bash
+python scripts/privacy_scan.py                        # files
+printf '%s\n' "$TITLE" "$BODY" | python scripts/privacy_scan.py --stdin   # PR text
+```
+
+If a stand-in genuinely has to keep the shape (a fixture batch name that carries a
+date range), mark that line `# privacy-ok: <reason>`.
+
 ## Contributor License Agreement
 
 Before we can merge your first pull request, we ask you to accept the
