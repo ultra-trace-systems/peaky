@@ -57,11 +57,13 @@ def raises(fn, exc=Exception):
     return None
 
 
-# The bates.mascope.app "Emmy's Workspace" shape (2026-09-13): the batch under
-# study is a PREFIX of two siblings' names, one of which even ends in a space.
-DATASET = "Emmy's Workspace"
+# The shape a real workspace listing had (2026-09-13): the batch under study is
+# a PREFIX of two siblings' names, one of which even ends in a space. Every name
+# and id below is a neutral stand-in that keeps that shape -- the dataset name
+# keeps its apostrophe, the batch names their trailing space and date range.
+DATASET = "Team A's Workspace"
 DATASET_ID = "DSxxxxxxxxxxxxxx"
-BATCH_ID = "BkKhjKMnAFVXFCUm"
+BATCH_ID = "BATCHxxxxxxxxxxx"
 BATCH = "Site A Ur 122-600"
 SIB_11 = "Site A Ur 122-600 11 "
 SIB_WZ = "Site A Ur 122-600 05-30 - 06-02 wind zone 1"
