@@ -941,7 +941,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 # the per-TRACE window: each row's own post-centring residual,
                 # the batch window where a row has none
                 merged["stamp_tol_ppm"] = _TS.stamp_tolerances(merged, tol_ppm=tol_ppm,
-                                                                fallback=stamp_tol)
+                                                                fallback=stamp_tol, floor=stamp_tol)
                 _pt = merged["stamp_tol_ppm"]
                 trace_info["stamp_tol_per_trace"] = {
                     "median_ppm": float(_pt.median()), "min_ppm": float(_pt.min()),

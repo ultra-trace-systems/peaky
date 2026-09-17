@@ -713,6 +713,7 @@ def _rolling_centres(merged: pd.DataFrame, idx, mzt: np.ndarray, tol_ppm: float,
                      times_by_code, out: dict, log) -> None:
     """The rolling path of `recentre_ledger` (in place on `merged` and `mzt`)."""
     from peaky.batch import centre as CE
+    from peaky.batch import traces as TR
 
     n = len(merged)
     merged["trace_key"] = np.arange(n, dtype=np.int64)
@@ -748,8 +749,22 @@ def _rolling_centres(merged: pd.DataFrame, idx, mzt: np.ndarray, tol_ppm: float,
         o = np.argsort(t, kind="mergesort")
         mem, t = mem[o], t[o]
         cen, info = CE.trace_centre(idx.mz[mem], t)
+        # a cloud wider than the merge window reads too narrow through it (the
+        # same truncation `traces.scatter_ppm` corrects): when three sigmas of
+        # the first estimate reach the edge, measure again through a wider one
+        wide_tol = tol_ppm
+        if (np.isfinite(info["resid_ppm"]) and TR.SCATTER_WIDEN_AT * info["resid_ppm"] > tol_ppm):
+            wide_tol = tol_ppm * TR.SCATTER_WIDEN_X
+            mem2 = idx.members(c, wide_tol)
+            t2 = tb[idx.sample[mem2]]
+            g2 = np.isfinite(t2)
+            mem2, t2 = mem2[g2], t2[g2]
+            if len(mem2) >= len(mem):
+                o2 = np.argsort(t2, kind="mergesort")
+                mem, t = mem2[o2], t2[o2]
+                cen, info = CE.trace_centre(idx.mz[mem], t)
         if info["scheme"] == "rolling":
-            mem2 = CE.rolling_members(idx, t, cen, tb, tol_ppm, float(np.median(cen)))
+            mem2 = CE.rolling_members(idx, t, cen, tb, wide_tol, float(np.median(cen)))
             if len(mem2) >= 5:
                 t2 = tb[idx.sample[mem2]]
                 g2 = np.isfinite(t2)
@@ -788,18 +803,24 @@ def _rolling_centres(merged: pd.DataFrame, idx, mzt: np.ndarray, tol_ppm: float,
 
 def stamp_tolerances(merged: pd.DataFrame, *, tol_ppm: float = DEFAULT_TOL_PPM,
                      k_sigma: float = STAMP_TOL_SIGMA, max_x: float = STAMP_TOL_MAX_X,
-                     fallback: float | None = None) -> np.ndarray:
+                     fallback: float | None = None, floor: float | None = None) -> np.ndarray:
     """A stamping half-window PER TRACE from its own post-centring residual
     (`resid_ppm`, the rolling path of `recentre_ledger`): the same rule as
     `stamp_tolerance` -- max(tol_ppm, min(max_x * tol_ppm, k_sigma * resid)) --
-    applied row by row, so a tight trace gets a tight window and a wide one a
-    wide window instead of every ion sharing one batch quantile. Rows without a
-    residual get `fallback` (the batch window; `tol_ppm` when None)."""
+    applied row by row, and NEVER below `floor` (the batch window): a trace's
+    window may widen beyond the batch's where its own scatter demands, it may
+    not tighten below it. The batch window was settled by measurement (a 12 ppm
+    window on a TOF doubled the share of ions gaining coverage over a 6 ppm one
+    with the losing share unchanged), and a first version that let per-trace
+    windows tighten lost more than 5 points of coverage on 170 ions of a
+    6 400-ion TOF ledger against 17 gained. Rows without a residual get
+    `fallback` (the batch window; `tol_ppm` when None)."""
     fb = float(tol_ppm if fallback is None else fallback)
+    lo = float(tol_ppm if floor is None else floor)
     if "resid_ppm" not in merged.columns:
         return np.full(len(merged), fb)
     r = pd.to_numeric(merged["resid_ppm"], errors="coerce").to_numpy(dtype=float)
-    per = np.maximum(tol_ppm, np.minimum(max_x * tol_ppm, k_sigma * r))
+    per = np.maximum(lo, np.minimum(max(max_x * tol_ppm, lo), k_sigma * r))
     return np.where(np.isfinite(r), per, fb)
 
 

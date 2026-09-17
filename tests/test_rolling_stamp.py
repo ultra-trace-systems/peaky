@@ -85,6 +85,12 @@ def test_stamp_tolerances_per_trace_clip_like_the_batch_rule():
     got = TS.stamp_tolerances(m, tol_ppm=6.0, k_sigma=2.5, max_x=2.0, fallback=9.0)
     assert list(got) == [6.0, 6.0, 7.5, 12.0, 9.0]
     assert list(TS.stamp_tolerances(pd.DataFrame({"mz": [1.0]}), tol_ppm=6.0)) == [6.0]
+    # with the batch window as the floor a trace may only WIDEN beyond it
+    got = TS.stamp_tolerances(m, tol_ppm=6.0, k_sigma=2.5, max_x=2.0, fallback=12.0, floor=12.0)
+    assert list(got) == [12.0, 12.0, 12.0, 12.0, 12.0]
+    got = TS.stamp_tolerances(pd.DataFrame({"resid_ppm": [3.0, 4.0]}), tol_ppm=6.0, k_sigma=2.5,
+                              max_x=2.0, fallback=8.0, floor=8.0)
+    assert list(got) == [8.0, 10.0]
 
 
 def test_a_per_row_window_overrides_the_batch_window():
