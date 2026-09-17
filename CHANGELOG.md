@@ -6,6 +6,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The formula search applied its ppm tolerance to the neutral mass, not the ion.**
+  `chemistry.candidates_for_peaks` sized its window as `neutral_mass x search_ppm`,
+  but every caller passes ion m/z and means the ion's window (the scorer, the z-gate
+  and the commit tolerance are all on the ion). On a cluster adduct the neutral is
+  lighter than the ion, so the enumeration net was narrower than the search tolerance
+  by neutral/ion: 1.8x for H2SO4 . Br- (`search_ppm=12` reached 6.6 ppm on the ion),
+  1.6x for H2SO4 . NO3-, 2.3x for acetic acid . Br-; on [M-H]- / [M+H]+ the ratio is ~1
+  and nothing changes. Candidates the scorer would have accepted were never
+  enumerated, and the peak sat unexplained. The window is now `ion_mz x search_ppm`
+  for every adduct, and `tests/test_chemistry.py` probes a neutral at +9.5 / +10.5 ppm
+  on the ion through four adducts. A/B measurements are in the pull request.
+
 ## [0.9.0] — 2026-09-30 (the v2 fit at the sample's own width, the standard adduct notation, the abstraction and solvent-cluster channels, the privacy scan)
 
 ### Changed
