@@ -407,6 +407,46 @@ def cmd_report(args) -> None:
         print("wrote", out.get("report_pdf_small"), "(compressed)")
 
 
+def cmd_mass_qc(args) -> None:
+    """Measure a batch's mass axis against formula-certain reference ions."""
+    import json
+
+    from peaky import pipeline as PL
+    from peaky.batch import massqc as MQ
+    from peaky.chem import reference_ions as RI
+
+    try:
+        refs = RI.get(args.reagent)
+    except KeyError as exc:
+        sys.exit(str(exc))
+    if args.ts:
+        ts = PL.load(peaks=args.ts)
+        label = os.path.basename(args.ts)
+    else:
+        if not (args.batch and args.dataset):
+            sys.exit("mass-qc needs --ts <parquet>, or --batch and --dataset")
+        _require_creds()
+        from peaky.io import io_mascope as IO
+        client = IO.connect()
+        rb = IO.resolve_batch(client, args.batch, dataset=args.dataset)
+        ts = PL.load(batch=rb.id, dataset=args.dataset, client=client)
+        label = rb.name
+    tol = args.tol_ppm if args.tol_ppm is not None else (6.0 if args.orbitrap else 12.0)
+    print(f"[mass-qc] {label}: {ts['sample_item_id'].nunique()} spectra, {len(ts)} peaks; "
+          f"{len(refs)} {args.reagent} reference ions; membership +-{tol:g} ppm, "
+          f"probe +-{args.probe_ppm:g} ppm, wave in (m/z)^{'-' if args.orbitrap else '+'}1/2")
+    table, v = MQ.run(ts, refs, tol_ppm=tol, tof=not args.orbitrap, probe_ppm=args.probe_ppm)
+    MQ.report(table, v, log=print)
+    out = os.path.expanduser(args.out or ".")
+    os.makedirs(out, exist_ok=True)
+    table.to_csv(os.path.join(out, "mass_qc.csv"), index=False)
+    v = dict(v, batch=label, reagent=args.reagent, tol_ppm=float(tol),
+             probe_ppm=float(args.probe_ppm))
+    with open(os.path.join(out, "mass_qc.json"), "w", encoding="utf-8") as fh:
+        json.dump(v, fh, indent=1, default=str)
+    print(f"[mass-qc] wrote {os.path.join(out, 'mass_qc.csv')} and mass_qc.json")
+
+
 def cmd_gka(args) -> None:
     import pandas as pd
 
@@ -992,6 +1032,24 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--generated", default=None, help="generated stamp for the cover")
     pr.add_argument("--subject", default=None)
     pr.set_defaults(func=cmd_report)
+
+    pq = sub.add_parser("mass-qc",
+                        help="measure a batch's mass axis against formula-certain reference "
+                             "ions: offset, trend, drift, blending -- and the remedy each implies")
+    pq.add_argument("--batch", default=None, help="batch id or name (with --dataset)")
+    pq.add_argument("--dataset", default=None)
+    pq.add_argument("--ts", default=None,
+                    help="cached full-batch TS parquet (offline; no credentials needed)")
+    pq.add_argument("--reagent", default="NO3",
+                    help="reference-ion table: NO3 (default), NO3_15N or Br")
+    pq.add_argument("--tol-ppm", type=float, default=None,
+                    help="trace membership half-window (default 12 ppm; 6 with --orbitrap)")
+    pq.add_argument("--probe-ppm", type=float, default=50.0,
+                    help="how far from theory to look for each reference ion (default 50)")
+    pq.add_argument("--orbitrap", action="store_true",
+                    help="fit the wave in (m/z)^-1/2 (frequency) instead of (m/z)^+1/2 (flight time)")
+    pq.add_argument("--out", default=None, help="directory for mass_qc.csv / mass_qc.json (default .)")
+    pq.set_defaults(func=cmd_mass_qc)
 
     pg = sub.add_parser("gka", help="interactive rotating-GKA HTML from a ledger CSV")
     pg.add_argument("ledger_csv")

@@ -8,6 +8,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`peaky mass-qc` — the batch's mass axis measured against an EXTERNAL reference.**
+  Pass 1 self-calibrates on the Assigned backbone, which is circular: an axis 30 ppm wrong
+  yields a self-consistent calibration and a batch of confident wrong formulas, and nothing in
+  the run log says the axis moved. The new command probes formula-certain reference ions
+  (`peaky.chem.reference_ions`: the 30-ion nitrate-CIMS core shipped as
+  `data/reference_ions/nitrate.csv` with grade / anchor / blend flags, its 15N-reagent variant
+  computed through `chem.ion_mz`, and a provisional bromide ladder whose every Br adduct
+  carries its 81Br twin) in a batch time series — live (`--batch`/`--dataset`) or offline
+  (`--ts parquet`, no credentials) — and reports per ion the occurrence, offset from theory,
+  per-spectrum noise, random-walk step and optimal window (`batch.centre`), then a verdict
+  with the remedy it implies: `clean`, `axis_offset` (flat bias → a constant), `axis_trend`
+  (a smooth wave → apply it), `blended` (ion-to-ion jumps, no smooth part → centre only,
+  widen the tolerance, cap the tier), with `drifting` appended when the centres roll.
+  `peaky.batch.wave` is the written model behind `axis_trend`: Chebyshev in `(m/z)^+1/2`
+  (TOF, flight time) or `(m/z)^-1/2` (Orbitrap, frequency), the degree chosen by leave-one-out
+  cross-validation over 0..5 — **0 included**, so a flat offset is expressible — under a
+  one-standard-error rule with an L1 score (a MAD-based score let noise buy a degree on 25
+  points), iteratively 3-sigma clipped about the median residual, and refusing to predict
+  outside the calibrant range. Two procedural rules from a calibration session that got them
+  wrong: every gate is absolute (a "below the batch median" gate deletes every persistent ion
+  of a TOF batch whose median jitter is 0), and a calibrant rule that relaxes when the strict
+  set is too small REPORTS WHICH TIER IT USED (`calibrant_tier`, `calibrant_tiers_tried`).
+  The 81Br twin is a free internal check: a Br adduct whose light and heavy lines disagree in
+  offset, height ratio or occurrence is withdrawn as a calibrant whatever the formula says.
+  Writes `mass_qc.csv` / `mass_qc.json`. No assignment behaviour changes.
+
 - **`peaky.batch.centre` — the adaptive trace-centre estimator.** A trace's per-spectrum
   positions carry white noise `sigma` and a slow random walk `gamma`; both come out of the
   trace's own structure function `S(k) = 0.5 · robust_var(x[i+k] − x[i]) = sigma² + 0.5 gamma² k`,
