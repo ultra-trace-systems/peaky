@@ -108,8 +108,9 @@ def _one_se(n: int, k_tol: float | None) -> float:
 
 def fit_wave(mz, ppm, *, tof: bool = True, k_max: int = 5, clip: float = 3.0,
              n_clip_iter: int = 4, min_n: int = 6, k_tol: float | None = None) -> WaveFit | None:
-    """Fit delta_ppm against (m/z)^p. None with fewer than `min_n` calibrants
-    (before or after clipping). K is picked by LOO over 0..k_max, including 0:
+    """Fit delta_ppm against (m/z)^p. None with fewer than `min_n` calibrants;
+    a clip that would leave fewer than that is refused, so the returned fit
+    always stands on at least `min_n` of them and `n` says how many. K is picked by LOO over 0..k_max, including 0:
     the SIMPLEST K whose CV error is within one standard error of the best
     (`k_tol` overrides that margin with a fixed fraction)."""
     mz = np.asarray(mz, dtype=float)
@@ -123,7 +124,6 @@ def fit_wave(mz, ppm, *, tof: bool = True, k_max: int = 5, clip: float = 3.0,
     lo, hi = float(v.min()), float(v.max())
     u_all = 2 * (v - lo) / (hi - lo) - 1 if hi > lo else np.zeros_like(v)
     keep = np.ones(len(mz), dtype=bool)
-    raw = rsd(ppm)
     best = None
     for _ in range(n_clip_iter):
         u, y = u_all[keep], ppm[keep]
@@ -135,6 +135,12 @@ def fit_wave(mz, ppm, *, tof: bool = True, k_max: int = 5, clip: float = 3.0,
         K = min(k for k in sorted(scores)
                 if scores[k] <= best_loo * (1 + tol) or scores[k] - best_loo <= 1e-3)
         coef = _cheb_fit(u, y, K)
+        # the fit as it stands on THIS set, which holds at least `min_n` points
+        # by construction. Recording it here is the guard: the old code recorded
+        # the fit against the mask the NEXT clip proposed, so a clip that cut the
+        # calibrants below min_n still returned -- a degree-2 wave standing on 4
+        # surviving points, reported as though it stood on all of them.
+        best = (K, coef, scores[K], keep.copy())
         res_all = ppm - np.polynomial.chebyshev.chebval(u_all, coef)
         # clip about the MEDIAN residual: an outlier pulls the least-squares
         # constant toward itself, so the good points' residuals share an offset
@@ -142,13 +148,18 @@ def fit_wave(mz, ppm, *, tof: bool = True, k_max: int = 5, clip: float = 3.0,
         dev = res_all - np.median(res_all[keep])
         s = max(rsd(res_all[keep]), 1e-9)
         new = np.abs(dev) <= clip * s
-        best = (K, coef, scores[K], rsd(res_all[new]) if new.sum() > 1 else 0.0, new)
-        if np.array_equal(new, keep):
-            break
-        if new.sum() < min_n:
+        if new.sum() < min_n or np.array_equal(new, keep):
             break
         keep = new
-    K, coef, loo, resid, keep = best
+    K, coef, loo, keep = best
+    # judge the fit on the points it was JUDGED on. `raw` used to be the spread
+    # of EVERY calibrant while `resid` was the spread of the survivors, so
+    # `share` compared two different sets and any clip at all flattered it --
+    # a 4-point degree-2 fit read "explains 100%". The outliers' own spread is
+    # not hidden: `verdict` reports it as ion_to_ion_spread_ppm.
+    raw = rsd(ppm[keep])
+    res_all = ppm - np.polynomial.chebyshev.chebval(u_all, coef)
+    resid = rsd(res_all[keep]) if keep.sum() > 1 else 0.0
     grid = np.linspace(mz.min(), mz.max(), 200)
     ug = 2 * (grid ** p - lo) / (hi - lo) - 1 if hi > lo else np.zeros_like(grid)
     pred = np.polynomial.chebyshev.chebval(ug, coef)

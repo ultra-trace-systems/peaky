@@ -50,6 +50,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A wave fit could stand on calibrants it had already discarded.** The clip loop
+  recorded each fit against the mask the NEXT clip proposed, so the `min_n` guard the
+  docstring promised never held: a real batch returned a degree-2 wave standing on 4
+  surviving calibrants out of 7. And `share` divided the survivors' residual by EVERY
+  calibrant's spread, two different sets, so any clip flattered it and an outlier in the
+  denominator could make noise read as an explained wave — a degree-ZERO fit reported
+  "explains 85 %". Both sides now come from the set the fit was judged on.
+
 - **The formula search applied its ppm tolerance to the neutral mass, not the ion.**
   `chemistry.candidates_for_peaks` sized its window as `neutral_mass x search_ppm`,
   but every caller passes ion m/z and means the ion's window (the scorer, the z-gate
