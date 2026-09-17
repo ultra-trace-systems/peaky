@@ -694,7 +694,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     _idx = TR.PeakIndex(ts_peaks, tol_ppm=tol_ppm) if ts_peaks is not None and len(ts_peaks) else None
     # absolute hours per index sample code, for the rolling centre and the
     # drift-following stamp (`rolling_centre`); None without timestamps
-    _hours = _TS.sample_hours(_idx, ts_peaks) if rolling_centre and _idx is not None else None
+    _hours = _TSN.sample_hours(_idx, ts_peaks) if rolling_centre and _idx is not None else None
     _occ, _thr = assign_kw.get("occurrence"), None
     if _on and _idx is not None and _occ is None:
         _occ = ADM.bin_occurrence(ts_peaks, tol_ppm=tol_ppm, index=_idx)
