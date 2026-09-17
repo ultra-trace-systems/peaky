@@ -344,7 +344,9 @@ def cmd_batch(args) -> None:
                            occurrence_min=args.occurrence_min,
                            height_cutoff_x_edge=args.height_cutoff_x_edge,
                            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
-                           rolling_centre=getattr(args, "rolling_centre", False), log=prog)
+                           rolling_centre=getattr(args, "rolling_centre", False),
+                           trace_first=getattr(args, "trace_first", False),
+                           resolving_power=getattr(args, "resolving_power", None), log=prog)
         # the window's final numbers come from the RETURNED summary, never from
         # parsing the log -- exact by construction.
         prog.finish((res.get("assign") or {}).get("summary"))
@@ -895,6 +897,20 @@ def _add_rolling_flag(p) -> None:
                         "per ion, as before")
 
 
+def _add_trace_first_flags(p) -> None:
+    p.add_argument("--trace-first", action="store_true", default=False,
+                   help="assign the batch's persistent ions ONCE from their centred traces "
+                        "(batch.tracefirst) instead of a cover of files: traces are built, "
+                        "centred, gated, corrected by the mass-qc wave and handed to the engine "
+                        "as one synthetic sample, which then goes through the same merge / "
+                        "stamp / residual stages. Needs --resolving-power. TOF-motivated; an "
+                        "Orbitrap batch keeps the file cover")
+    p.add_argument("--resolving-power", type=float, default=None,
+                   help="the instrument's resolving power (m/dm at FWHM), required with "
+                        "--trace-first: it sizes the dedup cell (0.4 HWHM) and the "
+                        "resolvability flag (e.g. 6500 for an APi-TOF)")
+
+
 def _add_admission_args(sp) -> None:
     """The admission gate (assignment/admission.py): brightness OR persistence.
     Defined ONCE here for `assign`, `batch` and `pool` -- the three flags are one
@@ -988,6 +1004,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_selection_args(pb)
     _add_admission_args(pb)
     _add_rolling_flag(pb)
+    _add_trace_first_flags(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "

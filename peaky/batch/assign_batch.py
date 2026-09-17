@@ -545,6 +545,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         residual_frac_of_max: float = SS.RESIDUAL_FRAC_OF_MAX,
         ts_peaks=None, amine_r_min: float = 0.6,
         n_jobs: int | None = None, rolling_centre: bool = False,
+        trace_first: bool = False, resolving_power: float | None = None,
         log=print, **assign_kw) -> dict:
     """Assign the presence-cover subset of a batch and combine, keeping per-file
     ledgers. Provide EITHER `peaks` (a batch peak/sample table) OR `batch` (a
@@ -614,6 +615,28 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     assign_kw["cfg"] = cfg
     selection = dict(selection_meta or {})
     sel = None                 # our own cover table (None on the sample_ids= path)
+    trace_sample = None
+    if trace_first:
+        # TRACE-FIRST: no files are selected -- the batch's persistent ions are
+        # built as traces, centred, gated and handed to the engine as ONE
+        # synthetic sample (batch.tracefirst), which then goes through the same
+        # merge / reconciliation / stamp / residual stages as a cover file.
+        if ts_peaks is None:
+            raise ValueError("trace-first needs the batch time series (ts_peaks=)")
+        if not resolving_power or float(resolving_power) <= 0:
+            raise ValueError("trace-first needs resolving_power (the instrument's R): it "
+                             "sizes the dedup cell (0.4 HWHM) and the resolvability flag")
+        from peaky.batch import tracefirst as TFT
+        log("[phase] traces")
+        trace_sample = TFT.build_trace_sample(
+            ts_peaks, sample_id=f"traces-{TFT.slug(batch or 'batch')}", reagent=prof.name,
+            resolving_power=float(resolving_power), log=log)
+        sample_ids = [trace_sample.sample_id]
+        selection = {"method": "trace-first", "k": 1, **trace_sample.summary()}
+        log(f"[assign_batch] trace-first: {selection['n_traces']} traces ({selection['n_seeds']} "
+            f"seeds + {selection['n_satellites']} satellite positions) from {selection['n_spectra']} "
+            f"spectra -> one synthetic sample")
+        log("[phase] assign")
     if sample_ids is None:
         # greedy presence set-cover over the batch's m/z bins. Needs the per-PEAK
         # table: the pipeline passes it as ts_peaks; `peaks` may already be one.
@@ -865,7 +888,23 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                     log(ln)
                 _apply(sid, out["ledger"], out["plausibility_audit"], out["stats"], stage)
 
-    _assign_files(list(sample_ids), STAGE_COVER, n_jobs)
+    if trace_sample is not None:
+        from peaky.batch import tracefirst as TFT
+        kw = dict(assign_kw, cfg=copy.deepcopy(cfg), occurrence=trace_sample.occurrence)
+        TFT.engine_settings(kw["cfg"], trace_sample, log=log)
+        log(f"[assign_batch] (1/1) assigning {trace_sample.sample_id} (offline, "
+            f"{len(trace_sample.peaks)} trace peaks) ...")
+        res = A.run(trace_sample.sample_id, context=context, log=log,
+                    reflists_active=reflists_active, peaks=trace_sample.peaks, **kw)
+        led = res["ledger"].merge(
+            trace_sample.traces[[c for c in TFT.TRACE_COLS if c in trace_sample.traces.columns]],
+            on="peak_id", how="left")
+        trace_sample.traces.to_csv(os.path.join(TAB, "traces.csv"), index=False)
+        _apply(trace_sample.sample_id, led, res.get("plausibility_audit") or [],
+               dict(res.get("stats", {})), STAGE_COVER)
+        log(f"[assign_batch] (1/1) done {trace_sample.sample_id}")
+    else:
+        _assign_files(list(sample_ids), STAGE_COVER, n_jobs)
 
     from peaky.chem import reagents as _RG
     from peaky.assignment import plausibility as PL
@@ -1166,6 +1205,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "reagent": prof.name, "label": prof.label, "context": context,
         "batch_name": batch,
         "selection": selection,
+        "trace_first": trace_sample.summary() if trace_sample is not None else None,
         "admission": occ_info,
         # the batch-derived brightness floor (empty when the multiple was pinned
         # by a flag / cfg / profile, or could not be derived): the transient share

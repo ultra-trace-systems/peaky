@@ -8,6 +8,37 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`--trace-first` (batch): assign the batch's persistent ions ONCE, from their centred
+  traces.** Opt-in, TOF-motivated, needs `--resolving-power`. `peaky.batch.tracefirst` builds
+  the traces (`PeakIndex` seeds recurring in >= 5 % of spectra, brightest first, each
+  consuming its 0.4-HWHM dedup cell — the Cubison & Jimenez fit floor, below which two
+  positions are one observable), centres each one adaptively (`batch.centre`), measures
+  the axis against the reference ions and applies the fitted wave inside its calibrant
+  range (`batch.massqc` / `batch.wave`), sizes membership from the reference ions'
+  per-spectrum noise (4 sigma, never below the validated 12 ppm, never above half the
+  cell), rejects a seed whose members cannot be told from a uniform fill of the window
+  (a Kolmogorov-Smirnov test at p ~ 0.001 — the shape, so free of the window and the
+  instrument; a fill recurring in half the spectra is kept and flagged `fills_window`),
+  probes the isotopologue positions of every persistent trace (20 members and 60 %
+  co-occurrence with the parent, no width test — a dim satellite reads as a fill by
+  nature), stamps each trace's separability from its nearest neighbour (`resolvability`:
+  unresolvable / blended / resolved, a flag never a filter), and hands the engine ONE
+  synthetic sample — one peak per trace, batch-mean height (absent = 0), the co-registered
+  estimator the isotope ratios rest on. That sample goes through `assign.run` and then the
+  same merge, trace reconciliation, stamp and residual stages as a cover file (`n_files`
+  is 1; the residual stage still picks real files for what the trace stamp left
+  unexplained). `tables/traces.csv` carries every trace's measurements, `per_file/`
+  the trace ledger with them merged in, and `batch_summary.json['trace_first']` the
+  build's numbers and the mass-qc verdict.
+
+- **`assign.run(..., peaks=frame)` runs the engine OFFLINE.** `io_mascope` serves a
+  registered in-memory table as the sample (`register_offline_sample`), the mechanism
+  lookups resolve to the names themselves for the channels the sample declares (the
+  opportunistic extra channels stay closed, as on a server that does not list them), and
+  the local scorer does the maths — no connection, no cache. The trace-first path and
+  the tests use it; `tests/test_tracefirst.py` runs the whole engine on a synthetic trace
+  sample and finds its acids and their 13C.
+
 - **`--rolling-centre` (batch and pool): the adaptive centre in the trace reconciliation, a
   stamping window per trace, and a stamp that follows a moving centre.** Off by default;
   the default path is bit-identical to before (`tests/test_rolling_stamp.py` checks it). With

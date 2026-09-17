@@ -458,8 +458,13 @@ def run(sample_id: str, context: str = "ambient-air", *,
         do_pass5: bool = True, do_pass_certified: bool = True,
         ts_peaks=None, adducts=None, reflists_active=None,
         label_isotope=None, label_max=2, label_purity=None, occurrence=None,
-        reagent_n_relabel: bool = True,
+        reagent_n_relabel: bool = True, peaks=None,
         log=print, checkpoint_dir=None) -> dict:
+    """Assign one sample. `peaks` (a DataFrame in the shape fetch_peaks returns:
+    peak_id, mz, height, area ...) makes the run OFFLINE: the table is served
+    as `sample_id` from memory, no server is contacted, the local scorer does
+    the mass and isotope maths, and only the given `adducts` are open. The
+    trace-first batch path and the tests use it."""
     cfg = cfg or passes.PassConfig()
     # the reagent bottle's isotopic purity (ReagentProfile.purity), published for
     # the two consumers that model a '^X' ion's unlabelled impurity line: the
@@ -473,7 +478,14 @@ def run(sample_id: str, context: str = "ambient-air", *,
     if reflists_active:
         cfg.reflist_formulas = reflists.prior_formulas(reflists_active)
     profile = contexts.get_context(context)
-    client = io_mascope.connect()
+    if peaks is not None:
+        if not io_mascope._local_scoring_enabled():
+            raise RuntimeError("an offline sample (peaks=) needs the local scorer; "
+                               "unset PEAKY_LOCAL_SCORING")
+        io_mascope.register_offline_sample(sample_id, peaks)
+        client = None
+    else:
+        client = io_mascope.connect()
 
     raw = io_mascope.fetch_peaks(client, sample_id, use_cache=use_cache)
     led = ledger.new_ledger(raw)
@@ -538,6 +550,11 @@ def run(sample_id: str, context: str = "ambient-air", *,
     opportunistic = (([] if labelled_nh4 else ["[M+Na]+", "[M+NH4]+"])
                      if polarity == "positive"
                      else ["[M+CO3]-", "[M+Br2]-"])
+    if peaks is not None:
+        # the offline sample's own channels are the only ones that resolve
+        io_mascope.register_offline_sample(
+            sample_id, peaks,
+            [io_mascope.ADDUCT_TO_MECH[a] for a in adducts if a in io_mascope.ADDUCT_TO_MECH])
     extra_channels = [a for a in opportunistic
                       if io_mascope.resolve_mechanism_ids(
                           client, [io_mascope.ADDUCT_TO_MECH[a]])]

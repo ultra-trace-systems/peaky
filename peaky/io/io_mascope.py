@@ -399,16 +399,47 @@ def fetch_pooled_peaks(client, dataset: str, batches_regex: str, *,
 # ---------------------------------------------------------------------------
 # Peaks
 # ---------------------------------------------------------------------------
+# --- offline samples ----------------------------------------------------------
+# A sample that exists only in this process: a synthetic table (one peak per
+# batch trace, batch.tracefirst) or a fixture. Registered here it is served by
+# fetch_peaks without a server, and with `client=None` the mechanism lookups
+# resolve to the names themselves for the channels the sample declares -- so
+# assign.run(..., peaks=frame) runs the whole engine on the local scorer with no
+# round trip at all.
+_OFFLINE: dict[str, tuple[pd.DataFrame, frozenset]] = {}
+
+
+def register_offline_sample(sample_id: str, peaks: pd.DataFrame, mechanisms=()) -> None:
+    """Serve `peaks` as `sample_id` from now on (this process only); `mechanisms`
+    are the mechanism names its channels use ('[M-H]-', '[M+NO3]-', ...; the
+    legacy '-H+' spelling names the same channel)."""
+    _OFFLINE[sample_id] = (peaks, frozenset(mechanisms))
+
+
+def unregister_offline_sample(sample_id: str) -> None:
+    _OFFLINE.pop(sample_id, None)
+
+
+def is_offline_sample(sample_id: str) -> bool:
+    return sample_id in _OFFLINE
+
+
+def _offline_mechanisms() -> set:
+    return set().union(*(m for _, m in _OFFLINE.values())) if _OFFLINE else set()
+
+
 def fetch_peaks(client, sample_id: str, *, use_cache: bool = True,
                 cache_root: Path = CACHE_ROOT) -> pd.DataFrame:
     """Pull the raw peak table (with Mascope's own matches flattened in) and
     cache it. Returns the full multi-row-per-peak frame; dedup is the ledger's
-    job.
+    job. An offline sample (`register_offline_sample`) is served from memory.
 
     The cache file is versioned because the peaks payload gained the per-peak
     `signal_to_noise` the scorer judges a faint line by: a frame cached before
     the server sent it has no such column, and silently scoring without it is
     the difference between charging an absent isotopologue and excusing it."""
+    if sample_id in _OFFLINE:
+        return _OFFLINE[sample_id][0].copy()
     cdir = Path(cache_root) / sample_id
     cfile = cdir / "peaks.v2.parquet"
     if use_cache and cfile.exists():
@@ -430,7 +461,16 @@ def resolve_mechanism_ids(client, names: list[str]) -> dict[str, str]:
     A row is matched by the mechanism it names, not by its spelling: a server
     before Mascope 1.10 stores the legacy '-H+' and one from 1.10 on the
     standard '[M-H]-', and both answer for '[M-H]-'. The keys of the result
-    are the names as they were asked."""
+    are the names as they were asked.
+
+    With no client (an offline sample) a name is its own id, and only the
+    channels the registered offline samples declare resolve -- matched by the
+    same key, so a sample declared in either spelling opens its channels -- and
+    the opportunistic extra channels stay closed, as on a server that does not
+    list them."""
+    if client is None:
+        allowed = {_mechanism_key(m) for m in _offline_mechanisms()}
+        return {n: n for n in names if _mechanism_key(n) in allowed}
     table = client.ionization.list()
     by_key = {_mechanism_key(r.ionization_mechanism): r.ionization_mechanism_id
               for r in table.itertuples()}
@@ -934,6 +974,21 @@ def _mechanism_names(client, mechanism_ids: list[str] | None) -> list[str]:
     from mascope_tools.composition import parse_mechanism
     from mascope_tools.composition.mechanism_notation import MechanismNotationError
 
+    if client is None:
+        # offline: the ids ARE the names, converted like a server row's (no
+        # polarity column to cross-check): '-H+' is the anion '[M-H]-' under the
+        # library's grammar, so the old sign flip to '-H-' would be a hydride loss
+        out = []
+        for m in mechanism_ids:
+            try:
+                std = parse_mechanism(str(m)).standard
+            except MechanismNotationError as e:
+                logger.warning("offline ionization mechanism {!r} is not scored "
+                               "locally: {}", m, e)
+                continue
+            if std not in out:
+                out.append(std)
+        return out + [m for m in out_local if m not in out]
     table = client.ionization.list()
     id2 = {
         r.ionization_mechanism_id: (
