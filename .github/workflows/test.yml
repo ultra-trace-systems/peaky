@@ -3,6 +3,9 @@ name: tests
 on:
   push:
   pull_request:
+    # 'edited' too: the privacy scan below reads the PR's own title and body,
+    # so editing them after the fact has to re-run the check.
+    types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
 
 jobs:
@@ -19,6 +22,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
+      # A pull request's title and body are NOT files, so tests/test_privacy.py
+      # cannot see them -- and "ran this against <server>, batch <id>" is exactly
+      # where an internal identifier leaks. Title and body reach the scanner
+      # through the environment, never interpolated into this script: a PR body is
+      # untrusted input.
+      - name: Scan the pull request title and body
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | python scripts/privacy_scan.py --stdin --label "PR text"
 
       # mascope-sdk + the rest are on public PyPI, so a clean install needs no
       # private index and no Mascope account.
