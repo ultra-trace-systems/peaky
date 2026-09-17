@@ -191,3 +191,60 @@ def test_offline_mechanism_lookups_resolve_only_the_declared_channels():
     finally:
         IO.unregister_offline_sample("x")
     assert not IO.is_offline_sample("x")
+
+
+def _per_sample_tables(ts):
+    """The per-file peak tables the engine would fetch, one per spectrum."""
+    out = {}
+    for sid, g in ts.groupby("sample_item_id"):
+        t = pd.DataFrame({"sample_item_id": sid, "peak_id": [f"{sid}-{i}" for i in range(len(g))],
+                          "mz": g["mz"].to_numpy(), "sparsity": 0.0,
+                          "area": g["area"].to_numpy(), "height": g["height"].to_numpy()})
+        for c in TFT.MATCH_COLS:
+            t[c] = None
+        out[sid] = t
+    return out
+
+
+def test_the_whole_batch_path_runs_offline_with_the_rolling_centre(ts, tmp_path):
+    """The file cover, the per-file engine runs, the merge, the trace
+    reconciliation WITH the rolling centre, the per-trace stamp and the summary
+    -- all offline, every selected sample served from memory."""
+    tabs = _per_sample_tables(ts)
+    for sid, t in tabs.items():
+        IO.register_offline_sample(sid, t, ["-H+"])
+    real_connect, real_fetch = IO.connect, IO.fetch_peaks
+    IO.connect = lambda *a, **k: None
+    try:
+        res = AB.run(peaks=ts, ts_peaks=ts, reagent="NO3", batch="test batch",
+                     out_dir=str(tmp_path), residual=False, n_jobs=1, k_min=2, k_max=3,
+                     rolling_centre=True, log=lambda *a: None)
+    finally:
+        IO.connect, IO.fetch_peaks = real_connect, real_fetch
+        for sid in tabs:
+            IO.unregister_offline_sample(sid)
+    summ = res["summary"]
+    tr = summ["traces"]
+    assert tr["rolling"]["enabled"] and "stamp_tol_per_trace" in tr
+    assert tr["rolling"]["n_rolling"] + tr["rolling"]["n_global"] >= 2
+    merged = res["merged"]
+    assert {"centre_scheme", "resid_ppm", "stamp_tol_ppm", "trace_key"} <= set(merged.columns)
+    assert {"C9H14O4", "C10H16O4"} <= set(merged["neutral_formula"])
+    ann = pd.read_parquet(tmp_path / "per_file" / "_batch_ts.parquet")   # the stamped time series
+    n = ts["sample_item_id"].nunique()
+    cov = ann[ann["neutral_formula"] == "C9H14O4"]["sample_item_id"].nunique() / n
+    assert cov > 0.9
+
+
+def test_trace_first_and_the_rolling_centre_compose(ts, tmp_path):
+    real_connect = IO.connect
+    IO.connect = lambda *a, **k: SimpleNamespace(name="stub-client")
+    try:
+        res = AB.run(peaks=ts, ts_peaks=ts, reagent="NO3", batch="test batch",
+                     out_dir=str(tmp_path), trace_first=True, resolving_power=6500.0,
+                     rolling_centre=True, residual=False, n_jobs=1, log=lambda *a: None)
+    finally:
+        IO.connect = real_connect
+    summ = res["summary"]
+    assert summ["trace_first"]["n_seeds"] == 4 and summ["traces"]["rolling"]["enabled"]
+    assert "stamp_tol_ppm" in res["merged"].columns
