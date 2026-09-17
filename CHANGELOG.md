@@ -6,6 +6,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`peaky.batch.centre` — the adaptive trace-centre estimator.** A trace's per-spectrum
+  positions carry white noise `sigma` and a slow random walk `gamma`; both come out of the
+  trace's own structure function `S(k) = 0.5 · robust_var(x[i+k] − x[i]) = sigma² + 0.5 gamma² k`,
+  with no user parameter and no assumption about batch length. A rolling median over `W`
+  spectra has error `sigma²/W + gamma² W/24`, minimised at `W* = sqrt(24) · sigma / gamma`;
+  `trace_centre` rolls only when the series is long enough (`min_n`), a walk is resolvable
+  (`S(kmax)/S(1) >= min_rise`) and the predicted gain beats the batch median by `min_gain` —
+  otherwise the centre is the batch median, bit for bit, so short batches behave exactly as
+  before. A gap guard keeps a window from spanning a hole in the batch. `rolling_members`
+  re-collects a drifting trace along its own track and `batch_centres` runs the estimator
+  over a `PeakIndex`. Nothing calls it yet; `tests/test_centre.py` pins sigma/gamma recovery
+  within 15 %, `W*` within 1.5× of the empirical optimum, never-roll on pure noise,
+  always-roll on a walk, and the bit-identical median below `min_n`.
+
 ### Fixed
 
 - **The formula search applied its ppm tolerance to the neutral mass, not the ion.**
