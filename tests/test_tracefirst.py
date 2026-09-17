@@ -38,6 +38,12 @@ def _batch(rng, n=800, sigma=1.5, noise_per_da=0.6):
         m13 = C.ion_mz("C9H14O4", "[M-H]-") + 1.0033548
         if rng.uniform() < 0.9:
             rows.append((sid, m13 * (1 + rng.normal(0, sigma * 1.5) * 1e-6), 40.0 * 0.0973, 40.0 * 0.0973 * 1.2, stamp))
+        # an EPISODIC bright acid in 3 % of spectra: below the seed threshold, so
+        # no trace -- the residual stage's domain
+        if rng.uniform() < 0.03:
+            me = C.ion_mz("C7H12O5", "[M-H]-")
+            rows.append((sid, me * (1 + rng.normal(0, sigma) * 1e-6), 60.0, 72.0, stamp))
+            rows.append((sid, (me + 1.0033548) * (1 + rng.normal(0, sigma) * 1e-6), 60.0 * 0.076, 72.0 * 0.076, stamp))
         d13 = C.ion_mz("C10H16O4", "[M-H]-") + 1.0033548
         if rng.uniform() < 0.033:
             rows.append((sid, d13 * (1 + rng.normal(0, sigma * 2) * 1e-6), 25.0 * 0.108, 25.0 * 0.108 * 1.2, stamp))
@@ -93,6 +99,7 @@ def test_the_fill_position_is_rejected_and_the_noise_is_not_a_trace(sample):
     _, d = _nearest(t, 230.1)
     assert d > 30.0                                   # nothing within the dedup cell
     assert len(t) <= 9                                # 3 ions + 2 satellites (+ maybe a 13C2/18O)
+    assert (t["mz"] - C.ion_mz("C7H12O5", "[M-H]-")).abs().min() / 190 * 1e6 > 30   # the episodic acid is no trace
     assert (t["kind"] == "seed").sum() == 4           # the bright 13C seeds too
 
 
@@ -248,3 +255,32 @@ def test_trace_first_and_the_rolling_centre_compose(ts, tmp_path):
     summ = res["summary"]
     assert summ["trace_first"]["n_seeds"] == 4 and summ["traces"]["rolling"]["enabled"]
     assert "stamp_tol_ppm" in res["merged"].columns
+
+
+def test_under_trace_first_a_residual_file_only_adds_what_the_stamp_left_unexplained(ts, tmp_path):
+    """The episodic acid recurs in 3 % of spectra -- no trace -- so its bins are
+    residual; the residual files that cover them also carry the three persistent
+    acids, which the trace ledger already explains: those rows must NOT merge
+    back in (they would out-vote the trace reading), the episodic one must."""
+    tabs = _per_sample_tables(ts)
+    for sid, t in tabs.items():
+        IO.register_offline_sample(sid, t, ["-H+"])
+    real_connect = IO.connect
+    IO.connect = lambda *a, **k: None
+    try:
+        res = AB.run(peaks=ts, ts_peaks=ts, reagent="NO3", batch="test batch",
+                     out_dir=str(tmp_path), trace_first=True, resolving_power=6500.0,
+                     residual=True, residual_k_max=2, n_jobs=1, log=lambda *a: None)
+    finally:
+        IO.connect = real_connect
+        for sid in tabs:
+            IO.unregister_offline_sample(sid)
+    summ = res["summary"]
+    rmeta = summ["selection"]["residual"]
+    assert rmeta["k"] >= 1, rmeta
+    sc = rmeta["trace_first_scope"]
+    assert 0 < sc["rows_kept"] < sc["rows_total"]
+    merged = res["merged"]
+    persistent = merged[merged["neutral_formula"].isin(["C9H14O4", "C10H16O4", "C5H8O4"])]
+    assert (persistent["n_files"] == 1).all()                 # the trace reading, unchanged
+    assert "C7H12O5" in set(merged["neutral_formula"])       # the episodic acid, added

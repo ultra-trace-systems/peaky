@@ -797,15 +797,38 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     n_jobs = _resolve_jobs(n_jobs, len(sample_ids))
     ts_path_written: list = []  # the raw-TS parquet the worker pool loads: written once
 
+    residual_scope: list = []      # [sorted residual-bin m/z] once the residual stage runs
+    scope_counts: dict = {}        # sid -> (kept, total) M0 rows under the trace-first scope
+
     def _apply(sid, led, plaus, stats, stage):
         """Parent-side reduce (called in sample_ids order): write the per-file CSV
         and fold this sample into the accumulators. Order-fixed so align() -- which
-        has order-sensitive tie-breaks -- yields byte-identical output either path."""
+        has order-sensitive tie-breaks -- yields byte-identical output either path.
+
+        Under TRACE-FIRST a residual file may only ADD what the trace stamp left
+        unexplained: its M0 rows are kept within `tol_ppm` of a residual bin and
+        dropped elsewhere. Otherwise ten per-file ledgers of a noisy TOF would
+        merge back in on top of the traces -- the per-file lottery trace-first
+        exists to avoid -- and out-vote a trace's reading (measured: a Candidate
+        on the trace ledger re-read as Assigned by three residual files)."""
         led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)
         plaus_audit.extend(plaus)
         protected_neutrals.update(_protected_neutrals(led))
         curated_neutrals.update(_curated_neutrals(led))
-        per_file[sid] = _m0(led)
+        m0 = _m0(led)
+        if stage == STAGE_RESIDUAL and trace_sample is not None and residual_scope:
+            bmz = residual_scope[0]
+            pmz = pd.to_numeric(m0["mz"], errors="coerce").to_numpy(dtype=float)
+            j = np.searchsorted(bmz, pmz)
+            jl = np.clip(j - 1, 0, len(bmz) - 1)
+            jr = np.clip(j, 0, len(bmz) - 1)
+            d = np.minimum(np.abs(bmz[jl] - pmz), np.abs(bmz[jr] - pmz))
+            keep = np.isfinite(pmz) & (d <= np.maximum(pmz * tol_ppm * 1e-6, TR.MZ_FLOOR_DA))
+            scope_counts[sid] = (int(keep.sum()), int(len(m0)))
+            log(f"[assign_batch]   {sid}: trace-first scope keeps {int(keep.sum())} of "
+                f"{len(m0)} M0 rows (those on a residual bin)")
+            m0 = m0[keep]
+        per_file[sid] = m0
         stages[sid] = stage
         from peaky.batch import timeseries as _TSI
         identified_aux.append(_TSI.identified_rows(led))
@@ -1066,6 +1089,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                                         min_x_edge=min_x, min_cps=min_cps,
                                         min_prevalence=min_prevalence, tol_ppm=tol_ppm)
             umeta = dict(bins.attrs.get("residual", {}))
+            if "bin_mz" in bins.columns:
+                residual_scope[:] = [np.sort(pd.to_numeric(bins["bin_mz"], errors="coerce")
+                                             .dropna().to_numpy(dtype=float))]
             # a sample counts for a bin only where its OWN gate would admit it:
             # the multiple x that sample's edge, or the absolute gate everywhere
             edge = pd.Series(bins.attrs.get("edge_cps") or {}, dtype=float)
@@ -1117,6 +1143,14 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                     f"-> {pfdir}")
                 sample_ids = list(sample_ids) + residual_ids
                 _assign_files(residual_ids, STAGE_RESIDUAL, min(n_jobs, len(residual_ids)))
+                if scope_counts:
+                    residual_meta["trace_first_scope"] = {
+                        "rows_kept": int(sum(k for k, _ in scope_counts.values())),
+                        "rows_total": int(sum(t for _, t in scope_counts.values())),
+                        "per_file": {sid: {"kept": k, "total": t} for sid, (k, t) in scope_counts.items()}}
+                    log(f"[assign_batch] trace-first scope: residual files contribute "
+                        f"{residual_meta['trace_first_scope']['rows_kept']} of "
+                        f"{residual_meta['trace_first_scope']['rows_total']} M0 rows (on residual bins)")
                 res_m = _merge()          # ONE align over cover + residual files
 
     # ---- write the run ------------------------------------------------------------
