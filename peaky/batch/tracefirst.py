@@ -17,7 +17,9 @@ The rules, each measured on a month-long TOF batch before it was written down:
     & Jimenez 2015) are one observable; a fixed-ppm dedup five times finer
     sliced one peak into a comb and gave each slice its own formula.
   * membership at the measured noise: 4 x the reference ions' per-spectrum
-    sigma, never below the validated 12 ppm cap, never above half the cell.
+    sigma, floored at the validated 12 ppm TOF cap but never above half the
+    cell -- so on a high-resolution instrument, whose cell is ~1 ppm, the floor
+    steps aside rather than gluing ten resolved neighbours into one trace.
   * a seed whose members FILL their window is not an ion: a nearest-peak-per-
     spectrum collection in +-W is UNIFORM across the window (robust sd 0.74 W),
     and the seeds that clear a 5 % occurrence gate alone pile up exactly there.
@@ -71,8 +73,12 @@ KEEP_OCC = 0.5           # ... unless it recurs in this share of spectra (blende
 SAT_COOCCUR = 0.6        # share of a satellite's spectra that must hold its parent
 SAT_PARENT_OCC = 0.10    # satellites are probed for traces at least this persistent
 MEMBER_SIGMA_X = 4.0     # membership half-window = this x the reference ions' sigma ...
-MEMBER_MIN_PPM = 12.0    # ... never below this (the validated TOF cap) ...
-                         # ... never above half the dedup cell
+MEMBER_MIN_PPM = 12.0    # ... never below this (the validated TOF cap) UNLESS the
+                         # instrument's own cell is narrower ...
+                         # ... and never above half the dedup cell, so a trace's
+                         # members can never span more than one observable
+HI_RES_CELL_PPM = 6.0    # a dedup cell this narrow means a high-resolution instrument:
+                         # trace-first is a TOF remedy, and says so rather than pretend
 WAVE_LOO_GAIN = 0.8      # apply a wave when its LOO error is below this x the raw scatter
 WAVE_MIN_OFFSET = 1.0    # or when a constant wave carries at least this bias (ppm)
 ISO_OFFSETS = {"13C": 1.0033548, "13C2": 2.0067096, "34S": 1.9957960,
@@ -397,11 +403,16 @@ def build_trace_sample(ts_peaks: pd.DataFrame, *, sample_id: str, reagent: str,
         MQ.report(table, qc, log=log)
         sig = qc.get("median_sigma_ppm")
     cell = dedup_ppm(200.0, resolving_power)
+    half = cell / 2.0
     if tol_ppm is None:
-        tol = float(np.clip(MEMBER_SIGMA_X * sig if sig and np.isfinite(sig) else MEMBER_MIN_PPM,
-                            MEMBER_MIN_PPM, max(cell / 2, MEMBER_MIN_PPM)))
+        # the floor is the validated TOF cap -- but never wider than half the
+        # instrument's OWN cell, or a trace spans more than one observable: at
+        # R = 155 000 the cell is ~1.3 ppm, where a 12 ppm window would collect
+        # ten resolved neighbours into one trace
+        lo = min(MEMBER_MIN_PPM, half)
+        tol = float(np.clip(MEMBER_SIGMA_X * sig if sig and np.isfinite(sig) else lo, lo, half))
         log(f"[traces] membership +-{tol:.2f} ppm = clip({MEMBER_SIGMA_X:g} x sigma_ref "
-            f"{None if sig is None else round(sig, 2)}, {MEMBER_MIN_PPM:g}, {cell / 2:.2f})")
+            f"{None if sig is None else round(sig, 2)}, {lo:.2f}, {half:.2f})")
     else:
         tol = float(tol_ppm)
         log(f"[traces] membership +-{tol:.2f} ppm (given)")
@@ -423,6 +434,13 @@ def build_trace_sample(ts_peaks: pd.DataFrame, *, sample_id: str, reagent: str,
         notes.append("no traces built")
     from peaky.assignment import passes as PA
     floor = float(PA.noise_edge(ts_peaks["height"])) if "height" in ts_peaks.columns and len(ts_peaks) else None
+    if cell <= HI_RES_CELL_PPM:
+        msg = (f"R = {resolving_power:g} puts the resolution floor at {cell:.2f} ppm: on a "
+               f"high-resolution instrument a per-file mass is already good to a fraction of a "
+               f"ppm, so the per-file route has little to lose to. Trace-first is a TOF remedy; "
+               f"it will run, but expect a reorganisation, not a gain")
+        notes.append(msg)
+        log(f"[traces] NOTE: {msg}")
     log(f"[traces] {len(traces)} traces -> synthetic sample {sample_id!r}")
     return TraceSample(sample_id=sample_id, peaks=synthetic_sample(traces, sample_id), traces=traces,
                        occurrence=occurrence_table(traces, tol, idx.n_samples), qc=qc, tol_ppm=tol,

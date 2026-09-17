@@ -284,3 +284,33 @@ def test_under_trace_first_a_residual_file_only_adds_what_the_stamp_left_unexpla
     persistent = merged[merged["neutral_formula"].isin(["C9H14O4", "C10H16O4", "C5H8O4"])]
     assert (persistent["n_files"] == 1).all()                 # the trace reading, unchanged
     assert "C7H12O5" in set(merged["neutral_formula"])       # the episodic acid, added
+
+
+def test_the_membership_window_never_exceeds_half_the_instruments_own_cell(ts):
+    """At high resolving power the 0.4-HWHM cell is ~1 ppm wide, so the TOF's
+    validated 12 ppm membership floor must not apply: a trace's members may
+    never span more than one observable."""
+    lines = []
+    s = TFT.build_trace_sample(ts, sample_id="hi-res", reagent="NO3", resolving_power=155000.0,
+                               log=lines.append)
+    cell = TFT.dedup_ppm(200.0, 155000.0)
+    assert cell < 2.0
+    assert s.tol_ppm <= cell / 2 + 1e-9, (s.tol_ppm, cell)
+    assert any("high-resolution instrument" in n for n in s.notes)
+    assert any("NOTE:" in ln for ln in lines)
+    # the TOF case is unchanged: the floor applies because the cell is wide
+    t = TFT.build_trace_sample(ts, sample_id="tof", reagent="NO3", resolving_power=6500.0,
+                               log=lambda *a: None)
+    assert t.tol_ppm == TFT.MEMBER_MIN_PPM
+    assert not any("high-resolution" in n for n in t.notes)
+
+
+def test_trace_first_on_a_reagent_with_no_reference_table_says_so_and_runs(ts):
+    """A positive-mode reagent has no reference-ion list yet: mass-qc is skipped,
+    no wave is applied, and the run says both in its notes rather than failing."""
+    s = TFT.build_trace_sample(ts, sample_id="no-refs", reagent="Ur", resolving_power=6500.0,
+                               log=lambda *a: None)
+    assert s.qc is None and s.summary()["mass_qc"] is None
+    assert any("no reference-ion table" in n for n in s.notes)
+    assert len(s.traces) and (s.traces["wave_ppm"] == 0).all()
+    assert s.tol_ppm == TFT.MEMBER_MIN_PPM
