@@ -14,9 +14,10 @@ Verdicts (`verdict`):
 
   clean         offsets small and flat                -> nothing to do
   axis_offset   a flat bias, no swing worth a wave    -> recalibrate with a constant
-  axis_trend    a smooth wave in (m/z)^p fits         -> apply the wave (batch.wave)
-  blended       offsets jump ion to ion, no smooth
-                component                             -> centre only, widen the
+  axis_trend    a smooth wave in (m/z)^p fits AND
+                predicts held-out ions               -> apply the wave (batch.wave)
+  blended       offsets jump ion to ion and no smooth
+                component predicts them              -> centre only, widen the
                                                          tolerance, cap the tier
   drifting      (appended) gamma resolvable, W* << n  -> roll the centre
   no_reference  too few reference ions present
@@ -46,9 +47,14 @@ PROBE_PPM = 50.0        # wide enough to find an axis error before it hides one
 MIN_PRESENT = 10        # peaks in the probe window / members before an ion counts
 OFFSET_FLAT_PPM = 2.0   # |constant| at or above this -> axis_offset
 TREND_SPAN_PPM = 4.0    # wave swing at or above this ...
-TREND_SHARE = 0.4       # ... explaining at least this share -> axis_trend
-BLEND_SPREAD_PPM = 5.0  # ion-to-ion spread at or above this ...
-BLEND_SHARE_MAX = 0.35  # ... with no smooth component -> blended
+TREND_SHARE = 0.4       # ... explaining at least this share ...
+TREND_LOO_GAIN = 0.8    # ... AND predicting held-out ions better than the constant
+                        # (LOO < this x the raw scatter) -> axis_trend; a fit that
+                        # explains the calibrants it saw but not the one it did not
+                        # is not a trend, whatever its share
+BLEND_SPREAD_PPM = 5.0  # ion-to-ion spread at or above this, with no PREDICTIVE
+                        # smooth component -> blended (a wave can always be fitted to
+                        # jumps; only one that predicts held-out ions is a trend)
 ROLL_FRAC = 0.5         # share of usable ions whose centre rolls ...
 ROLL_W_FRAC = 0.5       # ... with W* below this fraction of the batch -> drifting
 USABLE_OCC = 0.5        # an ion is usable at this occurrence or better
@@ -209,20 +215,23 @@ def verdict(t: pd.DataFrame, n_spectra: int, *, tof: bool = True) -> dict:
                wave_mz_range=[float(w.mz_range[0]), float(w.mz_range[1])],
                wave_n=w.n, wave_n_clipped=w.n_clipped)
     v, rem = "clean", "nothing to do -- assign as usual"
-    if w.K >= 1 and w.span_ppm >= TREND_SPAN_PPM and w.share >= TREND_SHARE:
+    trend = (w.K >= 1 and w.span_ppm >= TREND_SPAN_PPM and w.share >= TREND_SHARE
+             and w.loo_ppm < TREND_LOO_GAIN * w.raw_ppm)
+    if trend:
         v, rem = "axis_trend", (f"a degree-{w.K} wave in (m/z)^{w.p:+g} explains {w.share:.0%} "
                                 f"of a {w.span_ppm:.1f} ppm swing ({w.raw_ppm:.2f} -> "
                                 f"{w.resid_ppm:.2f} ppm, LOO {w.loo_ppm:.2f}) -- apply it "
                                 f"inside m/z {w.mz_range[0]:.0f}-{w.mz_range[1]:.0f}")
+    elif spread >= BLEND_SPREAD_PPM:
+        v, rem = "blended", (f"offsets jump ion to ion ({spread:.1f} ppm spread) and no smooth "
+                             f"component predicts them (LOO {w.loo_ppm:.2f} vs raw {w.raw_ppm:.2f}) "
+                             "-- unresolved neighbours: centre only, widen the stamping "
+                             "tolerance, cap the confidence tier")
     elif abs(med) >= OFFSET_FLAT_PPM:
         # a flat bias: the wave is (nearly) constant whatever degree the CV picked
         v, rem = "axis_offset", (f"flat {med:+.2f} ppm bias (wave degree {w.K}, swing "
                                  f"{w.span_ppm:.1f} ppm, residual {w.resid_ppm:.2f} ppm) -- "
                                  "recalibrate with a constant")
-    elif spread >= BLEND_SPREAD_PPM and w.share < BLEND_SHARE_MAX:
-        v, rem = "blended", ("offsets jump ion to ion with no smooth component -- unresolved "
-                             "neighbours: centre only, widen the stamping tolerance, cap the "
-                             "confidence tier")
     if roll_frac >= ROLL_FRAC and np.isfinite(Wmed) and Wmed < ROLL_W_FRAC * n_spectra:
         v = "drifting" if v == "clean" else v + "+drifting"
         rem += (f" | positions move: {roll_frac:.0%} of reference ions roll, W* median "

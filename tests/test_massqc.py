@@ -82,6 +82,32 @@ def test_a_walking_axis_is_flagged_drifting(refs):
     assert "rolling centre" in v["remedy"]
 
 
+def test_a_wave_that_does_not_predict_held_out_ions_is_not_a_trend(refs):
+    """Ion-specific offsets with a weak smooth component: the fit explains a
+    share of the calibrants it saw, but leave-one-out shows it predicts nothing
+    -- that batch is BLENDED, and the remedy is not a recalibration."""
+    rng = np.random.default_rng(12)
+    lo, hi = np.sqrt(46.0), np.sqrt(308.0)
+    # deterministic ion-to-ion jumps over the ANCHORS (the calibrant tier the
+    # spread is measured on): eleven values from -10 to +10 ppm in a fixed
+    # shuffled order, so the spread reads ~6 ppm (a two-valued +-8 set would
+    # read 0 -- the MAD of a majority value is 0), the median 0, and no smooth
+    # curve in sqrt(m/z) predicts them; the other ions sit on the ramp alone
+    seq = [6.0, -8.0, 2.0, 10.0, -4.0, 0.0, -10.0, 4.0, -2.0, 8.0, -6.0]
+    jumps, k = {}, 0
+    for _, r in refs.sort_values("mz").iterrows():
+        if r["anchor"]:
+            jumps[float(r["mz"])] = seq[k % len(seq)]
+            k += 1
+        else:
+            jumps[float(r["mz"])] = 0.0
+    ts = _batch(rng, refs, offset=lambda mz: 3.0 * (np.sqrt(mz) - lo) / (hi - lo) + jumps[float(mz)], sigma=1.0)
+    _, v = MQ.run(ts, refs, tol_ppm=12.0)
+    assert v["verdict"].startswith("blended"), v
+    assert v["ion_to_ion_spread_ppm"] >= MQ.BLEND_SPREAD_PPM
+    assert not (v["wave_loo_ppm"] < MQ.TREND_LOO_GAIN * v["wave_raw_ppm"] and v["wave_span_ppm"] >= MQ.TREND_SPAN_PPM and v["wave_share"] >= MQ.TREND_SHARE)
+
+
 def test_ion_to_ion_jumps_with_no_smooth_part_read_blended(refs):
     rng = np.random.default_rng(5)
     jumps = {float(m): float(j) for m, j in zip(refs["mz"], rng.choice([-9.0, 0.0, 9.0], len(refs)))}
