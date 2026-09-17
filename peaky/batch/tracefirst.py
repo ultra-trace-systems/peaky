@@ -79,6 +79,19 @@ MEMBER_MIN_PPM = 12.0    # ... never below this (the validated TOF cap) UNLESS t
                          # members can never span more than one observable
 HI_RES_CELL_PPM = 6.0    # a dedup cell this narrow means a high-resolution instrument:
                          # trace-first is a TOF remedy, and says so rather than pretend
+# Sanity band for the supplied resolving power, read off the spectra themselves.
+# Two reported maxima cannot be closer than the summed profile is bimodal --
+# 2.36 HWHM at equal heights, more when unequal -- so the smallest spacings a
+# picker reports bound the peak width. The bound is only a bound, because how
+# far into a flank a picker will call a maximum is the PICKER's property, not
+# the instrument's: measured at the 1st percentile of the within-spectrum
+# nearest-neighbour spacing, a TOF picker reports down to 1.00 HWHM (it calls
+# shoulders, below the bimodality limit) and an Orbitrap picker to 2.88 (it does
+# not). Three times apart, so this cannot SET the resolving power -- but it
+# catches the error that matters, a value from the wrong instrument, which is
+# twenty times out.
+SPACING_MIN_RATIO = 0.3   # d_min / HWHM below this: the claimed peaks are far wider
+SPACING_MAX_RATIO = 10.0  # ... above this: far narrower ... than the spectra show
 WAVE_LOO_GAIN = 0.8      # apply a wave when its LOO error is below this x the raw scatter
 WAVE_MIN_OFFSET = 1.0    # or when a constant wave carries at least this bias (ppm)
 ISO_OFFSETS = {"13C": 1.0033548, "13C2": 2.0067096, "34S": 1.9957960,
@@ -100,6 +113,33 @@ TRACE_COLS = ["peak_id", "mz_raw", "wave_ppm", "n_members", "trace_occurrence", 
 
 
 # ------------------------------------------------------------------ resolution
+def spacing_bound(ts_peaks: pd.DataFrame, resolving_power: float, *,
+                  sample_col: str = "sample_item_id", mz_col: str = "mz",
+                  q: float = 0.01) -> dict:
+    """What the spectra themselves say about the peak width, against the
+    resolving power the caller supplied.
+
+    `d_min` is the `q` quantile of the within-spectrum nearest-neighbour
+    spacing in ppm -- the closest two maxima this picker will report. Returned
+    with the supplied HWHM, their ratio, and `ok` (the ratio inside the
+    calibrated band). A bound, never a measurement: see SPACING_MIN_RATIO."""
+    out = {"d_min_ppm": None, "hwhm_ppm": None, "ratio": None, "ok": True, "q": q}
+    if ts_peaks is None or mz_col not in ts_peaks.columns or sample_col not in ts_peaks.columns:
+        return out
+    d = ts_peaks[[sample_col, mz_col]].dropna().sort_values([sample_col, mz_col])
+    gap = d.groupby(sample_col)[mz_col].diff()
+    ppm = (gap / d[mz_col] * 1e6).replace([np.inf, -np.inf], np.nan).dropna()
+    ppm = ppm[ppm > 0]
+    if len(ppm) < 100:
+        return out
+    d_min = float(np.quantile(ppm, q))
+    hw = hwhm(200.0, resolving_power) / 200.0 * 1e6          # HWHM in ppm (constant R)
+    ratio = d_min / hw if hw > 0 else np.nan
+    out.update(d_min_ppm=d_min, hwhm_ppm=hw, ratio=float(ratio),
+               ok=bool(SPACING_MIN_RATIO <= ratio <= SPACING_MAX_RATIO))
+    return out
+
+
 def hwhm(mz: float, resolving_power: float) -> float:
     """Half width at half maximum (Th) at `mz` for a constant-R instrument."""
     return 0.5 * float(mz) / float(resolving_power)
@@ -352,6 +392,7 @@ class TraceSample:
     resolving_power: float
     n_spectra: int
     picker_floor_cps: float | None = None
+    spacing: dict | None = None
     notes: list = field(default_factory=list)
 
     def summary(self) -> dict:
@@ -372,6 +413,7 @@ class TraceSample:
                                                           "wave_K", "wave_span_ppm", "wave_loo_ppm",
                                                           "wave_raw_ppm", "wave_mz_range")}
                             if self.qc else None),
+                "spacing_bound": self.spacing,
                 "notes": list(self.notes)}
 
 
@@ -434,6 +476,19 @@ def build_trace_sample(ts_peaks: pd.DataFrame, *, sample_id: str, reagent: str,
         notes.append("no traces built")
     from peaky.assignment import passes as PA
     floor = float(PA.noise_edge(ts_peaks["height"])) if "height" in ts_peaks.columns and len(ts_peaks) else None
+    sb = spacing_bound(ts_peaks, resolving_power, sample_col=sample_col)
+    if sb["ratio"] is not None:
+        line = (f"R = {resolving_power:g} puts HWHM at {sb['hwhm_ppm']:.2f} ppm; the closest two "
+                f"maxima this picker reports are {sb['d_min_ppm']:.2f} ppm apart "
+                f"({sb['ratio']:.2f} HWHM)")
+        if sb["ok"]:
+            log(f"[traces] {line} -- consistent")
+        else:
+            msg = (line + ". That is outside the band both measured instruments sit in "
+                   f"({SPACING_MIN_RATIO}-{SPACING_MAX_RATIO} HWHM): check --resolving-power, it "
+                   "looks like a value from a different instrument")
+            notes.append(msg)
+            log(f"[traces] WARNING: {msg}")
     if cell <= HI_RES_CELL_PPM:
         msg = (f"R = {resolving_power:g} puts the resolution floor at {cell:.2f} ppm: on a "
                f"high-resolution instrument a per-file mass is already good to a fraction of a "
@@ -445,7 +500,7 @@ def build_trace_sample(ts_peaks: pd.DataFrame, *, sample_id: str, reagent: str,
     return TraceSample(sample_id=sample_id, peaks=synthetic_sample(traces, sample_id), traces=traces,
                        occurrence=occurrence_table(traces, tol, idx.n_samples), qc=qc, tol_ppm=tol,
                        resolving_power=float(resolving_power), n_spectra=int(idx.n_samples),
-                       picker_floor_cps=floor, notes=notes)
+                       picker_floor_cps=floor, spacing=sb, notes=notes)
 
 
 def engine_settings(cfg, sample: TraceSample, log=print) -> dict:

@@ -314,3 +314,32 @@ def test_trace_first_on_a_reagent_with_no_reference_table_says_so_and_runs(ts):
     assert any("no reference-ion table" in n for n in s.notes)
     assert len(s.traces) and (s.traces["wave_ppm"] == 0).all()
     assert s.tol_ppm == TFT.MEMBER_MIN_PPM
+
+
+def test_the_spectra_bound_the_resolving_power_and_catch_a_value_from_another_instrument(ts):
+    """The closest two maxima a picker reports bound the peak width. It is a
+    bound, not a measurement -- how far into a flank a picker calls a maximum is
+    the picker's property (a TOF picker reports down to 1.0 HWHM, an Orbitrap
+    picker to 2.9) -- so the band is wide, and still twenty times tighter than
+    the error it exists to catch."""
+    b = TFT.spacing_bound(ts, 6500.0)
+    assert b["d_min_ppm"] > 0 and b["hwhm_ppm"] == pytest.approx(76.92, abs=0.1)
+    # the same spectra judged against an Orbitrap's resolving power: refused
+    hi = TFT.spacing_bound(ts, 155000.0)
+    assert hi["ratio"] > TFT.SPACING_MAX_RATIO and not hi["ok"]
+    # ... and against an absurdly low one: also refused, from the other side
+    lo = TFT.spacing_bound(ts, 1000.0)
+    assert lo["ratio"] < TFT.SPACING_MIN_RATIO and not lo["ok"]
+    # a table with no spectra to measure returns the empty bound, never raises
+    empty = TFT.spacing_bound(ts.head(3), 6500.0)
+    assert empty["ratio"] is None and empty["ok"]
+    assert TFT.spacing_bound(None, 6500.0)["ok"]
+
+
+def test_a_mismatched_resolving_power_is_noted_on_the_sample_not_swallowed(ts):
+    lines = []
+    s = TFT.build_trace_sample(ts, sample_id="wrong-R", reagent="NO3", resolving_power=155000.0,
+                               log=lines.append)
+    assert not s.spacing["ok"] and s.summary()["spacing_bound"]["ratio"] > 10
+    assert any("different instrument" in n for n in s.notes)
+    assert any("WARNING" in ln for ln in lines)
