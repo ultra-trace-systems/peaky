@@ -204,6 +204,17 @@ class Resolution:
         """The dedup half-window in ppm at `mz`: 0.4 HWHM, the fit floor."""
         return FIT_FLOOR_HWHM * self.hwhm(mz) / float(mz) * 1e6
 
+    @property
+    def is_tof(self) -> bool:
+        """Which dispersion the analyser works in, read off the width model.
+
+        A TOF's width grows about linearly with mass (exponent ~1, constant R);
+        an Orbitrap's as m^1.5 (R ~ m^-1/2). That is the same split the mass
+        wave needs -- flight time goes as (m/z)^+1/2, frequency as (m/z)^-1/2 --
+        so the measured exponent decides the basis, and nothing has to be
+        declared twice. 1.3 is the midpoint of the two, far from both."""
+        return float(self.exponent) < 1.3
+
     def describe(self) -> str:
         at = f"R = {self.r_at(200.0):.0f} at m/z 200"
         if abs(self.exponent - 1.0) > 0.15:
@@ -621,7 +632,10 @@ def build_trace_sample(ts_peaks: pd.DataFrame, *, sample_id: str, reagent: str,
         log(f"[mass-qc] no reference-ion table for {reagent!r}; skipped")
     if refs is not None:
         table = MQ.twin_check(MQ.probe(idx, hours, refs, trace_ppm=MEMBER_MIN_PPM))
-        qc = MQ.verdict(table, idx.n_samples, tof=True)
+        # the wave's basis is the analyser's dispersion, and the width model
+        # already knows which one this is -- an Orbitrap fitted in flight time
+        # is a wave fitted against the wrong variable
+        qc = MQ.verdict(table, idx.n_samples, tof=res.is_tof)
         MQ.report(table, qc, log=log)
         sig = qc.get("median_sigma_ppm")
     cell = res.dedup_ppm(200.0)

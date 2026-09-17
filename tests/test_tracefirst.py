@@ -410,3 +410,30 @@ def test_the_model_holds_mascopes_own_resolution_functions():
     assert tof.source == "mascope" and orbi.source == "mascope"
     with pytest.raises(ValueError):
         TFT.Resolution.from_mascope([], "tofwerk")
+
+
+def test_the_width_model_says_which_dispersion_the_analyser_works_in():
+    # a scalar R, and Mascope's own TOF form, are both constant-R: flight time
+    assert TFT.Resolution.from_r(6500).is_tof
+    assert TFT.Resolution.from_mascope([1.2e-4, 2.0e-3], "tofwerk").is_tof
+    # an Orbitrap's width grows as m^1.5 -- frequency
+    assert not TFT.Resolution.from_mascope([1.1e4], "orbitrap").is_tof
+    assert not TFT.Resolution(coef=1e-6, exponent=1.5).is_tof
+    # the exponents measured off real batches land either side of the split
+    assert TFT.Resolution(coef=1e-4, exponent=1.08).is_tof
+    assert not TFT.Resolution(coef=1e-6, exponent=1.57).is_tof
+
+
+def test_an_orbitrap_batch_fits_its_wave_in_frequency_not_flight_time(ts, monkeypatch):
+    """The basis used to be hard-coded tof=True, so a trace-first Orbitrap run
+    fitted its wave against (m/z)^+1/2 -- the wrong variable for the analyser."""
+    seen = []
+    real = TFT.MQ.verdict
+    monkeypatch.setattr(TFT.MQ, "verdict",
+                        lambda t, n, *, tof=True: (seen.append(tof), real(t, n, tof=tof))[1])
+    for res, expect in ((TFT.Resolution.from_r(6500), True),
+                        (TFT.Resolution(coef=1.0 / 155000.0, exponent=1.5), False)):
+        seen.clear()
+        TFT.build_trace_sample(ts, sample_id="s", reagent="NO3", resolving_power=res,
+                               log=lambda *a: None)
+        assert seen == [expect]

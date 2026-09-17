@@ -139,13 +139,39 @@ def available() -> list[str]:
     return ["NO3", "NO3_15N", "Br"]
 
 
-def get(reagent: str) -> pd.DataFrame:
-    """The reference table for a reagent name or alias. KeyError otherwise."""
-    key = _ALIASES.get((reagent or "").strip().lower())
+def _one(key: str | None) -> pd.DataFrame | None:
     if key == "NO3":
         return nitrate()
     if key == "NO3_15N":
         return nitrate(label_15n=True)
     if key == "Br":
         return bromide()
-    raise KeyError(f"no reference-ion table for {reagent!r}; available: {available()}")
+    return None
+
+
+def get(reagent: str) -> pd.DataFrame:
+    """The reference table for a reagent name or alias.
+
+    A '+'-joined combination -- how `profiles.compose` names a mixed inlet, e.g.
+    'Br+NO3' -- returns the UNION of its parts. A module running two reagents
+    really does carry both channels' formula-certain ions, and a name that
+    matches neither table left the mass axis with no calibrants at all: the
+    TOF batches that most need the wave were the ones silently skipping it.
+
+    KeyError when no part is known."""
+    raw = (reagent or "").strip()
+    parts = [p.strip() for p in raw.split("+") if p.strip()] if "+" in raw else [raw]
+    tables = [t for t in (_one(_ALIASES.get(p.lower())) for p in parts) if t is not None]
+    if not tables:
+        raise KeyError(f"no reference-ion table for {reagent!r}; available: {available()}")
+    if len(tables) == 1:
+        return tables[0]
+    out = pd.concat(tables, ignore_index=True)
+    # One ion, one row. The same species can be certain in both tables (HNO3
+    # [M-H]- is an anchor for nitrate and a B-grade bystander for bromide), and
+    # the stronger grading is the one to keep. Dedup on the ION, not the twin
+    # key -- that key deliberately groups a 79/81Br pair, which must both stay.
+    out["iso"] = out["iso"].fillna("")
+    out = out.sort_values(["grade", "anchor"], ascending=[True, False])
+    out = out.drop_duplicates(subset=["neutral", "channel", "iso"], keep="first")
+    return out.sort_values("mz").reset_index(drop=True)

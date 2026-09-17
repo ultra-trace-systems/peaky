@@ -65,3 +65,30 @@ def test_the_shipped_csv_carries_no_site_or_instrument_columns():
     with open(pkg_data("reference_ions", "nitrate.csv"), newline="") as fh:
         header = next(csv.reader(fh))
     assert header == ["neutral", "channel", "identity", "grade", "anchor", "blend_flag"]
+
+
+def test_a_composed_reagent_name_unions_both_channels_tables():
+    # `profiles.compose` names a mixed inlet 'Br+NO3'. That name matched no table,
+    # so a mixed-reagent TOF -- the instrument the wave exists for -- ran with no
+    # calibrants at all and silently skipped mass-qc.
+    no3, br = RI.get("NO3"), RI.get("Br")
+    both = RI.get("Br+NO3")
+    assert RI.get("NO3+Br").equals(both)                 # order is not information
+    # the union, minus the ions certain in BOTH tables (HNO3 [M-H]- and one more)
+    shared = 2
+    assert len(both) == len(no3) + len(br) - shared == 53
+    assert both["mz"].is_monotonic_increasing
+    # an ion kept once, at its STRONGER grading: HNO3 [M-H]- is a nitrate anchor
+    # and a B-grade bystander for bromide
+    hno3 = both[(both["neutral"] == "HNO3") & (both["channel"] == "[M-H]-")]
+    assert len(hno3) == 1 and hno3.iloc[0]["grade"] == "A" and bool(hno3.iloc[0]["anchor"])
+    # the 79/81Br pairs share a twin_key on purpose -- dedup must not collapse them
+    assert (both["iso"] == "81Br").sum() == (br["iso"] == "81Br").sum() == 12
+    assert both.duplicated(subset=["neutral", "channel", "iso"]).sum() == 0
+
+
+def test_a_composed_name_still_refuses_when_no_part_is_known():
+    with pytest.raises(KeyError):
+        RI.get("I+EasyIC")
+    # one known part is enough, and gives exactly that part
+    assert RI.get("NO3+I").equals(RI.get("NO3"))

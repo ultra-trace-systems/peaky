@@ -1074,7 +1074,9 @@ def build_parser() -> argparse.ArgumentParser:
     pq.add_argument("--ts", default=None,
                     help="cached full-batch TS parquet (offline; no credentials needed)")
     pq.add_argument("--reagent", default="NO3",
-                    help="reference-ion table: NO3 (default), NO3_15N or Br")
+                    help="reference-ion table: NO3 (default), NO3_15N or Br. "
+                         "A '+'-joined combination ('Br+NO3') takes the union of "
+                         "both, for a module running a mixed inlet")
     pq.add_argument("--tol-ppm", type=float, default=None,
                     help="trace membership half-window (default 12 ppm; 6 with --orbitrap)")
     pq.add_argument("--probe-ppm", type=float, default=50.0,
