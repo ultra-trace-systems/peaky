@@ -66,7 +66,7 @@ DATASET_ID = "DSxxxxxxxxxxxxxx"
 BATCH_ID = "BATCHxxxxxxxxxxx"
 BATCH = "Site A Ur 122-600"
 SIB_11 = "Site A Ur 122-600 11 "
-SIB_WZ = "Site A Ur 122-600 05-30 - 06-02 wind zone 1"
+SIB_WZ = "Site A Ur 122-600 05-30 - 06-02 wind zone 1"   # privacy-ok: invented, the range IS the shape
 LISTING = pd.DataFrame({
     "sample_batch_id": [BATCH_ID, "SIB11xxxxxxxxxxx", "SIBWZxxxxxxxxxxx", "NITRATExxxxxxxxx"],
     "sample_batch_name": [BATCH, SIB_11, SIB_WZ, "Nitrate plain batch"],

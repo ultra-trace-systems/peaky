@@ -6,6 +6,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A privacy scan that refuses internal identifiers, run by the suite and by CI.**
+  Peaky is public; the servers, workspaces, datasets and batches a run touches are
+  not. The rule was applied by hand three times and missed once, when a stacked pull
+  request raced the scrub and put a server name, a workspace name and a batch id
+  into a test comment. `scripts/privacy_scan.py` now matches the SHAPE of an
+  internal identifier — a service hostname, a private network address, a
+  16-character Mascope id, a date-ranged batch name, a workspace named after a
+  person — and `tests/test_privacy.py` runs it over every tracked file, so it is
+  part of the required suite, and it sees files that are only staged as well as
+  tracked ones. A pull request's own title and body are not files, so no file check
+  can see them — the same scanner reads them from stdin (`--stdin`), and wiring that
+  into CI follows separately. The rules match shapes and never a list of real names — a denylist would have to live in
+  this public repository to work, publishing exactly what it hides — so a
+  deliberate stand-in that must keep the shape carries a `privacy-ok: <reason>`
+  comment. The one finding the new scan turned up in the existing tree, a
+  date-ranged batch name in `tests/test_reflists.py`, is neutralized; the assertions
+  are unchanged.
+
 ### Fixed
 
 - **`peaky batch --help` and `peaky pool --help` crashed** with `TypeError: %o format:

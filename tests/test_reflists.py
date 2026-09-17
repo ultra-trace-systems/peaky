@@ -37,12 +37,12 @@ check("no context -> still get the always_active contaminants",
 # the dataset name ("AP oxidation demo-set"), and a resolver that never saw it left
 # the alpha-pinene list inactive on alpha-pinene data. The bare abbreviation "AP" is
 # still NOT a keyword (soap, grape); the PHRASE "ap oxidation" is.
-ds_tags = RL.resolve_context_tags("TOF NO3_Br mixed 2026-08-10 - 08-14",
+ds_tags = RL.resolve_context_tags("TOF NO3_Br mixed 2026-08-10",
                                   "AP oxidation demo-set", "Br- CIMS")
 check("the dataset name unlocks the alpha-pinene contexts when the batch name does not",
       {"ap_ox", "monoterpene_ox"} <= ds_tags, ds_tags)
 check("...and the same texts without the dataset name unlock nothing",
-      RL.resolve_context_tags("TOF NO3_Br mixed 2026-08-10 - 08-14", "", "Br- CIMS") == set())
+      RL.resolve_context_tags("TOF NO3_Br mixed 2026-08-10", "", "Br- CIMS") == set())
 check("a bare 'AP' is still not a keyword (false positives: soap, grape, AP Low temperature)",
       RL.resolve_context_tags("AP Low temperature", "soap and grape") == set())
 check("the phrase variants unlock too",
