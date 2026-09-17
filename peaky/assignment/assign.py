@@ -175,6 +175,9 @@ class _RunState:
     # the merged ledger (assign_batch.run), not per file -- its skip key is a
     # presence test that flips with each file's S/N.
     reagent_n_relabel: bool = True
+    # GKA series evidence measured in the pass-3 CURATED phase and handed to the
+    # late `pass3_series` stage (a DataFrame + member sets; never serialized).
+    series_carry: object = None
     summaries: dict = field(default_factory=dict)
     plaus_audit: list = field(default_factory=list)
 
@@ -213,6 +216,27 @@ def _safe(st, tag, fn):
     st.log(f"[run] {tag} took {s['elapsed_s']}s")
     _checkpoint(st, tag)
     return s
+
+
+def _stage_pass3_curated(st):
+    """Pass 3, first half: cluster resolution + the profile's own families. The
+    GKA-opened families are held back to `pass3_series` (see run_pass3.__doc__)."""
+    late = getattr(st.cfg, "pass3_series_late", True)
+    res = passes.run_pass3(
+        st.client, st.sample_id, st.led, st.profile, st.pre, st.cfg, st.adducts,
+        log=st.log, phase="curated" if late else "all")
+    # only the curated phase emits a carry, so `pass3_series` self-disables when
+    # the knob is off -- the stage's `when` needs no second condition.
+    st.series_carry = res.pop("_carry", None)
+    return res
+
+
+def _stage_pass3_series(st):
+    """Pass 3, second half: the evidence-opened families, claiming from whatever
+    passes 4/5/7 could not explain. Evidence comes from the curated phase."""
+    return passes.run_pass3(
+        st.client, st.sample_id, st.led, st.profile, st.pre, st.cfg, st.adducts,
+        log=st.log, phase="series", carried=st.series_carry)
 
 
 def _stage_composite(st):
@@ -282,9 +306,7 @@ _STAGES = [
     _Stage("pass2", lambda st: passes.run_pass2(
         st.client, st.sample_id, st.led, st.profile, st.cfg, st.adducts, log=st.log),
            when=lambda st: st.do_pass2),
-    _Stage("pass3", lambda st: passes.run_pass3(
-        st.client, st.sample_id, st.led, st.profile, st.pre, st.cfg, st.adducts, log=st.log),
-           when=lambda st: st.do_pass3),
+    _Stage("pass3", _stage_pass3_curated, when=lambda st: st.do_pass3),
     # claim each committed peak's full M+2/M+4 envelope BEFORE pass 4, then free the
     # bright low-carbon CHON mass-fits whose 13C contradicts the carbon count.
     _Stage("iso_env_pre4",
@@ -308,6 +330,12 @@ _STAGES = [
         st.client, st.sample_id, st.led, st.profile, st.cfg, st.adducts,
         reagent=st.reagent, ts_peaks=st.ts_peaks, log=st.log),
            when=lambda st: st.do_pass_certified),
+    # Pass 3, LATE half: families opened by detected GKA series structure claim
+    # only what passes 4/5/7 left behind. Ordering matters -- run before pass 3
+    # these out-competed the better-evidenced passes for the same unexplained
+    # peaks (2.0 % of their commits reached `Assigned` against a 41 % baseline).
+    _Stage("pass3_series", _stage_pass3_series,
+           when=lambda st: st.do_pass3 and st.series_carry is not None),
     # post-run audits: apply the calibrated mass gate to pre-calibration commits.
     _Stage("audit_iso", lambda st: passes.audit_isotopes(st.led, st.cfg, log=st.log), safe=False),
     _Stage("audit", lambda st: passes.audit_mass_gate(st.led, st.cfg, log=st.log), safe=False),

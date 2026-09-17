@@ -202,6 +202,23 @@ def _known_species(polarity: str = "negative", context: str | None = None) -> di
         "HNO3": "nitric acid",
         "HNO2": "nitrous acid",
         "HNO4": "peroxynitric acid",
+        # SULFURIC ACID and MSA -- the two canonical negative-mode ambient
+        # sulfur analytes, and the pair every nitrate/bromide CIMS is pointed at.
+        # Neither was reachable as a KNOWN species before: H2SO4 arrived only
+        # when the pass-3 `organosulfate` family happened to be open in the
+        # active context (it is C-free, so the grid reaches it solely through the
+        # carbon-free allowlist in contexts._inorganic_allowed), and it was then
+        # reported as `Good (organosulfate)` -- a contaminant label on the most
+        # measured acid in the field. MSA is on the grid (C1) but is routinely
+        # dim and single-channel, so pass 3 leaves it a Candidate.
+        # Both are S-monoisotopic-free (34S is 4.4% per S), so unlike the C0
+        # nitrogen acids above they CAN be isotope-corroborated -- and they are
+        # gated on that below (`_ATMOS_CORROBORATE`): >=2 ion channels OR a
+        # confirmed 34S envelope, the same rule `indoor_sulfur` uses. Without it
+        # a pass-0 lock at m/z 94.98 / 96.96 would be a confident claim on a
+        # single centroid, which on a TOF is routinely a blend of several ions.
+        "H2SO4": "sulfuric acid",
+        "CH4O3S": "methanesulfonic acid (MSA)",
     }
     # REACTIVE IODINE species -- the canonical iodide-CIMS analytes, detected as
     # [M+I]- (I2X- ions). Covalent iodine is monoisotopic and OFF the organic grid
@@ -287,6 +304,15 @@ def _known_species(polarity: str = "negative", context: str | None = None) -> di
 
 _D37CL = 1.9970499
 
+# The `atmospheric` known species that must be corroborated before they are
+# LOCKED: both carry sulfur, so a ³⁴S twin is available as evidence, and both sit
+# at low m/z where a TOF centroid is routinely a blend (on a coastal TOF campaign the m/z 94.98
+# MSA position is a comb of 4-6 persistent slices inside one FWHM, none carrying a
+# ³⁴S twin). The C0 nitrogen acids beside them are NOT gated: they have no
+# diagnostic heavy isotope to demand, and they are reagent-adjacent ions the
+# source produces in every spectrum. Formulas in peaky's canonical Hill order.
+_ATMOS_CORROBORATE = frozenset({"H2O4S", "CH4O3S"})
+
 
 _RECOVERABLE_KNOWN_FAMS = {"chlorinated_paraffin"}
 
@@ -306,8 +332,9 @@ def run_pass0_known(
     atmospheric acids/radicals) before the organic passes run. Mascope scores
     the compositions (its isotope model covers 29Si/30Si + the reagent
     halogen); commits are LOCKED so pass 1 cannot displace them with grid CHO
-    fits. Each still passes the mass gate (|ppm|<=2) and the 81Br-twin
-    consistency check, so a composite collision is refused, not locked."""
+    fits. Each still passes the mass gate (|ppm - prior_offset| <= cfg.pass0_ppm,
+    2.0 by default) and the 81Br-twin consistency check, so a composite
+    collision is refused, not locked."""
     score_fn = score_fn or IO.score_candidates
     out = {"committed": 0, "locked": 0, "iso_attached": 0}
     # `profile` here is the CONTEXT profile (assign.run resolves the reagent's
@@ -339,7 +366,7 @@ def run_pass0_known(
     if "mechanism_id" in base.columns:
         _onc = base[
             (pd.to_numeric(base["ppm_error"], errors="coerce") - cfg.prior_offset).abs()
-            <= 2.0
+            <= cfg.pass0_ppm
         ]
         ope_channels = (
             _onc.groupby("compound_formula")["mechanism_id"].nunique().to_dict()
@@ -379,7 +406,7 @@ def run_pass0_known(
         # rough offset (cfg.prior_offset) so a uniformly-shifted instrument (e.g.
         # -1.9 ppm) doesn't drop on-trend contaminants and hand the peak to an
         # off-trend CHO mass-fit (the silanediol-vs-C5H10O6 collision at -1.9 ppm).
-        if ppm is None or pd.isna(ppm) or abs(float(ppm) - cfg.prior_offset) > 2.0:
+        if ppm is None or pd.isna(ppm) or abs(float(ppm) - cfg.prior_offset) > cfg.pass0_ppm:
             continue
         pid = r["sample_peak_id"]
         try:
@@ -426,14 +453,17 @@ def run_pass0_known(
                 )
                 continue
             if (
-                fam in ("organophosphate", "organothiophosphate", "indoor_sulfur")
+                (fam in ("organophosphate", "organothiophosphate", "indoor_sulfur")
+                 or r["compound_formula"] in _ATMOS_CORROBORATE)
                 and ope_channels.get(r["compound_formula"], 0) < 2
                 and not _iso_ok
             ):
                 log(
                     f"[pass0] skip {r['compound_formula']} @{float(r['sample_peak_mz']):.4f}: "
                     f"single ion channel, no diagnostic-isotope (³⁴S/³⁷Cl/⁸¹Br) envelope ("
-                    + ("an off-grid S species needs >=2 channels or a ³⁴S twin"
+                    + ("H2SO4 / MSA need >=2 channels or a ³⁴S twin"
+                       if r["compound_formula"] in _ATMOS_CORROBORATE
+                       else "an off-grid S species needs >=2 channels or a ³⁴S twin"
                        if fam == "indoor_sulfur"
                        else "P needs >=2 channels or an isotope twin")
                     + " to corroborate)"
@@ -1485,10 +1515,32 @@ def run_pass3(
     adducts: list[str],
     *,
     log=print,
+    phase: str = "all",
+    carried: dict | None = None,
 ) -> dict:
+    """``phase`` splits this pass in two so that EVIDENCE-OPENED families claim
+    last, not first.
+
+    ``curated`` runs the HX/I2 cluster resolution and the profile's own families,
+    detects the GKA series structure, and hands it back in ``_carry`` WITHOUT
+    opening anything. ``series`` runs later (after passes 4/5/7) and opens only
+    the evidence-backed families, on whatever residual is left.
+
+    Why: pass 3 sits before the residual/completion/certified passes and claims
+    from the same unexplained pool, so an evidence-opened family took peaks those
+    passes would have explained better -- measured on one Orbitrap ambient batch,
+    its F commits reached `Assigned` 2.0 % of the time (batch baseline 41 %), and
+    the peaks freed by holding the family back reached it 48 % of the time. The
+    detection is unchanged and still measured on the FULL residual (that is why
+    the evidence is carried rather than re-detected); only the claim order moves.
+
+    ``all`` is the original single-shot behaviour and stays the default.
+    """
+    if phase not in ("all", "curated", "series"):
+        raise ValueError(f"run_pass3: unknown phase {phase!r}")
     tgt = _target_peaks(ledger, cfg)
     if len(tgt) == 0:
-        log("[pass3] nothing unassigned; skipping")
+        log(f"[pass3{'' if phase == 'all' else ':' + phase}] nothing unassigned; skipping")
         return {"committed": 0, "locked": 0, "iso_attached": 0}
     mzs = tgt["mz"].tolist()
     total = {"committed": 0, "locked": 0, "iso_attached": 0}
@@ -1501,7 +1553,11 @@ def run_pass3(
     # (Y.HX.X-), NOT a new covalent organohalogen. Resolve these against the
     # anchors FIRST so the organohalogen family below never sees them.
     cluster_claimed: set[str] = set()
-    if reagent in ("Br", "Cl"):
+    if phase == "series":
+        # reuse the curated phase's resolution: those peaks are no longer
+        # unexplained, so re-running it would find nothing and cost a round trip.
+        cluster_claimed = set((carried or {}).get("cluster_claimed") or ())
+    elif reagent in ("Br", "Cl"):
         hx = "H" + reagent
         s = _resolve_hx_clusters(
             client, sample_id, ledger, profile, cfg, reagent, hx, log=log
@@ -1522,43 +1578,67 @@ def run_pass3(
     # halide-CIMS: also try covalent organohalogens. The arbitration keeps the
     # complexity prior on the reagent element (its ion isotope can't prove
     # neutral ownership), so these only win with a real score margin.
-    families = list(profile.pass3_families)
-    if reagent == "Br" and "bromo_organic" not in families:
-        families.append("bromo_organic")
-    if reagent == "Cl" and "chloro_organic" not in families:
-        families.append("chloro_organic")
+    families = [] if phase == "series" else list(profile.pass3_families)
+    if phase != "series":
+        if reagent == "Br" and "bromo_organic" not in families:
+            families.append("bromo_organic")
+        if reagent == "Cl" and "chloro_organic" not in families:
+            families.append("chloro_organic")
 
     # --- automatic GKA series detection (the machine 'rotating plot') -------
     # Repeat-unit structure in the residual opens the matching contaminant
     # family even when the context has it off (e.g. CF2 links -> fluorinated).
     from peaky.assignment import series_detect as SD
 
-    evidence = SD.detect_series(
-        ledger, ppm=cfg.search_ppm, min_height=cfg.height_cutoff
-    )
-    log(
-        "[pass3] series evidence: "
-        + ", ".join(
-            f"{r.unit}:{r.n_links}x{r.enrichment}" + ("*" if r.significant else "")
-            for r in evidence.itertuples()
+    if phase == "series":
+        # Detection stays where it was -- on the FULL residual, before passes
+        # 4/5/7 consumed any of it. Re-detecting here would measure shorter
+        # chains (a chain whose every other member is now explained no longer
+        # links) and so would quietly weaken the evidence as a side effect of
+        # the reorder. Only the CLAIM is deferred, not the measurement.
+        evidence = (carried or {}).get("evidence")
+        fam_members = dict((carried or {}).get("fam_members") or {})
+        if evidence is None or evidence.empty:
+            log("[pass3:series] no carried series evidence; skipping")
+            return {"committed": 0, "locked": 0, "iso_attached": 0}
+    else:
+        evidence = SD.detect_series(
+            ledger, ppm=cfg.search_ppm, min_height=cfg.height_cutoff
         )
-    )
-    fam_members: dict[str, set] = {}
-    for r in evidence.itertuples():
-        action = r.action
-        if r.significant and isinstance(action, str) and action:
-            fam_members.setdefault(r.action, set()).update(
-                SD.unit_members(
-                    ledger, r.mass, ppm=cfg.search_ppm, min_height=cfg.height_cutoff
+        log(
+            "[pass3] series evidence: "
+            + ", ".join(
+                f"{r.unit}:{r.n_links}x{r.enrichment}" + ("*" if r.significant else "")
+                for r in evidence.itertuples()
+            )
+        )
+        fam_members = {}
+        for r in evidence.itertuples():
+            action = r.action
+            if r.significant and isinstance(action, str) and action:
+                fam_members.setdefault(r.action, set()).update(
+                    SD.unit_members(
+                        ledger, r.mass, ppm=cfg.search_ppm,
+                        min_height=cfg.height_cutoff
+                    )
                 )
-            )
-    for fam in SD.families_from_evidence(evidence):
-        if fam not in families:
-            families.append(fam)
-            log(
-                f"[pass3] GKA evidence opened family: {fam} "
-                f"({len(fam_members.get(fam, []))} chain-member targets)"
-            )
+
+    if phase == "curated":
+        # hand the evidence to the late phase instead of opening anything now.
+        opened = [f for f in SD.families_from_evidence(evidence)
+                  if f not in families]
+        if opened:
+            log(f"[pass3] GKA evidence held for the late series phase: "
+                f"{', '.join(opened)}")
+    else:
+        for fam in SD.families_from_evidence(evidence):
+            if fam not in families:
+                families.append(fam)
+                log(
+                    f"[pass3{'' if phase == 'all' else ':series'}] GKA evidence "
+                    f"opened family: {fam} "
+                    f"({len(fam_members.get(fam, []))} chain-member targets)"
+                )
     anchors_now = set(
         ledger.loc[ledger["role"] == L.ROLE_M0, "neutral_formula"].dropna()
     )
@@ -1671,8 +1751,13 @@ def run_pass3(
         for k in total:
             total[k] += s[k]
         log(f"[pass3:{fam_key}] {s}")
-    log(f"[pass3] total {total}")
+    log(f"[pass3{'' if phase == 'all' else ':' + phase}] total {total}")
     total["series_evidence"] = evidence.to_dict("records")
+    if phase == "curated":
+        # popped by the stage wrapper before the summary is stored -- it holds a
+        # DataFrame and a set, neither of which belongs in the JSON summary.
+        total["_carry"] = {"evidence": evidence, "fam_members": fam_members,
+                           "cluster_claimed": cluster_claimed}
     return total
 
 

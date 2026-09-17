@@ -47,6 +47,14 @@ class ReagentProfile:
     # --reagent-config profile written for your own instrument -- only to override
     # the derivation for that instrument.
     height_cutoff_x_edge: float | str | None = None
+    # True when `detect_adduct` is a WEAK signature -- one the server also stamps in
+    # runs of other reagents, so its presence is not evidence that THIS reagent is in
+    # the inlet. The bare molecular cation [M]+. is the case in point: a uronium batch
+    # stamps it on charge-transfer peaks while carrying no fluoranthene at all. Auto-
+    # detect composes the STRONG signatures it sees and only falls back on the weak
+    # ones when nothing strong matched, so a stray stamp can never bolt a phantom
+    # reagent onto a real one.
+    detect_weak: bool = False
     aliases: tuple = field(default_factory=tuple)
 
 
@@ -80,6 +88,14 @@ UR = ReagentProfile(
 # (or override via a --reagent-config file). Negative mode; highly oxygenated
 # molecules detected as the [M+NO3]⁻ cluster (and [M-H]⁻ when acidic). Reagent ions
 # are the NO3⁻ / (HNO3)ₙ·NO3⁻ cluster series.
+# IODINE: the reactive-iodine species (HOI, HIO2, HIO3 = iodic acid, OIO, INO2,
+# INO3, ICl, IBr ...) are reachable on this profile's channels ([M-H]⁻ = IO⁻/IO2⁻/
+# IO3⁻ and the [M+NO3]⁻ cluster) through the pass-0 `reactive_iodine` known-species
+# family (directors._known_species, negative polarity). Iodine stays OFF the
+# neutral grid on purpose (monoisotopic, no envelope to confirm a C-H-N-O-S-I
+# organic; see the iodide profile). Pass 0 commits within `PassConfig.pass0_ppm`
+# of the prior offset (2 ppm default); on a TOF where the nitrate clusters sit
+# 7-11 ppm high, raise pass0_ppm or the iodine acids never commit.
 NO3 = ReagentProfile(
     name="NO3",
     label="NO3- CIMS",
@@ -201,6 +217,7 @@ EASYIC = ReagentProfile(
     # would multiply the cached enumeration grid for every pass.
     ranges="C0-40 H0-80 N0-5 O0-15 S0-2",
     detect_adduct="[M]+.",
+    detect_weak=True,   # a bare "+" stamp also appears in other positive-mode runs
     context="easyic",
     aliases=("easyic", "easy-ic", "easyic+", "fluoranthene", "charge-transfer"),
 )
@@ -440,16 +457,114 @@ def apply_height_cutoff_x_edge(cfg, profile: "ReagentProfile | None" = None, *,
     return value, source
 
 
+def _merge_ranges(sources: list[str]) -> str:
+    """Union of element boxes: widest [lo, hi] per element, first-seen order."""
+    from peaky.chem import chemistry as C
+
+    merged: dict[str, tuple[int, int]] = {}
+    for s in sources:
+        for el, (lo, hi) in C.parse_ranges(s).items():
+            if el in merged:
+                lo0, hi0 = merged[el]
+                merged[el] = (min(lo0, lo), max(hi0, hi))
+            else:
+                merged[el] = (lo, hi)
+    return " ".join(f"{el}{lo}-{hi}" for el, (lo, hi) in merged.items())
+
+
+def compose(profiles: "list[ReagentProfile]") -> ReagentProfile:
+    """Merge several reagent profiles into one, for a module running MORE THAN ONE
+    reagent at once (e.g. a mixed nitrate/bromide inlet) or a labelled reagent whose
+    unlabelled isotopologue is also present.
+
+    This exists because a single-profile answer SILENTLY DROPS a whole ionization
+    channel: the profile's `adducts` list is the only menu the passes ever see, so a
+    mixed NO3/Br batch resolved to Br alone can never offer [M+NO3]- as a reading —
+    every nitrate-clustered analyte is then missed outright or forced into a bromide
+    interpretation, with nothing in the log to say so.
+
+    Merge rules: adducts and reagent-ion regexes are unioned; the element box takes
+    the widest bound per element; `normaliser` stays "reagent" only if every
+    component agrees (a component that must normalise on TIC, because its reagent
+    ions sit outside the acquisition window, forces TIC for the whole); a single
+    labelled component carries its label/purity through. Composing across polarities
+    is refused — that is two acquisitions, not one reagent system.
+    """
+    ps: list[ReagentProfile] = []
+    for p in profiles:                       # dedupe, preserve order
+        if p not in ps:
+            ps.append(p)
+    if not ps:
+        raise ValueError("compose() needs at least one profile")
+    if len(ps) == 1:
+        return ps[0]
+    pol = {p.polarity for p in ps}
+    if len(pol) > 1:
+        raise ValueError(
+            "cannot compose reagent profiles of different polarity: "
+            + ", ".join(f"{p.name}({p.polarity})" for p in ps))
+    labelled = [p for p in ps if p.label_isotope]
+    if len({p.label_isotope for p in labelled}) > 1:
+        raise ValueError(
+            "cannot compose two differently-labelled reagents: "
+            + ", ".join(f"{p.name}({p.label_isotope})" for p in labelled))
+    lab = labelled[0] if labelled else None
+    adducts: list[str] = []
+    for p in ps:
+        for a in p.adducts:
+            if a not in adducts:
+                adducts.append(a)
+    res = [p.reagent_ion_re for p in ps if p.reagent_ion_re]
+    ctx = {p.context for p in ps}
+    edge = {p.height_cutoff_x_edge for p in ps}
+    return ReagentProfile(
+        name="+".join(p.name for p in ps),
+        label=" / ".join(p.label for p in ps),
+        polarity=ps[0].polarity,
+        adducts=adducts,
+        normaliser="reagent" if all(p.normaliser == "reagent" for p in ps) else "tic",
+        reagent_ion_re="|".join(f"(?:{r})" for r in res) if res else None,
+        ranges=_merge_ranges([p.ranges for p in ps]),
+        detect_adduct=None,               # composed profiles are never auto-detected
+        context=ps[0].context if len(ctx) == 1 else "ambient-air",
+        purity=lab.purity if lab else None,
+        label_isotope=lab.label_isotope if lab else None,
+        label_max=lab.label_max if lab else 2,
+        height_cutoff_x_edge=next(iter(edge)) if len(edge) == 1 else None,
+        aliases=(),
+    )
+
+
+# Channels almost every reagent system carries, so their presence identifies NO
+# reagent: bare (de)protonation is offered by Br, NO3, iodide, uronium and EasyIC
+# alike. A profile whose `detect_adduct` is one of these is treated as a WEAK
+# signature whatever it declares -- otherwise it would attach itself to every run
+# of the matching polarity. (The old first-match resolve() dodged this only by
+# registry order, which is luck, not a rule.)
+_GENERIC_DETECT = frozenset({"[M-H]-", "[M+H]+"})
+
+
 def resolve(
     reagent: str = "auto", peaks=None, *, config: str | None = None
 ) -> ReagentProfile:
-    """Return a ReagentProfile. `reagent` may be a name/alias, or 'auto' to detect
-    from a loaded peak table (its server adduct mechanisms, then polarity). `config`
-    (a JSON/TOML path) registers extra/override reagents before resolving."""
+    """Return a ReagentProfile. `reagent` may be a name/alias, a '+'-joined
+    combination ('NO3+Br'), or 'auto' to detect from a loaded peak table (its server
+    adduct mechanisms, then polarity). `config` (a JSON/TOML path) registers
+    extra/override reagents before resolving.
+
+    Auto-detect returns EVERY reagent system the peak table evidences, composed into
+    one profile (see `compose`) -- not the first that happens to match. A module
+    running a mixed inlet, and a labelled reagent whose unlabelled isotopologue is
+    also present, both show two diagnostic adducts, and taking one of them silently
+    discards the other channel's chemistry."""
     if config:
         load_config(config)
     if reagent and reagent.lower() in _BY_ALIAS:
         return _BY_ALIAS[reagent.lower()]
+    if reagent and reagent != "auto" and "+" in reagent:
+        keys = [k.strip().lower() for k in reagent.split("+") if k.strip()]
+        if keys and all(k in _BY_ALIAS for k in keys):
+            return compose([_BY_ALIAS[k] for k in keys])
     if reagent != "auto":
         raise KeyError(f"unknown reagent {reagent!r}; known: {sorted(_BY_ALIAS)}")
     if peaks is None:
@@ -457,9 +572,15 @@ def resolve(
     from peaky.io import io_mascope as IO
 
     seen = set(IO.detect_adducts(peaks))
-    for p in PROFILES.values():
-        if p.detect_adduct in seen:
-            return p
+    matched = [p for p in PROFILES.values() if p.detect_adduct and p.detect_adduct in seen]
+    # Strong signatures name a specific reagent species and compose. Weak ones are
+    # only believed when nothing strong matched (see ReagentProfile.detect_weak).
+    def _weak(p):
+        return p.detect_weak or p.detect_adduct in _GENERIC_DETECT
+
+    hits = [p for p in matched if not _weak(p)] or matched
+    if hits:
+        return compose(hits)
     # fall back on polarity if no diagnostic adduct matched
     pol = _detect_polarity(peaks)
     for p in PROFILES.values():

@@ -48,6 +48,33 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   within 15 %, `W*` within 1.5× of the empirical optimum, never-roll on pure noise,
   always-roll on a walk, and the bit-identical median below `min_n`.
 
+- **`PassConfig.audit_floor_cps`** — the detection floor the post-run isotope audit
+  judges 13C satellites against (`postprocess.audit_isotopes`: "would the satellite be
+  comfortably visible?" and "is this measured satellite reliable?"). Default `None`
+  keeps the resolved height gate, which is right when the sample is a spectrum. Set it
+  when the sample is a derived table on a different footing: a batch of trace-averaged
+  heights (absent = 0) compresses every dim ion far below the per-spectrum floor its
+  satellite must clear to be picked, so the gate — a multiple of the table's own 1st
+  percentile — predicted "visible" satellites no spectrum could show and the audit
+  cleared 178 of 258 otherwise-silent formulas on a 766-spectrum TOF trace sample
+  (succinic acid among them).
+
+- **`PassConfig.audit_sat_ppm`** — how far from parent + 1.00335 the isotope audit
+  looks for the 13C satellite (sweeper, completeness check, halogen-twin fallback).
+  Default 5.0 is the Orbitrap ruling. A ~4k-resolution TOF blends 13C with the +H
+  isobar of a neighbouring homolog into one M+1 peak whose apex sits up to 4.5 mDa
+  (25 ppm at m/z 180) from the 13C position: on the same TOF trace sample 108 of 131
+  remaining missing-13C clears had a clean satellite trace 5–25 ppm away (succinic acid's
+  at 16.9 ppm). Set it to the instrument's M+1 blend.
+
+- **`PassConfig.pass0_ppm`** — the mass gate of the pass-0 known-species commit
+  (`directors.run_pass0_known`), previously hard-coded at 2 ppm. Default 2.0 is
+  unchanged. On a TOF whose weakly bound clusters sit 7–11 ppm high, the iodine acids
+  (`reactive_iodine` family: HOI, HIO2, HIO3 …), H2SO4·NO3⁻ and MSA could never commit;
+  raise it to the instrument's displacement. The nitrate profile now documents that
+  iodine reaches it through this family on the [M−H]⁻ / [M+NO3]⁻ channels, and that
+  iodine stays off the neutral grid on purpose.
+
 ### Fixed
 
 - **A wave fit could stand on calibrants it had already discarded.** The clip loop
@@ -69,6 +96,42 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   enumerated, and the peak sat unexplained. The window is now `ion_mz x search_ppm`
   for every adduct, and `tests/test_chemistry.py` probes a neutral at +9.5 / +10.5 ppm
   on the ion through four adducts. A/B measurements are in the pull request.
+
+- **The heteroatom isotopologue gate charged peaks that could never have shown their
+  satellite.** `passes.core`'s `_evidence_penalty` subtracts a gate penalty (0.30
+  halogen / 0.12 S / 0.12 Si) from `eff_score` whenever a candidate's diagnostic
+  satellite — 37Cl, 81Br, 34S, 29Si/30Si — is unconfirmed, and it had no
+  observability test: a peak too dim for its satellite to clear the height gate was
+  charged exactly like a bright peak whose satellite is genuinely missing. That turns
+  "we could not have looked" into evidence against the formula, and because the
+  penalty is subtracted before arbitration it hands the peak to a rival. The gate is
+  now waived when the predicted satellite height (per-atom abundance × atom count ×
+  parent height) falls below `cfg.height_cutoff`; the plain complexity prior still
+  applies, because unobservable is not confirmation either — the same reading the
+  reference-list rescue already took for a dim 13C ("tentative lead, not confirmed").
+  That rescue now asks the shared predicate (`isotopes.satellite_observable`) instead
+  of its own inline `0.011 × nC × height`: 13C is 1.07 % per carbon there, 2.7 % lower,
+  so a rescue sitting exactly on the floor now lands tentative, and a missing floor
+  reads as observable instead of raising.
+  The reagent-element branch is deliberately NOT waived: it is about neutral-vs-ion
+  ownership of a halogen the reagent also supplies, and the ion's twin is as bright as
+  the ion, so brightness never made that question answerable. Measured on two
+  trace-first ledgers of a 1057-spectrum TOF sample (nitrate and bromide channels):
+  the gate was being charged against an unobservable satellite for 46 % / 34 % of the
+  S-bearing winners and 57 % / 42 % of the Si-bearing ones — and for none of the Cl
+  and almost none of the Br, whose twins are 32 % and 97 % of the parent and so are
+  visible wherever the parent is. 10 % / 8 % of all M0 winners changed effective
+  score (by up to 0.12).
+
+- **The Si tier demote stated a refutation that could not have happened.** The rule in
+  `tiers.compute_tiers` demotes an uncorroborated silicon formula because "silicon has
+  a strong M+1/M+2 twin that must appear if real" — true only when the twin was within
+  reach. The tier is unchanged (an uncorroborated formula has no evidence for its
+  silicon either way and must not read as Assigned), but on a peak whose twin is
+  predicted below the detection floor the reason now says the claim was untestable
+  rather than refuted: 39 rows across the two ledgers above. The mono-isotopic P/I and
+  partially-fluorinated rules need no such guard — those elements have no minor isotope
+  at all, so no brightness could ever have made their count testable.
 
 ## [0.9.0] — 2026-09-30 (the v2 fit at the sample's own width, the standard adduct notation, the abstraction and solvent-cluster channels, the privacy scan)
 

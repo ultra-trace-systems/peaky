@@ -124,6 +124,33 @@ p4 = ISO.isotope_pattern("CBr4", min_rel=0.05, max_shift=12.0)
 check("CBr4 keeps its M+8 (~8 Da) line under max_shift=12",
       max(d for d, _, _ in p4) > 7.5, max(d for d, _, _ in p4))
 
+# --- observability: could the diagnostic satellite have been SEEN? -----------
+# One predicate behind every "the twin must appear if real" rule (the het-iso
+# gate in passes.core, the Si demote in tiers, the reflist rescue's dim branch).
+check("34S on one S is ~4.4% of the parent",
+      abs(ISO.satellite_height("S", 1, 1.0e4) - 443.0) < 1.0,
+      ISO.satellite_height("S", 1, 1.0e4))
+check("the line scales with the atom count",
+      ISO.satellite_height("S", 3, 1.0e4) == 3 * ISO.satellite_height("S", 1, 1.0e4))
+check("a 1e4 cps S parent clears a 100 cps floor (443 >= 100)",
+      ISO.satellite_observable("S", 1, 1.0e4, 100.0))
+check("a 1e3 cps S parent does NOT (44 < 100) -- absence proves nothing there",
+      not ISO.satellite_observable("S", 1, 1.0e3, 100.0))
+check("81Br is nearly 1:1, so a Br twin is visible wherever the parent is",
+      ISO.satellite_observable("Br", 1, 110.0, 100.0))
+check("Si is judged on its BRIGHTER line (29Si 5.1%, not 30Si 3.1%)",
+      ISO.DIAG_SATELLITE_RATIO["Si"] == max(ISO.R_29SI_PER_SI, ISO.R_30SI_PER_SI))
+check("an element with no minor isotope has no diagnostic line at all",
+      not any(e in ISO.DIAG_SATELLITE_RATIO for e in ("N", "P", "I", "F"))
+      and ISO.satellite_height("P", 4, 1.0e9) == 0.0)
+check("no resolved floor -> nothing can be ruled out",
+      ISO.satellite_observable("S", 1, 1.0, None))
+check("a NaN / zero / negative height is no line (NaN-safe, never a comparison)",
+      ISO.satellite_height("C", 10, float("nan")) == 0.0
+      and ISO.satellite_height("C", 10, 0.0) == 0.0
+      and ISO.satellite_height("C", 0, 1.0e4) == 0.0)
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

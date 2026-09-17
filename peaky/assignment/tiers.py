@@ -53,6 +53,7 @@ import numpy as np
 import pandas as pd
 
 from peaky.chem import chemistry as C
+from peaky.chem import isotopes as ISO
 from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
 
@@ -465,6 +466,14 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
     _bb = m0[m0["method"].astype(str).str.startswith("cheminfo+grid")
              & m0["confidence"].astype(str).str.startswith("High")]
     primary_channels = set(_bb["adduct"].dropna())
+    # Detection floor a diagnostic satellite must clear to be picked at all. The
+    # Si rule below argues from a MISSING 29Si/30Si twin, and that argument needs
+    # the twin to have been within reach; see chem/isotopes.satellite_observable.
+    # None (no cfg, or no gate resolved) -> nothing can be ruled out.
+    try:
+        sat_floor = cfg.height_cutoff if cfg is not None else None
+    except RuntimeError:
+        sat_floor = None
 
     rows = []
     for _, r in m0.iterrows():
@@ -579,11 +588,28 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
             # mass coincidence -- mass space is dense with Si formulas. The
             # arbitration het-iso gate already discounts it; this is the
             # belt-and-suspenders catch for any that still won the M0 slot.
+            #
+            # The TIER is the same either way -- an uncorroborated formula has no
+            # evidence for its silicon and must not read as Assigned -- but the
+            # REASON has to be true. On a peak whose twin is predicted below the
+            # detection floor the "must appear if real" premise is simply false,
+            # and stating it records a refutation that never happened. Say what
+            # actually holds: nothing could have tested the claim (the same
+            # reading the arbitration gate and the reflist rescue take).
             tier = TIER_CANDIDATE
-            reason = (f"Si{counts['Si']} with no confirmed 29Si/30Si satellite and "
-                      "no cross-channel / series corroboration: silicon has a strong "
-                      "M+1/M+2 twin that must appear if real, so this is a mass-only "
-                      "claim (likely a PDMS/silanol coincidence)")
+            _h = r.get("height")
+            _h = float(_h) if pd.notna(_h) else None
+            if _h is None or ISO.satellite_observable("Si", counts["Si"], _h, sat_floor):
+                reason = (f"Si{counts['Si']} with no confirmed 29Si/30Si satellite and "
+                          "no cross-channel / series corroboration: silicon has a strong "
+                          "M+1/M+2 twin that must appear if real, so this is a mass-only "
+                          "claim (likely a PDMS/silanol coincidence)")
+            else:
+                reason = (f"Si{counts['Si']} untestable at this intensity: the 29Si/30Si "
+                          "twin is predicted below the detection floor, so its absence "
+                          "refutes nothing -- and with no cross-channel / series "
+                          "corroboration either, nothing supports the silicon count "
+                          "(Candidate for want of evidence, not against it)")
         elif (counts.get("P", 0) >= 1 or counts.get("I", 0) >= 1) and not corroborated:
             # P (31P) and I (127I) are truly mono-isotopic: no isotope twin can ever
             # confirm the heteroatom count, so a bare P/I mass fit is unfalsifiable
