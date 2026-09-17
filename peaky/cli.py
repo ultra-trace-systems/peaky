@@ -344,7 +344,7 @@ def cmd_batch(args) -> None:
                            occurrence_min=args.occurrence_min,
                            height_cutoff_x_edge=args.height_cutoff_x_edge,
                            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
-                           log=prog)
+                           rolling_centre=getattr(args, "rolling_centre", False), log=prog)
         # the window's final numbers come from the RETURNED summary, never from
         # parsing the log -- exact by construction.
         prog.finish((res.get("assign") or {}).get("summary"))
@@ -375,7 +375,8 @@ def cmd_pool(args) -> None:
             residual_min_cps=args.residual_min_cps, residual_k_max=args.residual_k_max,
             occurrence_min=args.occurrence_min,
             height_cutoff_x_edge=args.height_cutoff_x_edge,
-            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs, log=prog)
+            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
+            rolling_centre=getattr(args, "rolling_centre", False), log=prog)
         prog.finish((res.get("assign") or {}).get("summary"))
         ctx = res["ctx"]
         print(f"\n[pool] unified ledger -> {ctx.out_dir} in {res.get('elapsed_s', '?')}s")
@@ -884,6 +885,16 @@ def _auto_or_float(v: str):
         raise argparse.ArgumentTypeError(f"expected 'auto' or a number, got {v!r}")
 
 
+def _add_rolling_flag(p) -> None:
+    p.add_argument("--rolling-centre", action="store_true", default=False,
+                   help="trace-level reconciliation with the ADAPTIVE centre: every merged "
+                        "ion's trace is measured for per-spectrum noise and random-walk drift "
+                        "(batch.centre), its centre rolls along the batch where the drift is "
+                        "resolvable, its stamping window is sized from its own scatter, and the "
+                        "stamp follows the moving centre. Off = one batch centre and one window "
+                        "per ion, as before")
+
+
 def _add_admission_args(sp) -> None:
     """The admission gate (assignment/admission.py): brightness OR persistence.
     Defined ONCE here for `assign`, `batch` and `pool` -- the three flags are one
@@ -976,6 +987,7 @@ def build_parser() -> argparse.ArgumentParser:
     pb.add_argument("--no-report", action="store_true", help="skip the PDF report")
     _add_selection_args(pb)
     _add_admission_args(pb)
+    _add_rolling_flag(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "
@@ -1014,6 +1026,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="only the whole-pool report; skip the per-group ones")
     _add_selection_args(pp)
     _add_admission_args(pp)
+    _add_rolling_flag(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "
                          "(default: physical cores; env PEAKY_JOBS honored)")

@@ -544,7 +544,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         residual_k_max: int = SS.RESIDUAL_K_MAX,
         residual_frac_of_max: float = SS.RESIDUAL_FRAC_OF_MAX,
         ts_peaks=None, amine_r_min: float = 0.6,
-        n_jobs: int | None = None, log=print, **assign_kw) -> dict:
+        n_jobs: int | None = None, rolling_centre: bool = False,
+        log=print, **assign_kw) -> dict:
     """Assign the presence-cover subset of a batch and combine, keeping per-file
     ledgers. Provide EITHER `peaks` (a batch peak/sample table) OR `batch` (a
     batch id or name -- exact id > exact name > unique substring, an ambiguous
@@ -691,6 +692,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # admission table here AND the trace reconciliation of the merged ledger below,
     # so a peak's occurrence, its trace and its stamp are one object at one rule.
     _idx = TR.PeakIndex(ts_peaks, tol_ppm=tol_ppm) if ts_peaks is not None and len(ts_peaks) else None
+    # absolute hours per index sample code, for the rolling centre and the
+    # drift-following stamp (`rolling_centre`); None without timestamps
+    _hours = _TS.sample_hours(_idx, ts_peaks) if rolling_centre and _idx is not None else None
     _occ, _thr = assign_kw.get("occurrence"), None
     if _on and _idx is not None and _occ is None:
         _occ = ADM.bin_occurrence(ts_peaks, tol_ppm=tol_ppm, index=_idx)
@@ -921,14 +925,34 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # trace_id, trace_role); the stamp below reads them. No-op without a TS.
         trace_info: dict = {}
         stamp_tol = tol_ppm
+        tracks = None
         if _idx is not None and len(merged):
-            trace_info = _TS.recentre_ledger(merged, index=_idx, tol_ppm=tol_ppm, log=log)
+            trace_info = _TS.recentre_ledger(merged, index=_idx, tol_ppm=tol_ppm,
+                                             rolling=rolling_centre, times_by_code=_hours,
+                                             log=log)
+            tracks = trace_info.pop("tracks", None)
             trace_info.update(_TS.collapse_trace_labels(merged, tol_ppm=tol_ppm, log=log))
             stamp_tol, _sigma = _TS.stamp_tolerance(_idx, merged["mz_trace"], tol_ppm=tol_ppm)
             trace_info.update(stamp_tol_ppm=float(stamp_tol),
                               sigma_ppm=None if not np.isfinite(_sigma) else float(_sigma))
             log(f"[traces] per-ion mass scatter {_sigma if np.isfinite(_sigma) else 'n/a'} ppm -> "
                 f"stamping window +-{stamp_tol:g} ppm (merge tolerance {tol_ppm:g})")
+            if rolling_centre:
+                # the per-TRACE window: each row's own post-centring residual,
+                # the batch window where a row has none
+                merged["stamp_tol_ppm"] = _TS.stamp_tolerances(merged, tol_ppm=tol_ppm,
+                                                                fallback=stamp_tol)
+                _pt = merged["stamp_tol_ppm"]
+                trace_info["stamp_tol_per_trace"] = {
+                    "median_ppm": float(_pt.median()), "min_ppm": float(_pt.min()),
+                    "max_ppm": float(_pt.max()),
+                    "n_wider_than_batch": int((_pt > stamp_tol + 1e-9).sum()),
+                    "n_tighter_than_batch": int((_pt < stamp_tol - 1e-9).sum())}
+                log(f"[traces] per-trace stamping windows: median "
+                    f"{trace_info['stamp_tol_per_trace']['median_ppm']:.2f} ppm "
+                    f"({trace_info['stamp_tol_per_trace']['min_ppm']:.2f}-"
+                    f"{trace_info['stamp_tol_per_trace']['max_ppm']:.2f}); "
+                    f"{len(tracks or {})} rows stamp along a rolling track")
         out = {"merged": merged, "jitter": jitter, "merge_gates": merge_gates,
                "trace_info": trace_info, "stamp_tol": stamp_tol, "ts_annot": None,
                "predicted_rows": {}, "predicted_tracks": None}
@@ -959,7 +983,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             _stamp = _TS.stamping_frame(merged, _aux, tol_ppm=stamp_tol)
             _stats: dict = {}
             out["ts_annot"] = _TS.annotate_peaks(ts_peaks, _stamp, tol_ppm=stamp_tol,
-                                                 stats=_stats)
+                                                 stats=_stats, tracks=tracks)
             out["predicted_rows"] = dict(_stamp.attrs.get("predicted_satellites") or {})
             out["predicted_tracks"] = _stats.get("predicted_tracks")
         return out

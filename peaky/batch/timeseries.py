@@ -518,7 +518,8 @@ def recentre_ledger(merged: pd.DataFrame, ts_peaks: pd.DataFrame | None = None, 
                     index=None, tol_ppm: float = DEFAULT_TOL_PPM,
                     max_drift_ppm: float = RECENTRE_MAX_DRIFT_PPM,
                     guard_cov: float = RECENTRE_GUARD_COV,
-                    guard_ppm: float = RECENTRE_GUARD_PPM, log=print) -> dict:
+                    guard_ppm: float = RECENTRE_GUARD_PPM, rolling: bool = False,
+                    times_by_code=None, log=print) -> dict:
     """Re-centre every merged row on its own TRACE (in place). Adds
 
       mz_anchor         the merge's m/z (what the assignment committed)
@@ -535,7 +536,21 @@ def recentre_ledger(merged: pd.DataFrame, ts_peaks: pd.DataFrame | None = None, 
     < `guard_cov` of the spectra that wants to move > `guard_ppm` must be
     corroborated (seen in >= 2 assigned files, or Assigned) -- an almost-empty
     anchor plus a large jump is how a label lands on a neighbour's trace. Without
-    a time series this is a no-op that still adds the columns."""
+    a time series this is a no-op that still adds the columns.
+
+    ROLLING (`rolling=True`, off by default). After the re-centre, every row's
+    trace is handed to `batch.centre.trace_centre`, which measures its per-
+    spectrum noise and random-walk step and ROLLS the centre along the batch
+    when the walk is resolvable and the predicted gain is real -- otherwise the
+    batch centre stands, bit for bit. Adds `trace_key` (the row's stable key for
+    the stamp), `centre_scheme` ('global' | 'rolling'), `centre_window`,
+    `sigma_ppm`, `gamma_ppm`, `resid_ppm` (the members' scatter about their own
+    centre -- what sizes this trace's stamping window) and `track_span_ppm`;
+    `mz_trace` of a rolling row becomes the median of its track. The tracks
+    themselves (absolute hours, centres) come back under `'tracks'` keyed by
+    `trace_key`, for `annotate_peaks`. `times_by_code` is the absolute hour per
+    index sample code (`sample_hours`); without it -- or without the time
+    series' timestamps -- the rolling path is skipped and says so."""
     idx = _trace_index(ts_peaks, index, tol_ppm)
     n = len(merged)
     mz = pd.to_numeric(merged["mz"], errors="coerce").to_numpy(dtype=float) if "mz" in merged.columns \
@@ -575,6 +590,10 @@ def recentre_ledger(merged: pd.DataFrame, ts_peaks: pd.DataFrame | None = None, 
             mzt[i] = c; cov_t[i] = cov_c; moved[i] = True
         else:
             cov_t[i] = cov_a[i]
+    if rolling:
+        if times_by_code is None:
+            times_by_code = sample_hours(idx, ts_peaks)
+        _rolling_centres(merged, idx, mzt, tol_ppm, times_by_code, out, log)
     merged["mz_trace"] = mzt
     merged["trace_offset_ppm"] = np.where(np.isfinite(mz) & (mz > 0), (mzt - mz) / mz * 1e6, 0.0)
     merged["trace_cov_anchor"] = cov_a
@@ -688,6 +707,100 @@ def stamp_tolerance(index, centres, *, tol_ppm: float = DEFAULT_TOL_PPM,
     if not np.isfinite(sigma):
         return float(tol_ppm), float("nan")
     return float(max(tol_ppm, min(max_x * tol_ppm, k_sigma * sigma))), round(float(sigma), 3)
+
+
+def _rolling_centres(merged: pd.DataFrame, idx, mzt: np.ndarray, tol_ppm: float,
+                     times_by_code, out: dict, log) -> None:
+    """The rolling path of `recentre_ledger` (in place on `merged` and `mzt`)."""
+    from peaky.batch import centre as CE
+
+    n = len(merged)
+    merged["trace_key"] = np.arange(n, dtype=np.int64)
+    scheme = np.full(n, "", dtype=object)
+    win = np.full(n, np.nan)
+    sig = np.full(n, np.nan)
+    gam = np.full(n, np.nan)
+    res = np.full(n, np.nan)
+    span = np.full(n, np.nan)
+    tracks: dict = {}
+    if times_by_code is None or not np.isfinite(np.asarray(times_by_code, dtype=float)).any():
+        out["rolling"] = {"enabled": True, "skipped": "no timestamps on the time series"}
+        for col, arr in (("centre_scheme", scheme), ("centre_window", win), ("sigma_ppm", sig),
+                         ("gamma_ppm", gam), ("resid_ppm", res), ("track_span_ppm", span)):
+            merged[col] = arr
+        if log:
+            log("[traces] rolling centre requested but the time series carries no "
+                "timestamps -- batch centres kept")
+        return
+    tb = np.asarray(times_by_code, dtype=float)
+    for i in range(n):
+        c = mzt[i]
+        if not np.isfinite(c):
+            continue
+        mem = idx.members(c, tol_ppm)
+        if len(mem) == 0:
+            continue
+        t = tb[idx.sample[mem]]
+        good = np.isfinite(t)
+        mem, t = mem[good], t[good]
+        if len(mem) == 0:
+            continue
+        o = np.argsort(t, kind="mergesort")
+        mem, t = mem[o], t[o]
+        cen, info = CE.trace_centre(idx.mz[mem], t)
+        if info["scheme"] == "rolling":
+            mem2 = CE.rolling_members(idx, t, cen, tb, tol_ppm, float(np.median(cen)))
+            if len(mem2) >= 5:
+                t2 = tb[idx.sample[mem2]]
+                g2 = np.isfinite(t2)
+                mem2, t2 = mem2[g2], t2[g2]
+                o2 = np.argsort(t2, kind="mergesort")
+                mem, t = mem2[o2], t2[o2]
+                cen, info = CE.trace_centre(idx.mz[mem], t)
+        scheme[i] = info["scheme"]
+        win[i] = info["window"]
+        sig[i] = info["sigma"]
+        gam[i] = info["gamma"]
+        res[i] = info["resid_ppm"]
+        if info["scheme"] == "rolling":
+            med = float(np.median(cen))
+            span[i] = float(np.ptp(cen) / med * 1e6)
+            mzt[i] = med
+            tracks[i] = (t.astype(float), cen.astype(float))
+    for col, arr in (("centre_scheme", scheme), ("centre_window", win), ("sigma_ppm", sig),
+                     ("gamma_ppm", gam), ("resid_ppm", res), ("track_span_ppm", span)):
+        merged[col] = arr
+    out["tracks"] = tracks
+    n_roll = len(tracks)
+    out["rolling"] = {
+        "enabled": True, "n_rolling": int(n_roll),
+        "n_global": int((scheme == "global").sum()),
+        "median_window": (float(np.nanmedian(win[list(tracks)])) if n_roll else None),
+        "median_span_ppm": (float(np.nanmedian(span[list(tracks)])) if n_roll else None),
+        "median_resid_ppm": (float(np.nanmedian(res)) if np.isfinite(res).any() else None),
+    }
+    if log:
+        r = out["rolling"]
+        log(f"[traces] rolling centre: {n_roll} of {n} rows roll (window median "
+            f"{r['median_window']}, track span median {r['median_span_ppm']} ppm); "
+            f"median post-centring residual {r['median_resid_ppm']} ppm")
+
+
+def stamp_tolerances(merged: pd.DataFrame, *, tol_ppm: float = DEFAULT_TOL_PPM,
+                     k_sigma: float = STAMP_TOL_SIGMA, max_x: float = STAMP_TOL_MAX_X,
+                     fallback: float | None = None) -> np.ndarray:
+    """A stamping half-window PER TRACE from its own post-centring residual
+    (`resid_ppm`, the rolling path of `recentre_ledger`): the same rule as
+    `stamp_tolerance` -- max(tol_ppm, min(max_x * tol_ppm, k_sigma * resid)) --
+    applied row by row, so a tight trace gets a tight window and a wide one a
+    wide window instead of every ion sharing one batch quantile. Rows without a
+    residual get `fallback` (the batch window; `tol_ppm` when None)."""
+    fb = float(tol_ppm if fallback is None else fallback)
+    if "resid_ppm" not in merged.columns:
+        return np.full(len(merged), fb)
+    r = pd.to_numeric(merged["resid_ppm"], errors="coerce").to_numpy(dtype=float)
+    per = np.maximum(tol_ppm, np.minimum(max_x * tol_ppm, k_sigma * r))
+    return np.where(np.isfinite(r), per, fb)
 
 
 def identified_rows(ledger: pd.DataFrame) -> pd.DataFrame:
@@ -992,17 +1105,39 @@ def stamping_frame(merged: pd.DataFrame,
     return stamp
 
 
-def _nearest_ion(lmz: np.ndarray, pmz: np.ndarray, tol_ppm: float, mz_floor_da: float):
+def _nearest_ion(lmz: np.ndarray, pmz: np.ndarray, tol_ppm, mz_floor_da: float):
     """Nearest ledger m/z for every peak (searchsorted): (near, signed, ok) --
-    ledger position, peak-minus-ledger offset, and 'within the window'."""
+    ledger position, peak-minus-ledger offset, and 'within the window'.
+    `tol_ppm` is one number for every ion, or an array with one half-window per
+    ledger row (the per-trace stamping window)."""
     j = np.searchsorted(lmz, pmz)
     jl = np.clip(j - 1, 0, len(lmz) - 1)
     jr = np.clip(j, 0, len(lmz) - 1)
     near = np.where(np.abs(lmz[jl] - pmz) <= np.abs(lmz[jr] - pmz), jl, jr)
-    tol = np.maximum(pmz * tol_ppm * 1e-6, mz_floor_da)
+    tol_here = np.asarray(tol_ppm, dtype=float)[near] if np.ndim(tol_ppm) else float(tol_ppm)
+    tol = np.maximum(pmz * tol_here * 1e-6, mz_floor_da)
     signed = pmz - lmz[near]                 # + == peak above ledger mass
     ok = np.isfinite(pmz) & (np.abs(signed) <= tol)
     return near, signed, ok
+
+
+def _epoch_hours(values) -> np.ndarray:
+    """Absolute hours (since 1970) for a datetime-like column; NaN where missing.
+    Absolute, so a track measured on the batch index and a peak read from the
+    time series share an origin without either knowing the other's."""
+    t = pd.to_datetime(pd.Series(values), utc=True, errors="coerce")
+    # resolution-agnostic (a frame may carry ns, us or s timestamps)
+    return ((t - pd.Timestamp(0, tz="UTC")) / pd.Timedelta(hours=1)).to_numpy(dtype=float)
+
+
+def sample_hours(index, ts_peaks: pd.DataFrame, *, sample_col: str = "sample_item_id",
+                 time_col: str = "datetime_utc") -> np.ndarray | None:
+    """Absolute hours per PeakIndex sample code, from the time series' own
+    timestamps. None when the frame carries no `time_col`."""
+    if ts_peaks is None or time_col not in ts_peaks.columns or index is None:
+        return None
+    t = ts_peaks.drop_duplicates(sample_col).set_index(sample_col)[time_col]
+    return _epoch_hours(t.reindex(index.sample_ids).to_numpy())
 
 
 def _predicted_ratio_gate(peaks: pd.DataFrame, led: pd.DataFrame, near_known: np.ndarray,
@@ -1152,7 +1287,8 @@ def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
                    pred_ratio: tuple[float, float] = (PRED_RATIO_MIN, PRED_RATIO_MAX),
                    pred_track_min_n: int = PRED_TRACK_MIN_N,
                    pred_track_min_share: float = PRED_TRACK_MIN_SHARE,
-                   stats: dict | None = None) -> pd.DataFrame:
+                   stats: dict | None = None, tracks: dict | None = None,
+                   time_col: str = "datetime_utc") -> pd.DataFrame:
     """Stamp every time-series peak with the assigned formula/channel of the nearest
     ledger ion within tolerance. Returns a COPY of ``peaks`` with these added columns:
 
@@ -1243,7 +1379,19 @@ def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
 
     The one-to-one contest for a predicted line then runs among the surviving
     candidates only, so a shoulder that fails the gate cannot beat the real
-    satellite to the label. Pass a dict as ``stats`` to receive, under
+    satellite to the label.
+
+    PER-TRACE WINDOW AND ROLLING TRACKS (the `--rolling-centre` path). A ledger
+    column ``stamp_tol_ppm`` overrides ``tol_ppm`` row by row for the known
+    tier. ``tracks`` -- {trace_key: (hours, centres)} from `recentre_ledger`
+    with ``rolling=True``, joined through the ledger's ``trace_key`` column --
+    makes a rolling ion's window MOVE: a peak is first collected within
+    ``stamp_tol_ppm + track_span_ppm / 2`` of the ion's median centre, then
+    kept only if it lies within ``stamp_tol_ppm`` of the centre interpolated at
+    the peak's own timestamp (``time_col``, absolute hours). Its offset in the
+    one-to-one contest is the offset from that moving centre. Without
+    timestamps the tracks are ignored and the ion stamps from its median.
+    Pass a dict as ``stats`` to receive, under
     ``'predicted_tracks'``, one audit row per predicted line that had a candidate
     (PRED_TRACK_COLS: samples judged / passed, pass share, judged, kept, peaks
     stamped) -- the batch writes it as tables/predicted_satellites.csv.
@@ -1278,13 +1426,44 @@ def annotate_peaks(peaks: pd.DataFrame, ledger: pd.DataFrame, *,
             pos1 = np.flatnonzero(~is_pred)
             if len(pos1):
                 lmz1 = lmz_all[pos1]
-                nr1, sg1, ok1 = _nearest_ion(lmz1, pmz, tol_ppm, mz_floor_da)
+                # per-row window (the per-trace stamp) or the one batch window
+                ltol1 = np.full(len(pos1), float(tol_ppm))
+                if "stamp_tol_ppm" in led.columns:
+                    st = pd.to_numeric(led["stamp_tol_ppm"], errors="coerce").to_numpy(dtype=float)[pos1]
+                    ltol1 = np.where(np.isfinite(st), st, ltol1)
+                # a rolling ion is COLLECTED within its window plus half its track
+                # span, then judged against the centre at each peak's own time
+                trk1 = None
+                if tracks and "trace_key" in led.columns and time_col in out.columns:
+                    keys = pd.to_numeric(led["trace_key"], errors="coerce").to_numpy(dtype=float)[pos1]
+                    trk1 = np.array([tracks.get(int(k)) is not None if np.isfinite(k) else False
+                                     for k in keys], dtype=bool)
+                    if trk1.any():
+                        span = (pd.to_numeric(led["track_span_ppm"], errors="coerce")
+                                .to_numpy(dtype=float)[pos1] if "track_span_ppm" in led.columns
+                                else np.zeros(len(pos1)))
+                        search = np.where(trk1, ltol1 + 0.5 * np.nan_to_num(span), ltol1)
+                    else:
+                        trk1, search = None, ltol1
+                else:
+                    search = ltol1
+                nr1, sg1, ok1 = _nearest_ion(lmz1, pmz, search, mz_floor_da)
+                if trk1 is not None:
+                    ph = _epoch_hours(out[time_col].to_numpy())
+                    hit = np.flatnonzero(ok1 & trk1[nr1] & np.isfinite(ph))
+                    for r in np.unique(nr1[hit]):
+                        sel = hit[nr1[hit] == r]
+                        tt, cc = tracks[int(keys[r])]
+                        cen = np.interp(ph[sel], tt, cc)          # flat outside the track
+                        sg1[sel] = pmz[sel] - cen
+                        lim = np.maximum(pmz[sel] * ltol1[r] * 1e-6, mz_floor_da)
+                        ok1[sel] = np.abs(sg1[sel]) <= lim
                 in_win_known = ok1.copy()
                 if one_to_one and ok1.any():
                     # consensus half-window: a third of each ion's own tolerance,
                     # so two tracks separated by more than that stay resolved as
                     # separate modes
-                    halfwin = np.maximum(lmz1 * tol_ppm * 1e-6, mz_floor_da) / 3.0
+                    halfwin = np.maximum(lmz1 * ltol1 * 1e-6, mz_floor_da) / 3.0
                     ok1, dup1, _cons = _resolve_one_to_one(
                         out, ok1, nr1, sg1, len(lmz1), halfwin,
                         sample_col, height_col, consensus=consensus)

@@ -8,6 +8,28 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`--rolling-centre` (batch and pool): the adaptive centre in the trace reconciliation, a
+  stamping window per trace, and a stamp that follows a moving centre.** Off by default;
+  the default path is bit-identical to before (`tests/test_rolling_stamp.py` checks it). With
+  the flag, `timeseries.recentre_ledger` hands every merged ion's trace to `batch.centre`:
+  the per-spectrum noise `sigma_ppm`, the random-walk step `gamma_ppm` and the members'
+  scatter about their own centre `resid_ppm` land on the merged ledger with
+  `centre_scheme` / `centre_window` / `track_span_ppm`, and an ion whose drift is
+  resolvable and worth following gets a rolling centre (its `mz_trace` becomes the track's
+  median, the track itself goes to the stamp). `timeseries.stamp_tolerances` then sizes the
+  stamping half-window PER TRACE from that residual — the same
+  `max(tol, min(2 tol, 2.5 sigma))` rule as the batch window, applied row by row — instead of
+  one batch quantile for every ion (`stamp_tol_ppm` on the merged ledger; the batch window
+  stays the fallback). `annotate_peaks` reads `stamp_tol_ppm` per row and, given the tracks,
+  collects a rolling ion's candidates within its window plus half its track span and keeps
+  only those within the window of the centre interpolated at the peak's own timestamp — so
+  the window MOVES with the ion, and the one-to-one contest measures distance from the
+  moving centre. Without timestamps on the time series the rolling path is skipped and says
+  so. `batch_summary.json['traces']` records `rolling` (how many rows rolled, median window
+  and span) and `stamp_tol_per_trace`. Measured on synthetic batches: an ion wandering
+  ±12 ppm over 400 spectra is stamped in all of them with the track and in under 70 %
+  from its median; a static ion is untouched.
+
 - **`peaky mass-qc` — the batch's mass axis measured against an EXTERNAL reference.**
   Pass 1 self-calibrates on the Assigned backbone, which is circular: an axis 30 ppm wrong
   yields a self-consistent calibration and a batch of confident wrong formulas, and nothing in
