@@ -37,12 +37,13 @@ dependencies = [
     # mass-accuracy fit and the instrument-class widths. PyPI's newest
     # mascope-tools (2026.6.25) predates all of it, and the peaks endpoint only
     # started sending signal_to_noise in the same epic, so this branch pins the
-    # library by revision - the one the reference runs were scored with, which
-    # the plan's step 2.1b names. A direct reference rather than a
-    # [tool.uv.sources] entry so pip and uv install the same thing, and so this
-    # branch cannot be released by accident (PyPI refuses direct references).
+    # library by revision - the one the reference runs are scored with, which
+    # the plan's step 2.7a names: the epic's head when the reference was
+    # refreshed. A direct reference rather than a [tool.uv.sources] entry
+    # so pip and uv install the same thing, and so this branch cannot be
+    # released by accident (PyPI refuses direct references).
     # The merge into main replaces it with the released lower bound.
-    "mascope-tools @ git+https://github.com/ultra-trace-systems/mascope@fc25575daff1ada188f9f4ae3db68f3bb52b85d4#subdirectory=libraries/tools",
+    "mascope-tools @ git+https://github.com/ultra-trace-systems/mascope@49aa69ca54b97293b8d2935ebb4f6021e253286d#subdirectory=libraries/tools",
     "pandas>=2.1",
     "pyarrow>=14",          # parquet engine — the per-batch TS (*_ts.parquet) is read/written across the pipeline
     "numpy>=1.24",
@@ -72,6 +73,12 @@ Repository = "https://github.com/ultra-trace-systems/peaky"
 [project.scripts]
 peaky = "peaky.cli:main"
 mascope-assign = "peaky.cli:main"   # back-compat alias
+
+[tool.hatch.metadata]
+# hatchling refuses a direct reference in the dependencies unless told to
+# accept one, and the pin above is one: without this the branch does not
+# even install, in CI or anywhere else.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 # `peaky` is the package; `mascope_assign` is a one-line back-compat shim
