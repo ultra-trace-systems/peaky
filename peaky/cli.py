@@ -905,10 +905,13 @@ def _add_trace_first_flags(p) -> None:
                         "as one synthetic sample, which then goes through the same merge / "
                         "stamp / residual stages. Needs --resolving-power. TOF-motivated; an "
                         "Orbitrap batch keeps the file cover")
-    p.add_argument("--resolving-power", type=float, default=None,
-                   help="the instrument's resolving power (m/dm at FWHM), required with "
-                        "--trace-first: it sizes the dedup cell (0.4 HWHM) and the "
-                        "resolvability flag (e.g. 6500 for an APi-TOF)")
+    p.add_argument("--resolving-power", default=None, metavar="R|auto",
+                   help="peak width for --trace-first, which sizes the dedup cell (0.4 HWHM) "
+                        "and the resolvability flag. Default 'auto': MEASURE it from the raw "
+                        "profile of isolated peaks across the batch's mass range, which also "
+                        "reports how it scales (constant on a TOF, as m^-1/2 on an Orbitrap). "
+                        "Give a number to declare it instead (e.g. 6500), which assumes it is "
+                        "the same at every mass")
 
 
 def _add_admission_args(sp) -> None:

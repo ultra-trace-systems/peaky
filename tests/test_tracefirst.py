@@ -170,11 +170,14 @@ def test_the_batch_run_takes_the_trace_first_path(ts, tmp_path):
     assert js["trace_first"]["n_traces"] == tf["n_traces"]
 
 
-def test_trace_first_refuses_to_run_without_the_resolving_power(ts, tmp_path):
+def test_trace_first_measures_the_width_and_says_so_when_it_cannot(ts, tmp_path):
+    """No --resolving-power means MEASURE it. When the profile cannot be read --
+    here a client that serves none -- the run stops with an actionable message
+    instead of guessing a number that would size the dedup cell wrong."""
     real_connect = IO.connect
     IO.connect = lambda *a, **k: SimpleNamespace(name="stub-client")
     try:
-        with pytest.raises(ValueError, match="resolving_power"):
+        with pytest.raises(ValueError, match="could not measure the peak width"):
             AB.run(peaks=ts, ts_peaks=ts, reagent="NO3", batch="b", out_dir=str(tmp_path),
                    trace_first=True, log=lambda *a: None)
         with pytest.raises(ValueError, match="ts_peaks"):
@@ -182,6 +185,51 @@ def test_trace_first_refuses_to_run_without_the_resolving_power(ts, tmp_path):
                    trace_first=True, resolving_power=6500.0, log=lambda *a: None)
     finally:
         IO.connect = real_connect
+
+
+def test_the_width_model_is_fitted_from_profile_segments_not_declared():
+    """measure_resolution against a synthetic server: Gaussian segments whose
+    width follows a known law. It must recover both terms -- the width AND how
+    it scales -- so a TOF (constant R) and an Orbitrap (R ~ m^-1/2) are told
+    apart without being declared."""
+    rng = np.random.default_rng(5)
+    for exponent, r_at_200 in ((1.0, 6500.0), (1.5, 150000.0)):
+        coef = (200.0 ** (1 - exponent)) / r_at_200          # FWHM(200) = 200 / R
+        mzs = np.geomspace(60, 600, 40)
+        peaks = pd.DataFrame({"peak_id": [f"p{i}" for i in range(len(mzs))],
+                              "mz": mzs, "height": 100.0})
+
+        def server(_sid, lo, hi, coef=coef, exponent=exponent):
+            m = 0.5 * (lo + hi)
+            fwhm = coef * m ** exponent
+            sigma = fwhm / 2.3548
+            # sample the profile at a realistic density (~10 points per FWHM):
+            # a fixed point count over a ppm-proportional window undersamples the
+            # narrow low-mass peaks and flattens the very exponent under test
+            n = int(np.clip((hi - lo) / (fwhm / 10.0), 51, 4001))
+            x = np.linspace(lo, hi, n)
+            return pd.DataFrame({"mz": x, "intensity": np.exp(-0.5 * ((x - m) / sigma) ** 2)})
+
+        res = TFT.measure_resolution(None, "s", peaks=peaks, fetch_peaks=lambda *a, **k: peaks,
+                                     get_spectrum=server, log=lambda *a: None)
+        assert res is not None and res.source == "measured" and res.n_peaks >= 5
+        assert res.exponent == pytest.approx(exponent, abs=0.08), (exponent, res.exponent)
+        assert res.r_at(200.0) == pytest.approx(r_at_200, rel=0.05)
+        # and the dedup cell follows the instrument instead of one constant
+        wide, narrow = res.dedup_ppm(600.0), res.dedup_ppm(200.0)
+        assert (wide > 1.3 * narrow) if exponent > 1.2 else (abs(wide - narrow) < 0.1 * narrow)
+
+
+def test_a_measurement_that_cannot_be_made_returns_none_rather_than_raising():
+    peaks = pd.DataFrame({"peak_id": ["a"], "mz": [100.0], "height": [1.0]})
+    assert TFT.measure_resolution(None, "s", peaks=peaks, log=lambda *a: None) is None
+    def boom(*a, **k):
+        raise RuntimeError("server down")
+    assert TFT.measure_resolution(None, "s", fetch_peaks=boom, log=lambda *a: None) is None
+    many = pd.DataFrame({"peak_id": [f"p{i}" for i in range(50)],
+                         "mz": np.geomspace(60, 600, 50), "height": 1.0})
+    assert TFT.measure_resolution(None, "s", peaks=many, fetch_peaks=lambda *a, **k: many,
+                                  get_spectrum=lambda *a, **k: None, log=lambda *a: None) is None
 
 
 def test_offline_mechanism_lookups_resolve_only_the_declared_channels():
@@ -343,3 +391,22 @@ def test_a_mismatched_resolving_power_is_noted_on_the_sample_not_swallowed(ts):
     assert not s.spacing["ok"] and s.summary()["spacing_bound"]["ratio"] > 10
     assert any("different instrument" in n for n in s.notes)
     assert any("WARNING" in ln for ln in lines)
+
+
+def test_the_model_holds_mascopes_own_resolution_functions():
+    """Mascope fits a resolution function per instrument -- a rational polynomial
+    for a TOF, an inverse square root for an Orbitrap -- and stores it against the
+    instrument config. It is not reachable with a service token today, so the
+    model just has to be able to HOLD it for when it is."""
+    a, b = 1.0e-4, 2.0e-3
+    tof = TFT.Resolution.from_mascope([a, b], "tofwerk")
+    for m in (100.0, 400.0):
+        assert tof.fwhm(m) == pytest.approx(a * m + b)          # R = m / (a m + b)
+        assert tof.r_at(m) == pytest.approx(m / (a * m + b))
+    orbi = TFT.Resolution.from_mascope([2.4e6], "orbitrap")
+    for m in (200.0, 800.0):
+        assert orbi.r_at(m) == pytest.approx(2.4e6 / np.sqrt(m), rel=1e-6)
+    assert orbi.r_at(800.0) == pytest.approx(orbi.r_at(200.0) / 2, rel=1e-6)
+    assert tof.source == "mascope" and orbi.source == "mascope"
+    with pytest.raises(ValueError):
+        TFT.Resolution.from_mascope([], "tofwerk")

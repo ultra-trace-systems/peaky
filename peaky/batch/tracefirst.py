@@ -113,7 +113,7 @@ TRACE_COLS = ["peak_id", "mz_raw", "wave_ppm", "n_members", "trace_occurrence", 
 
 
 # ------------------------------------------------------------------ resolution
-def spacing_bound(ts_peaks: pd.DataFrame, resolving_power: float, *,
+def spacing_bound(ts_peaks: pd.DataFrame, resolving_power, *,
                   sample_col: str = "sample_item_id", mz_col: str = "mz",
                   q: float = 0.01) -> dict:
     """What the spectra themselves say about the peak width, against the
@@ -140,14 +140,192 @@ def spacing_bound(ts_peaks: pd.DataFrame, resolving_power: float, *,
     return out
 
 
-def hwhm(mz: float, resolving_power: float) -> float:
-    """Half width at half maximum (Th) at `mz` for a constant-R instrument."""
-    return 0.5 * float(mz) / float(resolving_power)
+@dataclass(frozen=True)
+class Resolution:
+    """How wide a peak is, as a function of m/z: FWHM(m) = coef * m ** exponent.
+
+    A single resolving power is a model, not a fact -- it says FWHM is
+    proportional to m, i.e. R is the same at every mass. That holds on a TOF
+    (measured exponent 1.08 on a field batch) and fails on an Orbitrap, whose R
+    falls as m^-1/2: measured across one spectrum, 204 000 at m/z 152 and
+    96 000 at m/z 558, a factor of two that a scalar cannot express and that
+    would size the dedup cell wrong at both ends.
+
+    `from_r(R)` is the scalar model, kept because a caller who knows their
+    instrument may say so; `measure` (batch.tracefirst.measure_resolution) fits
+    both terms from the raw profile and reports which it found."""
+
+    coef: float            # FWHM(m) = coef * m ** exponent + offset, in Th
+    exponent: float = 1.0  # 1.0 = constant R (TOF); 1.5 = R ~ m^-1/2 (Orbitrap)
+    offset: float = 0.0    # the TOF rational form's constant width term
+    n_peaks: int = 0       # peaks the fit used (0 = declared, not measured)
+    r_spread: tuple = ()   # (p25, p75) of the per-peak R, when measured
+    source: str = "declared"
+
+    @classmethod
+    def from_r(cls, resolving_power: float) -> "Resolution":
+        """The constant-R model: FWHM(m) = m / R."""
+        r = float(resolving_power)
+        if not np.isfinite(r) or r <= 0:
+            raise ValueError(f"resolving power must be a positive number, got {resolving_power!r}")
+        return cls(coef=1.0 / r, exponent=1.0)
+
+    @classmethod
+    def coerce(cls, value) -> "Resolution":
+        return value if isinstance(value, cls) else cls.from_r(value)
+
+    @classmethod
+    def from_mascope(cls, coefficients, instrument_type: str = "") -> "Resolution":
+        """Mascope's own instrument resolution function, as its processors fit it
+        (`mascope_signal.instrument_func.fit`): a TOF gets the rational polynomial
+        R(m) = m / (a*m + b), so FWHM = a*m + b; an Orbitrap gets R(m) = a / sqrt(m),
+        so FWHM = m**1.5 / a. Both are exactly representable here, so the day the
+        server exposes them to a service token they drop straight in -- today the
+        /api/instrument_configs route answers only a user session."""
+        c = [float(x) for x in coefficients]
+        if len(c) >= 2 and "orbi" not in instrument_type.lower():
+            return cls(coef=c[0], exponent=1.0, offset=c[1], source="mascope")
+        if len(c) == 1:
+            return cls(coef=1.0 / c[0], exponent=1.5, source="mascope")
+        raise ValueError(f"unrecognised resolution-function coefficients: {coefficients!r}")
+
+    def fwhm(self, mz: float) -> float:
+        """Peak width at half maximum, in Th."""
+        return float(self.coef) * float(mz) ** float(self.exponent) + float(self.offset)
+
+    def hwhm(self, mz: float) -> float:
+        return 0.5 * self.fwhm(mz)
+
+    def r_at(self, mz: float) -> float:
+        """The resolving power AT this mass -- constant only when exponent is 1."""
+        return float(mz) / self.fwhm(mz)
+
+    def dedup_ppm(self, mz: float) -> float:
+        """The dedup half-window in ppm at `mz`: 0.4 HWHM, the fit floor."""
+        return FIT_FLOOR_HWHM * self.hwhm(mz) / float(mz) * 1e6
+
+    def describe(self) -> str:
+        at = f"R = {self.r_at(200.0):.0f} at m/z 200"
+        if abs(self.exponent - 1.0) > 0.15:
+            at += f", {self.r_at(600.0):.0f} at m/z 600 (FWHM ~ m^{self.exponent:.2f})"
+        if self.n_peaks:
+            at += f" [fitted on {self.n_peaks} profile peaks"
+            if self.r_spread:
+                at += f", per-peak IQR {self.r_spread[0]:.0f}-{self.r_spread[1]:.0f}"
+            at += "]"
+        return at
+
+    def as_dict(self) -> dict:
+        return {"coef": float(self.coef), "exponent": float(self.exponent),
+                "offset": float(self.offset),
+                "r_at_200": float(self.r_at(200.0)), "r_at_600": float(self.r_at(600.0)),
+                "n_peaks": int(self.n_peaks), "r_spread": list(self.r_spread),
+                "source": self.source}
 
 
-def dedup_ppm(mz: float, resolving_power: float) -> float:
-    """The dedup half-window: 0.4 HWHM in ppm (constant for constant R)."""
-    return FIT_FLOOR_HWHM * hwhm(mz, resolving_power) / float(mz) * 1e6
+def _profile_fwhm(x, y):
+    """FWHM of the tallest peak in a profile segment, by half-maximum crossings."""
+    x = np.asarray(x, dtype=float); y = np.asarray(y, dtype=float)
+    if len(x) < 8 or not np.isfinite(y).any():
+        return None
+    k = int(np.argmax(y)); half = y[k] / 2.0
+    left = np.where(y[:k] <= half)[0]
+    right = np.where(y[k:] <= half)[0]
+    if not len(left) or not len(right):
+        return None                                  # apex on the segment's edge
+    li, ri = int(left[-1]), int(k + right[0])
+    xl = np.interp(half, [y[li], y[li + 1]], [x[li], x[li + 1]])
+    xr = np.interp(half, [y[ri], y[ri - 1]], [x[ri], x[ri - 1]])
+    return float(xr - xl) if xr > xl else None
+
+
+def measure_resolution(client, sample_id: str, peaks: pd.DataFrame | None = None, *,
+                       fetch_peaks=None, get_spectrum=None, n_bands: int = 5,
+                       per_band: int = 2, iso_ppm=(400.0, 200.0, 100.0),
+                       window_ppm: float = 600.0, min_peaks: int = 3,
+                       log=print) -> "Resolution | None":
+    """Measure the peak-width model from the sample's RAW PROFILE.
+
+    Picks the brightest well-isolated peak in each of `n_bands` log-spaced mass
+    bands, fetches a narrow profile window around each, measures the FWHM at
+    half-maximum crossings, and fits log FWHM against log m/z -- so the width
+    model and the instrument class come out of the data instead of a flag.
+    Returns None (and says why) when too few peaks yield a usable profile.
+
+    On a TOF the profile is the instrument's own. On an Orbitrap the served
+    profile is a Gaussian rendering built from each centroid's stored
+    resolution, so this reads that recorded resolution back -- right for sizing
+    a window, and not evidence about the picker.
+    """
+    from peaky.io import io_mascope as IO
+    fetch_peaks = fetch_peaks or IO.fetch_peaks
+    get_spectrum = get_spectrum or (lambda sid, lo, hi: client.samples.get_spectrum(
+        sid, mz_min=lo, mz_max=hi))
+    try:
+        pk = peaks if peaks is not None else fetch_peaks(client, sample_id)
+    except Exception as exc:                     # a measurement may fail; a run may not
+        log(f"[resolution] could not read {sample_id}'s peaks ({type(exc).__name__})")
+        return None
+    if pk is None or not len(pk) or "mz" not in pk.columns:
+        log("[resolution] no peaks to measure from")
+        return None
+    d = pk.drop_duplicates("peak_id") if "peak_id" in pk.columns else pk
+    d = d[["mz", "height"]].dropna().sort_values("mz")
+    if len(d) < 20:
+        log("[resolution] too few peaks to measure from")
+        return None
+    mz = d["mz"].to_numpy(float); h = d["height"].to_numpy(float)
+    gapL = np.r_[np.inf, np.diff(mz)] / mz * 1e6
+    gapR = np.r_[np.diff(mz), np.inf] / mz * 1e6
+    lo, hi = np.quantile(mz, 0.02), np.quantile(mz, 0.98)
+    edges = np.exp(np.linspace(np.log(max(lo, 1.0)), np.log(max(hi, lo * 1.1)), n_bands + 1))
+    picks: list[float] = []
+    for a, b in zip(edges[:-1], edges[1:]):
+        band = (mz >= a) & (mz < b)
+        for iso in iso_ppm:
+            sel = band & (gapL > iso) & (gapR > iso)
+            if sel.any():
+                order = np.argsort(-np.where(sel, h, -np.inf))[:per_band]
+                picks += [float(mz[i]) for i in order if sel[i]]
+                break
+    rows = []
+    for m in picks:
+        w = m * window_ppm * 1e-6
+        try:
+            sp = get_spectrum(sample_id, m - w, m + w)
+        except Exception:
+            continue
+        if sp is None or not len(sp):
+            continue
+        f = _profile_fwhm(sp["mz"].to_numpy(), sp["intensity"].to_numpy())
+        if f and f > 0:
+            rows.append((m, f))
+    if len(rows) < min_peaks:
+        log(f"[resolution] only {len(rows)} of {len(picks)} probes gave a usable profile "
+            f"(need {min_peaks}); pass --resolving-power instead")
+        return None
+    a_mz = np.array([r[0] for r in rows]); a_f = np.array([r[1] for r in rows])
+    exponent, intercept = np.polyfit(np.log(a_mz), np.log(a_f), 1)
+    exponent = float(np.clip(exponent, 0.5, 2.5))
+    coef = float(np.exp(intercept))
+    per_r = a_mz / a_f
+    res = Resolution(coef=coef, exponent=exponent, n_peaks=len(rows),
+                     r_spread=(float(np.quantile(per_r, 0.25)), float(np.quantile(per_r, 0.75))),
+                     source="measured")
+    log(f"[resolution] measured from the raw profile of {len(rows)} isolated peaks "
+        f"(m/z {a_mz.min():.0f}-{a_mz.max():.0f}): {res.describe()}")
+    return res
+
+
+def hwhm(mz: float, resolving_power) -> float:
+    """Half width at half maximum (Th) at `mz`. `resolving_power` is a number
+    (constant R) or a `Resolution` model."""
+    return Resolution.coerce(resolving_power).hwhm(mz)
+
+
+def dedup_ppm(mz: float, resolving_power) -> float:
+    """The dedup half-window at `mz`: 0.4 HWHM in ppm."""
+    return Resolution.coerce(resolving_power).dedup_ppm(mz)
 
 
 _SIG_PER_HWHM = 1.0 / 1.1774396
@@ -183,7 +361,7 @@ def classify_pair(mz_a: float, h_a: float, mz_b: float, h_b: float, resolving_po
     return {"sep_hwhm": sep, "d_crit_hwhm": dc, "resolvability": cls, "height_ratio": ratio}
 
 
-def stamp_resolvability(traces: pd.DataFrame, resolving_power: float) -> pd.DataFrame:
+def stamp_resolvability(traces: pd.DataFrame, resolving_power) -> pd.DataFrame:
     """Every trace's separability from its nearest neighbour within 8 HWHM. A
     FLAG (and a tier input), never a filter."""
     t = traces.sort_values("mz").reset_index(drop=True)
@@ -228,9 +406,9 @@ def build_traces(index, hours, *, resolving_power: float, tol_ppm: float,
     """One row per trace: seeds (peaks recurring in >= seed_occ of spectra,
     brightest first, each consuming its dedup cell) and the satellite positions
     of the persistent ones. See the module note for the gates."""
-    R = float(resolving_power)
+    R = Resolution.coerce(resolving_power)
     tol = float(tol_ppm)
-    dedup = lambda m: dedup_ppm(m, R)
+    dedup = R.dedup_ppm
     fill = FILL_FRAC * tol
     occ = index.occurrence()
     n = index.n_samples
@@ -306,7 +484,7 @@ def build_traces(index, hours, *, resolving_power: float, tol_ppm: float,
         take(index.mean_shift(float(index.mz[i]), tol_ppm=tol, max_drift_ppm=tol), "seed", MIN_MEMBERS)
     n_seed = len(rows)
     rej_seed = [q for k, q, _, _ in rejected if k == "seed"]
-    log(f"[traces] R={R:g}: dedup {FIT_FLOOR_HWHM} HWHM = {dedup(200.0):.1f} ppm; membership "
+    log(f"[traces] {R.describe()}: dedup {FIT_FLOOR_HWHM} HWHM = {dedup(200.0):.1f} ppm; membership "
         f"+-{tol:g} ppm; a uniform fill reads {fill:.2f} ppm; gate rejects a seed whose "
         f"members cannot reject uniform (KS x sqrt(n) < {KS_CRIT}) unless occurrence >= "
         f"{KEEP_OCC:.0%}")
@@ -389,7 +567,7 @@ class TraceSample:
     occurrence: pd.DataFrame       # admission table
     qc: dict | None                # mass-qc verdict (None: no reference table)
     tol_ppm: float
-    resolving_power: float
+    resolution: "Resolution"
     n_spectra: int
     picker_floor_cps: float | None = None
     spacing: dict | None = None
@@ -400,8 +578,9 @@ class TraceSample:
         return {"n_traces": int(len(t)), "n_seeds": int((t["kind"] == "seed").sum()) if len(t) else 0,
                 "n_satellites": int(t["kind"].astype(str).str.startswith("sat").sum()) if len(t) else 0,
                 "n_spectra": int(self.n_spectra), "membership_ppm": float(self.tol_ppm),
-                "resolving_power": float(self.resolving_power),
-                "dedup_ppm": float(dedup_ppm(200.0, self.resolving_power)),
+                "resolution": self.resolution.as_dict(),
+                "resolving_power": float(self.resolution.r_at(200.0)),
+                "dedup_ppm": float(self.resolution.dedup_ppm(200.0)),
                 "n_rolling": int((t["centre_scheme"] == "rolling").sum()) if len(t) else 0,
                 "n_fills_kept": int(t["fills_window"].fillna(False).astype(bool).sum()) if len(t) else 0,
                 "n_wave_corrected": int((t["wave_ppm"] != 0).sum()) if "wave_ppm" in t.columns else 0,
@@ -418,11 +597,12 @@ class TraceSample:
 
 
 def build_trace_sample(ts_peaks: pd.DataFrame, *, sample_id: str, reagent: str,
-                       resolving_power: float, tol_ppm: float | None = None,
+                       resolving_power, tol_ppm: float | None = None,
                        seed_occ: float = SEED_OCC, sample_col: str = "sample_item_id",
                        time_col: str = "datetime_utc", log=print) -> TraceSample:
     """Traces -> mass-qc -> membership -> gate -> wave -> one synthetic sample."""
     notes: list[str] = []
+    res = Resolution.coerce(resolving_power)      # a number, or a measured model
     idx = TR.PeakIndex(ts_peaks, tol_ppm=MEMBER_MIN_PPM, sample_col=sample_col)
     hours = sample_hours(idx, ts_peaks, sample_col=sample_col, time_col=time_col)
     if hours is None or not np.isfinite(hours).any():
@@ -444,7 +624,7 @@ def build_trace_sample(ts_peaks: pd.DataFrame, *, sample_id: str, reagent: str,
         qc = MQ.verdict(table, idx.n_samples, tof=True)
         MQ.report(table, qc, log=log)
         sig = qc.get("median_sigma_ppm")
-    cell = dedup_ppm(200.0, resolving_power)
+    cell = res.dedup_ppm(200.0)
     half = cell / 2.0
     if tol_ppm is None:
         # the floor is the validated TOF cap -- but never wider than half the
@@ -462,10 +642,10 @@ def build_trace_sample(ts_peaks: pd.DataFrame, *, sample_id: str, reagent: str,
         idx = TR.PeakIndex(ts_peaks, tol_ppm=tol, sample_col=sample_col)
     area_idx = (TR.PeakIndex(ts_peaks, tol_ppm=tol, sample_col=sample_col, height_col="area")
                 if "area" in ts_peaks.columns else None)
-    traces = build_traces(idx, hours, resolving_power=resolving_power, tol_ppm=tol,
+    traces = build_traces(idx, hours, resolving_power=res, tol_ppm=tol,
                           seed_occ=seed_occ, area_index=area_idx, log=log)
     if len(traces):
-        traces = stamp_resolvability(traces, resolving_power)
+        traces = stamp_resolvability(traces, res)
         traces = apply_wave(traces, qc, log=log)
         log(f"[traces] resolvability {traces['resolvability'].value_counts().to_dict()}")
     else:
@@ -476,9 +656,9 @@ def build_trace_sample(ts_peaks: pd.DataFrame, *, sample_id: str, reagent: str,
         notes.append("no traces built")
     from peaky.assignment import passes as PA
     floor = float(PA.noise_edge(ts_peaks["height"])) if "height" in ts_peaks.columns and len(ts_peaks) else None
-    sb = spacing_bound(ts_peaks, resolving_power, sample_col=sample_col)
+    sb = spacing_bound(ts_peaks, res, sample_col=sample_col)
     if sb["ratio"] is not None:
-        line = (f"R = {resolving_power:g} puts HWHM at {sb['hwhm_ppm']:.2f} ppm; the closest two "
+        line = (f"{res.describe()} puts HWHM at {sb['hwhm_ppm']:.2f} ppm; the closest two "
                 f"maxima this picker reports are {sb['d_min_ppm']:.2f} ppm apart "
                 f"({sb['ratio']:.2f} HWHM)")
         if sb["ok"]:
@@ -490,7 +670,7 @@ def build_trace_sample(ts_peaks: pd.DataFrame, *, sample_id: str, reagent: str,
             notes.append(msg)
             log(f"[traces] WARNING: {msg}")
     if cell <= HI_RES_CELL_PPM:
-        msg = (f"R = {resolving_power:g} puts the resolution floor at {cell:.2f} ppm: on a "
+        msg = (f"{res.describe()} puts the resolution floor at {cell:.2f} ppm: on a "
                f"high-resolution instrument a per-file mass is already good to a fraction of a "
                f"ppm, so the per-file route has little to lose to. Trace-first is a TOF remedy; "
                f"it will run, but expect a reorganisation, not a gain")
@@ -499,7 +679,7 @@ def build_trace_sample(ts_peaks: pd.DataFrame, *, sample_id: str, reagent: str,
     log(f"[traces] {len(traces)} traces -> synthetic sample {sample_id!r}")
     return TraceSample(sample_id=sample_id, peaks=synthetic_sample(traces, sample_id), traces=traces,
                        occurrence=occurrence_table(traces, tol, idx.n_samples), qc=qc, tol_ppm=tol,
-                       resolving_power=float(resolving_power), n_spectra=int(idx.n_samples),
+                       resolution=res, n_spectra=int(idx.n_samples),
                        picker_floor_cps=floor, spacing=sb, notes=notes)
 
 
