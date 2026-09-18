@@ -18,7 +18,7 @@ Run: python3 tests/test_privacy.py   (or pytest)
 """
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts import privacy_scan as PS  # noqa: E402
@@ -87,6 +87,22 @@ check("several classes on one line are all reported",
 _hits = PS.scan_text("Validated against the run on hub.mascope.app", "PR body")  # privacy-ok: invented
 check("PR text scans the same way, and says where the finding is",
       len(_hits) == 1 and _hits[0].path == "PR body" and _hits[0].line == 1, _hits)
+
+
+# a Windows checkout hands scan_file '\'-separated paths, and ALLOWED_PATHS is spelled
+# with '/'. A pure Windows path behaves the same on every OS, so Linux CI pins this
+# too; each such "file" holds an invented id, so only the allowlist keeps it quiet.
+class _WinFile(PureWindowsPath):
+    def read_text(self, encoding=None):
+        return 'BATCH = "QrmZ4tLpV8nKdW2s"'                                  # privacy-ok: invented
+
+
+_win = _WinFile(r"C:\src\peaky")
+check("an allowlisted file is skipped whatever the path separator",
+      PS.scan_file(_win / r"tests\fixtures\match_tree.json", _win) == [])
+_win_hits = PS.scan_file(_win / r"tests\fixtures\other.json", _win)
+check("... and any other file is scanned, and reported by its '/' path",
+      [h.path for h in _win_hits] == ["tests/fixtures/other.json"], _win_hits)
 
 # ---------------------------------------------------------------------------
 # 2. the tree itself
