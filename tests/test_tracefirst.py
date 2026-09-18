@@ -437,3 +437,90 @@ def test_an_orbitrap_batch_fits_its_wave_in_frequency_not_flight_time(ts, monkey
         TFT.build_trace_sample(ts, sample_id="s", reagent="NO3", resolving_power=res,
                                log=lambda *a: None)
         assert seen == [expect]
+
+
+def test_the_fill_test_separates_an_ion_from_a_fill_at_every_member_count():
+    """The property the old statistic did not have.
+
+    It normalised by the members' OWN range, which divides out the width -- so a
+    real ion and a true fill both read KS ~ 0.21-0.25 and `KS * sqrt(n)` was a
+    disguised member count. Measured on the shipped code, a real ion was called a
+    fill 100% of the time at n=10 and 94% at n=40.
+    """
+    rng = np.random.default_rng(0)
+    W = 10.36
+    for n in (10, 20, 40, 80, 200):
+        ion = TFT.fill_ratio(rng.normal(0.0, 1.35, n), W)
+        fill = TFT.fill_ratio(rng.uniform(-W, W, n), W)
+        assert ion < TFT.FILL_SIGMA_FRAC <= fill, f"n={n}: ion {ion:.2f}, fill {fill:.2f}"
+    # and the statistic means what it says: a fill reads ~1, an ion reads its
+    # own sigma as a fraction of what a fill would give
+    assert 0.85 < TFT.fill_ratio(rng.uniform(-W, W, 400), W) < 1.15
+    assert abs(TFT.fill_ratio(rng.normal(0.0, 1.35, 400), W) - 1.35 / (TFT.FILL_FRAC * W)) < 0.05
+    assert TFT.fill_ratio([0.1, -0.1], W) == 0.0          # too few points to judge
+
+
+def test_a_real_ion_with_few_members_is_not_thrown_away_as_a_fill():
+    """A tight ion in 12 of 230 spectra is exactly what the old gate destroyed:
+    it had no power at that n, and read 'cannot reject uniform' as 'is a fill'."""
+    rng = np.random.default_rng(4)
+    W = 10.36
+    for n in (12, 15, 25):
+        offsets = rng.normal(0.0, 1.35, n)
+        assert TFT.fill_ratio(offsets, W) < TFT.FILL_SIGMA_FRAC
+    # an ion as wide as half the window is genuinely ambiguous and may go either
+    # way -- that is a physical limit, not a test failure; it must not crash
+    assert TFT.fill_ratio(rng.normal(0.0, 5.0, 40), W) > 0.0
+
+
+def _episode_batch(rng, n_spectra=200, mz_e=301.1234, mz_s=411.2345, scattered=True):
+    """A batch with a dim picked-noise floor (so the noise edge is realistic), a
+    persistent background, one contiguous episode and optionally the same number
+    of detections scattered across the campaign."""
+    rows = []
+    for s in range(n_spectra):
+        for mz in (150.0 + 0.001 * s, 250.5, 350.75):
+            rows.append((f"s{s:03d}", mz * (1 + rng.normal(0, 2e-6)), 40.0))
+        for _ in range(12):                        # the picker's own floor
+            rows.append((f"s{s:03d}", float(rng.uniform(120.0, 500.0)), float(rng.uniform(0.5, 2.0))))
+        if 90 <= s < 97:
+            rows.append((f"s{s:03d}", mz_e * (1 + rng.normal(0, 2e-6)), 60.0))
+        if scattered and s in (5, 33, 61, 98, 140, 171, 195):
+            rows.append((f"s{s:03d}", mz_s * (1 + rng.normal(0, 2e-6)), 60.0))
+    ts = pd.DataFrame(rows, columns=["sample_item_id", "mz", "height"])
+    ts["datetime_utc"] = pd.to_datetime(
+        [int(x[1:]) for x in ts["sample_item_id"]], unit="h", utc=True)
+    ts["area"] = ts["height"]
+    return ts
+
+
+def test_a_short_bright_episode_seeds_a_trace_but_the_same_count_scattered_does_not():
+    """The seed floor asks an ion to recur across the whole batch, which a plume
+    never does. An ion in 7 CONSECUTIVE spectra of 200 is 3.5% occurrence -- under
+    the 5% floor -- and used never to become a trace at all."""
+    ts = _episode_batch(np.random.default_rng(7))
+    s = TFT.build_trace_sample(ts, sample_id="epi", reagent="Ur",
+                               resolving_power=60000.0, log=lambda *a: None)
+    t = s.traces
+    near = lambda m: t[(t["mz"] - m).abs() / m * 1e6 < 15]
+    epi, scat = near(301.1234), near(411.2345)
+    assert len(epi) == 1 and epi.iloc[0]["kind"] == "episode"
+    assert epi.iloc[0]["trace_occurrence"] < TFT.SEED_OCC       # under the seed floor
+    assert epi.iloc[0]["episode_span"] <= TFT.EPISODE_IQR
+    assert len(scat) == 0, "detections scattered across the campaign are not an episode"
+
+
+def test_the_episode_pass_can_be_turned_off_and_never_outranks_a_persistent_ion():
+    ts = _episode_batch(np.random.default_rng(8), scattered=False)
+    idx = TFT.TR.PeakIndex(ts, tol_ppm=12.0, sample_col="sample_item_id")
+    hours = TFT.sample_hours(idx, ts, sample_col="sample_item_id", time_col="datetime_utc")
+    kw = dict(resolving_power=60000.0, tol_ppm=12.0, log=lambda *a: None)
+    off = TFT.build_traces(idx, hours, episodes=False, **kw)
+    on = TFT.build_traces(idx, hours, episodes=True, **kw)
+    assert (off["kind"] == "episode").sum() == 0
+    assert (on["kind"] == "episode").sum() >= 1
+    assert any(abs(m - 301.1234) / 301.1234 * 1e6 < 15
+               for m in on[on["kind"] == "episode"]["mz"])
+    # the persistent ions are seeded either way, and identically: the episode pass
+    # runs second and can never take a cell a persistent ion would have had
+    assert off[off["kind"] == "seed"]["mz"].tolist() == on[on["kind"] == "seed"]["mz"].tolist()

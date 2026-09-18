@@ -23,13 +23,24 @@ The rules, each measured on a month-long TOF batch before it was written down:
   * a seed whose members FILL their window is not an ion: a nearest-peak-per-
     spectrum collection in +-W is UNIFORM across the window (robust sd 0.74 W),
     and the seeds that clear a 5 % occurrence gate alone pile up exactly there.
-    The test is the shape, not the width -- a Kolmogorov-Smirnov statistic of
-    the members against a uniform on their own range, so it is free of the
-    window and of the instrument's noise: a seed that cannot reject uniform at
-    p ~ 0.001 is rejected, unless it recurs in half the spectra (that is a
-    blended peak, flagged `fills_window`, to tier-cap, not to drop). A real ion
-    dimmer than the window is wide -- sigma above W/2 -- also reads uniform,
-    which is what the 4-sigma membership rule is for.
+    The test is the WIDTH: a seed whose members scatter as widely as a uniform
+    fill of the window would is rejected, unless it recurs in half the spectra
+    (that is a blended peak, flagged `fills_window`, to tier-cap, not to drop).
+    A real ion dimmer than the window is wide -- sigma near W/2 -- and is
+    genuinely indistinguishable from a fill there; that is the physical limit
+    the 4-sigma membership rule exists to keep us away from.
+
+    This used to be a Kolmogorov-Smirnov statistic of the members against a
+    uniform ON THEIR OWN RANGE, chosen to be "free of the window and of the
+    instrument's noise". Dividing by the observed range is what made it
+    useless: it scales away the very width that separates an ion from a fill,
+    so the statistic no longer depends on sigma at all (a sigma = 1.35 ppm ion
+    and a true fill both read KS ~ 0.21-0.25) and KS * sqrt(n) becomes a
+    disguised member count. Measured: at n = 10 a real ion was called a fill
+    100 % of the time, at n = 40 still 94 %, and only above n ~ 86 did anything
+    pass. On a 230-spectrum TOF batch that silently made the rule "keep an ion
+    only if it occurs in ~37 % of spectra". It also read "cannot reject
+    uniform" as "is a fill", which turns no evidence into a rejection.
   * a satellite position (13C, 34S, 81Br, 37Cl, 13C2, 18O of every trace
     present in >= 10 % of spectra) needs 20 members and must co-occur with its
     parent in 60 % of its spectra; NO residual gate on it, because a dim
@@ -65,11 +76,33 @@ SEED_OCC = 0.05          # a peak seeds a trace when it recurs in >= this share 
 MIN_MEMBERS = 10
 MIN_SAT_MEMBERS = 20
 FIT_FLOOR_HWHM = 0.4     # Cubison & Jimenez (2015): below it two peaks are one observable
-FILL_FRAC = 0.74         # robust sd of a uniform fill of +-W, in units of W (reported)
-KS_CRIT = 1.95           # Kolmogorov-Smirnov statistic x sqrt(n) below which the members
-                         # are indistinguishable from a uniform fill of their own range
-                         # (two-sided p ~ 0.001): a seed that fails to reject uniform is noise
+FILL_FRAC = 0.74         # robust sd of a uniform fill of +-W, in units of W
+FILL_SIGMA_FRAC = 0.70   # ... and a seed reads as a fill at this fraction of it. Chosen
+                         # from both sides: a real ion (measured sigma median 1.35 ppm,
+                         # p90 3.03) is never rejected, while >= 91 % of true fills with
+                         # 30+ members are caught. Fills with ~12 members still leak
+                         # through ~30 % of the time -- there is no width test with power
+                         # that low, and MIN_MEMBERS is the floor that bounds it.
 KEEP_OCC = 0.5           # ... unless it recurs in this share of spectra (blended, not noise)
+# The EPISODE path. The seed floor asks an ion to recur across the batch, which a
+# short plume never does: on a four-day mixed-reagent TOF batch, 41 of the ions a
+# file cover found in >=2 files sit below a 5 % occurrence floor, and 24 of those
+# have their detections packed into one stretch of the campaign. Peaky's per-file admission has admitted
+# a peak by HEIGHT or by PERSISTENCE for as long as it has existed; the trace
+# seeder only ever had the persistence half. This is the other half.
+EPISODE_OCC = 0.01       # an episode may sit this far below the seed floor
+EPISODE_MIN_MEMBERS = 5  # below this, contiguity in time cannot be judged at all
+EPISODE_IQR = 0.05       # its detections' interquartile span, over the campaign's length.
+                         # A run of k CONSECUTIVE spectra reads ~k/2n (0.011 at k=5,
+                         # 0.024 at k=11, the most the episode path ever sees), while k
+                         # detections scattered at random read 0.37-0.43. At this cut a
+                         # scatter slips through 1.9 % of the time at k=5 and 0.01 % at
+                         # k=8 -- the loosest point on the curve is the smallest k, which
+                         # is why EPISODE_MIN_MEMBERS exists.
+EPISODE_X_EDGE = 2.0     # and it must reach this multiple of the batch's noise edge
+                         # somewhere. Brightness is the WEAKER half of this test -- of the
+                         # 24 recoverable ions only 10 reach 3x and 5 reach 5x -- so it is
+                         # set to exclude the floor, not to select plumes.
 SAT_COOCCUR = 0.6        # share of a satellite's spectra that must hold its parent
 SAT_PARENT_OCC = 0.10    # satellites are probed for traces at least this persistent
 MEMBER_SIGMA_X = 4.0     # membership half-window = this x the reference ions' sigma ...
@@ -108,7 +141,7 @@ TRACE_DEFAULTS = {"search_ppm": 12.0, "ppm": 5.0, "cal_sigma_floor": 3.0}
 TRACE_TOF_KNOBS = {"pass0_ppm": 8.0, "audit_sat_ppm": 15.0}
 TRACE_COLS = ["peak_id", "mz_raw", "wave_ppm", "n_members", "trace_occurrence", "sigma_ppm",
               "gamma_ppm", "centre_window", "centre_scheme", "resid_ppm", "se_ppm", "span_ppm",
-              "fills_window", "ks_uniform", "height_med", "kind", "parent_peak", "parent_cooccur",
+              "fills_window", "fill_ratio", "episode_span", "height_med", "kind", "parent_peak", "parent_cooccur",
               "resolvability", "sep_hwhm", "d_crit_hwhm"]
 
 
@@ -399,21 +432,42 @@ def stamp_resolvability(traces: pd.DataFrame, resolving_power) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------- traces
-def ks_uniform(offsets) -> float:
-    """Kolmogorov-Smirnov distance of `offsets` from a uniform on their own
-    range: ~0 for a fill of the window, large for a peaked cloud. 0 for fewer
-    than three points."""
-    d = np.sort(np.asarray(offsets, dtype=float))
-    n = len(d)
-    if n < 3 or d[-1] <= d[0]:
+def episode_span(positions, n_spectra: int) -> float:
+    """How tightly a trace's detections sit together in the campaign: the
+    interquartile span of the spectra it appears in, over the number of spectra.
+
+    ~0 for one contiguous episode, 0.37-0.48 for the same number of detections
+    scattered at random. `positions` are the members' places in TIME order, not
+    their spectrum ids. 1.0 (i.e. "scattered") for fewer than three points, so a
+    caller that forgets the member floor fails closed."""
+    p = np.asarray(positions, dtype=float)
+    if len(p) < 3 or not n_spectra:
+        return 1.0
+    return float((np.percentile(p, 75) - np.percentile(p, 25)) / float(n_spectra))
+
+
+def fill_ratio(offsets, tol_ppm: float) -> float:
+    """How much of its window a trace's members occupy: their robust sd over the
+    robust sd a uniform fill of +-`tol_ppm` would give. ~1 for a fill, small for
+    a real ion (0.18 for the measured median sigma of 1.35 ppm in a +-10.4 ppm
+    window). 0 for fewer than three points.
+
+    The comparison is against the WINDOW, deliberately. An earlier version
+    normalised by the members' own range to be scale-free, which divided out the
+    width and left a statistic that could not tell an ion from a fill at all
+    (see the module note)."""
+    d = np.asarray(offsets, dtype=float)
+    if len(d) < 3:
         return 0.0
-    fu = (d - d[0]) / (d[-1] - d[0])
-    fe = np.arange(1, n + 1) / n
-    return float(max(np.max(np.abs(fe - fu)), np.max(np.abs(fe - 1.0 / n - fu))))
+    ref = FILL_FRAC * float(tol_ppm)
+    if not np.isfinite(ref) or ref <= 0:
+        return 0.0
+    return float(1.4826 * np.median(np.abs(d - np.median(d))) / ref)
 
 
 def build_traces(index, hours, *, resolving_power: float, tol_ppm: float,
-                 seed_occ: float = SEED_OCC, area_index=None, log=print) -> pd.DataFrame:
+                 seed_occ: float = SEED_OCC, area_index=None, episodes: bool = True,
+                 log=print) -> pd.DataFrame:
     """One row per trace: seeds (peaks recurring in >= seed_occ of spectra,
     brightest first, each consuming its dedup cell) and the satellite positions
     of the persistent ones. See the module note for the gates."""
@@ -424,6 +478,13 @@ def build_traces(index, hours, *, resolving_power: float, tol_ppm: float,
     occ = index.occurrence()
     n = index.n_samples
     order = np.lexsort((-np.nan_to_num(index.height), -occ))
+    # where each spectrum falls in TIME, and how bright a peak has to be to be
+    # more than the picker's floor -- both only used by the episode path below
+    time_rank = np.empty(n, dtype=float)
+    time_rank[np.argsort(np.asarray(hours, dtype=float), kind="mergesort")] = np.arange(n)
+    from peaky.assignment.passes.config import noise_edge as _edge
+    edge = _edge(index.height)
+    epi_floor = (EPISODE_X_EDGE * float(edge)) if edge else 0.0
     consumed = np.zeros(len(index), dtype=bool)
     centres: list[float] = []
     rows: list[dict] = []
@@ -453,15 +514,18 @@ def build_traces(index, hours, *, resolving_power: float, tol_ppm: float,
             return False
         q = info["resid_ppm"]
         occ_c = len(mem) / n
-        ks = ks_uniform((index.mz[mem] - c) / c * 1e6)
-        fills = bool(ks * np.sqrt(len(mem)) < KS_CRIT)      # cannot reject a uniform fill
+        fr = fill_ratio((index.mz[mem] - c) / c * 1e6, tol)
+        fills = bool(fr >= FILL_SIGMA_FRAC)       # as wide as a fill of the window
         cooc = np.nan
         if parent is not None:
             cooc = float(np.isin(index.sample[mem], list(spectra_of[parent])).mean())
+        span = episode_span(time_rank[index.sample[mem]], n) if kind == "episode" else np.nan
         bad = (kind == "seed" and fills and occ_c < KEEP_OCC) \
-            or (kind != "seed" and cooc < SAT_COOCCUR)
+            or (kind == "episode" and not (span <= EPISODE_IQR
+                                           and np.nanmax(index.height[mem]) >= epi_floor)) \
+            or (kind not in ("seed", "episode") and cooc < SAT_COOCCUR)
         if bad:
-            rejected.append((kind, q, cooc, ks))
+            rejected.append((kind, q, cooc, fr))
             rhw = c * dedup(c) * 1e-6
             r0, r1 = index.window(c - rhw, c + rhw)
             consumed[r0:r1] = True
@@ -481,7 +545,7 @@ def build_traces(index, hours, *, resolving_power: float, tol_ppm: float,
                          centre_window=int(info["window"]), centre_scheme=info["scheme"],
                          resid_ppm=q, se_ppm=info["se_ppm"],
                          span_ppm=float(np.ptp(cen) / c * 1e6), fills_window=bool(fills),
-                         ks_uniform=float(ks),
+                         fill_ratio=float(fr), episode_span=float(span),
                          height_avg=float(h.sum() / n), area_avg=float(a.sum() / n),
                          height_med=float(np.median(h)), kind=kind, parent_peak=parent,
                          parent_cooccur=cooc))
@@ -494,17 +558,35 @@ def build_traces(index, hours, *, resolving_power: float, tol_ppm: float,
             continue
         take(index.mean_shift(float(index.mz[i]), tol_ppm=tol, max_drift_ppm=tol), "seed", MIN_MEMBERS)
     n_seed = len(rows)
+    # EPISODE PASS: below the occurrence floor, where a short plume lives. Ordered
+    # by height, because the floor is the one thing brightness is good for here,
+    # and run AFTER the seeds so an episode can never take a persistent ion's cell.
+    n_before_epi = len(rows)
+    if episodes:
+        epi_order = [i for i in np.lexsort((-np.nan_to_num(index.height), occ))
+                     if EPISODE_OCC <= occ[i] < seed_occ]
+        for i in epi_order:
+            if consumed[i]:
+                continue
+            take(index.mean_shift(float(index.mz[i]), tol_ppm=tol, max_drift_ppm=tol),
+                 "episode", EPISODE_MIN_MEMBERS)
+    n_epi = len(rows) - n_before_epi
     rej_seed = [q for k, q, _, _ in rejected if k == "seed"]
     log(f"[traces] {R.describe()}: dedup {FIT_FLOOR_HWHM} HWHM = {dedup(200.0):.1f} ppm; membership "
         f"+-{tol:g} ppm; a uniform fill reads {fill:.2f} ppm; gate rejects a seed whose "
-        f"members cannot reject uniform (KS x sqrt(n) < {KS_CRIT}) unless occurrence >= "
-        f"{KEEP_OCC:.0%}")
+        f"members scatter >= {FILL_SIGMA_FRAC:.0%} of that ({FILL_SIGMA_FRAC * fill:.2f} ppm) "
+        f"unless occurrence >= {KEEP_OCC:.0%}")
     log(f"[traces] {n_seed} seed traces from peaks recurring in >= {seed_occ:.0%} of {n} spectra; "
         f"{len(rej_seed)} seed positions rejected as fills"
         + (f" (median residual {np.median(rej_seed):.2f} ppm)" if rej_seed else ""))
     log(f"[traces] {sum(r['fills_window'] for r in rows)} kept seeds fill their window but recur "
         f"in >= {KEEP_OCC:.0%} (`fills_window`: blended, not noise); "
         f"{sum(r['centre_scheme'] == 'rolling' for r in rows)} of {n_seed} roll")
+    if episodes:
+        rej_epi = sum(1 for k, *_ in rejected if k == "episode")
+        log(f"[traces] + {n_epi} episode traces below the {seed_occ:.0%} floor: detections packed "
+            f"into <= {EPISODE_IQR:.0%} of the campaign (scattered reads 0.37-0.43) and reaching "
+            f"{EPISODE_X_EDGE:g}x the noise edge; {rej_epi} candidate positions rejected")
     base = [(r["peak_id"], r["mz"]) for r in rows if r["trace_occurrence"] >= SAT_PARENT_OCC]
     for pid, m in base:
         for lab, dm in ISO_OFFSETS.items():
