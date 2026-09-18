@@ -499,7 +499,7 @@ def test_a_short_bright_episode_seeds_a_trace_but_the_same_count_scattered_does_
     never does. An ion in 7 CONSECUTIVE spectra of 200 is 3.5% occurrence -- under
     the 5% floor -- and used never to become a trace at all."""
     ts = _episode_batch(np.random.default_rng(7))
-    s = TFT.build_trace_sample(ts, sample_id="epi", reagent="Ur",
+    s = TFT.build_trace_sample(ts, sample_id="epi", reagent="Ur", episodes=True,
                                resolving_power=60000.0, log=lambda *a: None)
     t = s.traces
     near = lambda m: t[(t["mz"] - m).abs() / m * 1e6 < 15]
@@ -524,3 +524,16 @@ def test_the_episode_pass_can_be_turned_off_and_never_outranks_a_persistent_ion(
     # the persistent ions are seeded either way, and identically: the episode pass
     # runs second and can never take a cell a persistent ion would have had
     assert off[off["kind"] == "seed"]["mz"].tolist() == on[on["kind"] == "seed"]["mz"].tolist()
+
+
+def test_the_episode_pass_is_off_unless_asked_for():
+    """It offers 322 more positions on a real TOF batch and only 20 of them are
+    confirmed by a file cover; until an end-to-end run says what the rest are, the
+    default must not change what a run produces."""
+    ts = _episode_batch(np.random.default_rng(9), scattered=False)
+    off = TFT.build_trace_sample(ts, sample_id="d", reagent="Ur",
+                                 resolving_power=60000.0, log=lambda *a: None)
+    on = TFT.build_trace_sample(ts, sample_id="d", reagent="Ur", episodes=True,
+                                resolving_power=60000.0, log=lambda *a: None)
+    assert (off.traces["kind"] == "episode").sum() == 0
+    assert (on.traces["kind"] == "episode").sum() >= 1

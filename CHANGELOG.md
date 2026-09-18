@@ -9,16 +9,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **`--trace-first` (batch): assign the batch's persistent ions ONCE, from their centred
-  traces.** Opt-in, TOF-motivated, needs `--resolving-power`. `peaky.batch.tracefirst` builds
+  traces.** Opt-in and EXPERIMENTAL — see the measured result at the end of this entry.
+  `--resolving-power` defaults to measuring the width from the raw profile. `peaky.batch.tracefirst` builds
   the traces (`PeakIndex` seeds recurring in >= 5 % of spectra, brightest first, each
   consuming its 0.4-HWHM dedup cell — the Cubison & Jimenez fit floor, below which two
   positions are one observable), centres each one adaptively (`batch.centre`), measures
   the axis against the reference ions and applies the fitted wave inside its calibrant
   range (`batch.massqc` / `batch.wave`), sizes membership from the reference ions'
   per-spectrum noise (4 sigma, never below the validated 12 ppm, never above half the
-  cell), rejects a seed whose members cannot be told from a uniform fill of the window
-  (a Kolmogorov-Smirnov test at p ~ 0.001 — the shape, so free of the window and the
-  instrument; a fill recurring in half the spectra is kept and flagged `fills_window`),
+  cell), rejects a seed whose members scatter as widely as a uniform fill of that window
+  would (their robust sd against the 0.74 W a fill gives; a fill recurring in half the
+  spectra is kept and flagged `fills_window`),
   probes the isotopologue positions of every persistent trace (20 members and 60 %
   co-occurrence with the parent, no width test — a dim satellite reads as a fill by
   nature), stamps each trace's separability from its nearest neighbour (`resolvability`:
@@ -30,6 +31,33 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   unexplained). `tables/traces.csv` carries every trace's measurements, `per_file/`
   the trace ledger with them merged in, and `batch_summary.json['trace_first']` the
   build's numbers and the mass-qc verdict.
+
+  **What it measures against a file cover, on a 4-day mixed-reagent TOF batch (230
+  spectra), same reagent and same commit.** Trace-first: 1,443 merged rows, 258 Assigned,
+  53 ion disagreements, 11 files. The cover: 2,645 rows, 618 Assigned, 802 disagreements,
+  28 files. Of the 1,141 neutrals the cover found in >= 2 files, trace-first recovers 547
+  (47.9 %). Split by peak brightness, the two meet on the brightest ions (57 % vs 61 %
+  Assigned above 50x the noise edge) and diverge in the working range (12 % vs 29 % at
+  5-10x). The cause is structural, not a gate: the isotope satellite that earns Assigned
+  sits in the same SPECTRUM as its parent, and a trace sample averages the batch into one
+  peak per ion — 22 % of Assigned traces carry a confirmed isotopologue against 10 % of
+  Candidates, and the rate collapses below 20 % occurrence. Trace centres are genuinely
+  precise (standard error 0.20-0.85 ppm against 0.83 ppm per file), so use this for
+  batch-level centred masses and for mass-qc, not to replace the cover. Untested end to
+  end: the 0.4-HWHM dedup cell (worth 4-9 points of offered positions on that batch) and
+  the hard-coded 5 ppm engine commit tolerance in `TRACE_DEFAULTS`, which is ~14x the
+  centre's own standard error here but is not derived from it.
+
+- **`--trace-episodes` (batch, with `--trace-first`): seed a trace BELOW the occurrence
+  floor for a short plume.** Off by default. The floor asks an ion to recur across the
+  batch, which an episode never does — 41 of those 1,141 cover neutrals sit under a 5 %
+  occurrence floor and never seeded at all. A second pass seeds when a candidate's
+  detections are packed into <= 5 % of the campaign (a contiguous run of k spectra reads
+  ~k/2n; scattered detections read 0.37-0.43) and it reaches 2x the batch noise edge.
+  Contiguity does the discriminating: of the 24 reachable ions only 10 reach 3x the edge.
+  It runs after the seeds, so an episode never takes a persistent ion's dedup cell. Off by
+  default because it offers 322 more positions for 20 the cover confirms, and no
+  end-to-end run has yet said what the other ~300 are.
 
 - **`assign.run(..., peaks=frame)` runs the engine OFFLINE.** `io_mascope` serves a
   registered in-memory table as the sample (`register_offline_sample`), the mechanism
@@ -130,6 +158,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A mixed inlet got no calibrants at all.** `profiles.compose` names a
+  two-reagent module `Br+NO3`; `reference_ions.get` matched only single-reagent aliases,
+  raised, and the trace builder read that as "no reference list", skipping mass-qc and the
+  wave entirely — so the mixed-reagent TOF, the case the wave exists for, was the one that
+  silently got no mass-axis measurement. `get` now unions the parts: 53 ions and 20 anchors
+  on `Br+NO3` against 30 and 11 from nitrate alone, the twelve 79/81Br twin pairs intact,
+  an ion certain in both kept once at its stronger grading.
+
+- **The mass wave was fitted in the wrong variable on an Orbitrap.** The mass-qc
+  call inside the trace builder passed `tof=True` as a literal, so a trace-first Orbitrap
+  run fitted its wave against flight time for an analyser that disperses in frequency.
+  `Resolution.is_tof` now reads the basis off the measured width exponent.
+
 - **A wave fit could stand on calibrants it had already discarded.** The clip loop
   recorded each fit against the mask the NEXT clip proposed, so the `min_n` guard the
   docstring promised never held: a real batch returned a degree-2 wave standing on 4
@@ -137,6 +178,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   calibrant's spread, two different sets, so any clip flattered it and an outlier in the
   denominator could make noise read as an explained wave — a degree-ZERO fit reported
   "explains 85 %". Both sides now come from the set the fit was judged on.
+
+- **The trace fill gate had no power to do its job.** `ks_uniform` compared a
+  trace's members against a uniform ON THEIR OWN RANGE, which divides out the width — the
+  only thing separating an ion from a fill. The statistic stopped depending on sigma at all
+  (a 1.35 ppm ion and a true fill both read ~0.21-0.25), so `KS * sqrt(n)` was a disguised
+  member count: a real ion was called a fill 100 % of the time at 10 members and 94 % at 40,
+  silently making the rule "keep an ion only if it occurs in ~37 % of spectra". It also read
+  "cannot reject uniform" as "is a fill". The test is now the width, and on that TOF batch
+  it takes the positions the trace layer offers from 65 % to 75 % of the cover's ions.
 
 - **The formula search applied its ppm tolerance to the neutral mass, not the ion.**
   `chemistry.candidates_for_peaks` sized its window as `neutral_mass x search_ppm`,

@@ -346,7 +346,8 @@ def cmd_batch(args) -> None:
                            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
                            rolling_centre=getattr(args, "rolling_centre", False),
                            trace_first=getattr(args, "trace_first", False),
-                           resolving_power=getattr(args, "resolving_power", None), log=prog)
+                           resolving_power=getattr(args, "resolving_power", None),
+                           trace_episodes=getattr(args, "trace_episodes", False), log=prog)
         # the window's final numbers come from the RETURNED summary, never from
         # parsing the log -- exact by construction.
         prog.finish((res.get("assign") or {}).get("summary"))
@@ -903,8 +904,18 @@ def _add_trace_first_flags(p) -> None:
                         "(batch.tracefirst) instead of a cover of files: traces are built, "
                         "centred, gated, corrected by the mass-qc wave and handed to the engine "
                         "as one synthetic sample, which then goes through the same merge / "
-                        "stamp / residual stages. Needs --resolving-power. TOF-motivated; an "
-                        "Orbitrap batch keeps the file cover")
+                        "stamp / residual stages. EXPERIMENTAL: on the one batch it has been "
+                        "A/B'd against (a 4-day mixed-reagent TOF) it recovered 48%% of the "
+                        "ions a file cover found in >=2 files and assigned 258 against 618, "
+                        "because the isotope evidence that earns Assigned lives inside a "
+                        "spectrum and a trace sample averages it away. Use it for batch-level "
+                        "centred masses, not to replace the cover")
+    p.add_argument("--trace-episodes", action="store_true", default=False,
+                   help="with --trace-first, also seed traces BELOW the occurrence floor when "
+                        "a candidate's detections are packed into one stretch of the campaign "
+                        "and it clears the noise edge -- a short plume never recurs across a "
+                        "batch, so the persistence floor cannot see one. Off by default: it is "
+                        "not yet validated end to end")
     p.add_argument("--resolving-power", default=None, metavar="R|auto",
                    help="peak width for --trace-first, which sizes the dedup cell (0.4 HWHM) "
                         "and the resolvability flag. Default 'auto': MEASURE it from the raw "

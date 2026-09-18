@@ -90,6 +90,9 @@ KEEP_OCC = 0.5           # ... unless it recurs in this share of spectra (blende
 # have their detections packed into one stretch of the campaign. Peaky's per-file admission has admitted
 # a peak by HEIGHT or by PERSISTENCE for as long as it has existed; the trace
 # seeder only ever had the persistence half. This is the other half.
+# OFF by default: measured on that batch it offers 322 more trace positions and lands
+# on 20 the cover confirms, but no end-to-end run has yet shown what the engine does
+# with the other ~300. Turn it on with `episodes=True` / `--trace-episodes`.
 EPISODE_OCC = 0.01       # an episode may sit this far below the seed floor
 EPISODE_MIN_MEMBERS = 5  # below this, contiguity in time cannot be judged at all
 EPISODE_IQR = 0.05       # its detections' interquartile span, over the campaign's length.
@@ -466,7 +469,7 @@ def fill_ratio(offsets, tol_ppm: float) -> float:
 
 
 def build_traces(index, hours, *, resolving_power: float, tol_ppm: float,
-                 seed_occ: float = SEED_OCC, area_index=None, episodes: bool = True,
+                 seed_occ: float = SEED_OCC, area_index=None, episodes: bool = False,
                  log=print) -> pd.DataFrame:
     """One row per trace: seeds (peaks recurring in >= seed_occ of spectra,
     brightest first, each consuming its dedup cell) and the satellite positions
@@ -690,7 +693,7 @@ class TraceSample:
 
 
 def build_trace_sample(ts_peaks: pd.DataFrame, *, sample_id: str, reagent: str,
-                       resolving_power, tol_ppm: float | None = None,
+                       resolving_power, tol_ppm: float | None = None, episodes: bool = False,
                        seed_occ: float = SEED_OCC, sample_col: str = "sample_item_id",
                        time_col: str = "datetime_utc", log=print) -> TraceSample:
     """Traces -> mass-qc -> membership -> gate -> wave -> one synthetic sample."""
@@ -739,7 +742,7 @@ def build_trace_sample(ts_peaks: pd.DataFrame, *, sample_id: str, reagent: str,
     area_idx = (TR.PeakIndex(ts_peaks, tol_ppm=tol, sample_col=sample_col, height_col="area")
                 if "area" in ts_peaks.columns else None)
     traces = build_traces(idx, hours, resolving_power=res, tol_ppm=tol,
-                          seed_occ=seed_occ, area_index=area_idx, log=log)
+                          seed_occ=seed_occ, area_index=area_idx, episodes=episodes, log=log)
     if len(traces):
         traces = stamp_resolvability(traces, res)
         traces = apply_wave(traces, qc, log=log)

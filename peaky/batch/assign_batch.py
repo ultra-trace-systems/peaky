@@ -545,7 +545,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         residual_frac_of_max: float = SS.RESIDUAL_FRAC_OF_MAX,
         ts_peaks=None, amine_r_min: float = 0.6,
         n_jobs: int | None = None, rolling_centre: bool = False,
-        trace_first: bool = False, resolving_power=None,
+        trace_first: bool = False, resolving_power=None, trace_episodes: bool = False,
         log=print, **assign_kw) -> dict:
     """Assign the presence-cover subset of a batch and combine, keeping per-file
     ledgers. Provide EITHER `peaks` (a batch peak/sample table) OR `batch` (a
@@ -646,7 +646,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             log(f"[traces] resolving power as given: {rp.describe()}")
         trace_sample = TFT.build_trace_sample(
             ts_peaks, sample_id=f"traces-{TFT.slug(batch or 'batch')}", reagent=prof.name,
-            resolving_power=rp, log=log)
+            resolving_power=rp, episodes=trace_episodes, log=log)
         sample_ids = [trace_sample.sample_id]
         selection = {"method": "trace-first", "k": 1, **trace_sample.summary()}
         log(f"[assign_batch] trace-first: {selection['n_traces']} traces ({selection['n_seeds']} "
