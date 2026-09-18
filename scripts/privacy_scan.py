@@ -111,6 +111,7 @@ RULES = (
 
 # Captured server payloads whose ids are library rows, not run identifiers: the
 # compound/ion/isotope ids of the match tree name no server, workspace or campaign.
+# Repo-relative and '/'-separated whatever the OS: scan_file compares that form.
 ALLOWED_PATHS = frozenset({"tests/fixtures/match_tree.json"})
 
 SKIP_SUFFIXES = frozenset({
@@ -147,7 +148,9 @@ def scan_text(text: str, path: str = "<text>") -> list[Hit]:
 
 
 def scan_file(path: Path, root: Path | None = None) -> list[Hit]:
-    rel = str(path.relative_to(root)) if root else str(path)
+    # '/' on every OS, as git ls-files and ALLOWED_PATHS spell a path (a Windows
+    # path's str() uses '\' and slips past the allowlist); the report uses it too
+    rel = (path.relative_to(root) if root else path).as_posix()
     if rel in ALLOWED_PATHS or path.suffix.lower() in SKIP_SUFFIXES:
         return []
     try:

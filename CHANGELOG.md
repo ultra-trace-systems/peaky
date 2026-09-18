@@ -37,6 +37,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and each nested `curate` verb — so a bare `%` in a help string fails the suite instead
   of the user's `--help`.
 
+- **`tests/test_privacy.py` failed on Windows**, with 177 `mascope-id` findings in
+  `tests/fixtures/match_tree.json`, the one file the privacy scan allowlists.
+  `scan_file` compared `str()` of the repo-relative path with `ALLOWED_PATHS`; on
+  Windows that string is `\`-separated, while the allowlist, like `git ls-files`,
+  spells paths with `/`, so the fixture was scanned there and nowhere else, and CI,
+  which runs on Linux, stayed green. The path is now compared, and reported, in its
+  `/` form on every OS, whether the scan walks the tree or is handed a file, so a
+  finding names a file the same way everywhere and in the spelling `ALLOWED_PATHS`
+  takes. The suite pins it with a pure Windows path, which behaves the same on every
+  OS, so a regression fails the Linux run too.
+
 ## [0.8.0] — 2026-09-13 (per-peak admission, batch-derived floor, trace-stamped time series, the merge vote, the residual stage)
 
 ### Added
