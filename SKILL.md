@@ -86,9 +86,10 @@ peaky batch --batch "<batch>" --dataset "<workspace>" --reagent <Br|Ur|...> \
     [--no-residual | --residual-min-x-edge 5 --residual-min-cps N --residual-k-max 10] \
     --out-dir ~/peaky-output
 
-# a TOF batch: measure the axis first, then roll the centres
+# a TOF batch: measure the axis first, then either roll the centres or go trace-first
 peaky mass-qc --batch "<batch>" --dataset "<workspace>" --reagent <NO3|NO3_15N|Br> [--ts <ts.parquet>]
 peaky batch ... --rolling-centre                      # adaptive centre + per-trace stamp window
+peaky batch ... --trace-first --resolving-power 6500  # one synthetic sample of centred traces
 
 # MANY same-chemistry batches -> ONE unified ledger + whole-pool + per-group reports
 peaky pool --batches "<regex over batch names>" --dataset "<workspace>" \
@@ -253,6 +254,12 @@ can't refute an off-grid P) standing in for the 2nd channel.
 * `--rolling-centre` (`batch`, `pool`): `batch/centre.py` measures each merged ion's
   per-spectrum noise and random-walk step; where a walk is resolvable the centre rolls
   and the stamp follows it; the stamping window is per trace. Off = today's behaviour.
+* `--trace-first --resolving-power R` (`batch`): `batch/tracefirst.py` builds the
+  persistent traces (dedup at 0.4 HWHM, membership from the reference ions' noise, a
+  KS uniform-fill gate, satellite positions by co-occurrence), applies the mass-qc wave
+  inside its calibrant range and assigns ONE synthetic sample; merge, stamp and the
+  residual stage run as usual. `tables/traces.csv` and `batch_summary.json['trace_first']`
+  carry the build. Opt-in; Orbitrap batches keep the file cover.
 
 ### Key flags
 
