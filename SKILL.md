@@ -86,8 +86,9 @@ peaky batch --batch "<batch>" --dataset "<workspace>" --reagent <Br|Ur|...> \
     [--no-residual | --residual-min-x-edge 5 --residual-min-cps N --residual-k-max 10] \
     --out-dir ~/peaky-output
 
-# a TOF batch: measure the axis first
+# a TOF batch: measure the axis first, then roll the centres
 peaky mass-qc --batch "<batch>" --dataset "<workspace>" --reagent <NO3|NO3_15N|Br> [--ts <ts.parquet>]
+peaky batch ... --rolling-centre                      # adaptive centre + per-trace stamp window
 
 # MANY same-chemistry batches -> ONE unified ledger + whole-pool + per-group reports
 peaky pool --batches "<regex over batch names>" --dataset "<workspace>" \
@@ -241,7 +242,7 @@ can't refute an off-grid P) standing in for the 2nd channel.
   these a large uniform offset collapses everything to Candidate and lets
   off-trend mass-coincidences win then z-reject (peak left unexplained).
 
-### Mass-axis QC (TOF batches)
+### Mass-axis QC and the trace-level flags (TOF batches)
 
 * `peaky mass-qc` probes formula-certain reference ions (`chem/reference_ions`: the
   30-ion nitrate core, its 15N variant, a provisional bromide ladder with 81Br twins)
@@ -249,6 +250,9 @@ can't refute an off-grid P) standing in for the 2nd channel.
   `blended`, `+drifting` when the centres roll, with the remedy — and WHICH calibrant
   tier it used. Read it before assigning a TOF batch; it is the only mass reference
   that is not the engine's own output.
+* `--rolling-centre` (`batch`, `pool`): `batch/centre.py` measures each merged ion's
+  per-spectrum noise and random-walk step; where a walk is resolvable the centre rolls
+  and the stamp follows it; the stamping window is per trace. Off = today's behaviour.
 
 ### Key flags
 
