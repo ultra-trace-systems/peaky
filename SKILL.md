@@ -86,6 +86,9 @@ peaky batch --batch "<batch>" --dataset "<workspace>" --reagent <Br|Ur|...> \
     [--no-residual | --residual-min-x-edge 5 --residual-min-cps N --residual-k-max 10] \
     --out-dir ~/peaky-output
 
+# a TOF batch: measure the axis first
+peaky mass-qc --batch "<batch>" --dataset "<workspace>" --reagent <NO3|NO3_15N|Br> [--ts <ts.parquet>]
+
 # MANY same-chemistry batches -> ONE unified ledger + whole-pool + per-group reports
 peaky pool --batches "<regex over batch names>" --dataset "<workspace>" \
     --reagent <Br|Ur|NO3_15N|...> [--k-max 30] [--group-by sample_batch_name]
@@ -237,6 +240,15 @@ can't refute an off-grid P) standing in for the 2nd channel.
   `relabel_confidence` all judge ppm vs the calibrated center, not 0. Without
   these a large uniform offset collapses everything to Candidate and lets
   off-trend mass-coincidences win then z-reject (peak left unexplained).
+
+### Mass-axis QC (TOF batches)
+
+* `peaky mass-qc` probes formula-certain reference ions (`chem/reference_ions`: the
+  30-ion nitrate core, its 15N variant, a provisional bromide ladder with 81Br twins)
+  in the batch time series and returns `clean` / `axis_offset` / `axis_trend` /
+  `blended`, `+drifting` when the centres roll, with the remedy — and WHICH calibrant
+  tier it used. Read it before assigning a TOF batch; it is the only mass reference
+  that is not the engine's own output.
 
 ### Key flags
 
