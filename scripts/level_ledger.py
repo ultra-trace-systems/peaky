@@ -104,8 +104,8 @@ HALOGEN_SATELLITE = {"Br": "81Br", "Cl": "37Cl", "I": None}
 
 
 def truthy(value) -> bool:
-    """Null-safe truthiness: NaN, None and 'false'/'' are all False."""
-    if value is None:
+    """Null-safe truthiness: NaN, NA, None and 'false'/'' are all False."""
+    if value is None or value is pd.NA:
         return False
     if isinstance(value, float) and np.isnan(value):
         return False

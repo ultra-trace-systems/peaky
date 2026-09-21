@@ -1,0 +1,33 @@
+name,formula,class,reference,note
+pinonaldehyde,C10H16O2,monomer,Yu et al. 1999 J. Atmos. Chem. 34 207 doi:10.1023/A:1006254930583,first-generation O3/OH product; seen protonated and as urea adduct in positive mode
+pinonic acid,C10H16O3,monomer,Yu et al. 1999 J. Atmos. Chem. 34 207 doi:10.1023/A:1006254930583,cis-pinonic acid
+pinic acid,C9H14O4,monomer,Christoffersen et al. 1998 Atmos. Environ. 32 1657 doi:10.1016/S1352-2310(97)00448-2,C9 diacid; the classic SOA tracer
+norpinonic acid,C9H14O3,monomer,Yu et al. 1999 J. Atmos. Chem. 34 207 doi:10.1023/A:1006254930583,isomeric with pinalic-4-acid
+norpinic acid,C8H12O4,monomer,Yu et al. 1999 J. Atmos. Chem. 34 207 doi:10.1023/A:1006254930583,isomeric with terpenylic acid (same formula; both listed)
+hydroxypinonic acid,C10H16O4,monomer,Yu et al. 1999 J. Atmos. Chem. 34 207 doi:10.1023/A:1006254930583,10-hydroxypinonic acid
+pinalic acid,C9H14O3,monomer,Yu et al. 1999 J. Atmos. Chem. 34 207 doi:10.1023/A:1006254930583,pinalic-3/4-acid; isomeric with norpinonic acid
+terpenylic acid,C8H12O4,monomer,Claeys et al. 2009 Environ. Sci. Technol. 43 6976 doi:10.1021/es9007596,lactone-acid; isomeric with norpinic acid
+diaterpenylic acid acetate,C10H16O6,monomer,Claeys et al. 2009 Environ. Sci. Technol. 43 6976 doi:10.1021/es9007596,
+terebic acid,C7H10O4,monomer,Claeys et al. 2009 Environ. Sci. Technol. 43 6976 doi:10.1021/es9007596,lactone-acid
+MBTCA,C8H12O6,monomer,Szmigielski et al. 2007 Geophys. Res. Lett. 34 L24811 doi:10.1029/2007GL031338,"3-methyl-1,2,3-butanetricarboxylic acid; aged-SOA tracer (OH on pinonic acid)"
+HOM C10H14O7,C10H14O7,HOM,Ehn et al. 2014 Nature 506 476 doi:10.1038/nature13032,alpha-pinene ozonolysis HOM monomer (NO3- CIMS)
+HOM C10H14O9,C10H14O9,HOM,Ehn et al. 2014 Nature 506 476 doi:10.1038/nature13032,
+HOM C10H14O11,C10H14O11,HOM,Ehn et al. 2014 Nature 506 476 doi:10.1038/nature13032,
+HOM C10H16O7,C10H16O7,HOM,Kang 2022 thesis Energie & Umwelt 557 ISBN 978-3-95806-596-3 (Appendix A; packaged as reflist monoterpene_hom_kang2024),alpha-pinene OH oxidation; the packaged reflist monoterpene_hom_kang2024 carries the full table
+HOM C10H16O8,C10H16O8,HOM,Ehn et al. 2014 Nature 506 476 doi:10.1038/nature13032,
+HOM C10H16O9,C10H16O9,HOM,Kang 2022 thesis Energie & Umwelt 557 ISBN 978-3-95806-596-3 (Appendix A; packaged as reflist monoterpene_hom_kang2024),
+HOM C10H16O10,C10H16O10,HOM,Ehn et al. 2014 Nature 506 476 doi:10.1038/nature13032,
+HOM C10H18O7,C10H18O7,HOM,Kang 2022 thesis Energie & Umwelt 557 ISBN 978-3-95806-596-3 (Appendix A; packaged as reflist monoterpene_hom_kang2024),OH-derived closed-shell monomer
+HOM C10H18O8,C10H18O8,HOM,Kang 2022 thesis Energie & Umwelt 557 ISBN 978-3-95806-596-3 (Appendix A; packaged as reflist monoterpene_hom_kang2024),
+dimer C17H26O8,C17H26O8,dimer,Kristensen et al. 2013 Atmos. Chem. Phys. 13 3763 doi:10.5194/acp-13-3763-2013,pinyl-diaterpenyl ester
+dimer C19H28O7,C19H28O7,dimer,Kristensen et al. 2013 Atmos. Chem. Phys. 13 3763 doi:10.5194/acp-13-3763-2013,pinonyl-pinyl ester
+dimer C19H28O11,C19H28O11,dimer,Ehn et al. 2014 Nature 506 476 doi:10.1038/nature13032,RO2 + RO2 accretion product
+dimer C20H30O10,C20H30O10,dimer,Berndt et al. 2018 Angew. Chem. Int. Ed. 57 3820 doi:10.1002/anie.201710989,RO2 + RO2 accretion product
+dimer C20H30O12,C20H30O12,dimer,Ehn et al. 2014 Nature 506 476 doi:10.1038/nature13032,
+dimer C20H30O14,C20H30O14,dimer,Ehn et al. 2014 Nature 506 476 doi:10.1038/nature13032,
+dimer C20H32O11,C20H32O11,dimer,Berndt et al. 2018 Angew. Chem. Int. Ed. 57 3820 doi:10.1002/anie.201710989,
+organonitrate C10H15NO7,C10H15NO7,organonitrate,Lee et al. 2016 Proc. Natl. Acad. Sci. 113 1516 doi:10.1073/pnas.1508108113,monoterpene nitrate (NO3 or NOx conditions)
+organonitrate C10H15NO8,C10H15NO8,organonitrate,Yan et al. 2016 Atmos. Chem. Phys. 16 12715 doi:10.5194/acp-16-12715-2016,
+organonitrate C10H15NO9,C10H15NO9,organonitrate,Lee et al. 2016 Proc. Natl. Acad. Sci. 113 1516 doi:10.1073/pnas.1508108113,
+organonitrate C10H15NO10,C10H15NO10,organonitrate,Yan et al. 2016 Atmos. Chem. Phys. 16 12715 doi:10.5194/acp-16-12715-2016,
+organonitrate C10H17NO7,C10H17NO7,organonitrate,Lee et al. 2016 Proc. Natl. Acad. Sci. 113 1516 doi:10.1073/pnas.1508108113,

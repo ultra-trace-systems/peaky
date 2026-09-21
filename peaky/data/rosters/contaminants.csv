@@ -1,0 +1,29 @@
+name,formula,class,reference,note
+DEHP,C24H38O4,plasticiser,Keller et al. 2008 Anal. Chim. Acta 627 71 doi:10.1016/j.aca.2008.04.043,bis(2-ethylhexyl) phthalate; also DEHA-isobaric ester DOTP
+DEHA,C22H42O4,plasticiser,Keller et al. 2008 Anal. Chim. Acta 627 71 doi:10.1016/j.aca.2008.04.043,bis(2-ethylhexyl) adipate
+dibutyl phthalate,C16H22O4,plasticiser,Keller et al. 2008 Anal. Chim. Acta 627 71 doi:10.1016/j.aca.2008.04.043,
+diethyl phthalate,C12H14O4,plasticiser,Keller et al. 2008 Anal. Chim. Acta 627 71 doi:10.1016/j.aca.2008.04.043,
+dimethyl phthalate,C10H10O4,plasticiser,Keller et al. 2008 Anal. Chim. Acta 627 71 doi:10.1016/j.aca.2008.04.043,
+bisphenol A,C15H16O2,plasticiser,Keller et al. 2008 Anal. Chim. Acta 627 71 doi:10.1016/j.aca.2008.04.043,
+"2,4-di-tert-butylphenol",C14H22O,antioxidant,Keller et al. 2008 Anal. Chim. Acta 627 71 doi:10.1016/j.aca.2008.04.043,antioxidant degradation product (Irgafos 168)
+erucamide,C22H43NO,slip agent,Keller et al. 2008 Anal. Chim. Acta 627 71 doi:10.1016/j.aca.2008.04.043,
+oleamide,C18H35NO,slip agent,Keller et al. 2008 Anal. Chim. Acta 627 71 doi:10.1016/j.aca.2008.04.043,
+caprolactam,C6H11NO,polymer monomer,Keller et al. 2008 Anal. Chim. Acta 627 71 doi:10.1016/j.aca.2008.04.043,nylon-6 monomer
+benzothiazole,C7H5NS,rubber additive,Keller et al. 2008 Anal. Chim. Acta 627 71 doi:10.1016/j.aca.2008.04.043,
+DEET,C12H17NO,repellent,Keller et al. 2008 Anal. Chim. Acta 627 71 doi:10.1016/j.aca.2008.04.043,
+D3 siloxane,C6H18O3Si3,siloxane,Coggon et al. 2018 Environ. Sci. Technol. 52 5610 doi:10.1021/acs.est.8b00506,cyclic volatile methylsiloxane
+D4 siloxane,C8H24O4Si4,siloxane,Coggon et al. 2018 Environ. Sci. Technol. 52 5610 doi:10.1021/acs.est.8b00506,
+D5 siloxane,C10H30O5Si5,siloxane,Coggon et al. 2018 Environ. Sci. Technol. 52 5610 doi:10.1021/acs.est.8b00506,the personal-care-product marker
+D6 siloxane,C12H36O6Si6,siloxane,Coggon et al. 2018 Environ. Sci. Technol. 52 5610 doi:10.1021/acs.est.8b00506,
+TFA,C2HF3O2,PFCA,Riedel et al. 2019 Environ. Sci. Technol. Lett. 6 289 doi:10.1021/acs.estlett.9b00196,trifluoroacetic acid; ubiquitous in negative CIMS (PTFE/PFA inlet)
+PFPrA,C3HF5O2,PFCA,Riedel et al. 2019 Environ. Sci. Technol. Lett. 6 289 doi:10.1021/acs.estlett.9b00196,perfluoropropanoic acid
+PFBA,C4HF7O2,PFCA,Riedel et al. 2019 Environ. Sci. Technol. Lett. 6 289 doi:10.1021/acs.estlett.9b00196,perfluorobutanoic acid
+PFPeA,C5HF9O2,PFCA,Riedel et al. 2019 Environ. Sci. Technol. Lett. 6 289 doi:10.1021/acs.estlett.9b00196,perfluoropentanoic acid
+PFHxA,C6HF11O2,PFCA,Riedel et al. 2019 Environ. Sci. Technol. Lett. 6 289 doi:10.1021/acs.estlett.9b00196,perfluorohexanoic acid
+PFOA,C8HF15O2,PFCA,Riedel et al. 2019 Environ. Sci. Technol. Lett. 6 289 doi:10.1021/acs.estlett.9b00196,perfluorooctanoic acid
+triethyl phosphate,C6H15O4P,organophosphate,peaky pass-0 known species (passes/directors.py organophosphate),
+tributyl phosphate,C12H27O4P,organophosphate,peaky pass-0 known species (passes/directors.py organophosphate),
+triphenyl phosphate,C18H15O4P,organophosphate,peaky pass-0 known species (passes/directors.py organophosphate),
+triphenylphosphine oxide,C18H15OP,organophosphate,peaky pass-0 known species (passes/directors.py organophosphate),
+tris(2-butoxyethyl) phosphate,C18H39O7P,organophosphate,peaky pass-0 known species (passes/directors.py organophosphate),
+tricresyl phosphate,C21H21O4P,organophosphate,peaky pass-0 known species (passes/directors.py organophosphate),
