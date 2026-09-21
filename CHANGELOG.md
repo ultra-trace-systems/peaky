@@ -188,6 +188,38 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   time, recovers 96.3 % of the cover path's neutrals against 47.9 % on a TOF,
   so the recorded "the deficit is structural" reads as instrument-dependent.
 
+- **`scripts/level_ledger.py` — what a committed neutral's evidence is WORTH,
+  on a CIMS-adapted Schymanski scale.** Schymanski's confidence levels assume a
+  fragment spectrum and a compound library; a chemical-ionization run has
+  neither, and the reagent is part of the ion. This script is the executable
+  definition of the adaptation: eleven levels, each a predicate over columns a
+  ledger already carries, one row out per `(source, neutral_formula, adduct)`.
+  Four axes feed it — a verified isotopologue (a satellite whose height is
+  within a factor of two of what the formula's carbon count or the isotope's
+  abundance predicts), a second adduct channel, a homologous-series or anchor
+  tie, and a corroborating source. Naming two sources levels both and gives each
+  the other as that fourth axis; `--corroborate` adds a source that corroborates
+  without being levelled. A source is a run dir (`per_file/*_ledger.csv`, else
+  `merged_ledger.csv`) or a bare ledger CSV.
+
+  Two rulings in it are CIMS-specific and have no Schymanski analogue. **4d**:
+  when the only isotope support is the reagent halogen, the pattern pins the
+  ION and says nothing about the neutral, because a covalent `X(Br)[M-H]-` and a
+  cluster `Y·HBr·Br-` are the same ion — so a bromide channel's `81Br`-only rows
+  stop short of a formula. The channel's halogen is read from its commonest
+  **cluster** adduct, so a stray `[M+Br]-` on a nitrate channel does not make it
+  a bromide one. **3b**: a neutral seen both deprotonated and clustered has its
+  gas-phase acidity measured, which names a substituent without naming a
+  structure — a real level 3 reached with no MS². Resolvability binds only where
+  it was measured (the trace-first path); a cover run is not punished for not
+  having it.
+
+  The levels the pipeline itself will carry (`evidence_level`) must reproduce
+  this script row for row. It is pinned against three measured count vectors —
+  a two-channel TOF campaign and a two-instrument same-air pair — reproduced
+  exactly, and `tests/test_level_ledger.py` fixes the decision table on a
+  fixture where every level fires once.
+
 ### Fixed
 
 - **A mixed inlet got no calibrants at all.** `profiles.compose` names a
