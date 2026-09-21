@@ -172,7 +172,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   named directly or by the `--out-dir` that holds it. The `--rolling-centre`
   block is read from both shapes it is written in — `traces.rolling` on the cover
   path and a flat `n_rolling` under `trace_first` — because reading only one of
-  them described a batch that rolled 965 of its ions as a fixed-centre run.
+  them described a batch that rolled 965 of its ions as a fixed-centre run. The
+  headline also breaks the merged rows down by selection stage and refuses to
+  compare two runs that did not run the same ones: a run with the residual stage
+  on carries rows a run without it never looked for, so crediting the difference
+  to whatever flag was under test reads a stage as an effect. A run dir that
+  predates the stage field reports `n/a`, not zero.
 
 ### Fixed
 

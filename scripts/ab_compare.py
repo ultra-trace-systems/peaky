@@ -78,6 +78,24 @@ class Run:
         return bool(self.summary.get("trace_first"))
 
     @property
+    def by_stage(self) -> dict:
+        """Merged rows per selection stage — `cover`, `residual`.
+
+        Two runs whose stage composition differs are not comparable on totals:
+        a run with the residual stage on carries rows a run without it never
+        looked for. Prefer the summary's own count; fall back to the ledger.
+        """
+        recorded = self.summary.get("merged_by_stage")
+        if isinstance(recorded, dict) and recorded:
+            return {str(k): int(v) for k, v in recorded.items()}
+        if "stage" in self.ledger.columns:
+            return {
+                str(k): int(v)
+                for k, v in self.ledger["stage"].fillna("—").value_counts().items()
+            }
+        return {}
+
+    @property
     def rolling(self) -> dict:
         """The `--rolling-centre` block, `{}` when the run did not roll.
 
@@ -275,6 +293,39 @@ def build_report(
     w(f"| neutrals only in A | {len(na - nb)} | | |")
     w(f"| neutrals only in B | | {len(nb - na)} | |")
     w("")
+
+    sa, sb = run_a.by_stage, run_b.by_stage
+    if sa or sb:
+        stages = sorted(set(sa) | set(sb))
+        w("Merged rows by selection stage:\n")
+        w("| stage | A | B | delta |")
+        w("|---|---:|---:|---:|")
+        for stage in stages:
+            # A run that records no stages at all has not run zero rows through
+            # them -- it predates the breakdown. Saying 0 invents a finding.
+            va = str(sa.get(stage, 0)) if sa else "n/a"
+            vb = str(sb.get(stage, 0)) if sb else "n/a"
+            delta = (
+                f"{sb.get(stage, 0) - sa.get(stage, 0):+d}" if sa and sb else "—"
+            )
+            w(f"| {stage} | {va} | {vb} | {delta} |")
+        w("")
+        if not sa or not sb:
+            which = "A" if not sa else "B"
+            w(
+                f"> **Run {which} records no stage breakdown** — it predates the "
+                "field, so its rows cannot be attributed to a stage and the two "
+                "runs' composition cannot be compared here.\n"
+            )
+        else:
+            missing = [s_ for s_ in stages if bool(sa.get(s_)) != bool(sb.get(s_))]
+            if missing:
+                w(
+                    f"> **The runs do not share a stage composition** "
+                    f"({', '.join(missing)} ran in one arm only). The totals above "
+                    "are not a like-for-like comparison: rerun with the same "
+                    "stages, or read the shared stage alone.\n"
+                )
 
     w(f"## Ion disagreements (matched within {tol_ppm:g} ppm)\n")
     matched = match_by_mz(a, b, tol_ppm)

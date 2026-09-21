@@ -244,3 +244,51 @@ def test_report_names_the_rolling_share(tmp_path):
         AB.load_run(str(a)), AB.load_run(str(b)), 6.0, 2, 5.0, 25
     )
     assert "B ran rolling (965 of 7346 ions)" in report
+
+
+def test_by_stage_prefers_the_summary_and_falls_back_to_the_ledger(tmp_path):
+    recorded = _write_run(
+        tmp_path / "rec", LEDGER_A, None, {"merged_by_stage": {"cover": 5, "residual": 1}}
+    )
+    assert AB.load_run(str(recorded)).by_stage == {"cover": 5, "residual": 1}
+
+    staged = LEDGER_A.assign(stage=["cover"] * 5 + ["residual"])
+    derived = _write_run(tmp_path / "der", staged, None, {})
+    assert AB.load_run(str(derived)).by_stage == {"cover": 5, "residual": 1}
+
+    assert AB.load_run(str(_write_run(tmp_path / "none", LEDGER_A, None, {}))).by_stage == {}
+
+
+def test_report_warns_when_only_one_arm_ran_a_stage(tmp_path):
+    """base ran no residual stage and roll_v2 added 1149 rows through one.
+
+    Comparing the totals then credits a flag with a stage it never ran, which is
+    exactly the reading this warning exists to stop.
+    """
+    a = _write_run(tmp_path / "a", LEDGER_A, None, {"merged_by_stage": {"cover": 6408}})
+    b = _write_run(
+        tmp_path / "b", LEDGER_B, None, {"merged_by_stage": {"cover": 6197, "residual": 1149}}
+    )
+    report = AB.build_report(AB.load_run(str(a)), AB.load_run(str(b)), 6.0, 2, 5.0, 25)
+    assert "| cover | 6408 | 6197 | -211 |" in report
+    assert "| residual | 0 | 1149 | +1149 |" in report
+    assert "do not share a stage composition" in report
+
+    # Same stages in both arms: the table is there, the warning is not.
+    c = _write_run(tmp_path / "c", LEDGER_B, None, {"merged_by_stage": {"cover": 6000, "residual": 900}})
+    ok = AB.build_report(AB.load_run(str(b)), AB.load_run(str(c)), 6.0, 2, 5.0, 25)
+    assert "| residual | 1149 | 900 | -249 |" in ok
+    assert "do not share a stage composition" not in ok
+
+
+def test_a_run_without_stage_data_is_not_reported_as_zero(tmp_path):
+    """base records no stage breakdown; printing 0 cover rows invents a finding."""
+    a = _write_run(tmp_path / "old", LEDGER_A, None, {})            # no stages at all
+    b = _write_run(
+        tmp_path / "new", LEDGER_B, None, {"merged_by_stage": {"cover": 6197, "residual": 1149}}
+    )
+    report = AB.build_report(AB.load_run(str(a)), AB.load_run(str(b)), 6.0, 2, 5.0, 25)
+    assert "| cover | n/a | 6197 | — |" in report
+    assert "| cover | 0 | 6197 |" not in report
+    assert "Run A records no stage breakdown" in report
+    assert "do not share a stage composition" not in report
