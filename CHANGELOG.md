@@ -179,6 +179,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   to whatever flag was under test reads a stage as an effect. A run dir that
   predates the stage field reports `n/a`, not zero.
 
+  First use settled three open questions. `--rolling-centre` is inert on both
+  instrument classes: same commit, same batch, flag on against flag off gives
+  0 ion disagreements in 1148 rows on an Orbitrap and 0 in 7346 on a TOF, even
+  though 434 and 965 ions roll and the TOF centres move by a median 1.4 ppm.
+  `origin/main` against the five-PR stack on the same Orbitrap batch is
+  likewise identical. And `--trace-first`, run on an Orbitrap for the first
+  time, recovers 96.3 % of the cover path's neutrals against 47.9 % on a TOF,
+  so the recorded "the deficit is structural" reads as instrument-dependent.
+
 ### Fixed
 
 - **A mixed inlet got no calibrants at all.** `profiles.compose` names a
