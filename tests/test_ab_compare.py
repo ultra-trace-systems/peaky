@@ -203,3 +203,44 @@ def test_cli_writes_the_report(runs, tmp_path, capsys):
     assert AB.main([str(a), str(b), "--out", str(out)]) == 0
     assert "**25.0 % recovery**" in out.read_text()
     assert str(out) in capsys.readouterr().out
+
+
+def test_rolling_is_read_from_the_nested_traces_block(tmp_path):
+    """A cover-path run writes traces.rolling, not a flat n_rolling.
+
+    Reading only the flat key reported a batch that rolled 965 of its ions as
+    "fixed centre" -- the shape this test pins.
+    """
+    nested = {
+        "traces": {
+            "rolling": {"enabled": True, "n_rolling": 965, "n_global": 6381},
+            "n_traces": 7346,
+        }
+    }
+    run = _write_run(tmp_path / "nested", LEDGER_A, None, nested)
+    roll = AB.load_run(str(run)).rolling
+    assert roll["n_rolling"] == 965 and roll["n_global"] == 6381
+
+    # The trace-first path writes it flat instead; both must be seen.
+    flat = {"trace_first": {"n_traces": 2544, "n_rolling": 1085}}
+    run2 = _write_run(tmp_path / "flat", LEDGER_A, None, flat)
+    assert AB.load_run(str(run2)).rolling["n_rolling"] == 1085
+
+    # A run that did not roll reports nothing, and a disabled block is not a roll.
+    off = {"traces": {"rolling": {"enabled": False, "n_rolling": 0}}}
+    run3 = _write_run(tmp_path / "off", LEDGER_A, None, off)
+    assert AB.load_run(str(run3)).rolling == {}
+
+
+def test_report_names_the_rolling_share(tmp_path):
+    a = _write_run(tmp_path / "a", LEDGER_A, None, {})
+    b = _write_run(
+        tmp_path / "b",
+        LEDGER_B,
+        None,
+        {"traces": {"rolling": {"enabled": True, "n_rolling": 965, "n_global": 6381}}},
+    )
+    report = AB.build_report(
+        AB.load_run(str(a)), AB.load_run(str(b)), 6.0, 2, 5.0, 25
+    )
+    assert "B ran rolling (965 of 7346 ions)" in report

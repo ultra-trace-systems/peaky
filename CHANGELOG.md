@@ -169,7 +169,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   change — the share of the reference run's multi-file neutrals the challenger
   keeps, split by occurrence and median m/z. It reads an `evidence_level`
   histogram when the column is there and says so when it is not. A run dir may be
-  named directly or by the `--out-dir` that holds it.
+  named directly or by the `--out-dir` that holds it. The `--rolling-centre`
+  block is read from both shapes it is written in — `traces.rolling` on the cover
+  path and a flat `n_rolling` under `trace_first` — because reading only one of
+  them described a batch that rolled 965 of its ions as a fixed-centre run.
 
 ### Fixed
 

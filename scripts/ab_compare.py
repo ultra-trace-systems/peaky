@@ -78,10 +78,22 @@ class Run:
         return bool(self.summary.get("trace_first"))
 
     @property
-    def rolling(self) -> bool:
-        tf = self.summary.get("trace_first") or {}
+    def rolling(self) -> dict:
+        """The `--rolling-centre` block, `{}` when the run did not roll.
+
+        It is written in two places and two shapes: `traces.rolling` on the
+        cover path (a dict with `enabled` / `n_rolling` / `n_global`) and a flat
+        `n_rolling` under `trace_first`. Reading only one of them reports a run
+        that plainly rolled as a fixed-centre run.
+        """
         traces = self.summary.get("traces") or {}
-        return bool(tf.get("n_rolling") or traces.get("n_rolling"))
+        block = traces.get("rolling")
+        if isinstance(block, dict) and (block.get("enabled") or block.get("n_rolling")):
+            return block
+        tf = self.summary.get("trace_first") or {}
+        if tf.get("n_rolling"):
+            return {"enabled": True, "n_rolling": tf["n_rolling"]}
+        return {}
 
 
 def load_run(path: str) -> Run:
@@ -235,7 +247,16 @@ def build_report(
     w(f"* **B** `{run_b.name}`\n")
 
     def flags(run: Run) -> str:
-        on = [n for n, v in (("trace-first", run.trace_first), ("rolling", run.rolling)) if v]
+        on = []
+        if run.trace_first:
+            on.append("trace-first")
+        roll = run.rolling
+        if roll:
+            n, g = roll.get("n_rolling"), roll.get("n_global")
+            on.append(
+                f"rolling ({n} of {n + g} ions)" if n is not None and g is not None
+                else "rolling"
+            )
         return ", ".join(on) if on else "cover path, fixed centre"
 
     w(f"A ran {flags(run_a)}; B ran {flags(run_b)}.\n")
