@@ -156,6 +156,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   iodine reaches it through this family on the [M−H]⁻ / [M+NO3]⁻ channels, and that
   iodine stays off the neutral grid on purpose.
 
+- **`scripts/ab_compare.py` — an A/B between two `peaky batch` runs over one batch.**
+  `scripts/diff_runs.py` asks "same peaks, same formula?" and keys on
+  `(sample_item_id, peak_id)`; it cannot see a path change, because a cover of
+  files and `--trace-first` (or a fixed centre and `--rolling-centre`) rebuild the
+  peak set from scratch and share no peak ids at all. The new script keys on
+  chemistry instead and reports, from `merged_ledger.csv`,
+  `per_file/_batch_ts.parquet` and `batch_summary.json`: the tier and neutral
+  headline; the merged rows that pair across the runs within a ppm window yet read
+  a different `(neutral_formula, adduct)`; the per-ion share of samples carrying a
+  series, with every move above a threshold; and the headline number for a path
+  change — the share of the reference run's multi-file neutrals the challenger
+  keeps, split by occurrence and median m/z. It reads an `evidence_level`
+  histogram when the column is there and says so when it is not. A run dir may be
+  named directly or by the `--out-dir` that holds it.
+
 ### Fixed
 
 - **A mixed inlet got no calibrants at all.** `profiles.compose` names a
