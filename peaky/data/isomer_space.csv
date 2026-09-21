@@ -1,0 +1,64 @@
+formula,n_plausible_structures,family,name,rationale
+HNO3,1,atmospheric,nitric acid,one connectivity; no isomer of HNO3 exists as a stable neutral
+HNO2,1,atmospheric,nitrous acid,HONO cis/trans are conformers of one structure; the nitro form is not a stable gas-phase neutral
+HNO4,1,atmospheric,peroxynitric acid,HOONO2 is the only stable connectivity
+HO2,1,atmospheric,hydroperoxyl radical,one connectivity
+H2SO4,1,atmospheric,sulfuric acid,one connectivity
+CH4O3S,1,atmospheric,methanesulfonic acid,CH3SO3H is the only acid of this formula; methyl sulfite is not a stable gas-phase neutral
+HOI,1,reactive_iodine,hypoiodous acid,one connectivity
+HIO2,1,reactive_iodine,iodous acid,HOIO is the only stable connectivity
+HIO3,1,reactive_iodine,iodic acid,one connectivity
+IO2,1,reactive_iodine,iodine dioxide radical (OIO),OIO; the IOO peroxy isomer is not a stable atmospheric species
+INO2,1,reactive_iodine,iodine nitrite,the IONO / INO2 pair is one reservoir species in the CIMS reading
+INO3,1,reactive_iodine,iodine nitrate,IONO2 is the only stable connectivity
+CNI,1,reactive_iodine,iodine cyanide (ICN),ICN; the isocyanide INC is not observed as a neutral
+CINO,1,reactive_iodine,iodine isocyanate (INCO),INCO is the connectivity the family names
+ICl,1,reactive_iodine,iodine monochloride,diatomic
+IBr,1,reactive_iodine,iodine monobromide,diatomic
+H3N,1,ambient_inorganic,ammonia,one structure
+C6H5NO3,3,nitroaromatic,nitrophenol,"2-, 3- and 4-nitrophenol share the formula; mass cannot separate them"
+C6H5NO4,4,nitroaromatic,nitrocatechol,"4-nitrocatechol, 3-nitrocatechol and the nitro-resorcinol / nitro-hydroquinone isomers"
+C6H4N2O5,6,nitroaromatic,dinitrophenol,six dinitrophenol positional isomers
+C7H6N2O5,10,nitroaromatic,dinitrocresol,"dinitro-methylphenol positional isomers; 4,6-dinitro-o-cresol is one of many"
+C2HF3O2,1,perfluoroacid,trifluoroacetic acid,"CF3COOH is the only structure; stays 3a because the pass-0 perfluoroacid family asserts the CLASS (a generated CnHF(2n-1)O2 list) and not the compound -- docs/EVIDENCE_LEVELS.md, level 2b"
+C3HF5O2,1,perfluoroacid,perfluoropropanoic acid,CF3CF2COOH only; the same class-scope note as TFA
+C4HF7O2,2,perfluoroacid,perfluorobutanoic acid,n- and iso-perfluorobutanoic acid
+C5HF9O2,4,perfluoroacid,perfluoropentanoic acid,linear and branched perfluoro chains
+C6HF11O2,8,perfluoroacid,perfluorohexanoic acid,linear and branched perfluoro chains
+C7HF13O2,12,perfluoroacid,perfluoroheptanoic acid,linear and branched perfluoro chains
+C8HF15O2,20,perfluoroacid,perfluorooctanoic acid,linear and branched perfluoro chains; technical PFOA is a branched mixture
+C6H18O3Si3,1,cyclosiloxane,hexamethylcyclotrisiloxane (D3),the cyclic trimer is the only structure the family admits for this formula
+C8H24O4Si4,1,cyclosiloxane,octamethylcyclotetrasiloxane (D4),one cyclic structure
+C10H30O5Si5,1,cyclosiloxane,decamethylcyclopentasiloxane (D5),one cyclic structure
+C12H36O6Si6,1,cyclosiloxane,dodecamethylcyclohexasiloxane (D6),one cyclic structure
+C14H42O7Si7,1,cyclosiloxane,tetradecamethylcycloheptasiloxane (D7),one cyclic structure
+C6H18OSi2,1,cyclosiloxane,hexamethyldisiloxane (L2),one structure
+C8H24O2Si3,1,cyclosiloxane,octamethyltrisiloxane (L3),one linear structure
+C10H30O3Si4,1,cyclosiloxane,decamethyltetrasiloxane (L4),one linear structure
+C12H36O4Si5,1,cyclosiloxane,dodecamethylpentasiloxane (L5),one linear structure
+C7H5NS,1,indoor_sulfur,benzothiazole,one structure
+C8H7NS,4,indoor_sulfur,2-methylbenzothiazole,the methyl can sit on C2 or the benzo ring
+C7H5NS2,1,indoor_sulfur,2-mercaptobenzothiazole,one structure the family admits
+C7H5NOS,2,indoor_sulfur,2(3H)-benzothiazolone,benzothiazolone and 2-hydroxybenzothiazole tautomer count as one; benzoxazole-thiol is the other
+C8H7NS2,2,indoor_sulfur,2-(methylthio)benzothiazole,S-methyl and N-methyl thione forms
+C4H9NS2,3,indoor_sulfur,dithiocarbamate methyl ester,methyl dimethyldithiocarbamate and its ester isomers
+C3H3NS,2,indoor_sulfur,thiazole,thiazole and isothiazole
+C4H5NS,6,indoor_sulfur,methylthiazole,methyl positions on thiazole and isothiazole
+C2H6OS,1,indoor_sulfur,dimethyl sulfoxide,one structure
+C2H6O2S,2,indoor_sulfur,dimethyl sulfone,dimethyl sulfone and methyl methanesulfinate
+C2H6S2,2,indoor_sulfur,dimethyl disulfide,dimethyl disulfide and ethanedithiol
+C2H6S3,1,indoor_sulfur,dimethyl trisulfide,one structure the family admits
+C4H4S,1,indoor_sulfur,thiophene,one aromatic structure
+C5H6S,2,indoor_sulfur,methylthiophene,2- and 3-methylthiophene
+C8H6S,2,indoor_sulfur,benzothiophene,benzo[b]- and benzo[c]thiophene
+C4H8O2S,3,indoor_sulfur,sulfolane,"sulfolane, butenesulfinic acid isomers"
+C10H15NO2S,4,indoor_sulfur,N-butylbenzenesulfonamide (NBBS),butyl chain isomers
+C5H12N2S,2,indoor_sulfur,tetramethylthiourea,tetramethyl- and other tetra-alkyl thiourea isomers
+C2H5O,1,easyic_hydride,ethanol via hydride abstraction,the pinned neutral is ethanol; the profile admits one origin for this ion
+C6H15O4P,3,organophosphate,triethyl phosphate (TEP),"triethyl phosphate, dipropyl hydrogen phosphate and mixed esters share the formula"
+C12H27O4P,6,organophosphate,tributyl phosphate (TBP / TiBP),"n-, iso-, sec- and tert-butyl esters and mixed esters"
+C18H15O4P,2,organophosphate,triphenyl phosphate (TPhP),triphenyl phosphate and the phenyl-phenylene phosphonate isomers
+C18H15OP,2,organophosphate,triphenylphosphine oxide (TPPO),TPPO and diphenyl(phenoxy)phosphine
+C21H21O4P,10,organophosphate,tricresyl phosphate,o/m/p-cresyl mixed esters (technical TCP is a mixture)
+C10H19O6PS2,4,organothiophosphate,malathion,"malathion, isomalathion and the O,S-dimethyl / diethyl ester isomers"
+C9H11Cl3NO3PS,2,organothiophosphate,chlorpyrifos,chlorpyrifos and its S-ethyl isomer

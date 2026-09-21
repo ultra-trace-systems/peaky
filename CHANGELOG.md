@@ -8,6 +8,27 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Evidence levels — the specification (nothing implemented yet).** `docs/EVIDENCE_LEVELS.md`
+  states the CIMS-adapted Schymanski scale (2b, 3a, 3b, 4a, 4b, 4c, 4d, 5a, 5b; 1 and 2a defined
+  and never assigned) as predicates over the ledger columns the engine already writes, exactly
+  as `scripts/level_ledger.py` computes them; the settled decisions (one rating channel; 2b needs
+  a compound-scope curated identity AND a one-structure formula in the isomer space, never a
+  whitelist — TFA stays 3a because the perfluoroacid family asserts a class; cross-reagent and
+  cross-instrument agreement is formula evidence, never above 4a; reagent ions excluded by role;
+  the isomer ceiling reported per row; resolvability binds only where measured; `n_files` is
+  recorded, not an axis); the column contract `evidence_level` / `evidence_axes` /
+  `level_reason` / `n_plausible_structures`; and the stage placement (`evidence` after
+  `iso_env_final`, before `timeseries`; recomputed on the pooled per-file ledgers in a batch and
+  joined onto the merged ledger by ion; `--corroborate` on `assign` and `batch`).
+  `peaky/data/isomer_space.csv` seeds the plausible-structure count with a rationale per row
+  (63 formulas, nine pass-0 families). `tests/fixtures/levels/` holds the three golden sets
+  (42 gzipped per-file ledgers trimmed to the M0 / isotope rows and the predicate columns, no
+  site or instrument names) with `expected_levels.csv` from the reference script; the trimmed
+  fixtures reproduce the three golden count vectors exactly. `tests/test_evidence.py` pins one
+  passing case and one mutant per level, the goldens, the row-for-row match, the null safety
+  and the isomer-space rules — and fails with `ImportError` on `peaky.assignment.evidence`
+  until the build lands.
+
 - **`--trace-first` (batch): assign the batch's persistent ions ONCE, from their centred
   traces.** Opt-in and EXPERIMENTAL — see the measured result at the end of this entry.
   `--resolving-power` defaults to measuring the width from the raw profile. `peaky.batch.tracefirst` builds
