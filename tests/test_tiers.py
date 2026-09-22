@@ -425,3 +425,26 @@ def test_all():
 if __name__ == "__main__":
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
+
+
+def test_persist_only_read_is_null_safe():
+    """`admitted_by` is float NaN on a row the admission gate never stamped and
+    pd.NA on an offline ledger (the scorecard's decoy arms). The old read
+    `str(r.get("admitted_by") or "")` gave "nan" on the first (False by accident)
+    and RAISED on the second; both must tier like an unstamped row."""
+    import numpy as np
+    from peaky.assignment import ledger as L
+    from peaky.assignment import tiers as T
+    rows = []
+    for pid, adm in (("a", np.nan), ("b", pd.NA), ("c", None), ("d", "occurrence"), ("e", "height")):
+        rows.append(dict(peak_id=pid, mz=200.0 + len(rows), height=1000.0))
+    led = L.new_ledger(pd.DataFrame(rows))
+    led["admitted_by"] = [np.nan, pd.NA, None, "occurrence", "height"]
+    for pid in "abcde":
+        L.commit_assignment(led, pid, neutral_formula="C10H16O4", adduct="[M-H]-", ion_formula="C10H15O4-",
+                            ion_score=0.9, compound_score=0.9, ppm_error=0.1, pass_no=1, method="cheminfo",
+                            confidence="High", commentary="t")
+    T.apply_tiers(led)                       # must not raise on the pd.NA row
+    by = led.set_index("peak_id")
+    assert by.loc["a", "tier"] == by.loc["b", "tier"] == by.loc["c", "tier"] == by.loc["e", "tier"]
+    assert by.loc["d", "tier"] == "Candidate"   # persistence-admitted, uncorroborated

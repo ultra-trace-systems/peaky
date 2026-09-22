@@ -514,7 +514,11 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
         # is a real ion, but at that intensity the isotopologues are sub-count,
         # so nothing constrains WHICH formula it got. Persistence gates entry;
         # only corroboration may gate the tier (see assignment/admission.py).
-        persist_only = str(r.get("admitted_by") or "") == "occurrence"
+        # null-safe: admitted_by is float NaN on a row the admission gate never
+        # stamped (NaN is truthy, so the old `or ""` read gave "nan" -- False by
+        # accident) and pd.NA on an offline ledger, where `pd.NA or ""` RAISES.
+        _adm = r.get("admitted_by")
+        persist_only = isinstance(_adm, str) and _adm == "occurrence"
 
         method = str(r.get("method") or "")
         tier, reason = TIER_ASSIGNED, ""

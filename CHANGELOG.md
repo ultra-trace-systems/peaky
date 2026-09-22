@@ -335,6 +335,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`scripts/level_ledger.py` read the curated scope from two hand-made family sets, not the
+  spec.** `{atmospheric, reactive_iodine}` were always 2b and six named families always 3a, which
+  agreed with the spec on every golden row (five negative-mode families) but not beyond them: the
+  cyclosiloxanes D3–D7 on a uronium channel read 3a in the script and 2b in core, and
+  `contaminant:silanediol` was in neither set (4c in the script, 3a in core). The script now carries
+  the spec's scope table (`KNOWN_FAMILY_SCOPE`) and reads `peaky/data/isomer_space.csv`; the three
+  golden vectors still reproduce, and in-core and script agree on every merged row of the three
+  reference runs.
+
+- **The tier engine's persistence read was not null-safe** (`tiers.py`, `persist_only`).
+  `str(r.get("admitted_by") or "")` gave `"nan"` on a float-NaN cell (NaN is truthy) — False by
+  accident on real runs, where the admission gate leaves 4 % of M0 rows unstamped — and raised
+  `boolean value of NA is ambiguous` on a `pd.NA` cell, which is why the scorecard's wrong-adducts
+  decoy arm had never completed on a negative channel. Now an explicit string test; result-identical
+  on real runs (0 of 1314 / 1148 / 2645 ions moved on the three reference channels).
+
+- `scripts/scorecard.py`: the decoy arms are rated by the engine's own `evidence_level` when the
+  engine wrote it, so an arm is levelled by the same leveller as the run it bounds; an older
+  engine's ledger is still levelled post hoc.
+
 - **A mixed inlet got no calibrants at all.** `profiles.compose` names a
   two-reagent module `Br+NO3`; `reference_ions.get` matched only single-reagent aliases,
   raised, and the trace builder read that as "no reference list", skipping mass-qc and the
