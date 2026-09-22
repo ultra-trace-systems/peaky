@@ -293,3 +293,27 @@ def test_merged_ledger_is_used_when_there_is_no_per_file_dir(tmp_path):
     run_dir = tmp_path / "RUN_2026"
     write_ledger(run_dir / "merged_ledger.csv", NITRATE_ROWS)
     assert len(LL.run([str(run_dir)], [])) == 10
+
+
+# --------------------------------------------------------------------------- family scope (2026-09-22)
+def _curated(neutral, family, adduct="[M-H]-"):
+    """The level of one curated commit, on its own, uncorroborated."""
+    led = pd.DataFrame([m0("p", neutral, adduct=adduct, method=f"known:{family}")],
+                       columns=LEDGER_COLUMNS)
+    led["__file"] = "f"
+    return LL.assign_levels(LL.measure_source("f", led, None), set()).level.iloc[0]
+
+
+def test_curated_scope_follows_the_spec_not_a_hand_made_set():
+    """docs/EVIDENCE_LEVELS.md section 4.1: 2b = a COMPOUND-scope family AND a
+    one-structure formula in the isomer space; every other curated commit is 3a.
+    Until 2026-09-22 this script kept two hand-made sets that read cyclosiloxane
+    as a class (3a, in core 2b) and knew no contaminant:silanediol."""
+    assert _curated("C6H18O3Si3", "cyclosiloxane", "[M+H]+") == "2b"          # D3: one structure
+    assert _curated("C2H8O2Si", "contaminant:silanediol", "[M+NO3]-") == "3a"  # class scope
+    assert _curated("C6H5NO3", "nitroaromatic") == "3a"                        # compound scope, three isomers
+    assert _curated("C2HF3O2", "perfluoroacid") == "3a"                        # class scope, even at one structure
+    assert _curated("HNO3", "atmospheric") == "2b"
+    assert _curated("C99H99O99", "atmospheric") == "3a"                        # compound scope, not in the space
+    assert LL.KNOWN_FAMILY_SCOPE["contaminant:silanediol"] == "class"
+    assert LL.plausible_structures("C6H18O3Si3") == 1 and LL.plausible_structures("C99H99O99") is None

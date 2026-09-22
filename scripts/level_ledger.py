@@ -73,18 +73,47 @@ ISOTOPE_ABUNDANCE = {
 C13_PER_CARBON = 0.0107
 RATIO_LO, RATIO_HI = 0.5, 2.0
 
-# Curated families whose formula admits essentially one structure in this
-# chemistry, and those that name a class only.
-UNIQUE_FAMILIES = {"atmospheric", "reactive_iodine"}
-CLASS_ONLY_FAMILIES = {
-    "nitroaromatic",
-    "perfluoroacid",
-    "chlorinated_paraffin",
-    "organophosphate",
-    "organothiophosphate",
-    "indoor_sulfur",
-    "cyclosiloxane",
+# The scope of each pass-0 family (docs/EVIDENCE_LEVELS.md section 4.1): a family
+# whose entries are hand-listed compounds asserts a COMPOUND, one generated from a
+# formula loop asserts a CLASS. 2b needs compound scope AND a one-structure formula
+# in peaky/data/isomer_space.csv; any other curated commit is 3a. A family not
+# listed is read as a class. (Until 2026-09-22 this script kept two hand-made sets
+# -- {atmospheric, reactive_iodine} always 2b, six others always 3a -- which
+# agreed with the spec on every golden row but not on the positive-mode families:
+# cyclosiloxane D3/D5/D7 read 3a here and 2b in core, and contaminant:silanediol
+# was in neither set. The spec is the design; the sets were the bug.)
+KNOWN_FAMILY_SCOPE = {
+    "atmospheric": "compound",
+    "reactive_iodine": "compound",
+    "ambient_inorganic": "compound",
+    "nitroaromatic": "compound",
+    "cyclosiloxane": "compound",
+    "indoor_sulfur": "compound",
+    "organophosphate": "compound",
+    "organothiophosphate": "compound",
+    "easyic_hydride": "compound",
+    "perfluoroacid": "class",
+    "chlorinated_paraffin": "class",
+    "contaminant:silanediol": "class",
 }
+ISOMER_SPACE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "peaky", "data", "isomer_space.csv")
+_STRUCTURES: dict | None = None
+
+
+def plausible_structures(formula: str) -> int | None:
+    """The isomer space's structure count for `formula`, None when absent."""
+    global _STRUCTURES
+    if _STRUCTURES is None:
+        _STRUCTURES = {}
+        if os.path.isfile(ISOMER_SPACE):
+            space = pd.read_csv(ISOMER_SPACE)
+            for f, n in zip(space["formula"].astype(str).str.strip(),
+                            pd.to_numeric(space["n_plausible_structures"], errors="coerce")):
+                if pd.notna(n):
+                    _STRUCTURES[f] = int(n)
+    return _STRUCTURES.get(str(formula).strip())
 
 BARE_ADDUCTS = {"[M-H]-"}
 CLUSTER_ADDUCTS = {
@@ -356,9 +385,10 @@ def level_of(row) -> str:
         return "5b"
     if degenerate and row.n_axes == 0:
         return "5b"
-    if row.known_fam in UNIQUE_FAMILIES:
-        return "2b"
-    if row.known_fam in CLASS_ONLY_FAMILIES:
+    if row.known_fam:
+        if (KNOWN_FAMILY_SCOPE.get(row.known_fam, "class") == "compound"
+                and plausible_structures(row.neutral) == 1):
+            return "2b"
         return "3a"
     if row.branch:
         return "3b"

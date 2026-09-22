@@ -346,3 +346,20 @@ def test_m1_names_a_reagent_water_cluster_across_a_denser_ladder(run):
     m1 = SC.missed_m1(run, ions, tracks, coverage_rows=[])
     row = next(r for r in m1["rows"] if abs(r["mz"] - (78.9189 + SC.WATER)) < 1e-3)
     assert row["family"] == "reagent + 1x H2O" and row["parent"].startswith("Br- @ 78.9189")
+
+
+def test_decoy_ledger_counts_prefer_the_engines_own_level():
+    """_ledger_counts rates a decoy arm by the in-core `evidence_level` when the
+    engine wrote it (the same leveller as the run it bounds); an older engine's
+    ledger is levelled post hoc by the reference script."""
+    base = dict(role="M0", tier="Assigned", mz=200.0, height=100.0, adduct="[M-H]-",
+                ion_formula="C10H15O4", method="cheminfo", confidence="High")
+    led = pd.DataFrame([dict(base, peak_id="a", neutral_formula="C10H16O4", evidence_level="4b"),
+                        dict(base, peak_id="b", neutral_formula="C9H14O4", evidence_level="5b", tier="Candidate"),
+                        dict(peak_id="r", role="reagent", tier=None, mz=62.0, height=1e5, adduct=None,
+                             neutral_formula=None, ion_formula="NO3-", method=None, confidence=None, evidence_level=None)])
+    c = SC._ledger_counts(led, "f")
+    assert c["m0"] == 2 and c["assigned"] == 1 and c["levels"]["4b"] == 1 and c["levels"]["5b"] == 1
+    old = led.drop(columns=["evidence_level"])
+    c0 = SC._ledger_counts(old, "f")
+    assert c0["m0"] == 2 and sum(c0["levels"].values()) == 2      # levelled post hoc instead

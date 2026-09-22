@@ -1140,8 +1140,13 @@ def _ledger_counts(led: pd.DataFrame, label: str) -> dict:
     tier = col(m0, "tier", "")
     frame = m0.assign(__file=label)
     levels = pd.DataFrame()
-    if not frame.empty:
-        # level the ledger the way level_ledger does (no corroboration)
+    if not frame.empty and "evidence_level" in m0.columns and m0["evidence_level"].notna().any():
+        # the engine at this tip levels its own rows (the `evidence` stage): the
+        # decoy arms are then rated by the SAME leveller as the run they bound
+        levels = (m0.drop_duplicates(["neutral_formula", "adduct"])
+                    .rename(columns={"evidence_level": "level"})[["neutral_formula", "adduct", "level"]])
+    elif not frame.empty:
+        # an older engine: level the ledger the way level_ledger does (no corroboration)
         full = led.assign(__file=label)
         halogen = LL.detect_reagent_halogen(frame)
         measured = LL.measure_source(label, full, halogen)
