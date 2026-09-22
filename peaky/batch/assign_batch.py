@@ -546,7 +546,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         ts_peaks=None, amine_r_min: float = 0.6,
         n_jobs: int | None = None, rolling_centre: bool = False,
         trace_first: bool = False, resolving_power=None, trace_episodes: bool = False,
-        log=print, **assign_kw) -> dict:
+        corroborate=None, log=print, **assign_kw) -> dict:
     """Assign the presence-cover subset of a batch and combine, keeping per-file
     ledgers. Provide EITHER `peaks` (a batch peak/sample table) OR `batch` (a
     batch id or name -- exact id > exact name > unique substring, an ambiguous
@@ -572,8 +572,19 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     admission gate. Those files go through the same per-file path, and the
     merge + stamp are redone once over everything. Needs `ts_peaks`; the
     pooled path (`sample_ids=`) gets the extra picks back as
-    `residual_samples` to append to its own selection table."""
+    `residual_samples` to append to its own selection table.
+
+    `corroborate`: run dirs / ledger CSVs (or a ready set of neutral formulas)
+    whose M0 neutrals corroborate this run -- the other reagent channel, or the
+    other instrument on the same air. It is the `corroborated` axis of the
+    evidence levels (docs/EVIDENCE_LEVELS.md): the per-file `evidence` stage
+    reads it, and so does the batch level, which is recomputed on the POOLED
+    per-file ledgers (cover + residual files as one source) and stamped on the
+    merged ledger by (neutral_formula, adduct) -- the merged rows carry none of
+    the predicate columns. batch_summary['evidence_levels'] records the counts;
+    tables/evidence_levels.csv the facts behind every pair."""
     from peaky.assignment import assign as A
+    from peaky.assignment import evidence as EV
     from peaky.batch import timeseries as _TSN
     from peaky.io import io_mascope as IO
 
@@ -694,6 +705,17 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # batch one answer. An explicit reagent_n_relabel=True in assign_kw restores
     # the per-file re-read (and the merged-level pass then stands down).
     assign_kw.setdefault("reagent_n_relabel", False)
+    # --corroborate: the neutrals of the named sources, or a ready set. Read by
+    # the per-file evidence stage (through assign_kw) and by the pooled batch
+    # level below; the paths are recorded so the run says what corroborated it.
+    if isinstance(corroborate, (set, frozenset)):
+        cross_sources, cross = [], {str(x) for x in corroborate}
+    else:
+        cross_sources = [str(x) for x in (corroborate or [])]
+        cross = EV.corroborating_neutrals(cross_sources)
+    assign_kw["corroborate"] = cross
+    if cross_sources:
+        log(f"[assign_batch] --corroborate: {len(cross)} neutral(s) from {len(cross_sources)} source(s)")
     # labelled-reagent covalent-product rescue (e.g. 15N-organonitrates); no-op
     # for every unlabelled reagent profile.
     if getattr(prof, "label_isotope", None):
@@ -800,6 +822,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             f"(context {sorted(_tags) or 'contaminants-only'})")
     per_file, offsets, per_stats = {}, {}, []
     scorings: dict = {}        # per-sample pattern_scoring, for the run manifest
+    level_frames: dict = {}    # sid -> its ledger's M0/iso rows + predicate columns
+                               # (evidence.trim): the pooled batch level's input
     identified_aux: list = []  # per-file identified-ion rows (reagent/iso/artifact
                                # + analyte ion_formula) for the parquet stamp
     plaus_audit: list = []     # per-file O-monster / carbon-cluster demotes, pooled
@@ -828,6 +852,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         exists to avoid -- and out-vote a trace's reading (measured: a Candidate
         on the trace ledger re-read as Assigned by three residual files)."""
         led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)
+        level_frames[sid] = EV.trim(led)
         plaus_audit.extend(plaus)
         protected_neutrals.update(_protected_neutrals(led))
         curated_neutrals.update(_curated_neutrals(led))
@@ -1178,6 +1203,29 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     n_audit = PL.write_audit(plaus_audit, os.path.join(TAB, f"plausibility_audit_{prof.name}.csv"))
     log(f"[assign_batch] plausibility audit: {n_audit} touched peaks "
         f"-> tables/plausibility_audit_{prof.name}.csv")
+    # evidence levels: recomputed on the POOLED per-file ledgers (cover + residual
+    # files as ONE source -- chan2 sees a second adduct in any file, tied/lowconf
+    # need all rows across files) and stamped on the merged ledger by ion. The
+    # merged rows carry none of the predicate columns, so they are never read for
+    # this; a merged row whose reading no per-file ledger holds (a batch-level
+    # re-read) stays NA, and the count says so.
+    levels = EV.level_pooled(level_frames, cross=cross)
+    merged = EV.stamp_merged(merged, levels)
+    levels.to_csv(os.path.join(TAB, "evidence_levels.csv"), index=False)
+    ev_summary = {
+        "pooled": EV.summarize(levels["evidence_level"]) if len(levels) else {},
+        "merged": EV.summarize(merged["evidence_level"]) if len(merged) else {},
+        "per_stage": ({str(s_): EV.summarize(merged.loc[merged["stage"] == s_, "evidence_level"])
+                       for s_ in sorted(merged["stage"].dropna().astype(str).unique())}
+                      if len(merged) and "stage" in merged.columns else {}),
+        "n_pairs": int(len(levels)),
+        "n_unstamped": int(merged["evidence_level"].isna().sum()) if len(merged) else 0,
+        "n_corroborate": int(len(cross)), "cross_source": cross_sources,
+    }
+    log(f"[assign_batch] evidence levels over {len(level_frames)} pooled file(s): "
+        f"{ev_summary['pooled']} ({ev_summary['n_pairs']} neutral/adduct pairs); "
+        f"{ev_summary['n_unstamped']} merged row(s) without a per-file reading "
+        f"-> tables/evidence_levels.csv")
     merged.to_csv(os.path.join(out_dir, "merged_ledger.csv"), index=False)
     jitter.to_csv(os.path.join(TAB, "jitter.csv"), index=False)
     # the FINAL per_file/_batch_ts.parquet (in parallel mode this overwrites the raw
@@ -1285,6 +1333,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "merge_gates": merge_gates,
         "plausibility": summary_plaus,
         "plausibility_audit_rows": n_audit,
+        # the evidence levels (docs/EVIDENCE_LEVELS.md): pooled = one count per
+        # (neutral, adduct) pair over the pooled files; merged = per merged row;
+        # per_stage = merged rows by cover / residual; cross_source = what
+        # corroborated the run
+        "evidence_levels": ev_summary,
         "reflists_active": RL.active_versions(reflists_active),   # [(id, data_version)]
         "per_file": per_stats,
         # RUN-TIME metadata, not material data: how long the assignment actually
@@ -1321,4 +1374,5 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     return {"profile": prof, "context": context, "sample_ids": sample_ids,
             "per_file": per_file, "offsets": offsets, "merged": merged,
             "jitter": jitter, "summary": summary, "out_dir": out_dir,
+            "evidence": levels,
             "residual_samples": rsel, "stages": dict(stages)}

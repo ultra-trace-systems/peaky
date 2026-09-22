@@ -540,6 +540,12 @@ _ENGINE_PROVENANCE_COLUMNS = (
     "commentary",
     "isotopologues",
     "below_assignability",
+    # the evidence level (docs/EVIDENCE_LEVELS.md): what the evidence behind the
+    # formula is worth on the CIMS-adapted Schymanski scale, and why
+    "evidence_level",
+    "evidence_axes",
+    "level_reason",
+    "n_plausible_structures",
     "iso_match_score",
     "compound_score",
     "dbe",

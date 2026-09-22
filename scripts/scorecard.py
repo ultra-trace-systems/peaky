@@ -397,7 +397,12 @@ def levels_for(run: Run, levels_csv: str | None, corroborate: list[str]) -> pd.D
         )
         axes = col(led, "evidence_axes", "")
         out["axes"] = axes.fillna("").astype(str)
-        out["n_axes"] = out["axes"].map(lambda s: len([a for a in re.split(r"[|,;]", s) if a]))
+        # the in-core string lists the four axes first, then modifiers
+        # (multiline / carbon / branch / reagent_only_iso / known:<fam> / files:<n>)
+        # -- only the axes count
+        out["n_axes"] = out["axes"].map(
+            lambda s: len([a for a in re.split(r"[|,;]", s)
+                           if a in ("iso", "chan2", "anchor", "corroborated")]))
         out["source"] = "in-core"
         return out.drop_duplicates(["neutral", "adduct"])
     if levels_csv:

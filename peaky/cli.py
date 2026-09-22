@@ -268,6 +268,13 @@ def cmd_assign(args) -> None:
                  # same account `peaky batch` gives of the same batch
                  else f"persistence path off: {ADM.why_off(cfg, occurrence)}"))
 
+    # --corroborate: the other channel's / instrument's neutrals = the
+    # `corroborated` axis of the evidence levels (docs/EVIDENCE_LEVELS.md)
+    from peaky.assignment import evidence as EV
+    cross = EV.corroborating_neutrals(getattr(args, "corroborate", []) or [])
+    if cross:
+        print(f"[levels] corroborated by {len(cross)} neutral(s) from "
+              f"{len(args.corroborate)} source(s)")
     # `prog` IS the log callable (a transparent pass-through to print whenever
     # the window is off), so the run below is identical either way.
     with PG.open_progress(f"peaky \u00b7 assign {args.sample_id}",
@@ -278,6 +285,7 @@ def cmd_assign(args) -> None:
                          do_pass4=not args.no_pass4, do_pass5=not args.no_pass5,
                          adducts=adducts, ts_peaks=ts_peaks, label_purity=purity,
                          occurrence=occurrence, reflists_active=reflists_active,
+                         corroborate=cross,
                          log=prog, checkpoint_dir=str(od / "checkpoints"))
         # Nothing on this path logs the `(i/N) done` line assign_batch emits, so
         # say it directly: the one sample is in (samples bar 1/1) and the stages
@@ -347,7 +355,8 @@ def cmd_batch(args) -> None:
                            rolling_centre=getattr(args, "rolling_centre", False),
                            trace_first=getattr(args, "trace_first", False),
                            resolving_power=getattr(args, "resolving_power", None),
-                           trace_episodes=getattr(args, "trace_episodes", False), log=prog)
+                           trace_episodes=getattr(args, "trace_episodes", False),
+                           corroborate=list(getattr(args, "corroborate", []) or []), log=prog)
         # the window's final numbers come from the RETURNED summary, never from
         # parsing the log -- exact by construction.
         prog.finish((res.get("assign") or {}).get("summary"))
@@ -898,6 +907,15 @@ def _add_rolling_flag(p) -> None:
                         "per ion, as before")
 
 
+def _add_corroborate_flag(p) -> None:
+    p.add_argument("--corroborate", action="append", default=[], metavar="SOURCE",
+                   help="a run dir, an out-dir holding one run, or a ledger CSV whose M0 "
+                        "neutrals corroborate this run's evidence levels -- the other "
+                        "reagent channel, or the other instrument on the same air; "
+                        "repeatable. Corroboration is formula evidence only: it can carry "
+                        "a row to level 4a, never above (docs/EVIDENCE_LEVELS.md)")
+
+
 def _add_trace_first_flags(p) -> None:
     p.add_argument("--trace-first", action="store_true", default=False,
                    help="assign the batch's persistent ions ONCE from their centred traces "
@@ -995,6 +1013,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="batch name to load as the time series (optional TS step)")
     pa.add_argument("--ts-dataset", default=None, help="dataset for --ts-batch")
     _add_admission_args(pa)
+    _add_corroborate_flag(pa)
     _add_progress_flag(pa)
     pa.set_defaults(func=cmd_assign)
 
@@ -1019,6 +1038,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_admission_args(pb)
     _add_rolling_flag(pb)
     _add_trace_first_flags(pb)
+    _add_corroborate_flag(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "

@@ -20,6 +20,7 @@ from peaky.assignment import labeled
 from peaky.assignment import ladders
 from peaky.assignment import ledger
 from peaky.assignment import passes
+from peaky.assignment import evidence
 from peaky.assignment import plausibility
 from peaky.chem import reagents
 from peaky.assignment import reflists
@@ -178,6 +179,10 @@ class _RunState:
     # GKA series evidence measured in the pass-3 CURATED phase and handed to the
     # late `pass3_series` stage (a DataFrame + member sets; never serialized).
     series_carry: object = None
+    # the neutral formulas a --corroborate source holds (the other reagent
+    # channel / instrument): the `corroborated` axis of the evidence levels
+    # (docs/EVIDENCE_LEVELS.md §3); empty on a bare run
+    corroborate: set = field(default_factory=set)
     summaries: dict = field(default_factory=dict)
     plaus_audit: list = field(default_factory=list)
 
@@ -278,6 +283,18 @@ def _stage_timeseries(st):
         ts_reagent_mzs = [m for (_l, m, _f) in reagents.build_library(st.reagent)]
     return timeseries.apply_timeseries(
         st.led, st.ts_peaks, reagent_mzs=ts_reagent_mzs, log=st.log)
+
+
+def _stage_evidence(st):
+    """Evidence level on every committed M0 (docs/EVIDENCE_LEVELS.md): what the
+    evidence behind the formula is worth on the CIMS-adapted Schymanski scale,
+    from the columns the ledger already carries. Runs after every tier and
+    demote stage, the reflist rescue and the final envelope sweep (the
+    satellites the `iso` axis reads), before `timeseries` (ts_* only)."""
+    s = evidence.apply_levels(st.led, cfg=st.cfg, cross=st.corroborate)
+    st.log(f"[run] evidence levels {s['levels']} on {s['n_levelled']} M0 rows "
+           f"({s['n_pairs']} neutral/adduct pairs; corroborated by {s['n_corroborate']} neutrals)")
+    return s
 
 
 # The assignment pipeline AS DATA -- read top to bottom to see exactly what runs,
@@ -447,6 +464,9 @@ _STAGES = [
     # brightest "unexplained" peak of a positive urea-CIMS ambient batch run).
     _Stage("iso_env_final",
            lambda st: passes.complete_isotope_envelopes(st.led, st.cfg, log=st.log)),
+    # evidence levels -- not `safe`: a level that cannot be computed is a bug,
+    # not a lost stage. The stage order above is the design (spec §6.1).
+    _Stage("evidence", _stage_evidence, safe=False),
     _Stage("timeseries", _stage_timeseries,
            when=lambda st: st.ts_peaks is not None and len(st.ts_peaks)),
 ]
@@ -458,13 +478,16 @@ def run(sample_id: str, context: str = "ambient-air", *,
         do_pass5: bool = True, do_pass_certified: bool = True,
         ts_peaks=None, adducts=None, reflists_active=None,
         label_isotope=None, label_max=2, label_purity=None, occurrence=None,
-        reagent_n_relabel: bool = True, peaks=None,
+        reagent_n_relabel: bool = True, peaks=None, corroborate=None,
         log=print, checkpoint_dir=None) -> dict:
     """Assign one sample. `peaks` (a DataFrame in the shape fetch_peaks returns:
     peak_id, mz, height, area ...) makes the run OFFLINE: the table is served
     as `sample_id` from memory, no server is contacted, the local scorer does
     the mass and isotope maths, and only the given `adducts` are open. The
-    trace-first batch path and the tests use it."""
+    trace-first batch path and the tests use it. `corroborate` is the set of
+    neutral formulas a corroborating source holds (the other reagent channel or
+    instrument on the same air; `evidence.corroborating_neutrals` resolves run
+    dirs / ledger CSVs to it): the `corroborated` axis of the evidence levels."""
     cfg = cfg or passes.PassConfig()
     # the reagent bottle's isotopic purity (ReagentProfile.purity), published for
     # the two consumers that model a '^X' ion's unlabelled impurity line: the
@@ -613,7 +636,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
         do_pass_certified=do_pass_certified,
         reflists_active=reflists_active, ts_peaks=ts_peaks,
         label_isotope=label_isotope, label_max=label_max, log=log,
-        checkpoint_dir=checkpoint_dir, reagent_n_relabel=reagent_n_relabel)
+        checkpoint_dir=checkpoint_dir, reagent_n_relabel=reagent_n_relabel,
+        corroborate=set(corroborate or ()))
     for stg in _STAGES:
         if not stg.when(st):
             continue

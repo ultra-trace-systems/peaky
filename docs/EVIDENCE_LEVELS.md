@@ -1,12 +1,13 @@
 # Evidence levels — how much a committed formula is worth
 
-**Status: specification (B1). Nothing in this document is implemented yet;**
-`peaky/assignment/evidence.py` does not exist, and `tests/test_evidence.py`
-fails on its import. The executable reference for every predicate below is
-`scripts/level_ledger.py`; the in-core stage must reproduce it row for row on
-the fixtures in `tests/fixtures/levels/` and hit the three golden count
-vectors exactly. Where this document and the script disagree, the script is
-right and this document is a bug.
+**Status: implemented (B2).** `peaky/assignment/evidence.py` is the `evidence`
+stage of `assign.run` and the pooled recompute of `assign_batch.run`;
+`tests/test_evidence.py` pins the contract. The executable reference for every
+predicate below is still `scripts/level_ledger.py`; the in-core stage reproduces
+it row for row on the fixtures in `tests/fixtures/levels/` and hits the three
+golden count vectors exactly. Where this document, the script and the code
+disagree, the script is right and the other two are bugs (one known reading
+difference is listed in §10).
 
 ## 1. What a level is
 
@@ -211,8 +212,11 @@ Two batch runs named together (`peaky batch … --corroborate <other run>`)
 corroborate this run by the other's M0 neutrals. The trace-first path is a
 one-file batch and follows the same rule.
 
-`batch_summary["evidence_levels"]` = `{"pooled": {level: n}, "per_stage":
-{cover: {…}, residual: {…}}, "n_corroborate": n, "cross_source": [...]}`.
+`batch_summary["evidence_levels"]` = `{"pooled": {level: n}` (one count per
+pair), `"merged": {level: n}` (per merged row), `"per_stage": {cover: {…},
+residual: {…}}`, `"n_pairs"`, `"n_unstamped"` (merged rows whose reading no
+per-file ledger holds), `"n_corroborate"`, `"cross_source": [...]}`; the pair
+table with every fact of §3 is written to `tables/evidence_levels.csv`.
 
 ### 6.3 The post-hoc script
 
@@ -229,7 +233,8 @@ before the column existed. `scripts/scorecard.py` already prefers an in-core
 | `level_reason` | str | M0 rows | one sentence naming the predicate that fired, in the words of §4, with the numbers (`"5b: near-tie broken by the arbiter"`, `"4c: 1 plausible ion in the window, resolved, no axis"`, `"4a: iso + chan2, corroborated by the other source"`) |
 | `n_plausible_structures` | Int64 | M0 rows whose formula is in the isomer space; `NA` otherwise | from `isomer_space.csv` |
 
-Written to: the per-file `<prefix>_ledger.csv`, `merged_ledger.csv`, the
+Written to: the per-file `<prefix>_ledger.csv`, `merged_ledger.csv`,
+`tables/evidence_levels.csv` (batch: one row per pair with every fact of §3), the
 Excel workbook (a column on the ledger sheets and a new **"By evidence
 level"** sheet: one row per level with count, share, tier split, the axes
 histogram and the twenty brightest rows), one PDF table after the tier
@@ -261,7 +266,8 @@ added them. `tests/test_evidence.py`:
   2b formula in the fixtures is in the isomer space;
 - `evidence_axes` order and `level_reason` are stable strings.
 
-All of it fails today with `ImportError: peaky.assignment.evidence`.
+All of it passes since B2; `tests/test_evidence_outputs.py` pins the wiring
+(stage order, the batch recompute, every output, `--corroborate`).
 
 ## 9. Worked rows (real rows of `expected_levels.csv`)
 
@@ -288,6 +294,14 @@ Across the three sets 4,606 of 6,444 pairs are 5b; the top two levels hold
   decoy split: above m/z 350 the mass-defect gap no longer protects the
   Orbitrap) — B3 measures, the predicate table changes only if the
   calibration order breaks.
+- One reading difference between the code and the reference script, to be
+  adjudicated in B3 on real runs: the ledger writes `isotopologues` with
+  `json.dumps`, so a satellite without a per-line score (a ³⁷Cl envelope
+  confirmed against the ledger) carries `null`; the script's `ast.literal_eval`
+  cannot read that cell and counts the list as empty, the in-core `as_list`
+  reads JSON first. No fixture row moves (the goldens and the row-for-row test
+  hold), but a real run's chlorinated-paraffin rows may differ on the `iso`
+  fact between the two.
 - A detectability term for heteroatom satellites (a 34S/81Br line that would
   sit below the noise edge cannot count as *missing*) — C3's topic; the level
   today only counts satellites that were seen.

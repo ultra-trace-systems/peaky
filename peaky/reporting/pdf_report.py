@@ -72,6 +72,9 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
     ctx["merged"] = merged
     ctx["n_m0"] = len(merged)
     ctx["tiers"] = merged["tier"].value_counts().to_dict()
+    if "evidence_level" in merged.columns:     # docs/EVIDENCE_LEVELS.md; absent on older runs
+        from peaky.assignment import evidence as _EV
+        ctx["evidence_levels"] = _EV.summarize(merged["evidence_level"])
     u = merged.drop_duplicates("neutral_formula").copy()
     ctx["n_neutrals"] = len(u)
     # composition by CHO/CHON/CHOS backbone (Si/F/halogen folded in)
@@ -549,6 +552,12 @@ def cover(ctx, pdf):
               f"({idn} Assigned / {cn} Candidate)"),
         ("b", f"Distinct neutral compounds:       {ctx['n_neutrals']}"),
     ]
+    if ctx.get("evidence_levels"):
+        _ev = ctx["evidence_levels"]
+        head += [("b", "Evidence levels (2b best .. 5b):  "
+                       + " · ".join(f"{k} {v}" for k, v in _ev.items())),
+                 ("dim", f"   on {sum(_ev.values())} of {ctx['n_m0']} merged rows -- "
+                         "see the Evidence levels page")]
     rc = ctx.get("role_count", {})
     if rc:
         tot = sum(rc.values())
@@ -803,6 +812,79 @@ def coverage(ctx, pdf):
     else:
         lines += [("dim", "Peak roles are defined on the Methods page.")]
     _text_lines(fig, lines, y0=0.40, dy=0.029, bottom=0.05)
+    _close(pdf, fig)
+
+
+def evidence_levels(ctx, pdf):
+    """What the evidence behind the merged formulas is worth (docs/EVIDENCE_LEVELS.md):
+    the level histogram with its tier split, the meaning of each level and the
+    brightest row of each. Skipped -- no page -- on a run made before the column
+    existed, so an older run's report is unchanged."""
+    merged = ctx.get("merged")
+    if merged is None or "evidence_level" not in merged.columns:
+        return
+    import matplotlib.pyplot as plt
+    from peaky.assignment import evidence as EV
+    lv = merged["evidence_level"].astype(object)
+    counts = EV.summarize(lv)
+    n_lv = sum(counts.values())
+    fig = plt.figure(figsize=A4)
+    fig.text(0.08, 0.965, "Evidence levels", fontsize=15, weight="bold", color=INK)
+    fig.text(0.08, 0.945, "What the evidence behind each committed formula is worth -- Schymanski "
+                          "et al. (2014) adapted to chemical ionization; 1 = best, 1 and 2a never "
+                          "fire (no standard, no library)", fontsize=8.5, color=GREY)
+    ax = fig.add_axes([0.11, 0.72, 0.80, 0.18])
+    levels = list(EV.LEVELS)
+    vals = [counts.get(k, 0) for k in levels]
+    _grp = {"2b": "#1D9E75", "3a": "#1D9E75", "3b": "#1D9E75", "4a": "#5FB89A", "4b": "#5FB89A",
+            "4c": "#378ADD", "4d": "#378ADD", "5a": "#E0A93B", "5b": "#B0B0B0"}
+    ax.bar(range(len(levels)), vals, color=[_grp[k] for k in levels], width=0.6)
+    for i, v in enumerate(vals):
+        if v:
+            ax.text(i, v, f"{v}", ha="center", va="bottom", fontsize=8)
+    ax.set_xticks(range(len(levels))); ax.set_xticklabels(levels, fontsize=9)
+    ax.set_ylabel("merged rows", fontsize=9)
+    ax.set_title("Merged rows by evidence level", loc="left", fontsize=11)
+    # the brightest row per level: the merged ledger carries no height, so rank by
+    # the per-file maximum per channel (load_context), else by match score
+    mx = ctx.get("max_h_by_channel", {}) or {}
+    lines = [("h", "By level"), ("gap", 0.3),
+             ("m", f"{'level':<6}{'n':>6}{'share':>7}  {'Assigned':>8}{'Candidate':>10}   brightest row")]
+    for k in levels:
+        g = merged[lv == k]
+        if not len(g):
+            continue
+        if mx:
+            key = list(zip(g["neutral_formula"].astype(str), g["adduct"].astype(str)))
+            rank = pd.Series([mx.get(kk, 0.0) for kk in key], index=g.index)
+            top = g.loc[rank.idxmax()]
+        elif "ion_score" in g.columns:
+            top = g.sort_values("ion_score", ascending=False).iloc[0]
+        else:
+            top = g.iloc[0]
+        na = int((g["tier"] == "Assigned").sum()) if "tier" in g.columns else 0
+        nc = int((g["tier"] == "Candidate").sum()) if "tier" in g.columns else 0
+        lines.append(("m", f"{k:<6}{len(g):>6}{100 * len(g) / max(n_lv, 1):>6.0f}%  {na:>8}{nc:>10}   "
+                           f"{float(top['mz']):.4f} {top['neutral_formula']} {top['adduct']}"))
+        lines.append(("dim", f"       {EV.LEVEL_MEANING[k]}"))
+    n_na = int(lv.isna().sum())
+    if n_na:
+        lines.append(("dim", f"{n_na} merged row(s) carry no level: their reading exists in no "
+                             "per-file ledger (a batch-level re-read)."))
+    lines += [("gap", 0.6), ("h", "Reading this page"), ("gap", 0.3),
+              ("b", "• A level rates one (neutral, adduct) pair as seen through one channel, from the "
+                    "ledger's own columns. The four axes: a verified isotopologue, the same neutral in "
+                    "a second adduct channel, a series/anchor tie, and a corroborating source (the "
+                    "other channel or instrument on the same air, --corroborate)."),
+              ("b", "• 4a needs two axes with one from outside this channel's ionization chemistry; "
+                    "4d is CIMS-specific: the reagent halogen's satellite pins the ion, not the neutral."),
+              ("b", "• 5b is the honest floor: a near-tie, a row below assignability, a Low/Suspect "
+                    "score, or a mass-degenerate window with nothing to break the tie. Most rows of an "
+                    "ambient run sit here; that is the point of the scale, not a problem with it."),
+              ("b", "• The tier is not an input: levels and tiers come from the same columns and may "
+                    "disagree. In a batch the level is recomputed on the pooled per-file ledgers and "
+                    "stamped by ion (merged_ledger.csv, tables/evidence_levels.csv).")]
+    _text_lines(fig, lines, y0=0.66, dy=0.025, bottom=0.05)
     _close(pdf, fig)
 
 
@@ -1362,7 +1444,7 @@ def assignments_table(ctx, pdf):
         _close(pdf, fig)
 
 
-SECTIONS = [cover, findings, coverage, composition, scrutiny, reference_lists, gka,
+SECTIONS = [cover, findings, coverage, evidence_levels, composition, scrutiny, reference_lists, gka,
             qc_massdefect, families, changers, clusters, methods, assignments_table]
 
 

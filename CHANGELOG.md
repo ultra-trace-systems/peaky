@@ -8,7 +8,38 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Evidence levels — the specification (nothing implemented yet).** `docs/EVIDENCE_LEVELS.md`
+- **Evidence levels — `evidence_level` on every committed formula.** A new `evidence` stage
+  (`peaky/assignment/evidence.py`; after every tier and demote stage, the reflist rescue and the
+  final envelope sweep, before `timeseries`; not `safe`, so a level that cannot be computed is a
+  bug, not a lost stage) rates each committed M0 row on the CIMS-adapted Schymanski scale — 2b, 3a,
+  3b, 4a, 4b, 4c, 4d, 5a, 5b; 1 and 2a defined and never assigned — from the columns the ledger
+  already writes, per `(neutral_formula, adduct)`, and stamps `evidence_level` / `evidence_axes` /
+  `level_reason` / `n_plausible_structures` (`NA` on every non-M0 row). A batch recomputes the level
+  on the POOLED per-file ledgers (cover + residual files as one source: `chan2` sees a second adduct
+  in any file, `tied` / `lowconf` need all rows across files) and stamps the merged ledger by ion — a
+  merged row whose reading no per-file ledger holds (a batch-level re-read) stays `NA`, and
+  `batch_summary.json['evidence_levels']` (`pooled`, `merged`, `per_stage`, `n_pairs`,
+  `n_unstamped`, `n_corroborate`, `cross_source`) says how many. `--corroborate <run dir | out-dir
+  | ledger CSV>` (repeatable, on `peaky assign` and `peaky batch`) supplies the other reagent
+  channel's or the other instrument's M0 neutrals as the `corroborated` axis (formula evidence: it
+  can carry a row to 4a, never above). Outputs: the four columns on per-file and merged ledgers,
+  `tables/evidence_levels.csv` (one row per pair with every fact behind its level), an Excel column
+  on the Assigned / Candidates / Target list / Peak ownership sheets plus a **By evidence level**
+  sheet (counts, share, tier split, axes histogram, the twenty brightest rows per level), Summary
+  and Read-me rows, an **Evidence levels** page in the PDF after the assignment-quality page and a
+  line on the cover, and the columns in the published engine provenance; every consumer renders a
+  ledger without the columns unchanged. `scripts/scorecard.py` counts only the four axes of the
+  in-core `evidence_axes` string (the modifiers `multiline` / `carbon` / `branch` /
+  `reagent_only_iso` / `known:<fam>` / `files:<n>` follow them). The in-core stage reproduces
+  `scripts/level_ledger.py` row for row on the fixtures and hits the three golden count vectors
+  exactly (tv 1373 → 21/15/107/38/162/9/9/33/979; tof 3364 → 6/16/182/38/260/79/91/135/2557;
+  orbi 1707 → 0/12/217/44/215/119/0/30/1070). One reading difference, recorded in the spec's §10
+  for B3: the ledger writes the satellite list as JSON (`null` for a line without a score), which
+  the script's `ast.literal_eval` cannot read; in-core reads JSON first — no fixture row moves.
+  `tests/test_evidence.py` (the contract) now passes; `tests/test_evidence_outputs.py` pins the
+  wiring.
+
+- **Evidence levels — the specification.** `docs/EVIDENCE_LEVELS.md`
   states the CIMS-adapted Schymanski scale (2b, 3a, 3b, 4a, 4b, 4c, 4d, 5a, 5b; 1 and 2a defined
   and never assigned) as predicates over the ledger columns the engine already writes, exactly
   as `scripts/level_ledger.py` computes them; the settled decisions (one rating channel; 2b needs
@@ -26,8 +57,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   site or instrument names) with `expected_levels.csv` from the reference script; the trimmed
   fixtures reproduce the three golden count vectors exactly. `tests/test_evidence.py` pins one
   passing case and one mutant per level, the goldens, the row-for-row match, the null safety
-  and the isomer-space rules — and fails with `ImportError` on `peaky.assignment.evidence`
-  until the build lands.
+  and the isomer-space rules.
 
 - **`--trace-first` (batch): assign the batch's persistent ions ONCE, from their centred
   traces.** Opt-in and EXPERIMENTAL — see the measured result at the end of this entry.

@@ -99,8 +99,8 @@ SCORING  ── local_scoring ────►         io_mascope.score_candidate
 arbitration + multi-pass commit         passes/ director (passes 1–6 + sweeps; §4)
    │                                     complexity-penalised, isotopologue-gated; commit M0 owners
    ▼
-cleanup → degeneracy → tiers            cleanup.py · degeneracy.py · tiers.py
-   │                                     recover/relabel, measure mass-degeneracy, assign Assigned/Candidate
+cleanup → degeneracy → tiers → evidence  cleanup.py · degeneracy.py · tiers.py · evidence.py
+   │                                     recover/relabel, measure mass-degeneracy, assign Assigned/Candidate; rate the evidence (2b…5b)
    ▼
 report                                  report.py / pdf — _ledger.csv, _assignments.xlsx, _summary.md, _gka.html
 ```
@@ -182,6 +182,7 @@ commitments the previous ones justify. (Condensed; the authoritative table is in
 | rearbitrate  | `passes`          | **off-cal degenerate re-arbitration**: applies the tier engine's calibration-sigma + corroboration gate AT WINNER-SELECTION — an off-cal (>\|2.6\|σ), uncorroborated, high-DBE/C aromatic-monster winner is displaced by an on-cal, plausible, lower-DBE stored alternative (so a degenerate competitor the scorer over-ranked can't keep an M0 slot it would only be tier-demoted out of) |
 | degeneracy   | `degeneracy`      | honest cross-family mass-degeneracy density; an uncorroborated mass-degenerate commit is capped at Candidate |
 | tiers        | `tiers`           | final **Assigned / Candidate** verdict (margin, density, calibrated mass-error gate, degeneracy-aware). Writes the calibrated `ppm_error_cal` (raw `ppm_error − cal_mu`). **Positive-mode reagent-N isobar gate**: a CHO-on-`[M+NH₄]⁺`/urea reading is exactly isobaric with a protonated CHON neutral → capped at Candidate unless an N-free (`[M+H]⁺`/`[M+Na]⁺`/`[M+K]⁺`) channel, the NH₄+urea pair, or a series anchor discriminates it (isotopes can't — same ion) |
+| evidence     | `evidence`        | **evidence level** on every committed M0 ([`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md)): the CIMS-adapted Schymanski scale 2b…5b from the ledger's own columns — a verified isotopologue, a second adduct channel, a series/anchor tie, a corroborating source (`--corroborate`); curated identity vs class; the acid branch; degeneracy and resolvability — stamped as `evidence_level` / `evidence_axes` / `level_reason` / `n_plausible_structures`. Runs after every tier/demote stage, the reflist rescue and the final envelope sweep, before `timeseries`. A batch recomputes it on the pooled per-file ledgers and stamps the merged ledger by ion |
 
 Also interleaved: **composite detection** (`cleanup`/`degeneracy`) flags an M0
 whose intensity exceeds its M+1-implied owner — **halide-CIMS only, a no-op in

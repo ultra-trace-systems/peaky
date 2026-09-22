@@ -96,10 +96,11 @@ _ASSIGN_COL_ORDER = [
 ]
 
 
-def _candidate_rows(cand: pd.DataFrame) -> pd.DataFrame:
+def _candidate_rows(cand: pd.DataFrame, *, levels: bool = False) -> pd.DataFrame:
     """Explode Candidate peaks into one row per candidate formula: rank 1 is
     the committed winner, ranks 2+ are the stored alternatives. This is the
-    'stop presenting one formula per peak' sheet."""
+    'stop presenting one formula per peak' sheet. With `levels`, the rank-1 row
+    carries the committed reading's `evidence_level`."""
     rows = []
     for _, r in cand.iterrows():
         first = {
@@ -108,6 +109,7 @@ def _candidate_rows(cand: pd.DataFrame) -> pd.DataFrame:
             "score": r["ion_score"],
             "eff_score": r.get("eff_score", np.nan),
             "ppm_error": r["ppm_error"], "confidence": r["confidence"],
+            "evidence_level": r.get("evidence_level", pd.NA),
             "candidate_density": r.get("candidate_density", pd.NA),
             "degeneracy_note": r.get("degeneracy_note", ""),
             "why_candidate": r.get("tier_reason", ""),
@@ -122,13 +124,15 @@ def _candidate_rows(cand: pd.DataFrame) -> pd.DataFrame:
                 "score": a.get("raw_score") or a.get("ion_score"),
                 "eff_score": a.get("eff_score"),
                 "ppm_error": a.get("ppm"),
-                "confidence": "", "candidate_density": "",
+                "confidence": "", "evidence_level": "", "candidate_density": "",
                 "why_candidate": "", "isotopologues": "", "commentary": "",
                 "peak_id": r["peak_id"],
             })
     cols = ["mz", "height", "rank", "formula", "adduct", "score", "eff_score",
             "ppm_error", "confidence", "candidate_density", "degeneracy_note",
             "why_candidate", "isotopologues", "commentary", "peak_id"]
+    if levels:
+        cols.insert(cols.index("confidence") + 1, "evidence_level")
     df = pd.DataFrame(rows, columns=cols)
     if len(df):
         df = (df.sort_values(["height", "mz", "rank"],
@@ -148,6 +152,13 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
         led["composite_note"] = pd.NA
     if "degeneracy_note" not in led.columns:   # old ledgers predate the degeneracy audit
         led["degeneracy_note"] = pd.NA
+    # evidence levels (docs/EVIDENCE_LEVELS.md): the column set and the extra sheet
+    # exist only when the ledger carries the level, so an older run renders unchanged
+    has_levels = "evidence_level" in led.columns
+    if has_levels:
+        for c in ("evidence_axes", "level_reason", "n_plausible_structures"):
+            if c not in led.columns:
+                led[c] = pd.NA
     m0 = led[led["role"] == L.ROLE_M0].copy()
     if len(m0):
         m0 = _enrich_m0(m0)
@@ -155,13 +166,17 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
     ident = m0[m0["tier"] == T.TIER_ASSIGNED]
     cand = m0[m0["tier"] == T.TIER_CANDIDATE]
 
-    identified = (ident[_ASSIGN_COL_ORDER]
+    acols = list(_ASSIGN_COL_ORDER)
+    if has_levels:
+        _j = acols.index("confidence") + 1
+        acols[_j:_j] = ["evidence_level", "level_reason", "n_plausible_structures"]
+    identified = (ident[acols]
                   .rename(columns={"tier_reason": "evidence"})
                   .sort_values("height", ascending=False)) if len(ident) else \
         pd.DataFrame(columns=[c if c != "tier_reason" else "evidence"
-                              for c in _ASSIGN_COL_ORDER])
+                              for c in acols])
 
-    candidates = _candidate_rows(cand)
+    candidates = _candidate_rows(cand, levels=has_levels)
 
     # unassigned -- characterized by isotope structure (carbon/halogen count,
     # iso-partner class) so the residual is described, not just listed
@@ -219,7 +234,7 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
     # ownership audit (one row per physical peak). A satellite's row names its
     # owner, not just its peak_id: this sheet is what a reviewer reads to ask who
     # claimed a peak, and "iso_child of 4f9a..." does not answer that.
-    _own_cols = ["peak_id", "mz", "height", "role", "tier",
+    _own_cols = ["peak_id", "mz", "height", "role", "tier", "evidence_level",
                  "neutral_formula", "adduct", "ion_score", "ppm_error",
                  "confidence", "composite_note", "parent_peak_id",
                  "parent_neutral_formula", "parent_adduct",
@@ -229,8 +244,9 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
 
     # target list (formula + adduct + best ppm), Assigned first
     # ('Assigned' < 'Candidate' lexically, hence the ascending tier sort)
-    target = (m0[["neutral_formula", "adduct", "ion_formula", "mz",
-                  "ppm_error", "ion_score", "confidence", "tier"]]
+    _tcols = ["neutral_formula", "adduct", "ion_formula", "mz",
+              "ppm_error", "ion_score", "confidence", "tier"] + (["evidence_level"] if has_levels else [])
+    target = (m0[_tcols]
               .sort_values(["tier", "mz"], ascending=[True, True])) if len(m0) else pd.DataFrame()
 
     reag = led[led["role"] == L.ROLE_REAGENT][[
@@ -250,7 +266,7 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
     else:
         below = pd.DataFrame()
 
-    return {
+    sheets = {
         "Summary": summary_stats(led, context=context, sample_id=sample_id),
         "Read me": legend_sheet(),
         "Assigned": identified,
@@ -264,6 +280,51 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
         "Target list": target,
         "Reagent ions": reag,
     }
+    if has_levels:
+        # the level histogram sits right after the two tier sheets it re-reads
+        out = {}
+        for k, v in sheets.items():
+            out[k] = v
+            if k == "Candidates":
+                out["By evidence level"] = evidence_level_sheet(m0) if len(m0) else pd.DataFrame()
+        sheets = out
+    return sheets
+
+
+def evidence_level_sheet(m0: pd.DataFrame, n_bright: int = 20) -> pd.DataFrame:
+    """The **By evidence level** sheet (docs/EVIDENCE_LEVELS.md): one `summary` row
+    per level -- count, share of levelled rows, tier split, the commonest axes
+    strings -- then the `n_bright` brightest M0 rows of each level with the axes
+    and the reason, so a reader sees what a 4a looks like beside a 5b."""
+    from peaky.assignment import evidence as EV
+    lv = m0["evidence_level"].astype(object)
+    n_lv = int(lv.notna().sum())
+    rows = []
+    for level in EV.LEVELS:
+        g = m0[lv == level]
+        if not len(g):
+            continue
+        axes = g["evidence_axes"].fillna("").astype(str).value_counts()
+        hist = "; ".join(f"{k or '(none)'}: {v}" for k, v in axes.head(6).items())
+        rows.append({"section": "summary", "level": level, "meaning": EV.LEVEL_MEANING[level],
+                     "n": int(len(g)), "share": len(g) / max(n_lv, 1),
+                     "n_assigned": int((g["tier"] == T.TIER_ASSIGNED).sum()),
+                     "n_candidate": int((g["tier"] == T.TIER_CANDIDATE).sum()),
+                     "axes": hist})
+    for level in EV.LEVELS:
+        g = m0[lv == level].sort_values("height", ascending=False).head(n_bright)
+        for _, r in g.iterrows():
+            rows.append({"section": f"brightest {level}", "level": level,
+                         "mz": r.get("mz"), "height": r.get("height"),
+                         "neutral_formula": r.get("neutral_formula"), "adduct": r.get("adduct"),
+                         "tier": r.get("tier"), "axes": r.get("evidence_axes"),
+                         "level_reason": r.get("level_reason"),
+                         "n_plausible_structures": r.get("n_plausible_structures"),
+                         "peak_id": r.get("peak_id")})
+    cols = ["section", "level", "meaning", "n", "share", "n_assigned", "n_candidate",
+            "mz", "height", "neutral_formula", "adduct", "tier", "axes", "level_reason",
+            "n_plausible_structures", "peak_id"]
+    return pd.DataFrame(rows, columns=cols)
 
 
 def summary_stats(ledger: pd.DataFrame, *, context: str = "",
@@ -309,6 +370,14 @@ def summary_stats(ledger: pd.DataFrame, *, context: str = "",
         add("Tiers", "Below assignability",
             f"{st['by_role'].get(L.ROLE_UNEXPLAINED, 0)} unexplained peaks "
             "(see Unassigned sheet for per-peak evidence)")
+    if "evidence_level" in ledger.columns and len(m0):
+        from peaky.assignment import evidence as EV
+        lv = m0["evidence_level"]
+        n_lv = int(lv.notna().sum())
+        for level, cnt in EV.summarize(lv).items():
+            add("Evidence levels", level,
+                f"{cnt}  ({100 * cnt / max(n_lv, 1):.0f}% of levelled rows) -- "
+                f"{EV.LEVEL_MEANING[level]}")
 
     if len(m0):
         base = m0["confidence"].map(T.base_confidence)
@@ -319,6 +388,25 @@ def summary_stats(ledger: pd.DataFrame, *, context: str = "",
         for meth, cnt in m0["method"].value_counts().items():
             add("Methods", str(meth), int(cnt))
     return pd.DataFrame(rows, columns=["section", "metric", "value"])
+
+
+_LEVEL_LEGEND = [
+    ("2b", "curated identity (a compound-scope pass-0 family) on a formula the isomer "
+           "space says admits one structure"),
+    ("3a", "any other curated commit: a named class, isomers open"),
+    ("3b", "the gas-phase-acidity branch: the same neutral seen deprotonated AND clustered "
+           "(a substituent only)"),
+    ("4a", "formula confirmed and the neutral established: two orthogonal axes, at least "
+           "one from outside this channel's ionization chemistry"),
+    ("4b", "formula confirmed, one corroboration"),
+    ("4c", "formula unopposed (one plausible ion in the calibrated window, separable "
+           "peak) but nothing corroborates it"),
+    ("4d", "ION formula only: the sole isotope support is the reagent halogen, which pins "
+           "the ion and says nothing about the neutral"),
+    ("5a", "exact mass only; no discriminating test was possible"),
+    ("5b", "the assignment argues with itself: a near-tie the arbiter broke, a row below "
+           "assignability, a Low/Suspect score, or a mass-degenerate window with no axis"),
+]
 
 
 def legend_sheet() -> pd.DataFrame:
@@ -335,6 +423,16 @@ def legend_sheet() -> pd.DataFrame:
          " 'evidence' says what the isotope pattern DOES tell us: iso-partner "
          "(satellite of another residual peak), has-constraints (carbon/"
          "halogen count measured), isolated (no isotope structure)."),
+        ("Evidence levels", "evidence_level", "What the evidence behind a "
+         "committed formula is worth, on Schymanski et al. (2014)'s scale "
+         "adapted to chemical ionization: 1 = best, 5b = weakest; 1 and 2a "
+         "never fire (no authentic standard, no library spectrum). Computed per "
+         "(neutral, adduct) from the ledger's own columns; 'evidence_axes' lists "
+         "the axes that hold (iso / chan2 / anchor / corroborated, then the "
+         "modifiers), 'level_reason' the predicate that fired, "
+         "'n_plausible_structures' the isomer ceiling of the formula. "
+         "The tier is not an input. See docs/EVIDENCE_LEVELS.md."),
+        *[("Evidence levels", _lvl, _meaning) for _lvl, _meaning in _LEVEL_LEGEND],
         ("Confidence", "High", "Score >= tau_high, |ppm| within 1.5x the gate, "
          "at least one Mascope-confirmed isotopologue, no near-tie."),
         ("Confidence", "Good", "Score >= tau_good and |ppm| within 2x the gate. "
@@ -404,11 +502,13 @@ _NUM_FMT = {
     "ion_score": "0.000", "compound_score": "0.000", "eff_score": "0.000",
     "score": "0.000", "best_score": "0.000", "iso_match_score": "0.000",
     "dbe": "0.0",
+    "share": "0.0%",
 }
 _WRAP_COLS = {"commentary": 70, "evidence": 46, "why_candidate": 46,
               "tier_reason": 46, "alternatives_text": 44, "composite_note": 50,
               "degeneracy_note": 60,
               "isotopologues_text": 30, "isotopologues": 30,
+              "level_reason": 52, "meaning": 60, "axes": 36,
               "interpretation": 52, "explanation": 90, "value": 46}
 
 _FILL = {
@@ -421,8 +521,16 @@ _FILL = {
 }
 
 
+# evidence levels (docs/EVIDENCE_LEVELS.md): identity / class in green, formula
+# confirmed in light green, formula-only in blue, exact mass in amber, 5b grey
+_LEVEL_CHIP = {"2b": "good", "3a": "good", "3b": "good", "4a": "okay", "4b": "okay",
+               "4c": "info", "4d": "info", "5a": "warn", "5b": "neutral"}
+
+
 def _chip(label: str) -> str | None:
     s = str(label)
+    if s in _LEVEL_CHIP:
+        return _LEVEL_CHIP[s]
     if s == T.TIER_ASSIGNED or s.startswith("High"):
         return "good"
     if s == T.TIER_CANDIDATE or s.startswith("Low"):
@@ -528,7 +636,7 @@ def _style_summary(ws, df):
 def write_excel(ledger: pd.DataFrame, path: str | Path,
                 context: str = "ambient-air", sample_id: str = ""):
     sheets = build_sheets(ledger, context, sample_id)
-    chip_cols = ("tier", "confidence", "evidence", "best_tier")
+    chip_cols = ("tier", "confidence", "evidence", "best_tier", "evidence_level", "level")
     with pd.ExcelWriter(path, engine="openpyxl") as xl:
         for name, df in sheets.items():
             out = df if len(df) else pd.DataFrame({"(empty)": []})
