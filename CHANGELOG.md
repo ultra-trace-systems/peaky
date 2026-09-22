@@ -37,7 +37,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   for B3: the ledger writes the satellite list as JSON (`null` for a line without a score), which
   the script's `ast.literal_eval` cannot read; in-core reads JSON first — no fixture row moves.
   `tests/test_evidence.py` (the contract) now passes; `tests/test_evidence_outputs.py` pins the
-  wiring.
+  wiring. Verified by mutation: 42 planted mutants over every predicate, the 4b/4c boundary, the
+  reagent-row exclusion, the stage order, the batch join and the `--corroborate` plumbing; 38 are
+  caught by a named test, two survivors are dead conditions (`carbon_ev` inside `neutral_backed`
+  and the `not carbon_ev` guard of `reagent_only_iso` can never decide a level -- noted in the
+  spec), and two were test gaps now pinned: a satellite hangs off its parent in the same file, and
+  a reagent row never forms a pooled pair.
 
 - **Evidence levels — the specification.** `docs/EVIDENCE_LEVELS.md`
   states the CIMS-adapted Schymanski scale (2b, 3a, 3b, 4a, 4b, 4c, 4d, 5a, 5b; 1 and 2a defined

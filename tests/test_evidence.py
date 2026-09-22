@@ -1,10 +1,12 @@
 """Evidence levels -- the contract of docs/EVIDENCE_LEVELS.md, pinned before
-the code exists.
+the code existed (the module failed to collect with ImportError until
+`peaky.assignment.evidence` shipped).
 
-Every test here imports `peaky.assignment.evidence`, which B1 does not ship:
-the whole module fails to collect with ImportError until B2 implements it.
 `scripts/level_ledger.py` is the executable reference; the fixtures under
 tests/fixtures/levels/ and their expected_levels.csv were written by it.
+Verified by mutation: every predicate reverted, the 4b/4c boundary swapped,
+a reagent row let through, a satellite joined across files -- each fails a
+test here or in tests/test_evidence_outputs.py.
 
 Run: pytest tests/test_evidence.py -q
 """
@@ -18,7 +20,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from peaky.assignment import evidence as EV  # noqa: E402  -- ImportError until B2
+from peaky.assignment import evidence as EV  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "levels"
 ORDER = ["2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
@@ -312,3 +314,24 @@ def test_pooled_equals_the_script_on_the_same_files():
     lv = dict(zip(zip(out.neutral_formula, out.adduct), out.evidence_level))
     assert lv[("C9H14O4", "[M-H]-")] == "5b"       # that pair's only row is tied: hard
     assert lv[("C9H14O4", "[M+NO3]-")] == "3b"     # the neutral branches ACROSS files: bare in f1, clustered in f2
+
+
+def test_a_satellite_hangs_off_its_parent_in_the_same_file():
+    """Two files may reuse a peak id: a child joins the M0 with that id in ITS
+    file only (spec section 2), so file 1's neutral gains no isotope axis from
+    file 2's satellite."""
+    f1 = ledger([m0("p", "C9H14O4", ion="C9H13O4", height=1000.0)])
+    f2 = ledger([m0("p", "C10H16O4", ion="C10H15O4", height=1000.0), child("c", "p", "13C+1", 107.0)])
+    out = EV.level_pooled({"f1": f1, "f2": f2})
+    lv = dict(zip(zip(out.neutral_formula, out.adduct), out.evidence_level))
+    axes = dict(zip(zip(out.neutral_formula, out.adduct), out.evidence_axes))
+    assert lv[("C10H16O4", "[M-H]-")] == "4b" and axes[("C10H16O4", "[M-H]-")].startswith("iso")
+    assert lv[("C9H14O4", "[M-H]-")] == "4c" and "iso" not in axes[("C9H14O4", "[M-H]-")]
+
+
+def test_pooled_pairs_are_m0_only_a_reagent_row_forms_no_pair():
+    """The pooled batch table (tables/evidence_levels.csv) has one row per
+    committed (neutral, adduct): a reagent ion is excluded by role there too,
+    not only on the stamp."""
+    out = EV.level_pooled({"f": ledger([m0("p", "C6H8O4"), reagent("r", "Br", 78.918)])})
+    assert list(out.neutral_formula) == ["C6H8O4"]

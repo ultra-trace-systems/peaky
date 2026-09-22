@@ -1,6 +1,7 @@
 # Evidence levels — how much a committed formula is worth
 
-**Status: implemented (B2).** `peaky/assignment/evidence.py` is the `evidence`
+**Status: implemented (B2), validated on real runs (B3), verified (B4).**
+`peaky/assignment/evidence.py` is the `evidence`
 stage of `assign.run` and the pooled recompute of `assign_batch.run`;
 `tests/test_evidence.py` pins the contract. The executable reference for every
 predicate below is still `scripts/level_ledger.py`; the in-core stage reproduces
@@ -88,6 +89,12 @@ degenerate     = saturated or degeneracy >= 3
 unique         = degeneracy <= 1                                  # NaN is neither
 hard           = tied or below or lowconf
 ```
+
+Two of these terms can never decide a level today and are kept because the
+reference script states both (verified by mutation, B4): `carbon_ev` inside
+`neutral_backed`, and the `not carbon_ev` guard of `reagent_only_iso` —
+`reagent_only_iso` already requires every satellite tag to be the reagent
+halogen's, so a pair with a ¹³C line never reaches the 4d test at all.
 
 `n_files` (files of the source that carry the pair) is **recorded** in
 `evidence_axes` but is **not an axis**: the golden vectors were measured
@@ -186,7 +193,9 @@ and demote stage (the last of which is `plausibility`), after
 isotope sweep (which adds the satellites the `iso` axis reads).
 `timeseries` writes only `ts_*` dispositions and is not an input.
 `safe=False` (a level that cannot be computed is a bug, not a lost stage),
-`store=True` (the summary goes to `batch_summary`).
+`store=True` (the stage summary is kept in the run's `summaries` and written
+to the single-sample `<prefix>_manifest.json`; a batch reports the pooled
+recompute of §6.2 in `batch_summary.json` instead).
 
 The stage calls `evidence.apply_levels(ledger, cfg=cfg, cross=cross)` which
 writes the four columns of §7 in place and returns the summary. `cross` is
@@ -237,9 +246,10 @@ Written to: the per-file `<prefix>_ledger.csv`, `merged_ledger.csv`,
 `tables/evidence_levels.csv` (batch: one row per pair with every fact of §3), the
 Excel workbook (a column on the ledger sheets and a new **"By evidence
 level"** sheet: one row per level with count, share, tier split, the axes
-histogram and the twenty brightest rows), one PDF table after the tier
-table, the publish comment (`io/publish.py` adds `evidence_level` to the
-published ledger fields), `docs/OUTPUTS.md`, README, SKILL.md. Every
+histogram and the twenty brightest rows), an **Evidence levels** page in the
+PDF report after the assignment-quality page and a line on its cover, the
+published engine provenance (`io/publish.py` carries the four columns in
+`engine_provenance`, dropping `NA` values), `docs/OUTPUTS.md`, README, SKILL.md. Every
 consumer must render a ledger **without** the columns unchanged (older
 runs, `peaky report` on them).
 
@@ -301,7 +311,19 @@ Across the three sets 4,606 of 6,444 pairs are 5b; the top two levels hold
   cannot read that cell and counts the list as empty, the in-core `as_list`
   reads JSON first. No fixture row moves (the goldens and the row-for-row test
   hold), but a real run's chlorinated-paraffin rows may differ on the `iso`
-  fact between the two.
+  fact between the two. **B3 adjudicated (2026-09-22): no row of the three
+  working-set channels moved on it, plain or corroborated — the commits that
+  carry a `null` score are `known:` rows, levelled 3a before the `iso` fact is
+  read.** The script keeps its reader; aligning it would move no golden.
+- Whether `neutral_backed` should count `anchor` and `carbon_ev` — B3's
+  calibration (the wrong-adduct decoy) shows both are facts about the **ion**:
+  a ¹³C line and a series tie survive a wrong adduct set, so 64 wrong-adduct
+  rows sit at 4b and 30 at 4c on the labelled-nitrate channel and 339 at 4c on
+  the uronium channel. Option (a): drop them from `neutral_backed` and send rows
+  whose only axes are ion-level to a generalised 4d ("ion pinned, neutral not";
+  the goldens move, `level_ledger.py` and `evidence.py` change together, R1–R3
+  re-run and re-validated row for row). Option (b): keep, and document that
+  4b / 4c rate the ion formula. The user's decision; not changed here.
 - A detectability term for heteroatom satellites (a 34S/81Br line that would
   sit below the noise edge cannot count as *missing*) — C3's topic; the level
   today only counts satellites that were seen.
