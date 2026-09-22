@@ -27,3 +27,4 @@ triphenyl phosphate,C18H15O4P,organophosphate,peaky pass-0 known species (passes
 triphenylphosphine oxide,C18H15OP,organophosphate,peaky pass-0 known species (passes/directors.py organophosphate),
 tris(2-butoxyethyl) phosphate,C18H39O7P,organophosphate,peaky pass-0 known species (passes/directors.py organophosphate),
 tricresyl phosphate,C21H21O4P,organophosphate,peaky pass-0 known species (passes/directors.py organophosphate),
+unnamed C22H42O6,C22H42O6,plasticiser,"observed in this project's uronium reference run: [M+H]+ 403.305 and the urea adduct 463.338 with a 13C line, Assigned in 10 of 10 files; no literature identity","DBE 2, saturated diester / PEG-like; the formula fits triethylene glycol bis(2-ethylhexanoate) but a formula cannot name it (MS2 or a standard needed)"
