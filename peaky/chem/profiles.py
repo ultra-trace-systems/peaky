@@ -492,7 +492,11 @@ def apply_ion_only_channels(cfg, profile: "ReagentProfile | None" = None, *,
         source = f"profile {profile.name}" if (profile is not None and cur) else "no profile channel"
     else:
         cur = tuple(cur)
-        source = "explicit config"
+        prof_t = tuple(getattr(profile, "ion_only_channels", ()) or ()) if profile is not None else ()
+        # a tuple equal to the profile's was stamped from it by an earlier call on
+        # the way down (pipeline -> assign_batch); only a DIFFERENT tuple is an override
+        source = (f"profile {profile.name}" if (profile is not None and cur == prof_t)
+                  else "explicit config")
     if log is not None and cur:
         log(f"[gate] ion-only channels {list(cur)} (from {source})")
     return cur

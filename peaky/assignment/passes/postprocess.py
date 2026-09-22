@@ -145,6 +145,14 @@ def complete_isotope_envelopes(
         ph = float(ledger.at[i, "height"])
         if not (ph > 0):
             continue
+        # an ION-ONLY parent (the `ion_only` stage's [M]-. row beside its acid)
+        # claims only UNEXPLAINED satellites: the bucket must not move anything
+        # already assigned, and its 13C line sits 0.3 mDa from where a weak
+        # cluster reading of another neutral can legitimately be (the 13C of
+        # C7H6O4-. vs C2H7NO3 [M+NO3]-) -- a displacement there would turn an
+        # existing Candidate into the satellite of a row whose neutral is open.
+        io_parent = ("ion_only_of" in ledger.columns
+                     and not pd.isna(ledger.at[i, "ion_only_of"]))
         try:
             # max_shift 12: keep the M+7/M+8 envelope of 4+ heavy-halogen ions
             # (a Br4 M+8 is ~0.9x M0) instead of leaking it into the residual.
@@ -185,6 +193,8 @@ def complete_isotope_envelopes(
                     except L.LedgerError:
                         pass
             elif role_j == L.ROLE_M0:
+                if io_parent:
+                    continue
                 # the LABELLED-reagent impurity line (14N at -0.997 of a ^N adduct):
                 # a fit sitting exactly at the predicted 2 % of a >=10x brighter
                 # labelled parent is that parent's satellite whatever its own

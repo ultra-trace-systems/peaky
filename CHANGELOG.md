@@ -24,7 +24,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bucket: the gate's half-width at that mass must be under half the gap, and the file's own picked
   peaks must show at least three adjacent pairs at <= 1.25x the gap within +-50 Da of the parent
   (an Orbitrap below ~m/z 350 picks hundreds per file; a ~4k TOF none anywhere, so every parent is
-  skipped and the log says so; an Orbitrap above ~m/z 400 skips too). Never a grid channel. Opened
+  skipped and the log says so; an Orbitrap above ~m/z 400 skips too). Never a grid channel, and
+  nothing existing moves: the final envelope sweep attaches only UNEXPLAINED satellites to an
+  ion-only parent (never displacing a committed M0 -- the row's 13C sits 0.3 mDa from where a weak
+  cluster reading of another neutral can be), and at the batch merge an ion-only reading ranks below
+  every regular reading in its cluster however many files carry it (the radical anion of a C_n acid
+  is 0.44 mDa from the labelled-nitrate cluster of the C_{n-1} organonitrate), going to
+  `alternatives` with a `tier_reason` note. Opened
   by the reagent profile: `ReagentProfile.ion_only_channels` (the nitrate profiles `NO3` / `NO3_15N`
   declare `("[M]-.",)`; `compose` unions it; a `--reagent-config` entry may list it), copied onto
   `PassConfig.ion_only_channels` by `profiles.apply_ion_only_channels` at every entry point with the

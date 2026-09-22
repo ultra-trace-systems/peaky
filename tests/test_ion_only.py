@@ -400,3 +400,70 @@ def test_scorecard_counts_the_bucket_on_its_own_and_keeps_it_out_of_the_candidat
     assert ("ion_only", "ion-only rows", 0) in SC.KEY_METRICS
     counts = SC._ledger_counts(led, "f")
     assert counts["candidate"] == 1 and counts["assigned"] == 1
+
+
+# --------------------------------------------------------------------------- the merge vote
+def test_an_ion_only_reading_never_outvotes_a_regular_reading_at_the_merge():
+    """The radical anion of a C_n acid sits 0.44 mDa from the labelled-nitrate
+    cluster of the C_{n-1} organonitrate: files that left the peak unexplained
+    and read it ion-only must not outvote the files that read the cluster."""
+    from peaky.batch import assign_batch as AB
+
+    mz = 294.0958
+    def m0(nf, ad, tier, link):
+        return pd.DataFrame([{"mz": mz, "neutral_formula": nf, "adduct": ad, "tier": tier,
+                              "ion_score": 0.0 if pd.notna(link) else 0.9, "admitted_by": "height",
+                              "occurrence": 0.9, "ion_only_of": link}])
+    per_file = {f"io{k}": m0("C11H18O9", "[M]-.", "Candidate", "P") for k in range(8)}
+    per_file.update({f"reg{k}": m0("C10H17NO5", "[M+^NO3]-", "Candidate", pd.NA) for k in range(4)})
+    merged, _ = AB.align(per_file, tol_ppm=6.0)
+    assert len(merged) == 1
+    r = merged.iloc[0]
+    assert (r.neutral_formula, r.adduct) == ("C10H17NO5", "[M+^NO3]-")   # 4 files beat 8 ion-only files
+    assert pd.isna(r.ion_only_of) and r.n_files == 12 and r.n_files_ion == 4
+    assert "C11H18O9 [M]-. x8" in r.alternatives
+    assert "ion-only reading" in str(r.tier_reason) and "vote 4 of 12" in str(r.tier_reason)
+    # alone, the ion-only reading wins its cluster as any reading would
+    merged, _ = AB.align({k: v for k, v in per_file.items() if k.startswith("io")}, tol_ppm=6.0)
+    assert (merged.iloc[0].neutral_formula, merged.iloc[0].adduct) == ("C11H18O9", "[M]-.")
+    assert merged.iloc[0].ion_only_of == "P" and pd.isna(merged.iloc[0].tier_reason)
+    # and a regular reading in ONE file beats it, with the note
+    per_file2 = {k: v for k, v in per_file.items() if k.startswith("io")}
+    per_file2["reg0"] = per_file["reg0"]
+    r = AB.align(per_file2, tol_ppm=6.0)[0].iloc[0]
+    assert r.adduct == "[M+^NO3]-" and "vote 1 of 9" in str(r.tier_reason)
+
+
+def test_the_channel_log_names_the_profile_when_an_earlier_call_already_applied_it():
+    cfg = PCfg.PassConfig()
+    P.apply_ion_only_channels(cfg, P.NO3)                    # pipeline: silent
+    lines = []
+    P.apply_ion_only_channels(cfg, P.NO3, log=lines.append)  # assign_batch: logs
+    assert lines and "from profile NO3" in lines[0]
+    lines = []
+    P.apply_ion_only_channels(PCfg.PassConfig(ion_only_channels=("[M+O2]-",)), P.NO3, log=lines.append)
+    assert lines and "explicit config" in lines[0]
+
+
+def test_the_final_sweep_never_displaces_an_existing_row_on_behalf_of_an_ion_only_parent():
+    """The 13C of the new [M]-. row sits 0.3 mDa from where a weak cluster
+    reading of another neutral can be; the sweep attaches only UNEXPLAINED
+    peaks to an ion-only parent."""
+    led = _ledger()
+    CL.commit_ion_only_electron_attachment(led, _cfg(), log=lambda *a: None)
+    # the +H row's 13C position holds a weak Candidate M0 of another neutral
+    L.commit_assignment(led, "H13", neutral_formula="C2H7NO3", adduct="[M+NO3]-", ion_formula="C2H7N2O6-",
+                        ion_score=0.55, pass_no=2, method="grid", confidence="Good", commentary="weak")
+    led.loc[led["peak_id"] == "H13", "tier"] = "Candidate"
+    PP.complete_isotope_envelopes(led, _cfg(), log=lambda *a: None)
+    assert _row(led, "H13")["role"] == L.ROLE_M0 and _row(led, "H13")["neutral_formula"] == "C2H7NO3"
+    EV.apply_levels(led)
+    assert led.set_index("peak_id").loc["H", "evidence_level"] == "5a"      # no satellite of its own
+    # the same weak row under a REGULAR parent is still displaced (the sweep's own rule):
+    # re-commit the acid's 13C peak as a weak M0 of another neutral (A is not locked)
+    led2 = _ledger()
+    L.commit_assignment(led2, "A13", neutral_formula="C2H7NO3", adduct="[M+NO3]-", ion_formula="C2H7N2O6-",
+                        ion_score=0.55, pass_no=2, method="grid", confidence="Good", commentary="weak")
+    assert _row(led2, "A13")["role"] == L.ROLE_M0
+    PP.complete_isotope_envelopes(led2, _cfg(), log=lambda *a: None)
+    assert _row(led2, "A13")["role"] == L.ROLE_ISO and _row(led2, "A13")["parent_peak_id"] == "A"

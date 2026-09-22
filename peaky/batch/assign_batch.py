@@ -153,23 +153,35 @@ def _vote(g: pd.DataFrame, curated: set):
        ties. On the 15-file uronium run 16 of the 43 same-ion splits had a majority
        label nobody had corroborated against a minority label some file had."""
     assigned = g["_r"] >= TIER_RANK[TIER_ASSIGNED]
+    # an ION-ONLY reading (the `ion_only` stage: the acid's own composition as
+    # a radical anion, committed beside its [M-H]- parent with an `ion_only_of`
+    # link) is a bucket kept apart from the tiers, and it must not MOVE a
+    # regular reading at the merge either: however many files carry it, it
+    # ranks below every regular ion in the cluster and goes to `alternatives`.
+    # The case: the radical anion of a C_n acid sits 0.44 mDa from the
+    # labelled-nitrate cluster of the C_{n-1} organonitrate (the CO3 / ^NO3
+    # degeneracy), so a file that left the peak unexplained and read it ion-only
+    # must not outvote the files that read the organonitrate.
+    io = (g["ion_only_of"].notna() if "ion_only_of" in g.columns
+          else pd.Series(False, index=g.index))
     gg = g.assign(_asrc=g["src"].where(assigned),       # the file, when Assigned there
-                  _c=g["_nf"].isin(curated).astype(int))
+                  _c=g["_nf"].isin(curated).astype(int),
+                  _reg=(~io).astype(int))                # 1 = a regular reading in this file
     lab = (gg.groupby(["_ion", "_nf", "_ad"], sort=True)  # text order = last key
              .agg(curated=("_c", "max"), n_files=("src", "nunique"),
                   n_assigned=("_asrc", "nunique"),        # FILES at Assigned, not rows
-                  best_ion=("ion_score", "max"))
+                  best_ion=("ion_score", "max"), regular=("_reg", "max"))
              .reset_index())
     ions = (gg.groupby("_ion", sort=True)
               .agg(n_files=("src", "nunique"), n_assigned=("_asrc", "nunique"),
-                   best_ion=("ion_score", "max"))
+                   best_ion=("ion_score", "max"), regular=("_reg", "max"))
               .reset_index())
     cur_lab = lab[lab["curated"] == 1]
     grid = ions[~ions["_ion"].isin(cur_lab["_ion"])]
     bar = max(1, int(grid["n_assigned"].max()) if len(grid) else 1)
     exempt = set(cur_lab.loc[cur_lab["n_assigned"] >= bar, "_ion"])
     ions["curated"] = ions["_ion"].isin(exempt).astype(int)
-    ions = ions.sort_values(["curated", "n_files", "n_assigned", "best_ion"],
+    ions = ions.sort_values(["regular", "curated", "n_files", "n_assigned", "best_ion"],
                             ascending=False, kind="mergesort")   # stable: keeps text order
     rank = {k: i for i, k in enumerate(ions["_ion"])}
     lab = (lab.assign(_k=lab["_ion"].map(rank))
@@ -273,6 +285,16 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
             notes.append(f"curated identity kept over the {int(top['n_files'])}-file "
                          f"{top_lab['_nf']} {top_lab['_ad']} reading (vote "
                          f"{int(win_ion['n_files'])} of {n_total} files)")
+        if int(win_ion.get("regular", 1)) and len(others):
+            # an ion-only reading carried by MORE files than the regular winner
+            # stayed an alternative on purpose (see _vote): say so on the row
+            io_more = others[(others.get("regular", 1) == 0) & (others["n_files"] > int(win_ion["n_files"]))]
+            if len(io_more):
+                top = io_more.iloc[0]
+                top_lab = lab[lab["_ion"] == top["_ion"]].iloc[0]
+                notes.append(f"regular reading kept over the {int(top['n_files'])}-file "
+                             f"{top_lab['_nf']} {top_lab['_ad']} ion-only reading (vote "
+                             f"{int(win_ion['n_files'])} of {n_total} files)")
         same = lab[lab["_ion"] == win_ion["_ion"]]
         if len(same) > 1 and int(same["n_files"].max()) > int(win["n_files"]):
             big = same.iloc[1:].sort_values("n_files", ascending=False, kind="mergesort").iloc[0]
