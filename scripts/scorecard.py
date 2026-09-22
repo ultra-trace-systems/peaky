@@ -544,6 +544,15 @@ def brightest(run: Run, ions: pd.DataFrame, tracks: pd.DataFrame, levels: pd.Dat
         return {"rows": [], "m0_not_assigned": 0, "unstamped_in_top": 0, "n": 0}
     lv = levels.set_index(["neutral", "adduct"]) if not levels.empty else None
     top = ions.sort_values("med_h", ascending=False).head(n)
+    # the ion-only bucket (`[M]-.` rows carrying an `ion_only_of` link on the merged
+    # ledger): bright by nature and Candidate by design, so it is flagged on its
+    # row and left out of "bright M0 not Assigned" -- that count is for readings
+    # the engine could not confirm, not for a bucket it deliberately keeps open
+    led = run.ledger
+    io_pairs = set()
+    if led is not None and len(led) and "neutral_formula" in led.columns:
+        io = ion_only_mask(led)
+        io_pairs = set(zip(led.loc[io, "neutral_formula"].astype(str), col(led, "adduct", "").astype(str)[io]))
     rows = []
     for r in top.itertuples():
         level, axes = "", ""
@@ -551,6 +560,7 @@ def brightest(run: Run, ions: pd.DataFrame, tracks: pd.DataFrame, levels: pd.Dat
             hit = lv.loc[(r.neutral, r.adduct)]
             hit = hit.iloc[0] if isinstance(hit, pd.DataFrame) else hit
             level, axes = str(hit["level"]), str(hit["axes"])
+        ion_only = is_str(r.neutral) and (str(r.neutral), str(r.adduct)) in io_pairs
         rows.append(
             {
                 "ion_mz": float(r.ion_mz),
@@ -564,9 +574,10 @@ def brightest(run: Run, ions: pd.DataFrame, tracks: pd.DataFrame, levels: pd.Dat
                 "level": level,
                 "axes": axes,
                 "suspect": bool(r.suspect),
+                "ion_only": bool(ion_only),
             }
         )
-    m0_not_assigned = sum(1 for r in rows if r["role"] == "M0" and r["tier"] != "Assigned")
+    m0_not_assigned = sum(1 for r in rows if r["role"] == "M0" and r["tier"] != "Assigned" and not r["ion_only"])
     # the batch's brightest tracks overall: stamped ions and unstamped tracks together
     all_tracks = pd.concat(
         [
@@ -579,6 +590,7 @@ def brightest(run: Run, ions: pd.DataFrame, tracks: pd.DataFrame, levels: pd.Dat
         "rows": rows,
         "n": len(rows),
         "m0_not_assigned": int(m0_not_assigned),
+        "ion_only_in_top": int(sum(1 for r in rows if r["ion_only"])),
         "by_role": {k: int(v) for k, v in pd.Series([r["role"] for r in rows]).value_counts().items()},
         "unstamped_in_top": int((all_tracks["kind"] == "unstamped").sum()),
     }
@@ -1527,7 +1539,7 @@ def render_md(card: dict) -> str:
     L += [f"## 2. The brightest {b['n']} ions (median height over the batch)", "",
           f"roles: " + ", ".join(f"{k} {v}" for k, v in b.get("by_role", {}).items())
           + f" · **bright M0 not Assigned: {b['m0_not_assigned']}** · unstamped tracks among the batch's brightest {TOP_N}: **{b['unstamped_in_top']}** (named in M1)", ""]
-    L += md_table(b["rows"], [("ion_mz", "ion m/z"), ("med_cps", "med cps"), ("in", "in"), ("role", "role"), ("ion", "ion"), ("neutral", "neutral"), ("adduct", "adduct"), ("tier", "tier"), ("level", "level"), ("axes", "axes")], {"ion_mz": 4})
+    L += md_table(b["rows"], [("ion_mz", "ion m/z"), ("med_cps", "med cps"), ("in", "in"), ("role", "role"), ("ion", "ion"), ("neutral", "neutral"), ("adduct", "adduct"), ("tier", "tier"), ("level", "level"), ("axes", "axes"), ("ion_only", "ion-only")], {"ion_mz": 4})
     L += [""]
     # 3 best evidence
     vec = "/".join(str(e["levels"].get(k, 0)) for k in LEVELS)

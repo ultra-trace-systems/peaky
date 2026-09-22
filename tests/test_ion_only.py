@@ -467,3 +467,24 @@ def test_the_final_sweep_never_displaces_an_existing_row_on_behalf_of_an_ion_onl
     assert _row(led2, "A13")["role"] == L.ROLE_M0
     PP.complete_isotope_envelopes(led2, _cfg(), log=lambda *a: None)
     assert _row(led2, "A13")["role"] == L.ROLE_ISO and _row(led2, "A13")["parent_peak_id"] == "A"
+
+
+def test_scorecard_brightest_flags_ion_only_rows_and_leaves_them_out_of_not_assigned():
+    import scorecard as SC
+
+    led = _ledger()
+    CL.commit_ion_only_electron_attachment(led, _cfg(), log=lambda *a: None)
+    led.loc[led["peak_id"] == "B", "tier"] = "Candidate"
+    ions = pd.DataFrame({
+        "ion_mz": [MZ_PARENT, MZ_EA, C.ion_mz("C8H12O4", "[M-H]-")], "n": [10, 10, 10],
+        "med_h": [40_000.0, 5_200.0, 9_000.0], "sum_h": [1.0, 1.0, 1.0], "role": ["M0", "M0", "M0"],
+        "ion_formula": ["C10H15O5-", "C10H16O5-", "C8H11O4-"], "iso_label": [None, None, None],
+        "neutral": [X, X, "C8H12O4"], "adduct": ["[M-H]-", "[M]-.", "[M-H]-"],
+        "tier": ["Assigned", "Candidate", "Candidate"], "suspect": [False, False, False], "stamp_source": ["", "", ""],
+        "presence": [1.0, 1.0, 1.0]})
+    run = types.SimpleNamespace(ledger=led, ts=None, name="r", channel="c|x", reagent="NO3", path_kind="cover",
+                                code="abc", summary={"n_files": 1}, n_spectra=10, per_file=pd.DataFrame())
+    b = SC.brightest(run, ions, pd.DataFrame(), pd.DataFrame(columns=["neutral", "adduct", "level", "n_axes", "axes"]))
+    by = {(r["neutral"], r["adduct"]): r for r in b["rows"]}
+    assert by[(X, "[M]-.")]["ion_only"] and not by[(X, "[M-H]-")]["ion_only"] and not by[("C8H12O4", "[M-H]-")]["ion_only"]
+    assert b["ion_only_in_top"] == 1 and b["m0_not_assigned"] == 1     # the regular Candidate, not the bucket
