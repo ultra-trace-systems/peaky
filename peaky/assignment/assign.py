@@ -457,6 +457,18 @@ _STAGES = [
     _Stage("reflist_rescue", lambda st: reflists.rescue_unexplained_by_reflist(
         st.client, st.sample_id, st.led, st.profile, st.cfg, st.reflists_active,
         st.adducts, log=st.log), when=lambda st: bool(st.reflists_active)),
+    # ION-ONLY rows: the +1.0078 Da electron-attachment line beside each committed
+    # [M-H]- acid, committed as a Candidate "[M]-." whose composition is pinned
+    # (exact mass, own 13C) while the ionization process and the neutral stay
+    # open. Post-tier (it sets its own tier, like reflist_rescue), BEFORE the
+    # final envelope sweep (which then claims the new row's own 13C), `evidence`
+    # (which levels it 4d / 5a on its own satellite and never lets it corroborate
+    # its parent) and `timeseries` (which stamps it). Only where the profile
+    # opened the channel (cfg.ion_only_channels); not `safe`: a bucket that
+    # cannot be filled is a bug, not a lost stage.
+    _Stage("ion_only", lambda st: cleanup.commit_ion_only_electron_attachment(
+        st.led, st.cfg, log=st.log),
+           when=lambda st: bool(getattr(st.cfg, "ion_only_channels", None)), safe=False),
     # final envelope sweep: an M0 committed AFTER the three earlier sweeps (a pass-8
     # reflist rescue, or a parent whose earlier assignment was cleared and re-won,
     # orphaning its children) still owes its satellites -- without this its bright
@@ -701,6 +713,7 @@ def main(argv=None):
                             height_cutoff_cps=args.height_cutoff)
     PR.apply_height_cutoff_x_edge(cfg, None, explicit=args.height_cutoff_x_edge,
                                   log=print)
+    PR.apply_ion_only_channels(cfg, None)        # no profile here: the bucket stays off
     out = run(args.sample_id, args.context, cfg=cfg, use_cache=not args.no_cache,
               do_pass2=not args.no_pass2, do_pass3=not args.no_pass3)
     # report.py will own file outputs; for now write the ledger + manifest

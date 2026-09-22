@@ -353,6 +353,19 @@ Cases 1–3 skip **locked** rows; case 4 does not — a lock says no pass may *c
 
 The aliases `[M+H-H2O]+` / `[M+^NH4-H2O]+` have **no server mechanism** (relabel-only, like `[M-H+I2]-`); `passes/core._DIFF_TO_ADDUCT` carries their element diffs so a re-derived label does not fall through to `[M-H]-`. Regression: `tests/test_nh4_15n.py`.
 
+### 3.7c Ion-only electron-attachment rows (`commit_ion_only_electron_attachment`, pipeline stage `ion_only`)
+
+**Gated on the reagent profile** (`when: cfg.ion_only_channels`, copied from `ReagentProfile.ion_only_channels` by `profiles.apply_ion_only_channels` at every entry point; the nitrate profiles `NO3` / `NO3_15N` declare `("[M]-.",)`, composed profiles union it, every other bundled profile nothing). Runs **after `reflist_rescue`, before `iso_env_final`** — post-tier (it sets its own tier), before the final sweep (which then claims the new row's own ¹³C), `evidence` (4d / 5a) and `timeseries` (the stamp). Not `safe`.
+
+The physics: on a nitrate CIMS the bright O-rich acids show a second line **+1.00783 Da** (one H) above their `[M-H]⁻` — the composition of the acid itself as a **radical anion**, exact to 0.05 mDa and pinned by its own ¹³C. Over a multi-day batch the family is anti-correlated with its acids (r −0.8…−0.9), moves as one class and collapses 25× within an hour while the `[M+NO₃]⁻` cluster of the same formula stays flat: a **source-state** effect — unconverted primary ions (an electron / O₂⁻·) attaching to compounds of high electron affinity — not chemistry of the air. So the ion composition is committed, the ionization process and the neutral stay open, and nothing existing moves.
+
+- **parent:** a committed M0 on `[M-H]⁻`, any tier, not below assignability, at least one carbon; the brightest parent claims first;
+- **candidate:** the **unexplained** peak (never an M0, satellite, reagent ion or artifact) nearest the parent neutral's M⁻· mass inside the calibrated gate — `|z| ≤ 2.6` via `passes.core.z_of` (the mass-dependent centre when a trend is fitted), ±3 ppm uncalibrated;
+- **the two guards** (the line sits 4.47 mDa above the parent's ¹³C — the H − ¹³C shift): the **gate guard** skips a parent whose gate half-width at that mass is ≥ half the gap (the gate itself could not tell the two positions apart); the **resolution guard** skips a parent unless the file's own picked peaks show ≥ 3 adjacent pairs at ≤ 1.25 × the gap within ±50 Da of it — the picker demonstrably resolves that spacing there (an Orbitrap below ~m/z 350 picks hundreds of such pairs per file, a ~4k TOF none anywhere: its M+1 is one blended peak, so every parent is skipped and the log says so);
+- **the row:** neutral = the parent's composition, adduct `[M]-.`, ion formula `<composition>-`, `method ion_only:electron_attachment`, pass 9, tier **Candidate**, `confidence "Good (ion only)"`, `ion_only_of` = the parent's peak id, the shift in mDa and the height ratio in the commentary; never an anchor or series tie (those are evidence axes), never locked, never below assignability. The parent row is not touched.
+
+Never a grid channel: every even-mass peak would gain a CHO radical-anion reading against the organonitrate `[M-H]⁻` and ¹³C lines. The evidence stage keeps the row out of the per-neutral pools in both directions (no `chan2` for the parent, no corroboration either way — EVIDENCE_LEVELS §3) and levels it on its own satellite alone. A batch carries `ion_only_of` onto the merged row and counts the bucket in `batch_summary['ion_only']`; the scorecard reports it beside, not inside, the Candidate count. Regression: `tests/test_ion_only.py`.
+
 ### 3.8 Labelled-reagent heavy-isotope rescue (`labeled.rescue_labeled`, pipeline stage `labeled_15n`, assign.py)
 
 **No-op unless `profile.label_isotope` is set** (only `NO3_15N` declares `label_isotope='^N'`, `label_max=2`). In a labelled-reagent run the reagent radical can add to a VOC and leave a *covalent* heavy atom in the product — a ¹⁵N-organonitrate. The formula grid enumerates only the light isotope, so every such product sits *j·Δ* off any expressible formula (Δ = m(¹⁵N) − m(¹⁴N) = 0.99703 Da) and the peak is either left unexplained or absorbed by a flexible partially-fluorinated CHONF fit (see the F/H-coherence cap in §4). Runs **before degeneracy/tiers** so the filled/re-read peaks tier normally.
@@ -666,6 +679,10 @@ DEGENERACY → TIERS (apply_tiers; stamp ppm_error_cal) → post-tier demotes:
         relabel_reagent_n (HC via N-cluster → [M+H]+ of N-heterocycle) →
         nh4_dehydration (¹⁵NH₄⁺ runs: X−H2O alkene readings → hydrate X aliases) →
         demote_ionization → demote_speculative → plausibility
+  ▼
+REFLIST rescue → ION-ONLY rows (nitrate profiles: the +1.0078 Da M⁻· line beside each
+        committed [M-H]⁻ acid → Candidate [M]-., guarded by gate width + picker resolution)
+        → final envelope sweep → EVIDENCE levels (2b…5b; ion-only rows 4d / 5a on their own ¹³C)
   ▼
 [opt] TIME-SERIES annotate/demote
   ▼

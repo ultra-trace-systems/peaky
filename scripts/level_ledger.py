@@ -126,6 +126,13 @@ CLUSTER_ADDUCTS = {
 }
 RESOLVED = {"resolved", "isolated"}
 LOW_CONFIDENCE = {"Low", "Suspect"}
+# ION-ONLY rows (the engine's `ion_only` stage): the electron-attachment line
+# beside a committed [M-H]- acid, on "[M]-." with method `ion_only:*` (a merged
+# ledger carries the `ion_only_of` link instead). Levelled on their own
+# satellite alone (4d with one, 5a without); never a second channel or a
+# corroboration for anything, in either direction -- as evidence.py does.
+ION_ONLY_ADDUCTS = {"[M]-."}
+ION_ONLY_METHOD_PREFIX = "ion_only:"
 
 # The heavy satellite a reagent halogen contributes. Iodine is monoisotopic, so
 # an iodide reagent can never produce a reagent-only isotope pattern.
@@ -170,6 +177,16 @@ def count_element(formula, element: str) -> int:
     if not match:
         return 0
     return int(match.group(1)) if match.group(1) else 1
+
+
+def is_ion_only(frame: pd.DataFrame) -> pd.Series:
+    """Rows the ion-only stage wrote (see ION_ONLY_ADDUCTS)."""
+    adduct = column(frame, "adduct", "").fillna("").astype(str).isin(ION_ONLY_ADDUCTS)
+    method = column(frame, "method", "").fillna("").astype(str).str.startswith(ION_ONLY_METHOD_PREFIX)
+    mask = adduct & method
+    if "ion_only_of" in frame.columns:
+        mask = mask | (adduct & frame["ion_only_of"].notna())
+    return mask
 
 
 def column(frame: pd.DataFrame, name: str, default=np.nan) -> pd.Series:
@@ -247,6 +264,8 @@ def measure_source(
 
     m0["neutral_formula"] = column(m0, "neutral_formula").fillna("").astype(str)
     m0["adduct"] = column(m0, "adduct").fillna("").astype(str)
+    m0["ion_only"] = is_ion_only(m0).to_numpy()
+    regular = m0[~m0["ion_only"]]
 
     # parent lookup: the M0 row an isotope child hangs off, within its own file
     parents = {}
@@ -277,9 +296,10 @@ def measure_source(
         if expected and RATIO_LO <= ratio / expected <= RATIO_HI:
             ratio_ok[key] = True
 
-    # per-neutral facts, over the source's M0 rows
-    channels = m0.groupby("neutral_formula")["adduct"].nunique()
-    adduct_sets = m0.groupby("neutral_formula")["adduct"].agg(
+    # per-neutral facts, over the source's REGULAR M0 rows (an ion-only row is
+    # its parent's composition on another adduct, not a second channel for it)
+    channels = regular.groupby("neutral_formula")["adduct"].nunique()
+    adduct_sets = regular.groupby("neutral_formula")["adduct"].agg(
         lambda s: set(s.dropna().astype(str))
     )
     satellite = HALOGEN_SATELLITE.get(halogen) if halogen else None
@@ -318,11 +338,14 @@ def measure_source(
             if str(v).strip() and str(v).strip().lower() != "nan"
         }
         carbon_ev = any(t.startswith("13C") for t in tags)
+        ion_only = bool(group["ion_only"].any())
+        aset = set() if ion_only else adduct_sets.get(neutral, set())
         rows.append(
             dict(
                 source=label,
                 neutral=neutral,
                 adduct=adduct,
+                ion_only=ion_only,
                 ion=str(group["ion_formula"].iloc[0]),
                 mz=float(pd.to_numeric(group["mz"], errors="coerce").median()),
                 tier="Assigned" if (group["tier"] == "Assigned").any() else "Candidate",
@@ -331,14 +354,14 @@ def measure_source(
                 or bool(group["isotopologues"].map(lambda v: len(as_list(v)) > 0).any()),
                 multiline=len(tags) >= 2,
                 carbon_ev=carbon_ev,
-                chan2=int(channels.get(neutral, 0)) >= 2,
-                anchor=bool(
+                chan2=(not ion_only) and int(channels.get(neutral, 0)) >= 2,
+                anchor=(not ion_only) and bool(
                     group["anchor_peak_id"].notna().any()
                     or group["series_unit"].notna().any()
                 ),
-                branch=bool(adduct_sets.get(neutral, set()) & BARE_ADDUCTS)
-                and bool(adduct_sets.get(neutral, set()) & CLUSTER_ADDUCTS),
-                reagent_only_iso=bool(satellite)
+                branch=bool(aset & BARE_ADDUCTS) and bool(aset & CLUSTER_ADDUCTS),
+                reagent_only_iso=(not ion_only)
+                and bool(satellite)
                 and bool(tags)
                 and not carbon_ev
                 and all(t.startswith(satellite) for t in tags),
@@ -383,6 +406,8 @@ def level_of(row) -> str:
     unique = pd.notna(row.degeneracy) and row.degeneracy <= 1
     if hard:
         return "5b"
+    if bool(getattr(row, "ion_only", False)):
+        return "4d" if row.iso else "5a"
     if degenerate and row.n_axes == 0:
         return "5b"
     if row.known_fam:
@@ -405,7 +430,9 @@ def assign_levels(df: pd.DataFrame, corroborating: set[str]) -> pd.DataFrame:
     """Add the axes, the derived flags and the level to measured rows."""
     df = df.copy()
     df["known_fam"] = df["known_fam"].fillna("")
-    df["corroborated"] = df["neutral"].isin(corroborating)
+    if "ion_only" not in df.columns:
+        df["ion_only"] = False
+    df["corroborated"] = df["neutral"].isin(corroborating) & ~df["ion_only"].astype(bool)
     df["n_axes"] = df[["iso", "chan2", "anchor", "corroborated"]].sum(axis=1)
     df["cross"] = df.corroborated | df.multiline | df.known_fam.ne("")
     df["neutral_backed"] = (
@@ -428,12 +455,14 @@ def run(sources: list[str], corroborate: list[str]) -> pd.DataFrame:
             continue
         frame["reagent_halogen"] = halogen or ""
         measured[path] = (label, frame)
-        neutrals[path] = set(frame["neutral"])
+        neutrals[path] = set(frame.loc[~frame["ion_only"].astype(bool), "neutral"])
     for path in corroborate:
         label, ledger = load_source(path)
         role = column(ledger, "role").astype(str)
+        m0c = ledger[role == "M0"]
+        m0c = m0c[~is_ion_only(m0c)]
         neutrals[f"--corroborate:{path}"] = set(
-            column(ledger[role == "M0"], "neutral_formula").dropna().astype(str)
+            column(m0c, "neutral_formula").dropna().astype(str)
         )
     out = []
     for path, (label, frame) in measured.items():

@@ -72,7 +72,8 @@ STAGE_COVER = "cover"          # a file of the presence cover (incl. its k_min p
 STAGE_RESIDUAL = "residual"    # a file the residual stage targeted
 TIER_RANK = {"Assigned": 2, "Candidate": 1}
 _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score",
-            "admitted_by", "occurrence"]   # the last two: admission provenance, when present
+            "admitted_by", "occurrence",   # admission provenance, when present
+            "ion_only_of"]                 # the ion-only link (the winner file's parent peak), when present
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +241,7 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
         frames.append(d)
     if not frames:
         return (pd.DataFrame(columns=["mz", "neutral_formula", "adduct", "tier",
-                                      "ion_score", "admitted_by", "occurrence",
+                                      "ion_score", "admitted_by", "occurrence", "ion_only_of",
                                       "n_files", "n_files_ion", "n_files_winner",
                                       "alternatives", "tier_reason", "srcs",
                                       *(["stage"] if stages is not None else []),
@@ -289,6 +290,7 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
             adduct=best.get("adduct"), tier=best["tier"],
             ion_score=best.get("ion_score"),
             admitted_by=best.get("admitted_by"), occurrence=best.get("occurrence"),
+            ion_only_of=best.get("ion_only_of", pd.NA),
             n_files=n_total, n_files_ion=int(win_ion["n_files"]),
             n_files_winner=int(win["n_files"]),
             alternatives="; ".join(_describe(r) for _, r in lab.iloc[1:].iterrows()),
@@ -623,6 +625,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
 
     cfg = assign_kw.get("cfg") or PA.PassConfig()
     x_edge, x_edge_source = P.apply_height_cutoff_x_edge(cfg, prof, log=log)
+    # the ion-only channels the profile opens ("[M]-." on the nitrate profiles),
+    # copied by the same explicitness rule: a cfg that already carries a tuple wins
+    P.apply_ion_only_channels(cfg, prof, log=log)
     assign_kw["cfg"] = cfg
     selection = dict(selection_meta or {})
     sel = None                 # our own cover table (None on the sample_ids= path)
@@ -1226,6 +1231,23 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         f"{ev_summary['pooled']} ({ev_summary['n_pairs']} neutral/adduct pairs); "
         f"{ev_summary['n_unstamped']} merged row(s) without a per-file reading "
         f"-> tables/evidence_levels.csv")
+    # ion-only rows (the `ion_only` stage): merged rows carrying the link, the
+    # per-file rows behind them, and the files that hold any -- so the bucket
+    # is on record beside the tiers it is deliberately kept apart from
+    _io_merged = int(merged["ion_only_of"].notna().sum()) if len(merged) and "ion_only_of" in merged.columns else 0
+    _io_files = {sid: int(EV.is_ion_only(fr).sum()) for sid, fr in level_frames.items()}
+    ion_only_summary = {
+        "channels": list(getattr(cfg, "ion_only_channels", None) or ()),
+        "merged": _io_merged,
+        "per_file_rows": int(sum(_io_files.values())),
+        "n_files_with": int(sum(1 for v in _io_files.values() if v)),
+        "merged_levels": (EV.summarize(merged.loc[merged["ion_only_of"].notna(), "evidence_level"])
+                          if _io_merged else {}),
+    }
+    if ion_only_summary["channels"]:
+        log(f"[assign_batch] ion-only rows: {_io_merged} merged ({ion_only_summary['per_file_rows']} "
+            f"per-file rows in {ion_only_summary['n_files_with']} of {len(_io_files)} files) on "
+            f"{ion_only_summary['channels']}")
     merged.to_csv(os.path.join(out_dir, "merged_ledger.csv"), index=False)
     jitter.to_csv(os.path.join(TAB, "jitter.csv"), index=False)
     # the FINAL per_file/_batch_ts.parquet (in parallel mode this overwrites the raw
@@ -1338,6 +1360,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # per_stage = merged rows by cover / residual; cross_source = what
         # corroborated the run
         "evidence_levels": ev_summary,
+        # the ion-only bucket (docs/EVIDENCE_LEVELS.md §3, the `ion_only` stage):
+        # channels opened, merged rows carrying an `ion_only_of` link, per-file
+        # rows behind them, files holding any, and their levels (4d / 5a)
+        "ion_only": ion_only_summary,
         "reflists_active": RL.active_versions(reflists_active),   # [(id, data_version)]
         "per_file": per_stats,
         # RUN-TIME metadata, not material data: how long the assignment actually

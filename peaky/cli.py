@@ -222,6 +222,7 @@ def cmd_assign(args) -> None:
                             occurrence_min=args.occurrence_min)
     profiles.apply_height_cutoff_x_edge(cfg, prof,
                                         explicit=args.height_cutoff_x_edge, log=print)
+    profiles.apply_ion_only_channels(cfg, prof, log=print)
     # the labelled-reagent purity rides on the same resolved profile
     purity = getattr(prof, "purity", None)
     od = Path(args.output_dir).expanduser()

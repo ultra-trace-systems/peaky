@@ -326,6 +326,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     # manifest below both use (assign_batch.run re-resolves it onto that cfg
     # and logs it once).
     P.apply_height_cutoff_x_edge(cfg, prof)
+    P.apply_ion_only_channels(cfg, prof)      # the profile's ion-only channels, same rule
     # The manifest fingerprints a snapshot taken HERE, before the assign runs: it
     # pins the run to the configuration it was GIVEN, never to what the assign
     # fitted from the data (the calibrated cal_mu/cal_sigma land on this same cfg
@@ -550,6 +551,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     prof = P.resolve(reagent, ts[ts_cols], config=config)
     # same one-multiple-per-run rule as run_batch, onto the same cfg (see there)
     P.apply_height_cutoff_x_edge(cfg, prof)
+    P.apply_ion_only_channels(cfg, prof)
     cfg_snapshot = copy.deepcopy(cfg)        # pre-assign, as in run_batch (see there)
     pool_label = out_name or pool_name(batches)
     ctx = make_run_context(base_out, pool_label, prof, when=when, dataset=dataset)

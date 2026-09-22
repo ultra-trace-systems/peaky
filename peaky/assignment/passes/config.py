@@ -266,6 +266,17 @@ class PassConfig:
     minor_channels: tuple = ("[M+CO3]-", "[M+O2]-", "[M]-.",
                              "[M-H]+", "[M-CH3]+")
     minor_channel_penalty: float = 0.12
+    # ION-ONLY channels (the `ion_only` stage, cleanup.commit_ion_only_electron_
+    # attachment): the adducts on which a committed [M-H]- parent's +1.0078 Da
+    # electron-attachment line is committed as a Candidate whose composition is
+    # pinned and whose ionization process and neutral stay open. None = UNSET:
+    # `profiles.apply_ion_only_channels` copies the reagent profile's tuple here
+    # (NO3 / NO3_15N declare ("[M]-.",); every other bundled profile nothing)
+    # and treats a tuple this config ALREADY carries -- () included -- as the
+    # caller's explicit choice, which outranks the profile. Empty/None = the
+    # stage does not run. A configuration knob, not a runtime field: it is
+    # part of the reproducibility fingerprint.
+    ion_only_channels: tuple | None = None
     # Reference-list selection prior: a candidate neutral on an ACTIVE reference
     # peaklist (a published product of the sample's chemistry, or a known
     # contaminant) is far more likely real than a mass-coincidence monster of

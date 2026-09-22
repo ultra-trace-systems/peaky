@@ -78,6 +78,11 @@ _ASSIGN_COLS: dict[str, object] = {
     "method": pd.NA,
     "anchor_peak_id": pd.NA,
     "series_unit": pd.NA,
+    # the [M-H]- parent an ION-ONLY row hangs off (cleanup.commit_ion_only_
+    # electron_attachment): the peak_id of the committed acid whose composition
+    # this [M]-. row carries. Not an evidence axis (anchor_peak_id / series_unit
+    # are); a bookkeeping link like parent_peak_id, NA on every other row.
+    "ion_only_of": pd.NA,
     "locked": False,
     "commentary": pd.NA,
     "alternatives": pd.NA,     # JSON string

@@ -8,6 +8,39 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Ion-only electron-attachment rows — the `ion_only` stage.** On a nitrate CIMS the bright O-rich
+  acids show a second line +1.0078 Da (one H) above their `[M-H]-`: the acid's own composition as a
+  radical anion, exact to 0.05 mDa and pinned by its own 13C, yet anti-correlated with the acid
+  and switching 25x within an hour with the source — a source-state effect (a primary ion attaching
+  to a high-electron-affinity compound), not chemistry of the air. A new post-tier stage
+  (`cleanup.commit_ion_only_electron_attachment`, after `reflist_rescue`, before `iso_env_final`,
+  not `safe`) commits, for every committed `[M-H]-` acid (any tier, not below assignability, at
+  least one carbon), the UNEXPLAINED peak at the acid neutral's M-. mass inside the calibrated gate
+  (|z| <= 2.6 via `z_of`; +-3 ppm uncalibrated) as a **Candidate `[M]-.`** carrying the acid's
+  composition: `method ion_only:electron_attachment`, pass 9, `confidence "Good (ion only)"`, a new
+  ledger column `ion_only_of` (the parent's peak id), the shift in mDa and the height ratio in the
+  commentary; never an anchor or series tie, never locked; the parent row is not touched. Two
+  separability guards keep a 13C line or an unresolved 13C/+H blend (4.47 mDa apart) out of the
+  bucket: the gate's half-width at that mass must be under half the gap, and the file's own picked
+  peaks must show at least three adjacent pairs at <= 1.25x the gap within +-50 Da of the parent
+  (an Orbitrap below ~m/z 350 picks hundreds per file; a ~4k TOF none anywhere, so every parent is
+  skipped and the log says so; an Orbitrap above ~m/z 400 skips too). Never a grid channel. Opened
+  by the reagent profile: `ReagentProfile.ion_only_channels` (the nitrate profiles `NO3` / `NO3_15N`
+  declare `("[M]-.",)`; `compose` unions it; a `--reagent-config` entry may list it), copied onto
+  `PassConfig.ion_only_channels` by `profiles.apply_ion_only_channels` at every entry point with the
+  height-gate rule (a cfg that already carries a tuple, `()` included, outranks the profile; None =
+  unset). The final envelope sweep then claims the new row's own 13C; the `evidence` stage levels an
+  ion-only pair on its own satellite alone — **4d** with one ("ion pinned, neutral not", the rung the
+  reagent-halogen case reaches by the other route), **5a** without — and keeps it out of the
+  per-neutral pools in both directions (no `chan2` / branch for the parent, never `corroborated`,
+  never in a cross set: `corroborating_neutrals` skips it; `scripts/level_ledger.py` mirrors all of
+  it, goldens unchanged; `tables/evidence_levels.csv` carries an `ion_only` flag). A batch carries
+  `ion_only_of` onto the merged row (the winner file's parent) and writes
+  `batch_summary.json['ion_only']` (`channels`, `merged`, `per_file_rows`, `n_files_with`,
+  `merged_levels`). `scripts/scorecard.py` counts the bucket on its own (`ion_only`, a board column
+  and a tile) and keeps it OUT of the Candidate count. `publish` sends a null mechanism for `[M]-.`
+  (no server mechanism is mapped). `tests/test_ion_only.py`.
+
 - **Evidence levels — `evidence_level` on every committed formula.** A new `evidence` stage
   (`peaky/assignment/evidence.py`; after every tier and demote stage, the reflist rescue and the
   final envelope sweep, before `timeseries`; not `safe`, so a level that cannot be computed is a

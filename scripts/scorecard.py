@@ -63,6 +63,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import level_ledger as LL  # noqa: E402  (scripts/level_ledger.py)
+from peaky.assignment import evidence as EV  # noqa: E402
 from peaky.chem import chemistry as C  # noqa: E402
 from peaky.paths import pkg_data  # noqa: E402
 
@@ -438,10 +439,22 @@ def level_rank(level) -> int:
 # ---------------------------------------------------------------------------
 # 1. headline
 # ---------------------------------------------------------------------------
+def ion_only_mask(led: pd.DataFrame) -> pd.Series:
+    """Rows the engine's ion-only stage wrote (merged or per-file ledger)."""
+    if led is None or not len(led):
+        return pd.Series(dtype=bool)
+    return EV.is_ion_only(led)
+
+
 def headline(run: Run, ions: pd.DataFrame) -> dict:
     led = run.ledger
     ts = run.ts
     tier = col(led, "tier", "")
+    # the ion-only bucket (the engine's `ion_only` stage: `[M]-.` rows carrying an
+    # `ion_only_of` link) is reported on its own and kept OUT of the Candidate
+    # tile: the composition is pinned, the neutral is open, and the count would
+    # otherwise inflate the tier it is deliberately kept apart from
+    ion_only = ion_only_mask(led)
     out = {
         "run": run.name,
         "channel": run.channel,
@@ -452,7 +465,9 @@ def headline(run: Run, ions: pd.DataFrame) -> dict:
         "n_spectra": run.n_spectra,
         "merged_rows": int(len(led)),
         "assigned": int((tier == "Assigned").sum()),
-        "candidate": int((tier == "Candidate").sum()),
+        "candidate": int(((tier == "Candidate") & ~ion_only).sum()),
+        "ion_only": int(ion_only.sum()),
+        "ion_only_levels": col(led, "evidence_level", "")[ion_only].fillna("").astype(str).value_counts().to_dict() if ion_only.any() else {},
         "neutrals": int(col(led, "neutral_formula").dropna().nunique()),
         "neutrals_assigned": int(led.loc[tier == "Assigned", "neutral_formula"].dropna().nunique()) if "neutral_formula" in led.columns else 0,
         "by_stage": col(led, "stage", "cover").fillna("cover").value_counts().to_dict(),
@@ -1120,6 +1135,7 @@ def run_engine_offline(run: Run, peaks: pd.DataFrame, sample_id: str, adducts: l
 
     cfg = PA.PassConfig()
     P.apply_height_cutoff_x_edge(cfg, run.profile, log=log)
+    P.apply_ion_only_channels(cfg, run.profile, log=log)
     kw = {"adducts": list(adducts), "reagent_n_relabel": False}
     if run.profile is not None:
         if getattr(run.profile, "label_isotope", None):
@@ -1138,6 +1154,8 @@ def run_engine_offline(run: Run, peaks: pd.DataFrame, sample_id: str, adducts: l
 def _ledger_counts(led: pd.DataFrame, label: str) -> dict:
     m0 = led[led["role"] == "M0"] if "role" in led.columns else led.iloc[0:0]
     tier = col(m0, "tier", "")
+    if len(m0):
+        tier = tier.where(~ion_only_mask(m0), "")    # the ion-only bucket is not a tier count
     frame = m0.assign(__file=label)
     levels = pd.DataFrame()
     if not frame.empty and "evidence_level" in m0.columns and m0["evidence_level"].notna().any():
@@ -1322,6 +1340,7 @@ def falsification(run: Run) -> dict:
 KEY_METRICS = [
     ("assigned", "Assigned rows", 0),
     ("candidate", "Candidate rows", 0),
+    ("ion_only", "ion-only rows", 0),
     ("neutrals", "distinct neutrals", 0),
     ("stamped_signal_share", "stamped signal %", 1),
     ("unstamped_merged", "merged rows unstamped", 0),
@@ -1439,6 +1458,7 @@ def board_row(card: dict) -> dict:
         "merged_rows": h["merged_rows"],
         "assigned": h["assigned"],
         "candidate": h["candidate"],
+        "ion_only": h.get("ion_only", 0),
         "neutrals": h["neutrals"],
         "unstamped_merged": h["stamp_coverage"].get("n_unstamped"),
         "bright_m0_not_assigned": b["m0_not_assigned"],
@@ -1490,7 +1510,8 @@ def render_md(card: dict) -> str:
           + (f", {h['elapsed_s'] / 60:.1f} min" if h.get("elapsed_s") else ""),
           f"- stamped: {_p(h['stamped_peak_share'])} % of peaks, {_p(h['stamped_signal_share'])} % of signal "
           f"(M0 alone {_p(h['stamped_M0_signal_share'])} %); unstamped signal {_p(h['unstamped_signal_share'])} %",
-          f"- merged rows {fmt(h['merged_rows'])}: Assigned {fmt(h['assigned'])}, Candidate {fmt(h['candidate'])}; "
+          f"- merged rows {fmt(h['merged_rows'])}: Assigned {fmt(h['assigned'])}, Candidate {fmt(h['candidate'])}"
+          + (f", ion-only {fmt(h['ion_only'])} (levels {h.get('ion_only_levels')})" if h.get("ion_only") else "") + "; "
           f"distinct neutrals {fmt(h['neutrals'])} ({fmt(h['neutrals_assigned'])} Assigned)",
           "- by stage: " + ", ".join(f"{k} {v}" for k, v in h["by_stage"].items()),
           "- by channel (Assigned / all): " + ", ".join(f"{k or '?'} {h['by_adduct_assigned'].get(k, 0)}/{v}" for k, v in h["by_adduct"].items()),
@@ -1617,8 +1638,8 @@ def render_board_md(board: list[dict]) -> str:
     rows = latest_rows(board)
     L = ["# Peaky Scoreboard", "", f"regenerated {dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} · {len(rows)} channels · {len(board)} rows in `scoreboard.jsonl`", "",
          "One row per channel, its latest scorecard, and the delta to the row before it. Levels are 2b/3a/3b/4a/4b/4c/4d/5a/5b.", ""]
-    L += ["| channel | run | code | Assigned | Candidate | neutrals | stamped signal % | unstamped merged | bright M0 not Assigned | unstamped in top 50 | levels | <= 4a | M1 fam. | M1 signal % | roster A/present/n | Cl+Br+F | decoy shift % | decoy adducts % | 13C ok/n | hetero ok/n |",
-          "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|---:|---:|---:|---|---|"]
+    L += ["| channel | run | code | Assigned | Candidate | ion-only | neutrals | stamped signal % | unstamped merged | bright M0 not Assigned | unstamped in top 50 | levels | <= 4a | M1 fam. | M1 signal % | roster A/present/n | Cl+Br+F | decoy shift % | decoy adducts % | 13C ok/n | hetero ok/n |",
+          "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|---:|---:|---:|---|---|"]
     for r in rows:
         prev = previous_row(board, r["channel"], before=r)
 
@@ -1633,7 +1654,7 @@ def render_board_md(board: list[dict]) -> str:
 
         lv = r.get("levels") or {}
         L.append("| " + " | ".join([
-            r["channel"].replace("|", " · "), r["run"][-24:], r.get("code", ""), cell("assigned"), cell("candidate"), cell("neutrals"), cell("stamped_signal_share", 1),
+            r["channel"].replace("|", " · "), r["run"][-24:], r.get("code", ""), cell("assigned"), cell("candidate"), cell("ion_only"), cell("neutrals"), cell("stamped_signal_share", 1),
             cell("unstamped_merged"), cell("bright_m0_not_assigned"), cell("bright_unstamped"),
             "/".join(str(lv.get(k, 0)) for k in LEVELS), cell("good_levels"), cell("m1_families"), cell("m1_signal_share", 1),
             f"{r.get('roster_assigned', '')}/{r.get('roster_present', '')}/{r.get('roster_n', '')}", cell("census_halogen"),
@@ -1765,7 +1786,7 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
 
         ch_rows.append({
             "channel": r["channel"], "run": r["run"][-24:], "code": r.get("code", ""), "assigned": r.get("assigned"), "d_assigned": d("assigned"),
-            "candidate": r.get("candidate"), "neutrals": r.get("neutrals"), "signal": r.get("stamped_signal_share"),
+            "candidate": r.get("candidate"), "ion_only": r.get("ion_only"), "neutrals": r.get("neutrals"), "signal": r.get("stamped_signal_share"),
             "unst": r.get("unstamped_merged"), "bright": r.get("bright_m0_not_assigned"), "bright_un": r.get("bright_unstamped"),
             "levels": "/".join(str(lv.get(k, 0)) for k in LEVELS), "good": r.get("good_levels"),
             "fam": r.get("m1_families"), "m1": r.get("m1_signal_share"),
@@ -1774,7 +1795,7 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
             "c13": f"{r.get('c13_within_1', '')}/{r.get('c13_n', '')}", "het": f"{r.get('hetero_present', '')}/{r.get('hetero_n', '')}",
         })
     out.append(html_table(ch_rows, [("channel", "channel"), ("run", "run"), ("code", "code"), ("assigned", "Assigned"), ("d_assigned", "Δ"), ("candidate", "Candidate"),
-                                    ("neutrals", "neutrals"), ("signal", "stamped signal %"), ("unst", "unstamped merged"), ("bright", "bright M0 not Assigned"),
+                                    ("ion_only", "ion-only"), ("neutrals", "neutrals"), ("signal", "stamped signal %"), ("unst", "unstamped merged"), ("bright", "bright M0 not Assigned"),
                                     ("bright_un", "unstamped in top 50"), ("levels", "levels 2b…5b"), ("good", "≤ 4a"), ("fam", "M1 families"), ("m1", "M1 signal %"),
                                     ("roster", "roster A/present/n"), ("hal", "Cl+Br+F"), ("dshift", "decoy shift %"), ("dadd", "decoy adducts %"), ("c13", "13C ok/n"), ("het", "hetero ok/n")],
                           {"signal": 1, "m1": 1, "dshift": 1, "dadd": 1, "d_assigned": 0}, mono=("channel", "run", "code", "levels", "roster", "c13", "het")))
@@ -1798,7 +1819,7 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
         out.append(f"<section class=\"panel\" id=\"p-{_h(r['run'])}\" hidden>")
         out.append(f"<h3>{_h(r['run'])}</h3><div class=\"meta\">channel {_h(h['channel'])} · reagent {_h(h['reagent'])} · {_h(h['path'])} · code {_h(h['code'])} · {_h(c['written_utc'])}</div>")
         out.append("<div class=\"tiles\">" + "".join([
-            tile("spectra", "n_spectra"), tile("Assigned", "assigned"), tile("Candidate", "candidate"), tile("neutrals", "neutrals"),
+            tile("spectra", "n_spectra"), tile("Assigned", "assigned"), tile("Candidate", "candidate"), tile("ion-only", "ion_only"), tile("neutrals", "neutrals"),
             tile("stamped signal %", "stamped_signal_share", 1), tile("merged rows unstamped", "unstamped_merged"),
             tile("bright M0 not Assigned", "bright_m0_not_assigned"), tile("unstamped in top 50", "bright_unstamped"),
             tile("rows at level ≤ 4a", "good_levels"), tile("M1 families", "m1_families"), tile("M1 signal %", "m1_signal_share", 1),

@@ -268,6 +268,7 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
         # relative gate: the profile's own multiple of the sample's noise edge
         # when it carries one, else the package default (logged once).
         profiles.apply_height_cutoff_x_edge(cfg, rp, log=log)
+        profiles.apply_ion_only_channels(cfg, rp, log=log)
         # same context-unlock as `peaky assign` / `peaky batch`: one sample's only
         # metadata is its context + reagent label, so this is contaminants-only
         # unless one of them names a chemistry.

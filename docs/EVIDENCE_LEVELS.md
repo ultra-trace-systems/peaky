@@ -76,8 +76,9 @@ Computed exactly as `level_ledger.measure_source` does.
 | `degeneracy` | median `degeneracy_density` over rows that have one; NaN when none has |
 | `saturated` | any `degeneracy_note` contains `MASS-SATURATED` |
 | `res_ok` | no row carries a `resolvability` value, **or** at least one is `resolved` / `isolated` — a source that never measured it is not penalised |
-| `corroborated` | the neutral is in the **cross set** (§6): the other reagent channel, the other instrument on the same air, or a `--corroborate` source |
+| `corroborated` | the neutral is in the **cross set** (§6): the other reagent channel, the other instrument on the same air, or a `--corroborate` source — never for an ion-only pair |
 | `known_fam` | the family of the first `known:` method among the rows, else `''` |
+| `ion_only` | the pair was written by the **ion-only stage** (`ion_only`, C7): adduct `[M]-.` with method `ion_only:*` (a merged ledger: an `ion_only_of` link) — the +1.0078 Da electron-attachment line beside a committed `[M-H]-` acid, carrying the acid's composition. An ion-only pair is levelled on its **own** satellite alone (§4 row 2b′) and is kept **out of the per-neutral pools in both directions**: `chan2`, `branch`, `anchor` and `reagent_only_iso` are computed over the regular rows only, so the row never gives its parent a second channel and never takes an axis from it; it is never `corroborated` and its neutral never enters a cross set (`corroborating_neutrals` skips it) |
 
 Derived:
 
@@ -112,13 +113,14 @@ with two stray `[M+Br]-` rows against 346 `[M+NO3]-` is a nitrate channel.
 | order | level | predicate | meaning |
 |---:|---|---|---|
 | 1 | **5b** | `hard` | the assignment argues with itself: a near-tie the arbiter broke, a row below assignability, or a score the engine calls Low/Suspect |
+| 1′ | **4d** / **5a** | `ion_only` | an ion-only row: **4d** when its own satellite passes the band (`iso`) — the composition is pinned by exact mass and ¹³C, the ionization process and the neutral are open — else **5a**, exact mass only. The same rung the reagent-halogen case (row 8) reaches by the other route: 4d = *ion pinned, neutral not*, by either route |
 | 2 | **5b** | `degenerate and n_axes == 0` | mass-degenerate with nothing to break the tie |
 | 3 | **2b** | `known_fam != ''` and `scope(known_fam) == "compound"` and `n_plausible_structures == 1` | a curated **identity** on a formula that admits one structure |
 | 4 | **3a** | `known_fam != ''` (any other curated commit) | a named class, isomers open |
 | 5 | **3b** | `branch` | a substituent only: the same neutral deprotonated and clustered means an acidic hydrogen, nothing more |
 | 6 | **4c** | `n_axes == 0 and unique and res_ok` | formula unopposed — one plausible ion in the calibrated window on a separable peak — but nothing corroborates it |
 | 7 | **5a** | `n_axes == 0` | exact mass only; no discriminating test was possible |
-| 8 | **4d** | `not neutral_backed and reagent_only_iso` | **ion** formula only: the sole isotope support is the reagent halogen, which pins the ion and says nothing about the neutral (CIMS-specific; no Schymanski analogue) |
+| 8 | **4d** | `not neutral_backed and reagent_only_iso` | **ion** formula only: the sole isotope support is the reagent halogen, which pins the ion and says nothing about the neutral (CIMS-specific; no Schymanski analogue). With row 1′, 4d reads *ion pinned, neutral not* whichever route reached it |
 | 9 | **4a** | `n_axes >= 2 and cross` | formula confirmed **and the neutral established**: two orthogonal axes, at least one from outside this channel's ionization chemistry |
 | 10 | **4b** | else | formula confirmed, one corroboration |
 
@@ -189,8 +191,11 @@ by `tests/test_evidence.py::test_isomer_space_rows_carry_a_rationale`.
 A new `_Stage("evidence", …)` in `peaky/assignment/assign.py::_STAGES`,
 placed **after `iso_env_final` and before `timeseries`**: after every tier
 and demote stage (the last of which is `plausibility`), after
-`reflist_rescue` (which commits M0 rows post-tier), and after the final
-isotope sweep (which adds the satellites the `iso` axis reads).
+`reflist_rescue` (which commits M0 rows post-tier), after `ion_only` (C7:
+the electron-attachment rows, post-tier like the rescue, placed before the
+final sweep so that sweep claims each new row's own ¹³C — the satellite row
+1′ reads), and after the final isotope sweep (which adds the satellites the
+`iso` axis reads).
 `timeseries` writes only `ts_*` dispositions and is not an input.
 `safe=False` (a level that cannot be computed is a bug, not a lost stage),
 `store=True` (the stage summary is kept in the run's `summaries` and written
@@ -238,12 +243,13 @@ before the column existed. `scripts/scorecard.py` already prefers an in-core
 | column | type | on | value |
 |---|---|---|---|
 | `evidence_level` | str | M0 rows; `NA` elsewhere | one of `2b 3a 3b 4a 4b 4c 4d 5a 5b` (never `1` / `2a` today) |
-| `evidence_axes` | str | M0 rows | `|`-joined, in this order, of the axes that hold: `iso`, `chan2`, `anchor`, `corroborated`, then the modifiers `multiline`, `carbon`, `branch`, `reagent_only_iso`, `known:<family>`, `files:<n>` (batch only); `''` when none |
+| `evidence_axes` | str | M0 rows | `|`-joined, in this order, of the axes that hold: `iso`, `chan2`, `anchor`, `corroborated`, then the modifiers `multiline`, `carbon`, `branch`, `reagent_only_iso`, `ion_only`, `known:<family>`, `files:<n>` (batch only); `''` when none |
 | `level_reason` | str | M0 rows | one sentence naming the predicate that fired, in the words of §4, with the numbers (`"5b: near-tie broken by the arbiter"`, `"4c: 1 plausible ion in the window, resolved, no axis"`, `"4a: iso + chan2, corroborated by the other source"`) |
 | `n_plausible_structures` | Int64 | M0 rows whose formula is in the isomer space; `NA` otherwise | from `isomer_space.csv` |
 
 Written to: the per-file `<prefix>_ledger.csv`, `merged_ledger.csv`,
-`tables/evidence_levels.csv` (batch: one row per pair with every fact of §3), the
+`tables/evidence_levels.csv` (batch: one row per pair with every fact of §3, the
+`ion_only` flag included), the
 Excel workbook (a column on the ledger sheets and a new **"By evidence
 level"** sheet: one row per level with count, share, tier split, the axes
 histogram and the twenty brightest rows), an **Evidence levels** page in the
