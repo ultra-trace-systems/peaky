@@ -186,9 +186,19 @@ EASYIC = ReagentProfile(
     name="EasyIC",
     label="EasyIC+ CT",
     polarity="+",
-    adducts=["[M]+.", "[M-H]+", "[M+H]+"],
+    # [M-CH3]+ added 2026-09-22 off the certified-mixture audit: it is the
+    # quantifier channel of the cyclic methylsiloxanes (D4 281.0511, D5
+    # 355.0699 -- the brightest peak of the 210-500 window), and without it the
+    # ion is committed under a neutral that cannot exist (C9H26O5Si5).
+    adducts=["[M]+.", "[M-H]+", "[M-CH3]+", "[M+H]+"],
     normaliser="tic",
     reagent_ion_re=None,
+    # Si stays OUT of the grid deliberately. The siloxanes reach [M-CH3]+
+    # through the pass-0 `cyclosiloxane` known list (D3-D7, L2-L5) where the
+    # commit is gated on >=2 channels or a confirmed ²⁹Si/³⁰Si envelope; opening
+    # Si here would instead let the SERIES passes propose Si formulas against
+    # the mass-degenerate CHON O-monsters that siloxane.py exists to beat, and
+    # would multiply the cached enumeration grid for every pass.
     ranges="C0-40 H0-80 N0-5 O0-15 S0-2",
     detect_adduct="[M]+.",
     context="easyic",

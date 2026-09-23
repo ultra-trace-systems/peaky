@@ -8,6 +8,80 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The positive-mode abstraction channels `[M-H]+` and `[M-CH3]+` are reachable,
+  and `[M-CH3]+` exists at all.** Audited against a certified 18-component
+  calibration cylinder, EasyIC's charge-transfer channel was exact (8 of 8
+  compounds, |ppm| <= 0.5) while every one of its other channels named a molecule
+  that is not in the bottle. Cause: the mechanism plumbing is keyed on deployment
+  mechanism ids, and no deployment registers one for a positive-mode abstraction —
+  so `ADDUCT_TO_MECH` filtered `[M-H]+` out before the scorer saw it, even though
+  the local scoring backend has computed `-H+` all along. The channel was
+  *unreachable*, not unscorable. An abstraction ion is also mass- and
+  envelope-identical to the protonated form of the neutral one H2 (or one CH4)
+  lighter, so with only the `[M+H]+` reading offered, that reading won every time:
+  acetone was read as propenal, isoprene as cyclopentadiene, hexanal as C6H10O, and
+  the two brightest peaks of the window — the benzyl and methylbenzyl cations — as
+  protonated C7H6 and C8H8.
+  - Abstraction channels now travel inside `cfg.mechanism_ids` as tagged tokens
+    (`io_mascope.LOCAL_MECH_PREFIX`), translated to a local mechanism name in the
+    one place ids reach the scorer and stripped in the two places they reach the
+    server. Fourteen call sites thread `mechanism_ids` already; a second parameter
+    would have had to be added to each, and the one that got missed would lose the
+    channel again in silence. They stay out of `ADDUCT_TO_MECH` on purpose: the
+    server spells negative deprotonation `-H+` too, so keying `[M-H]+` there would
+    make `MECH_TO_ADDUCT` ambiguous.
+  - `[M-CH3]+` is new — in `ADDUCT_SHIFTS`, in `_DIFF_TO_ADDUCT` (a channel missing
+    there is silently written to the ledger as a deprotonation), and in the EasyIC
+    profile and context. It is the cyclic methylsiloxanes' quantifier channel: D4
+    281.0511 and D5 355.0699 are 27 kcps and 107 kcps on the certified run, the
+    brightest peak of the 210-500 window among them, against `[M+H]+` lines
+    carrying 0.5 % of the same compound. Si deliberately stays out of the
+    enumeration grid — the siloxanes reach the channel through the pass-0
+    `cyclosiloxane` known list, where the commit is already gated on >= 2 channels
+    or a confirmed 29Si/30Si envelope.
+  - Both channels are MINOR channels, and are never enumerated from. The alias is
+    exact, so a good score cannot choose between the readings: on the certified run
+    isoprene's `[M-H]+` scores 0.900 against protonated cyclopentadiene's 0.902 on
+    the same peak, and hexanal's 0.982 against C6H10O's 0.982. Three consequences,
+    each measured on that run rather than argued:
+    - Un-penalised, the winner is whatever sorts first. Toluene's protonated line
+      93.0699 flipped from the correct `C7H8 [M+H]+` to `C7H10 [M-H]+`. The
+      minor-channel ranking penalty sends an exact tie to the protonation reading
+      and the flip is gone; a genuinely better abstraction fit can still win by more
+      than the penalty.
+    - Enumerating candidates FROM these channels turned 59 honestly-unexplained
+      peaks into commits, 40 of them nitrogen-bearing neutrals in a
+      nitrogen-free cylinder, and gained nothing. The channels are now scored for
+      neutrals the run already has (pass 0's known species, pass 5's cross-channel
+      search, a reference-list rescue) but never proposed from — the `[M+Br3]-`
+      ruling.
+    - The minor-channel commit gate's score and series exemptions do not apply to
+      them, so cross-channel standing for the neutral is the only way in. A high
+      score says the ion composition is right, not which molecule shed which
+      radical.
+  - Channel COUNT was tried as a tie-break and rejected on measurement: in a
+    fragmenting source the spectrum has a peak at nearly every (nominal mass,
+    defect) a small CHO formula needs, so C5H6 matches all four channels exactly
+    like C5H8 and C6H10O like C6H12O. The count separates nothing and a prior keyed
+    on it fires on both sides of every tie.
+  - Net on the certified mixture, same two samples, same peaks: 9 of 15 components
+    named correctly before, 11 of 15 after (D4 and D5 gained), no regression on any
+    quantifier or secondary channel, and unexplained peaks down 291 -> 247 and
+    108 -> 59. D4 and D5 also reclaim their own ²⁹Si/³⁰Si satellites, evicting five
+    sodium-adduct commits that had been sitting on them, two of them `Assigned`.
+    The three hydride components (acetone, isoprene, hexanal) are unchanged and
+    still read as the neutral two hydrogens lighter: that degeneracy is not
+    resolvable from one spectrum, and what stands between the reader and the wrong
+    molecule is `cleanup.annotate_easyic_ambiguity`'s dual-reading note. **Known
+    cost:** nitrogen-bearing neutrals rose from 62 to 89 in the 50-200 sample and 58
+    to 72 in 210-500 — every one of them wrong in a nitrogen-free cylinder. They are
+    the air-plasma CxNyOz+ source ions that `_EASYIC_SOURCE_IONS` does not label, so
+    the peaks are open to any grid formula; the new channels widen the opening
+    rather than create it.
+  - With the network scorer forced on (`PEAKY_LOCAL_SCORING=0`) these channels
+    cannot be scored at all; the run now says so once per sample instead of
+    dropping a declared channel without a word.
+
 - **A privacy scan that refuses internal identifiers, run by the suite and by CI.**
   Peaky is public; the servers, workspaces, datasets and batches a run touches are
   not. The rule was applied by hand three times and missed once, when a stacked pull

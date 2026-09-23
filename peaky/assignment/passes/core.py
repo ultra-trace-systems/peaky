@@ -27,6 +27,7 @@ __all__ = [
     "arbitrate",
     "_f",
     "_DIFF_TO_ADDUCT",
+    "ABSTRACTION_ADDUCTS",
     "_mech_to_adduct",
     "commit_winners",
     "_prefer_adduct_reading",
@@ -436,6 +437,15 @@ def _f(v):
     return None if v is None or pd.isna(v) else float(v)
 
 
+#: positive-mode channels where the ion is the neutral minus a RADICAL, so the
+#: ion is mass- and envelope-identical to the protonated form of a lighter
+#: neutral (see io_mascope.LOCAL_ONLY_ADDUCT_MECH). They are MINOR channels by
+#: default (PassConfig.minor_channels) because that alias is EXACT: measured on
+#: the 2026-09-22 certified mixture, C5H8 [M-H]+ and C5H6 [M+H]+ score 0.900 vs
+#: 0.902 on the same peak, so an unweighted arbitration is a coin flip.
+ABSTRACTION_ADDUCTS = ("[M-H]+", "[M-CH3]+")
+
+
 _DIFF_TO_ADDUCT = {
     (("H", -1),): "[M-H]-",
     (("Br", 1),): "[M+Br]-",
@@ -536,6 +546,14 @@ def _mech_to_adduct(row) -> str:
             return "[M]+."
         if diff == (("H", -1),):
             return "[M-H]+"
+        # METHYL loss (the methylsiloxanes' channel): (C-1, H-3). Nothing else
+        # presents that diff, so unlike the H-1 case there is no negative-mode
+        # reading to flip away from -- but it still has to be keyed somewhere or
+        # the row falls through `.get(diff, "[M-H]-")` and a committed D4
+        # [M-CH3]+ is written to the ledger as a DEPROTONATION (the urea /
+        # [M+I2]- silent-mislabel trap).
+        if diff == (("C", -1), ("H", -3)):
+            return "[M-CH3]+"
     return add
 
 
@@ -591,10 +609,21 @@ def commit_winners(
         # Minor-channel corroboration gate: a CO3-/O2-/M-. winner must be Good+
         # on raw score, or come from series evidence, or have its neutral
         # independently assigned via a primary channel elsewhere in the ledger.
-        if (
-            w["adduct"] in cfg.minor_channels
-            and w["raw_score"] < cfg.tau_good
-            and not series_like
+        #
+        # For the ABSTRACTION channels the score and series exemptions do NOT
+        # apply, so corroboration is the only way in. A high score is no evidence
+        # here: the ion is EXACTLY the protonated form of a lighter neutral, so
+        # both readings score the same, and a good score says the ion composition
+        # is right -- not which molecule shed which radical. Cross-channel
+        # standing is the one thing that does speak to the molecule. Measured on
+        # the 2026-09-22 certified mixture: without this, the two channels turned
+        # 19 unexplained peaks into nitrogen-bearing commits in a nitrogen-free
+        # cylinder, each on a score alone. Pass 0 is unaffected -- it commits
+        # known species directly, which is how the methylsiloxanes keep
+        # [M-CH3]+ on their own ²⁹Si/³⁰Si evidence.
+        if w["adduct"] in cfg.minor_channels and (
+            w["adduct"] in ABSTRACTION_ADDUCTS
+            or (w["raw_score"] < cfg.tau_good and not series_like)
         ):
             others = ledger[
                 (ledger["role"] == L.ROLE_M0)

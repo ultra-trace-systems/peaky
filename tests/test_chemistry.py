@@ -186,6 +186,22 @@ check("[M+H]+ and [M-H]+ sit exactly 2 H apart",
 check("[M]+. is the two-electron mirror of [M]-.",
       approx(C.ion_mz("C6H6", "[M]-.") - C.ion_mz("C6H6", "[M]+."),
              2 * 0.000548579909, 1e-9))
+# METHYL LOSS -- the cyclic-methylsiloxane quantifier channel. Masses checked
+# against the 2026-09-22 certified-mixture run, where these are the two
+# brightest peaks of the 210-500 window (27 kcps / 107 kcps).
+check("[M-CH3]+ of D4 = C7H21O4Si4+ @281.0511",
+      approx(C.ion_mz("C8H24O4Si4", "[M-CH3]+"), 281.05114, 5e-5))
+check("[M-CH3]+ of D5 = C9H27O5Si5+ @355.0699",
+      approx(C.ion_mz("C10H30O5Si5", "[M-CH3]+"), 355.06993, 5e-5))
+check("[M-CH3]+ sits exactly CH4 below [M+H]+ (the same-ion degeneracy that "
+      "makes a fabricated neutral score identically)",
+      approx(C.ion_mz("C8H24O4Si4", "[M+H]+") - C.ion_mz("C8H24O4Si4", "[M-CH3]+"),
+             C.M["C"] + 4 * C.M["H"], 1e-9))
+check("D4 [M-CH3]+ is the same ion as [M+H]+ of the CH4-lighter neutral",
+      approx(C.ion_mz("C8H24O4Si4", "[M-CH3]+"),
+             C.ion_mz("C7H20O4Si4", "[M+H]+"), 1e-9))
+check("isoprene [M-H]+ is the same ion as protonated cyclopentadiene",
+      approx(C.ion_mz("C5H8", "[M-H]+"), C.ion_mz("C5H6", "[M+H]+"), 1e-9))
 
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"

@@ -429,6 +429,68 @@ ADDUCT_TO_MECH = {
 }
 MECH_TO_ADDUCT = {v: k for k, v in ADDUCT_TO_MECH.items()}
 
+# POSITIVE-MODE ABSTRACTION CHANNELS -- local-scoring only.
+#
+# An abstraction ion is the neutral minus a RADICAL (H·, CH3·): hydride
+# abstraction [M-H]+ and methyl loss [M-CH3]+. No deployment registers an
+# ionization mechanism for either (a deployment's positive set is '+', '+H+',
+# '+Na+', '+NH4+', '+^NH4+' plus its cluster reagents), so they cannot
+# go in ADDUCT_TO_MECH -- and must not: the server spells NEGATIVE deprotonation
+# '-H+' as well, so keying [M-H]+ there would collide with [M-H]- and make
+# MECH_TO_ADDUCT ambiguous.
+#
+# `mascope_tools.parse_ionization` -- the local scorer -- reads the trailing sign
+# as the NET ION CHARGE (that is why _mechanism_names rewrites the server's
+# '-H+' to '-H-' for the negative channel). So '-H+' / '-CH3+' are exactly the
+# positive abstraction ions there, and the local backend already computes them,
+# isotope envelope included: on the 2026-09-22 certified mixture C5H8 on '-H+'
+# matches C5H7+ @67.0542 at 0.05 ppm with its ¹³C line, and C8H24O4Si4 on
+# '-CH3+' matches C7H21O4Si4+ @281.0509 with BOTH the ²⁹Si and ³⁰Si satellites.
+#
+# Until that run, the channels were unreachable rather than unscorable: the
+# adducts were in a profile and in ADDUCT_SHIFTS, but the mechanism plumbing is
+# keyed on server ids, so ADDUCT_TO_MECH filtered them out before the scorer
+# ever saw them. Every hydride analyte therefore lost its peak to the
+# mass-identical [M+H]+ reading of the neutral two hydrogens lighter (acetone
+# read as propenal, isoprene as cyclopentadiene, hexanal as C6H10O), and the
+# siloxanes' quantifier ion was named as a neutral that does not exist.
+LOCAL_ONLY_ADDUCT_MECH = {
+    "[M-H]+": "-H+",
+    "[M-CH3]+": "-CH3+",
+}
+
+#: An abstraction channel travels through the pipeline INSIDE
+#: ``cfg.mechanism_ids``, tagged with this prefix, instead of as a parallel
+#: argument. Fourteen call sites already thread `mechanism_ids=cfg.mechanism_ids`
+#: from every pass; a second parameter would have to be added to each of them
+#: (and to the two that call score_candidates directly), and the one that got
+#: missed would silently lose the channel again. The tag is stripped in the two
+#: places ids reach the SERVER (`_server_mech_ids`) and translated to a mechanism
+#: name in the one place they reach the local scorer (`_mechanism_names`).
+LOCAL_MECH_PREFIX = "local:"
+
+
+def local_mechanism_tokens(adducts: list[str]) -> list[str]:
+    """Tagged mechanism tokens for the abstraction channels among `adducts`.
+    Empty unless a profile actually asks for one."""
+    return [LOCAL_MECH_PREFIX + LOCAL_ONLY_ADDUCT_MECH[a]
+            for a in adducts if a in LOCAL_ONLY_ADDUCT_MECH]
+
+
+def _server_mech_ids(mechanism_ids: list[str] | None) -> list[str] | None:
+    """The subset of `mechanism_ids` that are real deployment ids -- what may be
+    sent to match_compounds / the cheminfo candidate query."""
+    if not mechanism_ids:
+        return mechanism_ids
+    out = [m for m in mechanism_ids if not str(m).startswith(LOCAL_MECH_PREFIX)]
+    return out or None
+
+
+def _local_mech_names(mechanism_ids: list[str] | None) -> list[str]:
+    """The abstraction-channel mechanism names carried in `mechanism_ids`."""
+    return [str(m)[len(LOCAL_MECH_PREFIX):]
+            for m in (mechanism_ids or []) if str(m).startswith(LOCAL_MECH_PREFIX)]
+
 
 def detect_adducts(peaks: pd.DataFrame) -> list[str]:
     """Infer the reagent/adduct system from the sample's own peak matches
@@ -493,7 +555,7 @@ def query_candidates(client, mz: float, mechanism_ids: list[str], *,
     to [] on any error and let the grid carry that m/z."""
     try:
         res = client.cheminfo.query_by_mz(
-            mz=mz, ionization_mechanism_ids=mechanism_ids,
+            mz=mz, ionization_mechanism_ids=_server_mech_ids(mechanism_ids),
             formula_ranges=formula_ranges, mz_tolerance=float(ppm), limit=limit) or []
     except Exception:
         return []
@@ -643,6 +705,13 @@ def _mechanism_names(client, mechanism_ids: list[str] | None) -> list[str]:
     etc. already agree and are unchanged."""
     if not mechanism_ids:
         return []
+    # abstraction channels arrive already spelled for the local scorer (they have
+    # no deployment id to reverse-map); they are the whole point of the tag.
+    out_local = _local_mech_names(mechanism_ids)
+    mechanism_ids = [m for m in mechanism_ids
+                     if not str(m).startswith(LOCAL_MECH_PREFIX)]
+    if not mechanism_ids:
+        return out_local
     table = client.ionization.list()
     id2 = {
         r.ionization_mechanism_id: (
@@ -660,7 +729,7 @@ def _mechanism_names(client, mechanism_ids: list[str] | None) -> list[str]:
         if sign and name and len(name) > 1 and name[-1] in "+-" and name[-1] != sign:
             name = name[:-1] + sign  # '-H+' (deprotonation, neg polarity) -> '-H-'
         out.append(name)
-    return out
+    return out + [m for m in out_local if m not in out]
 
 
 def _local_scoring_enabled() -> bool:
@@ -714,6 +783,18 @@ def score_candidates(client, sample_id: str, formulas: list[str], *,
     # Bromide (0.932 agreement) + Uronium; see docs/MASCOPE_TOOLS_INTEGRATION.md.
     if _local_scoring_enabled():
         return _score_candidates_local(client, sample_id, formulas, mechanism_ids)
+    if _local_mech_names(mechanism_ids):
+        # The escape hatch cannot reach the abstraction channels: they exist
+        # only as local-scorer mechanism names (LOCAL_ONLY_ADDUCT_MECH). Say so
+        # rather than silently dropping a profile's channel -- that silence is
+        # what hid the hydride gap through eleven EasyIC batches.
+        from loguru import logger
+        logger.warning(
+            "PEAKY_LOCAL_SCORING is off: the abstraction channels {} have no "
+            "server mechanism and will NOT be scored this run",
+            ", ".join(sorted(_local_mech_names(mechanism_ids))),
+        )
+    mechanism_ids = _server_mech_ids(mechanism_ids)
     mp = dict(DEFAULT_MATCH_PARAMS)
     if match_params:
         mp.update(match_params)
