@@ -38,6 +38,13 @@ __version__ = "0.3.0"  # predicted diagnostic satellites in the batch stamp (sta
 DEFAULT_TOL_PPM = 5.0
 FLAT_CV = 0.25          # cv_norm below this == flat / background
 COVARY_R = 0.70         # correlation above this == co-varies with the family
+# Fraction of binned channels that must clear FLAT_CV before flatness is read as
+# evidence of background at all (see apply_timeseries). A steady-state run is
+# flat everywhere, and there "flat" says nothing about a given peak.
+MIN_VARYING_FRAC = 0.20
+# A reagent normaliser may move no more than a channel it would call flat --
+# it has to clear the same bar it is used to judge (see apply_timeseries).
+MAX_NORMALISER_CV = FLAT_CV
 
 
 def auto_bin_minutes(ts: pd.DataFrame, *, target_bins: int = 50,
@@ -1455,6 +1462,36 @@ def apply_timeseries(ledger: pd.DataFrame, peaks: pd.DataFrame, *,
                     & ledger["ion_formula"].astype(str).str.match(r"Br\d-")]
         reagent_mzs = rr["mz"].dropna().tolist()
     rt = reagent_total(mat, bin_mz, reagent_mzs) if reagent_mzs else None
+    # A NORMALISER MUST ITSELF BE STABLE. Dividing by a trace that moves does not
+    # remove a common-mode swing, it injects one -- and every cv_norm downstream is
+    # then the normaliser's noise, not the channel's behaviour.
+    #
+    # This is not hypothetical: on the 2026-09-22 EasyIC dilution series the only
+    # library ions inside the 50-200 window were the urea CROSSOVER masses from the
+    # other source module, 0.013 % of TIC with an own cv of 0.93. Normalised by
+    # that, the calibrant's PAH background read cv_norm 0.53 and was classified
+    # "ambient:variable" -- flat instrument background presented as varying sample
+    # chemistry, the exact inversion of the truth. Un-normalised the same bins read
+    # 0.06 against 1.1-3.8 for the certified analytes.
+    #
+    # So the normaliser has to clear the same bar it is used to judge: no more
+    # movement than a flat channel. A real reagent beam clears it easily
+    # (fluoranthene holds +-5 % through a 12x load swing).
+    if rt is not None:
+        rt_s = pd.Series(rt).astype(float)
+        mean = float(rt_s.mean())
+        rt_cv = float(rt_s.std(ddof=1) / mean) if mean > 0 and len(rt_s) > 1 else np.inf
+        summary["normaliser_cv"] = None if not np.isfinite(rt_cv) else round(rt_cv, 3)
+        if not np.isfinite(rt_cv) or rt_cv > MAX_NORMALISER_CV:
+            log(f"[timeseries] reagent normaliser rejected (own cv "
+                f"{rt_cv:.2f} > {MAX_NORMALISER_CV}): it moves more than the "
+                "channels it would judge; using un-normalised traces")
+            rt = None
+            summary["normaliser"] = "rejected (unstable)"
+        else:
+            summary["normaliser"] = "reagent"
+    else:
+        summary["normaliser"] = "none (un-normalised)"
     norm = normalize(mat, rt)
     met = bin_metrics(norm, bin_mz)
 
@@ -1478,6 +1515,20 @@ def apply_timeseries(ledger: pd.DataFrame, peaks: pd.DataFrame, *,
     r_mono = correlate(norm, mono_tr)
     r_formic = correlate(norm, formic_tr)
 
+    # Does this batch's chemistry actually MOVE? Flatness only means background
+    # against a run that varies. In a steady-state run -- a held chamber, a single
+    # constant flow -- every bin is flat, cv carries no information, and demoting
+    # on it would cap the whole ledger. So the general flat-demote below is armed
+    # only when a real fraction of the spectrum varies. On the 2026-09-22 dilution
+    # series 55 % of bins clear FLAT_CV, and the certified analytes sit at
+    # cv_norm 1.1-3.8 against 0.06-0.13 for the calibrant's PAH background -- a
+    # 9-65x separation, so the threshold is nowhere near either population.
+    cv_all = pd.to_numeric(met["cv_norm"], errors="coerce").dropna()
+    varying_frac = float((cv_all >= FLAT_CV).mean()) if len(cv_all) else 0.0
+    flat_demote_armed = varying_frac >= MIN_VARYING_FRAC
+    summary["varying_frac"] = round(varying_frac, 3)
+    summary["flat_demote_armed"] = flat_demote_armed
+
     # stamp the ledger (M0 rows)
     for i in ledger.index[ledger["role"] == L.ROLE_M0]:
         mz = ledger.at[i, "mz"]
@@ -1497,13 +1548,31 @@ def apply_timeseries(ledger: pd.DataFrame, peaks: pd.DataFrame, *,
             summary["ambient"] += 1
         elif disp.startswith("background"):
             summary["background"] += 1
-            # conservative auto-demote: a flat di-bromide / CO3 background commit
-            # must not stay Assigned once the time series shows it is background
+            # Auto-demote: a commit the time series shows to be background must
+            # not stay Assigned. The di-bromide / CO3 channels are demoted on the
+            # channel alone; ANY other flat commit is demoted only while
+            # flat_demote_armed (see above).
+            #
+            # This is the general answer to a source whose brightest background is
+            # not a reagent cluster and cannot be enumerated. On the 2026-09-22
+            # certified mixture the EasyIC calibrant's PAH ladder (C13H8, C14H10,
+            # C14H12, C15H8, C15H10, C15H12) and most of the air-plasma C/N/O
+            # family committed as Assigned ANALYTES in a cylinder that contains
+            # none of them -- while being flat to 0.06-0.24 cv_norm through a step
+            # that moved every real component 100x. Naming those compositions in
+            # the reagent library was the alternative and was rejected: they are
+            # genuine targets in other runs (chem/reagents._EASYIC_SOURCE_IONS
+            # records why). Behaviour is what separates them, so behaviour is what
+            # tiers them -- and in a run where anthracene really does vary, it
+            # varies, and keeps its tier.
+            channel_flat = "di-bromide" in disp or "CO3-channel" in disp
             if demote and str(ledger.at[i, "tier"]) == "Assigned" and (
-                    "di-bromide" in disp or "CO3-channel" in disp):
+                    channel_flat or flat_demote_armed):
+                why = ("flat background (reagent/inlet)" if channel_flat
+                       else f"flat through a varying run (cv_norm {cv:.2f} < {FLAT_CV})")
                 ledger.at[i, "tier"] = "Candidate"
                 ledger.at[i, "tier_reason"] = (str(ledger.at[i, "tier_reason"] or "")
-                    + " | time-series: flat background (reagent/inlet), demoted").strip(" |")
+                    + f" | time-series: {why}, demoted").strip(" |")
                 summary["demoted"] += 1
     log(f"[timeseries] {summary}")
     return summary

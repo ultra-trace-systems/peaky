@@ -106,15 +106,57 @@ _POSITIVE_REAGENTS = {
 #     the urea positive library is merged in so they read as source ions, not
 #     analytes. Formula dicts here are the NEUTRAL composition; build adds the
 #     cation charge (lose an electron).
+#
+# WHAT IS DELIBERATELY *NOT* HERE (2026-09-22 certified-mixture audit). The run
+# showed two bright families that are demonstrably NOT the sample -- flat to
+# within 0.93-1.07 across a step that moved every analyte 100x:
+#   * a PAH ladder bracketing the calibrant (C13H8, C14H10, C14H12, C15H8,
+#     C15H10, C15H12 below 202.0777; C17H14, C17H16, C17H14O2 above), which reads
+#     like the coal-tar PAH impurities of a fluoranthene charge; and
+#   * a low-mass C/N/O family (C2N2O at 207 kcps, C2HN3, C2H3N3, C2H2N2, C3H2N2).
+# Neither goes in this library, because a reagent label is permanent and these
+# compositions are real analytes elsewhere: anthracene/phenanthrene C14H10 is a
+# primary target of any combustion or urban-air run, and the nitriles likewise.
+# Labelling them here would lock those analytes away exactly as a reagent label on
+# the iodine oxides would have locked away iodic acid (the HIO3 ruling). What
+# identifies them is not composition but BEHAVIOUR, so they are caught by the
+# time-series flat-background demote instead (batch/timeseries.apply_timeseries),
+# which keeps them assignable in a run where they actually vary.
+# Only ions that can never be an analyte are listed below.
 _EASYIC_SOURCE_IONS: dict[str, dict[str, int]] = {
     "[C16H10]+. (fluoranthene)": {"C": 16, "H": 10},
     "[C16H10-H]+ (fluoranthene fragment)": {"C": 16, "H": 9},
     "[C16H10+H]+ (fluoranthene)": {"C": 16, "H": 11},
     "[(C16H10)2]+. (fluoranthene dimer)": {"C": 32, "H": 20},
+    # PAH acetylene-loss fragments of the calibrant ion. Sequential -C2H2 (with
+    # -H) is the canonical PAH cation fragmentation, so these ARE derivable from
+    # the reagent rather than guessed: C14H8+. @176.0621 is present and flat
+    # (cv_norm 0.13 against 1.1-3.8 for every certified analyte) on the
+    # 2026-09-22 run. Unlike the H-RICHER ladder above them, a fragment cannot
+    # gain hydrogen, which is what makes this subset attributable.
+    "[C16H10-C2H2]+. (fluoranthene fragment)": {"C": 14, "H": 8},
+    "[C16H10-2xC2H2]+. (fluoranthene fragment)": {"C": 12, "H": 6},
     "[N3]+ (air plasma)": {"N": 3},
     "[NO2]+ (air plasma)": {"N": 1, "O": 2},
     "[NO]+ (air plasma)": {"N": 1, "O": 1},
     "[O2]+. (air plasma)": {"O": 2},
+    # carbon-free air-plasma cations completing the set the 2026-09-21 low-mass
+    # file (acquired 17.28-199.96) put in range. N2+. is the discharge's primary
+    # ion; NO+ above it is the one every analyte depletes, i.e. the actual
+    # reagent (N3+ only falls for ethanol).
+    "[N2]+. (air plasma)": {"N": 2},
+    "[N4]+. (air plasma)": {"N": 4},
+    # HYDRONIUM + its water clusters. Pure source (no analyte atoms) and now in
+    # range for the m/z 17-250 acquisitions. On the 2026-09-21 file H3O+ (19.018)
+    # and (H2O)2H+ (37.028) are present while (H2O)3H+ (55.039) and (H2O)4H+
+    # (73.050) are EXACTLY zero -- the source is dry, which is why the baseline
+    # runs on charge transfer and hydride abstraction instead of proton transfer.
+    # The larger members are listed so a wet source is labelled too, not because
+    # they were seen.
+    "[H3O]+ (hydronium)": {"H": 3, "O": 1},
+    "[(H2O)2+H]+ (water cluster)": {"H": 5, "O": 2},
+    "[(H2O)3+H]+ (water cluster)": {"H": 7, "O": 3},
+    "[(H2O)4+H]+ (water cluster)": {"H": 9, "O": 4},
 }
 
 

@@ -8,6 +8,50 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The EasyIC source-ion library, and the reason its background was being read as
+  sample.** On the certified-cylinder run the calibrant's own PAH ladder (C13H8,
+  C14H10, C14H12, C15H8, C15H10, C15H12) and most of an air-plasma C/N/O family sat
+  in the ledger as **Assigned analytes** in a cylinder that contains none of them.
+  The first guess — that the library was simply short of entries — was wrong twice
+  over, and the run says so:
+  - **The time-series layer already classifies flat background, and it was getting
+    the answer backwards.** Those bins are flat to cv_norm 0.06-0.08 against
+    1.1-3.8 for every certified analyte, yet the batch run labelled them
+    `ambient:variable` at cv_norm 0.53. Cause: the only EasyIC library ions inside
+    the 50-200 window were the urea CROSSOVER masses from the other source module —
+    0.013 % of TIC with an own cv of 0.93 — and dividing by a trace that moves does
+    not remove a common-mode swing, it injects one. **A normaliser now has to clear
+    the same bar it is used to judge** (`MAX_NORMALISER_CV` = `FLAT_CV`): if it
+    moves more than a flat channel it is rejected, with its own cv reported, and the
+    traces stay un-normalised. A real reagent beam clears it easily — fluoranthene
+    holds ±5 % through a 12× load swing. With the guard in place those six bins read
+    `background:flat` and the certified components keep `ambient:variable`.
+  - **The flat-background demote is no longer specific to two channels.** It fired
+    only for di-bromide and CO3 commits, so everything else stayed `Assigned` —
+    which is where a reader looks. Any flat `Assigned` commit is now capped at
+    `Candidate` with the cv in its `tier_reason`. It is armed only when the run
+    itself varies (`MIN_VARYING_FRAC`): a steady-state batch is flat everywhere,
+    and there flatness distinguishes nothing, so nothing is demoted. On the
+    dilution series 54 % of bins vary, and the separation between the two
+    populations is 9-65×, nowhere near the threshold.
+  - **What is NOT in the library, deliberately.** Naming those PAH and C/N/O
+    compositions as reagent ions was the obvious fix and is the wrong one: a
+    reagent label is permanent, and anthracene/phenanthrene C14H10 is a primary
+    target of any combustion or urban-air run. That is the HIO3 ruling — labelling
+    the iodine oxides reagent would have locked away iodic acid. Behaviour
+    identifies them, so behaviour tiers them, and in a run where anthracene really
+    varies it keeps its tier.
+  - Added instead are the ions that can **never** be an analyte: the calibrant's
+    acetylene-loss fragments C14H8 / C12H6 (a fragment cannot gain hydrogen, which
+    is what separates them from the H-richer ladder above; C14H8 is present and
+    flat at cv_norm 0.13 and is now labelled `reagent` rather than committed),
+    carbon-free N2+·/N4+·, and hydronium with its water-cluster series — in range
+    now that acquisitions start at m/z 17.
+  - Net on the 50-200 sample: `Assigned` 140 -> 96, nitrogen-bearing `Assigned`
+    16 -> 8, rows carrying a background disposition 9 -> 87, and every certified
+    component still `Assigned`. This also absorbs most of the nitrogen-phantom cost
+    the abstraction channels added below.
+
 - **The positive-mode abstraction channels `[M-H]+` and `[M-CH3]+` are reachable,
   and `[M-CH3]+` exists at all.** Audited against a certified 18-component
   calibration cylinder, EasyIC's charge-transfer channel was exact (8 of 8
