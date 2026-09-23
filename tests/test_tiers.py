@@ -418,6 +418,65 @@ check("stamp_calibrated_ppm stashes only the centre the column used",
       dict(led_tr.attrs))
 
 
+# ---- the reagent-N isobar flag fires on BOTH sides of the pair --------------
+# The donor side (an N-free neutral on an N-donating adduct) was always flagged;
+# the amine side -- the protonated N-richer neutral, with the same-ion N-poorer
+# alternative on the donor adduct -- reached Assigned as "unique formula in the
+# calibrated window" once the alias was dropped, with nothing discriminating it
+# (C5H12N2S [M+H]+ Assigned in 2 files at 133.079 against C5H9NS [M+NH4]+ in 10).
+_rn = L.new_ledger(pd.DataFrame({"peak_id": ["am", "am2", "dn"],
+                                 "mz": [133.0794, 193.1088, 133.0794],
+                                 "height": [5e4, 2e4, 5e4]}))
+
+
+def _commit_rn(pid, nf, ad, alt_nf, alt_ad):
+    L.commit_assignment(_rn, pid, neutral_formula=nf, adduct=ad, ion_formula="C5H13N2S+",
+                        ion_score=0.95, compound_score=0.95, eff_score=0.9, eff_margin=0.3,
+                        tied=False, ppm_error=0.2, pass_no=1, method="cheminfo+grid",
+                        confidence="High", commentary="Pass 1",
+                        alternatives=[{"formula": alt_nf, "adduct": alt_ad, "ion_score": 0.95,
+                                       "raw_score": 0.95, "eff_score": 0.9, "ppm": 0.2}])
+
+
+_commit_rn("am", "C5H12N2S", "[M+H]+", "C5H9NS", "[M+NH4]+")     # the amine side, one channel
+_commit_rn("dn", "C5H9NS", "[M+NH4]+", "C5H12N2S", "[M+H]+")     # the donor side, one channel
+check("_reagent_n_isobar: the amine side is flagged, naming its alias",
+      T._reagent_n_isobar(_rn[_rn.peak_id == "am"].iloc[0], [{"formula": "C5H9NS", "adduct": "[M+NH4]+"}])
+      == ("amine", "C5H9NS", "[M+NH4]+"))
+check("_reagent_n_isobar: the donor side is flagged as before",
+      T._reagent_n_isobar(_rn[_rn.peak_id == "dn"].iloc[0], [{"formula": "C5H12N2S", "adduct": "[M+H]+"}])
+      == ("donor", "C5H12N2S", "[M+H]+"))
+check("_reagent_n_isobar: negative mode / a different ion / an N-richer alias on [M+H]+ -> None",
+      T._reagent_n_isobar({"neutral_formula": "C5H12N2S", "adduct": "[M-H]-"},
+                          [{"formula": "C5H9NS", "adduct": "[M+Br]-"}]) is None
+      and T._reagent_n_isobar(_rn[_rn.peak_id == "am"].iloc[0],
+                              [{"formula": "C6H12O2", "adduct": "[M+H]+"}]) is None
+      and T._reagent_n_isobar({"neutral_formula": "C5H9NS", "adduct": "[M+H]+"},
+                              [{"formula": "C5H12N2S", "adduct": "[M+H]+"}]) is None)
+_trn = T.compute_tiers(_rn).set_index("peak_id")
+check("amine-side winner with a single channel -> Candidate, the alias named on the row",
+      _trn.at["am", "tier"] == "Candidate"
+      and _trn.at["am", "tier_reason"] == ("reagent-N isobar unresolved: C5H12N2S [M+H]+ is the same "
+                                           "ion as C5H9NS [M+NH4]+ (the N-poorer neutral on an N-donating "
+                                           "reagent adduct), and no second channel / series anchor fixes "
+                                           "the nitrogen count (isotopes cannot — identical ion)"),
+      _trn.at["am", "tier_reason"])
+check("donor-side winner with a single channel -> Candidate, the wording unchanged",
+      _trn.at["dn", "tier"] == "Candidate" and "N-heavier" in _trn.at["dn", "tier_reason"],
+      _trn.at["dn", "tier_reason"])
+# a second channel of the protonated neutral fixes the nitrogen count on the amine side
+L.commit_assignment(_rn, "am2", neutral_formula="C5H12N2S", adduct="[M+(CH4N2O)H]+",
+                    ion_formula="C6H17N4OS+", ion_score=0.9, compound_score=0.9, eff_score=0.85,
+                    eff_margin=0.3, tied=False, ppm_error=0.1, pass_no=5,
+                    method="completion:known-neutral", confidence="Good", commentary="Pass 5")
+_trn2 = T.compute_tiers(_rn).set_index("peak_id")
+check("amine-side winner with its urea channel too -> Assigned, the row says which channel fixed it",
+      _trn2.at["am", "tier"] == "Assigned"
+      and _trn2.at["am", "tier_reason"] == ("reagent-N isobar: nitrogen count fixed by a second "
+                                            "ionization channel of the protonated neutral"),
+      _trn2.at["am", "tier_reason"])
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

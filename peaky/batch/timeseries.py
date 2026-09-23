@@ -1051,7 +1051,9 @@ def stamping_frame(merged: pd.DataFrame,
     iso_label stamped on them).
 
     Analyte rows keep every merged column and gain role='M0' + the modal
-    per-file ion_formula for their (neutral_formula, adduct) key. Non-analyte
+    per-file ion_formula for their (neutral_formula, adduct) key -- or, for a
+    reading no per-file ledger holds (a batch-level re-read), the ion derived
+    from the reading itself (`publish.ion_formula_for`). Non-analyte
     rows are aggregated across files: reagent / iso_child by (ion_formula,
     iso_label) at the median m/z; artifacts (no formula key) by m/z gap
     clustering (>3 mDa starts a new track).
@@ -1113,6 +1115,24 @@ def stamping_frame(merged: pd.DataFrame,
                     start = i
         if aux:
             stamp = pd.concat([stamp, pd.DataFrame(aux)], ignore_index=True)
+    # A merged reading NO per-file ledger holds -- a batch-level re-read on the
+    # merged frame (cleanup.relabel_reagent_n_adducts, prefer_amine_over_ammonium,
+    # a known-species lock) -- has no per-file ion to borrow, so the modal lookup
+    # above leaves it blank; and blank means "unknown" to everything downstream
+    # (the residual universe, the scorecard, the predicted satellites). Such a
+    # row stamped its peaks with a neutral and no ion, and the batch then read
+    # the same track as unexplained: every one of the 7 reagent-N re-read rows of
+    # a 10-file uronium batch, in all 319 spectra, and none of the other 1141.
+    # Derive the ion from the reading itself (the same fallback the publish
+    # path uses for a merged row); a per-file ion, where one exists, still wins.
+    if {"neutral_formula", "adduct"} <= set(stamp.columns):
+        need = (stamp["ion_formula"].isna() & stamp["neutral_formula"].notna()
+                & stamp["adduct"].notna() & (stamp["role"] == "M0"))
+        if need.any():
+            from peaky.io.publish import ion_formula_for
+            stamp.loc[need, "ion_formula"] = [
+                ion_formula_for(str(n), str(a))
+                for n, a in zip(stamp.loc[need, "neutral_formula"], stamp.loc[need, "adduct"])]
     stamp["stamp_id"] = np.arange(len(stamp))
     stamp["parent_stamp_id"] = -1
     stamp["iso_rel"] = np.nan

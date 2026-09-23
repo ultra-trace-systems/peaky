@@ -83,6 +83,15 @@ _ASSIGN_COLS: dict[str, object] = {
     # this [M]-. row carries. Not an evidence axis (anchor_peak_id / series_unit
     # are); a bookkeeping link like parent_peak_id, NA on every other row.
     "ion_only_of": pd.NA,
+    # a KNOWN-SPECIES lead pass 0 anchored on-cal in this file but could not
+    # commit (passes.directors._record_known_lead): a JSON record -- the
+    # formula, family, label, adduct, the verdict 'deferred' (a single channel
+    # and no diagnostic twin the file could have shown) or 'refuted' (the twin
+    # was observable and absent, or an own-twin / Si M+1 check failed) and why.
+    # The batch pools it with the other files' `known:` commits and decides the
+    # species once, by evidence (assign_batch.known_evidence /
+    # lock_known_species). NA on every other row; never an evidence axis.
+    "known_lead": pd.NA,
     "locked": False,
     "commentary": pd.NA,
     "alternatives": pd.NA,     # JSON string

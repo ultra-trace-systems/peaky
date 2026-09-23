@@ -48,6 +48,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import time
 
 import numpy as np
@@ -118,13 +119,13 @@ def _ion_key(nf: str, ad: str) -> str:
     return "".join(f"{e}{n if n != 1 else ''}" for e, n in order) + sign
 
 
-def _vote(g: pd.DataFrame, curated: set):
+def _vote(g: pd.DataFrame):
     """Rank one cluster's readings in two stages. Returns (ions, labels):
-    `ions` one row per ion (_ion, curated, n_files, n_assigned, best_ion), best
-    first; `labels` one row per (neutral_formula, adduct) reading of EVERY ion
-    (_ion, _nf, _ad, curated, n_files, n_assigned, best_ion), the winning ion's
-    readings ranked best first and listed first, the other ions' readings after
-    them in ion order.
+    `ions` one row per ion (_ion, n_files, n_assigned, best_ion), best first;
+    `labels` one row per (neutral_formula, adduct) reading of EVERY ion (_ion,
+    _nf, _ad, n_files, n_assigned, best_ion), the winning ion's readings ranked
+    best first and listed first, the other ions' readings after them in ion
+    order.
 
     1. WHICH ION sits at this m/z is what files can genuinely disagree on, and
        the count decides it: the ion carried by the most FILES wins, the number
@@ -134,14 +135,15 @@ def _vote(g: pd.DataFrame, curated: set):
        runs stay byte-identical). This is the order collapse_trace_labels
        already applies to competing labels on one trace.
 
-       `curated` exempts an ion from the file count, not from corroboration: an
-       ion one of whose labels is a neutral from a curated list
-       (`_curated_neutrals`) ranks first when that label reached Assigned in at
-       least one file and in no fewer files than any grid ion did, so a list
-       identity is not outvoted by grid GUESSES; a grid ion the tier engine
-       corroborated in more files is a real contest, and the count decides it
-       (sulfolane from the known list in one file lost to fluorenone [M+H]+
-       Assigned in nine).
+       Nothing is exempt from the count. A known-species identity (the pass-0
+       list) used to be -- an ion carrying one ranked first once its label had
+       reached Assigned somewhere, so a list identity locked in one file on its
+       own evidence was not outvoted by grid guesses -- and that exemption is
+       retired: the batch pools every file's known-species evidence and decides
+       each such ion ONCE, by evidence, on the merged ledger AFTER the vote
+       (`lock_known_species`). A species confirmed somewhere and refuted nowhere
+       takes its cluster whatever the count, a species some file could test and
+       found wanting is left to the count, and the row says which.
 
     2. WHICH LABEL of that ion -- the same ion read as C13H14O4 [M+NH4]+ or as
        C13H17NO4 [M+H]+ (the reagent-N isobar) -- is decided by corroboration,
@@ -165,10 +167,9 @@ def _vote(g: pd.DataFrame, curated: set):
     io = (g["ion_only_of"].notna() if "ion_only_of" in g.columns
           else pd.Series(False, index=g.index))
     gg = g.assign(_asrc=g["src"].where(assigned),       # the file, when Assigned there
-                  _c=g["_nf"].isin(curated).astype(int),
                   _reg=(~io).astype(int))                # 1 = a regular reading in this file
     lab = (gg.groupby(["_ion", "_nf", "_ad"], sort=True)  # text order = last key
-             .agg(curated=("_c", "max"), n_files=("src", "nunique"),
+             .agg(n_files=("src", "nunique"),
                   n_assigned=("_asrc", "nunique"),        # FILES at Assigned, not rows
                   best_ion=("ion_score", "max"), regular=("_reg", "max"))
              .reset_index())
@@ -176,17 +177,12 @@ def _vote(g: pd.DataFrame, curated: set):
               .agg(n_files=("src", "nunique"), n_assigned=("_asrc", "nunique"),
                    best_ion=("ion_score", "max"), regular=("_reg", "max"))
               .reset_index())
-    cur_lab = lab[lab["curated"] == 1]
-    grid = ions[~ions["_ion"].isin(cur_lab["_ion"])]
-    bar = max(1, int(grid["n_assigned"].max()) if len(grid) else 1)
-    exempt = set(cur_lab.loc[cur_lab["n_assigned"] >= bar, "_ion"])
-    ions["curated"] = ions["_ion"].isin(exempt).astype(int)
-    ions = ions.sort_values(["regular", "curated", "n_files", "n_assigned", "best_ion"],
+    ions = ions.sort_values(["regular", "n_files", "n_assigned", "best_ion"],
                             ascending=False, kind="mergesort")   # stable: keeps text order
     rank = {k: i for i, k in enumerate(ions["_ion"])}
     lab = (lab.assign(_k=lab["_ion"].map(rank))
-              .sort_values(["_k", "curated", "n_assigned", "n_files", "best_ion"],
-                           ascending=[True, False, False, False, False], kind="mergesort")
+              .sort_values(["_k", "n_assigned", "n_files", "best_ion"],
+                           ascending=[True, False, False, False], kind="mergesort")
               .drop(columns="_k"))
     return ions, lab
 
@@ -200,18 +196,15 @@ def _describe(r) -> str:
 
 
 def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
-          offsets: dict | None = None, curated=None, stages: dict | None = None):
+          offsets: dict | None = None, stages: dict | None = None):
     """Align the M0 rows of several files by m/z and let the files VOTE on each
     cluster's reading (see `_vote`: the count decides WHICH ION, corroboration
     decides WHICH LABEL of it).
 
     per_file : {src -> DataFrame with _M0_COLS}. offsets : {src -> median ppm}
     (subtracted before clustering so a per-file calibration shift does not split
-    a peak). curated : neutral formulas whose identity is a curated list's, not
-    the grid's (a reference-peaklist rescue or the pass-0 known-species list --
-    see `_curated_neutrals`); an ion carrying one of these is not outvoted by
-    grid ions Assigned in fewer files than it (see `_vote`), and the merged
-    row's tier_reason says so when that decided the cluster. stages : {src ->
+    a peak). A known-species identity gets no exemption here: the batch decides
+    it after the vote, by pooled evidence (`lock_known_species`). stages : {src ->
     STAGE_COVER | STAGE_RESIDUAL}, the stage that assigned each file
     (assign_batch.run's record); when given, every merged row carries `stage`
     -- STAGE_COVER if any file of the cluster is a cover file, else
@@ -228,8 +221,9 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
               the winning reading), alternatives (the losing readings, best
               first, '' when unanimous), ion_agree (one ion in the cluster),
               formula_agree (one neutral), tier_reason (NA unless the vote had
-              something to explain: the curated exemption, or a label chosen
-              by corroboration over a bigger count); srcs[, stage],
+              something to explain: a label chosen by corroboration over a
+              bigger count, or a regular reading kept over an ion-only one
+              carried by more files); srcs[, stage],
               mz_jitter_ppm_raw, mz_jitter_ppm_caldj.
       jitter  long form, one row per (cluster, file): cluster, src, mz,
               neutral_formula, adduct, tier, ion_score -- every reading, winner
@@ -241,7 +235,6 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
     were decided that way -- and the merged row then carried nothing to show
     the other files had read it differently."""
     offsets = offsets or {}
-    curated = {str(p) for p in (curated or ())}
     frames = []
     for src, df in per_file.items():
         if df is None or not len(df):
@@ -268,7 +261,7 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
         g = g.assign(_r=g["tier"].map(lambda t: TIER_RANK.get(str(t), 0)),
                      _nf=g["neutral_formula"].map(_s), _ad=g["adduct"].map(_s))
         g["_ion"] = [_ion_key(a, b) for a, b in zip(g["_nf"], g["_ad"])]
-        ions, lab = _vote(g, curated)
+        ions, lab = _vote(g)
         win_ion, win = ions.iloc[0], lab.iloc[0]
         n_total = int(g["src"].nunique())
         gw = g[(g["_nf"] == win["_nf"]) & (g["_ad"] == win["_ad"])]
@@ -279,12 +272,6 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
         # what the vote had to explain, on the row (a 1-of-10 winner needs a reason)
         notes = []
         others = ions.iloc[1:]
-        if int(win_ion["curated"]) and len(others) and int(others["n_files"].max()) > int(win_ion["n_files"]):
-            top = others.iloc[0]
-            top_lab = lab[lab["_ion"] == top["_ion"]].iloc[0]
-            notes.append(f"curated identity kept over the {int(top['n_files'])}-file "
-                         f"{top_lab['_nf']} {top_lab['_ad']} reading (vote "
-                         f"{int(win_ion['n_files'])} of {n_total} files)")
         if int(win_ion.get("regular", 1)) and len(others):
             # an ion-only reading carried by MORE files than the regular winner
             # stayed an alternative on purpose (see _vote): say so on the row
@@ -456,12 +443,6 @@ def _m0(ledger: pd.DataFrame) -> pd.DataFrame:
 # the NH4-vs-parent tracking test. The merged ledger drops `method`, so the set is
 # gathered here from the full per-file ledgers.
 _PROTECTED_METHODS = ("reflist-rescue", "known:", "certified:")
-# the subset whose identity comes from OUTSIDE the formula grid -- a curated
-# reference peaklist or the pass-0 known-species list (mass + own-twin gate).
-# `certified:` is left out on purpose: a multi-channel certification is the
-# same file's own evidence for a grid formula, which the tier already credits
-# (and a Candidate-tier certified C19H8ClN once outvoted a 3-file reading).
-_CURATED_METHODS = ("reflist-rescue", "known:")
 
 
 def _neutrals_by_method(ledger: pd.DataFrame, prefixes: tuple) -> set:
@@ -477,10 +458,218 @@ def _protected_neutrals(ledger: pd.DataFrame) -> set:
     return _neutrals_by_method(ledger, _PROTECTED_METHODS)
 
 
-def _curated_neutrals(ledger: pd.DataFrame) -> set:
-    """Neutrals whose identity is a curated list's, not the grid's: the merge
-    vote's exemption (see align / _vote; _CURATED_METHODS)."""
-    return _neutrals_by_method(ledger, _CURATED_METHODS)
+# ---------------------------------------------------------------------------
+# known species, decided once per batch by pooled evidence
+# ---------------------------------------------------------------------------
+# what pass 0 writes into a `known:` commit's commentary: "... = <label>, ppm
+# <x>, ion score <y>; ...; corroborated by <route>"
+_KNOWN_LABEL_RE = re.compile(r"=\s*(.+?),\s*ppm\s")
+_KNOWN_ROUTE_RE = re.compile(r"corroborated by (.+?)(?:;|$)")
+
+
+def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
+    """One record per known-species reading this file anchored on-cal, for the
+    batch to pool (`lock_known_species`): the committed `known:` M0 rows
+    (verdict `confirmed`; `why` = the route pass 0 wrote into the commentary --
+    the ion channels or the diagnostic envelope -- or exact mass for a family
+    whose own rule is mass alone) and the `known_lead` records pass 0 left on
+    the claims it refused (verdict `deferred` = this file could not test it,
+    `refuted` = it tested it and it failed; ledger.py). `src` tags the file.
+    Record: src, neutral, adduct, mz, family, label, verdict, why, ion_score,
+    tier, admitted_by, occurrence (the last three None on a lead)."""
+    out: list[dict] = []
+    if ledger is None or not len(ledger) \
+            or not {"neutral_formula", "adduct", "mz"} <= set(ledger.columns):
+        return out
+
+    def _num(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if np.isnan(f) else f
+
+    def _col(i, name):
+        return _s(ledger.at[i, name]) if name in ledger.columns else ""
+
+    if "method" in ledger.columns:
+        meth = ledger["method"].map(_s)
+        role = ledger["role"].map(_s) if "role" in ledger.columns \
+            else pd.Series("M0", index=ledger.index)
+        for i in ledger.index[(role == "M0") & meth.str.startswith("known:")]:
+            com = _col(i, "commentary")
+            lab = _KNOWN_LABEL_RE.search(com)
+            route = _KNOWN_ROUTE_RE.search(com)
+            out.append(dict(
+                src=src, neutral=_s(ledger.at[i, "neutral_formula"]),
+                adduct=_s(ledger.at[i, "adduct"]), mz=float(ledger.at[i, "mz"]),
+                family=meth[i][len("known:"):],
+                label=lab.group(1).strip() if lab else "",
+                verdict="confirmed",
+                why=("corroborated by " + route.group(1).strip()) if route
+                    else "exact mass, on-cal (the family's own rule)",
+                ion_score=_num(ledger.at[i, "ion_score"]) if "ion_score" in ledger.columns else None,
+                tier=_col(i, "tier") or None,
+                admitted_by=_col(i, "admitted_by") or None,
+                occurrence=_num(ledger.at[i, "occurrence"]) if "occurrence" in ledger.columns else None))
+    if "known_lead" in ledger.columns:
+        for i in ledger.index[ledger["known_lead"].notna()]:
+            try:
+                d = json.loads(_s(ledger.at[i, "known_lead"]))
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(d, dict) or not d.get("formula"):
+                continue
+            out.append(dict(
+                src=src, neutral=str(d["formula"]), adduct=_s(d.get("adduct")),
+                mz=float(d["mz"]) if d.get("mz") is not None else float(ledger.at[i, "mz"]),
+                family=_s(d.get("family")), label=_s(d.get("label")),
+                verdict=_s(d.get("verdict")) or "deferred", why=_s(d.get("why")),
+                ion_score=_num(d.get("ion_score")), tier=None, admitted_by=None,
+                occurrence=None))
+    return out
+
+
+def _pool_summary(conf: list, dfr: list, ref: list) -> str:
+    """'confirmed in 2 files (...); could not test it in 3 files (...);
+    refuted in 1 file (...)' -- the distinct reasons of each group."""
+    def _n(rows):
+        return len({r["src"] for r in rows})
+
+    def _whys(rows):
+        seen: list = []
+        for r in rows:
+            w = str(r.get("why") or "").strip()
+            if w and w not in seen:
+                seen.append(w)
+        return " / ".join(seen)
+
+    parts = []
+    for rows, verb in ((conf, "confirmed in"), (dfr, "could not test it in"), (ref, "refuted in")):
+        if rows:
+            n = _n(rows)
+            parts.append(f"{verb} {n} file{'s' if n != 1 else ''} ({_whys(rows)})")
+    return "; ".join(parts)
+
+
+def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEFAULT_TOL_PPM,
+                       mz_floor_da: float = 1.5e-3, log=print) -> dict:
+    """Decide every known-species ion ONCE for the batch, by the evidence the
+    files pooled (`known_evidence`), on the merged ledger after the vote.
+
+    The pass-0 lock is per file: it commits a species where THAT file shows the
+    corroboration its family demands (>= 2 ion channels, or a diagnostic
+    29Si/30Si / 34S / 37Cl / 81Br twin; exact mass alone for the monoisotopic
+    families) and refuses it elsewhere. On a batch the twin clears the picker's
+    floor in one file of ten, so the D7 cyclosiloxane urea adduct was known in
+    one file and grid-fit as an O14 formula -- Candidate, flagged implausible
+    by the engine itself -- in the nine others. The vote used to carry a
+    "curated exemption" for that (a list identity Assigned somewhere ranked
+    first); this replaces the exemption with the evidence:
+
+      * a species CONFIRMED in at least one file and REFUTED in none takes its
+        merged cluster whatever the file count -- the files that could not test
+        it (`deferred`: a single channel, no twin the file could have shown) do
+        not vote against it, because silence is not evidence;
+      * a species some file could test and found wanting (`refuted`: the twin
+        predicted above the floor and absent; an own-twin ratio or the Si M+1
+        check failed) is left to the vote, and the row records the conflict --
+        sulfolane, 34S-confirmed in one file, against fluorenone [M+H]+ in nine
+        bright files that show no 34S, stays fluorenone, by evidence now;
+      * a lead never confirmed anywhere is noted on the row, not locked.
+
+    A locked row takes the known reading (neutral, adduct, the confirmed files'
+    best tier / score / admission provenance), moves the vote's winner to the
+    head of `alternatives`, and says in `tier_reason` what the evidence was and
+    what it overrode. A row already reading the species gains the note only.
+    Mutates `merged` in place; returns counts (pooled, locked, confirmed_kept,
+    conflict, lead_only, no_cluster) for `batch_summary["merge_gates"]`."""
+    from peaky.assignment.cleanup import _note
+    counts = {k: 0 for k in ("pooled", "locked", "confirmed_kept", "conflict",
+                             "lead_only", "no_cluster")}
+    if not pool or merged is None or not len(merged) or "mz" not in merged.columns:
+        return counts
+    if "tier_reason" not in merged.columns:
+        merged["tier_reason"] = pd.NA
+    if "alternatives" not in merged.columns:
+        merged["alternatives"] = ""
+    mz = pd.to_numeric(merged["mz"], errors="coerce").to_numpy(dtype=float)
+    groups: dict = {}
+    for rec in pool:
+        groups.setdefault((str(rec["neutral"]), str(rec["adduct"])), []).append(rec)
+    for (nf, ad), recs in sorted(groups.items()):
+        counts["pooled"] += 1
+        conf = [r for r in recs if r["verdict"] == "confirmed"]
+        dfr = [r for r in recs if r["verdict"] == "deferred"]
+        ref = [r for r in recs if r["verdict"] == "refuted"]
+        mz0 = float(np.median([float(r["mz"]) for r in recs]))
+        d = np.abs(mz - mz0)
+        cand = np.flatnonzero(np.isfinite(d) & (d <= max(mz0 * tol_ppm * 1e-6, mz_floor_da)))
+        if not len(cand):
+            counts["no_cluster"] += 1
+            continue
+        i = merged.index[cand[np.argmin(d[cand])]]
+        label = next((str(r["label"]) for r in conf + dfr + ref if r.get("label")), "") or nf
+        same = _s(merged.at[i, "neutral_formula"]) == nf and _s(merged.at[i, "adduct"]) == ad
+        n_c = len({r["src"] for r in conf})
+        head = (f"known species decided once for the batch: {label} ({nf} {ad}) -- "
+                f"{_pool_summary(conf, dfr, ref)}")
+        if conf and not ref:
+            if same:
+                _note(merged, i, head)
+                counts["confirmed_kept"] += 1
+                continue
+            best = max(conf, key=lambda r: (TIER_RANK.get(str(r.get("tier")), 0),
+                                            r.get("ion_score") or 0.0))
+            old_nf, old_ad = _s(merged.at[i, "neutral_formula"]), _s(merged.at[i, "adduct"])
+            old_n = (int(merged.at[i, "n_files_winner"])
+                     if "n_files_winner" in merged.columns and pd.notna(merged.at[i, "n_files_winner"])
+                     else 0)
+            old_sc = merged.at[i, "ion_score"] if "ion_score" in merged.columns else np.nan
+            old = (f"{old_nf} {old_ad} x{old_n} {_s(merged.at[i, 'tier'])}"
+                   + ("" if pd.isna(old_sc) else f" {float(old_sc):.2f}"))
+            keep = [x for x in _s(merged.at[i, "alternatives"]).split("; ")
+                    if x and not x.startswith(f"{nf} {ad} x")]
+            srcs = set(_s(merged.at[i, "srcs"]).split(",")) if "srcs" in merged.columns else set()
+            n_in = max(1, len({r["src"] for r in conf} & srcs) if srcs else n_c)
+            n_total = (int(merged.at[i, "n_files"])
+                       if "n_files" in merged.columns and pd.notna(merged.at[i, "n_files"])
+                       else max(n_in, old_n))
+            merged.at[i, "neutral_formula"] = nf
+            merged.at[i, "adduct"] = ad
+            merged.at[i, "tier"] = best.get("tier") or TIER_ASSIGNED
+            if "ion_score" in merged.columns:
+                scores = [r["ion_score"] for r in conf if r.get("ion_score") is not None]
+                merged.at[i, "ion_score"] = max(scores) if scores else np.nan
+            for col in ("admitted_by", "occurrence"):
+                if col in merged.columns:
+                    merged.at[i, col] = best.get(col) if best.get(col) is not None else pd.NA
+            if "ion_only_of" in merged.columns:
+                merged.at[i, "ion_only_of"] = pd.NA
+            for col in ("n_files_winner", "n_files_ion"):
+                if col in merged.columns:
+                    merged.at[i, col] = n_in
+            merged.at[i, "alternatives"] = "; ".join([old] + keep)
+            _note(merged, i, f"{head}; kept over the {old_n}-file {old_nf} {old_ad} reading "
+                             f"(vote {n_in} of {n_total} files)")
+            counts["locked"] += 1
+        elif conf and ref:
+            n_r = len({r["src"] for r in ref})
+            _note(merged, i, f"known species {label} ({nf} {ad}) confirmed in {n_c} "
+                             f"file{'s' if n_c != 1 else ''} but refuted in {n_r} "
+                             f"({_pool_summary([], [], ref).split(' (', 1)[1][:-1]}); left to the vote")
+            counts["conflict"] += 1
+        elif dfr and not same:
+            n_d = len({r["src"] for r in dfr})
+            _note(merged, i, f"known-species lead: {label} ({nf} {ad}) anchored on-cal in {n_d} "
+                             f"file{'s' if n_d != 1 else ''} but never corroborated "
+                             f"({_pool_summary([], dfr, []).split(' (', 1)[1][:-1]}); not locked")
+            counts["lead_only"] += 1
+    log(f"[known] pooled {counts['pooled']} known-species ion(s): {counts['locked']} locked over the "
+        f"vote, {counts['confirmed_kept']} confirmed where the vote already stood, "
+        f"{counts['conflict']} in conflict (left to the vote), {counts['lead_only']} lead(s) only, "
+        f"{counts['no_cluster']} without a merged row")
+    return counts
 
 
 # ---------------------------------------------------------------------------
@@ -858,8 +1047,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     #   gate must not re-read (reflist / known-species / certified provenance) --
     #   e.g. NBBS, whose weak isobar-contaminated NH4 trace fails the tracking test
     #   yet is a genuine Keller-list contaminant adduct.
-    curated_neutrals: set = set()     # the reflist / known-species subset: the merge
-    #   vote's exemption (a list identity is not outvoted by grid readings)
+    known_pool: list = []      # every file's known-species evidence (known_evidence):
+    #   the committed known: rows and the leads pass 0 left on the claims it
+    #   refused -- pooled and decided once on the merged ledger (lock_known_species)
     stages: dict = {}          # sid -> STAGE_COVER | STAGE_RESIDUAL (align() reads it)
     n_jobs = _resolve_jobs(n_jobs, len(sample_ids))
     ts_path_written: list = []  # the raw-TS parquet the worker pool loads: written once
@@ -882,7 +1072,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         level_frames[sid] = EV.trim(led)
         plaus_audit.extend(plaus)
         protected_neutrals.update(_protected_neutrals(led))
-        curated_neutrals.update(_curated_neutrals(led))
+        known_pool.extend(known_evidence(led, src=sid))
         m0 = _m0(led)
         if stage == STAGE_RESIDUAL and trace_sample is not None and residual_scope:
             bmz = residual_scope[0]
@@ -1010,7 +1200,6 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         record is what the residual universe is read from, and the last call
         (cover + residual files, ONE align) is what the run writes."""
         merged, jitter = align(per_file, tol_ppm=tol_ppm, offsets=offsets,
-                               curated=curated_neutrals,
                                stages=stages if residual else None)
         # Merge guard: drop reagent-cluster ions a per-file pass mislabelled as analyte
         # (urea [R_n+H]+/[R_n+NH4]+ read as CHNO/CH4N2O on the [M+NH4]+/urea channel) --
@@ -1025,6 +1214,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         if "tier_reason" not in merged.columns:
             merged["tier_reason"] = pd.NA
         merge_gates: dict = {}
+        # Known species, decided ONCE for the batch by the evidence every file
+        # pooled (the pass-0 commits and the leads it left on refused claims):
+        # what the vote's curated exemption used to do, by evidence instead of
+        # by rank, and written on the row either way.
+        merge_gates["known"] = lock_known_species(merged, known_pool, tol_ppm=tol_ppm, log=log)
         if prof.polarity == "+":
             from peaky.assignment import cleanup
             # Hydrocarbon on an N-cluster channel -> [M+H]+ of the N-heterocycle,

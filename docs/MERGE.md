@@ -93,17 +93,10 @@ selected sample_ids (SAMPLING.md)
      text — so a full tie resolves identically whatever order the files arrived
      in (serial and parallel runs stay byte-identical). This is the order
      `collapse_trace_labels` already applies to competing labels on one trace.
-     **Curated** exemption: an ion one of whose labels is a neutral in the
-     `curated` set — a reference-list rescue or the pass-0 known-species list,
-     gathered by `_curated_neutrals` from the per-file `method` — ranks first when
-     that label reached Assigned in at least one file and in no fewer files than
-     any grid ion did: exempt from the file count, not from corroboration, so a
-     list identity is not outvoted by grid *guesses* while a grid ion Assigned in
-     more files is a real contest the count decides. When it decides a cluster the
-     merged `tier_reason` says so: `curated identity kept over the 9-file
-     C27H30O14 [M+H]+ reading (vote 1 of 10 files)`. A `certified:` neutral is the
-     file's own multi-channel evidence for a grid formula, already credited by its
-     tier, and gets no exemption.
+     Nothing is exempt from the count. A **known-species** identity used to be
+     (the "curated exemption": an ion carrying a pass-0 or reference-list label
+     ranked first once that label had reached Assigned somewhere); it is now
+     decided once for the batch, by pooled evidence, after the vote — step 4b.
    - **Which label** of the winning ion is decided by corroboration, not by count:
      on a same-ion pair the tier engine marks a reading Assigned only when a
      discriminating channel was present in that file (an N-free sibling, the joint
@@ -130,13 +123,48 @@ selected sample_ids (SAMPLING.md)
    minority, and nothing on the merged row said so. *Why two stages.* Of those 73
    split clusters 43 were two labels of one ion and 30 were different ions; in 16
    of the 43 a pure count would hand the ion to a label nobody had corroborated
-   over one some file had. The curated exception keeps a list identity from
-   losing to a grid majority of guesses: on the same run the D7 cyclosiloxane
-   urea adduct at m/z 579.171 and tricresyl phosphate at 429.157, each locked in
-   one file by the known-species list (mass + own-twin gate), faced an O14 /
-   N4O10 grid formula the per-file engine itself flags as implausible (Candidate
-   in every file). Sulfolane at 181.065, from the same list in one file, met
-   fluorenone `C13H8O [M+H]+` Assigned in nine, and the count decided that one.
+   over one some file had. *Why no exemption.* On the same run the D7
+   cyclosiloxane urea adduct at m/z 579.171 and tricresyl phosphate at 429.157,
+   each locked in one file by the known-species list (mass + own-twin gate),
+   faced an O14 / N4O10 grid formula the per-file engine itself flags as
+   implausible (Candidate in every file); sulfolane at 181.065, from the same
+   list in one file, met fluorenone `C13H8O [M+H]+` Assigned in nine. A rank
+   exemption got the first two right and the third right by the count alone;
+   step 4b gets all three right by the evidence the other files hold — they
+   could not test the siloxane's twin or the phosphate's second channel (that
+   is silence), and they could and did test sulfolane's ³⁴S (a refutation).
+
+4b. **Known species, decided once** (`lock_known_species`; after the vote,
+   before the polarity re-reads). Every file's known-species evidence is pooled
+   (`known_evidence`): its `known:` commits with the route pass 0 wrote into
+   the commentary (≥ 2 ion channels; a diagnostic ²⁹Si/³⁰Si / ³⁴S / ³⁷Cl / ⁸¹Br
+   envelope; exact mass alone for the monoisotopic families), and the
+   `known_lead` records pass 0 leaves on the claims it refuses
+   ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §3.0) — `deferred` when that
+   file could not test the claim (a single channel and no twin the file could
+   have shown), `refuted` when it could and the twin was absent, or an own-twin
+   ratio / Si M+1 check failed. Per (neutral, adduct), on the merged row within
+   `tol_ppm` of the pooled m/z:
+   - confirmed in ≥ 1 file and refuted in none → the row takes the known
+     reading whatever the count (the confirmed files' best tier / `ion_score` /
+     `admitted_by` / `occurrence`; the vote's winner moves to the head of
+     `alternatives`; `n_files_winner` / `n_files_ion` = the confirmed files in
+     the cluster), and `tier_reason` says so: `known species decided once for
+     the batch: tetradecamethylcycloheptasiloxane (D7) (C14H42O7Si7
+     [M+(CH4N2O)H]+) -- confirmed in 1 file (corroborated by a confirmed
+     29Si/30Si envelope (single channel)); could not test it in 9 files (single
+     channel; the Si twin is predicted below the detection floor); kept over the
+     9-file C27H30O14 [M+H]+ reading (vote 1 of 10 files)`. A row the vote
+     already gave to the species gains the note only.
+   - confirmed somewhere and refuted somewhere → left to the vote; the row
+     records the conflict (`known species sulfolane (…) confirmed in 1 file but
+     refuted in 9 (…); left to the vote`).
+   - never confirmed → a `known-species lead: …; not locked` note on the row,
+     nothing moves.
+   A reference-list rescue gets no such lock — its corroboration is a ¹³C line,
+   which every carbon formula has — and a `certified:` neutral never did.
+   `batch_summary.json["merge_gates"]["known"]` records the counts (`pooled`,
+   `locked`, `confirmed_kept`, `conflict`, `lead_only`, `no_cluster`).
 
 5. **Positive urea re-reads, once per batch.** When `prof.polarity == "+"` two
    gates run on the merged ledger, and each writes its note to the merged row's
@@ -154,7 +182,8 @@ selected sample_ids (SAMPLING.md)
      (mass/isotope-identical, simpler in an N-rich source) unless the adduct's
      trace tracks its parent — done at the **merged** level where cross-channel
      corroboration is complete.
-   `batch_summary.json["merge_gates"]` records both gates' counts.
+   `batch_summary.json["merge_gates"]` records both gates' counts beside the
+   known-species decision's.
 
 6. **The residual stage** (`residual=True`, the default; [`SAMPLING.md`](SAMPLING.md)
    §3b). After the cover's merge and stamp, the universe bins in **no assigned
@@ -191,7 +220,7 @@ All in `peaky/batch/assign_batch.py`.
 | --- | --- | --- |
 | `DEFAULT_TOL_PPM` | 6.0 (`= sampling.BATCH_TOL_PPM`) | single-linkage gap tolerance for cross-file m/z clustering — the same constant the selector bins on |
 | `TIER_RANK` | `{Assigned:2, Candidate:1}` | the vote's Assigned-file count (a tie-break after file count) and the best-row pick within the winning reading (then `ion_score`) |
-| `align` `curated` | `_curated_neutrals` of the per-file ledgers (`method` starts with `reflist-rescue` or `known:`; `_CURATED_METHODS`) | a reading of one of these, Assigned in ≥ 1 file and in no fewer files than any grid reading, wins the vote outright |
+| `lock_known_species` `tol_ppm` / `mz_floor_da` | `DEFAULT_TOL_PPM` / 1.5 mDa | the window a pooled known-species ion is matched to its merged cluster with (the merge's own tolerance, the stamp's mDa floor); a species confirmed in ≥ 1 file and refuted in none takes that cluster |
 | `_M0_COLS` | `[mz, neutral_formula, adduct, tier, ion_score, admitted_by, occurrence]` | the per-file M0 schema aligned (the last two = admission provenance, carried for the winning row; absent columns are tolerated) |
 | `run` `amine_r_min` | 0.6 | min trace correlation for the positive amine re-read |
 | `assign_kw` `reagent_n_relabel` | `False` (set by `run`) | the per-file hydrocarbon-on-N-cluster re-read stands down; `run` applies it once to the merged ledger |

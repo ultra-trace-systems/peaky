@@ -111,7 +111,9 @@ BACKGROUND_CHANNELS = ("[M+CO3]-", "[M+HBr+CO3]-", "[M+O2]-", "[M]-.")
 # discrimination (each donor is individually spoofable). Only an N-FREE sibling
 # channel ([M+H]+ / [M+Na]+ / [M+K]+) -- or the jointly-unfakeable NH4+urea pair
 # (no single CHON neutral can present as both) -- fixes the nitrogen count, and
-# hence the DBE / Van Krevelen class. See _reagent_n_isobar.
+# hence the DBE / Van Krevelen class. See _reagent_n_isobar -- which flags the
+# pair from EITHER side: the N-free neutral on the donor adduct, and the
+# protonated N-richer neutral whose same-ion alias sits on a donor adduct.
 N_DONOR_ADDUCTS = ("[M+NH4]+", "[M+(CH4N2O)H]+")
 
 # Honest cross-family mass degeneracy (degeneracy.measure_degeneracy, stamped as
@@ -281,29 +283,45 @@ def _drop_decomposition_aliases(row, alts: list[dict]) -> tuple[list[dict], int]
     return kept, len(alts) - len(kept)
 
 
-def _reagent_n_isobar(row, alts_all: list[dict]) -> bool:
-    """True when the winner sits on a positive-mode N-DONATING reagent adduct AND a
-    same-ion alternative reads that donated nitrogen as ANALYTE nitrogen (a strictly
-    N-richer neutral). That pair is the reagent-N ambiguity: spectrally identical
-    (same ion, same isotopes), so the reported nitrogen count / DBE is a chemistry
-    guess unless an N-FREE sibling channel (or the joint NH4+urea pair) resolves it.
-    _drop_decomposition_aliases silently removes the alternative as a 'same-ion
-    decomposition alias' -- correct for a covalent-vs-cluster split, but WRONG here:
-    these are genuinely different neutrals, so the row must not then advertise a
-    'unique formula in the calibrated window'. Returns False in negative mode (no
-    N-donor adduct fires) and on unparseable rows -- the rule is then inert."""
+def _reagent_n_isobar(row, alts_all: list[dict]):
+    """The positive-mode reagent-N ambiguity, in EITHER direction, or None.
+
+    ("donor", alt_formula, alt_adduct) when the winner sits on an N-DONATING
+    reagent adduct and a same-ion alternative reads the donated nitrogen as
+    ANALYTE nitrogen (a strictly N-richer neutral); ("amine", alt_formula,
+    alt_adduct) when the winner is that protonated N-richer neutral and a
+    same-ion alternative reads part of its nitrogen as the reagent's (a strictly
+    N-poorer neutral on an N-donating adduct). The two members of such a pair
+    are spectrally identical (same ion, same isotopes), so WHICHEVER side won,
+    the reported nitrogen count / DBE is a chemistry guess until a
+    discriminating channel resolves it -- and the row must not advertise a
+    'unique formula in the calibrated window': _drop_decomposition_aliases
+    silently removes the alias, which is right for a covalent-vs-cluster split
+    of ONE neutral and wrong here, where they are two different neutrals. The
+    flag used to fire on the donor side only, so the amine-side reading reached
+    Assigned as 'unique in the window' with nothing discriminating it (C5H12N2S
+    [M+H]+ Assigned in two files against C5H9NS [M+NH4]+ in ten), and the batch
+    vote's label stage -- which trusts an Assigned label as a corroborated one
+    -- is only as honest as this flag. None in negative mode (no N-donor adduct
+    fires) and on unparseable rows: the rule is then inert. Truthy when set."""
     w_add = str(row.get("adduct") or "")
-    if w_add not in N_DONOR_ADDUCTS:
-        return False
+    if not w_add.endswith("]+"):
+        return None
     ion0 = _ion_counts(row.get("neutral_formula"), w_add)
     if ion0 is None:
-        return False
+        return None
     w_n = C.parse_formula(str(row.get("neutral_formula") or "")).get("N", 0)
+    donor = w_add in N_DONOR_ADDUCTS
     for a in alts_all:
-        if _ion_counts(a.get("formula"), a.get("adduct")) == ion0 \
-                and C.parse_formula(str(a.get("formula") or "")).get("N", 0) > w_n:
-            return True
-    return False
+        a_add = str(a.get("adduct") or "")
+        if _ion_counts(a.get("formula"), a_add) != ion0:
+            continue
+        a_n = C.parse_formula(str(a.get("formula") or "")).get("N", 0)
+        if donor and a_n > w_n:
+            return ("donor", str(a.get("formula")), a_add)
+        if not donor and a_add in N_DONOR_ADDUCTS and a_n < w_n:
+            return ("amine", str(a.get("formula")), a_add)
+    return None
 
 
 def _margin_density_tie(row, alts: list[dict], n_aliased: int,
@@ -500,13 +518,19 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
         # settle. Downgrade the corroboration to what actually discriminates: an
         # N-free sibling channel, the joint NH4+urea pair, or a series anchor.
         reagent_n = _reagent_n_isobar(r, alts_all)
-        nfree_sib = nh4_urea = False
+        nfree_sib = nh4_urea = second_chan = False
         if reagent_n:
             adset = adducts_of.get(formula, set())
-            nfree_sib = any(a not in N_DONOR_ADDUCTS for a in adset)
-            nh4_urea = {"[M+NH4]+", "[M+(CH4N2O)H]+"}.issubset(adset)
             iso_ev = False                        # same ion => isotopes tell nothing
-            cross_channel = nfree_sib or nh4_urea  # hollow N-only diversity doesn't count
+            if reagent_n[0] == "donor":
+                nfree_sib = any(a not in N_DONOR_ADDUCTS for a in adset)
+                nh4_urea = {"[M+NH4]+", "[M+(CH4N2O)H]+"}.issubset(adset)
+                cross_channel = nfree_sib or nh4_urea  # hollow N-only diversity doesn't count
+            else:
+                # the amine side: the N-poorer alias can present as THIS ion only,
+                # so any second channel of the protonated neutral discriminates
+                second_chan = len(adset) >= 2
+                cross_channel = second_chan
         corroborated = iso_ev or cross_channel or has_anchor
         degen_density, mass_degenerate = _degeneracy(r)
         # admission provenance: a peak that was eligible for formula search only
@@ -634,12 +658,19 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
             # positive-mode reagent-N isobar with nothing to fix the nitrogen
             # count: the ion reads equally as an N-free neutral on an N-donating
             # reagent adduct or as the protonated N-heavier neutral, and there is
-            # no N-free sibling channel, no joint NH4+urea pair, and no anchor.
+            # no discriminating channel and no anchor -- on either side of the pair.
             tier = TIER_CANDIDATE
-            reason = (f"reagent-N isobar unresolved: {formula} {r.get('adduct')} "
-                      "is the same ion as a protonated N-heavier neutral, and no "
-                      "N-free channel / joint NH4+urea / series anchor fixes the "
-                      "nitrogen count (isotopes cannot — identical ion)")
+            if reagent_n[0] == "donor":
+                reason = (f"reagent-N isobar unresolved: {formula} {r.get('adduct')} "
+                          "is the same ion as a protonated N-heavier neutral, and no "
+                          "N-free channel / joint NH4+urea / series anchor fixes the "
+                          "nitrogen count (isotopes cannot — identical ion)")
+            else:
+                reason = (f"reagent-N isobar unresolved: {formula} {r.get('adduct')} "
+                          f"is the same ion as {reagent_n[1]} {reagent_n[2]} (the "
+                          "N-poorer neutral on an N-donating reagent adduct), and no "
+                          "second channel / series anchor fixes the nitrogen count "
+                          "(isotopes cannot — identical ion)")
         elif tied and not (cross_channel or has_anchor):
             # a spectral eff-score tie cannot be broken by isotopes (they are
             # already in the score) -- only extra-spectral corroboration
@@ -695,7 +726,9 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
             # exists; it is simply ruled out by the discriminating channel).
             how = ("an N-free sibling channel" if nfree_sib
                    else "the joint [M+NH4]+/[M+urea·H]+ pair (unfakeable by one "
-                        "neutral)" if nh4_urea else "series-anchor support")
+                        "neutral)" if nh4_urea
+                   else "a second ionization channel of the protonated neutral" if second_chan
+                   else "series-anchor support")
             reason = f"reagent-N isobar: nitrogen count fixed by {how}"
         else:
             parts = []

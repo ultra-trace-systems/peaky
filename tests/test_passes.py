@@ -1049,6 +1049,17 @@ sg = P.run_pass0_known(None, "SID", ledg, PROF5, ACFG, ADD5,
                               score_fn=fake_n1, log=lambda *a: None)
 check("pass0 refuses claim with inconsistent own twin (ratio 0.04)",
       sg["committed"] == 0 and L.role_of(ledg, "X1") == L.ROLE_UNEXPLAINED, sg)
+# ... and leaves the REFUSED claim on the peak as a known_lead the batch can
+# pool: verdict 'refuted' (the file tested the claim and it failed), with why
+_lead_x1 = json.loads(ledg.loc[ledg.peak_id == "X1", "known_lead"].iloc[0])
+check("pass0 records a refuted known_lead on the peak whose own twin failed",
+      _lead_x1["verdict"] == "refuted" and _lead_x1["formula"] == "C2H8O2Si1"
+      and _lead_x1["twin"] == "Br" and _lead_x1["adduct"] == "[M+Br]-"
+      and "own 81Br twin ratio 0.04 outside 0.5-1.7" in _lead_x1["why"]
+      and _lead_x1["family"] == "contaminant:silanediol"
+      and _lead_x1["channels"] == 0, _lead_x1)   # the fixture's oracle frame has no mechanism_id column
+check("pass0: a committed peak carries no known_lead",
+      led0["known_lead"].isna().all())
 
 # pass0 nitroaromatic: dinitrophenol C6H4N2O5 [M-H]- is H-poor (VK-floor blocked)
 # so the grid can't reach it; pass-0 supplies it. No Br -> no twin gate, just the
@@ -1245,6 +1256,20 @@ _ledcp0 = mk_ledger([("cp0", _cpmz, 5000.0)])
 P.run_pass0_known(None, "SID", _ledcp0, PROF5, ACFG, ADD5, score_fn=_fake_cp0, log=lambda *a: None)
 check("pass0 refuses a 37Cl-unconfirmed chlorinated paraffin (n_kids<2)",
       L.role_of(_ledcp0, "cp0") == L.ROLE_UNEXPLAINED)
+# a 5000-cps Cl6 parent would show its 37Cl twin far above the 100-cps gate: the
+# twin's absence is a refutation this file can make, and the lead says so
+_lead_cp = json.loads(_ledcp0.loc[_ledcp0.peak_id == "cp0", "known_lead"].iloc[0])
+check("pass0: the bright unconfirmed paraffin leaves a REFUTED lead (twin observable, absent)",
+      _lead_cp["verdict"] == "refuted" and _lead_cp["twin"] == "Cl"
+      and _lead_cp["why"] == "single channel; the Cl twin is predicted above the floor and was not matched"
+      and _lead_cp["formula"] == "C11H18Cl6", _lead_cp)
+_ledcp_dim = mk_ledger([("cp0", _cpmz, 40.0)])
+_saved_cut = ACFG.height_cutoff_cps
+P.run_pass0_known(None, "SID", _ledcp_dim, PROF5, ACFG, ADD5, score_fn=_fake_cp0, log=lambda *a: None)
+_lead_dim = json.loads(_ledcp_dim.loc[_ledcp_dim.peak_id == "cp0", "known_lead"].iloc[0])
+check("pass0: the same claim on a 40-cps parent (twin below the 100-cps gate) is DEFERRED, not refuted",
+      L.role_of(_ledcp_dim, "cp0") == L.ROLE_UNEXPLAINED and _lead_dim["verdict"] == "deferred"
+      and _lead_dim["why"] == "single channel; the Cl twin is predicted below the detection floor", _lead_dim)
 
 # pass0 RECOVERY: a chlorinated paraffin the server scored too low to ANCHOR
 # (base unanchored: no sample_peak_id, ppm NaN -- the "too low score on the
@@ -1361,6 +1386,13 @@ s_ope1 = P.run_pass0_known(None, "SID", led_ope1, PROF_URO, ACFG,
                            log=lambda *a: None)
 check("pass0 refuses a single-channel organophosphate (no cross-channel support)",
       s_ope1["committed"] == 0, s_ope1)
+_lead_ope = json.loads(led_ope1.loc[led_ope1.peak_id == "tepH", "known_lead"].iloc[0])
+check("pass0: the single-channel organophosphate leaves a DEFERRED lead (monoisotopic P, no twin to test)",
+      _lead_ope["verdict"] == "deferred" and _lead_ope["twin"] is None
+      and _lead_ope["why"] == "single channel; no diagnostic twin to test (monoisotopic)"
+      and _lead_ope["formula"] == "C6H15O4P" and _lead_ope["adduct"] == "[M+H]+"
+      and _lead_ope["family"] == "organophosphate" and _lead_ope["label"] == "triethyl phosphate (TEP)",
+      _lead_ope)
 
 # ---------- positive polarity: organothiophosphate pesticide family (malathion) ----
 check("_known_species(positive) carries the organothiophosphate family with malathion",

@@ -142,6 +142,70 @@ out2 = RL.rescue_unexplained_by_reflist(None, "S", led2, None, cfg2, [rl], ["[M-
 check("rescue: off-calibration match rejected", out2["rescued"] == 0 and out2["tentative"] == 0, out2)
 
 
+# ---- a same-ion tie between two list entries: decided by chemistry, recorded ----
+# An acid's reagent cluster and the deprotonated organonitrate one HNO3 heavier
+# are ONE ion (C5H6O6 [M+NO3]- == C5H7NO9 [M-H]-): the mass cannot separate them,
+# the isotopes cannot, and the winner used to be whichever entry the formula
+# frozenset iterated first -- hash order; three TOF peaks flipped reading between
+# byte-identical runs. The cluster reading is kept (the reagent's native
+# detection, the decomposition-alias policy); the covalent one rides along.
+F_ACID, F_ON = "C5H6O6", "C5H7NO9"
+mz_tie = C.ion_mz(F_ACID, "[M+NO3]-")
+check("the pair is one ion to float precision", abs(mz_tie - C.ion_mz(F_ON, "[M-H]-")) < 1e-9)
+rl2 = RL.ReferenceList(
+    id="kang", system="t", label="HOM list", data_version="1", polarity="negative",
+    native_detection="[M+NO3]-", applies_to_contexts=("x",), references=(),
+    formulas=frozenset({F_ACID, F_ON}), radicals=frozenset(),
+    conditions_of={F_ACID: (), F_ON: ()}, source_file="k.json", always_active=False, meta_of={})
+for _adds in (["[M-H]-", "[M+NO3]-"], ["[M+NO3]-", "[M-H]-"]):   # the run's channel order must not matter
+    _tab = RL._target_table([rl2], _adds, False)
+    check(f"_target_table is sorted by mass and fully ordered ({_adds[0]} listed first)",
+          [t[0] for t in _tab] == sorted(t[0] for t in _tab) and len(_tab) == 4
+          and _tab == sorted(_tab, key=lambda t: (t[0], t[4], t[1], t[3])))
+    _hit = RL.match_by_mass([mz_tie], [rl2], _adds, tol_ppm=4.0)
+    check(f"match_by_mass keeps the cluster reading at the tie and lists the alias ({_adds[0]} first)",
+          len(_hit) == 1 and _hit[0]["formula"] == F_ACID and _hit[0]["adduct"] == "[M+NO3]-"
+          and _hit[0]["aliases"] == [{"formula": F_ON, "adduct": "[M-H]-", "list": "kang"}], _hit)
+check("match_by_mass: no alias on a mass only one entry names",
+      RL.match_by_mass([C.ion_mz(F_ACID, "[M-H]-")], [rl2], ["[M-H]-", "[M+NO3]-"],
+                       tol_ppm=4.0)[0]["aliases"] == [])
+led_tie = mk([("tie", mz_tie, 120.0)])          # dim -> tentative, like the real TOF rows
+
+
+def oracle_tie(client, sample_id, formulas, *, allow_partial=True, mechanism_ids=None):
+    rows = []
+    for f, a in ((F_ACID, "[M+NO3]-"), (F_ON, "[M-H]-")):
+        if f in formulas:
+            cnt = C.parse_formula(f)
+            if a == "[M-H]-":
+                cnt["H"] -= 1
+            else:
+                cnt["N"] = cnt.get("N", 0) + 1
+                cnt["O"] = cnt.get("O", 0) + 3
+            rows.append(dict(compound_formula=f, compound_score=0.85,
+                             ion_formula=C.format_formula(cnt) + "-", ion_score=0.85,
+                             iso_label="M0", is_base=True, iso_score=0.85, sample_peak_id="tie",
+                             sample_peak_mz=mz_tie, sample_peak_intensity=120.0, ppm_error=0.1))
+    return pd.DataFrame(rows)
+
+
+out_t = RL.rescue_unexplained_by_reflist(None, "S", led_tie, None, cfg, [rl2], ["[M-H]-", "[M+NO3]-"],
+                                         score_fn=oracle_tie, log=lambda *a: None)
+_t = led_tie[led_tie.peak_id == "tie"].iloc[0]
+check("rescue: the tied peak commits as the acid's cluster, whatever the channel order",
+      out_t["tentative"] == 1 and _t["neutral_formula"] == F_ACID and _t["adduct"] == "[M+NO3]-",
+      _t.to_dict())
+import json as _json  # noqa: E402
+_alts_t = _json.loads(_t["alternatives"])
+check("rescue: the covalent reading is recorded as the row's same-ion alias, and the commentary says so",
+      len(_alts_t) == 1 and _alts_t[0]["formula"] == F_ON and _alts_t[0]["adduct"] == "[M-H]-"
+      and _alts_t[0]["list"] == "kang"
+      and "Same ion as C5H7NO9 [M-H]- (kang): the reagent-cluster reading is kept" in str(_t["commentary"]),
+      (_alts_t, _t["commentary"]))
+check("rescue: an unshared mass carries no alias (alternatives empty as before)",
+      _json.loads(led[led.peak_id == "conf"].iloc[0]["alternatives"]) == [])
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

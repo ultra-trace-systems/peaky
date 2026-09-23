@@ -8,6 +8,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Known species decided once per batch, by pooled evidence — the vote's curated exemption is
+  retired.** Pass 0 locks a known species where THAT file shows the corroboration its family
+  demands (two ion channels, or a diagnostic 29Si/30Si / 34S / 37Cl / 81Br twin; exact mass alone
+  for the monoisotopic families) and refuses it elsewhere, and on a batch the twin clears the
+  picker's floor in one file of ten: the D7 cyclosiloxane urea adduct was `known:` in one file and
+  grid-fit as an O14 formula the engine itself flags implausible in the nine others, and the merge
+  vote kept it only through a rank exemption for "curated" labels. Now every refused on-cal claim
+  leaves a **`known_lead`** on its peak (`passes.directors._record_known_lead`, a new ledger column:
+  formula, family, label, adduct, ion, m/z, ppm, score, channel count, and a verdict — `deferred`
+  when the file could not test the claim, a single channel and no twin it could have shown per
+  `isotopes.satellite_observable`; `refuted` when it could and the twin was absent, or the
+  own-81Br-twin ratio / 29Si M+1 check failed), and the batch pools those with the `known:` commits
+  (`assign_batch.known_evidence`) and decides each known ion ONCE on the merged ledger after the
+  vote (`assign_batch.lock_known_species`): confirmed in at least one file and refuted in none →
+  the cluster takes the known reading whatever the count (the confirmed files' tier / score /
+  admission provenance; the vote's winner to the head of `alternatives`; the evidence and what it
+  overrode in `tier_reason`); confirmed and refuted → left to the vote, the conflict on the row;
+  never confirmed → a `known-species lead` note. Silence never votes against a species, a
+  refutation does — sulfolane, 34S-confirmed in one file against fluorenone `[M+H]+` in nine bright
+  files that show no 34S, stays fluorenone by evidence where it used to by count. `align(curated=)`,
+  `_curated_neutrals` and `_CURATED_METHODS` are gone; `batch_summary["merge_gates"]["known"]`
+  records the counts. `docs/MERGE.md` §3 step 4b, `docs/ASSIGNMENT_DETAIL.md` §3.0, `docs/OUTPUTS.md`.
+
 - **Ion-only electron-attachment rows — the `ion_only` stage.** On a nitrate CIMS the bright O-rich
   acids show a second line +1.0078 Da (one H) above their `[M-H]-`: the acid's own composition as a
   radical anion, exact to 0.05 mDa and pinned by its own 13C, yet anti-correlated with the acid
@@ -377,7 +400,44 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   exactly, and `tests/test_level_ledger.py` fixes the decision table on a
   fixture where every level fires once.
 
+### Changed
+
+- **The reagent-N isobar flag fires from both sides of the pair.** `tiers._reagent_n_isobar`
+  flagged a winner only when it sat on an N-donating reagent adduct (`[M+NH4]+` / uronium) with a
+  same-ion N-richer alternative; the protonated N-richer neutral, with its same-ion N-poorer alias on
+  the donor adduct, reached Assigned as "unique formula in the calibrated window" once the alias was
+  dropped (C5H12N2S `[M+H]+` Assigned in two files against C5H9NS `[M+NH4]+` in ten) — and the
+  batch vote's label stage, which trusts an Assigned label as a corroborated one, is only as honest
+  as the flag. It now returns `("donor" | "amine", alias formula, alias adduct)`; on the amine side
+  isotopes do not count either, and the winner is capped at Candidate unless a second channel of its
+  own or a series anchor fixes the nitrogen count (`reagent-N isobar unresolved: … is the same ion
+  as C5H9NS [M+NH4]+ (the N-poorer neutral on an N-donating reagent adduct) …`; resolved: `nitrogen
+  count fixed by a second ionization channel of the protonated neutral`). ROADMAP session-6 item 3.
+
+- **A same-ion tie in the reference-list rescue is decided by chemistry, and recorded.** Two
+  entries of one list can name the same ion under two of the run's adducts — an acid's reagent
+  cluster and the deprotonated organonitrate one HNO3 heavier (C5H6O6 `[M+NO3]-` ≡ C5H7NO9
+  `[M-H]-`) — and neither the mass nor the isotopes can separate them; the winner was whichever
+  entry the formula frozenset iterated first, i.e. hash order, and three TOF peaks flipped reading
+  between byte-identical runs. `reflists._target_table` is now fully ordered (mass, then a cluster
+  channel before a bare one, then the run's channel order, formula and list text), `match_by_mass`
+  treats targets within 1e-6 ppm as one ion and keeps the cluster reading (the list's native
+  detection, the decomposition-alias policy of the tier engine), returning the others as `aliases`,
+  and the rescue writes the alias into the row's `alternatives` and commentary ("Same ion as C5H7NO9
+  [M-H]- (…): the reagent-cluster reading is kept …"). Same answer whatever the channel order.
+
 ### Fixed
+
+- **A batch-level re-read left its time-series stamp without an ion.** The stamping frame borrows
+  each merged analyte's `ion_formula` from the per-file ledgers by its (neutral, adduct) key; a
+  reading no per-file ledger holds — the reagent-N re-read on the merged frame (C8H14
+  `[M+(CH4N2O)H]+` → C9H18N2O `[M+H]+`, the same ion), the amine re-read, now the known-species
+  lock — found no key, stamped its peaks with a neutral and no ion, and everything that reads
+  `ion_formula` as "identified" (the residual universe, the scorecard's stamp coverage, the
+  predicted satellites) took the track for unexplained: every one of the 7 reagent-N re-read rows
+  of a 10-file uronium batch, in all 319 spectra, and none of the other 1141. `stamping_frame` now
+  derives the ion from the reading itself (`publish.ion_formula_for`) wherever the modal lookup
+  finds nothing; a per-file ion still wins where one exists.
 
 - **`scripts/level_ledger.py` read the curated scope from two hand-made family sets, not the
   spec.** `{atmospheric, reactive_iodine}` were always 2b and six named families always 3a, which

@@ -198,46 +198,171 @@ check("vote: the 5-file consensus case still wins, with the 2-file Na reading li
       row["n_files_winner"] == 5 and row["n_files_ion"] == 5 and not bool(row["ion_agree"])
       and row["alternatives"] == "C17H31N5O6 [M+Na]+ x2 Assigned 1.00", row.to_dict())
 
-# a CURATED identity (reference-list rescue / pass-0 known species: a list's
-# identity, not the grid's) that reached Assigned somewhere is never outvoted by
-# grid readings: at m/z 579.171 the D7 cyclosiloxane urea adduct, locked in ONE
-# file, faced a 9-file C27H30O14 the per-file engine itself flags as an O14 monster.
+# a KNOWN-SPECIES identity is no longer exempt from the vote: the vote is the
+# files' count and corroboration, nothing else. What the curated exemption used
+# to do is decided ONCE for the batch by the evidence the files pooled
+# (`known_evidence` -> `lock_known_species`), on the merged ledger, AFTER the
+# vote. The case: at m/z 579.171 the D7 cyclosiloxane urea adduct, locked in ONE
+# file on its 29Si/30Si envelope, faced a 9-file C27H30O14 the per-file engine
+# itself flags as an O14 monster -- and in those 9 files pass 0 had anchored D7
+# on-cal but could not test it (a single channel, the twin below the floor).
+check("align no longer takes a curated set (the exemption is gone)",
+      "curated" not in __import__("inspect").signature(AB.align).parameters
+      and not hasattr(AB, "_curated_neutrals") and not hasattr(AB, "_CURATED_METHODS"))
 prot = {**_files(9, 579.1710, "C27H30O14", "[M+H]+", "Candidate", 0.99),
         **_files(1, 579.1710, "C14H42O7Si7", "[M+(CH4N2O)H]+", "Assigned", 0.83, start=9)}
-mp, _ = AB.align(prot, tol_ppm=6.0, curated={"C14H42O7Si7"})
-check("vote: a curated identity beats a grid majority, and the vote is still recorded",
-      mp.iloc[0]["neutral_formula"] == "C14H42O7Si7" and mp.iloc[0]["n_files_winner"] == 1
-      and mp.iloc[0]["n_files"] == 10
-      and mp.iloc[0]["alternatives"] == "C27H30O14 [M+H]+ x9 Candidate 0.99",
+mp, _ = AB.align(prot, tol_ppm=6.0)
+check("vote: without the exemption the 9-file grid reading wins the vote itself, no note",
+      mp.iloc[0]["neutral_formula"] == "C27H30O14" and mp.iloc[0]["n_files_winner"] == 9
+      and pd.isna(mp.iloc[0]["tier_reason"])
+      and mp.iloc[0]["alternatives"] == "C14H42O7Si7 [M+(CH4N2O)H]+ x1 Assigned 0.83",
       mp.to_dict("records"))
-check("vote: the exemption is explained on the row",
-      mp.iloc[0]["tier_reason"] == "curated identity kept over the 9-file C27H30O14 [M+H]+ "
-                                   "reading (vote 1 of 10 files)", mp.iloc[0]["tier_reason"])
-mnp, _ = AB.align(prot, tol_ppm=6.0)
-check("vote: without the curated set the same cluster goes to the majority, no note",
-      mnp.iloc[0]["neutral_formula"] == "C27H30O14" and pd.isna(mnp.iloc[0]["tier_reason"]),
-      mnp.to_dict("records"))
-# ... and the exemption is from the file COUNT, not from corroboration: sulfolane
-# (known list, 1 file, Assigned) at m/z 181.065 met fluorenone C13H8O [M+H]+
-# Assigned in 9 files -- a real contest, which the count decides.
+_D7 = dict(neutral="C14H42O7Si7", adduct="[M+(CH4N2O)H]+", family="cyclosiloxane",
+           label="tetradecamethylcycloheptasiloxane (D7)", mz=579.1710)
+
+
+def _ev(src, verdict, why, ion_score=0.83):
+    return dict(_D7, src=src, verdict=verdict, why=why, ion_score=ion_score,
+                tier="Assigned" if verdict == "confirmed" else None,
+                admitted_by="height" if verdict == "confirmed" else None,
+                occurrence=0.9 if verdict == "confirmed" else None)
+
+
+pool = ([_ev("v09", "confirmed", "corroborated by a confirmed 29Si/30Si envelope (single channel)")]
+        + [_ev(f"v{i:02d}", "deferred", "single channel; the Si twin is predicted below the detection floor")
+           for i in range(9)])
+mk = mp.copy()
+g = AB.lock_known_species(mk, pool, tol_ppm=6.0, log=lambda *a: None)
+row = mk.iloc[0]
+check("lock: confirmed in 1 file, untestable in 9, refuted in 0 -> the merged row is D7, Assigned",
+      row["neutral_formula"] == "C14H42O7Si7" and row["adduct"] == "[M+(CH4N2O)H]+"
+      and row["tier"] == "Assigned" and abs(float(row["ion_score"]) - 0.83) < 1e-9
+      and row["n_files_winner"] == 1 and row["n_files_ion"] == 1 and row["n_files"] == 10,
+      row.to_dict())
+check("lock: the vote's winner moves to the head of the alternatives, the known reading leaves them",
+      row["alternatives"] == "C27H30O14 [M+H]+ x9 Candidate 0.99", repr(row["alternatives"]))
+_tr = str(row["tier_reason"])
+check("lock: the row says the evidence and what it overrode",
+      _tr.startswith("known species decided once for the batch: tetradecamethylcycloheptasiloxane (D7) "
+                     "(C14H42O7Si7 [M+(CH4N2O)H]+) -- confirmed in 1 file (corroborated by a confirmed "
+                     "29Si/30Si envelope (single channel)); could not test it in 9 files (single channel; "
+                     "the Si twin is predicted below the detection floor)")
+      and _tr.endswith("; kept over the 9-file C27H30O14 [M+H]+ reading (vote 1 of 10 files)"), _tr)
+check("lock: counts", g == {"pooled": 1, "locked": 1, "confirmed_kept": 0, "conflict": 0,
+                            "lead_only": 0, "no_cluster": 0}, g)
+check("lock: admitted_by / occurrence come from the confirmed file's row, not the loser's",
+      row["admitted_by"] == "height" and abs(float(row["occurrence"]) - 0.9) < 1e-9, row.to_dict())
+# REFUTED anywhere: a file that could show the twin and did not contradicts the
+# lock; the species is left to the vote and the row says so. Sulfolane at
+# 181.065 (34S-confirmed in one file) vs fluorenone C13H8O [M+H]+ Assigned in
+# nine: the nine bright files show no 34S, so the count decides -- by evidence.
 sulf = {**_files(9, 181.0647, "C13H8O", "[M+H]+", "Assigned", 0.99),
         **_files(1, 181.0647, "C4H8O2S", "[M+(CH4N2O)H]+", "Assigned", 0.95, start=9)}
-msu, _ = AB.align(sulf, tol_ppm=6.0, curated={"C4H8O2S"})
-check("vote: a curated reading does NOT override a grid reading Assigned in more files",
-      msu.iloc[0]["neutral_formula"] == "C13H8O" and msu.iloc[0]["n_files_winner"] == 9
-      and pd.isna(msu.iloc[0]["tier_reason"])
-      and msu.iloc[0]["alternatives"] == "C4H8O2S [M+(CH4N2O)H]+ x1 Assigned 0.95",
-      msu.to_dict("records"))
-# ... but a curated reading that never reached Assigned has no claim on the vote
-weak = {**_files(3, 346.0741, "C4H23NO2Si6", "[M+(CH4N2O)H]+", "Candidate", 0.98),
-        **_files(1, 346.0741, "C19H8ClN", "[M+(CH4N2O)H]+", "Candidate", 0.90, start=3)}
-mw, _ = AB.align(weak, tol_ppm=6.0, curated={"C19H8ClN"})
-check("vote: a Candidate-only curated reading does not override the majority",
-      mw.iloc[0]["neutral_formula"] == "C4H23NO2Si6" and mw.iloc[0]["n_files_winner"] == 3,
-      mw.to_dict("records"))
-check("vote: a unanimous curated reading carries no exemption note",
-      pd.isna(AB.align({"a": m0([(500.0, "C21H21O4P", "[M+(CH4N2O)H]+", "Assigned", 0.9)])},
-                       curated={"C21H21O4P"})[0].iloc[0]["tier_reason"]))
+ms, _ = AB.align(sulf, tol_ppm=6.0)
+_SF = dict(neutral="C4H8O2S", adduct="[M+(CH4N2O)H]+", family="indoor_sulfur", label="sulfolane",
+           mz=181.0647, tier=None, admitted_by=None, occurrence=None)
+pool_s = ([dict(_SF, src="v09", verdict="confirmed", ion_score=0.95, tier="Assigned",
+                admitted_by="height", occurrence=0.8,
+                why="corroborated by a confirmed 34S envelope (single channel)")]
+          + [dict(_SF, src=f"v{i:02d}", verdict="refuted", ion_score=0.9,
+                  why="single channel; the S twin is predicted above the floor and was not matched")
+             for i in range(9)])
+gs = AB.lock_known_species(ms, pool_s, tol_ppm=6.0, log=lambda *a: None)
+check("lock: refuted in 9 files -> not locked, the vote's fluorenone stands, the conflict is on the row",
+      ms.iloc[0]["neutral_formula"] == "C13H8O" and gs["conflict"] == 1 and gs["locked"] == 0
+      and str(ms.iloc[0]["tier_reason"]) == ("known species sulfolane (C4H8O2S [M+(CH4N2O)H]+) confirmed "
+                                             "in 1 file but refuted in 9 (single channel; the S twin is "
+                                             "predicted above the floor and was not matched); left to the vote"),
+      ms.iloc[0].to_dict())
+# DEFERRED only (never confirmed anywhere): a lead on the row, not a lock --
+# tricresyl phosphate anchored single-channel in 3 files against a grid reading
+weak, _ = AB.align(_files(3, 429.1574, "C15H24N4O10", "[M+H]+", "Candidate", 0.98), tol_ppm=6.0)
+pool_w = [dict(neutral="C21H21O4P", adduct="[M+(CH4N2O)H]+", family="organophosphate",
+               label="tricresyl phosphate (TMPP / TCrP)", src=f"v{i:02d}", mz=429.1574,
+               verdict="deferred", why="single channel; no diagnostic twin to test (monoisotopic)",
+               ion_score=0.7, tier=None, admitted_by=None, occurrence=None) for i in range(3)]
+gw = AB.lock_known_species(weak, pool_w, tol_ppm=6.0, log=lambda *a: None)
+check("lock: a lead anchored in 3 files but confirmed in none is noted, not locked",
+      weak.iloc[0]["neutral_formula"] == "C15H24N4O10" and gw["lead_only"] == 1 and gw["locked"] == 0
+      and str(weak.iloc[0]["tier_reason"]) == ("known-species lead: tricresyl phosphate (TMPP / TCrP) "
+                                               "(C21H21O4P [M+(CH4N2O)H]+) anchored on-cal in 3 files but "
+                                               "never corroborated (single channel; no diagnostic twin to "
+                                               "test (monoisotopic)); not locked"),
+      weak.iloc[0].to_dict())
+# confirmed AND already the vote's winner: the row gains the evidence, nothing else moves
+uni, _ = AB.align({"a": m0([(500.0, "C21H21O4P", "[M+(CH4N2O)H]+", "Assigned", 0.9)])}, tol_ppm=6.0)
+_TCP = dict(neutral="C21H21O4P", adduct="[M+(CH4N2O)H]+", family="organophosphate",
+            label="tricresyl phosphate (TMPP / TCrP)", src="a", mz=500.0, verdict="confirmed",
+            why="corroborated by 2 ion channels", ion_score=0.9, tier="Assigned",
+            admitted_by="height", occurrence=1.0)
+gu = AB.lock_known_species(uni, [_TCP], tol_ppm=6.0, log=lambda *a: None)
+check("lock: a confirmed species the vote already chose keeps its row and gains the evidence note",
+      gu["confirmed_kept"] == 1 and uni.iloc[0]["neutral_formula"] == "C21H21O4P"
+      and uni.iloc[0]["alternatives"] == ""
+      and uni.iloc[0]["tier_reason"] == ("known species decided once for the batch: tricresyl phosphate "
+                                         "(TMPP / TCrP) (C21H21O4P [M+(CH4N2O)H]+) -- confirmed in 1 file "
+                                         "(corroborated by 2 ion channels)"),
+      uni.iloc[0].to_dict())
+gn = AB.lock_known_species(uni, [dict(_TCP, neutral="C6H15O4P", adduct="[M+H]+", mz=183.078)],
+                           tol_ppm=6.0, log=lambda *a: None)
+check("lock: a pooled ion with no merged row within tolerance is counted, nothing moves",
+      gn["no_cluster"] == 1 and gn["locked"] == 0 and uni.iloc[0]["neutral_formula"] == "C21H21O4P")
+check("lock: an empty pool / an empty frame is a no-op",
+      AB.lock_known_species(uni, [], tol_ppm=6.0, log=lambda *a: None)["pooled"] == 0
+      and AB.lock_known_species(pd.DataFrame(columns=["mz"]), pool, tol_ppm=6.0,
+                                log=lambda *a: None)["pooled"] == 0)
+# known_evidence reads a per-file ledger: the committed known: rows (with the
+# route pass 0 wrote into the commentary) and the known_lead records
+_ledk = pd.DataFrame([
+    dict(role="M0", peak_id="p1", mz=579.1710, neutral_formula="C14H42O7Si7", adduct="[M+(CH4N2O)H]+",
+         method="known:cyclosiloxane", tier="Assigned", ion_score=0.83, admitted_by="height", occurrence=0.9,
+         commentary=("Pass 0 (known methylsiloxane): C14H42O7Si7 [M+(CH4N2O)H]+ = "
+                     "tetradecamethylcycloheptasiloxane (D7), ppm 0.30, ion score 0.83; volatile "
+                     "methylsiloxane (PDMS monomer/oligomer, indoor/lab contaminant); corroborated by "
+                     "a confirmed 29Si/30Si envelope (single channel)"), known_lead=pd.NA),
+    dict(role="M0", peak_id="p2", mz=429.1574, neutral_formula="C15H24N4O10", adduct="[M+H]+",
+         method="cheminfo+grid", tier="Candidate", ion_score=0.98, admitted_by="height", occurrence=0.5,
+         commentary="Pass 1",
+         known_lead=('{"formula": "C21H21O4P", "family": "organophosphate", "label": "tricresyl phosphate '
+                     '(TMPP / TCrP)", "adduct": "[M+(CH4N2O)H]+", "ion_formula": "C22H26N2O5P+", '
+                     '"mz": 429.1574, "ppm": 0.4, "ion_score": 0.7, "channels": 1, "verdict": "deferred", '
+                     '"twin": null, "why": "single channel; no diagnostic twin to test (monoisotopic)"}')),
+    dict(role="M0", peak_id="p4", mz=112.9857, neutral_formula="C2HF3O2", adduct="[M-H]-",
+         method="known:perfluoroacid", tier="Assigned", ion_score=0.9, admitted_by=pd.NA, occurrence=float("nan"),
+         commentary=("Pass 0 (known perfluoroacid): C2HF3O2 [M-H]- = trifluoroacetic acid (TFA), ppm 0.10, "
+                     "ion score 0.90; perfluorocarboxylic acid (F off the grid); known PFCA series formula, "
+                     "exact-mass committed"), known_lead=pd.NA),
+    dict(role="unexplained", peak_id="p3", mz=100.0, neutral_formula=pd.NA, adduct=pd.NA, method=pd.NA,
+         tier=pd.NA, ion_score=float("nan"), admitted_by=pd.NA, occurrence=float("nan"), commentary=pd.NA,
+         known_lead=pd.NA),
+])
+_ke = AB.known_evidence(_ledk, src="f1")
+check("known_evidence: two confirmed records (route / exact mass), one lead with its verdict; nothing else",
+      len(_ke) == 3 and _ke[0]["verdict"] == "confirmed" and _ke[0]["src"] == "f1"
+      and _ke[0]["label"] == "tetradecamethylcycloheptasiloxane (D7)"
+      and _ke[0]["why"] == "corroborated by a confirmed 29Si/30Si envelope (single channel)"
+      and _ke[0]["family"] == "cyclosiloxane" and abs(_ke[0]["ion_score"] - 0.83) < 1e-9
+      and _ke[0]["tier"] == "Assigned" and _ke[0]["admitted_by"] == "height"
+      and _ke[1]["neutral"] == "C2HF3O2" and _ke[1]["label"] == "trifluoroacetic acid (TFA)"
+      and _ke[1]["why"] == "exact mass, on-cal (the family's own rule)"
+      and _ke[1]["admitted_by"] is None and _ke[1]["occurrence"] is None
+      and _ke[2] == dict(src="f1", neutral="C21H21O4P", adduct="[M+(CH4N2O)H]+", mz=429.1574,
+                         family="organophosphate", label="tricresyl phosphate (TMPP / TCrP)",
+                         verdict="deferred", why="single channel; no diagnostic twin to test (monoisotopic)",
+                         ion_score=0.7, tier=None, admitted_by=None, occurrence=None), _ke)
+check("known_evidence: missing columns -> empty", AB.known_evidence(pd.DataFrame({"x": [1]})) == [])
+# ... and the pool of that one file locks nothing the file did not already read:
+# the D7 row is confirmed where it stands, the TCP lead is noted on the grid row
+_mk2 = pd.DataFrame([dict(mz=579.1710, neutral_formula="C14H42O7Si7", adduct="[M+(CH4N2O)H]+", tier="Assigned",
+                          ion_score=0.83, n_files=1, n_files_ion=1, n_files_winner=1, alternatives="",
+                          tier_reason=pd.NA, srcs="f1"),
+                     dict(mz=429.1574, neutral_formula="C15H24N4O10", adduct="[M+H]+", tier="Candidate",
+                          ion_score=0.98, n_files=1, n_files_ion=1, n_files_winner=1, alternatives="",
+                          tier_reason=pd.NA, srcs="f1")])
+_g2 = AB.lock_known_species(_mk2, _ke, tol_ppm=6.0, log=lambda *a: None)
+check("lock over known_evidence: confirmed_kept 1, lead_only 1, no_cluster 1 (TFA has no row here)",
+      _g2 == {"pooled": 3, "locked": 0, "confirmed_kept": 1, "conflict": 0, "lead_only": 1, "no_cluster": 1}
+      and str(_mk2.iloc[1]["tier_reason"]).startswith("known-species lead: tricresyl phosphate"), _g2)
 
 # an unparseable adduct is its own ion (no crash, no false merge of labels)
 odd, _ = AB.align({"a": m0([(320.145, "C6H19N4PS2", "[M+1R+NH4]+", "Candidate", 0.9)]),
@@ -309,10 +434,6 @@ check("_protected_neutrals: reflist/known/certified in; grid/siloxane out",
       _prot == {"C10H15NO2S", "C10H19O6PS2", "C6H10O2"}, _prot)
 check("_protected_neutrals: missing columns -> empty set",
       AB._protected_neutrals(pd.DataFrame({"x": [1]})) == set())
-# the vote's exemption is the CURATED subset: a list's identity, not the file's
-# own multi-channel evidence for a grid formula (that is already in the tier)
-check("_curated_neutrals: reflist/known in; certified (and grid/siloxane) out",
-      AB._curated_neutrals(_ledp) == {"C10H15NO2S", "C10H19O6PS2"}, AB._curated_neutrals(_ledp))
 
 # --- admission provenance survives the merge --------------------------------
 # The merged ledger is the deliverable: a reader must be able to see that a row
@@ -459,8 +580,12 @@ try:
         check("run: the merged ledger carries the vote and a tier_reason column",
               {"n_files_winner", "alternatives", "tier_reason"} <= set(res["merged"].columns),
               list(res["merged"].columns))
-        check("run: batch_summary records the merged-level gates (none in negative mode)",
-              summ.get("merge_gates") == {}, summ.get("merge_gates"))
+        check("run: batch_summary records the merged-level gates (the known-species decision "
+              "always -- nothing pooled here; no polarity gate in negative mode)",
+              set(summ.get("merge_gates", {})) == {"known"}
+              and summ["merge_gates"]["known"] == {"pooled": 0, "locked": 0, "confirmed_kept": 0,
+                                                   "conflict": 0, "lead_only": 0, "no_cluster": 0},
+              summ.get("merge_gates"))
         # 8 samples: fewer than the 10 spectra the persistence table needs, so the
         # 'auto' policy has nothing to derive the floor from and falls back to the
         # numeric default -- stamped as a NUMBER on every per-file cfg, with a

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 
+import functools
+import json
+
 import pandas as pd
 
 from peaky.chem import chemistry as C
 from peaky.chem import contexts as X
+from peaky.chem import isotopes as ISO
 from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
 from peaky.assignment import series_gka as G
@@ -317,6 +321,70 @@ _ATMOS_CORROBORATE = frozenset({"H2O4S", "CH4O3S"})
 _RECOVERABLE_KNOWN_FAMS = {"chlorinated_paraffin"}
 
 
+def _twin_element(counts: dict) -> str | None:
+    """The element whose diagnostic heavy-isotope line would corroborate this
+    composition, if any -- Br, Cl, S, Si in that order (the brightest first-order
+    line first); None for a composition that is monoisotopic in every
+    heteroatom (P, F, I), which no twin can ever test."""
+    for el in ("Br", "Cl", "S", "Si"):
+        if counts.get(el, 0) > 0:
+            return el
+    return None
+
+
+def _twin_verdict(ledger: pd.DataFrame, pid, counts: dict, cfg: PassConfig) -> dict:
+    """What a refused single-channel known claim leaves behind: `deferred`
+    when this file could not have shown the corroborating twin (no twin element,
+    a twin predicted below the resolved height gate, or no gate to judge by) and
+    `refuted` when it could -- the twin was predicted above the floor
+    (isotopes.satellite_observable) and was not matched. The batch pools these
+    verdicts across files (assign_batch.lock_known_species): silence never votes
+    against a species, a refutation does."""
+    el = _twin_element(counts)
+    if el is None:
+        return {"verdict": "deferred", "twin": None,
+                "why": "single channel; no diagnostic twin to test (monoisotopic)"}
+    try:
+        floor = cfg.height_cutoff
+    except Exception:                                    # noqa: BLE001 -- unresolved gate
+        floor = None
+    if floor is None:
+        return {"verdict": "deferred", "twin": el,
+                "why": f"single channel; no resolved detection floor to judge the {el} twin"}
+    idx = ledger.index[ledger["peak_id"] == pid]
+    h = (float(ledger.at[idx[0], "height"])
+         if len(idx) and pd.notna(ledger.at[idx[0], "height"]) else 0.0)
+    if h > 0 and ISO.satellite_observable(el, counts.get(el, 0), h, floor):
+        return {"verdict": "refuted", "twin": el,
+                "why": f"single channel; the {el} twin is predicted above the floor and was not matched"}
+    return {"verdict": "deferred", "twin": el,
+            "why": f"single channel; the {el} twin is predicted below the detection floor"}
+
+
+def _record_known_lead(ledger: pd.DataFrame, pid, *, formula: str, fam: str, lbl: str,
+                       adduct: str, ion_formula, mz: float, ppm, ion_score, channels: int,
+                       verdict: str, why: str, twin: str | None = None) -> None:
+    """Stamp `known_lead` on the peak's ledger row: the known-species reading
+    pass 0 anchored on-cal in this file but did not commit, with its `verdict`
+    (`deferred` = the file could not test it; `refuted` = it tested it and it
+    failed) and `why`. One JSON record per peak; a peak is one ion, so the
+    first refused claim on it stands. The row itself is untouched otherwise --
+    the grid may still assign it -- and the batch reads the record back
+    (assign_batch.known_evidence) to decide the species once, by evidence."""
+    if "known_lead" not in ledger.columns:
+        ledger["known_lead"] = pd.NA
+    idx = ledger.index[ledger["peak_id"] == pid]
+    if not len(idx) or pd.notna(ledger.at[idx[0], "known_lead"]):
+        return
+    ledger.at[idx[0], "known_lead"] = json.dumps({
+        "formula": formula, "family": fam, "label": lbl, "adduct": adduct,
+        "ion_formula": None if ion_formula is None or pd.isna(ion_formula) else str(ion_formula),
+        "mz": round(float(mz), 5),
+        "ppm": None if ppm is None or pd.isna(ppm) else round(float(ppm), 3),
+        "ion_score": None if ion_score is None or pd.isna(ion_score) else round(float(ion_score), 3),
+        "channels": int(channels), "verdict": verdict, "twin": twin, "why": why})
+
+
 def run_pass0_known(
     client,
     sample_id: str,
@@ -412,6 +480,17 @@ def run_pass0_known(
         try:
             if L.role_of(ledger, pid) != L.ROLE_UNEXPLAINED:
                 continue
+            fam, lbl = label_of[r["compound_formula"]]
+            _cnt = C.parse_formula(r["compound_formula"])
+            # the record a refused claim leaves on the peak (`known_lead`): the
+            # batch pools it with the other files' commits and leads and decides
+            # the species once, by evidence (assign_batch.lock_known_species)
+            _lead = functools.partial(
+                _record_known_lead, ledger, pid, formula=r["compound_formula"],
+                fam=fam, lbl=lbl, adduct=_mech_to_adduct(r),
+                ion_formula=r["ion_formula"], mz=float(r["sample_peak_mz"]),
+                ppm=ppm, ion_score=r["ion_score"],
+                channels=ope_channels.get(r["compound_formula"], 0))
             # self-twin consistency: a [M+Br]- contaminant claim must own a
             # consistent 81Br twin of its OWN. v25 lesson: silanediol n=1
             # (170.9482) collided with lactic acid's 81Br child (170.9485);
@@ -430,8 +509,9 @@ def run_pass0_known(
                         f"own-81Br-twin ratio {rt:.2f} inconsistent "
                         f"(composite or wrong claim)"
                     )
+                    _lead(verdict="refuted", twin="Br",
+                          why=f"own 81Br twin ratio {rt:.2f} outside 0.5-1.7 (composite or wrong claim)")
                     continue
-            fam, lbl = label_of[r["compound_formula"]]
             # organophosphates are monoisotopic in P -> require >=2 ion channels
             # (e.g. [M+H]+ AND [M+(urea)H]+) before locking, since there is no
             # isotope twin to confirm a single-channel mass coincidence. The one
@@ -451,6 +531,7 @@ def run_pass0_known(
                     "single ion channel, no 29Si/30Si envelope (methylsiloxane needs "
                     ">=2 channels or the Si envelope)"
                 )
+                _lead(**_twin_verdict(ledger, pid, _cnt, cfg))
                 continue
             if (
                 (fam in ("organophosphate", "organothiophosphate", "indoor_sulfur")
@@ -468,6 +549,7 @@ def run_pass0_known(
                        else "P needs >=2 channels or an isotope twin")
                     + " to corroborate)"
                 )
+                _lead(**_twin_verdict(ledger, pid, _cnt, cfg))
                 continue
             tag = (
                 "atmospheric"
@@ -526,6 +608,7 @@ def run_pass0_known(
                     f"[pass0] skip {r['compound_formula']} @{float(r['sample_peak_mz']):.4f}: "
                     f"³⁷Cl envelope not confirmed (n_kids={n_kids})"
                 )
+                _lead(**_twin_verdict(ledger, pid, _cnt, cfg))
                 continue
             # silanediol / any Si-rich known species: the 29Si M+1 must MATCH the Si
             # count, not merely exist. A high-O organic is mass-degenerate with a Si_k
@@ -552,6 +635,8 @@ def run_pass0_known(
                         "a high-O organic) -- left for the grid"
                     )
                     out["si_underclaimed"] = out.get("si_underclaimed", 0) + 1
+                    _lead(verdict="refuted", twin="Si",
+                          why=f"29Si M+1 too small for Si{_c0.get('Si', 0)} (over-claimed; likely a high-O organic)")
                     continue
             conf = (
                 f"Good ({tag})"

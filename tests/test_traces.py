@@ -185,9 +185,14 @@ check("collapse tie (same n_files, same tier): the higher ion_score wins, not th
       and abs(tie.loc[1, "trace_offset_ppm"]) < abs(tie.loc[0, "trace_offset_ppm"]),
       tie[["neutral_formula", "trace_offset_ppm", "trace_role"]].to_dict("records"))
 # the stamping frame stamps from the trace centre and skips the collapsed label
+# (the analyte rows; the frame also predicts each analyte's satellites from the
+# ion it derives for the reading, so count the M0 rows, not the frame)
 sf = TS.stamping_frame(merged, None)
+_sf_m0 = sf[sf.stamp_source == "M0"]
 check("stamping_frame drops the collapsed label and uses the TRACE centre as the stamp m/z",
-      len(sf) == 2 and abs(sf.loc[sf.neutral_formula == "C10H16O9", "mz"].iloc[0] - merged.loc[0, "mz_trace"]) < 1e-9)
+      len(_sf_m0) == 2 and (_sf_m0.neutral_formula != merged.loc[1, "neutral_formula"]).all()
+      and abs(_sf_m0.loc[_sf_m0.neutral_formula == "C10H16O9", "mz"].iloc[0] - merged.loc[0, "mz_trace"]) < 1e-9,
+      _sf_m0[["neutral_formula", "mz"]].to_dict("records"))
 tol_s, sigma = TS.stamp_tolerance(idx, merged["mz_trace"], tol_ppm=6.0)
 check("stamp_tolerance widens the window on a TOF-like batch, capped at 2x the merge tolerance",
       6.0 < tol_s <= 12.0 and np.isfinite(sigma), (tol_s, sigma))
