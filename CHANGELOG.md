@@ -25,7 +25,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   prediction over-demands by the 13C share — the D5 urea adduct shows both lines at their predicted
   ratios in every file of the uronium reference batch and the scorer credited two), and the batch
   pools those with the `known:` commits
-  (`assign_batch.known_evidence`) and decides each known ion ONCE on the merged ledger after the
+  (`assign_batch.known_evidence`; a commit's evidence is read off its own row — the commentary's
+  "corroborated by", else the recorded satellites of an element the neutral contains, a paraffin's
+  37Cl envelope, else exact mass) and decides each known ion ONCE on the merged ledger after the
   vote (`assign_batch.lock_known_species`): confirmed in at least one file and refuted in none →
   the cluster takes the known reading whatever the count (the confirmed files' tier / score /
   admission provenance; the vote's winner to the head of `alternatives`; the evidence and what it

@@ -136,9 +136,11 @@ selected sample_ids (SAMPLING.md)
 
 4b. **Known species, decided once** (`lock_known_species`; after the vote,
    before the polarity re-reads). Every file's known-species evidence is pooled
-   (`known_evidence`): its `known:` commits with the route pass 0 wrote into
-   the commentary (≥ 2 ion channels; a diagnostic ²⁹Si/³⁰Si / ³⁴S / ³⁷Cl / ⁸¹Br
-   envelope; exact mass alone for the monoisotopic families), and the
+   (`known_evidence`): its `known:` commits with the route read off the row
+   (`_known_route`: the commentary's "corroborated by" — ≥ 2 ion channels or a
+   diagnostic ²⁹Si/³⁰Si / ³⁴S envelope; else the recorded satellites of an
+   element the neutral contains — a chlorinated paraffin's ³⁷Cl envelope; else
+   exact mass alone, the monoisotopic families' own rule), and the
    `known_lead` records pass 0 leaves on the claims it refuses
    ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §3.0) — `deferred` when that
    file could not test the claim, or tested it and found the diagnostic lines

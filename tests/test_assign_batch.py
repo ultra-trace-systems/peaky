@@ -422,6 +422,36 @@ check("known_evidence: two confirmed records (route / exact mass), one lead with
                          summary="no diagnostic twin to test (monoisotopic)",
                          ion_score=0.7, tier=None, admitted_by=None, occurrence=None), _ke)
 check("known_evidence: missing columns -> empty", AB.known_evidence(pd.DataFrame({"x": [1]})) == [])
+# the route is read off the ROW: a chlorinated paraffin names no "corroborated by"
+# but records the 37Cl lines it locked on; a PFCA's recorded 81Br line is the
+# REAGENT's twin (no Br in the neutral) and buys it nothing; an iodine bromide's
+# 81Br2 is the neutral's own
+_ledr = pd.DataFrame([
+    dict(role="M0", peak_id="cp", mz=680.9898, neutral_formula="C24H40Cl10", adduct="[M-H]-",
+         method="known:chlorinated_paraffin", tier="Assigned", ion_score=0.58,
+         commentary=("Pass 0 (known chlorinated-paraffin): C24H40Cl10 [M-H]- = chlorinated paraffin C24Cl10, "
+                     "ppm 2.12, ion score 0.58; chlorinated paraffin (Cl off the grid); 37Cl envelope confirmed "
+                     "(2 satellites), isotope-locked"),
+         isotopologues='[{"label": "37Cl3", "score": 0.9, "peak_id": "a"}, {"label": "37Cl4", "score": 0.8, "peak_id": "b"}]'),
+    dict(role="M0", peak_id="pf", mz=192.9118, neutral_formula="C2HF3O2", adduct="[M+Br]-",
+         method="known:perfluoroacid", tier="Assigned", ion_score=0.9,
+         commentary=("Pass 0 (known perfluoroacid): C2HF3O2 [M+Br]- = perfluoro-C2 acid (PFCA), ppm 1.5, ion score "
+                     "0.90; perfluorocarboxylic acid (F off the grid); known PFCA series formula, exact-mass committed"),
+         isotopologues='[{"label": "13C", "score": 0.9, "peak_id": "c"}, {"label": "81Br", "score": 0.95, "peak_id": "d"}]'),
+    dict(role="M0", peak_id="ib", mz=286.7401, neutral_formula="IBr", adduct="[M+Br]-",
+         method="known:reactive_iodine", tier="Assigned", ion_score=0.7,
+         commentary="Pass 0 (known reactive-iodine): IBr [M+Br]- = iodine monobromide, ppm 1.54, ion score 0.70",
+         isotopologues='[{"label": "81Br2", "score": 0.9, "peak_id": "e"}]'),
+])
+_kr = {r["neutral"]: r["why"] for r in AB.known_evidence(_ledr, src="f")}
+check("known_evidence: the paraffin's route is its recorded 37Cl envelope, the PFCA is mass-only, IBr its own 81Br",
+      _kr == {"C24H40Cl10": "corroborated by a confirmed 37Cl envelope (2 satellites)",
+              "C2HF3O2": AB.MASS_ONLY_ROUTE,
+              "IBr": "corroborated by a confirmed 81Br envelope (1 satellite)"}, _kr)
+check("_known_route: the commentary's own phrase wins; no satellites -> None; unparseable JSON -> None",
+      AB._known_route("x; corroborated by 2 ion channels", "C6H15O4P", None) == "2 ion channels"
+      and AB._known_route("no phrase", "C24H40Cl10", None) is None
+      and AB._known_route("no phrase", "C24H40Cl10", "not json") is None)
 # ... and the pool of that one file locks nothing the file did not already read:
 # the D7 row is confirmed where it stands, the TCP lead is noted on the grid row
 _mk2 = pd.DataFrame([dict(mz=579.1710, neutral_formula="C14H42O7Si7", adduct="[M+(CH4N2O)H]+", tier="Assigned",

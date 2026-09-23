@@ -471,14 +471,48 @@ _KNOWN_ROUTE_RE = re.compile(r"corroborated by (.+?)(?:;|$)")
 #: commit carries no evidence the batch can pool beyond the count of files it
 #: fitted in, so it never overrides the vote (see lock_known_species)
 MASS_ONLY_ROUTE = "exact mass, on-cal (the family's own rule)"
+#: the recorded satellite labels that corroborate an element of the NEUTRAL
+#: (tiers._DIAG_ISO, per element): a `[M+Br]-` reading's 81Br line is the
+#: reagent's twin, evidence of the adduct, not of the neutral -- it counts only
+#: when the neutral itself carries bromine
+_DIAG_TAGS = {"Br": ("81Br",), "Cl": ("37Cl",), "S": ("34S",), "Si": ("29Si", "30Si")}
+
+
+def _known_route(commentary: str, neutral: str, isotopologues) -> str | None:
+    """The evidence a `known:` commit rests on, read off its own row: the
+    commentary's "corroborated by <route>" (the channel count or the diagnostic
+    envelope the P / S / Si families name), else the recorded satellites of an
+    element the neutral contains (a chlorinated paraffin's 37Cl envelope, an
+    iodine bromide's 81Br2 -- pass 0 records the lines it locked on, and the
+    recovery path does too), else None: the family's rule was exact mass."""
+    m = _KNOWN_ROUTE_RE.search(commentary or "")
+    if m:
+        return m.group(1).strip()
+    try:
+        labels = [str(d.get("label", "")) for d in (json.loads(isotopologues)
+                  if isinstance(isotopologues, str) else (isotopologues or []))
+                  if isinstance(d, dict)]
+    except (TypeError, ValueError):
+        labels = []
+    if not labels:
+        return None
+    from peaky.chem import chemistry as _C
+    counts = _C.parse_formula(str(neutral or ""))
+    tags = [t for el, ts in _DIAG_TAGS.items() if counts.get(el, 0) > 0 for t in ts]
+    hit = [lab for lab in labels if any(t in lab for t in tags)]
+    if not hit:
+        return None
+    seen = sorted({t for t in tags if any(t in lab for lab in hit)})
+    return f"a confirmed {'/'.join(seen)} envelope ({len(hit)} satellite{'s' if len(hit) != 1 else ''})"
 
 
 def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
     """One record per known-species reading this file anchored on-cal, for the
     batch to pool (`lock_known_species`): the committed `known:` M0 rows
-    (verdict `confirmed`; `why` = the route pass 0 wrote into the commentary --
-    the ion channels or the diagnostic envelope -- or exact mass for a family
-    whose own rule is mass alone) and the `known_lead` records pass 0 left on
+    (verdict `confirmed`; `why` = the route read off the row (`_known_route`):
+    the ion channels or the diagnostic envelope the commentary names, else the
+    recorded satellites of an element the neutral contains, else exact mass --
+    the family's own rule) and the `known_lead` records pass 0 left on
     the claims it refused (verdict `deferred` = this file could not test it,
     `refuted` = it tested it and it failed; ledger.py). `src` tags the file.
     Record: src, neutral, adduct, mz, family, label, verdict, why, summary (the
@@ -506,15 +540,15 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
         for i in ledger.index[(role == "M0") & meth.str.startswith("known:")]:
             com = _col(i, "commentary")
             lab = _KNOWN_LABEL_RE.search(com)
-            route = _KNOWN_ROUTE_RE.search(com)
+            route = _known_route(com, _s(ledger.at[i, "neutral_formula"]),
+                                 ledger.at[i, "isotopologues"] if "isotopologues" in ledger.columns else None)
+            why = ("corroborated by " + route) if route else MASS_ONLY_ROUTE
             out.append(dict(
                 src=src, neutral=_s(ledger.at[i, "neutral_formula"]),
                 adduct=_s(ledger.at[i, "adduct"]), mz=float(ledger.at[i, "mz"]),
                 family=meth[i][len("known:"):],
                 label=lab.group(1).strip() if lab else "",
-                verdict="confirmed",
-                why=("corroborated by " + route.group(1).strip()) if route else MASS_ONLY_ROUTE,
-                summary=("corroborated by " + route.group(1).strip()) if route else MASS_ONLY_ROUTE,
+                verdict="confirmed", why=why, summary=why,
                 ion_score=_num(ledger.at[i, "ion_score"]) if "ion_score" in ledger.columns else None,
                 tier=_col(i, "tier") or None,
                 admitted_by=_col(i, "admitted_by") or None,
