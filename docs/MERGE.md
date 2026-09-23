@@ -141,9 +141,11 @@ selected sample_ids (SAMPLING.md)
    envelope; exact mass alone for the monoisotopic families), and the
    `known_lead` records pass 0 leaves on the claims it refuses
    ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §3.0) — `deferred` when that
-   file could not test the claim (a single channel and no twin the file could
-   have shown), `refuted` when it could and the twin was absent, or an own-twin
-   ratio / Si M+1 check failed. Per (neutral, adduct), on the merged row within
+   file could not test the claim, or tested it and found the diagnostic lines
+   present and consistent though the scorer did not credit them; `refuted` when
+   a line the file could show (predicted at 2× the gate) is absent or too small,
+   or the own-⁸¹Br-twin ratio failed — judged on the ledger, never on the
+   scorer's silence. Per (neutral, adduct), on the merged row within
    `tol_ppm` of the pooled m/z:
    - confirmed in ≥ 1 file and refuted in none → the row takes the known
      reading whatever the count (the confirmed files' best tier / `ion_score` /

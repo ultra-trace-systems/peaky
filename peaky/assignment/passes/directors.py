@@ -332,14 +332,44 @@ def _twin_element(counts: dict) -> str | None:
     return None
 
 
+# the diagnostic heavy-isotope lines a refused single-channel known claim is
+# tested against in the LEDGER: (shift from M0, abundance per atom, label). Si
+# has two -- on an Orbitrap above ~m/z 300 the picker resolves the 29Si line
+# (+0.9996) from the 13C line (+1.0034), so the picked M+1 is the 29Si line
+# ALONE and a blended (29Si + 13C) prediction over-demands by the 13C share;
+# the 30Si M+2 is what no organic can fake.
+_TWIN_LINES = {
+    "Br": ((ISO.D_81BR, ISO.R_81BR_PER_BR, "81Br"),),
+    "Cl": ((ISO.D_37CL, ISO.R_37CL_PER_CL, "37Cl"),),
+    "S": ((ISO.D_34S, ISO.R_34S_PER_S, "34S"),),
+    "Si": ((ISO.D_29SI, ISO.R_29SI_PER_SI, "29Si"), (ISO.D_30SI, ISO.R_30SI_PER_SI, "30Si")),
+}
+#: a line refutes a claim by its ABSENCE only when it was predicted at this
+#: multiple of the resolved height gate: a line predicted at the picker's edge
+#: is not a reliable absence
+TWIN_REFUTE_X_FLOOR = 2.0
+#: a line PRESENT at less than this fraction of its predicted height refutes
+#: the claim (the Si M+1 gate's own fraction, postprocess.SI_M1_MIN_FRAC)
+TWIN_MIN_FRAC = 0.6
+_TWIN_PPM = 15.0        # the M+1 / M+2 window the Si M+1 gate uses
+
+
 def _twin_verdict(ledger: pd.DataFrame, pid, counts: dict, cfg: PassConfig) -> dict:
-    """What a refused single-channel known claim leaves behind: `deferred`
-    when this file could not have shown the corroborating twin (no twin element,
-    a twin predicted below the resolved height gate, or no gate to judge by) and
-    `refuted` when it could -- the twin was predicted above the floor
-    (isotopes.satellite_observable) and was not matched. The batch pools these
-    verdicts across files (assign_batch.lock_known_species): silence never votes
-    against a species, a refutation does."""
+    """What a refused single-channel known claim leaves behind, judged on the
+    LEDGER, never on the scorer's silence: `refuted` when a diagnostic line the
+    file could show (predicted at >= TWIN_REFUTE_X_FLOOR x the resolved gate)
+    is absent from the ledger or sits under TWIN_MIN_FRAC of its predicted
+    height; `deferred` otherwise -- no twin element at all (a composition
+    monoisotopic in every heteroatom), no resolved gate, every line under the
+    threshold, or every testable line present and consistent (the scorer did
+    not credit it, but the ledger holds it). The batch pools these verdicts
+    across files (assign_batch.lock_known_species): silence never votes against
+    a species, a refutation does.
+
+    Measured on a 10-file uronium batch: the D5 cyclosiloxane urea adduct shows
+    the 29Si line at 0.16-0.22x and the 30Si line at 0.10-0.17x the parent in
+    EVERY file (predicted 0.26 / 0.15), yet the scorer credited the envelope in
+    two files only -- a scorer-based verdict called the other eight refutations."""
     el = _twin_element(counts)
     if el is None:
         return {"verdict": "deferred", "twin": None,
@@ -352,13 +382,38 @@ def _twin_verdict(ledger: pd.DataFrame, pid, counts: dict, cfg: PassConfig) -> d
         return {"verdict": "deferred", "twin": el,
                 "why": f"single channel; no resolved detection floor to judge the {el} twin"}
     idx = ledger.index[ledger["peak_id"] == pid]
-    h = (float(ledger.at[idx[0], "height"])
-         if len(idx) and pd.notna(ledger.at[idx[0], "height"]) else 0.0)
-    if h > 0 and ISO.satellite_observable(el, counts.get(el, 0), h, floor):
-        return {"verdict": "refuted", "twin": el,
-                "why": f"single channel; the {el} twin is predicted above the floor and was not matched"}
-    return {"verdict": "deferred", "twin": el,
-            "why": f"single channel; the {el} twin is predicted below the detection floor"}
+    if not len(idx) or pd.isna(ledger.at[idx[0], "height"]) or float(ledger.at[idx[0], "height"]) <= 0:
+        return {"verdict": "deferred", "twin": el,
+                "why": f"single channel; no parent height to predict the {el} twin from"}
+    h = float(ledger.at[idx[0], "height"])
+    m0 = float(ledger.at[idx[0], "mz"])
+    n = int(counts.get(el, 0))
+    support, contra, under = [], [], []
+    for delta, per_atom, label in _TWIN_LINES[el]:
+        pred_ratio = n * per_atom
+        pred_h = pred_ratio * h
+        if pred_h < TWIN_REFUTE_X_FLOOR * floor:
+            under.append(f"{label} predicted at {pred_h:.0f} cps, under {TWIN_REFUTE_X_FLOOR:g}x "
+                         f"the {floor:.0f}-cps floor")
+            continue
+        j = _peak_near(ledger["mz"], m0 + delta, ppm=_TWIN_PPM)
+        if j is None or pd.isna(ledger.at[j, "height"]):
+            contra.append(f"no {label} line at +{delta:.4f} (predicted {pred_ratio:.2f}x the parent, "
+                          f"{pred_h:.0f} cps)")
+            continue
+        obs = float(ledger.at[j, "height"]) / h
+        if obs >= TWIN_MIN_FRAC * pred_ratio:
+            support.append(f"{label} line at {obs:.2f}x the parent (predicted {pred_ratio:.2f})")
+        else:
+            contra.append(f"{label} line at {obs:.2f}x the parent, under {TWIN_MIN_FRAC:g}x the "
+                          f"predicted {pred_ratio:.2f}")
+    if contra:
+        return {"verdict": "refuted", "twin": el, "why": "single channel; " + "; ".join(contra)}
+    if support:
+        return {"verdict": "deferred", "twin": el,
+                "why": "single channel; " + "; ".join(support)
+                       + " -- present in the ledger, not credited by the scorer"}
+    return {"verdict": "deferred", "twin": el, "why": "single channel; " + "; ".join(under)}
 
 
 def _record_known_lead(ledger: pd.DataFrame, pid, *, formula: str, fam: str, lbl: str,
@@ -635,8 +690,10 @@ def run_pass0_known(
                         "a high-O organic) -- left for the grid"
                     )
                     out["si_underclaimed"] = out.get("si_underclaimed", 0) + 1
-                    _lead(verdict="refuted", twin="Si",
-                          why=f"29Si M+1 too small for Si{_c0.get('Si', 0)} (over-claimed; likely a high-O organic)")
+                    # the gate judged the picked M+1 against a BLENDED 29Si+13C
+                    # prediction; the lead is judged on the resolved lines (the
+                    # 29Si line alone, and the 30Si line) like every other refusal
+                    _lead(**_twin_verdict(ledger, pid, _c0, cfg))
                     continue
             conf = (
                 f"Good ({tag})"

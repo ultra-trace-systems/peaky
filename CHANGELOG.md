@@ -16,10 +16,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   grid-fit as an O14 formula the engine itself flags implausible in the nine others, and the merge
   vote kept it only through a rank exemption for "curated" labels. Now every refused on-cal claim
   leaves a **`known_lead`** on its peak (`passes.directors._record_known_lead`, a new ledger column:
-  formula, family, label, adduct, ion, m/z, ppm, score, channel count, and a verdict — `deferred`
-  when the file could not test the claim, a single channel and no twin it could have shown per
-  `isotopes.satellite_observable`; `refuted` when it could and the twin was absent, or the
-  own-81Br-twin ratio / 29Si M+1 check failed), and the batch pools those with the `known:` commits
+  formula, family, label, adduct, ion, m/z, ppm, score, channel count, and a verdict judged on the
+  LEDGER, never on the scorer's silence — `refuted` when a diagnostic line the file could show
+  (predicted at 2x the resolved gate) is absent or under 0.6x its predicted height, or the
+  own-81Br-twin ratio failed; `deferred` when nothing could be tested or every testable line is
+  present and consistent though the scorer did not credit it; for Si the 29Si line ALONE and the
+  30Si line, because an Orbitrap resolves 29Si from 13C above ~m/z 300 and a blended M+1
+  prediction over-demands by the 13C share — the D5 urea adduct shows both lines at their predicted
+  ratios in every file of the uronium reference batch and the scorer credited two), and the batch
+  pools those with the `known:` commits
   (`assign_batch.known_evidence`) and decides each known ion ONCE on the merged ledger after the
   vote (`assign_batch.lock_known_species`): confirmed in at least one file and refuted in none →
   the cluster takes the known reading whatever the count (the confirmed files' tier / score /

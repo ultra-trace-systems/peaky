@@ -1259,17 +1259,33 @@ check("pass0 refuses a 37Cl-unconfirmed chlorinated paraffin (n_kids<2)",
 # a 5000-cps Cl6 parent would show its 37Cl twin far above the 100-cps gate: the
 # twin's absence is a refutation this file can make, and the lead says so
 _lead_cp = json.loads(_ledcp0.loc[_ledcp0.peak_id == "cp0", "known_lead"].iloc[0])
-check("pass0: the bright unconfirmed paraffin leaves a REFUTED lead (twin observable, absent)",
+check("pass0: the bright unconfirmed paraffin with NO 37Cl peak in the ledger leaves a REFUTED lead",
       _lead_cp["verdict"] == "refuted" and _lead_cp["twin"] == "Cl"
-      and _lead_cp["why"] == "single channel; the Cl twin is predicted above the floor and was not matched"
+      and _lead_cp["why"] == ("single channel; no 37Cl line at +1.9970 (predicted 1.92x the parent, "
+                              "9588 cps)")
       and _lead_cp["formula"] == "C11H18Cl6", _lead_cp)
+# the verdict is the LEDGER's, not the scorer's: the same refusal with the 37Cl
+# line present at a consistent height is a DEFERRED lead that supports the claim
+_ledcp_ok = mk_ledger([("cp0", _cpmz, 5000.0), ("cp1", _cpmz + 1.99705, 7000.0)])
+P.run_pass0_known(None, "SID", _ledcp_ok, PROF5, ACFG, ADD5, score_fn=_fake_cp0, log=lambda *a: None)
+_lead_ok = json.loads(_ledcp_ok.loc[_ledcp_ok.peak_id == "cp0", "known_lead"].iloc[0])
+check("pass0: the same refusal with the 37Cl line in the ledger at 1.4x (predicted 1.92x) is DEFERRED, supporting",
+      L.role_of(_ledcp_ok, "cp0") == L.ROLE_UNEXPLAINED and _lead_ok["verdict"] == "deferred"
+      and _lead_ok["why"] == ("single channel; 37Cl line at 1.40x the parent (predicted 1.92) -- present in "
+                              "the ledger, not credited by the scorer"), _lead_ok)
+_ledcp_low = mk_ledger([("cp0", _cpmz, 5000.0), ("cp1", _cpmz + 1.99705, 500.0)])
+P.run_pass0_known(None, "SID", _ledcp_low, PROF5, ACFG, ADD5, score_fn=_fake_cp0, log=lambda *a: None)
+_lead_low = json.loads(_ledcp_low.loc[_ledcp_low.peak_id == "cp0", "known_lead"].iloc[0])
+check("pass0: ... and at 0.1x (under 0.6x the prediction) it is REFUTED by the ledger",
+      _lead_low["verdict"] == "refuted"
+      and _lead_low["why"] == "single channel; 37Cl line at 0.10x the parent, under 0.6x the predicted 1.92",
+      _lead_low)
 _ledcp_dim = mk_ledger([("cp0", _cpmz, 40.0)])
-_saved_cut = ACFG.height_cutoff_cps
 P.run_pass0_known(None, "SID", _ledcp_dim, PROF5, ACFG, ADD5, score_fn=_fake_cp0, log=lambda *a: None)
 _lead_dim = json.loads(_ledcp_dim.loc[_ledcp_dim.peak_id == "cp0", "known_lead"].iloc[0])
-check("pass0: the same claim on a 40-cps parent (twin below the 100-cps gate) is DEFERRED, not refuted",
+check("pass0: the same claim on a 40-cps parent (37Cl predicted at 77 cps, under 2x the 100-cps gate) is DEFERRED",
       L.role_of(_ledcp_dim, "cp0") == L.ROLE_UNEXPLAINED and _lead_dim["verdict"] == "deferred"
-      and _lead_dim["why"] == "single channel; the Cl twin is predicted below the detection floor", _lead_dim)
+      and _lead_dim["why"] == "single channel; 37Cl predicted at 77 cps, under 2x the 100-cps floor", _lead_dim)
 
 # pass0 RECOVERY: a chlorinated paraffin the server scored too low to ANCHOR
 # (base unanchored: no sample_peak_id, ppm NaN -- the "too low score on the
