@@ -1056,6 +1056,7 @@ check("pass0 records a refuted known_lead on the peak whose own twin failed",
       _lead_x1["verdict"] == "refuted" and _lead_x1["formula"] == "C2H8O2Si1"
       and _lead_x1["twin"] == "Br" and _lead_x1["adduct"] == "[M+Br]-"
       and "own 81Br twin ratio 0.04 outside 0.5-1.7" in _lead_x1["why"]
+      and _lead_x1["summary"] == "own 81Br twin ratio inconsistent (composite or wrong claim)"
       and _lead_x1["family"] == "contaminant:silanediol"
       and _lead_x1["channels"] == 0, _lead_x1)   # the fixture's oracle frame has no mechanism_id column
 check("pass0: a committed peak carries no known_lead",
@@ -1263,6 +1264,7 @@ check("pass0: the bright unconfirmed paraffin with NO 37Cl peak in the ledger le
       _lead_cp["verdict"] == "refuted" and _lead_cp["twin"] == "Cl"
       and _lead_cp["why"] == ("single channel; no 37Cl line at +1.9970 (predicted 1.92x the parent, "
                               "9588 cps)")
+      and _lead_cp["summary"] == "no 37Cl line where one was predicted above the floor"
       and _lead_cp["formula"] == "C11H18Cl6", _lead_cp)
 # the verdict is the LEDGER's, not the scorer's: the same refusal with the 37Cl
 # line present at a consistent height is a DEFERRED lead that supports the claim
@@ -1272,20 +1274,22 @@ _lead_ok = json.loads(_ledcp_ok.loc[_ledcp_ok.peak_id == "cp0", "known_lead"].il
 check("pass0: the same refusal with the 37Cl line in the ledger at 1.4x (predicted 1.92x) is DEFERRED, supporting",
       L.role_of(_ledcp_ok, "cp0") == L.ROLE_UNEXPLAINED and _lead_ok["verdict"] == "deferred"
       and _lead_ok["why"] == ("single channel; 37Cl line at 1.40x the parent (predicted 1.92) -- present in "
-                              "the ledger, not credited by the scorer"), _lead_ok)
+                              "the ledger, not credited by the scorer")
+      and _lead_ok["summary"] == "37Cl line present at the predicted ratio, not credited by the scorer", _lead_ok)
 _ledcp_low = mk_ledger([("cp0", _cpmz, 5000.0), ("cp1", _cpmz + 1.99705, 500.0)])
 P.run_pass0_known(None, "SID", _ledcp_low, PROF5, ACFG, ADD5, score_fn=_fake_cp0, log=lambda *a: None)
 _lead_low = json.loads(_ledcp_low.loc[_ledcp_low.peak_id == "cp0", "known_lead"].iloc[0])
 check("pass0: ... and at 0.1x (under 0.6x the prediction) it is REFUTED by the ledger",
       _lead_low["verdict"] == "refuted"
-      and _lead_low["why"] == "single channel; 37Cl line at 0.10x the parent, under 0.6x the predicted 1.92",
-      _lead_low)
+      and _lead_low["why"] == "single channel; 37Cl line at 0.10x the parent, under 0.6x the predicted 1.92"
+      and _lead_low["summary"] == "37Cl line under 0.6x its prediction", _lead_low)
 _ledcp_dim = mk_ledger([("cp0", _cpmz, 40.0)])
 P.run_pass0_known(None, "SID", _ledcp_dim, PROF5, ACFG, ADD5, score_fn=_fake_cp0, log=lambda *a: None)
 _lead_dim = json.loads(_ledcp_dim.loc[_ledcp_dim.peak_id == "cp0", "known_lead"].iloc[0])
 check("pass0: the same claim on a 40-cps parent (37Cl predicted at 77 cps, under 2x the 100-cps gate) is DEFERRED",
       L.role_of(_ledcp_dim, "cp0") == L.ROLE_UNEXPLAINED and _lead_dim["verdict"] == "deferred"
-      and _lead_dim["why"] == "single channel; 37Cl predicted at 77 cps, under 2x the 100-cps floor", _lead_dim)
+      and _lead_dim["why"] == "single channel; 37Cl predicted at 77 cps, under 2x the 100-cps floor"
+      and _lead_dim["summary"] == "37Cl line predicted under 2x the floor", _lead_dim)
 
 # pass0 RECOVERY: a chlorinated paraffin the server scored too low to ANCHOR
 # (base unanchored: no sample_peak_id, ppm NaN -- the "too low score on the
@@ -1406,6 +1410,7 @@ _lead_ope = json.loads(led_ope1.loc[led_ope1.peak_id == "tepH", "known_lead"].il
 check("pass0: the single-channel organophosphate leaves a DEFERRED lead (monoisotopic P, no twin to test)",
       _lead_ope["verdict"] == "deferred" and _lead_ope["twin"] is None
       and _lead_ope["why"] == "single channel; no diagnostic twin to test (monoisotopic)"
+      and _lead_ope["summary"] == "no diagnostic twin to test (monoisotopic)"
       and _lead_ope["formula"] == "C6H15O4P" and _lead_ope["adduct"] == "[M+H]+"
       and _lead_ope["family"] == "organophosphate" and _lead_ope["label"] == "triethyl phosphate (TEP)",
       _lead_ope)

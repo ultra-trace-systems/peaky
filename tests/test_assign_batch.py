@@ -269,11 +269,35 @@ pool_s = ([dict(_SF, src="v09", verdict="confirmed", ion_score=0.95, tier="Assig
              for i in range(9)])
 gs = AB.lock_known_species(ms, pool_s, tol_ppm=6.0, log=lambda *a: None)
 check("lock: refuted in 9 files -> not locked, the vote's fluorenone stands, the conflict is on the row",
-      ms.iloc[0]["neutral_formula"] == "C13H8O" and gs["conflict"] == 1 and gs["locked"] == 0
+      ms.iloc[0]["neutral_formula"] == "C13H8O" and ms.iloc[0]["tier"] == "Assigned"
+      and gs["conflict"] == 1 and gs["locked"] == 0
       and str(ms.iloc[0]["tier_reason"]) == ("known species sulfolane (C4H8O2S [M+(CH4N2O)H]+) confirmed "
                                              "in 1 file but refuted in 9 (single channel; the S twin is "
                                              "predicted above the floor and was not matched); left to the vote"),
       ms.iloc[0].to_dict())
+# ... and when the vote's winner IS the conflicted species (the other files left
+# the peak unexplained, so the one confirming file "won" 1-0) the merged tier is
+# capped: one file's Assigned cannot stand for a batch that refuted it in nine
+alone, _ = AB.align(_files(1, 181.0647, "C4H8O2S", "[M+(CH4N2O)H]+", "Assigned", 0.95, start=9), tol_ppm=6.0)
+ga = AB.lock_known_species(alone, pool_s, tol_ppm=6.0, log=lambda *a: None)
+check("lock: the conflicted species as the row's own reading -> capped Candidate, said on the row",
+      alone.iloc[0]["neutral_formula"] == "C4H8O2S" and alone.iloc[0]["tier"] == "Candidate"
+      and ga["conflict"] == 1
+      and str(alone.iloc[0]["tier_reason"]).endswith("; left to the vote; capped Candidate (refuted in more "
+                                                      "files than confirmed)"),
+      alone.iloc[0].to_dict())
+# a summary (the reason without the file's numbers) is what the note counts files by
+pool_sum = [dict(_D7, src=f"v{i:02d}", verdict="deferred", ion_score=0.8, tier=None, admitted_by=None,
+                 occurrence=None, why=f"single channel; 29Si predicted at {60 + i} cps, under 2x the 60-cps floor",
+                 summary="29Si and 30Si lines predicted under 2x the floor") for i in range(3)] + \
+           [dict(_D7, src="v09", verdict="deferred", ion_score=0.8, tier=None, admitted_by=None, occurrence=None,
+                 why="single channel; 29Si line at 0.28x the parent (predicted 0.36) -- present in the ledger, not credited by the scorer",
+                 summary="29Si line present at the predicted ratio, not credited by the scorer")]
+check("_pool_summary: counts files per distinct summary, never repeating a file's numbers",
+      AB._pool_summary([], pool_sum, []) == ("could not test it in 4 files (29Si and 30Si lines predicted "
+                                             "under 2x the floor [3 files] / 29Si line present at the "
+                                             "predicted ratio, not credited by the scorer [1 file])"),
+      AB._pool_summary([], pool_sum, []))
 # DEFERRED only (never confirmed anywhere): a lead on the row, not a lock --
 # tricresyl phosphate anchored single-channel in 3 files against a grid reading
 weak, _ = AB.align(_files(3, 429.1574, "C15H24N4O10", "[M+H]+", "Candidate", 0.98), tol_ppm=6.0)
@@ -326,7 +350,8 @@ _ledk = pd.DataFrame([
          known_lead=('{"formula": "C21H21O4P", "family": "organophosphate", "label": "tricresyl phosphate '
                      '(TMPP / TCrP)", "adduct": "[M+(CH4N2O)H]+", "ion_formula": "C22H26N2O5P+", '
                      '"mz": 429.1574, "ppm": 0.4, "ion_score": 0.7, "channels": 1, "verdict": "deferred", '
-                     '"twin": null, "why": "single channel; no diagnostic twin to test (monoisotopic)"}')),
+                     '"twin": null, "why": "single channel; no diagnostic twin to test (monoisotopic)", '
+                     '"summary": "no diagnostic twin to test (monoisotopic)"}')),
     dict(role="M0", peak_id="p4", mz=112.9857, neutral_formula="C2HF3O2", adduct="[M-H]-",
          method="known:perfluoroacid", tier="Assigned", ion_score=0.9, admitted_by=pd.NA, occurrence=float("nan"),
          commentary=("Pass 0 (known perfluoroacid): C2HF3O2 [M-H]- = trifluoroacetic acid (TFA), ppm 0.10, "
@@ -346,9 +371,11 @@ check("known_evidence: two confirmed records (route / exact mass), one lead with
       and _ke[1]["neutral"] == "C2HF3O2" and _ke[1]["label"] == "trifluoroacetic acid (TFA)"
       and _ke[1]["why"] == "exact mass, on-cal (the family's own rule)"
       and _ke[1]["admitted_by"] is None and _ke[1]["occurrence"] is None
+      and _ke[1]["summary"] == "exact mass, on-cal (the family's own rule)"
       and _ke[2] == dict(src="f1", neutral="C21H21O4P", adduct="[M+(CH4N2O)H]+", mz=429.1574,
                          family="organophosphate", label="tricresyl phosphate (TMPP / TCrP)",
                          verdict="deferred", why="single channel; no diagnostic twin to test (monoisotopic)",
+                         summary="no diagnostic twin to test (monoisotopic)",
                          ion_score=0.7, tier=None, admitted_by=None, occurrence=None), _ke)
 check("known_evidence: missing columns -> empty", AB.known_evidence(pd.DataFrame({"x": [1]})) == [])
 # ... and the pool of that one file locks nothing the file did not already read:

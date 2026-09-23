@@ -69,6 +69,7 @@ __version__ = "0.8.1"  # traces.stamp block + tables/predicted_satellites.csv: t
 # every batch-level binning; see sampling.BATCH_TOL_PPM)
 DEFAULT_TOL_PPM = SS.BATCH_TOL_PPM
 TIER_ASSIGNED = "Assigned"
+TIER_CANDIDATE = "Candidate"
 STAGE_COVER = "cover"          # a file of the presence cover (incl. its k_min pads)
 STAGE_RESIDUAL = "residual"    # a file the residual stage targeted
 TIER_RANK = {"Assigned": 2, "Candidate": 1}
@@ -475,8 +476,9 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
     whose own rule is mass alone) and the `known_lead` records pass 0 left on
     the claims it refused (verdict `deferred` = this file could not test it,
     `refuted` = it tested it and it failed; ledger.py). `src` tags the file.
-    Record: src, neutral, adduct, mz, family, label, verdict, why, ion_score,
-    tier, admitted_by, occurrence (the last three None on a lead)."""
+    Record: src, neutral, adduct, mz, family, label, verdict, why, summary (the
+    reason without this file's numbers -- what the merged row counts files by),
+    ion_score, tier, admitted_by, occurrence (the last three None on a lead)."""
     out: list[dict] = []
     if ledger is None or not len(ledger) \
             or not {"neutral_formula", "adduct", "mz"} <= set(ledger.columns):
@@ -508,6 +510,8 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
                 verdict="confirmed",
                 why=("corroborated by " + route.group(1).strip()) if route
                     else "exact mass, on-cal (the family's own rule)",
+                summary=("corroborated by " + route.group(1).strip()) if route
+                    else "exact mass, on-cal (the family's own rule)",
                 ion_score=_num(ledger.at[i, "ion_score"]) if "ion_score" in ledger.columns else None,
                 tier=_col(i, "tier") or None,
                 admitted_by=_col(i, "admitted_by") or None,
@@ -525,6 +529,7 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
                 mz=float(d["mz"]) if d.get("mz") is not None else float(ledger.at[i, "mz"]),
                 family=_s(d.get("family")), label=_s(d.get("label")),
                 verdict=_s(d.get("verdict")) or "deferred", why=_s(d.get("why")),
+                summary=_s(d.get("summary")) or _s(d.get("why")),
                 ion_score=_num(d.get("ion_score")), tier=None, admitted_by=None,
                 occurrence=None))
     return out
@@ -532,17 +537,26 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
 
 def _pool_summary(conf: list, dfr: list, ref: list) -> str:
     """'confirmed in 2 files (...); could not test it in 3 files (...);
-    refuted in 1 file (...)' -- the distinct reasons of each group."""
+    refuted in 1 file (...)' -- each group's distinct reasons (a record's
+    `summary`, the reason without that file's numbers, else its `why`), with
+    the file count of each reason when there are several."""
     def _n(rows):
         return len({r["src"] for r in rows})
 
     def _whys(rows):
-        seen: list = []
+        order: list = []
+        files: dict = {}
         for r in rows:
-            w = str(r.get("why") or "").strip()
-            if w and w not in seen:
-                seen.append(w)
-        return " / ".join(seen)
+            w = str(r.get("summary") or r.get("why") or "").strip()
+            if not w:
+                continue
+            if w not in files:
+                order.append(w)
+                files[w] = set()
+            files[w].add(r["src"])
+        if len(order) <= 1:
+            return " / ".join(order)
+        return " / ".join(f"{w} [{len(files[w])} file{'s' if len(files[w]) != 1 else ''}]" for w in order)
 
     parts = []
     for rows, verb in ((conf, "confirmed in"), (dfr, "could not test it in"), (ref, "refuted in")):
@@ -575,7 +589,10 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
         predicted above the floor and absent; an own-twin ratio or the Si M+1
         check failed) is left to the vote, and the row records the conflict --
         sulfolane, 34S-confirmed in one file, against fluorenone [M+H]+ in nine
-        bright files that show no 34S, stays fluorenone, by evidence now;
+        bright files that show no 34S, stays fluorenone, by evidence now; and
+        where the vote's own winner IS the conflicted species and it was refuted
+        in more files than it was confirmed in, the merged tier is capped at
+        Candidate (the one file's Assigned cannot stand for the batch);
       * a lead never confirmed anywhere is noted on the row, not locked.
 
     A locked row takes the known reading (neutral, adduct, the confirmed files'
@@ -655,9 +672,14 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
             counts["locked"] += 1
         elif conf and ref:
             n_r = len({r["src"] for r in ref})
+            capped = (same and n_r > n_c and "tier" in merged.columns
+                      and _s(merged.at[i, "tier"]) == TIER_ASSIGNED)
+            if capped:
+                merged.at[i, "tier"] = TIER_CANDIDATE
             _note(merged, i, f"known species {label} ({nf} {ad}) confirmed in {n_c} "
                              f"file{'s' if n_c != 1 else ''} but refuted in {n_r} "
-                             f"({_pool_summary([], [], ref).split(' (', 1)[1][:-1]}); left to the vote")
+                             f"({_pool_summary([], [], ref).split(' (', 1)[1][:-1]}); left to the vote"
+                             + ("; capped Candidate (refuted in more files than confirmed)" if capped else ""))
             counts["conflict"] += 1
         elif dfr and not same:
             n_d = len({r["src"] for r in dfr})

@@ -160,7 +160,12 @@ selected sample_ids (SAMPLING.md)
      already gave to the species gains the note only.
    - confirmed somewhere and refuted somewhere → left to the vote; the row
      records the conflict (`known species sulfolane (…) confirmed in 1 file but
-     refuted in 9 (…); left to the vote`).
+     refuted in 9 (…); left to the vote`), and where the vote's own winner is the
+     conflicted species and it was refuted in more files than confirmed, the
+     merged tier is capped at Candidate (`…; capped Candidate (refuted in more
+     files than confirmed)`) — one file's Assigned cannot stand for the batch.
+     Each group's reasons are the leads' `summary` (the reason without the
+     file's numbers), with the file count per reason when there are several.
    - never confirmed → a `known-species lead: …; not locked` note on the row,
      nothing moves.
    A reference-list rescue gets no such lock — its corroboration is a ¹³C line,

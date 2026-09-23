@@ -29,8 +29,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   vote (`assign_batch.lock_known_species`): confirmed in at least one file and refuted in none →
   the cluster takes the known reading whatever the count (the confirmed files' tier / score /
   admission provenance; the vote's winner to the head of `alternatives`; the evidence and what it
-  overrode in `tier_reason`); confirmed and refuted → left to the vote, the conflict on the row;
-  never confirmed → a `known-species lead` note. Silence never votes against a species, a
+  overrode in `tier_reason`); confirmed and refuted → left to the vote, the conflict on the row,
+  and the merged tier capped at Candidate where the row's own reading is the conflicted species
+  and the refutations outnumber the confirmations; never confirmed → a `known-species lead` note.
+  The note counts files per reason (each lead carries the reason with the file's numbers, `why`,
+  and without them, `summary`). Silence never votes against a species, a
   refutation does — sulfolane, 34S-confirmed in one file against fluorenone `[M+H]+` in nine bright
   files that show no 34S, stays fluorenone by evidence where it used to by count. `align(curated=)`,
   `_curated_neutrals` and `_CURATED_METHODS` are gone; `batch_summary["merge_gates"]["known"]`

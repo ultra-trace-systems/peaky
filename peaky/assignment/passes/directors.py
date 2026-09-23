@@ -373,56 +373,73 @@ def _twin_verdict(ledger: pd.DataFrame, pid, counts: dict, cfg: PassConfig) -> d
     el = _twin_element(counts)
     if el is None:
         return {"verdict": "deferred", "twin": None,
-                "why": "single channel; no diagnostic twin to test (monoisotopic)"}
+                "why": "single channel; no diagnostic twin to test (monoisotopic)",
+                "summary": "no diagnostic twin to test (monoisotopic)"}
     try:
         floor = cfg.height_cutoff
     except Exception:                                    # noqa: BLE001 -- unresolved gate
         floor = None
     if floor is None:
         return {"verdict": "deferred", "twin": el,
-                "why": f"single channel; no resolved detection floor to judge the {el} twin"}
+                "why": f"single channel; no resolved detection floor to judge the {el} twin",
+                "summary": "no resolved detection floor"}
     idx = ledger.index[ledger["peak_id"] == pid]
     if not len(idx) or pd.isna(ledger.at[idx[0], "height"]) or float(ledger.at[idx[0], "height"]) <= 0:
         return {"verdict": "deferred", "twin": el,
-                "why": f"single channel; no parent height to predict the {el} twin from"}
+                "why": f"single channel; no parent height to predict the {el} twin from",
+                "summary": "no parent height"}
     h = float(ledger.at[idx[0], "height"])
     m0 = float(ledger.at[idx[0], "mz"])
     n = int(counts.get(el, 0))
-    support, contra, under = [], [], []
+    support, contra, under = [], [], []          # (detail, summary) pairs
     for delta, per_atom, label in _TWIN_LINES[el]:
         pred_ratio = n * per_atom
         pred_h = pred_ratio * h
         if pred_h < TWIN_REFUTE_X_FLOOR * floor:
-            under.append(f"{label} predicted at {pred_h:.0f} cps, under {TWIN_REFUTE_X_FLOOR:g}x "
-                         f"the {floor:.0f}-cps floor")
+            under.append((f"{label} predicted at {pred_h:.0f} cps, under {TWIN_REFUTE_X_FLOOR:g}x "
+                          f"the {floor:.0f}-cps floor", label))
             continue
         j = _peak_near(ledger["mz"], m0 + delta, ppm=_TWIN_PPM)
         if j is None or pd.isna(ledger.at[j, "height"]):
-            contra.append(f"no {label} line at +{delta:.4f} (predicted {pred_ratio:.2f}x the parent, "
-                          f"{pred_h:.0f} cps)")
+            contra.append((f"no {label} line at +{delta:.4f} (predicted {pred_ratio:.2f}x the parent, "
+                           f"{pred_h:.0f} cps)", f"no {label} line where one was predicted above the floor"))
             continue
         obs = float(ledger.at[j, "height"]) / h
         if obs >= TWIN_MIN_FRAC * pred_ratio:
-            support.append(f"{label} line at {obs:.2f}x the parent (predicted {pred_ratio:.2f})")
+            support.append((f"{label} line at {obs:.2f}x the parent (predicted {pred_ratio:.2f})", label))
         else:
-            contra.append(f"{label} line at {obs:.2f}x the parent, under {TWIN_MIN_FRAC:g}x the "
-                          f"predicted {pred_ratio:.2f}")
+            contra.append((f"{label} line at {obs:.2f}x the parent, under {TWIN_MIN_FRAC:g}x the "
+                           f"predicted {pred_ratio:.2f}",
+                           f"{label} line under {TWIN_MIN_FRAC:g}x its prediction"))
+
+    def _lines(items):
+        labs = [s for _, s in items]
+        return (" and ".join(labs) + (" lines" if len(labs) > 1 else " line"))
+
     if contra:
-        return {"verdict": "refuted", "twin": el, "why": "single channel; " + "; ".join(contra)}
+        return {"verdict": "refuted", "twin": el,
+                "why": "single channel; " + "; ".join(d for d, _ in contra),
+                "summary": "; ".join(s for _, s in contra)}
     if support:
         return {"verdict": "deferred", "twin": el,
-                "why": "single channel; " + "; ".join(support)
-                       + " -- present in the ledger, not credited by the scorer"}
-    return {"verdict": "deferred", "twin": el, "why": "single channel; " + "; ".join(under)}
+                "why": "single channel; " + "; ".join(d for d, _ in support)
+                       + " -- present in the ledger, not credited by the scorer",
+                "summary": f"{_lines(support)} present at the predicted ratio, not credited by the scorer"}
+    return {"verdict": "deferred", "twin": el,
+            "why": "single channel; " + "; ".join(d for d, _ in under),
+            "summary": f"{_lines(under)} predicted under {TWIN_REFUTE_X_FLOOR:g}x the floor"}
 
 
 def _record_known_lead(ledger: pd.DataFrame, pid, *, formula: str, fam: str, lbl: str,
                        adduct: str, ion_formula, mz: float, ppm, ion_score, channels: int,
-                       verdict: str, why: str, twin: str | None = None) -> None:
+                       verdict: str, why: str, twin: str | None = None,
+                       summary: str | None = None) -> None:
     """Stamp `known_lead` on the peak's ledger row: the known-species reading
     pass 0 anchored on-cal in this file but did not commit, with its `verdict`
     (`deferred` = the file could not test it; `refuted` = it tested it and it
-    failed) and `why`. One JSON record per peak; a peak is one ion, so the
+    failed), `why` (with this file's numbers) and `summary` (the same reason
+    without them, so the batch can count files per reason on the merged row).
+    One JSON record per peak; a peak is one ion, so the
     first refused claim on it stands. The row itself is untouched otherwise --
     the grid may still assign it -- and the batch reads the record back
     (assign_batch.known_evidence) to decide the species once, by evidence."""
@@ -437,7 +454,8 @@ def _record_known_lead(ledger: pd.DataFrame, pid, *, formula: str, fam: str, lbl
         "mz": round(float(mz), 5),
         "ppm": None if ppm is None or pd.isna(ppm) else round(float(ppm), 3),
         "ion_score": None if ion_score is None or pd.isna(ion_score) else round(float(ion_score), 3),
-        "channels": int(channels), "verdict": verdict, "twin": twin, "why": why})
+        "channels": int(channels), "verdict": verdict, "twin": twin, "why": why,
+        "summary": summary or why})
 
 
 def run_pass0_known(
@@ -565,7 +583,8 @@ def run_pass0_known(
                         f"(composite or wrong claim)"
                     )
                     _lead(verdict="refuted", twin="Br",
-                          why=f"own 81Br twin ratio {rt:.2f} outside 0.5-1.7 (composite or wrong claim)")
+                          why=f"own 81Br twin ratio {rt:.2f} outside 0.5-1.7 (composite or wrong claim)",
+                          summary="own 81Br twin ratio inconsistent (composite or wrong claim)")
                     continue
             # organophosphates are monoisotopic in P -> require >=2 ion channels
             # (e.g. [M+H]+ AND [M+(urea)H]+) before locking, since there is no
