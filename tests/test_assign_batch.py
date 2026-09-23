@@ -249,7 +249,7 @@ check("lock: the row says the evidence and what it overrode",
                      "the Si twin is predicted below the detection floor)")
       and _tr.endswith("; kept over the 9-file C27H30O14 [M+H]+ reading (vote 1 of 10 files)"), _tr)
 check("lock: counts", g == {"pooled": 1, "locked": 1, "confirmed_kept": 0, "conflict": 0,
-                            "lead_only": 0, "no_cluster": 0}, g)
+                            "lead_only": 0, "mass_only_outvoted": 0, "no_cluster": 0}, g)
 check("lock: admitted_by / occurrence come from the confirmed file's row, not the loser's",
       row["admitted_by"] == "height" and abs(float(row["occurrence"]) - 0.9) < 1e-9, row.to_dict())
 # REFUTED anywhere: a file that could show the twin and did not contradicts the
@@ -329,6 +329,50 @@ check("lock: a confirmed species the vote already chose keeps its row and gains 
       uni.iloc[0].to_dict())
 gn = AB.lock_known_species(uni, [dict(_TCP, neutral="C6H15O4P", adduct="[M+H]+", mz=183.078)],
                            tol_ppm=6.0, log=lambda *a: None)
+# a MASS-ONLY family (the PFCAs: no twin, no second channel demanded) carries
+# nothing to pool beyond the count of files it fitted in: a PFCA [M-H]- on-cal in
+# 2 files of a ~4k TOF must not displace an 11-file 81Br-corroborated CHOS [M+Br]-
+# reading 6 ppm away -- the vote stands, the row says so
+pf = {**_files(11, 362.9717, "C12H12O8", "[M+Br]-", "Assigned", 0.91),
+      **_files(2, 362.9700, "C7HF13O2", "[M-H]-", "Assigned", 0.98, start=11)}
+mpf, _ = AB.align(pf, tol_ppm=6.0)
+_PF = dict(neutral="C7HF13O2", adduct="[M-H]-", family="perfluoroacid", label="perfluoro-C7 acid (PFCA)",
+           verdict="confirmed", why=AB.MASS_ONLY_ROUTE, summary=AB.MASS_ONLY_ROUTE, ion_score=0.98,
+           tier="Assigned", admitted_by="height", occurrence=0.6)
+gpf = AB.lock_known_species(mpf, [dict(_PF, src="v11", mz=362.9700), dict(_PF, src="v12", mz=362.9701)],
+                            tol_ppm=6.0, log=lambda *a: None)
+check("lock: a mass-only species confirmed in 2 files does NOT override the 11-file vote; noted",
+      mpf.iloc[0]["neutral_formula"] == "C12H12O8" and mpf.iloc[0]["tier"] == "Assigned"
+      and gpf["mass_only_outvoted"] == 1 and gpf["locked"] == 0
+      and str(mpf.iloc[0]["tier_reason"]) == ("mass-only known species perfluoro-C7 acid (PFCA) (C7HF13O2 "
+                                              "[M-H]-) anchored on-cal in 2 files; the vote's 11-file C12H12O8 "
+                                              "[M+Br]- reading stands (exact mass alone cannot overrule a "
+                                              "reading carried by more files)"),
+      mpf.iloc[0].to_dict())
+# ... and a mass-only species the vote itself chose is simply confirmed on its row
+uni_pf, _ = AB.align(_files(3, 112.9857, "C2HF3O2", "[M-H]-", "Assigned", 0.9), tol_ppm=6.0)
+gpu = AB.lock_known_species(uni_pf, [dict(_PF, neutral="C2HF3O2", label="TFA", src=f"v{i:02d}", mz=112.9857)
+                                     for i in range(3)], tol_ppm=6.0, log=lambda *a: None)
+check("lock: a mass-only species the vote chose -> confirmed_kept",
+      gpu["confirmed_kept"] == 1 and gpu["mass_only_outvoted"] == 0 and uni_pf.iloc[0]["neutral_formula"] == "C2HF3O2")
+# MEMBERSHIP, not the m/z window: a chlorinated paraffin 37Cl-confirmed in ONE
+# file whose own m/z sits 7.5 ppm from the mean of a cluster the 12-file grid
+# reading dominates -- the vote lists it in `alternatives`, so the lock finds it
+_mcp = pd.DataFrame([dict(mz=680.9847, neutral_formula="C25H18N2O16", adduct="[M+Br]-", tier="Candidate",
+                          ion_score=0.90, n_files=13, n_files_ion=12, n_files_winner=12,
+                          alternatives="C24H40Cl10 [M-H]- x1 Assigned 0.58", tier_reason=pd.NA,
+                          srcs=",".join(f"v{i:02d}" for i in range(13)), admitted_by="height", occurrence=0.5)])
+gcp = AB.lock_known_species(_mcp, [dict(neutral="C24H40Cl10", adduct="[M-H]-", family="chlorinated_paraffin",
+                                        label="chlorinated paraffin C24Cl10", src="v12", mz=680.9898,
+                                        verdict="confirmed", why="corroborated by a 37Cl envelope (2 satellites)",
+                                        summary="corroborated by a 37Cl envelope (2 satellites)", ion_score=0.58,
+                                        tier="Assigned", admitted_by="height", occurrence=0.1)],
+                            tol_ppm=6.0, log=lambda *a: None)
+check("lock: a reading the vote lists in `alternatives` is found by membership, 7.5 ppm off the cluster mean",
+      gcp["locked"] == 1 and gcp["no_cluster"] == 0 and _mcp.iloc[0]["neutral_formula"] == "C24H40Cl10"
+      and _mcp.iloc[0]["alternatives"] == "C25H18N2O16 [M+Br]- x12 Candidate 0.90"
+      and str(_mcp.iloc[0]["tier_reason"]).endswith("kept over the 12-file C25H18N2O16 [M+Br]- reading (vote 1 of 13 files)"),
+      _mcp.iloc[0].to_dict())
 check("lock: a pooled ion with no merged row within tolerance is counted, nothing moves",
       gn["no_cluster"] == 1 and gn["locked"] == 0 and uni.iloc[0]["neutral_formula"] == "C21H21O4P")
 check("lock: an empty pool / an empty frame is a no-op",
@@ -388,7 +432,8 @@ _mk2 = pd.DataFrame([dict(mz=579.1710, neutral_formula="C14H42O7Si7", adduct="[M
                           tier_reason=pd.NA, srcs="f1")])
 _g2 = AB.lock_known_species(_mk2, _ke, tol_ppm=6.0, log=lambda *a: None)
 check("lock over known_evidence: confirmed_kept 1, lead_only 1, no_cluster 1 (TFA has no row here)",
-      _g2 == {"pooled": 3, "locked": 0, "confirmed_kept": 1, "conflict": 0, "lead_only": 1, "no_cluster": 1}
+      _g2 == {"pooled": 3, "locked": 0, "confirmed_kept": 1, "conflict": 0, "lead_only": 1,
+              "mass_only_outvoted": 0, "no_cluster": 1}
       and str(_mk2.iloc[1]["tier_reason"]).startswith("known-species lead: tricresyl phosphate"), _g2)
 
 # an unparseable adduct is its own ion (no crash, no false merge of labels)
@@ -611,7 +656,8 @@ try:
               "always -- nothing pooled here; no polarity gate in negative mode)",
               set(summ.get("merge_gates", {})) == {"known"}
               and summ["merge_gates"]["known"] == {"pooled": 0, "locked": 0, "confirmed_kept": 0,
-                                                   "conflict": 0, "lead_only": 0, "no_cluster": 0},
+                                                   "conflict": 0, "lead_only": 0, "mass_only_outvoted": 0,
+                                                   "no_cluster": 0},
               summ.get("merge_gates"))
         # 8 samples: fewer than the 10 spectra the persistence table needs, so the
         # 'auto' policy has nothing to derive the floor from and falls back to the

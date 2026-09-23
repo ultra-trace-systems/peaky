@@ -31,7 +31,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   admission provenance; the vote's winner to the head of `alternatives`; the evidence and what it
   overrode in `tier_reason`); confirmed and refuted → left to the vote, the conflict on the row,
   and the merged tier capped at Candidate where the row's own reading is the conflicted species
-  and the refutations outnumber the confirmations; never confirmed → a `known-species lead` note.
+  and the refutations outnumber the confirmations; never confirmed → a `known-species lead` note;
+  a family whose own rule is exact mass alone (the PFCAs, the nitroaromatics, the C0 acids) has
+  nothing to pool beyond the count, so it never overrides the vote (a PFCA on-cal in 2 files of a
+  ~4k TOF does not displace an 11-file 81Br-corroborated reading 6 ppm away; the row says so). The
+  merged row a pooled reading belongs to is found by membership (the vote lists every losing reading
+  in `alternatives`), the m/z window only for a lead no file committed — a minority reading's own
+  m/z falls outside the merge window of a cluster the majority ion pulls 6-8 ppm away.
   The note counts files per reason (each lead carries the reason with the file's numbers, `why`,
   and without them, `summary`). Silence never votes against a species, a
   refutation does — sulfolane, 34S-confirmed in one file against fluorenone `[M+H]+` in nine bright

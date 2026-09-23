@@ -466,6 +466,11 @@ def _protected_neutrals(ledger: pd.DataFrame) -> set:
 # <x>, ion score <y>; ...; corroborated by <route>"
 _KNOWN_LABEL_RE = re.compile(r"=\s*(.+?),\s*ppm\s")
 _KNOWN_ROUTE_RE = re.compile(r"corroborated by (.+?)(?:;|$)")
+#: the route of a family whose own rule is exact mass alone (the perfluoroacids,
+#: the nitroaromatics, the C0 atmospheric acids, reactive iodine ...): such a
+#: commit carries no evidence the batch can pool beyond the count of files it
+#: fitted in, so it never overrides the vote (see lock_known_species)
+MASS_ONLY_ROUTE = "exact mass, on-cal (the family's own rule)"
 
 
 def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
@@ -508,10 +513,8 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
                 family=meth[i][len("known:"):],
                 label=lab.group(1).strip() if lab else "",
                 verdict="confirmed",
-                why=("corroborated by " + route.group(1).strip()) if route
-                    else "exact mass, on-cal (the family's own rule)",
-                summary=("corroborated by " + route.group(1).strip()) if route
-                    else "exact mass, on-cal (the family's own rule)",
+                why=("corroborated by " + route.group(1).strip()) if route else MASS_ONLY_ROUTE,
+                summary=("corroborated by " + route.group(1).strip()) if route else MASS_ONLY_ROUTE,
                 ion_score=_num(ledger.at[i, "ion_score"]) if "ion_score" in ledger.columns else None,
                 tier=_col(i, "tier") or None,
                 admitted_by=_col(i, "admitted_by") or None,
@@ -593,7 +596,20 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
         where the vote's own winner IS the conflicted species and it was refuted
         in more files than it was confirmed in, the merged tier is capped at
         Candidate (the one file's Assigned cannot stand for the batch);
-      * a lead never confirmed anywhere is noted on the row, not locked.
+      * a lead never confirmed anywhere is noted on the row, not locked;
+      * a species whose family's rule is exact mass alone (MASS_ONLY_ROUTE: no
+        diagnostic twin, no second channel demanded) carries nothing to pool
+        beyond the count of files it fitted in, so it never overrides the vote:
+        a PFCA `[M-H]-` on-cal in two files of a ~4k TOF cannot displace an
+        11-file, 81Br-corroborated CHOS `[M+Br]-` reading 6 ppm away; the row
+        notes it, the vote stands.
+
+    The merged row a pooled reading belongs to is found by MEMBERSHIP -- the
+    row whose own reading or whose `alternatives` lists it (the vote names
+    every losing reading as "NF AD xN ...") -- and only for a reading no file
+    committed by the m/z window: a minority reading's own m/z sits outside the
+    merge window of a cluster whose mean the majority ion pulls 6-8 ppm away,
+    which is exactly where a lock matters.
 
     A locked row takes the known reading (neutral, adduct, the confirmed files'
     best tier / score / admission provenance), moves the vote's winner to the
@@ -603,7 +619,7 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
     conflict, lead_only, no_cluster) for `batch_summary["merge_gates"]`."""
     from peaky.assignment.cleanup import _note
     counts = {k: 0 for k in ("pooled", "locked", "confirmed_kept", "conflict",
-                             "lead_only", "no_cluster")}
+                             "lead_only", "mass_only_outvoted", "no_cluster")}
     if not pool or merged is None or not len(merged) or "mz" not in merged.columns:
         return counts
     if "tier_reason" not in merged.columns:
@@ -611,6 +627,16 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
     if "alternatives" not in merged.columns:
         merged["alternatives"] = ""
     mz = pd.to_numeric(merged["mz"], errors="coerce").to_numpy(dtype=float)
+    pos = {i: k for k, i in enumerate(merged.index)}
+    members: dict = {}                     # (neutral, adduct) -> merged rows holding it
+    for i in merged.index:
+        keys = {(_s(merged.at[i, "neutral_formula"]), _s(merged.at[i, "adduct"]))}
+        for entry in _s(merged.at[i, "alternatives"]).split("; "):
+            parts = entry.split(" ")
+            if len(parts) >= 3 and parts[2].startswith("x"):
+                keys.add((parts[0], parts[1]))
+        for k in keys:
+            members.setdefault(k, []).append(i)
     groups: dict = {}
     for rec in pool:
         groups.setdefault((str(rec["neutral"]), str(rec["adduct"])), []).append(rec)
@@ -621,14 +647,22 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
         ref = [r for r in recs if r["verdict"] == "refuted"]
         mz0 = float(np.median([float(r["mz"]) for r in recs]))
         d = np.abs(mz - mz0)
-        cand = np.flatnonzero(np.isfinite(d) & (d <= max(mz0 * tol_ppm * 1e-6, mz_floor_da)))
-        if not len(cand):
-            counts["no_cluster"] += 1
-            continue
-        i = merged.index[cand[np.argmin(d[cand])]]
+        held = [j for j in members.get((nf, ad), ()) if np.isfinite(d[pos[j]])]
+        if held:
+            i = min(held, key=lambda j: d[pos[j]])
+        else:
+            cand = np.flatnonzero(np.isfinite(d) & (d <= max(mz0 * tol_ppm * 1e-6, mz_floor_da)))
+            if not len(cand):
+                counts["no_cluster"] += 1
+                continue
+            i = merged.index[cand[np.argmin(d[cand])]]
         label = next((str(r["label"]) for r in conf + dfr + ref if r.get("label")), "") or nf
         same = _s(merged.at[i, "neutral_formula"]) == nf and _s(merged.at[i, "adduct"]) == ad
         n_c = len({r["src"] for r in conf})
+        old_nf, old_ad = _s(merged.at[i, "neutral_formula"]), _s(merged.at[i, "adduct"])
+        old_n = (int(merged.at[i, "n_files_winner"])
+                 if "n_files_winner" in merged.columns and pd.notna(merged.at[i, "n_files_winner"])
+                 else 0)
         head = (f"known species decided once for the batch: {label} ({nf} {ad}) -- "
                 f"{_pool_summary(conf, dfr, ref)}")
         if conf and not ref:
@@ -636,12 +670,15 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                 _note(merged, i, head)
                 counts["confirmed_kept"] += 1
                 continue
+            if all((r.get("summary") or r.get("why")) == MASS_ONLY_ROUTE for r in conf):
+                _note(merged, i, f"mass-only known species {label} ({nf} {ad}) anchored on-cal in "
+                                 f"{n_c} file{'s' if n_c != 1 else ''}; the vote's {old_n}-file {old_nf} "
+                                 f"{old_ad} reading stands (exact mass alone cannot overrule a reading "
+                                 "carried by more files)")
+                counts["mass_only_outvoted"] += 1
+                continue
             best = max(conf, key=lambda r: (TIER_RANK.get(str(r.get("tier")), 0),
                                             r.get("ion_score") or 0.0))
-            old_nf, old_ad = _s(merged.at[i, "neutral_formula"]), _s(merged.at[i, "adduct"])
-            old_n = (int(merged.at[i, "n_files_winner"])
-                     if "n_files_winner" in merged.columns and pd.notna(merged.at[i, "n_files_winner"])
-                     else 0)
             old_sc = merged.at[i, "ion_score"] if "ion_score" in merged.columns else np.nan
             old = (f"{old_nf} {old_ad} x{old_n} {_s(merged.at[i, 'tier'])}"
                    + ("" if pd.isna(old_sc) else f" {float(old_sc):.2f}"))
@@ -690,6 +727,7 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
     log(f"[known] pooled {counts['pooled']} known-species ion(s): {counts['locked']} locked over the "
         f"vote, {counts['confirmed_kept']} confirmed where the vote already stood, "
         f"{counts['conflict']} in conflict (left to the vote), {counts['lead_only']} lead(s) only, "
+        f"{counts['mass_only_outvoted']} mass-only species outvoted, "
         f"{counts['no_cluster']} without a merged row")
     return counts
 

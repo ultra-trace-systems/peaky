@@ -168,10 +168,23 @@ selected sample_ids (SAMPLING.md)
      file's numbers), with the file count per reason when there are several.
    - never confirmed → a `known-species lead: …; not locked` note on the row,
      nothing moves.
+   - a species whose family's rule is exact mass alone (the perfluoroacids, the
+     nitroaromatics, the C0 atmospheric acids, reactive iodine: no twin and no
+     second channel demanded) carries nothing to pool beyond the count of files
+     it fitted in, so it never overrides the vote — a PFCA `[M-H]-` on-cal in 2
+     files of a ~4k TOF cannot displace an 11-file ⁸¹Br-corroborated CHOS
+     `[M+Br]-` reading 6 ppm away; the row notes it (`mass-only known species …;
+     the vote's 11-file … reading stands`) and the vote stands.
+   The merged row a pooled reading belongs to is found by membership — the row
+   whose own reading or whose `alternatives` lists it — and by the m/z window
+   only for a reading no file committed: a minority reading's own m/z sits
+   outside the merge window of a cluster whose mean the majority ion pulls
+   6–8 ppm away, which is exactly where a lock matters.
    A reference-list rescue gets no such lock — its corroboration is a ¹³C line,
    which every carbon formula has — and a `certified:` neutral never did.
    `batch_summary.json["merge_gates"]["known"]` records the counts (`pooled`,
-   `locked`, `confirmed_kept`, `conflict`, `lead_only`, `no_cluster`).
+   `locked`, `confirmed_kept`, `conflict`, `lead_only`, `mass_only_outvoted`,
+   `no_cluster`).
 
 5. **Positive urea re-reads, once per batch.** When `prof.polarity == "+"` two
    gates run on the merged ledger, and each writes its note to the merged row's
