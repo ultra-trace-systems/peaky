@@ -8,6 +8,124 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The EasyIC source-ion library, and the reason its background was being read as
+  sample.** On the certified-cylinder run the calibrant's own PAH ladder (C13H8,
+  C14H10, C14H12, C15H8, C15H10, C15H12) and most of an air-plasma C/N/O family sat
+  in the ledger as **Assigned analytes** in a cylinder that contains none of them.
+  The first guess — that the library was simply short of entries — was wrong twice
+  over, and the run says so:
+  - **The time-series layer already classifies flat background, and it was getting
+    the answer backwards.** Those bins are flat to cv_norm 0.06-0.08 against
+    1.1-3.8 for every certified analyte, yet the batch run labelled them
+    `ambient:variable` at cv_norm 0.53. Cause: the only EasyIC library ions inside
+    the 50-200 window were the urea CROSSOVER masses from the other source module —
+    0.013 % of TIC with an own cv of 0.93 — and dividing by a trace that moves does
+    not remove a common-mode swing, it injects one. **A normaliser now has to clear
+    the same bar it is used to judge** (`MAX_NORMALISER_CV` = `FLAT_CV`): if it
+    moves more than a flat channel it is rejected, with its own cv reported, and the
+    traces stay un-normalised. A real reagent beam clears it easily — fluoranthene
+    holds ±5 % through a 12× load swing. With the guard in place those six bins read
+    `background:flat` and the certified components keep `ambient:variable`.
+  - **The flat-background demote is no longer specific to two channels.** It fired
+    only for di-bromide and CO3 commits, so everything else stayed `Assigned` —
+    which is where a reader looks. Any flat `Assigned` commit is now capped at
+    `Candidate` with the cv in its `tier_reason`. It is armed only when the run
+    itself varies (`MIN_VARYING_FRAC`): a steady-state batch is flat everywhere,
+    and there flatness distinguishes nothing, so nothing is demoted. On the
+    dilution series 54 % of bins vary, and the separation between the two
+    populations is 9-65×, nowhere near the threshold.
+  - **What is NOT in the library, deliberately.** Naming those PAH and C/N/O
+    compositions as reagent ions was the obvious fix and is the wrong one: a
+    reagent label is permanent, and anthracene/phenanthrene C14H10 is a primary
+    target of any combustion or urban-air run. That is the HIO3 ruling — labelling
+    the iodine oxides reagent would have locked away iodic acid. Behaviour
+    identifies them, so behaviour tiers them, and in a run where anthracene really
+    varies it keeps its tier.
+  - Added instead are the ions that can **never** be an analyte: the calibrant's
+    acetylene-loss fragments C14H8 / C12H6 (a fragment cannot gain hydrogen, which
+    is what separates them from the H-richer ladder above; C14H8 is present and
+    flat at cv_norm 0.13 and is now labelled `reagent` rather than committed),
+    carbon-free N2+·/N4+·, and hydronium with its water-cluster series — in range
+    now that acquisitions start at m/z 17.
+  - Net on the 50-200 sample: `Assigned` 140 -> 96, nitrogen-bearing `Assigned`
+    16 -> 8, rows carrying a background disposition 9 -> 87, and every certified
+    component still `Assigned`. This also absorbs most of the nitrogen-phantom cost
+    the abstraction channels added below.
+
+- **The positive-mode abstraction channels `[M-H]+` and `[M-CH3]+` are reachable,
+  and `[M-CH3]+` exists at all.** Audited against a certified 18-component
+  calibration cylinder, EasyIC's charge-transfer channel was exact (8 of 8
+  compounds, |ppm| <= 0.5) while every one of its other channels named a molecule
+  that is not in the bottle. Cause: the mechanism plumbing is keyed on deployment
+  mechanism ids, and no deployment registers one for a positive-mode abstraction —
+  so `ADDUCT_TO_MECH` filtered `[M-H]+` out before the scorer saw it, even though
+  the local scoring backend has computed `-H+` all along. The channel was
+  *unreachable*, not unscorable. An abstraction ion is also mass- and
+  envelope-identical to the protonated form of the neutral one H2 (or one CH4)
+  lighter, so with only the `[M+H]+` reading offered, that reading won every time:
+  acetone was read as propenal, isoprene as cyclopentadiene, hexanal as C6H10O, and
+  the two brightest peaks of the window — the benzyl and methylbenzyl cations — as
+  protonated C7H6 and C8H8.
+  - Abstraction channels now travel inside `cfg.mechanism_ids` as tagged tokens
+    (`io_mascope.LOCAL_MECH_PREFIX`), translated to a local mechanism name in the
+    one place ids reach the scorer and stripped in the two places they reach the
+    server. Fourteen call sites thread `mechanism_ids` already; a second parameter
+    would have had to be added to each, and the one that got missed would lose the
+    channel again in silence. They stay out of `ADDUCT_TO_MECH` on purpose: the
+    server spells negative deprotonation `-H+` too, so keying `[M-H]+` there would
+    make `MECH_TO_ADDUCT` ambiguous.
+  - `[M-CH3]+` is new — in `ADDUCT_SHIFTS`, in `_DIFF_TO_ADDUCT` (a channel missing
+    there is silently written to the ledger as a deprotonation), and in the EasyIC
+    profile and context. It is the cyclic methylsiloxanes' quantifier channel: D4
+    281.0511 and D5 355.0699 are 27 kcps and 107 kcps on the certified run, the
+    brightest peak of the 210-500 window among them, against `[M+H]+` lines
+    carrying 0.5 % of the same compound. Si deliberately stays out of the
+    enumeration grid — the siloxanes reach the channel through the pass-0
+    `cyclosiloxane` known list, where the commit is already gated on >= 2 channels
+    or a confirmed 29Si/30Si envelope.
+  - Both channels are MINOR channels, and are never enumerated from. The alias is
+    exact, so a good score cannot choose between the readings: on the certified run
+    isoprene's `[M-H]+` scores 0.900 against protonated cyclopentadiene's 0.902 on
+    the same peak, and hexanal's 0.982 against C6H10O's 0.982. Three consequences,
+    each measured on that run rather than argued:
+    - Un-penalised, the winner is whatever sorts first. Toluene's protonated line
+      93.0699 flipped from the correct `C7H8 [M+H]+` to `C7H10 [M-H]+`. The
+      minor-channel ranking penalty sends an exact tie to the protonation reading
+      and the flip is gone; a genuinely better abstraction fit can still win by more
+      than the penalty.
+    - Enumerating candidates FROM these channels turned 59 honestly-unexplained
+      peaks into commits, 40 of them nitrogen-bearing neutrals in a
+      nitrogen-free cylinder, and gained nothing. The channels are now scored for
+      neutrals the run already has (pass 0's known species, pass 5's cross-channel
+      search, a reference-list rescue) but never proposed from — the `[M+Br3]-`
+      ruling.
+    - The minor-channel commit gate's score and series exemptions do not apply to
+      them, so cross-channel standing for the neutral is the only way in. A high
+      score says the ion composition is right, not which molecule shed which
+      radical.
+  - Channel COUNT was tried as a tie-break and rejected on measurement: in a
+    fragmenting source the spectrum has a peak at nearly every (nominal mass,
+    defect) a small CHO formula needs, so C5H6 matches all four channels exactly
+    like C5H8 and C6H10O like C6H12O. The count separates nothing and a prior keyed
+    on it fires on both sides of every tie.
+  - Net on the certified mixture, same two samples, same peaks: 9 of 15 components
+    named correctly before, 11 of 15 after (D4 and D5 gained), no regression on any
+    quantifier or secondary channel, and unexplained peaks down 291 -> 247 and
+    108 -> 59. D4 and D5 also reclaim their own ²⁹Si/³⁰Si satellites, evicting five
+    sodium-adduct commits that had been sitting on them, two of them `Assigned`.
+    The three hydride components (acetone, isoprene, hexanal) are unchanged and
+    still read as the neutral two hydrogens lighter: that degeneracy is not
+    resolvable from one spectrum, and what stands between the reader and the wrong
+    molecule is `cleanup.annotate_easyic_ambiguity`'s dual-reading note. **Known
+    cost:** nitrogen-bearing neutrals rose from 62 to 89 in the 50-200 sample and 58
+    to 72 in 210-500 — every one of them wrong in a nitrogen-free cylinder. They are
+    the air-plasma CxNyOz+ source ions that `_EASYIC_SOURCE_IONS` does not label, so
+    the peaks are open to any grid formula; the new channels widen the opening
+    rather than create it.
+  - With the network scorer forced on (`PEAKY_LOCAL_SCORING=0`) these channels
+    cannot be scored at all; the run now says so once per sample instead of
+    dropping a declared channel without a word.
+
 - **A privacy scan that refuses internal identifiers, run by the suite and by CI.**
   Peaky is public; the servers, workspaces, datasets and batches a run touches are
   not. The rule was applied by hand three times and missed once, when a stacked pull

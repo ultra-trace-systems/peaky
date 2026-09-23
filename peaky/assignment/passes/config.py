@@ -208,7 +208,28 @@ class PassConfig:
     # near-tie goes to the primary channel) and a minor-channel WINNER may only
     # commit with corroboration: a Good+ score, series-evidence method, or the
     # same neutral independently assigned via a primary channel.
-    minor_channels: tuple = ("[M+CO3]-", "[M+O2]-", "[M]-.")
+    # The positive ABSTRACTION channels are minor for a different reason than the
+    # air-ion ones: not rarity, but an EXACT alias. [M-H]+ of M is the same ion as
+    # [M+H]+ of M-H2, down to the isotope envelope, so on the 2026-09-22 certified
+    # mixture the two readings of one peak score identically (isoprene C5H8 0.900
+    # vs cyclopentadiene C5H6 0.902; hexanal 0.982 both ways) and the winner is
+    # whatever sorts first. Measured consequences of leaving them un-penalised on
+    # that run: toluene's protonated line 93.0699 flipped from the correct C7H8
+    # [M+H]+ to C7H10 [M-H]+, and nitrogen-bearing neutrals in a nitrogen-free
+    # cylinder rose from 62 to 105. The penalty sends an exact tie to the
+    # protonation reading (the status quo) while still letting a genuinely better
+    # abstraction fit win by > minor_channel_penalty -- and pass 0 commits known
+    # species directly, without arbitration, so the methylsiloxanes still take
+    # [M-CH3]+ on their own 29Si/30Si evidence.
+    #
+    # Channel COUNT is deliberately NOT used to break this tie. It was tried and
+    # measured on the same run: in a fragmenting source the spectrum has a peak at
+    # nearly every (nominal mass, defect) a small CHO formula needs, so C5H6
+    # matches on all four channels exactly like C5H8 and C6H10O like C6H12O -- the
+    # count separates nothing, and a prior keyed on it fires on both sides of every
+    # tie. The evidence that does separate them is outside MS1.
+    minor_channels: tuple = ("[M+CO3]-", "[M+O2]-", "[M]-.",
+                             "[M-H]+", "[M-CH3]+")
     minor_channel_penalty: float = 0.12
     # Reference-list selection prior: a candidate neutral on an ACTIVE reference
     # peaklist (a published product of the sample's chemistry, or a known

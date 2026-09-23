@@ -69,6 +69,8 @@ _ADDUCT_DELTA = {          # ion composition minus neutral composition
     "[M+CO3]-": {"C": 1, "O": 3}, "[M+H]+": {"H": 1}, "[M+NH4]+": {"N": 1, "H": 4},
     "[M+Na]+": {"Na": 1}, "[M+(CH4N2O)H]+": {"C": 1, "H": 5, "N": 2, "O": 1},
     "[M]+.": {}, "[M-H]+": {"H": -1},   # EasyIC: charge transfer / hydride off
+    # EasyIC methyl loss (the methylsiloxane quantifier channel)
+    "[M-CH3]+": {"C": -1, "H": -3},
     # 15N-ammonium cluster: the caret ^N in the ion string is what upgrades the
     # folded (H+4, N+1) diff from [M+NH4]+ to the labelled channel
     "[M+^NH4]+": {"^N": 1, "H": 4},
@@ -1655,6 +1657,35 @@ s_i2b = P._resolve_acid_i2_clusters(None, "S", led_i2b, PROF5, ICFG,
 check("iodine-bearing anchor (HIO3) never seeds an I2-cluster proposal",
       s_i2b["committed"] == 0
       and L.role_of(led_i2b, "t3") == L.ROLE_UNEXPLAINED, s_i2b)
+
+
+# ---------- abstraction channels: an EXACT alias, so a MINOR channel ----------
+# C5H7+ @67.0542 is isoprene's hydride ion AND protonated cyclopentadiene: same
+# mass, same isotope envelope, and on the 2026-09-22 certified mixture the same
+# ion score to two decimals. Channel count cannot separate them either (C5H6
+# matches all four channels exactly like C5H8 in a fragmenting source), so the
+# channels carry the minor-channel ranking penalty: an exact tie goes to the
+# protonation reading rather than to whatever sorts first.
+check("both abstraction channels are minor channels",
+      set(P.ABSTRACTION_ADDUCTS) <= set(P.PassConfig().minor_channels))
+check("ABSTRACTION_ADDUCTS names both positive radical-loss channels",
+      set(P.ABSTRACTION_ADDUCTS) == {"[M-H]+", "[M-CH3]+"})
+check("the air-ion minor channels are still minor (unchanged)",
+      {"[M+CO3]-", "[M+O2]-", "[M]-."} <= set(P.PassConfig().minor_channels))
+check("[M-CH3]+ round-trips through _mech_to_adduct (methylsiloxane channel)",
+      P._mech_to_adduct({"ion_formula": "C7H21O4Si4+",
+                         "compound_formula": "C8H24O4Si4"}) == "[M-CH3]+")
+check("[M-H]+ still round-trips (positive hydride, not deprotonation)",
+      P._mech_to_adduct({"ion_formula": "C5H7+",
+                         "compound_formula": "C5H8"}) == "[M-H]+")
+check("a negative deprotonation is untouched by the new positive branch",
+      P._mech_to_adduct({"ion_formula": "C5H7O2-",
+                         "compound_formula": "C5H8O2"}) == "[M-H]-")
+
+# the penalty has to be big enough to settle an exact tie, i.e. strictly
+# positive -- a 0 penalty would restore the coin flip this exists to remove
+check("minor_channel_penalty exceeds the arbitration tie window",
+      P.PassConfig().minor_channel_penalty > 0.05)
 
 
 def test_all():

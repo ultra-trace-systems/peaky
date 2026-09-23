@@ -332,6 +332,46 @@ if os.environ.get("MASCOPE_LIVE") == "1":
 else:
     print("\n(live smoke skipped; set MASCOPE_LIVE=1 to run)")
 
+# ---------- abstraction channels ride inside mechanism_ids (LOCAL_MECH_PREFIX) --
+# [M-H]+ / [M-CH3]+ have no deployment mechanism id, so ADDUCT_TO_MECH cannot
+# carry them -- and must not: the server spells NEGATIVE deprotonation '-H+'
+# too, so keying [M-H]+ there would make MECH_TO_ADDUCT ambiguous.
+check("[M-H]+ stays OUT of ADDUCT_TO_MECH (would collide with [M-H]-)",
+      "[M-H]+" not in IO.ADDUCT_TO_MECH)
+check("[M-CH3]+ stays OUT of ADDUCT_TO_MECH",
+      "[M-CH3]+" not in IO.ADDUCT_TO_MECH)
+check("MECH_TO_ADDUCT['-H+'] is still the negative deprotonation channel",
+      IO.MECH_TO_ADDUCT.get("-H+") == "[M-H]-")
+check("local_mechanism_tokens tags only the abstraction channels",
+      IO.local_mechanism_tokens(["[M]+.", "[M-H]+", "[M-CH3]+", "[M+H]+"])
+      == ["local:-H+", "local:-CH3+"])
+check("local_mechanism_tokens is empty for a profile with no abstraction channel",
+      IO.local_mechanism_tokens(["[M+Br]-", "[M-H]-"]) == [])
+check("_server_mech_ids drops the tagged tokens (never sent to the server)",
+      IO._server_mech_ids(["id1", "local:-H+", "id2"]) == ["id1", "id2"])
+check("_server_mech_ids returns None when only local channels are present",
+      IO._server_mech_ids(["local:-H+"]) is None)
+check("_local_mech_names recovers the local scorer's mechanism spelling",
+      IO._local_mech_names(["id1", "local:-H+", "local:-CH3+"]) == ["-H+", "-CH3+"])
+check("_mechanism_names needs no client when every channel is local",
+      IO._mechanism_names(None, ["local:-H+", "local:-CH3+"]) == ["-H+", "-CH3+"])
+
+# the local scorer must actually compute those channels -- the reason the whole
+# tag exists. Ethanol's hydride ion and D4's methyl-loss ion, both measured.
+from peaky.io import local_scoring as _LS       # noqa: E402
+import pandas as _pd                            # noqa: E402
+_pk = _pd.DataFrame({"peak_id": [1, 2], "mz": [45.03349, 281.05114],
+                     "height": [1e4, 2.7e4]})
+_h = _LS.score_candidates_local(_pk, ["C2H6O"], mechanisms=["-H+"])
+check("local scorer: C2H6O on '-H+' matches the ethanol hydride ion C2H5O+",
+      len(_h) > 0 and str(_h.iloc[0]["ion_formula"]) == "C2H5O+",
+      f"{list(_h.get('ion_formula', []))}")
+_m = _LS.score_candidates_local(_pk, ["C8H24O4Si4"], mechanisms=["-CH3+"])
+check("local scorer: D4 on '-CH3+' matches C7H21O4Si4+ (the quantifier ion)",
+      len(_m) > 0 and str(_m.iloc[0]["ion_formula"]) == "C7H21O4Si4+",
+      f"{list(_m.get('ion_formula', []))}")
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

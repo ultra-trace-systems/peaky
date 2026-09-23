@@ -166,8 +166,15 @@ ADDUCT_SHIFTS: dict[str, float] = {
     #           local-scoring channel). Writing the ion as [M-H]+ of the intact
     #           molecule keeps the NEUTRAL closed-shell, so the integer-DBE
     #           gate holds ([M]+. of the M-H radical is the same ion, blocked).
+    #   [M-CH3]+ METHYL loss: ion = M - CH3⁻. The methylsiloxanes' dominant
+    #           channel -- on the 2026-09-22 certified-mixture run D4 and D5
+    #           ionise almost entirely this way (281.0511 at 27 kcps, 355.0699
+    #           at 107 kcps = the brightest peak of the 210-500 window) while
+    #           their [M+H]+ lines carry 0.5 % of the compound. Same local-only
+    #           status and same closed-shell-neutral argument as [M-H]+.
     "[M]+.": -M_E,
     "[M-H]+": -(M["H"]) - M_E,
+    "[M-CH3]+": -(M["C"] + 3 * M["H"]) - M_E,
     # in-source DEHYDRATION of an alcohol (protonate, lose water): ion =
     # M + H - H2O. Same ion as the bare alkene's [M+H]+ -- an EasyIC
     # fragmentation alias, so like [M-H]+ it has NO server mechanism; it is

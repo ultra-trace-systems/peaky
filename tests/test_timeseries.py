@@ -71,7 +71,15 @@ check("di-bromide flat -> background disposition", disp("db").startswith("backgr
 check("di-bromide flat -> DEMOTED Assigned->Candidate", tier("db") == "Candidate", tier("db"))
 check("demote count >=1", summ["demoted"] >= 1, summ)
 check("fluorinated flat -> inlet contaminant", "inlet/instrument" in disp("ct"), disp("ct"))
-check("contaminant NOT demoted (not di-bromide/CO3)", tier("ct") == "Assigned", tier("ct"))
+# CHANGED 2026-09-23: a flat commit is demoted whatever its channel, not only on
+# the di-bromide / CO3 channels. The narrow rule left the EasyIC calibrant's PAH
+# background and the air-plasma C/N/O family sitting at Assigned in a certified
+# cylinder that contains none of them, which is where a reader looks. The demote
+# is armed only when the run itself varies (MIN_VARYING_FRAC), so a steady-state
+# batch -- where everything is flat and flatness means nothing -- is untouched.
+check("flat inlet contaminant IS demoted in a varying run", tier("ct") == "Candidate",
+      tier("ct"))
+check("the demote is armed here (this fixture varies)", summ["flat_demote_armed"], summ)
 check("flat peaks have low cv_norm", cv("db") < 0.25 and cv("ct") < 0.25, (cv("db"), cv("ct")))
 check("variable ambient peak high cv_norm", cv("am") > 0.4, cv("am"))
 check("co-varying peak -> ambient disposition", disp("am").startswith("ambient"), disp("am"))
@@ -660,6 +668,74 @@ check("bin_ids: an empty table -> an empty array",
       len(TS.bin_ids(_gap.iloc[:0], tol_ppm=6.0)) == 0)
 check("bin_ids: an all-dropped table -> all -1",
       TS.bin_ids(_gap.assign(height=np.nan), tol_ppm=6.0).tolist() == [-1, -1, -1])
+
+
+# ---------- the normaliser must itself be stable -------------------------------
+# On the 2026-09-22 EasyIC dilution series the only library ions inside the
+# 50-200 window were the urea CROSSOVER masses from the other source module:
+# 0.013 % of TIC, own cv 0.93. Normalised by that, the calibrant's flat PAH
+# background read cv_norm 0.53 and was classified "ambient:variable" -- flat
+# instrument background presented as varying sample chemistry. Un-normalised the
+# same bins read 0.06 against 1.1-3.8 for the certified analytes.
+import numpy as _np                                    # noqa: E402
+
+_n = 24
+_t = pd.DataFrame({
+    "sample_item_id": _np.repeat([f"s{i}" for i in range(_n)], 2),
+    "datetime_utc": pd.to_datetime(
+        _np.repeat(pd.date_range("2026-09-22T12:00Z", periods=_n, freq="2min"), 2)),
+    # 100.1000 is flat; 200.2000 swings 100x -- a run whose chemistry moves
+    "mz": _np.tile([100.1000, 200.2000], _n),
+    "height": _np.column_stack([
+        _np.full(_n, 1000.0),
+        _np.where(_np.arange(_n) < _n // 2, 10.0, 1000.0)]).ravel(),
+})
+# a would-be normaliser that swings wildly: 300.3 alternating 10 / 1000
+_t_norm = pd.concat([_t, pd.DataFrame({
+    "sample_item_id": [f"s{i}" for i in range(_n)],
+    "datetime_utc": pd.date_range("2026-09-22T12:00Z", periods=_n, freq="2min"),
+    "mz": [300.3000] * _n,
+    "height": [10.0 if i % 2 else 1000.0 for i in range(_n)],
+})], ignore_index=True)
+_led = pd.DataFrame([
+    dict(peak_id="flat", mz=100.1000, height=1000, role="M0",
+         neutral_formula="C6H6", ion_formula="C6H6+", adduct="[M]+.",
+         tier="Assigned", tier_reason="iso"),
+])
+_s = TS.apply_timeseries(_led.copy(), _t_norm, reagent_mzs=[300.3000],
+                         log=lambda *a: None)
+check("an unstable reagent normaliser is rejected",
+      _s["normaliser"] == "rejected (unstable)", _s)
+check("its own cv is reported so the rejection is auditable",
+      _s.get("normaliser_cv", 0) > TS.MAX_NORMALISER_CV, _s)
+check("MAX_NORMALISER_CV holds the normaliser to the flat-channel bar",
+      TS.MAX_NORMALISER_CV == TS.FLAT_CV)
+_s2 = TS.apply_timeseries(_led.copy(), _t, reagent_mzs=[100.1000],
+                          log=lambda *a: None)
+check("a stable reagent normaliser is accepted", _s2["normaliser"] == "reagent", _s2)
+check("no basis at all -> un-normalised, not a crash",
+      TS.apply_timeseries(_led.copy(), _t, reagent_mzs=[], log=lambda *a: None)
+      ["normaliser"] == "none (un-normalised)")
+
+# ---------- the flat-demote needs a run that varies ----------------------------
+# Every channel flat == a steady-state run, where flatness distinguishes nothing.
+_t_steady = pd.DataFrame({
+    "sample_item_id": _np.repeat([f"s{i}" for i in range(_n)], 2),
+    "datetime_utc": pd.to_datetime(
+        _np.repeat(pd.date_range("2026-09-22T12:00Z", periods=_n, freq="2min"), 2)),
+    "mz": _np.tile([100.1000, 200.2000], _n),
+    "height": _np.tile([1000.0, 500.0], _n),
+})
+_s3 = TS.apply_timeseries(_led.copy(), _t_steady, log=lambda *a: None)
+check("a steady-state run does NOT arm the flat-demote",
+      not _s3["flat_demote_armed"], _s3)
+check("and nothing is demoted there", _s3["demoted"] == 0, _s3)
+_led4 = _led.copy()
+_s4 = TS.apply_timeseries(_led4, _t, log=lambda *a: None)
+check("a varying run arms it", _s4["flat_demote_armed"], _s4)
+check("and the flat Assigned row is capped at Candidate",
+      _led4.loc[_led4.peak_id == "flat", "tier"].iloc[0] == "Candidate",
+      _led4[["peak_id", "tier", "ts_disposition"]].to_dict("records"))
 
 
 def test_all():

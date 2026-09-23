@@ -13,7 +13,8 @@ from peaky.assignment import series_gka as G
 
 
 from .config import PassConfig
-from .core import _f, _mech_to_adduct, arbitrate, commit_winners, confidence_label
+from .core import (ABSTRACTION_ADDUCTS, _f, _mech_to_adduct, arbitrate,
+                   commit_winners, confidence_label)
 from .postprocess import _DBR, _peak_near, _si_m1_consistent
 
 __all__ = [
@@ -1331,7 +1332,20 @@ def _enumerate(
     only consulted when cfg.use_cheminfo is set."""
     formulas: set[str] = set()
     if use_grid:
-        gadducts = [a for a in adducts if a in C.ADDUCT_SHIFTS]
+        # The ABSTRACTION channels are scored (they are in cfg.mechanism_ids) but
+        # never ENUMERATED FROM. The asymmetry is the point: score the channel for
+        # a neutral the run already believes in -- pass 0's known species, pass 5's
+        # cross-channel partner search, a reference-list rescue -- but do not
+        # propose a neutral merely because some grid formula happens to fit the
+        # peak once you subtract an H or a CH3. This is the [M+Br3]- ruling. Both
+        # halves were measured on the 2026-09-22 certified mixture: enumerating
+        # from them turned 59 honestly-unexplained peaks into commits, 40 of them
+        # nitrogen-bearing neutrals in a nitrogen-FREE cylinder, and gained
+        # nothing on the certified set -- while scoring them for pass-0 known
+        # species is exactly what recovers D4 and D5 on their own ²⁹Si/³⁰Si
+        # evidence.
+        gadducts = [a for a in adducts
+                    if a in C.ADDUCT_SHIFTS and a not in ABSTRACTION_ADDUCTS]
         formulas.update(
             C.candidates_for_peaks(
                 list(mzs), ranges, gadducts, ppm_tolerance=cfg.search_ppm

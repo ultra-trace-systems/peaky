@@ -251,7 +251,7 @@ _EASYIC = ContextProfile(
     max_N=5, max_S=2, max_P=1, max_F=0, max_Si=12, max_Cl=0, max_Br=0, max_I=0,
     # mz40-500 windows -> neutrals <= ~500 Da; the ambient 40/30 box covers it.
     min_C_for={"Si": 2},
-    reagent_adducts=("[M]+.", "[M-H]+", "[M+H]+"),
+    reagent_adducts=("[M]+.", "[M-H]+", "[M-CH3]+", "[M+H]+"),
     pass3_families=("amine", "siloxane", "pdms", "glycol_peg", "phthalate"),
 )
 

@@ -494,7 +494,12 @@ def run(sample_id: str, context: str = "ambient-air", *,
                   for a in adducts + extra_channels
                   if a in io_mascope.ADDUCT_TO_MECH]
     mech_map = io_mascope.resolve_mechanism_ids(client, mech_names)
-    cfg.mechanism_ids = list(mech_map.values()) or None
+    # ABSTRACTION channels ([M-H]+, [M-CH3]+) have no deployment mechanism id, so
+    # ADDUCT_TO_MECH cannot carry them and the loop above drops them. They ride
+    # along as tagged tokens instead -- see io_mascope.LOCAL_MECH_PREFIX for why
+    # this goes in mechanism_ids rather than a parallel argument.
+    cfg.mechanism_ids = (list(mech_map.values())
+                         + io_mascope.local_mechanism_tokens(adducts)) or None
     adducts = adducts + [a for a in extra_channels if a not in adducts]
     has_halogen_adduct = any(h in str(a) for a in adducts
                              for h in ("Br", "Cl", "I"))
