@@ -6,6 +6,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`peaky batch` no longer dies in the tier pass when a ledger column is
+  nullable.** `tiers` read its string columns as `str(v or "")` and `if not v`,
+  which raise "boolean value of NA is ambiguous" on `pd.NA` - and a merged ledger
+  carries `pd.NA` whenever rows were appended without the column (the
+  labelled-reagent rescue fills `admitted_by` only for peaks that came through
+  admission). A `--reagent NO3_15N` batch therefore stopped with
+  `TypeError: boolean value of NA is ambiguous` while the single-sample path,
+  which sees float NaN, survived; 0.9.0 still did this. `tiers._txt` is an
+  NA/NaN/None-safe `str()`, and the module's thirteen string reads go through it.
+
 ## [0.9.0] — 2026-09-30 (the v2 fit at the sample's own width, the standard adduct notation, the abstraction and solvent-cluster channels, the privacy scan)
 
 ### Changed

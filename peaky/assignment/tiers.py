@@ -245,15 +245,37 @@ def _alt_raw(a: dict) -> float | None:
 _ADDUCT_TOKENS = re.compile(r"([+-])\^?([A-Za-z0-9]+)")
 
 
+def _txt(v) -> str:
+    """``str(v)`` with every missing flavour -> ``""``.
+
+    ``str(v or "")`` looks equivalent but raises on ``pd.NA``: a nullable column
+    (``string``/``boolean``/``Int64``) yields ``pd.NA``, whose ``__bool__`` is
+    "TypeError: boolean value of NA is ambiguous", so ``or`` cannot test it. A
+    ledger reaches here with nullable dtypes whenever rows were appended without
+    the column (the labelled-reagent rescue fills ``admitted_by`` only for peaks
+    that went through admission), which killed `peaky batch` on the NO3_15N
+    profile while the single-sample path -- float NaN, which is falsy -- survived.
+    """
+    if v is None:
+        return ""
+    try:
+        if bool(pd.isna(v)):
+            return ""
+    except (TypeError, ValueError):        # array-like / non-scalar: not missing
+        pass
+    return str(v)
+
+
 def _ion_counts(neutral, adduct) -> dict | None:
     """Element counts of the ION for a (neutral, adduct) reading, or None when
     the adduct string is not parseable. '[M+HBr+Br]-' adds H, 2x Br, etc."""
+    neutral, adduct = _txt(neutral), _txt(adduct)
     if not neutral or not adduct:
         return None
-    s = str(adduct).strip()
+    s = adduct.strip()
     if not s.startswith("[M"):
         return None
-    cnt = dict(C.parse_formula(str(neutral)))
+    cnt = dict(C.parse_formula(neutral))
     # flatten parenthesised adduct groups, e.g. '[M+(CH4N2O)H]+' -> '+CH4N2OH',
     # so the urea/uronium reagent cluster is counted (element counts are additive;
     # parse_formula merges the repeated H). Without this the parens swallow the
@@ -291,16 +313,16 @@ def _reagent_n_isobar(row, alts_all: list[dict]) -> bool:
     these are genuinely different neutrals, so the row must not then advertise a
     'unique formula in the calibrated window'. Returns False in negative mode (no
     N-donor adduct fires) and on unparseable rows -- the rule is then inert."""
-    w_add = str(row.get("adduct") or "")
+    w_add = _txt(row.get("adduct"))
     if w_add not in N_DONOR_ADDUCTS:
         return False
     ion0 = _ion_counts(row.get("neutral_formula"), w_add)
     if ion0 is None:
         return False
-    w_n = C.parse_formula(str(row.get("neutral_formula") or "")).get("N", 0)
+    w_n = C.parse_formula(_txt(row.get("neutral_formula"))).get("N", 0)
     for a in alts_all:
         if _ion_counts(a.get("formula"), a.get("adduct")) == ion0 \
-                and C.parse_formula(str(a.get("formula") or "")).get("N", 0) > w_n:
+                and C.parse_formula(_txt(a.get("formula"))).get("N", 0) > w_n:
             return True
     return False
 
@@ -326,11 +348,11 @@ def _margin_density_tie(row, alts: list[dict], n_aliased: int,
     else:
         # old ledger: the mechanical commentary holds the true eff margin --
         # but only trust it when no alias was filtered (it may name the alias)
-        m = _TRAILS_RE.search(str(row.get("commentary") or ""))
+        m = _TRAILS_RE.search(_txt(row.get("commentary")))
         wr = _winner_raw(row)
         if m and n_aliased == 0:
             margin = float(m.group(1))
-            tied = "(TIE)" in str(row.get("commentary") or "") or margin < TIE_MARGIN
+            tied = "(TIE)" in _txt(row.get("commentary")) or margin < TIE_MARGIN
             n_close = 1 if margin < CLOSE_MARGIN else 0
             if wr is not None and len(alts) > 1:
                 n_close = max(n_close, sum(
@@ -383,7 +405,7 @@ def _calibrate(m0: pd.DataFrame, kids_of: pd.Series, *,
     ppms = []
     mzs = []
     for _, r in m0.iterrows():
-        counts = C.parse_formula(str(r.get("neutral_formula") or ""))
+        counts = C.parse_formula(_txt(r.get("neutral_formula")))
         if any(counts.get(e, 0) for e in ("F", "Cl", "Br", "Si", "S")):
             continue
         if counts.get("N", 0) > 1:
@@ -468,7 +490,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
 
     rows = []
     for _, r in m0.iterrows():
-        formula = str(r.get("neutral_formula") or "")
+        formula = _txt(r.get("neutral_formula"))
         counts = C.parse_formula(formula)
         base = base_confidence(r.get("confidence"))
         alts_all = _alts(r.get("alternatives"))
@@ -481,7 +503,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
             stored = _truthy(r.get("tied"))
             if stored is not None:
                 tied = stored
-            elif "(TIE)" in str(r.get("commentary") or ""):
+            elif "(TIE)" in _txt(r.get("commentary")):
                 tied = True
         iso_ev = (kids_of.get(r["peak_id"], 0) > 0) or bool(_alts(r.get("isotopologues")))
         cross_channel = int(chan_count.get(formula, 0)) >= 2
@@ -505,9 +527,9 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
         # is a real ion, but at that intensity the isotopologues are sub-count,
         # so nothing constrains WHICH formula it got. Persistence gates entry;
         # only corroboration may gate the tier (see assignment/admission.py).
-        persist_only = str(r.get("admitted_by") or "") == "occurrence"
+        persist_only = _txt(r.get("admitted_by")) == "occurrence"
 
-        method = str(r.get("method") or "")
+        method = _txt(r.get("method"))
         tier, reason = TIER_ASSIGNED, ""
         if method.startswith("known:solvent_cluster"):
             # a source-solvent cluster whose composition has NO covalent reading
@@ -779,7 +801,7 @@ def flag_below_assignability(ledger: pd.DataFrame) -> int:
         _density, is_degen = _degeneracy(ledger.loc[i])
         if o >= 11 and is_degen:
             ledger.at[i, "below_assignability"] = True
-            ledger.at[i, "tier_reason"] = (str(ledger.at[i, "tier_reason"] or "")
+            ledger.at[i, "tier_reason"] = (_txt(ledger.at[i, "tier_reason"])
                 + " | below-assignability (O>=11, mass-saturated)").strip(" |")
             n += 1
     return n
