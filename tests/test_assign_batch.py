@@ -1327,6 +1327,75 @@ finally:
     IO.estimate_offset, _A.run = _saved["estimate_offset"], _saved["run"]
 
 
+# ---- the batch's width model: measured ONCE, handed to every per-file run --------------
+from peaky.batch import tracefirst as _TFT  # noqa: E402
+from peaky.chem import resolution as _RES  # noqa: E402
+
+_saved_meas = _TFT.measure_resolution
+_MEAS_CALLS = []
+
+
+def _fake_measure(client, sid, peaks=None, log=print, **kw):
+    _MEAS_CALLS.append(sid)
+    return _RES.Resolution(coef=1.0 / 9500.0, exponent=1.0, n_peaks=9, source="measured")
+
+
+IO.connect = lambda *a, **k: "CLIENT"
+IO.fetch_peaks = lambda client, sid, use_cache=True: pd.DataFrame(
+    {"peak_id": ["p1"], "mz": [_C.ion_mz(_F, "[M-H]-")], "height": [1.0e5]})
+IO.estimate_offset = lambda raw: 0.0
+_A.run = _fake_assign
+_TFT.measure_resolution = _fake_measure
+try:
+    with tempfile.TemporaryDirectory() as _d:
+        _SEEN_KW.clear(); _MEAS_CALLS.clear(); _lines = []
+        AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch", out_dir=_d,
+               k_min=2, k_max=3, min_gain=0.0, n_jobs=1, log=_lines.append)
+        summ = json.load(open(os.path.join(_d, "batch_summary.json")))
+        _rps = [kw.get("resolving_power") for kw in _SEEN_KW]
+        check("width model: measured ONCE on a middling spectrum and handed to every per-file run",
+              len(_MEAS_CALLS) == 1 and len(_rps) == 3
+              and all(isinstance(r, _RES.Resolution) and r.r_at(200.0) == 9500.0 for r in _rps),
+              (_MEAS_CALLS, _rps))
+        check("width model: the middling spectrum by peak count is the probe",
+              _MEAS_CALLS[0] in _PK["sample_item_id"].unique(), _MEAS_CALLS)
+        check("width model: batch_summary records the model and the (empty here) class counts",
+              summ["resolution"]["source"] == "measured" and summ["resolution"]["r_at_200"] == 9500.0
+              and summ["resolvability"] == {}, (summ.get("resolution"), summ.get("resolvability")))
+    with tempfile.TemporaryDirectory() as _d:
+        _SEEN_KW.clear(); _MEAS_CALLS.clear()
+        AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch", out_dir=_d,
+               k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power=6500, log=lambda *a: None)
+        summ = json.load(open(os.path.join(_d, "batch_summary.json")))
+        check("width model: a declared R is coerced, nothing is measured",
+              not _MEAS_CALLS and all(kw["resolving_power"].r_at(200.0) == 6500.0 for kw in _SEEN_KW)
+              and summ["resolution"]["source"] == "declared", (_MEAS_CALLS, summ.get("resolution")))
+    with tempfile.TemporaryDirectory() as _d:
+        _SEEN_KW.clear(); _MEAS_CALLS.clear()
+        AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch", out_dir=_d,
+               k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power="none", log=lambda *a: None)
+        summ = json.load(open(os.path.join(_d, "batch_summary.json")))
+        check("width model: 'none' declines the stamp -- no measurement, None to every file, null in the summary",
+              not _MEAS_CALLS and all(kw["resolving_power"] is None for kw in _SEEN_KW)
+              and summ["resolution"] is None, (_MEAS_CALLS, summ.get("resolution")))
+    _TFT.measure_resolution = lambda *a, **k: None
+    with tempfile.TemporaryDirectory() as _d:
+        _SEEN_KW.clear(); _lines = []
+        AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch", out_dir=_d,
+               k_min=2, k_max=3, min_gain=0.0, n_jobs=1, log=_lines.append)
+        summ = json.load(open(os.path.join(_d, "batch_summary.json")))
+        check("width model: a measurement that cannot be made is a log line on the cover path, never a failed run",
+              all(kw["resolving_power"] is None for kw in _SEEN_KW) and summ["resolution"] is None
+              and summ["n_files"] == 3, (summ.get("resolution"), summ.get("n_files")))
+    check("_sum_counts adds class counts across files and skips None",
+          AB._sum_counts([{"blended": 2, "isolated": 1}, None, {"blended": 3}]) == {"blended": 5, "isolated": 1}
+          and AB._sum_counts([]) == {})
+finally:
+    _TFT.measure_resolution = _saved_meas
+    IO.connect, IO.fetch_peaks = _saved["connect"], _saved["fetch_peaks"]
+    IO.estimate_offset, _A.run = _saved["estimate_offset"], _saved["run"]
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

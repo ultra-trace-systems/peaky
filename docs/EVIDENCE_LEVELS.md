@@ -50,7 +50,7 @@ null-safe: NaN, `pd.NA`, `None`, `''` and `'false'` are False;
 | `below_assignability` | M0 | `tiers.flag_below_assignability` (O ≥ 11 and mass-saturated) |
 | `degeneracy_density` | M0 | plausible ions sharing the mass in the calibrated window (`degeneracy.apply_degeneracy`) |
 | `degeneracy_note` | M0 | contains `MASS-SATURATED` when the audit capped |
-| `resolvability` | M0 | `resolved` / `isolated` / `blended` / `unresolvable`; **trace-first only** — absent on the cover path |
+| `resolvability` | M0 | `resolved` / `isolated` / `blended` / `unresolvable`; stamped by the `resolvability` stage on every run that has a width model (a batch measures one from the raw profile of a middling spectrum; `--resolving-power` declares or declines it); NA on an offline run without one |
 | `series_unit`, `anchor_peak_id` | M0 | a homologous-series or anchor tie |
 | `isotopologues` | M0 | the server-attributed satellite list (a repr'd list; non-empty counts as isotope support) |
 | `tier` | M0 | reported beside the level; never read by a predicate |
@@ -163,8 +163,9 @@ the isomer space says 3 (2-, 3-, 4-nitrophenol), so 3a.
   written on every M0 row whose formula is in the isomer space (`NA`
   otherwise). It caps 2b and is reported so a reader sees that a 4a
   C₁₀H₁₆O₃ is one formula and, by a chemist's count, dozens of structures.
-- **Resolvability binds only where it was measured.** The cover path does not
-  produce it; a cover-path 4c is not denied for lacking it.
+- **Resolvability binds only where it was measured.** Every run with a width
+  model (measured from the raw profile, or declared) produces it; a run without
+  one (offline, no `--resolving-power`) is not denied 4c for lacking it.
 - **Isotope evidence is judged on physics.** A satellite whose ratio is
   outside 0.5–2× natural abundance is not evidence; a satellite the server
   attributed (`isotopologues`) is.

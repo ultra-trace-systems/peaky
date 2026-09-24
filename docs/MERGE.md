@@ -109,7 +109,8 @@ selected sample_ids (SAMPLING.md)
 
    The winning reading's best per-file row (tier, then `ion_score`, then `src`)
    supplies the merged `neutral_formula` / `adduct` / `tier` / `ion_score` /
-   `admitted_by` / `occurrence`. The merged **`mz` is the mean of the cluster's
+   `admitted_by` / `occurrence` / `resolvability` / `sep_hwhm` (the winner
+   file's peak separability, when the run had a width model). The merged **`mz` is the mean of the cluster's
    raw m/z**. Also recorded: `n_files` (distinct srcs), `n_files_ion` (files
    carrying the winning ion), `n_files_winner` (files carrying the winning
    reading), `alternatives` (every losing reading, best first, e.g.

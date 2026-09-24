@@ -75,7 +75,8 @@ STAGE_RESIDUAL = "residual"    # a file the residual stage targeted
 TIER_RANK = {"Assigned": 2, "Candidate": 1}
 _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score",
             "admitted_by", "occurrence",   # admission provenance, when present
-            "ion_only_of"]                 # the ion-only link (the winner file's parent peak), when present
+            "ion_only_of",                 # the ion-only link (the winner file's parent peak), when present
+            "resolvability", "sep_hwhm"]   # the winner file's peak separability (assignment/resolvability.py), when present
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +89,15 @@ def _cluster_mz(mz_sorted: np.ndarray, tol_ppm: float) -> np.ndarray:
         gaps = np.diff(mz_sorted) / mz_sorted[:-1] * 1e6
         cid[1:] = np.cumsum(gaps > tol_ppm)
     return cid
+
+
+def _sum_counts(dicts) -> dict:
+    """Element-wise sum of count dicts (None / empty skipped); {} when none."""
+    out: dict = {}
+    for d in dicts:
+        for k, v in (d or {}).items():
+            out[k] = out.get(k, 0) + int(v)
+    return out
 
 
 def _s(v) -> str:
@@ -248,6 +258,7 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
     if not frames:
         return (pd.DataFrame(columns=["mz", "neutral_formula", "adduct", "tier",
                                       "ion_score", "admitted_by", "occurrence", "ion_only_of",
+                                      "resolvability", "sep_hwhm",
                                       "n_files", "n_files_ion", "n_files_winner",
                                       "alternatives", "tier_reason", "srcs",
                                       *(["stage"] if stages is not None else []),
@@ -301,6 +312,7 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
             ion_score=best.get("ion_score"),
             admitted_by=best.get("admitted_by"), occurrence=best.get("occurrence"),
             ion_only_of=best.get("ion_only_of", pd.NA),
+            resolvability=best.get("resolvability", pd.NA), sep_hwhm=best.get("sep_hwhm", np.nan),
             n_files=n_total, n_files_ion=int(win_ion["n_files"]),
             n_files_winner=int(win["n_files"]),
             alternatives="; ".join(_describe(r) for _, r in lab.iloc[1:].iterrows()),
@@ -920,6 +932,31 @@ def _resolve_jobs(n_jobs, n_samples: int) -> int:
 # ---------------------------------------------------------------------------
 # network: assign each selected file, keep per-file records, combine
 # ---------------------------------------------------------------------------
+def _width_model_for_batch(resolving_power, client, table, log):
+    """The batch's peak-width model (chem.resolution.Resolution) or None. None /
+    'auto' measures it from the raw profile of a MIDDLING spectrum of `table`
+    (the richest is the most crowded, so the worst place to look for an isolated
+    peak, and the sparsest may have none); 'none' declines; a number is a
+    constant R; a model is taken as is. A measurement that cannot be made
+    returns None with a log line."""
+    from peaky.batch import tracefirst as TFT
+    rp = resolving_power
+    if isinstance(rp, str) and rp.strip().lower() == "none":
+        log("[resolution] resolvability stamp declined (--resolving-power none)")
+        return None
+    if rp is not None and not (isinstance(rp, str) and rp.strip().lower() == "auto"):
+        rp = TFT.Resolution.coerce(float(rp) if isinstance(rp, str) else rp)
+        log(f"[resolution] resolving power as given: {rp.describe()}")
+        return rp
+    if client is None or table is None or not len(table) or "sample_item_id" not in table.columns:
+        log("[resolution] no per-peak table / server to measure the peak width from; "
+            "resolvability is not stamped (pass --resolving-power <R> to declare one)")
+        return None
+    counts = table.groupby("sample_item_id").size().sort_values()
+    probe = str(counts.index[len(counts) // 2])
+    return TFT.measure_resolution(client, probe, log=log)
+
+
 def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         reagent: str = "auto", context: str | None = None,
         k_min: int = SS.K_MIN, k_max: int = SS.K_MAX, min_gain: float = SS.MIN_GAIN,
@@ -1018,6 +1055,17 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     selection = dict(selection_meta or {})
     sel = None                 # our own cover table (None on the sample_ids= path)
     trace_sample = None
+    # The peak-width model, resolved ONCE for the batch (chem.resolution) and
+    # handed to every per-file run: it sizes trace-first's dedup cell and, on
+    # every path, the `resolvability` stamp each per-file ledger carries (a
+    # blended, uncorroborated peak is capped at Candidate; level 4c reads it).
+    # MEASURED from the raw profile by default -- a TOF can be tuned anywhere
+    # and a declared number is a guess -- and the caller's only when they gave
+    # one. A measurement that cannot be made stops trace-first (nothing sizes
+    # its cell) and is a log line on the cover path (the stage skips, the
+    # columns stay NA).
+    rp = _width_model_for_batch(resolving_power, client,
+                                ts_peaks if ts_peaks is not None else peaks, log)
     if trace_first:
         # TRACE-FIRST: no files are selected -- the batch's persistent ions are
         # built as traces, centred, gated and handed to the engine as ONE
@@ -1027,25 +1075,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             raise ValueError("trace-first needs the batch time series (ts_peaks=)")
         from peaky.batch import tracefirst as TFT
         log("[phase] traces")
-        # The peak width sizes the dedup cell and the resolvability flag. MEASURE
-        # it from the raw profile by default -- a TOF can be tuned anywhere and a
-        # declared number is a guess -- and fall back to the caller's only when
-        # they gave one. A scalar is itself a model (constant R); the fit reports
-        # the exponent, so an Orbitrap's m^-1/2 comes out as such.
-        rp = resolving_power
-        if rp is None or (isinstance(rp, str) and rp.strip().lower() == "auto"):
-            # a MIDDLING spectrum: the richest is the most crowded, so the worst
-            # place to look for an isolated peak, and the sparsest may have none
-            counts = ts_peaks.groupby("sample_item_id").size().sort_values()
-            probe = str(counts.index[len(counts) // 2])
-            rp = TFT.measure_resolution(client, probe, log=log)
-            if rp is None:
-                raise ValueError(
-                    "could not measure the peak width from this batch's raw profile; pass "
-                    "--resolving-power <R> (the instrument's resolving power) instead")
-        else:
-            rp = TFT.Resolution.coerce(rp)
-            log(f"[traces] resolving power as given: {rp.describe()}")
+        if rp is None:
+            raise ValueError(
+                "could not measure the peak width from this batch's raw profile; pass "
+                "--resolving-power <R> (the instrument's resolving power) instead")
         trace_sample = TFT.build_trace_sample(
             ts_peaks, sample_id=f"traces-{TFT.slug(batch or 'batch')}", reagent=prof.name,
             resolving_power=rp, episodes=trace_episodes, log=log)
@@ -1105,6 +1138,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         cross_sources = [str(x) for x in (corroborate or [])]
         cross = EV.corroborating_neutrals(cross_sources)
     assign_kw["corroborate"] = cross
+    # the batch's width model -> every per-file `resolvability` stage (never re-measured per file)
+    assign_kw["resolving_power"] = rp
     if cross_sources:
         log(f"[assign_batch] --corroborate: {len(cross)} neutral(s) from {len(cross_sources)} source(s)")
     # labelled-reagent covalent-product rescue (e.g. 15N-organonitrates); no-op
@@ -1733,6 +1768,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "tol_ppm": tol_ppm, "offsets_ppm": offsets,
         "pattern_scoring": scorings,
         "merged_M0": int(len(merged)),
+        # the width model the per-file resolvability stamp used (None = not stamped)
+        # and the per-file M0 class counts summed over the files
+        "resolution": rp.as_dict() if rp is not None else None,
+        "resolvability": _sum_counts(x.get("resolvability") for x in per_stats),
         "merged_tiers": merged["tier"].value_counts().to_dict() if len(merged) else {},
         "n_in_all_files": int((merged["n_files"] == len(sample_ids)).sum()) if len(merged) else 0,
         "n_single_file": int((merged["n_files"] == 1).sum()) if len(merged) else 0,

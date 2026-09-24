@@ -23,7 +23,9 @@ from peaky.assignment import passes
 from peaky.assignment import evidence
 from peaky.assignment import plausibility
 from peaky.chem import reagents
+from peaky.chem import resolution as RES
 from peaky.assignment import reflists
+from peaky.assignment import resolvability
 from peaky.assignment import residual
 from peaky.assignment import siloxane
 from peaky.assignment import solvent_clusters
@@ -183,6 +185,9 @@ class _RunState:
     # channel / instrument): the `corroborated` axis of the evidence levels
     # (docs/EVIDENCE_LEVELS.md §3); empty on a bare run
     corroborate: set = field(default_factory=set)
+    # the peak-width model the `resolvability` stage reads (chem.resolution);
+    # None = no model, the stage is skipped and its columns stay NA
+    resolving_power: object = None
     summaries: dict = field(default_factory=dict)
     plaus_audit: list = field(default_factory=list)
 
@@ -297,6 +302,40 @@ def _stage_evidence(st):
     return s
 
 
+def _stage_resolvability(st):
+    """Nearest-neighbour separability of every M0 peak from the run's width
+    model (assignment/resolvability.py): a tier input (a blended peak with no
+    isotope / second-channel / series corroboration is capped at Candidate) and
+    a level input (4c needs a separable peak). Skipped without a model, and
+    when the ledger already carries the flag (the trace-first synthetic sample
+    stamps its own at the trace build)."""
+    return resolvability.stamp_resolvability(st.led, st.resolving_power, log=st.log)
+
+
+def _width_model(resolving_power, client, sample_id, raw, log):
+    """The peak-width model the `resolvability` stage reads (chem.resolution):
+    None -> None; 'auto' -> measured from this sample's raw profile when a
+    server is there, None offline; a number -> constant R; a Resolution as is.
+    A measurement that cannot be made is a log line, never a failed run: the
+    stage then skips and the level is computed without it."""
+    if resolving_power is None:
+        return None
+    if isinstance(resolving_power, RES.Resolution):
+        return resolving_power
+    if isinstance(resolving_power, str):
+        if resolving_power.strip().lower() == "none":
+            return None
+        if resolving_power.strip().lower() != "auto":
+            return RES.Resolution.from_r(float(resolving_power))
+        if client is None:
+            log("[resolvability] no server to measure the peak width from (offline sample); "
+                "pass resolving_power=<R> to declare one")
+            return None
+        from peaky.batch import tracefirst as TFT   # lazy: the batch package imports this module
+        return TFT.measure_resolution(client, sample_id, peaks=raw, log=log)
+    return RES.Resolution.coerce(resolving_power)
+
+
 # The assignment pipeline AS DATA -- read top to bottom to see exactly what runs,
 # in what order, under what condition. `safe` wraps a stage so a failure can't lose
 # prior work; `store` keeps its summary. Authoritative stage table: ARCHITECTURE.md §4.
@@ -387,6 +426,11 @@ _STAGES = [
     # over-ranked can't keep the M0 slot it will only ever be tier-demoted out of.
     _Stage("rearbitrate", lambda st: passes.rearbitrate_offcal_degenerate(
         st.led, st.cfg, log=st.log)),
+    # separability of each M0 peak from its nearest picked neighbour -- MUST precede
+    # tiers (a blended, uncorroborated peak is capped) and evidence (level 4c reads it).
+    _Stage("resolvability", _stage_resolvability,
+           when=lambda st: st.resolving_power is not None and not resolvability.already_stamped(st.led),
+           safe=False),
     # honest mass-degeneracy measurement -- MUST precede tiers (the tier engine reads it).
     _Stage("degeneracy", lambda st: _degen_summary(
         degeneracy.apply_degeneracy(st.led, context=st.profile.label, log=st.log))),
@@ -491,7 +535,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
         ts_peaks=None, adducts=None, reflists_active=None,
         label_isotope=None, label_max=2, label_purity=None, occurrence=None,
         reagent_n_relabel: bool = True, peaks=None, corroborate=None,
-        log=print, checkpoint_dir=None) -> dict:
+        resolving_power=None, log=print, checkpoint_dir=None) -> dict:
     """Assign one sample. `peaks` (a DataFrame in the shape fetch_peaks returns:
     peak_id, mz, height, area ...) makes the run OFFLINE: the table is served
     as `sample_id` from memory, no server is contacted, the local scorer does
@@ -499,7 +543,12 @@ def run(sample_id: str, context: str = "ambient-air", *,
     trace-first batch path and the tests use it. `corroborate` is the set of
     neutral formulas a corroborating source holds (the other reagent channel or
     instrument on the same air; `evidence.corroborating_neutrals` resolves run
-    dirs / ledger CSVs to it): the `corroborated` axis of the evidence levels."""
+    dirs / ledger CSVs to it): the `corroborated` axis of the evidence levels.
+    `resolving_power` is the peak-width model of the `resolvability` stage: None =
+    no stage (its columns stay NA), 'auto' = measure it from this sample's raw
+    profile when a server is there (an offline run cannot), a number = a constant
+    R, or a `chem.resolution.Resolution`; a batch measures ONE model and hands it
+    to every file."""
     cfg = cfg or passes.PassConfig()
     # the reagent bottle's isotopic purity (ReagentProfile.purity), published for
     # the two consumers that model a '^X' ion's unlabelled impurity line: the
@@ -524,6 +573,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
 
     raw = io_mascope.fetch_peaks(client, sample_id, use_cache=use_cache)
     led = ledger.new_ledger(raw)
+    width_model = _width_model(resolving_power, client, sample_id, raw, log)
     # The sample's noise edge (p1 of its picked heights) anchors every height
     # gate in the passes (cfg.height_cutoff = x_edge * edge): absolute cps
     # thresholds do not transfer between instruments/modes (see passes.config).
@@ -649,7 +699,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
         reflists_active=reflists_active, ts_peaks=ts_peaks,
         label_isotope=label_isotope, label_max=label_max, log=log,
         checkpoint_dir=checkpoint_dir, reagent_n_relabel=reagent_n_relabel,
-        corroborate=set(corroborate or ()))
+        corroborate=set(corroborate or ()), resolving_power=width_model)
     for stg in _STAGES:
         if not stg.when(st):
             continue
@@ -669,6 +719,9 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # the multiple the gate was resolved FROM (profile-supplied or the package
     # default) -- the gate in cps alone cannot be read back without it.
     st["height_cutoff_x_edge"] = cfg.height_cutoff_x_edge_resolved
+    # the width model the resolvability stage used (None = not stamped) and its class counts
+    st["resolution"] = width_model.as_dict() if width_model is not None else None
+    st["resolvability"] = (summaries.get("resolvability") or {}).get("counts")
     st["admitted"] = {"height": adm["height"], "occurrence": adm["occurrence"],
                       "rejected": adm["rejected"]}
     log(f"[run] stats {json.dumps(st)}")

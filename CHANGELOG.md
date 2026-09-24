@@ -8,6 +8,40 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Resolvability for every run, and two tier rules that read the spectrum's physics.** The
+  nearest-neighbour separability flag was trace-first only, so every cover run -- every
+  baseline -- rated `4c` and `Assigned` without knowing whether the picked centroid was the ion's
+  own. Now a batch measures ONE peak-width model from the raw profile of a middling spectrum
+  (`batch.tracefirst.measure_resolution`; `--resolving-power R` declares one, `none` declines; the
+  `assign` command takes the flag too and measures its own sample by default) and hands it to every
+  per-file run, and the new **`resolvability`** stage (`assignment/resolvability.py`, before
+  `degeneracy`) stamps `resolvability` / `sep_hwhm` / `d_crit_hwhm` on every M0 row from the
+  sample's own picked peaks (synthetic sub-peaks excluded; skipped without a model, the columns
+  stay NA). The width model itself moved to **`chem.resolution`** (`Resolution`, `classify_pair`,
+  `nearest_neighbour_classes`; `batch.tracefirst` re-exports the names it used to own), the
+  merged row carries the winner file's class, `batch_summary` records the model (`resolution`)
+  and the summed class counts (`resolvability`), and the scorecard hands the recorded model to its
+  offline decoy arms so they are rated by the same rule as the run they bound. **Tier rule 1,
+  separability:** a `blended` / `unresolvable` M0 with no isotope / second-channel / series
+  corroboration is Candidate -- the nearest picked peak sits inside the bimodality separation for
+  the pair's height ratio, so the centroid is displaced and the mass the formula was fitted to is
+  not the ion's own. **Tier rule 2, the satellite verdict:** the ledger-based twin test pass 0
+  applies to a refused known-species claim -- now `assignment/satellites.py`, one implementation
+  for both callers -- is applied to every committed row whose neutral carries Br, Cl or S: a
+  diagnostic line predicted at >= 4x the file's noise edge that is absent within 15 ppm, or present
+  under 0.6x its prediction, REFUTES the count whatever else corroborates the row (a series step
+  or a second channel cannot put back a line that is not there); a line predicted under the
+  multiple leaves the count untested, and an untested count with no other corroboration does not
+  earn Assigned ("for want of evidence, not against it"); the ion's atom count predicts the line,
+  the neutral's element is the one tested, and a reagent adduct's own Br / Cl sits in the same
+  M+2 window and masks the test (untestable, never refuted). Si keeps its own rule (on a TOF its
+  M+1 is unresolved from 13C). Measured before the change on two same-air batches (per-file
+  Assigned M0 rows): a ~10k TOF has 51 % of its M0 peaks blended -- 126 Assigned rows blended with
+  nothing else, 56 with an untestable heteroatom, 8 refuted (one organophosphate read as Assigned
+  in every spectrum with no 37Cl line where 40x the floor was predicted); an Orbitrap (R ~120k at
+  m/z 200) has 100 Br / Cl series and completion commits whose 81Br / 37Cl line is predicted at
+  4x the floor and absent, and 45 blended uncorroborated rows.
+
 - **Known species decided once per batch, by pooled evidence — the vote's curated exemption is
   retired.** Pass 0 locks a known species where THAT file shows the corroboration its family
   demands (two ion channels, or a diagnostic 29Si/30Si / 34S / 37Cl / 81Br twin; exact mass alone

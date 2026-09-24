@@ -49,6 +49,11 @@ A ledger row carries (among others): `peak_id`, `mz`, `height`, `area`, `role`, 
 - **Candidate** — plausible but uncorroborated / tied / degenerate / off-trend / heteroatom-coincidence-risk.
 - **Below assignability** — flagged monsters (e.g. O≥11 + mass-saturated; unconfirmed high fluorine).
 
+Two rules read the spectrum's physics before the corroboration rules (`tiers.compute_tiers`; both null-safe and inert where their input is missing):
+
+- **Separability** (`resolvability`, stamped by the `resolvability` stage from the run's width model — [ARCHITECTURE.md](ARCHITECTURE.md) §4): a `blended` / `unresolvable` M0 with no isotope / second-channel / series corroboration is Candidate — the nearest picked peak sits inside the bimodality separation for the pair's height ratio, so the centroid is displaced and the mass the formula was fitted to is not the ion's own. With corroboration the row stays Assigned and says it is blended.
+- **The satellite verdict** (`satellites.twin_verdict`, the same ledger-based test pass 0 applies to a refused known-species claim) on every committed row whose neutral carries Br, Cl or S: the ion's atom count predicts the ⁸¹Br / ³⁷Cl / ³⁴S line; a line predicted at ≥ 4× the file's noise edge that is absent within 15 ppm, or present under 0.6× its prediction, **refutes** the count whatever else corroborates the row; a line predicted under the multiple leaves the count **untested**, and an untested count with no other corroboration is Candidate ("for want of evidence, not against it"); a present, consistent line is noted on the row. A reagent adduct's own Br / Cl sits in the same M+2 window and masks the test (untestable, never refuted). Si keeps its own rule (`tiers.py`; on a TOF its M+1 is unresolved from ¹³C).
+
 ### 1.7 The orchestrator `assign.run()`
 
 ```

@@ -69,13 +69,16 @@ from peaky.batch import traces as TR
 from peaky.batch import wave as WV
 from peaky.batch.timeseries import sample_hours
 from peaky.chem import reference_ions as RI
+from peaky.chem import resolution as _RES
+from peaky.chem.resolution import (  # noqa: F401 -- re-exported: the width model now lives in chem.resolution
+    FIT_FLOOR_HWHM, Resolution, classify_pair, d_crit_hwhm, dedup_ppm, hwhm)
 
 __version__ = "0.1.0"
 
 SEED_OCC = 0.05          # a peak seeds a trace when it recurs in >= this share of spectra
 MIN_MEMBERS = 10
 MIN_SAT_MEMBERS = 20
-FIT_FLOOR_HWHM = 0.4     # Cubison & Jimenez (2015): below it two peaks are one observable
+# FIT_FLOOR_HWHM (0.4, Cubison & Jimenez 2015) is chem.resolution's; re-exported above
 FILL_FRAC = 0.74         # robust sd of a uniform fill of +-W, in units of W
 FILL_SIGMA_FRAC = 0.70   # ... and a seed reads as a fill at this fraction of it. Chosen
                          # from both sides: a real ion (measured sigma median 1.35 ppm,
@@ -176,98 +179,8 @@ def spacing_bound(ts_peaks: pd.DataFrame, resolving_power, *,
     return out
 
 
-@dataclass(frozen=True)
-class Resolution:
-    """How wide a peak is, as a function of m/z: FWHM(m) = coef * m ** exponent.
-
-    A single resolving power is a model, not a fact -- it says FWHM is
-    proportional to m, i.e. R is the same at every mass. That holds on a TOF
-    (measured exponent 1.08 on a field batch) and fails on an Orbitrap, whose R
-    falls as m^-1/2: measured across one spectrum, 204 000 at m/z 152 and
-    96 000 at m/z 558, a factor of two that a scalar cannot express and that
-    would size the dedup cell wrong at both ends.
-
-    `from_r(R)` is the scalar model, kept because a caller who knows their
-    instrument may say so; `measure` (batch.tracefirst.measure_resolution) fits
-    both terms from the raw profile and reports which it found."""
-
-    coef: float            # FWHM(m) = coef * m ** exponent + offset, in Th
-    exponent: float = 1.0  # 1.0 = constant R (TOF); 1.5 = R ~ m^-1/2 (Orbitrap)
-    offset: float = 0.0    # the TOF rational form's constant width term
-    n_peaks: int = 0       # peaks the fit used (0 = declared, not measured)
-    r_spread: tuple = ()   # (p25, p75) of the per-peak R, when measured
-    source: str = "declared"
-
-    @classmethod
-    def from_r(cls, resolving_power: float) -> "Resolution":
-        """The constant-R model: FWHM(m) = m / R."""
-        r = float(resolving_power)
-        if not np.isfinite(r) or r <= 0:
-            raise ValueError(f"resolving power must be a positive number, got {resolving_power!r}")
-        return cls(coef=1.0 / r, exponent=1.0)
-
-    @classmethod
-    def coerce(cls, value) -> "Resolution":
-        return value if isinstance(value, cls) else cls.from_r(value)
-
-    @classmethod
-    def from_mascope(cls, coefficients, instrument_type: str = "") -> "Resolution":
-        """Mascope's own instrument resolution function, as its processors fit it
-        (`mascope_signal.instrument_func.fit`): a TOF gets the rational polynomial
-        R(m) = m / (a*m + b), so FWHM = a*m + b; an Orbitrap gets R(m) = a / sqrt(m),
-        so FWHM = m**1.5 / a. Both are exactly representable here, so the day the
-        server exposes them to a service token they drop straight in -- today the
-        /api/instrument_configs route answers only a user session."""
-        c = [float(x) for x in coefficients]
-        if len(c) >= 2 and "orbi" not in instrument_type.lower():
-            return cls(coef=c[0], exponent=1.0, offset=c[1], source="mascope")
-        if len(c) == 1:
-            return cls(coef=1.0 / c[0], exponent=1.5, source="mascope")
-        raise ValueError(f"unrecognised resolution-function coefficients: {coefficients!r}")
-
-    def fwhm(self, mz: float) -> float:
-        """Peak width at half maximum, in Th."""
-        return float(self.coef) * float(mz) ** float(self.exponent) + float(self.offset)
-
-    def hwhm(self, mz: float) -> float:
-        return 0.5 * self.fwhm(mz)
-
-    def r_at(self, mz: float) -> float:
-        """The resolving power AT this mass -- constant only when exponent is 1."""
-        return float(mz) / self.fwhm(mz)
-
-    def dedup_ppm(self, mz: float) -> float:
-        """The dedup half-window in ppm at `mz`: 0.4 HWHM, the fit floor."""
-        return FIT_FLOOR_HWHM * self.hwhm(mz) / float(mz) * 1e6
-
-    @property
-    def is_tof(self) -> bool:
-        """Which dispersion the analyser works in, read off the width model.
-
-        A TOF's width grows about linearly with mass (exponent ~1, constant R);
-        an Orbitrap's as m^1.5 (R ~ m^-1/2). That is the same split the mass
-        wave needs -- flight time goes as (m/z)^+1/2, frequency as (m/z)^-1/2 --
-        so the measured exponent decides the basis, and nothing has to be
-        declared twice. 1.3 is the midpoint of the two, far from both."""
-        return float(self.exponent) < 1.3
-
-    def describe(self) -> str:
-        at = f"R = {self.r_at(200.0):.0f} at m/z 200"
-        if abs(self.exponent - 1.0) > 0.15:
-            at += f", {self.r_at(600.0):.0f} at m/z 600 (FWHM ~ m^{self.exponent:.2f})"
-        if self.n_peaks:
-            at += f" [fitted on {self.n_peaks} profile peaks"
-            if self.r_spread:
-                at += f", per-peak IQR {self.r_spread[0]:.0f}-{self.r_spread[1]:.0f}"
-            at += "]"
-        return at
-
-    def as_dict(self) -> dict:
-        return {"coef": float(self.coef), "exponent": float(self.exponent),
-                "offset": float(self.offset),
-                "r_at_200": float(self.r_at(200.0)), "r_at_600": float(self.r_at(600.0)),
-                "n_peaks": int(self.n_peaks), "r_spread": list(self.r_spread),
-                "source": self.source}
+# `Resolution` (the width model) moved to chem.resolution; imported above so the
+# names this module used to own keep resolving (TFT.Resolution, TFT.hwhm, ...).
 
 
 def _profile_fwhm(x, y):
@@ -364,73 +277,17 @@ def measure_resolution(client, sample_id: str, peaks: pd.DataFrame | None = None
     return res
 
 
-def hwhm(mz: float, resolving_power) -> float:
-    """Half width at half maximum (Th) at `mz`. `resolving_power` is a number
-    (constant R) or a `Resolution` model."""
-    return Resolution.coerce(resolving_power).hwhm(mz)
-
-
-def dedup_ppm(mz: float, resolving_power) -> float:
-    """The dedup half-window at `mz`: 0.4 HWHM in ppm."""
-    return Resolution.coerce(resolving_power).dedup_ppm(mz)
-
-
-_SIG_PER_HWHM = 1.0 / 1.1774396
-_LOGR = np.array([0.0, -0.30103, -0.69897, -1.0, -1.30103, -1.69897, -2.0, -2.30103, -2.69897, -3.0])
-_DSIG = np.array([2.000, 2.628, 3.079, 3.354, 3.598, 3.888, 4.088, 4.277, 4.511, 4.679])
-
-
-def d_crit_hwhm(ratio: float) -> float:
-    """Separation (HWHM) at which two Gaussians of height ratio `ratio` (<= 1)
-    become bimodal -- what a local-maximum picker needs to report two peaks."""
-    r = float(min(max(ratio, 1e-12), 1.0))
-    lr = np.log10(r)
-    if lr >= _LOGR[0]:
-        d = _DSIG[0]
-    elif lr <= _LOGR[-1]:
-        slope = (_DSIG[-1] - _DSIG[-2]) / (_LOGR[-1] - _LOGR[-2])
-        d = _DSIG[-1] + slope * (lr - _LOGR[-1])
-    else:
-        d = float(np.interp(lr, _LOGR[::-1], _DSIG[::-1]))
-    return d / _SIG_PER_HWHM
-
-
-def classify_pair(mz_a: float, h_a: float, mz_b: float, h_b: float, resolving_power: float) -> dict:
-    """'unresolvable' (< 0.4 HWHM: one observable), 'blended' (a fit could
-    separate them, the picker cannot: the centroid is displaced) or 'resolved'."""
-    hw = hwhm(0.5 * (mz_a + mz_b), resolving_power)
-    d = abs(float(mz_a) - float(mz_b))
-    sep = d / hw
-    hi, lo = max(h_a, h_b), min(h_a, h_b)
-    ratio = (lo / hi) if hi > 0 else 0.0
-    dc = d_crit_hwhm(ratio)
-    cls = "unresolvable" if sep < FIT_FLOOR_HWHM else ("blended" if sep < dc else "resolved")
-    return {"sep_hwhm": sep, "d_crit_hwhm": dc, "resolvability": cls, "height_ratio": ratio}
-
-
 def stamp_resolvability(traces: pd.DataFrame, resolving_power) -> pd.DataFrame:
-    """Every trace's separability from its nearest neighbour within 8 HWHM. A
-    FLAG (and a tier input), never a filter."""
+    """Every trace's separability from its nearest neighbour within 8 HWHM
+    (chem.resolution.nearest_neighbour_classes -- the same test the per-file
+    `resolvability` stage applies to a sample's picked peaks). A FLAG (and a
+    tier input), never a filter."""
     t = traces.sort_values("mz").reset_index(drop=True)
-    mz = t["mz"].to_numpy(float)
-    h = np.nan_to_num(t["height_med"].to_numpy(float), nan=0.0)
-    cls, sep, dcr = [], [], []
-    for i in range(len(t)):
-        hw = hwhm(mz[i], resolving_power)
-        lo = int(np.searchsorted(mz, mz[i] - 8 * hw))
-        hi = int(np.searchsorted(mz, mz[i] + 8 * hw))
-        best = None
-        for j in range(lo, hi):
-            if j != i and (best is None or abs(mz[j] - mz[i]) < best[0]):
-                best = (abs(mz[j] - mz[i]), j)
-        if best is None:
-            cls.append("isolated"); sep.append(np.nan); dcr.append(np.nan)
-            continue
-        c = classify_pair(mz[i], h[i], mz[best[1]], h[best[1]], resolving_power)
-        cls.append(c["resolvability"]); sep.append(c["sep_hwhm"]); dcr.append(c["d_crit_hwhm"])
-    t["resolvability"] = cls
-    t["sep_hwhm"] = sep
-    t["d_crit_hwhm"] = dcr
+    out = _RES.nearest_neighbour_classes(t["mz"].to_numpy(float), t["height_med"].to_numpy(float),
+                                         resolving_power)
+    t["resolvability"] = out["resolvability"]
+    t["sep_hwhm"] = out["sep_hwhm"]
+    t["d_crit_hwhm"] = out["d_crit_hwhm"]
     return t
 
 

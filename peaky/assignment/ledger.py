@@ -92,6 +92,15 @@ _ASSIGN_COLS: dict[str, object] = {
     # species once, by evidence (assign_batch.known_evidence /
     # lock_known_species). NA on every other row; never an evidence axis.
     "known_lead": pd.NA,
+    # separability of an M0's picked peak from its nearest picked neighbour
+    # (assignment/resolvability.py, from the run's width model): 'isolated' /
+    # 'resolved' / 'blended' / 'unresolvable', the separation and the
+    # bimodality threshold in HWHM at that mass. NA without a width model and on
+    # every non-M0 row. A tier input (tiers.py) and a level input (4c), never a
+    # filter.
+    "resolvability": pd.NA,
+    "sep_hwhm": np.nan,
+    "d_crit_hwhm": np.nan,
     "locked": False,
     "commentary": pd.NA,
     "alternatives": pd.NA,     # JSON string

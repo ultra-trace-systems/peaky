@@ -363,3 +363,30 @@ def test_decoy_ledger_counts_prefer_the_engines_own_level():
     old = led.drop(columns=["evidence_level"])
     c0 = SC._ledger_counts(old, "f")
     assert c0["m0"] == 2 and sum(c0["levels"].values()) == 2      # levelled post hoc instead
+
+
+def test_the_offline_engine_run_carries_the_runs_own_width_model(run_dir, monkeypatch):
+    """A decoy arm must be rated by the same separability rule as the run it
+    bounds: the recorded width model rides into assign.run(peaks=)."""
+    import json as _json
+    from peaky.assignment import assign as A
+    from peaky.chem import resolution as RES
+    seen = {}
+
+    def fake_run(sample_id, context="ambient-air", **kw):
+        seen.update(kw)
+        return {"ledger": pd.DataFrame({"role": [], "tier": []})}
+
+    monkeypatch.setattr(A, "run", fake_run)
+    peaks = pd.DataFrame({"peak_id": ["a"], "mz": [200.0], "height": [10.0]})
+    r0 = SC.load_run(str(run_dir))
+    SC.run_engine_offline(r0, peaks, "x-control", ["[M-H]-"])
+    assert "resolving_power" not in seen
+    summ = _json.loads((run_dir / "batch_summary.json").read_text())
+    summ["resolution"] = RES.Resolution(coef=1.0 / 9500.0, exponent=1.0, n_peaks=9, source="measured").as_dict()
+    (run_dir / "batch_summary.json").write_text(_json.dumps(summ))
+    r1 = SC.load_run(str(run_dir))
+    seen.clear()
+    SC.run_engine_offline(r1, peaks, "x-control", ["[M-H]-"])
+    assert isinstance(seen.get("resolving_power"), RES.Resolution)
+    assert seen["resolving_power"].r_at(200.0) == pytest.approx(9500.0)

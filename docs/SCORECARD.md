@@ -94,8 +94,10 @@ against its previous row.
    (d) **falsification survival**: the
    13C-implied carbon count against the formula on every Assigned row with a
    measured satellite, the 34S / 37Cl / 81Br / 29Si line where the formula
-   demands one, and the time covariance of satellites and adduct pairs with
-   their parent.
+   demands one, the time covariance of satellites and adduct pairs with
+   their parent, and the **separability** of the Assigned peaks (the
+   `resolvability` stamp's class counts over the per-file rows) with the
+   per-file rows the separability / satellite tier rules capped at Candidate.
 6. **Delta** against the previous row of the same channel, for the metrics
    the board tracks.
 

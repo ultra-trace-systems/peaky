@@ -1149,6 +1149,12 @@ def run_engine_offline(run: Run, peaks: pd.DataFrame, sample_id: str, adducts: l
     P.apply_height_cutoff_x_edge(cfg, run.profile, log=log)
     P.apply_ion_only_channels(cfg, run.profile, log=log)
     kw = {"adducts": list(adducts), "reagent_n_relabel": False}
+    model = run.summary.get("resolution")
+    if isinstance(model, dict) and model.get("coef"):
+        # the run's own width model, so a decoy arm carries the resolvability
+        # stamp and its tier cap exactly as the run it bounds did
+        from peaky.chem import resolution as RES
+        kw["resolving_power"] = RES.Resolution.from_dict(model)
     if run.profile is not None:
         if getattr(run.profile, "label_isotope", None):
             kw["label_isotope"] = run.profile.label_isotope
@@ -1264,7 +1270,7 @@ def falsification(run: Run) -> dict:
     demands one; and the time covariance of satellites and adduct pairs with
     their parent."""
     pf = run.per_file
-    out = {"c13": None, "hetero": None, "iso_cov": None, "adduct_cov": None}
+    out = {"c13": None, "hetero": None, "iso_cov": None, "adduct_cov": None, "resolvability": None}
     if not pf.empty and "isotopologues" in pf.columns and "role" in pf.columns:
         rows, hetero = [], {"n": 0, "present": 0, "missing": []}
         for fid, frame in pf.groupby("__file"):
@@ -1310,6 +1316,17 @@ def falsification(run: Run) -> dict:
             }
         if hetero["n"]:
             out["hetero"] = hetero
+        # the separability stamp (assignment/resolvability.py) on the Assigned rows,
+        # and how many per-file rows the separability / satellite tier rules capped
+        m0all = pf[pf["role"] == "M0"]
+        if "resolvability" in m0all.columns and m0all["resolvability"].notna().any():
+            cls = m0all.loc[m0all["tier"] == "Assigned", "resolvability"].dropna().astype(str).value_counts()
+            reasons = col(m0all, "tier_reason", "").fillna("").astype(str)
+            out["resolvability"] = {
+                "assigned": {k: int(v) for k, v in cls.items()},
+                "capped": {"blended": int(reasons.str.startswith(("blended peak", "unresolvable peak")).sum()),
+                           "refuted": int(reasons.str.contains("refuted by its isotope envelope", regex=False).sum()),
+                           "untestable": int(reasons.str.contains("untestable at this intensity", regex=False).sum())}}
     ts = run.ts
     if ts is not None and "ion_formula" in ts.columns and "role" in ts.columns:
         st = ts[ts["ion_formula"].notna() & ~col(ts, "dup_candidate", False).fillna(False).astype(bool)]
@@ -1612,6 +1629,10 @@ def render_md(card: dict) -> str:
     if c13:
         L.append(f"- 13C carbon count on {c13['n']} Assigned rows with a measured satellite: within 1 carbon {c13['within_1']}, within max(1, 25 %) {c13['within_tol']}, median |delta| {c13['median_abs_delta']:.2f}"
                  + (f"; worst: {'; '.join(c13['worst'])}" if c13["worst"] else ""))
+    rv = fz.get("resolvability")
+    if rv:
+        L.append(f"- separability of the Assigned peaks (per-file rows): {rv['assigned']}; per-file rows capped at "
+                 f"Candidate by the separability / satellite rules: {rv['capped']}")
     het = fz.get("hetero")
     if het:
         L.append(f"- heteroatom line (34S/37Cl/81Br/29Si) where the formula demands one: present {het['present']} of {het['n']}"
@@ -1889,6 +1910,10 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
             out.append(f"<p class=\"note\">decoy mode <span class=\"mono\">{_h(dc.get('mode'))}</span>: not run</p>")
         out.append("<h3>Falsification survival</h3><ul class=\"note\">")
         c13, het, ic, ac = fz.get("c13"), fz.get("hetero"), fz.get("iso_cov"), fz.get("adduct_cov")
+        rv = fz.get("resolvability")
+        if rv:
+            out.append(f"<li>separability of the Assigned peaks (per-file rows): <span class=\"mono\">{_h(str(rv['assigned']))}</span>; "
+                       f"capped by the separability / satellite rules: <span class=\"mono\">{_h(str(rv['capped']))}</span></li>")
         if c13:
             out.append(f"<li>13C carbon count on {c13['n']} Assigned rows: within 1 carbon {c13['within_1']}, within max(1, 25 %) {c13['within_tol']}, median |Δ| {c13['median_abs_delta']:.2f}" + (f" — worst: <span class=\"mono\">{_h('; '.join(c13['worst']))}</span>" if c13['worst'] else "") + "</li>")
         if het:

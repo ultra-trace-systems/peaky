@@ -13,6 +13,7 @@ from peaky.chem import contexts as X
 from peaky.chem import isotopes as ISO
 from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
+from peaky.assignment import satellites as _SAT
 from peaky.assignment import series_gka as G
 
 
@@ -321,130 +322,40 @@ _ATMOS_CORROBORATE = frozenset({"H2O4S", "CH4O3S"})
 _RECOVERABLE_KNOWN_FAMS = {"chlorinated_paraffin"}
 
 
-def _twin_element(counts: dict) -> str | None:
-    """The element whose diagnostic heavy-isotope line would corroborate this
-    composition, if any -- Br, Cl, S, Si in that order (the brightest first-order
-    line first); None for a composition that is monoisotopic in every
-    heteroatom (P, F, I), which no twin can ever test."""
-    for el in ("Br", "Cl", "S", "Si"):
-        if counts.get(el, 0) > 0:
-            return el
-    return None
-
-
-# the diagnostic heavy-isotope lines a refused single-channel known claim is
-# tested against in the LEDGER: (shift from M0, abundance per atom, label). Si
-# has two -- on an Orbitrap above ~m/z 300 the picker resolves the 29Si line
-# (+0.9996) from the 13C line (+1.0034), so the picked M+1 is the 29Si line
-# ALONE and a blended (29Si + 13C) prediction over-demands by the 13C share;
-# the 30Si M+2 is what no organic can fake.
-_TWIN_LINES = {
-    "Br": ((ISO.D_81BR, ISO.R_81BR_PER_BR, "81Br"),),
-    "Cl": ((ISO.D_37CL, ISO.R_37CL_PER_CL, "37Cl"),),
-    "S": ((ISO.D_34S, ISO.R_34S_PER_S, "34S"),),
-    "Si": ((ISO.D_29SI, ISO.R_29SI_PER_SI, "29Si"), (ISO.D_30SI, ISO.R_30SI_PER_SI, "30Si")),
-}
-#: a line refutes a claim -- by its absence, or by a picked height under
-#: TWIN_MIN_FRAC of its prediction -- only when it was predicted at this multiple
-#: of the resolved height gate (the per-file noise edge). Measured on a 10-file
-#: Orbitrap batch (J12, 2026-09-24): the per-scan noise at m/z 580 is ~100 cps
-#: and the instrument labels a centroid only above S/N 1.8, while the per-file
-#: edge is 61 cps; a line reaches the per-file peak list only when it clears the
-#: label threshold in most scans, i.e. when its mean is ~2.5x the per-scan
-#: noise = ~4x the per-file edge. Two of the three "refutations" of the D7
-#: cyclosiloxane were lines predicted at 2.3-2.5x the edge that the scans hold in
-#: 3-6 of 23 labels; below this multiple an absence is the threshold, not
-#: evidence, and a picked ratio is censored low.
-TWIN_REFUTE_X_FLOOR = 4.0
-#: a line PRESENT at less than this fraction of its predicted height refutes
-#: the claim (the Si M+1 gate's own fraction, postprocess.SI_M1_MIN_FRAC)
-TWIN_MIN_FRAC = 0.6
-_TWIN_PPM = 15.0        # the M+1 / M+2 window the Si M+1 gate uses
+# the twin test lives in assignment/satellites.py (the tier engine reads it too);
+# the names pass 0 has always used keep resolving here
+_twin_element = _SAT.twin_element
+_TWIN_LINES = _SAT.TWIN_LINES
+TWIN_REFUTE_X_FLOOR = _SAT.TWIN_REFUTE_X_FLOOR
+TWIN_MIN_FRAC = _SAT.TWIN_MIN_FRAC
+_TWIN_PPM = _SAT.TWIN_PPM
 
 
 def _twin_verdict(ledger: pd.DataFrame, pid, counts: dict, cfg: PassConfig) -> dict:
     """What a refused single-channel known claim leaves behind, judged on the
-    LEDGER, never on the scorer's silence: `refuted` when a diagnostic line the
-    file could show (predicted at >= TWIN_REFUTE_X_FLOOR x the resolved gate)
-    is absent from the ledger or sits under TWIN_MIN_FRAC of its predicted
-    height; `deferred` otherwise -- no twin element at all (a composition
-    monoisotopic in every heteroatom), no resolved gate, every line predicted
-    under the multiple (absent: untestable; present: support, its ratio
-    censored), or every testable line present and consistent (the scorer did
-    not credit it, but the ledger holds it). The batch pools these verdicts
-    across files (assign_batch.lock_known_species): silence never votes against
-    a species, a refutation does.
+    LEDGER, never on the scorer's silence (`satellites.twin_verdict`, which the
+    tier engine applies to every committed heteroatom row as well): `refuted`
+    when a diagnostic line the file could show (predicted at >=
+    TWIN_REFUTE_X_FLOOR x the resolved gate) is absent from the ledger or sits
+    under TWIN_MIN_FRAC of its predicted height; `deferred` otherwise -- no twin
+    element at all (a composition monoisotopic in every heteroatom), no resolved
+    gate, every line predicted under the multiple (absent: untestable; present:
+    support, its ratio censored), or every testable line present and consistent
+    (the scorer did not credit it, but the ledger holds it). The batch pools
+    these verdicts across files (assign_batch.lock_known_species): silence never
+    votes against a species, a refutation does. Returns the four fields a
+    `known_lead` records: verdict, twin, why, summary.
 
     Measured on a 10-file uronium batch: the D5 cyclosiloxane urea adduct shows
     the 29Si line at 0.16-0.22x and the 30Si line at 0.10-0.17x the parent in
     EVERY file (predicted 0.26 / 0.15), yet the scorer credited the envelope in
     two files only -- a scorer-based verdict called the other eight refutations."""
-    el = _twin_element(counts)
-    if el is None:
-        return {"verdict": "deferred", "twin": None,
-                "why": "single channel; no diagnostic twin to test (monoisotopic)",
-                "summary": "no diagnostic twin to test (monoisotopic)"}
     try:
         floor = cfg.height_cutoff
     except Exception:                                    # noqa: BLE001 -- unresolved gate
         floor = None
-    if floor is None:
-        return {"verdict": "deferred", "twin": el,
-                "why": f"single channel; no resolved detection floor to judge the {el} twin",
-                "summary": "no resolved detection floor"}
-    idx = ledger.index[ledger["peak_id"] == pid]
-    if not len(idx) or pd.isna(ledger.at[idx[0], "height"]) or float(ledger.at[idx[0], "height"]) <= 0:
-        return {"verdict": "deferred", "twin": el,
-                "why": f"single channel; no parent height to predict the {el} twin from",
-                "summary": "no parent height"}
-    h = float(ledger.at[idx[0], "height"])
-    m0 = float(ledger.at[idx[0], "mz"])
-    n = int(counts.get(el, 0))
-    support, contra, under = [], [], []          # (detail, summary) pairs
-    for delta, per_atom, label in _TWIN_LINES[el]:
-        pred_ratio = n * per_atom
-        pred_h = pred_ratio * h
-        testable = pred_h >= TWIN_REFUTE_X_FLOOR * floor
-        j = _peak_near(ledger["mz"], m0 + delta, ppm=_TWIN_PPM)
-        if j is None or pd.isna(ledger.at[j, "height"]):
-            if testable:
-                contra.append((f"no {label} line at +{delta:.4f} (predicted {pred_ratio:.2f}x the parent, "
-                               f"{pred_h:.0f} cps)", f"no {label} line where one was predicted above the floor"))
-            else:
-                under.append((f"{label} predicted at {pred_h:.0f} cps, under {TWIN_REFUTE_X_FLOOR:g}x "
-                              f"the {floor:.0f}-cps floor", label))
-            continue
-        obs = float(ledger.at[j, "height"]) / h
-        if not testable:
-            # a line the picker holds although it was predicted near its edge: it
-            # is there, and its picked height is censored low (the per-file height
-            # averages the scans that labelled it with the ones that did not)
-            support.append((f"{label} line at {obs:.2f}x the parent (predicted {pred_ratio:.2f}, "
-                            f"{pred_h:.0f} cps, under {TWIN_REFUTE_X_FLOOR:g}x the floor: ratio censored)",
-                            label))
-        elif obs >= TWIN_MIN_FRAC * pred_ratio:
-            support.append((f"{label} line at {obs:.2f}x the parent (predicted {pred_ratio:.2f})", label))
-        else:
-            contra.append((f"{label} line at {obs:.2f}x the parent, under {TWIN_MIN_FRAC:g}x the "
-                           f"predicted {pred_ratio:.2f}",
-                           f"{label} line under {TWIN_MIN_FRAC:g}x its prediction"))
-
-    def _lines(items):
-        labs = [s for _, s in items]
-        return (" and ".join(labs) + (" lines" if len(labs) > 1 else " line"))
-
-    if contra:
-        return {"verdict": "refuted", "twin": el,
-                "why": "single channel; " + "; ".join(d for d, _ in contra),
-                "summary": "; ".join(s for _, s in contra)}
-    if support:
-        return {"verdict": "deferred", "twin": el,
-                "why": "single channel; " + "; ".join(d for d, _ in support)
-                       + " -- present in the ledger, not credited by the scorer",
-                "summary": f"{_lines(support)} present at the predicted ratio, not credited by the scorer"}
-    return {"verdict": "deferred", "twin": el,
-            "why": "single channel; " + "; ".join(d for d, _ in under),
-            "summary": f"{_lines(under)} predicted under {TWIN_REFUTE_X_FLOOR:g}x the floor"}
+    v = _SAT.twin_verdict(ledger, pid, counts, floor, prefix="single channel; ")
+    return {k: v[k] for k in ("verdict", "twin", "why", "summary")}
 
 
 def _record_known_lead(ledger: pd.DataFrame, pid, *, formula: str, fam: str, lbl: str,

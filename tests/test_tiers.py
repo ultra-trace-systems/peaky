@@ -477,6 +477,71 @@ check("amine-side winner with its urea channel too -> Assigned, the row says whi
       _trn2.at["am", "tier_reason"])
 
 
+# ---- the diagnostic-satellite verdict on every committed Br / Cl / S row -------------
+# (assignment/satellites.py, read by the tier engine): a line the file could show and
+# did not refutes the count whatever else corroborates the row; a line the file could
+# not show leaves it untested, and an untested count with nothing else is Candidate.
+from peaky.chem import isotopes as _ISO  # noqa: E402
+from peaky.assignment.passes.config import PassConfig as _PC  # noqa: E402
+
+_sat_peaks = pd.DataFrame([
+    ("R", 300.0, 2000.0),                       # bromo-organic, 81Br line ABSENT (pred 1945 cps)
+    ("Ranc", 314.0157, 1500.0),                 # its CH2 series partner (an anchor for R)
+    ("S1", 320.0, 100.0),                       # organosulfate, 34S line predicted 4.4 cps: untestable
+    ("S2", 340.0, 100.0),                       # same, but the neutral also sits on a second channel
+    ("S2b", 419.9, 60.0),
+    ("S3", 360.0, 5000.0),                      # organosulfate with its 34S line PRESENT (pred 222)
+    ("S3t", 360.0 + _ISO.D_34S, 200.0),
+    ("M", 380.0, 2000.0),                       # bromo-organic ON the bromide adduct: masked
+    ("Mt", 380.0 + _ISO.D_81BR, 1900.0),
+    ("K", 400.0, 2000.0),                       # a known-species commit: never re-judged here
+], columns=["peak_id", "mz", "height"])
+_sat = L.new_ledger(_sat_peaks)
+
+
+def _c(pid, nf, ad, ion, **kw):
+    a = dict(neutral_formula=nf, adduct=ad, ion_formula=ion, ion_score=0.9, compound_score=0.9,
+             eff_score=0.9, eff_margin=0.3, tied=False, ppm_error=0.1, pass_no=1,
+             method="cheminfo+grid", confidence="High", commentary="Pass 1")
+    a.update(kw)
+    L.commit_assignment(_sat, pid, **a)
+
+
+_c("R", "C12H17BrO2", "[M-H]-", "C12H16BrO2-", method="residual:series", anchor_peak_id="Ranc", series_unit="CH2")
+_c("S1", "C10H16O5S", "[M-H]-", "C10H15O5S-")
+_c("S2", "C11H18O5S", "[M-H]-", "C11H17O5S-")
+_c("S2b", "C11H18O5S", "[M+Br]-", "C11H18O5S.Br-", pass_no=5, method="completion:known-neutral")
+_c("S3", "C12H20O5S", "[M-H]-", "C12H19O5S-")
+_c("M", "C13H19BrO3", "[M+Br]-", "C13H19BrO3.Br-")
+_c("K", "C14H21BrO2", "[M-H]-", "C14H20BrO2-", pass_no=0, method="known:contaminant:x")
+_ts = T.compute_tiers(_sat, cfg=_PC(height_cutoff_cps=10.0)).set_index("peak_id")
+
+check("satellite: an absent 81Br line predicted at 195x the floor refutes the Br count, anchor or not",
+      _ts.at["R", "tier"] == "Candidate" and _ts.at["R", "tier_reason"].startswith("Br count refuted by its isotope envelope")
+      and "no 81Br line" in _ts.at["R", "tier_reason"], _ts.at["R", "tier_reason"])
+check("satellite: a 34S line predicted under 4x the floor is untestable; with nothing else it is Candidate",
+      _ts.at["S1", "tier"] == "Candidate" and _ts.at["S1", "tier_reason"].startswith("S1 untestable at this intensity")
+      and "for want of evidence" in _ts.at["S1", "tier_reason"], _ts.at["S1", "tier_reason"])
+check("satellite: the same untestable S with a second channel stays Assigned and says the count is untested",
+      _ts.at["S2", "tier"] == "Assigned" and "second ionization channel" in _ts.at["S2", "tier_reason"]
+      and "S count untested" in _ts.at["S2", "tier_reason"], _ts.at["S2", "tier_reason"])
+check("satellite: a present, consistent 34S line supports -- Assigned, and the row says the line is there",
+      _ts.at["S3", "tier"] == "Assigned" and "S envelope line present" in _ts.at["S3", "tier_reason"],
+      _ts.at["S3", "tier_reason"])
+check("satellite: a bromo-organic on the bromide adduct is masked by the reagent's own 81Br line -> untestable, not refuted",
+      _ts.at["M", "tier"] == "Candidate" and "untestable" in _ts.at["M", "tier_reason"]
+      and "reagent adduct's 81Br line" in _ts.at["M", "tier_reason"], _ts.at["M", "tier_reason"])
+check("satellite: a known-species commit is never re-judged by the tier's twin test",
+      _ts.at["K", "tier"] == "Assigned" and "known species" in _ts.at["K", "tier_reason"], _ts.at["K", "tier_reason"])
+_ts0 = T.compute_tiers(_sat).set_index("peak_id")
+check("satellite: with no resolved floor nothing is refuted or capped as untestable (nothing can be ruled out)",
+      _ts0.at["R", "tier"] == "Assigned" and _ts0.at["S1", "tier"] == "Assigned", (_ts0.at["R", "tier_reason"], _ts0.at["S1", "tier_reason"]))
+# CSV round trip: the verdict is recomputed from the ledger, so it survives a string round trip
+_ts_rt = T.compute_tiers(pd.read_csv(io.StringIO(_sat.to_csv(index=False))), cfg=_PC(height_cutoff_cps=10.0)).set_index("peak_id")
+check("satellite: CSV round-trip keeps the refuted / untestable verdicts",
+      _ts_rt.at["R", "tier"] == "Candidate" and _ts_rt.at["S1", "tier"] == "Candidate" and _ts_rt.at["S3", "tier"] == "Assigned")
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

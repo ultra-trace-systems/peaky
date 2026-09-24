@@ -284,6 +284,7 @@ def cmd_assign(args) -> None:
         out = assign.run(args.sample_id, context, cfg=cfg, use_cache=not args.no_cache,
                          do_pass2=not args.no_pass2, do_pass3=not args.no_pass3,
                          do_pass4=not args.no_pass4, do_pass5=not args.no_pass5,
+                         resolving_power=args.resolving_power,
                          adducts=adducts, ts_peaks=ts_peaks, label_purity=purity,
                          occurrence=occurrence, reflists_active=reflists_active,
                          corroborate=cross,
@@ -936,8 +937,10 @@ def _add_trace_first_flags(p) -> None:
                         "batch, so the persistence floor cannot see one. Off by default: it is "
                         "not yet validated end to end")
     p.add_argument("--resolving-power", default=None, metavar="R|auto",
-                   help="peak width for --trace-first, which sizes the dedup cell (0.4 HWHM) "
-                        "and the resolvability flag. Default 'auto': MEASURE it from the raw "
+                   help="peak width: sizes --trace-first's dedup cell (0.4 HWHM) and stamps the "
+                        "resolvability flag on every per-file ledger (a blended peak with no "
+                        "isotope / second-channel / series corroboration is capped at "
+                        "Candidate; 'none' skips the stamp). Default 'auto': MEASURE it from the raw "
                         "profile of isolated peaks across the batch's mass range, which also "
                         "reports how it scales (constant on a TOF, as m^-1/2 on an Orbitrap). "
                         "Give a number to declare it instead (e.g. 6500), which assumes it is "
@@ -1013,6 +1016,12 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--ts-batch", default=None,
                     help="batch name to load as the time series (optional TS step)")
     pa.add_argument("--ts-dataset", default=None, help="dataset for --ts-batch")
+    pa.add_argument("--resolving-power", default="auto", metavar="R|auto|none",
+                    help="peak width for the resolvability stamp (how separable each assigned "
+                         "peak is from its nearest picked neighbour; a blended peak with no "
+                         "isotope / second-channel / series corroboration is capped at "
+                         "Candidate). Default 'auto': MEASURE it from this sample's raw profile. "
+                         "Give a number to declare it instead, or 'none' to skip the stamp")
     _add_admission_args(pa)
     _add_corroborate_flag(pa)
     _add_progress_flag(pa)

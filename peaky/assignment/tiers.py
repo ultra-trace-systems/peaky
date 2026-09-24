@@ -56,6 +56,7 @@ from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
+from peaky.assignment import satellites as SAT
 
 __version__ = "0.9.0"  # + source-solvent cluster cap (cluster:solvent -> Candidate)
                        # (history) mass-dependent z via masscal (range clamp; floor
@@ -545,6 +546,21 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
         persist_only = isinstance(_adm, str) and _adm == "occurrence"
 
         method = str(r.get("method") or "")
+        # the picked peak's separability (assignment/resolvability.py) and the
+        # diagnostic-satellite verdict on the neutral's Br / Cl / S (assignment/
+        # satellites.py) -- read once here, worded in the reasons below. Si keeps
+        # its own rule further down (on a TOF its 29Si M+1 is unresolved from 13C).
+        _rv = r.get("resolvability")
+        resolv = _rv.strip() if isinstance(_rv, str) else ""
+        _sep = float(r.get("sep_hwhm")) if pd.notna(r.get("sep_hwhm")) else float("nan")
+        _dc = float(r.get("d_crit_hwhm")) if pd.notna(r.get("d_crit_hwhm")) else float("nan")
+        twin = None
+        if not method.startswith(("known:", "ion_only:")):
+            _el = SAT.twin_element(counts, elements=SAT.TIER_ELEMENTS)
+            if _el:
+                _ion = _ion_counts(formula, r.get("adduct")) or counts
+                twin = SAT.twin_verdict(ledger, r["peak_id"], _ion, sat_floor, element=_el,
+                                        masked_by=SAT.reagent_masks(_el, counts, _ion))
         tier, reason = TIER_ASSIGNED, ""
         if method.startswith("known:solvent_cluster"):
             # a source-solvent cluster whose composition has NO covalent reading
@@ -579,6 +595,13 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
             tier = TIER_CANDIDATE
             reason = (f"{base} confidence: score/mass evidence below the "
                       "identification bar")
+        elif twin is not None and twin["kind"] == "refuted":
+            # the spectrum contradicts the heteroatom count: a diagnostic line the
+            # file could show (predicted at >= 4x its noise edge) is absent, or sits
+            # under 0.6x its prediction. Physics, not bookkeeping -- a second channel
+            # or a series step cannot put back a line that is not there.
+            tier = TIER_CANDIDATE
+            reason = f"{twin['twin']} count refuted by its isotope envelope: {twin['why']}"
         elif persist_only and not corroborated:
             tier = TIER_CANDIDATE
             _occ = r.get("occurrence")
@@ -654,6 +677,31 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
                       f"corroboration: {het} has no minor isotope, so the {het} "
                       "count is a mass-only claim with no possible isotope "
                       "confirmation and no independent channel to fix it")
+        elif (twin is not None and twin["kind"] == "untestable" and sat_floor is not None
+              and not corroborated):
+            # the line that would prove the heteroatom is predicted under 4x this
+            # file's noise edge (or the reagent's own halogen line fills its window):
+            # nothing could have tested the count, and nothing else supports it
+            tier = TIER_CANDIDATE
+            reason = (f"{twin['twin']}{counts.get(twin['twin'], 0)} untestable at this intensity: "
+                      f"{twin['why']}; with no isotope / cross-channel / series corroboration "
+                      "nothing supports the heteroatom count (Candidate for want of evidence, "
+                      "not against it)")
+        elif resolv in ("blended", "unresolvable") and not corroborated:
+            # the picked centroid is not the ion's own: a neighbour within the
+            # bimodality separation (assignment/resolvability.py) displaces it, so
+            # the mass the formula was fitted to carries the neighbour's pull
+            tier = TIER_CANDIDATE
+            if resolv == "unresolvable":
+                reason = (f"unresolvable peak: the nearest picked neighbour is {_sep:.2f} HWHM away, "
+                          "under the 0.4-HWHM fit floor (one observable, not two), so the fitted "
+                          "mass is not this ion's own; no isotope / cross-channel / series "
+                          "corroboration")
+            else:
+                reason = (f"blended peak: the nearest picked neighbour is {_sep:.2f} HWHM away and "
+                          f"two peaks of this height ratio separate only beyond {_dc:.2f}, so the "
+                          "centroid is displaced and the fitted mass is not this ion's own; no "
+                          "isotope / cross-channel / series corroboration")
         elif reagent_n and not corroborated:
             # positive-mode reagent-N isobar with nothing to fix the nitrogen
             # count: the ion reads equally as an N-free neutral on an N-donating
@@ -746,6 +794,13 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
                 parts.append("seen in a second ionization channel")
             if has_anchor:
                 parts.append("series-anchor support")
+            if twin is not None and twin["kind"] == "supported":
+                parts.append(f"{twin['twin']} envelope line present in the spectrum")
+            elif twin is not None and twin["kind"] == "untestable" and sat_floor is not None:
+                parts.append(f"{twin['twin']} count untested (its line predicted under the floor)")
+            if resolv in ("blended", "unresolvable"):
+                parts.append(f"{resolv} peak ({_sep:.2f} HWHM from its neighbour), carried by "
+                             "the corroboration")
             reason = "; ".join(parts)
         rows.append({"peak_id": r["peak_id"], "tier": tier, "tier_reason": reason,
                      "candidate_density": density, "density_capped": capped})
