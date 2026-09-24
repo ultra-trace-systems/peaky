@@ -23,7 +23,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   present and consistent though the scorer did not credit it; for Si the 29Si line ALONE and the
   30Si line, because an Orbitrap resolves 29Si from 13C above ~m/z 300 and a blended M+1
   prediction over-demands by the 13C share — the D5 urea adduct shows both lines at their predicted
-  ratios in every file of the uronium reference batch and the scorer credited two), and the batch
+  ratios in every file of the uronium reference batch and the scorer credited two; an absence, or a
+  picked ratio, counts only for a line predicted at 4x the per-file noise edge — measured: the
+  instrument labels a centroid above S/N 1.8 and the per-scan noise is 1.6x the per-file edge, so a
+  weaker line reaches the per-file list in a fraction of the scans, censored low or not at all — two
+  of the three "refutations" of the D7 cyclosiloxane were lines present in 3-6 of 23 scans), and the batch
   pools those with the `known:` commits
   (`assign_batch.known_evidence`; a commit's evidence is read off its own row — the commentary's
   "corroborated by", else the recorded satellites of an element the neutral contains, a paraffin's
@@ -34,6 +38,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   overrode in `tier_reason`); confirmed and refuted → left to the vote, the conflict on the row,
   and the merged tier capped at Candidate where the row's own reading is the conflicted species
   and the refutations outnumber the confirmations; never confirmed → a `known-species lead` note;
+  a species of a corroborated family is Assigned only when some confirming file holds two independent
+  lines beyond the exact mass (a second ion channel of the neutral, or two own-element diagnostic
+  satellites, counted from the ledger), else capped at Candidate, locked or kept — the D7
+  cyclosiloxane on the uronium reference batch (two files, one channel, the 29Si line alone; its 30Si
+  line sits below the label threshold in every scan) reads D7 at Candidate, as the per-scan test of
+  J12 supports;
   a family whose own rule is exact mass alone (the PFCAs, the nitroaromatics, the C0 acids) has
   nothing to pool beyond the count, so it never overrides the vote (a PFCA on-cal in 2 files of a
   ~4k TOF does not displace an 11-file 81Br-corroborated reading 6 ppm away; the row says so). The

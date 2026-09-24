@@ -228,13 +228,14 @@ def _ev(src, verdict, why, ion_score=0.83):
                 occurrence=0.9 if verdict == "confirmed" else None)
 
 
-pool = ([_ev("v09", "confirmed", "corroborated by a confirmed 29Si/30Si envelope (single channel)")]
+pool = ([dict(_ev("v09", "confirmed", "corroborated by a confirmed 29Si/30Si envelope (2 satellites)"),
+              n_channels=1, n_satellites=2)]
         + [_ev(f"v{i:02d}", "deferred", "single channel; the Si twin is predicted below the detection floor")
            for i in range(9)])
 mk = mp.copy()
 g = AB.lock_known_species(mk, pool, tol_ppm=6.0, log=lambda *a: None)
 row = mk.iloc[0]
-check("lock: confirmed in 1 file, untestable in 9, refuted in 0 -> the merged row is D7, Assigned",
+check("lock: confirmed in 1 file (two satellite lines), untestable in 9, refuted in 0 -> the merged row is D7, Assigned",
       row["neutral_formula"] == "C14H42O7Si7" and row["adduct"] == "[M+(CH4N2O)H]+"
       and row["tier"] == "Assigned" and abs(float(row["ion_score"]) - 0.83) < 1e-9
       and row["n_files_winner"] == 1 and row["n_files_ion"] == 1 and row["n_files"] == 10,
@@ -245,13 +246,45 @@ _tr = str(row["tier_reason"])
 check("lock: the row says the evidence and what it overrode",
       _tr.startswith("known species decided once for the batch: tetradecamethylcycloheptasiloxane (D7) "
                      "(C14H42O7Si7 [M+(CH4N2O)H]+) -- confirmed in 1 file (corroborated by a confirmed "
-                     "29Si/30Si envelope (single channel)); could not test it in 9 files (single channel; "
+                     "29Si/30Si envelope (2 satellites)); could not test it in 9 files (single channel; "
                      "the Si twin is predicted below the detection floor)")
       and _tr.endswith("; kept over the 9-file C27H30O14 [M+H]+ reading (vote 1 of 10 files)"), _tr)
 check("lock: counts", g == {"pooled": 1, "locked": 1, "confirmed_kept": 0, "conflict": 0,
                             "lead_only": 0, "mass_only_outvoted": 0, "no_cluster": 0}, g)
 check("lock: admitted_by / occurrence come from the confirmed file's row, not the loser's",
       row["admitted_by"] == "height" and abs(float(row["occurrence"]) - 0.9) < 1e-9, row.to_dict())
+# ONE channel and ONE satellite line in every confirming file (the real D7: two
+# files, the urea adduct alone, the 29Si line alone, the 30Si line never testable
+# at that intensity -- J12) -> the reading is locked, the tier capped at Candidate
+pool1 = ([dict(_ev(f"v{i:02d}", "confirmed", "corroborated by a confirmed 29Si/30Si envelope (1 satellite)"),
+               n_channels=1, n_satellites=1) for i in (8, 9)]
+         + [_ev(f"v{i:02d}", "deferred", "29Si and 30Si lines predicted under 4x the floor") for i in range(8)])
+mk1 = mp.copy()
+g1 = AB.lock_known_species(mk1, pool1, tol_ppm=6.0, log=lambda *a: None)
+check("lock: one channel + one satellite in every confirming file -> locked as D7 but capped Candidate, said on the row",
+      mk1.iloc[0]["neutral_formula"] == "C14H42O7Si7" and mk1.iloc[0]["tier"] == "Candidate" and g1["locked"] == 1
+      and str(mk1.iloc[0]["tier_reason"]).endswith("(vote 2 of 10 files); capped Candidate (one ion channel and one "
+                                                   "satellite line in every confirming file: two independent lines "
+                                                   "are needed for Assigned)"),
+      mk1.iloc[0].to_dict())
+# ... and a second channel in ONE confirming file is enough for Assigned
+pool2 = [dict(p) for p in pool1]; pool2[0]["n_channels"] = 2
+mk2 = mp.copy(); AB.lock_known_species(mk2, pool2, tol_ppm=6.0, log=lambda *a: None)
+check("lock: a second channel in one confirming file -> Assigned, no cap note",
+      mk2.iloc[0]["tier"] == "Assigned" and "capped" not in str(mk2.iloc[0]["tier_reason"]), mk2.iloc[0].to_dict())
+# the same cap on a row the vote already gave to the species (confirmed_kept)
+kept1, _ = AB.align(_files(2, 283.0960, "C6H18O3Si3", "[M+(CH4N2O)H]+", "Assigned", 0.9), tol_ppm=6.0)
+gk = AB.lock_known_species(kept1, [dict(neutral="C6H18O3Si3", adduct="[M+(CH4N2O)H]+", family="cyclosiloxane",
+                                        label="D3", src=f"v{i:02d}", mz=283.0960, verdict="confirmed",
+                                        why="corroborated by a confirmed 29Si/30Si envelope (1 satellite)",
+                                        summary="corroborated by a confirmed 29Si/30Si envelope (1 satellite)",
+                                        n_channels=1, n_satellites=1, ion_score=0.9, tier="Assigned",
+                                        admitted_by="height", occurrence=0.5) for i in range(2)],
+                           tol_ppm=6.0, log=lambda *a: None)
+check("lock: a kept known row backed by one channel and one satellite everywhere is capped Candidate too",
+      gk["confirmed_kept"] == 1 and kept1.iloc[0]["tier"] == "Candidate"
+      and str(kept1.iloc[0]["tier_reason"]).endswith("two independent lines are needed for Assigned)"),
+      kept1.iloc[0].to_dict())
 # REFUTED anywhere: a file that could show the twin and did not contradicts the
 # lock; the species is left to the vote and the row says so. Sulfolane at
 # 181.065 (34S-confirmed in one file) vs fluorenone C13H8O [M+H]+ Assigned in
@@ -318,7 +351,7 @@ uni, _ = AB.align({"a": m0([(500.0, "C21H21O4P", "[M+(CH4N2O)H]+", "Assigned", 0
 _TCP = dict(neutral="C21H21O4P", adduct="[M+(CH4N2O)H]+", family="organophosphate",
             label="tricresyl phosphate (TMPP / TCrP)", src="a", mz=500.0, verdict="confirmed",
             why="corroborated by 2 ion channels", ion_score=0.9, tier="Assigned",
-            admitted_by="height", occurrence=1.0)
+            admitted_by="height", occurrence=1.0, n_channels=2, n_satellites=0)
 gu = AB.lock_known_species(uni, [_TCP], tol_ppm=6.0, log=lambda *a: None)
 check("lock: a confirmed species the vote already chose keeps its row and gains the evidence note",
       gu["confirmed_kept"] == 1 and uni.iloc[0]["neutral_formula"] == "C21H21O4P"
@@ -366,7 +399,8 @@ gcp = AB.lock_known_species(_mcp, [dict(neutral="C24H40Cl10", adduct="[M-H]-", f
                                         label="chlorinated paraffin C24Cl10", src="v12", mz=680.9898,
                                         verdict="confirmed", why="corroborated by a 37Cl envelope (2 satellites)",
                                         summary="corroborated by a 37Cl envelope (2 satellites)", ion_score=0.58,
-                                        tier="Assigned", admitted_by="height", occurrence=0.1)],
+                                        tier="Assigned", admitted_by="height", occurrence=0.1,
+                                        n_channels=1, n_satellites=2)],
                             tol_ppm=6.0, log=lambda *a: None)
 check("lock: a reading the vote lists in `alternatives` is found by membership, 7.5 ppm off the cluster mean",
       gcp["locked"] == 1 and gcp["no_cluster"] == 0 and _mcp.iloc[0]["neutral_formula"] == "C24H40Cl10"
@@ -416,10 +450,11 @@ check("known_evidence: two confirmed records (route / exact mass), one lead with
       and _ke[1]["why"] == "exact mass, on-cal (the family's own rule)"
       and _ke[1]["admitted_by"] is None and _ke[1]["occurrence"] is None
       and _ke[1]["summary"] == "exact mass, on-cal (the family's own rule)"
+      and _ke[0]["n_channels"] == 1 and _ke[0]["n_satellites"] == 0
       and _ke[2] == dict(src="f1", neutral="C21H21O4P", adduct="[M+(CH4N2O)H]+", mz=429.1574,
                          family="organophosphate", label="tricresyl phosphate (TMPP / TCrP)",
                          verdict="deferred", why="single channel; no diagnostic twin to test (monoisotopic)",
-                         summary="no diagnostic twin to test (monoisotopic)",
+                         summary="no diagnostic twin to test (monoisotopic)", n_channels=1, n_satellites=0,
                          ion_score=0.7, tier=None, admitted_by=None, occurrence=None), _ke)
 check("known_evidence: missing columns -> empty", AB.known_evidence(pd.DataFrame({"x": [1]})) == [])
 # the route is read off the ROW: a chlorinated paraffin names no "corroborated by"
@@ -443,15 +478,20 @@ _ledr = pd.DataFrame([
          commentary="Pass 0 (known reactive-iodine): IBr [M+Br]- = iodine monobromide, ppm 1.54, ion score 0.70",
          isotopologues='[{"label": "81Br2", "score": 0.9, "peak_id": "e"}]'),
 ])
-_kr = {r["neutral"]: r["why"] for r in AB.known_evidence(_ledr, src="f")}
+_kr = {r["neutral"]: (r["why"], r["n_channels"], r["n_satellites"]) for r in AB.known_evidence(_ledr, src="f")}
 check("known_evidence: the paraffin's route is its recorded 37Cl envelope, the PFCA is mass-only, IBr its own 81Br",
-      _kr == {"C24H40Cl10": "corroborated by a confirmed 37Cl envelope (2 satellites)",
-              "C2HF3O2": AB.MASS_ONLY_ROUTE,
-              "IBr": "corroborated by a confirmed 81Br envelope (1 satellite)"}, _kr)
-check("_known_route: the commentary's own phrase wins; no satellites -> None; unparseable JSON -> None",
-      AB._known_route("x; corroborated by 2 ion channels", "C6H15O4P", None) == "2 ion channels"
+      _kr == {"C24H40Cl10": ("corroborated by a confirmed 37Cl envelope (2 satellites)", 1, 2),
+              "C2HF3O2": (AB.MASS_ONLY_ROUTE, 1, 0),
+              "IBr": ("corroborated by a confirmed 81Br envelope (1 satellite)", 1, 1)}, _kr)
+check("_known_route: a second ledger channel first; the commentary phrase ('by' or 'across') when nothing is recorded; else None",
+      AB._known_route("x; corroborated across 2 ion channels (monoisotopic P)", "C6H15O4P", None) == "2 ion channels (monoisotopic P)"
+      and AB._known_route("no phrase", "C6H15O4P", None, n_channels=2) == "2 ion channels"
       and AB._known_route("no phrase", "C24H40Cl10", None) is None
       and AB._known_route("no phrase", "C24H40Cl10", "not json") is None)
+# a satellite recorded in the row's list AND as an iso_child row is one peak
+check("_own_satellites: the same peak in the isotopologues list and as a child row counts once; a reagent 81Br is not the neutral's",
+      AB._own_satellites("C24H40Cl10", '[{"label": "37Cl", "peak_id": "k1"}]', [("k1", "37Cl"), ("k2", "37Cl2")]) == ["37Cl", "37Cl2"]
+      and AB._own_satellites("C2HF3O2", '[{"label": "81Br", "peak_id": "k1"}]', [("k1", "81Br")]) == [])
 # ... and the pool of that one file locks nothing the file did not already read:
 # the D7 row is confirmed where it stands, the TCP lead is noted on the grid row
 _mk2 = pd.DataFrame([dict(mz=579.1710, neutral_formula="C14H42O7Si7", adduct="[M+(CH4N2O)H]+", tier="Assigned",

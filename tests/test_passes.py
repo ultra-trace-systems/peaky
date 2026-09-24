@@ -1286,10 +1286,20 @@ check("pass0: ... and at 0.1x (under 0.6x the prediction) it is REFUTED by the l
 _ledcp_dim = mk_ledger([("cp0", _cpmz, 40.0)])
 P.run_pass0_known(None, "SID", _ledcp_dim, PROF5, ACFG, ADD5, score_fn=_fake_cp0, log=lambda *a: None)
 _lead_dim = json.loads(_ledcp_dim.loc[_ledcp_dim.peak_id == "cp0", "known_lead"].iloc[0])
-check("pass0: the same claim on a 40-cps parent (37Cl predicted at 77 cps, under 2x the 100-cps gate) is DEFERRED",
+check("pass0: the same claim on a 40-cps parent (37Cl predicted at 77 cps, under 4x the 100-cps gate) is DEFERRED",
       L.role_of(_ledcp_dim, "cp0") == L.ROLE_UNEXPLAINED and _lead_dim["verdict"] == "deferred"
-      and _lead_dim["why"] == "single channel; 37Cl predicted at 77 cps, under 2x the 100-cps floor"
-      and _lead_dim["summary"] == "37Cl line predicted under 2x the floor", _lead_dim)
+      and _lead_dim["why"] == "single channel; 37Cl predicted at 77 cps, under 4x the 100-cps floor"
+      and _lead_dim["summary"] == "37Cl line predicted under 4x the floor", _lead_dim)
+# a line PRESENT although predicted under the multiple (a 150-cps parent: 37Cl at 288 cps, under 4x the
+# 100-cps gate) supports the claim whatever its picked ratio -- the ratio is censored at that intensity
+_ledcp_cen = mk_ledger([("cp0", _cpmz, 150.0), ("cp1", _cpmz + 1.99705, 60.0)])
+P.run_pass0_known(None, "SID", _ledcp_cen, PROF5, ACFG, ADD5, score_fn=_fake_cp0, log=lambda *a: None)
+_lead_cen = json.loads(_ledcp_cen.loc[_ledcp_cen.peak_id == "cp0", "known_lead"].iloc[0])
+check("pass0: a 37Cl line present at 0.4x (predicted 1.92x, but under 4x the gate) is DEFERRED as support, ratio censored",
+      _lead_cen["verdict"] == "deferred"
+      and _lead_cen["why"] == ("single channel; 37Cl line at 0.40x the parent (predicted 1.92, 288 cps, under 4x the "
+                               "floor: ratio censored) -- present in the ledger, not credited by the scorer")
+      and _lead_cen["summary"] == "37Cl line present at the predicted ratio, not credited by the scorer", _lead_cen)
 
 # pass0 RECOVERY: a chlorinated paraffin the server scored too low to ANCHOR
 # (base unanchored: no sample_peak_id, ppm NaN -- the "too low score on the

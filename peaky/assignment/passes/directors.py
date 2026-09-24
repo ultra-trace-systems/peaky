@@ -344,10 +344,18 @@ _TWIN_LINES = {
     "S": ((ISO.D_34S, ISO.R_34S_PER_S, "34S"),),
     "Si": ((ISO.D_29SI, ISO.R_29SI_PER_SI, "29Si"), (ISO.D_30SI, ISO.R_30SI_PER_SI, "30Si")),
 }
-#: a line refutes a claim by its ABSENCE only when it was predicted at this
-#: multiple of the resolved height gate: a line predicted at the picker's edge
-#: is not a reliable absence
-TWIN_REFUTE_X_FLOOR = 2.0
+#: a line refutes a claim -- by its absence, or by a picked height under
+#: TWIN_MIN_FRAC of its prediction -- only when it was predicted at this multiple
+#: of the resolved height gate (the per-file noise edge). Measured on a 10-file
+#: Orbitrap batch (J12, 2026-09-24): the per-scan noise at m/z 580 is ~100 cps
+#: and the instrument labels a centroid only above S/N 1.8, while the per-file
+#: edge is 61 cps; a line reaches the per-file peak list only when it clears the
+#: label threshold in most scans, i.e. when its mean is ~2.5x the per-scan
+#: noise = ~4x the per-file edge. Two of the three "refutations" of the D7
+#: cyclosiloxane were lines predicted at 2.3-2.5x the edge that the scans hold in
+#: 3-6 of 23 labels; below this multiple an absence is the threshold, not
+#: evidence, and a picked ratio is censored low.
+TWIN_REFUTE_X_FLOOR = 4.0
 #: a line PRESENT at less than this fraction of its predicted height refutes
 #: the claim (the Si M+1 gate's own fraction, postprocess.SI_M1_MIN_FRAC)
 TWIN_MIN_FRAC = 0.6
@@ -360,8 +368,9 @@ def _twin_verdict(ledger: pd.DataFrame, pid, counts: dict, cfg: PassConfig) -> d
     file could show (predicted at >= TWIN_REFUTE_X_FLOOR x the resolved gate)
     is absent from the ledger or sits under TWIN_MIN_FRAC of its predicted
     height; `deferred` otherwise -- no twin element at all (a composition
-    monoisotopic in every heteroatom), no resolved gate, every line under the
-    threshold, or every testable line present and consistent (the scorer did
+    monoisotopic in every heteroatom), no resolved gate, every line predicted
+    under the multiple (absent: untestable; present: support, its ratio
+    censored), or every testable line present and consistent (the scorer did
     not credit it, but the ledger holds it). The batch pools these verdicts
     across files (assign_batch.lock_known_species): silence never votes against
     a species, a refutation does.
@@ -395,17 +404,25 @@ def _twin_verdict(ledger: pd.DataFrame, pid, counts: dict, cfg: PassConfig) -> d
     for delta, per_atom, label in _TWIN_LINES[el]:
         pred_ratio = n * per_atom
         pred_h = pred_ratio * h
-        if pred_h < TWIN_REFUTE_X_FLOOR * floor:
-            under.append((f"{label} predicted at {pred_h:.0f} cps, under {TWIN_REFUTE_X_FLOOR:g}x "
-                          f"the {floor:.0f}-cps floor", label))
-            continue
+        testable = pred_h >= TWIN_REFUTE_X_FLOOR * floor
         j = _peak_near(ledger["mz"], m0 + delta, ppm=_TWIN_PPM)
         if j is None or pd.isna(ledger.at[j, "height"]):
-            contra.append((f"no {label} line at +{delta:.4f} (predicted {pred_ratio:.2f}x the parent, "
-                           f"{pred_h:.0f} cps)", f"no {label} line where one was predicted above the floor"))
+            if testable:
+                contra.append((f"no {label} line at +{delta:.4f} (predicted {pred_ratio:.2f}x the parent, "
+                               f"{pred_h:.0f} cps)", f"no {label} line where one was predicted above the floor"))
+            else:
+                under.append((f"{label} predicted at {pred_h:.0f} cps, under {TWIN_REFUTE_X_FLOOR:g}x "
+                              f"the {floor:.0f}-cps floor", label))
             continue
         obs = float(ledger.at[j, "height"]) / h
-        if obs >= TWIN_MIN_FRAC * pred_ratio:
+        if not testable:
+            # a line the picker holds although it was predicted near its edge: it
+            # is there, and its picked height is censored low (the per-file height
+            # averages the scans that labelled it with the ones that did not)
+            support.append((f"{label} line at {obs:.2f}x the parent (predicted {pred_ratio:.2f}, "
+                            f"{pred_h:.0f} cps, under {TWIN_REFUTE_X_FLOOR:g}x the floor: ratio censored)",
+                            label))
+        elif obs >= TWIN_MIN_FRAC * pred_ratio:
             support.append((f"{label} line at {obs:.2f}x the parent (predicted {pred_ratio:.2f})", label))
         else:
             contra.append((f"{label} line at {obs:.2f}x the parent, under {TWIN_MIN_FRAC:g}x the "

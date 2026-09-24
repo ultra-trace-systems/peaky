@@ -465,7 +465,7 @@ def _protected_neutrals(ledger: pd.DataFrame) -> set:
 # what pass 0 writes into a `known:` commit's commentary: "... = <label>, ppm
 # <x>, ion score <y>; ...; corroborated by <route>"
 _KNOWN_LABEL_RE = re.compile(r"=\s*(.+?),\s*ppm\s")
-_KNOWN_ROUTE_RE = re.compile(r"corroborated by (.+?)(?:;|$)")
+_KNOWN_ROUTE_RE = re.compile(r"corroborated (?:by|across) (.+?)(?:;|$)")
 #: the route of a family whose own rule is exact mass alone (the perfluoroacids,
 #: the nitroaromatics, the C0 atmospheric acids, reactive iodine ...): such a
 #: commit carries no evidence the batch can pool beyond the count of files it
@@ -478,32 +478,59 @@ MASS_ONLY_ROUTE = "exact mass, on-cal (the family's own rule)"
 _DIAG_TAGS = {"Br": ("81Br",), "Cl": ("37Cl",), "S": ("34S",), "Si": ("29Si", "30Si")}
 
 
-def _known_route(commentary: str, neutral: str, isotopologues) -> str | None:
-    """The evidence a `known:` commit rests on, read off its own row: the
-    commentary's "corroborated by <route>" (the channel count or the diagnostic
-    envelope the P / S / Si families name), else the recorded satellites of an
-    element the neutral contains (a chlorinated paraffin's 37Cl envelope, an
-    iodine bromide's 81Br2 -- pass 0 records the lines it locked on, and the
-    recovery path does too), else None: the family's rule was exact mass."""
-    m = _KNOWN_ROUTE_RE.search(commentary or "")
-    if m:
-        return m.group(1).strip()
+def _own_satellites(neutral: str, isotopologues, kid_labels=()) -> list[str]:
+    """The recorded satellite lines of an element the NEUTRAL contains -- one
+    per distinct peak: the row's `isotopologues` entries (each names its peak)
+    and the iso_child rows pointing at the row (`kid_labels`: (peak_id, label)
+    pairs, or bare labels), kept where the label carries a diagnostic tag of one
+    of the neutral's own elements (`_DIAG_TAGS`), a peak recorded in both places
+    counted once. A `[M+Br]-` reading's 81Br line is the reagent's twin --
+    evidence of the adduct, not of the neutral -- and is left out unless the
+    neutral itself carries bromine."""
+    seen: dict = {}
     try:
-        labels = [str(d.get("label", "")) for d in (json.loads(isotopologues)
-                  if isinstance(isotopologues, str) else (isotopologues or []))
-                  if isinstance(d, dict)]
+        entries = (json.loads(isotopologues) if isinstance(isotopologues, str)
+                   else (isotopologues or []))
     except (TypeError, ValueError):
-        labels = []
-    if not labels:
-        return None
+        entries = []
+    for d in entries:
+        if isinstance(d, dict):
+            seen.setdefault(str(d.get("peak_id")) if d.get("peak_id") is not None else f"#{len(seen)}",
+                            str(d.get("label", "")))
+    for k in kid_labels:
+        pid, lab = (k if isinstance(k, tuple) else (None, k))
+        if lab is None or str(lab) in ("nan", "<NA>", ""):
+            continue
+        key = str(pid) if pid is not None and str(pid) not in ("nan", "<NA>", "") else f"#{len(seen)}"
+        seen.setdefault(key, str(lab))
     from peaky.chem import chemistry as _C
     counts = _C.parse_formula(str(neutral or ""))
     tags = [t for el, ts in _DIAG_TAGS.items() if counts.get(el, 0) > 0 for t in ts]
-    hit = [lab for lab in labels if any(t in lab for t in tags)]
-    if not hit:
-        return None
-    seen = sorted({t for t in tags if any(t in lab for lab in hit)})
-    return f"a confirmed {'/'.join(seen)} envelope ({len(hit)} satellite{'s' if len(hit) != 1 else ''})"
+    return [lab for lab in seen.values() if any(t in lab for t in tags)]
+
+
+def _known_route(commentary: str, neutral: str, isotopologues, *, n_channels: int = 0,
+                 kid_labels=()) -> str | None:
+    """The evidence a `known:` commit rests on, read off its own row: a second
+    ion channel of the neutral in the same ledger (`n_channels`, counted by the
+    caller), else the recorded satellites of an element the neutral contains
+    (`_own_satellites`: a chlorinated paraffin's 37Cl envelope, an iodine
+    bromide's 81Br2 -- pass 0 records the lines it locked on, and the recovery
+    path does too), else the commentary's own "corroborated by/across <route>",
+    else None: the family's rule was exact mass."""
+    if n_channels >= 2:
+        return f"{n_channels} ion channels"
+    hit = _own_satellites(neutral, isotopologues, kid_labels)
+    if hit:
+        from peaky.chem import chemistry as _C
+        counts = _C.parse_formula(str(neutral or ""))
+        tags = [t for el, ts in _DIAG_TAGS.items() if counts.get(el, 0) > 0 for t in ts]
+        seen = sorted({t for t in tags if any(t in lab for lab in hit)})
+        return f"a confirmed {'/'.join(seen)} envelope ({len(hit)} satellite{'s' if len(hit) != 1 else ''})"
+    m = _KNOWN_ROUTE_RE.search(commentary or "")
+    if m:
+        return m.group(1).strip()
+    return None
 
 
 def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
@@ -517,7 +544,9 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
     `refuted` = it tested it and it failed; ledger.py). `src` tags the file.
     Record: src, neutral, adduct, mz, family, label, verdict, why, summary (the
     reason without this file's numbers -- what the merged row counts files by),
-    ion_score, tier, admitted_by, occurrence (the last three None on a lead)."""
+    n_channels (the neutral's ion channels in that ledger), n_satellites (its
+    recorded own-element diagnostic lines), ion_score, tier, admitted_by,
+    occurrence (the last three None on a lead)."""
     out: list[dict] = []
     if ledger is None or not len(ledger) \
             or not {"neutral_formula", "adduct", "mz"} <= set(ledger.columns):
@@ -537,18 +566,32 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
         meth = ledger["method"].map(_s)
         role = ledger["role"].map(_s) if "role" in ledger.columns \
             else pd.Series("M0", index=ledger.index)
+        m0 = ledger[role == "M0"]
+        # the neutral's ion channels in THIS ledger (the tier engine's own
+        # cross-channel count) and the satellites attached to the row
+        chan = m0.groupby(m0["neutral_formula"].map(_s))["adduct"].nunique() if len(m0) else pd.Series(dtype=int)
+        kids: dict = {}
+        if {"parent_peak_id", "iso_label", "peak_id"} <= set(ledger.columns):
+            for pid, own, lab_ in zip(ledger.loc[role == "iso_child", "parent_peak_id"],
+                                      ledger.loc[role == "iso_child", "peak_id"],
+                                      ledger.loc[role == "iso_child", "iso_label"]):
+                kids.setdefault(pid, []).append((own, lab_))
         for i in ledger.index[(role == "M0") & meth.str.startswith("known:")]:
             com = _col(i, "commentary")
             lab = _KNOWN_LABEL_RE.search(com)
-            route = _known_route(com, _s(ledger.at[i, "neutral_formula"]),
-                                 ledger.at[i, "isotopologues"] if "isotopologues" in ledger.columns else None)
+            nf = _s(ledger.at[i, "neutral_formula"])
+            n_ch = int(chan.get(nf, 0))
+            kid_labels = kids.get(ledger.at[i, "peak_id"], ()) if "peak_id" in ledger.columns else ()
+            iso_cell = ledger.at[i, "isotopologues"] if "isotopologues" in ledger.columns else None
+            route = _known_route(com, nf, iso_cell, n_channels=n_ch, kid_labels=kid_labels)
             why = ("corroborated by " + route) if route else MASS_ONLY_ROUTE
             out.append(dict(
-                src=src, neutral=_s(ledger.at[i, "neutral_formula"]),
+                src=src, neutral=nf,
                 adduct=_s(ledger.at[i, "adduct"]), mz=float(ledger.at[i, "mz"]),
                 family=meth[i][len("known:"):],
                 label=lab.group(1).strip() if lab else "",
                 verdict="confirmed", why=why, summary=why,
+                n_channels=n_ch, n_satellites=len(_own_satellites(nf, iso_cell, kid_labels)),
                 ion_score=_num(ledger.at[i, "ion_score"]) if "ion_score" in ledger.columns else None,
                 tier=_col(i, "tier") or None,
                 admitted_by=_col(i, "admitted_by") or None,
@@ -567,6 +610,7 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
                 family=_s(d.get("family")), label=_s(d.get("label")),
                 verdict=_s(d.get("verdict")) or "deferred", why=_s(d.get("why")),
                 summary=_s(d.get("summary")) or _s(d.get("why")),
+                n_channels=int(d.get("channels") or 0), n_satellites=0,
                 ion_score=_num(d.get("ion_score")), tier=None, admitted_by=None,
                 occurrence=None))
     return out
@@ -636,7 +680,14 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
         beyond the count of files it fitted in, so it never overrides the vote:
         a PFCA `[M-H]-` on-cal in two files of a ~4k TOF cannot displace an
         11-file, 81Br-corroborated CHOS `[M+Br]-` reading 6 ppm away; the row
-        notes it, the vote stands.
+        notes it, the vote stands;
+      * a species of a family that demands corroboration is Assigned only when
+        some confirming file holds TWO independent lines of evidence beyond
+        the exact mass -- a second ion channel, or two own-element diagnostic
+        satellites (`n_channels >= 2 or n_satellites >= 2`); one channel and one
+        satellite line in every confirming file is capped at Candidate, locked
+        or kept (the D7 cyclosiloxane: two files, one channel, the 29Si line
+        alone, the 30Si line never testable at that intensity -- J12).
 
     The merged row a pooled reading belongs to is found by MEMBERSHIP -- the
     row whose own reading or whose `alternatives` lists it (the vote names
@@ -693,6 +744,11 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
         label = next((str(r["label"]) for r in conf + dfr + ref if r.get("label")), "") or nf
         same = _s(merged.at[i, "neutral_formula"]) == nf and _s(merged.at[i, "adduct"]) == ad
         n_c = len({r["src"] for r in conf})
+        mass_only = bool(conf) and all((r.get("summary") or r.get("why")) == MASS_ONLY_ROUTE for r in conf)
+        two_lines = any(int(r.get("n_channels") or 0) >= 2 or int(r.get("n_satellites") or 0) >= 2
+                        for r in conf)
+        weak_note = ("; capped Candidate (one ion channel and one satellite line in every "
+                     "confirming file: two independent lines are needed for Assigned)")
         old_nf, old_ad = _s(merged.at[i, "neutral_formula"]), _s(merged.at[i, "adduct"])
         old_n = (int(merged.at[i, "n_files_winner"])
                  if "n_files_winner" in merged.columns and pd.notna(merged.at[i, "n_files_winner"])
@@ -701,10 +757,14 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                 f"{_pool_summary(conf, dfr, ref)}")
         if conf and not ref:
             if same:
-                _note(merged, i, head)
+                capped = (not mass_only and not two_lines and "tier" in merged.columns
+                          and _s(merged.at[i, "tier"]) == TIER_ASSIGNED)
+                if capped:
+                    merged.at[i, "tier"] = TIER_CANDIDATE
+                _note(merged, i, head + (weak_note if capped else ""))
                 counts["confirmed_kept"] += 1
                 continue
-            if all((r.get("summary") or r.get("why")) == MASS_ONLY_ROUTE for r in conf):
+            if mass_only:
                 _note(merged, i, f"mass-only known species {label} ({nf} {ad}) anchored on-cal in "
                                  f"{n_c} file{'s' if n_c != 1 else ''}; the vote's {old_n}-file {old_nf} "
                                  f"{old_ad} reading stands (exact mass alone cannot overrule a reading "
@@ -725,7 +785,7 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                        else max(n_in, old_n))
             merged.at[i, "neutral_formula"] = nf
             merged.at[i, "adduct"] = ad
-            merged.at[i, "tier"] = best.get("tier") or TIER_ASSIGNED
+            merged.at[i, "tier"] = (best.get("tier") or TIER_ASSIGNED) if two_lines else TIER_CANDIDATE
             if "ion_score" in merged.columns:
                 scores = [r["ion_score"] for r in conf if r.get("ion_score") is not None]
                 merged.at[i, "ion_score"] = max(scores) if scores else np.nan
@@ -739,7 +799,7 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                     merged.at[i, col] = n_in
             merged.at[i, "alternatives"] = "; ".join([old] + keep)
             _note(merged, i, f"{head}; kept over the {old_n}-file {old_nf} {old_ad} reading "
-                             f"(vote {n_in} of {n_total} files)")
+                             f"(vote {n_in} of {n_total} files)" + ("" if two_lines else weak_note))
             counts["locked"] += 1
         elif conf and ref:
             n_r = len({r["src"] for r in ref})

@@ -159,7 +159,20 @@ selected sample_ids (SAMPLING.md)
      29Si/30Si envelope (single channel)); could not test it in 9 files (single
      channel; the Si twin is predicted below the detection floor); kept over the
      9-file C27H30O14 [M+H]+ reading (vote 1 of 10 files)`. A row the vote
-     already gave to the species gains the note only.
+     already gave to the species gains the note only. **Two lines for
+     Assigned**: a species of a family that demands corroboration keeps the
+     confirming files' Assigned tier only when some confirming file holds two
+     independent lines of evidence beyond the exact mass — a second ion channel
+     of the neutral in that ledger, or two own-element diagnostic satellites
+     (`n_channels ≥ 2 or n_satellites ≥ 2`, counted by `known_evidence` from
+     the ledger; a reagent's ⁸¹Br twin on a `[M+Br]-` reading is not the
+     neutral's); one channel and one satellite line in every confirming file is
+     capped at Candidate, locked or kept (`…; capped Candidate (one ion channel
+     and one satellite line in every confirming file: two independent lines are
+     needed for Assigned)`) — the D7 cyclosiloxane, J12: two files, the urea
+     adduct alone, the ²⁹Si line alone, the ³⁰Si line never testable at that
+     intensity. Mass-only families are outside this rule (exact mass is their
+     own standard).
    - confirmed somewhere and refuted somewhere → left to the vote; the row
      records the conflict (`known species sulfolane (…) confirmed in 1 file but
      refuted in 9 (…); left to the vote`), and where the vote's own winner is the
