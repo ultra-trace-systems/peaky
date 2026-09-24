@@ -41,6 +41,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in every spectrum with no 37Cl line where 40x the floor was predicted); an Orbitrap (R ~120k at
   m/z 200) has 100 Br / Cl series and completion commits whose 81Br / 37Cl line is predicted at
   4x the floor and absent, and 45 blended uncorroborated rows.
+  A predicted line height under 10 cps is written with one decimal in the verdict's reason (a TOF's
+  34S line of a 5-cps parent is 0.2 cps, not "0 cps"); text only.
 
 - **Known species decided once per batch, by pooled evidence — the vote's curated exemption is
   retired.** Pass 0 locks a known species where THAT file shows the corroboration its family

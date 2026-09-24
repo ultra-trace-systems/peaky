@@ -66,6 +66,13 @@ TIER_ELEMENTS = ("Br", "Cl", "S")
 DEFAULT_ELEMENTS = ("Br", "Cl", "S", "Si")
 
 
+def _cps(x: float) -> str:
+    """A predicted line height for a reason string: one decimal under 10 cps (a
+    TOF's 34S line of a 5-cps parent is 0.2 cps, not "0 cps"), else whole cps."""
+    x = float(x)
+    return f"{x:.1f}" if x < 10 else f"{x:.0f}"
+
+
 def twin_element(counts: dict, elements=DEFAULT_ELEMENTS) -> str | None:
     """The element whose diagnostic heavy-isotope line would corroborate this
     composition, if any -- the first of `elements` the composition carries;
@@ -149,10 +156,10 @@ def twin_verdict(ledger: pd.DataFrame, pid, counts: dict, floor, *, element: str
         if j is None or pd.isna(ledger.at[j, "height"]):
             if testable:
                 contra.append((f"no {label} line at +{delta:.4f} (predicted {pred_ratio:.2f}x the parent, "
-                               f"{pred_h:.0f} cps)", f"no {label} line where one was predicted above the floor"))
+                               f"{_cps(pred_h)} cps)", f"no {label} line where one was predicted above the floor"))
                 rec["status"] = "absent"
             else:
-                under.append((f"{label} predicted at {pred_h:.0f} cps, under {TWIN_REFUTE_X_FLOOR:g}x "
+                under.append((f"{label} predicted at {_cps(pred_h)} cps, under {TWIN_REFUTE_X_FLOOR:g}x "
                               f"the {floor:.0f}-cps floor", label))
                 rec["status"] = "under"
             lines.append(rec)
@@ -164,7 +171,7 @@ def twin_verdict(ledger: pd.DataFrame, pid, counts: dict, floor, *, element: str
             # is there, and its picked height is censored low (the per-file height
             # averages the scans that labelled it with the ones that did not)
             support.append((f"{label} line at {obs:.2f}x the parent (predicted {pred_ratio:.2f}, "
-                            f"{pred_h:.0f} cps, under {TWIN_REFUTE_X_FLOOR:g}x the floor: ratio censored)",
+                            f"{_cps(pred_h)} cps, under {TWIN_REFUTE_X_FLOOR:g}x the floor: ratio censored)",
                             label))
             rec["status"] = "present-censored"
         elif obs >= TWIN_MIN_FRAC * pred_ratio:
