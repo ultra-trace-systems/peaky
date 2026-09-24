@@ -476,17 +476,27 @@ MASS_ONLY_ROUTE = "exact mass, on-cal (the family's own rule)"
 #: reagent's twin, evidence of the adduct, not of the neutral -- it counts only
 #: when the neutral itself carries bromine
 _DIAG_TAGS = {"Br": ("81Br",), "Cl": ("37Cl",), "S": ("34S",), "Si": ("29Si", "30Si")}
+#: label parts that name a line of the ENVELOPE as a whole rather than one
+#: isotope: pass 0 records them on a multi-halogen species whose commit landed
+#: on one member of the pattern (an `M0` two Da below a chlorinated paraffin's
+#: committed 37Cl line, an `M+6` three lines up). They are the envelope's own
+#: lines and count; a carbon-only tag (13C, 13C2) never does.
+_ENVELOPE_PART = re.compile(r"^M(?:0|\+\d+)$")
 
 
 def _own_satellites(neutral: str, isotopologues, kid_labels=()) -> list[str]:
-    """The recorded satellite lines of an element the NEUTRAL contains -- one
-    per distinct peak: the row's `isotopologues` entries (each names its peak)
-    and the iso_child rows pointing at the row (`kid_labels`: (peak_id, label)
-    pairs, or bare labels), kept where the label carries a diagnostic tag of one
-    of the neutral's own elements (`_DIAG_TAGS`), a peak recorded in both places
-    counted once. A `[M+Br]-` reading's 81Br line is the reagent's twin --
-    evidence of the adduct, not of the neutral -- and is left out unless the
-    neutral itself carries bromine."""
+    """The recorded lines of the neutral's own isotope envelope -- one per
+    distinct peak: the row's `isotopologues` entries (each names its peak) and
+    the iso_child rows pointing at the row (`kid_labels`: (peak_id, label)
+    pairs, or bare labels), a peak recorded in both places -- or under two
+    labels, a 37Cl2 and an 81Br+37Cl the instrument does not separate --
+    counted once. A line counts when its label carries a diagnostic isotope of
+    an element the neutral contains (`_DIAG_TAGS`) or names an envelope line
+    outright (`_ENVELOPE_PART`: M0, M+6 -- pass 0 records those on a
+    multi-halogen species whose commit sits on one member of the pattern). A
+    `[M+Br]-` reading's bare 81Br line is the reagent's twin -- evidence of the
+    adduct, not of the neutral -- and is left out unless the neutral itself
+    carries bromine; a 13C line never counts."""
     seen: dict = {}
     try:
         entries = (json.loads(isotopologues) if isinstance(isotopologues, str)
@@ -506,7 +516,18 @@ def _own_satellites(neutral: str, isotopologues, kid_labels=()) -> list[str]:
     from peaky.chem import chemistry as _C
     counts = _C.parse_formula(str(neutral or ""))
     tags = [t for el, ts in _DIAG_TAGS.items() if counts.get(el, 0) > 0 for t in ts]
-    return [lab for lab in seen.values() if any(t in lab for t in tags)]
+
+    def _counts(lab: str) -> bool:
+        # a label is one line; its '+'-joined parts name what the line carries.
+        # It counts when any part is an envelope line (M0, M+6) or an isotope of
+        # a diagnostic element the neutral contains; 13C / 15N / 18O parts and
+        # the reagent's own twin on a halogen-free neutral do not.
+        if _ENVELOPE_PART.match(lab.strip()):
+            return True
+        return any(_ENVELOPE_PART.match(part.strip()) or any(t in part for t in tags)
+                   for part in lab.split("+"))
+
+    return [lab for lab in seen.values() if _counts(lab)]
 
 
 def _known_route(commentary: str, neutral: str, isotopologues, *, n_channels: int = 0,

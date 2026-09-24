@@ -492,6 +492,16 @@ check("_known_route: a second ledger channel first; the commentary phrase ('by' 
 check("_own_satellites: the same peak in the isotopologues list and as a child row counts once; a reagent 81Br is not the neutral's",
       AB._own_satellites("C24H40Cl10", '[{"label": "37Cl", "peak_id": "k1"}]', [("k1", "37Cl"), ("k2", "37Cl2")]) == ["37Cl", "37Cl2"]
       and AB._own_satellites("C2HF3O2", '[{"label": "81Br", "peak_id": "k1"}]', [("k1", "81Br")]) == [])
+# what pass 0 really records on the TOF's paraffins: an `M0` two Da below the committed 37Cl line and
+# an `M+6` are envelope lines and count; two labels on ONE peak (37Cl2 / 81Br+37Cl, unresolved) are
+# one line; a 13C child never counts; the reagent's 81Br on a Cl-only neutral counts only as the
+# 37Cl part of a composite label
+check("_own_satellites: envelope members M0 / M+6 count, two labels on one peak count once, 13C does not",
+      AB._own_satellites("C12H21Cl5", '[{"label": "M0", "peak_id": "a"}, {"label": "81Br+37Cl", "peak_id": "b"}]',
+                         [("c", "M+6"), ("b", "81Br+37Cl"), ("d", "13C")]) == ["M0", "81Br+37Cl", "M+6"]
+      and AB._own_satellites("C15H26Cl6", '[{"label": "37Cl2", "peak_id": "j"}, {"label": "81Br+37Cl", "peak_id": "j"}]',
+                             [("j", "81Br+37Cl")]) == ["37Cl2"]
+      and AB._own_satellites("C2HF3O2", '[{"label": "M0", "peak_id": "a"}, {"label": "13C", "peak_id": "b"}]', []) == ["M0"])
 # ... and the pool of that one file locks nothing the file did not already read:
 # the D7 row is confirmed where it stands, the TCP lead is noted on the grid row
 _mk2 = pd.DataFrame([dict(mz=579.1710, neutral_formula="C14H42O7Si7", adduct="[M+(CH4N2O)H]+", tier="Assigned",
