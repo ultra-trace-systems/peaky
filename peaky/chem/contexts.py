@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 from peaky.chem import chemistry as C
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"   # + ContextProfile.source_solvents (the cluster channel)
 
 
 @dataclass(frozen=True)
@@ -56,6 +56,17 @@ class ContextProfile:
     min_C_for: dict = field(default_factory=dict)
     # default adducts to search (ion forms from chemistry.ADDUCT_SHIFTS)
     reagent_adducts: tuple = ("[M-H]-",)
+    # SOURCE SOLVENTS this ion source carries in bulk, as neutral formulas
+    # (assignment/solvent_clusters.py). A positive source running on solvent
+    # vapour builds proton-/hydride-bound CLUSTERS of it -- [(C2H6O)2+H]+ was
+    # 6.5 % of the total signal on a 2026-09-21 EasyIC+ acquisition -- and those
+    # ions are unreachable by the neutral grid ON PURPOSE: the cluster's implied
+    # neutral has DBE < 0. Listing the solvents here opens the cluster channel;
+    # the family then self-gates on each solvent's own monomer ion, so naming one
+    # the source does not actually carry costs nothing. Empty = channel off,
+    # which is every negative-mode context (a halide reagent's own clusters are
+    # the reagent library's job, not this one).
+    source_solvents: tuple = ()
     # contaminant families Pass 3 may open (keys into CONTAMINANT_FAMILIES)
     pass3_families: tuple = ()
 
@@ -228,6 +239,16 @@ _URONIUM = ContextProfile(
     # Si only as a siloxane scaffold (PDMS bleed), never a bare-Si mass-fit.
     min_C_for={"Si": 2},
     reagent_adducts=("[M+H]+", "[M+(CH4N2O)H]+", "[M+Na]+", "[M+NH4]+"),
+    # SOURCE SOLVENTS: the same proton-bound solvent clustering as the EasyIC
+    # source -- it is positive-mode CI physics, not a fluoranthene speciality --
+    # so the channel is opened here too. No hydride ladder: this reagent
+    # protonates, it does not abstract H- ([M-H]+ is not among the adducts
+    # above, which is what `solvent_clusters.carriers_for` reads). In practice
+    # it is inert on the measured urea batches: their windows start at m/z
+    # 50-130, above ethanol's and methanol's monomer ions, and the family
+    # refuses to build a ladder whose monomer it cannot see -- 93.0911 stays
+    # unexplained there rather than becoming an unprovable cluster claim.
+    source_solvents=("H2O", "CH4O", "C2H6O", "C3H6O"),
     pass3_families=("amine", "siloxane", "pdms", "glycol_peg", "phthalate"),
 )
 
@@ -252,6 +273,18 @@ _EASYIC = ContextProfile(
     # mz40-500 windows -> neutrals <= ~500 Da; the ambient 40/30 box covers it.
     min_C_for={"Si": 2},
     reagent_adducts=("[M]+.", "[M-H]+", "[M-CH3]+", "[M+H]+"),
+    # SOURCE SOLVENTS. This source runs on solvent vapour and clusters it: on a
+    # 2026-09-21 acquisition the ethanol dimer (C2H5OH)2H+ (93.0911) alone was
+    # 6.5 % of the TOTAL signal and ~half of everything left unexplained, with
+    # its 13C satellite (94.0944) and the EtOH.H3O+ mixed cluster (65.0597)
+    # unexplained beside it -- none of them reachable by the neutral grid (the
+    # implied neutral C4H12O2 has DBE -1). Ethanol and acetone are the observed
+    # cluster formers; methanol and water are listed because they co-cluster
+    # with them (EtOH.H3O+) and cost nothing when absent -- the family needs a
+    # solvent's own monomer ion before it will build any ladder from it.
+    # Having the [M-H]+ hydride channel is what additionally opens the
+    # hydride-bound ladder ([EtOH-H]+.EtOH = 91.0754) here.
+    source_solvents=("H2O", "CH4O", "C2H6O", "C3H6O"),
     pass3_families=("amine", "siloxane", "pdms", "glycol_peg", "phthalate"),
 )
 
@@ -287,6 +320,9 @@ _AMMONIUM_15N = ContextProfile(
     grid_c_max=46, grid_o_max=32,
     min_C_for={"Si": 2},
     reagent_adducts=("[M+^NH4]+", "[M+H]+"),
+    # SOURCE SOLVENTS: as for uronium -- the proton-bound ladder is opened, the
+    # hydride ladder is not (an ammonium reagent protonates). See _EASYIC.
+    source_solvents=("H2O", "CH4O", "C2H6O", "C3H6O"),
     pass3_families=("amine", "organosulfur", "siloxane", "pdms", "glycol_peg", "phthalate"),
 )
 

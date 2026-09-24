@@ -42,7 +42,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"   # + the solvent_clusters stage in NOMINAL_STAGES
 
 # Stage count for the within-sample bar before a first sample has finished. The
 # real number is LEARNED from the first completed sample (stages are gated by
@@ -51,11 +51,11 @@ __version__ = "0.1.0"
 #
 # What it counts is the stages that TIME THEMSELVES: only an `assign._STAGES`
 # entry with `safe=True` emits `[run] <tag> took Xs`, and that line is the
-# parser's only cue. Counting all 36 table rows (20 of which are timed) capped
+# parser's only cue. Counting all 38 table rows (21 of which are timed) capped
 # the bar at 56% for any run that never got to learn the real number -- i.e.
 # every `peaky assign` run. tests/test_progress.py pins this against the real
 # stage table, so adding a timed stage fails a test rather than skewing the bar.
-NOMINAL_STAGES = 20
+NOMINAL_STAGES = 21
 
 # Every phase the window can show, in run order (`assign` is the long pole; the
 # rest are the tail). A phase with no entry here falls back to its bare name, so

@@ -8,6 +8,52 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A source-solvent cluster channel for positive-mode sources, kept off the covalent
+  grid on purpose.** A low-pressure positive source running on solvent vapour does not
+  only protonate single molecules — it builds proton- and hydride-bound CLUSTERS of the
+  solvent, and on one EasyIC⁺ acquisition the ethanol dimer `(C2H5OH)2H+` at m/z 93.0911
+  was **6.5 % of total signal and about half of everything the run left unexplained**,
+  with its ¹³C satellite and the mixed `EtOH·H3O+` (65.0597) unexplained beside it. Peaky
+  could not reach them, and must not be taught to: `[(C2H6O)2+H]+` implies the neutral
+  C4H12O2, whose DBE is −1, and the grid's chemistry gate is right to refuse it. So the
+  clusters get their own enumerated family — `assignment/solvent_clusters.py`, committed
+  and locked in pass 0's slot, offline (no scorer is asked; none could be). It enumerates
+  the `[Sₙ+H]⁺` and `[Sₙ−H]⁺` ladders and their `−H₂O` condensation rung over the source
+  solvents a context declares (`ContextProfile.source_solvents`: water / methanol /
+  ethanol / acetone for `easyic`, `uronium` and `ammonium-15n`; the hydride ladder only
+  where the context actually has an `[M-H]+` channel). A rung commits only with its
+  solvent's **own monomer ion present and ≥0.2 % of the spectrum**, the **rung below
+  observed** at exact solvent-mass spacing, and the pass-0 mass gate; a rung that would
+  displace a legal covalent reading must additionally be a major ion — and may never
+  be a **water** rung at any intensity: every other unit is anchored by its own
+  monomer ion and steps by a rare mass difference, while water is anchored by nothing
+  and +18.0106 is the commonest difference in a spectrum (26 % of peaks on an
+  orange-peel headspace run had such a partner, against 7.7 % for +C2H6O). A rung that
+  does displace is tiered **Candidate** with the covalent reading stored in
+  `alternatives`. Which readings
+  compete is the SOURCE's property and it grows with the profile: `C4H11O2+` is
+  protonated butanediol, and `C4H9O+` is protonated C4H8O, hydride-abstracted C4H10O
+  *and* — since EasyIC gained `[M-CH3]+` — the methyl loss of pentanol, so the
+  alternatives are worked out against the context's own `reagent_adducts` rather
+  than a fixed pair. The neutral reported is the SOLVENT on a cluster adduct
+  (`C2H6O [M+(C2H6O)H]+`), so the ¹³C satellite is picked up by the ordinary envelope
+  sweep. On the acquisition above it explains 10.1 % of total signal and re-reads three
+  ions that had been committed as covalent molecules at High confidence. Swept over 232
+  other EasyIC and urea per-file ledgers it commits 9 rungs in total; on every urea
+  batch measured, and on the orange-peel headspace batches, it commits nothing, because
+  those windows start above ethanol's monomer ions and the family refuses a ladder whose
+  monomer it cannot see.
+
+- **A cluster-vs-covalent dual note in the EasyIC ambiguity layer.** A proton/hydride-bound
+  cluster and its covalent isomer are the same ion with the same isotope pattern, so MS1
+  cannot split them — exactly the carbonyl-vs-alcohol situation one ionisation step
+  further out. `cleanup.annotate_easyic_ambiguity` gains a fourth case for it, built from
+  the same library the commit layer uses so the two cannot describe the chemistry
+  differently: an `C4H11O2+` or `C4H9O+` commit in a spectrum carrying a strong solvent
+  monomer keeps its covalent reading and records the cluster reading beside it. Unlike the
+  other cases it does not skip locked rows — a lock says no pass may *change* a reading,
+  and the pass that locked a High grid winner never weighed a cluster reading at all.
+
 - **The EasyIC source-ion library, and the reason its background was being read as
   sample.** On the certified-cylinder run the calibrant's own PAH ladder (C13H8,
   C14H10, C14H12, C15H8, C15H10, C15H12) and most of an air-plasma C/N/O family sat
