@@ -43,7 +43,7 @@ dependencies = [
     # so pip and uv install the same thing, and so this branch cannot be
     # released by accident (PyPI refuses direct references).
     # The merge into main replaces it with the released lower bound.
-    "mascope-tools @ git+https://github.com/ultra-trace-systems/mascope@49aa69ca54b97293b8d2935ebb4f6021e253286d#subdirectory=libraries/tools",
+    "mascope-tools @ git+https://github.com/ultra-trace-systems/mascope@1c2498f03b7e6ac0150b1f2c248d078f1988d3c7#subdirectory=libraries/tools",
     "pandas>=2.1",
     "pyarrow>=14",          # parquet engine — the per-batch TS (*_ts.parquet) is read/written across the pipeline
     "numpy>=1.24",
