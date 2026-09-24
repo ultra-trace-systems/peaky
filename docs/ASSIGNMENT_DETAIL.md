@@ -4,7 +4,7 @@
 
 ### 1.1 What Peaky does
 
-Peaky is an AI-native analysis toolbox for the Mascope mass-spectrometry platform. Its assignment pipeline transforms a raw high-resolution MS peak table into a chemical-formula inventory with quantified confidence. The core abstraction is the **ledger**: a pandas DataFrame with **one row per physical peak**, mutated in place by a sequence of assignment passes. Each pass scores candidate neutral formulas with **Mascope's isotope-scored maths** — by default run **in-process** via `mascope_tools` (`local_scoring.py`; same IsoSpec + `score_pattern`), with the network `match_compounds` endpoint as an opt-in fallback — arbitrates competing formulas per peak, and commits winners with metadata (role, lock status, confidence, tier, provenance).
+Peaky is an AI-native analysis toolbox for the Mascope mass-spectrometry platform. Its assignment pipeline transforms a raw high-resolution MS peak table into a chemical-formula inventory with quantified confidence. The core abstraction is the **ledger**: a pandas DataFrame with **one row per physical peak**, mutated in place by a sequence of assignment passes. Each pass scores candidate neutral formulas with **Mascope's isotope-scored maths** — by default run **in-process** via `mascope_tools` (`local_scoring.py`; same IsoSpec + `score_pattern_v2`, at the sample's own fitted mass width), with the network `match_compounds` endpoint as an opt-in fallback — arbitrates competing formulas per peak, and commits winners with metadata (role, lock status, confidence, tier, provenance).
 
 Once peaks are fetched, the pipeline is offline (no further network I/O is needed beyond `match_compounds` scoring calls), deterministic (content epoch pinned), and SDK-native.
 

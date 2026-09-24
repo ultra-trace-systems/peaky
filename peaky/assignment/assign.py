@@ -28,8 +28,11 @@ from peaky.assignment import siloxane
 from peaky.assignment import tiers
 from peaky.batch import timeseries
 
-__version__ = "0.5.1"  # + reagent_n_relabel: a batch defers the hydrocarbon-on-N-cluster
-                       #   re-read to its merged ledger (run(reagent_n_relabel=False))
+__version__ = "0.6.0"  # every candidate scored with the v2 fit at the sample's
+#                        own mass width, so no run of this version is comparable
+#                        with a 0.5.x one; it is what a published run stamps.
+#                        0.5.1: a batch defers the hydrocarbon-on-N-cluster
+#                        re-read to its merged ledger (run(reagent_n_relabel=False))
 
 
 def _parsed_version(path: "Path") -> str | None:
@@ -512,6 +515,14 @@ def run(sample_id: str, context: str = "ambient-air", *,
         f"polarity={polarity}; prior_offset={cfg.prior_offset:+.2f} ppm; "
         f"adducts={adducts}; mechanisms={sorted(mech_map)}"
         + (f"; label purity={purity:.3f}" if any("^" in str(a) for a in adducts) else ""))
+    # What every candidate of this sample is scored at, resolved once and cached
+    # for the passes. Logged because a run's assignments cannot be read without
+    # it: the same envelope scores differently at 0.3 ppm and at 3.
+    scoring = io_mascope.scoring_for_sample(client, sample_id, raw)
+    scoring_snapshot = io_mascope.scoring_snapshot(client, sample_id, raw)
+    log(f"[run] scoring {io_mascope.describe_scoring(scoring)}"
+        f" ({scoring_snapshot['sigma_source']}, {scoring_snapshot['fitted_anchors']}"
+        " anchors)")
 
     pre = isotopes.prescan(led)
     log(f"[run] prescan {pre.as_dict()}")
@@ -566,6 +577,10 @@ def run(sample_id: str, context: str = "ambient-air", *,
             "module_versions": module_versions(),
             "module_hashes": _module_hashes(), "context": profile.label,
             "reflists_active": reflist_versions,     # [(id, data_version), ...]
+            # What this sample's candidates were scored at. A run's assignments
+            # cannot be read without it: the same envelope scores differently at
+            # 0.3 ppm and at 3, and a published run carries it into the store.
+            "pattern_scoring": scoring_snapshot,
             "sample_id": sample_id}
 
 

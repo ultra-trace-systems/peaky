@@ -25,7 +25,7 @@ REPORTING    ledger → figures + PDF                 VANKREVELEN · GKA · QC_A
 | doc | module | transform |
 | --- | --- | --- |
 | [`DATA_IO.md`](DATA_IO.md) | `io/io_mascope.py` | the only Mascope I/O: pull + cache peaks / batch time series, detect adducts, estimate offset, flatten the score tree |
-| [`SCORING.md`](SCORING.md) | `io/local_scoring.py` | in-process IsoSpec + `score_pattern` — a candidate `(neutral × adduct)` → a 0–1 match score (default backend; `PEAKY_LOCAL_SCORING`) |
+| [`SCORING.md`](SCORING.md) | `io/local_scoring.py` | in-process IsoSpec + `score_pattern_v2` — a candidate `(neutral × adduct)` → a 0–1 match score at the sample's own mass width (default backend; `PEAKY_LOCAL_SCORING`) |
 
 ## 2. Chemistry — m/z → candidate formulas
 

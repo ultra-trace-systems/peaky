@@ -32,7 +32,18 @@ dependencies = [
     # In-process scoring backend, now the DEFAULT (PEAKY_LOCAL_SCORING=0 falls back
     # to the network match_compounds path). >=2026.6.25 carries the 15N-labelled
     # custom-element isotope prediction. See docs/MASCOPE_TOOLS_INTEGRATION.md.
-    "mascope-tools>=2026.6.25",
+    # THE EPIC BRANCH'S COUPLING. The scorer is built on library API that exists
+    # only on Mascope's assignment-quality epic: PatternScoring, the
+    # mass-accuracy fit and the instrument-class widths. PyPI's newest
+    # mascope-tools (2026.6.25) predates all of it, and the peaks endpoint only
+    # started sending signal_to_noise in the same epic, so this branch pins the
+    # library by revision - the one the reference runs are scored with, which
+    # the plan's step 2.7a names: the epic's head when the reference was
+    # refreshed. A direct reference rather than a [tool.uv.sources] entry
+    # so pip and uv install the same thing, and so this branch cannot be
+    # released by accident (PyPI refuses direct references).
+    # The merge into main replaces it with the released lower bound.
+    "mascope-tools @ git+https://github.com/ultra-trace-systems/mascope@1c2498f03b7e6ac0150b1f2c248d078f1988d3c7#subdirectory=libraries/tools",
     "pandas>=2.1",
     "pyarrow>=14",          # parquet engine — the per-batch TS (*_ts.parquet) is read/written across the pipeline
     "numpy>=1.24",
@@ -62,6 +73,12 @@ Repository = "https://github.com/ultra-trace-systems/peaky"
 [project.scripts]
 peaky = "peaky.cli:main"
 mascope-assign = "peaky.cli:main"   # back-compat alias
+
+[tool.hatch.metadata]
+# hatchling refuses a direct reference in the dependencies unless told to
+# accept one, and the pin above is one: without this the branch does not
+# even install, in CI or anywhere else.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 # `peaky` is the package; `mascope_assign` is a one-line back-compat shim
