@@ -370,7 +370,11 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                 # counts; likewise the batch-derived brightness floor (`gate`) and
                 # the trace reconciliation of the merged ledger (`traces`)
                 "admission": summ.get("admission"),
-                "gate": summ.get("gate"), "traces": summ.get("traces")},
+                "gate": summ.get("gate"), "traces": summ.get("traces"),
+                # the batch's mass scale: measured scatter + the merge / stamping
+                # windows sized from it (a run-derived count, like the admission
+                # threshold: the config fingerprint holds only the binning knob)
+                "mass_scale": summ.get("mass_scale")},
         # Keyed by sample: a batch run describes many, and what publishes into
         # Mascope is one sample's run, which has to say what scored it.
         extra={"pattern_scoring": summ.get("pattern_scoring") or {}},
@@ -603,7 +607,11 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                 "n_samples": summ.get("n_files"), "n_groups": len(groups),
                 "selection": summ.get("selection"),
                 "admission": summ.get("admission"),
-                "gate": summ.get("gate"), "traces": summ.get("traces")},
+                "gate": summ.get("gate"), "traces": summ.get("traces"),
+                # the batch's mass scale: measured scatter + the merge / stamping
+                # windows sized from it (a run-derived count, like the admission
+                # threshold: the config fingerprint holds only the binning knob)
+                "mass_scale": summ.get("mass_scale")},
         extra={"pattern_scoring": summ.get("pattern_scoring") or {}},
         created_utc=ctx.when.isoformat(), log=log)
     elapsed = round(time.time() - t_start, 1)

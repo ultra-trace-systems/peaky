@@ -62,9 +62,10 @@ gap-fill**, **residual stage B** and the **siloxane ladder** (its work set *and*
 its seed test). A peak is **eligible** there if it is bright enough
 (`height ≥ height_cutoff`, an edge multiple — see below) **or** persistent:
 the batch's spectra hold a peak within tolerance of *its* m/z in at least a
-threshold fraction of them (`sampling.BATCH_TOL_PPM` = 6 ppm, the one tolerance
-the selection, this table and the merge share, so `batch` and `assign --ts-batch`
-read one occurrence for one peak). The occurrence is **per peak, not per bin**
+threshold fraction of them (`sampling.BATCH_TOL_PPM` = 6 ppm, the one binning
+tolerance the selection, this table and the trace index share, so `batch` and
+`assign --ts-batch` read one occurrence for one peak; the merge's own window is
+sized from the batch's measured scatter and never below it). The occurrence is **per peak, not per bin**
 (`batch/traces.py`): one sweep over the m/z-sorted batch gives every peak the
 count of distinct spectra with a peak within ±tol of it, and a ledger peak is
 looked up by exactly that rule, so construction and lookup cannot disagree. (The
@@ -168,8 +169,11 @@ tolerance. So, between the merge and the stamp (`timeseries.recentre_ledger`,
    to land near it). Collapsed rows stay in the ledger flagged
    `trace_role = collapsed`.
 3. **Size the stamping window** to the batch's own per-ion scatter (the third
-   quartile of the per-trace scatter, ×2.5, between 1× and 2× the merge
-   tolerance): an Orbitrap keeps 6 ppm, a TOF gets ~10 ppm.
+   quartile of the per-trace scatter, ×2.5, between 1× and 2× the binning
+   tolerance): an Orbitrap keeps 6 ppm, a TOF gets ~10 ppm. The scatter is the
+   batch's `traces.MassScale`, measured once before the merge — the merge window
+   itself is the same σ × 2.5·√2 (a gap between two anchors is two draws), so a
+   TOF merges at 12 ppm and an Orbitrap at 6 (`MERGE.md` §3).
 4. **Predict the diagnostic satellites** of every merged analyte
    (`predicted_satellite_rows`): a per-file ledger claims a satellite only where
    its picker picked it, and the faint 15N / 18O / single-34S lines sit below the

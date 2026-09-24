@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 from peaky.assignment import ledger as L
+from peaky.batch import traces as TR
 
 __version__ = "0.3.0"  # predicted diagnostic satellites in the batch stamp (stamp_source,
                        # track coherence); 0.2.1: bin_ids, the row-aligned bin rule
@@ -500,13 +501,13 @@ RECENTRE_GUARD_COV = 0.10       # an anchor covering < this share of spectra ...
 RECENTRE_GUARD_PPM = 6.0        # ... may not move further than this uncorroborated
                                 # (one such row re-centred to 84 % coverage on peaks
                                 # that tracked nothing, r 0.19)
-STAMP_TOL_SIGMA = 2.5           # stamping half-window = this many per-ion sigmas ...
-STAMP_TOL_MAX_X = 2.0           # ... never wider than this x the merge tolerance
+STAMP_TOL_SIGMA = TR.WINDOW_SIGMA   # stamping half-window = this many per-ion sigmas ...
+STAMP_TOL_MAX_X = TR.WINDOW_MAX_X   # ... never wider than this x the binning tolerance
+                                    # (the one window rule: traces.window_ppm / MassScale)
 TRACE_WINNER, TRACE_COLLAPSED, TRACE_SINGLE = "winner", "collapsed", "single"
 
 
 def _trace_index(ts_peaks, index, tol_ppm):
-    from peaky.batch import traces as TR
     if index is not None:
         return index
     if ts_peaks is None or not len(ts_peaks):
@@ -701,19 +702,23 @@ def stamp_tolerance(index, centres, *, tol_ppm: float = DEFAULT_TOL_PPM,
     a window that cuts through it loses real spectra to the one-to-one contest
     (measured on a 230-spectrum TOF batch: a 12 ppm window doubled the share of
     ions gaining > 5 pp of coverage over a 6 ppm one, 21 -> 42 %, with the share
-    losing unchanged at 3.7 %)."""
-    from peaky.batch import traces as TR
+    losing unchanged at 3.7 %).
+
+    A batch run does not call this: it measures ONE `traces.MassScale` before its
+    merge (the same estimator, at the mean-shifted per-file anchors) and reads
+    `stamp_ppm` off it, so the merge window and the stamping window come from
+    one sigma. This function is the same rule for a caller that only has a
+    merged ledger."""
     sigma = TR.batch_scatter_ppm(index, centres, tol_ppm=tol_ppm) if index is not None else float("nan")
     if not np.isfinite(sigma):
         return float(tol_ppm), float("nan")
-    return float(max(tol_ppm, min(max_x * tol_ppm, k_sigma * sigma))), round(float(sigma), 3)
+    return TR.window_ppm(tol_ppm, sigma, k_sigma=k_sigma, max_x=max_x), round(float(sigma), 3)
 
 
 def _rolling_centres(merged: pd.DataFrame, idx, mzt: np.ndarray, tol_ppm: float,
                      times_by_code, out: dict, log) -> None:
     """The rolling path of `recentre_ledger` (in place on `merged` and `mzt`)."""
     from peaky.batch import centre as CE
-    from peaky.batch import traces as TR
 
     n = len(merged)
     merged["trace_key"] = np.arange(n, dtype=np.int64)

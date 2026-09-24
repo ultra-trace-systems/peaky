@@ -464,6 +464,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The batch merge window is sized from the batch's own mass scatter.** `assign_batch.align`
+  clustered the per-file anchors at the flat `sampling.BATCH_TOL_PPM` (6 ppm) whatever the
+  instrument, while one ion's anchors scatter 3–4 ppm across the files of a TOF batch: measured on
+  a 28-file TOF batch, the 6 ppm window minted two rows for one ion 135 times (adjacent merged rows
+  closer than the stamping window), the trace stage collapsed 125 of them afterwards, and the vote
+  in each split row never saw its rival — a 1-file `C14H17NO4S [M-H]-` kept a row of its own
+  6.5 ppm from the 7-file `C10H16O6 [M+NO3]-`. A batch run now measures ONE `traces.MassScale`
+  before its first merge (`traces.measure_mass_scale`: the per-file anchors, offset-corrected,
+  walked onto their trace by mean shift, one centre per trace, the third-quartile per-trace scatter
+  σ — the estimator the stamp already used, measured once for both) and sizes both windows from it
+  by the one rule `traces.window_ppm` = `max(tol, min(2·tol, k·σ))`: the stamping window at
+  k = 2.5 as before, the merge window at k = 2.5·√2 (`MERGE_GAP_SIGMA`), because the gap between
+  two anchors is the difference of two draws. Both are floored at the binning tolerance and capped
+  at twice it, so a run without a time series is the flat-window run exactly; an Orbitrap
+  (0.2–0.3 ppm) stays at 6 ppm on both (measured on two Orbitrap channels: the merge is inert from
+  3 to 9.5 ppm, no 6 ppm cluster holds two picked peaks of one file, and a tighter window only cuts
+  one ion's per-file cloud in two — 54 extra rows at 0.5 ppm); a TOF (3.7 ppm) merges at 12 ppm,
+  where no adjacent merged rows remain inside the stamping window and no cluster holds two picked
+  peaks of one file (that starts at 15 ppm). The same window decides the known-species match
+  (`lock_known_species`) and the trace-label collapse (`collapse_trace_labels`); selection,
+  admission and the trace index still bin at `BATCH_TOL_PPM`, which stays the one binning
+  tolerance. `batch_summary['mass_scale']` records σ, the trace count and both windows (`tol_ppm`
+  stays the binning tolerance; `traces.stamp_tol_ppm` / `sigma_ppm` are the same numbers as
+  before), `run_manifest` carries it under `output.counts.mass_scale`, and the log says
+  `[scale] …`. `timeseries.stamp_tolerance` is unchanged for a caller with only a merged ledger.
+
 - **The reagent-N isobar flag fires from both sides of the pair.** `tiers._reagent_n_isobar`
   flagged a winner only when it sat on an N-donating reagent adduct (`[M+NH4]+` / uronium) with a
   same-ion N-richer alternative; the protonated N-richer neutral, with its same-ion N-poorer alias on

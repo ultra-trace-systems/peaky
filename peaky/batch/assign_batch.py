@@ -58,15 +58,24 @@ from peaky import paths as PT
 from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
 
-__version__ = "0.8.1"  # traces.stamp block + tables/predicted_satellites.csv: the stamp's
-                       # predicted satellites counted apart from observed, track coherence
-                       # (0.8.0: the targeted residual stage: a second selection + assignment
+__version__ = "0.9.0"  # the merge window is sized from the batch's own mass scatter
+                       # (traces.MassScale: one sigma per batch, merge + stamp windows from
+                       # it; batch_summary['mass_scale']) -- the flat DEFAULT_TOL_PPM stays
+                       # the BINNING tolerance and the floor of both windows
+                       # (0.8.1: traces.stamp block + tables/predicted_satellites.csv: the stamp's
+                       # predicted satellites counted apart from observed, track coherence;
+                       # 0.8.0: the targeted residual stage: a second selection + assignment
                        # after the cover's merge, one align() over both, stage provenance;
                        # 0.7.0: the merge is a VOTE -- n_files_ion / n_files_winner /
                        # alternatives / ion_agree, the batch-level gates' tier_reason)
 
-# the merge's m/z tolerance IS the selector's binning tolerance (one constant for
-# every batch-level binning; see sampling.BATCH_TOL_PPM)
+# the BINNING tolerance: the selector's bins, the admission table, the trace index
+# (one constant for every batch-level binning; see sampling.BATCH_TOL_PPM). It is
+# also the default -- and the floor -- of the merge window: a batch run with a time
+# series sizes its merge window from the batch's own measured mass scatter
+# (traces.MassScale, measured once before the first merge; `merge_ppm`), never
+# narrower than this and never wider than 2x it. Pure `align()` callers pass the
+# window they mean; without a measured scale it is this constant.
 DEFAULT_TOL_PPM = SS.BATCH_TOL_PPM
 TIER_ASSIGNED = "Assigned"
 TIER_CANDIDATE = "Candidate"
@@ -1402,14 +1411,35 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     from peaky.batch import timeseries as _TS
     _rgk = _RG.reagent_for_adducts(list(prof.adducts or []))
 
+    scale = None   # the batch's traces.MassScale, measured at the first merge
+
     def _merge() -> dict:
         """align() over EVERY per-file ledger so far, then the merged-level
         guards and re-reads, the trace reconciliation and the whole-batch stamp
         -- returned as one record (merged, jitter, merge_gates, trace_info,
         stamp_tol, ts_annot), nothing written. Runs once per stage: the cover's
         record is what the residual universe is read from, and the last call
-        (cover + residual files, ONE align) is what the run writes."""
-        merged, jitter = align(per_file, tol_ppm=tol_ppm, offsets=offsets,
+        (cover + residual files, ONE align) is what the run writes.
+
+        The batch's mass scale (traces.MassScale) is measured ONCE, at the first
+        call, from the time series at the traces the per-file anchors label
+        (offset-corrected, walked onto their trace, one centre per trace): its
+        `merge_ppm` is the gap that still means one ion here, in the known-species
+        lock and in the trace-label collapse, its `stamp_ppm` the stamping
+        half-window. Both are the binning tolerance when nothing was measured (no
+        time series), so that path is the flat-window run exactly; on an Orbitrap
+        (0.2-0.3 ppm scatter) both sit on the tolerance floor and nothing moves
+        either; a TOF (3-4 ppm) merges at up to 2x the tolerance."""
+        nonlocal scale
+        if scale is None:
+            seeds = [pd.to_numeric(df["mz"], errors="coerce").to_numpy(dtype=float)
+                     * (1.0 - float(offsets.get(sid, 0.0) or 0.0) / 1e6)
+                     for sid, df in per_file.items() if df is not None and len(df)]
+            seeds = np.concatenate(seeds) if seeds else np.empty(0)
+            scale = (TR.measure_mass_scale(_idx, seeds, tol_ppm=tol_ppm) if _idx is not None
+                     else TR.MassScale(tol_ppm=float(tol_ppm), n_seeds=int(len(seeds))))
+            log(f"[scale] {scale.describe()}")
+        merged, jitter = align(per_file, tol_ppm=scale.merge_ppm, offsets=offsets,
                                stages=stages if residual else None)
         # Merge guard: drop reagent-cluster ions a per-file pass mislabelled as analyte
         # (urea [R_n+H]+/[R_n+NH4]+ read as CHNO/CH4N2O on the [M+NH4]+/urea channel) --
@@ -1428,7 +1458,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # pooled (the pass-0 commits and the leads it left on refused claims):
         # what the vote's curated exemption used to do, by evidence instead of
         # by rank, and written on the row either way.
-        merge_gates["known"] = lock_known_species(merged, known_pool, tol_ppm=tol_ppm, log=log)
+        merge_gates["known"] = lock_known_species(merged, known_pool, tol_ppm=scale.merge_ppm, log=log)
         if prof.polarity == "+":
             from peaky.assignment import cleanup
             # Hydrocarbon on an N-cluster channel -> [M+H]+ of the N-heterocycle,
@@ -1458,19 +1488,24 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # trace_offset_ppm, trace_cov_anchor, trace_cov, trace_moved, trace_guarded,
         # trace_id, trace_role); the stamp below reads them. No-op without a TS.
         trace_info: dict = {}
-        stamp_tol = tol_ppm
+        stamp_tol = scale.stamp_ppm     # = tol_ppm when nothing was measured
         tracks = None
         if _idx is not None and len(merged):
+            # the trace question (membership, re-centring) stays at the binning
+            # tolerance -- the index's own rule, with its mDa floor; the one-ion
+            # question (which rows compete for one trace) is the merge window
             trace_info = _TS.recentre_ledger(merged, index=_idx, tol_ppm=tol_ppm,
                                              rolling=rolling_centre, times_by_code=_hours,
                                              log=log)
             tracks = trace_info.pop("tracks", None)
-            trace_info.update(_TS.collapse_trace_labels(merged, tol_ppm=tol_ppm, log=log))
-            stamp_tol, _sigma = _TS.stamp_tolerance(_idx, merged["mz_trace"], tol_ppm=tol_ppm)
+            trace_info.update(_TS.collapse_trace_labels(merged, tol_ppm=scale.merge_ppm, log=log))
             trace_info.update(stamp_tol_ppm=float(stamp_tol),
-                              sigma_ppm=None if not np.isfinite(_sigma) else float(_sigma))
-            log(f"[traces] per-ion mass scatter {_sigma if np.isfinite(_sigma) else 'n/a'} ppm -> "
-                f"stamping window +-{stamp_tol:g} ppm (merge tolerance {tol_ppm:g})")
+                              sigma_ppm=round(float(scale.sigma_ppm), 3) if scale.measured else None)
+            log(f"[traces] stamping window +-{stamp_tol:g} ppm from the batch's mass scale "
+                f"(scatter {scale.sigma_ppm:.3f} ppm; merge window {scale.merge_ppm:g}, "
+                f"binning tolerance {tol_ppm:g})" if scale.measured else
+                f"[traces] stamping window +-{stamp_tol:g} ppm = the binning tolerance "
+                f"(mass scatter not measured)")
             if rolling_centre:
                 # the per-TRACE window: each row's own post-centring residual,
                 # the batch window where a row has none
@@ -1767,6 +1802,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "height_cutoff_x_edge_source": x_edge_source,
         "tol_ppm": tol_ppm, "offsets_ppm": offsets,
         "pattern_scoring": scorings,
+        # the batch's mass scale (traces.MassScale): the measured per-ion scatter
+        # and the merge / stamping windows sized from it (tol_ppm above is the
+        # BINNING tolerance and the floor of both; unmeasured, both equal it)
+        "mass_scale": (scale if scale is not None
+                       else TR.MassScale(tol_ppm=float(tol_ppm))).as_dict(),
         "merged_M0": int(len(merged)),
         # the width model the per-file resolvability stamp used (None = not stamped)
         # and the per-file M0 class counts summed over the files

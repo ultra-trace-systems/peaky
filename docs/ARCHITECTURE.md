@@ -133,13 +133,16 @@ traces.PeakIndex → admission.bin_occurrence   ONE m/z-sorted index of the batc
 assign each rep (assign.run)             per-file ledgers kept (each stamped with occurrence / admitted_by)
    │
    ▼
-assign_batch.run  → merge                offset-aware align + jitter table; positive amine gate at merge
-   │  (merged_ledger.csv)
+traces.measure_mass_scale                ONE mass scale per batch: the per-ion scatter at the traces the
+   │                                     per-file anchors label → the merge window (2.5·√2 σ) and the
+   ▼                                     stamp window (2.5 σ), both between 1× and 2× BATCH_TOL_PPM
+assign_batch.run  → merge                offset-aware align at the merge window + jitter table; positive
+   │  (merged_ledger.csv)                amine gate at merge
    ▼
 timeseries.recentre_ledger /             re-centre each merged anchor on its own trace (mean shift over
 collapse_trace_labels /                  the index, ≤ 10 ppm), collapse competing labels per trace
-stamp_tolerance → annotate_peaks         (n_files first), size the stamp window to the batch's per-ion
-   │  (_batch_ts.parquet)                scatter; stamp every spectrum from the trace centres
+annotate_peaks                           (n_files first) at the merge window; stamp every spectrum from
+   │  (_batch_ts.parquet)                the trace centres at the stamp window
    ▼
 generate_report (offline, no network):
    ├─ clustering.cluster_batch           correlation clusters of the batch time-series → A4 figure panels

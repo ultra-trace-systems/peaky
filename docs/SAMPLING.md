@@ -15,10 +15,14 @@ the selector bins on).
 per-sample, so a synthetic union spectrum can't be scored.
 
 > Keep this in sync with the code. Every threshold below is a named constant in
-> `sampling.py`; if you change one there, change it here. `BATCH_TOL_PPM` serves
-> every batch-level operation — sample selection, the admission table and the
-> merge (`assign_batch.DEFAULT_TOL_PPM` *is* it) — and all three must bin
-> identically, so change it in one place only.
+> `sampling.py`; if you change one there, change it here. `BATCH_TOL_PPM` is the
+> one BINNING tolerance — sample selection, the admission table and the trace
+> index bin at it, and they must bin identically, so change it in one place only.
+> It is also the default and the floor of the merge window
+> (`assign_batch.DEFAULT_TOL_PPM` *is* it): a batch run with a time series merges
+> at a window sized from its own measured mass scatter (`traces.MassScale`, never
+> below this constant, never above 2× it — see [`MERGE.md`](MERGE.md) §3); without
+> one it merges at this constant exactly.
 
 ---
 
@@ -235,7 +239,7 @@ mirrors them for `batch` and `pool`.
 | `K_MIN` | 6 | picks taken before the marginal-gain stop applies; pad target |
 | `MIN_GAIN` | 0.005 | stop when the next pick adds < this fraction of the universe |
 | `K_MAX` | 30 | budget; hitting it while still gaining → `stop_reason='k_max'` + warning |
-| `BATCH_TOL_PPM` | 6.0 | m/z gap-clustering tolerance for the bins — the one tolerance for every batch-level binning (selection and merge: `assign_batch.DEFAULT_TOL_PPM = BATCH_TOL_PPM`); recorded as `selection.tol_ppm` |
+| `BATCH_TOL_PPM` | 6.0 | m/z gap-clustering tolerance for the bins — the one tolerance for every batch-level binning (selection, admission, the trace index); recorded as `selection.tol_ppm`. The merge's default and floor (`assign_batch.DEFAULT_TOL_PPM = BATCH_TOL_PPM`); a run with a time series merges at `traces.MassScale.merge_ppm`, sized from its measured scatter between 1× and 2× this |
 | `RESIDUAL_DEFAULT` | True | the residual stage runs unless `--no-residual`; off reproduces the cover-only run exactly |
 | `RESIDUAL_MIN_X_EDGE` | 5.0 | a residual bin must reach this × its sample's noise edge somewhere (never below the run's gate multiple) |
 | `RESIDUAL_FRAC_OF_MAX` | 0.5 | a sample counts for a residual bin only at ≥ this share of the bin's maximum |

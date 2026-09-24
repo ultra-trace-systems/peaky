@@ -78,9 +78,29 @@ selected sample_ids (SAMPLING.md)
 
 3. **Gap-cluster** (`_cluster_mz`). Sort by `_mz_adj`; consecutive-gap
    single-linkage: `gaps = diff(mz)/mz · 1e6`, `cluster_id = cumsum(gaps >
-   tol_ppm)` with **`tol_ppm` = `DEFAULT_TOL_PPM` (6.0 = `sampling.BATCH_TOL_PPM`,
-   the tolerance the selector binned on — see [`SAMPLING.md`](SAMPLING.md))**.
-   One cluster ≈ one physical peak across files.
+   tol_ppm)`. One cluster ≈ one physical peak across files. **The window is the
+   batch's measured merge window**, `traces.MassScale.merge_ppm`: `run` measures
+   ONE mass scale before its first merge (`traces.measure_mass_scale` — the
+   per-file anchors, offset-corrected, walked onto their trace by mean shift, one
+   centre per trace, the third quartile of the per-trace scatter σ; the stamp's
+   own estimator, measured once for both) and sizes the window as
+   `max(tol, min(2·tol, 2.5·√2·σ))` with `tol` = `DEFAULT_TOL_PPM` (6.0 =
+   `sampling.BATCH_TOL_PPM`, the tolerance the selector binned on — see
+   [`SAMPLING.md`](SAMPLING.md)). The gap between two anchors is the difference
+   of two draws, √2 wider than one draw about a centre, hence √2 × the stamp's
+   2.5 σ. Floored at the binning tolerance and capped at twice it: a run with no
+   time series (nothing to measure) clusters at the flat 6 ppm exactly; an
+   Orbitrap (σ 0.2–0.3 ppm) sits on the floor and clusters at 6 ppm (measured on
+   two Orbitrap channels: the merge is inert from 3 to 9.5 ppm — no 6 ppm cluster
+   holds two picked peaks of one file, and a tighter window only cuts one ion's
+   per-file cloud in two); a TOF (σ 3.7 ppm) clusters at 12 ppm (measured on a
+   28-file batch: at 6 ppm the merge minted two rows for one ion 135 times —
+   adjacent merged rows closer than the stamping window, 125 of them collapsed by
+   the trace stage afterwards, and the vote in each split row never saw its rival;
+   at 12 ppm none is left, and no cluster holds two picked peaks of one file —
+   that starts at 15 ppm). `batch_summary['mass_scale']` records σ, the trace
+   count and both windows; the log line is `[scale] …`. A pure `align()` caller
+   passes the window it means (`tol_ppm`, default `DEFAULT_TOL_PPM`).
 
 4. **The vote** (`_vote`), in two stages. A *reading* is a
    `(neutral_formula, adduct)` pair; its *ion* is the element composition of
@@ -254,9 +274,10 @@ All in `peaky/batch/assign_batch.py`.
 
 | constant | value | role |
 | --- | --- | --- |
-| `DEFAULT_TOL_PPM` | 6.0 (`= sampling.BATCH_TOL_PPM`) | single-linkage gap tolerance for cross-file m/z clustering — the same constant the selector bins on |
+| `DEFAULT_TOL_PPM` | 6.0 (`= sampling.BATCH_TOL_PPM`) | the BINNING tolerance (the selector's bins, the admission table, the trace index) and the default + floor of the merge window: what a pure `align()` call clusters at, and what `run` clusters at when nothing could be measured |
+| `traces.MassScale.merge_ppm` | `max(tol, min(2·tol, 2.5·√2·σ))` — 6 ppm on an Orbitrap, 12 on a TOF | the window `run` clusters at, from the batch's measured per-ion scatter σ (`traces.measure_mass_scale`, once per batch, before the first merge); `traces.MERGE_GAP_SIGMA` = 2.5·√2 = 3.54, `traces.WINDOW_MAX_X` = 2.0 |
 | `TIER_RANK` | `{Assigned:2, Candidate:1}` | the vote's Assigned-file count (a tie-break after file count) and the best-row pick within the winning reading (then `ion_score`) |
-| `lock_known_species` `tol_ppm` / `mz_floor_da` | `DEFAULT_TOL_PPM` / 1.5 mDa | the window a pooled known-species ion is matched to its merged cluster with (the merge's own tolerance, the stamp's mDa floor); a species confirmed in ≥ 1 file and refuted in none takes that cluster |
+| `lock_known_species` `tol_ppm` / `mz_floor_da` | the merge window / 1.5 mDa | the window a pooled known-species ion is matched to its merged cluster with (`run` passes `MassScale.merge_ppm`; the stamp's mDa floor); a species confirmed in ≥ 1 file and refuted in none takes that cluster |
 | `_M0_COLS` | `[mz, neutral_formula, adduct, tier, ion_score, admitted_by, occurrence]` | the per-file M0 schema aligned (the last two = admission provenance, carried for the winning row; absent columns are tolerated) |
 | `run` `amine_r_min` | 0.6 | min trace correlation for the positive amine re-read |
 | `assign_kw` `reagent_n_relabel` | `False` (set by `run`) | the per-file hydrocarbon-on-N-cluster re-read stands down; `run` applies it once to the merged ledger |

@@ -54,7 +54,7 @@ batch peaks (sample_item_id, mz, height)
 
 ## 3. The transformation, stage by stage
 
-1. **Build the matrix** (`build_matrix`, `tol_ppm` = `DEFAULT_TOL_PPM` 5.0). Sort
+1. **Build the matrix** (`build_matrix`, `tol_ppm` = `DEFAULT_TOL_PPM` 6.0 = `sampling.BATCH_TOL_PPM`). Sort
    peaks by m/z, single-linkage gap-cluster into **m/z bins**
    (`cumsum(diff/mz·1e6 > tol_ppm)`), set each bin's centre to the
    **intensity-weighted mean** `Σ(mz·h)/Σh`, and pivot to a **samples × bins**
@@ -111,7 +111,7 @@ All in `peaky/batch/timeseries.py`.
 
 | constant | value | role |
 | --- | --- | --- |
-| `DEFAULT_TOL_PPM` | 5.0 | m/z-bin gap tolerance (matrix) + ledger↔bin matching |
+| `DEFAULT_TOL_PPM` | 6.0 (`= sampling.BATCH_TOL_PPM`) | m/z-bin gap tolerance (matrix) + ledger↔bin matching — the binning tolerance |
 | `reagent_total` `tol_ppm` | 8.0 | window matching a reagent ion m/z to a bin |
 | `FLAT_CV` | 0.25 | `cv_norm` below this → flat / background |
 | `COVARY_R` | 0.70 | correlation above this → co-varies with the family |
@@ -180,10 +180,13 @@ All in `peaky/batch/timeseries.py`.
 
 ## 9. Trace reconciliation — between the merge and the stamp
 
-`recentre_ledger`, `collapse_trace_labels` and `stamp_tolerance` run in
-`assign_batch.run` after the merge (and the sidelobe flag) and before
-`annotate_peaks`; all three read the batch through `batch/traces.PeakIndex`, the
-same m/z-sorted index the admission table is built on.
+`recentre_ledger` and `collapse_trace_labels` run in `assign_batch.run` after
+the merge (and the sidelobe flag) and before `annotate_peaks`; both read the
+batch through `batch/traces.PeakIndex`, the same m/z-sorted index the admission
+table is built on. The stamping window comes from the batch's `traces.MassScale`,
+measured ONCE before the merge (the same per-ion scatter sizes the merge window,
+see [`MERGE.md`](MERGE.md) §3); `stamp_tolerance` is the same rule for a caller
+that only has a merged ledger.
 
 **Why.** The merged m/z is an *anchor* minted from the few assigned samples. On
 a TOF the assignment snaps it to theory — a formula is only committed where a
@@ -220,12 +223,17 @@ validates the diagnosis.
    C15H21NO3 whose anchor happened to sit 0.25 ppm from the centre (score 0.846
    vs 0.960); the score ordering picked the reference-list label in 4 of 4
    same-file, same-tier ties where exactly one label was on the list.
-3. **`stamp_tolerance`** — the stamping half-window = max(tol, min(2·tol,
+3. **The stamping window** — `MassScale.stamp_ppm` = max(tol, min(2·tol,
    2.5·σ)), σ = the **third quartile** of the per-trace robust scatter
    (`traces.batch_scatter_ppm`; the dim traces scatter more — 3.6 vs 1.2 ppm on
    the TOF — and are the ones a window sized from the bright ones loses; the top
-   decile on one Orbitrap mode is a scan-edge artefact 40× the median). An
-   Orbitrap (0.24–0.34 ppm) keeps 6 ppm; a TOF (3.8–4.2 ppm) gets ~10 ppm.
+   decile on one Orbitrap mode is a scan-edge artefact 40× the median), measured
+   once per batch at the mean-shifted per-file anchors before the merge
+   (`traces.measure_mass_scale`; on the Orbitrap channels it equals the number
+   the merged ledger's own trace centres give to three decimals, on the TOF 3.73
+   vs 3.83 ppm). An Orbitrap (0.24–0.34 ppm) keeps 6 ppm; a TOF (3.7–4.2 ppm)
+   gets ~9–10 ppm. `stamp_tolerance(index, centres)` is the same rule for a
+   caller with only a merged ledger.
    `annotate_peaks` then stamps from `stamping_frame`, which uses `mz_trace` and
    skips collapsed rows; the one-to-one contest is unchanged.
 
@@ -238,7 +246,7 @@ C10H16O9 0.135 → 0.857; two Orbitrap batches 0.754 → 0.754 and 0.542 → 0.5
 | --- | --- | --- |
 | `RECENTRE_MAX_DRIFT_PPM` | 10.0 | an anchor may move at most this far (median move 2.7 ppm; ±10 delivers +11.6 of the +12.7 pp total) |
 | `RECENTRE_GUARD_COV` / `RECENTRE_GUARD_PPM` | 0.10 / 6.0 | the low-evidence guard: an anchor under 10 % coverage may not move > 6 ppm uncorroborated |
-| `STAMP_TOL_SIGMA` / `STAMP_TOL_MAX_X` | 2.5 / 2.0 | window = this many σ, never wider than this × the merge tolerance |
+| `STAMP_TOL_SIGMA` / `STAMP_TOL_MAX_X` (= `traces.WINDOW_SIGMA` / `WINDOW_MAX_X`) | 2.5 / 2.0 | window = this many σ, never narrower than the binning tolerance, never wider than this × it (`traces.window_ppm`, the one rule; the merge window uses `MERGE_GAP_SIGMA` = 2.5·√2) |
 | `traces.SCATTER_Q` | 0.75 | the per-trace scatter quantile that sizes the window |
 | `traces.MZ_FLOOR_DA` | 1.5 mDa | every window is ±max(tol ppm, this) — the stamp's own floor, shared by occurrence and trace |
 | `PRED_SAT_LABELS` | 13C 81Br 37Cl 15N 34S 29Si 30Si 18O | the diagnostic satellite lines the stamp PREDICTS for every merged M0 (`cleanup.reclaim_satellites`' set) |
