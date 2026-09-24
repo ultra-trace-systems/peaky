@@ -690,7 +690,7 @@ mcp = [
 [package.metadata]
 requires-dist = [
     { name = "mascope-sdk", specifier = ">=2026.8.12" },
-    { name = "mascope-tools", git = "https://github.com/ultra-trace-systems/mascope?subdirectory=libraries%2Ftools&rev=49aa69ca54b97293b8d2935ebb4f6021e253286d" },
+    { name = "mascope-tools", git = "https://github.com/ultra-trace-systems/mascope?subdirectory=libraries%2Ftools&rev=1c2498f03b7e6ac0150b1f2c248d078f1988d3c7" },
     { name = "matplotlib", specifier = ">=3.7" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },
     { name = "numpy", specifier = ">=1.24" },
@@ -708,7 +708,7 @@ provides-extras = ["dev", "compress", "mcp", "local-scoring"]
 [[package]]
 name = "mascope-sdk"
 version = "2026.9.15"
-source = { git = "https://github.com/ultra-trace-systems/mascope?subdirectory=libraries%2Fsdk&rev=49aa69ca54b97293b8d2935ebb4f6021e253286d#49aa69ca54b97293b8d2935ebb4f6021e253286d" }
+source = { git = "https://github.com/ultra-trace-systems/mascope?subdirectory=libraries%2Fsdk&rev=1c2498f03b7e6ac0150b1f2c248d078f1988d3c7#1c2498f03b7e6ac0150b1f2c248d078f1988d3c7" }
 dependencies = [
     { name = "loguru" },
     { name = "pandas" },
@@ -720,7 +720,7 @@ dependencies = [
 [[package]]
 name = "mascope-tools"
 version = "2026.9.15"
-source = { git = "https://github.com/ultra-trace-systems/mascope?subdirectory=libraries%2Ftools&rev=49aa69ca54b97293b8d2935ebb4f6021e253286d#49aa69ca54b97293b8d2935ebb4f6021e253286d" }
+source = { git = "https://github.com/ultra-trace-systems/mascope?subdirectory=libraries%2Ftools&rev=1c2498f03b7e6ac0150b1f2c248d078f1988d3c7#1c2498f03b7e6ac0150b1f2c248d078f1988d3c7" }
 dependencies = [
     { name = "isospecpy" },
     { name = "mascope-sdk" },
