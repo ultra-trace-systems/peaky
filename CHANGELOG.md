@@ -476,6 +476,45 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The degeneracy audit counts what the run could have committed.** `degeneracy.py` feeds the
+  tier's degeneracy cap, `below_assignability` (O >= 11 and degenerate), the O-monster demote and
+  the 4c / 5a / 5b split of every axis-less row, and it enumerated ONE space for every run: the
+  Br-CIMS adducts (`[M+Br]-`, `[M-H]-`, `[M+CO3]-`, `[M+HBr+Br]-`, `[M+HBr+CO3]-` -- the stage passed
+  none), a fixed box (C <= 20, O <= 12, H <= 36, F <= 17, Si <= 3, Cl / Br <= 2, S <= 1) and the
+  Br-CIMS contaminant caps. So a uronium (+) channel tried only anions and 83 % of its M0 rows read
+  density 0, "unique"; a nitrate channel never tried `[M+NO3]-` / `[M+^NO3]-`; 70-80 % of all
+  competitor slots on three channels were cross-family mixtures no pass can commit (F+Si+N,
+  F+Si+Cl, ...), on the uronium channel F / Cl / Br formulas its context rules out; and the
+  committed formula itself lay outside the box on 6-45 % of the rows (C > 20, O > 12, P, S2 ...),
+  where density 0 then read "unique" -- the quantity the 4c level and C2b's "degeneracy is the
+  wrong discriminator" rested on. The count is now every ion the run could have committed inside
+  the calibrated window: **its channels** (the adducts it scored -- the detected reagent channels
+  and the opportunistic ones the server resolved; a row on any other adduct adds its own), **its
+  element space** (the context's element budget and filter; a cap the context sets to zero raised
+  to a contaminant family's ceiling only where the file opened that family -- the context's
+  declared pass-3 families, the reagent's organohalogen family, the GKA evidence pass 3 carried --
+  plus the curated formulas, the pass-0 registry and the active reference lists:
+  `degeneracy.opened_families`, `space_profiles`), and **no box**: C to the context's
+  `grid_c_max`, O to `grid_o_max`, H from an integer DBE under Senior's cap and the structural
+  oxygen cap. The enumeration is analytic and per peak (for each heteroatom combination the
+  neutral mass is linear in C and the DBE) and proposes exactly the grid enumerator's formulas,
+  window by window (tested), so the 9.7 M-formula relaxed grid and its ~40 s build per worker are
+  gone: the audit takes 0.3-1.7 s per file instead of ~37 s. A commit outside the space makes the
+  count a **lower bound** (the others plus itself): at >= 3 it still decides "degenerate"; below,
+  the density is NaN, "not measured" -- never 4c, never degenerate-5b, no tier cap. The stage
+  summary records the `channels`, the opened `families`, `not_measured` and `lower_bound`.
+  `DEFAULT_ADDUCTS`, `RELAXED_BOX`, `relaxed_profile` and `GRID_MASS_MAX` are gone;
+  `measure_degeneracy` / `apply_degeneracy` take `adducts`, `families` and `curated`. Sized before
+  coding on the same-air working set (the C9 runs replayed: the audit re-measured per file -- the
+  old default set reproduced the stored density on 26,820 of 26,835 rows -- then the tier cap, the
+  below flag, the O-monster demote, the per-file levels, the merge vote and the merged levels; the
+  build reproduces the census on 25,834 of 25,835 rows, the other being a relabelled `[M]-.` row
+  that now counts its own channel): the uronium Orbitrap's merged 4c 295 -> 282 and Assigned
+  840 -> 838 (the MBTCA roster row 5a -> 4c); the labelled-nitrate Orbitrap's Assigned 631 -> 645;
+  the ~10k TOF's Assigned 518 -> 493 and 4c 41 -> 11 -- heavy C24-C40 readings at m/z 490-960 whose
+  windows are saturated once C > 20 and O > 12 are counted; the six test-set rows and every roster
+  winner unchanged.
+
 - **A commit outside the run's element budget is Candidate unless a curated list names it.** The
   per-peak grid filters every candidate through the run context (`ambient-air` keeps P, F and I
   at zero -- monoisotopic, never isotope-confirmable -- and S at one), but the passes that widen

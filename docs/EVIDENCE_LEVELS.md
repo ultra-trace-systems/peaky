@@ -73,7 +73,7 @@ Computed exactly as `level_ledger.measure_source` does.
 | `tied` | **all** rows of the pair are tied |
 | `below` | **any** row is below assignability |
 | `lowconf` | **all** rows are `Low` or `Suspect` |
-| `degeneracy` | median `degeneracy_density` over rows that have one; NaN when none has |
+| `degeneracy` | median `degeneracy_density` over rows that have one; NaN when none has. The audit counts the ions the run could have committed in the calibrated window -- its channels, its element space, no box (`degeneracy.py`); a row whose commit lies outside that space with fewer than three ions carries NaN (`not measured`), so `unique` never holds for it |
 | `saturated` | any `degeneracy_note` contains `MASS-SATURATED` |
 | `res_ok` | no row carries a `resolvability` value, **or** at least one is `resolved` / `isolated` — a source that never measured it is not penalised |
 | `corroborated` | the neutral is in the **cross set** (§6.4): a source — the other reagent channel, the other instrument on the same air, a `--corroborate` run — that holds it at **4b or better by its own evidence**; never for an ion-only pair |

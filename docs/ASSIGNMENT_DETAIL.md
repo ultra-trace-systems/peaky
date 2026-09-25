@@ -419,7 +419,7 @@ Per peak: `eff_score = raw_score − complexity/iso penalty − minor-channel pe
 
 **Below assignability** (flag): `O ≥ 11` AND mass-saturated.
 
-The **degeneracy audit** (degeneracy.py) re-counts distinct plausible ions across ALL chemical families (not just the narrow pass box), catching honest cross-family ambiguity. Corroboration (isotopologue / cross-channel / series) is exactly the evidence that breaks degeneracy because it pins the specific ion. The confidence suffix lifecycle (`Low (series)`, `Low (recovered)`) is preserved through re-grading so the report knows the evidence type.
+The **degeneracy audit** (degeneracy.py) re-counts distinct plausible ions across every family the run could have committed (not just the narrow pass box), catching honest cross-family ambiguity. What it counts is the run's own space: its channels (the adducts it scored; a row on another adduct adds its own), the context's element budget and filter, a cap the context sets to zero raised to a contaminant family's ceiling only where the file opened that family (the declared pass-3 families, the reagent's organohalogen family, the GKA evidence pass 3 carried), plus the curated formulas (pass-0 registry, active reference lists); no element box -- C and O run to the context's grid limits and H follows from an integer DBE under Senior's cap and the structural O cap, solved per peak rather than read off a grid. A commit outside that space turns the count into a lower bound (the others plus itself): three or more still decides "degenerate", fewer is `not measured` (NaN density) -- never 4c, never degenerate-5b, no cap. (Until 2026-09 the audit used one Br-CIMS adduct set and a C<=20 / O<=12 box on every run: a uronium channel read 83 % of its rows as "unique" at density 0.) Corroboration (isotopologue / cross-channel / series) is exactly the evidence that breaks degeneracy because it pins the specific ion. The confidence suffix lifecycle (`Low (series)`, `Low (recovered)`) is preserved through re-grading so the report knows the evidence type.
 
 ---
 
@@ -628,7 +628,7 @@ A reference list is used in **three** places, all soft and provenance-tagged (a 
 | `reflists.py` | Curated reference peaklists + the catalog loader/context-unlock; the **selection prior** set, the **rescue-verify** pass (`rescue_unexplained_by_reflist`), report corroboration (`match_assigned`) and mass-match (`match_by_mass`) |
 | `plausibility.py` | Candidate-tier scrutiny flags (heteroatom coincidence, carbon-rich, wrong-mode halogen) + the `plausibility` stage's demotes (O-monster, carbon cluster, element budget) |
 | `tiers.py` | Tier classification (Assigned / Candidate / below-assignability), independent re-calibration, degeneracy demotion |
-| `degeneracy.py` | Cross-family ion-density audit and heteroatom-type counting |
+| `degeneracy.py` | Ion-density audit over the run's channels and committable element space (analytic per-peak enumeration), heteroatom-type counting |
 | `cleanup.py` | Pass-7 residual reclassification: ringing artifacts, bromide clusters, reagent-halocarbon relabel, isotope-gated recovery, satellite/envelope reclaim, fluorine demotion, carbon-cluster demotion, reagent-N re-read (HC via N-cluster → protonated N-heterocycle), amine re-read |
 | `isotopes.py` | Per-atom isotope-distribution convolution → predicted envelope `(dmass, rel, label)` |
 | `assign_batch.py` | Per-file assignment + offset-aware m/z merge into the merged ledger; jitter report |

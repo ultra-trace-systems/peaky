@@ -10,6 +10,8 @@ import argparse
 import json
 from dataclasses import dataclass, field
 
+import pandas as pd
+
 from peaky.assignment import admission
 from peaky.assignment import cleanup
 from peaky.chem import contexts
@@ -122,15 +124,43 @@ def module_versions() -> dict:
     return dict(_MODULE_VERSIONS_CACHE)
 
 
-def _degen_summary(led) -> dict:
-    """Compact manifest summary of the degeneracy audit."""
+def _degen_summary(led, channels=None, families=None) -> dict:
+    """Compact manifest summary of the degeneracy audit: how many M0 rows it
+    measured, how many it could only bound (the committed formula outside the
+    run's space) or not measure, and the channels / opened families it counted."""
     m0 = led[led["role"] == ledger.ROLE_M0]
-    d = m0["degeneracy_density"].dropna()
+    note = m0["degeneracy_note"].astype(str) if "degeneracy_note" in m0.columns else pd.Series(dtype=str)
+    out = {"not_measured": int(note.str.startswith("not measured").sum()),
+           "lower_bound": int(note.str.contains("count is a lower bound", regex=False).sum())}
+    if channels is not None:
+        out["channels"] = list(channels)
+    if families is not None:
+        out["families"] = list(families)
+    d = pd.to_numeric(m0["degeneracy_density"], errors="coerce").dropna() \
+        if "degeneracy_density" in m0.columns else pd.Series(dtype=float)
     if not len(d):
-        return {"measured": 0}
+        return {"measured": 0, **out}
     d = d.astype(int)
     return {"measured": int(len(d)), "degenerate_ge2": int((d >= 2).sum()),
-            "max_density": int(d.max())}
+            "max_density": int(d.max()), **out}
+
+
+def _stage_degeneracy(st):
+    """The honest mass-degeneracy count (degeneracy.py) over what THIS run could
+    commit: its channels (the adducts it scored), the context's element budget
+    widened by the contaminant families this file opened -- declared by the
+    context, the reagent's organohalogen family, the GKA evidence pass 3 carried --
+    and the curated formulas (the pass-0 registry, the active reference lists)."""
+    polarity = getattr(st.profile, "polarity", "negative")
+    curated = passes.known_formulas(polarity, getattr(st.profile, "label", None))
+    curated = curated | frozenset(getattr(st.cfg, "reflist_formulas", None) or ())
+    carry = st.series_carry or {}
+    families = degeneracy.opened_families(
+        st.profile if st.do_pass3 else None, st.reagent if st.do_pass3 else None,
+        carry.get("evidence"), st.led)
+    degeneracy.apply_degeneracy(st.led, context=st.profile, adducts=st.adducts,
+                                families=families, curated=curated, log=st.log)
+    return _degen_summary(st.led, st.adducts, families)
 
 
 def _module_hashes() -> dict:
@@ -445,8 +475,7 @@ _STAGES = [
            when=lambda st: st.resolving_power is not None and not resolvability.already_stamped(st.led),
            safe=False),
     # honest mass-degeneracy measurement -- MUST precede tiers (the tier engine reads it).
-    _Stage("degeneracy", lambda st: _degen_summary(
-        degeneracy.apply_degeneracy(st.led, context=st.profile.label, log=st.log))),
+    _Stage("degeneracy", _stage_degeneracy),
     # report tier, then the post-tier de-risking demotes (each gets the last word).
     _Stage("tiers", lambda st: tiers.apply_tiers(st.led, cfg=st.cfg), safe=False, store=False),
     _Stage("demote_fluorine",

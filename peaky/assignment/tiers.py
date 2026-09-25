@@ -121,8 +121,9 @@ N_DONOR_ADDUCTS = ("[M+NH4]+", "[M+(CH4N2O)H]+")
 # degeneracy_density / degeneracy_note). The per-pass candidate_density only
 # counts competitors inside the ONE narrow element box that peak's pass
 # enumerated; the degeneracy audit re-counts how many distinct plausible IONS
-# fall in the calibrated window across ALL families (CHO/CHON, fluorinated, Si,
-# S, halogen ...). A high count means the mass is not identifiable from accurate
+# fall in the calibrated window across every family the run could have committed
+# (its channels, its context's element budget and the families the file opened,
+# the curated formulas -- degeneracy.py). A high count means the mass is not identifiable from accurate
 # mass alone. So a commit that is degenerate at this honest level AND carries no
 # extra-spectral corroboration (committed isotopologue child / stored
 # isotopologue / second ionization channel / series anchor) must be capped at
