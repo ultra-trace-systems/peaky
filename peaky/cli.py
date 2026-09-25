@@ -911,11 +911,13 @@ def _add_rolling_flag(p) -> None:
 
 def _add_corroborate_flag(p) -> None:
     p.add_argument("--corroborate", action="append", default=[], metavar="SOURCE",
-                   help="a run dir, an out-dir holding one run, or a ledger CSV whose M0 "
+                   help="a run dir, an out-dir holding one run, or a ledger CSV whose "
                         "neutrals corroborate this run's evidence levels -- the other "
                         "reagent channel, or the other instrument on the same air; "
-                        "repeatable. Corroboration is formula evidence only: it can carry "
-                        "a row to level 4a, never above (docs/EVIDENCE_LEVELS.md)")
+                        "repeatable. A source corroborates only the neutrals it pins on "
+                        "its own (level 4b or better with no cross set), and "
+                        "corroboration is formula evidence only: it can carry a row to "
+                        "level 4a, never above (docs/EVIDENCE_LEVELS.md)")
 
 
 def _add_trace_first_flags(p) -> None:

@@ -288,10 +288,13 @@ def test_an_ion_only_row_is_never_a_second_channel_nor_a_corroboration_either_wa
     lv = EV.compute_levels(led, cross={X}).set_index("peak_id")
     assert "corroborated" in lv.loc["A", "evidence_axes"] and lv.loc["A", "evidence_level"] == "4b"
     assert "corroborated" not in lv.loc["H", "evidence_axes"] and lv.loc["H", "evidence_level"] == "4d"
-    # and the ion-only row never contributes its neutral to a cross set
+    # and the ion-only row never contributes its neutral to a cross set -- at ANY
+    # level (max_level 5b admits every level; the default 4b would hide the rule:
+    # both regular rows here are 5a, pinned by nothing of their own)
     only_ion_only = led[led["peak_id"].isin(["H", "H13", "B"])]
-    assert EV.corroborating_neutrals([only_ion_only]) == {"C8H12O4"}
-    assert EV.corroborating_neutrals([led]) == {X, "C8H12O4"}
+    assert EV.source_neutrals({"f": only_ion_only}, max_level="5b") == {"C8H12O4"}
+    assert EV.source_neutrals({"f": led}, max_level="5b") == {X, "C8H12O4"}
+    assert EV.corroborating_neutrals([led]) == set()          # a 5a sighting corroborates nothing
     # the pair table records the flag
     pairs = EV.level_pooled({"f": EV.trim(led)})
     assert pairs.set_index(["neutral_formula", "adduct"]).loc[(X, "[M]-."), "ion_only"] == True  # noqa: E712
@@ -299,7 +302,10 @@ def test_an_ion_only_row_is_never_a_second_channel_nor_a_corroboration_either_wa
     # a merged ledger (no method column) is recognised by its link
     merged = pd.DataFrame({"neutral_formula": [X, X], "adduct": ["[M-H]-", "[M]-."], "ion_only_of": [pd.NA, "A"]})
     assert EV.is_ion_only(merged).tolist() == [False, True]
-    assert EV.corroborating_neutrals([merged.assign(role="M0")]) == {X}
+    assert EV.source_neutrals({"m": merged.assign(role="M0")}, max_level="5b") == {X}
+    # ... and a merged ledger read by its stored level leaves the linked row out too
+    stored = merged.assign(evidence_level=["4b", "4d"], evidence_axes=["iso|files:2", "iso|ion_only|files:2"])
+    assert EV.source_neutrals({"m": stored}) == {X}
 
 
 def test_the_reference_script_levels_ion_only_rows_exactly_as_the_core_does():

@@ -24,10 +24,14 @@ from peaky.assignment import evidence as EV  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "levels"
 ORDER = ["2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
+# the three golden vectors -- each source corroborated by the neutrals the other
+# holds at 4b or better by its OWN evidence (C8, 2026-09-25; before it, by every
+# M0 neutral of the other at any level: 21/15/107/38/162/9/9/33/979,
+# 6/16/182/38/260/79/91/135/2557 and 0/12/217/44/215/119/0/30/1070)
 GOLDEN = {
-    "tv": (1373, "21/15/107/38/162/9/9/33/979"),
-    "tof": (3364, "6/16/182/38/260/79/91/135/2557"),
-    "orbi": (1707, "0/12/217/44/215/119/0/30/1070"),
+    "tv": (1373, "21/15/107/16/143/15/10/37/1009"),
+    "tof": (3364, "6/15/182/22/247/82/99/138/2573"),
+    "orbi": (1707, "0/11/217/9/203/139/0/35/1093"),
 }
 
 LEDGER_COLUMNS = [
@@ -273,8 +277,8 @@ def expected():
 
 def test_golden_tv_two_channels_corroborate_each_other():
     no3, br = _read("tv_nitrate"), _read("tv_bromide")
-    cross_for_no3 = set(br.loc[br.role == "M0", "neutral_formula"].dropna())
-    cross_for_br = set(no3.loc[no3.role == "M0", "neutral_formula"].dropna())
+    cross_for_no3 = EV.source_neutrals({"tv_bromide": br})
+    cross_for_br = EV.source_neutrals({"tv_nitrate": no3})
     a = EV.level_pooled({"tv_nitrate": no3}, cross=cross_for_no3)
     b = EV.level_pooled({"tv_bromide": br}, cross=cross_for_br)
     both = pd.concat([a, b])
@@ -283,8 +287,7 @@ def test_golden_tv_two_channels_corroborate_each_other():
 
 def test_golden_same_air_pair():
     tof, orbi = _pooled("tof"), _pooled("orbi")
-    n_tof = {f for d in tof.values() for f in d.loc[d.role == "M0", "neutral_formula"].dropna()}
-    n_orbi = {f for d in orbi.values() for f in d.loc[d.role == "M0", "neutral_formula"].dropna()}
+    n_tof, n_orbi = EV.source_neutrals(tof), EV.source_neutrals(orbi)
     t = EV.level_pooled(tof, cross=n_orbi)
     o = EV.level_pooled(orbi, cross=n_tof)
     assert (len(t), _vector(t.evidence_level)) == GOLDEN["tof"]
@@ -293,8 +296,7 @@ def test_golden_same_air_pair():
 
 def test_rows_match_the_reference_script_row_for_row(expected):
     tof, orbi = _pooled("tof"), _pooled("orbi")
-    n_tof = {f for d in tof.values() for f in d.loc[d.role == "M0", "neutral_formula"].dropna()}
-    n_orbi = {f for d in orbi.values() for f in d.loc[d.role == "M0", "neutral_formula"].dropna()}
+    n_tof, n_orbi = EV.source_neutrals(tof), EV.source_neutrals(orbi)
     got = pd.concat([EV.level_pooled(tof, cross=n_orbi).assign(source="tof"),
                      EV.level_pooled(orbi, cross=n_tof).assign(source="orbi")])
     exp = expected[expected.source.isin(["tof", "orbi"])]
@@ -335,3 +337,77 @@ def test_pooled_pairs_are_m0_only_a_reagent_row_forms_no_pair():
     not only on the stamp."""
     out = EV.level_pooled({"f": ledger([m0("p", "C6H8O4"), reagent("r", "Br", 78.918)])})
     assert list(out.neutral_formula) == ["C6H8O4"]
+
+
+# --------------------------------------------------------------------------- the cross set (C8)
+def test_a_source_corroborates_only_what_it_holds_at_4b_or_better_by_its_own_evidence():
+    """The `corroborated` axis is a second SIGHTING of the neutral: the source
+    must pin it by an axis of its own (4b) or better. A 4c (unopposed, no axis),
+    a 5b (tied) or an ion-only pair is the source's grid enumerating the formula,
+    not a sighting of it."""
+    src = ledger([
+        m0("a", "C10H16O4", ion="C10H15O4", height=1000.0), child("a1", "a", "13C+1", 107.0),   # iso -> 4b
+        m0("b", "C8HF15O2", method="known:perfluoroacid"),                                     # 3a
+        m0("c", "C7H12O4"),                                                                    # 4c: no axis
+        m0("d", "C6H8O4", tied=True, anchor="a"),                                              # 5b: tied
+        m0("e", "C9H14O4", adduct="[M]-.", method="ion_only:electron_attachment", mz=186.09),  # ion-only
+    ])
+    assert EV.source_neutrals({"s": src}) == {"C10H16O4", "C8HF15O2"}
+    assert EV.source_neutrals({"s": src}, max_level="4c") == {"C10H16O4", "C8HF15O2", "C7H12O4"}
+
+
+def test_two_sources_that_only_agree_cannot_lift_each_other():
+    """Two instruments whose grids both fit a mass-degenerate formula with no axis
+    (5b on each) used to hand each other the `corroborated` axis and climb to 4b
+    together; each is now corroborated only by what the other pins on its own."""
+    x = ledger([m0("p", "C6H10O4", degeneracy=5.0)])
+    y = ledger([m0("q", "C6H10O4", degeneracy=5.0, adduct="[M+NO3]-", mz=208.0)])
+    for me, other in ((x, y), (y, x)):
+        cross = EV.source_neutrals({"other": other})
+        assert cross == set()
+        assert set(EV.level_pooled({"me": me}, cross=cross).evidence_level) == {"5b"}
+        # the mutant: any-level membership lifts the pair to 4b on the agreement alone
+        assert set(EV.level_pooled({"me": me}, cross={"C6H10O4"}).evidence_level) == {"4b"}
+
+
+def test_a_per_file_source_is_relevelled_not_read():
+    """A ledger with predicate columns is levelled afresh with no cross set: a
+    stored 4a the source owed to ITS OWN --corroborate does not count."""
+    src = ledger([m0("p", "C9H14O4", degeneracy=None)])          # no axis, degeneracy unmeasured -> 5a
+    src["evidence_level"], src["evidence_axes"] = "4a", "iso|corroborated"
+    assert EV.source_neutrals({"s": src}) == set()
+
+
+def test_a_merged_ledger_source_reads_its_stored_level_without_its_own_corroboration():
+    merged = pd.DataFrame([
+        dict(neutral_formula="A1", adduct="[M-H]-", evidence_level="4b", evidence_axes="iso|files:3"),
+        dict(neutral_formula="B1", adduct="[M-H]-", evidence_level="4b", evidence_axes="corroborated|files:3"),
+        dict(neutral_formula="C1", adduct="[M-H]-", evidence_level="4a", evidence_axes="iso|corroborated|carbon|files:2"),
+        dict(neutral_formula="D1", adduct="[M+Br]-", evidence_level="4a",
+             evidence_axes="iso|corroborated|reagent_only_iso|files:2"),
+        dict(neutral_formula="E1", adduct="[M-H]-", evidence_level="5b", evidence_axes="files:9"),
+        dict(neutral_formula="F1", adduct="[M-H]-", evidence_level="3a",
+             evidence_axes="corroborated|known:perfluoroacid|files:4"),
+        dict(neutral_formula="G1", adduct="[M-H]-", evidence_level="3b", evidence_axes="chan2|branch|files:5"),
+        dict(neutral_formula="H1", adduct="[M]-.", evidence_level="4d", evidence_axes="iso|ion_only|files:5",
+             ion_only_of="C9H14O4 [M-H]-"),
+    ])
+    assert EV.source_neutrals({"m": merged}) == {"A1", "C1", "G1"}
+    with pytest.raises(ValueError, match="evidence_level"):
+        EV.source_neutrals({"m": merged.drop(columns=["evidence_level", "evidence_axes"])})
+
+
+def test_the_cross_set_equals_the_reference_scripts_on_the_golden_sets():
+    """The in-core helper and scripts/level_ledger.py pick the same neutrals."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "level_ledger", Path(__file__).resolve().parents[1] / "scripts" / "level_ledger.py")
+    LL = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(LL)
+    for prefix in ("tof", "orbi"):
+        files = _pooled(prefix)
+        frame = pd.concat([f.assign(__file=k) for k, f in files.items()], ignore_index=True)
+        halogen = LL.detect_reagent_halogen(frame[frame.role == "M0"])
+        measured = LL.measure_source(prefix, frame, halogen)
+        measured["reagent_halogen"] = halogen or ""
+        assert LL.own_good_neutrals(measured) == EV.source_neutrals(files), prefix

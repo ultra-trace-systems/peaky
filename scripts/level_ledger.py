@@ -16,7 +16,12 @@ levelled; naming two of them ALSO gives each the other as corroboration, which
 is what "the same neutral, seen through a second, independent channel" means —
 the other reagent channel of one instrument, or the other instrument sampling
 the same air. `--corroborate` adds a source that corroborates but is not itself
-levelled.
+levelled. A source corroborates only the neutrals it holds at level 4b or
+better by its OWN evidence — levelled first with no corroboration at all, so
+two sources can never lift each other on nothing but their agreement (a 5b
+formula the other grid also enumerated is two grids agreeing, not a second
+sighting). A merged ledger has no predicate columns: its stored level is read
+without its own `corroborated` axis.
 
 One row out per `(source, neutral_formula, adduct)` over the source's M0 rows.
 
@@ -442,28 +447,65 @@ def assign_levels(df: pd.DataFrame, corroborating: set[str]) -> pd.DataFrame:
     return df
 
 
+#: a source corroborates the neutrals it holds at one of these levels by its own
+#: evidence (4b or better; 1 and 2a never fire)
+CORROBORATING_LEVELS = {"1", "2a", "2b", "3a", "3b", "4a", "4b"}
+OWN_AXES = {"iso", "chan2", "anchor"}
+
+
+def own_good_neutrals(frame: pd.DataFrame) -> set[str]:
+    """The neutrals a measured source holds at 4b or better when it is levelled
+    with NO corroboration — its own evidence only. Ion-only pairs never count."""
+    own = assign_levels(frame, set())
+    ok = own["level"].isin(CORROBORATING_LEVELS) & ~own["ion_only"].astype(bool)
+    return set(own.loc[ok, "neutral"].astype(str)) - {""}
+
+
+def stored_good_neutrals(ledger: pd.DataFrame, label: str) -> set[str]:
+    """A merged ledger (no predicate columns): the rows its stored level puts at
+    4b or better that still hold an axis of their own once `corroborated` is
+    taken away (a level the axis alone produced does not count)."""
+    if "evidence_level" not in ledger.columns:
+        raise SystemExit(f"{label}: neither per-file predicate columns nor an evidence_level column")
+    ledger = ledger[~is_ion_only(ledger)]
+    keep = []
+    for level, axes in zip(ledger["evidence_level"], column(ledger, "evidence_axes", "")):
+        parts = set(str(axes).split("|")) if pd.notna(axes) else set()
+        good = str(level) in CORROBORATING_LEVELS
+        if good and "corroborated" in parts:
+            own = parts & OWN_AXES
+            good = bool(own) and not (own == {"iso"} and "reagent_only_iso" in parts)
+        keep.append(good)
+    return set(column(ledger, "neutral_formula")[np.array(keep, dtype=bool)].dropna().astype(str)) - {""}
+
+
+def source_good_neutrals(path: str) -> tuple[str, pd.DataFrame | None, set[str]]:
+    """(label, measured frame or None, the neutrals it corroborates) for one source."""
+    label, ledger = load_source(path)
+    if "role" not in ledger.columns:
+        return label, None, stored_good_neutrals(ledger, label)
+    halogen = detect_reagent_halogen(ledger[column(ledger, "role").astype(str) == "M0"])
+    frame = measure_source(label, ledger, halogen)
+    if frame.empty:
+        return label, None, set()
+    frame["reagent_halogen"] = halogen or ""
+    return label, frame, own_good_neutrals(frame)
+
+
 def run(sources: list[str], corroborate: list[str]) -> pd.DataFrame:
-    """Level every source, each corroborated by the others plus --corroborate."""
+    """Level every source, each corroborated by the others plus --corroborate —
+    by the neutrals each of them holds at 4b or better on its own evidence."""
     measured = {}
     neutrals = {}
     for path in sources:
-        label, ledger = load_source(path)
-        halogen = detect_reagent_halogen(ledger[column(ledger, "role").astype(str) == "M0"])
-        frame = measure_source(label, ledger, halogen)
-        if frame.empty:
+        label, frame, good = source_good_neutrals(path)
+        if frame is None:
             print(f"  {label}: no M0 rows, skipped", file=sys.stderr)
             continue
-        frame["reagent_halogen"] = halogen or ""
         measured[path] = (label, frame)
-        neutrals[path] = set(frame.loc[~frame["ion_only"].astype(bool), "neutral"])
+        neutrals[path] = good
     for path in corroborate:
-        label, ledger = load_source(path)
-        role = column(ledger, "role").astype(str)
-        m0c = ledger[role == "M0"]
-        m0c = m0c[~is_ion_only(m0c)]
-        neutrals[f"--corroborate:{path}"] = set(
-            column(m0c, "neutral_formula").dropna().astype(str)
-        )
+        neutrals[f"--corroborate:{path}"] = source_good_neutrals(path)[2]
     out = []
     for path, (label, frame) in measured.items():
         others: set[str] = set()

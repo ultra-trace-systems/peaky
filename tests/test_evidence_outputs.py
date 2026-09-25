@@ -176,13 +176,23 @@ def test_batch_run_recomputes_the_level_on_the_pooled_files(tmp_path, monkeypatc
 
 
 def test_corroborating_neutrals_resolves_run_dirs_and_csvs(tmp_path):
+    # the ledger holds C10H16O4 at 4b (its own 13C line) and C7H12O4 at 5a (the
+    # series commit carries no axis the levels read): only the first is a sighting
     run = tmp_path / "run"; (run / "per_file").mkdir(parents=True)
     _ledger().to_csv(run / "per_file" / "s1_ledger.csv", index=False)
-    assert EV.corroborating_neutrals([str(run)]) == {"C10H16O4", "C7H12O4"}
-    assert EV.corroborating_neutrals([str(tmp_path)]) == {"C10H16O4", "C7H12O4"}   # the out-dir holding one run
+    assert EV.corroborating_neutrals([str(run)]) == {"C10H16O4"}
+    assert EV.corroborating_neutrals([str(tmp_path)]) == {"C10H16O4"}   # the out-dir holding one run
+    assert EV.corroborating_neutrals([str(run / "per_file" / "s1_ledger.csv")]) == {"C10H16O4"}   # a ledger CSV
+    # a merged ledger has no predicate columns: its stored level, without its own `corroborated`
     merged = tmp_path / "m.csv"
-    pd.DataFrame({"neutral_formula": ["HNO3"], "adduct": ["[M-H]-"]}).to_csv(merged, index=False)
+    pd.DataFrame({"neutral_formula": ["HNO3", "C5H8O3"], "adduct": ["[M-H]-", "[M-H]-"],
+                  "evidence_level": ["2b", "4b"], "evidence_axes": ["known:atmospheric|files:3", "corroborated|files:2"]}
+                 ).to_csv(merged, index=False)
     assert EV.corroborating_neutrals([str(merged)]) == {"HNO3"}
+    bare = tmp_path / "bare.csv"
+    pd.DataFrame({"neutral_formula": ["HNO3"], "adduct": ["[M-H]-"]}).to_csv(bare, index=False)
+    with pytest.raises(ValueError, match="evidence_level"):
+        EV.corroborating_neutrals([str(bare)])      # nothing to judge the sighting by: say so, never guess
     assert EV.corroborating_neutrals([]) == set()
     with pytest.raises(FileNotFoundError):
         EV.corroborating_neutrals([str(tmp_path / "nowhere")])

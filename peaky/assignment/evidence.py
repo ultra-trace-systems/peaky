@@ -35,13 +35,15 @@ The scale, in the order the predicates are tried (the first that holds wins):
 The four axes: a verified isotopologue (`iso`), a second adduct channel
 (`chan2`), a homologous-series or anchor tie (`anchor`), and a corroborating
 source (`corroborated`: the other reagent channel, the other instrument on the
-same air, or a `--corroborate` source). Levels 1 and 2a need an authentic
+same air, or a `--corroborate` source, holding the neutral at 4b or better by
+its OWN evidence -- `source_neutrals`). Levels 1 and 2a need an authentic
 standard or a library spectrum and never fire.
 
 Entry points: `apply_levels` (the `evidence` stage of assign.run: writes the
 four columns in place), `compute_levels` (pure, one row per M0), `level_pooled`
-(a batch's per-file ledgers as ONE source, one row per pair) and `stamp_merged`
-(join the pooled result onto the merged ledger by ion).
+(a batch's per-file ledgers as ONE source, one row per pair), `stamp_merged`
+(join the pooled result onto the merged ledger by ion) and
+`corroborating_neutrals` (the cross set of the `--corroborate` sources).
 """
 
 from __future__ import annotations
@@ -622,22 +624,87 @@ def resolve_source(path: str) -> tuple[str, list[str]]:
     raise FileNotFoundError(f"no ledger under {path}")
 
 
+#: The level a --corroborate source must hold a neutral at, by its OWN evidence,
+#: for its sighting to count as the `corroborated` axis: the formula confirmed
+#: by an axis of the source's own -- 4b -- or better. Below that the source's
+#: grid only ENUMERATED the same formula at a peak (4c unopposed but
+#: unconfirmed, 4d the ion only, 5a exact mass alone, 5b arguing with itself):
+#: two grids agreeing, not a second sighting of the neutral. Measured on the
+#: same-air pair before the rule: of 1521 neutrals the labelled-nitrate
+#: Orbitrap offered the TOF, 379 pass; of 3728 the TOF offered the Orbitrap,
+#: 435 (3437 of its pairs are 5b -- a 10k-resolution TOF can seldom pin a
+#: formula), and of the TOF's 49 vote winners lifted by the axis alone, 28
+#: rested on an Orbitrap 5a / 5b (docs/EVIDENCE_LEVELS.md §6.4).
+CORROBORATE_MAX_LEVEL = "4b"
+_AXES_OWN = frozenset(a for a in AXES if a != "corroborated")
+
+
+def _rank(level) -> int:
+    return LEVEL_ORDER.index(level) if level in LEVEL_ORDER else len(LEVEL_ORDER)
+
+
+def _stored_own_good(level, axes, max_level: str) -> bool:
+    """A merged ledger's stored level read WITHOUT its own `corroborated` axis
+    (a merged row carries no predicate column to re-level it from): good when
+    the level is `max_level` or better and it still holds an axis of its own
+    once `corroborated` is taken away -- a level the axis alone produced (a 4b
+    of one corroboration, a known-family row with no other axis) does not count."""
+    lv = str(level) if pd.notna(level) else ""
+    if _rank(lv) > _rank(max_level):
+        return False
+    parts = set(str(axes).split("|")) if pd.notna(axes) else set()
+    if "corroborated" not in parts:
+        return True
+    own = parts & _AXES_OWN
+    if not own or (own == {"iso"} and "reagent_only_iso" in parts):
+        return False
+    return True
+
+
+def source_neutrals(per_file: dict, *, isomer_space=None, max_level: str = CORROBORATE_MAX_LEVEL) -> set[str]:
+    """The neutral formulas a source ({label: ledger}) holds at `max_level` or
+    better by its OWN evidence: the ledgers pooled as ONE source and levelled
+    with NO cross set (`level_pooled`, the batch's own merged-row level), so a
+    source that was itself run with --corroborate cannot hand a run back the
+    agreement it got from it. Ion-only pairs never count. A ledger without a
+    `role` column is a merged ledger: it carries none of the predicate columns,
+    so its stored `evidence_level` is read instead, without its own
+    `corroborated` axis (`_stored_own_good`)."""
+    frames = {k: f for k, f in per_file.items() if "role" in f.columns}
+    merged = {k: f for k, f in per_file.items() if "role" not in f.columns}
+    out: set[str] = set()
+    if frames:
+        pairs = level_pooled({k: trim(f) for k, f in frames.items()}, cross=None, isomer_space=isomer_space)
+        if len(pairs):
+            ok = (pairs["evidence_level"].map(_rank) <= _rank(max_level)) & ~pairs["ion_only"].astype(bool)
+            out |= set(pairs.loc[ok, "neutral_formula"].astype(str))
+    for label, f in merged.items():
+        if "evidence_level" not in f.columns:
+            raise ValueError(
+                f"--corroborate source {label!r} carries neither the per-file predicate columns nor an "
+                "evidence_level column (a merged ledger from before the levels?) -- name the run dir, "
+                "whose per_file/ ledgers the source's own levels are computed from")
+        f = f[~is_ion_only(f)]
+        ok = np.array([_stored_own_good(lv, ax, max_level)
+                       for lv, ax in zip(f["evidence_level"], _col(f, "evidence_axes", ""))], dtype=bool)
+        out |= set(_col(f, "neutral_formula").loc[ok].dropna().astype(str))
+    out.discard("")
+    return out
+
+
 def corroborating_neutrals(sources) -> set[str]:
-    """The M0 neutral formulas of every source in `sources` (paths, or frames):
-    the cross set a run is corroborated by. Ion-only rows are left out: they
-    carry their parent's composition, not an independent sighting of it."""
+    """The cross set a run is corroborated by: for every source in `sources`
+    (a run dir, an out-dir holding one run, a ledger CSV, or a frame), the
+    neutral formulas it holds at level <= 4b by its own evidence
+    (`source_neutrals`). A run dir is read through its per-file ledgers, which
+    carry every fact a level reads."""
     out: set[str] = set()
     for src in sources or []:
-        frames = []
         if isinstance(src, pd.DataFrame):
-            frames = [src]
+            per_file = {"": src}
         else:
-            _, files = resolve_source(src)
-            frames = [pd.read_csv(f, low_memory=False) for f in files]
-        for f in frames:
-            if "role" in f.columns:
-                f = f[f["role"].astype(str) == "M0"]
-            f = f[~is_ion_only(f)]
-            out |= set(_col(f, "neutral_formula").dropna().astype(str))
-    out.discard("")
+            label, files = resolve_source(src)
+            per_file = {(os.path.basename(f) if len(files) > 1 else label): pd.read_csv(f, low_memory=False)
+                        for f in files}
+        out |= source_neutrals(per_file)
     return out

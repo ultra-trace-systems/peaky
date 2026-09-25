@@ -76,7 +76,7 @@ Computed exactly as `level_ledger.measure_source` does.
 | `degeneracy` | median `degeneracy_density` over rows that have one; NaN when none has |
 | `saturated` | any `degeneracy_note` contains `MASS-SATURATED` |
 | `res_ok` | no row carries a `resolvability` value, **or** at least one is `resolved` / `isolated` — a source that never measured it is not penalised |
-| `corroborated` | the neutral is in the **cross set** (§6): the other reagent channel, the other instrument on the same air, or a `--corroborate` source — never for an ion-only pair |
+| `corroborated` | the neutral is in the **cross set** (§6.4): a source — the other reagent channel, the other instrument on the same air, a `--corroborate` run — that holds it at **4b or better by its own evidence**; never for an ion-only pair |
 | `known_fam` | the family of the first `known:` method among the rows, else `''` |
 | `ion_only` | the pair was written by the **ion-only stage** (`ion_only`, C7): adduct `[M]-.` with method `ion_only:*` (a merged ledger: an `ion_only_of` link) — the +1.0078 Da electron-attachment line beside a committed `[M-H]-` acid, carrying the acid's composition. An ion-only pair is levelled on its **own** satellite alone (§4 row 2b′) and is kept **out of the per-neutral pools in both directions**: `chan2`, `branch`, `anchor` and `reagent_only_iso` are computed over the regular rows only, so the row never gives its parent a second channel and never takes an axis from it; it is never `corroborated` and its neutral never enters a cross set (`corroborating_neutrals` skips it) |
 
@@ -205,10 +205,11 @@ recompute of §6.2 in `batch_summary.json` instead).
 
 The stage calls `evidence.apply_levels(ledger, cfg=cfg, cross=cross)` which
 writes the four columns of §7 in place and returns the summary. `cross` is
-the set of neutral formulas from `--corroborate` sources (repeatable CLI
-option on `peaky assign` and `peaky batch`; a run dir, an out-dir holding one
-run, or a ledger CSV; resolved as `level_ledger.resolve_source` does); empty
-for a bare single-sample run.
+the cross set of §6.4: the neutral formulas the `--corroborate` sources hold
+at 4b or better by their own evidence (repeatable CLI option on `peaky
+assign` and `peaky batch`; a run dir, an out-dir holding one run, or a ledger
+CSV; resolved as `level_ledger.resolve_source` does); empty for a bare
+single-sample run.
 
 ### 6.2 Batch — recomputed on the pooled files, stamped on the merged ledger
 
@@ -224,8 +225,9 @@ one-to-one — and the four columns are written there too. The per-file
 ledgers keep their own per-file levels (computed at 6.1).
 
 Two batch runs named together (`peaky batch … --corroborate <other run>`)
-corroborate this run by the other's M0 neutrals. The trace-first path is a
-one-file batch and follows the same rule.
+corroborate this run by the neutrals the other holds at 4b or better on its
+own evidence (§6.4). The trace-first path is a one-file batch and follows the
+same rule.
 
 `batch_summary["evidence_levels"]` = `{"pooled": {level: n}` (one count per
 pair), `"merged": {level: n}` (per merged row), `"per_stage": {cover: {…},
@@ -238,6 +240,48 @@ table with every fact of §3 is written to `tables/evidence_levels.csv`.
 `scripts/level_ledger.py` stays as the reference and the tool for runs made
 before the column existed. `scripts/scorecard.py` already prefers an in-core
 `evidence_level` column when present.
+
+### 6.4 The cross set — what a source's sighting is worth (C8)
+
+A source corroborates a neutral only when it **pins it on its own**: at level
+**4b or better** when the source is levelled with **no cross set at all**
+(`evidence.source_neutrals`; `CORROBORATE_MAX_LEVEL = "4b"`). Below that the
+source's grid merely enumerated the same formula at a peak — 4c unopposed but
+unconfirmed, 4d the ion only, 5a exact mass alone, 5b arguing with itself —
+and two grids agreeing is not a second sighting of the neutral.
+
+- A source with per-file ledgers (a run dir, an out-dir holding one run, a
+  per-file or single-sample ledger CSV) is **re-levelled**: its ledgers pooled
+  as ONE source, `level_pooled(…, cross=None)` — the batch's own merged-row
+  level, §6.2 — and a neutral counts when any of its pairs reaches 4b.
+  Stored levels are never read here, so a source that was itself run with
+  `--corroborate` cannot hand a run back the agreement it got from it, and
+  two sources named together (`level_ledger.py A B`) are each corroborated by
+  what the other pins on its own — never by their mutual agreement.
+- A merged ledger (no `role` column) carries none of the predicate columns:
+  its stored `evidence_level` is read, **without its own `corroborated`
+  axis** — a row counts at 4b or better when `corroborated` is not among its
+  axes, or when it still holds `iso` / `chan2` / `anchor` once that axis is
+  taken away (and is not an `iso`-only `reagent_only_iso` row, which would
+  fall to 4d). A level the axis alone produced — a 4b of one corroboration, a
+  curated row with no axis of its own — does not count. A source carrying
+  neither the predicate columns nor `evidence_level` raises: there is nothing
+  to judge the sighting by.
+- Ion-only pairs never count, in either direction (§3).
+
+Measured on the same-air pair before the rule (three regression runs, the
+per-file levels, the merge vote and the merged levels replayed with the new
+cross set; each replay's baseline reproduced its run row for row): the
+labelled-nitrate Orbitrap offered the TOF 1521 neutrals, 379 of them pinned on
+its own; the TOF offered the Orbitrap 3728, 435 pinned (3437 of its pooled
+pairs are 5b — a 10k-resolution TOF can seldom pin a formula); of the TOF's 49
+vote winners lifted by the axis alone, 28 rested on an Orbitrap 5a / 5b. The
+merge vote (C2b) then changes 36 winners on the TOF (every test-set row and
+every roster compound keeps its reading), 12 on the Orbitrap (all between
+implausible grid formulas) and none on the uronium channel, where the 4a rungs
+built on the TOF's 5b agreement fall to 4b. The curated perfluoroheptanoic
+acid, mass-saturated on both instruments with no axis on either, falls from
+3a to 5b on both: its one "axis" was the mutual agreement.
 
 ## 7. The column contract
 
@@ -271,10 +315,14 @@ added them. `tests/test_evidence.py`:
 - one test per level (2b, 3a, 3b, 4a, 4b, 4c, 4d, 5a, 5b) on a synthetic
   ledger where exactly that level fires, **and a mutant** that flips one
   input and must change the level;
-- the three golden count vectors, exact:
-  `tv` 1373 → 21/15/107/38/162/9/9/33/979,
-  `tof` 3364 → 6/16/182/38/260/79/91/135/2557,
-  `orbi` 1707 → 0/12/217/44/215/119/0/30/1070;
+- the three golden count vectors, exact (each source corroborated by what
+  the other pins on its own, §6.4):
+  `tv` 1373 → 21/15/107/16/143/15/10/37/1009,
+  `tof` 3364 → 6/15/182/22/247/82/99/138/2573,
+  `orbi` 1707 → 0/11/217/9/203/139/0/35/1093
+  (before C8, with any-level membership: 21/15/107/38/162/9/9/33/979,
+  6/16/182/38/260/79/91/135/2557 and 0/12/217/44/215/119/0/30/1070 —
+  183 of the 6,444 pairs moved, every one to a lower level);
 - row-for-row equality with `expected_levels.csv`;
 - non-M0 rows carry `NA`; a reagent-ion row never carries a level;
 - missing columns and all-null columns do not raise;
@@ -301,8 +349,9 @@ All of it passes since B2; `tests/test_evidence_outputs.py` pins the wiring
 | tof | HO2 | [M-H]- | known:atmospheric **but** Low confidence | **5b** — `hard` outranks the identity (a defect for the pass-0 lock) |
 | orbi | HBr | [M+^NO3]- | iso, anchor, below assignability | **5b** |
 
-Across the three sets 4,606 of 6,444 pairs are 5b; the top two levels hold
-70. That distribution is the point of the scale, not a problem with it.
+Across the three sets 4,675 of 6,444 pairs are 5b; the top two levels hold
+68 (4,606 and 70 before §6.4). That distribution is the point of the scale,
+not a problem with it.
 
 ## 10. Open for B2/B3 (not decided here)
 

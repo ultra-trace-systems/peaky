@@ -101,8 +101,9 @@ _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score",
 # committed reading per file (docs/EVIDENCE_LEVELS.md): a curated identity (2b,
 # 3a), the acid branch (3b) and a neutral established by two axes with one
 # outside the channel (4a) say the NEUTRAL is right; a reading the `--corroborate`
-# source holds too (the `corroborated` axis, at whatever level) has the other
-# instrument's / channel's word for its neutral; 4b / 4c / 4d say the FORMULA
+# source pins on its own evidence (the `corroborated` axis: the source holds the
+# neutral at 4b or better with no cross set; this reading itself at whatever
+# level) has the other instrument's / channel's word for its neutral; 4b / 4c / 4d say the FORMULA
 # or the ION is pinned and the neutral is not; 5a / 5b are exact mass alone or
 # an assignment that argues with itself. Three classes, compared before any
 # count: a reading of the first kind outranks one of the second whatever the
@@ -127,7 +128,8 @@ def _has_axis(axes, name: str) -> bool:
 
 def _evidence_class(level, axes) -> int:
     """2 = the neutral established (2b / 3a / 3b / 4a) or corroborated by the
-    --corroborate source (the `corroborated` axis, at any level); 1 = the formula
+    --corroborate source (the `corroborated` axis -- the source pins the neutral
+    on its own, this reading at any level); 1 = the formula
     or the ion pinned (4b / 4c / 4d); 0 = exact mass alone / self-contradicting
     (5a / 5b) or no level at all."""
     lv = _s(level)
@@ -1115,8 +1117,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     `residual_samples` to append to its own selection table.
 
     `corroborate`: run dirs / ledger CSVs (or a ready set of neutral formulas)
-    whose M0 neutrals corroborate this run -- the other reagent channel, or the
-    other instrument on the same air. It is the `corroborated` axis of the
+    whose neutrals corroborate this run -- the other reagent channel, or the
+    other instrument on the same air -- each source by the neutrals it holds at
+    4b or better on its own evidence (`evidence.corroborating_neutrals`). It is the `corroborated` axis of the
     evidence levels (docs/EVIDENCE_LEVELS.md): the per-file `evidence` stage
     reads it, and so does the batch level, which is recomputed on the POOLED
     per-file ledgers (cover + residual files as one source) and stamped on the

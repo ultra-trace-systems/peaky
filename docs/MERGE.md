@@ -117,7 +117,9 @@ selected sample_ids (SAMPLING.md)
      [`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md)): **2** = the neutral
      established — a curated identity (2b, 3a), the acid branch (3b), two axes
      with one outside the channel (4a) — or a reading the `--corroborate` source
-     holds too (the `corroborated` axis, at whatever level); **1** = the formula
+     pins on its own evidence (the `corroborated` axis: the source holds the
+     neutral at 4b or better with no cross set, `EVIDENCE_LEVELS.md` §6.4; this
+     reading itself at whatever level); **1** = the formula
      or the ion pinned, the neutral not (4b, 4c, 4d); **0** = exact mass alone
      or an assignment that argues with itself (5a, 5b), or no level at all (a
      pure `align()` caller without the evidence stage: every reading is 0 and

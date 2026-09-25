@@ -136,8 +136,13 @@ BROMIDE_ROWS = [
     m0("b_bulk", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br", mz=235.0),
 ]
 
-# The corroborating source: it need only carry the neutral.
-OTHER_ROWS = [m0("o_cross", "C10H16O4", adduct="[M+NO3]-", mz=262.0)]
+# The corroborating source: it must pin the neutral by an axis of its OWN (here a
+# 13C line at the ratio of ten carbons) -- a source corroborates only what it holds
+# at 4b or better on its own evidence.
+OTHER_ROWS = [
+    m0("o_cross", "C10H16O4", adduct="[M+NO3]-", ion="C10H16NO7", mz=262.0),
+    child("o_cross_iso", "o_cross", "13C+1", 107.0),
+]
 
 
 def write_ledger(path: Path, rows) -> Path:
@@ -220,6 +225,41 @@ def test_corroboration_is_symmetric_and_external_sources_are_not_levelled(source
     assert levels(external)[("C10H16O4", "[M-H]-")] == "4a"
     alone = LL.run([str(run_dir)], [])
     assert levels(alone)[("C10H16O4", "[M-H]-")] == "4b"
+
+
+def test_a_source_that_only_carries_the_neutral_does_not_corroborate(tmp_path, sources):
+    """A 5a sighting (exact mass, no axis) is the other grid enumerating the same
+    formula, not a second sighting -- while the direction that IS a sighting
+    still counts: the run pins C10H16O4 by its own 13C line (4b), so it
+    corroborates the bare source's row."""
+    run_dir, _, _ = sources
+    bare = write_ledger(tmp_path / "bare_ledger.csv", [m0("o", "C10H16O4", adduct="[M+NO3]-", mz=262.0, degeneracy=None)])
+    assert levels(LL.run([str(run_dir)], [str(bare)]))[("C10H16O4", "[M-H]-")] == "4b"
+    both = LL.run([str(run_dir), str(bare)], [])
+    run_row = both[(both.source == "NITRATE_2026") & (both.neutral == "C10H16O4")].iloc[0]
+    bare_row = both[both.source == "bare_ledger"].iloc[0]
+    assert not run_row.corroborated and run_row.level == "4b"
+    assert bare_row.corroborated and bare_row.level == "4b"
+
+
+def test_two_sources_that_only_agree_cannot_lift_each_other(tmp_path):
+    x = write_ledger(tmp_path / "x_ledger.csv", [m0("p", "C6H10O4", degeneracy=5.0)])
+    y = write_ledger(tmp_path / "y_ledger.csv", [m0("q", "C6H10O4", adduct="[M+NO3]-", mz=208.0, degeneracy=5.0)])
+    both = LL.run([str(x), str(y)], [])
+    assert set(both.level) == {"5b"} and not both.corroborated.any()
+
+
+def test_a_merged_ledger_corroborates_by_its_stored_level_without_its_own_axis(tmp_path, sources):
+    run_dir, _, _ = sources
+    merged_dir = tmp_path / "OTHER_RUN"
+    merged_dir.mkdir()
+    pd.DataFrame([
+        dict(neutral_formula="C10H16O4", adduct="[M+NO3]-", evidence_level="4b", evidence_axes="corroborated|files:2"),
+        dict(neutral_formula="C9H14O4", adduct="[M+NO3]-", evidence_level="4a", evidence_axes="iso|corroborated|files:2"),
+    ]).to_csv(merged_dir / "merged_ledger.csv", index=False)
+    got = levels(LL.run([str(run_dir)], [str(merged_dir)]))
+    assert got[("C10H16O4", "[M-H]-")] == "4b"     # the stored 4b was the axis alone: no sighting
+    assert got[("C9H14O4", "[M-H]-")] == "4a"      # the stored 4a keeps its own 13C: series tie + corroboration
 
 
 def test_resolvability_only_binds_where_it_was_measured(tmp_path):
