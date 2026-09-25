@@ -93,7 +93,7 @@ def test_off_budget_commit_is_candidate_below_assignability_with_a_note_and_an_a
                    dict(neutral_formula="C10H16O5")])
     audit = []
     out = PL.demote_off_budget(led, context="ambient-air", audit=audit, log=lambda *a: None)
-    assert out == {"budget_demoted": 1}
+    assert out == {"budget_demoted": 1, "budget_cf2_kept": 0}
     assert led.loc[0, "tier"] == "Candidate" and bool(led.loc[0, "below_assignability"])
     assert "outside the ambient-air element budget (P=1 > 0)" in led.loc[0, "commentary"]
     assert led.loc[1, "tier"] == "Assigned" and not bool(led.loc[1, "below_assignability"])
@@ -118,7 +118,7 @@ def test_a_curated_formula_is_exempt_whichever_pass_committed_it():
     curated = passes.known_formulas("negative", "ambient-air") | {"C18H15OP"}
     assert "C6HF11O2" in curated                               # the PFCA family of pass 0
     out = PL.demote_off_budget(led, context="ambient-air", curated=curated, log=lambda *a: None)
-    assert out == {"budget_demoted": 0}
+    assert out == {"budget_demoted": 0, "budget_cf2_kept": 0}
     assert list(led["tier"]) == ["Assigned", "Assigned"]
 
 
@@ -126,7 +126,7 @@ def test_grid_priors_and_the_reagent_alias_guard_are_not_the_budget():
     led = _ledger([dict(neutral_formula="C7H5NO4"), dict(neutral_formula="C2H3BrO2"),
                    dict(neutral_formula="C8H4O4"), dict(neutral_formula="C30H43NO")])
     out = PL.demote_off_budget(led, context="ambient-air", log=lambda *a: None)
-    assert out == {"budget_demoted": 0}
+    assert out == {"budget_demoted": 0, "budget_cf2_kept": 0}
     assert (led["tier"] == "Assigned").all()
 
 
@@ -136,7 +136,7 @@ def test_candidates_are_flagged_and_other_roles_are_untouched():
                    dict(neutral_formula="C5HF3O2", method="ion_only:electron_attachment", adduct="[M]-.")])
     audit = []
     out = PL.demote_off_budget(led, context="ambient-air", audit=audit, log=lambda *a: None)
-    assert out == {"budget_demoted": 1}
+    assert out == {"budget_demoted": 1, "budget_cf2_kept": 0}
     assert led.loc[0, "tier"] == "Candidate" and bool(led.loc[0, "below_assignability"])
     assert not bool(led.loc[1, "below_assignability"]) and not bool(led.loc[2, "below_assignability"])
     assert audit[0]["before_tier"] == "Candidate"
@@ -144,11 +144,54 @@ def test_candidates_are_flagged_and_other_roles_are_untouched():
 
 def test_no_context_is_a_no_op_and_demote_implausible_keeps_its_old_keys():
     led = _ledger([dict(neutral_formula="C5H6ClN2OP")])
-    assert PL.demote_off_budget(led, context=None, log=lambda *a: None) == {"budget_demoted": 0}
+    assert PL.demote_off_budget(led, context=None, log=lambda *a: None) == {"budget_demoted": 0, "budget_cf2_kept": 0}
     out = PL.demote_implausible(led, audit=[], log=lambda *a: None)
     assert set(out) == {"o_demoted", "c_cluster_demoted"} and led.loc[0, "tier"] == "Assigned"
     out = PL.demote_implausible(led, audit=[], log=lambda *a: None, context="ambient-air")
     assert out["budget_demoted"] == 1 and led.loc[0, "tier"] == "Candidate"
+
+
+# --------------------------------------------------------------------------- the CF2 step
+def test_consistent_cf2_series_members_keep_their_fluorine():
+    """Two rows on one adduct whose neutrals differ by exactly CF2 carry two more F
+    between them -- the only element-specific evidence 19F can have."""
+    led = _ledger([dict(neutral_formula="C4HF5O2"), dict(neutral_formula="C5HF7O2"),
+                   dict(neutral_formula="C5HF3O2")])                  # the last has no CF2 neighbour
+    audit = []
+    out = PL.demote_off_budget(led, context="ambient-air", audit=audit, log=lambda *a: None)
+    assert out == {"budget_demoted": 1, "budget_cf2_kept": 2}
+    assert list(led["tier"]) == ["Assigned", "Assigned", "Candidate"]
+    assert not bool(led.loc[0, "below_assignability"]) and not bool(led.loc[1, "below_assignability"])
+    assert [a["neutral_formula"] for a in audit] == ["C5HF3O2"]
+
+
+def test_the_cf2_neighbour_must_be_on_the_same_adduct():
+    led = _ledger([dict(neutral_formula="C4HF5O2", adduct="[M-H]-"),
+                   dict(neutral_formula="C5HF7O2", adduct="[M+NO3]-")])
+    out = PL.demote_off_budget(led, context="ambient-air", log=lambda *a: None)
+    assert out == {"budget_demoted": 2, "budget_cf2_kept": 0}
+
+
+def test_a_cf2_step_does_not_excuse_another_element():
+    """The step pins fluorine only: a phosphorus formula on a CF2 series is still off budget."""
+    led = _ledger([dict(neutral_formula="C4H2F5O2P"), dict(neutral_formula="C5H2F7O2P")])
+    out = PL.demote_off_budget(led, context="ambient-air", log=lambda *a: None)
+    assert out == {"budget_demoted": 2, "budget_cf2_kept": 0}
+
+
+def test_the_lighter_neighbour_may_carry_no_fluorine():
+    """H(CF2)nCOOH starts at formic acid: difluoroacetic acid one CF2 above it is a series member."""
+    led = _ledger([dict(neutral_formula="CH2O2", adduct="[M+Br]-"),
+                   dict(neutral_formula="C2H2F2O2", adduct="[M+Br]-")])
+    out = PL.demote_off_budget(led, context="ambient-air", log=lambda *a: None)
+    assert out == {"budget_demoted": 0, "budget_cf2_kept": 1}
+    assert (led["tier"] == "Assigned").all()
+
+
+def test_cf2_neighbours():
+    assert PL._cf2_neighbours("C2H2F2O2") == ["CH2O2", "C3H2F4O2"]
+    assert PL._cf2_neighbours("CHF3") == ["C2HF5"]                    # no C0 neighbour
+    assert PL._cf2_neighbours("C4HF5O2") == ["C3HF3O2", "C5HF7O2"]
 
 
 def test_the_stage_passes_the_context_and_the_curated_lists():

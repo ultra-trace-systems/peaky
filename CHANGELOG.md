@@ -492,12 +492,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   registry for the run's polarity and context, plus the active reference lists), the row is
   Assigned -> Candidate + `below_assignability` with a note and an audit row
   (`plausibility.demote_off_budget`), and the evidence level reads 5b through its existing
-  `hard` predicate -- no level predicate or golden changes. The budget is not the context's
+  `hard` predicate -- no level predicate or golden changes. **A CF2 series keeps its fluorine**:
+  19F is monoisotopic, so no satellite can pin it, but two committed rows on one adduct whose
+  neutrals differ by exactly CF2 carry two more fluorines between them; a formula whose only
+  violation is fluorine is kept when the ledger commits its CF2 neighbour (`budget_cf2_kept` in the
+  stage summary) -- peak pairs one CF2 apart were 20x chance on the labelled-nitrate Orbitrap and
+  4x on the ~10k TOF. The budget is not the context's
   minimum-carbon rule for a halogen (a reagent-alias guard: bromoacetic acid on a nitrate channel
   is no alias) nor its Van Krevelen windows (grid priors: nitrobenzoic acid is DBE/C 0.86). Sized
   on the same-air working set before coding (the C8 runs replayed: per-file levels, the merge
-  vote, the merged levels): the ~10k TOF's Assigned 556 -> 516, and every Assigned phosphorus and
-  multi-sulfur neutral goes (P 15 -> 0, S>=2 13 -> 0, F 15 -> 6, Cl 22 -> 13); the labelled-nitrate
+  vote, the merged levels): the ~10k TOF's Assigned 556 -> 518, and every Assigned phosphorus and
+  multi-sulfur neutral goes (P 15 -> 0, S>=2 13 -> 0, F 15 -> 9, Cl 22 -> 13); the labelled-nitrate
   Orbitrap 633 -> 631 (its two unlisted fluorinated rows); the uronium Orbitrap 842 -> 840 (two
   chlorinated rows in positive mode); the six test-set rows, every roster compound and the
   cross-instrument agreement did not move.

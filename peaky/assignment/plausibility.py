@@ -18,6 +18,7 @@ flagged set is small and defensible (the clear coincidences), not a dragnet.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import numpy as np
@@ -293,15 +294,31 @@ def demote_off_budget(ledger: pd.DataFrame, *, context: str | None,
     (assign._stage_plausibility), exempt whichever pass committed it. Measured on
     a same-air TOF/Orbitrap pair before the rule: the TOF's Assigned
     phosphorus and multi-sulfur neutrals were ALL such commits.
+
+    One element has evidence of its own that no isotope can give: fluorine, whose
+    only stable isotope is 19F, is pinned by a CF2 STEP -- two committed rows on
+    the same adduct whose neutrals differ by exactly CF2 carry, between them, two
+    more fluorines (at Orbitrap accuracy no other composition difference sits
+    within the window; the nearest, CH3Cl and O3H2, are 4.5 and 3.6 mDa away).
+    So a formula whose only budget violation is fluorine is KEPT when the ledger
+    commits its CF2 neighbour (neutral +/- CF2, same adduct) -- a consistent
+    member of a fluorinated homologous series, the same standing an isotope line
+    gives Cl, Br or S. The step pins the fluorine difference, not the rest of the
+    formula; the level still reads the row's own axes. Measured on the same pair:
+    peak pairs one CF2 apart were 20x chance on the labelled-nitrate Orbitrap and
+    4x on the ~10k TOF (where ~1 in 4 such pairs is chance), and the fluorinated
+    rows the budget would demote from Assigned were almost all NOT chain members.
     Demote-only; `context=None` is a no-op."""
     if not context:
-        return {"budget_demoted": 0}
+        return {"budget_demoted": 0, "budget_cf2_kept": 0}
     from peaky.chem import contexts as X
     profile = X.get_context(context)
+    open_f = dataclasses.replace(profile, max_F=10 ** 6)   # the budget with fluorine lifted
     curated = frozenset(curated or ())
     verdict: dict = {}
-    n = 0
+    n = kept = 0
     has_method = "method" in ledger.columns
+    committed = _committed_pairs(ledger)
     for i in _m0_index(ledger):
         neutral = ledger.at[i, "neutral_formula"]
         if not isinstance(neutral, str) or not neutral.strip() or neutral in curated:
@@ -315,6 +332,11 @@ def demote_off_budget(ledger: pd.DataFrame, *, context: str | None,
         ok, why = verdict[neutral]
         if ok:
             continue
+        adduct = ledger.at[i, "adduct"] if "adduct" in ledger.columns else None
+        if (X.element_budget(neutral, open_f)[0]
+                and any((nb, adduct) in committed for nb in _cf2_neighbours(neutral))):
+            kept += 1          # fluorine is the only violation and its CF2 step is committed
+            continue
         ni = _iso_count(ledger.at[i, "isotopologues"]) if "isotopologues" in ledger.columns else 0
         note = ledger.at[i, "degeneracy_note"] if "degeneracy_note" in ledger.columns else None
         reason = (f"outside the {profile.label} element budget ({why}) and on no curated list "
@@ -324,8 +346,30 @@ def demote_off_budget(ledger: pd.DataFrame, *, context: str | None,
                     degeneracy_note=note, n_iso=ni)
         n += 1
     log(f"[plausibility] demoted {n} commits outside the {profile.label} element budget "
-        f"(not on a curated list)")
-    return {"budget_demoted": n}
+        f"(not on a curated list); kept {kept} fluorinated CF2-series members")
+    return {"budget_demoted": n, "budget_cf2_kept": kept}
+
+
+def _committed_pairs(ledger: pd.DataFrame) -> set:
+    """(neutral_formula, adduct) of every committed M0 row of the ledger."""
+    if "neutral_formula" not in ledger.columns or "adduct" not in ledger.columns:
+        return set()
+    m0 = ledger.loc[_m0_index(ledger)]
+    return {(str(n), a) for n, a in zip(m0["neutral_formula"], m0["adduct"]) if isinstance(n, str) and n}
+
+
+def _cf2_neighbours(neutral: str) -> list:
+    """The neutral one CF2 lighter and one CF2 heavier (the lighter only when it
+    exists: at least one C and two F to remove)."""
+    cnt = C.parse_formula(neutral)
+    out = []
+    for k in (-1, 1):
+        c = dict(cnt)
+        c["C"] = c.get("C", 0) + k
+        c["F"] = c.get("F", 0) + 2 * k
+        if c["C"] >= 1 and c["F"] >= 0:
+            out.append(C.format_formula({el: v for el, v in c.items() if v}))
+    return out
 
 
 def demote_implausible(ledger: pd.DataFrame, *, audit=None, log=print,

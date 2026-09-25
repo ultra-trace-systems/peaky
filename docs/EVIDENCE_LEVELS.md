@@ -183,7 +183,10 @@ the isomer space says 3 (2-, 3-, 4-nitrophenol), so 3a.
   formula 3b or 4b on its own proposal. The `plausibility` stage flags such a
   commit `below_assignability` unless a curated list names it, and the level
   reads that as 5b through `hard` -- no predicate here changes, and the golden
-  fixtures (written before the stage) do not move.
+  fixtures (written before the stage) do not move. Fluorine alone has an
+  exemption: a formula whose only violation is F keeps its level when the ledger
+  commits its CF2 neighbour on the same adduct -- the CF2 step is the one piece
+  of element-specific evidence a monoisotopic element can have.
 
 ## 5. `peaky/data/isomer_space.csv`
 
