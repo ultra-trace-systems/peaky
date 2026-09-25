@@ -542,6 +542,142 @@ check("vote: a full tie resolves the same way in either file order",
       f1.iloc[0]["neutral_formula"] == f2.iloc[0]["neutral_formula"] == "C10H12O2",
       (f1.iloc[0]["neutral_formula"], f2.iloc[0]["neutral_formula"]))
 
+# --- THE VOTE READS THE EVIDENCE: the evidence class ranks ions before the count
+# With one TOF ion's readings finally in one row (the merge window sized from
+# the batch's own scatter), the count alone handed the peak to bromide adducts
+# of N-compounds read in more files over the reading the other instrument
+# confirms. Each ion now takes the best per-file evidence class of its readings
+# ({2b, 3a, 3b, 4a} or the `corroborated` axis > {4b, 4c, 4d} > {5a, 5b}) and
+# the count decides among equals; the label stage and the ion-only-last rule
+# are unchanged. The four cases are the C2 board's own losses.
+def m0e(rows):
+    return pd.DataFrame(rows, columns=["mz", "neutral_formula", "adduct", "tier", "ion_score",
+                                       "evidence_level", "evidence_axes"])
+
+
+def _filese(n, mz, nf, ad, tier, ion, level, axes, start=0):
+    return {f"e{start + i:02d}": m0e([(mz + 1e-4 * i, nf, ad, tier, ion, level, axes)]) for i in range(n)}
+
+
+check("evidence class: the neutral established (2b/3a/3b/4a) or corroborated is 2, the formula/ion pinned is 1, mass-only 0",
+      [AB._evidence_class(lv, "") for lv in ("2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b", None)]
+      == [2, 2, 2, 2, 1, 1, 1, 0, 0, 0]
+      and AB._evidence_class("5b", "iso|corroborated|carbon") == 2 and AB._evidence_class("4b", "corroborated") == 2
+      and AB._evidence_class("5b", "iso|uncorroborated") == 0)
+# case 1: pinic acid, a 1-vs-1 tie the count could not decide -- the old vote
+# fell through to ion_score and picked a silicon formula over the reading the
+# other instrument corroborates
+pin = {"a": m0e([(248.0762, "C12H15NO3Si", "[M-H]-", "Candidate", 0.947, "5b", "")]),
+       "b": m0e([(248.0762, "C9H14O4", "[M+NO3]-", "Candidate", 0.917, "4b", "corroborated")])}
+mp, jp = AB.align(pin, tol_ppm=12.0)
+check("evidence: pinic acid C9H14O4 [M+NO3]- (4b corroborated, 1 file) beats the 1-file silicon formula (5b) that out-scored it",
+      len(mp) == 1 and mp.iloc[0]["neutral_formula"] == "C9H14O4" and mp.iloc[0]["adduct"] == "[M+NO3]-",
+      mp.to_dict("records"))
+check("evidence: the row says the evidence decided, not the count",
+      mp.iloc[0]["tier_reason"] == "evidence outranks the count: kept C9H14O4 [M+NO3]- (4b corroborated in 1 of 2 "
+                                   "files) over the 1-file C12H15NO3Si [M-H]- (5b)", mp.iloc[0]["tier_reason"])
+check("evidence: the loser is listed as before", mp.iloc[0]["alternatives"] == "C12H15NO3Si [M-H]- x1 Candidate 0.95",
+      repr(mp.iloc[0]["alternatives"]))
+check("evidence: jitter.csv carries each file's own level",
+      "evidence_level" in jp.columns and sorted(jp["evidence_level"].astype(str)) == ["4b", "5b"], jp.to_dict("records"))
+pin_br = {"a": m0e([(265.0089, "C2H9N3O6S", "[M+NO3]-", "Candidate", 0.944, "5b", "")]),
+          "b": m0e([(265.0089, "C9H14O4", "[M+Br]-", "Candidate", 0.909, "4b", "corroborated")])}
+mpb, _ = AB.align(pin_br, tol_ppm=12.0)
+check("evidence: pinic acid's [M+Br]- reading wins its row the same way",
+      mpb.iloc[0]["neutral_formula"] == "C9H14O4" and mpb.iloc[0]["adduct"] == "[M+Br]-", mpb.to_dict("records"))
+# case 2: C9H16O6 [M+NO3]- Assigned at 4a in 2 files against C14H21N [M+Br]- in 9
+hom6 = {**_filese(9, 282.0853, "C14H21N", "[M+Br]-", "Candidate", 0.93, "5a", ""),
+        **_filese(2, 282.0831, "C9H16O6", "[M+NO3]-", "Assigned", 0.95, "4a", "iso|chan2|corroborated|branch", start=9)}
+m6, _ = AB.align(hom6, tol_ppm=12.0)
+_h6 = m6.iloc[0]
+check("evidence: C9H16O6 [M+NO3]- (4a, 2 files) beats C14H21N [M+Br]- (5a, 9 files) whatever the count",
+      len(m6) == 1 and _h6["neutral_formula"] == "C9H16O6" and _h6["tier"] == "Assigned"
+      and _h6["n_files"] == 11 and _h6["n_files_ion"] == 2 and _h6["n_files_winner"] == 2, _h6.to_dict())
+check("evidence: the 9-file loser heads the alternatives and the note names it",
+      _h6["alternatives"] == "C14H21N [M+Br]- x9 Candidate 0.93"
+      and _h6["tier_reason"] == "evidence outranks the count: kept C9H16O6 [M+NO3]- (4a corroborated in 2 of 11 "
+                                "files) over the 9-file C14H21N [M+Br]- (5a)", _h6.to_dict())
+# case 3: C10H16O9 [M+NO3]- read below assignability (5b) in 2 files, but the
+# other instrument holds the neutral: the corroborated axis lifts it over the
+# 3-file mass-only C15H21NO3 [M+Br]-
+hom9 = {**_filese(3, 342.0698, "C15H21NO3", "[M+Br]-", "Candidate", 0.90, "5b", ""),
+        **_filese(2, 342.0698, "C10H16O9", "[M+NO3]-", "Candidate", 0.85, "5b", "iso|corroborated|carbon", start=3)}
+m9, _ = AB.align(hom9, tol_ppm=12.0)
+check("evidence: a corroborated 5b reading (C10H16O9, 2 files) beats an uncorroborated 5b read in 3 files",
+      m9.iloc[0]["neutral_formula"] == "C10H16O9" and m9.iloc[0]["n_files_ion"] == 2
+      and str(m9.iloc[0]["tier_reason"]).startswith("evidence outranks the count: kept C10H16O9 [M+NO3]- (5b corroborated in 2 of 5 files) over the 3-file C15H21NO3 [M+Br]- (5b)"),
+      m9.iloc[0].to_dict())
+# case 4: C10H18O9 [M+NO3]- in ONE file (4b corroborated) against two mass-only
+# ions read in 4 and 3 files; both losers stay listed, biggest first
+hom18 = {**_filese(4, 344.0857, "C15H23NO3", "[M+Br]-", "Candidate", 0.92, "5b", ""),
+         **_filese(3, 344.0857, "C11H9NO9", "[M+NO3]-", "Candidate", 0.91, "5b", "", start=4),
+         **_filese(1, 344.0840, "C10H18O9", "[M+NO3]-", "Candidate", 0.88, "4b", "corroborated", start=7)}
+m18, _ = AB.align(hom18, tol_ppm=12.0)
+check("evidence: C10H18O9 [M+NO3]- (1 file, 4b corroborated) beats the 4-file and the 3-file mass-only ions",
+      m18.iloc[0]["neutral_formula"] == "C10H18O9" and m18.iloc[0]["n_files"] == 8 and m18.iloc[0]["n_files_ion"] == 1
+      and m18.iloc[0]["alternatives"] == "C15H23NO3 [M+Br]- x4 Candidate 0.92; C11H9NO9 [M+NO3]- x3 Candidate 0.91",
+      m18.iloc[0].to_dict())
+check("evidence: the note names the biggest of the lower-class ions",
+      m18.iloc[0]["tier_reason"] == "evidence outranks the count: kept C10H18O9 [M+NO3]- (4b corroborated in 1 of 8 "
+                                    "files) over the 4-file C15H23NO3 [M+Br]- (5b)", m18.iloc[0]["tier_reason"])
+# the count decides among EQUALS: two class-2 ions, 3 files at 4a vs 2 files at 3b
+eq = {**_filese(3, 300.0, "C10H12O2", "[M+H]+", "Candidate", 0.90, "4a", "iso|chan2"),
+      **_filese(2, 300.0, "C9H12N2O", "[M+H]+", "Candidate", 0.99, "3b", "branch", start=3)}
+meq, _ = AB.align(eq, tol_ppm=6.0)
+check("evidence: among ions of one class the count decides (3 files at 4a beat 2 files at 3b), no note",
+      meq.iloc[0]["neutral_formula"] == "C10H12O2" and meq.iloc[0]["n_files_ion"] == 3 and pd.isna(meq.iloc[0]["tier_reason"]),
+      meq.iloc[0].to_dict())
+eq0 = {**_filese(4, 300.0, "C10H12O2", "[M+H]+", "Candidate", 0.90, "5b", ""),
+       **_filese(1, 300.0, "C9H12N2O", "[M+H]+", "Assigned", 0.99, "5a", "", start=4)}
+meq0, _ = AB.align(eq0, tol_ppm=6.0)
+check("evidence: two mass-only ions are equals, the count decides as before (4 Candidate files beat 1 Assigned)",
+      meq0.iloc[0]["neutral_formula"] == "C10H12O2" and pd.isna(meq0.iloc[0]["tier_reason"]), meq0.iloc[0].to_dict())
+# the middle class: the formula pinned (4b) in one file beats exact mass alone in nine
+mid = {**_filese(9, 304.9071, "C16H2S", "[M+Br]-", "Candidate", 0.95, "5b", ""),
+       **_filese(1, 304.9071, "C10HF3O3", "[M+Br]-", "Assigned", 0.90, "4b", "iso", start=9)}
+mmid, _ = AB.align(mid, tol_ppm=12.0)
+check("evidence: a 4b reading in 1 file beats a 5b reading in 9 (the middle class outranks mass-only)",
+      mmid.iloc[0]["neutral_formula"] == "C10HF3O3"
+      and mmid.iloc[0]["tier_reason"] == "evidence outranks the count: kept C10HF3O3 [M+Br]- (4b in 1 of 10 files) "
+                                         "over the 9-file C16H2S [M+Br]- (5b)", mmid.iloc[0].to_dict())
+# an Orbitrap-like cluster: the many-file reading is also the best-evidenced one -- nothing moves, no note
+noop = {**_filese(8, 217.12, "C10H16O2", "[M+H]+", "Assigned", 0.91, "3b", "chan2|branch"),
+        **_filese(2, 217.12, "C9H16N2O", "[M+H]+", "Candidate", 0.99, "5b", "", start=8)}
+mno, _ = AB.align(noop, tol_ppm=6.0)
+check("evidence: the many-file best-class reading wins as before, no note",
+      mno.iloc[0]["neutral_formula"] == "C10H16O2" and mno.iloc[0]["n_files_ion"] == 8 and pd.isna(mno.iloc[0]["tier_reason"]),
+      mno.iloc[0].to_dict())
+# frames WITHOUT the evidence columns: every reading is class 0 and the vote is the count it was
+_nocol, _ = AB.align(vote, tol_ppm=6.0)
+_nacol, _ = AB.align({k: v.assign(evidence_level=pd.NA, evidence_axes=pd.NA) for k, v in vote.items()}, tol_ppm=6.0)
+check("evidence: frames without the columns (or with NA levels) vote by the count exactly as before",
+      _nocol["neutral_formula"].iloc[0] == "C10H12O2" and _nocol.drop(columns=[]).equals(_nacol), (_nocol.to_dict("records"), _nacol.to_dict("records")))
+# the ion-only-last rule is unchanged: an ion-only reading levelled 4d in 3 files
+# still yields to a regular mass-only reading in 1
+io = {**{f"i{i}": pd.DataFrame([(100.0, "C4H6O2", "[M]-.", "Candidate", 0.8, "4d", "iso|ion_only", "p1")],
+                                columns=["mz", "neutral_formula", "adduct", "tier", "ion_score", "evidence_level", "evidence_axes", "ion_only_of"])
+         for i in range(3)},
+      "r": pd.DataFrame([(100.0, "C3H2O3", "[M-H]-", "Candidate", 0.7, "5b", "", pd.NA)],
+                        columns=["mz", "neutral_formula", "adduct", "tier", "ion_score", "evidence_level", "evidence_axes", "ion_only_of"])}
+mio, _ = AB.align(io, tol_ppm=6.0)
+check("evidence: an ion-only reading (4d, 3 files) still ranks below a regular reading (5b, 1 file)",
+      mio.iloc[0]["neutral_formula"] == "C3H2O3" and str(mio.iloc[0]["tier_reason"]).startswith("regular reading kept over the 3-file"),
+      mio.iloc[0].to_dict())
+# the label stage is unchanged: the same ion read two ways -- the label Assigned in
+# a file wins over the label Candidate in more files even when the latter carries the better level
+lbl = {**_filese(3, 252.1230, "C13H17NO4", "[M+H]+", "Candidate", 0.98, "3b", "branch"),
+       **_filese(1, 252.1230, "C13H14O4", "[M+NH4]+", "Assigned", 0.97, "5b", "", start=3)}
+mlb, _ = AB.align(lbl, tol_ppm=6.0)
+check("evidence: within one ion the label stage still goes by corroboration (Assigned in 1 beats Candidate in 3)",
+      mlb.iloc[0]["neutral_formula"] == "C13H14O4" and bool(mlb.iloc[0]["ion_agree"])
+      and str(mlb.iloc[0]["tier_reason"]).startswith("same ion C13H18NO4+ read two ways"), mlb.iloc[0].to_dict())
+# determinism with the new key
+for _name, _d in (("HOM C10H18O9", hom18), ("pinic acid", pin)):
+    _m1, _j1 = AB.align(_d, tol_ppm=12.0)
+    _m2, _j2 = AB.align(dict(reversed(list(_d.items()))), tol_ppm=12.0)
+    check(f"evidence ({_name}): reversed file order -> identical merged frame", _m1.equals(_m2),
+          (_m1.to_dict("records"), _m2.to_dict("records")))
+
 # --- empty input ------------------------------------------------------------
 me, je = AB.align({})
 check("empty -> empty merged + jitter with schema",

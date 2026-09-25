@@ -464,6 +464,33 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The merge vote reads the per-file evidence.** With the merge window finally putting one TOF ion's
+  readings in one row, the vote's keys — files, Assigned-file count, `ion_score`, text — handed the
+  peak to the reading fitted in the most files whatever the files' evidence for it: on a 28-file TOF
+  batch the Orbitrap-confirmed `C9H16O6 [M+NO3]-` (Assigned, 4a, 2 files) lost to `C14H21N [M+Br]-`
+  (5a, 9 files), the HOMs `C10H16O9 [M+NO3]-` and `C10H18O9 [M+NO3]-` to bromide adducts of
+  N-compounds read in 3–4 files, and the roster's pinic acid `C9H14O4` a 1-vs-1 tie on `ion_score`
+  to an organosilicon formula — and the batch's board lost 14 cross-instrument agreements and two
+  roster compounds to duplicate rows leaving. `assign_batch.align` now carries each file's own
+  `evidence_level` / `evidence_axes` (`_M0_COLS`), and `_vote` ranks a cluster's ions by the best
+  evidence CLASS of their readings before the file count (`_evidence_class`): {2b, 3a, 3b, 4a} or the
+  `corroborated` axis (the neutral established, or held by the `--corroborate` source) > {4b, 4c, 4d}
+  (the formula / the ion pinned) > {5a, 5b} (exact mass alone, or self-contradicting) — then files,
+  Assigned count, score, text; the count decides among equals; the ion-only-last rule and the label
+  stage are unchanged; frames without a level vote by the count exactly as before. A per-file level
+  measures that file's evidence for the reading, the file count measures persistence, and a reading
+  no file could establish does not become right by being fitted in more of them. The row says when
+  the class overrode a count (`tier_reason`: `evidence outranks the count: kept … (4a corroborated in
+  2 of 12 files) over the 9-file … (5a)`) and `tables/jitter.csv` carries each file's level.
+  Measured on the three regression channels' per-file ledgers before coding (the pure merge
+  replayed): on the TOF 160 of 885 multi-ion clusters change their winner — every one a lower-class
+  many-file reading yielding to a higher-class one, none the other way; the four cases above come
+  back, the other instrument's neutrals missing here fall 193 → 170 by the scorecard's own rule, and
+  the pinic acid and `C10H16O9` rows are no longer misread — on the ¹⁵N-nitrate Orbitrap 56 of 268
+  (fluorinated and organosilicon grid formulas at 5b in 5–10 files yielding to 1–4-file 3b / 4b
+  readings), on the uronium Orbitrap 5 of 10 (the D7 cyclosiloxane urea adduct, 2b in 2 files, now
+  won by the vote itself rather than by the known-species lock alone).
+
 - **The batch merge window is sized from the batch's own mass scatter.** `assign_batch.align`
   clustered the per-file anchors at the flat `sampling.BATCH_TOL_PPM` (6 ppm) whatever the
   instrument, while one ion's anchors scatter 3–4 ppm across the files of a TOF batch: measured on

@@ -17,13 +17,16 @@ The combine step is OFFSET-AWARE: each file carries a median mass offset
 genuine same-peak is not split by a per-file calibration shift, while the reported
 jitter separates the raw spread from the calibration-removed (residual) spread.
 
-Within a cluster the files VOTE, in two stages: the ION carried by the most files
-wins (tier and ion_score break ties), and among that ion's labels -- the same
+Within a cluster the files VOTE, in two stages: the ION of the best EVIDENCE
+CLASS wins -- each ion takes the best per-file evidence level of its readings
+(the neutral established or corroborated > the formula / ion pinned > exact mass
+alone; `_evidence_class`) -- and among ions of one class the ion carried by the
+most files (tier and ion_score break ties); among that ion's labels -- the same
 ion read as C13H14O4 [M+NH4]+ or as C13H17NO4 [M+H]+ -- the one Assigned in the
 most files wins, because on such a pair Assigned means a discriminating channel
 was present and Candidate means the file had nothing to decide with. The losing
 readings stay on the merged row (`alternatives`, `n_files_ion`, `n_files_winner`,
-`ion_agree`) as well as in jitter.csv.
+`ion_agree`) as well as in jitter.csv (with each file's own evidence level).
 The two positive-mode re-reads that can change a reading -- the hydrocarbon-on-
 N-cluster re-read and the ammonium/amine gate -- are decided ONCE on the merged
 ledger, from the union of every file's evidence, and say so in `tier_reason`.
@@ -58,16 +61,20 @@ from peaky import paths as PT
 from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
 
-__version__ = "0.9.0"  # the merge window is sized from the batch's own mass scatter
-                       # (traces.MassScale: one sigma per batch, merge + stamp windows from
-                       # it; batch_summary['mass_scale']) -- the flat DEFAULT_TOL_PPM stays
-                       # the BINNING tolerance and the floor of both windows
-                       # (0.8.1: traces.stamp block + tables/predicted_satellites.csv: the stamp's
-                       # predicted satellites counted apart from observed, track coherence;
-                       # 0.8.0: the targeted residual stage: a second selection + assignment
-                       # after the cover's merge, one align() over both, stage provenance;
-                       # 0.7.0: the merge is a VOTE -- n_files_ion / n_files_winner /
-                       # alternatives / ion_agree, the batch-level gates' tier_reason)
+__version__ = "0.10.0"  # the vote reads the per-file EVIDENCE: a cluster's ions are
+                        # ranked by the best evidence class of their readings before the
+                        # file count (_evidence_class; align carries evidence_level /
+                        # evidence_axes; jitter.csv carries the level)
+                        # (0.9.0: the merge window is sized from the batch's own mass scatter
+                        # -- traces.MassScale: one sigma per batch, merge + stamp windows from
+                        # it; batch_summary['mass_scale'] -- the flat DEFAULT_TOL_PPM stays
+                        # the BINNING tolerance and the floor of both windows;
+                        # 0.8.1: traces.stamp block + tables/predicted_satellites.csv: the stamp's
+                        # predicted satellites counted apart from observed, track coherence;
+                        # 0.8.0: the targeted residual stage: a second selection + assignment
+                        # after the cover's merge, one align() over both, stage provenance;
+                        # 0.7.0: the merge is a VOTE -- n_files_ion / n_files_winner /
+                        # alternatives / ion_agree, the batch-level gates' tier_reason)
 
 # the BINNING tolerance: the selector's bins, the admission table, the trace index
 # (one constant for every batch-level binning; see sampling.BATCH_TOL_PPM). It is
@@ -85,7 +92,56 @@ TIER_RANK = {"Assigned": 2, "Candidate": 1}
 _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score",
             "admitted_by", "occurrence",   # admission provenance, when present
             "ion_only_of",                 # the ion-only link (the winner file's parent peak), when present
-            "resolvability", "sep_hwhm"]   # the winner file's peak separability (assignment/resolvability.py), when present
+            "resolvability", "sep_hwhm",   # the winner file's peak separability (assignment/resolvability.py), when present
+            "evidence_level", "evidence_axes"]   # the file's own evidence level + axes (assignment/evidence.py): the vote's
+                                                 # evidence class reads them (_evidence_class), when present
+
+# THE VOTE'S EVIDENCE CLASS of one per-file reading (the key after the ion-only
+# rule and before the file count in `_vote`). The tier engine levels every
+# committed reading per file (docs/EVIDENCE_LEVELS.md): a curated identity (2b,
+# 3a), the acid branch (3b) and a neutral established by two axes with one
+# outside the channel (4a) say the NEUTRAL is right; a reading the `--corroborate`
+# source holds too (the `corroborated` axis, at whatever level) has the other
+# instrument's / channel's word for its neutral; 4b / 4c / 4d say the FORMULA
+# or the ION is pinned and the neutral is not; 5a / 5b are exact mass alone or
+# an assignment that argues with itself. Three classes, compared before any
+# count: a reading of the first kind outranks one of the second whatever the
+# file count, and one of the second outranks a mass-only reading; the count
+# decides among equals. Measured on a 28-file TOF batch merged at its own 12 ppm
+# window: with one ion's readings finally in one row, the count alone handed the
+# peak of the Orbitrap-confirmed acid C9H16O6 [M+NO3]- (Assigned, 4a, 2 files)
+# to C14H21N [M+Br]- (5a, 9 files), and the roster's pinic acid C9H14O4 (4b
+# corroborated, 1 file) lost a 1-vs-1 tie on ion_score to a silicon formula --
+# neither a bromide adduct of an amine nor an organosilicon is a reading a
+# negative-mode CIMS should carry over the one the other instrument confirms.
+EVIDENCE_CLASS_GOOD = frozenset({"1", "2a", "2b", "3a", "3b", "4a"})   # the neutral established
+EVIDENCE_CLASS_MID = frozenset({"4b", "4c", "4d"})                      # the formula / the ion pinned
+CORROBORATED_AXIS = "corroborated"   # the `evidence_axes` token of the --corroborate source's agreement
+_LEVEL_RANK = {lv: i for i, lv in enumerate(["1", "2a", "2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"])}
+
+
+def _has_axis(axes, name: str) -> bool:
+    """True when `name` is one of the `|`-separated tokens of an evidence_axes string."""
+    return name in _s(axes).split("|")
+
+
+def _evidence_class(level, axes) -> int:
+    """2 = the neutral established (2b / 3a / 3b / 4a) or corroborated by the
+    --corroborate source (the `corroborated` axis, at any level); 1 = the formula
+    or the ion pinned (4b / 4c / 4d); 0 = exact mass alone / self-contradicting
+    (5a / 5b) or no level at all."""
+    lv = _s(level)
+    if lv in EVIDENCE_CLASS_GOOD or _has_axis(axes, CORROBORATED_AXIS):
+        return 2
+    if lv in EVIDENCE_CLASS_MID:
+        return 1
+    return 0
+
+
+def _level_text(level_rank, corroborated) -> str:
+    """'3b', '4b corroborated', '-' (no level): the evidence a vote note names."""
+    lv = next((k for k, v in _LEVEL_RANK.items() if v == int(level_rank)), "-")
+    return lv + (" corroborated" if int(corroborated) else "")
 
 
 # ---------------------------------------------------------------------------
@@ -141,19 +197,36 @@ def _ion_key(nf: str, ad: str) -> str:
 
 def _vote(g: pd.DataFrame):
     """Rank one cluster's readings in two stages. Returns (ions, labels):
-    `ions` one row per ion (_ion, n_files, n_assigned, best_ion), best first;
-    `labels` one row per (neutral_formula, adduct) reading of EVERY ion (_ion,
-    _nf, _ad, n_files, n_assigned, best_ion), the winning ion's readings ranked
-    best first and listed first, the other ions' readings after them in ion
-    order.
+    `ions` one row per ion (_ion, n_files, n_assigned, best_ion, regular,
+    best_cls, best_lr, corroborated), best first; `labels` one row per
+    (neutral_formula, adduct) reading of EVERY ion (_ion, _nf, _ad, n_files,
+    n_assigned, best_ion, ...), the winning ion's readings ranked best first
+    and listed first, the other ions' readings after them in ion order.
 
     1. WHICH ION sits at this m/z is what files can genuinely disagree on, and
-       the count decides it: the ion carried by the most FILES wins, the number
-       of files carrying it at Assigned tier and the best ion_score only break
+       the EVIDENCE decides it before the count: each ion takes the best
+       evidence class of its per-file readings (`_evidence_class` over the
+       file's own `evidence_level` / `evidence_axes` -- the neutral established
+       or corroborated, above the formula / ion pinned, above exact mass alone;
+       every reading is class 0 when the frames carry no level, and the vote is
+       then the pure count it was), and the ion of the best class wins; among
+       ions of one class the ion carried by the most FILES wins, the number of
+       files carrying it at Assigned tier and the best ion_score only break
        ties, and the ion's own text is the last key -- so a full tie resolves
        the same way whatever order the files arrived in (serial and parallel
-       runs stay byte-identical). This is the order collapse_trace_labels
-       already applies to competing labels on one trace.
+       runs stay byte-identical). The count-first order is the one
+       collapse_trace_labels applies to competing labels on one trace.
+
+       Why the evidence first: once the merge window put one TOF ion's readings
+       in one row (they used to sit in rows of their own, 8-12 ppm apart, each
+       looking unanimous), a 4-file mass-only reading (5b) outvoted a 1-file
+       reading with an acid-branch corroboration (3b) at the same peak, and the
+       board lost the Orbitrap-confirmed HOMs and the roster's pinic acid to
+       bromide adducts of N-compounds read in more files. A per-file level is
+       a measurement of THAT file's evidence for the reading; the count of
+       files is a measurement of persistence. The first says which reading is
+       right, the second how often it was seen -- and a reading no file could
+       establish does not become right by being fitted in more of them.
 
        Nothing is exempt from the count. A known-species identity (the pass-0
        list) used to be -- an ion carrying one ranked first once its label had
@@ -175,6 +248,18 @@ def _vote(g: pd.DataFrame):
        ties. On the 15-file uronium run 16 of the 43 same-ion splits had a majority
        label nobody had corroborated against a minority label some file had."""
     assigned = g["_r"] >= TIER_RANK[TIER_ASSIGNED]
+    # the evidence class of every per-file reading (0 everywhere when the frames
+    # carry no level: a pure `align()` caller without the evidence stage), the
+    # rank of its level (for the row's note) and its corroborated axis
+    if "evidence_level" in g.columns:
+        axes = g["evidence_axes"] if "evidence_axes" in g.columns else pd.Series("", index=g.index)
+        cls = pd.Series([_evidence_class(a, b) for a, b in zip(g["evidence_level"], axes)], index=g.index)
+        lrank = pd.Series([_LEVEL_RANK.get(_s(v), len(_LEVEL_RANK)) for v in g["evidence_level"]], index=g.index)
+        corr = pd.Series([int(_has_axis(b, CORROBORATED_AXIS)) for b in axes], index=g.index)
+    else:
+        cls = pd.Series(0, index=g.index)
+        lrank = pd.Series(len(_LEVEL_RANK), index=g.index)
+        corr = pd.Series(0, index=g.index)
     # an ION-ONLY reading (the `ion_only` stage: the acid's own composition as
     # a radical anion, committed beside its [M-H]- parent with an `ion_only_of`
     # link) is a bucket kept apart from the tiers, and it must not MOVE a
@@ -187,17 +272,20 @@ def _vote(g: pd.DataFrame):
     io = (g["ion_only_of"].notna() if "ion_only_of" in g.columns
           else pd.Series(False, index=g.index))
     gg = g.assign(_asrc=g["src"].where(assigned),       # the file, when Assigned there
-                  _reg=(~io).astype(int))                # 1 = a regular reading in this file
+                  _reg=(~io).astype(int),                # 1 = a regular reading in this file
+                  _cls=cls, _lr=lrank, _corr=corr)
     lab = (gg.groupby(["_ion", "_nf", "_ad"], sort=True)  # text order = last key
              .agg(n_files=("src", "nunique"),
                   n_assigned=("_asrc", "nunique"),        # FILES at Assigned, not rows
-                  best_ion=("ion_score", "max"), regular=("_reg", "max"))
+                  best_ion=("ion_score", "max"), regular=("_reg", "max"),
+                  best_cls=("_cls", "max"), best_lr=("_lr", "min"), corroborated=("_corr", "max"))
              .reset_index())
     ions = (gg.groupby("_ion", sort=True)
               .agg(n_files=("src", "nunique"), n_assigned=("_asrc", "nunique"),
-                   best_ion=("ion_score", "max"), regular=("_reg", "max"))
+                   best_ion=("ion_score", "max"), regular=("_reg", "max"),
+                   best_cls=("_cls", "max"), best_lr=("_lr", "min"), corroborated=("_corr", "max"))
               .reset_index())
-    ions = ions.sort_values(["regular", "n_files", "n_assigned", "best_ion"],
+    ions = ions.sort_values(["regular", "best_cls", "n_files", "n_assigned", "best_ion"],
                             ascending=False, kind="mergesort")   # stable: keeps text order
     rank = {k: i for i, k in enumerate(ions["_ion"])}
     lab = (lab.assign(_k=lab["_ion"].map(rank))
@@ -218,10 +306,13 @@ def _describe(r) -> str:
 def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
           offsets: dict | None = None, stages: dict | None = None):
     """Align the M0 rows of several files by m/z and let the files VOTE on each
-    cluster's reading (see `_vote`: the count decides WHICH ION, corroboration
-    decides WHICH LABEL of it).
+    cluster's reading (see `_vote`: the evidence class, then the count, decides
+    WHICH ION; corroboration decides WHICH LABEL of it).
 
-    per_file : {src -> DataFrame with _M0_COLS}. offsets : {src -> median ppm}
+    per_file : {src -> DataFrame with _M0_COLS; `evidence_level` / `evidence_axes`
+    are the file's own levels (assignment/evidence.py) and feed the vote's
+    evidence class -- without them every reading is class 0 and the vote is
+    the pure count}. offsets : {src -> median ppm}
     (subtracted before clustering so a per-file calibration shift does not split
     a peak). A known-species identity gets no exemption here: the batch decides
     it after the vote, by pooled evidence (`lock_known_species`). stages : {src ->
@@ -241,13 +332,14 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
               the winning reading), alternatives (the losing readings, best
               first, '' when unanimous), ion_agree (one ion in the cluster),
               formula_agree (one neutral), tier_reason (NA unless the vote had
-              something to explain: a label chosen by corroboration over a
-              bigger count, or a regular reading kept over an ion-only one
-              carried by more files); srcs[, stage],
+              something to explain: an ion chosen by its evidence class over a
+              lower-class ion carried by at least as many files, a label chosen
+              by corroboration over a bigger count, or a regular reading kept
+              over an ion-only one carried by more files); srcs[, stage],
               mz_jitter_ppm_raw, mz_jitter_ppm_caldj.
       jitter  long form, one row per (cluster, file): cluster, src, mz,
-              neutral_formula, adduct, tier, ion_score -- every reading, winner
-              or not.
+              neutral_formula, adduct, tier, ion_score, evidence_level -- every
+              reading, winner or not.
 
     The previous rule ranked the number of ASSIGNED files first, which let one
     file's Assigned reading outvote many files' Candidate reading of a
@@ -293,6 +385,19 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
         # what the vote had to explain, on the row (a 1-of-10 winner needs a reason)
         notes = []
         others = ions.iloc[1:]
+        if len(others) and "best_cls" in others.columns:
+            # an ion of a lower evidence class carried by at least as many files
+            # as the winner: the evidence decided the ion, not the count
+            lower = others[(others.get("regular", 1) == 1) & (others["best_cls"] < int(win_ion["best_cls"]))
+                           & (others["n_files"] >= int(win_ion["n_files"]))]
+            if len(lower):
+                big = lower.sort_values(["n_files", "best_cls"], ascending=False, kind="mergesort").iloc[0]
+                big_lab = lab[lab["_ion"] == big["_ion"]].iloc[0]
+                notes.append(f"evidence outranks the count: kept {win['_nf']} {win['_ad']} "
+                             f"({_level_text(win_ion['best_lr'], win_ion['corroborated'])} in "
+                             f"{int(win_ion['n_files'])} of {n_total} files) over the "
+                             f"{int(big['n_files'])}-file {big_lab['_nf']} {big_lab['_ad']} "
+                             f"({_level_text(big['best_lr'], big['corroborated'])})")
         if int(win_ion.get("regular", 1)) and len(others):
             # an ion-only reading carried by MORE files than the regular winner
             # stayed an alternative on purpose (see _vote): say so on the row
@@ -342,7 +447,8 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
             jitter_rows.append(dict(cluster=int(cid), src=r["src"], mz=float(r["mz"]),
                                     neutral_formula=r.get("neutral_formula"),
                                     adduct=r.get("adduct"), tier=r.get("tier"),
-                                    ion_score=r.get("ion_score")))
+                                    ion_score=r.get("ion_score"),
+                                    evidence_level=r.get("evidence_level", pd.NA)))
     merged = pd.DataFrame(merged_rows).sort_values("mz").reset_index(drop=True)
     jitter = pd.DataFrame(jitter_rows)
     return merged, jitter

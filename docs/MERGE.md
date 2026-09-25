@@ -36,8 +36,10 @@ selected sample_ids (SAMPLING.md)
    ▼  single-linkage gap-cluster _mz_adj at tol_ppm (6)
  one row per m/z cluster:
    consensus mz = mean(raw mz);  the files VOTE in two stages:
-     which ION  -- most files wins (Assigned-file count, ion_score break ties;
-                   a curated identity, Assigned somewhere, is never outvoted)
+     which ION  -- the best per-file EVIDENCE CLASS wins (the neutral
+                   established or corroborated > the formula / ion pinned >
+                   mass-only), then most files (Assigned-file count, ion_score
+                   break ties); a known species is decided after the vote
      which LABEL of it -- the reading Assigned in the most files (a same-ion
                    label split is the reagent-N isobar: Candidate = undecided)
    n_files, n_files_ion, n_files_winner, alternatives, tier_reason, srcs,
@@ -58,7 +60,9 @@ selected sample_ids (SAMPLING.md)
 
 - `per_file` — `{src → DataFrame}` of each file's **M0 (assigned-compound) rows**
   in the `_M0_COLS` schema (`mz`, `neutral_formula`, `adduct`, `tier`,
-  `ion_score`), extracted by `_m0`.
+  `ion_score`, the admission / ion-only / resolvability provenance, and the
+  file's own `evidence_level` / `evidence_axes` — the vote's evidence class
+  reads them), extracted by `_m0`.
 - `offsets` — `{src → median ppm}` from `io_mascope.estimate_offset`
   ([`DATA_IO.md`](DATA_IO.md)); missing → treated as 0.
 
@@ -107,12 +111,27 @@ selected sample_ids (SAMPLING.md)
    neutral + adduct (`_ion_key`, the tier engine's `_ion_counts`), so
    `C13H14O4 [M+NH4]+` and `C13H17NO4 [M+H]+` are one ion, `C13H18NO4+`.
    - **Which ion** sits at the m/z is what files can genuinely disagree on, and
-     the count decides it: the ion carried by the most **files** wins, then the
-     number of files carrying it at **Assigned** tier (`TIER_RANK = {Assigned:2,
-     Candidate:1}`, else 0), then the best `ion_score`, and last the ion's own
-     text — so a full tie resolves identically whatever order the files arrived
-     in (serial and parallel runs stay byte-identical). This is the order
-     `collapse_trace_labels` already applies to competing labels on one trace.
+     the **evidence class, then the count**, decides it. Each ion takes the best
+     per-file evidence class of its readings (`_evidence_class` over the file's
+     own `evidence_level` / `evidence_axes`,
+     [`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md)): **2** = the neutral
+     established — a curated identity (2b, 3a), the acid branch (3b), two axes
+     with one outside the channel (4a) — or a reading the `--corroborate` source
+     holds too (the `corroborated` axis, at whatever level); **1** = the formula
+     or the ion pinned, the neutral not (4b, 4c, 4d); **0** = exact mass alone
+     or an assignment that argues with itself (5a, 5b), or no level at all (a
+     pure `align()` caller without the evidence stage: every reading is 0 and
+     the vote is the pure count). The ion of the best class wins whatever the
+     file count; among ions of one class the ion carried by the most **files**
+     wins, then the number of files carrying it at **Assigned** tier
+     (`TIER_RANK = {Assigned:2, Candidate:1}`, else 0), then the best
+     `ion_score`, and last the ion's own text — so a full tie resolves
+     identically whatever order the files arrived in (serial and parallel runs
+     stay byte-identical). When the class decided against an ion carried by at
+     least as many files, the row says so: `evidence outranks the count: kept
+     C9H16O6 [M+NO3]- (4a corroborated in 2 of 12 files) over the 9-file
+     C14H21N [M+Br]- (5a)`. The count-first order (files, tier, score) is the
+     one `collapse_trace_labels` applies to competing labels on one trace.
      Nothing is exempt from the count. A **known-species** identity used to be
      (the "curated exemption": an ion carrying a pass-0 or reference-list label
      ranked first once that label had reached Assigned somewhere); it is now
@@ -154,6 +173,24 @@ selected sample_ids (SAMPLING.md)
    step 4b gets all three right by the evidence the other files hold — they
    could not test the siloxane's twin or the phosphate's second channel (that
    is silence), and they could and did test sulfolane's ³⁴S (a refutation).
+   *Why the evidence before the count.* Once the merge window put one TOF
+   ion's readings in one row (under the flat window they sat in rows of their
+   own, 8–12 ppm apart, each looking unanimous), the count handed the peak to
+   the reading fitted in the most files whatever the files' evidence for it:
+   on a 28-file TOF batch the Orbitrap-confirmed `C9H16O6 [M+NO3]-` (Assigned,
+   4a, 2 files) lost to `C14H21N [M+Br]-` (5a, 9 files), the HOMs `C10H16O9`
+   and `C10H18O9` to bromide adducts of N-compounds read in 3–4 files, and the
+   roster's pinic acid `C9H14O4` a 1-vs-1 tie on `ion_score` to an
+   organosilicon formula — none a reading a negative-mode CIMS should carry
+   over the one the other instrument confirms. A per-file level measures THAT
+   file's evidence for the reading; the file count measures persistence. The
+   first says which reading is right, the second how often it was seen, and a
+   reading no file could establish does not become right by being fitted in
+   more of them. Replayed on the three regression channels' per-file ledgers
+   before the rule was coded: 160 of the TOF's 885 multi-ion clusters change
+   their winner (every one a lower-class many-file reading yielding to a
+   higher-class one; the four cases above come back), 56 of the ¹⁵N-nitrate
+   Orbitrap's 268 and 5 of the uronium Orbitrap's 10.
 
 4b. **Known species, decided once** (`lock_known_species`; after the vote,
    before the polarity re-reads). Every file's known-species evidence is pooled
@@ -276,9 +313,10 @@ All in `peaky/batch/assign_batch.py`.
 | --- | --- | --- |
 | `DEFAULT_TOL_PPM` | 6.0 (`= sampling.BATCH_TOL_PPM`) | the BINNING tolerance (the selector's bins, the admission table, the trace index) and the default + floor of the merge window: what a pure `align()` call clusters at, and what `run` clusters at when nothing could be measured |
 | `traces.MassScale.merge_ppm` | `max(tol, min(2·tol, 2.5·√2·σ))` — 6 ppm on an Orbitrap, 12 on a TOF | the window `run` clusters at, from the batch's measured per-ion scatter σ (`traces.measure_mass_scale`, once per batch, before the first merge); `traces.MERGE_GAP_SIGMA` = 2.5·√2 = 3.54, `traces.WINDOW_MAX_X` = 2.0 |
-| `TIER_RANK` | `{Assigned:2, Candidate:1}` | the vote's Assigned-file count (a tie-break after file count) and the best-row pick within the winning reading (then `ion_score`) |
+| `EVIDENCE_CLASS_GOOD` / `EVIDENCE_CLASS_MID` / `CORROBORATED_AXIS` | `{1, 2a, 2b, 3a, 3b, 4a}` / `{4b, 4c, 4d}` / `corroborated` | the vote's evidence class of a per-file reading (`_evidence_class`: 2 = a level in the first set or the `corroborated` token in `evidence_axes`; 1 = a level in the second; 0 = 5a / 5b / no level) — the ion key before the file count |
+| `TIER_RANK` | `{Assigned:2, Candidate:1}` | the vote's Assigned-file count (a tie-break after the evidence class and the file count) and the best-row pick within the winning reading (then `ion_score`) |
 | `lock_known_species` `tol_ppm` / `mz_floor_da` | the merge window / 1.5 mDa | the window a pooled known-species ion is matched to its merged cluster with (`run` passes `MassScale.merge_ppm`; the stamp's mDa floor); a species confirmed in ≥ 1 file and refuted in none takes that cluster |
-| `_M0_COLS` | `[mz, neutral_formula, adduct, tier, ion_score, admitted_by, occurrence]` | the per-file M0 schema aligned (the last two = admission provenance, carried for the winning row; absent columns are tolerated) |
+| `_M0_COLS` | `[mz, neutral_formula, adduct, tier, ion_score, admitted_by, occurrence, ion_only_of, resolvability, sep_hwhm, evidence_level, evidence_axes]` | the per-file M0 schema aligned (admission / ion-only / separability provenance, carried for the winning row; the file's own evidence level + axes, read by the vote's evidence class; absent columns are tolerated) |
 | `run` `amine_r_min` | 0.6 | min trace correlation for the positive amine re-read |
 | `assign_kw` `reagent_n_relabel` | `False` (set by `run`) | the per-file hydrocarbon-on-N-cluster re-read stands down; `run` applies it once to the merged ledger |
 | `run` `k_min` / `k_max` / `min_gain` / `min_prevalence` | 6 / 30 / 0.005 / 2 | passed through to `sampling.select_cover_samples` (see [`SAMPLING.md`](SAMPLING.md)) |
@@ -305,8 +343,10 @@ All in `peaky/batch/assign_batch.py`.
   `formula adduct xN tier score` (the best tier / score any file gave it);
   `''` when unanimous. The per-file detail is `tables/jitter.csv`.
 - **`tier_reason`** (merged) — what the vote and the batch-level gates did to the
-  row: the curated exemption or a corroboration-over-count label choice when one
-  decided the vote; the reagent-N re-read,
+  row: an evidence-over-count ion choice (`evidence outranks the count: kept …
+  (4a corroborated in 2 of 12 files) over the 9-file … (5a)`) or a
+  corroboration-over-count label choice when one decided the vote; the
+  known-species decision; the reagent-N re-read,
   naming the reading it replaced; the amine gate, naming the `[M+NH4]⁺` neutral it
   did not confirm and why. `NA` when nothing needed saying.
 - **per-file offset** — median observed-vs-theoretical ppm of a file's assignments
@@ -323,7 +363,7 @@ All in `peaky/batch/assign_batch.py`.
 | artifact | content |
 | --- | --- |
 | `merged_ledger.csv` (run root) | one row per m/z cluster: consensus mz, the winning reading, the vote (`n_files`, `n_files_ion`, `n_files_winner`, `alternatives`), `srcs`, `ion_agree`, `formula_agree`, `mz_jitter_ppm_raw/caldj`, the batch-level gates' `tier_reason`, `stage` (`cover` / `residual`; only when the residual stage is on), plus the trace reconciliation columns (`mz_anchor`, `mz_trace`, `trace_offset_ppm`, `trace_cov_anchor`, `trace_cov`, `trace_moved`, `trace_guarded`, `trace_id`, `trace_role`; [`TIMESERIES.md`](TIMESERIES.md) §9) — **the result** |
-| `tables/jitter.csv` | long form, one row per (cluster, file): `cluster`, `src`, `mz`, formula, adduct, tier, `ion_score` |
+| `tables/jitter.csv` | long form, one row per (cluster, file): `cluster`, `src`, `mz`, formula, adduct, tier, `ion_score`, `evidence_level` (the file's own level of that reading — the vote's evidence class comes from it) |
 | `per_file/<sid>_ledger.csv` | each assigned file's full single-sample ledger (audit / re-merge) |
 | `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role` ∈ `cover` / `pad` / `residual`, `bins_new`, `coverage`) |
 | `tables/residual_bins.csv` | the residual stage's targeted bins (`bin_mz`, `prevalence`, `max_cps`, `max_x_edge`, `sample_at_max`, `covered_by`); written when the stage is on |
@@ -340,11 +380,13 @@ All in `peaky/batch/assign_batch.py`.
 - **Offset correction aligns; raw masses report.** `_mz_adj` is used only to avoid
   splitting a peak by calibration drift — the merged `mz` and `mz_jitter_ppm_raw`
   are computed on raw masses, so the two jitter columns are an honest before/after.
-- **Consensus = a vote, in two stages.** The count picks the ION (tier and score
-  only break ties; a curated identity is exempt from the count), corroboration
+- **Consensus = a vote, in two stages.** The per-file evidence class, then the
+  count, picks the ION (tier and score only break ties; nothing is exempt — a
+  known species is decided after the vote by pooled evidence), corroboration
   picks its LABEL (the reading Assigned in the most files). The losers stay on
-  the row (`alternatives`) and in `jitter.csv`; `formula_agree` stays `False` on
-  a split, and `ion_agree` tells a label split from a real contest.
+  the row (`alternatives`) and in `jitter.csv` (with each file's level);
+  `formula_agree` stays `False` on a split, and `ion_agree` tells a label split
+  from a real contest. Frames without a level vote by the count exactly as before.
 - **The two positive-mode re-reads are merged-level** — the amine gate needs the
   full cross-channel picture, and the hydrocarbon-on-N-cluster re-read needs every
   file's `[M+H]⁺` rows at once; per file, the latter split one ion into two
@@ -366,7 +408,8 @@ All in `peaky/batch/assign_batch.py`.
 | `_cluster_mz` | single-linkage gap clustering of an ascending m/z array |
 | `align` | offset-aware cluster → the vote per cluster → merged rows + long jitter frame |
 | `_ion_key` | a reading's ion (neutral + adduct composition, Hill order, charge sign): the key two labels of one ion share |
-| `_vote` | rank one cluster's ions (curated, file count, Assigned-file count, best score, text) and, within each, its labels (Assigned-file count, file count, best score, text) |
+| `_evidence_class` | the vote's evidence class of one per-file reading from its `evidence_level` / `evidence_axes` (2 / 1 / 0) |
+| `_vote` | rank one cluster's ions (regular before ion-only, evidence class, file count, Assigned-file count, best score, text) and, within each, its labels (Assigned-file count, file count, best score, text) |
 | `_describe` | one losing reading as `formula adduct xN tier score` for `alternatives` |
 | `_curated_neutrals` | the reflist-rescue / known-species neutrals of a per-file ledger (the vote's exemption) |
 | `_protected_neutrals` | those plus the certified neutrals (the amine gate's exemption) |
