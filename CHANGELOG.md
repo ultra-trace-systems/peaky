@@ -368,6 +368,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   time, recovers 96.3 % of the cover path's neutrals against 47.9 % on a TOF,
   so the recorded "the deficit is structural" reads as instrument-dependent.
 
+- **`scripts/scorecard.py`: M3 also counts by the other instrument's own evidence.** "Found by
+  the other instrument, missing here" read the other run's merged in-core level, and on a same-air
+  pair that level can owe a rung to the other run's own `--corroborate` source -- the run being
+  scored -- so the metric could hold this run's agreement against it. The card now counts M3 a second
+  time with the other instrument's per-file ledgers levelled with no cross set (`own_levels_for`,
+  the level a `--corroborate` source is judged by, `docs/EVIDENCE_LEVELS.md` §6.4):
+  `m3_other_instrument_own_missing` on the board row beside the unchanged
+  `m3_other_instrument_missing`, a line and a table in both card renderings. On the TOF of the
+  regression set the corroboration change moves the original count 170 → 175, every added neutral a
+  4a / 4b the Orbitrap reached only through the TOF's own agreement (5b / 5a / 4c on its own evidence).
+
 - **`scripts/scorecard.py` — what a `peaky batch` run assigned, how good it is, what
   it missed, the same way every session.** One card per run (`SCORECARD.md` +
   `scorecard.json`), one row appended to a scoreboard (`scoreboard.jsonl`), and the

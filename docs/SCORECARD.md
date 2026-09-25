@@ -78,7 +78,15 @@ against its previous row.
      Assigned) holds and this run lacks; and neutrals the other instrument
      (`--other-instrument`) holds at level ≤ 4b, above the detection floor
      inside the overlap window (with the masked gaps removed), that this run
-     lacks. The other instrument also corroborates this run's levels.
+     lacks — counted twice: by the other instrument's merged in-core level
+     (`m3_other_instrument_missing`, the original metric) and by its **own**
+     evidence, its per-file ledgers levelled with no cross set
+     (`m3_other_instrument_own_missing`, `own_levels_for`). The two differ where
+     the other instrument's in-core level owes a rung to its own
+     `--corroborate` source — on a same-air pair that source is the run being
+     scored, so the first count can hold this run's own agreement against it
+     (EVIDENCE_LEVELS.md §6.4). The other instrument also corroborates this
+     run's levels.
 5. **Is it right.** (a) roster recall (see M2; the rosters are unreviewed
    until the user signs them off); (b) the element census of Assigned
    neutrals — F, Si, P, Cl, Br, S, N and C > 20, with examples; (c) the

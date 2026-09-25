@@ -21,8 +21,9 @@ them the same way so the sessions can be compared:
                            300-line electron-attachment comb is one row; M2 the
                            roster / reference / known species present but not
                            assigned, with the engine's own reason; M3 what the
-                           other instrument on the same air, or the other path
-                           on the same batch, found and this run did not
+                           other instrument on the same air (by its merged level
+                           and by its own evidence), or the other path on the
+                           same batch, found and this run did not
 
     python scripts/scorecard.py <run_dir>... [--levels levels.csv]
         [--other <run_dir>] [--other-instrument <run_dir>]
@@ -425,6 +426,31 @@ def levels_for(run: Run, levels_csv: str | None, corroborate: list[str]) -> pd.D
         df["n_axes"] = df["axes"].map(lambda s: len([a for a in s.split(",") if a]))
     keep = ["neutral", "adduct", "level", "n_axes", "axes"] + [c for c in ("known_fam",) if c in df.columns]
     return df[keep].drop_duplicates(["neutral", "adduct"])
+
+
+def own_levels_for(run: Run) -> pd.DataFrame:
+    """One row per (neutral, adduct) the run's per-file ledgers commit, levelled
+    on the run's OWN evidence: its files pooled as one source with NO cross set
+    (`evidence.level_pooled`) -- the level a `--corroborate` source is judged by
+    (docs/EVIDENCE_LEVELS.md §6.4). The merged ledger's in-core level can owe a
+    rung to the run's own `--corroborate` source, and for M3 that source is the
+    run being scored (two instruments corroborate each other), so the in-core
+    level would count the scored run's agreement as the other's finding."""
+    pf = run.per_file
+    empty = pd.DataFrame(columns=["neutral", "adduct", "level", "n_axes", "axes", "source"])
+    if pf is None or pf.empty or "role" not in pf.columns:
+        return empty
+    frames = {k: EV.trim(g) for k, g in pf.groupby("__file", sort=True)}
+    pairs = EV.level_pooled(frames, cross=None)
+    if pairs.empty:
+        return empty
+    pairs = pairs[~pairs["ion_only"].astype(bool)]
+    out = pairs[["neutral_formula", "adduct", "evidence_level", "evidence_axes"]].rename(
+        columns={"neutral_formula": "neutral", "evidence_level": "level", "evidence_axes": "axes"})
+    out["n_axes"] = out["axes"].map(
+        lambda s: len([a for a in str(s).split("|") if a in ("iso", "chan2", "anchor", "corroborated")]))
+    out["source"] = "own"
+    return out.drop_duplicates(["neutral", "adduct"])
 
 
 def level_vector(levels: pd.DataFrame) -> dict:
@@ -1016,13 +1042,52 @@ def _parse_window(text: str | None) -> tuple | None:
     return (a, b)
 
 
+def _m3_other_instrument(mine: set, other_instrument: Run | None, levels: pd.DataFrame | None,
+                         overlap: tuple | None, masks: list[tuple], floor_cps: float, floor_share: float) -> dict | None:
+    """The neutrals the other INSTRUMENT holds at level <= 4b (by `levels`),
+    above the detection floor inside the overlap window, that this run lacks."""
+    if other_instrument is None or levels is None or levels.empty or other_instrument.ts is None:
+        return None
+    ots = other_instrument.ts
+    keep = _window_mask(ots, overlap, masks)
+    w = ots[keep & ots["neutral_formula"].notna() & ~col(ots, "dup_candidate", False).fillna(False).astype(bool)]
+    n_in_window = int(ots.loc[keep, "sample_item_id"].nunique()) if "sample_item_id" in ots.columns else 0
+    good = levels[levels["level"].map(level_rank) <= level_rank("4b")]
+    rows = []
+    for r in good.itertuples():
+        tr = w[(w["neutral_formula"] == r.neutral) & (w["adduct"] == r.adduct)]
+        if tr.empty or n_in_window == 0:
+            continue
+        med = float(tr["height"].median())
+        share = tr["sample_item_id"].nunique() / n_in_window
+        if med < floor_cps or share < floor_share:
+            continue
+        if r.neutral in mine:
+            continue
+        rows.append({"neutral": str(r.neutral), "adduct": str(r.adduct), "level": str(r.level), "axes": str(r.axes),
+                     "med_cps": med, "share": float(share * 100)})
+    rows.sort(key=lambda x: (level_rank(x["level"]), -x["med_cps"]))
+    return {
+        "run": other_instrument.name, "reagent": other_instrument.reagent,
+        "n_good": int(len(good)), "n_spectra_in_window": n_in_window,
+        "n_missing": int(len(rows)),
+        "rows": rows[:40],
+        "window": [str(overlap[0]), str(overlap[1])] if overlap else None,
+        "floor": {"cps": floor_cps, "share": floor_share},
+    }
+
+
 def missed_m3(run: Run, other: Run | None, other_instrument: Run | None, other_levels: pd.DataFrame | None,
-              overlap: tuple | None, masks: list[tuple], floor_cps: float, floor_share: float) -> dict:
+              overlap: tuple | None, masks: list[tuple], floor_cps: float, floor_share: float,
+              own_levels: pd.DataFrame | None = None) -> dict:
     """M3: neutrals the other path found (>= 2 files or Assigned) that this run
     lacks; and neutrals the other INSTRUMENT holds at level <= 4b, above the
-    detection floor inside the overlap window, that this run lacks."""
+    detection floor inside the overlap window, that this run lacks -- once by
+    `other_levels` (its merged ledger's in-core level) and once by `own_levels`
+    (its own evidence, `own_levels_for`; the in-core level can owe a rung to
+    THIS run's agreement when the two corroborate each other)."""
     mine = set(run.ledger["neutral_formula"].dropna().astype(str)) if "neutral_formula" in run.ledger.columns else set()
-    out = {"other_path": None, "other_instrument": None}
+    out = {"other_path": None, "other_instrument": None, "other_instrument_own": None}
     if other is not None and "neutral_formula" in other.ledger.columns:
         o = other.ledger
         solid = o[(col(o, "n_files", 0).fillna(0) >= 2) | (col(o, "tier", "") == "Assigned")]
@@ -1038,34 +1103,8 @@ def missed_m3(run: Run, other: Run | None, other_instrument: Run | None, other_l
                 for r in missing.drop_duplicates("neutral_formula").head(25).itertuples()
             ],
         }
-    if other_instrument is not None and other_levels is not None and not other_levels.empty and other_instrument.ts is not None:
-        ots = other_instrument.ts
-        keep = _window_mask(ots, overlap, masks)
-        w = ots[keep & ots["neutral_formula"].notna() & ~col(ots, "dup_candidate", False).fillna(False).astype(bool)]
-        n_in_window = int(ots.loc[keep, "sample_item_id"].nunique()) if "sample_item_id" in ots.columns else 0
-        good = other_levels[other_levels["level"].map(level_rank) <= level_rank("4b")]
-        rows = []
-        for r in good.itertuples():
-            tr = w[(w["neutral_formula"] == r.neutral) & (w["adduct"] == r.adduct)]
-            if tr.empty or n_in_window == 0:
-                continue
-            med = float(tr["height"].median())
-            share = tr["sample_item_id"].nunique() / n_in_window
-            if med < floor_cps or share < floor_share:
-                continue
-            if r.neutral in mine:
-                continue
-            rows.append({"neutral": str(r.neutral), "adduct": str(r.adduct), "level": str(r.level), "axes": str(r.axes),
-                         "med_cps": med, "share": float(share * 100)})
-        rows.sort(key=lambda x: (level_rank(x["level"]), -x["med_cps"]))
-        out["other_instrument"] = {
-            "run": other_instrument.name, "reagent": other_instrument.reagent,
-            "n_good": int(len(good)), "n_spectra_in_window": n_in_window,
-            "n_missing": int(len(rows)),
-            "rows": rows[:40],
-            "window": [str(overlap[0]), str(overlap[1])] if overlap else None,
-            "floor": {"cps": floor_cps, "share": floor_share},
-        }
+    out["other_instrument"] = _m3_other_instrument(mine, other_instrument, other_levels, overlap, masks, floor_cps, floor_share)
+    out["other_instrument_own"] = _m3_other_instrument(mine, other_instrument, own_levels, overlap, masks, floor_cps, floor_share)
     return out
 
 
@@ -1437,9 +1476,10 @@ def build_card(run: Run, *, levels_csv=None, other=None, other_instrument=None, 
     tracks = unstamped_tracks(run)
     corroborate = [other_instrument.path] if other_instrument is not None else []
     levels = levels_for(run, levels_csv, corroborate)
-    other_levels = None
+    other_levels = other_own = None
     if other_instrument is not None:
         other_levels = levels_for(other_instrument, None, [run.path])
+        other_own = own_levels_for(other_instrument)
     rosters = load_rosters() if rosters is None else rosters
     head = headline(run, ions)
     card = {
@@ -1451,7 +1491,8 @@ def build_card(run: Run, *, levels_csv=None, other=None, other_instrument=None, 
         "evidence": best_evidence(run, ions, levels),
         "m1": missed_m1(run, ions, tracks, coverage_rows=head["stamp_coverage"].get("rows")),
         "m2": missed_m2(run, ions, tracks, rosters),
-        "m3": missed_m3(run, other, other_instrument, other_levels, overlap, list(masks), floor_cps, floor_share),
+        "m3": missed_m3(run, other, other_instrument, other_levels, overlap, list(masks), floor_cps, floor_share,
+                        own_levels=other_own),
         "census": census(run),
         "decoy": decoy(run, decoy_mode, decoy_offset, decoy_files, log=log),
         "falsification": falsification(run),
@@ -1517,6 +1558,7 @@ def board_row(card: dict) -> dict:
         "adduct_cov_median_r": (fz.get("adduct_cov") or {}).get("median_r"),
         "m3_other_path_missing": ((card["m3"].get("other_path") or {}).get("n_missing")),
         "m3_other_instrument_missing": ((card["m3"].get("other_instrument") or {}).get("n_missing")),
+        "m3_other_instrument_own_missing": ((card["m3"].get("other_instrument_own") or {}).get("n_missing")),
     }
     return row
 
@@ -1598,6 +1640,13 @@ def render_md(card: dict) -> str:
               f"({oi['floor']['cps']} cps median in {int(oi['floor']['share'] * 100)} % of {oi['n_spectra_in_window']} spectra"
               + (f", window {oi['window'][0][:16]} -> {oi['window'][1][:16]}" if oi.get("window") else "") + ") and are absent here", ""]
         L += md_table(oi["rows"], [("neutral", "neutral"), ("adduct", "other adduct"), ("level", "level"), ("axes", "axes"), ("med_cps", "med cps there"), ("share", "share %")], {"share": 0})
+        L += [""]
+    oo = m3.get("other_instrument_own")
+    if oo:
+        L += [f"- the same by the other instrument's OWN evidence (its files levelled with no cross set, the level a "
+              f"`--corroborate` source is judged by; its in-core level can owe a rung to this run's agreement): "
+              f"{oo['n_missing']} of its {oo['n_good']} rows at level <= 4b pass the floor and are absent here", ""]
+        L += md_table(oo["rows"], [("neutral", "neutral"), ("adduct", "other adduct"), ("level", "own level"), ("axes", "own axes"), ("med_cps", "med cps there"), ("share", "share %")], {"share": 0})
         L += [""]
     if not op and not oi:
         L += ["*(no --other / --other-instrument given)*", ""]
@@ -1895,6 +1944,10 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
             if oi:
                 out.append(f"<p class=\"note\">other instrument <span class=\"mono\">{_h(oi['run'])}</span> ({_h(oi['reagent'])}): {oi['n_missing']} of its {oi['n_good']} rows at level ≤ 4b pass the floor and are absent here</p>")
                 out.append(html_table(oi["rows"], [("neutral", "neutral"), ("adduct", "other adduct"), ("level", "level"), ("axes", "axes"), ("med_cps", "med cps there"), ("share", "share %")], {"share": 0}, mono=("neutral", "adduct", "level")))
+            oo = m3.get("other_instrument_own")
+            if oo:
+                out.append(f"<p class=\"note\">by the other instrument's <b>own</b> evidence (no cross set — the level a --corroborate source is judged by): {oo['n_missing']} of its {oo['n_good']} rows at level ≤ 4b pass the floor and are absent here</p>")
+                out.append(html_table(oo["rows"], [("neutral", "neutral"), ("adduct", "other adduct"), ("level", "own level"), ("axes", "own axes"), ("med_cps", "med cps there"), ("share", "share %")], {"share": 0}, mono=("neutral", "adduct", "level")))
         out.append("<h3>Decoy false-discovery bound</h3>")
         if dc.get("control") and "error" not in dc["control"]:
             dc_rows = []

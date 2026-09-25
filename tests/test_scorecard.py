@@ -286,6 +286,35 @@ def test_m3_names_what_the_other_path_and_instrument_found(run, tmp_path):
     assert m3w["other_instrument"]["n_spectra_in_window"] == 0 and m3w["other_instrument"]["n_missing"] == 0
 
 
+def test_m3_also_counts_by_the_other_instruments_own_evidence(run, tmp_path):
+    """The other instrument's in-core level can owe a rung to its own --corroborate
+    source -- on a same-air pair, the run being scored -- so M3 is counted a second
+    time on the other's OWN evidence (its per-file ledgers, no cross set)."""
+    import dataclasses
+    other_dir = write_run(tmp_path / "other")
+    led = pd.read_csv(other_dir / "merged_ledger.csv")
+    led["evidence_level"], led["evidence_axes"] = "4a", "iso|corroborated|files:2"   # the stamp says 4a everywhere
+    led.to_csv(other_dir / "merged_ledger.csv", index=False)
+    other = SC.load_run(str(other_dir))
+    own = SC.own_levels_for(other)
+    lv = dict(zip(own.neutral, own.level))
+    assert lv[A[0]] == "4b"                                        # its own 13C line
+    assert {lv[n] for n in (B[0], Cc[0], E[0], D[0])} == {"4c"}    # unique, but no axis of its own
+    in_core = SC.levels_for(other, None, [])
+    lacks_b = dataclasses.replace(run, ledger=run.ledger[run.ledger.neutral_formula != B[0]])
+    m3 = SC.missed_m3(lacks_b, None, other, in_core, None, [], 10.0, 0.8, own_levels=own)
+    assert m3["other_instrument"]["n_good"] == 5 and m3["other_instrument_own"]["n_good"] == 1
+    assert [r["neutral"] for r in m3["other_instrument"]["rows"]] == [B[0]]   # 4a by the stamp alone
+    assert m3["other_instrument_own"]["n_missing"] == 0
+    lacks_a = dataclasses.replace(run, ledger=run.ledger[run.ledger.neutral_formula != A[0]])
+    m3a = SC.missed_m3(lacks_a, None, other, in_core, None, [], 10.0, 0.8, own_levels=own)
+    assert [r["neutral"] for r in m3a["other_instrument_own"]["rows"]] == [A[0]]
+    # the card carries both counts; without an other instrument neither is computed
+    card = SC.build_card(lacks_b, other_instrument=other, rosters=SC.load_rosters(), board=[], log=lambda *a: None)
+    assert card["row"]["m3_other_instrument_missing"] == 1 and card["row"]["m3_other_instrument_own_missing"] == 0
+    assert SC.missed_m3(run, None, None, None, None, [], 10.0, 0.8)["other_instrument_own"] is None
+
+
 def test_card_board_and_pages_round_trip_with_a_delta(run, rosters, tmp_path):
     out = tmp_path / "board"
     card = SC.build_card(run, rosters=rosters, board=[], log=lambda *a: None)
