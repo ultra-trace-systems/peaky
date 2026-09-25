@@ -104,6 +104,7 @@ _MODULES = {
     "ladders": "assignment.ladders", "residual": "assignment.residual",
     "labeled": "assignment.labeled",
     "siloxane": "assignment.siloxane", "cleanup": "assignment.cleanup",
+    "solvent_clusters": "assignment.solvent_clusters",
     "degeneracy": "assignment.degeneracy", "tiers": "assignment.tiers",
     "plausibility": "assignment.plausibility", "reflists": "assignment.reflists",
     "assign": "assignment.assign",

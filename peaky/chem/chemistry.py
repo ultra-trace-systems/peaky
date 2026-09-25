@@ -28,7 +28,7 @@ import bisect
 import re
 from typing import Iterable, Iterator
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"   # + register_adduct: run-time cluster ion forms
 
 # ---------------------------------------------------------------------------
 # Exact monoisotopic masses (most-abundant isotope) and the electron mass.
@@ -245,6 +245,27 @@ def format_formula(counts: dict[str, int]) -> str:
 def neutral_mass(formula: str | dict[str, int]) -> float:
     cnt = formula if isinstance(formula, dict) else parse_formula(formula)
     return sum(M[el] * n for el, n in cnt.items() if el in M)
+
+
+def register_adduct(label: str, shift: float, *, tol: float = 1e-9) -> str:
+    """Add an ion form whose COMPOSITION is only known at run time, so `ion_mz`
+    stays total over the adducts a ledger can carry.
+
+    The table above is hand-written because those channels are fixed by the
+    reagent. A CLUSTER channel built out of whatever solvent vapour a source
+    happens to carry is not: `[M+(C2H6O)(C2H6O)H]+` exists only on a run where
+    ethanol was detected (assignment/solvent_clusters.py enumerates and
+    registers exactly the rungs it commits). Idempotent -- re-registering the
+    same shift is a no-op -- and a CONFLICTING redefinition of a label already
+    in use is refused, because it would silently move every reading that label
+    has ever carried. Returns the label, so a caller can register inline."""
+    prev = ADDUCT_SHIFTS.get(label)
+    if prev is not None and abs(prev - float(shift)) > tol:
+        raise ValueError(
+            f"adduct {label!r} is already registered at {prev:+.6f}; refusing to "
+            f"redefine it as {float(shift):+.6f}")
+    ADDUCT_SHIFTS[label] = float(shift)
+    return label
 
 
 def ion_mz(neutral: str | dict[str, int] | float, adduct: str) -> float:

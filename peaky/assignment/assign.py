@@ -25,10 +25,12 @@ from peaky.chem import reagents
 from peaky.assignment import reflists
 from peaky.assignment import residual
 from peaky.assignment import siloxane
+from peaky.assignment import solvent_clusters
 from peaky.assignment import tiers
 from peaky.batch import timeseries
 
-__version__ = "0.5.1"  # + reagent_n_relabel: a batch defers the hydrocarbon-on-N-cluster
+__version__ = "0.5.2"  # + solvent_clusters stage (source-solvent cluster ladders, pass-0 slot)
+                       # (history) reagent_n_relabel: a batch defers the hydrocarbon-on-N-cluster
                        #   re-read to its merged ledger (run(reagent_n_relabel=False))
 
 
@@ -252,6 +254,15 @@ def _stage_timeseries(st):
 _STAGES = [
     _Stage("pass0", lambda st: passes.run_pass0_known(
         st.client, st.sample_id, st.led, st.profile, st.cfg, st.adducts, log=st.log)),
+    # Source-solvent CLUSTER ladders ([S_n+H]+ / [S_n-H]+ and their -H2O
+    # condensation rung). Pass-0 style and in pass 0's slot -- offline (the ion
+    # masses are exact and the evidence is the ladder, so no scorer is asked),
+    # BEFORE pass 1 and locked, so the grid never re-reads a cluster mass as a
+    # covalent molecule. Self-gating: a no-op unless the context declares source
+    # solvents AND this spectrum shows their monomer ions.
+    _Stage("solvent_clusters", lambda st: solvent_clusters.assign_solvent_clusters(
+        st.led, st.profile, st.cfg, log=st.log),
+           when=lambda st: bool(solvent_clusters.solvents_for(st.profile))),
     _Stage("pass1", lambda st: passes.run_pass1(
         st.client, st.sample_id, st.led, st.profile, st.pre, st.cfg, st.adducts, log=st.log)),
     # self-calibrate the mass gate on the pass-1 backbone, then re-grade pass-1's
@@ -361,13 +372,17 @@ _STAGES = [
            safe=False, store=False),
     # EasyIC⁺ fragmentation ambiguity: relabel corroborated alcohol-dehydration
     # ions ([CnH2n+H]+ -> [CnH2n+2O+H-H2O]+) and stamp the MS1-irreducible
-    # carbonyl-vs-alcohol / fragment-vs-intact dual readings into commentary.
+    # carbonyl-vs-alcohol / fragment-vs-intact / cluster-vs-covalent dual
+    # readings into commentary. The cluster note is the complement of the
+    # `solvent_clusters` stage above: that stage COMMITS a cluster reading when
+    # the whole ladder is behind it, this one records the reading beside the
+    # covalent one on the rows it could not take.
     # With a batch TS, the dehydration pair (ion and its +O hydride partner)
     # can ALSO be corroborated by time-correlation -- one spectrum cannot tell
     # butene+MEK from dehydrated butanol, but the batch can.
     _Stage("easyic_ambiguity",
            lambda st: cleanup.annotate_easyic_ambiguity(
-               st.led, ts_peaks=st.ts_peaks, log=st.log),
+               st.led, ts_peaks=st.ts_peaks, profile=st.profile, log=st.log),
            when=lambda st: getattr(st.profile, "label", "") == "easyic",
            safe=False, store=False),
     # ¹⁵N-nitrate isobar arbitration: a covalent organonitrate [Y−H]- whose cluster

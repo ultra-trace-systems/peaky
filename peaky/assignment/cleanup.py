@@ -31,11 +31,13 @@ from peaky.chem import contexts as X
 from peaky.assignment import degeneracy as D
 from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
+from peaky.assignment import solvent_clusters as SC
 
-__version__ = "0.5.0"   # + reclaim_satellites now covers 15N/34S/29Si/30Si/18O (not just 13C/81Br/37Cl)
-# (history) v43-review fixes: ringing brightness floor (H4),
-                        # CHO-only isotope-confirmed recovery (H1/H2), covalent
-                        # cluster commentary (M4)
+__version__ = "0.6.0"   # + easyic cluster-vs-covalent dual note (case 4)
+                        # (history) reclaim_satellites covers 15N/34S/29Si/30Si/18O
+                        # (not just 13C/81Br/37Cl); v43-review fixes: ringing
+                        # brightness floor (H4), CHO-only isotope-confirmed
+                        # recovery (H1/H2), covalent cluster commentary (M4)
 
 BR = 1.99795          # 81Br - 79Br
 C13 = 1.003355
@@ -744,10 +746,12 @@ def _ts_pair_r(ts_peaks, mz_a: float, mz_b: float, *, tol: float = 0.004,
 
 
 def annotate_easyic_ambiguity(ledger: pd.DataFrame, *, ts_peaks=None,
-                              ts_r_min: float = 0.9, log=print) -> dict:
-    """EasyIC⁺ fragmentation ambiguity (easyic context only). A low-pressure
-    charge-transfer source FRAGMENTS, so three MS1-irreducible readings recur
-    (all three observed on the 2026-08-31 gin headspace run):
+                              ts_r_min: float = 0.9, profile=None,
+                              log=print) -> dict:
+    """EasyIC⁺ fragmentation / clustering ambiguity (easyic context only). A
+    low-pressure charge-transfer source FRAGMENTS, and one running on solvent
+    vapour also CLUSTERS, so four MS1-irreducible readings recur (the first
+    three all observed on the 2026-08-31 gin headspace run):
 
       1. A CnH2n "[M+H]+" commit (the alkene reading) is the SAME ion as an
          alcohol's in-source dehydration [CnH2n+2O + H - H2O]+. When that
@@ -764,9 +768,29 @@ def annotate_easyic_ambiguity(ledger: pd.DataFrame, *, ts_peaks=None,
       3. A pure-hydrocarbon cation with DBE >= 2 may be a FRAGMENT of a larger
          analyte (monoterpenes fragment; C7H9+ etc.), not the intact neutral.
          Commentary only.
+      4. A CLUSTER-vs-covalent reading: a source that runs on solvent vapour
+         builds proton- and hydride-bound clusters of it, and a cluster is the
+         SAME ION as its covalent isomer -- C4H11O2+ is both protonated
+         C4H10O2 (a butanediol) and [EtOH-H]+.EtOH, C4H9O+ is both protonated
+         C4H8O and that dimer's -H2O condensation product. Exactly the case-2
+         situation, one ionisation step further out. `solvent_clusters`
+         COMMITS such an ion as the cluster when the full ladder is behind it
+         (monomer present and strong, rung below observed, spacing exact); this
+         note is for the rows it did NOT take -- a ladder broken by an unpicked
+         rung, a condensation ion far too bright for its parent, or a run with
+         the cluster channel switched off. The covalent reading is kept and the
+         cluster reading recorded beside it. Commentary only, and it fires only
+         while a constituent solvent's own monomer is strong in the SAME
+         spectrum (`solvent_clusters.covalent_alias_notes`).
 
-    Locked rows are skipped (the pass-0 ethanol hydride lock already carries
-    its own observation-based commentary).
+    Cases 1-3 skip LOCKED rows (the pass-0 ethanol hydride lock already carries
+    its own observation-based commentary). Case 4 deliberately does not -- see
+    the sweep at the end of the function -- but it is excluded at source on the
+    rows `solvent_clusters` itself committed.
+
+    `profile` is the run's ContextProfile; it supplies the source solvents for
+    case 4 and defaults to the easyic context, which is the only context this
+    stage runs under.
 
     With a batch `ts_peaks` table, a SECOND corroboration route opens: a
     single spectrum cannot tell genuine-butene + genuine-MEK from dehydrated
@@ -777,8 +801,14 @@ def annotate_easyic_ambiguity(ledger: pd.DataFrame, *, ts_peaks=None,
     commit sitting ON the partner mass gets the correlation evidence appended
     to its dual-reading note (the alcohol contributes on that channel too)."""
     if "neutral_formula" not in ledger.columns or "adduct" not in ledger.columns:
-        return {"easyic_dehydration": 0, "easyic_dual": 0, "easyic_fragment": 0}
-    out = {"easyic_dehydration": 0, "easyic_dual": 0, "easyic_fragment": 0}
+        return {"easyic_dehydration": 0, "easyic_dual": 0, "easyic_fragment": 0,
+                "easyic_cluster": 0}
+    out = {"easyic_dehydration": 0, "easyic_dual": 0, "easyic_fragment": 0,
+           "easyic_cluster": 0}
+    # case 4, built from the SAME library the commit layer uses, so the two
+    # cannot describe the chemistry differently
+    cluster_notes = SC.covalent_alias_notes(
+        ledger, profile if profile is not None else X.get_context("easyic"))
     # alcohols committed on the hydride channel corroborate a dehydration ion
     alcohols = {str(ledger.at[j, "neutral_formula"] or "")
                 for j in ledger.index
@@ -852,6 +882,18 @@ def annotate_easyic_ambiguity(ledger: pd.DataFrame, *, ts_peaks=None,
             prev = str(ledger.at[i, "commentary"] or "")
             ledger.at[i, "commentary"] = \
                 (prev + "; " + note) if prev and prev != "nan" else note
+    # case 4, appended in its own sweep: it does NOT skip locked rows the way
+    # the loop above does. A lock says no pass may CHANGE this reading -- which
+    # is why case 1, the only one that relabels, has to respect it -- but the
+    # pass that locked a High grid winner never weighed a cluster reading at
+    # all, and that is exactly where the note earns its place (C4H11O2+ and
+    # C4H9O+ are both locked pass-1 backbone rows on the run this came from).
+    # Committed solvent clusters are excluded at source (they carry their own,
+    # better, commentary); this only ever adds a sentence.
+    if "commentary" in ledger.columns:
+        for i, cnote in cluster_notes.items():
+            _append_commentary(ledger, i, cnote)
+            out["easyic_cluster"] += 1
     # symmetric upgrade: the carbonyl commit sitting ON a time-corroborated
     # partner mass carries an alcohol contribution too -- append the evidence
     # to its dual-reading note (reading kept; the batch cannot apportion the
@@ -872,7 +914,8 @@ def annotate_easyic_ambiguity(ledger: pd.DataFrame, *, ts_peaks=None,
                     (prev + "; " + extra) if prev and prev != "nan" else extra
     log(f"[cleanup] easyic ambiguity: {out['easyic_dehydration']} dehydration "
         f"relabels, {out['easyic_dual']} dual-reading notes, "
-        f"{out['easyic_fragment']} fragment notes"
+        f"{out['easyic_fragment']} fragment notes, "
+        f"{out['easyic_cluster']} solvent-cluster alias notes"
         + (f", {len(partner_hits)} TS-corroborated pairs" if partner_hits else ""))
     return out
 
@@ -1590,6 +1633,15 @@ def _is_na(v) -> bool:
     """Scalar NA test that is safe on the ledger's mixed object cells (pd.NA
     raises on truth-testing, so `cell or ""` is not an option)."""
     return v is None or v is pd.NA or (isinstance(v, float) and np.isnan(v))
+
+
+def _append_commentary(ledger, i, msg):
+    """Append `msg` to the row's commentary ('; '-joined); NA-safe."""
+    prev = ledger.at[i, "commentary"]
+    prev = "" if _is_na(prev) else str(prev)
+    if prev in ("nan", "<NA>", "None"):
+        prev = ""
+    ledger.at[i, "commentary"] = f"{prev}; {msg}" if prev else str(msg)
 
 
 def _note(ledger, i, msg):

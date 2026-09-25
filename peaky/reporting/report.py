@@ -25,7 +25,8 @@ from peaky.chem import contexts as X
 from peaky.assignment import ledger as L
 from peaky.assignment import tiers as T
 
-__version__ = "0.3.0"  # + Below-assignability sheet
+__version__ = "0.3.1"  # + solvent-cluster method legend
+                       # (history) Below-assignability sheet
 
 
 def _alts_list(cell) -> list[dict]:
@@ -360,6 +361,16 @@ def legend_sheet() -> pd.DataFrame:
         ("Methods", "known:*", "Pass 0: locked list of known instrument "
          "contaminants (silanediol/PDMS ladder) and small atmospheric "
          "acids/radicals; mass + own-81Br-twin self-consistency gated."),
+        ("Methods", "known:solvent_cluster / cluster:solvent", "Pass 0 "
+         "(positive mode): a SOURCE-SOLVENT cluster ion -- solvent vapour the "
+         "ion source clusters with itself ([S_n+H]+, [S_n-H]+, and their -H2O "
+         "condensation rung). The neutral reported is the SOLVENT, on a cluster "
+         "adduct; the ion is not a covalent molecule and the grid cannot reach "
+         "it. 'known:' = no covalent reading of that composition exists (its "
+         "neutral would have DBE < 0); 'cluster:' = one does, so the row is "
+         "capped at Candidate with the covalent reading in `alternatives`. "
+         "ion_score is 0 on these rows: the family is scored OFFLINE (exact "
+         "cluster masses + an observed ladder), so there is no server score."),
         ("Methods", "cheminfo+grid", "Pass 1: CHO/CHON backbone candidates "
          "from the cheminfo m/z query + local formula grid, scored by "
          "Mascope; self-calibration is fitted on these."),

@@ -559,7 +559,9 @@ check("easyic: DBE>=2 hydrocarbon flagged as possible fragment",
 check("easyic: locked pass-0 hydride row untouched",
       lede.loc[lede.peak_id == "etoh", "commentary"].iloc[0] == "pass0")
 check("easyic: counts", oute == {"easyic_dehydration": 1, "easyic_dual": 2,
-                                 "easyic_fragment": 1}, oute)
+                                 "easyic_fragment": 1, "easyic_cluster": 0}, oute)
+# ...and the cluster note (case 4) is silent on a frame with no m/z column: it
+# cannot see a solvent monomer, so it must not invent a cluster reading.
 check("easyic: [M+H-H2O]+ shift registered (butanol dehydration ion = 57.0699)",
       abs(C.ion_mz("C4H10O", "[M+H-H2O]+") - 57.06988) < 5e-5)
 

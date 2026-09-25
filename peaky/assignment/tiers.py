@@ -56,9 +56,10 @@ from peaky.chem import chemistry as C
 from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
 
-__version__ = "0.8.0"  # mass-dependent z via masscal (range clamp; floor owned by
-                       # PassConfig) + persistent-weak cap (occurrence-admitted,
-                       # uncorroborated -> Candidate)
+__version__ = "0.9.0"  # + source-solvent cluster cap (cluster:solvent -> Candidate)
+                       # (history) mass-dependent z via masscal (range clamp; floor
+                       # owned by PassConfig) + persistent-weak cap
+                       # (occurrence-admitted, uncorroborated -> Candidate)
 
 TIER_ASSIGNED = "Assigned"
 TIER_CANDIDATE = "Candidate"
@@ -508,11 +509,35 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
 
         method = str(r.get("method") or "")
         tier, reason = TIER_ASSIGNED, ""
-        if method.startswith("known:"):
+        if method.startswith("known:solvent_cluster"):
+            # a source-solvent cluster whose composition has NO covalent reading
+            # (the implied neutral's DBE is negative). Its own gate is the
+            # ladder, not the own-twin check the halide known species earn their
+            # tier with, so it says so in its own terms.
+            reason = ("source-solvent cluster ion with no possible covalent "
+                      "reading (the implied neutral has DBE < 0): committed on "
+                      "exact mass plus an exact ladder step off an observed "
+                      "monomer channel")
+        elif method.startswith("known:"):
             reason = ("known species (pass-0 locked list, mass + own-twin "
                       "self-consistency gated)"
                       + _known_route(r, int(chan_count.get(formula, 0)),
                                      kid_labels_of.get(r["peak_id"], ())))
+        elif method.startswith("cluster:solvent"):
+            # A source-solvent cluster ion whose composition ALSO reads as a
+            # covalent neutral ([(C2H6O)2-H]+ == protonated C4H10O2). The
+            # cluster reading is committed -- a same-ion split goes to the
+            # adduct reading, the same policy `_drop_decomposition_aliases`
+            # applies -- but nothing in MS1 can prove it, so it is capped here.
+            # Not a score/mass failure, which is what the Low-confidence branch
+            # below would have called it: the mass is exact and the ladder is
+            # intact; it is the ISOMER that is unfalsifiable.
+            tier = TIER_CANDIDATE
+            reason = ("source-solvent cluster ion with a same-ion covalent "
+                      f"reading ({(alts_all[0].get('formula') if alts_all else '?')}"
+                      " on a monomer channel): a proton/hydride-bound cluster and "
+                      "its covalent isomer are one ion with one isotope pattern, "
+                      "so MS1 cannot discriminate them")
         elif base in ("Low", "Suspect"):
             tier = TIER_CANDIDATE
             reason = (f"{base} confidence: score/mass evidence below the "
