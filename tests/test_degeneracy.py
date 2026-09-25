@@ -48,22 +48,28 @@ def _competitor_adducts(res):
 
 # --------------------------------------------------------------------------- the solver
 def test_solver_proposes_exactly_the_grid_enumerators_formulas():
-    """The analytic per-window solve is the grid enumerator's formula set, window by window."""
-    prof = dataclasses.replace(X.get_context("ambient-air"), max_N=1, max_S=1, max_Si=0, max_Cl=1,
+    """The analytic per-window solve is the grid enumerator's formula set (<= 3 heteroatom types),
+    window by window: 1.9-Da windows tiling 20-400 Da, so every formula of the space is compared --
+    P is in the space so Senior's cap is not implied by H >= 0 -- plus exact-hit windows."""
+    prof = dataclasses.replace(X.get_context("ambient-air"), max_N=1, max_S=1, max_P=1, max_Si=0, max_Cl=1,
                                max_Br=0, max_F=0, grid_c_max=12, grid_o_max=6)
     cb = D._combos(D._caps(prof))
-    grid = C.enumerate_grid({"C": (0, 12), "H": (0, 60), "N": (0, 1), "O": (0, 6), "S": (0, 1),
-                             "Cl": (0, 1)}, 20.0, 400.0)
-    masses = np.array([m for m, _ in grid])
+    grid = [(m, f) for m, f in C.enumerate_grid({"C": (0, 12), "H": (0, 60), "N": (0, 1), "O": (0, 6),
+                                                 "S": (0, 1), "P": (0, 1), "Cl": (0, 1)}, 20.0, 400.0)
+            if D._het_types(C.parse_formula(f)) <= D.MAX_HET_TYPES]
     rng = random.Random(7)
-    windows = [(m, m + 0.01) for m in (rng.uniform(60, 380) for _ in range(40))]
+    # 1.9-Da tiles: just under the solver's 2 x m(H) limit, wide enough that Senior's cap -- which the
+    # carbon pruning enforces on its own inside a narrower window -- has to decide some formulas
+    windows = [(20.0 + 1.9 * k, 21.9 + 1.9 * k) for k in range(200)]
     windows += [(m - 1e-7, m + 1e-7) for m, _ in rng.sample(grid, 20)]       # exact hits
+    n = 0
     for lo, hi in windows:
         want = {f for m, f in grid if lo <= m <= hi}
         rep, cv, hv = D._solve(cb, 12, lo, hi)
         got = {D._formula(cb, i, c, h) for i, c, h in zip(rep, cv, hv)}
         assert got == want, (lo, hi, sorted(got ^ want))
-    assert len(masses)
+        n += len(want)
+    assert n > 10_000
 
 
 def test_the_window_is_applied_exactly():
@@ -150,6 +156,30 @@ def test_fluorine_counts_only_where_the_file_opened_it():
     assert opened["measured"] and not opened["lower_bound"] and opened["density"] >= 1
     curated = _measure(pfoa, context="ambient-air", adducts=NITRATE, curated={"C8HF15O2"})["P"]
     assert curated["measured"] and not curated["lower_bound"]      # a curated list names it
+
+
+def test_every_competitor_passes_the_context_filter():
+    """The space is the context's own: its Van Krevelen and minimum-carbon rules bind competitors."""
+    res = _measure([("P", "C10H16O5", "[M-H]-")], sigma=15.0, context="ambient-air", adducts=NITRATE,
+                   max_alts=500)["P"]
+    assert res["density"] > 10
+    for alt in res["alts"]:
+        assert X.filter_by_profile(alt.split(" ")[0], X.get_context("ambient-air"))[0], alt
+
+
+def test_the_commit_outside_the_context_filter_is_outside_the_space():
+    """In the budget but outside the context's filter ((H+X)/C 0.5 < 0.7): a bound, not a count."""
+    res = _measure([("P", "C8H4O4", "[M-H]-")], sigma=0.05, context="ambient-air", adducts=NITRATE)["P"]
+    assert res["lower_bound"] and np.isnan(res["density"]) and "context filter" in res["note"]
+
+
+def test_a_curated_commit_off_the_window_is_in_the_space():
+    """Off the window is not off the space when a curated list names the formula."""
+    led = _ledger([("P", "C8HF15O2", "[M-H]-")])
+    led.loc[led.peak_id == "P", "mz"] = float(led.loc[led.peak_id == "P", "mz"].iloc[0]) * (1 + 5e-6)
+    res = D.measure_degeneracy(led, cal=(0.0, 0.2), context="ambient-air", adducts=NITRATE,
+                               curated={"C8HF15O2"})["P"]
+    assert not res["lower_bound"] and res["measured"]
 
 
 def test_uronium_never_counts_a_halogen_competitor():
