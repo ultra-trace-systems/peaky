@@ -476,6 +476,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A commit outside the run's element budget is Candidate unless a curated list names it.** The
+  per-peak grid filters every candidate through the run context (`ambient-air` keeps P, F and I
+  at zero -- monoisotopic, never isotope-confirmable -- and S at one), but the passes that widen
+  the search on evidence of their own do not: the certified multi-channel core opens P / S / Cl,
+  the ladder gap-fill, the residual series / isotope pairs and completion extend what they are
+  given, and a CF2 chain opens the fluorinated family on `max_F=0`. The evidence that proposed
+  such a formula -- two channels converging on one neutral mass, a series step -- was then read
+  back as the second channel, the acid branch or the anchor that the tier and the evidence level
+  count as confirmation, so a certified `C40H66N3O2PS3` stood at Assigned 3b on its own proposal.
+  The `plausibility` stage now holds every commit to the context's **element budget**
+  (`contexts.element_budget`: the structural gate, the carbon-free allowlist and the heteroatom
+  caps -- `filter_by_profile`'s first three steps, factored out, its answers unchanged on 9,434
+  formulas x 28 contexts): outside it, and on no curated list (`passes.known_formulas`, the pass-0
+  registry for the run's polarity and context, plus the active reference lists), the row is
+  Assigned -> Candidate + `below_assignability` with a note and an audit row
+  (`plausibility.demote_off_budget`), and the evidence level reads 5b through its existing
+  `hard` predicate -- no level predicate or golden changes. The budget is not the context's
+  minimum-carbon rule for a halogen (a reagent-alias guard: bromoacetic acid on a nitrate channel
+  is no alias) nor its Van Krevelen windows (grid priors: nitrobenzoic acid is DBE/C 0.86). Sized
+  on the same-air working set before coding (the C8 runs replayed: per-file levels, the merge
+  vote, the merged levels): the ~10k TOF's Assigned 556 -> 516, and every Assigned phosphorus and
+  multi-sulfur neutral goes (P 15 -> 0, S>=2 13 -> 0, F 15 -> 6, Cl 22 -> 13); the labelled-nitrate
+  Orbitrap 633 -> 631 (its two unlisted fluorinated rows); the uronium Orbitrap 842 -> 840 (two
+  chlorinated rows in positive mode); the six test-set rows, every roster compound and the
+  cross-instrument agreement did not move.
+
 - **The `corroborated` axis counts only what the other source pins on its own.** `--corroborate`
   handed the axis to a neutral whenever the other source's ledgers committed the same formula at
   ANY level -- so two instruments whose grids both fit a mass-degenerate formula (5b on each)

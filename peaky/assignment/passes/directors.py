@@ -25,6 +25,7 @@ from .postprocess import _DBR, _peak_near, _si_m1_consistent
 __all__ = [
     "_silanediol_series",
     "_known_species",
+    "known_formulas",
     "_D37CL",
     "_RECOVERABLE_KNOWN_FAMS",
     "run_pass0_known",
@@ -305,6 +306,14 @@ def _known_species(polarity: str = "negative", context: str | None = None) -> di
         "chlorinated_paraffin": chlorinated_paraffin,
         "contaminant:silanediol": contam,
     }
+
+
+def known_formulas(polarity: str = "negative", context: str | None = None) -> frozenset[str]:
+    """Every formula the pass-0 registry names for this polarity / context, all
+    families together -- the curated half of the plausibility element-budget
+    exemption (plausibility.demote_off_budget): a formula a curated list names
+    is admitted by that list, whichever pass committed it."""
+    return frozenset(f for family in _known_species(polarity, context).values() for f in family)
 
 
 _D37CL = 1.9970499

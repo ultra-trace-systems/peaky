@@ -26,7 +26,7 @@ import pandas as pd
 from peaky.chem import chemistry as C
 from peaky.assignment import ledger as L
 
-__version__ = "0.3.0"   # carbon-cluster rule: F no longer exempts (F counts as H)
+__version__ = "0.4.0"   # element-budget demote (demote_off_budget); 0.3.0 carbon-cluster rule: F no longer exempts
 
 # thresholds (loose on purpose — flag the clear coincidences only)
 N_HIGH_OC = 3       # N>=3 combined with...
@@ -274,13 +274,72 @@ def demote_carbon_clusters(ledger: pd.DataFrame, *, audit=None, log=print) -> di
     return {"c_cluster_demoted": n}
 
 
-def demote_implausible(ledger: pd.DataFrame, *, audit=None, log=print) -> dict:
-    """The two shared-oracle demotes that fire on a single-file or merged ledger
-    without a time series: O-monster + carbon-cluster. Both are demote-only and
-    feed the same audit list."""
+def demote_off_budget(ledger: pd.DataFrame, *, context: str | None,
+                      curated=frozenset(), audit=None, log=print) -> dict:
+    """Demote M0 commits whose neutral lies outside the run context's ELEMENT
+    BUDGET (contexts.element_budget: the structural gate, the carbon-free
+    allowlist, the heteroatom caps) and that no curated list names.
+
+    The per-peak grid never proposes such a formula -- ambient-air keeps P, F and
+    I at zero because they are monoisotopic and can never be isotope-confirmed,
+    and S at one. Other commit paths widen the search on evidence of their own
+    (a multi-channel certificate, a series extrapolation, a contaminant family)
+    and CAN commit one; that evidence proposes the neutral MASS, and it is then
+    read back as the axes (chan2, the acid branch, an anchor) that the evidence
+    level and the tier count as confirmation. So an off-budget formula that no
+    curated list names is Candidate + below_assignability -- the evidence level
+    reads that as 5b. `curated` is every formula the pass-0 registry names for
+    this polarity/context plus the active reference lists
+    (assign._stage_plausibility), exempt whichever pass committed it. Measured on
+    a same-air TOF/Orbitrap pair before the rule: the TOF's Assigned
+    phosphorus and multi-sulfur neutrals were ALL such commits.
+    Demote-only; `context=None` is a no-op."""
+    if not context:
+        return {"budget_demoted": 0}
+    from peaky.chem import contexts as X
+    profile = X.get_context(context)
+    curated = frozenset(curated or ())
+    verdict: dict = {}
+    n = 0
+    has_method = "method" in ledger.columns
+    for i in _m0_index(ledger):
+        neutral = ledger.at[i, "neutral_formula"]
+        if not isinstance(neutral, str) or not neutral.strip() or neutral in curated:
+            continue
+        # an ion-only row carries its parent acid's composition (evidence.py);
+        # it is levelled on its own satellite and never judged here
+        if has_method and str(ledger.at[i, "method"]).startswith("ion_only:"):
+            continue
+        if neutral not in verdict:
+            verdict[neutral] = X.element_budget(neutral, profile)
+        ok, why = verdict[neutral]
+        if ok:
+            continue
+        ni = _iso_count(ledger.at[i, "isotopologues"]) if "isotopologues" in ledger.columns else 0
+        note = ledger.at[i, "degeneracy_note"] if "degeneracy_note" in ledger.columns else None
+        reason = (f"outside the {profile.label} element budget ({why}) and on no curated list "
+                  "-- a widened search proposed this formula; its axes confirm a neutral mass, "
+                  "not this composition")
+        _demote_row(ledger, i, reason=reason, audit=audit, evidence=str(why),
+                    degeneracy_note=note, n_iso=ni)
+        n += 1
+    log(f"[plausibility] demoted {n} commits outside the {profile.label} element budget "
+        f"(not on a curated list)")
+    return {"budget_demoted": n}
+
+
+def demote_implausible(ledger: pd.DataFrame, *, audit=None, log=print,
+                       context: str | None = None, curated=frozenset()) -> dict:
+    """The shared-oracle demotes that fire on a single-file or merged ledger
+    without a time series: O-monster + carbon-cluster, and -- given the run's
+    `context` -- the element-budget demote (`demote_off_budget`). All are
+    demote-only and feed the same audit list."""
     o = demote_oxygen_monsters(ledger, audit=audit, log=log)
     c = demote_carbon_clusters(ledger, audit=audit, log=log)
-    return {**o, **c}
+    if not context:
+        return {**o, **c}
+    b = demote_off_budget(ledger, context=context, curated=curated, audit=audit, log=log)
+    return {**o, **c, **b}
 
 
 _AUDIT_COLS = ["mz", "neutral_formula", "before_tier", "after_tier_or_role",

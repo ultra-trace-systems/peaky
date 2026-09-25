@@ -290,6 +290,19 @@ def _stage_timeseries(st):
         st.led, st.ts_peaks, reagent_mzs=ts_reagent_mzs, log=st.log)
 
 
+def _stage_plausibility(st):
+    """The shared-oracle demotes (O-monster, carbon cluster) and the element-budget
+    demote: a commit whose neutral lies outside the run context's element budget
+    (contexts.element_budget) and that no curated list names -- the pass-0
+    registry for this polarity/context or an active reference list -- is
+    Candidate + below_assignability (plausibility.demote_off_budget)."""
+    label = getattr(st.profile, "label", None)
+    curated = passes.known_formulas(getattr(st.profile, "polarity", "negative"), label)
+    curated = curated | frozenset(getattr(st.cfg, "reflist_formulas", None) or ())
+    return plausibility.demote_implausible(
+        st.led, audit=st.plaus_audit, log=st.log, context=label, curated=curated)
+
+
 def _stage_evidence(st):
     """Evidence level on every committed M0 (docs/EVIDENCE_LEVELS.md): what the
     evidence behind the formula is worth on the CIMS-adapted Schymanski scale,
@@ -495,8 +508,7 @@ _STAGES = [
     _Stage("demote_speculative",
            lambda st: cleanup.demote_speculative_residual(st.led, st.cfg, log=st.log),
            safe=False, store=False),
-    _Stage("plausibility", lambda st: plausibility.demote_implausible(
-        st.led, audit=st.plaus_audit, log=st.log), safe=False),
+    _Stage("plausibility", _stage_plausibility, safe=False),
     # rescue-verify the still-unexplained residual against active reference peaklists.
     _Stage("reflist_rescue", lambda st: reflists.rescue_unexplained_by_reflist(
         st.client, st.sample_id, st.led, st.profile, st.cfg, st.reflists_active,

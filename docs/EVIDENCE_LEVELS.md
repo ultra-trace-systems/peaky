@@ -47,7 +47,7 @@ null-safe: NaN, `pd.NA`, `None`, `''` and `'false'` are False;
 | `method` | M0 | `known:<family>` marks a pass-0 curated identity |
 | `confidence` | M0 | its first word: `High`, `Good`, `Low`, `Suspect` |
 | `tied` | M0 | the arbiter broke a near-tie |
-| `below_assignability` | M0 | `tiers.flag_below_assignability` (O ≥ 11 and mass-saturated) |
+| `below_assignability` | M0 | `tiers.flag_below_assignability` (O ≥ 11 and mass-saturated), or a `plausibility` demote: an O-monster, a carbon cluster, or a commit outside the run context's element budget that no curated list names (`plausibility.demote_off_budget`, docs/ASSIGNMENT_DETAIL.md §8.5) |
 | `degeneracy_density` | M0 | plausible ions sharing the mass in the calibrated window (`degeneracy.apply_degeneracy`) |
 | `degeneracy_note` | M0 | contains `MASS-SATURATED` when the audit capped |
 | `resolvability` | M0 | `resolved` / `isolated` / `blended` / `unresolvable`; stamped by the `resolvability` stage on every run that has a width model (a batch measures one from the raw profile of a middling spectrum; `--resolving-power` declares or declines it); NA on an offline run without one |
@@ -174,6 +174,16 @@ the isomer space says 3 (2-, 3-, 4-nitrophenol), so 3a.
   the pass-0 lock to be fixed there, not hidden here.
 - **The tier is not an input.** Levels and tiers are computed from the same
   columns and may disagree; B3 measures where.
+- **A formula outside the run's element budget is not evidence of the neutral
+  (C9).** A pass that widens the search -- a multi-channel certificate, a series
+  extrapolation, a chain-opened contaminant family -- can commit a formula the
+  context's element budget excludes (P, F or I in ambient air, S > 1, ...). The
+  channels or the series step that proposed it are exactly the `chan2` / acid
+  branch / `anchor` facts a level counts, so read back they would rate the
+  formula 3b or 4b on its own proposal. The `plausibility` stage flags such a
+  commit `below_assignability` unless a curated list names it, and the level
+  reads that as 5b through `hard` -- no predicate here changes, and the golden
+  fixtures (written before the stage) do not move.
 
 ## 5. `peaky/data/isomer_space.csv`
 
