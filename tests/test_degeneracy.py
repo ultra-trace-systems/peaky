@@ -66,6 +66,19 @@ def test_solver_proposes_exactly_the_grid_enumerators_formulas():
     assert len(masses)
 
 
+def test_the_window_is_applied_exactly():
+    """Inclusive at the edge (to float noise), and not a nanodalton wider -- the DBE solve alone
+    carries a tolerance of that size, so the mass test has to be applied on its own."""
+    cb = D._combos(D._caps(X.get_context("ambient-air")))
+    m = C.neutral_mass("C10H16O5")
+    def got(lo, hi):
+        rep, cv, hv = D._solve(cb, 40, lo, hi)
+        return {D._formula(cb, i, c, h) for i, c, h in zip(rep, cv, hv)}
+    assert "C10H16O5" in got(m - 1e-3, m + 1e-12) and "C10H16O5" in got(m - 1e-12, m + 1e-3)
+    assert "C10H16O5" not in got(m + 1e-9, m + 1e-3)
+    assert "C10H16O5" not in got(m - 1e-3, m - 1e-9)
+
+
 @pytest.mark.parametrize("name", sorted({id(p): n for n, p in X.CONTEXTS.items()}.values()))
 def test_every_context_enumerates_inside_the_ceiling(name):
     """A context that leaves a cap at its 99 default must not open a 99-atom loop."""
@@ -170,6 +183,27 @@ def test_an_off_space_commit_is_a_lower_bound_or_not_measured():
     assert wide["measured"] and wide["lower_bound"] and wide["density"] >= 3
     assert "at least" in wide["note"] and "lower bound" in wide["note"]
     assert T._degeneracy({"degeneracy_density": wide["density"], "degeneracy_note": wide["note"]})[1]
+
+
+def test_the_lower_bound_decides_at_three():
+    """Off-space commit with one other ion: not measured; with two: 'at least 3', degenerate."""
+    row = [("P", "C10H15O4P", "[M-H]-")]
+    one = _measure(row, sigma=0.2, context="ambient-air", adducts=NITRATE)["P"]
+    assert np.isnan(one["density"]) and "; 1 other plausible ion(s)" in one["note"]
+    two = _measure(row, sigma=0.3, context="ambient-air", adducts=NITRATE)["P"]
+    assert two["density"] == 3 and two["lower_bound"] and "at least 3" in two["note"]
+    assert T._degeneracy({"degeneracy_density": two["density"], "degeneracy_note": two["note"]})[1]
+
+
+def test_a_curated_formula_competes_off_budget():
+    """A curated formula counts wherever its ion lands in the window, off-budget or not."""
+    row = [("P", "C10H16O5", "[M-H]-")]
+    cur = _measure(row, sigma=15.0, context="ambient-air", adducts=NITRATE, curated={"C10H17O3P"},
+                   max_alts=500)["P"]
+    plain = _measure(row, sigma=15.0, context="ambient-air", adducts=NITRATE, max_alts=500)["P"]
+    assert any(a.startswith("C10H17O3P ") for a in cur["alts"])
+    assert not any(a.startswith("C10H17O3P ") for a in plain["alts"])
+    assert cur["density"] == plain["density"] + 1
 
 
 def test_outside_the_window_is_not_outside_the_space():
