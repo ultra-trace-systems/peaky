@@ -144,6 +144,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   date-ranged batch name in `tests/test_reflists.py`, is neutralized; the assertions
   are unchanged.
 
+### Changed
+
+- **`mascope-tools` is held below 2026.9.24.** That release reads the
+  subtractive mechanism spellings per the grammar (`-H-` is a hydride removed,
+  `-H+` a proton), and this code still writes them the other way round until it
+  is re-pinned together with the change. Without the ceiling a fresh install
+  between the two releases would pair the old spellings with the new parser.
+
 ### Fixed
 
 - **`peaky batch --help` and `peaky pool --help` crashed** with `TypeError: %o format:
