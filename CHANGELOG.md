@@ -509,11 +509,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   old default set reproduced the stored density on 26,820 of 26,835 rows -- then the tier cap, the
   below flag, the O-monster demote, the per-file levels, the merge vote and the merged levels; the
   build reproduces the census on 25,834 of 25,835 rows, the other being a relabelled `[M]-.` row
-  that now counts its own channel): the uronium Orbitrap's merged 4c 295 -> 282 and Assigned
-  840 -> 838 (the MBTCA roster row 5a -> 4c); the labelled-nitrate Orbitrap's Assigned 631 -> 645;
-  the ~10k TOF's Assigned 518 -> 493 and 4c 41 -> 11 -- heavy C24-C40 readings at m/z 490-960 whose
-  windows are saturated once C > 20 and O > 12 are counted; the six test-set rows and every roster
-  winner unchanged.
+  that now counts its own channel), and the regression runs equal that replay: the uronium
+  Orbitrap's merged 4c 290 -> 277 and Assigned 838 -> 836 (the MBTCA roster row 5a -> 4c); the
+  labelled-nitrate Orbitrap's Assigned 631 -> 646; the ~10k TOF's Assigned 517 -> 492 and 4c 41 -> 11
+  -- heavy C24-C40 readings at m/z 490-960 whose windows are saturated once C > 20 and O > 12 are
+  counted; the six test-set rows, every roster winner, the cross-instrument agreement and the shift
+  decoy unchanged or better. The wrong-adduct decoy rises (labelled nitrate 20.8 -> 23.9 %, uronium
+  73.1 -> 74.9 %): every extra decoy row had been capped by competitors no pass can commit (F+Si
+  mixtures; anion readings of a cation peak), so the old rate was lowered by the defect itself.
 
 - **A commit outside the run's element budget is Candidate unless a curated list names it.** The
   per-peak grid filters every candidate through the run context (`ambient-air` keeps P, F and I
