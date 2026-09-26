@@ -17,12 +17,18 @@ Reported, A as the reference and B as the challenger:
 * headline — merged rows, tier counts, distinct neutrals, distinct ions;
 * ion disagreements — merged rows matched across the runs within `--tol-ppm`
   whose `(neutral_formula, adduct)` reading differs;
+* row changes — the merged rows joined on the ion `(neutral_formula, adduct)`:
+  how many of the shared ions changed tier, evidence level or claim, and the
+  rows only one run holds (a pre-claim run's claims are read off its levels; a
+  field one run does not carry at all is not compared);
 * time-series coverage — per `(neutral, adduct)`, the share of the batch's
   samples carrying the ion in `_batch_ts.parquet`, and every gain or loss above
   `--coverage-delta` points;
 * recovery — the neutrals A found in at least `--min-files` files that B lacks,
   split by occurrence and median m/z, the headline number for a path change;
-* evidence levels — the `evidence_level` histogram, when the column is there.
+* evidence levels — the `evidence_level` histogram, when the column is there;
+* claims — the claim histogram (identified / ion / tentative), when either
+  column is there.
 """
 
 from __future__ import annotations
@@ -38,6 +44,16 @@ import numpy as np
 import pandas as pd
 
 TS_COLUMNS = ["sample_item_id", "neutral_formula", "adduct"]
+
+# The claim a level supports (peaky.assignment.evidence.CLAIMS and its level
+# sets), kept here so the script reads a run dir without peaky installed; a
+# test pins them equal to the package's.
+CLAIMS = ("identified", "ion", "tentative")
+CLAIM_IDENTIFIED = frozenset({"1", "2a", "2b", "3a", "3b", "4a"})
+CLAIM_ION = frozenset({"4b", "4c", "4d"})
+# What a shared ion is compared on: (report field, ledger column).
+CHANGE_FIELDS = (("tier", "tier"), ("level", "evidence_level"), ("claim", "claim"))
+CHANGED_ROWS_SHOWN = 20
 
 
 def resolve_run_dir(path: str) -> str:
@@ -238,6 +254,107 @@ def evidence_hist(run: Run) -> pd.Series | None:
     return run.ledger["evidence_level"].fillna("—").astype(str).value_counts().sort_index()
 
 
+def claim_class(level) -> str:
+    """The claim a level supports, read as evidence.claim_class reads it:
+    'identified' (1-4a), 'ion' (4b-4d), 'tentative' (5a, 5b or no level)."""
+    if level is None or (not isinstance(level, str) and pd.isna(level)):
+        return "tentative"
+    lv = str(level).strip()
+    if lv in CLAIM_IDENTIFIED:
+        return "identified"
+    if lv in CLAIM_ION:
+        return "ion"
+    return "tentative"
+
+
+def _ledger(run) -> pd.DataFrame:
+    return run.ledger if isinstance(run, Run) else run
+
+
+def claim_source(run) -> str | None:
+    """'stamped' (the ledger carries `claim`), 'derived' (read off
+    `evidence_level`: the run predates the column) or None (neither)."""
+    cols = _ledger(run).columns
+    if "claim" in cols:
+        return "stamped"
+    return "derived" if "evidence_level" in cols else None
+
+
+def claims_of(run) -> pd.Series | None:
+    """The claim of every merged row: the `claim` column when the ledger
+    carries one, else read off `evidence_level`; None when it has neither."""
+    led = _ledger(run)
+    source = claim_source(led)
+    if source == "stamped":
+        return led["claim"].astype(object)
+    if source == "derived":
+        return led["evidence_level"].map(claim_class).astype(object)
+    return None
+
+
+def claims_hist(run) -> pd.Series | None:
+    claims = claims_of(run)
+    if claims is None:
+        return None
+    return claims.fillna("—").astype(str).value_counts()
+
+
+def _keyed(led: pd.DataFrame) -> pd.DataFrame:
+    """The merged rows that read an ion, keyed on (neutral, adduct, k) with the
+    compared fields as strings (no value reads '—'). k numbers the repeats of
+    one ion in m/z order, so a repeated ion pairs row by row, never n x m."""
+    claims = claims_of(led)
+    sub = led[led["neutral_formula"].notna()]
+    out = pd.DataFrame(
+        {
+            "neutral": sub["neutral_formula"].astype(str),
+            "adduct": (sub["adduct"].fillna("").astype(str)
+                       if "adduct" in sub.columns else ""),
+            "mz": sub["mz"] if "mz" in sub.columns else np.nan,
+        },
+        index=sub.index,
+    )
+    for field, col in CHANGE_FIELDS:
+        values = claims if col == "claim" else (led[col] if col in led.columns else None)
+        out[field] = (values.loc[sub.index].fillna("—").astype(str)
+                      if values is not None else "—")
+    out = out.sort_values("mz", kind="stable")
+    out["k"] = out.groupby(["neutral", "adduct"]).cumcount()
+    return out
+
+
+def _carries(led: pd.DataFrame, col: str) -> bool:
+    """Whether a ledger holds a compared field at all: the claim when it is
+    stamped or can be read off a level, any other field by its column."""
+    return claim_source(led) is not None if col == "claim" else col in led.columns
+
+
+def row_changes(a, b) -> dict:
+    """The merged rows of two runs (Run or ledger) joined on the ion
+    (neutral_formula, adduct): {shared, only_a, only_b, tier, level, claim,
+    rows}. A field counts as changed on a shared ion when its values differ as
+    strings, no value on both sides being equal; `rows` lists those ions. A
+    field one ledger does not carry at all is not compared: it reads None, and
+    no row is listed for it (a missing column is not a change)."""
+    la, lb = _ledger(a), _ledger(b)
+    ka, kb = _keyed(la), _keyed(lb)
+    joined = ka.merge(kb, on=["neutral", "adduct", "k"], how="outer",
+                      suffixes=("_a", "_b"), indicator=True)
+    shared = joined[joined["_merge"] == "both"]
+    changed = {field: shared[f"{field}_a"] != shared[f"{field}_b"]
+               for field, col in CHANGE_FIELDS if _carries(la, col) and _carries(lb, col)}
+    rows = (shared[pd.concat(changed.values(), axis=1).any(axis=1)]
+            if len(shared) and changed else shared.iloc[:0])
+    return {
+        "shared": int(len(shared)),
+        "only_a": int((joined["_merge"] == "left_only").sum()),
+        "only_b": int((joined["_merge"] == "right_only").sum()),
+        **{field: int(changed[field].sum()) if field in changed else None
+           for field, _col in CHANGE_FIELDS},
+        "rows": rows.sort_values("mz_a", kind="stable").reset_index(drop=True),
+    }
+
+
 def _tier_table(a: pd.DataFrame, b: pd.DataFrame) -> str:
     ta = a["tier"].astype(str).value_counts()
     tb = b["tier"].astype(str).value_counts()
@@ -329,10 +446,12 @@ def build_report(
 
     w(f"## Ion disagreements (matched within {tol_ppm:g} ppm)\n")
     matched = match_by_mz(a, b, tol_ppm)
+    n_ion = None
     if matched.empty:
         w("No merged rows matched across the runs.\n")
     else:
         disagree = matched[matched["ion_a"] != matched["ion_b"]]
+        n_ion = len(disagree)
         share = len(disagree) / len(matched) * 100.0
         w(
             f"{len(matched)} of A's {len(a)} rows found a partner in B; "
@@ -348,6 +467,41 @@ def build_report(
                     f"{r.ion_b} ({r.tier_b}) | {r.ppm:.2f} |"
                 )
             w("")
+
+    w("## Row changes (merged rows joined on the ion)\n")
+    ch = row_changes(a, b)
+    w(
+        f"{ch['shared']} ions are merged rows in both runs, {ch['only_a']} only in A "
+        f"and {ch['only_b']} only in B. The ion row counts the m/z-matched pairs "
+        "above; tier, level and claim count the shared ions, no value on both "
+        "sides being no change.\n"
+    )
+    for label, run in (("A", run_a), ("B", run_b)):
+        if claim_source(run) == "derived":
+            w(f"> Run {label}'s ledger has no `claim` column: its claims are read "
+              "off `evidence_level`.\n")
+        elif claim_source(run) is None:
+            w(f"> Run {label}'s ledger carries neither `claim` nor `evidence_level`: "
+              "level and claim are not compared.\n")
+    w("| field | changed |")
+    w("|---|---:|")
+    w(f"| ion | {n_ion if n_ion is not None else '—'} |")
+    for field, _col in CHANGE_FIELDS:
+        w(f"| {field} | {ch[field] if ch[field] is not None else '—'} |")
+    w(f"| rows only in A | {ch['only_a']} |")
+    w(f"| rows only in B | {ch['only_b']} |")
+    w("")
+    if not ch["rows"].empty:
+        shown = ch["rows"].head(CHANGED_ROWS_SHOWN)
+        w(f"The {len(shown)} changed at the lowest m/z:\n")
+        w("| m/z (A) | ion | tier A → B | level A → B | claim A → B |")
+        w("|---:|---|---|---|---|")
+        for _, r in shown.iterrows():
+            w(
+                f"| {r.mz_a:.4f} | {r.neutral} {r.adduct} | {r.tier_a} → {r.tier_b} | "
+                f"{r.level_a} → {r.level_b} | {r.claim_a} → {r.claim_b} |"
+            )
+        w("")
 
     w("## Time-series coverage per ion\n")
     cov_a, cov_b = ts_coverage(run_a), ts_coverage(run_b)
@@ -429,6 +583,27 @@ def build_report(
         for level in sorted(set(ha.index) | set(hb.index)):
             va, vb = int(ha.get(level, 0)), int(hb.get(level, 0))
             w(f"| {level} | {va} | {vb} | {vb - va:+d} |")
+        w("")
+
+    w("## Claims\n")
+    ca, cb = claims_hist(run_a), claims_hist(run_b)
+    if ca is None and cb is None:
+        w("Neither ledger carries `claim` or `evidence_level`.\n")
+    else:
+        extra = sorted(
+            (set(ca.index if ca is not None else ()) | set(cb.index if cb is not None else ()))
+            - set(CLAIMS)
+        )
+        w("| claim | A | B | delta |")
+        w("|---|---:|---:|---:|")
+        for claim in (*CLAIMS, *extra):
+            # A run with neither column has no claims to count, not zero of
+            # each -- as with the stages, saying 0 invents a finding.
+            va = str(int(ca.get(claim, 0))) if ca is not None else "n/a"
+            vb = str(int(cb.get(claim, 0))) if cb is not None else "n/a"
+            delta = (f"{int(cb.get(claim, 0)) - int(ca.get(claim, 0)):+d}"
+                     if ca is not None and cb is not None else "—")
+            w(f"| {claim} | {va} | {vb} | {delta} |")
         w("")
 
     return "\n".join(out) + "\n"

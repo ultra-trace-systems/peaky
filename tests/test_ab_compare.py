@@ -292,3 +292,140 @@ def test_a_run_without_stage_data_is_not_reported_as_zero(tmp_path):
     assert "| cover | 0 | 6197 |" not in report
     assert "Run A records no stage breakdown" in report
     assert "do not share a stage composition" not in report
+
+
+# --- claims and row changes (C13) ---------------------------------------------
+# A pre-claim run carries `evidence_level` and no `claim`; a claim run carries
+# both. The row-change table is what shows two such runs agree on every ion,
+# tier and level: the old run's claims are read off its levels, so the claim
+# row reads 0 exactly when the stamped claim equals the derived one.
+LEVELLED_A = LEDGER_A.assign(evidence_level=["2b", "4b", "4c", "5b", "4a", None])
+
+
+def test_the_claim_sets_are_the_package_sets():
+    from peaky.assignment import evidence as EV
+
+    assert AB.CLAIMS == EV.CLAIMS
+    assert AB.CLAIM_IDENTIFIED == EV.CLAIM_IDENTIFIED
+    assert AB.CLAIM_ION == EV.CLAIM_ION
+    for level in [*EV.LEVEL_ORDER, None, float("nan"), "", "nan", "6"]:
+        assert AB.claim_class(level) == EV.claim_class(level), level
+
+
+def test_claims_of_reads_the_column_or_derives_it_from_the_level(tmp_path):
+    old = AB.load_run(str(_write_run(tmp_path / "old", LEVELLED_A, None, {})))
+    assert AB.claim_source(old) == "derived"
+    assert list(AB.claims_of(old)) == ["identified", "ion", "ion", "tentative", "identified", "tentative"]
+
+    stamped = LEVELLED_A.assign(claim=["identified", "ion", "ion", "tentative", "identified", "tentative"])
+    new = AB.load_run(str(_write_run(tmp_path / "new", stamped, None, {})))
+    assert AB.claim_source(new) == "stamped"
+    assert list(AB.claims_of(new)) == list(stamped["claim"])
+
+    bare = AB.load_run(str(_write_run(tmp_path / "bare", LEDGER_A, None, {})))
+    assert AB.claim_source(bare) is None and AB.claims_of(bare) is None
+    assert AB.claims_hist(bare) is None
+
+
+def test_row_changes_is_zero_for_identical_runs(tmp_path):
+    a = AB.load_run(str(_write_run(tmp_path / "a", LEVELLED_A, None, {})))
+    b = AB.load_run(str(_write_run(tmp_path / "b", LEVELLED_A, None, {})))
+    ch = AB.row_changes(a, b)
+    # the None-neutral row is not an ion: five shared, none on one side only
+    assert (ch["shared"], ch["only_a"], ch["only_b"]) == (5, 0, 0)
+    assert (ch["tier"], ch["level"], ch["claim"]) == (0, 0, 0)
+    assert ch["rows"].empty
+
+
+def test_row_changes_counts_a_tier_change_and_a_level_change(tmp_path):
+    b_led = LEVELLED_A.copy()
+    b_led.loc[2, "tier"] = "Assigned"            # C8H12O4: Candidate -> Assigned, level kept
+    b_led.loc[3, "evidence_level"] = "4c"        # C9H10O3: 5b -> 4c, tier kept (claim moves too)
+    b_led = b_led.drop(index=[4])                # C10H16O -> only in A
+    b_led = pd.concat([b_led, pd.DataFrame([{"mz": 700.0, "neutral_formula": "C11H18O3",
+                                             "adduct": "[M-H]-", "tier": "Assigned",
+                                             "n_files": 2, "occurrence": 0.4,
+                                             "evidence_level": "4b"}])], ignore_index=True)
+    a = AB.load_run(str(_write_run(tmp_path / "a", LEVELLED_A, None, {})))
+    b = AB.load_run(str(_write_run(tmp_path / "b", b_led, None, {})))
+    ch = AB.row_changes(a, b)
+    assert (ch["shared"], ch["only_a"], ch["only_b"]) == (4, 1, 1)
+    assert (ch["tier"], ch["level"], ch["claim"]) == (1, 1, 1)
+    rows = ch["rows"]
+    assert list(rows["neutral"]) == ["C8H12O4", "C9H10O3"]
+    assert (rows.iloc[0]["tier_a"], rows.iloc[0]["tier_b"]) == ("Candidate", "Assigned")
+    assert (rows.iloc[1]["level_a"], rows.iloc[1]["level_b"]) == ("5b", "4c")
+    assert (rows.iloc[1]["claim_a"], rows.iloc[1]["claim_b"]) == ("tentative", "ion")
+
+
+def test_a_stamped_claim_equal_to_the_derived_one_is_no_change(tmp_path):
+    """The pre-claim run (A) has no claim column; the claim run (B) stamps it."""
+    stamped = LEVELLED_A.assign(claim=LEVELLED_A["evidence_level"].map(AB.claim_class))
+    a = AB.load_run(str(_write_run(tmp_path / "pre", LEVELLED_A, None, {})))
+    b = AB.load_run(str(_write_run(tmp_path / "post", stamped, None, {})))
+    ch = AB.row_changes(a, b)
+    assert (ch["tier"], ch["level"], ch["claim"]) == (0, 0, 0)
+    # a stamped claim that disagrees with its own level is a change, not hidden
+    wrong = stamped.copy()
+    wrong.loc[0, "claim"] = "ion"
+    c = AB.load_run(str(_write_run(tmp_path / "wrong", wrong, None, {})))
+    assert AB.row_changes(a, c)["claim"] == 1
+
+    report = AB.build_report(a, b, 6.0, 2, 5.0, 25)
+    for line in ("| ion | 0 |", "| tier | 0 |", "| level | 0 |", "| claim | 0 |",
+                 "| rows only in A | 0 |", "| rows only in B | 0 |"):
+        assert line in report, line
+    assert "Run A's ledger has no `claim` column" in report
+    assert "Run B's ledger has no `claim` column" not in report
+    # the section sits after the ion disagreements, before the coverage
+    assert (report.index("## Ion disagreements") < report.index("## Row changes")
+            < report.index("## Time-series coverage"))
+
+
+def test_row_changes_pairs_a_repeated_ion_row_by_row():
+    a = pd.DataFrame({"mz": [100.0, 100.5], "neutral_formula": ["C5H8O2"] * 2,
+                      "adduct": ["[M-H]-"] * 2, "tier": ["Assigned", "Candidate"]})
+    b = a.iloc[[0]]
+    ch = AB.row_changes(a, b)
+    assert (ch["shared"], ch["only_a"], ch["only_b"], ch["tier"]) == (1, 1, 0, 0)
+
+
+def test_report_writes_the_claims_histogram(runs, tmp_path):
+    a, b = runs
+    report = AB.build_report(AB.load_run(str(a)), AB.load_run(str(b)), 6.0, 2, 5.0, 25)
+    assert "Neither ledger carries `claim` or `evidence_level`." in report
+
+    stamped = LEVELLED_A.assign(claim=["identified", "ion", "ion", "tentative", "identified", "tentative"])
+    ra = AB.load_run(str(_write_run(tmp_path / "old", LEVELLED_A, None, {})))
+    rb = AB.load_run(str(_write_run(tmp_path / "new", stamped.iloc[:4], None, {})))
+    report = AB.build_report(ra, rb, 6.0, 2, 5.0, 25)
+    assert report.index("## Evidence levels") < report.index("## Claims")
+    assert "| identified | 2 | 1 | -1 |" in report
+    assert "| ion | 2 | 2 | +0 |" in report
+    assert "| tentative | 2 | 1 | -1 |" in report
+
+
+def test_a_run_without_levels_is_not_compared_on_level_or_claim(tmp_path):
+    """A pre-level run (no `evidence_level`, no `claim`) against a levelled one:
+    the missing columns are not a change on every shared ion. Only the tier is
+    compared, only the real tier change is listed, and the claims histogram
+    reads n/a for the run that has none rather than 0."""
+    b_led = LEVELLED_A.copy()
+    b_led.loc[2, "tier"] = "Assigned"            # C8H12O4: Candidate -> Assigned
+    a = AB.load_run(str(_write_run(tmp_path / "pre", LEDGER_A, None, {})))
+    b = AB.load_run(str(_write_run(tmp_path / "post", b_led, None, {})))
+    ch = AB.row_changes(a, b)
+    assert ch["shared"] == 5
+    assert (ch["tier"], ch["level"], ch["claim"]) == (1, None, None)
+    assert list(ch["rows"]["neutral"]) == ["C8H12O4"]
+
+    report = AB.build_report(a, b, 6.0, 2, 5.0, 25)
+    for line in ("| tier | 1 |", "| level | — |", "| claim | — |",
+                 "| identified | n/a | 2 | — |", "| ion | n/a | 2 | — |",
+                 "| tentative | n/a | 2 | — |"):
+        assert line in report, line
+    assert ("Run A's ledger carries neither `claim` nor `evidence_level`: "
+            "level and claim are not compared.") in report
+    assert "Run B's ledger carries neither" not in report
+    assert "| identified | 0 |" not in report
+    assert "The 1 changed at the lowest m/z:" in report
