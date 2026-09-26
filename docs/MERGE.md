@@ -123,7 +123,13 @@ selected sample_ids (SAMPLING.md)
      or the ion pinned, the neutral not (4b, 4c, 4d); **0** = exact mass alone
      or an assignment that argues with itself (5a, 5b), or no level at all (a
      pure `align()` caller without the evidence stage: every reading is 0 and
-     the vote is the pure count). The ion of the best class wins whatever the
+     the vote is the pure count). The level sets of classes 2 and 1 are the
+     claim's `identified` and `ion` sets ([`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md)
+     §1.1), but class 2 also takes the `corroborated` axis, which is the vote's
+     alone: a corroborated 5b votes class 2 and claims `tentative`. So the vote
+     class is not the claim, and the vote reads `evidence_level` /
+     `evidence_axes`, never `claim` (it is not in `_M0_COLS`; a per-file claim
+     column moves no winner). The ion of the best class wins whatever the
      file count; among ions of one class the ion carried by the most **files**
      wins, then the number of files carrying it at **Assigned** tier
      (`TIER_RANK = {Assigned:2, Candidate:1}`, else 0), then the best
@@ -318,7 +324,7 @@ All in `peaky/batch/assign_batch.py`.
 | --- | --- | --- |
 | `DEFAULT_TOL_PPM` | 6.0 (`= sampling.BATCH_TOL_PPM`) | the BINNING tolerance (the selector's bins, the admission table, the trace index) and the default + floor of the merge window: what a pure `align()` call clusters at, and what `run` clusters at when nothing could be measured |
 | `traces.MassScale.merge_ppm` | `max(tol, min(2·tol, 2.5·√2·σ))` — 6 ppm on an Orbitrap, 12 on a TOF | the window `run` clusters at, from the batch's measured per-ion scatter σ (`traces.measure_mass_scale`, once per batch, before the first merge); `traces.MERGE_GAP_SIGMA` = 2.5·√2 = 3.54, `traces.WINDOW_MAX_X` = 2.0 |
-| `EVIDENCE_CLASS_GOOD` / `EVIDENCE_CLASS_MID` / `CORROBORATED_AXIS` | `{1, 2a, 2b, 3a, 3b, 4a}` / `{4b, 4c, 4d}` / `corroborated` | the vote's evidence class of a per-file reading (`_evidence_class`: 2 = a level in the first set or the `corroborated` token in `evidence_axes`; 1 = a level in the second; 0 = 5a / 5b / no level) — the ion key before the file count |
+| `EVIDENCE_CLASS_GOOD` / `EVIDENCE_CLASS_MID` / `CORROBORATED_AXIS` | `{1, 2a, 2b, 3a, 3b, 4a}` / `{4b, 4c, 4d}` / `corroborated` | the vote's evidence class of a per-file reading (`_evidence_class`: 2 = a level in the first set or the `corroborated` token in `evidence_axes`; 1 = a level in the second; 0 = 5a / 5b / no level) — the ion key before the file count. The two sets equal `evidence.CLAIM_IDENTIFIED` / `CLAIM_ION` by design; the `corroborated` token is vote-only (the claim reads the level alone), and the vote never goes through `evidence.claim_class` |
 | `TIER_RANK` | `{Assigned:2, Candidate:1}` | the vote's Assigned-file count (a tie-break after the evidence class and the file count) and the best-row pick within the winning reading (then `ion_score`) |
 | `lock_known_species` `tol_ppm` / `mz_floor_da` | the merge window / 1.5 mDa | the window a pooled known-species ion is matched to its merged cluster with (`run` passes `MassScale.merge_ppm`; the stamp's mDa floor); a species confirmed in ≥ 1 file and refuted in none takes that cluster |
 | `_M0_COLS` | `[mz, neutral_formula, adduct, tier, ion_score, admitted_by, occurrence, ion_only_of, resolvability, sep_hwhm, ts_disposition, ts_cv_norm, evidence_level, evidence_axes]` | the per-file M0 schema aligned (admission / ion-only / separability provenance, carried for the winning row; the file's own evidence level + axes, read by the vote's evidence class; absent columns are tolerated) |
@@ -367,12 +373,12 @@ All in `peaky/batch/assign_batch.py`.
 
 | artifact | content |
 | --- | --- |
-| `merged_ledger.csv` (run root) | one row per m/z cluster: consensus mz, the winning reading, the vote (`n_files`, `n_files_ion`, `n_files_winner`, `alternatives`), `srcs`, `ion_agree`, `formula_agree`, `mz_jitter_ppm_raw/caldj`, the batch-level gates' `tier_reason`, `stage` (`cover` / `residual`; only when the residual stage is on), plus the trace reconciliation columns (`mz_anchor`, `mz_trace`, `trace_offset_ppm`, `trace_cov_anchor`, `trace_cov`, `trace_moved`, `trace_guarded`, `trace_id`, `trace_role`; [`TIMESERIES.md`](TIMESERIES.md) §9) — **the result** |
+| `merged_ledger.csv` (run root) | one row per m/z cluster: consensus mz, the winning reading, the vote (`n_files`, `n_files_ion`, `n_files_winner`, `alternatives`), `srcs`, `ion_agree`, `formula_agree`, `mz_jitter_ppm_raw/caldj`, the batch-level gates' `tier_reason`, `stage` (`cover` / `residual`; only when the residual stage is on), the pooled evidence level and its `claim` (stamped after the vote, never read by it; [`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §6.2), plus the trace reconciliation columns (`mz_anchor`, `mz_trace`, `trace_offset_ppm`, `trace_cov_anchor`, `trace_cov`, `trace_moved`, `trace_guarded`, `trace_id`, `trace_role`; [`TIMESERIES.md`](TIMESERIES.md) §9) — **the result** |
 | `tables/jitter.csv` | long form, one row per (cluster, file): `cluster`, `src`, `mz`, formula, adduct, tier, `ion_score`, `evidence_level` (the file's own level of that reading — the vote's evidence class comes from it) |
 | `per_file/<sid>_ledger.csv` | each assigned file's full single-sample ledger (audit / re-merge) |
 | `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role` ∈ `cover` / `pad` / `residual`, `bins_new`, `coverage`) |
 | `tables/residual_bins.csv` | the residual stage's targeted bins (`bin_mz`, `prevalence`, `max_cps`, `max_x_edge`, `sample_at_max`, `covered_by`); written when the stage is on |
-| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason; `residual` sub-block: the funnel, the floor, k, coverage_of_residual, stop_reason, sample_ids), `n_files_by_stage` / `merged_by_stage` when the stage is on, the resolved height gate (`height_cutoff_x_edge` + its source, and the `gate` derivation block), the `admission` block, the `traces` block (re-centred / collapsed counts, per-ion scatter, stamp window), per-file offsets + noise edges, merged tier counts, agreement counts |
+| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason; `residual` sub-block: the funnel, the floor, k, coverage_of_residual, stop_reason, sample_ids), `n_files_by_stage` / `merged_by_stage` when the stage is on, the resolved height gate (`height_cutoff_x_edge` + its source, and the `gate` derivation block), the `admission` block, the `traces` block (re-centred / collapsed counts, per-ion scatter, stamp window), per-file offsets + noise edges, merged tier counts and the claim tallies beside them (`claims`), agreement counts |
 | `jitter_report()` dict | `{offsets, by_formula, by_mz, summary}` — the standalone jitter analysis |
 
 ---

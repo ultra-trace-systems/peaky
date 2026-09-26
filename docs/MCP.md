@@ -66,8 +66,8 @@ ships in `io_mascope.fetch_batch_peaks`.
 | `list_batches(dataset, workspace?)` | quick | batches (name / polarity / status) |
 | `list_samples(dataset, batch, limit=50)` | quick | samples; count exact, rows capped |
 | `certify_neutrals(ledger_csv, reagent, ts_parquet?)` | quick | **offline** certified-neutral table over a ledger CSV (no server) |
-| `assign_sample(sample_id, reagent, …)` | **job** | one-sample multi-pass assign → job_id |
-| `run_batch(batch, dataset, reagent, k_max, …)` | **job** | whole-batch pipeline → job_id; runs the residual stage by default, with the CLI's defaults |
+| `assign_sample(sample_id, reagent, …)` | **job** | one-sample multi-pass assign → job_id; the result carries the role counts, the ten brightest species (each with its `claim` when the ledger carries one), the claim tallies `claims` and the ledger CSV path |
+| `run_batch(batch, dataset, reagent, k_max, …)` | **job** | whole-batch pipeline → job_id; runs the residual stage by default, with the CLI's defaults; the result carries the batch summary's `claims` block beside the paths and counts |
 | `job_status(job_id)` | quick | status + recent log + result/paths |
 | `list_jobs()` | quick | recent jobs |
 
@@ -76,7 +76,11 @@ ships in `io_mascope.fetch_batch_peaks`.
 `assign_sample` (~minutes) and `run_batch` (~many minutes) return a `job_id`
 immediately and run on a background thread, so an MCP request never blocks or
 times out. Poll `job_status(job_id)`; when `status == "done"` the result carries
-the run folder, the report PDF, the merged-ledger path, and key counts. The job
+the run folder, the report PDF, the merged-ledger path, and key counts, with the
+claim tallies under `claims` (`{identified, ion, tentative: n}` for
+`assign_sample`; the batch summary's merged / pooled / per-stage / per-tier block
+for `run_batch`; `None` from a run that has none —
+[`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §1.1). The job
 registry is **in-memory** — a server restart forgets running jobs (fine for
 interactive use; artifacts on disk survive).
 

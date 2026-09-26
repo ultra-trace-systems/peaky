@@ -37,8 +37,9 @@ Prefer to do it by hand? Follow **[QUICKSTART.md](QUICKSTART.md)**, or the
 
 - **Chemical-formula assignment** — multi-pass, isotope-pattern-aware peak → formula
   annotation, with an **evidence level** (2b–5b, a CIMS-adapted Schymanski scale) on
-  every committed formula. Produces a tiered Excel (Assigned / Candidate / below-assignability)
-  with commentary, close alternatives, per-isotopologue scores, and a peak-ownership
+  every committed formula and the **claim** it supports beside the tier — identified
+  (the neutral established), ion (the ion composition pinned) or tentative. Produces a
+  tiered Excel (Assigned / Candidate / below-assignability) with commentary, close alternatives, per-isotopologue scores, and a peak-ownership
   audit, plus an interactive rotating-GKA widget.
 - **Batch pipeline** — assigns the presence set-cover subset (the samples that
   together hold the batch's m/z bins, chosen greedily with a marginal-gain stop),

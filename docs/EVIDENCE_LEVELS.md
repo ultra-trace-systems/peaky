@@ -30,6 +30,52 @@ Levels 1 and 2a are defined and never fire: 1 needs an authentic standard
 measured in the same source and reagent chemistry; 2a needs a library
 spectrum, and CIMS has none.
 
+### 1.1 Claims — what a level lets a reader say (C13)
+
+Nine rungs answer "how good is the evidence"; a reader of a result table
+asks something coarser: may this formula be reported as a compound?
+`evidence.claim_class(level)` reads the level as one of three **claims**
+(`evidence.CLAIMS`):
+
+| claim | levels | what a reader may say |
+|---|---|---|
+| `identified` | 1, 2a, 2b, 3a, 3b, 4a (`CLAIM_IDENTIFIED`) | the neutral is established: the formula can be reported as a compound or class |
+| `ion` | 4b, 4c, 4d (`CLAIM_ION`) | the ion composition is pinned; the neutral / adduct split is open |
+| `tentative` | 5a, 5b, no level | exact mass only, or the assignment argues with itself |
+
+`CLAIM_MEANING` holds the sentence each output prints for a claim.
+
+- **A pure function of the level.** `claim_class` reads `evidence_level` and
+  nothing else — no predicate column, no axis, no tier. The value is stripped
+  of whitespace; NaN, `pd.NA`, `None`, `''`, 5a, 5b and any string it does not
+  know read `tentative`.
+- **Only a committed formula makes a claim.** Every committed M0 row carries
+  one (per file from the file's own level, §6.1; on the merged ledger from the
+  pooled level, §6.2); isotope children, reagent ions, artifacts and
+  unexplained peaks carry `NA`. A committed row with no level — a merged row
+  whose reading no per-file ledger holds — reads `tentative`, never `NA`.
+- **Ion-only rows count by their level.** An ion-only pair (§3) is 4d with its
+  own ¹³C — `ion` — or 5a without — `tentative`. Where an output crosstabs the
+  claim against the tier, the ion-only rows are a row of their own
+  (`ion-only`) beside Assigned and Candidate, not part of the Candidate row.
+- **The vote class is not the claim.** The merge vote's evidence class
+  (`assign_batch._evidence_class`, docs/MERGE.md §3 step 4) ranks on the same
+  two level sets (`EVIDENCE_CLASS_GOOD` = `CLAIM_IDENTIFIED`,
+  `EVIDENCE_CLASS_MID` = `CLAIM_ION`) and adds the `corroborated` axis on top:
+  a corroborated reading votes with the good class at any level, so a
+  corroborated 5b votes class 2 and claims `tentative`. The vote reads
+  `evidence_level` / `evidence_axes`, never `claim`.
+- **Tier and claim are separate verdicts.** The tier says whether the engine
+  prints a formula or only offers it; the claim says what the evidence lets a
+  reader say of it. Both are read from the same ledger columns and they are
+  not nested: on the three same-air regression runs 16 / 5 / 52 Candidate rows
+  are identified and 112 / 11 / 103 Assigned rows are tentative. The outputs
+  show the two side by side (the workbook, the PDF report and the scorecard
+  list the rows where they part); neither is read off, corrected from or
+  routed into the other.
+- **Nothing upstream reads it.** Not the tiers, not the merge vote, not the
+  cross set (§6.4), not a predicate: the claim changes no ion, tier or level.
+
 ## 2. The columns a level reads
 
 All from the ledger `peaky.assignment.ledger` already writes. Every read is
@@ -217,7 +263,12 @@ to the single-sample `<prefix>_manifest.json`; a batch reports the pooled
 recompute of §6.2 in `batch_summary.json` instead).
 
 The stage calls `evidence.apply_levels(ledger, cfg=cfg, cross=cross)` which
-writes the four columns of §7 in place and returns the summary. `cross` is
+writes the five columns of §7 in place (`claim` read off the level, §1.1; `NA`
+on every non-M0 row like the other four) and returns the summary: `levels`
+(`{level: n}`), `claims` (`{identified, ion, tentative: n}` over the M0 rows,
+zeros kept), `n_levelled`, `n_pairs`, `n_corroborate` and `axes`. The run's
+log line ends `; claims identified N | ion N | tentative N`, and `peaky
+assign` prints the same tally as a `claims:` line. `cross` is
 the cross set of §6.4: the neutral formulas the `--corroborate` sources hold
 at 4b or better by their own evidence (repeatable CLI option on `peaky
 assign` and `peaky batch`; a run dir, an out-dir holding one run, or a ledger
@@ -234,8 +285,10 @@ per `(neutral, adduct)` over all files, so `chan2` sees a second adduct in
 *any* file, `iso` any file's satellite, `tied`/`lowconf` require *all* rows
 (across files) and `below` any. The result is joined onto the merged ledger
 by `(neutral_formula, adduct)` — each merged row is one ion, so the join is
-one-to-one — and the four columns are written there too. The per-file
-ledgers keep their own per-file levels (computed at 6.1).
+one-to-one — and the five columns are written there too (`evidence.stamp_merged`:
+`claim` is re-read off the joined level, so every merged row carries one and a
+row with no per-file reading reads `tentative`). The per-file ledgers keep
+their own per-file levels (computed at 6.1).
 
 Two batch runs named together (`peaky batch … --corroborate <other run>`)
 corroborate this run by the neutrals the other holds at 4b or better on its
@@ -246,7 +299,19 @@ same rule.
 pair), `"merged": {level: n}` (per merged row), `"per_stage": {cover: {…},
 residual: {…}}`, `"n_pairs"`, `"n_unstamped"` (merged rows whose reading no
 per-file ledger holds), `"n_corroborate"`, `"cross_source": [...]}`; the pair
-table with every fact of §3 is written to `tables/evidence_levels.csv`.
+table with every fact of §3 is written to `tables/evidence_levels.csv`, with
+the pair's `claim` beside its level.
+
+`batch_summary["claims"]`, right after `evidence_levels`, tallies the claims
+(each a `{identified, ion, tentative: n}` dict, zeros kept): `"merged"` (per
+merged row), `"pooled"` (per pair of the pair table), `"per_stage"` (merged
+rows by `cover` / `residual`), `"by_tier"` (merged rows per tier, Assigned
+first; the ion-only rows under their own `"ion-only"` key, present only when
+there are some) and `"n_unlevelled"` (merged rows with no level, whose claim
+reads tentative). The batch logs `[assign_batch] claims (merged): identified N
+| ion N | tentative N`, `peaky batch` prints the merged tally again after
+`[batch] done`, and `run_manifest.json` records it as `counts.merged_claims`
+beside `merged_tiers`.
 
 ### 6.3 The post-hoc script
 
@@ -304,18 +369,26 @@ acid, mass-saturated on both instruments with no axis on either, falls from
 | `evidence_axes` | str | M0 rows | `|`-joined, in this order, of the axes that hold: `iso`, `chan2`, `anchor`, `corroborated`, then the modifiers `multiline`, `carbon`, `branch`, `reagent_only_iso`, `ion_only`, `known:<family>`, `files:<n>` (batch only); `''` when none |
 | `level_reason` | str | M0 rows | one sentence naming the predicate that fired, in the words of §4, with the numbers (`"5b: near-tie broken by the arbiter"`, `"4c: 1 plausible ion in the window, resolved, no axis"`, `"4a: iso + chan2, corroborated by the other source"`) |
 | `n_plausible_structures` | Int64 | M0 rows whose formula is in the isomer space; `NA` otherwise | from `isomer_space.csv` |
+| `claim` | str | every M0 row of a per-file ledger and every merged row; `NA` on every other per-file row | `identified` / `ion` / `tentative` = `claim_class(evidence_level)` (§1.1); a committed row with no level reads `tentative` |
 
 Written to: the per-file `<prefix>_ledger.csv`, `merged_ledger.csv`,
 `tables/evidence_levels.csv` (batch: one row per pair with every fact of §3, the
-`ion_only` flag included), the
-Excel workbook (a column on the ledger sheets and a new **"By evidence
-level"** sheet: one row per level with count, share, tier split, the axes
-histogram and the twenty brightest rows), an **Evidence levels** page in the
-PDF report after the assignment-quality page and a line on its cover, the
-published engine provenance (`io/publish.py` carries the four columns in
-`engine_provenance`, dropping `NA` values), `docs/OUTPUTS.md`, README, SKILL.md. Every
-consumer must render a ledger **without** the columns unchanged (older
-runs, `peaky report` on them).
+`ion_only` flag and the pair's `claim` included), the
+Excel workbook (a column on the ledger sheets, `claim` directly before
+`evidence_level`; a **"By evidence level"** sheet: one row per level with
+count, share, tier split, the axes histogram and the twenty brightest rows;
+and the **"By claim"** sheet the workbook opens on: one row per claim with
+count, share, signal, tier split and level histogram, the rows where tier and
+claim part, and the twenty brightest rows per claim), an **Evidence levels**
+page in the PDF report after the assignment-quality page and a line on its
+cover, a **Claims** page right after the cover and a claims line leading the
+cover's summary, the published engine provenance (`io/publish.py` carries the
+five columns in `engine_provenance`, dropping `NA` values; a batch publish
+carries `batch_summary["claims"]` in the run's config), `docs/OUTPUTS.md`,
+README, SKILL.md. Every consumer must render a ledger **without** the columns
+unchanged (older runs, `peaky report` on them); a ledger that has
+`evidence_level` but no `claim` (a run made before the claim existed) gets the
+claim read off its level, on the M0 / merged rows only.
 
 ## 8. Golden fixtures and what the tests pin
 
@@ -346,6 +419,41 @@ added them. `tests/test_evidence.py`:
 
 All of it passes since B2; `tests/test_evidence_outputs.py` pins the wiring
 (stage order, the batch recompute, every output, `--corroborate`).
+
+`tests/test_claims.py` pins the claim (§1.1):
+
+- `claim_class` on every level and on `None`, NaN, `pd.NA`, `''`, `'nan'`,
+  an unknown level and a padded one; the two level sets are disjoint and
+  cover the scale bar 5a / 5b; `claim` is the fifth of `COLUMNS`;
+  `summarize_claims` keeps the zeros, in `CLAIMS` order, and skips `NA`;
+- `apply_levels` stamps the claim on M0 rows only (an isotope child and a
+  reagent ion carry `NA`), its summary's `claims` equals the tally of the
+  column, and the claim follows the level when a cross set lifts it; the
+  stage's log line ends with the tally;
+- `stamp_merged` gives every merged row a claim — `tentative` for a row with
+  no per-file reading, for an empty pair table and for none — and joins a pair
+  table that predates the column;
+- `batch_summary["claims"]`: the ion-only rows under their own key, a
+  Candidate identified and an Assigned tentative standing side by side, zeros
+  on an empty ledger; a batch run writes the column on the merged ledger and
+  the pair table, the block right after `evidence_levels` and its log line,
+  never on the `DONE` line the progress panel parses;
+- the claim changes nothing upstream: with `claim_class` replaced by a
+  constant the batch writes the same merged ledger, pair table and jitter
+  table, claim aside; the vote's class sets equal the claim sets while a
+  corroborated 5b votes class 2 and claims tentative; `claim` is neither a
+  predicate column nor a vote column, and a per-file claim column that says
+  the opposite of the levels moves no winner, tier or note;
+- the entry points pass the tallies on: the publish batch config, both CLI
+  lines, the manifest's `merged_claims`, and the MCP tools' `claims` and
+  per-species `claim`.
+
+`tests/test_claims_outputs.py` pins the workbook and the PDF (docs/OUTPUTS.md):
+the By claim sheet first, `claim` directly before `evidence_level` on every
+sheet that shows the level, `NA` off the committed rows, the claim read off the
+level for a ledger without the column, a ledger without levels rendered
+unchanged, the Claims page second in the report with its `unmatched` signal
+bucket and both kinds of disagreement, and the cover's claims line.
 
 ## 9. Worked rows (real rows of `expected_levels.csv`)
 

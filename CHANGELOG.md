@@ -8,6 +8,59 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Claims -- what a committed formula lets a reader say: identified, ion or tentative.** The nine
+  evidence levels say how good the evidence is; a reader of a result table asks something coarser
+  -- may this formula be reported as a compound? -- and the tier (print or offer) does not answer
+  it. `evidence.claim_class(level)` reads a level as **identified** (1-4a: the neutral is
+  established, the formula can be reported as a compound or class), **ion** (4b-4d: the ion
+  composition is pinned, the neutral / adduct split is open) or **tentative** (5a, 5b or no level:
+  exact mass only, or the assignment argues with itself), with `CLAIMS`, `CLAIM_IDENTIFIED`,
+  `CLAIM_ION`, `CLAIM_MEANING` and `summarize_claims` beside it. `claim` is the fifth column the
+  `evidence` stage writes: on every committed M0 row per file (from the file's own level; `NA` on
+  isotope children, reagent ions and unexplained peaks -- only a committed formula makes a claim),
+  on every merged row (from the pooled level; a batch-level re-read with no level reads tentative)
+  and in `tables/evidence_levels.csv`. The stage summary and its log line carry the tally
+  (`claims`); `batch_summary.json['claims']` holds it per merged row, per pooled pair, per stage and
+  per tier (an ion-only row under its own `ion-only` key, counted by its level: 4d = ion,
+  5a = tentative) with `n_unlevelled`; `run_manifest.json` counts `merged_claims` beside
+  `merged_tiers`; `peaky assign` and `peaky batch` print the tally; the MCP tools return it
+  (`assign_sample` with each top species' claim); and `publish` carries `claim` in the engine
+  provenance and `claims` in a batch run's config -- never in a tier field, where the `engine_tier`
+  map reads the legacy spelling `Identified` as Assigned. The single-sample workbook opens on a
+  **By claim** sheet (per claim: count, share, signal, the Assigned / Candidate / ion-only split
+  and the level histogram; then the rows where tier and claim part, brightest first; then the
+  twenty brightest rows of each claim), with `claim` directly before `evidence_level` on every sheet
+  that shows the level, `best_claim` on Unique formulas, a Summary **Claims** section and a Read me
+  that opens on the classes; the summary markdown gains a `Claims:` line; the PDF report leads its
+  cover summary with the claims and follows the cover with a **Claims** page (merged rows and
+  committed signal per claim, the tier x claim crosstab, the brightest rows where the two part),
+  and the findings and the appendix carry the claim. A run made before the column gets the claim
+  read off its level; a run without levels renders unchanged. `scripts/scorecard.py` leads the
+  card with the claim (§0: rows, the tier x claim crosstab with an ion-only row, signal per claim,
+  the disagreeing rows, identified split by the channel's own evidence), counts each decoy arm's
+  pairs per claim in the level vector's unit on either side of m/z 350, reads today's acceptance
+  criteria on the identified class beside the metric each was read on before, keeps each arm's
+  engine ledger for a re-count at no engine cost (`--decoy-ledgers`), and puts a claims table first
+  on the board and the page; `scripts/ab_compare.py` counts the tier, level and claim changes per
+  shared ion and the claim histogram. Additive: nothing upstream reads the claim -- not the tiers,
+  not the merge vote, not the cross set -- so no ion, tier or level moves (with `claim_class`
+  replaced by a constant a batch writes the same merged ledger, pair table and jitter table). The
+  vote's evidence class ranks on the same two level sets but adds the `corroborated` axis, which is
+  the vote's alone (a corroborated 5b votes with the good class and claims tentative), so the vote
+  class is not the claim. Tier and claim are separate verdicts from the same columns and are not
+  nested: on the three same-air regression channels 16 / 5 / 52 Candidate rows are identified and
+  112 / 11 / 103 Assigned rows tentative; the outputs show both side by side (the workbook, the PDF
+  and the scorecard list where they part), and neither is corrected from the other. Measured on
+  those runs: identified carries 55.9 / 59.0 / 64.9 % of the committed-peak signal (every
+  per-file M0 height credited with the merged claim of its reading, over all per-file M0 height;
+  the 1.8 / 1.4 / 13.4 % in readings no merged row carries is its own `unmatched` bucket, never
+  folded into tentative), identified-and-Assigned 55.7 / 58.5 / 64.7 % and ion-and-Assigned
+  32.8 / 35.0 / 8.9 %; the wrong-adduct decoy keeps 4 / 0 / 1 identified pairs against
+  154 / 27 / 15 in the control, and the shift decoy 4 identified pairs below m/z 350 against the
+  control's 145 on the labelled-nitrate channel. The tier is unchanged. `tests/test_claims.py`,
+  `tests/test_claims_outputs.py`, `tests/test_scorecard_claims.py` and the claim tests in
+  `tests/test_ab_compare.py`.
+
 - **Resolvability for every run, and two tier rules that read the spectrum's physics.** The
   nearest-neighbour separability flag was trace-first only, so every cover run -- every
   baseline -- rated `4c` and `Assigned` without knowing whether the picked centroid was the ion's
