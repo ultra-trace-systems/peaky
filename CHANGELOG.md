@@ -673,8 +673,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it kept the same small-acid fixes but also released five O/C >= 1.4 formulas in 5-24-ion windows
   to Assigned (C6H14O9 `[M+Br]-` on 22 TOF files, C5H10ClNO7 `[M+NO3]-` on 10 Orbitrap files).
   Sized on the same-air working set before the change (the census replay of the audit's
-  consumers): labelled nitrate +1 Assigned, ~10k TOF +1, uronium unchanged; no test-set or roster
-  winner moves.
+  consumers) and the regression runs equal it row for row: labelled nitrate Assigned 646 -> 647 and
+  rows at <= 4a 247 -> 248, ~10k TOF 492 -> 493 and 225 -> 228 (malonic acid 3b on two channels),
+  uronium unchanged; the test set, every roster winner, the cross-instrument metrics and the shift
+  decoy unchanged. The wrong-adduct decoy on the labelled-nitrate channel admits two O-rich
+  `[M+Cl]-` fits in two-ion windows (110 -> 112 rows, 23.9 -> 24.3 %): sparing a two-ion window is
+  the small-acid fix itself.
 
 - **A batch-level re-read left its time-series stamp without an ion.** The stamping frame borrows
   each merged analyte's `ion_formula` from the per-file ledgers by its (neutral, adduct) key; a
