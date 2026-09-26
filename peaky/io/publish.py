@@ -546,6 +546,10 @@ _ENGINE_PROVENANCE_COLUMNS = (
     "evidence_axes",
     "level_reason",
     "n_plausible_structures",
+    # the claim the level supports (C13): identified / ion / tentative. Never
+    # routed into a tier field -- ENGINE_TIER_MAP reads the legacy tier spelling
+    # 'Identified' as Assigned, which is not this
+    "claim",
     "iso_match_score",
     "compound_score",
     "dbe",

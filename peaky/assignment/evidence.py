@@ -40,10 +40,17 @@ its OWN evidence -- `source_neutrals`). Levels 1 and 2a need an authentic
 standard or a library spectrum and never fire.
 
 Entry points: `apply_levels` (the `evidence` stage of assign.run: writes the
-four columns in place), `compute_levels` (pure, one row per M0), `level_pooled`
+five columns in place), `compute_levels` (pure, one row per M0), `level_pooled`
 (a batch's per-file ledgers as ONE source, one row per pair), `stamp_merged`
 (join the pooled result onto the merged ledger by ion) and
 `corroborating_neutrals` (the cross set of the `--corroborate` sources).
+
+The claim (C13): `claim_class` reads a level as what a reader may say about
+the committed formula -- `identified` (1-4a, the neutral established), `ion`
+(4b-4d, the ion composition pinned, the neutral / adduct split open) or
+`tentative` (5a, 5b, no level). It is stamped with the level on every committed
+M0 row (per file and merged) and read by nothing upstream; `tier` stays the
+engine's print-or-offer verdict and can disagree with it.
 """
 
 from __future__ import annotations
@@ -78,8 +85,24 @@ LEVEL_MEANING = {
     "5a": "exact mass only; no discriminating test was possible",
     "5b": "the assignment argues with itself (near-tie, below assignability, Low/Suspect, or degenerate with no axis)",
 }
-#: the four columns the stage writes, in order
-COLUMNS = ("evidence_level", "evidence_axes", "level_reason", "n_plausible_structures")
+#: what a committed formula lets a reader say, read off its level (C13). The
+#: tier is a separate verdict (print / offer) and can disagree with it.
+CLAIMS = ("identified", "ion", "tentative")
+#: identified = the neutral established (a curated identity or class, the acid
+#: branch, or two axes with one outside the channel); these are also the vote's
+#: EVIDENCE_CLASS_GOOD / _MID sets in assign_batch, which add the corroborated
+#: axis on top -- the vote class is not the claim.
+CLAIM_IDENTIFIED = frozenset({"1", "2a", "2b", "3a", "3b", "4a"})
+CLAIM_ION = frozenset({"4b", "4c", "4d"})
+CLAIM_MEANING = {
+    "identified": "the neutral is established (levels 1-4a): the formula can be reported as a compound or class",
+    "ion": "the ion composition is pinned, the neutral / adduct split is open (levels 4b-4d)",
+    "tentative": "exact mass only, or the assignment argues with itself (5a, 5b, or no level)",
+}
+#: the five columns the stage writes, in order (`claim` is a pure function of
+#: `evidence_level` and is read by nothing upstream: not the tiers, not the
+#: merge vote, not the cross set)
+COLUMNS = ("evidence_level", "evidence_axes", "level_reason", "n_plausible_structures", "claim")
 #: the four axes, in the order `evidence_axes` lists them
 AXES = ("iso", "chan2", "anchor", "corroborated")
 #: what the pooled batch recompute reads -- `trim()` keeps these of a ledger
@@ -143,6 +166,27 @@ def family_scope(family: str) -> str:
 # ---------------------------------------------------------------------------
 # null-safe cell readers (the script's, verbatim in behaviour)
 # ---------------------------------------------------------------------------
+def claim_class(level) -> str:
+    """The claim a level supports: 'identified' (1-4a), 'ion' (4b-4d) or
+    'tentative' (5a, 5b, or no level). Callers decide which rows carry a claim
+    at all: a committed M0 row always does; an isotope child, a reagent ion or
+    an unexplained peak does not."""
+    if level is None or (not isinstance(level, str) and pd.isna(level)):
+        return "tentative"
+    lv = str(level).strip()
+    if lv in CLAIM_IDENTIFIED:
+        return "identified"
+    if lv in CLAIM_ION:
+        return "ion"
+    return "tentative"
+
+
+def summarize_claims(claims) -> dict:
+    """{claim: n} over the three classes in CLAIMS order, zeros kept; NA skipped."""
+    counts = pd.Series(claims, dtype=object).dropna().astype(str).value_counts()
+    return {k: int(counts.get(k, 0)) for k in CLAIMS}
+
+
 def truthy(value) -> bool:
     """Null-safe truthiness: NaN, NA, None and 'false'/'' are all False.
     `bool(numpy.nan)` is True and once inflated 5b by 127 rows."""
@@ -482,6 +526,7 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
     facts["evidence_level"] = [d[0] for d in decided]
     facts["level_reason"] = [d[1] for d in decided]
     facts["evidence_axes"] = [_axes_string(r, with_files=with_files) for r in facts.itertuples(index=False)]
+    facts["claim"] = facts["evidence_level"].map(claim_class)
     return facts
 
 
@@ -490,7 +535,7 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
 # ---------------------------------------------------------------------------
 def compute_levels(ledger: pd.DataFrame, *, cfg=None, isomer_space=None, cross=None) -> pd.DataFrame:
     """Pure: one row per M0 row of `ledger` (index = the ledger's index) with
-    `peak_id` and the four columns. `cross` = the corroborating neutral formulas
+    `peak_id` and the five columns. `cross` = the corroborating neutral formulas
     (the other reagent channel / instrument / `--corroborate` source); `cfg` is
     accepted for stage-call symmetry and not read -- no predicate is tunable."""
     role = _col(ledger, "role").astype(str)
@@ -499,7 +544,8 @@ def compute_levels(ledger: pd.DataFrame, *, cfg=None, isomer_space=None, cross=N
                           "evidence_level": pd.Series(dtype=object),
                           "evidence_axes": pd.Series(dtype=object),
                           "level_reason": pd.Series(dtype=object),
-                          "n_plausible_structures": pd.Series(dtype="Int64")})
+                          "n_plausible_structures": pd.Series(dtype="Int64"),
+                          "claim": pd.Series(dtype=object)})
     if m0.empty:
         return empty
     pairs = _level_pairs({"": ledger}, cross=cross, isomer_space=isomer_space, with_files=False)
@@ -514,6 +560,8 @@ def compute_levels(ledger: pd.DataFrame, *, cfg=None, isomer_space=None, cross=N
                     on=["neutral_formula", "adduct"], how="left")
     out.index = m0.index
     out["n_plausible_structures"] = out["n_plausible_structures"].astype("Int64")
+    # every committed M0 row carries a claim; one with no level reads tentative
+    out["claim"] = out["evidence_level"].map(claim_class)
     return out[["peak_id", *COLUMNS]]
 
 
@@ -524,16 +572,17 @@ def summarize(levels: pd.Series) -> dict:
 
 
 def apply_levels(ledger: pd.DataFrame, *, cfg=None, cross=None, isomer_space=None) -> dict:
-    """The `evidence` stage: write the four columns onto `ledger` in place (NA
-    on every non-M0 row) and return the stage summary."""
+    """The `evidence` stage: write the five columns onto `ledger` in place (NA
+    on every non-M0 row, `claim` included: only a committed formula makes a
+    claim) and return the stage summary."""
     cross = {str(x) for x in (cross or set())}
     out = compute_levels(ledger, cfg=cfg, isomer_space=isomer_space, cross=cross)
     n = len(ledger)
-    for c in ("evidence_level", "evidence_axes", "level_reason"):
+    for c in ("evidence_level", "evidence_axes", "level_reason", "claim"):
         ledger[c] = pd.Series([pd.NA] * n, index=ledger.index, dtype=object)
     ledger["n_plausible_structures"] = pd.array([pd.NA] * n, dtype="Int64")
     if len(out):
-        for c in ("evidence_level", "evidence_axes", "level_reason"):
+        for c in ("evidence_level", "evidence_axes", "level_reason", "claim"):
             ledger.loc[out.index, c] = out[c].astype(object).values
         ledger.loc[out.index, "n_plausible_structures"] = out["n_plausible_structures"].values
     axes = {}
@@ -542,6 +591,7 @@ def apply_levels(ledger: pd.DataFrame, *, cfg=None, cross=None, isomer_space=Non
             if a in AXES:
                 axes[a] = axes.get(a, 0) + 1
     return {"levels": summarize(out["evidence_level"]) if len(out) else {},
+            "claims": summarize_claims(out["claim"] if len(out) else []),
             "n_levelled": int(out["evidence_level"].notna().sum()) if len(out) else 0,
             "n_pairs": _n_pairs(ledger),
             "n_corroborate": len(cross), "axes": axes}
@@ -568,15 +618,18 @@ def level_pooled(per_file: dict, *, cross=None, isomer_space=None) -> pd.DataFra
 def stamp_merged(merged: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:
     """Join the pooled result onto a merged ledger by (neutral_formula, adduct)
     -- each merged row is one ion, so the join is one-to-one. A merged row whose
-    reading exists in no per-file ledger (a batch-level re-read) stays NA."""
+    reading exists in no per-file ledger (a batch-level re-read) stays NA and
+    its `claim` reads tentative: every merged row is a committed reading."""
     out = merged.copy()
     n = len(out)
     for c in ("evidence_level", "evidence_axes", "level_reason"):
         out[c] = pd.Series([pd.NA] * n, index=out.index, dtype=object)
     out["n_plausible_structures"] = pd.array([pd.NA] * n, dtype="Int64")
+    out["claim"] = pd.Series(["tentative"] * n, index=out.index, dtype=object)
     if not n or pairs is None or pairs.empty:
         return out
-    right = pairs[["neutral_formula", "adduct", *COLUMNS]].copy()
+    # the claim is re-read off the joined level, so a pairs frame without one joins too
+    right = pairs[["neutral_formula", "adduct", *(c for c in COLUMNS if c != "claim")]].copy()
     right["__n"] = right["neutral_formula"].fillna("").astype(str)
     right["__a"] = right["adduct"].fillna("").astype(str)
     right = right.drop_duplicates(["__n", "__a"]).set_index(["__n", "__a"])
@@ -586,6 +639,7 @@ def stamp_merged(merged: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:
     for c in ("evidence_level", "evidence_axes", "level_reason"):
         out[c] = pd.Series(hit[c].astype(object).values, index=out.index, dtype=object).where(hit[c].notna().values, pd.NA)
     out["n_plausible_structures"] = pd.array(hit["n_plausible_structures"].values, dtype="Int64")
+    out["claim"] = pd.Series([claim_class(v) for v in out["evidence_level"]], index=out.index, dtype=object)
     return out
 
 
