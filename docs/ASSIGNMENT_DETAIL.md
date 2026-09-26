@@ -633,7 +633,7 @@ A reference list is used in **three** places, all soft and provenance-tagged (a 
 | `isotopes.py` | Per-atom isotope-distribution convolution → predicted envelope `(dmass, rel, label)` |
 | `assign_batch.py` | Per-file assignment + offset-aware m/z merge into the merged ledger; jitter report |
 | `sampling.py` | Sample selection: greedy presence set-cover over the batch's m/z bins with a marginal-gain stop (`docs/SAMPLING.md`) |
-| `timeseries.py` | Matrix binning, reagent normalization, native cadence, TS annotation/demotion, reproducible single-compound trace |
+| `timeseries.py` | Matrix binning, reagent normalization, native cadence, TS annotation (labels, no tier change), reproducible single-compound trace |
 | `cluster.py` | Correlation, complete-linkage clustering, merge, flat-split, big-changers, panel median |
 | `clustering.py` | Cluster orchestrator: assigned + unassigned funnel, channel-agreement QC, `clusters_summary.json` |
 | `analyte_viz.py` | Van Krevelen batch figures, channel-agreement |
@@ -693,7 +693,7 @@ REFLIST rescue → ION-ONLY rows (nitrate profiles: the +1.0078 Da M⁻· line b
         committed [M-H]⁻ acid → Candidate [M]-., guarded by gate width + picker resolution)
         → final envelope sweep → EVIDENCE levels (2b…5b; ion-only rows 4d / 5a on their own ¹³C)
   ▼
-[opt] TIME-SERIES annotate/demote
+[opt] TIME-SERIES annotate (labels only)
   ▼
 VALIDATE invariants + STATS  →  per-sample ledger
 ```

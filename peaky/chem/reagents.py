@@ -121,8 +121,8 @@ _POSITIVE_REAGENTS = {
 # the iodine oxides would have locked away iodic acid (the HIO3 ruling). What
 # identifies them is not composition but BEHAVIOUR, so the time series labels them
 # instead (`ts_disposition` = `background:flat`, batch/timeseries.apply_timeseries).
-# The label never tiers them, and in a run where they actually vary it reads
-# ambient.
+# The label never tiers them, and in a run where they actually vary it no longer
+# reads background.
 # Only ions that can never be an analyte are listed below.
 _EASYIC_SOURCE_IONS: dict[str, dict[str, int]] = {
     "[C16H10]+. (fluoranthene)": {"C": 16, "H": 10},

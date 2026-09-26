@@ -491,14 +491,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   summary reports `varying_frac` and `flat_informative` (formerly
   `flat_demote_armed`), so a background label can be read against whether the run
   moves at all. The merged batch ledger now carries the donor row's `ts_disposition`
-  and `ts_cv_norm`, so the label reaches a batch reader as well. The same now holds
-  on the reagent-cluster channels. A flat di-bromide or `[M+CO3]-` commit was still
-  capped at `Candidate`, although its label (`background:di-bromide cluster`,
-  `background:CO3-channel`) already said background. On a bromide TOF that cap took
-  IBr and rows confirmed by their isotope pattern and a second ion channel. So no
-  tier depends on a trace any more: `apply_timeseries` loses its `demote` switch and
-  its summary the `demoted` count. Unchanged: the reagent-normaliser guard
-  (`MAX_NORMALISER_CV`) and every disposition.
+  and `ts_cv_norm`, so the label reaches a batch reader as well. The reagent-cluster
+  channels follow the same rule: the older channel demote, which capped a flat
+  di-bromide or `[M+CO3]-` commit at `Candidate` although its label
+  (`background:di-bromide cluster`, `background:CO3-channel`) already said
+  background, is removed too. On a bromide TOF that cap took IBr and rows confirmed
+  by their isotope pattern or a second ion channel. So flatness lowers no tier any
+  more: `apply_timeseries` loses its `demote` switch and its summary the `demoted`
+  count. Unchanged: the reagent-normaliser guard (`MAX_NORMALISER_CV`), every
+  disposition, and the checks that compare a trace with another trace to test
+  identity (a sidelobe locked to a bright neighbour, an adduct tracking its parent).
+  On the same-air working set (one variable per run): the general demote had cost
+  merged Assigned 647 -> 566 (labelled nitrate), 836 -> 737 (uronium) and 493 -> 357
+  (~10k TOF), roster winners 23 -> 22, 20 -> 15, 12 -> 11 and bright M0 not Assigned
+  1 -> 17, 2 -> 33, 5 -> 7, with no decoy rate moved. Without it the two Orbitrap
+  channels return to their earlier results exactly (647, 836). Without the channel
+  rule as well, the TOF reads 497: 18 di-bromide rows go back to `Assigned` (3 of
+  them at <= 4a), 4 more than before the general demote, because the channel rule held
+  6 rows there too. An offline replay of the merge predicted every row. Roster
+  winners, bright M0, both decoys and the cross-instrument metrics are unchanged.
 
 - **The degeneracy audit counts what the run could have committed.** `degeneracy.py` feeds the
   tier's degeneracy cap, `below_assignability` (O >= 11 on a saturated window), the O-monster demote and

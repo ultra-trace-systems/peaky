@@ -87,8 +87,8 @@ check("fluorinated flat -> inlet contaminant", "inlet/instrument" in disp("ct"),
 # varying run at Candidate.)
 check("flat inlet contaminant KEEPS its tier in a varying run", tier("ct") == "Assigned",
       tier("ct"))
-check("  -> its tier_reason is untouched", "time-series" not in
-      str(led.loc[led.peak_id == "ct", "tier_reason"].iloc[0]),
+check("  -> its tier_reason is untouched",
+      led.loc[led.peak_id == "ct", "tier_reason"].iloc[0] == "unique",
       led.loc[led.peak_id == "ct", "tier_reason"].iloc[0])
 check("flatness is informative here (this fixture varies)", summ["flat_informative"], summ)
 check("flat peaks have low cv_norm", cv("db") < 0.25 and cv("ct") < 0.25, (cv("db"), cv("ct")))
@@ -114,9 +114,15 @@ check("flat CO3-channel KEEPS Assigned and its tier_reason",
       _co3[["tier", "tier_reason"]].to_dict())
 check("  -> and is counted as background", s2["background"] == 1, s2)
 import inspect as _inspect  # noqa: E402
-check("apply_timeseries takes no demote switch -- no tier depends on the trace",
+check("apply_timeseries takes no demote switch -- flatness has nothing to switch",
       "demote" not in _inspect.signature(TS.apply_timeseries).parameters,
       list(_inspect.signature(TS.apply_timeseries).parameters))
+try:
+    TS.apply_timeseries(led2.copy(), peaks2, demote=False, log=lambda *a: None)
+    _took = True
+except TypeError:
+    _took = False
+check("  -> and a caller passing demote= is told so, not silently ignored", not _took)
 
 # no reagent -> graceful (cv still computed on raw)
 led3 = led.copy()
@@ -775,15 +781,39 @@ _led5 = pd.DataFrame([
          ion_formula="C6H6+", adduct="[M]+.", tier="Assigned",
          tier_reason="unique formula in the calibrated window"),
 ])
+_reasons5 = dict(zip(_led5.peak_id, _led5.tier_reason))
 _s5 = TS.apply_timeseries(_led5, _t, log=lambda *a: None)
 for _pid in ("iso2ch", "massonly"):
     _r = _led5.loc[_led5.peak_id == _pid].iloc[0]
     check(f"flat {_pid} row keeps Assigned and its tier_reason in a varying run",
-          _r["tier"] == "Assigned" and "time-series" not in str(_r["tier_reason"]),
+          _r["tier"] == "Assigned" and _r["tier_reason"] == _reasons5[_pid],
           _r[["tier", "tier_reason", "ts_disposition"]].to_dict())
     check(f"  -> {_pid} is labelled background", str(_r["ts_disposition"]).startswith("background"),
           _r["ts_disposition"])
 check("both flat rows are counted as background", _s5["background"] == 2, _s5)
+
+
+# ---------- the trace never touches identity or tier, on any row -----------------
+# A flat CANDIDATE row on every channel, beside flat Assigned ones, and a byte-level
+# freeze of the identity/tier columns: no fixture above has a flat Candidate, and the
+# off-channel tier_reason checks only look for the substring "time-series".
+_inv = pd.DataFrame([
+    dict(peak_id=p, mz=100.1000, height=1000, role="M0", neutral_formula=nf,
+         ion_formula=ion, adduct=ad, tier=t, tier_reason=tr, below_assignability=False)
+    for p, nf, ion, ad, t, tr in [
+        ("fa", "C6H6", "C6H6+", "[M]+.", "Assigned", "iso"),
+        ("fc", "C6H6", "C6H6+", "[M]+.", "Candidate", "ladder"),
+        ("dbc", "C6H6", "C6H7Br2-", "[M+HBr+Br]-", "Candidate", "series"),
+        ("co3c", "C6H6", "C7H6O3-", "[M+CO3]-", "Candidate", "x"),
+    ]])
+_cols = ["tier", "tier_reason", "neutral_formula", "ion_formula", "adduct", "below_assignability"]
+_before = _inv[_cols].copy()
+_si = TS.apply_timeseries(_inv, _t, log=lambda *a: None)
+check("every row here is labelled background (flat, varying run)",
+      _inv["ts_disposition"].astype(str).str.startswith("background").all(),
+      _inv[["peak_id", "ts_disposition"]].to_dict("records"))
+check("the identity and tier columns are unchanged on every row, Candidate included",
+      _inv[_cols].equals(_before), _inv[["peak_id"] + _cols].to_dict("records"))
 
 
 def test_all():

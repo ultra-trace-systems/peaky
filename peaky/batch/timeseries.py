@@ -34,8 +34,8 @@ from peaky.assignment import ledger as L
 from peaky.batch import traces as TR
 
 __version__ = "0.3.2"  # flatness labels a row (ts_disposition) and never tiers it, on the
-                       # di-bromide / CO3 channels too; 0.3.1: the general flat demote removed;
-                       # 0.3.0: predicted diagnostic
+                       # di-bromide / CO3 channels too (apply_timeseries has no demote switch);
+                       # 0.3.1: the general flat demote removed; 0.3.0: predicted diagnostic
                        # satellites in the batch stamp (stamp_source, track coherence);
                        # 0.2.1: bin_ids, the row-aligned bin rule
 
@@ -1799,7 +1799,7 @@ def apply_timeseries(ledger: pd.DataFrame, peaks: pd.DataFrame, *,
             # although its label (`background:di-bromide cluster`,
             # `background:CO3-channel`) already says background. On a bromide
             # TOF that cap took IBr (a known species, the ion IBr2-) and rows
-            # confirmed by their isotope pattern and a second ion channel, and it
+            # confirmed by their isotope pattern or a second ion channel, and it
             # moved no roster, bright-peak or decoy metric.
     log(f"[timeseries] {summary}")
     return summary

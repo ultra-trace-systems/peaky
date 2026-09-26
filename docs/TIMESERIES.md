@@ -8,7 +8,7 @@ whole pipeline), [`SAMPLING.md`](SAMPLING.md) (which bins on `build_matrix`), an
 [`CLUSTERING.md`](CLUSTERING.md) (which clusters traces built on the same cadence).
 
 **Code:** `peaky/batch/timeseries.py`. All pure pandas/numpy, no network. It never
-changes a formula — only the tier/role annotation, with commentary.
+changes a formula or a tier — it labels rows (`ts_*` columns), with commentary.
 
 > Keep this in sync with the code. Every threshold below is a named constant or a
 > literal in `timeseries.py`; if you change one there, change it here.
@@ -144,7 +144,7 @@ All in `peaky/batch/timeseries.py`.
 | --- | --- |
 | `build_matrix` | `(matrix, bin_mz)` — samples × m/z-bin intensities + bin centres |
 | ledger `ts_cv_norm` / `ts_r_mono` / `ts_r_formic` / `ts_disposition` | per-M0 time-series annotation (in place) |
-| `apply_timeseries` summary | `{annotated, ambient, background}` + the normaliser verdict (`normaliser`, `normaliser_cv`) and `varying_frac` / `flat_informative` |
+| `apply_timeseries` summary | `{annotated, ambient, background}`; once a matrix is built also `normaliser`, `varying_frac`, `flat_informative`, and `normaliser_cv` when a reagent basis exists |
 | `trace` | tidy `[datetime_utc, <value>]` for one compound; `attrs`: mz, assignment, n_peak_ids, tol_ppm |
 
 ---
