@@ -619,6 +619,15 @@ def build_rows(
         dropped_synthetic = int(synthetic.sum())
         frame = frame[~synthetic]
 
+    # A ledger written before the claim column (C13) still carries the level the
+    # claim is read off: its committed M0 rows publish the claim claim_class
+    # derives, every other role none -- the rows a current run stamps.
+    if "claim" not in frame.columns and "evidence_level" in frame.columns:
+        from peaky.assignment import evidence as EV
+
+        m0 = frame["role"].astype(str) == "M0"
+        frame = frame.assign(claim=frame["evidence_level"].map(EV.claim_class).where(m0))
+
     # An iso_child publishes its owner's formula: Mascope models the family by
     # having the child carry the M0's committed formula, and the child's own
     # ledger row holds no formula of its own.
@@ -1378,12 +1387,31 @@ BATCH_CONFIG_KEYS = (
     "n_in_all_files",
     "n_single_file",
     "formula_disagreements",
+    "claims",   # the claim tallies (identified / ion / tentative), beside merged_tiers
 )
 
 
-def batch_config(summary: dict | None, log: Callable[[str], None] = print) -> dict:
-    """The batch run's config for the run record, capped like a manifest."""
+def batch_config(
+    summary: dict | None,
+    log: Callable[[str], None] = print,
+    merged: pd.DataFrame | None = None,
+) -> dict:
+    """The batch run's config for the run record, capped like a manifest.
+
+    A summary written before the claim tallies (C13) has no 'claims'; given the
+    merged ledger, its merged tally is read off the rows' `claim`, or off their
+    `evidence_level` through claim_class when the ledger predates that too.
+    """
     config = {k: summary[k] for k in BATCH_CONFIG_KEYS if summary and k in summary}
+    if "claims" not in config and merged is not None:
+        from peaky.assignment import evidence as EV
+
+        if "claim" in merged.columns:
+            config["claims"] = {"merged": EV.summarize_claims(merged["claim"])}
+        elif "evidence_level" in merged.columns:
+            config["claims"] = {
+                "merged": EV.summarize_claims(merged["evidence_level"].map(EV.claim_class))
+            }
     config.setdefault("engine", ENGINE)
     config.setdefault("pipeline", "batch")
     return _capped(_sanitize(config), "config", log) or {"engine": ENGINE}

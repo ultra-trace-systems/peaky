@@ -338,10 +338,14 @@ def _stage_evidence(st):
     evidence behind the formula is worth on the CIMS-adapted Schymanski scale,
     from the columns the ledger already carries. Runs after every tier and
     demote stage, the reflist rescue and the final envelope sweep (the
-    satellites the `iso` axis reads), before `timeseries` (ts_* only)."""
+    satellites the `iso` axis reads), before `timeseries` (ts_* only). The
+    claim each level supports (identified / ion / tentative) is stamped beside
+    it and tallied on the log line; it changes no tier."""
     s = evidence.apply_levels(st.led, cfg=st.cfg, cross=st.corroborate)
+    claims = s.get("claims") or {}
     st.log(f"[run] evidence levels {s['levels']} on {s['n_levelled']} M0 rows "
-           f"({s['n_pairs']} neutral/adduct pairs; corroborated by {s['n_corroborate']} neutrals)")
+           f"({s['n_pairs']} neutral/adduct pairs; corroborated by {s['n_corroborate']} neutrals); "
+           "claims " + " | ".join(f"{k} {claims.get(k, 0)}" for k in evidence.CLAIMS))
     return s
 
 

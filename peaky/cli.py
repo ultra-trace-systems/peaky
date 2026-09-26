@@ -299,6 +299,14 @@ def cmd_assign(args) -> None:
         _progress_hold_note(prog)
 
 
+def _claims_text(claims) -> str:
+    """'identified N | ion N | tentative N' from a claim tally ({claim: n}, in
+    evidence.CLAIMS order), '' when there is none."""
+    if not isinstance(claims, dict) or not claims:
+        return ""
+    return " | ".join(f"{k} {v}" for k, v in claims.items())
+
+
 def _write_assign_outputs(args, out, base) -> None:
     """Write the single-sample run's artifacts + print its summary. Split out of
     cmd_assign so the progress window stays open across the write + report."""
@@ -331,6 +339,9 @@ def _write_assign_outputs(args, out, base) -> None:
     print(f"\nwrote {base}_*.{{csv,xlsx,md,json,html}} (+ _gka_unexplained.html)")
     print(f"assigned {st['by_role']['M0']} | iso {st['by_role']['iso_child']} | "
           f"reagent {st['by_role']['reagent']} | unexplained {st['by_role']['unexplained']}")
+    claims = _claims_text(((out.get("summaries") or {}).get("evidence") or {}).get("claims"))
+    if claims:
+        print(f"claims: {claims}")
     head = (f"peaks explained {100*(1-cf['unexplained']):.1f}% | " if cf else "")
     print(head + f"signal explained {expl:.1f}%  | "
           f"ledger problems: {out['problems'] or 'none'}")
@@ -364,6 +375,10 @@ def cmd_batch(args) -> None:
         prog.finish((res.get("assign") or {}).get("summary"))
         ctx = res["ctx"]
         print(f"\n[batch] done -> {ctx.out_dir} in {res.get('elapsed_s', '?')}s")
+        claims = _claims_text((((res.get("assign") or {}).get("summary") or {})
+                               .get("claims") or {}).get("merged"))
+        if claims:
+            print(f"  claims (merged): {claims}")
         if res.get("report_pdf"):
             print(f"  report: {res['report_pdf']}")
         if res.get("report_pdf_small"):
@@ -394,6 +409,10 @@ def cmd_pool(args) -> None:
         prog.finish((res.get("assign") or {}).get("summary"))
         ctx = res["ctx"]
         print(f"\n[pool] unified ledger -> {ctx.out_dir} in {res.get('elapsed_s', '?')}s")
+        claims = _claims_text((((res.get("assign") or {}).get("summary") or {})
+                               .get("claims") or {}).get("merged"))
+        if claims:
+            print(f"  claims (merged): {claims}")
         if res.get("report_pdf"):
             print(f"  report: {res['report_pdf']}")
         if res.get("group_runs"):
@@ -699,7 +718,7 @@ def cmd_publish_batch(args) -> None:
         sys.exit("Nothing to publish: no merged row carries a formula.")
 
     version = args.engine_version or P.engine_version(None)
-    config = P.batch_config(summary)
+    config = P.batch_config(summary, merged=merged)
 
     if args.dry_run:
         print(f"\n[dry-run] nothing sent. engine_version {version}, "

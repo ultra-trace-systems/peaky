@@ -117,6 +117,10 @@ _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score",
 # corroborated, 1 file) lost a 1-vs-1 tie on ion_score to a silicon formula --
 # neither a bromide adduct of an amine nor an organosilicon is a reading a
 # negative-mode CIMS should carry over the one the other instrument confirms.
+# These two sets equal evidence.CLAIM_IDENTIFIED / CLAIM_ION by design, but the
+# vote class adds the `corroborated` axis on top (a corroborated reading at any
+# level ranks with the good class), so the vote class is not the claim and is never
+# routed through evidence.claim_class.
 EVIDENCE_CLASS_GOOD = frozenset({"1", "2a", "2b", "3a", "3b", "4a"})   # the neutral established
 EVIDENCE_CLASS_MID = frozenset({"4b", "4c", "4d"})                      # the formula / the ion pinned
 CORROBORATED_AXIS = "corroborated"   # the `evidence_axes` token of the --corroborate source's agreement
@@ -1077,6 +1081,39 @@ def _width_model_for_batch(resolving_power, client, table, log):
     return TFT.measure_resolution(client, probe, log=log)
 
 
+def _claims_summary(merged: pd.DataFrame, levels: pd.DataFrame) -> dict:
+    """batch_summary['claims']: the claim each level supports (evidence.claim_class,
+    C13) counted per merged row, per pooled (neutral, adduct) pair, per stage
+    and per tier. An ion-only merged row (an `ion_only_of` link) counts under
+    its own key 'ion-only', not under its tier. Tier and claim are separate
+    verdicts: they are tallied side by side and neither is read off the other.
+    `n_unlevelled` = merged rows with no level (their claim reads tentative)."""
+    from peaky.assignment import evidence as EV
+
+    pooled = EV.summarize_claims(levels["claim"] if len(levels) and "claim" in levels.columns else [])
+    if not len(merged) or "claim" not in merged.columns:
+        return {"merged": EV.summarize_claims([]), "pooled": pooled,
+                "per_stage": {}, "by_tier": {}, "n_unlevelled": 0}
+    io = (merged["ion_only_of"].notna() if "ion_only_of" in merged.columns
+          else pd.Series(False, index=merged.index))
+    tiers = (merged["tier"].fillna("").astype(str) if "tier" in merged.columns
+             else pd.Series("", index=merged.index))
+    by_tier = {t: EV.summarize_claims(merged.loc[~io & (tiers == t), "claim"])
+               for t in sorted(tiers[~io].unique(), key=lambda t: (-TIER_RANK.get(t, 0), t))}
+    if io.any():
+        by_tier["ion-only"] = EV.summarize_claims(merged.loc[io, "claim"])
+    return {
+        "merged": EV.summarize_claims(merged["claim"]),
+        "pooled": pooled,
+        "per_stage": ({str(s_): EV.summarize_claims(merged.loc[merged["stage"] == s_, "claim"])
+                       for s_ in sorted(merged["stage"].dropna().astype(str).unique())}
+                      if "stage" in merged.columns else {}),
+        "by_tier": by_tier,
+        "n_unlevelled": (int(merged["evidence_level"].isna().sum())
+                         if "evidence_level" in merged.columns else int(len(merged))),
+    }
+
+
 def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         reagent: str = "auto", context: str | None = None,
         k_min: int = SS.K_MIN, k_max: int = SS.K_MAX, min_gain: float = SS.MIN_GAIN,
@@ -1128,7 +1165,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     per-file ledgers (cover + residual files as one source) and stamped on the
     merged ledger by (neutral_formula, adduct) -- the merged rows carry none of
     the predicate columns. batch_summary['evidence_levels'] records the counts;
-    tables/evidence_levels.csv the facts behind every pair."""
+    tables/evidence_levels.csv the facts behind every pair. The claim each level
+    supports (identified / ion / tentative) is stamped on every merged row and
+    tallied in batch_summary['claims'] (merged, pooled, per stage, per tier with
+    the ion-only rows apart); it changes no ion, tier or level."""
     from peaky.assignment import assign as A
     from peaky.assignment import evidence as EV
     from peaky.batch import timeseries as _TSN
@@ -1804,6 +1844,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         f"{ev_summary['pooled']} ({ev_summary['n_pairs']} neutral/adduct pairs); "
         f"{ev_summary['n_unstamped']} merged row(s) without a per-file reading "
         f"-> tables/evidence_levels.csv")
+    # the claim each level supports, tallied beside the tier (never read off it)
+    claims_summary = _claims_summary(merged, levels)
+    log("[assign_batch] claims (merged): "
+        + " | ".join(f"{k} {claims_summary['merged'][k]}" for k in EV.CLAIMS))
     # ion-only rows (the `ion_only` stage): merged rows carrying the link, the
     # per-file rows behind them, and the files that hold any -- so the bucket
     # is on record beside the tiers it is deliberately kept apart from
@@ -1942,6 +1986,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # per_stage = merged rows by cover / residual; cross_source = what
         # corroborated the run
         "evidence_levels": ev_summary,
+        # the claim each level supports (identified / ion / tentative), merged / pooled / per stage / per tier
+        "claims": claims_summary,
         # the ion-only bucket (docs/EVIDENCE_LEVELS.md §3, the `ion_only` stage):
         # channels opened, merged rows carrying an `ion_only_of` link, per-file
         # rows behind them, files holding any, and their levels (4d / 5a)
