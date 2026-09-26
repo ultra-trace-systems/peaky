@@ -23,8 +23,8 @@ is the analyte **normalised to the reagent ion** (removes instrument-sensitivity
 reagent-flow common-mode drift). Then a **flat** normalised trace (low cv, no
 diel) is background, and a **variable** trace that co-varies with a known family is
 real ambient chemistry. This module builds the matrix, measures each bin's
-variability + family correlation, and applies **conservative** auto-actions
-(demote a TS-confirmed flat background commit; flag inlet contaminants).
+variability + family correlation, and **labels** each committed row (background,
+inlet contaminant, ambient). A label never changes a tier or a formula.
 
 ```
 batch peaks (sample_item_id, mz, height)
@@ -38,7 +38,7 @@ batch peaks (sample_item_id, mz, height)
    │  family_trace + correlate: r_mono / r_formic (z-scored log-traces)
    ▼  _disposition(formula, cv, r_mono, r_formic)
  stamp ledger M0 rows: ts_cv_norm / ts_r_mono / ts_r_formic / ts_disposition
-   └─ conservative demote: flat di-bromide / CO3 Assigned → Candidate
+   └─ label only: no tier, tier_reason or formula is touched
 ```
 
 ---
@@ -87,10 +87,11 @@ batch peaks (sample_item_id, mz, height)
    - `r_mono ≥ COVARY_R (0.70)` → ambient biogenic-SOA; `r_formic ≥ 0.9` → ambient
      acid/oxygenate pool; `cv ≥ 0.45` → ambient variable; else intermediate.
 
-7. **Stamp + conservatively demote** (`apply_timeseries`). Write the four `ts_*`
-   columns onto each M0 row. If `demote` and a row is `Assigned` **and** its
-   disposition is a flat **di-bromide** or **CO3-channel** background, cap it at
-   `Candidate` with a tier-reason note. Nothing else is changed — never a formula.
+7. **Stamp** (`apply_timeseries`). Write the four `ts_*` columns onto each M0 row.
+   Nothing else is changed: not a tier, not a tier reason, never a formula. A flat
+   **di-bromide** or **CO3-channel** commit was capped at `Candidate` here until
+   2026-09-26; its label (`background:di-bromide cluster`, `background:CO3-channel`)
+   already says background, so it now keeps its tier like every other row.
 
 8. **Cadence helper** (`auto_bin_minutes`). The time-bin width for the
    correlation/cluster/VK layer: the **native median inter-sample cadence**,
@@ -133,7 +134,7 @@ All in `peaky/batch/timeseries.py`.
 - **`r_mono` / `r_formic`** — Pearson r of a bin's z-scored **log10** trace against
   a family's z-scored mean log-trace; the co-variation evidence.
 - **`ts_disposition`** — the categorical verdict (`background:…` / `ambient:…` /
-  `intermediate`) that drives the conservative demote.
+  `intermediate`). It labels the row; it never tiers it.
 
 ---
 
@@ -143,7 +144,7 @@ All in `peaky/batch/timeseries.py`.
 | --- | --- |
 | `build_matrix` | `(matrix, bin_mz)` — samples × m/z-bin intensities + bin centres |
 | ledger `ts_cv_norm` / `ts_r_mono` / `ts_r_formic` / `ts_disposition` | per-M0 time-series annotation (in place) |
-| `apply_timeseries` summary | `{annotated, demoted, ambient, background}` |
+| `apply_timeseries` summary | `{annotated, ambient, background}` + the normaliser verdict (`normaliser`, `normaliser_cv`) and `varying_frac` / `flat_informative` |
 | `trace` | tidy `[datetime_utc, <value>]` for one compound; `attrs`: mz, assignment, n_peak_ids, tol_ppm |
 
 ---
@@ -160,9 +161,8 @@ All in `peaky/batch/timeseries.py`.
 - **Normalisation removes common-mode drift.** Dividing by the reagent total
   cancels instrument-sensitivity and reagent-flow swings, so `cv_norm` reflects
   chemistry, not the source.
-- **Conservative by design.** It never edits a formula and only demotes a flat
-  **di-bromide / CO3** Assigned commit (TS-confirmed background) — every other
-  disposition is annotation + commentary.
+- **Annotation only.** It never edits a formula or a tier; every disposition,
+  the di-bromide / CO3 channels included, is a label.
 - **Flatness labels, it never tiers.** A flat trace says where an ion comes from,
   not what it is, so a flat row keeps the tier its identity evidence earned and the
   verdict is in `ts_disposition`. `flat_informative` in the summary (at least
@@ -295,7 +295,7 @@ one-to-one contest for a predicted line runs among the surviving candidates.
 | `bin_metrics` | per-bin presence / median / `cv_norm` |
 | `family_trace` / `correlate` | z-scored log family trace; per-bin Pearson r |
 | `_disposition` | formula + (cv, r_mono, r_formic) → background/ambient/intermediate |
-| `apply_timeseries` | stamp `ts_*` columns; conservative flat-background demote |
+| `apply_timeseries` | stamp the `ts_*` columns (labels only; no tier change) |
 | `find_ts_parquet` / `trace` | locate the run's TS parquet; one-compound reproducible trace |
 | `recentre_ledger` / `collapse_trace_labels` / `stamp_tolerance` | §9: re-centre merged anchors on their traces, collapse competing labels, size the stamp window |
 | `identified_rows` / `stamping_frame` / `predicted_satellite_rows` / `annotate_peaks` | the parquet stamp: every identified ion per file → one union frame (analytes + observed reagent / satellite / artifact rows + the PREDICTED diagnostic satellites of every M0, `stamp_source`) → every TS peak stamped, known rows first, predicted lines gated on the parent's same-sample height |

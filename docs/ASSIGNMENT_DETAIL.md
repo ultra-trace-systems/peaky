@@ -537,7 +537,7 @@ A TS bin enters unassigned clustering only if: **median `≥ 50.0 cps`** AND `�
 
 ### 7.5 Time-series annotation
 
-`apply_timeseries(reagent_mzs, mono_anchor_mzs, formic_mz, tol_ppm=5.0, demote=True)` (timeseries.py) stamps M0s: `ts_cv_norm`, `ts_r_mono`, `ts_r_formic`, `ts_disposition`. Gates (on reagent-NORMALISED traces): `background` if `cv_norm < 0.25` (FLAT_CV); `ambient:biogenic-SOA` if `r_mono ≥ 0.70` (COVARY_R); `ambient:acid/oxygenate pool` if `r_formic ≥ 0.90`. If `demote=True` and an Assigned di-bromide/CO3 commit is flat → **tier demoted to Candidate** (formula unchanged). `trace(run_dir, query, tol_ppm=5.0)` (timeseries.py) is the reproducible single-compound query (reads the run's own parquet + merged ledger).
+`apply_timeseries(reagent_mzs, mono_anchor_mzs, formic_mz, tol_ppm=5.0)` (timeseries.py) stamps M0s: `ts_cv_norm`, `ts_r_mono`, `ts_r_formic`, `ts_disposition`. Gates (on reagent-NORMALISED traces; a normaliser whose own cv exceeds `MAX_NORMALISER_CV` = FLAT_CV is rejected and the traces stay un-normalised): `background` if `cv_norm < 0.25` (FLAT_CV); `ambient:biogenic-SOA` if `r_mono ≥ 0.70` (COVARY_R); `ambient:acid/oxygenate pool` if `r_formic ≥ 0.90`. **The disposition is a label only: no tier, tier reason or formula changes**, on the di-bromide / CO3 channels too (they were capped at Candidate until 2026-09-26). `trace(run_dir, query, tol_ppm=5.0)` (timeseries.py) is the reproducible single-compound query (reads the run's own parquet + merged ledger).
 
 ---
 

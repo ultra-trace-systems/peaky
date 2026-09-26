@@ -491,9 +491,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   summary reports `varying_frac` and `flat_informative` (formerly
   `flat_demote_armed`), so a background label can be read against whether the run
   moves at all. The merged batch ledger now carries the donor row's `ts_disposition`
-  and `ts_cv_norm`, so the label reaches a batch reader as well. Unchanged: the
-  reagent-normaliser guard (`MAX_NORMALISER_CV`), the di-bromide / CO3 channel
-  demote, and every disposition.
+  and `ts_cv_norm`, so the label reaches a batch reader as well. The same now holds
+  on the reagent-cluster channels. A flat di-bromide or `[M+CO3]-` commit was still
+  capped at `Candidate`, although its label (`background:di-bromide cluster`,
+  `background:CO3-channel`) already said background. On a bromide TOF that cap took
+  IBr and rows confirmed by their isotope pattern and a second ion channel. So no
+  tier depends on a trace any more: `apply_timeseries` loses its `demote` switch and
+  its summary the `demoted` count. Unchanged: the reagent-normaliser guard
+  (`MAX_NORMALISER_CV`) and every disposition.
 
 - **The degeneracy audit counts what the run could have committed.** `degeneracy.py` feeds the
   tier's degeneracy cap, `below_assignability` (O >= 11 on a saturated window), the O-monster demote and

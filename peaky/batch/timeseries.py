@@ -14,9 +14,9 @@ instrument-sensitivity + reagent-flow common-mode drift), and then
 This module ingests a batch's per-sample peak table, builds the reagent-normalised
 intensity matrix, measures each peak's variability (`cv_norm`) and (optionally)
 its correlation to reference family traces, and stamps a `ts_*` disposition onto
-the ledger. It then applies CONSERVATIVE auto-actions: demote a flat di-bromide /
-background-channel commit (TS-confirmed background) and flag inlet contaminants.
-It never changes a formula -- only the tier/role annotation, with commentary.
+the ledger. The disposition LABELS a row (background / ambient / inlet
+contaminant); it never changes a formula or a tier. Flatness says where an ion
+comes from, not what it is.
 
 All pure pandas/numpy; no network. Reference (2026-06-16 time-series unlock).
 """
@@ -33,8 +33,9 @@ import pandas as pd
 from peaky.assignment import ledger as L
 from peaky.batch import traces as TR
 
-__version__ = "0.3.1"  # flatness labels a row (ts_disposition) and never tiers it; only the
-                       # di-bromide / CO3 channel demote remains. 0.3.0: predicted diagnostic
+__version__ = "0.3.2"  # flatness labels a row (ts_disposition) and never tiers it, on the
+                       # di-bromide / CO3 channels too; 0.3.1: the general flat demote removed;
+                       # 0.3.0: predicted diagnostic
                        # satellites in the batch stamp (stamp_source, track coherence);
                        # 0.2.1: bin_ids, the row-aligned bin rule
 
@@ -1667,14 +1668,13 @@ def _disposition(row, cv, r_mono, r_formic):
 
 def apply_timeseries(ledger: pd.DataFrame, peaks: pd.DataFrame, *,
                      reagent_mzs=None, mono_anchor_mzs=None, formic_mz=None,
-                     tol_ppm: float = DEFAULT_TOL_PPM, demote=True, log=print) -> dict:
+                     tol_ppm: float = DEFAULT_TOL_PPM, log=print) -> dict:
     """Annotate `ledger` (in place) with ts_cv_norm / ts_r_mono / ts_r_formic /
-    ts_disposition from the time-series `peaks` table, and (if demote) cap a flat
-    di-bromide / CO3-channel Assigned commit at Candidate (TS-confirmed
-    background). Returns a summary dict. Reagent normaliser + anchors are taken
-    from the ledger when not supplied.
+    ts_disposition from the time-series `peaks` table. No tier, tier_reason or
+    formula is touched. Returns a summary dict. Reagent normaliser + anchors are
+    taken from the ledger when not supplied.
     """
-    summary = {"annotated": 0, "demoted": 0, "ambient": 0, "background": 0}
+    summary = {"annotated": 0, "ambient": 0, "background": 0}
     for col in ("ts_cv_norm", "ts_r_mono", "ts_r_formic", "ts_disposition"):
         if col not in ledger.columns:
             ledger[col] = np.nan if col != "ts_disposition" else ""
@@ -1794,13 +1794,13 @@ def apply_timeseries(ledger: pd.DataFrame, peaks: pd.DataFrame, *,
             # C/N/O compositions in the reagent library stays rejected for the
             # reason chem/reagents._EASYIC_SOURCE_IONS records.
             #
-            # The di-bromide / CO3 channel demote predates this and is unchanged.
-            if demote and str(ledger.at[i, "tier"]) == "Assigned" and (
-                    "di-bromide" in disp or "CO3-channel" in disp):
-                ledger.at[i, "tier"] = "Candidate"
-                ledger.at[i, "tier_reason"] = (str(ledger.at[i, "tier_reason"] or "")
-                    + " | time-series: flat background (reagent/inlet), demoted").strip(" |")
-                summary["demoted"] += 1
+            # The same holds on the reagent-cluster channels. A flat di-bromide
+            # or CO3-channel commit was capped at Candidate here until 2026-09-26,
+            # although its label (`background:di-bromide cluster`,
+            # `background:CO3-channel`) already says background. On a bromide
+            # TOF that cap took IBr (a known species, the ion IBr2-) and rows
+            # confirmed by their isotope pattern and a second ion channel, and it
+            # moved no roster, bright-peak or decoy metric.
     log(f"[timeseries] {summary}")
     return summary
 

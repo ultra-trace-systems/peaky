@@ -119,9 +119,10 @@ _POSITIVE_REAGENTS = {
 # primary target of any combustion or urban-air run, and the nitriles likewise.
 # Labelling them here would lock those analytes away exactly as a reagent label on
 # the iodine oxides would have locked away iodic acid (the HIO3 ruling). What
-# identifies them is not composition but BEHAVIOUR, so they are caught by the
-# time-series flat-background demote instead (batch/timeseries.apply_timeseries),
-# which keeps them assignable in a run where they actually vary.
+# identifies them is not composition but BEHAVIOUR, so the time series labels them
+# instead (`ts_disposition` = `background:flat`, batch/timeseries.apply_timeseries).
+# The label never tiers them, and in a run where they actually vary it reads
+# ambient.
 # Only ions that can never be an analyte are listed below.
 _EASYIC_SOURCE_IONS: dict[str, dict[str, int]] = {
     "[C16H10]+. (fluoranthene)": {"C": 16, "H": 10},
