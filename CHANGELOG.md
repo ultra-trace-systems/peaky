@@ -490,8 +490,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   background is labelled `background`, which is what a reader has to see. The
   summary reports `varying_frac` and `flat_informative` (formerly
   `flat_demote_armed`), so a background label can be read against whether the run
-  moves at all. Unchanged: the reagent-normaliser guard (`MAX_NORMALISER_CV`), the
-  di-bromide / CO3 channel demote, and every disposition.
+  moves at all. The merged batch ledger now carries the donor row's `ts_disposition`
+  and `ts_cv_norm`, so the label reaches a batch reader as well. Unchanged: the
+  reagent-normaliser guard (`MAX_NORMALISER_CV`), the di-bromide / CO3 channel
+  demote, and every disposition.
 
 - **The degeneracy audit counts what the run could have committed.** `degeneracy.py` feeds the
   tier's degeneracy cap, `below_assignability` (O >= 11 on a saturated window), the O-monster demote and

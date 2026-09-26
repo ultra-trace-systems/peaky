@@ -1532,6 +1532,28 @@ finally:
     IO.estimate_offset, _A.run = _saved["estimate_offset"], _saved["run"]
 
 
+# --- FLATNESS SURVIVES THE MERGE AS A LABEL: the time series labels a row
+# (ts_disposition / ts_cv_norm) and never tiers it, so the merged row carries the
+# label of the row that donates its tier -- otherwise a batch reader would see a
+# flat calibrant background as a plain Assigned analyte.
+def m0t(rows):
+    return pd.DataFrame(rows, columns=["mz", "neutral_formula", "adduct", "tier", "ion_score",
+                                       "ts_disposition", "ts_cv_norm"])
+
+
+flat_lab = {"a": m0t([(178.0777, "C14H10", "[M]+.", "Assigned", 0.95, "background:flat (TS-flat)", 0.07)]),
+            "b": m0t([(178.0778, "C14H10", "[M]+.", "Candidate", 0.97, "ambient:variable", 0.61)])}
+mfl, _ = AB.align(flat_lab, tol_ppm=6.0)
+check("the merged row carries the donor row's ts_disposition (the Assigned file's label, not the other file's)",
+      len(mfl) == 1 and mfl.iloc[0]["tier"] == "Assigned"
+      and mfl.iloc[0]["ts_disposition"] == "background:flat (TS-flat)", mfl.to_dict("records"))
+check("  -> and its ts_cv_norm", float(mfl.iloc[0]["ts_cv_norm"]) == 0.07, mfl.to_dict("records"))
+nolab, _ = AB.align({"a": m0([(500.0, "C20H30O8", "[M+H]+", "Assigned", 0.9)])}, tol_ppm=6.0)
+check("a batch without a time series merges as before (label NA, no crash)",
+      len(nolab) == 1 and pd.isna(nolab.iloc[0]["ts_disposition"]) and pd.isna(nolab.iloc[0]["ts_cv_norm"]),
+      nolab.to_dict("records"))
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

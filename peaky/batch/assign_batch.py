@@ -93,6 +93,8 @@ _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score",
             "admitted_by", "occurrence",   # admission provenance, when present
             "ion_only_of",                 # the ion-only link (the winner file's parent peak), when present
             "resolvability", "sep_hwhm",   # the winner file's peak separability (assignment/resolvability.py), when present
+            "ts_disposition", "ts_cv_norm",  # the winner file's time-series label (batch/timeseries.py): flatness is a
+                                             # label, never a tier, so the merged row must carry it, when present
             "evidence_level", "evidence_axes"]   # the file's own evidence level + axes (assignment/evidence.py): the vote's
                                                  # evidence class reads them (_evidence_class), when present
 
@@ -361,7 +363,7 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
     if not frames:
         return (pd.DataFrame(columns=["mz", "neutral_formula", "adduct", "tier",
                                       "ion_score", "admitted_by", "occurrence", "ion_only_of",
-                                      "resolvability", "sep_hwhm",
+                                      "resolvability", "sep_hwhm", "ts_disposition", "ts_cv_norm",
                                       "n_files", "n_files_ion", "n_files_winner",
                                       "alternatives", "tier_reason", "srcs",
                                       *(["stage"] if stages is not None else []),
@@ -429,6 +431,7 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
             admitted_by=best.get("admitted_by"), occurrence=best.get("occurrence"),
             ion_only_of=best.get("ion_only_of", pd.NA),
             resolvability=best.get("resolvability", pd.NA), sep_hwhm=best.get("sep_hwhm", np.nan),
+            ts_disposition=best.get("ts_disposition", pd.NA), ts_cv_norm=best.get("ts_cv_norm", np.nan),
             n_files=n_total, n_files_ion=int(win_ion["n_files"]),
             n_files_winner=int(win["n_files"]),
             alternatives="; ".join(_describe(r) for _, r in lab.iloc[1:].iterrows()),

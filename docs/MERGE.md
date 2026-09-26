@@ -151,7 +151,10 @@ selected sample_ids (SAMPLING.md)
    The winning reading's best per-file row (tier, then `ion_score`, then `src`)
    supplies the merged `neutral_formula` / `adduct` / `tier` / `ion_score` /
    `admitted_by` / `occurrence` / `resolvability` / `sep_hwhm` (the winner
-   file's peak separability, when the run had a width model). The merged **`mz` is the mean of the cluster's
+   file's peak separability, when the run had a width model) / `ts_disposition` /
+   `ts_cv_norm` (the winner file's time-series label, when the run had a time series:
+   flatness labels a row and never tiers it, so the label has to survive the merge).
+   The merged **`mz` is the mean of the cluster's
    raw m/z**. Also recorded: `n_files` (distinct srcs), `n_files_ion` (files
    carrying the winning ion), `n_files_winner` (files carrying the winning
    reading), `alternatives` (every losing reading, best first, e.g.
@@ -318,7 +321,7 @@ All in `peaky/batch/assign_batch.py`.
 | `EVIDENCE_CLASS_GOOD` / `EVIDENCE_CLASS_MID` / `CORROBORATED_AXIS` | `{1, 2a, 2b, 3a, 3b, 4a}` / `{4b, 4c, 4d}` / `corroborated` | the vote's evidence class of a per-file reading (`_evidence_class`: 2 = a level in the first set or the `corroborated` token in `evidence_axes`; 1 = a level in the second; 0 = 5a / 5b / no level) — the ion key before the file count |
 | `TIER_RANK` | `{Assigned:2, Candidate:1}` | the vote's Assigned-file count (a tie-break after the evidence class and the file count) and the best-row pick within the winning reading (then `ion_score`) |
 | `lock_known_species` `tol_ppm` / `mz_floor_da` | the merge window / 1.5 mDa | the window a pooled known-species ion is matched to its merged cluster with (`run` passes `MassScale.merge_ppm`; the stamp's mDa floor); a species confirmed in ≥ 1 file and refuted in none takes that cluster |
-| `_M0_COLS` | `[mz, neutral_formula, adduct, tier, ion_score, admitted_by, occurrence, ion_only_of, resolvability, sep_hwhm, evidence_level, evidence_axes]` | the per-file M0 schema aligned (admission / ion-only / separability provenance, carried for the winning row; the file's own evidence level + axes, read by the vote's evidence class; absent columns are tolerated) |
+| `_M0_COLS` | `[mz, neutral_formula, adduct, tier, ion_score, admitted_by, occurrence, ion_only_of, resolvability, sep_hwhm, ts_disposition, ts_cv_norm, evidence_level, evidence_axes]` | the per-file M0 schema aligned (admission / ion-only / separability provenance, carried for the winning row; the file's own evidence level + axes, read by the vote's evidence class; absent columns are tolerated) |
 | `run` `amine_r_min` | 0.6 | min trace correlation for the positive amine re-read |
 | `assign_kw` `reagent_n_relabel` | `False` (set by `run`) | the per-file hydrocarbon-on-N-cluster re-read stands down; `run` applies it once to the merged ledger |
 | `run` `k_min` / `k_max` / `min_gain` / `min_prevalence` | 6 / 30 / 0.005 / 2 | passed through to `sampling.select_cover_samples` (see [`SAMPLING.md`](SAMPLING.md)) |
