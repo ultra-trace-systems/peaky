@@ -26,6 +26,7 @@ import pandas as pd
 
 from peaky.chem import chemistry as C
 from peaky.assignment import ledger as L
+from peaky.assignment import tiers as T
 
 __version__ = "0.4.0"   # element-budget demote (demote_off_budget); 0.3.0 carbon-cluster rule: F no longer exempts
 
@@ -49,8 +50,9 @@ F_HIGH = 4          # F>=this -> heavily fluorinated; F is monoisotopic, so the 
 #     signature. It is NOT a niso gate -- a 13C satellite confirms the CARBON
 #     count, not the O count, so an O-monster carrying a real 13C twin is still an
 #     O-monster. Real HOMs top out at O/C ~1.14, so OC_MONSTER=1.3 spares every
-#     genuine oxidation product. (The DEMOTE additionally requires mass-saturation
-#     from the degeneracy audit; the plain reason-string oracle reports the ratio.)
+#     genuine oxidation product. (The DEMOTE additionally requires a mass-degenerate
+#     window from the degeneracy audit -- the tier engine's own threshold, >= 3
+#     plausible ions or MASS-SATURATED; the plain reason-string oracle reports the ratio.)
 #
 #   * CARBON-CLUSTER: DBE/C >= DBE_PER_C_MONSTER (equivalently H <= N+2) on an
 #     C>=2 skeleton is a bare-carbon mass coincidence (e.g. C5H2, C24H2, C12HF --
@@ -167,15 +169,14 @@ def scan(merged, *, polarity: str | None = None) -> list[dict]:
 # write tables/plausibility_audit_*.
 # ===========================================================================
 
-def _is_saturated(note) -> bool:
-    """A degeneracy_note carrying the audit's MASS-SATURATED flag (more than
-    degeneracy.SATURATION_DENSITY plausible formulas in the window) -- the second
-    leg of the O-monster demote (the ratio alone is not enough; the mass must also
-    be one arbitrary pick of a saturated set). A MASS-DEGENERATE note (2-8 ions)
-    is not: the audit counts the commit itself, so a small high-O/C acid with one
-    competitor reads 2; the tier's degeneracy cap already holds it if uncorroborated."""
-    s = "" if note is None or (isinstance(note, float) and pd.isna(note)) else str(note)
-    return "MASS-SATURATED" in s
+def _mass_degenerate(row) -> bool:
+    """The second leg of the O-monster demote: the tier engine's own "degenerate"
+    window (`tiers._degeneracy`: more than DEGEN_DEMOTE_DENSITY plausible ions, a
+    lower bound included, or the audit's MASS-SATURATED flag) -- the ratio alone is
+    not enough, the mass must also be one pick of a degenerate set. Two ions is not:
+    the audit counts the commit itself, so a small high-O/C acid with one competitor
+    reads density 2 -- a choice between two, not an arbitrary pick."""
+    return T._degeneracy(row)[1]
 
 
 def _iso_count(s) -> int:
@@ -226,11 +227,12 @@ def _demote_row(ledger, i, *, reason, audit, evidence, degeneracy_note, n_iso):
 
 def demote_oxygen_monsters(ledger: pd.DataFrame, *, audit=None, log=print) -> dict:
     """Demote M0 assignments that are oxygen-lattice 'monsters': O/C > OC_MONSTER
-    AND mass-saturated (the degeneracy audit flags ~dozens of plausible ions on
-    the mass). NOT niso-gated -- a 13C satellite confirms the carbon count, not the
-    oxygen count, so it would wrongly exempt a real O-monster. Real HOMs (O/C<=1.14)
-    are spared by the ratio cut; non-saturated high-O fits are spared by the second
-    leg. Assigned->Candidate + below_assignability. Demote-only."""
+    AND mass-degenerate (the degeneracy audit counts >= 3 plausible ions in the
+    calibrated window, or flags it MASS-SATURATED). NOT niso-gated -- a 13C satellite
+    confirms the carbon count, not the oxygen count, so it would wrongly exempt a
+    real O-monster. Real HOMs (O/C<=1.14) are spared by the ratio cut; high-O fits
+    on a unique or two-ion window (the small polyacids: oxalic, malonic ...) are
+    spared by the second leg. Assigned->Candidate + below_assignability. Demote-only."""
     n = 0
     has_note = "degeneracy_note" in ledger.columns
     for i in _m0_index(ledger):
@@ -238,15 +240,15 @@ def demote_oxygen_monsters(ledger: pd.DataFrame, *, audit=None, log=print) -> di
         if not is_oxygen_monster(cnt):
             continue
         note = ledger.at[i, "degeneracy_note"] if has_note else None
-        if not _is_saturated(note):     # ratio alone is not enough -- needs saturation
+        if not _mass_degenerate(ledger.loc[i]):   # ratio alone is not enough -- needs a degenerate mass
             continue
         ni = _iso_count(ledger.at[i, "isotopologues"]) if "isotopologues" in ledger.columns else 0
         reason = (f"oxygen-lattice monster (O/C {_oc(cnt):.2f} > {OC_MONSTER}, "
-                  "mass-saturated) -- one arbitrary pick of a sub-ppm-degenerate set")
+                  "mass-degenerate) -- one pick of a sub-ppm-degenerate set")
         _demote_row(ledger, i, reason=reason, audit=audit,
                     evidence=f"O/C={_oc(cnt):.2f}", degeneracy_note=note, n_iso=ni)
         n += 1
-    log(f"[plausibility] demoted {n} oxygen-lattice monsters (O/C>{OC_MONSTER}, mass-saturated)")
+    log(f"[plausibility] demoted {n} oxygen-lattice monsters (O/C>{OC_MONSTER}, mass-degenerate)")
     return {"o_demoted": n}
 
 

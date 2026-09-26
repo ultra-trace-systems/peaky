@@ -195,12 +195,14 @@ if __name__ == "__main__":
     sys.exit(1 if FAIL else 0)
 
 
-def test_oxygen_monster_demote_needs_a_saturated_note():
-    """The O-monster demote's second leg is the audit's MASS-SATURATED flag. The audit counts
-    the commit itself, so a small high-O/C acid with one competitor reads MASS-DEGENERATE: 2
-    (malonic acid [M+^NO3]- beside a fluorinated [M-H]- on the nitrate Orbitrap) -- not
-    saturated, not a lattice monster."""
+def test_oxygen_monster_demote_needs_a_degenerate_window():
+    """The O-monster demote's second leg is the tier engine's own "degenerate" window
+    (>= 3 plausible ions, a lower bound included, or MASS-SATURATED). The audit counts the
+    commit itself, so a small high-O/C acid with one competitor reads density 2 (malonic
+    acid [M+^NO3]- beside a fluorinated [M-H]- on the nitrate Orbitrap) -- spared; an
+    O-rich formula in a 4-ion window is not."""
     from peaky.assignment import plausibility as PL
+    from peaky.assignment import tiers as T
     deg2 = ("MASS-DEGENERATE: 2 plausible ions within ±3σ calibrated window — competitors: "
             "C5H3F3O3 [M-H]- (+1.12 ppm)")
     deg_lb = ("MASS-DEGENERATE: at least 4 plausible ions within ±3σ calibrated window — competitors: "
@@ -208,16 +210,18 @@ def test_oxygen_monster_demote_needs_a_saturated_note():
               "count is a lower bound")
     sat = ("MASS-SATURATED: 11 plausible formulas (≤3 heteroatom types) within ±3σ calibrated "
            "window — not identifiable from accurate mass alone")
-    led = pd.DataFrame([
-        dict(role="M0", mz=165.0, neutral_formula="C3H4O4", tier="Assigned", commentary="",
-             below_assignability=False, degeneracy_note=deg2, isotopologues="[]"),
-        dict(role="M0", mz=168.0, neutral_formula="C2H4O4", tier="Assigned", commentary="",
-             below_assignability=False, degeneracy_note=deg_lb, isotopologues="[]"),
-        dict(role="M0", mz=167.0, neutral_formula="C3H6O4", tier="Assigned", commentary="",
-             below_assignability=False, degeneracy_note=sat, isotopologues="[]"),
-    ])
-    assert PL.demote_oxygen_monsters(led, log=lambda *a: None) == {"o_demoted": 1}
-    assert list(led["tier"]) == ["Assigned", "Assigned", "Candidate"]
-    assert [bool(v) for v in led["below_assignability"]] == [False, False, True]
-    assert not PL._is_saturated(deg2) and not PL._is_saturated(deg_lb) and PL._is_saturated(sat)
-    assert not any(PL._is_saturated(v) for v in (None, float("nan"), pd.NA, ""))
+    nm = ("not measured: the committed formula lies outside this run's enumerated space (x); "
+          "1 other plausible ion(s) within ±3σ calibrated window: a")
+    rows = [("C3H4O4", 165.0, 2, deg2), ("C6H14O9", 309.0, 4, deg_lb), ("C3H6O4", 167.0, 11, sat),
+            ("C2H4O4", 168.0, pd.NA, nm), ("C2H2O4", 170.0, 1, "unique within ±3σ calibrated mass window")]
+    led = pd.DataFrame([dict(role="M0", mz=mz, neutral_formula=nf, tier="Assigned", commentary="",
+                             below_assignability=False, degeneracy_density=d, degeneracy_note=n,
+                             isotopologues="[]") for nf, mz, d, n in rows])
+    assert PL.demote_oxygen_monsters(led, log=lambda *a: None) == {"o_demoted": 2}
+    assert list(led["tier"]) == ["Assigned", "Candidate", "Candidate", "Assigned", "Assigned"]
+    assert [bool(v) for v in led["below_assignability"]] == [False, True, True, False, False]
+    assert "mass-degenerate" in led.at[1, "commentary"]
+    # the second leg is the tier engine's own predicate, row for row
+    for i in led.index:
+        assert PL._mass_degenerate(led.loc[i]) == T._degeneracy(led.loc[i])[1]
+    assert not PL._mass_degenerate({}) and not PL._mass_degenerate({"degeneracy_note": pd.NA})

@@ -207,7 +207,7 @@ def test_an_off_space_commit_is_a_lower_bound_or_not_measured():
     assert not tight["measured"] and np.isnan(tight["density"])
     assert tight["note"].startswith("not measured")
     # the note must not read as saturated / degenerate anywhere downstream
-    assert not PL._is_saturated(tight["note"])
+    assert not PL._mass_degenerate({"degeneracy_density": pd.NA, "degeneracy_note": tight["note"]})
     assert T._degeneracy({"degeneracy_density": pd.NA, "degeneracy_note": tight["note"]}) == (None, False)
     wide = _measure(row, sigma=12.0, context="ambient-air", adducts=NITRATE)["P"]
     assert wide["measured"] and wide["lower_bound"] and wide["density"] >= 3

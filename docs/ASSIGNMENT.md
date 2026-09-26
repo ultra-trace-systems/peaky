@@ -269,8 +269,9 @@ relabels a role, it never fabricates an assignment.
 A second, **hardened** layer (`peaky/plausibility.py`) shares one oracle between the scrutiny
 flags and the demotes, so a flagged formula and a demoted formula can never disagree:
 
-- **Oxygen-lattice monster** — `O/C > 1.3` **and** the degeneracy audit flags the mass as
-  saturated. It is deliberately *not* niso-gated: a ¹³C satellite confirms the carbon count,
+- **Oxygen-lattice monster** — `O/C > 1.3` **and** the degeneracy audit counts the mass as
+  degenerate (≥ 3 plausible ions in the calibrated window, the tier engine's own threshold, or
+  saturated); a unique or two-ion window spares the small polyacids. It is deliberately *not* niso-gated: a ¹³C satellite confirms the carbon count,
   not the oxygen count, so a real ¹³C twin must not exempt a monster. Real HOMs top out at
   `O/C ≈ 1.14` and are spared by the ratio cut.
 - **Carbon cluster** — `DBE/C ≥ 1.0` (equivalently `H ≤ N+2`), F-free, C ≥ 2, with a
