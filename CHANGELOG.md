@@ -477,7 +477,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - **The degeneracy audit counts what the run could have committed.** `degeneracy.py` feeds the
-  tier's degeneracy cap, `below_assignability` (O >= 11 and degenerate), the O-monster demote and
+  tier's degeneracy cap, `below_assignability` (O >= 11 on a saturated window), the O-monster demote and
   the 4c / 5a / 5b split of every axis-less row, and it enumerated ONE space for every run: the
   Br-CIMS adducts (`[M+Br]-`, `[M-H]-`, `[M+CO3]-`, `[M+HBr+Br]-`, `[M+HBr+CO3]-` -- the stage passed
   none), a fixed box (C <= 20, O <= 12, H <= 36, F <= 17, Si <= 3, Cl / Br <= 2, S <= 1) and the
@@ -656,6 +656,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [M-H]- (…): the reagent-cluster reading is kept …"). Same answer whatever the channel order.
 
 ### Fixed
+
+- **The two O-rich rules read a saturated window, as they say.** `below_assignability` for
+  O >= 11 (`tiers.flag_below_assignability`, reason "O>=11, mass-saturated") fired on any
+  degenerate window (>= 3 ions), and the O-monster demote's second leg
+  (`plausibility._is_saturated`, documented as "~dozens of plausible ions") matched a
+  `MASS-DEGENERATE` note as well as `MASS-SATURATED`. Once the degeneracy audit counts the commit
+  itself, a small high-O/C acid with one competitor reads `MASS-DEGENERATE: 2`: malonic acid,
+  C2H4O4 and C3H6O4 on the labelled-nitrate Orbitrap (`[M+^NO3]-`, beside a fluorinated `[M-H]-`)
+  fell to Candidate + below assignability, level 5b. Both rules now read the audit's
+  `MASS-SATURATED` flag only (`tiers._saturated`: more than `degeneracy.SATURATION_DENSITY`
+  plausible formulas, a lower bound included); a degenerate window is still capped by the tier's
+  degeneracy rule when uncorroborated and is 5b without an axis. Sized on the same-air working
+  set before the change (the census replay of the audit's consumers): labelled nitrate +2
+  Assigned, ~10k TOF +5, uronium unchanged; no test-set or roster winner moves.
 
 - **A batch-level re-read left its time-series stamp without an ion.** The stamping frame borrows
   each merged analyte's `ion_formula` from the per-file ledgers by its (neutral, adduct) key; a

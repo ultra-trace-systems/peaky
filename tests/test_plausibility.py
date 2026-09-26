@@ -193,3 +193,31 @@ def test_all():
 if __name__ == "__main__":
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
+
+
+def test_oxygen_monster_demote_needs_a_saturated_note():
+    """The O-monster demote's second leg is the audit's MASS-SATURATED flag. The audit counts
+    the commit itself, so a small high-O/C acid with one competitor reads MASS-DEGENERATE: 2
+    (malonic acid [M+^NO3]- beside a fluorinated [M-H]- on the nitrate Orbitrap) -- not
+    saturated, not a lattice monster."""
+    from peaky.assignment import plausibility as PL
+    deg2 = ("MASS-DEGENERATE: 2 plausible ions within ±3σ calibrated window — competitors: "
+            "C5H3F3O3 [M-H]- (+1.12 ppm)")
+    deg_lb = ("MASS-DEGENERATE: at least 4 plausible ions within ±3σ calibrated window — competitors: "
+              "a; b; c — the committed formula lies outside this run's enumerated space (x), so the "
+              "count is a lower bound")
+    sat = ("MASS-SATURATED: 11 plausible formulas (≤3 heteroatom types) within ±3σ calibrated "
+           "window — not identifiable from accurate mass alone")
+    led = pd.DataFrame([
+        dict(role="M0", mz=165.0, neutral_formula="C3H4O4", tier="Assigned", commentary="",
+             below_assignability=False, degeneracy_note=deg2, isotopologues="[]"),
+        dict(role="M0", mz=168.0, neutral_formula="C2H4O4", tier="Assigned", commentary="",
+             below_assignability=False, degeneracy_note=deg_lb, isotopologues="[]"),
+        dict(role="M0", mz=167.0, neutral_formula="C3H6O4", tier="Assigned", commentary="",
+             below_assignability=False, degeneracy_note=sat, isotopologues="[]"),
+    ])
+    assert PL.demote_oxygen_monsters(led, log=lambda *a: None) == {"o_demoted": 1}
+    assert list(led["tier"]) == ["Assigned", "Assigned", "Candidate"]
+    assert [bool(v) for v in led["below_assignability"]] == [False, False, True]
+    assert not PL._is_saturated(deg2) and not PL._is_saturated(deg_lb) and PL._is_saturated(sat)
+    assert not any(PL._is_saturated(v) for v in (None, float("nan"), pd.NA, ""))

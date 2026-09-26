@@ -225,11 +225,16 @@ def _degeneracy(row) -> tuple[int | None, bool]:
             density = int(float(d))
         except (TypeError, ValueError):
             density = None
-    note = row.get("degeneracy_note")
-    note = "" if note is None or pd.isna(note) else str(note)
-    flagged = "MASS-SATURATED" in note
-    is_degen = (density is not None and density > DEGEN_DEMOTE_DENSITY) or flagged
+    is_degen = (density is not None and density > DEGEN_DEMOTE_DENSITY) or _saturated(row)
     return density, is_degen
+
+
+def _saturated(row) -> bool:
+    """The degeneracy audit's MASS-SATURATED flag (more than degeneracy.py's
+    SATURATION_DENSITY plausible formulas in the window, a lower bound included):
+    the mass alone cannot pick one. Stronger than degenerate (> 2 ions)."""
+    note = row.get("degeneracy_note")
+    return note is not None and not pd.isna(note) and "MASS-SATURATED" in str(note)
 
 
 def _winner_raw(row) -> float | None:
@@ -888,15 +893,16 @@ def flag_below_assignability(ledger: pd.DataFrame) -> int:
     formula is one arbitrary pick of a sub-ppm-degenerate set, not an ID. Stamp a
     `below_assignability` flag so the report lists them as a constrained mass, not
     a confident formula. They are already capped at Candidate by the tier rules;
-    this is the explicit do-not-trust-the-formula disposition."""
+    this is the explicit do-not-trust-the-formula disposition. A MASS-DEGENERATE
+    window (3-8 ions) is not enough: the degeneracy cap holds an uncorroborated
+    commit there, and an isotope or second channel may still pick the formula."""
     if "below_assignability" not in ledger.columns:
         ledger["below_assignability"] = False
     n = 0
     for i in ledger.index[ledger["role"] == L.ROLE_M0]:
         nf = str(ledger.at[i, "neutral_formula"])
         o = C.parse_formula(nf).get("O", 0) if nf and nf != "nan" else 0
-        _density, is_degen = _degeneracy(ledger.loc[i])
-        if o >= 11 and is_degen:
+        if o >= 11 and _saturated(ledger.loc[i]):
             ledger.at[i, "below_assignability"] = True
             ledger.at[i, "tier_reason"] = (str(ledger.at[i, "tier_reason"] or "")
                 + " | below-assignability (O>=11, mass-saturated)").strip(" |")

@@ -572,3 +572,35 @@ def test_persist_only_read_is_null_safe():
     by = led.set_index("peak_id")
     assert by.loc["a", "tier"] == by.loc["b", "tier"] == by.loc["c", "tier"] == by.loc["e", "tier"]
     assert by.loc["d", "tier"] == "Candidate"   # persistence-admitted, uncorroborated
+
+
+def test_below_assignability_reads_a_saturated_note_only():
+    """`below_assignability` (O >= 11) needs the audit's MASS-SATURATED flag, as its reason
+    says. A MASS-DEGENERATE window (3-8 ions, a lower bound included) stays degenerate for
+    the tier's cap but is not flagged below assignability."""
+    from peaky.assignment import tiers as T
+    tail = (" — the committed formula lies outside this run's enumerated space (C41 > the "
+            "context's C40), so the count is a lower bound")
+    notes = {
+        "sat": (12, "MASS-SATURATED: 12 plausible formulas (≤3 heteroatom types) within ±3σ "
+                    "calibrated window — not identifiable from accurate mass alone"),
+        "sat_lb": (9, "MASS-SATURATED: at least 9 plausible formulas (≤3 heteroatom types) within "
+                      "±3σ calibrated window" + tail),
+        "deg8": (8, "MASS-DEGENERATE: 8 plausible ions within ±3σ calibrated window — competitors: "
+                    "C9H12O13 [M+NO3]- (+0.40 ppm)"),
+        "deg_lb": (3, "MASS-DEGENERATE: at least 3 plausible ions within ±3σ calibrated window — "
+                      "competitors: C9H12O13 [M+NO3]- (+0.40 ppm); C12H10O10 [M-H]- (-1.1 ppm)" + tail),
+    }
+    ba = pd.DataFrame([dict(peak_id=p, role="M0", neutral_formula="C10H16O11", degeneracy_density=d,
+                            degeneracy_note=n, tier="Candidate", tier_reason="r")
+                       for p, (d, n) in notes.items()])
+    assert T.flag_below_assignability(ba) == 2
+    by = ba.set_index("peak_id")
+    assert bool(by.loc["sat", "below_assignability"]) and bool(by.loc["sat_lb", "below_assignability"])
+    assert not bool(by.loc["deg8", "below_assignability"]) and not bool(by.loc["deg_lb", "below_assignability"])
+    assert by.loc["sat", "tier_reason"] == "r | below-assignability (O>=11, mass-saturated)"
+    assert by.loc["deg8", "tier_reason"] == "r"
+    # still degenerate for the tier's cap
+    assert T._degeneracy(by.loc["deg8"])[1] and T._degeneracy(by.loc["deg_lb"])[1]
+    assert not T._saturated(by.loc["deg8"]) and T._saturated(by.loc["sat_lb"])
+    assert not T._saturated({"degeneracy_note": pd.NA}) and not T._saturated({})

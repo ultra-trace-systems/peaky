@@ -168,12 +168,14 @@ def scan(merged, *, polarity: str | None = None) -> list[dict]:
 # ===========================================================================
 
 def _is_saturated(note) -> bool:
-    """A degeneracy_note that flags the mass as saturated/degenerate -- the
-    second leg of the O-monster demote (the ratio alone is not enough; the mass
-    must also be one arbitrary pick of a degenerate set)."""
+    """A degeneracy_note carrying the audit's MASS-SATURATED flag (more than
+    degeneracy.SATURATION_DENSITY plausible formulas in the window) -- the second
+    leg of the O-monster demote (the ratio alone is not enough; the mass must also
+    be one arbitrary pick of a saturated set). A MASS-DEGENERATE note (2-8 ions)
+    is not: the audit counts the commit itself, so a small high-O/C acid with one
+    competitor reads 2; the tier's degeneracy cap already holds it if uncorroborated."""
     s = "" if note is None or (isinstance(note, float) and pd.isna(note)) else str(note)
-    low = s.lower()
-    return "satur" in low or "degener" in low
+    return "MASS-SATURATED" in s
 
 
 def _iso_count(s) -> int:
