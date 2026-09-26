@@ -1,8 +1,10 @@
 """Standard PDF report for a cover-selected batch assignment run.
 
 Assembles the assignment findings into one PDF per batch: cover + headline,
-coverage stats (assigned vs unassigned, by count AND signal), composition / full
-Van Krevelen, analyte families, correlated-cluster TS figures, and methods.
+the claims (what each formula lets you say -- identified / ion / tentative --
+by row and by signal, beside the tier), coverage stats (assigned vs unassigned,
+by count AND signal), composition / full Van Krevelen, analyte families,
+correlated-cluster TS figures, and methods.
 
 ITERABLE BY DESIGN: the report is an ordered list of SECTIONS, each a function
 `section(ctx, pdf)` that draws one or more pages. To change the report, edit /
@@ -75,6 +77,20 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
     if "evidence_level" in merged.columns:     # docs/EVIDENCE_LEVELS.md; absent on older runs
         from peaky.assignment import evidence as _EV
         ctx["evidence_levels"] = _EV.summarize(merged["evidence_level"])
+        # the claim each merged row makes (evidence.claim_class, C13): stored on a run
+        # made after the column existed, else read off the level. Every merged row
+        # has one; the tier beside it is a separate verdict.
+        cl = pd.Series([_EV.claim_class(v) for v in merged["evidence_level"]],
+                       index=merged.index, dtype=object)
+        if "claim" in merged.columns:
+            cl = merged["claim"].astype(object).where(merged["claim"].notna(), cl)
+        merged["claim"] = cl
+        ctx["claims"] = _EV.summarize_claims(cl)
+        row = _claim_row(merged)
+        ctx["claim_by_tier"] = {r: _EV.summarize_claims(cl[row == r]) for r in _claim_rows(row)}
+        ctx["claim_of_pair"] = dict(zip(zip(merged["neutral_formula"].astype(str),
+                                            merged["adduct"].astype(str)), cl))
+        ctx["n_unlevelled"] = int(merged["evidence_level"].isna().sum())
     u = merged.drop_duplicates("neutral_formula").copy()
     ctx["n_neutrals"] = len(u)
     # composition by CHO/CHON/CHOS backbone (Si/F/halogen folded in)
@@ -185,6 +201,8 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
             asig = a[a["role"] == "M0"].groupby("adduct")["h"].sum()
             tot = float(asig.sum()) or 1.0
             ctx["adduct_signal"] = {k: float(v) / tot for k, v in asig.items()}
+        if ctx.get("claim_of_pair") and {"neutral_formula", "adduct"} <= set(a.columns):
+            ctx.update(_claim_signal(a, merged, ctx["claim_of_pair"]))
 
         # REFERENCE-LIST prior: unlock literature peaklists from the run's context
         # (batch-name/label metadata) through the same one-step `activate` the
@@ -498,6 +516,73 @@ def _flag_evidence(a, polarity):
     return out
 
 
+_CLAIM_COLOUR = {"identified": "#1D9E75", "ion": "#378ADD", "tentative": "#E0A93B",
+                 "unmatched": "#B0B0B0"}
+_CLAIM_RANK = {"identified": 0, "ion": 1, "tentative": 2}
+
+
+def _claim_row(merged) -> pd.Series:
+    """The tier x claim crosstab row of each merged row: its tier, or `ion-only`
+    for an ion-only row (`ion_only_of` set), which is kept out of its tier's row."""
+    row = (merged["tier"].astype(object).where(merged["tier"].notna(), "")
+           if "tier" in merged.columns else pd.Series("", index=merged.index, dtype=object))
+    if "ion_only_of" in merged.columns:
+        row = row.where(merged["ion_only_of"].isna(), "ion-only")
+    return row
+
+
+def _claim_rows(row: pd.Series) -> list:
+    """Crosstab rows in print order: Assigned, Candidate, any other tier, ion-only."""
+    seen = set(row.astype(str))
+    rest = sorted(seen - {"Assigned", "Candidate", "ion-only", ""})
+    return ["Assigned", "Candidate", *rest] + (["ion-only"] if "ion-only" in seen else [])
+
+
+def _claim_signal(a, merged, claim_of_pair) -> dict:
+    """The committed signal by claim. Every per-file M0 height is credited with the
+    MERGED claim (and crosstab row) of its (neutral, adduct); a reading no merged
+    row carries is its own `unmatched` bucket, never folded into tentative. The
+    denominator is ALL per-file M0 height. {} when there is none."""
+    from peaky.assignment import evidence as EV
+    m0 = a[a["role"].astype(str) == "M0"]
+    tot = float(m0["h"].sum()) if len(m0) else 0.0
+    if tot <= 0:
+        return {}
+    key = list(zip(m0["neutral_formula"].astype(str), m0["adduct"].astype(str)))
+    cl = pd.Series([claim_of_pair.get(k, "unmatched") for k in key], index=m0.index)
+    mrow = _claim_row(merged)
+    row_of = dict(zip(zip(merged["neutral_formula"].astype(str), merged["adduct"].astype(str)), mrow))
+    rw = pd.Series([row_of.get(k, "") for k in key], index=m0.index)
+    h = m0["h"]
+    by_tier = {r: {c: float(h[(rw == r) & (cl == c)].sum()) / tot for c in EV.CLAIMS}
+               for r in _claim_rows(mrow)}
+    return {
+        "claim_signal": {c: float(h[cl == c].sum()) / tot for c in (*EV.CLAIMS, "unmatched")},
+        # the crosstab's Assigned row: ion-only rows stay in their own row
+        "claim_signal_assigned": by_tier["Assigned"],
+        "claim_signal_by_tier": by_tier,
+    }
+
+
+def _best_claims(claim_of_pair: dict) -> dict:
+    """{neutral: its best claim over its channels} (identified > ion > tentative)."""
+    best: dict = {}
+    for (nf, _ad), c in claim_of_pair.items():
+        if nf not in best or _CLAIM_RANK.get(c, 9) < _CLAIM_RANK.get(best[nf], 9):
+            best[nf] = c
+    return best
+
+
+def _cps(h):                                  # compact cps: 3.3M / 120k / 840
+    if h is None or not (h == h) or h <= 0:
+        return "  -"
+    if h >= 9.95e5:
+        return f"{h / 1e6:.1f}M"
+    if h >= 995:
+        return f"{h / 1e3:.0f}k"
+    return f"{h:.0f}"
+
+
 def _iso_ppm(per_file_frames):
     """Isotopologue mass error (ppm): per file, match each M0's predicted 13C M+1
     (parent ion m/z + 1.00335) to the nearest iso_child peak. iso_child rows carry
@@ -545,9 +630,22 @@ def cover(ctx, pdf):
     tiers = ctx["tiers"]; idn = tiers.get("Assigned", 0); cn = tiers.get("Candidate", 0)
     ts = ctx.get("ts"); sig = (_pct(ts["expl_signal"], ts["tot_signal"]) if ts else None)
     ex_c = (_pct(ts["expl_count"], ts["nbins"]) if ts else None)
-    head = [
-        ("h", "Summary"),
-        ("gap", 0.3),
+    head = [("h", "Summary"), ("gap", 0.3)]
+    if ctx.get("claims"):                   # the claim leads; the tier and level lines follow
+        _c = ctx["claims"]; _s = ctx.get("claim_signal")
+        head.append(("b", f"Claims: {_c['identified']} identified · {_c['ion']} ion · "
+                          f"{_c['tentative']} tentative   (of {ctx['n_m0']} merged rows)"))
+        if _s:
+            head.append(("dim", f"   identified carries {100 * _s['identified']:.0f}% of the "
+                                f"committed-peak signal, ion {100 * _s['ion']:.0f}%, tentative "
+                                f"{100 * _s['tentative']:.0f}% -- see the Claims page"))
+            if _s.get("unmatched", 0) >= 0.005:
+                head.append(("dim", f"   the other {100 * _s['unmatched']:.0f}% is per-file signal "
+                                    "with no merged row"))
+        else:
+            head.append(("dim", "   read from the evidence level; the tier below is a separate "
+                                "verdict -- see the Claims page"))
+    head += [
         ("b", f"Unique analytes assigned (M0):   {ctx['n_m0']}   "
               f"({idn} Assigned / {cn} Candidate)"),
         ("b", f"Distinct neutral compounds:       {ctx['n_neutrals']}"),
@@ -657,7 +755,7 @@ def cover(ctx, pdf):
 
 
 def findings(ctx, pdf):
-    """Plain-language findings page (right after the cover): the event time-trace
+    """Plain-language findings page (after the claim summary): the event time-trace
     plus data-driven takeaways — top species by signal, signal-weighted
     composition, and the oligomer/HOM fingerprint. Answers 'what changed during
     the run?' before the QC detail. Everything is derived from the data, so it
@@ -703,7 +801,15 @@ def findings(ctx, pdf):
                             "see Composition).")]
         else:
             lines += [("b", "  (a few bright CHO species carry most of the signal).")]
-    if top:
+    if top and ctx.get("claim_of_pair"):
+        # the neutral's best claim over its channels (identified > ion > tentative)
+        best = _best_claims(ctx["claim_of_pair"])
+        lines += [("gap", 0.6), ("h", "Top species by signal"), ("gap", 0.25),
+                  ("m", f"   share   class   {'claim':<10}   neutral")]
+        for r in top[:8]:
+            lines.append(("m", f"   {r['frac']*100:>4.1f}%   {r['klass']:5s}   "
+                               f"{best.get(str(r['neutral_formula']), '-'):<10}   {r['neutral_formula']}"))
+    elif top:
         lines += [("gap", 0.6), ("h", "Top species by signal"), ("gap", 0.25),
                   ("m", "   share   class   neutral")]
         for r in top[:8]:
@@ -812,6 +918,144 @@ def coverage(ctx, pdf):
     else:
         lines += [("dim", "Peak roles are defined on the Methods page.")]
     _text_lines(fig, lines, y0=0.40, dy=0.029, bottom=0.05)
+    _close(pdf, fig)
+
+
+def claims(ctx, pdf):
+    """What each merged formula lets a reader say (evidence.claim_class, C13), read
+    off its evidence level: identified / ion / tentative, by merged row and by
+    committed signal, with the tier split beside it and the brightest rows where
+    tier and claim part. The tier is a separate verdict from the same columns: it
+    is shown, never corrected. Skipped -- no page -- on a run without levels."""
+    cc = ctx.get("claims")
+    if not cc or not sum(cc.values()):
+        return
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+
+    from peaky.assignment import evidence as EV
+    from peaky.reporting.report import claim_levels
+    merged = ctx["merged"]
+    n = sum(cc.values())
+    sig = ctx.get("claim_signal")
+    fig = plt.figure(figsize=A4)
+    fig.text(0.08, 0.965, "Claims — what each formula lets you say", fontsize=15, weight="bold",
+             color=INK)
+    _text_lines(fig, [("dim", "identified = evidence level 1-4a · ion = 4b-4d (ion composition "
+                              "pinned, neutral/adduct open) · tentative = 5a, 5b or unlevelled. "
+                              "The tier is unchanged and shown beside it.")],
+                y0=0.948, dy=0.0155, size=9.5)
+
+    # (a) the claim split by merged row and by committed signal (coverage()'s bar style)
+    bars = [("merged rows", [(c, 100 * cc[c] / n) for c in EV.CLAIMS])]
+    if sig:
+        bars.append(("committed signal", [(c, 100 * sig[c]) for c in (*EV.CLAIMS, "unmatched")]))
+    h_ax = 0.035 * len(bars) + 0.01
+    bot = 0.885 - h_ax                           # the axes title clears the two-line subtitle
+    ax = fig.add_axes([0.22, bot, 0.70, h_ax])
+    ys = list(range(len(bars)))[::-1]
+    for y, (_lab, segs) in zip(ys, bars):
+        left = 0.0
+        for c, v in segs:
+            ax.barh(y, v, left=left, color=_CLAIM_COLOUR[c], height=0.62)
+            if v >= 7:
+                ax.text(left + v / 2, y, f"{v:.0f}", va="center", ha="center", fontsize=7, color="white")
+            left += v
+    ax.set_yticks(ys); ax.set_yticklabels([lab for lab, _ in bars], fontsize=9)
+    ax.set_ylim(-0.6, len(bars) - 0.4)
+    ax.set_xlim(0, 100); ax.tick_params(axis="x", labelsize=8)
+    ax.set_xlabel("% of merged rows / of all per-file M0 height" if sig else "% of merged rows", fontsize=8)
+    ax.set_title("Merged rows and committed signal by claim" if sig else "Merged rows by claim",
+                 loc="left", fontsize=11)
+    keys = list(EV.CLAIMS) + (["unmatched"] if sig else [])
+    # the legend sits below the x label, outside the axes (never over the bars)
+    fig.legend(handles=[Patch(color=_CLAIM_COLOUR[k], label=("no merged row" if k == "unmatched" else k))
+                        for k in keys],
+               loc="upper center", bbox_to_anchor=(0.57, bot - 0.045), ncol=len(keys), frameon=False,
+               fontsize=8, handlelength=1.2, columnspacing=1.6)
+
+    # (b) the table, the tier x claim crosstab, the rows where tier and claim part
+    tb = ctx.get("claim_by_tier", {})
+    sb = ctx.get("claim_signal_by_tier", {}) if sig else {}
+    lines = [("h", "By claim"), ("gap", 0.3),
+             ("m", f"{'claim':<14}{'n':>6}{'share':>7}{'signal':>8}{'Assigned':>10}{'Candidate':>11}"
+                   f"{'ion-only':>10}   levels")]
+    for c in EV.CLAIMS:
+        sg = f"{100 * sig[c]:>7.1f}%" if sig else f"{'-':>8}"
+        lines.append(("m", f"{c:<14}{cc[c]:>6}{100 * cc[c] / n:>6.0f}%{sg}"
+                           f"{tb.get('Assigned', {}).get(c, 0):>10}{tb.get('Candidate', {}).get(c, 0):>11}"
+                           f"{tb.get('ion-only', {}).get(c, 0):>10}   {claim_levels(c)}"))
+    if sig:
+        lines.append(("m", f"{'no merged row':<14}{'-':>6}{'-':>7}{100 * sig['unmatched']:>7.1f}%"))
+    lines += [("gap", 0.6),
+              ("h", "Tier × claim" + ("  (merged rows · % of committed signal)" if sb else "  (merged rows)")),
+              ("gap", 0.3),
+              ("m", f"{'':<12}" + "".join(f"{c:>16}" for c in EV.CLAIMS))]
+    for r, d in tb.items():
+        if sb:
+            cells = "".join(f"{d[c]:>9} {100 * sb.get(r, {}).get(c, 0.0):>5.1f}%" for c in EV.CLAIMS)
+        else:
+            cells = "".join(f"{d[c]:>16}" for c in EV.CLAIMS)
+        lines.append(("m", f"{r:<12}{cells}"))
+
+    row = _claim_row(merged)
+    cl = (merged["claim"] if "claim" in merged.columns
+          else merged["evidence_level"].map(EV.claim_class)).astype(str)
+    at = (row == "Assigned") & (cl == "tentative")
+    ci = (row == "Candidate") & (cl == "identified")
+    mx = ctx.get("max_h_by_channel", {}) or {}
+    # the merged ledger carries no height: rank by the channel's max cps (load_context),
+    # else by ion score. Each direction is ranked on its own and gets 6 of the 12
+    # rows, a slot one leaves unused going to the other, so neither hides the other
+    if mx:
+        rank = pd.Series([mx.get(k, 0.0) for k in zip(merged["neutral_formula"].astype(str),
+                                                       merged["adduct"].astype(str))], index=merged.index)
+        by, col = "the brightest {}", "max cps"
+    elif "ion_score" in merged.columns:
+        rank = pd.to_numeric(merged["ion_score"], errors="coerce").fillna(0.0)
+        by, col = "the {} with the highest ion score", "score"
+    else:
+        rank, by, col = pd.Series(0.0, index=merged.index), "the first {}", ""
+    n_at = min(int(at.sum()), max(6, 12 - int(ci.sum())))
+    n_ci = min(int(ci.sum()), 12 - n_at)
+    top = [*rank[at].sort_values(ascending=False, kind="mergesort").index[:n_at],
+           *rank[ci].sort_values(ascending=False, kind="mergesort").index[:n_ci]]
+    shown = (f"{n_at} of each" if n_at == n_ci else f"{n_at} and {n_ci}") if n_at and n_ci else str(len(top))
+    lines += [("gap", 0.6), ("h", "Where tier and claim part"), ("gap", 0.3),
+              ("b", f"{int(at.sum())} Assigned but tentative · {int(ci.sum())} Candidate but identified"
+                    + (f" -- {by.format(shown)} below" if top else ""))]
+    if top:
+        lines.append(("m", f"{'m/z':>9}  {'neutral':<17}{'adduct':<16}{'tier':<11}{'level':<7}"
+                           f"{'claim':<12}{col:>7}"))
+        if mx:
+            lines.append(("dim", "max cps = the brightest height of the channel "
+                                 + ("in any sample of the full batch" if ctx.get("max_h_scope") == "batch"
+                                    else "across the selected samples")))
+        for i in top:
+            r = merged.loc[i]
+            nf, ad = str(r["neutral_formula"]), str(r["adduct"])
+            lvs = str(r["evidence_level"]) if pd.notna(r.get("evidence_level")) else "-"
+            last = _cps(mx.get((nf, ad))) if mx else f"{rank[i]:.2f}" if col else ""
+            lines.append(("m", f"{float(r['mz']):>9.4f}  {nf[:16]:<17}{ad[:15]:<16}{str(r['tier']):<11}"
+                               f"{lvs:<7}{cl[i]:<12}{last:>7}"))
+    lines += [("gap", 0.6), ("h", "Reading this page"), ("gap", 0.3),
+              ("b", "• The claim is read from the evidence level alone (Evidence levels page): identified = the "
+                    "neutral is established and can be reported as a compound or class; ion = the ion "
+                    "composition is pinned, the neutral / adduct split is open; tentative = exact mass "
+                    "only, or the assignment argues with itself."),
+              ("b", "• The tier (Assigned / Candidate) is a separate verdict from the same ledger columns. "
+                    "The two can disagree; neither is read off or corrected from the other.")]
+    if sig:
+        lines.append(("b", "• Committed signal: every per-file M0 height, credited with the claim of the "
+                           "merged row for its (neutral, adduct). 'No merged row' is per-file signal whose "
+                           "reading no merged row carries; it is not folded into tentative."))
+    if "ion-only" in tb:
+        lines.append(("b", "• Ion-only rows (the electron-attachment line beside an [M-H]- acid) count by "
+                           "their level and have their own crosstab row, apart from their tier."))
+    if ctx.get("n_unlevelled"):
+        lines.append(("b", f"• {ctx['n_unlevelled']} merged row(s) carry no level (a batch-level "
+                           "re-read) and read tentative."))
+    _text_lines(fig, lines, y0=bot - 0.085, dy=0.0178, size=9, bottom=0.04)
     _close(pdf, fig)
 
 
@@ -1345,6 +1589,9 @@ def methods(ctx, pdf):
         ("b", "• Confidence (Assigned/Candidate) applies to M0 compounds only."),
         ("b", "• Mass-degenerate peaks can flip formula across files (see jitter)."),
     ]
+    if ctx.get("claims"):
+        lines += [("b", "• The claim (identified / ion / tentative) is read from the evidence level alone"),
+                  ("b", "  and can disagree with the tier; both are shown side by side (Claims page).")]
     rf = ctx.get("role_signal_frac", {})
     if rf.get("reagent", 0) >= 0.05:
         lines += [("b", f"• The reagent ion carries ~{rf['reagent']*100:.0f}% of the signal; "
@@ -1390,24 +1637,21 @@ def assignments_table(ctx, pdf):
     df["_nm"] = df["neutral_formula"].map(nm)
     df = df.sort_values(["_nm", "mz"], kind="mergesort")
 
-    def _cps(h):                              # compact cps: 3.3M / 120k / 840
-        if h is None or not (h == h) or h <= 0:
-            return "  -"
-        if h >= 9.95e5:
-            return f"{h / 1e6:.1f}M"
-        if h >= 995:
-            return f"{h / 1e3:.0f}k"
-        return f"{h:.0f}"
-
-    # fixed-width monospace columns (A4 portrait fits ~108 mono chars at size 6.5)
+    # fixed-width monospace columns (A4 portrait fits ~130 mono chars at size 6.5 from
+    # x=0.06 to a 0.07 right margin); the claim column widens the row to 124 chars and
+    # the isotopes field keeps its 36
+    has_claim = bool(ctx.get("claims")) and "claim" in df.columns
     NW, AW, IW = 15, 19, 36                  # neutral / adduct / isotopes field widths
+    CW = 11 if has_claim else 0
     _scope = ("brightest height of the channel in ANY sample of the full batch"
               if ctx.get("max_h_scope") == "batch"
               else "brightest height of the channel across the selected samples")
-    head = (f"{'neutral':<{NW}}{'m/z':>10}  {'channel':<{AW}}{'tier':<11}{'score':>6}"
-            f"{'max cps':>8}{'  f':>4}  isotopes")
+    head = (f"{'neutral':<{NW}}{'m/z':>10}  {'channel':<{AW}}{'tier':<11}"
+            + (f"{'claim':<{CW}}" if has_claim else "")
+            + f"{'score':>6}{'max cps':>8}{'  f':>4}  isotopes")
     rows: list = [("m", head),
-                  ("dim", f"  max cps = {_scope} · f = files seen · isotopes = confirmed")]
+                  ("dim", f"  max cps = {_scope} · f = files seen · isotopes = confirmed"
+                          + (" · claim = read from the evidence level" if has_claim else ""))]
     last = None
     for _, r in df.iterrows():
         nf, ad = r["neutral_formula"], r["adduct"]
@@ -1423,8 +1667,9 @@ def assignments_table(ctx, pdf):
         nf_files = r.get("n_files", "")
         adv = ad if len(ad) <= AW else ad[:AW - 1] + "…"
         ih = _cps(max_h.get((nf, ad)))
+        clm = f"{str(r.get('claim', '')):<{CW}}" if has_claim else ""
         rows.append(("m", f"{shown:<{NW}}{float(r['mz']):>10.4f}  {adv:<{AW}}"
-                          f"{tier:<11}{scs:>6}{ih:>8}{str(nf_files):>4}  {itxt}"))
+                          f"{tier:<11}{clm}{scs:>6}{ih:>8}{str(nf_files):>4}  {itxt}"))
 
     header, body = rows[:2], rows[2:]
     PER = 50
@@ -1444,8 +1689,8 @@ def assignments_table(ctx, pdf):
         _close(pdf, fig)
 
 
-SECTIONS = [cover, findings, coverage, evidence_levels, composition, scrutiny, reference_lists, gka,
-            qc_massdefect, families, changers, clusters, methods, assignments_table]
+SECTIONS = [cover, claims, findings, coverage, evidence_levels, composition, scrutiny, reference_lists,
+            gka, qc_massdefect, families, changers, clusters, methods, assignments_table]
 
 
 def build(out_dir: str, *, tag: str, label: str, ts_path: str | None = None,
