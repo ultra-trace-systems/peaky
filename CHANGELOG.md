@@ -476,6 +476,23 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Flatness labels a row; it no longer tiers it.** The general flat-background
+  demote added above capped every flat `Assigned` commit at `Candidate` whenever the
+  run varies. It was written for a certified-mixture run, where the EasyIC
+  calibrant's PAH ladder and the air-plasma C/N/O family sat at `Assigned` in a
+  cylinder that contains none of them. But a flat trace says where an ion comes from
+  (a steady inlet, the source, the calibrant), not what it is. On a varying chamber
+  batch the general demote capped rows that their isotope pattern and a second ion
+  channel confirm, nitric acid `[M-H]-` among them, and it moved no decoy rate. The
+  verdict now lives only in `ts_disposition` (`background:flat`,
+  `background:inlet/instrument ...`), and the tier stays with the identity evidence
+  for every row, mass-only rows included. The certified mixture's calibrant
+  background is labelled `background`, which is what a reader has to see. The
+  summary reports `varying_frac` and `flat_informative` (formerly
+  `flat_demote_armed`), so a background label can be read against whether the run
+  moves at all. Unchanged: the reagent-normaliser guard (`MAX_NORMALISER_CV`), the
+  di-bromide / CO3 channel demote, and every disposition.
+
 - **The degeneracy audit counts what the run could have committed.** `degeneracy.py` feeds the
   tier's degeneracy cap, `below_assignability` (O >= 11 on a saturated window), the O-monster demote and
   the 4c / 5a / 5b split of every axis-less row, and it enumerated ONE space for every run: the

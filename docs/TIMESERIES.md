@@ -163,6 +163,11 @@ All in `peaky/batch/timeseries.py`.
 - **Conservative by design.** It never edits a formula and only demotes a flat
   **di-bromide / CO3** Assigned commit (TS-confirmed background) — every other
   disposition is annotation + commentary.
+- **Flatness labels, it never tiers.** A flat trace says where an ion comes from,
+  not what it is, so a flat row keeps the tier its identity evidence earned and the
+  verdict is in `ts_disposition`. `flat_informative` in the summary (at least
+  `MIN_VARYING_FRAC` of the bins vary) says whether a background label means anything
+  in this run: in a steady-state batch every bin is flat.
 - **Reagent-less profiles pass through.** Uronium / ¹⁵N-nitrate normalise on TIC
   (their reagent ions sit below the acquisition window — a positive urea-CIMS
   spectrum starts at ~m/z 122, excluding the 61/121 uronium reagent ions); the

@@ -33,8 +33,10 @@ import pandas as pd
 from peaky.assignment import ledger as L
 from peaky.batch import traces as TR
 
-__version__ = "0.3.0"  # predicted diagnostic satellites in the batch stamp (stamp_source,
-                       # track coherence); 0.2.1: bin_ids, the row-aligned bin rule
+__version__ = "0.3.1"  # flatness labels a row (ts_disposition) and never tiers it; only the
+                       # di-bromide / CO3 channel demote remains. 0.3.0: predicted diagnostic
+                       # satellites in the batch stamp (stamp_source, track coherence);
+                       # 0.2.1: bin_ids, the row-aligned bin rule
 
 DEFAULT_TOL_PPM = 5.0
 FLAT_CV = 0.25          # cv_norm below this == flat / background
@@ -1742,17 +1744,16 @@ def apply_timeseries(ledger: pd.DataFrame, peaks: pd.DataFrame, *,
 
     # Does this batch's chemistry actually MOVE? Flatness only means background
     # against a run that varies. In a steady-state run -- a held chamber, a single
-    # constant flow -- every bin is flat, cv carries no information, and demoting
-    # on it would cap the whole ledger. So the general flat-demote below is armed
-    # only when a real fraction of the spectrum varies. On the 2026-09-22 dilution
-    # series 55 % of bins clear FLAT_CV, and the certified analytes sit at
-    # cv_norm 1.1-3.8 against 0.06-0.13 for the calibrant's PAH background -- a
-    # 9-65x separation, so the threshold is nowhere near either population.
+    # constant flow -- every bin is flat and cv carries no information. The verdict
+    # is reported (`flat_informative`) so a reader can tell a background label that
+    # means something from one that cannot; nothing is tiered on it (see below). On
+    # the 2026-09-22 dilution series 55 % of bins clear FLAT_CV, and the certified
+    # analytes sit at cv_norm 1.1-3.8 against 0.06-0.13 for the calibrant's PAH
+    # background -- a 9-65x separation.
     cv_all = pd.to_numeric(met["cv_norm"], errors="coerce").dropna()
     varying_frac = float((cv_all >= FLAT_CV).mean()) if len(cv_all) else 0.0
-    flat_demote_armed = varying_frac >= MIN_VARYING_FRAC
     summary["varying_frac"] = round(varying_frac, 3)
-    summary["flat_demote_armed"] = flat_demote_armed
+    summary["flat_informative"] = varying_frac >= MIN_VARYING_FRAC
 
     # stamp the ledger (M0 rows)
     for i in ledger.index[ledger["role"] == L.ROLE_M0]:
@@ -1773,31 +1774,32 @@ def apply_timeseries(ledger: pd.DataFrame, peaks: pd.DataFrame, *,
             summary["ambient"] += 1
         elif disp.startswith("background"):
             summary["background"] += 1
-            # Auto-demote: a commit the time series shows to be background must
-            # not stay Assigned. The di-bromide / CO3 channels are demoted on the
-            # channel alone; ANY other flat commit is demoted only while
-            # flat_demote_armed (see above).
+            # FLATNESS LABELS A ROW; IT DOES NOT TIER IT. A flat trace says where
+            # an ion comes from -- a steady inlet, the source, the calibrant -- not
+            # what it is: a formula that its isotope pattern and a second ion
+            # channel confirm is exactly as right when its trace is flat. So the
+            # verdict lives in `ts_disposition` and the tier stays with the
+            # identity evidence.
             #
-            # This is the general answer to a source whose brightest background is
-            # not a reagent cluster and cannot be enumerated. On the 2026-09-22
-            # certified mixture the EasyIC calibrant's PAH ladder (C13H8, C14H10,
-            # C14H12, C15H8, C15H10, C15H12) and most of the air-plasma C/N/O
-            # family committed as Assigned ANALYTES in a cylinder that contains
-            # none of them -- while being flat to 0.06-0.24 cv_norm through a step
-            # that moved every real component 100x. Naming those compositions in
-            # the reagent library was the alternative and was rejected: they are
-            # genuine targets in other runs (chem/reagents._EASYIC_SOURCE_IONS
-            # records why). Behaviour is what separates them, so behaviour is what
-            # tiers them -- and in a run where anthracene really does vary, it
-            # varies, and keeps its tier.
-            channel_flat = "di-bromide" in disp or "CO3-channel" in disp
+            # That is also the answer to the 2026-09-22 certified mixture, where
+            # the EasyIC calibrant's PAH ladder (C13H8, C14H10, C14H12, C15H8,
+            # C15H10, C15H12) and most of the air-plasma C/N/O family sat at
+            # Assigned in a cylinder that contains none of them, flat to 0.06-0.24
+            # cv_norm through a step that moved every real component 100x. They
+            # are what they are; what a reader must see is that they are
+            # BACKGROUND, and the label says so. A general flat-demote tried for
+            # that case (2026-09-23) also capped rows with isotope and
+            # second-channel confirmation on a varying chamber batch -- HNO3
+            # [M-H]- among them -- and changed no decoy rate. Naming the PAH and
+            # C/N/O compositions in the reagent library stays rejected for the
+            # reason chem/reagents._EASYIC_SOURCE_IONS records.
+            #
+            # The di-bromide / CO3 channel demote predates this and is unchanged.
             if demote and str(ledger.at[i, "tier"]) == "Assigned" and (
-                    channel_flat or flat_demote_armed):
-                why = ("flat background (reagent/inlet)" if channel_flat
-                       else f"flat through a varying run (cv_norm {cv:.2f} < {FLAT_CV})")
+                    "di-bromide" in disp or "CO3-channel" in disp):
                 ledger.at[i, "tier"] = "Candidate"
                 ledger.at[i, "tier_reason"] = (str(ledger.at[i, "tier_reason"] or "")
-                    + f" | time-series: {why}, demoted").strip(" |")
+                    + " | time-series: flat background (reagent/inlet), demoted").strip(" |")
                 summary["demoted"] += 1
     log(f"[timeseries] {summary}")
     return summary

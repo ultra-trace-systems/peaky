@@ -71,15 +71,16 @@ check("di-bromide flat -> background disposition", disp("db").startswith("backgr
 check("di-bromide flat -> DEMOTED Assigned->Candidate", tier("db") == "Candidate", tier("db"))
 check("demote count >=1", summ["demoted"] >= 1, summ)
 check("fluorinated flat -> inlet contaminant", "inlet/instrument" in disp("ct"), disp("ct"))
-# CHANGED 2026-09-23: a flat commit is demoted whatever its channel, not only on
-# the di-bromide / CO3 channels. The narrow rule left the EasyIC calibrant's PAH
-# background and the air-plasma C/N/O family sitting at Assigned in a certified
-# cylinder that contains none of them, which is where a reader looks. The demote
-# is armed only when the run itself varies (MIN_VARYING_FRAC), so a steady-state
-# batch -- where everything is flat and flatness means nothing -- is untouched.
-check("flat inlet contaminant IS demoted in a varying run", tier("ct") == "Candidate",
+# CHANGED 2026-09-26: flatness labels a row, it does not tier it. A flat trace says
+# where an ion comes from, not what it is, so off the di-bromide / CO3 channels a
+# flat commit keeps its tier and its verdict lives in ts_disposition. (2026-09-23
+# had capped every flat commit in a varying run at Candidate.)
+check("flat inlet contaminant KEEPS its tier in a varying run", tier("ct") == "Assigned",
       tier("ct"))
-check("the demote is armed here (this fixture varies)", summ["flat_demote_armed"], summ)
+check("  -> its tier_reason is untouched", "time-series" not in
+      str(led.loc[led.peak_id == "ct", "tier_reason"].iloc[0]),
+      led.loc[led.peak_id == "ct", "tier_reason"].iloc[0])
+check("flatness is informative here (this fixture varies)", summ["flat_informative"], summ)
 check("flat peaks have low cv_norm", cv("db") < 0.25 and cv("ct") < 0.25, (cv("db"), cv("ct")))
 check("variable ambient peak high cv_norm", cv("am") > 0.4, cv("am"))
 check("co-varying peak -> ambient disposition", disp("am").startswith("ambient"), disp("am"))
@@ -717,7 +718,7 @@ check("no basis at all -> un-normalised, not a crash",
       TS.apply_timeseries(_led.copy(), _t, reagent_mzs=[], log=lambda *a: None)
       ["normaliser"] == "none (un-normalised)")
 
-# ---------- the flat-demote needs a run that varies ----------------------------
+# ---------- flatness is informative only in a run that varies ------------------
 # Every channel flat == a steady-state run, where flatness distinguishes nothing.
 _t_steady = pd.DataFrame({
     "sample_item_id": _np.repeat([f"s{i}" for i in range(_n)], 2),
@@ -727,15 +728,41 @@ _t_steady = pd.DataFrame({
     "height": _np.tile([1000.0, 500.0], _n),
 })
 _s3 = TS.apply_timeseries(_led.copy(), _t_steady, log=lambda *a: None)
-check("a steady-state run does NOT arm the flat-demote",
-      not _s3["flat_demote_armed"], _s3)
+check("a steady-state run: flatness is not informative",
+      not _s3["flat_informative"], _s3)
 check("and nothing is demoted there", _s3["demoted"] == 0, _s3)
 _led4 = _led.copy()
 _s4 = TS.apply_timeseries(_led4, _t, log=lambda *a: None)
-check("a varying run arms it", _s4["flat_demote_armed"], _s4)
-check("and the flat Assigned row is capped at Candidate",
-      _led4.loc[_led4.peak_id == "flat", "tier"].iloc[0] == "Candidate",
+check("a varying run: flatness is informative", _s4["flat_informative"], _s4)
+check("and the flat Assigned row KEEPS its tier -- flatness labels, it does not tier",
+      _led4.loc[_led4.peak_id == "flat", "tier"].iloc[0] == "Assigned" and _s4["demoted"] == 0,
       _led4[["peak_id", "tier", "ts_disposition"]].to_dict("records"))
+check("  -> the verdict is in its label",
+      str(_led4.loc[_led4.peak_id == "flat", "ts_disposition"].iloc[0]).startswith("background"),
+      _led4[["peak_id", "ts_disposition"]].to_dict("records"))
+
+# ---------- identity evidence decides the tier, whatever the trace does ----------
+# The case that exposed the 2026-09-23 general demote: a bright flat row with an
+# isotope confirmation and a second ionization channel, and a mass-only flat row,
+# both in a run that varies. Neither loses its tier; both carry the background label.
+_led5 = pd.DataFrame([
+    dict(peak_id="iso2ch", mz=100.1000, height=1000, role="M0", neutral_formula="HNO3",
+         ion_formula="NO3-", adduct="[M-H]-", tier="Assigned",
+         tier_reason="unique formula in the calibrated window; isotopologue-confirmed; "
+                     "seen in a second ionization channel"),
+    dict(peak_id="massonly", mz=100.1000, height=1000, role="M0", neutral_formula="C6H6",
+         ion_formula="C6H6+", adduct="[M]+.", tier="Assigned",
+         tier_reason="unique formula in the calibrated window"),
+])
+_s5 = TS.apply_timeseries(_led5, _t, log=lambda *a: None)
+for _pid in ("iso2ch", "massonly"):
+    _r = _led5.loc[_led5.peak_id == _pid].iloc[0]
+    check(f"flat {_pid} row keeps Assigned and its tier_reason in a varying run",
+          _r["tier"] == "Assigned" and "time-series" not in str(_r["tier_reason"]),
+          _r[["tier", "tier_reason", "ts_disposition"]].to_dict())
+    check(f"  -> {_pid} is labelled background", str(_r["ts_disposition"]).startswith("background"),
+          _r["ts_disposition"])
+check("nothing demoted off the reagent-cluster channels", _s5["demoted"] == 0, _s5)
 
 
 def test_all():
