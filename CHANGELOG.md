@@ -59,7 +59,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   154 / 27 / 15 in the control, and the shift decoy 4 identified pairs below m/z 350 against the
   control's 145 on the labelled-nitrate channel. The tier is unchanged. `tests/test_claims.py`,
   `tests/test_claims_outputs.py`, `tests/test_scorecard_claims.py` and the claim tests in
-  `tests/test_ab_compare.py`.
+  `tests/test_ab_compare.py`. Runs (the three regression runs, one variable against the same
+  inputs on the previous tip): `ab_compare` reads 0 ion, 0 tier, 0 level and 0 claim changes on every channel; every
+  per-file and merged ledger and every table equals the previous run's cell for cell once `claim` is dropped (the
+  reference-list match table holds the same rows in another order: its row order is not deterministic); the
+  in-core levels equal `scripts/level_ledger.py` on every row; every existing scorecard key is unchanged. Identified
+  248 / 103 / 228 rows carry 55.9 / 59.0 / 64.9 % of the committed-peak signal (labelled nitrate / uronium / TOF); the
+  TOF's identified rows stand on its own evidence 200 times and on the other instrument's 28; the shift decoy keeps
+  0 identified pairs on the uronium and TOF channels and 4 of 145 below m/z 350 on the labelled-nitrate one.
 
 - **Resolvability for every run, and two tier rules that read the spectrum's physics.** The
   nearest-neighbour separability flag was trace-first only, so every cover run -- every
