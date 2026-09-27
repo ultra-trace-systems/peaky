@@ -56,16 +56,26 @@ rule C).
         envelope is that tall).
 
 Measured on the three regression batches through this engine (the offline replay
-of the 2026-09-27 C17+U baselines): rule C vetoes
-19 pairs on the labelled-nitrate Orbitrap (2.087 % of the batch signal) and 5 on
-the uronium Orbitrap, none on the TOF (TOF-class); REQ 152 pooled / 104 merged
-pairs on the labelled-nitrate batch (identified -0.947 points), 6 / 4 (all Si) on
-the uronium batch, 29 merged on the TOF (both windows); HIGH V4 moves 7 aromatic
-[M+^NO3]- rows 4b -> 5b on the labelled-nitrate batch (a C2 + 15N <-> H4 + Cl exact
-alias: their 37Cl line is there), 1 on the uronium batch and 6 on the TOF, none
-identified. The false-veto controls: 0 of 63 testable 3b acids under rule C, 1 in
-~280 real lines absent at 1 ppm under REQ, 0 decoy flags per +-4/8 mDa offset
-under HIGH V4 on both Orbitraps.
+of the 2026-09-27 C17+U baselines), identified /
+ion claim signal in % of the batch series:
+  rule C  labelled-nitrate Orbitrap: 19 pairs refuted (2.087 % of the signal), 12
+          merged rows move with the pool exclusion (4 of them acid-branch siblings
+          3b -> 4b), identified 48.266 -> 47.830, ion 30.879 -> 30.169; uronium
+          Orbitrap: 5 refuted, 1 move (5a -> 5b); the TOF: TOF-class, none. The
+          level-free bias gives the set a bias fitted on levelled acids gives;
+          0 of 63 testable 3b acids are refuted.
+  REQ     labelled nitrate: 152 pooled / 104 merged refuted, 85 merged moves,
+          identified -0.947, ion -1.335; uronium: 6 / 4 (all Si), identified
+          -0.269; the TOF: 102 / 29 at both windows (39 merged at the stamp window
+          alone), 11 moves, identified 0.000, ion -0.126. One real line in ~280 is
+          absent at 1 ppm.
+  HIGH    labelled nitrate: 14 / 12 flagged, 7 aromatic [M+^NO3]- rows 4b -> 5b
+          (a C2 + 15N <-> H4 + Cl exact alias: their 37Cl line is there), ion
+          -0.444; uronium: 1 (4c -> 5b); the TOF: 64 / 23 flagged, 6 moves; none
+          identified; 0 decoy flags per +-4/8 mDa offset on both Orbitraps.
+  all three: identified / ion 48.266 / 30.879 -> 47.319 / 28.967 (labelled
+          nitrate), 73.822 / 12.552 -> 73.553 / 12.502 (uronium), 11.207 / 4.054
+          -> 11.207 / 3.907 (the TOF).
 """
 from __future__ import annotations
 
@@ -301,7 +311,7 @@ def ion_counts(neutral: str, adduct: str, ion) -> dict:
 # --------------------------------------------------------------------------- rule C
 def _labelled_sibling(adduct: str, prof) -> bool:
     """A 14N nitrate cluster on a profile that also clusters on the 15N-labelled
-    nitrate: the M+1 slot is the 15N sibling's line (6.32 mDa below it)."""
+    nitrate: its M+1 slot sits 6.32 mDa above the taller 15N sibling's line."""
     from peaky.assignment import evidence as EV
     lab = EV.LABEL_FOLD.get(adduct)
     return bool(lab and lab != adduct and lab in set(getattr(prof, "adducts", None) or ()))
