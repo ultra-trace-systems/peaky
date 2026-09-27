@@ -451,8 +451,8 @@ def levels_for(run: Run, levels_csv: str | None, corroborate: list[str]) -> pd.D
 def own_levels_for(run: Run) -> pd.DataFrame:
     """One row per (neutral, adduct) the run's per-file ledgers commit, levelled
     on the run's OWN evidence: its files pooled as one source with NO cross set
-    and its own neutral-pair table (`evidence.level_pooled`; rule U is the run's
-    own evidence, not a corroboration) -- the level a `--corroborate` source is judged by
+    and its own neutral-pair and label-twin tables (`evidence.level_pooled`; rules U
+    and K are the run's own evidence, not a corroboration) -- the level a `--corroborate` source is judged by
     (docs/EVIDENCE_LEVELS.md §6.4). The merged ledger's in-core level can owe a
     rung to the run's own `--corroborate` source, and for M3 that source is the
     run being scored (two instruments corroborate each other), so the in-core
@@ -469,7 +469,14 @@ def own_levels_for(run: Run) -> pd.DataFrame:
         t = pd.read_csv(table)
         if "upair" in t.columns:
             upair = set(t.loc[t["upair"].map(EV.truthy), "neutral_formula"].astype(str))
-    pairs = EV.level_pooled(frames, cross=None, upair=upair)
+    # ... and so are its labelled-nitrate twin facts (rule K)
+    untie, veto = set(), {}
+    table = os.path.join(run.path, "tables", "label_twins.csv")
+    if os.path.isfile(table):
+        from peaky.batch import label_twins as LT
+        t = pd.read_csv(table)
+        untie, veto = LT.untie(t), LT.veto(t)
+    pairs = EV.level_pooled(frames, cross=None, upair=upair, untie=untie, veto=veto)
     if pairs.empty:
         return empty
     pairs = pairs[~pairs["ion_only"].astype(bool)]

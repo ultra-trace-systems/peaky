@@ -59,6 +59,7 @@ import pandas as pd
 
 from peaky import paths as PT
 from peaky.chem import profiles as P
+from peaky.batch import label_twins as _LT
 from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sampling as SS
 
@@ -1411,6 +1412,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     per_file, offsets, per_stats = {}, {}, []
     scorings: dict = {}        # per-sample pattern_scoring, for the run manifest
     level_frames: dict = {}    # sid -> its ledger's M0/iso rows + predicate columns
+    alias_ties: dict = {}      # sid -> its tied [M+NO3]- rows and whether the tie is alias-only (rule K)
                                # (evidence.trim): the pooled batch level's input
     identified_aux: list = []  # per-file identified-ion rows (reagent/iso/artifact
                                # + analyte ion_formula) for the parquet stamp
@@ -1442,6 +1444,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         on the trace ledger re-read as Assigned by three residual files)."""
         led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)
         level_frames[sid] = EV.trim(led)
+        alias_ties[sid] = _LT.alias_only_ties(led)
         plaus_audit.extend(plaus)
         protected_neutrals.update(_protected_neutrals(led))
         known_pool.extend(known_evidence(led, src=sid))
@@ -1853,7 +1856,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     _pair = tuple(getattr(prof, "neutral_pair", ()) or ())
     pairs_table = _NP.measure(ts_annot, level_frames, _pair, log=log)
     pairs_table.to_csv(os.path.join(TAB, "neutral_pairs.csv"), index=False)
-    levels = EV.level_pooled(level_frames, cross=cross, upair=_NP.neutrals(pairs_table))
+    # rule K (docs/EVIDENCE_LEVELS.md §3 label_untie / label_veto): on a 15N-labelled
+    # nitrate channel the 14N and 15N lines of one cluster arbitrate each other's
+    # reading on the same series; written for every run (empty out of scope)
+    twins_table = _LT.measure(ts_annot, level_frames, prof, alias_ties=alias_ties, log=log)
+    twins_table.to_csv(os.path.join(TAB, "label_twins.csv"), index=False)
+    levels = EV.level_pooled(level_frames, cross=cross, upair=_NP.neutrals(pairs_table),
+                             untie=_LT.untie(twins_table), veto=_LT.veto(twins_table))
     merged = EV.stamp_merged(merged, levels)
     levels.to_csv(os.path.join(TAB, "evidence_levels.csv"), index=False)
     ev_summary = {
@@ -1866,6 +1875,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "n_unstamped": int(merged["evidence_level"].isna().sum()) if len(merged) else 0,
         "n_corroborate": int(len(cross)), "cross_source": cross_sources,
         "neutral_pairs": _NP.summary(pairs_table, _pair),
+        "label_twins": _LT.summary(twins_table, prof),
     }
     log(f"[assign_batch] evidence levels over {len(level_frames)} pooled file(s): "
         f"{ev_summary['pooled']} ({ev_summary['n_pairs']} neutral/adduct pairs); "
