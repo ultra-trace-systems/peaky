@@ -250,19 +250,19 @@ def test_every_committed_14n_line_gets_a_tracking_verdict():
     for n, (_, verdict) in lines.items():
         r = _row(t, n)
         assert r.line_verdict == verdict and r.committed, (n, r.line_verdict)
-        assert r.alien == (verdict in ("excess", "absent", "untestable")), n
+        assert r.alien == (verdict in ("absent", "untestable")), n    # the excess line's partner is present
         assert r.veto == (verdict in ("excess", "absent")), n
     assert "no 15N partner" in _row(t, "C11H18O6").note and "0 of the 120" in _row(t, "C11H18O6").note
     assert "runs 3.0x its cluster share" in _row(t, "C6H10O4").note
     assert _row(t, "C11H18O5").partner_share == pytest.approx(0.15)
     f = LT.facts(t)
-    assert f["alien"] == {(n, NO3) for n, (_, v) in lines.items() if v in ("excess", "absent", "untestable")}
+    assert f["alien"] == {(n, NO3) for n, (_, v) in lines.items() if v in ("absent", "untestable")}
     assert {k for k in f["veto"] if k[1] == NO3} == {(n, NO3) for n, (_, v) in lines.items() if v in ("excess", "absent")}
     assert f["untie"] == set()                                        # nothing tied here
     s = LT.summary(t, LABEL)
     assert s["committed_lines"] == len(lines) and s["lines_absent"] == 2 and s["lines_excess"] == 1
     assert s["lines_consistent"] == 2 and s["lines_untestable"] == 2 and s["lines_tracks"] == 1
-    assert s["alien"] == 5 and s["lines_refuted"] == 3
+    assert s["alien"] == 4 and s["lines_refuted"] == 3
     # the references are the committed labelled clusters only: a bright 14N-only neutral never calibrates k
     assert not _row(t, "C11H18O6").reference and not _row(t, "C11H18O5").reference
 
@@ -736,7 +736,7 @@ def test_an_unlabelled_batch_writes_an_empty_table(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- the real golden set
-ORBI_K = (1707, "0/11/172/9/208/151/0/38/1118")
+ORBI_K = (1707, "0/11/174/9/206/151/0/38/1118")
 
 
 def test_the_labelled_nitrate_golden_set_with_its_label_twin_table(tmp_path):

@@ -42,9 +42,9 @@ C10H15F3N2,[M+NO3]-,False,untestable,False,False,False,,False,
 C10H15F3N2,[M+^NO3]-,True,,False,False,False,untestable,False,
 C10H16O10,[M+NO3]-,False,untestable,False,False,False,,False,
 C10H16O10,[M+^NO3]-,True,,False,False,False,untestable,False,
-C10H16O2,[M+NO3]-,True,excess,False,False,True,,True,the 14N line runs 2.7x its cluster share of the 15N line; cluster or organonitrate undecided
+C10H16O2,[M+NO3]-,True,excess,False,False,False,,True,the 14N line runs 2.7x its cluster share of the 15N line; cluster or organonitrate undecided
 C10H16O2,[M+^NO3]-,True,,False,False,False,untestable,False,
-C10H16O3,[M+NO3]-,True,excess,False,False,True,,True,the 14N line runs 2.1x its cluster share of the 15N line; cluster or organonitrate undecided
+C10H16O3,[M+NO3]-,True,excess,False,False,False,,True,the 14N line runs 2.1x its cluster share of the 15N line; cluster or organonitrate undecided
 C10H16O3,[M+^NO3]-,True,,False,False,False,untestable,False,
 C10H16O4,[M+NO3]-,True,tracks,True,False,False,,False,
 C10H16O4,[M+^NO3]-,True,,False,False,False,untestable,False,
@@ -816,7 +816,7 @@ C6H10O3,[M+NO3]-,False,untestable,False,False,False,,False,
 C6H10O3,[M+^NO3]-,True,,False,False,False,untestable,False,
 C6H10O4,[M+NO3]-,True,consistent,False,False,False,,False,
 C6H10O4,[M+^NO3]-,True,,False,False,False,untestable,False,
-C6H10O5,[M+NO3]-,True,excess,False,False,True,,True,the 14N line runs 4.9x its cluster share of the 15N line; cluster or organonitrate undecided
+C6H10O5,[M+NO3]-,True,excess,False,False,False,,True,the 14N line runs 4.9x its cluster share of the 15N line; cluster or organonitrate undecided
 C6H10O5,[M+^NO3]-,True,,False,False,False,untestable,False,
 C6H11NO6S,[M+NO3]-,False,untestable,False,False,False,,False,
 C6H11NO6S,[M+^NO3]-,True,,False,False,False,untestable,False,
@@ -896,12 +896,12 @@ C7H10O4,[M+NO3]-,True,tracks,True,False,False,,False,
 C7H10O4,[M+^NO3]-,True,,False,False,False,untestable,False,
 C7H10O5,[M+NO3]-,True,consistent,False,False,False,,False,
 C7H10O5,[M+^NO3]-,True,,False,False,False,untestable,False,
-C7H10O6,[M+NO3]-,True,excess,False,False,True,,True,the 14N line runs 3.9x its cluster share of the 15N line; cluster or organonitrate undecided
+C7H10O6,[M+NO3]-,True,excess,False,False,False,,True,the 14N line runs 3.9x its cluster share of the 15N line; cluster or organonitrate undecided
 C7H12O3,[M+NO3]-,False,untestable,False,False,False,,False,
 C7H12O3,[M+^NO3]-,True,,False,False,False,untestable,False,
 C7H12O4,[M+NO3]-,True,consistent,False,False,False,,False,
 C7H12O4,[M+^NO3]-,True,,False,False,False,untestable,False,
-C7H12O5,[M+NO3]-,True,excess,False,False,True,,True,the 14N line runs 3.8x its cluster share of the 15N line; cluster or organonitrate undecided
+C7H12O5,[M+NO3]-,True,excess,False,False,False,,True,the 14N line runs 3.8x its cluster share of the 15N line; cluster or organonitrate undecided
 C7H12O5,[M+^NO3]-,True,,False,False,False,untestable,False,
 C7H12O6,[M+NO3]-,True,absent,False,False,True,,True,no 15N partner: seen in 0 of the 38 spectra of the 14N line; cluster or organonitrate undecided
 C7H14N2O5S,[M+NO3]-,False,untestable,False,False,False,,False,
@@ -974,12 +974,12 @@ C8H12O4,[M+NO3]-,True,tracks,True,False,False,,False,
 C8H12O4,[M+^NO3]-,True,,False,False,False,untestable,False,
 C8H12O5,[M+NO3]-,True,tracks,True,False,False,,False,
 C8H12O5,[M+^NO3]-,True,,False,False,False,untestable,False,
-C8H12O6,[M+NO3]-,True,excess,False,False,True,,True,the 14N line runs 2.1x its cluster share of the 15N line; cluster or organonitrate undecided
+C8H12O6,[M+NO3]-,True,excess,False,False,False,,True,the 14N line runs 2.1x its cluster share of the 15N line; cluster or organonitrate undecided
 C8H12O6,[M+^NO3]-,True,,False,False,False,untestable,False,
 C8H14O3,[M+NO3]-,True,absent,False,False,True,,True,no 15N partner: seen in 0 of the 73 spectra of the 14N line; cluster or organonitrate undecided
-C8H14O4,[M+NO3]-,True,excess,False,False,True,,True,the 14N line runs 4.4x its cluster share of the 15N line; cluster or organonitrate undecided
+C8H14O4,[M+NO3]-,True,excess,False,False,False,,True,the 14N line runs 4.4x its cluster share of the 15N line; cluster or organonitrate undecided
 C8H14O4,[M+^NO3]-,True,,False,False,False,untestable,False,
-C8H14O5,[M+NO3]-,True,excess,False,False,True,,True,the 14N line runs 16.1x its cluster share of the 15N line; cluster or organonitrate undecided
+C8H14O5,[M+NO3]-,True,excess,False,False,False,,True,the 14N line runs 16.1x its cluster share of the 15N line; cluster or organonitrate undecided
 C8H14O6,[M+NO3]-,True,absent,False,False,True,,True,no 15N partner: seen in 0 of the 154 spectra of the 14N line; cluster or organonitrate undecided
 C8H14O7,[M+NO3]-,False,untestable,False,False,False,,False,
 C8H14O7,[M+^NO3]-,True,,False,False,False,untestable,False,
@@ -1086,7 +1086,7 @@ C9H16O4,[M+NO3]-,False,untestable,False,False,False,,False,
 C9H16O4,[M+^NO3]-,True,,False,False,False,untestable,False,
 C9H16O5,[M+NO3]-,True,untestable,False,False,True,,False,
 C9H16O5,[M+^NO3]-,True,,False,False,False,untestable,False,
-C9H16O6,[M+NO3]-,True,excess,False,False,True,,True,the 14N line runs 4.5x its cluster share of the 15N line; cluster or organonitrate undecided
+C9H16O6,[M+NO3]-,True,excess,False,False,False,,True,the 14N line runs 4.5x its cluster share of the 15N line; cluster or organonitrate undecided
 C9H16O6,[M+^NO3]-,True,,False,False,False,untestable,False,
 C9H18N2O4,[M+NO3]-,False,untestable,False,False,False,,False,
 C9H18N2O4,[M+^NO3]-,True,,False,False,False,untestable,False,

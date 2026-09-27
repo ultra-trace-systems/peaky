@@ -23,9 +23,11 @@ arbitrates the other's reading, in its own direction:
         PARTNER_ABSENT_SHARE of the >= PARTNER_MIN_SPECTRA spectra of the 14N line);
         `untestable`. A tracking line breaks the arbiter's tie in the cluster's
         favour where every file's tie is with the same-ion alias alone
-        (`alias_only_ties`); an excess / absent / untestable line gives X nothing
-        (`alien`: out of X's per-neutral pools, both ways), and an excess or absent
-        one is refuted (cluster or organonitrate undecided: hard 5b). The two
+        (`alias_only_ties`); an excess or absent line is refuted (cluster or
+        organonitrate undecided: hard 5b); an absent or untestable line, and an
+        excess one whose 15N partner is in < PARTNER_PRESENT_SHARE of its spectra,
+        gives X nothing (`alien`: out of X's per-neutral pools, both ways) -- an
+        excess line with its partner present still shows X's cluster. The two
         clusters of one neutral also count as ONE channel (evidence.LABEL_FOLD).
   veto  (15N line -> its 14N twin)     : a real reagent cluster [Y+^NO3]- carries
         the reagent's 14N impurity at f = (1 - purity) / purity of its height
@@ -49,7 +51,7 @@ re-measured on the trunk 2026-09-27): 14 of the
 organonitrate lines 3/150; of the 291 committed [X+NO3]- lines 14 track, 18 are
 consistent, 13 excess, 220 have no 15N partner (1.35 % of the signal) and 26 are
 untestable, and the C11-C12 [M-H]- acids whose only cluster was such a line leave
-the acid branch (identified 48.3 -> 44.6 % with the rest of the rule); the twin veto
+the acid branch (identified 48.3 -> 45.1 % with the rest of the rule); the twin veto
 refutes 3 pooled [Y+^NO3]- readings (0 of 42 / 42 / 53 expected detections; two
 move a level, the third is the first one's line under another formula, already
 5b), the same set for f 0.0150-0.0236, never a positive control (a 13C-backed
@@ -83,12 +85,19 @@ REF_ELEMENTS = frozenset({"C", "H", "O"})
 #: line at >= 2.6x the 14N one in every spectrum of the regression batch)
 PARTNER_ABSENT_SHARE = 0.2
 PARTNER_MIN_SPECTRA = 10
+#: an excess line whose 15N partner is present in >= PARTNER_PRESENT_SHARE of its
+#: spectra still shows X's cluster (the partner), so X keeps it
+PARTNER_PRESENT_SHARE = 0.8
 #: what a 14N line's verdict does to its reading: `tracks` -- X's cluster (the
 #: tie may be broken); `consistent` -- tested, not above the cluster ratio (a
 #: noisy or a reagent-dominated cluster: an organonitrate can only ADD 14N
 #: intensity), counts as X's cluster; `excess` -- above RATIO_HI x the cluster
-#: ratio and `absent` -- no 15N partner: cluster or organonitrate undecided,
-#: gives X nothing and reads 5b; `untestable` -- gives X nothing
+#: ratio: the line itself is cluster or organonitrate undecided (5b), and it
+#: gives X nothing unless its 15N partner is present in >= PARTNER_PRESENT_SHARE
+#: of its spectra (the cluster is then shown by the partner, 2026-09-27 user
+#: decision: the aged-SOA tracer C8H12O6 runs at 2.1x with its partner in 98 %);
+#: `absent` -- no 15N partner: undecided (5b), gives X nothing; `untestable` --
+#: gives X nothing
 LINE_VERDICTS = ("tracks", "consistent", "excess", "absent", "untestable")
 FOREIGN = ("excess", "absent", "untestable")
 REFUTED = ("excess", "absent")
@@ -345,7 +354,8 @@ def measure(ts: pd.DataFrame | None, frames: dict, prof, *, alias_ties: dict | N
     ck["alias_only_tie"] = ck["neutral_formula"].map(alias_ok).fillna(False).astype(bool)
     ck["committed"] = ck["neutral_formula"].isin(n14)
     ck["untie"] = ck["line_verdict"].eq("tracks") & ck["alias_only_tie"] & ck["committed"]
-    ck["alien"] = ck["committed"] & ck["line_verdict"].isin(FOREIGN)
+    shown = ck["line_verdict"].eq("excess") & (ck["partner_share"] >= PARTNER_PRESENT_SHARE)
+    ck["alien"] = ck["committed"] & ck["line_verdict"].isin(FOREIGN) & ~shown
     ck["veto"] = ck["committed"] & ck["line_verdict"].isin(REFUTED)
     ck["note"] = [_line_note(r) if v else "" for r, v in zip(ck.itertuples(index=False), ck["veto"])]
     f = twin_fraction(prof)

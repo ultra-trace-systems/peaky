@@ -409,6 +409,20 @@ def test_a_line_whose_partner_is_mostly_absent_is_absent_even_when_tested(monkey
     assert r.line_verdict == "absent" and r.alien and r.veto
 
 
+def test_an_excess_line_gives_its_neutral_nothing_only_when_its_partner_is_mostly_missing(monkeypatch):
+    """excess (2026-09-27 decision): the line is refuted (5b) either way; it leaves its
+    neutral's pools only when its 15N partner is in < PARTNER_PRESENT_SHARE (0.8) of
+    its spectra -- with the partner present the cluster is shown by the partner."""
+    monkeypatch.setattr(TL, "N_SPECTRA", 600)
+    w = "C11H18O4"
+    for share15, alien in ((0.7, True), (0.8, False)):
+        spec = _refs_spec(**{w: {"phase": 0.9, "q": 3.0, "share15": (share15 * 600 - 0.5) / 600 + 1e-9}})
+        r = _row(_measure(spec, _frames(list(spec), no3=[w])), w)
+        assert r.line_verdict == "excess" and r.veto, share15
+        assert r.partner_share == pytest.approx(share15, abs=2e-3)
+        assert bool(r.alien) == alien, share15
+
+
 def test_a_line_whose_partner_is_mostly_absent_never_unties(monkeypatch):
     """untie = tracks & alias-only tie & committed: a line that is not X's cluster in 82 % of
     its spectra must not clear the organonitrate tie."""
@@ -419,13 +433,13 @@ def test_a_line_whose_partner_is_mostly_absent_never_unties(monkeypatch):
 # =========================================================================== the untie assembly
 def test_an_alias_only_tie_on_a_line_off_k_does_not_untie():
     """untie = cluster_k & alias-only tie & committed: a committed, alias-only tied line at
-    3x k_cl stays tied (excess, alien, vetoed)."""
+    3x k_cl stays tied (excess, vetoed; its 15N partner is present, so not alien)."""
     x = "C10H18O3"
     spec = _refs_spec(**{x: {"phase": 2.0, "q": 3.0}})
     t = _measure(spec, _frames(list(spec), no3=[x], tied=[x]), {"f1": LT.alias_only_ties(_alias_ledger(x))})
     r = _row(t, x)
     assert r.alias_only_tie and r.committed and not r.cluster_k and not r.untie
-    assert r.line_verdict == "excess" and r.alien and r.veto
+    assert r.line_verdict == "excess" and not r.alien and r.veto and r.partner_share >= LT.PARTNER_PRESENT_SHARE
     assert LT.untie(t) == set() and LT.facts(t)["untie"] == set()
 
 
@@ -543,7 +557,7 @@ def test_the_summary_funnel_counts_each_stage():
     assert LT.summary(t, LABEL) == {
         "in_scope": True, "f": pytest.approx(0.02 / 0.98), "lines": 14, "codetected": 10, "references": 10,
         "cluster_k": 8, "committed_lines": 5, "lines_tracks": 1, "lines_consistent": 1, "lines_excess": 1,
-        "lines_absent": 1, "lines_untestable": 1, "alien": 3, "untie": 1, "readings": 13, "testable": 12,
+        "lines_absent": 1, "lines_untestable": 1, "alien": 2, "untie": 1, "readings": 13, "testable": 12,
         "passes": 11, "refuted": 1, "lines_refuted": 2}
     assert list(LT.summary(t, LABEL)) == [
         "in_scope", "f", "lines", "codetected", "references", "cluster_k", "committed_lines", "lines_tracks",
