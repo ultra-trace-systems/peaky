@@ -127,9 +127,9 @@ check("rescue: confirmed peak -> M0 with the listed formula",
       L.role_of(led, "conf") == L.ROLE_M0
       and led[led.peak_id == "conf"].iloc[0]["neutral_formula"] == F_CONF)
 _dim = led[led.peak_id == "dim"].iloc[0]
-check("rescue: dim peak -> tentative Candidate (literature, dim) + below_assignability",
+check("rescue: dim peak -> tentative Candidate (literature, dim) + tentative_lead, not below (C19(c))",
       _dim["role"] == L.ROLE_M0 and "dim" in str(_dim["confidence"])
-      and bool(_dim["below_assignability"]))
+      and bool(_dim["tentative_lead"]) and not bool(_dim["below_assignability"]))
 check("rescue: bright-but-unconfirmed peak left unexplained (isotopes expected, absent)",
       L.role_of(led, "bright") == L.ROLE_UNEXPLAINED)
 check("rescue: ledger valid", L.validate(led) == [])

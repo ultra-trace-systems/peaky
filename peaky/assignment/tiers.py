@@ -895,9 +895,12 @@ def flag_below_assignability(ledger: pd.DataFrame) -> int:
     a confident formula. They are already capped at Candidate by the tier rules;
     this is the explicit do-not-trust-the-formula disposition. A MASS-DEGENERATE
     window (3-8 ions) is not enough: the degeneracy cap holds an uncorroborated
-    commit there, and an isotope or second channel may still pick the formula."""
-    if "below_assignability" not in ledger.columns:
-        ledger["below_assignability"] = False
+    commit there, and an isotope or second channel may still pick the formula.
+
+    Creates both assignability flags (False) where missing -- this and its
+    `tentative_lead` sibling (ledger.ASSIGNABILITY_FLAGS), which the post-tier
+    stages set; the O >= 11 flag is a hard one and never a lead."""
+    L.ensure_flags(ledger)
     n = 0
     for i in ledger.index[ledger["role"] == L.ROLE_M0]:
         nf = str(ledger.at[i, "neutral_formula"])

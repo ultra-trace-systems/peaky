@@ -93,7 +93,8 @@ null-safe: NaN, `pd.NA`, `None`, `''` and `'false'` are False;
 | `method` | M0 | `known:<family>` marks a pass-0 curated identity |
 | `confidence` | M0 | its first word: `High`, `Good`, `Low`, `Suspect` |
 | `tied` | M0 | the arbiter broke a near-tie |
-| `below_assignability` | M0 | `tiers.flag_below_assignability` (O ≥ 11 and mass-saturated), or a `plausibility` demote: an O-monster, a carbon cluster, or a commit outside the run context's element budget that no curated list names (`plausibility.demote_off_budget`, docs/ASSIGNMENT_DETAIL.md §8.5); or an ionization the neutral cannot support: a hydrocarbon or an N-only neutral read through an anion channel (`cleanup.demote_implausible_ionization`, docs/ASSIGNMENT_DETAIL.md §5.6c) |
+| `below_assignability` | M0 | the assignment **argues with itself** — set by `tiers.flag_below_assignability` (O ≥ 11 and mass-saturated); the `plausibility` O-monster (`demote_oxygen_monsters`: O/C > 1.3 on a mass-degenerate window) and carbon-cluster (`demote_carbon_clusters`: integer DBE/C ≥ 1) demotes; `cleanup.demote_unconfirmed_fluorine` (F ≥ 4, no confirmed Cl/Br/S isotope anchor, not a PFCA); `cleanup.demote_implausible_carbon` ((H+F)/C < 0.35); `cleanup.demote_implausible_ionization` (a hydrocarbon or an N-only neutral read through an anion channel, docs/ASSIGNMENT_DETAIL.md §5.6c); `cleanup.demote_speculative_residual` for an **off-calibration** residual fit (\|z\| > `cal_z_accept`: the mass disagrees with the calibration). A corroborated radical-anion relabel (`cleanup.relabel_radical_anions`) clears it; an ion-only row never carries it. Created False with `tentative_lead` by the tier stage; a commit, a clear and a displacement reset both (`ledger.reset_flags`) |
+| `tentative_lead` | M0 | (C19(c), 2026-09-27) the proposal is **unsupported, not contradicted** — the other half of what `below_assignability` said before the split: `reflists.rescue_unexplained_by_reflist`'s dim branch (a reference-list match too dim to show its ¹³C line, "tentative lead, not confirmed"); `plausibility.demote_off_budget` (a commit outside the run context's element budget that no curated list names, docs/ASSIGNMENT_DETAIL.md §8.5); `cleanup.demote_speculative_residual` for **N ≥ 3 with no isotope corroboration**, a **series gap-fill with no supporting anchors** and a **sole minor channel**; `cleanup.relabel_radical_anions` when the radical anion is **uncorroborated** (a corroborated one clears both flags); `cleanup.relabel_reagent_n_adducts` (the reagent-N re-read; per file only on a single sample, and the merged ledger a batch re-reads carries no flag, so nothing is written there). A row both flags mark keeps `below_assignability`: precedence is hard. A ledger written before the split has no such column: its leads sit in `below_assignability` and the missing column reads False |
 | `degeneracy_density` | M0 | plausible ions sharing the mass in the calibrated window (`degeneracy.apply_degeneracy`) |
 | `degeneracy_note` | M0 | contains `MASS-SATURATED` when the audit capped |
 | `resolvability` | M0 | `resolved` / `isolated` / `blended` / `unresolvable`; stamped by the `resolvability` stage on every run that has a width model (a batch measures one from the raw profile of a middling spectrum; `--resolving-power` declares or declines it); NA on an offline run without one |
@@ -118,6 +119,7 @@ Computed exactly as `level_ledger.measure_source` does.
 | `reagent_only_iso` | the channel has a reagent halogen (§3.1), the pair has satellites, none is 13C, and every tag starts with that halogen's heavy isotope (`81Br` / `37Cl`; iodine is monoisotopic, so an iodide channel never sets it) |
 | `tied` | **all** rows of the pair are tied — unless rule K's untie clears it (batch only, `label_untie` below) |
 | `below` | **any** row is below assignability |
+| `lead` | (C19(c)) **any** row is a tentative lead. Hard like `below` (derived `hard` below) and worded like it: a lead-only pair reads `5b: below assignability`, exactly as the same pair did before the split, so the split moved no level and no reason. Rule H (C11+b) is where a lead stops being hard on its own |
 | `lowconf` | **all** rows are `Low` or `Suspect` |
 | `degeneracy` | median `degeneracy_density` over rows that have one; NaN when none has. The audit counts the ions the run could have committed in the calibrated window -- its channels, its element space, no box (`degeneracy.py`); a row whose commit lies outside that space with fewer than three ions carries NaN (`not measured`), so `unique` never holds for it |
 | `saturated` | any `degeneracy_note` contains `MASS-SATURATED` |
@@ -138,7 +140,7 @@ cross          = corroborated or multiline or known_fam != ''    # an axis outsi
 neutral_backed = corroborated or chan2 or anchor or known_fam != '' or carbon_ev
 degenerate     = saturated or degeneracy >= 3
 unique         = degeneracy <= 1                                  # NaN is neither
-hard           = tied or below or lowconf or label_veto          # label_veto: rule K, batch only
+hard           = tied or below or lead or lowconf or label_veto  # lead: C19(c); label_veto: rule K, batch only
 ```
 
 Two of these terms can never decide a level today and are kept because the
@@ -162,7 +164,7 @@ with two stray `[M+Br]-` rows against 346 `[M+NO3]-` is a nitrate channel.
 
 | order | level | predicate | meaning |
 |---:|---|---|---|
-| 1 | **5b** | `hard` | the assignment argues with itself: a near-tie the arbiter broke, a row below assignability, a score the engine calls Low/Suspect, or (rule K, batch only) the reagent's two isotopologues refute the cluster reading |
+| 1 | **5b** | `hard` | the assignment argues with itself: a near-tie the arbiter broke, a row below assignability or a tentative lead (both read "below assignability" in `level_reason`), a score the engine calls Low/Suspect, or (rule K, batch only) the reagent's two isotopologues refute the cluster reading |
 | 1′ | **4d** / **5a** | `ion_only` | an ion-only row: **4d** when its own satellite passes the band (`iso`) — the composition is pinned by exact mass and ¹³C, the ionization process and the neutral are open — else **5a**, exact mass only. The same rung the reagent-halogen case (row 8) reaches by the other route: 4d = *ion pinned, neutral not*, by either route |
 | 2 | **5b** | `degenerate and n_axes == 0` | mass-degenerate with nothing to break the tie |
 | 3 | **2b** | `known_fam != ''` and `scope(known_fam) == "compound"` and `n_plausible_structures == 1` | a curated **identity** on a formula that admits one structure |
@@ -290,8 +292,10 @@ the isomer space says 3 (2-, 3-, 4-nitrophenol), so 3a.
   channels or the series step that proposed it are exactly the `chan2` / acid
   branch / `anchor` facts a level counts, so read back they would rate the
   formula 3b or 4b on its own proposal. The `plausibility` stage flags such a
-  commit `below_assignability` unless a curated list names it, and the level
-  reads that as 5b through `hard` -- no predicate here changes, and the golden
+  commit a `tentative_lead` unless a curated list names it (C19(c); before the
+  split it was `below_assignability`): nothing tests the composition either way,
+  so it is unsupported, not contradicted. The level reads a lead as 5b through
+  `hard`, as it read the old flag -- no predicate here changes, and the golden
   fixtures (written before the stage) do not move. Fluorine alone has an
   exemption: a formula whose only violation is F keeps its level when the ledger
   commits its CF2 neighbour on the same adduct -- the CF2 step is the one piece
@@ -346,7 +350,7 @@ ledgers of the assigned files (cover **and** residual stages) as one source
 and calls `evidence.level_pooled(per_file, cross=cross)`: one evidence record
 per `(neutral, adduct)` over all files, so `chan2` sees a second adduct in
 *any* file, `iso` any file's satellite, `tied`/`lowconf` require *all* rows
-(across files) and `below` any. The result is joined onto the merged ledger
+(across files) and `below` and `lead` any. The result is joined onto the merged ledger
 by `(neutral_formula, adduct)` — each merged row is one ion, so the join is
 one-to-one — and the five columns are written there too (`evidence.stamp_merged`:
 `claim` is re-read off the joined level, so every merged row carries one and a
@@ -473,10 +477,20 @@ acid, mass-saturated on both instruments with no axis on either, falls from
 | `n_plausible_structures` | Int64 | M0 rows whose formula is in the isomer space; `NA` otherwise | from `isomer_space.csv` |
 | `claim` | str | every M0 row of a per-file ledger and every merged row; `NA` on every other per-file row | `identified` / `ion` / `tentative` = `claim_class(evidence_level)` (§1.1); a committed row with no level reads `tentative` |
 
+The two assignability flags the level reads (§2) are per-file ledger columns
+too: `below_assignability` and `tentative_lead`, bool, on every row of a tiered
+ledger (created False by the tier stage, set on M0 rows, reset by a commit, a
+clear or a displacement). The merged ledger carries neither: its level is the
+pooled one. `tables/evidence_levels.csv` carries both pooled facts, `below` and
+`lead`; the workbook's **Below assignability** sheet lists the M0 rows either flag
+marks, with a `tentative_lead` column saying which; `io/publish.py` carries both
+in `engine_provenance`. A ledger written before C19(c) has no `tentative_lead`
+column and every reader takes it as False.
+
 Written to: the per-file `<prefix>_ledger.csv`, `merged_ledger.csv`,
 `tables/evidence_levels.csv` (batch: one row per pair with every fact of §3, the
 `ion_only` flag, `multiline_elements`, `upair`, `label_untie`, `label_veto`,
-`label_note` and the pair's `claim` included; an alien 14N line reads `chan2` / `branch` False),
+`label_note`, `lead` and the pair's `claim` included; an alien 14N line reads `chan2` / `branch` False),
 `tables/neutral_pairs.csv` (batch: rule U's clauses per neutral),
 `tables/label_twins.csv` (batch: rule K's tests per 14N line and per labelled
 reading), the
@@ -549,6 +563,25 @@ added them. `tests/test_evidence.py`:
 
 All of it passes since B2; `tests/test_evidence_outputs.py` pins the wiring
 (stage order, the batch recompute, every output, `--corroborate`).
+
+The fixtures predate the `tentative_lead` split (C19(c)): they carry no such
+column, their leads sit in `below_assignability`, and the four vectors are
+unchanged by it. Replaying three regression batches' per-file ledgers with
+each lead row's flag moved from `below_assignability` to `tentative_lead` (the
+setter read off its note) gives every pooled pair the same level and the same
+`level_reason`. `tests/test_tentative_lead.py` pins the split:
+
+- each lead setter writes the lead and not below, and each hard setter writes
+  below and not the lead;
+- a row both mark keeps below, and a corroborated radical anion clears both;
+- the pooled `lead` is any row. A lead-only pair is 5b with the reason
+  `5b: below assignability`, alone or beside a tie or a Low score;
+- the flag in either column gives the same levels, reasons, pooled facts and
+  tiers. The reference script agrees row for row, and a missing column levels
+  as an all-False one;
+- the ion-only stage takes no lead parent;
+- the Below assignability sheet lists leads, and publish carries the column;
+- a commit, a clear and a displacement reset both flags and never create one.
 
 `tests/test_claims.py` pins the claim (§1.1):
 

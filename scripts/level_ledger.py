@@ -30,9 +30,10 @@ One row out per `(source, neutral_formula, adduct)` over the source's M0 rows.
 The scale, in the order the predicates are tried:
 
     5b  the assignment argues with itself — a near-tie the arbiter broke, a row
-        below assignability, or a score the engine itself calls Low/Suspect, or
-        (rule K, --label-twins) the labelled reagent's 14N twin refutes the
-        cluster reading; also a mass-degenerate row with no corroborating axis at all
+        below assignability or a tentative lead, or a score the engine itself
+        calls Low/Suspect, or (rule K, --label-twins) the labelled reagent's 14N
+        twin refutes the cluster reading; also a mass-degenerate row with no
+        corroborating axis at all
     2b  a curated identity on a formula that admits essentially one structure
     3a  a named compound class, isomers open (PFCA, nitroaromatic, …)
     3b  a substituent only, via the gas-phase acidity branch: the same neutral
@@ -374,6 +375,9 @@ def measure_source(
         "isotopologues",
         "tied",
         "below_assignability",
+        # C19(c): the lead half of the old flag; a ledger written before the
+        # split carries none, reads False, and keeps its leads in below
+        "tentative_lead",
         "degeneracy_density",
         "ion_formula",
         "tier",
@@ -431,6 +435,7 @@ def measure_source(
                 iso_labels="|".join(sorted(tags)),
                 tied=bool(group["tied"].map(truthy).all()),
                 below=bool(group["below_assignability"].map(truthy).any()),
+                lead=bool(group["tentative_lead"].map(truthy).any()),
                 lowconf=bool(
                     group["confidence"].map(first_word).isin(LOW_CONFIDENCE).all()
                 ),
@@ -462,8 +467,9 @@ def measure_source(
 
 def level_of(row) -> str:
     """The decision table. Order matters: the first predicate that holds wins."""
-    hard = (bool(row.tied) or bool(row.below) or bool(row.lowconf)
-            or bool(getattr(row, "label_veto", False)))
+    # a tentative lead (C19(c)) is hard like below assignability until rule H
+    hard = (bool(row.tied) or bool(row.below) or bool(getattr(row, "lead", False))
+            or bool(row.lowconf) or bool(getattr(row, "label_veto", False)))
     degenerate = bool(row.saturated) or (
         pd.notna(row.degeneracy) and row.degeneracy >= 3
     )

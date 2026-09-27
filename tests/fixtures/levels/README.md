@@ -2,7 +2,9 @@
 
 Fifty-two per-file ledgers from four real runs (and one neutral-pair table and one label-twin table), trimmed to what the evidence
 levels read: the `M0` and `iso_child` rows and the twenty-two columns the
-predicates in `docs/EVIDENCE_LEVELS.md` name. Gzipped CSV (`pandas.read_csv`
+predicates in `docs/EVIDENCE_LEVELS.md` named when they were cut. They predate
+the twenty-third, `tentative_lead` (C19(c), 2026-09-27): it reads False here,
+their leads sit in `below_assignability`, and no vector moved with the split. Gzipped CSV (`pandas.read_csv`
 opens them directly); 3.5 MB in all with the neutral-pair table and `expected_levels.csv`.
 
 | set | fixtures | source | M0 rows | iso rows | golden vector (2b/3a/3b/4a/4b/4c/4d/5a/5b) |

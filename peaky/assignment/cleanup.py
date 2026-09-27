@@ -655,14 +655,14 @@ def relabel_radical_anions(ledger: pd.DataFrame, *, log=print) -> dict:
 
     Corroborated when that neutral is independently assigned via a functional-group
     channel ([M-H]-/[M+Br]-/[M+Cl]-): it stays a visible Candidate (not below-
-    assignability). Uncorroborated -> Candidate + below_assignability: a flagged
+    assignability). Uncorroborated -> Candidate + tentative_lead: a flagged
     best-guess, still shown (users want the best guess even when it's a guess),
-    just lowest-confidence. Runs BEFORE demote_implausible_ionization so the
+    just lowest-confidence -- unsupported, not contradicted, so a lead (C19(c));
+    corroborated clears both flags. Runs BEFORE demote_implausible_ionization so the
     relabeled rows (now hetero-bearing neutral + [M]-. adduct) escape the
     hydrocarbon demote. Negative-mode FG-cluster anions only."""
     if "neutral_formula" not in ledger.columns or "adduct" not in ledger.columns:
         return {"radical_relabeled": 0, "radical_corroborated": 0}
-    has_ba = "below_assignability" in ledger.columns
     corrob = {str(ledger.at[j, "neutral_formula"] or "")
               for j in ledger.index
               if str(ledger.at[j, "adduct"]) in _PRIMARY_ANION_CHANNELS}
@@ -694,8 +694,14 @@ def relabel_radical_anions(ledger: pd.DataFrame, *, log=print) -> dict:
             ledger.at[i, "dbe"] = C.dbe(ion)
         if str(ledger.at[i, "tier"]) == "Assigned":
             ledger.at[i, "tier"] = "Candidate"
-        if has_ba:
-            ledger.at[i, "below_assignability"] = not is_corrob
+        if is_corrob:
+            # corroborated: the relabel clears both flags (it always cleared
+            # below_assignability)
+            L.reset_flags(ledger, i)
+        else:
+            # uncorroborated: a lead; a hard flag an earlier demote set stays
+            # (a row both mark stays hard)
+            L.mark_lead(ledger, i)
         if "confidence" in ledger.columns:
             ledger.at[i, "confidence"] = ("Good (radical anion, corroborated)"
                                           if is_corrob else "Low (radical anion)")
@@ -942,10 +948,11 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
     SKIPPED when the same hydrocarbon also has its own [M+H]+ row -- then it is a
     genuine hydrocarbon (e.g. a terpene C10H16 that legitimately forms [M+NH4]+),
     so its cluster adducts are left alone. The re-read is tiered Candidate +
-    below_assignability: the specific N-heterocycle is rarely cross-channel-
-    confirmed and the region is often reagent background, but the protonated-
-    heterocycle label is the saner best-guess and stays visible. Positive adducts
-    only (negative reagents never hit these).
+    tentative_lead (C19(c): unsupported, not contradicted): the specific
+    N-heterocycle is rarely cross-channel-confirmed and the region is often
+    reagent background, but the protonated-heterocycle label is the saner
+    best-guess and stays visible. Positive adducts only (negative reagents never
+    hit these).
 
     That skip key is a PRESENCE test, so on a batch it is applied ONCE to the
     merged ledger (assign_batch.run; the per-file stage is gated off with
@@ -953,11 +960,11 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
     [M+H]+ row was picked flips with each file's S/N, and the same ion then came
     out as C15H22 [M+NH4]+ in fourteen files and C15H25N [M+H]+ in the fifteenth.
     Works on a merged frame as it does on a ledger: `role` is optional, and the
-    columns it annotates (ion_formula, dbe, below_assignability, confidence,
-    commentary, tier_reason) are each written only when present."""
+    columns it annotates (ion_formula, dbe, the assignability flags, confidence,
+    commentary, tier_reason) are each written only when present (the merged
+    ledger carries no flag, so none is written there)."""
     if "neutral_formula" not in ledger.columns or "adduct" not in ledger.columns:
         return {"reagent_n_relabeled": 0}
-    has_ba = "below_assignability" in ledger.columns
     hc_with_mh = {str(ledger.at[j, "neutral_formula"] or "")
                   for j in ledger.index if str(ledger.at[j, "adduct"]) == "[M+H]+"}
     target = (ledger.index[ledger["role"] == L.ROLE_M0]
@@ -988,8 +995,7 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
             ledger.at[i, "dbe"] = C.dbe(m2)
         if str(ledger.at[i, "tier"]) == "Assigned":
             ledger.at[i, "tier"] = "Candidate"
-        if has_ba:
-            ledger.at[i, "below_assignability"] = True
+        L.mark_lead(ledger, i)
         if "confidence" in ledger.columns:
             ledger.at[i, "confidence"] = "Low (reagent-N re-read)"
         note = (f"re-read {f_raw} {add_label} as [M+H]+ "
@@ -1294,11 +1300,12 @@ def commit_ion_only_electron_attachment(ledger: pd.DataFrame, cfg=None, *, log=p
     """Commit the +1.00783 Da electron-attachment line of every committed
     [M-H]- parent as an ION-ONLY Candidate row on `[M]-.` (module note above).
 
-    Per parent (a committed M0 on `[M-H]-`, any tier, not below assignability,
-    at least one carbon): the UNEXPLAINED peak -- never an M0, isotopologue,
-    reagent or artifact -- nearest the parent neutral's M-. mass and inside the
-    calibrated gate (|z| <= ION_ONLY_Z via passes.core.z_of, the mass-dependent
-    centre when fitted; +-ION_ONLY_PPM_UNCAL ppm uncalibrated). Two guards keep
+    Per parent (a committed M0 on `[M-H]-`, any tier, flagged neither below
+    assignability nor a tentative lead, at least one carbon): the UNEXPLAINED
+    peak -- never an M0, isotopologue, reagent or artifact -- nearest the parent
+    neutral's M-. mass and inside the calibrated gate (|z| <= ION_ONLY_Z via
+    passes.core.z_of, the mass-dependent centre when fitted; +-ION_ONLY_PPM_UNCAL
+    ppm uncalibrated). Two guards keep
     a 13C line, or an unresolved 13C/+H blend, out of the bucket:
       * the GATE guard -- the gate's half-width at that m/z must be under half
         the 4.47 mDa gap, else the gate itself cannot tell the two positions
@@ -1329,11 +1336,11 @@ def commit_ion_only_electron_attachment(ledger: pd.DataFrame, cfg=None, *, log=p
     mz_all = pd.to_numeric(ledger["mz"], errors="coerce").to_numpy(dtype=float)
     centres = _resolved_pair_centres(mz_all)
     role = ledger["role"].astype(str)
-    has_ba = "below_assignability" in ledger.columns
     has_tier = "tier" in ledger.columns
     m0 = (role == L.ROLE_M0) & ledger["adduct"].astype(str).eq(ION_ONLY_PARENT_ADDUCT)
-    if has_ba:
-        m0 &= ~ledger["below_assignability"].map(lambda v: bool(v) if not _is_na(v) else False)
+    # a flagged parent -- below assignability OR a tentative lead (C19(c): the
+    # split must not open a lead-only acid to the bucket) -- lends no ion-only row
+    m0 &= ~L.flagged(ledger)
     parents = ledger.index[m0]
     heights = pd.to_numeric(ledger["height"], errors="coerce")
     # the brightest parent claims first (a peak is committed once; a later parent
@@ -1404,8 +1411,7 @@ def commit_ion_only_electron_attachment(ledger: pd.DataFrame, cfg=None, *, log=p
             if "tier_reason" in ledger.columns:
                 ledger.at[j, "tier_reason"] = ("ion-only: composition pinned by exact mass; "
                                                "ionization process and neutral open")
-        if has_ba:
-            ledger.at[j, "below_assignability"] = False
+        L.reset_flags(ledger, j)          # never below assignability, never a lead
         ledger.at[j, "ion_only_of"] = parent_pid
         out["ion_only_committed"] += 1
     if out["ion_only_skipped_unresolved"] and not out["ion_only_committed"] and not out["ion_only_candidates"]:
@@ -1617,14 +1623,16 @@ def demote_speculative_residual(ledger: pd.DataFrame, cfg=None, *, log=print) ->
     """Demote speculative residual-tail commits that reached Assigned on weak
     evidence (plausibility-audit rule-gaps). Targets ONLY method startswith
     'residual' (the pass-4 residual explainer / series gap-fill) — so pass-0/1/2
-    grid analytes and known-species are untouched. Demote Assigned->Candidate +
-    below_assignability when any of:
-      * off-calibration: |z| > cal_z_accept (committed beyond the calibrated window);
+    grid analytes and known-species are untouched. Demote Assigned->Candidate
+    when any of:
+      * off-calibration: |z| > cal_z_accept (committed beyond the calibrated
+        window) -- + below_assignability: the mass disagrees with the calibration;
       * uncorroborated multi-N: n_iso==0 AND N>=3 (a Br-doublet confirms the adduct
         Br, not the neutral's C/N backbone);
       * series gap-fill with no anchors ('0 supporting anchors' in the commentary);
       * sole minor-background channel (n_iso==0, adduct in minor_channels, and the
-        neutral has no primary-channel partner)."""
+        neutral has no primary-channel partner);
+    the last three + tentative_lead (C19(c)): unsupported, not contradicted."""
     if "method" not in ledger.columns or "tier" not in ledger.columns:
         return {"residual_demoted": 0}
     minor = set(getattr(cfg, "minor_channels", None) or ("[M+CO3]-", "[M+O2]-", "[M]-."))
@@ -1649,8 +1657,10 @@ def demote_speculative_residual(ledger: pd.DataFrame, cfg=None, *, log=print) ->
         z = abs((float(ppm) - mu) / sigma) if (mu is not None and pd.notna(ppm)) else 0.0
         comm = str(ledger.at[i, "commentary"] or "")
         reason = None
+        hard = False
         if mu is not None and z > zacc:
             reason = f"off-calibration (z={z:.1f} > {zacc})"
+            hard = True
         elif ni == 0 and cnt.get("N", 0) >= 3:
             reason = f"N{cnt.get('N', 0)} with no isotope corroboration"
         elif "0 supporting anchors" in comm:
@@ -1660,7 +1670,9 @@ def demote_speculative_residual(ledger: pd.DataFrame, cfg=None, *, log=print) ->
         if reason is None:
             continue
         ledger.at[i, "tier"] = "Candidate"
-        if has_ba:
+        if not hard:
+            L.mark_lead(ledger, i)
+        elif has_ba:
             ledger.at[i, "below_assignability"] = True
         if "commentary" in ledger.columns:
             note = f"speculative residual fit -- {reason}; not Assigned-grade"

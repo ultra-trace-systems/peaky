@@ -540,6 +540,8 @@ _ENGINE_PROVENANCE_COLUMNS = (
     "commentary",
     "isotopologues",
     "below_assignability",
+    # the lead half of the old flag (C19(c)): unsupported, not contradicted
+    "tentative_lead",
     # the evidence level (docs/EVIDENCE_LEVELS.md): what the evidence behind the
     # formula is worth on the CIMS-adapted Schymanski scale, and why
     "evidence_level",

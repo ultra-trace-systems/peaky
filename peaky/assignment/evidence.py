@@ -17,7 +17,8 @@ reagent ions, artifacts and unexplained peaks carry no level.
 The scale, in the order the predicates are tried (the first that holds wins):
 
     5b  the assignment argues with itself: a near-tie the arbiter broke, a row
-        below assignability, a score the engine calls Low/Suspect, or (rule K,
+        below assignability or a tentative lead (the two halves of the old
+        flag, C19(c)), a score the engine calls Low/Suspect, or (rule K,
         batch only) the labelled reagent's 14N twin refuting the cluster
         reading; also a mass-degenerate pair with no corroborating axis at all
     2b  a curated identity (compound-scope pass-0 family) on a formula the
@@ -115,6 +116,9 @@ PREDICATE_COLUMNS = (
     "ion_formula", "mz", "height", "tier", "method", "confidence", "tied",
     "below_assignability", "degeneracy_density", "degeneracy_note", "resolvability",
     "series_unit", "anchor_peak_id", "isotopologues", "ppm_error_cal", "occurrence",
+    # C19(c): the lead half of the old below_assignability (ledger.ASSIGNABILITY_FLAGS);
+    # a ledger written before the split has no such column and reads False
+    "tentative_lead",
 )
 
 # Natural abundance of the heavy isotope relative to the light one, for the
@@ -427,6 +431,7 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None)
     m0["__iso_list"] = m0["isotopologues"].map(lambda v: len(as_list(v)) > 0)
     m0["__tied"] = m0["tied"].map(truthy)
     m0["__below"] = m0["below_assignability"].map(truthy)
+    m0["__lead"] = m0["tentative_lead"].map(truthy)
     m0["__lowconf"] = m0["confidence"].map(first_word).isin(LOW_CONFIDENCE)
     m0["__deg"] = pd.to_numeric(m0["degeneracy_density"], errors="coerce")
     m0["__sat"] = m0["degeneracy_note"].astype(str).str.contains("MASS-SATURATED", regex=False)
@@ -472,6 +477,8 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None)
             iso_labels="|".join(sorted(t)),
             tied=bool(g["__tied"].all()),
             below=bool(g["__below"].any()),
+            # C19(c): any row a tentative lead (unsupported, not contradicted)
+            lead=bool(g["__lead"].any()),
             lowconf=bool(g["__lowconf"].all()),
             degeneracy=float(g["__deg"].median()) if g["__deg"].notna().any() else np.nan,
             saturated=bool(g["__sat"].any()),
@@ -495,7 +502,10 @@ def _decide(r) -> tuple[str, str]:
     hard = []
     if r.tied:
         hard.append("near-tie broken by the arbiter")
-    if r.below:
+    if r.below or getattr(r, "lead", False):
+        # C19(c) split the old flag in two; a lead is still hard and still reads
+        # "below assignability", so no level and no reason moved with the split.
+        # C11+b (rule H) is where a lead stops being hard on its own.
         hard.append("below assignability")
     if r.lowconf:
         hard.append("engine confidence Low/Suspect")
@@ -731,7 +741,7 @@ def level_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None, l
     """A batch's per-file ledgers ({label: frame}) pooled as ONE source: one row
     per (neutral_formula, adduct) over all files with the four columns and every
     fact of §3 (`chan2` sees a second adduct in ANY file, `iso` any file's
-    satellite, `tied`/`lowconf` need ALL rows across files, `below` any).
+    satellite, `tied`/`lowconf` need ALL rows across files, `below` and `lead` any).
     `upair` is the neutral-pair set of rule U (batch/neutral_pairs.neutrals);
     `label` is rule K's labelled-nitrate twin facts (batch/label_twins.facts);
     both exist only here, on the pooled batch.

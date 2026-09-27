@@ -295,11 +295,15 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
     # below-assignability: M0 commits flagged as mass-saturated O-monsters -- the
     # base mass fits but ~dozens of plausible ions sit within <=1 ppm, so the
     # formula is one arbitrary pick, NOT an identification. Listed as a constrained
-    # mass + the tie-set size, separated from the real Candidates.
-    if "below_assignability" in led.columns:
-        bamask = (led["role"] == L.ROLE_M0) & led["below_assignability"].fillna(False).astype(bool)
+    # mass + the tie-set size, separated from the real Candidates. Since C19(c) the
+    # flag has two halves -- below_assignability (the assignment argues with
+    # itself) and tentative_lead (unsupported, not contradicted) -- and the sheet
+    # lists both, with the `tentative_lead` column saying which.
+    if L.has_flags(led):
+        bamask = (led["role"] == L.ROLE_M0) & L.flagged(led)
         bcols = [c for c in ["mz", "neutral_formula", "adduct", "ion_formula", "ppm_error",
-                             "ion_score", "degeneracy_density", "degeneracy_note", "tier_reason"]
+                             "ion_score", "degeneracy_density", "degeneracy_note", "tier_reason",
+                             L.FLAG_LEAD]
                  if c in led.columns]
         below = led[bamask][bcols].copy().sort_values("mz") if bamask.any() else pd.DataFrame(columns=bcols)
     else:
