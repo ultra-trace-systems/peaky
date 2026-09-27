@@ -17,8 +17,9 @@ reagent ions, artifacts and unexplained peaks carry no level.
 The scale, in the order the predicates are tried (the first that holds wins):
 
     5b  the assignment argues with itself: a near-tie the arbiter broke, a row
-        below assignability, or a score the engine calls Low/Suspect; also a
-        mass-degenerate pair with no corroborating axis at all
+        below assignability, a score the engine calls Low/Suspect, or (rule K,
+        batch only) the labelled reagent's 14N twin refuting the cluster
+        reading; also a mass-degenerate pair with no corroborating axis at all
     2b  a curated identity (compound-scope pass-0 family) on a formula the
         isomer space says admits one structure
     3a  any other curated commit: a named class, isomers open
@@ -485,6 +486,11 @@ def _decide(r) -> tuple[str, str]:
         hard.append("below assignability")
     if r.lowconf:
         hard.append("engine confidence Low/Suspect")
+    if getattr(r, "label_veto", False):
+        # rule K (C18): the labelled reagent's 14N twin is absent where the
+        # reagent's own impurity puts it -- the cluster reading is refuted
+        note = getattr(r, "label_note", "") or ""
+        hard.append("the reagent label refutes the cluster reading" + (f" ({note})" if note else ""))
     if hard:
         return "5b", "5b: " + "; ".join(hard)
     if r.ion_only:
@@ -562,6 +568,10 @@ def _axes_string(r, *, with_files: bool) -> str:
         parts.append("ion_only")
     if getattr(r, "upair", False):
         parts.append("upair")
+    if getattr(r, "label_untie", False):
+        parts.append("label_untie")
+    if getattr(r, "label_veto", False):
+        parts.append("label_veto")
     if r.known_fam:
         parts.append(f"known:{r.known_fam}")
     if with_files:
@@ -570,10 +580,13 @@ def _axes_string(r, *, with_files: bool) -> str:
 
 
 def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: bool = False,
-                 upair=None) -> pd.DataFrame:
+                 upair=None, untie=None, veto=None) -> pd.DataFrame:
     """Level every (neutral, adduct) pair of the frames pooled as ONE source.
     `upair`: the neutrals whose declared neutral pair holds (rule U, measured by
-    batch/neutral_pairs.py on the batch time series; pooled only)."""
+    batch/neutral_pairs.py on the batch time series; pooled only). `untie` /
+    `veto`: the labelled-nitrate twin facts of rule K (batch/label_twins.py;
+    pooled only) -- {(neutral, adduct)} whose arbiter tie the 15N sibling breaks,
+    and {(neutral, adduct): note} whose 14N twin refutes the cluster reading."""
     parts = []
     for label, frame in frames.items():
         f = frame.copy()
@@ -596,6 +609,16 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
     # `cross`; like chan2 it never lands on an ion-only pair
     upair = {str(x) for x in (upair or set())}
     facts["upair"] = facts["neutral_formula"].isin(upair) & ~facts["ion_only"]
+    # rule K: facts about one reading (a pair), never an axis, never in `cross`;
+    # the untie clears the arbiter's tie only where the pair is tied at all
+    keys = list(zip(facts["neutral_formula"].astype(str), facts["adduct"].astype(str)))
+    untie = {(str(n), str(a)) for n, a in (untie or set())}
+    facts["label_untie"] = pd.Series([k in untie for k in keys], index=facts.index, dtype=bool) \
+        & facts["tied"] & ~facts["ion_only"]
+    facts.loc[facts["label_untie"], "tied"] = False
+    veto = {(str(n), str(a)): str(v or "") for (n, a), v in (veto or {}).items()}
+    facts["label_veto"] = pd.Series([k in veto for k in keys], index=facts.index, dtype=bool) & ~facts["ion_only"]
+    facts["label_note"] = [veto.get(k, "") if v else "" for k, v in zip(keys, facts["label_veto"])]
     facts["n_axes"] = facts[list(AXES)].sum(axis=1).astype(int)
     facts["cross"] = facts["corroborated"] | facts["multiline"] | facts["known_fam"].ne("")
     facts["neutral_backed"] = (facts["corroborated"] | facts["chan2"] | facts["anchor"]
@@ -686,14 +709,18 @@ def _n_pairs(ledger: pd.DataFrame) -> int:
                              "a": _col(m0, "adduct").fillna("").astype(str)}).drop_duplicates().shape[0])
 
 
-def level_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None) -> pd.DataFrame:
+def level_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None, untie=None,
+                 veto=None) -> pd.DataFrame:
     """A batch's per-file ledgers ({label: frame}) pooled as ONE source: one row
     per (neutral_formula, adduct) over all files with the four columns and every
     fact of §3 (`chan2` sees a second adduct in ANY file, `iso` any file's
     satellite, `tied`/`lowconf` need ALL rows across files, `below` any).
     `upair` is the neutral-pair set of rule U (batch/neutral_pairs.neutrals);
-    it exists only here, on the pooled batch. `evidence_axes` ends with `files:<n>`."""
-    return _level_pairs(dict(per_file), cross=cross, isomer_space=isomer_space, with_files=True, upair=upair)
+    `untie` / `veto` are the labelled-nitrate twin facts of rule K
+    (batch/label_twins.untie / .veto); they exist only here, on the pooled batch.
+    `evidence_axes` ends with `files:<n>`."""
+    return _level_pairs(dict(per_file), cross=cross, isomer_space=isomer_space, with_files=True, upair=upair,
+                        untie=untie, veto=veto)
 
 
 def stamp_merged(merged: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:

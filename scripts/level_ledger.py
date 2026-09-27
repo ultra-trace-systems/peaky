@@ -9,6 +9,7 @@ in-core `evidence_level` column (Phase B) must reproduce row for row.
 
     python scripts/level_ledger.py <source>... [--corroborate <source>]
                                    [--upair [<neutral_pairs.csv>]]
+                                   [--label-twins [<label_twins.csv>]]
                                    [--out levels.csv]
 
 A *source* is a batch run dir (its `per_file/*_ledger.csv`, or `merged_ledger.csv`
@@ -29,8 +30,9 @@ One row out per `(source, neutral_formula, adduct)` over the source's M0 rows.
 The scale, in the order the predicates are tried:
 
     5b  the assignment argues with itself — a near-tie the arbiter broke, a row
-        below assignability, or a score the engine itself calls Low/Suspect;
-        also a mass-degenerate row with no corroborating axis at all
+        below assignability, or a score the engine itself calls Low/Suspect, or
+        (rule K, --label-twins) the labelled reagent's 14N twin refutes the
+        cluster reading; also a mass-degenerate row with no corroborating axis at all
     2b  a curated identity on a formula that admits essentially one structure
     3a  a named compound class, isomers open (PFCA, nitroaromatic, …)
     3b  a substituent only, via the gas-phase acidity branch: the same neutral
@@ -460,7 +462,8 @@ def measure_source(
 
 def level_of(row) -> str:
     """The decision table. Order matters: the first predicate that holds wins."""
-    hard = bool(row.tied) or bool(row.below) or bool(row.lowconf)
+    hard = (bool(row.tied) or bool(row.below) or bool(row.lowconf)
+            or bool(getattr(row, "label_veto", False)))
     degenerate = bool(row.saturated) or (
         pd.notna(row.degeneracy) and row.degeneracy >= 3
     )
@@ -492,15 +495,26 @@ def level_of(row) -> str:
     return "4b"
 
 
-def assign_levels(df: pd.DataFrame, corroborating: set[str], upair: set[str] | None = None) -> pd.DataFrame:
+def assign_levels(df: pd.DataFrame, corroborating: set[str], upair: set[str] | None = None,
+                  untie: set | None = None, veto: set | None = None) -> pd.DataFrame:
     """Add the axes, the derived flags and the level to measured rows. `upair`
-    is the batch's neutral-pair set (rule U); it is a fact, never an axis."""
+    is the batch's neutral-pair set (rule U); `untie` / `veto` are the
+    labelled-nitrate twin facts (rule K): {(neutral, adduct)} whose arbiter tie
+    the 15N sibling breaks, and whose 14N twin refutes the cluster reading.
+    Facts, never axes."""
     df = df.copy()
     df["known_fam"] = df["known_fam"].fillna("")
     if "ion_only" not in df.columns:
         df["ion_only"] = False
     df["corroborated"] = df["neutral"].isin(corroborating) & ~df["ion_only"].astype(bool)
     df["upair"] = df["neutral"].isin(upair or set()) & ~df["ion_only"].astype(bool)
+    keys = list(zip(df["neutral"].astype(str), df["adduct"].astype(str)))
+    untie = {(str(n), str(a)) for n, a in (untie or set())}
+    veto = {(str(n), str(a)) for n, a in (veto or set())}
+    df["label_untie"] = (pd.Series([k in untie for k in keys], index=df.index, dtype=bool)
+                         & df["tied"].astype(bool) & ~df["ion_only"].astype(bool))
+    df.loc[df["label_untie"], "tied"] = False
+    df["label_veto"] = pd.Series([k in veto for k in keys], index=df.index, dtype=bool) & ~df["ion_only"].astype(bool)
     df["n_axes"] = df[["iso", "chan2", "anchor", "corroborated"]].sum(axis=1)
     df["cross"] = df.corroborated | df.multiline | df.known_fam.ne("")
     df["neutral_backed"] = (
@@ -576,11 +590,38 @@ def upair_neutrals(path: str) -> set[str]:
     return set(frame.loc[held, "neutral_formula"].astype(str))
 
 
-def run(sources: list[str], corroborate: list[str], upair: str | None = None) -> pd.DataFrame:
+def label_twin_facts(path: str) -> tuple[set, set]:
+    """(untie, veto) -- the labelled-nitrate twin facts (rule K) read from a
+    batch's tables/label_twins.csv (a run dir, or an --out-dir holding one run)
+    or from that CSV itself. A source without the table says so on stderr."""
+    table = path
+    if os.path.isdir(path):
+        table = os.path.join(path, "tables", "label_twins.csv")
+        if not os.path.isfile(table):
+            found = sorted(glob.glob(os.path.join(path, "*", "tables", "label_twins.csv")))
+            if len(found) == 1:
+                table = found[0]
+    if not os.path.isfile(table):
+        print(f"  --label-twins: no label_twins.csv for {path}; rule K does not fire there", file=sys.stderr)
+        return set(), set()
+    frame = pd.read_csv(table)
+    out = []
+    for col in ("untie", "veto"):
+        if col not in frame.columns:
+            out.append(set())
+            continue
+        held = frame[col].map(truthy)
+        out.append(set(zip(frame.loc[held, "neutral_formula"].astype(str), frame.loc[held, "adduct"].astype(str))))
+    return out[0], out[1]
+
+
+def run(sources: list[str], corroborate: list[str], upair: str | None = None,
+        twins: str | None = None) -> pd.DataFrame:
     """Level every source, each corroborated by the others plus --corroborate —
     by the neutrals each of them holds at 4b or better on its own evidence.
     `upair`: 'auto' reads each run-dir source's own tables/neutral_pairs.csv;
-    a CSV path applies that table to every levelled source; None = rule U off."""
+    a CSV path applies that table to every levelled source; None = rule U off.
+    `twins`: the same for tables/label_twins.csv (rule K)."""
     measured = {}
     neutrals = {}
     for path in sources:
@@ -603,7 +644,12 @@ def run(sources: list[str], corroborate: list[str], upair: str | None = None) ->
             held = upair_neutrals(path)
         elif upair:
             held = upair_neutrals(upair)
-        out.append(assign_levels(frame, others, held))
+        untie, veto = set(), set()
+        if twins == "auto":
+            untie, veto = label_twin_facts(path)
+        elif twins:
+            untie, veto = label_twin_facts(twins)
+        out.append(assign_levels(frame, others, held, untie, veto))
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
 
 
@@ -630,10 +676,19 @@ def main(argv: list[str] | None = None) -> int:
         help="rule U: read each batch source's tables/neutral_pairs.csv (no value), "
         "or apply this neutral-pair CSV to every levelled source",
     )
+    parser.add_argument(
+        "--label-twins",
+        nargs="?",
+        const="auto",
+        default=None,
+        dest="twins",
+        help="rule K: read each batch source's tables/label_twins.csv (no value), "
+        "or apply this label-twin CSV to every levelled source",
+    )
     parser.add_argument("--out", help="write the levelled rows here as CSV")
     args = parser.parse_args(argv)
 
-    df = run(args.sources, args.corroborate, args.upair)
+    df = run(args.sources, args.corroborate, args.upair, args.twins)
     if df.empty:
         print("nothing to level", file=sys.stderr)
         return 1
