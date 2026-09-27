@@ -109,8 +109,8 @@ Computed exactly as `level_ledger.measure_source` does.
 
 | fact | definition |
 |---|---|
-| `iso` | some child of some row of the pair has a height ratio within **0.5–2.0×** of natural abundance (13C: 0.0107 per carbon of `ion_formula`; 15N: 0.00369 per ¹⁴N atom of `ion_formula` — a caret `^N` atom is already ¹⁵N; 18O: 0.00205 per O atom; 34S 0.0443; 37Cl 0.3196; 81Br 0.9728; 29Si 0.0508; 30Si 0.0335) **or** any row's `isotopologues` list is non-empty. 15N and 18O joined the band with C17 (2026-09-27) |
-| `multiline` | (C17, 2026-09-27) the pair's children carry in-band lines (the `iso` test, per line) of **≥ 2 distinct elements the neutral supplies**. A child's tag names its element (`13C` / `13C2` → C, `81Br` / `2x81Br` / `81Br2` / `81Br(pair)` → Br, `37Cl…` → Cl, `15N` / `14N` → N, `18O` → O, …); a generic `M+n` child names none. The neutral **supplies** an element when it holds more than half of the ion's atoms of it: the ¹⁵N line of a urea adduct of an N-free neutral, the ⁸¹Br line of a bromide adduct and the ¹⁸O line of formic acid's nitrate cluster (2 of 5 O) measure the reagent; the ¹⁸O line of C₁₀H₁₆O₄'s urea adduct (4 of 5 O) measures the neutral. Before C17 it was "≥ 2 distinct satellite tags", so 13C + 13C2 (one element twice), the reagent's own 15N / 81Br and `M+n` children all counted (output audit K01). The elements are written as `multiline_elements` (`C|O`) |
+| `iso` | some child of some row of the pair has a height ratio within **0.5–2.0×** of natural abundance (13C: 0.0107 per carbon of `ion_formula`; 15N: 0.00369 per ¹⁴N atom of `ion_formula` — a caret `^N` atom is already ¹⁵N; 18O: 0.00205 per O atom, except on an ion carrying Br or Cl, whose 81Br / 37Cl line owns the M+2 region (no 18O line is measured there); 34S 0.0443; 37Cl 0.3196; 81Br 0.9728; 29Si 0.0508; 30Si 0.0335) **or** any row's `isotopologues` list is non-empty. 15N and 18O joined the band with C17 (2026-09-27) |
+| `multiline` | (C17, 2026-09-27) the pair's children carry in-band lines (the `iso` test, per line) of **≥ 2 distinct elements the neutral supplies**. A child's tag names the atoms it measures (`13C` / `13C2` → C, `81Br` / `2x81Br` / `81Br2` / `81Br(pair)` → Br, `37Cl…` → Cl, `15N` → N (the ¹⁴N atoms), `14N` → `^N` (a ¹⁵N label's atoms), `18O` → O, …); a generic `M+n` child names none. The neutral **supplies** them when it holds more than half of the ion's atoms of that key, counted unfolded (a labelled adduct's `^N` is not the neutral's N): the ¹⁵N line of a urea adduct of an N-free neutral, the ⁸¹Br line of a bromide adduct and the ¹⁸O line of formic acid's nitrate cluster (2 of 5 O) measure the reagent; the ¹⁸O line of C₁₀H₁₆O₄'s urea adduct (4 of 5 O) measures the neutral. Before C17 it was "≥ 2 distinct satellite tags", so 13C + 13C2 (one element twice), the reagent's own 15N / 81Br and `M+n` children all counted (output audit K01). The elements are written as `multiline_elements` (`C|O`) |
 | `carbon_ev` | a `13C…` tag is among them |
 | `chan2` | the **neutral** is committed under ≥ 2 distinct adducts in this source |
 | `anchor` | any row has `anchor_peak_id` or `series_unit` |
@@ -124,7 +124,7 @@ Computed exactly as `level_ledger.measure_source` does.
 | `res_ok` | no row carries a `resolvability` value, **or** at least one is `resolved` / `isolated` — a source that never measured it is not penalised |
 | `corroborated` | the neutral is in the **cross set** (§6.4): a source — the other reagent channel, the other instrument on the same air, a `--corroborate` run — that holds it at **4b or better by its own evidence**; never for an ion-only pair |
 | `known_fam` | the family of the first `known:` method among the rows, else `''` |
-| `upair` | (rule U, C17 + U, 2026-09-27) **batch only**: the neutral is in the batch's **neutral-pair set** — the profile declares a `(bare, cluster)` pair (`ReagentProfile.neutral_pair`; bundled: the uronium profile's `([M+H]+, [M+(CH4N2O)H]+)`, 60.0324 Da apart) and `batch/neutral_pairs.py` finds, on the stamped batch time series, both ions of the neutral committed, the neutral C/H/O only (N-free: the NH4 alias `[X+NH4]+` and the urea ladder both need N; no S/Si/P/halogen), each ion present within 2 ppm of its exact m/z in ≥ 50 % of the spectra at median \|ppm\| ≤ 1, r(log h_bare, log h_cluster) ≥ 0.5 over ≥ 30 spectra with both ≥ 150 counts, neither matched peak stamped as an isotope child, an artifact or another reading's M0 in > 50 % of its spectra, and no ¹³C carbon count (area, calibrated on the batch's own ions) contradicting either ion. A fact about the neutral: **never an axis, never in `cross`**, never on an ion-only pair, never per file and never on a profile without a pair (a leaked fact would move the TOF and nitrate goldens, §8). Written to `tables/neutral_pairs.csv` |
+| `upair` | (rule U, C17 + U, 2026-09-27) **batch only**: the neutral is in the batch's **neutral-pair set** — the profile declares a `(bare, cluster)` pair (`ReagentProfile.neutral_pair`; bundled: the uronium profile's `([M+H]+, [M+(CH4N2O)H]+)`, 60.0324 Da apart) and `batch/neutral_pairs.py` finds, on the stamped batch time series, both ions of the neutral committed, the neutral C/H/O only (N-free: the NH4 alias `[X+NH4]+` and the urea ladder both need N; no S/Si/P/halogen), each ion present within 2 ppm of its exact m/z in ≥ 50 % of the spectra with \|median ppm\| ≤ 1 (the signed median), r(log h_bare, log h_cluster) ≥ 0.5 over ≥ 30 spectra with both ≥ 150 counts, neither matched peak stamped as an isotope child, an artifact or another reading's M0 in > 50 % of its spectra, and no ¹³C carbon count (area, the scale calibrated on both ions of every committed-both neutral) contradicting either ion by more than max(1, 0.2 n). A fact about the neutral: **never an axis, never in `cross`**, never on an ion-only pair, never per file and never on a profile without a pair (a leaked fact would move the TOF and nitrate goldens, §8); a composed profile keeps the pair when exactly one pair is declared among its components (`Ur+EasyIC` does; two different pairs give none), and the fact then lifts the neutral's rows on every adduct of that profile. Written to `tables/neutral_pairs.csv` |
 | `ion_only` | the pair was written by the **ion-only stage** (`ion_only`, C7): adduct `[M]-.` with method `ion_only:*` (a merged ledger: an `ion_only_of` link) — the +1.0078 Da electron-attachment line beside a committed `[M-H]-` acid, carrying the acid's composition. An ion-only pair is levelled on its **own** satellite alone (§4 row 2b′) and is kept **out of the per-neutral pools in both directions**: `chan2`, `branch`, `anchor` and `reagent_only_iso` are computed over the regular rows only, so the row never gives its parent a second channel and never takes an axis from it; it is never `corroborated` and its neutral never enters a cross set (`corroborating_neutrals` skips it) |
 
 Derived:
@@ -223,15 +223,20 @@ the isomer space says 3 (2-, 3-, 4-nitrophenol), so 3a.
   independent elements, each supplied mostly by the neutral, each at a height
   its natural abundance allows. One element seen twice (13C and 13C2), the
   reagent's own isotope (the urea's 15N, the bromide's 81Br, nitrate's 18O on a
-  C1 neutral) or a line with no element (`M+n`) is not a second line. On the
-  regression runs it moved 1 row (labelled nitrate), 10 (uronium) and 14 (TOF)
-  from 4a to 4b; the uronium rows are the ones rule U then re-establishes.
+  C1 neutral) or a line with no element (`M+n`) is not a second line, and an
+  ion carrying Br or Cl has no measured 18O line (the halogen's 81Br / 37Cl line
+  owns its M+2 region; on a TOF the two are one peak). On the regression runs it
+  moved 1 row (labelled nitrate), 10 (uronium) and 15 (TOF) from 4a to 4b; rule U
+  re-establishes 8 of the 10 uronium rows (C6H8O3 and C9H16O2 urea adducts stay
+  4b: a 13C contradiction and no co-variation).
 - **The neutral pair establishes the neutral where the chemistry declares
   one (rule U).** A uronium channel has no acid branch; its equivalent is the
   protonated and the urea-clustered ion of one neutral at exact mass,
   co-varying through the batch. Its specificity comes from exact mass and the
-  formula support (0.25 neutrals pass per decoy offset, output audit round 3),
-  not from the co-variation, which is a weak veto. Two batch-specific vetoes of
+  formula support (round 3: 0.25 neutrals per decoy offset before the stamp
+  clause; as built, 0 at each of 12 offsets on the uronium run), not from the
+  co-variation, which is a weak veto (wrong partners pass r >= 0.5 in most
+  cases). Two batch-specific vetoes of
   the round-3 design -- line proportionality through hand-dated steady states and
   a bright-parent guard read at those steps -- are not built: no batch-generic
   form reproduced them (the user's decision, 2026-09-27). The neutrals whose
@@ -430,7 +435,9 @@ claim read off its level, on the M0 / merged rows only.
 `tests/fixtures/levels/` (see its README): 52 gzipped per-file ledgers from
 four real runs, trimmed to the rows and columns of §2, the uronium run's
 neutral-pair table, and
-`expected_levels.csv` with the level and every fact of §3 per
+`expected_levels.csv` with the level and the axes, flags and degeneracy facts
+behind it (not `multiline`, `multiline_elements` or `upair`, which the tests pin
+separately) per
 `(source, neutral, adduct)`, written by `level_ledger.py` at the commit that
 added them. `tests/test_evidence.py`:
 
@@ -441,7 +448,7 @@ added them. `tests/test_evidence.py`:
   the other pins on its own, §6.4; the uronium set alone, with its
   neutral-pair table):
   `tv` 1373 → 21/15/107/16/143/15/10/37/1009,
-  `tof` 3364 → 6/15/182/15/255/82/99/138/2572,
+  `tof` 3364 → 6/15/182/15/254/82/99/138/2573,
   `orbi` 1707 → 0/11/217/9/203/139/0/35/1093,
   `ur` 1161 → 4/4/0/331/376/291/0/82/73 (4/4/0/25/682/291/0/82/73 without
   the pair table)
@@ -449,8 +456,7 @@ added them. `tests/test_evidence.py`:
   6/16/182/38/260/79/91/135/2557 and 0/12/217/44/215/119/0/30/1070 —
   183 of the 6,444 pairs moved, every one to a lower level; before C17 the
   TOF vector was 6/15/182/22/247/82/99/138/2573: seven bromide-adduct 4a
-  pairs had counted the reagent's 81Br as a second line, and one 5b pair
-  gains an in-band 18O line);
+  pairs had counted the reagent's 81Br as a second line);
 - rule U: each clause of the fact vetoes it, the profile scope (only the
   uronium profile declares a pair), row 9′'s formula support and order, the
   fact never an axis nor in `cross` nor per file, and the **leak mutant** —
@@ -519,8 +525,9 @@ bucket and both kinds of disagreement, and the cover's claims line.
 | tof | HO2 | [M-H]- | known:atmospheric **but** Low confidence | **5b** — `hard` outranks the identity (a defect for the pass-0 lock) |
 | orbi | HBr | [M+^NO3]- | iso, anchor, below assignability | **5b** |
 
-Across the three sets 4,675 of 6,444 pairs are 5b; the top two levels hold
-68 (4,606 and 70 before §6.4). That distribution is the point of the scale,
+Across the three field sets 4,675 of 6,444 pairs are 5b; the top two levels hold
+68 (4,606 and 70 before §6.4). The uronium set (§8) adds 1,161 pairs, 73 of them
+5b. That distribution is the point of the scale,
 not a problem with it.
 
 ## 10. Open for B2/B3 (not decided here)

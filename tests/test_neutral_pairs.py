@@ -223,8 +223,13 @@ def test_a_leaked_fact_would_move_the_goldens():
         leak = set(base.loc[base["chan2"] & ~base["neutral_formula"].str.contains("N"), "neutral_formula"])
         moved = EV.level_pooled(pooled, cross=cross, upair=leak)
         assert _vector(moved.evidence_level) != GOLDEN[key], key
-        scoped = NP.neutrals(NP.measure(None, pooled, P.PROFILES["Br"].neutral_pair))
-        assert _vector(EV.level_pooled(pooled, cross=cross, upair=scoped).evidence_level) == GOLDEN[key][1]
+    # the scope: the same series and ledgers hold pairs under the uronium profile's
+    # declaration and none under any profile that declares no pair
+    spec = {n: {"phase": k * 0.7} for k, n in enumerate(GOOD)}
+    ts, frames = _series(spec), _frames(GOOD)
+    assert NP.neutrals(NP.measure(ts, frames, P.PROFILES["Ur"].neutral_pair)) == set(GOOD)
+    for name in ("Br", "NO3", "NO3_15N"):
+        assert NP.measure(ts, frames, P.PROFILES[name].neutral_pair).empty, name
 
 
 # --------------------------------------------------------------------------- the reference script
@@ -247,3 +252,302 @@ def test_level_ledger_reads_the_pair_table(tmp_path):
     assert set(off.level) == {"4b"} and set(on.level) == {"4a"} and set(explicit.level) == {"4a"}
     core = EV.level_pooled({"s1": _pair_rows(iso=True)}, upair={"C10H16O4"})
     assert sorted(core.evidence_level) == sorted(on.level)
+
+
+# --------------------------------------------------------------------------- the thresholds
+def _one(spec_extra: dict, n="C12H20O4") -> pd.Series:
+    """The table row of one extra neutral measured beside the four GOOD ones
+    (which set the 13C scale)."""
+    spec = {m: {"phase": k * 0.7} for k, m in enumerate(GOOD)}
+    spec[n] = spec_extra
+    ts = spec_extra.pop("_ts_hook", lambda t: t)(_series(spec))
+    t = NP.measure(ts, _frames(list(spec)), PAIR, log=lambda *a: None)
+    return t.set_index("neutral_formula").loc[n]
+
+
+def _thin(ts, neutral, adduct, keep_share):
+    """Drop an ion's line from all but `keep_share` of the spectra."""
+    mz = C.ion_mz(neutral, adduct)
+    near = (ts["mz"] - mz).abs() < 1e-6
+    sids = sorted(ts["sample_item_id"].unique())
+    drop = set(sids[int(round(keep_share * len(sids))):])
+    return ts[~(near & ts["sample_item_id"].isin(drop))]
+
+
+def test_presence_needs_half_the_spectra():
+    n = "C12H20O4"
+    assert not _one({"_ts_hook": lambda t: _thin(t, n, PAIR[1], 0.4)})["present"]
+    assert _one({"_ts_hook": lambda t: _thin(t, n, PAIR[1], 0.6)})["present"]
+
+
+def test_presence_needs_the_median_within_one_ppm():
+    n = "C12H20O4"
+    def shift(ts, ppm):
+        mz = C.ion_mz(n, PAIR[0])
+        near = (ts["mz"] - mz).abs() < 1e-6
+        ts = ts.copy()
+        ts.loc[near, "mz"] = mz * (1 + ppm * 1e-6)
+        return ts
+    r = _one({"_ts_hook": lambda t: shift(t, 1.5)})               # inside the 2 ppm window, off by 1.5
+    assert r["det_bare"] == 1.0 and not r["present"] and not r["upair"]
+    assert _one({"_ts_hook": lambda t: shift(t, 0.6)})["present"]
+
+
+def test_co_variation_needs_r_of_one_half():
+    n = "C12H20O4"
+    def blend(ts, w):
+        """cluster = w x the neutral's course + (1 - w) x an unrelated course."""
+        mz = C.ion_mz(n, PAIR[1])
+        near = (ts["mz"] - mz).abs() < 1e-6
+        ts = ts.copy()
+        i = ts.loc[near, "sample_item_id"].str[1:].astype(int).to_numpy()
+        own = 5000.0 * (1.6 + np.sin(2 * np.pi * i / 20.0))
+        other = 5000.0 * (1.6 + np.sin(2 * np.pi * i / 7.3 + 1.0))
+        ts.loc[near, "height"] = 0.6 * (w * own + (1 - w) * other)
+        return ts
+    weak = _one({"_ts_hook": lambda t: blend(t, 0.25)})
+    strong = _one({"_ts_hook": lambda t: blend(t, 0.8)})
+    assert 0.0 < weak["r_log"] < NP.COVARY_R_MIN and not weak["covary"]
+    assert strong["r_log"] >= NP.COVARY_R_MIN and strong["covary"]
+
+
+def test_co_variation_reads_only_spectra_where_both_lines_are_bright():
+    """A dim, flat protonated line (under the height floor) beside a bright,
+    moving urea line is not evidence against the pair; counted, it would sink r."""
+    n = "C12H20O4"
+    def dim(ts):
+        mz = C.ion_mz(n, PAIR[0])
+        near = (ts["mz"] - mz).abs() < 1e-6
+        ts = ts.copy()
+        late = ts["sample_item_id"].str[1:].astype(int) >= 40
+        ts.loc[near & late, "height"] = 100.0
+        return ts
+    r = _one({"_ts_hook": dim})
+    assert r["n_both"] == 40 and r["covary"] and r["upair"]
+
+
+def test_co_variation_is_read_on_the_log_scale():
+    """One spectrum a hundred times brighter in the protonated line sinks the
+    linear r and not the log r."""
+    n = "C12H20O4"
+    def spike(ts):
+        mz = C.ion_mz(n, PAIR[0])
+        near = (ts["mz"] - mz).abs() < 1e-6
+        ts = ts.copy()
+        ts.loc[near & (ts["sample_item_id"] == "s005"), "height"] *= 100.0
+        return ts
+    r = _one({"_ts_hook": spike})
+    assert r["covary"]
+    t = _series({n: {}})
+    t = spike(t)
+    a = t[(t["mz"] - C.ion_mz(n, PAIR[0])).abs() < 1e-6].sort_values("sample_item_id")["height"].to_numpy()
+    b = t[(t["mz"] - C.ion_mz(n, PAIR[1])).abs() < 1e-6].sort_values("sample_item_id")["height"].to_numpy()
+    assert np.corrcoef(a, b)[0, 1] < NP.COVARY_R_MIN                  # the linear r would veto it
+
+
+def test_clean_reads_the_iso_child_and_artifact_stamps():
+    n = "C12H20O4"
+    for role in ("iso_child", "artifact"):
+        def restamp(ts, role=role):
+            mz = C.ion_mz(n, PAIR[0])
+            near = (ts["mz"] - mz).abs() < 1e-6
+            ts = ts.copy()
+            ts.loc[near, "role"] = role
+            return ts
+        r = _one({"_ts_hook": restamp})
+        assert not r["clean"] and not r["upair"], role
+
+
+def test_clean_holds_below_a_majority_of_foreign_stamps():
+    n = "C12H20O4"
+    def partly(ts, share):
+        mz = C.ion_mz(n, PAIR[1])
+        near = (ts["mz"] - mz).abs() < 1e-6
+        ts = ts.copy()
+        sids = sorted(ts["sample_item_id"].unique())
+        foreign = near & ts["sample_item_id"].isin(sids[:int(share * len(sids))])
+        ts.loc[foreign, "neutral_formula"] = "C8H16N4O3"
+        ts.loc[foreign, "adduct"] = "[M+H]+"
+        return ts
+    assert not _one({"_ts_hook": lambda t: partly(t, 0.7)})["clean"]
+    assert _one({"_ts_hook": lambda t: partly(t, 0.3)})["clean"]
+
+
+def test_a_13C_count_off_by_a_quarter_contradicts():
+    """|n_obs - n| > max(1, 0.2 n): a C13 ion read as ~9.75 C contradicts, one
+    read as ~12 C does not."""
+    assert _one({"c13": 0.75}, n="C12H20O4")["c13_contradicts"]
+    assert not _one({"c13": 0.93}, n="C12H20O4")["c13_contradicts"]
+
+
+# --------------------------------------------------------------------------- composition
+def test_a_composed_profile_keeps_one_declared_pair_and_drops_two():
+    import dataclasses
+    ur, easy = P.PROFILES["Ur"], P.PROFILES["EasyIC"]
+    assert P.compose([ur, easy]).neutral_pair == PAIR                  # one component declares it
+    assert P.compose([easy, ur]).neutral_pair == PAIR
+    other = dataclasses.replace(ur, name="UrX", neutral_pair=("[M+H]+", "[M+NH4]+"), aliases=())
+    assert P.compose([ur, other]).neutral_pair == ()                    # two different pairs: no rule
+    assert P.compose([ur, dataclasses.replace(ur, name="UrY", aliases=())]).neutral_pair == PAIR
+    assert P.compose([easy, P.PROFILES["NH4_15N"]]).neutral_pair == ()  # none declares one
+
+
+# --------------------------------------------------------------------------- the order of the rows
+def test_a_row_9_pair_keeps_row_9s_reason():
+    """Row 9' sits after row 9: a pair that two axes and an outside one already
+    establish keeps that reason; the neutral pair speaks only where row 9 did not."""
+    frame = _pair_rows(iso=True)
+    out = EV.level_pooled({"f": frame}, cross={"C10H16O4"}, upair={"C10H16O4"})
+    assert set(out.evidence_level) == {"4a"}
+    assert all("corroborated by the other source" in r for r in out.level_reason)
+    assert all("neutral pair" not in r for r in out.level_reason)
+
+
+# --------------------------------------------------------------------------- the reference script, live
+def _ll():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "level_ledger", Path(__file__).resolve().parents[1] / "scripts" / "level_ledger.py")
+    LL = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(LL)
+    return LL
+
+
+def test_the_reference_script_levels_the_uronium_set_like_the_engine(tmp_path):
+    """Live, not through expected_levels.csv: the script with the fixture pair
+    table against the engine, row for row."""
+    from tests.test_evidence import FIXTURES
+    LL = _ll()
+    d = tmp_path / "ur" / "per_file"
+    d.mkdir(parents=True)
+    for p in sorted(FIXTURES.glob("ur_*_ledger.csv.gz")):
+        pd.read_csv(p, low_memory=False).to_csv(d / p.name[:-3], index=False)
+    table = FIXTURES / "ur_neutral_pairs.csv"
+    ref = LL.run([str(tmp_path / "ur")], [], str(table))
+    t = pd.read_csv(table)
+    core = EV.level_pooled(_pooled("ur"), upair=set(t.loc[t["upair"].astype(bool), "neutral_formula"]))
+    m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
+    assert len(m) == len(core) == len(ref) == GOLDEN["ur"][0]
+    assert (m["evidence_level"] == m["level"]).all()
+    assert (m["multiline_elements_x"].fillna("") == m["multiline_elements_y"].fillna("")).all()
+
+
+def test_the_reference_script_honours_the_verdict_and_the_cli(tmp_path):
+    LL = _ll()
+    run = tmp_path / "out" / "RUN_1"
+    (run / "per_file").mkdir(parents=True)
+    (run / "tables").mkdir()
+    rows = pd.concat([_pair_rows("C10H16O4", iso=True), _pair_rows("C9H14O4", iso=True)])
+    rows["peak_id"] = [f"q{i}" if r.role == "M0" else f"c{i}" for i, r in enumerate(rows.itertuples())]
+    # re-link the children to their parents after the re-numbering
+    rows = rows.reset_index(drop=True)
+    for i in range(len(rows)):
+        if rows.at[i, "role"] == "iso_child":
+            rows.at[i, "parent_peak_id"] = rows.at[i - 1, "peak_id"]
+    rows.to_csv(run / "per_file" / "s1_ledger.csv", index=False)
+    pd.DataFrame({"neutral_formula": ["C10H16O4", "C9H14O4"], "upair": [True, False]}).to_csv(
+        run / "tables" / "neutral_pairs.csv", index=False)
+    got = LL.run([str(run)], [], "auto").set_index("neutral")["level"]
+    assert set(got.loc["C10H16O4"]) == {"4a"} and set(got.loc["C9H14O4"]) == {"4b"}   # the False row holds nothing
+    # an --out-dir holding one run finds the same table
+    assert set(LL.run([str(tmp_path / "out")], [], "auto").set_index("neutral").loc["C10H16O4", "level"]) == {"4a"}
+    out = tmp_path / "levels.csv"
+    assert LL.main([str(run), "--upair", "--out", str(out)]) == 0
+    assert set(pd.read_csv(out).set_index("neutral").loc["C10H16O4", "level"]) == {"4a"}
+    assert LL.main([str(run), "--out", str(out)]) == 0
+    assert set(pd.read_csv(out).set_index("neutral").loc["C10H16O4", "level"]) == {"4b"}
+
+
+# --------------------------------------------------------------------------- the scorecard
+def test_the_scorecard_counts_the_pair_as_the_runs_own_evidence(tmp_path, monkeypatch):
+    """scorecard.own_levels_for levels the run on its own evidence, and the
+    neutral pair is its own: a lift by the pair is not owed to a cross source."""
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "scorecard", Path(__file__).resolve().parents[1] / "scripts" / "scorecard.py")
+    SC = importlib.util.module_from_spec(spec)
+    import sys
+    monkeypatch.setitem(sys.modules, "scorecard", SC)       # its dataclasses resolve their module
+    spec.loader.exec_module(SC)
+    seen = {}
+    real = SC.EV.level_pooled
+
+    def spy(frames, **kw):
+        seen.update(kw)
+        return real(frames, **kw)
+    monkeypatch.setattr(SC.EV, "level_pooled", spy)
+    run_dir = tmp_path / "RUN"
+    (run_dir / "tables").mkdir(parents=True)
+    pd.DataFrame({"neutral_formula": ["C10H16O4", "C9H14O4"], "upair": [True, False]}).to_csv(
+        run_dir / "tables" / "neutral_pairs.csv", index=False)
+    pf = _pair_rows(iso=True).assign(__file="s1")
+    run = types_simple(path=str(run_dir), per_file=pf)
+    own = SC.own_levels_for(run)
+    assert seen.get("upair") == {"C10H16O4"} and seen.get("cross") is None
+    assert set(own["level"]) == {"4a"}
+
+
+def types_simple(**kw):
+    import types
+    return types.SimpleNamespace(**kw)
+
+
+# --------------------------------------------------------------------------- the batch, end to end
+def test_a_uronium_batch_measures_the_pair_and_lifts_the_rows(tmp_path, monkeypatch):
+    """assign_batch.run on the uronium profile: the pair table is written from the
+    stamped batch series, the summary carries the funnel, and the merged rows of
+    the pair level 4a with `upair` among their facts."""
+    import json
+    from peaky.assignment import assign as A
+    from peaky.assignment import ledger as L
+    from peaky.assignment import tiers as T
+    from peaky.batch import assign_batch as AB
+    from peaky.io import io_mascope as IO
+
+    neutrals = GOOD
+    t0 = pd.Timestamp("2026-08-11 00:00", tz="UTC")
+    rows = []
+    for i in range(40):
+        sid = f"s{i:03d}"
+        for k, n in enumerate(neutrals):
+            level = 5000.0 * (1.6 + np.sin(2 * np.pi * i / 20.0 + 0.7 * k))
+            for adduct, h in ((PAIR[0], level), (PAIR[1], 0.6 * level)):
+                rows.append(dict(sample_item_id=sid, sample_item_name=f"n_{sid}",
+                                 datetime_utc=t0 + pd.Timedelta(minutes=30 * i), mz=C.ion_mz(n, adduct), height=h))
+        rows += [dict(sample_item_id=sid, sample_item_name=f"n_{sid}", datetime_utc=t0 + pd.Timedelta(minutes=30 * i),
+                      mz=float(100 + j), height=500.0) for j in range(10)]
+    pk = pd.DataFrame(rows)
+
+    def fake_assign(sid, context="uronium", **kw):
+        ids = [f"P{k}{j}" for k in range(len(neutrals)) for j in range(2)]
+        mzs = [C.ion_mz(n, a) for n in neutrals for a in PAIR]
+        led = L.new_ledger(pd.DataFrame({"peak_id": ids, "mz": mzs, "height": [5000.0] * len(ids)}))
+        for k, n in enumerate(neutrals):
+            for j, a in enumerate(PAIR):
+                L.commit_assignment(led, f"P{k}{j}", neutral_formula=n, adduct=a, ion_formula=_ion(n, a) + "+",
+                                    ion_score=0.95, compound_score=0.95, ppm_error=0.1, pass_no=1,
+                                    method="cheminfo", confidence="High", commentary=f"Pass 1: {n} {a}")
+        T.apply_tiers(led)
+        led["degeneracy_density"] = 0.5
+        led["resolvability"] = "resolved"
+        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+                "plausibility_audit": [], "summaries": {}, "problems": []}
+
+    monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
+    monkeypatch.setattr(IO, "fetch_peaks", lambda client, sid, use_cache=True: pd.DataFrame(
+        {"peak_id": ["A"], "mz": [200.1], "height": [1.0e5]}))
+    monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
+    monkeypatch.setattr(A, "run", fake_assign)
+    AB.run(peaks=pk, ts_peaks=pk, reagent="Ur", batch="test batch", out_dir=str(tmp_path),
+           k_min=2, k_max=3, min_gain=0.0, n_jobs=1, log=lambda *a: None)
+    table = pd.read_csv(tmp_path / "tables" / "neutral_pairs.csv")
+    assert set(table.loc[table["upair"].astype(bool), "neutral_formula"]) == set(neutrals)
+    assert (table["bare"] == PAIR[0]).all() and (table["cluster"] == PAIR[1]).all()
+    summ = json.load(open(tmp_path / "batch_summary.json"))["evidence_levels"]["neutral_pairs"]
+    assert summ["pair"] == list(PAIR) and summ["upair"] == len(neutrals)
+    merged = pd.read_csv(tmp_path / "merged_ledger.csv")
+    mine = merged[merged["neutral_formula"].isin(neutrals)]
+    assert len(mine) == 2 * len(neutrals)
+    assert set(mine["evidence_level"]) == {"4a"} and mine["evidence_axes"].str.contains("upair").all()

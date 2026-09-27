@@ -124,9 +124,15 @@ C13_PER_CARBON = 0.0107
 #: light natural abundance; a caret '^N' atom is already 15N and is not counted)
 PER_ATOM_ABUNDANCE = {"15N": ("N", 0.00368 / 0.99632), "18O": ("O", 0.00205 / 0.99757)}
 RATIO_LO, RATIO_HI = 0.5, 2.0
-#: the element an isotope child's tag measures: '13C' / '13C2' -> C, '81Br' /
-#: '2x81Br' / '81Br2' / '81Br(pair)' -> Br, '14N' (the light line of a 15N label)
-#: -> N. A generic 'M+n' child ('M') names no element.
+#: an ion carrying Br or Cl owns its M+2 region: the 81Br / 37Cl line (97 % /
+#: 32 % per atom) sits 6.3 / 7.2 mDa from an 18O satellite -- one peak on a TOF,
+#: a shoulder on an Orbitrap -- so an '18O' line of such an ion is not measured
+#: (and a bromide ion showing an '18O' line with no 81Br line contradicts itself)
+M2_OWNERS = ("Br", "Cl")
+#: the atoms an isotope child's tag measures, as a key of the UNFOLDED ion
+#: composition: '13C' / '13C2' -> C, '81Br' / '2x81Br' / '81Br2' / '81Br(pair)'
+#: -> Br, '15N' -> N (the 14N atoms), '14N' (the light line of a 15N label) ->
+#: '^N' (the labelled atoms). A generic 'M+n' child ('M') names none.
 _TAG_ELEMENT = re.compile(r"^(?:\d+x)?\d+([A-Z][a-z]?)\d*(?:\(pair\))?$")
 
 BARE_ADDUCTS = {"[M-H]-"}
@@ -259,15 +265,21 @@ def expected_ratio(tag: str, ion_formula) -> float:
     if tag.startswith("13C"):
         return C13_PER_CARBON * count_element(ion_formula, "C")
     if tag in PER_ATOM_ABUNDANCE:
+        counts = C.parse_formula(str(ion_formula or ""))
         element, per_atom = PER_ATOM_ABUNDANCE[tag]
-        return per_atom * C.parse_formula(str(ion_formula or "")).get(element, 0)
+        if element == "O" and any(counts.get(e, 0) for e in M2_OWNERS):
+            return 0.0
+        return per_atom * counts.get(element, 0)
     return ISOTOPE_ABUNDANCE.get(tag, 0.0)
 
 
 def tag_element(tag) -> str | None:
-    """The element an isotope child's tag measures (see `_TAG_ELEMENT`)."""
-    match = _TAG_ELEMENT.match(str(tag).strip())
-    return match.group(1) if match else None
+    """The composition key an isotope child's tag measures (see `_TAG_ELEMENT`)."""
+    tag = str(tag).strip()
+    match = _TAG_ELEMENT.match(tag)
+    if not match:
+        return None
+    return "^N" if tag.startswith("14N") else match.group(1)
 
 
 def neutral_elements(neutral, ion) -> set[str]:
@@ -275,9 +287,11 @@ def neutral_elements(neutral, ion) -> set[str]:
     supplies MORE THAN HALF of the ion's atoms of the element. A 15N line of a
     urea adduct of an N-free neutral, the 81Br line of a bromide adduct, or the
     18O line of formic acid's nitrate cluster (2 of 5 O) measure the reagent;
-    the 18O line of a C10H16O4 urea adduct (4 of 5 O) measures the neutral."""
-    own = C.fold_isotopes(C.parse_formula(str(neutral or "")))
-    ion_counts = C.fold_isotopes(C.parse_formula(str(ion or "")))
+    the 18O line of a C10H16O4 urea adduct (4 of 5 O) measures the neutral.
+    Counted on the unfolded composition: a natural 15N line measures the 14N
+    atoms, so a labelled adduct's '^N' is not the neutral's N."""
+    own = C.parse_formula(str(neutral or ""))
+    ion_counts = C.parse_formula(str(ion or ""))
     return {el for el, n in own.items() if n > 0 and 2 * n > ion_counts.get(el, 0)}
 
 

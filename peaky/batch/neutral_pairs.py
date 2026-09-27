@@ -17,19 +17,22 @@ file, never an axis, never in `cross`, never on a profile without a pair.
               the urea ladder both need N) and no S/Si/P/halogen (curated or
               contaminant evidence, not ion chemistry)
   presence  : each ion has a raw peak within PRESENCE_TOL_PPM of its exact m/z in
-              >= PRESENCE_SHARE of the spectra, median |ppm| <= MEDIAN_PPM_MAX
+              >= PRESENCE_SHARE of the spectra, |median ppm| <= MEDIAN_PPM_MAX
+              (the signed median: a centroid biased to one side fails)
   co-vary   : r(log10 h_bare, log10 h_cluster) >= COVARY_R_MIN over >=
               COVARY_MIN_SPECTRA spectra where both are >= COVARY_MIN_HEIGHT
   clean     : neither ion's matched peak is stamped iso_child / artifact, or as
               ANOTHER reading's M0, in more than CLEAN_SHARE of the spectra where
               it is found
   13C       : the area-13C carbon count of neither ion contradicts its formula
-              (the scale is calibrated on the batch's own testable ions)
+              (|n_obs / scale - n| > max(1, 0.2 n); the scale is the median of
+              n_obs / n over both ions of every committed-both neutral)
 The level rule adds formula support (the pair's own `iso`, or one plausible ion
 on a resolved peak) and the rows above 9' (hard 5b, curated, branch) win first.
 Measured on the regression batches (2026-09-27 output audit, round 3): exact
-mass plus degeneracy <= 1 give the specificity (0.25 neutrals pass per decoy
-offset); r >= 0.5 is a weak veto. The round-3 step-proportionality veto and
+mass plus degeneracy <= 1 give the specificity (as built, 0 neutrals pass at
+each of 12 decoy offsets on the uronium run); r >= 0.5 is a weak veto. A
+composed profile keeps the pair when exactly one component declares one. The round-3 step-proportionality veto and
 bright-parent guard read hand-dated steady states of one batch and are not
 built (the user's decision, 2026-09-27).
 """
@@ -178,7 +181,7 @@ def measure(ts: pd.DataFrame | None, frames: dict, pair, *, log=print) -> pd.Dat
     # the raw-series clauses are measured on every committed-both neutral (the
     # 13C scale needs the whole population), the CHO clause applied after
     test = com[com["committed_both"]].reset_index(drop=True)
-    rows = com[~com["committed_both"]].assign(upair=False)
+    rows = com[~com["committed_both"]].assign(upair=False, bare=bare, cluster=cluster)
     if test.empty:
         return _finish(rows, pd.DataFrame())
     series = _Series(ts)
@@ -232,6 +235,7 @@ def measure(ts: pd.DataFrame | None, frames: dict, pair, *, log=print) -> pd.Dat
         contra |= bad.to_numpy()
     meas["c13_contradicts"] = contra
     test = test.merge(meas, on="neutral_formula", how="left")
+    test["bare"], test["cluster"] = bare, cluster
     test["present"] = ((test["det_bare"] >= PRESENCE_SHARE) & (test["ppm_bare"].abs() <= MEDIAN_PPM_MAX)
                        & (test["det_cluster"] >= PRESENCE_SHARE) & (test["ppm_cluster"].abs() <= MEDIAN_PPM_MAX))
     test["covary"] = test["r_log"].fillna(-9.0) >= COVARY_R_MIN

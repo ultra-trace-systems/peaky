@@ -8,6 +8,30 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A uronium neutral pair establishes the neutral (rule U, evidence level 4a).** A
+  uronium channel has no acid branch -- the pattern that lets the anion channels say
+  "the same neutral, deprotonated and clustered". Its equivalent is the protonated
+  and the urea-clustered ion of one neutral, 60.0324 Da apart. A reagent profile can
+  now declare such a pair (`ReagentProfile.neutral_pair`; the bundled uronium profile
+  declares `([M+H]+, [M+(CH4N2O)H]+)`, every other profile none), and the batch
+  measures it on its own stamped time series (`batch/neutral_pairs.py`): the neutral is
+  committed under both adducts, carries only C, H and O, both ions sit at exact mass
+  (within 2 ppm in at least half the spectra, signed median within 1 ppm), their heights
+  co-vary (r >= 0.5 on the log scale), the stamp gives both to this neutral, and
+  neither ion's 13C line contradicts the carbon count. Such a neutral's rows level 4a
+  when the formula has its own support (an isotope line, or one plausible ion on a
+  resolved peak) -- a new row 9' after the two-axis row, so no existing 4a changes its
+  reason. The fact is never an axis, never in `cross`, batch only, and profile-scoped:
+  computed on every channel it would lift TOF and nitrate rows, and the golden vectors
+  would move. `tables/neutral_pairs.csv` records every clause per neutral,
+  `batch_summary.json` the funnel (`evidence_levels.neutral_pairs`), and
+  `scripts/level_ledger.py --upair` reads the table in lockstep. The round-3 design
+  also held pairs whose two lines drift apart through the batch's steps, and a
+  fragment of a brighter parent; both tests read hand-dated steady states of one
+  batch, no batch-generic form reproduced them, and they are not built.
+  `tests/test_neutral_pairs.py`; a uronium set joins the golden fixtures with its pair
+  table.
+
 - **The reagent-ion water ladder, measured on the batch's own time series.** A soft-interface
   CIMS carries its reagent ions hydrated -- Br-.(H2O)n, NO3-.(H2O)n, HNO3.NO3-.(H2O)n --
   and how far a ladder reaches moves with the source and the humidity: on the five-day
@@ -574,6 +598,23 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fixture where every level fires once.
 
 ### Changed
+
+- **`multiline` counts two elements the neutral supplies, each by an in-band line.**
+  `multiline` is the only term inside one channel that can carry a pair to 4a ("formula
+  confirmed and the neutral established"). It counted raw satellite tags, so a 13C line
+  with its 13C2 line (one element twice), the urea's own 15N on a urea adduct, the
+  bromide's own 81Br on a bromide adduct and a generic `M+n` child all made "two lines"
+  (2026-09-26 output audit). It now needs lines of two distinct elements, each within
+  0.5-2x of its natural abundance, each supplied mostly by the neutral: more than half
+  of the ion's atoms of the element. The 18O line of an oxygen-rich neutral's urea
+  adduct counts (4 of 5 O); the 18O line of formic acid's nitrate cluster does not (2 of
+  5). 15N and 18O join the ratio band, per atom of the ion like 13C per carbon, so they
+  also count toward the isotope axis. The evidence table records the elements
+  (`multiline_elements`). An ion carrying Br or Cl does not have its 18O line measured:
+  the halogen's 81Br / 37Cl line owns the M+2 region (one peak with it on a TOF). The
+  same-air TOF golden moves: seven bromide-adduct 4a pairs that counted the reagent's
+  81Br go to 4b.
+  `tests/test_multiline_elements.py`.
 
 - **The ionization check covers N-only neutrals.** `cleanup.demote_implausible_ionization`
   demoted only a pure hydrocarbon read through an anion channel (`[M-H]-` or a cluster;

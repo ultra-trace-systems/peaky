@@ -2470,7 +2470,7 @@ tof,C16H12O5S,[M-H]-,5b,0,False,False,False,False,False,False,,False,False,False
 tof,C16H12O6,[M+Br]-,5b,0,False,False,False,False,False,False,,False,False,False,62.0,True,True,1
 tof,C16H12O6S,[M-H]-,5b,0,False,False,False,False,False,False,,False,False,False,43.0,True,True,1
 tof,C16H12O8,[M+Br]-,5b,0,False,False,False,False,False,False,,False,False,False,79.0,True,True,1
-tof,C16H12O9,[M+Br]-,4b,1,True,False,False,False,False,False,,False,False,False,90.0,True,True,9
+tof,C16H12O9,[M+Br]-,5b,0,False,False,False,False,False,False,,False,False,False,90.0,True,True,9
 tof,C16H12S,[M+Br]-,5b,1,False,True,False,False,True,False,,False,False,True,14.0,True,True,1
 tof,C16H12S,[M-H]-,5b,1,False,True,False,False,True,False,,False,False,True,5.0,False,True,1
 tof,C16H13BrO2,[M+HBr+Br]-,5b,0,False,False,False,False,False,False,,False,False,True,82.0,True,True,1

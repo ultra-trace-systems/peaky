@@ -85,6 +85,9 @@ RATIO_LO, RATIO_HI = 0.5, 2.0
 # the element an isotope child's tag measures ('13C2' -> C, '2x81Br' -> Br,
 # '81Br(pair)' -> Br, '14N' -> N); 'M' (a generic M+n child) names none
 TAG_ELEMENT = re.compile(r"^(?:\d+x)?\d+([A-Z][a-z]?)\d*(?:\(pair\))?$")
+# an ion carrying Br or Cl owns its M+2 region: its 81Br / 37Cl line buries an
+# 18O satellite, so an '18O' line there is not measured
+M2_OWNERS = ("Br", "Cl")
 FORMULA_TOKEN = re.compile(r"(\^?)([A-Z][a-z]?)(\d*)")
 
 # The scope of each pass-0 family (docs/EVIDENCE_LEVELS.md section 4.1): a family
@@ -193,14 +196,17 @@ def count_element(formula, element: str) -> int:
     return int(match.group(1)) if match.group(1) else 1
 
 
-def composition(formula, fold: bool = True) -> dict:
+def composition(formula, fold: bool = True, labelled: bool = False) -> dict:
     """Element counts of a formula; a caret isotope ('^N') folds into its
-    element unless `fold` is False, when it is left out (it is already heavy)."""
+    element unless `fold` is False, when it is left out (it is already heavy),
+    or `labelled` is True, when it is its own key ('^N')."""
     out: dict = {}
     if not isinstance(formula, str):
         return out
     for caret, element, n in FORMULA_TOKEN.findall(formula):
-        if caret and not fold:
+        if caret and labelled:
+            element = caret + element
+        elif caret and not fold:
             continue
         out[element] = out.get(element, 0) + (int(n) if n else 1)
     return out
@@ -213,7 +219,10 @@ def expected_ratio(tag: str, ion_formula) -> float | None:
         return C13_PER_CARBON * carbons if carbons else None
     if tag in PER_ATOM_ABUNDANCE:
         element, per_atom = PER_ATOM_ABUNDANCE[tag]
-        atoms = composition(ion_formula, fold=False).get(element, 0)
+        counts = composition(ion_formula, fold=False)
+        if element == "O" and any(counts.get(e, 0) for e in M2_OWNERS):
+            return None
+        atoms = counts.get(element, 0)
         return per_atom * atoms if atoms else None
     return ISOTOPE_ABUNDANCE.get(tag)
 
@@ -223,7 +232,7 @@ def neutral_elements(neutral, ion) -> set:
     more than half of the ion's atoms of the element (else the line measures
     the reagent -- 15N on a urea adduct of an N-free neutral, 81Br on a bromide
     adduct)."""
-    own, whole = composition(neutral), composition(ion)
+    own, whole = composition(neutral, labelled=True), composition(ion, labelled=True)
     return {e for e, n in own.items() if n > 0 and 2 * n > whole.get(e, 0)}
 
 
@@ -342,7 +351,8 @@ def measure_source(
             ratio_ok[key] = True
             match = TAG_ELEMENT.match(tag)
             if match:
-                in_band.setdefault(key, set()).add(match.group(1))
+                element = "^N" if tag.startswith("14N") else match.group(1)
+                in_band.setdefault(key, set()).add(element)
 
     # per-neutral facts, over the source's REGULAR M0 rows (an ion-only row is
     # its parent's composition on another adduct, not a second channel for it)
@@ -547,11 +557,17 @@ def source_good_neutrals(path: str) -> tuple[str, pd.DataFrame | None, set[str]]
 
 def upair_neutrals(path: str) -> set[str]:
     """The neutrals whose neutral pair holds, read from a batch's
-    tables/neutral_pairs.csv (a run dir) or from that CSV itself."""
+    tables/neutral_pairs.csv (a run dir, or an --out-dir holding one run) or
+    from that CSV itself. A source without the table says so on stderr."""
     table = path
     if os.path.isdir(path):
         table = os.path.join(path, "tables", "neutral_pairs.csv")
+        if not os.path.isfile(table):
+            found = sorted(glob.glob(os.path.join(path, "*", "tables", "neutral_pairs.csv")))
+            if len(found) == 1:
+                table = found[0]
     if not os.path.isfile(table):
+        print(f"  --upair: no neutral_pairs.csv for {path}; rule U does not fire there", file=sys.stderr)
         return set()
     frame = pd.read_csv(table)
     if "upair" not in frame.columns:

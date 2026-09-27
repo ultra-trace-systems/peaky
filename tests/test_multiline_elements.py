@@ -37,7 +37,7 @@ def c13(peak, parent, ion_c, height=1000.0):
 def test_tag_element_folds_every_satellite_spelling_into_its_element():
     for tag, el in [("13C", "C"), ("13C2", "C"), ("81Br", "Br"), ("2x81Br", "Br"), ("81Br2", "Br"),
                     ("81Br(pair)", "Br"), ("37Cl(pair)", "Cl"), ("2x37Cl", "Cl"), ("37Cl3", "Cl"),
-                    ("15N", "N"), ("14N", "N"), ("18O", "O"), ("34S", "S"), ("29Si", "Si"), ("30Si", "Si")]:
+                    ("15N", "N"), ("14N", "^N"), ("18O", "O"), ("34S", "S"), ("29Si", "Si"), ("30Si", "Si")]:
         assert EV.tag_element(tag) == el, tag
     for tag in ("M", "M0", "", "nan", "M+2"):
         assert EV.tag_element(tag) is None, tag
@@ -53,9 +53,14 @@ def test_an_element_speaks_for_the_neutral_when_the_neutral_supplies_most_of_it(
     assert "C" not in EV.neutral_elements("CH2O2", "C2H7N2O3")
     # a bromide adduct of a Br-free neutral: the 81Br line is the reagent's
     assert "Br" not in EV.neutral_elements("C8H14O2", "C8H14BrO2")
-    # an N2 neutral on nitrate supplies 2 of 3 N; a caret label folds into its element
+    # an N2 neutral on nitrate supplies 2 of 3 N
     assert "N" in EV.neutral_elements("C10H16N2O8", "C10H16N3O11")
-    assert "N" not in EV.neutral_elements("C10H17NO7", "C10H17N^NO10")
+    # on a 15N-labelled nitrate adduct the ion's 14N atoms are all the neutral's: a
+    # natural 15N line measures the neutral; the label's own atoms ('^N', seen by a
+    # '14N' impurity line) are the reagent's
+    assert "N" in EV.neutral_elements("C10H17NO7", "C10H17N^NO10")
+    assert "^N" not in EV.neutral_elements("C10H17NO7", "C10H17N^NO10")
+    assert "^N" in EV.neutral_elements("C10H15^NO7", "C10H14^NO7")    # a labelled product, deprotonated
 
 
 def test_15N_and_18O_are_expected_per_atom_of_the_ion():
@@ -119,6 +124,22 @@ def test_an_M_plus_4_child_on_a_bromide_adduct_is_no_line():
     r = facts(rows)[("C8H14O2", "[M+Br]-")]
     assert r.iso and not r.multiline and r.multiline_elements == "C"
     assert level_of(rows)[("C8H14O2", "[M+Br]-")] == "4b"
+
+
+def test_an_18O_line_of_a_bromide_or_chloride_ion_is_not_measured():
+    """The halogen owns the ion's M+2 region: an '18O' line there is the 81Br /
+    37Cl line's shoulder, or -- with no halogen line at all -- evidence against
+    the formula. It gives neither the isotope axis nor an element."""
+    for adduct, ion in (("[M+Br]-", "C16H12BrO9"), ("[M+Cl]-", "C16H12ClO9")):
+        rows = [m0("p", "C16H12O9", adduct=adduct, ion=ion, height=1000.0, series_unit="CH2"),
+                c13("c", "p", 16), child("o", "p", "18O+2", 1000.0 * 9 * O18)]
+        r = facts(rows)[("C16H12O9", adduct)]
+        assert r.multiline_elements == "C" and not r.multiline, adduct
+        assert EV.expected_ratio("18O", ion) == 0.0
+        rows = [m0("p", "C16H12O9", adduct=adduct, ion=ion, height=1000.0),
+                child("o", "p", "18O+2", 1000.0 * 9 * O18)]
+        assert not facts(rows)[("C16H12O9", adduct)].iso, adduct
+    assert EV.expected_ratio("18O", "C16H11O9") > 0                 # the same neutral deprotonated: measured
 
 
 def test_an_18O_line_alone_now_gives_the_isotope_axis():

@@ -30,11 +30,10 @@ ORDER = ["2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
 # 6/16/182/38/260/79/91/135/2557 and 0/12/217/44/215/119/0/30/1070). C17
 # (2026-09-27, `multiline` counts in-band elements the neutral supplies) moved
 # the TOF set only: seven bromide-adduct 4a rows whose second line was the
-# reagent's 81Br go to 4b, and one 5b gains an in-band 18O line (4b); it was
-# 6/15/182/22/247/82/99/138/2573.
+# reagent's 81Br go to 4b; it was 6/15/182/22/247/82/99/138/2573.
 GOLDEN = {
     "tv": (1373, "21/15/107/16/143/15/10/37/1009"),
-    "tof": (3364, "6/15/182/15/255/82/99/138/2572"),
+    "tof": (3364, "6/15/182/15/254/82/99/138/2573"),
     "orbi": (1707, "0/11/217/9/203/139/0/35/1093"),
     # the uronium set (C17 + U, 2026-09-27): one source, no corroboration, levelled
     # with its neutral-pair table (rule U, row 9'); without the table it reads
