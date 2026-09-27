@@ -251,9 +251,11 @@ def _cluster_k(tr: _Traces, neutrals: list, ref_pool=None) -> pd.DataFrame:
                         & (rec["k_r"] >= R_MIN)).fillna(False).astype(bool)
     stats_ok = rec["k_ratio"].notna()
     absent = (rec["n14"] >= PARTNER_MIN_SPECTRA) & (rec["partner_share"] <= PARTNER_ABSENT_SHARE)
+    # an absent partner outranks the statistics: on a long batch a line can be
+    # co-detected in >= CODETECT_MIN spectra and still lack its 15N partner in most
     rec["line_verdict"] = np.select(
-        [rec["cluster_k"], stats_ok & (rec["k_ratio"] > RATIO_HI), stats_ok, absent],
-        ["tracks", "excess", "consistent", "absent"], default="untestable")
+        [absent, rec["cluster_k"], stats_ok & (rec["k_ratio"] > RATIO_HI), stats_ok],
+        ["absent", "tracks", "excess", "consistent"], default="untestable")
     rec["adduct"] = NO3
     return rec
 
@@ -298,7 +300,8 @@ def _twin_veto(tr: _Traces, neutrals: list, f: float, curve: np.ndarray) -> pd.D
     mz = np.array([C.ion_mz(n, NO3L) for n in neutrals])
     H0, TW = tr.heights(mz), tr.heights(mz - DELTA_15N)
     # a spectrum whose lowest peak lies above the twin never measured it
-    seen = np.isfinite(H0) & ((mz - DELTA_15N)[None, :] >= tr.low[:, None])
+    # (a twin that was found was measured, even as the spectrum's lowest peak)
+    seen = np.isfinite(H0) & (((mz - DELTA_15N)[None, :] >= tr.low[:, None]) | np.isfinite(TW))
     e = np.where(seen, np.nan_to_num(H0) * f, 0.0)
     b = np.clip(np.searchsorted(PDET_EDGES, e, side="right") - 1, 0, len(curve) - 1)
     p = np.where(seen, curve[b], 0.0)
@@ -321,16 +324,17 @@ def measure(ts: pd.DataFrame | None, frames: dict, prof, *, alias_ties: dict | N
     """The label-twin table: one row per committed [X+^NO3]- neutral's 14N line
     (the untie) and per committed [Y+^NO3]- (the veto). Empty with a header when
     the profile is not a labelled-nitrate channel, the batch has no time series,
-    or nothing is committed on `[M+^NO3]-`. `alias_ties`: {label: alias_only_ties(ledger)}."""
+    or nothing is committed on either nitrate adduct. `alias_ties`: {label:
+    alias_only_ties(ledger)}."""
     if not in_scope(prof) or ts is None or not len(ts):
         return _empty()
     com = _committed(frames)
     n15 = sorted(set(com.loc[com["adduct"] == NO3L, "neutral_formula"]) - {""})
-    if not n15:
+    n14 = set(com.loc[com["adduct"] == NO3, "neutral_formula"]) - {""}
+    if not n15 and not n14:
         return _empty()
     tr = _Traces(ts)
-    n14 = set(com.loc[com["adduct"] == NO3, "neutral_formula"])
-    ck = _cluster_k(tr, sorted(set(n15) | n14 - {""}), ref_pool=n15)
+    ck = _cluster_k(tr, sorted(set(n15) | n14), ref_pool=n15)
     # the untie guard: every file's tie on the [X+NO3]- reading is with same-ion aliases only
     parts = [t for t in (alias_ties or {}).values() if t is not None and len(t)]
     if parts:
@@ -340,12 +344,12 @@ def measure(ts: pd.DataFrame | None, frames: dict, prof, *, alias_ties: dict | N
         alias_ok = pd.Series(dtype=bool)
     ck["alias_only_tie"] = ck["neutral_formula"].map(alias_ok).fillna(False).astype(bool)
     ck["committed"] = ck["neutral_formula"].isin(n14)
-    ck["untie"] = ck["cluster_k"] & ck["alias_only_tie"] & ck["committed"]
+    ck["untie"] = ck["line_verdict"].eq("tracks") & ck["alias_only_tie"] & ck["committed"]
     ck["alien"] = ck["committed"] & ck["line_verdict"].isin(FOREIGN)
     ck["veto"] = ck["committed"] & ck["line_verdict"].isin(REFUTED)
     ck["note"] = [_line_note(r) if v else "" for r, v in zip(ck.itertuples(index=False), ck["veto"])]
     f = twin_fraction(prof)
-    tw = _twin_veto(tr, n15, f, _pdet_curve(tr, com))
+    tw = _twin_veto(tr, n15, f, _pdet_curve(tr, com)) if n15 else pd.DataFrame(columns=list(TABLE_COLUMNS))
     tw["committed"] = True
     out = pd.concat([ck, tw], ignore_index=True, sort=False)
     for c in TABLE_COLUMNS:
