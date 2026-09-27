@@ -22,8 +22,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or below the cluster ratio (an organonitrate can only add 14N: trifluoroacetic
   acid's cluster runs at the reagent's own impurity, 0.12x), still counts as X's
   cluster; a line above twice the cluster ratio, or whose 15N partner is absent in
-  >= 80 % of its spectra, is cluster or organonitrate undecided -- it reads 5b and,
-  like an untestable line, gives X nothing (no second channel, no acid branch). The
+  >= 80 % of its spectra, is cluster or organonitrate undecided and reads 5b. An
+  absent or untestable line gives X nothing (no second channel, no acid branch), and
+  so does a line above twice the ratio unless its 15N partner is present in >= 80 %
+  of its spectra: then the partner shows X's cluster (the aged-SOA tracer C8H12O6,
+  a 14N line at 2.1x with its partner in 127 of 130 spectra, keeps its acid branch). The
   two lines of one cluster are one channel, never two. In the other direction a
   labelled [Y+^NO3]- reading is refuted (5b) when the 14N twin its reagent must carry,
   (1 - purity) / purity of its height (`ReagentProfile.purity`), is absent from the
@@ -38,14 +41,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   offline replay row for row): of 291 committed 14N lines 14 track, 18 are consistent,
   13 excess, 220 have no 15N partner and 26 are untestable; 8 tied rows untie 5b -> 3b
   (0.18 % of the signal); 2 labelled readings are refuted (0 of 42 / 53 expected twin
-  sightings); 75 merged rows change level, none their ion or tier; the identified
-  share of the time-series signal falls from 48.3 % to 44.6 % (of committed M0 height
-  55.9 -> 51.5 %), almost all of it C11-C12 [M-H]- acids whose only cluster was a 14N
+  sightings); 72 merged rows change level, none their ion or tier; the identified
+  share of the time-series signal falls from 48.3 % to 45.1 % (of committed M0 height
+  55.9 -> 52.2 %), almost all of it C11-C12 [M-H]- acids whose only cluster was a 14N
   line with no 15N partner in any spectrum (3b -> 4b, "ion pinned, neutral open").
   The uronium and TOF batches are out of scope and do not move. The golden vectors
   stand; a fifth (the labelled-nitrate run levelled with its table, 1848 ->
-  0/12/194/15/266/95/22/144/1100) joins the regression check, and the labelled-nitrate
-  fixture set carries its label-twin table (1707 -> 0/11/172/9/208/151/0/38/1118 with
+  0/12/197/14/264/95/22/144/1100) joins the regression check, and the labelled-nitrate
+  fixture set carries its label-twin table (1707 -> 0/11/174/9/206/151/0/38/1118 with
   it). `tests/test_label_twins*.py`. The measured 37Cl lock on Cl-free labelled
   readings is left to the isotope checks (a too-high heavy line), not to this rule.
 
