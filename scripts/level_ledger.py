@@ -674,12 +674,15 @@ def run(sources: list[str], corroborate: list[str], upair: str | None = None,
         if twins == "auto":
             label = label_twin_facts(path)
         elif twins:
-            # one named table applies only to a labelled-nitrate source: rule K's
-            # scope is the batch it was measured on
-            if (frame["adduct"].astype(str) == "[M+^NO3]-").any():
-                label = label_twin_facts(twins)
-            else:
-                print(f"  --label-twins: {label_} carries no [M+^NO3]- pair; rule K does not fire there",
+            # one named table applies only to the source it was measured on: every
+            # pair it names (untie, veto, alien) must be one of the source's pairs
+            facts = label_twin_facts(twins)
+            named = set().union(*(set(facts[k]) for k in ("untie", "veto", "alien"))) if facts else set()
+            pairs = set(zip(frame["neutral"].astype(str), frame["adduct"].astype(str)))
+            if facts is not None and named <= pairs:
+                label = facts
+            elif facts is not None:
+                print(f"  --label-twins: {label_} does not hold the pairs the table names; rule K does not fire there",
                       file=sys.stderr)
         out.append(assign_levels(frame, others, held, label))
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()

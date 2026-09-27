@@ -322,20 +322,23 @@ def test_the_reference_script_reads_every_fact_from_a_run_table(tmp_path):
     assert _levels_of(got, "chan2") == _levels_of(_engine(_combo(), LAB), "chan2")
 
 
-def test_a_named_table_reaches_every_labelled_source_and_only_those(tmp_path):
-    """--label-twins <csv> applies to each levelled source that carries an
-    [M+^NO3]- pair -- one with no 14N line and no table of its own included --
-    and to no other source."""
+def test_a_named_table_reaches_only_the_source_holding_its_pairs(tmp_path):
+    """--label-twins <csv> applies to each levelled source that holds every pair the
+    table names -- another batch's table does not fire there."""
     LL = _ll()
-    csv = tmp_path / "t.csv"
-    _table(K(veto={(Z, NO3L): "no 14N twin"}, alien={(J, NO3)})).to_csv(csv, index=False)
+    zcsv, jcsv = tmp_path / "z.csv", tmp_path / "j.csv"
+    _table(K(veto={(Z, NO3L): "no 14N twin"})).to_csv(zcsv, index=False)
+    _table(K(veto={(J, NO3): "n"}, alien={(J, NO3)})).to_csv(jcsv, index=False)
     zrows = ledger([m0("z15", Z, adduct=NO3L, ion=Z + "^NO3", mz=C.ion_mz(Z, NO3L)),
                     child("zc", "z15", "13C+1", 1000.0 * EV.C13_PER_CARBON * 12)])
     labelled = _run_dir(tmp_path / "labelled", zrows)
     other = _run_dir(tmp_path / "other", _j1_rows(J))
-    got = LL.run([str(labelled), str(other)], [], None, str(csv)).set_index(["neutral", "adduct"])
+    got = LL.run([str(labelled), str(other)], [], None, str(zcsv)).set_index(["neutral", "adduct"])
     assert got.loc[(Z, NO3L), "level"] == "5b" and bool(got.loc[(Z, NO3L), "label_veto"])
     assert got.loc[(J, "[M-H]-"), "level"] == "3b" and got.loc[(J, NO3), "level"] == "3b"
+    got = LL.run([str(labelled), str(other)], [], None, str(jcsv)).set_index(["neutral", "adduct"])
+    assert got.loc[(Z, NO3L), "level"] == "4b"
+    assert got.loc[(J, "[M-H]-"), "level"] == "4b" and got.loc[(J, NO3), "level"] == "5b"
     off = LL.run([str(labelled)], [], None, None).set_index(["neutral", "adduct"])
     assert off.loc[(Z, NO3L), "level"] == "4b"
 

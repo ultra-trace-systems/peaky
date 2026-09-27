@@ -413,9 +413,9 @@ not by the script: `--upair` (no value) reads each batch source's own
 `tables/neutral_pairs.csv`, `--upair <csv>` applies one table to every levelled
 source, and without the flag row 9′ never fires. Rule K's facts the same way:
 `--label-twins` reads each batch source's `tables/label_twins.csv`,
-`--label-twins <csv>` applies one table to every levelled source that carries
-an `[M+^NO3]-` pair (a source without one is out of the rule's scope and says
-so), and without the flag (or with an empty table) no part of rule K fires, the
+`--label-twins <csv>` applies one table to every levelled source that holds
+every pair the table names (another batch's table does not fire there, and
+says so), and without the flag (or with an empty table) no part of rule K fires, the
 one-channel fold included. A run named as a `--corroborate` source is re-levelled
 without its rule K facts, as without its rule U pair (§6.4): the cross set is
 the source's own per-file evidence; `scorecard.own_levels_for` reads both

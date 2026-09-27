@@ -627,7 +627,9 @@ def test_the_reference_script_reads_the_table_like_the_engine(tmp_path):
     (empty / "per_file").mkdir(parents=True)
     rows.to_csv(empty / "per_file" / "s1_ledger.csv", index=False)
     assert LL.label_twin_facts(str(empty)) is None
-    # one named table never reaches a source without a labelled cluster (another channel)
+    # one named table fires only on a source that holds every pair it names: this table names
+    # C11H18O6's 14N line, and a source holding it is levelled with it (5b line, 4b acid); a
+    # source that does not hold the pairs is untouched
     other = tmp_path / "other"
     (other / "per_file").mkdir(parents=True)
     _j1_rows().to_csv(other / "per_file" / "s1_ledger.csv", index=False)
@@ -635,7 +637,11 @@ def test_the_reference_script_reads_the_table_like_the_engine(tmp_path):
     pd.DataFrame({"neutral_formula": ["C11H18O6"], "adduct": [NO3], "untie": [False], "veto": [True],
                   "alien": [True], "note": ["n"]}).to_csv(table, index=False)
     got = LL.run([str(other)], [], None, str(table)).set_index("adduct")["level"]
-    assert got["[M-H]-"] == "3b" and got[NO3] == "3b"               # untouched: no [M+^NO3]- pair there
+    assert got["[M-H]-"] == "4b" and got[NO3] == "5b"
+    third = tmp_path / "third"
+    (third / "per_file").mkdir(parents=True)
+    _j1_rows("C11H18O5").to_csv(third / "per_file" / "s1_ledger.csv", index=False)
+    assert set(LL.run([str(third)], [], None, str(table))["level"]) == {"3b"}
 
 
 # --------------------------------------------------------------------------- the scorecard
