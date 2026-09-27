@@ -49,7 +49,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the vote's alone (a corroborated 5b votes with the good class and claims tentative), so the vote
   class is not the claim. Tier and claim are separate verdicts from the same columns and are not
   nested: on the three same-air regression channels 16 / 5 / 52 Candidate rows are identified and
-  112 / 11 / 103 Assigned rows tentative; the outputs show both side by side (the workbook, the PDF
+  112 / 11 / 103 Assigned rows tentative (104 on the TOF once flatness no longer tiers: four 5b rows
+  became Assigned); the outputs show both side by side (the workbook, the PDF
   and the scorecard list where they part), and neither is corrected from the other. Measured on
   those runs: identified carries 55.9 / 59.0 / 64.9 % of the committed-peak signal (every
   per-file M0 height credited with the merged claim of its reading, over all per-file M0 height;
@@ -67,6 +68,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   248 / 103 / 228 rows carry 55.9 / 59.0 / 64.9 % of the committed-peak signal (labelled nitrate / uronium / TOF); the
   TOF's identified rows stand on its own evidence 200 times and on the other instrument's 28; the shift decoy keeps
   0 identified pairs on the uronium and TOF channels and 4 of 145 below m/z 350 on the labelled-nitrate one.
+  Re-checked after the rebase onto the flatness-labels-only tip: the uronium run again reads 0 ion, 0 tier, 0 level
+  and 0 claim changes against that tip's run, every ledger and table equal once `claim` is dropped (the reference-list
+  match table in another row order); 104 identified rows there (the one isobar the earlier tip flipped is back).
 
 - **Resolvability for every run, and two tier rules that read the spectrum's physics.** The
   nearest-neighbour separability flag was trace-first only, so every cover run -- every
