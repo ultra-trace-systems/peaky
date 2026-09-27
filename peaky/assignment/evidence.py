@@ -18,9 +18,10 @@ The scale, in the order the predicates are tried (the first that holds wins):
 
     5b  the assignment argues with itself: a near-tie the arbiter broke, a row
         below assignability or a tentative lead (the two halves of the old
-        flag, C19(c)), a score the engine calls Low/Suspect, or (rule K,
+        flag, C19(c)), a score the engine calls Low/Suspect, (rule K,
         batch only) the labelled reagent's 14N twin refuting the cluster
-        reading; also a mass-degenerate pair with no corroborating axis at all
+        reading, or (C11+, batch only) an isotope check refuting the formula;
+        also a mass-degenerate pair with no corroborating axis at all
     2b  a curated identity (compound-scope pass-0 family) on a formula the
         isomer space says admits one structure
     3a  any other curated commit: a named class, isomers open
@@ -515,6 +516,12 @@ def _decide(r) -> tuple[str, str]:
         # runs above its cluster share -- the cluster reading is refuted
         note = getattr(r, "label_note", "") or ""
         hard.append("the reagent's two isotopologues refute the cluster reading" + (f" ({note})" if note else ""))
+    if getattr(r, "iso_veto", False):
+        # C11+ (batch/iso_checks.py): the batch's time series refutes the
+        # formula's own isotope claim -- its 13C carbon count, a required heavy
+        # line absent, or a heavy line too high for it
+        note = getattr(r, "iso_note", "") or ""
+        hard.append("an isotope check refutes the formula" + (f" ({note})" if note else ""))
     if hard:
         return "5b", "5b: " + "; ".join(hard)
     if r.ion_only:
@@ -596,6 +603,8 @@ def _axes_string(r, *, with_files: bool) -> str:
         parts.append("label_untie")
     if getattr(r, "label_veto", False):
         parts.append("label_veto")
+    if getattr(r, "iso_veto", False):
+        parts.append("iso_veto")
     if r.known_fam:
         parts.append(f"known:{r.known_fam}")
     if with_files:
@@ -604,7 +613,7 @@ def _axes_string(r, *, with_files: bool) -> str:
 
 
 def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: bool = False,
-                 upair=None, label=None) -> pd.DataFrame:
+                 upair=None, label=None, iso=None) -> pd.DataFrame:
     """Level every (neutral, adduct) pair of the frames pooled as ONE source.
     `upair`: the neutrals whose declared neutral pair holds (rule U, measured by
     batch/neutral_pairs.py on the batch time series; pooled only). `label`: the
@@ -612,7 +621,10 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
     {'untie': {(n, a)} whose arbiter tie the 15N sibling breaks, 'veto': {(n, a):
     note} the reagent's isotopologues refute, 'alien': {(n, a)} 14N lines kept out
     of their neutral's pools}; given, the 14N and 15N nitrate clusters of one
-    neutral also count as one channel."""
+    neutral also count as one channel. `iso`: the isotope checks (C11+,
+    batch/iso_checks.facts; pooled only): {'veto': {(n, a): note}} -- a vetoed
+    pair is hard 5b and, like rule K's alien lines, leaves its neutral's chan2 /
+    branch pools in both directions."""
     parts = []
     for src, frame in frames.items():
         f = frame.copy()
@@ -624,8 +636,9 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
     role = _col(frame, "role").astype(str)
     halogen = detect_reagent_halogen(frame[role == "M0"])
     label = label or None
-    facts = _measure(frame, halogen=halogen, alien=(label or {}).get("alien"),
-                     fold=LABEL_FOLD if label else None)
+    iso_veto = {(str(n), str(a)): str(v or "") for (n, a), v in (((iso or {}).get("veto")) or {}).items()}
+    alien = set((label or {}).get("alien") or set()) | set(iso_veto)
+    facts = _measure(frame, halogen=halogen, alien=alien or None, fold=LABEL_FOLD if label else None)
     if facts.empty:
         return pd.DataFrame(columns=["neutral_formula", "adduct", *COLUMNS])
     cross = {str(x) for x in (cross or set())}
@@ -647,6 +660,11 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
     veto = {(str(n), str(a)): str(v or "") for (n, a), v in ((label or {}).get("veto") or {}).items()}
     facts["label_veto"] = pd.Series([k in veto for k in keys], index=facts.index, dtype=bool) & ~facts["ion_only"]
     facts["label_note"] = [veto.get(k, "") if v else "" for k, v in zip(keys, facts["label_veto"])]
+    # C11+: the isotope checks refute a formula -- a fact about one reading
+    # (a pair), never an axis, never in `cross`; unlike rule K it reaches an
+    # ion-only pair too (a refuted composition is refuted on any channel)
+    facts["iso_veto"] = pd.Series([k in iso_veto for k in keys], index=facts.index, dtype=bool)
+    facts["iso_note"] = [iso_veto.get(k, "") if v else "" for k, v in zip(keys, facts["iso_veto"])]
     facts["n_axes"] = facts[list(AXES)].sum(axis=1).astype(int)
     facts["cross"] = facts["corroborated"] | facts["multiline"] | facts["known_fam"].ne("")
     facts["neutral_backed"] = (facts["corroborated"] | facts["chan2"] | facts["anchor"]
@@ -737,17 +755,19 @@ def _n_pairs(ledger: pd.DataFrame) -> int:
                              "a": _col(m0, "adduct").fillna("").astype(str)}).drop_duplicates().shape[0])
 
 
-def level_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None, label=None) -> pd.DataFrame:
+def level_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None, label=None,
+                 iso=None) -> pd.DataFrame:
     """A batch's per-file ledgers ({label: frame}) pooled as ONE source: one row
     per (neutral_formula, adduct) over all files with the four columns and every
     fact of §3 (`chan2` sees a second adduct in ANY file, `iso` any file's
     satellite, `tied`/`lowconf` need ALL rows across files, `below` and `lead` any).
     `upair` is the neutral-pair set of rule U (batch/neutral_pairs.neutrals);
     `label` is rule K's labelled-nitrate twin facts (batch/label_twins.facts);
-    both exist only here, on the pooled batch.
+    `iso` the isotope checks' vetoes (C11+, batch/iso_checks.facts); all three
+    exist only here, on the pooled batch.
     `evidence_axes` ends with `files:<n>`."""
     return _level_pairs(dict(per_file), cross=cross, isomer_space=isomer_space, with_files=True, upair=upair,
-                        label=label)
+                        label=label, iso=iso)
 
 
 def stamp_merged(merged: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:

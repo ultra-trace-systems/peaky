@@ -10,6 +10,7 @@ in-core `evidence_level` column (Phase B) must reproduce row for row.
     python scripts/level_ledger.py <source>... [--corroborate <source>]
                                    [--upair [<neutral_pairs.csv>]]
                                    [--label-twins [<label_twins.csv>]]
+                                   [--iso-checks [<iso_checks.csv>]]
                                    [--out levels.csv]
 
 A *source* is a batch run dir (its `per_file/*_ledger.csv`, or `merged_ledger.csv`
@@ -32,8 +33,9 @@ The scale, in the order the predicates are tried:
     5b  the assignment argues with itself — a near-tie the arbiter broke, a row
         below assignability or a tentative lead, or a score the engine itself
         calls Low/Suspect, or (rule K, --label-twins) the labelled reagent's 14N
-        twin refutes the cluster reading; also a mass-degenerate row with no
-        corroborating axis at all
+        twin refutes the cluster reading, or (C11+, --iso-checks) an isotope
+        check of the batch's time series refutes the formula; also a
+        mass-degenerate row with no corroborating axis at all
     2b  a curated identity on a formula that admits essentially one structure
     3a  a named compound class, isomers open (PFCA, nitroaromatic, …)
     3b  a substituent only, via the gas-phase acidity branch: the same neutral
@@ -469,7 +471,8 @@ def level_of(row) -> str:
     """The decision table. Order matters: the first predicate that holds wins."""
     # a tentative lead (C19(c)) is hard like below assignability until rule H
     hard = (bool(row.tied) or bool(row.below) or bool(getattr(row, "lead", False))
-            or bool(row.lowconf) or bool(getattr(row, "label_veto", False)))
+            or bool(row.lowconf) or bool(getattr(row, "label_veto", False))
+            or bool(getattr(row, "iso_veto", False)))
     degenerate = bool(row.saturated) or (
         pd.notna(row.degeneracy) and row.degeneracy >= 3
     )
@@ -505,15 +508,17 @@ def level_of(row) -> str:
 LABEL_FOLD = {"[M+NO3]-": "[M+^NO3]-", "[M+15NO3]-": "[M+^NO3]-"}
 
 
-def relabel_pools(df: pd.DataFrame, alien: set) -> pd.DataFrame:
-    """Rule K on the per-neutral facts: chan2 and branch recomputed over the
-    regular rows minus the `alien` 14N lines, the two nitrate clusters of one
-    neutral counted as one channel; an alien row takes neither."""
+def relabel_pools(df: pd.DataFrame, alien: set, fold: bool = True) -> pd.DataFrame:
+    """Rule K / C11+ on the per-neutral facts: chan2 and branch recomputed over
+    the regular rows minus the `alien` pairs (rule K's 14N lines, the pairs an
+    isotope check refutes), with `fold` the two nitrate clusters of one neutral
+    counted as one channel (rule K only); an alien row takes neither."""
     df = df.copy()
     keys = list(zip(df["neutral"].astype(str), df["adduct"].astype(str)))
     out = pd.Series([k in alien for k in keys], index=df.index, dtype=bool) | df["ion_only"].astype(bool)
     reg = df[~out]
-    chans = reg.assign(ch=reg["adduct"].map(lambda a: LABEL_FOLD.get(a, a))).groupby("neutral")["ch"].nunique()
+    chans = reg.assign(ch=reg["adduct"].map(lambda a: LABEL_FOLD.get(a, a) if fold else a)) \
+        .groupby("neutral")["ch"].nunique()
     adds = reg.groupby("neutral")["adduct"].agg(lambda s: set(s.astype(str)))
     df["chan2"] = [(not o) and int(chans.get(n, 0)) >= 2 for n, o in zip(df["neutral"], out)]
     df["branch"] = [(not o) and bool(adds.get(n, set()) & BARE_ADDUCTS) and bool(adds.get(n, set()) & CLUSTER_ADDUCTS)
@@ -522,21 +527,25 @@ def relabel_pools(df: pd.DataFrame, alien: set) -> pd.DataFrame:
 
 
 def assign_levels(df: pd.DataFrame, corroborating: set[str], upair: set[str] | None = None,
-                  label: dict | None = None) -> pd.DataFrame:
+                  label: dict | None = None, iso: dict | None = None) -> pd.DataFrame:
     """Add the axes, the derived flags and the level to measured rows. `upair`
     is the batch's neutral-pair set (rule U); `label` the labelled-nitrate twin
     facts (rule K: {'untie', 'veto', 'alien'}, `label_twin_facts`): the 14N lines
     it could not tie to their neutral's 15N cluster leave the neutral's pools,
     the two clusters count as one channel, a tie the 15N sibling breaks is
-    cleared and a refuted reading is hard. Facts, never axes."""
+    cleared and a refuted reading is hard; `iso` the isotope checks' vetoes
+    (C11+: {'veto': {(n, a): note}}, `iso_check_facts`): a refuted pair is hard
+    and leaves its neutral's pools like an alien line. Facts, never axes."""
     df = df.copy()
     df["known_fam"] = df["known_fam"].fillna("")
     if "ion_only" not in df.columns:
         df["ion_only"] = False
     df["corroborated"] = df["neutral"].isin(corroborating) & ~df["ion_only"].astype(bool)
     df["upair"] = df["neutral"].isin(upair or set()) & ~df["ion_only"].astype(bool)
-    if label:
-        df = relabel_pools(df, {(str(n), str(a)) for n, a in (label.get("alien") or set())})
+    iso_veto = {(str(n), str(a)): str(v or "") for (n, a), v in ((iso or {}).get("veto") or {}).items()}
+    if label or iso_veto:
+        alien = {(str(n), str(a)) for n, a in ((label or {}).get("alien") or set())} | set(iso_veto)
+        df = relabel_pools(df, alien, fold=bool(label))
     keys = list(zip(df["neutral"].astype(str), df["adduct"].astype(str)))
     untie = {(str(n), str(a)) for n, a in ((label or {}).get("untie") or set())}
     veto = {(str(n), str(a)) for n, a in ((label or {}).get("veto") or {})}
@@ -544,6 +553,9 @@ def assign_levels(df: pd.DataFrame, corroborating: set[str], upair: set[str] | N
                          & df["tied"].astype(bool) & ~df["ion_only"].astype(bool))
     df.loc[df["label_untie"], "tied"] = False
     df["label_veto"] = pd.Series([k in veto for k in keys], index=df.index, dtype=bool) & ~df["ion_only"].astype(bool)
+    # C11+: an isotope check refutes the formula (an ion-only pair too)
+    df["iso_veto"] = pd.Series([k in iso_veto for k in keys], index=df.index, dtype=bool)
+    df["iso_note"] = [iso_veto.get(k, "") if v else "" for k, v in zip(keys, df["iso_veto"])]
     df["n_axes"] = df[["iso", "chan2", "anchor", "corroborated"]].sum(axis=1)
     df["cross"] = df.corroborated | df.multiline | df.known_fam.ne("")
     df["neutral_backed"] = (
@@ -647,13 +659,56 @@ def label_twin_facts(path: str) -> dict | None:
     return out
 
 
+#: the order the isotope checks' notes join in, and each check's name there
+ISO_CHECKS = ("C", "REQ", "HIGH")
+ISO_CHECK_NAME = {"C": "rule C", "REQ": "REQ", "HIGH": "HIGH"}
+
+
+def iso_check_facts(path: str) -> dict | None:
+    """{'veto': {(neutral, adduct): note}} -- the isotope checks (C11+) read
+    from a batch's tables/iso_checks.csv (a run dir, or an --out-dir holding one
+    run) or from that CSV itself, one note per pair joined over the checks that
+    refute it ('rule C: ...; REQ: ...'); None when there is no table or it is
+    empty (no time series). A source without the table says so on stderr."""
+    table = path
+    if os.path.isdir(path):
+        table = os.path.join(path, "tables", "iso_checks.csv")
+        if not os.path.isfile(table):
+            found = sorted(glob.glob(os.path.join(path, "*", "tables", "iso_checks.csv")))
+            if len(found) == 1:
+                table = found[0]
+    if not os.path.isfile(table):
+        print(f"  --iso-checks: no iso_checks.csv for {path}; the isotope checks do not fire there", file=sys.stderr)
+        return None
+    frame = pd.read_csv(table)
+    if frame.empty:
+        return None
+    veto: dict = {}
+    if "veto" in frame.columns:
+        held = frame[frame["veto"].map(truthy)].copy()
+        order = {c: i for i, c in enumerate(ISO_CHECKS)}
+        held["__o"] = held["check"].map(lambda c: order.get(str(c), len(order))) if "check" in held.columns else 0
+        held = held.sort_values("__o", kind="mergesort")
+        for _, r in held.iterrows():
+            key = (str(r["neutral_formula"]), str(r["adduct"]))
+            name = ISO_CHECK_NAME.get(str(r.get("check", "")), str(r.get("check", "")))
+            note = r.get("note")
+            piece = f"{name}: {note}" if isinstance(note, str) and note else name
+            veto[key] = f"{veto[key]}; {piece}" if key in veto else piece
+    return {"veto": veto}
+
+
 def run(sources: list[str], corroborate: list[str], upair: str | None = None,
-        twins: str | None = None) -> pd.DataFrame:
+        twins: str | None = None, iso: str | None = None) -> pd.DataFrame:
     """Level every source, each corroborated by the others plus --corroborate —
     by the neutrals each of them holds at 4b or better on its own evidence.
     `upair`: 'auto' reads each run-dir source's own tables/neutral_pairs.csv;
     a CSV path applies that table to every levelled source; None = rule U off.
-    `twins`: the same for tables/label_twins.csv (rule K)."""
+    `twins`: the same for tables/label_twins.csv (rule K). `iso`: the same for
+    tables/iso_checks.csv (C11+); a named table applies only to a source that
+    holds every pair it vetoes -- the checks were measured on one batch's time
+    series and name its pairs, so a source missing one of them is another
+    batch and the table does not fire there."""
     measured = {}
     neutrals = {}
     for path in sources:
@@ -690,7 +745,18 @@ def run(sources: list[str], corroborate: list[str], upair: str | None = None,
             elif facts is not None:
                 print(f"  --label-twins: {label_} does not hold the pairs the table names; rule K does not fire there",
                       file=sys.stderr)
-        out.append(assign_levels(frame, others, held, label))
+        checks = None
+        if iso == "auto":
+            checks = iso_check_facts(path)
+        elif iso:
+            checks = iso_check_facts(iso)
+            pairs = set(zip(frame["neutral"].astype(str), frame["adduct"].astype(str)))
+            missing = set((checks or {}).get("veto") or {}) - pairs
+            if missing:
+                print(f"  --iso-checks: {label_} does not hold {len(missing)} pair(s) the table vetoes "
+                      f"(another batch's table); the isotope checks do not fire there", file=sys.stderr)
+                checks = None
+        out.append(assign_levels(frame, others, held, label, checks))
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
 
 
@@ -726,10 +792,19 @@ def main(argv: list[str] | None = None) -> int:
         help="rule K: read each batch source's tables/label_twins.csv (no value), "
         "or apply this label-twin CSV to every levelled source",
     )
+    parser.add_argument(
+        "--iso-checks",
+        nargs="?",
+        const="auto",
+        default=None,
+        dest="iso",
+        help="C11+: read each batch source's tables/iso_checks.csv (no value), "
+        "or apply this isotope-check CSV to the levelled sources that hold every pair it vetoes",
+    )
     parser.add_argument("--out", help="write the levelled rows here as CSV")
     args = parser.parse_args(argv)
 
-    df = run(args.sources, args.corroborate, args.upair, args.twins)
+    df = run(args.sources, args.corroborate, args.upair, args.twins, args.iso)
     if df.empty:
         print("nothing to level", file=sys.stderr)
         return 1
