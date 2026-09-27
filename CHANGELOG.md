@@ -8,6 +8,47 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **On a labelled-nitrate channel the reagent's two isotopologues arbitrate each
+  other's reading (rule K).** A 15N-labelled nitrate reagent sees one neutral X's
+  cluster twice, 0.997 Da apart: big as [X+^NO3]- and small as [X+NO3]- (the reagent's
+  14N impurity plus ambient 14N nitrate). The batch now tests each line against the
+  other on its own stamped time series (`batch/label_twins.py`, profiles labelled `^N`
+  that cluster on `[M+^NO3]-`). A committed 14N line TRACKS X's cluster when its
+  14N/15N ratio follows the batch's cluster ratio through the run (the per-spectrum
+  median over the bright CHO acid clusters committed on `[M+^NO3]-`, the tested pair
+  left out: ratio 0.5-2, sd(log) <= 0.25, r >= 0.8 over >= 50 of >= 100 co-detected
+  spectra). A tracking line breaks the arbiter's tie with the same-ion organonitrate
+  [X'-H]- where every file's tie is with that alias alone; a line tested but noisy,
+  or below the cluster ratio (an organonitrate can only add 14N: trifluoroacetic
+  acid's cluster runs at the reagent's own impurity, 0.12x), still counts as X's
+  cluster; a line above twice the cluster ratio, or whose 15N partner is absent in
+  >= 80 % of its spectra, is cluster or organonitrate undecided -- it reads 5b and,
+  like an untestable line, gives X nothing (no second channel, no acid branch). The
+  two lines of one cluster are one channel, never two. In the other direction a
+  labelled [Y+^NO3]- reading is refuted (5b) when the 14N twin its reagent must carry,
+  (1 - purity) / purity of its height (`ReagentProfile.purity`), is absent from the
+  spectra where the batch's own 13C detection curve says it would be seen and the scan
+  reached it. Facts of the pooled batch only: never an axis, never in `cross`, never
+  per file (the per-file level, the tier and the vote keep the arbiter's tie).
+  `tables/label_twins.csv` holds every line's verdict and every reading's test,
+  `batch_summary.json` the funnel (`evidence_levels.label_twins`),
+  `scripts/level_ledger.py --label-twins` reads the table in lockstep and
+  `scripts/scorecard.py` reads it as the run's own evidence. On the labelled-nitrate
+  regression batch (one variable against the previous trunk run; the run equals the
+  offline replay row for row): of 291 committed 14N lines 14 track, 18 are consistent,
+  13 excess, 220 have no 15N partner and 26 are untestable; 8 tied rows untie 5b -> 3b
+  (0.18 % of the signal); 2 labelled readings are refuted (0 of 42 / 53 expected twin
+  sightings); 75 merged rows change level, none their ion or tier; the identified
+  share of the time-series signal falls from 48.3 % to 44.6 % (of committed M0 height
+  55.9 -> 51.5 %), almost all of it C11-C12 [M-H]- acids whose only cluster was a 14N
+  line with no 15N partner in any spectrum (3b -> 4b, "ion pinned, neutral open").
+  The uronium and TOF batches are out of scope and do not move. The golden vectors
+  stand; a fifth (the labelled-nitrate run levelled with its table, 1848 ->
+  0/12/194/15/266/95/22/144/1100) joins the regression check, and the labelled-nitrate
+  fixture set carries its label-twin table (1707 -> 0/11/172/9/208/151/0/38/1118 with
+  it). `tests/test_label_twins*.py`. The measured 37Cl lock on Cl-free labelled
+  readings is left to the isotope checks (a too-high heavy line), not to this rule.
+
 - **A uronium neutral pair establishes the neutral (rule U, evidence level 4a).** A
   uronium channel has no acid branch -- the pattern that lets the anion channels say
   "the same neutral, deprotonated and clustered". Its equivalent is the protonated
