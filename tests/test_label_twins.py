@@ -46,8 +46,9 @@ def _series(spec: dict) -> pd.DataFrame:
     h15 (the 15N line's scale), phase, q (the 14N line's factor on k_cl; None = no
     14N line), noise (sd of a log-normal factor on the 14N line), flat (the 14N
     line at a constant ratio instead of following k), share (the 14N line in the
-    first `share` of the spectra only), twin_shift (Da added to the 14N line's
-    position), c13 (write the 15N line's 13C line; default True)."""
+    first `share` of the spectra only), share15 (the 15N line in the first
+    `share15` of the spectra only; 0 = never), twin_shift (Da added to the 14N
+    line's position), c13 (write the 15N line's 13C line; default True)."""
     t0 = pd.Timestamp("2026-08-11 00:00", tz="UTC")
     rng = np.random.default_rng(7)
     rows = []
@@ -57,9 +58,11 @@ def _series(spec: dict) -> pd.DataFrame:
         for n, o in spec.items():
             h15 = o.get("h15", 5000.0) * (1.5 + np.sin(2 * np.pi * i / 25.0 + o.get("phase", 0.0)))
             mz15 = C.ion_mz(n, NO3L)
-            rows.append(dict(sample_item_id=sid, datetime_utc=when, mz=mz15, height=h15, area=h15, role="M0",
-                             neutral_formula=n, adduct=NO3L))
-            if o.get("c13", True):
+            has15 = i < o.get("share15", 1.0) * N_SPECTRA
+            if has15:
+                rows.append(dict(sample_item_id=sid, datetime_utc=when, mz=mz15, height=h15, area=h15, role="M0",
+                                 neutral_formula=n, adduct=NO3L))
+            if has15 and o.get("c13", True):
                 h13 = h15 * LT.C13_PER_C * C.parse_formula(n).get("C", 0)
                 rows.append(dict(sample_item_id=sid, datetime_utc=when, mz=mz15 + LT.D13C, height=h13, area=h13,
                                  role="iso_child", neutral_formula=None, adduct=None))
@@ -73,11 +76,15 @@ def _series(spec: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _frames(neutrals, *, no3=(), tied=()) -> dict:
-    """One per-file ledger committing every neutral on [M+^NO3]- and those in
-    `no3` on [M+NO3]- (tied on the same-ion organonitrate alias when in `tied`)."""
+def _frames(neutrals, *, no3=(), tied=(), only14=()) -> dict:
+    """One per-file ledger committing every neutral on [M+^NO3]- (those in
+    `only14` on [M+NO3]- alone) and those in `no3` on [M+NO3]- (tied on the
+    same-ion organonitrate alias when in `tied`)."""
     rows = []
     for k, n in enumerate(neutrals):
+        if n in only14:
+            rows.append(m0(f"b{k}", n, adduct=NO3, ion=n + "NO3", mz=C.ion_mz(n, NO3), tied=n in tied))
+            continue
         rows.append(m0(f"a{k}", n, adduct=NO3L, ion=n + "^NO3", mz=C.ion_mz(n, NO3L)))
         if n in no3:
             rows.append(m0(f"b{k}", n, adduct=NO3, ion=n + "NO3", mz=C.ion_mz(n, NO3), tied=n in tied))
@@ -225,6 +232,63 @@ def test_alias_only_ties_reads_the_tier_engines_own_test():
     assert LT.alias_only_ties(pd.DataFrame()).empty
 
 
+# --------------------------------------------------------------------------- the tracking verdicts (K03)
+def test_every_committed_14n_line_gets_a_tracking_verdict():
+    lines = {
+        "C10H18O3": ({"phase": 2.0}, "tracks"),
+        "C7H12O5": ({"phase": 1.4, "noise": 0.6}, "consistent"),        # in band, too noisy to track
+        "C6H10O5": ({"phase": 1.2, "q": 0.15}, "consistent"),           # below the cluster share: not an organonitrate
+        "C6H10O4": ({"phase": 1.0, "q": 3.0}, "excess"),                # above it: cluster or organonitrate
+        "C11H18O6": ({"phase": 0.9, "share15": 0.0}, "absent"),         # no 15N partner at all
+        "C11H18O5": ({"phase": 0.7, "share15": 0.15}, "absent"),        # partner in 15 % of the 14N line's spectra
+        "C9H16O4": ({"phase": 1.8, "share15": 0.25}, "untestable"),     # 25 %: neither absent nor co-detected enough
+        "C9H14O6": ({"phase": 1.6, "share15": 0.5}, "untestable"),
+    }
+    spec = _refs_spec(**{n: o for n, (o, _) in lines.items()})
+    frames = _frames(list(spec), no3=list(lines), only14=["C11H18O6", "C11H18O5"])
+    t = _measure(spec, frames)
+    for n, (_, verdict) in lines.items():
+        r = _row(t, n)
+        assert r.line_verdict == verdict and r.committed, (n, r.line_verdict)
+        assert r.alien == (verdict in ("excess", "absent", "untestable")), n
+        assert r.veto == (verdict in ("excess", "absent")), n
+    assert "no 15N partner" in _row(t, "C11H18O6").note and "0 of the 120" in _row(t, "C11H18O6").note
+    assert "runs 3.0x its cluster share" in _row(t, "C6H10O4").note
+    assert _row(t, "C11H18O5").partner_share == pytest.approx(0.15)
+    f = LT.facts(t)
+    assert f["alien"] == {(n, NO3) for n, (_, v) in lines.items() if v in ("excess", "absent", "untestable")}
+    assert {k for k in f["veto"] if k[1] == NO3} == {(n, NO3) for n, (_, v) in lines.items() if v in ("excess", "absent")}
+    assert f["untie"] == set()                                        # nothing tied here
+    s = LT.summary(t, LABEL)
+    assert s["committed_lines"] == len(lines) and s["lines_absent"] == 2 and s["lines_excess"] == 1
+    assert s["lines_consistent"] == 2 and s["lines_untestable"] == 2 and s["lines_tracks"] == 1
+    assert s["alien"] == 5 and s["lines_refuted"] == 3
+    # the references are the committed labelled clusters only: a bright 14N-only neutral never calibrates k
+    assert not _row(t, "C11H18O6").reference and not _row(t, "C11H18O5").reference
+
+
+def test_an_absent_partner_needs_ten_spectra_of_the_14n_line():
+    n = "C11H18O6"
+    for share, verdict in ((9 / N_SPECTRA, "untestable"), (10 / N_SPECTRA, "absent")):
+        spec = _refs_spec(**{n: {"phase": 0.9, "share15": 0.0, "share": share}})
+        t = _measure(spec, _frames(list(spec), no3=[n], only14=[n]))
+        assert _row(t, n).line_verdict == verdict, share
+
+
+def test_a_line_not_committed_on_14n_is_never_alien_nor_vetoed():
+    spec = _refs_spec(**{"C6H10O4": {"phase": 1.0, "q": 3.0}})
+    t = _measure(spec)                                                # committed on [M+^NO3]- only
+    r = _row(t, "C6H10O4")
+    assert r.line_verdict == "excess" and not r.committed and not r.alien and not r.veto
+    assert LT.facts(t)["alien"] == set()
+
+
+def test_facts_is_none_for_an_empty_table():
+    assert LT.facts(None) is None and LT.facts(LT._empty()) is None
+    t = _measure(_refs_spec())
+    assert set(LT.facts(t)) == {"untie", "veto", "alien"}
+
+
 # --------------------------------------------------------------------------- the veto (14N twin)
 def test_a_bright_cluster_without_its_14n_twin_is_refuted():
     y = "C12H14O2"
@@ -321,6 +385,11 @@ def _nitrate_rows(x="C10H18O4", *, tied=True, iso=True):
     return ledger(rows)
 
 
+def K(untie=(), veto=None, alien=()) -> dict:
+    """Rule K's facts as batch/label_twins.facts hands them to level_pooled."""
+    return {"untie": set(untie), "veto": dict(veto or {}), "alien": set(alien)}
+
+
 def _levels(frame, **kw) -> dict:
     out = EV.level_pooled({"f": frame}, **kw)
     return {a: (lv, ax, why) for a, lv, ax, why in
@@ -331,34 +400,34 @@ def test_the_untie_lets_the_acid_branch_read():
     x = "C10H18O4"
     base = _levels(_nitrate_rows(x))
     assert base[NO3][0] == "5b" and "near-tie" in base[NO3][2]
-    lv = _levels(_nitrate_rows(x), untie={(x, NO3)})
+    lv = _levels(_nitrate_rows(x), label=K(untie={(x, NO3)}))
     assert lv[NO3][0] == "3b" and "label_untie" in lv[NO3][1] and "acid branch" in lv[NO3][2]
     assert lv["[M-H]-"] == base["[M-H]-"] and lv[NO3L] == base[NO3L]
     # an untie of a pair that is not tied changes nothing and is not recorded
-    lv = _levels(_nitrate_rows(x, tied=False), untie={(x, NO3)})
+    lv = _levels(_nitrate_rows(x, tied=False), label=K(untie={(x, NO3)}))
     assert "label_untie" not in lv[NO3][1]
     assert lv == _levels(_nitrate_rows(x, tied=False))
     # other hard inputs still hold
     rows = _nitrate_rows(x)
     rows.loc[rows.peak_id == "n14", "below_assignability"] = True
-    assert _levels(rows, untie={(x, NO3)})[NO3][0] == "5b"
+    assert _levels(rows, label=K(untie={(x, NO3)}))[NO3][0] == "5b"
 
 
 def test_the_veto_is_a_hard_input_with_its_numbers():
     x = "C10H18O4"
     note = "no 14N twin: seen in 0 of 42 expected detections"
-    lv = _levels(_nitrate_rows(x, tied=False), veto={(x, NO3L): note})
+    lv = _levels(_nitrate_rows(x, tied=False), label=K(veto={(x, NO3L): note}))
     level, axes, why = lv[NO3L]
     assert level == "5b" and "label_veto" in axes
-    assert why == f"5b: the reagent label refutes the cluster reading ({note})"
-    assert _levels(_nitrate_rows(x, tied=False), veto={(x, NO3L): ""})[NO3L][2] == \
-        "5b: the reagent label refutes the cluster reading"
+    assert why == f"5b: the reagent's two isotopologues refute the cluster reading ({note})"
+    assert _levels(_nitrate_rows(x, tied=False), label=K(veto={(x, NO3L): ""}))[NO3L][2] == \
+        "5b: the reagent's two isotopologues refute the cluster reading"
     # it outranks the curated identity and the branch, as every hard input does
     rows = _nitrate_rows(x, tied=False)
     rows.loc[rows.peak_id == "n15", "method"] = "known:atmospheric"
-    assert _levels(rows, veto={(x, NO3L): note})[NO3L][0] == "5b"
+    assert _levels(rows, label=K(veto={(x, NO3L): note}))[NO3L][0] == "5b"
     # a veto keyed on another adduct leaves this one alone
-    assert _levels(_nitrate_rows(x, tied=False), veto={(x, NO3): note})[NO3L][0] != "5b"
+    assert _levels(_nitrate_rows(x, tied=False), label=K(veto={(x, NO3): note}))[NO3L][0] != "5b"
 
 
 def test_ion_only_pairs_never_take_the_facts():
@@ -366,15 +435,73 @@ def test_ion_only_pairs_never_take_the_facts():
     rows = _nitrate_rows(x)
     io = m0("io", x, adduct="[M]-.", ion=x, mz=C.ion_mz(x, "[M-H]-") + 1.0078, method="ion_only:ea", tied=True)
     frame = pd.concat([rows, ledger([io])], ignore_index=True)
-    out = EV.level_pooled({"f": frame}, untie={(x, "[M]-.")}, veto={(x, "[M]-."): "x"}).set_index("adduct")
+    out = EV.level_pooled({"f": frame}, label=K(untie={(x, "[M]-.")}, veto={(x, "[M]-."): "x"})).set_index("adduct")
     assert not out.loc["[M]-.", "label_untie"] and not out.loc["[M]-.", "label_veto"]
     assert out.loc["[M]-.", "evidence_level"] == "5b"            # still tied: the untie never reaches it
+
+
+def _j1_rows(j="C11H18O6", *, tied=False):
+    """A C11 acid seen deprotonated (13C-backed) and as a 14N [M+NO3]- line only."""
+    return ledger([m0("h", j, adduct="[M-H]-", ion=j, mz=C.ion_mz(j, "[M-H]-")),
+                   child("hc", "h", "13C+1", 1000.0 * EV.C13_PER_CARBON * 11),
+                   m0("n14", j, adduct=NO3, ion=j + "NO3", mz=C.ion_mz(j, NO3), tied=tied),
+                   child("nc", "n14", "13C+1", 1000.0 * EV.C13_PER_CARBON * 11)])
+
+
+def test_an_alien_14n_line_gives_its_neutral_nothing_and_takes_nothing():
+    j = "C11H18O6"
+    base = _levels(_j1_rows(j))
+    assert base["[M-H]-"][0] == "3b" and base[NO3][0] == "3b"          # the branch rests on the 14N line
+    note = "no 15N partner: seen in 0 of the 305 spectra of the 14N line; cluster or organonitrate undecided"
+    lv = _levels(_j1_rows(j), label=K(alien={(j, NO3)}, veto={(j, NO3): note}))
+    assert lv["[M-H]-"][0] == "4b" and "branch" not in lv["[M-H]-"][1] and "chan2" not in lv["[M-H]-"][1]
+    assert lv[NO3][0] == "5b" and "two isotopologues refute" in lv[NO3][2] and note in lv[NO3][2]
+    # an untestable line (alien, no veto) takes nothing either: its own axes decide
+    lv = _levels(_j1_rows(j), label=K(alien={(j, NO3)}))
+    assert lv[NO3][0] == "4b" and "branch" not in lv[NO3][1] and "chan2" not in lv[NO3][1]
+    assert lv["[M-H]-"][0] == "4b"
+    # a line that is not alien keeps the branch
+    assert _levels(_j1_rows(j), label=K())["[M-H]-"][0] == "3b"
+
+
+def test_the_two_nitrate_clusters_of_one_neutral_are_one_channel():
+    x = "C4H6O4"
+    rows = ledger([m0("n14", x, adduct=NO3, ion=x + "NO3", mz=C.ion_mz(x, NO3)),
+                   m0("n15", x, adduct=NO3L, ion=x + "^NO3", mz=C.ion_mz(x, NO3L)),
+                   child("c1", "n15", "13C+1", 1000.0 * EV.C13_PER_CARBON * 4)])
+    base = EV.level_pooled({"f": rows}).set_index("adduct")
+    got = EV.level_pooled({"f": rows}, label=K()).set_index("adduct")
+    assert base["chan2"].all() and not got["chan2"].any()
+    assert base.loc[NO3L, "evidence_level"] == "4b" and got.loc[NO3L, "evidence_level"] == "4b"
+    # with the deprotonated line the neutral still has two channels and the branch
+    rows = pd.concat([rows, ledger([m0("h", x, adduct="[M-H]-", ion=x, mz=C.ion_mz(x, "[M-H]-"))])],
+                     ignore_index=True)
+    got = EV.level_pooled({"f": rows}, label=K()).set_index("adduct")
+    assert got["chan2"].all() and got["branch"].all()
+    # the fold never touches a profile without the facts: label=None is the old engine
+    assert EV.level_pooled({"f": rows}, label=None).equals(EV.level_pooled({"f": rows}))
+
+
+def test_the_reference_script_relabels_the_pools_like_the_engine():
+    LL = _ll()
+    j, x = "C11H18O6", "C4H6O4"
+    rows = pd.concat([_j1_rows(j), ledger([m0("a14", x, adduct=NO3, ion=x + "NO3", mz=C.ion_mz(x, NO3)),
+                                           m0("a15", x, adduct=NO3L, ion=x + "^NO3", mz=C.ion_mz(x, NO3L))])],
+                     ignore_index=True)
+    lab = K(alien={(j, NO3)}, veto={(j, NO3): "n"})
+    core = EV.level_pooled({"s1": rows}, label=lab)
+    frame = LL.measure_source("s1", rows.assign(__file="s1"), None)
+    ref = LL.assign_levels(frame, set(), None, lab)
+    m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
+    assert len(m) == len(core) == 4
+    assert (m["evidence_level"] == m["level"]).all()
+    assert (m["chan2_x"] == m["chan2_y"]).all() and (m["branch_x"] == m["branch_y"]).all()
 
 
 def test_the_facts_are_never_axes_nor_in_cross_nor_per_file():
     x = "C10H18O4"
     base = EV.level_pooled({"f": _nitrate_rows(x)})
-    out = EV.level_pooled({"f": _nitrate_rows(x)}, untie={(x, NO3)}, veto={(x, NO3L): "n"})
+    out = EV.level_pooled({"f": _nitrate_rows(x)}, label=K(untie={(x, NO3)}, veto={(x, NO3L): "n"}))
     assert (out["n_axes"].to_numpy() == base["n_axes"].to_numpy()).all()
     assert (out["cross"].to_numpy() == base["cross"].to_numpy()).all()
     assert EV.source_neutrals({"f": _nitrate_rows(x)}) == EV.source_neutrals({"f": _nitrate_rows(x)})
@@ -396,15 +523,22 @@ def test_a_leaked_fact_would_move_the_goldens():
     tied = set(zip(base.loc[base["tied"] & base["adduct"].eq(NO3), "neutral_formula"],
                    base.loc[base["tied"] & base["adduct"].eq(NO3), "adduct"]))
     assert tied
-    moved = EV.level_pooled({"tv_nitrate": no3}, cross=cross, untie=tied)
+    moved = EV.level_pooled({"tv_nitrate": no3}, cross=cross, label=K(untie=tied))
     assert _vector(moved.evidence_level) != _vector(base.evidence_level)
     tof, orbi = _pooled("tof"), _pooled("orbi")
     base = EV.level_pooled(orbi, cross=EV.source_neutrals(tof))
     assert (len(base), _vector(base.evidence_level)) == GOLDEN["orbi"]
     labelled = base[base["adduct"].eq(NO3L)]
     moved = EV.level_pooled(orbi, cross=EV.source_neutrals(tof),
-                            veto={(n, NO3L): "" for n in labelled["neutral_formula"]})
+                            label=K(veto={(n, NO3L): "" for n in labelled["neutral_formula"]}))
     assert _vector(moved.evidence_level) != GOLDEN["orbi"][1]
+    # the one-channel fold alone (an empty fact set that is not None) moves it too
+    moved = EV.level_pooled(orbi, cross=EV.source_neutrals(tof), label=K())
+    assert _vector(moved.evidence_level) != GOLDEN["orbi"][1]
+    # ... and alien 14N lines leaving their neutral's pools
+    lines = set(zip(base.loc[base["adduct"].eq(NO3), "neutral_formula"], base.loc[base["adduct"].eq(NO3), "adduct"]))
+    moved = EV.level_pooled({"tv_nitrate": no3}, cross=cross, label=K(alien=lines))
+    assert _vector(moved.evidence_level) != _vector(EV.level_pooled({"tv_nitrate": no3}, cross=cross).evidence_level)
 
 
 # --------------------------------------------------------------------------- the reference script
@@ -439,7 +573,7 @@ def test_the_reference_script_reads_the_table_like_the_engine(tmp_path):
     explicit = LL.run([str(run)], [], None, str(run / "tables" / "label_twins.csv"))
     assert list(explicit["level"]) == list(on.reset_index()["level"])
     assert list(LL.run([str(tmp_path / "out")], [], None, "auto")["level"]) == list(on.reset_index()["level"])
-    core = EV.level_pooled({"s1": rows}, untie={(x, NO3)}, veto={(y, NO3L): "no 14N twin"})
+    core = EV.level_pooled({"s1": rows}, label=K(untie={(x, NO3)}, veto={(y, NO3L): "no 14N twin"}))
     m = core.merge(on.reset_index(), left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
     assert len(m) == len(core) and (m["evidence_level"] == m["level"]).all()
     out = tmp_path / "levels.csv"
@@ -451,7 +585,7 @@ def test_the_reference_script_reads_the_table_like_the_engine(tmp_path):
     empty = tmp_path / "bare"
     (empty / "per_file").mkdir(parents=True)
     rows.to_csv(empty / "per_file" / "s1_ledger.csv", index=False)
-    assert LL.label_twin_facts(str(empty)) == (set(), set())
+    assert LL.label_twin_facts(str(empty)) is None
 
 
 # --------------------------------------------------------------------------- the scorecard
@@ -480,7 +614,7 @@ def test_the_scorecard_reads_the_twins_as_the_runs_own_evidence(tmp_path, monkey
                                                                     index=False)
     run = types.SimpleNamespace(path=str(run_dir), per_file=_nitrate_rows(x).assign(__file="s1"))
     SC.own_levels_for(run)
-    assert seen.get("untie") == {(x, NO3)} and seen.get("veto") == {(x, NO3L): "n"}
+    assert seen.get("label") == {"untie": {(x, NO3)}, "veto": {(x, NO3L): "n"}, "alien": set()}
 
 
 # --------------------------------------------------------------------------- the batch, end to end
@@ -537,7 +671,7 @@ def test_a_labelled_nitrate_batch_writes_the_table_and_levels_it(tmp_path, monke
     assert merged.loc[(x, NO3), "evidence_level"] == "3b"
     assert "label_untie" in merged.loc[(x, NO3), "evidence_axes"]
     assert merged.loc[(y, NO3L), "evidence_level"] == "5b"
-    assert "reagent label refutes" in merged.loc[(y, NO3L), "level_reason"]
+    assert "two isotopologues refute" in merged.loc[(y, NO3L), "level_reason"]
     ev = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv")
     assert {"label_untie", "label_veto", "label_note"} <= set(ev.columns)
 

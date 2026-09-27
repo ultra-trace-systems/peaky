@@ -470,13 +470,12 @@ def own_levels_for(run: Run) -> pd.DataFrame:
         if "upair" in t.columns:
             upair = set(t.loc[t["upair"].map(EV.truthy), "neutral_formula"].astype(str))
     # ... and so are its labelled-nitrate twin facts (rule K)
-    untie, veto = set(), {}
+    label = None
     table = os.path.join(run.path, "tables", "label_twins.csv")
     if os.path.isfile(table):
         from peaky.batch import label_twins as LT
-        t = pd.read_csv(table)
-        untie, veto = LT.untie(t), LT.veto(t)
-    pairs = EV.level_pooled(frames, cross=None, upair=upair, untie=untie, veto=veto)
+        label = LT.facts(pd.read_csv(table))
+    pairs = EV.level_pooled(frames, cross=None, upair=upair, label=label)
     if pairs.empty:
         return empty
     pairs = pairs[~pairs["ion_only"].astype(bool)]

@@ -1862,7 +1862,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     twins_table = _LT.measure(ts_annot, level_frames, prof, alias_ties=alias_ties, log=log)
     twins_table.to_csv(os.path.join(TAB, "label_twins.csv"), index=False)
     levels = EV.level_pooled(level_frames, cross=cross, upair=_NP.neutrals(pairs_table),
-                             untie=_LT.untie(twins_table), veto=_LT.veto(twins_table))
+                             label=_LT.facts(twins_table))
     merged = EV.stamp_merged(merged, levels)
     levels.to_csv(os.path.join(TAB, "evidence_levels.csv"), index=False)
     ev_summary = {

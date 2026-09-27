@@ -358,9 +358,17 @@ def detect_reagent_halogen(m0: pd.DataFrame) -> str | None:
     return None
 
 
-def _measure(frame: pd.DataFrame, *, halogen: str | None) -> pd.DataFrame:
+#: rule K's one-channel fold: on a labelled-nitrate batch the 14N and the 15N
+#: nitrate cluster of one neutral are one channel seen through the reagent's two
+#: isotopologues, never two
+LABEL_FOLD = {"[M+NO3]-": "[M+^NO3]-", "[M+15NO3]-": "[M+^NO3]-"}
+
+
+def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None) -> pd.DataFrame:
     """One row of evidence per (neutral, adduct) the source committed. `frame`
-    carries a `__file` column (the file each row came from)."""
+    carries a `__file` column (the file each row came from). `alien` (rule K):
+    {(neutral, adduct)} kept out of the per-neutral pools in both directions,
+    like an ion-only row; `fold` maps adducts that count as one channel."""
     role = _col(frame, "role").astype(str)
     m0 = frame[role == "M0"].copy()
     if m0.empty:
@@ -371,10 +379,13 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None) -> pd.DataFrame:
     m0["__neutral"] = m0["neutral_formula"].fillna("").astype(str)
     m0["__adduct"] = m0["adduct"].fillna("").astype(str)
     m0["__ion_only"] = is_ion_only(m0).to_numpy()
+    alien = {(str(n), str(a)) for n, a in (alien or set())}
+    m0["__alien"] = [k in alien for k in zip(m0["__neutral"], m0["__adduct"])] if alien else False
     # the per-neutral facts (second channel, acid branch) are read over the
     # REGULAR rows only: an ion-only row is the parent's own composition on
-    # another adduct and must not count as a second channel for it
-    regular = m0[~m0["__ion_only"]]
+    # another adduct and must not count as a second channel for it (nor a 14N
+    # nitrate line rule K could not tie to its neutral's 15N cluster)
+    regular = m0[~m0["__ion_only"] & ~m0["__alien"]]
 
     # satellites: each child hangs off the M0 with peak_id == parent_peak_id in
     # the same file; the tag is the label before any '+' (13C+1 -> 13C)
@@ -406,7 +417,8 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None) -> pd.DataFrame:
             lined[(n, a)] = set(g.loc[g["__ok"], "__el"].dropna())
 
     # per-neutral facts over the whole source (regular rows: see above)
-    channels = regular.groupby("__neutral")["__adduct"].nunique()
+    channels = regular.assign(__ch=regular["__adduct"].map(lambda a: (fold or {}).get(a, a))) \
+        .groupby("__neutral")["__ch"].nunique()
     adduct_sets = regular.groupby("__neutral")["__adduct"].agg(lambda s: set(s))
     satellite = HALOGEN_SATELLITE.get(halogen) if halogen else None
 
@@ -436,7 +448,8 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None) -> pd.DataFrame:
         known = g["__known"].dropna()
         seen = {v for v in g["__res"] if v}
         ion_only = bool(g["__ion_only"].any())
-        aset = set() if ion_only else adduct_sets.get(neutral, set())
+        outside = ion_only or bool(np.any(g["__alien"]))
+        aset = set() if outside else adduct_sets.get(neutral, set())
         rows.append(dict(
             neutral_formula=neutral, adduct=adduct,
             ion=ion,
@@ -450,7 +463,7 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None) -> pd.DataFrame:
             multiline=len(own) >= 2,
             multiline_elements="|".join(sorted(own)),
             carbon_ev=carbon_ev,
-            chan2=(not ion_only) and int(channels.get(neutral, 0)) >= 2,
+            chan2=(not outside) and int(channels.get(neutral, 0)) >= 2,
             anchor=(not ion_only) and bool(g["__anchor"].any()),
             branch=bool(aset & BARE_ADDUCTS) and bool(aset & CLUSTER_ADDUCTS),
             reagent_only_iso=(not ion_only) and bool(satellite) and bool(t) and not carbon_ev
@@ -487,10 +500,11 @@ def _decide(r) -> tuple[str, str]:
     if r.lowconf:
         hard.append("engine confidence Low/Suspect")
     if getattr(r, "label_veto", False):
-        # rule K (C18): the labelled reagent's 14N twin is absent where the
-        # reagent's own impurity puts it -- the cluster reading is refuted
+        # rule K (C18): the 14N twin of a labelled cluster is absent where the
+        # reagent's own impurity puts it, or a 14N line has no 15N partner or
+        # runs above its cluster share -- the cluster reading is refuted
         note = getattr(r, "label_note", "") or ""
-        hard.append("the reagent label refutes the cluster reading" + (f" ({note})" if note else ""))
+        hard.append("the reagent's two isotopologues refute the cluster reading" + (f" ({note})" if note else ""))
     if hard:
         return "5b", "5b: " + "; ".join(hard)
     if r.ion_only:
@@ -580,24 +594,28 @@ def _axes_string(r, *, with_files: bool) -> str:
 
 
 def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: bool = False,
-                 upair=None, untie=None, veto=None) -> pd.DataFrame:
+                 upair=None, label=None) -> pd.DataFrame:
     """Level every (neutral, adduct) pair of the frames pooled as ONE source.
     `upair`: the neutrals whose declared neutral pair holds (rule U, measured by
-    batch/neutral_pairs.py on the batch time series; pooled only). `untie` /
-    `veto`: the labelled-nitrate twin facts of rule K (batch/label_twins.py;
-    pooled only) -- {(neutral, adduct)} whose arbiter tie the 15N sibling breaks,
-    and {(neutral, adduct): note} whose 14N twin refutes the cluster reading."""
+    batch/neutral_pairs.py on the batch time series; pooled only). `label`: the
+    labelled-nitrate twin facts of rule K (batch/label_twins.facts; pooled only):
+    {'untie': {(n, a)} whose arbiter tie the 15N sibling breaks, 'veto': {(n, a):
+    note} the reagent's isotopologues refute, 'alien': {(n, a)} 14N lines kept out
+    of their neutral's pools}; given, the 14N and 15N nitrate clusters of one
+    neutral also count as one channel."""
     parts = []
-    for label, frame in frames.items():
+    for src, frame in frames.items():
         f = frame.copy()
-        f["__file"] = str(label)
+        f["__file"] = str(src)
         parts.append(f)
     if not parts:
         return pd.DataFrame(columns=["neutral_formula", "adduct", *COLUMNS])
     frame = pd.concat(parts, ignore_index=True, sort=False)
     role = _col(frame, "role").astype(str)
     halogen = detect_reagent_halogen(frame[role == "M0"])
-    facts = _measure(frame, halogen=halogen)
+    label = label or None
+    facts = _measure(frame, halogen=halogen, alien=(label or {}).get("alien"),
+                     fold=LABEL_FOLD if label else None)
     if facts.empty:
         return pd.DataFrame(columns=["neutral_formula", "adduct", *COLUMNS])
     cross = {str(x) for x in (cross or set())}
@@ -612,11 +630,11 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
     # rule K: facts about one reading (a pair), never an axis, never in `cross`;
     # the untie clears the arbiter's tie only where the pair is tied at all
     keys = list(zip(facts["neutral_formula"].astype(str), facts["adduct"].astype(str)))
-    untie = {(str(n), str(a)) for n, a in (untie or set())}
+    untie = {(str(n), str(a)) for n, a in ((label or {}).get("untie") or set())}
     facts["label_untie"] = pd.Series([k in untie for k in keys], index=facts.index, dtype=bool) \
         & facts["tied"] & ~facts["ion_only"]
     facts.loc[facts["label_untie"], "tied"] = False
-    veto = {(str(n), str(a)): str(v or "") for (n, a), v in (veto or {}).items()}
+    veto = {(str(n), str(a)): str(v or "") for (n, a), v in ((label or {}).get("veto") or {}).items()}
     facts["label_veto"] = pd.Series([k in veto for k in keys], index=facts.index, dtype=bool) & ~facts["ion_only"]
     facts["label_note"] = [veto.get(k, "") if v else "" for k, v in zip(keys, facts["label_veto"])]
     facts["n_axes"] = facts[list(AXES)].sum(axis=1).astype(int)
@@ -709,18 +727,17 @@ def _n_pairs(ledger: pd.DataFrame) -> int:
                              "a": _col(m0, "adduct").fillna("").astype(str)}).drop_duplicates().shape[0])
 
 
-def level_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None, untie=None,
-                 veto=None) -> pd.DataFrame:
+def level_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None, label=None) -> pd.DataFrame:
     """A batch's per-file ledgers ({label: frame}) pooled as ONE source: one row
     per (neutral_formula, adduct) over all files with the four columns and every
     fact of §3 (`chan2` sees a second adduct in ANY file, `iso` any file's
     satellite, `tied`/`lowconf` need ALL rows across files, `below` any).
     `upair` is the neutral-pair set of rule U (batch/neutral_pairs.neutrals);
-    `untie` / `veto` are the labelled-nitrate twin facts of rule K
-    (batch/label_twins.untie / .veto); they exist only here, on the pooled batch.
+    `label` is rule K's labelled-nitrate twin facts (batch/label_twins.facts);
+    both exist only here, on the pooled batch.
     `evidence_axes` ends with `files:<n>`."""
     return _level_pairs(dict(per_file), cross=cross, isomer_space=isomer_space, with_files=True, upair=upair,
-                        untie=untie, veto=veto)
+                        label=label)
 
 
 def stamp_merged(merged: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:

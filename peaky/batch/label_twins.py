@@ -7,34 +7,49 @@ from the reagent's 14N impurity and ambient 14N nitrate, the light [X+NO3]-. The
 two lines are one cluster seen through the reagent's isotopologues, so each
 arbitrates the other's reading, in its own direction:
 
-  untie (14N line -> its 15N sibling) : a committed [X+NO3]- reading ties by
+  track (14N line -> its 15N sibling) : a committed [X+NO3]- reading ties by
         construction with the organonitrate [X'-H]- (X' = X + HNO3, the SAME ion).
-        The line is X's cluster when its 14N/15N ratio q(t) follows the batch's
+        The line TRACKS X's cluster when its 14N/15N ratio q(t) follows the batch's
         cluster ratio k_cl(t) -- the per-spectrum median of q over the bright CHO
-        acid clusters (15N line >= REF_MIN_H15 counts, both lines co-detected in >=
-        CODETECT_MIN spectra), the pair under test left out: median(q / k_cl) in
-        RATIO_LO..RATIO_HI, sd(log q / k_cl) <= SD_MAX and r(log q, log k_cl) >=
-        R_MIN over >= STATS_MIN spectra. A passing line breaks the arbiter's tie in
-        the cluster's favour, but only where every file's tie is with the same-ion
-        alias alone (`alias_only_ties`); the level then reads the acid branch.
+        acid clusters committed on [M+^NO3]- (15N line >= REF_MIN_H15 counts, both
+        lines co-detected in >= CODETECT_MIN spectra), the pair under test left out:
+        median(q / k_cl) in RATIO_LO..RATIO_HI, sd(log q / k_cl) <= SD_MAX and
+        r(log q, log k_cl) >= R_MIN over >= STATS_MIN spectra. Each committed line
+        gets a verdict (LINE_VERDICTS): `tracks`; `consistent` (tested, not above
+        the cluster ratio -- an organonitrate can only ADD 14N intensity, so a noisy
+        or a reagent-dominated cluster such as trifluoroacetic acid's, at the
+        reagent's own impurity, is still X's cluster); `excess` (tested, above
+        RATIO_HI x the cluster ratio); `absent` (the 15N partner in <=
+        PARTNER_ABSENT_SHARE of the >= PARTNER_MIN_SPECTRA spectra of the 14N line);
+        `untestable`. A tracking line breaks the arbiter's tie in the cluster's
+        favour where every file's tie is with the same-ion alias alone
+        (`alias_only_ties`); an excess / absent / untestable line gives X nothing
+        (`alien`: out of X's per-neutral pools, both ways), and an excess or absent
+        one is refuted (cluster or organonitrate undecided: hard 5b). The two
+        clusters of one neutral also count as ONE channel (evidence.LABEL_FOLD).
   veto  (15N line -> its 14N twin)     : a real reagent cluster [Y+^NO3]- carries
         the reagent's 14N impurity at f = (1 - purity) / purity of its height
         (ReagentProfile.purity; 0.98 -> 0.0204, the labelled nitrate dimer of the
         reagent-ion scan reads 0.0186 and trifluoroacetic acid's cluster 0.0206 in
         the same batch). Over the spectra where that twin would be detected with
         probability >= PMIN (the batch's own detection curve: the 13C lines of every
-        committed M0 of >= PDET_MIN_C carbons), E = sum of those probabilities; the
-        twin is refuted when E >= E_MIN and it is seen in <= REFUTE_SHARE x E of them
-        (passes >= PASS_SHARE x E; untestable when E < E_MIN). A refuted twin says the
-        reagent label refutes the cluster reading: a new hard input (5b).
+        committed M0 of >= PDET_MIN_C carbons; an empty bin takes the populated bin
+        below it), E = sum of those probabilities; the twin is refuted when E >=
+        E_MIN and it is seen in <= REFUTE_SHARE x E of them (passes >= PASS_SHARE x
+        E; untestable when E < E_MIN): the reagent's two isotopologues refute the
+        cluster reading, a hard input (5b).
 
 Measured on the labelled-nitrate regression batch (2026-09-26 output audit rule K,
 re-measured on the trunk 2026-09-27): 14 of 40
 co-detected pairs pass the cluster-k test, 8 tied [X+NO3]- rows untie (5b -> 3b,
 0.179 % of the batch signal), mismatched X14/Y15 pairs pass 42/600 and
-organonitrate lines 3/150; the twin veto refutes 2 [Y+^NO3]- readings (0 of ~32 / 41
-expected detections), the same 2 for f 0.0150-0.0365, never a positive control (a
-13C-backed cluster of an identified acid) and every testable N-free [M-H]- control.
+organonitrate lines 3/150; of the 291 committed [X+NO3]- lines 14 track, 18 are
+consistent, 13 excess, 220 have no 15N partner (1.35 % of the signal) and 26 are
+untestable, and the C11-C12 [M-H]- acids whose only cluster was such a line leave
+the acid branch (identified 48.3 -> 44.6 % with the rest of the rule); the twin veto
+refutes 2 [Y+^NO3]- readings (0 of ~42 / 53 expected detections), the same 2 for f
+0.0150-0.0236, never a positive control (a 13C-backed cluster of an identified
+acid) and every testable N-free [M-H]- control.
 The table is batch-only (it needs the stamped time series), never an axis, never
 in `cross`, never per file.
 """
@@ -57,6 +72,20 @@ RATIO_LO, RATIO_HI = 0.5, 2.0
 SD_MAX = 0.25
 R_MIN = 0.8
 REF_ELEMENTS = frozenset({"C", "H", "O"})
+#: the 15N partner is ABSENT when it is found in <= PARTNER_ABSENT_SHARE of the
+#: >= PARTNER_MIN_SPECTRA spectra that hold the 14N line (the cluster puts the 15N
+#: line at >= 2.6x the 14N one in every spectrum of the regression batch)
+PARTNER_ABSENT_SHARE = 0.2
+PARTNER_MIN_SPECTRA = 10
+#: what a 14N line's verdict does to its reading: `tracks` -- X's cluster (the
+#: tie may be broken); `consistent` -- tested, not above the cluster ratio (a
+#: noisy or a reagent-dominated cluster: an organonitrate can only ADD 14N
+#: intensity), counts as X's cluster; `excess` -- above RATIO_HI x the cluster
+#: ratio and `absent` -- no 15N partner: cluster or organonitrate undecided,
+#: gives X nothing and reads 5b; `untestable` -- gives X nothing
+LINE_VERDICTS = ("tracks", "consistent", "excess", "absent", "untestable")
+FOREIGN = ("excess", "absent", "untestable")
+REFUTED = ("excess", "absent")
 # the veto (14N twin)
 C13_PER_C = 0.0107
 PDET_MIN_C = 4
@@ -66,9 +95,9 @@ E_MIN = 3.0
 REFUTE_SHARE = 0.2
 PASS_SHARE = 0.5
 TABLE_COLUMNS = (
-    "neutral_formula", "adduct", "mz", "mz_partner", "n_codetected", "h15_median", "reference",
-    "k_ratio", "k_sd", "k_r", "k_n", "cluster_k", "alias_only_tie", "untie",
-    "f", "E", "obs", "twin_verdict", "veto", "note",
+    "neutral_formula", "adduct", "committed", "mz", "mz_partner", "n14", "n_codetected", "partner_share",
+    "h15_median", "reference", "k_ratio", "k_sd", "k_r", "k_n", "cluster_k", "line_verdict",
+    "alias_only_tie", "untie", "alien", "f", "E", "obs", "twin_verdict", "veto", "note",
 )
 
 
@@ -162,18 +191,23 @@ def _committed(frames: dict) -> pd.DataFrame:
     return m.drop_duplicates(["neutral_formula", "adduct"]).reset_index(drop=True)
 
 
-def _cluster_k(tr: _Traces, neutrals: list) -> pd.DataFrame:
-    """The cluster-k test on every [X+^NO3]- neutral's 14N line (module docstring)."""
+def _cluster_k(tr: _Traces, neutrals: list, ref_pool=None) -> pd.DataFrame:
+    """The cluster-k test on the 14N line of every neutral in `neutrals`; the
+    references are drawn from `ref_pool` (the neutrals committed on the labelled
+    cluster; all of `neutrals` when None). Module docstring."""
     mz14 = np.array([C.ion_mz(n, NO3) for n in neutrals])
     mz15 = np.array([C.ion_mz(n, NO3L) for n in neutrals])
     H14, H15 = tr.heights(mz14), tr.heights(mz15)
     both = np.isfinite(H14) & np.isfinite(H15)
     nco = both.sum(axis=0)
-    rec = pd.DataFrame({"neutral_formula": neutrals, "mz": mz14, "mz_partner": mz15, "n_codetected": nco})
+    n14 = np.isfinite(H14).sum(axis=0)
+    rec = pd.DataFrame({"neutral_formula": neutrals, "mz": mz14, "mz_partner": mz15, "n14": n14,
+                        "n_codetected": nco, "partner_share": nco / np.maximum(n14, 1)})
     rec["h15_median"] = [float(np.median(H15[both[:, j], j])) if nco[j] else np.nan for j in range(len(neutrals))]
     tested = nco >= CODETECT_MIN
     cho = np.array([set(k for k, v in C.parse_formula(n).items() if v) <= REF_ELEMENTS for n in neutrals])
-    ref = tested & cho & (np.nan_to_num(rec["h15_median"].to_numpy(float)) >= REF_MIN_H15)
+    pool = np.ones(len(neutrals), bool) if ref_pool is None else np.isin(neutrals, list(ref_pool))
+    ref = tested & cho & pool & (np.nan_to_num(rec["h15_median"].to_numpy(float)) >= REF_MIN_H15)
     rec["reference"] = ref
     Q = H14 / H15
     Qref = Q[:, ref]
@@ -201,6 +235,11 @@ def _cluster_k(tr: _Traces, neutrals: list) -> pd.DataFrame:
     rec["k_ratio"], rec["k_sd"], rec["k_r"], rec["k_n"] = zip(*stats) if stats else ([], [], [], [])
     rec["cluster_k"] = (rec["k_ratio"].between(RATIO_LO, RATIO_HI) & (rec["k_sd"] <= SD_MAX)
                         & (rec["k_r"] >= R_MIN)).fillna(False).astype(bool)
+    stats_ok = rec["k_ratio"].notna()
+    absent = (rec["n14"] >= PARTNER_MIN_SPECTRA) & (rec["partner_share"] <= PARTNER_ABSENT_SHARE)
+    rec["line_verdict"] = np.select(
+        [rec["cluster_k"], stats_ok & (rec["k_ratio"] > RATIO_HI), stats_ok, absent],
+        ["tracks", "excess", "consistent", "absent"], default="untestable")
     rec["adduct"] = NO3
     return rec
 
@@ -273,7 +312,8 @@ def measure(ts: pd.DataFrame | None, frames: dict, prof, *, alias_ties: dict | N
     if not n15:
         return _empty()
     tr = _Traces(ts)
-    ck = _cluster_k(tr, n15)
+    n14 = set(com.loc[com["adduct"] == NO3, "neutral_formula"])
+    ck = _cluster_k(tr, sorted(set(n15) | n14 - {""}), ref_pool=n15)
     # the untie guard: every file's tie on the [X+NO3]- reading is with same-ion aliases only
     parts = [t for t in (alias_ties or {}).values() if t is not None and len(t)]
     if parts:
@@ -282,22 +322,50 @@ def measure(ts: pd.DataFrame | None, frames: dict, prof, *, alias_ties: dict | N
     else:
         alias_ok = pd.Series(dtype=bool)
     ck["alias_only_tie"] = ck["neutral_formula"].map(alias_ok).fillna(False).astype(bool)
-    n14 = set(com.loc[com["adduct"] == NO3, "neutral_formula"])
-    ck["untie"] = ck["cluster_k"] & ck["alias_only_tie"] & ck["neutral_formula"].isin(n14)
+    ck["committed"] = ck["neutral_formula"].isin(n14)
+    ck["untie"] = ck["cluster_k"] & ck["alias_only_tie"] & ck["committed"]
+    ck["alien"] = ck["committed"] & ck["line_verdict"].isin(FOREIGN)
+    ck["veto"] = ck["committed"] & ck["line_verdict"].isin(REFUTED)
+    ck["note"] = [_line_note(r) if v else "" for r, v in zip(ck.itertuples(index=False), ck["veto"])]
     f = twin_fraction(prof)
     tw = _twin_veto(tr, n15, f, _pdet_curve(tr, com))
+    tw["committed"] = True
     out = pd.concat([ck, tw], ignore_index=True, sort=False)
     for c in TABLE_COLUMNS:
         if c not in out.columns:
             out[c] = np.nan
-    for c in ("reference", "cluster_k", "alias_only_tie", "untie", "veto"):
+    for c in ("committed", "reference", "cluster_k", "alias_only_tie", "untie", "alien", "veto"):
         out[c] = out[c].fillna(False).astype(bool)
     out["note"] = out["note"].fillna("")
     out = out[list(TABLE_COLUMNS)].sort_values(["neutral_formula", "adduct"]).reset_index(drop=True)
-    log(f"[label_twins] {len(n15)} [M+^NO3]- neutrals: {int(ck['cluster_k'].sum())} 14N lines pass the "
-        f"cluster-k test ({int(out['untie'].sum())} untie), {int(tw['veto'].sum())} readings refuted by their "
-        f"14N twin (f {f:.4f}, {int((tw['twin_verdict'] == 'untestable').sum())} untestable)")
+    c14 = ck[ck["committed"]]
+    log(f"[label_twins] {len(c14)} committed [M+NO3]- lines: "
+        + ", ".join(f"{int((c14['line_verdict'] == v).sum())} {v}" for v in LINE_VERDICTS)
+        + f" ({int(out['untie'].sum())} untie); {len(n15)} [M+^NO3]- readings: {int(tw['veto'].sum())} refuted by "
+        f"their 14N twin (f {f:.4f}, {int((tw['twin_verdict'] == 'untestable').sum())} untestable)")
     return out
+
+
+def _line_note(r) -> str:
+    if r.line_verdict == "absent":
+        return (f"no 15N partner: seen in {int(r.n_codetected)} of the {int(r.n14)} spectra of the 14N line; "
+                f"cluster or organonitrate undecided")
+    return (f"the 14N line runs {r.k_ratio:.1f}x its cluster share of the 15N line; "
+            f"cluster or organonitrate undecided")
+
+
+def facts(table: pd.DataFrame | None) -> dict | None:
+    """What evidence.level_pooled reads (its `label=`): {'untie': {(n, a)},
+    'veto': {(n, a): note}, 'alien': {(n, a)}} -- None for an empty table (out of
+    scope, or no time series), where nothing of rule K applies, the one-channel
+    fold included."""
+    if table is None or not len(table):
+        return None
+    alien = set()
+    if "alien" in table.columns:
+        t = table[table["alien"].map(_truth)]
+        alien = set(zip(t["neutral_formula"].astype(str), t["adduct"].astype(str)))
+    return {"untie": untie(table), "veto": veto(table), "alien": alien}
 
 
 def untie(table: pd.DataFrame | None) -> set:
@@ -309,7 +377,9 @@ def untie(table: pd.DataFrame | None) -> set:
 
 
 def veto(table: pd.DataFrame | None) -> dict:
-    """{(neutral, '[M+^NO3]-'): note} the 14N twin refutes."""
+    """{(neutral, adduct): note} rule K refutes: an [M+^NO3]- reading whose 14N
+    twin is absent, an [M+NO3]- reading whose 14N line exceeds its cluster share
+    or has no 15N partner."""
     if table is None or not len(table) or "veto" not in table.columns:
         return {}
     t = table[table["veto"].map(_truth)]
@@ -330,10 +400,15 @@ def summary(table: pd.DataFrame | None, prof) -> dict:
         return {"in_scope": bool(in_scope(prof)), "lines": 0, "untie": 0, "readings": 0, "refuted": 0}
     t14 = table[table["adduct"] == NO3]
     t15 = table[table["adduct"] == NO3L]
+    c14 = t14[t14["committed"].map(_truth)] if "committed" in t14.columns else t14
+    verdicts = c14["line_verdict"].astype(str) if "line_verdict" in c14.columns else pd.Series(dtype=str)
     return {"in_scope": True, "f": float(t15["f"].iloc[0]) if len(t15) else None,
             "lines": int(len(t14)), "codetected": int((pd.to_numeric(t14["n_codetected"]) >= CODETECT_MIN).sum()),
             "references": int(t14["reference"].map(_truth).sum()), "cluster_k": int(t14["cluster_k"].map(_truth).sum()),
+            "committed_lines": int(len(c14)), **{f"lines_{v}": int((verdicts == v).sum()) for v in LINE_VERDICTS},
+            "alien": int(c14["alien"].map(_truth).sum()) if "alien" in c14.columns else 0,
             "untie": int(t14["untie"].map(_truth).sum()), "readings": int(len(t15)),
             "testable": int((t15["twin_verdict"] != "untestable").sum()),
             "passes": int((t15["twin_verdict"] == "passes").sum()),
-            "refuted": int(t15["veto"].map(_truth).sum())}
+            "refuted": int(t15["veto"].map(_truth).sum()),
+            "lines_refuted": int(c14["veto"].map(_truth).sum())}

@@ -495,22 +495,45 @@ def level_of(row) -> str:
     return "4b"
 
 
+#: rule K's one-channel fold (the 14N and 15N nitrate clusters of one neutral)
+LABEL_FOLD = {"[M+NO3]-": "[M+^NO3]-", "[M+15NO3]-": "[M+^NO3]-"}
+
+
+def relabel_pools(df: pd.DataFrame, alien: set) -> pd.DataFrame:
+    """Rule K on the per-neutral facts: chan2 and branch recomputed over the
+    regular rows minus the `alien` 14N lines, the two nitrate clusters of one
+    neutral counted as one channel; an alien row takes neither."""
+    df = df.copy()
+    keys = list(zip(df["neutral"].astype(str), df["adduct"].astype(str)))
+    out = pd.Series([k in alien for k in keys], index=df.index, dtype=bool) | df["ion_only"].astype(bool)
+    reg = df[~out]
+    chans = reg.assign(ch=reg["adduct"].map(lambda a: LABEL_FOLD.get(a, a))).groupby("neutral")["ch"].nunique()
+    adds = reg.groupby("neutral")["adduct"].agg(lambda s: set(s.astype(str)))
+    df["chan2"] = [(not o) and int(chans.get(n, 0)) >= 2 for n, o in zip(df["neutral"], out)]
+    df["branch"] = [(not o) and bool(adds.get(n, set()) & BARE_ADDUCTS) and bool(adds.get(n, set()) & CLUSTER_ADDUCTS)
+                    for n, o in zip(df["neutral"], out)]
+    return df
+
+
 def assign_levels(df: pd.DataFrame, corroborating: set[str], upair: set[str] | None = None,
-                  untie: set | None = None, veto: set | None = None) -> pd.DataFrame:
+                  label: dict | None = None) -> pd.DataFrame:
     """Add the axes, the derived flags and the level to measured rows. `upair`
-    is the batch's neutral-pair set (rule U); `untie` / `veto` are the
-    labelled-nitrate twin facts (rule K): {(neutral, adduct)} whose arbiter tie
-    the 15N sibling breaks, and whose 14N twin refutes the cluster reading.
-    Facts, never axes."""
+    is the batch's neutral-pair set (rule U); `label` the labelled-nitrate twin
+    facts (rule K: {'untie', 'veto', 'alien'}, `label_twin_facts`): the 14N lines
+    it could not tie to their neutral's 15N cluster leave the neutral's pools,
+    the two clusters count as one channel, a tie the 15N sibling breaks is
+    cleared and a refuted reading is hard. Facts, never axes."""
     df = df.copy()
     df["known_fam"] = df["known_fam"].fillna("")
     if "ion_only" not in df.columns:
         df["ion_only"] = False
     df["corroborated"] = df["neutral"].isin(corroborating) & ~df["ion_only"].astype(bool)
     df["upair"] = df["neutral"].isin(upair or set()) & ~df["ion_only"].astype(bool)
+    if label:
+        df = relabel_pools(df, {(str(n), str(a)) for n, a in (label.get("alien") or set())})
     keys = list(zip(df["neutral"].astype(str), df["adduct"].astype(str)))
-    untie = {(str(n), str(a)) for n, a in (untie or set())}
-    veto = {(str(n), str(a)) for n, a in (veto or set())}
+    untie = {(str(n), str(a)) for n, a in ((label or {}).get("untie") or set())}
+    veto = {(str(n), str(a)) for n, a in ((label or {}).get("veto") or {})}
     df["label_untie"] = (pd.Series([k in untie for k in keys], index=df.index, dtype=bool)
                          & df["tied"].astype(bool) & ~df["ion_only"].astype(bool))
     df.loc[df["label_untie"], "tied"] = False
@@ -590,10 +613,11 @@ def upair_neutrals(path: str) -> set[str]:
     return set(frame.loc[held, "neutral_formula"].astype(str))
 
 
-def label_twin_facts(path: str) -> tuple[set, set]:
-    """(untie, veto) -- the labelled-nitrate twin facts (rule K) read from a
-    batch's tables/label_twins.csv (a run dir, or an --out-dir holding one run)
-    or from that CSV itself. A source without the table says so on stderr."""
+def label_twin_facts(path: str) -> dict | None:
+    """{'untie', 'veto', 'alien'} -- the labelled-nitrate twin facts (rule K)
+    read from a batch's tables/label_twins.csv (a run dir, or an --out-dir holding
+    one run) or from that CSV itself; None when there is no table or it is empty
+    (out of scope). A source without the table says so on stderr."""
     table = path
     if os.path.isdir(path):
         table = os.path.join(path, "tables", "label_twins.csv")
@@ -603,16 +627,18 @@ def label_twin_facts(path: str) -> tuple[set, set]:
                 table = found[0]
     if not os.path.isfile(table):
         print(f"  --label-twins: no label_twins.csv for {path}; rule K does not fire there", file=sys.stderr)
-        return set(), set()
+        return None
     frame = pd.read_csv(table)
-    out = []
-    for col in ("untie", "veto"):
+    if frame.empty:
+        return None
+    out = {}
+    for col in ("untie", "veto", "alien"):
         if col not in frame.columns:
-            out.append(set())
+            out[col] = set()
             continue
         held = frame[col].map(truthy)
-        out.append(set(zip(frame.loc[held, "neutral_formula"].astype(str), frame.loc[held, "adduct"].astype(str))))
-    return out[0], out[1]
+        out[col] = set(zip(frame.loc[held, "neutral_formula"].astype(str), frame.loc[held, "adduct"].astype(str)))
+    return out
 
 
 def run(sources: list[str], corroborate: list[str], upair: str | None = None,
@@ -644,12 +670,12 @@ def run(sources: list[str], corroborate: list[str], upair: str | None = None,
             held = upair_neutrals(path)
         elif upair:
             held = upair_neutrals(upair)
-        untie, veto = set(), set()
+        label = None
         if twins == "auto":
-            untie, veto = label_twin_facts(path)
+            label = label_twin_facts(path)
         elif twins:
-            untie, veto = label_twin_facts(twins)
-        out.append(assign_levels(frame, others, held, untie, veto))
+            label = label_twin_facts(twins)
+        out.append(assign_levels(frame, others, held, label))
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
 
 
