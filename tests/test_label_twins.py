@@ -318,12 +318,13 @@ def test_the_twin_is_looked_for_below_the_labelled_line():
 
 def test_a_twin_seen_in_between_is_unclear_and_a_dim_cluster_is_untestable():
     y, z = "C12H14O2", "C11H12O2"
-    spec = _refs_spec(**{y: {"phase": 1.0, "share": 0.35}, z: {"phase": 1.0, "q": None, "h15": 2.0}})
+    spec = _refs_spec(**{y: {"phase": 1.0, "share": 0.35},
+                         z: {"phase": 1.0, "q": None, "h15": 2.0, "c13": False}})
     t = _measure(spec)
     assert _row(t, y, NO3L).twin_verdict == "unclear" and not _row(t, y, NO3L).veto
     rz = _row(t, z, NO3L)
     # a detection curve of nothing but bright lines says nothing about a dim twin
-    assert rz.twin_verdict in ("untestable", "refuted")
+    assert rz.twin_verdict == "untestable" and not rz.veto and rz.E == 0
 
 
 def _dim_rows(frames, ts):
@@ -542,11 +543,13 @@ def test_the_facts_are_never_axes_nor_in_cross_nor_per_file():
     out = EV.level_pooled({"f": _nitrate_rows(x)}, label=K(untie={(x, NO3)}, veto={(x, NO3L): "n"}))
     assert (out["n_axes"].to_numpy() == base["n_axes"].to_numpy()).all()
     assert (out["cross"].to_numpy() == base["cross"].to_numpy()).all()
-    assert EV.source_neutrals({"f": _nitrate_rows(x)}) == EV.source_neutrals({"f": _nitrate_rows(x)})
+    # the cross set re-levels a source on its own per-file evidence, without rule K (§6.3)
+    assert x in EV.source_neutrals({"f": _nitrate_rows(x)})
+    import inspect
+    assert "label" not in inspect.signature(EV.source_neutrals).parameters
     per_file = EV.compute_levels(_nitrate_rows(x))
     assert "5b" in set(per_file["evidence_level"])                # the per-file tie stands
-    import inspect
-    assert "untie" not in inspect.signature(EV.compute_levels).parameters
+    assert "label" not in inspect.signature(EV.compute_levels).parameters
 
 
 # --------------------------------------------------------------------------- the leak guard
