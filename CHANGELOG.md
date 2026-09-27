@@ -649,6 +649,31 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A tentative lead is its own flag (`tentative_lead`), apart from `below_assignability`.**
+  `below_assignability` said two things: the assignment argues with itself (O >= 11 on
+  a saturated formula, an O-monster, a carbon cluster, an implausible ionization, an
+  off-calibration residual, unconfirmed F >= 4), or the proposal is only unsupported.
+  The second half is now a per-row column of its own, written by the reference-list
+  dim rescue, the element-budget demote, the speculative-residual demote (N >= 3 with no
+  isotope, a series gap-fill with no anchors, a sole minor channel), an uncorroborated
+  radical anion and the reagent-N re-read; every other setter keeps
+  `below_assignability`, and a row both flags mark stays hard. The evidence level pools
+  the lead over any row, treats it as hard and gives it the same reason as before
+  ("5b: below assignability"), so no level, reason or claim moves; the ion-only parent
+  choice and the Below assignability sheet read either flag; the tier engine reads
+  neither. `scripts/level_ledger.py` reads it in lockstep (a ledger without the column
+  reads False, so old ledgers and the golden vectors do not move -- and a checkout
+  before this change must not level or corroborate the new ledgers: it would ignore the
+  lead). A commit, a clear or a displacement now resets both flags
+  (`below_assignability` was never reset before; on the regression runs that clears it
+  on six displaced isotope-child rows and moves nothing). Publish carries the column.
+  This is the split the isotope checks and the halogen lock (C11+) build on: a lead
+  can stop being hard where a later rule lifts it; a contradiction cannot. On the three
+  regression batches (one variable against the previous trunk run): 0 of 1419 / 1148 /
+  2239 merged rows change ion, tier, level, reason or claim; the lead moves from
+  `below_assignability` to `tentative_lead` on 1288 / 37 / 1319 per-file M0 rows (128 /
+  13 / 645 pooled pairs). `tests/test_tentative_lead*.py`.
+
 - **`multiline` counts two elements the neutral supplies, each by an in-band line.**
   `multiline` is the only term inside one channel that can carry a pair to 4a ("formula
   confirmed and the neutral established"). It counted raw satellite tags, so a 13C line
