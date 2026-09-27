@@ -869,11 +869,14 @@ try:
               {"n_files_winner", "alternatives", "tier_reason"} <= set(res["merged"].columns),
               list(res["merged"].columns))
         check("run: batch_summary records the merged-level gates (the known-species decision "
-              "always -- nothing pooled here; no polarity gate in negative mode)",
-              set(summ.get("merge_gates", {})) == {"known"}
+              "and the reagent-water ladder always -- nothing pooled, no rung here; no polarity "
+              "gate in negative mode)",
+              set(summ.get("merge_gates", {})) == {"known", "reagent_water"}
               and summ["merge_gates"]["known"] == {"pooled": 0, "locked": 0, "confirmed_kept": 0,
                                                    "conflict": 0, "lead_only": 0, "mass_only_outvoted": 0,
-                                                   "no_cluster": 0},
+                                                   "no_cluster": 0}
+              and summ["merge_gates"]["reagent_water"]["n_rungs"] == 0
+              and summ["merge_gates"]["reagent_water"]["n_stripped"] == 0,
               summ.get("merge_gates"))
         # 8 samples: fewer than the 10 spectra the persistence table needs, so the
         # 'auto' policy has nothing to derive the floor from and falls back to the

@@ -362,7 +362,8 @@ and `run_manifest.json['config']` (the knob: a number, or `"auto"`).
 | artifact | content |
 | --- | --- |
 | `ReagentProfile` | the run's mode config: polarity, adducts, ranges, normaliser, reagent_ion_re, detect_adduct, context, purity |
-| `build_library` | `[(label, ion_mz, ion_formula)]` — the enumerated reagent-cluster ions |
+| `build_library` | `[(label, ion_mz, ion_formula)]` — the enumerated reagent-cluster ions; a halide cluster's label carries its core's isotopologue tag (`[Br1+1xH2O]- (81Br)`), which the batch stamp reads to keep the isotopologues of one cluster formula apart |
+| `ReagentProfile.water_cores` | the reagent-side cores whose water ladder a batch measures on its own time series (`batch/reagent_water.py`, [MERGE.md](MERGE.md) §3 step 4a) — declaring a core claims nothing by itself |
 | `label_reagents` | count of ledger peaks set to `role='reagent'` (each with a known `ion_formula`) |
 | `reagent_for_adducts` | the cluster-library key (`"Br"`/`"I"`/`"Cl"`/`"urea"`/`None`) |
 

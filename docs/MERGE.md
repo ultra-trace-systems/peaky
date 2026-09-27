@@ -44,6 +44,8 @@ selected sample_ids (SAMPLING.md)
                    label split is the reagent-N isobar: Candidate = undecided)
    n_files, n_files_ion, n_files_winner, alternatives, tier_reason, srcs,
    ion_agree, formula_agree, mz_jitter_ppm_raw, mz_jitter_ppm_caldj
+   │  reagent-water ladder (batch/reagent_water.py): rungs core.(H2O)n measured on
+   │   the batch TS; a merged row on a passing rung leaves, the rung is stamped
    │  (positive urea, ONCE on the merged ledger: relabel_reagent_n_adducts, then
    │   prefer_amine_over_ammonium -- each writes what it did to tier_reason)
    ▼
@@ -202,6 +204,27 @@ selected sample_ids (SAMPLING.md)
    their winner (every one a lower-class many-file reading yielding to a
    higher-class one; the four cases above come back), 56 of the ¹⁵N-nitrate
    Orbitrap's 268 and 5 of the uronium Orbitrap's 10.
+
+4a. **The reagent-water ladder** (`batch/reagent_water.py`; right after the vote
+   and the reagent-cluster guard, once per batch). The profile's `water_cores`
+   (Br- / Br2-. / Br3- / HNO3.Br- on the bromide profile; NO3- / HNO3.NO3- /
+   (HNO3)2.NO3- / NO2- on the nitrate one; the labelled cores on ¹⁵N-nitrate;
+   none on the positive profiles) are looked for in the batch's OWN time series
+   as core.(H2O)n, n = 1…45, per acquisition segment (the spectra cut at gaps
+   longer than max(60 min, 5× the median spacing); a segment under 10 spectra
+   joins its neighbour). A rung passes when, in some segment, the core and every
+   rung 1…n are present in ≥ 50 % of the spectra within the stamping window and
+   the rung is ≥ 3× the presence of its decoy offsets (±0.02 / 0.035 / 0.05 Da;
+   floor 0.02). How far a ladder reaches is measured, not declared: on the
+   five-day bromide/nitrate TOF batch it ends at n ≤ 8 (Br-) and n ≤ 4 (NO3-)
+   before an instrument restart and runs past n = 15 after it. A merged analyte
+   row within the window of a passing rung is the water cluster and leaves the
+   merged ledger (on that batch 70 rows, C13H12O8 [M-H]- at Br-.(H2O)12 and
+   C25H19N [M-H]- at NO3-.(H2O)15 among them); every passing rung becomes a
+   reagent row of the stamp (with its isotopologue tag, so the ⁷⁹Br and ⁸¹Br
+   rungs stay two tracks). `tables/reagent_water.csv` lists the rungs and the
+   readings each displaced; `batch_summary.json["merge_gates"]["reagent_water"]`
+   the counts. The per-file ledgers are untouched.
 
 4b. **Known species, decided once** (`lock_known_species`; after the vote,
    before the polarity re-reads). Every file's known-species evidence is pooled

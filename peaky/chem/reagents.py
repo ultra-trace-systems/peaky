@@ -295,7 +295,7 @@ def build_library(reagent: str = "Br", *, max_n: int = 4, max_neutral: int = 1
     # reagent ions in a halide source: odd n are closed-shell (R-, R3-), even n
     # are radical anions (R2-., R4-.). All are pure reagent -- no analyte atoms
     # -- so they must be LABELLED, not left red in the residual.
-    core_masses: list[tuple[str, float, int]] = []   # (label, mass, n)
+    core_masses: list[tuple[str, float, int, str]] = []   # (label, mass, n, isotopologue tag)
     for n in range(1, max_n + 1):
         f_core = C.format_formula({reagent: n}) + "-"
         for combo in itertools.combinations_with_replacement(range(len(isos)), n):
@@ -304,21 +304,27 @@ def build_library(reagent: str = "Br", *, max_n: int = 4, max_neutral: int = 1
             radical = "." if n % 2 == 0 else ""
             label = f"[{reagent}{n}]-{radical} ({tag})"
             out.append((label, mass, f_core))
-            core_masses.append((label, mass, n))
+            core_masses.append((label, mass, n, tag))
 
     # R_n^- . (neutral)_k clusters -- neutrals adduct onto each bare core.
     # The shed hydrogen halide is the REAGENT'S OWN (HBr / HCl / HI), not a
     # fixed HBr: [I+HI]- is the iodide analog of the Br-CIMS [Br+HBr]-.
+    # The label carries the core's isotopologue tag like the bare core's does:
+    # every isotopologue of one cluster shares its ion formula, and the batch
+    # stamp (`timeseries.identified_rows`) tells them apart only by that tag --
+    # untagged, the 79Br and 81Br lines of Br-.H2O collapsed onto one median
+    # m/z (97.93) that matches neither peak, and the TOF's largest water family
+    # (8 % of its signal) stayed unstamped.
     neutrals = dict(_CLUSTER_NEUTRALS)
     neutrals["H" + reagent] = "H" + reagent
-    for label, core_mz, n in core_masses:
+    for label, core_mz, n, tag in core_masses:
         for name, formula in neutrals.items():
             nm = C.neutral_mass(formula)
             for k in range(1, max_neutral + 1):
                 d = {reagent: n}
                 for el, c in C.parse_formula(formula).items():
                     d[el] = d.get(el, 0) + k * c
-                out.append((f"[{reagent}{n}+{k}x{name}]-", core_mz + k * nm,
+                out.append((f"[{reagent}{n}+{k}x{name}]- ({tag})", core_mz + k * nm,
                             C.format_formula(d) + "-"))
 
     # reagent-halogen oxide anions RO-/RO2-/RO3- -- BOTH halogen isotopologues
