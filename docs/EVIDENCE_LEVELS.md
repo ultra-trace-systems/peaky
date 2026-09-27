@@ -116,7 +116,7 @@ Computed exactly as `level_ledger.measure_source` does.
 | `anchor` | any row has `anchor_peak_id` or `series_unit` |
 | `branch` | the neutral's adduct set meets both `{[M-H]-}` and `{[M+NO3]-, [M+15NO3]-, [M+^NO3]-, [M+Br]-, [M+HBr+Br]-, [M+CO3]-}` — deprotonated **and** clustered: the gas-phase-acidity branch |
 | `reagent_only_iso` | the channel has a reagent halogen (§3.1), the pair has satellites, none is 13C, and every tag starts with that halogen's heavy isotope (`81Br` / `37Cl`; iodine is monoisotopic, so an iodide channel never sets it) |
-| `tied` | **all** rows of the pair are tied |
+| `tied` | **all** rows of the pair are tied — unless rule K's untie clears it (batch only, `label_untie` below) |
 | `below` | **any** row is below assignability |
 | `lowconf` | **all** rows are `Low` or `Suspect` |
 | `degeneracy` | median `degeneracy_density` over rows that have one; NaN when none has. The audit counts the ions the run could have committed in the calibrated window -- its channels, its element space, no box (`degeneracy.py`); a row whose commit lies outside that space with fewer than three ions carries NaN (`not measured`), so `unique` never holds for it |
@@ -125,6 +125,8 @@ Computed exactly as `level_ledger.measure_source` does.
 | `corroborated` | the neutral is in the **cross set** (§6.4): a source — the other reagent channel, the other instrument on the same air, a `--corroborate` run — that holds it at **4b or better by its own evidence**; never for an ion-only pair |
 | `known_fam` | the family of the first `known:` method among the rows, else `''` |
 | `upair` | (rule U, C17 + U, 2026-09-27) **batch only**: the neutral is in the batch's **neutral-pair set** — the profile declares a `(bare, cluster)` pair (`ReagentProfile.neutral_pair`; bundled: the uronium profile's `([M+H]+, [M+(CH4N2O)H]+)`, 60.0324 Da apart) and `batch/neutral_pairs.py` finds, on the stamped batch time series, both ions of the neutral committed, the neutral C/H/O only (N-free: the NH4 alias `[X+NH4]+` and the urea ladder both need N; no S/Si/P/halogen), each ion present within 2 ppm of its exact m/z in ≥ 50 % of the spectra with \|median ppm\| ≤ 1 (the signed median), r(log h_bare, log h_cluster) ≥ 0.5 over ≥ 30 spectra with both ≥ 150 counts, neither matched peak stamped as an isotope child, an artifact or another reading's M0 in > 50 % of its spectra, and no ¹³C carbon count (area, the scale calibrated on both ions of every committed-both neutral) contradicting either ion by more than max(1, 0.2 n). A fact about the neutral: **never an axis, never in `cross`**, never on an ion-only pair, never per file and never on a profile without a pair (a leaked fact would move the TOF and nitrate goldens, §8); a composed profile keeps the pair when exactly one pair is declared among its components (`Ur+EasyIC` does; two different pairs give none), and the fact then lifts the neutral's rows on every adduct of that profile. Written to `tables/neutral_pairs.csv` |
+| `label_untie` | (rule K, C18, 2026-09-27) **batch only**, on a 15N-labelled nitrate channel (the profile's label is `^N` and it clusters on `[M+^NO3]-`: `NO3_15N`, or composed `NO3+NO3_15N`): the pair is a tied `[X+NO3]-` whose tie `batch/label_twins.py` breaks in the cluster's favour. The 14N line of X's cluster ties by construction with the organonitrate `[X'-H]-` (X' = X + HNO3, the same ion); it is X's cluster when its 14N/15N height ratio q(t) follows the batch's cluster ratio k_cl(t) — the per-spectrum median of q over the bright CHO acid clusters (the 15N line's median ≥ 1000 counts, both lines within 2 ppm in ≥ 100 spectra), the pair under test left out: median(q / k_cl) in 0.5–2, sd(log q / k_cl) ≤ 0.25, r(log q, log k_cl) ≥ 0.8 over ≥ 50 spectra — AND every file's tie on the reading is with same-ion decomposition aliases alone (the tier engine's own test). The pair's `tied` then reads False and the level falls through to the rows below (on a real acid, the branch: 3b). Written to `tables/label_twins.csv` |
+| `label_veto` | (rule K) **batch only**, same scope: the pair is an `[Y+^NO3]-` reading whose **14N twin** — the line the reagent's own 14N impurity puts 0.99703 Da below every real cluster, at f = (1 − purity) / purity of its height (`ReagentProfile.purity`: 0.98 → 0.0204; the labelled reagent's nitrate dimer reads 0.0186 and trifluoroacetic acid's cluster 0.0206 on the regression batch) — is refuted: over the spectra where the batch's own detection curve (the 13C lines of every committed M0 of ≥ 4 carbons, binned by expected height; a bin with no line takes the populated bin below it, 0 below the first) gives the twin p ≥ 0.5, E = Σ p ≥ 3 and the twin (within 2 ppm) is seen in ≤ 0.2 E of them. A hard input (§4 row 1); `label_note` carries the numbers. `passes` (≥ 0.5 E), `unclear` and `untestable` (E < 3) set nothing |
 | `ion_only` | the pair was written by the **ion-only stage** (`ion_only`, C7): adduct `[M]-.` with method `ion_only:*` (a merged ledger: an `ion_only_of` link) — the +1.0078 Da electron-attachment line beside a committed `[M-H]-` acid, carrying the acid's composition. An ion-only pair is levelled on its **own** satellite alone (§4 row 2b′) and is kept **out of the per-neutral pools in both directions**: `chan2`, `branch`, `anchor` and `reagent_only_iso` are computed over the regular rows only, so the row never gives its parent a second channel and never takes an axis from it; it is never `corroborated` and its neutral never enters a cross set (`corroborating_neutrals` skips it) |
 
 Derived:
@@ -135,7 +137,7 @@ cross          = corroborated or multiline or known_fam != ''    # an axis outsi
 neutral_backed = corroborated or chan2 or anchor or known_fam != '' or carbon_ev
 degenerate     = saturated or degeneracy >= 3
 unique         = degeneracy <= 1                                  # NaN is neither
-hard           = tied or below or lowconf
+hard           = tied or below or lowconf or label_veto          # label_veto: rule K, batch only
 ```
 
 Two of these terms can never decide a level today and are kept because the
@@ -159,7 +161,7 @@ with two stray `[M+Br]-` rows against 346 `[M+NO3]-` is a nitrate channel.
 
 | order | level | predicate | meaning |
 |---:|---|---|---|
-| 1 | **5b** | `hard` | the assignment argues with itself: a near-tie the arbiter broke, a row below assignability, or a score the engine calls Low/Suspect |
+| 1 | **5b** | `hard` | the assignment argues with itself: a near-tie the arbiter broke, a row below assignability, a score the engine calls Low/Suspect, or (rule K, batch only) the labelled reagent's 14N twin refutes the cluster reading |
 | 1′ | **4d** / **5a** | `ion_only` | an ion-only row: **4d** when its own satellite passes the band (`iso`) — the composition is pinned by exact mass and ¹³C, the ionization process and the neutral are open — else **5a**, exact mass only. The same rung the reagent-halogen case (row 8) reaches by the other route: 4d = *ion pinned, neutral not*, by either route |
 | 2 | **5b** | `degenerate and n_axes == 0` | mass-degenerate with nothing to break the tie |
 | 3 | **2b** | `known_fam != ''` and `scope(known_fam) == "compound"` and `n_plausible_structures == 1` | a curated **identity** on a formula that admits one structure |
@@ -243,6 +245,25 @@ the isomer space says 3 (2-, 3-, 4-nitrophenol), so 3a.
   protonated line also carries an in-source fragment of a brighter parent
   (C₁₀H₁₆O from a hydroperoxide, C₁₄H₂₈O₅ from TEG-EH) stay 4a; the fragment is
   an intensity note, not a level.
+- **On a labelled-nitrate channel the reagent's two isotopologues arbitrate
+  each other's reading (rule K, C18).** The 14N and the 15N line of one
+  cluster are one ion seen twice, so each is a test of the other's reading,
+  in its own direction. A committed 14N `[X+NO3]-` ties by construction with
+  the organonitrate of the same ion; its 14N/15N ratio following the batch's
+  cluster ratio through the run says the line is X's cluster, and the tie is
+  cleared where it is with that alias alone (on the regression batch: 14 of 40
+  co-detected pairs pass, 8 tied rows untie 5b → 3b, 0.179 % of the signal;
+  mismatched X14 / Y15 pairs pass 42 of 600 and organonitrate lines 3 of
+  150). A labelled `[Y+^NO3]-` without the 14N twin its reagent's impurity
+  must carry, where the batch would have seen it, is refuted (2 readings,
+  4b → 5b: 0 of 42 / 53 expected detections; the same two for f from 0.0150 to
+  0.0236, none of the 16 13C-backed clusters of identified acids, and every
+  testable N-free `[M-H]-` control is refuted by the same test). The twin
+  fraction is the profile's reagent purity, not a reagent-ion scan (the
+  batch's scan starts above the reagent dimer). Both are facts of the pooled
+  batch series, never an axis, never in `cross`, never per file: the
+  per-file level, the tier and the merge vote keep the arbiter's tie, and the
+  merged row reads the pooled level (§6.2).
 - **Predicate order is the design.** `hard` outranks a curated identity: a
   known species the arbiter had to tie-break is 5b, and that is a defect in
   the pass-0 lock to be fixed there, not hidden here.
@@ -329,12 +350,27 @@ holds) and the pooled per-file ledgers, `tables/neutral_pairs.csv` records every
 clause per neutral (written on every run, empty without a declared pair or a
 time series), and `level_pooled(..., upair=...)` reads the set.
 
+Rule K's facts likewise (C18): `batch/label_twins.measure` reads the same
+series, the pooled per-file ledgers and, per file, whether each tied
+`[X+NO3]-` row's tie is with same-ion aliases alone (`label_twins.alias_only_ties`,
+taken while the parent collects the file); `tables/label_twins.csv` holds one
+row per committed `[X+^NO3]-` neutral's 14N line (the cluster-k test and the
+untie) and one per committed `[Y+^NO3]-` reading (E, the twin's sightings, the
+verdict, the veto) — written on every run, empty out of scope or without a
+time series — and `level_pooled(..., untie=..., veto=...)` reads the two sets.
+The untie changes only the pooled level: the per-file levels, the tiers, the
+confidence labels and the vote keep the arbiter's tie, so a merged row can read
+3b where its per-file rows read 5b.
+
 `batch_summary["evidence_levels"]` = `{"pooled": {level: n}` (one count per
 pair), `"merged": {level: n}` (per merged row), `"per_stage": {cover: {…},
 residual: {…}}`, `"n_pairs"`, `"n_unstamped"` (merged rows whose reading no
 per-file ledger holds), `"n_corroborate"`, `"cross_source": [...]`,
 `"neutral_pairs": {pair, neutrals, committed_both, cho, present, covary, clean,
-upair}` (the funnel; `{pair: [], neutrals: 0, upair: 0}` without a pair)}; the
+upair}` (the funnel; `{pair: [], neutrals: 0, upair: 0}` without a pair),
+`"label_twins": {in_scope, f, lines, codetected, references, cluster_k, untie,
+readings, testable, passes, refuted}` (rule K's funnel; `{in_scope: false,
+lines: 0, untie: 0, readings: 0, refuted: 0}` out of scope)}; the
 pair table with every fact of §3 is written to `tables/evidence_levels.csv`,
 with the pair's `claim` beside its level.
 
@@ -356,7 +392,10 @@ before the column existed. `scripts/scorecard.py` already prefers an in-core
 `evidence_level` column when present. Rule U's fact is measured by the batch,
 not by the script: `--upair` (no value) reads each batch source's own
 `tables/neutral_pairs.csv`, `--upair <csv>` applies one table to every levelled
-source, and without the flag row 9′ never fires.
+source, and without the flag row 9′ never fires. Rule K's facts the same way:
+`--label-twins` reads each batch source's `tables/label_twins.csv`,
+`--label-twins <csv>` applies one table, and without the flag neither the untie
+nor the veto fires.
 
 ### 6.4 The cross set — what a source's sighting is worth (C8)
 
@@ -405,15 +444,18 @@ acid, mass-saturated on both instruments with no axis on either, falls from
 | column | type | on | value |
 |---|---|---|---|
 | `evidence_level` | str | M0 rows; `NA` elsewhere | one of `2b 3a 3b 4a 4b 4c 4d 5a 5b` (never `1` / `2a` today) |
-| `evidence_axes` | str | M0 rows | `|`-joined, in this order, of the axes that hold: `iso`, `chan2`, `anchor`, `corroborated`, then the modifiers `multiline`, `carbon`, `branch`, `reagent_only_iso`, `ion_only`, `upair` (batch only, rule U), `known:<family>`, `files:<n>` (batch only); `''` when none |
+| `evidence_axes` | str | M0 rows | `|`-joined, in this order, of the axes that hold: `iso`, `chan2`, `anchor`, `corroborated`, then the modifiers `multiline`, `carbon`, `branch`, `reagent_only_iso`, `ion_only`, `upair` (batch only, rule U), `label_untie`, `label_veto` (batch only, rule K), `known:<family>`, `files:<n>` (batch only); `''` when none |
 | `level_reason` | str | M0 rows | one sentence naming the predicate that fired, in the words of §4, with the numbers (`"5b: near-tie broken by the arbiter"`, `"4c: 1 plausible ion in the window, resolved, no axis"`, `"4a: iso + chan2, corroborated by the other source"`) |
 | `n_plausible_structures` | Int64 | M0 rows whose formula is in the isomer space; `NA` otherwise | from `isomer_space.csv` |
 | `claim` | str | every M0 row of a per-file ledger and every merged row; `NA` on every other per-file row | `identified` / `ion` / `tentative` = `claim_class(evidence_level)` (§1.1); a committed row with no level reads `tentative` |
 
 Written to: the per-file `<prefix>_ledger.csv`, `merged_ledger.csv`,
 `tables/evidence_levels.csv` (batch: one row per pair with every fact of §3, the
-`ion_only` flag, `multiline_elements`, `upair` and the pair's `claim` included),
-`tables/neutral_pairs.csv` (batch: rule U's clauses per neutral), the
+`ion_only` flag, `multiline_elements`, `upair`, `label_untie`, `label_veto`,
+`label_note` and the pair's `claim` included),
+`tables/neutral_pairs.csv` (batch: rule U's clauses per neutral),
+`tables/label_twins.csv` (batch: rule K's tests per 14N line and per labelled
+reading), the
 Excel workbook (a column on the ledger sheets, `claim` directly before
 `evidence_level`; a **"By evidence level"** sheet: one row per level with
 count, share, tier split, the axes histogram and the twenty brightest rows;
@@ -461,7 +503,14 @@ added them. `tests/test_evidence.py`:
   uronium profile declares a pair), row 9′'s formula support and order, the
   fact never an axis nor in `cross` nor per file, and the **leak mutant** —
   the fact computed as "two channels and N-free" on every channel moves the
-  TOF and nitrate vectors (`tests/test_neutral_pairs.py`); C17's element rule
+  TOF and nitrate vectors (`tests/test_neutral_pairs.py`); rule K: each clause
+  of the cluster-k test and of the twin test, the alias-only guard, the
+  detection curve's gate, the untie's and the veto's levels, the profile scope,
+  the facts never axes nor in `cross` nor per file, the reference script and
+  the scorecard reading the table, and the **leak mutants** — untie every tied
+  `[M+NO3]-` pair, veto every `[M+^NO3]-` pair: the nitrate and Orbitrap vectors
+  move (`tests/test_label_twins.py`; no golden source carries a batch series,
+  so the vectors stand); C17's element rule
   case by case (`tests/test_multiline_elements.py`), both against the
   reference script;
 - row-for-row equality with `expected_levels.csv`;
