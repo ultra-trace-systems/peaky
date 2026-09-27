@@ -34,22 +34,28 @@ arbitrates the other's reading, in its own direction:
         the same batch). Over the spectra where that twin would be detected with
         probability >= PMIN (the batch's own detection curve: the 13C lines of every
         committed M0 of >= PDET_MIN_C carbons; an empty bin takes the populated bin
-        below it), E = sum of those probabilities; the twin is refuted when E >=
+        below it, 0 below the first), and where the twin's m/z is not below the
+        spectrum's lowest peak (the scan start), E = sum of those probabilities;
+        the twin is refuted when E >=
         E_MIN and it is seen in <= REFUTE_SHARE x E of them (passes >= PASS_SHARE x
         E; untestable when E < E_MIN): the reagent's two isotopologues refute the
         cluster reading, a hard input (5b).
 
 Measured on the labelled-nitrate regression batch (2026-09-26 output audit rule K,
-re-measured on the trunk 2026-09-27): 14 of 40
-co-detected pairs pass the cluster-k test, 8 tied [X+NO3]- rows untie (5b -> 3b,
+re-measured on the trunk 2026-09-27): 14 of the
+42 co-detected [X+^NO3]- pairs track (the audit's merged population: 14 of 40),
+8 tied [X+NO3]- rows untie (5b -> 3b,
 0.179 % of the batch signal), mismatched X14/Y15 pairs pass 42/600 and
 organonitrate lines 3/150; of the 291 committed [X+NO3]- lines 14 track, 18 are
 consistent, 13 excess, 220 have no 15N partner (1.35 % of the signal) and 26 are
 untestable, and the C11-C12 [M-H]- acids whose only cluster was such a line leave
 the acid branch (identified 48.3 -> 44.6 % with the rest of the rule); the twin veto
-refutes 2 [Y+^NO3]- readings (0 of ~42 / 53 expected detections), the same 2 for f
-0.0150-0.0236, never a positive control (a 13C-backed cluster of an identified
-acid) and every testable N-free [M-H]- control.
+refutes 3 pooled [Y+^NO3]- readings (0 of 42 / 42 / 53 expected detections; two
+move a level, the third is the first one's line under another formula, already
+5b), the same set for f 0.0150-0.0236, never a positive control (a 13C-backed
+cluster of an identified acid) and every testable N-free [M-H]- control.
+`untie` in the table marks a line that WOULD clear a tie; the level's
+`label_untie` records where it did (the pooled pair was tied).
 The table is batch-only (it needs the stamped time series), never an axis, never
 in `cross`, never per file.
 """
@@ -157,6 +163,14 @@ class _Traces:
         self.mz = t["mz"].to_numpy(float)
         self.h = pd.to_numeric(t["height"], errors="coerce").to_numpy(float)
         self.s = t["sample_item_id"].map(code).to_numpy(int)
+        # each spectrum's scan start: its lowest peak, capped at the batch's median
+        # lowest peak (a sparse spectrum with nothing near the start keeps the
+        # batch's edge); a line below it was never measured there
+        low = np.full(len(self.order), np.inf)
+        np.fmin.at(low, self.s, self.mz)
+        if np.isfinite(low).any():
+            low = np.minimum(low, np.median(low[np.isfinite(low)]))
+        self.low = low
 
     def heights(self, targets) -> np.ndarray:
         targets = np.asarray(targets, float)
@@ -246,7 +260,9 @@ def _cluster_k(tr: _Traces, neutrals: list, ref_pool=None) -> pd.DataFrame:
 
 def _pdet_curve(tr: _Traces, committed: pd.DataFrame) -> np.ndarray:
     """P(a 13C line is detected | its expected height), per PDET_EDGES bin, from
-    the 13C lines of every committed M0 of >= PDET_MIN_C carbons."""
+    the 13C lines of every committed M0 of >= PDET_MIN_C carbons. A height below
+    every measured line reads 0 (never testable); a gap between populated bins
+    takes the bin below it."""
     ions = committed.copy()
     ions["nC"] = [C.parse_formula(str(i) if isinstance(i, str) and i else n).get("C", 0)
                   for i, n in zip(ions.get("ion_formula", pd.Series([""] * len(ions))), ions["neutral_formula"])]
@@ -268,8 +284,8 @@ def _pdet_curve(tr: _Traces, committed: pd.DataFrame) -> np.ndarray:
     b = np.clip(np.searchsorted(PDET_EDGES, e, side="right") - 1, 0, len(PDET_EDGES) - 2)
     num = np.bincount(b, weights=d.astype(float), minlength=len(PDET_EDGES) - 1)
     den = np.bincount(b, minlength=len(PDET_EDGES) - 1)
-    # a bin the batch holds no line in says nothing: it takes the populated bin
-    # below it (0 below the first), so an unmeasured height is never testable
+    # a bin the batch holds no line in takes the populated bin below it, 0 below
+    # the first: a height under every measured 13C line is never testable
     out, last = np.zeros(len(den)), 0.0
     for i, (x, n) in enumerate(zip(num, den)):
         last = x / n if n else last
@@ -281,7 +297,8 @@ def _twin_veto(tr: _Traces, neutrals: list, f: float, curve: np.ndarray) -> pd.D
     """The 14N-twin test on every committed [Y+^NO3]- (module docstring)."""
     mz = np.array([C.ion_mz(n, NO3L) for n in neutrals])
     H0, TW = tr.heights(mz), tr.heights(mz - DELTA_15N)
-    seen = np.isfinite(H0)
+    # a spectrum whose lowest peak lies above the twin never measured it
+    seen = np.isfinite(H0) & ((mz - DELTA_15N)[None, :] >= tr.low[:, None])
     e = np.where(seen, np.nan_to_num(H0) * f, 0.0)
     b = np.clip(np.searchsorted(PDET_EDGES, e, side="right") - 1, 0, len(curve) - 1)
     p = np.where(seen, curve[b], 0.0)

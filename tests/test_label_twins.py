@@ -368,11 +368,49 @@ def test_an_unmeasured_height_is_never_testable():
     assert (curve[:lowest] == 0.0).all() and curve[lowest] > 0.5
     r = _row(LT.measure(ts, frames, LABEL, log=lambda *a: None), y, NO3L)
     assert r.twin_verdict == "untestable" and not r.veto
-    # a gap between populated bins inherits the bin below it
-    tr = LT._Traces(ts)
-    gap = LT._pdet_curve(tr, LT._committed(frames))
-    assert all(gap[i] <= 1.0 for i in range(len(gap)))
-    assert (LT._pdet_curve(tr, LT._committed({})) == 0.0).all()
+    assert (LT._pdet_curve(LT._Traces(ts), LT._committed({})) == 0.0).all()
+
+
+def _scan_from(ts, start):
+    """The series as a scan that starts at `start`: the lines below it removed and
+    a filler line at the start in every spectrum (a real spectrum's lowest peak
+    sits at its scan start)."""
+    cut = ts[ts["mz"] >= start]
+    fill = cut.groupby("sample_item_id", as_index=False).first()[["sample_item_id", "datetime_utc"]]
+    fill = fill.assign(mz=start + 0.001, height=50.0, area=50.0, role="", neutral_formula=None, adduct=None)
+    return pd.concat([cut, fill], ignore_index=True)
+
+
+def test_a_twin_below_the_scan_start_was_never_measured():
+    """A labelled reading within 0.997 Da of the scan start cannot be refuted by
+    a twin the scan never reached."""
+    y = "C4H4O2"
+    spec = _refs_spec(**{y: {"phase": 1.0, "h15": 20000.0}})
+    ts = _series(spec)
+    meas = lambda t: _row(LT.measure(t, _frames(list(spec)), LABEL, log=lambda *a: None), y, NO3L)
+    assert meas(ts).twin_verdict == "passes"
+    r = meas(_scan_from(ts, C.ion_mz(y, NO3L) - 0.5))                 # the scan starts 0.5 Da below Y's line
+    assert r.twin_verdict == "untestable" and not r.veto and r.E == 0
+    # with no twin anywhere but the twin inside the scan, the reading is refuted
+    spec[y] = {"phase": 1.0, "h15": 20000.0, "q": None}
+    ts = _series(spec)
+    assert meas(_scan_from(ts, C.ion_mz(y, NO3L) - 2.0)).veto
+    assert not meas(_scan_from(ts, C.ion_mz(y, NO3L) - 0.5)).veto
+
+
+def test_the_scan_start_is_capped_at_the_batch_median():
+    """A sparse spectrum whose lowest peak sits high keeps the batch's scan start;
+    a spectrum that really starts lower keeps its own."""
+    y = "C4H4O2"
+    spec = _refs_spec(**{y: {"phase": 1.0, "h15": 20000.0, "q": None}})
+    ts = _scan_from(_series(spec), C.ion_mz(y, NO3L) - 2.0)
+    sparse = ts[~((ts["sample_item_id"] == "s000") & (ts["mz"] < C.ion_mz(y, NO3L) - 1.0))]
+    tr = LT._Traces(sparse)
+    assert tr.low[0] == pytest.approx(C.ion_mz(y, NO3L) - 2.0 + 0.001)
+    deep = pd.concat([ts, pd.DataFrame([dict(sample_item_id="s001", datetime_utc=ts["datetime_utc"].iloc[0],
+                                             mz=40.0, height=50.0, area=50.0, role="")])], ignore_index=True)
+    tr = LT._Traces(deep)
+    assert tr.low[tr.order.index("s001")] == pytest.approx(40.0)
 
 
 # --------------------------------------------------------------------------- the level
@@ -586,6 +624,15 @@ def test_the_reference_script_reads_the_table_like_the_engine(tmp_path):
     (empty / "per_file").mkdir(parents=True)
     rows.to_csv(empty / "per_file" / "s1_ledger.csv", index=False)
     assert LL.label_twin_facts(str(empty)) is None
+    # one named table never reaches a source without a labelled cluster (another channel)
+    other = tmp_path / "other"
+    (other / "per_file").mkdir(parents=True)
+    _j1_rows().to_csv(other / "per_file" / "s1_ledger.csv", index=False)
+    table = tmp_path / "t.csv"
+    pd.DataFrame({"neutral_formula": ["C11H18O6"], "adduct": [NO3], "untie": [False], "veto": [True],
+                  "alien": [True], "note": ["n"]}).to_csv(table, index=False)
+    got = LL.run([str(other)], [], None, str(table)).set_index("adduct")["level"]
+    assert got["[M-H]-"] == "3b" and got[NO3] == "3b"               # untouched: no [M+^NO3]- pair there
 
 
 # --------------------------------------------------------------------------- the scorecard

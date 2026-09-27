@@ -660,7 +660,7 @@ def run(sources: list[str], corroborate: list[str], upair: str | None = None,
     for path in corroborate:
         neutrals[f"--corroborate:{path}"] = source_good_neutrals(path)[2]
     out = []
-    for path, (label, frame) in measured.items():
+    for path, (label_, frame) in measured.items():
         others: set[str] = set()
         for other, values in neutrals.items():
             if other != path:
@@ -674,7 +674,13 @@ def run(sources: list[str], corroborate: list[str], upair: str | None = None,
         if twins == "auto":
             label = label_twin_facts(path)
         elif twins:
-            label = label_twin_facts(twins)
+            # one named table applies only to a labelled-nitrate source: rule K's
+            # scope is the batch it was measured on
+            if (frame["adduct"].astype(str) == "[M+^NO3]-").any():
+                label = label_twin_facts(twins)
+            else:
+                print(f"  --label-twins: {label_} carries no [M+^NO3]- pair; rule K does not fire there",
+                      file=sys.stderr)
         out.append(assign_levels(frame, others, held, label))
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
 
