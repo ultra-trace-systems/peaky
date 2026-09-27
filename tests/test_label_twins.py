@@ -733,3 +733,37 @@ def test_an_unlabelled_batch_writes_an_empty_table(tmp_path, monkeypatch):
     assert table.empty and list(table.columns) == list(LT.TABLE_COLUMNS)
     summ = json.load(open(tmp_path / "batch_summary.json"))["evidence_levels"]["label_twins"]
     assert summ == {"in_scope": False, "lines": 0, "untie": 0, "readings": 0, "refuted": 0}
+
+
+# --------------------------------------------------------------------------- the real golden set
+ORBI_K = (1707, "0/11/172/9/208/151/0/38/1118")
+
+
+def test_the_labelled_nitrate_golden_set_with_its_label_twin_table(tmp_path):
+    """The 'orbi' fixtures (a labelled-nitrate Orbitrap, corroborated by the TOF set)
+    levelled with rule K's table, measured by batch/label_twins.py on that run's
+    stamped series: 63 committed 14N lines (13 track, 14 consistent, 9 excess, 13
+    absent, 14 untestable), 2 labelled readings refuted, nothing tied. Engine and
+    reference script agree row for row; without the table the golden stands."""
+    from tests.test_evidence import FIXTURES
+    table = pd.read_csv(FIXTURES / "orbi_label_twins.csv")
+    c14 = table[(table["adduct"] == NO3) & table["committed"]]
+    assert c14["line_verdict"].value_counts().to_dict() == {
+        "tracks": 13, "consistent": 14, "untestable": 14, "absent": 13, "excess": 9}
+    assert int(table["veto"].sum()) == 22 + 2 and not table["untie"].any()
+    tof, orbi = _pooled("tof"), _pooled("orbi")
+    cross = EV.source_neutrals(tof)
+    core = EV.level_pooled(orbi, cross=cross, label=LT.facts(table))
+    assert (len(core), _vector(core.evidence_level)) == ORBI_K
+    assert _vector(EV.level_pooled(orbi, cross=cross).evidence_level) == GOLDEN["orbi"][1]
+    LL = _ll()
+    for name in ("orbi", "tof"):
+        d = tmp_path / name / "per_file"
+        d.mkdir(parents=True)
+        for p in sorted(FIXTURES.glob(f"{name}_*_ledger.csv.gz")):
+            pd.read_csv(p, low_memory=False).to_csv(d / p.name[:-3], index=False)
+    ref = LL.run([str(tmp_path / "orbi")], [str(tmp_path / "tof")], None, str(FIXTURES / "orbi_label_twins.csv"))
+    m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
+    assert len(m) == len(core) == len(ref)
+    assert (m["evidence_level"] == m["level"]).all()
+

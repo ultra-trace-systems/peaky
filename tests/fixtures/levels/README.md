@@ -1,6 +1,6 @@
 # Level fixtures — the four golden sets behind `tests/test_evidence.py`
 
-Fifty-two per-file ledgers from four real runs (and one neutral-pair table), trimmed to what the evidence
+Fifty-two per-file ledgers from four real runs (and one neutral-pair table and one label-twin table), trimmed to what the evidence
 levels read: the `M0` and `iso_child` rows and the twenty-two columns the
 predicates in `docs/EVIDENCE_LEVELS.md` name. Gzipped CSV (`pandas.read_csv`
 opens them directly); 3.5 MB in all with the neutral-pair table and `expected_levels.csv`.
@@ -9,7 +9,7 @@ opens them directly); 3.5 MB in all with the neutral-pair table and `expected_le
 |---|---|---|---:|---:|---|
 | `tv_nitrate`, `tv_bromide` | 2 | one TOF, two reagent channels on the same air; each ledger is one source and the two corroborate each other | 1,373 | 570 | 1373 · 21/15/107/16/143/15/10/37/1009 |
 | `tof_01` … `tof_28` | 28 | a mixed bromide/nitrate TOF, 18 cover + 10 residual files, pooled as ONE source | 8,313 | 4,286 | 3364 · 6/15/182/15/254/82/99/138/2573 |
-| `orbi_01` … `orbi_12` | 12 | a labelled-nitrate Orbitrap sampling the same air as the TOF set, ONE source; the TOF and Orbitrap sets corroborate each other | 9,773 | 2,238 | 1707 · 0/11/217/9/203/139/0/35/1093 |
+| `orbi_01` … `orbi_12` + `orbi_label_twins.csv` | 12 + 1 | a labelled-nitrate Orbitrap sampling the same air as the TOF set, ONE source; the TOF and Orbitrap sets corroborate each other; its label-twin table (rule K, measured by `batch/label_twins.py` on the run's stamped time series) | 9,773 | 2,238 | 1707 · 0/11/217/9/203/139/0/35/1093 (with the table 0/11/172/9/208/151/0/38/1118) |
 | `ur_01` … `ur_10` + `ur_neutral_pairs.csv` | 10 + 1 | a uronium Orbitrap batch, ONE source, no corroboration; levelled with its neutral-pair table (rule U, measured by `batch/neutral_pairs.py` on the run's stamped time series) | 8,076 | 2,263 | 1161 · 4/4/0/331/376/291/0/82/73 (without the table 4/4/0/25/682/291/0/82/73) |
 
 `expected_levels.csv` holds one row per `(source, neutral, adduct)` with the
