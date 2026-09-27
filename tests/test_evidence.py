@@ -30,10 +30,14 @@ ORDER = ["2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
 # 6/16/182/38/260/79/91/135/2557 and 0/12/217/44/215/119/0/30/1070). C17
 # (2026-09-27, `multiline` counts in-band elements the neutral supplies) moved
 # the TOF set only: seven bromide-adduct 4a rows whose second line was the
-# reagent's 81Br go to 4b; it was 6/15/182/22/247/82/99/138/2573.
+# reagent's 81Br go to 4b; it was 6/15/182/22/247/82/99/138/2573. C11+a (2026-09-27,
+# `reagent_only_iso` only where the ION carries more of the reagent halogen than
+# the neutral) moved it again: six bromide-channel [M-H]- rows 4d -> 4b (four
+# brominated neutrals whose 81Br line is their own, two Br-free ions); it was
+# 6/15/182/15/254/82/99/138/2573.
 GOLDEN = {
     "tv": (1373, "21/15/107/16/143/15/10/37/1009"),
-    "tof": (3364, "6/15/182/15/254/82/99/138/2573"),
+    "tof": (3364, "6/15/182/15/260/82/93/138/2573"),
     "orbi": (1707, "0/11/217/9/203/139/0/35/1093"),
     # the uronium set (C17 + U, 2026-09-27): one source, no corroboration, levelled
     # with its neutral-pair table (rule U, row 9'); without the table it reads
@@ -219,6 +223,62 @@ def test_level_4d_reagent_halogen_pins_the_ion_not_the_neutral():
     nitrate = [m0("p", "C8H14O2", adduct="[M+NO3]-", ion="C8H14O2NO3", mz=204.0),
                child("c", "p", "81Br+1", 950.0), m0("q", "C9H16O2", adduct="[M+NO3]-", mz=218.0)]
     assert level_of(nitrate)[("C8H14O2", "[M+NO3]-")] == "4b"
+
+
+def _bromide_channel(*rows):
+    """`rows` on a bromide channel: two [M+Br]- commits make Br the reagent halogen."""
+    return [*rows, m0("q", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br-", mz=235.0),
+            m0("r", "C9H18O2", adduct="[M+Br]-", ion="C9H18O2Br-", mz=237.0)]
+
+
+def test_the_reagent_satellite_needs_the_ion_to_carry_the_reagent_halogen():
+    """C11+a: `reagent_only_iso` only where the ION carries more of the reagent
+    halogen than the neutral -- an 81Br line on a Br-free ion is not the
+    reagent's, and on a brominated neutral's [M-H]- it is the neutral's own."""
+    def facts(rows):
+        out = EV.level_pooled({"f": ledger(rows)})
+        return {(n, a): (lv, roi) for n, a, lv, roi in
+                zip(out.neutral_formula, out.adduct, out.evidence_level, out.reagent_only_iso)}
+    brfree = _bromide_channel(m0("p", "C8H14O4", ion="C8H13O4-", mz=173.08), child("c", "p", "81Br+2", 950.0))
+    assert facts(brfree)[("C8H14O4", "[M-H]-")] == ("4b", False)
+    own = _bromide_channel(m0("p", "C7H11BrO4", ion="C7H10BrO4-", mz=236.97), child("c", "p", "81Br+2", 950.0))
+    assert facts(own)[("C7H11BrO4", "[M-H]-")] == ("4b", False)
+    # the reagent's own line: a bromide adduct of a Br-free neutral, and of a brominated one (Br2 > Br)
+    adduct = _bromide_channel(m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br-", mz=221.0),
+                              child("c", "p", "81Br+1", 950.0))
+    assert facts(adduct)[("C8H14O2", "[M+Br]-")] == ("4d", True)
+    more = _bromide_channel(m0("p", "C7H11BrO4", adduct="[M+Br]-", ion="C7H11Br2O4-", mz=316.9),
+                            child("c", "p", "81Br+1", 950.0))
+    assert facts(more)[("C7H11BrO4", "[M+Br]-")] == ("4d", True)
+    # a ledger row that stored the NEUTRAL as its ion formula: the adduct carries the reagent
+    stored = _bromide_channel(m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2", mz=221.0),
+                              child("c", "p", "81Br+1", 950.0))
+    assert facts(stored)[("C8H14O2", "[M+Br]-")] == ("4d", True)
+    assert EV.carries_reagent("C8H14O2", "[M+HBr+Br]-", "C8H14O2", "Br")
+    assert not EV.carries_reagent("C7H11BrO4", "[M+NO3]-", "C7H11BrNO7-", "Br")
+    assert not EV.carries_reagent("C8H14O2", "[M+Br]-", "C8H14O2Br-", None)
+    assert EV.ion_composition("C8H14O2", "[M+HBr+Br]-", "nan") == {"C": 8, "H": 15, "O": 2, "Br": 2}
+
+
+def test_the_reference_script_reads_the_reagent_satellite_like_the_engine():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("level_ledger", Path(__file__).resolve().parents[1]
+                                                  / "scripts" / "level_ledger.py")
+    LL = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(LL)
+    rows = ledger(_bromide_channel(
+        m0("p", "C8H14O4", ion="C8H13O4-", mz=173.08), child("c", "p", "81Br+2", 950.0),
+        m0("s", "C7H11BrO4", ion="C7H10BrO4-", mz=236.97), child("d", "s", "81Br+2", 950.0),
+        m0("t", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2", mz=221.0), child("e", "t", "81Br+1", 950.0),
+        m0("u", "C7H11BrO4", adduct="[M+Br]-", ion="C7H11Br2O4-", mz=316.9), child("g", "u", "81Br+1", 950.0)))
+    core = EV.level_pooled({"s1": rows})
+    ref = LL.assign_levels(LL.measure_source("s1", rows.assign(__file="s1"), "Br"), set())
+    m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
+    assert len(m) == len(core) == 6
+    assert (m["reagent_only_iso_x"] == m["reagent_only_iso_y"]).all() and (m["evidence_level"] == m["level"]).all()
+    assert set(m.loc[m["reagent_only_iso_x"], "neutral_formula"]) == {"C8H14O2", "C7H11BrO4"}
+    assert LL.ion_composition("C8H14O2", "[M+HBr+Br]-", float("nan")) == {"C": 8, "H": 15, "O": 2, "Br": 2}
+    assert not LL.carries_reagent("C7H11BrO4", "[M-H]-", "C7H10BrO4-", "Br")
 
 
 # --------------------------------------------------------------------------- contract

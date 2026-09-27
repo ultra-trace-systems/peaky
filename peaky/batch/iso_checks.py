@@ -292,12 +292,10 @@ def _pooled(frames: dict) -> pd.DataFrame:
 
 def ion_counts(neutral: str, adduct: str, ion) -> dict:
     """The ion's composition: its ion formula when it carries a charge sign, else
-    neutral + adduct (a ledger can hold the NEUTRAL in `ion_formula`)."""
-    s = str(ion or "").strip()
-    if s.endswith(("-", "+")):
-        return C.parse_formula(s)
-    from peaky.assignment.tiers import _ion_counts
-    return _ion_counts(neutral, adduct) or C.parse_formula(s)
+    neutral + adduct (a ledger can hold the NEUTRAL in `ion_formula`) --
+    evidence.ion_composition."""
+    from peaky.assignment import evidence as EV
+    return EV.ion_composition(neutral, adduct, ion)
 
 
 # --------------------------------------------------------------------------- rule C

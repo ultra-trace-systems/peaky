@@ -10,7 +10,7 @@ opens them directly); 3.5 MB in all with the neutral-pair table and `expected_le
 | set | fixtures | source | M0 rows | iso rows | golden vector (2b/3a/3b/4a/4b/4c/4d/5a/5b) |
 |---|---|---|---:|---:|---|
 | `tv_nitrate`, `tv_bromide` | 2 | one TOF, two reagent channels on the same air; each ledger is one source and the two corroborate each other | 1,373 | 570 | 1373 · 21/15/107/16/143/15/10/37/1009 |
-| `tof_01` … `tof_28` | 28 | a mixed bromide/nitrate TOF, 18 cover + 10 residual files, pooled as ONE source | 8,313 | 4,286 | 3364 · 6/15/182/15/254/82/99/138/2573 |
+| `tof_01` … `tof_28` | 28 | a mixed bromide/nitrate TOF, 18 cover + 10 residual files, pooled as ONE source | 8,313 | 4,286 | 3364 · 6/15/182/15/260/82/93/138/2573 |
 | `orbi_01` … `orbi_12` + `orbi_label_twins.csv` | 12 + 1 | a labelled-nitrate Orbitrap sampling the same air as the TOF set, ONE source; the TOF and Orbitrap sets corroborate each other; its label-twin table (rule K, measured by `batch/label_twins.py` on the run's stamped time series) | 9,773 | 2,238 | 1707 · 0/11/217/9/203/139/0/35/1093 (with the table 0/11/174/9/206/151/0/38/1118) |
 | `ur_01` … `ur_10` + `ur_neutral_pairs.csv` | 10 + 1 | a uronium Orbitrap batch, ONE source, no corroboration; levelled with its neutral-pair table (rule U, measured by `batch/neutral_pairs.py` on the run's stamped time series) | 8,076 | 2,263 | 1161 · 4/4/0/331/376/291/0/82/73 (without the table 4/4/0/25/682/291/0/82/73) |
 
@@ -29,7 +29,14 @@ in-band line; 15N and 18O join the ratio band) regenerated it again: 14 rows
 changed. Seven are levels, all in the TOF set (bromide-adduct 4a rows that counted
 the reagent's 81Br fall to 4b; the vector was 6/15/182/22/247/82/99/138/2573);
 seven gain the isotope axis from an in-band 18O line at an unchanged level (six
-nitrate-channel rows of the TV set and HNO2 on the TOF).
+nitrate-channel rows of the TV set and HNO2 on the TOF). C11+a (2026-09-27:
+`reagent_only_iso` only where the ION carries more of the reagent halogen than
+the neutral) regenerated it again: 14 rows changed, all in the bromide-channel
+sets. Six are levels, all in the TOF set: `[M-H]-` rows 4d -> 4b (C10H10BrClO6,
+C12H20BrCl, C15H27BrO5, C18H27BrO4 -- brominated neutrals whose 81Br line is
+their own -- and the Br-free C35H32O4S, C35H36O6S; the vector was
+6/15/182/15/254/82/99/138/2573); eight lose the flag at an unchanged level
+(three `[M-H]-` rows of `tv_bromide`, five of the TOF set).
 
 Scrubbed: file names are positional, `sample_item_id` is dropped, and no site,
 instrument or server name is inside. The privacy scanner skips `.gz`; the

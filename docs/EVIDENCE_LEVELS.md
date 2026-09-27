@@ -528,7 +528,7 @@ added them. `tests/test_evidence.py`:
   the other pins on its own, §6.4; the uronium set alone, with its
   neutral-pair table):
   `tv` 1373 → 21/15/107/16/143/15/10/37/1009,
-  `tof` 3364 → 6/15/182/15/254/82/99/138/2573,
+  `tof` 3364 → 6/15/182/15/260/82/93/138/2573,
   `orbi` 1707 → 0/11/217/9/203/139/0/35/1093,
   `ur` 1161 → 4/4/0/331/376/291/0/82/73 (4/4/0/25/682/291/0/82/73 without
   the pair table)
@@ -536,7 +536,11 @@ added them. `tests/test_evidence.py`:
   6/16/182/38/260/79/91/135/2557 and 0/12/217/44/215/119/0/30/1070 —
   183 of the 6,444 pairs moved, every one to a lower level; before C17 the
   TOF vector was 6/15/182/22/247/82/99/138/2573: seven bromide-adduct 4a
-  pairs had counted the reagent's 81Br as a second line);
+  pairs had counted the reagent's 81Br as a second line; before C11+a it was
+  6/15/182/15/254/82/99/138/2573: six bromide-channel `[M-H]-` pairs read 4d
+  on an 81Br line the ion's reagent never carried -- four brominated
+  neutrals' own line, two Br-free ions -- and read 4b once `reagent_only_iso`
+  needs the ion to carry more of the reagent halogen than the neutral);
 - rule U: each clause of the fact vetoes it, the profile scope (only the
   uronium profile declares a pair), row 9′'s formula support and order, the
   fact never an axis nor in `cross` nor per file, and the **leak mutant** —

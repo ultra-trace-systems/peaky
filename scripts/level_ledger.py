@@ -217,6 +217,35 @@ def composition(formula, fold: bool = True, labelled: bool = False) -> dict:
     return out
 
 
+ADDUCT_TOKEN = re.compile(r"([+-])\^?([A-Za-z0-9]+)")
+
+
+def ion_composition(neutral, adduct, ion) -> dict:
+    """The ION's element counts: its stored ion formula when that carries a
+    charge sign, else neutral + adduct ('[M+HBr+Br]-' adds H and two Br; a
+    ledger row can hold the NEUTRAL in ion_formula)."""
+    s = str(ion).strip() if isinstance(ion, str) else ""
+    if s.endswith(("+", "-")):
+        return composition(s)
+    a = str(adduct).strip() if isinstance(adduct, str) else ""
+    if not neutral or not a.startswith("[M"):
+        return composition(s)
+    counts = composition(neutral)
+    inner = a.split("]")[0][2:].replace("(", "").replace(")", "")
+    for sign, token in ADDUCT_TOKEN.findall(inner):
+        for element, n in composition(token).items():
+            counts[element] = counts.get(element, 0) + (n if sign == "+" else -n)
+    return {k: v for k, v in counts.items() if v} or composition(s)
+
+
+def carries_reagent(neutral, adduct, ion, halogen) -> bool:
+    """The ION carries more of the reagent halogen than the neutral: only then
+    can a line of it be the reagent's."""
+    if not halogen:
+        return False
+    return ion_composition(neutral, adduct, ion).get(halogen, 0) > composition(neutral).get(halogen, 0)
+
+
 def expected_ratio(tag: str, ion_formula) -> float | None:
     """Natural height ratio of an isotope child to its M0, None when unknown."""
     if tag.startswith("13C"):
@@ -429,11 +458,14 @@ def measure_source(
                     or group["series_unit"].notna().any()
                 ),
                 branch=bool(aset & BARE_ADDUCTS) and bool(aset & CLUSTER_ADDUCTS),
+                # ... and the ION carries more of the reagent halogen than the
+                # neutral (C11+a: else the line is not the reagent's)
                 reagent_only_iso=(not ion_only)
                 and bool(satellite)
                 and bool(tags)
                 and not carbon_ev
-                and all(t.startswith(satellite) for t in tags),
+                and all(t.startswith(satellite) for t in tags)
+                and carries_reagent(neutral, adduct, group["ion_formula"].iloc[0], halogen),
                 iso_labels="|".join(sorted(tags)),
                 tied=bool(group["tied"].map(truthy).all()),
                 below=bool(group["below_assignability"].map(truthy).any()),

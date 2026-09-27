@@ -301,6 +301,26 @@ def neutral_elements(neutral, ion) -> set[str]:
     return {el for el, n in own.items() if n > 0 and 2 * n > ion_counts.get(el, 0)}
 
 
+def ion_composition(neutral, adduct, ion) -> dict:
+    """The ION's element counts: its stored ion formula when that carries a
+    charge sign, else neutral + adduct (a ledger row can hold the NEUTRAL in
+    `ion_formula` -- then the reagent's atoms are only in the adduct)."""
+    s = str(ion or "").strip() if not (isinstance(ion, float) and np.isnan(ion)) else ""
+    if s.endswith(("+", "-")):
+        return C.parse_formula(s)
+    from peaky.assignment.tiers import _ion_counts
+    return _ion_counts(str(neutral or ""), str(adduct or "")) or C.parse_formula(s)
+
+
+def carries_reagent(neutral, adduct, ion, halogen) -> bool:
+    """The ION carries more of the reagent halogen than the neutral does: only
+    then can a line of it be the reagent's (an 81Br line of a Br-free ion, or of
+    a brominated neutral's nitrate cluster, is not the bromide reagent's)."""
+    if not halogen:
+        return False
+    return ion_composition(neutral, adduct, ion).get(halogen, 0) > C.parse_formula(str(neutral or "")).get(halogen, 0)
+
+
 def is_ion_only(frame: pd.DataFrame) -> pd.Series:
     """Boolean mask of the rows the ion-only stage wrote: an ION_ONLY_ADDUCTS
     adduct carrying an `ion_only:` method, or (a merged ledger, which has no
@@ -472,8 +492,11 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None)
             chan2=(not outside) and int(channels.get(neutral, 0)) >= 2,
             anchor=(not ion_only) and bool(g["__anchor"].any()),
             branch=bool(aset & BARE_ADDUCTS) and bool(aset & CLUSTER_ADDUCTS),
+            # the sole satellite is the reagent halogen's -- and the ION carries
+            # more of that halogen than the neutral (C11+a: else the line is
+            # the neutral's own, or no reagent line at all)
             reagent_only_iso=(not ion_only) and bool(satellite) and bool(t) and not carbon_ev
-            and all(x.startswith(satellite) for x in t),
+            and all(x.startswith(satellite) for x in t) and carries_reagent(neutral, adduct, ion, halogen),
             ion_only=ion_only,
             iso_labels="|".join(sorted(t)),
             tied=bool(g["__tied"].all()),
