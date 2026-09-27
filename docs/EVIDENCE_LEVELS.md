@@ -109,8 +109,8 @@ Computed exactly as `level_ledger.measure_source` does.
 
 | fact | definition |
 |---|---|
-| `iso` | some child of some row of the pair has a height ratio within **0.5–2.0×** of natural abundance (13C: 0.0107 per carbon of `ion_formula`; 34S 0.0443; 37Cl 0.3196; 81Br 0.9728; 29Si 0.0508; 30Si 0.0335) **or** any row's `isotopologues` list is non-empty |
-| `multiline` | ≥ 2 distinct satellite tags across the pair's children (excluding `M0`) |
+| `iso` | some child of some row of the pair has a height ratio within **0.5–2.0×** of natural abundance (13C: 0.0107 per carbon of `ion_formula`; 15N: 0.00369 per ¹⁴N atom of `ion_formula` — a caret `^N` atom is already ¹⁵N; 18O: 0.00205 per O atom; 34S 0.0443; 37Cl 0.3196; 81Br 0.9728; 29Si 0.0508; 30Si 0.0335) **or** any row's `isotopologues` list is non-empty. 15N and 18O joined the band with C17 (2026-09-27) |
+| `multiline` | (C17, 2026-09-27) the pair's children carry in-band lines (the `iso` test, per line) of **≥ 2 distinct elements the neutral supplies**. A child's tag names its element (`13C` / `13C2` → C, `81Br` / `2x81Br` / `81Br2` / `81Br(pair)` → Br, `37Cl…` → Cl, `15N` / `14N` → N, `18O` → O, …); a generic `M+n` child names none. The neutral **supplies** an element when it holds more than half of the ion's atoms of it: the ¹⁵N line of a urea adduct of an N-free neutral, the ⁸¹Br line of a bromide adduct and the ¹⁸O line of formic acid's nitrate cluster (2 of 5 O) measure the reagent; the ¹⁸O line of C₁₀H₁₆O₄'s urea adduct (4 of 5 O) measures the neutral. Before C17 it was "≥ 2 distinct satellite tags", so 13C + 13C2 (one element twice), the reagent's own 15N / 81Br and `M+n` children all counted (output audit K01). The elements are written as `multiline_elements` (`C|O`) |
 | `carbon_ev` | a `13C…` tag is among them |
 | `chan2` | the **neutral** is committed under ≥ 2 distinct adducts in this source |
 | `anchor` | any row has `anchor_peak_id` or `series_unit` |
@@ -124,6 +124,7 @@ Computed exactly as `level_ledger.measure_source` does.
 | `res_ok` | no row carries a `resolvability` value, **or** at least one is `resolved` / `isolated` — a source that never measured it is not penalised |
 | `corroborated` | the neutral is in the **cross set** (§6.4): a source — the other reagent channel, the other instrument on the same air, a `--corroborate` run — that holds it at **4b or better by its own evidence**; never for an ion-only pair |
 | `known_fam` | the family of the first `known:` method among the rows, else `''` |
+| `upair` | (rule U, C17 + U, 2026-09-27) **batch only**: the neutral is in the batch's **neutral-pair set** — the profile declares a `(bare, cluster)` pair (`ReagentProfile.neutral_pair`; bundled: the uronium profile's `([M+H]+, [M+(CH4N2O)H]+)`, 60.0324 Da apart) and `batch/neutral_pairs.py` finds, on the stamped batch time series, both ions of the neutral committed, the neutral C/H/O only (N-free: the NH4 alias `[X+NH4]+` and the urea ladder both need N; no S/Si/P/halogen), each ion present within 2 ppm of its exact m/z in ≥ 50 % of the spectra at median \|ppm\| ≤ 1, r(log h_bare, log h_cluster) ≥ 0.5 over ≥ 30 spectra with both ≥ 150 counts, neither matched peak stamped as an isotope child, an artifact or another reading's M0 in > 50 % of its spectra, and no ¹³C carbon count (area, calibrated on the batch's own ions) contradicting either ion. A fact about the neutral: **never an axis, never in `cross`**, never on an ion-only pair, never per file and never on a profile without a pair (a leaked fact would move the TOF and nitrate goldens, §8). Written to `tables/neutral_pairs.csv` |
 | `ion_only` | the pair was written by the **ion-only stage** (`ion_only`, C7): adduct `[M]-.` with method `ion_only:*` (a merged ledger: an `ion_only_of` link) — the +1.0078 Da electron-attachment line beside a committed `[M-H]-` acid, carrying the acid's composition. An ion-only pair is levelled on its **own** satellite alone (§4 row 2b′) and is kept **out of the per-neutral pools in both directions**: `chan2`, `branch`, `anchor` and `reagent_only_iso` are computed over the regular rows only, so the row never gives its parent a second channel and never takes an axis from it; it is never `corroborated` and its neutral never enters a cross set (`corroborating_neutrals` skips it) |
 
 Derived:
@@ -168,6 +169,7 @@ with two stray `[M+Br]-` rows against 346 `[M+NO3]-` is a nitrate channel.
 | 7 | **5a** | `n_axes == 0` | exact mass only; no discriminating test was possible |
 | 8 | **4d** | `not neutral_backed and reagent_only_iso` | **ion** formula only: the sole isotope support is the reagent halogen, which pins the ion and says nothing about the neutral (CIMS-specific; no Schymanski analogue). With row 1′, 4d reads *ion pinned, neutral not* whichever route reached it |
 | 9 | **4a** | `n_axes >= 2 and cross` | formula confirmed **and the neutral established**: two orthogonal axes, at least one from outside this channel's ionization chemistry |
+| 9′ | **4a** | `upair and (iso or (unique and res_ok))` | (rule U) the neutral established by the channel's **neutral pair** — the bare and the reagent-cluster ion of one neutral, seen together at exact mass and co-varying, the way the acid branch (row 5) establishes it on the anion channels — on a formula with its own support: an isotope line, or one plausible ion on a resolved peak. Placed after row 9 so no existing 4a changes its reason; 4a, not 3b: the pair makes no functional-group claim |
 | 10 | **4b** | else | formula confirmed, one corroboration |
 
 Levels **1** and **2a** are in `LEVEL_ORDER` and never assigned.
@@ -215,6 +217,27 @@ the isomer space says 3 (2-, 3-, 4-nitrophenol), so 3a.
 - **Isotope evidence is judged on physics.** A satellite whose ratio is
   outside 0.5–2× natural abundance is not evidence; a satellite the server
   attributed (`isotopologues`) is.
+- **Two isotope lines speak for the neutral only as two of its elements
+  (C17).** `multiline` is the only outside term a single channel has, so it
+  must say something the other axes cannot: the ion's composition in two
+  independent elements, each supplied mostly by the neutral, each at a height
+  its natural abundance allows. One element seen twice (13C and 13C2), the
+  reagent's own isotope (the urea's 15N, the bromide's 81Br, nitrate's 18O on a
+  C1 neutral) or a line with no element (`M+n`) is not a second line. On the
+  regression runs it moved 1 row (labelled nitrate), 10 (uronium) and 14 (TOF)
+  from 4a to 4b; the uronium rows are the ones rule U then re-establishes.
+- **The neutral pair establishes the neutral where the chemistry declares
+  one (rule U).** A uronium channel has no acid branch; its equivalent is the
+  protonated and the urea-clustered ion of one neutral at exact mass,
+  co-varying through the batch. Its specificity comes from exact mass and the
+  formula support (0.25 neutrals pass per decoy offset, output audit round 3),
+  not from the co-variation, which is a weak veto. Two batch-specific vetoes of
+  the round-3 design -- line proportionality through hand-dated steady states and
+  a bright-parent guard read at those steps -- are not built: no batch-generic
+  form reproduced them (the user's decision, 2026-09-27). The neutrals whose
+  protonated line also carries an in-source fragment of a brighter parent
+  (C₁₀H₁₆O from a hydroperoxide, C₁₄H₂₈O₅ from TEG-EH) stay 4a; the fragment is
+  an intensity note, not a level.
 - **Predicate order is the design.** `hard` outranks a curated identity: a
   known species the arbiter had to tie-break is 5b, and that is a defect in
   the pass-0 lock to be fixed there, not hidden here.
@@ -295,12 +318,20 @@ corroborate this run by the neutrals the other holds at 4b or better on its
 own evidence (§6.4). The trace-first path is a one-file batch and follows the
 same rule.
 
+Rule U's fact is measured here and nowhere else: `batch/neutral_pairs.measure`
+reads the stamped batch time series (the table `per_file/_batch_ts.parquet`
+holds) and the pooled per-file ledgers, `tables/neutral_pairs.csv` records every
+clause per neutral (written on every run, empty without a declared pair or a
+time series), and `level_pooled(..., upair=...)` reads the set.
+
 `batch_summary["evidence_levels"]` = `{"pooled": {level: n}` (one count per
 pair), `"merged": {level: n}` (per merged row), `"per_stage": {cover: {…},
 residual: {…}}`, `"n_pairs"`, `"n_unstamped"` (merged rows whose reading no
-per-file ledger holds), `"n_corroborate"`, `"cross_source": [...]}`; the pair
-table with every fact of §3 is written to `tables/evidence_levels.csv`, with
-the pair's `claim` beside its level.
+per-file ledger holds), `"n_corroborate"`, `"cross_source": [...]`,
+`"neutral_pairs": {pair, neutrals, committed_both, cho, present, covary, clean,
+upair}` (the funnel; `{pair: [], neutrals: 0, upair: 0}` without a pair)}; the
+pair table with every fact of §3 is written to `tables/evidence_levels.csv`,
+with the pair's `claim` beside its level.
 
 `batch_summary["claims"]`, right after `evidence_levels`, tallies the claims
 (each a `{identified, ion, tentative: n}` dict, zeros kept): `"merged"` (per
@@ -317,7 +348,10 @@ beside `merged_tiers`.
 
 `scripts/level_ledger.py` stays as the reference and the tool for runs made
 before the column existed. `scripts/scorecard.py` already prefers an in-core
-`evidence_level` column when present.
+`evidence_level` column when present. Rule U's fact is measured by the batch,
+not by the script: `--upair` (no value) reads each batch source's own
+`tables/neutral_pairs.csv`, `--upair <csv>` applies one table to every levelled
+source, and without the flag row 9′ never fires.
 
 ### 6.4 The cross set — what a source's sighting is worth (C8)
 
@@ -366,14 +400,15 @@ acid, mass-saturated on both instruments with no axis on either, falls from
 | column | type | on | value |
 |---|---|---|---|
 | `evidence_level` | str | M0 rows; `NA` elsewhere | one of `2b 3a 3b 4a 4b 4c 4d 5a 5b` (never `1` / `2a` today) |
-| `evidence_axes` | str | M0 rows | `|`-joined, in this order, of the axes that hold: `iso`, `chan2`, `anchor`, `corroborated`, then the modifiers `multiline`, `carbon`, `branch`, `reagent_only_iso`, `ion_only`, `known:<family>`, `files:<n>` (batch only); `''` when none |
+| `evidence_axes` | str | M0 rows | `|`-joined, in this order, of the axes that hold: `iso`, `chan2`, `anchor`, `corroborated`, then the modifiers `multiline`, `carbon`, `branch`, `reagent_only_iso`, `ion_only`, `upair` (batch only, rule U), `known:<family>`, `files:<n>` (batch only); `''` when none |
 | `level_reason` | str | M0 rows | one sentence naming the predicate that fired, in the words of §4, with the numbers (`"5b: near-tie broken by the arbiter"`, `"4c: 1 plausible ion in the window, resolved, no axis"`, `"4a: iso + chan2, corroborated by the other source"`) |
 | `n_plausible_structures` | Int64 | M0 rows whose formula is in the isomer space; `NA` otherwise | from `isomer_space.csv` |
 | `claim` | str | every M0 row of a per-file ledger and every merged row; `NA` on every other per-file row | `identified` / `ion` / `tentative` = `claim_class(evidence_level)` (§1.1); a committed row with no level reads `tentative` |
 
 Written to: the per-file `<prefix>_ledger.csv`, `merged_ledger.csv`,
 `tables/evidence_levels.csv` (batch: one row per pair with every fact of §3, the
-`ion_only` flag and the pair's `claim` included), the
+`ion_only` flag, `multiline_elements`, `upair` and the pair's `claim` included),
+`tables/neutral_pairs.csv` (batch: rule U's clauses per neutral), the
 Excel workbook (a column on the ledger sheets, `claim` directly before
 `evidence_level`; a **"By evidence level"** sheet: one row per level with
 count, share, tier split, the axes histogram and the twenty brightest rows;
@@ -392,8 +427,9 @@ claim read off its level, on the M0 / merged rows only.
 
 ## 8. Golden fixtures and what the tests pin
 
-`tests/fixtures/levels/` (see its README): 42 gzipped per-file ledgers from
-three real runs, trimmed to the rows and columns of §2, and
+`tests/fixtures/levels/` (see its README): 52 gzipped per-file ledgers from
+four real runs, trimmed to the rows and columns of §2, the uronium run's
+neutral-pair table, and
 `expected_levels.csv` with the level and every fact of §3 per
 `(source, neutral, adduct)`, written by `level_ledger.py` at the commit that
 added them. `tests/test_evidence.py`:
@@ -401,14 +437,27 @@ added them. `tests/test_evidence.py`:
 - one test per level (2b, 3a, 3b, 4a, 4b, 4c, 4d, 5a, 5b) on a synthetic
   ledger where exactly that level fires, **and a mutant** that flips one
   input and must change the level;
-- the three golden count vectors, exact (each source corroborated by what
-  the other pins on its own, §6.4):
+- the four golden count vectors, exact (each source corroborated by what
+  the other pins on its own, §6.4; the uronium set alone, with its
+  neutral-pair table):
   `tv` 1373 → 21/15/107/16/143/15/10/37/1009,
-  `tof` 3364 → 6/15/182/22/247/82/99/138/2573,
-  `orbi` 1707 → 0/11/217/9/203/139/0/35/1093
+  `tof` 3364 → 6/15/182/15/255/82/99/138/2572,
+  `orbi` 1707 → 0/11/217/9/203/139/0/35/1093,
+  `ur` 1161 → 4/4/0/331/376/291/0/82/73 (4/4/0/25/682/291/0/82/73 without
+  the pair table)
   (before C8, with any-level membership: 21/15/107/38/162/9/9/33/979,
   6/16/182/38/260/79/91/135/2557 and 0/12/217/44/215/119/0/30/1070 —
-  183 of the 6,444 pairs moved, every one to a lower level);
+  183 of the 6,444 pairs moved, every one to a lower level; before C17 the
+  TOF vector was 6/15/182/22/247/82/99/138/2573: seven bromide-adduct 4a
+  pairs had counted the reagent's 81Br as a second line, and one 5b pair
+  gains an in-band 18O line);
+- rule U: each clause of the fact vetoes it, the profile scope (only the
+  uronium profile declares a pair), row 9′'s formula support and order, the
+  fact never an axis nor in `cross` nor per file, and the **leak mutant** —
+  the fact computed as "two channels and N-free" on every channel moves the
+  TOF and nitrate vectors (`tests/test_neutral_pairs.py`); C17's element rule
+  case by case (`tests/test_multiline_elements.py`), both against the
+  reference script;
 - row-for-row equality with `expected_levels.csv`;
 - non-M0 rows carry `NA`; a reagent-ion row never carries a level;
 - missing columns and all-null columns do not raise;

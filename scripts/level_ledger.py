@@ -8,6 +8,7 @@ terms of columns a peaky ledger already carries, and it is the yardstick the
 in-core `evidence_level` column (Phase B) must reproduce row for row.
 
     python scripts/level_ledger.py <source>... [--corroborate <source>]
+                                   [--upair [<neutral_pairs.csv>]]
                                    [--out levels.csv]
 
 A *source* is a batch run dir (its `per_file/*_ledger.csv`, or `merged_ledger.csv`
@@ -41,7 +42,8 @@ The scale, in the order the predicates are tried:
         pins the ion and says nothing about the neutral (CIMS-specific; there is
         no Schymanski analogue)
     4a  formula confirmed and the NEUTRAL established: two orthogonal axes, at
-        least one from outside this channel's ionization chemistry
+        least one from outside this channel's ionization chemistry -- or (9',
+        rule U, --upair) the channel's neutral pair on a supported formula
     4b  formula confirmed, one corroboration
 
 The four axes are: a verified isotopologue, a second adduct channel, a
@@ -76,7 +78,14 @@ ISOTOPE_ABUNDANCE = {
     "30Si": 0.0335,
 }
 C13_PER_CARBON = 0.0107
+# 15N and 18O are expected per atom of the ion (heavy / light natural abundance;
+# a caret '^N' atom is already 15N and is not counted)
+PER_ATOM_ABUNDANCE = {"15N": ("N", 0.00368 / 0.99632), "18O": ("O", 0.00205 / 0.99757)}
 RATIO_LO, RATIO_HI = 0.5, 2.0
+# the element an isotope child's tag measures ('13C2' -> C, '2x81Br' -> Br,
+# '81Br(pair)' -> Br, '14N' -> N); 'M' (a generic M+n child) names none
+TAG_ELEMENT = re.compile(r"^(?:\d+x)?\d+([A-Z][a-z]?)\d*(?:\(pair\))?$")
+FORMULA_TOKEN = re.compile(r"(\^?)([A-Z][a-z]?)(\d*)")
 
 # The scope of each pass-0 family (docs/EVIDENCE_LEVELS.md section 4.1): a family
 # whose entries are hand-listed compounds asserts a COMPOUND, one generated from a
@@ -184,6 +193,40 @@ def count_element(formula, element: str) -> int:
     return int(match.group(1)) if match.group(1) else 1
 
 
+def composition(formula, fold: bool = True) -> dict:
+    """Element counts of a formula; a caret isotope ('^N') folds into its
+    element unless `fold` is False, when it is left out (it is already heavy)."""
+    out: dict = {}
+    if not isinstance(formula, str):
+        return out
+    for caret, element, n in FORMULA_TOKEN.findall(formula):
+        if caret and not fold:
+            continue
+        out[element] = out.get(element, 0) + (int(n) if n else 1)
+    return out
+
+
+def expected_ratio(tag: str, ion_formula) -> float | None:
+    """Natural height ratio of an isotope child to its M0, None when unknown."""
+    if tag.startswith("13C"):
+        carbons = count_element(ion_formula, "C")
+        return C13_PER_CARBON * carbons if carbons else None
+    if tag in PER_ATOM_ABUNDANCE:
+        element, per_atom = PER_ATOM_ABUNDANCE[tag]
+        atoms = composition(ion_formula, fold=False).get(element, 0)
+        return per_atom * atoms if atoms else None
+    return ISOTOPE_ABUNDANCE.get(tag)
+
+
+def neutral_elements(neutral, ion) -> set:
+    """Elements whose isotope line speaks for the neutral: the neutral supplies
+    more than half of the ion's atoms of the element (else the line measures
+    the reagent -- 15N on a urea adduct of an N-free neutral, 81Br on a bromide
+    adduct)."""
+    own, whole = composition(neutral), composition(ion)
+    return {e for e, n in own.items() if n > 0 and 2 * n > whole.get(e, 0)}
+
+
 def is_ion_only(frame: pd.DataFrame) -> pd.Series:
     """Rows the ion-only stage wrote (see ION_ONLY_ADDUCTS)."""
     adduct = column(frame, "adduct", "").fillna("").astype(str).isin(ION_ONLY_ADDUCTS)
@@ -279,6 +322,7 @@ def measure_source(
 
     labels: dict[tuple, set] = {}
     ratio_ok: dict[tuple, bool] = {}
+    in_band: dict[tuple, set] = {}   # the elements with an in-band line
     for _, child in iso.iterrows():
         parent = parents.get((child["__file"], child.get("parent_peak_id")))
         if parent is None:
@@ -293,13 +337,12 @@ def measure_source(
         ratio = float(child["height"]) / height
         if not np.isfinite(ratio):
             continue
-        if tag.startswith("13C"):
-            carbons = count_element(parent.get("ion_formula"), "C")
-            expected = C13_PER_CARBON * carbons if carbons else None
-        else:
-            expected = ISOTOPE_ABUNDANCE.get(tag)
+        expected = expected_ratio(tag, parent.get("ion_formula"))
         if expected and RATIO_LO <= ratio / expected <= RATIO_HI:
             ratio_ok[key] = True
+            match = TAG_ELEMENT.match(tag)
+            if match:
+                in_band.setdefault(key, set()).add(match.group(1))
 
     # per-neutral facts, over the source's REGULAR M0 rows (an ion-only row is
     # its parent's composition on another adduct, not a second channel for it)
@@ -344,6 +387,8 @@ def measure_source(
         }
         carbon_ev = any(t.startswith("13C") for t in tags)
         ion_only = bool(group["ion_only"].any())
+        own = in_band.get(key, set()) & neutral_elements(
+            neutral, str(group["ion_formula"].iloc[0]))
         aset = set() if ion_only else adduct_sets.get(neutral, set())
         rows.append(
             dict(
@@ -357,7 +402,8 @@ def measure_source(
                 known_fam=known.iloc[0][6:] if len(known) else "",
                 iso=bool(ratio_ok.get(key, False))
                 or bool(group["isotopologues"].map(lambda v: len(as_list(v)) > 0).any()),
-                multiline=len(tags) >= 2,
+                multiline=len(own) >= 2,
+                multiline_elements="|".join(sorted(own)),
                 carbon_ev=carbon_ev,
                 chan2=(not ion_only) and int(channels.get(neutral, 0)) >= 2,
                 anchor=(not ion_only) and bool(
@@ -428,16 +474,23 @@ def level_of(row) -> str:
         return "4d"
     if row.n_axes >= 2 and row.cross:
         return "4a"
+    # 9' (rule U): the profile's neutral pair establishes the neutral; the
+    # formula needs its own support -- an isotope, or one plausible ion on a
+    # resolved peak
+    if bool(getattr(row, "upair", False)) and (row.iso or (unique and row.res_ok)):
+        return "4a"
     return "4b"
 
 
-def assign_levels(df: pd.DataFrame, corroborating: set[str]) -> pd.DataFrame:
-    """Add the axes, the derived flags and the level to measured rows."""
+def assign_levels(df: pd.DataFrame, corroborating: set[str], upair: set[str] | None = None) -> pd.DataFrame:
+    """Add the axes, the derived flags and the level to measured rows. `upair`
+    is the batch's neutral-pair set (rule U); it is a fact, never an axis."""
     df = df.copy()
     df["known_fam"] = df["known_fam"].fillna("")
     if "ion_only" not in df.columns:
         df["ion_only"] = False
     df["corroborated"] = df["neutral"].isin(corroborating) & ~df["ion_only"].astype(bool)
+    df["upair"] = df["neutral"].isin(upair or set()) & ~df["ion_only"].astype(bool)
     df["n_axes"] = df[["iso", "chan2", "anchor", "corroborated"]].sum(axis=1)
     df["cross"] = df.corroborated | df.multiline | df.known_fam.ne("")
     df["neutral_backed"] = (
@@ -492,9 +545,26 @@ def source_good_neutrals(path: str) -> tuple[str, pd.DataFrame | None, set[str]]
     return label, frame, own_good_neutrals(frame)
 
 
-def run(sources: list[str], corroborate: list[str]) -> pd.DataFrame:
+def upair_neutrals(path: str) -> set[str]:
+    """The neutrals whose neutral pair holds, read from a batch's
+    tables/neutral_pairs.csv (a run dir) or from that CSV itself."""
+    table = path
+    if os.path.isdir(path):
+        table = os.path.join(path, "tables", "neutral_pairs.csv")
+    if not os.path.isfile(table):
+        return set()
+    frame = pd.read_csv(table)
+    if "upair" not in frame.columns:
+        return set()
+    held = frame["upair"].map(truthy)
+    return set(frame.loc[held, "neutral_formula"].astype(str))
+
+
+def run(sources: list[str], corroborate: list[str], upair: str | None = None) -> pd.DataFrame:
     """Level every source, each corroborated by the others plus --corroborate —
-    by the neutrals each of them holds at 4b or better on its own evidence."""
+    by the neutrals each of them holds at 4b or better on its own evidence.
+    `upair`: 'auto' reads each run-dir source's own tables/neutral_pairs.csv;
+    a CSV path applies that table to every levelled source; None = rule U off."""
     measured = {}
     neutrals = {}
     for path in sources:
@@ -512,7 +582,12 @@ def run(sources: list[str], corroborate: list[str]) -> pd.DataFrame:
         for other, values in neutrals.items():
             if other != path:
                 others |= values
-        out.append(assign_levels(frame, others))
+        held = set()
+        if upair == "auto":
+            held = upair_neutrals(path)
+        elif upair:
+            held = upair_neutrals(upair)
+        out.append(assign_levels(frame, others, held))
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
 
 
@@ -531,10 +606,18 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="a source that corroborates but is not itself levelled",
     )
+    parser.add_argument(
+        "--upair",
+        nargs="?",
+        const="auto",
+        default=None,
+        help="rule U: read each batch source's tables/neutral_pairs.csv (no value), "
+        "or apply this neutral-pair CSV to every levelled source",
+    )
     parser.add_argument("--out", help="write the levelled rows here as CSV")
     args = parser.parse_args(argv)
 
-    df = run(args.sources, args.corroborate)
+    df = run(args.sources, args.corroborate, args.upair)
     if df.empty:
         print("nothing to level", file=sys.stderr)
         return 1

@@ -29,7 +29,9 @@ The scale, in the order the predicates are tried (the first that holds wins):
     4d  ION formula only: the sole isotope support is the reagent halogen, which
         pins the ion and says nothing about the neutral (CIMS-specific)
     4a  formula confirmed AND the neutral established: two orthogonal axes, at
-        least one from outside this channel's ionization chemistry
+        least one from outside this channel's ionization chemistry -- or, on a
+        batch whose profile declares a neutral pair (rule U, row 9'), the pair
+        on a formula with its own support
     4b  formula confirmed, one corroboration
 
 The four axes: a verified isotopologue (`iso`), a second adduct channel
@@ -65,6 +67,7 @@ import numpy as np
 import pandas as pd
 
 from peaky import paths as PT
+from peaky.chem import chemistry as C
 
 # ---------------------------------------------------------------------------
 # the scale
@@ -117,7 +120,14 @@ PREDICATE_COLUMNS = (
 # satellite the audit looks for. 13C is per carbon and computed from the ion.
 ISOTOPE_ABUNDANCE = {"34S": 0.0443, "37Cl": 0.3196, "81Br": 0.9728, "29Si": 0.0508, "30Si": 0.0335}
 C13_PER_CARBON = 0.0107
+#: 15N and 18O are expected per atom of the ion, like 13C per carbon (heavy /
+#: light natural abundance; a caret '^N' atom is already 15N and is not counted)
+PER_ATOM_ABUNDANCE = {"15N": ("N", 0.00368 / 0.99632), "18O": ("O", 0.00205 / 0.99757)}
 RATIO_LO, RATIO_HI = 0.5, 2.0
+#: the element an isotope child's tag measures: '13C' / '13C2' -> C, '81Br' /
+#: '2x81Br' / '81Br2' / '81Br(pair)' -> Br, '14N' (the light line of a 15N label)
+#: -> N. A generic 'M+n' child ('M') names no element.
+_TAG_ELEMENT = re.compile(r"^(?:\d+x)?\d+([A-Z][a-z]?)\d*(?:\(pair\))?$")
 
 BARE_ADDUCTS = {"[M-H]-"}
 CLUSTER_ADDUCTS = {"[M+NO3]-", "[M+15NO3]-", "[M+^NO3]-", "[M+Br]-", "[M+HBr+Br]-", "[M+CO3]-"}
@@ -242,6 +252,35 @@ def count_element(formula, element: str) -> int:
     return int(match.group(1)) if match.group(1) else 1
 
 
+def expected_ratio(tag: str, ion_formula) -> float:
+    """The natural height ratio of an isotope child to its M0: 13C per carbon
+    of the ion, 15N / 18O per atom of the ion, the tabulated satellite
+    otherwise; 0.0 when there is none (such a line is never in the band)."""
+    if tag.startswith("13C"):
+        return C13_PER_CARBON * count_element(ion_formula, "C")
+    if tag in PER_ATOM_ABUNDANCE:
+        element, per_atom = PER_ATOM_ABUNDANCE[tag]
+        return per_atom * C.parse_formula(str(ion_formula or "")).get(element, 0)
+    return ISOTOPE_ABUNDANCE.get(tag, 0.0)
+
+
+def tag_element(tag) -> str | None:
+    """The element an isotope child's tag measures (see `_TAG_ELEMENT`)."""
+    match = _TAG_ELEMENT.match(str(tag).strip())
+    return match.group(1) if match else None
+
+
+def neutral_elements(neutral, ion) -> set[str]:
+    """The elements whose isotope line speaks for the NEUTRAL (C17): the neutral
+    supplies MORE THAN HALF of the ion's atoms of the element. A 15N line of a
+    urea adduct of an N-free neutral, the 81Br line of a bromide adduct, or the
+    18O line of formic acid's nitrate cluster (2 of 5 O) measure the reagent;
+    the 18O line of a C10H16O4 urea adduct (4 of 5 O) measures the neutral."""
+    own = C.fold_isotopes(C.parse_formula(str(neutral or "")))
+    ion_counts = C.fold_isotopes(C.parse_formula(str(ion or "")))
+    return {el for el, n in own.items() if n > 0 and 2 * n > ion_counts.get(el, 0)}
+
+
 def is_ion_only(frame: pd.DataFrame) -> pd.Series:
     """Boolean mask of the rows the ion-only stage wrote: an ION_ONLY_ADDUCTS
     adduct carrying an `ion_only:` method, or (a merged ledger, which has no
@@ -330,6 +369,7 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None) -> pd.DataFrame:
                .rename(columns={"peak_id": "__pid", "height": "__h_parent"}))
     tags: dict[tuple, set] = {}
     ratio_ok: dict[tuple, bool] = {}
+    lined: dict[tuple, set] = {}
     if len(iso) and len(parents):
         ch = iso.loc[iso["parent_peak_id"].notna(),
                      ["__file", "parent_peak_id", "iso_label", "height"]]
@@ -339,14 +379,16 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None) -> pd.DataFrame:
         hp = pd.to_numeric(ch["__h_parent"], errors="coerce")
         hc = pd.to_numeric(ch["height"], errors="coerce")
         ratio = hc / hp.where(hp > 0)
-        expected = pd.Series(
-            [C13_PER_CARBON * count_element(f, "C") if t.startswith("13C") else ISOTOPE_ABUNDANCE.get(t, 0.0)
-             for t, f in zip(ch["__tag"], ch["ion_formula"])], index=ch.index, dtype=float)
+        expected = pd.Series([expected_ratio(t, f) for t, f in zip(ch["__tag"], ch["ion_formula"])],
+                             index=ch.index, dtype=float)
         rel = ratio / expected.where(expected > 0)
         ch["__ok"] = rel.between(RATIO_LO, RATIO_HI) & np.isfinite(rel)
+        ch["__el"] = ch["__tag"].map(tag_element)
         for (n, a), g in ch.groupby(["__neutral", "__adduct"], sort=False):
             tags[(n, a)] = set(g["__tag"]) - {"M0"}
             ratio_ok[(n, a)] = bool(g["__ok"].any())
+            # the elements with an in-band line (C17: `multiline` counts these)
+            lined[(n, a)] = set(g.loc[g["__ok"], "__el"].dropna())
 
     # per-neutral facts over the whole source (regular rows: see above)
     channels = regular.groupby("__neutral")["__adduct"].nunique()
@@ -374,13 +416,15 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None) -> pd.DataFrame:
         key = (neutral, adduct)
         t = tags.get(key, set())
         carbon_ev = any(x.startswith("13C") for x in t)
+        ion = str(g["ion_formula"].iloc[0])
+        own = lined.get(key, set()) & neutral_elements(neutral, ion)
         known = g["__known"].dropna()
         seen = {v for v in g["__res"] if v}
         ion_only = bool(g["__ion_only"].any())
         aset = set() if ion_only else adduct_sets.get(neutral, set())
         rows.append(dict(
             neutral_formula=neutral, adduct=adduct,
-            ion=str(g["ion_formula"].iloc[0]),
+            ion=ion,
             mz=float(g["__mz"].median()) if g["__mz"].notna().any() else np.nan,
             height=float(g["__height"].median()) if g["__height"].notna().any() else np.nan,
             ppm=float(g["__ppm"].median()) if g["__ppm"].notna().any() else np.nan,
@@ -388,7 +432,8 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None) -> pd.DataFrame:
             tier="Assigned" if (g["tier"].astype(str) == "Assigned").any() else "Candidate",
             known_fam=str(known.iloc[0]) if len(known) else "",
             iso=bool(ratio_ok.get(key, False)) or bool(g["__iso_list"].any()),
-            multiline=len(t) >= 2,
+            multiline=len(own) >= 2,
+            multiline_elements="|".join(sorted(own)),
             carbon_ev=carbon_ev,
             chan2=(not ion_only) and int(channels.get(neutral, 0)) >= 2,
             anchor=(not ion_only) and bool(g["__anchor"].any()),
@@ -469,9 +514,21 @@ def _decide(r) -> tuple[str, str]:
         sat = HALOGEN_SATELLITE.get(r.reagent_halogen) or "halogen"
         return "4d", f"4d: only the reagent {sat} satellite, the ion is pinned, the neutral is not"
     if r.n_axes >= 2 and r.cross:
+        els = getattr(r, "multiline_elements", "") or ""
         outside = ("corroborated by the other source" if r.corroborated
-                   else "two-line isotope envelope")
+                   else f"isotope lines of two of the neutral's elements ({els.replace('|', ', ')})"
+                   if els else "isotope lines of two of the neutral's elements")
         return "4a", f"4a: {held}, {outside}"
+    if getattr(r, "upair", False):
+        # row 9' (rule U): the profile's neutral pair -- the bare and the cluster
+        # ion at exact mass, co-varying, clean, N-free CHO -- establishes the
+        # neutral as the acid branch does; the formula needs its own support
+        unique = pd.notna(deg) and deg <= 1
+        if r.iso:
+            return "4a", f"4a: {held}, the neutral pair establishes the neutral (upair), formula by isotope"
+        if unique and r.res_ok:
+            return "4a", (f"4a: {held}, the neutral pair establishes the neutral (upair), "
+                          f"formula unique on a resolved peak")
     if r.n_axes >= 2:
         return "4b", f"4b: {held}, none outside the channel's chemistry"
     return "4b", f"4b: one corroboration ({held})"
@@ -489,6 +546,8 @@ def _axes_string(r, *, with_files: bool) -> str:
         parts.append("reagent_only_iso")
     if r.ion_only:
         parts.append("ion_only")
+    if getattr(r, "upair", False):
+        parts.append("upair")
     if r.known_fam:
         parts.append(f"known:{r.known_fam}")
     if with_files:
@@ -496,8 +555,11 @@ def _axes_string(r, *, with_files: bool) -> str:
     return "|".join(parts)
 
 
-def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: bool = False) -> pd.DataFrame:
-    """Level every (neutral, adduct) pair of the frames pooled as ONE source."""
+def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: bool = False,
+                 upair=None) -> pd.DataFrame:
+    """Level every (neutral, adduct) pair of the frames pooled as ONE source.
+    `upair`: the neutrals whose declared neutral pair holds (rule U, measured by
+    batch/neutral_pairs.py on the batch time series; pooled only)."""
     parts = []
     for label, frame in frames.items():
         f = frame.copy()
@@ -516,6 +578,10 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
     # an ion-only row is never corroborated: its neutral is the parent's, and a
     # source that holds it is not a second independent sighting of that neutral
     facts["corroborated"] = facts["neutral_formula"].isin(cross) & ~facts["ion_only"]
+    # the neutral pair is a fact about the neutral, never an axis and never in
+    # `cross`; like chan2 it never lands on an ion-only pair
+    upair = {str(x) for x in (upair or set())}
+    facts["upair"] = facts["neutral_formula"].isin(upair) & ~facts["ion_only"]
     facts["n_axes"] = facts[list(AXES)].sum(axis=1).astype(int)
     facts["cross"] = facts["corroborated"] | facts["multiline"] | facts["known_fam"].ne("")
     facts["neutral_backed"] = (facts["corroborated"] | facts["chan2"] | facts["anchor"]
@@ -606,13 +672,14 @@ def _n_pairs(ledger: pd.DataFrame) -> int:
                              "a": _col(m0, "adduct").fillna("").astype(str)}).drop_duplicates().shape[0])
 
 
-def level_pooled(per_file: dict, *, cross=None, isomer_space=None) -> pd.DataFrame:
+def level_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None) -> pd.DataFrame:
     """A batch's per-file ledgers ({label: frame}) pooled as ONE source: one row
     per (neutral_formula, adduct) over all files with the four columns and every
     fact of §3 (`chan2` sees a second adduct in ANY file, `iso` any file's
     satellite, `tied`/`lowconf` need ALL rows across files, `below` any).
-    `evidence_axes` ends with `files:<n>`."""
-    return _level_pairs(dict(per_file), cross=cross, isomer_space=isomer_space, with_files=True)
+    `upair` is the neutral-pair set of rule U (batch/neutral_pairs.neutrals);
+    it exists only here, on the pooled batch. `evidence_axes` ends with `files:<n>`."""
+    return _level_pairs(dict(per_file), cross=cross, isomer_space=isomer_space, with_files=True, upair=upair)
 
 
 def stamp_merged(merged: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:

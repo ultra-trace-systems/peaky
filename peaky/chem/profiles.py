@@ -76,6 +76,14 @@ class ReagentProfile:
     # module. Empty = off (the positive-mode profiles: urea.H+.H2O is 5e-5 of
     # urea.H+ on the uronium Orbitrap).
     water_cores: tuple = ()
+    # NEUTRAL PAIR (rule U, docs/EVIDENCE_LEVELS.md §3 `upair`, §4 row 9'): a
+    # (bare, cluster) adduct pair of this chemistry whose two ions, seen together
+    # at exact mass and co-varying, establish the NEUTRAL the way the acid branch
+    # does on the anion channels -- the uronium pair ([M+H]+, [M+(CH4N2O)H]+).
+    # `batch/neutral_pairs.py` measures the fact from the batch time series. Empty
+    # = off (every other bundled profile: an unscoped fact would lift two-channel
+    # rows of any chemistry).
+    neutral_pair: tuple = ()
     aliases: tuple = field(default_factory=tuple)
 
 
@@ -105,6 +113,7 @@ UR = ReagentProfile(
     ranges="C0-40 H0-90 N0-8 O0-15 S0-2",
     detect_adduct="[M+(CH4N2O)H]+",
     context="uronium",
+    neutral_pair=("[M+H]+", "[M+(CH4N2O)H]+"),
     aliases=("ur", "uronium", "urea", "urea-cims", "ur+"),
 )
 
@@ -343,6 +352,8 @@ _CONFIG_FIELDS = (
     "ion_only_channels",
     # reagent-water cores (batch.reagent_water): a list of neutral compositions
     "water_cores",
+    # the (bare, cluster) neutral pair of rule U: a two-item list in the config
+    "neutral_pair",
 )
 
 
@@ -365,6 +376,10 @@ def from_dict(entry: dict) -> "ReagentProfile":
         kw["ion_only_channels"] = tuple(kw["ion_only_channels"] or ())
     if "water_cores" in kw:
         kw["water_cores"] = tuple(kw["water_cores"] or ())
+    if "neutral_pair" in kw:
+        kw["neutral_pair"] = tuple(kw["neutral_pair"] or ())
+        if kw["neutral_pair"] and len(kw["neutral_pair"]) != 2:
+            raise ValueError(f"neutral_pair must be two adducts (bare, cluster), got {kw['neutral_pair']!r}")
     if kw.get("height_cutoff_x_edge") is not None:
         kw["height_cutoff_x_edge"] = _x_edge_value(kw["height_cutoff_x_edge"])  # 'auto' or a number
     return ReagentProfile(**kw)
@@ -595,6 +610,9 @@ def compose(profiles: "list[ReagentProfile]") -> ReagentProfile:
         for c in (p.water_cores or ()):
             if c not in water:
                 water.append(c)
+    # the neutral pair survives only when every component that declares one
+    # declares the same pair (two different pairs would be two rules)
+    pairs = {tuple(p.neutral_pair) for p in ps if p.neutral_pair}
     return ReagentProfile(
         name="+".join(p.name for p in ps),
         label=" / ".join(p.label for p in ps),
@@ -611,6 +629,7 @@ def compose(profiles: "list[ReagentProfile]") -> ReagentProfile:
         height_cutoff_x_edge=next(iter(edge)) if len(edge) == 1 else None,
         ion_only_channels=tuple(ion_only),
         water_cores=tuple(water),
+        neutral_pair=next(iter(pairs)) if len(pairs) == 1 else (),
         aliases=(),
     )
 

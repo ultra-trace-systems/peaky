@@ -59,6 +59,7 @@ import pandas as pd
 
 from peaky import paths as PT
 from peaky.chem import profiles as P
+from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sampling as SS
 
 __version__ = "0.10.0"  # the vote reads the per-file EVIDENCE: a cluster's ions are
@@ -1846,7 +1847,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # merged rows carry none of the predicate columns, so they are never read for
     # this; a merged row whose reading no per-file ledger holds (a batch-level
     # re-read) stays NA, and the count says so.
-    levels = EV.level_pooled(level_frames, cross=cross)
+    # rule U (docs/EVIDENCE_LEVELS.md §4 row 9'): the profile's neutral pair,
+    # measured on the stamped batch time series over the pooled ledgers; the
+    # table is written for every run (empty without a pair or a time series)
+    _pair = tuple(getattr(prof, "neutral_pair", ()) or ())
+    pairs_table = _NP.measure(ts_annot, level_frames, _pair, log=log)
+    pairs_table.to_csv(os.path.join(TAB, "neutral_pairs.csv"), index=False)
+    levels = EV.level_pooled(level_frames, cross=cross, upair=_NP.neutrals(pairs_table))
     merged = EV.stamp_merged(merged, levels)
     levels.to_csv(os.path.join(TAB, "evidence_levels.csv"), index=False)
     ev_summary = {
@@ -1858,6 +1865,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "n_pairs": int(len(levels)),
         "n_unstamped": int(merged["evidence_level"].isna().sum()) if len(merged) else 0,
         "n_corroborate": int(len(cross)), "cross_source": cross_sources,
+        "neutral_pairs": _NP.summary(pairs_table, _pair),
     }
     log(f"[assign_batch] evidence levels over {len(level_frames)} pooled file(s): "
         f"{ev_summary['pooled']} ({ev_summary['n_pairs']} neutral/adduct pairs); "

@@ -27,12 +27,21 @@ ORDER = ["2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
 # the three golden vectors -- each source corroborated by the neutrals the other
 # holds at 4b or better by its OWN evidence (C8, 2026-09-25; before it, by every
 # M0 neutral of the other at any level: 21/15/107/38/162/9/9/33/979,
-# 6/16/182/38/260/79/91/135/2557 and 0/12/217/44/215/119/0/30/1070)
+# 6/16/182/38/260/79/91/135/2557 and 0/12/217/44/215/119/0/30/1070). C17
+# (2026-09-27, `multiline` counts in-band elements the neutral supplies) moved
+# the TOF set only: seven bromide-adduct 4a rows whose second line was the
+# reagent's 81Br go to 4b, and one 5b gains an in-band 18O line (4b); it was
+# 6/15/182/22/247/82/99/138/2573.
 GOLDEN = {
     "tv": (1373, "21/15/107/16/143/15/10/37/1009"),
-    "tof": (3364, "6/15/182/22/247/82/99/138/2573"),
+    "tof": (3364, "6/15/182/15/255/82/99/138/2572"),
     "orbi": (1707, "0/11/217/9/203/139/0/35/1093"),
+    # the uronium set (C17 + U, 2026-09-27): one source, no corroboration, levelled
+    # with its neutral-pair table (rule U, row 9'); without the table it reads
+    # 4/4/0/25/682/291/0/82/73
+    "ur": (1161, "4/4/0/331/376/291/0/82/73"),
 }
+UR_WITHOUT_PAIR = "4/4/0/25/682/291/0/82/73"
 
 LEDGER_COLUMNS = [
     "role", "peak_id", "parent_peak_id", "iso_label", "neutral_formula", "adduct",
@@ -292,6 +301,30 @@ def test_golden_same_air_pair():
     o = EV.level_pooled(orbi, cross=n_tof)
     assert (len(t), _vector(t.evidence_level)) == GOLDEN["tof"]
     assert (len(o), _vector(o.evidence_level)) == GOLDEN["orbi"]
+
+
+def _ur_pairs() -> set:
+    t = pd.read_csv(FIXTURES / "ur_neutral_pairs.csv")
+    return set(t.loc[t["upair"].astype(bool), "neutral_formula"])
+
+
+def test_golden_uronium_neutral_pair():
+    """Rule U on the uronium set: the pair table lifts 306 ion pairs to 4a;
+    without it the vector is C17's alone."""
+    ur = _pooled("ur")
+    with_pair = EV.level_pooled(ur, upair=_ur_pairs())
+    assert (len(with_pair), _vector(with_pair.evidence_level)) == GOLDEN["ur"]
+    assert _vector(EV.level_pooled(ur).evidence_level) == UR_WITHOUT_PAIR
+
+
+def test_uronium_rows_match_the_reference_script(expected):
+    got = EV.level_pooled(_pooled("ur"), upair=_ur_pairs()).assign(source="ur")
+    exp = expected[expected.source == "ur"]
+    assert len(exp) == GOLDEN["ur"][0]
+    m = exp.merge(got, left_on=["source", "neutral", "adduct"],
+                  right_on=["source", "neutral_formula", "adduct"], how="left")
+    bad = m[m.level != m.evidence_level]
+    assert bad.empty, bad[["neutral", "adduct", "level", "evidence_level"]].head(20)
 
 
 def test_rows_match_the_reference_script_row_for_row(expected):
