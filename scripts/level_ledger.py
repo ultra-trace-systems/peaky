@@ -246,6 +246,15 @@ def carries_reagent(neutral, adduct, ion, halogen) -> bool:
     return ion_composition(neutral, adduct, ion).get(halogen, 0) > composition(neutral).get(halogen, 0)
 
 
+def not_the_neutrals_line(neutral, adduct, ion, halogen) -> bool:
+    """A line of the reagent halogen tells nothing about the neutral: the reagent
+    put the halogen there, or the ion carries none of it (no isotope line of this
+    formula at all; held at the old flag until C11+c, 2026-09-27 decision)."""
+    if not halogen:
+        return False
+    return carries_reagent(neutral, adduct, ion, halogen) or ion_composition(neutral, adduct, ion).get(halogen, 0) == 0
+
+
 def expected_ratio(tag: str, ion_formula) -> float | None:
     """Natural height ratio of an isotope child to its M0, None when unknown."""
     if tag.startswith("13C"):
@@ -458,14 +467,14 @@ def measure_source(
                     or group["series_unit"].notna().any()
                 ),
                 branch=bool(aset & BARE_ADDUCTS) and bool(aset & CLUSTER_ADDUCTS),
-                # ... and the ION carries more of the reagent halogen than the
-                # neutral (C11+a: else the line is not the reagent's)
+                # ... and not the neutral's own: the ION carries more of the
+                # reagent halogen than the neutral, or none (C11+a + the hold)
                 reagent_only_iso=(not ion_only)
                 and bool(satellite)
                 and bool(tags)
                 and not carbon_ev
                 and all(t.startswith(satellite) for t in tags)
-                and carries_reagent(neutral, adduct, group["ion_formula"].iloc[0], halogen),
+                and not_the_neutrals_line(neutral, adduct, group["ion_formula"].iloc[0], halogen),
                 iso_labels="|".join(sorted(tags)),
                 tied=bool(group["tied"].map(truthy).all()),
                 below=bool(group["below_assignability"].map(truthy).any()),

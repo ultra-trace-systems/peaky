@@ -37,7 +37,7 @@ ORDER = ["2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
 # 6/15/182/15/254/82/99/138/2573.
 GOLDEN = {
     "tv": (1373, "21/15/107/16/143/15/10/37/1009"),
-    "tof": (3364, "6/15/182/15/260/82/93/138/2573"),
+    "tof": (3364, "6/15/182/15/258/82/95/138/2573"),
     "orbi": (1707, "0/11/217/9/203/139/0/35/1093"),
     # the uronium set (C17 + U, 2026-09-27): one source, no corroboration, levelled
     # with its neutral-pair table (rule U, row 9'); without the table it reads
@@ -232,15 +232,18 @@ def _bromide_channel(*rows):
 
 
 def test_the_reagent_satellite_needs_the_ion_to_carry_the_reagent_halogen():
-    """C11+a: `reagent_only_iso` only where the ION carries more of the reagent
-    halogen than the neutral -- an 81Br line on a Br-free ion is not the
-    reagent's, and on a brominated neutral's [M-H]- it is the neutral's own."""
+    """C11+a: `reagent_only_iso` clears only where the ion's reagent halogen is
+    all the neutral's own -- on a brominated neutral's [M-H]- the 81Br line is
+    the neutral's. The reagent's line (the ion carries more of the halogen than
+    the neutral) keeps the flag, and so does an ion carrying NONE of it: a 1:1
+    +2 Da line on a Br-free ion argues against the formula, held at 4d until
+    C11+c (2026-09-27 decision)."""
     def facts(rows):
         out = EV.level_pooled({"f": ledger(rows)})
         return {(n, a): (lv, roi) for n, a, lv, roi in
                 zip(out.neutral_formula, out.adduct, out.evidence_level, out.reagent_only_iso)}
     brfree = _bromide_channel(m0("p", "C8H14O4", ion="C8H13O4-", mz=173.08), child("c", "p", "81Br+2", 950.0))
-    assert facts(brfree)[("C8H14O4", "[M-H]-")] == ("4b", False)
+    assert facts(brfree)[("C8H14O4", "[M-H]-")] == ("4d", True)
     own = _bromide_channel(m0("p", "C7H11BrO4", ion="C7H10BrO4-", mz=236.97), child("c", "p", "81Br+2", 950.0))
     assert facts(own)[("C7H11BrO4", "[M-H]-")] == ("4b", False)
     # the reagent's own line: a bromide adduct of a Br-free neutral, and of a brominated one (Br2 > Br)
@@ -257,6 +260,13 @@ def test_the_reagent_satellite_needs_the_ion_to_carry_the_reagent_halogen():
     assert EV.carries_reagent("C8H14O2", "[M+HBr+Br]-", "C8H14O2", "Br")
     assert not EV.carries_reagent("C7H11BrO4", "[M+NO3]-", "C7H11BrNO7-", "Br")
     assert not EV.carries_reagent("C8H14O2", "[M+Br]-", "C8H14O2Br-", None)
+    # the hold: none of the halogen on the ion -> not the neutral's line; all of it the neutral's -> its own
+    assert EV.not_the_neutrals_line("C8H14O4", "[M-H]-", "C8H13O4-", "Br")
+    assert EV.not_the_neutrals_line("C6H11NO6S", "[M+NO3]-", "C6H11N2O9S-", "Br")
+    assert not EV.not_the_neutrals_line("C7H11BrO4", "[M-H]-", "C7H10BrO4-", "Br")
+    assert not EV.not_the_neutrals_line("HBrO", "[M+NO3]-", "HBrNO4-", "Br")
+    assert EV.not_the_neutrals_line("C8H14O2", "[M+Br]-", "C8H14O2Br-", "Br")
+    assert not EV.not_the_neutrals_line("C8H14O4", "[M-H]-", "C8H13O4-", None)
     assert EV.ion_composition("C8H14O2", "[M+HBr+Br]-", "nan") == {"C": 8, "H": 15, "O": 2, "Br": 2}
 
 
@@ -276,9 +286,11 @@ def test_the_reference_script_reads_the_reagent_satellite_like_the_engine():
     m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
     assert len(m) == len(core) == 6
     assert (m["reagent_only_iso_x"] == m["reagent_only_iso_y"]).all() and (m["evidence_level"] == m["level"]).all()
-    assert set(m.loc[m["reagent_only_iso_x"], "neutral_formula"]) == {"C8H14O2", "C7H11BrO4"}
+    assert set(m.loc[m["reagent_only_iso_x"], "neutral_formula"]) == {"C8H14O2", "C7H11BrO4", "C8H14O4"}
     assert LL.ion_composition("C8H14O2", "[M+HBr+Br]-", float("nan")) == {"C": 8, "H": 15, "O": 2, "Br": 2}
     assert not LL.carries_reagent("C7H11BrO4", "[M-H]-", "C7H10BrO4-", "Br")
+    assert LL.not_the_neutrals_line("C8H14O4", "[M-H]-", "C8H13O4-", "Br")
+    assert not LL.not_the_neutrals_line("C7H11BrO4", "[M-H]-", "C7H10BrO4-", "Br")
 
 
 # --------------------------------------------------------------------------- contract

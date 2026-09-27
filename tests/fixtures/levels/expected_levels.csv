@@ -163,7 +163,7 @@ tv_bromide,C12H9NO9,[M-H]-,4b,1,False,False,True,False,False,False,,False,False,
 tv_bromide,C13H10Cl2N2S,[M+Br]-,4b,1,False,False,True,False,False,False,,False,False,False,66.0,True,False,1
 tv_bromide,C13H10O15,[M+Br]-,5b,1,True,False,False,False,False,False,,False,True,False,219.0,True,True,1
 tv_bromide,C13H11NO14,[M-H]-,5b,0,False,False,False,False,False,False,,False,True,False,101.0,True,True,1
-tv_bromide,C13H11NO15,[M-H]-,5b,0,False,False,False,False,False,False,,False,True,False,119.0,True,False,1
+tv_bromide,C13H11NO15,[M-H]-,5b,0,False,False,False,False,False,True,,False,True,False,119.0,True,False,1
 tv_bromide,C13H11NO5,[M+Br]-,5b,1,False,True,False,False,False,False,,False,False,True,51.0,True,False,1
 tv_bromide,C13H11NO5,[M+HBr+Br]-,4b,2,False,True,True,False,False,False,,False,False,False,88.0,True,False,1
 tv_bromide,C13H12N2O17,[M+Br]-,5b,1,True,False,False,False,False,True,,False,True,True,316.0,True,True,1
@@ -539,7 +539,7 @@ tv_bromide,C6H2O2,[M-H]-,5b,1,False,False,True,False,False,False,,False,True,Tru
 tv_bromide,C6H4N2O5,[M-H]-,5b,0,False,False,False,False,False,False,nitroaromatic,False,True,False,4.0,False,False,1
 tv_bromide,C6H5NO2S,[M-H]-,4b,1,False,False,True,False,False,False,,False,False,False,1.0,False,False,1
 tv_bromide,C6H5NO3,[M+Br]-,3a,3,True,True,False,True,True,True,nitroaromatic,False,False,False,4.0,False,False,1
-tv_bromide,C6H5NO3,[M-H]-,3a,3,True,True,False,True,True,False,nitroaromatic,False,False,False,1.0,False,False,1
+tv_bromide,C6H5NO3,[M-H]-,3a,3,True,True,False,True,True,True,nitroaromatic,False,False,False,1.0,False,False,1
 tv_bromide,C6H5NOS,[M+Br]-,5b,1,False,False,True,False,False,False,,False,False,True,3.0,False,False,1
 tv_bromide,C6H6N2O3S,[M+Br]-,5b,2,True,False,True,False,False,False,,False,False,True,13.0,True,False,1
 tv_bromide,C6H6O,[M-H]-,4b,1,False,False,False,True,False,False,,False,False,False,1.0,False,True,1
@@ -3293,7 +3293,7 @@ tof,C22H20N2O5Si,[M-H]-,5b,0,False,False,False,False,False,False,,False,False,Tr
 tof,C22H20N2O7,[M-H]-,5a,0,False,False,False,False,False,False,,False,False,False,,False,True,1
 tof,C22H20O15,[M+Br]-,5b,0,False,False,False,False,False,False,,False,True,True,309.0,True,True,1
 tof,C22H20O21,[M+Br]-,5b,2,True,True,False,False,True,False,,False,True,False,196.5,True,True,22
-tof,C22H20O21,[M-H]-,5b,2,True,True,False,False,True,False,,False,True,False,189.0,True,True,1
+tof,C22H20O21,[M-H]-,5b,2,True,True,False,False,True,True,,False,True,False,189.0,True,True,1
 tof,C22H21BrO21,[M-H]-,5b,1,False,False,True,False,False,False,,False,True,True,242.0,True,True,1
 tof,C22H21N3O17,[M+Br]-,5b,1,True,False,False,False,False,True,,False,True,False,157.0,True,True,1
 tof,C22H21NO18,[M+Br]-,5b,0,False,False,False,False,False,False,,False,True,False,238.0,True,True,4
@@ -3390,7 +3390,7 @@ tof,C23H18O12,[M+Br]-,5b,1,True,False,False,False,False,False,,False,True,False,
 tof,C23H18O14,[M+Br]-,5b,0,False,False,False,False,False,True,,False,True,False,239.5,True,True,3
 tof,C23H18O15,[M+Br]-,5b,1,True,False,False,False,False,True,,False,False,True,,False,True,1
 tof,C23H18O20,[M+Br]-,5b,0,False,False,False,False,False,False,,False,True,True,129.0,True,True,1
-tof,C23H18O27,[M-H]-,5b,1,True,False,False,False,False,False,,False,True,False,161.0,True,True,1
+tof,C23H18O27,[M-H]-,5b,1,True,False,False,False,False,True,,False,True,False,161.0,True,True,1
 tof,C23H18O29,[M-H]-,5b,0,False,False,False,False,False,False,,False,True,False,101.0,True,True,1
 tof,C23H18O30,[M-H]-,5b,0,False,False,False,False,False,False,,False,True,False,123.0,True,True,2
 tof,C23H20,[M+Br]-,5b,0,False,False,False,False,False,False,,False,True,False,36.0,True,True,1
@@ -3887,8 +3887,8 @@ tof,C34H34O3S,[M-H]-,5b,0,False,False,False,False,False,False,,False,False,False
 tof,C34H51NO2,[M+Br]-,5b,0,False,False,False,False,False,False,,False,False,True,0.0,False,True,1
 tof,C34H61NO5S,[M+Br]-,5b,1,True,False,False,False,False,False,,False,False,True,0.0,False,True,1
 tof,C34H66O16S2,[M+Br]-,5b,0,False,False,False,False,False,False,,False,False,True,0.0,False,True,1
-tof,C35H32O4S,[M-H]-,4b,1,True,False,False,False,False,False,,False,False,False,12.0,True,True,1
-tof,C35H36O6S,[M-H]-,4b,1,True,False,False,False,False,False,,False,False,False,3.0,False,True,1
+tof,C35H32O4S,[M-H]-,4d,1,True,False,False,False,False,True,,False,False,False,12.0,True,True,1
+tof,C35H36O6S,[M-H]-,4d,1,True,False,False,False,False,True,,False,False,False,3.0,False,True,1
 tof,C35H40,[M+Br]-,5b,2,True,False,True,False,False,False,,False,True,False,2.0,False,True,1
 tof,C35H42O,[M+Br]-,4b,2,True,False,True,False,False,False,,False,False,False,0.0,False,True,1
 tof,C35H44O2,[M+Br]-,4b,2,True,False,True,False,False,False,,False,False,False,0.0,False,True,1
@@ -4226,7 +4226,7 @@ tof,C6H4S,[M+Br]-,5b,0,False,False,False,False,False,True,,False,False,True,,Fal
 tof,C6H5F7O2,[M+Br]-,5b,1,True,False,False,False,False,True,,False,True,True,28.5,True,True,2
 tof,C6H5FS,[M+Br]-,5b,1,True,False,False,False,False,False,,False,False,True,2.0,False,True,2
 tof,C6H5NO3,[M+Br]-,3a,3,True,True,False,True,True,True,nitroaromatic,False,False,False,3.0,False,True,15
-tof,C6H5NO3,[M-H]-,3a,3,True,True,False,True,True,False,nitroaromatic,False,False,False,2.0,False,True,4
+tof,C6H5NO3,[M-H]-,3a,3,True,True,False,True,True,True,nitroaromatic,False,False,False,2.0,False,True,4
 tof,C6H6Cl2N2,[M-H]-,5b,0,False,False,False,False,False,False,,False,False,True,3.0,False,True,1
 tof,C6H6N2O7,[M+Br]-,5b,0,False,False,False,False,False,False,,False,False,False,23.0,True,True,1
 tof,C6H6O3S,[M-H]-,5b,0,False,False,False,False,False,False,,False,False,False,4.0,False,True,1
@@ -4734,7 +4734,7 @@ tof,HNO3,[M+Br]-,2b,2,True,True,False,False,True,True,atmospheric,False,False,Fa
 tof,HNO3,[M-H]-,2b,2,True,True,False,False,True,False,atmospheric,False,False,False,1.0,False,True,22
 tof,HNO4,[M+Br]-,2b,1,True,False,False,False,False,True,atmospheric,False,False,False,0.0,False,True,19
 tof,HO2,[M+Br]-,2b,2,True,True,False,False,True,True,atmospheric,False,False,False,0.0,False,True,19
-tof,HO2,[M-H]-,5b,2,True,True,False,False,True,False,atmospheric,False,False,True,0.0,False,True,3
+tof,HO2,[M-H]-,5b,2,True,True,False,False,True,True,atmospheric,False,False,True,0.0,False,True,3
 tof,IBr,[M+Br]-,2b,1,True,False,False,False,False,True,reactive_iodine,False,False,False,0.0,False,True,13
 orbi,C10H10Cl2N2O,[M-H]-,5b,0,False,False,False,False,False,False,,False,False,False,5.5,False,True,2
 orbi,C10H10F12,[M+^NO3]-,5b,0,False,False,False,False,False,False,,True,True,False,35.5,True,True,8

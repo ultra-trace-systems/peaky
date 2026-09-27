@@ -116,7 +116,7 @@ Computed exactly as `level_ledger.measure_source` does.
 | `chan2` | the **neutral** is committed under ≥ 2 distinct adducts in this source — on a labelled-nitrate batch (rule K, batch only) the 14N `[M+NO3]-` and the 15N `[M+^NO3]-` count as **one** channel, and neither an alien 14N line (`label_alien`) nor a pair an isotope check refutes (`iso_veto`, C11+, batch only) gives or takes it |
 | `anchor` | any row has `anchor_peak_id` or `series_unit` |
 | `branch` | the neutral's adduct set meets both `{[M-H]-}` and `{[M+NO3]-, [M+15NO3]-, [M+^NO3]-, [M+Br]-, [M+HBr+Br]-, [M+CO3]-}` — deprotonated **and** clustered: the gas-phase-acidity branch; an alien 14N line (rule K) or a pair an isotope check refutes (`iso_veto`) is not in the set and takes no branch |
-| `reagent_only_iso` | the channel has a reagent halogen (§3.1), the pair has satellites, none is 13C, every tag starts with that halogen's heavy isotope (`81Br` / `37Cl`; iodine is monoisotopic, so an iodide channel never sets it), and (C11+a, 2026-09-27) the **ion carries more of that halogen than the neutral** — the ion's composition read off its `ion_formula` when that carries a charge sign, else neutral + adduct (a ledger row can hold the neutral there). An 81Br line of a Br-free ion is not the reagent's line, and on a brominated neutral's `[M-H]-` or `[M+NO3]-` it is the neutral's own; both read 4d on the flag before |
+| `reagent_only_iso` | the channel has a reagent halogen (§3.1), the pair has satellites, none is 13C, every tag starts with that halogen's heavy isotope (`81Br` / `37Cl`; iodine is monoisotopic, so an iodide channel never sets it), and (C11+a, 2026-09-27) the **ion carries more of that halogen than the neutral** — the ion's composition read off its `ion_formula` when that carries a charge sign, else neutral + adduct (a ledger row can hold the neutral there), **or carries none of it** (2026-09-27 hold). On a brominated neutral's `[M-H]-` or `[M+NO3]-` the 81Br line is the neutral's own and the flag clears (4d on the flag before); an ion with no Br at all keeps the flag: a 1:1 +2 Da line on a Br-free ion is no isotope line of that formula -- it argues against it (the batch's HIGH check refutes the reading) -- and is held at the old 4d until C11+c's count-aware band judges it per file |
 | `tied` | **all** rows of the pair are tied — unless rule K's untie clears it (batch only, `label_untie` below) |
 | `below` | **any** row is below assignability |
 | `lead` | (C19(c)) **any** row is a tentative lead. Hard like `below` (derived `hard` below) and worded like it: a lead-only pair reads `5b: below assignability`, exactly as the same pair did before the split, so the split moved no level and no reason. Rule H (C11+b) is where a lead stops being hard on its own |
@@ -601,7 +601,7 @@ added them. `tests/test_evidence.py`:
   the other pins on its own, §6.4; the uronium set alone, with its
   neutral-pair table):
   `tv` 1373 → 21/15/107/16/143/15/10/37/1009,
-  `tof` 3364 → 6/15/182/15/260/82/93/138/2573,
+  `tof` 3364 → 6/15/182/15/258/82/95/138/2573,
   `orbi` 1707 → 0/11/217/9/203/139/0/35/1093,
   `ur` 1161 → 4/4/0/331/376/291/0/82/73 (4/4/0/25/682/291/0/82/73 without
   the pair table)
@@ -610,10 +610,10 @@ added them. `tests/test_evidence.py`:
   183 of the 6,444 pairs moved, every one to a lower level; before C17 the
   TOF vector was 6/15/182/22/247/82/99/138/2573: seven bromide-adduct 4a
   pairs had counted the reagent's 81Br as a second line; before C11+a it was
-  6/15/182/15/254/82/99/138/2573: six bromide-channel `[M-H]-` pairs read 4d
-  on an 81Br line the ion's reagent never carried -- four brominated
-  neutrals' own line, two Br-free ions -- and read 4b once `reagent_only_iso`
-  needs the ion to carry more of the reagent halogen than the neutral);
+  6/15/182/15/254/82/99/138/2573: four brominated neutrals' `[M-H]-` pairs
+  read 4d on their own 81Br line, and read 4b once `reagent_only_iso` needs
+  the ion to carry more of the reagent halogen than the neutral, or none of
+  it -- the two Br-free `[M-H]-` pairs with a 1:1 +2 Da line keep 4d);
 - rule U: each clause of the fact vetoes it, the profile scope (only the
   uronium profile declares a pair), row 9′'s formula support and order, the
   fact never an axis nor in `cross` nor per file, and the **leak mutant** —

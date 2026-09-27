@@ -321,6 +321,20 @@ def carries_reagent(neutral, adduct, ion, halogen) -> bool:
     return ion_composition(neutral, adduct, ion).get(halogen, 0) > C.parse_formula(str(neutral or "")).get(halogen, 0)
 
 
+def not_the_neutrals_line(neutral, adduct, ion, halogen) -> bool:
+    """A line of the reagent halogen tells nothing about the neutral: the reagent
+    put the halogen there (`carries_reagent`), or the ion carries none of it --
+    then the line is no isotope line of this formula at all (a 1:1 +2 Da line on
+    a Br-free ion argues against the formula; the batch's HIGH check refutes the
+    reading, and C11+c's count-aware band will judge it per file). Only an ion
+    whose halogen is all the neutral's own reads the line as the neutral's
+    (a brominated neutral's [M-H]- or [M+NO3]-). The Br-free case holds the flag
+    it had before C11+a (2026-09-27 decision)."""
+    if not halogen:
+        return False
+    return carries_reagent(neutral, adduct, ion, halogen) or ion_composition(neutral, adduct, ion).get(halogen, 0) == 0
+
+
 def is_ion_only(frame: pd.DataFrame) -> pd.Series:
     """Boolean mask of the rows the ion-only stage wrote: an ION_ONLY_ADDUCTS
     adduct carrying an `ion_only:` method, or (a merged ledger, which has no
@@ -492,11 +506,12 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None)
             chan2=(not outside) and int(channels.get(neutral, 0)) >= 2,
             anchor=(not ion_only) and bool(g["__anchor"].any()),
             branch=bool(aset & BARE_ADDUCTS) and bool(aset & CLUSTER_ADDUCTS),
-            # the sole satellite is the reagent halogen's -- and the ION carries
-            # more of that halogen than the neutral (C11+a: else the line is
-            # the neutral's own, or no reagent line at all)
+            # the sole satellite is the reagent halogen's -- and it is not the
+            # neutral's own: the ION carries more of that halogen than the
+            # neutral, or none of it (C11+a; the Br-free case is held, see
+            # not_the_neutrals_line)
             reagent_only_iso=(not ion_only) and bool(satellite) and bool(t) and not carbon_ev
-            and all(x.startswith(satellite) for x in t) and carries_reagent(neutral, adduct, ion, halogen),
+            and all(x.startswith(satellite) for x in t) and not_the_neutrals_line(neutral, adduct, ion, halogen),
             ion_only=ion_only,
             iso_labels="|".join(sorted(t)),
             tied=bool(g["__tied"].all()),
