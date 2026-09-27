@@ -35,6 +35,8 @@ def _demote(rows):
     ("C5H13NO2", "N-only"),                   # an amino-diol, DBE 0
     ("C4H9^N", "N-only"),                     # a labelled N is N, not a hydrocarbon
     ("C3H7^NO", "N-only"),                    # O = 1, DBE 1 only once ^N counts as N
+    ("CH5N", "N-only"),                       # one carbon is enough (the C >= 1 gate, from above)
+    ("CH4", "hydrocarbon"),                   # ... on the hydrocarbon leg too
 ])
 def test_anion_implausible_hits(formula, why):
     assert CU.anion_implausible(formula) == why
@@ -45,6 +47,16 @@ def test_anion_implausible_hits(formula, why):
     "C3H7NO2",         # O = 2, DBE 1: an amino acid fits (a carboxylic acid)
     "C4H11NO3",        # O = 3: out of the rule
     "C6H12O6",         # no N, has O
+    "C4H10O",          # O = 1, DBE 0 but no N: an alcohol is not an N-only neutral (the N >= 1 gate)
+    "C2H6O2",          # O = 2, DBE 0, no N: a diol
+    "C3H6O",           # O = 1, DBE 1, no N: a ketone
+    "C5H12O2",         # O = 2, DBE 0, no N (a row the labelled-nitrate run commits)
+    "C2H5Br",          # a halocarbon is not a hydrocarbon: the exemption comes before either leg
+    "CH2Br2",
+    "C2Cl4",
+    "C6F14",
+    "C10H18Cl4",       # (a row the labelled-nitrate run commits)
+    "C2H6S",           # a thio-hydrocarbon
     "C11H6Cl2N2",      # halogen: exempt (fenpiclonil's formula)
     "C8H20N2Si",       # Si: exempt
     "C2H7NS",          # S: exempt

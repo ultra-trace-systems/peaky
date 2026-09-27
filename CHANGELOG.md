@@ -556,6 +556,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   identified rows at m/z >= 350 on that arm from 17 to 0 at a cost of 0 Assigned rows on the
   labelled-nitrate run and 7 on the TOF run -- the aryl-amine C13H12N2 / C13H14N2 family,
   plausible chemistry a formula-only rule cannot exempt. `tests/test_ionization_plausibility.py`.
+  Run on both anion regression batches (one variable against the previous trunk runs, same
+  inputs): the labelled-nitrate run changes one Candidate row (C5H13NO2 `[M+NO3]-`, 4c -> 5b,
+  an amino-diol the formula rule cannot tell from junk); the TOF run demotes the predicted
+  seven Assigned readings, Assigned 497 -> 491 and identified 228 -> 227, identified signal
+  unchanged (48.30 % and 12.95 % of all time-series signal). Two TOF peaks are re-read once
+  their reading drops: m/z 332.146 goes to a Candidate nitrate cluster, and m/z 511.175 to
+  another Assigned reading, C35H28O2S `[M-H]-` (4b on an anchor alone), which the peak's own
+  1:1 M+2 doublet contradicts -- an isotope check that never refutes a too-high line, left to
+  the isotope-check card. On the labelled-nitrate shift decoy the Assigned identified rows at
+  m/z >= 350 go 17 -> 0 (shift Assigned 87 -> 44, identified 23 -> 2, both Candidate); the
+  control and adduct arms keep their Assigned counts there, and no decoy arm gains a row.
 
 - **Flatness labels a row; it no longer tiers it.** The general flat-background
   demote added above capped every flat `Assigned` commit at `Candidate` whenever the
