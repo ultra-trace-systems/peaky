@@ -30,7 +30,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fragment of a brighter parent; both tests read hand-dated steady states of one
   batch, no batch-generic form reproduced them, and they are not built.
   `tests/test_neutral_pairs.py`; a uronium set joins the golden fixtures with its pair
-  table.
+  table. On the uronium regression batch (one variable against the previous trunk run):
+  167 of the 344 neutrals committed on both adducts hold the pair; 254 merged rows go
+  from ion to identified and the identified share of the time-series signal from
+  52.2 % to 73.8 % (ion 34.1 -> 12.6 %); the run equals the offline pre-check row for
+  row, and every row of round 3's recommended set (230) is among the 254. What the
+  dropped vetoes let through: 16 of the rows (1.35 % of the signal) that round 3 found
+  to have a second source in one line, 10 of them (0.34 %) not established by the pair.
 
 - **The reagent-ion water ladder, measured on the batch's own time series.** A soft-interface
   CIMS carries its reagent ions hydrated -- Br-.(H2O)n, NO3-.(H2O)n, HNO3.NO3-.(H2O)n --
@@ -613,7 +619,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`multiline_elements`). An ion carrying Br or Cl does not have its 18O line measured:
   the halogen's 81Br / 37Cl line owns the M+2 region (one peak with it on a TOF). The
   same-air TOF golden moves: seven bromide-adduct 4a pairs that counted the reagent's
-  81Br go to 4b.
+  81Br go to 4b. On the regression runs it moves 4a -> 4b: 1 labelled-nitrate row (two
+  chlorine lines), 10 uronium rows (the urea's 15N, 13C with 13C2, or an out-of-band
+  18O line; rule U lifts 8 of them back) and 11 TOF rows (the bromide's 81Br, or
+  nitrate's 18O on formic acid; four more are water rungs the reagent-water ladder
+  already removed), taking the TOF's identified signal from 12.9 % to 11.2 % (formic
+  acid alone 1.5 %: its ion stays pinned, its neutral no longer counts as shown). No
+  decoy arm gains an identified row (the uronium control arm goes 27 -> 15).
   `tests/test_multiline_elements.py`.
 
 - **The ionization check covers N-only neutrals.** `cleanup.demote_implausible_ionization`
