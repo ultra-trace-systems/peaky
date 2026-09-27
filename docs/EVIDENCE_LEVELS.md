@@ -93,7 +93,7 @@ null-safe: NaN, `pd.NA`, `None`, `''` and `'false'` are False;
 | `method` | M0 | `known:<family>` marks a pass-0 curated identity |
 | `confidence` | M0 | its first word: `High`, `Good`, `Low`, `Suspect` |
 | `tied` | M0 | the arbiter broke a near-tie |
-| `below_assignability` | M0 | `tiers.flag_below_assignability` (O ≥ 11 and mass-saturated), or a `plausibility` demote: an O-monster, a carbon cluster, or a commit outside the run context's element budget that no curated list names (`plausibility.demote_off_budget`, docs/ASSIGNMENT_DETAIL.md §8.5) |
+| `below_assignability` | M0 | `tiers.flag_below_assignability` (O ≥ 11 and mass-saturated), or a `plausibility` demote: an O-monster, a carbon cluster, or a commit outside the run context's element budget that no curated list names (`plausibility.demote_off_budget`, docs/ASSIGNMENT_DETAIL.md §8.5); or an ionization the neutral cannot support: a hydrocarbon or an N-only neutral read through an anion channel (`cleanup.demote_implausible_ionization`, docs/ASSIGNMENT_DETAIL.md §5.6c) |
 | `degeneracy_density` | M0 | plausible ions sharing the mass in the calibrated window (`degeneracy.apply_degeneracy`) |
 | `degeneracy_note` | M0 | contains `MASS-SATURATED` when the audit capped |
 | `resolvability` | M0 | `resolved` / `isolated` / `blended` / `unresolvable`; stamped by the `resolvability` stage on every run that has a width model (a batch measures one from the raw profile of a middling spectrum; `--resolving-power` declares or declines it); NA on an offline run without one |

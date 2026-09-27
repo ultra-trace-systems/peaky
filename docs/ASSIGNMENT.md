@@ -259,7 +259,8 @@ Mascope still scores every commit, so the honesty principle holds.
 A set of post-tiering gates demote (never delete) commitments that fit by mass but whose
 isotope evidence or ionization chemistry does not actually support them: **carbon-rich**
 (an F-free formula with implausibly low H/C), **implausible-ionization** (a heteroatom-free
-hydrocarbon detected through an anion channel that needs an acidic / H-bond site),
+hydrocarbon, or an N-only neutral that fits no carboxylic acid or phenol, detected through an
+anion channel that needs an acidic / H-bond site),
 **speculative-residual** (a residual commit resting on off-calibration charge, uncorroborated
 multi-nitrogen, a zero-anchor series, or a single minor channel), and a **reagent-halocarbon
 relabel** (Br runs) that re-reads bromomethane fragments mis-assigned as a bare element +

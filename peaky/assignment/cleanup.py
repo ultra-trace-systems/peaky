@@ -1530,6 +1530,41 @@ def relabel_nitrate_clusters(ledger: pd.DataFrame, *, log=print) -> dict:
     return {"nitrate_cluster_relabeled": n}
 
 
+#: Elements whose presence takes a neutral out of the ionization-plausibility
+#: test: S, P, the halogens and Si each open their own route to an anion (a
+#: thiol or sulfonic acid, a phosphate, a halide-bearing acid, a silanol), so a
+#: formula carrying any of them is never judged here.
+_IONIZATION_EXEMPT_ELEMENTS = ("S", "P", "F", "Cl", "Br", "I", "Si")
+
+
+def anion_implausible(formula) -> str | None:
+    """Why `formula` cannot ionize on an anion channel that needs an acidic
+    proton or an H-bond site to hold the anion ([M-H]- and every anion
+    cluster), or None when it can. Heavy-isotope labels fold into their
+    element ('^N' is N), so a labelled neutral is judged like its natural one.
+
+    * 'hydrocarbon': C >= 1 and no O, N, S, P, halogen or Si at all.
+    * 'N-only' (C14, definition D4): C >= 1, N >= 1, no S / P / halogen / Si,
+      and O = 0, or O = 1 with DBE <= 1, or O = 2 with DBE <= 0. No carboxylic
+      acid (two O and a C=O) and no phenol (an aromatic ring, DBE >= 4 with its
+      O) fits such a formula. The O = 1, DBE 1 leg still admits an amide or a
+      urea, and the O = 0 leg an aryl amine or an azole N-H, which can be acidic:
+      a formula cannot tell those apart, and the rule reads them all as a mass
+      coincidence (the census cost, docs/ASSIGNMENT_DETAIL.md §5.6c)."""
+    cnt = C.fold_isotopes(C.parse_formula(str(formula or "")))
+    if cnt.get("C", 0) < 1:
+        return None
+    if any(cnt.get(e, 0) for e in _IONIZATION_EXEMPT_ELEMENTS):
+        return None
+    n_n, n_o = cnt.get("N", 0), cnt.get("O", 0)
+    if n_n == 0:
+        return "hydrocarbon" if n_o == 0 else None
+    dbe = C.dbe(cnt)
+    if n_o == 0 or (n_o == 1 and dbe <= 1) or (n_o == 2 and dbe <= 0):
+        return "N-only"
+    return None
+
+
 def demote_implausible_ionization(ledger: pd.DataFrame, *, log=print) -> dict:
     """Demote M0s whose ionization is chemically impossible for the assigned neutral.
     A PURE HYDROCARBON (no O/N/S/P/halogen/Si) has no acidic proton to lose and no
@@ -1537,20 +1572,23 @@ def demote_implausible_ionization(ledger: pd.DataFrame, *, log=print) -> dict:
     [M-H]- or as a halide/carbonate/nitrate/sulfate/carboxylate cluster — regardless
     of how well the exact mass + isotope pattern fit (the pattern of a C/H ion just
     confirms the C count). Such an assignment is a mass coincidence (e.g. C7H10/C7H12
-    [M-H]-, C2H2 [M+CO3]-): Assigned->Candidate + below_assignability. Electron
-    attachment ([M]-./[M+O2]-) is exempt (the one route an electron-poor hydrocarbon
-    has). Negative-mode anion channels only; positive adducts are left alone."""
-    n = 0
+    [M-H]-, C2H2 [M+CO3]-): Assigned->Candidate + below_assignability. The same holds
+    for an N-ONLY neutral (C14; `anion_implausible`): an amine, amino-alcohol or
+    amino-ether with no room for a carboxylic acid or a phenol. A uniform mass shift
+    keeps every inter-peak spacing, so a shifted spectrum rebuilds H-saturated N2
+    formulas on both anion channels (C21H46N2 as [M-H]- and [M+^NO3]-) with the
+    two-channel axes intact; only this chemistry rejects them. Electron attachment
+    ([M]-./[M+O2]-) is exempt (the one route an electron-poor hydrocarbon has).
+    Negative-mode anion channels only; positive adducts are left alone."""
+    n = n_only = 0
     has_ba = "below_assignability" in ledger.columns
     target = (ledger.index[ledger["role"] == L.ROLE_M0]
               if "role" in ledger.columns else ledger.index)
     for i in target:
-        cnt = C.parse_formula(str(ledger.at[i, "neutral_formula"] or ""))
-        if cnt.get("C", 0) < 1:
-            continue
-        hetero = sum(cnt.get(e, 0) for e in ("O", "N", "S", "P", "F", "Cl", "Br", "I", "Si"))
-        if hetero > 0:
-            continue                                 # has a functional-group atom
+        formula = ledger.at[i, "neutral_formula"]
+        why = anion_implausible(formula)
+        if why is None:
+            continue                                 # has a site an anion channel can use
         ad = str(ledger.at[i, "adduct"])
         if not ad.endswith("-") or ad in _EA_ADDUCTS:
             continue                                 # only FG-requiring anion channels
@@ -1559,13 +1597,20 @@ def demote_implausible_ionization(ledger: pd.DataFrame, *, log=print) -> dict:
         if has_ba:
             ledger.at[i, "below_assignability"] = True
         if "commentary" in ledger.columns:
-            note = (f"pure hydrocarbon via {ad}: no acidic proton / H-bond site to "
-                    "ionize -- implausible (mass coincidence)")
+            if why == "hydrocarbon":
+                note = (f"pure hydrocarbon via {ad}: no acidic proton / H-bond site to "
+                        "ionize -- implausible (mass coincidence)")
+            else:
+                cnt = C.fold_isotopes(C.parse_formula(str(formula)))
+                note = (f"N-only neutral via {ad} (O {cnt.get('O', 0)}, DBE {C.dbe(cnt):g}): no "
+                        "carboxylic acid or phenol fits the formula -- implausible (mass coincidence)")
             prev = str(ledger.at[i, "commentary"] or "")
             ledger.at[i, "commentary"] = (prev + "; " + note) if prev and prev != "nan" else note
         n += 1
-    log(f"[cleanup] demoted {n} implausible-ionization M0 (heteroatom-free via anion channel)")
-    return {"ionization_demoted": n}
+        n_only += why == "N-only"
+    log(f"[cleanup] demoted {n} implausible-ionization M0 via an anion channel "
+        f"({n - n_only} heteroatom-free, {n_only} N-only)")
+    return {"ionization_demoted": n, "ionization_demoted_n_only": n_only}
 
 
 def demote_speculative_residual(ledger: pd.DataFrame, cfg=None, *, log=print) -> dict:

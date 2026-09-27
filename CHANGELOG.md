@@ -540,6 +540,23 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The ionization check covers N-only neutrals.** `cleanup.demote_implausible_ionization`
+  demoted only a pure hydrocarbon read through an anion channel (`[M-H]-` or a cluster;
+  electron attachment exempt): any N or O skipped the test, although an aliphatic amine has
+  no acidic proton either. It now also demotes an **N-only** neutral (`cleanup.anion_implausible`):
+  C >= 1, N >= 1, no S / P / halogen / Si, and O = 0, or O = 1 with DBE <= 1, or O = 2 with
+  DBE <= 0 -- formulas no carboxylic acid or phenol fits. Same channels, same demotion
+  (Assigned -> Candidate + `below_assignability`, so the pair levels 5b), its own note, and a
+  second count in the stage summary (`ionization_demoted_n_only`). A heavy-isotope label folds
+  into its element, so a `^N`-only neutral is judged as an N-compound instead of passing as a
+  hydrocarbon. Why: a uniform +0.35 Da shift keeps every inter-peak spacing, so the shifted
+  labelled-nitrate spectrum rebuilt H-saturated N2 formulas (C21H46N2, C22H46N2O, C25H54N2O2 as
+  `[M-H]-` and `[M+^NO3]-`) at 3b on their two-channel axes; the census of this rule
+  (seven definitions on the three regression runs and all decoy arms) takes the Assigned
+  identified rows at m/z >= 350 on that arm from 17 to 0 at a cost of 0 Assigned rows on the
+  labelled-nitrate run and 7 on the TOF run -- the aryl-amine C13H12N2 / C13H14N2 family,
+  plausible chemistry a formula-only rule cannot exempt. `tests/test_ionization_plausibility.py`.
+
 - **Flatness labels a row; it no longer tiers it.** The general flat-background
   demote added above capped every flat `Assigned` commit at `Candidate` whenever the
   run varies. It was written for a certified-mixture run, where the EasyIC

@@ -332,7 +332,7 @@ ledi = pd.DataFrame([
     dict(role="M0", neutral_formula="C7H10",   adduct="[M]-.",    tier="Assigned", commentary="", below_assignability=False),  # electron attach -> exempt
 ])
 outi = CU.demote_implausible_ionization(ledi, log=lambda *a: None)
-check("ionization demote: 3 heteroatom-free via FG-requiring anion channels", outi == {"ionization_demoted": 3}, outi)
+check("ionization demote: 3 heteroatom-free via FG-requiring anion channels", outi == {"ionization_demoted": 3, "ionization_demoted_n_only": 0}, outi)
 check("ionization demote: C7H10 [M-H]- -> Candidate + below_assignability",
       ledi.loc[0, "tier"] == "Candidate" and bool(ledi.loc[0, "below_assignability"]))
 check("ionization demote: C2H2 [M+CO3]- demoted",
@@ -433,7 +433,7 @@ check("radical: oxygenated C6H12O6 [M-H]- untouched", ledrad.loc[3, "adduct"] ==
 # the relabeled radicals must now ESCAPE the hydrocarbon implausible-ionization demote
 outi_rad = CU.demote_implausible_ionization(ledrad, log=lambda *a: None)
 check("radical: relabeled radicals escape implausible-ionization demote",
-      outi_rad == {"ionization_demoted": 0}, outi_rad)
+      outi_rad == {"ionization_demoted": 0, "ionization_demoted_n_only": 0}, outi_rad)
 
 
 # ---- positive-mode reagent-N re-read (hydrocarbon via urea/NH4 -> [M+H]+ N-heterocycle) ----
