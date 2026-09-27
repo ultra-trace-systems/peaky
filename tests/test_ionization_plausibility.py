@@ -50,6 +50,8 @@ def test_anion_implausible_hits(formula, why):
     "C2H7NS",          # S: exempt
     "C3H10NP",         # P: exempt
     "C5H3F8NO",        # F: exempt
+    "C5H9BrN2",        # Br: exempt (a bromo-amine reading in a bromide run)
+    "ICN",             # I: exempt -- the curated reactive-iodine compound, one C, one N, no O
     "HNO3",            # no carbon
     "",                # nothing to judge
     None,
