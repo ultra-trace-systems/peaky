@@ -102,6 +102,19 @@ def test_segments_without_time_are_one():
     assert set(RW.segments(ts)) == {0}
 
 
+
+def _two_blocks(spacing, gap, n=15):
+    spec = [(i * spacing, [100.0]) for i in range(n)]
+    spec += [((n - 1) * spacing + gap + i * spacing, [100.0]) for i in range(n)]
+    return RW.segments(_ts(spec)).nunique()
+
+
+def test_a_segment_boundary_is_a_gap_over_five_median_spacings_with_a_one_hour_floor():
+    """gap > max(60 min, 5 x the median spacing): at 20-min spacing the bar is 100 min
+    (the TOF batch's restart gap is 130 min at 20-min spacing), at 5-min spacing 60 min."""
+    assert _two_blocks(20, 110) == 2 and _two_blocks(20, 90) == 1 and _two_blocks(20, 100) == 1   # strictly over
+    assert _two_blocks(5, 70) == 2 and _two_blocks(5, 50) == 1
+
 # --- detection ---------------------------------------------------------------------------------------
 def _ladder(n_top, *, core=BR79, missing=(), extra=()):
     return [core] + [core + n * W for n in range(1, n_top + 1) if n not in missing] + list(extra)
@@ -204,11 +217,15 @@ def test_a_batch_strips_the_rung_row_stamps_the_ladder_and_writes_the_table(monk
     ts = _ts(spectra)
 
     def fake_assign(sid, context="ambient-air", **kw):
-        led = L.new_ledger(pd.DataFrame([("p1", rung5, 900.0), ("p2", 250.1, 5e3)],
+        led = L.new_ledger(pd.DataFrame([("p1", rung5, 900.0), ("p2", 250.1, 5e3), ("p3", rung5 + 1.00335, 40.0)],
                                         columns=["peak_id", "mz", "height"]))
         L.commit_assignment(led, "p1", neutral_formula="C4H4O8", adduct="[M-H]-", ion_formula="C4H3O8-",
                             ion_score=0.9, compound_score=0.9, ppm_error=0.1, pass_no=1,
-                            method="cheminfo+grid", confidence="High", commentary="stub")
+                            method="cheminfo+grid", confidence="High", commentary="stub",
+                            isotopologues=[{"label": "13C", "score": 0.9, "peak_id": "p3"}])
+        # its own 13C line does not save it: on a TOF the M+1 line of a water rung
+        # is its 15N-labelled partner as often as a 13C (no 13C exemption)
+        L.attach_isotopologue(led, "p3", "p1", iso_label="13C", iso_match_score=0.9)
         L.commit_assignment(led, "p2", neutral_formula="C9H16O6", adduct="[M-H]-", ion_formula="C9H15O6-",
                             ion_score=0.9, compound_score=0.9, ppm_error=0.1, pass_no=1,
                             method="cheminfo+grid", confidence="High", commentary="stub")
@@ -221,9 +238,16 @@ def test_a_batch_strips_the_rung_row_stamps_the_ladder_and_writes_the_table(monk
         {"peak_id": ["p1", "p2"], "mz": [rung5, 250.1], "height": [900.0, 5e3]}))
     monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
     monkeypatch.setattr(A, "run", fake_assign)
+    seen = {}
+    real_strip = RW.strip_rung_rows
+
+    def spy_strip(merged, rungs, **kw):
+        seen["strip_tol"] = kw.get("tol_ppm")
+        return real_strip(merged, rungs, **kw)
+    monkeypatch.setattr(RW, "strip_rung_rows", spy_strip)
     with tempfile.TemporaryDirectory() as d:
         AB.run(peaks=ts, ts_peaks=ts, reagent="Br", batch="test batch", out_dir=d, k_min=2, k_max=3,
-               min_gain=0.0, n_jobs=1, residual=False, log=lambda *a: None)
+               min_gain=0.0, n_jobs=1, residual=False, tol_ppm=8.0, log=lambda *a: None)
         run = d
         merged = pd.read_csv(os.path.join(run, "merged_ledger.csv"))
         summ = json.load(open(os.path.join(run, "batch_summary.json")))
@@ -231,9 +255,77 @@ def test_a_batch_strips_the_rung_row_stamps_the_ladder_and_writes_the_table(monk
         stamped = pd.read_parquet(os.path.join(run, "per_file", "_batch_ts.parquet"))
     assert merged["neutral_formula"].tolist() == ["C9H16O6"]                  # the rung reading left
     rw = summ["merge_gates"]["reagent_water"]
+    assert rw["tol_ppm"] == pytest.approx(summ["traces"]["stamp_tol_ppm"])   # measured and stripped at the stamp window
+    assert rw["tol_ppm"] >= 8.0                                               # the batch's window, not a fixed 6 ppm
+    assert seen["strip_tol"] == pytest.approx(rw["tol_ppm"])
     assert rw["n_rungs"] == 6 and rw["n_stripped"] == 1 and rw["stripped"] == ["C4H4O8 [M-H]- (Br(79Br).(H2O)5)"]
     assert table.loc[table["n"] == 5, "displaced"].iloc[0] == "C4H4O8 [M-H]-"
     at5 = stamped[np.isclose(stamped["mz"], rung5)]
     assert set(at5["role"]) == {"reagent"} and set(at5["ion_formula"]) == {"H10BrO5-"}
     at250 = stamped[np.isclose(stamped["mz"], 250.1)]
     assert set(at250["neutral_formula"]) == {"C9H16O6"}
+
+
+# --- the constants the rule stands on ----------------------------------------------------------------
+def test_the_decoy_gate_is_three_times_the_most_present_decoy():
+    def run(k_decoy):
+        decoy = BR79 + 4 * W + 0.02
+        spec = [(i * 10, _ladder(6) + ([decoy] if i < k_decoy else [])) for i in range(12)]
+        return RW.detect(_ts(spec), ("Br",), tol_ppm=5.0)["n"].tolist()
+    assert run(5) == [1, 2, 3, 5, 6]            # 3 x 5/12 = 1.25 > 1.0: fails (a 2x gate would pass it)
+    assert run(3) == [1, 2, 3, 4, 5, 6]         # 3 x 3/12 = 0.75 <= 1.0: passes (a 5x gate would fail it)
+    assert run(4) == [1, 2, 3, 4, 5, 6]         # 3 x 4/12 = 1.0: at least three times passes
+
+
+@pytest.mark.parametrize("offset", (-0.05, -0.035, -0.02, 0.02, 0.035, 0.05))
+def test_every_decoy_offset_is_read(offset):
+    assert RW.DECOY_OFFSETS_DA == (-0.05, -0.035, -0.02, 0.02, 0.035, 0.05)
+    decoy = BR79 + 4 * W + offset
+    ts = _ts([(i * 10, _ladder(6, extra=(decoy,))) for i in range(12)])
+    assert 4 not in RW.detect(ts, ("Br",), tol_ppm=5.0)["n"].tolist()
+
+
+def test_a_ladder_is_read_up_to_n_45_and_no_further():
+    ts = _ts([(i * 10, _ladder(50)) for i in range(12)])
+    n = RW.detect(ts, ("Br",), tol_ppm=5.0)["n"].tolist()
+    assert n == list(range(1, RW.N_MAX + 1)) and RW.N_MAX == 45
+
+
+def test_the_core_must_be_present_in_half_the_segment():
+    def run(k_core):
+        spec = [(i * 10, ([BR79] if i < k_core else []) + [BR79 + n * W for n in range(1, 4)]) for i in range(12)]
+        return RW.detect(_ts(spec), ("Br",), tol_ppm=5.0)["n"].tolist()
+    assert run(5) == [] and run(6) == [1, 2, 3]
+
+
+def test_a_rung_passes_in_any_segment_not_only_the_last():
+    before = [(i * 10, _ladder(9)) for i in range(12)]
+    after = [(300 + 200 + i * 10, _ladder(2)) for i in range(12)]
+    assert RW.detect(_ts(before + after), ("Br",), tol_ppm=5.0)["n"].tolist() == list(range(1, 10))
+
+
+def test_the_strip_window_is_the_stamp_window_and_takes_candidates_too():
+    r = _rungs()
+    at = float(r.loc[(r["n"] == 4) & (r["iso_tag"] == "79Br"), "mz_obs"].iloc[0])
+    merged = pd.DataFrame({"mz": [at * (1 + 0.8 * 5e-6), at * (1 + 1.2 * 5e-6), at * (1 - 0.8 * 5e-6)],
+                           "neutral_formula": ["C7H6O6", "C7H6O6x", "C8H10O5"],
+                           "adduct": ["[M-H]-", "[M-H]-", "[M+NO3]-"], "tier": ["Assigned", "Assigned", "Candidate"]})
+    kept, stripped = RW.strip_rung_rows(merged, r, tol_ppm=5.0, log=lambda *a: None)
+    assert sorted(stripped["neutral_formula"]) == ["C7H6O6", "C8H10O5"]       # inside 5 ppm, Candidate too
+    assert kept["neutral_formula"].tolist() == ["C7H6O6x"]                     # 6 ppm out
+
+
+def test_strip_and_stamp_read_the_observed_rung_not_the_exact_mass():
+    """A batch calibrated 8 ppm high: the ladder is found at its observed m/z, and a
+    merged row on that peak is stripped although it is 8 ppm from the exact mass."""
+    shift = 1 + 8e-6
+    ts = _ts([(i * 10, [m * shift for m in _ladder(5)]) for i in range(12)])
+    r = RW.detect(ts, ("Br",), tol_ppm=10.0)
+    assert r["n"].tolist() == [1, 2, 3, 4, 5]
+    obs = float(r.loc[r["n"] == 3, "mz_obs"].iloc[0])
+    assert abs(obs / float(r.loc[r["n"] == 3, "mz"].iloc[0]) - shift) < 1e-7
+    merged = pd.DataFrame({"mz": [obs], "neutral_formula": ["C6H8O7"], "adduct": ["[M-H]-"], "tier": ["Assigned"]})
+    kept, stripped = RW.strip_rung_rows(merged, r, tol_ppm=5.0, log=lambda *a: None)
+    assert kept.empty and len(stripped) == 1
+    s = RW.stamp_rows(r)
+    assert np.allclose(np.sort(s["mz"].to_numpy()), np.sort(r["mz_obs"].to_numpy()), rtol=0, atol=1e-6)

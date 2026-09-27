@@ -11,26 +11,37 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The reagent-ion water ladder, measured on the batch's own time series.** A soft-interface
   CIMS carries its reagent ions hydrated -- Br-.(H2O)n, NO3-.(H2O)n, HNO3.NO3-.(H2O)n --
   and how far a ladder reaches moves with the source and the humidity: on the five-day
-  bromide/nitrate TOF regression batch it ends at n <= 8 (Br-) and n <= 4 (NO3-) before an
+  bromide/nitrate TOF regression batch it ends at n <= 8 (Br-) and n <= 5 (NO3-) before an
   instrument restart and runs past n = 15 after it, where the rungs were committed as
-  C13-C31 organics (C13H12O8 [M-H]- = Br-.(H2O)12, C25H19N [M-H]- = NO3-.(H2O)15). The
+  C1-C37 organics (C13H12O8 [M-H]- = Br-.(H2O)12, C13H22N2O4 [M+NO3]- = NO3-.(H2O)15). The
   reagent library declared only the first halide rung and no nitrate rung at all. A new
   batch step (`peaky/batch/reagent_water.py`, run once after the vote) looks for
   core.(H2O)n, n = 1..45, of every core the profile declares (`ReagentProfile.water_cores`:
   Br- / Br2-. / Br3- / HNO3.Br- on the bromide profile, NO3- / HNO3.NO3- / (HNO3)2.NO3- /
   NO2- on the nitrate one, the labelled cores on 15N-nitrate, none on the positive
   profiles; `compose()` unions them; a config profile may declare its own) per
-  acquisition segment (gaps > max(60 min, 5x the median spacing); segments under 10
-  spectra join a neighbour). A rung passes when, in some segment, the core and every
+  acquisition segment (a gap longer than max(60 min, 5x the median spacing) cuts; a
+  segment under 10 spectra joins its neighbour). A rung passes when, in some segment, the core and every
   lower rung are present in >= 50 % of the spectra within the stamping window and the
-  rung is >= 3x the presence of its decoy offsets. A merged analyte row on a passing rung
+  rung is >= 3x the presence of its decoy offsets (its 0.02 floor never binds while the
+  presence bar is 50 %). A merged analyte row on a passing rung
   leaves the merged ledger as the water cluster it is; the rung becomes a reagent row of
   the batch stamp. `tables/reagent_water.csv` lists the rungs and the readings each
   displaced, `batch_summary.json["merge_gates"]["reagent_water"]` the counts. The
   per-file ledgers are untouched; nothing is tiered or levelled by it. Measured offline
-  before the build: 114 passing rungs and 70 displaced rows on the TOF batch, 0 rungs on
-  both Orbitrap batches (the labelled nitrate cores sit below their window; the uronium
-  profile declares none). `tests/test_reagent_water.py`.
+  before the build and reproduced by the run: 114 passing rungs and 70 displaced rows on
+  the TOF batch (42 Assigned; identified rows 227 -> 214, each of the 13 held by evidence
+  the ladders themselves make: NO3-.(H2O)n and HNO3.NO3-.(H2O)n differ by HNO3 like an
+  acid's two channels); the unexplained share of its time-series signal falls from 16.95 %
+  to 5.75 %, identified signal 12.95 -> 12.91 %, and nothing else in the merged ledger
+  changes. 0 rungs on both Orbitrap batches, whose outputs are identical (the
+  labelled-nitrate window starts at m/z 130, above five of its seven cores, and the two
+  trimer cores inside it are absent; the uronium profile declares none). Known limits:
+  the rungs are measured per segment but stamped and stripped batch-wide, so one Assigned
+  row that is a real species before the restart and the water rung after it left with
+  the rung; and a halogen rung passes for one isotopologue while its twin fails the decoy
+  gate on neighbouring peaks, leaving about 60 merged rows on unstamped rungs.
+  `tests/test_reagent_water.py`.
 
 - **Claims -- what a committed formula lets a reader say: identified, ion or tentative.** The nine
   evidence levels say how good the evidence is; a reader of a result table asks something coarser

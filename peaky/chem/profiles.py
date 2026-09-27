@@ -157,7 +157,7 @@ NO3_15N = ReagentProfile(
     label_isotope="^N",   # covalent 15N products (organonitrates) rescued by labeled.py
     label_max=2,          # up to di-organonitrate
     ion_only_channels=("[M]-.",),   # as NO3: the M-. line beside each acid's [M-H]-
-    water_cores=("^NO3", "H^N2O6", "H2^N3O9"),   # the labelled cores (usually below the window)
+    water_cores=("^NO3", "H^N2O6", "H2^N3O9"),   # the labelled cores (the monomer and dimer sit below a m/z 130 window)
     aliases=(
         "no3-15n",
         "15no3",

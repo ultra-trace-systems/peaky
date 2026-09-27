@@ -215,16 +215,20 @@ selected sample_ids (SAMPLING.md)
    joins its neighbour). A rung passes when, in some segment, the core and every
    rung 1…n are present in ≥ 50 % of the spectra within the stamping window and
    the rung is ≥ 3× the presence of its decoy offsets (±0.02 / 0.035 / 0.05 Da;
-   floor 0.02). How far a ladder reaches is measured, not declared: on the
-   five-day bromide/nitrate TOF batch it ends at n ≤ 8 (Br-) and n ≤ 4 (NO3-)
-   before an instrument restart and runs past n = 15 after it. A merged analyte
-   row within the window of a passing rung is the water cluster and leaves the
-   merged ledger (on that batch 70 rows, C13H12O8 [M-H]- at Br-.(H2O)12 and
-   C25H19N [M-H]- at NO3-.(H2O)15 among them); every passing rung becomes a
+   floor 0.02, inactive while the presence bar is 50 %). How far a ladder
+   reaches is measured, not declared: on the five-day bromide/nitrate TOF batch
+   it ends at n ≤ 8 (Br-) and n ≤ 5 (NO3-) before an instrument restart and runs
+   past n = 15 after it. A merged analyte row within the window of a passing rung
+   is the water cluster and leaves the merged ledger (on that batch 70 rows,
+   C13H12O8 [M-H]- at Br-.(H2O)12 and C13H22N2O4 [M+NO3]- at NO3-.(H2O)15 among
+   them); every passing rung becomes a
    reagent row of the stamp (with its isotopologue tag, so the ⁷⁹Br and ⁸¹Br
    rungs stay two tracks). `tables/reagent_water.csv` lists the rungs and the
    readings each displaced; `batch_summary.json["merge_gates"]["reagent_water"]`
-   the counts. The per-file ledgers are untouched.
+   the counts. The per-file ledgers are untouched. Two limits stand: a rung is
+   measured per segment but stamped and stripped over the whole batch, and a
+   halogen rung can pass for one isotopologue while its twin fails the decoy gate
+   on a neighbouring peak.
 
 4b. **Known species, decided once** (`lock_known_species`; after the vote,
    before the polarity re-reads). Every file's known-species evidence is pooled
@@ -400,8 +404,9 @@ All in `peaky/batch/assign_batch.py`.
 | `tables/jitter.csv` | long form, one row per (cluster, file): `cluster`, `src`, `mz`, formula, adduct, tier, `ion_score`, `evidence_level` (the file's own level of that reading — the vote's evidence class comes from it) |
 | `per_file/<sid>_ledger.csv` | each assigned file's full single-sample ledger (audit / re-merge) |
 | `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role` ∈ `cover` / `pad` / `residual`, `bins_new`, `coverage`) |
+| `tables/reagent_water.csv` | the reagent-water ladder (step 4a): one row per passing rung — `core`, `iso_tag`, `n`, `ion_formula`, exact `mz` and observed `mz_obs`, the `segments` it passes in with their `presence` / `decoy_presence`, and the merged reading(s) it `displaced`; header only when nothing passes |
 | `tables/residual_bins.csv` | the residual stage's targeted bins (`bin_mz`, `prevalence`, `max_cps`, `max_x_edge`, `sample_at_max`, `covered_by`); written when the stage is on |
-| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason; `residual` sub-block: the funnel, the floor, k, coverage_of_residual, stop_reason, sample_ids), `n_files_by_stage` / `merged_by_stage` when the stage is on, the resolved height gate (`height_cutoff_x_edge` + its source, and the `gate` derivation block), the `admission` block, the `traces` block (re-centred / collapsed counts, per-ion scatter, stamp window), per-file offsets + noise edges, merged tier counts and the claim tallies beside them (`claims`), agreement counts |
+| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason; `residual` sub-block: the funnel, the floor, k, coverage_of_residual, stop_reason, sample_ids), `n_files_by_stage` / `merged_by_stage` when the stage is on, the resolved height gate (`height_cutoff_x_edge` + its source, and the `gate` derivation block), the `admission` block, the `traces` block (re-centred / collapsed counts, per-ion scatter, stamp window), per-file offsets + noise edges, merged tier counts and the claim tallies beside them (`claims`), agreement counts, and `merge_gates` (the known-species decision, the positive-mode gates and `reagent_water`: cores, window, segments, rungs by core, the stripped readings) |
 | `jitter_report()` dict | `{offsets, by_formula, by_mz, summary}` — the standalone jitter analysis |
 
 ---

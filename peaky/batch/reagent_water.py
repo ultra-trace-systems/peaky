@@ -5,9 +5,9 @@ HNO3.NO3-.(H2O)n ... The per-file reagent library declares only the first rung o
 halide cores (`reagents.build_library`, k = 1) and nothing for the nitrate cores, whose
 bare ions are the HNO3 / HNO2 analyte readings. How far a ladder reaches is not a
 constant of the chemistry: it moves with the source and the humidity. On a five-day
-bromide/nitrate TOF batch the ladders end at n <= 8 (Br-) and n <= 4 (NO3-) before an
+bromide/nitrate TOF batch the ladders end at n <= 8 (Br-) and n <= 5 (NO3-) before an
 instrument restart and run past n = 15 after it, where the higher rungs were committed
-as C13-C31 organics (C13H12O8 [M-H]- at Br-.(H2O)12, C25H19N [M-H]- at NO3-.(H2O)15).
+as C1-C37 organics (C13H12O8 [M-H]- at Br-.(H2O)12, C13H22N2O4 [M+NO3]- at NO3-.(H2O)15).
 
 So the ladder is MEASURED on the batch's own time series, per acquisition segment:
 
@@ -20,8 +20,11 @@ So the ladder is MEASURED on the batch's own time series, per acquisition segmen
                  a segment it PASSES when the core and every rung 1..n are present (a
                  peak within the window) in >= MIN_PRESENCE of the segment's spectra,
                  and the rung itself is present >= DECOY_X x the highest presence of
-                 its decoy offsets (DECOY_OFFSETS_DA; floor DECOY_FLOOR). A rung that
-                 passes in any segment is a reagent ion of the batch.
+                 its decoy offsets (DECOY_OFFSETS_DA; floor DECOY_FLOOR, which never
+                 binds while MIN_PRESENCE > DECOY_X x DECOY_FLOOR). A rung that
+                 passes in any segment is a reagent ion of the batch -- stamped and
+                 stripped over every segment (a known limit: a peak that is the rung
+                 after a restart and something else before it goes with the rung).
   * the window -- the batch's stamping half-window (`MassScale.stamp_ppm`).
 
 A passing rung becomes a reagent row of the batch stamp (`stamp_rows`), and a merged
