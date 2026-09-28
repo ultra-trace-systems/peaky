@@ -605,15 +605,19 @@ def lift_leads(df: pd.DataFrame, lock: dict, alien: set, fold: bool) -> pd.DataF
     lock its isotope axis, no reagent-only flag, and its second channel / acid
     branch / anchor read over unflagged rows alone -- its own adduct plus the
     adducts its neutral commits on an unflagged regular row of a pair that is
-    not alien (`fold`: the two nitrate clusters count as one channel)."""
+    not alien (`fold`: the two nitrate clusters count as one channel). Row by
+    row, like the engine: a pair holding an ion-only row beside such a regular
+    row still gives its adduct (`clean_row` already leaves the ion-only rows out)."""
     df = df.copy()
     df["lead_lift"] = False
     df["lock_note"] = ""
     if not lock:
         return df
     keys = list(zip(df["neutral"].astype(str), df["adduct"].astype(str)))
-    out = pd.Series([k in alien for k in keys], index=df.index, dtype=bool) | df["ion_only"].astype(bool)
-    clean = df[df["clean_row"].astype(bool) & ~out].groupby("neutral")["adduct"].agg(lambda s: set(s.astype(str)))
+    alien_row = pd.Series([k in alien for k in keys], index=df.index, dtype=bool)
+    out = alien_row | df["ion_only"].astype(bool)
+    clean = df[df["clean_row"].astype(bool) & ~alien_row].groupby("neutral")["adduct"].agg(
+        lambda s: set(s.astype(str)))
     for idx, k in zip(df.index, keys):
         spec = lock.get(k)
         if spec is None or out[idx] or bool(df.at[idx, "below"]) or not bool(df.at[idx, "lead"]):

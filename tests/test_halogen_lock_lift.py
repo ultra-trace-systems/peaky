@@ -412,6 +412,20 @@ def test_the_reference_script_lifts_like_the_engine_on_a_labelled_batch(tmp_path
     assert (m.loc[[(CL2, NO3L), ("C3H5ClO3", H), ("C5H9ClO4", "[M]-.")], "evidence_level"] == "5b").all()
 
 
+def test_a_mixed_ion_only_sibling_gives_its_regular_row(tmp_path):
+    """A neutral whose [M]-. pair holds an ion-only row AND an unflagged regular
+    commit: the regular row is a second channel for the lifted pair, read row by
+    row in the engine and the reference script alike (the script once dropped
+    the whole pair for its ion-only row)."""
+    mz = C.ion_mz(CL1, H) + 1.00728
+    io_row = _r("io", adduct="[M]-.", mz=mz)
+    io_row["method"] = "ion_only:ea"
+    m = _lockstep(tmp_path, "R", _f(_r("p", lead=True), io_row, _r("rg", adduct="[M]-.", mz=mz)),
+                  _h_table([_h_row(CL1, H)]))
+    r = m.loc[(CL1, H)]
+    assert bool(r["lead_lift"]) and bool(r["chan2"]) and r["level_reason"].startswith("4b: iso + chan2")
+
+
 def test_the_reference_script_clears_the_reagent_only_flag_like_the_engine(tmp_path):
     frame = _f(_r("p", lead=True), _child("c", "p", "81Br+2", 320.0),
                _r("b1", "C9H14O4", adduct="[M+Br]-"), _r("b2", "C8H12O4", adduct="[M+Br]-"),
