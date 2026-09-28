@@ -394,7 +394,9 @@ def test_req_reads_the_ion_from_neutral_and_adduct_when_the_ledger_holds_the_neu
 
 
 # --------------------------------------------------------------------------- HIGH
-Z = "C11H18O4"
+# a Br-free formula whose [M-H]- (m/z 241.051) an ion carrying one Br can also have (a CHNOS rest fits
+# within 1 ppm): HIGH names an element only where an ion carrying it fits the mass (2026-09-27)
+Z = "C14H10O4"
 
 
 def _hi(i, *, n=Z, ratio=1.0, ratio_h=None, offset=1.9979535, seen=None, stamp=None, h=1e4, anti=False, n_m0=N):
@@ -467,9 +469,15 @@ def test_high_slot_guards_an_other_m0_and_a_plain_13c_line():
 
 
 def test_high_caps_what_no_isotope_envelope_reaches():
-    r = _get(_measure(_series(lambda i: _hi(i, ratio=3.5)), [(Z, H)]), "HIGH", Z)
+    # at the 18O spacing (no element to fit): above expected + 3 no isotope envelope reaches
+    o18 = IC.HIGH_OFFSETS["18O"]
+    r = _get(_measure(_series(lambda i: _hi(i, ratio=3.5, offset=o18)), [(Z, H)]), "HIGH", Z)
     assert r["verdict"] == "guarded" and "no isotope envelope" in r["note"]
-    assert _get(_measure(_series(lambda i: _hi(i, ratio=2.9)), [(Z, H)]), "HIGH", Z)["verdict"] == "too_high"
+    r = _get(_measure(_series(lambda i: _hi(i, ratio=2.9, offset=o18)), [(Z, H)]), "HIGH", Z)
+    assert r["verdict"] == "too_high" and r["offset"] == "18O"
+    # at the 81Br spacing 2.9x means three Br, which no ion at m/z 241 carries: not this ion's isotope line
+    r = _get(_measure(_series(lambda i: _hi(i, ratio=2.9)), [(Z, H)]), "HIGH", Z)
+    assert r["verdict"] == "guarded" and "no ion carrying the Br this line needs fits its mass" in r["note"]
 
 
 def test_high_alias_guard_is_orbitrap_only():
@@ -504,7 +512,7 @@ def test_the_table_and_its_facts():
     assert f["veto"][(Y, H)] == "REQ: " + _get(t, "REQ", Y)["note"]
     # a pair refuted by several checks carries one joined note, in check order
     assert f["veto"][(Z, H)] == "rule C: " + _get(t, "C", Z)["note"] + "; HIGH: " + _get(t, "HIGH", Z)["note"]
-    assert _get(t, "C", Z)["note"].startswith("13C reads -0.1 C for 11")
+    assert _get(t, "C", Z)["note"].startswith("13C reads -0.1 C for 14")
     assert IC.veto(t.iloc[::-1]) == f["veto"]
     s = IC.summary(t, ORBI)
     assert s["instrument"] == "orbitrap" and s["vetoed_pairs"] == 3 and s["tested"] == len(t)

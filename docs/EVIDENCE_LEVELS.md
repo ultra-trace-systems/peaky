@@ -130,7 +130,7 @@ Computed exactly as `level_ledger.measure_source` does.
 | `label_untie` | (rule K, C18, 2026-09-27) **batch only**, on a 15N-labelled nitrate channel (the profile's label is `^N` and it clusters on `[M+^NO3]-`: `NO3_15N`, or composed `NO3+NO3_15N`): the pair is a tied `[X+NO3]-` whose 14N line **tracks** X's 15N cluster and whose tie `batch/label_twins.py` therefore breaks in the cluster's favour. The 14N line ties by construction with the organonitrate `[X'-H]-` (X' = X + HNO3, the same ion); it tracks when its 14N/15N height ratio q(t) follows the batch's cluster ratio k_cl(t) — the per-spectrum median of q over the bright CHO acid clusters committed on `[M+^NO3]-` (the 15N line's median ≥ 1000 counts, both lines within 2 ppm in ≥ 100 spectra), the pair under test left out: median(q / k_cl) in 0.5–2, sd(log q / k_cl) ≤ 0.25, r(log q, log k_cl) ≥ 0.8 over ≥ 50 spectra — AND every file's tie on the reading is with same-ion decomposition aliases alone (the tier engine's own test). The pair's `tied` then reads False and the level falls through to the rows below (on a real acid, the branch: 3b). Written to `tables/label_twins.csv` |
 | `label_alien` | (rule K) **batch only**, same scope: a committed `[X+NO3]-` whose 14N line is not established as X's cluster — `absent` (the 15N partner in ≤ 20 % of the ≥ 10 spectra of the 14N line), `untestable`, or `excess` (tested, the ratio above 2 × k_cl: cluster or organonitrate) with its 15N partner in < 80 % of its spectra; an excess line whose partner is present in ≥ 80 % still shows X's cluster through the partner and stays in the pools (the 2026-09-27 decision: the aged-SOA tracer C8H12O6 runs at 2.1 × with its partner in 98 %), though it is refuted itself (`label_veto`). An alien line is kept out of X's per-neutral pools **in both directions**, like an ion-only row: it gives X no `chan2` and no acid `branch`, and takes neither. A `consistent` line — tested, not above the cluster ratio (a noisy cluster, or one dominated by the reagent's own 14N, as trifluoroacetic acid's at 0.12 × k_cl; an organonitrate can only add 14N intensity) — stays X's cluster, untied |
 | `label_veto` | (rule K) **batch only**, same scope: the pair is an `[Y+^NO3]-` reading whose **14N twin** — the line the reagent's own 14N impurity puts 0.99703 Da below every real cluster, at f = (1 − purity) / purity of its height (`ReagentProfile.purity`: 0.98 → 0.0204; the labelled reagent's nitrate dimer reads 0.0186 and trifluoroacetic acid's cluster 0.0206 on the regression batch) — is refuted, or a committed `[X+NO3]-` whose 14N line is `excess` or `absent` (above; `label_note` says which): for the 15N reading, over the spectra where the batch's own detection curve (the 13C lines of every committed M0 of ≥ 4 carbons, binned by expected height; a bin with no line takes the populated bin below it, 0 below the first) gives the twin p ≥ 0.5 and the twin's m/z is not below the spectrum's lowest peak (a twin under the scan start was never measured), E = Σ p ≥ 3 and the twin (within 2 ppm) is seen in ≤ 0.2 E of them. A hard input (§4 row 1); `label_note` carries the numbers. `passes` (≥ 0.5 E), `unclear` and `untestable` (E < 3) set nothing |
-| `iso_veto` | (C11+a, 2026-09-27) **batch only**: `batch/iso_checks.py` finds, on the stamped batch time series, that the formula's own isotope claim is false. The instrument class is read off the batch's width model: **Orbitrap-class** when it resolves ≥ 50 000 at m/z 200 (`batch_summary.resolution.r_at_200`), else **TOF-class**; no width model is TOF-class. Three checks, any one refutes: **rule C** (Orbitrap-class only) — per stamped pair, not ion-only: in each spectrum the brightest M0 stamp and the nearest peak to it + 1.0033548 within 3 ppm; a spectrum counts when h0 × C × 0.010816 ≥ 5 × its noise edge (its 1st-percentile height), ≥ 8 spectra; the pooled area ratio (corrected for the width, ((m+1)/m)^1.5, and 17O) and the pooled height ratio each read a carbon count, divided by (1 + bias), the level-free median misread over every testable heteroatom-free pair; refuted when area **and** height both miss the ion's carbons by more than max(1.5, 0.25 C, 3 se) — a 'too many' reading whose M+1 slot is another named pair's line in > 20 % of the spectra is untestable; an ion below the scan start + 1 Da (the batch's lowest m/z) and a 14N `[M+NO3]-` beside the profile's 15N `[M+^NO3]-` (its M+1 sits 6.32 mDa above the taller 15N line) are not tested. **REQ** — per pooled pair whose ion carries Br / Cl (TOF-class) or Br / Cl / S / Si (Orbitrap-class): the ion's count-aware fine structure, components closer than one FWHM of the width model merged into observable lines, placed relative to the **stamped** line (a Br2 ion is committed on 79Br81Br); required are every halogen group ≥ 0.25 × the stamped line (81Br per Br, 37Cl per Cl, the Br2 1:2:1 and Cl2 patterns) and, on an Orbitrap-class ion without Br or Cl, 34S / 29Si / 30Si where the component is ≥ 50 % of its line; a line is detectable in a spectrum when h0 × its ratio ≥ 3 × the spectrum's height gate (noise edge × the batch's `height_cutoff_x_edge`), present when a peak sits within max(1 ppm, 4σ) of the blend centroid or the pure component (TOF-class: the stamp window **and** 20 ppm, absent only when absent at both); refuted when ≥ 3 spectra are detectable and the line is present in ≤ 20 % of them (a pair with no stamp takes the tallest peak within the stamp window of its pooled m/z). **HIGH** (variant V4) — per pooled pair with ≥ 8 spectra: at a heavy offset (81Br, 37Cl, 34S, 30Si, 18O, 13C2) the nearest peak within 1 ppm (TOF-class 10 ppm) co-varies with the M0 (r(log area) ≥ 0.8, present in ≥ 60 % of its spectra) at a pooled area **and** height ratio ≥ 3 × the ion's count-aware expected M+2 and ≥ 0.2 — unless the line is another committed M0 or a plain `13C` child in > 20 % of its spectra, sits nearer a non-isotopic +2 alias (F↔OH, C3↔F2, N2↔CH2O) than the heavy spacing (Orbitrap-class), or runs above expected + 3. A hard input (§4 row 1) that also keeps the pair out of its neutral's `chan2` / `branch` pools in both directions, as an alien 14N line; `iso_note` joins the refuting checks' notes with their numbers (`rule C: 13C reads 4.1 C for 6 …; REQ: the M+2 (81Br) line (0.97x the stamped line) absent in 12 of 12 detectable spectra …`). Never an axis, never in `cross`, never per file; it reaches an ion-only pair too, and a curated row: hard outranks curated. Written to `tables/iso_checks.csv` |
+| `iso_veto` | (C11+a, 2026-09-27) **batch only**: `batch/iso_checks.py` finds, on the stamped batch time series, that the formula's own isotope claim is false. The instrument class is read off the batch's width model: **Orbitrap-class** when it resolves ≥ 50 000 at m/z 200 (`batch_summary.resolution.r_at_200`), else **TOF-class**; no width model is TOF-class. Three checks, any one refutes: **rule C** (Orbitrap-class only) — per stamped pair, not ion-only: in each spectrum the brightest M0 stamp and the nearest peak to it + 1.0033548 within 3 ppm; a spectrum counts when h0 × C × 0.010816 ≥ 5 × its noise edge (its 1st-percentile height), ≥ 8 spectra; the pooled area ratio (corrected for the width, ((m+1)/m)^1.5, and 17O) and the pooled height ratio each read a carbon count, divided by (1 + bias), the level-free median misread over every testable heteroatom-free pair; refuted when area **and** height both miss the ion's carbons by more than max(1.5, 0.25 C, 3 se) — a 'too many' reading whose M+1 slot is another named pair's line in > 20 % of the spectra is untestable; an ion below the scan start + 1 Da (the batch's lowest m/z) and a 14N `[M+NO3]-` beside the profile's 15N `[M+^NO3]-` (its M+1 sits 6.32 mDa above the taller 15N line) are not tested, nor an ion whose +1 line 13C does not dominate (13C < 50 % of it beside 29Si, 33S, 15N, 2H and 17O: a Si-rich ion's +1 line is mostly 29Si, 3.8 mDa lower — the 2026-09-27 decision). **REQ** — per pooled pair whose ion carries Br / Cl (TOF-class) or Br / Cl / S / Si (Orbitrap-class): the ion's count-aware fine structure, components closer than one FWHM of the width model merged into observable lines, placed relative to the **stamped** line (a Br2 ion is committed on 79Br81Br); required are every halogen group ≥ 0.25 × the stamped line (81Br per Br, 37Cl per Cl, the Br2 1:2:1 and Cl2 patterns) and, on an Orbitrap-class ion without Br or Cl, 34S / 29Si / 30Si where the component is ≥ 50 % of its line; a line is detectable in a spectrum when h0 × its ratio × the element's **line efficiency** ≥ 3 × the spectrum's height gate (noise edge × the batch's `height_cutoff_x_edge`) — the efficiency is the batch's own: per element, the median seen/theory height over the pairs whose line is present in ≥ half of ≥ 3 theory-detectable spectra, from ≥ 3 pairs, read within [0.25, 1] (1 without a measurement; a Br + Cl line takes the smaller; the 2026-09-27 decision: the uronium batch's Si lines run 0.58 × theory, their peaks 1.3–1.5 × wider), present when a peak sits within max(1 ppm, 4σ) of the blend centroid or the pure component (TOF-class: the stamp window **and** 20 ppm, absent only when absent at both); refuted when ≥ 3 spectra are detectable and the line is present in ≤ 20 % of them (a pair with no stamp takes the tallest peak within the stamp window of its pooled m/z). **HIGH** (variant V4) — per pooled pair with ≥ 8 spectra: at a heavy offset (81Br, 37Cl, 34S, 30Si, 18O, 13C2) the nearest peak within 1 ppm (TOF-class 10 ppm) co-varies with the M0 (r(log area) ≥ 0.8, present in ≥ 60 % of its spectra) at a pooled area **and** height ratio ≥ 3 × the ion's count-aware expected M+2 and ≥ 0.2 — unless the line is another committed M0 or a plain `13C` child in > 20 % of its spectra, sits nearer a non-isotopic +2 alias (F↔OH, C3↔F2, N2↔CH2O) than the heavy spacing (Orbitrap-class), or runs above expected + 3, or names an element the formula lacks that no ion at that mass can carry in the number the line implies (round(min(area, height ratio) / the per-atom height), ≥ 1): some CcHhNnOoSs rest (N ≤ 4, S ≤ 3, 0 ≤ H ≤ 2C + N + 4) must make up the rest of the M0 mass within 5 ppm (TOF-class 20 ppm) — the 2026-09-27 decision; an O2 ↔ H2S analogue sits 0.06 mDa from 81Br. A line several heavy spacings reach is the tallest one's, named by the spacing it sits nearest. A hard input (§4 row 1) that also keeps the pair out of its neutral's `chan2` / `branch` pools in both directions, as an alien 14N line; `iso_note` joins the refuting checks' notes with their numbers (`rule C: 13C reads 4.1 C for 6 …; REQ: the M+2 (81Br) line (0.97x the stamped line) absent in 12 of 12 detectable spectra …`). Never an axis, never in `cross`, never per file; it reaches an ion-only pair too, and a curated row: hard outranks curated. Written to `tables/iso_checks.csv` |
 | `ion_only` | the pair was written by the **ion-only stage** (`ion_only`, C7): adduct `[M]-.` with method `ion_only:*` (a merged ledger: an `ion_only_of` link) — the +1.0078 Da electron-attachment line beside a committed `[M-H]-` acid, carrying the acid's composition. An ion-only pair is levelled on its **own** satellite alone (§4 row 2b′) and is kept **out of the per-neutral pools in both directions**: `chan2`, `branch`, `anchor` and `reagent_only_iso` are computed over the regular rows only, so the row never gives its parent a second channel and never takes an axis from it; it is never `corroborated` and its neutral never enters a cross set (`corroborating_neutrals` skips it) |
 
 Derived:
@@ -285,50 +285,71 @@ the isomer space says 3 (2-, 3-, 4-nitrophenol), so 3a.
 - **A formula's own isotope lines are tested on the batch series (C11+a).**
   The per-file isotope test only asks whether a child it found sits in the
   band; three batch checks ask what the formula claims and refute it where the
-  series says otherwise (§3 `iso_veto`; replayed on the three regression
-  baselines through the engine, every number below reproduces the measurement):
+  series says otherwise (§3 `iso_veto`). Numbers against the trunk with rule K
+  (C18 + K, C19(c); the engine replay equals the runs row for row), identified /
+  ion signal in % of the batch series:
   - **rule C** (the 13C carbon count, Orbitrap-class only). Labelled-nitrate
-    Orbitrap: 19 pairs refuted (2.087 % of the batch signal, 11 already 5b);
-    with the pool exclusion 12 merged rows move (4 identified → 5b, 4 ion →
-    5b, 4 acid-branch siblings 3b → 4b), identified 48.266 → 47.830 %, ion
-    30.879 → 30.169. Uronium Orbitrap: 5 refuted, 1 move (5a → 5b, identified
-    unchanged). The TOF batch is TOF-class: no rule C. The level-free bias
-    gives the veto set a bias fitted on levelled acids gives; 0 of 63 testable
-    3b acids are refuted; decoys read at C − 2 are refuted in ~50 %, at C + 2 in
-    ≤ 7.5 % — a veto for a gross carbon over-claim, never a confirmation.
-  - **REQ** (a required heavy line absent). Labelled-nitrate: 152 pooled / 104
-    merged pairs refuted (Br 62, Cl 39, S 3), 85 merged rows move, identified
-    −0.947, ion −1.335. Uronium: 6 / 4, all Si (C12H14N2O4Si `[M+H]+` 4a → 5b:
-    no 29Si in 319 of 319 spectra), identified −0.269. The TOF: 102 / 29
-    refuted at both windows, 11 moves, identified 0.000, ion −0.126 — its
-    blends displace real 81Br lines 10–19 ppm, so the stamp window alone would
-    refute 39 merged, three identified among them; hence the two windows. The
-    3 × gate sits at 84–98 % per-spectrum detection; one real line in ~280 is
-    absent at 1 ppm. A curated cyclosiloxane (D7 urea, 2b) is refuted on its
-    30Si line: hard outranks curated (the user's decision, 2026-09-27).
+    Orbitrap: 19 pairs refuted; with the pool exclusion 11 merged rows move
+    (4 identified → 5b, 3 ion → 5b, 4 acid-branch siblings 3b → 4b: brominated
+    readings whose sibling adduct was their only branch), identified 45.148 →
+    44.713 %, ion 33.224 → 32.711. Uronium Orbitrap: 2 refuted, 1 move
+    (C24H40N2O3 urea cluster 5a → 5b, reads 11.6 C for 25). The TOF batch is
+    TOF-class: no rule C. 0 of 62 roster or well-known species tested are
+    refuted (pinic acid, MBTCA, pinonic acid, TFA, DEHP read their own carbon
+    counts); decoys read at C − 2 are refuted in ~50 %, at C + 2 in ≤ 7.5 % — a
+    veto for a gross carbon over-claim, never a confirmation. A Si-rich ion is
+    not read: three Si10–Si12 siloxane readings of the uronium batch read
+    "−0.2 C" on a +1 line 13C makes 25 % of, the rest 29Si (all already 5b).
+  - **REQ** (a required heavy line absent). Labelled nitrate: 152 pooled / 104
+    merged pairs refuted (Br 62, Cl 39, S 3), 71 merged rows move, identified
+    −0.774, ion −0.843; genuine Br / Cl lines there read 1.01–1.13 × theory
+    (efficiency 1), their offsets scatter 0.04–0.36 ppm, and 55 of the 63
+    directly refuted pairs stay absent out to 3 ppm. Uronium: 3 refuted, 2
+    moves (C12H14N2O4Si `[M+H]+` 4a → 5b: no 29Si in 319 of 319 spectra at
+    6.7 × the floor, and C13H15N2O3S+ fits at +0.05 ppm with its 34S line;
+    identified −0.257); its Si lines run 0.58 × theory, so the cyclosiloxanes
+    D7·urea (curated 2b) and D5 `[M+H]+` (4b), whose 29Si line would sit near
+    1.5 × the floor, are untestable, not refuted. The TOF: 94 pooled / 27
+    merged refuted at both windows (Br efficiency 0.96, Cl 0.70), identified
+    0.000, ion −0.126 — its blends displace real 81Br lines 10–19 ppm, so the
+    stamp window alone would refute 39 merged, three identified among them
+    (measured before the efficiency); hence the two windows. REQ tests presence only: a line far below its
+    required height, or another pair's M0, passes — the yields are a lower
+    bound (count-aware heights: C11+c).
   - **HIGH** (a heavy line too high for the formula, variant V4). Labelled
-    nitrate: 7 rows 4b → 5b, ion −0.444 — aromatic `[M+^NO3]-` readings whose
-    37Cl line (0.31–0.46 ×, the exact spacing) says they are chlorinated
-    `[M-H]-` ions (C2 + 15N ↔ H4 + Cl is a 0.044 mDa alias; a Cl-free
-    labelled reading with a locked 37Cl line lands here, not as its own rule).
-    Uronium: 1 (4c → 5b, a 0.68 × line at the 81Br spacing, at the decoy
-    rate). TOF: 6 (4b / 4d → 5b, among them a Br-free `[M-H]-` whose own 1:1
-    81Br doublet refutes it). Identified 0 on all three; under V4, 0 decoy
-    flags per ±4 / 8 mDa offset on both Orbitraps.
-  - all three together: identified / ion / tentative 48.266 / 30.879 / 9.300
-    → 47.319 / 28.967 / 12.158 (labelled nitrate), 73.822 / 12.552 / 0.826 →
-    73.553 / 12.502 / 1.146 (uronium), 11.207 / 4.054 / 3.862 → 11.207 / 3.907
-    / 4.009 (TOF). The merge vote is not re-run: a refuted reading is not
-    replaced by its runner-up here.
+    nitrate: 11 refuted, 5 merged moves (4b → 5b 4, 5a → 5b 1), ion −0.202 —
+    aromatic `[M+^NO3]-` readings whose 37Cl line (0.26–0.46 ×, the exact
+    spacing, r 0.87–0.98) says they are chloride adducts of α-pinene products
+    (`[C10H18O7+Cl]-` …; C2 + 15N ↔ H4 + Cl is a 0.044 mDa alias), diethyl
+    phthalate's `[M+^NO3]-` reading among them. Uronium: none (C4H6O·urea's
+    0.68 × line 1.998 Da up cannot be bromine at m/z 131.08). TOF: 64 / 23
+    refuted, 6 merged moves (4b → 5b 4, 4d → 5b 2: C6H11NO6S and C7H19N3O6Si
+    `[M+NO3]-`, Br-free ions whose own 1:1 +2 Da doublet refutes them; three
+    more such `[M-H]-` pairs are refuted, not merged). Identified 0 on all three; under V4, 0
+    decoy flags per ±4 / 8 mDa offset on both Orbitraps.
+  - all three together: identified / ion / tentative 45.148 / 33.224 / 10.072
+    → 44.374 / 32.045 / 12.024 (labelled nitrate, 76 merged moves), 73.822 /
+    12.552 / 0.826 → 73.565 / 12.549 / 1.086 (uronium, 3), 11.207 / 4.054 /
+    3.862 → 11.207 / 3.907 / 4.009 (TOF, 25). Measured first on the trunk
+    before rule K (C17 + U): 48.266 / 30.879 → 47.319 / 28.967 on the
+    labelled nitrate; the 15 merged rows that differ are rows rule K already
+    refutes (a pair is refuted once, by whichever rule comes first). The
+    merge vote is not re-run: a refuted reading is not replaced by its
+    runner-up here.
 - **A reagent satellite needs the reagent in the ion (C11+a).** 4d reads
   "the ion is pinned by the reagent's own halogen"; that holds only where the
-  reagent put the halogen there. Per file, 29 M0 rows (21 pairs) of the
-  bromide/nitrate TOF batch move 4d → 4b (15 brominated neutrals' `[M+NO3]-`,
-  whose 81Br line is their own, and six Br-free ions carrying an 81Br child);
-  the Orbitrap batches do not move. The Br-free ones read 4b on a line the
-  per-file band still passes (the band is count-blind until C11+c); on the
-  batch HIGH refutes five of the six (5b), the sixth has no line tall enough
-  to test.
+  reagent put the halogen there. A brominated neutral's `[M-H]-` or
+  `[M+NO3]-` carries its OWN Br, and its 81Br line is the neutral's: the flag
+  clears. An ion carrying NONE of the reagent halogen keeps the flag (the
+  2026-09-27 hold): a 1:1 +2 Da line on a Br-free ion is no isotope line of
+  that formula — it says the ion carries a Br the formula lacks (C35H32O4S
+  `[M-H]-` at m/z 547.195: 1.00 × its M0 in 39 of 39 spectra, where the
+  formula makes 0.12 ×) — and would read 4b on a line that refutes it; HIGH
+  refutes such a reading on the batch, and C11+c's count-aware band will
+  judge it per file. Per file, 23 M0 rows (15 pairs) of the bromide/nitrate
+  TOF batch move 4d → 4b, all brominated neutrals' `[M+NO3]-` (e.g.
+  hypobromous acid, HBrO·NO3- at m/z 157.909); pooled 13 pairs (8 merged);
+  the Orbitrap batches do not move.
 - **Predicate order is the design.** `hard` outranks a curated identity: a
   known species the arbiter had to tie-break is 5b, and that is a defect in
   the pass-0 lock to be fixed there, not hidden here.

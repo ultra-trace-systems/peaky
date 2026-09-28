@@ -633,9 +633,11 @@ def test_high_every_alias_is_guarded_on_an_orbitrap():
     for alias, off in (("C3<->F2", "30Si"), ("N2<->CH2O", "18O")):
         r = _high(_series(lambda i, a=alias: _hl(i, pos=IC.HIGH_ALIASES[a])))
         assert r["verdict"] == "guarded" and r["offset"] == off and "alias" in r["note"], alias
-    # 0.05 mDa below 34S, 0.086 mDa above F<->OH: nearer 34S -- a heavy line
+    # 0.05 mDa below 34S, 0.086 mDa above F<->OH: nearer 34S -- not alias-guarded (a 1.0x 34S line
+    # would need ~22 S, which no ion at this mass carries: the element fit guards it instead)
     r = _high(_series(lambda i: _hl(i, pos=IC.HIGH_OFFSETS["34S"] - 5e-5)))
-    assert r["offset"] == "34S" and r["verdict"] == "too_high"
+    assert r["offset"] == "34S" and "alias" not in r["note"]
+    assert r["verdict"] == "guarded" and "no ion carrying the S this line needs fits its mass" in r["note"]
 
 
 def test_high_reports_the_tallest_refuting_line():

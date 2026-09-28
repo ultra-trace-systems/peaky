@@ -55,27 +55,28 @@ rule C).
         spacing (Orbitrap-class), or runs above expected + HIGH_CAP (no isotope
         envelope is that tall).
 
-Measured on the three regression batches through this engine (the offline replay
-of the 2026-09-27 C17+U baselines), identified /
-ion claim signal in % of the batch series:
-  rule C  labelled-nitrate Orbitrap: 19 pairs refuted (2.087 % of the signal), 12
-          merged rows move with the pool exclusion (4 of them acid-branch siblings
-          3b -> 4b), identified 48.266 -> 47.830, ion 30.879 -> 30.169; uronium
-          Orbitrap: 5 refuted, 1 move (5a -> 5b); the TOF: TOF-class, none. The
-          level-free bias gives the set a bias fitted on levelled acids gives;
-          0 of 63 testable 3b acids are refuted.
-  REQ     labelled nitrate: 152 pooled / 104 merged refuted, 85 merged moves,
-          identified -0.947, ion -1.335; uronium: 6 / 4 (all Si), identified
-          -0.269; the TOF: 102 / 29 at both windows (39 merged at the stamp window
-          alone), 11 moves, identified 0.000, ion -0.126. One real line in ~280 is
-          absent at 1 ppm.
-  HIGH    labelled nitrate: 14 / 12 flagged, 7 aromatic [M+^NO3]- rows 4b -> 5b
-          (a C2 + 15N <-> H4 + Cl exact alias: their 37Cl line is there), ion
-          -0.444; uronium: 1 (4c -> 5b); the TOF: 64 / 23 flagged, 6 moves; none
-          identified; 0 decoy flags per +-4/8 mDa offset on both Orbitraps.
-  all three: identified / ion 48.266 / 30.879 -> 47.319 / 28.967 (labelled
-          nitrate), 73.822 / 12.552 -> 73.553 / 12.502 (uronium), 11.207 / 4.054
-          -> 11.207 / 3.907 (the TOF).
+Measured on the three regression batches through this engine against the trunk
+with rule K (C18 + K, C19(c)); identified / ion claim signal in % of the batch
+series (the runs equal the replay row for row):
+  rule C  labelled-nitrate Orbitrap: 19 pairs refuted, 11 merged rows move with
+          the pool exclusion (4 of them acid-branch siblings 3b -> 4b),
+          identified 45.148 -> 44.713, ion 33.224 -> 32.711; uronium Orbitrap: 2
+          refuted, 1 move (5a -> 5b); the TOF: TOF-class, none. 0 of 62 roster /
+          well-known species refuted; three Si10-Si12 readings whose +1 line is
+          mostly 29Si are not read.
+  REQ     labelled nitrate: 152 pooled / 104 merged refuted, 71 merged moves,
+          identified -0.774, ion -0.843 (Br / Cl efficiency 1); uronium: 3 / 2
+          (Si efficiency 0.58: D7.urea and D5 [M+H]+ untestable, not refuted),
+          identified -0.257; the TOF: 94 / 27 at both windows (Br 0.96, Cl 0.70),
+          identified 0.000, ion -0.126.
+  HIGH    labelled nitrate: 11 refuted, 5 merged moves (chloride adducts read as
+          aromatic [M+^NO3]-), ion -0.202; uronium: none (no Br fits m/z 131.08);
+          the TOF: 64 / 23, 6 merged moves; none identified.
+  all three: identified / ion 45.148 / 33.224 -> 44.374 / 32.045 (labelled
+          nitrate, 76 merged moves), 73.822 / 12.552 -> 73.565 / 12.549 (uronium,
+          3), 11.207 / 4.054 -> 11.207 / 3.907 (the TOF, 25). First measured before
+          rule K (C17 + U: 48.266 / 30.879 -> 47.319 / 28.967 on the labelled
+          nitrate); the difference is rows rule K already refutes.
 """
 from __future__ import annotations
 
@@ -102,6 +103,12 @@ C_NMIN = 8
 C_TOL_ABS, C_TOL_REL, C_TOL_SE = 1.5, 0.25, 3.0
 C_OCC_MAX = 0.2
 C_HETERO = ("F", "S", "Si", "Cl", "P", "I", "Br")
+#: rule C reads the +1 line as 13C only where 13C makes at least this share of it
+#: (a Si-rich ion's +1 line is mostly 29Si, 3.8 mDa lower: 2026-09-27 decision)
+C_MIN_13C_SHARE = 0.5
+#: the other light-element contributions to an ion's +1 line, per atom relative to its all-light line
+_M1_OTHER = {"H": 0.000115 / 0.999885, "N": 0.00364 / 0.99636, "O": 0.00038 / 0.99757,
+             "S": 0.0075 / 0.9499, "Si": 0.04685 / 0.92223}
 # --- REQ
 REQ_FRAC = 0.25          # a halogen group is required when >= 0.25x the stamped line
 REQ_SHARE = 0.5          # an S / Si component must be >= 50 % of its observable line
@@ -112,6 +119,14 @@ REQ_ORBI_MIN_PPM = 1.0
 REQ_ORBI_SIGMA_K = 4.0
 REQ_TOF_WIDE_PPM = 20.0
 REQ_MERGE_FWHM = 1.0
+#: an element's heavy lines, as tall as this batch shows them: the median seen/theory
+#: height over the pairs whose line is present in >= REQ_EFF_SEEN of >= REQ_NMIN
+#: detectable spectra, from >= REQ_EFF_PAIRS pairs, read within [REQ_EFF_FLOOR, 1]
+#: (never above theory; 2026-09-27 decision: the uronium batch's Si lines run
+#: 0.4-0.5x theory on real siloxanes, their peaks 1.3-1.5x wider)
+REQ_EFF_SEEN = 0.5
+REQ_EFF_PAIRS = 3
+REQ_EFF_FLOOR = 0.25
 _MIN_REL = 1e-5
 _ISO = {
     "C": [(0.0, 0.98930), (1.0033548378, 0.01070, "13C")],
@@ -139,6 +154,11 @@ HIGH_OFFSETS = {"81Br": 1.9979535, "37Cl": 1.9970499, "34S": 1.9957959, "30Si": 
 _OFFSET_ELEMENT = {"81Br": "Br", "37Cl": "Cl", "34S": "S", "30Si": "Si"}
 #: the non-isotopic +2 aliases an Orbitrap can tell from a heavy spacing
 HIGH_ALIASES = {"F<->OH": 1.995660, "C3<->F2": 1.996810, "N2<->CH2O": 2.004410}
+#: per-atom height of each element's heavy line (for the atoms a line implies)
+_OFFSET_PER_ATOM = {"81Br": _A81, "37Cl": _A37, "34S": _A34, "30Si": _A30}
+#: the element-fit search: an ion carrying the implied atoms must fit its M0 mass
+#: with a CHNOS rest (H <= 2C + N + 4) within this window (2026-09-27 decision)
+HIGH_FIT_PPM = {"orbitrap": 5.0, "tof": 20.0}
 
 TABLE_COLUMNS = (
     "neutral_formula", "adduct", "check", "instrument", "ion", "mz", "stamped", "n_spectra", "n_used",
@@ -146,7 +166,7 @@ TABLE_COLUMNS = (
     # rule C
     "n_carbon", "c_area", "c_height", "se_area", "se_height", "bias_area", "bias_height", "occupied",
     # REQ
-    "line", "expected", "n_present", "det_frac", "window_ppm", "n_present_wide", "det_frac_wide",
+    "line", "expected", "line_eff", "n_present", "det_frac", "window_ppm", "n_present_wide", "det_frac_wide",
     # HIGH
     "offset", "ratio_area", "ratio_height", "r", "presence", "offset_mda", "other_m0", "other_13c",
     "note",
@@ -348,8 +368,10 @@ def _rule_c(S: _Series, pooled: pd.DataFrame, prof) -> pd.DataFrame:
         e = S.edge[codes]
         u = h0 * nC * R13C >= C_KDL * e
         n = int(u.sum())
+        share, other = c13_share(ic)
         rec = dict(neutral_formula=k[0], adduct=k[1], ion=ion, mz=mzm, n_spectra=int(len(g)), n_used=n,
-                   n_carbon=nC, het=sum(C.parse_formula(k[0]).get(x, 0) for x in C_HETERO))
+                   n_carbon=nC, het=sum(C.parse_formula(k[0]).get(x, 0) for x in C_HETERO),
+                   c13_share=share, m1_other=other)
         if n > 0:
             for nm, x0, x1, w in (("area", a0[u], a1[u], wf), ("height", h0[u], h1[u], 1.0)):
                 s0, s1 = x0.sum(), x1.sum()
@@ -381,6 +403,8 @@ def _rule_c(S: _Series, pooled: pd.DataFrame, prof) -> pd.DataFrame:
     v = np.where(d["n_used"] < C_NMIN, "untestable", np.where(~oa, "agree", np.where(oh, "contradict", "ambiguous")))
     v = pd.Series(v, index=d.index, dtype=object)
     v[(v == "contradict") & (d["c_area"] > nc) & (d["occupied"] > C_OCC_MAX)] = "untestable"
+    # a +1 line 13C does not dominate is no carbon count (a Si-rich ion's is mostly 29Si)
+    v[d["c13_share"] < C_MIN_13C_SHARE] = "untestable"
     ex14 = d["adduct"].map(lambda a: _labelled_sibling(a, prof))
     d["verdict"] = np.where(edge, "scan_edge", np.where(ex14, "exempt_14N", v))
     d["veto"] = d["verdict"].eq("contradict")
@@ -394,6 +418,20 @@ def _parse_ion(ion: str) -> dict:
     return C.parse_formula(str(ion).rstrip("+-."))
 
 
+def c13_share(ion: dict) -> tuple[float, str]:
+    """(13C's share of the ion's +1 line, the largest other contributor) -- the
+    +1 line also holds 29Si, 33S, 15N, 2H and 17O, unresolved from 13C where the
+    peak is wider than their spacing; rule C reads a carbon count only where
+    13C makes at least C_MIN_13C_SHARE of it."""
+    c13 = ion.get("C", 0) * R13C
+    other = {el: ion.get(el, 0) * a for el, a in _M1_OTHER.items() if ion.get(el, 0) > 0}
+    tot = c13 + sum(other.values())
+    if tot <= 0:
+        return 0.0, ""
+    top = max(other, key=other.get) if other else ""
+    return float(c13 / tot), top
+
+
 def _c_note(r) -> str:
     finite = isinstance(r.c_area, float) and np.isfinite(r.c_area)
     txt = (f"13C reads {r.c_area:.1f} C for {r.n_carbon} (height {r.c_height:.1f}, se {r.se_area:.1f}) "
@@ -401,6 +439,11 @@ def _c_note(r) -> str:
     why = {"scan_edge": "below the scan start + 1 Da, not tested",
            "exempt_14N": "its M+1 slot is the 15N sibling's line, not tested"}.get(r.verdict)
     if why:
+        return f"{txt}; {why}" if txt else why
+    share = getattr(r, "c13_share", 1.0)
+    if isinstance(share, float) and np.isfinite(share) and share < C_MIN_13C_SHARE:
+        iso = {"Si": "29Si", "S": "33S", "N": "15N", "H": "2H", "O": "17O"}.get(getattr(r, "m1_other", ""), "other lines")
+        why = f"the +1 line is mostly {iso} (13C {share:.0%} of it): no carbon count"
         return f"{txt}; {why}" if txt else why
     if not finite or r.n_used < C_NMIN:
         return f"{r.n_used} of {r.n_spectra} spectra bright enough for the 13C line (needs {C_NMIN})"
@@ -507,12 +550,13 @@ def _tag_text(tags: dict) -> str:
 
 
 def _req(S: _Series, pooled: pd.DataFrame, klass: str, rp, sigma: float, stamp: float,
-         x_edge: float) -> pd.DataFrame:
+         x_edge: float, log=None) -> pd.DataFrame:
     tof = klass == "tof"
     heavy = ("Br", "Cl") if tof else ("Br", "Cl", "S", "Si")
     win = stamp if tof else max(REQ_ORBI_MIN_PPM, REQ_ORBI_SIGMA_K * sigma if np.isfinite(sigma) else 0.0)
     floor = S.edge * x_edge
-    rows = []
+    # pass 1: every pair's required lines, where they would sit and what is there
+    cases = []
     for r in pooled.itertuples(index=False):
         counts = ion_counts(r.neutral_formula, r.adduct, r.ion)
         if not any(counts.get(el, 0) > 0 for el in heavy):
@@ -540,40 +584,97 @@ def _req(S: _Series, pooled: pd.DataFrame, klass: str, rp, sigma: float, stamp: 
         fl = floor[codes]
         lines = []
         for q in req:
-            det = ph * q["ratio"] >= REQ_DET_X * fl
-            nd = int(det.sum())
             t1 = pm + (q["centroid"] - sc)
             t2 = pm + (q["pure"] - sc)
-            pres = _present(S, codes, t1, t2, win)
+            hl = _line_height(S, codes, t1, t2, win)
+            lines.append(dict(q, t1=t1, t2=t2, pres=hl > 0, seen=hl / np.maximum(ph * q["ratio"], 1e-12)))
+        cases.append((r, stamped, codes, pm, ph, fl, lines))
+    # the batch's own line efficiency per element (how tall the lines it sees come out)
+    eff = line_efficiency(cases)
+    if log is not None and eff:
+        log("[iso_checks] REQ line height vs theory: "
+            + ", ".join(f"{el} {v:.2f} ({n} pairs)" for el, (v, n) in sorted(eff.items())))
+    # pass 2: the verdicts, with each line's detectability at the height this batch shows
+    rows = []
+    for r, stamped, codes, pm, ph, fl, lines in cases:
+        out = []
+        for q in lines:
+            e = _eff_of(eff, q["element"])
+            det = ph * q["ratio"] * e >= REQ_DET_X * fl
+            nd = int(det.sum())
+            pres = q["pres"]
             npd = int((pres & det).sum())
             frac = npd / nd if nd else np.nan
             testable = nd >= REQ_NMIN
             absent = testable and frac <= REQ_ABSENT_FRAC
             npw = frw = np.nan
             if tof:
-                presw = pres | _present(S, codes, t1, t2, REQ_TOF_WIDE_PPM)
+                presw = pres | _present(S, codes, q["t1"], q["t2"], REQ_TOF_WIDE_PPM)
                 npw = int((presw & det).sum())
                 frw = npw / nd if nd else np.nan
                 absent = absent and frw <= REQ_ABSENT_FRAC
-            lines.append(dict(q, n_det=nd, n_present=npd, det_frac=frac, n_present_wide=npw, det_frac_wide=frw,
-                              testable=testable, absent=absent))
-        ab = [x for x in lines if x["absent"]]
-        tst = [x for x in lines if x["testable"]]
+            x = {k: v for k, v in q.items() if k not in ("t1", "t2", "pres", "seen")}
+            out.append(dict(x, eff=e, n_det=nd, n_present=npd, det_frac=frac, n_present_wide=npw,
+                            det_frac_wide=frw, testable=testable, absent=absent))
+        ab = [x for x in out if x["absent"]]
+        tst = [x for x in out if x["testable"]]
         pick = (min(ab, key=lambda x: (x["det_frac"], -x["n_det"])) if ab else
                 min(tst, key=lambda x: (x["det_frac"], -x["n_det"])) if tst else
-                max(lines, key=lambda x: x["n_det"]))
+                max(out, key=lambda x: x["n_det"]))
         verdict = "absent" if ab else ("present" if tst else "untestable")
         note = "; ".join(_req_note(x, tof, win) for x in ab) if ab else _req_note(pick, tof, win)
         rows.append(dict(neutral_formula=r.neutral_formula, adduct=r.adduct, ion=str(r.ion), mz=float(np.median(pm)),
-                         stamped=stamped, n_spectra=int(len(codes)), n_used=pick["n_det"], line=pick["label"],
-                         expected=pick["ratio"], n_present=pick["n_present"], det_frac=pick["det_frac"],
-                         window_ppm=win, n_present_wide=pick["n_present_wide"], det_frac_wide=pick["det_frac_wide"],
+                         stamped=stamped, n_spectra=int(len(codes)),
+                         n_used=pick["n_det"], line=pick["label"], expected=pick["ratio"], line_eff=pick["eff"],
+                         n_present=pick["n_present"], det_frac=pick["det_frac"], window_ppm=win,
+                         n_present_wide=pick["n_present_wide"], det_frac_wide=pick["det_frac_wide"],
                          verdict=verdict, veto=bool(ab), note=note))
     if not rows:
         return _empty()
     d = pd.DataFrame(rows)
     d["check"] = "REQ"
     return d
+
+
+def line_efficiency(cases) -> dict:
+    """{element: (efficiency, n pairs)}: per element, the median over the pairs
+    whose line is present in >= REQ_EFF_SEEN of its >= REQ_NMIN theory-detectable
+    spectra of that pair's median seen/theory height, read within
+    [REQ_EFF_FLOOR, 1]; an element with fewer than REQ_EFF_PAIRS such pairs is
+    absent from the dict (read as 1: the theory height)."""
+    per: dict = {}
+    for _r, _st, _codes, _pm, ph, fl, lines in cases:
+        for q in lines:
+            det = ph * q["ratio"] >= REQ_DET_X * fl
+            nd = int(det.sum())
+            if nd < REQ_NMIN:
+                continue
+            seen = q["pres"] & det
+            if seen.sum() < REQ_EFF_SEEN * nd:
+                continue
+            per.setdefault(q["element"], []).append(float(np.median(q["seen"][seen])))
+    return {el: (float(np.clip(np.median(v), REQ_EFF_FLOOR, 1.0)), len(v))
+            for el, v in per.items() if len(v) >= REQ_EFF_PAIRS}
+
+
+def _eff_of(eff: dict, element: str) -> float:
+    """The efficiency REQ reads for a required line's element (a Br + Cl line: the
+    smaller of the two where it has none of its own); 1 without a measurement."""
+    if element in eff:
+        return eff[element][0]
+    if element == "BrCl":
+        return min(eff.get("Br", (1.0, 0))[0], eff.get("Cl", (1.0, 0))[0])
+    return 1.0
+
+
+def _line_height(S: _Series, codes, t1, t2, ppm) -> np.ndarray:
+    """The tallest peak within +-ppm of either position of each (spectrum, line), 0 where none."""
+    out = np.zeros(len(codes))
+    for t in (t1, t2):
+        j = S.tallest(codes, t, ppm)
+        ok = j >= 0
+        out[ok] = np.maximum(out[ok], S.h[j[ok]])
+    return out
 
 
 def _present(S: _Series, codes, t1, t2, ppm) -> np.ndarray:
@@ -583,7 +684,9 @@ def _present(S: _Series, codes, t1, t2, ppm) -> np.ndarray:
 
 
 def _req_note(x: dict, tof: bool, win: float) -> str:
-    what = f"the {x['label']} line ({x['ratio']:.2f}x the stamped line)"
+    e = x.get("eff", 1.0)
+    shown = "" if not (isinstance(e, float) and e < 0.995) else f"; this batch shows the element's lines at {e:.2f}x"
+    what = f"the {x['label']} line ({x['ratio']:.2f}x the stamped line{shown})"
     if not x["testable"]:
         return f"{what} detectable in {x['n_det']} spectra (needs {REQ_NMIN})"
     where = (f"within {win:.3g} and {REQ_TOF_WIDE_PPM:g} ppm" if tof else f"within {win:.3g} ppm")
@@ -629,6 +732,7 @@ def _high(S: _Series, pooled: pd.DataFrame, klass: str) -> pd.DataFrame:
     npar = np.isfinite(PM).sum(0)
     ions = [ion_counts(n, a, x) for (n, a), x in zip(keys, pooled["ion"])]
     exp = np.array([expected_m2(x) for x in ions])
+    sign = np.array([-1.0 if str(a).rstrip().endswith("-") else 1.0 for _n, a in keys])
     # the pair id of each column in the series' factorized (neutral, adduct) codes (-2: never stamped)
     pid = {k: i for i, k in enumerate(S.pair_index)}
     pcol = np.array([pid.get(k, -2) for k in keys])
@@ -673,17 +777,26 @@ def _high(S: _Series, pooled: pd.DataFrame, klass: str) -> pd.DataFrame:
         else:
             alias = np.zeros(P, bool)
         cap = (ra <= exp + HIGH_CAP) & (rh <= exp + HIGH_CAP)
-        v4 = v0 & (oth <= HIGH_SLOT_MAX) & ~alias & cap & (o13 <= HIGH_SLOT_MAX)
+        # an element the formula lacks must fit the ion's mass in the number the line implies
+        fit = np.ones(P, bool)
+        el = _OFFSET_ELEMENT.get(lab)
+        if el:
+            for i in np.flatnonzero(v0):
+                if ions[i].get(el, 0):
+                    continue
+                k = max(1, int(round(min(ra[i], rh[i]) / _OFFSET_PER_ATOM[lab])))
+                fit[i] = element_fits(float(np.nanmedian(PM[:, i])), el, k, HIGH_FIT_PPM[klass], sign[i])
+        v4 = v0 & (oth <= HIGH_SLOT_MAX) & ~alias & cap & (o13 <= HIGH_SLOT_MAX) & fit
         per[lab] = dict(n=n, frac=frac, ra=ra, rh=rh, r=r, off=off, oth=oth, o13=o13, alias=alias, cap=cap,
-                        v0=v0, v4=v4)
+                        fit=fit, v0=v0, v4=v4)
     rows = []
     for i in np.flatnonzero(npar >= HIGH_NMIN):
         hit = [lab for lab in HIGH_OFFSETS if per[lab]["v4"][i]]
         cand = [lab for lab in HIGH_OFFSETS if per[lab]["v0"][i]]
         if hit:
-            lab, verdict = max(hit, key=lambda x: per[x]["ra"][i]), "too_high"
+            lab, verdict = _label(hit, per, i, tol * 1e-6 * float(np.nanmedian(PM[:, i]))), "too_high"
         elif cand:
-            lab, verdict = max(cand, key=lambda x: per[x]["ra"][i]), "guarded"
+            lab, verdict = _label(cand, per, i, tol * 1e-6 * float(np.nanmedian(PM[:, i]))), "guarded"
         else:
             fin = [x for x in HIGH_OFFSETS if np.isfinite(per[x]["ra"][i])]
             lab = max(fin, key=lambda x: per[x]["ra"][i] / max(exp[i], 1e-12)) if fin else "81Br"
@@ -701,6 +814,17 @@ def _high(S: _Series, pooled: pd.DataFrame, klass: str) -> pd.DataFrame:
     d = pd.DataFrame(rows)
     d["check"] = "HIGH"
     return d
+
+
+def _label(labs: list, per: dict, i: int, tol_da: float) -> str:
+    """The tallest line among `labs`, named by the heavy spacing nearest it: every
+    offset near +2 Da can reach the same peak (within the matching window
+    `tol_da` of each other), and the spacing it sits nearest names it (the larger
+    ratio alone named a 37Cl line 30Si)."""
+    top = max(labs, key=lambda x: per[x]["ra"][i])
+    pos = {x: HIGH_OFFSETS[x] + per[x]["off"][i] / 1e3 for x in labs}
+    same = [x for x in labs if x == top or abs(pos[x] - pos[top]) <= tol_da]
+    return min(same, key=lambda x: abs(per[x]["off"][i]))
 
 
 def _high_note(st: dict, i: int, lab: str, exp: float, npar: int, ion: dict, verdict: str) -> str:
@@ -724,8 +848,39 @@ def _high_note(st: dict, i: int, lab: str, exp: float, npar: int, ion: dict, ver
             why.append("nearer a non-isotopic +2 alias than the heavy spacing")
         if not st["cap"][i]:
             why.append(f"above expected + {HIGH_CAP:g}: no isotope envelope")
+        if not st["fit"][i]:
+            why.append(f"no ion carrying the {_OFFSET_ELEMENT.get(lab, '')} this line needs fits its mass")
         return txt + "; not an isotope line of this ion (" + "; ".join(why) + ")"
     return txt
+
+
+_FIT_MASS = {"C": 12.0, "H": 1.00782503207, "N": 14.0030740048, "O": 15.99491461956, "S": 31.97207100,
+             "Br": 78.9183371, "Cl": 34.96885268, "Si": 27.9769265325}
+
+
+def element_fits(mz: float, element: str, k: int, ppm: float, sign: float) -> bool:
+    """Whether a singly charged ion at `mz` can carry `k` atoms of `element`: some
+    CcHhNnOoSs rest (n <= 4, s <= 3, 0 <= h <= 2c + n + 4) makes up the rest of
+    its mass within `ppm`. A line at a heavy spacing the ion cannot carry is no
+    isotope line of it (an O2 <-> H2S analogue sits 0.06 mDa from 81Br)."""
+    if not np.isfinite(mz) or mz <= 0:
+        return True
+    rest = mz + sign * C.M_E - k * _FIT_MASS[element]
+    tol = mz * ppm * 1e-6
+    if rest < -tol:
+        return False
+    if abs(rest) <= tol:
+        return True
+    m = _FIT_MASS
+    c = np.arange(0, int(rest // m["C"]) + 1)
+    n = np.arange(0, 5)
+    o = np.arange(0, int(rest // m["O"]) + 1)
+    sx = np.arange(0, 4)
+    cc, nn, oo, ss = np.meshgrid(c, n, o, sx, indexing="ij")
+    heavy = cc * m["C"] + nn * m["N"] + oo * m["O"] + ss * m["S"]
+    h = np.round((rest - heavy) / m["H"])
+    ok = (h >= 0) & (h <= 2 * cc + nn + 4) & (np.abs(heavy + h * m["H"] - rest) <= tol)
+    return bool(ok.any())
 
 
 # --------------------------------------------------------------------------- the table
@@ -759,7 +914,7 @@ def measure(ts: pd.DataFrame | None, frames: dict, prof=None, *, resolution=None
     if klass == "orbitrap":
         parts.append(_rule_c(S, pooled, prof))
     if rp is not None:
-        parts.append(_req(S, pooled, klass, rp, sigma, stamp, x_edge))
+        parts.append(_req(S, pooled, klass, rp, sigma, stamp, x_edge, log=log))
     parts.append(_high(S, pooled, klass))
     parts = [p for p in parts if p is not None and len(p)]
     if not parts:
