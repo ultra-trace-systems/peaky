@@ -298,12 +298,13 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
     # mass + the tie-set size, separated from the real Candidates. Since C19(c) the
     # flag has two halves -- below_assignability (the assignment argues with
     # itself) and tentative_lead (unsupported, not contradicted) -- and the sheet
-    # lists both, with the `tentative_lead` column saying which.
+    # lists both, with the `tentative_lead` column saying which and `lead_by`
+    # which setter made it a lead (C11+b).
     if L.has_flags(led):
         bamask = (led["role"] == L.ROLE_M0) & L.flagged(led)
         bcols = [c for c in ["mz", "neutral_formula", "adduct", "ion_formula", "ppm_error",
                              "ion_score", "degeneracy_density", "degeneracy_note", "tier_reason",
-                             L.FLAG_LEAD]
+                             L.FLAG_LEAD, L.LEAD_BY]
                  if c in led.columns]
         below = led[bamask][bcols].copy().sort_values("mz") if bamask.any() else pd.DataFrame(columns=bcols)
     else:

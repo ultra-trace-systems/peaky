@@ -120,6 +120,9 @@ PREDICATE_COLUMNS = (
     # C19(c): the lead half of the old below_assignability (ledger.ASSIGNABILITY_FLAGS);
     # a ledger written before the split has no such column and reads False
     "tentative_lead",
+    # C11+b: which setter made a row a lead (ledger.LEAD_BY); a ledger written
+    # before it has no such column
+    "lead_by",
 )
 
 # Natural abundance of the heavy isotope relative to the light one, for the

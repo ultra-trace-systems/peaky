@@ -418,6 +418,8 @@ def measure_source(
         # C19(c): the lead half of the old flag; a ledger written before the
         # split carries none, reads False, and keeps its leads in below
         "tentative_lead",
+        # C11+b: the lead's setter (ledger.LEAD_SETTERS); missing = any setter
+        "lead_by",
         "degeneracy_density",
         "ion_formula",
         "tier",

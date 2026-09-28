@@ -701,7 +701,7 @@ def relabel_radical_anions(ledger: pd.DataFrame, *, log=print) -> dict:
         else:
             # uncorroborated: a lead; a hard flag an earlier demote set stays
             # (a row both mark stays hard)
-            L.mark_lead(ledger, i)
+            L.mark_lead(ledger, i, "radical_anion")
         if "confidence" in ledger.columns:
             ledger.at[i, "confidence"] = ("Good (radical anion, corroborated)"
                                           if is_corrob else "Low (radical anion)")
@@ -995,7 +995,7 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
             ledger.at[i, "dbe"] = C.dbe(m2)
         if str(ledger.at[i, "tier"]) == "Assigned":
             ledger.at[i, "tier"] = "Candidate"
-        L.mark_lead(ledger, i)
+        L.mark_lead(ledger, i, "reagent_n")
         if "confidence" in ledger.columns:
             ledger.at[i, "confidence"] = "Low (reagent-N re-read)"
         note = (f"re-read {f_raw} {add_label} as [M+H]+ "
@@ -1657,21 +1657,20 @@ def demote_speculative_residual(ledger: pd.DataFrame, cfg=None, *, log=print) ->
         z = abs((float(ppm) - mu) / sigma) if (mu is not None and pd.notna(ppm)) else 0.0
         comm = str(ledger.at[i, "commentary"] or "")
         reason = None
-        hard = False
+        lead = None            # the lead's setter code (ledger.LEAD_SETTERS); None = hard
         if mu is not None and z > zacc:
             reason = f"off-calibration (z={z:.1f} > {zacc})"
-            hard = True
         elif ni == 0 and cnt.get("N", 0) >= 3:
-            reason = f"N{cnt.get('N', 0)} with no isotope corroboration"
+            reason, lead = f"N{cnt.get('N', 0)} with no isotope corroboration", "spec_n3"
         elif "0 supporting anchors" in comm:
-            reason = "series gap-fill with no supporting anchors"
+            reason, lead = "series gap-fill with no supporting anchors", "spec_gapfill"
         elif ni == 0 and ad in minor and str(ledger.at[i, "neutral_formula"]) not in primary:
-            reason = f"sole minor channel ({ad}), no isotope or primary-channel support"
+            reason, lead = f"sole minor channel ({ad}), no isotope or primary-channel support", "spec_minor"
         if reason is None:
             continue
         ledger.at[i, "tier"] = "Candidate"
-        if not hard:
-            L.mark_lead(ledger, i)
+        if lead:
+            L.mark_lead(ledger, i, lead)
         elif has_ba:
             ledger.at[i, "below_assignability"] = True
         if "commentary" in ledger.columns:

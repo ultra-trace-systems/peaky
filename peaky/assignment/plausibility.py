@@ -204,16 +204,17 @@ def _append_note(ledger, i, note):
         ledger.at[i, "commentary"] = (prev + "; " + note) if prev and prev != "nan" else note
 
 
-def _demote_row(ledger, i, *, reason, audit, evidence, degeneracy_note, n_iso, lead=False):
-    """Demote one M0 -> Candidate + below_assignability (`lead=True`: + the
-    tentative_lead flag instead -- the proposal is unsupported, not contradicted;
-    ledger.ASSIGNABILITY_FLAGS), append the note, and log one audit record.
-    Demote-only: tier moves Assigned->Candidate, nothing is cleared."""
+def _demote_row(ledger, i, *, reason, audit, evidence, degeneracy_note, n_iso, lead=None):
+    """Demote one M0 -> Candidate + below_assignability (`lead`, a setter code
+    of ledger.LEAD_SETTERS: + the tentative_lead flag set by it instead -- the
+    proposal is unsupported, not contradicted; ledger.ASSIGNABILITY_FLAGS),
+    append the note, and log one audit record. Demote-only: tier moves
+    Assigned->Candidate, nothing is cleared."""
     before = str(ledger.at[i, "tier"]) if "tier" in ledger.columns else ""
     if "tier" in ledger.columns and before == "Assigned":
         ledger.at[i, "tier"] = "Candidate"
     if lead:
-        L.mark_lead(ledger, i)
+        L.mark_lead(ledger, i, lead)
     elif "below_assignability" in ledger.columns:
         ledger.at[i, "below_assignability"] = True
     _append_note(ledger, i, reason)
@@ -354,7 +355,7 @@ def demote_off_budget(ledger: pd.DataFrame, *, context: str | None,
         # a lead, not a contradiction: the widened search's evidence proposed the
         # neutral mass and nothing tests this composition either way (C19(c))
         _demote_row(ledger, i, reason=reason, audit=audit, evidence=str(why),
-                    degeneracy_note=note, n_iso=ni, lead=True)
+                    degeneracy_note=note, n_iso=ni, lead="off_budget")
         n += 1
     log(f"[plausibility] demoted {n} commits outside the {profile.label} element budget "
         f"(not on a curated list); kept {kept} fluorinated CF2-series members")

@@ -147,7 +147,7 @@ def test_the_off_budget_demote_writes_the_lead_and_keeps_its_note_and_audit():
 
 def test_the_demote_row_takes_a_lead_argument():
     led = _tiered([dict(peak_id="p", role="M0", neutral_formula="C10H16O5", adduct="[M-H]-")])
-    PL._demote_row(led, 0, reason="r", audit=None, evidence="e", degeneracy_note=None, n_iso=0, lead=True)
+    PL._demote_row(led, 0, reason="r", audit=None, evidence="e", degeneracy_note=None, n_iso=0, lead="off_budget")
     assert _flags(led, 0) == (False, True)
     PL._demote_row(led, 0, reason="r", audit=None, evidence="e", degeneracy_note=None, n_iso=0)
     assert _flags(led, 0) == (True, True)                  # a hard demote on a lead: both, still hard
@@ -454,7 +454,7 @@ def test_the_flag_helpers():
     assert list(L.flagged(frame.drop(columns=[LEAD]))) == [True, False, False, False, False]
     assert not L.flagged(pd.DataFrame({"x": [1]})).any() and not L.has_flags(pd.DataFrame({"x": [1]}))
     bare = pd.DataFrame({"x": [1, 2]})
-    assert L.mark_lead(bare, 0) is False and LEAD not in bare.columns
+    assert L.mark_lead(bare, 0, "spec_n3") is False and LEAD not in bare.columns
     old = pd.DataFrame({BELOW: [False, False]})
-    assert L.mark_lead(old, 1) is True and list(old[LEAD]) == [False, True]
+    assert L.mark_lead(old, 1, "spec_n3") is True and list(old[LEAD]) == [False, True]
     assert L.ASSIGNABILITY_FLAGS == (BELOW, LEAD)
