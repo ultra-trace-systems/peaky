@@ -60,7 +60,8 @@ move alone moves no level (a lead is hard like below). `orbi_iso_checks.csv` and
 schema) of the live runs of those batches, recomputed by `batch/iso_checks.py` from
 each run's stamped series, for the pairs the set holds: 15 of the labelled-nitrate
 run's 16 locks (its C5H9ClO4 `[M]-.` line is not in the set) and the uronium run's
-1. Levelled with them, exactly the four pairs move, 5b -> 4b "4b: one
+1, with the silicon test's columns (the 2026-09-28 decision: the four Cl locks above
+m/z 206 -- three here, the uronium one -- read no 29Si line). Levelled with them, exactly the four pairs move, 5b -> 4b "4b: one
 corroboration (iso)": the Orbitrap vector 0/11/217/9/203/139/0/35/1093 ->
 0/11/217/9/206/139/0/35/1090 (with rule K's table 0/11/174/9/206/151/0/38/1118 ->
 0/11/174/9/209/151/0/38/1115), the uronium one 4/4/0/331/376/291/0/82/73 ->

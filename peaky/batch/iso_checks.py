@@ -63,13 +63,23 @@ rule C).
         (LOCK_D) within LOCK_TOL_PPM (1 ppm, of the M0's m/z). A `lock` when the
         line is present in >= LOCK_FRAC of >= LOCK_NMIN M0 spectra, r(log area)
         >= LOCK_RMIN, the pooled area ratio in [LOCK_LO, LOCK_HI] x n x
-        LOCK_PER_ATOM for the ion's count n (`count_window`), the line's median
-        position nearer the halogen spacing than any of LOCK_OTHER (30Si, 34S,
-        18O, 13C2, C3<->F2: `other_spacing`), and the M0 not itself a heavy line
-        (`heavy`: a line one Cl or Br spacing below it, co-varying, at a count
-        window of either element). Never locked (`untestable`): an ion carrying
-        Si >= 3, both Cl and Br (a blended M+2), a pair with no M0 stamp, one
-        stamped on a heavy isotopologue, one stamped in < LOCK_NMIN spectra.
+        LOCK_PER_ATOM for the ion's count n (`count_window`), and the M0 not
+        itself a heavy line (`heavy`: a line one Cl or Br spacing below it,
+        co-varying, at a count window of either element). The silicon test
+        (2026-09-28 decision, "the 29Si line decides"; `si_rich`): from
+        LOCK_SI_MZ (~206, where the 30Si spacing, 0.206 mDa below 37Cl, enters
+        the 1 ppm window) a Cl lock is refused when the ion's M+1 region shows
+        the 29Si line a Si-rich ion making the partner from 30Si must carry --
+        n = ratio / 0.0335 silicons, 29Si n x 0.0508 at +0.99957 Da, 3.79 mDa
+        below 13C: resolved (the width model's FWHM at the +1 m/z < 3.79 mDa) the
+        line itself within 1 ppm, present and co-varying like the partner, at
+        >= half its expected area; blended, the +1 region >= half the 29Si area
+        above the ion's own +1 line (`m1_line`) and its area-weighted position
+        >= half-way toward 29Si (`_silicon`). A chlorinated ion carries no 29Si;
+        81Br needs no test (30Si sits 1.11 mDa below it). Never locked
+        (`untestable`): an ion carrying Si >= 3, both Cl and Br (a blended M+2),
+        a pair with no M0 stamp, one stamped on a heavy isotopologue, one
+        stamped in < LOCK_NMIN spectra.
         The halogen must be the sample's (`reagent`, 2026-09-28 decision): the
         batch's reagent supplies up to `reagent_supply` atoms of it per ion (the
         most any adduct of the profile adds), and a line counts only where the
@@ -108,9 +118,14 @@ series (the runs equal the replay row for row):
           scan locks; 4 leads lifted (C6H9ClO3, C7H11ClO5, C6H10Cl2O4 [M-H]-,
           HBr [M+^NO3]-: 5b -> 4b), ion 32.045 -> 32.158; uronium: 8 / 1, the
           C7H11ClO2 urea cluster lifted (Cl its only budget violation), ion
-          12.549 -> 12.576; the TOF: 2620 / 1, 659 `reagent` (the bromide
-          reagent's own 81Br line), no lift. Identified 0 on all three; a lock
-          at +-4 / 8 / 12 / 16 mDa around either spacing moves nothing.
+          12.549 -> 12.576; the TOF: 2620 / 1, 659 `reagent` (ions the
+          bromide reagent could have put the Br into), no lift. Identified 0 on
+          all three; a lock at +-4 / 8 / 12 / 16 mDa around either spacing moves
+          nothing. The silicon test (2026-09-28) reads the four Cl locks above
+          m/z 206 (C7H11ClO5, C6H10Cl2O4, C10H19ClO3 [M-H]-; the urea cluster):
+          no 29Si line on any, the locks and the lifts unchanged; on the uronium
+          batch's own siloxanes, their M+2 handed to it as a Cl line, it fires
+          where that line co-varies (D5, Si10, Si11 urea clusters).
 """
 from __future__ import annotations
 
@@ -207,10 +222,16 @@ LOCK_HEAVY_N = {"Cl": (1, 2, 3, 4), "Br": (1, 2)}
 LOCK_SI_MAX = 2                                   # an ion with Si >= 3 is never locked
 #: a line stamped this far above the ion's all-light m/z is a heavy isotopologue
 LOCK_STAMP_MAX_DA = 0.5
-#: the other +2 spacings a partner must sit farther from than the halogen's own
-#: (2026-09-28 decision: above m/z ~206 a 37Cl and a 30Si line share the window)
-LOCK_OTHER = {"30Si": HIGH_OFFSETS["30Si"], "34S": HIGH_OFFSETS["34S"], "18O": HIGH_OFFSETS["18O"],
-              "13C2": HIGH_OFFSETS["13C2"], "C3<->F2": HIGH_ALIASES["C3<->F2"]}
+# the silicon test (2026-09-28 decision: "the 29Si line decides"). A 30Si line
+# sits 0.206 mDa below the 37Cl one, inside the 1 ppm window from LOCK_SI_MZ on;
+# there a Cl lock is refused where the M+1 region carries the 29Si line a Si-rich
+# ion making the partner's height from 30Si must carry. 81Br needs none: 30Si
+# sits 1.11 mDa below it, outside 1 ppm below m/z ~1100.
+D29SI, D30SI = _ISO["Si"][1][0], _ISO["Si"][2][0]
+LOCK_SI_PER_ATOM = {"29Si": _ISO["Si"][1][1] / _ISO["Si"][0][1], "30Si": _ISO["Si"][2][1] / _ISO["Si"][0][1]}
+LOCK_SI_MZ = (LOCK_D["Cl"] - D30SI) / (LOCK_TOL_PPM * 1e-6)
+#: the 29Si line (or the +1 line's excess and shift) must reach this share of what the Si reading implies
+LOCK_SI_FRAC = 0.5
 
 TABLE_COLUMNS = (
     "neutral_formula", "adduct", "check", "instrument", "ion", "mz", "stamped", "n_spectra", "n_used",
@@ -223,13 +244,14 @@ TABLE_COLUMNS = (
     "offset", "ratio_area", "ratio_height", "r", "presence", "offset_mda", "other_m0", "other_13c",
     # rule H
     "lock", "element", "n_halogen", "ratio_lo", "ratio_hi", "heavy_cl", "heavy_br", "budget_ok", "budget_why",
+    "si_n", "si29_expected", "si29_seen", "si29_mode",
     "note",
 )
 VERDICTS = {
     "C": ("agree", "ambiguous", "contradict", "untestable", "scan_edge", "exempt_14N"),
     "REQ": ("present", "absent", "untestable"),
     "HIGH": ("consistent", "guarded", "too_high"),
-    "H": ("lock", "no_lock", "other_spacing", "heavy", "reagent", "untestable"),
+    "H": ("lock", "no_lock", "si_rich", "heavy", "reagent", "untestable"),
 }
 
 
@@ -1020,17 +1042,66 @@ def _heavy(S: _Series, codes, pm, pa, ph, pcol: int) -> dict:
     return out
 
 
-def nearest_spacing(el: str, off_mda: float) -> str:
-    """The +2 spacing the partner's median position (the element's spacing +
-    `off_mda`) sits nearest: the element's own (LOCK_OFFSET) only when it is
-    strictly nearer than every one of LOCK_OTHER, else the nearest of those."""
-    pos = LOCK_D[el] + off_mda / 1e3
-    own = abs(pos - LOCK_D[el])
-    other = min(LOCK_OTHER, key=lambda k: abs(pos - LOCK_OTHER[k]))
-    return LOCK_OFFSET[el] if own < abs(pos - LOCK_OTHER[other]) else other
+def silicon_window(el: str, mz: float) -> bool:
+    """Whether a 30Si line can pass for the element's lock partner at an M0 of
+    `mz`: only Cl's (30Si sits 0.206 mDa below 37Cl), and only from LOCK_SI_MZ on,
+    where that is within LOCK_TOL_PPM of the M0's m/z."""
+    return el == "Cl" and bool(mz >= LOCK_SI_MZ)
 
 
-def _lock(S: _Series, pooled: pd.DataFrame, klass: str, prof=None, context=None) -> pd.DataFrame:
+def m1_line(ion: dict) -> tuple[float, float]:
+    """(height, position) of the ion's own +1 line: its +1 isotopes (13C, 2H,
+    15N, 17O, 33S, 29Si) per atom relative to its all-light line, summed, and
+    their height-weighted spacing above the M0 (D13C where it has none)."""
+    parts = [(ion.get(el, 0) * p / lines[0][1], d) for el, lines in _ISO.items() for d, p, *_x in lines[1:]
+             if d < 1.5 and ion.get(el, 0) > 0]
+    h = sum(x for x, _d in parts)
+    return float(h), (float(sum(x * d for x, d in parts) / h) if h > 0 else D13C)
+
+
+def _silicon(S: _Series, codes, pm, pa, ph, ratio: float, ion: dict, rp, pcol: int) -> dict:
+    """The silicon test of a Cl lock partner at `ratio` x the M0 (2026-09-28
+    decision). Read as 30Si, the line makes n = ratio / 30Si-per-atom silicons,
+    whose 29Si line is n x 29Si-per-atom at D29SI, 3.79 mDa below 13C. Where the
+    width model resolves the two at the ion's +1 m/z (FWHM < D13C - D29SI) that
+    line is looked for as the lock partner is -- within LOCK_TOL_PPM, present in
+    >= LOCK_FRAC of the stamps, r(log area) >= LOCK_RMIN -- at >= LOCK_SI_FRAC of
+    its expected area. Where they blend (no width model: blended) the +1 region
+    (D29SI - 1 ppm .. D13C + 1 ppm, every peak in it: a blend, or lines the peak
+    picker split after all), present in >= LOCK_FRAC of the stamps, must read
+    >= LOCK_SI_FRAC of the 29Si area above the ion's own +1 line (`m1_line`) and
+    sit, area-weighted, >= LOCK_SI_FRAC of the way the blend would move it
+    toward 29Si. Areas, not heights: a blend's height is not the sum of its
+    lines', and the batch's Si lines run wide (their heights 0.4-0.75x theory).
+    `holds`: the M+1 region shows the Si reading; `seen` is the 29Si area found
+    (blended: the region's excess over the ion's own +1 line)."""
+    n_si = ratio / LOCK_SI_PER_ATOM["30Si"]
+    e29 = n_si * LOCK_SI_PER_ATOM["29Si"]
+    mz = float(np.median(pm))
+    if rp is not None and rp.fwhm(mz + D13C) < D13C - D29SI:
+        st = _partner(S, codes, pm, pa, ph, D29SI, pcol)
+        holds = st["frac"] >= LOCK_FRAC and st["r"] >= LOCK_RMIN and st["ra"] >= LOCK_SI_FRAC * e29
+        return dict(n=n_si, expected=e29, seen=st["ra"], mode="resolved", holds=bool(holds), presence=st["frac"],
+                    r=st["r"])
+    m1, c1 = m1_line(ion)
+    blend = (m1 * c1 + e29 * D29SI) / (m1 + e29)
+    mid = pm + (D13C + D29SI) / 2
+    lo, hi = S.window(codes, mid, ((D13C - D29SI) / 2 + pm * LOCK_TOL_PPM * 1e-6) / mid * 1e6)
+    hit = hi > lo
+    area, pos = np.zeros(len(pm)), np.full(len(pm), np.nan)
+    for i in np.nonzero(hit)[0]:
+        a = S.a[lo[i]:hi[i]]
+        area[i] = a.sum()
+        pos[i] = float((a * (S.mz[lo[i]:hi[i]] - pm[i])).sum() / area[i])
+    excess = float(area[hit].sum() / pa[hit].sum()) - m1 if hit.any() else np.nan
+    at = float(np.median(pos[hit])) if hit.any() else np.nan
+    at_max = c1 - LOCK_SI_FRAC * (c1 - blend)
+    holds = hit.mean() >= LOCK_FRAC and excess >= LOCK_SI_FRAC * e29 and at <= at_max
+    return dict(n=n_si, expected=e29, seen=excess, mode="blended", holds=bool(holds), presence=float(hit.mean()),
+                at=at, at_max=at_max)
+
+
+def _lock(S: _Series, pooled: pd.DataFrame, klass: str, prof=None, context=None, rp=None) -> pd.DataFrame:
     adducts = (getattr(prof, "adducts", None) if prof is not None else None) or sorted(set(pooled["adduct"]))
     supply = {el: reagent_supply(adducts, el) for el in LOCK_D}
     pid = {k: i for i, k in enumerate(S.pair_index)}
@@ -1047,8 +1118,9 @@ def _lock(S: _Series, pooled: pd.DataFrame, klass: str, prof=None, context=None)
         g = S.m0.get((r.neutral_formula, r.adduct))
         stamped = g is not None and len(g) > 0
         npar = int(len(g)) if stamped else 0
-        st, heavy = dict(n=0, frac=0.0, ra=np.nan, rh=np.nan, r=np.nan, off=np.nan, oth=0.0), {}
+        st, heavy, si = dict(n=0, frac=0.0, ra=np.nan, rh=np.nan, r=np.nan, off=np.nan, oth=0.0), {}, {}
         mz = float(r.mz) if np.isfinite(r.mz) else np.nan
+        ok = False
         if stamped:
             codes, pm = g["code"].to_numpy(), g["mz"].to_numpy(float)
             pa, ph = g["area"].to_numpy(float), g["height"].to_numpy(float)
@@ -1056,12 +1128,13 @@ def _lock(S: _Series, pooled: pd.DataFrame, klass: str, prof=None, context=None)
             pcol = pid.get((r.neutral_formula, r.adduct), -2)
             st = _partner(S, codes, pm, pa, ph, LOCK_D[el], pcol)
             heavy = _heavy(S, codes, pm, pa, ph, pcol)
+            ok = lock_gates(st["frac"], st["r"], st["ra"], lo, hi)
+            if ok and silicon_window(el, mz):
+                si = _silicon(S, codes, pm, pa, ph, st["ra"], ion, rp, pcol)
         try:
             shift = mz - C.ion_mz(r.neutral_formula, r.adduct)
         except Exception:
             shift = np.nan
-        ok = lock_gates(st["frac"], st["r"], st["ra"], lo, hi)
-        near = nearest_spacing(el, st["off"]) if np.isfinite(st["off"]) else ""
         hv = [e for e, (h, _x) in heavy.items() if h]
         why = ""
         if ion.get("Si", 0) > LOCK_SI_MAX:
@@ -1080,8 +1153,8 @@ def _lock(S: _Series, pooled: pd.DataFrame, klass: str, prof=None, context=None)
                                        f"carries {n_x}: the line may be the reagent's")
         elif not ok:
             verdict = "no_lock"
-        elif near != LOCK_OFFSET[el]:
-            verdict, why = "other_spacing", f"the line sits nearer the {near} spacing than the {LOCK_OFFSET[el]} one"
+        elif si.get("holds"):
+            verdict, why = "si_rich", f"the M+1 region carries the 29Si line of a {_si_text(si)}"
         elif hv:
             verdict, why = "heavy", "the M0 is itself a heavy line: " + ", ".join(
                 f"{heavy[e][1]['ratio']:.2f}x the line one {LOCK_OFFSET[e]} spacing below it" for e in hv)
@@ -1095,7 +1168,8 @@ def _lock(S: _Series, pooled: pd.DataFrame, klass: str, prof=None, context=None)
             offset_mda=st["off"], other_m0=st["oth"], expected=exp, element=el, n_halogen=n_x,
             ratio_lo=lo, ratio_hi=hi, heavy_cl=bool(heavy.get("Cl", (False,))[0]),
             heavy_br=bool(heavy.get("Br", (False,))[0]), budget_ok=budget_ok, budget_why=budget_why,
-            note=_lock_note(st, el, n_x, lo, hi, npar, mz, verdict, why)))
+            si_n=si.get("n", np.nan), si29_expected=si.get("expected", np.nan), si29_seen=si.get("seen", np.nan),
+            si29_mode=si.get("mode", ""), note=_lock_note(st, el, n_x, lo, hi, npar, mz, verdict, why, si)))
     if not rows:
         return _empty()
     d = pd.DataFrame(rows)
@@ -1104,8 +1178,13 @@ def _lock(S: _Series, pooled: pd.DataFrame, klass: str, prof=None, context=None)
     return d
 
 
+def _si_text(si: dict) -> str:
+    seen = f"{si['seen']:.2f}x" if np.isfinite(si["seen"]) else "none"
+    return f"Si{si['n']:.1f} reading of the line ({seen} of {si['expected']:.2f}x, {si['mode']})"
+
+
 def _lock_note(st: dict, el: str, n_x: int, lo: float, hi: float, npar: int, mz: float, verdict: str,
-               why: str) -> str:
+               why: str, si: dict | None = None) -> str:
     lab = LOCK_OFFSET[el]
     if not np.isfinite(st["ra"]):
         txt = f"no line at the {lab} offset in {npar} spectra" if npar else ""
@@ -1124,6 +1203,8 @@ def _lock_note(st: dict, el: str, n_x: int, lo: float, hi: float, npar: int, mz:
         why = "; ".join(miss)
     elif verdict == "lock":
         why = "no lighter line makes the M0 a heavy isotopologue"
+        if si:
+            why += f"; no 29Si line of a {_si_text(si)}"
     return "; ".join(x for x in (txt, why) if x)
 
 
@@ -1163,7 +1244,7 @@ def measure(ts: pd.DataFrame | None, frames: dict, prof=None, *, resolution=None
     if rp is not None:
         parts.append(_req(S, pooled, klass, rp, sigma, stamp, x_edge, log=log))
     parts.append(_high(S, pooled, klass))
-    parts.append(_lock(S, pooled, klass, prof, context))
+    parts.append(_lock(S, pooled, klass, prof, context, rp))
     parts = [p for p in parts if p is not None and len(p)]
     if not parts:
         return _empty()

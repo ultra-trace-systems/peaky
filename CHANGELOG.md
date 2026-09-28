@@ -14,9 +14,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `H` in `batch/iso_checks.py`, now writes a POSITIVE fact per pooled pair whose ion
   carries Cl or Br: a `lock` where the stamped series shows the line at the exact
   37Cl - 35Cl / 81Br - 79Br spacing (1 ppm) in >= 60 % of >= 20 M0 spectra, co-varying
-  (r(log area) >= 0.8), at 0.65-1.45 x the ion's count x 0.3198 / 0.9728, the M0 not
-  itself the heavy line of a lighter one, and the line nearer the halogen spacing than
-  30Si, 34S, 18O, 13C2 or C3<->F2. Never on an ion with Si >= 3 or both halogens, and
+  (r(log area) >= 0.8), at 0.65-1.45 x the ion's count x 0.3198 / 0.9728, and the M0
+  not itself the heavy line of a lighter one; from m/z ~206, where a 30Si line (0.206
+  mDa below 37Cl) can sit inside the 1 ppm window, a Cl lock is refused (`si_rich`)
+  where the ion's M+1 region shows the 29Si line a Si-rich ion making the partner from
+  30Si must carry (the 2026-09-28 decision, "the 29Si line decides": n = ratio / 0.0335
+  silicons, 29Si n x 0.0508 at +0.99957 Da; where the width model parts it from 13C the
+  line itself at >= half its expected area, present and co-varying like the partner,
+  else the +1 region >= half that area above the ion's own +1 line and shifted at
+  least half-way toward 29Si -- areas, as blends and the wide Si lines need; 81Br needs
+  no test). Never on an ion with Si >= 3 or both halogens, and
   never on a halogen the batch's reagent could have put there: a line counts only where
   the ion carries more of it than one reagent ion supplies (the batch's reagent
   decides, not the adduct label: HBr [M+^NO3]- locks on the labelled-nitrate batch,
@@ -39,13 +46,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   -- and every other pair identical in level, reason and axes): the labelled-nitrate
   Orbitrap locks 16 pairs and lifts 4, 5b -> 4b "one corroboration (iso)" -- three
   chlorinated acids (C6H9ClO3, C7H11ClO5, C6H10Cl2O4 [M-H]-, series gap-fills whose
-  37Cl line and its count are the only evidence against their Cl-free 15N-nitrate
-  twins) and HBr [M+^NO3]- -- ion 32.045 -> 32.158 %, tentative 12.024 -> 11.912; the
+  37Cl line and its count are the only evidence against their 15N-nitrate twins with
+  one Cl fewer, 35Cl + 4 H - 2 C being 15N within 0.044 mDa) and HBr [M+^NO3]- -- ion
+  32.045 -> 32.158 %, tentative 12.024 -> 11.912; the
   uronium Orbitrap locks 1 and lifts it (C7H11ClO2 [M+(CH4N2O)H]+, Cl its only budget
   violation), ion 12.549 -> 12.576 %; the bromide / nitrate TOF locks 1 and lifts none
   (its bromide reagent could have put the Br in 659 of its ions; at 1 ppm rule H is
   Orbitrap-only in practice). Identified unchanged on all three; a lock at +-4 to 16
-  mDa decoy spacings moves nothing. The golden fixtures gained the lock tables of the
+  mDa decoy spacings moves nothing. The silicon test reads the four Cl locks above m/z
+  206 (C7H11ClO5, C6H10Cl2O4, C10H19ClO3 [M-H]-, the uronium urea cluster) and finds no
+  29Si line on any; handed the uronium batch's own siloxane M+2 lines as Cl partners it
+  fires on the D5, Si10 and Si11 urea clusters (the D7 cluster is too dim for its 30Si
+  line to show). The golden fixtures gained the lock tables of the
   live runs and the four live-locked lead pairs' flag in `tentative_lead` (decision
   D8): the Orbitrap vector 0/11/217/9/203/139/0/35/1093 -> 0/11/217/9/206/139/0/35/1090,
   the uronium one 4/4/0/331/376/291/0/82/73 -> 4/4/0/331/377/291/0/82/72; the TOF, TV

@@ -7,10 +7,13 @@ when the ion's stamped M0 has a partner at the exact 37Cl - 35Cl / 81Br - 79Br
 spacing (1 ppm) in >= 60 % of >= 20 M0 spectra, co-varying with it (r(log
 area) >= 0.8), at a pooled area ratio of 0.65-1.45 x n x 0.3198 (Cl) / 0.9728
 (Br) for the ion's count n; unless the M0 is itself the heavy line of a lighter
-one (either spacing), the line sits nearer another +2 spacing (30Si, 34S, 18O,
-13C2, C3<->F2), the ion carries Si >= 3 or both halogens, or the batch's reagent
-could have put the halogen there (it supplies as many as the ion carries). The
-synthetic series carry exact ratios, so each gate is tested at its edge.
+one (either spacing), the ion carries Si >= 3 or both halogens, or the batch's
+reagent could have put the halogen there (it supplies as many as the ion
+carries). Where a 30Si line can sit inside the 1 ppm window (a Cl ion from m/z
+~206) a Cl lock is refused when the M+1 region shows the 29Si line a Si-rich
+ion making the partner from 30Si must carry (the 2026-09-28 decision: the
+29Si line decides; the three scenarios the user was shown are tested here).
+The synthetic series carry exact ratios, so each gate is tested at its edge.
 
 Run: pytest tests/test_halogen_lock_check.py -q
 """
@@ -276,28 +279,108 @@ def test_a_batch_of_carbon_free_pairs_only_is_measured():
     assert IC.summary(t, ORBI)["C"]["tested"] == 0 and IC.summary(t, ORBI)["locked_pairs"] == 1
 
 
-# =========================================================================== the line position (D4)
-def test_a_partner_nearer_the_30si_spacing_does_not_lock():
-    d30 = IC.HIGH_OFFSETS["30Si"]
-    assert C.ion_mz(BIG_CL, H) > 206          # the 30Si line sits inside the 37Cl line's 1 ppm here
-    r = _verdict(lambda i: _hal(i, BIG_CL, d=d30), BIG_CL)
-    assert r["verdict"] == "other_spacing" and "nearer the 30Si spacing" in r["note"] and not bool(r["lock"])
-    assert r["offset_mda"] == pytest.approx((d30 - IC.LOCK_D["Cl"]) * 1e3)
-    assert _verdict(lambda i: _hal(i, BIG_CL), BIG_CL)["verdict"] == "lock"
-    # below m/z 206 the 30Si position is outside 1 ppm of the 37Cl one: no line, no lock
-    r = _verdict(lambda i: _hal(i, CL1, d=d30))
-    assert r["verdict"] == "no_lock" and r["n_used"] == 0
+# =========================================================================== the silicon test (the 29Si line decides)
+UR = P.resolve("Ur")
+HI_RES = {"coef": 200 / 240_000 / 200 ** 1.5, "exponent": 1.5}    # R 240 000 at m/z 200: 29Si / 13C apart at m/z 520
+LO_RES = {"coef": 200 / 100_000 / 200 ** 1.5, "exponent": 1.5}    # R 100 000 at m/z 200: blended from m/z ~250
+SI7, CLR, UA = "C14H42O7Si7", "C22H23N6O7Cl", "[M+H]+"            # the D7 siloxane, its Cl reading 0.26 ppm off
+BIG = "C16H29ClO6"                                                  # a chloro acid at m/z 351
 
 
-def test_the_nearest_spacing():
-    mid = (IC.HIGH_OFFSETS["30Si"] - IC.LOCK_D["Cl"]) / 2 * 1e3            # -0.103 mDa
-    assert IC.nearest_spacing("Cl", 0.0) == "37Cl" and IC.nearest_spacing("Cl", mid + 1e-6) == "37Cl"
-    assert IC.nearest_spacing("Cl", mid - 1e-6) == "30Si"
-    assert IC.nearest_spacing("Cl", (IC.LOCK_OTHER["34S"] - IC.LOCK_D["Cl"]) * 1e3) == "34S"
-    assert IC.nearest_spacing("Br", 0.4) == "81Br" and IC.nearest_spacing("Br", 6.0) == "18O"
-    assert IC.nearest_spacing("Cl", (IC.LOCK_OTHER["C3<->F2"] - IC.LOCK_D["Cl"]) * 1e3) == "C3<->F2"
-    assert IC.nearest_spacing("Cl", 9.6) == "13C2"
-    assert set(IC.LOCK_OTHER) == {"30Si", "34S", "18O", "13C2", "C3<->F2"}
+def _blend(parts):
+    """(position, area) of lines the peak picker reads as one: area-weighted."""
+    a = sum(x for _d, x in parts)
+    return sum(d * x for d, x in parts) / a, a
+
+
+def _siloxane(i, resolved: bool):
+    """The D7 siloxane's [M+H]+ stamped as its Cl reading. Its +1 lines: 29Si
+    (7 x 0.0508) and 13C with 17O and 2H -- two peaks where the width model
+    resolves them, else one at their area-weighted position; its M+2: 30Si (7 x
+    0.0335) and 29Si2 blended, 0.29x at +0.43 ppm from the 37Cl spacing, inside
+    the Cl1 window -- the line the lock would take for 37Cl."""
+    ion = C.parse_formula(_ion(SI7, UA).rstrip("+"))
+    a29, a30 = IC.LOCK_SI_PER_ATOM["29Si"], IC.LOCK_SI_PER_ATOM["30Si"]
+    c13 = [(IC.D13C, ion["C"] * IC.R13C), (1.0042169, ion["O"] * IC.R17O), (1.0062767, ion["H"] * 0.000115)]
+    p1 = [(IC.D29SI, 7 * a29)] + c13
+    mz, h0 = C.ion_mz(SI7, UA), 1e5 * _wave(i)
+    rows = [_row(i, mz, h0, role="M0", nf=CLR, ad=UA, ion=_ion(CLR, UA))]
+    for d, x in ([p1[0], _blend(c13)] if resolved else [_blend(p1)]):
+        rows.append(_row(i, mz + d, x * h0))
+    d2, x2 = _blend([(IC.D30SI, 7 * a30), (2 * IC.D29SI, 21 * a29 ** 2)])
+    return rows + [_row(i, mz + d2, x2 * h0)]
+
+
+def test_the_siloxane_fixture_is_the_d7_ion_read_as_chlorine():
+    assert abs(C.ion_mz(CLR, UA) - C.ion_mz(SI7, UA)) / C.ion_mz(SI7, UA) * 1e6 < 0.3
+    lo, hi = IC.count_window("Cl", 1)
+    a29, a30 = IC.LOCK_SI_PER_ATOM["29Si"], IC.LOCK_SI_PER_ATOM["30Si"]
+    d2, x2 = _blend([(IC.D30SI, 7 * a30), (2 * IC.D29SI, 21 * a29 ** 2)])
+    assert lo <= x2 <= hi and abs(d2 - IC.LOCK_D["Cl"]) / C.ion_mz(SI7, UA) * 1e6 < IC.LOCK_TOL_PPM
+    for rp, fwhm_lt in ((HI_RES, True), (ORBI, False)):
+        assert (IC._resolution(rp).fwhm(C.ion_mz(SI7, UA) + 1) < IC.D13C - IC.D29SI) is fwhm_lt
+
+
+def test_a_chlorine_line_measured_low_locks_below_the_silicon_window():
+    """Scenario 1: at m/z 193 a 37Cl line 0.15 mDa low (-0.78 ppm) sits nearer
+    the 30Si spacing than its own -- but no 30Si line can enter the 1 ppm window
+    below LOCK_SI_MZ, so the full window stands and nothing reads silicon."""
+    n = "C7H11ClO4"
+    mz = C.ion_mz(n, H)
+    assert mz < IC.LOCK_SI_MZ
+    for mda in (-0.15, 0.15):
+        r = _verdict(lambda i: _hal(i, n, off_ppm=mda * 1e-3 / mz * 1e6), n)
+        assert r["verdict"] == "lock" and r["offset_mda"] == pytest.approx(mda, abs=1e-6)
+        assert r["si29_mode"] == "" and np.isnan(r["si_n"]) and "29Si" not in r["note"]
+
+
+@pytest.mark.parametrize("rp, mode, seen", [(HI_RES, "resolved", 7 * 0.0508), (ORBI, "blended", 0.249)])
+def test_a_siloxane_read_as_a_chlorine_formula_is_refused(rp, mode, seen):
+    """Scenario 2: the D7 siloxane stamped as C22H23N6O7Cl. Its 30Si + 29Si2 line
+    passes every gate of a 37Cl line; read as 30Si it makes Si8.6, whose 29Si
+    line (0.44x) must be there -- and is: resolved, the 29Si peak itself (0.36x);
+    blended, the +1 line reads 0.25x above the Cl reading's own +1 (0.27x) and
+    sits 2.6 mDa below its 13C position."""
+    t = _measure(_series(lambda i: _siloxane(i, mode == "resolved")), [(CLR, UA)], prof=UR, resolution=rp)
+    r = _get(t, "H", CLR, UA)
+    assert r["verdict"] == "si_rich" and not bool(r["lock"]) and not bool(r["veto"])
+    assert r["si29_mode"] == mode and r["si_n"] == pytest.approx(8.62, abs=0.01)
+    assert r["si29_expected"] == pytest.approx(0.438, abs=1e-3) and r["si29_seen"] == pytest.approx(seen, abs=2e-3)
+    assert f"the M+1 region carries the 29Si line of a Si8.6 reading of the line ({seen:.2f}x of 0.44x, {mode})" \
+        in r["note"]
+    assert IC.lock(t) == {} and IC.summary(t, rp)["H"]["si_rich"] == 1
+
+
+@pytest.mark.parametrize("rp, mode", [(ORBI, "resolved"), (LO_RES, "blended")])
+def test_a_chlorine_line_measured_low_locks_above_the_silicon_window(rp, mode):
+    """Scenario 3: at m/z 351 a 37Cl line 0.15 mDa low (-0.43 ppm) is where a
+    30Si line could sit, so the silicon test runs -- and finds no 29Si line (a
+    chlorinated ion carries none): the full window stands and it locks."""
+    mz = C.ion_mz(BIG, H)
+    assert mz > IC.LOCK_SI_MZ and (IC._resolution(rp).fwhm(mz + 1) < IC.D13C - IC.D29SI) is (mode == "resolved")
+    r = _verdict(lambda i: _hal(i, BIG, off_ppm=-0.15e-3 / mz * 1e6), BIG, resolution=rp)
+    assert r["verdict"] == "lock" and r["si29_mode"] == mode and r["offset_mda"] == pytest.approx(-0.15, abs=1e-6)
+    assert r["si_n"] == pytest.approx(0.3198 / IC.LOCK_SI_PER_ATOM["30Si"])
+    assert (np.isnan(r["si29_seen"]) if mode == "resolved" else r["si29_seen"] < 0.01)
+    assert "no 29Si line of a Si9.5 reading of the line" in r["note"]
+
+
+def test_the_silicon_window_starts_where_30si_enters_the_lock_window():
+    """LOCK_SI_MZ: the M0 m/z at which the 30Si spacing (0.206 mDa below 37Cl) is
+    exactly LOCK_TOL_PPM of it -- derived, not set; 81Br never (30Si sits 1.11 mDa
+    below it, past 1 ppm below m/z ~1100)."""
+    assert IC.LOCK_SI_MZ == pytest.approx((IC.LOCK_D["Cl"] - IC.D30SI) / (IC.LOCK_TOL_PPM * 1e-6))
+    assert IC.LOCK_SI_MZ == pytest.approx(205.7, abs=0.05)
+    assert IC.silicon_window("Cl", IC.LOCK_SI_MZ) and not IC.silicon_window("Cl", np.nextafter(IC.LOCK_SI_MZ, 0))
+    assert not IC.silicon_window("Br", 1000.0) and not IC.silicon_window("Cl", float("nan"))
+    assert (IC.LOCK_D["Br"] - IC.D30SI) / 1e-6 > 1100
+    # on the series: C8H11ClO4 [M-H]- at m/z 205.03 is not tested, C8H13ClO4 [M-H]- at 207.04 is
+    for n, mode in (("C8H11ClO4", ""), ("C8H13ClO4", "resolved")):
+        r = _verdict(lambda i: _hal(i, n), n)
+        assert r["verdict"] == "lock" and r["si29_mode"] == mode, n
+    # a bromine lock above it is never tested
+    r = _verdict(lambda i: _hal(i, "C10H17BrO4"), "C10H17BrO4")
+    assert r["verdict"] == "lock" and r["mz"] > 270 and r["si29_mode"] == ""
 
 
 @pytest.mark.parametrize("mda", [-8.0, -4.0, 4.0, 8.0])
@@ -351,7 +434,7 @@ def test_the_h_rows_never_veto_and_the_facts_carry_the_locks():
     assert (lk["element"], lk["n"], lk["budget_ok"]) == ("Cl", 1, True) and lk["note"] == _get(t, "H", CL1)["note"]
     s = IC.summary(t, ORBI)
     assert s["locked_pairs"] == 1 and s["vetoed_pairs"] == len(IC.veto(t)) and s["tested"] == len(t)
-    assert s["H"] == {"tested": 3, "locked": 1, "lock": 1, "no_lock": 2, "other_spacing": 0, "heavy": 0,
+    assert s["H"] == {"tested": 3, "locked": 1, "lock": 1, "no_lock": 2, "si_rich": 0, "heavy": 0,
                       "reagent": 0, "untestable": 0}
     assert "vetoed" in s["REQ"] and "locked" not in s["REQ"]
 
