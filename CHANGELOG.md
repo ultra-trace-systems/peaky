@@ -1046,6 +1046,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The isotope checks measure a batch whose committed pairs are all carbon-free.**
+  Rule C (`batch/iso_checks.py`, C11+a) raised `KeyError: 'mz'` when no stamped pair
+  carried carbon, which stopped the batch run at its evidence stage; it now tests nothing
+  there, and REQ, HIGH and rule H run as on any batch. Real batches always carry carbon
+  pairs; rule H gives a carbon-free pair (HBr) a line to read.
+  `tests/test_halogen_lock_check.py`.
+
 - **The two isotopologues of a bromide water cluster stamped as one line between them.**
   `reagents.build_library` labelled `[Br1+1xH2O]-` (and every halide-core cluster) without
   the core's isotopologue tag, so its 79Br and 81Br lines shared (ion formula, no tag) in

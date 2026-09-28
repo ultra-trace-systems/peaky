@@ -261,6 +261,16 @@ def test_a_nitrate_batch_locks_the_samples_bromine_whatever_the_label():
     assert _inorganic("HNO3", "[M+Br]-", None)["verdict"] == "reagent"
 
 
+def test_a_batch_of_carbon_free_pairs_only_is_measured():
+    """Rule C finds no 13C line to read where no committed pair carries carbon:
+    it tests nothing (it once raised on such a batch) and rule H still locks the
+    sample's HBr."""
+    n, a = "HBr", "[M+^NO3]-"
+    t = _h(lambda i: _hal(i, n, a), [(n, a)], prof=LABEL)
+    assert not (t["check"] == "C").any() and _get(t, "H", n, a)["verdict"] == "lock"
+    assert IC.summary(t, ORBI)["C"]["tested"] == 0 and IC.summary(t, ORBI)["locked_pairs"] == 1
+
+
 # =========================================================================== the line position (D4)
 def test_a_partner_nearer_the_30si_spacing_does_not_lock():
     d30 = IC.HIGH_OFFSETS["30Si"]

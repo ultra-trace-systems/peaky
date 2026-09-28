@@ -437,6 +437,9 @@ def _rule_c(S: _Series, pooled: pd.DataFrame, prof) -> pd.DataFrame:
                 rec[f"se_{nm}"] = se / w / R13C
             rec["occupied"] = float(occ[u].mean())
         rows.append(rec)
+    if not rows:
+        # every stamped pair is carbon-free (HBr, HNO3): no 13C line to read
+        return _empty()
     d = pd.DataFrame(rows)
     for c in ("c_area_raw", "c_height_raw", "se_area", "se_height", "occupied"):
         if c not in d.columns:
