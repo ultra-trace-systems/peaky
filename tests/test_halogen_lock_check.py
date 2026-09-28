@@ -28,7 +28,8 @@ from peaky.batch import iso_checks as IC
 from peaky.chem import chemistry as C
 from peaky.chem import profiles as P
 from tests.test_iso_checks import (
-    H, LABEL, N, NO3, ORBI, SCALE_O, SCALE_T, TOF, _frames, _get, _ion, _ll, _measure, _row, _series, _wave, quiet)
+    H, LABEL, N, NO3, ORBI, SCALE_O, SCALE_T, TOF, _c13, _frames, _get, _ion, _ll, _measure, _row, _series, _wave,
+    quiet)
 
 CL1, BR1, CL2 = "C6H9ClO3", "C2H3BrO2", "C4H6Cl2O2"      # a chloro acid, bromoacetic, a dichloro acid
 BIG_CL = "C10H17ClO4"                                     # a chloro acid above m/z 206
@@ -64,9 +65,11 @@ def _h0(h=1e5, phase=0.0):
 def _hal(i, n=CL1, a=H, *, ratio=None, d=None, off_ppm=0.0, present=lambda i: True, h=1e5, phase=0.0,
          noise=None, stamp=True, stamp_shift=0.0, n_m0=N, lighter=None, ld=None, lpresent=lambda i: True,
          lrole=""):
-    """An M0 stamp of (n, a) and its partner `d` Da above (default the ion's own
-    halogen spacing, `off_ppm` off it) at `ratio` x its area (default the
-    ion's count x per atom); `lighter`: a line `ld` Da below at M0 / `lighter`."""
+    """An M0 stamp of (n, a), its 13C line (the ion's own carbons, as
+    test_iso_checks._c13 builds it: rule C reads the ion as it is) and its
+    partner `d` Da above (default the ion's own halogen spacing, `off_ppm` off
+    it) at `ratio` x its area (default the ion's count x per atom); `lighter`: a
+    line `ld` Da below at M0 / `lighter`."""
     if i >= n_m0:
         return []
     el = _el(n, a)
@@ -76,6 +79,9 @@ def _hal(i, n=CL1, a=H, *, ratio=None, d=None, off_ppm=0.0, present=lambda i: Tr
     mz = C.ion_mz(n, a) + stamp_shift
     h0 = h * _wave(i, phase)
     rows = [_row(i, mz, h0, role="M0", nf=n, ad=a, ion=_ion(n, a)) if stamp else _row(i, mz, h0)]
+    if ion.get("C", 0):
+        h1 = h0 * (ion["C"] * IC.R13C + ion.get("O", 0) * IC.R17O)
+        rows.append(_row(i, mz + IC.D13C, h1, h1 * ((mz + 1) / mz) ** 1.5, role="iso_child", label="13C"))
     if present(i):
         a1 = ratio * h0 * (np.exp(noise[i]) if noise is not None else 1.0)
         rows.append(_row(i, mz + d + off_ppm * 1e-6 * mz, a1, role="iso_child",
@@ -95,10 +101,9 @@ def _verdict(build, n=CL1, a=H, **kw) -> pd.Series:
 
 def _inorganic(n, a, prof, **kw) -> pd.Series:
     """The verdict on a carbon-free ion (HBr, HNO3), beside a carbon-bearing pair
-    (rule C, which runs first, reads a batch with a carbon line)."""
+    (a batch always carries some; rule C, which runs first, reads its 13C line)."""
     ref = "C10H16O4"
-    t = _h(lambda i: _hal(i, n, a, **kw) + [_row(i, C.ion_mz(ref, H), 1e5 * _wave(i, 2.0), role="M0", nf=ref,
-                                                  ad=H, ion=_ion(ref, H))], [(n, a), (ref, H)], prof=prof)
+    t = _h(lambda i: _hal(i, n, a, **kw) + _c13(i, ref, H, phase=2.0), [(n, a), (ref, H)], prof=prof)
     return _get(t, "H", n, a)
 
 
@@ -326,9 +331,7 @@ def _table(**kw):
     y = "C6H9BrO3"
     pairs = [(CL1, H), (BR1, H), (y, H), ("C10H16O4", H)]
     ts = _series(lambda i: _hal(i) + _hal(i, BR1, present=lambda i: False, phase=0.5)
-                 + _hal(i, y, present=lambda i: False, phase=1.0, h=1e4)
-                 + [_row(i, C.ion_mz("C10H16O4", H), 1e5 * _wave(i, 2.0), role="M0", nf="C10H16O4", ad=H,
-                         ion=_ion("C10H16O4", H))])
+                 + _hal(i, y, present=lambda i: False, phase=1.0, h=1e4) + _c13(i, "C10H16O4", H, phase=2.0))
     return _measure(ts, pairs, **kw)
 
 
@@ -386,12 +389,15 @@ def test_the_tof_class_runs_rule_h_too():
 
 
 def test_the_log_counts_the_locks():
+    """The pair locks and nothing refutes it (rule C reads its 13C line), so the
+    tail counts the locks apart from the vetoes: 0 vetoed, 1 locked."""
     seen = []
-    IC.measure(_series(lambda i: _hal(i)), _frames([(CL1, H)]), NO3, resolution=ORBI, mass_scale=SCALE_O,
-               log=seen.append)
+    t = IC.measure(_series(lambda i: _hal(i)), _frames([(CL1, H)]), NO3, resolution=ORBI, mass_scale=SCALE_O,
+                   log=seen.append)
+    assert not t["veto"].any() and _get(t, "C", CL1)["verdict"] == "agree"
     line = [x for x in seen if x.startswith("[iso_checks]") and "rule H" in x]
-    assert line and "rule H 1 tested, 1 locked" in line[0] and "1 locked" in line[0].split("->")[1]
-
+    assert line and "rule H 1 tested, 1 locked" in line[0] and "rule C 1 tested, 0 refuted" in line[0]
+    assert line[0].split("->")[1].strip().startswith("0 pair(s) vetoed, 1 locked")
 
 
 # =========================================================================== the batch

@@ -206,10 +206,16 @@ def test_rule_k_outranks_the_lift():
     r = _one(files, key=(CL1, NO3L), iso=lock((CL1, NO3L)), label=label)
     assert r["evidence_level"] == "5b" and not bool(r["lead_lift"])
     assert "below assignability" in r["level_reason"] and "lead_lift" not in r["evidence_axes"]
+    # ... the same pair with no rule K veto lifts
+    r = _one(files, key=(CL1, NO3L), iso=lock((CL1, NO3L)), label=dict(label, veto={}))
+    assert r["evidence_level"] == "4b" and bool(r["lead_lift"])
     files = {"f1": _f(_r("p", adduct=NO3, lead=True))}
     label = {"untie": set(), "veto": {}, "alien": {(CL1, NO3)}}
     r = _one(files, key=(CL1, NO3), iso=lock((CL1, NO3)), label=label)
     assert r["evidence_level"] == "5b" and not bool(r["lead_lift"])
+    # ... and with no alien line
+    r = _one(files, key=(CL1, NO3), iso=lock((CL1, NO3)), label=dict(label, alien=set()))
+    assert r["evidence_level"] == "4b" and bool(r["lead_lift"])
 
 
 def test_an_ion_only_pair_is_never_lifted():
@@ -217,6 +223,10 @@ def test_an_ion_only_pair_is_never_lifted():
     row["method"] = "ion_only:ea"
     r = _one({"f1": _f(row)}, key=(CL1, "[M]-."), iso=lock((CL1, "[M]-.")))
     assert not bool(r["lead_lift"]) and r["evidence_level"] == "5b"
+    # the same row committed by a regular pass lifts
+    row["method"] = "pass2"
+    r = _one({"f1": _f(row)}, key=(CL1, "[M]-."), iso=lock((CL1, "[M]-.")))
+    assert bool(r["lead_lift"]) and r["evidence_level"] == "4b"
 
 
 def test_the_other_hard_inputs_still_hold_but_the_lead_reason_goes():

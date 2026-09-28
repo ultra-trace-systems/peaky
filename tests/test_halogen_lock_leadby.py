@@ -64,7 +64,7 @@ def test_the_tier_stage_creates_the_column_empty():
 def test_the_speculative_residual_names_its_reason(row, code):
     led = _tiered([row])
     CL.demote_speculative_residual(led, _ResidualCfg(), **QUIET)
-    assert _by(led, 0) == code
+    assert BY in led.columns and _by(led, 0) == code          # the column is there: "" is no code, not no column
     assert bool(led.at[0, "tentative_lead"]) == bool(code)
 
 
@@ -122,7 +122,7 @@ def test_each_hard_setter_writes_no_code(name):
     demote, row = HARD[name]
     led = _tiered([dict(dict(peak_id="p", role="M0", mz=300.0, adduct="[M-H]-"), **row)])
     demote(led)
-    assert bool(led.at[0, "below_assignability"]) and _by(led, 0) == ""
+    assert bool(led.at[0, "below_assignability"]) and BY in led.columns and _by(led, 0) == ""
 
 
 def test_two_setters_on_one_row_both_named_sorted_once():
