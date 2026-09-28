@@ -102,6 +102,15 @@ series (the runs equal the replay row for row):
           3), 11.207 / 4.054 -> 11.207 / 3.907 (the TOF, 25). First measured before
           rule K (C17 + U: 48.266 / 30.879 -> 47.319 / 28.967 on the labelled
           nitrate); the difference is rows rule K already refutes.
+  rule H  (against the C11+a trunk, the same batches; the C / REQ / HIGH rows
+          recomputed byte-identical) labelled nitrate: 282 tested, 16 locked
+          (173 no lock, 92 untestable, 1 heavy), the 16 an independent line
+          scan locks; 4 leads lifted (C6H9ClO3, C7H11ClO5, C6H10Cl2O4 [M-H]-,
+          HBr [M+^NO3]-: 5b -> 4b), ion 32.045 -> 32.158; uronium: 8 / 1, the
+          C7H11ClO2 urea cluster lifted (Cl its only budget violation), ion
+          12.549 -> 12.576; the TOF: 2620 / 1, 659 `reagent` (the bromide
+          reagent's own 81Br line), no lift. Identified 0 on all three; a lock
+          at +-4 / 8 / 12 / 16 mDa around either spacing moves nothing.
 """
 from __future__ import annotations
 

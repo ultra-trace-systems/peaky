@@ -8,6 +8,49 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A halogen lock lifts a tentative lead (C11+b, rule H).** A lead is unsupported,
+  not contradicted -- a speculative residual fit, a reference-list match too dim to
+  confirm, a commit outside the element budget -- and read 5b. A fourth batch check,
+  `H` in `batch/iso_checks.py`, now writes a POSITIVE fact per pooled pair whose ion
+  carries Cl or Br: a `lock` where the stamped series shows the line at the exact
+  37Cl - 35Cl / 81Br - 79Br spacing (1 ppm) in >= 60 % of >= 20 M0 spectra, co-varying
+  (r(log area) >= 0.8), at 0.65-1.45 x the ion's count x 0.3198 / 0.9728, the M0 not
+  itself the heavy line of a lighter one, and the line nearer the halogen spacing than
+  30Si, 34S, 18O, 13C2 or C3<->F2. Never on an ion with Si >= 3 or both halogens, and
+  never on a halogen the batch's reagent could have put there: a line counts only where
+  the ion carries more of it than one reagent ion supplies (the batch's reagent
+  decides, not the adduct label: HBr [M+^NO3]- locks on the labelled-nitrate batch,
+  HBr [M+NO3]- would not on a bromide one). On the pooled batch a locked pair whose
+  lead rows were all set by a setter the lock answers -- the three speculative-residual
+  reasons, the dim reference-list rescue, and the element budget only where the locked
+  halogen is the neutral's sole violation (`budget_ok`, the CF2 exemption's
+  construction) -- and none is below assignability is lifted: its lead reads False,
+  the lock is its isotope axis, and the anchor, second channel and acid branch its
+  flagged rows alone gave go with the flag (for that pair only). The C11+a vetoes and
+  rule K outrank it; rule C is the only 13C hold; per-file levels, the tier and the
+  vote never see it. `tables/iso_checks.csv` gains the `H` rows and their columns
+  (`lock`, `element`, `n_halogen`, `ratio_lo` / `ratio_hi`, `heavy_cl` / `heavy_br`,
+  `budget_ok` / `budget_why`), `tables/evidence_levels.csv` `lead_lift` / `lock_note`,
+  `evidence_axes` the modifier `lead_lift`, `batch_summary.json` the H funnel,
+  `locked_pairs` and `evidence_levels.lead_lifted`; `scripts/level_ledger.py
+  --iso-checks` lifts in lockstep and `scripts/scorecard.py` reads the locks as the
+  run's own evidence. On the regression batches (the C11+a final runs replayed, the
+  table recomputed from each run's own series -- its C / REQ / HIGH rows byte for byte
+  -- and every other pair identical in level, reason and axes): the labelled-nitrate
+  Orbitrap locks 16 pairs and lifts 4, 5b -> 4b "one corroboration (iso)" -- three
+  chlorinated acids (C6H9ClO3, C7H11ClO5, C6H10Cl2O4 [M-H]-, series gap-fills whose
+  37Cl line and its count are the only evidence against their Cl-free 15N-nitrate
+  twins) and HBr [M+^NO3]- -- ion 32.045 -> 32.158 %, tentative 12.024 -> 11.912; the
+  uronium Orbitrap locks 1 and lifts it (C7H11ClO2 [M+(CH4N2O)H]+, Cl its only budget
+  violation), ion 12.549 -> 12.576 %; the bromide / nitrate TOF locks 1 and lifts none
+  (its bromide reagent could have put the Br in 659 of its ions; at 1 ppm rule H is
+  Orbitrap-only in practice). Identified unchanged on all three; a lock at +-4 to 16
+  mDa decoy spacings moves nothing. The golden fixtures gained the lock tables of the
+  live runs and the four live-locked lead pairs' flag in `tentative_lead` (decision
+  D8): the Orbitrap vector 0/11/217/9/203/139/0/35/1093 -> 0/11/217/9/206/139/0/35/1090,
+  the uronium one 4/4/0/331/376/291/0/82/73 -> 4/4/0/331/377/291/0/82/72; the TOF, TV
+  and rule K vectors do not move. `tests/test_halogen_lock_*.py`.
+
 - **Isotope checks test what a formula claims about its own isotope lines (C11+a).**
   The per-file isotope test only asks whether a child it found sits in the band; three
   batch checks (`batch/iso_checks.py`, on the stamped batch series) ask what the
@@ -685,6 +728,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fixture where every level fires once.
 
 ### Changed
+
+- **The ledger records which setter made a row a tentative lead (`lead_by`, C11+b).**
+  Per-file ledgers gain a column beside `tentative_lead`: the setter's code
+  (`reflist_dim`, `off_budget`, `spec_n3` / `spec_gapfill` / `spec_minor` for the three
+  speculative-residual reasons, `radical_anion`, `reagent_n`; pipe-joined where two
+  mark a row), empty on every other row, created and reset with the flags. The Below
+  assignability sheet and the published engine provenance carry it. Rule H reads it on
+  the pooled batch, where the commentary that also names the setter is not kept; a
+  ledger written before it reads "any setter" (a lead lifts only where the element
+  budget holds too). No level moves with the column.
 
 - **A reagent-halogen isotope line pins only the ion where the reagent put the
   halogen there (C11+a).** `reagent_only_iso` (level 4d: "the sole isotope support is
