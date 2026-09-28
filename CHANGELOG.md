@@ -8,6 +8,43 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Isotope checks test what a formula claims about its own isotope lines (C11+a).**
+  The per-file isotope test only asks whether a child it found sits in the band; three
+  batch checks (`batch/iso_checks.py`, on the stamped batch series) ask what the
+  formula claims and refute it -- hard 5b, and out of its neutral's second-channel and
+  acid-branch pools in both directions -- where the series says otherwise: **rule C**
+  (Orbitrap-class batches: the 13C line's area and height both read a carbon count the
+  formula misses by more than max(1.5, 0.25 C, 3 se); not read where 13C makes under
+  half the +1 line, as on a Si-rich ion), **REQ** (a heavy line the formula requires
+  -- 81Br, 37Cl, their Br2 / Cl2 patterns, 34S, 29Si / 30Si -- absent in >= 80 % of >=
+  3 spectra where it would clear 3x the height gate, judged at the height this batch
+  shows that element's lines; a TOF only when absent at the stamp window AND 20 ppm)
+  and **HIGH** (a co-varying heavy line >= 3x the formula's count-aware M+2 and >=
+  0.2x its M0, guarded against another pair's line, a plain 13C line, a non-isotopic
+  +2 alias, a height no envelope reaches, and an element no ion at that mass can carry
+  in the number the line implies). The instrument class is read off the batch's width
+  model. `tables/iso_checks.csv` holds every test with its numbers and note,
+  `batch_summary.json` the funnel (`evidence_levels.iso_checks`),
+  `scripts/level_ledger.py --iso-checks` reads the table in lockstep and
+  `scripts/scorecard.py` reads it as the run's own evidence. Never an axis, never in
+  `cross`, never per file; a curated row is not exempt. On the regression batches (one
+  variable against the previous trunk run; the runs equal the offline replay row for
+  row): the labelled-nitrate Orbitrap 76 merged rows change level, none their ion or
+  tier (69 refuted by a check -- REQ 63, rule C 7, HIGH 5, six by both REQ and C --
+  and 7 whose refuted sibling leaves the pools), and the identified share of the
+  time-series signal falls from 45.1 % to 44.4 % (ion 33.2 -> 32.0 %): brominated and
+  chlorinated readings whose 81Br / 37Cl line is absent in every spectrum where it
+  must show, readings whose 13C line counts far fewer carbons than they carry (3.7 for
+  10, 5.8 for 22), and aromatic labelled-nitrate readings whose 37Cl line says they
+  are chloride adducts of monoterpene products; the uronium batch 3 (identified 73.8
+  -> 73.6 %: a C12H14N2O4Si [M+H]+ reading with no 29Si line in any of the 282 spectra
+  where it would show, where C13H15N2O3S+ fits the mass at 0.1 ppm against 0.9 and the
+  M+2 line sits at the 34S spacing, its urea cluster, and one urea cluster rule C
+  refutes); the bromide / nitrate TOF 17 (REQ 11, HIGH 5, one refuted sibling's pair;
+  identified unchanged, ion 4.05 -> 3.91 %; its other 8 moves are the reagent_only_iso
+  fix under Changed). No roster species is refuted by rule C; the golden vectors read
+  no batch table and do not move with the checks. `tests/test_iso_checks*.py`.
+
 - **On a labelled-nitrate channel the reagent's two isotopologues arbitrate each
   other's reading (rule K).** A 15N-labelled nitrate reagent sees one neutral X's
   cluster twice, 0.997 Da apart: big as [X+^NO3]- and small as [X+NO3]- (the reagent's
@@ -648,6 +685,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fixture where every level fires once.
 
 ### Changed
+
+- **A reagent-halogen isotope line pins only the ion where the reagent put the
+  halogen there (C11+a).** `reagent_only_iso` (level 4d: "the sole isotope support is
+  the reagent's own halogen") now clears where the ion's halogen is all the
+  neutral's own: a brominated neutral's `[M-H]-` or `[M+NO3]-` carries its own 81Br
+  line (hypobromous acid's nitrate cluster at m/z 157.909). An ion carrying none of
+  the reagent halogen keeps the flag: a 1:1 +2 Da line on a Br-free ion says it
+  carries a Br its formula lacks, and is no support for that formula (held at 4d
+  until a count-aware isotope band judges it per file; the batch's HIGH check
+  refutes such a reading). On the bromide / nitrate TOF regression batch 23 per-file
+  M0 rows (15 pairs; pooled 13, 8 merged) move 4d -> 4b, all brominated neutrals'
+  nitrate clusters; the Orbitrap batches do not move. The same-air TOF golden moves
+  from 6/15/182/15/254/82/99/138/2573 to 6/15/182/15/258/82/95/138/2573 (four
+  brominated neutrals' `[M-H]-`); `expected_levels.csv` differs from the previous
+  file in the six brominated-neutral rows alone.
 
 - **A tentative lead is its own flag (`tentative_lead`), apart from `below_assignability`.**
   `below_assignability` said two things: the assignment argues with itself (O >= 11 on
