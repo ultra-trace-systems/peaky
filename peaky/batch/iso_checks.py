@@ -1,11 +1,14 @@
-"""The isotope checks of a batch (C11+a; docs/EVIDENCE_LEVELS.md §3 `iso_veto`, §4.2).
+"""The isotope checks of a batch (C11+a, C11+b; docs/EVIDENCE_LEVELS.md §3
+`iso_veto`, `lead_lift`, §4.2).
 
 A committed formula makes a claim about its isotope lines: how many carbons the
 13C line counts, which heavy lines MUST be there, and how tall the M+2 region
 may be. Three checks read those claims off the batch's stamped time series and
 refute the formula where the series says otherwise -- a hard input (5b), and the
 refuted pair leaves its neutral's chan2 / branch pools in both directions (rule
-K's `alien` mechanism). All three are batch facts: they need the stamped time
+K's `alien` mechanism). A fourth, rule H, writes a POSITIVE fact instead: the
+ion's exact halogen line, which lifts a tentative lead the line answers
+(evidence._measure). All four are batch facts: they need the stamped time
 series, never run per file, are never an axis, never in `cross`.
 
 The instrument class is batch-generic: Orbitrap-class when the batch's peak-width
@@ -54,6 +57,28 @@ rule C).
         spectra (slot guards), sits nearer a non-isotopic +2 alias than the heavy
         spacing (Orbitrap-class), or runs above expected + HIGH_CAP (no isotope
         envelope is that tall).
+  rule H  (the halogen lock, C11+b; both classes) -- per pooled pair whose ION
+        carries Cl or Br: in each spectrum the brightest M0 stamp and the
+        nearest peak to it + the exact 37Cl - 35Cl / 81Br - 79Br spacing
+        (LOCK_D) within LOCK_TOL_PPM (1 ppm, of the M0's m/z). A `lock` when the
+        line is present in >= LOCK_FRAC of >= LOCK_NMIN M0 spectra, r(log area)
+        >= LOCK_RMIN, the pooled area ratio in [LOCK_LO, LOCK_HI] x n x
+        LOCK_PER_ATOM for the ion's count n (`count_window`), the line's median
+        position nearer the halogen spacing than any of LOCK_OTHER (30Si, 34S,
+        18O, 13C2, C3<->F2: `other_spacing`), and the M0 not itself a heavy line
+        (`heavy`: a line one Cl or Br spacing below it, co-varying, at a count
+        window of either element). Never locked (`untestable`): an ion carrying
+        Si >= 3, both Cl and Br (a blended M+2), a pair with no M0 stamp, one
+        stamped on a heavy isotopologue, one stamped in < LOCK_NMIN spectra.
+        The halogen must be the sample's (`reagent`, 2026-09-28 decision): the
+        batch's reagent supplies up to `reagent_supply` atoms of it per ion (the
+        most any adduct of the profile adds), and a line counts only where the
+        ion carries more than that -- whatever the adduct label says (the ion
+        BrHNO3- is HNO3 [M+Br]- or HBr [M+NO3]-). Each row also carries
+        `budget_ok`: the neutral passes the batch context's element budget with
+        the locked halogen's cap lifted (the CF2 exemption's construction), the
+        gate an element-budget lead is lifted by. At 1 ppm the check is
+        Orbitrap-only in practice: a TOF's line scatter is several ppm.
 
 Measured on the three regression batches through this engine against the trunk
 with rule K (C18 + K, C19(c)); identified / ion claim signal in % of the batch
@@ -89,8 +114,10 @@ import pandas as pd
 
 from peaky.chem import chemistry as C
 
-CHECKS = ("C", "REQ", "HIGH")
-CHECK_NAME = {"C": "rule C", "REQ": "REQ", "HIGH": "HIGH"}
+CHECKS = ("C", "REQ", "HIGH", "H")
+CHECK_NAME = {"C": "rule C", "REQ": "REQ", "HIGH": "HIGH", "H": "rule H"}
+#: the checks that refute (a veto); rule H writes a positive fact instead
+VETO_CHECKS = ("C", "REQ", "HIGH")
 #: Orbitrap-class: the batch's width model resolves at least this at m/z 200
 ORBITRAP_R200 = 50_000.0
 D13C = 1.0033548378
@@ -159,6 +186,22 @@ _OFFSET_PER_ATOM = {"81Br": _A81, "37Cl": _A37, "34S": _A34, "30Si": _A30}
 #: the element-fit search: an ion carrying the implied atoms must fit its M0 mass
 #: with a CHNOS rest (H <= 2C + N + 4) within this window (2026-09-27 decision)
 HIGH_FIT_PPM = {"orbitrap": 5.0, "tof": 20.0}
+# --- rule H (C11+b): the exact-spacing halogen lock -- a POSITIVE fact, never a veto
+LOCK_D = {"Cl": 1.9970499, "Br": 1.9979521}       # 37Cl - 35Cl, 81Br - 79Br (the _ISO spacings)
+LOCK_PER_ATOM = {"Cl": 0.3198, "Br": 0.9728}      # the heavy line per atom of the light one
+LOCK_OFFSET = {"Cl": "37Cl", "Br": "81Br"}
+LOCK_TOL_PPM = 1.0                                # both classes: on a TOF it seldom finds a line
+LOCK_NMIN, LOCK_FRAC, LOCK_RMIN = 20, 0.6, 0.8
+LOCK_LO, LOCK_HI = 0.65, 1.45                     # the count window: [LO, HI] x n x per atom
+#: the heavy check: the counts a lighter line's window is tried at, per element
+LOCK_HEAVY_N = {"Cl": (1, 2, 3, 4), "Br": (1, 2)}
+LOCK_SI_MAX = 2                                   # an ion with Si >= 3 is never locked
+#: a line stamped this far above the ion's all-light m/z is a heavy isotopologue
+LOCK_STAMP_MAX_DA = 0.5
+#: the other +2 spacings a partner must sit farther from than the halogen's own
+#: (2026-09-28 decision: above m/z ~206 a 37Cl and a 30Si line share the window)
+LOCK_OTHER = {"30Si": HIGH_OFFSETS["30Si"], "34S": HIGH_OFFSETS["34S"], "18O": HIGH_OFFSETS["18O"],
+              "13C2": HIGH_OFFSETS["13C2"], "C3<->F2": HIGH_ALIASES["C3<->F2"]}
 
 TABLE_COLUMNS = (
     "neutral_formula", "adduct", "check", "instrument", "ion", "mz", "stamped", "n_spectra", "n_used",
@@ -167,14 +210,17 @@ TABLE_COLUMNS = (
     "n_carbon", "c_area", "c_height", "se_area", "se_height", "bias_area", "bias_height", "occupied",
     # REQ
     "line", "expected", "line_eff", "n_present", "det_frac", "window_ppm", "n_present_wide", "det_frac_wide",
-    # HIGH
+    # HIGH (and rule H: offset .. other_m0)
     "offset", "ratio_area", "ratio_height", "r", "presence", "offset_mda", "other_m0", "other_13c",
+    # rule H
+    "lock", "element", "n_halogen", "ratio_lo", "ratio_hi", "heavy_cl", "heavy_br", "budget_ok", "budget_why",
     "note",
 )
 VERDICTS = {
     "C": ("agree", "ambiguous", "contradict", "untestable", "scan_edge", "exempt_14N"),
     "REQ": ("present", "absent", "untestable"),
     "HIGH": ("consistent", "guarded", "too_high"),
+    "H": ("lock", "no_lock", "other_spacing", "heavy", "reagent", "untestable"),
 }
 
 
@@ -883,17 +929,206 @@ def element_fits(mz: float, element: str, k: int, ppm: float, sign: float) -> bo
     return bool(ok.any())
 
 
+# --------------------------------------------------------------------------- rule H
+def reagent_supply(adducts, element: str) -> int:
+    """How many atoms of `element` one reagent ion puts into an ion: the most
+    any of the batch's adducts adds (a bromide batch's [M+HBr+Br]- adds 2);
+    0 when the batch has no such reagent."""
+    from peaky.assignment.tiers import _ion_counts
+    return max([0] + [int((_ion_counts("C", a) or {}).get(element, 0)) for a in adducts or ()])
+
+
+def budget_verdict(neutral: str, element: str, context) -> tuple[bool, str]:
+    """(budget_ok, why): the neutral passes the context's element budget with
+    `element`'s cap lifted -- the locked halogen is its only violation, if it has
+    one (the CF2 exemption's construction, plausibility.demote_off_budget) --
+    and the budget's own first violation ("" when none). No context: (True, "")
+    -- the budget demote never ran."""
+    import dataclasses
+    from peaky.chem import contexts as X
+    try:
+        prof = X.get_context(context) if context else None
+    except ValueError:
+        prof = None
+    if prof is None:
+        return True, ""
+    ok = bool(X.element_budget(neutral, dataclasses.replace(prof, **{f"max_{element}": 10 ** 6}))[0])
+    return ok, str(X.element_budget(neutral, prof)[1] or "")
+
+
+def count_window(element: str, n: int) -> tuple[float, float]:
+    """The pooled area ratio a line at the element's spacing must read for an
+    ion carrying `n` atoms of it: [LOCK_LO, LOCK_HI] x n x LOCK_PER_ATOM."""
+    return LOCK_LO * n * LOCK_PER_ATOM[element], LOCK_HI * n * LOCK_PER_ATOM[element]
+
+
+def lock_gates(presence: float, r: float, ratio: float, lo: float, hi: float) -> bool:
+    """The line co-varies with the M0 and reads the ion's halogen count: present
+    in >= LOCK_FRAC of the M0's spectra, r(log area) >= LOCK_RMIN, the pooled
+    area ratio in [lo, hi] (NaN fails every gate)."""
+    return bool(presence >= LOCK_FRAC and r >= LOCK_RMIN and lo <= ratio <= hi)
+
+
+def _pearson(x: np.ndarray, y: np.ndarray) -> float:
+    if len(x) < 3 or np.var(x) <= 0 or np.var(y) <= 0:
+        return float("nan")
+    return float(np.corrcoef(x, y)[0, 1])
+
+
+def _partner(S: _Series, codes, pm, pa, ph, shift: float, pcol: int) -> dict:
+    """The line at `shift` from each stamp (nearest within LOCK_TOL_PPM of the
+    M0's m/z): its presence over the stamps, the pooled area and height ratio
+    line / M0, r(log area), the median offset from `shift` (mDa) and how often
+    the line is another committed pair's M0."""
+    j = S.nearest(codes, pm + shift, ppm_of=pm, ppm=LOCK_TOL_PPM, reach=(-2, -1, 0, 1))
+    hit = j >= 0
+    n = int(hit.sum())
+    out = dict(n=n, frac=n / max(len(pm), 1), ra=np.nan, rh=np.nan, r=np.nan, off=np.nan, oth=0.0)
+    if n:
+        jj = j[hit]
+        la, lh = S.a[jj], S.h[jj]
+        out.update(ra=float(la.sum() / pa[hit].sum()), rh=float(lh.sum() / ph[hit].sum()),
+                   r=_pearson(np.log(pa[hit]), np.log(la)),
+                   off=float(np.median(S.mz[jj] - pm[hit] - shift)) * 1e3,
+                   oth=float(((S.role[jj] == "M0") & (S.pair_code[jj] != pcol)).mean()))
+    return out
+
+
+def _heavy(S: _Series, codes, pm, pa, ph, pcol: int) -> dict:
+    """{element: (holds, lighter-line stats)}: the M0 is itself the heavy line of
+    a lighter one -- a line one element spacing below it, present in >= LOCK_FRAC
+    of the stamps, r >= LOCK_RMIN, the M0 / lighter area ratio in the count
+    window of 1..LOCK_HEAVY_N of that element."""
+    out = {}
+    for el, D in LOCK_D.items():
+        st = _partner(S, codes, pm, pa, ph, -D, pcol)
+        ratio = 1.0 / st["ra"] if np.isfinite(st["ra"]) and st["ra"] > 0 else np.nan
+        holds = any(lock_gates(st["frac"], st["r"], ratio, *count_window(el, k)) for k in LOCK_HEAVY_N[el])
+        out[el] = (bool(holds), dict(st, ratio=ratio))
+    return out
+
+
+def nearest_spacing(el: str, off_mda: float) -> str:
+    """The +2 spacing the partner's median position (the element's spacing +
+    `off_mda`) sits nearest: the element's own (LOCK_OFFSET) only when it is
+    strictly nearer than every one of LOCK_OTHER, else the nearest of those."""
+    pos = LOCK_D[el] + off_mda / 1e3
+    own = abs(pos - LOCK_D[el])
+    other = min(LOCK_OTHER, key=lambda k: abs(pos - LOCK_OTHER[k]))
+    return LOCK_OFFSET[el] if own < abs(pos - LOCK_OTHER[other]) else other
+
+
+def _lock(S: _Series, pooled: pd.DataFrame, klass: str, prof=None, context=None) -> pd.DataFrame:
+    adducts = (getattr(prof, "adducts", None) if prof is not None else None) or sorted(set(pooled["adduct"]))
+    supply = {el: reagent_supply(adducts, el) for el in LOCK_D}
+    pid = {k: i for i, k in enumerate(S.pair_index)}
+    rows = []
+    for r in pooled.itertuples(index=False):
+        ion = ion_counts(r.neutral_formula, r.adduct, r.ion)
+        els = [el for el in LOCK_D if ion.get(el, 0) > 0]
+        if not els:
+            continue
+        el = els[0]
+        n_x = int(ion.get(el, 0))
+        exp = n_x * LOCK_PER_ATOM[el]
+        lo, hi = count_window(el, n_x)
+        g = S.m0.get((r.neutral_formula, r.adduct))
+        stamped = g is not None and len(g) > 0
+        npar = int(len(g)) if stamped else 0
+        st, heavy = dict(n=0, frac=0.0, ra=np.nan, rh=np.nan, r=np.nan, off=np.nan, oth=0.0), {}
+        mz = float(r.mz) if np.isfinite(r.mz) else np.nan
+        if stamped:
+            codes, pm = g["code"].to_numpy(), g["mz"].to_numpy(float)
+            pa, ph = g["area"].to_numpy(float), g["height"].to_numpy(float)
+            mz = float(np.median(pm))
+            pcol = pid.get((r.neutral_formula, r.adduct), -2)
+            st = _partner(S, codes, pm, pa, ph, LOCK_D[el], pcol)
+            heavy = _heavy(S, codes, pm, pa, ph, pcol)
+        try:
+            shift = mz - C.ion_mz(r.neutral_formula, r.adduct)
+        except Exception:
+            shift = np.nan
+        ok = lock_gates(st["frac"], st["r"], st["ra"], lo, hi)
+        near = nearest_spacing(el, st["off"]) if np.isfinite(st["off"]) else ""
+        hv = [e for e, (h, _x) in heavy.items() if h]
+        why = ""
+        if ion.get("Si", 0) > LOCK_SI_MAX:
+            verdict, why = "untestable", f"the ion carries Si{ion['Si']} (rule H never locks Si >= {LOCK_SI_MAX + 1})"
+        elif len(els) > 1:
+            verdict, why = "untestable", "the ion carries both Cl and Br (its M+2 is a 37Cl / 81Br blend)"
+        elif not stamped:
+            verdict, why = "untestable", "no M0 stamp in the batch series"
+        elif not np.isfinite(shift) or abs(shift) > LOCK_STAMP_MAX_DA:
+            verdict, why = "untestable", (f"stamped {shift:+.3f} Da from the all-light ion: a heavy isotopologue"
+                                          if np.isfinite(shift) else "no ion m/z for this reading")
+        elif npar < LOCK_NMIN:
+            verdict, why = "untestable", f"stamped in {npar} spectra (needs {LOCK_NMIN})"
+        elif supply[el] and n_x <= supply[el]:
+            verdict, why = "reagent", (f"the batch's reagent puts up to {supply[el]} {el} in an ion and this one "
+                                       f"carries {n_x}: the line may be the reagent's")
+        elif not ok:
+            verdict = "no_lock"
+        elif near != LOCK_OFFSET[el]:
+            verdict, why = "other_spacing", f"the line sits nearer the {near} spacing than the {LOCK_OFFSET[el]} one"
+        elif hv:
+            verdict, why = "heavy", "the M0 is itself a heavy line: " + ", ".join(
+                f"{heavy[e][1]['ratio']:.2f}x the line one {LOCK_OFFSET[e]} spacing below it" for e in hv)
+        else:
+            verdict = "lock"
+        budget_ok, budget_why = budget_verdict(r.neutral_formula, el, context)
+        rows.append(dict(
+            neutral_formula=r.neutral_formula, adduct=r.adduct, ion=str(r.ion), mz=mz, stamped=stamped,
+            n_spectra=npar, n_used=int(st["n"]), verdict=verdict, veto=False, lock=verdict == "lock",
+            offset=LOCK_OFFSET[el], ratio_area=st["ra"], ratio_height=st["rh"], r=st["r"], presence=st["frac"],
+            offset_mda=st["off"], other_m0=st["oth"], expected=exp, element=el, n_halogen=n_x,
+            ratio_lo=lo, ratio_hi=hi, heavy_cl=bool(heavy.get("Cl", (False,))[0]),
+            heavy_br=bool(heavy.get("Br", (False,))[0]), budget_ok=budget_ok, budget_why=budget_why,
+            note=_lock_note(st, el, n_x, lo, hi, npar, mz, verdict, why)))
+    if not rows:
+        return _empty()
+    d = pd.DataFrame(rows)
+    d["check"] = "H"
+    d["n_halogen"] = d["n_halogen"].astype("Int64")
+    return d
+
+
+def _lock_note(st: dict, el: str, n_x: int, lo: float, hi: float, npar: int, mz: float, verdict: str,
+               why: str) -> str:
+    lab = LOCK_OFFSET[el]
+    if not np.isfinite(st["ra"]):
+        txt = f"no line at the {lab} offset in {npar} spectra" if npar else ""
+    else:
+        ppm = st["off"] / mz * 1e3 if np.isfinite(mz) and mz > 0 else np.nan
+        txt = (f"a {st['ra']:.2f}x line at the {lab} offset ({n_x} {el}: {lo:.2f}-{hi:.2f}), r {st['r']:.2f}, "
+               f"in {st['frac']:.0%} of {npar} spectra, {ppm:+.2f} ppm")
+    if verdict == "no_lock" and np.isfinite(st["ra"]):
+        miss = []
+        if st["frac"] < LOCK_FRAC:
+            miss.append(f"present in < {LOCK_FRAC:.0%}")
+        if not st["r"] >= LOCK_RMIN:
+            miss.append(f"r < {LOCK_RMIN:g}")
+        if not lo <= st["ra"] <= hi:
+            miss.append(f"outside the {n_x} {el} window")
+        why = "; ".join(miss)
+    elif verdict == "lock":
+        why = "no lighter line makes the M0 a heavy isotopologue"
+    return "; ".join(x for x in (txt, why) if x)
+
+
 # --------------------------------------------------------------------------- the table
 def measure(ts: pd.DataFrame | None, frames: dict, prof=None, *, resolution=None, mass_scale=None,
-            x_edge: float = 1.0, log=print) -> pd.DataFrame:
+            x_edge: float = 1.0, context: str | None = None, log=print) -> pd.DataFrame:
     """The isotope-check table: one row per tested pooled pair and check (module
     docstring). `resolution` is the batch's width model (chem.resolution.Resolution
     or its as_dict; it decides the instrument class and REQ's observable lines),
     `mass_scale` the batch's traces.MassScale (sigma_ppm, stamp_ppm), `x_edge` the
     batch's height_cutoff_x_edge (the height gate each spectrum's floor is: its
     noise edge, the 1st-percentile height, x x_edge -- the per-file
-    height_gate_cps where a file is also a ledger). Empty with a header when the
-    batch has no time series or no committed pair."""
+    height_gate_cps where a file is also a ledger), `context` the batch's
+    assignment context (rule H's `budget_ok`: the element budget each file's
+    plausibility stage demoted against; None = no budget). `prof` is the batch's
+    reagent profile (rule C's 14N exemption, rule H's reagent supply). Empty with
+    a header when the batch has no time series or no committed pair."""
     if ts is None or not len(ts):
         return _empty()
     pooled = _pooled(frames)
@@ -916,6 +1151,7 @@ def measure(ts: pd.DataFrame | None, frames: dict, prof=None, *, resolution=None
     if rp is not None:
         parts.append(_req(S, pooled, klass, rp, sigma, stamp, x_edge, log=log))
     parts.append(_high(S, pooled, klass))
+    parts.append(_lock(S, pooled, klass, prof, context))
     parts = [p for p in parts if p is not None and len(p)]
     if not parts:
         return _empty()
@@ -926,6 +1162,7 @@ def measure(ts: pd.DataFrame | None, frames: dict, prof=None, *, resolution=None
             out[c] = np.nan
     out["veto"] = out["veto"].fillna(False).astype(bool)
     out["stamped"] = out["stamped"].fillna(False).astype(bool)
+    out["lock"] = out["lock"].fillna(False).astype(bool)
     out["note"] = out["note"].fillna("")
     order = {c: i for i, c in enumerate(CHECKS)}
     out = out[list(TABLE_COLUMNS)]
@@ -933,8 +1170,9 @@ def measure(ts: pd.DataFrame | None, frames: dict, prof=None, *, resolution=None
     out = out.drop(columns="__o").reset_index(drop=True)
     log(f"[iso_checks] {klass}-class batch: "
         + "; ".join(f"{CHECK_NAME[c]} {int((out['check'] == c).sum())} tested, "
-                    f"{int((out['veto'] & (out['check'] == c)).sum())} refuted" for c in CHECKS)
-        + f" -> {len(veto(out))} pair(s) vetoed"
+                    + (f"{int((out['veto'] & (out['check'] == c)).sum())} refuted" if c in VETO_CHECKS
+                       else f"{int((out['lock'] & (out['check'] == c)).sum())} locked") for c in CHECKS)
+        + f" -> {len(veto(out))} pair(s) vetoed, {len(lock(out))} locked"
         + ("" if klass == "orbitrap" else " (TOF-class: no rule C)")
         + ("" if rp is not None else " (no width model: no REQ)"))
     return out
@@ -956,12 +1194,31 @@ def veto(table: pd.DataFrame | None) -> dict:
     return out
 
 
+def lock(table: pd.DataFrame | None) -> dict:
+    """{(neutral, adduct): {'element', 'n', 'budget_ok', 'note'}} of the rule H
+    rows that lock -- {} for a table written before rule H (no `lock` column,
+    no H row)."""
+    if table is None or not len(table) or "lock" not in table.columns or "check" not in table.columns:
+        return {}
+    t = table[(table["check"].astype(str) == "H") & table["lock"].map(_truth)]
+    out: dict = {}
+    for r in t.itertuples(index=False):
+        n = pd.to_numeric(getattr(r, "n_halogen", np.nan), errors="coerce")
+        el = getattr(r, "element", "")
+        out[(str(r.neutral_formula), str(r.adduct))] = {
+            "element": el if isinstance(el, str) else "", "n": int(n) if pd.notna(n) else 0,
+            "budget_ok": _truth(getattr(r, "budget_ok", False)),
+            "note": str(r.note) if isinstance(r.note, str) else ""}
+    return out
+
+
 def facts(table: pd.DataFrame | None) -> dict | None:
-    """What evidence.level_pooled reads (its `iso=`): {'veto': {(n, a): note}} --
-    None for an empty table (no time series, nothing committed)."""
+    """What evidence.level_pooled reads (its `iso=`): {'veto': {(n, a): note},
+    'lock': {(n, a): {...}}} -- the refutations and rule H's locks; None for an
+    empty table (no time series, nothing committed)."""
     if table is None or not len(table):
         return None
-    return {"veto": veto(table)}
+    return {"veto": veto(table), "lock": lock(table)}
 
 
 def _truth(v) -> bool:
@@ -972,14 +1229,17 @@ def _truth(v) -> bool:
 
 def summary(table: pd.DataFrame | None, resolution=None) -> dict:
     """The funnel, for batch_summary.json: per check the pairs tested and each
-    verdict's count, and the pairs vetoed in all."""
+    verdict's count (the vetoes of C / REQ / HIGH, the locks of rule H), and the
+    pairs vetoed and locked in all."""
     klass = instrument_class(resolution)
     if table is None or not len(table):
-        return {"instrument": klass, "tested": 0, "vetoed_pairs": 0}
-    out = {"instrument": klass, "tested": int(len(table)), "vetoed_pairs": len(veto(table))}
+        return {"instrument": klass, "tested": 0, "vetoed_pairs": 0, "locked_pairs": 0}
+    out = {"instrument": klass, "tested": int(len(table)), "vetoed_pairs": len(veto(table)),
+           "locked_pairs": len(lock(table))}
     for c in CHECKS:
         t = table[table["check"] == c]
         v = t["verdict"].astype(str)
-        out[c] = {"tested": int(len(t)), "vetoed": int(t["veto"].map(_truth).sum()),
-                  **{k: int((v == k).sum()) for k in VERDICTS[c]}}
+        head = ({"vetoed": int(t["veto"].map(_truth).sum())} if c in VETO_CHECKS else
+                {"locked": int(t["lock"].map(_truth).sum()) if "lock" in t.columns else 0})
+        out[c] = {"tested": int(len(t)), **head, **{k: int((v == k).sum()) for k in VERDICTS[c]}}
     return out

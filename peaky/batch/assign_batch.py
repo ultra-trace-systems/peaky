@@ -1862,13 +1862,14 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # reading on the same series; written for every run (empty out of scope)
     twins_table = _LT.measure(ts_annot, level_frames, prof, alias_ties=alias_ties, log=log)
     twins_table.to_csv(os.path.join(TAB, "label_twins.csv"), index=False)
-    # the isotope checks (C11+, docs/EVIDENCE_LEVELS.md §3 iso_veto): rule C, REQ and
-    # HIGH read each committed formula's isotope claims off the same stamped series
-    # (the instrument class from the batch's width model); written for every run
-    # (empty without a time series); a refuted pair is hard 5b and leaves its
-    # neutral's pools
+    # the isotope checks (C11+, docs/EVIDENCE_LEVELS.md §3 iso_veto, lead_lift): rule C,
+    # REQ and HIGH read each committed formula's isotope claims off the same stamped
+    # series (the instrument class from the batch's width model), rule H its exact
+    # halogen line (a lock, judged against the batch's element budget: `context`);
+    # written for every run (empty without a time series); a refuted pair is hard 5b
+    # and leaves its neutral's pools
     iso_table = _IC.measure(ts_annot, level_frames, prof, resolution=rp, mass_scale=scale,
-                            x_edge=x_edge, log=log)
+                            x_edge=x_edge, context=context, log=log)
     iso_table.to_csv(os.path.join(TAB, "iso_checks.csv"), index=False)
     levels = EV.level_pooled(level_frames, cross=cross, upair=_NP.neutrals(pairs_table),
                              label=_LT.facts(twins_table), iso=_IC.facts(iso_table))

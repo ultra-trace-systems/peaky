@@ -691,9 +691,9 @@ def test_veto_reads_the_flag_and_the_note_strictly():
                     dict(neutral_formula="D", adduct=H, check="C", veto=float("nan"), note="d"),
                     dict(neutral_formula="E", adduct=H, check="C", veto=None, note="e")])
     assert IC.veto(t) == {("A", H): "REQ", ("C", H): "HIGH: c"}
-    assert IC.facts(t) == {"veto": {("A", H): "REQ", ("C", H): "HIGH: c"}}
+    assert IC.facts(t) == {"veto": {("A", H): "REQ", ("C", H): "HIGH: c"}, "lock": {}}
     assert IC.facts(t.iloc[:0]) is None and IC.facts(_iso_table([dict(neutral_formula="B", adduct=H, check="C",
-                                                                       veto=False)])) == {"veto": {}}
+                                                                       veto=False)])) == {"veto": {}, "lock": {}}
 
 
 # =========================================================================== evidence / level_ledger
@@ -754,7 +754,8 @@ def test_the_reference_script_iso_table_lookup(tmp_path, capsys):
         table.to_csv(out / run / "tables" / "iso_checks.csv", index=False)
     assert LL.iso_check_facts(str(out)) is None and "no iso_checks.csv" in capsys.readouterr().err
     csv = out / "RUN_1" / "tables" / "iso_checks.csv"
-    assert LL.iso_check_facts(str(csv)) == {"veto": {(x, "[M+NO3]-"): "REQ"}} == IC.facts(pd.read_csv(csv))
+    assert LL.iso_check_facts(str(csv)) == {"veto": {(x, "[M+NO3]-"): "REQ"}, "lock": {}} \
+        == IC.facts(pd.read_csv(csv))
     bare = tmp_path / "bare"
     (bare / "per_file").mkdir(parents=True)
     rows.to_csv(bare / "per_file" / "s1_ledger.csv", index=False)

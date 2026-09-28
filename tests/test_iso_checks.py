@@ -507,7 +507,7 @@ def test_the_table_and_its_facts():
     t = _measure(ts, pairs)
     assert list(t.columns) == list(IC.TABLE_COLUMNS)
     f = IC.facts(t)
-    assert set(f) == {"veto"} and set(f["veto"]) == {(x, H), (Y, H), (Z, H)}
+    assert set(f) == {"veto", "lock"} and set(f["veto"]) == {(x, H), (Y, H), (Z, H)} and f["lock"] == {}
     assert f["veto"][(x, H)] == "rule C: " + _get(t, "C", x)["note"]
     assert f["veto"][(Y, H)] == "REQ: " + _get(t, "REQ", Y)["note"]
     # a pair refuted by several checks carries one joined note, in check order
@@ -518,7 +518,7 @@ def test_the_table_and_its_facts():
     assert s["instrument"] == "orbitrap" and s["vetoed_pairs"] == 3 and s["tested"] == len(t)
     assert s["C"]["vetoed"] == 2 and s["C"]["contradict"] == 2 and s["C"]["agree"] == len(REFS) + 1
     assert s["REQ"]["tested"] == 1 and s["REQ"]["absent"] == 1 and s["HIGH"]["too_high"] == 1
-    assert IC.summary(None, None) == {"instrument": "tof", "tested": 0, "vetoed_pairs": 0}
+    assert IC.summary(None, None) == {"instrument": "tof", "tested": 0, "vetoed_pairs": 0, "locked_pairs": 0}
 
 
 # --------------------------------------------------------------------------- the level
@@ -689,7 +689,8 @@ def test_the_reference_script_reads_the_table_like_the_engine(tmp_path, capsys):
                         dict(neutral_formula=x, adduct="[M+NO3]-", check="C", veto=True, note="c"),
                         dict(neutral_formula=x, adduct=H, check="REQ", veto=False, note="")])
     table.to_csv(run / "tables" / "iso_checks.csv", index=False)
-    assert LL.iso_check_facts(str(run)) == {"veto": {(x, "[M+NO3]-"): "rule C: c; HIGH: h"}} == IC.facts(table)
+    assert LL.iso_check_facts(str(run)) == {"veto": {(x, "[M+NO3]-"): "rule C: c; HIGH: h"}, "lock": {}} \
+        == IC.facts(table)
     off = LL.run([str(run)], []).set_index(["neutral", "adduct"])["level"]
     on = LL.run([str(run)], [], None, None, "auto").set_index(["neutral", "adduct"])["level"]
     assert off[(x, "[M+NO3]-")] == "3b" and on[(x, "[M+NO3]-")] == "5b" and on[(x, H)] == "4b"
@@ -754,7 +755,7 @@ def test_the_scorecard_reads_the_checks_as_the_runs_own_evidence(tmp_path, monke
         run_dir / "tables" / "iso_checks.csv", index=False)
     run = types.SimpleNamespace(path=str(run_dir), per_file=_branch_rows(x).assign(__file="s1"))
     own = SC.own_levels_for(run).set_index("adduct")
-    assert seen.get("iso") == {"veto": {(x, H): "REQ: r"}}
+    assert seen.get("iso") == {"veto": {(x, H): "REQ: r"}, "lock": {}}
     assert own.loc[H, "level"] == "5b" and own.loc["[M+NO3]-", "level"] == "4b"
 
 
@@ -834,6 +835,6 @@ def test_a_batch_without_a_time_series_writes_an_empty_table(tmp_path, monkeypat
     table = pd.read_csv(tmp_path / "tables" / "iso_checks.csv")
     assert table.empty and list(table.columns) == list(IC.TABLE_COLUMNS)
     summ = json.load(open(tmp_path / "batch_summary.json"))["evidence_levels"]["iso_checks"]
-    assert summ == {"instrument": "orbitrap", "tested": 0, "vetoed_pairs": 0}
+    assert summ == {"instrument": "orbitrap", "tested": 0, "vetoed_pairs": 0, "locked_pairs": 0}
     merged = pd.read_csv(tmp_path / "merged_ledger.csv")
     assert not merged["level_reason"].astype(str).str.contains("isotope check").any()

@@ -703,16 +703,18 @@ def label_twin_facts(path: str) -> dict | None:
 
 
 #: the order the isotope checks' notes join in, and each check's name there
-ISO_CHECKS = ("C", "REQ", "HIGH")
-ISO_CHECK_NAME = {"C": "rule C", "REQ": "REQ", "HIGH": "HIGH"}
+ISO_CHECKS = ("C", "REQ", "HIGH", "H")
+ISO_CHECK_NAME = {"C": "rule C", "REQ": "REQ", "HIGH": "HIGH", "H": "rule H"}
 
 
 def iso_check_facts(path: str) -> dict | None:
-    """{'veto': {(neutral, adduct): note}} -- the isotope checks (C11+) read
-    from a batch's tables/iso_checks.csv (a run dir, or an --out-dir holding one
-    run) or from that CSV itself, one note per pair joined over the checks that
-    refute it ('rule C: ...; REQ: ...'); None when there is no table or it is
-    empty (no time series). A source without the table says so on stderr."""
+    """{'veto': {(neutral, adduct): note}, 'lock': {(neutral, adduct): {'element',
+    'n', 'budget_ok', 'note'}}} -- the isotope checks (C11+) read from a batch's
+    tables/iso_checks.csv (a run dir, or an --out-dir holding one run) or from
+    that CSV itself: one note per pair joined over the checks that refute it
+    ('rule C: ...; REQ: ...'), and rule H's locks (C11+b; a table written before
+    rule H has none); None when there is no table or it is empty (no time
+    series). A source without the table says so on stderr."""
     table = path
     if os.path.isdir(path):
         table = os.path.join(path, "tables", "iso_checks.csv")
@@ -738,7 +740,15 @@ def iso_check_facts(path: str) -> dict | None:
             note = r.get("note")
             piece = f"{name}: {note}" if isinstance(note, str) and note else name
             veto[key] = f"{veto[key]}; {piece}" if key in veto else piece
-    return {"veto": veto}
+    lock: dict = {}
+    if "lock" in frame.columns and "check" in frame.columns:
+        for _, r in frame[(frame["check"].astype(str) == "H") & frame["lock"].map(truthy)].iterrows():
+            n = pd.to_numeric(r.get("n_halogen"), errors="coerce")
+            el, note = r.get("element"), r.get("note")
+            lock[(str(r["neutral_formula"]), str(r["adduct"]))] = {
+                "element": el if isinstance(el, str) else "", "n": int(n) if pd.notna(n) else 0,
+                "budget_ok": truthy(r.get("budget_ok")), "note": note if isinstance(note, str) else ""}
+    return {"veto": veto, "lock": lock}
 
 
 def run(sources: list[str], corroborate: list[str], upair: str | None = None,
