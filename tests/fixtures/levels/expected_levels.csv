@@ -5897,7 +5897,7 @@ orbi,C5HF9O,[M-H]-,5b,0,False,False,False,False,False,False,,False,True,False,7.
 orbi,C5HF9O2,[M-H]-,3a,1,False,False,False,True,False,False,perfluoroacid,False,False,False,10.0,True,True,12
 orbi,C5HF9O3,[M+^NO3]-,5b,1,False,True,False,False,True,False,,False,True,False,16.5,True,True,4
 orbi,C5HF9O3,[M-H]-,5b,1,False,True,False,False,True,False,,False,True,False,11.0,True,True,12
-orbi,C6H10Cl2O4,[M-H]-,5b,1,False,False,True,False,False,False,,False,True,False,2.0,False,True,1
+orbi,C6H10Cl2O4,[M-H]-,4b,1,True,False,False,False,False,False,,False,False,False,2.0,False,True,1
 orbi,C6H10N2O4S,[M+^NO3]-,5b,0,False,False,False,False,False,False,,False,False,False,7.0,False,True,1
 orbi,C6H10O2,[M+NO3]-,4b,1,False,True,False,False,False,False,,False,False,False,1.0,False,True,3
 orbi,C6H10O2,[M+^NO3]-,4b,1,False,True,False,False,False,False,,False,False,False,0.0,False,True,7
@@ -6017,7 +6017,7 @@ orbi,C6H8O5,[M-H]-,3b,2,True,True,False,False,True,False,,False,False,False,1.0,
 orbi,C6H8O6,[M-H]-,4b,2,True,False,True,False,False,False,,False,False,False,1.0,False,True,12
 orbi,C6H8O7,[M-H]-,4c,0,False,False,False,False,False,False,,False,False,False,1.0,False,True,12
 orbi,C6H8O8,[M-H]-,4c,0,False,False,False,False,False,False,,False,False,False,1.0,False,True,4
-orbi,C6H9ClO3,[M-H]-,5b,2,True,False,True,False,False,False,,False,True,False,1.0,False,True,9
+orbi,C6H9ClO3,[M-H]-,4b,1,True,False,False,False,False,False,,False,False,False,1.0,False,True,9
 orbi,C6H9ClO5,[M-H]-,5b,1,False,False,True,False,False,False,,False,True,False,1.0,False,True,8
 orbi,C6H9NO4,[M-H]-,4c,0,False,False,False,False,False,False,,False,False,False,1.0,False,True,1
 orbi,C6HClO,[M+^NO3]-,5b,1,True,False,False,False,False,False,,False,True,False,0.0,False,True,1
@@ -6442,7 +6442,7 @@ orbi,C9HF6N3O,[M-H]-,5b,0,False,False,False,False,False,False,,False,True,False,
 orbi,C9HF8N3O2,[M-H]-,5b,0,False,False,False,False,False,False,,False,True,False,15.0,True,True,3
 orbi,CH2F2O4,[M+^NO3]-,4c,0,False,False,False,False,False,False,,False,False,False,1.0,False,True,3
 orbi,CH3FO3,[M+^NO3]-,4c,0,False,False,False,False,False,False,,False,False,False,0.0,False,True,5
-orbi,HBr,[M+^NO3]-,5b,2,True,False,True,False,False,False,,False,True,False,0.0,False,True,2
+orbi,HBr,[M+^NO3]-,4b,1,True,False,False,False,False,False,,False,False,False,0.0,False,True,2
 ur,C10H10O,[M+H]+,4c,0,False,False,False,False,False,False,,False,False,False,1.0,False,True,6
 ur,C10H10O2,[M+(CH4N2O)H]+,4a,1,False,True,False,False,False,False,,False,False,False,1.0,False,True,10
 ur,C10H10O2,[M+H]+,4a,1,False,True,False,False,False,False,,False,False,False,1.0,False,True,10
@@ -7338,7 +7338,7 @@ ur,C7H10O4,[M+H]+,4a,2,True,True,False,False,False,False,,False,False,False,1.0,
 ur,C7H10O5,[M+(CH4N2O)H]+,4a,1,False,True,False,False,False,False,,False,False,False,1.0,False,True,10
 ur,C7H10O5,[M+H]+,4a,1,False,True,False,False,False,False,,False,False,False,1.0,False,True,10
 ur,C7H10O6,[M+(CH4N2O)H]+,5b,0,False,False,False,False,False,False,,False,True,False,1.0,False,True,5
-ur,C7H11ClO2,[M+(CH4N2O)H]+,5b,2,True,True,False,False,False,False,,False,True,False,,False,True,3
+ur,C7H11ClO2,[M+(CH4N2O)H]+,4b,1,True,False,False,False,False,False,,False,False,False,,False,True,3
 ur,C7H11ClO2,[M+H]+,5b,1,False,True,False,False,False,False,,False,True,False,,False,True,3
 ur,C7H11NO,[M+H]+,4c,0,False,False,False,False,False,False,,False,False,False,1.0,False,True,10
 ur,C7H11NO2,[M+(CH4N2O)H]+,4b,1,False,True,False,False,False,False,,False,False,False,1.0,False,True,9

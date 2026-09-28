@@ -28,7 +28,7 @@ from peaky.assignment import evidence as EV
 from peaky.batch import label_twins as LT
 from peaky.chem import chemistry as C
 from peaky.chem import profiles as P
-from tests.test_evidence import GOLDEN, _pooled, _vector, child, ledger, m0
+from tests.test_evidence import ORBI_NO_LOCK, _pooled, _vector, child, ledger, m0
 
 NO3, NO3L = LT.NO3, LT.NO3L
 N_SPECTRA = 120
@@ -568,14 +568,14 @@ def test_a_leaked_fact_would_move_the_goldens():
     assert _vector(moved.evidence_level) != _vector(base.evidence_level)
     tof, orbi = _pooled("tof"), _pooled("orbi")
     base = EV.level_pooled(orbi, cross=EV.source_neutrals(tof))
-    assert (len(base), _vector(base.evidence_level)) == GOLDEN["orbi"]
+    assert (len(base), _vector(base.evidence_level)) == ORBI_NO_LOCK
     labelled = base[base["adduct"].eq(NO3L)]
     moved = EV.level_pooled(orbi, cross=EV.source_neutrals(tof),
                             label=K(veto={(n, NO3L): "" for n in labelled["neutral_formula"]}))
-    assert _vector(moved.evidence_level) != GOLDEN["orbi"][1]
+    assert _vector(moved.evidence_level) != ORBI_NO_LOCK[1]
     # the one-channel fold alone (an empty fact set that is not None) moves it too
     moved = EV.level_pooled(orbi, cross=EV.source_neutrals(tof), label=K())
-    assert _vector(moved.evidence_level) != GOLDEN["orbi"][1]
+    assert _vector(moved.evidence_level) != ORBI_NO_LOCK[1]
     # ... and alien 14N lines leaving their neutral's pools
     lines = set(zip(base.loc[base["adduct"].eq(NO3), "neutral_formula"], base.loc[base["adduct"].eq(NO3), "adduct"]))
     moved = EV.level_pooled({"tv_nitrate": no3}, cross=cross, label=K(alien=lines))
@@ -761,7 +761,7 @@ def test_the_labelled_nitrate_golden_set_with_its_label_twin_table(tmp_path):
     cross = EV.source_neutrals(tof)
     core = EV.level_pooled(orbi, cross=cross, label=LT.facts(table))
     assert (len(core), _vector(core.evidence_level)) == ORBI_K
-    assert _vector(EV.level_pooled(orbi, cross=cross).evidence_level) == GOLDEN["orbi"][1]
+    assert _vector(EV.level_pooled(orbi, cross=cross).evidence_level) == ORBI_NO_LOCK[1]
     LL = _ll()
     for name in ("orbi", "tof"):
         d = tmp_path / name / "per_file"

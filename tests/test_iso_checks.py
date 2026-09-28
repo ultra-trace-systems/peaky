@@ -28,7 +28,7 @@ from peaky.batch import iso_checks as IC
 from peaky.chem import chemistry as C
 from peaky.chem import profiles as P
 from peaky.chem.resolution import Resolution
-from tests.test_evidence import GOLDEN, _pooled, _vector, child, ledger, m0
+from tests.test_evidence import ORBI_NO_LOCK, _pooled, _vector, child, ledger, m0
 
 N = 40
 FILL = 10.0
@@ -608,11 +608,11 @@ def test_a_leaked_veto_would_move_the_goldens():
     tof, orbi = _pooled("tof"), _pooled("orbi")
     cross = EV.source_neutrals(tof)
     base = EV.level_pooled(orbi, cross=cross)
-    assert (len(base), _vector(base.evidence_level)) == GOLDEN["orbi"]
-    assert _vector(EV.level_pooled(orbi, cross=cross, iso={"veto": {}}).evidence_level) == GOLDEN["orbi"][1]
+    assert (len(base), _vector(base.evidence_level)) == ORBI_NO_LOCK
+    assert _vector(EV.level_pooled(orbi, cross=cross, iso={"veto": {}}).evidence_level) == ORBI_NO_LOCK[1]
     acids = base[base["adduct"].eq(H) & base["evidence_level"].ne("5b")]
     moved = EV.level_pooled(orbi, cross=cross, iso={"veto": {(n, H): "" for n in acids["neutral_formula"]}})
-    assert _vector(moved.evidence_level) != GOLDEN["orbi"][1]
+    assert _vector(moved.evidence_level) != ORBI_NO_LOCK[1]
     # one veto on a branch acid moves its cluster sibling through the pool alone
     sib3b = set(base.loc[base["adduct"].ne(H) & base["evidence_level"].eq("3b"), "neutral_formula"])
     br = base[base["branch"] & base["adduct"].eq(H) & base["evidence_level"].eq("3b")

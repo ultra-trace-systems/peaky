@@ -21,6 +21,7 @@ import pandas as pd
 import pytest
 
 from peaky.assignment import evidence as EV  # noqa: E402
+from peaky.batch import iso_checks as IC  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "levels"
 ORDER = ["2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
@@ -35,16 +36,26 @@ ORDER = ["2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
 # the neutral) moved it again: six bromide-channel [M-H]- rows 4d -> 4b (four
 # brominated neutrals whose 81Br line is their own, two Br-free ions); it was
 # 6/15/182/15/254/82/99/138/2573.
+# C11+b (rule H, decision D8, 2026-09-28): the Orbitrap and the uronium sets are
+# levelled with their lock tables (orbi_iso_checks.csv / ur_iso_checks.csv: the
+# rule H lock rows of the live runs), and the four live-locked lead pairs carry
+# their flag in tentative_lead -- the Orbitrap set's HBr [M+^NO3]-, C6H9ClO3 and
+# C6H10Cl2O4 [M-H]- and the uronium set's C7H11ClO2 [M+(CH4N2O)H]+ lift 5b -> 4b.
+# Without the tables the vectors are as before (ORBI_NO_LOCK, UR_NO_LOCK).
 GOLDEN = {
     "tv": (1373, "21/15/107/16/143/15/10/37/1009"),
     "tof": (3364, "6/15/182/15/258/82/95/138/2573"),
-    "orbi": (1707, "0/11/217/9/203/139/0/35/1093"),
+    "orbi": (1707, "0/11/217/9/206/139/0/35/1090"),
     # the uronium set (C17 + U, 2026-09-27): one source, no corroboration, levelled
-    # with its neutral-pair table (rule U, row 9'); without the table it reads
-    # 4/4/0/25/682/291/0/82/73
-    "ur": (1161, "4/4/0/331/376/291/0/82/73"),
+    # with its neutral-pair table (rule U, row 9') and its lock table (C11+b);
+    # without either it reads 4/4/0/25/682/291/0/82/73
+    "ur": (1161, "4/4/0/331/377/291/0/82/72"),
 }
 UR_WITHOUT_PAIR = "4/4/0/25/682/291/0/82/73"
+#: the Orbitrap set without its lock table, the uronium set with its neutral-pair
+#: table alone -- the goldens before C11+b, and the base a leak guard levels at
+ORBI_NO_LOCK = (1707, "0/11/217/9/203/139/0/35/1093")
+UR_NO_LOCK = "4/4/0/331/376/291/0/82/73"
 
 LEDGER_COLUMNS = [
     "role", "peak_id", "parent_peak_id", "iso_label", "neutral_formula", "adduct",
@@ -350,6 +361,11 @@ def _vector(levels: pd.Series) -> str:
     return "/".join(str(int(c.get(k, 0))) for k in ORDER)
 
 
+def _iso(prefix: str) -> dict:
+    """A golden set's rule H lock table as level_pooled reads it (C11+b)."""
+    return IC.facts(pd.read_csv(FIXTURES / f"{prefix}_iso_checks.csv"))
+
+
 @pytest.fixture(scope="module")
 def expected():
     return pd.read_csv(FIXTURES / "expected_levels.csv")
@@ -369,9 +385,11 @@ def test_golden_same_air_pair():
     tof, orbi = _pooled("tof"), _pooled("orbi")
     n_tof, n_orbi = EV.source_neutrals(tof), EV.source_neutrals(orbi)
     t = EV.level_pooled(tof, cross=n_orbi)
-    o = EV.level_pooled(orbi, cross=n_tof)
+    o = EV.level_pooled(orbi, cross=n_tof, iso=_iso("orbi"))
     assert (len(t), _vector(t.evidence_level)) == GOLDEN["tof"]
     assert (len(o), _vector(o.evidence_level)) == GOLDEN["orbi"]
+    no_lock = EV.level_pooled(orbi, cross=n_tof)
+    assert (len(no_lock), _vector(no_lock.evidence_level)) == ORBI_NO_LOCK
 
 
 def _ur_pairs() -> set:
@@ -381,15 +399,16 @@ def _ur_pairs() -> set:
 
 def test_golden_uronium_neutral_pair():
     """Rule U on the uronium set: the pair table lifts 306 ion pairs to 4a;
-    without it the vector is C17's alone."""
+    without it the vector is C17's alone. The lock table (C11+b) lifts one lead."""
     ur = _pooled("ur")
-    with_pair = EV.level_pooled(ur, upair=_ur_pairs())
+    with_pair = EV.level_pooled(ur, upair=_ur_pairs(), iso=_iso("ur"))
     assert (len(with_pair), _vector(with_pair.evidence_level)) == GOLDEN["ur"]
+    assert _vector(EV.level_pooled(ur, upair=_ur_pairs()).evidence_level) == UR_NO_LOCK
     assert _vector(EV.level_pooled(ur).evidence_level) == UR_WITHOUT_PAIR
 
 
 def test_uronium_rows_match_the_reference_script(expected):
-    got = EV.level_pooled(_pooled("ur"), upair=_ur_pairs()).assign(source="ur")
+    got = EV.level_pooled(_pooled("ur"), upair=_ur_pairs(), iso=_iso("ur")).assign(source="ur")
     exp = expected[expected.source == "ur"]
     assert len(exp) == GOLDEN["ur"][0]
     m = exp.merge(got, left_on=["source", "neutral", "adduct"],
@@ -402,7 +421,7 @@ def test_rows_match_the_reference_script_row_for_row(expected):
     tof, orbi = _pooled("tof"), _pooled("orbi")
     n_tof, n_orbi = EV.source_neutrals(tof), EV.source_neutrals(orbi)
     got = pd.concat([EV.level_pooled(tof, cross=n_orbi).assign(source="tof"),
-                     EV.level_pooled(orbi, cross=n_tof).assign(source="orbi")])
+                     EV.level_pooled(orbi, cross=n_tof, iso=_iso("orbi")).assign(source="orbi")])
     exp = expected[expected.source.isin(["tof", "orbi"])]
     m = exp.merge(got, left_on=["source", "neutral", "adduct"],
                   right_on=["source", "neutral_formula", "adduct"], how="left")
