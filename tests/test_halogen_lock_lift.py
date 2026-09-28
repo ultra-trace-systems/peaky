@@ -515,3 +515,17 @@ def test_a_batch_lifts_the_locked_lead_on_the_merged_ledger(tmp_path, monkeypatc
         assert bool(row["tentative_lead"]) and row["lead_by"] == "spec_gapfill"
         lv = EV.compute_levels(led)
         assert lv.loc[row.name, "evidence_level"] == "5b"
+
+
+def test_a_table_written_before_rule_h_levels_as_before():
+    """An iso_checks.csv from before rule H (no `lock` column, no H rows) gives
+    no lock: the levels are those of its vetoes alone, in both readers."""
+    files = {"f1": _f(_r("p", lead=True), _r("s", adduct=NO3), _r("x", "C7H12O4", anchor="z"))}
+    t = _h_table([dict(neutral_formula="C7H12O4", adduct=H, check="REQ", verdict="absent", veto=True, note="r")])
+    old = t.drop(columns=["lock", "element", "n_halogen", "ratio_lo", "ratio_hi", "heavy_cl", "heavy_br",
+                          "budget_ok", "budget_why"])
+    facts = IC.facts(old)
+    assert facts == {"veto": {("C7H12O4", H): "REQ: r"}, "lock": {}}
+    got = EV.level_pooled(files, iso=facts)
+    assert got.equals(EV.level_pooled(files, iso={"veto": facts["veto"]})) and not got["lead_lift"].any()
+    assert got.set_index(["neutral_formula", "adduct"]).at[(CL1, H), "evidence_level"] == "5b"
