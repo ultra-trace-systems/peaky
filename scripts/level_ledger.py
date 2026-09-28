@@ -31,11 +31,12 @@ One row out per `(source, neutral_formula, adduct)` over the source's M0 rows.
 The scale, in the order the predicates are tried:
 
     5b  the assignment argues with itself — a near-tie the arbiter broke, a row
-        below assignability or a tentative lead, or a score the engine itself
-        calls Low/Suspect, or (rule K, --label-twins) the labelled reagent's 14N
-        twin refutes the cluster reading, or (C11+, --iso-checks) an isotope
-        check of the batch's time series refutes the formula; also a
-        mass-degenerate row with no corroborating axis at all
+        below assignability or a tentative lead (with --iso-checks, one a
+        halogen lock of the batch answers is lifted: rule H, C11+b), or a score
+        the engine itself calls Low/Suspect, or (rule K, --label-twins) the
+        labelled reagent's 14N twin refutes the cluster reading, or (C11+,
+        --iso-checks) an isotope check of the batch's time series refutes the
+        formula; also a mass-degenerate row with no corroborating axis at all
     2b  a curated identity on a formula that admits essentially one structure
     3a  a named compound class, isomers open (PFCA, nitroaromatic, …)
     3b  a substituent only, via the gas-phase acidity branch: the same neutral
@@ -279,6 +280,20 @@ def neutral_elements(neutral, ion) -> set:
     return {e for e, n in own.items() if n > 0 and 2 * n > whole.get(e, 0)}
 
 
+#: the lead setters a halogen lock answers (rule H, C11+b; the engine's
+#: evidence.LIFTABLE_LEADS): the three speculative-residual reasons, the
+#: reference-list dim rescue and -- where the locked halogen is its only
+#: violation -- the element budget; never the radical anion or the reagent-N re-read
+LIFTABLE_LEADS = {"spec_n3", "spec_gapfill", "spec_minor", "reflist_dim", "off_budget"}
+
+
+def lead_setters(value) -> set:
+    """The setter codes a `lead_by` cell names; empty for "", NaN or None."""
+    if not isinstance(value, str):
+        return set()
+    return {s for s in value.split("|") if s.strip() and s.strip().lower() != "nan"}
+
+
 def is_ion_only(frame: pd.DataFrame) -> pd.Series:
     """Rows the ion-only stage wrote (see ION_ONLY_ADDUCTS)."""
     adduct = column(frame, "adduct", "").fillna("").astype(str).isin(ION_ONLY_ADDUCTS)
@@ -445,6 +460,10 @@ def measure_source(
         }
         carbon_ev = any(t.startswith("13C") for t in tags)
         ion_only = bool(group["ion_only"].any())
+        below_row = group["below_assignability"].map(truthy).astype(bool)
+        lead_row = group["tentative_lead"].map(truthy).astype(bool)
+        clean_row = ~group["ion_only"].astype(bool) & ~below_row & ~lead_row
+        lead_codes = [lead_setters(v) for v in group.loc[lead_row, "lead_by"]]
         own = in_band.get(key, set()) & neutral_elements(
             neutral, str(group["ion_formula"].iloc[0]))
         aset = set() if ion_only else adduct_sets.get(neutral, set())
@@ -479,8 +498,17 @@ def measure_source(
                 and not_the_neutrals_line(neutral, adduct, group["ion_formula"].iloc[0], halogen),
                 iso_labels="|".join(sorted(tags)),
                 tied=bool(group["tied"].map(truthy).all()),
-                below=bool(group["below_assignability"].map(truthy).any()),
-                lead=bool(group["tentative_lead"].map(truthy).any()),
+                below=bool(below_row.any()),
+                lead=bool(lead_row.any()),
+                # rule H (C11+b): the setters behind the pair's lead rows (a lead
+                # row naming none -- a ledger written before `lead_by` -- may be
+                # the element budget's), whether it has an unflagged regular row,
+                # and the anchor its unflagged rows give on their own
+                lead_by="|".join(sorted(set().union(*lead_codes))) if lead_codes else "",
+                lead_unknown=any(not c for c in lead_codes),
+                clean_row=bool(clean_row.any()),
+                anchor_clean=(not ion_only) and bool(
+                    (group["anchor_peak_id"].notna() | group["series_unit"].notna())[~below_row & ~lead_row].any()),
                 lowconf=bool(
                     group["confidence"].map(first_word).isin(LOW_CONFIDENCE).all()
                 ),
@@ -512,7 +540,8 @@ def measure_source(
 
 def level_of(row) -> str:
     """The decision table. Order matters: the first predicate that holds wins."""
-    # a tentative lead (C19(c)) is hard like below assignability until rule H
+    # a tentative lead (C19(c)) is hard like below assignability; a halogen lock
+    # (rule H, C11+b) that lifts it has already set `lead` False (lift_leads)
     hard = (bool(row.tied) or bool(row.below) or bool(getattr(row, "lead", False))
             or bool(row.lowconf) or bool(getattr(row, "label_veto", False))
             or bool(getattr(row, "iso_veto", False)))
@@ -569,6 +598,45 @@ def relabel_pools(df: pd.DataFrame, alien: set, fold: bool = True) -> pd.DataFra
     return df
 
 
+def lift_leads(df: pd.DataFrame, lock: dict, alien: set, fold: bool) -> pd.DataFrame:
+    """Rule H (C11+b): a locked pair whose lead rows were all set by a setter
+    the lock answers (the element budget's only where `budget_ok`), none below
+    assignability, not alien / ion-only / refuted, is lifted: `lead` False, the
+    lock its isotope axis, no reagent-only flag, and its second channel / acid
+    branch / anchor read over unflagged rows alone -- its own adduct plus the
+    adducts its neutral commits on an unflagged regular row of a pair that is
+    not alien (`fold`: the two nitrate clusters count as one channel)."""
+    df = df.copy()
+    df["lead_lift"] = False
+    df["lock_note"] = ""
+    if not lock:
+        return df
+    keys = list(zip(df["neutral"].astype(str), df["adduct"].astype(str)))
+    out = pd.Series([k in alien for k in keys], index=df.index, dtype=bool) | df["ion_only"].astype(bool)
+    clean = df[df["clean_row"].astype(bool) & ~out].groupby("neutral")["adduct"].agg(lambda s: set(s.astype(str)))
+    for idx, k in zip(df.index, keys):
+        spec = lock.get(k)
+        if spec is None or out[idx] or bool(df.at[idx, "below"]) or not bool(df.at[idx, "lead"]):
+            continue
+        if bool(df.at[idx, "label_veto"]) or bool(df.at[idx, "iso_veto"]):
+            continue
+        setters = lead_setters(df.at[idx, "lead_by"])
+        budget_ok = bool(spec.get("budget_ok", False))
+        if not (setters <= LIFTABLE_LEADS and ("off_budget" not in setters or budget_ok)
+                and (not bool(df.at[idx, "lead_unknown"]) or budget_ok)):
+            continue
+        own = {k[1]} | set(clean.get(k[0], set()))
+        df.at[idx, "chan2"] = len({LABEL_FOLD.get(a, a) if fold else a for a in own}) >= 2
+        df.at[idx, "branch"] = bool(own & BARE_ADDUCTS) and bool(own & CLUSTER_ADDUCTS)
+        df.at[idx, "anchor"] = bool(df.at[idx, "anchor_clean"])
+        df.at[idx, "iso"] = True
+        df.at[idx, "reagent_only_iso"] = False
+        df.at[idx, "lead"] = False
+        df.at[idx, "lead_lift"] = True
+        df.at[idx, "lock_note"] = str(spec.get("note", "") or "")
+    return df
+
+
 def assign_levels(df: pd.DataFrame, corroborating: set[str], upair: set[str] | None = None,
                   label: dict | None = None, iso: dict | None = None) -> pd.DataFrame:
     """Add the axes, the derived flags and the level to measured rows. `upair`
@@ -576,9 +644,11 @@ def assign_levels(df: pd.DataFrame, corroborating: set[str], upair: set[str] | N
     facts (rule K: {'untie', 'veto', 'alien'}, `label_twin_facts`): the 14N lines
     it could not tie to their neutral's 15N cluster leave the neutral's pools,
     the two clusters count as one channel, a tie the 15N sibling breaks is
-    cleared and a refuted reading is hard; `iso` the isotope checks' vetoes
-    (C11+: {'veto': {(n, a): note}}, `iso_check_facts`): a refuted pair is hard
-    and leaves its neutral's pools like an alien line. Facts, never axes."""
+    cleared and a refuted reading is hard; `iso` the isotope checks' vetoes and
+    locks (C11+: {'veto': {(n, a): note}, 'lock': {(n, a): fact}},
+    `iso_check_facts`): a refuted pair is hard and leaves its neutral's pools
+    like an alien line; a locked pair's lead the lock answers is lifted
+    (`lift_leads`, rule H). Facts, never axes."""
     df = df.copy()
     df["known_fam"] = df["known_fam"].fillna("")
     if "ion_only" not in df.columns:
@@ -599,6 +669,13 @@ def assign_levels(df: pd.DataFrame, corroborating: set[str], upair: set[str] | N
     # C11+: an isotope check refutes the formula (an ion-only pair too)
     df["iso_veto"] = pd.Series([k in iso_veto for k in keys], index=df.index, dtype=bool)
     df["iso_note"] = [iso_veto.get(k, "") if v else "" for k, v in zip(keys, df["iso_veto"])]
+    # rule H (C11+b): the halogen locks lift the leads they answer
+    lock = {(str(n), str(a)): dict(v or {}) for (n, a), v in ((iso or {}).get("lock") or {}).items()}
+    for col, default in (("lead_by", ""), ("lead_unknown", True), ("clean_row", False), ("anchor_clean", False)):
+        if col not in df.columns:
+            df[col] = default
+    df = lift_leads(df, lock, {(str(n), str(a)) for n, a in ((label or {}).get("alien") or set())} | set(iso_veto),
+                    fold=bool(label))
     df["n_axes"] = df[["iso", "chan2", "anchor", "corroborated"]].sum(axis=1)
     df["cross"] = df.corroborated | df.multiline | df.known_fam.ne("")
     df["neutral_backed"] = (
@@ -758,10 +835,11 @@ def run(sources: list[str], corroborate: list[str], upair: str | None = None,
     `upair`: 'auto' reads each run-dir source's own tables/neutral_pairs.csv;
     a CSV path applies that table to every levelled source; None = rule U off.
     `twins`: the same for tables/label_twins.csv (rule K). `iso`: the same for
-    tables/iso_checks.csv (C11+); a named table applies only to a source that
-    holds every pair it vetoes -- the checks were measured on one batch's time
-    series and name its pairs, so a source missing one of them is another
-    batch and the table does not fire there."""
+    tables/iso_checks.csv (C11+, its vetoes and rule H's locks); a named table
+    applies only to a source that holds every pair it vetoes or locks -- the
+    checks were measured on one batch's time series and name its pairs, so a
+    source missing one of them is another batch and the table does not fire
+    there."""
     measured = {}
     neutrals = {}
     for path in sources:
@@ -804,9 +882,9 @@ def run(sources: list[str], corroborate: list[str], upair: str | None = None,
         elif iso:
             checks = iso_check_facts(iso)
             pairs = set(zip(frame["neutral"].astype(str), frame["adduct"].astype(str)))
-            missing = set((checks or {}).get("veto") or {}) - pairs
+            missing = (set((checks or {}).get("veto") or {}) | set((checks or {}).get("lock") or {})) - pairs
             if missing:
-                print(f"  --iso-checks: {label_} does not hold {len(missing)} pair(s) the table vetoes "
+                print(f"  --iso-checks: {label_} does not hold {len(missing)} pair(s) the table vetoes or locks "
                       f"(another batch's table); the isotope checks do not fire there", file=sys.stderr)
                 checks = None
         out.append(assign_levels(frame, others, held, label, checks))
@@ -852,7 +930,8 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         dest="iso",
         help="C11+: read each batch source's tables/iso_checks.csv (no value), "
-        "or apply this isotope-check CSV to the levelled sources that hold every pair it vetoes",
+        "or apply this isotope-check CSV to the levelled sources that hold every pair it vetoes or locks "
+        "(its vetoes refute; rule H's locks lift the tentative leads they answer)",
     )
     parser.add_argument("--out", help="write the levelled rows here as CSV")
     args = parser.parse_args(argv)

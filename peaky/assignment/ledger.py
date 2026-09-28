@@ -119,7 +119,8 @@ _REQUIRED_IDENTITY = ("peak_id", "mz")
 #       element budget that no curated list names, a speculative residual fit
 #       (N >= 3 with no isotope, a gap-fill with no anchors, a sole minor
 #       channel), an uncorroborated radical anion, a reagent-N re-read.
-# The evidence level reads either as `hard` (5b) today. Neither is in
+# The evidence level reads either as `hard` (5b); on the pooled batch a halogen
+# lock lifts a lead it answers (rule H, C11+b: evidence._measure). Neither is in
 # `_ASSIGN_COLS`: the tier stage creates both (tiers.flag_below_assignability;
 # the reference-list rescue on a ledger it reaches first), so a ledger that was
 # never tiered -- and the merged ledger, whose schema is assign_batch._M0_COLS --
@@ -134,7 +135,8 @@ ASSIGNABILITY_FLAGS = (FLAG_BELOW, FLAG_LEAD)
 # a lead only where every setter behind it is one the lock answers, and the
 # commentary that also names the setter is not among the columns the pooled level
 # keeps. Created and reset with the flags; a ledger written before it has no such
-# column, and a reader takes its leads for any setter (evidence._measure).
+# column, and the pooled level takes such a lead for any setter, the element
+# budget's included (evidence.lead_liftable).
 LEAD_BY = "lead_by"
 #: the codes `lead_by` names a lead's setter with: the reference-list dim rescue,
 #: the element-budget demote, the three speculative-residual reasons (N >= 3 with

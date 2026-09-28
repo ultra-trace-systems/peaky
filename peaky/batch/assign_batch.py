@@ -1887,9 +1887,12 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "neutral_pairs": _NP.summary(pairs_table, _pair),
         "label_twins": _LT.summary(twins_table, prof),
         "iso_checks": _IC.summary(iso_table, rp),
+        # rule H (C11+b): the pooled pairs whose tentative lead a halogen lock lifted
+        "lead_lifted": int(levels["lead_lift"].sum()) if len(levels) and "lead_lift" in levels.columns else 0,
     }
     log(f"[assign_batch] evidence levels over {len(level_frames)} pooled file(s): "
-        f"{ev_summary['pooled']} ({ev_summary['n_pairs']} neutral/adduct pairs); "
+        f"{ev_summary['pooled']} ({ev_summary['n_pairs']} neutral/adduct pairs, "
+        f"{ev_summary['lead_lifted']} lead(s) lifted by a halogen lock); "
         f"{ev_summary['n_unstamped']} merged row(s) without a per-file reading "
         f"-> tables/evidence_levels.csv")
     # the claim each level supports, tallied beside the tier (never read off it)
