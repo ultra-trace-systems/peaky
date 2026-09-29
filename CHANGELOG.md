@@ -21,9 +21,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   30Si must carry (the 2026-09-28 decision, "the 29Si line decides": n = ratio / 0.0335
   silicons, 29Si n x 0.0508 at +0.99957 Da; where the width model parts it from 13C the
   line itself at >= half its expected area, present and co-varying like the partner,
-  else the +1 region >= half that area above the ion's own +1 line and shifted at
-  least half-way toward 29Si -- areas, as blends and the wide Si lines need; 81Br needs
-  no test). Never on an ion with Si >= 3 or both halogens, and
+  else the +1 region -- every peak from 29Si to 13C -- present and co-varying with the
+  M0 like the partner (r(log region area, log M0 area) >= 0.8, the 2026-09-29
+  decision), >= half that area above the ion's own +1 line (13C, 2H, 15N, 17O, 33S and,
+  for a reading carrying Si, 29Si) and, area-weighted and the median over the spectra,
+  at least half-way toward 29Si -- areas, the basis of the partner's ratio; 81Br needs
+  no test; the 30Si spacing is AME2020's 1.9968436, so the test starts at m/z 206.3).
+  What the blended test cannot refuse is an organosilicon above m/z ~600 rich enough in
+  carbon that rule C reads its blend as a 13C line, read as a Cl formula with more than
+  ~40 C (none on the regression batches); the line's position alone would catch it and
+  was rejected (~20 more false refusals per 531 Si-free pairs with a present +1 region).
+  Never on an ion with Si >= 3 or both halogens, and
   never on a halogen the batch's reagent could have put there: a line counts only where
   the ion carries more of it than one reagent ion supplies (the batch's reagent
   decides, not the adduct label: HBr [M+^NO3]- locks on the labelled-nitrate batch,
@@ -37,7 +45,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rule K outrank it; rule C is the only 13C hold; per-file levels, the tier and the
   vote never see it. `tables/iso_checks.csv` gains the `H` rows and their columns
   (`lock`, `element`, `n_halogen`, `ratio_lo` / `ratio_hi`, `heavy_cl` / `heavy_br`,
-  `budget_ok` / `budget_why`), `tables/evidence_levels.csv` `lead_lift` / `lock_note`,
+  `budget_ok` / `budget_why`, and the silicon test's `si_n`, `si29_expected`,
+  `si29_seen`, `si29_mode`), `tables/evidence_levels.csv` `lead_lift` / `lock_note`,
   `evidence_axes` the modifier `lead_lift`, `batch_summary.json` the H funnel,
   `locked_pairs` and `evidence_levels.lead_lifted`; `scripts/level_ledger.py
   --iso-checks` lifts in lockstep and `scripts/scorecard.py` reads the locks as the
@@ -55,9 +64,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Orbitrap-only in practice). Identified unchanged on all three; a lock at +-4 to 16
   mDa decoy spacings moves nothing. The silicon test reads the four Cl locks above m/z
   206 (C7H11ClO5, C6H10Cl2O4, C10H19ClO3 [M-H]-, the uronium urea cluster) and finds no
-  29Si line on any; handed the uronium batch's own siloxane M+2 lines as Cl partners it
-  fires on the D5, Si10 and Si11 urea clusters (the D7 cluster is too dim for its 30Si
-  line to show). The golden fixtures gained the lock tables of the
+  29Si line on any. No uronium siloxane can form a Cl lock at all (none passes the one-Cl
+  gates at 1 ppm); handed their M+2 lines as Cl partners, the detector alone fires on the
+  Si10 and Si11 urea clusters only against the siloxane's own Si-free composition (their
+  M+2 taken within 3 ppm; the D5 urea cluster, whose +1 region co-varies at r 0.74, no
+  longer does) and on none of the CHNOS(+Si <= 2)+Cl readings within 1 ppm a lock would
+  carry (their extra carbons' +1 line absorbs the excess): the protection there is the
+  lock's gates and rule C, which refutes the 7 carbon-rich Cl readings it can test. The
+  co-variation gate cuts the test's false fires on the Orbitrap batches' real Si-free
+  ions, forced blended, from 38 to 1. The golden fixtures gained the lock tables of the
   live runs and the four live-locked lead pairs' flag in `tentative_lead` (decision
   D8): the Orbitrap vector 0/11/217/9/203/139/0/35/1093 -> 0/11/217/9/206/139/0/35/1090,
   the uronium one 4/4/0/331/376/291/0/82/73 -> 4/4/0/331/377/291/0/82/72; the TOF, TV

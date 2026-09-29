@@ -73,10 +73,20 @@ rule C).
         n = ratio / 0.0335 silicons, 29Si n x 0.0508 at +0.99957 Da, 3.79 mDa
         below 13C: resolved (the width model's FWHM at the +1 m/z < 3.79 mDa) the
         line itself within 1 ppm, present and co-varying like the partner, at
-        >= half its expected area; blended, the +1 region >= half the 29Si area
-        above the ion's own +1 line (`m1_line`) and its area-weighted position
-        >= half-way toward 29Si (`_silicon`). A chlorinated ion carries no 29Si;
-        81Br needs no test (30Si sits 1.11 mDa below it). Never locked
+        >= half its expected area; blended, the +1 region present and
+        co-varying with the M0 like the partner (r(log region area, log M0
+        area) >= LOCK_RMIN, the 2026-09-29 decision), >= half the 29Si area
+        above the ion's own +1 line (`m1_line`: 13C, 2H, 15N, 17O, 33S and, for
+        a reading carrying Si, 29Si) and its area-weighted position, the median
+        over the spectra, >= half-way toward 29Si (`_silicon`). A chlorinated
+        ion carries no 29Si; 81Br needs no test (30Si sits 1.11 mDa below it).
+        What the blended test cannot refuse: an organosilicon above m/z ~600
+        rich enough in carbon that rule C reads its blend as a 13C line, read
+        as a Cl formula with more than ~40 C -- that reading's own +1 line
+        absorbs the 29Si excess (none on the regression batches). The line's
+        position alone would catch it and was measured and rejected: ~20 more
+        false refusals per 531 Si-free pairs with a present +1 region, on dim
+        ions like the real locks. Never locked
         (`untestable`): an ion carrying Si >= 3, both Cl and Br (a blended M+2),
         a pair with no M0 stamp, one stamped on a heavy isotopologue, one
         stamped in < LOCK_NMIN spectra.
@@ -123,9 +133,20 @@ series (the runs equal the replay row for row):
           all three; a lock at +-4 / 8 / 12 / 16 mDa around either spacing moves
           nothing. The silicon test (2026-09-28) reads the four Cl locks above
           m/z 206 (C7H11ClO5, C6H10Cl2O4, C10H19ClO3 [M-H]-; the urea cluster):
-          no 29Si line on any, the locks and the lifts unchanged; on the uronium
-          batch's own siloxanes, their M+2 handed to it as a Cl line, it fires
-          where that line co-varies (D5, Si10, Si11 urea clusters).
+          no 29Si line on any, the locks and the lifts unchanged. On the uronium
+          batch's own siloxanes no Cl lock can form at all: none passes the
+          one-Cl gates at 1 ppm. As a control of the detector alone, their M+2
+          handed to it as a Cl partner: against the siloxane's own Si-free
+          composition it fires on the Si10 and Si11 urea clusters (their M+2
+          taken within 3 ppm, where the lock reads 1 ppm; the D5 urea cluster's
+          +1 region co-varies at r 0.74 and no longer fires), against every
+          CHNOS(+Si <= 2)+Cl reading within 1 ppm -- the formulas a lock would
+          carry -- on none (their extra carbons' +1 line absorbs the excess).
+          The protection there is the lock's own gates and rule C, which refutes
+          the 7 carbon-rich Cl readings of the D5, Si10 and Si11 urea clusters
+          (no 13C line at the exact spacing). The co-variation gate (2026-09-29)
+          cuts the test's false fires on real Si-free ions of the Orbitrap
+          batches, forced into the blended regime, from 38 to 1.
 """
 from __future__ import annotations
 
@@ -1070,12 +1091,17 @@ def _silicon(S: _Series, codes, pm, pa, ph, ratio: float, ion: dict, rp, pcol: i
     line is looked for as the lock partner is -- within LOCK_TOL_PPM, present in
     >= LOCK_FRAC of the stamps, r(log area) >= LOCK_RMIN -- at >= LOCK_SI_FRAC of
     its expected area. Where they blend (no width model: blended) the +1 region
-    (D29SI - 1 ppm .. D13C + 1 ppm, every peak in it: a blend, or lines the peak
-    picker split after all), present in >= LOCK_FRAC of the stamps, must read
-    >= LOCK_SI_FRAC of the 29Si area above the ion's own +1 line (`m1_line`) and
-    sit, area-weighted, >= LOCK_SI_FRAC of the way the blend would move it
-    toward 29Si. Areas, not heights: a blend's height is not the sum of its
-    lines', and the batch's Si lines run wide (their heights 0.4-0.75x theory).
+    (D29SI - 1 ppm .. D13C + 1 ppm, every peak in it: the peak picker reports a
+    blend as one peak at its apex, and sums whatever lines it did part),
+    present in >= LOCK_FRAC of the stamps and co-varying with the M0 (r(log
+    region area, log M0 area) >= LOCK_RMIN over the spectra it is present in:
+    a Si-rich ion's 29Si line is its own isotope line, as the partner is),
+    must read >= LOCK_SI_FRAC of the 29Si area above the ion's own +1 line
+    (`m1_line`; pooled, sum over sum) and sit, area-weighted within each
+    spectrum and the median over the spectra, >= LOCK_SI_FRAC of the way the
+    blend would move it toward 29Si. Areas, not heights: the partner's ratio
+    and the silicons it implies are area ratios, and the 29Si line is read on
+    the same basis (a blend's height is not the sum of its lines' either).
     `holds`: the M+1 region shows the Si reading; `seen` is the 29Si area found
     (blended: the region's excess over the ion's own +1 line)."""
     n_si = ratio / LOCK_SI_PER_ATOM["30Si"]
@@ -1098,10 +1124,11 @@ def _silicon(S: _Series, codes, pm, pa, ph, ratio: float, ion: dict, rp, pcol: i
         pos[i] = float((a * (S.mz[lo[i]:hi[i]] - pm[i])).sum() / area[i])
     excess = float(area[hit].sum() / pa[hit].sum()) - m1 if hit.any() else np.nan
     at = float(np.median(pos[hit])) if hit.any() else np.nan
+    r = _pearson(np.log(pa[hit]), np.log(area[hit]))
     at_max = c1 - LOCK_SI_FRAC * (c1 - blend)
-    holds = hit.mean() >= LOCK_FRAC and excess >= LOCK_SI_FRAC * e29 and at <= at_max
+    holds = (hit.mean() >= LOCK_FRAC and r >= LOCK_RMIN and excess >= LOCK_SI_FRAC * e29 and at <= at_max)
     return dict(n=n_si, expected=e29, seen=excess, mode="blended", holds=bool(holds), presence=float(hit.mean()),
-                at=at, at_max=at_max)
+                r=r, at=at, at_max=at_max)
 
 
 def _lock(S: _Series, pooled: pd.DataFrame, klass: str, prof=None, context=None, rp=None) -> pd.DataFrame:

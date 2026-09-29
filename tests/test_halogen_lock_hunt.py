@@ -11,7 +11,8 @@ reference script re-implements a rule it is held in lockstep with the engine
 test (the 2026-09-28 decision, "the 29Si line decides") is pinned at each of
 its edges in both regimes: the line a Si reading implies at half its area,
 present and co-varying (resolved), the region's excess, its area-weighted
-median position half-way toward 29Si, its bounds and presence (blended), the
+median position half-way toward 29Si, its bounds, presence and co-variation
+with the M0 (blended; the co-variation the 2026-09-29 decision added), the
 regime read at the ion's +1 m/z. A line at the 29Si position beside a real
 chloro acid is another ion's (what the test would read); in the blended regime
 it merges with the 13C line into one peak, as the peak picker reports it.
@@ -337,10 +338,11 @@ def test_the_blended_excess_is_over_the_m0s_area():
 
 
 def test_the_blended_position_is_the_median_over_the_spectra():
-    """An extra line in 21 of 40 spectra (2x the 29Si's area there), placed so
-    those spectra's +1 region sits 0.2 mDa inside the half-way mark toward 29Si;
-    the other 19 sit at 13C. The median spectrum is on the Si side and the lock
-    is refused; the mean of all would sit past the mark."""
+    """An extra line (2x the 29Si's area) in every spectrum, co-varying with the
+    M0: in 21 of 40 spectra it sits where it puts the +1 region 0.2 mDa inside
+    the half-way mark toward 29Si, in the other 19 at 13C (two sources
+    alternating). The median spectrum is on the Si side and the lock is
+    refused; the mean of all would sit past the mark."""
     ion = C.parse_formula(_ion(BIG, H).rstrip("-"))
     own, c1 = IC.m1_line(ion)
     at_max = c1 - 0.5 * (c1 - (own * c1 + E29 * IC.D29SI) / (own + E29))
@@ -348,8 +350,51 @@ def test_the_blended_position_is_the_median_over_the_spectra():
     target = at_max - 2e-4
     d = (target * (a13 + x) - a13 * IC.D13C) / x              # the extra line's spacing that puts the region there
     assert (21 * target + 19 * IC.D13C) / 40 > at_max          # the mean would not refuse
-    r = _si(lambda i: _si_line(i, 2.0, d=d, blend=True, present=lambda i: i < 21), _lo())
+    r = _si(lambda i: _si_line(i, 2.0, d=d if i < 21 else IC.D13C, blend=True), _lo())
     assert r["verdict"] == "si_rich"
+    # 20 of 40 on the Si side: the median sits between the two groups, past the mark
+    assert _si(lambda i: _si_line(i, 2.0, d=d if i < 20 else IC.D13C, blend=True), _lo())["verdict"] == "lock"
+
+
+def _region(rows):
+    """The +1 region's peak of a blended _si_line series (the 13C line merged with the extra one)."""
+    return next(r for r in rows if 0.99 < r["mz"] - rows[0]["mz"] < 1.01)
+
+
+def test_the_blended_region_must_co_vary_with_the_m0():
+    """The 2026-09-29 decision (U1): the +1 region co-varies with the M0 --
+    r(log region area, log M0 area) >= LOCK_RMIN over the spectra it is present
+    in -- as the lock partner and the resolved 29Si line must: a Si-rich ion's
+    29Si line is its own. The same region scattered to r 0.795 is not the
+    ion's: no refusal."""
+    h0 = _h0()
+    for r_target, verdict in ((0.805, "si_rich"), (0.795, "lock")):
+        noise = _noise_for(r_target, h0)
+
+        def build(i):
+            rows = _si_line(i, 1.0, blend=True)
+            reg = _region(rows)
+            reg.update(area=reg["area"] * np.exp(noise[i]), height=reg["height"] * np.exp(noise[i]))
+            return rows
+        r = _si(build, _lo())
+        assert r["si29_mode"] == "blended" and r["verdict"] == verdict, r_target
+        assert r["si29_seen"] > 0.5 * E29                    # the excess alone would refuse
+
+
+def test_the_blended_region_co_varies_by_area():
+    """The M0's heights scatter against its areas (r 0.5 in log: a peak whose
+    width changes spectrum to spectrum); the +1 region's area follows the M0's
+    area exactly. r reads the areas, as the lock partner's does: the region is
+    the ion's and the lock is refused."""
+    h0 = _h0()
+    noise = _noise_for(0.5, h0)
+
+    def build(i):
+        rows = _si_line(i, 1.0, blend=True)
+        rows[0]["height"] = rows[0]["area"] * np.exp(noise[i])
+        return rows
+    r = _si(build, _lo())
+    assert r["verdict"] == "si_rich" and r["r"] == pytest.approx(1.0)   # the partner's r reads areas too
 
 
 def test_the_blended_region_reads_its_peaks_area_weighted():
