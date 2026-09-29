@@ -487,15 +487,20 @@ def test_a_si2_reading_whose_own_29si_hides_the_shift_is_refused_on_the_excess(h
 
 def test_on_a_tof_the_plus_one_line_read_low_refuses_a_real_chlorine_lock():
     """The TOF note (the 2026-09-29 decision): a TOF-class batch blends 29Si
-    and 13C at every mass, and its peak list reads an ion's +1 line ~1.3 mDa
-    below the 13C spacing (the median on the regression TOF; 1.2-2.1 mDa on the
-    seven Si-free ions the position alone refused there, where the excess test
-    had not). There the position is no silicon signature: the chloro acid's own
-    13C line read 2.0 mDa low, 1.79 mDa above 29Si, sits past the half-way mark
-    (2.44 mDa above 29Si for its 16 carbons) and a real Cl lock is refused. Harmless today -- no TOF
-    lock forms at 1 ppm (the TOF's own 81Br partners sit 6.8 ppm off the exact
-    spacing at the median) -- and pinned so that a TOF lock, if one ever
-    forms, meets it; the same line where it belongs locks."""
+    and 13C at every mass, and its peak list reads an ion's +1 region ~1.3 mDa
+    below the ion's own +1 position (the median over the regression TOF's 69
+    present regions); the seven Si-free ions the position alone refused there,
+    where the excess test had not, sit 1.4-2.6 mDa below theirs (the
+    area-weighted region, the median over the spectra; 1.7-2.5 mDa below the
+    13C spacing, 1.2-2.1 mDa above 29Si). There the position is no silicon
+    signature: the chloro acid's own 13C line read 2.0 mDa low, 1.79 mDa above
+    29Si, sits past the half-way mark (2.44 mDa above 29Si for its 16
+    carbons) and a real Cl lock is refused. Harmless while no TOF Cl lock
+    forms above m/z 206.3 (the batch's one TOF lock, C2H3ClO2 [M+NO3]- at m/z
+    156, sits below the silicon test's threshold; the TOF's own 81Br partners
+    sit 6.8 ppm off the exact spacing at the median) -- and pinned so that such
+    a TOF lock, if one ever forms, meets it; the same line where it belongs
+    locks."""
     def build(low_mda):
         def b(i):
             rows = _hal(i, BIG)

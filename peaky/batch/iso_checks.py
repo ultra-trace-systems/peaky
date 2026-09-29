@@ -101,14 +101,22 @@ rule C).
         test cannot refuse: a misread whose +1 region is absent from more than
         40 % of its spectra or does not co-vary with its M0 (the gates that
         keep a real ion's neighbours from refusing its lock); and it refuses a
-        real Cl lock where another
-        ion's line near the 29Si position merges into a dim ion's +1 region
-        while the ion's own 13C line supplies the co-variation (~1.0-1.4 per
-        1000 real Cl ions placed on real +1 regions, against 0.5-0.9 for the
-        excess test). On a TOF the position is no silicon signature: its peak
-        list reads an ion's +1 line ~1.3 mDa below the 13C spacing (the
-        regression TOF's median), past the half-way mark on some real ions --
-        harmless while no TOF lock forms at 1 ppm. Never locked
+        real Cl lock where another ion's line near the 29Si position merges into
+        a dim ion's +1 region while the ion's own 13C line supplies the
+        co-variation (~1.0-1.4 per 1000 real Cl ions placed on real +1 regions,
+        against 0.5-0.9 for the excess test). The Si-reading guard can refuse a
+        real Si1-2 Cl reading on any excess in its +1 region, a neighbour's line
+        at the 13C position included -- it asks no position (measured 0 / 0 / 1
+        of the 30 / 12 / 37 real Si1-2 ions of the regression batches from m/z
+        206.3, forced blended with a one-Cl partner; the one a TOF C5H7NO2Si
+        [M+Br]-: its region reads 4.1x the excess the guard needs while it sits
+        2.22 mDa above 29Si, short of its mark at 1.17). On a TOF the position
+        is no silicon signature: its peak list reads an ion's +1 region ~1.3 mDa
+        below the ion's own +1 position (the regression TOF's median over its 69
+        present regions; ~1.4 below the 13C spacing), past the half-way mark on
+        some real ions -- harmless while no TOF Cl lock forms above m/z 206.3
+        (the batch's one TOF lock, C2H3ClO2 [M+NO3]- at m/z 156, sits below the
+        silicon test's threshold). Never locked
         (`untestable`): an ion carrying Si >= 3, both Cl and Br (a blended M+2),
         a pair with no M0 stamp, one stamped on a heavy isotopologue, one
         stamped in < LOCK_NMIN spectra.
@@ -172,11 +180,14 @@ series (the runs equal the replay row for row):
           region the gates cannot read (the D7 urea cluster's in 26 % of its
           spectra, the D5 urea one's at r 0.59); the excess test refused 2,
           left rule C 150 and let 72 pass. Where the real lock gates pass (the
-          Si12 line's bright half, 11 readings) rule C refutes every one. Rule
-          C refutes every one of the 23 Cl readings of the D5, Si10 and Si11
-          urea clusters within 1 ppm (and Si12's 11); the D7 urea cluster's
-          readings are rule-C-untestable, and only the lock's 1 ppm gate stops
-          it (its M+2 line is in 0 % of its spectra at the 37Cl spacing). On the real
+          Si12 line's bright half, 11 readings) rule C refutes every one.
+          Over the full series (and its bright half) rule C refutes every one
+          of the 37 Cl1 / Cl2 readings (23 one-Cl) of the D5, Si10 and Si11
+          urea clusters within 1 ppm, and Si12's 19 (11); in the dim half it
+          is untestable on the D5 urea cluster's 3, 2 of Si10's and all 19 of
+          Si12's. The D7 urea cluster's readings are rule-C-untestable, and
+          only the lock's 1 ppm gate stops it (its M+2 line is in 0 % of its
+          spectra at the 37Cl spacing). On the real
           Si-free ions of the two Orbitrap batches, forced blended with a
           one-Cl partner at the bottom of the window, the position test fires
           on 0 / 1, as the excess test did: the co-variation gate's work (the
@@ -185,7 +196,9 @@ series (the runs equal the replay row for row):
           below the threshold once the AME2020 30Si spacing moved it -- and the
           position test without it on 43 of the 277 with a +1 region); on the
           TOF, blended at every mass, 24 (the excess test 17): the seven more
-          are ions whose +1 line the TOF reads 1.2-2.1 mDa low.
+          are Si-free ions whose +1 region sits 1.4-2.6 mDa below the ion's own
+          +1 position (the area-weighted region, the median over the spectra;
+          1.7-2.5 mDa below the 13C spacing, 1.2-2.1 mDa above 29Si).
 """
 from __future__ import annotations
 
@@ -296,8 +309,9 @@ LOCK_STAMP_MAX_DA = 0.5
 # nitrate's C5H8Cl2O2 [M-H]- 30Si -> 37Cl (a rule H lock whose HIGH row names its
 # Cl2 M+2 a 30Si line seen in 8 % of its spectra: a `consistent` row is labelled
 # by its largest ratio over the expected line, not by `_label`'s nearest spacing)
-# and the TOF's C11H10N2O14 [M+NO3]- 37Cl -> 30Si -- and n_used / ratio / r /
-# presence on 10 rows; no verdict. Left for its own card (2026-09-29).
+# and the TOF's C11H10N2O14 [M+NO3]- 37Cl -> 30Si --, n_used / ratio / r /
+# presence on 10 rows, other_m0 on 3 TOF HIGH rows and the note on 9 rows; no
+# verdict. Left for its own card (2026-09-29).
 D29SI, D30SI = _ISO["Si"][1][0], 1.9968436
 LOCK_SI_PER_ATOM = {"29Si": _ISO["Si"][1][1] / _ISO["Si"][0][1], "30Si": _ISO["Si"][2][1] / _ISO["Si"][0][1]}
 LOCK_SI_MZ = (LOCK_D["Cl"] - D30SI) / (LOCK_TOL_PPM * 1e-6)
@@ -1166,7 +1180,18 @@ def _silicon(S: _Series, codes, pm, pa, ph, ratio: float, ion: dict, rp, pcol: i
     (Si >= 3 is never locked) has its own 29Si in its +1 line, which pulls the
     half-way mark toward 29Si; it is refused on the position OR the excess --
     the region reading >= LOCK_SI_FRAC of the implied 29Si area above the
-    reading's own +1 line (pooled, sum over sum). Areas, not heights: the
+    reading's own +1 line (pooled, sum over sum). An OR, not an AND (the
+    decision's "a Si reading must ALSO show the excess", read as OR and
+    confirmed 2026-09-29): as an AND the guard would ask a Si reading for more
+    than a Si-free one and reopen the Si2 corner it closes -- 393 of 852
+    synthetic blended scenario-2 / D7-urea cases (every one a Si1 / Si2
+    reading) no longer refused, the dim scenario-2 Si1 and Si2 readings
+    (excess 0.87x / 0.72x of the need) and the Si2 corner (its position 0.06
+    mDa short of the mark) among them, and on the siloxane control the 73 Si
+    readings the position refuses let through (115 refused -> 42). The guard
+    asks no position, so it can refuse a real Si1-2 Cl reading on any excess
+    in its +1 region, a neighbour's line at the 13C position included. Where
+    both criteria hold, the note names the position. Areas, not heights: the
     partner's ratio and the silicons it implies are area ratios, and a blend's
     height is not the sum of its lines' either.
 
@@ -1292,7 +1317,9 @@ def _si_text(si: dict) -> str:
 
 def _si_why(si: dict) -> str:
     """A si_rich row's reason: the 29Si line found (resolved), or what the +1
-    region shows (blended / unparted): its position, or a Si reading's excess."""
+    region shows (blended / unparted): its position (and the half-way mark) --
+    also where a Si reading's excess holds too -- or else a Si reading's
+    excess."""
     why = f"the M+1 region carries the 29Si line of a {_si_text(si)}"
     if si["mode"] == "resolved":
         return why

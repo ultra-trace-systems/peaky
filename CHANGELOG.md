@@ -40,8 +40,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   position test none, bar one Si2 reading the guard refuses). The price: ~1.0-1.4
   refusals per 1000 real Cl ions placed on real +1 regions (0.5-0.9 for the excess
   test), where another ion's line near 29Si merges into a dim ion's +1 region; on a
-  TOF-class batch, whose peak list reads a +1 line ~1.3 mDa low, the position is no
-  silicon signature -- harmless while no TOF lock forms at 1 ppm.
+  TOF-class batch, whose peak list reads a +1 region ~1.3 mDa below the ion's own +1
+  position, the position is no silicon signature -- harmless while no TOF Cl lock forms
+  above m/z 206.3 (the batch's one TOF lock, C2H3ClO2 [M+NO3]- at m/z 156, sits below
+  the silicon test's threshold). The Si-reading guard is an OR (a Si reading is refused
+  on the position or its excess; as an AND it would reopen the Si2 corner: 393 of 852
+  synthetic blended cases, the dim Si1 / Si2 readings among them, no longer refused),
+  and it asks no position, so it can refuse a real Si1-2 Cl reading on any excess in its
+  +1 region, a neighbour's line at the 13C position included (0 / 0 / 1 of the 30 / 12
+  / 37 real Si1-2 ions of the regression batches, forced blended).
   Never on an ion with Si >= 3 or both halogens, and
   never on a halogen the batch's reagent could have put there: a line counts only where
   the ion carries more of it than one reagent ion supplies (the batch's reagent
@@ -82,18 +89,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in < 60 % of the spectra: Si10 24 %, Si11 0 % at the 30Si spacing) and read as every
   CHNOS(+Si <= 2)+Cl formula within 1 ppm, the position test refuses 115 of 224 cases,
   rule C refutes 48 more, and the other 61 have a +1 region the gates cannot read (the
-  excess test: 2 refused, 150 left to rule C, 72 through). Rule C refutes every one of
-  the 23 Cl readings of the D5, Si10 and Si11 urea clusters within 1 ppm (and Si12's
-  11); the D7 urea cluster's readings are rule-C-untestable, and only the lock's 1 ppm
-  gate stops that cluster. On the Orbitrap batches' real Si-free ions, forced blended
-  with a one-Cl partner, the position test fires on 0 and 1 as the excess test did --
-  the co-variation gate's work (37 -> 1 from m/z 206.3 for the excess test, 23 -> 0 and
-  14 -> 1; the first count's 38th fire left with the threshold move) -- and on the TOF
-  on 24 (the excess test 17). The golden fixtures gained the lock tables of the
-  live runs and the four live-locked lead pairs' flag in `tentative_lead` (decision
-  D8): the Orbitrap vector 0/11/217/9/203/139/0/35/1093 -> 0/11/217/9/206/139/0/35/1090,
-  the uronium one 4/4/0/331/376/291/0/82/73 -> 4/4/0/331/377/291/0/82/72; the TOF, TV
-  and rule K vectors do not move. `tests/test_halogen_lock_*.py`.
+  excess test: 2 refused, 150 left to rule C, 72 through). Over the full series rule C
+  refutes every one of the 37 Cl1 / Cl2 readings (23 one-Cl) of the D5, Si10 and Si11
+  urea clusters within 1 ppm, and Si12's 19 (11); in the dim half it is untestable on
+  the D5 urea cluster's 3, 2 of Si10's and all 19 of Si12's. The D7 urea cluster's
+  readings are rule-C-untestable, and only the lock's 1 ppm gate stops that cluster. On
+  the Orbitrap batches' real Si-free ions, forced blended with a one-Cl partner, the
+  position test fires on 0 and 1 as the excess test did -- the co-variation gate's work
+  (37 -> 1 from m/z 206.3 for the excess test, 23 -> 0 and 14 -> 1; the first count's
+  38th fire left with the threshold move) -- and on the TOF on 24 (the excess test 17;
+  the seven more Si-free ions whose +1 region sits 1.4-2.6 mDa below their own +1
+  position, 1.2-2.1 mDa above 29Si). The golden fixtures gained the lock tables of the
+  live runs and the four live-locked lead pairs' flag in `tentative_lead` (decision D8):
+  the Orbitrap vector 0/11/217/9/203/139/0/35/1093 -> 0/11/217/9/206/139/0/35/1090, the
+  uronium one 4/4/0/331/376/291/0/82/73 -> 4/4/0/331/377/291/0/82/72; the TOF, TV and
+  rule K vectors do not move. `tests/test_halogen_lock_*.py`.
 
 - **Isotope checks test what a formula claims about its own isotope lines (C11+a).**
   The per-file isotope test only asks whether a child it found sits in the band; three
