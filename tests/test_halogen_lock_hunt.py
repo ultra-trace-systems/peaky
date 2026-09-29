@@ -187,8 +187,21 @@ def _si_line(i, frac, *, d=IC.D29SI, present=lambda i: True, blend=False, n=BIG,
     return rows
 
 
-def _si(build, rp, n=BIG):
-    return _verdict(build, n, resolution=rp)
+def _si(build, rp, n=BIG, veto=""):
+    """The H row of the series under the width model `rp`; asserts the pair's
+    veto state in the same table -- `veto` names the checks that refute it ("":
+    none). The blended fixtures merge another ion's line into the chloro acid's
+    13C line: rule C, reading that +1 peak as the formula's 13C line, refutes
+    them where it pulls the peak off the 13C position (no line within 3 ppm:
+    ~0 C) or reads too many carbons -- the veto outranks any lock (a refuted
+    pair never lifts), so each test reads the silicon test's own verdict and
+    says whether rule C also refutes the reading (refute A5)."""
+    t = _h(build, [(n, H)], resolution=rp)
+    r = _get(t, "H", n, H).copy()
+    v = t[t["veto"] & (t["neutral_formula"] == n) & (t["adduct"] == H)]
+    r["vetoed_by"] = "|".join(sorted(v["check"]))
+    assert r["vetoed_by"] == veto, (r["vetoed_by"], veto)
+    return r
 
 
 def test_the_silicon_constants_are_the_isotope_tables():
@@ -265,6 +278,21 @@ def test_the_resolved_29si_line_is_looked_for_within_one_ppm(off, verdict, mode)
     assert (r["verdict"], r["si29_mode"]) == (verdict, mode)
 
 
+@pytest.mark.parametrize("off, verdict, mode", [(0.8, "si_rich", "resolved"), (-0.8, "si_rich", "resolved"),
+                                               (1.2, "si_rich", "unparted"), (-1.2, "lock", "unparted")])
+def test_the_29si_line_is_looked_for_at_the_literal_spacing(off, verdict, mode):
+    """The line placed at the LITERAL 29Si - 28Si spacing (0.9995683, AME2020),
+    not the module's constant, 0.8 / 1.2 ppm off: found within 1 ppm by the
+    resolved search, or not (then the +1 region decides: above 29Si it reads the
+    line, below it the line is outside) -- a wrong D29SI moves the verdict or
+    the mode (the refute's mutant S06, D29SI at the 33S spacing, 0.18 mDa low).
+    A line AT the 33S spacing cannot be told from 29Si by position wherever the
+    test runs: 0.18 mDa is inside 1 ppm from m/z 180 on, and the test starts at
+    206.3 -- the half-area gate does that (a real ion's 33S line is 0.008 per S)."""
+    r = _si(lambda i: _si_line(i, 1.0, d=0.9995683, off_ppm=off), ORBI)
+    assert (r["verdict"], r["si29_mode"]) == (verdict, mode)
+
+
 def test_the_regime_is_read_at_the_ions_plus_one_mz():
     """A width model that parts 29Si from 13C at the M0's m/z but not at its +1
     m/z blends them: the test is where the lines are."""
@@ -291,7 +319,7 @@ def _lo():
 
 @pytest.mark.parametrize("frac, verdict", [(0.51, "si_rich"), (0.49, "lock")])
 def test_the_blended_line_reads_half_the_29si_above_its_own(frac, verdict):
-    r = _si(lambda i: _si_line(i, frac, blend=True), _lo())
+    r = _si(lambda i: _si_line(i, frac, blend=True), _lo(), veto="C")
     assert r["si29_mode"] == "blended" and r["verdict"] == verdict
     ion = C.parse_formula(_ion(BIG, H).rstrip("-"))
     assert r["si29_seen"] == pytest.approx(_own13(ion) + frac * E29 - IC.m1_line(ion)[0])
@@ -300,14 +328,14 @@ def test_the_blended_line_reads_half_the_29si_above_its_own(frac, verdict):
 def test_the_blended_excess_at_the_13c_position_is_no_silicon():
     """A +1 line 0.6x the 29Si too tall but sitting where 13C sits (more carbon,
     or another ion there): the excess alone does not refuse the lock."""
-    r = _si(lambda i: _si_line(i, 0.6, d=IC.D13C, blend=True), _lo())
+    r = _si(lambda i: _si_line(i, 0.6, d=IC.D13C, blend=True), _lo(), veto="C")      # rule C: ~43 C for 16
     assert r["verdict"] == "lock" and r["si29_seen"] > 0.5 * E29
 
 
 def test_the_blended_shift_without_the_excess_is_no_silicon():
     """0.3x the 29Si at its position: the blend moves toward 29Si but reads too
     little above the ion's own +1 line."""
-    r = _si(lambda i: _si_line(i, 0.3, blend=True), _lo())
+    r = _si(lambda i: _si_line(i, 0.3, blend=True), _lo(), veto="C")
     assert r["verdict"] == "lock" and 0 < r["si29_seen"] < 0.5 * E29
 
 
@@ -323,7 +351,7 @@ def test_the_blended_line_must_shift_half_way_toward_29si():
     for eps, verdict in ((-2e-5, "si_rich"), (2e-5, "lock")):
         # the extra line's spacing that puts the area-weighted +1 position at at_max + eps
         d = ((at_max + eps) * (ion13 + x) - ion13 * IC.D13C) / x
-        assert _si(lambda i: _si_line(i, 0.8, d=d, blend=True), _lo())["verdict"] == verdict, eps
+        assert _si(lambda i: _si_line(i, 0.8, d=d, blend=True), _lo(), veto="C")["verdict"] == verdict, eps
 
 
 def test_the_blended_region_is_29si_to_13c():
@@ -344,7 +372,7 @@ def test_the_blended_excess_is_over_the_m0s_area():
         for r in rows:
             r["area"] = 2 * r["height"]
         return rows
-    r = _si(build, _lo())
+    r = _si(build, _lo(), veto="C")
     assert r["verdict"] == "lock" and r["si29_seen"] < 0.5 * E29
 
 
@@ -362,9 +390,10 @@ def test_the_blended_position_is_the_median_over_the_spectra():
     d = (target * (a13 + x) - a13 * IC.D13C) / x              # the extra line's spacing that puts the region there
     assert (21 * target + 19 * IC.D13C) / 40 > at_max          # the mean would not refuse
     r = _si(lambda i: _si_line(i, 2.0, d=d if i < 21 else IC.D13C, blend=True), _lo())
-    assert r["verdict"] == "si_rich"
+    assert r["verdict"] == "si_rich"                          # (rule C: area 43 C, height at 13C, not both)
     # 20 of 40 on the Si side: the median sits between the two groups, past the mark
-    assert _si(lambda i: _si_line(i, 2.0, d=d if i < 20 else IC.D13C, blend=True), _lo())["verdict"] == "lock"
+    assert _si(lambda i: _si_line(i, 2.0, d=d if i < 20 else IC.D13C, blend=True), _lo(),
+               veto="C")["verdict"] == "lock"
 
 
 def _region(rows):
@@ -387,7 +416,7 @@ def test_the_blended_region_must_co_vary_with_the_m0():
             reg = _region(rows)
             reg.update(area=reg["area"] * np.exp(noise[i]), height=reg["height"] * np.exp(noise[i]))
             return rows
-        r = _si(build, _lo())
+        r = _si(build, _lo(), veto="C")
         assert r["si29_mode"] == "blended" and r["verdict"] == verdict, r_target
         assert r["si29_seen"] > 0.5 * E29                    # the excess alone would refuse
 
@@ -404,7 +433,7 @@ def test_the_blended_region_co_varies_by_area():
         rows = _si_line(i, 1.0, blend=True)
         rows[0]["height"] = rows[0]["area"] * np.exp(noise[i])
         return rows
-    r = _si(build, _lo())
+    r = _si(build, _lo(), veto="C")
     assert r["verdict"] == "si_rich" and r["r"] == pytest.approx(1.0)   # the partner's r reads areas too
 
 
@@ -418,7 +447,7 @@ def test_the_blended_region_reads_its_peaks_area_weighted():
         c13 = next(r for r in rows if r["iso_label"] == "13C")
         c13.update(height=c13["height"] + 0.5 * rows[0]["height"], area=c13["area"] + 0.5 * rows[0]["height"])
         return rows
-    r = _si(build, _lo())
+    r = _si(build, _lo(), veto="C")                           # rule C: ~62 C for 16
     assert r["verdict"] == "lock" and r["si29_seen"] > 0.5 * E29
 
 
@@ -430,8 +459,8 @@ def test_the_blended_region_needs_the_partners_presence():
             rows = _si_line(i, 1.0, blend=True)
             return rows if i < n_on else [r for r in rows if not (0.99 < r["mz"] - rows[0]["mz"] < 1.01)]
         return b
-    assert _si(build(24), _lo())["verdict"] == "si_rich"
-    assert _si(build(23), _lo())["verdict"] == "lock"
+    assert _si(build(24), _lo(), veto="C")["verdict"] == "si_rich"
+    assert _si(build(23), _lo(), veto="C")["verdict"] == "lock"
 
 
 def test_the_silicon_test_runs_only_on_a_line_that_passes_the_gates():
