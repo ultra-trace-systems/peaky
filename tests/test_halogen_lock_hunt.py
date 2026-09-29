@@ -22,7 +22,14 @@ Equivalent survivors (no input tells them apart):
   reads carries n >= 1, so `n <= 0` is False exactly where the short-circuit
   was); the heavy check's three-Cl window (it lies inside the union of
   the two- and four-Cl windows); the partner search's reach (-2 .. 1) cut to
-  (-1, 0) (it differs only on bit-identical m/z in one spectrum).
+  (-1, 0) (it differs only on bit-identical m/z in one spectrum); the silicon
+  test's co-variation gate letting a NaN r pass (`not r < LOCK_RMIN`): r is
+  NaN only where the region's (or the M0's) area is exactly the same in every
+  one of the >= 12 spectra it is present in (a refusal needs >= 60 % of >= 20)
+  -- no measured peak list gives that (0 of the 346 real Si-free pairs from
+  m/z 206.3 with a present +1 region on the three regression batches), and a
+  fixture giving it would need lines summing to one exact area in every
+  spectrum around the ion's own 13C line, which varies with the M0.
 - evidence: `clean` built without a lift (it is read only for a lifted pair); the
   iso_veto filter on the lift set (a vetoed pair is alien, so outside the lift).
 - ledger / plausibility: the NaN branch of `lead_setters` (str(nan) is "nan",
@@ -419,6 +426,36 @@ def test_the_blended_region_must_co_vary_with_the_m0():
         r = _si(build, _lo(), veto="C")
         assert r["si29_mode"] == "blended" and r["verdict"] == verdict, r_target
         assert r["si29_seen"] > 0.5 * E29                    # the excess alone would refuse
+
+
+def test_an_anti_correlated_region_does_not_co_vary():
+    """R2A-3: the gate reads r itself, not its size. Another ion's line at the
+    29Si position that FALLS as the chloro acid rises (its precursor, say),
+    merged with the 13C line into one peak (a full-area centroid): the region
+    sits past the half-way mark toward 29Si in every spectrum and reads far more
+    than half the 29Si above the ion's own +1 line, but at r -0.95 it is not
+    the ion's own line -- no refusal (|r| would refuse it)."""
+    ion = C.parse_formula(_ion(BIG, H).rstrip("-"))
+    own, c1 = IC.m1_line(ion)
+    at_max = c1 - 0.5 * (c1 - (own * c1 + E29 * IC.D29SI) / (own + E29))
+
+    def build(i):
+        rows = _hal(i, BIG)
+        c13 = next(r for r in rows if r["iso_label"] == "13C")
+        x = E29 * 1.5e5 / _wave(i)                     # 0.89 x the 29Si pooled, falling as the M0 rises
+        a = c13["area"] + x
+        c13.update(mz=(c13["area"] * c13["mz"] + x * (rows[0]["mz"] + IC.D29SI)) / a, height=c13["height"] + x,
+                   area=a, iso_label="")
+        return rows
+    series = [build(i) for i in range(40)]
+    pa = np.array([s[0]["area"] for s in series])
+    reg = [_region(s) for s in series]
+    ra = np.array([g["area"] for g in reg])
+    assert np.corrcoef(np.log(pa), np.log(ra))[0, 1] == pytest.approx(-0.95, abs=0.005)
+    assert max(g["mz"] - s[0]["mz"] for g, s in zip(reg, series)) < at_max          # past the mark everywhere
+    assert ra.sum() / pa.sum() - own > 0.5 * E29                                     # and the excess
+    r = _si(build, _lo(), veto="C")
+    assert (r["verdict"], r["si29_mode"]) == ("lock", "blended") and r["si29_seen"] > 0.5 * E29
 
 
 def test_the_blended_region_co_varies_by_area():

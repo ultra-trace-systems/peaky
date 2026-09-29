@@ -477,6 +477,27 @@ def test_an_unlifted_pairs_pools_read_a_mixed_sibling_row_by_row(tmp_path):
     assert _lockstep(tmp_path, "R2", files, table).loc[(CL1, H), "evidence_level"] == "4b"
 
 
+def test_a_pure_ion_only_sibling_gives_an_unlifted_pair_nothing(tmp_path):
+    """The same batch with the [M]-. pair holding ONLY its ion-only row: it is
+    the parent's composition on another adduct, no second channel -- the [M-H]-
+    pair reads 4c, chan2 False, in the engine and the reference script alike
+    (refute round 2, R2A-2: a script taking every pair as holding a regular row,
+    `has_regular` True, read 4b; on the labelled-nitrate batch that moves 12
+    levels)."""
+    mz = C.ion_mz(CL1, H) + 1.00728
+    io_row = _r("io", adduct="[M]-.", mz=mz)
+    io_row["method"] = "ion_only:ea"
+    x = "C7H12O4"
+    table = _h_table([_h_row(CL1, H, lock=False), _h_row(x, H, check="REQ", lock=False, veto=True, note="r")])
+    m = _lockstep(tmp_path, "R", _f(_r("p"), io_row, _r("x", x)), table)
+    r = m.loc[(CL1, H)]
+    assert not bool(r["lead_lift"]) and not bool(r["chan2"]) and r["evidence_level"] == "4c"
+    assert r["level_reason"].startswith("4c: ") and m.loc[(x, H), "evidence_level"] == "5b"
+    # the ion-only row in its own file
+    files = {"s1": _f(_r("p"), _r("x", x)), "s2": _f(io_row)}
+    assert not bool(_lockstep(tmp_path, "R2", files, table).loc[(CL1, H), "chan2"])
+
+
 def test_a_measured_frame_without_has_regular_reads_the_pair_flag():
     """assign_levels on a measured frame that carries no `has_regular` (not
     measure_source's): a pair with an ion-only row gives its siblings nothing --
