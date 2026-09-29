@@ -20,8 +20,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   where the ion's M+1 region shows the 29Si line a Si-rich ion making the partner from
   30Si must carry (the 2026-09-28 decision, "the 29Si line decides": n = ratio / 0.0335
   silicons, 29Si n x 0.0508 at +0.99957 Da; where the width model parts it from 13C the
-  line itself at >= half its expected area, present and co-varying like the partner,
-  else the +1 region -- every peak from 29Si to 13C -- present and co-varying with the
+  line itself at >= half its expected area, present and co-varying like the partner
+  (where no such line is present, the +1 region decides: the peak picker may not have
+  parted the two, `unparted`), else the +1 region -- every peak from 29Si to 13C --
+  present and co-varying with the
   M0 like the partner (r(log region area, log M0 area) >= 0.8, the 2026-09-29
   decision), >= half that area above the ion's own +1 line (13C, 2H, 15N, 17O, 33S and,
   for a reading carrying Si, 29Si) and, area-weighted and the median over the spectra,

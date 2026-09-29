@@ -334,13 +334,17 @@ def test_a_chlorine_line_measured_low_locks_below_the_silicon_window():
         assert r["si29_mode"] == "" and np.isnan(r["si_n"]) and "29Si" not in r["note"]
 
 
-@pytest.mark.parametrize("rp, mode, seen", [(HI_RES, "resolved", 7 * 0.0508), (ORBI, "blended", 0.249)])
+@pytest.mark.parametrize("rp, mode, seen", [(HI_RES, "resolved", 7 * 0.0508), (ORBI, "blended", 0.249),
+                                             (HI_RES, "unparted", 0.249)])
 def test_a_siloxane_read_as_a_chlorine_formula_is_refused(rp, mode, seen):
     """Scenario 2: the D7 siloxane stamped as C22H23N6O7Cl. Its 30Si + 29Si2 line
     passes every gate of a 37Cl line; read as 30Si it makes Si8.6, whose 29Si
     line (0.44x) must be there -- and is: resolved, the 29Si peak itself (0.36x);
     blended, the +1 line reads 0.25x above the Cl reading's own +1 (0.27x) and
-    sits 2.6 mDa below its 13C position."""
+    sits 2.6 mDa below its 13C position; unparted -- the width model parts the
+    two lines but the peak picker reports one (refute B6: two Gaussians at this
+    height ratio part only from ~1.15 FWHM) -- no 29Si line is present at its
+    own position, so the +1 region decides as where they blend."""
     t = _measure(_series(lambda i: _siloxane(i, mode == "resolved")), [(CLR, UA)], prof=UR, resolution=rp)
     r = _get(t, "H", CLR, UA)
     assert r["verdict"] == "si_rich" and not bool(r["lock"]) and not bool(r["veto"])
@@ -351,17 +355,19 @@ def test_a_siloxane_read_as_a_chlorine_formula_is_refused(rp, mode, seen):
     assert IC.lock(t) == {} and IC.summary(t, rp)["H"]["si_rich"] == 1
 
 
-@pytest.mark.parametrize("rp, mode", [(ORBI, "resolved"), (LO_RES, "blended")])
+@pytest.mark.parametrize("rp, mode", [(ORBI, "unparted"), (LO_RES, "blended")])
 def test_a_chlorine_line_measured_low_locks_above_the_silicon_window(rp, mode):
     """Scenario 3: at m/z 351 a 37Cl line 0.15 mDa low (-0.43 ppm) is where a
     30Si line could sit, so the silicon test runs -- and finds no 29Si line (a
-    chlorinated ion carries none): the full window stands and it locks."""
+    chlorinated ion carries none; where the width model parts it from 13C, none
+    at its own position, and the +1 region holds only the ion's 13C line): the
+    full window stands and it locks."""
     mz = C.ion_mz(BIG, H)
-    assert mz > IC.LOCK_SI_MZ and (IC._resolution(rp).fwhm(mz + 1) < IC.D13C - IC.D29SI) is (mode == "resolved")
+    assert mz > IC.LOCK_SI_MZ and (IC._resolution(rp).fwhm(mz + 1) < IC.D13C - IC.D29SI) is (mode == "unparted")
     r = _verdict(lambda i: _hal(i, BIG, off_ppm=-0.15e-3 / mz * 1e6), BIG, resolution=rp)
     assert r["verdict"] == "lock" and r["si29_mode"] == mode and r["offset_mda"] == pytest.approx(-0.15, abs=1e-6)
     assert r["si_n"] == pytest.approx(0.3198 / IC.LOCK_SI_PER_ATOM["30Si"])
-    assert (np.isnan(r["si29_seen"]) if mode == "resolved" else r["si29_seen"] < 0.01)
+    assert abs(r["si29_seen"]) < 0.01
     assert "no 29Si line of a Si9.5 reading of the line" in r["note"]
 
 
@@ -377,7 +383,7 @@ def test_the_silicon_window_starts_where_30si_enters_the_lock_window():
     assert (IC.LOCK_D["Br"] - IC.D30SI) / 1e-6 > 1100
     # on the series: C8H11ClO4 [M-H]- at m/z 205.03 and C7H10ClNO4 [M-H]- at 206.02 (inside
     # the 0.6 Da the table's rounding added) are not tested, C8H13ClO4 [M-H]- at 207.04 is
-    for n, mode in (("C8H11ClO4", ""), ("C7H10ClNO4", ""), ("C8H13ClO4", "resolved")):
+    for n, mode in (("C8H11ClO4", ""), ("C7H10ClNO4", ""), ("C8H13ClO4", "unparted")):
         r = _verdict(lambda i: _hal(i, n), n)
         assert r["verdict"] == "lock" and r["si29_mode"] == mode, n
     # a bromine lock above it is never tested

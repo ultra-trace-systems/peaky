@@ -235,8 +235,14 @@ def test_the_resolved_29si_line_reads_its_area_not_its_height():
 
 
 def test_the_resolved_29si_line_needs_the_partners_presence_and_covariation():
-    assert _si(lambda i: _si_line(i, 1.0, present=lambda i: i < 24), ORBI)["verdict"] == "si_rich"   # 24 / 40
-    assert _si(lambda i: _si_line(i, 1.0, present=lambda i: i < 23), ORBI)["verdict"] == "lock"
+    """Present in 24 of 40 stamps the line decides (resolved); in 23 it is not
+    present, and the +1 region decides instead (unparted: the peak picker may
+    not have parted it from 13C) -- there, a line in 23 of 40 spectra does not
+    follow the M0 and refuses nothing."""
+    r = _si(lambda i: _si_line(i, 1.0, present=lambda i: i < 24), ORBI)                  # 24 / 40
+    assert (r["verdict"], r["si29_mode"]) == ("si_rich", "resolved")
+    r = _si(lambda i: _si_line(i, 1.0, present=lambda i: i < 23), ORBI)
+    assert (r["verdict"], r["si29_mode"]) == ("lock", "unparted")
     h0 = _h0()
     for r_target, verdict in ((0.805, "si_rich"), (0.795, "lock")):
         noise = _noise_for(r_target, h0)
@@ -249,9 +255,14 @@ def test_the_resolved_29si_line_needs_the_partners_presence_and_covariation():
         assert _si(build, ORBI)["verdict"] == verdict, r_target
 
 
-@pytest.mark.parametrize("off, verdict", [(0.9, "si_rich"), (-0.9, "si_rich"), (1.1, "lock"), (-1.1, "lock")])
-def test_the_resolved_29si_line_is_looked_for_within_one_ppm(off, verdict):
-    assert _si(lambda i: _si_line(i, 1.0, off_ppm=off), ORBI)["verdict"] == verdict
+@pytest.mark.parametrize("off, verdict, mode", [(0.9, "si_rich", "resolved"), (-0.9, "si_rich", "resolved"),
+                                               (1.1, "si_rich", "unparted"), (-1.1, "lock", "unparted")])
+def test_the_resolved_29si_line_is_looked_for_within_one_ppm(off, verdict, mode):
+    """Within 1 ppm of 29Si the line itself decides; 1.1 ppm off it is not found
+    there and the +1 region decides (unparted): 1.1 ppm above 29Si is inside the
+    region (it reads the line), 1.1 ppm below is outside it."""
+    r = _si(lambda i: _si_line(i, 1.0, off_ppm=off), ORBI)
+    assert (r["verdict"], r["si29_mode"]) == (verdict, mode)
 
 
 def test_the_regime_is_read_at_the_ions_plus_one_mz():
@@ -430,8 +441,10 @@ def test_the_silicon_test_runs_only_on_a_line_that_passes_the_gates():
 
 def test_the_note_names_a_missing_29si_line():
     r = _si(lambda i: _si_line(i, 0), ORBI)
-    assert r["verdict"] == "lock" and r["note"].endswith("no 29Si line of a Si9.5 reading of the line (none of 0.48x, "
-                                                         "resolved)")
+    assert r["verdict"] == "lock" and r["note"].endswith("no 29Si line of a Si9.5 reading of the line (-0.00x of "
+                                                         "0.48x, unparted)")
+    r = _si(lambda i: _si_line(i, 0.2), ORBI)                   # present, too small: the line decides
+    assert r["verdict"] == "lock" and r["note"].endswith("(0.10x of 0.48x, resolved)")
 
 
 def test_the_silicon_columns_are_rule_hs_own():

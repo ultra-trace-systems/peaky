@@ -73,7 +73,9 @@ rule C).
         n = ratio / 0.0335 silicons, 29Si n x 0.0508 at +0.99957 Da, 3.79 mDa
         below 13C: resolved (the width model's FWHM at the +1 m/z < 3.79 mDa) the
         line itself within 1 ppm, present and co-varying like the partner, at
-        >= half its expected area; blended, the +1 region present and
+        >= half its expected area -- where no such line is present at all the
+        picker may not have parted it from 13C, and the +1 region decides as
+        where they blend (`unparted`); blended, the +1 region present and
         co-varying with the M0 like the partner (r(log region area, log M0
         area) >= LOCK_RMIN, the 2026-09-29 decision), >= half the 29Si area
         above the ion's own +1 line (`m1_line`: 13C, 2H, 15N, 17O, 33S and, for
@@ -133,7 +135,9 @@ series (the runs equal the replay row for row):
           all three; a lock at +-4 / 8 / 12 / 16 mDa around either spacing moves
           nothing. The silicon test (2026-09-28) reads the four Cl locks above
           m/z 206 (C7H11ClO5, C6H10Cl2O4, C10H19ClO3 [M-H]-; the urea cluster):
-          no 29Si line on any, the locks and the lifts unchanged. On the uronium
+          no 29Si line on any (none at its own position; their +1 region, which
+          then decides, reads -0.04 to +0.03x above the ions' own +1 line), the
+          locks and the lifts unchanged. On the uronium
           batch's own siloxanes no Cl lock can form at all: none passes the
           one-Cl gates at 1 ppm. As a control of the detector alone, their M+2
           handed to it as a Cl partner: against the siloxane's own Si-free
@@ -1090,7 +1094,11 @@ def _silicon(S: _Series, codes, pm, pa, ph, ratio: float, ion: dict, rp, pcol: i
     width model resolves the two at the ion's +1 m/z (FWHM < D13C - D29SI) that
     line is looked for as the lock partner is -- within LOCK_TOL_PPM, present in
     >= LOCK_FRAC of the stamps, r(log area) >= LOCK_RMIN -- at >= LOCK_SI_FRAC of
-    its expected area. Where they blend (no width model: blended) the +1 region
+    its expected area; where it is not present (in < LOCK_FRAC of the stamps) the
+    peak picker may have reported the two lines as one after all (two Gaussians
+    at a 29Si / 13C height ratio of ~0.4 part only from ~1.15 FWHM, refute B6),
+    and the +1 region decides as where they blend (mode `unparted`; 2026-09-29).
+    Where they blend (no width model: blended) the +1 region
     (D29SI - 1 ppm .. D13C + 1 ppm, every peak in it: the peak picker reports a
     blend as one peak at its apex, and sums whatever lines it did part),
     present in >= LOCK_FRAC of the stamps and co-varying with the M0 (r(log
@@ -1107,11 +1115,16 @@ def _silicon(S: _Series, codes, pm, pa, ph, ratio: float, ion: dict, rp, pcol: i
     n_si = ratio / LOCK_SI_PER_ATOM["30Si"]
     e29 = n_si * LOCK_SI_PER_ATOM["29Si"]
     mz = float(np.median(pm))
+    mode = "blended"
     if rp is not None and rp.fwhm(mz + D13C) < D13C - D29SI:
         st = _partner(S, codes, pm, pa, ph, D29SI, pcol)
-        holds = st["frac"] >= LOCK_FRAC and st["r"] >= LOCK_RMIN and st["ra"] >= LOCK_SI_FRAC * e29
-        return dict(n=n_si, expected=e29, seen=st["ra"], mode="resolved", holds=bool(holds), presence=st["frac"],
-                    r=st["r"])
+        if st["frac"] >= LOCK_FRAC:
+            holds = st["r"] >= LOCK_RMIN and st["ra"] >= LOCK_SI_FRAC * e29
+            return dict(n=n_si, expected=e29, seen=st["ra"], mode="resolved", holds=bool(holds),
+                        presence=st["frac"], r=st["r"])
+        # no 29Si line present where the width model parts it from 13C: the picker may
+        # not have parted them after all -- the +1 region decides, as where they blend
+        mode = "unparted"
     m1, c1 = m1_line(ion)
     blend = (m1 * c1 + e29 * D29SI) / (m1 + e29)
     mid = pm + (D13C + D29SI) / 2
@@ -1127,7 +1140,7 @@ def _silicon(S: _Series, codes, pm, pa, ph, ratio: float, ion: dict, rp, pcol: i
     r = _pearson(np.log(pa[hit]), np.log(area[hit]))
     at_max = c1 - LOCK_SI_FRAC * (c1 - blend)
     holds = (hit.mean() >= LOCK_FRAC and r >= LOCK_RMIN and excess >= LOCK_SI_FRAC * e29 and at <= at_max)
-    return dict(n=n_si, expected=e29, seen=excess, mode="blended", holds=bool(holds), presence=float(hit.mean()),
+    return dict(n=n_si, expected=e29, seen=excess, mode=mode, holds=bool(holds), presence=float(hit.mean()),
                 r=r, at=at, at_max=at_max)
 
 
