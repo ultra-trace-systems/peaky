@@ -162,20 +162,21 @@ series (the runs equal the replay row for row):
           and the position test). On the uronium batch's own siloxanes no Cl
           lock can form (none passes the one-Cl gates at 1 ppm over its
           spectra). As a control of the test alone, their M+2 handed over as
-          the partner (at the 37Cl spacing within 1 ppm where present in >= 60
-          % of the spectra, else within 3 ppm of the 30Si spacing: the Si10
-          urea cluster's 37Cl-spacing line is in 24 %, the Si11 one's in 0 %)
-          and read as each CHNOS(+Si <= 2)+Cl formula within 1 ppm, over all,
-          the bright and the dim half of the spectra: of 224 such cases the
-          position test refuses 115, rule C refutes 48 more, 61 pass -- all 61
-          with a +1 region the gates cannot read (the D7 urea cluster's in 26
-          % of its spectra, the D5 urea one's at r 0.59); the excess test
-          refused 2, left rule C 150 and let 72 pass. Where the real lock gates pass (the Si12 line's
-          bright half, 11 readings) rule C refutes every one. Rule C refutes
-          every one of the 23 Cl readings of the D5, Si10 and Si11 urea
-          clusters within 1 ppm (and Si12's 11); the D7 urea cluster's readings
-          are rule-C-untestable, and only the lock's 1 ppm gate stops it (its
-          M+2 line is in 0 % of its spectra at the 37Cl spacing). On the real
+          the partner (within 1 ppm of the 37Cl or the 30Si spacing where
+          present in >= 60 % of the spectra, else taken within 3 ppm of the
+          30Si spacing where 1 ppm finds it in < 60 % -- Si10 24 %, Si11 0 %
+          at the 30Si spacing, 46 % / 1 % at the 37Cl one) and read as each
+          CHNOS(+Si <= 2)+Cl formula within 1 ppm, over all, the bright and
+          the dim half of the spectra: of 224 such cases the position test
+          refuses 115, rule C refutes 48 more, 61 pass -- all 61 with a +1
+          region the gates cannot read (the D7 urea cluster's in 26 % of its
+          spectra, the D5 urea one's at r 0.59); the excess test refused 2,
+          left rule C 150 and let 72 pass. Where the real lock gates pass (the
+          Si12 line's bright half, 11 readings) rule C refutes every one. Rule
+          C refutes every one of the 23 Cl readings of the D5, Si10 and Si11
+          urea clusters within 1 ppm (and Si12's 11); the D7 urea cluster's
+          readings are rule-C-untestable, and only the lock's 1 ppm gate stops
+          it (its M+2 line is in 0 % of its spectra at the 37Cl spacing). On the real
           Si-free ions of the two Orbitrap batches, forced blended with a
           one-Cl partner at the bottom of the window, the position test fires
           on 0 / 1, as the excess test did: the co-variation gate's work (the
@@ -281,14 +282,22 @@ LOCK_HEAVY_N = {"Cl": (1, 2, 3, 4), "Br": (1, 2)}
 LOCK_SI_MAX = 2                                   # an ion with Si >= 3 is never locked
 #: a line stamped this far above the ion's all-light m/z is a heavy isotopologue
 LOCK_STAMP_MAX_DA = 0.5
-# the silicon test (2026-09-28 decision: "the 29Si line decides"). A 30Si line
-# sits 0.206 mDa below the 37Cl one, inside the 1 ppm window from LOCK_SI_MZ on;
-# there a Cl lock is refused where the M+1 region carries the 29Si line a Si-rich
-# ion making the partner's height from 30Si must carry. 81Br needs none: 30Si
-# sits 1.11 mDa below it, outside 1 ppm below m/z ~1100. D30SI is the AME2020
-# 30Si - 28Si spacing (29.973770136 - 27.976926535); the _ISO / HIGH_OFFSETS entry
-# (1.9968442) is 0.6 uDa high and stays: re-rounding it there moves HIGH rows of the
-# regression batches (their offset_mda, one line's offset label), 2026-09-29.
+# the silicon test (2026-09-28 decision: "the 29Si line decides"; its blended
+# reading the +1 peak's position since 2026-09-29). A 30Si line sits 0.206 mDa
+# below the 37Cl one, inside the 1 ppm window from LOCK_SI_MZ on; there a Cl lock
+# is refused where the M+1 region carries the 29Si line a Si-rich ion making the
+# partner's area from 30Si must carry. 81Br needs none: 30Si sits 1.11 mDa below
+# it, outside 1 ppm below m/z ~1100. D29SI is the isotope table's 29Si - 28Si
+# spacing, 0.9995683 (0.2 uDa above AME2020's 0.9995681, 28.976494665 -
+# 27.976926535: 0.0006 ppm at m/z 350). D30SI is the AME2020 30Si - 28Si spacing
+# (29.973770136 - 27.976926535); the _ISO / HIGH_OFFSETS entry (1.9968442) is 0.6
+# uDa high and stays: re-rounding it there would move HIGH's offset_mda on 45 / 11
+# / 73 rows of the three regression batches, two offset labels -- the labelled
+# nitrate's C5H8Cl2O2 [M-H]- 30Si -> 37Cl (a rule H lock whose HIGH row names its
+# Cl2 M+2 a 30Si line seen in 8 % of its spectra: a `consistent` row is labelled
+# by its largest ratio over the expected line, not by `_label`'s nearest spacing)
+# and the TOF's C11H10N2O14 [M+NO3]- 37Cl -> 30Si -- and n_used / ratio / r /
+# presence on 10 rows; no verdict. Left for its own card (2026-09-29).
 D29SI, D30SI = _ISO["Si"][1][0], 1.9968436
 LOCK_SI_PER_ATOM = {"29Si": _ISO["Si"][1][1] / _ISO["Si"][0][1], "30Si": _ISO["Si"][2][1] / _ISO["Si"][0][1]}
 LOCK_SI_MZ = (LOCK_D["Cl"] - D30SI) / (LOCK_TOL_PPM * 1e-6)

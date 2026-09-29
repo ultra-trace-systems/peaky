@@ -215,7 +215,8 @@ def _si(build, rp, n=BIG, veto=""):
 
 
 def test_the_silicon_constants_are_the_isotope_tables():
-    """AME2020: 29Si - 28Si 0.9995683, 30Si - 28Si 1.9968436 (29.973770136 -
+    """29Si - 28Si 0.9995683, the isotope table's spacing (0.2 uDa above
+    AME2020's 0.9995681); 30Si - 28Si 1.9968436, AME2020's (29.973770136 -
     27.976926535). The isotope table's 30Si entry keeps 1.9968442 (0.6 uDa high):
     re-rounding it moves HIGH rows of the regression batches (2026-09-29)."""
     assert (IC.D29SI, IC.D30SI) == (0.9995683, 1.9968436)
@@ -291,7 +292,8 @@ def test_the_resolved_29si_line_is_looked_for_within_one_ppm(off, verdict, mode)
 @pytest.mark.parametrize("off, verdict, mode", [(0.8, "si_rich", "resolved"), (-0.8, "si_rich", "resolved"),
                                                (1.2, "si_rich", "unparted"), (-1.2, "lock", "unparted")])
 def test_the_29si_line_is_looked_for_at_the_literal_spacing(off, verdict, mode):
-    """The line placed at the LITERAL 29Si - 28Si spacing (0.9995683, AME2020),
+    """The line placed at the LITERAL 29Si - 28Si spacing of the isotope table
+    (0.9995683; AME2020's 0.9995681 is 0.2 uDa lower, 0.0006 ppm at m/z 351),
     not the module's constant, 0.8 / 1.2 ppm off: found within 1 ppm by the
     resolved search, or not (then the +1 region decides: above 29Si it reads the
     line, below it the line is outside) -- a wrong D29SI moves the verdict or

@@ -67,7 +67,8 @@ run's 16 locks (its C5H9ClO4 `[M]-.` line is not in the set) and the uronium run
 1, with the silicon test's columns (the 2026-09-28 decision: the four Cl locks above
 m/z 206 -- three here, the uronium one -- read no 29Si line; recomputed 2026-09-29
 with the round-2 engine, the co-variation gate and the `unparted` reading, which
-changes those four rows' `si29_seen` / `si29_mode` / note and nothing else).
+changes those four rows' `si29_seen` / `si29_mode` / note and nothing else; the
+round-3 position test leaves every row as it is).
 Levelled with them, exactly the four pairs move, 5b -> 4b "4b: one
 corroboration (iso)": the Orbitrap vector 0/11/217/9/203/139/0/35/1093 ->
 0/11/217/9/206/139/0/35/1090 (with rule K's table 0/11/174/9/206/151/0/38/1118 ->

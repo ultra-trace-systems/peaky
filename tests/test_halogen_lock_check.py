@@ -187,7 +187,7 @@ def test_the_partner_window_is_one_ppm(n, off, verdict):
 @pytest.mark.parametrize("n, spacing", [(BR1, 1.9979521), (CL1, 1.9970499), (BIG_CL, 1.9970499)])
 def test_the_partner_is_looked_for_at_the_literal_spacing(n, spacing):
     """The partner placed at the LITERAL 81Br - 79Br / 37Cl - 35Cl spacing
-    (AME2020), not the module's constant: 0.8 ppm off locks, 1.2 ppm off does
+    (the isotope table's), not the module's constant: 0.8 ppm off locks, 1.2 ppm off does
     not -- a LOCK_D that is wrong by a few tenths of a mDa (0.73 ppm at m/z 137)
     moves one side out of the window."""
     for off, verdict in ((0.8, "lock"), (-0.8, "lock"), (1.2, "no_lock"), (-1.2, "no_lock")):

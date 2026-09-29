@@ -22,17 +22,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   silicons, 29Si n x 0.0508 at +0.99957 Da; where the width model parts it from 13C the
   line itself at >= half its expected area, present and co-varying like the partner
   (where no such line is present, the +1 region decides: the peak picker may not have
-  parted the two, `unparted`), else the +1 region -- every peak from 29Si to 13C --
-  present and co-varying with the
-  M0 like the partner (r(log region area, log M0 area) >= 0.8, the 2026-09-29
-  decision), >= half that area above the ion's own +1 line (13C, 2H, 15N, 17O, 33S and,
-  for a reading carrying Si, 29Si) and, area-weighted and the median over the spectra,
-  at least half-way toward 29Si -- areas, the basis of the partner's ratio; 81Br needs
-  no test; the 30Si spacing is AME2020's 1.9968436, so the test starts at m/z 206.3).
-  What the blended test cannot refuse is an organosilicon above m/z ~600 rich enough in
-  carbon that rule C reads its blend as a 13C line, read as a Cl formula with more than
-  ~40 C (none on the regression batches); the line's position alone would catch it and
-  was rejected (~20 more false refusals per 531 Si-free pairs with a present +1 region).
+  parted the two, `unparted`); else the +1 region -- every peak from 29Si to 13C --
+  present and co-varying with the M0 like the partner (r(log region area, log M0 area)
+  >= 0.8) and sitting, area-weighted and the median over the spectra, at least half-way
+  from the reading's own +1 position toward the blend a Si reading implies -- the
+  position decides, no height criterion (the 2026-09-29 decision) -- and a reading that
+  itself carries 1-2 Si is also refused on reading >= half that 29Si area above its own
+  +1 line, since its own 29Si pulls the half-way mark toward 29Si (the Si-reading
+  guard); 81Br needs no test; the 30Si spacing is AME2020's 1.9968436, so the test
+  starts at m/z 206.3). The position and not the height: a peak picker reporting a
+  blend at its apex keeps its position toward 29Si while its area comes out short
+  (72-84 % on the regression batches' siloxanes), and rule C, which a height test leans
+  on for carbon-rich readings, reads no ion too dim for its 13C line -- the excess test
+  built first (excess AND position) let dim siloxane misreads lock unrefuted at any m/z
+  from 206.3 (48 of 52 dim readings of the uronium batch's real D8 / D9 urea clusters
+  with the lock gates forced, up to 173 of 263 synthetic Si7-Si12 readings; the
+  position test none, bar one Si2 reading the guard refuses). The price: ~1.0-1.4
+  refusals per 1000 real Cl ions placed on real +1 regions (0.5-0.9 for the excess
+  test), where another ion's line near 29Si merges into a dim ion's +1 region; on a
+  TOF-class batch, whose peak list reads a +1 line ~1.3 mDa low, the position is no
+  silicon signature -- harmless while no TOF lock forms at 1 ppm.
   Never on an ion with Si >= 3 or both halogens, and
   never on a halogen the batch's reagent could have put there: a line counts only where
   the ion carries more of it than one reagent ion supplies (the batch's reagent
@@ -65,16 +74,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (its bromide reagent could have put the Br in 659 of its ions; at 1 ppm rule H is
   Orbitrap-only in practice). Identified unchanged on all three; a lock at +-4 to 16
   mDa decoy spacings moves nothing. The silicon test reads the four Cl locks above m/z
-  206 (C7H11ClO5, C6H10Cl2O4, C10H19ClO3 [M-H]-, the uronium urea cluster) and finds no
-  29Si line on any. No uronium siloxane can form a Cl lock at all (none passes the one-Cl
-  gates at 1 ppm); handed their M+2 lines as Cl partners, the detector alone fires on the
-  Si10 and Si11 urea clusters only against the siloxane's own Si-free composition (their
-  M+2 taken within 3 ppm; the D5 urea cluster, whose +1 region co-varies at r 0.74, no
-  longer does) and on none of the CHNOS(+Si <= 2)+Cl readings within 1 ppm a lock would
-  carry (their extra carbons' +1 line absorbs the excess): the protection there is the
-  lock's gates and rule C, which refutes the 7 carbon-rich Cl readings it can test. The
-  co-variation gate cuts the test's false fires on the Orbitrap batches' real Si-free
-  ions, forced blended, from 38 to 1. The golden fixtures gained the lock tables of the
+  206.3 (C7H11ClO5, C6H10Cl2O4, C10H19ClO3 [M-H]-, the uronium urea cluster) and finds no
+  29Si line on any: their +1 region sits at their own 13C position, 1.5-1.8 mDa short of
+  the half-way mark, and the tables are identical under the excess and the position
+  test. No uronium siloxane can form a Cl lock at all (none passes the one-Cl gates at 1
+  ppm). Handed their M+2 lines as Cl partners (taken within 3 ppm where 1 ppm finds them
+  in < 60 % of the spectra: Si10 24 %, Si11 0 % at the 30Si spacing) and read as every
+  CHNOS(+Si <= 2)+Cl formula within 1 ppm, the position test refuses 115 of 224 cases,
+  rule C refutes 48 more, and the other 61 have a +1 region the gates cannot read (the
+  excess test: 2 refused, 150 left to rule C, 72 through). Rule C refutes every one of
+  the 23 Cl readings of the D5, Si10 and Si11 urea clusters within 1 ppm (and Si12's
+  11); the D7 urea cluster's readings are rule-C-untestable, and only the lock's 1 ppm
+  gate stops that cluster. On the Orbitrap batches' real Si-free ions, forced blended
+  with a one-Cl partner, the position test fires on 0 and 1 as the excess test did --
+  the co-variation gate's work (37 -> 1 from m/z 206.3 for the excess test, 23 -> 0 and
+  14 -> 1; the first count's 38th fire left with the threshold move) -- and on the TOF
+  on 24 (the excess test 17). The golden fixtures gained the lock tables of the
   live runs and the four live-locked lead pairs' flag in `tentative_lead` (decision
   D8): the Orbitrap vector 0/11/217/9/203/139/0/35/1093 -> 0/11/217/9/206/139/0/35/1090,
   the uronium one 4/4/0/331/376/291/0/82/73 -> 4/4/0/331/377/291/0/82/72; the TOF, TV
