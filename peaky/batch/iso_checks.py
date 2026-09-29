@@ -226,8 +226,11 @@ LOCK_STAMP_MAX_DA = 0.5
 # sits 0.206 mDa below the 37Cl one, inside the 1 ppm window from LOCK_SI_MZ on;
 # there a Cl lock is refused where the M+1 region carries the 29Si line a Si-rich
 # ion making the partner's height from 30Si must carry. 81Br needs none: 30Si
-# sits 1.11 mDa below it, outside 1 ppm below m/z ~1100.
-D29SI, D30SI = _ISO["Si"][1][0], _ISO["Si"][2][0]
+# sits 1.11 mDa below it, outside 1 ppm below m/z ~1100. D30SI is the AME2020
+# 30Si - 28Si spacing (29.973770136 - 27.976926535); the _ISO / HIGH_OFFSETS entry
+# (1.9968442) is 0.6 uDa high and stays: re-rounding it there moves HIGH rows of the
+# regression batches (their offset_mda, one line's offset label), 2026-09-29.
+D29SI, D30SI = _ISO["Si"][1][0], 1.9968436
 LOCK_SI_PER_ATOM = {"29Si": _ISO["Si"][1][1] / _ISO["Si"][0][1], "30Si": _ISO["Si"][2][1] / _ISO["Si"][0][1]}
 LOCK_SI_MZ = (LOCK_D["Cl"] - D30SI) / (LOCK_TOL_PPM * 1e-6)
 #: the 29Si line (or the +1 line's excess and shift) must reach this share of what the Si reading implies

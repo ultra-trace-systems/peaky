@@ -191,7 +191,11 @@ def _si(build, rp, n=BIG):
 
 
 def test_the_silicon_constants_are_the_isotope_tables():
-    assert (IC.D29SI, IC.D30SI) == (0.9995683, 1.9968442)
+    """AME2020: 29Si - 28Si 0.9995683, 30Si - 28Si 1.9968436 (29.973770136 -
+    27.976926535). The isotope table's 30Si entry keeps 1.9968442 (0.6 uDa high):
+    re-rounding it moves HIGH rows of the regression batches (2026-09-29)."""
+    assert (IC.D29SI, IC.D30SI) == (0.9995683, 1.9968436)
+    assert IC._ISO["Si"][2][0] == IC.HIGH_OFFSETS["30Si"] == 1.9968442
     assert IC.LOCK_SI_PER_ATOM == pytest.approx({"29Si": 0.04685 / 0.92223, "30Si": 0.03092 / 0.92223}, rel=1e-12)
     assert IC.LOCK_SI_FRAC == 0.5
 

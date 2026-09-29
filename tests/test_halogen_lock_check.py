@@ -367,15 +367,17 @@ def test_a_chlorine_line_measured_low_locks_above_the_silicon_window(rp, mode):
 
 def test_the_silicon_window_starts_where_30si_enters_the_lock_window():
     """LOCK_SI_MZ: the M0 m/z at which the 30Si spacing (0.206 mDa below 37Cl) is
-    exactly LOCK_TOL_PPM of it -- derived, not set; 81Br never (30Si sits 1.11 mDa
-    below it, past 1 ppm below m/z ~1100)."""
+    exactly LOCK_TOL_PPM of it -- derived, not set: 206.3 with the AME2020 30Si
+    spacing (1.9968436; 205.7 with the isotope table's 1.9968442); 81Br never
+    (30Si sits 1.11 mDa below it, past 1 ppm below m/z ~1100)."""
     assert IC.LOCK_SI_MZ == pytest.approx((IC.LOCK_D["Cl"] - IC.D30SI) / (IC.LOCK_TOL_PPM * 1e-6))
-    assert IC.LOCK_SI_MZ == pytest.approx(205.7, abs=0.05)
+    assert IC.LOCK_SI_MZ == pytest.approx((1.9970499 - 1.9968436) / 1e-6) == pytest.approx(206.3, abs=0.01)
     assert IC.silicon_window("Cl", IC.LOCK_SI_MZ) and not IC.silicon_window("Cl", np.nextafter(IC.LOCK_SI_MZ, 0))
     assert not IC.silicon_window("Br", 1000.0) and not IC.silicon_window("Cl", float("nan"))
     assert (IC.LOCK_D["Br"] - IC.D30SI) / 1e-6 > 1100
-    # on the series: C8H11ClO4 [M-H]- at m/z 205.03 is not tested, C8H13ClO4 [M-H]- at 207.04 is
-    for n, mode in (("C8H11ClO4", ""), ("C8H13ClO4", "resolved")):
+    # on the series: C8H11ClO4 [M-H]- at m/z 205.03 and C7H10ClNO4 [M-H]- at 206.02 (inside
+    # the 0.6 Da the table's rounding added) are not tested, C8H13ClO4 [M-H]- at 207.04 is
+    for n, mode in (("C8H11ClO4", ""), ("C7H10ClNO4", ""), ("C8H13ClO4", "resolved")):
         r = _verdict(lambda i: _hal(i, n), n)
         assert r["verdict"] == "lock" and r["si29_mode"] == mode, n
     # a bromine lock above it is never tested
