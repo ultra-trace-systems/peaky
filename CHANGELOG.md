@@ -68,9 +68,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `evidence_axes` the modifier `lead_lift`, `batch_summary.json` the H funnel,
   `locked_pairs` and `evidence_levels.lead_lifted`; `scripts/level_ledger.py
   --iso-checks` lifts in lockstep and `scripts/scorecard.py` reads the locks as the
-  run's own evidence. On the regression batches (the C11+a final runs replayed, the
-  table recomputed from each run's own series -- its C / REQ / HIGH rows byte for byte
-  -- and every other pair identical in level, reason and axes): the labelled-nitrate
+  run's own evidence. On the regression batches (one variable against the previous
+  trunk run; the runs equal the offline replay row for row, their tables' C / REQ /
+  HIGH rows byte for byte and every other pair identical in level, reason and
+  axes): the labelled-nitrate
   Orbitrap locks 16 pairs and lifts 4, 5b -> 4b "one corroboration (iso)" -- three
   chlorinated acids (C6H9ClO3, C7H11ClO5, C6H10Cl2O4 [M-H]-, series gap-fills whose
   37Cl line and its count are the only evidence against their 15N-nitrate twins with

@@ -110,7 +110,9 @@ rule C).
         of the 30 / 12 / 37 real Si1-2 ions of the regression batches from m/z
         206.3, forced blended with a one-Cl partner; the one a TOF C5H7NO2Si
         [M+Br]-: its region reads 4.1x the excess the guard needs while it sits
-        2.22 mDa above 29Si, short of its mark at 1.17). On a TOF the position
+        2.22 mDa above 29Si, short of its mark at 1.17 -- a Br adduct, whose Cl
+        reading would carry both halogens and which rule H therefore never
+        tests; on the readings it would test, 0 / 0 / 0). On a TOF the position
         is no silicon signature: its peak list reads an ion's +1 region ~1.3 mDa
         below the ion's own +1 position (the regression TOF's median over its 69
         present regions; ~1.4 below the 13C spacing), past the half-way mark on
@@ -1185,10 +1187,12 @@ def _silicon(S: _Series, codes, pm, pa, ph, ratio: float, ion: dict, rp, pcol: i
     confirmed 2026-09-29): as an AND the guard would ask a Si reading for more
     than a Si-free one and reopen the Si2 corner it closes -- 393 of 852
     synthetic blended scenario-2 / D7-urea cases (every one a Si1 / Si2
-    reading) no longer refused, the dim scenario-2 Si1 and Si2 readings
-    (excess 0.87x / 0.72x of the need) and the Si2 corner (its position 0.06
-    mDa short of the mark) among them, and on the siloxane control the 73 Si
-    readings the position refuses let through (115 refused -> 42). The guard
+    reading) no longer refused, the dim scenario-2 Si1 and Si2 readings rule C
+    cannot read (excess 0.87x / 0.72x of the need) and the Si2 corner (its
+    position 0.06 mDa short of the mark) among them, and on the siloxane
+    control the 73 Si readings the position refuses no longer refused by the
+    silicon test (115 -> 42; rule C still refutes 64 of them, so 9 more
+    misreads go unrefuted: 61 -> 70). The guard
     asks no position, so it can refuse a real Si1-2 Cl reading on any excess
     in its +1 region, a neighbour's line at the 13C position included. Where
     both criteria hold, the note names the position. Areas, not heights: the
