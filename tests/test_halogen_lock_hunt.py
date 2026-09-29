@@ -11,8 +11,10 @@ reference script re-implements a rule it is held in lockstep with the engine
 test (the 2026-09-28 decision, "the 29Si line decides") is pinned at each of
 its edges in both regimes: the line a Si reading implies at half its area,
 present and co-varying (resolved); the region's area-weighted median position
-half-way toward 29Si, which alone refuses a Si-free reading, and a Si
-reading's excess (the Si-reading guard) -- both the 2026-09-29 decision --,
+half-way toward 29Si (its peaks weighed by area, not read off the tallest
+one), which alone refuses a Si-free reading, and a Si reading's excess (the
+Si-reading guard; the note names the position where both hold) -- both the
+2026-09-29 decision --,
 the region's bounds, presence and co-variation with the M0 (blended), the
 regime read at the ion's +1 m/z. A line at the 29Si position beside a real
 chloro acid is another ion's (what the test would read); in the blended regime
@@ -371,6 +373,23 @@ def test_a_si_reading_is_also_refused_on_half_the_29si_excess(n, veto, frac, ver
     assert r["si29_seen"] == pytest.approx(frac * r["si29_expected"], abs=1e-9)
 
 
+@pytest.mark.parametrize("n, veto, at, mark", [(SI2CL, "", "0.50", "1.22"), (SI1CL, "C", "0.67", "1.71")])
+def test_a_si_reading_that_meets_both_criteria_is_named_by_its_position(n, veto, at, mark):
+    """R3A-4: a Si reading whose region meets both blended criteria -- the
+    29Si a Si reading of its M+2 implies, in full and at the 29Si position,
+    merged into the reading's own +1 line (a full-area centroid): the region
+    sits past the half-way mark AND reads the whole implied 29Si above the
+    reading's own +1 line -- is refused, and its note names the position (the
+    criterion every reading is read on) with its numbers, not the excess (the
+    Si-reading guard's addition, named only where the position falls short)."""
+    r = _si(lambda i: _si_reading(i, n, 1.0, d=IC.D29SI), _lo(), n=n, veto=veto)
+    assert (r["verdict"], r["si29_mode"]) == ("si_rich", "blended")
+    assert r["si29_seen"] == pytest.approx(r["si29_expected"], abs=1e-9)          # >= half: the excess holds too
+    assert r["note"].endswith(f"blended): its +1 peak sits {at} mDa above 29Si, at least half-way toward that "
+                              f"reading's blend (<= {mark})")
+    assert "reads at least half that 29Si" not in r["note"]
+
+
 def test_a_si_free_reading_is_refused_on_the_position_alone():
     """0.3x the 29Si at its position, merged with the ion's 13C line (a
     full-area centroid): the region reads only 0.3x the 29Si above the ion's own
@@ -545,6 +564,61 @@ def test_the_blended_region_reads_its_peaks_area_weighted():
         return rows
     r = _si(build, _lo(), veto="C")                           # rule C: ~62 C for 16
     assert r["verdict"] == "lock" and r["si29_seen"] > 0.5 * E29
+
+
+def _plus1(i, lines):
+    """The chloro acid of `_si_line` (C16H29ClO6 [M-H]-, its own 13C line at
+    the 13C spacing) and other ions' lines in its +1 region, each (spacing,
+    height, area), height and area in units of the ion's own 13C line's height."""
+    rows = _hal(i, BIG)
+    m0, h13 = rows[0], next(r for r in rows if r["iso_label"] == "13C")["height"]
+    return rows + [_row(i, m0["mz"] + d, hx * h13, ax * h13) for d, hx, ax in lines]
+
+
+def test_the_blended_position_weighs_the_region_by_area_not_by_its_tallest_peak():
+    """R3A-3: since the 2026-09-29 decision the region's area-weighted position
+    alone refuses a Si-free reading -- pinned against reading it off the
+    region's tallest peak (as if the region were one apex) or weighing its
+    peaks by height. (a) Another ion's line AT the 29Si position is the
+    region's tallest peak and its largest (1.2x the ion's own 13C line, height
+    and area), beside two broad lines of other ions on the 13C side (0.15 mDa
+    above and 0.25 mDa below it, each half the 13C line's height and as much
+    area): area-weighted the region sits 2.68 mDa above 29Si, short of the
+    half-way mark at 2.44 -- it locks (height-weighted it would sit at 2.35,
+    past the mark; the tallest peak sits at 29Si). (b) The mirror: the ion's
+    own 13C line is the tallest peak, and a broad line at 29Si (0.7x its
+    height, 2x its area) carries most of the region's area: area-weighted the
+    region sits 1.27 mDa above 29Si, past the mark -- refused, though the
+    tallest peak sits at 13C. Rule C reads the ion's own 13C line in both: no
+    veto."""
+    ion = C.parse_formula(_ion(BIG, H).rstrip("-"))
+    own, c1 = IC.m1_line(ion)
+    at_max = c1 - 0.5 * (c1 - (own * c1 + E29 * IC.D29SI) / (own + E29))
+    assert (at_max - IC.D29SI) * 1e3 == pytest.approx(2.444, abs=1e-3)
+
+    def anatomy(lines):
+        """(area-weighted, height-weighted, tallest peak's) +1 position of the fixture's region, in mDa above 29Si."""
+        rows = _plus1(0, lines)
+        reg = [r for r in rows if 0.99 < r["mz"] - rows[0]["mz"] < 1.01]
+        at = [(r["mz"] - rows[0]["mz"] - IC.D29SI) * 1e3 for r in reg]
+        a, h = np.array([r["area"] for r in reg]), np.array([r["height"] for r in reg])
+        return float(a @ at / a.sum()), float(h @ at / h.sum()), at[int(np.argmax(h))], at[int(np.argmax(a))]
+
+    mark = (at_max - IC.D29SI) * 1e3
+    tall_at_29si = [(IC.D29SI, 1.2, 1.2), (IC.D13C + 0.15e-3, 0.5, 1.0), (IC.D13C - 0.25e-3, 0.5, 1.0)]
+    by_area, by_height, tallest, largest = anatomy(tall_at_29si)
+    assert by_area == pytest.approx(2.682, abs=1e-3) and by_height == pytest.approx(2.351, abs=1e-3)
+    assert by_height < mark < by_area and tallest == largest == pytest.approx(0.0, abs=1e-6)
+    r = _si(lambda i: _plus1(i, tall_at_29si), _lo())
+    assert (r["verdict"], r["si29_mode"]) == ("lock", "blended")
+    broad_at_29si = [(IC.D29SI, 0.7, 2.0)]
+    by_area, _h_w, tallest, _l = anatomy(broad_at_29si)
+    assert by_area == pytest.approx(1.266, abs=1e-3) and by_area < mark
+    assert tallest == pytest.approx((IC.D13C - IC.D29SI) * 1e3, abs=1e-6)
+    r = _si(lambda i: _plus1(i, broad_at_29si), _lo())
+    assert (r["verdict"], r["si29_mode"]) == ("si_rich", "blended")
+    assert r["note"].endswith("its +1 peak sits 1.27 mDa above 29Si, at least half-way toward that reading's blend "
+                              "(<= 2.44)")
 
 
 def test_the_blended_region_needs_the_partners_presence():
