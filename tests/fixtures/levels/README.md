@@ -1,11 +1,15 @@
 # Level fixtures — the four golden sets behind `tests/test_evidence.py`
 
 Fifty-two per-file ledgers from four real runs (and one neutral-pair table, one label-twin table and two lock tables), trimmed to what the evidence
-levels read: the `M0` and `iso_child` rows and the twenty-two columns the
-predicates in `docs/EVIDENCE_LEVELS.md` named when they were cut. They predate
-the twenty-third, `tentative_lead` (C19(c), 2026-09-27): it reads False here,
-their leads sit in `below_assignability`, and no vector moved with the split --
-except on the four pairs rule H lifts (C11+b, below). Gzipped CSV (`pandas.read_csv`
+levels read: the `M0` and `iso_child` rows and the columns the predicates in
+`docs/EVIDENCE_LEVELS.md` named when they were cut -- twenty-two on the TV and
+uronium sets, twenty-one on the TOF and Orbitrap sets (no `resolvability`). They
+predate `tentative_lead` (C19(c), 2026-09-27): where the column is missing it
+reads False, their leads sit in `below_assignability`, and no vector moved with
+the split. Since C11+b the Orbitrap and uronium sets carry `tentative_lead` and
+`lead_by` (23 and 24 columns): False / empty on every row but the eight rows of
+the four pairs rule H lifts (below), whose flag moved from
+`below_assignability` to `tentative_lead` with its setter. Gzipped CSV (`pandas.read_csv`
 opens them directly); 3.6 MB in all with the tables and `expected_levels.csv`.
 
 | set | fixtures | source | M0 rows | iso rows | golden vector (2b/3a/3b/4a/4b/4c/4d/5a/5b) |
@@ -61,7 +65,10 @@ schema) of the live runs of those batches, recomputed by `batch/iso_checks.py` f
 each run's stamped series, for the pairs the set holds: 15 of the labelled-nitrate
 run's 16 locks (its C5H9ClO4 `[M]-.` line is not in the set) and the uronium run's
 1, with the silicon test's columns (the 2026-09-28 decision: the four Cl locks above
-m/z 206 -- three here, the uronium one -- read no 29Si line). Levelled with them, exactly the four pairs move, 5b -> 4b "4b: one
+m/z 206 -- three here, the uronium one -- read no 29Si line; recomputed 2026-09-29
+with the round-2 engine, the co-variation gate and the `unparted` reading, which
+changes those four rows' `si29_seen` / `si29_mode` / note and nothing else).
+Levelled with them, exactly the four pairs move, 5b -> 4b "4b: one
 corroboration (iso)": the Orbitrap vector 0/11/217/9/203/139/0/35/1093 ->
 0/11/217/9/206/139/0/35/1090 (with rule K's table 0/11/174/9/206/151/0/38/1118 ->
 0/11/174/9/209/151/0/38/1115), the uronium one 4/4/0/331/376/291/0/82/73 ->
