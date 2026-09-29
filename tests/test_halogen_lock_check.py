@@ -401,7 +401,11 @@ def test_a_siloxane_read_as_a_chlorine_formula_is_refused(rp, mode, seen):
     sits 2.6 mDa below its 13C position; unparted -- the width model parts the
     two lines but the peak picker reports one (refute B6: two Gaussians at this
     height ratio part only from ~1.15 FWHM) -- no 29Si line is present at its
-    own position, so the +1 region decides as where they blend."""
+    own position, so the +1 region decides as where they blend. Blended and
+    unparted, the +1 lines are a full-area centroid (one peak at their
+    area-weighted position carrying all their area); the apex-reporting picker
+    (one peak at 29Si carrying part of the area) is pinned on the dim ion
+    below, read as each of its six Cl formulas."""
     picker = "parted" if mode == "resolved" else "centroid"
     t = _measure(_series(lambda i: _siloxane(i, picker)), [(CLR, UA)], prof=UR, resolution=rp)
     r = _get(t, "H", CLR, UA)

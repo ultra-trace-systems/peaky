@@ -301,7 +301,8 @@ LOCK_STAMP_MAX_DA = 0.5
 D29SI, D30SI = _ISO["Si"][1][0], 1.9968436
 LOCK_SI_PER_ATOM = {"29Si": _ISO["Si"][1][1] / _ISO["Si"][0][1], "30Si": _ISO["Si"][2][1] / _ISO["Si"][0][1]}
 LOCK_SI_MZ = (LOCK_D["Cl"] - D30SI) / (LOCK_TOL_PPM * 1e-6)
-#: the 29Si line (or the +1 line's excess and shift) must reach this share of what the Si reading implies
+#: the share of what the Si reading implies that refuses a Cl lock: the 29Si line's area (resolved); where
+#: 29Si and 13C blend, the +1 region's shift toward the Si blend -- or, on a reading carrying 1-2 Si, its excess
 LOCK_SI_FRAC = 0.5
 
 TABLE_COLUMNS = (
