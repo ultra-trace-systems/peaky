@@ -310,11 +310,18 @@ def test_no_upair_neutral_carries_a_halogen():
 
 
 # =========================================================================== the reference script
-def _run_dir(tmp_path: Path, name: str, frame: pd.DataFrame, table: pd.DataFrame | None) -> Path:
+def _files(frame) -> dict:
+    """{file: ledger}: one frame is the file s1."""
+    return dict(frame) if isinstance(frame, dict) else {"s1": frame}
+
+
+def _run_dir(tmp_path: Path, name: str, frame, table: pd.DataFrame | None) -> Path:
+    """A run dir holding `frame` (one ledger, or {file: ledger}) and the iso table."""
     run = tmp_path / name
     (run / "per_file").mkdir(parents=True)
     (run / "tables").mkdir()
-    frame.rename(columns={"occurrence": "occurrence_y"}).to_csv(run / "per_file" / "s1_ledger.csv", index=False)
+    for k, f in _files(frame).items():
+        f.rename(columns={"occurrence": "occurrence_y"}).to_csv(run / "per_file" / f"{k}_ledger.csv", index=False)
     if table is not None:
         table.to_csv(run / "tables" / "iso_checks.csv", index=False)
     return run
@@ -380,14 +387,14 @@ def test_the_reference_script_lifts_like_the_engine(tmp_path):
 
 
 def _lockstep(tmp_path, name, frame, table, label_table=None):
-    """The engine and the reference script on one run dir: every level input the
-    lift touches, row for row."""
+    """The engine and the reference script on one run dir (`frame`: one ledger, or
+    {file: ledger}): every level input the lift touches, row for row."""
     from peaky.batch import label_twins as LT
     run = _run_dir(tmp_path, name, frame, table)
     if label_table is not None:
         label_table.to_csv(run / "tables" / "label_twins.csv", index=False)
     ref = LL.run([str(run)], [], None, "auto" if label_table is not None else None, "auto")
-    core = EV.level_pooled({"s1": frame}, iso=IC.facts(table),
+    core = EV.level_pooled(_files(frame), iso=IC.facts(table),
                            label=LT.facts(label_table) if label_table is not None else None)
     m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"], suffixes=("", "_ll"))
     assert len(m) == len(core) == len(ref)
@@ -434,6 +441,58 @@ def test_a_mixed_ion_only_sibling_gives_its_regular_row(tmp_path):
                   _h_table([_h_row(CL1, H)]))
     r = m.loc[(CL1, H)]
     assert bool(r["lead_lift"]) and bool(r["chan2"]) and r["level_reason"].startswith("4b: iso + chan2")
+
+
+def test_a_siblings_unflagged_row_beside_its_below_row_is_a_channel(tmp_path):
+    """A sibling pair holding a below row in one file and an unflagged commit in
+    another: the unflagged row is a clean second channel for the lifted pair,
+    row by row in the engine and the reference script alike -- 3b with the acid
+    branch (a script dropping every pair with a below row read 4b, chan2 False)."""
+    files = {"f1": _f(_r("p", lead=True), _r("s", adduct=NO3, below=True)), "f2": _f(_r("t", adduct=NO3))}
+    m = _lockstep(tmp_path, "R", files, _h_table([_h_row(CL1, H)]))
+    r = m.loc[(CL1, H)]
+    assert bool(r["lead_lift"]) and bool(r["chan2"]) and bool(r["branch"]) and r["evidence_level"] == "3b"
+    assert m.loc[(CL1, NO3), "evidence_level"] == "5b"                  # the sibling's own below row holds it
+
+
+def test_an_unlifted_pairs_pools_read_a_mixed_sibling_row_by_row(tmp_path):
+    """No lock, a veto elsewhere (so the reference script re-reads the pools,
+    `relabel_pools`), and a [M]-. pair holding an ion-only row AND an unflagged
+    regular commit: the regular row is the [M-H]- pair's second channel in both
+    (4b "one corroboration (chan2)"); the script once dropped the whole mixed
+    pair for its ion-only row and read 4c."""
+    mz = C.ion_mz(CL1, H) + 1.00728
+    io_row = _r("io", adduct="[M]-.", mz=mz)
+    io_row["method"] = "ion_only:ea"
+    x = "C7H12O4"
+    frame = _f(_r("p"), io_row, _r("rg", adduct="[M]-.", mz=mz), _r("x", x))
+    table = _h_table([_h_row(CL1, H, lock=False), _h_row(x, H, check="REQ", lock=False, veto=True, note="r")])
+    m = _lockstep(tmp_path, "R", frame, table)
+    r = m.loc[(CL1, H)]
+    assert not bool(r["lead_lift"]) and bool(r["chan2"]) and r["evidence_level"] == "4b"
+    assert r["level_reason"] == "4b: one corroboration (chan2)"
+    assert m.loc[(x, H), "evidence_level"] == "5b" and not bool(m.loc[(CL1, "[M]-."), "chan2"])
+    # the same mixed pair split across two files
+    files = {"s1": _f(_r("p"), io_row, _r("x", x)), "s2": _f(_r("rg", adduct="[M]-.", mz=mz))}
+    assert _lockstep(tmp_path, "R2", files, table).loc[(CL1, H), "evidence_level"] == "4b"
+
+
+def test_a_measured_frame_without_has_regular_reads_the_pair_flag():
+    """assign_levels on a measured frame that carries no `has_regular` (not
+    measure_source's): a pair with an ion-only row gives its siblings nothing --
+    the conservative reading, 0 axes where the column reads a second channel."""
+    mz = C.ion_mz(CL1, H) + 1.00728
+    io_row = _r("io", adduct="[M]-.", mz=mz)
+    io_row["method"] = "ion_only:ea"
+    x = "C7H12O4"
+    frame = _f(_r("p"), io_row, _r("rg", adduct="[M]-.", mz=mz), _r("x", x))
+    iso = IC.facts(_h_table([_h_row(x, H, check="REQ", lock=False, veto=True, note="r")]))
+    measured = LL.measure_source("s1", frame.assign(__file="s1"), None)
+    assert measured.set_index(["neutral", "adduct"]).loc[(CL1, "[M]-."), "has_regular"]
+    new = LL.assign_levels(measured, set(), iso=iso).set_index(["neutral", "adduct"]).loc[(CL1, H)]
+    old = LL.assign_levels(measured.drop(columns=["has_regular"]), set(), iso=iso) \
+        .set_index(["neutral", "adduct"]).loc[(CL1, H)]
+    assert bool(new["chan2"]) and new["n_axes"] == 1 and not bool(old["chan2"]) and old["n_axes"] == 0
 
 
 def test_the_reference_script_clears_the_reagent_only_flag_like_the_engine(tmp_path):

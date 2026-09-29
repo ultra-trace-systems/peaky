@@ -507,6 +507,9 @@ def measure_source(
                 lead_by="|".join(sorted(set().union(*lead_codes))) if lead_codes else "",
                 lead_unknown=any(not c for c in lead_codes),
                 clean_row=bool(clean_row.any()),
+                # a pair with a regular (not ion-only) row gives its adduct to its
+                # neutral's pools, row by row like the engine (relabel_pools)
+                has_regular=bool((~group["ion_only"].astype(bool)).any()),
                 anchor_clean=(not ion_only) and bool(
                     (group["anchor_peak_id"].notna() | group["series_unit"].notna())[~below_row & ~lead_row].any()),
                 lowconf=bool(
@@ -584,11 +587,18 @@ def relabel_pools(df: pd.DataFrame, alien: set, fold: bool = True) -> pd.DataFra
     """Rule K / C11+ on the per-neutral facts: chan2 and branch recomputed over
     the regular rows minus the `alien` pairs (rule K's 14N lines, the pairs an
     isotope check refutes), with `fold` the two nitrate clusters of one neutral
-    counted as one channel (rule K only); an alien row takes neither."""
+    counted as one channel (rule K only); an alien row takes neither. Row by
+    row, like the engine: a pair holding an ion-only row beside a regular one
+    still gives its adduct to its siblings (`has_regular`; a measured frame
+    without the column reads the pair-level ion-only flag) and takes neither
+    itself."""
     df = df.copy()
     keys = list(zip(df["neutral"].astype(str), df["adduct"].astype(str)))
-    out = pd.Series([k in alien for k in keys], index=df.index, dtype=bool) | df["ion_only"].astype(bool)
-    reg = df[~out]
+    alien_row = pd.Series([k in alien for k in keys], index=df.index, dtype=bool)
+    out = alien_row | df["ion_only"].astype(bool)
+    has_regular = (df["has_regular"].astype(bool) if "has_regular" in df.columns
+                   else ~df["ion_only"].astype(bool))
+    reg = df[~alien_row & has_regular]
     chans = reg.assign(ch=reg["adduct"].map(lambda a: LABEL_FOLD.get(a, a) if fold else a)) \
         .groupby("neutral")["ch"].nunique()
     adds = reg.groupby("neutral")["adduct"].agg(lambda s: set(s.astype(str)))
