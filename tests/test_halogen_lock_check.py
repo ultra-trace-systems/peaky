@@ -12,8 +12,12 @@ reagent could have put the halogen there (it supplies as many as the ion
 carries). Where a 30Si line can sit inside the 1 ppm window (a Cl ion from m/z
 ~206) a Cl lock is refused when the M+1 region shows the 29Si line a Si-rich
 ion making the partner from 30Si must carry (the 2026-09-28 decision: the
-29Si line decides; the three scenarios the user was shown are tested here).
-The synthetic series carry exact ratios, so each gate is tested at its edge.
+29Si line decides; the three scenarios the user was shown are tested here);
+where 29Si and 13C blend, the +1 peak's position decides, and a reading that
+itself carries Si is also refused on its excess (the 2026-09-29 decision:
+scenario 2 dim and under an apex-reporting picker, the Si2-reading corner and
+the TOF note are tested here too). The synthetic series carry exact ratios, so
+each gate is tested at its edge.
 
 Run: pytest tests/test_halogen_lock_check.py -q
 """
@@ -32,8 +36,8 @@ from peaky.batch import iso_checks as IC
 from peaky.chem import chemistry as C
 from peaky.chem import profiles as P
 from tests.test_iso_checks import (
-    H, LABEL, N, NO3, ORBI, SCALE_O, SCALE_T, TOF, _c13, _frames, _get, _ion, _ll, _measure, _row, _series, _wave,
-    quiet)
+    FILL, H, LABEL, N, NO3, ORBI, SCALE_O, SCALE_T, TOF, _c13, _frames, _get, _ion, _ll, _measure, _row, _series,
+    _wave, quiet)
 
 CL1, BR1, CL2 = "C6H9ClO3", "C2H3BrO2", "C4H6Cl2O2"      # a chloro acid, bromoacetic, a dichloro acid
 BIG_CL = "C10H17ClO4"                                     # a chloro acid above m/z 206
@@ -318,9 +322,18 @@ def test_a_batch_of_carbon_free_pairs_only_is_measured():
 # =========================================================================== the silicon test (the 29Si line decides)
 UR = P.resolve("Ur")
 HI_RES = {"coef": 200 / 240_000 / 200 ** 1.5, "exponent": 1.5}    # R 240 000 at m/z 200: 29Si / 13C apart at m/z 520
-LO_RES = {"coef": 200 / 100_000 / 200 ** 1.5, "exponent": 1.5}    # R 100 000 at m/z 200: blended from m/z ~250
+LO_RES = {"coef": 200 / 100_000 / 200 ** 1.5, "exponent": 1.5}    # R 100 000 at m/z 200: blended from m/z ~306
 SI7, CLR, UA = "C14H42O7Si7", "C22H23N6O7Cl", "[M+H]+"            # the D7 siloxane, its Cl reading 0.26 ppm off
+UU = "[M+(CH4N2O)H]+"
 BIG = "C16H29ClO6"                                                  # a chloro acid at m/z 351
+#: the six CHNOS(+Si <= 2)+Cl readings of the D7 siloxane's [M+H]+ within 1 ppm (refute round 2's enumeration);
+#: the two carbon-richest are the ones rule C can read on a dim ion
+R2_READINGS = ("C22H31N2O6S2Cl", "C22H23N6O7Cl", "C30H27O4SCl",
+               "C22H35N2O2S3SiCl",                             # privacy-ok: a molecular formula, not an id
+               "C29H27O5SiCl", "C21H35N2O3S2Si2Cl")
+RULE_C_READS_DIM = ("C30H27O4SCl", "C29H27O5SiCl")
+#: the D7 urea cluster's one Si2 reading the position alone lets through (the re-measure's corner)
+SI2_READING = "C13H31N8O6SSi2Cl"                                   # privacy-ok: a molecular formula, not an id
 
 
 def _blend(parts):
@@ -329,19 +342,27 @@ def _blend(parts):
     return sum(d * x for d, x in parts) / a, a
 
 
-def _siloxane(i, resolved: bool):
-    """The D7 siloxane's [M+H]+ stamped as its Cl reading. Its +1 lines: 29Si
-    (7 x 0.0508) and 13C with 17O and 2H -- two peaks where the width model
-    resolves them, else one at their area-weighted position; its M+2: 30Si (7 x
-    0.0335) and 29Si2 blended, 0.29x at +0.43 ppm from the 37Cl spacing, inside
-    the Cl1 window -- the line the lock would take for 37Cl."""
-    ion = C.parse_formula(_ion(SI7, UA).rstrip("+"))
+def _siloxane(i, picker="centroid", *, reading=CLR, adduct=UA, h=1e5):
+    """The D7 siloxane's `adduct` ion (the [M+H]+ at m/z 519 or its urea
+    cluster at 579) stamped as its Cl `reading`. Its +1 lines: 29Si (7 x 0.0508)
+    and 13C with 17O and 2H (the urea cluster's two 15N, 2.5 mDa below 29Si, are
+    left out) -- as the peak picker reports them: two peaks where it parts them
+    (`parted`), else ONE peak, either a full-area centroid (`centroid`: at their
+    area-weighted position, carrying every line's area) or at the blend's apex
+    (`apex`: AT the 29Si position, carrying the 29Si line and half the 13C
+    group's area -- how R2's peak list reports a siloxane's +1 blend, refute
+    round 2's convention); its M+2: 30Si (7 x 0.0335) and 29Si2 blended, 0.29x
+    at +0.4 ppm from the 37Cl spacing, inside the Cl1 window -- the line the lock
+    would take for 37Cl. `h`: the M0's height scale (x the wave)."""
+    ion = C.parse_formula(_ion(SI7, adduct).rstrip("+"))
     a29, a30 = IC.LOCK_SI_PER_ATOM["29Si"], IC.LOCK_SI_PER_ATOM["30Si"]
     c13 = [(IC.D13C, ion["C"] * IC.R13C), (1.0042169, ion["O"] * IC.R17O), (1.0062767, ion["H"] * 0.000115)]
-    p1 = [(IC.D29SI, 7 * a29)] + c13
-    mz, h0 = C.ion_mz(SI7, UA), 1e5 * _wave(i)
-    rows = [_row(i, mz, h0, role="M0", nf=CLR, ad=UA, ion=_ion(CLR, UA))]
-    for d, x in ([p1[0], _blend(c13)] if resolved else [_blend(p1)]):
+    p29 = (IC.D29SI, 7 * a29)
+    mz, h0 = C.ion_mz(SI7, adduct), h * _wave(i)
+    rows = [_row(i, mz, h0, role="M0", nf=reading, ad=adduct, ion=_ion(reading, adduct))]
+    plus1 = {"parted": [p29, _blend(c13)], "centroid": [_blend([p29] + c13)],
+             "apex": [(IC.D29SI, p29[1] + 0.5 * _blend(c13)[1])]}[picker]
+    for d, x in plus1:
         rows.append(_row(i, mz + d, x * h0))
     d2, x2 = _blend([(IC.D30SI, 7 * a30), (2 * IC.D29SI, 21 * a29 ** 2)])
     return rows + [_row(i, mz + d2, x2 * h0)]
@@ -381,16 +402,108 @@ def test_a_siloxane_read_as_a_chlorine_formula_is_refused(rp, mode, seen):
     two lines but the peak picker reports one (refute B6: two Gaussians at this
     height ratio part only from ~1.15 FWHM) -- no 29Si line is present at its
     own position, so the +1 region decides as where they blend."""
-    t = _measure(_series(lambda i: _siloxane(i, mode == "resolved")), [(CLR, UA)], prof=UR, resolution=rp)
+    picker = "parted" if mode == "resolved" else "centroid"
+    t = _measure(_series(lambda i: _siloxane(i, picker)), [(CLR, UA)], prof=UR, resolution=rp)
     r = _get(t, "H", CLR, UA)
     assert r["verdict"] == "si_rich" and not bool(r["lock"]) and not bool(r["veto"])
     assert r["si29_mode"] == mode and r["si_n"] == pytest.approx(8.62, abs=0.01)
     assert r["si29_expected"] == pytest.approx(0.438, abs=1e-3) and r["si29_seen"] == pytest.approx(seen, abs=2e-3)
     assert f"the M+1 region carries the 29Si line of a Si8.6 reading of the line ({seen:.2f}x of 0.44x, {mode})" \
         in r["note"]
+    if mode != "resolved":                  # the position decides: 1.20 mDa above 29Si, the mark at 2.28
+        assert "its +1 peak sits 1.20 mDa above 29Si, at least half-way toward that reading's blend (<= 2.28)" \
+            in r["note"]
     assert IC.lock(t) == {} and IC.summary(t, rp)["H"]["si_rich"] == 1
-    # and rule C refutes the reading: its +1 line is no 13C line of 22 carbons (the protection on real batches)
+    # and rule C refutes the reading on a bright ion: its +1 line is no 13C line of 22 carbons
     assert IC.veto(t)[(CLR, UA)].startswith("rule C: ") and _get(t, "C", CLR, UA)["verdict"] == "contradict"
+
+
+@pytest.mark.parametrize("picker, rp, mode", [("centroid", ORBI, "blended"), ("apex", ORBI, "blended"),
+                                              ("centroid", HI_RES, "unparted")])
+def test_a_dim_siloxane_read_as_a_chlorine_formula_is_refused_whatever_the_picker_reports(picker, rp, mode):
+    """Scenario 2 dim (the 2026-09-29 decision, after refute round 2): the D7
+    siloxane's [M+H]+ at 8 x the noise edge (every line above the edge; the
+    13C line of a reading's carbons too dim for rule C, bar the two
+    carbon-richest readings), read as each of the six Cl formulas within 1 ppm,
+    under both blend models (and the centroid where the width model would part
+    29Si from 13C: unparted). Its +1 region sits 1.20 mDa above 29Si as a
+    full-area centroid and AT 29Si as the apex -- at least half-way toward every
+    reading's Si blend, and every reading is refused (si_rich), the four rule C
+    cannot read with nothing else refuting them. The excess test as built
+    before (excess AND position) locked 2 of those 4 as a centroid and all 4 as
+    an apex: a reading's extra carbons absorb the 29Si excess, an apex carries
+    only part of the blend's area, and rule C cannot read a dim ion."""
+    tables = {n: _measure(_series(lambda i: _siloxane(i, picker, reading=n, h=8 * FILL)), [(n, UA)], prof=UR,
+                          resolution=rp) for n in R2_READINGS}
+    assert {n: _get(t, "H", n, UA)["verdict"] for n, t in tables.items()} == dict.fromkeys(R2_READINGS, "si_rich")
+    for reading, t in tables.items():
+        r = _get(t, "H", reading, UA)
+        assert r["si29_mode"] == mode and r["si_n"] == pytest.approx(8.62, abs=0.01)
+        at = "1.20" if picker == "centroid" else "0.00"
+        assert f"its +1 peak sits {at} mDa above 29Si, at least half-way toward that reading's blend" in r["note"]
+        c = _get(t, "C", reading, UA)["verdict"]
+        veto = IC.veto(t).get((reading, UA), "")
+        if reading in RULE_C_READS_DIM:
+            assert c == "contradict" and veto.startswith("rule C: "), reading
+        else:
+            assert c == "untestable" and veto == "", reading       # nothing but the silicon test stops it
+
+
+@pytest.mark.parametrize("h", [1e5, 8 * FILL])
+def test_a_si2_reading_whose_own_29si_hides_the_shift_is_refused_on_the_excess(h):
+    """The Si-reading guard (the 2026-09-29 decision): the D7 siloxane's urea
+    cluster (m/z 579) stamped as its N8 S Si2 Cl reading (`SI2_READING`, 0.19
+    ppm off), its +1 lines a full-area centroid. The reading carries two 29Si of its own, so its own +1
+    line sits 1.71 mDa above 29Si and the half-way mark toward a Si8.6
+    reading's blend at 1.20 -- the siloxane's region, at 1.26, misses it by
+    0.06 mDa: the position alone locks it (the one misread the re-measure found
+    it lifting), and rule C cannot read the reading at any brightness (13C is
+    under half its +1 line). A reading carrying 1-2 Si is also refused on the
+    excess: the region reads 0.22x above the reading's own +1 line, at least
+    half the 0.44x 29Si line a Si8.6 reading implies -- refused (si_rich)."""
+    n = SI2_READING
+    ts = _series(lambda i: _siloxane(i, reading=n, adduct=UU, h=h))
+    t = _measure(ts, [(n, UU)], prof=UR, resolution=ORBI)
+    r = _get(t, "H", n, UU)
+    assert (r["verdict"], r["si29_mode"]) == ("si_rich", "blended") and IC.veto(t) == {}
+    assert _get(t, "C", n, UU)["verdict"] == "untestable"
+    assert r["si29_seen"] == pytest.approx(0.2220, abs=1e-4) and r["si29_expected"] == pytest.approx(0.4377, abs=1e-4)
+    assert "the reading carries Si2 and its +1 peak reads at least half that 29Si above the reading's own" in r["note"]
+    # the anatomy of the corner: the position misses, the excess alone refuses
+    S = IC._Series(ts)
+    g = S.m0[(n, UU)]
+    codes, pm, pa, ph = (g["code"].to_numpy(), g["mz"].to_numpy(float), g["area"].to_numpy(float),
+                         g["height"].to_numpy(float))
+    si = IC._silicon(S, codes, pm, pa, ph, r["ratio_area"], IC.ion_counts(n, UU, ""), IC._resolution(ORBI), -2)
+    assert (si["at"] - IC.D29SI) * 1e3 == pytest.approx(1.263, abs=1e-3)
+    assert (si["at_max"] - IC.D29SI) * 1e3 == pytest.approx(1.204, abs=1e-3)
+    assert IC.m1_line(IC.ion_counts(n, UU, ""))[1] - IC.D29SI == pytest.approx(1.708e-3, abs=1e-6)
+    assert not si["at"] <= si["at_max"] and si["seen"] >= IC.LOCK_SI_FRAC * si["expected"] and si["holds"]
+
+
+def test_on_a_tof_the_plus_one_line_read_low_refuses_a_real_chlorine_lock():
+    """The TOF note (the 2026-09-29 decision): a TOF-class batch blends 29Si
+    and 13C at every mass, and its peak list reads an ion's +1 line ~1.3 mDa
+    below the 13C spacing (the median on the regression TOF; 1.2-2.1 mDa on the
+    seven Si-free ions the position alone refused there, where the excess test
+    had not). There the position is no silicon signature: the chloro acid's own
+    13C line read 2.0 mDa low, 1.79 mDa above 29Si, sits past the half-way mark
+    (2.44 mDa above 29Si for its 16 carbons) and a real Cl lock is refused. Harmless today -- no TOF
+    lock forms at 1 ppm (the TOF's own 81Br partners sit 6.8 ppm off the exact
+    spacing at the median) -- and pinned so that a TOF lock, if one ever
+    forms, meets it; the same line where it belongs locks."""
+    def build(low_mda):
+        def b(i):
+            rows = _hal(i, BIG)
+            next(r for r in rows if r["iso_label"] == "13C")["mz"] -= low_mda * 1e-3
+            return rows
+        return b
+    r = _lock_only(build(0.0), BIG, resolution=TOF, scale=SCALE_T)
+    assert (r["instrument"], r["si29_mode"]) == ("tof", "blended") and abs(r["si29_seen"]) < 0.01
+    r = _verdict(build(2.0), BIG, resolution=TOF, scale=SCALE_T)
+    assert (r["verdict"], r["si29_mode"]) == ("si_rich", "blended") and abs(r["si29_seen"]) < 0.01
+    assert "its +1 peak sits 1.79 mDa above 29Si, at least half-way toward that reading's blend (<= 2.44)" \
+        in r["note"]
 
 
 @pytest.mark.parametrize("rp, mode", [(ORBI, "unparted"), (LO_RES, "blended")])

@@ -10,12 +10,14 @@ reference script re-implements a rule it is held in lockstep with the engine
 (`_lockstep`: every level input the lift touches, row for row). The silicon
 test (the 2026-09-28 decision, "the 29Si line decides") is pinned at each of
 its edges in both regimes: the line a Si reading implies at half its area,
-present and co-varying (resolved), the region's excess, its area-weighted
-median position half-way toward 29Si, its bounds, presence and co-variation
-with the M0 (blended; the co-variation the 2026-09-29 decision added), the
+present and co-varying (resolved); the region's area-weighted median position
+half-way toward 29Si, which alone refuses a Si-free reading, and a Si
+reading's excess (the Si-reading guard) -- both the 2026-09-29 decision --,
+the region's bounds, presence and co-variation with the M0 (blended), the
 regime read at the ion's +1 m/z. A line at the 29Si position beside a real
 chloro acid is another ion's (what the test would read); in the blended regime
-it merges with the 13C line into one peak, as the peak picker reports it.
+it merges with the 13C line into one peak -- a full-area centroid here (the
+apex-reporting picker is pinned with scenario 2, tests/test_halogen_lock_check.py).
 
 Equivalent survivors (no input tells them apart):
 - iso_checks: `supply[el] and` dropped from the reagent test (an ion the check
@@ -58,7 +60,7 @@ from tests.test_halogen_lock_check import (
     BIG, BIG_CL, BR1, CL1, MIXED, _h, _h0, _hal, _inorganic, _noise_for, _verdict)
 from tests.test_halogen_lock_lift import (
     LL, NO3L, NOTE, _f, _h_row, _h_table, _lockstep, _one, _r, _run_dir, lock)
-from tests.test_iso_checks import H, ORBI, _get, _ion, _measure, _row, _series, _wave
+from tests.test_iso_checks import FILL, H, ORBI, _get, _ion, _measure, _row, _series, _wave
 
 NO3 = "[M+NO3]-"
 BRCL = "C2H2BrClO2"                                    # bromochloroacetic acid: a mixed-halogen ion
@@ -178,9 +180,10 @@ def _si_line(i, frac, *, d=IC.D29SI, present=lambda i: True, blend=False, n=BIG,
     """A C16H29ClO6 [M-H]- series (m/z 351, a 37Cl line at its count) and a
     line at `d` above the M0 of `frac` x the 29Si height a Si reading of that
     line implies (another ion's line at the 29Si position: what the silicon test
-    reads); `blend`: merged with the ion's 13C line into one peak at their
-    area-weighted position, as the peak picker reports lines the width does not
-    part."""
+    reads); `blend`: merged with the ion's 13C line into one peak -- a full-area
+    centroid, at their area-weighted position carrying both areas (the
+    apex-reporting picker, one peak at the blend's apex with part of its area,
+    is scenario 2's other model: tests/test_halogen_lock_check.py)."""
     rows = _hal(i, n, **kw)
     if not present(i) or not frac:
         return rows
@@ -324,26 +327,84 @@ def _lo():
     return LO_RES
 
 
+SI2CL, SI1CL = "C9H21ClO6Si2", "C11H21ClO7Si"    # chloro acids carrying Si2 / Si1 (m/z 315 / 327)
+
+
+def _si_reading(i, n, frac, *, d=IC.D13C, area_x=1.0, h=1e5):
+    """A Cl reading `n` [M-H]- that itself carries silicon, as the peak picker
+    reports it where 29Si and 13C blend (LO_RES from a +1 m/z of ~306): the M0;
+    its own +1 line (`m1_line`: 13C, 2H, 17O and its own 29Si, at their
+    height-weighted spacing) with `frac` x the 29Si a Si reading of its M+2
+    implies from another line at `d` merged into it -- a full-area centroid;
+    and its M+2 -- 37Cl, the Si count x 30Si and the 29Si2 line -- as one line
+    at their area-weighted position (0.02 mDa below the 37Cl spacing). Every
+    area `area_x` x its height."""
+    ion = C.parse_formula(_ion(n, H).rstrip("-"))
+    k = ion["Si"]
+    a29, a30 = IC.LOCK_SI_PER_ATOM["29Si"], IC.LOCK_SI_PER_ATOM["30Si"]
+    parts = [(IC.LOCK_D["Cl"], IC.LOCK_PER_ATOM["Cl"]), (IC.D30SI, k * a30), (2 * IC.D29SI, k * (k - 1) / 2 * a29 ** 2)]
+    x2 = sum(x for _d, x in parts)
+    d2 = sum(dd * x for dd, x in parts) / x2
+    own, c1 = IC.m1_line(ion)
+    x = frac * x2 / a30 * a29
+    mz, h0 = C.ion_mz(n, H), h * _wave(i)
+    return [_row(i, mz, h0, area_x * h0, role="M0", nf=n, ad=H, ion=_ion(n, H)),
+            _row(i, mz + (own * c1 + x * d) / (own + x), (own + x) * h0, area_x * (own + x) * h0),
+            _row(i, mz + d2, x2 * h0, area_x * x2 * h0, role="iso_child", label="37Cl")]
+
+
+@pytest.mark.parametrize("n, veto", [(SI2CL, ""), (SI1CL, "C")])
 @pytest.mark.parametrize("frac, verdict", [(0.51, "si_rich"), (0.49, "lock")])
-def test_the_blended_line_reads_half_the_29si_above_its_own(frac, verdict):
-    r = _si(lambda i: _si_line(i, frac, blend=True), _lo(), veto="C")
-    assert r["si29_mode"] == "blended" and r["verdict"] == verdict
+def test_a_si_reading_is_also_refused_on_half_the_29si_excess(n, veto, frac, verdict):
+    """The Si-reading guard (the 2026-09-29 decision): a Cl reading carrying
+    1-2 Si has its own 29Si in its +1 line, which pulls the half-way mark toward
+    29Si; its region is refused on the position OR on reading >= half the 29Si
+    a Si reading of its M+2 implies above its own +1 line. The excess here sits
+    at the 13C position (another ion's line there moves the region away from
+    29Si): the excess alone decides, at its edge, for a Si2 and a Si1 reading.
+    (Rule C cannot read SI2CL, whose +1 line is 48 % 13C, and refutes SI1CL,
+    whose +1 peak sits 0.4 mDa off 13C reading ~40 C.)"""
+    r = _si(lambda i: _si_reading(i, n, frac), _lo(), n=n, veto=veto)
+    assert (r["verdict"], r["si29_mode"]) == (verdict, "blended")
+    assert r["si29_seen"] == pytest.approx(frac * r["si29_expected"], abs=1e-9)
+
+
+def test_a_si_free_reading_is_refused_on_the_position_alone():
+    """0.3x the 29Si at its position, merged with the ion's 13C line (a
+    full-area centroid): the region reads only 0.3x the 29Si above the ion's own
+    +1 line -- less than half -- but sits at least half-way toward 29Si, and a
+    Si-free reading is refused on the position alone (the 2026-09-29 decision:
+    the excess test, as built before, locked the dim and apex-reported
+    siloxane misreads)."""
+    r = _si(lambda i: _si_line(i, 0.3, blend=True), _lo(), veto="C")
+    assert r["verdict"] == "si_rich" and 0 < r["si29_seen"] < 0.5 * E29
     ion = C.parse_formula(_ion(BIG, H).rstrip("-"))
-    assert r["si29_seen"] == pytest.approx(_own13(ion) + frac * E29 - IC.m1_line(ion)[0])
+    assert r["si29_seen"] == pytest.approx(_own13(ion) + 0.3 * E29 - IC.m1_line(ion)[0])
 
 
 def test_the_blended_excess_at_the_13c_position_is_no_silicon():
     """A +1 line 0.6x the 29Si too tall but sitting where 13C sits (more carbon,
-    or another ion there): the excess alone does not refuse the lock."""
+    or another ion there): a Si-free reading has no excess criterion -- no
+    refusal (excess OR position would refuse it)."""
     r = _si(lambda i: _si_line(i, 0.6, d=IC.D13C, blend=True), _lo(), veto="C")      # rule C: ~43 C for 16
     assert r["verdict"] == "lock" and r["si29_seen"] > 0.5 * E29
 
 
-def test_the_blended_shift_without_the_excess_is_no_silicon():
-    """0.3x the 29Si at its position: the blend moves toward 29Si but reads too
-    little above the ion's own +1 line."""
-    r = _si(lambda i: _si_line(i, 0.3, blend=True), _lo(), veto="C")
-    assert r["verdict"] == "lock" and 0 < r["si29_seen"] < 0.5 * E29
+def test_a_dim_si_free_ion_with_a_neighbour_at_13c_is_not_refused():
+    """The negative control's shape as a fixture: the chloro acid dim (12 x
+    the noise edge x the wave: its own 13C line above the edge in every
+    spectrum, too dim for rule C, so nothing else stands between the lock and
+    its lift). Its own 13C line alone is the +1 region -- co-varying, at its
+    own position: no refusal. Another ion's line at the 13C spacing merged into
+    it, co-varying, 1.0x the 29Si a Si reading implies: the region reads twice
+    the half 29Si above the ion's own +1 line but does not move toward 29Si --
+    no refusal either (excess OR position would refuse it)."""
+    for frac in (0.0, 1.0):
+        t = _h(lambda i: _si_line(i, frac, d=IC.D13C, blend=True, h=12 * FILL), [(BIG, H)], resolution=_lo())
+        r = _get(t, "H", BIG, H)
+        assert (r["verdict"], r["si29_mode"]) == ("lock", "blended") and IC.veto(t) == {}, frac
+        assert _get(t, "C", BIG, H)["verdict"] == "untestable" and r["presence"] == 1.0
+        assert bool(r["si29_seen"] > 0.5 * E29) == (frac > 0)
 
 
 def test_the_blended_line_must_shift_half_way_toward_29si():
@@ -371,16 +432,11 @@ def test_the_blended_region_is_29si_to_13c():
 
 
 def test_the_blended_excess_is_over_the_m0s_area():
-    """Wide peaks (every area 2x its height): the region's excess reads per M0
-    area -- 0.3x the 29Si, no refusal -- not per M0 height (which would read
-    0.6x)."""
-    def build(i):
-        rows = _si_line(i, 0.3, blend=True)
-        for r in rows:
-            r["area"] = 2 * r["height"]
-        return rows
-    r = _si(build, _lo(), veto="C")
-    assert r["verdict"] == "lock" and r["si29_seen"] < 0.5 * E29
+    """Wide peaks (every area 2x its height) on a Si reading, whose excess
+    counts: the region's excess reads per M0 area -- 0.3x the 29Si, no refusal
+    -- not per M0 height (which would read the +1 line twice over and refuse)."""
+    r = _si(lambda i: _si_reading(i, SI2CL, 0.3, area_x=2.0), _lo(), n=SI2CL)
+    assert r["verdict"] == "lock" and r["si29_seen"] == pytest.approx(0.3 * r["si29_expected"], abs=1e-9)
 
 
 def test_the_blended_position_is_the_median_over_the_spectra():
@@ -432,9 +488,10 @@ def test_an_anti_correlated_region_does_not_co_vary():
     """R2A-3: the gate reads r itself, not its size. Another ion's line at the
     29Si position that FALLS as the chloro acid rises (its precursor, say),
     merged with the 13C line into one peak (a full-area centroid): the region
-    sits past the half-way mark toward 29Si in every spectrum and reads far more
-    than half the 29Si above the ion's own +1 line, but at r -0.95 it is not
-    the ion's own line -- no refusal (|r| would refuse it)."""
+    sits past the half-way mark toward 29Si in every spectrum (the position
+    alone refuses a co-varying region) and reads far more than half the 29Si
+    above the ion's own +1 line, but at r -0.95 it is not the ion's own line --
+    no refusal (|r| would refuse it)."""
     ion = C.parse_formula(_ion(BIG, H).rstrip("-"))
     own, c1 = IC.m1_line(ion)
     at_max = c1 - 0.5 * (c1 - (own * c1 + E29 * IC.D29SI) / (own + E29))
