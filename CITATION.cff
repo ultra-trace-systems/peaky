@@ -20,8 +20,8 @@ authors:
 repository-code: "https://github.com/ultra-trace-systems/peaky"
 url: "https://github.com/ultra-trace-systems/peaky"
 license: Apache-2.0
-version: 0.8.0
-date-released: "2026-09-13"
+version: 0.9.0
+date-released: "2026-09-30"
 # `version` + `date-released` name the last release that was actually TAGGED,
 # published and archived - what a citation has to resolve to. They therefore LAG
 # `pyproject.toml`, which carries the version under development, and that gap is
