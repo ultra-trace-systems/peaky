@@ -56,6 +56,19 @@ check("Br pair n_halogen=1", (pairs[pairs.element == "Br"].n_halogen == 1).all()
 check("Cl pair detected", (pairs.element == "Cl").any())
 check("orphan not paired", "orph" not in set(pairs.light_pid) | set(pairs.heavy_pid))
 
+# ---------- the Br pair spacing is the exact 81Br - 79Br mass difference (C11+c, I5) ----------
+# 80.9162906 - 78.9183371 (chemistry.M's Br): 1.9979535, not the truncated 1.997795
+# (0.16 mDa, 0.8 ppm at m/z 200 low) the doublet finder's +-8 ppm window used to centre on
+check("D_PAIR_BR is the exact 81Br spacing", RD.D_PAIR_BR == 1.9979535
+      and abs(RD.D_PAIR_BR - ISO.ISOTOPE_SPACING["81Br"]) < 1e-9, RD.D_PAIR_BR)
+_t = MZ_BR + 1.9979535
+for _off, _want in ((+7.6, True), (-8.3, False)):
+    _led = L.new_ledger(pd.DataFrame({"peak_id": ["L", "H"], "mz": [MZ_BR, _t * (1 + _off * 1e-6)],
+                                      "height": [1e4, 9.6e3]}))
+    _p = RD.find_iso_pairs(_led, min_height=100)
+    check(f"a Br partner {_off:+.1f} ppm off the exact spacing is {'inside' if _want else 'outside'} the 8-ppm window",
+          (int((_p["element"] == "Br").sum()) == 1 if len(_p) else False) == _want, _p.to_dict("records"))
+
 # ---------- candidates_for_pair: ion must carry the halogen, DBE-only ----------
 # light_mz for C6H10O3 as [M+Br]- ; n_Br=1 in ion via the adduct (need=0 neutral)
 mz_br = C.ion_mz("C6H10O3", "[M+Br]-")

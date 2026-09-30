@@ -45,11 +45,12 @@ from peaky.assignment import series_gka as G
 from peaky.assignment.passes import (PassConfig, arbitrate, confidence_label, z_of, _f,
                      _prefer_adduct_reading)
 
-__version__ = "0.3.1"  # stage B: deterministic anchor tie-break (#8); 0.3.0: stage B draws
-                       # from the admission gate (persistence OR brightness)
+__version__ = "0.3.2"  # the exact 81Br pair spacing (C11+c); 0.3.1 stage B: deterministic anchor
+                       # tie-break (#8); 0.3.0: stage B draws from the admission gate (persistence
+                       # OR brightness)
 
 # isotope spacings
-D_PAIR_BR = 1.997795
+D_PAIR_BR = 1.9979535   # the exact 81Br - 79Br spacing (C11+c I5; was the truncated 1.997795)
 D_PAIR_CL = 1.997050
 D_13C = 1.0033548
 R_13C = 0.0107   # 13C abundance per carbon
