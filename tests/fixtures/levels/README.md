@@ -14,10 +14,10 @@ opens them directly); 3.6 MB in all with the tables and `expected_levels.csv`.
 
 | set | fixtures | source | M0 rows | iso rows | golden vector (2b/3a/3b/4a/4b/4c/4d/5a/5b) |
 |---|---|---|---:|---:|---|
-| `tv_nitrate`, `tv_bromide` | 2 | one TOF, two reagent channels on the same air; each ledger is one source and the two corroborate each other | 1,373 | 570 | 1373 · 21/15/107/16/143/15/10/37/1009 |
-| `tof_01` … `tof_28` | 28 | a mixed bromide/nitrate TOF, 18 cover + 10 residual files, pooled as ONE source | 8,313 | 4,286 | 3364 · 6/15/182/15/258/82/95/138/2573 |
-| `orbi_01` … `orbi_12` + `orbi_label_twins.csv` + `orbi_iso_checks.csv` | 12 + 2 | a labelled-nitrate Orbitrap sampling the same air as the TOF set, ONE source; the TOF and Orbitrap sets corroborate each other; levelled with its lock table (rule H, below); its label-twin table (rule K, measured by `batch/label_twins.py` on the run's stamped time series) | 9,773 | 2,238 | 1707 · 0/11/217/9/206/139/0/35/1090 (without the lock table 0/11/217/9/203/139/0/35/1093; with the label-twin table 0/11/174/9/206/151/0/38/1118, with both 0/11/174/9/209/151/0/38/1115) |
-| `ur_01` … `ur_10` + `ur_neutral_pairs.csv` + `ur_iso_checks.csv` | 10 + 2 | a uronium Orbitrap batch, ONE source, no corroboration; levelled with its neutral-pair table (rule U, measured by `batch/neutral_pairs.py` on the run's stamped time series) and its lock table (rule H) | 8,076 | 2,263 | 1161 · 4/4/0/331/377/291/0/82/72 (with the neutral-pair table alone 4/4/0/331/376/291/0/82/73; without either 4/4/0/25/682/291/0/82/73) |
+| `tv_nitrate`, `tv_bromide` | 2 | one TOF, two reagent channels on the same air; each ledger is one source and the two corroborate each other | 1,373 | 570 | 1373 · 21/15/107/15/145/15/9/37/1009 |
+| `tof_01` … `tof_28` | 28 | a mixed bromide/nitrate TOF, 18 cover + 10 residual files, pooled as ONE source | 8,313 | 4,286 | 3364 · 6/15/182/14/267/85/84/135/2576 |
+| `orbi_01` … `orbi_12` + `orbi_label_twins.csv` + `orbi_iso_checks.csv` | 12 + 2 | a labelled-nitrate Orbitrap sampling the same air as the TOF set, ONE source; the TOF and Orbitrap sets corroborate each other; levelled with its lock table (rule H, below); its label-twin table (rule K, measured by `batch/label_twins.py` on the run's stamped time series) | 9,773 | 2,238 | 1707 · 0/10/217/9/205/138/0/35/1093 (without the lock table 0/10/217/9/202/138/0/35/1096; with the label-twin table 0/10/174/9/205/150/0/38/1121, with both 0/10/174/9/208/150/0/38/1118) |
+| `ur_01` … `ur_10` + `ur_neutral_pairs.csv` + `ur_iso_checks.csv` | 10 + 2 | a uronium Orbitrap batch, ONE source, no corroboration; levelled with its neutral-pair table (rule U, measured by `batch/neutral_pairs.py` on the run's stamped time series) and its lock table (rule H) | 8,076 | 2,263 | 1161 · 4/4/0/330/375/293/0/82/73 (with the neutral-pair table alone 4/4/0/330/374/293/0/82/74; without either 4/4/0/17/687/293/0/82/74) |
 
 `expected_levels.csv` holds one row per `(source, neutral, adduct)` with the
 level and every predicate input, written by `scripts/level_ledger.py`; the
@@ -75,6 +75,33 @@ corroboration (iso)": the Orbitrap vector 0/11/217/9/203/139/0/35/1093 ->
 0/11/174/9/209/151/0/38/1115), the uronium one 4/4/0/331/376/291/0/82/73 ->
 4/4/0/331/377/291/0/82/72; `expected_levels.csv` changes in those four rows only
 (`build_expected_levels.py` levels each set with its own tables).
+
+C11+c (2026-09-30: an isotope child counts only at its label's exact spacing
+from the parent's COMMITTED isotopologue -- max(1 ppm, 4 sigma(h)) self-fitted on
+the set's own '13C' children, pcal and the neighbour's pull rescuing, 'M+n'
+exempt -- and in band under its count-aware expectation relative to that line;
+the whole label is read, the isotopologues list answers the same question, and
+the Br-free hold on `reagent_only_iso` is released; docs/EVIDENCE_LEVELS.md
+§3.2) regenerated `expected_levels.csv` from the unchanged fixtures:
+47 of 7,605 levels move, and the isotope facts (`iso`, `reagent_only_iso`) of
+others. The sets carry no width model: the committed line is read within the
+class-less 20 ppm and an 'M+n' line within 12 mDa. tv (6): TV-BR C12H22O,
+C18H14N2O8 `[M+Br]-` 5b -> 4b, C13H16O5 `[M+Br]-` 4a -> 4b, C20H33NO10 `[M+Br]-`
+4d -> 4b, C14H14O5 `[M-H]-` 4b -> 5b; TV-NO3 C9H12O5S `[M-H]-` 4b -> 5b. tof (33):
+twelve `[M+Br]-` 4d / 5a / 5b -> 4b on an M+3 '81Br+13C' carbon line or a line
+proving a second Br, C10H16O8 `[M+Br]-` 4a -> 4b, the two Br-free C35H32O4S /
+C35H36O6S `[M-H]-` 4d -> 5b (their 1:1 +2 line expects nothing on a Br-free ion:
+mass-degenerate with no axis), C12H9BrN2 `[M+HBr+Br]-` 4b -> 4d (its line two
+81Br up names the reagent halogen alone), and the rest dim readings whose child
+sits off its exact spacing or out of its count-aware band. orbi (4): the
+chlorinated paraffin C10H18Cl4 `[M+^NO3]-` 3a -> 5b (its one list line reads
+2.0x a 37Cl1-committed parent, 0.48 expected: its recovery labels every ladder
+line '37Cl', a separate card), C11H20O10 and C13H15ClO8 `[M-H]-` 4b -> 5b,
+dibromoacetic acid C2H2Br2O2 `[M-H]-` 4c -> 4b (its 81Br2 and 79Br2 lines
+around the 79Br81Br-committed M0). ur (4): C10H17NO4, C18H25NO `[M+H]+` 4b -> 4c,
+C12H14N2O4Si `[M+H]+` 4a -> 4b, C17H22N4O10 urea 4b -> 5b. The release of the
+hold moves no level: it clears the flag on three TOF `[M-H]-` rows (C22H20O21,
+C35H32O4S, C35H36O6S), all 5b.
 
 Scrubbed: file names are positional, `sample_item_id` is dropped, and no site,
 instrument or server name is inside. The privacy scanner skips `.gz`; the

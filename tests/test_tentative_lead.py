@@ -239,7 +239,10 @@ LEDGER_COLUMNS = list(EV.PREDICATE_COLUMNS)
 
 
 def _m0(peak_id, neutral, adduct="[M-H]-", *, below=False, lead=False, tied=False, anchor=None,
-        confidence="High", mz=200.0):
+        confidence="High", mz=None):
+    from tests.test_evidence import ion_mz_of
+    if mz is None and neutral:
+        mz = ion_mz_of(neutral, adduct)
     return {"role": "M0", "peak_id": peak_id, "parent_peak_id": None, "iso_label": None,
             "neutral_formula": neutral, "adduct": adduct, "ion_formula": neutral, "mz": mz,
             "height": 1000.0, "tier": "Candidate", "method": "pass2", "confidence": confidence,
@@ -250,6 +253,7 @@ def _m0(peak_id, neutral, adduct="[M-H]-", *, below=False, lead=False, tied=Fals
 
 
 def _child(peak_id, parent, label, height):
+    """An isotope child; `_frame` puts it at its label's exact spacing from its parent (C11+c)."""
     row = _m0(peak_id, None, adduct=None)
     row.update(role="iso_child", parent_peak_id=parent, iso_label=label, height=height,
                degeneracy_density=None)
@@ -257,7 +261,8 @@ def _child(peak_id, parent, label, height):
 
 
 def _frame(rows):
-    return pd.DataFrame(rows, columns=LEDGER_COLUMNS)
+    from tests.test_evidence import place
+    return pd.DataFrame(place(rows), columns=LEDGER_COLUMNS)
 
 
 def test_the_lead_is_a_predicate_column_trim_keeps():

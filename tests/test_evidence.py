@@ -22,6 +22,7 @@ import pytest
 
 from peaky.assignment import evidence as EV  # noqa: E402
 from peaky.batch import iso_checks as IC  # noqa: E402
+from peaky.chem import isotopes as ISO  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "levels"
 ORDER = ["2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
@@ -73,11 +74,50 @@ LEDGER_COLUMNS = [
 
 
 # --------------------------------------------------------------------------- builders
-def m0(peak_id, neutral, adduct="[M-H]-", ion=None, mz=200.0, height=1000.0,
+def ion_mz_of(neutral, adduct, ion=None, default=200.0) -> float:
+    """The exact m/z of the ion a (neutral, adduct[, ion]) reading makes; `default` when it does not parse."""
+    if not neutral or not adduct:
+        return default
+    counts = {e: v for e, v in EV.ion_composition(neutral, adduct, ion).items() if v}
+    mz = ISO.mono_mz(counts, ISO.ion_sign(ion, adduct))
+    return mz if mz == mz else default
+
+
+def label_shift(label) -> float:
+    """The exact shift a child label names from its parent (the parent-relative reading of the whole
+    label; the tests' legacy '+<digit>' note is no part: '13C+1' is a 13C line)."""
+    tot = 0.0
+    for part in ISO.split_label(label):
+        kind, v = ISO.parse_label_part(part)
+        if kind == "set":
+            tot += ISO.heavy_shift(v)
+        elif kind == "alt":
+            tot += ISO.heavy_shift(v[0])
+        elif kind == "gen":
+            tot += v * ISO.ISOTOPE_SPACING["13C"]
+    return tot
+
+
+def place(rows) -> list:
+    """C11+c: a child line counts only at its label's exact spacing from its parent, so every synthetic
+    child built without an m/z is put there (its parent's m/z + `label_shift`)."""
+    mz = {r["peak_id"]: r["mz"] for r in rows if r.get("role") == "M0"}
+    out = []
+    for r in rows:
+        if r.get("role") == "iso_child" and r.get("mz") is None and r.get("parent_peak_id") in mz:
+            r = dict(r, mz=mz[r["parent_peak_id"]] + label_shift(r.get("iso_label")))
+        out.append(r)
+    return out
+
+
+def m0(peak_id, neutral, adduct="[M-H]-", ion=None, mz=None, height=1000.0,
        tier="Assigned", method="pass2", confidence="High", tied=False, below=False,
        degeneracy=0.5, note="", resolvability="resolved", series_unit=None,
        anchor=None, isotopologues=""):
-    """One committed neutral; the defaults are deliberately uncorroborated."""
+    """One committed neutral at its ion's exact m/z unless told otherwise; the defaults are deliberately
+    uncorroborated."""
+    if mz is None:
+        mz = ion_mz_of(neutral, adduct, ion)
     return {
         "role": "M0", "peak_id": peak_id, "parent_peak_id": None, "iso_label": None,
         "neutral_formula": neutral, "adduct": adduct, "ion_formula": ion or neutral,
@@ -90,9 +130,11 @@ def m0(peak_id, neutral, adduct="[M-H]-", ion=None, mz=200.0, height=1000.0,
     }
 
 
-def child(peak_id, parent, label, height, mz=200.0):
-    """One isotope satellite hanging off an M0 row (at `mz`)."""
+def child(peak_id, parent, label, height, mz=None):
+    """One isotope satellite hanging off an M0 row: at `mz`, else (`ledger`) at its label's exact spacing
+    from its parent."""
     row = m0(peak_id, None, adduct=None, height=height, mz=mz)
+    row["mz"] = mz
     row.update(role="iso_child", parent_peak_id=parent, iso_label=label,
                tier="Assigned", degeneracy_density=None)
     return row
@@ -105,7 +147,7 @@ def reagent(peak_id, formula, mz):
 
 
 def ledger(rows) -> pd.DataFrame:
-    return pd.DataFrame(rows, columns=LEDGER_COLUMNS)
+    return pd.DataFrame(place(rows), columns=LEDGER_COLUMNS)
 
 
 def level_of(rows, **kw) -> dict:

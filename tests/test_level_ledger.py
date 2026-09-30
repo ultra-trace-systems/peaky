@@ -45,12 +45,35 @@ LEDGER_COLUMNS = [
 ]
 
 
+def exact_mz(neutral, adduct, ion=None, default=200.0):
+    """The exact m/z of the ion a reading makes (the script's own masses); `default` when it does not parse."""
+    if not neutral or not adduct:
+        return default
+    counts = {e: v for e, v in LL.ion_counts(neutral, adduct, ion).items() if v}
+    mz = LL.mono_mz(counts, LL.ion_sign(ion, adduct))
+    return mz if mz == mz else default
+
+
+def label_shift(label):
+    """The exact shift a child label names from its parent (parent-relative, the whole label)."""
+    tot = 0.0
+    for part in LL.split_label(label):
+        kind, v = LL.parse_label_part(part)
+        if kind == "set":
+            tot += LL.heavy_shift(v)
+        elif kind == "alt":
+            tot += LL.heavy_shift(v[0])
+        elif kind == "gen":
+            tot += v * LL.ISOTOPE_SPACING["13C"]
+    return tot
+
+
 def m0(
     peak_id,
     neutral,
     adduct="[M-H]-",
     ion=None,
-    mz=200.0,
+    mz=None,
     height=1000.0,
     tier="Assigned",
     method="pass2",
@@ -63,7 +86,10 @@ def m0(
     series_unit=None,
     anchor=None,
 ):
-    """One committed neutral. Defaults are deliberately uncorroborated."""
+    """One committed neutral at its ion's exact m/z unless told otherwise. Defaults are deliberately
+    uncorroborated."""
+    if mz is None:
+        mz = exact_mz(neutral, adduct, ion)
     return {
         "role": "M0",
         "peak_id": peak_id,
@@ -91,9 +117,11 @@ def m0(
 
 
 def child(peak_id, parent, label, height):
-    """One isotope satellite hanging off an M0 row."""
+    """One isotope satellite hanging off an M0 row; `write_ledger` puts it at its label's exact spacing from
+    its parent (C11+c: a line counts only there)."""
     row = m0(peak_id, None, adduct=None, height=height)
     row.update(
+        mz=None,
         role="iso_child",
         parent_peak_id=parent,
         iso_label=label,
@@ -145,9 +173,16 @@ OTHER_ROWS = [
 ]
 
 
+def place(rows):
+    mz = {r["peak_id"]: r["mz"] for r in rows if r.get("role") == "M0"}
+    return [dict(r, mz=mz[r["parent_peak_id"]] + label_shift(r.get("iso_label")))
+            if r.get("role") == "iso_child" and r.get("mz") is None and r.get("parent_peak_id") in mz else r
+            for r in rows]
+
+
 def write_ledger(path: Path, rows) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows, columns=LEDGER_COLUMNS).to_csv(path, index=False)
+    pd.DataFrame(place(rows), columns=LEDGER_COLUMNS).to_csv(path, index=False)
     return path
 
 

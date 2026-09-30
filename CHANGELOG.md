@@ -784,6 +784,68 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **An isotope child is evidence at its exact spacing from the committed line, in its
+  count-aware band (C11+c).** The scorer commits an ion's most ABUNDANT isotopologue (a Br2
+  ion on 79Br81Br, a Cl4 ion on a 37Cl line) and labels its lines counted from the MONO line
+  (`81Br2`, `M0`, `13C+81Br`); peaky's own passes label theirs from the PARENT line
+  (`2x81Br`, `81Br(pair)`, `81Br+13C`, `M+5`). The levels read a child by the part of its
+  label before the first `+`, against a single-atom expectation relative to the mono line,
+  wherever the line sat; a non-empty isotopologues list alone gave `iso`. Now
+  (docs/EVIDENCE_LEVELS.md §3.2; `chem/isotopes.judge_source`, a standalone twin in
+  `scripts/level_ledger.py` pinned text for text): the committed configuration is read off the
+  parent's m/z (the most probable Br / Cl / S / Si one within 5 ppm on an Orbitrap-class width
+  model, 20 ppm on a TOF-class one or without one; none -> the mono line); each label is read
+  both ways and whole ('+' parts summed, the joint probability; `13C2` its own C(n, 2) x
+  0.0107^2; `M+n` the ion's lines within max(12 mDa, FWHM/2)); the expectation is the line's
+  configuration's probability over the committed one's, multinomial over the ion's atoms; a
+  line credits the elements it adds to the committed line (a scorer `13C+81Br` on a heavy
+  parent is its 13C line); a child counts only within max(1 ppm, 4 sigma(h)) of its exact
+  spacing, sigma(h)^2 = a^2 + b^2/h self-fitted on the source's own `13C` children (binned MAD,
+  weighted least squares, a >= 0.02 ppm, >= 40 children or no test), rescued by the calibrated
+  parent position or a >= 3x brighter neighbour pulling it, `M+n` exempt, and per file a
+  TOF-class file whose fit sits on the intercept floor untested; a dropped child is dropped
+  for every fact; `carbon_ev` is a placed line that adds 13C; `reagent_only_iso` needs every
+  line naming a heavy atom to name only the reagent halogen's (`81Br`, `81Br2`, `2x81Br`); the
+  isotopologues list holds `iso` only through an entry that passes the same test;
+  `iso_labels` lists the kept lines' whole labels. The Br-free `reagent_only_iso` hold of
+  C11+a is released with it (its line expects 0: no isotope axis, no 4d). The width model
+  reaches every level path (`apply_levels` / `compute_levels` / `level_pooled` /
+  `source_neutrals` take `resolution=`; a `--corroborate` run dir and a script source read their
+  own `batch_summary.json`), and the script reads isotopologues lists JSON first like the engine.
+  REPLAY numbers (the final runs replace them at landing): the three regression batches'
+  STORED per-file ledgers levelled by the built engine (each run's tables, stored cross set and
+  width model) -- the labelled-nitrate Orbitrap 3 pooled pairs (3 merged): dibromoacetic acid
+  `[M-H]-` 5a -> 4b (its 81Br2 and 79Br2 lines around the 79Br81Br-committed M0), C18H15BrO3S
+  and C13H15ClO8 `[M-H]-` 4b -> 5b (their only "halogen" line sits at the F-for-OH / 34S
+  spacing); claims identified 0 / ion +0.015 / tentative -0.015 % of the batch signal; per file
+  16 M0 rows (8 pairs; the chlorinated paraffin C10H18Cl4 `[M+^NO3]-` 3a -> 5b in six files:
+  its recovery labels every ladder line '37Cl', a separate card). The uronium Orbitrap 3 (3):
+  C10H17NO4, C18H25NO `[M+H]+` 4b -> 4c, C17H22N4O10 urea 4b -> 5b; claims 0 / -0.018 / +0.018;
+  per file 24 rows (11 pairs; rule U keeps the urea / `[M+H]+` 18O pairs 4a pooled). The
+  bromide/nitrate TOF 26 (16): nine `[M+Br]-` 4d -> 4b on an M+3 `81Br+13C` carbon line or a
+  line proving a second Br, three brominated readings 4b -> 5b whose 81Br lines do not fit their
+  Br / Br2 pattern, C12H9BrN2 `[M+HBr+Br]-` 4b -> 4d (its line two 81Br up names the reagent
+  halogen alone), chloroacetic acid `[M+Br]-` staying 4a on its `81Br+37Cl` M+4 line; claims
+  0 / -0.0035 / +0.0035; per file 60 rows (51 pairs). Identified never moves; the hold kept or
+  released moves no level; the corroborating sources re-levelled under the rule move none; the
+  reference script levels every pair of the three runs alike, level and fact. The FULL offline
+  replay (every file's A.run and the batch half, with the engine items below):
+  the labelled-nitrate Orbitrap 7 pooled pairs (4 merged) -- the chain's 3 and
+  four dim 5b pairs appearing or disappearing (pass 4 at the exact Br spacing, one pass-7
+  re-read) -- claims 0 / +0.015 / -0.016; the uronium Orbitrap the chain's 3 (3), claims
+  0 / -0.018 / +0.018; the bromide/nitrate TOF 84 (43 merged): the chain's 26 and 58 from the
+  per-file items -- 21 on pairs held only by the one file whose mass-calibration core fell to 19,
+  under the 20 it needs, once the pass-0 mislinks left it (5b -> 5a, degeneracy not measured),
+  25 dim 5b pairs appearing or disappearing, C4H6N2O6S `[M-H]-` 4b -> 3b (its bromide cluster
+  now its own pair), chloroacetic acid kept at 4a (its `81Br+37Cl` M+4 line; the 13 mislinked
+  37Cl children gone) -- claims identified -0.0001 / ion +0.008 / tentative -0.008, merged
+  rows 2239 -> 2242, Assigned 449 -> 454. Every move of the stored-ledger replay recurs. The golden vectors move (tv 21/15/107/15/145/15/9/37/1009, tof
+  6/15/182/14/267/85/84/135/2576, orbi 0/10/217/9/205/138/0/35/1093, ur
+  4/4/0/330/375/293/0/82/73; 47 of 7,605 fixture pairs, listed in the fixtures' README) and
+  `expected_levels.csv` is regenerated. `tests/test_isotope_children.py`,
+  `tests/test_isotope_levels.py`; every synthetic child of the level tests now sits at its
+  label's exact spacing from its parent.
+
 - **The ledger records which setter made a row a tentative lead (`lead_by`, C11+b).**
   Per-file ledgers gain a column beside `tentative_lead`: the setter's code
   (`reflist_dim`, `off_budget`, `spec_n3` / `spec_gapfill` / `spec_minor` for the three
@@ -1100,6 +1162,40 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [M-H]- (…): the reagent-cluster reading is kept …"). Same answer whatever the channel order.
 
 ### Fixed
+
+- **A known or certified ion takes its own isotope lines (C11+c, I7).** The scorer returns
+  the lines of every ion of a compound; pass 0 (known species) and pass 7 (certified neutral)
+  hung all of them under whichever ion they committed -- HNO4's nitrate cluster carried the
+  81Br line of HNO4.Br- 18.93 Da up, the PFCAs' nitrate clusters their bromide clusters'
+  lines, TPPO's urea adduct its `[M+H]+` ion's 13C 59 Da below, chloroacetic acid's bromide
+  cluster the 37Cl lines of its nitrate cluster 14.93 Da below. The lines are now keyed on
+  (compound, ion): pass 0's attach loop, recorded isotopologues list, chlorinated-paraffin
+  gate and confidence count the ion's own lines (the single-channel P / S / Si gates still read
+  the compound), and each pass-7 member takes its committed ion's. A pass-7 ladder rung is
+  committed with its real ion formula (the oracle's own string for its channel, else neutral +
+  reagent units + adduct) where it stored the bare neutral, and takes its own lines. The
+  certificate's diagnostic-isotope gate still reads the compound. `tests/test_known_ion_kids.py`.
+  REPLAY numbers (the final runs replace them at landing): per-file ledger rows whose role, reading, parent, label,
+  list or confidence change (attributed exactly by a replay without the residual fix below):
+  the labelled-nitrate Orbitrap 23 (pass 0 18, pass 7 1, and 4 knock-on rows: two ions
+  committed later in two files, with a line each), the uronium Orbitrap 30 (all pass 0: TPPO's
+  urea adduct and D3's lines), the bromide/nitrate TOF 723 (pass 0 620 -- the PFCAs, HNO3 /
+  HNO4 / HO2 and nitrophenol lose their bromide clusters' lines, 28 dim pass-0 rows turn Low,
+  one file's calibration core falls under 20 --, pass 7 59, and 44 from the rungs' real ions:
+  32 rungs carry their ion instead of the bare neutral, 12 rows are later commits and lines
+  that follow); the ladder rung C7H6N2OP2 `[M+Br]-` keeps its own 81Br line and its commit.
+  Pooled: see the entry above.
+
+- **The Br doublet spacing of the residual pass is the exact 81Br - 79Br difference (C11+c,
+  I5).** `residual.D_PAIR_BR` was 1.997795, 0.16 mDa below the exact 1.9979535 its +-8 ppm pair
+  finder and +-6 ppm residual characterisation centre on; now exact, with a value pin. Only dim
+  doublets at the window's rim appear or disappear (per file); the residual tags shift from
+  'iso-partner 81Br' toward '37Cl' where a partner sat between the two spacings.
+  `tests/test_residual.py`. REPLAY numbers: per-file rows change in pass 4's dim edge doublets and what re-reads
+  the freed peaks (the labelled-nitrate Orbitrap 9, the bromide/nitrate TOF 36; the uronium
+  batch's context caps every doublet, so nothing moves there); pooled, the labelled-nitrate
+  Orbitrap 3 dim 5b pairs appear or disappear, the TOF 11 (C15H12N2O4S `[M+Br]-` 5b -> 4d, ten
+  dim 5b pairs appearing or disappearing).
 
 - **The isotope checks measure a batch whose committed pairs are all carbon-free.**
   Rule C (`batch/iso_checks.py`, C11+a) raised `KeyError: 'mz'` when no stamped pair

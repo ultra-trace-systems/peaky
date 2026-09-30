@@ -86,9 +86,11 @@ null-safe: NaN, `pd.NA`, `None`, `''` and `'false'` are False;
 |---|---|---|
 | `role` | all | `M0` are levelled; `iso_child` supply satellites; everything else is ignored |
 | `peak_id`, `parent_peak_id` | M0, iso | a child hangs off the M0 with `peak_id == parent_peak_id` **in the same file** |
-| `iso_label` | iso | the satellite's tag before any `+` (`13C+1` → `13C`; `81Br`, `34S`, `37Cl`, `29Si`, `30Si`, `18O`, `15N`) |
-| `height` | M0, iso | the ratio child/parent, tested against natural abundance |
-| `ion_formula` | M0 | carbon count for the 13C expectation |
+| `iso_label` | iso | the WHOLE label (C11+c, §3.2): its `+` parts (`13C+81Br`, `81Br+37Cl`), a count (`81Br2`, `37Cl3`, `13C2`) or a `kx` multiplier (`2x81Br`), `(pair)` (one atom), `81Br/37Cl(pair)` (either line), `81Br37Cl(pair)` (one of each), `M0` (the mono line), `M+n` (generic); read under both conventions in use -- scorer labels count heavy atoms from the ion's MONO line, peaky's own from the PARENT line. A bare number after a part is the synthetic tests' nominal note (`13C+1` reads `13C`). Before C11+c only the part before the first `+` was read |
+| `height` | M0, iso | the ratio child/parent, tested against the line's count-aware expectation |
+| `mz` | M0, iso | (C11+c) the parent's committed isotopologue (read off its m/z against the ion's mono m/z) and each child's position against its label's exact spacing |
+| `ppm_error_cal` | M0 | (C11+c) the calibrated parent position a child may also be placed from (`pcal`, §3.2) |
+| `ion_formula` | M0 | the ion's element counts (the stored ion when it carries a charge sign, else neutral + adduct): every count-aware expectation |
 | `neutral_formula`, `adduct` | M0 | the pair the level is about |
 | `method` | M0 | `known:<family>` marks a pass-0 curated identity |
 | `confidence` | M0 | its first word: `High`, `Good`, `Low`, `Suspect` |
@@ -100,10 +102,10 @@ null-safe: NaN, `pd.NA`, `None`, `''` and `'false'` are False;
 | `degeneracy_note` | M0 | contains `MASS-SATURATED` when the audit capped |
 | `resolvability` | M0 | `resolved` / `isolated` / `blended` / `unresolvable`; stamped by the `resolvability` stage on every run that has a width model (a batch measures one from the raw profile of a middling spectrum; `--resolving-power` declares or declines it); NA on an offline run without one |
 | `series_unit`, `anchor_peak_id` | M0 | a homologous-series or anchor tie |
-| `isotopologues` | M0 | the server-attributed satellite list (a repr'd list; non-empty counts as isotope support) |
+| `isotopologues` | M0 | the server-attributed satellite list (JSON, read JSON first, then as a repr'd list; a `null` per-line score reads). Since C11+c an entry counts as isotope support only as a child would (§3.2); before it any non-empty list did |
 | `tier` | M0 | reported beside the level; never read by a predicate |
 
-Optional, reported only: `mz`, `ppm_error_cal`, `occurrence`, `n_files`.
+Optional, reported only: `occurrence`, `n_files` (`mz` and `ppm_error_cal` are also reported, as the pair's medians).
 
 ## 3. The evidence record — one per (neutral, adduct) per source
 
@@ -111,13 +113,13 @@ Computed exactly as `level_ledger.measure_source` does.
 
 | fact | definition |
 |---|---|
-| `iso` | some child of some row of the pair has a height ratio within **0.5–2.0×** of natural abundance (13C: 0.0107 per carbon of `ion_formula`; 15N: 0.00369 per ¹⁴N atom of `ion_formula` — a caret `^N` atom is already ¹⁵N; 18O: 0.00205 per O atom, except on an ion carrying Br or Cl, whose 81Br / 37Cl line owns the M+2 region (no 18O line is measured there); 34S 0.0443; 37Cl 0.3196; 81Br 0.9728; 29Si 0.0508; 30Si 0.0335) **or** any row's `isotopologues` list is non-empty. 15N and 18O joined the band with C17 (2026-09-27). On a pair rule H lifts (`lead_lift`, batch only) the lock is its isotope axis |
-| `multiline` | (C17, 2026-09-27) the pair's children carry in-band lines (the `iso` test, per line) of **≥ 2 distinct elements the neutral supplies**. A child's tag names the atoms it measures (`13C` / `13C2` → C, `81Br` / `2x81Br` / `81Br2` / `81Br(pair)` → Br, `37Cl…` → Cl, `15N` → N (the ¹⁴N atoms), `14N` → `^N` (a ¹⁵N label's atoms), `18O` → O, …); a generic `M+n` child names none. The neutral **supplies** them when it holds more than half of the ion's atoms of that key, counted unfolded (a labelled adduct's `^N` is not the neutral's N): the ¹⁵N line of a urea adduct of an N-free neutral, the ⁸¹Br line of a bromide adduct and the ¹⁸O line of formic acid's nitrate cluster (2 of 5 O) measure the reagent; the ¹⁸O line of C₁₀H₁₆O₄'s urea adduct (4 of 5 O) measures the neutral. Before C17 it was "≥ 2 distinct satellite tags", so 13C + 13C2 (one element twice), the reagent's own 15N / 81Br and `M+n` children all counted (output audit K01). The elements are written as `multiline_elements` (`C|O`) |
-| `carbon_ev` | a `13C…` tag is among them |
+| `iso` | some **kept** child of some row of the pair (one placed at its label's exact spacing from the committed parent line, §3.2) has a height ratio within **0.5–2.0×** of its count-aware expectation relative to that line (the probability of the line's configuration over the committed line's, multinomial over the ion's atoms, per atom 13C 0.0107, ¹⁵N 0.00369 per ¹⁴N atom — a caret `^N` atom is already ¹⁵N — ¹⁸O 0.00205 per O, ³⁴S 0.0443, ³⁷Cl 0.3196, ⁸¹Br 0.9728, ²⁹Si 0.0508, ³⁰Si 0.0335; `13C2` is C(n, 2) × 0.0107²; a line the ion cannot make, a `14N` line, an `18O` line of an ion carrying Br or Cl — its 81Br / 37Cl line owns the M+2 region — expect 0 and are never in band) **or** some row's `isotopologues` list holds an entry that answers the same question (§3.2). 15N and 18O joined the band with C17 (2026-09-27); the count-aware expectation, the committed line, the position test and the list's test with C11+c (2026-09-30). On a pair rule H lifts (`lead_lift`, batch only) the lock is its isotope axis |
+| `multiline` | (C17, 2026-09-27) the pair's children carry in-band lines (the `iso` test, per line) of **≥ 2 distinct elements the neutral supplies**. A kept line credits the elements whose heavy-atom count **differs between the line and the committed parent line** (C11+c, decision D2 (d): a joint `81Br+37Cl` M+4 line in band credits Br and Cl; a scorer `13C+81Br` on a Br3 ion committed on 79Br2 81Br is the parent's own 13C line and credits C only; `13C` / `13C2` → C, `81Br` / `2x81Br` / `81Br2` / `81Br(pair)` → Br, `37Cl…` → Cl, `15N` → N (the ¹⁴N atoms), `14N` → `^N` (a ¹⁵N label's atoms), `18O` → O, …); a pure `M0` line credits the parent's heavy elements; a generic `M+n` child names none. The neutral **supplies** them when it holds more than half of the ion's atoms of that key, counted unfolded (a labelled adduct's `^N` is not the neutral's N): the ¹⁵N line of a urea adduct of an N-free neutral, the ⁸¹Br line of a bromide adduct and the ¹⁸O line of formic acid's nitrate cluster (2 of 5 O) measure the reagent; the ¹⁸O line of C₁₀H₁₆O₄'s urea adduct (4 of 5 O) measures the neutral. Before C17 it was "≥ 2 distinct satellite tags", so 13C + 13C2 (one element twice), the reagent's own 15N / 81Br and `M+n` children all counted (output audit K01). The elements are written as `multiline_elements` (`C|O`) |
+| `carbon_ev` | a **kept** line adds 13C to the committed line (`13C`, `13C2`, the M+3 `81Br+13C` of a bromide cluster) -- its presence, not its height (C11+c, D10: the TOF's 13C lines run tall as a class, unresolved blends) |
 | `chan2` | the **neutral** is committed under ≥ 2 distinct adducts in this source — on a labelled-nitrate batch (rule K, batch only) the 14N `[M+NO3]-` and the 15N `[M+^NO3]-` count as **one** channel, and neither an alien 14N line (`label_alien`) nor a pair an isotope check refutes (`iso_veto`, C11+, batch only) gives or takes it. On a pair rule H lifts (`lead_lift`) it is read over its own adduct and the adducts its neutral commits on an **unflagged** regular row of a pair that is not alien (rule K's fold applies): a second channel only flagged rows gave goes with the flag |
 | `anchor` | any row has `anchor_peak_id` or `series_unit` — on a pair rule H lifts, any **unflagged** row |
 | `branch` | the neutral's adduct set meets both `{[M-H]-}` and `{[M+NO3]-, [M+15NO3]-, [M+^NO3]-, [M+Br]-, [M+HBr+Br]-, [M+CO3]-}` — deprotonated **and** clustered: the gas-phase-acidity branch; an alien 14N line (rule K) or a pair an isotope check refutes (`iso_veto`) is not in the set and takes no branch; a pair rule H lifts reads it over the adduct set of its `chan2` (unflagged rows only) |
-| `reagent_only_iso` | the channel has a reagent halogen (§3.1), the pair has satellites, none is 13C, every tag starts with that halogen's heavy isotope (`81Br` / `37Cl`; iodine is monoisotopic, so an iodide channel never sets it), and (C11+a, 2026-09-27) the **ion carries more of that halogen than the neutral** — the ion's composition read off its `ion_formula` when that carries a charge sign, else neutral + adduct (a ledger row can hold the neutral there), **or carries none of it** (2026-09-27 hold). On a brominated neutral's `[M-H]-` or `[M+NO3]-` the 81Br line is the neutral's own and the flag clears (4d on the flag before); an ion with no Br at all keeps the flag: a 1:1 +2 Da line on a Br-free ion is no isotope line of that formula -- it argues against it (the batch's HIGH check refutes the reading) -- and is held at the old 4d until C11+c's count-aware band judges it per file. False on a pair rule H lifts: its lock is a line of its own |
+| `reagent_only_iso` | the channel has a reagent halogen (§3.1), the pair has kept lines, every kept line that names a heavy atom names only that halogen's heavy isotope (`81Br`, `81Br2`, `2x81Br`, `81Br(pair)`; not `81Br+13C`, `81Br37Cl(pair)`, `M+n`; iodine is monoisotopic, so an iodide channel never sets it), none adds 13C, at least one names a part (a pure `M0` line names none: a 79Br2 line below a 79Br81Br-committed parent breaks the flag), and (C11+a, 2026-09-27) the **ion carries more of that halogen than the neutral** — the ion's composition read off its `ion_formula` when that carries a charge sign, else neutral + adduct (a ledger row can hold the neutral there). On a brominated neutral's `[M-H]-` or `[M+NO3]-` the 81Br line is the neutral's own and the flag clears. An ion carrying NONE of the halogen never takes it (C11+c released the 2026-09-27 hold, D1): its 1:1 +2 Da line expects 0 under the count-aware band, so the pair has no isotope axis from it and its own pattern refutes it. False on a pair rule H lifts: its lock is a line of its own |
 | `tied` | **all** rows of the pair are tied — unless rule K's untie clears it (batch only, `label_untie` below) |
 | `below` | **any** row is below assignability |
 | `lead` | (C19(c)) **any** row is a tentative lead. Hard like `below` (derived `hard` below) and worded like it: a lead-only pair reads `5b: below assignability`, exactly as the same pair did before the split, so the split moved no level and no reason. False on the pooled batch where a halogen lock lifts it (`lead_lift`, rule H) |
@@ -151,8 +153,9 @@ hard           = tied or below or lead or lowconf or label_veto or iso_veto
 Two of these terms can never decide a level today and are kept because the
 reference script states both (verified by mutation, B4): `carbon_ev` inside
 `neutral_backed`, and the `not carbon_ev` guard of `reagent_only_iso` —
-`reagent_only_iso` already requires every satellite tag to be the reagent
-halogen's, so a pair with a ¹³C line never reaches the 4d test at all.
+`reagent_only_iso` already requires every kept line that names a heavy atom to
+name only the reagent halogen's, so a pair with a kept ¹³C line never reaches
+the 4d test at all.
 
 `n_files` (files of the source that carry the pair) is **recorded** in
 `evidence_axes` but is **not an axis**: the golden vectors were measured
@@ -164,6 +167,73 @@ calibration question for B3, decided on roster hit rate and decoy rate.
 The halogen of the source's **commonest cluster adduct** (`[M+Br]-` → Br;
 `[M+NO3]-` → none), never of "any halogen adduct present": a nitrate channel
 with two stray `[M+Br]-` rows against 346 `[M+NO3]-` is a nitrate channel.
+
+### 3.2 The isotope line test (C11+c)
+
+An isotope child counts as evidence where it sits at its label's exact spacing
+from the parent's **committed** line and is as tall as the ion's composition
+makes it relative to that line; the isotopologues list answers the same
+question (decisions D1–D5, D10, 2026-09-30). The code is
+`chem/isotopes.judge_source` / `line_facts`, called by `evidence._measure`;
+`scripts/level_ledger.py` carries a standalone copy of the section (it imports
+no peaky code) that `tests/test_isotope_children.py` pins text for text.
+
+1. **The committed line.** The scorer commits an ion's most abundant
+   isotopologue: a Br2 ion on 79Br81Br, a Br3 ion on 79Br2 81Br, a Cl≥4 ion on
+   a 37Cl line (a Cl3 ion stays on its mono line). The parent's heavy
+   configuration is read off its m/z: among the ion's Br / Cl / S / Si
+   configurations (S and Si to two atoms, probability ≥ 1e-4) whose shift lies
+   within **5 ppm** (Orbitrap-class width model) / **20 ppm** (TOF-class, or no
+   width model) of parent m/z − the ion's mono m/z, the most probable; none
+   within → the mono line. The ion's counts are `ion_composition`'s.
+2. **Two readings.** Scorer labels count heavy atoms from the MONO line
+   (`81Br2`, `M0` = the mono line below a heavy parent, `13C+81Br`); peaky's
+   own count them from the PARENT line (`2x81Br`, `81Br(pair)`, `81Br+13C`,
+   `M+5`); no column records the producer. Each child is read both ways: the
+   expectation reads the reading whose exact shift is nearer the measured child
+   − parent shift, the position test accepts either. A pure `M0` label names
+   the mono line (expected P(mono) / P(parent); of a mono-committed parent 0 —
+   2 Da below the lightest line of the ion).
+3. **The expectation.** P(the line's configuration) / P(the committed one),
+   multinomial per element over the ion's atoms with the band's per-atom ratios
+   (§3 `iso`): the `+` parts' joint probability, a count or `kx` counting,
+   `81Br/37Cl(pair)` the sum of the two lines, `13C2` C(n, 2) × 0.0107². A
+   generic `M+n` expects the ion's lines within max(12 mDa, half the width
+   model's FWHM) of its measured shift, summed. Band 0.5–2×.
+4. **The position.** A child counts only within **w = max(1 ppm, 4 σ(h))** (ppm
+   of the parent m/z; h the child's height) of the parent + its exact shift
+   under either reading. σ(h)² = a² + b²/h is fitted per SOURCE — the file for
+   the per-file level, the pooled files for the batch's, each script source —
+   on its own children labelled exactly `13C` (residual under the
+   parent-relative reading): pre-clipped at max(5 ppm, 6 × the global 1.4826 ×
+   MAD), eight height-quantile bins of ≥ 5 children, per-bin 1.4826 × MAD,
+   weighted least squares of s² on 1/h (weights the bin counts), a ≥ 0.02 ppm,
+   b ≥ 0 (the estimator is pinned: a Gaussian fit moves R1's median window from
+   1.07 to 1.41 ppm). Fewer than 40 such children: **no position test** in
+   that source. Rescues, either enough: **pcal** — the same window from the
+   parent's calibrated position, m/z × (1 − `ppm_error_cal` / 10⁶); **N1** — a
+   row the levelling reads (an M0 or iso child of the same file, not the child,
+   not its parent) ≥ 3 × the child's height, within 25 ppm of the child's exact
+   position on the side the child is displaced toward, the child's residual ≤
+   half the distance to it (a dim line pulled by a brighter neighbour: R1's
+   `[M]-.` 13C lines, pulled +2 to +3 ppm by the `[M-H]-` line of the neutral
+   with two more H, 4.47 mDa above). `M+n` children are exempt (they name no
+   exact shift). Per file only, a TOF-class file (width model R(200) < 50 000)
+   whose fit sits on the 0.02-ppm intercept floor is not tested. On the
+   Orbitraps the window is 1 ppm above ~430 cps; on the TOF 10–22 ppm, so there
+   the test catches gross errors only (mislinked lines, labels on the wrong
+   line). **A dropped child is dropped for every fact**: `iso`, `multiline`,
+   `carbon_ev`, `reagent_only_iso`, `iso_labels`.
+5. **The list.** An `isotopologues` entry holds `iso` when it is not the
+   parent's dropped child, names an M0 / iso row of the same file, is placed at
+   its own height (pcal allowed, no N1) and is in band under its label's
+   expectation.
+
+The width model is the run's: per file the one the `resolvability` stage
+reads (`apply_levels(…, resolution=)`), on the batch the batch's
+(`level_pooled(…, resolution=)`), in the script each run-dir source's
+`batch_summary.json` `resolution` (a ledger CSV is class-less), and a
+`--corroborate` source's its own (§6.4).
 
 ## 4. The decision table — first predicate that holds wins
 
@@ -225,8 +295,9 @@ the isomer space says 3 (2-, 3-, 4-nitrophenol), so 3a.
   model (measured from the raw profile, or declared) produces it; a run without
   one (offline, no `--resolving-power`) is not denied 4c for lacking it.
 - **Isotope evidence is judged on physics.** A satellite whose ratio is
-  outside 0.5–2× natural abundance is not evidence; a satellite the server
-  attributed (`isotopologues`) is.
+  outside 0.5–2× its count-aware expectation relative to the committed line is
+  not evidence, nor one off its label's exact spacing; a satellite the server
+  attributed (`isotopologues`) counts only by the same test (C11+c, §3.2).
 - **Two isotope lines speak for the neutral only as two of its elements
   (C17).** `multiline` is the only outside term a single channel has, so it
   must say something the other axes cannot: the ion's composition in two
@@ -343,16 +414,55 @@ the isomer space says 3 (2-, 3-, 4-nitrophenol), so 3a.
   "the ion is pinned by the reagent's own halogen"; that holds only where the
   reagent put the halogen there. A brominated neutral's `[M-H]-` or
   `[M+NO3]-` carries its OWN Br, and its 81Br line is the neutral's: the flag
-  clears. An ion carrying NONE of the reagent halogen keeps the flag (the
-  2026-09-27 hold): a 1:1 +2 Da line on a Br-free ion is no isotope line of
-  that formula — it says the ion carries a Br the formula lacks (C35H32O4S
-  `[M-H]-` at m/z 547.195: 1.00 × its M0 in 39 of 39 spectra, where the
-  formula makes 0.12 ×) — and would read 4b on a line that refutes it; HIGH
-  refutes such a reading on the batch, and C11+c's count-aware band will
-  judge it per file. Per file, 23 M0 rows (15 pairs) of the bromide/nitrate
+  clears. An ion carrying NONE of the reagent halogen kept the flag until
+  C11+c (the 2026-09-27 hold): a 1:1 +2 Da line on a Br-free ion is no isotope
+  line of that formula — it says the ion carries a Br the formula lacks
+  (C35H32O4S `[M-H]-` at m/z 547.195: 1.00 × its M0 in 39 of 39 spectra, where
+  the formula makes 0.12 ×) — and released alone would have read 4b on a line
+  that refutes it. C11+c released it after the count-aware band (decision D1):
+  such a line expects 0 and is never in band, so the pair has no isotope axis
+  from it and falls where its other facts put it (the five R3 readings per
+  file: 5b, mass-degenerate with no axis). Per file, 23 M0 rows (15 pairs) of the bromide/nitrate
   TOF batch move 4d → 4b, all brominated neutrals' `[M+NO3]-` (e.g.
   hypobromous acid, HBrO·NO3- at m/z 157.909); pooled 13 pairs (8 merged);
   the Orbitrap batches do not move.
+- **An isotope child is the committed line's, at its exact spacing (C11+c,
+  2026-09-30).** The scorer commits an ion's most abundant isotopologue and
+  writes its lines counted from the mono line, peaky's own passes count from
+  the parent; a child was read by the first part of its label against a
+  mono-line, single-atom expectation, wherever it sat, and a non-empty
+  isotopologues list alone gave `iso`. Now (§3.2): the committed line is read
+  off the parent's m/z, each label both ways, the whole label (joint
+  expectation, the elements a line adds), `13C2` its own C(n, 2) term, the
+  position within max(1 ppm, 4 σ(h)) self-fitted on the source's own `13C`
+  children (pcal and N1 rescue; `M+n` exempt; a per-file TOF guard), the list
+  entry by the same test, the Br-free hold released (D1). Measured on the three
+  regression batches' STORED per-file ledgers (pooled levels with each run's
+  tables, stored cross set and width model; per-file levels with the run's
+  width model and the per-file guard): the labelled-nitrate Orbitrap 3 pooled
+  pairs (3 merged) — dibromoacetic acid `[M-H]-` 5a → 4b (its 81Br2 and 79Br2
+  lines around the 79Br81Br-committed M0), C18H15BrO3S and C13H15ClO8 `[M-H]-`
+  4b → 5b (their only "halogen" line sits at the F-for-OH / 34S spacing) —
+  claims identified 0 / ion +0.015 / tentative −0.015 % of the batch signal,
+  per file 16 rows (8 pairs; the chlorinated paraffin C10H18Cl4 `[M+^NO3]-` 3a
+  → 5b in six files: the one line its list names reads 2.0 × a 37Cl1-committed
+  parent against 0.48 expected — its recovery labels every ladder line '37Cl', a
+  separate card); the uronium Orbitrap 3 (3) — C10H17NO4 and C18H25NO `[M+H]+`
+  4b → 4c (their '13C' line another ion's), C17H22N4O10 urea 4b → 5b — claims
+  0 / −0.018 / +0.018, per file 24 rows (11 pairs; the urea / `[M+H]+` 18O
+  lines displaced by a partly resolved 13C2 line: rule U keeps them 4a
+  pooled); the bromide/nitrate TOF 26 (16), claims 0 / −0.0035 / +0.0035, per
+  file 60 rows (51 pairs) — nine `[M+Br]-` 4d → 4b on an M+3 `81Br+13C` carbon
+  line or a line proving a second Br, three brominated readings 4b → 5b whose
+  81Br lines do not fit their count-aware Br / Br2 pattern, chloroacetic acid
+  `[M+Br]-` staying 4a on its `81Br+37Cl` M+4 line. Identified never moves.
+  Hold kept = released on every run and golden (levels); the corroborating
+  sources re-levelled under the same rule move no level. The measurement the
+  decision rested on read 25 (15) on the TOF; the one pair
+  more, C12H9BrN2 `[M+HBr+Br]-` 4b → 4d, is the reagent-part rule: its line
+  two 81Br up is spelled `81Br2` by the scorer and `2x81Br` by peaky, and both
+  spellings name the reagent halogen alone (D2's list) where that measurement
+  read only the first as the reagent's.
 - **A halogen lock lifts a tentative lead (C11+b, rule H, 2026-09-28).** A
   lead is unsupported, not contradicted; where the batch's series shows the
   ion's exact ³⁷Cl / ⁸¹Br line at its count, co-varying, the formula has the
@@ -507,8 +617,10 @@ final sweep so that sweep claims each new row's own ¹³C — the satellite row
 to the single-sample `<prefix>_manifest.json`; a batch reports the pooled
 recompute of §6.2 in `batch_summary.json` instead).
 
-The stage calls `evidence.apply_levels(ledger, cfg=cfg, cross=cross)` which
-writes the five columns of §7 in place (`claim` read off the level, §1.1; `NA`
+The stage calls `evidence.apply_levels(ledger, cfg=cfg, cross=cross,
+resolution=st.resolving_power)` -- the run's width model, the one the
+`resolvability` stage reads (C11+c: the committed line's tolerance, the `M+n`
+window and the per-file TOF guard, §3.2) -- which writes the five columns of §7 in place (`claim` read off the level, §1.1; `NA`
 on every non-M0 row like the other four) and returns the summary: `levels`
 (`{level: n}`), `claims` (`{identified, ion, tentative: n}` over the M0 rows,
 zeros kept), `n_levelled`, `n_pairs`, `n_corroborate` and `axes`. The run's
@@ -525,7 +637,8 @@ single-sample run.
 The merged ledger carries none of the predicate columns, so the batch level
 is **not** read off merged rows. `assign_batch.run` pools the per-file
 ledgers of the assigned files (cover **and** residual stages) as one source
-and calls `evidence.level_pooled(per_file, cross=cross)`: one evidence record
+and calls `evidence.level_pooled(per_file, cross=cross, resolution=rp)` (the
+batch's width model, §3.2): one evidence record
 per `(neutral, adduct)` over all files, so `chan2` sees a second adduct in
 *any* file, `iso` any file's satellite, `tied`/`lowconf` require *all* rows
 (across files) and `below` and `lead` any. The result is joined onto the merged ledger
@@ -637,7 +750,12 @@ rule U pair (§6.4): the cross set is the source's own per-file evidence (a
 run's per-file evidence carries no lift; a source that resolves to a merged
 ledger is read at its stored level, a lift included, as for rules K and U);
 `scorecard.own_levels_for` reads all
-three tables as the run's own evidence, rule H's locks included.
+three tables as the run's own evidence, rule H's locks included, and its
+batch_summary's width model. Since C11+c the script levels each run-dir source
+with its `batch_summary.json` `resolution` (`source_resolution`; a ledger CSV
+and a run without one are class-less: 20 ppm for the committed line, 12 mDa
+for `M+n`), reads isotopologues lists JSON first like the engine, and judges
+children and lists with its own copy of §3.2's test.
 
 ### 6.4 The cross set — what a source's sighting is worth (C8)
 
@@ -651,7 +769,9 @@ and two grids agreeing is not a second sighting of the neutral.
 - A source with per-file ledgers (a run dir, an out-dir holding one run, a
   per-file or single-sample ledger CSV) is **re-levelled**: its ledgers pooled
   as ONE source, `level_pooled(…, cross=None)` — the batch's own merged-row
-  level, §6.2 — and a neutral counts when any of its pairs reaches 4b.
+  level, §6.2, with the source's own width model where its `batch_summary.json`
+  records one (C11+c, `source_resolution`) — and a neutral counts when any of
+  its pairs reaches 4b.
   Stored levels are never read here, so a source that was itself run with
   `--corroborate` cannot hand a run back the agreement it got from it, and
   two sources named together (`level_ledger.py A B`) are each corroborated by
@@ -704,7 +824,9 @@ column and every reader takes it as False; one written before C11+b has no
 `lead_by`, and rule H takes its leads for any setter.
 
 Written to: the per-file `<prefix>_ledger.csv`, `merged_ledger.csv`,
-`tables/evidence_levels.csv` (batch: one row per pair with every fact of §3, the
+`tables/evidence_levels.csv` (batch: one row per pair with every fact of §3 --
+`iso_labels` the kept lines' whole labels without `M0` parts, `|`-joined (C11+c;
+the first part only before it) -- the
 `ion_only` flag, `multiline_elements`, `upair`, `label_untie`, `label_veto`,
 `label_note`, `iso_veto`, `iso_note`, `lead`, `lead_lift`, `lock_note` and the pair's `claim` included; an alien 14N line and a pair an
 isotope check refutes read `chan2` / `branch` False),
@@ -746,11 +868,19 @@ added them. `tests/test_evidence.py`:
 - the four golden count vectors, exact (each source corroborated by what
   the other pins on its own, §6.4; the uronium set alone, with its
   neutral-pair table):
-  `tv` 1373 → 21/15/107/16/143/15/10/37/1009,
-  `tof` 3364 → 6/15/182/15/258/82/95/138/2573,
-  `orbi` 1707 → 0/11/217/9/203/139/0/35/1093,
-  `ur` 1161 → 4/4/0/331/376/291/0/82/73 (4/4/0/25/682/291/0/82/73 without
-  the pair table)
+  `tv` 1373 → 21/15/107/15/145/15/9/37/1009,
+  `tof` 3364 → 6/15/182/14/267/85/84/135/2576,
+  `orbi` 1707 → 0/10/217/9/205/138/0/35/1093 with its lock table
+  (0/10/217/9/202/138/0/35/1096 without),
+  `ur` 1161 → 4/4/0/330/375/293/0/82/73 with its pair and lock tables
+  (4/4/0/330/374/293/0/82/74 with the pair table alone,
+  4/4/0/17/687/293/0/82/74 without either)
+  (before C11+c, 2026-09-30: 21/15/107/16/143/15/10/37/1009,
+  6/15/182/15/258/82/95/138/2573, 0/11/217/9/206/139/0/35/1090 (no lock
+  0/11/217/9/203/139/0/35/1093) and 4/4/0/331/377/291/0/82/72 (pair table alone
+  4/4/0/331/376/291/0/82/73, neither 4/4/0/25/682/291/0/82/73) — 47 of the
+  7,605 pairs moved, tv 6, tof 33, orbi 4, ur 4, listed in the fixtures'
+  README)
   (before C8, with any-level membership: 21/15/107/38/162/9/9/33/979,
   6/16/182/38/260/79/91/135/2557 and 0/12/217/44/215/119/0/30/1070 —
   183 of the 6,444 pairs moved, every one to a lower level; before C17 the
@@ -788,6 +918,16 @@ added them. `tests/test_evidence.py`:
   case by case (`tests/test_multiline_elements.py`), both against the
   reference script;
 - row-for-row equality with `expected_levels.csv`;
+- C11+c's isotope line test (§3.2): the shared helper and its script twin text
+  for text and value for value, the label grammar, the multinomial, the
+  committed line and its class tolerance, both readings, the joint expectation
+  and the delta credit, the `M+n` window, the σ(h) estimator (pinned on a fixed
+  sample), the window, N1 and pcal at their edges, the per-file TOF guard, the
+  list entry's test, the dropped line dropped for every fact, and the released
+  hold (`tests/test_isotope_children.py`, `tests/test_isotope_levels.py`: every
+  synthetic line at its configuration's exact m/z, engine and script alike);
+  pass 0 / pass 7 keying a committed ion's lines on (compound, ion) and a
+  ladder rung's real ion (`tests/test_known_ion_kids.py`);
 - non-M0 rows carry `NA`; a reagent-ion row never carries a level;
 - missing columns and all-null columns do not raise;
 - the pooled batch computation equals the script's pooling on the same files;
@@ -897,7 +1037,9 @@ not a problem with it.
   decoy split: above m/z 350 the mass-defect gap no longer protects the
   Orbitrap) — B3 measures, the predicate table changes only if the
   calibration order breaks.
-- One reading difference between the code and the reference script, to be
+- (Resolved by C11+c, 2026-09-30: the script reads JSON first too, and a list
+  counts only through an entry that passes §3.2's test.) One reading difference
+  between the code and the reference script, to be
   adjudicated in B3 on real runs: the ledger writes `isotopologues` with
   `json.dumps`, so a satellite without a per-line score (a ³⁷Cl envelope
   confirmed against the ledger) carries `null`; the script's `ast.literal_eval`
