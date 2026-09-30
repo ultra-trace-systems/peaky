@@ -65,6 +65,7 @@ from __future__ import annotations
 import argparse
 import ast
 import glob
+import json
 import os
 import re
 import sys
@@ -182,13 +183,21 @@ def first_word(value) -> str:
 
 
 def as_list(value) -> list:
-    """A ledger cell holding a repr'd list, or nothing at all."""
+    """A ledger cell holding a JSON or repr'd list, or nothing at all.
+
+    The ledger writes the satellite list with json.dumps, so a line without a
+    per-line score carries `null`, which `ast.literal_eval` cannot read: JSON
+    is tried first, as the engine's `evidence.as_list` does (C11+c; before it
+    such a list read EMPTY here). A cell neither parser reads is empty."""
     if not isinstance(value, str) or not value.strip():
         return []
     try:
-        parsed = ast.literal_eval(value)
+        parsed = json.loads(value)
     except Exception:
-        return []
+        try:
+            parsed = ast.literal_eval(value)
+        except Exception:
+            return []
     return list(parsed) if isinstance(parsed, (list, tuple)) else []
 
 

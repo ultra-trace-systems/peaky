@@ -357,3 +357,39 @@ def test_curated_scope_follows_the_spec_not_a_hand_made_set():
     assert _curated("C99H99O99", "atmospheric") == "3a"                        # compound scope, not in the space
     assert LL.KNOWN_FAMILY_SCOPE["contaminant:silanediol"] == "class"
     assert LL.plausible_structures("C6H18O3Si3") == 1 and LL.plausible_structures("C99H99O99") is None
+
+
+# --------------------------------------------------------------------------- JSON lists (C11+c c1)
+def test_a_list_with_a_null_score_reads_as_written_in_the_script_and_the_engine():
+    """The ledger writes the satellite list with json.dumps: a line without a
+    per-line score (the chlorinated-paraffin recovery, the residual pairs) is
+    `"score": null`, which ast.literal_eval cannot read. The script read such a
+    list as EMPTY while the engine (evidence.as_list, JSON first) read it; since
+    C11+c both read it as written, and a repr'd list still reads."""
+    from peaky.assignment import evidence as EV
+    cell = '[{"label": "37Cl", "score": null, "peak_id": "a"}, {"label": "37Cl", "score": null, "peak_id": "b"}]'
+    assert LL.as_list(cell) == EV.as_list(cell) == [{"label": "37Cl", "score": None, "peak_id": "a"},
+                                                    {"label": "37Cl", "score": None, "peak_id": "b"}]
+    assert LL.as_list("[{'label': '13C', 'score': 0.9}]") == EV.as_list("[{'label': '13C', 'score': 0.9}]")
+    assert LL.as_list("not a list") == EV.as_list("not a list") == []
+    assert LL.as_list('{"label": "13C"}') == EV.as_list('{"label": "13C"}') == []      # a dict is no list
+    assert LL.as_list("") == LL.as_list(float("nan")) == []
+
+
+def test_the_paraffin_fixture_row_levels_alike_per_file():
+    """The Orbitrap fixture's chlorinated paraffin C10H18Cl4 [M+^NO3]- in file
+    orbi_07 (and orbi_12) holds `iso` through its null-score list alone: the
+    engine read it, the script did not (script 5b vs engine 3a on that file as
+    its own source). Script and engine now level it alike, fact for fact."""
+    import glob
+
+    from peaky.assignment import evidence as EV
+    fix = Path(__file__).resolve().parent / "fixtures" / "levels"
+    for name in ("orbi_07", "orbi_12"):
+        led = pd.read_csv(fix / f"{name}_ledger.csv.gz", low_memory=False)
+        core = EV.level_pooled({name: led})
+        ref = LL.assign_levels(LL.measure_source(name, led.assign(__file=name), None), set())
+        a = core[core.neutral_formula == "C10H18Cl4"].iloc[0]
+        b = ref[ref.neutral == "C10H18Cl4"].iloc[0]
+        assert (a.evidence_level, bool(a.iso)) == (b.level, bool(b.iso)), name
+    assert glob.glob(str(fix / "orbi_07_ledger.csv.gz"))
