@@ -509,7 +509,10 @@ def _judge_children(frame: pd.DataFrame, role: pd.Series, m0: pd.DataFrame, *, s
     for c, verdict in zip(children, judged["children"]):
         if verdict["keep"]:
             kept.setdefault(pair_of[(c["file"], c["parent"])], []).append(verdict)
-    facts = {k: ISO.line_facts(v, satellite) for k, v in kept.items()}
+    # the neutral's atoms of the reagent halogen: what the adduct supplies is the rest (D4's full-count line)
+    halogen = ISO.ISOTOPE_ELEMENT[satellite] if satellite else None
+    facts = {k: ISO.line_facts(v, satellite, C.parse_formula(str(k[0])).get(halogen, 0) if halogen else 0)
+             for k, v in kept.items()}
     listed = iter(judged["lists"])
     list_ok = [bool(next(listed)) if entries else False for _f, _p, entries in lists]
     return facts, list_ok
@@ -632,7 +635,8 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None,
             anchor=anchor,
             branch=bool(aset & BARE_ADDUCTS) and bool(aset & CLUSTER_ADDUCTS),
             # the sole satellite is the reagent halogen's -- every kept line
-            # naming a heavy atom names only its heavy isotope, none adds 13C --
+            # naming a heavy atom names only its heavy isotope, none adds 13C,
+            # none is a line only the ion's full halogen count makes (D4) --
             # and the reagent put that halogen on the ion: the ION carries more
             # of it than the neutral (C11+a; the Br-free hold released by
             # C11+c); a lifted pair's lock is a line of its own

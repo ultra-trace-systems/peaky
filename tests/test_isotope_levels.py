@@ -335,30 +335,70 @@ def test_the_committed_lines_tolerance_follows_the_instrument_class():
     assert not _fact(_both(rows_at(RES_ORBI), RES_ORBI), "C2H2Br2O2").iso
 
 
-def test_the_reagent_only_flag_reads_label_parts_as_built():
-    """The reagent-only flag as BUILT (DECISIONS D2's list: a line whose label parts name only the reagent
-    halogen's heavy isotope -- '81Br', '81Br2', '2x81Br' -- is the reagent's; a pure 'M0' line names no part).
-    Pinned so that the open D4 question moves it deliberately: D4's last sub-point ("a line only the ion's
-    full halogen count makes is the neutral's halogen") is NOT implemented, here or in the reference chain.
-
-    C12H9BrN2 [M+HBr+Br]- (Br3, the reagent supplies two Br) committed on 79Br2 81Br, R3's geometry: the
-    scorer's '81Br2' is the 79Br 81Br2 line 1.998 Da up (0.97x, in band); peaky's '2x81Br' is the 81Br3 line
-    3.996 Da up (0.32x expected) -- a line only the full Br3 count makes. Either keeps the flag (4d).
-    A Br1 neutral's [M+Br]- (Br2, the reagent supplies one) committed on 79Br81Br: its 'M0' (79Br2) line
-    alone gives no flag (4b); with its '81Br2' line too the flag holds (4d) -- the rule is not monotonic."""
-    for label, shift, ratio in (("81Br2", SP["81Br"], 0.97), ("2x81Br", 2 * SP["81Br"], 0.32)):
-        p = parent("a", "C12H9BrN2", "[M+HBr+Br]-", height=1e5, heavy={"81Br": 1})
-        got = _both(background() + _bromide(p, kid("u", p, label, ratio * 1e5, shift)))
-        f = _fact(got, "C12H9BrN2", "[M+HBr+Br]-")
-        assert f.iso and f.reagent_only_iso and _level(got, "C12H9BrN2", "[M+HBr+Br]-") == "4d", label
+# --------------------------------------------------------------------------- D4's full-count line (a position rule)
+# A pair whose ion carries n atoms of the reagent halogen, s of them the adduct's: a kept, in-band line whose heavy
+# index relative to the committed line, j = k - k_c(n), lies outside [-k_c(s), s - k_c(s)] -- a line an s-atom ion
+# committed on its own most probable line cannot make -- is the NEUTRAL's halogen, so the pair is not reagent-only,
+# whatever other lines it carries (k_c(1) = 0, k_c(2) = k_c(3) = 1 for Br). Height alone is no such evidence.
+def test_a_line_only_the_full_halogen_count_makes_is_the_neutrals_halogen():
+    """C9H20BrN3O6 [M+Br]- (R3): a Br2 ion, one Br the neutral's and one the reagent's, committed on 79Br81Br;
+    a Br1 ion puts lines at j = 0 and +1 only. Its 'M0' line -- the 79Br2 line 1.998 Da below, j = -1 -- is
+    the neutral's second Br: 4b, alone or beside its '81Br2' line. The '81Br2' line alone (j = +1: where a Br1
+    ion committed on its 79Br line puts its 81Br line) is the reagent's: 4d. Both lines in band (0.514 /
+    0.486 expected)."""
     p = parent("a", "C9H20BrN3O6", "[M+Br]-", height=1e5, heavy={"81Br": 1})
-    m0_line = kid("d", p, "M0", 0.51e5, -SP["81Br"])
-    got = _both(background() + _bromide(p, m0_line))
-    f = _fact(got, "C9H20BrN3O6", "[M+Br]-")
-    assert f.iso and not f.reagent_only_iso and _level(got, "C9H20BrN3O6", "[M+Br]-") == "4b"
-    got = _both(background() + _bromide(p, m0_line, kid("u", p, "81Br2", 0.49e5, SP["81Br"])))
-    f = _fact(got, "C9H20BrN3O6", "[M+Br]-")
-    assert f.iso and f.reagent_only_iso and _level(got, "C9H20BrN3O6", "[M+Br]-") == "4d"
+    low = kid("d", p, "M0", 0.51e5, -SP["81Br"])
+    up = kid("u", p, "81Br2", 0.49e5, SP["81Br"])
+    for lines, flag, level in (([low], False, "4b"), ([low, up], False, "4b"), ([up], True, "4d")):
+        got = _both(background() + _bromide(p, *lines))
+        f = _fact(got, "C9H20BrN3O6", "[M+Br]-")
+        assert f.iso and f.reagent_only_iso == flag, [r["peak_id"] for r in lines]
+        assert _level(got, "C9H20BrN3O6", "[M+Br]-") == level, [r["peak_id"] for r in lines]
+
+
+def test_a_full_count_line_the_band_or_the_position_test_refuses_is_no_evidence():
+    """The same Br2 [M+Br]- with its '81Br2' line: a 79Br2 line out of band (0.10x against 0.514) is height
+    evidence only -- still a line of the halogen's pattern, the flag holds (4d); a 79Br2 line in band but 3 ppm
+    off its exact position on the Orbitrap (window 1 ppm: dropped) is no line at all (4d)."""
+    p = parent("a", "C9H20BrN3O6", "[M+Br]-", height=1e5, heavy={"81Br": 1})
+    up = kid("u", p, "81Br2", 0.49e5, SP["81Br"])
+    for low in (kid("d", p, "M0", 0.10e5, -SP["81Br"]), kid("d", p, "M0", 0.51e5, -SP["81Br"], 3.0)):
+        got = _both(background() + _bromide(p, low, up))
+        f = _fact(got, "C9H20BrN3O6", "[M+Br]-")
+        assert f.iso and f.reagent_only_iso and _level(got, "C9H20BrN3O6", "[M+Br]-") == "4d"
+
+
+def test_a_br3_clusters_lines_where_a_br2_ion_puts_one_are_the_reagents():
+    """C12H9BrN2 [M+HBr+Br]- (R3: C12H10Br3N2-, one Br the neutral's, two the reagent's) committed on
+    79Br2 81Br; a Br2 ion committed on 79Br81Br puts lines at j = -1, 0, +1. The scorer's '81Br2' line 1.998 Da
+    up at 0.97x (the 79Br 81Br2 line, j = +1) and the 'M0' line (79Br3, j = -1, 0.343 expected) are the
+    reagent's: 4d. Peaky's '2x81Br' line 3.996 Da up is the 81Br3 line (j = +2), which only Br3 makes: in band
+    (0.32x of 0.3155) it is the neutral's -- 4b; at R3's 1.23x (3.9x its expectation) it is out of band, and
+    the pair stays 4d on its '81Br2' line, as built."""
+    p = parent("a", "C12H9BrN2", "[M+HBr+Br]-", height=1e5, heavy={"81Br": 1})
+    up = kid("u", p, "81Br2", 0.97e5, SP["81Br"])
+    for lines, flag, level in (
+            ([up], True, "4d"),
+            ([kid("d", p, "M0", 0.34e5, -SP["81Br"])], True, "4d"),
+            ([up, kid("t", p, "2x81Br", 0.32e5, 2 * SP["81Br"])], False, "4b"),
+            ([up, kid("t", p, "2x81Br", 1.23e5, 2 * SP["81Br"])], True, "4d")):
+        got = _both(background() + _bromide(p, *lines))
+        f = _fact(got, "C12H9BrN2", "[M+HBr+Br]-")
+        assert f.iso and f.reagent_only_iso == flag, [(r["iso_label"], r["height"]) for r in lines]
+        assert _level(got, "C12H9BrN2", "[M+HBr+Br]-") == level, [(r["iso_label"], r["height"]) for r in lines]
+
+
+def test_every_line_of_a_br_free_neutrals_hbr_br_cluster_is_the_reagents():
+    """A Br-free neutral's [M+HBr+Br]-: the reagent supplies both Br (s = n = 2), so every line the ion makes is
+    the reagent's. Its 'M0' line (79Br2) -- which, naming no part, left the pair without the flag as built,
+    though a line of the reagent's own pattern -- takes the flag like its '81Br2' line (4d)."""
+    p = parent("a", "C10H12O4", "[M+HBr+Br]-", height=1e5, heavy={"81Br": 1})
+    low = kid("d", p, "M0", 0.51e5, -SP["81Br"])
+    up = kid("u", p, "81Br2", 0.49e5, SP["81Br"])
+    for lines in ([low], [up], [low, up]):
+        got = _both(background() + _bromide(p, *lines))
+        f = _fact(got, "C10H12O4", "[M+HBr+Br]-")
+        assert f.iso and f.reagent_only_iso and _level(got, "C10H12O4", "[M+HBr+Br]-") == "4d"
 
 
 def test_a_scorer_label_on_a_heavy_parent_credits_only_what_the_line_adds():

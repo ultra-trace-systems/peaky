@@ -38,8 +38,8 @@ _spec.loader.exec_module(LL)
 SHARED = ["split_label", "parse_label_part", "heavy_key", "heavy_shift", "_heavy_nominal", "_heavy_add",
           "heavy_probability", "ion_sign", "mono_mz", "_committed_candidates", "committed_tolerance_ppm",
           "committed_configuration", "_ion_lines", "generic_expectation", "_label_elements", "_expand",
-          "resolve_child", "reagent_part", "fit_position_sigma", "position_window_ppm", "_in_band", "_placed",
-          "_pulled", "judge_source", "line_facts"]
+          "resolve_child", "reagent_part", "most_probable_heavy", "full_count_line", "fit_position_sigma",
+          "position_window_ppm", "_in_band", "_placed", "_pulled", "judge_source", "_reagent_line", "line_facts"]
 CONSTANTS = ["HEAVY_ISOTOPES", "ELEMENT_MASS", "ELECTRON_MASS", "ISOTOPE_SPACING", "ISOTOPE_ELEMENT", "ISOTOPE_RATIO",
              "M2_OWNERS", "COMMITTED_ISOTOPES", "COMMITTED_MIN_P", "COMMITTED_TOL_PPM", "COMMITTED_TOL_CLASSLESS_PPM",
              "GENERIC_HALF_WIDTH_DA", "POSITION_MIN_PPM", "POSITION_K", "SIGMA_MIN_CHILDREN", "SIGMA_BINS",
@@ -578,20 +578,66 @@ def test_n1_never_counts_the_childs_own_parent():
 
 
 def test_line_facts_read_the_kept_lines():
-    def line(parts, elements, ok):
-        return dict(parts=parts, elements=elements, ok=ok)
+    def line(parts, elements, ok, kind="set"):
+        return dict(parts=parts, elements=elements, ok=ok, kind=kind)
     f = I.line_facts([line(["81Br"], ["Br"], True)], "81Br")
     assert f == dict(iso=True, lined={"Br"}, carbon=False, labels={"81Br"}, reagent_only=True)
     f = I.line_facts([line(["81Br"], ["Br"], True), line(["81Br", "13C"], ["Br", "C"], False)], "81Br")
     assert f["carbon"] and not f["reagent_only"] and f["lined"] == {"Br"}
-    f = I.line_facts([line([], ["Br"], True)], "81Br")                # a pure 'M0' line names no part
-    assert f["iso"] and not f["reagent_only"] and f["labels"] == set()
+    # a pure 'M0' line names what it differs in from the committed line: the lighter line of a
+    # heavy-committed Br pattern names Br (the reagent's halogen); of a mono-committed parent, nothing
+    f = I.line_facts([line([], ["Br"], True, "mono")], "81Br")
+    assert f["iso"] and f["reagent_only"] and f["labels"] == set()
+    assert not I.line_facts([line([], [], False, "mono")], "81Br")["reagent_only"]
+    assert not I.line_facts([line([], ["Br", "S"], True, "mono")], "81Br")["reagent_only"]
     f = I.line_facts([line(["2x81Br"], ["Br"], False), line(["81Br2"], ["Br"], False)], "81Br")
     assert f["reagent_only"] and not f["iso"]
-    f = I.line_facts([line(["M+4"], [], False)], "81Br")
+    f = I.line_facts([line(["M+4"], [], False, "gen")], "81Br")
     assert not f["reagent_only"] and f["labels"] == {"M+4"}
     assert not I.line_facts([line(["81Br"], ["Br"], True)], None)["reagent_only"]
     assert I.line_facts([], "81Br") == dict(iso=False, lined=set(), carbon=False, labels=set(), reagent_only=False)
+
+
+def test_the_most_probable_line_of_an_n_atom_halogen_ion():
+    """k_c(n), the heavy atoms on the line a scorer commits: Br 0, 1, 1, 2, 2 (Br1-Br5: 0.9728 per atom); Cl
+    0, 0, 0, 1, 1, 1 (Cl1-Cl6: 0.3196) -- Cl4 is committed on a 37Cl line, Cl3 on its mono line."""
+    assert [I.most_probable_heavy(n, "81Br") for n in range(6)] == [0, 0, 1, 1, 2, 2]
+    assert [I.most_probable_heavy(n, "37Cl") for n in range(7)] == [0, 0, 0, 0, 1, 1, 1]
+    for n in range(8):
+        for iso in ("81Br", "37Cl"):
+            assert I.most_probable_heavy(n, iso) == LL.most_probable_heavy(n, iso)
+
+
+def test_a_line_only_the_full_count_makes_on_either_side_of_the_reagents_range():
+    """D4's full-count line (the position rule): j = k - k_c(n) outside [-k_c(s), s - k_c(s)], kept lines only
+    (the caller passes those), in band only.
+
+    Br2 [M+Br]- (n 2, the neutral 1, s 1: j in [0, 1] is the reagent's): 79Br2 (k 0, j -1) the neutral's;
+    79Br81Br (k 1) and 81Br2 (k 2, j +1) the reagent's. Br3 [M+HBr+Br]- (n 3, s 2: j in [-1, 1]): 79Br3 (k 0)
+    and 79Br 81Br2 (k 2) the reagent's, 81Br3 (k 3, j +2) the neutral's. Out of band: never. A Br-free
+    neutral (s = n): nothing. An adduct supplying none (s 0): nothing. Cl2 [M+Cl]- (s 1, k_c(2) = k_c(1) = 0:
+    j in [0, 1]): 37Cl2 (k 2) the neutral's. No satellite, an 'M+n' line (no configuration): nothing."""
+    br2, br3 = {"C": 9, "H": 20, "Br": 2, "N": 3, "O": 6}, {"C": 12, "H": 10, "Br": 3, "N": 2}
+
+    def v(counts, k, ok=True, heavy=True, iso="81Br"):
+        return dict(ok=ok, counts=counts, heavy=({iso: k} if k else {}) if heavy else None)
+    for mod in (I, LL):
+        f = mod.full_count_line
+        assert f(v(br2, 0), "81Br", 1) and not f(v(br2, 1), "81Br", 1) and not f(v(br2, 2), "81Br", 1)
+        assert not f(v(br2, 0, ok=False), "81Br", 1)
+        assert not f(v(br3, 0), "81Br", 1) and not f(v(br3, 2), "81Br", 1) and f(v(br3, 3), "81Br", 1)
+        assert not f(v(br3, 3, ok=False), "81Br", 1)
+        assert not any(f(v(br2, k), "81Br", 0) for k in range(3))              # the neutral carries no Br
+        assert not any(f(v(br2, k), "81Br", 2) for k in range(3))              # the adduct supplies none
+        cl2 = {"C": 6, "H": 9, "Cl": 2, "O": 3}
+        assert f(v(cl2, 2, iso="37Cl"), "37Cl", 1) and not f(v(cl2, 1, iso="37Cl"), "37Cl", 1)
+        assert not f(v(br2, 0), None, 1) and not f(v(br2, 0, heavy=False), "81Br", 1)
+    # through line_facts: the full-count line clears the flag whatever the pair's other lines
+    lines = [dict(parts=["81Br2"], elements=["Br"], ok=True, kind="set", counts=br2, heavy={"81Br": 2}),
+             dict(parts=[], elements=["Br"], ok=True, kind="mono", counts=br2, heavy={})]
+    assert I.line_facts(lines[:1], "81Br", 1)["reagent_only"]
+    assert not I.line_facts(lines, "81Br", 1)["reagent_only"] and not I.line_facts(lines[1:], "81Br", 1)["reagent_only"]
+    assert I.line_facts(lines, "81Br", 0)["reagent_only"]
 
 
 # --------------------------------------------------------------------------- the width model reaches every path (c3)

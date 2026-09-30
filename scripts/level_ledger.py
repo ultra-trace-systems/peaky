@@ -645,12 +645,15 @@ def resolve_child(label, counts: dict, hp: dict, delta: float, *,
                 the committed line (a pure 'M0' line: the parent's heavy
                 elements); none for 'M+n'
       parts     the label's parts other than 'M0' (their '+'-join is the label
-                `iso_labels` lists)"""
+                `iso_labels` lists)
+      heavy     the line's own heavy configuration under the nearer reading
+                ({} for a pure 'M0' line: the mono line); None for 'M+n' or an
+                unreadable label (no configuration)"""
     raw = split_label(label)
     parsed = [parse_label_part(p) for p in raw]
     parts = [p for p, (k, _v) in zip(raw, parsed) if k != "mono"]
     kinds = {k for k, _v in parsed}
-    out = dict(kind="bad", shift=float("nan"), readings=(), expected=0.0, elements=[], parts=parts)
+    out = dict(kind="bad", shift=float("nan"), readings=(), expected=0.0, elements=[], parts=parts, heavy=None)
     if not parsed or "bad" in kinds:
         return out
     if "gen" in kinds:
@@ -694,7 +697,7 @@ def resolve_child(label, counts: dict, hp: dict, delta: float, *,
         elements = sorted({ISOTOPE_ELEMENT[i] for i, v in diff.items() if v}) or _label_elements(parsed)
         expected = best["expected"]
     return dict(kind="mono" if mono_only else "set", shift=best["shift"], readings=tuple(readings),
-                expected=expected, elements=elements, parts=parts)
+                expected=expected, elements=elements, parts=parts, heavy=dict(best["heavy"]))
 
 
 def reagent_part(part: str, satellite: str | None) -> bool:
@@ -705,6 +708,37 @@ def reagent_part(part: str, satellite: str | None) -> bool:
         return False
     kind, v = parse_label_part(part)
     return kind == "set" and set(v) == {satellite}
+
+
+def most_probable_heavy(n: int, iso: str) -> int:
+    """k_c(n): how many `iso` atoms the most probable line of an ion carrying
+    n atoms of its element holds (per-atom ISOTOPE_RATIO) -- the line a scorer
+    commits: 81Br 0, 1, 1, 2 for Br1-Br4; 37Cl 0, 0, 0, 1 for Cl1-Cl4."""
+    n = max(int(n), 0)
+    r = ISOTOPE_RATIO[iso]
+    return max(range(n + 1), key=lambda k: math.comb(n, k) * r ** k)
+
+
+def full_count_line(v: dict, satellite: str | None, own: int) -> bool:
+    """D4's last sub-point, read as a POSITION rule (2026-09-30): a kept,
+    IN-BAND line (`v` a judge_source verdict) that only the ion's full count
+    of the reagent halogen makes -- evidence of the NEUTRAL's halogen. The ion
+    carries n atoms of it, the adduct s = n - `own` (the neutral's atoms); the
+    line's heavy index relative to the committed line, j = k - k_c(n) (k its
+    heavy atoms, k_c `most_probable_heavy`), lies outside [-k_c(s), s - k_c(s)]
+    -- the lines an s-atom ion committed on its most probable line makes. A
+    line where an s-atom ion puts one stays the reagent's whatever its height;
+    an 'M+n' or unreadable line has no index; an adduct that supplies none of
+    the halogen (s <= 0) leaves nothing to tell apart."""
+    if not satellite or not v["ok"] or v.get("heavy") is None:
+        return False
+    n = int(v["counts"].get(ISOTOPE_ELEMENT[satellite], 0))
+    s = n - int(own)
+    if s <= 0:
+        return False
+    j = int(v["heavy"].get(satellite, 0)) - most_probable_heavy(n, satellite)
+    kc = most_probable_heavy(s, satellite)
+    return not (-kc <= j <= s - kc)
 
 
 class PositionSigma(NamedTuple):
@@ -814,7 +848,8 @@ def judge_source(children, parents: dict, lists, rows: dict, *, klass: str | Non
 
     Returns {'fit': PositionSigma | None, 'tested': bool, 'children': [one
     verdict per child: keep (placed), ok (in band), expected, ratio, elements,
-    parts, kind], 'lists': [one bool per list row: an entry that is not this
+    parts, kind, heavy (the line's configuration), counts (the ion's)],
+    'lists': [one bool per list row: an entry that is not this
     parent's dropped child, names an M0 / iso row of the file, is placed at its
     own height (pcal allowed, no N1) and is in band]}."""
     tol = committed_tolerance_ppm(klass)
@@ -860,7 +895,8 @@ def judge_source(children, parents: dict, lists, rows: dict, *, klass: str | Non
                                rows.get(c["file"])))
         ratio = ch / ph if (np.isfinite(ph) and ph > 0) else float("nan")
         verdicts.append(dict(keep=bool(keep), ok=_in_band(ratio, r["expected"]), expected=r["expected"],
-                             ratio=ratio, elements=r["elements"], parts=r["parts"], kind=r["kind"]))
+                             ratio=ratio, elements=r["elements"], parts=r["parts"], kind=r["kind"],
+                             heavy=r["heavy"], counts=p["counts"]))
         if not keep:
             dropped.setdefault(key, set()).add(str(c["peak_id"]))
 
@@ -898,24 +934,35 @@ def judge_source(children, parents: dict, lists, rows: dict, *, klass: str | Non
     return dict(fit=fit, tested=tested, children=verdicts, lists=list_ok)
 
 
-def line_facts(verdicts, satellite: str | None) -> dict:
+def _reagent_line(v: dict, satellite: str) -> bool:
+    if v["parts"]:
+        return all(reagent_part(pt, satellite) for pt in v["parts"])
+    return v["elements"] == [ISOTOPE_ELEMENT[satellite]]
+
+
+def line_facts(verdicts, satellite: str | None, own: int = 0) -> dict:
     """The facts one pair's KEPT lines give (`verdicts` = its placed children):
     `iso` an in-band line; `lined` the elements of its in-band lines (C17's
     multiline reads those the neutral supplies); `carbon` a line that adds
     13C; `labels` the lines' labels without 'M0' parts; `reagent_only` every
-    line naming a heavy atom names only the reagent halogen's, and none adds
-    13C (a pure 'M0' line names none)."""
+    line naming a heavy atom names only the reagent halogen's (by its label
+    parts; a pure 'M0' line by what it differs in from the committed line, so
+    the lighter line of a heavy-committed halogen pattern names the halogen
+    and the 'M0' child of a mono-committed parent names nothing), none adds
+    13C, and none is a line only the ion's full halogen count makes
+    (`full_count_line`; `own` = the neutral's atoms of the halogen)."""
     lines = list(verdicts)
     ok = [v for v in lines if v["ok"]]
-    naming = [v for v in lines if v["parts"]]
+    naming = [v for v in lines if v["parts"] or (v.get("kind") == "mono" and v["elements"])]
     carbon = any("C" in v["elements"] for v in lines)
     return dict(
         iso=bool(ok),
         lined=set().union(*(set(v["elements"]) for v in ok)) if ok else set(),
         carbon=carbon,
-        labels={"+".join(v["parts"]) for v in naming},
+        labels={"+".join(v["parts"]) for v in lines if v["parts"]},
         reagent_only=bool(satellite) and bool(naming) and not carbon
-        and all(reagent_part(pt, satellite) for v in naming for pt in v["parts"]),
+        and all(_reagent_line(v, satellite) for v in naming)
+        and not any(full_count_line(v, satellite, own) for v in lines),
     )
 
 
@@ -1121,7 +1168,9 @@ def measure_source(
     for c, verdict in zip(children, judged["children"]):
         if verdict["keep"]:
             kept.setdefault(pair_of[(c["file"], c["parent"])], []).append(verdict)
-    facts_of = {k: line_facts(v, satellite) for k, v in kept.items()}
+    # the neutral's atoms of the reagent halogen: what the adduct supplies is the rest (D4's full-count line)
+    x = ISOTOPE_ELEMENT[satellite] if satellite else None
+    facts_of = {k: line_facts(v, satellite, composition(str(k[0])).get(x, 0) if x else 0) for k, v in kept.items()}
     no_lines = line_facts([], None)
     listed = iter(judged["lists"])
     m0["__list_ok"] = [bool(next(listed)) if entries else False for _f, _p, entries in lists]
@@ -1202,7 +1251,8 @@ def measure_source(
                 ),
                 branch=bool(aset & BARE_ADDUCTS) and bool(aset & CLUSTER_ADDUCTS),
                 # every kept line naming a heavy atom names only the reagent
-                # halogen's, none adds 13C -- and the reagent put it there: the
+                # halogen's, none adds 13C, none is a line only the ion's full
+                # halogen count makes (D4) -- and the reagent put it there: the
                 # ION carries more of the reagent halogen than the neutral
                 # (C11+a; the Br-free hold released by C11+c)
                 reagent_only_iso=(not ion_only)
