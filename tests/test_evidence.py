@@ -500,6 +500,43 @@ def test_rows_match_the_reference_script_row_for_row(expected):
     assert bad.empty, bad[["source", "neutral", "adduct", "level", "evidence_level"]].head(20)
 
 
+#: the reference script's per-row facts in expected_levels.csv (tests/fixtures/levels/README.md)
+FIXTURE_FACTS = ["iso", "chan2", "anchor", "corroborated", "branch", "reagent_only_iso", "known_fam", "tied",
+                 "below", "lowconf", "degeneracy", "saturated", "res_ok", "n_files", "n_axes"]
+
+
+def _cell(v) -> str:
+    """One fact cell as text, alike from the CSV and from the engine (bools, integral floats, NaN)."""
+    if v is None or (isinstance(v, float) and v != v):
+        return ""
+    if isinstance(v, bool) or type(v).__name__ == "bool_":
+        return str(bool(v))
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
+
+
+def test_every_fixture_row_matches_the_reference_script_fact_for_fact(expected):
+    """Not only the level: every fact the reference script recorded for a fixture row (iso, reagent_only_iso,
+    chan2, ... -- C11+c moved several at unchanged levels) is the engine's, on all five sources."""
+    tof, orbi = _pooled("tof"), _pooled("orbi")
+    no3, br = _read("tv_nitrate"), _read("tv_bromide")
+    got = pd.concat([
+        EV.level_pooled(tof, cross=EV.source_neutrals(orbi)).assign(source="tof"),
+        EV.level_pooled(orbi, cross=EV.source_neutrals(tof), iso=_iso("orbi")).assign(source="orbi"),
+        EV.level_pooled(_pooled("ur"), upair=_ur_pairs(), iso=_iso("ur")).assign(source="ur"),
+        EV.level_pooled({"tv_nitrate": no3}, cross=EV.source_neutrals({"tv_bromide": br})).assign(source="tv_nitrate"),
+        EV.level_pooled({"tv_bromide": br}, cross=EV.source_neutrals({"tv_nitrate": no3})).assign(source="tv_bromide")])
+    m = expected.merge(got, left_on=["source", "neutral", "adduct"],
+                       right_on=["source", "neutral_formula", "adduct"], how="left", suffixes=("", "_engine"))
+    assert len(m) == len(expected) and m.evidence_level.notna().all(), "every reference row must be levelled"
+    assert (m.level == m.evidence_level).all()
+    for c in FIXTURE_FACTS:
+        a, b = m[c].map(_cell), m[c + "_engine"].map(_cell)
+        bad = m.loc[a != b, ["source", "neutral", "adduct", c, c + "_engine"]]
+        assert bad.empty, (c, bad.head(10).to_dict("records"))
+
+
 def test_pooled_equals_the_script_on_the_same_files():
     """level_pooled over N files is the reference pooling: all rows of a pair across
     files decide tied/lowconf, any row decides below, chan2 sees every file."""
