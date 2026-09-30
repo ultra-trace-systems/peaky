@@ -742,7 +742,7 @@ def test_an_unlabelled_batch_writes_an_empty_table(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- the real golden set
-ORBI_K = (1707, "0/11/174/9/206/151/0/38/1118")
+ORBI_K = (1707, "0/10/174/9/205/150/0/38/1121")   # C11+c; before it 0/11/174/9/206/151/0/38/1118
 
 
 def test_the_labelled_nitrate_golden_set_with_its_label_twin_table(tmp_path):

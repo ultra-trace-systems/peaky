@@ -42,20 +42,27 @@ ORDER = ["2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
 # their flag in tentative_lead -- the Orbitrap set's HBr [M+^NO3]-, C6H9ClO3 and
 # C6H10Cl2O4 [M-H]- and the uronium set's C7H11ClO2 [M+(CH4N2O)H]+ lift 5b -> 4b.
 # Without the tables the vectors are as before (ORBI_NO_LOCK, UR_NO_LOCK).
+# C11+c (2026-09-30: an isotope child counts only at its label's exact spacing
+# from the COMMITTED parent line and in band under its count-aware expectation;
+# the isotopologues list answers the same question) moved every vector. Before it
+# tv 21/15/107/16/143/15/10/37/1009, tof 6/15/182/15/258/82/95/138/2573, orbi
+# 0/11/217/9/206/139/0/35/1090 (no lock 0/11/217/9/203/139/0/35/1093), ur
+# 4/4/0/331/377/291/0/82/72 (pair table alone 4/4/0/331/376/291/0/82/73, neither
+# 4/4/0/25/682/291/0/82/73); tests/fixtures/levels/README.md lists the rows.
 GOLDEN = {
-    "tv": (1373, "21/15/107/16/143/15/10/37/1009"),
-    "tof": (3364, "6/15/182/15/258/82/95/138/2573"),
-    "orbi": (1707, "0/11/217/9/206/139/0/35/1090"),
+    "tv": (1373, "21/15/107/15/145/15/9/37/1009"),
+    "tof": (3364, "6/15/182/14/267/85/84/135/2576"),
+    "orbi": (1707, "0/10/217/9/205/138/0/35/1093"),
     # the uronium set (C17 + U, 2026-09-27): one source, no corroboration, levelled
     # with its neutral-pair table (rule U, row 9') and its lock table (C11+b);
-    # without either it reads 4/4/0/25/682/291/0/82/73
-    "ur": (1161, "4/4/0/331/377/291/0/82/72"),
+    # without either it reads 4/4/0/17/687/293/0/82/74
+    "ur": (1161, "4/4/0/330/375/293/0/82/73"),
 }
-UR_WITHOUT_PAIR = "4/4/0/25/682/291/0/82/73"
+UR_WITHOUT_PAIR = "4/4/0/17/687/293/0/82/74"
 #: the Orbitrap set without its lock table, the uronium set with its neutral-pair
 #: table alone -- the goldens before C11+b, and the base a leak guard levels at
-ORBI_NO_LOCK = (1707, "0/11/217/9/203/139/0/35/1093")
-UR_NO_LOCK = "4/4/0/331/376/291/0/82/73"
+ORBI_NO_LOCK = (1707, "0/10/217/9/202/138/0/35/1096")
+UR_NO_LOCK = "4/4/0/330/374/293/0/82/74"
 
 LEDGER_COLUMNS = [
     "role", "peak_id", "parent_peak_id", "iso_label", "neutral_formula", "adduct",
@@ -83,9 +90,9 @@ def m0(peak_id, neutral, adduct="[M-H]-", ion=None, mz=200.0, height=1000.0,
     }
 
 
-def child(peak_id, parent, label, height):
-    """One isotope satellite hanging off an M0 row."""
-    row = m0(peak_id, None, adduct=None, height=height)
+def child(peak_id, parent, label, height, mz=200.0):
+    """One isotope satellite hanging off an M0 row (at `mz`)."""
+    row = m0(peak_id, None, adduct=None, height=height, mz=mz)
     row.update(role="iso_child", parent_peak_id=parent, iso_label=label,
                tier="Assigned", degeneracy_density=None)
     return row
@@ -230,10 +237,16 @@ def test_level_4d_reagent_halogen_pins_the_ion_not_the_neutral():
     ok, mut = CASES["4d"]
     assert level_of(ok)[("C8H14O2", "[M+Br]-")] == "4d"
     assert level_of(mut)[("C8H14O2", "[M+Br]-")] == "4b"
-    # the same satellite on a nitrate channel (no reagent halogen) is ordinary isotope evidence
-    nitrate = [m0("p", "C8H14O2", adduct="[M+NO3]-", ion="C8H14O2NO3", mz=204.0),
-               child("c", "p", "81Br+1", 950.0), m0("q", "C9H16O2", adduct="[M+NO3]-", mz=218.0)]
-    assert level_of(nitrate)[("C8H14O2", "[M+NO3]-")] == "4b"
+    # a brominated neutral's own 81Br line on a nitrate channel (no reagent halogen) is ordinary isotope
+    # evidence (C11+c: a Br-free ion makes no 81Br line at all -- its expectation is 0)
+    nitrate = [m0("p", "C8H13BrO2", adduct="[M+NO3]-", ion="C8H13BrNO5-", mz=281.9983),
+               child("c", "p", "81Br", 950.0, mz=281.9983 + 1.9979535),
+               m0("q", "C9H16O2", adduct="[M+NO3]-", mz=218.0)]
+    assert level_of(nitrate)[("C8H13BrO2", "[M+NO3]-")] == "4b"
+    brfree = [m0("p", "C8H14O2", adduct="[M+NO3]-", ion="C8H14NO5-", mz=204.0877),
+              child("c", "p", "81Br", 950.0, mz=204.0877 + 1.9979535),
+              m0("q", "C9H16O2", adduct="[M+NO3]-", mz=218.0)]
+    assert level_of(brfree)[("C8H14O2", "[M+NO3]-")] == "4c"
 
 
 def _bromide_channel(*rows):
@@ -246,27 +259,37 @@ def test_the_reagent_satellite_needs_the_ion_to_carry_the_reagent_halogen():
     """C11+a: `reagent_only_iso` clears only where the ion's reagent halogen is
     all the neutral's own -- on a brominated neutral's [M-H]- the 81Br line is
     the neutral's. The reagent's line (the ion carries more of the halogen than
-    the neutral) keeps the flag, and so does an ion carrying NONE of it: a 1:1
-    +2 Da line on a Br-free ion argues against the formula, held at 4d until
-    C11+c (2026-09-27 decision)."""
+    the neutral) keeps the flag. An ion carrying NONE of it: a 1:1 +2 Da line
+    on a Br-free ion is no line of that ion (C11+c: its count-aware expectation
+    is 0, never in band, so the pair has no isotope axis and no 4d); the flag
+    it still carries is held until the release (2026-09-27 hold)."""
     def facts(rows):
         out = EV.level_pooled({"f": ledger(rows)})
         return {(n, a): (lv, roi) for n, a, lv, roi in
                 zip(out.neutral_formula, out.adduct, out.evidence_level, out.reagent_only_iso)}
-    brfree = _bromide_channel(m0("p", "C8H14O4", ion="C8H13O4-", mz=173.08), child("c", "p", "81Br+2", 950.0))
-    assert facts(brfree)[("C8H14O4", "[M-H]-")] == ("4d", True)
-    own = _bromide_channel(m0("p", "C7H11BrO4", ion="C7H10BrO4-", mz=236.97), child("c", "p", "81Br+2", 950.0))
+    br = 1.9979535
+    brfree = _bromide_channel(m0("p", "C8H14O4", ion="C8H13O4-", mz=173.0819),
+                              child("c", "p", "81Br", 950.0, mz=173.0819 + br))
+    assert facts(brfree)[("C8H14O4", "[M-H]-")] == ("4c", True)
+    own = _bromide_channel(m0("p", "C7H11BrO4", ion="C7H10BrO4-", mz=236.9768),
+                           child("c", "p", "81Br", 950.0, mz=236.9768 + br))
     assert facts(own)[("C7H11BrO4", "[M-H]-")] == ("4b", False)
     # the reagent's own line: a bromide adduct of a Br-free neutral, and of a brominated one (Br2 > Br)
-    adduct = _bromide_channel(m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br-", mz=221.0),
-                              child("c", "p", "81Br+1", 950.0))
+    adduct = _bromide_channel(m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br-", mz=221.0183),
+                              child("c", "p", "81Br", 950.0, mz=221.0183 + br))
     assert facts(adduct)[("C8H14O2", "[M+Br]-")] == ("4d", True)
-    more = _bromide_channel(m0("p", "C7H11BrO4", adduct="[M+Br]-", ion="C7H11Br2O4-", mz=316.9),
-                            child("c", "p", "81Br+1", 950.0))
+    # the Br2 ion is committed on its 79Br81Br line (the scorer's most abundant): its 81Br2 line sits
+    # 1.998 Da above it at 0.486x (C11+c; against the mono line the same child at 0.95x of a 1.9456
+    # expectation falls out of band)
+    more = _bromide_channel(m0("p", "C7H11BrO4", adduct="[M+Br]-", ion="C7H11Br2O4-", mz=316.9030 + br),
+                            child("c", "p", "81Br2", 486.0, mz=316.9030 + 2 * br))
     assert facts(more)[("C7H11BrO4", "[M+Br]-")] == ("4d", True)
+    mono = _bromide_channel(m0("p", "C7H11BrO4", adduct="[M+Br]-", ion="C7H11Br2O4-", mz=316.9030),
+                            child("c", "p", "81Br", 950.0, mz=316.9030 + br))
+    assert facts(mono)[("C7H11BrO4", "[M+Br]-")] == ("4c", True)
     # a ledger row that stored the NEUTRAL as its ion formula: the adduct carries the reagent
-    stored = _bromide_channel(m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2", mz=221.0),
-                              child("c", "p", "81Br+1", 950.0))
+    stored = _bromide_channel(m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2", mz=221.0183),
+                              child("c", "p", "81Br", 950.0, mz=221.0183 + br))
     assert facts(stored)[("C8H14O2", "[M+Br]-")] == ("4d", True)
     assert EV.carries_reagent("C8H14O2", "[M+HBr+Br]-", "C8H14O2", "Br")
     assert not EV.carries_reagent("C7H11BrO4", "[M+NO3]-", "C7H11BrNO7-", "Br")

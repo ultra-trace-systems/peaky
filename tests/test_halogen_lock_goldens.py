@@ -36,7 +36,7 @@ D8 = {"orbi": {("HBr", "[M+^NO3]-"): "spec_gapfill", ("C6H9ClO3", "[M-H]-"): "sp
                ("C6H10Cl2O4", "[M-H]-"): "spec_gapfill"},
       "ur": {("C7H11ClO2", "[M+(CH4N2O)H]+"): "off_budget"}}
 #: the Orbitrap set with rule K's table and its lock table
-ORBI_KH = (1707, "0/11/174/9/209/151/0/38/1115")
+ORBI_KH = (1707, "0/10/174/9/208/150/0/38/1118")   # C11+c; before it 0/11/174/9/209/151/0/38/1115
 
 
 def _key(frame: pd.DataFrame) -> list:

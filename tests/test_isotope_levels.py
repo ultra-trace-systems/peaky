@@ -1,0 +1,392 @@
+"""C11+c on the levels: an isotope child is evidence where it sits at its label's
+exact spacing from the COMMITTED parent line and is as tall as the ion's
+composition makes it (count-aware, relative to that line); the isotopologues
+list answers the same question; a dropped child is dropped for every fact.
+
+Every source here is physically possible: each ion at its exact m/z (its
+committed isotopologue's where that is not the mono line), each child at its
+configuration's exact position plus a stated offset, and a background of CHO
+[M-H]- acids whose '13C' lines scatter as sigma(h)^2 = a^2 + b^2 / h, so the
+source's own fit sets the window. The reference script levels every source
+alike, fact for fact (`_both`).
+
+Run: pytest tests/test_isotope_levels.py -q
+"""
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from peaky.assignment import evidence as EV
+from peaky.chem import chemistry as C
+from peaky.chem import isotopes as I
+from tests.test_evidence import LEDGER_COLUMNS, m0
+
+_spec = importlib.util.spec_from_file_location(
+    "level_ledger_lv", Path(__file__).resolve().parents[1] / "scripts" / "level_ledger.py")
+LL = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(LL)
+
+RES_ORBI = {"coef": 5.0134221e-07, "exponent": 1.5344223, "offset": 0.0}     # R(200) ~ 118 000
+RES_TOF = {"coef": 0.00010564869, "exponent": 0.99632248, "offset": 0.0}      # R(200) ~ 9 650
+SP = I.ISOTOPE_SPACING
+FACTS = ["iso", "multiline", "multiline_elements", "carbon_ev", "reagent_only_iso", "iso_labels"]
+
+
+# --------------------------------------------------------------------------- builders
+def ion_of(neutral: str, adduct: str) -> tuple[dict, str]:
+    counts = {e: v for e, v in EV.ion_composition(neutral, adduct, None).items() if v}
+    return counts, C.format_formula(counts) + adduct[-1]
+
+
+def parent(pid, neutral, adduct="[M-H]-", *, height=1e6, heavy=None, off_ppm=0.0, pcal=0.0, **kw):
+    """An M0 row at the exact m/z of the ion's committed line (`heavy`, {} = mono), `off_ppm` from it
+    (pcal = the calibration's own reading of that offset, ppm_error_cal)."""
+    counts, ion = ion_of(neutral, adduct)
+    true = I.mono_mz(counts, adduct[-1]) + I.heavy_shift(heavy or {})
+    row = m0(pid, neutral, adduct=adduct, ion=ion, mz=true * (1 + off_ppm * 1e-6), height=height, **kw)
+    row["ppm_error_cal"] = pcal
+    row["_true"] = true
+    return row
+
+
+def kid(pid, par, label, height, shift, off_ppm=0.0):
+    """An isotope child `shift` Da above the parent's TRUE position, `off_ppm` (of the parent m/z) off it."""
+    row = m0(pid, None, adduct=None, height=height, mz=par["_true"] + shift + off_ppm * 1e-6 * par["_true"])
+    row.update(role="iso_child", parent_peak_id=par["peak_id"], iso_label=label, tier="Assigned",
+               degeneracy_density=None, ion_formula=None)
+    return row
+
+
+def background(n=400, a=0.2, b=6.0, seed=11, exact=False):
+    """n CHO [M-H]- acids, each with a '13C' line at its exact spacing plus a residual of scatter
+    sigma(h)^2 = a^2 + b^2 / h (a seeded draw, or `exact`: ten residuals per height whose MAD is exact)."""
+    rng = np.random.default_rng(seed)
+    if exact:
+        pat = np.array([-3, -1, -1, -1, 0, 0, 1, 1, 1, 3], float) / I.MAD_TO_SIGMA
+        hs = np.repeat([30, 100, 300, 1000, 3000, 10000, 30000, 100000], 10)
+        hs = np.resize(hs, n)
+        res = np.array([pat[i % 10] * np.sqrt(a * a + b * b / h) for i, h in enumerate(hs)])
+    else:
+        hs = 10 ** rng.uniform(1.5, 5.0, n)
+        res = rng.normal(0.0, np.sqrt(a * a + b * b / hs))
+    rows = []
+    for i in range(n):
+        nc, no = 5 + i % 20, 9 + (i // 20) % 6                   # O9-O14: no test neutral is among them
+        neutral = f"C{nc}H{2 * nc - 4 + 2 * (i // 120)}O{no}"
+        p = parent(f"bg{i}", neutral, height=1e7)
+        rows += [p, kid(f"bgc{i}", p, "13C", float(hs[i]), SP["13C"], float(res[i]))]
+    return rows
+
+
+def frame(rows) -> pd.DataFrame:
+    return pd.DataFrame(rows, columns=LEDGER_COLUMNS)
+
+
+def _both(rows, resolution=RES_ORBI, *, per_file=False, cross=None) -> dict:
+    """{(neutral, adduct): (level, facts)} from the engine -- pooled, or per file -- and the SAME from the
+    reference script (asserted)."""
+    led = frame(rows)
+    if per_file:
+        out = EV.compute_levels(led, resolution=resolution, cross=cross)
+        j = led[led.role == "M0"][["peak_id", "neutral_formula", "adduct"]].merge(out, on="peak_id")
+        per = {(n, a): lv for n, a, lv in zip(j.neutral_formula, j.adduct, j.evidence_level)}
+        pooled = EV.level_pooled({"f": led}, resolution=resolution, cross=cross)
+        facts = {(r.neutral_formula, r.adduct): r for r in pooled.itertuples(index=False)}
+        eng = {k: (per[k], facts[k]) for k in per}
+    else:
+        pooled = EV.level_pooled({"f": led}, resolution=resolution, cross=cross)
+        eng = {(r.neutral_formula, r.adduct): (r.evidence_level, r) for r in pooled.itertuples(index=False)}
+    halogen = LL.detect_reagent_halogen(led[led.role == "M0"])
+    ref = LL.assign_levels(LL.measure_source("f", led.assign(__file="f"), halogen, resolution, per_file),
+                           set(cross or ()))
+    for r in ref.itertuples(index=False):
+        lv, f = eng[(r.neutral, r.adduct)]
+        assert r.level == lv, (r.neutral, r.adduct, r.level, lv)
+        if not per_file:
+            for c in FACTS:
+                assert str(getattr(r, c)) == str(getattr(f, c)), (r.neutral, r.adduct, c)
+    return eng
+
+
+def _level(got, neutral, adduct="[M-H]-"):
+    return got[(neutral, adduct)][0]
+
+
+def _fact(got, neutral, adduct="[M-H]-"):
+    return got[(neutral, adduct)][1]
+
+
+# --------------------------------------------------------------------------- the position (I4)
+def test_a_line_off_its_exact_position_counts_only_where_its_height_allows_the_offset():
+    """1.5 ppm off a C10 line: outside the 1-ppm window of a 1e5-cps line,
+    inside the ~2-ppm window of a 100-cps one (the source's own fit)."""
+    bright = parent("a", "C10H16O4", height=1e6)
+    dim = parent("b", "C11H18O4", height=935.0)
+    rows = background() + [bright, kid("ac", bright, "13C", 1.07e5, SP["13C"], 1.5),
+                           dim, kid("bc", dim, "13C", 110.0, SP["13C"], 1.5)]
+    got = _both(rows)
+    led = frame(rows)
+    t = led[led.iso_label == "13C"].merge(led[led.role == "M0"][["peak_id", "mz"]], left_on="parent_peak_id",
+                                          right_on="peak_id", suffixes=("", "_p"))
+    fit = I.fit_position_sigma((t.mz - t.mz_p - SP["13C"]) / t.mz_p * 1e6, t.height)
+    assert I.position_window_ppm(1.07e5, fit) < 1.5 < I.position_window_ppm(110.0, fit)
+    assert _level(got, "C10H16O4") == "4c" and not _fact(got, "C10H16O4").iso
+    assert _level(got, "C11H18O4") == "4b" and _fact(got, "C11H18O4").iso
+    # at its exact position the bright line counts
+    rows[-3] = kid("ac", bright, "13C", 1.07e5, SP["13C"], 0.0)
+    assert _level(_both(rows), "C10H16O4") == "4b"
+
+
+def test_a_source_with_fewer_than_40_13c_children_is_not_tested():
+    bright = parent("a", "C10H16O4", height=1e6)
+    rows = background(n=38) + [bright, kid("ac", bright, "13C", 1.07e5, SP["13C"], 1.5)]
+    assert _level(_both(rows), "C10H16O4") == "4b"
+
+
+def test_n1_a_brighter_neighbour_pulls_the_line_toward_itself():
+    """C10H16O5 [M]-.'s pattern on R1: its 13C line displaced +3 ppm toward the
+    25x brighter [M-H]- line of the neutral with two more H, 4.47 mDa above."""
+    p = parent("a", "C10H16O5", height=1e5)
+    x = p["_true"] + SP["13C"]
+    nb = parent("n", "C10H18O5", height=2.7e6)
+    nb["mz"] = nb["_true"] = x + 0.00447                            # the neighbour line itself
+    rows = background() + [p, kid("ac", p, "13C", 1.07e4, SP["13C"], 3.0), nb]
+    assert _level(_both(rows), "C10H16O5") == "4b"
+    rows[-1] = dict(nb, height=1.0e4)                               # not 3x the child: no pull
+    assert _level(_both(rows), "C10H16O5") == "4c"
+    nb2 = dict(nb, mz=x - 0.00447)                                   # on the other side: no pull
+    rows[-1] = nb2
+    assert _level(_both(rows), "C10H16O5") == "4c"
+
+
+def test_pcal_a_displaced_parent_line_places_its_line_through_the_calibration():
+    """The parent line sits 3 ppm high and the file's calibration says so
+    (ppm_error_cal +3): its 13C child, at the TRUE parent + 1.00335, counts."""
+    p = parent("a", "C12H20O4", height=1e6, off_ppm=3.0, pcal=3.0)
+    rows = background() + [p, kid("ac", p, "13C", 1.28e5, SP["13C"], 0.0)]
+    assert _level(_both(rows), "C12H20O4") == "4b"
+    rows[-2] = dict(p, ppm_error_cal=0.0)                            # uncalibrated: 3 ppm off, dropped
+    assert _level(_both(rows), "C12H20O4") == "4c"
+
+
+def test_a_tof_line_30_ppm_off_is_dropped_and_5_ppm_off_counts():
+    """On a TOF-like source (a 2.5, b 1.8 ppm: a ~10-ppm window) an 81Br line
+    of a brominated acid 30 ppm off its exact spacing is another peak."""
+    p = parent("a", "C7H11BrO4", height=1e5)
+    rows = background(a=2.5, b=1.8) + [p, kid("ab", p, "81Br", 0.97e5, SP["81Br"], 30.0)]
+    got = _both(rows, RES_TOF)
+    assert _level(got, "C7H11BrO4") == "4c" and _fact(got, "C7H11BrO4").iso_labels == ""
+    rows[-1] = kid("ab", p, "81Br", 0.97e5, SP["81Br"], 5.0)
+    got = _both(rows, RES_TOF)
+    assert _level(got, "C7H11BrO4") == "4b" and _fact(got, "C7H11BrO4").iso_labels == "81Br"
+
+
+def test_the_per_file_tof_guard():
+    """A TOF-class file whose '13C' fit sits on the intercept floor (its scatter
+    collapsed: no height-independent term at all) is not position-tested per
+    file; pooled, or on an Orbitrap-class file, the same line drops."""
+    p = parent("a", "C7H11BrO4", height=1e5)
+    rows = background(a=0.0, b=6.0, exact=True) + [p, kid("ab", p, "81Br", 0.97e5, SP["81Br"], 6.0)]
+    assert _level(_both(rows, RES_TOF, per_file=True), "C7H11BrO4") == "4b"      # guarded: no test
+    assert _level(_both(rows, RES_ORBI, per_file=True), "C7H11BrO4") == "4c"     # Orbitrap-class: tested
+    assert _level(_both(rows, RES_TOF), "C7H11BrO4") == "4c"                     # pooled: no guard
+    assert _level(_both(rows, None, per_file=True), "C7H11BrO4") == "4c"         # class-less: no guard
+
+
+def test_a_dropped_line_is_dropped_for_every_fact():
+    """A bromide cluster of a Br-free neutral: its reagent 81Br line kept and a
+    '13C' line 3 ppm off at 1e5 cps. The dropped 13C line gives no carbon, so
+    the sole satellite is the reagent's: 4d, iso_labels '81Br'."""
+    rows = background()
+    p = parent("a", "C8H14O2", "[M+Br]-", height=1e6)
+    rows += [p, kid("ab", p, "81Br", 0.97e6, SP["81Br"]), kid("ac", p, "13C", 0.86e5, SP["13C"], 3.0),
+             parent("q", "C9H16O2", "[M+Br]-"), parent("r", "C9H18O2", "[M+Br]-")]
+    got = _both(rows)
+    f = _fact(got, "C8H14O2", "[M+Br]-")
+    assert _level(got, "C8H14O2", "[M+Br]-") == "4d"
+    assert f.iso_labels == "81Br" and not f.carbon_ev and f.reagent_only_iso
+    rows[-4] = kid("ac", p, "13C", 0.86e5, SP["13C"], 0.0)                     # placed: carbon pins it
+    got = _both(rows)
+    assert _level(got, "C8H14O2", "[M+Br]-") == "4b" and _fact(got, "C8H14O2", "[M+Br]-").carbon_ev
+
+
+# --------------------------------------------------------------------------- the committed line (I1, D4)
+def test_dibromoacetic_acid_committed_on_79br81br_reads_both_its_neighbour_lines():
+    """R1's C2H2Br2O2 [M-H]-: committed on 79Br81Br; its '81Br2' (scorer) and
+    'M0' (the 79Br2 line) children 1.998 Da either side, 0.486 and 0.514 of it
+    -- a textbook 1:2:1. Before C11+c both read expected 0 (5a); now iso (4b)."""
+    p = parent("a", "C2H2Br2O2", height=1e5, heavy={"81Br": 1})
+    rows = background() + [p, kid("u", p, "81Br2", 0.49e5, SP["81Br"]), kid("d", p, "M0", 0.50e5, -SP["81Br"])]
+    got = _both(rows)
+    f = _fact(got, "C2H2Br2O2")
+    assert _level(got, "C2H2Br2O2") == "4b" and f.iso and f.iso_labels == "81Br2"
+    # read against the mono line (the old reading) the 81Br2 line expects 0.9728^2 and M0 nothing: still in
+    # band for 81Br2 alone -- but put the parent at its mono position and the same lines sit 2 Da off
+    q = parent("a", "C2H2Br2O2", height=1e5)
+    rows2 = background() + [q, kid("u", q, "81Br2", 0.49e5, SP["81Br"]), kid("d", q, "M0", 0.50e5, -SP["81Br"])]
+    assert not _fact(_both(rows2), "C2H2Br2O2").iso
+
+
+def test_count_labels_count_and_a_line_the_ion_cannot_make_never_does():
+    rows = background()
+    br2 = parent("a", "C8H14Br2O4", height=1e5, heavy={"81Br": 1})          # committed on 79Br81Br
+    brfree = parent("b", "C31H34O10", height=1e5)                           # a Br-free [M-H]- with a 1:1 +2 line
+    si7 = parent("c", "C14H42O7Si7", "[M+H]+", height=1e5)
+    s2 = parent("d", "C8H14O4S2", height=1e5)
+    rows += [br2, kid("a2", br2, "2x81Br", 0.47e5, 2 * SP["81Br"] - SP["81Br"]),
+             brfree, kid("b1", brfree, "81Br", 0.95e5, SP["81Br"]),
+             si7, kid("c1", si7, "29Si", 0.36e5, SP["29Si"]), kid("c2", si7, "30Si", 0.23e5, SP["30Si"]),
+             s2, kid("d1", s2, "34S", 0.0435e5, SP["34S"])]
+    got = _both(rows)
+    assert _fact(got, "C8H14Br2O4").iso                     # '2x81Br' parent-relative: the 81Br2 line, 0.486x
+    assert not _fact(got, "C31H34O10").iso                  # an ion with no Br makes no 81Br line
+    assert _fact(got, "C14H42O7Si7", "[M+H]+").iso          # 7 x 0.0508 and 7 x 0.0335: its own lines
+    assert not _fact(got, "C8H14O4S2").iso                  # one 34S line of S2 is 0.0886: 0.0435 is out of band
+
+
+def test_13c2_has_its_own_expectation():
+    p = parent("a", "C22H42O6", "[M+H]+", height=1e5, series_unit="CH2")
+    rows = background() + [p, kid("c2", p, "13C2", 1e5 * 231 * 0.0107 ** 2, 2 * SP["13C"])]
+    assert _fact(_both(rows), "C22H42O6", "[M+H]+").iso
+    rows[-1] = kid("c2", p, "13C2", 1e5 * 22 * 0.0107, 2 * SP["13C"])      # the per-carbon M+1 value: 9x too tall
+    assert not _fact(_both(rows), "C22H42O6", "[M+H]+").iso
+
+
+# --------------------------------------------------------------------------- whole labels (I3, D2)
+def _bromide(*rows):
+    return [*rows, parent("q", "C9H16O2", "[M+Br]-"), parent("r", "C9H18O2", "[M+Br]-")]
+
+
+def test_chloroacetic_acids_m4_line_proves_its_chlorine():
+    """C2H3ClO2 [M+Br]- (Br1 Cl1) on the TOF: its +2 line is the 81Br / 37Cl
+    blend; its '81Br+37Cl' M+4 line (0.9728 x 0.3196) proves the Cl -- with its
+    13C line and its nitrate cluster (chan2) it is 4a, C and Cl."""
+    rows = background(a=2.5, b=1.8)
+    p = parent("a", "C2H3ClO2", "[M+Br]-", height=1e5)
+    n = parent("n", "C2H3ClO2", "[M+NO3]-", height=1e4)
+    rows += _bromide(p, kid("c", p, "13C", 1e5 * 2 * 0.0107, SP["13C"]),
+                     kid("b", p, "81Br", 1.30e5, SP["81Br"]),
+                     kid("m4", p, "81Br+37Cl", 1e5 * 0.9728 * 0.3196, SP["81Br"] + SP["37Cl"]), n)
+    got = _both(rows, RES_TOF)
+    f = _fact(got, "C2H3ClO2", "[M+Br]-")
+    assert f.multiline and f.multiline_elements == "C|Cl"
+    assert _level(got, "C2H3ClO2", "[M+Br]-") == "4a"
+    # without the M+4 line the Cl rests on nothing: 4b
+    got = _both([r for r in rows if r["peak_id"] != "m4"], RES_TOF)
+    assert _level(got, "C2H3ClO2", "[M+Br]-") == "4b"
+
+
+def test_an_m3_81br_13c_line_is_a_carbon_line():
+    """C7H6N2O6S [M+Br]-: its reagent 81Br line and an '81Br+13C' M+3 line --
+    the 13C line of its 81Br isotopologue. Carbon pins the neutral: 4b, not 4d."""
+    p = parent("a", "C7H6N2O6S", "[M+Br]-", height=1e5)
+    rows = background() + _bromide(p, kid("b", p, "81Br", 0.97e5, SP["81Br"]),
+                                   kid("m3", p, "81Br+13C", 1e5 * 0.9728 * 7 * 0.0107, SP["81Br"] + SP["13C"]))
+    got = _both(rows)
+    f = _fact(got, "C7H6N2O6S", "[M+Br]-")
+    assert f.carbon_ev and not f.reagent_only_iso and _level(got, "C7H6N2O6S", "[M+Br]-") == "4b"
+    assert f.iso_labels == "81Br|81Br+13C"
+
+
+def test_a_scorer_13c_81br_label_on_a_heavy_parent_credits_carbon_only():
+    """A Br3 ion committed on 79Br2 81Br: the scorer's '13C+81Br' (mono-counted)
+    is the parent's own 13C line -- it adds carbon, not bromine."""
+    p = parent("a", "C19H27BrN2O", "[M+HBr+Br]-", height=1e5, heavy={"81Br": 1})
+    rows = background() + _bromide(p, kid("c", p, "13C+81Br", 1e5 * 19 * 0.0107, SP["13C"]))
+    f = _fact(_both(rows), "C19H27BrN2O", "[M+HBr+Br]-")
+    assert f.iso and f.carbon_ev and f.iso_labels == "13C+81Br" and not f.reagent_only_iso
+
+
+def test_a_generic_m_plus_n_line_is_exempt_and_credits_nothing():
+    p = parent("a", "C10H16O4", height=1e5)
+    rows = background() + [p, kid("m", p, "M+2", 1e5 * 0.0056, 2.0055, 25.0)]
+    f = _fact(_both(rows), "C10H16O4")
+    assert f.iso_labels == "M+2" and not f.carbon_ev and f.multiline_elements == ""
+
+
+# --------------------------------------------------------------------------- the list (D5)
+def test_the_isotopologues_list_answers_the_same_question():
+    import json
+    rows = background()
+    p = parent("a", "C10H16O4", height=1e6)
+    other = parent("o", "C8H10O7", height=1.07e5)                           # an M0 row at a's 13C position
+    other["mz"] = p["_true"] + SP["13C"]
+    far = parent("f", "C9H12O6", height=1.07e5)
+    far["mz"] = p["_true"] + SP["13C"] + 3e-6 * p["_true"]                 # 3 ppm off that position
+    rows += [p, other, far]
+    for peak, want in (("o", "4b"), ("f", "4c"), ("nowhere", "4c")):
+        p["isotopologues"] = json.dumps([{"label": "13C", "score": None, "peak_id": peak}])
+        assert _level(_both(rows), "C10H16O4") == want, peak
+    # a list naming a line out of band (2x the expectation of 10 carbons ... 5x) does not count
+    other["height"] = 5.35e5
+    p["isotopologues"] = json.dumps([{"label": "13C", "score": 0.9, "peak_id": "o"}])
+    assert _level(_both(rows), "C10H16O4") == "4c"
+
+
+def test_the_committed_lines_tolerance_follows_the_instrument_class():
+    """Dibromoacetic acid's 79Br81Br parent 8 ppm off its exact position: within
+    the TOF-class / class-less 20 ppm it is still read as committed on that line
+    (its 81Br2 / 79Br2 neighbours count), beyond the Orbitrap-class 5 ppm it is
+    read as the mono line and its neighbours sit 2 Da off every reading."""
+    def rows_at(res):
+        p = parent("a", "C2H2Br2O2", height=1e5, heavy={"81Br": 1}, off_ppm=8.0, pcal=8.0)
+        return background(a=2.5, b=1.8) + [p, kid("u", p, "81Br2", 0.49e5, SP["81Br"]),
+                                           kid("d", p, "M0", 0.50e5, -SP["81Br"])]
+    assert _fact(_both(rows_at(RES_TOF), RES_TOF), "C2H2Br2O2").iso
+    assert _fact(_both(rows_at(None), None), "C2H2Br2O2").iso
+    assert not _fact(_both(rows_at(RES_ORBI), RES_ORBI), "C2H2Br2O2").iso
+
+
+def test_a_two_81br_line_is_the_reagents_in_either_spelling():
+    """A Br3 [M+HBr+Br]- ion of a brominated neutral committed on 79Br2 81Br: its
+    81Br2 line (79Br 81Br2, 1.998 Da up) needs two Br, which the reagent
+    supplies -- named '81Br2' (the scorer) or '2x81Br' (peaky), it is a
+    reagent-halogen line either way (SPEC_DRAFT I3: '81Br', '81Br2', '2x81Br')."""
+    for label in ("81Br2", "2x81Br"):
+        p = parent("a", "C12H9BrN2", "[M+HBr+Br]-", height=1e5, heavy={"81Br": 1})
+        rows = background() + _bromide(p, kid("u", p, label, 0.97e5, SP["81Br"]))
+        got = _both(rows)
+        f = _fact(got, "C12H9BrN2", "[M+HBr+Br]-")
+        assert f.iso and f.reagent_only_iso and _level(got, "C12H9BrN2", "[M+HBr+Br]-") == "4d", label
+
+
+def test_a_scorer_label_on_a_heavy_parent_credits_only_what_the_line_adds():
+    """A Br2 neutral's [M-H]- committed on 79Br81Br: the scorer's '13C+81Br' is
+    the parent's own 13C line (it adds a 13C, not an 81Br). It credits carbon
+    alone -- read as crediting Br too it would make a second element of the
+    neutral's (multiline) and, with a series tie, a 4a."""
+    p = parent("a", "C8H14Br2O4", height=1e5, heavy={"81Br": 1}, series_unit="CH2")
+    rows = background() + [p, kid("c", p, "13C+81Br", 1e5 * 8 * 0.0107, SP["13C"])]
+    got = _both(rows)
+    f = _fact(got, "C8H14Br2O4")
+    assert f.iso and f.multiline_elements == "C" and not f.multiline and _level(got, "C8H14Br2O4") == "4b"
+
+
+def test_carbon_is_a_placed_13c_line_whatever_its_height():
+    """D10: carbon_ev is the presence of a placed line that adds 13C, not an
+    in-band one (the TOF's 13C lines run tall as a class: blends). A bromide
+    cluster with its reagent 81Br line and a placed 13C line 3x its
+    expectation: carbon pins the neutral (4b), no reagent-only 4d."""
+    p = parent("a", "C8H14O2", "[M+Br]-", height=1e6)
+    rows = background() + _bromide(p, kid("b", p, "81Br", 0.97e6, SP["81Br"]),
+                                   kid("c", p, "13C", 3 * 8 * 0.0107 * 1e6, SP["13C"]))
+    got = _both(rows)
+    f = _fact(got, "C8H14O2", "[M+Br]-")
+    assert f.carbon_ev and not f.reagent_only_iso and _level(got, "C8H14O2", "[M+Br]-") == "4b"
+
+
+def test_an_m0_child_of_a_mono_parent_is_no_line_of_the_ion():
+    """D4: an 'M0' child 2 Da BELOW a bromide cluster committed on its MONO line
+    (R3: fifteen such lines) names the mono line of an ion whose mono line is the
+    parent itself -- it expects nothing. In a source too thin to be
+    position-tested it still never makes the isotope axis."""
+    p = parent("a", "C9H16O3", "[M+Br]-", height=1e5)
+    rows = background(n=20) + _bromide(p, kid("m", p, "M0", 0.6e5, -SP["81Br"]))
+    got = _both(rows)
+    assert not _fact(got, "C9H16O3", "[M+Br]-").iso and _level(got, "C9H16O3", "[M+Br]-") == "4c"

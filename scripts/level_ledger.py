@@ -204,6 +204,14 @@ def as_list(value) -> list:
     return list(parsed) if isinstance(parsed, (list, tuple)) else []
 
 
+def to_float(value) -> float:
+    """A cell as a float; NaN when it is none."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
 def count_element(formula, element: str) -> int:
     """How many of `element` a formula carries; 0 when it carries none."""
     if not isinstance(formula, str):
@@ -290,19 +298,16 @@ def not_the_neutrals_line(neutral, adduct, ion, halogen) -> bool:
     return carries_reagent(neutral, adduct, ion, halogen) or ion_composition(neutral, adduct, ion).get(halogen, 0) == 0
 
 
-def expected_ratio(tag: str, ion_formula) -> float | None:
-    """Natural height ratio of an isotope child to its M0, None when unknown."""
-    if tag.startswith("13C"):
-        carbons = count_element(ion_formula, "C")
-        return C13_PER_CARBON * carbons if carbons else None
-    if tag in PER_ATOM_ABUNDANCE:
-        element, per_atom = PER_ATOM_ABUNDANCE[tag]
-        counts = composition(ion_formula, fold=False)
-        if element == "O" and any(counts.get(e, 0) for e in M2_OWNERS):
-            return None
-        atoms = counts.get(element, 0)
-        return per_atom * atoms if atoms else None
-    return ISOTOPE_ABUNDANCE.get(tag)
+def expected_ratio(tag: str, ion_formula, committed: dict | None = None) -> float:
+    """The natural height ratio of an isotope line to its parent (C11+c: the
+    count-aware expectation relative to the COMMITTED parent line, `committed`
+    its heavy configuration, {} / None = the mono line); 0.0 when there is none
+    -- the engine's evidence.expected_ratio. The levels read every child through
+    `resolve_child` (below); this is its parent-relative reading."""
+    counts = {e: v for e, v in composition(ion_formula, labelled=True).items() if v}
+    shift = resolve_child(tag, counts, {}, 0.0)["shift"]
+    r = resolve_child(tag, counts, dict(committed or {}), shift if np.isfinite(shift) else 0.0)
+    return float(r["expected"])
 
 
 def neutral_elements(neutral, ion) -> set:
@@ -1068,35 +1073,62 @@ def measure_source(
     m0["ion_only"] = is_ion_only(m0).to_numpy()
     regular = m0[~m0["ion_only"]]
 
-    # parent lookup: the M0 row an isotope child hangs off, within its own file
-    parents = {}
-    for _, row in m0.iterrows():
-        parents.setdefault((row["__file"], row.get("peak_id")), row)
-
-    labels: dict[tuple, set] = {}
-    ratio_ok: dict[tuple, bool] = {}
-    in_band: dict[tuple, set] = {}   # the elements with an in-band line
-    for _, child in iso.iterrows():
-        parent = parents.get((child["__file"], child.get("parent_peak_id")))
-        if parent is None:
+    # the isotope children and the isotopologues lists, judged against their
+    # committed parents (C11+c; `judge_source` above -- the engine's
+    # evidence._judge_children): a child counts where it sits at its label's
+    # exact spacing from the committed line (the source's self-fitted window,
+    # pcal, N1; 'M+n' exempt), in band under its count-aware expectation; a
+    # dropped child is dropped for every fact
+    satellite = HALOGEN_SATELLITE.get(halogen) if halogen else None
+    for name in ("peak_id", "ion_formula", "mz", "height", "ppm_error_cal", "isotopologues"):
+        if name not in m0.columns:
+            m0[name] = np.nan
+    klass, fwhm = instrument(resolution)
+    counts_of: dict = {}
+    parents: dict = {}
+    pair_of: dict = {}
+    for f, pid, n, a, ion, mz, h, pc in zip(m0["__file"].astype(str), m0["peak_id"].astype(str),
+                                            m0["neutral_formula"], m0["adduct"], m0["ion_formula"], m0["mz"],
+                                            m0["height"], m0["ppm_error_cal"]):
+        key = (f, pid)
+        if key in parents:
             continue
-        key = (parent["neutral_formula"], parent["adduct"])
-        tag = str(child.get("iso_label")).split("+")[0].strip()
-        labels.setdefault(key, set()).add(tag)
-        height = parent.get("height")
-        height = float(height) if pd.notna(height) and height > 0 else np.nan
-        if height != height or not pd.notna(child.get("height")):
+        ck = (n, a, ion if isinstance(ion, str) else "")
+        if ck not in counts_of:
+            counts_of[ck] = ({e: v for e, v in ion_counts(n, a, ion).items() if v}, ion_sign(ion, a))
+        counts, sign = counts_of[ck]
+        parents[key] = dict(mz=to_float(mz), height=to_float(h), pcal=to_float(pc), counts=counts, sign=sign)
+        pair_of[key] = (n, a)
+    children = []
+    for f, pid, par, lab, mz, h in zip(iso["__file"].astype(str), column(iso, "peak_id").astype(str),
+                                       column(iso, "parent_peak_id"), column(iso, "iso_label"), column(iso, "mz"),
+                                       column(iso, "height")):
+        if not isinstance(par, str) and pd.isna(par):
             continue
-        ratio = float(child["height"]) / height
-        if not np.isfinite(ratio):
+        key = (f, str(par))
+        if key not in parents:
             continue
-        expected = expected_ratio(tag, parent.get("ion_formula"))
-        if expected and RATIO_LO <= ratio / expected <= RATIO_HI:
-            ratio_ok[key] = True
-            match = TAG_ELEMENT.match(tag)
-            if match:
-                element = "^N" if tag.startswith("14N") else match.group(1)
-                in_band.setdefault(key, set()).add(element)
+        lab = str(lab).strip() if pd.notna(lab) else ""
+        if not lab.split("+")[0].strip():
+            continue
+        children.append(dict(file=f, peak_id=pid, parent=str(par), label=lab, mz=to_float(mz), height=to_float(h)))
+    lists = [(f, pid, as_list(v)) for f, pid, v in zip(m0["__file"].astype(str), m0["peak_id"].astype(str),
+                                                        m0["isotopologues"])]
+    readable = ledger[role.isin(["M0", "iso_child"])]
+    rows_by_file = {str(f): (pd.to_numeric(column(g, "mz"), errors="coerce").to_numpy(float),
+                             pd.to_numeric(column(g, "height"), errors="coerce").to_numpy(float),
+                             column(g, "peak_id").astype(str).to_numpy(object))
+                    for f, g in readable.groupby(readable["__file"].astype(str), sort=False)}
+    judged = judge_source(children, parents, [x for x in lists if x[2]], rows_by_file, klass=klass, fwhm=fwhm,
+                          guard=per_file)
+    kept: dict = {}
+    for c, verdict in zip(children, judged["children"]):
+        if verdict["keep"]:
+            kept.setdefault(pair_of[(c["file"], c["parent"])], []).append(verdict)
+    facts_of = {k: line_facts(v, satellite) for k, v in kept.items()}
+    no_lines = line_facts([], None)
+    listed = iter(judged["lists"])
+    m0["__list_ok"] = [bool(next(listed)) if entries else False for _f, _p, entries in lists]
 
     # per-neutral facts, over the source's REGULAR M0 rows (an ion-only row is
     # its parent's composition on another adduct, not a second channel for it)
@@ -1104,7 +1136,6 @@ def measure_source(
     adduct_sets = regular.groupby("neutral_formula")["adduct"].agg(
         lambda s: set(s.dropna().astype(str))
     )
-    satellite = HALOGEN_SATELLITE.get(halogen) if halogen else None
 
     for name in (
         "method",
@@ -1135,7 +1166,7 @@ def measure_source(
     rows = []
     for (neutral, adduct), group in m0.groupby(["neutral_formula", "adduct"]):
         key = (neutral, adduct)
-        tags = labels.get(key, set()) - {"M0"}
+        lines = facts_of.get(key) or no_lines
         methods = group["method"].astype(str)
         known = methods[methods.str.startswith("known:")]
         degeneracy = pd.to_numeric(group["degeneracy_density"], errors="coerce")
@@ -1144,13 +1175,13 @@ def measure_source(
             for v in group["resolvability"].dropna()
             if str(v).strip() and str(v).strip().lower() != "nan"
         }
-        carbon_ev = any(t.startswith("13C") for t in tags)
+        carbon_ev = lines["carbon"]
         ion_only = bool(group["ion_only"].any())
         below_row = group["below_assignability"].map(truthy).astype(bool)
         lead_row = group["tentative_lead"].map(truthy).astype(bool)
         clean_row = ~group["ion_only"].astype(bool) & ~below_row & ~lead_row
         lead_codes = [lead_setters(v) for v in group.loc[lead_row, "lead_by"]]
-        own = in_band.get(key, set()) & neutral_elements(
+        own = lines["lined"] & neutral_elements(
             neutral, str(group["ion_formula"].iloc[0]))
         aset = set() if ion_only else adduct_sets.get(neutral, set())
         rows.append(
@@ -1163,8 +1194,8 @@ def measure_source(
                 mz=float(pd.to_numeric(group["mz"], errors="coerce").median()),
                 tier="Assigned" if (group["tier"] == "Assigned").any() else "Candidate",
                 known_fam=known.iloc[0][6:] if len(known) else "",
-                iso=bool(ratio_ok.get(key, False))
-                or bool(group["isotopologues"].map(lambda v: len(as_list(v)) > 0).any()),
+                # an in-band kept line, or a list entry that answers the same question
+                iso=lines["iso"] or bool(group["__list_ok"].any()),
                 multiline=len(own) >= 2,
                 multiline_elements="|".join(sorted(own)),
                 carbon_ev=carbon_ev,
@@ -1174,15 +1205,14 @@ def measure_source(
                     or group["series_unit"].notna().any()
                 ),
                 branch=bool(aset & BARE_ADDUCTS) and bool(aset & CLUSTER_ADDUCTS),
-                # ... and not the neutral's own: the ION carries more of the
-                # reagent halogen than the neutral, or none (C11+a + the hold)
+                # every kept line naming a heavy atom names only the reagent
+                # halogen's, none adds 13C -- and not the neutral's own: the ION
+                # carries more of the reagent halogen than the neutral, or none
+                # (C11+a + the hold)
                 reagent_only_iso=(not ion_only)
-                and bool(satellite)
-                and bool(tags)
-                and not carbon_ev
-                and all(t.startswith(satellite) for t in tags)
+                and lines["reagent_only"]
                 and not_the_neutrals_line(neutral, adduct, group["ion_formula"].iloc[0], halogen),
-                iso_labels="|".join(sorted(tags)),
+                iso_labels="|".join(sorted(lines["labels"])),
                 tied=bool(group["tied"].map(truthy).all()),
                 below=bool(below_row.any()),
                 lead=bool(lead_row.any()),
