@@ -29,9 +29,13 @@ from peaky.assignment import solvent_clusters
 from peaky.assignment import tiers
 from peaky.batch import timeseries
 
-__version__ = "0.6.0"  # every candidate scored with the v2 fit at the sample's
-#                        own mass width, so no run of this version is comparable
-#                        with a 0.5.x one; it is what a published run stamps.
+__version__ = "0.6.1"  # the v2 fit (0.6.0) with main's solvent_clusters stage
+#                        (0.5.2) under it: a run stamped 0.6.0 was scored before
+#                        that stage existed, so the two are told apart.
+#                        0.6.0: every candidate scored with the v2 fit at the
+#                        sample's own mass width, so no run of this version is
+#                        comparable with a 0.5.x one; it is what a published run
+#                        stamps.
 #                        0.5.2: + solvent_clusters stage (source-solvent cluster
 #                        ladders, pass-0 slot)
 #                        0.5.1: a batch defers the hydrocarbon-on-N-cluster
