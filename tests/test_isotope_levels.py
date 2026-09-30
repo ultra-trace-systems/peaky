@@ -390,3 +390,25 @@ def test_an_m0_child_of_a_mono_parent_is_no_line_of_the_ion():
     rows = background(n=20) + _bromide(p, kid("m", p, "M0", 0.6e5, -SP["81Br"]))
     got = _both(rows)
     assert not _fact(got, "C9H16O3", "[M+Br]-").iso and _level(got, "C9H16O3", "[M+Br]-") == "4c"
+
+
+# --------------------------------------------------------------------------- the hold released (I8, D1)
+def test_a_br_free_ion_with_a_one_to_one_plus_2_line_takes_no_reagent_flag():
+    """D1: R3's C31H34O10 [M-H]- on the bromide channel -- a 0.95:1 line 1.998 Da
+    up that the batch stamps as the reagent's water cluster. No Br on the ion:
+    the line is none of its lines (expected 0), so no isotope axis, and it is not
+    the reagent's line on THIS ion either (the hold is released). Mass-degenerate
+    with no axis: 5b, per file and pooled, no reagent_only_iso."""
+    p = parent("a", "C31H34O10", height=1e4, degeneracy=3.0)
+    rows = background() + _bromide(p, kid("b", p, "81Br", 0.95e4, SP["81Br"]))
+    for per_file in (False, True):
+        got = _both(rows, per_file=per_file)
+        assert _level(got, "C31H34O10") == "5b"
+    f = _fact(_both(rows), "C31H34O10")
+    assert not f.iso and not f.reagent_only_iso and f.iso_labels == "81Br"
+    assert "reagent_only_iso" not in f.evidence_axes and f.level_reason.startswith("5b: mass-degenerate")
+    # its bromide cluster (the reagent put the Br there) keeps the flag
+    q = parent("c", "C9H14O3", "[M+Br]-", height=1e4)
+    rows += [q, kid("qb", q, "81Br", 0.97e4, SP["81Br"])]
+    f = _fact(_both(rows), "C9H14O3", "[M+Br]-")
+    assert f.reagent_only_iso and _level(_both(rows), "C9H14O3", "[M+Br]-") == "4d"

@@ -283,19 +283,11 @@ def ion_counts(neutral, adduct, ion) -> dict:
 
 def carries_reagent(neutral, adduct, ion, halogen) -> bool:
     """The ION carries more of the reagent halogen than the neutral: only then
-    can a line of it be the reagent's."""
+    can a line of it be the reagent's (the reagent-only flag reads this alone
+    since C11+c released the Br-free hold)."""
     if not halogen:
         return False
     return ion_composition(neutral, adduct, ion).get(halogen, 0) > composition(neutral).get(halogen, 0)
-
-
-def not_the_neutrals_line(neutral, adduct, ion, halogen) -> bool:
-    """A line of the reagent halogen tells nothing about the neutral: the reagent
-    put the halogen there, or the ion carries none of it (no isotope line of this
-    formula at all; held at the old flag until C11+c, 2026-09-27 decision)."""
-    if not halogen:
-        return False
-    return carries_reagent(neutral, adduct, ion, halogen) or ion_composition(neutral, adduct, ion).get(halogen, 0) == 0
 
 
 def expected_ratio(tag: str, ion_formula, committed: dict | None = None) -> float:
@@ -1206,12 +1198,12 @@ def measure_source(
                 ),
                 branch=bool(aset & BARE_ADDUCTS) and bool(aset & CLUSTER_ADDUCTS),
                 # every kept line naming a heavy atom names only the reagent
-                # halogen's, none adds 13C -- and not the neutral's own: the ION
-                # carries more of the reagent halogen than the neutral, or none
-                # (C11+a + the hold)
+                # halogen's, none adds 13C -- and the reagent put it there: the
+                # ION carries more of the reagent halogen than the neutral
+                # (C11+a; the Br-free hold released by C11+c)
                 reagent_only_iso=(not ion_only)
                 and lines["reagent_only"]
-                and not_the_neutrals_line(neutral, adduct, group["ion_formula"].iloc[0], halogen),
+                and carries_reagent(neutral, adduct, group["ion_formula"].iloc[0], halogen),
                 iso_labels="|".join(sorted(lines["labels"])),
                 tied=bool(group["tied"].map(truthy).all()),
                 below=bool(below_row.any()),

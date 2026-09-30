@@ -3293,7 +3293,7 @@ tof,C22H20N2O5Si,[M-H]-,5b,0,False,False,False,False,False,False,,False,False,Tr
 tof,C22H20N2O7,[M-H]-,5a,0,False,False,False,False,False,False,,False,False,False,,False,True,1
 tof,C22H20O15,[M+Br]-,5b,0,False,False,False,False,False,False,,False,True,True,309.0,True,True,1
 tof,C22H20O21,[M+Br]-,5b,2,True,True,False,False,True,False,,False,True,False,196.5,True,True,22
-tof,C22H20O21,[M-H]-,5b,1,False,True,False,False,True,True,,False,True,False,189.0,True,True,1
+tof,C22H20O21,[M-H]-,5b,1,False,True,False,False,True,False,,False,True,False,189.0,True,True,1
 tof,C22H21BrO21,[M-H]-,5b,1,False,False,True,False,False,False,,False,True,True,242.0,True,True,1
 tof,C22H21N3O17,[M+Br]-,5b,1,True,False,False,False,False,True,,False,True,False,157.0,True,True,1
 tof,C22H21NO18,[M+Br]-,5b,0,False,False,False,False,False,False,,False,True,False,238.0,True,True,4
@@ -3887,8 +3887,8 @@ tof,C34H34O3S,[M-H]-,5b,0,False,False,False,False,False,False,,False,False,False
 tof,C34H51NO2,[M+Br]-,5b,0,False,False,False,False,False,False,,False,False,True,0.0,False,True,1
 tof,C34H61NO5S,[M+Br]-,5b,0,False,False,False,False,False,False,,False,False,True,0.0,False,True,1
 tof,C34H66O16S2,[M+Br]-,5b,0,False,False,False,False,False,False,,False,False,True,0.0,False,True,1
-tof,C35H32O4S,[M-H]-,5b,0,False,False,False,False,False,True,,False,False,False,12.0,True,True,1
-tof,C35H36O6S,[M-H]-,5b,0,False,False,False,False,False,True,,False,False,False,3.0,False,True,1
+tof,C35H32O4S,[M-H]-,5b,0,False,False,False,False,False,False,,False,False,False,12.0,True,True,1
+tof,C35H36O6S,[M-H]-,5b,0,False,False,False,False,False,False,,False,False,False,3.0,False,True,1
 tof,C35H40,[M+Br]-,5b,2,True,False,True,False,False,False,,False,True,False,2.0,False,True,1
 tof,C35H42O,[M+Br]-,4b,2,True,False,True,False,False,False,,False,False,False,0.0,False,True,1
 tof,C35H44O2,[M+Br]-,4b,2,True,False,True,False,False,False,,False,False,False,0.0,False,True,1

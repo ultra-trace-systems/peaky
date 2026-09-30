@@ -708,8 +708,8 @@ def test_ion_composition_prefers_a_signed_stored_ion_and_falls_back_to_it():
         assert f("C8H14O2", "", "C8H14O2Br") == {"C": 8, "H": 14, "O": 2, "Br": 1}
         assert f("C8H14O4", "[M-H]-", float("nan")) == {"C": 8, "H": 13, "O": 4}
     assert IC.ion_counts("C8H12O4", "[M+^NO3]-", "C8H12^NO7-") == C.parse_formula("C8H12^NO7-")
-    assert not LL.not_the_neutrals_line("C8H14O4", "[M-H]-", "C8H13O4-", None)
-    assert not LL.not_the_neutrals_line("C8H14O4", "[M-H]-", "C8H13O4-", "")
+    assert not LL.carries_reagent("C8H14O2", "[M+Br]-", "C8H14O2Br-", None)
+    assert not LL.carries_reagent("C8H14O2", "[M+Br]-", "C8H14O2Br-", "")
 
 
 def test_the_veto_is_never_an_axis_nor_cross():

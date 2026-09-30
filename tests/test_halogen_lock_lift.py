@@ -270,18 +270,22 @@ def test_every_lead_row_must_be_liftable_and_a_ledger_without_the_column_is_cons
 
 
 def test_a_lifted_pair_takes_no_reagent_only_flag():
-    """A Cl acid's [M-H]- on a bromide channel whose only per-file satellite is
-    tagged 81Br (the TOF cannot tell it from the 37Cl line): without the lift
-    the reagent-only flag would put it at 4d; the lock is a line of its own."""
-    rows = [_r("p", lead=True), _child("c", "p", "81Br+2", 320.0),
-            _r("b1", "C9H14O4", adduct="[M+Br]-"), _r("b2", "C8H12O4", adduct="[M+Br]-"),
-            _r("b3", "C10H16O4", adduct="[M+Br]-")]
+    """A Cl acid's bromide cluster whose only per-file satellite is the
+    reagent's 81Br line: without the lift the reagent-only flag would put it at
+    4d; the lock is a line of its own. (C11+c: its [M-H]-, which carries no Br,
+    never takes the flag -- the Br-free hold is released.)"""
+    br = "[M+Br]-"
+    rows = [_r("p", CL1, br, lead=True), _child("c", "p", "81Br", 950.0),
+            _r("b1", "C9H14O4", adduct=br), _r("b2", "C8H12O4", adduct=br),
+            _r("b3", "C10H16O4", adduct=br)]
     files = {"f1": _f(*rows)}
-    base = _one(files)
+    base = _one(files, key=(CL1, br))
     assert bool(base["reagent_only_iso"]) and base["reagent_halogen"] == "Br"
-    r = _one(files, iso=lock((CL1, H)))
+    r = _one(files, key=(CL1, br), iso=lock((CL1, br)))
     assert not bool(r["reagent_only_iso"]) and r["evidence_level"] == "4b" and "reagent_only_iso" not in \
         r["evidence_axes"]
+    bare = {"f1": _f(_r("p", lead=True), _child("c", "p", "81Br", 320.0), *rows[2:])}
+    assert not bool(_one(bare)["reagent_only_iso"])
 
 
 # =========================================================================== never per file, never a leak
@@ -517,12 +521,14 @@ def test_a_measured_frame_without_has_regular_reads_the_pair_flag():
 
 
 def test_the_reference_script_clears_the_reagent_only_flag_like_the_engine(tmp_path):
-    frame = _f(_r("p", lead=True), _child("c", "p", "81Br+2", 320.0),
-               _r("b1", "C9H14O4", adduct="[M+Br]-"), _r("b2", "C8H12O4", adduct="[M+Br]-"),
-               _r("b3", "C10H16O4", adduct="[M+Br]-"))
-    m = _lockstep(tmp_path, "BR", frame, _h_table([_h_row(CL1, H)]))
-    r = m.loc[(CL1, H)]
+    br = "[M+Br]-"
+    frame = _f(_r("p", CL1, br, lead=True), _child("c", "p", "81Br", 950.0),
+               _r("b1", "C9H14O4", adduct=br), _r("b2", "C8H12O4", adduct=br), _r("b3", "C10H16O4", adduct=br))
+    m = _lockstep(tmp_path, "BR", frame, _h_table([_h_row(CL1, br)]))
+    r = m.loc[(CL1, br)]
     assert bool(r["lead_lift"]) and not bool(r["reagent_only_iso"]) and r["evidence_level"] == "4b"
+    m = _lockstep(tmp_path / "x", "BR", frame, _h_table([_h_row("C9H14O4", br)]))
+    assert bool(m.loc[(CL1, br), "reagent_only_iso"]) and m.loc[(CL1, br), "evidence_level"] == "5b"
 
 
 def test_the_reference_script_without_lead_by_is_conservative_like_the_engine(tmp_path):

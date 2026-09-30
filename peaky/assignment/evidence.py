@@ -344,24 +344,14 @@ def ion_composition(neutral, adduct, ion) -> dict:
 def carries_reagent(neutral, adduct, ion, halogen) -> bool:
     """The ION carries more of the reagent halogen than the neutral does: only
     then can a line of it be the reagent's (an 81Br line of a Br-free ion, or of
-    a brominated neutral's nitrate cluster, is not the bromide reagent's)."""
+    a brominated neutral's nitrate cluster, is not the bromide reagent's). The
+    reagent-only flag reads this alone since C11+c released the 2026-09-27 hold
+    on Br-free ions: under the count-aware band a Br-free ion's 81Br line is no
+    line of it (expected 0, never in band), so its own pattern refutes the
+    reading instead of the flag holding it at 4d."""
     if not halogen:
         return False
     return ion_composition(neutral, adduct, ion).get(halogen, 0) > C.parse_formula(str(neutral or "")).get(halogen, 0)
-
-
-def not_the_neutrals_line(neutral, adduct, ion, halogen) -> bool:
-    """A line of the reagent halogen tells nothing about the neutral: the reagent
-    put the halogen there (`carries_reagent`), or the ion carries none of it --
-    then the line is no isotope line of this formula at all (a 1:1 +2 Da line on
-    a Br-free ion argues against the formula; the batch's HIGH check refutes the
-    reading, and C11+c's count-aware band will judge it per file). Only an ion
-    whose halogen is all the neutral's own reads the line as the neutral's
-    (a brominated neutral's [M-H]- or [M+NO3]-). The Br-free case holds the flag
-    it had before C11+a (2026-09-27 decision)."""
-    if not halogen:
-        return False
-    return carries_reagent(neutral, adduct, ion, halogen) or ion_composition(neutral, adduct, ion).get(halogen, 0) == 0
 
 
 def is_ion_only(frame: pd.DataFrame) -> pd.Series:
@@ -641,12 +631,11 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None,
             branch=bool(aset & BARE_ADDUCTS) and bool(aset & CLUSTER_ADDUCTS),
             # the sole satellite is the reagent halogen's -- every kept line
             # naming a heavy atom names only its heavy isotope, none adds 13C --
-            # and it is not the neutral's own: the ION carries more of that
-            # halogen than the neutral, or none of it (C11+a; the Br-free case
-            # is held, see not_the_neutrals_line); a lifted pair's lock is a
-            # line of its own
+            # and the reagent put that halogen on the ion: the ION carries more
+            # of it than the neutral (C11+a; the Br-free hold released by
+            # C11+c); a lifted pair's lock is a line of its own
             reagent_only_iso=(not ion_only) and not lifted and lines["reagent_only"]
-            and not_the_neutrals_line(neutral, adduct, ion, halogen),
+            and carries_reagent(neutral, adduct, ion, halogen),
             ion_only=ion_only,
             iso_labels="|".join(sorted(lines["labels"])),
             tied=bool(g["__tied"].all()),
