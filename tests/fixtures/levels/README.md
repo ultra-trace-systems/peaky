@@ -21,8 +21,9 @@ opens them directly); 3.6 MB in all with the tables and `expected_levels.csv`.
 
 `expected_levels.csv` holds one row per `(source, neutral, adduct)` with the
 level and every predicate input, written by `scripts/level_ledger.py`; the
-in-core `evidence` stage must reproduce it row for row and the three vectors
-exactly. Each pair corroborates by what the other source pins on its own (4b or
+in-core `evidence` stage must reproduce it row for row -- level and every
+recorded fact (`test_every_fixture_row_matches_the_reference_script_fact_for_fact`)
+-- and the vectors exactly. Each pair corroborates by what the other source pins on its own (4b or
 better with no cross set, `docs/EVIDENCE_LEVELS.md` §6.4); the file was
 regenerated for that rule (183 of 6,444 levels moved, all downward; the vectors
 before it were 21/15/107/38/162/9/9/33/979, 6/16/182/38/260/79/91/135/2557 and
@@ -91,8 +92,9 @@ C18H14N2O8 `[M+Br]-` 5b -> 4b, C13H16O5 `[M+Br]-` 4a -> 4b, C20H33NO10 `[M+Br]-`
 twelve `[M+Br]-` 4d / 5a / 5b -> 4b on an M+3 '81Br+13C' carbon line or a line
 proving a second Br, C10H16O8 `[M+Br]-` 4a -> 4b, the two Br-free C35H32O4S /
 C35H36O6S `[M-H]-` 4d -> 5b (their 1:1 +2 line expects nothing on a Br-free ion:
-mass-degenerate with no axis), C12H9BrN2 `[M+HBr+Br]-` 4b -> 4d (its line two
-81Br up names the reagent halogen alone), and the rest dim readings whose child
+mass-degenerate with no axis), C12H9BrN2 `[M+HBr+Br]-` 4b -> 4d (a Br3 ion on
+its 79Br2 81Br line: its '81Br2' lines, 0.97x, sit where a Br2 ion puts one, and
+its '2x81Br' 81Br3 line is out of band), and the rest dim readings whose child
 sits off its exact spacing or out of its count-aware band. orbi (4): the
 chlorinated paraffin C10H18Cl4 `[M+^NO3]-` 3a -> 5b (its one list line reads
 2.0x a 37Cl1-committed parent, 0.48 expected: its recovery labels every ladder
@@ -101,7 +103,12 @@ dibromoacetic acid C2H2Br2O2 `[M-H]-` 4c -> 4b (its 81Br2 and 79Br2 lines
 around the 79Br81Br-committed M0). ur (4): C10H17NO4, C18H25NO `[M+H]+` 4b -> 4c,
 C12H14N2O4Si `[M+H]+` 4a -> 4b, C17H22N4O10 urea 4b -> 5b. The release of the
 hold moves no level: it clears the flag on three TOF `[M-H]-` rows (C22H20O21,
-C35H32O4S, C35H36O6S), all 5b.
+C35H32O4S, C35H36O6S), all 5b. Nor does D4's full-count line (a kept, in-band
+line only the ion's full halogen count makes is the neutral's halogen): it moves
+`reagent_only_iso` on six rows at unchanged levels -- tof IBr `[M+Br]-` (2b),
+C13HBrO4 `[M+Br]-` and C27H27BrN2O2 `[M+HBr+Br]-` (5b) lose it on an in-band
+79Br2 / 81Br3 line; tv C13H16 and tof C20H22N2O12, C8H14O5 `[M+HBr+Br]-` (5b),
+Br-free, take it on their `M0` line.
 
 Scrubbed: file names are positional, `sample_item_id` is dropped, and no site,
 instrument or server name is inside. The privacy scanner skips `.gz`; the

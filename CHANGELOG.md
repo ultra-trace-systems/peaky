@@ -805,7 +805,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   parent position or a >= 3x brighter neighbour pulling it, `M+n` exempt, and per file a
   TOF-class file whose fit sits on the intercept floor untested; a dropped child is dropped
   for every fact; `carbon_ev` is a placed line that adds 13C; `reagent_only_iso` needs every
-  line naming a heavy atom to name only the reagent halogen's (`81Br`, `81Br2`, `2x81Br`); the
+  line naming a heavy atom to name only the reagent halogen's (`81Br`, `81Br2`, `2x81Br`; a pure
+  `M0` line names what it differs in from the committed line) and no kept, in-band line that only
+  the ion's full halogen count makes (D4's full-count line, a POSITION rule: its heavy index
+  j = k - k_c(n) outside [-k_c(s), s - k_c(s)], s the adduct's atoms of the halogen -- such a line
+  is the neutral's halogen, whatever the pair's other lines; a line where an s-atom ion puts one
+  stays the reagent's whatever its height); the
   isotopologues list holds `iso` only through an entry that passes the same test;
   `iso_labels` lists the kept lines' whole labels. The Br-free `reagent_only_iso` hold of
   C11+a is released with it (its line expects 0: no isotope axis, no 4d). The width model
@@ -824,9 +829,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   per file 24 rows (11 pairs; rule U keeps the urea / `[M+H]+` 18O pairs 4a pooled). The
   bromide/nitrate TOF 26 (16): nine `[M+Br]-` 4d -> 4b on an M+3 `81Br+13C` carbon line or a
   line proving a second Br, three brominated readings 4b -> 5b whose 81Br lines do not fit their
-  Br / Br2 pattern, C12H9BrN2 `[M+HBr+Br]-` 4b -> 4d (its line two 81Br up names the reagent
-  halogen alone), chloroacetic acid `[M+Br]-` staying 4a on its `81Br+37Cl` M+4 line; claims
-  0 / -0.0035 / +0.0035; per file 60 rows (51 pairs). Identified never moves; the hold kept or
+  Br / Br2 pattern, C12H9BrN2 `[M+HBr+Br]-` 4b -> 4d (a Br3 ion committed on 79Br2 81Br: its
+  scorer `81Br2` lines, 1.998 Da up at 0.97x, sit where a Br2 ion puts one -- the reagent's -- and
+  its one peaky `2x81Br` line, the 81Br3 line 3.994 Da up, is 3.9x its expectation, out of band;
+  the reconciler's reference read it 4b only because its reagent-part test matched labels
+  starting with `81Br`), chloroacetic acid `[M+Br]-` staying 4a on its `81Br+37Cl` M+4 line; claims
+  0 / -0.0035 / +0.0035; per file 60 rows (51 pairs). The full-count rule moves no level on the
+  three batches (pooled or per file) nor any golden row: `reagent_only_iso` on five pooled TOF
+  pairs (IBr, C13HBrO4 `[M+Br]-` and C27H27BrN2O2 `[M+HBr+Br]-` lose it on an in-band 79Br2 /
+  81Br3 line; the Br-free C10H12O4 and C8H14O5 `[M+HBr+Br]-` take it on their `M0` line), 18
+  per-file rows, six fixture rows. Identified never moves; the hold kept or
   released moves no level; the corroborating sources re-levelled under the rule move none; the
   reference script levels every pair of the three runs alike, level and fact. The FULL offline
   replay (every file's A.run and the batch half, with the engine items below):
@@ -835,10 +847,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   re-read) -- claims 0 / +0.015 / -0.016; the uronium Orbitrap the chain's 3 (3), claims
   0 / -0.018 / +0.018; the bromide/nitrate TOF 84 (43 merged): the chain's 26 and 58 from the
   per-file items -- 21 on pairs held only by the one file whose mass-calibration core fell to 19,
-  under the 20 it needs, once the pass-0 mislinks left it (5b -> 5a, degeneracy not measured),
-  25 dim 5b pairs appearing or disappearing, C4H6N2O6S `[M-H]-` 4b -> 3b (its bromide cluster
-  now its own pair), chloroacetic acid kept at 4a (its `81Br+37Cl` M+4 line; the 13 mislinked
-  37Cl children gone) -- claims identified -0.0001 / ion +0.008 / tentative -0.008, merged
+  under the 20 it needs, once the pass-0 mislinks left it (17 of them 5b -> 5a, degeneracy not
+  measured; C18H14N2O15 `[M+HBr+Br]-` 5b -> 4b; C4H6N2O6S `[M-H]-` 4b -> 3b, its bromide cluster
+  now its own pair; two dim 5b pairs appearing or disappearing), 23 other dim 5b pairs and two
+  4b pairs appearing or disappearing, and 12 others; chloroacetic acid kept at 4a (its
+  `81Br+37Cl` M+4 line; the 13 mislinked 37Cl children gone) -- claims identified -0.0001 / ion
+  +0.008 / tentative -0.008, merged
   rows 2239 -> 2242, Assigned 449 -> 454. Every move of the stored-ledger replay recurs. The golden vectors move (tv 21/15/107/15/145/15/9/37/1009, tof
   6/15/182/14/267/85/84/135/2576, orbi 0/10/217/9/205/138/0/35/1093, ur
   4/4/0/330/375/293/0/82/73; 47 of 7,605 fixture pairs, listed in the fixtures' README) and
@@ -1163,6 +1177,23 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A labelled adduct keeps its 15N when the ion is read from neutral + adduct (C11+c).** The
+  isotope line test reads every line against the ion's mono m/z, from the stored ion string
+  when it is signed, else neutral + adduct -- and that fallback (`tiers._ion_counts`) dropped a
+  labelled reagent's caret, so an unsigned `[M+^NO3]-` / `[M+^NH4]+` row read 14N: its mass sat
+  0.997 Da low and the committed line of a multi-halogen ion was lost (a Cl4 `[M+^NO3]-`
+  committed on its 37Cl1 line read as mono, its 37Cl2 line out of band); a pass-7 ladder rung
+  the oracle wrote no string for stored `C5H3F6N2O6-` for a labelled nitrate rung. The
+  reference script mirrored the drop. `tiers._ion_counts(..., labelled=True)` keeps the label
+  as `^N`, as `parse_formula` reads a signed labelled ion (the tier gates' default reading is
+  unchanged); `evidence.ion_composition`, the rung's ion and the script read it so. Latent on
+  the stored data: no M0 row on a caret adduct stores an unsigned ion string in the three
+  regression runs or the fixtures, and every labelled rung of the replays carries the oracle's
+  string -- the full offline replay of the three batches reproduces the replay before it in every
+  per-file ledger column but the evidence axes the full-count rule moves (18 rows), and every
+  batch table and time-series stamp. `tests/test_isotope_levels.py`,
+  `tests/test_isotope_children.py`, `tests/test_known_ion_kids.py`.
+
 - **A known or certified ion takes its own isotope lines (C11+c, I7).** The scorer returns
   the lines of every ion of a compound; pass 0 (known species) and pass 7 (certified neutral)
   hung all of them under whichever ion they committed -- HNO4's nitrate cluster carried the
@@ -1174,7 +1205,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the compound), and each pass-7 member takes its committed ion's. A pass-7 ladder rung is
   committed with its real ion formula (the oracle's own string for its channel, else neutral +
   reagent units + adduct) where it stored the bare neutral, and takes its own lines. The
-  certificate's diagnostic-isotope gate still reads the compound. `tests/test_known_ion_kids.py`.
+  certificate's diagnostic-isotope gate still reads the compound (D6(c)); keyed on the ions the
+  certificate commits it would flip 0 / 0 / 11 of the 379 / 43 / 835 gate decisions of the
+  three batches' offline replays -- all two-channel certificates of Br-free winners whose only
+  diagnostic line is the reagent's 81Br line under their uncommitted `[M+Br]-` ion (open for
+  review). `tests/test_known_ion_kids.py`.
   REPLAY numbers (the final runs replace them at landing): per-file ledger rows whose role, reading, parent, label,
   list or confidence change (attributed exactly by a replay without the residual fix below):
   the labelled-nitrate Orbitrap 23 (pass 0 18, pass 7 1, and 4 knock-on rows: two ions
@@ -1194,8 +1229,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `tests/test_residual.py`. REPLAY numbers: per-file rows change in pass 4's dim edge doublets and what re-reads
   the freed peaks (the labelled-nitrate Orbitrap 9, the bromide/nitrate TOF 36; the uronium
   batch's context caps every doublet, so nothing moves there); pooled, the labelled-nitrate
-  Orbitrap 3 dim 5b pairs appear or disappear, the TOF 11 (C15H12N2O4S `[M+Br]-` 5b -> 4d, ten
-  dim 5b pairs appearing or disappearing).
+  Orbitrap 3 dim 5b pairs appear or disappear, the TOF 11 (4 merged): ten dim 5b pairs appearing
+  or disappearing -- the ten the engine lane measured for this fix alone, on the old levelling --
+  and C15H12N2O4S `[M+Br]-` 5b -> 4d, the one interaction with the line test above: the pair's new
+  row (pass 4, one more file) carries an `81Br(pair)` child at 0.78x, which the old levelling
+  could not read (expected 0) and the whole-label reading puts in band (0.9728 expected).
 
 - **The isotope checks measure a batch whose committed pairs are all carbon-free.**
   Rule C (`batch/iso_checks.py`, C11+a) raised `KeyError: 'mz'` when no stamped pair
