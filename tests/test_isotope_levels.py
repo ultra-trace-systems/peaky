@@ -631,3 +631,22 @@ def test_a_13c2_line_is_a_carbon_line():
     got = _both(rows)
     f = _fact(got, "C22H42O6", "[M+Br]-")
     assert f.carbon_ev and not f.reagent_only_iso and _level(got, "C22H42O6", "[M+Br]-") == "4b"
+
+
+# --------------------------------------------------------------------------- a labelled adduct read from neutral + adduct
+def test_an_unsigned_labelled_row_is_read_with_its_15n():
+    """D4: the ion's counts come from evidence.ion_composition -- neutral + adduct when the stored ion string
+    carries no sign (a ledger row may hold the bare neutral). A labelled reagent's '^N' must stay 15N there:
+    read as 14N the ion's mono m/z sits 0.997 Da low, the committed line of a Cl4 [M+^NO3]- (its 37Cl1
+    line) is lost and its 37Cl2 line reads against the mono line (1.28 expected for 0.48 seen: out of band).
+    Signed ('C10H18Cl4O3^N-', the oracle's spelling) or unsigned, the pair is levelled alike -- in the
+    engine and the script."""
+    true = C.ion_mz("C10H18Cl4", "[M+^NO3]-") + SP["37Cl"]              # the 37Cl1 line, committed
+    for stored in ("C10H18Cl4O3^N-", "C10H18Cl4"):
+        p = m0("a", "C10H18Cl4", adduct="[M+^NO3]-", ion=stored, mz=true, height=1e5)
+        p.update(ppm_error_cal=0.0, _true=true)
+        rows = background() + [p, kid("c", p, "37Cl", 0.479e5, SP["37Cl"])]
+        f = _fact(_both(rows), "C10H18Cl4", "[M+^NO3]-")
+        assert f.iso and f.iso_labels == "37Cl", stored
+    counts, _ion = ion_of("C10H18Cl4", "[M+^NO3]-")
+    assert counts.get("^N") == 1 and "N" not in counts

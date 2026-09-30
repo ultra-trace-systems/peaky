@@ -259,13 +259,17 @@ def ion_composition(neutral, adduct, ion) -> dict:
     return {k: v for k, v in counts.items() if v} or composition(s)
 
 
+ADDUCT_TOKEN_LABELLED = re.compile(r"([+-])(\^?[A-Za-z0-9]+)")
+
+
 def ion_counts(neutral, adduct, ion) -> dict:
     """The ION's element counts as the engine's evidence.ion_composition reads
     them for the isotope lines, the labelled '^N' kept as its own key: the
-    stored ion formula when it carries a charge sign, else neutral + adduct (the
-    adduct's caret dropped, as the engine's tiers._ion_counts does), else the
-    stored string. `ion_composition` above folds '^N' into N (the reagent
-    halogen count it serves does not care)."""
+    stored ion formula when it carries a charge sign, else neutral + adduct (a
+    labelled reagent atom kept too: '[M+^NO3]-' adds 15N, as the engine's
+    tiers._ion_counts(labelled=True) reads it), else the stored string.
+    `ion_composition` above folds '^N' into N (the reagent halogen count it
+    serves does not care)."""
     s = str(ion).strip() if isinstance(ion, str) else ""
     if s.endswith(("+", "-")):
         return composition(s, labelled=True)
@@ -275,7 +279,7 @@ def ion_counts(neutral, adduct, ion) -> dict:
     if n and a.startswith("[M"):
         counts = composition(n, labelled=True)
         inner = a.split("]")[0][2:].replace("(", "").replace(")", "")
-        for sign, token in ADDUCT_TOKEN.findall(inner):
+        for sign, token in ADDUCT_TOKEN_LABELLED.findall(inner):
             for element, k in composition(token, labelled=True).items():
                 counts[element] = counts.get(element, 0) + (k if sign == "+" else -k)
     return {k: v for k, v in counts.items() if v} or composition(s, labelled=True)

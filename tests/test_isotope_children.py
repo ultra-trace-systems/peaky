@@ -720,3 +720,24 @@ def test_the_batch_and_the_scorecard_hand_over_their_width_model(tmp_path, monke
     SC.own_levels_for(SimpleNamespace(path=str(tmp_path / "none"), per_file=pf, summary={"resolution": RES_ORBI}))
     SC.own_levels_for(SimpleNamespace(path=str(tmp_path / "none"), per_file=pf))
     assert got == [RES_ORBI, None]
+
+
+# --------------------------------------------------------------------------- a labelled adduct's 15N (fix round 1)
+def test_a_labelled_adduct_keeps_its_15n_when_the_ion_is_read_from_neutral_plus_adduct():
+    """The ion's counts from neutral + adduct keep a labelled reagent atom as '^N' -- as parse_formula reads a
+    signed labelled ion string -- in the engine (evidence.ion_composition) and the script (ion_counts); the
+    tier gates' own reading (tiers._ion_counts by default) still folds it into N."""
+    from peaky.assignment import tiers as TI
+    cases = [("C10H18Cl4", "[M+^NO3]-", {"C": 10, "H": 18, "Cl": 4, "^N": 1, "O": 3}),
+             ("C10H15NO2S", "[M+^NH4]+", {"C": 10, "H": 19, "N": 1, "^N": 1, "O": 2, "S": 1}),
+             ("C10H15NO2S", "[M+^NH4-H2O]+", {"C": 10, "H": 17, "N": 1, "^N": 1, "O": 1, "S": 1}),
+             ("C10H16O4", "[M+NO3]-", {"C": 10, "H": 16, "N": 1, "O": 7}),
+             ("C9H12O2", "[M+HBr+Br]-", {"C": 9, "H": 13, "Br": 2, "O": 2}),
+             ("C10H15NO2S", "[M+(CH4N2O)H]+", {"C": 11, "H": 20, "N": 3, "O": 3, "S": 1})]
+    for neutral, adduct, want in cases:
+        got = {k: v for k, v in EV.ion_composition(neutral, adduct, None).items() if v}
+        assert got == want == LL.ion_counts(neutral, adduct, None), (neutral, adduct, got)
+        assert got == {k: v for k, v in EV.ion_composition(neutral, adduct, neutral).items() if v}  # unsigned
+        sign = adduct[-1]
+        assert I.mono_mz(got, sign) == pytest.approx(C.ion_mz(neutral, adduct), abs=1e-9), (neutral, adduct)
+    assert TI._ion_counts("C10H18Cl4", "[M+^NO3]-") == {"C": 10, "H": 18, "Cl": 4, "N": 1, "O": 3}

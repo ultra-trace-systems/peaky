@@ -333,12 +333,14 @@ def neutral_elements(neutral, ion) -> set[str]:
 def ion_composition(neutral, adduct, ion) -> dict:
     """The ION's element counts: its stored ion formula when that carries a
     charge sign, else neutral + adduct (a ledger row can hold the NEUTRAL in
-    `ion_formula` -- then the reagent's atoms are only in the adduct)."""
+    `ion_formula` -- then the reagent's atoms are only in the adduct). A
+    labelled reagent atom is '^N' either way ('[M+^NO3]-' adds 15N, not N:
+    read as 14N the ion's mass sits 0.997 Da low)."""
     s = str(ion or "").strip() if not (isinstance(ion, float) and np.isnan(ion)) else ""
     if s.endswith(("+", "-")):
         return C.parse_formula(s)
     from peaky.assignment.tiers import _ion_counts
-    return _ion_counts(str(neutral or ""), str(adduct or "")) or C.parse_formula(s)
+    return _ion_counts(str(neutral or ""), str(adduct or ""), labelled=True) or C.parse_formula(s)
 
 
 def carries_reagent(neutral, adduct, ion, halogen) -> bool:

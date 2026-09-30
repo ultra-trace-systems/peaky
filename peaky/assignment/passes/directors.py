@@ -1889,7 +1889,7 @@ def _rung_ion(winner: str, hit, reagent: str | None, scored_ions: dict) -> str |
         return scored_ions[hit.adduct]
     from peaky.assignment.tiers import _ion_counts
     from peaky.chem import reagents as RG
-    counts = _ion_counts(winner, hit.adduct)
+    counts = _ion_counts(winner, hit.adduct, labelled=True)          # a labelled reagent keeps its '^N'
     if not counts:
         return None
     if hit.cluster_order:

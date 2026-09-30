@@ -172,7 +172,11 @@ def test_the_rung_ion_reads_the_oracle_then_the_composition():
     # the oracle writes a labelled reagent's '^N' apart ('...NO6^N-'): its own string wins
     lab = SimpleNamespace(adduct="[M+^NO3]-", cluster_order=0)
     assert D._rung_ion("C5H3F6NO3", lab, None, {"[M+^NO3]-": "C5H3F6NO6^N-"}) == "C5H3F6NO6^N-"
-    assert D._rung_ion("C5H3F6NO3", lab, None, {}) == "C5H3F6N2O6-"
+    # without it the composition keeps the label as '^N' (C11+c fix round 1: it folded 15N into N, 0.997 Da low)
+    assert D._rung_ion("C5H3F6NO3", lab, None, {}) == "C5H3F6N^NO6-"
+    assert CH.parse_formula(D._rung_ion("C5H3F6NO3", lab, None, {})) == CH.parse_formula("C5H3F6NO6^N-")
+    nh4 = SimpleNamespace(adduct="[M+^NH4]+", cluster_order=0)
+    assert D._rung_ion(NBBS, nh4, None, {}) == "C10H19N^NO2S+"
     rung = SimpleNamespace(adduct="[M+(CH4N2O)H]+", cluster_order=2)
     assert D._rung_ion(NBBS, rung, "urea", {}) == "C13H28N7O5S+"
     assert D._rung_ion(NBBS, rung, None, {}) is None      # a cluster rung without a molecular reagent
