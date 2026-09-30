@@ -177,3 +177,83 @@ def test_the_rung_ion_reads_the_oracle_then_the_composition():
     assert D._rung_ion(NBBS, rung, "urea", {}) == "C13H28N7O5S+"
     assert D._rung_ion(NBBS, rung, None, {}) is None      # a cluster rung without a molecular reagent
     assert D._rung_ion(NBBS, SimpleNamespace(adduct="bogus", cluster_order=0), None, {}) is None
+
+
+# --------------------------------------------------------------------------- the gates stay on the compound (D6 (c))
+def test_the_single_channel_s_gate_reads_the_compounds_envelope():
+    """D6 (c): iso_confirmed stays keyed on the compound -- the gate licenses the commit, the ion's own lines
+    are its evidence. MSA seen on one channel (CH3O3S-, on-cal) whose 34S line the scorer matched under its
+    nitrate cluster (scored 9 ppm off: not a second channel): the 34S envelope of ANY of its ions licenses
+    the single-channel [M-H]- commit, whose own lines stay its own (the nitrate cluster's 34S line does not
+    hang under it). Without that line the single channel is refused."""
+    msa = "CH4O3S"
+    mz_h, mz_n = CH.ion_mz(msa, "[M-H]-"), CH.ion_mz(msa, "[M+NO3]-")
+    s34 = 1.9957963
+    scored = pd.DataFrame([
+        _row(msa, "CH3O3S-", "M0", "h", mz_h, base=True, mech="mH", ppm=0.2),
+        _row(msa, "CH4NO6S-", "M0", "n", mz_n, base=True, mech="mN", ppm=9.0),
+        _row(msa, "CH4NO6S-", "34S", "n34", mz_n + s34, base=False, mech="mN", ppm=9.0)])
+    rows = [("h", mz_h, 5e4), ("n", mz_n * (1 + 9e-6), 2e4), ("n34", (mz_n + s34) * (1 + 9e-6), 900.0)]
+    led = _ledger(rows)
+    P.run_pass0_known(None, "SID", led, AIR, ACFG, ["[M-H]-", "[M+NO3]-"],
+                      score_fn=lambda *a, **k: scored, log=lambda *a: None)
+    assert L.role_of(led, "h") == L.ROLE_M0 and L.role_of(led, "n34") != L.ROLE_ISO
+    led2 = _ledger(rows)
+    P.run_pass0_known(None, "SID", led2, AIR, ACFG, ["[M-H]-", "[M+NO3]-"],
+                      score_fn=lambda *a, **k: scored.iloc[:2], log=lambda *a: None)
+    assert L.role_of(led2, "h") != L.ROLE_M0
+
+
+def test_the_single_channel_si_gate_reads_the_compounds_envelope():
+    """D6 (c) for iso_confirmed_si: a D5 siloxane (C10H30O5Si5) seen on one channel ([M+H]+, on-cal, its M+1
+    blend present) whose 29Si / 30Si lines the scorer matched under its ammonium adduct (scored 9 ppm off):
+    the envelope of any of its ions licenses the commit; without those lines it is refused."""
+    d5 = "C10H30O5Si5"
+    mz_h, mz_n = CH.ion_mz(d5, "[M+H]+"), CH.ion_mz(d5, "[M+NH4]+")
+    s29, s30 = 0.9995681, 1.9968436
+    scored = pd.DataFrame([
+        _row(d5, "C10H31O5Si5+", "M0", "h", mz_h, base=True, mech="mH", ppm=0.2),
+        _row(d5, "C10H34NO5Si5+", "M0", "n", mz_n, base=True, mech="mN", ppm=9.0),
+        _row(d5, "C10H34NO5Si5+", "29Si", "n29", mz_n + s29, base=False, mech="mN", ppm=9.0),
+        _row(d5, "C10H34NO5Si5+", "30Si", "n30", mz_n + s30, base=False, mech="mN", ppm=9.0)])
+    m1 = 5 * 0.0508 + 10 * 0.0107
+    rows = [("h", mz_h, 5e4), ("h1", mz_h + s29, 5e4 * m1), ("n", mz_n * (1 + 9e-6), 2e4),
+            ("n29", (mz_n + s29) * (1 + 9e-6), 2e4 * 5 * 0.0508), ("n30", (mz_n + s30) * (1 + 9e-6), 2e4 * 5 * 0.0335)]
+    led = _ledger(rows)
+    P.run_pass0_known(None, "SID", led, URO, ACFG, ["[M+H]+", "[M+NH4]+"],
+                      score_fn=lambda *a, **k: scored, log=lambda *a: None)
+    assert L.role_of(led, "h") == L.ROLE_M0
+    led2 = _ledger(rows)
+    P.run_pass0_known(None, "SID", led2, URO, ACFG, ["[M+H]+", "[M+NH4]+"],
+                      score_fn=lambda *a, **k: scored.iloc[:2], log=lambda *a: None)
+    assert L.role_of(led2, "h") != L.ROLE_M0
+
+
+# --------------------------------------------------------------------------- a rung on a scored, unanchored channel
+MZ_N3L = CH.ion_mz(NBBS, "[M+^NH4]+")
+
+
+def _nbbs_labelled(client, sid, formulas, *, mechanism_ids=None, **kw):
+    """The NBBS certificate with a 15N-ammonium channel the oracle scored (its own string, the label written
+    apart: 'C10H19NO2S^N+') but did not anchor on the member peak."""
+    if NBBS not in formulas:
+        return pd.DataFrame([])
+    return pd.DataFrame([
+        _row(NBBS, "C10H16NO2S+", "M0", "n0", MZ_N0, base=True, score=0.93, mech="mH", ppm=0.05),
+        _row(NBBS, "C10H16NO2S+", "34S", "n0s", MZ_N0 + S34, base=False, mech="mH", ppm=0.05),
+        _row(NBBS, "C11H20N3O3S+", "M0", "n1", MZ_N1, base=True, score=0.93, mech="mU", ppm=0.05),
+        _row(NBBS, "C10H19NO2S^N+", "M0", None, MZ_N3L, base=True, score=0.93, mech="mN", ppm=0.05),
+        _row(NBBS, "C10H19NO2S^N+", "34S", "n3s", MZ_N3L + S34, base=False, mech="mN", ppm=0.05)])
+
+
+def test_a_rung_on_a_scored_unanchored_channel_takes_the_oracles_string_and_its_lines():
+    """The oracle's ion string per channel comes from EVERY base row of the winner, anchored or not: the
+    15N-ammonium rung is committed under 'C10H19NO2S^N+' (not a composition string written another way) and
+    its own 34S line, keyed on that string, hangs under it."""
+    led = _ledger([("n0", MZ_N0, 50000.0), ("n1", MZ_N1, 400000.0), ("n2", MZ_N2, 3000.0),
+                   ("n0s", MZ_N0 + S34, 2200.0), ("n3", MZ_N3L, 20000.0), ("n3s", MZ_N3L + S34, 900.0)])
+    s = P.run_pass_certified(None, "SID", led, URO, ACFG, ["[M+H]+", "[M+(CH4N2O)H]+", "[M+^NH4]+"],
+                             reagent="urea", score_fn=_nbbs_labelled, log=lambda *a: None)
+    by = led.set_index("peak_id")
+    assert s["rungs_committed"] == 2 and by.loc["n3", "method"] == "certified:ladder-rung", s
+    assert by.loc["n3", "ion_formula"] == "C10H19NO2S^N+" and _parent(led, "n3s") == "n3"

@@ -68,6 +68,24 @@ for _off, _want in ((+7.6, True), (-8.3, False)):
     _p = RD.find_iso_pairs(_led, min_height=100)
     check(f"a Br partner {_off:+.1f} ppm off the exact spacing is {'inside' if _want else 'outside'} the 8-ppm window",
           (int((_p["element"] == "Br").sum()) == 1 if len(_p) else False) == _want, _p.to_dict("records"))
+# every other use of the spacing is centred on it too (fix round 1 of C11+c: only the single-halogen loop
+# above was pinned): the BrCl pattern's M+2 and M+4 searches, and characterize_residual's 81Br partner / twin.
+# C2H3ClO2 [M+Br]- (Br1 Cl1): M+2 0.97 + 0.32, M+4 0.97 x 0.32; a line 7.6 ppm above its exact position
+# sits inside the 8-ppm window centred on 1.9979535 and outside one centred on 1.997795
+_mz = C.ion_mz("C2H3ClO2", "[M+Br]-")
+for _name, _m2, _m4 in (("M+2", (_mz + 1.9979535) * (1 + 7.6e-6), _mz + 1.9979535 + RD.D_PAIR_CL),
+                        ("M+4", _mz + 1.9979535, (_mz + 1.9979535 + RD.D_PAIR_CL) * (1 + 7.6e-6))):
+    _p = RD.find_iso_pairs(L.new_ledger(pd.DataFrame({"peak_id": ["L", "H2", "H4"], "mz": [_mz, _m2, _m4],
+                                                       "height": [1e4, 1.29e4, 3.1e3]})), min_height=100)
+    check(f"the BrCl pattern's {_name} 7.6 ppm off the exact spacing is found",
+          len(_p) > 0 and int((_p["element"] == "BrCl").sum()) == 1, _p.to_dict("records"))
+# characterize_residual's 6-ppm partner window: a Br doublet 5.6 ppm off the exact spacing
+_mz = C.ion_mz("C6H10O3", "[M+Br]-")
+_t = RD.characterize_residual(L.new_ledger(pd.DataFrame({
+    "peak_id": ["L", "H"], "mz": [_mz, (_mz + 1.9979535) * (1 + 5.6e-6)], "height": [1e4, 9.7e3]}))).set_index("peak_id")
+check("characterize_residual reads a Br partner 5.6 ppm off the exact spacing (n_Br 1)", _t.loc["L", "n_Br"] == 1,
+      _t.to_dict("records"))
+check("characterize_residual reads that line as the 81Br twin", _t.loc["H", "twin_of"] == "81Br", _t.to_dict("records"))
 
 # ---------- candidates_for_pair: ion must carry the halogen, DBE-only ----------
 # light_mz for C6H10O3 as [M+Br]- ; n_Br=1 in ion via the adduct (need=0 neutral)
