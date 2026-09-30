@@ -66,9 +66,12 @@ import argparse
 import ast
 import glob
 import json
+import math
 import os
 import re
 import sys
+from functools import lru_cache
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -248,6 +251,28 @@ def ion_composition(neutral, adduct, ion) -> dict:
     return {k: v for k, v in counts.items() if v} or composition(s)
 
 
+def ion_counts(neutral, adduct, ion) -> dict:
+    """The ION's element counts as the engine's evidence.ion_composition reads
+    them for the isotope lines, the labelled '^N' kept as its own key: the
+    stored ion formula when it carries a charge sign, else neutral + adduct (the
+    adduct's caret dropped, as the engine's tiers._ion_counts does), else the
+    stored string. `ion_composition` above folds '^N' into N (the reagent
+    halogen count it serves does not care)."""
+    s = str(ion).strip() if isinstance(ion, str) else ""
+    if s.endswith(("+", "-")):
+        return composition(s, labelled=True)
+    a = str(adduct).strip() if isinstance(adduct, str) else ""
+    n = "" if neutral is None else str(neutral)
+    counts: dict = {}
+    if n and a.startswith("[M"):
+        counts = composition(n, labelled=True)
+        inner = a.split("]")[0][2:].replace("(", "").replace(")", "")
+        for sign, token in ADDUCT_TOKEN.findall(inner):
+            for element, k in composition(token, labelled=True).items():
+                counts[element] = counts.get(element, 0) + (k if sign == "+" else -k)
+    return {k: v for k, v in counts.items() if v} or composition(s, labelled=True)
+
+
 def carries_reagent(neutral, adduct, ion, halogen) -> bool:
     """The ION carries more of the reagent halogen than the neutral: only then
     can a line of it be the reagent's."""
@@ -287,6 +312,610 @@ def neutral_elements(neutral, ion) -> set:
     adduct)."""
     own, whole = composition(neutral, labelled=True), composition(ion, labelled=True)
     return {e for e, n in own.items() if n > 0 and 2 * n > whole.get(e, 0)}
+
+
+# ===========================================================================
+# ISOTOPE CHILDREN JUDGED AGAINST THE COMMITTED LINE (C11+c) -- the standalone
+# twin of peaky/chem/isotopes.py's section of the same name (this script imports
+# no peaky code). The committed line is read off the parent's m/z, each child
+# label both ways (parent-relative / mono-counted), a line counts within
+# max(1 ppm, 4 sigma(h)) of its exact spacing (sigma(h) self-fitted on the
+# source's '13C' children; pcal and N1 rescue it, 'M+n' is exempt) and in band
+# under its count-aware expectation. tests/test_isotope_children.py pins every
+# function here to the engine's, text and values.
+# ===========================================================================
+
+#: exact mass (NIST / AME2020) of the heavy isotope a child label can name and
+#: the element it replaces; the light isotope's mass is chemistry.M's
+HEAVY_ISOTOPES: dict[str, tuple[str, float]] = {
+    "13C": ("C", 13.0033548378), "15N": ("N", 15.0001088984), "17O": ("O", 16.9991317565),
+    "18O": ("O", 17.9991596129), "33S": ("S", 32.9714589098), "34S": ("S", 33.967867004),
+    "37Cl": ("Cl", 36.965902602), "81Br": ("Br", 80.9162906), "29Si": ("Si", 28.9764946649),
+    "30Si": ("Si", 29.973770136), "2H": ("H", 2.0141017781),
+}
+#: monoisotopic element masses an ion's mono m/z is summed from (chemistry.M
+#: plus the two alkali adduct metals -- a copy: the script imports no peaky code)
+ELEMENT_MASS: dict[str, float] = {
+    "C": 12.0, "H": 1.0078250319, "O": 15.9949146221, "N": 14.0030740052, "S": 31.97207069, "P": 30.97376163,
+    "Si": 27.976926535, "F": 18.9984031627, "Cl": 34.96885268, "Br": 78.9183371, "I": 126.9044719,
+    "^N": 15.0001088984, "Na": 22.989769282, "K": 38.9637064864,
+}
+ELECTRON_MASS = 0.0005485799
+#: exact heavy - light spacing (Da); '14N' is the labelled reagent's light line,
+#: one 15N - 14N spacing BELOW a '^N' atom
+ISOTOPE_SPACING: dict[str, float] = {iso: m - ELEMENT_MASS[el] for iso, (el, m) in HEAVY_ISOTOPES.items()}
+ISOTOPE_SPACING["14N"] = -ISOTOPE_SPACING["15N"]
+#: the composition key each heavy isotope counts atoms of ('14N' counts the
+#: labelled '^N' atoms)
+ISOTOPE_ELEMENT: dict[str, str] = {iso: el for iso, (el, _m) in HEAVY_ISOTOPES.items()}
+ISOTOPE_ELEMENT["14N"] = "^N"
+#: per-atom heavy / light ratio -- the evidence band's (evidence.C13_PER_CARBON,
+#: ISOTOPE_ABUNDANCE, PER_ATOM_ABUNDANCE); 33S, 17O, 2H natural; '14N' the
+#: labelled reagent's impurity at LABEL_PURITY_15N. Card B7 re-rounds 30Si.
+ISOTOPE_RATIO: dict[str, float] = {
+    "13C": 0.0107, "81Br": 0.9728, "37Cl": 0.3196, "34S": 0.0443, "29Si": 0.0508, "30Si": 0.0335,
+    "15N": 0.00368 / 0.99632, "18O": 0.00205 / 0.99757, "33S": 0.0075 / 0.9499, "17O": 0.00038 / 0.99757,
+    "2H": 0.000115, "14N": 0.02 / 0.98,
+}
+#: an ion carrying Br or Cl owns its M+2 region: an '18O' line there is not
+#: measured (evidence.M2_OWNERS, C17) -- its expectation reads 0
+M2_OWNERS = ("Br", "Cl")
+
+#: the heavy isotopes the committed line may carry (the M+2 drivers; S and Si
+#: to two atoms), and the least probability a candidate configuration needs
+COMMITTED_ISOTOPES = ("81Br", "37Cl", "34S", "30Si", "29Si")
+COMMITTED_MIN_P = 1e-4
+#: how far (ppm of the parent m/z) the parent may sit from a configuration's
+#: exact position and still be read as committed on it: 5 ppm on an
+#: Orbitrap-class width model, 20 ppm on a TOF-class one and without one
+COMMITTED_TOL_PPM = {"orbitrap": 5.0, "tof": 20.0}
+COMMITTED_TOL_CLASSLESS_PPM = 20.0
+#: a generic 'M+n' child: the ion's lines within this half-width (Da) of its
+#: measured shift, or half the width model's FWHM there if wider
+GENERIC_HALF_WIDTH_DA = 0.012
+
+#: the position test: a child counts within max(POSITION_MIN_PPM, POSITION_K x
+#: sigma(h)) of its exact position, sigma(h)^2 = a^2 + b^2 / h fitted on the
+#: source's own '13C' children -- pre-clipped at max(SIGMA_CLIP_PPM,
+#: SIGMA_CLIP_K x the global 1.4826 x MAD), SIGMA_BINS height-quantile bins of
+#: >= SIGMA_MIN_PER_BIN children, per-bin 1.4826 x MAD, weighted least squares
+#: of s^2 on 1/h (weights = bin counts), a >= SIGMA_A_FLOOR_PPM, b >= 0; fewer
+#: than SIGMA_MIN_CHILDREN such children and the source is not tested at all
+POSITION_MIN_PPM = 1.0
+POSITION_K = 4.0
+SIGMA_MIN_CHILDREN = 40
+SIGMA_BINS = 8
+SIGMA_MIN_PER_BIN = 5
+SIGMA_A_FLOOR_PPM = 0.02
+SIGMA_CLIP_PPM = 5.0
+SIGMA_CLIP_K = 6.0
+MAD_TO_SIGMA = 1.4826
+#: N1, the neighbour's pull: a child outside the window still counts when a row
+#: the levelling reads (an M0 or iso child of its file, not the child's own
+#: parent) >= NEIGHBOUR_RATIO x its height sits on the side it is displaced
+#: toward, within NEIGHBOUR_REACH_PPM of its exact position, and the child's
+#: residual is <= NEIGHBOUR_FRACTION of the distance to it
+NEIGHBOUR_RATIO = 3.0
+NEIGHBOUR_REACH_PPM = 25.0
+NEIGHBOUR_FRACTION = 0.5
+
+_PART_KX = re.compile(r"^(\d+)x(\d+)([A-Z][a-z]?)$")                     # '2x81Br'
+_PART_TWO = re.compile(r"^(\d+)([A-Z][a-z]?)(\d+)([A-Z][a-z]?)\(pair\)$")  # '81Br37Cl(pair)': one of each
+_PART_ONE = re.compile(r"^(\d+)([A-Z][a-z]?)(\d*)(\(pair\))?$")          # '81Br', '81Br2', '13C2', '37Cl(pair)'
+_GENERIC = re.compile(r"^M\+(\d+)$")                                      # 'M+5'
+
+
+def split_label(label) -> list[str]:
+    """The '+' parts of a child label: 'M+n' is one part ('13C+M+4' -> ['13C',
+    'M+4']); a bare number after an isotope part is the synthetic tests'
+    nominal-shift note ('13C+1', '81Br+2') and is no part."""
+    out: list[str] = []
+    for tok in (t.strip() for t in str(label).split("+")):
+        if tok.isdigit() and out:
+            if out[-1] == "M":
+                out[-1] = "M+" + tok
+            continue
+        out.append(tok)
+    return [t for t in out if t]
+
+
+def parse_label_part(part: str) -> tuple[str, object]:
+    """One '+' part -> ('set', {isotope: count}) | ('alt', [{..}, {..}]) (either
+    line, '81Br/37Cl(pair)') | ('gen', n) ('M+n') | ('mono', {}) ('M0') |
+    ('bad', None). 'kx' multiplies ('2x81Br'), a trailing count counts
+    ('81Br2', '37Cl3', '13C2'), '(pair)' is one atom ('81Br(pair)'),
+    '81Br37Cl(pair)' is one of each."""
+    p = str(part).strip()
+    if p == "M0":
+        return "mono", {}
+    m = _GENERIC.match(p)
+    if m:
+        return "gen", int(m.group(1))
+    if "/" in p and p.endswith("(pair)"):
+        alts = []
+        for a in p[:-6].split("/"):
+            kind, v = parse_label_part(a)
+            if kind != "set":
+                return "bad", None
+            alts.append(v)
+        return "alt", alts
+    m = _PART_KX.match(p)
+    if m:
+        iso = m.group(2) + m.group(3)
+        return ("set", {iso: int(m.group(1))}) if iso in ISOTOPE_SPACING else ("bad", None)
+    m = _PART_TWO.match(p)
+    if m:
+        a, b = m.group(1) + m.group(2), m.group(3) + m.group(4)
+        return ("set", {a: 1, b: 1}) if a in ISOTOPE_SPACING and b in ISOTOPE_SPACING else ("bad", None)
+    m = _PART_ONE.match(p)
+    if m:
+        iso = m.group(1) + m.group(2)
+        return ("set", {iso: int(m.group(3) or 1)}) if iso in ISOTOPE_SPACING else ("bad", None)
+    return "bad", None
+
+
+def heavy_key(h: dict) -> tuple:
+    """A heavy configuration {isotope: count} as a sorted tuple (zeros dropped)."""
+    return tuple(sorted((k, int(v)) for k, v in h.items() if v))
+
+
+def heavy_shift(h) -> float:
+    """The exact mass shift of a heavy configuration from the all-light line."""
+    return sum(ISOTOPE_SPACING[i] * k for i, k in (h.items() if isinstance(h, dict) else h))
+
+
+def _heavy_nominal(h) -> int:
+    return sum(int(round(ISOTOPE_SPACING[i])) * k for i, k in (h.items() if isinstance(h, dict) else h))
+
+
+def _heavy_add(a: dict, b: dict) -> dict:
+    out = dict(a)
+    for k, v in b.items():
+        out[k] = out.get(k, 0) + v
+    return {k: v for k, v in out.items() if v}
+
+
+def heavy_probability(h: dict, counts: dict) -> float:
+    """P(configuration h) relative to the all-light line of an ion with element
+    `counts`: per element the multinomial C(n; k1, k2, ..) x prod ratio^k over
+    its n atoms. 0.0 when the ion cannot form it (an element it lacks, more
+    heavy atoms than it has). '13C2' is C(nC, 2) x 0.0107^2."""
+    p = 1.0
+    per_el: dict[str, dict] = {}
+    for iso, k in h.items():
+        if k < 0:
+            return 0.0
+        per_el.setdefault(ISOTOPE_ELEMENT[iso], {})[iso] = k
+    for el, ks in per_el.items():
+        n = int(counts.get(el, 0))
+        tot = sum(ks.values())
+        if tot > n:
+            return 0.0
+        mult = math.factorial(n) / (math.factorial(n - tot) * math.prod(math.factorial(k) for k in ks.values()))
+        p *= mult * math.prod(ISOTOPE_RATIO[iso] ** k for iso, k in ks.items())
+    return p
+
+
+def ion_sign(ion, adduct) -> str:
+    """'+' / '-' of an ion: its stored ion formula's sign, else its adduct's;
+    '' when neither carries one."""
+    s = ion.strip().rstrip(".") if isinstance(ion, str) else ""
+    if s.endswith(("+", "-")):
+        return s[-1]
+    a = adduct.strip().rstrip(".") if isinstance(adduct, str) else ""
+    return a[-1] if a.endswith(("+", "-")) else ""
+
+
+def mono_mz(counts: dict, sign: str) -> float:
+    """The monoisotopic m/z of a singly charged ion (NaN for an unknown element
+    or no sign)."""
+    if sign not in ("+", "-"):
+        return float("nan")
+    mass = sum(ELEMENT_MASS.get(el, float("nan")) * n for el, n in counts.items())
+    return mass + (ELECTRON_MASS if sign == "-" else -ELECTRON_MASS)
+
+
+@lru_cache(maxsize=200000)
+def _committed_candidates(ckey: tuple) -> tuple:
+    counts = dict(ckey)
+    opts: list[dict] = [{}]
+    for iso in COMMITTED_ISOTOPES:
+        el = ISOTOPE_ELEMENT[iso]
+        n = int(counts.get(el, 0))
+        kmax = min(n, 2) if iso in ("34S", "30Si", "29Si") else n
+        new = []
+        for o in opts:
+            used = sum(v for k, v in o.items() if ISOTOPE_ELEMENT[k] == el)
+            for k in range(0, min(kmax, n - used) + 1):
+                new.append(_heavy_add(o, {iso: k}) if k else dict(o))
+        opts = new
+    out = []
+    for o in opts:
+        p = heavy_probability(o, counts)
+        if p >= COMMITTED_MIN_P:
+            out.append((heavy_key(o), heavy_shift(o), p))
+    return tuple(out)
+
+
+def committed_tolerance_ppm(klass: str | None) -> float:
+    """COMMITTED_TOL_PPM of an instrument class ('orbitrap' / 'tof'); 20 ppm
+    without one."""
+    return COMMITTED_TOL_PPM.get(klass, COMMITTED_TOL_CLASSLESS_PPM) if klass else COMMITTED_TOL_CLASSLESS_PPM
+
+
+def committed_configuration(counts: dict, d: float, mz: float, tol_ppm: float) -> dict:
+    """The heavy configuration of the committed parent line that sits `d` Da
+    above the ion's mono m/z: among the ion's Br / Cl / S / Si configurations
+    (P >= COMMITTED_MIN_P) whose shift lies within `tol_ppm` of `d` (ppm of
+    `mz`), the most probable; none within -> the mono line ({})."""
+    if not (np.isfinite(d) and np.isfinite(mz)):
+        return {}
+    ck = heavy_key({k: v for k, v in counts.items() if k in ("Br", "Cl", "S", "Si")})
+    tol = tol_ppm * 1e-6 * mz
+    inside = [c for c in _committed_candidates(ck) if abs(d - c[1]) <= tol]
+    if not inside:
+        return {}
+    return dict(max(inside, key=lambda c: c[2])[0])
+
+
+_ENUM_ISOTOPES = ("13C", "81Br", "37Cl", "34S", "33S", "29Si", "30Si", "18O", "17O", "15N")
+
+
+@lru_cache(maxsize=50000)
+def _ion_lines(ckey: tuple, max_nominal: int = 12, floor: float = 1e-7) -> tuple:
+    """Every heavy configuration of the ion (vs its mono line) with P >= floor
+    and nominal shift <= max_nominal: ((key, shift, P), ...); 13C to four
+    atoms, the halogens to their count, S / Si / O / N to two."""
+    counts = dict(ckey)
+    lines: list[tuple[dict, float]] = [({}, 1.0)]
+    for iso in _ENUM_ISOTOPES:
+        el = ISOTOPE_ELEMENT[iso]
+        n = int(counts.get(el, 0))
+        if n <= 0:
+            continue
+        kmax = {"13C": 4, "81Br": n, "37Cl": n}.get(iso, 2)
+        new = []
+        for h, _p in lines:
+            used = sum(v for k, v in h.items() if ISOTOPE_ELEMENT[k] == el)
+            for k in range(0, min(kmax, n - used) + 1):
+                h2 = _heavy_add(h, {iso: k}) if k else dict(h)
+                if _heavy_nominal(h2) > max_nominal:
+                    break
+                p = heavy_probability(h2, counts)
+                if p < floor:
+                    break
+                new.append((h2, p))
+        lines = new
+    return tuple((heavy_key(h), heavy_shift(h), p) for h, p in lines)
+
+
+def generic_expectation(counts: dict, hp: dict, delta: float, half_width: float) -> tuple[float, float]:
+    """A generic 'M+n' child `delta` Da from its parent: (the ion's lines within
+    `half_width` Da of that shift summed, relative to the committed line; their
+    probability-weighted shift). (0.0, the nearest line's shift) when none."""
+    sp = heavy_shift(hp)
+    pp = heavy_probability(hp, counts)
+    lines = _ion_lines(heavy_key(counts))
+    near = [(s - sp, p) for _k, s, p in lines if abs((s - sp) - delta) <= half_width]
+    if near and pp > 0:
+        tot = sum(p for _s, p in near)
+        return tot / pp, sum(s * p for s, p in near) / tot
+    if not lines:
+        return 0.0, delta
+    return 0.0, min((s - sp for _k, s, _p in lines), key=lambda x: abs(x - delta))
+
+
+def _label_elements(parsed) -> list[str]:
+    els = []
+    for kind, v in parsed:
+        if kind == "set":
+            els.extend(ISOTOPE_ELEMENT[i] for i in v)
+        elif kind == "alt":
+            for a in v:
+                els.extend(ISOTOPE_ELEMENT[i] for i in a)
+    return sorted(set(els))
+
+
+def _expand(parsed) -> list[dict]:
+    outs: list[dict] = [{}]
+    for kind, v in parsed:
+        if kind == "set":
+            outs = [_heavy_add(o, v) for o in outs]
+        elif kind == "alt":
+            outs = [_heavy_add(o, a) for o in outs for a in v]
+    return outs
+
+
+def resolve_child(label, counts: dict, hp: dict, delta: float, *,
+                  generic_half_width: float = GENERIC_HALF_WIDTH_DA) -> dict:
+    """Read one child label against its committed parent (heavy set `hp`) at
+    the measured child - parent shift `delta` (Da). Returns
+
+      kind      'set' | 'mono' (a pure 'M0' label) | 'gen' ('M+n') | 'bad'
+      shift     the exact child - parent shift of the reading nearer `delta`
+      readings  the exact shifts the position test may place it at: both
+                conventions (parent-relative, mono-counted); a pure 'M0' label
+                only the mono line; none for 'M+n' (exempt) or an unreadable label
+      expected  P(line) / P(committed line) under the nearer reading, the '+'
+                parts' joint probability; 0.0 for a line the ion cannot make, a
+                '14N' line (rule K judges it), an '18O' line of a Br / Cl ion,
+                an 'M0' child of a mono-committed parent, an unreadable label
+      elements  the elements whose heavy-atom count differs between the line and
+                the committed line (a pure 'M0' line: the parent's heavy
+                elements); none for 'M+n'
+      parts     the label's parts other than 'M0' (their '+'-join is the label
+                `iso_labels` lists)"""
+    raw = split_label(label)
+    parsed = [parse_label_part(p) for p in raw]
+    parts = [p for p, (k, _v) in zip(raw, parsed) if k != "mono"]
+    kinds = {k for k, _v in parsed}
+    out = dict(kind="bad", shift=float("nan"), readings=(), expected=0.0, elements=[], parts=parts)
+    if not parsed or "bad" in kinds:
+        return out
+    if "gen" in kinds:
+        if len(parsed) != 1:
+            return out
+        e, s = generic_expectation(counts, hp, delta, generic_half_width)
+        return dict(out, kind="gen", shift=s, expected=e)
+    sp = heavy_shift(hp)
+    pp = heavy_probability(hp, counts) if hp else 1.0
+    alts = _expand(parsed)
+    mono_only = not parts
+    if not hp:
+        conventions = ("same",)
+    elif mono_only:
+        conventions = ("M",)          # 'M0' names the mono line, never the parent itself
+    else:
+        conventions = ("P", "M")
+    best = None
+    readings = []
+    for conv in conventions:
+        cands = [_heavy_add(hp, a) for a in alts] if conv in ("same", "P") else alts
+        ps = [heavy_probability(h, counts) for h in cands]
+        tot = sum(ps)
+        shift = (sum(heavy_shift(h) * p for h, p in zip(cands, ps)) / tot if tot > 0 else heavy_shift(cands[0])) - sp
+        expected = tot / pp if pp > 0 else 0.0
+        if any("14N" in h for h in cands):
+            expected = 0.0
+        if any("18O" in h for h in cands) and any(counts.get(e, 0) for e in M2_OWNERS):
+            expected = 0.0
+        readings.append(shift)
+        cand = dict(shift=shift, expected=expected, heavy=cands[0])
+        if best is None or abs(delta - shift) < abs(delta - best["shift"]):
+            best = cand
+    if mono_only:
+        elements = sorted({ISOTOPE_ELEMENT[i] for i in hp})
+        expected = best["expected"] if hp else 0.0
+    else:
+        diff = dict(best["heavy"])
+        for k, v in hp.items():
+            diff[k] = diff.get(k, 0) - v
+        elements = sorted({ISOTOPE_ELEMENT[i] for i, v in diff.items() if v}) or _label_elements(parsed)
+        expected = best["expected"]
+    return dict(kind="mono" if mono_only else "set", shift=best["shift"], readings=tuple(readings),
+                expected=expected, elements=elements, parts=parts)
+
+
+def reagent_part(part: str, satellite: str | None) -> bool:
+    """A label part naming the reagent halogen's heavy line alone ('81Br',
+    '81Br2', '2x81Br', '81Br(pair)' on a bromide batch); a mixed or alternative
+    part ('81Br37Cl(pair)', '81Br/37Cl(pair)') is not."""
+    if not satellite:
+        return False
+    kind, v = parse_label_part(part)
+    return kind == "set" and set(v) == {satellite}
+
+
+class PositionSigma(NamedTuple):
+    """sigma(h)^2 = a^2 + b^2 / h (ppm of the parent m/z; h = the child's
+    height), fitted on a source's own '13C' children. `floored`: the
+    intercept sits on SIGMA_A_FLOOR_PPM (the fit found no height-independent
+    scatter at all)."""
+    a: float
+    b: float
+    floored: bool
+    n: int
+
+
+def fit_position_sigma(residual_ppm, height) -> PositionSigma | None:
+    """The height-aware sigma of a source's '13C' children (see the constants
+    above); None below SIGMA_MIN_CHILDREN children (no position test there)."""
+    r, h = np.asarray(residual_ppm, float), np.asarray(height, float)
+    ok = np.isfinite(r) & np.isfinite(h) & (h > 0)
+    r, h = r[ok], h[ok]
+    if len(r) < SIGMA_MIN_CHILDREN:
+        return None
+    s0 = MAD_TO_SIGMA * np.median(np.abs(r - np.median(r)))
+    k = np.abs(r) <= max(SIGMA_CLIP_PPM, SIGMA_CLIP_K * s0)
+    r, h = r[k], h[k]
+    q = np.quantile(h, np.linspace(0, 1, SIGMA_BINS + 1))
+    xs, ys, ws = [], [], []
+    for i in range(SIGMA_BINS):
+        m = (h >= q[i]) & (h <= q[i + 1])
+        if m.sum() < SIGMA_MIN_PER_BIN:
+            continue
+        s = MAD_TO_SIGMA * np.median(np.abs(r[m] - np.median(r[m])))
+        xs.append(1 / np.median(h[m]))
+        ys.append(s * s)
+        ws.append(m.sum())
+    X, Y, W = np.asarray(xs, float), np.asarray(ys, float), np.asarray(ws, float)
+    A = np.vstack([np.ones_like(X), X]).T * np.sqrt(W)[:, None]
+    coef, *_ = np.linalg.lstsq(A, Y * np.sqrt(W), rcond=None)
+    floor = SIGMA_A_FLOOR_PPM ** 2
+    return PositionSigma(a=float(np.sqrt(max(coef[0], floor))), b=float(np.sqrt(max(coef[1], 0.0))),
+                         floored=bool(coef[0] <= floor), n=int(len(r)))
+
+
+def position_window_ppm(height, fit: PositionSigma) -> float:
+    """max(POSITION_MIN_PPM, POSITION_K x sigma(h)) at a child of `height`."""
+    h = float(height)
+    return float(max(POSITION_MIN_PPM, POSITION_K * math.sqrt(fit.a ** 2 + fit.b ** 2 / h))) \
+        if np.isfinite(h) and h > 0 else float("nan")
+
+
+#: the height-ratio band a line must fall in to count (evidence.RATIO_LO / RATIO_HI)
+RATIO_BAND = (0.5, 2.0)
+
+
+def _in_band(ratio: float, expected: float) -> bool:
+    if not (expected and expected > 0 and np.isfinite(ratio)):
+        return False
+    rel = ratio / expected
+    return bool(np.isfinite(rel) and RATIO_BAND[0] <= rel <= RATIO_BAND[1])
+
+
+def _placed(c_mz: float, bases: list, readings, w_da: float) -> bool:
+    return any(np.isfinite(c_mz - (b + e)) and abs(c_mz - (b + e)) <= w_da for b in bases for e in readings)
+
+
+def _pulled(c_mz: float, c_h: float, p_mz: float, readings, own: str, parent: str, rows) -> bool:
+    """N1: a row of the file >= NEIGHBOUR_RATIO x the child's height, within
+    NEIGHBOUR_REACH_PPM of the exact position, on the side the child is
+    displaced toward, the residual <= NEIGHBOUR_FRACTION of the distance to it
+    (not the child itself, not its parent)."""
+    if rows is None:
+        return False
+    fm, fh, fp = rows
+    for e in readings:
+        x = p_mz + e
+        r = c_mz - x
+        if not np.isfinite(r):
+            continue
+        sel = ((fm >= x * (1 - NEIGHBOUR_REACH_PPM * 1e-6)) & (fm <= x * (1 + NEIGHBOUR_REACH_PPM * 1e-6))
+               & (fh >= NEIGHBOUR_RATIO * c_h) & (fp != own) & (fp != parent))
+        dj = fm[sel] - x
+        if np.any((np.sign(dj) == np.sign(r)) & (abs(r) <= NEIGHBOUR_FRACTION * np.abs(dj))):
+            return True
+    return False
+
+
+def judge_source(children, parents: dict, lists, rows: dict, *, klass: str | None = None, fwhm=None,
+                 guard: bool = False) -> dict:
+    """The isotope children of ONE source (a file, or a batch's pooled files)
+    judged against their committed parents: position (the self-fitted window,
+    pcal, N1; 'M+n' exempt), count-aware expectation and band.
+
+      parents   {(file, peak_id): {'mz', 'height', 'pcal', 'counts', 'sign'}} --
+                every M0 row (the first per (file, peak_id)); `counts` the ION's
+                element counts, `sign` its charge sign
+      children  [{'file', 'peak_id', 'parent', 'label', 'mz', 'height'}] -- the
+                iso_child rows joined to a parent
+      lists     [(file, parent peak_id, [entry dict, ...])] -- the M0 rows'
+                isotopologues lists (the scorer's record of the lines it scored)
+      rows      {file: (mz, height, peak_id) arrays} -- the M0 + iso_child rows
+                of each file: N1's neighbours and the list entries' lookup
+      klass     'orbitrap' / 'tof' / None (the width model's class): the
+                committed line's tolerance (COMMITTED_TOL_PPM)
+      fwhm      the width model's FWHM(m/z) in Da, or None: an 'M+n' child's
+                half-width
+      guard     per file only: a TOF-class source whose fit sits on the
+                intercept floor is not tested (its '13C' scatter collapsed)
+
+    Returns {'fit': PositionSigma | None, 'tested': bool, 'children': [one
+    verdict per child: keep (placed), ok (in band), expected, ratio, elements,
+    parts, kind], 'lists': [one bool per list row: an entry that is not this
+    parent's dropped child, names an M0 / iso row of the file, is placed at its
+    own height (pcal allowed, no N1) and is in band]}."""
+    tol = committed_tolerance_ppm(klass)
+    hp_of: dict = {}
+    for key, p in parents.items():
+        mono = mono_mz(p["counts"], p["sign"])
+        pmz = float(p["mz"]) if p["mz"] is not None else float("nan")
+        hp_of[key] = committed_configuration(p["counts"], pmz - mono, pmz, tol)
+
+    def half_width(mz: float) -> float:
+        if fwhm is None or not np.isfinite(mz):
+            return GENERIC_HALF_WIDTH_DA
+        return max(GENERIC_HALF_WIDTH_DA, float(fwhm(mz)) / 2)
+
+    # the self-fit on the source's own '13C' children
+    s13 = ISOTOPE_SPACING["13C"]
+    res13, h13 = [], []
+    for c in children:
+        if str(c["label"]).strip() == "13C":
+            p = parents[(c["file"], c["parent"])]
+            pmz = float(p["mz"])
+            res13.append((float(c["mz"]) - pmz - s13) / pmz * 1e6)
+            h13.append(float(c["height"]))
+    fit = fit_position_sigma(res13, h13)
+    tested = fit is not None and not (guard and klass == "tof" and fit.floored)
+
+    verdicts = []
+    dropped: dict = {}
+    for c in children:
+        key = (c["file"], c["parent"])
+        p = parents[key]
+        hp = hp_of[key]
+        pmz, ph = float(p["mz"]), float(p["height"])
+        cmz, ch = float(c["mz"]), float(c["height"])
+        r = resolve_child(c["label"], p["counts"], hp, cmz - pmz, generic_half_width=half_width(cmz))
+        keep = True
+        if tested and r["kind"] != "gen":
+            w = position_window_ppm(ch, fit) * pmz / 1e6
+            pcal = float(p["pcal"]) if p["pcal"] is not None else float("nan")
+            bases = [pmz] + ([pmz * (1 - pcal / 1e6)] if np.isfinite(pcal) else [])
+            keep = (_placed(cmz, bases, r["readings"], w)
+                    or _pulled(cmz, ch, pmz, r["readings"], str(c["peak_id"]), str(c["parent"]),
+                               rows.get(c["file"])))
+        ratio = ch / ph if (np.isfinite(ph) and ph > 0) else float("nan")
+        verdicts.append(dict(keep=bool(keep), ok=_in_band(ratio, r["expected"]), expected=r["expected"],
+                             ratio=ratio, elements=r["elements"], parts=r["parts"], kind=r["kind"]))
+        if not keep:
+            dropped.setdefault(key, set()).add(str(c["peak_id"]))
+
+    look: dict = {}
+    for f, (fm, fh, fp) in rows.items():
+        for mz, h, pid in zip(fm, fh, fp):
+            look.setdefault((f, str(pid)), (float(mz), float(h)))
+    list_ok = []
+    for f, parent, entries in lists:
+        key = (f, parent)
+        p = parents.get(key)
+        passed = False
+        if p is not None:
+            hp = hp_of[key]
+            pmz, ph = float(p["mz"]), float(p["height"])
+            pcal = float(p["pcal"]) if p["pcal"] is not None else float("nan")
+            bases = [pmz] + ([pmz * (1 - pcal / 1e6)] if np.isfinite(pcal) else [])
+            gone = dropped.get(key, set())
+            for e in entries:
+                if not isinstance(e, dict) or str(e.get("peak_id")) in gone:
+                    continue
+                hit = look.get((f, str(e.get("peak_id"))))
+                if hit is None or not np.isfinite(hit[0]):
+                    continue
+                emz, eh = hit
+                r = resolve_child(e.get("label"), p["counts"], hp, emz - pmz, generic_half_width=half_width(emz))
+                placed = True
+                if tested and r["kind"] != "gen":
+                    placed = _placed(emz, bases, r["readings"], position_window_ppm(eh, fit) * pmz / 1e6)
+                ratio = eh / ph if (np.isfinite(ph) and ph > 0) else float("nan")
+                if placed and _in_band(ratio, r["expected"]):
+                    passed = True
+                    break
+        list_ok.append(passed)
+    return dict(fit=fit, tested=tested, children=verdicts, lists=list_ok)
+
+
+def line_facts(verdicts, satellite: str | None) -> dict:
+    """The facts one pair's KEPT lines give (`verdicts` = its placed children):
+    `iso` an in-band line; `lined` the elements of its in-band lines (C17's
+    multiline reads those the neutral supplies); `carbon` a line that adds
+    13C; `labels` the lines' labels without 'M0' parts; `reagent_only` every
+    line naming a heavy atom names only the reagent halogen's, and none adds
+    13C (a pure 'M0' line names none)."""
+    lines = list(verdicts)
+    ok = [v for v in lines if v["ok"]]
+    naming = [v for v in lines if v["parts"]]
+    carbon = any("C" in v["elements"] for v in lines)
+    return dict(
+        iso=bool(ok),
+        lined=set().union(*(set(v["elements"]) for v in ok)) if ok else set(),
+        carbon=carbon,
+        labels={"+".join(v["parts"]) for v in naming},
+        reagent_only=bool(satellite) and bool(naming) and not carbon
+        and all(reagent_part(pt, satellite) for v in naming for pt in v["parts"]),
+    )
 
 
 #: the lead setters a halogen lock answers (rule H, C11+b; the engine's
