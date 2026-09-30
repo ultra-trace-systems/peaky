@@ -16,6 +16,7 @@ Run: pytest tests/test_isotope_levels.py -q
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import numpy as np
@@ -41,14 +42,14 @@ FACTS = ["iso", "multiline", "multiline_elements", "carbon_ev", "reagent_only_is
 # --------------------------------------------------------------------------- builders
 def ion_of(neutral: str, adduct: str) -> tuple[dict, str]:
     counts = {e: v for e, v in EV.ion_composition(neutral, adduct, None).items() if v}
-    return counts, C.format_formula(counts) + adduct[-1]
+    return counts, C.format_formula(counts) + adduct.rstrip(".")[-1]          # '[M]-.' is an anion too
 
 
 def parent(pid, neutral, adduct="[M-H]-", *, height=1e6, heavy=None, off_ppm=0.0, pcal=0.0, **kw):
     """An M0 row at the exact m/z of the ion's committed line (`heavy`, {} = mono), `off_ppm` from it
     (pcal = the calibration's own reading of that offset, ppm_error_cal)."""
     counts, ion = ion_of(neutral, adduct)
-    true = I.mono_mz(counts, adduct[-1]) + I.heavy_shift(heavy or {})
+    true = I.mono_mz(counts, adduct.rstrip(".")[-1]) + I.heavy_shift(heavy or {})
     row = m0(pid, neutral, adduct=adduct, ion=ion, mz=true * (1 + off_ppm * 1e-6), height=height, **kw)
     row["ppm_error_cal"] = pcal
     row["_true"] = true
@@ -412,3 +413,221 @@ def test_a_br_free_ion_with_a_one_to_one_plus_2_line_takes_no_reagent_flag():
     rows += [q, kid("qb", q, "81Br", 0.97e4, SP["81Br"])]
     f = _fact(_both(rows), "C9H14O3", "[M+Br]-")
     assert f.reagent_only_iso and _level(_both(rows), "C9H14O3", "[M+Br]-") == "4d"
+
+
+# --------------------------------------------------------------------------- the decided edges, pinned (fix round 1)
+# Each case sits on one side of a decided threshold with its twin on the other side, so moving the threshold
+# (or dropping the condition) moves a level; the C11+c verify lenses found every one of them unpinned.
+def orphan(pid, mz, height, label="13C"):
+    """An isotope row of the file whose line sits at `mz` but that the ledger hangs under no parent (a
+    line the scorer listed under one M0 while the ledger could not attach it there): it is no child of
+    any pair, yet an M0 / iso row the levelling reads -- N1's neighbour or a list entry."""
+    row = m0(pid, None, adduct=None, height=height, mz=mz)
+    row.update(role="iso_child", parent_peak_id=None, iso_label=label, tier="Assigned", degeneracy_density=None,
+               ion_formula=None)
+    return row
+
+
+def test_a_tof_file_whose_fit_has_an_intercept_is_position_tested_per_file():
+    """D3's per-file TOF guard skips only a fit that sits ON the 0.02-ppm floor. A TOF-class file whose '13C'
+    scatter has a height-independent term -- a realistic TOF (a 2.5, b 1.8 ppm) or one just above the floor
+    (a 0.03) -- is tested per file: an 81Br line 30 ppm (resp. 6 ppm) off its exact spacing drops."""
+    p = parent("a", "C7H11BrO4", height=1e5)
+    rows = background(a=2.5, b=1.8) + [p, kid("ab", p, "81Br", 0.97e5, SP["81Br"], 30.0)]
+    assert _level(_both(rows, RES_TOF, per_file=True), "C7H11BrO4") == "4c"
+    rows = background(a=0.03, b=6.0, exact=True) + [p, kid("ab", p, "81Br", 0.97e5, SP["81Br"], 6.0)]
+    assert _level(_both(rows, RES_TOF, per_file=True), "C7H11BrO4") == "4c"
+    rows = background(a=0.0, b=6.0, exact=True) + [p, kid("ab", p, "81Br", 0.97e5, SP["81Br"], 6.0)]
+    assert _level(_both(rows, RES_TOF, per_file=True), "C7H11BrO4") == "4b"    # on the floor: guarded
+
+
+def test_exactly_40_13c_children_make_a_fit():
+    """Fewer than 40 '13C' children -> no test; 40 is a fit. 39 background lines + the test line (itself a
+    '13C' child) = 40: the bright line 1.5 ppm off drops; 38 + 1 = 39 is not tested and it counts."""
+    bright = parent("a", "C10H16O4", height=1e6)
+    rows = background(n=39) + [bright, kid("ac", bright, "13C", 1.07e5, SP["13C"], 1.5)]
+    assert _level(_both(rows), "C10H16O4") == "4c"
+    rows = background(n=38) + [bright, kid("ac", bright, "13C", 1.07e5, SP["13C"], 1.5)]
+    assert _level(_both(rows), "C10H16O4") == "4b"
+
+
+def test_a_thin_source_keeps_its_height_term():
+    """46 '13C' children, 8 height bins of 5-6: every bin holds >= 5 (SIGMA_MIN_PER_BIN), so the fit keeps
+    its b / h term and the ~2-ppm window of a 110-cps line keeps it 1.5 ppm off."""
+    dim = parent("b", "C11H18O4", height=935.0)
+    rows = background(n=45) + [dim, kid("bc", dim, "13C", 110.0, SP["13C"], 1.5)]
+    assert _level(_both(rows), "C11H18O4") == "4b"
+
+
+def _n1(neutral="C10H16O5", *, nb_height=3.2e5, off_ppm=3.0, role="M0"):
+    """R1's C10H16O5 [M]-. geometry: the ion's 13C line `off_ppm` off its exact position, and the [M-H]- line
+    of the neutral with two more H at ITS exact m/z -- 4.47 mDa (the 13C / H doublet) above that position
+    (20.6 ppm at m/z 217). As `role` 'unexplained' the same line is a row the ledger left unassigned."""
+    p = parent("a", neutral, "[M]-.", height=1e5)
+    counts = C.parse_formula(neutral)
+    nb = parent("n", C.format_formula(dict(counts, H=counts["H"] + 2)), height=nb_height)
+    if role != "M0":
+        nb.update(role=role, neutral_formula=None, adduct=None, ion_formula=None, tier=None, method=None)
+    nc = counts["C"]
+    return background() + [p, kid("ac", p, "13C", 1e5 * nc * 0.0107, SP["13C"], off_ppm), nb], nb, p
+
+
+def test_n1_pulls_only_from_three_times_the_childs_height():
+    """N1: a neighbour >= 3x the child's height. 3.0e4 (2.8x the 1.07e4 child) does not pull, 3.3e4 (3.08x)
+    does."""
+    assert _level(_both(_n1(nb_height=3.0e4)[0]), "C10H16O5", "[M]-.") == "4c"
+    assert _level(_both(_n1(nb_height=3.3e4)[0]), "C10H16O5", "[M]-.") == "4b"
+
+
+def test_n1_reaches_25_ppm_of_the_exact_position():
+    """The 4.47-mDa doublet is 20.6 ppm at m/z 217 (C10H16O5 [M]-.: within reach, pulled) but 28.1 ppm at
+    m/z 159 (C7H10O4 [M]-.: beyond the 25-ppm reach, a line 3 ppm off stays dropped)."""
+    rows, nb, p = _n1("C10H16O5")
+    assert (nb["mz"] - (p["mz"] + SP["13C"])) / nb["mz"] * 1e6 < 25.0
+    assert _level(_both(rows), "C10H16O5", "[M]-.") == "4b"
+    rows, nb, p = _n1("C7H10O4")
+    assert (nb["mz"] - (p["mz"] + SP["13C"])) / nb["mz"] * 1e6 > 25.0
+    assert _level(_both(rows), "C7H10O4", "[M]-.") == "4c"
+
+
+def test_n1_rescues_a_line_pulled_at_most_half_way():
+    """|residual| <= 0.5 x the distance to the neighbour (4.47 mDa): a line 0.45 of the way (2.01 mDa,
+    9.3 ppm) is rescued, one 0.55 of the way (2.46 mDa, 11.3 ppm) is not."""
+    x = parent("a", "C10H16O5", "[M]-.")["_true"] + SP["13C"]
+    near, far = 0.45 * 0.00447 / x * 1e6, 0.55 * 0.00447 / x * 1e6
+    assert _level(_both(_n1(off_ppm=near)[0]), "C10H16O5", "[M]-.") == "4b"
+    assert _level(_both(_n1(off_ppm=far)[0]), "C10H16O5", "[M]-.") == "4c"
+
+
+def test_n1_and_the_list_read_only_the_rows_the_levelling_reads():
+    """N1's neighbour and a list entry must be an M0 / iso row of the file. Per file the whole ledger reaches
+    the levelling: the same bright line as an UNEXPLAINED row pulls nothing, and a list entry naming an
+    unexplained row at the exact 13C position answers nothing -- in the engine and the script alike (pooled,
+    the same frame reaches both too)."""
+    for per_file in (True, False):
+        assert _level(_both(_n1(role="unexplained")[0], per_file=per_file), "C10H16O5", "[M]-.") == "4c"
+        assert _level(_both(_n1()[0], per_file=per_file), "C10H16O5", "[M]-.") == "4b"     # an M0 row: pulls
+    p, ent = _listed(1e6, 1.07e5)
+    ent.update(role="unexplained", iso_label=None)
+    for per_file in (True, False):
+        assert _level(_both(background() + [p, ent], per_file=per_file), "C10H16O4") == "4c"
+    ent.update(role="iso_child", iso_label="13C")
+    assert _level(_both(background() + [p, ent]), "C10H16O4") == "4b"                   # an iso row: it answers
+
+
+# --------------------------------------------------------------------------- the list's own rules (D5)
+def _listed(parent_height, entry_height, *, parent_off_ppm=0.0, pcal=0.0, entry_off_ppm=0.0, label="13C",
+            shift=None):
+    """A C10H16O4 [M-H]- M0 whose isotopologues list names ONE line, an iso row of the file at the parent's
+    TRUE position + `shift` (its 13C spacing by default), `entry_off_ppm` off, under no parent (`orphan`):
+    the list is the pair's only isotope evidence."""
+    p = parent("a", "C10H16O4", height=parent_height, off_ppm=parent_off_ppm, pcal=pcal)
+    at = (p["_true"] + (SP["13C"] if shift is None else shift)) * (1 + entry_off_ppm * 1e-6)
+    ent = orphan("e", at, entry_height, label)
+    p["isotopologues"] = json.dumps([{"label": label, "score": 0.9, "peak_id": "e"}])
+    return p, ent
+
+
+def test_a_list_entry_is_placed_through_the_parents_calibration():
+    """The parent line sits 3 ppm high and its calibration says so (ppm_error_cal +3): the entry its list
+    names sits at the TRUE parent + 1.00335 -- placed through pcal, as a child would be (4b); uncalibrated,
+    or with the calibration's sign the other way, it is 3 / 6 ppm off (4c)."""
+    p, ent = _listed(1e6, 1.07e5, parent_off_ppm=3.0, pcal=3.0)
+    assert _level(_both(background() + [p, ent]), "C10H16O4") == "4b"
+    for pcal in (0.0, -3.0):
+        p["ppm_error_cal"] = pcal
+        assert _level(_both(background() + [p, ent]), "C10H16O4") == "4c", pcal
+
+
+def test_a_list_entry_is_placed_at_its_own_height():
+    """A dim parent (1 000 cps) whose list entry (107 cps, in band) sits 1.5 ppm off: the entry's own
+    ~2.4-ppm window places it (4b); the parent's height would give ~1.1 ppm. A bright entry the same 1.5 ppm
+    off drops (4c)."""
+    p, ent = _listed(1e3, 107.0, entry_off_ppm=1.5)
+    assert _level(_both(background() + [p, ent]), "C10H16O4") == "4b"
+    p, ent = _listed(1e6, 1.07e5, entry_off_ppm=1.5)
+    assert _level(_both(background() + [p, ent]), "C10H16O4") == "4c"
+
+
+def test_a_list_entry_is_not_rescued_by_a_neighbour():
+    """The list test has no N1: an entry 3 ppm off the 13C position of C10H16O5 [M]-., with the 30x brighter
+    [M-H]- line of C10H18O5 4.47 mDa above it (N1 rescues a CHILD there), answers nothing (4c)."""
+    rows, nb, p = _n1()
+    child = rows[-2]
+    ent = orphan("e", child["mz"], child["height"])
+    q = dict(p, isotopologues=json.dumps([{"label": "13C", "score": 0.9, "peak_id": "e"}]))
+    assert _level(_both(background() + [q, ent, nb]), "C10H16O5", "[M]-.") == "4c"
+    assert _level(_both(rows), "C10H16O5", "[M]-.") == "4b"                         # as its child: rescued
+
+
+def test_a_list_entry_names_a_row_of_its_own_file():
+    """Two files reuse peak ids (spec section 2): file f2's M0 names 'e' in its list; f2 has no row 'e',
+    f1's 'e' sits exactly at f2's parent's 13C position. The entry names no row of ITS file: 4c, in the
+    engine and the script; with 'e' in f2 it answers (4b)."""
+    p, ent = _listed(1e6, 1.07e5)
+    for f2_rows, want in (([p], "4c"), ([p, ent], "4b")):
+        f1, f2 = frame(background() + ([ent] if want == "4c" else [])), frame(f2_rows)
+        out = EV.level_pooled({"f1": f1, "f2": f2}, resolution=RES_ORBI)
+        assert dict(zip(zip(out.neutral_formula, out.adduct), out.evidence_level))[("C10H16O4", "[M-H]-")] == want
+        both = pd.concat([f1.assign(__file="f1"), f2.assign(__file="f2")], ignore_index=True)
+        ref = LL.assign_levels(LL.measure_source("s", both, LL.detect_reagent_halogen(both[both.role == "M0"]),
+                                                 RES_ORBI, False), set())
+        assert dict(zip(zip(ref.neutral, ref.adduct), ref.level))[("C10H16O4", "[M-H]-")] == want
+
+
+def test_a_generic_list_entry_is_exempt_from_the_position_test():
+    """An 'M+n' entry names no exact shift: like an 'M+n' child it is judged by its band alone. The list names
+    an 'M+2' line 5 mDa above the 13C2 position at the height the ion's lines within 12 mDa give: 4b."""
+    shift = 2 * SP["13C"] + 0.005
+    e, _s = I.generic_expectation({"C": 10, "H": 15, "O": 4}, {}, shift, 0.012)
+    p, ent = _listed(1e6, 1e6 * e, label="M+2", shift=shift)
+    assert e > 0 and _level(_both(background() + [p, ent]), "C10H16O4") == "4b"
+
+
+def test_a_guarded_tof_file_does_not_position_test_its_list():
+    """Per file, a TOF-class file whose 13C fit sits on the intercept floor is not position-tested (the
+    guard): neither its children nor its list entries. A list entry 6 ppm off, in band, holds iso there (4b);
+    pooled (no guard) or on an Orbitrap-class file it drops (4c)."""
+    p, ent = _listed(1e6, 1.07e5, entry_off_ppm=6.0)
+    rows = background(a=0.0, b=6.0, exact=True) + [p, ent]
+    assert _level(_both(rows, RES_TOF, per_file=True), "C10H16O4") == "4b"
+    assert _level(_both(rows, RES_TOF), "C10H16O4") == "4c"
+    assert _level(_both(rows, RES_ORBI, per_file=True), "C10H16O4") == "4c"
+
+
+# --------------------------------------------------------------------------- the 'M+n' window (D2)
+def test_the_m_plus_n_window_is_12_mda_or_half_the_fwhm():
+    """An 'M+2' child reads the ion's lines within max(12 mDa, FWHM/2) of its measured shift. Orbitrap
+    (FWHM/2 ~1 mDa): a line 8 mDa above the 13C2 position reads the lines within 12 mDa, in band -> iso.
+    TOF at m/z 201 (FWHM/2 ~10.4 mDa): a line 14 mDa from every M+2 line expects 0 (a FWHM-wide window would
+    sum them). TOF at m/z 401 (FWHM/2 ~20.7 mDa): a line 16 mDa above 13C2 reads them -> iso."""
+    fw = EV.instrument(RES_TOF)[1]
+    p = parent("a", "C10H16O4", height=1e5)
+    c10 = {"C": 10, "H": 15, "O": 4}
+    e, _s = I.generic_expectation(c10, {}, 2 * SP["13C"] + 0.008, 0.012)
+    rows = background() + [p, kid("m", p, "M+2", 1e5 * e, 2 * SP["13C"] + 0.008)]
+    assert e > 0 and _fact(_both(rows, RES_ORBI), "C10H16O4").iso
+    at = 2 * SP["13C"] + 0.014
+    wide, _s = I.generic_expectation(c10, {}, at, float(fw(p["_true"] + at)))
+    rows = background(a=2.5, b=1.8) + [p, kid("m", p, "M+2", 1e5 * wide, at)]
+    assert wide > 0 and 0.012 > float(fw(p["_true"] + at)) / 2
+    assert not _fact(_both(rows, RES_TOF), "C10H16O4").iso
+    q = parent("b", "C20H32O8", height=1e5)
+    at = 2 * SP["13C"] + 0.016
+    half = float(fw(q["_true"] + at)) / 2
+    e20, _s = I.generic_expectation({"C": 20, "H": 31, "O": 8}, {}, at, half)
+    rows = background(a=2.5, b=1.8) + [q, kid("m", q, "M+2", 1e5 * e20, at)]
+    assert half > 0.016 > 0.012 and e20 > 0
+    assert _fact(_both(rows, RES_TOF), "C20H32O8").iso
+
+
+# --------------------------------------------------------------------------- 13C2 is a carbon line (D10, I2)
+def test_a_13c2_line_is_a_carbon_line():
+    """'13C2' adds 13C: a bromide cluster with its reagent 81Br line and a placed, in-band 13C2 line (no 13C
+    line) has carbon -- 4b, not the reagent-only 4d."""
+    p = parent("a", "C22H42O6", "[M+Br]-", height=1e5)
+    rows = background() + _bromide(p, kid("b", p, "81Br", 0.97e5, SP["81Br"]),
+                                   kid("c2", p, "13C2", 1e5 * 231 * 0.0107 ** 2, 2 * SP["13C"]))
+    got = _both(rows)
+    f = _fact(got, "C22H42O6", "[M+Br]-")
+    assert f.carbon_ev and not f.reagent_only_iso and _level(got, "C22H42O6", "[M+Br]-") == "4b"

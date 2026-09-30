@@ -299,6 +299,59 @@ def test_the_estimator_is_pinned():
 FIT_PIN = {"a": 0.3888, "b": 3.7752, "n": 240}
 
 
+def test_the_decided_constants_hold_their_values():
+    """The binding C11+c numbers (BUILD_SPEC 2026-09-30, D2-D4): the text-identity test above compares the
+    two copies with each other; this pins them to the decision."""
+    assert I.COMMITTED_TOL_PPM == {"orbitrap": 5.0, "tof": 20.0} and I.COMMITTED_TOL_CLASSLESS_PPM == 20.0
+    assert I.COMMITTED_MIN_P == 1e-4 and I.GENERIC_HALF_WIDTH_DA == 0.012
+    assert (I.POSITION_MIN_PPM, I.POSITION_K) == (1.0, 4.0)
+    assert (I.SIGMA_MIN_CHILDREN, I.SIGMA_BINS, I.SIGMA_MIN_PER_BIN) == (40, 8, 5)
+    assert (I.SIGMA_A_FLOOR_PPM, I.SIGMA_CLIP_PPM, I.SIGMA_CLIP_K, I.MAD_TO_SIGMA) == (0.02, 5.0, 6.0, 1.4826)
+    assert (I.NEIGHBOUR_RATIO, I.NEIGHBOUR_REACH_PPM, I.NEIGHBOUR_FRACTION) == (3.0, 25.0, 0.5)
+    assert I.RATIO_BAND == (0.5, 2.0) and EV.ORBITRAP_R200 == 50_000.0
+
+
+def _mislinked(seed, a, b, out, n=240, n_out=24):
+    """A source's '13C' residuals: n lines scattering as sigma(h)^2 = a^2 + b^2 / h, plus n_out BRIGHT
+    children +-`out` ppm off (mislinked lines of another species) -- what the pre-clip is for."""
+    rng = np.random.default_rng(seed)
+    h = 10 ** rng.uniform(1.5, 5.0, n)
+    r = rng.normal(0.0, np.sqrt(a * a + b * b / h))
+    ho = 10 ** rng.uniform(3.0, 5.0, n_out)
+    ro = rng.choice([-1, 1], n_out) * out
+    return np.r_[r, ro], np.r_[h, ho]
+
+
+def test_the_estimator_at_its_edges():
+    """Samples that sit where each piece of the pinned estimator matters (the equal-bin sample above sees
+    none of them):
+    - 40 children is a fit (39 is none);
+    - the pre-clip floor is 5 ppm: Orbitrap-like (a 0.4, b 5) with 10 % bright lines 4 ppm off -- 6 x MAD
+      (2.9 ppm) is below the floor, so the 4-ppm lines stay in the fit (a 3-ppm floor would clip them);
+    - the pre-clip is 6 x MAD: TOF-like (a 2.5, b 1.8; MAD sigma 2.66 ppm) with 10 % bright lines 12 ppm off
+      -- 16 ppm keeps them (4 x MAD would clip them); the WLS slope comes out negative there and b clamps at 0;
+    - the bins are weighted by their counts: a flat-topped source (40 lines at 30 cps, 40 at 1e5 cps, 10 at
+      each height between) gives quantile bins of unequal counts (unweighted: a 0.307);
+    - a thin source (46 children, bins of 5-6) keeps every bin (a minimum of 6 per bin drops two)."""
+    r, h = _exact_13c(0.3, 6.0)
+    assert I.fit_position_sigma(r[:40], h[:40]) is not None and I.fit_position_sigma(r[:39], h[:39]) is None
+    fit = I.fit_position_sigma(*_mislinked(5, 0.4, 5.0, 4.0))
+    assert (round(fit.a, 3), round(fit.b, 3), fit.n) == (0.454, 5.157, 264)
+    fit = I.fit_position_sigma(*_mislinked(5, 2.5, 1.8, 12.0))
+    assert (round(fit.a, 3), fit.b, fit.n, fit.floored) == (2.899, 0.0, 264, False)
+    pat = np.array([-3, -1, -1, -1, 0, 0, 1, 1, 1, 3], float) / I.MAD_TO_SIGMA
+    r, h = [], []
+    for hi, n in [(30, 40), (100, 10), (300, 10), (1000, 10), (3000, 10), (1e4, 10), (3e4, 10), (1e5, 40)]:
+        r += list(np.resize(pat, n) * math.sqrt(0.09 + 36.0 / hi))
+        h += [hi] * n
+    fit = I.fit_position_sigma(np.array(r), np.array(h))
+    assert (round(fit.a, 3), round(fit.b, 3)) == (0.304, 5.994)
+    rng = np.random.default_rng(3)
+    h = 10 ** rng.uniform(1.5, 5.0, 46)
+    fit = I.fit_position_sigma(rng.normal(0.0, np.sqrt(0.16 + 25.0 / h)), h)
+    assert (round(fit.a, 4), round(fit.b, 4), fit.n) == (0.3962, 9.6246, 46)
+
+
 # --------------------------------------------------------------------------- the twin
 def test_the_script_carries_the_same_functions_text_for_text():
     for name in SHARED:
@@ -547,6 +600,10 @@ def test_the_instrument_class_is_read_off_the_width_model():
         k2, fwhm2 = LL.instrument(res)
         assert k == k2 == klass and fwhm(300.0) == pytest.approx(fwhm2(300.0), rel=1e-12)
     assert LL.instrument(None) == (None, None)
+    # the class is read at m/z 200: an Orbitrap resolving 60 000 there (33 000 at m/z 600) is Orbitrap-class
+    mid = {"coef": 200 ** (1 - 1.5344223) / 60_000.0, "exponent": 1.5344223, "offset": 0.0}
+    assert EV.instrument(mid)[0] == LL.instrument(mid)[0] == "orbitrap"
+    assert EV.instrument(Resolution.from_r(49_000))[0] == LL.instrument(Resolution.from_r(49_000).as_dict())[0] == "tof"
     from peaky.batch import iso_checks as IC
     assert EV.ORBITRAP_R200 == LL.ORBITRAP_R200 == IC.ORBITRAP_R200
 
