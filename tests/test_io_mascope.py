@@ -214,11 +214,14 @@ check("flatten does NOT re-anchor a normal (no-^) ion",
 from peaky import chemistry as _C  # noqa: E402
 # build a synthetic match table at a uniform -1.9 ppm offset (Br-CIMS)
 _off_rows = []
-for f, mech in [("C10H16O4", "+Br-"), ("C10H16O3", "+Br-"), ("C5H10O3", "+Br-"),
-                ("C2HF3O2", "+Br-"), ("C9H14O4", "-H+"), ("C6H12O3", "+Br-"),
-                ("C4H6O4", "-H+"), ("HNO3", "+Br-"), ("C8H12O4", "+Br-"),
+# the matches spell their mechanism as the server stores it: the legacy
+# '+Br-' / '-H+' before Mascope 1.10, the standard '[M+Br]-' / '[M-H]-' from
+# 1.10 on; the offset reads both
+for f, mech in [("C10H16O4", "+Br-"), ("C10H16O3", "[M+Br]-"), ("C5H10O3", "+Br-"),
+                ("C2HF3O2", "[M+Br]-"), ("C9H14O4", "-H+"), ("C6H12O3", "+Br-"),
+                ("C4H6O4", "[M-H]-"), ("HNO3", "+Br-"), ("C8H12O4", "[M+Br]-"),
                 ("C10H18O4", "+Br-")]:
-    add = IO.MECH_TO_ADDUCT[mech]
+    add = IO.MECH_TO_ADDUCT[IO._mechanism_key(mech)]
     mz = _C.ion_mz(f, add) * (1 - 1.9e-6)            # observed = -1.9 ppm
     _off_rows.append({"target_compound_formula": f, "ionization_mechanism": mech,
                       "target_isotope_formula": f, "mz": mz})
@@ -316,8 +319,8 @@ check("fetch_batch_samples propagates the SDK error unmasked",
 if os.environ.get("MASCOPE_LIVE") == "1":
     print("\n-- live smoke --")
     cl = IO.connect()
-    mech = IO.resolve_mechanism_ids(cl, ["-H+", "+Br-"])
-    check("live: mechanisms resolved", set(mech) == {"-H+", "+Br-"}, mech)
+    mech = IO.resolve_mechanism_ids(cl, ["[M-H]-", "[M+Br]-"])
+    check("live: mechanisms resolved", set(mech) == {"[M-H]-", "[M+Br]-"}, mech)
     SID = os.environ.get("MASCOPE_SID")          # set to one of YOUR sample ids
     if SID:
         peaks = IO.fetch_peaks(cl, SID, use_cache=False)
@@ -332,29 +335,70 @@ if os.environ.get("MASCOPE_LIVE") == "1":
 else:
     print("\n(live smoke skipped; set MASCOPE_LIVE=1 to run)")
 
+# ---------- mechanisms: one spelling to the scorer, either from the server ---
+# ADDUCT_TO_MECH's values are the standard adduct notation the library and a
+# Mascope 1.10 server spell mechanisms in; each is its key canonicalised.
+from mascope_tools.composition import standard_notation as _std   # noqa: E402
+check("every ADDUCT_TO_MECH value is its label's standard spelling",
+      all(v == _std(k) for k, v in IO.ADDUCT_TO_MECH.items()),
+      {k: v for k, v in IO.ADDUCT_TO_MECH.items() if v != _std(k)})
+check("MECH_TO_ADDUCT is keyed on the standard spelling",
+      IO.MECH_TO_ADDUCT.get("[M-H]-") == "[M-H]-" and IO.MECH_TO_ADDUCT.get("[M]+.") == "[M]+."
+      and "-H+" not in IO.MECH_TO_ADDUCT)
+check("_mechanism_key reads a legacy server row as the standard spelling",
+      IO._mechanism_key("-H+") == "[M-H]-" and IO._mechanism_key("+") == "[M]+."
+      and IO._mechanism_key("+(CH4N2O)H+") == "[M+CH4N2O+H]+")
+check("_mechanism_key leaves an unreadable row as itself",
+      IO._mechanism_key("not a mechanism") == "not a mechanism")
+# detect_adducts reads the sample's own matches on either kind of server
+check("detect_adducts on a server before 1.10 (legacy spellings)",
+      IO.detect_adducts(pd.DataFrame({"ionization_mechanism": ["+Br-", "-H+", "+Br-"]}))
+      == ["[M+Br]-", "[M-H]-"])
+check("detect_adducts on a server from 1.10 on (standard spellings)",
+      IO.detect_adducts(pd.DataFrame({"ionization_mechanism": ["[M+Br]-", "[M-H]-"]}))
+      == ["[M+Br]-", "[M-H]-"])
+# resolve_mechanism_ids matches a row by the mechanism it names, whichever
+# spelling the server stores, and keys its answer by the name as asked
+class _MechTable:
+    def __init__(self, rows):
+        self._df = pd.DataFrame(rows, columns=["ionization_mechanism",
+                                               "ionization_mechanism_polarity",
+                                               "ionization_mechanism_id"])
+    def list(self):
+        return self._df
+class _MechClient:
+    def __init__(self, rows):
+        self.ionization = _MechTable(rows)
+_legacy_server = _MechClient([("-H+", "-", "dep"), ("+Br-", "-", "br"), ("+", "+", "et")])
+_std_server = _MechClient([("[M-H]-", "-", "dep"), ("[M+Br]-", "-", "br"), ("[M]+.", "+", "et")])
+for _label, _srv in (("legacy", _legacy_server), ("standard", _std_server)):
+    check(f"resolve_mechanism_ids finds the rows on a {_label}-spelled server",
+          IO.resolve_mechanism_ids(_srv, ["[M-H]-", "[M+Br]-", "[M]+.", "[M+I]-"])
+          == {"[M-H]-": "dep", "[M+Br]-": "br", "[M]+.": "et"})
+
 # ---------- abstraction channels ride inside mechanism_ids (LOCAL_MECH_PREFIX) --
-# [M-H]+ / [M-CH3]+ have no deployment mechanism id, so ADDUCT_TO_MECH cannot
-# carry them -- and must not: the server spells NEGATIVE deprotonation '-H+'
-# too, so keying [M-H]+ there would make MECH_TO_ADDUCT ambiguous.
-check("[M-H]+ stays OUT of ADDUCT_TO_MECH (would collide with [M-H]-)",
+# [M-H]+ / [M-CH3]+ have no mechanism on a server before Mascope 1.10, so
+# ADDUCT_TO_MECH does not carry them; they ride as tagged tokens, spelled for
+# the scorer exactly as their labels are.
+check("[M-H]+ stays OUT of ADDUCT_TO_MECH (a local-scoring channel)",
       "[M-H]+" not in IO.ADDUCT_TO_MECH)
 check("[M-CH3]+ stays OUT of ADDUCT_TO_MECH",
       "[M-CH3]+" not in IO.ADDUCT_TO_MECH)
-check("MECH_TO_ADDUCT['-H+'] is still the negative deprotonation channel",
-      IO.MECH_TO_ADDUCT.get("-H+") == "[M-H]-")
+check("[M-H]- and [M-H]+ are two spellings, so the map cannot confuse them",
+      IO.MECH_TO_ADDUCT.get("[M-H]-") == "[M-H]-" and "[M-H]+" not in IO.MECH_TO_ADDUCT)
 check("local_mechanism_tokens tags only the abstraction channels",
       IO.local_mechanism_tokens(["[M]+.", "[M-H]+", "[M-CH3]+", "[M+H]+"])
-      == ["local:-H+", "local:-CH3+"])
+      == ["local:[M-H]+", "local:[M-CH3]+"])
 check("local_mechanism_tokens is empty for a profile with no abstraction channel",
       IO.local_mechanism_tokens(["[M+Br]-", "[M-H]-"]) == [])
 check("_server_mech_ids drops the tagged tokens (never sent to the server)",
-      IO._server_mech_ids(["id1", "local:-H+", "id2"]) == ["id1", "id2"])
+      IO._server_mech_ids(["id1", "local:[M-H]+", "id2"]) == ["id1", "id2"])
 check("_server_mech_ids returns None when only local channels are present",
-      IO._server_mech_ids(["local:-H+"]) is None)
+      IO._server_mech_ids(["local:[M-H]+"]) is None)
 check("_local_mech_names recovers the local scorer's mechanism spelling",
-      IO._local_mech_names(["id1", "local:-H+", "local:-CH3+"]) == ["-H+", "-CH3+"])
+      IO._local_mech_names(["id1", "local:[M-H]+", "local:[M-CH3]+"]) == ["[M-H]+", "[M-CH3]+"])
 check("_mechanism_names needs no client when every channel is local",
-      IO._mechanism_names(None, ["local:-H+", "local:-CH3+"]) == ["-H+", "-CH3+"])
+      IO._mechanism_names(None, ["local:[M-H]+", "local:[M-CH3]+"]) == ["[M-H]+", "[M-CH3]+"])
 
 # the local scorer must actually compute those channels -- the reason the whole
 # tag exists. Ethanol's hydride ion and D4's methyl-loss ion, both measured.
@@ -362,14 +406,22 @@ from peaky.io import local_scoring as _LS       # noqa: E402
 import pandas as _pd                            # noqa: E402
 _pk = _pd.DataFrame({"peak_id": [1, 2], "mz": [45.03349, 281.05114],
                      "height": [1e4, 2.7e4]})
-_h = _LS.score_candidates_local(_pk, ["C2H6O"], mechanisms=["-H+"])
-check("local scorer: C2H6O on '-H+' matches the ethanol hydride ion C2H5O+",
+_h = _LS.score_candidates_local(_pk, ["C2H6O"], mechanisms=["[M-H]+"])
+check("local scorer: C2H6O on [M-H]+ matches the ethanol hydride ion C2H5O+",
       len(_h) > 0 and str(_h.iloc[0]["ion_formula"]) == "C2H5O+",
       f"{list(_h.get('ion_formula', []))}")
-_m = _LS.score_candidates_local(_pk, ["C8H24O4Si4"], mechanisms=["-CH3+"])
-check("local scorer: D4 on '-CH3+' matches C7H21O4Si4+ (the quantifier ion)",
+_m = _LS.score_candidates_local(_pk, ["C8H24O4Si4"], mechanisms=["[M-CH3]+"])
+check("local scorer: D4 on [M-CH3]+ matches C7H21O4Si4+ (the quantifier ion)",
       len(_m) > 0 and str(_m.iloc[0]["ion_formula"]) == "C7H21O4Si4+",
       f"{list(_m.get('ion_formula', []))}")
+# and the deprotonation channel, which shared the legacy name '-H+' with the
+# hydride one, is still the anion: ethoxide, two electron masses above C2H5O+
+_e = _LS.score_candidates_local(
+    _pd.DataFrame({"peak_id": [1], "mz": [45.03459], "height": [1e4]}),
+    ["C2H6O"], mechanisms=["[M-H]-"])
+check("local scorer: C2H6O on [M-H]- matches the ethoxide anion C2H5O-",
+      len(_e) > 0 and str(_e.iloc[0]["ion_formula"]) == "C2H5O-",
+      f"{list(_e.get('ion_formula', []))}")
 
 
 def test_all():

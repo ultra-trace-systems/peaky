@@ -1,8 +1,14 @@
 # Scoring: Mascope backend vs. `mascope_tools` (peaky local)
 
-> Unstaged analysis note. Background: peaky's default scorer is now in-process
-> `mascope_tools.score_pattern`; the server's `match_compounds` uses a *different*
-> formula. This documents the difference, its effect, and the consolidation path.
+> Unstaged analysis note, and now largely a historical one: the consolidation it
+> recommends has happened. peaky and Mascope's peak-assignment engine both score
+> with `mascope_tools.score_pattern_v2`, at the sample's own fitted mass width and
+> its own per-peak signal-to-noise, and the "science decision to make" below was
+> made the way this note suggested - an envelope-completeness penalty weighted by
+> detectability, so a line predicted below the noise is not charged. What follows
+> describes the two formulas as they stood, which is what the numbers in it are.
+> The legacy targeted `match_compounds` path still carries the v1 formula behind
+> `MASCOPE_MATCH_SCORE_VERSION`.
 
 ## The two formulas
 

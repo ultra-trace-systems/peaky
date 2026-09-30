@@ -30,12 +30,15 @@ dependencies = [
     # upgrade and run tests/test_io_mascope.py rather than pinning back.
     "mascope-sdk>=2026.8.12",
     # In-process scoring backend, now the DEFAULT (PEAKY_LOCAL_SCORING=0 falls back
-    # to the network match_compounds path). >=2026.6.25 carries the 15N-labelled
-    # custom-element isotope prediction. See docs/MASCOPE_TOOLS_INTEGRATION.md.
-    # Below 2026.9.24: that release spells the subtractive mechanisms per the
-    # grammar (-H- is a hydride removed, -H+ a proton), and this code still
-    # writes them the other way round until it is re-pinned with the change.
-    "mascope-tools>=2026.6.25,<2026.9.24",
+    # to the network match_compounds path). See docs/MASCOPE_TOOLS_INTEGRATION.md.
+    # 2026.9.30, the library Mascope 1.10 publishes, is the release that carries
+    # what the scorer is built on: PatternScoring, the mass-accuracy fit, the
+    # instrument-class widths and the standard adduct notation the mechanisms
+    # are spelled in (2026.6.25 brought the 15N-labelled custom-element isotope
+    # prediction). A server of that release also sends each peak's
+    # signal_to_noise; an older one does not, and the score runs in its no-SNR
+    # mode against it.
+    "mascope-tools>=2026.9.30",
     "pandas>=2.1",
     "pyarrow>=14",          # parquet engine — the per-batch TS (*_ts.parquet) is read/written across the pipeline
     "numpy>=1.24",

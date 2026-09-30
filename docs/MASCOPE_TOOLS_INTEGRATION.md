@@ -1,7 +1,7 @@
 # Local scoring via `mascope_tools`
 
 Status: **DEFAULT.** Local in-process scoring replaced the network `match_compounds`
-hot loop (same Mascope scoring maths — IsoSpec + `score_pattern` — run locally). Opt
+hot loop (same Mascope scoring maths — IsoSpec + `score_pattern_v2` — run locally). Opt
 back to the server path with `PEAKY_LOCAL_SCORING=0`. `mascope-tools` is now a core
 dependency. Full-pipeline validated on Bromide (0.932 agreement) + Uronium (no OOM,
 0.986); one integration bug found & fixed (deprotonation charge, below); the +0.052
@@ -56,7 +56,7 @@ score + argmax over the same candidate pool vs the backend's assigned neutral.
 - **Adduct universe must match the passes**, not just the base profile: peaky's passes
   add `[M+NH4]+` (37% of Uronium M0s!) and `[M+CO3]-`/`[M+HBr+Br]-`/`[M+HBr+CO3]-`
   (Br). With those included, coverage went 0.66->1.00 (Ur) and 0.84->0.92 (Br).
-  `adduct_to_mech` now collapses multi-part adducts.
+  `adduct_to_mech` reads multi-part adducts.
 - **Score gap is a clean systematic offset**, not noise: local is **+0.067 (Br) /
   +0.074 (Ur)** higher than the backend (median ~= mean, std ~0.07). Offsets are
   rank-preserving, which is why argmax agreement is high.
@@ -88,9 +88,12 @@ mechanism_ids straight to that name and hands it to `parse_ionization`, which re
 trailing `+` as net charge **+1** — so every `[M-H]-` candidate was scored as a +1
 cation, predicted the wrong m/z and matched nothing, silently dropping the whole
 deprotonation channel (37% of Bromide assignments). The parity eval never hit this
-because it used `adduct_to_mech` (correct `-H-`); only the pipeline dispatch uses
-`_mechanism_names`. **Fix:** `_mechanism_names` normalises the trailing sign to the
-mechanism's polarity (`-H+`→`-H-`); consistent adduct names are untouched. Guarded by
+because it used `adduct_to_mech` (`-H-`, the anion as the library then read it); only the pipeline dispatch uses
+`_mechanism_names`. **Fix, then:** `_mechanism_names` normalised the trailing sign to the
+mechanism's polarity (`-H+`→`-H-`). **Now:** the library reads both notations by their
+grammar (`mascope-tools` 2026.9.30, Mascope 1.10), under which `-H-` is a hydride removed,
+so the rewrite is gone and every mechanism reaches the scorer in the standard adduct
+notation (`[M-H]-`), converted from whichever spelling the server stores. Guarded by
 `tests/test_mechanism_names.py`. (Positive-mode Uronium — `+H+`/`+NH4+` — was never
 affected, consistent with its 0.98 eval agreement.)
 
@@ -122,7 +125,8 @@ real assignments.)
    Uronium completes with no OOM (the server-path blocker), 0.986 vs the prior run.
 5. **15N-labelled nitrate scoring** — DONE in `mascope_tools` >= 2026.06.25
    (custom-element `predict_isotopes` + per-reagent purity).
-6. **Dependency** — `mascope-tools>=2026.6.25` is now a core dependency.
+6. **Dependency** — `mascope-tools` is a core dependency; the floor is 2026.9.30, the
+   release Mascope 1.10 publishes, which carries the v2 fit and the notation module.
 
 **Possible follow-ups (not blocking):** a clean *today-code* server Uronium baseline (the
 06-24 reference is older code) if a tighter Ur agreement number is wanted — though the

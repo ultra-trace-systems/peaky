@@ -107,8 +107,8 @@ for _p in P.PROFILES.values():
           [a for a in _p.adducts if a not in CHEM.ADDUCT_SHIFTS])
     check(f"{_p.name}: detect_adduct is mechanism-mapped (auto-detect works)",
           _p.detect_adduct in IOM.ADDUCT_TO_MECH, _p.detect_adduct)
-for _a, _m in (("[M+I]-", "+I-"), ("[M-H]-", "-H+"), ("[M+I2]-", "+I2-"),
-               ("[M+I3]-", "+I3-")):
+for _a, _m in (("[M+I]-", "[M+I]-"), ("[M-H]-", "[M-H]-"), ("[M+I2]-", "[M+I2]-"),
+               ("[M+I3]-", "[M+I3]-")):
     check(f"iodide channel {_a} maps to server mechanism {_m}",
           IOM.ADDUCT_TO_MECH.get(_a) == _m)
 # [M-H+I2]- is relabel-only, like [M+HBr+Br]-: pass 3 scores its covalent alias
@@ -116,8 +116,8 @@ for _a, _m in (("[M+I]-", "+I-"), ("[M-H]-", "-H+"), ("[M+I2]-", "+I2-"),
 # mixed +/- mechanism to the scorers -- keep it OUT.
 check("iodide [M-H+I2]- is a decomposition alias: deliberately NOT mechanism-mapped",
       "[M-H+I2]-" not in IOM.ADDUCT_TO_MECH)
-check("EasyIC [M]+. maps to the server's bare '+' mechanism",
-      IOM.ADDUCT_TO_MECH.get("[M]+.") == "+")
+check("EasyIC [M]+. is its own spelling, and a server's legacy bare '+' resolves to it",
+      IOM.ADDUCT_TO_MECH.get("[M]+.") == "[M]+." and IOM._mechanism_key("+") == "[M]+.")
 # Hydride abstraction has no server mechanism: like [M-H+I2]-, it is scored
 # locally -- a mapping here would query the server with a nonexistent name.
 check("EasyIC [M-H]+ is a local-scoring channel: deliberately NOT mechanism-mapped",

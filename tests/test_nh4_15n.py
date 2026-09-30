@@ -31,8 +31,14 @@ def test_profile_resolves_and_is_labelled_positive():
 
 
 def test_auto_detect_from_server_mechanism():
+    # as a server before Mascope 1.10 spells the matches ...
     peaks = pd.DataFrame({"peak_id": [1, 2], "mz": [197.13, 179.107],
                           "ionization_mechanism": ["+^NH4+", "+H+"]})
+    assert IO.detect_adducts(peaks) == ["[M+^NH4]+", "[M+H]+"]
+    assert P.resolve("auto", peaks).name == "NH4_15N"
+    # ... and as one from 1.10 on does
+    peaks = pd.DataFrame({"peak_id": [1, 2], "mz": [197.13, 179.107],
+                          "ionization_mechanism": ["[M+^NH4]+", "[M+H]+"]})
     assert IO.detect_adducts(peaks) == ["[M+^NH4]+", "[M+H]+"]
     assert P.resolve("auto", peaks).name == "NH4_15N"
 
@@ -51,9 +57,11 @@ def test_adduct_masses_match_the_exploratory_file():
 
 
 def test_mechanism_maps_both_ways():
-    assert LS.adduct_to_mech("[M+^NH4]+") == "+^NH4+"
-    assert IO.ADDUCT_TO_MECH["[M+^NH4]+"] == "+^NH4+"
-    assert IO.MECH_TO_ADDUCT["+^NH4+"] == "[M+^NH4]+"
+    assert LS.adduct_to_mech("[M+^NH4]+") == "[M+^NH4]+"
+    assert IO.ADDUCT_TO_MECH["[M+^NH4]+"] == "[M+^NH4]+"
+    assert IO.MECH_TO_ADDUCT["[M+^NH4]+"] == "[M+^NH4]+"
+    # a server before Mascope 1.10 spells the row the legacy way; same key
+    assert IO._mechanism_key("+^NH4+") == "[M+^NH4]+"
     # the dehydration aliases are relabel-only: no server mechanism
     assert "[M+^NH4-H2O]+" not in IO.ADDUCT_TO_MECH
     assert "[M+H-H2O]+" not in IO.ADDUCT_TO_MECH

@@ -101,7 +101,7 @@ ADDUCT_SHIFTS: dict[str, float] = {
     # radical, blocked by integer-DBE), which is why they sat unexplained.
     "[M-H+I2]-": 2 * M["I"] - M["H"] + M_E,
     "[M+NO3]-": M["N"] + 3 * M["O"] + M_E,
-    # ¹⁵N-labelled nitrate reagent cluster (server mechanism '+^NO3-'); the added
+    # ¹⁵N-labelled nitrate reagent cluster (mechanism '[M+^NO3]-'); the added
     # N is ¹⁵N, so this is +62.9855, not the +61.9885 of the ¹⁴N adduct above.
     "[M+^NO3]-": _M_15N + 3 * M["O"] + M_E,
     "[M+HSO4]-": 2 * M["H"] + M["S"] + 4 * M["O"] - M["H"] + M_E,  # = H + S + 4O
@@ -137,7 +137,7 @@ ADDUCT_SHIFTS: dict[str, float] = {
     "[M+H]+":   M["H"] - M_E,
     "[M+Na]+":  22.9897692820 - M_E,
     "[M+NH4]+": M["N"] + 4 * M["H"] - M_E,
-    # ¹⁵N-labelled AMMONIUM reagent cluster (server mechanism '+^NH4+'): the
+    # ¹⁵N-labelled AMMONIUM reagent cluster (mechanism '[M+^NH4]+'): the
     # added N is ¹⁵N, so the shift is +19.0309, not the +18.0338 of the ¹⁴N
     # adduct above. The ~2 % ¹⁴N reagent impurity shows as a -0.99703 satellite
     # (modelled by the scorer's ^N purity), NOT as a second analyte channel --
@@ -154,7 +154,7 @@ ADDUCT_SHIFTS: dict[str, float] = {
     "[M+K]+":   38.9637064864 - M_E,
     # protonated-urea (URONIUM) adduct -- the analyte channel of a urea-CIMS
     # positive-mode source: [M + (CH4N2O) + H]+ = M + urea + proton (server
-    # mechanism '+(CH4N2O)H+'). Shift = C + 5H + 2N + O - e  (= 61.0396).
+    # mechanism '[M+CH4N2O+H]+'). Shift = C + 5H + 2N + O - e  (= 61.0396).
     "[M+(CH4N2O)H]+": M["C"] + 5 * M["H"] + 2 * M["N"] + M["O"] - M_E,
     # EasyIC⁺ (fluoranthene-cation charge transfer, low pressure) channels:
     #   [M]+.   molecular RADICAL cation (server mechanism '+') -- charge

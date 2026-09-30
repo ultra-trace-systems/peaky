@@ -1,13 +1,15 @@
-"""Guard the server-mechanism -> mascope-notation normalisation in the local
-scoring dispatch.
+"""Guard the server-mechanism -> scorer-spelling conversion in the local scoring
+dispatch.
 
-The server names deprotonation '-H+' (remove a proton) with polarity '-', but it
-yields an ANION. `mascope_tools.parse_ionization` reads the trailing sign as the
-net charge, so an un-normalised '-H+' scores as a +1 cation and matches nothing —
-which silently dropped the entire [M-H]- channel in a full batch (486 strong
-peaks left unexplained). `_mechanism_names` must normalise the trailing sign to
-the mechanism's polarity ('-H+' -> '-H-') while leaving already-consistent
-adduct names ('+Br-', '+NH4+') untouched.
+A server before Mascope 1.10 stores a mechanism in the legacy
+'<operation><moiety><moiety charge>' spelling, whose trailing sign is the added
+or removed species' charge rather than the ion's: deprotonation is '-H+' (a
+proton removed) although it yields an ANION. A server from 1.10 on stores the
+standard adduct notation, '[M-H]-'. The scorer (`mascope_tools`) reads both by
+their grammar since the release this branch pins, so `_mechanism_names` hands
+it the standard spelling of whatever the row stores - and no longer flips a
+trailing sign to the row's polarity, which under that grammar would turn the
+deprotonation into a hydride abstraction ('-H-' is '[M-H]+').
 """
 
 import pandas as pd
@@ -28,43 +30,87 @@ class _FakeClient:
         self.ionization = _FakeIonization(df)
 
 
-def _client():
-    df = pd.DataFrame(
-        [
-            # name, polarity, id  — mirrors a live server's mechanism table
-            ("-H+", "-", "dep"),  # deprotonation: anion despite trailing '+'
-            ("+Br-", "-", "br"),
-            ("+CO3-", "-", "co3"),
-            ("+NH4+", "+", "nh4"),
-            ("+H+", "+", "prot"),
-            ("+^NO3-", "-", "no315n"),
-        ],
-        columns=[
-            "ionization_mechanism",
-            "ionization_mechanism_polarity",
-            "ionization_mechanism_id",
-        ],
-    )
-    return _FakeClient(df)
+def _client(rows):
+    return _FakeClient(pd.DataFrame(rows, columns=[
+        "ionization_mechanism",
+        "ionization_mechanism_polarity",
+        "ionization_mechanism_id",
+    ]))
 
 
-def test_deprotonation_sign_normalised_to_polarity():
-    # '-H+' (the bug) must become '-H-' so parse_ionization charges it -1
-    assert IO._mechanism_names(_client(), ["dep"]) == ["-H-"]
+#: a mechanism table as a server before Mascope 1.10 stores it
+LEGACY = [
+    ("-H+", "-", "dep"),  # deprotonation: anion despite trailing '+'
+    ("+Br-", "-", "br"),
+    ("+CO3-", "-", "co3"),
+    ("+NH4+", "+", "nh4"),
+    ("+H+", "+", "prot"),
+    ("+^NO3-", "-", "no315n"),
+    ("+(CH4N2O)H+", "+", "uro"),
+    ("+", "+", "et"),
+]
+
+#: the same table on a server from 1.10 on
+STANDARD = [
+    ("[M-H]-", "-", "dep"),
+    ("[M+Br]-", "-", "br"),
+    ("[M+CO3]-", "-", "co3"),
+    ("[M+NH4]+", "+", "nh4"),
+    ("[M+H]+", "+", "prot"),
+    ("[M+^NO3]-", "-", "no315n"),
+    ("[M+CH4N2O+H]+", "+", "uro"),
+    ("[M]+.", "+", "et"),
+]
+
+#: what the scorer is handed for each id, from either table
+EXPECTED = {
+    "dep": "[M-H]-", "br": "[M+Br]-", "co3": "[M+CO3]-", "nh4": "[M+NH4]+",
+    "prot": "[M+H]+", "no315n": "[M+^NO3]-", "uro": "[M+CH4N2O+H]+", "et": "[M]+.",
+}
 
 
-def test_consistent_adducts_unchanged():
-    c = _client()
-    assert IO._mechanism_names(c, ["br"]) == ["+Br-"]
-    assert IO._mechanism_names(c, ["co3"]) == ["+CO3-"]
-    assert IO._mechanism_names(c, ["nh4"]) == ["+NH4+"]
-    assert IO._mechanism_names(c, ["prot"]) == ["+H+"]
-    assert IO._mechanism_names(c, ["no315n"]) == ["+^NO3-"]
+def test_legacy_rows_are_handed_over_in_the_standard_notation():
+    c = _client(LEGACY)
+    for mech_id, spelling in EXPECTED.items():
+        assert IO._mechanism_names(c, [mech_id]) == [spelling], mech_id
+
+
+def test_standard_rows_are_handed_over_unchanged():
+    c = _client(STANDARD)
+    for mech_id, spelling in EXPECTED.items():
+        assert IO._mechanism_names(c, [mech_id]) == [spelling], mech_id
+
+
+def test_deprotonation_is_the_anion_not_the_hydride_cation():
+    # the old rewrite made '-H-' of the deprotonation row; the library now
+    # reads '-H-' as [M-H]+, so the row must reach the scorer as [M-H]-
+    assert IO._mechanism_names(_client(LEGACY), ["dep"]) == ["[M-H]-"]
+    assert IO._mechanism_names(_client([("-H-", "+", "hyd")]), ["hyd"]) == ["[M-H]+"]
+
+
+def test_polarity_column_does_not_override_the_spelling():
+    # a row stored with a polarity that contradicts what it says is read as it
+    # says, the way the server reads it (logged, not rewritten)
+    assert IO._mechanism_names(_client([("-H-", "-", "odd")]), ["odd"]) == ["[M-H]+"]
+
+
+def test_unreadable_row_is_skipped():
+    c = _client([("not a mechanism", "-", "bad"), ("+Br-", "-", "br")])
+    assert IO._mechanism_names(c, ["bad", "br"]) == ["[M+Br]-"]
+
+
+def test_order_and_local_tokens():
+    c = _client(LEGACY)
+    assert IO._mechanism_names(c, ["br", "dep"]) == ["[M+Br]-", "[M-H]-"]
+    # a local token is appended, and not twice when the server also names it
+    assert IO._mechanism_names(c, ["prot", "local:[M-H]+"]) == ["[M+H]+", "[M-H]+"]
+    assert IO._mechanism_names(_client([("[M-H]+", "+", "hyd")]),
+                               ["hyd", "local:[M-H]+"]) == ["[M-H]+"]
 
 
 def test_unknown_id_skipped_and_empty():
-    assert IO._mechanism_names(_client(), ["does-not-exist"]) == []
-    assert IO._mechanism_names(_client(), None) == []
+    assert IO._mechanism_names(_client(LEGACY), ["does-not-exist"]) == []
+    assert IO._mechanism_names(_client(LEGACY), None) == []
 
 
 def test_polarity_sign_tolerant():

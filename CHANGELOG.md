@@ -6,7 +6,59 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The local scorer judges a candidate at the sample's own measurement, not at a
+  fixed Orbitrap's.** It scored with `score_pattern`, which scaled its mass term
+  by a flat 5 ppm and averaged its terms over the lines a candidate *matched* - so
+  an envelope that predicted three lines and found one cost nothing, and on a TOF,
+  whose ordinary mass error is a whole Orbitrap window, every candidate scored near
+  zero and a run committed almost nothing. It now scores with Mascope's
+  `score_pattern_v2` and a `PatternScoring` built per sample
+  (`io_mascope.scoring_for_sample`): the width and offset fitted from the sample's
+  own targeted matches - the library's `fit_mass_accuracy`, falling back to the
+  instrument class below eight anchors - and the line-matching window of that class
+  (5 ppm Orbitrap, 15 TOF). The peaks frame carries each peak's `signal_to_noise`
+  into the score, so a predicted line that is missing is charged where the noise
+  says it should have been visible and excused where it says it could not.
+
+  This is the same function, the same fit and the same widths Mascope's own
+  assignment engine uses, so a peaky run and an in-app run of one sample can be
+  compared as two sets of assignments rather than as two scorers.
+
+  **The library it is built on is the one Mascope 1.10 publishes.** The v2
+  scorer, the fit and the widths entered `mascope-tools` after 2026.6.25 and
+  reached PyPI with 2026.9.30, which is now the dependency's floor; until that
+  release this work lived on a branch pinned to the library by revision, the one
+  the reference runs were scored with. The per-peak `signal_to_noise` the score
+  reads is sent by a server of the same release; against an older server the
+  score runs in its no-SNR mode and charges an absent line on predicted
+  abundance alone.
+
+- **A published run says what scored it.** Its config carries `score_version` and
+  a `pattern_scoring` block - width, offset, whether the width was fitted or the
+  instrument class's, the anchors behind it, the matching window, the envelope
+  floor - in the same keys Mascope's engine stamps on its own runs. Two runs of
+  one sample disagreeing is a different fact when they were judged at different
+  widths, and neither said so before.
+
+- **The predicted envelope is anchored on the ion's own line.** IsoSpec returns
+  the most abundant configuration first, which for a dibromide is the mixed 79/81
+  line two mass units above the peak the candidate was proposed for - and every
+  index-0 reading downstream (the intensity the envelope is normalised to, the
+  score's anchor, `is_base`) then described the wrong line. `anchor_on_monoisotopic`
+  puts M0 first, which is also how the network path derives `is_base`, so the two
+  backends now agree about which row is the ion's.
+
+- **A run's manifest records the `mascope-tools` version.** The library is the
+  scorer - the fit, the isotope prediction and the class widths all come from it -
+  so a run's numbers are not reproducible without naming it.
+
 ### Added
+- `PEAKY_MATCH_PPM` widened the local scorer's line-matching window per run, so a TOF
+  reference run (5-15 ppm accuracy) was not emptied by the Orbitrap-sized 5 ppm default.
+  **Removed again in the same release**: the window is now the instrument class's
+  (`resolve_match_tolerance_ppm`), which is what an operator was saying by setting it.
 
 - **A source-solvent cluster channel for positive-mode sources, kept off the covalent
   grid on purpose.** A low-pressure positive source running on solvent vapour does not
@@ -192,11 +244,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **`mascope-tools` is held below 2026.9.24.** That release reads the
-  subtractive mechanism spellings per the grammar (`-H-` is a hydride removed,
-  `-H+` a proton), and this code still writes them the other way round until it
-  is re-pinned together with the change. Without the ceiling a fresh install
-  between the two releases would pair the old spellings with the new parser.
+- **Mechanisms are spelled in the standard adduct notation, and `mascope-tools`
+  moves to the release that reads it.** Mascope 1.10 stores and returns every
+  ionization mechanism as chemists write the ion - `[M+H]+`, `[M-H]-`, `[M+Br]-`,
+  `[M]+.` - and its `mascope-tools` (2026.9.30) reads the legacy
+  `<operation><moiety><moiety charge>` spelling by its grammar, under which the
+  strings peaky used to hand the scorer for a subtraction meant the opposite ion:
+  `-H-` for `[M-H]-` is a hydride removed, a cation, and `-H+` for `[M-H]+` a
+  proton removed, an anion. So peaky now speaks the standard notation wherever a
+  mechanism is named. `adduct_to_mech` is the label's one spelling through the
+  library's `standard_notation` (terms in the library's order: `[M+(CH4N2O)H]+`
+  as `[M+CH4N2O+H]+`, `[M+HBr+Br]-` as `[M+Br+HBr]-`), `ADDUCT_TO_MECH` maps each
+  label to that spelling, and the abstraction channels ride their tokens as
+  `[M-H]+` / `[M-CH3]+`. What comes back from a server is read by the mechanism
+  it names, whichever notation the row stores: `resolve_mechanism_ids`,
+  `detect_adducts`, the mass-error anchors and `_mechanism_names` all go through
+  the library's `mechanism_key`, so a server before 1.10 (`-H+`) and one from
+  1.10 on (`[M-H]-`) both work, and the sign rewrite `_mechanism_names` used to
+  do by the row's polarity is gone - it would now turn a deprotonation into a
+  hydride abstraction. A row whose polarity column contradicts its spelling is
+  scored as it reads, the way the server reads it, and logged. Nothing about
+  what is scored changes: the same ions, the same envelopes. The ceiling that
+  held `mascope-tools` below 2026.9.24 comes off with it; the floor is the
+  library Mascope 1.10 publishes.
 
 ### Fixed
 

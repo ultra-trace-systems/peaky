@@ -114,9 +114,10 @@ the heavy scoring maths live in [`SCORING.md`](SCORING.md).
    **`MATCH_BATCH` 200** (it times out above ~500), scores chunks concurrently on
    **`MATCH_WORKERS` 5** threads, coerces `mz_tolerance` to **int** ppm, and (by
    default) **raises if any batch fails** — a partial candidate universe is worse
-   than a failed pass. Mechanism ids are reverse-mapped to mascope mechanism
-   names by `_mechanism_names`, which fixes the deprotonation sign (`-H+` →
-   `-H-`).
+   than a failed pass. Mechanism ids are reverse-mapped to mechanism strings
+   by `_mechanism_names`, in the standard adduct notation whichever notation
+   the server stores (`-H+` on a server before Mascope 1.10, `[M-H]-` from
+   1.10 on).
 
 8. **Flatten the score tree** (`flatten_match_tree`, **pure**). One row per
    (compound · ion · isotopologue), columns listed in §6. `parse_isotope_label`
@@ -198,10 +199,15 @@ All in `peaky/io/io_mascope.py`.
   isolate it) rather than pooled. Names are still passed RAW — metacharacters
   (`Sample run (Ur+ CIMS)`, a `^Nitrate` prefix) carry no regex meaning; only a
   compiled `re.Pattern` is a regex (the multi-batch pool path uses this).
-- **`-H+` is not a cation.** The server names deprotonation `-H+` (the *removed*
-  species' sign), but it yields an anion. `_mechanism_names` normalizes the
-  trailing sign to the mechanism's polarity (`-H+` → `-H-`) before handing it to
-  the scorer, or the entire `[M-H]⁻` channel is silently dropped.
+- **Two notations, one spelling.** A server before Mascope 1.10 names
+  deprotonation `-H+` (the *removed* species' sign) and one from 1.10 on
+  `[M-H]-`; every name that crosses the boundary goes through the library's
+  notation module (`resolve_mechanism_ids`, `detect_adducts`, the mass-error
+  anchors and `_mechanism_names` all key on `mechanism_key`), so both spellings
+  mean the anion and the scorer is handed `[M-H]-`. The sign rewrite that used
+  to do this by the row's polarity (`-H+` → `-H-`) is gone: the library reads
+  the legacy spelling by its grammar now, under which `-H-` is a hydride
+  removed, and the rewrite would turn a deprotonation into a cation.
 - **ppm is meaningful only for matched isotopes.** Forced/phantom nodes get
   `ppm_error = None`, never a misleading 0.
 - **¹⁵N nitrate phantom base.** The server models the reagent N as
