@@ -164,9 +164,9 @@ def _load_plausibility() -> Callable[[str], float] | None:
     Evidence is ``fit x formula_plausibility(assigned_formula)`` and the server
     recomputes it from the formula on every row, so publishing a coherent tier
     means computing the same product with the same function. It lives in
-    `mascope_tools` -- which peaky already depends on -- but was added after the
-    2026.6.25 release that dependency currently resolves to, so an install
-    pinned to a published wheel does not have it yet.
+    `mascope_tools`, exported since the release the dependency floor names
+    (2026.9.30), so a fresh install has it; the guard stays for an environment
+    that resolved the dependency before the floor moved.
 
     :return: The plausibility function, or None when unavailable.
     """

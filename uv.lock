@@ -690,7 +690,7 @@ mcp = [
 [package.metadata]
 requires-dist = [
     { name = "mascope-sdk", specifier = ">=2026.8.12" },
-    { name = "mascope-tools", git = "https://github.com/ultra-trace-systems/mascope?subdirectory=libraries%2Ftools&rev=c040671e79e94fde61518d3695fc143a5f38ed15" },
+    { name = "mascope-tools", specifier = ">=2026.9.30" },
     { name = "matplotlib", specifier = ">=3.7" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },
     { name = "numpy", specifier = ">=1.24" },
@@ -708,7 +708,7 @@ provides-extras = ["dev", "compress", "mcp", "local-scoring"]
 [[package]]
 name = "mascope-sdk"
 version = "2026.9.30"
-source = { git = "https://github.com/ultra-trace-systems/mascope?subdirectory=libraries%2Fsdk&rev=c040671e79e94fde61518d3695fc143a5f38ed15#c040671e79e94fde61518d3695fc143a5f38ed15" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "loguru" },
     { name = "pandas" },
@@ -716,11 +716,15 @@ dependencies = [
     { name = "requests" },
     { name = "tqdm" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/26/c6/23001dd41e9ae80da01ce8570a9470c35b8ab35cd9e9d1897fb3a252d16c/mascope_sdk-2026.9.30.tar.gz", hash = "sha256:81a42a7168b8e0eb4ae4db2f5a19b166e0a67ba4c93103754a56d6973dc2bf70", size = 95955, upload-time = "2026-09-30T07:43:48.594Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/30/80/de4aef32ee81a633ebab87556bbe711cc34a50235d0220d070872ea33f4b/mascope_sdk-2026.9.30-py3-none-any.whl", hash = "sha256:1069db5653d8b5dac10f41649bc5726ae789f015192e38012e96e96e83d3f47f", size = 108909, upload-time = "2026-09-30T07:43:47.585Z" },
+]
 
 [[package]]
 name = "mascope-tools"
 version = "2026.9.30"
-source = { git = "https://github.com/ultra-trace-systems/mascope?subdirectory=libraries%2Ftools&rev=c040671e79e94fde61518d3695fc143a5f38ed15#c040671e79e94fde61518d3695fc143a5f38ed15" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "isospecpy" },
     { name = "mascope-sdk" },
@@ -732,6 +736,10 @@ dependencies = [
     { name = "ruptures" },
     { name = "scipy" },
     { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/24/95/98d92cb7fbce26b6238602a34f3ec430067b329d7a4fb9f0b5614cf837ce/mascope_tools-2026.9.30.tar.gz", hash = "sha256:4e007e4e1d4aabdea3be98e94da4bbd09f99a127a7943dbaeee5d965c76cb3fb", size = 164403, upload-time = "2026-09-30T07:43:51.964Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/79/b9/938cc5221a22072df3c1cbfdcfca0459df58e9d5d2b2d8e48b066b5d2a0c/mascope_tools-2026.9.30-py3-none-any.whl", hash = "sha256:9b3b53f88b6ca8be11e40988a70c50f39593590360f70da1115b96a9b20797dc", size = 179397, upload-time = "2026-09-30T07:43:53.085Z" },
 ]
 
 [[package]]

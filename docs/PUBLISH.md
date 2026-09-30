@@ -70,12 +70,12 @@ pair it used, and the app shows them on the engine badge.
 
 > **Version note, now cosmetic.** `--dry-run` previews the tiers Mascope will
 > derive, and that preview needs `formula_plausibility`, which lives in
-> `mascope_tools` but is not in the 2026.6.25 release peaky's dependency
-> resolves to. Without it the preview assumes a plausibility of 1.0 and reads
-> high for a formula the server weighs down. **Nothing is at risk** — the tier
-> is derived server-side and the preview is not published. Upgrade
-> `mascope-tools` to a release exporting `formula_plausibility` for an exact
-> preview.
+> `mascope_tools` and is carried by the release the dependency floor names
+> (`mascope-tools>=2026.9.30`), so a fresh install previews exactly. An older
+> environment that resolved the dependency before the floor moved assumes a
+> plausibility of 1.0 and reads high for a formula the server weighs down.
+> **Nothing is at risk** — the tier is derived server-side and the preview is
+> not published. Upgrade `mascope-tools` for an exact preview.
 
 ### 2. Which intensity, and why it is not your choice
 

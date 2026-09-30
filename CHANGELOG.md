@@ -26,13 +26,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   assignment engine uses, so a peaky run and an in-app run of one sample can be
   compared as two sets of assignments rather than as two scorers.
 
-  **This lives on an epic branch, and the branch owns the coupling.** The library
-  API it is built on exists only on Mascope's assignment-quality epic - PyPI's
-  newest `mascope-tools` predates the v2 scorer, and released servers do not send
-  the per-peak `signal_to_noise` the score reads - so `pyproject.toml` pins the
-  library by revision, the one the reference runs were scored with. The merge
-  into main replaces the pin with a released lower bound; until then main is
-  untouched and keeps scoring with `score_pattern`.
+  **The library it is built on is the one Mascope 1.10 publishes.** The v2
+  scorer, the fit and the widths entered `mascope-tools` after 2026.6.25 and
+  reached PyPI with 2026.9.30, which is now the dependency's floor; until that
+  release this work lived on a branch pinned to the library by revision, the one
+  the reference runs were scored with. The per-peak `signal_to_noise` the score
+  reads is sent by a server of the same release; against an older server the
+  score runs in its no-SNR mode and charges an absent line on predicted
+  abundance alone.
 
 - **A published run says what scored it.** Its config carries `score_version` and
   a `pattern_scoring` block - width, offset, whether the width was fitted or the

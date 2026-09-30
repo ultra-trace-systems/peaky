@@ -125,7 +125,8 @@ real assignments.)
    Uronium completes with no OOM (the server-path blocker), 0.986 vs the prior run.
 5. **15N-labelled nitrate scoring** — DONE in `mascope_tools` >= 2026.06.25
    (custom-element `predict_isotopes` + per-reagent purity).
-6. **Dependency** — `mascope-tools>=2026.6.25` is now a core dependency.
+6. **Dependency** — `mascope-tools` is a core dependency; the floor is 2026.9.30, the
+   release Mascope 1.10 publishes, which carries the v2 fit and the notation module.
 
 **Possible follow-ups (not blocking):** a clean *today-code* server Uronium baseline (the
 06-24 reference is older code) if a tighter Ur agreement number is wanted — though the
