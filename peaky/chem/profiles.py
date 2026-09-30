@@ -95,7 +95,7 @@ NO3 = ReagentProfile(
 
 # ¹⁵N-labelled nitrate CIMS (server reagent '^NO3-'). Same chemistry as NO3 above,
 # but the cluster adduct is the heavy [M+¹⁵NO3]⁻ = [M+^NO3]- (+62.9855, mechanism
-# '+^NO3-'); the deprotonation channel [M-H]- is isotope-independent. Reagent
+# '[M+^NO3]-'); the deprotonation channel [M-H]- is isotope-independent. Reagent
 # cluster ions ((H^NO3)ₙ·^NO3⁻) usually sit below a >120 m/z acquisition window, so
 # the correlation layer normalises on TIC, not on a reagent ion. detect_adduct is
 # [M+^NO3]- so auto-detect distinguishes it from the ¹⁴N NO3 profile above.
@@ -206,7 +206,7 @@ EASYIC = ReagentProfile(
 )
 
 # ¹⁵N-labelled AMMONIUM CIMS ('^NH4+' ionisation mode, server mechanism
-# '+^NH4+'; first file: the 2026-09-10 exploratory acquisition).
+# '[M+^NH4]+'; first file: the 2026-09-10 exploratory acquisition).
 # Positive mode; the analyte cluster is [M+^NH4]+ (+19.0309). Why the label:
 # with ¹⁴NH4+ the adduct of a CHO neutral X is mass- AND isotope-identical to
 # [M+H]+ of the amine X+NH3 (the uronium/NH4 degeneracy that

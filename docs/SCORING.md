@@ -100,7 +100,7 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   measures within 0.3 ppm of calibration.
 - **`formulas`** — candidate neutral formulas (the grid + cheminfo union).
 - **channels** — either peaky `adducts` (labels like `[M+Br]-`) or already-resolved
-  mascope **`mechanisms`** strings (`+Br-`); the dispatcher passes the latter, which
+  mascope **`mechanisms`** strings (`[M+Br]-`); the dispatcher passes the latter, which
   skips `adduct_to_mech`. Each is parsed once via `utils.parse_ionization`.
 
 ---
@@ -115,8 +115,9 @@ All thresholds are the named constants from `local_scoring.py` (see §4).
 
 2. **Build the ion** (`utils.combine_formula_and_ionization`). neutral + parsed
    ionization → the ion formula string (e.g. `C6H12BrO6-`). `adduct_to_mech`
-   (when adducts, not mechanisms, are passed) collapses multi-part adducts by
-   concatenating the added pieces: `[M+HBr+Br]-` → `+HBrBr-` (= +HBr₂).
+   (when adducts, not mechanisms, are passed) gives the label its one spelling
+   in the standard adduct notation, terms in the library's order:
+   `[M+HBr+Br]-` → `[M+Br+HBr]-`, `[M+(CH4N2O)H]+` → `[M+CH4N2O+H]+`.
 
 3. **Predict the envelope** (`predict_isotopes`, IsoSpec). → `pred_mz`,
    `pred_int`, `labels` for the charged ion, then **`anchor_on_monoisotopic`**:
@@ -252,7 +253,7 @@ so callers see a uniform shape across both backends.
 | function (`local_scoring.py` unless noted) | role |
 | --- | --- |
 | `score_candidates_local` | the engine: peaks + formulas → flat per-isotopologue table |
-| `adduct_to_mech` | peaky adduct label → mascope mechanism string (multi-part collapse) |
+| `adduct_to_mech` | peaky adduct label → its one spelling in the standard adduct notation |
 | `_category` | score → `probable` / `possible` / `unlikely` |
 | `utils.parse_ionization` / `combine_formula_and_ionization` (mascope_tools) | parse channel; build the ion formula |
 | `predict_isotopes` (mascope_tools, IsoSpec) | theoretical isotope envelope of the ion |

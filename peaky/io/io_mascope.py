@@ -425,60 +425,87 @@ def fetch_peaks(client, sample_id: str, *, use_cache: bool = True,
 
 
 def resolve_mechanism_ids(client, names: list[str]) -> dict[str, str]:
-    """Map ionization-mechanism names (e.g. '-H+', '+Br-') to their ids."""
+    """Map ionization-mechanism names ('[M-H]-', '[M+Br]-') to their ids.
+
+    A row is matched by the mechanism it names, not by its spelling: a server
+    before Mascope 1.10 stores the legacy '-H+' and one from 1.10 on the
+    standard '[M-H]-', and both answer for '[M-H]-'. The keys of the result
+    are the names as they were asked."""
     table = client.ionization.list()
-    by_name = {r.ionization_mechanism: r.ionization_mechanism_id
-               for r in table.itertuples()}
+    by_key = {_mechanism_key(r.ionization_mechanism): r.ionization_mechanism_id
+              for r in table.itertuples()}
     out: dict[str, str] = {}
     for n in names:
-        if n in by_name:
-            out[n] = by_name[n]
+        key = _mechanism_key(n)
+        if key in by_key:
+            out[n] = by_key[key]
     return out
 
 
-# Map our adduct labels to the server's ionization-mechanism names.
+# The adduct labels that have a server mechanism, each mapped to that
+# mechanism's one spelling: the standard adduct notation, which Mascope stores
+# and shows from 1.10 on and which the labels themselves are written in, so a
+# value is its key canonicalised ('[M+(CH4N2O)H]+' is stored as
+# '[M+CH4N2O+H]+'; test_io_mascope pins every value to `standard_notation`).
+# A server before 1.10 stores the legacy '<operation><moiety><moiety charge>'
+# spelling ('-H+' for '[M-H]-', '+' for '[M]+.'), so every lookup against a
+# server row goes through `_mechanism_key`, which reads both, and never
+# through this dict's keys or values directly.
 ADDUCT_TO_MECH = {
-    "[M-H]-": "-H+",
-    "[M+Br]-": "+Br-",
-    "[M+Cl]-": "+Cl-",
-    "[M+I]-": "+I-",
-    "[M+NO3]-": "+NO3-",
-    "[M+^NO3]-": "+^NO3-",          # ¹⁵N-labelled nitrate reagent cluster
-    "[M+HSO4]-": "+HSO4-",
-    "[M+Br2]-": "+Br2-",
-    "[M+Br3]-": "+Br3-",
-    "[M+I2]-": "+I2-",
-    "[M+I3]-": "+I3-",
-    "[M+H]+": "+H+",
-    "[M+Na]+": "+Na+",
-    "[M+NH4]+": "+NH4+",
-    "[M+^NH4]+": "+^NH4+",          # ¹⁵N-labelled ammonium reagent cluster
-    "[M+CO3]-": "+CO3-",
-    "[M+(CH4N2O)H]+": "+(CH4N2O)H+",   # protonated-urea (uronium) adduct channel
+    "[M-H]-": "[M-H]-",
+    "[M+Br]-": "[M+Br]-",
+    "[M+Cl]-": "[M+Cl]-",
+    "[M+I]-": "[M+I]-",
+    "[M+NO3]-": "[M+NO3]-",
+    "[M+^NO3]-": "[M+^NO3]-",          # ¹⁵N-labelled nitrate reagent cluster
+    "[M+HSO4]-": "[M+HSO4]-",
+    "[M+Br2]-": "[M+Br2]-",
+    "[M+Br3]-": "[M+Br3]-",
+    "[M+I2]-": "[M+I2]-",
+    "[M+I3]-": "[M+I3]-",
+    "[M+H]+": "[M+H]+",
+    "[M+Na]+": "[M+Na]+",
+    "[M+NH4]+": "[M+NH4]+",
+    "[M+^NH4]+": "[M+^NH4]+",          # ¹⁵N-labelled ammonium reagent cluster
+    "[M+CO3]-": "[M+CO3]-",
+    "[M+(CH4N2O)H]+": "[M+CH4N2O+H]+",   # protonated-urea (uronium) adduct channel
     # bare molecular cation (EasyIC⁺ fluoranthene charge transfer). The hydride-
-    # abstraction twin [M-H]+ has NO server mechanism and stays off this map
-    # (the [M-H+I2]- ruling) -- it is a local-scoring channel only.
-    "[M]+.": "+",
+    # abstraction twin [M-H]+ is a local-scoring channel (LOCAL_ONLY_ADDUCT_MECH)
+    # and stays off this map (the [M-H+I2]- ruling).
+    "[M]+.": "[M]+.",
 }
 MECH_TO_ADDUCT = {v: k for k, v in ADDUCT_TO_MECH.items()}
+
+
+def _mechanism_key(name) -> str:
+    """The spelling a server's mechanism is compared by: the standard adduct
+    notation whichever notation the row is stored in ('-H+' and '[M-H]-' are
+    one key), and the text itself where it reads as neither, so an unreadable
+    row matches nothing rather than raising (`mascope_tools.composition.mechanism_key`)."""
+    from mascope_tools.composition import mechanism_key
+
+    return mechanism_key(str(name))
 
 # POSITIVE-MODE ABSTRACTION CHANNELS -- local-scoring only.
 #
 # An abstraction ion is the neutral minus a RADICAL (H·, CH3·): hydride
-# abstraction [M-H]+ and methyl loss [M-CH3]+. No deployment registers an
-# ionization mechanism for either (a deployment's positive set is '+', '+H+',
-# '+Na+', '+NH4+', '+^NH4+' plus its cluster reagents), so they cannot
-# go in ADDUCT_TO_MECH -- and must not: the server spells NEGATIVE deprotonation
-# '-H+' as well, so keying [M-H]+ there would collide with [M-H]- and make
-# MECH_TO_ADDUCT ambiguous.
+# abstraction [M-H]+ and methyl loss [M-CH3]+. No server before Mascope 1.10
+# holds an ionization mechanism for either (a deployment's positive set is
+# [M]+., [M+H]+, [M+Na]+, [M+NH4]+, [M+^NH4]+ plus its cluster reagents), so
+# they are not in ADDUCT_TO_MECH, which lists the channels a server can name;
+# they reach the scorer as tagged tokens instead (LOCAL_MECH_PREFIX). The
+# collision that used to keep them out for good is gone with the standard
+# notation - the legacy spelling wrote deprotonation '-H+' too, so [M-H]+ and
+# [M-H]- shared a name - and Mascope 1.10 ships both mechanisms with the rest,
+# so joining the map, and with it the server's ids and the publish path, is
+# the follow-up once main runs against that release alone.
 #
-# `mascope_tools.parse_ionization` -- the local scorer -- reads the trailing sign
-# as the NET ION CHARGE (that is why _mechanism_names rewrites the server's
-# '-H+' to '-H-' for the negative channel). So '-H+' / '-CH3+' are exactly the
-# positive abstraction ions there, and the local backend already computes them,
-# isotope envelope included: on the 2026-09-22 certified mixture C5H8 on '-H+'
-# matches C5H7+ @67.0542 at 0.05 ppm with its ¹³C line, and C8H24O4Si4 on
-# '-CH3+' matches C7H21O4Si4+ @281.0509 with BOTH the ²⁹Si and ³⁰Si satellites.
+# The local scorer reads the standard notation, so the two channels are
+# spelled to it exactly as their labels are, and it already computes them,
+# isotope envelope included: on the 2026-09-22 certified mixture C5H8 on
+# [M-H]+ matches C5H7+ @67.0542 at 0.05 ppm with its ¹³C line, and
+# C8H24O4Si4 on [M-CH3]+ matches C7H21O4Si4+ @281.0509 with BOTH the ²⁹Si and
+# ³⁰Si satellites.
 #
 # Until that run, the channels were unreachable rather than unscorable: the
 # adducts were in a profile and in ADDUCT_SHIFTS, but the mechanism plumbing is
@@ -488,8 +515,8 @@ MECH_TO_ADDUCT = {v: k for k, v in ADDUCT_TO_MECH.items()}
 # read as propenal, isoprene as cyclopentadiene, hexanal as C6H10O), and the
 # siloxanes' quantifier ion was named as a neutral that does not exist.
 LOCAL_ONLY_ADDUCT_MECH = {
-    "[M-H]+": "-H+",
-    "[M-CH3]+": "-CH3+",
+    "[M-H]+": "[M-H]+",
+    "[M-CH3]+": "[M-CH3]+",
 }
 
 #: An abstraction channel travels through the pipeline INSIDE
@@ -534,7 +561,7 @@ def detect_adducts(peaks: pd.DataFrame) -> list[str]:
         return ["[M-H]-"]
     out: list[str] = []
     for name in peaks["ionization_mechanism"].dropna().unique():
-        a = MECH_TO_ADDUCT.get(str(name))
+        a = MECH_TO_ADDUCT.get(_mechanism_key(name))
         if a and a not in out:
             out.append(a)
     return out or ["[M-H]-"]
@@ -566,7 +593,7 @@ def sample_mass_errors(peaks: pd.DataFrame, *,
                                   "ionization_mechanism"]).itertuples():
         if iso_col and "[" in str(getattr(r, "target_isotope_formula", "") or ""):
             continue                                 # heavy-isotope row, skip
-        add = MECH_TO_ADDUCT.get(str(r.ionization_mechanism))
+        add = MECH_TO_ADDUCT.get(_mechanism_key(r.ionization_mechanism))
         if not add or add not in C.ADDUCT_SHIFTS:
             continue
         try:
@@ -879,16 +906,21 @@ def _polarity_sign(pol) -> str | None:
 
 
 def _mechanism_names(client, mechanism_ids: list[str] | None) -> list[str]:
-    """Reverse-map resolved ionization-mechanism ids -> mascope mechanism strings
-    that `mascope_tools.parse_ionization` charges CORRECTLY.
+    """Reverse-map resolved ionization-mechanism ids -> the mechanism strings
+    the local scorer is handed: the standard adduct notation, whichever
+    notation the server stores.
 
-    The server's name trailing sign is the *added/removed species'* sign, not the
-    net ion charge: deprotonation is named '-H+' (remove H+) yet yields an ANION.
-    `parse_ionization` reads the trailing sign as the net charge, so '-H+' would
-    score as a +1 cation and match nothing -- silently dropping the whole [M-H]-
-    channel. The server disambiguates via `ionization_mechanism_polarity`, so we
-    normalise the trailing sign to that polarity ('-H+' -> '-H-'); '+Br-'/'+NH4+'
-    etc. already agree and are unchanged."""
+    A server before Mascope 1.10 stores the legacy spelling, whose trailing
+    sign is the added or removed species' charge rather than the ion's: '-H+'
+    (a proton removed) is the anion '[M-H]-', and '-H-' (a hydride removed) the
+    cation '[M-H]+'. The library reads that spelling by its grammar since the
+    release this branch pins, so the rewrite this function used to do - flip
+    the trailing sign to the row's polarity - would now turn a deprotonation
+    into a hydride abstraction; the row is converted with `standard_notation`
+    instead, which is exact on every spelling the fleet stores. A row whose
+    polarity column contradicts its spelling is read by the spelling, as the
+    server reads it, and logged; a row that reads as neither notation is
+    skipped, since the scorer could not parse it either."""
     if not mechanism_ids:
         return []
     # abstraction channels arrive already spelled for the local scorer (they have
@@ -898,6 +930,10 @@ def _mechanism_names(client, mechanism_ids: list[str] | None) -> list[str]:
                      if not str(m).startswith(LOCAL_MECH_PREFIX)]
     if not mechanism_ids:
         return out_local
+    from loguru import logger
+    from mascope_tools.composition import parse_mechanism
+    from mascope_tools.composition.mechanism_notation import MechanismNotationError
+
     table = client.ionization.list()
     id2 = {
         r.ionization_mechanism_id: (
@@ -911,10 +947,18 @@ def _mechanism_names(client, mechanism_ids: list[str] | None) -> list[str]:
         if m not in id2:
             continue
         name, pol = id2[m]
+        try:
+            parts = parse_mechanism(str(name))
+        except MechanismNotationError as e:
+            logger.warning("ionization mechanism {!r} (id {}) is not scored "
+                           "locally: {}", name, m, e)
+            continue
         sign = _polarity_sign(pol)
-        if sign and name and len(name) > 1 and name[-1] in "+-" and name[-1] != sign:
-            name = name[:-1] + sign  # '-H+' (deprotonation, neg polarity) -> '-H-'
-        out.append(name)
+        if sign and sign != parts.polarity:
+            logger.warning("ionization mechanism {!r} (id {}) is stored with "
+                           "polarity {!r} but reads as {}; scored as it reads",
+                           name, m, pol, parts.standard)
+        out.append(parts.standard)
     return out + [m for m in out_local if m not in out]
 
 

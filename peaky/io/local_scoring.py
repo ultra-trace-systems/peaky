@@ -33,8 +33,6 @@ engines judge a mass error at one width rather than at two.
 
 from __future__ import annotations
 
-import re
-
 import numpy as np
 import pandas as pd
 
@@ -52,25 +50,26 @@ INTENSITY_TOLERANCE = 0.4  # mascope_tools ISOTOPE_MATCHING_INTENSITY_TOLERANCE
 
 
 def adduct_to_mech(adduct: str) -> str:
-    """peaky adduct label -> mascope_tools ionization-mechanism string.
-    '[M+Br]-' -> '+Br-' ; '[M-H]-' -> '-H-' ; '[M+(CH4N2O)H]+' -> '+(CH4N2O)H+' ;
-    '[M+NH4]+' -> '+NH4+' ; '[M+^NO3]-' -> '+^NO3-' (15N nitrate).
+    """peaky adduct label -> the mechanism string the library scores it as.
 
-    Multi-part adducts (more than one +/- term) are collapsed by concatenating the
-    added pieces, e.g. '[M+HBr+Br]-' -> '+HBrBr-' (= +HBr2) and '[M+HBr+CO3]-' ->
-    '+HBrCO3-'. parse_ionization/parse_composition then sum the atoms."""
-    m = re.match(r"^\[M(.+)\]([+-])$", adduct.strip())
-    if not m:
-        raise ValueError(f"unrecognised adduct label {adduct!r}")
-    core, charge = m.group(1), m.group(2)
-    terms = re.findall(r"[+-][^+-]+", core)  # ['+HBr', '+CO3'] | ['-H'] | ['+Br']
-    adds = "".join(t[1:] for t in terms if t.startswith("+"))
-    subs = "".join(t[1:] for t in terms if t.startswith("-"))
-    if adds and not subs:
-        return f"+{adds}{charge}"
-    if subs and not adds:
-        return f"-{subs}{charge}"
-    raise ValueError(f"mixed +/- adduct not supported: {adduct!r}")
+    The library reads the standard adduct notation, which peaky's labels are
+    written in, so this is the label's one spelling: its terms in the library's
+    order, a grouped term split ('[M+(CH4N2O)H]+' -> '[M+CH4N2O+H]+',
+    '[M+HBr+Br]-' -> '[M+Br+HBr]-'), a labelled reagent as it is ('[M+^NO3]-').
+    What it says about the ion is what the label says: '[M-H]-' is the
+    deprotonated anion and '[M-H]+' the hydride-abstracted cation. The legacy
+    '<operation><moiety><moiety charge>' spelling this used to emit got both
+    backwards once the library read it by its grammar ('-H-' is a hydride
+    removed, a cation), which is why peaky main held the library below the
+    release that does.
+
+    A label that adds and removes at once ('[M-H+I2]-') is a decomposition
+    alias with no mechanism of its own, and the library refuses it with a
+    ValueError, as it does anything that is not a label at all; the raise is
+    the contract the relabel-only channels rely on."""
+    from mascope_tools.composition import standard_notation
+
+    return standard_notation(adduct.strip())
 
 
 def _category(score: float) -> str:

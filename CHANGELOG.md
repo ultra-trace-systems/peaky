@@ -243,11 +243,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **`mascope-tools` is held below 2026.9.24.** That release reads the
-  subtractive mechanism spellings per the grammar (`-H-` is a hydride removed,
-  `-H+` a proton), and this code still writes them the other way round until it
-  is re-pinned together with the change. Without the ceiling a fresh install
-  between the two releases would pair the old spellings with the new parser.
+- **Mechanisms are spelled in the standard adduct notation, and `mascope-tools`
+  moves to the release that reads it.** Mascope 1.10 stores and returns every
+  ionization mechanism as chemists write the ion - `[M+H]+`, `[M-H]-`, `[M+Br]-`,
+  `[M]+.` - and its `mascope-tools` (2026.9.30) reads the legacy
+  `<operation><moiety><moiety charge>` spelling by its grammar, under which the
+  strings peaky used to hand the scorer for a subtraction meant the opposite ion:
+  `-H-` for `[M-H]-` is a hydride removed, a cation, and `-H+` for `[M-H]+` a
+  proton removed, an anion. So peaky now speaks the standard notation wherever a
+  mechanism is named. `adduct_to_mech` is the label's one spelling through the
+  library's `standard_notation` (terms in the library's order: `[M+(CH4N2O)H]+`
+  as `[M+CH4N2O+H]+`, `[M+HBr+Br]-` as `[M+Br+HBr]-`), `ADDUCT_TO_MECH` maps each
+  label to that spelling, and the abstraction channels ride their tokens as
+  `[M-H]+` / `[M-CH3]+`. What comes back from a server is read by the mechanism
+  it names, whichever notation the row stores: `resolve_mechanism_ids`,
+  `detect_adducts`, the mass-error anchors and `_mechanism_names` all go through
+  the library's `mechanism_key`, so a server before 1.10 (`-H+`) and one from
+  1.10 on (`[M-H]-`) both work, and the sign rewrite `_mechanism_names` used to
+  do by the row's polarity is gone - it would now turn a deprotonation into a
+  hydride abstraction. A row whose polarity column contradicts its spelling is
+  scored as it reads, the way the server reads it, and logged. Nothing about
+  what is scored changes: the same ions, the same envelopes. The ceiling that
+  held `mascope-tools` below 2026.9.24 comes off with it; the floor is the
+  library Mascope 1.10 publishes.
 
 ### Fixed
 

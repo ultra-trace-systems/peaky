@@ -1,6 +1,7 @@
-"""Offline tests for local_scoring.py — the pure helpers that need no mascope_tools
-or network (adduct-label -> mechanism conversion, category thresholds). The scoring
-itself is exercised against real data by scripts/eval_local_scoring.py.
+"""Offline tests for local_scoring.py — the helpers that need no network (the
+adduct label -> mechanism spelling, through the library's notation module, and
+the category thresholds). The scoring itself is exercised against real data by
+scripts/eval_local_scoring.py.
 Run: python tests/test_local_scoring.py"""
 import sys
 from pathlib import Path
@@ -15,20 +16,26 @@ def check(name, cond, detail=""):
     else: FAIL += 1; print(f"FAIL  {name}  {detail}")
 
 
-# ---- adduct label -> mascope_tools mechanism string -------------------------
+# ---- adduct label -> the mechanism string the library scores it as ---------
+# The standard adduct notation, which the labels are written in: a label is its
+# own spelling, a grouped term is split, terms are in the library's order, and
+# a subtraction keeps the charge the label says ('[M-H]-' is the anion; the
+# legacy '-H-' the scorer used to be handed reads as the hydride cation now).
 cases = {
-    "[M+Br]-": "+Br-", "[M-H]-": "-H-", "[M+CO3]-": "+CO3-",
-    "[M+H]+": "+H+", "[M+NH4]+": "+NH4+", "[M+(CH4N2O)H]+": "+(CH4N2O)H+",
-    "[M+^NO3]-": "+^NO3-",                         # 15N-labelled nitrate
+    "[M+Br]-": "[M+Br]-", "[M-H]-": "[M-H]-", "[M+CO3]-": "[M+CO3]-",
+    "[M+H]+": "[M+H]+", "[M+NH4]+": "[M+NH4]+", "[M+(CH4N2O)H]+": "[M+CH4N2O+H]+",
+    "[M+^NO3]-": "[M+^NO3]-",                      # 15N-labelled nitrate
+    "[M-H]+": "[M-H]+", "[M-CH3]+": "[M-CH3]+",    # the abstraction channels
+    "[M]+.": "[M]+.",                              # electron transfer
 }
 for adduct, mech in cases.items():
     check(f"adduct_to_mech({adduct}) == {mech}", LS.adduct_to_mech(adduct) == mech,
           LS.adduct_to_mech(adduct))
 
-# multi-part adducts collapse to a single signed group
-check("multi-add [M+HBr+Br]- -> +HBrBr-", LS.adduct_to_mech("[M+HBr+Br]-") == "+HBrBr-",
+# multi-part adducts keep their terms, in the one order the library writes them
+check("multi-add [M+HBr+Br]- -> [M+Br+HBr]-", LS.adduct_to_mech("[M+HBr+Br]-") == "[M+Br+HBr]-",
       LS.adduct_to_mech("[M+HBr+Br]-"))
-check("multi-add [M+HBr+CO3]- -> +HBrCO3-", LS.adduct_to_mech("[M+HBr+CO3]-") == "+HBrCO3-",
+check("multi-add [M+HBr+CO3]- -> [M+CO3+HBr]-", LS.adduct_to_mech("[M+HBr+CO3]-") == "[M+CO3+HBr]-",
       LS.adduct_to_mech("[M+HBr+CO3]-"))
 
 # mixed +/- decomposition aliases have NO mechanism string BY DESIGN: the

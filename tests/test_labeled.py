@@ -67,7 +67,7 @@ def fake_score(client, sample_id, formulas, allow_partial=True, mechanism_ids=No
             continue
         for lab, is_base in (("M0", True), ("13C", False)):
             rows.append(dict(
-                compound_formula=f, ion_formula="C9H14^NO5-", mechanism_id="-H-",
+                compound_formula=f, ion_formula="C9H14^NO5-", mechanism_id="[M-H]-",
                 is_base=is_base, ion_score=0.95, compound_score=0.95,
                 sample_peak_mz=mz_on, sample_peak_id=("p1" if is_base else "p1c"),
                 ppm_error=0.2))
@@ -94,7 +94,7 @@ def fake_score_lowO(client, sample_id, formulas, allow_partial=True, mechanism_i
     if low_o not in formulas:
         return pd.DataFrame()
     return pd.DataFrame([dict(compound_formula=low_o, ion_formula=low_o + "-",
-        mechanism_id="-H-", is_base=True, ion_score=0.95, compound_score=0.95,
+        mechanism_id="[M-H]-", is_base=True, ion_score=0.95, compound_score=0.95,
         sample_peak_mz=float(led2.iloc[0]["mz"]), sample_peak_id="p1", ppm_error=0.1)])
 # (the real gate is exercised inside rescue_labeled's candidate loop; this just
 # confirms a low-O formula never reaches commit)
