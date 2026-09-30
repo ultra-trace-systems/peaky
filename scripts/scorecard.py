@@ -482,7 +482,9 @@ def own_levels_for(run: Run) -> pd.DataFrame:
     if os.path.isfile(table):
         from peaky.batch import iso_checks as IC
         iso = IC.facts(pd.read_csv(table))
-    pairs = EV.level_pooled(frames, cross=None, upair=upair, label=label, iso=iso)
+    # ... and its width model (the isotope children's committed line and 'M+n' window, C11+c)
+    resolution = (getattr(run, "summary", None) or {}).get("resolution")
+    pairs = EV.level_pooled(frames, cross=None, upair=upair, label=label, iso=iso, resolution=resolution)
     if pairs.empty:
         return empty
     pairs = pairs[~pairs["ion_only"].astype(bool)]

@@ -531,3 +531,135 @@ def test_line_facts_read_the_kept_lines():
     assert not f["reagent_only"] and f["labels"] == {"M+4"}
     assert not I.line_facts([line(["81Br"], ["Br"], True)], None)["reagent_only"]
     assert I.line_facts([], "81Br") == dict(iso=False, lined=set(), carbon=False, labels=set(), reagent_only=False)
+
+
+# --------------------------------------------------------------------------- the width model reaches every path (c3)
+RES_TOF = {"coef": 0.00010564869, "exponent": 0.99632248, "offset": 0.0, "r_at_200": 9651.6}
+RES_ORBI = {"coef": 5.0134221e-07, "exponent": 1.5344223, "offset": 0.0, "r_at_200": 117528.7}
+
+
+def test_the_instrument_class_is_read_off_the_width_model():
+    from peaky.chem.resolution import Resolution
+    assert EV.instrument(None) == (None, None) and EV.instrument({"source": "none"}) == (None, None)
+    assert EV.instrument(Resolution.from_r(9650))[0] == "tof" and EV.instrument(120_000)[0] == "orbitrap"
+    for res, klass in ((RES_TOF, "tof"), (RES_ORBI, "orbitrap")):
+        k, fwhm = EV.instrument(res)
+        k2, fwhm2 = LL.instrument(res)
+        assert k == k2 == klass and fwhm(300.0) == pytest.approx(fwhm2(300.0), rel=1e-12)
+    assert LL.instrument(None) == (None, None)
+    from peaky.batch import iso_checks as IC
+    assert EV.ORBITRAP_R200 == LL.ORBITRAP_R200 == IC.ORBITRAP_R200
+
+
+def _run_dir(tmp_path, name="RUN_1", resolution=RES_TOF, rows=None):
+    import json
+
+    import pandas as pd
+    from tests.test_evidence import ledger, m0
+    run = tmp_path / name
+    (run / "per_file").mkdir(parents=True)
+    ledger(rows or [m0("p", "C10H16O4", ion="C10H15O4-", mz=C.ion_mz("C10H16O4", "[M-H]-"), series_unit="CH2")]) \
+        .to_csv(run / "per_file" / "s1_ledger.csv", index=False)
+    summary = {"reagent": "NO3"}
+    if resolution is not None:
+        summary["resolution"] = resolution
+    json.dump(summary, open(run / "batch_summary.json", "w"))
+    assert isinstance(pd, object)
+    return run
+
+
+def test_a_run_dirs_width_model_is_read_from_its_batch_summary(tmp_path):
+    run = _run_dir(tmp_path)
+    for f in (EV.source_resolution, LL.source_resolution):
+        assert f(str(run)) == RES_TOF
+        assert f(str(tmp_path)) == RES_TOF                        # an out-dir holding one run
+        assert f(str(run / "per_file" / "s1_ledger.csv")) is None  # a ledger CSV is class-less
+    bare = _run_dir(tmp_path / "x", resolution=None)
+    assert EV.source_resolution(str(bare)) is None and LL.source_resolution(str(bare)) is None
+
+
+def test_every_level_path_takes_the_width_model(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from peaky.assignment import assign as A
+    from peaky.chem.resolution import Resolution
+    from tests.test_evidence import ledger, m0
+    led = ledger([m0("p", "C10H16O4", ion="C10H15O4-", mz=C.ion_mz("C10H16O4", "[M-H]-"), series_unit="CH2")])
+    rp = Resolution.from_dict(RES_TOF)
+    assert EV.compute_levels(led, resolution=rp).equals(EV.compute_levels(led))
+    assert EV.level_pooled({"f": led}, resolution=RES_ORBI).equals(EV.level_pooled({"f": led}))
+    assert EV.source_neutrals({"f": led}, resolution=rp) == EV.source_neutrals({"f": led}) == {"C10H16O4"}
+    # the per-file stage hands the run's width model to the levels
+    seen = {}
+    real = EV.apply_levels
+
+    def spy(ledger_, **kw):
+        seen.update(kw)
+        return real(ledger_, **kw)
+    monkeypatch.setattr(A.evidence, "apply_levels", spy)
+    inner = []
+    real_lp = EV._level_pairs
+
+    def spy_lp(frames, **kw):
+        inner.append((kw.get("resolution"), kw.get("per_file")))
+        return real_lp(frames, **kw)
+    monkeypatch.setattr(EV, "_level_pairs", spy_lp)
+    st = SimpleNamespace(led=led.copy(), cfg=None, corroborate=set(), resolving_power=rp, log=lambda *a: None)
+    A._stage_evidence(st)
+    assert seen["resolution"] is rp and inner == [(rp, True)]          # per file: the guard's flag set
+    EV.level_pooled({"f": led}, resolution=RES_ORBI)
+    assert inner[-1][0] == RES_ORBI and not inner[-1][1]
+    # a --corroborate run dir is levelled with its own width model
+    got = {}
+    real_sn = EV.source_neutrals
+
+    def spy_sn(per_file, **kw):
+        got.setdefault("res", []).append(kw.get("resolution"))
+        return real_sn(per_file, **kw)
+    monkeypatch.setattr(EV, "source_neutrals", spy_sn)
+    run = _run_dir(tmp_path)
+    assert EV.corroborating_neutrals([str(run), str(run / "per_file" / "s1_ledger.csv")]) == {"C10H16O4"}
+    assert got["res"] == [RES_TOF, None]
+    # the script levels a run dir with its batch_summary's model, a CSV without one
+    rec = []
+    real_ms = LL.measure_source
+
+    def spy_ms(label, frame, halogen, resolution=None, per_file=False):
+        rec.append(resolution)
+        return real_ms(label, frame, halogen, resolution, per_file)
+    monkeypatch.setattr(LL, "measure_source", spy_ms)
+    LL.run([str(run), str(run / "per_file" / "s1_ledger.csv")], [])
+    assert rec == [RES_TOF, None]
+
+
+def test_the_batch_and_the_scorecard_hand_over_their_width_model(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from tests.test_iso_checks import _run_batch
+    seen = {}
+    real = EV.level_pooled
+
+    def spy(frames, **kw):
+        seen.update(kw)
+        return real(frames, **kw)
+    monkeypatch.setattr(EV, "level_pooled", spy)
+    _run_batch(tmp_path, monkeypatch, resolving_power=100_000)
+    assert seen["resolution"].r_at(200.0) == pytest.approx(100_000)
+    spec = importlib.util.spec_from_file_location(
+        "scorecard", Path(__file__).resolve().parents[1] / "scripts" / "scorecard.py")
+    SC = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "scorecard", SC)
+    spec.loader.exec_module(SC)
+    got = []
+    real_sc = SC.EV.level_pooled
+
+    def spy_sc(frames, **kw):
+        got.append(kw.get("resolution"))
+        return real_sc(frames, **kw)
+    monkeypatch.setattr(SC.EV, "level_pooled", spy_sc)
+    from tests.test_evidence import ledger, m0
+    pf = ledger([m0("p", "C10H16O4", ion="C10H15O4-", series_unit="CH2")]).assign(__file="s1")
+    SC.own_levels_for(SimpleNamespace(path=str(tmp_path / "none"), per_file=pf, summary={"resolution": RES_ORBI}))
+    SC.own_levels_for(SimpleNamespace(path=str(tmp_path / "none"), per_file=pf))
+    assert got == [RES_ORBI, None]

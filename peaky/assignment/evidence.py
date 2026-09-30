@@ -164,6 +164,27 @@ LOW_CONFIDENCE = {"Low", "Suspect"}
 # The heavy satellite a reagent halogen contributes. Iodine is monoisotopic, so
 # an iodide reagent can never produce a reagent-only isotope pattern.
 HALOGEN_SATELLITE = {"Br": "81Br", "Cl": "37Cl", "I": None}
+#: an Orbitrap-class width model resolves at least this at m/z 200 (the batch
+#: checks' split, batch/iso_checks.ORBITRAP_R200)
+ORBITRAP_R200 = 50_000.0
+
+
+def instrument(resolution) -> tuple[str | None, object]:
+    """(class, FWHM) of a width model -- a chem.resolution.Resolution, its
+    `as_dict` (a run's batch_summary `resolution`) or a resolving power:
+    ('orbitrap' | 'tof', FWHM(m/z) in Da). (None, None) without one: the
+    source is class-less (a ledger CSV, a fixture, an old run)."""
+    from peaky.chem.resolution import Resolution
+    if resolution is None:
+        return None, None
+    if isinstance(resolution, dict):
+        if resolution.get("coef") is None:
+            return None, None
+        rp = Resolution.from_dict(resolution)
+    else:
+        rp = Resolution.coerce(resolution)
+    r = rp.r_at(200.0)
+    return ("orbitrap" if np.isfinite(r) and r >= ORBITRAP_R200 else "tof"), rp.fwhm
 
 #: Scope of each pass-0 family (passes/directors.py `_known_species`): a family
 #: whose entries are hand-listed compounds asserts a COMPOUND; one generated from
@@ -429,9 +450,12 @@ def lead_liftable(setters, budget_ok: bool) -> bool:
     return setters <= LIFTABLE_LEADS and ("off_budget" not in setters or bool(budget_ok))
 
 
-def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None, lift=None) -> pd.DataFrame:
+def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None, lift=None,
+             resolution=None, per_file: bool = False) -> pd.DataFrame:
     """One row of evidence per (neutral, adduct) the source committed. `frame`
-    carries a `__file` column (the file each row came from). `alien` (rule K):
+    carries a `__file` column (the file each row came from). `resolution`: the
+    source's width model (`instrument`), None for a class-less source;
+    `per_file`: the source is one file levelled inside its run. `alien` (rule K):
     {(neutral, adduct)} kept out of the per-neutral pools in both directions,
     like an ion-only row; `fold` maps adducts that count as one channel. `lift`
     (rule H): {(neutral, adduct): lock fact} -- a pair it names whose flagged
@@ -711,7 +735,7 @@ def _axes_string(r, *, with_files: bool) -> str:
 
 
 def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: bool = False,
-                 upair=None, label=None, iso=None) -> pd.DataFrame:
+                 upair=None, label=None, iso=None, resolution=None, per_file: bool = False) -> pd.DataFrame:
     """Level every (neutral, adduct) pair of the frames pooled as ONE source.
     `upair`: the neutrals whose declared neutral pair holds (rule U, measured by
     batch/neutral_pairs.py on the batch time series; pooled only). `label`: the
@@ -724,7 +748,9 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
     a): fact}} -- a vetoed pair is hard 5b and, like rule K's alien lines, leaves
     its neutral's chan2 / branch pools in both directions; a locked pair (rule
     H, C11+b) whose lead the lock answers is lifted (`_measure`), unless a check
-    or rule K refutes the reading."""
+    or rule K refutes the reading. `resolution`: the source's width model (the
+    isotope children's committed-line tolerance and 'M+n' window, C11+c);
+    `per_file`: the frames are one file levelled inside its run."""
     parts = []
     for src, frame in frames.items():
         f = frame.copy()
@@ -744,7 +770,7 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
     lift = {(str(n), str(a)): dict(v or {}) for (n, a), v in (((iso or {}).get("lock")) or {}).items()
             if (str(n), str(a)) not in iso_veto and (str(n), str(a)) not in label_veto}
     facts = _measure(frame, halogen=halogen, alien=alien or None, fold=LABEL_FOLD if label else None,
-                     lift=lift or None)
+                     lift=lift or None, resolution=resolution, per_file=per_file)
     if facts.empty:
         return pd.DataFrame(columns=["neutral_formula", "adduct", *COLUMNS])
     cross = {str(x) for x in (cross or set())}
@@ -788,11 +814,14 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
 # ---------------------------------------------------------------------------
 # public API
 # ---------------------------------------------------------------------------
-def compute_levels(ledger: pd.DataFrame, *, cfg=None, isomer_space=None, cross=None) -> pd.DataFrame:
+def compute_levels(ledger: pd.DataFrame, *, cfg=None, isomer_space=None, cross=None,
+                   resolution=None) -> pd.DataFrame:
     """Pure: one row per M0 row of `ledger` (index = the ledger's index) with
     `peak_id` and the five columns. `cross` = the corroborating neutral formulas
-    (the other reagent channel / instrument / `--corroborate` source); `cfg` is
-    accepted for stage-call symmetry and not read -- no predicate is tunable."""
+    (the other reagent channel / instrument / `--corroborate` source);
+    `resolution` = the run's width model (the per-file `resolvability` stage's,
+    `instrument`); `cfg` is accepted for stage-call symmetry and not read -- no
+    predicate is tunable."""
     role = _col(ledger, "role").astype(str)
     m0 = ledger[role == "M0"]
     empty = pd.DataFrame({"peak_id": pd.Series(dtype=object),
@@ -803,7 +832,8 @@ def compute_levels(ledger: pd.DataFrame, *, cfg=None, isomer_space=None, cross=N
                           "claim": pd.Series(dtype=object)})
     if m0.empty:
         return empty
-    pairs = _level_pairs({"": ledger}, cross=cross, isomer_space=isomer_space, with_files=False)
+    pairs = _level_pairs({"": ledger}, cross=cross, isomer_space=isomer_space, with_files=False,
+                         resolution=resolution, per_file=True)
     if pairs.empty:
         return empty
     key = pd.DataFrame({
@@ -826,12 +856,12 @@ def summarize(levels: pd.Series) -> dict:
     return {k: int(counts[k]) for k in LEVELS if k in counts.index and counts[k]}
 
 
-def apply_levels(ledger: pd.DataFrame, *, cfg=None, cross=None, isomer_space=None) -> dict:
+def apply_levels(ledger: pd.DataFrame, *, cfg=None, cross=None, isomer_space=None, resolution=None) -> dict:
     """The `evidence` stage: write the five columns onto `ledger` in place (NA
     on every non-M0 row, `claim` included: only a committed formula makes a
-    claim) and return the stage summary."""
+    claim) and return the stage summary. `resolution`: the run's width model."""
     cross = {str(x) for x in (cross or set())}
-    out = compute_levels(ledger, cfg=cfg, isomer_space=isomer_space, cross=cross)
+    out = compute_levels(ledger, cfg=cfg, isomer_space=isomer_space, cross=cross, resolution=resolution)
     n = len(ledger)
     for c in ("evidence_level", "evidence_axes", "level_reason", "claim"):
         ledger[c] = pd.Series([pd.NA] * n, index=ledger.index, dtype=object)
@@ -862,7 +892,7 @@ def _n_pairs(ledger: pd.DataFrame) -> int:
 
 
 def level_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None, label=None,
-                 iso=None) -> pd.DataFrame:
+                 iso=None, resolution=None) -> pd.DataFrame:
     """A batch's per-file ledgers ({label: frame}) pooled as ONE source: one row
     per (neutral_formula, adduct) over all files with the four columns and every
     fact of §3 (`chan2` sees a second adduct in ANY file, `iso` any file's
@@ -870,10 +900,11 @@ def level_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None, l
     `upair` is the neutral-pair set of rule U (batch/neutral_pairs.neutrals);
     `label` is rule K's labelled-nitrate twin facts (batch/label_twins.facts);
     `iso` the isotope checks' vetoes and locks (C11+, batch/iso_checks.facts);
-    all three exist only here, on the pooled batch.
+    all three exist only here, on the pooled batch. `resolution`: the batch's
+    width model (`instrument`; None = class-less).
     `evidence_axes` ends with `files:<n>`."""
     return _level_pairs(dict(per_file), cross=cross, isomer_space=isomer_space, with_files=True, upair=upair,
-                        label=label, iso=iso)
+                        label=label, iso=iso, resolution=resolution)
 
 
 def stamp_merged(merged: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:
@@ -976,7 +1007,8 @@ def _stored_own_good(level, axes, max_level: str) -> bool:
     return True
 
 
-def source_neutrals(per_file: dict, *, isomer_space=None, max_level: str = CORROBORATE_MAX_LEVEL) -> set[str]:
+def source_neutrals(per_file: dict, *, isomer_space=None, max_level: str = CORROBORATE_MAX_LEVEL,
+                    resolution=None) -> set[str]:
     """The neutral formulas a source ({label: ledger}) holds at `max_level` or
     better by its OWN evidence: the ledgers pooled as ONE source and levelled
     with NO cross set (`level_pooled`, the batch's own merged-row level), so a
@@ -984,12 +1016,14 @@ def source_neutrals(per_file: dict, *, isomer_space=None, max_level: str = CORRO
     agreement it got from it. Ion-only pairs never count. A ledger without a
     `role` column is a merged ledger: it carries none of the predicate columns,
     so its stored `evidence_level` is read instead, without its own
-    `corroborated` axis (`_stored_own_good`)."""
+    `corroborated` axis (`_stored_own_good`). `resolution`: the source's own
+    width model (`source_resolution`), None = class-less."""
     frames = {k: f for k, f in per_file.items() if "role" in f.columns}
     merged = {k: f for k, f in per_file.items() if "role" not in f.columns}
     out: set[str] = set()
     if frames:
-        pairs = level_pooled({k: trim(f) for k, f in frames.items()}, cross=None, isomer_space=isomer_space)
+        pairs = level_pooled({k: trim(f) for k, f in frames.items()}, cross=None, isomer_space=isomer_space,
+                             resolution=resolution)
         if len(pairs):
             ok = (pairs["evidence_level"].map(_rank) <= _rank(max_level)) & ~pairs["ion_only"].astype(bool)
             out |= set(pairs.loc[ok, "neutral_formula"].astype(str))
@@ -1015,11 +1049,38 @@ def corroborating_neutrals(sources) -> set[str]:
     carry every fact a level reads."""
     out: set[str] = set()
     for src in sources or []:
+        resolution = None
         if isinstance(src, pd.DataFrame):
             per_file = {"": src}
         else:
             label, files = resolve_source(src)
             per_file = {(os.path.basename(f) if len(files) > 1 else label): pd.read_csv(f, low_memory=False)
                         for f in files}
-        out |= source_neutrals(per_file)
+            resolution = source_resolution(src)
+        out |= source_neutrals(per_file, resolution=resolution)
     return out
+
+
+def source_resolution(path) -> dict | None:
+    """A run dir's width model as its batch_summary.json records it (the
+    `resolution` dict), for a run dir or an out-dir holding one run; None for a
+    ledger CSV or a run that recorded none (a class-less source)."""
+    import json
+    path = os.path.expanduser(str(path).rstrip("/"))
+    if not os.path.isdir(path):
+        return None
+    run = path
+    if not (os.path.isdir(os.path.join(path, "per_file")) or os.path.isfile(os.path.join(path, "merged_ledger.csv"))):
+        inner = [d for d in sorted(glob.glob(os.path.join(path, "*"))) if os.path.isdir(d)
+                 and (os.path.isdir(os.path.join(d, "per_file")) or os.path.isfile(os.path.join(d, "merged_ledger.csv")))]
+        if len(inner) != 1:
+            return None
+        run = inner[0]
+    summary = os.path.join(run, "batch_summary.json")
+    if not os.path.isfile(summary):
+        return None
+    try:
+        res = json.load(open(summary)).get("resolution")
+    except (OSError, ValueError):
+        return None
+    return res if isinstance(res, dict) and res.get("coef") is not None else None

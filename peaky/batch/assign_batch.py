@@ -1872,7 +1872,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                             x_edge=x_edge, context=context, log=log)
     iso_table.to_csv(os.path.join(TAB, "iso_checks.csv"), index=False)
     levels = EV.level_pooled(level_frames, cross=cross, upair=_NP.neutrals(pairs_table),
-                             label=_LT.facts(twins_table), iso=_IC.facts(iso_table))
+                             label=_LT.facts(twins_table), iso=_IC.facts(iso_table), resolution=rp)
     merged = EV.stamp_merged(merged, levels)
     levels.to_csv(os.path.join(TAB, "evidence_levels.csv"), index=False)
     ev_summary = {

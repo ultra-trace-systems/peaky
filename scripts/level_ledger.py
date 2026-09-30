@@ -976,6 +976,51 @@ def resolve_source(path: str) -> tuple[str, list[str]]:
     raise SystemExit(f"no ledger under {path}")
 
 
+def source_resolution(path: str) -> dict | None:
+    """A run dir's width model as its batch_summary.json records it (the
+    `resolution` dict), for a run dir or an out-dir holding one run; None for a
+    ledger CSV or a run that recorded none (a class-less source) -- the engine's
+    evidence.source_resolution."""
+    path = os.path.expanduser(str(path).rstrip("/"))
+    if not os.path.isdir(path):
+        return None
+    run = path
+    if not (os.path.isdir(os.path.join(path, "per_file")) or os.path.isfile(os.path.join(path, "merged_ledger.csv"))):
+        inner = [d for d in sorted(glob.glob(os.path.join(path, "*"))) if os.path.isdir(d)
+                 and (os.path.isdir(os.path.join(d, "per_file")) or os.path.isfile(os.path.join(d, "merged_ledger.csv")))]
+        if len(inner) != 1:
+            return None
+        run = inner[0]
+    summary = os.path.join(run, "batch_summary.json")
+    if not os.path.isfile(summary):
+        return None
+    try:
+        res = json.load(open(summary)).get("resolution")
+    except (OSError, ValueError):
+        return None
+    return res if isinstance(res, dict) and res.get("coef") is not None else None
+
+
+#: an Orbitrap-class width model resolves at least this at m/z 200 (the engine's
+#: evidence.ORBITRAP_R200 / batch/iso_checks.ORBITRAP_R200)
+ORBITRAP_R200 = 50_000.0
+
+
+def instrument(resolution) -> tuple:
+    """(class, FWHM) of a run's `resolution` dict (batch_summary.json):
+    ('orbitrap' | 'tof', FWHM(m/z) in Da); (None, None) without one -- the
+    engine's evidence.instrument on the recorded model."""
+    if not isinstance(resolution, dict) or resolution.get("coef") is None:
+        return None, None
+    coef, expo = float(resolution["coef"]), float(resolution.get("exponent", 1.0))
+    off = float(resolution.get("offset", 0.0) or 0.0)
+
+    def fwhm(mz: float) -> float:
+        return coef * float(mz) ** expo + off
+    r = 200.0 / fwhm(200.0)
+    return ("orbitrap" if np.isfinite(r) and r >= ORBITRAP_R200 else "tof"), fwhm
+
+
 def load_source(path: str) -> tuple[str, pd.DataFrame]:
     """Every ledger row of one source, stamped with the file it came from."""
     label, files = resolve_source(path)
@@ -1006,9 +1051,12 @@ def detect_reagent_halogen(m0: pd.DataFrame) -> str | None:
 
 
 def measure_source(
-    label: str, ledger: pd.DataFrame, halogen: str | None
+    label: str, ledger: pd.DataFrame, halogen: str | None, resolution: dict | None = None,
+    per_file: bool = False,
 ) -> pd.DataFrame:
-    """One row of evidence per (neutral, adduct) the source committed."""
+    """One row of evidence per (neutral, adduct) the source committed.
+    `resolution`: the source's width model (`source_resolution`; None =
+    class-less); `per_file`: the source is one file of a run."""
     role = column(ledger, "role").astype(str)
     m0 = ledger[role == "M0"].copy()
     iso = ledger[role == "iso_child"]
@@ -1375,7 +1423,7 @@ def source_good_neutrals(path: str) -> tuple[str, pd.DataFrame | None, set[str]]
     if "role" not in ledger.columns:
         return label, None, stored_good_neutrals(ledger, label)
     halogen = detect_reagent_halogen(ledger[column(ledger, "role").astype(str) == "M0"])
-    frame = measure_source(label, ledger, halogen)
+    frame = measure_source(label, ledger, halogen, source_resolution(path))
     if frame.empty:
         return label, None, set()
     frame["reagent_halogen"] = halogen or ""

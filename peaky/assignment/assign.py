@@ -340,8 +340,10 @@ def _stage_evidence(st):
     demote stage, the reflist rescue and the final envelope sweep (the
     satellites the `iso` axis reads), before `timeseries` (ts_* only). The
     claim each level supports (identified / ion / tentative) is stamped beside
-    it and tallied on the log line; it changes no tier."""
-    s = evidence.apply_levels(st.led, cfg=st.cfg, cross=st.corroborate)
+    it and tallied on the log line; it changes no tier. The run's width model
+    rides along: it sets the tolerance of an isotope child's committed parent
+    line and a TOF-class file's position guard (C11+c)."""
+    s = evidence.apply_levels(st.led, cfg=st.cfg, cross=st.corroborate, resolution=st.resolving_power)
     claims = s.get("claims") or {}
     st.log(f"[run] evidence levels {s['levels']} on {s['n_levelled']} M0 rows "
            f"({s['n_pairs']} neutral/adduct pairs; corroborated by {s['n_corroborate']} neutrals); "
