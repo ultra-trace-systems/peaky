@@ -287,8 +287,8 @@ def test_a_lead_only_pair_is_5b_with_the_reason_a_below_row_gives():
 
 
 def test_the_pooled_lead_is_any_row():
-    one = _frame([_m0("a", "C8H12O4", lead=True, anchor="x"), _m0("b", "C9H14O4", anchor="x", mz=210.0)])
-    two = _frame([_m0("a", "C8H12O4", anchor="x"), _m0("b", "C9H14O4", anchor="x", mz=210.0)])
+    one = _frame([_m0("a", "C8H12O4", lead=True, anchor="x"), _m0("b", "C9H14O4", anchor="x")])
+    two = _frame([_m0("a", "C8H12O4", anchor="x"), _m0("b", "C9H14O4", anchor="x")])
     pairs = EV.level_pooled({"f1": one, "f2": two}).set_index("neutral_formula")
     assert bool(pairs.at["C8H12O4", "lead"]) and not bool(pairs.at["C8H12O4", "below"])
     assert pairs.at["C8H12O4", "evidence_level"] == "5b"
@@ -301,8 +301,8 @@ def _mixed(flag: str) -> pd.DataFrame:
     with the flagged rows carrying the flag in the `flag` column."""
     lead_col = {"below": dict(below=True), "lead": dict(lead=True)}[flag]
     rows = [
-        _m0("br1", "C10H16O5", **lead_col), _m0("br2", "C10H16O5", "[M+NO3]-", mz=262.0),
-        _m0("ch1", "C6H8O5", anchor="z", **lead_col), _m0("ch2", "C6H8O5", "[M+Br]-", mz=240.0),
+        _m0("br1", "C10H16O5", **lead_col), _m0("br2", "C10H16O5", "[M+NO3]-"),
+        _m0("ch1", "C6H8O5", anchor="z", **lead_col), _m0("ch2", "C6H8O5", "[M+Br]-"),
         _m0("iso", "C9H14O4", **lead_col), _child("iso13", "iso", "13C", 100.0),
         _m0("tie", "C5H8O4", tied=True, **lead_col),
         _m0("kn", "HNO3", **lead_col), _m0("clean", "C7H10O4", anchor="z"),

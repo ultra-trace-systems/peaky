@@ -173,8 +173,8 @@ CASES = {
         [m0("p", "C8HF15O2", method="pass2")],                  # not curated -> 4c (unique, resolved, no axis)
     ),
     "3b": (
-        [m0("p1", "C10H16O5"), m0("p2", "C10H16O5", adduct="[M+NO3]-", mz=262.0)],
-        [m0("p1", "C10H16O5"), m0("p2", "C10H16O5", adduct="[M+^NO3]-", mz=263.0)],
+        [m0("p1", "C10H16O5"), m0("p2", "C10H16O5", adduct="[M+NO3]-")],
+        [m0("p1", "C10H16O5"), m0("p2", "C10H16O5", adduct="[M+^NO3]-")],
         # ^ still deprotonated + clustered: the mutant is below, in test_level_3b
     ),
     "4c": (
@@ -187,8 +187,8 @@ CASES = {
     ),
     "4b": (
         [m0("p", "C9H14O4", series_unit="CH2")],
-        [m0("p", "C9H14O4", adduct="[M+NO3]-", mz=247.0, series_unit="CH2"),
-         m0("q", "C9H14O4", adduct="[M+^NO3]-", mz=248.0)],
+        [m0("p", "C9H14O4", adduct="[M+NO3]-", series_unit="CH2"),
+         m0("q", "C9H14O4", adduct="[M+^NO3]-")],
         # ^ two axes (anchor + second cluster channel) but neither outside the chemistry -> still 4b
     ),
     "4a": (
@@ -196,12 +196,12 @@ CASES = {
         [m0("p", "C10H16O4", ion="C10H15O4", height=1000.0)],           # no iso axis -> 4b
     ),
     "4d": (
-        [m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br", mz=221.0),
+        [m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br"),
          child("c", "p", "81Br+1", 950.0),
-         m0("q", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br", mz=235.0)],
-        [m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br", mz=221.0),
+         m0("q", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br")],
+        [m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br"),
          child("c", "p", "81Br+1", 950.0), child("c2", "p", "13C+1", 86.0),
-         m0("q", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br", mz=235.0)],  # carbon pins the neutral -> 4b
+         m0("q", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br")],  # carbon pins the neutral -> 4b
     ),
 }
 
@@ -237,8 +237,8 @@ def test_level_3b_acid_branch():
     lv = level_of(ok)
     assert lv[("C10H16O5", "[M-H]-")] == "3b" and lv[("C10H16O5", "[M+NO3]-")] == "3b"
     # mutant: two CLUSTER channels are not a branch -> chan2 only -> 4b
-    mut = [m0("p1", "C10H16O5", adduct="[M+NO3]-", mz=262.0),
-           m0("p2", "C10H16O5", adduct="[M+^NO3]-", mz=263.0)]
+    mut = [m0("p1", "C10H16O5", adduct="[M+NO3]-"),
+           m0("p2", "C10H16O5", adduct="[M+^NO3]-")]
     assert level_of(mut)[("C10H16O5", "[M+NO3]-")] == "4b"
 
 
@@ -283,18 +283,18 @@ def test_level_4d_reagent_halogen_pins_the_ion_not_the_neutral():
     # evidence (C11+c: a Br-free ion makes no 81Br line at all -- its expectation is 0)
     nitrate = [m0("p", "C8H13BrO2", adduct="[M+NO3]-", ion="C8H13BrNO5-", mz=281.9983),
                child("c", "p", "81Br", 950.0, mz=281.9983 + 1.9979535),
-               m0("q", "C9H16O2", adduct="[M+NO3]-", mz=218.0)]
+               m0("q", "C9H16O2", adduct="[M+NO3]-")]
     assert level_of(nitrate)[("C8H13BrO2", "[M+NO3]-")] == "4b"
     brfree = [m0("p", "C8H14O2", adduct="[M+NO3]-", ion="C8H14NO5-", mz=204.0877),
               child("c", "p", "81Br", 950.0, mz=204.0877 + 1.9979535),
-              m0("q", "C9H16O2", adduct="[M+NO3]-", mz=218.0)]
+              m0("q", "C9H16O2", adduct="[M+NO3]-")]
     assert level_of(brfree)[("C8H14O2", "[M+NO3]-")] == "4c"
 
 
 def _bromide_channel(*rows):
     """`rows` on a bromide channel: two [M+Br]- commits make Br the reagent halogen."""
-    return [*rows, m0("q", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br-", mz=235.0),
-            m0("r", "C9H18O2", adduct="[M+Br]-", ion="C9H18O2Br-", mz=237.0)]
+    return [*rows, m0("q", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br-"),
+            m0("r", "C9H18O2", adduct="[M+Br]-", ion="C9H18O2Br-")]
 
 
 def test_the_reagent_satellite_needs_the_ion_to_carry_the_reagent_halogen():
@@ -541,7 +541,7 @@ def test_pooled_equals_the_script_on_the_same_files():
     """level_pooled over N files is the reference pooling: all rows of a pair across
     files decide tied/lowconf, any row decides below, chan2 sees every file."""
     a = [m0("p", "C9H14O4", tied=True)]
-    b = [m0("q", "C9H14O4", tied=False, adduct="[M+NO3]-", mz=247.0)]
+    b = [m0("q", "C9H14O4", tied=False, adduct="[M+NO3]-")]
     out = EV.level_pooled({"f1": ledger(a), "f2": ledger(b)})
     lv = dict(zip(zip(out.neutral_formula, out.adduct), out.evidence_level))
     assert lv[("C9H14O4", "[M-H]-")] == "5b"       # that pair's only row is tied: hard
@@ -580,7 +580,7 @@ def test_a_source_corroborates_only_what_it_holds_at_4b_or_better_by_its_own_evi
         m0("b", "C8HF15O2", method="known:perfluoroacid"),                                     # 3a
         m0("c", "C7H12O4"),                                                                    # 4c: no axis
         m0("d", "C6H8O4", tied=True, anchor="a"),                                              # 5b: tied
-        m0("e", "C9H14O4", adduct="[M]-.", method="ion_only:electron_attachment", mz=186.09),  # ion-only
+        m0("e", "C9H14O4", adduct="[M]-.", method="ion_only:electron_attachment"),  # ion-only
     ])
     assert EV.source_neutrals({"s": src}) == {"C10H16O4", "C8HF15O2"}
     assert EV.source_neutrals({"s": src}, max_level="4c") == {"C10H16O4", "C8HF15O2", "C7H12O4"}
@@ -591,7 +591,7 @@ def test_two_sources_that_only_agree_cannot_lift_each_other():
     (5b on each) used to hand each other the `corroborated` axis and climb to 4b
     together; each is now corroborated only by what the other pins on its own."""
     x = ledger([m0("p", "C6H10O4", degeneracy=5.0)])
-    y = ledger([m0("q", "C6H10O4", degeneracy=5.0, adduct="[M+NO3]-", mz=208.0)])
+    y = ledger([m0("q", "C6H10O4", degeneracy=5.0, adduct="[M+NO3]-")])
     for me, other in ((x, y), (y, x)):
         cross = EV.source_neutrals({"other": other})
         assert cross == set()

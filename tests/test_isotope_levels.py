@@ -152,18 +152,12 @@ def test_a_source_with_fewer_than_40_13c_children_is_not_tested():
 
 def test_n1_a_brighter_neighbour_pulls_the_line_toward_itself():
     """C10H16O5 [M]-.'s pattern on R1: its 13C line displaced +3 ppm toward the
-    25x brighter [M-H]- line of the neutral with two more H, 4.47 mDa above."""
-    p = parent("a", "C10H16O5", height=1e5)
-    x = p["_true"] + SP["13C"]
-    nb = parent("n", "C10H18O5", height=2.7e6)
-    nb["mz"] = nb["_true"] = x + 0.00447                            # the neighbour line itself
-    rows = background() + [p, kid("ac", p, "13C", 1.07e4, SP["13C"], 3.0), nb]
-    assert _level(_both(rows), "C10H16O5") == "4b"
-    rows[-1] = dict(nb, height=1.0e4)                               # not 3x the child: no pull
-    assert _level(_both(rows), "C10H16O5") == "4c"
-    nb2 = dict(nb, mz=x - 0.00447)                                   # on the other side: no pull
-    rows[-1] = nb2
-    assert _level(_both(rows), "C10H16O5") == "4c"
+    25x brighter [M-H]- line of the neutral with two more H, 4.47 mDa above (at
+    its own exact m/z, `_n1`). Not 3x the child, or the child displaced away from
+    it, and the line stays dropped."""
+    assert _level(_both(_n1(nb_height=2.7e6)[0]), "C10H16O5", "[M]-.") == "4b"
+    assert _level(_both(_n1(nb_height=1.0e4)[0]), "C10H16O5", "[M]-.") == "4c"          # not 3x the child
+    assert _level(_both(_n1(nb_height=2.7e6, off_ppm=-3.0)[0]), "C10H16O5", "[M]-.") == "4c"   # the other side
 
 
 def test_pcal_a_displaced_parent_line_places_its_line_through_the_calibration():
@@ -236,16 +230,16 @@ def test_dibromoacetic_acid_committed_on_79br81br_reads_both_its_neighbour_lines
 
 def test_count_labels_count_and_a_line_the_ion_cannot_make_never_does():
     rows = background()
-    br2 = parent("a", "C8H14Br2O4", height=1e5, heavy={"81Br": 1})          # committed on 79Br81Br
+    br2 = parent("a", "C8H14Br2O4", height=1e5)                             # committed on its mono line
     brfree = parent("b", "C31H34O10", height=1e5)                           # a Br-free [M-H]- with a 1:1 +2 line
     si7 = parent("c", "C14H42O7Si7", "[M+H]+", height=1e5)
     s2 = parent("d", "C8H14O4S2", height=1e5)
-    rows += [br2, kid("a2", br2, "2x81Br", 0.47e5, 2 * SP["81Br"] - SP["81Br"]),
+    rows += [br2, kid("a2", br2, "2x81Br", 0.93e5, 2 * SP["81Br"]),
              brfree, kid("b1", brfree, "81Br", 0.95e5, SP["81Br"]),
              si7, kid("c1", si7, "29Si", 0.36e5, SP["29Si"]), kid("c2", si7, "30Si", 0.23e5, SP["30Si"]),
              s2, kid("d1", s2, "34S", 0.0435e5, SP["34S"])]
     got = _both(rows)
-    assert _fact(got, "C8H14Br2O4").iso                     # '2x81Br' parent-relative: the 81Br2 line, 0.486x
+    assert _fact(got, "C8H14Br2O4").iso                     # peaky's '2x81Br', parent-relative: the 81Br2 line, 0.946x
     assert not _fact(got, "C31H34O10").iso                  # an ion with no Br makes no 81Br line
     assert _fact(got, "C14H42O7Si7", "[M+H]+").iso          # 7 x 0.0508 and 7 x 0.0335: its own lines
     assert not _fact(got, "C8H14O4S2").iso                  # one 34S line of S2 is 0.0886: 0.0435 is out of band
@@ -313,13 +307,10 @@ def test_a_generic_m_plus_n_line_is_exempt_and_credits_nothing():
 
 # --------------------------------------------------------------------------- the list (D5)
 def test_the_isotopologues_list_answers_the_same_question():
-    import json
     rows = background()
     p = parent("a", "C10H16O4", height=1e6)
-    other = parent("o", "C8H10O7", height=1.07e5)                           # an M0 row at a's 13C position
-    other["mz"] = p["_true"] + SP["13C"]
-    far = parent("f", "C9H12O6", height=1.07e5)
-    far["mz"] = p["_true"] + SP["13C"] + 3e-6 * p["_true"]                 # 3 ppm off that position
+    other = orphan("o", p["_true"] + SP["13C"], 1.07e5)                     # an iso row at a's 13C position
+    far = orphan("f", (p["_true"] + SP["13C"]) * (1 + 3e-6), 1.07e5)        # 3 ppm off that position
     rows += [p, other, far]
     for peak, want in (("o", "4b"), ("f", "4c"), ("nowhere", "4c")):
         p["isotopologues"] = json.dumps([{"label": "13C", "score": None, "peak_id": peak}])
@@ -344,17 +335,30 @@ def test_the_committed_lines_tolerance_follows_the_instrument_class():
     assert not _fact(_both(rows_at(RES_ORBI), RES_ORBI), "C2H2Br2O2").iso
 
 
-def test_a_two_81br_line_is_the_reagents_in_either_spelling():
-    """A Br3 [M+HBr+Br]- ion of a brominated neutral committed on 79Br2 81Br: its
-    81Br2 line (79Br 81Br2, 1.998 Da up) needs two Br, which the reagent
-    supplies -- named '81Br2' (the scorer) or '2x81Br' (peaky), it is a
-    reagent-halogen line either way (SPEC_DRAFT I3: '81Br', '81Br2', '2x81Br')."""
-    for label in ("81Br2", "2x81Br"):
+def test_the_reagent_only_flag_reads_label_parts_as_built():
+    """The reagent-only flag as BUILT (DECISIONS D2's list: a line whose label parts name only the reagent
+    halogen's heavy isotope -- '81Br', '81Br2', '2x81Br' -- is the reagent's; a pure 'M0' line names no part).
+    Pinned so that the open D4 question moves it deliberately: D4's last sub-point ("a line only the ion's
+    full halogen count makes is the neutral's halogen") is NOT implemented, here or in the reference chain.
+
+    C12H9BrN2 [M+HBr+Br]- (Br3, the reagent supplies two Br) committed on 79Br2 81Br, R3's geometry: the
+    scorer's '81Br2' is the 79Br 81Br2 line 1.998 Da up (0.97x, in band); peaky's '2x81Br' is the 81Br3 line
+    3.996 Da up (0.32x expected) -- a line only the full Br3 count makes. Either keeps the flag (4d).
+    A Br1 neutral's [M+Br]- (Br2, the reagent supplies one) committed on 79Br81Br: its 'M0' (79Br2) line
+    alone gives no flag (4b); with its '81Br2' line too the flag holds (4d) -- the rule is not monotonic."""
+    for label, shift, ratio in (("81Br2", SP["81Br"], 0.97), ("2x81Br", 2 * SP["81Br"], 0.32)):
         p = parent("a", "C12H9BrN2", "[M+HBr+Br]-", height=1e5, heavy={"81Br": 1})
-        rows = background() + _bromide(p, kid("u", p, label, 0.97e5, SP["81Br"]))
-        got = _both(rows)
+        got = _both(background() + _bromide(p, kid("u", p, label, ratio * 1e5, shift)))
         f = _fact(got, "C12H9BrN2", "[M+HBr+Br]-")
         assert f.iso and f.reagent_only_iso and _level(got, "C12H9BrN2", "[M+HBr+Br]-") == "4d", label
+    p = parent("a", "C9H20BrN3O6", "[M+Br]-", height=1e5, heavy={"81Br": 1})
+    m0_line = kid("d", p, "M0", 0.51e5, -SP["81Br"])
+    got = _both(background() + _bromide(p, m0_line))
+    f = _fact(got, "C9H20BrN3O6", "[M+Br]-")
+    assert f.iso and not f.reagent_only_iso and _level(got, "C9H20BrN3O6", "[M+Br]-") == "4b"
+    got = _both(background() + _bromide(p, m0_line, kid("u", p, "81Br2", 0.49e5, SP["81Br"])))
+    f = _fact(got, "C9H20BrN3O6", "[M+Br]-")
+    assert f.iso and f.reagent_only_iso and _level(got, "C9H20BrN3O6", "[M+Br]-") == "4d"
 
 
 def test_a_scorer_label_on_a_heavy_parent_credits_only_what_the_line_adds():

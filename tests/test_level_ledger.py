@@ -144,7 +144,7 @@ NITRATE_ROWS = [
     m0("p_class", "C8HF15O2", method="known:perfluoroacid"),
     # 3b -- the same neutral deprotonated AND clustered: a substituent only
     m0("p_acid1", "C10H16O5", adduct="[M-H]-"),
-    m0("p_acid2", "C10H16O5", adduct="[M+NO3]-", mz=262.0),
+    m0("p_acid2", "C10H16O5", adduct="[M+NO3]-"),
     # 4c -- unopposed on a separable peak, but nothing corroborates it
     m0("p_uniq", "C7H12O3", degeneracy=0.5, resolvability="resolved"),
     # 5a -- the same row on a peak the width model calls blended
@@ -159,16 +159,16 @@ NITRATE_ROWS = [
 # One bromide-channel source: its clusters carry Br, so an 81Br satellite pins
 # the ion and not the neutral.
 BROMIDE_ROWS = [
-    m0("b_reag", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br", mz=221.0),
+    m0("b_reag", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br"),
     child("b_reag_iso", "b_reag", "81Br+1", 950.0),
-    m0("b_bulk", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br", mz=235.0),
+    m0("b_bulk", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br"),
 ]
 
 # The corroborating source: it must pin the neutral by an axis of its OWN (here a
 # 13C line at the ratio of ten carbons) -- a source corroborates only what it holds
 # at 4b or better on its own evidence.
 OTHER_ROWS = [
-    m0("o_cross", "C10H16O4", adduct="[M+NO3]-", ion="C10H16NO7", mz=262.0),
+    m0("o_cross", "C10H16O4", adduct="[M+NO3]-", ion="C10H16NO7"),
     child("o_cross_iso", "o_cross", "13C+1", 107.0),
 ]
 
@@ -268,7 +268,7 @@ def test_a_source_that_only_carries_the_neutral_does_not_corroborate(tmp_path, s
     still counts: the run pins C10H16O4 by its own 13C line (4b), so it
     corroborates the bare source's row."""
     run_dir, _, _ = sources
-    bare = write_ledger(tmp_path / "bare_ledger.csv", [m0("o", "C10H16O4", adduct="[M+NO3]-", mz=262.0, degeneracy=None)])
+    bare = write_ledger(tmp_path / "bare_ledger.csv", [m0("o", "C10H16O4", adduct="[M+NO3]-", degeneracy=None)])
     assert levels(LL.run([str(run_dir)], [str(bare)]))[("C10H16O4", "[M-H]-")] == "4b"
     both = LL.run([str(run_dir), str(bare)], [])
     run_row = both[(both.source == "NITRATE_2026") & (both.neutral == "C10H16O4")].iloc[0]
@@ -279,7 +279,7 @@ def test_a_source_that_only_carries_the_neutral_does_not_corroborate(tmp_path, s
 
 def test_two_sources_that_only_agree_cannot_lift_each_other(tmp_path):
     x = write_ledger(tmp_path / "x_ledger.csv", [m0("p", "C6H10O4", degeneracy=5.0)])
-    y = write_ledger(tmp_path / "y_ledger.csv", [m0("q", "C6H10O4", adduct="[M+NO3]-", mz=208.0, degeneracy=5.0)])
+    y = write_ledger(tmp_path / "y_ledger.csv", [m0("q", "C6H10O4", adduct="[M+NO3]-", degeneracy=5.0)])
     both = LL.run([str(x), str(y)], [])
     assert set(both.level) == {"5b"} and not both.corroborated.any()
 

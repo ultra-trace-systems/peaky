@@ -411,10 +411,11 @@ def _cho(nc: int) -> dict:
     return {"C": nc, "H": 2 * nc - 5, "O": 4}
 
 
-def _source(extra_children=(), extra_parents=None, n_fit=400, a=0.2, b=6.0):
+def _source(extra_children=(), extra_parents=None, n_fit=400, a=0.2, b=6.0, extra_rows=()):
     """A synthetic Orbitrap-like source: n_fit CHO parents at their exact m/z,
     each with a '13C' child at the exact spacing plus a residual drawn so the
-    source's fit is (a, b) (`_exact_13c`); then the test's own rows."""
+    source's fit is (a, b) (`_exact_13c`); then the test's own rows
+    (`extra_rows`: (peak_id, mz, height) iso rows of the file under no parent)."""
     r, h = _exact_13c(a, b)
     parents, children = {}, []
     for i in range(n_fit):
@@ -426,9 +427,11 @@ def _source(extra_children=(), extra_parents=None, n_fit=400, a=0.2, b=6.0):
         children.append(dict(file="f", peak_id=f"c{i}", parent=pid, label="13C", mz=cm, height=float(h[i % len(h)])))
     parents.update(extra_parents or {})
     children.extend(extra_children)
-    fm = np.array([p["mz"] for p in parents.values()] + [c["mz"] for c in children], float)
-    fh = np.array([p["height"] for p in parents.values()] + [c["height"] for c in children], float)
-    fp = np.array([k[1] for k in parents] + [c["peak_id"] for c in children], object)
+    fm = np.array([p["mz"] for p in parents.values()] + [c["mz"] for c in children] + [r[1] for r in extra_rows],
+                  float)
+    fh = np.array([p["height"] for p in parents.values()] + [c["height"] for c in children]
+                  + [r[2] for r in extra_rows], float)
+    fp = np.array([k[1] for k in parents] + [c["peak_id"] for c in children] + [r[0] for r in extra_rows], object)
     return parents, children, {"f": (fm, fh, fp)}
 
 
@@ -466,23 +469,28 @@ def test_a_child_off_its_exact_position_drops_where_its_height_says_it_can_be_me
 
 def test_n1_a_brighter_neighbour_pulls_a_line_toward_itself():
     """An [M]-. line's 13C child pulled +3 ppm toward the 25x brighter [M-H]-
-    line of the neutral with two more H, 4.47 mDa above (on a TOF / Orbitrap
-    centroid the blend shifts the dim line): kept; with the neighbour on the
-    other side, too dim, or its own parent, dropped."""
-    counts = {"C": 10, "H": 16, "O": 5}
-    pmz = I.mono_mz(counts, "-")
-    x = pmz + I.ISOTOPE_SPACING["13C"]
-    off = 3e-6 * pmz
-    def case(n_mz, n_h, n_id="nb"):
+    line of the neutral with two more H, at its own exact m/z 4.47 mDa above
+    (the 13C / H doublet; on a TOF / Orbitrap centroid the blend shifts the dim
+    line): kept; with the child displaced the other way, the neighbour too dim,
+    beyond 25 ppm (the same doublet at m/z 159 is 28 ppm) or the residual more
+    than half the distance, dropped."""
+    def case(neutral, off_ppm, n_h):
+        counts = C.parse_formula(neutral)                          # the [M]-. ion
+        nb = dict(counts, H=counts["H"] + 1)                       # [M-H]- of the neutral with two more H
+        pmz = I.mono_mz(counts, "-")
+        x = pmz + I.ISOTOPE_SPACING["13C"]
+        n_mz = I.mono_mz(nb, "-")
+        assert abs(n_mz - x - 0.00447) < 1e-5
         p = {("f", "q"): dict(mz=pmz, height=1e5, pcal=0.0, counts=counts, sign="-"),
-             ("f", n_id): dict(mz=n_mz, height=n_h, pcal=0.0, counts=_cho(10), sign="-")}
-        kid = [dict(file="f", peak_id="k", parent="q", label="13C", mz=x + off, height=1.07e4)]
+             ("f", "nb"): dict(mz=n_mz, height=n_h, pcal=0.0, counts=nb, sign="-")}
+        kid = [dict(file="f", peak_id="k", parent="q", label="13C", mz=x + off_ppm * 1e-6 * pmz,
+                    height=1e5 * counts["C"] * 0.0107)]
         return _verdicts(*_source(kid, p), klass="orbitrap")[1]["k"]["keep"]
-    assert case(x + 0.00447, 2.7e5)                    # >= 3x, same side, 3 ppm <= half of 22 ppm
-    assert not case(x - 0.00447, 2.7e5)                # the other side
-    assert not case(x + 0.00447, 2.0e4)                # not 3x the child
-    assert not case(x + 0.012, 2.7e5)                  # beyond 25 ppm of the exact position
-    assert not case(x + 0.0005, 2.7e5)                 # the residual is more than half the distance
+    assert case("C10H16O5", 3.0, 2.7e6)                  # >= 3x, same side, 3 ppm <= half of 20.6 ppm
+    assert not case("C10H16O5", -3.0, 2.7e6)             # displaced the other way
+    assert not case("C10H16O5", 3.0, 2.0e4)              # not 3x the child
+    assert not case("C7H10O4", 3.0, 2.7e6)               # the doublet is 28 ppm at m/z 159: beyond 25 ppm
+    assert not case("C10H16O5", 11.3, 2.7e6)             # 2.44 mDa off: more than half of 4.47 mDa
 
 
 def test_pcal_the_calibrated_parent_position_places_a_line_too():
@@ -529,16 +537,16 @@ def test_a_list_entry_answers_the_childrens_question():
     counts = _cho(10)
     pmz = I.mono_mz(counts, "-")
     x = pmz + I.ISOTOPE_SPACING["13C"]
+    q2 = _cho(11)                                                     # another acid, at its own m/z (213.1)
     p = {("f", "q"): dict(mz=pmz, height=1e6, pcal=0.0, counts=counts, sign="-"),
-         ("f", "other"): dict(mz=x, height=1.07e5, pcal=0.0, counts=_cho(11), sign="-"),
-         ("f", "tall"): dict(mz=x, height=5e5, pcal=0.0, counts=_cho(11), sign="-"),
-         ("f", "q2"): dict(mz=pmz + 5.0, height=1e6, pcal=0.0, counts=_cho(10), sign="-")}
+         ("f", "q2"): dict(mz=I.mono_mz(q2, "-"), height=1e6, pcal=0.0, counts=q2, sign="-")}
     kids = [dict(file="f", peak_id="off", parent="q", label="13C", mz=x + 0.001, height=1.07e5),
             # a line the ledger labelled '81Br' (dropped: nowhere near +1.998) that the list calls '13C'
             dict(file="f", peak_id="mislabelled", parent="q", label="81Br", mz=x, height=1.07e5),
-            # another parent's child 1 mDa off this parent's 13C position, in band
+            # another parent's child (mislinked: 13 Da below it) 1 mDa off this parent's 13C position, in band
             dict(file="f", peak_id="stranger", parent="q2", label="13C", mz=x + 0.001, height=1.07e5)]
-    src = _source(kids, p)
+    # iso rows of the file at this parent's 13C position under no parent: in band, and 4.7x too tall
+    src = _source(kids, p, extra_rows=[("other", x, 1.07e5), ("tall", x, 5e5)])
     lists = [("f", "q", [{"label": "13C", "peak_id": "off"}]),                  # its own dropped child
              ("f", "q", [{"label": "13C", "peak_id": "other"}]),                # another M0 at the exact place
              ("f", "q", [{"label": "13C", "peak_id": "nowhere"}]),              # names no row of the file
