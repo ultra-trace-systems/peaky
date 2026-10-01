@@ -1240,16 +1240,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   two-channel certificate as on a three-channel one. The user kept the gate so the same evening,
   judging the per-file Good / Low label of no consequence for the final assignment: the merged
   ledger's vote decides (chloroacetic acid, for one, is the reading of m/z 172.901 / 155.970 in
-  13 / 14 of its 17 files, and the batch stamps every spectrum so). On the TOF 133 of the 154
-  passing gate decisions rest on such a line alone: 99 commit (89 at Good (certified), 49
-  winners) and 34 are then skipped as anti-correlated in time (the time-series check vetoes 26 %
-  of these passes, 1 of the other 21, 5 %). One of them reads a dim bromide-reagent triplet at
-  m/z 422.83 / 424.83 / 426.83, `reagent` at trunk, as a C10H4N2O5S `[M+HBr+Br]-` ladder rung at
-  Good (certified), a Candidate in the batch. Pass 7 does not revisit the label: in 22 of the 99
-  every member whose ion carried the line is later cleared or re-read (19 by the isotope audit's
-  carbon count -- that triplet's `[M+Br]-` member among them --, 2 by the ladder gap-fill, 1 as an
-  isotope line), and four members of three of them keep Good (certified) and "diagnostic isotope
-  envelope confirmed", all at 5b per file. "Commits" means the certificate's intended members
+  13 / 14 of the 17 files that assign each peak, and the batch stamps every spectrum so). On the
+  TOF 133 of the 154 passing gate decisions rest on such a line alone: 99 commit (89 at Good
+  (certified), 49 winners) and 34 are then skipped as anti-correlated in time (the time-series
+  check vetoes 26 % of these passes, 1 of the other 21, 5 %). One of them reads a dim
+  bromide-reagent triplet at m/z 422.83 / 424.83 / 426.83, `reagent` at trunk, as a C10H4N2O5S
+  `[M+HBr+Br]-` ladder rung at Good (certified), a Candidate in the batch. Pass 7 does not
+  revisit the label: in 22 of the 99 every member whose ion carried the line is later cleared or
+  re-read (18 by the isotope audit's carbon count -- that triplet's `[M+Br]-` member among them
+  --, 1 by the end mass gate, 2 by the ladder gap-fill, 1 as an isotope line), and four members
+  of three of them keep Good (certified) and "diagnostic isotope envelope confirmed", all at 5b
+  per file. "Commits" means the certificate's intended members
   (each member's ion is fixed before the commit loop): every passing decision that gets past the
   time-series check commits all of them (119 of 154; the other 35 commit nothing). The levels keep
   the line apart from the neutral's own isotope axis (`reagent_only_iso`, `chan2`). Pass 0's
