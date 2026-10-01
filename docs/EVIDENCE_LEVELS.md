@@ -242,11 +242,13 @@ no peaky code) that `tests/test_isotope_children.py` pins text for text.
 6. **The full-count line (D4).** On a pair whose ion carries n atoms of the
    reagent halogen, s = n − (the neutral's) of them the adduct's, a kept,
    in-band line is the NEUTRAL's halogen where its heavy index relative to the
-   committed line, j = k − k_c(n), lies outside [−k_c(s), s − k_c(s)] — k the
-   line's heavy atoms of the halogen under its nearer reading, k_c(m) those of
-   the most probable line of an m-atom ion (Br 0, 1, 1, 2 for Br1–Br4; Cl 0, 0,
-   0, 1 for Cl1–Cl4): a line an s-atom ion committed on its own most probable
-   line cannot make. The pair is then not `reagent_only_iso`, whatever its
+   committed line, j = k − k_P, lies outside [−k_c(s), s − k_c(s)] — k the
+   line's heavy atoms of the halogen under its nearer reading, k_P those of the
+   line the parent is ACTUALLY committed on (item 1's committed configuration,
+   read off the parent m/z), k_c(m) those of the most probable line of an
+   m-atom ion (Br 0, 1, 1, 2 for Br1–Br4; Cl 0, 0, 0, 1 for Cl1–Cl4): a line an
+   s-atom ion committed on its own most probable line cannot make. A line that
+   changes no atom of the halogen (a 13C or 34S line: j = 0) never counts. The pair is then not `reagent_only_iso`, whatever its
    other lines. A POSITION rule (the decided sub-point as read on 2026-09-30):
    a line where an s-atom ion puts one stays the reagent's whatever its height,
    and an out-of-band line is no evidence either way. A Br1 neutral's
@@ -258,12 +260,21 @@ no peaky code) that `tests/test_isotope_children.py` pins text for text.
    puts one, and its one `2x81Br` line (the 81Br3 line 3.994 Da up, j = +2) is
    1.23 ×, 3.9 × its 0.3155 expectation — out of band; 4d. A Br-free neutral's
    `[M+HBr+Br]-` (s = n) takes the flag from any of its lines, its `M0` line
-   too. Where a parent is committed on a line other than its ion's most probable
-   one (a Br2 ion stamped on its 79Br2 line), j is read against k_c(n) as
-   decided, not the committed line (the two differ only there): on the three
-   regression batches 8 per-file M0 rows of multi-halogen ions sit so, one of
-   them a pair the rule reads (a Br1 neutral's `[M+Br]-` stamped on its 79Br2
-   line, carbon-pinned), and the two readings level every pair and fact alike.
+   too, whichever line it is committed on: a neutral that carries none of the
+   halogen has no line of its own halogen. Where a parent is committed on a line
+   other than its ion's most probable one, j is counted from that line ("relative
+   to the committed line"; until 2026-10-01 from k_c(n), which shifted every
+   index there by the offset): C15H23BrO2 `[M+Br]-` (a Br1 neutral's, Br2
+   stamped on its 79Br2 line) — its 79Br81Br line 2 Da up (j = +1) is where the
+   reagent's Br puts one, its 81Br2 line 4 Da up (j = +2) is the neutral's
+   second Br, and its 13C line (j = 0) is no halogen line (counted from k_c(2)
+   it read j = −1, the neutral's). On the three regression batches 8 per-file M0
+   rows of Br ions sit off their most probable line (one a pair the rule reads,
+   C15H23BrO2, carbon-pinned; seven of Br-free neutrals), and the two countings
+   level every pair, fact and golden row alike. The Br-free reading matters on
+   one pair of the TOF batch's full replay: the C10H4N2O5S `[M+HBr+Br]-` ladder
+   rung, a dim reagent Br2 triplet stamped on its 79Br2 line, whose 81Br2 line
+   sits at j = +2 — the reagent's (the flag stays; 5b either way).
 
 The width model is the run's: per file the one the `resolvability` stage
 reads (`apply_levels(…, resolution=)`), on the batch the batch's
