@@ -418,6 +418,47 @@ def test_the_full_count_line_is_read_from_the_line_the_parent_is_committed_on():
         assert _level(got, "C15H23BrO2", "[M+Br]-") == level, [r["peak_id"] for r in lines]
 
 
+def test_a_br2_neutrals_bromide_cluster_reads_its_own_halogen_lines():
+    """C8H8Br2O2 [M+Br]-: a Br3 ion, two Br the neutral's and one the reagent's (s 1), committed on its most
+    probable 79Br2 81Br line; a Br1 ion committed on its 79Br line puts lines at j = 0, +1 only. Its 'M0' line
+    (79Br3, 2 Da below, 0.34x of 0.343, j -1) and its '2x81Br' line (81Br3, 4 Da up, 0.32x of 0.315, j +2) only
+    a Br3 ion makes: the neutral's, 4b; its '81Br2' line alone (79Br 81Br2, 2 Da up, 0.97x of 0.973, j +1) is
+    where the reagent's Br puts one: 4d. (The neutral's own count: capped at one Br, s would read 2 and the
+    'M0' line the reagent's.)"""
+    p = parent("a", "C8H8Br2O2", "[M+Br]-", height=1e5, heavy={"81Br": 1})
+    for line, flag, level in ((kid("d", p, "M0", 0.34e5, -SP["81Br"]), False, "4b"),
+                              (kid("t", p, "2x81Br", 0.32e5, 2 * SP["81Br"]), False, "4b"),
+                              (kid("u", p, "81Br2", 0.97e5, SP["81Br"]), True, "4d")):
+        got = _both(background() + _bromide(p, line))
+        f = _fact(got, "C8H8Br2O2", "[M+Br]-")
+        assert f.iso and f.reagent_only_iso == flag, line["iso_label"]
+        assert _level(got, "C8H8Br2O2", "[M+Br]-") == level, line["iso_label"]
+
+
+def test_an_out_of_band_m0_line_alone_stays_the_reagents():
+    """An 'M0' line out of band (1.6x against 0.514: height evidence only) as the pair's ONLY line: it is no
+    evidence of the neutral's halogen and it names the reagent's -- the flag holds (4c: no in-band line), on a
+    Br1 neutral's [M+Br]- committed on 79Br81Br (the 79Br2 line, j -1) and on a Br-free neutral's
+    [M+HBr+Br]- (every line the reagent's)."""
+    for neutral, adduct in (("C9H20BrN3O6", "[M+Br]-"), ("C10H12O4", "[M+HBr+Br]-")):
+        p = parent("a", neutral, adduct, height=1e5, heavy={"81Br": 1})
+        got = _both(background() + _bromide(p, kid("d", p, "M0", 1.6e5, -SP["81Br"])))
+        f = _fact(got, neutral, adduct)
+        assert not f.iso and f.reagent_only_iso and _level(got, neutral, adduct) == "4c", neutral
+
+
+def test_a_br_cl_m0_line_beside_a_reagent_81br_line_is_no_reagent_line():
+    """Chloroacetic acid's [M+Br]- (BrCl, the Br the reagent's, the Cl the neutral's) stamped on its 81Br37Cl
+    line: its 'M0' line (79Br35Cl, 3.995 Da below, 3.2x of 3.216) differs from the committed line in Br AND Cl,
+    so it names the neutral's Cl too -- not a reagent line, whatever the scorer's '81Br' line (81Br35Cl, 1.997
+    Da below, 3.1x of 3.129) beside it: no flag, 4b."""
+    p = parent("a", "C2H3ClO2", "[M+Br]-", height=1e5, heavy={"81Br": 1, "37Cl": 1})
+    lines = [kid("d", p, "M0", 3.2e5, -(SP["81Br"] + SP["37Cl"])), kid("u", p, "81Br", 3.1e5, -SP["37Cl"])]
+    got = _both(background() + _bromide(p, *lines))
+    f = _fact(got, "C2H3ClO2", "[M+Br]-")
+    assert f.iso and not f.reagent_only_iso and _level(got, "C2H3ClO2", "[M+Br]-") == "4b"
+
+
 def test_a_scorer_label_on_a_heavy_parent_credits_only_what_the_line_adds():
     """A Br2 neutral's [M-H]- committed on 79Br81Br: the scorer's '13C+81Br' is
     the parent's own 13C line (it adds a 13C, not an 81Br). It credits carbon

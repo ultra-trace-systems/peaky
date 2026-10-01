@@ -590,6 +590,12 @@ def test_line_facts_read_the_kept_lines():
     assert f["iso"] and f["reagent_only"] and f["labels"] == set()
     assert not I.line_facts([line([], [], False, "mono")], "81Br")["reagent_only"]
     assert not I.line_facts([line([], ["Br", "S"], True, "mono")], "81Br")["reagent_only"]
+    # ... and beside a reagent-part line: a Br + Cl 'M0' line (the 79Br35Cl line of a parent committed on
+    # 81Br37Cl) names the Cl too, whatever the '81Br' line next to it
+    for mod in (I, LL):
+        assert not mod.line_facts([line([], ["Br", "Cl"], True, "mono"), line(["81Br"], ["Cl"], True)],
+                                  "81Br")["reagent_only"]
+        assert mod.line_facts([line(["81Br"], ["Cl"], True)], "81Br")["reagent_only"]
     f = I.line_facts([line(["2x81Br"], ["Br"], False), line(["81Br2"], ["Br"], False)], "81Br")
     assert f["reagent_only"] and not f["iso"]
     f = I.line_facts([line(["M+4"], [], False, "gen")], "81Br")
