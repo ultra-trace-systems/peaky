@@ -418,6 +418,17 @@ def test_the_full_count_line_is_read_from_the_line_the_parent_is_committed_on():
         assert _level(got, "C15H23BrO2", "[M+Br]-") == level, [r["peak_id"] for r in lines]
 
 
+def test_a_br_free_neutrals_bromide_cluster_committed_on_its_81br_line_has_no_line_of_its_own():
+    """C10H18O3 [M+Br]- (Br-free: the Br is the reagent's) stamped on its 81Br line, off its most probable 79Br
+    line: its in-band 'M0' line (the 79Br line 1.998 Da below, 1.03x of 1.028) sits at j = -1 counted from the
+    committed line -- outside the range anchored at k_c(1) -- yet the neutral carries no Br, so the line is the
+    reagent's: the flag holds, 4d."""
+    p = parent("a", "C10H18O3", "[M+Br]-", height=1e5, heavy={"81Br": 1})
+    got = _both(background() + _bromide(p, kid("d", p, "M0", 1.03e5, -SP["81Br"])))
+    f = _fact(got, "C10H18O3", "[M+Br]-")
+    assert f.iso and f.reagent_only_iso and _level(got, "C10H18O3", "[M+Br]-") == "4d"
+
+
 def test_a_br2_neutrals_bromide_cluster_reads_its_own_halogen_lines():
     """C8H8Br2O2 [M+Br]-: a Br3 ion, two Br the neutral's and one the reagent's (s 1), committed on its most
     probable 79Br2 81Br line; a Br1 ion committed on its 79Br line puts lines at j = 0, +1 only. Its 'M0' line
