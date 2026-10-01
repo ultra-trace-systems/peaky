@@ -609,8 +609,9 @@ def test_the_most_probable_line_of_an_n_atom_halogen_ion():
 
 
 def test_a_line_only_the_full_count_makes_on_either_side_of_the_reagents_range():
-    """D4's full-count line (the position rule): j = k - k_c(n) outside [-k_c(s), s - k_c(s)], kept lines only
-    (the caller passes those), in band only.
+    """D4's full-count line (the position rule): j = k - k_P outside [-k_c(s), s - k_c(s)], kept lines only
+    (the caller passes those), in band only. Here every parent is committed on its most probable line (k_P =
+    k_c(n)); off it, see the next test.
 
     Br2 [M+Br]- (n 2, the neutral 1, s 1: j in [0, 1] is the reagent's): 79Br2 (k 0, j -1) the neutral's;
     79Br81Br (k 1) and 81Br2 (k 2, j +1) the reagent's. Br3 [M+HBr+Br]- (n 3, s 2: j in [-1, 1]): 79Br3 (k 0)
@@ -620,7 +621,9 @@ def test_a_line_only_the_full_count_makes_on_either_side_of_the_reagents_range()
     br2, br3 = {"C": 9, "H": 20, "Br": 2, "N": 3, "O": 6}, {"C": 12, "H": 10, "Br": 3, "N": 2}
 
     def v(counts, k, ok=True, heavy=True, iso="81Br"):
-        return dict(ok=ok, counts=counts, heavy=({iso: k} if k else {}) if heavy else None)
+        kp = I.most_probable_heavy(counts[I.ISOTOPE_ELEMENT[iso]], iso)
+        return dict(ok=ok, counts=counts, heavy=({iso: k} if k else {}) if heavy else None,
+                    committed={iso: kp} if kp else {})
     for mod in (I, LL):
         f = mod.full_count_line
         assert f(v(br2, 0), "81Br", 1) and not f(v(br2, 1), "81Br", 1) and not f(v(br2, 2), "81Br", 1)
@@ -633,11 +636,41 @@ def test_a_line_only_the_full_count_makes_on_either_side_of_the_reagents_range()
         assert f(v(cl2, 2, iso="37Cl"), "37Cl", 1) and not f(v(cl2, 1, iso="37Cl"), "37Cl", 1)
         assert not f(v(br2, 0), None, 1) and not f(v(br2, 0, heavy=False), "81Br", 1)
     # through line_facts: the full-count line clears the flag whatever the pair's other lines
-    lines = [dict(parts=["81Br2"], elements=["Br"], ok=True, kind="set", counts=br2, heavy={"81Br": 2}),
-             dict(parts=[], elements=["Br"], ok=True, kind="mono", counts=br2, heavy={})]
+    lines = [dict(parts=["81Br2"], elements=["Br"], ok=True, kind="set", counts=br2, heavy={"81Br": 2},
+                  committed={"81Br": 1}),
+             dict(parts=[], elements=["Br"], ok=True, kind="mono", counts=br2, heavy={}, committed={"81Br": 1})]
     assert I.line_facts(lines[:1], "81Br", 1)["reagent_only"]
     assert not I.line_facts(lines, "81Br", 1)["reagent_only"] and not I.line_facts(lines[1:], "81Br", 1)["reagent_only"]
     assert I.line_facts(lines, "81Br", 0)["reagent_only"]
+
+
+def test_the_full_count_index_is_read_from_the_actual_committed_line():
+    """j = k - k_P, k_P the heavy atoms of the line the parent is ACTUALLY committed on (D4's committed
+    configuration, from the parent m/z), not k_c(n): "relative to the committed line". The range stays
+    [-k_c(s), s - k_c(s)].
+
+    Br2 [M+Br]- (s 1) committed on 79Br2 (k_P 0, off k_c(2) = 1): its 79Br81Br line 2 Da up (j +1) is where a
+    Br1 ion committed on its 79Br line puts its 81Br line -- the reagent's; its 81Br2 line 4 Da up (j +2) only
+    the full Br2 count makes -- the neutral's. Committed on 81Br2 (k_P 2): both lighter lines (j -1, -2) are the
+    neutral's. Br3 [M+HBr+Br]- (s 2) committed on 79Br3 (k_P 0): 79Br2 81Br (j +1) the reagent's, 79Br 81Br2
+    (j +2) and 81Br3 (j +3) the neutral's. A line that changes no Br (a 13C line, k = k_P, j 0) is never a
+    halogen line, on any parent (read from k_c(n) it was j = -1 on the 79Br2-committed Br2 ion). A Br-free
+    neutral's ion (the neutral 0: s = n) has no line of the neutral's halogen whichever line it is committed on."""
+    br2, br3 = {"C": 15, "H": 23, "Br": 2, "O": 2}, {"C": 12, "H": 10, "Br": 3, "N": 2}
+
+    def v(counts, k, kp):
+        return dict(ok=True, counts=counts, heavy={"81Br": k} if k else {}, committed={"81Br": kp} if kp else {})
+    for mod in (I, LL):
+        f = mod.full_count_line
+        assert [f(v(br2, k, 0), "81Br", 1) for k in range(3)] == [False, False, True]
+        assert [f(v(br2, k, 2), "81Br", 1) for k in range(3)] == [True, True, False]
+        assert [f(v(br3, k, 0), "81Br", 1) for k in range(4)] == [False, False, True, True]
+        for counts, own in ((br2, 1), (br3, 1), (br2, 0), (br3, 0)):
+            for kp in range(counts["Br"] + 1):
+                assert not f(v(counts, kp, kp), "81Br", own), (counts, own, kp)          # the 13C line
+        assert not any(f(v(br2, k, kp), "81Br", 0) for k in range(3) for kp in range(3))
+        assert not any(f(v(br3, k, kp), "81Br", 0) for k in range(4) for kp in range(4))
+        assert not f(v({"C": 2, "H": 3, "Br": 1, "Cl": 1, "O": 2}, 0, 1), "81Br", 0)  # BrCl on 81Br: 79Br line
 
 
 # --------------------------------------------------------------------------- the width model reaches every path (c3)

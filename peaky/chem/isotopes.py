@@ -854,19 +854,23 @@ def full_count_line(v: dict, satellite: str | None, own: int) -> bool:
     IN-BAND line (`v` a judge_source verdict) that only the ion's full count
     of the reagent halogen makes -- evidence of the NEUTRAL's halogen. The ion
     carries n atoms of it, the adduct s = n - `own` (the neutral's atoms); the
-    line's heavy index relative to the committed line, j = k - k_c(n) (k its
-    heavy atoms, k_c `most_probable_heavy`), lies outside [-k_c(s), s - k_c(s)]
-    -- the lines an s-atom ion committed on its most probable line makes. A
-    line where an s-atom ion puts one stays the reagent's whatever its height;
-    an 'M+n' or unreadable line has no index; an adduct that supplies none of
-    the halogen (s <= 0) leaves nothing to tell apart."""
+    line's heavy index relative to the ACTUAL committed line, j = k - k_P (k
+    its heavy atoms, k_P the committed configuration's: `committed` on the
+    verdict, read from the parent m/z), lies outside [-k_c(s), s - k_c(s)]
+    (k_c `most_probable_heavy`) -- the lines an s-atom ion committed on its
+    most probable line makes. A line that changes no atom of the halogen
+    (j = 0: a 13C or 34S line of any parent) never counts. A line where an
+    s-atom ion puts one stays the reagent's whatever its height; an 'M+n' or
+    unreadable line has no index; an adduct that supplies none of the halogen
+    (s <= 0) leaves nothing to tell apart, nor does a neutral that carries
+    none (`own` <= 0: every line of its ion is the reagent's)."""
     if not satellite or not v["ok"] or v.get("heavy") is None:
         return False
     n = int(v["counts"].get(ISOTOPE_ELEMENT[satellite], 0))
     s = n - int(own)
-    if s <= 0:
+    if s <= 0 or int(own) <= 0:
         return False
-    j = int(v["heavy"].get(satellite, 0)) - most_probable_heavy(n, satellite)
+    j = int(v["heavy"].get(satellite, 0)) - int(v["committed"].get(satellite, 0))
     kc = most_probable_heavy(s, satellite)
     return not (-kc <= j <= s - kc)
 
@@ -978,7 +982,8 @@ def judge_source(children, parents: dict, lists, rows: dict, *, klass: str | Non
 
     Returns {'fit': PositionSigma | None, 'tested': bool, 'children': [one
     verdict per child: keep (placed), ok (in band), expected, ratio, elements,
-    parts, kind, heavy (the line's configuration), counts (the ion's)],
+    parts, kind, heavy (the line's configuration), committed (the parent's
+    committed configuration), counts (the ion's)],
     'lists': [one bool per list row: an entry that is not this
     parent's dropped child, names an M0 / iso row of the file, is placed at its
     own height (pcal allowed, no N1) and is in band]}."""
@@ -1026,7 +1031,7 @@ def judge_source(children, parents: dict, lists, rows: dict, *, klass: str | Non
         ratio = ch / ph if (np.isfinite(ph) and ph > 0) else float("nan")
         verdicts.append(dict(keep=bool(keep), ok=_in_band(ratio, r["expected"]), expected=r["expected"],
                              ratio=ratio, elements=r["elements"], parts=r["parts"], kind=r["kind"],
-                             heavy=r["heavy"], counts=p["counts"]))
+                             heavy=r["heavy"], committed=hp, counts=p["counts"]))
         if not keep:
             dropped.setdefault(key, set()).add(str(c["peak_id"]))
 

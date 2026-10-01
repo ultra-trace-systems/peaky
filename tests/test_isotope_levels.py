@@ -401,6 +401,23 @@ def test_every_line_of_a_br_free_neutrals_hbr_br_cluster_is_the_reagents():
         assert f.iso and f.reagent_only_iso and _level(got, "C10H12O4", "[M+HBr+Br]-") == "4d"
 
 
+def test_the_full_count_line_is_read_from_the_line_the_parent_is_committed_on():
+    """C15H23BrO2 [M+Br]- (R3: a Br2 ion, one Br the neutral's) stamped on its 79Br2 line, off its most
+    probable 79Br81Br line: j is counted from the ACTUAL committed line (D4's committed configuration, from the
+    parent m/z). Its '81Br' line 2 Da up (79Br81Br, 1.92x of 1.946, j +1) is where a Br1 ion committed on its
+    79Br line puts its 81Br line -- the reagent's (4d alone); its '2x81Br' line 4 Da up (81Br2, 0.97x of 0.946,
+    j +2) only the full Br2 count makes -- the neutral's second Br: 4b, alone or beside the 2-Da line. (Read
+    from k_c(2) = 1, as built before, the 4-Da line sat at j +1 and the pair kept the flag: 4d.)"""
+    p = parent("a", "C15H23BrO2", "[M+Br]-", height=1e5)
+    two = kid("u", p, "81Br", 1.92e5, SP["81Br"])
+    four = kid("t", p, "2x81Br", 0.97e5, 2 * SP["81Br"])
+    for lines, flag, level in (([two], True, "4d"), ([two, four], False, "4b"), ([four], False, "4b")):
+        got = _both(background() + _bromide(p, *lines))
+        f = _fact(got, "C15H23BrO2", "[M+Br]-")
+        assert f.iso and f.reagent_only_iso == flag, [r["peak_id"] for r in lines]
+        assert _level(got, "C15H23BrO2", "[M+Br]-") == level, [r["peak_id"] for r in lines]
+
+
 def test_a_scorer_label_on_a_heavy_parent_credits_only_what_the_line_adds():
     """A Br2 neutral's [M-H]- committed on 79Br81Br: the scorer's '13C+81Br' is
     the parent's own 13C line (it adds a 13C, not an 81Br). It credits carbon
