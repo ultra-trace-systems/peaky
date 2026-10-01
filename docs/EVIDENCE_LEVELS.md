@@ -266,12 +266,25 @@ no peaky code) that `tests/test_isotope_children.py` pins text for text.
    to the committed line"; until 2026-10-01 from k_c(n), which shifted every
    index there by the offset): C15H23BrO2 `[M+Br]-` (a Br1 neutral's, Br2
    stamped on its 79Br2 line) — its 79Br81Br line 2 Da up (j = +1) is where the
-   reagent's Br puts one, its 81Br2 line 4 Da up (j = +2) is the neutral's
-   second Br, and its 13C line (j = 0) is no halogen line (counted from k_c(2)
-   it read j = −1, the neutral's). On the three regression batches 8 per-file M0
-   rows of Br ions sit off their most probable line (one a pair the rule reads,
-   C15H23BrO2, carbon-pinned; seven of Br-free neutrals), and the two countings
-   level every pair, fact and golden row alike. The Br-free reading matters on
+   reagent's Br puts one, its 81Br2 line 4 Da up (j = +2) is the neutral's Br,
+   and its 13C line (j = 0) is no halogen line (counted from k_c(2) it read
+   j = −1, the neutral's). On the three regression batches 8 per-file M0 rows of
+   Br ions sit off their most probable line (one of them C15H23BrO2, the one pair
+   the rule would read — carbon-pinned, so never evaluated; seven of Br-free
+   neutrals), and the two countings level every pair, fact and golden row alike.
+   The rule is not symmetric in the committed line: on a parent committed on a
+   line HEAVIER than its most probable one, a line one 2-Da step of a single Br
+   below it reads as the neutral's halogen, though a one-Br reagent ion committed
+   on its own 81Br line puts one exactly there (C15H23BrO2's `[M+Br]-` committed
+   on 81Br2 would read its 79Br81Br line alone, j = −1, as the neutral's, 4b; its
+   mirror, committed on the most probable 79Br81Br line with only its 81Br2 line
+   2 Da up, j = +1, reads the reagent's, 4d). The Br-free reading above (a
+   neutral with none of the halogen) is this corner's s = n instance, and it
+   guards that one. Latent: every parent in the data that sits
+   off its most probable line is committed on a LIGHTER one (8 per-file rows of
+   the stored runs, 9 of the full replay), where one 2-Da step stays inside the
+   reagent's range; whether the heavier side should read like its mirror is an
+   open question. The Br-free reading matters on
    one pair of the TOF batch's full replay: the C10H4N2O5S `[M+HBr+Br]-` ladder
    rung, a dim reagent Br2 triplet stamped on its 79Br2 line, whose 81Br2 line
    sits at j = +2 — the reagent's (the flag stays; 5b either way).

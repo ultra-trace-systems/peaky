@@ -816,7 +816,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instead, as first built, every index of a parent stamped off its most probable line shifted --
   a 13C line of a Br2 ion stamped on 79Br2 read as the neutral's Br -- moving no level or fact on
   the three batches, the goldens or the fixtures; the Br-free reading keeps the reagent's flag on
-  one pair of the full replay, a dim reagent Br2 triplet read as a ladder rung, 5b either way); the
+  one pair of the full replay, a dim reagent Br2 triplet read as a ladder rung, 5b either way; a
+  parent committed on a HEAVIER line than its most probable one would read one 2-Da step of a
+  single Br as the neutral's halogen, where a one-Br reagent ion puts a line too -- latent, every
+  off-line parent of the three batches is committed on a lighter one, and an open question); the
   isotopologues list holds `iso` only through an entry that passes the same test;
   `iso_labels` lists the kept lines' whole labels. The Br-free `reagent_only_iso` hold of
   C11+a is released with it (its line expects 0: no isotope axis, no 4d). The width model
@@ -1233,12 +1236,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sat under their `[M+Br]-` ion, which they do not commit (the doublet already held by another
   reading): 8 Good -> Low, 3 tied ones lose the displacement strength. The reagent halogen's line
   of a COMMITTED ion counts (the user: "Why would it not be evidence if there is two other ions
-  confirming?") -- it proves the channel a real bromide cluster of the certified neutral; 133 of
-  the TOF's 154 passing gate decisions rest on such a line alone and stay (one of them reads a dim
-  bromide-reagent triplet at m/z 422.83 / 424.83 / 426.83, `reagent` at trunk, as a
-  C10H4N2O5S `[M+HBr+Br]-` ladder rung at Good (certified), a Candidate in the batch); the levels
-  keep it apart from the neutral's own isotope axis (`reagent_only_iso`, `chan2`). Pass 0's
-  single-channel gates stay on the compound. `tests/test_known_ion_kids.py`.
+  confirming?") -- it proves the channel a real bromide cluster of the certified neutral, on a
+  two-channel certificate as on a three-channel one. The user kept the gate so the same evening,
+  judging the per-file Good / Low label of no consequence for the final assignment: the merged
+  ledger's vote decides (chloroacetic acid, for one, is the reading of m/z 172.901 / 155.970 in
+  13 / 14 of its 17 files, and the batch stamps every spectrum so). On the TOF 133 of the 154
+  passing gate decisions rest on such a line alone: 99 commit (89 at Good (certified), 49
+  winners) and 34 are then skipped as anti-correlated in time (the time-series check vetoes 26 %
+  of these passes, 1 of the other 21, 5 %). One of them reads a dim bromide-reagent triplet at
+  m/z 422.83 / 424.83 / 426.83, `reagent` at trunk, as a C10H4N2O5S `[M+HBr+Br]-` ladder rung at
+  Good (certified), a Candidate in the batch. Pass 7 does not revisit the label: in 22 of the 99
+  every member whose ion carried the line is later cleared or re-read (19 by the isotope audit's
+  carbon count -- that triplet's `[M+Br]-` member among them --, 2 by the ladder gap-fill, 1 as an
+  isotope line), and four members of three of them keep Good (certified) and "diagnostic isotope
+  envelope confirmed", all at 5b per file. "Commits" means the certificate's intended members
+  (each member's ion is fixed before the commit loop): every passing decision that gets past the
+  time-series check commits all of them (119 of 154; the other 35 commit nothing). The levels keep
+  the line apart from the neutral's own isotope axis (`reagent_only_iso`, `chan2`). Pass 0's
+  single-channel gates stay on the compound. `tests/test_known_ion_kids.py` (its pass-7 spectra
+  built from the scorer's own envelope and scored by the local scorer: a two-channel certificate,
+  a '13C+81Br' line alone, a 34S line under an uncommitted ion, an order-1 rung's own line).
   REPLAY numbers (the final runs replace them at landing): per-file ledger rows whose role, reading, parent, label,
   list or confidence change (attributed exactly by a replay without the residual fix below):
   the labelled-nitrate Orbitrap 23 (pass 0 18, pass 7 1, and 4 knock-on rows: two ions
@@ -1250,12 +1267,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that follow); the ladder rung C7H6N2OP2 `[M+Br]-` keeps its own 81Br line and its commit.
   The gate keyed on the committed ions, against the same replay with the compound-keyed gate:
   the two Orbitrap batches unchanged (every file, table and stamp byte-identical); the TOF 8 of
-  28 files -- 8 certificate members Good -> Low (certified), 10 rows whose commentary alone
-  changes (members the isotope audit clears anyway), 10 rows re-read (a Low certificate's
-  members are weak commits that later stages re-read: one C8H15ClN3PS3 `[M+NO3]-` member is now a
-  C10H10BrN3O4 reading, one C5H15ClN2P2S2 `[M-H]-` member a C5H12O7 `[M+Br]-` one, others an
-  isotope line or unexplained), 9 rows of tetrafluoropropionic acid C3H2F4O2 committed by pass
-  3's late fluorinated sweep in two files, and 391 rows whose displayed `ppm_error_cal` alone
+  28 files, 428 rows -- 8 certificate members Good -> Low (certified); 8 rows re-read, five
+  members and three lines that follow them (a Low certificate's members are weak commits that
+  later stages re-read: one C8H15ClN3PS3 `[M+NO3]-` member is now a C10H10BrN3O4 reading, one
+  C5H15ClN2P2S2 `[M-H]-` member a C5H12O7 `[M+Br]-` one, the others an isotope line or
+  unexplained); 9 rows of tetrafluoropropionic acid C3H2F4O2 (five M0 rows and four of their
+  lines) committed by pass 3's late fluorinated sweep in two files; 12 rows whose other columns
+  alone change -- the commentary of six unexplained peaks (members the isotope audit clears
+  anyway) and of the tied C9H9ClP2 certificate's two members (Low (certified) before and after,
+  now without "diagnostic isotope envelope confirmed"), the isotope match score of two lines, the
+  evidence axes of two members --; and 391 rows whose displayed `ppm_error_cal` alone
   shifts by 0.01 ppm in one of those files (the offset re-fits on the changed commits; no
   decision reads the column); per file one
   M0 level move (C6H9ClO3S `[M+NO3]-` 4b -> 5b in one file: a Low engine confidence), pooled no
