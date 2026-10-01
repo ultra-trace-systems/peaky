@@ -461,13 +461,23 @@ def test_an_out_of_band_m0_line_alone_stays_the_reagents():
 def test_a_br_cl_m0_line_beside_a_reagent_81br_line_is_no_reagent_line():
     """Chloroacetic acid's [M+Br]- (BrCl, the Br the reagent's, the Cl the neutral's) stamped on its 81Br37Cl
     line: its 'M0' line (79Br35Cl, 3.995 Da below, 3.2x of 3.216) differs from the committed line in Br AND Cl,
-    so it names the neutral's Cl too -- not a reagent line, whatever the scorer's '81Br' line (81Br35Cl, 1.997
-    Da below, 3.1x of 3.129) beside it: no flag, 4b."""
+    so it names the neutral's Cl too -- not a reagent line, whatever the scorer's '81Br' line beside it: no
+    flag, 4b. That line is the one peak a real spectrum has there: 81Br35Cl (1.997 Da below, 3.129x) and
+    79Br37Cl (0.9 mDa further down, 1.028x) are unresolved (FWHM ~1.4 mDa at m/z 175 on this width model), so
+    it stands at their sum, 4.157x, at their intensity-weighted centroid (1.26 ppm below the 81Br35Cl spacing,
+    still read as that line). Alone, that line is the reagent's (4d): the 'M0' line is what clears the flag."""
     p = parent("a", "C2H3ClO2", "[M+Br]-", height=1e5, heavy={"81Br": 1, "37Cl": 1})
-    lines = [kid("d", p, "M0", 3.2e5, -(SP["81Br"] + SP["37Cl"])), kid("u", p, "81Br", 3.1e5, -SP["37Cl"])]
+    counts, _ = ion_of("C2H3ClO2", "[M+Br]-")
+    pc, p81, p37 = (I.heavy_probability(h, counts) for h in ({"81Br": 1, "37Cl": 1}, {"81Br": 1}, {"37Cl": 1}))
+    blend = kid("u", p, "81Br", 1e5 * (p81 + p37) / pc, -(p81 * SP["37Cl"] + p37 * SP["81Br"]) / (p81 + p37))
+    assert abs(blend["height"] / 1e5 - 4.157) < 1e-3
+    lines = [kid("d", p, "M0", 3.2e5, -(SP["81Br"] + SP["37Cl"])), blend]
     got = _both(background() + _bromide(p, *lines))
     f = _fact(got, "C2H3ClO2", "[M+Br]-")
     assert f.iso and not f.reagent_only_iso and _level(got, "C2H3ClO2", "[M+Br]-") == "4b"
+    assert f.iso_labels == "81Br"                                    # the blend is kept, read as its '81Br' line
+    alone = _both(background() + _bromide(p, blend))
+    assert _fact(alone, "C2H3ClO2", "[M+Br]-").reagent_only_iso and _level(alone, "C2H3ClO2", "[M+Br]-") == "4d"
 
 
 def test_a_scorer_label_on_a_heavy_parent_credits_only_what_the_line_adds():
