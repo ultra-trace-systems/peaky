@@ -280,10 +280,11 @@ def test_a_rung_on_a_scored_unanchored_channel_takes_the_oracles_string_and_its_
 # the ion's height, each a Gaussian of the Orbitrap FWHM (R ~ 118 000 at m/z 200, R ~ m^-1/2); lines whose summed
 # profile shows no minimum between them are one peak at their sum and intensity-weighted centroid (a weak line on a
 # strong one's flank is a shoulder, not a peak, however far beyond one FWHM it sits), and a peak under the 100-cps
-# floor is not picked (one spectrum is the TOF's, as measured). The oracle is the local scorer on that peak list (`score_candidates_local`: each line matched to the
-# nearest peak within 5 ppm and 40 % of its predicted height), asked for the certificate's compound only. The
-# certificates' members are dim, so their own 37Cl / 34S lines stay under the floor: only then is a line of one ion
-# the certificate's only diagnostic line, which each test asserts of its spectrum before running the pass.
+# floor is not picked (one spectrum is the TOF's, as measured). The oracle is the local scorer on that peak list
+# (`score_candidates_local`: each line matched to the nearest peak within 5 ppm and 40 % of its predicted height),
+# asked for the certificate's compound only. The certificates' members are dim, so their own 37Cl / 34S lines stay
+# under the floor: only then is a line of one ion the certificate's only diagnostic line, which each test asserts of
+# its spectrum before running the pass.
 R200 = 118_000.0
 FLOOR = 100.0
 DIAG = ("34S", "37Cl", "81Br")
