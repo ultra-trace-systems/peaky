@@ -8,7 +8,9 @@ of its nitrate cluster 14.93 Da below. Now the lines are keyed on (compound,
 ion): the attach loop, the recorded isotopologues list, the chlorinated-paraffin
 gate and the confidence count the ion's own lines; the single-channel P / S / Si
 gates still read the compound. A pass-7 ladder rung is committed with its real
-ion formula (it stored the bare neutral) and takes its own lines.
+ion formula (it stored the bare neutral) and takes its own lines. Pass 7's diagnostic-isotope gate reads
+the lines of the ions the certificate commits; its tests run on physically built spectra scored by the
+local scorer.
 
 Run: pytest tests/test_known_ion_kids.py -q
 """
@@ -18,11 +20,13 @@ from __future__ import annotations
 import json
 
 import pandas as pd
+from mascope_tools.composition.heuristic_filter import predict_isotopes
 
 from peaky import ledger as L
 from peaky import passes as P
 from peaky.chem import chemistry as CH
 from peaky.chem import contexts as XC
+from peaky.io import local_scoring as LS
 
 ACFG = P.PassConfig(height_cutoff_cps=100.0)
 AIR = XC.get_context("ambient-air")
@@ -267,62 +271,196 @@ def test_a_rung_on_a_scored_unanchored_channel_takes_the_oracles_string_and_its_
 # The certificate's diagnostic-isotope gate (34S / 37Cl / 81Br) reads the lines of the ions the certificate COMMITS
 # -- each member's: an anchored member's oracle string, a ladder rung's `_rung_ion` -- not every line the scorer
 # found for the compound (the user, 2026-10-01: "key it on the ion"). The reagent halogen's line of a committed ion
-# counts: a Br-free winner's committed [M+Br]- ion's 81Br line proves that channel is a real bromide cluster of the
-# certified neutral (the user, 2026-10-01: "Why would it not be evidence if there is two other ions confirming?").
-CS = "C6H9ClO3S"                                 # Br-free; its S and Cl want the diagnostic envelope
-MZ_CH = CH.ion_mz(CS, "[M-H]-")                  # C6H8ClO3S-    194.9888
-MZ_CN = CH.ion_mz(CS, "[M+NO3]-")                # C6H9ClNO6S-   257.9845
-MZ_CB = CH.ion_mz(CS, "[M+Br]-")                 # C6H9BrClO3S-  274.9150
-BR_NO3 = ["[M-H]-", "[M+NO3]-", "[M+Br]-"]
+# counts, on a two-channel certificate as on a three-channel one: a Br-free winner's committed [M+Br]- ion's 81Br
+# line proves that channel is a real bromide cluster of the certified neutral (the user, 2026-10-01: "Why would it
+# not be evidence if there is two other ions confirming?"; the gate stays as built, the same evening).
+#
+# Every spectrum here is physically possible: an ion's lines are the scorer's own envelope (`predict_isotopes`) at
+# the ion's height, lines closer than the Orbitrap FWHM (R ~ 118 000 at m/z 200, R ~ m^-1/2) are one peak at their
+# sum and intensity-weighted centroid, and a peak under the 100-cps floor is not picked (one spectrum is the TOF's,
+# as measured). The oracle is the local scorer on that peak list (`score_candidates_local`: each line matched to the
+# nearest peak within 5 ppm and 40 % of its predicted height), asked for the certificate's compound only. The
+# certificates' members are dim, so their own 37Cl / 34S lines stay under the floor: only then is a line of one ion
+# the certificate's only diagnostic line, which each test asserts of its spectrum before running the pass.
+R200 = 118_000.0
+FLOOR = 100.0
+DIAG = ("34S", "37Cl", "81Br")
 
 
-def _cs(br_pid="b"):
-    """The scorer's rows for CS on a bromide / nitrate profile: its [M-H]- and [M+NO3]- lines, and its [M+Br]- line
-    (matched to `br_pid`; None: the oracle's base line matched no peak) with that ion's 81Br line -- the bromide
-    reagent's own bromine, the only diagnostic line the scorer found for the compound."""
+def _spectrum(ions) -> pd.DataFrame:
+    """The peak list `ions` make -- (prefix, ion formula without its sign, charge, height[, ppm off]) each: every
+    isotope line of the ion at its predicted height, merged with its neighbours within the FWHM, kept at or above
+    FLOOR. A peak's id is its tallest line's: the prefix for an M0, '<prefix>:<label>' for another line."""
+    lines = []
+    for prefix, body, z, h, *off in ions:
+        mz, it, lab = predict_isotopes(body, z, None)
+        lines += [(float(m) * (1 + (off[0] if off else 0.0) * 1e-6), float(r) * h, prefix, str(lb))
+                  for m, r, lb in zip(mz, it / it[0], lab)]
+    groups: list[list] = []
+    for ln in sorted(lines):
+        if groups and ln[0] - groups[-1][-1][0] < ln[0] / (R200 * (200.0 / ln[0]) ** 0.5):
+            groups[-1].append(ln)
+        else:
+            groups.append([ln])
+    rows = []
+    for g in groups:
+        h = sum(x[1] for x in g)
+        if h >= FLOOR:
+            top = max(g, key=lambda x: x[1])
+            rows.append((top[2] if top[3] == "M0" else f"{top[2]}:{top[3]}", sum(x[0] * x[1] for x in g) / h, h))
+    return pd.DataFrame(rows, columns=["peak_id", "mz", "height"])
+
+
+def _local(peaks, compound, adducts=None, mechanisms=None):
+    """The oracle: the local scorer on `peaks`, for `compound` alone."""
     def score(client, sid, formulas, *, mechanism_ids=None, **kw):
-        if CS not in formulas:
-            return pd.DataFrame([])
-        return pd.DataFrame([
-            _row(CS, "C6H8ClO3S-", "M0", "h", MZ_CH, base=True, mech="mH"),
-            _row(CS, "C6H9ClNO6S-", "M0", "n", MZ_CN, base=True, mech="mN"),
-            _row(CS, "C6H9BrClO3S-", "M0", br_pid, MZ_CB, base=True, mech="mB"),
-            _row(CS, "C6H9BrClO3S-", "81Br", "b81", MZ_CB + BR81, base=False, mech="mB")])
+        return LS.score_candidates_local(peaks, [f for f in formulas if f == compound], adducts,
+                                         mechanisms=mechanisms)
     return score
 
 
-def _cs_ledger():
-    return _ledger([("h", MZ_CH, 2.0e4), ("n", MZ_CN, 6.0e3), ("b", MZ_CB, 1.5e4), ("b81", MZ_CB + BR81, 1.45e4)])
+def _diag_lines(peaks, compound, adducts=None, mechanisms=None) -> set:
+    """(ion, label, peak) of every diagnostic line the scorer matches for `compound` (the gate's candidates)."""
+    s = LS.score_candidates_local(peaks, [compound], adducts, mechanisms=mechanisms)
+    s = s[s["sample_peak_id"].notna() & ~s["is_base"].astype(bool)
+          & (pd.to_numeric(s["iso_score"], errors="coerce") > 0.4)]
+    return {(i, lb, p) for i, lb, p in zip(s["ion_formula"], s["iso_label"], s["sample_peak_id"])
+            if any(d in lb for d in DIAG)}
+
+
+def _hold(led, pid, neutral, adduct, ion, lines=()):
+    """Another reading already holds the doublet at `pid` at Good (pass 4's iso-pair), with its lines."""
+    L.commit_assignment(led, pid, neutral_formula=neutral, adduct=adduct, ion_formula=ion, ion_score=0.9, pass_no=4,
+                        method="residual:iso-pair", confidence="Good (iso-pair)", commentary="a Br doublet")
+    for k in lines:
+        L.attach_isotopologue(led, k, pid, iso_label=k.split(":", 1)[1])
+
+
+def _certify(led, peaks, compound, adducts=None, *, mechanisms=None, profile=AIR, channels=None, reagent=None):
+    s = P.run_pass_certified(None, "SID", led, profile, ACFG, channels or adducts, reagent=reagent,
+                             score_fn=_local(peaks, compound, adducts, mechanisms), log=lambda *a: None)
+    return s, led.set_index("peak_id")
+
+
+CS = "C6H9ClO3S"                                 # Br-free; its S and Cl want the diagnostic envelope
+BR_NO3 = ["[M-H]-", "[M+NO3]-", "[M+Br]-"]
+CS_H = ("h", "C6H8ClO3S", -1, 250.0)             # [M-H]-   194.9888; M+2 (37Cl + 34S) 0.365x = 91 cps: unpicked
+CS_N = ("n", "C6H9ClNO6S", -1, 200.0)            # [M+NO3]- 257.9845; M+2 0.377x = 75 cps: unpicked
+CS_B = ("b", "C6H9BrClO3S", -1, 240.0)           # [M+Br]-  274.9150; M+2 81Br + 37Cl + 34S unresolved, 1.338x =
+#                                                  321 cps (the scorer's '81Br' line: 0.973x, inside its 40 %);
+#                                                  M+4 0.369x = 89 cps: unpicked
 
 
 def test_a_line_under_an_ion_the_certificate_does_not_commit_confirms_nothing():
-    """The two-channel [M-H]- + [M+NO3]- certificate (the shape of the bromide/nitrate TOF's 11 flips): the
-    [M+Br]- doublet at 274.915 / 276.914 is already held at Good by another reading, so its ion is no member; the
-    scorer's 81Br line under CS's [M+Br]- ion is not a line of the certificate -- no diagnostic envelope, Low."""
-    led = _cs_ledger()
-    L.commit_assignment(led, "b", neutral_formula="C9H2F2O3", adduct="[M+Br]-", ion_formula="C9H2BrF2O3-",
-                        ion_score=0.9, pass_no=4, method="residual:iso-pair", confidence="Good (iso-pair)",
-                        commentary="a Br doublet")
-    L.attach_isotopologue(led, "b81", "b", iso_label="81Br")
-    s = P.run_pass_certified(None, "SID", led, AIR, ACFG, BR_NO3, score_fn=_cs(), log=lambda *a: None)
-    by = led.set_index("peak_id")
+    """The two-channel [M-H]- + [M+NO3]- certificate (the shape of the bromide/nitrate TOF's 11 flips): the doublet
+    at CS's [M+Br]- position is another neutral's bromide cluster (C9H2BrF2O3-, 4 ppm above CS's, its M+2 0.97x),
+    held at Good by its own reading, so CS's [M+Br]- ion is no member. The scorer matches CS's [M+Br]- ion and its
+    '81Br' line onto that doublet -- a line under no ion the certificate commits: no diagnostic envelope, Low."""
+    peaks = _spectrum([CS_H, CS_N, ("x", "C9H2BrF2O3", -1, 1.5e4)])
+    assert _diag_lines(peaks, CS, BR_NO3) == {("C6H9BrClO3S-", "81Br", "x:81Br")}
+    led = L.new_ledger(peaks.copy())
+    _hold(led, "x", "C9H2F2O3", "[M+Br]-", "C9H2BrF2O3-", [p for p in peaks.peak_id if p.startswith("x:")])
+    s, by = _certify(led, peaks, CS, BR_NO3)
     assert s["committed"] == 1 and by.loc["h", "neutral_formula"] == CS and by.loc["n", "neutral_formula"] == CS, s
     assert by.loc["h", "confidence"] == "Low (certified)" and by.loc["n", "confidence"] == "Low (certified)"
     assert "diagnostic isotope envelope" not in by.loc["h", "commentary"]
-    assert by.loc["b", "neutral_formula"] == "C9H2F2O3" and _parent(led, "b81") == "b"
+    assert by.loc["x", "neutral_formula"] == "C9H2F2O3" and _parent(led, "x:81Br") == "x"
+
+
+def test_a_34s_line_under_an_ion_the_certificate_does_not_commit_confirms_nothing():
+    """The same shape with a 34S line: methanesulfonic acid's [M-H]- + [M+NO3]- certificate, its bromide cluster
+    (CH4BrO3S-, 4000 cps) held at Good by the isomeric reading CH5BrO3S [M-H]- (the same ion), so no member. At
+    m/z 177 the cluster's 34S line, 2.15 mDa below its 81Br line, is resolved (FWHM 1.4 mDa) and the scorer matches
+    it under the uncommitted bromide ion -- a 34S line is no more a line of the certificate than an 81Br one: Low.
+    The members' own 34S lines (4.5 % of 1500 / 1200 cps) are under the floor."""
+    msa = "CH4O3S"
+    peaks = _spectrum([("h", "CH3O3S", -1, 1500.0), ("n", "CH4NO6S", -1, 1200.0), ("b", "CH4BrO3S", -1, 4000.0)])
+    assert _diag_lines(peaks, msa, BR_NO3) == {("CH4BrO3S-", "81Br", "b:81Br"), ("CH4BrO3S-", "34S", "b:34S"),
+                                               ("CH4BrO3S-", "81Br+34S", "b:81Br+34S")}
+    led = L.new_ledger(peaks.copy())
+    _hold(led, "b", "CH5BrO3S", "[M-H]-", "CH4BrO3S-", ["b:81Br"])
+    s, by = _certify(led, peaks, msa, BR_NO3)
+    assert s["committed"] == 1 and by.loc["h", "neutral_formula"] == msa and by.loc["n", "neutral_formula"] == msa, s
+    assert by.loc["h", "confidence"] == "Low (certified)" and by.loc["n", "confidence"] == "Low (certified)"
+    assert "diagnostic isotope envelope" not in by.loc["n", "commentary"]
+    assert by.loc["b", "neutral_formula"] == "CH5BrO3S" and L.role_of(led, "b:34S") == L.ROLE_UNEXPLAINED
 
 
 def test_the_reagent_line_of_a_committed_bromide_cluster_confirms_the_certificate():
-    """The three-channel certificate that commits its [M+Br]- ion: that ion's 81Br line -- the reagent's bromine on
-    a Br-free winner -- confirms the channel is a real bromide cluster of the certified neutral: Good (certified),
-    whether the oracle anchored the [M+Br]- member or it is committed as a rung of that channel (`_rung_ion`: the
-    oracle's own string). The line hangs under the [M+Br]- member."""
-    for br_pid, rungs in (("b", 0), (None, 1)):
-        led = _cs_ledger()
-        s = P.run_pass_certified(None, "SID", led, AIR, ACFG, BR_NO3, score_fn=_cs(br_pid), log=lambda *a: None)
-        by = led.set_index("peak_id")
-        assert s["committed"] == 1 and s["rungs_committed"] == rungs, (br_pid, s)
-        assert by.loc["b", "ion_formula"] == "C6H9BrClO3S-" and _parent(led, "b81") == "b", br_pid
+    """The three-channel certificate that commits its [M+Br]- ion: that ion's M+2 -- 81Br + 37Cl + 34S, unresolved,
+    1.34x, which the scorer reads as its '81Br' line -- is the reagent's bromine on a Br-free winner and confirms the
+    channel is a real bromide cluster of the certified neutral: Good (certified), whether the oracle anchored the
+    [M+Br]- member or, the cluster read 3 ppm high (off the 2-ppm anchor gate, inside the scorer's 5 ppm), it is
+    committed as a rung of that channel under the oracle's own string. The line hangs under the [M+Br]- member. It
+    is the certificate's only diagnostic line: the members' own lines and the cluster's M+4 are under the floor."""
+    for ppm, rungs in ((0.0, 0), (3.0, 1)):
+        peaks = _spectrum([CS_H, CS_N, CS_B + (ppm,)])
+        assert abs(peaks.set_index("peak_id").loc["b:81Br", "height"] / CS_B[3] - 1.338) < 0.005
+        assert _diag_lines(peaks, CS, BR_NO3) == {("C6H9BrClO3S-", "81Br", "b:81Br")}
+        led = L.new_ledger(peaks.copy())
+        s, by = _certify(led, peaks, CS, BR_NO3)
+        assert s["committed"] == 1 and s["rungs_committed"] == rungs, (ppm, s)
+        assert by.loc["b", "ion_formula"] == "C6H9BrClO3S-" and _parent(led, "b:81Br") == "b", ppm
         for pid in ("h", "n", "b"):
-            assert by.loc[pid, "neutral_formula"] == CS and by.loc[pid, "confidence"] == "Good (certified)", (br_pid, pid)
-        assert "diagnostic isotope envelope confirmed" in by.loc["h", "commentary"], br_pid
+            assert by.loc[pid, "neutral_formula"] == CS and by.loc[pid, "confidence"] == "Good (certified)", (ppm, pid)
+        assert "diagnostic isotope envelope confirmed" in by.loc["h", "commentary"], ppm
+
+
+def test_the_reagent_line_confirms_a_two_channel_certificate_that_commits_its_bromide_cluster():
+    """The same line on TWO channels -- an [M+NO3]- + [M+Br]- or an [M-H]- + [M+Br]- certificate (the third ion
+    under the floor) that commits its [M+Br]- ion, whose 1.34x '81Br' M+2 is the only diagnostic line: Good
+    (certified). One other ion confirms the mass here, and the gate counts the line as on three channels."""
+    for other in (CS_N, CS_H):
+        peaks = _spectrum([other, CS_B])
+        assert _diag_lines(peaks, CS, BR_NO3) == {("C6H9BrClO3S-", "81Br", "b:81Br")}
+        led = L.new_ledger(peaks.copy())
+        s, by = _certify(led, peaks, CS, BR_NO3)
+        assert s["committed"] == 1 and s["peaks_claimed"] == 2, (other[0], s)
+        for pid in (other[0], "b"):
+            assert by.loc[pid, "neutral_formula"] == CS and by.loc[pid, "confidence"] == "Good (certified)", pid
+        assert "diagnostic isotope envelope confirmed" in by.loc[other[0], "commentary"], other[0]
+        assert _parent(led, "b:81Br") == "b", other[0]
+
+
+def test_a_13c_81br_line_alone_under_a_committed_ion_confirms_the_certificate():
+    """A certificate passing on a '13C+81Br' line alone: the bromide/nitrate TOF batch's own two-channel [M+NO3]- +
+    [M+Br]- certificate of this shape (C10H23ClN2O3P2), at the m/z and heights its file measured. The [M+Br]-
+    cluster's M+2 read 0.55x of its 48.7-cps M0 (the scorer's '81Br' line expects 0.97x: out of its 40 %), its M+1
+    0.19x (a blend: '13C' expects 0.11x), its M+4 lies split 25 mDa below and 16 mDa above (outside the 5 ppm), and
+    the nitrate cluster's lines (2.4 cps) are under the TOF's ~1.5-cps edge -- so the scorer's one diagnostic line
+    is the cluster's M+3, '13C+81Br' (0.112x of 0.105x): a line of the committed [M+Br]- ion naming the reagent's
+    81Br. Good (certified), the line under that member."""
+    cp = "C10H23ClN2O3P2"
+    peaks = pd.DataFrame([("n", 378.075402, 2.41), ("b", 395.006538, 48.72), ("b1", 396.009008, 9.45),
+                          ("b2", 397.004448, 26.97), ("b3", 398.007904, 5.45), ("b4", 398.976160, 2.59),
+                          ("b4'", 399.017571, 4.64)], columns=["peak_id", "mz", "height"])
+    assert _diag_lines(peaks, cp, BR_NO3) == {
+        ("C10H23BrClN2O3P2-", "13C+81Br", "b3")}                     # privacy-ok: a molecular formula, not an id
+    led = L.new_ledger(peaks.copy())
+    s, by = _certify(led, peaks, cp, BR_NO3)
+    assert s["committed"] == 1 and s["peaks_claimed"] == 2, s
+    for pid in ("n", "b"):
+        assert by.loc[pid, "neutral_formula"] == cp and by.loc[pid, "confidence"] == "Good (certified)", pid
+    assert _parent(led, "b3") == "b" and by.loc["b3", "iso_label"] == "13C+81Br"
+
+
+def test_a_committed_rungs_own_line_confirms_the_certificate():
+    """A ladder rung of order 1 confirms with its own line: NBBS's urea ladder with the urea-dimer cluster
+    [M+(CH4N2O)2H]+ the strongest ion (5000 cps) and the only one whose 34S line (4.5 %) clears the floor. The
+    oracle here also scores that channel (its string C12H24N5O4S+) and reads the cluster 3 ppm high, off the anchor
+    gate, so the member is committed as the order-1 rung of the urea channel under `_rung_ion`'s composition -- the
+    same string -- and its 34S line, the certificate's only diagnostic line, confirms it: Good (certified). (The
+    pipeline scores exactly the channels it passes to this pass, all of order 0, so on its own runs no rung of
+    order >= 1 has a scored line: this pins the rule for a caller whose scorer reads more channels.)"""
+    peaks = _spectrum([("n0", "C10H16NO2S", 1, 2000.0), ("n1", "C11H20N3O3S", 1, 2000.0),
+                       ("n2", "C12H24N5O4S", 1, 5000.0, 3.0)])
+    mech = ["+H+", "+(CH4N2O)H+", "+(CH4N2O)2H+"]
+    assert _diag_lines(peaks, NBBS, mechanisms=mech) == {("C12H24N5O4S+", "34S", "n2:34S")}
+    led = L.new_ledger(peaks.copy())
+    s, by = _certify(led, peaks, NBBS, mechanisms=mech, profile=URO, channels=["[M+H]+", "[M+(CH4N2O)H]+"],
+                     reagent="urea")
+    assert s["committed"] == 1 and s["rungs_committed"] == 1, s
+    assert by.loc["n2", "method"] == "certified:ladder-rung" and by.loc["n2", "ion_formula"] == "C12H24N5O4S+"
+    for pid in ("n0", "n1", "n2"):
+        assert by.loc[pid, "neutral_formula"] == NBBS and by.loc[pid, "confidence"] == "Good (certified)", pid
+    assert _parent(led, "n2:34S") == "n2"
