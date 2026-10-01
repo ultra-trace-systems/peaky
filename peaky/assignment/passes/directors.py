@@ -1925,7 +1925,9 @@ def run_pass_certified(
     commit the winning formula onto EVERY member peak (same neutral, each under
     its own channel label) so the tier engine's cross-channel corroboration
     sees the certificate. S/Cl/Br winners additionally want their diagnostic
-    isotope envelope; a matched one earns Good confidence.
+    isotope envelope -- a 34S / 37Cl / 81Br line under an ion the certificate
+    commits (the reagent halogen's line of a committed cluster counts); a
+    matched one earns Good confidence.
 
     ts_peaks is OPTIONAL (a batch may not include the reagent mass range, and a
     single-sample run has no TS at all): when provided, member-channel time
@@ -2021,10 +2023,25 @@ def run_pass_certified(
             continue   # the oracle must anchor >=2 member channels
         n_anchored, eff, winner, win_rows = ranked[0]
         tied = len(ranked) > 1 and ranked[1][0] == n_anchored and (eff - ranked[1][1]) < 0.02
-        # diagnostic-isotope gate for isotope-confirmable winners (13C never counts)
+        anchored_by_pid = {r["sample_peak_id"]: r for _, r in win_rows.iterrows()}
+        # the oracle's own ion string per channel of the winner (anchored or not):
+        # a ladder rung on a registered channel is committed under it
+        win_ions = {_mech_to_adduct(r_): r_["ion_formula"]
+                    for _, r_ in scored[scored["is_base"] & (scored["compound_formula"] == winner)].iterrows()
+                    if isinstance(r_["ion_formula"], str) and r_["ion_formula"]}
+        # the ion each member is committed under: an anchored member the oracle's
+        # string, a ladder rung `_rung_ion`
+        member_ion = {h.peak_id: (anchored_by_pid[h.peak_id]["ion_formula"] if h.peak_id in anchored_by_pid
+                                  else _rung_ion(winner, h, reagent, win_ions)) for h in cert.hits}
+        # diagnostic-isotope gate for isotope-confirmable winners (13C never counts),
+        # keyed on the IONS the certificate commits (C11+c): a line the scorer found
+        # under another ion of the winner (a bromide cluster no member is) is no
+        # line of the certificate. The reagent halogen's line of a committed ion
+        # counts: it proves that channel a real cluster of the certified neutral.
         wf = C.parse_formula(winner)
         wants_iso = any(wf.get(el, 0) > 0 for el in ("S", "Cl", "Br"))
-        win_kids = kids[kids["compound_formula"] == winner]
+        cert_ions = {i for i in member_ion.values() if isinstance(i, str) and i}
+        win_kids = kids[(kids["compound_formula"] == winner) & kids["ion_formula"].isin(cert_ions)]
         iso_ok = bool(win_kids["iso_label"].astype(str).str.contains(
             "|".join(_CERT_DIAG_ISO), na=False).any())
         # optional TS corroboration (guarded: fully optional)
@@ -2050,12 +2067,6 @@ def run_pass_certified(
                      + ", ".join(f"{h.mz:.4f}[{h.adduct}"
                                  + (f"+{h.cluster_order}R]" if h.cluster_order else "]")
                                  for h in cert.hits))
-        anchored_by_pid = {r["sample_peak_id"]: r for _, r in win_rows.iterrows()}
-        # the oracle's own ion string per channel of the winner (anchored or not):
-        # a ladder rung on a registered channel is committed under it
-        win_ions = {_mech_to_adduct(r_): r_["ion_formula"]
-                    for _, r_ in scored[scored["is_base"] & (scored["compound_formula"] == winner)].iterrows()
-                    if isinstance(r_["ion_formula"], str) and r_["ion_formula"]}
         committed_any = False
         strong_cert = iso_ok or cert.n_channels >= 3
         displaced_note: dict = {}
@@ -2119,7 +2130,7 @@ def run_pass_certified(
                         ledger, h.peak_id,
                         neutral_formula=winner,
                         adduct=rung_adduct,
-                        ion_formula=_rung_ion(winner, h, reagent, win_ions),
+                        ion_formula=member_ion[h.peak_id],
                         ion_score=float(win_rows["ion_score"].min()),
                         ppm_error=float(rung_ppm),
                         tied=tied,
@@ -2139,7 +2150,7 @@ def run_pass_certified(
                 # other ions (chloroacetic acid's bromide cluster its nitrate
                 # cluster's 37Cl lines, 14.93 Da below it); a ladder rung reads its
                 # own ion (`_rung_ion`)
-                h_ion = r["ion_formula"] if r is not None else _rung_ion(winner, h, reagent, win_ions)
+                h_ion = member_ion[h.peak_id]
                 for _, k in kids[(kids["compound_formula"] == winner)
                                  & (kids["ion_formula"] == h_ion)
                                  & (kids["sample_peak_id"] != h.peak_id)].iterrows():
