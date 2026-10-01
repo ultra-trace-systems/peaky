@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pandas as pd
 from mascope_tools.composition.heuristic_filter import predict_isotopes
 
@@ -276,9 +277,10 @@ def test_a_rung_on_a_scored_unanchored_channel_takes_the_oracles_string_and_its_
 # not be evidence if there is two other ions confirming?"; the gate stays as built, the same evening).
 #
 # Every spectrum here is physically possible: an ion's lines are the scorer's own envelope (`predict_isotopes`) at
-# the ion's height, lines closer than the Orbitrap FWHM (R ~ 118 000 at m/z 200, R ~ m^-1/2) are one peak at their
-# sum and intensity-weighted centroid, and a peak under the 100-cps floor is not picked (one spectrum is the TOF's,
-# as measured). The oracle is the local scorer on that peak list (`score_candidates_local`: each line matched to the
+# the ion's height, each a Gaussian of the Orbitrap FWHM (R ~ 118 000 at m/z 200, R ~ m^-1/2); lines whose summed
+# profile shows no minimum between them are one peak at their sum and intensity-weighted centroid (a weak line on a
+# strong one's flank is a shoulder, not a peak, however far beyond one FWHM it sits), and a peak under the 100-cps
+# floor is not picked (one spectrum is the TOF's, as measured). The oracle is the local scorer on that peak list (`score_candidates_local`: each line matched to the
 # nearest peak within 5 ppm and 40 % of its predicted height), asked for the certificate's compound only. The
 # certificates' members are dim, so their own 37Cl / 34S lines stay under the floor: only then is a line of one ion
 # the certificate's only diagnostic line, which each test asserts of its spectrum before running the pass.
@@ -287,27 +289,42 @@ FLOOR = 100.0
 DIAG = ("34S", "37Cl", "81Br")
 
 
+def _sigma(mz):
+    """The Gaussian width of a line at `mz`: FWHM = mz / R, R = R200 (200 / mz)^1/2."""
+    return mz / (R200 * (200.0 / mz) ** 0.5) / 2.354820045
+
+
 def _spectrum(ions) -> pd.DataFrame:
     """The peak list `ions` make -- (prefix, ion formula without its sign, charge, height[, ppm off]) each: every
-    isotope line of the ion at its predicted height, merged with its neighbours within the FWHM, kept at or above
+    isotope line of the ion at its predicted height, a Gaussian of the instrument's width; lines with no minimum of
+    the summed profile between them are one peak (their sum, at their intensity-weighted centroid), kept at or above
     FLOOR. A peak's id is its tallest line's: the prefix for an M0, '<prefix>:<label>' for another line."""
     lines = []
     for prefix, body, z, h, *off in ions:
         mz, it, lab = predict_isotopes(body, z, None)
         lines += [(float(m) * (1 + (off[0] if off else 0.0) * 1e-6), float(r) * h, prefix, str(lb))
                   for m, r, lb in zip(mz, it / it[0], lab)]
-    groups: list[list] = []
+    regions: list[list] = []                      # lines that can touch: within 10 sigma of the previous one
     for ln in sorted(lines):
-        if groups and ln[0] - groups[-1][-1][0] < ln[0] / (R200 * (200.0 / ln[0]) ** 0.5):
-            groups[-1].append(ln)
+        if regions and ln[0] - regions[-1][-1][0] < 10 * _sigma(ln[0]):
+            regions[-1].append(ln)
         else:
-            groups.append([ln])
+            regions.append([ln])
     rows = []
-    for g in groups:
-        h = sum(x[1] for x in g)
-        if h >= FLOOR:
-            top = max(g, key=lambda x: x[1])
-            rows.append((top[2] if top[3] == "M0" else f"{top[2]}:{top[3]}", sum(x[0] * x[1] for x in g) / h, h))
+    for reg in regions:
+        m, h = np.array([x[0] for x in reg]), np.array([x[1] for x in reg])
+        s = _sigma(m)
+        x = np.arange(m[0] - 4 * s[0], m[-1] + 4 * s[-1], s.min() / 100)
+        y = (h[:, None] * np.exp(-0.5 * ((x[None, :] - m[:, None]) / s[:, None]) ** 2)).sum(0)
+        cuts = x[1:-1][(y[1:-1] < y[:-2]) & (y[1:-1] < y[2:])]          # the summed profile's minima
+        side = np.searchsorted(cuts, m)
+        for j in range(len(cuts) + 1):
+            g = [ln for ln, k in zip(reg, side) if k == j]
+            tot = sum(q[1] for q in g)
+            if g and tot >= FLOOR:
+                top = max(g, key=lambda q: q[1])
+                rows.append((top[2] if top[3] == "M0" else f"{top[2]}:{top[3]}", sum(q[0] * q[1] for q in g) / tot,
+                             tot))
     return pd.DataFrame(rows, columns=["peak_id", "mz", "height"])
 
 
@@ -368,22 +385,26 @@ def test_a_line_under_an_ion_the_certificate_does_not_commit_confirms_nothing():
 
 
 def test_a_34s_line_under_an_ion_the_certificate_does_not_commit_confirms_nothing():
-    """The same shape with a 34S line: methanesulfonic acid's [M-H]- + [M+NO3]- certificate, its bromide cluster
-    (CH4BrO3S-, 4000 cps) held at Good by the isomeric reading CH5BrO3S [M-H]- (the same ion), so no member. At
-    m/z 177 the cluster's 34S line, 2.15 mDa below its 81Br line, is resolved (FWHM 1.4 mDa) and the scorer matches
-    it under the uncommitted bromide ion -- a 34S line is no more a line of the certificate than an 81Br one: Low.
-    The members' own 34S lines (4.5 % of 1500 / 1200 cps) are under the floor."""
-    msa = "CH4O3S"
-    peaks = _spectrum([("h", "CH3O3S", -1, 1500.0), ("n", "CH4NO6S", -1, 1200.0), ("b", "CH4BrO3S", -1, 4000.0)])
-    assert _diag_lines(peaks, msa, BR_NO3) == {("CH4BrO3S-", "81Br", "b:81Br"), ("CH4BrO3S-", "34S", "b:34S"),
-                                               ("CH4BrO3S-", "81Br+34S", "b:81Br+34S")}
+    """The same shape with a 34S line: thioacetic acid's (C2H4OS, DBE 1) [M-H]- + [M+NO3]- certificate, its bromide
+    cluster (C2H4BrOS-, 4000 cps) held at Good by the isomeric reading C2H5BrOS [M-H]- (DBE 0; the same ion), so no
+    member. At m/z 156.9 the cluster's 34S line (179 cps), 2.16 mDa below its 81Br line, is a peak of its own (1.83
+    FWHM: the profile dips to 118 cps between them) and the scorer matches it under the uncommitted bromide ion -- a
+    34S line is no more a line of the certificate than an 81Br one: Low. (Methanesulfonic acid's would not do: at
+    m/z 176.9 the same line is a shoulder of the 81Br peak, and its isomeric reading has DBE -1.) The members' own
+    34S lines (4.5 % of 1500 / 1200 cps) are under the floor."""
+    taa, hold = "C2H4OS", "C2H5BrOS"
+    assert CH.dbe_ok(taa)[0] and CH.dbe_ok(hold)[0] and not CH.dbe_ok("CH5BrO3S")[0]
+    assert set(_spectrum([("b", "CH4BrO3S", -1, 4000.0)]).peak_id) == {"b", "b:81Br", "b:81Br+34S"}   # the shoulder
+    peaks = _spectrum([("h", "C2H3OS", -1, 1500.0), ("n", "C2H4NO4S", -1, 1200.0), ("b", "C2H4BrOS", -1, 4000.0)])
+    assert _diag_lines(peaks, taa, BR_NO3) == {("C2H4BrOS-", "81Br", "b:81Br"), ("C2H4BrOS-", "34S", "b:34S"),
+                                               ("C2H4BrOS-", "81Br+34S", "b:81Br+34S")}
     led = L.new_ledger(peaks.copy())
-    _hold(led, "b", "CH5BrO3S", "[M-H]-", "CH4BrO3S-", ["b:81Br"])
-    s, by = _certify(led, peaks, msa, BR_NO3)
-    assert s["committed"] == 1 and by.loc["h", "neutral_formula"] == msa and by.loc["n", "neutral_formula"] == msa, s
+    _hold(led, "b", hold, "[M-H]-", "C2H4BrOS-", ["b:81Br"])
+    s, by = _certify(led, peaks, taa, BR_NO3)
+    assert s["committed"] == 1 and by.loc["h", "neutral_formula"] == taa and by.loc["n", "neutral_formula"] == taa, s
     assert by.loc["h", "confidence"] == "Low (certified)" and by.loc["n", "confidence"] == "Low (certified)"
     assert "diagnostic isotope envelope" not in by.loc["n", "commentary"]
-    assert by.loc["b", "neutral_formula"] == "CH5BrO3S" and L.role_of(led, "b:34S") == L.ROLE_UNEXPLAINED
+    assert by.loc["b", "neutral_formula"] == hold and L.role_of(led, "b:34S") == L.ROLE_UNEXPLAINED
 
 
 def test_the_reagent_line_of_a_committed_bromide_cluster_confirms_the_certificate():
