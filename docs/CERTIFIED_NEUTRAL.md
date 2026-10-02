@@ -48,9 +48,12 @@ whitelist (pass 0) — a gatekeeper that can only find what someone listed.
    (`score_candidates`); the winner must be server-anchored on **≥2 member
    channels** with on-calibration ppm; S/Cl/Br winners want their diagnostic
    heavy-isotope envelope (³⁴S/³⁷Cl/⁸¹Br — ¹³C never counts): a line under an
-   ion the certificate commits, a member's (C11+c), where the reagent halogen's
-   line of a committed bromide cluster counts, on two channels as on three
-   ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §3.0).
+   ion the certificate commits, a member's (C11+c). The reagent's ⁸¹Br line of
+   a committed bromide cluster of a winner without Br (`81Br`, `13C+81Br`)
+   counts only on a certificate of ≥3 channels — on two, one file, two ions
+   and the reagent's own line are not enough (the user, 2026-10-02) — while
+   the winner's own ³⁴S / ³⁷Cl (and a Br winner's ⁸¹Br) count on two channels
+   as on three ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §3.0).
 5. **Commit** (`method=certified:multi-channel`): the same certified neutral
    is committed onto *every* member peak under its own channel label — so the
    tier engine's cross-channel corroboration sees the certificate. Ladder

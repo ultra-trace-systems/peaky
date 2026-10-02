@@ -826,53 +826,66 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reaches every level path (`apply_levels` / `compute_levels` / `level_pooled` /
   `source_neutrals` take `resolution=`; a `--corroborate` run dir and a script source read their
   own `batch_summary.json`), and the script reads isotopologues lists JSON first like the engine.
-  REPLAY numbers (the final runs replace them at landing): the three regression batches'
-  STORED per-file ledgers levelled by the built engine (each run's tables, stored cross set and
-  width model) -- the labelled-nitrate Orbitrap 3 pooled pairs (3 merged): dibromoacetic acid
-  `[M-H]-` 5a -> 4b (its 81Br2 and 79Br2 lines around the 79Br81Br-committed M0), C18H15BrO3S
-  and C13H15ClO8 `[M-H]-` 4b -> 5b (their only "halogen" line sits at the F-for-OH / 34S
-  spacing); claims identified 0 / ion +0.015 / tentative -0.015 % of the batch signal; per file
-  16 M0 rows (8 pairs; the chlorinated paraffin C10H18Cl4 `[M+^NO3]-` 3a -> 5b in six files:
-  its recovery labels every ladder line '37Cl', a separate card). The uronium Orbitrap 3 (3):
-  C10H17NO4, C18H25NO `[M+H]+` 4b -> 4c, C17H22N4O10 urea 4b -> 5b; claims 0 / -0.018 / +0.018;
-  per file 24 rows (11 pairs; rule U keeps the urea / `[M+H]+` 18O pairs 4a pooled). The
-  bromide/nitrate TOF 26 (16): nine `[M+Br]-` 4d -> 4b on an M+3 `81Br+13C` carbon line or a
-  line proving a second Br, three brominated readings 4b -> 5b whose 81Br lines do not fit their
-  Br / Br2 pattern, C12H9BrN2 `[M+HBr+Br]-` 4b -> 4d (a Br3 ion committed on 79Br2 81Br: its
-  scorer `81Br2` lines, 1.998 Da up at 0.97x, sit where a Br2 ion puts one -- the reagent's -- and
-  its one peaky `2x81Br` line, the 81Br3 line 3.994 Da up, is 3.9x its expectation, out of band;
-  the reconciler's reference read it 4b only because its reagent-part test matched labels
-  starting with `81Br`), chloroacetic acid `[M+Br]-` staying 4a on its `81Br+37Cl` M+4 line; claims
-  0 / -0.0035 / +0.0035; per file 60 rows (51 pairs). The full-count rule moves no level on the
-  three batches (pooled or per file) nor any golden row: `reagent_only_iso` on five pooled TOF
-  pairs (IBr, C13HBrO4 `[M+Br]-` and C27H27BrN2O2 `[M+HBr+Br]-` lose it on an in-band 79Br2 /
-  81Br3 line; the Br-free C10H12O4 and C8H14O5 `[M+HBr+Br]-` take it on their `M0` line), 18
-  per-file rows, six fixture rows. Identified never moves; the hold kept or
-  released moves no level; the corroborating sources re-levelled under the rule move none; the
-  reference script levels every pair of the three runs alike, level and fact. The FULL offline
-  replay (every file's A.run and the batch half, with the engine items below):
-  the labelled-nitrate Orbitrap 7 pooled pairs (4 merged) -- the chain's 3 and
-  four dim 5b pairs appearing or disappearing (pass 4 at the exact Br spacing, one pass-7
-  re-read) -- claims 0 / +0.015 / -0.016; the uronium Orbitrap the chain's 3 (3), claims
-  0 / -0.018 / +0.018, and one tier: merged Assigned 836 -> 835, hexamethylcyclotrisiloxane (D3)
-  C6H18O3Si3 `[M+H]+` capped Candidate at an unchanged 2b once I7 frees the 29Si line the trunk
-  hung under it in four files (its urea adduct's line, 61 Da up; that adduct is committed in one
-  file of ten, so every confirming file has one ion channel); the bromide/nitrate TOF 88 (43
-  merged): the chain's 26 and 58 from the
-  per-file items -- 21 on pairs held only by the one file whose mass-calibration core fell to 19,
-  under the 20 it needs, once the pass-0 mislinks left it (17 of them 5b -> 5a, degeneracy not
-  measured; C18H14N2O15 `[M+HBr+Br]-` 5b -> 4b; C4H6N2O6S `[M-H]-` 4b -> 3b, its bromide cluster
-  now its own pair; two dim 5b pairs appearing or disappearing), 23 other dim 5b pairs and two
-  4b pairs appearing or disappearing, and 12 others; and 4 from pass 7's gate keyed on the
-  committed ions (one dim 5b pair appearing, three disappearing; see the I7 entry); chloroacetic
-  acid kept at 4a (its `81Br+37Cl` M+4 line; the 13 mislinked 37Cl children gone) -- claims
-  identified -0.0001 / ion +0.008 / tentative -0.008, merged
-  rows 2239 -> 2242, Assigned 449 -> 454. Every move of the stored-ledger replay recurs. The golden vectors move (tv 21/15/107/15/145/15/9/37/1009, tof
-  6/15/182/14/267/85/84/135/2576, orbi 0/10/217/9/205/138/0/35/1093, ur
-  4/4/0/330/375/293/0/82/73; 47 of 7,605 fixture pairs, listed in the fixtures' README) and
-  `expected_levels.csv` is regenerated. `tests/test_isotope_children.py`,
-  `tests/test_isotope_levels.py`; every synthetic child of the level tests now sits at its
-  label's exact spacing from its parent.
+  LANDING numbers, measured offline (an online run is blocked: Mascope renamed its ionization
+  mechanisms, card C30), one variable against the trunk's final runs, whose offline replay the
+  tools reproduce byte for byte. First the chain: the three regression batches' STORED per-file
+  ledgers levelled by the built engine (each run's tables, stored cross set and width model) --
+  the labelled-nitrate Orbitrap 3 pooled pairs (3 merged): dibromoacetic acid `[M-H]-` 5a -> 4b
+  (its 81Br2 and 79Br2 lines around the 79Br81Br-committed M0), C18H15BrO3S and C13H15ClO8
+  `[M-H]-` 4b -> 5b (their only "halogen" line sits at the F-for-OH / 34S spacing); claims
+  identified 0 / ion +0.015 / tentative -0.015 % of the batch signal; per file 16 M0 rows (8
+  pairs; the chlorinated paraffin C10H18Cl4 `[M+^NO3]-` 3a -> 5b in six files: its recovery
+  labels every ladder line '37Cl', a separate card). The uronium Orbitrap 3 (3): C10H17NO4,
+  C18H25NO `[M+H]+` 4b -> 4c, C17H22N4O10 urea 4b -> 5b; claims 0 / -0.018 / +0.018; per file 24
+  rows (11 pairs; rule U keeps the urea / `[M+H]+` 18O pairs 4a pooled). The bromide/nitrate TOF
+  26 (16): nine `[M+Br]-` 4d -> 4b on an M+3 `81Br+13C` carbon line or a line proving a second
+  Br, three brominated readings 4b -> 5b whose 81Br lines do not fit their Br / Br2 pattern,
+  C12H9BrN2 `[M+HBr+Br]-` 4b -> 4d (a Br3 ion committed on 79Br2 81Br: its scorer `81Br2` lines,
+  1.998 Da up at 0.97x, sit where a Br2 ion puts one -- the reagent's -- and its one peaky
+  `2x81Br` line, the 81Br3 line 3.994 Da up, is 3.9x its expectation, out of band; the
+  reconciler's reference read it 4b only because its reagent-part test matched labels starting
+  with `81Br`), chloroacetic acid `[M+Br]-` staying 4a on its `81Br+37Cl` M+4 line; claims 0 /
+  -0.0035 / +0.0035; per file 60 rows (51 pairs). The full-count rule moves no level on the three
+  batches (pooled or per file) nor any golden row: `reagent_only_iso` on five pooled TOF pairs
+  (IBr, C13HBrO4 `[M+Br]-` and C27H27BrN2O2 `[M+HBr+Br]-` lose it on an in-band 79Br2 / 81Br3
+  line; the Br-free C10H12O4 and C8H14O5 `[M+HBr+Br]-` take it on their `M0` line), 18 per-file
+  rows, six fixture rows. Identified never moves; the hold kept or released moves no level; the
+  corroborating sources re-levelled under the rule move none; the reference script levels every
+  pair of the three runs alike, level and fact. Then the landing itself, the FULL offline replay
+  of the final engine (every file's A.run on the stored scorer responses and the batch half, with
+  the engine items below): the labelled-nitrate Orbitrap 7 pooled pairs (4 merged; pairs 1848 ->
+  1850) -- the chain's 3 and four dim 5b pairs appearing or disappearing (pass 4 at the exact Br
+  spacing, one pass-7 re-read) -- claims 0 / +0.015 / -0.016, merged rows 1419 -> 1420, Assigned
+  647 -> 647, 632 time-series peaks restamped (0.018 % of the signal); the uronium Orbitrap the
+  chain's 3 (3; pairs 1161 -> 1161), claims 0 / -0.018 / +0.018, merged rows 1148 -> 1148, 373
+  peaks restamped (0.013 %), and one tier: merged Assigned 836 -> 835, hexamethylcyclotrisiloxane
+  (D3) C6H18O3Si3 `[M+H]+` capped Candidate at an unchanged 2b once I7 frees the 29Si line the
+  trunk hung under it in four files (its urea adduct's line, 61 Da up; that adduct is committed
+  in one file of ten, so every confirming file has one ion channel); the bromide/nitrate TOF 113
+  (51 merged; pairs 4317 -> 4305): the chain's 26, 58 from the per-file items -- 21 on pairs held
+  only by the one file whose mass-calibration core fell to 19, under the 20 it needs, once the
+  pass-0 mislinks left it (17 of them 5b -> 5a, degeneracy not measured; C18H14N2O15
+  `[M+HBr+Br]-` 5b -> 4b; C4H6N2O6S `[M-H]-` 4b gone -- its bromide cluster now its own pair, its
+  two-channel certificate Low under option B, too weak to displace the pass-3 C4H5NO3S `[M+NO3]-`
+  reading of the `[M-H]-` peak --; two dim 5b pairs appearing or disappearing), 23 other dim 5b
+  pairs and two 4b pairs appearing or disappearing, and 12 others --, 4 from pass 7's gate keyed
+  on the committed ions (one dim 5b pair appearing, three disappearing) and 25 net from its
+  reagent line counted only on >= 3 channels (option B; see the I7 entry): 26 pairs move that did
+  not -- C16H19NO4S `[M+Br]-` 3b -> 5b and its `[M-H]-` 3b gone, C25H36N2O8S `[M+NO3]-` /
+  `[M+Br]-` 4b -> 5b, C25H40N2O10S `[M+NO3]-` 4b -> 5b, C10H21ClN2O6S `[M+NO3]-` 4b -> 5b and its
+  `[M+Br]-` 4b gone, 19 dim 5b pairs appearing or disappearing -- and one dim 5b pair no longer
+  appears (C3H5NO10 `[M+Br]-`); chloroacetic acid kept at 4a (its `81Br+37Cl` M+4 line; the 13
+  mislinked 37Cl children gone) -- claims identified -0.0001 / ion +0.056 / tentative +0.024
+  (+0.048 of the ion share is one trace: m/z 331.024, the 81Br line of a Br doublet at 329.025,
+  now stamped C11H11NO5S `[M+NO3]-` in 99 spectra, where three files hung it as an 81Br line
+  under a two-channel C11H22O2S2 `[M+Br]-` certificate member and now leave both peaks
+  unexplained), merged rows 2239 -> 2241, Assigned 449 -> 450, 10320 time-series peaks restamped
+  (1.41 % of the signal). Every move of the stored-ledger replay recurs, at the same levels. The
+  golden vectors move (tv 21/15/107/15/145/15/9/37/1009, tof 6/15/182/14/267/85/84/135/2576, orbi
+  0/10/217/9/205/138/0/35/1093, ur 4/4/0/330/375/293/0/82/73; 47 of 7,605 fixture pairs, listed
+  in the fixtures' README) and `expected_levels.csv` is regenerated.
+  `tests/test_isotope_children.py`, `tests/test_isotope_levels.py`; every synthetic child of the
+  level tests now sits at its label's exact spacing from its parent.
 
 - **The ledger records which setter made a row a tentative lead (`lead_by`, C11+b).**
   Per-file ledgers gain a column beside `tentative_lead`: the setter's code
@@ -1223,82 +1236,109 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   committed with its real ion formula (the oracle's own string for its channel, else neutral +
   reagent units + adduct) where it stored the bare neutral, and takes its own lines. One
   commit path still stores an unsigned ion string: a re-arbitration commit
-  (`rearb<-cheminfo+grid`: one M0 row of the 28,104 in the three batches' replays, on the
+  (`rearb<-cheminfo+grid`: one M0 row of the 28,092 in the three batches' final replays, on the
   bromide/nitrate TOF); the levels
   read its composition from neutral + adduct, so no level or fact depends on it, and the
   reference script, which prints the composed string, shows another `ion` for that pair.
   The certificate's diagnostic-isotope gate (a 34S / 37Cl / 81Br line earns Good (certified) and
   the displacement strength) now reads the lines of the ions the certificate COMMITS -- each
   member's: an anchored member's oracle string, a rung's real ion (the user, 2026-10-01: "key it
-  on the ion") -- not every line the scorer found for the compound. Measured before the
-  decision on the three batches' offline replays: 0 / 0 / 11 of 379 / 43 / 835 gate decisions
-  flip, all two-channel `[M-H]-` + `[M+NO3]-` certificates of Br-free winners whose only line
-  sat under their `[M+Br]-` ion, which they do not commit (the doublet already held by another
-  reading): 8 Good -> Low, 3 tied ones lose the displacement strength. The reagent halogen's line
-  of a COMMITTED ion counts (the user: "Why would it not be evidence if there is two other ions
-  confirming?") -- it proves the channel a real bromide cluster of the certified neutral, on a
-  two-channel certificate as on a three-channel one. The user kept the gate so the same evening,
-  judging the per-file Good / Low label of no consequence for the final assignment: the merged
-  ledger's vote decides (chloroacetic acid, for one, is the reading of m/z 172.901 / 155.970 in
-  13 / 14 of the 17 files that assign each peak, and the batch stamps every spectrum so). On the
-  TOF 133 of the 154 passing gate decisions rest on such a line alone: 99 commit (89 at Good
-  (certified), 49 winners) and 34 are then skipped as anti-correlated in time (the time-series
-  check vetoes 26 % of these passes, 1 of the other 21, 5 %). One of them reads a dim
-  bromide-reagent triplet at m/z 422.83 / 424.83 / 426.83, `reagent` at trunk, as a C10H4N2O5S
-  `[M+HBr+Br]-` ladder rung at Good (certified), a Candidate in the batch. Pass 7 does not
-  revisit the label: in 22 of the 99 every member whose ion carried the line is later cleared or
-  re-read (18 by the isotope audit's carbon count -- that triplet's `[M+Br]-` member among them
-  --, 1 by the end mass gate, 2 by the ladder gap-fill, 1 as an isotope line), and four members
-  of three of them keep Good (certified) and "diagnostic isotope envelope confirmed", all at 5b
-  per file. "Commits" means the certificate's intended members
-  (each member's ion is fixed before the commit loop): every passing decision that gets past the
-  time-series check commits all of them (119 of 154; the other 35 commit nothing). The levels keep
+  on the ion") -- not every line the scorer found for the compound. Measured before the decision
+  on the three batches' offline replays, with the reagent's line counted on two channels as then
+  built: 0 / 0 / 11 of 379 / 43 / 835 gate decisions flip, all two-channel `[M-H]-` + `[M+NO3]-`
+  certificates of Br-free winners whose only line sat under their `[M+Br]-` ion, which they do
+  not commit (the doublet already held by another reading): 8 Good -> Low, 3 tied ones lose the
+  displacement strength (under the rule below those 11 read Low either way). A line naming only
+  the reagent halogen's heavy isotope (`81Br`, `13C+81Br`) under a committed ion of a winner that
+  carries no Br counts only on a certificate of >= 3 channels (`cert.n_channels`), where two
+  other ions confirm the mass: on two -- one file, two ions and the reagent's own line -- it is
+  not enough for 'identified', and such a certificate reads Low (certified) with no displacement
+  strength (the user's decision of 2026-10-02, option B; it supersedes the decision of 2026-10-01
+  to count the line on two channels as on three). Lines of the winner's own elements (34S, 37Cl;
+  the 81Br of a winner that carries Br, which pass 7's P / S / Cl box never certifies on the
+  pipeline's own runs) count on two channels as on three. The label is not without consequence,
+  as the 2026-10-01 entry had it ("the merged ledger's vote decides"): a pair seen in one file
+  has no vote, so that file's label sets the pair's merged tier, level and claim. Measured on the
+  full offline replay at the final engine against the same replay with the line counted on two
+  channels: the two Orbitrap batches unchanged (every per-file ledger, table and stamp
+  byte-identical; neither has a bromide channel); on the TOF 65 of the 835 gate decisions flip,
+  every one a two-channel certificate of a Br-free winner on the reagent's line alone -- 49 Good
+  -> Low (certified), 16 tied ones (Low either way) lose the displacement strength; 120 per-file
+  rows in 22 of the 28 files change (34 certificate members Good -> Low (certified) and two
+  ladder rows Good -> Low (ladder) on the same reading, 75 rows re-read or changing role, five
+  isotope lines relabelled, four M0 rows only in level); merged rows 2242 -> 2241, Assigned 454
+  -> 450 -- C16H19NO4S `[M+Br]-` (m/z 400.022) Assigned 3b 'identified' -> Candidate 5b
+  'tentative' and its `[M-H]-` pair gone (its one file's certificate no longer displaces the weak
+  C12H23N3O2 `[M+Br]-` series reading of m/z 320.097, which the end mass gate then clears),
+  C25H36N2O8S `[M+NO3]-` Assigned 4b 'ion' -> Candidate 5b 'tentative' (its `[M+Br]-` peak at m/z
+  603.134 now read as C23H28N2O17 `[M-H]-`, 5b), C25H40N2O10S `[M+NO3]-` Candidate 4b -> 5b
+  ('ion' -> 'tentative'), 8 merged pairs gone and 7 new, all dim 5b; 1198 time-series stamp rows
+  change reading (0.10 % of the signal) and 3513 keep theirs at a shifted consensus m/z.
+  Chloroacetic acid is untouched: m/z 172.901 (`[M+Br]-`, 4a) and 155.970 (`[M+NO3]-`, 4b) stay
+  Assigned, read so in 13 of 17 and 14 of 15 files. On the TOF 68 of the 89 passing gate
+  decisions rest on a reagent line alone, all on >= 3 channels: 54 get past the time-series check
+  (50 at Good (certified), 20 winners) and 14 are skipped as anti-correlated in time (the check
+  vetoes 21 % of these passes, 1 of the other 21, 5 %). One of them reads a dim bromide-reagent
+  triplet at m/z 422.83 / 424.83 / 426.83, `reagent` at trunk, as a C10H4N2O5S `[M+HBr+Br]-`
+  ladder rung at Good (certified), a Candidate in the batch. Pass 7 does not revisit the label:
+  in 21 of the 74 committing certificates every member whose ion carried the counted line is
+  later cleared or re-read (19 by the isotope audit's carbon count -- that triplet's `[M+Br]-`
+  member among them --, 1 by the end mass gate, 1 by the ladder gap-fill), and four members of
+  three of them keep Good (certified), all at 5b per file; three of the four (the anchored
+  members) carry "diagnostic isotope envelope confirmed", the fourth, that ladder rung, does not
+  (a rung's commentary never does). "Commits" means the certificate's intended members (each
+  member's ion is fixed before the commit loop): every passing decision that gets past the
+  time-series check commits all of them (74 of 89; the other 15 commit nothing). The levels keep
   the line apart from the neutral's own isotope axis (`reagent_only_iso`, `chan2`). Pass 0's
   single-channel gates stay on the compound. `tests/test_known_ion_kids.py` (its pass-7 spectra
-  built from the scorer's own envelope and scored by the local scorer: a two-channel certificate,
-  a '13C+81Br' line alone, a 34S line under an uncommitted ion, an order-1 rung's own line).
-  REPLAY numbers (the final runs replace them at landing): per-file ledger rows whose role, reading, parent, label,
-  list or confidence change (attributed exactly by a replay without the residual fix below):
-  the labelled-nitrate Orbitrap 23 (pass 0 18, pass 7 1, and 4 knock-on rows: two ions
-  committed later in two files, with a line each), the uronium Orbitrap 30 (all pass 0: TPPO's
-  urea adduct and D3's lines), the bromide/nitrate TOF 723 (pass 0 620 -- the PFCAs, HNO3 /
-  HNO4 / HO2 and nitrophenol lose their bromide clusters' lines, 28 dim pass-0 rows turn Low,
-  one file's calibration core falls under 20 --, pass 7 59, and 44 from the rungs' real ions:
-  32 rungs carry their ion instead of the bare neutral, 12 rows are later commits and lines
-  that follow); the ladder rung C7H6N2OP2 `[M+Br]-` keeps its own 81Br line and its commit.
-  The gate keyed on the committed ions, against the same replay with the compound-keyed gate:
-  the two Orbitrap batches unchanged (every file, table and stamp byte-identical); the TOF 8 of
-  28 files, 428 rows -- 8 certificate members Good -> Low (certified); 8 rows re-read, five
-  members and three lines that follow them (a Low certificate's members are weak commits that
-  later stages re-read: one C8H15ClN3PS3 `[M+NO3]-` member is now a C10H10BrN3O4 reading, one
-  C5H15ClN2P2S2 `[M-H]-` member a C5H12O7 `[M+Br]-` one, the others an isotope line or
-  unexplained); 9 rows of tetrafluoropropionic acid C3H2F4O2 (five M0 rows and four of their
-  lines) committed by pass 3's late fluorinated sweep in two files; 12 rows whose other columns
-  alone change -- the commentary of six unexplained peaks (members the isotope audit clears
-  anyway) and of the tied C9H9ClP2 certificate's two members (Low (certified) before and after,
-  now without "diagnostic isotope envelope confirmed"), the isotope match score of two lines, the
-  evidence axes of two members --; and 391 rows whose displayed `ppm_error_cal` alone
-  shifts by 0.01 ppm in one of those files (the offset re-fits on the changed commits; no
-  decision reads the column); per file one
-  M0 level move (C6H9ClO3S `[M+NO3]-` 4b -> 5b in one file: a Low engine confidence), pooled no
+  built from the scorer's own envelope and scored by the local scorer: the reagent's line on two
+  channels and on three, a '13C+81Br' line alone, a winner wanting no envelope, the winner's own
+  34S / 37Cl and a Br winner's 81Br on two channels, a 34S or 37Cl line under an uncommitted ion,
+  a tied certificate on two and on three channels, an order-1 rung's own line).
+  ATTRIBUTION on the offline replays (each fix against the replay without it, before option B;
+  the landing numbers are the isotope-child entry's under Changed): per-file ledger rows whose
+  role, reading, parent, label, list or confidence change (attributed exactly by a replay without
+  the residual fix below): the labelled-nitrate Orbitrap 23 (pass 0 18, pass 7 1, and 4 knock-on
+  rows: two ions committed later in two files, with a line each), the uronium Orbitrap 30 (all
+  pass 0: TPPO's urea adduct and D3's lines), the bromide/nitrate TOF 723 (pass 0 620 -- the
+  PFCAs, HNO3 / HNO4 / HO2 and nitrophenol lose their bromide clusters' lines, 28 dim pass-0 rows
+  turn Low, one file's calibration core falls under 20 --, pass 7 59, and 44 from the rungs' real
+  ions: 32 rungs carry their ion instead of the bare neutral, 12 rows are later commits and lines
+  that follow); the ladder rung C7H6N2OP2 `[M+Br]-` keeps its own 81Br line and its commit. The
+  gate keyed on the committed ions, against the same replay with the compound-keyed gate: the two
+  Orbitrap batches unchanged (every file, table and stamp byte-identical); the TOF 8 of 28 files,
+  428 rows -- 8 certificate members Good -> Low (certified); 8 rows re-read, five members and
+  three lines that follow them (a Low certificate's members are weak commits that later stages
+  re-read: one C8H15ClN3PS3 `[M+NO3]-` member is now a C10H10BrN3O4 reading, one C5H15ClN2P2S2
+  `[M-H]-` member a C5H12O7 `[M+Br]-` one, the others an isotope line or unexplained); 9 rows of
+  tetrafluoropropionic acid C3H2F4O2 (five M0 rows and four of their lines) committed by pass 3's
+  late fluorinated sweep in two files; 12 rows whose other columns alone change -- the commentary
+  of six unexplained peaks (members the isotope audit clears anyway) and of the tied C9H9ClP2
+  certificate's two members (Low (certified) before and after, now without "diagnostic isotope
+  envelope confirmed"), the isotope match score of two lines, the evidence axes of two members
+  --; and 391 rows whose displayed `ppm_error_cal` alone shifts by 0.01 ppm in one of those files
+  (the offset re-fits on the changed commits; no decision reads the column); per file one M0
+  level move (C6H9ClO3S `[M+NO3]-` 4b -> 5b in one file: a Low engine confidence), pooled no
   level move on a common pair, one dim 5b pair appearing (C10H10BrN3O4 `[M+NO3]-`) and three
   disappearing (C5H15ClN2P2S2 `[M-H]-`, C8H15ClN3PS3 `[M-H]-` / `[M+NO3]-`), 0 merged tier moves;
-  1556 time-series stamp rows (0.28 % of the signal) change their stamped ion or its m/z.
-  Pooled: see the entry above.
+  1556 time-series stamp rows (0.28 % of the signal) change their stamped ion or its m/z. Pooled:
+  see the entry above.
 
 - **The Br doublet spacing of the residual pass is the exact 81Br - 79Br difference (C11+c,
   I5).** `residual.D_PAIR_BR` was 1.997795, 0.16 mDa below the exact 1.9979535 its +-8 ppm pair
   finder and +-6 ppm residual characterisation centre on; now exact, with a value pin. Only dim
   doublets at the window's rim appear or disappear (per file); the residual tags shift from
   'iso-partner 81Br' toward '37Cl' where a partner sat between the two spacings.
-  `tests/test_residual.py`. REPLAY numbers: per-file rows change in pass 4's dim edge doublets and what re-reads
-  the freed peaks (the labelled-nitrate Orbitrap 9, the bromide/nitrate TOF 36; the uronium
-  batch's context caps every doublet, so nothing moves there); pooled, the labelled-nitrate
-  Orbitrap 3 dim 5b pairs appear or disappear, the TOF 11 (4 merged): ten dim 5b pairs appearing
-  or disappearing -- the ten the engine lane measured for this fix alone, on the old levelling --
-  and C15H12N2O4S `[M+Br]-` 5b -> 4d, the one interaction with the line test above: the pair's new
-  row (pass 4, one more file) carries an `81Br(pair)` child at 0.78x, which the old levelling
-  could not read (expected 0) and the whole-label reading puts in band (0.9728 expected).
+  `tests/test_residual.py`. ATTRIBUTION on the offline replays (this fix against the replay
+  without it, before option B; the landing numbers are the isotope-child entry's under Changed):
+  per-file rows change in pass 4's dim edge doublets and what re-reads the freed peaks (the
+  labelled-nitrate Orbitrap 9, the bromide/nitrate TOF 36; the uronium batch's context caps every
+  doublet, so nothing moves there); pooled, the labelled-nitrate Orbitrap 3 dim 5b pairs appear
+  or disappear, the TOF 11 (4 merged): ten dim 5b pairs appearing or disappearing -- the ten the
+  engine lane measured for this fix alone, on the old levelling -- and C15H12N2O4S `[M+Br]-` 5b
+  -> 4d, the one interaction with the line test above: the pair's new row (pass 4, one more file)
+  carries an `81Br(pair)` child at 0.78x, which the old levelling could not read (expected 0) and
+  the whole-label reading puts in band (0.9728 expected).
 
 - **The isotope checks measure a batch whose committed pairs are all carbon-free.**
   Rule C (`batch/iso_checks.py`, C11+a) raised `KeyError: 'mz'` when no stamped pair
