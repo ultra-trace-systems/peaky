@@ -448,6 +448,25 @@ def test_the_reagent_line_alone_does_not_confirm_a_two_channel_certificate():
         assert _parent(led, "b:81Br") == "b", other[0]
 
 
+def test_the_reagent_line_alone_does_not_confirm_a_two_channel_certificate_of_a_winner_wanting_no_envelope():
+    """The same for a winner with no S / Cl / Br, which wants no isotope envelope and on two channels is Good only
+    through a counted line: methylphosphonic acid (CH5O3P) certified on its [M-H]- or [M+NO3]- ion and its bromide
+    cluster, whose 1:1 '81Br' line is the only diagnostic line (the 13C / 18O lines, 1.1 / 0.6 %, under the floor):
+    Low (certified)."""
+    mpa = "CH5O3P"
+    assert CH.dbe_ok(mpa)[0]
+    for other in (("h", "CH4O3P", -1, 300.0), ("n", "CH5NO6P", -1, 300.0)):
+        peaks = _spectrum([other, ("b", "CH5BrO3P", -1, 240.0)])
+        assert _diag_lines(peaks, mpa, BR_NO3) == {("CH5BrO3P-", "81Br", "b:81Br")}, other[0]
+        led = L.new_ledger(peaks.copy())
+        s, by = _certify(led, peaks, mpa, BR_NO3)
+        assert s["committed"] == 1 and s["peaks_claimed"] == 2, (other[0], s)
+        for pid in (other[0], "b"):
+            assert by.loc[pid, "neutral_formula"] == mpa and by.loc[pid, "confidence"] == "Low (certified)", pid
+            assert "diagnostic isotope envelope" not in by.loc[pid, "commentary"], pid
+        assert _parent(led, "b:81Br") == "b", other[0]
+
+
 TOF_CP = "C10H23ClN2O3P2"
 TOF_PEAKS = [("n", 378.075402, 2.41), ("b", 395.006538, 48.72), ("b1", 396.009008, 9.45), ("b2", 397.004448, 26.97),
              ("b3", 398.007904, 5.45), ("b4", 398.976160, 2.59), ("b4'", 399.017571, 4.64)]
