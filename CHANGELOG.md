@@ -827,8 +827,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `source_neutrals` take `resolution=`; a `--corroborate` run dir and a script source read their
   own `batch_summary.json`), and the script reads isotopologues lists JSON first like the engine.
   LANDING numbers, measured offline (an online run is blocked: Mascope renamed its ionization
-  mechanisms, card C30), one variable against the trunk's final runs, whose offline replay the
-  tools reproduce byte for byte. First the chain: the three regression batches' STORED per-file
+  mechanisms, card C30), one variable against the trunk's final runs, whose per-file A.run
+  ledgers, merged ledger and tables the offline tools reproduce byte for byte (every time-series
+  stamp too). First the chain: the three regression batches' STORED per-file
   ledgers levelled by the built engine (each run's tables, stored cross set and width model) --
   the labelled-nitrate Orbitrap 3 pooled pairs (3 merged): dibromoacetic acid `[M-H]-` 5a -> 4b
   (its 81Br2 and 79Br2 lines around the 79Br81Br-committed M0), C18H15BrO3S and C13H15ClO8
@@ -856,7 +857,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the engine items below): the labelled-nitrate Orbitrap 7 pooled pairs (4 merged; pairs 1848 ->
   1850) -- the chain's 3 and four dim 5b pairs appearing or disappearing (pass 4 at the exact Br
   spacing, one pass-7 re-read) -- claims 0 / +0.015 / -0.016, merged rows 1419 -> 1420, Assigned
-  647 -> 647, 632 time-series peaks restamped (0.018 % of the signal); the uronium Orbitrap the
+  647 -> 647, 632 time-series peaks restamped (0.018 % of the signal; restamped: the stamped
+  reading changed -- neutral, adduct, role, ion formula, isotope label, stamp source or duplicate
+  flag --, an m/z-only shift not counted); the uronium Orbitrap the
   chain's 3 (3; pairs 1161 -> 1161), claims 0 / -0.018 / +0.018, merged rows 1148 -> 1148, 373
   peaks restamped (0.013 %), and one tier: merged Assigned 836 -> 835, hexamethylcyclotrisiloxane
   (D3) C6H18O3Si3 `[M+H]+` capped Candidate at an unchanged 2b once I7 frees the 29Si line the
@@ -1248,21 +1251,24 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   built: 0 / 0 / 11 of 379 / 43 / 835 gate decisions flip, all two-channel `[M-H]-` + `[M+NO3]-`
   certificates of Br-free winners whose only line sat under their `[M+Br]-` ion, which they do
   not commit (the doublet already held by another reading): 8 Good -> Low, 3 tied ones lose the
-  displacement strength (under the rule below those 11 read Low either way). A line naming only
-  the reagent halogen's heavy isotope (`81Br`, `13C+81Br`) under a committed ion of a winner that
+  displacement strength (under the rule below those 11 read Low either way). A line whose only
+  diagnostic isotope is the reagent halogen's heavy one (`81Br`, `13C+81Br`, a two-Br ion's
+  `81Br2`; a 13C, 18O, 15N or 33S beside it adds none) under a committed ion of a winner that
   carries no Br counts only on a certificate of >= 3 channels (`cert.n_channels`), where two
   other ions confirm the mass: on two -- one file, two ions and the reagent's own line -- it is
   not enough for 'identified', and such a certificate reads Low (certified) with no displacement
   strength (the user's decision of 2026-10-02, option B; it supersedes the decision of 2026-10-01
-  to count the line on two channels as on three). Lines of the winner's own elements (34S, 37Cl;
-  the 81Br of a winner that carries Br, which pass 7's P / S / Cl box never certifies on the
+  to count the line on two channels as on three). Lines of the winner's own elements (34S, 37Cl,
+  alone or combined -- `13C+37Cl`, `81Br+37Cl` --; the 81Br of a winner that carries Br, which
+  pass 7's P / S / Cl box never certifies on the
   pipeline's own runs) count on two channels as on three. The label is not without consequence,
   as the 2026-10-01 entry had it ("the merged ledger's vote decides"): a pair seen in one file
   has no vote, so that file's label sets the pair's merged tier, level and claim. Measured on the
   full offline replay at the final engine against the same replay with the line counted on two
-  channels: the two Orbitrap batches unchanged (every per-file ledger, table and stamp
-  byte-identical; neither has a bromide channel); on the TOF 65 of the 835 gate decisions flip,
-  every one a two-channel certificate of a Br-free winner on the reagent's line alone -- 49 Good
+  channels: the two Orbitrap batches unchanged (every per-file A.run ledger, table and stamp
+  byte-identical; neither has a bromide channel); on the TOF 65 of the 835 gate decisions flip
+  (45 of them past the time-series check: 39 untied, 6 tied), every one a two-channel certificate
+  of a Br-free winner on the reagent's line alone -- 49 Good
   -> Low (certified), 16 tied ones (Low either way) lose the displacement strength; 120 per-file
   rows in 22 of the 28 files change (34 certificate members Good -> Low (certified) and two
   ladder rows Good -> Low (ladder) on the same reading, 75 rows re-read or changing role, five
@@ -1272,8 +1278,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   C12H23N3O2 `[M+Br]-` series reading of m/z 320.097, which the end mass gate then clears),
   C25H36N2O8S `[M+NO3]-` Assigned 4b 'ion' -> Candidate 5b 'tentative' (its `[M+Br]-` peak at m/z
   603.134 now read as C23H28N2O17 `[M-H]-`, 5b), C25H40N2O10S `[M+NO3]-` Candidate 4b -> 5b
-  ('ion' -> 'tentative'), 8 merged pairs gone and 7 new, all dim 5b; 1198 time-series stamp rows
-  change reading (0.10 % of the signal) and 3513 keep theirs at a shifted consensus m/z.
+  ('ion' -> 'tentative'), 8 merged pairs gone (the two named above -- C16H19NO4S `[M-H]-`,
+  C25H36N2O8S `[M+Br]-` -- and 6 dim 5b) and 7 new, all dim 5b; 1198 time-series stamp rows
+  change their neutral or adduct (0.10 % of the signal; 2226, 0.25 %, by the landing count of the
+  isotope-child entry under Changed, which also counts a changed role, ion formula, isotope
+  label, stamp source or duplicate flag) and 3513 keep theirs at a shifted consensus m/z.
   Chloroacetic acid is untouched: m/z 172.901 (`[M+Br]-`, 4a) and 155.970 (`[M+NO3]-`, 4b) stay
   Assigned, read so in 13 of 17 and 14 of 15 files. On the TOF 68 of the 89 passing gate
   decisions rest on a reagent line alone, all on >= 3 channels: 54 get past the time-series check
@@ -1292,9 +1301,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the line apart from the neutral's own isotope axis (`reagent_only_iso`, `chan2`). Pass 0's
   single-channel gates stay on the compound. `tests/test_known_ion_kids.py` (its pass-7 spectra
   built from the scorer's own envelope and scored by the local scorer: the reagent's line on two
-  channels and on three, a '13C+81Br' line alone, a winner wanting no envelope, the winner's own
-  34S / 37Cl and a Br winner's 81Br on two channels, a 34S or 37Cl line under an uncommitted ion,
-  a tied certificate on two and on three channels, an order-1 rung's own line).
+  channels and on three, a '13C+81Br' line alone, a winner wanting no envelope, a two-Br ion's
+  `81Br` / `81Br2` lines, the winner's own 34S / 37Cl -- alone or as `13C+37Cl` / `81Br+37Cl` --
+  and a Br winner's 81Br (on its two-Br bromide cluster too) on two channels, a 34S or 37Cl line
+  under an uncommitted ion, a tied certificate on two and on three channels and a tied one of a
+  winner wanting no envelope, an order-1 rung's own line; a two-Br ion based on its all-light
+  line, as the server bases it).
   ATTRIBUTION on the offline replays (each fix against the replay without it, before option B;
   the landing numbers are the isotope-child entry's under Changed): per-file ledger rows whose
   role, reading, parent, label, list or confidence change (attributed exactly by a replay without
