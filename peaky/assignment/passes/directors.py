@@ -1926,8 +1926,9 @@ def run_pass_certified(
     its own channel label) so the tier engine's cross-channel corroboration
     sees the certificate. S/Cl/Br winners additionally want their diagnostic
     isotope envelope -- a 34S / 37Cl / 81Br line under an ion the certificate
-    commits (the reagent halogen's line of a committed cluster counts); a
-    matched one earns Good confidence.
+    commits (the reagent's 81Br line of a committed bromide cluster of a Br-free
+    winner only on a certificate of >= 3 channels); a matched one earns Good
+    confidence.
 
     ts_peaks is OPTIONAL (a batch may not include the reagent mass range, and a
     single-sample run has no TS at all): when provided, member-channel time
@@ -2036,14 +2037,19 @@ def run_pass_certified(
         # diagnostic-isotope gate for isotope-confirmable winners (13C never counts),
         # keyed on the IONS the certificate commits (C11+c): a line the scorer found
         # under another ion of the winner (a bromide cluster no member is) is no
-        # line of the certificate. The reagent halogen's line of a committed ion
-        # counts: it proves that channel a real cluster of the certified neutral.
+        # line of the certificate. A line naming only the reagent halogen's heavy
+        # isotope ('81Br', '13C+81Br') of a winner that carries no Br counts only on a
+        # certificate of >= 3 channels, where two other ions confirm (the user,
+        # 2026-10-02): on two, one file, two ions and the reagent's own line are not
+        # enough. The winner's own 34S / 37Cl (and a Br winner's 81Br) count on two.
         wf = C.parse_formula(winner)
         wants_iso = any(wf.get(el, 0) > 0 for el in ("S", "Cl", "Br"))
         cert_ions = {i for i in member_ion.values() if isinstance(i, str) and i}
         win_kids = kids[(kids["compound_formula"] == winner) & kids["ion_formula"].isin(cert_ions)]
+        diag = (_CERT_DIAG_ISO if wf.get("Br", 0) or cert.n_channels >= 3
+                else tuple(d for d in _CERT_DIAG_ISO if d != "81Br"))
         iso_ok = bool(win_kids["iso_label"].astype(str).str.contains(
-            "|".join(_CERT_DIAG_ISO), na=False).any())
+            "|".join(diag), na=False).any())
         # optional TS corroboration (guarded: fully optional)
         ts_note = ""
         if ts_peaks is not None and len(ts_peaks):
