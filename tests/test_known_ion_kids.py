@@ -9,8 +9,9 @@ ion): the attach loop, the recorded isotopologues list, the chlorinated-paraffin
 gate and the confidence count the ion's own lines; the single-channel P / S / Si
 gates still read the compound. A pass-7 ladder rung is committed with its real
 ion formula (it stored the bare neutral) and takes its own lines. Pass 7's diagnostic-isotope gate reads
-the lines of the ions the certificate commits, the reagent's 81Br line of a Br-free winner only on a
-certificate of >= 3 channels; its tests run on physically built spectra scored by the local scorer.
+the lines of the ions the certificate commits, a Br-free winner's line whose only diagnostic isotope is the
+reagent's 81Br only on a certificate of >= 3 channels; its tests run on physically built spectra scored by
+the local scorer.
 
 Run: pytest tests/test_known_ion_kids.py -q
 """
@@ -271,11 +272,12 @@ def test_a_rung_on_a_scored_unanchored_channel_takes_the_oracles_string_and_its_
 # --------------------------------------------------------------------------- pass 7's gate reads the committed ions
 # The certificate's diagnostic-isotope gate (34S / 37Cl / 81Br) reads the lines of the ions the certificate COMMITS
 # -- each member's: an anchored member's oracle string, a ladder rung's `_rung_ion` -- not every line the scorer
-# found for the compound (the user, 2026-10-01: "key it on the ion"). A line naming only the reagent halogen's heavy
-# isotope ('81Br', '13C+81Br') under a committed ion of a winner that carries no Br counts only on a certificate of
-# >= 3 channels, where two other ions confirm (the user, 2026-10-02): on two, one file, two ions and the reagent's
-# own line are not enough for 'identified'. Lines of the winner's own elements (34S, 37Cl; the 81Br of a winner
-# that carries Br) count on two channels as on three.
+# found for the compound (the user, 2026-10-01: "key it on the ion"). A line whose only diagnostic isotope is the
+# reagent halogen's heavy one ('81Br', '13C+81Br', '81Br2') under a committed ion of a winner that carries no Br
+# counts only on a certificate of >= 3 channels, where two other ions confirm (the user, 2026-10-02): on two, one
+# file, two ions and the reagent's own line are not enough for 'identified'. Lines of the winner's own elements (34S,
+# 37Cl, alone or combined -- '13C+37Cl', '81Br+37Cl'; the 81Br of a winner that carries Br) count on two channels as
+# on three.
 #
 # Every spectrum here is physically possible: an ion's lines are the scorer's own envelope (`predict_isotopes`) at
 # the ion's height, each a Gaussian of the Orbitrap FWHM (R ~ 118 000 at m/z 200, R ~ m^-1/2); lines whose summed
@@ -283,9 +285,10 @@ def test_a_rung_on_a_scored_unanchored_channel_takes_the_oracles_string_and_its_
 # strong one's flank is a shoulder, not a peak, however far beyond one FWHM it sits), and a peak under the 100-cps
 # floor is not picked (one spectrum is the TOF's, as measured). The oracle is the local scorer on that peak list
 # (`score_candidates_local`: each line matched to the nearest peak within 5 ppm and 40 % of its predicted height),
-# asked for the certificate's compound only. The certificates' members are dim, so their own 37Cl / 34S lines stay
-# under the floor: only then is a line of one ion the certificate's only diagnostic line, which each test asserts of
-# its spectrum before running the pass.
+# asked for the certificate's compound only; where a member is a two-Br ion the oracle bases each ion on its
+# all-light line, as the server does (`_m0_based`). Where one line is to be the certificate's only diagnostic line,
+# the members are dim enough that their other 37Cl / 34S / 81Br lines stay under the floor (or, at m/z 785, merge
+# out of the scorer's band), which each test asserts of its spectrum before running the pass.
 R200 = 118_000.0
 FLOOR = 100.0
 DIAG = ("34S", "37Cl", "81Br")
@@ -330,17 +333,26 @@ def _spectrum(ions) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["peak_id", "mz", "height"])
 
 
-def _local(peaks, compound, adducts=None, mechanisms=None):
-    """The oracle: the local scorer on `peaks`, for `compound` alone."""
+def _m0_based(s: pd.DataFrame) -> pd.DataFrame:
+    """The server's base line: Mascope's match tree bases every ion on its all-light isotopologue ('M0',
+    `io_mascope.parse_isotope_label`), the local scorer on its tallest line. The two agree on an ion with at most one
+    Br; a two-Br ion's tallest line is its 79Br81Br one ('81Br', 1.95x its M0), so on the local scorer's base its M0
+    member is anchored by no base line and a two-channel certificate with it never commits (one anchored channel)."""
+    return s.assign(is_base=s["iso_label"].eq("M0")) if len(s) else s
+
+
+def _local(peaks, compound, adducts=None, mechanisms=None, m0_base=False):
+    """The oracle: the local scorer on `peaks`, for `compound` alone (on the server's base line with `m0_base`)."""
     def score(client, sid, formulas, *, mechanism_ids=None, **kw):
-        return LS.score_candidates_local(peaks, [f for f in formulas if f == compound], adducts,
-                                         mechanisms=mechanisms)
+        s = LS.score_candidates_local(peaks, [f for f in formulas if f == compound], adducts, mechanisms=mechanisms)
+        return _m0_based(s) if m0_base else s
     return score
 
 
-def _diag_lines(peaks, compound, adducts=None, mechanisms=None) -> set:
+def _diag_lines(peaks, compound, adducts=None, mechanisms=None, m0_base=False) -> set:
     """(ion, label, peak) of every diagnostic line the scorer matches for `compound` (the gate's candidates)."""
     s = LS.score_candidates_local(peaks, [compound], adducts, mechanisms=mechanisms)
+    s = _m0_based(s) if m0_base else s
     s = s[s["sample_peak_id"].notna() & ~s["is_base"].astype(bool)
           & (pd.to_numeric(s["iso_score"], errors="coerce") > 0.4)]
     return {(i, lb, p) for i, lb, p in zip(s["ion_formula"], s["iso_label"], s["sample_peak_id"])
@@ -355,9 +367,10 @@ def _hold(led, pid, neutral, adduct, ion, lines=(), note="a Br doublet"):
         L.attach_isotopologue(led, k, pid, iso_label=k.split(":", 1)[1])
 
 
-def _certify(led, peaks, compound, adducts=None, *, mechanisms=None, profile=AIR, channels=None, reagent=None):
+def _certify(led, peaks, compound, adducts=None, *, mechanisms=None, profile=AIR, channels=None, reagent=None,
+             m0_base=False):
     s = P.run_pass_certified(None, "SID", led, profile, ACFG, channels or adducts, reagent=reagent,
-                             score_fn=_local(peaks, compound, adducts, mechanisms), log=lambda *a: None)
+                             score_fn=_local(peaks, compound, adducts, mechanisms, m0_base), log=lambda *a: None)
     return s, led.set_index("peak_id")
 
 
@@ -467,6 +480,46 @@ def test_the_reagent_line_alone_does_not_confirm_a_two_channel_certificate_of_a_
         assert _parent(led, "b:81Br") == "b", other[0]
 
 
+def test_a_two_br_ions_reagent_lines_do_not_confirm_a_two_channel_certificate():
+    """A two-Br ion's lines are the reagent's as well: methylphosphonic acid certified on its [M-H]- or [M+NO3]- ion
+    (300 cps, its lines under the floor) and its [M+Br2]- cluster (CH5Br2O3P-, 79Br2 : 79Br81Br : 81Br2 = 0.51 : 1 :
+    0.49 at 500 cps), whose '81Br' (M+2) and '81Br2' (M+4) lines are the only diagnostic lines, each naming no
+    diagnostic isotope but the reagent's 81Br: Low (certified), both lines under the [M+Br2]- member. ('81Br2' alone
+    is no physical spectrum: the M+2 line, the cluster's tallest, is there whenever its M+4 is.) The oracle bases each
+    ion on its all-light line, as the server does (`_m0_based`)."""
+    mpa, ads = "CH5O3P", BR_NO3 + ["[M+Br2]-"]
+    for other in (("h", "CH4O3P", -1, 300.0), ("n", "CH5NO6P", -1, 300.0)):
+        peaks = _spectrum([other, ("r", "CH5Br2O3P", -1, 500.0)])
+        assert _diag_lines(peaks, mpa, ads, m0_base=True) == {("CH5Br2O3P-", "81Br", "r:81Br"),
+                                                              ("CH5Br2O3P-", "81Br2", "r:81Br2")}, other[0]
+        led = L.new_ledger(peaks.copy())
+        s, by = _certify(led, peaks, mpa, ads, m0_base=True)
+        assert s["committed"] == 1 and s["peaks_claimed"] == 2 and s["rungs_committed"] == 0, (other[0], s)
+        for pid in (other[0], "r"):
+            assert by.loc[pid, "neutral_formula"] == mpa and by.loc[pid, "confidence"] == "Low (certified)", pid
+            assert "diagnostic isotope envelope" not in by.loc[pid, "commentary"], pid
+        assert _parent(led, "r:81Br") == "r" and _parent(led, "r:81Br2") == "r", other[0]
+
+
+def test_the_winners_own_37cl_beside_the_reagents_81br_confirms_a_two_channel_certificate():
+    """'81Br+37Cl' names the winner's own 37Cl beside the reagent's 81Br, so it counts on two channels where the
+    reagent's '81Br' does not: CS's two-channel [M+NO3]- + [M+Br]- or [M-H]- + [M+Br]- certificate with the bromide
+    cluster at 400 cps -- its M+2 (81Br + 37Cl + 34S, one peak: the scorer's '81Br' line) counting for nothing, its M+4
+    (81Br+37Cl with 81Br+34S and 37Cl+34S, one peak at 0.37x = 148 cps: the scorer's '81Br+37Cl' line, 0.31x) picked
+    and counted. Good (certified), "diagnostic isotope envelope confirmed", both lines under the [M+Br]- member."""
+    for other in (CS_N, CS_H):
+        peaks = _spectrum([other, CS_B[:3] + (400.0,)])
+        assert _diag_lines(peaks, CS, BR_NO3) == {("C6H9BrClO3S-", "81Br", "b:81Br"),
+                                                  ("C6H9BrClO3S-", "81Br+37Cl", "b:81Br+37Cl")}, other[0]
+        led = L.new_ledger(peaks.copy())
+        s, by = _certify(led, peaks, CS, BR_NO3)
+        assert s["committed"] == 1 and s["peaks_claimed"] == 2, (other[0], s)
+        for pid in (other[0], "b"):
+            assert by.loc[pid, "neutral_formula"] == CS and by.loc[pid, "confidence"] == "Good (certified)", pid
+            assert "diagnostic isotope envelope confirmed" in by.loc[pid, "commentary"], pid
+        assert _parent(led, "b:81Br") == "b" and _parent(led, "b:81Br+37Cl") == "b", other[0]
+
+
 TOF_CP = "C10H23ClN2O3P2"
 TOF_PEAKS = [("n", 378.075402, 2.41), ("b", 395.006538, 48.72), ("b1", 396.009008, 9.45), ("b2", 397.004448, 26.97),
              ("b3", 398.007904, 5.45), ("b4", 398.976160, 2.59), ("b4'", 399.017571, 4.64)]
@@ -516,6 +569,28 @@ def test_the_winners_own_34s_or_37cl_line_confirms_a_two_channel_certificate():
             assert _parent(led, f"{pid}:{label}") == pid, (compound, pid)
 
 
+def test_the_winners_own_13c_37cl_line_confirms_a_two_channel_certificate():
+    """A combined line of the winner's own isotopes counts on two channels as its plain line does: a chlorinated
+    sulfolipid (C40H77ClO10S) certified on its [M-H]- (2000 cps) and [M+NO3]- (150 cps, its lines under the floor)
+    ions. At m/z 785 (FWHM 13 mDa) the [M-H]- ion's 37Cl line, its 13C2 line 9.7 mDa up and its 34S line are one M+2
+    peak at 1.49x the scorer's '37Cl' line (out of its 40 %), while its M+3 -- 13C+37Cl with the smaller 13C+34S and
+    13C3 lines -- is 1.23x the '13C+37Cl' line, inside: that line, the winner's own 37Cl beside its carbon, is the
+    certificate's only diagnostic line. Good (certified), the line under the [M-H]- member. (Two of the bromide/nitrate
+    TOF's two-channel certificates, C15H8ClN2PS and C36H69Cl2PS2, are Good through a '13C+37Cl' line alone.)"""
+    csl = "C40H77ClO10S"
+    assert CH.dbe_ok(csl)[0]
+    peaks = _spectrum([("h", "C40H76ClO10S", -1, 2000.0), ("n", "C40H77ClNO13S", -1, 150.0)])
+    assert set(peaks.peak_id) == {"h", "h:13C", "h:37Cl", "h:13C+37Cl", "n"}
+    assert _diag_lines(peaks, csl, BR_NO3) == {("C40H76ClO10S-", "13C+37Cl", "h:13C+37Cl")}
+    led = L.new_ledger(peaks.copy())
+    s, by = _certify(led, peaks, csl, BR_NO3)
+    assert s["committed"] == 1 and s["peaks_claimed"] == 2, s
+    for pid in ("h", "n"):
+        assert by.loc[pid, "neutral_formula"] == csl and by.loc[pid, "confidence"] == "Good (certified)", pid
+        assert "diagnostic isotope envelope confirmed" in by.loc[pid, "commentary"], pid
+    assert _parent(led, "h:13C+37Cl") == "h"
+
+
 def test_a_bromine_bearing_winners_own_81br_line_confirms_a_two_channel_certificate(monkeypatch):
     """A brominated winner's 81Br line is its own bromine, not only the reagent's: it confirms a two-channel
     certificate. 2-bromoethanesulfonic acid (C2H5BrO3S) seen as its [M-H]- and [M+NO3]- ions, each with
@@ -534,6 +609,30 @@ def test_a_bromine_bearing_winners_own_81br_line_confirms_a_two_channel_certific
         assert by.loc[pid, "neutral_formula"] == bes and by.loc[pid, "confidence"] == "Good (certified)", pid
         assert "diagnostic isotope envelope confirmed" in by.loc[pid, "commentary"], pid
         assert _parent(led, f"{pid}:81Br") == pid
+
+
+def test_a_bromine_bearing_winners_lines_on_its_two_br_bromide_cluster_confirm_a_two_channel_certificate(monkeypatch):
+    """A Br winner's bromide cluster carries two Br, one of them its own: (2-bromoethyl)phosphonic acid (C2H6BrO3P)
+    certified on its [M-H]- ion (101 cps; its 0.97x 81Br line, 98 cps, under the floor) and its [M+Br]- cluster
+    (C2H6Br2O3P-, 0.51 : 1 : 0.49 at 1000 cps), whose '81Br' and '81Br2' lines are the only diagnostic lines: on a
+    winner that carries Br they count on two channels -- Good (certified), both lines under the [M+Br]- member. The
+    box is opened to Br as for the Br winner above, and the oracle bases each ion on its all-light line, as the server
+    does (`_m0_based`)."""
+    from peaky.assignment import certified_neutral as CN
+    monkeypatch.setitem(CN._CERT_EXTRA, "Br", (0, 2))
+    bep = "C2H6BrO3P"
+    assert CH.dbe_ok(bep)[0]
+    peaks = _spectrum([("h", "C2H5BrO3P", -1, 101.0), ("b", "C2H6Br2O3P", -1, 1000.0)])
+    assert set(peaks.peak_id) == {"h", "b", "b:81Br", "b:81Br2"}
+    assert _diag_lines(peaks, bep, BR_NO3, m0_base=True) == {("C2H6Br2O3P-", "81Br", "b:81Br"),
+                                                             ("C2H6Br2O3P-", "81Br2", "b:81Br2")}
+    led = L.new_ledger(peaks.copy())
+    s, by = _certify(led, peaks, bep, BR_NO3, m0_base=True)
+    assert s["committed"] == 1 and s["peaks_claimed"] == 2 and s["rungs_committed"] == 0, s
+    for pid in ("h", "b"):
+        assert by.loc[pid, "neutral_formula"] == bep and by.loc[pid, "confidence"] == "Good (certified)", pid
+        assert "diagnostic isotope envelope confirmed" in by.loc[pid, "commentary"], pid
+    assert _parent(led, "b:81Br") == "b" and _parent(led, "b:81Br2") == "b"
 
 
 def test_a_37cl_line_under_an_ion_the_certificate_does_not_commit_confirms_nothing():
@@ -562,9 +661,9 @@ def test_a_37cl_line_under_an_ion_the_certificate_does_not_commit_confirms_nothi
 TIE = ("C6H9ClO3S", "C5H9O4PS")
 
 
-def _certify_tied(led, peaks):
+def _certify_tied(led, peaks, pair=TIE):
     def score(client, sid, formulas, *, mechanism_ids=None, **kw):
-        return LS.score_candidates_local(peaks, [f for f in formulas if f in TIE], BR_NO3)
+        return LS.score_candidates_local(peaks, [f for f in formulas if f in pair], BR_NO3)
     s = P.run_pass_certified(None, "SID", led, AIR, ACFG, BR_NO3, score_fn=score, log=lambda *a: None)
     return s, led.set_index("peak_id")
 
@@ -603,6 +702,34 @@ def test_a_tied_two_channel_certificate_on_the_reagent_line_alone_displaces_noth
     assert by.loc["b", "confidence"] == "Low (certified)"
     assert "diagnostic isotope envelope" not in by.loc["b", "commentary"]
     assert by.loc["n", "neutral_formula"] == "C3H4N2O8" and by.loc["n", "confidence"] == "Low"
+
+
+# Propylphosphonic acid (C3H9O3P, P only) and C4H9ClO2 (Cl + C for P + O) are 0.18 mDa apart: with every member read
+# 0.55 ppm above the acid's ions -- between the two -- the oracle scores them within 0.02 of each other, the acid ahead
+# (its envelope has no 37Cl line to miss), and the certificate is TIED.
+TIE_P = ("C3H9O3P", "C4H9ClO2")
+
+
+def test_a_tied_certificate_of_a_winner_wanting_no_envelope_reads_low_on_three_channels():
+    """The tie on the other branch of the Good condition: a winner with no S / Cl / Br wants no envelope and reads
+    Good on >= 3 channels without a diagnostic line -- but not when tied. Propylphosphonic acid certified on its
+    [M-H]-, [M+NO3]- and [M+Br]- ions (`TIE_P`): TIED, every member Low (certified), whether the bromide cluster's
+    81Br line counts (the cluster at 1500 cps, its line picked: "diagnostic isotope envelope confirmed") or not (at
+    101 cps, its 0.97x line under the floor). (The bromide/nitrate TOF's one tied certificate of >= 3 channels of a
+    winner wanting no envelope that gets past the time-series check, C10H6N2O3P2, has this shape, its 81Br line
+    counted.)"""
+    assert CH.dbe_ok(TIE_P[0])[0] and CH.dbe_ok(TIE_P[1])[0]
+    for hb, env in ((1500.0, True), (101.0, False)):
+        peaks = _spectrum([("h", "C3H8O3P", -1, 1500.0, 0.55), ("n", "C3H9NO6P", -1, 1200.0, 0.55),
+                           ("b", "C3H9BrO3P", -1, hb, 0.55)])
+        assert _diag_lines(peaks, TIE_P[0], BR_NO3) == ({("C3H9BrO3P-", "81Br", "b:81Br")} if env else set()), hb
+        led = L.new_ledger(peaks.copy())
+        s, by = _certify_tied(led, peaks, TIE_P)
+        assert s["committed"] == 1 and s["peaks_claimed"] == 3, (hb, s)
+        for pid in ("h", "n", "b"):
+            assert by.loc[pid, "neutral_formula"] == TIE_P[0] and bool(by.loc[pid, "tied"]), (hb, pid)
+            assert by.loc[pid, "confidence"] == "Low (certified)", (hb, pid)
+            assert ("diagnostic isotope envelope confirmed" in by.loc[pid, "commentary"]) == env, (hb, pid)
 
 
 def test_a_committed_rungs_own_line_confirms_the_certificate():
