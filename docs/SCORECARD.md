@@ -26,7 +26,7 @@ the merged ledger, `per_file/*_ledger.csv`, `per_file/_batch_ts.parquet`,
 | `<out>/<run name>/SCORECARD.md` | the card: §0 the claim, then six numbered sections (below) |
 | `<out>/<run name>/scorecard.json` | the same, as data — every table as records |
 | `<out>/<run name>/decoy/<file>__<arm>.csv.gz` | each decoy arm's engine ledger (`control`, `shift`, `adducts`), kept for a re-count |
-| `<out>/<run name>/decoy/manifest.json` | what those ledgers were made with: mode, offset, files, adduct sets, engine code |
+| `<out>/<run name>/decoy/manifest.json` | what those ledgers were made with: mode, offset, files, adduct sets, per file the scoring its arms were judged at (`inherited` / `class-fallback`) and the inherited width, offset, window, floor and anchors (`scoring_detail`), engine code |
 | `<out>/scoreboard.jsonl` | one row per run, appended; the board's memory |
 | `<out>/SCOREBOARD.md` | the claims table first, then every channel's latest row with its delta to the row before (`## All metrics`) |
 | `<out>/scoreboard.html` | the page source of "Peaky Scoreboard": the claims table, the channel table and one tabbed panel per run |
@@ -162,7 +162,42 @@ and the tables show a dash.
    wrong polarity chemistry (`[M+Cl]-`/`[M+I]-` on a negative run,
    `[M+Na]+`/`[M+NH4]+` on a positive one); what is still Assigned, per tier
    and level, is the error bound, reported on either side of m/z 350 because
-   the mass-defect gap a 0.35 Da shift lands in closes above it. Two units sit
+   the mass-defect gap a 0.35 Da shift lands in closes above it. Each arm is
+   scored at the measurement the run judged its file at -- the width, offset,
+   window and abundance floor of the file's `pattern_scoring` snapshot in the
+   batch summary (a 0.9.0 run records one per sample) -- with the per-peak
+   signal-to-noise its per-file ledger carries; a run from before 0.9.0
+   records no snapshot, and a snapshot that fails the registration's check
+   (`io_mascope._check_offline_scoring`: a width, offset, window or floor
+   that is not a finite number -- text and booleans included; a snapshot may
+   omit its floor, the library default -- a width or window not above zero,
+   an abundance floor outside [0, 1)) counts as none: those arms take the
+   offline class fallback, a TOF's width at zero offset.
+   What an arm does NOT inherit from the run: the opportunistic channels the
+   server opened for it (offline, only the run's declared adducts resolve),
+   its batch-derived height cutoff, its pre-calibration prior offset, its
+   batch occurrence table, its batch time series (pass 7's time-series
+   corroboration and the time-series stage), its active reference lists (the
+   reflist prior and the pass-8 rescue) and its corroboration -- so the
+   control is the engine on the file under the arm's own settings, not the
+   run's per-file ledger. They differ most in M0 and Assigned rows on a TOF
+   batch, and in the identified class on a corroborated batch (R2, 0.9.0:
+   the control holds 11 identified pairs where the run's file holds 50, 43 of
+   them identified only through corroboration); card C39. On a TOF the
+   brightest file -- the decoy file -- can be the batch's worst-fitted one
+   (R3: 8.75 ppm on 29 anchors, where the batch's median fitted width is
+   3.0), and its arms are scored at that; the card prints each file's
+   inherited width, offset, window, floor and anchors. Per file,
+   `decoy.scoring` says what the arms were scored at (`inherited` /
+   `class-fallback`, or `unrecorded` on a re-count of ledgers kept before the
+   field existed) and `decoy.scoring_detail` the inherited numbers, both kept
+   in the decoy manifest for a re-count; the card prints them under the decoy
+   heading and the board row records one word for the card (`decoy_scoring`:
+   one of those, or `mixed`). Nothing renders it yet: the board's tables,
+   the page's run-panel deltas and the card's own delta section all compare
+   a decoy rate with the previous row's whatever scoring made either, so a
+   delta across a change of scoring compares two different bounds unmarked
+   (card C41). Two units sit
    side by side: the tier counts are M0 **rows**; the level vector and the
    **per-claim** counts are distinct (neutral_formula, adduct) M0 **pairs** of
    any tier, each pair's m/z and tier taken from its brightest M0 row (the
@@ -175,7 +210,7 @@ and the tables show a dash.
    `manifest.json` beside it; `--decoy-ledgers DIR` (a scoreboard out dir, or
    the decoy dir itself) counts those ledgers instead of running the engine
    again — a re-score at no engine cost, the same counts. The card then
-   reports the manifest's offset, files and adduct sets, not the command
+   reports the manifest's offset, files, adduct sets and scoring, not the command
    line's, and `ledgers.code` names the engine that made them. It implies
    `--decoy both` unless `--decoy` is given; a missing ledger is that arm's
    error, and a DIR with no kept ledger for a run stops the scorecard before

@@ -582,7 +582,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
         ts_peaks=None, adducts=None, reflists_active=None,
         label_isotope=None, label_max=2, label_purity=None, occurrence=None,
         reagent_n_relabel: bool = True, peaks=None, corroborate=None,
-        resolving_power=None, log=print, checkpoint_dir=None) -> dict:
+        resolving_power=None, log=print, checkpoint_dir=None, scoring=None) -> dict:
     """Assign one sample. `peaks` (a DataFrame in the shape fetch_peaks returns:
     peak_id, mz, height, area ...) makes the run OFFLINE: the table is served
     as `sample_id` from memory, no server is contacted, the local scorer does
@@ -595,7 +595,10 @@ def run(sample_id: str, context: str = "ambient-air", *,
     no stage (its columns stay NA), 'auto' = measure it from this sample's raw
     profile when a server is there (an offline run cannot), a number = a constant
     R, or a `chem.resolution.Resolution`; a batch measures ONE model and hands it
-    to every file."""
+    to every file. `scoring` (offline runs only) is what the offline sample is
+    judged at -- a measured sample's `pattern_scoring` snapshot, a
+    `PatternScoring` or an instrument class (`io_mascope.register_offline_sample`);
+    None leaves an offline sample at the forgiving class fallback."""
     cfg = cfg or passes.PassConfig()
     # the reagent bottle's isotopic purity (ReagentProfile.purity), published for
     # the two consumers that model a '^X' ion's unlabelled impurity line: the
@@ -609,11 +612,14 @@ def run(sample_id: str, context: str = "ambient-air", *,
     if reflists_active:
         cfg.reflist_formulas = reflists.prior_formulas(reflists_active)
     profile = contexts.get_context(context)
+    if scoring is not None and peaks is None:
+        raise ValueError("scoring= is what an OFFLINE sample (peaks=) is judged at; a server sample is "
+                         "judged at its own record and matches")
     if peaks is not None:
         if not io_mascope._local_scoring_enabled():
             raise RuntimeError("an offline sample (peaks=) needs the local scorer; "
                                "unset PEAKY_LOCAL_SCORING")
-        io_mascope.register_offline_sample(sample_id, peaks)
+        io_mascope.register_offline_sample(sample_id, peaks, scoring=scoring)
         client = None
     else:
         client = io_mascope.connect()
@@ -686,7 +692,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
         # the offline sample's own channels are the only ones that resolve
         io_mascope.register_offline_sample(
             sample_id, peaks,
-            [io_mascope.ADDUCT_TO_MECH[a] for a in adducts if a in io_mascope.ADDUCT_TO_MECH])
+            [io_mascope.ADDUCT_TO_MECH[a] for a in adducts if a in io_mascope.ADDUCT_TO_MECH],
+            scoring=scoring)
     extra_channels = [a for a in opportunistic
                       if io_mascope.resolve_mechanism_ids(
                           client, [io_mascope.ADDUCT_TO_MECH[a]])]

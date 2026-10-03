@@ -1207,6 +1207,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A decoy arm is scored at what its file was scored at, not at a TOF's width (C35).** Under
+  the v2 fit a sample's width, offset and window come from its server record and its own
+  server matches (`io_mascope.scoring_for_sample`); an offline sample has neither, so it is
+  scored at the more forgiving class -- a TOF's -- at zero offset. The scorecard's decoy arms
+  are offline samples, so an Orbitrap run's arms were judged at a TOF's width while the run
+  was judged at its own fitted one. `register_offline_sample(..., scoring=)` (and
+  `assign.run(peaks=, scoring=)`, refused without `peaks=`) now takes a measured sample's
+  `pattern_scoring` snapshot, a `PatternScoring` or an instrument class ('orbi' / 'tof');
+  `scoring_for_sample` judges the sample at it and the snapshot says `inherited`. A class
+  other than those, a width, offset, window or floor that is not a finite number (a
+  `PatternScoring` may leave its width or offset unset: the library default / zero; a
+  snapshot may omit its floor), a width or window not above zero, an abundance floor
+  outside [0, 1), or any other type is refused at registration. Each decoy arm inherits its
+  file's snapshot from the run's batch summary (`scorecard.decoy_scoring`, by the same
+  check; a run from before 0.9.0, or a snapshot that fails it, leaves the arm at the class
+  fallback) and keeps the per-peak `signal_to_noise` of its per-file ledger (it was dropped,
+  so an arm was judged in the no-SNR mode its file was not). The card prints per file what
+  the arms were scored at, with the inherited width, offset, window, floor and anchors
+  (`decoy.scoring` / `decoy.scoring_detail`, kept in the decoy manifest for a re-count), and
+  the board row appends `decoy_scoring`; nothing renders it yet, so a decoy delta across a
+  change of scoring -- on the board, the page's run panels or the card's delta section -- is
+  not marked (card C41). What an arm still does not
+  inherit -- the run's opportunistic channels, height cutoff, prior offset, occurrence table,
+  time series, reference lists and corroboration -- is listed on the card and in
+  docs/SCORECARD.md (card C39). The trace-first synthetic sample stays at
+  the class fallback (scored at an Orbitrap's width it lost a third of a batch's
+  assignments, mostly for want of a signal-to-noise: card C38). Re-registering an offline
+  sample forgets the scoring computed for its old table.
+
 - **A labelled adduct keeps its 15N when the ion is read from neutral + adduct (C11+c).** The
   isotope line test reads every line against the ion's mono m/z, from the stored ion string
   when it is signed, else neutral + adduct -- and that fallback (`tiers._ion_counts`) dropped a

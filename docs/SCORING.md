@@ -98,6 +98,23 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   measurement. On a bromide TOF sample with three anchors, two mis-matched to the
   same wrong species, the median landed at −10.4 ppm for a source the engine
   measures within 0.3 ppm of calibration.
+
+  **An offline sample has neither a record nor anchors.** A table served from
+  memory (`register_offline_sample`: a scorecard decoy arm, the trace-first
+  synthetic sample, a test) has no server record to name its class and usually
+  no server matches, so on its own it is scored at the more forgiving class — a
+  TOF's width and window — at an assumed-zero offset. Registered with a
+  `scoring` (`register_offline_sample(..., scoring=)`, `assign.run(peaks=,
+  scoring=)`) it is judged at that instead: a measured sample's
+  `pattern_scoring` snapshot or a `PatternScoring` as it is (`sigma_source` /
+  `mu_source` `inherited`, the originals under `inherited`), or an instrument
+  class at that class's width. The scorecard's decoy arms inherit their file's
+  snapshot; the trace-first sample stays at the class fallback: scored at an
+  Orbitrap's width with an assumed-zero offset it lost a third of a batch's
+  assignments, mostly because its traces carry no signal-to-noise (adding it
+  recovers 135 of R2's 209 lost) and partly because their offsets are ones the
+  class width cannot absorb -- uncorrected outside the wave's range and
+  over-corrected inside it on R1 (card C38).
 - **`formulas`** — candidate neutral formulas (the grid + cheminfo union).
 - **channels** — either peaky `adducts` (labels like `[M+Br]-`) or already-resolved
   mascope **`mechanisms`** strings (`[M+Br]-`); the dispatcher passes the latter, which

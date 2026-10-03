@@ -248,7 +248,7 @@ def test_falsification_reads_the_13c_carbon_count(run):
 
 def test_decoy_transforms_and_the_wrong_adduct_sets(run):
     peaks = SC.raw_peaks_of(run, "s1")
-    assert list(peaks.columns[:6]) == SC.PEAK_COLS and len(peaks) == 12
+    assert list(peaks.columns[:len(SC.PEAK_COLS)]) == SC.PEAK_COLS and len(peaks) == 12
     shifted = SC.decoy_peaks(peaks, 0.35)
     assert np.allclose(shifted["mz"] - peaks["mz"], 0.35) and shifted["peak_id"].str.endswith("_decoy").all()
     assert SC.wrong_adducts("-") == ["[M+Cl]-", "[M+I]-"] and SC.wrong_adducts("+") == ["[M+Na]+", "[M+NH4]+"]
@@ -345,10 +345,10 @@ def test_cli_writes_the_board(run_dir, tmp_path, capsys):
 def test_a_decoy_arm_that_crashes_the_engine_is_recorded_not_fatal(run, monkeypatch):
     real = SC.run_engine_offline
 
-    def boom(run_, peaks, sample_id, adducts, log=lambda *a: None):
+    def boom(run_, peaks, sample_id, adducts, log=lambda *a: None, scoring=None):
         if sample_id.endswith("-adducts"):
             raise TypeError("boolean value of NA is ambiguous")
-        return real(run_, peaks, sample_id, adducts, log)
+        return real(run_, peaks, sample_id, adducts, log, scoring=scoring)
 
     monkeypatch.setattr(SC, "run_engine_offline", boom)
     dc = SC.decoy(run, "adducts", 0.35, 1)
