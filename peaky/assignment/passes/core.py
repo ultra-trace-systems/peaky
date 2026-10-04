@@ -139,7 +139,8 @@ def calibrate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> tuple | No
     # every satellite is below detection scores ~1 on the pattern -- nothing
     # contradicts it -- and on the labelled-nitrate files such rows above m/z
     # 400 sat ~0.4 ppm off the trend and failed its variance test in 12/12.
-    pattern = pd.to_numeric(m0.get("ion_score_massfree"), errors="coerce")
+    pattern = (pd.to_numeric(m0["ion_score_massfree"], errors="coerce")
+               if "ion_score_massfree" in m0.columns else pd.Series(float("nan"), index=m0.index))
     tsel = pattern.where(pattern.notna(), score)
     kids = ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
     tested = m0["peak_id"].map(kids).fillna(0) >= 1

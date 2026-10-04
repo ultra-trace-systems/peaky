@@ -330,3 +330,138 @@ def test_the_levels_read_the_given_halogen_instead_of_counting(monkeypatch):
     assert not calls
     EV.compute_levels(led)
     assert calls
+
+
+# --------------------------------------------------------------------------- refute round 1 (0300a05)
+class TestTheTrendStepRule:
+    T1 = MC.MassTrend(A_PPM, B_MDA, 0.25, 90, 145.0, 497.0)        # misses the lowest masses
+    T2 = MC.MassTrend(A_PPM, B_MDA, 0.25, 96, 131.0, 497.0)        # the re-run's refit
+    T3 = MC.MassTrend(A_PPM + 0.01, B_MDA, 0.25, 96, 131.0, 497.0)  # agrees with T2
+
+    def test_no_trend_fitted_and_none_scored_changes_nothing(self):
+        assert A._trend_step(None, None, local=True, reruns=0) == "done"
+
+    def test_a_first_accepted_trend_re_runs(self):
+        assert A._trend_step(None, self.T1, local=True, reruns=0) == "rerun"
+
+    def test_a_refit_that_moved_re_runs_again(self):
+        # +0.64 vs +0.77 ppm at m/z 131: the first fit held the centre at its edge
+        assert MC.trend_shift(self.T1, self.T2) > A.TREND_AGREE_PPM
+        assert A._trend_step(self.T1, self.T2, local=True, reruns=1) == "rerun"
+
+    def test_an_agreeing_refit_stops(self):
+        assert A._trend_step(self.T2, self.T3, local=True, reruns=2) == "done"
+        assert A._trend_step(self.T2, self.T3, local=True, reruns=1) == "done"
+
+    def test_the_re_run_budget_stops_it(self):
+        assert A._trend_step(self.T1, self.T2, local=True,
+                             reruns=A.MAX_TREND_RERUNS) == "done"
+
+    def test_a_rejected_refit_leaves_the_gates_at_the_scoring_trend(self):
+        assert A._trend_step(self.T2, None, local=True, reruns=1) == "keep_gates"
+
+    def test_the_network_scorer_never_re_runs(self):
+        assert A._trend_step(None, self.T1, local=False, reruns=0) == "network"
+
+
+def test_the_vectorised_centre_is_the_scalar_one():
+    mz = np.array([61.0, 131.035, 250.0, 900.0])
+    got = MC.centre_array(A_PPM, B_MDA, mz, 130.0, 700.0)
+    want = [MC.centre(A_PPM, B_MDA, m, 130.0, 700.0) for m in mz]
+    assert got == pytest.approx(want)
+
+
+class TestTheRunAfterTheRefute:
+    @staticmethod
+    def _run(sid, adducts=("[M-H]-",), **cfg_kw):
+        log = []
+        cfg = PCfg.PassConfig(height_cutoff_cps=100, **cfg_kw)
+        res = A.run(sid, context="ambient-air", cfg=cfg, peaks=_peaks(_ACIDS),
+                    adducts=list(adducts), do_pass2=False, do_pass3=False, do_pass4=False,
+                    do_pass5=False, do_pass_certified=False, use_cache=False,
+                    log=log.append, scoring=ORBI)
+        return res, [str(m) for m in log]
+
+    def test_the_pattern_only_score_reaches_the_committed_rows(self):
+        res, _ = self._run("c42r-carry")
+        m0 = res["ledger"][res["ledger"]["role"] == "M0"]
+        grid = m0[m0["method"].astype(str).str.startswith("cheminfo+grid")]
+        assert len(grid) and grid["ion_score_massfree"].notna().all()
+
+    def test_the_scoring_trend_converges_on_the_calibration_s_own(self):
+        res, log = self._run("c42r-converge")
+        assert sum("scoring centre -> the mass trend" in m for m in log) >= 1
+        agree = [m for m in log if "scoring trend and calibration agree within" in m]
+        assert agree and "re-run limit" not in agree[-1], log
+        assert float(agree[-1].split("within ")[1].split(" ppm")[0]) <= A.TREND_AGREE_PPM
+        assert res["pattern_scoring"]["trend"]["mz_lo"] < 132
+
+    def test_a_run_forgets_its_sample_s_previous_trend_before_scoring(self, monkeypatch):
+        # an offline sample is re-registered (which clears a trend) on every run;
+        # a server sample is not, so the run itself must reset it first
+        calls = []
+        real_reset, real_resolve = IO.reset_scoring_trend, IO.scoring_for_sample
+        monkeypatch.setattr(IO, "reset_scoring_trend",
+                            lambda sid: calls.append(("reset", sid)) or real_reset(sid))
+        monkeypatch.setattr(IO, "scoring_for_sample",
+                            lambda *a, **k: calls.append(("resolve", a[1])) or real_resolve(*a, **k))
+        self._run("c42r-twice")
+        assert calls and calls[0] == ("reset", "c42r-twice"), calls[:3]
+
+    def test_every_re_run_starts_from_the_uncalibrated_state(self, monkeypatch):
+        seen = []
+        real = A.passes.run_pass1
+
+        def spy(client, sid, led, profile, pre, cfg, adducts, log=print):
+            seen.append(cfg.cal_mu)
+            return real(client, sid, led, profile, pre, cfg, adducts, log=log)
+
+        monkeypatch.setattr(A.passes, "run_pass1", spy)
+        self._run("c42r-fresh")
+        assert len(seen) >= 2 and all(v is None for v in seen), seen
+
+    def test_the_levels_read_the_declared_halogen(self, monkeypatch):
+        got = []
+        real = A.evidence.apply_levels
+
+        def spy(*a, **kw):
+            got.append(kw.get("halogen"))
+            return real(*a, **kw)
+
+        monkeypatch.setattr(A.evidence, "apply_levels", spy)
+        self._run("c42r-br", adducts=("[M-H]-", "[M+Br]-"))
+        self._run("c42r-nohal", adducts=("[M-H]-",))
+        assert got == ["Br", None]
+
+
+def test_a_batch_worker_returns_what_it_scored_at():
+    from peaky.batch import assign_batch as AB
+    kw = dict(cfg=PCfg.PassConfig(height_cutoff_cps=100), peaks=_peaks(_ACIDS),
+              adducts=["[M-H]-"], do_pass2=False, do_pass3=False, do_pass4=False,
+              do_pass5=False, do_pass_certified=False, use_cache=False, scoring=ORBI)
+    AB._worker_init("ambient-air", None, kw, None)
+    out = AB._assign_one("c42r-worker")
+    assert out["pattern_scoring"]["mu_source"] == "trend"
+    assert out["pattern_scoring"]["trend"]["b"] == pytest.approx(B_MDA, abs=0.03)
+
+
+def test_an_uncalibrated_file_says_so():
+    reason = _one_row(stamp_density=None).at["u", "tier_reason"]
+    assert "degeneracy not measured: file uncalibrated" in reason
+
+
+def test_a_ledger_without_the_pattern_column_falls_back_to_the_full_score():
+    led = _backbone_ledger(with_pattern=True).drop(columns=["ion_score_massfree"])
+    cfg = PCfg.PassConfig()
+    assert PC.calibrate(led, cfg, log=lambda *a: None) is not None
+
+
+def test_the_pooled_levels_forward_the_given_halogen(monkeypatch):
+    led = _backbone_ledger(with_pattern=True)
+    calls = []
+    real = EV.detect_reagent_halogen
+    monkeypatch.setattr(EV, "detect_reagent_halogen", lambda m0: calls.append(1) or real(m0))
+    EV.level_pooled({"f1": led, "f2": led}, halogen=None)
+    assert not calls
+    EV.level_pooled({"f1": led, "f2": led})
+    assert calls

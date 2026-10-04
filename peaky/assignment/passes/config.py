@@ -227,7 +227,8 @@ class PassConfig:
     # C42: once calibrate() accepts a mass trend, assign.run re-scores the file
     # from pass 0 with every candidate line judged against the trend's centre at
     # its own m/z (io_mascope.set_scoring_trend) instead of the one constant
-    # offset. False keeps the constant-offset score (the pre-C42 behaviour).
+    # offset. False: the run fits no scoring trend of its own (the pre-C42
+    # behaviour); a trend a stand-in inherited with its snapshot still applies.
     score_at_trend: bool = True
     # absolute floor (mDa) on the trend sigma, active only where it exceeds the
     # ppm sigma (below ~m/z 120 at sigma 0.25 ppm) -- see masscal.ABS_FLOOR_MDA

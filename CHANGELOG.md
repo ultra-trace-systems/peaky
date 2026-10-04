@@ -20,12 +20,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CHO-CHON rows whose pattern-only score is Good AND that carry an observed isotope line
   (an untested pattern -- a dim O-rich coincidence with every satellite below detection --
   scores ~1 and sat ~0.4 ppm off the trend above m/z 400); (c) once a trend is accepted
-  `assign.run` re-runs the file once from pass 0 with every line judged at the trend's
-  centre at its own m/z (`PassConfig.score_at_trend`, default on), and records the trend
-  in the sample's `pattern_scoring` snapshot (`mu_source: "trend"`), which a decoy arm
-  inherits. Single-file check (passes 0-1, three labelled-nitrate files): the trend is
-  accepted in 3/3, the file re-runs, and the re-run's fit (b 0.207-0.218 mDa, coverage
-  from m/z 131) matches the pre-0.9.0 engine's per-file fits (0.16-0.22).
+  `assign.run` re-runs the file from pass 0 with every line judged at the trend's centre
+  at its own m/z (`PassConfig.score_at_trend`, default on) -- again while the re-run's
+  own calibration moves the trend by more than 0.05 ppm anywhere (at most twice), so the
+  file ends scored at the trend its gates use -- and records the trend in the sample's
+  `pattern_scoring` snapshot (`mu_source: "trend"`; a batch carries it back from each
+  worker), which a decoy arm inherits. The network scorer (`PEAKY_LOCAL_SCORING=0`)
+  judges one offset: there nothing re-runs. Single-file check (passes 0-1, three
+  labelled-nitrate files): the first fit (b 0.16-0.21 mDa, coverage from m/z 139-157)
+  is refined by the re-run (b 0.207-0.218, coverage from m/z 131), within the pre-0.9.0
+  engine's per-file fits (0.16-0.22).
 - **"unique formula in the calibrated window" needs the degeneracy audit (C42c).** On an
   uncalibrated file the audit is skipped and stamps nothing, yet a row with no stored
   rival still read the unique-window text (the mixed TOF: 59 of 67 such per-file gains).

@@ -1024,7 +1024,10 @@ def _assign_one(sid: str) -> dict:
                 log=lines.append, **kw)
     return {"sid": sid, "ledger": res["ledger"],
             "plausibility_audit": res.get("plausibility_audit") or [],
-            "stats": dict(res.get("stats", {})), "log": lines}
+            "stats": dict(res.get("stats", {})), "log": lines,
+            # what the worker scored at: a mass trend its calibration set lives
+            # in the worker's process only (C42), so the parent cannot re-read it
+            "pattern_scoring": res.get("pattern_scoring")}
 
 
 def _physical_cores() -> int:
@@ -1432,7 +1435,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     residual_scope: list = []      # [sorted residual-bin m/z] once the residual stage runs
     scope_counts: dict = {}        # sid -> (kept, total) M0 rows under the trace-first scope
 
-    def _apply(sid, led, plaus, stats, stage):
+    def _apply(sid, led, plaus, stats, stage, scoring=None):
         """Parent-side reduce (called in sample_ids order): write the per-file CSV
         and fold this sample into the accumulators. Order-fixed so align() -- which
         has order-sensitive tie-breaks -- yields byte-identical output either path.
@@ -1470,13 +1473,19 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             offsets[sid] = IO.estimate_offset(IO.fetch_peaks(client, sid, use_cache=True))
         except Exception:
             offsets[sid] = None
-        # What this sample's candidates were scored at. Read here rather than
-        # carried back from the worker: it is a property of the sample and its
-        # peaks are cached, so the parent computes the same answer the worker did.
-        try:
-            scorings[sid] = IO.scoring_snapshot(client, sid)
-        except Exception:      # provenance must not fail a completed sample
-            scorings[sid] = None
+        # What this sample's candidates were scored at: the record the run
+        # returned. Since C42 a run may re-score at the mass trend its own
+        # calibration accepted, and that lives in the process that ran it -- a
+        # spawned worker's -- so the parent re-reading the sample would record the
+        # constant offset for a file scored at the trend (and a decoy arm would
+        # inherit the wrong one). The parent's own read is the fallback only.
+        if scoring is not None:
+            scorings[sid] = dict(scoring)
+        else:
+            try:
+                scorings[sid] = IO.scoring_snapshot(client, sid)
+            except Exception:      # provenance must not fail a completed sample
+                scorings[sid] = None
         st = dict(stats)
         st.update(sample_id=sid, offset_ppm=offsets[sid],
                   n_M0=int((led["role"] == "M0").sum()) if "role" in led.columns else None)
@@ -1504,7 +1513,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 res = A.run(sid, context=context, log=log,
                             reflists_active=reflists_active, **kw)
                 _apply(sid, res["ledger"], res.get("plausibility_audit") or [],
-                       dict(res.get("stats", {})), stage)
+                       dict(res.get("stats", {})), stage, res.get("pattern_scoring"))
                 # same line the parallel branch logs per completed future: it is what
                 # advances a progress reader's samples bar (peaky/progress.py)
                 log(f"[assign_batch] ({i}/{len(sample_ids)}) done {sid}")
@@ -1543,7 +1552,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 out = results[sid]
                 for ln in out["log"]:              # replay worker logs, grouped per sid
                     log(ln)
-                _apply(sid, out["ledger"], out["plausibility_audit"], out["stats"], stage)
+                _apply(sid, out["ledger"], out["plausibility_audit"], out["stats"], stage,
+                       out.get("pattern_scoring"))
 
     if trace_sample is not None:
         from peaky.batch import tracefirst as TFT
@@ -1558,7 +1568,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             on="peak_id", how="left")
         trace_sample.traces.to_csv(os.path.join(TAB, "traces.csv"), index=False)
         _apply(trace_sample.sample_id, led, res.get("plausibility_audit") or [],
-               dict(res.get("stats", {})), STAGE_COVER)
+               dict(res.get("stats", {})), STAGE_COVER, res.get("pattern_scoring"))
         log(f"[assign_batch] (1/1) done {trace_sample.sample_id}")
     else:
         _assign_files(list(sample_ids), STAGE_COVER, n_jobs)

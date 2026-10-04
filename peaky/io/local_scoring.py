@@ -154,6 +154,7 @@ def score_candidates_local(
         score_pattern_v2,
     )
 
+    from peaky.assignment import masscal as MC
     from peaky.chem import isotopes as ISO
 
     # A '^X' candidate's envelope carries the reagent's unlabelled impurity line,
@@ -272,9 +273,8 @@ def score_candidates_local(
             if base_int is None:  # M0 not detected -> not a candidate at all
                 continue
             if centre is not None:
-                lo = centre.mz_lo if centre.mz_lo is not None else -np.inf
-                hi = centre.mz_hi if centre.mz_hi is not None else np.inf
-                line_centre = centre.a + centre.b * 1000.0 / np.clip(pred_mz, lo, hi)
+                line_centre = MC.centre_array(centre.a, centre.b, pred_mz,
+                                              centre.mz_lo, centre.mz_hi)
             else:
                 line_centre = scoring.mu_ppm
             score = float(

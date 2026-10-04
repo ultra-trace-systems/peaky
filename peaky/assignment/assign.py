@@ -581,6 +581,38 @@ _STAGES = [
 ]
 
 
+#: C42: the scoring trend is the calibration's own when the two would put a line
+#: within this many ppm of each other anywhere either was fitted (masscal.trend_shift)
+TREND_AGREE_PPM = 0.05
+#: ... and the file is re-run at most this many times to get there
+MAX_TREND_RERUNS = 2
+
+
+def _trend_step(scoring_trend, fitted, *, local: bool, reruns: int) -> str:
+    """What a run does after a calibrate stage (C42), given the trend the file
+    is scored at (`scoring_trend`, None = the constant offset) and the trend
+    this pass's calibration accepted (`fitted`, None = rejected):
+
+    'rerun'     -- score at `fitted` and re-run from pass 0: no scoring trend
+                   yet, or the fit moved more than TREND_AGREE_PPM since the
+                   last one (the first fit misses the low masses the constant
+                   offset left unexplained), while re-runs remain;
+    'keep_gates'-- the file is scored at a trend this calibration rejects: the
+                   gates take the scoring trend, so one centre judges the file;
+    'network'   -- a trend was accepted but the network scorer judges one
+                   constant offset: nothing to re-run (the gates use the fit);
+    'done'      -- nothing to change."""
+    if fitted is None:
+        return "keep_gates" if scoring_trend is not None else "done"
+    if not local:
+        return "network"
+    if reruns >= MAX_TREND_RERUNS:
+        return "done"
+    if scoring_trend is None or masscal.trend_shift(scoring_trend, fitted) > TREND_AGREE_PPM:
+        return "rerun"
+    return "done"
+
+
 def run(sample_id: str, context: str = "ambient-air", *,
         cfg: passes.PassConfig | None = None, use_cache: bool = True,
         do_pass2: bool = True, do_pass3: bool = True, do_pass4: bool = True,
@@ -759,13 +791,17 @@ def run(sample_id: str, context: str = "ambient-air", *,
         log(f"[run] pre-labeled {n_reag} reagent-cluster peaks ({reagent})")
 
     # C42: the pass-1 commits are scored against the sample's ONE constant offset;
-    # if calibrate() then accepts a 1/mz mass trend (fitted on the pattern-only
-    # backbone), the file is re-run from pass 0 with every candidate line judged
-    # against the trend's centre at its own m/z -- once, from the state the
-    # stages started from. A stand-in that inherited its sample's trend
-    # (a decoy arm) is scored at it from the start and never re-runs.
+    # if calibrate() then accepts a 1/mz mass trend (fitted on the pattern-only,
+    # isotope-tested backbone), the file is re-run from pass 0 -- from the state
+    # the stages started from -- with every candidate line judged against the
+    # trend's centre at its own m/z, until the trend it is scored at and its own
+    # calibration's agree (_trend_step; at most MAX_TREND_RERUNS re-runs). A
+    # stand-in that inherited its sample's trend (a decoy arm) is scored at it
+    # from the start and never re-runs; with score_at_trend off a run fits none.
     led0, cfg0 = led.copy(deep=True), copy.deepcopy(cfg)
-    at_trend = io_mascope.scoring_trend(sample_id) is not None
+    inherited = io_mascope.scoring_trend(sample_id) is not None
+    local = io_mascope._local_scoring_enabled()
+    reruns = 0
     while True:
         st = _RunState(
             client=client, sample_id=sample_id, led=led, profile=profile, pre=pre,
@@ -784,16 +820,34 @@ def run(sample_id: str, context: str = "ambient-air", *,
             res = _safe(st, stg.name, (lambda s=stg: s.fn(st))) if stg.safe else stg.fn(st)
             if stg.store:
                 st.summaries[stg.name] = res
-            if (stg.name == "calibrate" and not at_trend and cfg.score_at_trend
-                    and cfg.cal_b is not None):
-                trend = masscal.MassTrend(cfg.cal_a, cfg.cal_b, cfg.cal_sigma_trend,
-                                          cfg.cal_trend_n or 0, cfg.cal_mz_lo, cfg.cal_mz_hi)
-                io_mascope.set_scoring_trend(sample_id, trend)
-                log(f"[run] scoring centre -> the mass trend ppm = {trend.a:+.3f} "
-                    f"{trend.b:+.3f}*1000/mz (m/z {trend.mz_lo:.0f}-{trend.mz_hi:.0f}); "
-                    "re-running from pass 0 at the per-line centre")
-                at_trend = restart = True
-                break
+            if stg.name == "calibrate" and not inherited and cfg.score_at_trend:
+                fitted = (masscal.MassTrend(cfg.cal_a, cfg.cal_b, cfg.cal_sigma_trend,
+                                            cfg.cal_trend_n or 0, cfg.cal_mz_lo, cfg.cal_mz_hi)
+                          if cfg.cal_b is not None else None)
+                current = io_mascope.scoring_trend(sample_id)
+                step = _trend_step(current, fitted, local=local, reruns=reruns)
+                if step == "rerun":
+                    io_mascope.set_scoring_trend(sample_id, fitted)
+                    log(f"[run] scoring centre -> the mass trend ppm = {fitted.a:+.3f} "
+                        f"{fitted.b:+.3f}*1000/mz (m/z {fitted.mz_lo:.0f}-{fitted.mz_hi:.0f}); "
+                        f"re-running from pass 0 at the per-line centre (re-run {reruns + 1})")
+                    reruns += 1
+                    restart = True
+                    break
+                if step == "keep_gates":
+                    cfg.cal_a, cfg.cal_b = current.a, current.b
+                    cfg.cal_sigma_trend, cfg.cal_trend_n = current.sigma, current.n
+                    cfg.cal_mz_lo, cfg.cal_mz_hi = current.mz_lo, current.mz_hi
+                    log("[run] this pass's calibration rejects the mass trend the file is "
+                        "scored at; the gates keep the scoring trend")
+                elif step == "network":
+                    log("[run] mass trend accepted, but the network scorer judges one "
+                        "constant offset: scored at it, the trend gates only")
+                elif current is not None and fitted is not None:
+                    log(f"[run] scoring trend and calibration agree within "
+                        f"{masscal.trend_shift(current, fitted):.3f} ppm"
+                        + ("" if masscal.trend_shift(current, fitted) <= TREND_AGREE_PPM
+                           else f" (re-run limit {MAX_TREND_RERUNS} reached)"))
         if not restart:
             break
         led, cfg = led0.copy(deep=True), copy.deepcopy(cfg0)

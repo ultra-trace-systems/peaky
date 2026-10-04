@@ -172,8 +172,10 @@ opens on a nitrate run (`[M+Br2]-` on Mascope 1.10) makes it no bromide
 reagent. The per-file levels read it from `assign.run` (the channels before the
 opportunistic ones join), the pooled levels from the batch's reagent profile.
 
-Without declared channels (the post-hoc `scripts/level_ledger.py`) it falls back
-to the halogen of the source's **commonest cluster adduct** (`[M+Br]-` → Br;
+Without declared channels it falls back to the halogen of the source's
+**commonest cluster adduct** -- today in the post-hoc `scripts/level_ledger.py`,
+the scorecard's own levels (`scorecard.own_levels_for`) and a corroborating
+source re-levelled by `evidence.source_neutrals` (`[M+Br]-` → Br;
 `[M+NO3]-` → none): a nitrate channel with two stray `[M+Br]-` rows against 346
 `[M+NO3]-` is a nitrate channel. The count is a guess on a mixed reagent: on
 the mixed Br-/NO3- TOF it flipped to none when per-file `[M+NO3]-` M0 rows
