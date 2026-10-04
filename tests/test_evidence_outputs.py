@@ -324,7 +324,9 @@ def test_the_pooled_stage_stamps_merged_and_writes_the_table_and_the_summaries(t
     assert list(pairs.columns[:10]) == ["neutral_formula", "adduct", *EV.COLUMNS]
     assert not set(OLD_COLUMNS) & set(pairs.columns)
     assert {"iso_veto", "label_veto", "lowconf", "below", "ion_only", "n_competitors", "split_pinned",
-            "tag_kinds"} <= set(pairs.columns)
+            "tag_kinds", "anchor_kind", "anchor_why"} <= set(pairs.columns)
+    assert not set(EV.INTERNAL_COLUMNS) & set(pairs.columns)       # the in-pass tokens stay in memory (D21)
+    assert set(pairs["anchor_kind"]) <= {"two routes", "ladder", "listed", "none"}
     assert len(pairs) == 2 and res["evidence"] is not None and len(res["evidence"]) == 2
     summ = json.load(open(tmp_path / "batch_summary.json"))
     ev = summ["evidence_levels"]

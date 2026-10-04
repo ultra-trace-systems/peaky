@@ -477,8 +477,8 @@ MODE_FLAG_ALL = (" [FLAG: every named entry's source mode contradicts this run (
 RECORD_COLUMNS = ("evidence_level", "evidence", "would_lift", "competitors_left", "tags", "context", "context_source",
                   "tag_kinds", "split_pinned", "split_how", "positive_fact", "named_list", "named_mode_flag",
                   "window_only", "window_isobar", "chloride_open", "nh4_gate", "nh4_admissible", "nh4_inadmissible",
-                  "nh4_gate_detail", "side_aliases", "route_alias", "inpass_level", "inpass_why", "n_left_inpass",
-                  "n_series_excl", "iterations")
+                  "nh4_gate_detail", "side_aliases", "route_alias", "anchor_kind", "anchor_why", "n_left_inpass",
+                  "n_series_excl", "inpass_level", "inpass_why", "iterations")
 
 
 def records(S: Prepared, res: dict, texts: list[dict], lv: list[str]) -> pd.DataFrame:
@@ -696,10 +696,13 @@ def records(S: Prepared, res: dict, texts: list[dict], lv: list[str]) -> pd.Data
         cols["nh4_gate_detail"].append("; ".join(f"{Y}: {g['verdict']} ({g['how']})" for Y, g in gi.get("nh4", [])))
         cols["side_aliases"].append(s["flags"])
         cols["route_alias"].append("; ".join(alias_txt))
-        cols["inpass_level"].append(res["level"][i])
-        cols["inpass_why"].append(res["why"][i])
+        cols["anchor_kind"].append(RT.anchor_kind(res["level"][i], res["why"][i]))
+        cols["anchor_why"].append(RT.anchor_why(res["level"][i], res["why"][i]))
         cols["n_left_inpass"].append(t["n_left"])
         cols["n_series_excl"].append(t["n_series_excl"])
+        # the raw in-pass tokens: in memory only (scale.INTERNAL_COLUMNS; partners_from reads them)
+        cols["inpass_level"].append(res["level"][i])
+        cols["inpass_why"].append(res["why"][i])
     extra = set(cols) - set(RECORD_COLUMNS)
     if extra:
         raise AssertionError(f"record columns missing from RECORD_COLUMNS: {sorted(extra)}")

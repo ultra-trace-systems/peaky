@@ -416,6 +416,30 @@ def partner_how(level, why) -> str:
     return {"3b": "two routes", "3d": "ladder", "3c": "listed"}.get(str(level), "listed")
 
 
+ANCHOR_NONE = "none"
+
+
+def anchor_kind(level, why) -> str:
+    """What anchored a pair in the internal pass, in the words a partner prints
+    (`partner_how`): 'two routes', 'ladder', 'listed', or 'none' (the in-pass
+    level is not a route / ladder / list anchor)."""
+    return partner_how(level, why) if str(level) in PARTNER_LEVELS else ANCHOR_NONE
+
+
+def anchor_why(level, why) -> str:
+    """The internal pass's why without its level token: an anchor's kind (+
+    'listed' when a context list also names it: 'two routes + listed'), the
+    list anchor's 'split pinned + listed', else the pass's own reason ('split
+    open', 'competitors left (2)', 'rejected: ...')."""
+    lv, w = str(level), str(why or "")
+    if lv not in PARTNER_LEVELS:
+        return w
+    kind = partner_how(lv, w)
+    if kind == "listed":
+        return w or kind
+    return kind + (" + listed" if lv == "3a" else "")
+
+
 def partners_from(levels: pd.DataFrame, label: str, *, level_col: str = "inpass_level", why_col: str = "inpass_why",
                   ion_only_col: str = "ion_only_reading", locked: bool = True) -> dict:
     """{neutral: {route class: ['<label> <neutral> <adduct> <how>']}} of a

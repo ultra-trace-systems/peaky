@@ -134,6 +134,9 @@ def both(S, partners=None) -> pd.DataFrame:
         assert a == b, f"{col}: engine {a} != script {b}"
     assert core["inpass_level"].tolist() == mine["inpass_level"].tolist()
     assert core["inpass_why"].tolist() == mine["inpass_why"].tolist()
+    assert core["anchor_kind"].tolist() == mine["anchor_kind"].tolist()
+    assert core["anchor_why"].tolist() == mine["anchor_why"].tolist()
+    assert set(mine["anchor_kind"]) <= {"two routes", "ladder", "listed", "none"}
     assert core["n_series_excl"].tolist() == mine["n_series_excl"].tolist()
     return mine.reset_index()
 
@@ -470,6 +473,8 @@ def test_the_cli_levels_a_run_dir_prints_the_vector_and_writes_the_rows(tmp_path
     text = capsys.readouterr().out
     df = pd.read_csv(out, keep_default_na=False)
     assert len(df) == len(PAIRS) and set(df["source"]) == {rd.name}
+    # the internal pass's raw tokens stay in memory; the table names the anchor
+    assert not set(EV.INTERNAL_COLUMNS) & set(df.columns) and {"anchor_kind", "anchor_why"} <= set(df.columns)
     assert "3c/4a/4b/5a/5b/reagent/NA" in text and "% of committed M0 height:" in text and "unmatched 20.00" in text
     v = LL.vector(df)
     assert list(v) == ["3c", "4a", "4b", "5a", "5b", "reagent", "NA"] and sum(v.values()) == len(PAIRS)

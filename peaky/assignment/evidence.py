@@ -81,6 +81,9 @@ CLAIM_ION = SCALE.CLAIM_ION
 CLAIM_MEANING = dict(SCALE.CLAIM_MEANING)
 #: the columns every committed M0 row carries (empty off M0)
 COLUMNS = SCALE.COLUMNS
+#: in-memory only: the internal pass's raw tokens (tables write anchor_kind / anchor_why; `for_output`)
+INTERNAL_COLUMNS = SCALE.INTERNAL_COLUMNS
+for_output = SCALE.for_output
 claim_class = SCALE.claim_class
 summarize = SCALE.summarize
 summarize_claims = SCALE.summarize_claims

@@ -444,6 +444,19 @@ def _inpass(i, f, left, routes, homo, lmin):
     return "4b", ("split pinned, no positive fact" if f["pinned"][i] else "split open")
 
 
+#: what anchored a pair in the internal pass, as the tables print it (the raw in-pass level stays in memory):
+#: (anchor_kind, anchor_why) per in-pass (level, why); any other in-pass level is no anchor -- kind 'none', why
+#: the pass's own reason
+ANCHOR_TEXT = {("3b", "routes"): ("two routes", "two routes"), ("3a", "routes"): ("two routes", "two routes + listed"),
+               ("3d", "ladder"): ("ladder", "ladder"), ("3a", "ladder"): ("ladder", "ladder + listed"),
+               ("3c", "split pinned + listed"): ("listed", "split pinned + listed")}
+
+
+def anchor_of(level, why) -> tuple[str, str]:
+    """(anchor_kind, anchor_why) of an in-pass (level, why)."""
+    return ANCHOR_TEXT.get((level, why), ("none", why))
+
+
 # ===========================================================================
 # steps 3 + 4: the level, and what would lift it
 # ===========================================================================
@@ -505,8 +518,9 @@ def would_lift(level: str, f: dict) -> str:
 # ===========================================================================
 DECISION_COLUMNS = ["neutral_formula", "adduct", "evidence_level", "claim", "would_lift", "competitors_left",
                     "n_left", "reagent_identity", "rejected_by", "o11_tag", "untestable", "ion_only", "split_pinned",
-                    "split_rule", "split_text", "positive_fact", "named_entry", "class_entry", "inpass_level",
-                    "inpass_why", "n_series_excl", "iterations", "n_files_obs", "mz", "height"]
+                    "split_rule", "split_text", "positive_fact", "named_entry", "class_entry", "anchor_kind",
+                    "anchor_why", "n_series_excl", "iterations", "n_files_obs", "mz", "height",
+                    *EV.INTERNAL_COLUMNS]
 
 
 def decide(S, partners=None) -> pd.DataFrame:
@@ -592,6 +606,7 @@ def decide(S, partners=None) -> pd.DataFrame:
             split_pinned=sp["pinned"], split_rule=sp["rule"], split_text=sp["text"], positive_fact="; ".join(pf),
             named_entry="; ".join(f"{h['id']} = {h['name']}" for h in f["named"][i]),
             class_entry="; ".join(h["id"] for h in f["class_entry"][i]),
+            anchor_kind=anchor_of(*inp[i])[0], anchor_why=anchor_of(*inp[i])[1],
             inpass_level=inp[i][0], inpass_why=inp[i][1], n_series_excl=len(excluded.get(i, {})),
             iterations=iterations, n_files_obs=f["nfiles"][i], mz=rows[i].get("mz"), height=rows[i].get("height")))
     return pd.DataFrame(recs, columns=DECISION_COLUMNS)
@@ -785,7 +800,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
-        df.to_csv(args.out, index=False)
+        EV.for_output(df).to_csv(args.out, index=False)      # the raw in-pass tokens stay in memory
     order = "/".join(VECTOR_KEYS)
     for (label, group), path in zip(df.groupby("source", sort=False), args.paths):
         v = vector(group)

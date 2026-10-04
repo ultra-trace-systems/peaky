@@ -50,6 +50,14 @@ CLAIM_MEANING = {
 #: the columns every committed M0 row carries (empty off M0)
 COLUMNS = ("evidence_level", "evidence", "would_lift", "competitors_left", "tags", "context", "context_source",
            "claim")
+#: in-memory columns of a level frame that no written table carries: the internal pass's raw level / why (its
+#: route and ladder tokens are not levels of the scale); the tables carry `anchor_kind` / `anchor_why` instead
+INTERNAL_COLUMNS = ("inpass_level", "inpass_why")
+
+
+def for_output(levels: pd.DataFrame) -> pd.DataFrame:
+    """A level frame as a table writes it: without the INTERNAL_COLUMNS."""
+    return levels.drop(columns=[c for c in INTERNAL_COLUMNS if c in levels.columns])
 
 
 def claim_class(level) -> str:

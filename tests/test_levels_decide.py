@@ -4,6 +4,8 @@ routes / lists / source): one passing case and one mutant per level (3c, 4a,
 rules the levels read (the split, the below setters, the series exclusion, the
 lead and context texts, the claims). A mutant is the minimal change that must
 move the level. Synthetic, offline."""
+import re
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -339,6 +341,23 @@ def test_partners_from_names_how_not_the_internal_level():
     assert dict(p["X3"]) == {"deprotonation": ["src X3 [M-H]- ladder"]}
     assert "X4" not in p
     assert dict(EV.partners_from(lev, "src", locked=False)["X2"]) == {"ammonium": ["src X2 [M+NH4]+ listed"]}
+
+
+@pytest.mark.parametrize("level, why, kind, text", [
+    ("3b", "routes", "two routes", "two routes"),
+    ("3a", "routes", "two routes", "two routes + listed"),
+    ("3d", "ladder", "ladder", "ladder"),
+    ("3a", "ladder", "ladder", "ladder + listed"),
+    ("3c", "split pinned + listed", "listed", "split pinned + listed"),
+    ("4a", "split pinned + positive fact", "none", "split pinned + positive fact"),
+    ("5a", "competitors left (2)", "none", "competitors left (2)"),
+    ("reagent", "reagent identity (HNO3)", "none", "reagent identity (HNO3)"),
+])
+def test_the_anchor_columns_name_the_internal_pass_without_its_tokens(level, why, kind, text):
+    """D21: tables/evidence_levels.csv prints what anchored a pair in the internal
+    pass in the partner's words; the raw in-pass level (3a..3d) stays in memory."""
+    assert RT.anchor_kind(level, why) == kind and RT.anchor_why(level, why) == text
+    assert not re.search(r"\b3[abcd]\b", RT.anchor_why(level, why))
 
 
 def test_context_source_names_the_keyword_and_the_field():

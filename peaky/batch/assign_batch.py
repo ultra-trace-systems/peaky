@@ -1991,7 +1991,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     partners, partner_counts = _corroborate_partners(cross_sources, log=log)
     levels = EV.level_batch(level_ledgers, run_inputs=run_inputs, partners=partners or None)
     merged = EV.stamp_merged(merged, levels)
-    levels.to_csv(os.path.join(TAB, "evidence_levels.csv"), index=False)
+    EV.for_output(levels).to_csv(os.path.join(TAB, "evidence_levels.csv"), index=False)
     klass, r200 = _instrument_of(rp)
     ev_summary = {
         "scale": f"peaky {EV.SCALE_RELEASE}",

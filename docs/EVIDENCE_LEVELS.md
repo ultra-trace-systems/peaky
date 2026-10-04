@@ -210,9 +210,13 @@ columns, then the step facts and the pair facts:
   `split_pinned`, `split_how`, `positive_fact`, `named_list`,
   `named_mode_flag`, `window_only`, `window_isobar`, `chloride_open`,
   `nh4_gate`, `nh4_admissible`, `nh4_inadmissible`, `nh4_gate_detail`,
-  `side_aliases`, `route_alias`, `inpass_level` / `inpass_why` (the internal
-  pass of §5.4: its route and ladder labels are internal anchors, not levels
-  of the scale), `n_left_inpass`, `n_series_excl`, `iterations`;
+  `side_aliases`, `route_alias`, `anchor_kind` / `anchor_why` (what anchored
+  the pair in the internal pass of §5.4, in the words an other-source partner
+  prints: `two routes`, `ladder`, `listed` or `none`; the why adds `+ listed`
+  when a context list also names a route / ladder anchor, and is the pass's
+  own reason -- `split open`, `competitors left (2)`, ... -- when it is no
+  anchor. The pass's raw labels are internal and never written),
+  `n_left_inpass`, `n_series_excl`, `iterations`;
 - step 1's facts: `n_competitors`, `n_excl_iso`, the committed reading's
   `committed_*` facts (contradicted, matched elements and lines, plausible as
   its own decomposition), `no_comp_info`, the space notes;
