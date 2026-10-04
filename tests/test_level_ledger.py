@@ -502,6 +502,17 @@ def test_corroborate_takes_partners_only_from_an_orbitrap_class_run_dir(tmp_path
     assert isinstance(got, dict)
 
 
+def test_partners_are_computed_only_for_a_source_that_can_take_them(tmp_path, monkeypatch):
+    tof, orbi = _run_dir(tmp_path / "tof", resolution=TOF), _run_dir(tmp_path / "orbi")
+    asked = []
+    monkeypatch.setattr(LL, "partners_of", lambda paths, log=print: asked.append(list(paths)) or {})
+    assert set(LL.run([str(tof)], [str(orbi)], log=lambda *a: None)["evidence_level"]) == {"NA"} and asked == []
+    LL.run([str(orbi)], [str(orbi)], mode="adapted", log=lambda *a: None)          # one-file minima: no partners
+    assert asked == []
+    LL.run([str(orbi)], [str(orbi)], log=lambda *a: None)
+    assert asked == [[str(orbi)]]
+
+
 def test_the_b_series_reference_is_kept_under_its_series_names():
     assert LL.SERIES_LEVEL_ORDER[:3] == ["1", "2a", "2b"] and callable(LL.series_run) and callable(LL.series_main)
     assert callable(LL.measure_source) and callable(LL.assign_levels) and callable(LL.series_level_of)

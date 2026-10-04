@@ -715,13 +715,15 @@ def partners_of(paths, log=print) -> dict:
 
 def run(paths, corroborate=(), *, mode=None, main=None, resolving_power=None, reagent=None, context=None,
         window=None, log=print) -> pd.DataFrame:
-    """Level every path with this script's decision; one row per (source, pair)."""
-    partners = partners_of(corroborate, log=log) if corroborate else None
+    """Level every path with this script's decision; one row per (source, pair). The --corroborate partners are
+    computed only when a source can take them (Orbitrap-class, not a one-file adapted source)."""
     main_src = EV.source_from_run_dir(run_dir_of(main) or main) if main else None
+    sources = [source_of(p, mode=mode, main=main_src, resolving_power=resolving_power, reagent=reagent,
+                         context=context, window=window) for p in paths]
+    takes = any(src.instrument()[0] == "orbitrap" and not src.one_file_minima for _l, src in sources)
+    partners = partners_of(corroborate, log=log) if (corroborate and takes) else None
     out = []
-    for p in paths:
-        label, src = source_of(p, mode=mode, main=main_src, resolving_power=resolving_power, reagent=reagent,
-                               context=context, window=window)
+    for label, src in sources:
         df = no_window_rows(src) if getattr(src, "no_window", False) else decide_source(src, partners)
         df.insert(0, "source", label)
         out.append(df)
