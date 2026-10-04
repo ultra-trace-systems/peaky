@@ -173,10 +173,12 @@ def test_evidence_hist_is_absent_until_the_column_is(runs, tmp_path):
     a, _ = runs
     assert AB.evidence_hist(AB.load_run(str(a))) is None
 
-    levelled = LEDGER_A.assign(evidence_level=["2b", "2b", "4c", "5b", "4c", None])
+    levelled = LEDGER_A.assign(evidence_level=["4b", "3c", "4b", "5b", "NA", None])
     run = _write_run(tmp_path / "lvl", levelled, None, {})
     hist = AB.evidence_hist(AB.load_run(str(run)))
-    assert hist["2b"] == 2 and hist["4c"] == 2 and hist["—"] == 1
+    # NA (not assessed) is a level token, re-read as written: never folded into "no level"
+    assert hist["4b"] == 2 and hist["NA"] == 1 and hist["—"] == 1
+    assert list(hist.index) == ["3c", "4b", "5b", "NA", "—"]          # the scale's order
 
 
 def test_report_states_every_headline_number(runs):
@@ -294,30 +296,35 @@ def test_a_run_without_stage_data_is_not_reported_as_zero(tmp_path):
     assert "do not share a stage composition" not in report
 
 
-# --- claims and row changes (C13) ---------------------------------------------
+# --- claims and row changes ---------------------------------------------------
 # A pre-claim run carries `evidence_level` and no `claim`; a claim run carries
 # both. The row-change table is what shows two such runs agree on every ion,
 # tier and level: the old run's claims are read off its levels, so the claim
-# row reads 0 exactly when the stamped claim equals the derived one.
-LEVELLED_A = LEDGER_A.assign(evidence_level=["2b", "4b", "4c", "5b", "4a", None])
+# row reads 0 exactly when the stamped claim equals the derived one. The levels
+# are on the evidence scale (3c 4a 4b 5a 5b + the reagent and NA buckets).
+LEVELLED_A = LEDGER_A.assign(evidence_level=["3c", "4b", "NA", "5b", "4a", None])
+CLAIMS_A = ["identified", "ion", "not assessed", "tentative", "neutral", "tentative"]
 
 
 def test_the_claim_sets_are_the_package_sets():
     from peaky.assignment import evidence as EV
 
-    assert AB.CLAIMS == EV.CLAIMS
+    assert AB.CLAIMS == EV.CLAIMS and AB.CLAIM_KEYS == EV.CLAIM_KEYS
+    assert (AB.CLAIM_REAGENT, AB.CLAIM_NA) == (EV.CLAIM_REAGENT, EV.CLAIM_NA)
     assert AB.CLAIM_IDENTIFIED == EV.CLAIM_IDENTIFIED
+    assert AB.CLAIM_NEUTRAL == EV.CLAIM_NEUTRAL
     assert AB.CLAIM_ION == EV.CLAIM_ION
-    for level in [*EV.LEVEL_ORDER, None, float("nan"), "", "nan", "6"]:
+    assert AB.LEVEL_ORDER == EV.LEVEL_ORDER and AB.BUCKETS == EV.BUCKETS
+    for level in [*EV.LEVEL_ORDER, *EV.BUCKETS, None, float("nan"), "", "nan", "6", "2b", "4c", "4d"]:
         assert AB.claim_class(level) == EV.claim_class(level), level
 
 
 def test_claims_of_reads_the_column_or_derives_it_from_the_level(tmp_path):
     old = AB.load_run(str(_write_run(tmp_path / "old", LEVELLED_A, None, {})))
     assert AB.claim_source(old) == "derived"
-    assert list(AB.claims_of(old)) == ["identified", "ion", "ion", "tentative", "identified", "tentative"]
+    assert list(AB.claims_of(old)) == CLAIMS_A          # NA read as written, not as "no level"
 
-    stamped = LEVELLED_A.assign(claim=["identified", "ion", "ion", "tentative", "identified", "tentative"])
+    stamped = LEVELLED_A.assign(claim=CLAIMS_A)
     new = AB.load_run(str(_write_run(tmp_path / "new", stamped, None, {})))
     assert AB.claim_source(new) == "stamped"
     assert list(AB.claims_of(new)) == list(stamped["claim"])
@@ -340,7 +347,7 @@ def test_row_changes_is_zero_for_identical_runs(tmp_path):
 def test_row_changes_counts_a_tier_change_and_a_level_change(tmp_path):
     b_led = LEVELLED_A.copy()
     b_led.loc[2, "tier"] = "Assigned"            # C8H12O4: Candidate -> Assigned, level kept
-    b_led.loc[3, "evidence_level"] = "4c"        # C9H10O3: 5b -> 4c, tier kept (claim moves too)
+    b_led.loc[3, "evidence_level"] = "4b"        # C9H10O3: 5b -> 4b, tier kept (claim moves too)
     b_led = b_led.drop(index=[4])                # C10H16O -> only in A
     b_led = pd.concat([b_led, pd.DataFrame([{"mz": 700.0, "neutral_formula": "C11H18O3",
                                              "adduct": "[M-H]-", "tier": "Assigned",
@@ -354,7 +361,7 @@ def test_row_changes_counts_a_tier_change_and_a_level_change(tmp_path):
     rows = ch["rows"]
     assert list(rows["neutral"]) == ["C8H12O4", "C9H10O3"]
     assert (rows.iloc[0]["tier_a"], rows.iloc[0]["tier_b"]) == ("Candidate", "Assigned")
-    assert (rows.iloc[1]["level_a"], rows.iloc[1]["level_b"]) == ("5b", "4c")
+    assert (rows.iloc[1]["level_a"], rows.iloc[1]["level_b"]) == ("5b", "4b")
     assert (rows.iloc[1]["claim_a"], rows.iloc[1]["claim_b"]) == ("tentative", "ion")
 
 
@@ -395,14 +402,18 @@ def test_report_writes_the_claims_histogram(runs, tmp_path):
     report = AB.build_report(AB.load_run(str(a)), AB.load_run(str(b)), 6.0, 2, 5.0, 25)
     assert "Neither ledger carries `claim` or `evidence_level`." in report
 
-    stamped = LEVELLED_A.assign(claim=["identified", "ion", "ion", "tentative", "identified", "tentative"])
+    stamped = LEVELLED_A.assign(claim=CLAIMS_A)
     ra = AB.load_run(str(_write_run(tmp_path / "old", LEVELLED_A, None, {})))
     rb = AB.load_run(str(_write_run(tmp_path / "new", stamped.iloc[:4], None, {})))
     report = AB.build_report(ra, rb, 6.0, 2, 5.0, 25)
     assert report.index("## Evidence levels") < report.index("## Claims")
-    assert "| identified | 2 | 1 | -1 |" in report
-    assert "| ion | 2 | 2 | +0 |" in report
-    assert "| tentative | 2 | 1 | -1 |" in report
+    claims = report[report.index("## Claims"):]
+    for line in ("| identified | 1 | 1 | +0 |", "| neutral | 1 | 0 | -1 |", "| ion | 1 | 1 | +0 |",
+                 "| tentative | 2 | 1 | -1 |", "| not assessed | 1 | 1 | +0 |"):
+        assert line in claims, line
+    assert "| reagent |" not in claims                   # a bucket neither run has is not listed
+    order = [claims.index(f"| {c} |") for c in ("identified", "neutral", "ion", "tentative", "not assessed")]
+    assert order == sorted(order)
 
 
 def test_a_run_without_levels_is_not_compared_on_level_or_claim(tmp_path):
@@ -421,11 +432,37 @@ def test_a_run_without_levels_is_not_compared_on_level_or_claim(tmp_path):
 
     report = AB.build_report(a, b, 6.0, 2, 5.0, 25)
     for line in ("| tier | 1 |", "| level | — |", "| claim | — |",
-                 "| identified | n/a | 2 | — |", "| ion | n/a | 2 | — |",
-                 "| tentative | n/a | 2 | — |"):
+                 "| identified | n/a | 1 | — |", "| neutral | n/a | 1 | — |", "| ion | n/a | 1 | — |",
+                 "| tentative | n/a | 2 | — |", "| not assessed | n/a | 1 | — |"):
         assert line in report, line
     assert ("Run A's ledger carries neither `claim` nor `evidence_level`: "
             "level and claim are not compared.") in report
     assert "Run B's ledger carries neither" not in report
     assert "| identified | 0 |" not in report
     assert "The 1 changed at the lowest m/z:" in report
+
+
+def test_a_run_levelled_before_the_scale_is_read_on_it(tmp_path):
+    """A run levelled on an older scale (B-series letters, `evidence_axes`, its
+    claims stamped on that scale) against a run on the evidence scale: its
+    unknown letters read as no level, its claims are re-read on this scale, its
+    levels are not compared letter for letter, and the report says so."""
+    old_led = LEDGER_A.assign(evidence_level=["2b", "4b", "4c", "5b", "4a", None],
+                              evidence_axes=["iso|chan2", "iso", "", "", "iso|anchor", None],
+                              claim=["identified", "ion", "ion", "tentative", "identified", "tentative"])
+    new_led = LEVELLED_A.assign(claim=CLAIMS_A)
+    a = AB.load_run(str(_write_run(tmp_path / "old", old_led, None, {})))
+    b = AB.load_run(str(_write_run(tmp_path / "new", new_led, None, {})))
+    assert AB.before_scale(a) and not AB.before_scale(b)
+    assert AB.claim_source(a) == "derived" and AB.claim_source(b) == "stamped"
+    assert list(AB.claims_of(a)) == ["tentative", "ion", "tentative", "tentative", "neutral", "tentative"]
+    ch = AB.row_changes(a, b)
+    assert ch["level"] is None and ch["claim"] == 2           # C5H8O2 (2b), C8H12O4 (4c vs NA)
+    report = AB.build_report(a, b, 6.0, 2, 5.0, 25)
+    assert ("> Run A was levelled on a scale before the evidence scale: 2 row(s) carry a letter this "
+            "scale does not define and read as no level; its claims are re-read off its levels on this "
+            "scale, and its levels are not compared with the other run's.") in report
+    assert "| level | — |" in report
+    # two runs on the older scale are still compared on their letters
+    c = AB.load_run(str(_write_run(tmp_path / "old2", old_led, None, {})))
+    assert AB.row_changes(a, c)["level"] == 0
