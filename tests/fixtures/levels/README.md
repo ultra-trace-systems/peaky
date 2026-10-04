@@ -1,8 +1,23 @@
-# Level fixtures — the four golden sets behind `tests/test_evidence.py`
+# Level fixtures — the golden sets of the merge vote's private decision
+
+**What these sets pin now.** They were cut for the level scale peaky used
+before the evidence scale (docs/EVIDENCE_LEVELS.md), and that decision now
+lives on, privately, as the merge vote's class (`evidence.vote_classes`,
+docs/EVIDENCE_LEVELS.md §13; docs/MERGE.md §3 step 4). The vectors and
+`expected_levels.csv` below are that private decision's output; its rung names
+(`2b` … `5b`, the axes, the cross set) are internal labels, never shown to a
+user, and are NOT levels of the evidence scale. The sets carry no width model,
+so under the evidence scale every pair of them reads `NA` (not assessed); the
+scale's own tests build their frames in `tests/test_levels_*.py`. The private
+names the tests reach the decision through are `evidence._series_pooled`
+(pooled), `evidence._series_levels` (one ledger), `evidence.vote_classes`,
+`evidence._source_neutrals` and `evidence.vote_cross_neutrals` (the cross set).
+The rest of this file is the record of how the sets and vectors were cut, in
+the vocabulary of the time.
 
 Fifty-two per-file ledgers from four real runs (and one neutral-pair table, one label-twin table and two lock tables), trimmed to what the evidence
 levels read: the `M0` and `iso_child` rows and the columns the predicates in
-`docs/EVIDENCE_LEVELS.md` named when they were cut -- twenty-two on the TV and
+the level documentation named when they were cut -- twenty-two on the TV and
 uronium sets, twenty-one on the TOF and Orbitrap sets (no `resolvability`). They
 predate `tentative_lead` (C19(c), 2026-09-27): where the column is missing it
 reads False, their leads sit in `below_assignability`, and no vector moved with
@@ -24,7 +39,7 @@ level and every predicate input, written by `scripts/level_ledger.py`; the
 in-core `evidence` stage must reproduce it row for row -- level and every
 recorded fact (`test_every_fixture_row_matches_the_reference_script_fact_for_fact`)
 -- and the vectors exactly. Each pair corroborates by what the other source pins on its own (4b or
-better with no cross set, `docs/EVIDENCE_LEVELS.md` §6.4); the file was
+better with no cross set, the vote's cross set); the file was
 regenerated for that rule (183 of 6,444 levels moved, all downward; the vectors
 before it were 21/15/107/38/162/9/9/33/979, 6/16/182/38/260/79/91/135/2557 and
 0/12/217/44/215/119/0/30/1070). Rebuild it from the fixtures with
@@ -82,8 +97,7 @@ from the parent's COMMITTED isotopologue -- max(1 ppm, 4 sigma(h)) self-fitted o
 the set's own '13C' children, pcal and the neighbour's pull rescuing, 'M+n'
 exempt -- and in band under its count-aware expectation relative to that line;
 the whole label is read, the isotopologues list answers the same question, and
-the Br-free hold on `reagent_only_iso` is released; docs/EVIDENCE_LEVELS.md
-§3.2) regenerated `expected_levels.csv` from the unchanged fixtures:
+the Br-free hold on `reagent_only_iso` is released) regenerated `expected_levels.csv` from the unchanged fixtures:
 47 of 7,605 levels move, and the isotope facts (`iso`, `reagent_only_iso`) of
 others. The sets carry no width model: the committed line is read within the
 class-less 20 ppm and an 'M+n' line within 12 mDa. tv (6): TV-BR C12H22O,
