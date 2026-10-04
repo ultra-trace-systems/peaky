@@ -397,3 +397,15 @@ def test_claims_and_summaries():
     assert list(SC.summarize_claims(["ion"])) == ["identified", "neutral", "ion", "tentative", "reagent",
                                                   "not assessed"]
     assert EV.SCALE_RELEASE == "0.10.0" and EV.SIDE_CHANNELS_LOCKED and EV.UNLOCKED == frozenset()
+
+
+def test_a_base_rate_without_a_ratio_says_so_instead_of_lr_nan():
+    """No formula neighbour X±delta is a hit (a tiny batch): the null rate is 0 and
+    the likelihood ratio undefined -- the tag says 'base rate n/a (too few CHO
+    neutrals)', never 'LR nan'; a defined ratio prints as before."""
+    few = dict(n=3, rate0=0.67, null_median=0.0, lr=float("nan"))
+    assert RT.br_text(few, "base rate of 'seen in both channels'") == RT.BR_TOO_FEW
+    assert RT.BR_TOO_FEW == "base rate n/a (too few CHO neutrals)"
+    ok = dict(n=40, rate0=0.5, null_median=0.1, lr=5.0)
+    assert RT.br_text(ok, "w") == "w: base rate 50 % vs 10 % for formula neighbours X±delta (LR 5.00, 40 CHO neutrals)"
+    assert RT.br_text(None) == "" and RT.br_text(dict(rate0=float("nan"))) == ""

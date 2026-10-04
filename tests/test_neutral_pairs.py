@@ -546,3 +546,5 @@ def test_a_uronium_batch_measures_the_pair_and_lifts_the_rows(tmp_path, monkeypa
     assert len(mine) == 2 * len(neutrals) and "evidence_axes" not in merged.columns
     assert set(mine["evidence_level"]) <= set(EV.LEVELS)
     assert mine["tags"].map(lambda t: "two routes: protonated + urea cluster (" in t).all()
+    # a tiny batch: no formula neighbour is a hit, so the base rate has no ratio -- said so, never "LR nan"
+    assert not mine["tags"].str.contains("LR nan").any()

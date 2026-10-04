@@ -244,9 +244,16 @@ def base_rate_cross(pol: str, run_classes: set, partners, keys, eligible):
     return dict(all=_rates(X, lambda x, y: y in part, pol))
 
 
+#: a base rate with no likelihood ratio: no formula neighbour X±delta was a hit (a tiny batch), so the null
+#: rate is 0 and the ratio undefined -- said so, never printed as "LR nan"
+BR_TOO_FEW = "base rate n/a (too few CHO neutrals)"
+
+
 def br_text(b, what="formula seen in both channels"):
     if not b or not np.isfinite(b.get("rate0", np.nan)):
         return ""
+    if not np.isfinite(b.get("lr", np.nan)):
+        return BR_TOO_FEW
     return (f"{what}: base rate {100 * b['rate0']:.0f} % vs {100 * b['null_median']:.0f} % for formula neighbours "
             f"X±delta (LR {b['lr']:.2f}, {b['n']} CHO neutrals)")
 
