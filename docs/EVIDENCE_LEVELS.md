@@ -219,6 +219,12 @@ columns, then the step facts and the pair facts:
 - the pair facts of §3.2 (`iso_veto`, `label_veto`, `lowconf`, `below`,
   `lead`, `tied`, `ion_only`, `n_files`, ...).
 
+On a batch the scale does not assess (a TOF-class or class-less width model,
+every pair `NA`) the table keeps the pair facts of §3.2 after the eight
+columns; the step facts and step 1's facts are absent (nothing is enumerated,
+gated or tested on such a run). A batch that committed nothing writes the
+header alone.
+
 `scripts/level_ledger.py` writes the same table post hoc (§10.4).
 
 ## 3. The facts the scale reads

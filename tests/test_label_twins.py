@@ -707,6 +707,7 @@ def test_a_labelled_nitrate_batch_writes_the_table_and_levels_it(tmp_path, monke
         {"peak_id": ["A"], "mz": [200.1], "height": [1.0e5]}))
     monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
     monkeypatch.setattr(A, "run", fake_assign)
+    # the merged rows' levels below need an Orbitrap-class width model (the facts do not)
     AB.run(peaks=pk, ts_peaks=pk, reagent="NO3+NO3_15N", batch="test batch", out_dir=str(tmp_path),
            k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power=100_000, log=lambda *a: None)
     table = pd.read_csv(tmp_path / "tables" / "label_twins.csv")

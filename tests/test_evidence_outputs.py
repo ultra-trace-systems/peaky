@@ -350,10 +350,24 @@ def test_the_pooled_stage_stamps_merged_and_writes_the_table_and_the_summaries(t
     assert set(jit["vote_class"].dropna().astype(int)) <= {0, 1, 2}
 
 
-def test_the_pooled_stage_on_a_tof_batch_is_not_assessed(tmp_path, monkeypatch):
-    _run_batch(tmp_path, monkeypatch, resolving_power=TOF)
+@pytest.mark.parametrize("resolving_power", [TOF, None])
+def test_the_pooled_stage_on_a_tof_batch_is_not_assessed(tmp_path, monkeypatch, resolving_power):
+    """A TOF-class or class-less batch: every pair NA, and tables/evidence_levels.csv
+    still carries the pooled pair facts (D17) -- never the scale's own facts
+    (no enumeration, no gate, no pass A on such a run)."""
+    from peaky.assignment.levels import competitors as _CP
+    monkeypatch.setattr(_CP, "q1_pass", lambda *a, **k: pytest.fail("pass A on a run the scale does not assess"))
+    _run_batch(tmp_path, monkeypatch, resolving_power=resolving_power)
     merged = pd.read_csv(tmp_path / "merged_ledger.csv", keep_default_na=False)
     assert (merged["evidence_level"] == "NA").all() and (merged["claim"] == "not assessed").all()
+    pairs = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv", keep_default_na=False)
+    assert list(pairs.columns[:10]) == ["neutral_formula", "adduct", *EV.COLUMNS] and len(pairs) == 2
+    assert {"iso_veto", "label_veto", "lowconf", "below", "ion_only", "tied", "lead", "upair", "iso", "chan2",
+            "n_files"} <= set(pairs.columns)
+    assert not {"n_competitors", "split_pinned", "tag_kinds"} & set(pairs.columns)
+    assert not set(OLD_COLUMNS) & set(pairs.columns)
+    if resolving_power is None:
+        return
     summ = json.load(open(tmp_path / "batch_summary.json"))
     assert summ["evidence_levels"]["instrument"]["class"] == "tof"
     assert summ["evidence_levels"]["pooled"] == {"NA": 2}

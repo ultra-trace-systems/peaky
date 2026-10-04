@@ -420,7 +420,14 @@ def committed_pairs(per_file: dict) -> list[tuple[str, str]]:
     return sorted(out)
 
 
-def na_frame(src: Source) -> pd.DataFrame:
+def na_frame(src: Source, *, facts: bool = True) -> pd.DataFrame:
+    """The level frame of a source the scale does not assess (a TOF-class or
+    class-less width model): every committed pair NA with the reason, then --
+    ``facts`` -- the pair-fact table's columns (`pair_facts`: the cheap per-pair
+    facts the vetoes and step 0 read, pooled as on an Orbitrap batch), so
+    tables/evidence_levels.csv keeps the facts on every run (D17). No
+    enumeration, no gate, no pass A. The per-file stage asks for the scale's
+    columns only (``facts=False``: no fact work at all)."""
     klass, r200 = src.instrument()
     keys = committed_pairs(src.per_file)
     out = pd.DataFrame({"neutral_formula": [k[0] for k in keys], "adduct": [k[1] for k in keys]})
@@ -429,6 +436,11 @@ def na_frame(src: Source) -> pd.DataFrame:
     out["evidence_level"] = "NA"
     out["evidence"] = na_text(klass, r200)
     out["claim"] = SC.CLAIM_NA
+    if facts:
+        F = pair_facts(src)
+        F = F[[c for c in F.columns if c not in out.columns or c in ("neutral_formula", "adduct")]]
+        F = F.drop_duplicates(["neutral_formula", "adduct"])
+        out = out.merge(F, on=["neutral_formula", "adduct"], how="left")
     return out
 
 

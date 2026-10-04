@@ -530,6 +530,7 @@ def test_a_uronium_batch_measures_the_pair_and_lifts_the_rows(tmp_path, monkeypa
         {"peak_id": ["A"], "mz": [200.1], "height": [1.0e5]}))
     monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
     monkeypatch.setattr(A, "run", fake_assign)
+    # the merged rows' levels and tags below need an Orbitrap-class width model (the facts do not)
     AB.run(peaks=pk, ts_peaks=pk, reagent="Ur", batch="test batch", out_dir=str(tmp_path),
            k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power=100_000, log=lambda *a: None)
     table = pd.read_csv(tmp_path / "tables" / "neutral_pairs.csv")

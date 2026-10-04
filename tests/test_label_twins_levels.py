@@ -403,10 +403,12 @@ def test_a_table_without_a_fact_column_reads_that_fact_empty(tmp_path):
 
 
 # --------------------------------------------------------------------------- the batch, end to end
-def _batch(tmp_path, monkeypatch, spec, commits, tie_alts):
+def _batch(tmp_path, monkeypatch, spec, commits, tie_alts, resolving_power=None):
     """assign_batch.run on the composed NO3+NO3_15N profile with a stub per-file
     assignment: every file commits `commits`; tie_alts(n_call, neutral, adduct)
-    gives a row's alternatives (None = not tied). Returns the calls in order."""
+    gives a row's alternatives (None = not tied). Class-less unless
+    `resolving_power` is given (the pooled facts are written either way; a
+    level needs an Orbitrap-class width model). Returns the calls in order."""
     from peaky.assignment import assign as A
     from peaky.assignment import ledger as L
     from peaky.assignment import tiers as T
@@ -443,7 +445,7 @@ def _batch(tmp_path, monkeypatch, spec, commits, tie_alts):
     monkeypatch.setattr(IOM, "estimate_offset", lambda raw: 0.0)
     monkeypatch.setattr(A, "run", fake_assign)
     AB.run(peaks=pk, ts_peaks=pk, reagent="NO3+NO3_15N", batch="test batch", out_dir=str(tmp_path),
-           k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power=100_000, log=lambda *a: None)
+           k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power=resolving_power, log=lambda *a: None)
     return calls
 
 
@@ -475,7 +477,7 @@ def test_one_file_with_a_foreign_tie_keeps_the_batch_tie(tmp_path, monkeypatch):
                          "eff_score": 0.88, "ppm": 0.3})
         return alts
 
-    calls = _batch(tmp_path, monkeypatch, spec, commits, tie_alts)
+    calls = _batch(tmp_path, monkeypatch, spec, commits, tie_alts, resolving_power=100_000)   # J's level: Orbitrap
     assert len(calls) >= 2
     table = pd.read_csv(tmp_path / "tables" / "label_twins.csv")
     rows = table[table.adduct == NO3].set_index("neutral_formula")
@@ -512,6 +514,8 @@ def test_a_labelled_batch_with_no_labelled_reading_still_judges_its_14n_lines(tm
     summ = json.load(open(tmp_path / "batch_summary.json"))["evidence_levels"]["label_twins"]
     assert summ["in_scope"] is True and summ["committed_lines"] == 1 and summ["lines_untestable"] == 1
     assert summ["alien"] == 1 and summ["readings"] == 0 and summ["refuted"] == 0
-    ev = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv")
-    assert not ev["label_untie"].any() and not ev["label_veto"].any()
-    assert ev.set_index("adduct")["chan2"].to_dict() == {NO3: False, NO3_15: False}
+    # a class-less batch: not assessed, and the pooled facts are in the table all the same
+    ev = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv", keep_default_na=False)
+    assert set(ev["evidence_level"]) == {"NA"} and set(ev["claim"]) == {"not assessed"}
+    assert not ev["label_untie"].map(EV.truthy).any() and not ev["label_veto"].map(EV.truthy).any()
+    assert ev.set_index("adduct")["chan2"].map(EV.truthy).to_dict() == {NO3: False, NO3_15: False}

@@ -1273,9 +1273,12 @@ def apply_levels(ledger: pd.DataFrame, *, cfg=None, resolution=None, run_inputs=
     src = SRC.source_from_frames({sid: ledger}, run_inputs=run_inputs, mode="adapted", name=sid, label=sid)
     klass, r200 = src.instrument()
     pairs, why = None, ""
-    if klass == "orbitrap" and not summary.get("reagent"):
+    if klass != "orbitrap":
+        # not assessed: the scale's columns only -- no fact work on a file it does not rate
+        pairs = SRC.na_frame(src, facts=False)
+    elif not summary.get("reagent"):
         why = NO_REAGENT_TEXT
-    elif klass == "orbitrap":
+    else:
         # the step-1 window: the degeneracy stage's calibration (else the D10
         # refit); a file with no calibration has no window of its own and, alone,
         # no run sigma to borrow -- it is not levelled, and says so
@@ -1286,7 +1289,8 @@ def apply_levels(ledger: pd.DataFrame, *, cfg=None, resolution=None, run_inputs=
     if why:
         ledger.loc[m0, "evidence"] = why
     else:
-        pairs = level_source(src)
+        if pairs is None:
+            pairs = level_source(src)
         _stamp_pairs(ledger, m0, pairs)
     ledger.loc[m0, "claim"] = [claim_class(v) for v in ledger.loc[m0, "evidence_level"]]
     lv = ledger.loc[m0, "evidence_level"]
