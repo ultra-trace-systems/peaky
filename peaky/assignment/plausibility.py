@@ -295,11 +295,12 @@ def demote_off_budget(ledger: pd.DataFrame, *, context: str | None,
     and S at one. Other commit paths widen the search on evidence of their own
     (a multi-channel certificate, a series extrapolation, a contaminant family)
     and CAN commit one; that evidence proposes the neutral MASS, and it is then
-    read back as the axes (chan2, the acid branch, an anchor) that the evidence
-    level and the tier count as confirmation. So an off-budget formula that no
+    read back as the axes (chan2, the acid branch, an anchor) that the tier and
+    the merge vote's class count as confirmation. So an off-budget formula that no
     curated list names is Candidate + tentative_lead (C19(c): the proposal is
     unsupported, not contradicted; before the split it was below_assignability)
-    -- the evidence level reads that as 5b. `curated` is every formula the pass-0 registry names for
+    -- the evidence level prints that as the `lead` tag, with no level effect
+    (docs/EVIDENCE_LEVELS.md section 3.2). `curated` is every formula the pass-0 registry names for
     this polarity/context plus the active reference lists
     (assign._stage_plausibility), exempt whichever pass committed it. Measured on
     a same-air TOF/Orbitrap pair before the rule: the TOF's Assigned
