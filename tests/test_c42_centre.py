@@ -432,9 +432,12 @@ class TestTheRunAfterTheRefute:
             return real(*a, **kw)
 
         monkeypatch.setattr(A.evidence, "apply_levels", spy)
-        self._run("c42r-br", adducts=("[M-H]-", "[M+Br]-"))
-        self._run("c42r-nohal", adducts=("[M-H]-",))
+        br, _ = self._run("c42r-br", adducts=("[M-H]-", "[M+Br]-"))
+        nohal, _ = self._run("c42r-nohal", adducts=("[M-H]-",))
         assert got == ["Br", None]
+        # ... and the run's stats carry it: a batch's parent computes the file's
+        # merge-vote class with the halogen this run read
+        assert br["stats"]["reagent_halogen"] == "Br" and nohal["stats"]["reagent_halogen"] is None
 
 
 def test_a_batch_worker_returns_what_it_scored_at():
