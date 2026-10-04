@@ -259,11 +259,15 @@ def _summary(resolution):
                 per_file=[dict(sample_id="f1", height_gate_cps=1e3, degeneracy_cal={"mu": 0.0, "sigma": 0.3})])
 
 
-def test_na_on_a_tof_class_source_before_any_fact_work(monkeypatch):
+def test_na_on_a_tof_class_source_before_any_scale_work(monkeypatch):
+    """NA before the run context, the enumeration, the gate and pass A; the
+    cheap pair facts ride along (D17: the batch table keeps them)."""
     src = EV.source_from_frames({"f1": _file([("C10H16O4", "[M-H]-")])},
                                 run_inputs=SRC.RunInputs(summary=_summary(TOF)), mode="adapted")
-    monkeypatch.setattr(SRC, "pair_facts", lambda s: pytest.fail("fact work on a TOF source"))
+    monkeypatch.setattr(SRC, "context_of", lambda s: pytest.fail("run context on a TOF source"))
+    monkeypatch.setattr(CP, "q1_pass", lambda *a, **k: pytest.fail("pass A on a TOF source"))
     out = EV.level_source(src)
+    assert {"iso_veto", "lowconf", "ion_only"} <= set(out.columns) and "n_competitors" not in out.columns
     r = out.iloc[0]
     assert r.evidence_level == "NA" and r.claim == "not assessed"
     assert r.evidence == "NA · not assessed on this instrument class (width model R(200) = 9 000 < 50 000)"
