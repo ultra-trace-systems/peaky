@@ -30,28 +30,42 @@ KEYWORD_SOURCE = "names (keywords)"
 
 
 def keyword_matches(texts: dict) -> dict:
-    """{context tag: [(field, keyword), ...]} of the keywords `RL.resolve_context_tags`
-    finds, per field of ``texts`` ({field: text}); the same lower-cased
-    substring rule, so the tags are exactly the ones `RL.activate` resolves."""
-    out = defaultdict(list)
-    for field, text in texts.items():
-        blob = str(text or "").lower()
-        if not blob:
-            continue
-        for tag, kws in RL.CONTEXT_KEYWORDS.items():
-            for kw in kws:
-                if kw.lower() in blob and (field, kw) not in out[tag]:
-                    out[tag].append((field, kw))
-    return dict(out)
+    """{context tag: [(field, keyword), ...]} (`reflists.keyword_matches`)."""
+    return RL.keyword_matches(texts)
 
 
 def activation_record(batch: str = "", dataset: str = "", label: str = "") -> dict:
     """The record of how a run's reference lists were activated, from the
     texts `RL.activate(batch, dataset, label)` reads: {tags: [...], matched:
     {tag: [[field, keyword], ...]}}. Which lists activate is unchanged."""
-    m = keyword_matches({"batch": batch, "dataset": dataset, "reagent label": label})
-    tags = sorted(RL.resolve_context_tags(batch or "", dataset or "", label or ""))
-    return dict(tags=tags, matched={t: [list(x) for x in m.get(t, [])] for t in tags})
+    return RL.activation_record((batch or "", dataset or "", label or ""), ACTIVATION_FIELDS)
+
+
+def activation_how(L, activation) -> str:
+    """How one active list was activated: 'always active' | "keyword '<kw>' in
+    the <field> name, ..." | 'activation not recorded'."""
+    if L.always_active:
+        return "always active"
+    if not activation:
+        return "activation not recorded"
+    matched = activation.get("matched") or {}
+    pairs = []
+    for tag in L.applies_to_contexts:
+        for fk in matched.get(tag, []):
+            fk = (str(fk[0]), str(fk[1]))
+            if fk not in pairs:
+                pairs.append(fk)
+    if not pairs:
+        return "activation not recorded"
+    return ", ".join(f"keyword '{kw}' in the {field} name" for field, kw in pairs)
+
+
+def reflists_context(lists, activation) -> dict:
+    """batch_summary["reflists_context"]: the activation record ({tags,
+    matched}) plus every active list as [id, data_version, how]."""
+    rec = dict(activation or {"tags": [], "matched": {}})
+    rec["active"] = [[L.id, L.data_version, activation_how(L, activation)] for L in (lists or ())]
+    return rec
 
 
 class ContextLists:
@@ -107,20 +121,7 @@ class ContextLists:
 
     # ---- activation ----
     def _source_text(self, lid: str, L) -> str:
-        if L.always_active:
-            return f"reflist:{lid}: always active"
-        if not self.activation:
-            return f"reflist:{lid}: activation not recorded"
-        matched = self.activation.get("matched") or {}
-        pairs = []
-        for tag in L.applies_to_contexts:
-            for fk in matched.get(tag, []):
-                fk = (str(fk[0]), str(fk[1]))
-                if fk not in pairs:
-                    pairs.append(fk)
-        if not pairs:
-            return f"reflist:{lid}: activation not recorded"
-        return f"reflist:{lid}: " + ", ".join(f"keyword '{kw}' in the {field} name" for field, kw in pairs)
+        return f"reflist:{lid}: " + activation_how(L, self.activation)
 
     # ---- lookups ----
     def hits(self, neutral) -> list:

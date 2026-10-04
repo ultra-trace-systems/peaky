@@ -203,7 +203,39 @@ def active_lists(catalog: dict, *, context_tags=()) -> list:
             if L.always_active or (tags and set(L.applies_to_contexts) & tags)]
 
 
-def activate(*texts: str) -> tuple[list, set]:
+#: what `activate` calls its texts in the activation record, by position
+#: (a batch passes its batch name, its dataset name and the reagent label)
+ACTIVATION_FIELDS = ("batch", "dataset", "reagent label")
+
+
+def keyword_matches(texts: dict) -> dict:
+    """{context tag: [(field, keyword), ...]}: the keywords `resolve_context_tags`
+    finds, per field of ``texts`` ({field: text}) -- the same lower-cased
+    substring rule, so the tags are the ones `activate` resolves."""
+    out: dict = {}
+    for field, text in texts.items():
+        blob = str(text or "").lower()
+        if not blob:
+            continue
+        for tag, kws in CONTEXT_KEYWORDS.items():
+            for kw in kws:
+                if kw.lower() in blob and (field, kw) not in out.setdefault(tag, []):
+                    out[tag].append((field, kw))
+    return {t: v for t, v in out.items() if v}
+
+
+def activation_record(texts, fields=None) -> dict:
+    """How `activate(*texts)` activated: {tags: [...], matched: {tag: [[field,
+    keyword], ...]}} -- which keyword in which text unlocked each tag."""
+    texts = list(texts)
+    fields = list(fields) if fields is not None else (
+        list(ACTIVATION_FIELDS) if len(texts) == len(ACTIVATION_FIELDS) else [f"text {i + 1}" for i in range(len(texts))])
+    m = keyword_matches(dict(zip(fields, texts)))
+    tags = sorted(resolve_context_tags(*[t or "" for t in texts]))
+    return dict(tags=tags, matched={t: [list(x) for x in m.get(t, [])] for t in tags})
+
+
+def activate(*texts: str, record: bool = False, fields=None):
     """The one activation step every entry point runs: infer the context tags from
     whatever metadata the run has, then select the lists those tags unlock.
     Returns `(lists, tags)` so the caller can log what the metadata bought it.
@@ -213,9 +245,17 @@ def activate(*texts: str) -> tuple[list, set]:
     still gets the `always_active` lists (the lab contaminants); only `peaky
     batch`, which has a batch name and a dataset name to read, can unlock a
     chemistry-specific list (on a campaign whose batch names describe the
-    instrument and the reagent, the chemistry lives in the dataset name)."""
+    instrument and the reagent, the chemistry lives in the dataset name).
+
+    ``record=True`` returns `(lists, tags, record)`, the record saying which
+    keyword in which text (``fields`` names them; default batch / dataset /
+    reagent label for three texts) unlocked each tag (`activation_record`);
+    which lists activate is the same either way."""
     tags = resolve_context_tags(*texts)
-    return active_lists(load_catalog(), context_tags=tags), tags
+    lists = active_lists(load_catalog(), context_tags=tags)
+    if record:
+        return lists, tags, activation_record(texts, fields)
+    return lists, tags
 
 
 def prior_formulas(lists) -> frozenset:
