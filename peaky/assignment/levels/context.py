@@ -300,7 +300,11 @@ def file_cal(led: pd.DataFrame):
 
 
 def mu_stamp(led: pd.DataFrame) -> float:
-    """An uncalibrated file's window centre: median(ppm_error - ppm_error_cal) over its M0 rows (NaN when none)."""
+    """An uncalibrated file's window centre: median(ppm_error - ppm_error_cal) over its M0 rows (NaN when none,
+    and when the ledger has no ``ppm_error_cal`` at all: tiers.stamp_calibrated_ppm writes it only when it could
+    centre the file -- a decoy arm with nothing Assigned has none)."""
+    if "ppm_error" not in led.columns or "ppm_error_cal" not in led.columns:
+        return np.nan
     m0 = led[led["role"] == "M0"]
     pce = pd.to_numeric(m0["ppm_error"], errors="coerce") - pd.to_numeric(m0["ppm_error_cal"], errors="coerce")
     return float(pce.median()) if pce.notna().any() else np.nan

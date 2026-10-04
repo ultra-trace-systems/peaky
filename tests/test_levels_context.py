@@ -151,6 +151,21 @@ def test_fit_window_uncalibrated_file_takes_the_stamp_centre(noted):
     assert rec["mu_stamp"] == pytest.approx(0.25)
 
 
+def test_an_uncalibrated_ledger_without_the_calibrated_column_has_no_stamp_centre():
+    """tiers.stamp_calibrated_ppm writes `ppm_error_cal` only when it can centre the
+    file: a ledger that never got it (a decoy arm with nothing Assigned) reads no
+    stamp centre -- the run window -- instead of crashing the stage (safe=False)."""
+    led = _ledger([("p1", "C6H10O5", "[M+NO3]-")])
+    assert "ppm_error_cal" not in led.columns
+    assert np.isnan(CX.mu_stamp(led))
+    summary = _summary(per_file=[dict(sample_id="a", degeneracy_cal={"mu": 0.12, "sigma": 0.31}),
+                                 dict(sample_id="b", degeneracy_cal=None)])
+    win = CX.run_windows(summary, {"a": led, "b": led})
+    assert np.isnan(win["b"]["mu_stamp"])
+    windows, run = CX.window_table(win)
+    assert windows["b"] == run == (0.12, 0.31)
+
+
 # --------------------------------------------------------------------------- per-file arrays
 @pytest.fixture()
 def fa():

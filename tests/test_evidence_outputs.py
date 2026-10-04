@@ -142,6 +142,19 @@ def test_an_uncalibrated_file_alone_has_no_window_and_says_so():
     assert s["levels"] == {} and s["n_levelled"] == 0
 
 
+def test_an_uncalibrated_file_without_the_calibrated_ppm_column_says_so_instead_of_crashing():
+    """A decoy shift arm that Assigned nothing: tiers.stamp_calibrated_ppm wrote no
+    `ppm_error_cal` and the degeneracy stage had no calibration. The stage is
+    safe=False (a crash kills the run): the missing column reads as no stamp
+    centre, so the file has no window and says so -- persisted or refitted."""
+    for cal in (None, "absent"):
+        led = _ledger().drop(columns=["ppm_error_cal"], errors="ignore")
+        s = EV.apply_levels(led, run_inputs=_inputs(cal=cal))
+        m0 = led[led["role"] == "M0"]
+        assert (m0["evidence"] == EV.NO_WINDOW_TEXT).all() and (m0["claim"] == "tentative").all(), cal
+        assert s["n_levelled"] == 0
+
+
 def test_an_unknown_reagent_profile_is_not_levelled_and_says_so():
     led = _ledger()
     EV.apply_levels(led, run_inputs=_inputs(reagent=None))
