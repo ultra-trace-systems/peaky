@@ -380,6 +380,13 @@ def test_publish_batch_reads_the_claims_off_an_older_merged_ledger(tmp_path, cap
     assert PUB.batch_config({"claims": recorded}, merged=merged, **quiet)["claims"] == recorded
     assert "claims" not in PUB.batch_config({"merged_tiers": {}}, **quiet)
     assert "claims" not in PUB.batch_config({}, merged=pd.DataFrame({"mz": [1.0]}), **quiet)
+    # a merged ledger levelled before the evidence scale: its recorded tally was read on the old scale, and
+    # every letter (the shared 4a / 4b too) is no level here -- all tentative, and how many letters said so
+    old = pd.DataFrame({"evidence_level": ["2b", "4a", "4b", None], "evidence_axes": ["iso", "iso", "", None]})
+    cfg = PUB.batch_config({"claims": recorded}, merged=old, **quiet)
+    assert cfg["claims"] == {"merged": {**dict.fromkeys(EV.CLAIM_KEYS, 0), "tentative": 4}}
+    assert cfg["levels_before_scale"] == 3
+    assert "levels_before_scale" not in PUB.batch_config({}, merged=merged, **quiet)
 
     # the CLI hands the merged ledger over (a dry run writes the payload)
     run = tmp_path / "run"

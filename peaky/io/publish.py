@@ -636,18 +636,12 @@ def build_rows(
     # the level, so it reads tentative; never a pre-scale letter under the
     # current name.
     levels_before_scale = 0
-    if "evidence_level" in frame.columns:
-        from peaky.assignment import evidence as EV
-
-        known = set(EV.LEVEL_ORDER) | set(EV.BUCKETS)
-        text = frame["evidence_level"].astype(object)
-        lettered = text.notna() & text.astype(str).str.strip().ne("")
-        unknown = lettered & ~text.astype(str).str.strip().isin(known)
-        if unknown.any() or {"evidence_axes", "level_reason"} & set(frame.columns):
-            levels_before_scale = int(lettered.sum())
-            frame = frame.assign(evidence_level=text.where(~lettered, None))
-            if "claim" in frame.columns:
-                frame = frame.drop(columns=["claim"])
+    lettered = levelled_before_scale(frame)
+    if lettered is not None:
+        levels_before_scale = int(lettered.sum())
+        frame = frame.assign(evidence_level=frame["evidence_level"].astype(object).where(~lettered, None))
+        if "claim" in frame.columns:
+            frame = frame.drop(columns=["claim"])
     # A ledger written before the claim column (C13) still carries the level the
     # claim is read off: its committed M0 rows publish the claim claim_class
     # derives, every other role none -- the rows a current run stamps.
@@ -1434,6 +1428,24 @@ BATCH_CONFIG_KEYS = (
 )
 
 
+def levelled_before_scale(frame: pd.DataFrame) -> pd.Series | None:
+    """The rows carrying a level letter when `frame` was levelled on a scale
+    before the evidence scale (it carries `evidence_axes` / `level_reason`, or
+    a letter this scale does not define) -- every such letter reads as no level
+    here, the shared ones included; None for a ledger on this scale (or with no
+    level at all)."""
+    if "evidence_level" not in frame.columns:
+        return None
+    from peaky.assignment import evidence as EV
+
+    text = frame["evidence_level"].astype(object)
+    lettered = text.notna() & text.astype(str).str.strip().ne("")
+    unknown = lettered & ~text.astype(str).str.strip().isin(set(EV.LEVEL_ORDER) | set(EV.BUCKETS))
+    if unknown.any() or {"evidence_axes", "level_reason"} & set(frame.columns):
+        return lettered
+    return None
+
+
 def batch_config(
     summary: dict | None,
     log: Callable[[str], None] = print,
@@ -1443,10 +1455,20 @@ def batch_config(
 
     A summary written before the claim tallies (C13) has no 'claims'; given the
     merged ledger, its merged tally is read off the rows' `claim`, or off their
-    `evidence_level` through claim_class when the ledger predates that too.
+    `evidence_level` through claim_class when the ledger predates that too. A
+    merged ledger levelled before the evidence scale has no level of this scale
+    (`levelled_before_scale`): its recorded tally (read on the old scale) is
+    replaced by every row tentative, and `levels_before_scale` says how many
+    letters were read so.
     """
     config = {k: summary[k] for k in BATCH_CONFIG_KEYS if summary and k in summary}
-    if "claims" not in config and merged is not None:
+    old = levelled_before_scale(merged) if merged is not None else None
+    if old is not None:
+        from peaky.assignment import evidence as EV
+
+        config["claims"] = {"merged": EV.summarize_claims([EV.claim_class(None)] * len(merged))}
+        config["levels_before_scale"] = int(old.sum())
+    elif "claims" not in config and merged is not None:
         from peaky.assignment import evidence as EV
 
         if "claim" in merged.columns:
