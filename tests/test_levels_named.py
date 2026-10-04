@@ -491,9 +491,12 @@ def test_na_mutant_the_same_file_on_an_orbitrap_class_width_model_is_levelled():
     assert "NA" not in lv and lv <= set(SC.LEVELS) | set(SC.BUCKETS)
 
 
-def test_the_na_short_circuit_runs_before_any_fact_work(monkeypatch):
-    monkeypatch.setattr(SRC, "pair_facts", lambda s: pytest.fail("fact work on a TOF-class source"))
+def test_the_na_short_circuit_runs_before_any_scale_work(monkeypatch):
+    """NA before the run context and pass A; the pooled pair facts ride along (D17)."""
+    monkeypatch.setattr(SRC, "context_of", lambda s: pytest.fail("run context on a TOF-class source"))
+    monkeypatch.setattr(CP, "q1_pass", lambda *a, **k: pytest.fail("pass A on a TOF-class source"))
     src = EV.source_from_frames({"f1": _file([("C10H16O4", "[M-H]-")])},
                                 run_inputs=SRC.RunInputs(summary=dict(reagent="NO3", context="ambient-air",
                                                                       resolution=TOF, per_file=[])), mode="run")
-    assert set(EV.level_source(src)["evidence_level"]) == {"NA"}
+    out = EV.level_source(src)
+    assert set(out["evidence_level"]) == {"NA"} and {"iso_veto", "lowconf"} <= set(out.columns)
