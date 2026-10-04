@@ -249,6 +249,12 @@ Pooled over the source's files (a batch: `tied` and `lowconf` need ALL rows,
 | `ion_only` | an ion-only channel (`[M]-.`) | 4b at best (§8) |
 | `label_untie`, `upair`, `lead_lift` | rule K's untie, rule U's neutral pair (`tables/neutral_pairs.csv`), rule H's halogen lock | recorded in the facts table; read by no step of the scale |
 
+The facts table also records, pooled, the facts the merge vote's private
+class is computed from (§13; the vote reads them per file): `iso`, `multiline` / `multiline_elements`, `carbon_ev`,
+`chan2`, `anchor`, `branch`, `reagent_only_iso`, `res_ok` / `resolvability`,
+`saturated`, `known_fam`, `corroborated`, `neutral_backed`. No step of the
+scale reads them.
+
 On a single file there are no batch checks: `iso_veto` and `label_veto` are
 False per file.
 
