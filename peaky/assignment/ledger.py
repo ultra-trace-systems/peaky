@@ -100,8 +100,8 @@ _ASSIGN_COLS: dict[str, object] = {
     # (assignment/resolvability.py, from the run's width model): 'isolated' /
     # 'resolved' / 'blended' / 'unresolvable', the separation and the
     # bimodality threshold in HWHM at that mass. NA without a width model and on
-    # every non-M0 row. A tier input (tiers.py) and a level input (4c), never a
-    # filter.
+    # every non-M0 row. A tier input (tiers.py) and an input of the merge vote's
+    # class (evidence._measure), never a filter.
     "resolvability": pd.NA,
     "sep_hwhm": np.nan,
     "d_crit_hwhm": np.nan,
