@@ -42,6 +42,10 @@ _ASSIGN_COLS: dict[str, object] = {
     "adduct": pd.NA,
     "ion_formula": pd.NA,
     "ion_score": np.nan,
+    # the same score with every matched line's mass error at the centre: what the
+    # isotope pattern alone says (C42; local_scoring). calibrate() selects the rows
+    # it fits the mass trend on by it. NaN where the scorer did not report one.
+    "ion_score_massfree": np.nan,
     "compound_score": np.nan,
     "eff_score": np.nan,       # arbitration's complexity-penalised score
     "eff_margin": np.nan,      # eff-score lead over the best alternative
@@ -301,6 +305,7 @@ def commit_assignment(
     ion_formula: str | None = None,
     ion_score: float,
     compound_score: float | None = None,
+    ion_score_massfree: float | None = None,
     eff_score: float | None = None,
     eff_margin: float | None = None,
     tied: bool | None = None,
@@ -339,6 +344,10 @@ def commit_assignment(
     ledger.at[i, "adduct"] = adduct
     ledger.at[i, "ion_formula"] = ion_formula if ion_formula is not None else neutral_formula
     ledger.at[i, "ion_score"] = float(ion_score)
+    if "ion_score_massfree" in ledger.columns or ion_score_massfree is not None:
+        ledger.at[i, "ion_score_massfree"] = (
+            np.nan if ion_score_massfree is None or pd.isna(ion_score_massfree)
+            else float(ion_score_massfree))
     ledger.at[i, "compound_score"] = (np.nan if compound_score is None else float(compound_score))
     ledger.at[i, "eff_score"] = (np.nan if eff_score is None or pd.isna(eff_score)
                                  else float(eff_score))

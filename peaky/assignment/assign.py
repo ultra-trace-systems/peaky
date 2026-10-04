@@ -7,6 +7,7 @@ records a reproducibility manifest with every locked module version.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 from dataclasses import dataclass, field
 
@@ -21,6 +22,7 @@ from peaky.chem import isotopes
 from peaky.assignment import labeled
 from peaky.assignment import ladders
 from peaky.assignment import ledger
+from peaky.assignment import masscal
 from peaky.assignment import passes
 from peaky.assignment import evidence
 from peaky.assignment import plausibility
@@ -218,6 +220,9 @@ class _RunState:
     # the peak-width model the `resolvability` stage reads (chem.resolution);
     # None = no model, the stage is skipped and its columns stay NA
     resolving_power: object = None
+    # the reagent halogen the evidence levels read (evidence.channel_halogen of
+    # the declared channels, C43); DETECT_HALOGEN = count the committed clusters
+    reagent_halogen: object = evidence.DETECT_HALOGEN
     summaries: dict = field(default_factory=dict)
     plaus_audit: list = field(default_factory=list)
 
@@ -343,7 +348,8 @@ def _stage_evidence(st):
     it and tallied on the log line; it changes no tier. The run's width model
     rides along: it sets the tolerance of an isotope child's committed parent
     line and a TOF-class file's position guard (C11+c)."""
-    s = evidence.apply_levels(st.led, cfg=st.cfg, cross=st.corroborate, resolution=st.resolving_power)
+    s = evidence.apply_levels(st.led, cfg=st.cfg, cross=st.corroborate, resolution=st.resolving_power,
+                              halogen=getattr(st, "reagent_halogen", evidence.DETECT_HALOGEN))
     claims = s.get("claims") or {}
     st.log(f"[run] evidence levels {s['levels']} on {s['n_levelled']} M0 rows "
            f"({s['n_pairs']} neutral/adduct pairs; corroborated by {s['n_corroborate']} neutrals); "
@@ -707,6 +713,10 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # this goes in mechanism_ids rather than a parallel argument.
     cfg.mechanism_ids = (list(mech_map.values())
                          + io_mascope.local_mechanism_tokens(adducts)) or None
+    # the reagent halogen from the DECLARED channels, before the server's
+    # opportunistic ones join (C43): an [M+Br2]- side channel opened on a nitrate
+    # run does not make it a bromide reagent
+    reagent_halogen = evidence.channel_halogen(adducts)
     adducts = adducts + [a for a in extra_channels if a not in adducts]
     has_halogen_adduct = any(h in str(a) for a in adducts
                              for h in ("Br", "Cl", "I"))
@@ -722,6 +732,9 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # What every candidate of this sample is scored at, resolved once and cached
     # for the passes. Logged because a run's assignments cannot be read without
     # it: the same envelope scores differently at 0.3 ppm and at 3.
+    # a trend a previous run of this sample left (same process) is that run's;
+    # this run fits its own (C42). A stand-in's inherited trend stays.
+    io_mascope.reset_scoring_trend(sample_id)
     scoring = io_mascope.scoring_for_sample(client, sample_id, raw)
     scoring_snapshot = io_mascope.scoring_snapshot(client, sample_id, raw)
     log(f"[run] scoring {io_mascope.describe_scoring(scoring)}"
@@ -745,22 +758,48 @@ def run(sample_id: str, context: str = "ambient-air", *,
         n_reag = reagents.label_reagents(led, reagent, ppm=12.0)
         log(f"[run] pre-labeled {n_reag} reagent-cluster peaks ({reagent})")
 
-    st = _RunState(
-        client=client, sample_id=sample_id, led=led, profile=profile, pre=pre,
-        cfg=cfg, adducts=adducts, reagent=reagent, has_halogen=has_halogen_adduct,
-        do_pass2=do_pass2, do_pass3=do_pass3, do_pass4=do_pass4, do_pass5=do_pass5,
-        do_pass_certified=do_pass_certified,
-        reflists_active=reflists_active, ts_peaks=ts_peaks,
-        label_isotope=label_isotope, label_max=label_max, log=log,
-        checkpoint_dir=checkpoint_dir, reagent_n_relabel=reagent_n_relabel,
-        corroborate=set(corroborate or ()), resolving_power=width_model)
-    for stg in _STAGES:
-        if not stg.when(st):
-            continue
-        res = _safe(st, stg.name, (lambda s=stg: s.fn(st))) if stg.safe else stg.fn(st)
-        if stg.store:
-            st.summaries[stg.name] = res
+    # C42: the pass-1 commits are scored against the sample's ONE constant offset;
+    # if calibrate() then accepts a 1/mz mass trend (fitted on the pattern-only
+    # backbone), the file is re-run from pass 0 with every candidate line judged
+    # against the trend's centre at its own m/z -- once, from the state the
+    # stages started from. A stand-in that inherited its sample's trend
+    # (a decoy arm) is scored at it from the start and never re-runs.
+    led0, cfg0 = led.copy(deep=True), copy.deepcopy(cfg)
+    at_trend = io_mascope.scoring_trend(sample_id) is not None
+    while True:
+        st = _RunState(
+            client=client, sample_id=sample_id, led=led, profile=profile, pre=pre,
+            cfg=cfg, adducts=adducts, reagent=reagent, has_halogen=has_halogen_adduct,
+            do_pass2=do_pass2, do_pass3=do_pass3, do_pass4=do_pass4, do_pass5=do_pass5,
+            do_pass_certified=do_pass_certified,
+            reflists_active=reflists_active, ts_peaks=ts_peaks,
+            label_isotope=label_isotope, label_max=label_max, log=log,
+            checkpoint_dir=checkpoint_dir, reagent_n_relabel=reagent_n_relabel,
+            corroborate=set(corroborate or ()), resolving_power=width_model,
+            reagent_halogen=reagent_halogen)
+        restart = False
+        for stg in _STAGES:
+            if not stg.when(st):
+                continue
+            res = _safe(st, stg.name, (lambda s=stg: s.fn(st))) if stg.safe else stg.fn(st)
+            if stg.store:
+                st.summaries[stg.name] = res
+            if (stg.name == "calibrate" and not at_trend and cfg.score_at_trend
+                    and cfg.cal_b is not None):
+                trend = masscal.MassTrend(cfg.cal_a, cfg.cal_b, cfg.cal_sigma_trend,
+                                          cfg.cal_trend_n or 0, cfg.cal_mz_lo, cfg.cal_mz_hi)
+                io_mascope.set_scoring_trend(sample_id, trend)
+                log(f"[run] scoring centre -> the mass trend ppm = {trend.a:+.3f} "
+                    f"{trend.b:+.3f}*1000/mz (m/z {trend.mz_lo:.0f}-{trend.mz_hi:.0f}); "
+                    "re-running from pass 0 at the per-line centre")
+                at_trend = restart = True
+                break
+        if not restart:
+            break
+        led, cfg = led0.copy(deep=True), copy.deepcopy(cfg0)
     led, summaries, plaus_audit = st.led, st.summaries, st.plaus_audit
+    # the record of what the candidates were scored at, the trend included
+    scoring_snapshot = io_mascope.scoring_snapshot(client, sample_id, raw)
     tc = led.loc[led["role"] == ledger.ROLE_M0, "tier"].value_counts().to_dict()
     log(f"[run] tiers {tc}")
 

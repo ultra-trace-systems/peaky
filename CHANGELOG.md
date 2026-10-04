@@ -6,6 +6,39 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The fit scores a mass at the sample's own m/z-dependent centre (C42).** The v2 score
+  judged every line against ONE offset per sample (its server matches' median), and the
+  pass-1 calibration that could fit the instrument's 1/mz mass trend selected its backbone
+  by that same score -- so it saw only rows already near the constant offset, and on the
+  15N-nitrate Orbitrap rejected the trend in 12/12 files (all 12 pooled too), leaving the
+  bright low-mass acids (C5H8O4 / C6H6O4 / C7H8O3 [M-H]-, +0.7-0.9 ppm at m/z 131-141
+  where the instrument centre is +0.7-0.8) at v2 0.50-0.68: Candidate, level 5b.
+  Now (a) the local scorer also reports `ion_score_massfree` (the isotope pattern alone;
+  a new ledger column) and takes a per-line `centre`; (b) `calibrate()` fits the trend on
+  CHO-CHON rows whose pattern-only score is Good AND that carry an observed isotope line
+  (an untested pattern -- a dim O-rich coincidence with every satellite below detection --
+  scores ~1 and sat ~0.4 ppm off the trend above m/z 400); (c) once a trend is accepted
+  `assign.run` re-runs the file once from pass 0 with every line judged at the trend's
+  centre at its own m/z (`PassConfig.score_at_trend`, default on), and records the trend
+  in the sample's `pattern_scoring` snapshot (`mu_source: "trend"`), which a decoy arm
+  inherits. Single-file check (passes 0-1, three labelled-nitrate files): the trend is
+  accepted in 3/3, the file re-runs, and the re-run's fit (b 0.207-0.218 mDa, coverage
+  from m/z 131) matches the pre-0.9.0 engine's per-file fits (0.16-0.22).
+- **"unique formula in the calibrated window" needs the degeneracy audit (C42c).** On an
+  uncalibrated file the audit is skipped and stamps nothing, yet a row with no stored
+  rival still read the unique-window text (the mixed TOF: 59 of 67 such per-file gains).
+  It now reads "no rival formula in the search window (degeneracy not measured: file
+  uncalibrated)". The tier is unchanged; the levels never read the text (their `unique`
+  is the audit's own stamp).
+- **The reagent halogen comes from the declared channels (C43).** The evidence levels named
+  it from the commonest committed cluster adduct; on the mixed Br-/NO3- TOF that count
+  flipped (3907 [M+NO3]- : 3847 [M+Br]- per-file M0) and switched the C11+c reagent-81Br
+  rule off for the whole run (4d 49 -> 0). `evidence.channel_halogen` reads the run's
+  declared channels (`assign.run`, before opportunistic ones) and the batch profile's
+  (`assign_batch`); the count remains the fallback where no channels are known.
+
 ### Added
 
 - **A halogen lock lifts a tentative lead (C11+b, rule H).** A lead is unsupported,

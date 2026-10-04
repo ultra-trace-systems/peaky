@@ -164,9 +164,21 @@ calibration question for B3, decided on roster hit rate and decoy rate.
 
 ### 3.1 The reagent halogen
 
-The halogen of the source's **commonest cluster adduct** (`[M+Br]-` → Br;
-`[M+NO3]-` → none), never of "any halogen adduct present": a nitrate channel
-with two stray `[M+Br]-` rows against 346 `[M+NO3]-` is a nitrate channel.
+The halogen the run's **declared analyte channels** name (C43,
+`evidence.channel_halogen`): Br for a channel set holding `[M+Br]-` or
+`[M+HBr+Br]-` (a bromide or mixed nitrate/bromide reagent), likewise Cl / I,
+none for a halogen-free set. Declared, not opened: a side channel the server
+opens on a nitrate run (`[M+Br2]-` on Mascope 1.10) makes it no bromide
+reagent. The per-file levels read it from `assign.run` (the channels before the
+opportunistic ones join), the pooled levels from the batch's reagent profile.
+
+Without declared channels (the post-hoc `scripts/level_ledger.py`) it falls back
+to the halogen of the source's **commonest cluster adduct** (`[M+Br]-` → Br;
+`[M+NO3]-` → none): a nitrate channel with two stray `[M+Br]-` rows against 346
+`[M+NO3]-` is a nitrate channel. The count is a guess on a mixed reagent: on
+the mixed Br-/NO3- TOF it flipped to none when per-file `[M+NO3]-` M0 rows
+came to outnumber `[M+Br]-` 3907 : 3847, and the reagent-81Br rule went off for
+the whole run (4d 49 -> 0).
 
 ### 3.2 The isotope line test (C11+c)
 

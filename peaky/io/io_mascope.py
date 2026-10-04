@@ -69,6 +69,60 @@ MIN_OFFSET_ANCHORS = 5
 #: `scoring_for_sample` and `scoring_snapshot`).
 _SCORING_CACHE: dict = {}
 
+#: Per-sample mass-dependent scoring centre (C42): a `masscal.MassTrend` the
+#: sample's own calibration accepted (`set_scoring_trend`, from assign.run) or
+#: its stand-in inherited with a measured sample's snapshot. Candidates of a
+#: sample listed here are scored against the trend's centre at each line's m/z
+#: instead of the snapshot's one offset. `_SCORING_TREND_INHERITED` holds the
+#: ids whose trend came with the snapshot, which a new run keeps.
+_SCORING_TREND: dict = {}
+_SCORING_TREND_INHERITED: set = set()
+
+
+def _trend_record(trend) -> dict:
+    return {"a": round(float(trend.a), 6), "b": round(float(trend.b), 6),
+            "sigma": round(float(trend.sigma), 6), "n": int(trend.n),
+            "mz_lo": None if trend.mz_lo is None else round(float(trend.mz_lo), 4),
+            "mz_hi": None if trend.mz_hi is None else round(float(trend.mz_hi), 4)}
+
+
+def _trend_from_record(rec: dict):
+    from peaky.assignment.masscal import MassTrend
+    return MassTrend(float(rec["a"]), float(rec["b"]), float(rec.get("sigma") or 0.0),
+                     int(rec.get("n") or 0),
+                     None if rec.get("mz_lo") is None else float(rec["mz_lo"]),
+                     None if rec.get("mz_hi") is None else float(rec["mz_hi"]))
+
+
+def set_scoring_trend(sample_id: str, trend) -> None:
+    """Score this sample's candidates against `trend` (a `masscal.MassTrend`)
+    from now on, and record it in the sample's scoring snapshot (`mu_source`
+    "trend", the fit under `trend`) so a run's record and every stand-in that
+    inherits the snapshot (a decoy arm) are judged at the same centre."""
+    _SCORING_TREND[sample_id] = trend
+    if sample_id in _SCORING_CACHE:
+        scoring, snap = _SCORING_CACHE[sample_id]
+        snap = dict(snap)
+        snap["mu_source"] = "trend"
+        snap["trend"] = _trend_record(trend)
+        _SCORING_CACHE[sample_id] = (scoring, snap)
+
+
+def scoring_trend(sample_id: str):
+    """The sample's mass-dependent scoring centre, or None (constant offset)."""
+    return _SCORING_TREND.get(sample_id)
+
+
+def reset_scoring_trend(sample_id: str) -> None:
+    """Forget a trend the sample's OWN calibration set (a new run of it fits its
+    own); a trend inherited with a stand-in's snapshot stays."""
+    if sample_id in _SCORING_TREND_INHERITED:
+        return
+    if _SCORING_TREND.pop(sample_id, None) is not None:
+        # the cached snapshot names the trend; the next scoring_for_sample
+        # recomputes it from the (cached) peaks
+        _SCORING_CACHE.pop(sample_id, None)
+
 
 def _find_env(explicit: str | None = None) -> str:
     # precedence: explicit arg (e.g. CLI --env) > $MASCOPE_ENV > the search list.
@@ -434,6 +488,8 @@ def register_offline_sample(sample_id: str, peaks: pd.DataFrame, mechanisms=(), 
     _OFFLINE[sample_id] = (peaks, frozenset(mechanisms))
     _OFFLINE_SCORING[sample_id] = scoring
     _SCORING_CACHE.pop(sample_id, None)
+    _SCORING_TREND.pop(sample_id, None)
+    _SCORING_TREND_INHERITED.discard(sample_id)
 
 
 def _check_offline_scoring(scoring) -> None:
@@ -493,6 +549,8 @@ def unregister_offline_sample(sample_id: str) -> None:
     _OFFLINE.pop(sample_id, None)
     _OFFLINE_SCORING.pop(sample_id, None)
     _SCORING_CACHE.pop(sample_id, None)
+    _SCORING_TREND.pop(sample_id, None)
+    _SCORING_TREND_INHERITED.discard(sample_id)
 
 
 def is_offline_sample(sample_id: str) -> bool:
@@ -805,6 +863,10 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
         raw = fetch_peaks(client, sample_id) if peaks is None else peaks
         scoring, snapshot = _inherited_scoring(given, raw)
         _SCORING_CACHE[sample_id] = (scoring, snapshot)
+        if isinstance(given, dict) and given.get("trend"):
+            # the measured sample was scored at its mass trend: so is its stand-in
+            _SCORING_TREND[sample_id] = _trend_from_record(given["trend"])
+            _SCORING_TREND_INHERITED.add(sample_id)
         return scoring
     try:
         record = client.samples.get(sample_id)
@@ -901,6 +963,7 @@ def _inherited_scoring(given, raw):
         "mu_ppm": round(float(scoring.mu_ppm), 4),
         "sigma_source": "inherited",
         "mu_source": "inherited",
+        **({"trend": dict(src["trend"])} if src.get("trend") else {}),
         "inherited": {"sigma_source": src.get("sigma_source"), "mu_source": src.get("mu_source"),
                       "fitted_anchors": src.get("fitted_anchors"),
                       "has_signal_to_noise": src.get("has_signal_to_noise")},
@@ -1177,6 +1240,7 @@ def _score_candidates_local(client, sample_id, formulas, mechanism_ids):
     out = local_scoring.score_candidates_local(
         raw, formulas, mechanisms=mechs,
         scoring=scoring_for_sample(client, sample_id, raw),
+        centre=scoring_trend(sample_id),
     )
     out.attrs["match_batches"] = 0
     out.attrs["match_batch_failures"] = []

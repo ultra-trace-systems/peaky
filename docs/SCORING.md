@@ -161,7 +161,10 @@ All thresholds are the named constants from `local_scoring.py` (see §4).
    wrong abundance is **not** attributed — it stays unmatched.
 
 6. **Score the ion** (`score_pattern_v2`). One score per ion, on
-   `(obs_ppm − scoring.mu_ppm, obs_int, obs_snr, pred_rel)` at
+   `(obs_ppm − centre, obs_int, obs_snr, pred_rel)` -- `centre` the sample's
+   constant `scoring.mu_ppm`, or (C42) once the sample's own calibration
+   accepted a 1/mz mass trend, that trend's centre at each line's own m/z
+   (`centre=` a `masscal.MassTrend`, clamped to its m/z coverage) -- at
    `sigma_ppm=scoring.sigma_ppm`: each line contributes a Gaussian mass
    likelihood times an intensity likelihood whose tolerance is set by that
    peak's signal-to-noise, an **absent** line contributes a miss penalty iff the
@@ -170,7 +173,9 @@ All thresholds are the named constants from `local_scoring.py` (see §4).
    predicted-abundance-weighted geometric mean. Reported `ppm_error` stays the
    raw measured error: the offset belongs to the calibration, not to the row.
    The same `compound_score` / `ion_score` is copied onto every isotopologue row
-   of that ion.
+   of that ion, and so is `ion_score_massfree`: the same score with every
+   matched line's error at the centre -- the isotope pattern alone, which the
+   calibration picks its trend backbone by (C42).
 
 7. **Categorize** (`_category`). `score ≥ PROBABLE_THRESHOLD (0.8)` → `probable`;
    `≥ POSSIBLE_THRESHOLD (0.4)` → `possible`; else `unlikely`. Bands on the fit's

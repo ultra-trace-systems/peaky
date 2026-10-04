@@ -126,15 +126,36 @@ def calibrate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> tuple | No
     # only under masscal's rule (3-SE slope, beats the constant model, |b| cap),
     # so a flat source keeps the constant model. Consumers that know the peak's
     # m/z get z against this centre, held constant outside the backbone range.
+    #
+    # The trend's backbone is chosen by the PATTERN-ONLY score (C42): the full
+    # score's mass term is judged against the scorer's one constant offset, so a
+    # Good-by-full-score backbone holds only rows already near that offset -- a
+    # 1/mz trend is cut out of the very points it is fitted on (the labelled-
+    # nitrate Orbitrap: rejected in 12/12 files, and on all 12 pooled, at any
+    # score cut). The robust fit's own trimming and acceptance rule then judge
+    # the mass errors. Rows without a pattern-only score fall back to the full one.
+    # A pattern only counts where it was TESTED: the row carries an observed
+    # isotope line (an attached child). A dim O-rich mass coincidence whose
+    # every satellite is below detection scores ~1 on the pattern -- nothing
+    # contradicts it -- and on the labelled-nitrate files such rows above m/z
+    # 400 sat ~0.4 ppm off the trend and failed its variance test in 12/12.
+    pattern = pd.to_numeric(m0.get("ion_score_massfree"), errors="coerce")
+    tsel = pattern.where(pattern.notna(), score)
+    kids = ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
+    tested = m0["peak_id"].map(kids).fillna(0) >= 1
+    trend_rows = m0.loc[(tsel >= cfg.tau_good) & chon & tested]
     fit = MC.fit_mass_trend(
-        m0.loc[ppm.index, "mz"].astype(float).to_numpy(), ppm.to_numpy(),
+        trend_rows["mz"].astype(float).to_numpy(),
+        trend_rows["ppm_error"].astype(float).to_numpy(),
         min_n=cfg.cal_min_n, sigma_floor=cfg.cal_sigma_floor)
     if fit is not None:
         cfg.cal_a, cfg.cal_b, cfg.cal_sigma_trend = fit.a, fit.b, fit.sigma
         cfg.cal_mz_lo, cfg.cal_mz_hi = fit.mz_lo, fit.mz_hi
+        cfg.cal_trend_n = fit.n
         log(
             f"[calibrate] mass trend: ppm = {fit.a:+.3f} {fit.b:+.3f}*1000/mz (abs "
-            f"offset {fit.b:+.3f} mDa; n={fit.n}, sigma={fit.sigma:.3f}, backbone "
+            f"offset {fit.b:+.3f} mDa; n={fit.n} of {len(trend_rows)} isotope-tested pattern-Good, "
+            f"sigma={fit.sigma:.3f}, backbone "
             f"m/z {fit.mz_lo:.0f}-{fit.mz_hi:.0f}) -> centre "
             + ", ".join(f"{cal_center(cfg, m):+.2f} @{m}" for m in (60, 100, 200, 400))
             + " ppm"
@@ -142,7 +163,9 @@ def calibrate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> tuple | No
     else:
         cfg.cal_a = cfg.cal_b = cfg.cal_sigma_trend = None
         cfg.cal_mz_lo = cfg.cal_mz_hi = None
-        log("[calibrate] mass trend not accepted; constant centre kept")
+        cfg.cal_trend_n = None
+        log(f"[calibrate] mass trend not accepted (on {len(trend_rows)} isotope-tested "
+            "pattern-Good rows); constant centre kept")
     return mu, sigma, len(ppm)
 
 
@@ -429,6 +452,7 @@ def arbitrate(scored: pd.DataFrame, cfg: PassConfig) -> dict:
                 "ion_formula": top["ion_formula"],
                 "adduct": top["adduct_label"],
                 "ion_score": _f(top["ion_score"]),
+                "ion_score_massfree": _f(top.get("ion_score_massfree")),
                 "compound_score": _f(top["compound_score"]),
                 "raw_score": _f(top["raw_score"]),
                 "eff_score": _f(top["eff_score"]),
@@ -704,6 +728,7 @@ def commit_winners(
                 ion_formula=w["ion_formula"],
                 ion_score=w["ion_score"],
                 compound_score=w["compound_score"],
+                ion_score_massfree=w.get("ion_score_massfree"),
                 ppm_error=w["ppm_error"],
                 eff_score=w.get("eff_score"),
                 eff_margin=w.get("eff_margin"),
