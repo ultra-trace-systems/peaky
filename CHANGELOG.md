@@ -45,6 +45,77 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The evidence scale of peaky 0.10.0.** Every committed formula carries, beside its tier, an
+  evidence level that says what the evidence behind it is worth (`docs/EVIDENCE_LEVELS.md`, the
+  contract; `peaky/assignment/levels/`, the machinery; `peaky.assignment.evidence`, the entry
+  points). A CIMS-adapted Schymanski scale built on one rule: a level-3 unlock must be evidence
+  measured to carry formula-specific information, and everything else is a tag printed with its
+  measured base rate.
+  - **Levels:** `3c` (ion established, the neutral / adduct split pinned, and a NAMED context-list
+    entry names the neutral), `4a` (pinned + a positive fact: an own in-band isotope line of an
+    element the neutral contains, the 15N label, or an NH4 adduct tracking its parent), `4b` (the
+    ion only: the split open, pinned without a positive fact, or an ion-only channel), `5a` (a
+    competitor ion left in the calibrated window), `5b` (rejected, or nothing could be tested);
+    the buckets `reagent` (reagent ions and clusters) and `NA` (not assessed); 1 and 2 defined and
+    never assigned. Each pooled `(neutral_formula, adduct)` pair takes the first outcome that
+    applies: reagent, 5b, 5a, 4b (ion-only), 3c, 4a, 4b.
+  - **Claims:** `identified` (3c), `neutral` (4a), `ion` (4b), `tentative` (5a, 5b, no level), with
+    the buckets `reagent` and `not assessed` reported beside them (`evidence.CLAIM_KEYS`).
+  - **The steps:** step 0 sorts out reagent ions and rejections (`iso_veto`, `label_veto`,
+    `lowconf`, an implausible-chemistry below-assignability setter, the reading's own isotope
+    lines); step 1 enumerates every ion of the run's space in the mu ± 3 sigma window and excludes
+    competitors by isotope-line tests (a), (b), (c), (k) and CH2 / CF2 series exclusion; step 2
+    asks whether the split is pinned over the run's adducts with the side channels locked
+    (`evidence.SIDE_CHANNELS_LOCKED`, the single switch; `evidence.UNLOCKED`, the sweep hook), by
+    the 15N label or by being the only plausible decomposition, with the engine's amine gate and
+    the NH4 admissibility rule deciding `[M+NH4]+` readings on a uronium run and the reagent-isobar
+    window rule keeping the X+reagent isobar live; steps 3-4 read 3c / 4a / 4b off the facts.
+  - **Tags, never levels:** two routes, other-source partners, CH2 / CF2 ladders, class lists, the
+    locked side channels that would open a split, window-only pins, the amine gate's decisions, a
+    tentative lead (on every level), ties and series exclusions.
+  - **Instrument class:** assessed only with a width model resolving >= 50 000 at m/z 200; a
+    TOF-class or class-less source reads `NA` before any fact work.
+  - **Outputs:** eight columns on every committed M0 row of the per-file and merged ledgers --
+    `evidence_level`, `evidence` (one line: the level, the decisive facts, the tags),
+    `would_lift`, `competitors_left`, `tags`, `context`, `context_source`, `claim`.
+    `tables/evidence_levels.csv` (one row per pooled pair, every step fact);
+    `batch_summary.json` `evidence_levels` (`scale`, `instrument`, `pooled` / `merged` /
+    `per_stage` over levels and buckets, `side_channels_locked`, `unlocked`, `partners`,
+    `amine_r_min`, the batch checks' funnels), `claims` over the six keys, `reflists_context`
+    (which keyword in which name activated each reference list; `reflists.activate` records it)
+    and `amine_r_min`. `NA` is a literal token: read `claim`, or pass `keep_default_na=False`.
+  - **Where it runs:** per file in the `evidence` stage of `assign.run` (the file alone, every
+    file-count minimum 1, no time series; the degeneracy stage now persists its calibration as
+    `stats["degeneracy_cal"]` for the window); pooled in `assign_batch.run` over the per-file
+    ledgers re-read from disk in sorted order (every minimum 3, with the stamped time series, the
+    merged ledger and the batch checks) and stamped on the merged ledger by pair; post hoc by
+    `scripts/level_ledger.py` with its own independently written decision layer. A merged row no
+    pooled pair holds reads `no pooled pair: a batch-level re-read`; an uncalibrated file
+    levelled alone gets no level and says why.
+  - **`--corroborate`** feeds the merge vote's class (as before) and, from an Orbitrap-class run
+    directory, the other-source partner tag; it never moves an evidence level. On single-sample
+    `peaky assign` it is accepted, logged and ignored.
+  - **The merge vote keeps its own class.** The vote ranks a cluster's ions by a private class
+    (`evidence.vote_classes`: neutral backed / formula confirmed / unconfirmed), computed by the
+    decision the vote has always read, so the scale moves no assignment. The vote note in
+    `tier_reason` and `tables/jitter.csv` (`vote_class`, 0 / 1 / 2) print the class, never a level.
+  - **Removed from every output:** `evidence_axes`, `level_reason`, `n_plausible_structures`.
+  - **Validated:** the in-core scale reproduces a reference implementation level for level and on
+    every text field on a labelled-nitrate Orbitrap run (1 850 pairs) and a uronium Orbitrap run
+    (1 161 pairs) and all twelve of their decoy tables; the in-run pooled levels equal a post-hoc
+    re-level of the same run directory; the vote class equals the stored class on every M0 row of
+    three regression runs (26 278 rows). Known limits (the lock holds most 4a height on a
+    labelled-nitrate run, the urea isobar holds most 4b height on a uronium run, the lead / list
+    circularity, the run-level family union) are listed in the spec's section 12. The per-file
+    stage costs about 5-20 s per Orbitrap file.
+
+- *The pre-release evidence-level rules described in the [Unreleased] entries below (the scale
+  2b … 5b with its axes: rule H's lift, rule U, rule K's untie, the isotope-check vetoes, the three
+  claims, the `corroborated` axis, `multiline`, the level script) were replaced before release by the evidence
+  scale above; their facts survive as inputs (`iso_veto`, `label_veto`, `lowconf`, `below`,
+  `lead` / `lead_by`, `tied`, `ion_only`, the batch checks' tables) and in the merge vote's
+  private class.*
+
 - **A halogen lock lifts a tentative lead (C11+b, rule H).** A lead is unsupported,
   not contradicted -- a speculative residual fit, a reference-list match too dim to
   confirm, a commit outside the element budget -- and read 5b. A fourth batch check,
