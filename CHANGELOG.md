@@ -99,6 +99,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     (`evidence.vote_classes`: neutral backed / formula confirmed / unconfirmed), computed by the
     decision the vote has always read, so the scale moves no assignment. The vote note in
     `tier_reason` and `tables/jitter.csv` (`vote_class`, 0 / 1 / 2) print the class, never a level.
+    The class is computed in the batch's parent with the reagent halogen the file's own run read
+    from its declared channels (C43; carried back in the file's stats, `per_file[i].reagent_halogen`);
+    the pooled pair facts read the batch profile's (`batch_summary["reagent_halogen"]`), which a
+    post-hoc re-level reads back.
   - **Removed from every output:** `evidence_axes`, `level_reason`, `n_plausible_structures`.
   - **Validated:** the in-core scale reproduces a reference implementation level for level and on
     every text field on a labelled-nitrate Orbitrap run (1 850 pairs) and a uronium Orbitrap run

@@ -284,6 +284,38 @@ degeneracy stage's calibration), and for a batch the stamped time series, the
 merged ledger, the protected neutrals, the batch-check tables and the run's
 `amine_r_min`.
 
+### 3.4 The reagent halogen
+
+The pair facts (§3.2: `reagent_halogen`, `reagent_only_iso`, rule H's lock
+lift) and the merge vote's class (§13) read the reagent's halogen. It is the
+halogen the run's **declared analyte channels** name (`evidence.channel_halogen`):
+Br for a channel set holding `[M+Br]-` or `[M+HBr+Br]-` (a bromide or mixed
+nitrate/bromide reagent), likewise Cl / I, none for a halogen-free set.
+Declared, not opened: a side channel the server opens on a nitrate run
+(`[M+Br2]-`) makes it no bromide reagent.
+
+- **Per file:** `assign.run` takes it from the channels before the
+  opportunistic ones join, hands it to the file's pair facts and records it in
+  the file's stats (`per_file[i].reagent_halogen` in `batch_summary.json`); a
+  batch's parent computes the file's vote class with that same halogen.
+- **Pooled:** the batch's reagent profile's channels, recorded as
+  `batch_summary["reagent_halogen"]`.
+- **Post-hoc** (`evidence.source_from_run_dir`, `scripts/level_ledger.py`, a
+  decoy arm in its main run's context): the run's recorded `reagent_halogen`,
+  else the declared channels of the run's reagent profile (`reagent`, a run
+  made before the record).
+
+Where no channels are known it falls back to the halogen of the source's
+**commonest cluster adduct** (`evidence.detect_reagent_halogen`,
+`evidence.DETECT_HALOGEN`): a ledger CSV levelled alone, a `--corroborate`
+source re-levelled for the vote's cross set (`vote_cross_neutrals`), a
+per-file stats record without the key. `[M+Br]-` → Br, `[M+NO3]-` → none: a
+nitrate channel with two stray `[M+Br]-` rows against 346 `[M+NO3]-` is a
+nitrate channel. The count is a guess on a mixed reagent: on the mixed
+Br-/NO3- TOF it flipped to none when per-file `[M+NO3]-` M0 rows came to
+outnumber `[M+Br]-` 3907 : 3847, and the reagent-81Br rule went off for the
+whole run.
+
 ## 4. Step 0 — sort out
 
 - **The reagent bucket.** The neutral is made only of the reagent's own
@@ -677,8 +709,8 @@ read 4a where its per-file rows read 4b, and the other way round.
 - `claims`: `merged`, `pooled`, `per_stage`, `by_tier` (ion-only rows under
   their own `ion-only` key) — each over the six `CLAIM_KEYS`, zeros kept — and
   `n_unlevelled`;
-- `reflists_context` (§2.5) and `amine_r_min` at the top level;
-  `ion_only.merged_levels`.
+- `reflists_context` (§2.5), `amine_r_min` and `reagent_halogen` (§3.4) at
+  the top level; `ion_only.merged_levels`.
 
 `tables/evidence_levels.csv` is §2.6.
 
@@ -809,7 +841,8 @@ readings before the file count (`assign_batch._vote`, [MERGE.md](MERGE.md)
 
 - It is computed privately in `evidence.py`, by the decision peaky used before
   the scale (`evidence.vote_classes` over `EV.trim(ledger)`, the
-  `--corroborate` cross set and the width model), from per-file facts. The vote
+  `--corroborate` cross set, the width model and the reagent halogen the
+  file's own run read, §3.4), from per-file facts. The vote
   is the only path from evidence to assignments, so the scale moves no
   assignment.
 - **2 = neutral backed** (the formula is confirmed and the neutral backed by
