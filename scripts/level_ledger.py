@@ -772,7 +772,7 @@ def main(argv: list[str] | None = None) -> int:
                                      "degeneracy_cal); default: refitted from its degeneracy counts")
     ap.add_argument("--out", help="write the levelled pairs here as CSV")
     ap.add_argument("--vector", action="store_true",
-                    help="print n 3c/4a/4b/5a/5b/reagent/NA and the % of committed M0 height per level")
+                    help="print n 3c/4a/4b/5a/5b/reagent/NA and the %% of committed M0 height per level")
     args = ap.parse_args(argv)
     log = (lambda *a: print(*a, file=sys.stderr))
     window = tuple(float(x) for x in args.window.split(",")) if args.window else None
