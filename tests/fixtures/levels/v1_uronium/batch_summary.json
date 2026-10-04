@@ -1,0 +1,100 @@
+{
+ "context": "uronium",
+ "label": "Ur+ CIMS",
+ "per_file": [
+  {
+   "height_gate_cps": 61.42241295699331,
+   "noise_edge_cps": 61.42241295699331,
+   "sample_id": "s08"
+  },
+  {
+   "height_gate_cps": 63.4479982660907,
+   "noise_edge_cps": 63.4479982660907,
+   "sample_id": "s04"
+  },
+  {
+   "height_gate_cps": 58.822617663352226,
+   "noise_edge_cps": 58.822617663352226,
+   "sample_id": "s01"
+  },
+  {
+   "height_gate_cps": 62.7399584264942,
+   "noise_edge_cps": 62.7399584264942,
+   "sample_id": "s10"
+  },
+  {
+   "height_gate_cps": 60.82532423460278,
+   "noise_edge_cps": 60.82532423460278,
+   "sample_id": "s06"
+  },
+  {
+   "height_gate_cps": 60.99485385448406,
+   "noise_edge_cps": 60.99485385448406,
+   "sample_id": "s07"
+  },
+  {
+   "height_gate_cps": 64.89305416278268,
+   "noise_edge_cps": 64.89305416278268,
+   "sample_id": "s03"
+  },
+  {
+   "height_gate_cps": 62.987308970028636,
+   "noise_edge_cps": 62.987308970028636,
+   "sample_id": "s05"
+  },
+  {
+   "height_gate_cps": 59.921658385868845,
+   "noise_edge_cps": 59.921658385868845,
+   "sample_id": "s02"
+  },
+  {
+   "height_gate_cps": 60.636270822266205,
+   "noise_edge_cps": 60.636270822266205,
+   "sample_id": "s09"
+  }
+ ],
+ "reagent": "Ur",
+ "reflists_active": [
+  [
+   "contaminants_keller2008",
+   "2008.2"
+  ],
+  [
+   "monoterpene_hom_kang2024",
+   "2024.2"
+  ]
+ ],
+ "reflists_context": {
+  "matched": {
+   "ap_ox": [
+    [
+     "dataset",
+     "ap oxidation"
+    ]
+   ],
+   "monoterpene_ox": [
+    [
+     "dataset",
+     "ap oxidation"
+    ]
+   ]
+  },
+  "tags": [
+   "ap_ox",
+   "monoterpene_ox"
+  ]
+ },
+ "resolution": {
+  "coef": 1.4840100626747826e-06,
+  "exponent": 1.3520241414959238,
+  "n_peaks": 10,
+  "offset": 0.0,
+  "r_at_200": 104362.63730248938,
+  "r_at_600": 70890.30507772637,
+  "r_spread": [
+   87761.30894257093,
+   95999.94729121703
+  ],
+  "source": "measured"
+ }
+}
