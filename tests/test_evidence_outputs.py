@@ -23,6 +23,7 @@ Run: pytest tests/test_evidence_outputs.py -q
 from __future__ import annotations
 
 import json
+import sys
 import types
 from pathlib import Path
 
@@ -34,6 +35,8 @@ from peaky.assignment import assign as A
 from peaky.assignment import evidence as EV
 from peaky.assignment import ledger as L
 from peaky.assignment import tiers as T
+from peaky.assignment.levels import competitors as CP
+from peaky.assignment.levels import decide as DC
 from peaky.assignment.levels import source as SRC
 from peaky.chem import chemistry as C
 from peaky.chem import contexts as X
@@ -153,6 +156,42 @@ def test_an_uncalibrated_file_without_the_calibrated_ppm_column_says_so_instead_
         m0 = led[led["role"] == "M0"]
         assert (m0["evidence"] == EV.NO_WINDOW_TEXT).all() and (m0["claim"] == "tentative").all(), cal
         assert s["n_levelled"] == 0
+
+
+def _blank_ledger() -> pd.DataFrame:
+    """A file the engine committed nothing on (an empty decoy arm, a blank)."""
+    return L.new_ledger(pd.DataFrame({"peak_id": ["A", "B"], "mz": [199.1, 250.2], "height": [1.0e5, 2.0e4]}))
+
+
+def test_a_source_with_no_committed_pair_levels_to_an_empty_frame_with_the_columns():
+    """Zero committed pairs: no row, the columns a levelled source writes (the
+    scale's columns first, the step facts, pass B's facts) -- through
+    level_source, the per-file stage and the pooled stage alike."""
+    full = EV.level_source(EV.source_from_frames({"s1": _ledger()}, run_inputs=_inputs(), mode="adapted"))
+    empty = EV.level_source(EV.source_from_frames({"s1": _blank_ledger()}, run_inputs=_inputs(), mode="adapted"))
+    assert empty.empty and list(empty.columns[:10]) == ["neutral_formula", "adduct", *EV.COLUMNS]
+    assert set(empty.columns) <= set(full.columns)
+    head = len(DC.RECORD_COLUMNS) + 3              # the pair, the record's columns, claim
+    assert list(empty.columns[:head]) == list(full.columns[:head])
+    assert set(CP.PASS_B_COLUMNS) <= set(empty.columns)
+    # the per-file stage
+    led = _blank_ledger()
+    s = EV.apply_levels(led, run_inputs=_inputs())
+    assert s["n_pairs"] == 0 and s["levels"] == {} and set(EV.COLUMNS) <= set(led.columns)
+    # the pooled stage's entry point, and the stamp of an empty merged ledger
+    pooled = EV.level_batch({"s1": _blank_ledger(), "s2": _blank_ledger()},
+                            run_inputs=EV.RunInputs(summary=_inputs().summary))
+    assert pooled.empty and list(pooled.columns) == list(empty.columns)
+    assert len(EV.stamp_merged(pd.DataFrame(columns=["neutral_formula", "adduct", "mz"]), pooled)) == 0
+
+
+def test_a_batch_that_committed_nothing_writes_an_empty_level_table(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "_ledger", _blank_ledger)
+    _run_batch(tmp_path, monkeypatch)
+    pairs = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv", keep_default_na=False)
+    assert pairs.empty and list(pairs.columns[:10]) == ["neutral_formula", "adduct", *EV.COLUMNS]
+    ev = json.load(open(tmp_path / "batch_summary.json"))["evidence_levels"]
+    assert ev["n_pairs"] == 0 and ev["pooled"] == {}
 
 
 def test_an_unknown_reagent_profile_is_not_levelled_and_says_so():

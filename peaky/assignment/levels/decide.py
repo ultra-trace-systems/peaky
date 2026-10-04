@@ -472,6 +472,15 @@ MODE_FLAG_ALL = (" [FLAG: every named entry's source mode contradicts this run (
                  "not a block]")
 
 
+#: the record's columns after (neutral_formula, adduct), in order: the scale's columns but `claim`, then the step
+#: facts (`iterations` last); a source with no pair levels to an empty frame with them (source.empty_levels)
+RECORD_COLUMNS = ("evidence_level", "evidence", "would_lift", "competitors_left", "tags", "context", "context_source",
+                  "tag_kinds", "split_pinned", "split_how", "positive_fact", "named_list", "named_mode_flag",
+                  "window_only", "window_isobar", "chloride_open", "nh4_gate", "nh4_admissible", "nh4_inadmissible",
+                  "nh4_gate_detail", "side_aliases", "route_alias", "inpass_level", "inpass_why", "n_left_inpass",
+                  "n_series_excl", "iterations")
+
+
 def records(S: Prepared, res: dict, texts: list[dict], lv: list[str]) -> pd.DataFrame:
     """The per-pair record: the scale's columns + the step facts."""
     P = S.P
@@ -691,7 +700,10 @@ def records(S: Prepared, res: dict, texts: list[dict], lv: list[str]) -> pd.Data
         cols["inpass_why"].append(res["why"][i])
         cols["n_left_inpass"].append(t["n_left"])
         cols["n_series_excl"].append(t["n_series_excl"])
-    out = pd.DataFrame(cols)
+    extra = set(cols) - set(RECORD_COLUMNS)
+    if extra:
+        raise AssertionError(f"record columns missing from RECORD_COLUMNS: {sorted(extra)}")
+    out = pd.DataFrame({c: cols[c] for c in RECORD_COLUMNS if c != "iterations"})
     out.insert(0, "adduct", [k[1] for k in keys])
     out.insert(0, "neutral_formula", [k[0] for k in keys])
     out["iterations"] = res["iterations"]

@@ -432,6 +432,14 @@ def test_a_whole_source_levels_alike_through_the_engines_entry_point():
     assert mine.loc[("HNO3", "[M+NO3]-"), "evidence_level"] == "reagent"
 
 
+@pytest.mark.parametrize("mode", ["adapted", "run"])
+def test_a_source_with_no_committed_pair_gives_no_row_in_script_and_engine(mode):
+    src = EV.source_from_frames({"f1": _file([])}, run_inputs=SRC.RunInputs(summary=_summary(ORBI)), mode=mode)
+    mine = LL.decide_source(src)
+    assert mine.empty and list(mine.columns) == LL.DECISION_COLUMNS
+    assert EV.level_source(src).empty
+
+
 @pytest.mark.parametrize("res,why", [(TOF, "tof"), (None, "class-less")])
 def test_the_class_gate_reads_na_and_its_mutant_is_levelled(res, why):
     src = EV.source_from_frames({"f1": _file(PAIRS)}, run_inputs=SRC.RunInputs(summary=_summary(res)), mode="adapted")

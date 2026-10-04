@@ -432,6 +432,21 @@ def na_frame(src: Source) -> pd.DataFrame:
     return out
 
 
+def empty_levels(src: Source) -> pd.DataFrame:
+    """The level frame of a source with no committed pair: no row, the columns
+    `level_source` writes (neutral_formula, adduct, the scale's COLUMNS, the
+    step facts, pass B's and the pair-fact table's columns) -- so the per-file
+    stage, the pooled stage and their tables see the same shape on a run that
+    committed nothing (an empty decoy arm, a blank file)."""
+    front = ["neutral_formula", "adduct", *SC.COLUMNS]
+    cols = front + [c for c in DC.RECORD_COLUMNS if c not in front]
+    facts = pair_facts(src)
+    for c in [*facts.columns, *CP.PASS_B_COLUMNS]:
+        if c not in cols:
+            cols.append(c)
+    return pd.DataFrame({c: pd.Series(dtype=object) for c in cols})
+
+
 def level_source(src: Source, *, partners=None) -> pd.DataFrame:
     """One row per pair: neutral_formula, adduct, the scale's COLUMNS, then the
     step facts (split, positive fact, named list, NH4 / window / chloride
@@ -441,6 +456,8 @@ def level_source(src: Source, *, partners=None) -> pd.DataFrame:
     klass, _r = src.instrument()
     if klass != "orbitrap":
         return na_frame(src)
+    if not committed_pairs(src.per_file):
+        return empty_levels(src)
     S = prepared(src)
     if src.one_file_minima:
         partners = None

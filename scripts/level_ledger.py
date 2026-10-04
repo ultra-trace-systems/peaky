@@ -634,6 +634,8 @@ def decide_source(src, partners=None) -> pd.DataFrame:
     klass, _r200 = src.instrument()
     if klass != "orbitrap":
         return na_rows(src)
+    if not SRC.committed_pairs(src.per_file):
+        return _blank_rows(src)          # nothing committed: no pair to level (no row, the columns)
     return decide(SRC.prepared(src), None if src.one_file_minima else partners)
 
 

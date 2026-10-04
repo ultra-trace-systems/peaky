@@ -215,6 +215,14 @@ def skip_m0_of(q1: dict) -> frozenset:
 # ---------------------------------------------------------------------------
 COMP_COLUMNS = ("neutral_formula", "adduct", "competitor", "kind", "ppm", "status", "how", "why", "window",
                 "comp_neutral", "comp_adduct")
+#: pass B's per-pair columns (in order; a source with no pair gives an empty frame with them)
+PASS_B_COLUMNS = ("neutral_formula", "adduct", "n_files_obs", "committed_contradicted", "committed_reasons",
+                  "committed_matched", "committed_matched_lines", "committed_c13", "strong_isotope", "n_competitors",
+                  "n_comp_mass", "n_comp_mass_engine", "n_comp_alt", "n_excl_iso", "n_excl_routes", "n_left",
+                  "competitors_left", "competitors_excluded", "n_decomp_plausible", "committed_plausible",
+                  "plaus_decomps", "outside_space", "space_note", "n_tie_same", "committed_z_med",
+                  "committed_files_off_window", "off_own_window", "n_comp_isoline", "n_isoline_left",
+                  "iso_explained_files", "n_comp_file_window_only", "no_comp_info", "ion_only_reading", "lead_fact")
 
 
 def _committed_z(ctx, pr: dict, n: str, a: str) -> list:
@@ -319,4 +327,4 @@ def pass_b(ctx, facts: pd.DataFrame, pairs: dict, q1: dict) -> tuple[pd.DataFram
             n_comp_file_window_only=sum(1 for c in cands[1:] if c.get("win") and "run" not in c.get("win", "")),
             no_comp_info=no_comp_info, ion_only_reading=ion_only, lead_fact=bool(truthy(f.lead)),
         ))
-    return pd.DataFrame(rows), pd.DataFrame(comp_out, columns=list(COMP_COLUMNS))
+    return pd.DataFrame(rows, columns=list(PASS_B_COLUMNS)), pd.DataFrame(comp_out, columns=list(COMP_COLUMNS))
