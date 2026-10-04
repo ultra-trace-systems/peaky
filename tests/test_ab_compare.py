@@ -444,9 +444,10 @@ def test_a_run_without_levels_is_not_compared_on_level_or_claim(tmp_path):
 
 def test_a_run_levelled_before_the_scale_is_read_on_it(tmp_path):
     """A run levelled on an older scale (B-series letters, `evidence_axes`, its
-    claims stamped on that scale) against a run on the evidence scale: its
-    unknown letters read as no level, its claims are re-read on this scale, its
-    levels are not compared letter for letter, and the report says so."""
+    claims stamped on that scale) against a run on the evidence scale: EVERY
+    letter reads as no level (the shared 4a / 4b / 5b too), its claims re-read
+    tentative, its levels are not compared letter for letter, and the report
+    says so."""
     old_led = LEDGER_A.assign(evidence_level=["2b", "4b", "4c", "5b", "4a", None],
                               evidence_axes=["iso|chan2", "iso", "", "", "iso|anchor", None],
                               claim=["identified", "ion", "ion", "tentative", "identified", "tentative"])
@@ -455,14 +456,18 @@ def test_a_run_levelled_before_the_scale_is_read_on_it(tmp_path):
     b = AB.load_run(str(_write_run(tmp_path / "new", new_led, None, {})))
     assert AB.before_scale(a) and not AB.before_scale(b)
     assert AB.claim_source(a) == "derived" and AB.claim_source(b) == "stamped"
-    assert list(AB.claims_of(a)) == ["tentative", "ion", "tentative", "tentative", "neutral", "tentative"]
+    assert list(AB.claims_of(a)) == ["tentative"] * 6
+    assert list(AB.levels_of(a).isna()) == [True] * 6
     ch = AB.row_changes(a, b)
-    assert ch["level"] is None and ch["claim"] == 2           # C5H8O2 (2b), C8H12O4 (4c vs NA)
+    assert ch["level"] is None
+    assert ch["claim"] == sum(1 for c in CLAIMS_A if c != "tentative")
     report = AB.build_report(a, b, 6.0, 2, 5.0, 25)
-    assert ("> Run A was levelled on a scale before the evidence scale: 2 row(s) carry a letter this "
-            "scale does not define and read as no level; its claims are re-read off its levels on this "
-            "scale, and its levels are not compared with the other run's.") in report
-    assert "| level | — |" in report
+    assert (f"> Run A was levelled on a scale before the evidence scale: its 5 levelled row(s) read as "
+            f"{AB.OLD_SCALE_NO_LEVEL} (the letters this scale shares too), so its claims read tentative, "
+            "and its levels are not compared with the other run's.") in report
+    from peaky.assignment import evidence as EV
+    assert AB.OLD_SCALE_NO_LEVEL == f"no level (pre-{EV.SCALE_RELEASE} scale)"
+    assert f"| {AB.OLD_SCALE_NO_LEVEL} | 5 |" in report and "| 4a | 0 |" in report
     # two runs on the older scale are still compared on their letters
     c = AB.load_run(str(_write_run(tmp_path / "old2", old_led, None, {})))
     assert AB.row_changes(a, c)["level"] == 0

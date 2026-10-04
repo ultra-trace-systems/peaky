@@ -34,8 +34,9 @@ The level token `NA` (not assessed on this instrument class) is literal: the
 merged ledger's `evidence_level` is re-read as written, so it is never mistaken
 for "no level". A run levelled on a scale before the evidence scale (it carries
 `evidence_axes` / `level_reason`, or a letter this scale does not define) has
-its unknown letters read as no level and its claims re-read on this scale; its
-levels are not compared letter for letter with a run on the current scale.
+every letter read as no level (an old 4a is not a 4a of this scale) and its
+claims re-read on this scale (tentative); its levels are not compared letter
+for letter with a run on the current scale.
 """
 
 from __future__ import annotations
@@ -69,6 +70,11 @@ CLAIM_ION = frozenset({"4b"})
 KNOWN_LEVELS = frozenset(LEVEL_ORDER) | frozenset(BUCKETS)
 #: columns only a ledger levelled before the scale carries
 OLD_LEVEL_COLUMNS = ("evidence_axes", "level_reason", "n_plausible_structures")
+try:        # the release names the older scale; without peaky installed it is just "older"
+    from peaky.assignment.levels.scale import SCALE_RELEASE as _RELEASE
+    OLD_SCALE_NO_LEVEL = f"no level (pre-{_RELEASE} scale)"
+except ImportError:  # pragma: no cover - peaky not importable
+    OLD_SCALE_NO_LEVEL = "no level (older scale)"
 # What a shared ion is compared on: (report field, ledger column).
 CHANGE_FIELDS = (("tier", "tier"), ("level", "evidence_level"), ("claim", "claim"))
 CHANGED_ROWS_SHOWN = 20
@@ -297,20 +303,31 @@ def before_scale(run) -> bool:
     return any(c in led.columns for c in OLD_LEVEL_COLUMNS) or bool(_unknown_levels(led).any())
 
 
+def _lettered(led: pd.DataFrame) -> pd.Series:
+    """The rows that carry a level letter."""
+    level = led["evidence_level"].astype(object)
+    return level.notna() & level.astype(str).str.strip().ne("")
+
+
 def levels_of(run) -> pd.Series | None:
-    """The merged rows' levels on this scale: a letter it does not define reads
-    as no level. None when the ledger carries no `evidence_level`."""
+    """The merged rows' levels on this scale: on a run levelled before it EVERY
+    letter reads as no level (OLD_SCALE_NO_LEVEL) -- the letters both scales
+    share too, since an old 4a is not a 4a of this scale. None when the ledger
+    carries no `evidence_level`."""
     led = _ledger(run)
     if "evidence_level" not in led.columns:
         return None
     level = led["evidence_level"].astype(object)
-    return level.where(~_unknown_levels(led), None)
+    return level.where(~_lettered(led), None) if before_scale(led) else level
 
 
 def evidence_hist(run: Run) -> pd.Series | None:
     if "evidence_level" not in run.ledger.columns:
         return None
-    counts = run.ledger["evidence_level"].fillna("—").astype(str).value_counts()
+    level = run.ledger["evidence_level"].astype(object)
+    if before_scale(run.ledger):            # an old letter is no level of this scale, whatever its name
+        level = level.where(~_lettered(run.ledger), OLD_SCALE_NO_LEVEL)
+    counts = level.fillna("—").astype(str).value_counts()
     order = {k: i for i, k in enumerate([*LEVEL_ORDER, *BUCKETS])}
     return counts.loc[sorted(counts.index, key=lambda k: (order.get(k, len(order)), k))]
 
@@ -550,11 +567,10 @@ def build_report(
     )
     for label, run in (("A", run_a), ("B", run_b)):
         if before_scale(run):
-            n_old = int(_unknown_levels(run.ledger).sum())
+            n_old = int(_lettered(run.ledger).sum())
             w(f"> Run {label} was levelled on a scale before the evidence scale: "
-              + (f"{n_old} row(s) carry a letter this scale does not define and read as no level; "
-                 if n_old else "")
-              + "its claims are re-read off its levels on this scale"
+              + (f"its {n_old} levelled row(s) read as {OLD_SCALE_NO_LEVEL} (the letters this scale shares "
+                 "too), so its claims read tentative" if n_old else "it carries no level of this scale")
               + ("" if before_scale(run_a) == before_scale(run_b)
                  else ", and its levels are not compared with the other run's")
               + ".\n")

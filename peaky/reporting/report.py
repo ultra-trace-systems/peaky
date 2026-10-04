@@ -94,6 +94,9 @@ LEVEL_TEXT_COLUMNS = tuple(c for c in EV.COLUMNS if c not in ("evidence_level", 
 LEVEL_COLUMNS = ["claim", "evidence_level", *LEVEL_TEXT_COLUMNS]
 #: the scale's name in user-facing text (the release lives in one constant)
 SCALE_NAME = f"the evidence scale of peaky {EV.SCALE_RELEASE}"
+#: what every level letter of a ledger levelled on an older scale reads as -- the
+#: letters both scales share (4a, 4b, 5a, 5b) included: an old 4a is not a new 4a
+OLD_SCALE_NO_LEVEL = f"no level (pre-{EV.SCALE_RELEASE} scale)"
 #: claim rank, best first: the four claims, then the two buckets
 _CLAIM_RANK = {c: k for k, c in enumerate(EV.CLAIM_KEYS)}
 
@@ -119,13 +122,16 @@ def scale_view(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
       turns into NaN; a row whose `claim` says "not assessed" gets its ``NA``
       back (docs/OUTPUTS.md: read the claim column to tell NA from no level).
     - A ledger levelled on a scale before this one (it carries `evidence_axes`
-      / `level_reason`, or a level letter this scale does not define): every
-      unknown letter reads as no level, and the stored claim -- read on the old
-      scale -- is dropped, so the claim is re-read off the level on this one.
+      / `level_reason`, or a level letter this scale does not define): EVERY
+      level letter reads as no level (`OLD_SCALE_NO_LEVEL`) -- the letters both
+      scales share too, since an old 4a is not a 4a of this scale -- and the
+      stored claim, read on the old scale, is dropped: every claim re-reads
+      tentative.
 
-    Returns (frame, info) with info = {old_scale, n_unknown, unknown (sorted
-    tokens), n_na, na_reason}. A frame without `evidence_level` comes back
-    unchanged with an empty info."""
+    Returns (frame, info) with info = {old_scale, n_unknown (rows whose old
+    letter reads as no level), unknown (the sorted old letters), n_na,
+    na_reason}. A frame without `evidence_level` comes back unchanged with an
+    empty info."""
     out = frame.copy()
     info = {"old_scale": False, "n_unknown": 0, "unknown": [], "n_na": 0, "na_reason": ""}
     if "evidence_level" not in out.columns:
@@ -135,8 +141,8 @@ def scale_view(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     if "claim" in out.columns:
         na_claim = out["claim"].astype(object).map(lambda v: not _blank(v) and str(v) == EV.CLAIM_NA)
         lv = lv.where(~(lv.isna() & na_claim), "NA")
-    unknown = lv.notna() & ~lv.isin(KNOWN_LEVELS)
-    old = bool(unknown.any()) or any(c in out.columns for c in OLD_LEVEL_COLUMNS)
+    old = bool((lv.notna() & ~lv.isin(KNOWN_LEVELS)).any()) or any(c in out.columns for c in OLD_LEVEL_COLUMNS)
+    unknown = lv.notna() if old else pd.Series(False, index=lv.index)
     if old:
         info.update(old_scale=True, n_unknown=int(unknown.sum()),
                     unknown=sorted(set(lv[unknown].astype(str))))
@@ -161,11 +167,11 @@ def scale_note(info: dict) -> str:
         return ""
     if info.get("n_unknown"):
         letters = ", ".join(info["unknown"])
-        return (f"levelled on a scale older than {SCALE_NAME}: {info['n_unknown']} committed row(s) carry a "
-                f"level this scale does not define ({letters}) and read as no level (tentative); the other "
-                "letters and every claim are read on this scale")
-    return (f"levelled on a scale older than {SCALE_NAME} (its level columns are not shown); the levels and "
-            "the claims are read on this scale")
+        return (f"levelled on a scale older than {SCALE_NAME}: its {info['n_unknown']} levelled row(s) "
+                f"({letters}; the letters this scale shares too) read as {OLD_SCALE_NO_LEVEL}, and their claims "
+                "as tentative")
+    return (f"levelled on a scale older than {SCALE_NAME} (its level columns are not shown); no row carries a "
+            "level of this scale")
 
 
 def na_detail(info: dict) -> str:
@@ -453,16 +459,17 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
     if has_levels:
         # the claim leads (the workbook opens on it); the level histogram sits right
         # after the two tier sheets it re-reads
-        out = {"By claim": claim_sheet(m0) if len(m0) else pd.DataFrame()}
+        no_level = OLD_SCALE_NO_LEVEL if _info.get("old_scale") else "no level"
+        out = {"By claim": claim_sheet(m0, no_level=no_level) if len(m0) else pd.DataFrame()}
         for k, v in sheets.items():
             out[k] = v
             if k == "Candidates":
-                out["By evidence level"] = evidence_level_sheet(m0) if len(m0) else pd.DataFrame()
+                out["By evidence level"] = evidence_level_sheet(m0, no_level=no_level) if len(m0) else pd.DataFrame()
         sheets = out
     return sheets
 
 
-def claim_sheet(m0: pd.DataFrame, n_bright: int = 20) -> pd.DataFrame:
+def claim_sheet(m0: pd.DataFrame, n_bright: int = 20, *, no_level: str = "no level") -> pd.DataFrame:
     """The **By claim** sheet, the workbook's first: one `summary` row per claim
     key (evidence.CLAIM_KEYS: the four claims, then the reagent and not-assessed
     buckets, zeros kept) -- count and share of the M0 rows, summed height and its
@@ -482,7 +489,7 @@ def claim_sheet(m0: pd.DataFrame, n_bright: int = 20) -> pd.DataFrame:
     rows = []
     for c in EV.CLAIM_KEYS:
         g = cl == c
-        counts = lv[g].where(lv[g].notna(), "no level").astype(str).value_counts()
+        counts = lv[g].where(lv[g].notna(), no_level).astype(str).value_counts()
         hist = "; ".join(f"{k}: {v}" for k, v in sorted(counts.items(),
                                                          key=lambda kv: (-kv[1], pos.get(kv[0], 99))))
         rows.append({"section": "summary", "claim": c, "meaning": EV.CLAIM_MEANING[c],
@@ -527,7 +534,7 @@ def _kind_hist(tags: pd.Series, top: int = 8) -> str:
     return "; ".join(f"{k}: {v}" for k, v in ordered[:top])
 
 
-def evidence_level_sheet(m0: pd.DataFrame, n_bright: int = 20) -> pd.DataFrame:
+def evidence_level_sheet(m0: pd.DataFrame, n_bright: int = 20, *, no_level: str = "no level") -> pd.DataFrame:
     """The **By evidence level** sheet (docs/EVIDENCE_LEVELS.md): one `summary` row
     per level and bucket (evidence.LEVELS + BUCKETS, then `no level` when a
     committed row carries none) -- count, share of the M0 rows, tier split, the
@@ -538,9 +545,11 @@ def evidence_level_sheet(m0: pd.DataFrame, n_bright: int = 20) -> pd.DataFrame:
     keys = [*EV.LEVELS, *EV.BUCKETS]
     groups = [(k, lv == k) for k in keys]
     if lv.isna().any():
-        groups.append(("no level", lv.isna()))
+        groups.append((no_level, lv.isna()))
     meaning = {**EV.LEVEL_MEANING,
-               "no level": "a committed row the stage did not level (its evidence says why) -- reads tentative"}
+               "no level": "a committed row the stage did not level (its evidence says why) -- reads tentative",
+               OLD_SCALE_NO_LEVEL: f"a level of a scale older than {SCALE_NAME} -- not a level of this one; "
+                                   "reads tentative"}
     _col = lambda g, c: g[c] if c in g.columns else pd.Series(pd.NA, index=g.index)   # noqa: E731
     rows = []
     for level, mask in groups:
@@ -638,7 +647,11 @@ def summary_stats(ledger: pd.DataFrame, *, context: str = "",
                 f"{cnt}  ({100 * cnt / len(m0):.0f}% of assignments) -- "
                 f"{EV.LEVEL_MEANING[level]}")
         n_none = int(lv.isna().sum())
-        if n_none:
+        if n_none and info.get("old_scale"):
+            add("Evidence levels", OLD_SCALE_NO_LEVEL,
+                f"{n_none}  ({100 * n_none / len(m0):.0f}% of assignments) -- levelled on an older scale; "
+                "reads tentative")
+        elif n_none:
             add("Evidence levels", "no level",
                 f"{n_none}  ({100 * n_none / len(m0):.0f}% of assignments) -- not levelled "
                 "(the row's evidence says why); reads tentative")

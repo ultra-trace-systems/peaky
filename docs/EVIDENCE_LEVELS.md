@@ -129,6 +129,13 @@ so a reader that must tell "not assessed" from "no level" either reads the
 `keep_default_na=False`; reading `evidence_level` alone with the default
 parser folds `NA` into "no level".
 
+A ledger levelled on a scale older than this one (it carries `evidence_axes` /
+`level_reason`, or a letter this scale does not define) is read with **every**
+letter as no level -- the letters both scales share (4a, 4b, 5a, 5b) too: an
+old 4a is not a 4a of this scale. The report, the PDF, `publish` and
+`scripts/ab_compare.py` show such rows as "no level (pre-<release> scale)",
+re-read their claims (tentative) and say so in one sentence.
+
 ### 2.3 The evidence string
 
 Segments are separated by `" · "` (U+00B7 with a space on each side).

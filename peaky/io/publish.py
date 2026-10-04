@@ -630,19 +630,22 @@ def build_rows(
         frame = frame[~synthetic]
 
     # A ledger levelled on a scale before the evidence scale carries pre-scale
-    # columns or letters this scale does not define: those letters publish as no
-    # level, and the stored claim (read on the old scale) is re-read off the
-    # level on this one -- never a pre-scale letter under the current name.
+    # columns or letters this scale does not define: EVERY letter of it publishes
+    # as no level -- the ones both scales share too (an old 4a is not a 4a of
+    # this scale) -- and the stored claim (read on the old scale) is re-read off
+    # the level, so it reads tentative; never a pre-scale letter under the
+    # current name.
     levels_before_scale = 0
     if "evidence_level" in frame.columns:
         from peaky.assignment import evidence as EV
 
         known = set(EV.LEVEL_ORDER) | set(EV.BUCKETS)
         text = frame["evidence_level"].astype(object)
-        unknown = text.notna() & ~text.astype(str).str.strip().isin(known)
+        lettered = text.notna() & text.astype(str).str.strip().ne("")
+        unknown = lettered & ~text.astype(str).str.strip().isin(known)
         if unknown.any() or {"evidence_axes", "level_reason"} & set(frame.columns):
-            levels_before_scale = int(unknown.sum())
-            frame = frame.assign(evidence_level=text.where(~unknown, None))
+            levels_before_scale = int(lettered.sum())
+            frame = frame.assign(evidence_level=text.where(~lettered, None))
             if "claim" in frame.columns:
                 frame = frame.drop(columns=["claim"])
     # A ledger written before the claim column (C13) still carries the level the
@@ -828,8 +831,8 @@ def build_rows(
         "resolved_mechanisms": resolved_mechanisms,
         "reserved_provenance_dropped": sorted(reserved_seen),
         "exact_plausibility": EXACT_PLAUSIBILITY,
-        # committed rows whose level letter predates the evidence scale (published
-        # with no level; their claim read on this scale)
+        # rows of a ledger levelled before the evidence scale: every level letter
+        # published as no level (their claim read on this scale: tentative)
         "levels_before_scale": levels_before_scale,
     }
     return rows, summary

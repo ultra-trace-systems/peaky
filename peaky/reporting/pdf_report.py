@@ -698,7 +698,9 @@ def cover(ctx, pdf):
                        + " · ".join(f"{k} {v}" for k, v in _ev.items())),
                  ("dim", f"   on {sum(_ev.values())} of {ctx['n_m0']} merged rows -- {SCALE_NAME}; "
                          "see the Evidence levels page")]
-        if scale_note(_info):
+    if ctx.get("levels_info"):
+        from peaky.reporting.report import scale_note
+        if scale_note(_info):        # an older-scale run has no level of this scale: said even then
             head.append(("dim", f"   this run was {scale_note(_info)}"))
     rc = ctx.get("role_count", {})
     if rc:
@@ -1108,10 +1110,13 @@ def claims(ctx, pdf):
     if cc.get(EV.CLAIM_REAGENT):
         lines.append(("b", f"• {cc[EV.CLAIM_REAGENT]} merged row(s) are reagent ions or reagent clusters "
                            "(the reagent bucket, not levelled)."))
-    if ctx.get("n_unlevelled"):
+    if ctx.get("n_unlevelled") and info.get("old_scale"):
+        from peaky.reporting.report import OLD_SCALE_NO_LEVEL
+        lines.append(("b", f"• {ctx['n_unlevelled']} merged row(s) carry {OLD_SCALE_NO_LEVEL} (or no level at "
+                           "all) and read tentative."))
+    elif ctx.get("n_unlevelled"):
         lines.append(("b", f"• {ctx['n_unlevelled']} merged row(s) carry no level (a batch-level "
-                           "re-read" + (", or a level of an older scale" if info.get("n_unknown") else "")
-                           + ") and read tentative."))
+                           "re-read) and read tentative."))
     _text_lines(fig, lines, y0=bot - 0.085, dy=0.0178, size=9, bottom=0.04)
     _close(pdf, fig)
 
@@ -1175,10 +1180,13 @@ def evidence_levels(ctx, pdf):
                            f"{float(top['mz']):.4f} {top['neutral_formula']} {top['adduct']}"))
         lines.append(("dim", f"         {EV.LEVEL_MEANING[k]}"))
     n_na = int(lv.isna().sum())
-    if n_na:
-        why = ("their reading exists in no pooled pair (a batch-level re-read)"
-               + (", or they carry a level of an older scale" if info.get("n_unknown") else ""))
-        lines.append(("dim", f"{n_na} merged row(s) carry no level: {why}; they read tentative."))
+    if n_na and info.get("old_scale"):
+        from peaky.reporting.report import OLD_SCALE_NO_LEVEL
+        lines.append(("dim", f"{n_na} merged row(s) carry {OLD_SCALE_NO_LEVEL} (or no level at all); they read "
+                             "tentative."))
+    elif n_na:
+        lines.append(("dim", f"{n_na} merged row(s) carry no level: their reading exists in no pooled pair (a "
+                             "batch-level re-read); they read tentative."))
     note = scale_note(info)
     if note:
         lines.append(("dim", f"This run was {note}."))

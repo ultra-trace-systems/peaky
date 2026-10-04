@@ -16,8 +16,9 @@ this file pins that:
 - the literal level token NA survives a CSV round trip (read off the claim, or
   re-read as written), and a run not assessed says so (Summary, markdown, the
   PDF cover and levels page);
-- a ledger levelled on an older scale renders: its unknown letters read as no
-  level, its claims are re-read on this scale, and the outputs say so;
+- a ledger levelled on an older scale renders: EVERY letter reads as no level
+  (the letters both scales share too: an old 4a is not a 4a here), its claims
+  re-read tentative, and the outputs say so;
 - the PDF leads with a Claims page whose signal shares carry an explicit
   `unmatched` bucket, the levels page draws every level and bucket (never a
   KeyError), and the cover / findings / methods / appendix carry the claim;
@@ -414,32 +415,42 @@ def _b_series(led: pd.DataFrame) -> pd.DataFrame:
     return old
 
 
-def test_an_older_scale_ledger_renders_its_unknown_letters_as_no_level_and_says_so(tmp_path):
+def test_an_older_scale_ledger_renders_every_letter_as_no_level_and_says_so(tmp_path):
     old = _round_trip(_b_series(_ledger()), tmp_path)
     view, info = R.scale_view(old)
-    assert info["old_scale"] and info["n_unknown"] == 2 and info["unknown"] == ["2b", "4c"]
+    assert info["old_scale"] and info["n_unknown"] == 4 and info["unknown"] == ["2b", "4a", "4c", "5b"]
     assert "claim" not in view.columns                                    # read on the old scale: dropped
+    assert R.OLD_SCALE_NO_LEVEL == f"no level (pre-{EV.SCALE_RELEASE} scale)"
     sheets = R.build_sheets(old, "ambient-air", sample_id="T")
     own = sheets["Peak ownership"].set_index("peak_id")
     assert pd.isna(own.loc["A", "evidence_level"]) and own.loc["A", "claim"] == "tentative"   # 2b: unknown
     assert pd.isna(own.loc["D", "evidence_level"]) and own.loc["D", "claim"] == "tentative"   # 4c: unknown
-    assert own.loc["F", "evidence_level"] == "4a" and own.loc["F", "claim"] == "neutral"      # re-read here
+    # a letter both scales share is no level either: an old 4a is not a 4a of this scale
+    assert pd.isna(own.loc["F", "evidence_level"]) and own.loc["F", "claim"] == "tentative"
+    assert pd.isna(own.loc["C", "evidence_level"]) and own.loc["C", "claim"] == "tentative"   # 5b
     for name, df in sheets.items():
         assert not set(OLD_COLUMNS) & set(df.columns), name
     ev = sheets["Summary"].query("section == 'Evidence levels'").set_index("metric")["value"]
-    assert "older scale" in ev.index and "2 committed row(s)" in ev["older scale"]
-    assert "(2b, 4c)" in ev["older scale"] and ev["no level"].startswith("2  (50% of assignments)")
+    assert "older scale" in ev.index and "its 4 levelled row(s)" in ev["older scale"]
+    assert "(2b, 4a, 4c, 5b;" in ev["older scale"] and R.OLD_SCALE_NO_LEVEL in ev["older scale"]
+    assert ev[R.OLD_SCALE_NO_LEVEL].startswith("4  (100% of assignments)") and "no level" not in ev.index
+    assert not set(EV.LEVELS) & set(ev.index)
     summ = sheets["By evidence level"].query("section == 'summary'").set_index("level")
-    assert list(summ.index) == ["4a", "5b", "no level"]
+    assert list(summ.index) == [R.OLD_SCALE_NO_LEVEL]
+    hist = sheets["By claim"].query("section == 'summary'").set_index("claim")["level_hist"]
+    assert hist["tentative"] == f"{R.OLD_SCALE_NO_LEVEL}: 4"
     R.write_excel(old, tmp_path / "old.xlsx", "ambient-air", sample_id="T")
     result = {"ledger": old, "stats": L.stats(old), "sample_id": "T", "context": "ambient-air",
               "prescan": {}, "problems": []}
     md = R.write_markdown(result, tmp_path / "old.md").read_text()
-    assert "- Claims: identified 0 | neutral 1 | ion 0 | tentative 3" in md
+    assert "- Claims: identified 0 | neutral 0 | ion 0 | tentative 4" in md
     assert "levelled on a scale older than the evidence scale of peaky" in md
-    # an older ledger whose letters all exist here is still flagged by its columns
+    # an older ledger whose letters all exist here is still flagged by its columns, and every letter goes
     led = _ledger().drop(columns=["claim"]).assign(evidence_axes="iso")
-    assert R.scale_view(led)[1]["old_scale"] and R.scale_view(led)[1]["n_unknown"] == 0
+    view, info = R.scale_view(led)
+    n_lettered = int(led["evidence_level"].notna().sum())
+    assert info["old_scale"] and n_lettered and info["n_unknown"] == n_lettered
+    assert view["evidence_level"].isna().all()
 
 
 def test_the_stage_output_renders_and_the_workbook_writes(tmp_path):
@@ -783,16 +794,17 @@ def test_an_older_scale_run_renders_and_says_so(tmp_path, monkeypatch):
     _run_dir(tmp_path, old=True)
     ctx = PR.load_context(str(tmp_path), tag="X", label="X")
     info = ctx["levels_info"]
-    assert info["old_scale"] and info["unknown"] == ["2b", "3a", "4d"] and info["n_unknown"] == 3
-    assert ctx["evidence_levels"] == {"4b": 1, "5a": 1, "5b": 1}
-    # the stored claims (read on the old scale) are dropped and re-read here
-    assert ctx["claims"] == _zeros(ion=1, tentative=6)
-    assert ctx["n_unlevelled"] == 4
+    assert info["old_scale"] and info["unknown"] == ["2b", "3a", "4b", "4d", "5a", "5b"] and info["n_unknown"] == 6
+    # every old letter is no level here, the shared ones (4b, 5a, 5b) included
+    assert ctx["evidence_levels"] == {}
+    # the stored claims (read on the old scale) are dropped and re-read here: all tentative
+    assert ctx["claims"] == _zeros(tentative=7)
+    assert ctx["n_unlevelled"] == 7
     cover = " ".join(t for _s, t in _lines(PR.cover, ctx, monkeypatch))
     assert "this run was levelled on a scale older than the evidence scale of peaky" in cover
-    assert "(2b, 3a, 4d)" in cover
+    assert "(2b, 3a, 4b, 4d, 5a, 5b;" in cover
     page = " ".join(t for _s, t in _lines(PR.evidence_levels, ctx, monkeypatch))
-    assert "or they carry a level of an older scale" in page
+    assert f"7 merged row(s) carry {R.OLD_SCALE_NO_LEVEL}" in page
     out = PR.build(str(tmp_path), tag="X", label="X", out_pdf=str(tmp_path / "old.pdf"),
                    sections=[PR.cover, PR.claims, PR.evidence_levels, PR.findings, PR.assignments_table])
     assert Path(out).stat().st_size > 0
@@ -845,7 +857,8 @@ def test_publish_keeps_na_through_the_csv_and_derives_claims_on_the_scale(tmp_pa
 def test_publish_reads_an_older_scale_ledger_on_this_scale(tmp_path):
     led = _publish_ledger(["2b", "4a", "4d"], ["identified", "identified", "ion"], evidence_axes="iso")
     prov, summary = _published(led, tmp_path)
-    assert summary["levels_before_scale"] == 2
-    assert [p.get("evidence_level") for p in prov] == [None, "4a", None]
-    assert [p.get("claim") for p in prov] == ["tentative", "neutral", "tentative"]
+    assert summary["levels_before_scale"] == 3
+    # every letter publishes as no level -- the shared 4a too: an old 4a is not a 4a of this scale
+    assert [p.get("evidence_level") for p in prov] == [None, None, None]
+    assert [p.get("claim") for p in prov] == ["tentative", "tentative", "tentative"]
     assert all("evidence_axes" not in p for p in prov)
