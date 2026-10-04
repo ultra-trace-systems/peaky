@@ -205,6 +205,13 @@ def _progress_hold_note(prog) -> None:
         pass
 
 
+#: the one line a single-sample `assign --corroborate` logs: the flag feeds a batch's merge vote (which a single
+#: sample does not have) and a batch's other-source partner tag; it never moves a level
+CORROBORATE_IGNORED = ("[levels] --corroborate ({n} source(s)) is ignored here: a single-sample run has no merge "
+                       "vote and no other-source partners (both are a batch's); this sample's evidence levels are "
+                       "its file levelled alone")
+
+
 def cmd_assign(args) -> None:
     _require_creds()
     from peaky.assignment import assign
@@ -273,8 +280,7 @@ def cmd_assign(args) -> None:
     # --corroborate feeds a batch's merge vote and its other-source partner tag;
     # a single sample has neither (its evidence level is the file levelled alone)
     if getattr(args, "corroborate", None):
-        print(f"[levels] --corroborate ({len(args.corroborate)} source(s)) feeds a batch's merge vote and "
-              "other-source partner tag; a single sample has neither: ignored")
+        print(CORROBORATE_IGNORED.format(n=len(args.corroborate)))
     # `prog` IS the log callable (a transparent pass-through to print whenever
     # the window is off), so the run below is identical either way.
     with PG.open_progress(f"peaky \u00b7 assign {args.sample_id}",
@@ -495,6 +501,11 @@ def cmd_gka(args) -> None:
     print(f"wrote {out}  ({len(pts)} points)")
 
 
+#: publish's `levels_before_scale` (a ledger levelled on a scale before the evidence scale), said in one line
+LEVELS_BEFORE_SCALE = ("older     {n} row(s) were levelled on a scale before the evidence scale: every such "
+                       "letter publishes as no level and the row's claim as tentative")
+
+
 def cmd_publish(args) -> None:
     """Publish a finished ledger into Mascope's peak-assignment run ledger.
 
@@ -589,6 +600,8 @@ def cmd_publish(args) -> None:
     if summary.get("resolved_mechanisms"):
         print(f"ionization {summary['resolved_mechanisms']} row(s) carry a mechanism "
               "id -- the fit view needs one, and it is part of a verification's identity")
+    if summary.get("levels_before_scale"):
+        print(LEVELS_BEFORE_SCALE.format(n=summary["levels_before_scale"]))
     for label, key in (("skipped synthetic", "dropped_synthetic"),
                        ("skipped incomplete", "dropped_incomplete"),
                        ("iso formulas inherited", "inherited_formulas")):
@@ -719,6 +732,8 @@ def cmd_publish_batch(args) -> None:
 
     version = args.engine_version or P.engine_version(None)
     config = P.batch_config(summary, merged=merged)
+    if config.get("levels_before_scale"):
+        print(LEVELS_BEFORE_SCALE.format(n=config["levels_before_scale"]))
 
     if args.dry_run:
         print(f"\n[dry-run] nothing sent. engine_version {version}, "

@@ -532,3 +532,50 @@ def test_the_mcp_tools_return_the_claims(monkeypatch, tmp_path):
     monkeypatch.setattr(PL, "run_batch", lambda **kw: {"ctx": None, "assign": {"merged_M0": 3}})
     job = _wait(M.JOBS, M.run_batch("some batch", dataset="D")["job_id"])
     assert job.status == "done" and job.result["claims"] is None
+
+
+def test_cli_publish_says_how_many_rows_were_levelled_before_the_scale(tmp_path, capsys):
+    """`peaky publish` prints publish's `levels_before_scale` in one line (none on
+    a ledger of this scale); `publish-batch` prints the run config's count."""
+    def ledger(levels, **extra):
+        return pd.DataFrame({"peak_id": [f"P{k:018d}" for k in range(len(levels))], "mz": [150.0, 151.0],
+                             "role": "M0", "neutral_formula": "C6H6", "ion_score": 0.9, "height": [10.0, 11.0],
+                             "tier": "Assigned", "evidence_level": levels, "sample_item_id": "S0000000000000001",
+                             **extra})
+
+    def publish(led):
+        path = tmp_path / "led.csv"
+        led.to_csv(path, index=False)
+        cli.cmd_publish(cli.build_parser().parse_args(["publish", str(path), "--intensity", "height",
+                                                       "--dry-run", "--no-resolve-mechanisms"]))
+        return capsys.readouterr().out
+
+    out = publish(ledger(["2b", "4a"], evidence_axes="iso"))
+    assert cli.LEVELS_BEFORE_SCALE.format(n=2) in out
+    assert "older" not in publish(ledger(["3c", "4a"], claim=["identified", "neutral"]))
+    run = tmp_path / "run"
+    run.mkdir()
+    ledger(["2b", "4a"], evidence_axes="iso").assign(adduct="[M-H]-").to_csv(run / "merged_ledger.csv", index=False)
+    (run / "batch_summary.json").write_text(json.dumps({"merged_tiers": {"Assigned": 2}}))
+    cli.cmd_publish_batch(cli.build_parser().parse_args(
+        ["publish-batch", str(run), "--dry-run", "--no-resolve-mechanisms"]))
+    assert cli.LEVELS_BEFORE_SCALE.format(n=2) in capsys.readouterr().out
+
+
+def test_cli_single_sample_corroborate_logs_one_line_that_it_is_ignored(monkeypatch, tmp_path, capsys):
+    class _Stop(Exception):
+        pass
+
+    def stop(*a, **k):
+        raise _Stop
+
+    monkeypatch.setattr(cli, "_require_creds", lambda: None)
+    monkeypatch.setattr(A, "run", stop)
+    args = cli.build_parser().parse_args(["assign", "--sample-id", "X", "--reagent", "Br", "--output-dir",
+                                          str(tmp_path), "--corroborate", "r1", "--corroborate", "r2"])
+    with pytest.raises(_Stop):
+        cli.cmd_assign(args)
+    out = capsys.readouterr().out
+    lines = [ln for ln in out.splitlines() if "--corroborate" in ln]
+    assert lines == [cli.CORROBORATE_IGNORED.format(n=2)]
+    assert "no merge vote" in lines[0] and "ignored" in lines[0]
