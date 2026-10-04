@@ -16,6 +16,7 @@ from ledger columns, so they are reproducible.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -26,8 +27,8 @@ from peaky.assignment import evidence as EV
 from peaky.assignment import ledger as L
 from peaky.assignment import tiers as T
 
-__version__ = "0.4.0"  # + By claim sheet (the claim beside the tier)
-                       # (history) solvent-cluster method legend; Below-assignability sheet
+__version__ = "0.5.0"  # the evidence scale of peaky 0.10.0 (the level columns, By claim over six keys)
+                       # (history) By claim sheet; solvent-cluster method legend; Below-assignability sheet
 
 
 def _alts_list(cell) -> list[dict]:
@@ -78,24 +79,143 @@ _RESIDUAL_INTERPRETATION = {
 }
 
 
+# ---------------------------------------------------------------------------
+# the evidence scale (docs/EVIDENCE_LEVELS.md): reading a ledger's level columns
+# ---------------------------------------------------------------------------
+#: the level tokens the scale defines: LEVEL_ORDER (1 and 2 never assigned) + the
+#: two buckets. Any other token in `evidence_level` is a level of a scale before
+#: this one (a ledger written by an older peaky).
+KNOWN_LEVELS = frozenset(EV.LEVEL_ORDER) | frozenset(EV.BUCKETS)
+#: columns only a ledger levelled before the scale carries
+OLD_LEVEL_COLUMNS = ("evidence_axes", "level_reason", "n_plausible_structures")
+#: the long text columns the scale writes beside `evidence_level` and `claim`
+LEVEL_TEXT_COLUMNS = tuple(c for c in EV.COLUMNS if c not in ("evidence_level", "claim"))
+#: where a sheet shows the level: the claim, the level, then its text columns
+LEVEL_COLUMNS = ["claim", "evidence_level", *LEVEL_TEXT_COLUMNS]
+#: the scale's name in user-facing text (the release lives in one constant)
+SCALE_NAME = f"the evidence scale of peaky {EV.SCALE_RELEASE}"
+#: claim rank, best first: the four claims, then the two buckets
+_CLAIM_RANK = {c: k for k, c in enumerate(EV.CLAIM_KEYS)}
+
+
+def _blank(v) -> bool:
+    """A cell with no value: None, NaN, pd.NA, or the text forms a CSV round
+    trip leaves ('', 'nan', '<NA>')."""
+    if v is None:
+        return True
+    if not isinstance(v, str):
+        try:
+            return bool(pd.isna(v))
+        except (TypeError, ValueError):
+            return False
+    return v.strip() in ("", "nan", "<NA>")
+
+
+def scale_view(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """A copy of `frame` with its level columns read for display, and what was
+    found. Two repairs:
+
+    - ``NA`` (not assessed) is a literal token that pandas' default CSV parser
+      turns into NaN; a row whose `claim` says "not assessed" gets its ``NA``
+      back (docs/OUTPUTS.md: read the claim column to tell NA from no level).
+    - A ledger levelled on a scale before this one (it carries `evidence_axes`
+      / `level_reason`, or a level letter this scale does not define): every
+      unknown letter reads as no level, and the stored claim -- read on the old
+      scale -- is dropped, so the claim is re-read off the level on this one.
+
+    Returns (frame, info) with info = {old_scale, n_unknown, unknown (sorted
+    tokens), n_na, na_reason}. A frame without `evidence_level` comes back
+    unchanged with an empty info."""
+    out = frame.copy()
+    info = {"old_scale": False, "n_unknown": 0, "unknown": [], "n_na": 0, "na_reason": ""}
+    if "evidence_level" not in out.columns:
+        return out, info
+    lv = pd.Series([pd.NA if _blank(v) else str(v).strip() for v in out["evidence_level"]],
+                   index=out.index, dtype=object)
+    if "claim" in out.columns:
+        na_claim = out["claim"].astype(object).map(lambda v: not _blank(v) and str(v) == EV.CLAIM_NA)
+        lv = lv.where(~(lv.isna() & na_claim), "NA")
+    unknown = lv.notna() & ~lv.isin(KNOWN_LEVELS)
+    old = bool(unknown.any()) or any(c in out.columns for c in OLD_LEVEL_COLUMNS)
+    if old:
+        info.update(old_scale=True, n_unknown=int(unknown.sum()),
+                    unknown=sorted(set(lv[unknown].astype(str))))
+        lv = lv.where(~unknown, pd.NA)
+        if "claim" in out.columns:
+            out = out.drop(columns=["claim"])
+    out["evidence_level"] = lv
+    na = lv == "NA"
+    info["n_na"] = int(na.sum())
+    if na.any():
+        reason = ""
+        if "evidence" in out.columns:
+            texts = [str(t) for t in out.loc[na, "evidence"] if not _blank(t)]
+            reason = texts[0].split(" · ", 1)[1] if texts and " · " in texts[0] else ""
+        info["na_reason"] = reason or EV.LEVEL_MEANING["NA"]
+    return out, info
+
+
+def scale_note(info: dict) -> str:
+    """One sentence on a ledger levelled before the scale ('' otherwise)."""
+    if not info.get("old_scale"):
+        return ""
+    if info.get("n_unknown"):
+        letters = ", ".join(info["unknown"])
+        return (f"levelled on a scale older than {SCALE_NAME}: {info['n_unknown']} committed row(s) carry a "
+                f"level this scale does not define ({letters}) and read as no level (tentative); the other "
+                "letters and every claim are read on this scale")
+    return (f"levelled on a scale older than {SCALE_NAME} (its level columns are not shown); the levels and "
+            "the claims are read on this scale")
+
+
+def na_detail(info: dict) -> str:
+    """The parenthetical of a not-assessed reason ('width model R(200) = 9 652 <
+    50 000'), or the whole reason when it has none."""
+    reason = str(info.get("na_reason") or EV.LEVEL_MEANING["NA"])
+    head = EV.LEVEL_MEANING["NA"] + " ("
+    return reason[len(head):-1] if reason.startswith(head) and reason.endswith(")") else reason
+
+
+def tag_kind(tag: str) -> str:
+    """The kind of one tag text: its words before the first ':', ' (' or ' -- ',
+    without a trailing count ('series exclusion x2' -> 'series exclusion')."""
+    head = re.split(r":| \(| -- ", str(tag), maxsplit=1)[0].strip()
+    return re.sub(r" x\d+$", "", head)
+
+
+def tag_kinds(tags) -> list[str]:
+    """The sorted distinct kinds of a `tags` cell (tag texts joined by ' | ')."""
+    if _blank(tags):
+        return []
+    return sorted({tag_kind(t) for t in str(tags).split(" | ") if t.strip()})
+
+
 def _claims(m0: pd.DataFrame) -> pd.Series:
     """The claim of each M0 row (evidence.claim_class): the stored `claim`, else --
-    a ledger written before the column existed -- read off `evidence_level`."""
+    a ledger written before the column existed, or one `scale_view` re-reads --
+    read off `evidence_level`."""
     lv = m0["evidence_level"] if "evidence_level" in m0.columns else pd.Series(pd.NA, index=m0.index)
     derived = pd.Series([EV.claim_class(v) for v in lv], index=m0.index, dtype=object)
     if "claim" not in m0.columns:
         return derived
-    return m0["claim"].astype(object).where(m0["claim"].notna(), derived)
+    stored = m0["claim"].astype(object)
+    return stored.where(~stored.map(_blank), derived)
 
 
 def claim_levels(claim: str) -> str:
-    """The levels behind a claim, best first: '1 2a 2b 3a 3b 4a' / '4b 4c 4d' /
-    '5a 5b, no level'."""
+    """The levels behind a claim, best first: '1 2 3c' (1 and 2 never assigned) /
+    '4a' / '4b' / '5a 5b, no level' / 'reagent' / 'NA'."""
     if claim == "identified":
         return " ".join(lv for lv in EV.LEVEL_ORDER if lv in EV.CLAIM_IDENTIFIED)
+    if claim == "neutral":
+        return " ".join(lv for lv in EV.LEVEL_ORDER if lv in EV.CLAIM_NEUTRAL)
     if claim == "ion":
         return " ".join(lv for lv in EV.LEVEL_ORDER if lv in EV.CLAIM_ION)
-    rest = [lv for lv in EV.LEVEL_ORDER if lv not in EV.CLAIM_IDENTIFIED | EV.CLAIM_ION]
+    if claim == EV.CLAIM_REAGENT:
+        return "reagent"
+    if claim == EV.CLAIM_NA:
+        return "NA"
+    rest = [lv for lv in EV.LEVEL_ORDER if lv not in EV.CLAIM_IDENTIFIED | EV.CLAIM_NEUTRAL | EV.CLAIM_ION]
     return " ".join(rest) + ", no level"
 
 
@@ -122,7 +242,8 @@ def _candidate_rows(cand: pd.DataFrame, *, levels: bool = False) -> pd.DataFrame
     """Explode Candidate peaks into one row per candidate formula: rank 1 is
     the committed winner, ranks 2+ are the stored alternatives. This is the
     'stop presenting one formula per peak' sheet. With `levels`, the rank-1 row
-    carries the committed reading's `claim` and `evidence_level`."""
+    carries the committed reading's `claim`, `evidence_level` and the level's
+    text columns (evidence.COLUMNS); an alternative makes no claim."""
     rows = []
     for _, r in cand.iterrows():
         first = {
@@ -133,6 +254,7 @@ def _candidate_rows(cand: pd.DataFrame, *, levels: bool = False) -> pd.DataFrame
             "ppm_error": r["ppm_error"], "confidence": r["confidence"],
             "claim": r.get("claim", pd.NA),
             "evidence_level": r.get("evidence_level", pd.NA),
+            **{c: r.get(c, pd.NA) for c in LEVEL_TEXT_COLUMNS},
             "candidate_density": r.get("candidate_density", pd.NA),
             "degeneracy_note": r.get("degeneracy_note", ""),
             "why_candidate": r.get("tier_reason", ""),
@@ -148,6 +270,7 @@ def _candidate_rows(cand: pd.DataFrame, *, levels: bool = False) -> pd.DataFrame
                 "eff_score": a.get("eff_score"),
                 "ppm_error": a.get("ppm"),
                 "confidence": "", "claim": "", "evidence_level": "", "candidate_density": "",
+                **{c: "" for c in LEVEL_TEXT_COLUMNS},
                 "why_candidate": "", "isotopologues": "", "commentary": "",
                 "peak_id": r["peak_id"],
             })
@@ -155,7 +278,7 @@ def _candidate_rows(cand: pd.DataFrame, *, levels: bool = False) -> pd.DataFrame
             "ppm_error", "confidence", "candidate_density", "degeneracy_note",
             "why_candidate", "isotopologues", "commentary", "peak_id"]
     if levels:
-        cols[cols.index("confidence") + 1:cols.index("confidence") + 1] = ["claim", "evidence_level"]
+        cols[cols.index("confidence") + 1:cols.index("confidence") + 1] = LEVEL_COLUMNS
     df = pd.DataFrame(rows, columns=cols)
     if len(df):
         df = (df.sort_values(["height", "mz", "rank"],
@@ -175,11 +298,15 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
         led["composite_note"] = pd.NA
     if "degeneracy_note" not in led.columns:   # old ledgers predate the degeneracy audit
         led["degeneracy_note"] = pd.NA
-    # evidence levels (docs/EVIDENCE_LEVELS.md): the column set and the extra sheet
-    # exist only when the ledger carries the level, so an older run renders unchanged
+    # evidence levels (docs/EVIDENCE_LEVELS.md): the column set and the extra sheets
+    # exist only when the ledger carries the level, so an unlevelled run renders
+    # unchanged. `scale_view` restores the literal NA (not assessed) and reads a
+    # ledger levelled before the scale (its unknown letters read as no level)
     has_levels = "evidence_level" in led.columns
     if has_levels:
-        for c in ("evidence_axes", "level_reason", "n_plausible_structures"):
+        led, _info = scale_view(led)
+        led = led.drop(columns=[c for c in OLD_LEVEL_COLUMNS if c in led.columns])
+        for c in EV.COLUMNS:
             if c not in led.columns:
                 led[c] = pd.NA
         # the claim (evidence.claim_class): an older ledger predates the column, so it
@@ -189,6 +316,7 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
         claim = (led["claim"].astype(object) if "claim" in led.columns
                  else pd.Series(pd.NA, index=led.index, dtype=object))
         claim[is_m0] = _claims(led[is_m0]).values
+        claim[~is_m0] = pd.NA
         led["claim"] = claim
     m0 = led[led["role"] == L.ROLE_M0].copy()
     if len(m0):
@@ -200,12 +328,10 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
     acols = list(_ASSIGN_COL_ORDER)
     if has_levels:
         _j = acols.index("confidence") + 1
-        acols[_j:_j] = ["claim", "evidence_level", "level_reason", "n_plausible_structures"]
-    identified = (ident[acols]
-                  .rename(columns={"tier_reason": "evidence"})
-                  .sort_values("height", ascending=False)) if len(ident) else \
-        pd.DataFrame(columns=[c if c != "tier_reason" else "evidence"
-                              for c in acols])
+        acols[_j:_j] = LEVEL_COLUMNS
+    # the tier's own reason keeps its ledger name: `evidence` is the level's column
+    identified = (ident[acols].sort_values("height", ascending=False)) if len(ident) else \
+        pd.DataFrame(columns=acols)
 
     candidates = _candidate_rows(cand, levels=has_levels)
 
@@ -214,9 +340,9 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
     from peaky.assignment import residual as RD
     un = RD.characterize_residual(led)
     if len(un):
-        un = un.rename(columns={"tier": "evidence"})
-        un["interpretation"] = un["evidence"].map(_RESIDUAL_INTERPRETATION)
-        un = un[["mz", "height", "evidence", "twin_of", "c_count",
+        un = un.rename(columns={"tier": "residual_evidence"})
+        un["interpretation"] = un["residual_evidence"].map(_RESIDUAL_INTERPRETATION)
+        un = un[["mz", "height", "residual_evidence", "twin_of", "c_count",
                  "n_Br", "n_Cl", "interpretation", "peak_id"]]
 
     # by class, with the tier split visible
@@ -246,10 +372,10 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
                      signal=("height", "sum"))
                 .reset_index().sort_values("signal", ascending=False))
         if has_levels:
-            # the neutral's best claim over its channels, beside its best tier
-            _rank = {c: k for k, c in enumerate(EV.CLAIMS)}
-            best = (m0.assign(_r=m0["claim"].map(_rank))
-                    .groupby("neutral_formula")["_r"].min().map(dict(enumerate(EV.CLAIMS))))
+            # the neutral's best claim over its channels, beside its best tier (the
+            # four claims first, then the reagent and not-assessed buckets)
+            best = (m0.assign(_r=m0["claim"].map(_CLAIM_RANK))
+                    .groupby("neutral_formula")["_r"].min().map(dict(enumerate(EV.CLAIM_KEYS))))
             uniq.insert(uniq.columns.get_loc("best_tier") + 1, "best_claim",
                         uniq["neutral_formula"].map(best).values)
     else:
@@ -272,8 +398,7 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
     # ownership audit (one row per physical peak). A satellite's row names its
     # owner, not just its peak_id: this sheet is what a reviewer reads to ask who
     # claimed a peak, and "iso_child of 4f9a..." does not answer that.
-    _own_cols = ["peak_id", "mz", "height", "role", "tier"] + (["claim"] if has_levels else []) + [
-                 "evidence_level",
+    _own_cols = ["peak_id", "mz", "height", "role", "tier"] + (LEVEL_COLUMNS if has_levels else []) + [
                  "neutral_formula", "adduct", "ion_score", "ppm_error",
                  "confidence", "composite_note", "parent_peak_id",
                  "parent_neutral_formula", "parent_adduct",
@@ -284,7 +409,7 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
     # target list (formula + adduct + best ppm), Assigned first
     # ('Assigned' < 'Candidate' lexically, hence the ascending tier sort)
     _tcols = ["neutral_formula", "adduct", "ion_formula", "mz",
-              "ppm_error", "ion_score", "confidence", "tier"] + (["claim", "evidence_level"] if has_levels else [])
+              "ppm_error", "ion_score", "confidence", "tier"] + (LEVEL_COLUMNS if has_levels else [])
     target = (m0[_tcols]
               .sort_values(["tier", "mz"], ascending=[True, True])) if len(m0) else pd.DataFrame()
 
@@ -311,7 +436,8 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
         below = pd.DataFrame()
 
     sheets = {
-        "Summary": summary_stats(led, context=context, sample_id=sample_id),
+        "Summary": summary_stats(led, context=context, sample_id=sample_id,
+                                 scale_info=_info if has_levels else None),
         "Read me": legend_sheet(claims=has_levels),
         "Assigned": identified,
         "Candidates": candidates,
@@ -338,7 +464,8 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
 
 def claim_sheet(m0: pd.DataFrame, n_bright: int = 20) -> pd.DataFrame:
     """The **By claim** sheet, the workbook's first: one `summary` row per claim
-    (evidence.CLAIMS) -- count and share of the M0 rows, summed height and its
+    key (evidence.CLAIM_KEYS: the four claims, then the reagent and not-assessed
+    buckets, zeros kept) -- count and share of the M0 rows, summed height and its
     share, the tier split, the levels behind it -- then the `tier disagrees` rows
     (Assigned but tentative, Candidate but identified; brightest first) and the
     `n_bright` brightest rows of each claim. The tier is shown beside the claim,
@@ -351,9 +478,9 @@ def claim_sheet(m0: pd.DataFrame, n_bright: int = 20) -> pd.DataFrame:
     tier = m0["tier"].astype(object)
     io = (m0["ion_only_of"].notna() if "ion_only_of" in m0.columns
           else pd.Series(False, index=m0.index))
-    pos = {k: i for i, k in enumerate(EV.LEVEL_ORDER)}
+    pos = {k: i for i, k in enumerate([*EV.LEVEL_ORDER, *EV.BUCKETS])}
     rows = []
-    for c in EV.CLAIMS:
+    for c in EV.CLAIM_KEYS:
         g = cl == c
         counts = lv[g].where(lv[g].notna(), "no level").astype(str).value_counts()
         hist = "; ".join(f"{k}: {v}" for k, v in sorted(counts.items(),
@@ -371,7 +498,7 @@ def claim_sheet(m0: pd.DataFrame, n_bright: int = 20) -> pd.DataFrame:
         return {"section": section, "claim": c, "evidence_level": r.get("evidence_level"),
                 "tier": r.get("tier"), "mz": r.get("mz"), "height": r.get("height"),
                 "neutral_formula": r.get("neutral_formula"), "adduct": r.get("adduct"),
-                "evidence_axes": r.get("evidence_axes"), "level_reason": r.get("level_reason"),
+                "evidence": r.get("evidence"), "would_lift": r.get("would_lift"),
                 "tier_reason": r.get("tier_reason"), "peak_id": r.get("peak_id")}
     # the two verdicts part: a tier that prints a row the claim calls tentative, or
     # offers one the claim calls identified -- listed, never reconciled
@@ -379,53 +506,73 @@ def claim_sheet(m0: pd.DataFrame, n_bright: int = 20) -> pd.DataFrame:
                   | ((tier == T.TIER_CANDIDATE) & (cl == "identified")))
     for i in h[part].sort_values(ascending=False, kind="mergesort").index:
         rows.append(_row("tier disagrees", cl[i], m0.loc[i]))
-    for c in EV.CLAIMS:
+    for c in EV.CLAIM_KEYS:
         for i in h[cl == c].sort_values(ascending=False, kind="mergesort").head(n_bright).index:
             rows.append(_row(f"brightest {c}", c, m0.loc[i]))
     cols = ["section", "claim", "evidence_level", "tier", "meaning", "levels", "n", "share",
             "signal", "signal_share", "n_assigned", "n_candidate", "n_ion_only", "level_hist",
-            "mz", "height", "neutral_formula", "adduct", "evidence_axes", "level_reason",
+            "mz", "height", "neutral_formula", "adduct", "evidence", "would_lift",
             "tier_reason", "peak_id"]
     return pd.DataFrame(rows, columns=cols)
 
 
+def _kind_hist(tags: pd.Series, top: int = 8) -> str:
+    """'kind: n; ...' over the rows' tag kinds (a row counts once per kind),
+    commonest first; '(none)' counts the rows with no tag."""
+    counts: dict = {}
+    for t in tags:
+        for k in (tag_kinds(t) or ["(none)"]):
+            counts[k] = counts.get(k, 0) + 1
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return "; ".join(f"{k}: {v}" for k, v in ordered[:top])
+
+
 def evidence_level_sheet(m0: pd.DataFrame, n_bright: int = 20) -> pd.DataFrame:
     """The **By evidence level** sheet (docs/EVIDENCE_LEVELS.md): one `summary` row
-    per level -- count, share of levelled rows, tier split, the commonest axes
-    strings -- then the `n_bright` brightest M0 rows of each level with the axes
-    and the reason, so a reader sees what a 4a looks like beside a 5b."""
+    per level and bucket (evidence.LEVELS + BUCKETS, then `no level` when a
+    committed row carries none) -- count, share of the M0 rows, tier split, the
+    commonest tag kinds -- then the `n_bright` brightest M0 rows of each with
+    the evidence, what would lift it, the competitors left and the tags, so a
+    reader sees what a 4a looks like beside a 5b."""
     lv = m0["evidence_level"].astype(object)
-    n_lv = int(lv.notna().sum())
+    keys = [*EV.LEVELS, *EV.BUCKETS]
+    groups = [(k, lv == k) for k in keys]
+    if lv.isna().any():
+        groups.append(("no level", lv.isna()))
+    meaning = {**EV.LEVEL_MEANING,
+               "no level": "a committed row the stage did not level (its evidence says why) -- reads tentative"}
+    _col = lambda g, c: g[c] if c in g.columns else pd.Series(pd.NA, index=g.index)   # noqa: E731
     rows = []
-    for level in EV.LEVELS:
-        g = m0[lv == level]
+    for level, mask in groups:
+        g = m0[mask]
         if not len(g):
             continue
-        axes = g["evidence_axes"].fillna("").astype(str).value_counts()
-        hist = "; ".join(f"{k or '(none)'}: {v}" for k, v in axes.head(6).items())
-        rows.append({"section": "summary", "level": level, "meaning": EV.LEVEL_MEANING[level],
-                     "n": int(len(g)), "share": len(g) / max(n_lv, 1),
+        rows.append({"section": "summary", "level": level, "meaning": meaning[level],
+                     "n": int(len(g)), "share": len(g) / max(len(m0), 1),
                      "n_assigned": int((g["tier"] == T.TIER_ASSIGNED).sum()),
                      "n_candidate": int((g["tier"] == T.TIER_CANDIDATE).sum()),
-                     "axes": hist})
-    for level in EV.LEVELS:
-        g = m0[lv == level].sort_values("height", ascending=False).head(n_bright)
+                     "tag_kinds": _kind_hist(_col(g, "tags"))})
+    for level, mask in groups:
+        g = m0[mask].sort_values("height", ascending=False).head(n_bright)
         for _, r in g.iterrows():
             rows.append({"section": f"brightest {level}", "level": level,
                          "mz": r.get("mz"), "height": r.get("height"),
                          "neutral_formula": r.get("neutral_formula"), "adduct": r.get("adduct"),
-                         "tier": r.get("tier"), "axes": r.get("evidence_axes"),
-                         "level_reason": r.get("level_reason"),
-                         "n_plausible_structures": r.get("n_plausible_structures"),
-                         "peak_id": r.get("peak_id")})
-    cols = ["section", "level", "meaning", "n", "share", "n_assigned", "n_candidate",
-            "mz", "height", "neutral_formula", "adduct", "tier", "axes", "level_reason",
-            "n_plausible_structures", "peak_id"]
+                         "tier": r.get("tier"), "evidence": r.get("evidence"),
+                         "would_lift": r.get("would_lift"), "competitors_left": r.get("competitors_left"),
+                         "tags": r.get("tags"), "peak_id": r.get("peak_id")})
+    cols = ["section", "level", "meaning", "n", "share", "n_assigned", "n_candidate", "tag_kinds",
+            "mz", "height", "neutral_formula", "adduct", "tier", "evidence", "would_lift",
+            "competitors_left", "tags", "peak_id"]
     return pd.DataFrame(rows, columns=cols)
 
 
 def summary_stats(ledger: pd.DataFrame, *, context: str = "",
-                  sample_id: str = "") -> pd.DataFrame:
+                  sample_id: str = "", scale_info: dict | None = None) -> pd.DataFrame:
+    """The **Summary** sheet. `scale_info` is `scale_view`'s info when the caller
+    has already read the level columns (build_sheets); else they are read here."""
+    if "evidence_level" in ledger.columns and scale_info is None:
+        ledger, scale_info = scale_view(ledger)
     st = L.stats(ledger)
     n = st["n_peaks"]
     rows = []
@@ -460,7 +607,7 @@ def summary_stats(ledger: pd.DataFrame, *, context: str = "",
         # the claim each level supports, on the Tiers rows' own denominators
         cl = _claims(m0)
         h_m0 = m0["height"].sum(skipna=True)
-        for claim in EV.CLAIMS:
+        for claim in EV.CLAIM_KEYS:
             sub = m0[cl == claim]
             sig = (100 * sub["height"].sum(skipna=True) / h_m0) if h_m0 else 0.0
             add("Claims", claim,
@@ -479,11 +626,22 @@ def summary_stats(ledger: pd.DataFrame, *, context: str = "",
             "(see Unassigned sheet for per-peak evidence)")
     if "evidence_level" in ledger.columns and len(m0):
         lv = m0["evidence_level"]
-        n_lv = int(lv.notna().sum())
+        add("Evidence levels", "scale", SCALE_NAME)
+        info = scale_info or {}
+        if info.get("n_na"):
+            add("Evidence levels", "not assessed", info["na_reason"])
+        note = scale_note(info)
+        if note:
+            add("Evidence levels", "older scale", note)
         for level, cnt in EV.summarize(lv).items():
             add("Evidence levels", level,
-                f"{cnt}  ({100 * cnt / max(n_lv, 1):.0f}% of levelled rows) -- "
+                f"{cnt}  ({100 * cnt / len(m0):.0f}% of assignments) -- "
                 f"{EV.LEVEL_MEANING[level]}")
+        n_none = int(lv.isna().sum())
+        if n_none:
+            add("Evidence levels", "no level",
+                f"{n_none}  ({100 * n_none / len(m0):.0f}% of assignments) -- not levelled "
+                "(the row's evidence says why); reads tentative")
 
     if len(m0):
         base = m0["confidence"].map(T.base_confidence)
@@ -496,22 +654,30 @@ def summary_stats(ledger: pd.DataFrame, *, context: str = "",
     return pd.DataFrame(rows, columns=["section", "metric", "value"])
 
 
-_LEVEL_LEGEND = [
-    ("2b", "curated identity (a compound-scope pass-0 family) on a formula the isomer "
-           "space says admits one structure"),
-    ("3a", "any other curated commit: a named class, isomers open"),
-    ("3b", "the gas-phase-acidity branch: the same neutral seen deprotonated AND clustered "
-           "(a substituent only)"),
-    ("4a", "formula confirmed and the neutral established: two orthogonal axes, at least "
-           "one from outside this channel's ionization chemistry"),
-    ("4b", "formula confirmed, one corroboration"),
-    ("4c", "formula unopposed (one plausible ion in the calibrated window, separable "
-           "peak) but nothing corroborates it"),
-    ("4d", "ION formula only: the sole isotope support is the reagent halogen, which pins "
-           "the ion and says nothing about the neutral"),
-    ("5a", "exact mass only; no discriminating test was possible"),
-    ("5b", "the assignment argues with itself: a near-tie the arbiter broke, a row below "
-           "assignability, a Low/Suspect score, or a mass-degenerate window with no axis"),
+#: the Read me rows of the scale: every level and bucket with its meaning
+_LEVEL_LEGEND = [(lv, EV.LEVEL_MEANING[lv]) for lv in [*EV.LEVEL_ORDER, *EV.BUCKETS]]
+
+#: the Read me rows of the level's columns
+_LEVEL_COLUMN_LEGEND = [
+    ("evidence_level", "What the evidence behind a committed formula is worth on " + SCALE_NAME
+     + ": 3c (best assigned) .. 5b, plus the reagent bucket and NA (not assessed on this "
+     "instrument class). Levels 1 (authentic standard) and 2 (library / MS2 spectrum) are "
+     "defined and never assigned. Computed per (neutral, adduct) on M0 rows only; the tier "
+     "is not an input. See docs/EVIDENCE_LEVELS.md."),
+    ("evidence", "The level's reasons in one line, segments joined by ' · ': the level, how the ion "
+     "is established, whether the neutral / adduct split is pinned and how, the positive fact, "
+     "the named list entry, how the context lists were activated and the tags."),
+    ("would_lift", "What the next level up needs (or, on 5a / 5b, what refuted or blocked the reading)."),
+    ("competitors_left", "The competitor ions left in the calibrated window after the isotope "
+     "tests ('; '-joined; empty when none)."),
+    ("tags", "Facts that do not move the level, joined by ' | ': routes, other-source partners, "
+     "ladders, class-list entries, side channels locked, NH4 gate outcomes, a tentative lead."),
+    ("context", "The context-list entries that match the neutral (reflist:<id> = <name> for a "
+     "named entry, reflist:<id> for a class entry; registry:<family> likewise)."),
+    ("context_source", "How those lists were activated (always active, a keyword in the batch / "
+     "dataset / reagent label name, or the pass-0 registry)."),
+    ("NA (the token)", "Written literally. Spreadsheet and pandas readers may show it as empty: the claim "
+     "column ('not assessed') tells it apart from a row with no level."),
 ]
 
 
@@ -522,25 +688,18 @@ def legend_sheet(*, claims: bool = False) -> pd.DataFrame:
         ("Tiers", "Assigned", "Formula unique in the calibrated mass window, "
          "or corroborated by independent evidence: Mascope-confirmed "
          "isotopologues, the same neutral in a second ionization channel, or "
-         "series-anchor support. The 'evidence' column states which."),
+         "series-anchor support. The 'tier_reason' column states which."),
         ("Tiers", "Candidate", "A plausible formula that the evidence cannot "
          "single out. All competing formulas are listed, one row per candidate "
          "(rank 1 = the committed best guess). The 'why_candidate' column "
          "gives the demotion reason."),
         ("Tiers", "Below assignability", "Unexplained peaks (Unassigned sheet)."
-         " 'evidence' says what the isotope pattern DOES tell us: iso-partner "
+         " 'residual_evidence' says what the isotope pattern DOES tell us: iso-partner "
          "(satellite of another residual peak), has-constraints (carbon/"
          "halogen count measured), isolated (no isotope structure)."),
-        ("Evidence levels", "evidence_level", "What the evidence behind a "
-         "committed formula is worth, on Schymanski et al. (2014)'s scale "
-         "adapted to chemical ionization: 1 = best, 5b = weakest; 1 and 2a "
-         "never fire (no authentic standard, no library spectrum). Computed per "
-         "(neutral, adduct) from the ledger's own columns; 'evidence_axes' lists "
-         "the axes that hold (iso / chan2 / anchor / corroborated, then the "
-         "modifiers), 'level_reason' the predicate that fired, "
-         "'n_plausible_structures' the isomer ceiling of the formula. "
-         "The tier is not an input. See docs/EVIDENCE_LEVELS.md."),
+        *[("Evidence levels", _col, _text) for _col, _text in _LEVEL_COLUMN_LEGEND[:1]],
         *[("Evidence levels", _lvl, _meaning) for _lvl, _meaning in _LEVEL_LEGEND],
+        *[("Evidence levels", _col, _text) for _col, _text in _LEVEL_COLUMN_LEGEND[1:]],
         ("Confidence", "High", "Score >= tau_high, |ppm| within 1.5x the gate, "
          "at least one Mascope-confirmed isotopologue, no near-tie."),
         ("Confidence", "Good", "Score >= tau_good and |ppm| within 2x the gate. "
@@ -600,10 +759,12 @@ def legend_sheet(*, claims: bool = False) -> pd.DataFrame:
     if claims:
         rows = [
             ("Claims", "claim", "What a committed formula lets you say, read from its "
-             "evidence_level: identified (levels 1-4a), ion (4b-4d), tentative (5a, 5b "
-             "or no level). The tier is a separate verdict from the same columns and "
-             "can disagree; the By claim sheet lists where."),
-            *[("Claims", _c, EV.CLAIM_MEANING[_c]) for _c in EV.CLAIMS],
+             "evidence_level: identified (level 3c; 1 and 2 are never assigned), neutral "
+             "(4a), ion (4b), tentative (5a, 5b or no level). Two buckets sit beside the "
+             "claims, never folded into them: reagent (a reagent ion or cluster) and not "
+             "assessed (NA). The tier is a separate verdict from the same columns and can "
+             "disagree; the By claim sheet lists where."),
+            *[("Claims", _c, EV.CLAIM_MEANING[_c]) for _c in EV.CLAIM_KEYS],
             ("Claims", "n_identified (By class)", "The number of tier-Assigned rows: a "
              "column name older than the claim. It does not count the identified claim."),
         ] + rows
@@ -622,11 +783,14 @@ _NUM_FMT = {
     "dbe": "0.0",
     "share": "0.0%", "signal_share": "0.0%",
 }
-_WRAP_COLS = {"commentary": 70, "evidence": 46, "why_candidate": 46,
+_WRAP_COLS = {"commentary": 70, "why_candidate": 46,
               "tier_reason": 46, "alternatives_text": 44, "composite_note": 50,
               "degeneracy_note": 60,
               "isotopologues_text": 30, "isotopologues": 30,
-              "level_reason": 52, "meaning": 60, "axes": 36, "level_hist": 36,
+              # the level's text columns (evidence.COLUMNS): long, one line each
+              "evidence": 80, "would_lift": 50, "competitors_left": 44, "tags": 60,
+              "context": 40, "context_source": 44, "tag_kinds": 52,
+              "meaning": 60, "level_hist": 36,
               "interpretation": 52, "explanation": 90, "value": 46}
 
 _FILL = {
@@ -639,22 +803,24 @@ _FILL = {
 }
 
 
-# evidence levels (docs/EVIDENCE_LEVELS.md): identity / class in green, formula
-# confirmed in light green, formula-only in blue, exact mass in amber, 5b grey
-_LEVEL_CHIP = {"2b": "good", "3a": "good", "3b": "good", "4a": "okay", "4b": "okay",
-               "4c": "info", "4d": "info", "5a": "warn", "5b": "neutral"}
+# evidence levels (docs/EVIDENCE_LEVELS.md): named (3c) green, neutral established
+# (4a) light green, ion only (4b) blue, a competitor left (5a) amber, rejected (5b)
+# red; the reagent and not-assessed buckets grey. Read only on a level column, so
+# "NA" or "4a" elsewhere is never coloured
+_LEVEL_CHIP = {"1": "good", "2": "good", "3c": "good", "4a": "okay", "4b": "info",
+               "5a": "warn", "5b": "bad", "reagent": "neutral", "NA": "neutral"}
+_LEVEL_COLS = ("evidence_level", "level")
 
 
 # claims (evidence.CLAIM_MEANING): read only on a claim column, so a word that
 # happens to match elsewhere is never coloured
-_CLAIM_CHIP = {"identified": "good", "ion": "info", "tentative": "warn"}
+_CLAIM_CHIP = {"identified": "good", "neutral": "okay", "ion": "info", "tentative": "warn",
+               EV.CLAIM_REAGENT: "neutral", EV.CLAIM_NA: "neutral"}
 _CLAIM_COLS = ("claim", "best_claim")
 
 
 def _chip(label: str) -> str | None:
     s = str(label)
-    if s in _LEVEL_CHIP:
-        return _LEVEL_CHIP[s]
     if s == T.TIER_ASSIGNED or s.startswith("High"):
         return "good"
     if s == T.TIER_CANDIDATE or s.startswith("Low"):
@@ -718,6 +884,8 @@ def _style_sheet(ws, df, *, chip_cols=(), band_by=None):
                 kind = None
             elif col in _CLAIM_COLS:
                 kind = _CLAIM_CHIP.get(str(val))
+            elif col in _LEVEL_COLS:
+                kind = _LEVEL_CHIP.get(str(val))
             else:
                 kind = _chip(val)
             if kind:
@@ -765,7 +933,7 @@ def _style_summary(ws, df):
 def write_excel(ledger: pd.DataFrame, path: str | Path,
                 context: str = "ambient-air", sample_id: str = ""):
     sheets = build_sheets(ledger, context, sample_id)
-    chip_cols = ("tier", "confidence", "evidence", "best_tier", "evidence_level", "level",
+    chip_cols = ("tier", "confidence", "residual_evidence", "best_tier", "evidence_level", "level",
                  "claim", "best_claim")
     with pd.ExcelWriter(path, engine="openpyxl") as xl:
         for name, df in sheets.items():
@@ -793,6 +961,10 @@ def write_markdown(result: dict, path: str | Path) -> Path:
     tier_line = ""
     if "by_tier" in st and st["by_tier"]:
         tier_line = "  |  ".join(f"{k}: {v}" for k, v in st["by_tier"].items())
+    info: dict = {}
+    if "evidence_level" in led.columns:
+        led, info = scale_view(led)
+    m0 = led[led["role"] == L.ROLE_M0]
     cl = _claims(m0) if "evidence_level" in led.columns else None
     lines = [
         f"# Peak assignment — sample {result['sample_id']}",
@@ -810,7 +982,12 @@ def write_markdown(result: dict, path: str | Path) -> Path:
     ]
     if cl is not None:
         n_cl = EV.summarize_claims(cl)
-        lines.append("- Claims: " + " | ".join(f"{k} {n_cl[k]}" for k in EV.CLAIMS))
+        lines.append("- Claims: " + " | ".join(f"{k} {n_cl[k]}" for k in EV.CLAIMS)
+                     + "".join(f" | {k} {n_cl[k]}" for k in (EV.CLAIM_REAGENT, EV.CLAIM_NA) if n_cl[k]))
+        if info.get("n_na"):
+            lines.append(f"- Evidence levels: {info['n_na']} of {len(m0)} not assessed -- {info['na_reason']}")
+        if info.get("old_scale"):
+            lines.append(f"- Evidence levels: {scale_note(info)}")
     if tier_line:
         lines.append(f"- Tiers: {tier_line}")
     lines += [
