@@ -1,4 +1,4 @@
-"""The neutral-pair fact of rule U (docs/EVIDENCE_LEVELS.md §3 `upair`, §4 row 9').
+"""The neutral-pair fact of rule U (`upair`: a pooled pair fact, docs/EVIDENCE_LEVELS.md §3.2; read by the merge vote's private class, §13).
 
 A reagent chemistry whose profile declares a (bare, cluster) adduct pair --
 the uronium profile: ([M+H]+, [M+(CH4N2O)H]+), `ReagentProfile.neutral_pair` --

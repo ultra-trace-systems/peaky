@@ -20,7 +20,7 @@ C6H5NO3,3,nitroaromatic,nitrophenol,"2-, 3- and 4-nitrophenol share the formula;
 C6H5NO4,4,nitroaromatic,nitrocatechol,"4-nitrocatechol, 3-nitrocatechol and the nitro-resorcinol / nitro-hydroquinone isomers"
 C6H4N2O5,6,nitroaromatic,dinitrophenol,six dinitrophenol positional isomers
 C7H6N2O5,10,nitroaromatic,dinitrocresol,"dinitro-methylphenol positional isomers; 4,6-dinitro-o-cresol is one of many"
-C2HF3O2,1,perfluoroacid,trifluoroacetic acid,"CF3COOH is the only structure; stays 3a because the pass-0 perfluoroacid family asserts the CLASS (a generated CnHF(2n-1)O2 list) and not the compound -- docs/EVIDENCE_LEVELS.md, level 2b"
+C2HF3O2,1,perfluoroacid,trifluoroacetic acid,"CF3COOH is the only structure, but the pass-0 perfluoroacid family asserts the CLASS (a generated CnHF(2n-1)O2 list), not the compound: one structure is no identification here (read only by the merge vote's private class, docs/EVIDENCE_LEVELS.md section 13)"
 C3HF5O2,1,perfluoroacid,perfluoropropanoic acid,CF3CF2COOH only; the same class-scope note as TFA
 C4HF7O2,2,perfluoroacid,perfluorobutanoic acid,n- and iso-perfluorobutanoic acid
 C5HF9O2,4,perfluoroacid,perfluoropentanoic acid,linear and branched perfluoro chains

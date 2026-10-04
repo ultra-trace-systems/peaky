@@ -35,7 +35,8 @@ What is counted: every ion THIS run could have committed there.
 A commit outside that space (off-budget and uncurated -- the plausibility stage
 demotes those anyway -- or outside the context filter) makes the count a LOWER
 BOUND: the others plus itself. At >= 3 that still decides "degenerate"; below 3
-the density is not measured (NaN): never 4c, never degenerate-5b, no tier cap.
+the density is not measured (NaN): never "unique" and never "degenerate" for
+the merge vote's private class (docs/EVIDENCE_LEVELS.md section 13), no tier cap.
 
 The enumeration is analytic and per peak (no grid): for every heteroatom
 combination the neutral mass is linear in the carbon count and the DBE, so the

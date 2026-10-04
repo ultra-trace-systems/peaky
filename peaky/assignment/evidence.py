@@ -684,8 +684,10 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None,
 # the decision table
 # ---------------------------------------------------------------------------
 def _decide(r) -> tuple[str, str]:
-    """(level, reason) for one evidence record. Order matters: the first
-    predicate that holds wins -- docs/EVIDENCE_LEVELS.md §4."""
+    """The merge vote's PRIVATE class decision (the decision peaky used before
+    the evidence scale; its letters are never shown, `vote_classes` folds them
+    to 0 / 1 / 2 -- docs/EVIDENCE_LEVELS.md §13): (private level, reason) for
+    one pair-fact record. Order matters: the first predicate that holds wins."""
     deg = r.degeneracy
     hard = []
     if r.tied:
