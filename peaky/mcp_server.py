@@ -250,8 +250,10 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
                   height_cutoff: float | None = None, output_dir: str = "") -> dict:
     """Assign one sample (multi-pass). Returns a job_id immediately; poll
     `job_status`. On completion the result carries the assignment counts, top
-    species (with each one's claim), the claim tallies (identified / ion /
-    tentative) and the written ledger CSV path. `height_cutoff` is an ABSOLUTE cps
+    species (with each one's claim), the claim tallies (identified / neutral /
+    ion / tentative + the reagent and not-assessed buckets; the run measures no
+    width model, so its evidence levels read NA -- not assessed) and the
+    written ledger CSV path. `height_cutoff` is an ABSOLUTE cps
     override of the height-gated passes; default = a multiple of the sample's own
     noise edge (instrument-independent) — the reagent profile's own multiple when
     it carries one, else the package default (1x)."""
@@ -273,12 +275,14 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
         # same context-unlock as `peaky assign` / `peaky batch`: one sample's only
         # metadata is its context + reagent label, so this is contaminants-only
         # unless one of them names a chemistry.
-        lists, _tags = RL.activate(ctx, getattr(rp, "label", "") or "")
+        lists, _tags, rl_record = RL.activate(ctx, getattr(rp, "label", "") or "", record=True,
+                                              fields=("context", "reagent label"))
         if lists:
             log(f"[reflists] active: {RL.active_versions(lists)}")
         res = assign.run(sample_id, ctx, cfg=cfg, adducts=adducts,
                          reflists_active=lists, log=log,
-                         label_purity=getattr(rp, "purity", None))
+                         label_purity=getattr(rp, "purity", None),
+                         reagent_profile=getattr(rp, "name", None), reflists_context=rl_record)
         led = res["ledger"]
         path = os.path.join(out_dir, f"{sample_id}_ledger.csv")
         led.to_csv(path, index=False)
@@ -289,7 +293,7 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
             # the claim each row's evidence level supports, when the ledger carries it
             cols = ["mz", "neutral_formula", "adduct"] + (["claim"] if "claim" in led.columns else [])
             top = m0.head(10)[cols].to_dict("records")
-        # the evidence stage's claim tallies (identified / ion / tentative)
+        # the evidence stage's claim tallies (evidence.CLAIM_KEYS: the four claims + two buckets)
         claims = ((res.get("summaries") or {}).get("evidence") or {}).get("claims")
         return {"ledger_csv": path, "context": ctx,
                 "roles": {k: int(v) for k, v in roles.items()},
@@ -330,7 +334,8 @@ def run_batch(batch: str, dataset: str = "", reagent: str = "auto",
                                   if run_dir else None),
                 "assign_summary": {k: v for k, v in (res.get("assign") or {}).items()
                                    if isinstance(v, (int, float, str, bool))},
-                # the batch summary's claim tallies (merged / pooled / per stage / per tier)
+                # the batch summary's claim tallies (merged / pooled / per stage / per tier),
+                # each over evidence.CLAIM_KEYS
                 "claims": (((res.get("assign") or {}).get("summary") or {}).get("claims"))}
 
     jid = JOBS.submit("run_batch", work,

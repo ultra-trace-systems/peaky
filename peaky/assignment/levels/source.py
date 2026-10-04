@@ -33,6 +33,7 @@ from peaky.assignment.levels import scale as SC
 from peaky.assignment.levels import space as SP
 from peaky.assignment.levels import split as SPL
 from peaky.chem import chemistry as C
+from peaky.chem import profiles as PR
 
 MODES = ("run", "adapted", "strict")
 # the pair-fact columns of the pooled facts table read as booleans / texts (NaN-safe)
@@ -225,6 +226,26 @@ def norm_facts(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=[c for c in SERIES_LEVEL_COLS if c in df.columns])
 
 
+def reagent_halogen(summary: dict):
+    """The reagent halogen a source's pair facts read (C43,
+    `evidence.channel_halogen`): the one the run recorded (`reagent_halogen`:
+    a batch's profile channels, a file's declared channels), else the declared
+    channels of the run's reagent profile (`reagent`, a run made before the
+    record), else `evidence.DETECT_HALOGEN` (count the committed clusters) for a
+    source that names no profile."""
+    EV = _ev()
+    summary = summary or {}
+    if "reagent_halogen" in summary:
+        return summary["reagent_halogen"]
+    name = summary.get("reagent")
+    if name:
+        try:
+            return EV.channel_halogen(PR.resolve(str(name)).adducts)
+        except Exception:  # noqa: BLE001 -- an unknown profile name: no declared channels
+            pass
+    return EV.DETECT_HALOGEN
+
+
 def pair_facts(src: Source) -> pd.DataFrame:
     """The pair facts the scale's step 0 reads (iso_veto, label_veto, lowconf,
     below, ion_only, lead, tied, the pooled m/z ...): one row per committed
@@ -241,7 +262,8 @@ def pair_facts(src: Source) -> pd.DataFrame:
         if (res or {}).get("coef") is not None:
             from peaky.chem.resolution import Resolution
             rp = Resolution.from_dict(res)
-        F = EV._level_pairs({"": led}, cross=None, resolution=rp, per_file=True)
+        F = EV._level_pairs({"": led}, cross=None, resolution=rp, per_file=True,
+                            halogen=reagent_halogen(src.summary))
     else:
         from peaky.batch import iso_checks as IC
         from peaky.batch import label_twins as LT
@@ -251,7 +273,7 @@ def pair_facts(src: Source) -> pd.DataFrame:
                             upair=NP.neutrals(ri.neutral_pairs) if ri.neutral_pairs is not None else None,
                             label=LT.facts(ri.label_twins) if ri.label_twins is not None else None,
                             iso=IC.facts(ri.iso_checks) if ri.iso_checks is not None else None,
-                            resolution=src.summary.get("resolution"))
+                            resolution=src.summary.get("resolution"), halogen=reagent_halogen(src.summary))
     src.facts = norm_facts(F)
     return src.facts
 

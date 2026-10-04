@@ -362,6 +362,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
                 # the claim each merged row's level supports, beside its tier
+                # ({claim: n} over evidence.CLAIM_KEYS)
                 "merged_claims": (summ.get("claims") or {}).get("merged"),
                 "n_samples": summ.get("n_files"),
                 "selection": summ.get("selection"),
@@ -607,6 +608,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
                 # the claim each merged row's level supports, beside its tier
+                # ({claim: n} over evidence.CLAIM_KEYS)
                 "merged_claims": (summ.get("claims") or {}).get("merged"),
                 "n_samples": summ.get("n_files"), "n_groups": len(groups),
                 "selection": summ.get("selection"),

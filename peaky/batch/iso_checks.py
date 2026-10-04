@@ -1458,7 +1458,7 @@ def lock(table: pd.DataFrame | None) -> dict:
 
 
 def facts(table: pd.DataFrame | None) -> dict | None:
-    """What evidence.level_pooled reads (its `iso=`): {'veto': {(n, a): note},
+    """What the pooled pair facts read (evidence._level_pairs, its `iso=`): {'veto': {(n, a): note},
     'lock': {(n, a): {...}}} -- the refutations and rule H's locks; None for an
     empty table (no time series, nothing committed)."""
     if table is None or not len(table):

@@ -326,9 +326,11 @@ def test_the_levels_read_the_given_halogen_instead_of_counting(monkeypatch):
     calls = []
     real = EV.detect_reagent_halogen
     monkeypatch.setattr(EV, "detect_reagent_halogen", lambda m0: calls.append(1) or real(m0))
-    EV.compute_levels(led, halogen="Br")
+    # the evidence scale of peaky 0.10.0: the per-file reading the halogen
+    # feeds is the merge vote's private class (evidence.vote_classes)
+    EV.vote_classes(led, halogen="Br")
     assert not calls
-    EV.compute_levels(led)
+    EV.vote_classes(led)
     assert calls
 
 
@@ -425,7 +427,8 @@ class TestTheRunAfterTheRefute:
         real = A.evidence.apply_levels
 
         def spy(*a, **kw):
-            got.append(kw.get("halogen"))
+            # the per-file stage hands the halogen to the pair facts in its run inputs
+            got.append(kw["run_inputs"].summary.get("reagent_halogen"))
             return real(*a, **kw)
 
         monkeypatch.setattr(A.evidence, "apply_levels", spy)
@@ -461,7 +464,14 @@ def test_the_pooled_levels_forward_the_given_halogen(monkeypatch):
     calls = []
     real = EV.detect_reagent_halogen
     monkeypatch.setattr(EV, "detect_reagent_halogen", lambda m0: calls.append(1) or real(m0))
-    EV.level_pooled({"f1": led, "f2": led}, halogen=None)
+    from peaky.assignment.levels import source as SRC
+
+    def pooled(summary):
+        # the pooled pair facts of the evidence scale (the batch's source)
+        src = EV.source_from_frames({"f1": led, "f2": led}, run_inputs=EV.RunInputs(summary=summary))
+        return SRC.pair_facts(src)
+
+    pooled({"reagent_halogen": None})
     assert not calls
-    EV.level_pooled({"f1": led, "f2": led})
+    pooled({})
     assert calls

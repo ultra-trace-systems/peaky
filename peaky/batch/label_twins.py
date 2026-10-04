@@ -386,7 +386,7 @@ def _line_note(r) -> str:
 
 
 def facts(table: pd.DataFrame | None) -> dict | None:
-    """What evidence.level_pooled reads (its `label=`): {'untie': {(n, a)},
+    """What the pooled pair facts read (evidence._level_pairs, its `label=`): {'untie': {(n, a)},
     'veto': {(n, a): note}, 'alien': {(n, a)}} -- None for an empty table (out of
     scope, or no time series), where nothing of rule K applies, the one-channel
     fold included."""
