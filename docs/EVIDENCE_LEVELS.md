@@ -250,10 +250,10 @@ Pooled over the source's files (a batch: `tied` and `lowconf` need ALL rows,
 | `label_untie`, `upair`, `lead_lift` | rule K's untie, rule U's neutral pair (`tables/neutral_pairs.csv`), rule H's halogen lock | recorded in the facts table; read by no step of the scale |
 
 The facts table also records, pooled, the facts the merge vote's private
-class is computed from (§13; the vote reads them per file): `iso`, `multiline` / `multiline_elements`, `carbon_ev`,
-`chan2`, `anchor`, `branch`, `reagent_only_iso`, `res_ok` / `resolvability`,
-`saturated`, `known_fam`, `corroborated`, `neutral_backed`. No step of the
-scale reads them.
+class is computed from (§13; the vote reads them per file): `iso`,
+`multiline` / `multiline_elements`, `carbon_ev`, `chan2`, `anchor`, `branch`,
+`reagent_only_iso`, `res_ok` / `resolvability`, `saturated`, `known_fam`,
+`corroborated`, `neutral_backed`. No step of the scale reads them.
 
 On a single file there are no batch checks: `iso_veto` and `label_veto` are
 False per file.
@@ -362,10 +362,14 @@ testable files gives its element as a matched element — the positive fact of
 
 ### 5.4 Series exclusion and the outcome
 
-**Series exclusion** (CH2 and CF2 only) removes a competitor whose own
-homologue chain the run does not support, anchored on pairs an internal pass
-reads as route-anchored (seen through two of the reagent's own routes). It is
-iterated with the ladder to a fixed point (≤ 20 passes). It stays in step 1
+**Series exclusion** (CH2 and CF2 only). When the pair sits in an ANCHORED
+homologous series — a chain of committed pairs on the same adduct, neutral ± k
+units, with ≥ 2 members at the right spacing that an internal pass reads as
+route-anchored (seen through two of the reagent's own routes) — a competitor
+is excluded when the competitor shifted by the same k units, on its own
+adduct, is a committed ion at none of the anchors' spacings. Isotope-line
+competitors are never series-testable. It is iterated with the ladder to a
+fixed point (≤ 20 passes). It stays in step 1
 although its anchors are route tags: it is not a level-3 unlock, and without
 it established ions fall to 5a (measured when the scale was built: 30 pairs,
 0.41 % of the committed height, on a labelled-nitrate Orbitrap run; 8 pairs,
@@ -444,8 +448,7 @@ The rules in order; the first that decides wins.
    channel (process open)`).
 2. **The 15N label** (a labelled-nitrate run): the ion carries the reagent's
    ^N on a ^N adduct, with no `label_veto` and not marked alien by the 15N-twin
-   facts → PINNED
-   (`label (...)`), and the label is a positive fact. An ^N ion on an
+   facts → PINNED (`label (...)`), and the label is a positive fact. An ^N ion on an
    unlabelled adduct → open (`label points to the cluster reading: ...`).
 3. **The amine gate** decides on a positive run with `[M+NH4]+` in the grid
    (§6.5).
