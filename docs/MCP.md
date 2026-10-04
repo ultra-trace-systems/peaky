@@ -77,8 +77,9 @@ ships in `io_mascope.fetch_batch_peaks`.
 immediately and run on a background thread, so an MCP request never blocks or
 times out. Poll `job_status(job_id)`; when `status == "done"` the result carries
 the run folder, the report PDF, the merged-ledger path, and key counts, with the
-claim tallies under `claims` (`{identified, ion, tentative: n}` for
-`assign_sample`; the batch summary's merged / pooled / per-stage / per-tier block
+claim tallies under `claims` (`{identified, neutral, ion, tentative,
+reagent, not assessed: n}` for `assign_sample`, which measures no width model,
+so its levels read `NA`, not assessed; the batch summary's merged / pooled / per-stage / per-tier block
 for `run_batch`; `None` from a run that has none —
 [`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §1.1). The job
 registry is **in-memory** — a server restart forgets running jobs (fine for

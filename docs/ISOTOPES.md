@@ -181,9 +181,10 @@ All in `peaky/chem/isotopes.py`.
   a heavy parent, `13C+81Br`) and it commits an ion's most ABUNDANT isotopologue
   (a Br2 ion on 79Br81Br); peaky's own labels (`_label_for_shift`, pass 4's
   `(pair)`, the reclaim tails) count from the PARENT line (`2x81Br`, `81Br(pair)`,
-  `81Br+13C`, `M+5`). No column records the producer, so the evidence levels read
-  a child both ways against the committed line (C11+c, `resolve_child` and
-  `judge_source` below; docs/EVIDENCE_LEVELS.md §3.2).
+  `81Br+13C`, `M+5`). No column records the producer, so the per-file isotope facts
+  (`evidence._measure`, which the merge vote's class reads) read a child both ways against the committed line (C11+c, `resolve_child`
+  and `judge_source` below). The evidence scale probes isotope lines with its
+  own line model (docs/EVIDENCE_LEVELS.md §5.3).
 - **`D_81BR` was corrected** to 1.9979521 (AME2020) from a stale 0.16 mDa-low
   value. The residual pass's doublet constant is the exact 1.9979535 of
   chemistry's masses since C11+c (it was the same stale value); the two agree to

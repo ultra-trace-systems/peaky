@@ -36,9 +36,11 @@ Prefer to do it by hand? Follow **[QUICKSTART.md](QUICKSTART.md)**, or the
 ## What it does
 
 - **Chemical-formula assignment** — multi-pass, isotope-pattern-aware peak → formula
-  annotation, with an **evidence level** (2b–5b, a CIMS-adapted Schymanski scale) on
-  every committed formula and the **claim** it supports beside the tier — identified
-  (the neutral established), ion (the ion composition pinned) or tentative. Produces a
+  annotation, with an **evidence level** (3c–5b on the evidence scale, a
+  CIMS-adapted Schymanski scale for Orbitrap-class data; `NA` on a TOF) on every
+  committed formula and the **claim** it supports beside the tier — identified (the
+  compound named), neutral (the neutral established), ion (the ion composition
+  established) or tentative. Produces a
   tiered Excel (Assigned / Candidate / below-assignability) with commentary, close alternatives, per-isotopologue scores, and a peak-ownership
   audit, plus an interactive rotating-GKA widget.
 - **Batch pipeline** — assigns the presence set-cover subset (the samples that
