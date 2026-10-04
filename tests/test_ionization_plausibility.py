@@ -140,14 +140,20 @@ def test_a_ledger_without_the_optional_columns_does_not_raise():
     assert out["ionization_demoted"] == 1
 
 
-def test_a_demoted_n_only_pair_levels_5b():
-    """The level reads the flag through `hard`: the pair argues with itself, whatever its axes."""
+def test_a_demoted_n_only_pair_is_below_assignability():
+    """The levels read the flag as a hard input: the pair argues with itself,
+    whatever its axes -- the merge vote's class drops from 2 (both channels: the
+    acid branch) to 0, and the evidence scale rejects it at step 0 by its setter
+    ("implausible ionization", levels.decide.BELOW_SETTERS)."""
+    from peaky.assignment.levels import decide as DC
     rows = [dict(_row("C21H46N2", "[M-H]-"), mz=323.3432, height=5e4, confidence="High"),
             dict(_row("C21H46N2", "[M+^NO3]-"), mz=387.3357, height=3e4, confidence="High")]
     led = pd.DataFrame(rows)
-    before = EV.compute_levels(led)
-    assert set(before["evidence_level"]) == {"3b"}          # both channels: the acid branch
+    before = EV._level_pairs({"": led}, per_file=True)
+    assert before["branch"].all() and not before["below"].any() and set(EV.vote_classes(led)) == {2}
     CU.demote_implausible_ionization(led, log=lambda *a: None)
-    after = EV.compute_levels(led)
-    assert set(after["evidence_level"]) == {"5b"}
-    assert all(r.startswith("5b: below assignability") for r in after["level_reason"])
+    after = EV._level_pairs({"": led}, per_file=True)
+    assert after["below"].all() and set(EV.vote_classes(led)) == {0}
+    below = DC.below_classes({"f": led})
+    assert {k: v["setters"] for k, v in below.items()} == {
+        ("C21H46N2", "[M-H]-"): ["implausible ionization"], ("C21H46N2", "[M+^NO3]-"): ["implausible ionization"]}

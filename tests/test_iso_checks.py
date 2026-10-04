@@ -5,10 +5,14 @@
 per-file ledgers and tests what each committed formula claims about its isotope
 lines: rule C (the 13C line's carbon count, Orbitrap-class only), REQ (a required
 heavy line absent where it must be seen) and HIGH (a heavy line too high for the
-formula, variant V4). A refuted pair is a hard input (5b) with the check's note
-and leaves its neutral's chan2 / branch pools in both directions. The facts exist
-only on the pooled batch; a leak would move the golden vectors, and a test here
-says so. The synthetic series below carry exact isotope ratios, so every
+formula, variant V4). A refuted pair carries `iso_veto` with the check's note
+-- a hard input of the private pre-0.10.0 decision, a step-0 rejection (5b) of
+the evidence scale -- and leaves its neutral's chan2 / branch pools in both
+directions. The facts exist only on the pooled batch; a leak would move the
+golden fact vectors, and a test here says so. (Before peaky 0.10.0 these tests
+pinned the pooled level the veto gave; that decision is private now and never
+sees the table, so they pin the facts, the hard inputs, and on a batch the
+scale's level on the merged ledger.) The synthetic series below carry exact isotope ratios, so every
 threshold is tested at its edge.
 
 Run: pytest tests/test_iso_checks.py -q
@@ -532,50 +536,51 @@ def _branch_rows(x="C10H18O4", p=""):
                    child(p + "nc", p + "n", "13C+1", 1000.0 * EV.C13_PER_CARBON * nc)])
 
 
+HARD = ("tied", "below", "lead", "lowconf", "label_veto", "iso_veto")
+
+
 def _levels(frame, **kw) -> dict:
-    out = EV.level_pooled({"f": frame}, **kw)
-    return {a: (lv, ax, why) for a, lv, ax, why in
-            zip(out.adduct, out.evidence_level, out.evidence_axes, out.level_reason)}
+    """{adduct: (hard inputs, facts string, iso_note)} of the pooled fact layer over one file."""
+    out = EV._series_pooled({"f": frame}, **kw)
+    return {r.adduct: (tuple(h for h in HARD if bool(getattr(r, h))), r.evidence_axes, r.iso_note)
+            for r in out.itertuples(index=False)}
 
 
 def test_a_vetoed_pair_is_hard_with_the_checks_note():
     x = "C10H18O4"
     base = _levels(_branch_rows(x))
-    assert base[H][0] == "3b" and base["[M+NO3]-"][0] == "3b"
+    assert base[H][:2] == ((), "iso|chan2|carbon|branch|files:1") and base["[M+NO3]-"][0] == ()
     note = "rule C: 13C reads 4.1 C for 10"
     lv = _levels(_branch_rows(x), iso={"veto": {(x, "[M+NO3]-"): note}})
-    level, axes, why = lv["[M+NO3]-"]
-    assert level == "5b" and "iso_veto" in axes
-    assert why == f"5b: an isotope check refutes the formula ({note})"
-    assert _levels(_branch_rows(x), iso={"veto": {(x, "[M+NO3]-"): ""}})["[M+NO3]-"][2] == \
-        "5b: an isotope check refutes the formula"
-    # it outranks a curated identity, as every hard input does
+    hard, axes, why = lv["[M+NO3]-"]
+    assert hard == ("iso_veto",) and "iso_veto" in axes and why == note
+    assert _levels(_branch_rows(x), iso={"veto": {(x, "[M+NO3]-"): ""}})["[M+NO3]-"][::2] == (("iso_veto",), "")
+    # it stands beside a curated identity, as every hard input does
     rows = _branch_rows(x)
     rows.loc[rows.peak_id == "n", "method"] = "known:atmospheric"
-    assert _levels(rows, iso={"veto": {(x, "[M+NO3]-"): note}})["[M+NO3]-"][0] == "5b"
-    # with another hard input the reasons join
+    assert _levels(rows, iso={"veto": {(x, "[M+NO3]-"): note}})["[M+NO3]-"][0] == ("iso_veto",)
+    # with another hard input both hold
     rows = _branch_rows(x)
     rows.loc[rows.peak_id == "n", "tied"] = True
-    assert _levels(rows, iso={"veto": {(x, "[M+NO3]-"): note}})["[M+NO3]-"][2] == \
-        f"5b: near-tie broken by the arbiter; an isotope check refutes the formula ({note})"
+    assert _levels(rows, iso={"veto": {(x, "[M+NO3]-"): note}})["[M+NO3]-"][0] == ("tied", "iso_veto")
 
 
 def test_a_vetoed_pair_leaves_its_neutrals_pools_both_ways():
     x = "C10H18O4"
     lv = _levels(_branch_rows(x), iso={"veto": {(x, "[M+NO3]-"): "n"}})
-    assert lv[H][0] == "4b" and "branch" not in lv[H][1] and "chan2" not in lv[H][1]     # gives the acid nothing
+    assert lv[H][0] == () and "branch" not in lv[H][1] and "chan2" not in lv[H][1]     # gives the acid nothing
     assert "branch" not in lv["[M+NO3]-"][1] and "chan2" not in lv["[M+NO3]-"][1]       # takes nothing
     lv = _levels(_branch_rows(x), iso={"veto": {(x, H): "n"}})
-    assert lv["[M+NO3]-"][0] == "4b" and lv[H][0] == "5b"
+    assert lv["[M+NO3]-"][:2] == ((), "iso|carbon|files:1") and lv[H][0] == ("iso_veto",)
     # a veto keyed on another neutral leaves this one alone
     assert _levels(_branch_rows(x), iso={"veto": {("C9H9NO", H): "n"}}) == _levels(_branch_rows(x))
 
 
 def test_iso_none_and_an_empty_veto_change_nothing():
     rows = _branch_rows()
-    base = EV.level_pooled({"f": rows})
-    assert base.equals(EV.level_pooled({"f": rows}, iso=None))
-    assert base.equals(EV.level_pooled({"f": rows}, iso={"veto": {}}))
+    base = EV._series_pooled({"f": rows})
+    assert base.equals(EV._series_pooled({"f": rows}, iso=None))
+    assert base.equals(EV._series_pooled({"f": rows}, iso={"veto": {}}))
     assert not base["iso_veto"].any() and (base["iso_note"] == "").all()
 
 
@@ -584,53 +589,55 @@ def test_the_veto_reaches_an_ion_only_pair():
     rows = ledger([m0("h", x, adduct=H, ion=_ion(x, H), mz=C.ion_mz(x, H)),
                    m0("io", x, adduct="[M]-.", ion="C10H16O5-", mz=C.ion_mz(x, H) + 1.00728, method="ion_only:ea"),
                    child("ic", "io", "13C+1", 1000.0 * EV.C13_PER_CARBON * 10)])
-    assert _levels(rows)["[M]-."][0] == "4d"
+    assert _levels(rows)["[M]-."][:2] == ((), "iso|carbon|ion_only|files:1")
     lv = _levels(rows, iso={"veto": {(x, "[M]-."): "HIGH: h"}})
-    assert lv["[M]-."][0] == "5b" and "iso_veto" in lv["[M]-."][1]
+    assert lv["[M]-."][0] == ("iso_veto",) and "iso_veto" in lv["[M]-."][1]
 
 
 def test_the_facts_are_never_axes_nor_in_cross_nor_per_file():
     import inspect
     x = "C10H18O4"
-    base = EV.level_pooled({"f": _branch_rows(x)}, cross={x})
-    out = EV.level_pooled({"f": _branch_rows(x)}, cross={x}, iso={"veto": {(x, H): "n"}})
+    base = EV._series_pooled({"f": _branch_rows(x)}, cross={x})
+    out = EV._series_pooled({"f": _branch_rows(x)}, cross={x}, iso={"veto": {(x, H): "n"}})
     assert (out["corroborated"] == base["corroborated"]).all() and (out["cross"] == base["cross"]).all()
     assert (out["iso"] == base["iso"]).all() and (out["anchor"] == base["anchor"]).all()
-    assert "iso" not in inspect.signature(EV.source_neutrals).parameters
-    assert "iso" not in inspect.signature(EV.compute_levels).parameters
-    assert "iso_veto" not in EV.AXES
+    assert "iso" not in inspect.signature(EV._source_neutrals).parameters
+    assert "iso" not in inspect.signature(EV.vote_classes).parameters
+    assert "iso_veto" not in EV._AXES
 
 
 # --------------------------------------------------------------------------- the leak guard
 def test_a_leaked_veto_would_move_the_goldens():
-    """Leak mutant: the isotope facts on a golden set move its vector -- the facts
-    come only from a batch time series, which no golden source carries."""
+    """Leak mutant: the isotope facts on a golden set move its fact vector -- the
+    facts come only from a batch time series, which no golden source carries."""
     tof, orbi = _pooled("tof"), _pooled("orbi")
-    cross = EV.source_neutrals(tof)
-    base = EV.level_pooled(orbi, cross=cross)
-    assert (len(base), _vector(base.evidence_level)) == ORBI_NO_LOCK
-    assert _vector(EV.level_pooled(orbi, cross=cross, iso={"veto": {}}).evidence_level) == ORBI_NO_LOCK[1]
-    acids = base[base["adduct"].eq(H) & base["evidence_level"].ne("5b")]
-    moved = EV.level_pooled(orbi, cross=cross, iso={"veto": {(n, H): "" for n in acids["neutral_formula"]}})
-    assert _vector(moved.evidence_level) != ORBI_NO_LOCK[1]
-    # one veto on a branch acid moves its cluster sibling through the pool alone
-    sib3b = set(base.loc[base["adduct"].ne(H) & base["evidence_level"].eq("3b"), "neutral_formula"])
-    br = base[base["branch"] & base["adduct"].eq(H) & base["evidence_level"].eq("3b")
-              & base["neutral_formula"].isin(sib3b)]
+    cross = EV._source_neutrals(tof)
+    base = EV._series_pooled(orbi, cross=cross)
+    assert (len(base), _vector(base)) == ORBI_NO_LOCK
+    assert _vector(EV._series_pooled(orbi, cross=cross, iso={"veto": {}})) == ORBI_NO_LOCK[1]
+    acids = base[base["adduct"].eq(H)]
+    moved = EV._series_pooled(orbi, cross=cross, iso={"veto": {(n, H): "" for n in acids["neutral_formula"]}})
+    assert _vector(moved) != ORBI_NO_LOCK[1]
+    # one veto on a branch acid takes the branch from its cluster sibling through the pool alone
+    sib = set(base.loc[base["adduct"].ne(H) & base["branch"], "neutral_formula"])
+    br = base[base["branch"] & base["adduct"].eq(H) & base["neutral_formula"].isin(sib)]
     n = br["neutral_formula"].iloc[0]
-    moved = EV.level_pooled(orbi, cross=cross, iso={"veto": {(n, H): ""}})
-    sib = moved[(moved.neutral_formula == n) & moved.adduct.ne(H)]
-    assert len(sib) and (sib["evidence_level"] != "3b").all()
+    moved = EV._series_pooled(orbi, cross=cross, iso={"veto": {(n, H): ""}})
+    after = moved[(moved.neutral_formula == n) & moved.adduct.ne(H)]
+    assert len(after) and not after["branch"].any() and not after["iso_veto"].any()
 
 
 # --------------------------------------------------------------------------- the reference script
 def _ll():
+    """The reference script with the pre-0.10.0 decision, or skip."""
     import importlib.util
     from pathlib import Path
     spec = importlib.util.spec_from_file_location(
         "level_ledger", Path(__file__).resolve().parents[1] / "scripts" / "level_ledger.py")
     LL = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(LL)
+    if not all(hasattr(LL, x) for x in ("run", "main", "measure_source", "assign_levels", "iso_check_facts")):
+        pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 decision")
     return LL
 
 
@@ -639,7 +646,7 @@ def test_the_reference_script_levels_the_vetoes_like_the_engine():
     x, y = "C10H18O4", "C9H14O4"
     rows = pd.concat([_branch_rows(x), _branch_rows(y, "y")], ignore_index=True)
     for iso in ({"veto": {(x, "[M+NO3]-"): "rule C: c"}}, {"veto": {(x, H): "n", (y, H): "m"}}, {"veto": {}}, None):
-        core = EV.level_pooled({"s1": rows}, iso=iso)
+        core = EV._series_pooled({"s1": rows}, iso=iso)
         frame = LL.measure_source("s1", rows.assign(__file="s1"), None)
         ref = LL.assign_levels(frame, set(), None, None, iso)
         m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
@@ -654,7 +661,7 @@ def test_the_reference_script_levels_the_vetoes_like_the_engine():
                                    m0("w15", w, adduct="[M+^NO3]-", ion="C8H12^NO7-",
                                       mz=C.ion_mz(w, "[M+^NO3]-"))])], ignore_index=True)
     iso = {"veto": {(x, H): "n"}}
-    core = EV.level_pooled({"s1": two}, iso=iso)
+    core = EV._series_pooled({"s1": two}, iso=iso)
     ref = LL.assign_levels(LL.measure_source("s1", two.assign(__file="s1"), None), set(), None, None, iso)
     m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
     assert (m["evidence_level"] == m["level"]).all() and (m["chan2_x"] == m["chan2_y"]).all()
@@ -662,11 +669,11 @@ def test_the_reference_script_levels_the_vetoes_like_the_engine():
     # with rule K's facts the fold still applies, and the two alien sets add up
     lab = {"untie": set(), "veto": {}, "alien": {(y, "[M+NO3]-")}}
     iso = {"veto": {(x, "[M+NO3]-"): "c"}}
-    core = EV.level_pooled({"s1": rows}, label=lab, iso=iso)
+    core = EV._series_pooled({"s1": rows}, label=lab, iso=iso)
     ref = LL.assign_levels(LL.measure_source("s1", rows.assign(__file="s1"), None), set(), None, lab, iso)
     m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
-    assert (m["evidence_level"] == m["level"]).all()
-    assert set(m.loc[m["adduct"] == H, "evidence_level"]) == {"4b"}
+    assert (m["evidence_level"] == m["level"]).all()                   # the private decision, alike in both
+    assert not m.loc[m["adduct"] == H, "branch_x"].any()                # x vetoed, y's 14N line alien
 
 
 def _iso_table(rows) -> pd.DataFrame:
@@ -691,21 +698,22 @@ def test_the_reference_script_reads_the_table_like_the_engine(tmp_path, capsys):
     table.to_csv(run / "tables" / "iso_checks.csv", index=False)
     assert LL.iso_check_facts(str(run)) == {"veto": {(x, "[M+NO3]-"): "rule C: c; HIGH: h"}, "lock": {}} \
         == IC.facts(table)
-    off = LL.run([str(run)], []).set_index(["neutral", "adduct"])["level"]
-    on = LL.run([str(run)], [], None, None, "auto").set_index(["neutral", "adduct"])["level"]
-    assert off[(x, "[M+NO3]-")] == "3b" and on[(x, "[M+NO3]-")] == "5b" and on[(x, H)] == "4b"
+    off = LL.run([str(run)], []).set_index(["neutral", "adduct"])
+    on = LL.run([str(run)], [], None, None, "auto").set_index(["neutral", "adduct"])
+    assert not off.at[(x, "[M+NO3]-"), "iso_veto"] and off.at[(x, H), "branch"]
+    assert on.at[(x, "[M+NO3]-"), "iso_veto"] and not on.at[(x, H), "iso_veto"] and not on.at[(x, H), "branch"]
     explicit = LL.run([str(run)], [], None, None, str(run / "tables" / "iso_checks.csv"))
-    assert list(explicit["level"]) == list(on.reset_index()["level"])
-    assert list(LL.run([str(tmp_path / "out")], [], None, None, "auto")["level"]) == list(on.reset_index()["level"])
-    core = EV.level_pooled({"s1": rows}, iso=IC.facts(table))
+    assert list(explicit["level"]) == list(on["level"])
+    assert list(LL.run([str(tmp_path / "out")], [], None, None, "auto")["level"]) == list(on["level"])
+    core = EV._series_pooled({"s1": rows}, iso=IC.facts(table))
     m = core.merge(on.reset_index(), left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
     assert len(m) == len(core) and (m["evidence_level"] == m["level"]).all()
     out = tmp_path / "levels.csv"
     assert LL.main([str(run), "--iso-checks", "--out", str(out)]) == 0
     got = pd.read_csv(out).set_index(["neutral", "adduct"])
-    assert got.loc[(x, "[M+NO3]-"), "level"] == "5b" and got.loc[(x, "[M+NO3]-"), "iso_note"] == "rule C: c; HIGH: h"
+    assert got.loc[(x, "[M+NO3]-"), "iso_veto"] and got.loc[(x, "[M+NO3]-"), "iso_note"] == "rule C: c; HIGH: h"
     assert LL.main([str(run), "--out", str(out)]) == 0
-    assert pd.read_csv(out).set_index(["neutral", "adduct"])["level"][(x, "[M+NO3]-")] == "3b"
+    assert not pd.read_csv(out).set_index(["neutral", "adduct"])["iso_veto"][(x, "[M+NO3]-")]
     # no table: nothing fires, stderr says so; an empty table is None too
     bare = tmp_path / "bare"
     (bare / "per_file").mkdir(parents=True)
@@ -722,41 +730,12 @@ def test_the_reference_script_reads_the_table_like_the_engine(tmp_path, capsys):
     named = tmp_path / "t.csv"
     _iso_table([dict(neutral_formula=x, adduct="[M+NO3]-", check="C", veto=True, note="c"),
                 dict(neutral_formula="C9H14O4", adduct=H, check="C", veto=True, note="c")]).to_csv(named, index=False)
-    got = LL.run([str(other)], [], None, None, str(named)).set_index("adduct")["level"]
-    assert set(got) == {"3b"}
+    got = LL.run([str(other)], [], None, None, str(named))
+    assert not got["iso_veto"].any() and got["branch"].all()
     assert "does not hold 1 pair(s) the table vetoes" in capsys.readouterr().err
     got = LL.run([str(run), str(other)], [], None, None, str(run / "tables" / "iso_checks.csv"))
-    assert got.loc[got.source == "RUN_1"].set_index("adduct")["level"]["[M+NO3]-"] == "5b"
-    assert set(got.loc[got.source == "other", "level"]) == {"3b"}
-
-
-# --------------------------------------------------------------------------- the scorecard
-def test_the_scorecard_reads_the_checks_as_the_runs_own_evidence(tmp_path, monkeypatch):
-    import importlib.util
-    import sys
-    import types
-    from pathlib import Path
-    spec = importlib.util.spec_from_file_location(
-        "scorecard", Path(__file__).resolve().parents[1] / "scripts" / "scorecard.py")
-    SC = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, "scorecard", SC)
-    spec.loader.exec_module(SC)
-    seen = {}
-    real = SC.EV.level_pooled
-
-    def spy(frames, **kw):
-        seen.update(kw)
-        return real(frames, **kw)
-    monkeypatch.setattr(SC.EV, "level_pooled", spy)
-    x = "C10H18O4"
-    run_dir = tmp_path / "RUN"
-    (run_dir / "tables").mkdir(parents=True)
-    _iso_table([dict(neutral_formula=x, adduct=H, check="REQ", veto=True, note="r")]).to_csv(
-        run_dir / "tables" / "iso_checks.csv", index=False)
-    run = types.SimpleNamespace(path=str(run_dir), per_file=_branch_rows(x).assign(__file="s1"))
-    own = SC.own_levels_for(run).set_index("adduct")
-    assert seen.get("iso") == {"veto": {(x, H): "REQ: r"}, "lock": {}}
-    assert own.loc[H, "level"] == "5b" and own.loc["[M+NO3]-", "level"] == "4b"
+    assert got.loc[got.source == "RUN_1"].set_index("adduct")["iso_veto"]["[M+NO3]-"]
+    assert not got.loc[got.source == "other", "iso_veto"].any()
 
 
 # --------------------------------------------------------------------------- the batch, end to end
@@ -809,8 +788,9 @@ def _run_batch(tmp_path, monkeypatch, *, ts=True, resolving_power=100_000):
 
 def test_a_batch_writes_the_table_and_levels_the_vetoes(tmp_path, monkeypatch):
     """assign_batch.run on an Orbitrap-class batch: the table is written from the
-    stamped series, the summary carries the funnel, and the pair each check
-    refutes reads 5b on the merged ledger with the check's note."""
+    stamped series, the summary carries the funnel, the pooled fact table carries
+    each veto with the check's note, and the scale rejects each refuted pair on
+    the merged ledger (5b, "refuted: iso_veto")."""
     _run_batch(tmp_path, monkeypatch)
     table = pd.read_csv(tmp_path / "tables" / "iso_checks.csv")
     assert list(table.columns) == list(IC.TABLE_COLUMNS)
@@ -820,14 +800,15 @@ def test_a_batch_writes_the_table_and_levels_the_vetoes(tmp_path, monkeypatch):
     summ = json.load(open(tmp_path / "batch_summary.json"))["evidence_levels"]["iso_checks"]
     assert summ["instrument"] == "orbitrap" and summ["vetoed_pairs"] == 3
     assert summ["C"]["contradict"] == 1 and summ["REQ"]["absent"] == 1 and summ["HIGH"]["too_high"] == 1
-    merged = pd.read_csv(tmp_path / "merged_ledger.csv").set_index(["neutral_formula", "adduct"])
-    for k in veto:
-        assert merged.loc[k, "evidence_level"] == "5b"
-        assert merged.loc[k, "level_reason"] == f"5b: an isotope check refutes the formula ({veto[k]})"
-        assert "iso_veto" in merged.loc[k, "evidence_axes"]
-    assert (merged.loc[[(n, H) for n in REFS], "evidence_level"] != "5b").all()
-    ev = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv")
+    merged = pd.read_csv(tmp_path / "merged_ledger.csv", keep_default_na=False) \
+        .set_index(["neutral_formula", "adduct"])
+    ev = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv", keep_default_na=False)
     assert {"iso_veto", "iso_note"} <= set(ev.columns)
+    ev = ev.set_index(["neutral_formula", "adduct"])
+    for k in veto:
+        assert merged.loc[k, "evidence_level"] == "5b" and merged.loc[k, "would_lift"].startswith("refuted: iso_veto")
+        assert EV.truthy(ev.loc[k, "iso_veto"]) and ev.loc[k, "iso_note"] == veto[k]
+    assert (merged.loc[[(n, H) for n in REFS], "evidence_level"] != "5b").all()
 
 
 def test_a_batch_without_a_time_series_writes_an_empty_table(tmp_path, monkeypatch):
@@ -836,5 +817,5 @@ def test_a_batch_without_a_time_series_writes_an_empty_table(tmp_path, monkeypat
     assert table.empty and list(table.columns) == list(IC.TABLE_COLUMNS)
     summ = json.load(open(tmp_path / "batch_summary.json"))["evidence_levels"]["iso_checks"]
     assert summ == {"instrument": "orbitrap", "tested": 0, "vetoed_pairs": 0, "locked_pairs": 0}
-    merged = pd.read_csv(tmp_path / "merged_ledger.csv")
-    assert not merged["level_reason"].astype(str).str.contains("isotope check").any()
+    merged = pd.read_csv(tmp_path / "merged_ledger.csv", keep_default_na=False)
+    assert not merged["would_lift"].astype(str).str.contains("iso_veto").any()

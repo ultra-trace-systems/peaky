@@ -736,10 +736,12 @@ def test_every_level_path_takes_the_width_model(monkeypatch, tmp_path):
     from tests.test_evidence import ledger, m0
     led = ledger([m0("p", "C10H16O4", ion="C10H15O4-", mz=C.ion_mz("C10H16O4", "[M-H]-"), series_unit="CH2")])
     rp = Resolution.from_dict(RES_TOF)
-    assert EV.compute_levels(led, resolution=rp).equals(EV.compute_levels(led))
-    assert EV.level_pooled({"f": led}, resolution=RES_ORBI).equals(EV.level_pooled({"f": led}))
-    assert EV.source_neutrals({"f": led}, resolution=rp) == EV.source_neutrals({"f": led}) == {"C10H16O4"}
-    # the per-file stage hands the run's width model to the levels
+    # the private fact layer (the merge vote's class) takes it and, on this source, reads alike
+    assert EV._series_levels(led, resolution=rp).equals(EV._series_levels(led))
+    assert EV._series_pooled({"f": led}, resolution=RES_ORBI).equals(EV._series_pooled({"f": led}))
+    assert EV._source_neutrals({"f": led}, resolution=rp) == EV._source_neutrals({"f": led}) == {"C10H16O4"}
+    # the per-file stage hands the run's width model to the levels: a TOF-class file reads NA before
+    # any fact work; an Orbitrap-class one reads its facts per file (the guard's flag set) with that model
     seen = {}
     real = EV.apply_levels
 
@@ -754,23 +756,33 @@ def test_every_level_path_takes_the_width_model(monkeypatch, tmp_path):
         inner.append((kw.get("resolution"), kw.get("per_file")))
         return real_lp(frames, **kw)
     monkeypatch.setattr(EV, "_level_pairs", spy_lp)
-    st = SimpleNamespace(led=led.copy(), cfg=None, corroborate=set(), resolving_power=rp, log=lambda *a: None)
-    A._stage_evidence(st)
-    assert seen["resolution"] is rp and inner == [(rp, True)]          # per file: the guard's flag set
-    EV.level_pooled({"f": led}, resolution=RES_ORBI)
+    st = SimpleNamespace(led=led.copy(), cfg=None, corroborate=set(), resolving_power=rp, log=lambda *a: None,
+                         reagent_profile="NO3", degeneracy_cal=(0.0, 0.3))
+    s = A._stage_evidence(st)
+    assert seen["run_inputs"].summary["resolution"] == rp.as_dict() and inner == []
+    assert s["instrument"]["class"] == "tof" and set(st.led.loc[st.led.role == "M0", "evidence_level"]) == {"NA"}
+    orbi = Resolution.from_dict(RES_ORBI)
+    st = SimpleNamespace(led=led.copy(), cfg=None, corroborate=set(), resolving_power=orbi, log=lambda *a: None,
+                         reagent_profile="NO3", degeneracy_cal=(0.0, 0.3))
+    s = A._stage_evidence(st)
+    assert s["instrument"]["class"] == "orbitrap" and inner and inner[0][1] is True
+    assert inner[0][0].r_at(200.0) == pytest.approx(orbi.r_at(200.0))
+    EV._series_pooled({"f": led}, resolution=RES_ORBI)
     assert inner[-1][0] == RES_ORBI and not inner[-1][1]
-    # a --corroborate run dir is levelled with its own width model
+    # a --corroborate run dir feeds the vote's cross set with its own width model
     got = {}
-    real_sn = EV.source_neutrals
+    real_sn = EV._source_neutrals
 
     def spy_sn(per_file, **kw):
         got.setdefault("res", []).append(kw.get("resolution"))
         return real_sn(per_file, **kw)
-    monkeypatch.setattr(EV, "source_neutrals", spy_sn)
+    monkeypatch.setattr(EV, "_source_neutrals", spy_sn)
     run = _run_dir(tmp_path)
-    assert EV.corroborating_neutrals([str(run), str(run / "per_file" / "s1_ledger.csv")]) == {"C10H16O4"}
+    assert EV.vote_cross_neutrals([str(run), str(run / "per_file" / "s1_ledger.csv")]) == {"C10H16O4"}
     assert got["res"] == [RES_TOF, None]
     # the script levels a run dir with its batch_summary's model, a CSV without one
+    if not hasattr(LL, "measure_source"):
+        return                       # the script no longer holds the pre-0.10.0 decision
     rec = []
     real_ms = LL.measure_source
 
@@ -782,37 +794,27 @@ def test_every_level_path_takes_the_width_model(monkeypatch, tmp_path):
     assert rec == [RES_TOF, None]
 
 
-def test_the_batch_and_the_scorecard_hand_over_their_width_model(tmp_path, monkeypatch):
-    import sys
-    from types import SimpleNamespace
-
+def test_the_batch_hands_over_its_width_model(tmp_path, monkeypatch):
+    """The pooled stage levels the batch with the batch's width model (its run
+    inputs' summary), and the merge vote's class reads each file with it.
+    (The scorecard no longer levels a run itself: tests/test_scorecard*.py.)"""
     from tests.test_iso_checks import _run_batch
-    seen = {}
-    real = EV.level_pooled
+    seen, vote = {}, []
+    real = EV.level_batch
 
-    def spy(frames, **kw):
+    def spy(per_file, **kw):
         seen.update(kw)
-        return real(frames, **kw)
-    monkeypatch.setattr(EV, "level_pooled", spy)
-    _run_batch(tmp_path, monkeypatch, resolving_power=100_000)
-    assert seen["resolution"].r_at(200.0) == pytest.approx(100_000)
-    spec = importlib.util.spec_from_file_location(
-        "scorecard", Path(__file__).resolve().parents[1] / "scripts" / "scorecard.py")
-    SC = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, "scorecard", SC)
-    spec.loader.exec_module(SC)
-    got = []
-    real_sc = SC.EV.level_pooled
+        return real(per_file, **kw)
+    monkeypatch.setattr(EV, "level_batch", spy)
+    real_v = EV.vote_classes
 
-    def spy_sc(frames, **kw):
-        got.append(kw.get("resolution"))
-        return real_sc(frames, **kw)
-    monkeypatch.setattr(SC.EV, "level_pooled", spy_sc)
-    from tests.test_evidence import ledger, m0
-    pf = ledger([m0("p", "C10H16O4", ion="C10H15O4-", series_unit="CH2")]).assign(__file="s1")
-    SC.own_levels_for(SimpleNamespace(path=str(tmp_path / "none"), per_file=pf, summary={"resolution": RES_ORBI}))
-    SC.own_levels_for(SimpleNamespace(path=str(tmp_path / "none"), per_file=pf))
-    assert got == [RES_ORBI, None]
+    def spy_v(frame, **kw):
+        vote.append(kw.get("resolution"))
+        return real_v(frame, **kw)
+    monkeypatch.setattr(EV, "vote_classes", spy_v)
+    _run_batch(tmp_path, monkeypatch, resolving_power=100_000)
+    assert seen["run_inputs"].summary["resolution"]["r_at_200"] == pytest.approx(100_000)
+    assert vote and all(r.r_at(200.0) == pytest.approx(100_000) for r in vote)
 
 
 # --------------------------------------------------------------------------- a labelled adduct's 15N (fix round 1)

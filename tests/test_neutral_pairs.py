@@ -1,14 +1,21 @@
-"""Rule U: the uronium neutral pair establishes the neutral (EVIDENCE_LEVELS §4 row 9').
+"""Rule U: the uronium neutral pair (the `upair` fact).
 
 `batch/neutral_pairs.measure` reads the stamped batch time series and the pooled
 per-file ledgers; `upair(M)` holds when M is committed as [M+H]+ AND
 [M+(CH4N2O)H]+, is C/H/O only, both ions are present at exact mass, co-vary,
 are stamped as M's own readings, and their 13C lines do not contradict the
-formula. The pooled level recompute then lifts M's rows to 4a -- after row 9,
-before 4b -- when the formula has its own support (an isotope, or one plausible
-ion on a resolved peak). The fact exists only where the profile declares a
-pair: a leak to another channel would move the golden vectors, and a test here
-says so.
+formula. The fact exists only where the profile declares a pair: a leak to
+another channel would move the golden fact vectors, and a test here says so.
+
+Before peaky 0.10.0 the pooled level lifted M's rows to 4a on the pair (row 9',
+after row 9, before 4b) when the formula had its own support. That decision is
+private now and never sees the pair table (the merge vote reads each file
+alone); the evidence scale reads the two channels as a "two routes" tag. So the
+tests here pin the fact, the formula-support facts the row read (an isotope
+line, or one plausible ion on a resolved peak), the hard inputs that outranked
+it, and -- on a batch -- the routes tag the scale prints; the reference script
+is compared with the engine (its private level) while it still holds that
+decision.
 
 Run: pytest tests/test_neutral_pairs.py -q
 """
@@ -168,46 +175,61 @@ def _pair_rows(neutral="C10H16O4", *, iso=False, degeneracy=0.5, resolvability="
     return ledger(rows)
 
 
+HARD = ("tied", "below", "lead", "lowconf", "label_veto", "iso_veto")
+
+
 def _levels(frame, upair) -> dict:
-    out = EV.level_pooled({"f": frame}, upair=upair)
-    return dict(zip(out.adduct, zip(out.evidence_level, out.evidence_axes, out.level_reason)))
+    """{adduct: fact row} of the pooled fact layer over one file with the pair set `upair`."""
+    out = EV._series_pooled({"f": frame}, upair=upair)
+    return {r.adduct: r for r in out.itertuples(index=False)}
 
 
-def test_row_9prime_lifts_the_pair_with_formula_support():
+def _support(r) -> bool:
+    """The formula support row 9' read: an isotope line, or one plausible ion on a resolved peak."""
+    return bool(r.iso) or (r.degeneracy <= 1 and bool(r.res_ok))
+
+
+def _hard(r) -> tuple:
+    return tuple(h for h in HARD if bool(getattr(r, h)))
+
+
+def test_the_pair_fact_lands_on_both_rows_with_or_without_formula_support():
     for iso, deg, res in ((True, 2.0, "blended"), (False, 0.5, "resolved")):
         lv = _levels(_pair_rows(iso=iso, degeneracy=deg, resolvability=res), {"C10H16O4"})
         for a in PAIR:
-            level, axes, reason = lv[a]
-            assert level == "4a" and "upair" in axes and "neutral pair" in reason, (iso, deg, a)
+            assert lv[a].upair and "upair" in lv[a].evidence_axes and _support(lv[a]), (iso, deg, a)
         base = _levels(_pair_rows(iso=iso, degeneracy=deg, resolvability=res), set())
-        assert {v[0] for v in base.values()} == {"4b"}
+        assert not any(r.upair for r in base.values()) and all(r.chan2 for r in base.values())
 
 
-def test_row_9prime_needs_the_formula_supported():
+def test_without_formula_support_the_pair_is_still_recorded():
     for deg, res in ((2.0, "resolved"), (0.5, "blended")):
         lv = _levels(_pair_rows(iso=False, degeneracy=deg, resolvability=res), {"C10H16O4"})
-        assert {v[0] for v in lv.values()} == {"4b"}, (deg, res)
+        assert all(r.upair and not _support(r) for r in lv.values()), (deg, res)
 
 
-def test_rows_above_9prime_still_win():
+def test_hard_inputs_and_curated_identities_stand_beside_the_pair():
     lv = _levels(_pair_rows(iso=True, tied=True), {"C10H16O4"})
-    assert {v[0] for v in lv.values()} == {"5b"}                        # a hard 5b stays 5b
+    assert {_hard(r) for r in lv.values()} == {("tied",)} and all(r.upair for r in lv.values())
     lv = _levels(_pair_rows(iso=True, method="known:atmospheric"), {"C10H16O4"})
-    assert {v[0] for v in lv.values()} == {"3a"}                        # curated first
+    assert {r.known_fam for r in lv.values()} == {"atmospheric"}
     lv = _levels(_pair_rows(iso=True, below=True), {"C10H16O4"})
-    assert {v[0] for v in lv.values()} == {"5b"}                        # outside the element budget
+    assert {_hard(r) for r in lv.values()} == {("below",)}                # outside the element budget
 
 
 def test_the_pair_is_never_an_axis_nor_in_cross():
-    out = EV.level_pooled({"f": _pair_rows(iso=True)}, upair={"C10H16O4"})
+    out = EV._series_pooled({"f": _pair_rows(iso=True)}, upair={"C10H16O4"})
     assert (out["n_axes"] == 2).all()                                   # iso + chan2, upair adds none
     assert not out["cross"].any()
-    assert EV.source_neutrals({"f": _pair_rows(iso=True)}) == {"C10H16O4"}   # 4b either way: the cross set is unchanged
+    # the cross set is unchanged by the pair either way
+    assert EV._source_neutrals({"f": _pair_rows(iso=True)}) == {"C10H16O4"}
 
 
 def test_a_per_file_ledger_never_carries_the_pair():
-    out = EV.compute_levels(_pair_rows(iso=True))
-    assert set(out["evidence_level"]) == {"4b"}
+    """The merge vote reads each file alone: no pair, the formula confirmed (class 1)."""
+    out = EV._level_pairs({"": _pair_rows(iso=True)}, per_file=True)
+    assert not out["upair"].any()
+    assert set(EV.vote_classes(_pair_rows(iso=True))) == {1}
 
 
 # --------------------------------------------------------------------------- the leak guard
@@ -216,14 +238,14 @@ def test_a_leaked_fact_would_move_the_goldens():
     every channel lifts TOF and labelled-nitrate rows -- the golden vectors catch
     it. The profile-scoped fact is empty there, and the vectors stand."""
     tof, orbi = _pooled("tof"), _pooled("orbi")
-    n_tof, n_orbi = EV.source_neutrals(tof), EV.source_neutrals(orbi)
+    n_tof, n_orbi = EV._source_neutrals(tof), EV._source_neutrals(orbi)
     for pooled, cross, key in ((tof, n_orbi, "tof"), (orbi, n_tof, "orbi")):
-        base = EV.level_pooled(pooled, cross=cross)
+        base = EV._series_pooled(pooled, cross=cross)
         gold = {"tof": GOLDEN["tof"], "orbi": ORBI_NO_LOCK}[key]      # the orbi set without its lock table
-        assert (len(base), _vector(base.evidence_level)) == gold
+        assert (len(base), _vector(base)) == gold
         leak = set(base.loc[base["chan2"] & ~base["neutral_formula"].str.contains("N"), "neutral_formula"])
-        moved = EV.level_pooled(pooled, cross=cross, upair=leak)
-        assert _vector(moved.evidence_level) != gold, key
+        moved = EV._series_pooled(pooled, cross=cross, upair=leak)
+        assert _vector(moved) != gold, key
     # the scope: the same series and ledgers hold pairs under the uronium profile's
     # declaration and none under any profile that declares no pair
     spec = {n: {"phase": k * 0.7} for k, n in enumerate(GOOD)}
@@ -235,12 +257,7 @@ def test_a_leaked_fact_would_move_the_goldens():
 
 # --------------------------------------------------------------------------- the reference script
 def test_level_ledger_reads_the_pair_table(tmp_path):
-    import importlib.util
-    from pathlib import Path
-    spec = importlib.util.spec_from_file_location(
-        "level_ledger", Path(__file__).resolve().parents[1] / "scripts" / "level_ledger.py")
-    LL = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(LL)
+    LL = _ll()
     run = tmp_path / "run"
     (run / "per_file").mkdir(parents=True)
     (run / "tables").mkdir()
@@ -250,9 +267,10 @@ def test_level_ledger_reads_the_pair_table(tmp_path):
     off = LL.run([str(run)], [])
     on = LL.run([str(run)], [], "auto")
     explicit = LL.run([str(run)], [], str(run / "tables" / "neutral_pairs.csv"))
-    assert set(off.level) == {"4b"} and set(on.level) == {"4a"} and set(explicit.level) == {"4a"}
-    core = EV.level_pooled({"s1": _pair_rows(iso=True)}, upair={"C10H16O4"})
-    assert sorted(core.evidence_level) == sorted(on.level)
+    assert not off["upair"].any() and on["upair"].all() and explicit["upair"].all()
+    assert list(explicit.level) == list(on.level) != list(off.level)
+    core = EV._series_pooled({"s1": _pair_rows(iso=True)}, upair={"C10H16O4"})
+    assert sorted(core.evidence_level) == sorted(on.level)              # the private decision, alike
 
 
 # --------------------------------------------------------------------------- the thresholds
@@ -394,24 +412,28 @@ def test_a_composed_profile_keeps_one_declared_pair_and_drops_two():
 
 
 # --------------------------------------------------------------------------- the order of the rows
-def test_a_row_9_pair_keeps_row_9s_reason():
-    """Row 9' sits after row 9: a pair that two axes and an outside one already
-    establish keeps that reason; the neutral pair speaks only where row 9 did not."""
+def test_a_corroborated_pair_keeps_its_outside_axis():
+    """Row 9' sat after row 9: a pair that two axes and an outside one (the
+    corroborating source) already backed kept that reading -- the merge vote's
+    class 2 -- and the private reason names the source, not the pair."""
     frame = _pair_rows(iso=True)
-    out = EV.level_pooled({"f": frame}, cross={"C10H16O4"}, upair={"C10H16O4"})
-    assert set(out.evidence_level) == {"4a"}
-    assert all("corroborated by the other source" in r for r in out.level_reason)
+    out = EV._series_pooled({"f": frame}, cross={"C10H16O4"}, upair={"C10H16O4"})
+    assert out["corroborated"].all() and out["upair"].all() and out["cross"].all()
+    assert {EV._vote_class_of(a, b) for a, b in zip(out.evidence_level, out.evidence_axes)} == {2}
     assert all("neutral pair" not in r for r in out.level_reason)
 
 
 # --------------------------------------------------------------------------- the reference script, live
 def _ll():
+    """The reference script with the pre-0.10.0 decision, or skip."""
     import importlib.util
     from pathlib import Path
     spec = importlib.util.spec_from_file_location(
         "level_ledger", Path(__file__).resolve().parents[1] / "scripts" / "level_ledger.py")
     LL = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(LL)
+    if not all(hasattr(LL, x) for x in ("run", "main", "measure_source", "assign_levels")):
+        pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 decision")
     return LL
 
 
@@ -427,7 +449,7 @@ def test_the_reference_script_levels_the_uronium_set_like_the_engine(tmp_path):
     table = FIXTURES / "ur_neutral_pairs.csv"
     ref = LL.run([str(tmp_path / "ur")], [], str(table))
     t = pd.read_csv(table)
-    core = EV.level_pooled(_pooled("ur"), upair=set(t.loc[t["upair"].astype(bool), "neutral_formula"]))
+    core = EV._series_pooled(_pooled("ur"), upair=set(t.loc[t["upair"].astype(bool), "neutral_formula"]))
     m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
     assert len(m) == len(core) == len(ref) == GOLDEN["ur"][0]
     assert (m["evidence_level"] == m["level"]).all()
@@ -449,57 +471,24 @@ def test_the_reference_script_honours_the_verdict_and_the_cli(tmp_path):
     rows.to_csv(run / "per_file" / "s1_ledger.csv", index=False)
     pd.DataFrame({"neutral_formula": ["C10H16O4", "C9H14O4"], "upair": [True, False]}).to_csv(
         run / "tables" / "neutral_pairs.csv", index=False)
-    got = LL.run([str(run)], [], "auto").set_index("neutral")["level"]
-    assert set(got.loc["C10H16O4"]) == {"4a"} and set(got.loc["C9H14O4"]) == {"4b"}   # the False row holds nothing
+    got = LL.run([str(run)], [], "auto").set_index("neutral")
+    assert got.loc["C10H16O4", "upair"].all() and not got.loc["C9H14O4", "upair"].any()   # the False row: nothing
     # an --out-dir holding one run finds the same table
-    assert set(LL.run([str(tmp_path / "out")], [], "auto").set_index("neutral").loc["C10H16O4", "level"]) == {"4a"}
+    assert LL.run([str(tmp_path / "out")], [], "auto").set_index("neutral").loc["C10H16O4", "upair"].all()
     out = tmp_path / "levels.csv"
     assert LL.main([str(run), "--upair", "--out", str(out)]) == 0
-    assert set(pd.read_csv(out).set_index("neutral").loc["C10H16O4", "level"]) == {"4a"}
+    assert pd.read_csv(out).set_index("neutral").loc["C10H16O4", "upair"].all()
     assert LL.main([str(run), "--out", str(out)]) == 0
-    assert set(pd.read_csv(out).set_index("neutral").loc["C10H16O4", "level"]) == {"4b"}
-
-
-# --------------------------------------------------------------------------- the scorecard
-def test_the_scorecard_counts_the_pair_as_the_runs_own_evidence(tmp_path, monkeypatch):
-    """scorecard.own_levels_for levels the run on its own evidence, and the
-    neutral pair is its own: a lift by the pair is not owed to a cross source."""
-    import importlib.util
-    from pathlib import Path
-    spec = importlib.util.spec_from_file_location(
-        "scorecard", Path(__file__).resolve().parents[1] / "scripts" / "scorecard.py")
-    SC = importlib.util.module_from_spec(spec)
-    import sys
-    monkeypatch.setitem(sys.modules, "scorecard", SC)       # its dataclasses resolve their module
-    spec.loader.exec_module(SC)
-    seen = {}
-    real = SC.EV.level_pooled
-
-    def spy(frames, **kw):
-        seen.update(kw)
-        return real(frames, **kw)
-    monkeypatch.setattr(SC.EV, "level_pooled", spy)
-    run_dir = tmp_path / "RUN"
-    (run_dir / "tables").mkdir(parents=True)
-    pd.DataFrame({"neutral_formula": ["C10H16O4", "C9H14O4"], "upair": [True, False]}).to_csv(
-        run_dir / "tables" / "neutral_pairs.csv", index=False)
-    pf = _pair_rows(iso=True).assign(__file="s1")
-    run = types_simple(path=str(run_dir), per_file=pf)
-    own = SC.own_levels_for(run)
-    assert seen.get("upair") == {"C10H16O4"} and seen.get("cross") is None
-    assert set(own["level"]) == {"4a"}
-
-
-def types_simple(**kw):
-    import types
-    return types.SimpleNamespace(**kw)
+    assert not pd.read_csv(out).set_index("neutral").loc["C10H16O4", "upair"].any()
 
 
 # --------------------------------------------------------------------------- the batch, end to end
 def test_a_uronium_batch_measures_the_pair_and_lifts_the_rows(tmp_path, monkeypatch):
     """assign_batch.run on the uronium profile: the pair table is written from the
-    stamped batch series, the summary carries the funnel, and the merged rows of
-    the pair level 4a with `upair` among their facts."""
+    stamped batch series, the summary carries the funnel, the pooled fact table
+    carries `upair` on both rows of each pair, and the scale's record on the
+    merged rows prints the two channels as a "two routes" tag (before peaky
+    0.10.0 the pair lifted those rows to 4a)."""
     import json
     from peaky.assignment import assign as A
     from peaky.assignment import ledger as L
@@ -542,13 +531,17 @@ def test_a_uronium_batch_measures_the_pair_and_lifts_the_rows(tmp_path, monkeypa
     monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
     monkeypatch.setattr(A, "run", fake_assign)
     AB.run(peaks=pk, ts_peaks=pk, reagent="Ur", batch="test batch", out_dir=str(tmp_path),
-           k_min=2, k_max=3, min_gain=0.0, n_jobs=1, log=lambda *a: None)
+           k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power=100_000, log=lambda *a: None)
     table = pd.read_csv(tmp_path / "tables" / "neutral_pairs.csv")
     assert set(table.loc[table["upair"].astype(bool), "neutral_formula"]) == set(neutrals)
     assert (table["bare"] == PAIR[0]).all() and (table["cluster"] == PAIR[1]).all()
     summ = json.load(open(tmp_path / "batch_summary.json"))["evidence_levels"]["neutral_pairs"]
     assert summ["pair"] == list(PAIR) and summ["upair"] == len(neutrals)
-    merged = pd.read_csv(tmp_path / "merged_ledger.csv")
+    ev = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv")
+    pairs = ev[ev["neutral_formula"].isin(neutrals)]
+    assert len(pairs) == 2 * len(neutrals) and pairs["upair"].map(EV.truthy).all()
+    merged = pd.read_csv(tmp_path / "merged_ledger.csv", keep_default_na=False)
     mine = merged[merged["neutral_formula"].isin(neutrals)]
-    assert len(mine) == 2 * len(neutrals)
-    assert set(mine["evidence_level"]) == {"4a"} and mine["evidence_axes"].str.contains("upair").all()
+    assert len(mine) == 2 * len(neutrals) and "evidence_axes" not in merged.columns
+    assert set(mine["evidence_level"]) <= set(EV.LEVELS)
+    assert mine["tags"].map(lambda t: "two routes: protonated + urea cluster (" in t).all()

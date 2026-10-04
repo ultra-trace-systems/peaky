@@ -61,7 +61,7 @@ from tests.test_evidence import ledger, m0
 from tests.test_halogen_lock_check import (
     BIG, BIG_CL, BR1, CL1, MIXED, _h, _h0, _hal, _inorganic, _noise_for, _verdict)
 from tests.test_halogen_lock_lift import (
-    LL, NO3L, NOTE, _f, _h_row, _h_table, _lockstep, _one, _r, _run_dir, lock)
+    NO3L, NOTE, _f, _h_row, _h_table, _hard, _ll, _lockstep, _one, _r, _run_dir, lock)
 from tests.test_iso_checks import FILL, H, ORBI, _get, _ion, _measure, _row, _series, _wave
 
 NO3 = "[M+NO3]-"
@@ -744,7 +744,7 @@ def test_an_ion_only_sibling_gives_the_lifted_pair_no_channel(tmp_path):
     io_row["method"] = "ion_only:ea"
     m = _lockstep(tmp_path, "R", _f(_r("p", lead=True), io_row), _h_table([_h_row(CL1, H)]))
     r = m.loc[(CL1, H)]
-    assert bool(r["lead_lift"]) and not bool(r["chan2"]) and r["evidence_level"] == "4b"
+    assert bool(r["lead_lift"]) and not bool(r["chan2"]) and _hard(r) == ()
 
 
 def test_a_lock_fact_without_budget_ok_is_conservative():
@@ -759,11 +759,13 @@ def test_a_lock_fact_without_budget_ok_is_conservative():
 # =========================================================================== ledger: lead_by
 @pytest.mark.parametrize("value", ["nan", "NaN", pd.NA, float("nan"), np.float64("nan"), None, "", " "])
 def test_nan_like_cells_name_no_setter(value):
+    LL = _ll()
     assert L.lead_setters(value) == frozenset()
     assert LL.lead_setters(value) == set()
 
 
 def test_the_script_reads_the_setters_like_the_ledger():
+    LL = _ll()
     for v in ("spec_gapfill", "off_budget|spec_minor", "nan|spec_n3", "spec_n3|", "radical_anion"):
         assert LL.lead_setters(v) == set(L.lead_setters(v)), v
 
@@ -781,6 +783,7 @@ def test_the_converted_column_reads_empty_on_the_other_rows():
 
 # =========================================================================== the reference script
 def test_the_scripts_setter_list_is_the_engines():
+    LL = _ll()
     assert LL.LIFTABLE_LEADS == set(EV.LIFTABLE_LEADS)
     assert set(EV.LIFTABLE_LEADS) < set(L.LEAD_SETTERS)
 
@@ -817,6 +820,7 @@ def test_every_lead_rows_code_counts_in_the_script(tmp_path):
 
 
 def test_the_script_carries_the_lock_note(tmp_path):
+    LL = _ll()
     run = _run_dir(tmp_path, "R", _f(_r("p", lead=True)), _h_table([_h_row(CL1, H)]))
     ref = LL.run([str(run)], [], None, None, "auto").set_index(["neutral", "adduct"])
     core = _one({"s1": _f(_r("p", lead=True))}, iso=lock((CL1, H)))
@@ -832,6 +836,7 @@ def test_without_a_label_table_the_script_does_not_fold(tmp_path):
 
 
 def test_the_script_reads_a_table_written_before_rule_h(tmp_path):
+    LL = _ll()
     t = _h_table([dict(neutral_formula="C7H12O4", adduct=H, check="REQ", verdict="absent", veto=True, note="r")])
     old = t.drop(columns=["lock", "element", "n_halogen", "ratio_lo", "ratio_hi", "heavy_cl", "heavy_br",
                           "budget_ok", "budget_why"])
@@ -844,6 +849,7 @@ def test_a_measured_frame_without_lead_unknown_is_conservative(tmp_path):
     """assign_levels on a measured frame that carries no `lead_unknown` (not
     measure_source's) takes every lead as of unknown setter: it lifts only where
     `budget_ok`, like the engine on a ledger without `lead_by`."""
+    LL = _ll()
     frame = _f(_r("p", lead=True))
     run = _run_dir(tmp_path, "R", frame, None)
     label, led = LL.load_source(str(run))

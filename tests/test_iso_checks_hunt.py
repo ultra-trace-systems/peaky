@@ -716,8 +716,8 @@ def test_the_veto_is_never_an_axis_nor_cross():
     """A vetoed pair's axis count is its own evidence's (the veto adds none, the
     pool exclusion takes chan2), and the veto never makes a pair `cross`."""
     x = "C10H18O4"
-    base = TI.EV.level_pooled({"f": TI._branch_rows(x)})
-    out = TI.EV.level_pooled({"f": TI._branch_rows(x)}, iso={"veto": {(x, "[M+NO3]-"): "n"}})
+    base = TI.EV._series_pooled({"f": TI._branch_rows(x)})
+    out = TI.EV._series_pooled({"f": TI._branch_rows(x)}, iso={"veto": {(x, "[M+NO3]-"): "n"}})
     b, o = base.set_index("adduct"), out.set_index("adduct")
     assert o.loc["[M+NO3]-", "iso_veto"] and not b.loc["[M+NO3]-", "iso_veto"]
     assert int(o.loc["[M+NO3]-", "n_axes"]) == int(b.loc["[M+NO3]-", "n_axes"]) - int(b.loc["[M+NO3]-", "chan2"])
@@ -731,12 +731,12 @@ def test_the_reference_script_vetoes_an_ion_only_pair_like_the_engine():
                    m0("io", x, adduct="[M]-.", ion="C10H16O5-", mz=C.ion_mz(x, H) + 1.00728, method="ion_only:ea"),
                    child("ic", "io", "13C+1", 1000.0 * EV.C13_PER_CARBON * 10)])
     iso = {"veto": {(x, "[M]-."): "HIGH: h"}}
-    core = EV.level_pooled({"s1": rows}, iso=iso)
+    core = EV._series_pooled({"s1": rows}, iso=iso)
     ref = LL.assign_levels(LL.measure_source("s1", rows.assign(__file="s1"), None), set(), None, None, iso)
     m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
-    assert len(m) == 2 and (m["evidence_level"] == m["level"]).all()
+    assert len(m) == 2 and (m["evidence_level"] == m["level"]).all()        # the private decision, alike
     io = m[m["adduct"] == "[M]-."].iloc[0]
-    assert io["level"] == "5b" and io["iso_veto_y"] and io["iso_note_y"] == "HIGH: h"
+    assert io["iso_veto_x"] and io["iso_veto_y"] and io["iso_note_y"] == "HIGH: h"
 
 
 def test_the_reference_script_iso_table_lookup(tmp_path, capsys):
@@ -760,7 +760,7 @@ def test_the_reference_script_iso_table_lookup(tmp_path, capsys):
     (bare / "per_file").mkdir(parents=True)
     rows.to_csv(bare / "per_file" / "s1_ledger.csv", index=False)
     got = LL.run([str(bare)], [], None, None, str(csv)).set_index("adduct")
-    assert got.loc["[M+NO3]-", "level"] == "5b" and got.loc["[M+NO3]-", "iso_note"] == "REQ"
+    assert got.loc["[M+NO3]-", "iso_veto"] and got.loc["[M+NO3]-", "iso_note"] == "REQ"
 
 
 # =========================================================================== the batch wiring

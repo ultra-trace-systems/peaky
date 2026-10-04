@@ -13,9 +13,11 @@ Pinned here:
 - each lead setter writes the lead and not below, and each hard setter still
   writes below and not the lead;
 - a row that both mark keeps below;
-- the pooled `lead` fact holds when ANY row is a lead. A lead-only pair is 5b
-  with the reason a below row gives ("5b: below assignability"), in the engine
-  and in the reference script;
+- the pooled `lead` fact holds when ANY row is a lead. The private
+  pre-0.10.0 decision (the merge vote's class) reads a lead exactly as a below
+  row -- a hard input, class 0 -- in the engine and in the reference script;
+  the evidence scale prints a lead as a tag on every level
+  (tests/test_levels_decide.py) and rejects a below row at step 0 by its setter;
 - nothing that decides a tier, a report row or an ion-only parent can tell the
   two columns apart;
 - commit, clear and displace reset both flags and never create a column;
@@ -230,8 +232,9 @@ def test_a_row_both_mark_keeps_below():
     CL.demote_unconfirmed_fluorine(led, log=lambda *a: None)
     PL.demote_off_budget(led, context="ambient-air", log=lambda *a: None)
     assert _flags(led, 0) == (True, True)
-    lv = EV.compute_levels(led)
-    assert lv.at[0, "evidence_level"] == "5b" and lv.at[0, "level_reason"] == "5b: below assignability"
+    facts = EV._level_pairs({"": led}, per_file=True)
+    assert bool(facts.at[0, "below"]) and bool(facts.at[0, "lead"])
+    assert list(EV.vote_classes(led)) == [0]
 
 
 # =========================================================================== the level
@@ -270,30 +273,28 @@ def test_the_lead_is_a_predicate_column_trim_keeps():
     assert LEAD in EV.trim(_frame([_m0("p", "C7H12O4", lead=True)])).columns
 
 
-def test_a_lead_only_pair_is_5b_with_the_reason_a_below_row_gives():
-    for extra, reason in (({}, "5b: below assignability"),
-                          ({"tied": True}, "5b: near-tie broken by the arbiter; below assignability"),
-                          ({"confidence": "Low (0.3)"},
-                           "5b: below assignability; engine confidence Low/Suspect")):
-        as_below = EV.compute_levels(_frame([_m0("p", "C7H12O4", below=True, anchor="a", **extra)]))
-        as_lead = EV.compute_levels(_frame([_m0("p", "C7H12O4", lead=True, anchor="a", **extra)]))
-        both = EV.compute_levels(_frame([_m0("p", "C7H12O4", below=True, lead=True, anchor="a", **extra)]))
-        for out in (as_below, as_lead, both):
-            assert out.at[0, "evidence_level"] == "5b"
-            assert out.at[0, "level_reason"] == reason
+def test_a_lead_only_pair_reads_as_a_below_row_does():
+    """The private decision reads a lead as below assignability: the same reading,
+    reason included, whichever column carries the flag (and both), beside the
+    other hard inputs -- the merge vote's class 0."""
+    for extra in ({}, {"tied": True}, {"confidence": "Low (0.3)"}):
+        rows = {k: _frame([_m0("p", "C7H12O4", anchor="a", **extra, **flags)])
+                for k, flags in (("below", dict(below=True)), ("lead", dict(lead=True)),
+                                 ("both", dict(below=True, lead=True)))}
+        as_below, as_lead, both = (EV._series_levels(rows[k]) for k in ("below", "lead", "both"))
         pd.testing.assert_frame_equal(as_below, as_lead)
-    # the mutant: no flag at all is not hard (the anchor gives 4b)
-    assert EV.compute_levels(_frame([_m0("p", "C7H12O4", anchor="a")])).at[0, "evidence_level"] == "4b"
+        pd.testing.assert_frame_equal(as_below, both)
+        assert all(list(EV.vote_classes(f)) == [0] for f in rows.values())
+    # the mutant: no flag at all is not hard (the anchor confirms the formula: class 1)
+    assert list(EV.vote_classes(_frame([_m0("p", "C7H12O4", anchor="a")]))) == [1]
 
 
 def test_the_pooled_lead_is_any_row():
     one = _frame([_m0("a", "C8H12O4", lead=True, anchor="x"), _m0("b", "C9H14O4", anchor="x")])
     two = _frame([_m0("a", "C8H12O4", anchor="x"), _m0("b", "C9H14O4", anchor="x")])
-    pairs = EV.level_pooled({"f1": one, "f2": two}).set_index("neutral_formula")
+    pairs = EV._series_pooled({"f1": one, "f2": two}).set_index("neutral_formula")
     assert bool(pairs.at["C8H12O4", "lead"]) and not bool(pairs.at["C8H12O4", "below"])
-    assert pairs.at["C8H12O4", "evidence_level"] == "5b"
-    assert pairs.at["C8H12O4", "level_reason"] == "5b: below assignability"
-    assert not bool(pairs.at["C9H14O4", "lead"]) and pairs.at["C9H14O4", "evidence_level"] == "4b"
+    assert not bool(pairs.at["C9H14O4", "lead"]) and bool(pairs.at["C9H14O4", "anchor"])
 
 
 def _mixed(flag: str) -> pd.DataFrame:
@@ -313,11 +314,13 @@ def _mixed(flag: str) -> pd.DataFrame:
 
 def test_the_flag_in_either_column_levels_and_tiers_identically():
     by_below, by_lead = _mixed("below"), _mixed("lead")
-    lv_b, lv_l = EV.compute_levels(by_below), EV.compute_levels(by_lead)
+    lv_b, lv_l = EV._series_levels(by_below), EV._series_levels(by_lead)
     pd.testing.assert_frame_equal(lv_b, lv_l)
-    assert set(lv_l.loc[by_lead[LEAD].astype(bool), "evidence_level"]) == {"5b"}
-    pb = EV.level_pooled({"f": by_below}).drop(columns=["below", "lead"])
-    pl = EV.level_pooled({"f": by_lead}).drop(columns=["below", "lead"])
+    cls = EV.vote_classes(by_lead)
+    assert set(cls.loc[by_lead.index[by_lead[LEAD].astype(bool) & (by_lead.role == "M0")]]) == {0}
+    pd.testing.assert_series_equal(cls, EV.vote_classes(by_below))
+    pb = EV._series_pooled({"f": by_below}).drop(columns=["below", "lead"])
+    pl = EV._series_pooled({"f": by_lead}).drop(columns=["below", "lead"])
     pd.testing.assert_frame_equal(pb, pl)
     # the tier engine reads neither flag: the same tiers whichever column carries it
     tb, tl = T.compute_tiers(by_below), T.compute_tiers(by_lead)
@@ -329,9 +332,9 @@ def test_a_ledger_without_the_column_levels_exactly_as_before():
     and no tentative_lead column: the column reads False, nothing moves."""
     old = _mixed("below")
     no_col = old.drop(columns=[LEAD])
-    pd.testing.assert_frame_equal(EV.compute_levels(no_col), EV.compute_levels(old))
-    a = EV.level_pooled({"f": no_col})
-    b = EV.level_pooled({"f": old})
+    pd.testing.assert_frame_equal(EV._series_levels(no_col), EV._series_levels(old))
+    a = EV._series_pooled({"f": no_col})
+    b = EV._series_pooled({"f": old})
     pd.testing.assert_frame_equal(a, b)
     assert not a["lead"].any()
 
@@ -343,16 +346,17 @@ def _write(path: Path, frame: pd.DataFrame) -> Path:
 
 
 def test_the_reference_script_reads_the_lead_in_lockstep(tmp_path):
+    if not hasattr(LL, "run") or not hasattr(LL, "measure_source"):
+        pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 decision")
     for flag in ("below", "lead"):
         frame = _mixed(flag)
         path = _write(tmp_path / flag / "s_ledger.csv", frame)
         got = LL.run([str(path)], [])
-        eng = EV.compute_levels(frame)
+        eng = EV._series_levels(frame)
         m0 = frame[frame.role == "M0"]
         engine = dict(zip(zip(m0.neutral_formula, m0.adduct), eng.loc[m0.index, "evidence_level"]))
         script = dict(zip(zip(got.neutral, got.adduct), got.level))
-        assert script == engine, flag
-        assert script[("C6H8O5", "[M-H]-")] == "5b"
+        assert script == engine, flag                         # the private decision, alike in both
         if flag == "lead":
             assert got.set_index(["neutral", "adduct"]).at[("C6H8O5", "[M-H]-"), "lead"]
     # a missing column reads False: the old ledger's levels, row for row

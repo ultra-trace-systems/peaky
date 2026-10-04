@@ -201,14 +201,18 @@ def test_trim_publish_and_the_sheet_carry_it():
 
 
 def test_nothing_levels_on_it_yet(tmp_path):
-    """The column moves no level in the engine or the reference script: with it,
-    without it, and on a ledger written before the split."""
+    """The column moves no fact and no class of the merge vote in the engine, nor
+    the reference script's reading: with it, without it, and on a ledger written
+    before the split. (The evidence scale prints it, in the lead tag.)"""
     frame = _mixed("lead")
     coded = frame.assign(**{BY: np.where(frame["tentative_lead"].astype(bool), "off_budget", "")})
-    base = EV.level_pooled({"f": frame})
+    base = EV._series_pooled({"f": frame})
     for f in (coded, frame.drop(columns=[BY])):
-        pd.testing.assert_frame_equal(EV.level_pooled({"f": f}), base)
-        pd.testing.assert_frame_equal(EV.compute_levels(f), EV.compute_levels(frame))
+        pd.testing.assert_frame_equal(EV._series_pooled({"f": f}), base)
+        pd.testing.assert_frame_equal(EV._series_levels(f), EV._series_levels(frame))
+        pd.testing.assert_series_equal(EV.vote_classes(f), EV.vote_classes(frame))
+    if not all(hasattr(LL, x) for x in ("run", "measure_source", "assign_levels")):
+        return                       # the script no longer holds the pre-0.10.0 decision
     got = LL.run([str(_write(tmp_path / "c" / "s_ledger.csv", coded))], [])
     ref = LL.run([str(_write(tmp_path / "n" / "s_ledger.csv", frame.drop(columns=[BY])))], [])
     assert list(got.level) == list(ref.level)
