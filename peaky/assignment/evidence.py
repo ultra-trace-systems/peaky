@@ -1165,3 +1165,63 @@ def source_resolution(path) -> dict | None:
     except (OSError, ValueError):
         return None
     return res if isinstance(res, dict) and res.get("coef") is not None else None
+
+
+# ---------------------------------------------------------------------------
+# the evidence scale of peaky 0.10.0 (levels 3c / 4a / 4b / 5a / 5b, the reagent
+# bucket, NA on a non-Orbitrap-class source): the machinery lives in
+# peaky.assignment.levels; these are its entry points. Until the stages and the
+# reports are rewired, the scale's vocabulary is `SCALE` (levels/scale.py:
+# LEVEL_ORDER, LEVELS, BUCKETS, CLAIMS, claim_class, summarize,
+# summarize_claims, COLUMNS) -- the names above still serve the stage this
+# module has run so far.
+# ---------------------------------------------------------------------------
+from peaky.assignment.levels import scale as SCALE  # noqa: E402
+
+SCALE_RELEASE = SCALE.SCALE_RELEASE
+BUCKETS = list(SCALE.BUCKETS)
+#: THE side-channel switch: formate, acetate, CO3-, O2-, O3-, NH4+ (except a
+#: positive run's own [M+NH4]+), Na+ and chloride never enter the split grid or
+#: the route classes while locked. UNLOCKED is the sweep hook: a channel name
+#: there (e.g. "formate") is unlocked alone.
+SIDE_CHANNELS_LOCKED = True
+UNLOCKED: frozenset = frozenset()
+
+
+def source_from_frames(per_file: dict, *, run_inputs, mode: str = "run", name: str = "", label: str = "",
+                       main=None, arm=None, wrong_adducts=(), control_ledger=None):
+    """A Source of the evidence scale from in-memory FULL ledgers
+    ({sample_id: ledger}) and `levels.source.RunInputs` (see there)."""
+    from peaky.assignment.levels import source as SRC
+    return SRC.source_from_frames(per_file, run_inputs=run_inputs, mode=mode, name=name, label=label, main=main,
+                                  arm=arm, wrong_adducts=wrong_adducts, control_ledger=control_ledger)
+
+
+def source_from_run_dir(path, *, main=None, mode: str | None = None, name: str | None = None,
+                        label: str | None = None):
+    """A Source from a batch run directory, or from ONE ledger CSV (levelled
+    alone, or in a ``main`` run's context like a decoy arm; ``mode`` 'adapted'
+    or 'strict')."""
+    from peaky.assignment.levels import source as SRC
+    return SRC.source_from_run_dir(path, main=main, mode=mode, name=name, label=label)
+
+
+def level_source(src, *, partners=None) -> pd.DataFrame:
+    """Level a Source: one row per (neutral_formula, adduct) with the scale's
+    columns (`SCALE.COLUMNS`) and the step facts. ``partners``: other-source
+    partners (`partners_from`)."""
+    from peaky.assignment.levels import source as SRC
+    return SRC.level_source(src, partners=partners)
+
+
+def level_batch(per_file: dict, *, run_inputs, partners=None) -> pd.DataFrame:
+    """A batch's per-file ledgers levelled as ONE pooled source (minima 3)."""
+    return level_source(source_from_frames(per_file, run_inputs=run_inputs, mode="run"), partners=partners)
+
+
+def partners_from(levels: pd.DataFrame, label: str, **kw) -> dict:
+    """The other-source partners a levelled source gives (its route / ladder /
+    listed pairs, not ion-only; side-channel route classes dropped while
+    locked): {neutral: {route class: ['<label> <neutral> <adduct> <how>']}}."""
+    from peaky.assignment.levels import routes as RT
+    return RT.partners_from(levels, label, **kw)
