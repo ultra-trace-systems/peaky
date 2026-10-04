@@ -264,9 +264,9 @@ def test_level_ledger_reads_the_pair_table(tmp_path):
     _pair_rows(iso=True).to_csv(run / "per_file" / "s1_ledger.csv", index=False)
     pd.DataFrame({"neutral_formula": ["C10H16O4"], "upair": [True]}).to_csv(run / "tables" / "neutral_pairs.csv",
                                                                            index=False)
-    off = LL.run([str(run)], [])
-    on = LL.run([str(run)], [], "auto")
-    explicit = LL.run([str(run)], [], str(run / "tables" / "neutral_pairs.csv"))
+    off = LL.series_run([str(run)], [])
+    on = LL.series_run([str(run)], [], "auto")
+    explicit = LL.series_run([str(run)], [], str(run / "tables" / "neutral_pairs.csv"))
     assert not off["upair"].any() and on["upair"].all() and explicit["upair"].all()
     assert list(explicit.level) == list(on.level) != list(off.level)
     core = EV._series_pooled({"s1": _pair_rows(iso=True)}, upair={"C10H16O4"})
@@ -432,7 +432,7 @@ def _ll():
         "level_ledger", Path(__file__).resolve().parents[1] / "scripts" / "level_ledger.py")
     LL = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(LL)
-    if not all(hasattr(LL, x) for x in ("run", "main", "measure_source", "assign_levels")):
+    if not all(hasattr(LL, x) for x in ("series_run", "series_main", "measure_source", "assign_levels")):
         pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 decision")
     return LL
 
@@ -447,7 +447,7 @@ def test_the_reference_script_levels_the_uronium_set_like_the_engine(tmp_path):
     for p in sorted(FIXTURES.glob("ur_*_ledger.csv.gz")):
         pd.read_csv(p, low_memory=False).to_csv(d / p.name[:-3], index=False)
     table = FIXTURES / "ur_neutral_pairs.csv"
-    ref = LL.run([str(tmp_path / "ur")], [], str(table))
+    ref = LL.series_run([str(tmp_path / "ur")], [], str(table))
     t = pd.read_csv(table)
     core = EV._series_pooled(_pooled("ur"), upair=set(t.loc[t["upair"].astype(bool), "neutral_formula"]))
     m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
@@ -471,14 +471,14 @@ def test_the_reference_script_honours_the_verdict_and_the_cli(tmp_path):
     rows.to_csv(run / "per_file" / "s1_ledger.csv", index=False)
     pd.DataFrame({"neutral_formula": ["C10H16O4", "C9H14O4"], "upair": [True, False]}).to_csv(
         run / "tables" / "neutral_pairs.csv", index=False)
-    got = LL.run([str(run)], [], "auto").set_index("neutral")
+    got = LL.series_run([str(run)], [], "auto").set_index("neutral")
     assert got.loc["C10H16O4", "upair"].all() and not got.loc["C9H14O4", "upair"].any()   # the False row: nothing
     # an --out-dir holding one run finds the same table
-    assert LL.run([str(tmp_path / "out")], [], "auto").set_index("neutral").loc["C10H16O4", "upair"].all()
+    assert LL.series_run([str(tmp_path / "out")], [], "auto").set_index("neutral").loc["C10H16O4", "upair"].all()
     out = tmp_path / "levels.csv"
-    assert LL.main([str(run), "--upair", "--out", str(out)]) == 0
+    assert LL.series_main([str(run), "--upair", "--out", str(out)]) == 0
     assert pd.read_csv(out).set_index("neutral").loc["C10H16O4", "upair"].all()
-    assert LL.main([str(run), "--out", str(out)]) == 0
+    assert LL.series_main([str(run), "--out", str(out)]) == 0
     assert not pd.read_csv(out).set_index("neutral").loc["C10H16O4", "upair"].any()
 
 

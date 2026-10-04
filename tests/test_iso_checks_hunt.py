@@ -759,7 +759,7 @@ def test_the_reference_script_iso_table_lookup(tmp_path, capsys):
     bare = tmp_path / "bare"
     (bare / "per_file").mkdir(parents=True)
     rows.to_csv(bare / "per_file" / "s1_ledger.csv", index=False)
-    got = LL.run([str(bare)], [], None, None, str(csv)).set_index("adduct")
+    got = LL.series_run([str(bare)], [], None, None, str(csv)).set_index("adduct")
     assert got.loc["[M+NO3]-", "iso_veto"] and got.loc["[M+NO3]-", "iso_note"] == "REQ"
 
 

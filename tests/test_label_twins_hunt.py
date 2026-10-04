@@ -306,11 +306,11 @@ def test_level_of_without_a_label_veto_column_is_not_vetoed():
                                saturated=False, n_axes=1, known_fam="", branch=False, neutral_backed=True,
                                reagent_only_iso=False, cross=False, res_ok=True, upair=False, neutral="C10H16O5")])
     rec = frame.iloc[0].to_dict()
-    assert frame.apply(LL.level_of, axis=1).tolist() == [EV._decide(NS(**rec, chan2=False, anchor=False,
+    assert frame.apply(LL.series_level_of, axis=1).tolist() == [EV._decide(NS(**rec, chan2=False, anchor=False,
                                                                       corroborated=False,
                                                                       n_plausible_structures=pd.NA))[0]]
-    vetoed = frame.assign(label_veto=True).apply(LL.level_of, axis=1).tolist()
-    assert vetoed != frame.apply(LL.level_of, axis=1).tolist()
+    vetoed = frame.assign(label_veto=True).apply(LL.series_level_of, axis=1).tolist()
+    assert vetoed != frame.apply(LL.series_level_of, axis=1).tolist()
     assert vetoed == [EV._decide(NS(**rec, label_veto=True, chan2=False, anchor=False, corroborated=False,
                                     n_plausible_structures=pd.NA))[0]]
 
@@ -321,7 +321,7 @@ def test_auto_reads_a_runs_own_table_whatever_its_adducts(tmp_path):
     table = LT.measure(_series(spec), {"f1": EV.trim(_j1_rows(J))}, LABEL, log=QUIET)
     run = _run_dir(tmp_path / "RUN_1", _j1_rows(J), table)
     LL = _ll()
-    got = LL.run([str(run)], [], None, "auto").set_index(["neutral", "adduct"])
+    got = LL.series_run([str(run)], [], None, "auto").set_index(["neutral", "adduct"])
     core = _engine(_j1_rows(J), LT.facts(table))
     assert bool(got.loc[(J, NO3), "label_veto"]) and not bool(got.loc[(J, "[M-H]-"), "branch"])
     assert bool(core.loc[(J, NO3), "label_veto"]) and not bool(core.loc[(J, "[M-H]-"), "branch"])
@@ -355,13 +355,13 @@ def test_a_named_table_fires_on_its_own_batch_even_without_a_labelled_commit(tmp
     run.mkdir(parents=True)
     rows.to_csv(run / "s1_ledger.csv", index=False)
     LL = _ll()
-    got = LL.run([str(tmp_path / "run")], [], None, str(csv)).set_index("adduct")
+    got = LL.series_run([str(tmp_path / "run")], [], None, str(csv)).set_index("adduct")
     core = EV._series_pooled({"s1": rows}, label=LT.facts(table)).set_index("adduct")
     assert got["level"].to_dict() == core["evidence_level"].to_dict()
     assert bool(got.at["[M+NO3]-", "label_veto"]) and bool(core.at["[M+NO3]-", "label_veto"])
     other = tmp_path / "other" / "per_file"
     other.mkdir(parents=True)
     _j1_rows("C11H18O5").to_csv(other / "s1_ledger.csv", index=False)
-    untouched = LL.run([str(tmp_path / "other")], [], None, str(csv))
+    untouched = LL.series_run([str(tmp_path / "other")], [], None, str(csv))
     assert not untouched["label_veto"].any() and untouched["branch"].all()
 

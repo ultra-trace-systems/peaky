@@ -66,13 +66,13 @@ def test_the_engine_pools_the_lead_over_every_file_whichever_holds_it(lead_in):
 
 @pytest.mark.parametrize("lead_in", ["a", "b"])
 def test_the_reference_script_pools_the_lead_over_a_run_dirs_files(tmp_path, lead_in):
-    if not hasattr(LL, "run") or not hasattr(LL, "measure_source"):
+    if not hasattr(LL, "series_run") or not hasattr(LL, "measure_source"):
         pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 decision")
     files = _files(lead_in)
     run = tmp_path / "RUN"
     for name, frame in files.items():
         _write(run / "per_file" / f"{name}_ledger.csv", frame)
-    got = LL.run([str(run)], []).set_index(["neutral", "adduct"])
+    got = LL.series_run([str(run)], []).set_index(["neutral", "adduct"])
     assert int(got.at[PAIR, "n_files"]) == 2                    # one source, both files
     assert bool(got.at[PAIR, "lead"]) and not bool(got.at[PAIR, "below"])
     assert not bool(got.at[("C9H14O4", "[M-H]-"), "lead"])

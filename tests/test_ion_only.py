@@ -417,6 +417,8 @@ def test_scorecard_counts_the_bucket_on_its_own_and_keeps_it_out_of_the_candidat
     led.loc[led["peak_id"] == "B", "tier"] = "Candidate"
     run = types.SimpleNamespace(ledger=led, ts=None, name="r", channel="c|x", reagent="NO3", path_kind="cover",
                                 code="abc", summary={"n_files": 1}, n_spectra=0, per_file=pd.DataFrame())
+    run.scale = SC.Run.scale.fget(run)               # the real property: the ledger carries the scale's columns
+    assert run.scale
     h = SC.headline(run, pd.DataFrame(columns=["ion_mz"]))
     assert h["assigned"] == 1 and h["candidate"] == 1 and h["ion_only"] == 1
     assert h["ion_only_levels"] == {"NA": 1}          # the synthetic file has no width model: not assessed

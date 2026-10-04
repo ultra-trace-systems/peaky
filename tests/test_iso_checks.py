@@ -636,7 +636,8 @@ def _ll():
         "level_ledger", Path(__file__).resolve().parents[1] / "scripts" / "level_ledger.py")
     LL = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(LL)
-    if not all(hasattr(LL, x) for x in ("run", "main", "measure_source", "assign_levels", "iso_check_facts")):
+    if not all(hasattr(LL, x) for x in ("series_run", "series_main", "measure_source", "assign_levels",
+                                        "iso_check_facts")):
         pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 decision")
     return LL
 
@@ -698,21 +699,21 @@ def test_the_reference_script_reads_the_table_like_the_engine(tmp_path, capsys):
     table.to_csv(run / "tables" / "iso_checks.csv", index=False)
     assert LL.iso_check_facts(str(run)) == {"veto": {(x, "[M+NO3]-"): "rule C: c; HIGH: h"}, "lock": {}} \
         == IC.facts(table)
-    off = LL.run([str(run)], []).set_index(["neutral", "adduct"])
-    on = LL.run([str(run)], [], None, None, "auto").set_index(["neutral", "adduct"])
+    off = LL.series_run([str(run)], []).set_index(["neutral", "adduct"])
+    on = LL.series_run([str(run)], [], None, None, "auto").set_index(["neutral", "adduct"])
     assert not off.at[(x, "[M+NO3]-"), "iso_veto"] and off.at[(x, H), "branch"]
     assert on.at[(x, "[M+NO3]-"), "iso_veto"] and not on.at[(x, H), "iso_veto"] and not on.at[(x, H), "branch"]
-    explicit = LL.run([str(run)], [], None, None, str(run / "tables" / "iso_checks.csv"))
+    explicit = LL.series_run([str(run)], [], None, None, str(run / "tables" / "iso_checks.csv"))
     assert list(explicit["level"]) == list(on["level"])
-    assert list(LL.run([str(tmp_path / "out")], [], None, None, "auto")["level"]) == list(on["level"])
+    assert list(LL.series_run([str(tmp_path / "out")], [], None, None, "auto")["level"]) == list(on["level"])
     core = EV._series_pooled({"s1": rows}, iso=IC.facts(table))
     m = core.merge(on.reset_index(), left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
     assert len(m) == len(core) and (m["evidence_level"] == m["level"]).all()
     out = tmp_path / "levels.csv"
-    assert LL.main([str(run), "--iso-checks", "--out", str(out)]) == 0
+    assert LL.series_main([str(run), "--iso-checks", "--out", str(out)]) == 0
     got = pd.read_csv(out).set_index(["neutral", "adduct"])
     assert got.loc[(x, "[M+NO3]-"), "iso_veto"] and got.loc[(x, "[M+NO3]-"), "iso_note"] == "rule C: c; HIGH: h"
-    assert LL.main([str(run), "--out", str(out)]) == 0
+    assert LL.series_main([str(run), "--out", str(out)]) == 0
     assert not pd.read_csv(out).set_index(["neutral", "adduct"])["iso_veto"][(x, "[M+NO3]-")]
     # no table: nothing fires, stderr says so; an empty table is None too
     bare = tmp_path / "bare"
@@ -730,10 +731,10 @@ def test_the_reference_script_reads_the_table_like_the_engine(tmp_path, capsys):
     named = tmp_path / "t.csv"
     _iso_table([dict(neutral_formula=x, adduct="[M+NO3]-", check="C", veto=True, note="c"),
                 dict(neutral_formula="C9H14O4", adduct=H, check="C", veto=True, note="c")]).to_csv(named, index=False)
-    got = LL.run([str(other)], [], None, None, str(named))
+    got = LL.series_run([str(other)], [], None, None, str(named))
     assert not got["iso_veto"].any() and got["branch"].all()
     assert "does not hold 1 pair(s) the table vetoes" in capsys.readouterr().err
-    got = LL.run([str(run), str(other)], [], None, None, str(run / "tables" / "iso_checks.csv"))
+    got = LL.series_run([str(run), str(other)], [], None, None, str(run / "tables" / "iso_checks.csv"))
     assert got.loc[got.source == "RUN_1"].set_index("adduct")["iso_veto"]["[M+NO3]-"]
     assert not got.loc[got.source == "other", "iso_veto"].any()
 

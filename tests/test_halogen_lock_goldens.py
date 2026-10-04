@@ -154,20 +154,20 @@ def test_the_reference_script_levels_the_golden_sets_with_their_lock_tables(tmp_
     with --iso-checks agrees with the engine row for row, lifts included."""
     LL = _ll()
     tof, orbi = _unpack(tmp_path, "tof"), _unpack(tmp_path, "orbi")
-    ref = LL.run([str(orbi)], [str(tof)], None, None, str(FIXTURES / "orbi_iso_checks.csv"))
+    ref = LL.series_run([str(orbi)], [str(tof)], None, None, str(FIXTURES / "orbi_iso_checks.csv"))
     core = EV._series_pooled(_pooled("orbi"), cross=EV._source_neutrals(_pooled("tof")), iso=_iso("orbi"))
     m = core.merge(ref, left_on=K, right_on=["neutral", "adduct"], suffixes=("", "_ll"))
     assert len(m) == len(core) == len(ref) == GOLDEN["orbi"][0]
     assert (m["evidence_level"] == m["level"]).all() and (m["lead_lift"] == m["lead_lift_ll"]).all()
     assert set(_key(m[m["lead_lift_ll"]])) == set(D8["orbi"])
     ur = _unpack(tmp_path, "ur")
-    ref = LL.run([str(ur)], [], str(FIXTURES / "ur_neutral_pairs.csv"), None, str(FIXTURES / "ur_iso_checks.csv"))
+    ref = LL.series_run([str(ur)], [], str(FIXTURES / "ur_neutral_pairs.csv"), None, str(FIXTURES / "ur_iso_checks.csv"))
     core = EV._series_pooled(_pooled("ur"), upair=_ur_pairs(), iso=_iso("ur"))
     m = core.merge(ref, left_on=K, right_on=["neutral", "adduct"], suffixes=("", "_ll"))
     assert len(m) == GOLDEN["ur"][0] and (m["evidence_level"] == m["level"]).all()
     assert set(_key(m[m["lead_lift_ll"]])) == set(D8["ur"])
     # the named-table guard: the Orbitrap set's table on the TOF set is another batch's
-    ref = LL.run([str(tof)], [str(orbi)], None, None, str(FIXTURES / "orbi_iso_checks.csv"))
+    ref = LL.series_run([str(tof)], [str(orbi)], None, None, str(FIXTURES / "orbi_iso_checks.csv"))
     core = EV._series_pooled(_pooled("tof"), cross=EV._source_neutrals(_pooled("orbi")))
     m = core.merge(ref, left_on=K, right_on=["neutral", "adduct"])
     assert not ref["lead_lift"].any() and len(m) == len(core) == GOLDEN["tof"][0]

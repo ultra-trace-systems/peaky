@@ -604,7 +604,7 @@ def _ll():
         "level_ledger", Path(__file__).resolve().parents[1] / "scripts" / "level_ledger.py")
     LL = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(LL)
-    if not all(hasattr(LL, x) for x in ("run", "measure_source", "assign_levels")):
+    if not all(hasattr(LL, x) for x in ("series_run", "measure_source", "assign_levels")):
         pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 decision")
     return LL
 
@@ -623,22 +623,22 @@ def test_the_reference_script_reads_the_table_like_the_engine(tmp_path):
     pd.DataFrame({"neutral_formula": [x, y, x], "adduct": [NO3, NO3L, NO3L], "untie": [True, False, False],
                   "veto": [False, True, False], "note": ["", "no 14N twin", ""]}).to_csv(
         run / "tables" / "label_twins.csv", index=False)
-    off = LL.run([str(run)], []).set_index(["neutral", "adduct"])
-    on = LL.run([str(run)], [], None, "auto").set_index(["neutral", "adduct"])
+    off = LL.series_run([str(run)], []).set_index(["neutral", "adduct"])
+    on = LL.series_run([str(run)], [], None, "auto").set_index(["neutral", "adduct"])
     # the table read: x's 14N line untied (the acid branch reads), y's labelled reading vetoed
     assert bool(off.at[(x, NO3), "tied"]) and not bool(on.at[(x, NO3), "tied"]) and bool(on.at[(x, NO3), "label_untie"])
     assert not bool(off.at[(y, NO3L), "label_veto"]) and bool(on.at[(y, NO3L), "label_veto"])
-    explicit = LL.run([str(run)], [], None, str(run / "tables" / "label_twins.csv"))
+    explicit = LL.series_run([str(run)], [], None, str(run / "tables" / "label_twins.csv"))
     assert list(explicit["level"]) == list(on["level"])
-    assert list(LL.run([str(tmp_path / "out")], [], None, "auto")["level"]) == list(on["level"])
+    assert list(LL.series_run([str(tmp_path / "out")], [], None, "auto")["level"]) == list(on["level"])
     core = EV._series_pooled({"s1": rows}, label=K(untie={(x, NO3)}, veto={(y, NO3L): "no 14N twin"}))
     m = core.merge(on.reset_index(), left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
     assert len(m) == len(core) and (m["evidence_level"] == m["level"]).all()     # the private decision, alike
     out = tmp_path / "levels.csv"
-    assert LL.main([str(run), "--label-twins", "--out", str(out)]) == 0
+    assert LL.series_main([str(run), "--label-twins", "--out", str(out)]) == 0
     got = pd.read_csv(out).set_index(["neutral", "adduct"])
     assert list(got["level"]) == list(on["level"]) and bool(got.at[(y, NO3L), "label_veto"])
-    assert LL.main([str(run), "--out", str(out)]) == 0
+    assert LL.series_main([str(run), "--out", str(out)]) == 0
     assert list(pd.read_csv(out)["level"]) == list(off["level"])
     empty = tmp_path / "bare"
     (empty / "per_file").mkdir(parents=True)
@@ -653,12 +653,12 @@ def test_the_reference_script_reads_the_table_like_the_engine(tmp_path):
     table = tmp_path / "t.csv"
     pd.DataFrame({"neutral_formula": ["C11H18O6"], "adduct": [NO3], "untie": [False], "veto": [True],
                   "alien": [True], "note": ["n"]}).to_csv(table, index=False)
-    got = LL.run([str(other)], [], None, str(table)).set_index("adduct")
+    got = LL.series_run([str(other)], [], None, str(table)).set_index("adduct")
     assert bool(got.at[NO3, "label_veto"]) and not bool(got.at["[M-H]-", "branch"])
     third = tmp_path / "third"
     (third / "per_file").mkdir(parents=True)
     _j1_rows("C11H18O5").to_csv(third / "per_file" / "s1_ledger.csv", index=False)
-    untouched = LL.run([str(third)], [], None, str(table))
+    untouched = LL.series_run([str(third)], [], None, str(table))
     assert not untouched["label_veto"].any() and untouched["branch"].all()
 
 
@@ -764,7 +764,7 @@ def test_the_labelled_nitrate_golden_set_with_its_label_twin_table(tmp_path):
         d.mkdir(parents=True)
         for p in sorted(FIXTURES.glob(f"{name}_*_ledger.csv.gz")):
             pd.read_csv(p, low_memory=False).to_csv(d / p.name[:-3], index=False)
-    ref = LL.run([str(tmp_path / "orbi")], [str(tmp_path / "tof")], None, str(FIXTURES / "orbi_label_twins.csv"))
+    ref = LL.series_run([str(tmp_path / "orbi")], [str(tmp_path / "tof")], None, str(FIXTURES / "orbi_label_twins.csv"))
     m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
     assert len(m) == len(core) == len(ref)
     assert (m["evidence_level"] == m["level"]).all()

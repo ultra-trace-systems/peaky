@@ -22,8 +22,8 @@ Regenerate from the fixtures in the repo (no run directories needed):
 because it reads the real run directories).
 
 `scripts/level_ledger.py` re-levels the same run directory with its own
-decision layer and must agree row for row. It is skipped, with the reason,
-until the script has the scale's decision layer (its `--mode` option).
+decision layer and must agree row for row (skipped, with the reason, only if
+the script cannot run or lacks the scale's decision layer, its `--mode` option).
 """
 from __future__ import annotations
 
@@ -189,8 +189,7 @@ def _level_ledger_or_skip():
     except (OSError, subprocess.SubprocessError) as e:      # pragma: no cover
         pytest.skip(f"scripts/level_ledger.py does not run: {e}")
     if "--mode" not in help_:
-        pytest.skip("scripts/level_ledger.py has not the evidence scale's decision layer yet (no --mode option; "
-                    "it is being rewritten beside this test): the integrator runs this comparison")
+        pytest.skip("scripts/level_ledger.py has not the evidence scale's decision layer (no --mode option)")
     return script
 
 

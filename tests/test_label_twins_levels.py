@@ -324,7 +324,7 @@ def test_the_reference_script_reads_every_fact_from_a_run_table(tmp_path):
     run = _run_dir(tmp_path / "RUN_1", _combo(), table)
     assert LT.facts(table) == LAB
     assert LL.label_twin_facts(str(run)) == {"untie": LAB["untie"], "veto": set(LAB["veto"]), "alien": LAB["alien"]}
-    got = LL.run([str(run)], [], None, "auto").set_index(["neutral", "adduct"])
+    got = LL.series_run([str(run)], [], None, "auto").set_index(["neutral", "adduct"])
     assert _levels_of(got, "level") == _levels_of(_engine(_combo(), LAB), "evidence_level")
     assert {k: _hard(r) for k, r in got.iterrows()} == {k: v[0] for k, v in COMBO_LEVELS.items()}
     assert _levels_of(got, "chan2") == _levels_of(_engine(_combo(), LAB), "chan2")
@@ -341,13 +341,13 @@ def test_a_named_table_reaches_only_the_source_holding_its_pairs(tmp_path):
                     child("zc", "z15", "13C+1", 1000.0 * EV.C13_PER_CARBON * 12)])
     labelled = _run_dir(tmp_path / "labelled", zrows)
     other = _run_dir(tmp_path / "other", _j1_rows(J))
-    got = LL.run([str(labelled), str(other)], [], None, str(zcsv)).set_index(["neutral", "adduct"])
+    got = LL.series_run([str(labelled), str(other)], [], None, str(zcsv)).set_index(["neutral", "adduct"])
     assert bool(got.loc[(Z, NO3L), "label_veto"])
     assert got.loc[(J, "[M-H]-"), "branch"] and got.loc[(J, NO3), "branch"] and not got.loc[(J, NO3), "label_veto"]
-    got = LL.run([str(labelled), str(other)], [], None, str(jcsv)).set_index(["neutral", "adduct"])
+    got = LL.series_run([str(labelled), str(other)], [], None, str(jcsv)).set_index(["neutral", "adduct"])
     assert not got.loc[(Z, NO3L), "label_veto"]
     assert not got.loc[(J, "[M-H]-"), "branch"] and bool(got.loc[(J, NO3), "label_veto"])
-    off = LL.run([str(labelled)], [], None, None).set_index(["neutral", "adduct"])
+    off = LL.series_run([str(labelled)], [], None, None).set_index(["neutral", "adduct"])
     assert not off.loc[(Z, NO3L), "label_veto"]
 
 
@@ -361,9 +361,9 @@ def test_a_missing_or_empty_table_is_no_rule_k(tmp_path):
     assert LL.label_twin_facts(str(bare)) is None
     assert LL.label_twin_facts(str(empty)) is None
     assert LL.label_twin_facts(str(empty / "tables" / "label_twins.csv")) is None
-    off = list(LL.run([str(bare)], [], None, None)["level"])
+    off = list(LL.series_run([str(bare)], [], None, None)["level"])
     for path, twins in ((bare, "auto"), (empty, "auto"), (bare, str(empty / "tables" / "label_twins.csv"))):
-        got = LL.run([str(path)], [], None, twins).set_index(["neutral", "adduct"])
+        got = LL.series_run([str(path)], [], None, twins).set_index(["neutral", "adduct"])
         assert list(got["level"]) == off, (path, twins)
         assert bool(got.loc[(W, NO3), "chan2"]) and not got["label_untie"].any() and not got["label_veto"].any()
 

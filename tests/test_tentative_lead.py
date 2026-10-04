@@ -346,12 +346,12 @@ def _write(path: Path, frame: pd.DataFrame) -> Path:
 
 
 def test_the_reference_script_reads_the_lead_in_lockstep(tmp_path):
-    if not hasattr(LL, "run") or not hasattr(LL, "measure_source"):
+    if not hasattr(LL, "series_run") or not hasattr(LL, "measure_source"):
         pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 decision")
     for flag in ("below", "lead"):
         frame = _mixed(flag)
         path = _write(tmp_path / flag / "s_ledger.csv", frame)
-        got = LL.run([str(path)], [])
+        got = LL.series_run([str(path)], [])
         eng = EV._series_levels(frame)
         m0 = frame[frame.role == "M0"]
         engine = dict(zip(zip(m0.neutral_formula, m0.adduct), eng.loc[m0.index, "evidence_level"]))
@@ -361,8 +361,8 @@ def test_the_reference_script_reads_the_lead_in_lockstep(tmp_path):
             assert got.set_index(["neutral", "adduct"]).at[("C6H8O5", "[M-H]-"), "lead"]
     # a missing column reads False: the old ledger's levels, row for row
     old = _mixed("below")
-    with_col = LL.run([str(_write(tmp_path / "w" / "s_ledger.csv", old))], [])
-    no_col = LL.run([str(_write(tmp_path / "n" / "s_ledger.csv", old.drop(columns=[LEAD])))], [])
+    with_col = LL.series_run([str(_write(tmp_path / "w" / "s_ledger.csv", old))], [])
+    no_col = LL.series_run([str(_write(tmp_path / "n" / "s_ledger.csv", old.drop(columns=[LEAD])))], [])
     assert list(with_col.level) == list(no_col.level)
 
 

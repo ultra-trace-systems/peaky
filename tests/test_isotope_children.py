@@ -790,7 +790,7 @@ def test_every_level_path_takes_the_width_model(monkeypatch, tmp_path):
         rec.append(resolution)
         return real_ms(label, frame, halogen, resolution, per_file)
     monkeypatch.setattr(LL, "measure_source", spy_ms)
-    LL.run([str(run), str(run / "per_file" / "s1_ledger.csv")], [])
+    LL.series_run([str(run), str(run / "per_file" / "s1_ledger.csv")], [])
     assert rec == [RES_TOF, None]
 
 

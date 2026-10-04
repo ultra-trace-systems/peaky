@@ -822,7 +822,7 @@ def test_every_lead_rows_code_counts_in_the_script(tmp_path):
 def test_the_script_carries_the_lock_note(tmp_path):
     LL = _ll()
     run = _run_dir(tmp_path, "R", _f(_r("p", lead=True)), _h_table([_h_row(CL1, H)]))
-    ref = LL.run([str(run)], [], None, None, "auto").set_index(["neutral", "adduct"])
+    ref = LL.series_run([str(run)], [], None, None, "auto").set_index(["neutral", "adduct"])
     core = _one({"s1": _f(_r("p", lead=True))}, iso=lock((CL1, H)))
     assert ref.at[(CL1, H), "lock_note"] == core["lock_note"] == NOTE
 

@@ -62,7 +62,7 @@ def _hard(r) -> tuple:
 
 def _ll():
     """The reference script with the pre-0.10.0 decision, or skip."""
-    if not all(hasattr(LL, x) for x in ("run", "measure_source", "assign_levels", "iso_check_facts")):
+    if not all(hasattr(LL, x) for x in ("series_run", "measure_source", "assign_levels", "iso_check_facts")):
         pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 decision")
     return LL
 
@@ -389,7 +389,7 @@ def test_the_reference_script_lifts_like_the_engine(tmp_path):
     facts = LL.iso_check_facts(str(run))
     assert facts == IC.facts(table) and set(facts["lock"]) == {(CL1, H), (CL2, H), ("C5H9ClO4", H), ("C7H11ClO5", H),
                                                               ("C4H5ClO3", H), ("C5H7ClO3", H)}
-    ref = LL.run([str(run)], [], None, None, "auto")
+    ref = LL.series_run([str(run)], [], None, None, "auto")
     core = EV._series_pooled({"s1": frame}, iso=IC.facts(table))
     m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"], suffixes=("", "_ll"))
     assert len(m) == len(core) == len(ref)
@@ -412,7 +412,7 @@ def test_the_reference_script_lifts_like_the_engine(tmp_path):
     import io
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
-        got = LL.run([str(other)], [], None, None, str(lone))
+        got = LL.series_run([str(other)], [], None, None, str(lone))
     assert "does not hold 1 pair(s) the table vetoes or locks" in err.getvalue()
     assert not got["lead_lift"].any()
 
@@ -424,7 +424,7 @@ def _lockstep(tmp_path, name, frame, table, label_table=None):
     run = _run_dir(tmp_path, name, frame, table)
     if label_table is not None:
         label_table.to_csv(run / "tables" / "label_twins.csv", index=False)
-    ref = _ll().run([str(run)], [], None, "auto" if label_table is not None else None, "auto")
+    ref = _ll().series_run([str(run)], [], None, "auto" if label_table is not None else None, "auto")
     core = EV._series_pooled(_files(frame), iso=IC.facts(table),
                            label=LT.facts(label_table) if label_table is not None else None)
     m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"], suffixes=("", "_ll"))
@@ -564,7 +564,7 @@ def test_the_reference_script_without_lead_by_is_conservative_like_the_engine(tm
     LL = _ll()
     for ok in (True, False):
         run = _run_dir(tmp_path, f"RUN_{ok}", frame, _h_table([_h_row(CL1, H, budget_ok=ok)]))
-        ref = LL.run([str(run)], [], None, None, "auto").set_index(["neutral", "adduct"])
+        ref = LL.series_run([str(run)], [], None, None, "auto").set_index(["neutral", "adduct"])
         core = _one({"s1": frame}, iso=IC.facts(pd.read_csv(run / "tables" / "iso_checks.csv")))
         assert bool(ref.at[(CL1, H), "lead_lift"]) is ok is bool(core["lead_lift"])
         assert ref.at[(CL1, H), "level"] == core["evidence_level"]       # the private decision, alike
