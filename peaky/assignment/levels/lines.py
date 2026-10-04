@@ -5,8 +5,12 @@ per-file evaluation of a candidate's lines.
 fine structure merged within the width model's FWHM); `eval_candidate` probes
 each testable line in every file the pair was seen in (detectability against the
 file's height gate, the width-model position window, the ratio band, occupied /
-shadowed / off-scan files). The verdicts built on these records -- tests (a),
-(b), (c), (k), the matched elements, isoline competitors -- sit on top of them.
+shadowed / off-scan files). On those records: test (a) (`contradiction_a`: a
+line absent / off its band), the matched elements (`matched_elements`: the
+positive fact), test (c) (`carbon_test`: the observed carbon count), test (b)
+(`q1_isotopes`: another candidate's observed line this one cannot explain) and
+test (k) (`twin_test`: the labelled run's 15N twin), and the isotope-line
+competitors (`isoline_competitors`: the peak is another reading's line).
 
 Only the Orbitrap branches exist: a TOF-class source is not assessed.
 """
@@ -274,3 +278,290 @@ def eval_candidate(ctx, cand: dict, obs: list, pairkey: str, collect=False, pair
         recs.append(dict(L=L, n_det=n_det, n_test=n_test, n_ok=n_ok, n_bad=n_bad, n_abs=n_abs, n_hi=n_hi, n_lo=n_lo,
                          n_occ=n_occ, per=per))
     return recs
+
+
+# ---------------------------------------------------------------------------
+# the verdicts on a candidate's line records: (a), matched elements, (c), (b), (k)
+# ---------------------------------------------------------------------------
+ABSENT_FRAC = 0.8             # (a)/(b)/(k): >= 80 % of the testable files
+MATCH_FRAC = 0.5              # a line "matched in band": >= 50 % of its testable files
+C_TOL_ABS, C_TOL_REL, C_TOL_SE = 1.5, 0.25, 3.0   # (c): |C_obs - nC| > max(1.5, 0.25 nC, 3 se) contradicts
+B_FACTOR = 4.0                # (b): "nothing comparable" = the observed line > 4 x what J predicts there
+B_MIN_RATIO = 0.04            # (b) probes only K's lines >= 0.04 x the anchor (the 14N reagent line excepted)
+B_SHOULDER_FWHM, B_SHOULDER_X = 2.0, 3.0   # (b): a line within 2 FWHM of a peak > 3 x taller is a shoulder
+B_LINE_GATE_X = 1.0           # (b): an observed line counts only at >= 1 x the file's height gate
+B_SAME_LINE_FWHM = 1.0        # (b): J's lines within max(position window, 1 FWHM) of the observed line are "there"
+D15N_TWIN = 0.99703           # (k): a 14N [M+NO3]- reading implies its 15N twin at +0.99703 Da
+ISOLINE_LIST_X = 2.0          # a committed reading P's isotope line is a competitor of an M0 when, in >= 1 file,
+                              # it predicts >= 1/2 of the observed height there
+ISOLINE_REACH_FWHM = 3.0      # ... searched within max(position window, 3 FWHM) + ISOLINE_REACH_PAD of the peak
+ISOLINE_REACH_PAD = 0.05
+
+
+def contradiction_a(recs: list, nmin: int) -> list[str]:
+    """(a): a line bad (absent / too high / too low) in >= ABSENT_FRAC of its
+    >= ``nmin`` testable files. One text per refuting line."""
+    out = []
+    for r in recs:
+        if r["n_test"] >= nmin and r["n_bad"] / r["n_test"] >= ABSENT_FRAC:
+            L = r["L"]
+            what = ("absent" if r["n_abs"] >= max(r["n_hi"], r["n_lo"]) else
+                    "too high" if r["n_hi"] >= r["n_lo"] else "too low")
+            out.append(f"{L['label']} ({L['ratio']:.3g}x) {what} in {r['n_bad']}/{r['n_test']} files")
+    return out
+
+
+def matched_elements(recs: list, nmin: int) -> tuple[set, list]:
+    """(elements, labels) of the lines in band in >= MATCH_FRAC of their >=
+    ``nmin`` testable files. The 14N reagent line is a route marker, not an
+    element's isotope line: its label counts, its element does not."""
+    els = set()
+    labs = []
+    for r in recs:
+        if r["n_test"] >= nmin and r["n_ok"] / r["n_test"] >= MATCH_FRAC:
+            if r["L"]["mode"] != "reagent14N":
+                els.update(r["L"]["elements"])
+            labs.append(r["L"]["label"])
+    return els, labs
+
+
+def carbon_test(ctx, pair_key: tuple, cand_counts: dict) -> tuple:
+    """(c): the observed PEAK's carbon count (``ctx.c13[pair_key]``) against the
+    candidate's nC: ('contradicts' | 'agrees' | None, text). Skipped when the
+    candidate's +1 line is < IC.C_MIN_13C_SHARE 13C (a carbon-free candidate IS
+    tested)."""
+    cobs = ctx.c13.get(pair_key)
+    if not cobs or not np.isfinite(cobs.get("c", np.nan)):
+        return None, ""
+    share, _ = IC.c13_share(cand_counts)
+    nC = int(cand_counts.get("C", 0))
+    if nC > 0 and share < IC.C_MIN_13C_SHARE:
+        return None, ""
+    tol = max(C_TOL_ABS, C_TOL_REL * nC, C_TOL_SE * (cobs.get("se") if np.isfinite(cobs.get("se", np.nan)) else 0.0))
+    if abs(cobs["c"] - nC) > tol:
+        return "contradicts", f"13C reads {cobs['c']:.1f} C for {nC} (tol {tol:.1f}, {cobs['src']})"
+    return "agrees", f"13C reads {cobs['c']:.1f} C for {nC}"
+
+
+def _b_uninformative(ctx, o: dict, p: tuple) -> bool:
+    """A file that says nothing about K's line either way: K's parent below the
+    file's height gate, the observed (in-band) line below B_LINE_GATE_X x the
+    gate, or the line peak a shoulder (within B_SHOULDER_FWHM FWHM of a peak >
+    B_SHOULDER_X x taller)."""
+    if o["h"] < ctx.gates[o["sid"]]:
+        return True
+    j = p[5]
+    if p[4] and p[1] < B_LINE_GATE_X * ctx.gates[o["sid"]]:
+        return True
+    if p[4] and j >= 0:
+        fa = ctx.files[o["sid"]]
+        if fa.shoulder(j, B_SHOULDER_FWHM * ctx.fwhm(fa.mz[j]), B_SHOULDER_X):
+            return True
+    return False
+
+
+def _line_off(fa, o: dict, p: tuple, L: dict) -> float:
+    """Signed offset (Da) of the observed line peak from the nearest point of the predicted span (0 inside)."""
+    x = fa.mz[p[5]] - o["mz"]
+    lo, hi = min(L["span"][0], L["d"]), max(L["span"][1], L["d"])
+    return 0.0 if lo <= x <= hi else (x - lo if x < lo else x - hi)
+
+
+def _line_is_neighbour(ctx, okfiles: list, pair: dict, L: dict) -> str:
+    """The in-band line is a neighbouring compound, not K's line, when its
+    POOLED position (median over the files) is closer to another reading's
+    committed, unrefuted M0 than to the prediction, within the position window.
+    Returns the reason or ''. (The reference's TOF offset branch is not ported:
+    a TOF-class source is not assessed.)"""
+    if not okfiles:
+        return ""
+    xs, preds = [], []
+    for o, p in okfiles:
+        fa = ctx.files[o["sid"]]
+        off = _line_off(fa, o, p, L)
+        xs.append(float(fa.mz[p[5]]))
+        preds.append(float(fa.mz[p[5]]) - off)
+    if not len(ctx.m0_mz):
+        return ""
+    x = float(np.median(xs))
+    d_line = abs(x - float(np.median(preds)))
+    tol = ctx.tol_da(x, float(np.median([p[1] for _o, p in okfiles])))
+    skip = {pair.get("pairkey")} | set(pair.get("own_pk", ()))
+    lo = np.searchsorted(ctx.m0_mz, x - tol, "left")
+    hi = np.searchsorted(ctx.m0_mz, x + tol, "right")
+    for i in range(lo, hi):
+        if ctx.m0_pk[i] not in skip and abs(ctx.m0_mz[i] - x) < d_line:
+            return f"another reading's M0 ({ctx.m0_pk[i]}) sits closer"
+    return ""
+
+
+def twin_test(ctx, pair: dict, cand: dict, nmin: int) -> str:
+    """(k), labelled-nitrate run, competitors only: a reading that can only be
+    a 14N [M+NO3]- cluster (every plausible decomposition over the run's
+    decomposition adducts is [M+NO3]-) implies its 15N twin (+D15N_TWIN Da) at
+    >= the file's twin ratio x its height (detectable at DET_X x the gate; an
+    occupant counts as present). Refuted when absent or too low in >=
+    ABSENT_FRAC of >= ``nmin`` files. Returns the text or ''."""
+    if not ctx.labelled or not ctx.twin_q or not cand.get("counts"):
+        return ""
+    if cand["adduct"] != "[M+NO3]-":
+        return ""
+    for d in ctx.decompositions(cand["counts"], cand["neutral"], cand["adduct"]):
+        if d["ok"] and d["neutral"] and d["adduct"] != "[M+NO3]-":
+            return ""
+    n_test = n_bad = 0
+    for o in pair["obs"]:
+        q = ctx.twin_q.get(o["sid"])
+        if not q:
+            continue
+        fa = ctx.files[o["sid"]]
+        exp_h = o["h"] * q
+        if exp_h < DET_X * ctx.gates[o["sid"]]:
+            continue
+        t = o["mz"] + D15N_TWIN
+        if not fa.in_scan(t, t):
+            continue
+        st, hobs, _j = fa.probe((t, t), ctx.tol_da(o["mz"], exp_h), o["pid"], SHADOW_FWHM * ctx.fwhm(o["mz"]), exp_h)
+        if st == "shadowed":
+            continue
+        n_test += 1
+        if not (st in ("free", "occupied") and hobs >= BAND[0] * exp_h):
+            n_bad += 1
+    if n_test >= nmin and n_bad / n_test >= ABSENT_FRAC:
+        return f"15N twin (+0.997, >= q_lo x) absent or too low in {n_bad}/{n_test} files"
+    return ""
+
+
+def q1_isotopes(ctx, pair: dict, cands: list, nmin: int) -> list:
+    """The isotope tests of the committed reading (``cands[0]``) and every
+    competitor, in place: ``recs`` (eval_candidate), ``a``, ``c`` / ``c_agree``,
+    ``matched_els`` / ``matched_labels``, ``b`` (a candidate K's observed
+    in-band line where J predicts nothing comparable; K must not be refuted by
+    its own (a)/(c); the committed reading too can be refuted through a
+    competitor's line), ``k`` (competitors only) and ``contradicted`` = a or b
+    or c or k."""
+    obs = pair["obs"]
+    pk = pair["pairkey"]
+    for c in cands:
+        c["recs"] = eval_candidate(ctx, c, obs, pk, pair=pair)
+        c["a"] = contradiction_a(c["recs"], nmin)
+        c["b"] = []
+        cv, ctext = carbon_test(ctx, pair["key"], c["counts"])
+        c["c"] = ctext if cv == "contradicts" else ""
+        c["c_agree"] = ctext if cv == "agrees" else ""
+        c["matched_els"], c["matched_labels"] = matched_elements(c["recs"], nmin)
+    for K in cands:
+        if K["a"] or K["c"]:
+            continue              # a reading its own (a)/(c) refutes does not vouch for a line
+        for r in K["recs"]:
+            L = r["L"]
+            if L["ratio"] < B_MIN_RATIO and L["mode"] != "reagent14N":
+                continue
+            # an OBSERVED in-band line counts wherever it is seen, also below K's predicted detection
+            consid = [(o, p) for o, p in zip(obs, r["per"]) if (p[3] and p[0] not in ("shadowed", "offscan")) or p[4]]
+            if L["mode"] != "reagent14N":
+                consid = [(o, p) for o, p in consid if not _b_uninformative(ctx, o, p)]
+                okfiles = [(o, p) for o, p in consid if p[4]]
+                if _line_is_neighbour(ctx, okfiles, pair, L):
+                    continue
+            else:
+                okfiles = [(o, p) for o, p in consid if p[4]]
+            if len(okfiles) < nmin or len(okfiles) < ABSENT_FRAC * len(consid):
+                continue
+            eff = min([ctx.eff.get(e, 1.0) for e in L["elements"]] or [1.0])
+            for J in cands:
+                if J is K:
+                    continue
+                if L["mode"] == "reagent14N" and any(z["mode"] == "reagent14N" for z in J["lines"]):
+                    continue      # J carries the labelled atom too: it makes the 14N line (no upper bound)
+                n_over = 0
+                rJs = []
+                for o, p in okfiles:
+                    x = ctx.files[o["sid"]].mz[p[5]] - o["mz"]          # the observed line, from the anchor
+                    tol = max(ctx.tol_da(o["mz"], p[1]), B_SAME_LINE_FWHM * ctx.fwhm(o["mz"]))
+                    rJ = sum(z["ratio"] for z in J["lines"]
+                             if min(z["span"][0], z["d"]) - tol <= x <= max(z["span"][1], z["d"]) + tol)
+                    rJs.append(rJ)
+                    if p[1] > B_FACTOR * o["h"] * rJ * eff:
+                        n_over += 1
+                if n_over / len(okfiles) >= ABSENT_FRAC and n_over >= nmin:
+                    J["b"].append(f"{L['label']} line at {np.median([p[1] / o['h'] for o, p in okfiles]):.3g}x seen in "
+                                  f"{n_over}/{len(okfiles)} files (in band for {K['name']}), predicts {np.median(rJs):.2g}x")
+    for c in cands:
+        c["k"] = twin_test(ctx, pair, c, nmin) if c is not cands[0] else ""
+    for c in cands:
+        c["contradicted"] = bool(c["a"] or c["b"] or c["c"] or c["k"])
+    return cands
+
+
+# ---------------------------------------------------------------------------
+# isotope-line competitors
+# ---------------------------------------------------------------------------
+def isoline_competitors(ctx, pair: dict, nmin: int) -> tuple[list, set]:
+    """'This peak is line L of committed reading P': listed when, in >= 1 file
+    of the pair, a line of a committed, unrefuted reading P of ANOTHER neutral
+    lands on the observed peak (P's position window) and predicts >= 1 /
+    ISOLINE_LIST_X of its height. Tested in every file by P's predicted line
+    there (P's own M0 in that file, else the tallest peak at P's position;
+    none -> 0): EXCLUDED when the peak is > BAND[1] x the predicted line in >=
+    ABSENT_FRAC of >= ``nmin`` files. Returns (competitors, the sids where some
+    P line explains >= half the peak)."""
+    n, _a = pair["key"]
+    obs = pair["obs"]
+    listed = {}
+    for o in obs:
+        ix = ctx.isolines.get(o["sid"])
+        if not ix or not len(ix["c"]):
+            continue
+        reach = max(ctx.tol_da(o["mz"], 0.0), ISOLINE_REACH_FWHM * ctx.fwhm(o["mz"])) + ISOLINE_REACH_PAD
+        lo = np.searchsorted(ix["c"], o["mz"] - reach, "left")
+        hi = np.searchsorted(ix["c"], o["mz"] + reach, "right")
+        for i in range(lo, hi):
+            pk = ix["pk"][i]
+            if pk == pair["pairkey"] or pk in pair.get("own_pk", ()) or ix["neutral"][i] == n:
+                continue
+            pmz, ph = ix["pos"][pk]
+            exp_h = ph * ix["r"][i]
+            tol = ctx.tol_da(o["mz"], exp_h)
+            if not (pmz + ix["lo"][i] - tol <= o["mz"] <= pmz + ix["hi"][i] + tol):
+                continue
+            if exp_h * ISOLINE_LIST_X < o["h"]:
+                continue
+            key = (pk, ix["label"][i])
+            if key not in listed:
+                listed[key] = dict(pk=pk, label=ix["label"][i], ratio=float(ix["r"][i]), lo=float(ix["lo"][i]),
+                                   hi=float(ix["hi"][i]), pmz=pmz, ppm=(o["mz"] - float(ix["c"][i])) / o["mz"] * 1e6)
+    comps, explained = [], set()
+    for (pk, lab), v in listed.items():
+        n_ex = n_exp = 0
+        ratios = []
+        for o in obs:
+            fa = ctx.files[o["sid"]]
+            ix = ctx.isolines.get(o["sid"]) or {}
+            pos = (ix.get("pos") or {}).get(pk)
+            if pos is None:
+                lo_, hi_ = fa.window(v["pmz"], ctx.tol_da(v["pmz"], 0.0))
+                if hi_ > lo_:
+                    jj = lo_ + int(np.argmax(fa.h[lo_:hi_]))
+                    pos = (float(fa.mz[jj]), float(fa.h[jj]))
+            exp_h = 0.0
+            if pos is not None:
+                e = pos[1] * v["ratio"]
+                tol = ctx.tol_da(o["mz"], e)
+                if pos[0] + v["lo"] - tol <= o["mz"] <= pos[0] + v["hi"] + tol:
+                    exp_h = e
+            ratios.append(exp_h / o["h"] if o["h"] > 0 else 0.0)
+            if o["h"] > BAND[1] * exp_h:
+                n_ex += 1
+            else:
+                n_exp += 1
+                explained.add(o["sid"])
+        excl = len(obs) >= nmin and n_ex >= nmin and n_ex / len(obs) >= ABSENT_FRAC
+        pn, pa = pk.split("|", 1)
+        comps.append(dict(name=f"{lab} line of {pn} {pa}", neutral=pn, adduct=pa, kind="isoline", ppm=v["ppm"],
+                          excluded=excl, explained_files=n_exp, n_files=len(obs),
+                          why=(f"isotope height: the peak is > {BAND[1]:g}x {pn} {pa}'s predicted {lab} line in "
+                               f"{n_ex}/{len(obs)} files" if excl else
+                               f"{lab} line of {pn} {pa} (pred/obs median {np.median(ratios):.2f}) explains >= half the "
+                               f"peak in {n_exp}/{len(obs)} files; > {BAND[1]:g}x in {n_ex}")))
+    return comps, explained

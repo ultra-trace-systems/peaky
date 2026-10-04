@@ -44,6 +44,17 @@ def ion_counts_of(neutral, adduct, ion=None) -> dict:
     return {k: int(v) for k, v in (c or {}).items() if v}
 
 
+def same_formula(f1, f2) -> bool:
+    """Two formulas with the same element counts ('C2H8O2Si1' == 'C2H8O2Si');
+    the strings compared when either cannot be parsed."""
+    try:
+        a = {k: v for k, v in C.parse_formula(str(f1)).items() if v}
+        b = {k: v for k, v in C.parse_formula(str(f2)).items() if v}
+        return a == b
+    except Exception:  # noqa: BLE001
+        return str(f1) == str(f2)
+
+
 _DELTA: dict = {}
 
 
