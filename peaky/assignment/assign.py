@@ -407,7 +407,7 @@ def _stage_resolvability(st):
     """Nearest-neighbour separability of every M0 peak from the run's width
     model (assignment/resolvability.py): a tier input (a blended peak with no
     isotope / second-channel / series corroboration is capped at Candidate) and
-    a level input (4c needs a separable peak). Skipped without a model, and
+    a fact of the merge vote's class. Skipped without a model, and
     when the ledger already carries the flag (the trace-first synthetic sample
     stamps its own at the trace build)."""
     return resolvability.stamp_resolvability(st.led, st.resolving_power, log=st.log)
@@ -528,7 +528,7 @@ _STAGES = [
     _Stage("rearbitrate", lambda st: passes.rearbitrate_offcal_degenerate(
         st.led, st.cfg, log=st.log)),
     # separability of each M0 peak from its nearest picked neighbour -- MUST precede
-    # tiers (a blended, uncorroborated peak is capped) and evidence (level 4c reads it).
+    # tiers (a blended, uncorroborated peak is capped) and the merge vote's class (reads it).
     _Stage("resolvability", _stage_resolvability,
            when=lambda st: st.resolving_power is not None and not resolvability.already_stamped(st.led),
            safe=False),
@@ -605,7 +605,7 @@ _STAGES = [
     # (exact mass, own 13C) while the ionization process and the neutral stay
     # open. Post-tier (it sets its own tier, like reflist_rescue), BEFORE the
     # final envelope sweep (which then claims the new row's own 13C), `evidence`
-    # (which levels it 4d / 5a on its own satellite and never lets it corroborate
+    # (which reads its channel as the ion only and never lets it corroborate
     # its parent) and `timeseries` (which stamps it). Only where the profile
     # opened the channel (cfg.ion_only_channels); not `safe`: a bucket that
     # cannot be filled is a bug, not a lost stage.

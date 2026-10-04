@@ -1152,9 +1152,10 @@ def _corroborate_partners(sources, *, log=print) -> tuple[dict, dict]:
 
 
 def _claims_summary(merged: pd.DataFrame, levels: pd.DataFrame) -> dict:
-    """batch_summary['claims']: the claim each level supports (evidence.claim_class,
-    C13) counted per merged row, per pooled (neutral, adduct) pair, per stage
-    and per tier. An ion-only merged row (an `ion_only_of` link) counts under
+    """batch_summary['claims']: the claim each level supports (evidence.claim_class:
+    identified / neutral / ion / tentative + the reagent and not-assessed
+    buckets, every tally over evidence.CLAIM_KEYS) counted per merged row, per
+    pooled (neutral, adduct) pair, per stage and per tier. An ion-only merged row (an `ion_only_of` link) counts under
     its own key 'ion-only', not under its tier. Tier and claim are separate
     verdicts: they are tallied side by side and neither is read off the other.
     `n_unlevelled` = merged rows with no level (their claim reads tentative)."""
@@ -1293,7 +1294,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # The peak-width model, resolved ONCE for the batch (chem.resolution) and
     # handed to every per-file run: it sizes trace-first's dedup cell and, on
     # every path, the `resolvability` stamp each per-file ledger carries (a
-    # blended, uncorroborated peak is capped at Candidate; level 4c reads it).
+    # blended, uncorroborated peak is capped at Candidate; the vote's class reads it)
+    # and, per file and pooled, the evidence level's instrument class.
     # MEASURED from the raw profile by default -- a TOF can be tuned anywhere
     # and a declared number is a guess -- and the caller's only when they gave
     # one. A measurement that cannot be made stops trace-first (nothing sizes
