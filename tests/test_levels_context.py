@@ -250,7 +250,10 @@ def test_build_run_context_gates_channels_and_windows():
     assert ctx.gates["a"] == 250.0 and ctx.gates["b"] == ctx.files["b"].edge   # no gate: the 1st-percentile height
     assert ctx.channels == ["[M+H]+", "[M+(CH4N2O)H]+"]
     assert ctx.decomp_adducts[-1] == "[M+NH4]+" and "[M+NO3]-" in ctx.decomp_adducts
-    assert ctx.families == ("siloxane",) and not ctx.labelled and ctx.twin_q == {}
+    # C47: a family one file alone opened does not open the run's space (recorded as dropped)
+    assert ctx.families == () and ctx.families_dropped == ("siloxane",) and not ctx.labelled and ctx.twin_q == {}
+    win2 = {"a": dict(fams=("siloxane",), fit=(0.1, 0.3)), "b": dict(fams=("siloxane",), fit=(0.2, 0.3))}
+    assert CX.build_run_context(summary, pf, win2, name="t").families == ("siloxane",)
     assert ctx.tol_da(200.0, 1e5) == pytest.approx(200.0 * 1e-6)      # no position fit: 1 ppm
     assert ctx.fwhm(200.0) == pytest.approx(0.002)
     d = ctx.decompositions(SP.ion_counts_of("C7H12O5", "[M+H]+"), "C7H12O5", "[M+H]+")

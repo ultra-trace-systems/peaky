@@ -89,6 +89,7 @@ if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
 from peaky.assignment import evidence as EV  # noqa: E402
+from peaky.assignment.levels import decide as DC  # noqa: E402
 from peaky.assignment.levels import routes as RT  # noqa: E402
 from peaky.assignment.levels import source as SRC  # noqa: E402
 from peaky.assignment.levels import space as SP  # noqa: E402
@@ -429,7 +430,7 @@ def _inpass(i, f, left, routes, homo, lmin):
     levels (never output: they anchor the series exclusion and make other-source partners)."""
     if f["reagent"][i]:
         return "reagent", "reagent identity (" + f["reagent"][i] + ")"
-    if f["rej"][i]:
+    if f["rej"][i] and not f["lowconf_only"][i]:
         return "5b", "rejected: " + "; ".join(f["rej"][i])
     if f["untestable"][i]:
         return "5b", "untestable"
@@ -442,7 +443,7 @@ def _inpass(i, f, left, routes, homo, lmin):
     h = homo.get(i)
     if h and h["anchored"] and f["pinned"][i] and f["nfiles"][i] >= lmin:
         return ("3a" if f["listed"][i] else "3d"), "ladder"
-    if f["pinned"][i] and f["listed"][i]:
+    if f["pinned"][i] and f["listed"][i] and not f["lead_reflist"][i]:
         return "3c", "split pinned + listed"
     if f["pinned"][i] and f["posfact"][i]:
         return "4a", "split pinned + positive fact"
@@ -479,17 +480,24 @@ LIFT = {
 LEFT_SHOWN = 6                  # the competitors a 5a would-lift names
 
 
+def lowconf_alone(rejected) -> bool:
+    """C47: the pair's only rejection is `lowconf` -- a 5a ceiling, not a rejection."""
+    return bool(rejected) and all(x == DC.LOWCONF_REASON for x in rejected)
+
+
 def level_of(f: dict) -> str:
     """The level of one pair from its facts: the first outcome that applies."""
     if f["reagent"]:
         return "reagent"
-    if f["rejected"] or f["untestable"]:
+    if (f["rejected"] and not lowconf_alone(f["rejected"])) or f["untestable"]:
         return "5b"
     if f["left"]:
         return "5a"
+    if f["rejected"]:
+        return "5a"          # lowconf alone: the ceiling (C47)
     if f["ion_only"]:
         return "4b"
-    if f["pinned"] and f["named"]:
+    if f["pinned"] and f["named"] and not f.get("lead_reflist", False):
         return "3c"
     if f["pinned"] and (f["posfact"] or f["track"]):
         return "4a"
@@ -500,10 +508,13 @@ def would_lift(level: str, f: dict) -> str:
     if level == "reagent":
         return LIFT["reagent"]
     if level == "5b":
-        # the rejection text with its 'rejected: ' read as 'refuted: ' (every occurrence, as built)
-        return ("rejected: " + "; ".join(f["rejected"])).replace("rejected: ", "refuted: ") if f["rejected"] \
-            else LIFT["untestable"]
+        # the rejection text with its 'rejected: ' read as 'refuted: ' (every occurrence, as built); lowconf
+        # alone is no rejection (C47), so a 5b beside it is the untestable one
+        return ("rejected: " + "; ".join(f["rejected"])).replace("rejected: ", "refuted: ") \
+            if f["rejected"] and not lowconf_alone(f["rejected"]) else LIFT["untestable"]
     if level == "5a":
+        if not f["left"] and lowconf_alone(f["rejected"]):
+            return DC.LOWCONF_CEILING_WHY
         names = [c["name"] for c in f["left"]]
         return "competitors left: " + "; ".join(names[:LEFT_SHOWN]) + (
             f" (+{len(names) - LEFT_SHOWN} more)" if len(names) > LEFT_SHOWN else "")
@@ -514,6 +525,8 @@ def would_lift(level: str, f: dict) -> str:
             return "split not pinned: " + f["split_text"]
         return LIFT["4b pinned"] + ("" if f["named"] else LIFT["4b pinned, no name"])
     if level == "4a":
+        if f["named"] and f.get("lead_reflist", False):
+            return DC.LIFT_3C_WITHHELD
         return LIFT["4a"] + (LIFT["4a, class entry"] if f["class_entry"] else "")
     return LIFT["3c"]
 
@@ -558,6 +571,8 @@ def decide(S, partners=None) -> pd.DataFrame:
         f["named"].append([h for h in hits if h["named"]])
         f["class_entry"].append([h for h in hits if not h["named"]])
         f["listed"].append(bool(hits))
+        f["lead_reflist"].append(DC.lead_rescued(S.lead_by.get(keys[i], "")))   # C47: the prepared source's dict
+        f["lowconf_only"].append(lowconf_alone(rej))                     # C47
         f["nfiles"].append(int(nfiles[i]))
     f["member"] = [not f["rej"][i] and not f["untestable"][i] and not f["reagent"][i] for i in range(n)]
     if S.arm:
@@ -572,7 +587,13 @@ def decide(S, partners=None) -> pd.DataFrame:
 
     def one_pass(excluded, homo):
         lefts = [[c for c in left_of.get(i, []) if c["name"] not in excluded.get(i, {})] for i in range(n)]
-        return [_inpass(i, f, lefts[i], routes, homo, lmin) for i in range(n)], lefts
+        inp = []
+        for i in range(n):
+            lv, why = _inpass(i, f, lefts[i], routes, homo, lmin)
+            if f["lowconf_only"][i] and lv not in ("reagent", "5b", "5a"):
+                lv, why = "5a", DC.LOWCONF_CEILING_WHY            # C47: the ceiling
+            inp.append((lv, why))
+        return inp, lefts
 
     excluded, homo = {}, {}
     inp, lefts = one_pass(excluded, homo)
@@ -592,7 +613,8 @@ def decide(S, partners=None) -> pd.DataFrame:
         sp = f["split"][i]
         g = dict(reagent=f["reagent"][i], rejected=f["rej"][i], untestable=f["untestable"][i], left=lefts[i],
                  ion_only=f["ion_only"][i], pinned=sp["pinned"], named=f["named"][i], posfact=f["posfact"][i],
-                 track=sp["track"], split_text=sp["text"], class_entry=f["class_entry"][i])
+                 track=sp["track"], split_text=sp["text"], class_entry=f["class_entry"][i],
+                 lead_reflist=f["lead_reflist"][i])
         lv = level_of(g)
         pf = []
         if sp["label_pin"]:

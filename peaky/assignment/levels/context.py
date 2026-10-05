@@ -45,6 +45,12 @@ from peaky.chem import reagents as RG
 
 K_SIGMA = 3.0                 # the calibrated half-window, in sigma
 NMIN_FILES = 3                # files where an isotope test is possible (a batch)
+# C47: a contaminant family opens the run's space (its competitors for EVERY
+# pair) only from >= this many files (1 on a one-file source) -- the other
+# 2-file minima of the scale (ROUTE_COFILES, LADDER_MIN_FILES). On the uronium
+# run the scale was validated on, ONE Candidate row in ONE file opened
+# `fluorinated` for all 1196 pairs (131 moved behind F competitors).
+FAMILY_MIN_FILES = 2
 NMIN_FILES_ARM = 1            # a single-file source ("adapted" minima)
 ORBI_MIN_PPM, ORBI_K = 1.0, 4.0   # the isotope position window without a fit: 1 ppm (ISO.position_window_ppm's floor)
 DEFAULT_FWHM_DA = 0.02        # the line merge width without a width model
@@ -434,6 +440,20 @@ def fit_windows(summary: dict, per_file: dict, *, catalog=None) -> dict:
     return out
 
 
+def family_union(win: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(the run's families, the families dropped): a family counts when at
+    least FAMILY_MIN_FILES of the files' window records (`fams`) opened it
+    (every family on a one-file source), in first-seen order (C47)."""
+    need = min(FAMILY_MIN_FILES, max(1, len(win)))
+    counts: dict = {}
+    for w in win.values():
+        for f in dict.fromkeys(w.get("fams", ()) or ()):
+            counts[f] = counts.get(f, 0) + 1
+    kept = tuple(f for f, c in counts.items() if c >= need)
+    dropped = tuple(f for f, c in counts.items() if c < need)
+    return kept, dropped
+
+
 def run_windows(summary: dict, per_file: dict, *, catalog=None) -> dict:
     """The window record of every file: PRIMARY the persisted degeneracy-stage
     calibration (``per_file[i].degeneracy_cal`` = {mu, sigma} | null), else
@@ -508,6 +528,7 @@ class RunContext:
         self.alien: frozenset = frozenset()
         self.window_records: dict = {}
         self.families: tuple = ()
+        self.families_dropped: tuple = ()   # opened by fewer than FAMILY_MIN_FILES files (C47)
         self.n_13c_children = 0
         self.cl37_flips = 0
         self.cl37_blend = 0
@@ -555,7 +576,7 @@ def build_run_context(summary: dict, per_file: dict, win: dict, *, nmin: int = N
     indexes (`prepare_context` adds them): width model + class, FileArr per file
     with its gate (``height_gate_cps``, else ``noise_edge_cps``, else the file's
     1st-percentile height), the windows (``win`` = `run_windows`), the space
-    over the UNION of the files' families, the position-sigma fit, the
+    over the families >= FAMILY_MIN_FILES files opened (`family_union`), the position-sigma fit, the
     channels (profile adducts), the decomposition adducts (+ every committed
     non-ion-only adduct with a composition, + [M+NH4]+ beside [M+H]+), and the
     15N twin ratios. Raises ValueError on a source the scale does not assess."""
@@ -573,7 +594,7 @@ def build_run_context(summary: dict, per_file: dict, win: dict, *, nmin: int = N
             fa.gate = fa.edge
             gates[sid] = fa.edge
     windows, run_window = window_table(win)
-    fams = tuple(dict.fromkeys(f for w in win.values() for f in w["fams"]))
+    fams, fams_dropped = family_union(win)
     space = SP.Space(*run_space_args(summary), fams, catalog=catalog)
     sig_fit, n13 = position_sigma(per_file)
     labelled = any("^" in a for a in space.adducts)
@@ -591,6 +612,7 @@ def build_run_context(summary: dict, per_file: dict, win: dict, *, nmin: int = N
     ctx.run_channels = run_channels
     ctx.window_records = win
     ctx.families = fams
+    ctx.families_dropped = fams_dropped
     ctx.n_13c_children = n13
     ctx.twin_q = twin_ratios(ctx, per_file)
     return ctx

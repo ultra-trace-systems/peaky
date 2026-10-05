@@ -428,7 +428,13 @@ def test_the_level_order_is_the_documented_one():
     assert LL.level_of(dict(base, ion_only=True)) == "4b"
     assert LL.level_of(dict(base, left=[{"name": "c"}])) == "5a"
     assert LL.level_of(dict(base, untestable=True, left=[{"name": "c"}])) == "5b"
-    assert LL.level_of(dict(base, rejected=["lowconf"])) == "5b"
+    assert LL.level_of(dict(base, rejected=["lowconf"])) == "5a"                 # C47: the lowconf ceiling
+    assert LL.level_of(dict(base, rejected=["lowconf", "iso_veto"])) == "5b"
+    assert LL.level_of(dict(base, rejected=["lowconf"], left=[{"name": "c"}])) == "5a"
+    assert LL.level_of(dict(base, rejected=["lowconf"], untestable=True)) == "5b"
+    assert LL.level_of(dict(base, lead_reflist=True)) == "4a"                         # C47: 3c withheld
+    assert LL.would_lift("4a", dict(base, lead_reflist=True, class_entry=[])) == LL.DC.LIFT_3C_WITHHELD
+    assert LL.would_lift("5a", dict(base, rejected=["lowconf"])) == LL.DC.LOWCONF_CEILING_WHY
     assert LL.level_of(dict(base, reagent="HNO3", rejected=["lowconf"])) == "reagent"
     assert [r for r, _k in LL.SPLIT_RULES][:2] == ["no ion composition", "ion-only channel"]
 

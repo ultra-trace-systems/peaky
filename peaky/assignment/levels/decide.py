@@ -185,6 +185,33 @@ def run_classes_of(engine_channels) -> set:
     return rc - {cl for cl, nm in RT.SIDE_CLASSES.items() if SPL.is_locked(nm)}
 
 
+# C47 (rule changes the user accepted on 2026-10-05 after the scale landed):
+#  * `lowconf` ALONE (every row of the pair Low / Suspect, no other rejection) is
+#    a 5a CEILING, not a rejection: the pair is levelled on its facts and reads at
+#    most 5a -- "not established", where 5b says "refuted". It still anchors
+#    nothing (no member of the series exclusion, no route, no ladder). On the two
+#    Orbitrap runs the scale was validated on, lowconf alone was the only reason
+#    of 86 (labelled nitrate) and 174 (uronium; 174 of its 185 5b pairs) 5b pairs,
+#    and the C42 recentring alone moved 40 of them out and 13 in -- the flag
+#    tracks the calibration centre more than the chemistry.
+#  * a reference list that rescued a dim reading (a tentative lead whose setter
+#    is `reflist_dim`) may not also certify it at 3c through its named entry:
+#    the pair takes the level its other facts give (tag `3c withheld`).
+LOWCONF_REASON = "lowconf"
+LOWCONF_CEILING_WHY = ("engine confidence Low/Suspect in every file: not established (5a ceiling; a file at "
+                       "Good or High lifts it), not refuted")
+LEAD_RESCUE_SETTER = "reflist_dim"
+LIFT_3C_WITHHELD = ("3c withheld: the named entry is on the list that rescued this reading -- an independent named "
+                    "list, or MS2 / standards")
+
+
+def lead_rescued(lead_by) -> bool:
+    """Did a reference list rescue this pair (a `lead_by` text naming the
+    `reflist_dim` setter; the pooled text joins setters with ',' or '|')?"""
+    t = _txt(lead_by)
+    return any(x.strip() == LEAD_RESCUE_SETTER for x in re.split(r"[,|]", t)) if t else False
+
+
 def inpass(S: Prepared, partners=None) -> dict:
     """The internal pass over a source. ``partners`` = {neutral: {route class:
     [partner text]}} (other-source partners; None on a partner pass and on a
@@ -234,6 +261,10 @@ def inpass(S: Prepared, partners=None) -> dict:
     posfact = np.array([bool(label_pin[i]) or bool(matched_els[i] & elements[i]) for i in range(n)], dtype=bool)
     hits = [S.lists.hits(nn) for nn, _ in keys]
     listed = np.array([bool(h) for h in hits], dtype=bool)
+    # C47: the list that rescued a dim reading may not certify it at 3c
+    lead_reflist = np.array([lead_rescued(S.lead_by.get(k, "")) for k in keys], dtype=bool)
+    # C47: lowconf alone is a 5a ceiling -- the pair is still no anchor for others (rej stays)
+    lowconf_only = np.array([bool(x) and all(y == LOWCONF_REASON for y in x) for x in rej], dtype=bool)
     # ---- routes (in-pass anchors; tags in the record) ----
     rejected_mask = np.array([bool(x) for x in rej], dtype=bool)
     nonrej = ~rejected_mask & ~no_info & np.array([not x for x in reag], dtype=bool)
@@ -312,6 +343,30 @@ def inpass(S: Prepared, partners=None) -> dict:
     D = P[["neutral_formula", "adduct", "mz"]].copy()
     lmin = 1 if arm else RT.LADDER_MIN_FILES
 
+    def inpass_level(i, left, homo):
+        """The internal pass's natural (level, why) of pair i."""
+        if reag[i]:
+            return "reagent", "reagent identity (" + reag[i] + ")"
+        if rej[i] and not lowconf_only[i]:
+            return "5b", "rejected: " + "; ".join(rej[i])
+        # a tentative lead has no level effect (the lead gate is off)
+        if no_info[i]:
+            return "5b", "untestable"
+        if left:
+            return "5a", f"competitors left ({len(left)})"
+        if ion_only[i]:
+            return "4b", "ion formula only"
+        if routes2[i]:
+            return ("3a" if listed[i] else "3b"), "routes"
+        h = homo.get(i)
+        if h and h["anchored"] and pinned[i] and nfiles[i] >= lmin:
+            return ("3a" if listed[i] else "3d"), "ladder"
+        if pinned[i] and listed[i] and not lead_reflist[i]:
+            return "3c", "split pinned + listed"
+        if pinned[i] and posfact[i]:
+            return "4a", "split pinned + positive fact"
+        return "4b", ("split pinned, no positive fact" if pinned[i] else "split open")
+
     def one_pass(excl_s, homo):
         lv = [""] * n
         why = [""] * n
@@ -319,36 +374,10 @@ def inpass(S: Prepared, partners=None) -> dict:
         for i in range(n):
             left = [c for c in left_of.get(i, []) if c["name"] not in excl_s.get(i, {})]
             lefts[i] = left
-            if reag[i]:
-                lv[i], why[i] = "reagent", "reagent identity (" + reag[i] + ")"
-                continue
-            if rej[i]:
-                lv[i], why[i] = "5b", "rejected: " + "; ".join(rej[i])
-                continue
-            # a tentative lead has no level effect (the lead gate is off)
-            if no_info[i] or left:
-                if no_info[i]:
-                    lv[i], why[i] = "5b", "untestable"
-                else:
-                    lv[i], why[i] = "5a", f"competitors left ({len(left)})"
-                continue
-            if ion_only[i]:
-                lv[i], why[i] = "4b", "ion formula only"
-                continue
-            if routes2[i]:
-                lv[i], why[i] = ("3a" if listed[i] else "3b"), "routes"
-                continue
-            h = homo.get(i)
-            if h and h["anchored"] and pinned[i] and nfiles[i] >= lmin:
-                lv[i], why[i] = ("3a" if listed[i] else "3d"), "ladder"
-                continue
-            if pinned[i] and listed[i]:
-                lv[i], why[i] = "3c", "split pinned + listed"
-                continue
-            if pinned[i] and posfact[i]:
-                lv[i], why[i] = "4a", "split pinned + positive fact"
-                continue
-            lv[i], why[i] = "4b", ("split pinned, no positive fact" if pinned[i] else "split open")
+            lv[i], why[i] = inpass_level(i, left, homo)
+            if lowconf_only[i] and lv[i] not in ("reagent", "5b", "5a"):
+                # C47: the ceiling -- its step-1/2 facts stand, the level reads 5a
+                lv[i], why[i] = "5a", LOWCONF_CEILING_WHY
         return lv, why, lefts
 
     excl_s, homo = {}, {}
@@ -367,6 +396,7 @@ def inpass(S: Prepared, partners=None) -> dict:
             break
     return dict(level=lv, why=why, lefts=lefts, excl_s=excl_s, homo=homo, routes2=routes2, route_info=route_info,
                 sp=sp, pinned=pinned, posfact=posfact, listed=listed, hits=hits, reag=reag, rej=rej,
+                lead_reflist=lead_reflist, lowconf_only=lowconf_only,
                 o11_note=o11_note, iterations=it, nfiles=nfiles, br_own=br_own, br_cross=br_cross)
 
 
@@ -449,7 +479,7 @@ def relevel(S: Prepared, res: dict) -> list[str]:
             out.append(L)
             continue
         pin = bool(res["pinned"][i])
-        if pin and LS.named_hits(res["hits"][i]):
+        if pin and LS.named_hits(res["hits"][i]) and not res["lead_reflist"][i]:
             out.append("3c")
             continue
         if pin and (res["posfact"][i] or res["sp"][i]["gi"].get("track", False)):
@@ -582,7 +612,13 @@ def records(S: Prepared, res: dict, texts: list[dict], lv: list[str]) -> pd.Data
                 ctx_txt.append(f"{hh['id']}" + (f" [{mfl}]" if mfl else ""))
             tags.append("class list: " + "; ".join(ctx_txt) + " -- tag (formula-only / class entry)")
             tagk.append("class list")
-        if named and L != "3c":
+        if named and L != "3c" and pinned and res["lead_reflist"][i] and L in ("4a", "4b"):
+            # C47: the list that rescued the reading (lead_by reflist_dim) cannot also certify it
+            tags.append("3c withheld: the named entry is on the list that rescued this reading (lead: "
+                        f"{LEAD_RESCUE_SETTER}); the pair takes the level its other facts give: "
+                        + "; ".join(named_txt))
+            tagk.append("3c withheld (list rescued the lead)")
+        elif named and L != "3c":
             tags.append("named list (not used: " + ("split open" if not pinned else "ion not established") + "): "
                         + "; ".join(named_txt))
             tagk.append("named list, not 3c")
@@ -627,6 +663,10 @@ def records(S: Prepared, res: dict, texts: list[dict], lv: list[str]) -> pd.Data
             tagk.append("NH4 adduct tracks its parent")
         # --- the internal pass's tags; the tentative lead on every level ---
         tags += t["tags_pre"]
+        if res["lowconf_only"][i] and L == "5a":
+            # C47: lowconf alone -- the ceiling, printed whether or not it bit
+            tags.append("engine confidence Low/Suspect in every file: 5a ceiling (not established, not refuted)")
+            tagk.append("lowconf 5a ceiling")
         if _b(r["lead_fact"]):
             lb = S.lead_by.get((nn, aa), "")
             tags.append(f"lead: {lb} ({LEAD_TAG})" if lb else f"lead ({LEAD_TAG})")
@@ -670,8 +710,11 @@ def records(S: Prepared, res: dict, texts: list[dict], lv: list[str]) -> pd.Data
                 if not named:
                     blk += "; 3c needs a named context-list entry"
         elif L == "4a":
-            blk = "3c needs a NAMED context-list entry naming the neutral" + (
-                " (the class-list match is a tag only)" if cls else "")
+            if named and res["lead_reflist"][i]:
+                blk = LIFT_3C_WITHHELD
+            else:
+                blk = "3c needs a NAMED context-list entry naming the neutral" + (
+                    " (the class-list match is a tag only)" if cls else "")
         else:
             blk = "level 2 (MS2 / standards) is not automatic"
         cols["evidence_level"].append(L)

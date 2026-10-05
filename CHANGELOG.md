@@ -6,6 +6,34 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Three rule changes of the evidence scale (C47; the user's decisions of 2026-10-05, after
+  the scale landed).** (1) `lowconf` alone -- every row of a pair Low / Suspect and no other
+  rejection -- is a **5a ceiling, not a 5b rejection**: the pair is levelled on its facts
+  (untestable stays 5b, competitors left stay 5a) and reads at most 5a, `engine confidence
+  Low/Suspect in every file: not established (5a ceiling; a file at Good or High lifts it), not
+  refuted` (tag kind `lowconf 5a ceiling`); it still anchors nothing (no member of the series
+  exclusion, no route, no ladder). The flag tracked the calibration centre more than the
+  chemistry (the C42 recentring alone moved 40 pairs out of it and 13 in). (2) **A contaminant
+  family opens the run's space only from >= 2 files** (`levels.context.FAMILY_MIN_FILES`,
+  `family_union`; every family on a one-file source; the families one file alone opened are
+  kept on `RunContext.families_dropped`), the scale's other 2-file minima: one Candidate row in
+  one file of the uronium run had opened `fluorinated` for all of its 1196 pairs. (3) **A
+  reference list that rescued a dim reading cannot also certify it at 3c**: a tentative lead
+  whose setter is `reflist_dim` takes the level its other facts give (tag kind `3c withheld
+  (list rescued the lead)`; at 4a `would_lift` says so). `scripts/level_ledger.py` carries the
+  same three rules (parity with the core, row for row). Tiers and the merge vote are untouched,
+  so no tier, claim-by-tier or finish-line number moves. Measured post hoc on the C42 Orbitrap
+  baselines against the C45 reference levels: labelled nitrate 86 pairs 5b -> 5a and the two
+  reflist-rescued 3c pairs (BHA C11H16O2 and dimethyl phthalate C10H10O4 [M-H]-) 3c -> 4b,
+  nothing else (vector 1906 10/161/256/395/1084 -> 8/161/258/481/998); uronium 174 pairs 5b -> 5a, 128
+  5a -> 4b, 2 5a -> 4a and C6H15O4P [M+H]+ 5a -> 3c (1196 16/55/701/239/185 -> 17/57/829/282/11:
+  the 5b bucket is 11 pairs). The level fixtures move with it (`tests/fixtures/levels/
+  expected_levels_v1.csv.gz`, re-cut: nitrate 1850 9/186/290/500/864/1/0, uronium 1161
+  17/75/913/140/16/0/0) and so do the golden vectors kept outside the repository -- both pending
+  the user's sign-off. docs/EVIDENCE_LEVELS.md sections 2.4, 3.2, 4, 5.2, 7, 9, 11 and 12.
+
 ### Fixed
 
 - **The signal-to-noise the score reads is judged before it is believed (C46).** Three
