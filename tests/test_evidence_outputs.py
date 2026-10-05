@@ -9,7 +9,7 @@ stage runs and what each entry point writes:
   work, the run's reagent profile / window / gate threaded from the run;
 - the degeneracy stage's calibration persisted per file (`degeneracy_cal`);
 - the pooled stage (`assign_batch.run`): the per-file ledgers re-read from disk
-  in sorted order and levelled as one source, the merged ledger stamped by ion,
+  in sorted order and levelled as one source, the merged ledger stamped by (neutral, adduct) reading,
   tables/evidence_levels.csv (the new columns + the facts, no pre-0.10.0 level
   columns), batch_summary's evidence_levels / claims / reflists_context;
 - `--corroborate`: the merge vote's cross set (`vote_cross_neutrals`) and the
@@ -509,7 +509,8 @@ def test_cli_corroborate_is_repeatable_on_assign_and_batch_and_says_what_it_does
     sub = next(a for a in p._actions if a.dest == "command" or getattr(a, "choices", None))
     helps = [act.help for act in sub.choices["batch"]._actions if act.dest == "corroborate"]
     assert helps and "feeds the merge vote's evidence class and (Orbitrap run dirs) the other-source " \
-                     "partner tag; it never moves an evidence level" in " ".join(helps[0].split())
+                     "partner tag, which never unlocks an evidence level but can anchor the series exclusion " \
+                     "that lifts a pair out of 5a" in " ".join(helps[0].split())
 
 
 def test_reflists_activate_records_which_keyword_unlocked_each_tag():

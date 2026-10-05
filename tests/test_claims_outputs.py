@@ -755,6 +755,13 @@ def test_the_levels_page_renders_every_level_and_bucket_and_is_skipped_without(t
     joined = " ".join(text)
     for gone in ("four axes", "corroborating source", "4d", "2a"):
         assert gone not in joined, gone
+    # what the page says the tags do, and how the merged rows are stamped, as the code does it: a route / ladder /
+    # partner never unlocks a level but can anchor the series exclusion; the join is by (neutral, adduct)
+    assert "never move the level" not in joined and "stamped by ion" not in joined
+    assert "facts that never unlock a level" in joined and "can anchor the series exclusion" in joined
+    assert "stamped by (neutral, adduct) reading" in joined
+    tags_doc = dict(R._LEVEL_COLUMN_LEGEND)["tags"]
+    assert tags_doc.startswith("Facts that never unlock a level") and "series exclusion" in tags_doc
     cl = [t for _s, t in _lines(PR.claims, ctx, monkeypatch)]
     assert any(t.startswith("• 1 merged row(s) are not assessed on this instrument class (width model R(200)")
                and t.count("not assessed on this instrument class") == 1 for t in cl)

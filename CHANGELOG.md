@@ -96,7 +96,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `--resolving-power` and `--reagent` is levelled as the per-file stage of a single-sample
     `peaky assign` (the profile's context and the reference lists it activates).
   - **`--corroborate`** feeds the merge vote's class (as before) and, from an Orbitrap-class run
-    directory, the other-source partner tag; it never moves an evidence level. A run directory
+    directory, the other-source partner tag. A partner never unlocks a level, but as a route it can
+    anchor the step-1 series exclusion, which can lift a pair out of 5a. A run directory
     none of whose files is calibrated, or whose reagent profile or context this process does not
     know (a run made under a `--reagent-config` profile), gives no partners (logged with the
     reason; the batch no longer stops on it). On single-sample

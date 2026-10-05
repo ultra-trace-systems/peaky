@@ -1245,7 +1245,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     (each source by the neutrals it holds by its own evidence,
     `evidence.vote_cross_neutrals`) and, from an Orbitrap-class run dir, the
     evidence scale's other-source partner tag (`evidence.partners_from` of the
-    source levelled once with no partners); it never moves an evidence level.
+    source levelled once with no partners), which never unlocks an evidence
+    level but, as a route, can anchor the series exclusion that lifts a pair out
+    of 5a.
     The evidence level of the merged ledger is computed on the POOLED per-file
     ledgers (cover + residual files as one source, every file-count minimum 3;
     `evidence.level_batch`) and stamped on the merged ledger by

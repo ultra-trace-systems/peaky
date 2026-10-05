@@ -683,8 +683,9 @@ _LEVEL_COLUMN_LEGEND = [
     ("would_lift", "What the next level up needs (or, on 5a / 5b, what refuted or blocked the reading)."),
     ("competitors_left", "The competitor ions left in the calibrated window after the isotope "
      "tests ('; '-joined; empty when none)."),
-    ("tags", "Facts that do not move the level, joined by ' | ': routes, other-source partners, "
-     "ladders, class-list entries, side channels locked, NH4 gate outcomes, a tentative lead."),
+    ("tags", "Facts that never unlock a level, joined by ' | ': routes, other-source partners, "
+     "ladders, class-list entries, side channels locked, NH4 gate outcomes, a tentative lead. "
+     "Routes, ladders and partners can anchor the series exclusion that lifts a pair out of 5a."),
     ("context", "The context-list entries that match the neutral (reflist:<id> = <name> for a "
      "named entry, reflist:<id> for a class entry; registry:<family> likewise)."),
     ("context_source", "How those lists were activated (always active, a keyword in the batch / "

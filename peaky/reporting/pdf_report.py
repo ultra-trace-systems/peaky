@@ -1200,11 +1200,12 @@ def evidence_levels(ctx, pdf):
               ("b", "• 4b is the ion: its composition is established, the split is open or pinned without a "
                     "positive fact. 5b is a reading a check rejected, or one with nothing to enumerate or test."),
               ("b", "• Each merged row carries the reasons (evidence), what would lift it (would_lift), the "
-                    "competitors left and the tags -- facts that never move the level (routes, partners, "
-                    "ladders, class lists, gate outcomes)."),
+                    "competitors left and the tags -- facts that never unlock a level (routes, partners, "
+                    "ladders, class lists, gate outcomes); routes, ladders and partners can anchor the "
+                    "series exclusion that lifts a pair out of 5a."),
               ("b", "• The tier is not an input: levels and tiers come from the same columns and may "
                     "disagree. In a batch the level is computed on the pooled per-file ledgers and "
-                    "stamped by ion (merged_ledger.csv, tables/evidence_levels.csv).")]
+                    "stamped by (neutral, adduct) reading (merged_ledger.csv, tables/evidence_levels.csv).")]
     _text_lines(fig, lines, y0=0.645, dy=0.025, bottom=0.05)
     _close(pdf, fig)
 

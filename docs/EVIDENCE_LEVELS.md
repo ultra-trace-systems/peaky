@@ -11,7 +11,10 @@ disagree, the code is the contract and the document has a bug.
 been measured to carry formula-specific information. Everything else —
 co-detection in two channels, a homologous ladder, a class list, another
 source's sighting — is printed as a **tag**, with its measured base rate where
-one exists, and never moves a level (§9).
+one exists, and is never itself a level unlock (§9). One designed exception to
+"a tag moves nothing": two routes, a ladder or another source's partner can
+ANCHOR the step-1 series exclusion (§5.4), which removes competitors and so can
+lift a pair out of 5a.
 
 ## 1. What a level is
 
@@ -238,7 +241,12 @@ columns; the step facts and step 1's facts are absent (nothing is enumerated,
 gated or tested on such a run). A batch that committed nothing writes the
 header alone.
 
-`scripts/level_ledger.py` writes the same table post hoc (§10.4).
+`scripts/level_ledger.py --out` writes the same levels post hoc (§10.4), not
+this table: one row per pair with the level, `claim`, `would_lift`,
+`competitors_left` and its own decision facts (`n_left`, `rejected_by`,
+`split_pinned`, `split_rule`, `positive_fact`, `named_entry`, `anchor_kind`,
+`n_series_excl`, ...). It equals the table on those columns; it writes no
+`evidence`, `tags`, `context` / `context_source` and none of the pair facts.
 
 ## 3. The facts the scale reads
 
@@ -421,7 +429,8 @@ homologous series — a chain of committed pairs on the same adduct, neutral ± 
 units, with ≥ 2 members at the right spacing that an internal pass reads as
 route-anchored (seen through two of the reagent's own routes) — a competitor
 is excluded when the competitor shifted by the same k units, on its own
-adduct, is a committed ion at none of the anchors' spacings. Isotope-line
+adduct, is a committed ion at none of the anchors' spacings. An
+other-source partner (§10.3) counts as a route for the anchoring. Isotope-line
 competitors are never series-testable. It is iterated with the ladder to a
 fixed point (≤ 20 passes). It stays in step 1
 although its anchors are route tags: it is not a level-3 unlock, and without
@@ -623,10 +632,12 @@ flagged, the level text carries the FLAG suffix of §2.3.
 The `positive_fact` column names it, e.g. `own in-band isotope line(s)
 13C|18O (C,O of the neutral)`.
 
-## 9. Tags — printed, never a level
+## 9. Tags — printed, never a level unlock
 
 Each tag is a tag because its measured information content is at or near
-chance. The base rates below were measured when the scale was built on a
+chance. No tag unlocks a level; the route, ladder and partner tags can still
+move one indirectly, as anchors of the step-1 series exclusion (§5.4: an
+excluded competitor no longer keeps the pair at 5a). The base rates below were measured when the scale was built on a
 labelled-nitrate Orbitrap run and a uronium Orbitrap run (CHO neutrals X on
 the base route; the null is formula neighbours X ± Δ, Δ = ±CH2, ±O, ±H2,
 ±C2H4, ±CO, ±H2O, ±O2, +CH2O). The route and partner tags print the run's own
@@ -742,8 +753,10 @@ level (§10.2) and none can anchor a partner (logged with that reason, by the
 batch and by `scripts/level_ledger.py` alike). Nor does a run directory whose
 batch summary names a reagent profile or context this process does not know
 (a run made under a `--reagent-config` profile, say), or none: it cannot be
-levelled here, so it is logged and skipped, never a stop of the batch. A partner never moves a level; it is a tag, and in
-the internal pass it can anchor a series exclusion (§5.4) as a route can.
+levelled here, so it is logged and skipped, never a stop of the batch. A partner
+is a tag and never unlocks a level, but in the internal pass it counts as a
+route: it can anchor a series exclusion (§5.4), and so lift a pair out of 5a
+(one partner pair can anchor a whole CF2 ladder of an acid series).
 
 ### 10.4 The post-hoc script and decoy arms
 

@@ -206,7 +206,7 @@ def _progress_hold_note(prog) -> None:
 
 
 #: the one line a single-sample `assign --corroborate` logs: the flag feeds a batch's merge vote (which a single
-#: sample does not have) and a batch's other-source partner tag; it never moves a level
+#: sample does not have) and a batch's other-source partner tag (never a level unlock; it can anchor a series exclusion)
 CORROBORATE_IGNORED = ("[levels] --corroborate ({n} source(s)) is ignored here: a single-sample run has no merge "
                        "vote and no other-source partners (both are a batch's); this sample's evidence levels are "
                        "its file levelled alone")
@@ -948,8 +948,9 @@ def _add_corroborate_flag(p) -> None:
                    help="a run dir, an out-dir holding one run, or a ledger CSV of the "
                         "other reagent channel or the other instrument on the same air; "
                         "repeatable. It feeds the merge vote's evidence class and (Orbitrap "
-                        "run dirs) the other-source partner tag; it never moves an evidence "
-                        "level (docs/EVIDENCE_LEVELS.md). A single sample has neither: "
+                        "run dirs) the other-source partner tag, which never unlocks an "
+                        "evidence level but can anchor the series exclusion that lifts a "
+                        "pair out of 5a (docs/EVIDENCE_LEVELS.md). A single sample has neither: "
                         "`peaky assign` records it and ignores it")
 
 
