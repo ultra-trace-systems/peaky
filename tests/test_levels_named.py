@@ -538,3 +538,46 @@ def test_partner_mutant_the_same_chain_with_pinned_anchors_is_anchored_and_exclu
     assert mid.evidence_level == "4a" and int(mid.n_series_excl) == 1 and mid.competitors_left == ""
     assert "not counted" not in out.loc["C8H12O4", "tags"]
     assert _chain_case(PINNED_CHAIN, partners=False).loc["C9H14O4", "evidence_level"] == "5a"
+
+
+# =========================================================================== the real amine gate keeps a committed NH4
+def test_a_committed_nh4_whose_amine_is_valence_impossible_is_kept_pinned_and_its_line_makes_it_4a():
+    """X = C6H14O4 [M+NH4]+: the amine reading C6H17NO4 is valence-impossible, so the gate keeps the NH4 reading
+    unconfirmed (no time series) and the split pins; the own 13C line is the positive fact."""
+    r = _one(dict(neutral_formula="C6H14O4", adduct="[M+NH4]+", **C13), "uronium", ts=None)
+    assert r.evidence_level == "4a" and r.split_pinned and r.nh4_gate == "committed NH4"
+    assert r.split_how == ("NH4 adduct kept by the amine gate: amine C6H17NO4 valence-impossible (kept unconfirmed; "
+                           "no time series: nothing can be confirmed)")
+    assert r.nh4_gate_detail.startswith("C6H14O4: amine-impossible (amine C6H17NO4 valence-impossible")
+    assert r.positive_fact.startswith("own in-band isotope line(s) 13C")
+
+
+def test_valence_impossible_mutant_a_neutral_whose_amine_is_possible_is_the_open_amine_default():
+    r = _one(dict(neutral_formula="C6H12O4", adduct="[M+NH4]+", **C13), "uronium", ts=None)
+    assert r.evidence_level == "4b" and not r.split_pinned and r.nh4_gate == "amine default"
+    assert r.split_how == ("amine default (NH4 reading unconfirmed: no time series: nothing can be confirmed; the "
+                           "engine's gate reads this ion as C6H15NO4 [M+H]+)")
+
+
+def _nh4_parent_ts(X, *, track=True):
+    """X [M+NH4]+ and its own [M+H]+ parent over 40 2-h bins."""
+    return _ts({(X, "[M+H]+"): SHAPE, (X, "[M+NH4]+"): SHAPE * 0.3 if track else NOISE})
+
+
+def test_a_committed_nh4_that_tracks_its_parent_is_kept_and_tracking_is_the_positive_fact():
+    X = "C6H12O3"
+    r = _one(dict(neutral_formula=X, adduct="[M+NH4]+"), "uronium", ts=_nh4_parent_ts(X),
+             merged=[(X, "[M+H]+"), (X, "[M+NH4]+")])
+    assert r.evidence_level == "4a" and r.split_pinned and r.nh4_gate == "committed NH4"
+    assert r.positive_fact == "NH4 adduct tracks its parent"
+    assert r.split_how == "NH4 adduct tracks its parent (tracks its own [M+H]+/urea parent, r 1.00 over 40 2-h bins)"
+    assert r.would_lift == "3c needs a NAMED context-list entry naming the neutral"
+
+
+def test_tracking_mutant_an_independent_trace_is_the_open_amine_default():
+    X = "C6H12O3"
+    r = _one(dict(neutral_formula=X, adduct="[M+NH4]+"), "uronium", ts=_nh4_parent_ts(X, track=False),
+             merged=[(X, "[M+H]+"), (X, "[M+NH4]+")])
+    assert r.evidence_level == "4b" and not r.split_pinned and r.nh4_gate == "amine default"
+    assert r.positive_fact == "" and r.split_how.startswith("amine default (NH4 reading unconfirmed: independent "
+                                                            "time trace, r ")
