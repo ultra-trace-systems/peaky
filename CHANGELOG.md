@@ -79,8 +79,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `would_lift`, `competitors_left`, `tags`, `context`, `context_source`, `claim`.
     `tables/evidence_levels.csv` (one row per pooled pair, every step fact);
     `batch_summary.json` `evidence_levels` (`scale`, `instrument`, `pooled` / `merged` /
-    `per_stage` over levels and buckets, `side_channels_locked`, `unlocked`, `partners`,
-    `amine_r_min`, the batch checks' funnels), `claims` over the six keys, `reflists_context`
+    `per_stage` over levels and buckets, `n_pairs` (pooled pairs), `n_unstamped` (merged rows
+    without a pooled pair), `side_channels_locked`, `unlocked`, `n_corroborate` (the vote's
+    cross-set size), `cross_source` (the `--corroborate` paths), `partners`, `amine_r_min`, the
+    batch checks' funnels), `claims` over the six keys, `reflists_context`
     (which keyword in which name activated each reference list; `reflists.activate` records it)
     and `amine_r_min`. `NA` is a literal token: read `claim`, or pass `keep_default_na=False`.
     The single-sample workbook's **By evidence level** sheet and the PDF's **Evidence levels**
@@ -96,19 +98,23 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     whose files is calibrated (no run window). A lone ledger CSV levelled by the script with
     `--resolving-power` and `--reagent` is levelled as the per-file stage of a single-sample
     `peaky assign` (the profile's context and the reference lists it activates).
-  - **`--corroborate`** feeds the merge vote's class (as before) and, from an Orbitrap-class run
-    directory, the other-source partner tag. A partner never unlocks a level, but as a route it can
-    anchor the step-1 series exclusion, which can lift a pair out of 5a. A run directory
-    none of whose files is calibrated, or whose reagent profile or context this process does not
-    know (a run made under a `--reagent-config` profile), gives no partners (logged with the
-    reason; the batch no longer stops on it). On single-sample
+  - **`--corroborate SOURCE`** (new in this release, on `peaky assign` and `peaky batch`,
+    repeatable): a run directory, an out directory holding one run, or a ledger CSV of the other
+    reagent channel or the other instrument on the same air. It feeds the merge vote's class and,
+    from an Orbitrap-class run directory, the other-source partner tag (a TOF-class or class-less
+    run directory, or a ledger CSV, feeds the vote only, logged). A partner never unlocks a
+    level, but as a route it can anchor the step-1 series exclusion, which can lift a pair out
+    of 5a. A run directory none of whose files is calibrated, or whose reagent profile or
+    context this process does not know (a run made under a `--reagent-config` profile), gives
+    no partners (logged with the reason; the batch does not stop on it). On single-sample
     `peaky assign` it is accepted, logged and ignored.
   - **The merge vote keeps its own class.** The vote ranks a cluster's ions by a private class
     (`evidence.vote_classes`: neutral backed / formula confirmed / unconfirmed), computed by the
-    decision the vote has always read (the pre-scale decision, kept frozen in `evidence.py` and
-    `scripts/level_ledger.py` with `peaky/data/isomer_space.csv` and the decision's golden sets in
-    `tests/fixtures/levels/`), so the scale moves no assignment. The vote note in
-    `tier_reason` and `tables/jitter.csv` (`vote_class`, 0 / 1 / 2) print the class, never a level.
+    decision the vote has always read (the pre-scale decision, kept frozen in `evidence.py` and in
+    the new `scripts/level_ledger.py`, with the new `peaky/data/isomer_space.csv` and the
+    decision's golden sets in the new `tests/fixtures/levels/`), so the scale moves no
+    assignment. The vote note in `tier_reason` and `tables/jitter.csv` (`vote_class`, 0 / 1 /
+    2) print the class, never a level.
     The class is computed in the batch's parent with the reagent halogen the file's own run read
     from its declared channels (C43; carried back in the file's stats, `per_file[i].reagent_halogen`);
     the pooled pair facts read the batch profile's (`batch_summary["reagent_halogen"]`), which a
@@ -256,8 +262,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   median over the bright CHO acid clusters committed on `[M+^NO3]-`, the tested pair
   left out: ratio 0.5-2, sd(log) <= 0.25, r >= 0.8 over >= 50 of >= 100 co-detected
   spectra). A tracking line unties the arbiter's tie with the same-ion organonitrate
-  [X'-H]- where every file's tie is with that alias alone (`label_untie`, a recorded
-  fact no step of the evidence scale reads); a line tested but noisy,
+  [X'-H]- where every file's tie is with that alias alone (`label_untie`, recorded; it
+  clears the pooled pair's `tied` fact, so it can remove the `tie` tag, never a level); a
+  line tested but noisy,
   or below the cluster ratio (an organonitrate can only add 14N: trifluoroacetic
   acid's cluster runs at the reagent's own impurity, 0.12x), still counts as X's
   cluster; a line above twice the cluster ratio, or whose 15N partner is absent in
@@ -710,8 +717,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the engine is recorded, not fatal) and **falsification survival** (the 13C-implied carbon count against the
   formula, the 34S / 37Cl / 81Br / 29Si line where the formula demands one, the time
   covariance of satellites and adduct pairs with their parent); and the delta. The
-  level column comes from `scripts/level_ledger.py` run in-process until the in-core
-  `evidence_level` column exists, which is then preferred. Not built from
+  level column is the merged ledger's in-core `evidence_level` when the run wrote the
+  scale's columns, else a `scripts/level_ledger.py --out` CSV given with `--levels`, else
+  the run levelled post hoc by `scripts/level_ledger.py` in-process. Not built from
   `tables/residual_bins.csv`: it lists only bins absent from every cover file, and
   every headline miss of the first cut sat inside the cover files.
 
@@ -799,20 +807,33 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in-band 79Br2 / 81Br3 line; the Br-free C10H12O4 and C8H14O5 `[M+HBr+Br]-` take it on their `M0`
   line), 18 per-file rows and six fixture rows. The landing itself, the FULL offline replay of the
   final engine (every file's A.run on the stored scorer responses and the batch half, with the
-  engine items below): the labelled-nitrate Orbitrap merged rows 1419 -> 1420, Assigned 647 ->
-  647, 632 time-series peaks restamped (0.018 % of the signal; restamped: the stamped reading
-  changed -- neutral, adduct, role, ion formula, isotope label, stamp source or duplicate flag --,
-  an m/z-only shift not counted); the uronium Orbitrap merged rows 1148 -> 1148, 373 peaks
-  restamped (0.013 %), and one tier: merged Assigned 836 -> 835, hexamethylcyclotrisiloxane (D3)
-  C6H18O3Si3 `[M+H]+` capped Candidate once I7 frees the 29Si line the trunk hung under it in four
-  files (its urea adduct's line, 61 Da up; that adduct is committed in one file of ten, so every
-  confirming file has one ion channel); the bromide/nitrate TOF merged rows 2239 -> 2241, Assigned
-  449 -> 450, 10320 time-series peaks restamped (1.41 % of the signal; among them m/z 331.024, the
-  81Br line of a Br doublet at 329.025, now stamped C11H11NO5S `[M+NO3]-` in 99 spectra, where
-  three files hung it as an 81Br line under a two-channel C11H22O2S2 `[M+Br]-` certificate member
-  and now leave both peaks unexplained), one file's mass-calibration core falling to 19, under the
-  20 it needs, once the pass-0 mislinks left it, and chloroacetic acid keeping its `81Br+37Cl` M+4
-  line (the 13 mislinked 37Cl children gone).
+  engine items below): the labelled-nitrate Orbitrap pooled pairs 1848 -> 1850 (four dim pairs
+  appearing or disappearing: pass 4 at the exact Br spacing, one pass-7 re-read), merged rows
+  1419 -> 1420, Assigned 647 -> 647, 632 time-series peaks restamped (0.018 % of the signal;
+  restamped: the stamped reading changed -- neutral, adduct, role, ion formula, isotope label,
+  stamp source or duplicate flag --, an m/z-only shift not counted); the uronium Orbitrap pooled
+  pairs 1161 -> 1161, merged rows 1148 -> 1148, 373 peaks restamped (0.013 %), and one tier:
+  merged Assigned 836 -> 835, hexamethylcyclotrisiloxane (D3) C6H18O3Si3 `[M+H]+` capped
+  Candidate once I7 frees the 29Si line the trunk hung under it in four files (its urea adduct's
+  line, 61 Da up; that adduct is committed in one file of ten, so every confirming file has one
+  ion channel); the bromide/nitrate TOF pooled pairs 4317 -> 4305, merged rows 2239 -> 2241,
+  Assigned 449 -> 450, 10320 time-series peaks restamped (1.41 % of the signal; among them m/z
+  331.024, the 81Br line of a Br doublet at 329.025, now stamped C11H11NO5S `[M+NO3]-` in 99
+  spectra, where three files hung it as an 81Br line under a two-channel C11H22O2S2 `[M+Br]-`
+  certificate member and now leave both peaks unexplained), and chloroacetic acid keeping its
+  `81Br+37Cl` M+4 line (the 13 mislinked 37Cl children gone). Of the TOF pooled pairs that move
+  beyond the stored-ledger reading above (appear, disappear or read differently; counted on the
+  development builds' levelling), 58 come from the per-file items -- 21 on pairs held only by the
+  one file whose mass-calibration core fell to 19, under the 20 it needs, once the pass-0
+  mislinks left it (C4H6N2O6S `[M-H]-` no longer committed -- its bromide cluster now its own
+  pair, its two-channel certificate Low under option B, too weak to displace the pass-3
+  C4H5NO3S `[M+NO3]-` reading of the `[M-H]-` peak --; two dim pairs appearing or
+  disappearing), 23 other dim pairs and two pairs appearing or disappearing, and 12 others --, 4
+  from pass 7's gate keyed on the committed ions (one dim pair appearing, three disappearing) and
+  25 net from its reagent line counted only on >= 3 channels (option B; see the I7 entry): 26
+  pairs move that did not -- among them C16H19NO4S `[M-H]-` and C10H21ClN2O6S `[M+Br]-` no
+  longer committed and 19 dim pairs appearing or disappearing -- and one dim pair no longer
+  appears (C3H5NO10 `[M+Br]-`).
   `tests/test_isotope_children.py`, `tests/test_isotope_levels.py`; every synthetic child of the
   level tests now sits at its label's exact spacing from its parent.
 
@@ -900,8 +921,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   re-read once their reading drops: m/z 332.146 goes to a Candidate nitrate cluster, and m/z 511.175 to
   another Assigned reading, C35H28O2S `[M-H]-`, which the peak's own
   1:1 M+2 doublet contradicts -- an isotope check that never refutes a too-high line, left to
-  the isotope-check card. On the labelled-nitrate shift decoy Assigned goes 87 -> 44; the
-  control and adduct arms keep their Assigned counts, and no decoy arm gains a row.
+  the isotope-check card. On the labelled-nitrate shift decoy the Assigned rows at
+  m/z >= 350 go 87 -> 44; the control and adduct arms keep their
+  Assigned counts there, and no decoy arm gains a row.
 
 - **Flatness labels a row; it no longer tiers it.** The general flat-background
   demote added above capped every flat `Assigned` commit at `Candidate` whenever the
@@ -1016,8 +1038,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`evidence.vote_cross_neutrals`, docs/EVIDENCE_LEVELS.md §13) is now the neutrals each source
   pins on its own: its per-file ledgers are pooled as one source and decided with NO cross set, so
   a source that was itself run with `--corroborate` cannot hand a run back the agreement it got
-  from it; ion-only pairs never count. A merged-only source written on the 0.10.0 scale carries
-  no per-file facts and is refused, and so is one carrying no level: name its run directory.
+  from it; ion-only pairs never count. A merged-only source written before 0.10.0 is read by its
+  stored private level without its own `corroborated` axis: a neutral counts where that level
+  passes the same cut a run directory's pooled ledgers are held to and an axis of its own
+  remains (`evidence._source_neutrals`, `_stored_own_good`). A merged-only source written on
+  the 0.10.0 scale carries no per-file facts and is refused, and so is one carrying no level:
+  name its run directory.
   Measured on the same-air pair before the change: the labelled-nitrate Orbitrap offered the TOF
   1521 neutrals, 379 of them pinned on its own; the TOF offered the Orbitrap 3728, 435 pinned.
   Replaying the vote on the three regression runs: 36 winners change on the TOF (every test-set
