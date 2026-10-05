@@ -610,6 +610,33 @@ def test_a_corroborate_run_dir_with_no_calibrated_file_gives_no_partners_in_the_
     assert not any(EV.NO_RUN_WINDOW_PARTNERS in s for s in mine) and "partner neutral(s)" in mine[0]
 
 
+@pytest.mark.parametrize("edit, why", [
+    ({"reagent": "UrCustom"}, "its reagent profile 'UrCustom' is not registered here"),
+    ({"reagent": None}, "its batch summary names no reagent profile"),
+    ({"context": "no-such-context"}, "its context 'no-such-context' is not known here"),
+])
+def test_a_corroborate_run_dir_this_process_cannot_level_gives_no_partners_and_never_crashes(tmp_path, edit, why):
+    """--corroborate an Orbitrap-class run dir made under a profile this process does not know (a
+    --reagent-config run), or whose summary names none: the batch and the script skip it with the reason
+    (the batch used to crash with a KeyError after every per-file assignment); the partner tag is an extra."""
+    import json
+    from peaky.batch import assign_batch as AB
+    rd = _run_dir(tmp_path / "custom")
+    summ = json.loads((rd / "batch_summary.json").read_text())
+    summ.update(edit)
+    if summ.get("reagent") is None:
+        summ.pop("reagent")
+    (rd / "batch_summary.json").write_text(json.dumps(summ))
+    assert EV.partner_source_problem(str(rd)) == why
+    seen, mine = [], []
+    parts, counts = AB._corroborate_partners([str(rd)], log=seen.append)
+    assert dict(parts) == {} and counts == {}
+    assert len(seen) == 1 and why in seen[0] and "no other-source partners" in seen[0], seen
+    assert dict(LL.partners_of([str(rd)], log=mine.append)) == {}
+    assert len(mine) == 1 and why in mine[0], mine
+    assert EV.partner_source_problem(str(_run_dir(tmp_path / "known"))) == ""
+
+
 def test_partners_are_computed_only_for_a_source_that_can_take_them(tmp_path, monkeypatch):
     tof, orbi = _run_dir(tmp_path / "tof", resolution=TOF), _run_dir(tmp_path / "orbi")
     asked = []

@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import ast
 import glob
+import json
 import os
 import re
 from functools import lru_cache
@@ -1227,6 +1228,36 @@ NO_RUN_WINDOW_TEXT = ("no level · no file of the source is calibrated (no calib
 #: scripts/level_ledger.py log it and skip the source: its pairs carry no level, so none anchors a partner)
 NO_RUN_WINDOW_PARTNERS = ("no file of the source is calibrated (no run window): its pairs carry no level, "
                           "so it gives no other-source partners")
+
+
+def partner_source_problem(run_dir: str) -> str:
+    """Why an Orbitrap-class --corroborate run dir cannot be levelled in this
+    process, so gives no other-source partners ('' when it can): its batch
+    summary names no reagent profile or context, or one this process does not
+    know -- a run made under a ``--reagent-config`` profile, say. The partner
+    tag is an optional extra: such a source is logged and skipped, never a
+    crash of the batch that asked for it."""
+    from peaky.chem import contexts as _X
+    from peaky.chem import profiles as _PR
+    try:
+        with open(os.path.join(os.path.expanduser(str(run_dir)), "batch_summary.json")) as fh:
+            summary = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return f"its batch_summary.json cannot be read ({type(exc).__name__})"
+    reagent, context = summary.get("reagent"), summary.get("context")
+    if not reagent:
+        return "its batch summary names no reagent profile"
+    try:
+        _PR.resolve(reagent)
+    except (KeyError, ValueError):
+        return f"its reagent profile {reagent!r} is not registered here"
+    if not context:
+        return "its batch summary names no context"
+    try:
+        _X.get_context(context)
+    except (KeyError, ValueError):
+        return f"its context {context!r} is not known here"
+    return ""
 
 
 def no_run_window(src) -> bool:

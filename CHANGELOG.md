@@ -97,7 +97,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `peaky assign` (the profile's context and the reference lists it activates).
   - **`--corroborate`** feeds the merge vote's class (as before) and, from an Orbitrap-class run
     directory, the other-source partner tag; it never moves an evidence level. A run directory
-    none of whose files is calibrated gives no partners (logged with the reason). On single-sample
+    none of whose files is calibrated, or whose reagent profile or context this process does not
+    know (a run made under a `--reagent-config` profile), gives no partners (logged with the
+    reason; the batch no longer stops on it). On single-sample
     `peaky assign` it is accepted, logged and ignored.
   - **The merge vote keeps its own class.** The vote ranks a cluster's ions by a private class
     (`evidence.vote_classes`: neutral backed / formula confirmed / unconfirmed), computed by the

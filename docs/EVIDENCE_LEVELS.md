@@ -739,7 +739,10 @@ A TOF-class or class-less run directory, a ledger CSV or a merged-only source
 gives no partners (logged), and neither does an Orbitrap-class run directory
 none of whose files is calibrated: it has no run window, so its pairs carry no
 level (§10.2) and none can anchor a partner (logged with that reason, by the
-batch and by `scripts/level_ledger.py` alike). A partner never moves a level; it is a tag, and in
+batch and by `scripts/level_ledger.py` alike). Nor does a run directory whose
+batch summary names a reagent profile or context this process does not know
+(a run made under a `--reagent-config` profile, say), or none: it cannot be
+levelled here, so it is logged and skipped, never a stop of the batch. A partner never moves a level; it is a tag, and in
 the internal pass it can anchor a series exclusion (§5.4) as a route can.
 
 ### 10.4 The post-hoc script and decoy arms
