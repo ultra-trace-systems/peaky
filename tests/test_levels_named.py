@@ -93,8 +93,9 @@ NOISE = 1e4 * (1.5 + np.cos(np.arange(40) * 2.3 + 0.7) * np.sin(np.arange(40) * 
 
 
 def _case(rows, run="nitrate", *, merged=(), per_file=(), ts=None, protected=(), context=None, labelled=None,
-          alien=(), comps=(), with_gate=None):
-    """Level ``rows`` (pair facts over ROW) on a synthetic source of ``run``."""
+          alien=(), comps=(), with_gate=None, partners=None, n_files=1):
+    """Level ``rows`` (pair facts over ROW) on a synthetic source of ``run`` (``n_files`` copies of the per-file
+    ledger; ``partners`` = other-source partners as ``evidence.partners_from`` gives them)."""
     R = RUNS[run]
     ctx = _Ctx(R, context=context, labelled=labelled)
     P = pd.DataFrame([{**ROW, "mz": C.ion_mz(r["neutral_formula"], r["adduct"]), **r} for r in rows])
@@ -105,7 +106,7 @@ def _case(rows, run="nitrate", *, merged=(), per_file=(), ts=None, protected=(),
                             comp_neutral=c[2], comp_adduct=c[3]) for c in comps], columns=list(CP.COMP_COLUMNS))
     led = pd.DataFrame([_m0(n, a) for n, a in zip(P["neutral_formula"], P["adduct"])]
                        + [_m0(n, a) for n, a in per_file])
-    pf = {"f1": led}
+    pf = {f"f{k + 1}": led.copy() for k in range(n_files)}
     gate = None
     if with_gate if with_gate is not None else R["pol"] == "positive":
         mf = pd.DataFrame([dict(neutral_formula=n, adduct=a) for n, a in merged], columns=["neutral_formula", "adduct"])
@@ -114,7 +115,7 @@ def _case(rows, run="nitrate", *, merged=(), per_file=(), ts=None, protected=(),
     S = DC.Prepared(name="t", P=P, comps=cm, pf=pf, ctx=ctx, lists=lists, ts=None, tol_ppm=1.0, pol=R["pol"],
                     run_classes=DC.run_classes_of(R["engine"]), below={}, alien=frozenset(alien), arm=False,
                     skip_m0=frozenset(), gate=gate, lead_by={})
-    res = DC.inpass(S, None)
+    res = DC.inpass(S, partners)
     texts = DC.inpass_texts(S, res)
     lv = DC.relevel(S, res)
     rec = DC.records(S, res, texts, lv)
@@ -500,3 +501,40 @@ def test_the_na_short_circuit_runs_before_any_scale_work(monkeypatch):
                                                                       resolution=TOF, per_file=[])), mode="run")
     out = EV.level_source(src)
     assert set(out["evidence_level"]) == {"NA"} and {"iso_veto", "lowconf"} <= set(out.columns)
+
+
+# =========================================================================== other-source partners: pinned anchors only
+#: a CH2 chain of [M-H]- ions that are also X.NO3- of C8H12O4 ... (two decompositions: the split stays open)
+OPEN_CHAIN = ("C8H13NO7", "C9H15NO7", "C10H17NO7")
+PINNED_CHAIN = ("C8H12O4", "C9H14O4", "C10H16O4")
+
+
+def _chain_case(chain, *, partners):
+    rows = [dict(neutral_formula=n, adduct="[M-H]-", committed_matched="C") for n in chain]
+    comp = [(chain[1], "[M-H]-", "C7H18O5", "[M-H]-", "left")]
+    part = {n: {"protonation": [f"src {n} [M+H]+ two routes"]} for n in (chain[0], chain[2])} if partners else None
+    return _case(rows, "nitrate", comps=comp, partners=part, n_files=2).set_index("neutral_formula")
+
+
+def test_an_other_source_partner_on_an_open_split_anchor_is_not_counted():
+    """The in-pass route of an other-source partner counts only on a PINNED split: here the anchors' own splits are
+    open, so they anchor nothing, the middle member keeps its competitor (5a) and the anchors say why."""
+    out = _chain_case(OPEN_CHAIN, partners=True)
+    mid = out.loc["C9H15NO7"]
+    assert mid.evidence_level == "5a" and int(mid.n_series_excl) == 0 and mid.competitors_left == "C7H18O5 [M-H]-"
+    for anchor in (OPEN_CHAIN[0], OPEN_CHAIN[2]):
+        r = out.loc[anchor]
+        assert not r.split_pinned and r.evidence_level == "4b"
+        assert r.split_how.startswith("2 decompositions: ")
+        assert "other-source route (protonation) not counted: this ion's own split is open" in r.tags.split(" | ")
+        assert r.anchor_kind == "none" and r.inpass_why != "routes"
+    assert _chain_case(OPEN_CHAIN, partners=False).loc["C9H15NO7", "evidence_level"] == "5a"
+
+
+def test_partner_mutant_the_same_chain_with_pinned_anchors_is_anchored_and_excludes_the_competitor():
+    out = _chain_case(PINNED_CHAIN, partners=True)
+    assert out.loc["C8H12O4", "split_pinned"] and out.loc["C8H12O4", "inpass_why"] == "routes"
+    mid = out.loc["C9H14O4"]
+    assert mid.evidence_level == "4a" and int(mid.n_series_excl) == 1 and mid.competitors_left == ""
+    assert "not counted" not in out.loc["C8H12O4", "tags"]
+    assert _chain_case(PINNED_CHAIN, partners=False).loc["C9H14O4", "evidence_level"] == "5a"

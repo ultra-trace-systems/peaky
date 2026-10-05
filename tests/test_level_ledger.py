@@ -388,6 +388,24 @@ def test_other_source_partners_anchor_a_series_only_on_a_pinned_split_and_never_
     assert both(S, partners).set_index("neutral_formula").loc["C9H14O4", "evidence_level"] == "5a"
 
 
+def test_an_other_source_partner_counts_only_on_a_pinned_split_in_engine_and_script():
+    """The anchors' own splits are open (X.NO3- of C8H12O4 ... reads as the same ion): their other-source routes are
+    not counted, nothing anchors the series, the middle member keeps its competitor."""
+    chain = ("C8H13NO7", "C9H15NO7", "C10H17NO7")
+    rows = [dict(neutral_formula=n, adduct="[M-H]-", committed_matched="C") for n in chain]
+    comp = [("C9H15NO7", "[M-H]-", "C7H18O5", "[M-H]-", "left")]
+    pf = {f"f{k}": pd.DataFrame([dict(role="M0", neutral_formula=n, adduct="[M-H]-", method="grid", height=1e5,
+                                      mz=C.ion_mz(n, "[M-H]-")) for n in chain]) for k in range(2)}
+    partners = {n: {"protonation": [f"src {n} [M+H]+ two routes"]} for n in (chain[0], chain[2])}
+    S = _prepared(rows, comps=comp, pf=pf)
+    out = both(S, partners).set_index("neutral_formula")
+    assert out.loc["C9H15NO7", "evidence_level"] == "5a" and out.loc["C9H15NO7", "n_series_excl"] == 0
+    assert set(out.loc[[chain[0], chain[2]], "anchor_kind"]) == {"none"}
+    assert not out.loc[chain[0], "split_pinned"]
+    core = _engine(_prepared(rows, comps=comp, pf=pf), partners).set_index("neutral_formula")
+    assert "other-source route (protonation) not counted: this ion's own split is open" in core.loc[chain[0], "tags"]
+
+
 def test_the_level_order_is_the_documented_one():
     base = dict(reagent="", rejected=[], untestable=False, left=[], ion_only=False, pinned=True, named=[{"x": 1}],
                 posfact=True, track=False)
