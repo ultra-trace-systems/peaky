@@ -979,6 +979,34 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
 _W: dict = {}   # per-worker-process read-only context, populated by _worker_init
 
 
+def batch_noise_edge(client, sample_ids, *, edges=None) -> float | None:
+    """The batch's typical detection edge: the median of its files' own
+    (`passes.noise_edge`, the 1st percentile of each file's picked heights),
+    from their cached peak tables (`edges` given: those numbers, for tests and
+    offline callers). None when no file has one. The tier pass's
+    counting-detector floor is sized from it (tiers.tof_assign_floor, C46)."""
+    from peaky.assignment import passes as PA
+    from peaky.io import io_mascope as IO
+
+    vals = []
+    if edges is None:
+        edges = []
+        for sid in sample_ids:
+            try:
+                h = IO.fetch_peaks(client, sid, use_cache=True)["height"]
+                edges.append(PA.noise_edge(h))
+            except Exception:            # noqa: BLE001 -- a file with no peaks has no edge
+                edges.append(None)
+    for e in edges:
+        try:
+            e = float(e) if e is not None else None
+        except (TypeError, ValueError):
+            e = None
+        if e is not None and np.isfinite(e) and e > 0:
+            vals.append(e)
+    return float(np.median(vals)) if vals else None
+
+
 def _worker_init(context, reflists_active, base_kw, ts_path):
     global _W
     _W = {"context": context, "reflists_active": reflists_active,
@@ -1609,6 +1637,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         serially or across a process pool, and fold each into the accumulators
         in id order (`_apply`). The cover stage and the residual stage share it."""
         offset = len(sample_ids) - len(ids)
+        # C46: the batch's typical detection edge (the median of its files' own),
+        # the footing of the tier pass's counting-detector floor. Set once, from
+        # the first stage's files; every per-file cfg copy below carries it.
+        if getattr(cfg, "noise_edge_batch_cps", None) is None:
+            cfg.noise_edge_batch_cps = batch_noise_edge(client, ids)
+            log(f"[assign_batch] batch detection edge (median of {len(ids)} files' own): "
+                f"{cfg.noise_edge_batch_cps if cfg.noise_edge_batch_cps is None else round(cfg.noise_edge_batch_cps, 4)} cps")
         if n_jobs <= 1:
             for i, sid in enumerate(ids, offset + 1):
                 log(f"[assign_batch] ({i}/{len(sample_ids)}) assigning {sid} ...")
@@ -2167,6 +2202,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # the resolved cps gate per file is in per_file[].height_gate_cps.
         "height_cutoff_x_edge": x_edge,
         "height_cutoff_x_edge_source": x_edge_source,
+        # C46: the median of the files' own detection edges, the footing of the
+        # tier pass's counting-detector floor (per file: tof_assign_floor_cps)
+        "noise_edge_batch_cps": getattr(cfg, "noise_edge_batch_cps", None),
         "tol_ppm": tol_ppm, "offsets_ppm": offsets,
         "pattern_scoring": scorings,
         # the batch's mass scale (traces.MassScale): the measured per-ion scatter

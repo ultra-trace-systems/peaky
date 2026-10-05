@@ -922,9 +922,52 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
         )
         if "signal_to_noise" in getattr(raw, "columns", [])
         else False,
+        **_snr_policy_keys(sample_id, raw),
     }
     _SCORING_CACHE[sample_id] = (scoring, snapshot)
     return scoring
+
+
+# re-exported for callers that read a snapshot's `snr_source`
+from peaky.io.local_scoring import (  # noqa: E402
+    SNR_SOURCE_NONE, SNR_SOURCE_POISSON, SNR_SOURCE_SERVER,
+)
+
+
+def _snr_policy_keys(sample_id, raw) -> dict:
+    """The snapshot's record of WHAT signal-to-noise the sample's lines are
+    judged at (C46): `snr_source` ("server" -- the table's own column; "none"
+    -- no column, the score's no-SNR mode; "poisson_fallback" -- the column
+    does not track height and the counting-statistics SNR h/sqrt(h+edge^2)
+    stands in), `snr_spearman` (height vs the column, over the file's peaks),
+    `snr_n` (peaks judged) and `snr_edge` (the detection edge the fallback
+    uses). `peaks_for_scoring` reads them back."""
+    from loguru import logger
+
+    from peaky.io import local_scoring
+
+    a = local_scoring.assess_snr(raw)
+    if a["source"] == SNR_SOURCE_POISSON:
+        logger.info("sample {}: the peak table's signal_to_noise does not track height "
+                    "(Spearman {} over {} peaks) -- lines judged at the counting-statistics "
+                    "SNR h/sqrt(h + edge^2), edge {}",
+                    sample_id or "<offline>", a["spearman"], a["n"],
+                    None if a["edge"] is None else round(a["edge"], 4))
+    return {"snr_source": a["source"], "snr_spearman": a["spearman"],
+            "snr_n": a["n"], "snr_edge": a["edge"]}
+
+
+def peaks_for_scoring(sample_id: str, raw: pd.DataFrame) -> pd.DataFrame:
+    """`raw` as the local scorer should read it: its own table, or a copy
+    whose `signal_to_noise` is the counting-statistics SNR where the sample's
+    snapshot says the column is not one (`snr_source` "poisson_fallback").
+    Before `scoring_for_sample` has judged the sample, the table as it is."""
+    from peaky.io import local_scoring
+
+    snap = _SCORING_CACHE.get(sample_id, (None, None))[1] or {}
+    if snap.get("snr_source") != SNR_SOURCE_POISSON:
+        return raw
+    return local_scoring.with_poisson_snr(raw, snap.get("snr_edge"))
 
 
 def _has_snr(raw) -> bool:
@@ -972,6 +1015,7 @@ def _inherited_scoring(given, raw):
         "abundance_floor": float(scoring.abundance_floor),
         "instrument_type": src.get("instrument_type"),
         "has_signal_to_noise": _has_snr(raw),
+        **_snr_policy_keys(None, raw),
     }
     return scoring, snapshot
 
@@ -1237,9 +1281,10 @@ def _score_candidates_local(client, sample_id, formulas, mechanism_ids):
     # The window is the instrument class's, so PEAKY_MATCH_PPM is gone: an
     # operator setting 15 for a TOF was saying what the class already knows,
     # and nothing said it for the width the mass is then scored against.
+    scoring = scoring_for_sample(client, sample_id, raw)
     out = local_scoring.score_candidates_local(
-        raw, formulas, mechanisms=mechs,
-        scoring=scoring_for_sample(client, sample_id, raw),
+        peaks_for_scoring(sample_id, raw), formulas, mechanisms=mechs,
+        scoring=scoring,
         centre=scoring_trend(sample_id),
     )
     out.attrs["match_batches"] = 0

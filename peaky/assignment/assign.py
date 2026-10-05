@@ -826,6 +826,21 @@ def run(sample_id: str, context: str = "ambient-air", *,
     log(f"[run] scoring {io_mascope.describe_scoring(scoring)}"
         f" ({scoring_snapshot['sigma_source']}, {scoring_snapshot['fitted_anchors']}"
         " anchors)")
+    # C46: the tier pass keys its counting-detector floor on the class, and a
+    # run whose peak table's signal-to-noise was replaced says so once
+    cfg.instrument_type = scoring_snapshot.get("instrument_type")
+    if scoring_snapshot.get("snr_source") == io_mascope.SNR_SOURCE_POISSON:
+        _edge = scoring_snapshot.get("snr_edge")
+        log(f"[run] signal-to-noise: the peak table's column does not track height "
+            f"(Spearman {scoring_snapshot.get('snr_spearman')} over {scoring_snapshot.get('snr_n')} peaks)"
+            f" -- lines judged at the counting-statistics SNR h/sqrt(h + edge^2), edge "
+            f"{_edge if _edge is None else round(float(_edge), 4)} cps")
+    _floor = tiers.tof_assign_floor(cfg)
+    if _floor is not None:
+        log(f"[run] tier floor (TOF): an M0 under {_floor:.3g} cps "
+            f"({tiers.TOF_ASSIGN_FLOOR_X_EDGE:g}x the "
+            + ("batch's typical" if cfg.noise_edge_batch_cps is not None else "file's own")
+            + " detection edge) is Candidate")
 
     pre = isotopes.prescan(led)
     log(f"[run] prescan {pre.as_dict()}")
@@ -921,6 +936,12 @@ def run(sample_id: str, context: str = "ambient-air", *,
         log(f"[run] LEDGER VALIDATION PROBLEMS: {problems}")
     st = ledger.stats(led)
     st["noise_edge_cps"] = cfg.noise_edge_cps
+    # C46: the footing of the tier pass's counting-detector floor, the class it
+    # keyed on, the floor in force (None off a TOF) and what SNR the lines were judged at
+    st["noise_edge_batch_cps"] = getattr(cfg, "noise_edge_batch_cps", None)
+    st["instrument_type"] = getattr(cfg, "instrument_type", None)
+    st["tof_assign_floor_cps"] = tiers.tof_assign_floor(cfg)
+    st["snr_source"] = scoring_snapshot.get("snr_source")
     st["height_gate_cps"] = cfg.height_cutoff     # RESOLVED gate (the knob is cfg.height_cutoff_cps)
     # the multiple the gate was resolved FROM (profile-supplied or the package
     # default) -- the gate in cps alone cannot be read back without it.

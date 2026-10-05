@@ -48,6 +48,87 @@ PROBABLE_THRESHOLD = 0.8
 POSSIBLE_THRESHOLD = 0.4
 INTENSITY_TOLERANCE = 0.4  # mascope_tools ISOTOPE_MATCHING_INTENSITY_TOLERANCE
 
+# ---------------------------------------------------------------------------
+# The signal-to-noise the score reads (C46)
+# ---------------------------------------------------------------------------
+# Three terms of the v2 fit are set by a peak's signal-to-noise: whether an
+# ABSENT predicted line is charged (it is, where rel * SNR_base >= k_detect),
+# the intensity tolerance of a matched line (its Poisson-like 1/SNR), and the
+# centroiding term of its mass width. The column the server sends is taken at
+# its word -- and on one TOF it is not a signal-to-noise at all: over a file's
+# ~1500-2600 picked peaks it does not track height (Spearman -0.07..0.17; a
+# 478-count peak carries 1.1, a 2-count peak 12), where every Orbitrap file
+# gives 0.999 with a flat ~19 cps implied noise. Read as an SNR, that column
+# excuses every missing line of a bright ion (no 81Br line of a bromide cluster
+# is ever charged) and charges dim ions for lines they could never show.
+# A file whose column fails the test is scored at the counting-statistics SNR
+# of an ion-counting detector instead: h / sqrt(h + edge^2), the Poisson noise
+# of the peak's own counts in quadrature with the picker's detection edge (the
+# 1st percentile of the file's picked heights, passes.config.noise_edge). The
+# ratio tolerance that gives a matched line is then its real Poisson scatter,
+# an absent line is charged where the counts say it was within reach, and a
+# handful-of-ions centroid is judged at the width such a centroid has.
+SNR_ASSESS_MIN_PEAKS = 30   # fewer peaks: the column cannot be judged, keep it
+SNR_MIN_SPEARMAN = 0.5      # a signal-to-noise tracks height; under this it is not one
+SNR_SOURCE_SERVER = "server"
+SNR_SOURCE_POISSON = "poisson_fallback"
+SNR_SOURCE_NONE = "none"
+
+
+def assess_snr(peaks: pd.DataFrame, *, height_col: str = "height",
+               snr_col: str = "signal_to_noise", peak_id_col: str = "peak_id") -> dict:
+    """Is the table's signal-to-noise column one? {source, spearman, n, edge}.
+
+    `source` is `SNR_SOURCE_NONE` when no peak carries a value (the score runs
+    in its no-SNR mode, as before), `SNR_SOURCE_SERVER` when the column tracks
+    height (Spearman >= SNR_MIN_SPEARMAN over the file's peaks) or there are
+    too few peaks to judge it, and `SNR_SOURCE_POISSON` when it does not --
+    then `edge` (the detection edge the fallback uses) is set. One peak per
+    `peak_id` (the raw server table has one row per match)."""
+    from peaky.assignment.passes.config import noise_edge
+
+    if peaks is None or snr_col not in getattr(peaks, "columns", []) or height_col not in peaks.columns:
+        return {"source": SNR_SOURCE_NONE, "spearman": None, "n": 0, "edge": None}
+    p = peaks.drop_duplicates(peak_id_col) if peak_id_col in peaks.columns else peaks
+    h = pd.to_numeric(p[height_col], errors="coerce")
+    s = pd.to_numeric(p[snr_col], errors="coerce")
+    ok = h.notna() & s.notna() & np.isfinite(h) & np.isfinite(s) & (s > 0)
+    n = int(ok.sum())
+    if n == 0:
+        return {"source": SNR_SOURCE_NONE, "spearman": None, "n": 0, "edge": None}
+    edge = noise_edge(h[h.notna()].to_numpy())
+    if n < SNR_ASSESS_MIN_PEAKS:
+        return {"source": SNR_SOURCE_SERVER, "spearman": None, "n": n, "edge": edge}
+    # Spearman as the Pearson correlation of the ranks: a constant column (every
+    # peak the same value) has no rank correlation and reads 0 -- it does not
+    # track height -- without scipy's warning about it
+    hr, sr = h[ok].rank(), s[ok].rank()
+    rho = 0.0 if hr.nunique() < 2 or sr.nunique() < 2 else float(hr.corr(sr))
+    if not np.isfinite(rho):
+        rho = 0.0
+    source = SNR_SOURCE_SERVER if rho >= SNR_MIN_SPEARMAN else SNR_SOURCE_POISSON
+    return {"source": source, "spearman": round(rho, 4), "n": n, "edge": edge}
+
+
+def poisson_snr(heights, edge: float | None) -> np.ndarray:
+    """The counting-statistics signal-to-noise of each peak: h / sqrt(h + edge^2).
+    A non-positive or unknown `edge` leaves sqrt(h) alone; a non-finite or
+    non-positive height reads NaN (no SNR for that peak)."""
+    h = np.asarray(heights, dtype=float)
+    e2 = float(edge) ** 2 if edge is not None and np.isfinite(edge) and edge > 0 else 0.0
+    out = np.full(h.shape, np.nan)
+    ok = np.isfinite(h) & (h > 0)
+    out[ok] = h[ok] / np.sqrt(h[ok] + e2)
+    return out
+
+
+def with_poisson_snr(peaks: pd.DataFrame, edge: float | None, *, height_col: str = "height",
+                     snr_col: str = "signal_to_noise") -> pd.DataFrame:
+    """A copy of `peaks` whose `snr_col` is the counting-statistics SNR."""
+    p = peaks.copy()
+    p[snr_col] = poisson_snr(pd.to_numeric(p[height_col], errors="coerce").to_numpy(dtype=float), edge)
+    return p
+
 
 def adduct_to_mech(adduct: str) -> str:
     """peaky adduct label -> the mechanism string the library scores it as.
