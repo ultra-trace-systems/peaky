@@ -613,3 +613,37 @@ def test_tracking_mutant_an_independent_trace_is_the_open_amine_default():
     assert r.evidence_level == "4b" and not r.split_pinned and r.nh4_gate == "amine default"
     assert r.positive_fact == "" and r.split_how.startswith("amine default (NH4 reading unconfirmed: independent "
                                                             "time trace, r ")
+
+
+# =========================================================================== the run's amine_r_min decides the gate
+def _rmin_source(r_min, noise_sd):
+    """A uronium source in which X [M+NH4]+ follows its own [M+H]+ parent at a correlation set by ``noise_sd``
+    (2 500: r 0.77; 8 000: r 0.40), the run's batch summary recording ``r_min`` (None: not recorded)."""
+    X = "C6H12O3"
+    rng = np.random.default_rng(0)
+    ts = _ts({(X, "[M+H]+"): SHAPE, (X, "[M+NH4]+"): SHAPE * 0.3 + rng.normal(0, noise_sd, 40)})
+    led = _file([(X, "[M+H]+"), (X, "[M+NH4]+")])
+    summary = dict(reagent="Ur", context="uronium", reflists_active=[], resolution=ORBI,
+                   per_file=[dict(sample_id="f1", height_gate_cps=1e3, degeneracy_cal={"mu": 0.0, "sigma": 0.3})])
+    if r_min is not None:
+        summary["amine_r_min"] = r_min
+    src = EV.source_from_frames({"f1": led}, run_inputs=SRC.RunInputs(
+        summary=summary, merged=led[led["role"] == "M0"].copy(), ts=ts), mode="run")
+    return EV.level_source(src).set_index("adduct").loc["[M+NH4]+"]
+
+
+@pytest.mark.parametrize("r_min,noise_sd,kept", [
+    (None, 2500, True),      # not recorded: the default 0.6 keeps r 0.77
+    (0.6, 2500, True),
+    (0.9, 2500, False),      # the run's stricter gate: r 0.77 is only weak tracking
+    (0.6, 8000, False),      # r 0.40 under the default
+    (0.0, 8000, True),       # a recorded 0.0 is the run's value, not "no value"
+])
+def test_the_level_gate_reads_the_runs_recorded_amine_r_min(r_min, noise_sd, kept):
+    r = _rmin_source(r_min, noise_sd)
+    if kept:
+        assert r.evidence_level == "4a" and r.nh4_gate == "committed NH4"
+        assert r.positive_fact == "NH4 adduct tracks its parent"
+    else:
+        assert r.evidence_level == "4b" and r.nh4_gate == "amine default" and r.positive_fact == ""
+        assert r.split_how.startswith("amine default (NH4 reading unconfirmed: only weak tracking, r 0.")

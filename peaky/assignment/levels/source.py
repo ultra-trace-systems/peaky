@@ -386,7 +386,8 @@ def prepared(src: Source):
     tol_ppm = CX.K_SIGMA * main_ctx.run_window[1]
     gate = None
     if pol == "positive":
-        r_min = float(src.summary.get("amine_r_min") or SPL.AMINE_R_MIN)
+        rec = src.summary.get("amine_r_min")          # the run's own value when it recorded one (0.0 included)
+        r_min = SPL.AMINE_R_MIN if rec is None else float(rec)
         ri = src.inputs
         prot = ri.protected if (ri.protected is not None and src.main is None) else SPL.protected_neutrals(src.per_file)
         if src.main is None and ri.merged is not None:
