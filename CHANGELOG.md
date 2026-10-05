@@ -91,7 +91,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     merged ledger and the batch checks) and stamped on the merged ledger by pair; post hoc by
     `scripts/level_ledger.py` with its own independently written decision layer. A merged row no
     pooled pair holds reads `no pooled pair: a batch-level re-read`; an uncalibrated file
-    levelled alone gets no level and says why.
+    levelled alone gets no level and says why, and so does every pooled pair of a batch none of
+    whose files is calibrated (no run window). A lone ledger CSV levelled by the script with
+    `--resolving-power` and `--reagent` is levelled as the per-file stage of a single-sample
+    `peaky assign` (the profile's context and the reference lists it activates).
   - **`--corroborate`** feeds the merge vote's class (as before) and, from an Orbitrap-class run
     directory, the other-source partner tag; it never moves an evidence level. On single-sample
     `peaky assign` it is accepted, logged and ignored.
