@@ -698,7 +698,7 @@ def test_a_labelled_nitrate_batch_writes_the_table_and_levels_it(tmp_path, monke
         led["degeneracy_density"] = 0.5
         led["resolvability"] = "resolved"
         return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
-                                                  "degeneracy_cal": {"mu": 0.0, "sigma": 0.3}},
+                                         "degeneracy_cal": {"mu": 0.0, "sigma": 0.3}},
                 "plausibility_audit": [], "summaries": {}, "problems": []}
 
     monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")

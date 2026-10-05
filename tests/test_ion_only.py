@@ -27,7 +27,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from peaky.assignment import assign as A
 from peaky.assignment import cleanup as CL
