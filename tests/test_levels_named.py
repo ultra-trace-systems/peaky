@@ -383,6 +383,38 @@ def test_urea_cluster_mutant_without_the_isobar_rule_the_window_pins_it(monkeypa
     assert "pinned only by the context window: C4H11N3O2 [M+H]+" in r.split_how
 
 
+#: X [M+Br]- whose X+HBr [M-H]- reading fails the context window only (Br in a neutral needs C >= 5)
+BR_CLUSTER = dict(neutral_formula="C4H6O4", adduct="[M+Br]-", **C13)
+
+
+@pytest.mark.parametrize("X,n_c", [("C4H6O4", 4), ("C3H4O4", 3)])
+def test_bromide_cluster_and_the_deprotonated_x_plus_hbr_isobar_admitted_over_the_window(X, n_c):
+    r = _one(dict(BR_CLUSTER, neutral_formula=X), "nitrate")
+    assert r.evidence_level == "4b" and not r.split_pinned
+    Y = C.format_formula({**C.parse_formula(X), "H": C.parse_formula(X)["H"] + 1, "Br": 1})
+    isobar = f"{Y} [M-H]- (X+HBr; window Br in neutral needs C>=5 (got C={n_c}); likely reagent alias)"
+    assert r.window_isobar == isobar
+    assert r.split_how == (f"2 decompositions: {X} [M+Br]-; {Y} [M-H]- [X+reagent isobar admitted over the context "
+                           f"window: {isobar}]")
+    assert "X+reagent isobar admitted over the window" in _kinds(r)
+
+
+def test_bromide_cluster_mutant_without_the_hbr_isobar_the_window_pins_it(monkeypatch):
+    mols = {k: dict(v) for k, v in SPL.REAGENT_MOLS.items()}
+    del mols["negative"]["HBr"]
+    monkeypatch.setattr(SPL, "REAGENT_MOLS", mols)
+    r = _one(BR_CLUSTER, "nitrate")
+    assert r.split_pinned and r.evidence_level == "4a" and r.window_isobar == ""
+    assert "pinned only by the context window: C4H7BrO4 [M-H]-" in r.split_how
+
+
+def test_bromide_cluster_contrast_with_c5_the_x_plus_hbr_reading_is_an_ordinary_decomposition():
+    """C >= 5: the X+HBr reading passes the window, so it is a full decomposition (open), with no isobar note."""
+    r = _one(dict(BR_CLUSTER, neutral_formula="C5H8O4"), "nitrate")
+    assert r.evidence_level == "4b" and not r.split_pinned and r.window_isobar == ""
+    assert r.split_how == "2 decompositions: C5H9BrO4 [M-H]-; C5H8O4 [M+Br]-"
+
+
 # =========================================================================== locked side channels
 C11 = dict(neutral_formula="C11H16O5", adduct="[M-H]-", **C13)
 

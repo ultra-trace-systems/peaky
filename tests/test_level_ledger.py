@@ -278,6 +278,17 @@ def test_split_window_only_pin_and_the_reagent_isobar_opens():
         in iso.would_lift
 
 
+def test_split_the_hbr_isobar_opens_a_bromide_cluster_in_engine_and_script():
+    ctx = lambda: _Ctx(reagent="NO3", decomp=["[M+NO3]-", "[M-H]-", "[M+Br]-"])  # noqa: E731
+    r = one(dict(ACID, neutral_formula="C4H6O4", adduct="[M+Br]-"), ctx=ctx())    # X+HBr [M-H]- fails the window alone
+    assert not r.split_pinned and r.evidence_level == "4b"
+    assert r.would_lift == ("split not pinned: 2 decompositions: C4H6O4 [M+Br]-; C4H7BrO4 [M-H]- [X+reagent isobar "
+                            "admitted over the context window: C4H7BrO4 [M-H]- (X+HBr; window Br in neutral needs "
+                            "C>=5 (got C=4); likely reagent alias)]")
+    c5 = one(dict(ACID, neutral_formula="C5H8O4", adduct="[M+Br]-"), ctx=ctx())    # passes the window: a decomposition
+    assert not c5.split_pinned and "isobar" not in c5.would_lift
+
+
 def test_split_committed_neutral_not_plausible_is_open():
     r = one(dict(neutral_formula="C2H40O4", adduct="[M-H]-"))
     assert r.split_rule == "committed neutral not plausible" and r.evidence_level == "4b"
