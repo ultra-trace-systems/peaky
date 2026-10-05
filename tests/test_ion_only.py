@@ -360,7 +360,8 @@ def test_batch_merged_row_carries_the_link_and_the_summary_counts_the_bucket(tmp
         CL.commit_ion_only_electron_attachment(led, _cfg(), log=lambda *a: None)
         PP.complete_isotope_envelopes(led, _cfg(), log=lambda *a: None)
         EV.apply_levels(led)
-        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
+                                         "degeneracy_cal": {"mu": 0.0, "sigma": 0.3}},   # as a real run persists
                 "plausibility_audit": [], "summaries": {}, "problems": []}
 
     monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
@@ -385,12 +386,21 @@ def test_batch_merged_row_carries_the_link_and_the_summary_counts_the_bucket(tmp
     io = summ["ion_only"]
     assert io["channels"] == ["[M]-."] and io["merged"] == 1 and io["n_files_with"] == len(seen)
     assert io["per_file_rows"] == len(seen) and io["merged_levels"] == {"NA": 1}
-    # a Br run opens no channel and reports an empty bucket
+    # the pooled stage ran (to its class gate: no width model) with every file's persisted calibration
+    assert summ["evidence_levels"]["pooled"] == {"NA": len(ev)} and summ["evidence_levels"]["n_pairs"] == len(ev)
+    assert all(pf["degeneracy_cal"] == {"mu": 0.0, "sigma": 0.3} for pf in summ["per_file"])
+    # a Br run opens no channel and reports an empty bucket; with an Orbitrap-class width model and the
+    # persisted calibrations its pooled stage levels every pair on the scale
     seen.clear()
     AB.run(peaks=pk, ts_peaks=pk, reagent="Br", batch="test batch", out_dir=str(tmp_path / "br"),
-           k_min=2, k_max=3, min_gain=0.0, n_jobs=1, log=lambda *a: None)
+           k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power=100_000, log=lambda *a: None)
     assert all(kw["cfg"].ion_only_channels == () for kw in seen)
-    assert json.load(open(tmp_path / "br" / "batch_summary.json"))["ion_only"]["channels"] == []
+    br = json.load(open(tmp_path / "br" / "batch_summary.json"))
+    assert br["ion_only"]["channels"] == []
+    evb = pd.read_csv(tmp_path / "br" / "tables" / "evidence_levels.csv", keep_default_na=False)
+    assert br["evidence_levels"]["instrument"]["class"] == "orbitrap" and len(evb) > 0
+    assert set(evb["evidence_level"]) <= set(EV.LEVELS) | {"reagent"}
+    assert EV.NO_RUN_WINDOW_TEXT not in set(evb["evidence"])
 
 
 def test_publish_sends_a_null_mechanism_for_the_ion_only_adduct():

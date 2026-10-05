@@ -822,6 +822,10 @@ _PK = _batch_table(_SPEC)
 _F = "C10H16O5"
 
 
+#: what every fake file's degeneracy stage persists, as a real run's does (stats["degeneracy_cal"])
+_CAL = {"mu": 0.0, "sigma": 0.3}
+
+
 _SEEN_CFG = []
 _SEEN_KW = []
 
@@ -838,8 +842,23 @@ def _fake_assign(sid, context="ambient-air", **kw):
                          ppm_error=0.1, pass_no=1, method="cheminfo+grid",
                          confidence="High", commentary="stub")
     _T.apply_tiers(led)
-    return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+    return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
+                                     "degeneracy_cal": dict(_CAL)},
             "plausibility_audit": [], "summaries": {}, "problems": []}
+
+
+def _pooled_levelled(d, summ):
+    """(ok, detail): the pooled level stage really ran on the batch in ``d`` -- an Orbitrap-class width model
+    (declared: the fakes give no measured one), the per-file calibrations in the summary, so a run window,
+    and every pooled pair levelled on the scale (no NA, none at the no-run-window text)."""
+    from peaky.assignment import evidence as _EV
+    ev = pd.read_csv(os.path.join(d, "tables", "evidence_levels.csv"), keep_default_na=False)
+    el = summ["evidence_levels"]
+    cals = [pf.get("degeneracy_cal") for pf in summ["per_file"]]
+    ok = (el["instrument"]["class"] == "orbitrap" and all(c == _CAL for c in cals)
+          and el["n_pairs"] == len(ev) > 0 and set(ev["evidence_level"]) <= set(_EV.LEVELS) | {"reagent"}
+          and _EV.NO_RUN_WINDOW_TEXT not in set(ev["evidence"]) and sum(el["pooled"].values()) == len(ev))
+    return ok, (el.get("instrument"), el.get("pooled"), cals)
 
 
 _saved = {"connect": IO.connect, "fetch_peaks": IO.fetch_peaks,
@@ -853,9 +872,11 @@ try:
     with tempfile.TemporaryDirectory() as _d:
         res = AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch",
                      out_dir=_d, k_min=2, k_max=3, min_gain=0.0, n_jobs=1,
-                     log=lambda *a: None)
+                     resolving_power=100_000, log=lambda *a: None)   # Orbitrap class: the pooled levels run
         summ = json.load(open(os.path.join(_d, "batch_summary.json")))
         s = summ["selection"]
+        check("run: the pooled level stage ran (Orbitrap class, persisted calibrations, every pair levelled)",
+              *_pooled_levelled(_d, summ))
         check("run: batch_summary carries the selection block",
               s["method"] == "presence-cover" and s["k"] == 3 and s["n_samples"] == 8
               and s["n_bins"] == 100, s)
@@ -1080,7 +1101,8 @@ def _positive_assign(sid, context="ambient-air", **kw):
                              ppm_error=0.1, pass_no=1, method="cheminfo+grid",
                              confidence="High", commentary="stub")
     _T.apply_tiers(led)
-    return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+    return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
+                                     "degeneracy_cal": dict(_CAL)},
             "plausibility_audit": [], "summaries": {}, "problems": []}
 
 
@@ -1093,11 +1115,13 @@ try:
     with tempfile.TemporaryDirectory() as _dp:
         resp = AB.run(peaks=_PK, ts_peaks=_PK, reagent="Ur", batch="test batch",
                       out_dir=_dp, k_min=2, k_max=3, min_gain=0.0, n_jobs=1,
-                      log=lambda *a: None)
+                      resolving_power=100_000, log=lambda *a: None)   # Orbitrap class: the pooled levels run
         mg = resp["merged"]
         summp = json.load(open(os.path.join(_dp, "batch_summary.json")))
         r_nh4 = mg.iloc[(mg["mz"] - _HC_MZ).abs().argmin()]
         r_ur = mg.iloc[(mg["mz"] - _UR_MZ).abs().argmin()]
+        check("positive run: the pooled level stage ran (Orbitrap class, persisted calibrations, every pair levelled)",
+              *_pooled_levelled(_dp, summp))
         check("positive run: the per-file ledgers AGREE (no per-file re-read split the ion)",
               bool(r_nh4["formula_agree"]) and bool(r_nh4["ion_agree"])
               and r_nh4["n_files_winner"] == r_nh4["n_files_ion"] == r_nh4["n_files"] == 3
@@ -1201,7 +1225,8 @@ def _fake_assign_staged(sid, context="ambient-air", **kw):
                              ppm_error=0.3, pass_no=1, method="cheminfo+grid",
                              confidence="Medium", commentary="stub")
     _T.apply_tiers(led)
-    return {"ledger": led, "stats": {"noise_edge_cps": 500.0, "height_gate_cps": 500.0},
+    return {"ledger": led, "stats": {"noise_edge_cps": 500.0, "height_gate_cps": 500.0,
+                                     "degeneracy_cal": dict(_CAL)},
             "plausibility_audit": [], "summaries": {}, "problems": []}
 
 
@@ -1228,10 +1253,12 @@ class _FakePool:
         return f
 
 
-def _run_staged(d, **kw):
+def _run_staged(d, resolving_power=100_000, **kw):
+    """One staged run; an Orbitrap-class width model by default, so the pooled levels run over both stages
+    (the fakes give no measured one: class-less, every pair would read NA at the class gate)."""
     lines = []
     res = AB.run(peaks=_RPK, ts_peaks=_RPK, reagent="Br", batch="test batch", out_dir=d,
-                 k_min=2, k_max=2, min_gain=0.0, log=lines.append, **kw)
+                 k_min=2, k_max=2, min_gain=0.0, log=lines.append, resolving_power=resolving_power, **kw)
     summ = json.load(open(os.path.join(d, "batch_summary.json")))
     return res, summ, lines
 
@@ -1254,6 +1281,10 @@ try:
         _SEEN_CFG.clear()
         res, summ, lines = _run_staged(_d, n_jobs=1)
         r = summ["selection"]["residual"]
+        _ok, _det = _pooled_levelled(_d, summ)
+        check("residual run: the pooled level stage ran over both stages (every pair levelled, per stage too)",
+              _ok and set(summ["evidence_levels"]["per_stage"]) == {"cover", "residual"},
+              (_det, summ["evidence_levels"].get("per_stage")))
         check("residual run: the cover stops at k_max=2 (a0, a1) and the z files stay unpicked",
               summ["selection"]["k"] == 2 and summ["selection"]["stop_reason"] == "k_max"
               and summ["n_files_by_stage"] == {"cover": 2, "residual": 2},
