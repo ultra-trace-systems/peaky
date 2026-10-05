@@ -294,6 +294,27 @@ def test_na_mutant_an_orbitrap_class_source_is_levelled():
     assert (out["context_source"] != "").all()
 
 
+@pytest.mark.parametrize("res", [TOF, None], ids=["tof", "class-less"])
+def test_a_tof_or_class_less_batch_that_committed_no_pair_gives_an_empty_frame(tmp_path, res):
+    """A blank batch (every file committed nothing) on an instrument the scale does not assess: the pooled stage
+    returns the empty frame every stage returns on an empty source -- read back through a CSV as the batch reads
+    its per-file ledgers -- and the merged stamp and the tallies take it."""
+    led = _file([("C10H16O4", "[M-H]-"), ("C9H14O4", "[M-H]-")])
+    blank = led[led["role"] != "M0"]
+    path = tmp_path / "f1_ledger.csv"
+    blank.to_csv(path, index=False)
+    for frame in (blank.copy(), pd.read_csv(path, low_memory=False)):
+        out = EV.level_batch({"f1": frame}, run_inputs=SRC.RunInputs(summary=_summary(res)))
+        assert out.empty and list(out.columns[:10]) == ["neutral_formula", "adduct", *SC.COLUMNS]
+        orbi = EV.level_batch({"f1": frame}, run_inputs=SRC.RunInputs(summary=_summary(ORBI)))
+        assert list(out.columns) == list(orbi.columns)
+        merged = EV.stamp_merged(frame.iloc[:0].copy(), out)
+        assert merged.empty and EV.summarize(out["evidence_level"]) == EV.summarize(orbi["evidence_level"])
+    # the per-file stage's scale-only frame on the same source does not fail either
+    src = EV.source_from_frames({"f1": blank.copy()}, run_inputs=SRC.RunInputs(summary=_summary(res)), mode="adapted")
+    assert SRC.na_frame(src, facts=False).empty
+
+
 # --------------------------------------------------------------------------- step rules the levels read
 def test_lead_tag_prints_on_every_level_with_its_setter():
     r = _one(dict(ACID, lead_fact=True), lead_by={("C10H16O4", "[M-H]-"): "reflist_dim"})

@@ -431,7 +431,10 @@ def na_frame(src: Source, *, facts: bool = True) -> pd.DataFrame:
     columns only (``facts=False``: no fact work at all)."""
     klass, r200 = src.instrument()
     keys = committed_pairs(src.per_file)
-    out = pd.DataFrame({"neutral_formula": [k[0] for k in keys], "adduct": [k[1] for k in keys]})
+    if not keys and facts:
+        return empty_levels(src)          # no committed pair: the empty frame of every stage (a blank batch)
+    out = pd.DataFrame({"neutral_formula": pd.Series([k[0] for k in keys], dtype=object),
+                        "adduct": pd.Series([k[1] for k in keys], dtype=object)})
     for c in SC.COLUMNS:
         out[c] = ""
     out["evidence_level"] = "NA"
