@@ -636,9 +636,6 @@ def _ll():
         "level_ledger", Path(__file__).resolve().parents[1] / "scripts" / "level_ledger.py")
     LL = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(LL)
-    if not all(hasattr(LL, x) for x in ("series_run", "series_main", "measure_source", "assign_levels",
-                                        "iso_check_facts")):
-        pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 decision")
     return LL
 
 

@@ -66,8 +66,6 @@ def test_the_engine_pools_the_lead_over_every_file_whichever_holds_it(lead_in):
 
 @pytest.mark.parametrize("lead_in", ["a", "b"])
 def test_the_reference_script_pools_the_lead_over_a_run_dirs_files(tmp_path, lead_in):
-    if not hasattr(LL, "series_run") or not hasattr(LL, "measure_source"):
-        pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 decision")
     files = _files(lead_in)
     run = tmp_path / "RUN"
     for name, frame in files.items():

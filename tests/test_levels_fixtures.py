@@ -182,14 +182,15 @@ def test_the_side_channel_note_and_the_ion_form_flag_print_on_the_real_batch(lev
 
 # --------------------------------------------------------------------------- the executable reference
 def _level_ledger_or_skip():
+    """The executable reference: it must run (a crash of its --help fails, never skips); only a missing
+    interpreter skips."""
     script = REPO / "scripts" / "level_ledger.py"
     try:
-        help_ = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True,
-                               timeout=120).stdout
-    except (OSError, subprocess.SubprocessError) as e:      # pragma: no cover
-        pytest.skip(f"scripts/level_ledger.py does not run: {e}")
-    if "--mode" not in help_:
-        pytest.skip("scripts/level_ledger.py has not the evidence scale's decision layer (no --mode option)")
+        r = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True, timeout=120)
+    except OSError as e:      # pragma: no cover -- no interpreter to run it with
+        pytest.skip(f"scripts/level_ledger.py cannot be started: {e}")
+    assert r.returncode == 0, f"scripts/level_ledger.py --help exits {r.returncode}: {r.stderr[-2000:]}"
+    assert "--mode" in r.stdout, "scripts/level_ledger.py --help names no --mode (not the evidence scale's script)"
     return script
 
 

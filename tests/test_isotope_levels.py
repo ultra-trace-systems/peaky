@@ -43,8 +43,6 @@ _spec = importlib.util.spec_from_file_location(
     "level_ledger_lv", Path(__file__).resolve().parents[1] / "scripts" / "level_ledger.py")
 LL = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(LL)
-#: the pre-0.10.0 decision's independent implementation, while the script still holds it
-HAS_SERIES_REFERENCE = all(hasattr(LL, x) for x in ("measure_source", "assign_levels", "detect_reagent_halogen"))
 
 RES_ORBI = {"coef": 5.0134221e-07, "exponent": 1.5344223, "offset": 0.0}     # R(200) ~ 118 000
 RES_TOF = {"coef": 0.00010564869, "exponent": 0.99632248, "offset": 0.0}      # R(200) ~ 9 650
@@ -111,8 +109,6 @@ def _both(rows, resolution=RES_ORBI, *, per_file=False, cross=None) -> dict:
     else:
         out = EV._series_pooled({"f": led}, resolution=resolution, cross=cross)
     eng = {(r.neutral_formula, r.adduct): (r.evidence_level, r) for r in out.itertuples(index=False)}
-    if not HAS_SERIES_REFERENCE:
-        return eng
     halogen = LL.detect_reagent_halogen(led[led.role == "M0"])
     ref = LL.assign_levels(LL.measure_source("f", led.assign(__file="f"), halogen, resolution, per_file),
                            set(cross or ()))
@@ -716,8 +712,6 @@ def test_a_list_entry_names_a_row_of_its_own_file():
         out = EV._series_pooled({"f1": f1, "f2": f2}, resolution=RES_ORBI)
         got = {(r.neutral_formula, r.adduct): (r.evidence_level, r) for r in out.itertuples(index=False)}
         assert _axis(got, "C10H16O4") == want
-        if not HAS_SERIES_REFERENCE:
-            continue
         both = pd.concat([f1.assign(__file="f1"), f2.assign(__file="f2")], ignore_index=True)
         ref = LL.assign_levels(LL.measure_source("s", both, LL.detect_reagent_halogen(both[both.role == "M0"]),
                                                  RES_ORBI, False), set())

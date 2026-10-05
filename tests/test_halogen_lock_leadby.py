@@ -211,8 +211,6 @@ def test_nothing_levels_on_it_yet(tmp_path):
         pd.testing.assert_frame_equal(EV._series_pooled({"f": f}), base)
         pd.testing.assert_frame_equal(EV._series_levels(f), EV._series_levels(frame))
         pd.testing.assert_series_equal(EV.vote_classes(f), EV.vote_classes(frame))
-    if not all(hasattr(LL, x) for x in ("series_run", "measure_source", "assign_levels")):
-        return                       # the script no longer holds the pre-0.10.0 decision
     got = LL.series_run([str(_write(tmp_path / "c" / "s_ledger.csv", coded))], [])
     ref = LL.series_run([str(_write(tmp_path / "n" / "s_ledger.csv", frame.drop(columns=[BY])))], [])
     assert list(got.level) == list(ref.level)

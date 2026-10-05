@@ -61,9 +61,7 @@ def _hard(r) -> tuple:
 
 
 def _ll():
-    """The reference script with the pre-0.10.0 decision, or skip."""
-    if not all(hasattr(LL, x) for x in ("series_run", "measure_source", "assign_levels", "iso_check_facts")):
-        pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 decision")
+    """The reference script with the pre-0.10.0 decision (a missing name fails, never skips)."""
     return LL
 
 CL1, CL2 = "C6H9ClO3", "C6H10Cl2O4"

@@ -320,8 +320,6 @@ def test_an_ion_only_row_is_never_a_second_channel_nor_a_corroboration_either_wa
 
 
 def test_the_reference_script_levels_ion_only_rows_exactly_as_the_core_does():
-    if not all(hasattr(LL, x) for x in ("assign_levels", "measure_source")):
-        pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 decision")
     led = _ledger()
     CL.commit_ion_only_electron_attachment(led, _cfg(), log=lambda *a: None)
     PP.complete_isotope_envelopes(led, _cfg(), log=lambda *a: None)

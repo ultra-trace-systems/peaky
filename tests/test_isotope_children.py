@@ -781,8 +781,6 @@ def test_every_level_path_takes_the_width_model(monkeypatch, tmp_path):
     assert EV.vote_cross_neutrals([str(run), str(run / "per_file" / "s1_ledger.csv")]) == {"C10H16O4"}
     assert got["res"] == [RES_TOF, None]
     # the script levels a run dir with its batch_summary's model, a CSV without one
-    if not hasattr(LL, "measure_source"):
-        return                       # the script no longer holds the pre-0.10.0 decision
     rec = []
     real_ms = LL.measure_source
 

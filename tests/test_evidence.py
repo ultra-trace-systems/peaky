@@ -209,9 +209,6 @@ def series_reference():
     spec = importlib.util.spec_from_file_location("level_ledger", REPO / "scripts" / "level_ledger.py")
     LL = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(LL)
-    if not all(hasattr(LL, x) for x in ("measure_source", "assign_levels")):
-        pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 decision: the merge vote's private "
-                    "class has no second implementation to compare with")
     return LL
 
 

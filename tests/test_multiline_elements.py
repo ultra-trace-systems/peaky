@@ -172,9 +172,6 @@ def test_the_reference_script_agrees_on_each_case():
         "level_ledger", Path(__file__).resolve().parents[1] / "scripts" / "level_ledger.py")
     LL = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(LL)
-    if not hasattr(LL, "measure_source"):
-        import pytest
-        pytest.skip("scripts/level_ledger.py no longer carries the pre-0.10.0 fact reader")
     cases = [
         ("C10H16O4", "C11H21N2O5", "18O", 5 * O18, True),
         ("C10H16O4", "C11H21N2O5", "18O", 25 * O18, False),
