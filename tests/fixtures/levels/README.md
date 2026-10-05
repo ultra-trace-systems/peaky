@@ -39,8 +39,10 @@ scrubbed):
 - **time series**: the committed M0 rows (route co-variation) and, on the
   positive (uronium) batch, every row within 8.5 ppm of a mass the amine gate
   looks up (recorded while levelling the full run), in the columns those
-  readers use; m/z rounded to 1e-6, heights to 5 significant digits, datetimes
-  kept (the gate bins them by 2 h), sample ids mapped as above;
+  readers use; m/z rounded to 1e-6, heights to 5 significant digits, sample
+  ids mapped as above; every timestamp shifted by one constant whole-day offset
+  (the acquisition dates are not kept; a whole day is a multiple of the gate's
+  2-h bins, so every bin holds the same spectra and every level is unchanged);
 - **batch summary**: the width model, reagent, context, label, the active
   reference lists and their activation record (the keywords that matched,
   never the batch / dataset names) and the per-file gates (the runs predate
