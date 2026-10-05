@@ -307,7 +307,8 @@ Declared, not opened: a side channel the server opens on a nitrate run
 
 Where no channels are known it falls back to the halogen of the source's
 **commonest cluster adduct** (`evidence.detect_reagent_halogen`,
-`evidence.DETECT_HALOGEN`): a ledger CSV levelled alone, a `--corroborate`
+`evidence.DETECT_HALOGEN`): a ledger CSV levelled alone without `--reagent`
+(with it, the profile's channels, §10.4), a `--corroborate`
 source re-levelled for the vote's cross set (`vote_cross_neutrals`), a
 per-file stats record without the key. `[M+Br]-` → Br, `[M+NO3]-` → none: a
 nitrate channel with two stray `[M+Br]-` rows against 346 `[M+NO3]-` is a
@@ -733,15 +734,31 @@ the internal pass it can anchor a series exclusion (§5.4) as a route can.
 ### 10.4 The post-hoc script and decoy arms
 
 `scripts/level_ledger.py <run dir>... [--corroborate <run dir>...] [--mode
-run|adapted|strict] [--main <run dir>] [--out levels.csv] [--vector]`
+run|adapted|strict] [--main <run dir>] [--resolving-power R --reagent NAME
+[--context NAME] [--window MU,SIGMA]] [--out levels.csv] [--vector]`
 re-levels any run directory after the fact — old runs included (the window
 refit of §5.1) — with the shared fact layer (`evidence.source_from_run_dir`)
 and its own, independently written decision layer (step 0 order, step 1
 outcome, the split outcome table, the level, the `would_lift` texts). The
 in-core decision must equal it row for row. `--vector` prints the pair count
-per level and bucket and each level's share of the committed M0 height. A
-single ledger CSV is a one-file "adapted" source with no width model (`NA`)
-unless `--resolving-power` is given.
+per level and bucket and each level's share of the committed M0 height.
+
+A single ledger CSV is a one-file "adapted" source with no width model (`NA`)
+unless `--resolving-power` (R at m/z 200) and `--reagent` (the profile) are
+given. It is then levelled as the per-file stage of a single-sample `peaky
+assign` would level it: the profile's context (`--context` overrides it), the
+reference lists that context and the profile label activate (the
+always-active lists included), the halogen of the profile's declared
+channels, and the window `--window` gives (the file's `degeneracy_cal`), else
+refitted from its degeneracy counts. What a lone CSV cannot know stays at the
+stage's own fallback: the height gate (with no gate or noise edge recorded,
+the 1st-percentile height of the file's peaks) and any list a batch or
+dataset NAME activated by keyword. A file of a batch whose lists were
+activated by such a name can therefore differ from its stored per-file level
+by those lists' entries.
+`--main <run dir>` levels the CSV in that run's context instead, as a decoy
+arm (below) — the pooled run's window, gate and models, not the per-file
+stage's.
 
 A **decoy arm** — one ledger levelled inside a main run's context (its window,
 gate, line efficiency, carbon-count model, 15N twin ratio, grid, lists and

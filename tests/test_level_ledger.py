@@ -536,6 +536,47 @@ def test_a_lone_ledger_with_a_declared_width_model_is_levelled(tmp_path):
     assert Resolution.from_dict(LL.resolution_for(70000.0)).r_at(200.0) == pytest.approx(70000.0)
 
 
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "levels"
+
+
+@pytest.mark.parametrize("fixture,reagent,sid", [("v1_uronium", "Ur", "s01"), ("v1_nitrate", "NO3+NO3_15N", "s01")])
+def test_a_lone_ledger_is_levelled_as_the_per_file_stage_of_a_single_sample_run(tmp_path, fixture, reagent, sid):
+    """level_ledger.py <ledger.csv> --resolving-power R --reagent P [--window MU,SIGMA] == the per-file stage of
+    `peaky assign` on that file: the profile's context, the lists that context and the profile label activate
+    (the always-active ones included), the profile channels' halogen."""
+    import gzip
+    import shutil
+    from types import SimpleNamespace
+
+    from peaky.assignment import assign as A
+    from peaky.assignment import reflists as RL
+    from peaky.chem import contexts
+    from peaky.chem import profiles as PR
+    path = tmp_path / f"{sid}_ledger.csv"
+    with gzip.open(FIXTURES / fixture / "per_file" / f"{sid}_ledger.csv.gz", "rb") as f, open(path, "wb") as g:
+        shutil.copyfileobj(f, g)
+    r200, window = 104_000.0, (0.0, 0.2)
+    prof = PR.resolve(reagent)
+    # the per-file stage itself, with the inputs `peaky assign` gives it (cli.py's activation, assign.run's state)
+    lists, _tags, record = RL.activate(prof.context, prof.label, record=True, fields=("context", "reagent label"))
+    assert any(L.id == "contaminants_keller2008" for L in lists)
+    led = pd.read_csv(path, low_memory=False)
+    st = SimpleNamespace(cfg=None, reagent_profile=prof.name, adducts=list(prof.adducts),
+                         profile=contexts.get_context(prof.context), resolving_power=LL.resolution_for(r200),
+                         reflists_active=lists, reflists_context=record, degeneracy_cal=window,
+                         reagent_halogen=EV.channel_halogen(prof.adducts), sample_id=sid, led=led,
+                         log=lambda *a: None)
+    A._stage_evidence(st)
+    stage = (led[led["role"] == "M0"].drop_duplicates(["neutral_formula", "adduct"])
+             .set_index(["neutral_formula", "adduct"]))
+    lone = LL.run([str(path)], resolving_power=r200, reagent=reagent, window=window,
+                  log=lambda *a: None).set_index(["neutral_formula", "adduct"])
+    assert len(lone) == len(stage) and set(lone.index) == set(stage.index)
+    for col in ("evidence_level", "would_lift", "claim", "competitors_left"):
+        want = stage.loc[lone.index, col].fillna("").astype(str).tolist()
+        assert lone[col].fillna("").astype(str).tolist() == want, col
+
+
 def test_corroborate_takes_partners_only_from_an_orbitrap_class_run_dir(tmp_path):
     seen = []
     LL.partners_of([str(_run_dir(tmp_path / "tof", resolution=TOF)), str(tmp_path / "nothing")], log=seen.append)

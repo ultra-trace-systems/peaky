@@ -23,7 +23,12 @@ label_twins}.csv; it is levelled as one pooled source ('run', every file-count
 minimum 3). A ledger CSV is one file: levelled alone ('adapted', the minima 1;
 'strict', the batch minima) or, with --main, in that run's context exactly as a
 decoy arm. A lone ledger has no width model: it reads NA unless
---resolving-power (R at m/z 200) and --reagent (the profile) are given.
+--resolving-power (R at m/z 200) and --reagent (the profile) are given; it is
+then levelled as the per-file stage of a single-sample `peaky assign`: the
+profile's context (--context overrides it), the lists that context and the
+profile label activate, the profile channels' halogen and the --window
+calibration (MU,SIGMA; else refitted from its degeneracy counts). Lists a
+batch or dataset name activated are not known to a lone ledger.
 --corroborate names other-source partners: each Orbitrap-class run dir is
 levelled once with no partners and its route / ladder / listed pairs become a
 TAG on the levelled pairs (they can still anchor the series exclusion of step
@@ -680,6 +685,25 @@ def resolution_for(r200: float) -> dict:
     return Resolution(coef=(200.0 / float(r200)) / 200.0 ** 1.5, exponent=1.5, offset=0.0, source="declared").as_dict()
 
 
+def lone_run_inputs(sid, *, reagent, context=None, resolution=None, **kw):
+    """The run inputs of a lone ledger CSV, built as the per-file stage of a single-sample run builds its own
+    (assign._stage_evidence after cli's assign): the profile's context unless ``context`` names one, the reference
+    lists that context and the profile label activate (the always-active lists included) with their activation
+    record, and the halogen of the profile's declared channels. What a lone CSV cannot know -- a batch's or
+    dataset's name (keyword-activated lists), the file's height gate -- falls back as the stage's own fallbacks do."""
+    from peaky.assignment import reflists as RL
+    from peaky.chem import profiles as PR
+    try:
+        prof = PR.resolve(str(reagent))
+    except (KeyError, ValueError) as e:
+        raise SystemExit(f"--reagent {reagent!r}: {e}") from None
+    ctx_name = context or prof.context
+    lists, _tags, record = RL.activate(ctx_name, prof.label or "", record=True, fields=("context", "reagent label"))
+    return EV.file_run_inputs(sample_id=sid, reagent=reagent, context=ctx_name, resolution=resolution,
+                              reflists_active=RL.active_versions(lists), activation=record,
+                              reagent_halogen=EV.channel_halogen(prof.adducts), **kw)
+
+
 def source_of(path, *, mode=None, main=None, resolving_power=None, reagent=None, context=None, window=None):
     """(label, Source) of one argument: a run dir (or its out dir), or one ledger CSV (alone, or in ``main``'s
     context)."""
@@ -699,8 +723,7 @@ def source_of(path, *, mode=None, main=None, resolving_power=None, reagent=None,
             raise SystemExit(f"{path}: --resolving-power on a lone ledger needs --reagent (its profile)")
         sid = next(iter(src.per_file))
         kw = {} if window is None else {"degeneracy_cal": tuple(window)}
-        ri = EV.file_run_inputs(sample_id=sid, reagent=reagent, context=context,
-                                resolution=resolution_for(resolving_power), **kw)
+        ri = lone_run_inputs(sid, reagent=reagent, context=context, resolution=resolution_for(resolving_power), **kw)
         src = EV.source_from_frames(src.per_file, run_inputs=ri, mode=mode or "adapted", name=sid, label=sid)
         # the step-1 window: the file's calibration when given, else refitted from its degeneracy counts
         from peaky.assignment.levels import context as CX
@@ -784,7 +807,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--main", help="a run dir: level each ledger CSV in its context, like a decoy arm")
     ap.add_argument("--resolving-power", type=float, help="R at m/z 200 for a lone ledger CSV (else it reads NA)")
     ap.add_argument("--reagent", help="the reagent profile of a lone ledger CSV levelled with --resolving-power")
-    ap.add_argument("--context", help="the context of a lone ledger CSV (default: the profile's)")
+    ap.add_argument("--context", help="the context of a lone ledger CSV (default: the reagent profile's context); "
+                                      "it and the profile label activate the reference lists, as `peaky assign` does")
     ap.add_argument("--window", help="MU,SIGMA (ppm): a lone ledger's calibration (its batch_summary per_file "
                                      "degeneracy_cal); default: refitted from its degeneracy counts")
     ap.add_argument("--out", help="write the levelled pairs here as CSV")
