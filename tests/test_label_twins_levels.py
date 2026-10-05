@@ -436,7 +436,8 @@ def _batch(tmp_path, monkeypatch, spec, commits, tie_alts, resolving_power=None)
         T.apply_tiers(led)
         led["degeneracy_density"] = 0.5
         led["resolvability"] = "resolved"
-        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
+                                         "degeneracy_cal": {"mu": 0.0, "sigma": 0.3}},
                 "plausibility_audit": [], "summaries": {}, "problems": []}
 
     monkeypatch.setattr(IOM, "connect", lambda *a, **k: "CLIENT")
