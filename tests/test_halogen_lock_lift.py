@@ -613,7 +613,8 @@ def test_a_batch_lifts_the_locked_lead_on_the_merged_ledger(tmp_path, monkeypatc
         led["degeneracy_density"] = 0.5
         led["resolvability"] = "resolved"
         L.mark_lead(led, led.index[led["neutral_formula"] == CL1][0], "spec_gapfill")
-        return {"ledger": led, "stats": {"noise_edge_cps": 10.0, "height_gate_cps": 10.0},
+        return {"ledger": led, "stats": {"noise_edge_cps": 10.0, "height_gate_cps": 10.0,
+                                                  "degeneracy_cal": {"mu": 0.0, "sigma": 0.3}},
                 "plausibility_audit": [], "summaries": {}, "problems": []}
 
     monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")

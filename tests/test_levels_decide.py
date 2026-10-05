@@ -315,6 +315,55 @@ def test_a_tof_or_class_less_batch_that_committed_no_pair_gives_an_empty_frame(t
     assert SRC.na_frame(src, facts=False).empty
 
 
+UNCAL_PAIRS = [("C10H16O4", "[M-H]-"), ("C9H14O4", "[M-H]-"), ("C10H16O4", "[M+NO3]-")]
+
+
+def _three_files(cals):
+    """Three files of one Orbitrap-class batch; ``cals`` = their persisted degeneracy_cal (None: uncalibrated)."""
+    per_file = {f"f{k}": _file(UNCAL_PAIRS) for k in range(3)}
+    summary = dict(_summary(ORBI), per_file=[dict(sample_id=f"f{k}", height_gate_cps=1e3, degeneracy_cal=c)
+                                             for k, c in enumerate(cals)])
+    return per_file, SRC.RunInputs(summary=summary)
+
+
+def test_a_pooled_source_with_no_calibrated_file_is_not_levelled_and_says_why():
+    """No file calibrated: no run window, so no competitor search -- every pair gets no level, claim tentative and
+    the reason (fast: nothing is enumerated), the script says the same, and the merged stamp carries it."""
+    import sys
+    import time
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import level_ledger as LL
+    per_file, ri = _three_files([None, None, None])
+    t0 = time.time()
+    out = EV.level_batch(per_file, run_inputs=ri)
+    assert time.time() - t0 < 30
+    assert len(out) == len(UNCAL_PAIRS) and set(out["evidence_level"]) == {""}
+    assert set(out["claim"]) == {"tentative"} and set(out["evidence"]) == {EV.NO_RUN_WINDOW_TEXT}
+    assert {"iso_veto", "lowconf"} <= set(out.columns)                    # the pair facts ride along (D17)
+    mine = LL.decide_source(EV.source_from_frames(per_file, run_inputs=ri, mode="run"))
+    assert set(mine["would_lift"]) == {EV.NO_RUN_WINDOW_TEXT} and set(mine["claim"]) == {"tentative"}
+    merged = per_file["f0"][per_file["f0"]["role"] == "M0"].copy()
+    stamped = EV.stamp_merged(merged, out)
+    assert set(stamped["evidence"]) == {EV.NO_RUN_WINDOW_TEXT} and set(stamped["claim"]) == {"tentative"}
+
+
+def test_no_window_mutant_one_calibrated_file_lends_the_run_sigma_and_every_pair_is_levelled():
+    per_file, ri = _three_files([None, {"mu": 0.0, "sigma": 0.3}, None])
+    out = EV.level_batch(per_file, run_inputs=ri)
+    assert len(out) == len(UNCAL_PAIRS) and set(out["evidence_level"]) <= set(SC.LEVELS)
+    assert EV.NO_RUN_WINDOW_TEXT not in set(out["evidence"])
+
+
+def test_the_enumeration_refuses_a_non_finite_window():
+    sp = SP.Space("NO3", "ambient-air", [], ())
+    with pytest.raises(ValueError, match="non-finite ppm window"):
+        sp.enumerate(200.0, float("nan"), float("nan"), ["[M-H]-"])
+    with pytest.raises(ValueError, match="non-finite ppm window"):
+        sp.enumerate(200.0, -1.0, float("inf"), ["[M-H]-"])
+    assert isinstance(sp.enumerate(200.0, -1.0, 1.0, ["[M-H]-"]), dict)
+
+
 # --------------------------------------------------------------------------- step rules the levels read
 def test_lead_tag_prints_on_every_level_with_its_setter():
     r = _one(dict(ACID, lead_fact=True), lead_by={("C10H16O4", "[M-H]-"): "reflist_dim"})

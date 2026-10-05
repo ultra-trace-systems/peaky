@@ -155,7 +155,9 @@ Segments are separated by `" · "` (U+00B7 with a space on each side).
 - **No level:** a per-file row the stage could not level reads
   `no level · the run's reagent profile is unknown (...)` or
   `no level · the file is uncalibrated (...) ... no calibrated window to enumerate competitors in`
-  (§10.1); a merged row no pooled pair holds reads
+  (§10.1); a pooled pair of a batch none of whose files is calibrated reads
+  `no level · no file of the source is calibrated (...): no run window to enumerate competitors in`
+  (§10.2); a merged row no pooled pair holds reads
   `no pooled pair: a batch-level re-read` (§10.2).
 
 The **ion text** is `unique in the calibrated window`, or
@@ -354,7 +356,9 @@ that refits it: the (mu, sigma) that reproduces the stored
 (kept when it reproduces ≥ 99 % of them). An uncalibrated file in a batch
 takes (median of `ppm_error - ppm_error_cal`, the run sigma), the run sigma
 being the median of the per-file sigmas. The run window is the median of the
-per-file windows.
+per-file windows. A source none of whose files is calibrated has no run
+sigma and no window: its pairs get no level (§2.3, "No level"), and the
+enumeration refuses a non-finite window.
 
 ### 5.2 The space and the competitors
 
@@ -696,7 +700,11 @@ onto the merged ledger by `(neutral_formula, adduct)` (one-to-one); a merged
 row no pooled pair holds (a batch-level re-read) gets no level, claim
 tentative and the evidence `no pooled pair: a batch-level re-read`. The
 per-file ledgers keep their own per-file levels (§10.1), so a merged row can
-read 4a where its per-file rows read 4b, and the other way round.
+read 4a where its per-file rows read 4b, and the other way round. A batch
+none of whose Orbitrap-class files is calibrated (a one-file batch of an
+uncalibrated file included) has no run window: every pooled pair gets no
+level, claim tentative and the evidence `no level · no file of the source is
+calibrated ...`; one calibrated file is enough to lend the others its sigma.
 
 `batch_summary.json` records:
 

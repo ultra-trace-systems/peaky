@@ -359,7 +359,11 @@ def enumerate_window(mz: float, lo_ppm: float, hi_ppm: float, channels, space: E
     on ``channels`` whose ppm error at ``mz`` lies in [lo_ppm, hi_ppm]
     (inclusive; no truncation). Within one ion key the reading closest to
     ``centre`` (default: the window's midpoint) wins. A channel without an
-    adduct shift is skipped."""
+    adduct shift is skipped. A non-finite window is refused (ValueError): it
+    would admit every ion of the space."""
+    if not (np.isfinite(lo_ppm) and np.isfinite(hi_ppm)):
+        raise ValueError(f"enumerate_window: a non-finite ppm window [{lo_ppm}, {hi_ppm}] at m/z {mz} "
+                         "(an uncalibrated source has no window to enumerate in)")
     ion_lo = mz / (1 + hi_ppm * 1e-6)
     ion_hi = mz / (1 + lo_ppm * 1e-6)
     mid = 0.5 * (lo_ppm + hi_ppm) if centre is None else centre

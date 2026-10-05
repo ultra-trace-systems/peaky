@@ -430,6 +430,25 @@ def na_frame(src: Source, *, facts: bool = True) -> pd.DataFrame:
     enumeration, no gate, no pass A. The per-file stage asks for the scale's
     columns only (``facts=False``: no fact work at all)."""
     klass, r200 = src.instrument()
+    return _unlevelled_frame(src, "NA", na_text(klass, r200), SC.CLAIM_NA, facts=facts)
+
+
+def no_run_window(src: Source) -> bool:
+    """Whether an Orbitrap-class source has no run window: none of its files is
+    calibrated (every persisted `degeneracy_cal` null, no refit), so there is
+    no sigma to borrow and no window to enumerate competitors in."""
+    return not np.isfinite(context_of(src).run_window[1])
+
+
+def no_window_frame(src: Source) -> pd.DataFrame:
+    """The level frame of a source with no run window (`no_run_window`): every
+    committed pair without a level, claim tentative, the reason in `evidence`
+    (`evidence.NO_RUN_WINDOW_TEXT`), the pair facts beside it -- as the
+    per-file stage writes for an uncalibrated file levelled alone."""
+    return _unlevelled_frame(src, "", _ev().NO_RUN_WINDOW_TEXT, SC.claim_class(""), facts=True)
+
+
+def _unlevelled_frame(src: Source, level: str, evidence: str, claim: str, *, facts: bool) -> pd.DataFrame:
     keys = committed_pairs(src.per_file)
     if not keys and facts:
         return empty_levels(src)          # no committed pair: the empty frame of every stage (a blank batch)
@@ -437,9 +456,9 @@ def na_frame(src: Source, *, facts: bool = True) -> pd.DataFrame:
                         "adduct": pd.Series([k[1] for k in keys], dtype=object)})
     for c in SC.COLUMNS:
         out[c] = ""
-    out["evidence_level"] = "NA"
-    out["evidence"] = na_text(klass, r200)
-    out["claim"] = SC.CLAIM_NA
+    out["evidence_level"] = level
+    out["evidence"] = evidence
+    out["claim"] = claim
     if facts:
         F = pair_facts(src)
         F = F[[c for c in F.columns if c not in out.columns or c in ("neutral_formula", "adduct")]]
@@ -474,6 +493,8 @@ def level_source(src: Source, *, partners=None) -> pd.DataFrame:
         return na_frame(src)
     if not committed_pairs(src.per_file):
         return empty_levels(src)
+    if no_run_window(src):
+        return no_window_frame(src)
     S = prepared(src)
     if src.one_file_minima:
         partners = None

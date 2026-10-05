@@ -1219,6 +1219,10 @@ NO_REAGENT_TEXT = ("no level · the run's reagent profile is unknown (its adduct
 NO_WINDOW_TEXT = ("no level · the file is uncalibrated (no calibration core for the degeneracy audit) and, "
                   "levelled alone, has no run sigma to borrow: no calibrated window to enumerate competitors in")
 
+#: ... and of every pair of a pooled source none of whose files is calibrated (no run window)
+NO_RUN_WINDOW_TEXT = ("no level · no file of the source is calibrated (no calibration core for the degeneracy audit "
+                      "in any file): no run window to enumerate competitors in")
+
 
 def _blank_columns(frame: pd.DataFrame) -> None:
     n = len(frame)

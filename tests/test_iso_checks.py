@@ -774,7 +774,8 @@ def _run_batch(tmp_path, monkeypatch, *, ts=True, resolving_power=100_000):
         TT.apply_tiers(led)
         led["degeneracy_density"] = 0.5
         led["resolvability"] = "resolved"
-        return {"ledger": led, "stats": {"noise_edge_cps": 10.0, "height_gate_cps": 10.0},
+        return {"ledger": led, "stats": {"noise_edge_cps": 10.0, "height_gate_cps": 10.0,
+                                                  "degeneracy_cal": {"mu": 0.0, "sigma": 0.3}},
                 "plausibility_audit": [], "summaries": {}, "problems": []}
 
     monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")

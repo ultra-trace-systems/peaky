@@ -638,13 +638,14 @@ def na_rows(src) -> pd.DataFrame:
     return out
 
 
-def no_window_rows(src) -> pd.DataFrame:
-    """A lone file with no calibrated window (no calibration of its own, no run sigma to borrow): no level, claim
-    tentative, and why (the engine's per-file stage says the same)."""
+def no_window_rows(src, why: str = EV.NO_WINDOW_TEXT) -> pd.DataFrame:
+    """A lone file with no calibrated window (no calibration of its own, no run sigma to borrow), or a pooled
+    source none of whose files is calibrated (``why`` = EV.NO_RUN_WINDOW_TEXT): no level, claim tentative, and why
+    (the engine's per-file and pooled stages say the same in `evidence`)."""
     out = _blank_rows(src)
     out["evidence_level"] = ""
     out["claim"] = "tentative"
-    out["would_lift"] = EV.NO_WINDOW_TEXT
+    out["would_lift"] = why
     return out
 
 
@@ -656,6 +657,8 @@ def decide_source(src, partners=None) -> pd.DataFrame:
         return na_rows(src)
     if not SRC.committed_pairs(src.per_file):
         return _blank_rows(src)          # nothing committed: no pair to level (no row, the columns)
+    if SRC.no_run_window(src):
+        return no_window_rows(src, EV.NO_RUN_WINDOW_TEXT)   # no file calibrated: no window to enumerate in
     return decide(SRC.prepared(src), None if src.one_file_minima else partners)
 
 
