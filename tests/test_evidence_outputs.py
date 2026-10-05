@@ -279,7 +279,8 @@ def _batch_table(spec, height=500.0):
     return pd.DataFrame(rows)
 
 
-def _run_batch(tmp_path, monkeypatch, *, resolving_power=ORBI, corroborate=None, seen=None, lines=None):
+def _run_batch(tmp_path, monkeypatch, *, resolving_power=ORBI, corroborate=None, seen=None, lines=None,
+               ledger_of=None):
     from peaky.batch import assign_batch as AB
     from peaky.io import io_mascope as IO
 
@@ -289,11 +290,13 @@ def _run_batch(tmp_path, monkeypatch, *, resolving_power=ORBI, corroborate=None,
         spec[f"a{i}"] = bg + list(range(200 + 20 * i, 220 + 20 * i))
         spec[f"b{i}"] = bg + list(range(200 + 20 * i, 220 + 20 * i))
     pk = _batch_table(spec)
+    n_calls = [0]
 
     def fake_assign(sid, context="ambient-air", **kw):
         if seen is not None:
             seen.append(kw)
-        return {"ledger": _ledger(), "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
+        n_calls[0] += 1
+        return {"ledger": ledger_of(n_calls[0]) if ledger_of else _ledger(), "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
                                                "degeneracy_cal": {"mu": CAL[0], "sigma": CAL[1]}},
                 "plausibility_audit": [], "summaries": {}, "problems": []}
 
@@ -447,6 +450,53 @@ def test_corroborate_feeds_the_vote_and_an_orbitrap_run_dir_gives_partners(tmp_p
     ev2 = json.load(open(tmp_path / "main2" / "batch_summary.json"))["evidence_levels"]
     assert ev2["partners"] == {} and ev2["n_corroborate"] == 1
     assert any("one.csv: not a batch run dir" in ln for ln in lines2)
+
+
+def _one_reading(neutral, ion, *, own_13c):
+    """A one-ion ledger: `neutral` [M-H]- at its exact mass, with (or without) its own 13C line."""
+    mz = C.ion_mz(neutral, "[M-H]-")
+    peaks = pd.DataFrame({"peak_id": ["M", "I"], "mz": [mz, mz + 1.0033548], "height": [1.0e5, 1.0e4]})
+    led = L.new_ledger(peaks if own_13c else peaks.iloc[:1])
+    L.commit_assignment(led, "M", neutral_formula=neutral, adduct="[M-H]-", ion_formula=ion, ion_score=0.95,
+                        compound_score=0.95, ppm_error=0.1, pass_no=1, method="cheminfo", confidence="High",
+                        commentary=f"Pass 1: {neutral} [M-H]-",
+                        **({"isotopologues": [{"label": "13C", "score": 0.93, "peak_id": "I"}]} if own_13c else {}))
+    if own_13c:
+        L.attach_isotopologue(led, "I", "M", iso_label="13C", iso_match_score=0.93)
+    T.apply_tiers(led)
+    return led
+
+
+@pytest.mark.parametrize("corroborated", [False, True])
+def test_the_batch_feeds_each_files_vote_class_into_the_merge(tmp_path, monkeypatch, corroborated):
+    """Through assign_batch.run itself (not align() on hand-set classes): one ion, read by the first two files
+    as C9H20OSi2 [M-H]- and by the third as C10H16O4 [M-H]- (2 ppm apart, one cluster). The count gives it
+    to the silicon reading; the vote class each file's ledger earns must take it back.
+    - no --corroborate: the silicon reading on exact mass alone (unconfirmed, 0) vs C10H16O4 by its own 13C
+      line (formula confirmed, 1);
+    - --corroborate holding C10H16O4: both readings carry their 13C line (1 each, the count would decide),
+      and the cross set lifts C10H16O4 to neutral backed (2)."""
+    si = dict(neutral="C9H20OSi2", ion="C9H19OSi2-", own_13c=corroborated)
+    acid = dict(neutral="C10H16O4", ion="C10H15O4-", own_13c=True)
+    cross = None
+    if corroborated:
+        cross = tmp_path / "src.csv"
+        _ledger().to_csv(cross, index=False)        # holds C10H16O4 by its own 13C line
+        cross = [str(cross)]
+    _run_batch(tmp_path / "run", monkeypatch, corroborate=cross,
+               ledger_of=lambda i: _one_reading(**(acid if i == 3 else si)))
+    merged = pd.read_csv(tmp_path / "run" / "merged_ledger.csv", keep_default_na=False)
+    row = merged[merged["neutral_formula"].isin(["C9H20OSi2", "C10H16O4"])]
+    assert len(row) == 1 and row["neutral_formula"].iloc[0] == "C10H16O4", row.to_dict("records")
+    win, lose = ("neutral backed", "formula confirmed") if corroborated else ("formula confirmed", "unconfirmed")
+    assert row["tier_reason"].iloc[0].startswith(
+        f"evidence outranks the count: kept C10H16O4 [M-H]- ({win} in 1 of 3 files) over the 2-file "
+        f"C9H20OSi2 [M-H]- ({lose})"), row["tier_reason"].iloc[0]
+    jit = pd.read_csv(tmp_path / "run" / "tables" / "jitter.csv")
+    jit = jit[jit["neutral_formula"].isin(["C9H20OSi2", "C10H16O4"])]
+    got = sorted(zip(jit["neutral_formula"], jit["vote_class"].astype(int)))
+    assert got == ([("C10H16O4", 2), ("C9H20OSi2", 1), ("C9H20OSi2", 1)] if corroborated
+                   else [("C10H16O4", 1), ("C9H20OSi2", 0), ("C9H20OSi2", 0)]), got
 
 
 def test_cli_corroborate_is_repeatable_on_assign_and_batch_and_says_what_it_does():
