@@ -149,9 +149,15 @@ and the tables show a dash.
      Assigned) holds and this run lacks; and neutrals the other instrument
      (`--other-instrument`) establishes — level 3c, 4a or 4b on the evidence
      scale — above the detection floor inside the overlap window (with the
-     masked gaps removed), that this run lacks (`m3_other_instrument_missing`
-     and `m3_other_instrument_own_missing`; the scale reads no corroborating
-     source, so the two counts are the same rows). Where the other instrument
+     masked gaps removed), that this run lacks, counted twice on two level
+     sets that differ: `m3_other_instrument_missing` reads the other
+     instrument's in-core level (for a run levelled before the scale, its
+     post-hoc level with this run as its `--corroborate` partner), which keeps
+     its ion-only readings and can owe a series anchor to an other-source
+     partner (its `--corroborate` sources, which may be this run);
+     `m3_other_instrument_own_missing` reads its own evidence
+     (`own_levels_for`: its files pooled with no other-source partner), with
+     the ion-only readings left out. Where the other instrument
      is TOF-class or class-less its rows read `NA` (not assessed), so M3
      counts its **Assigned** rows instead and its metric label says so. The
      counts are split by claim (`n_good_by_claim`, `n_missing_by_claim`:

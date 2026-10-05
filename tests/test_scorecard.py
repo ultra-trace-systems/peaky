@@ -380,6 +380,32 @@ def test_m3_cuts_at_4b_and_counts_the_assigned_rows_of_an_instrument_it_does_not
     assert SC.missed_m3(run, None, None, None, None, [], 10.0, 0.8)["other_instrument_own"] is None
 
 
+def test_m3_counts_on_two_level_sets_that_keep_and_drop_the_ion_only_readings(tmp_path, monkeypatch):
+    """docs/SCORECARD.md M3: the in-core level set keeps the other instrument's ion-only readings (and can owe an
+    anchor to its partners); the own-evidence set (`own_levels_for`) leaves the ion-only readings out -- so the
+    two counts are not the same rows."""
+    other_dir = write_run(tmp_path / "other", resolution=ORBI)
+    _stamp_scale(other_dir, {(A[0], "[M-H]-"): "4b", (B[0], "[M-H]-"): "4a"})
+    other = SC.load_run(str(other_dir))
+    in_core = SC.levels_for(other, None, [])
+    pooled = pd.DataFrame(dict(neutral_formula=[A[0], B[0]], adduct=["[M-H]-", "[M-H]-"], evidence_level=["4b", "4a"],
+                               would_lift=["", ""], ion_only_reading=[True, False]))   # A read on an ion-only channel
+    monkeypatch.setattr(SC.EV, "level_source", lambda src, **kw: pooled)
+    own = SC.own_levels_for(other)
+    assert (A[0], "[M-H]-") in set(zip(in_core["neutral"], in_core["adduct"]))
+    assert set(zip(own["neutral"], own["adduct"])) == {(B[0], "[M-H]-")} and set(own["source"]) == {"own"}
+    m3 = SC.missed_m3(dataclasses_replace_ledger(SC.load_run(str(write_run(tmp_path / "me"))), [A[0], B[0]]), None,
+                      other, in_core, None, [], 10.0, 0.8, own_levels=own)
+    oi, oo = m3["other_instrument"], m3["other_instrument_own"]
+    assert sorted(r["neutral"] for r in oi["rows"]) == sorted([A[0], B[0]]) and oi["n_missing"] == 2
+    assert [r["neutral"] for r in oo["rows"]] == [B[0]] and oo["n_missing"] == 1
+
+
+def dataclasses_replace_ledger(run, drop):
+    import dataclasses
+    return dataclasses.replace(run, ledger=run.ledger[~run.ledger.neutral_formula.isin(drop)])
+
+
 def test_card_board_and_pages_round_trip_with_a_delta(run, rosters, tmp_path):
     out = tmp_path / "board"
     card = SC.build_card(run, rosters=rosters, board=[], log=lambda *a: None)
