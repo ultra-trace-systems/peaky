@@ -121,6 +121,7 @@ _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score",
 # pinic acid C9H14O4 (corroborated, 1 file) lost a 1-vs-1 tie on ion_score to a
 # silicon formula.
 VOTE_CLASS = "vote_class"
+_OWN_VOTE_CLASS = "__own_vote_class"   # a ledger's vote class carried through a merge (trace-first), never written
 
 
 def _evidence_class(level, axes) -> int:
@@ -1518,6 +1519,12 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     residual_scope: list = []      # [sorted residual-bin m/z] once the residual stage runs
     scope_counts: dict = {}        # sid -> (kept, total) M0 rows under the trace-first scope
 
+    def _vote_class(led, stats):
+        """The reading's vote class over one file's ledger AS ITS RUN RETURNED IT
+        (evidence.vote_classes; see VOTE_CLASS), indexed by the ledger's rows."""
+        return EV.vote_classes(EV.trim(led), cross=cross, resolution=rp,
+                               halogen=(stats or {}).get("reagent_halogen", EV.DETECT_HALOGEN))
+
     def _apply(sid, led, plaus, stats, stage, scoring=None):
         """Parent-side reduce (called in sample_ids order): write the per-file CSV
         and fold this sample into the accumulators. Order-fixed so align() -- which
@@ -1529,6 +1536,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         merge back in on top of the traces -- the per-file lottery trace-first
         exists to avoid -- and out-vote a trace's reading (measured: a Candidate
         on the trace ledger re-read as Assigned by three residual files)."""
+        # the trace-first sample hands in its class computed BEFORE the trace
+        # columns were merged on (see the call): carried as a private column,
+        # never written
+        own_class = led.pop(_OWN_VOTE_CLASS) if _OWN_VOTE_CLASS in led.columns else None
         led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)
         level_frames[sid] = EV.trim(led)
         alias_ties[sid] = _LT.alias_only_ties(led)
@@ -1541,9 +1552,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # batch's width model and the reagent halogen the file's own run read --
         # the declared channels' (C43), carried back in its stats) -- joined by
         # row before any subset below
-        m0[VOTE_CLASS] = EV.vote_classes(level_frames[sid], cross=cross, resolution=rp,
-                                         halogen=(stats or {}).get("reagent_halogen", EV.DETECT_HALOGEN)) \
-            .reindex(m0.index).fillna(0).astype(int)
+        vc = own_class if own_class is not None else _vote_class(led, stats)
+        m0[VOTE_CLASS] = pd.to_numeric(vc.reindex(m0.index), errors="coerce").fillna(0).astype(int)
         if stage == STAGE_RESIDUAL and trace_sample is not None and residual_scope:
             bmz = residual_scope[0]
             pmz = pd.to_numeric(m0["mz"], errors="coerce").to_numpy(dtype=float)
@@ -1654,7 +1664,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             f"{len(trace_sample.peaks)} trace peaks) ...")
         res = A.run(trace_sample.sample_id, context=context, log=log,
                     reflists_active=reflists_active, peaks=trace_sample.peaks, **kw)
-        led = res["ledger"].merge(
+        # The vote class is read off the ledger the engine returned, BEFORE the
+        # trace columns are merged on: the trace table carries its own
+        # `resolvability` / `sep_hwhm`, so after the merge the ledger's columns
+        # are suffixed (_x / _y) and a class read there sees no resolvability --
+        # a blended exact-mass reading would count as "formula confirmed" (the
+        # per-file stage before 0.10.0 read the unmerged ledger: unconfirmed).
+        own = res["ledger"]
+        own = own.assign(**{_OWN_VOTE_CLASS: _vote_class(own, res.get("stats"))})
+        led = own.merge(
             trace_sample.traces[[c for c in TFT.TRACE_COLS if c in trace_sample.traces.columns]],
             on="peak_id", how="left")
         trace_sample.traces.to_csv(os.path.join(TAB, "traces.csv"), index=False)
