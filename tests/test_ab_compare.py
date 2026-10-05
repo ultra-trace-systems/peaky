@@ -468,6 +468,14 @@ def test_a_run_levelled_before_the_scale_is_read_on_it(tmp_path):
     from peaky.assignment import evidence as EV
     assert AB.OLD_SCALE_NO_LEVEL == f"no level (pre-{EV.SCALE_RELEASE} scale)"
     assert f"| {AB.OLD_SCALE_NO_LEVEL} | 5 |" in report and "| 4a | 0 |" in report
-    # two runs on the older scale are still compared on their letters
-    c = AB.load_run(str(_write_run(tmp_path / "old2", old_led, None, {})))
+    # the changed-rows table prints no older-scale letter either: the old run's lettered rows read as no level
+    table = report.split("| m/z (A) | ion | tier A → B | level A → B | claim A → B |")[1].split("\n\n")[0]
+    rows = [r for r in table.splitlines() if r.startswith("| ") and not r.startswith("|---")]
+    assert rows and all(f"| {AB.OLD_SCALE_NO_LEVEL} → " in r or "| — → " in r for r in rows), rows
+    for letter in ("1", "2a", "2b", "3a", "3b", "3c", "3d", "4a", "4b", "4c", "4d", "5a", "5b"):
+        assert f"| {letter} → " not in table, letter
+    assert set(AB.row_changes(a, b)["rows"]["level_a"]) <= {AB.OLD_SCALE_NO_LEVEL, "—"}
+    # two runs on the older scale: no letter of either is a level of this scale, so no level change is counted
+    c = AB.load_run(str(_write_run(tmp_path / "old2", old_led.assign(evidence_level=["2a", "4c", "4c", "5b", "4a",
+                                                                                     None]), None, {})))
     assert AB.row_changes(a, c)["level"] == 0

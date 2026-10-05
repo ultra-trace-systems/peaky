@@ -389,6 +389,9 @@ def _keyed(led: pd.DataFrame) -> pd.DataFrame:
     compared fields as strings (no value reads '—'). k numbers the repeats of
     one ion in m/z order, so a repeated ion pairs row by row, never n x m."""
     claims = claims_of(led)
+    levels = levels_of(led)
+    if levels is not None and before_scale(led):     # an old letter is no level of this scale, whatever its name
+        levels = levels.where(~_lettered(led), OLD_SCALE_NO_LEVEL)
     sub = led[led["neutral_formula"].notna()]
     out = pd.DataFrame(
         {
@@ -400,7 +403,8 @@ def _keyed(led: pd.DataFrame) -> pd.DataFrame:
         index=sub.index,
     )
     for field, col in CHANGE_FIELDS:
-        values = claims if col == "claim" else (led[col] if col in led.columns else None)
+        values = (claims if col == "claim" else levels if col == "evidence_level"
+                  else (led[col] if col in led.columns else None))
         out[field] = (values.loc[sub.index].fillna("—").astype(str)
                       if values is not None else "—")
     out = out.sort_values("mz", kind="stable")
@@ -426,8 +430,10 @@ def row_changes(a, b) -> dict:
     joined = ka.merge(kb, on=["neutral", "adduct", "k"], how="outer",
                       suffixes=("_a", "_b"), indicator=True)
     shared = joined[joined["_merge"] == "both"]
-    # a pre-scale run's letters are not this scale's: its level is compared only
-    # with another pre-scale run (its claims, re-read on this scale, always are)
+    # a pre-scale run's letters are not this scale's: every one reads as no level
+    # (OLD_SCALE_NO_LEVEL), and its level is compared only with another pre-scale
+    # run's (no letter of either is a level here; its claims, re-read on this
+    # scale, always are compared)
     same_scale = before_scale(la) == before_scale(lb)
     changed = {field: shared[f"{field}_a"] != shared[f"{field}_b"]
                for field, col in CHANGE_FIELDS
