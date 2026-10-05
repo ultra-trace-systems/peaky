@@ -218,6 +218,27 @@ def test_build_run_context_assesses_the_orbitrap_class_only():
         CX.build_run_context(_summary(resolution=None, per_file=[dict(sample_id="a"), dict(sample_id="b")]), pf, win)
 
 
+def test_the_class_gate_is_inclusive_at_r200_50000():
+    """A declared --resolving-power 50000 (peaky assign, level_ledger.py) sits ON the gate: it is Orbitrap-class
+    (R(200) >= 50 000), and anything below reads TOF; the script states the same gate."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import level_ledger as LL
+    from peaky.assignment import evidence as EV
+    assert EV.ORBITRAP_R200 == LL.ORBITRAP_R200 == 50_000.0
+    on_gate = [50_000, 50_000.0, Resolution.from_r(50_000), Resolution.from_r(50_000).as_dict(),
+               LL.resolution_for(50_000.0)]
+    for res in on_gate:
+        assert Resolution.coerce(res if not isinstance(res, dict) else Resolution.from_dict(res)).r_at(200.0) \
+            == 50_000.0
+        assert EV.instrument(res)[0] == "orbitrap", res
+    assert LL.instrument(LL.resolution_for(50_000.0))[0] == "orbitrap"
+    for res in (49_999.99, LL.resolution_for(49_999.99)):
+        assert EV.instrument(res)[0] == "tof"
+    assert LL.instrument(LL.resolution_for(49_999.99))[0] == "tof"
+
+
 def test_build_run_context_gates_channels_and_windows():
     pf = _pf()
     win = {"a": dict(fams=(), fit=(0.1, 0.3)), "b": dict(fams=("siloxane",), fit=(0.2, 0.3))}
