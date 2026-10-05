@@ -444,9 +444,11 @@ def _file(rows):
     return led
 
 
-def _summary(resolution):
+def _summary(resolution, cal=(0.0, 0.3)):
+    """``cal`` = the file's persisted degeneracy_cal (mu, sigma); None = an uncalibrated file."""
     return dict(reagent="NO3", context="ambient-air", reflists_active=[], resolution=resolution,
-                per_file=[dict(sample_id="f1", height_gate_cps=1e3, degeneracy_cal={"mu": 0.0, "sigma": 0.3})])
+                per_file=[dict(sample_id="f1", height_gate_cps=1e3,
+                               degeneracy_cal=None if cal is None else {"mu": cal[0], "sigma": cal[1]})])
 
 
 PAIRS = [("C10H16O4", "[M-H]-"), ("C9H14O4", "[M-H]-"), ("C6H5NO3", "[M-H]-"), ("HNO3", "[M+NO3]-"),
@@ -481,7 +483,7 @@ def test_the_class_gate_reads_na_and_its_mutant_is_levelled(res, why):
         list(zip(out["neutral_formula"], out["adduct"])), "evidence_level"].tolist()
 
 
-def _run_dir(root: Path, name="BATCH_2026-01-01T000000Z", resolution=ORBI) -> Path:
+def _run_dir(root: Path, name="BATCH_2026-01-01T000000Z", resolution=ORBI, cal=(0.0, 0.3)) -> Path:
     import json
     rd = root / name
     (rd / "per_file").mkdir(parents=True)
@@ -491,7 +493,7 @@ def _run_dir(root: Path, name="BATCH_2026-01-01T000000Z", resolution=ORBI) -> Pa
     led.to_csv(rd / "per_file" / "f1_ledger.csv", index=False)
     m0 = led[led["role"] == "M0"]
     m0.iloc[:-1].to_csv(rd / "merged_ledger.csv", index=False)      # the last reading: no merged row
-    (rd / "batch_summary.json").write_text(json.dumps(_summary(resolution)))
+    (rd / "batch_summary.json").write_text(json.dumps(_summary(resolution, cal)))
     return rd
 
 
@@ -583,6 +585,29 @@ def test_corroborate_takes_partners_only_from_an_orbitrap_class_run_dir(tmp_path
     assert any("tof source -- no partners" in s for s in seen) and any("not a run dir" in s for s in seen)
     got = LL.partners_of([str(_run_dir(tmp_path / "orbi"))], log=seen.append)
     assert isinstance(got, dict)
+
+
+def test_a_corroborate_run_dir_with_no_calibrated_file_gives_no_partners_in_the_batch_and_the_script(tmp_path):
+    """--corroborate an Orbitrap-class run dir none of whose files is calibrated: it has no run window, so its
+    pairs carry no level and none anchors a partner. The batch and the script both skip it and log the same
+    reason (the batch used to crash on the unlevelled frame); the same dir calibrated is levelled and asked."""
+    from peaky.batch import assign_batch as AB
+    uncal = _run_dir(tmp_path / "uncal", cal=None)
+    assert EV.no_run_window(EV.source_from_run_dir(str(uncal)))
+    seen, mine = [], []
+    parts, counts = AB._corroborate_partners([str(uncal)], log=seen.append)
+    assert dict(parts) == {} and counts == {}
+    assert len(seen) == 1 and EV.NO_RUN_WINDOW_PARTNERS in seen[0], seen
+    assert dict(LL.partners_of([str(uncal)], log=mine.append)) == {}
+    assert len(mine) == 1 and EV.NO_RUN_WINDOW_PARTNERS in mine[0], mine
+    # the control: calibrated, the same run dir is levelled and its partners taken (no skip, its count recorded)
+    cal = _run_dir(tmp_path / "cal")
+    seen.clear()
+    mine.clear()
+    _parts, counts = AB._corroborate_partners([str(cal)], log=seen.append)
+    assert list(counts) == [cal.name] and not any(EV.NO_RUN_WINDOW_PARTNERS in s for s in seen)
+    LL.partners_of([str(cal)], log=mine.append)
+    assert not any(EV.NO_RUN_WINDOW_PARTNERS in s for s in mine) and "partner neutral(s)" in mine[0]
 
 
 def test_partners_are_computed_only_for_a_source_that_can_take_them(tmp_path, monkeypatch):

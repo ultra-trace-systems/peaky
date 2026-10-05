@@ -1126,8 +1126,9 @@ def _corroborate_partners(sources, *, log=print) -> tuple[dict, dict]:
     sources (D9): each Orbitrap-class RUN DIR levelled once by the scale with
     no partners of its own, `evidence.partners_from` taken under the run dir's
     name. A TOF-class or class-less run dir, a ledger CSV or a merged-only
-    source gives none (its levels would be NA, or it carries no run context):
-    logged and skipped. Returns (partners, {source label: n neutrals})."""
+    source gives none (its levels would be NA, or it carries no run context),
+    nor does an Orbitrap run dir none of whose files is calibrated (no run
+    window: its pairs carry no level): logged and skipped. Returns (partners, {source label: n neutrals})."""
     from peaky.assignment import evidence as EV
     from peaky.assignment.levels import routes as _RT
     parts, counts = [], {}
@@ -1143,7 +1144,11 @@ def _corroborate_partners(sources, *, log=print) -> tuple[dict, dict]:
             log(f"[assign_batch] --corroborate {label}: instrument class {klass or 'unknown'} -- its evidence "
                 "levels are NA, so it gives no other-source partners (the merge vote still reads it)")
             continue
-        lv = EV.level_source(EV.source_from_run_dir(run))
+        src = EV.source_from_run_dir(run)
+        if EV.no_run_window(src):
+            log(f"[assign_batch] --corroborate {label}: {EV.NO_RUN_WINDOW_PARTNERS} (the merge vote still reads it)")
+            continue
+        lv = EV.level_source(src)
         p = EV.partners_from(lv, os.path.basename(run))
         parts.append(p)
         counts[os.path.basename(run)] = int(len(p))

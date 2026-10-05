@@ -1223,6 +1223,19 @@ NO_WINDOW_TEXT = ("no level · the file is uncalibrated (no calibration core for
 NO_RUN_WINDOW_TEXT = ("no level · no file of the source is calibrated (no calibration core for the degeneracy audit "
                       "in any file): no run window to enumerate competitors in")
 
+#: why such a source, named by --corroborate, gives no other-source partners (the batch and
+#: scripts/level_ledger.py log it and skip the source: its pairs carry no level, so none anchors a partner)
+NO_RUN_WINDOW_PARTNERS = ("no file of the source is calibrated (no run window): its pairs carry no level, "
+                          "so it gives no other-source partners")
+
+
+def no_run_window(src) -> bool:
+    """Whether an Orbitrap-class Source has no run window: none of its files is
+    calibrated, so it is not levelled (`NO_RUN_WINDOW_TEXT`) and gives no
+    other-source partners (`NO_RUN_WINDOW_PARTNERS`)."""
+    from peaky.assignment.levels import source as SRC
+    return SRC.no_run_window(src)
+
 
 def _blank_columns(frame: pd.DataFrame) -> None:
     n = len(frame)

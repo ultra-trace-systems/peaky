@@ -96,7 +96,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     `--resolving-power` and `--reagent` is levelled as the per-file stage of a single-sample
     `peaky assign` (the profile's context and the reference lists it activates).
   - **`--corroborate`** feeds the merge vote's class (as before) and, from an Orbitrap-class run
-    directory, the other-source partner tag; it never moves an evidence level. On single-sample
+    directory, the other-source partner tag; it never moves an evidence level. A run directory
+    none of whose files is calibrated gives no partners (logged with the reason). On single-sample
     `peaky assign` it is accepted, logged and ignored.
   - **The merge vote keeps its own class.** The vote ranks a cluster's ions by a private class
     (`evidence.vote_classes`: neutral backed / formula confirmed / unconfirmed), computed by the

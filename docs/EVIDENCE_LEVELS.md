@@ -736,7 +736,10 @@ calibrated ...`; one calibrated file is enough to lend the others its sigma.
   partner text names the source by its run directory name.
 
 A TOF-class or class-less run directory, a ledger CSV or a merged-only source
-gives no partners (logged). A partner never moves a level; it is a tag, and in
+gives no partners (logged), and neither does an Orbitrap-class run directory
+none of whose files is calibrated: it has no run window, so its pairs carry no
+level (§10.2) and none can anchor a partner (logged with that reason, by the
+batch and by `scripts/level_ledger.py` alike). A partner never moves a level; it is a tag, and in
 the internal pass it can anchor a series exclusion (§5.4) as a route can.
 
 ### 10.4 The post-hoc script and decoy arms

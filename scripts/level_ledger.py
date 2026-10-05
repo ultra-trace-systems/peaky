@@ -738,7 +738,8 @@ def source_of(path, *, mode=None, main=None, resolving_power=None, reagent=None,
 
 def partners_of(paths, log=print) -> dict:
     """Other-source partners from --corroborate run dirs: each Orbitrap-class run dir levelled once with no
-    partners (this script's decision); a TOF-class / class-less source or a CSV gives none (logged)."""
+    partners (this script's decision); a TOF-class / class-less source, a CSV or an Orbitrap run dir none of whose
+    files is calibrated (no run window) gives none (logged, with the batch's reason)."""
     merged = {}
     for p in paths:
         rd = run_dir_of(p)
@@ -749,6 +750,9 @@ def partners_of(paths, log=print) -> dict:
         klass, r200 = src.instrument()
         if klass != "orbitrap":
             log(f"  --corroborate {os.path.basename(rd)}: {klass or 'class-less'} source -- no partners")
+            continue
+        if SRC.no_run_window(src):
+            log(f"  --corroborate {os.path.basename(rd)}: {EV.NO_RUN_WINDOW_PARTNERS}")
             continue
         got = RT.partners_from(decide_source(src), os.path.basename(rd))
         log(f"  --corroborate {os.path.basename(rd)}: {len(got)} partner neutral(s)")
