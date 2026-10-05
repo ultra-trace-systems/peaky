@@ -49,7 +49,7 @@ def _series(spec: dict) -> pd.DataFrame:
     lines) in N_SPECTRA spectra. spec[neutral] options: phase (its own time
     course), cluster ('covary' | 'anti' | 'absent'), c13 (factor on the true
     13C area), cluster_reading (a stamp other than the neutral's own)."""
-    t0 = pd.Timestamp("2026-08-11 00:00", tz="UTC")
+    t0 = pd.Timestamp("2021-02-18 00:00", tz="UTC")
     rows = []
     for i in range(N_SPECTRA):
         sid = f"s{i:03d}"
@@ -495,7 +495,7 @@ def test_a_uronium_batch_measures_the_pair_and_lifts_the_rows(tmp_path, monkeypa
     from peaky.io import io_mascope as IO
 
     neutrals = GOOD
-    t0 = pd.Timestamp("2026-08-11 00:00", tz="UTC")
+    t0 = pd.Timestamp("2021-02-18 00:00", tz="UTC")
     rows = []
     for i in range(40):
         sid = f"s{i:03d}"

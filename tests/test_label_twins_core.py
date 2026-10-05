@@ -24,7 +24,7 @@ from tests import test_label_twins as TL
 from tests.test_evidence import ledger, m0
 from tests.test_label_twins import LABEL, NO3, NO3L, REFS, _alias_ledger, _frames, _measure, _refs_spec, _row, _series
 
-T0 = pd.Timestamp("2026-08-11", tz="UTC")
+T0 = pd.Timestamp("2021-02-18", tz="UTC")
 QUIET = lambda *a: None   # noqa: E731
 
 

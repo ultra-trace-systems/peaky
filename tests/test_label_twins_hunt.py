@@ -28,7 +28,7 @@ from tests.test_label_twins_levels import J, X, _engine, _run_dir, _script
 from tests.test_label_twins_veto import F0, MZ15, TWIN, Y, _ones, _ts, _veto
 
 N = TL.N_SPECTRA
-T0 = pd.Timestamp("2026-08-11", tz="UTC")
+T0 = pd.Timestamp("2021-02-18", tz="UTC")
 QUIET = lambda *a: None   # noqa: E731
 
 

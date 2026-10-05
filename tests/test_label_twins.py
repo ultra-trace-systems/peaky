@@ -49,7 +49,7 @@ def _series(spec: dict) -> pd.DataFrame:
     first `share` of the spectra only), share15 (the 15N line in the first
     `share15` of the spectra only; 0 = never), twin_shift (Da added to the 14N
     line's position), c13 (write the 15N line's 13C line; default True)."""
-    t0 = pd.Timestamp("2026-08-11 00:00", tz="UTC")
+    t0 = pd.Timestamp("2021-02-18 00:00", tz="UTC")
     rng = np.random.default_rng(7)
     rows = []
     for i in range(N_SPECTRA):
@@ -336,7 +336,7 @@ def _dim_rows(frames, ts):
         for i in range(N_SPECTRA):
             h = 1000.0 * (1.2 + 0.8 * np.sin(i / 7.0 + k))
             rows.append(dict(sample_item_id=f"s{i:03d}",
-                             datetime_utc=pd.Timestamp("2026-08-11", tz="UTC") + pd.Timedelta(minutes=20 * i),
+                             datetime_utc=pd.Timestamp("2021-02-18", tz="UTC") + pd.Timedelta(minutes=20 * i),
                              mz=C.ion_mz(n, "[M-H]-"), height=h, area=h, role="M0", neutral_formula=n,
                              adduct="[M-H]-"))
     frames = dict(frames, f2=EV.trim(ledger(extra)))

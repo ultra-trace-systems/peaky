@@ -36,7 +36,7 @@ from tests.test_evidence import ORBI_NO_LOCK, _pooled, _vector, child, ledger, m
 
 N = 40
 FILL = 10.0
-T0 = pd.Timestamp("2026-08-11 00:00", tz="UTC")
+T0 = pd.Timestamp("2021-02-18 00:00", tz="UTC")
 ORBI = {"coef": 5e-7, "exponent": 1.5}            # R ~ 140 000 at m/z 200
 TOF = Resolution.from_r(10_000)
 SCALE_O = {"sigma_ppm": 0.2, "stamp_ppm": 6.0}
