@@ -100,9 +100,10 @@ CAL_SIGMA_FLOOR = 0.15   # ppm; a lucky-tight core must not reject everything
 # centroid) nor any isotope line it predicts. The floor is the BATCH's because
 # a file's own edge follows its total ion count: on the bromide/nitrate TOF
 # batch two files with a 5x lower count had edges of 0.10-0.13 against the
-# batch's 0.47-0.96 and, gated on their own edge, picked 466 of the batch's
-# 1622 Assigned M0 rows under 3 counts (both silicon false readings of the
-# finish line at 0.65 and 1.5 counts, 'Good' on an anchor and a sub-count kid).
+# batch's 0.47-0.96; the batch carried 466 of its 1622 Assigned M0 rows under
+# 3 counts, 136 of them in those two files (of their 188 Assigned rows), among
+# them both silicon false readings of the finish line (0.65 and 1.5 counts,
+# 'Good' on an anchor and a sub-count kid).
 TOF_ASSIGN_FLOOR_X_EDGE = 3.0
 # The absolute (mDa) floor on the mass-dependent sigma is owned by
 # PassConfig.cal_abs_floor_mda (default masscal.ABS_FLOOR_MDA); apply_tiers /

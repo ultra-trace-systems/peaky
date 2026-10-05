@@ -141,6 +141,25 @@ out2 = RL.rescue_unexplained_by_reflist(None, "S", led2, None, cfg2, [rl], ["[M-
                                         score_fn=oracle, log=lambda *a: None)
 check("rescue: off-calibration match rejected", out2["rescued"] == 0 and out2["tentative"] == 0, out2)
 
+# C46: a sub-floor TOF centroid is a lead, never Assigned, however its 13C window scored (the rescue runs after
+# the tier pass and stamps tiers itself, so it honours the counting-detector floor too)
+led3 = mk([("subfloor", mh(F_CONF), 1.5)])
+cfg3 = P.PassConfig(height_cutoff_cps=1.0, instrument_type="tof", noise_edge_batch_cps=0.74)
+cfg3.cal_mu, cfg3.cal_sigma = 0.0, 0.3; cfg3.mechanism_ids = None
+out3 = RL.rescue_unexplained_by_reflist(None, "S", led3, None, cfg3, [rl], ["[M-H]-"],
+                                        score_fn=oracle, log=lambda *a: None)
+_sf = led3[led3.peak_id == "subfloor"].iloc[0]
+check("rescue (C46): under the TOF floor -> tentative lead, not Assigned",
+      out3 == {"rescued": 0, "tentative": 1} and _sf["tier"] == "Candidate" and bool(_sf["tentative_lead"])
+      and "counting-detector floor" in str(_sf["commentary"]), (out3, _sf["tier"], _sf["commentary"]))
+led4 = mk([("subfloor", mh(F_CONF), 1.5)])
+cfg4 = P.PassConfig(height_cutoff_cps=1.0, noise_edge_batch_cps=0.74)            # no class: no floor
+cfg4.cal_mu, cfg4.cal_sigma = 0.0, 0.3; cfg4.mechanism_ids = None
+out4 = RL.rescue_unexplained_by_reflist(None, "S", led4, None, cfg4, [rl], ["[M-H]-"],
+                                        score_fn=oracle, log=lambda *a: None)
+check("rescue (C46): the same peak off a TOF is rescued as before",
+      out4 == {"rescued": 1, "tentative": 0} and led4[led4.peak_id == "subfloor"].iloc[0]["tier"] == "Assigned", out4)
+
 
 # ---- a same-ion tie between two list entries: decided by chemistry, recorded ----
 # An acid's reagent cluster and the deprotonated organonitrate one HNO3 heavier

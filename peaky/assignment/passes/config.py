@@ -314,6 +314,7 @@ class PassConfig:
     # asdict()/pickle/deepcopy are unaffected.
     RUNTIME_FIELDS: ClassVar[tuple[str, ...]] = (
         "mechanism_ids", "prior_offset", "reagent_element", "noise_edge_cps",
+        "noise_edge_batch_cps", "instrument_type",          # C46: the batch and assign.run stamp them
         # passes.calibrate fits these onto the cfg during a run: they are the
         # calibration's OUTPUT, not user knobs. The pipeline now hands the same
         # cfg to the provenance manifest, so leaving any of them in would make

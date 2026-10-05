@@ -887,6 +887,13 @@ try:
         check("run: the selection's binning tolerance IS the merge tolerance",
               s["tol_ppm"] == summ["tol_ppm"] == SS.BATCH_TOL_PPM, (s.get("tol_ppm"),
                                                                     summ.get("tol_ppm")))
+        # C46: the batch's typical detection edge -- the median of the files' own 1st-percentile heights
+        # (the stub serves one 1e5-cps peak per file) -- recorded in the summary and carried on every
+        # per-file cfg the assigner was handed
+        check("run (C46): batch_summary records the batch detection edge and every per-file cfg carried it",
+              summ.get("noise_edge_batch_cps") == 1.0e5
+              and all(getattr(c, "noise_edge_batch_cps", None) == 1.0e5 for c in _SEEN_CFG if c is not None)
+              and len(_SEEN_CFG) > 0, (summ.get("noise_edge_batch_cps"), len(_SEEN_CFG)))
         sel = pd.read_csv(os.path.join(_d, "tables", "selected_samples.csv"))
         check("run: selected_samples.csv is in pick order with the cover columns",
               sel["pick"].tolist() == [1, 2, 3] and sel["role"].tolist() == ["cover"] * 3

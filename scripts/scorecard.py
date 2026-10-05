@@ -1516,6 +1516,15 @@ def run_engine_offline(run: Run, peaks: pd.DataFrame, sample_id: str, adducts: l
     cfg = PA.PassConfig()
     P.apply_height_cutoff_x_edge(cfg, run.profile, log=log)
     P.apply_ion_only_channels(cfg, run.profile, log=log)
+    # the batch's typical detection edge the run's tier pass sized its counting-
+    # detector floor from (C46): an arm bounds the run AS TIERED, so it takes the
+    # same footing (its own file's edge alone would put a low-count file's floor
+    # 5x lower than the run's)
+    _be = run.summary.get("noise_edge_batch_cps")
+    try:
+        cfg.noise_edge_batch_cps = float(_be) if _be is not None and float(_be) > 0 else None
+    except (TypeError, ValueError):
+        cfg.noise_edge_batch_cps = None
     kw = {"adducts": list(adducts), "reagent_n_relabel": False}
     model = run.summary.get("resolution")
     if isinstance(model, dict) and model.get("coef"):

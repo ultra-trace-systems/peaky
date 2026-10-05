@@ -14,24 +14,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and the centroiding term of its mass width. The column the server sends was taken at its
   word, and on the bromide/nitrate TOF it is not a signal-to-noise at all: over a file's
   ~1500-2600 picked peaks it does not track height (Spearman -0.07..0.17 in 28/28 files; a
-  478-count peak carries 1.1, a 2-count peak 12) where every Orbitrap file gives 0.999 with
-  a flat ~19 cps implied noise. Read as an SNR it excused every missing line of a bright ion
-  (no 81Br line of a bromide cluster was ever charged: 89 Assigned [M+Br]- rows carried none)
-  and charged dim ions for lines they could never show. Now `scoring_for_sample` judges the
+  478-count peak carries 1.1, a 2-count peak 12) where every Orbitrap file gives 0.99-1.00
+  with an implied noise that is flat within a file (~19 cps on the uronium files). Read as an
+  SNR it excused every missing line of a bright ion (no 81Br line of a bromide cluster was
+  ever charged: 89 Assigned [M+Br]- rows had no 81Br child hung under them) and charged dim
+  ions for lines they could never show. Now `scoring_for_sample` judges the
   column once per sample (`local_scoring.assess_snr`: Spearman of height vs the column over
   the file's peaks, >= 0.5 is a signal-to-noise; fewer than 30 peaks are not judged) and
   records the verdict in the scoring snapshot (`snr_source` server / none /
   poisson_fallback, `snr_spearman`, `snr_n`, `snr_edge`; a stand-in judges its own table);
   where the column fails, the local scorer reads the counting-statistics SNR of an
   ion-counting detector, h / sqrt(h + edge^2) (the peak's Poisson noise in quadrature with
-  the picker's detection edge, the file's 1st-percentile height), so a matched line's ratio
-  tolerance is its real Poisson scatter and an absent line is charged where the counts say
-  it was within reach. The run log and each file's stats say so (`snr_source`). Offline
-  replica on the C42 TOF run (28 files, 10 309 readings, the server column reproduced the
-  ledger scores exactly): 155 of 1622 per-file Assigned rows fall under the Good bar (85
-  [M+Br]-, 31 [M+HBr+Br]-: the 81Br line absent or off), the median Assigned score moves
-  +0.001; every true row of the frozen finish line keeps a majority of its files. The
-  Orbitrap runs are untouched (their column passes).
+  the picker's detection edge, the file's 1st-percentile height). The heights of a TOF file
+  are per-file averages, so the true ion counts are higher and this SNR is a conservative
+  lower bound: a matched line's ratio tolerance is at least its Poisson scatter, and an absent
+  line is charged only where even this bound says it was within reach (an absent 81Br line
+  from ~10 cps at a 0.74 cps edge; a 13C line only on bright ions). The run log and each
+  file's stats say so (`snr_source`). Offline replica on the C42 TOF run (28 files, 10 309
+  readings; the server column reproduces the ledger scores: median and 95th-percentile
+  difference 0, 50 rows differ by more than 0.01): 155 of 1622 per-file Assigned rows score
+  under the Good bar with the fallback, 107 of them from above it (58 [M+Br]-, 30
+  [M+HBr+Br]-, 16 [M+NO3]-: the 81Br line absent or off); the per-row median change is
+  +0.0006; every true row of the frozen finish line keeps at least half of its files (one
+  pair exactly half). The Orbitrap runs are untouched (their column passes). The reference-
+  list rescue (pass 8), which stamps tiers after the tier pass, honours the floor below; the
+  network scorer (`PEAKY_LOCAL_SCORING=0`) still reads the server column, whatever the
+  snapshot says.
 - **A counting-detector floor for the TOF tier (C46).** On a TOF an M0 under 3x (the scorer's
   own `k_detect`) the batch's typical detection edge -- the median of its files' own
   1st-percentile heights, which `assign_batch` now measures once per batch
@@ -41,13 +49,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   keys it, so an Orbitrap never sees it). A handful-of-ions centroid has no testable mass and
   no testable isotope line, and the kid or series step that corroborated it is itself
   sub-edge. A file's own edge follows its total ion count: two files of the bromide/nitrate
-  TOF batch with a 5x lower count had edges of 0.10-0.13 against the batch's 0.47-0.96 and,
-  gated on their own edge, carried 466 of the batch's 1622 Assigned M0 rows under 3 counts,
-  among them both silicon false readings of the frozen finish line (C10H24N2Si and
-  C11H11N3OSi [M+Br]- at 1.5 and 0.65 counts, 'Good' on a series anchor and a sub-count kid).
-  At the batch's floor (2.22 cps) 331 per-file Assigned rows are under it; every true row of
-  the finish line keeps a majority of its files. The per-file stats carry the floor in force
-  (`tof_assign_floor_cps`, None off a TOF) and the class (`instrument_type`).
+  TOF batch with a 5x lower count had edges of 0.10-0.13 against the batch's 0.47-0.96; the
+  batch carried 466 of its 1622 Assigned M0 rows under 3 counts, 136 of them in those two
+  files (of their 188 Assigned rows), among them both silicon false readings of the frozen
+  finish line (C10H24N2Si and C11H11N3OSi [M+Br]- at 1.5 and 0.65 counts, 'Good' on a series
+  anchor and a sub-count kid). At the batch's floor (2.22 cps on the cached peaks of all 28
+  files; 1.70 on the live run's 18 cover files) 331 per-file Assigned rows are under it; every
+  true row of the finish line keeps at least half of its files. The per-file stats carry the
+  floor in force (`tof_assign_floor_cps`, None off a TOF) and the class (`instrument_type`);
+  a decoy arm of the scorecard takes the run's batch edge (`batch_summary.
+  noise_edge_batch_cps`), so it is tiered at the floor the run was. The edge is measured on
+  the first per-file stage's files (the cover; on a trace-first run the residual picks); the
+  trace sample itself (averaged traces, no class) never sees the floor.
 - **The fit scores a mass at the sample's own m/z-dependent centre (C42).** The v2 score
   judged every line against ONE offset per sample (its server matches' median), and the
   pass-1 calibration that could fit the instrument's 1/mz mass trend selected its backbone

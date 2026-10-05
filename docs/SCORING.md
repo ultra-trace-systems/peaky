@@ -76,7 +76,7 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   file rather than reusing a frame from before the column existed. **The column is
   judged before it is believed** (C46, `local_scoring.assess_snr`): a signal-to-noise
   tracks height, and on one TOF the server's column does not (Spearman −0.07..0.17 over
-  a file's peaks against 0.999 on every Orbitrap file; a 478-count peak carried 1.1, a
+  a file's peaks against 0.99–1.00 on every Orbitrap file; a 478-count peak carried 1.1, a
   2-count peak 12), which read as an SNR excuses every missing line of a bright ion and
   charges dim ions for lines they could never show. `io_mascope.scoring_for_sample`
   records the verdict in the scoring snapshot (`snr_source`: `server` — the column,
@@ -84,9 +84,13 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   least 30 peaks; with `snr_spearman`, `snr_n`, `snr_edge`), and `peaks_for_scoring`
   then hands the scorer a copy whose column is the counting-statistics SNR of an
   ion-counting detector, `h / sqrt(h + edge²)` (`poisson_snr`; `edge` = the file's
-  1st-percentile picked height, `passes.config.noise_edge`): a matched line's ratio
-  tolerance becomes its real Poisson scatter and an absent line is charged where the
-  counts say it was within reach. A stand-in sample judges its own table.
+  1st-percentile picked height, `passes.config.noise_edge`). A TOF file's heights are
+  per-file averages, so the true ion counts are higher and this is a conservative lower
+  bound on the SNR: a matched line's ratio tolerance is at least its Poisson scatter, and an
+  absent line is charged only where even the bound says it was within reach (an absent 81Br
+  line from ~10 cps at a 0.74 cps edge; a 13C line only on bright ions). A stand-in sample
+  judges its own table. The network scorer (`PEAKY_LOCAL_SCORING=0`) reads the server's
+  column regardless.
 - **`scoring`** — a `mascope_tools.composition.PatternScoring`, built per sample
   by `io_mascope.scoring_for_sample`: `sigma_ppm` and `mu_ppm` from
   `fit_mass_accuracy` over the sample's own targeted matches (falling back to the

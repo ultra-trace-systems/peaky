@@ -511,3 +511,26 @@ def test_the_offline_engine_run_carries_the_runs_own_width_model(run_dir, monkey
     SC.run_engine_offline(r1, peaks, "x-control", ["[M-H]-"])
     assert isinstance(seen.get("resolving_power"), RES.Resolution)
     assert seen["resolving_power"].r_at(200.0) == pytest.approx(9500.0)
+
+
+def test_the_offline_engine_run_carries_the_runs_batch_detection_edge(run_dir, monkeypatch):
+    """C46: an arm is tiered at the counting-detector floor the run was -- the
+    batch's typical edge rides into its cfg; a run that recorded none gives None."""
+    import json as _json
+    from peaky.assignment import assign as A
+    seen = {}
+
+    def fake_run(sample_id, context="ambient-air", **kw):
+        seen.update(kw)
+        return {"ledger": pd.DataFrame({"role": [], "tier": []})}
+
+    monkeypatch.setattr(A, "run", fake_run)
+    peaks = pd.DataFrame({"peak_id": ["a"], "mz": [200.0], "height": [10.0]})
+    SC.run_engine_offline(SC.load_run(str(run_dir)), peaks, "x-control", ["[M-H]-"])
+    assert seen["cfg"].noise_edge_batch_cps is None
+    summ = _json.loads((run_dir / "batch_summary.json").read_text())
+    summ["noise_edge_batch_cps"] = 0.74
+    (run_dir / "batch_summary.json").write_text(_json.dumps(summ))
+    seen.clear()
+    SC.run_engine_offline(SC.load_run(str(run_dir)), peaks, "x-control", ["[M-H]-"])
+    assert seen["cfg"].noise_edge_batch_cps == pytest.approx(0.74)

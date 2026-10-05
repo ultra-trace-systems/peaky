@@ -993,8 +993,10 @@ def batch_noise_edge(client, sample_ids, *, edges=None) -> float | None:
         edges = []
         for sid in sample_ids:
             try:
-                h = IO.fetch_peaks(client, sid, use_cache=True)["height"]
-                edges.append(PA.noise_edge(h))
+                pk = IO.fetch_peaks(client, sid, use_cache=True)
+                if "peak_id" in pk.columns:
+                    pk = pk.drop_duplicates("peak_id")   # the raw table has one row per match
+                edges.append(PA.noise_edge(pk["height"]))
             except Exception:            # noqa: BLE001 -- a file with no peaks has no edge
                 edges.append(None)
     for e in edges:
@@ -1639,7 +1641,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         offset = len(sample_ids) - len(ids)
         # C46: the batch's typical detection edge (the median of its files' own),
         # the footing of the tier pass's counting-detector floor. Set once, from
-        # the first stage's files; every per-file cfg copy below carries it.
+        # the first stage's files (the cover; on a trace-first run the residual
+        # picks, the only per-file stage it runs); every per-file cfg copy below
+        # carries it. The trace sample itself (averaged traces, no scoring
+        # snapshot, no class) never sees the floor: its heights sit on another
+        # footing (PassConfig.audit_floor_cps).
         if getattr(cfg, "noise_edge_batch_cps", None) is None:
             cfg.noise_edge_batch_cps = batch_noise_edge(client, ids)
             log(f"[assign_batch] batch detection edge (median of {len(ids)} files' own): "

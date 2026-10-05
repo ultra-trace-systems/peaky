@@ -81,7 +81,7 @@ def test_a_snapshot_is_inherited_as_measured_and_says_so():
     snap = IO.scoring_snapshot(None, SID)
     assert snap["sigma_source"] == snap["mu_source"] == "inherited"
     assert snap["inherited"] == {"sigma_source": "fitted", "mu_source": "fitted", "fitted_anchors": 23,
-                                 "has_signal_to_noise": True}
+                                 "has_signal_to_noise": True, "snr_source": None}   # C46: the measured sample's verdict
     assert snap["fitted_anchors"] == 0 and snap["instrument_type"] == "orbi" and snap["has_signal_to_noise"]
 
 

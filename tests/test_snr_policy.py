@@ -204,3 +204,25 @@ class TestTheSnapshotAndTheTableTheScorerReads:
         assert snap["snr_source"] == io_mascope.SNR_SOURCE_POISSON
         _, snap2 = io_mascope._inherited_scoring(given, _table(tracking=True))
         assert snap2["snr_source"] == io_mascope.SNR_SOURCE_SERVER
+
+
+class TestEdgesOfTheAssessment:
+    def test_non_positive_values_are_not_a_signal_to_noise_reading(self):
+        t = _table(n=80, tracking=True)
+        t.loc[t.index[:50], "signal_to_noise"] = 0.0           # 50 peaks carry 0: no reading
+        a = LS.assess_snr(t)
+        assert a["n"] == 30 and a["source"] == LS.SNR_SOURCE_SERVER
+        t.loc[t.index[:51], "signal_to_noise"] = 0.0
+        assert LS.assess_snr(t)["n"] == 29 and LS.assess_snr(t)["spearman"] is None
+
+    def test_a_stand_ins_snapshot_records_the_measured_samples_verdict_beside_its_own(self):
+        given = {"sigma_ppm": 4.0, "mu_ppm": 0.0, "mz_tolerance_ppm": 15.0, "instrument_type": "tof",
+                 "sigma_source": "fitted", "mu_source": "fitted", "fitted_anchors": 40,
+                 "snr_source": LS.SNR_SOURCE_POISSON}
+        _, snap = io_mascope._inherited_scoring(given, _table(tracking=True))
+        assert snap["inherited"]["snr_source"] == LS.SNR_SOURCE_POISSON
+        assert snap["snr_source"] == LS.SNR_SOURCE_SERVER        # this table's own column tracks height
+
+    def test_the_runtime_fields_are_declared_once(self):
+        from peaky.assignment.passes.config import PassConfig
+        assert {"noise_edge_batch_cps", "instrument_type"} <= set(PassConfig.RUNTIME_FIELDS)

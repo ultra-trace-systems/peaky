@@ -93,3 +93,35 @@ class TestMedianOfFileEdges:
         assert batch_noise_edge(None, [], edges=[0.58, None, 0.78, float("nan"), 0.126, 0.0]) == pytest.approx(0.58)
         assert batch_noise_edge(None, [], edges=[None, float("nan")]) is None
         assert batch_noise_edge(None, [], edges=[]) is None
+
+
+class TestTheFloorComesFirst:
+    def test_a_known_species_row_under_the_floor_is_candidate_too(self):
+        """The rule is unconditional: the pass-0 locked list does not exempt a
+        sub-edge centroid."""
+        peaks = pd.DataFrame({"peak_id": ["K", "L"], "mz": [141.8880, 143.8860], "height": [1.2, 1.1]})
+        led = L.new_ledger(peaks)
+        L.commit_assignment(led, "K", neutral_formula="HNO3", adduct="[M+Br]-", ion_formula="HNO3Br-",
+                            ion_score=0.95, compound_score=0.95, eff_score=0.95, eff_margin=0.4, tied=False,
+                            ppm_error=0.2, pass_no=0, method="known:atmospheric", confidence="Good",
+                            commentary="pass 0", isotopologues=[{"label": "81Br", "score": 0.9, "peak_id": "L"}])
+        L.attach_isotopologue(led, "L", "K", iso_label="81Br", iso_match_score=0.9)
+        cfg = PassConfig(instrument_type="tof", noise_edge_batch_cps=0.74)
+        out = T.compute_tiers(led, cfg=cfg)
+        row = out[out.peak_id == "K"].iloc[0]
+        assert row.tier == T.TIER_CANDIDATE and "sub-edge centroid" in row.tier_reason
+        # the same row on an Orbitrap keeps the known-species tier
+        out2 = T.compute_tiers(led, cfg=PassConfig(instrument_type="orbi", noise_edge_batch_cps=0.74))
+        assert out2[out2.peak_id == "K"].iloc[0].tier == T.TIER_ASSIGNED
+
+    def test_a_centroid_exactly_at_the_floor_stands(self):
+        peaks = pd.DataFrame({"peak_id": ["A", "B"], "mz": [279.0896, 280.0930], "height": [3 * 0.74, 0.3]})
+        led = L.new_ledger(peaks)
+        L.commit_assignment(led, "A", neutral_formula="C10H24N2Si", adduct="[M+Br]-", ion_formula="C10H24BrN2Si-",
+                            ion_score=0.97, compound_score=0.97, eff_score=0.95, eff_margin=0.3, tied=False,
+                            ppm_error=0.4, pass_no=1, method="cheminfo+grid", confidence="High", commentary="Pass 1",
+                            isotopologues=[{"label": "13C", "score": 0.9, "peak_id": "B"}])
+        L.attach_isotopologue(led, "B", "A", iso_label="13C", iso_match_score=0.9)
+        cfg = PassConfig(instrument_type="tof", noise_edge_batch_cps=0.74)
+        row = T.compute_tiers(led, cfg=cfg).iloc[0]
+        assert "sub-edge" not in row.tier_reason                 # `<`, not `<=`
