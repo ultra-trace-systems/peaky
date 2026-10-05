@@ -647,3 +647,32 @@ def test_the_level_gate_reads_the_runs_recorded_amine_r_min(r_min, noise_sd, kep
     else:
         assert r.evidence_level == "4b" and r.nh4_gate == "amine default" and r.positive_fact == ""
         assert r.split_how.startswith("amine default (NH4 reading unconfirmed: only weak tracking, r 0.")
+
+
+# =========================================================================== one file levelled alone: isotope minimum 1
+def _one_file_with_its_13c_line(mode):
+    """One ledger whose committed C10H16O4 [M-H]- has its 13C line in band (0.11x), levelled alone in ``mode``."""
+    m0 = C.ion_mz("C10H16O4", "[M-H]-")
+    led = L.new_ledger(pd.DataFrame({"peak_id": ["p0", "p1", "p2", "p3"], "mz": [m0, m0 + 1.003355, 100.0, 500.0],
+                                     "height": [3e5, 3.3e4, 5e3, 5e3]}))
+    L.commit_assignment(led, "p0", neutral_formula="C10H16O4", adduct="[M-H]-", ion_formula="C10H15O4-",
+                        ion_score=0.9, compound_score=0.9, ppm_error=0.0, pass_no=1, method="cheminfo+grid",
+                        confidence="Good", commentary="x")
+    summary = dict(reagent="NO3", context="ambient-air", reflists_active=[], resolution=ORBI,
+                   per_file=[dict(sample_id="f1", height_gate_cps=1e3, degeneracy_cal={"mu": 0.0, "sigma": 0.3})])
+    src = EV.source_from_frames({"f1": led}, run_inputs=SRC.RunInputs(summary=summary), mode=mode)
+    return src, EV.level_source(src).iloc[0]
+
+
+def test_a_file_levelled_alone_tests_its_isotopes_with_a_one_file_minimum():
+    """The per-file stage and the adapted decoy arms: one file is enough to test (and match) the 13C line."""
+    src, r = _one_file_with_its_13c_line("adapted")
+    assert r.evidence_level == "4a" and r.positive_fact == "own in-band isotope line(s) 13C (C of the neutral)"
+    assert "own lines in band: 13C" in r.evidence
+    assert src.nmin == 1
+
+
+def test_one_file_minimum_mutant_strict_minima_cannot_test_the_line_on_one_file():
+    src, r = _one_file_with_its_13c_line("strict")
+    assert src.nmin == 3
+    assert r.evidence_level == "4b" and r.positive_fact == ""
