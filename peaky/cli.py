@@ -1032,9 +1032,9 @@ def _add_side_channels_flag(p) -> None:
                         "--side-channels '[M+CO3]-' on a source with real CO3- chemistry, "
                         "'[M+Br2]-' for di-bromide clusters) or 'none' to close them all "
                         "(Ur included). [M+CO3]-, [M+Br2]- and [M+Na]+ are off by default: on "
-                        "the batches measured they re-read ions the run already held or "
-                        "found no support. The opened channels are recorded per file and in "
-                        "batch_summary.json (side_channels)")
+                        "the batches measured they mostly re-read ions the run already held "
+                        "or had no support of their own. The opened channels are recorded per "
+                        "file and in batch_summary.json (side_channels)")
 
 
 def _side_channels_arg(values):

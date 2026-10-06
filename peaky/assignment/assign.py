@@ -286,7 +286,7 @@ def _stage_pass3_curated(st):
     late = getattr(st.cfg, "pass3_series_late", True)
     res = passes.run_pass3(
         st.client, st.sample_id, st.led, st.profile, st.pre, st.cfg, st.adducts,
-        log=st.log, phase="curated" if late else "all")
+        log=st.log, phase="curated" if late else "all", reagent=st.reagent)
     # only the curated phase emits a carry, so `pass3_series` self-disables when
     # the knob is off -- the stage's `when` needs no second condition.
     st.series_carry = res.pop("_carry", None)
@@ -298,7 +298,7 @@ def _stage_pass3_series(st):
     passes 4/5/7 could not explain. Evidence comes from the curated phase."""
     return passes.run_pass3(
         st.client, st.sample_id, st.led, st.profile, st.pre, st.cfg, st.adducts,
-        log=st.log, phase="series", carried=st.series_carry)
+        log=st.log, phase="series", carried=st.series_carry, reagent=st.reagent)
 
 
 def _stage_composite(st):
@@ -877,8 +877,11 @@ def run(sample_id: str, context: str = "ambient-air", *,
 
     # Label reagent-ion clusters BEFORE the passes so they are never assignment
     # candidates (e.g. [Br3]-, [Br+HBr]-, BrO- in a Br-CIMS sample; [urea_n+H]+
-    # in a uronium sample).
-    reagent = reagents.reagent_for_adducts(adducts)
+    # in a uronium sample). The key is read from the DECLARED channels, like the
+    # reagent halogen and the composite switch: an opted-in [M+Br2]- / [M+Cl]- /
+    # [M+I2]- side channel on a halogen-free reagent must not load that halide's
+    # cluster library or make it the arbitration's reagent element.
+    reagent = reagents.reagent_for_adducts(analyte_adducts)
     # The arbitration complexity prior is kept on a NEUTRAL halogen only -- a
     # molecular positive reagent (urea) puts no halogen in the neutral, so it has
     # no reagent_element (its [urea_n+H]+ clusters are still labelled via
@@ -991,7 +994,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # the side channels this file OPENED (asked for and resolved by the server;
     # [] = none): two runs of one sample that differ here differ for this reason
     st["side_channels"] = list(extra_channels)
-    st["admitted"] ={"height": adm["height"], "occurrence": adm["occurrence"],
+    st["admitted"] = {"height": adm["height"], "occurrence": adm["occurrence"],
                       "rejected": adm["rejected"]}
     log(f"[run] stats {json.dumps(st)}")
     return {"ledger": led, "stats": st, "summaries": summaries,

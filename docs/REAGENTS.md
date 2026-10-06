@@ -267,8 +267,11 @@ on the run's own polarity only. Nothing is opened by polarity.
   `batch_summary.json`; SKILL.md *Reagent-aware chemistry*): it stays an
   ammonium adduct when it tracks its own `[M+H]⁺` / urea parent, else it is
   re-read as the protonated amine at Candidate (a siloxane, a protected
-  identity or a valence-impossible amine keeps it). The evidence scale reads
-  the same gate and the NH4 admissibility rule ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §6).
+  identity or a valence-impossible amine keeps it). The evidence scale decides
+  a committed `[M+NH4]⁺` reading by the same gate alone; its NH4 admissibility
+  rule (an ammonium reading of Y needs a uronium adduct ion of Y in the run)
+  applies to the ammonium decompositions of committed `[M+H]⁺` readings, not
+  to a committed `[M+NH4]⁺` reading ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §6).
   On a uronium Orbitrap batch 54 of the 78 merged Assigned ammonium readings
   tracked their own parent at r ≥ 0.7. The gate is a batch stage (it needs the
   batch time series); in every file, and so also in a single-sample
@@ -290,14 +293,17 @@ on the run's own polarity only. Nothing is opened by polarity.
 - **Why carbonate, di-bromide and sodium are off by default.** Before 0.10.0
   `[M+CO3]⁻` and `[M+Br2]⁻` opened on every negative run and `[M+Na]⁺` /
   `[M+NH4]⁺` on every positive one whenever the server listed the mechanism.
-  On the batches measured they read nothing the data support. On a
-  labelled-nitrate Orbitrap batch 72 of 77 Assigned `[M+CO3]⁻` readings were the
-  ion the closed run holds as a radical-anion Candidate (the carbonate cluster of
-  the C(n−1) neutral and the radical anion of the Cn neutral are one ion, so
-  the ¹³C line cannot split them), and the carbonate reading's neutral never
-  co-varied best. On a bromide/nitrate TOF batch the CO₃⁻ ion was present in
-  2 of 230 spectra, and 20 of the 22 `[M+Br2]⁻` readings with a testable M+2
-  line failed it. On a uronium batch none of 8 `[M+Na]⁺` readings tracked a
+  On the batches measured they mostly re-read ions the run already held under
+  another reading, or had no support of their own. On a labelled-nitrate
+  Orbitrap batch 72 of 77 Assigned `[M+CO3]⁻` readings were the ion the closed
+  run holds as a radical-anion Candidate (the carbonate cluster of the C(n−1)
+  neutral and the radical anion of the Cn neutral are one ion, so the ¹³C line
+  cannot split them). In the 45 of the 77 where the readings' neutrals had
+  lines to test, the carbonate reading's neutral co-varied better than both
+  the radical-anion and the superoxide reading's in 16, never at r ≥ 0.85,
+  and less well than one of them in 29. On a bromide/nitrate TOF batch the
+  CO₃⁻ ion was present in 2 of 230 spectra, and 20 of the 22 `[M+Br2]⁻`
+  readings with a testable M+2 line failed it. On a uronium batch none of 8 `[M+Na]⁺` readings tracked a
   partner. Where the chemistry is real -- a source with a bright CO₃⁻ ion --
   open it: `--side-channels '[M+CO3]-'`.
 - **The record.** Each file's stats carry the channels it opened
@@ -307,10 +313,14 @@ on the run's own polarity only. Nothing is opened by polarity.
   `side_channels_requested` and `side_channels_source`; the run manifest's
   config carries the knob. The scorecard's decoy arms on the run's own channels
   open what the run recorded ([SCORECARD.md](SCORECARD.md)).
-- **The composite de-blend and the reagent halogen read the declared
-  channels.** The even-shift composite test is the halide reagents' test, so
-  an opted-in `[M+Br2]⁻` on a nitrate run leaves it off, as it leaves the run's
-  reagent halogen unset ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §3.4).
+- **The halide machinery reads the declared channels.** The even-shift
+  composite test, the reagent halogen, the cluster-library key (step 3, and
+  with it the arbitration's `reagent_element` and the bromide-cluster cleanup)
+  and pass 3's cluster key (its HX-cluster resolution and organohalogen
+  family) are the halide reagents', so they are read from the analyte channels
+  before the side channels join: an opted-in `[M+Br2]⁻` (or `[M+Cl]⁻`,
+  `[M+I2]⁻`) on a nitrate run scores that adduct and switches none of them on
+  ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §3.4).
 - **Not the evidence scale's lock.** `evidence.SIDE_CHANNELS_LOCKED` is a
   different switch: it keeps formate, acetate, CO₃⁻, … out of the evidence
   scale's decomposition grid whatever the engine scored

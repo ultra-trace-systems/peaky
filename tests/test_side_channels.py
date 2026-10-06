@@ -10,13 +10,15 @@ Pins: the per-profile defaults and the config field; the resolution order
 (explicit > the cfg's own tuple > the profile) and the compose union; the cfg
 field survives the pickling that carries it into a spawned worker; an offline
 run registers and opens its side channels and records them per file; the
-composite de-blend reads the DECLARED channels (a nitrate run with an opted-in
-[M+Br2]- skips it); a channel of the other polarity, without a server
+bromide machinery (composite de-blend, reagent-cluster library, reagent
+element, pass 3's HBr clusters) reads the DECLARED channels (a nitrate run with
+an opted-in [M+Br2]- runs none of it); a channel of the other polarity, without a server
 mechanism, or on a labelled-ammonium run is skipped and said so; the batch
-summary records what was asked for and what the files opened; the amine gate
-acts on a side-channel [M+NH4]+ reading at the merge and on the evidence
-scale; the CLI flag and the pipeline thread the choice; the scorecard's arms
-open what the run recorded.
+summary records what was asked for and what the files opened (a file that
+opened nothing counts for nothing); the amine gate acts on a side-channel
+[M+NH4]+ reading at the merge and on the evidence scale; the CLI flag, the
+pipeline (batch and pool) and the MCP assign tool thread the choice; the
+scorecard's arms open what the run recorded.
 
 Offline: no server, no network. Run: pytest tests/test_side_channels.py -q
 """
@@ -145,9 +147,9 @@ def test_the_cfg_carries_the_side_channels_into_a_spawned_worker(monkeypatch):
 
 
 # --------------------------------------------------------------------------- assign.run offline
-def _offline(sid, adducts, context, mzs, cfg):
+def _offline(sid, adducts, context, mzs, cfg, heights=(5e4, 2e4, 1e4, 300.0, 200.0)):
     tbl = pd.DataFrame({"peak_id": [f"p{i}" for i in range(len(mzs))], "mz": mzs,
-                        "height": [5e4, 2e4, 1e4, 300.0, 200.0][:len(mzs)]})
+                        "height": list(heights)[:len(mzs)]})
     lines: list = []
     out = A.run(sid, context, cfg=cfg, peaks=tbl, adducts=list(adducts), use_cache=False,
                 log=lines.append, resolving_power=None)
@@ -189,17 +191,52 @@ def test_an_opted_in_channel_opens_and_one_of_the_other_polarity_or_without_a_me
     assert out["stats"]["reagent_halogen"] is None          # declared, not opened: still no bromide reagent
 
 
-def test_the_composite_de_blend_reads_the_declared_channels_not_an_opted_in_halogen_side_channel():
-    """The even-shift composite test is the halide reagents'; an [M+Br2]- side
-    channel opened on a nitrate run must not switch it on (a bromide run's
-    declared channels already carry the halogen)."""
-    out, _ = _offline("side-no3-br2", P.NO3.adducts, "ambient-air", NO3_MZ,
-                      PCfg.PassConfig(side_channels=("[M+Br2]-",)))
+BR_REAGENT_MZ = [78.9183, 80.9163, 238.7525]            # Br-, 81Br-, Br3- (79Br2 81Br)
+BR_HEIGHTS = (5e4, 2e4, 1e4, 3e4, 3e4, 2e4)
+
+
+def _pass3_reagents(monkeypatch):
+    """Record the cluster-library key each pass-3 call works with (the one it is
+    handed, or -- handed none -- the one it reads from its adducts)."""
+    from peaky.chem import reagents as RG
+    seen, real = [], A.passes.run_pass3
+
+    def spy(*a, **kw):
+        seen.append(kw["reagent"] if "reagent" in kw else RG.reagent_for_adducts(a[6]))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(A.passes, "run_pass3", spy)
+    return seen
+
+
+def test_the_bromide_machinery_reads_the_declared_channels_not_an_opted_in_halogen_side_channel(monkeypatch):
+    """The even-shift composite test, the reagent-cluster library, the
+    arbitration's reagent element and pass 3's HBr-cluster resolution are the
+    halide reagents'; an [M+Br2]- side channel opened on a nitrate run must not
+    switch any of them on (a bromide run's declared channels already carry the
+    halogen)."""
+    seen = _pass3_reagents(monkeypatch)
+    cfg = PCfg.PassConfig(side_channels=("[M+Br2]-",))
+    out, lines = _offline("side-no3-br2", P.NO3.adducts, "ambient-air", NO3_MZ + BR_REAGENT_MZ, cfg,
+                          heights=BR_HEIGHTS)
     assert out["stats"]["side_channels"] == ["[M+Br2]-"]
+    assert any("'[M+Br2]-'" in ln for ln in lines if ln.startswith("[run] ") and "adducts=" in ln)
     assert out["summaries"]["composite"] == {"flagged": 0, "skipped": "no halogen adduct"}
-    br, _ = _offline("side-br", P.BR.adducts, "ambient-air",
-                     [C.ion_mz("C5H8O4", "[M+Br]-"), C.ion_mz("C5H8O4", "[M-H]-"), 140.2], PCfg.PassConfig())
-    assert br["summaries"]["composite"].get("skipped") is None          # a bromide run keeps the test
+    assert cfg.reagent_element is None
+    assert not any("pre-labeled" in ln for ln in lines)                  # no Br cluster library
+    led = out["ledger"]
+    assert not (led["role"] == "reagent").any()                         # Br-, 81Br-, Br3- not reagent rows
+    assert seen and all(r is None for r in seen)                        # no HBr-cluster resolution
+    # a bromide run keeps all of it
+    seen.clear()
+    bcfg = PCfg.PassConfig()
+    br, blines = _offline("side-br", P.BR.adducts, "ambient-air",
+                          [C.ion_mz("C5H8O4", "[M+Br]-"), C.ion_mz("C5H8O4", "[M-H]-"), 140.2] + BR_REAGENT_MZ,
+                          bcfg, heights=BR_HEIGHTS)
+    assert br["summaries"]["composite"].get("skipped") is None
+    assert bcfg.reagent_element == "Br" and any("pre-labeled" in ln and "(Br)" in ln for ln in blines)
+    assert (br["ledger"]["role"] == "reagent").sum() >= 1
+    assert seen and all(r == "Br" for r in seen)
 
 
 def test_a_labelled_ammonium_run_keeps_the_ammonium_and_sodium_channels_closed_even_when_asked():
@@ -251,15 +288,21 @@ def _ur_ledger(side):
     return led
 
 
-def _run_ur_batch(tmp_path, monkeypatch, *, cfg=None):
+def _run_ur_batch(tmp_path, monkeypatch, *, cfg=None, opens=None, opened=None):
+    """`opens(sid, side)` -> the channels that file's fake run opened (default: all
+    it was asked for, as a server that resolves every mechanism would);
+    `opened` collects them per file."""
     ts = _ts()
     seen = []
 
     def fake_assign(sid, context="ambient-air", **kw):
         side = tuple(kw["cfg"].side_channels or ())
         seen.append(side)
-        return {"ledger": _ur_ledger(side),
-                "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0, "side_channels": list(side),
+        got = tuple(opens(sid, side)) if opens is not None else side
+        if opened is not None:
+            opened[sid] = got
+        return {"ledger": _ur_ledger(got),
+                "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0, "side_channels": list(got),
                           "degeneracy_cal": {"mu": 0.0, "sigma": 0.3}},
                 "plausibility_audit": [], "summaries": {}, "problems": []}
 
@@ -308,6 +351,29 @@ def test_an_explicit_empty_choice_closes_the_uronium_channel_and_says_so(tmp_pat
     assert summ["side_channels"] == [] and summ["side_channels_files"] == {}
     assert summ["side_channels_requested"] == [] and summ["side_channels_source"] == "explicit config"
     assert summ["merge_gates"]["amine"]["relabeled"] == 0 and summ["merge_gates"]["amine"]["kept_covary"] == 0
+
+
+def test_the_batch_summary_records_what_the_files_opened_not_what_was_asked(tmp_path, monkeypatch):
+    """The scorecard's arms open `side_channels`, so it must be the union the
+    files OPENED (a server that does not resolve the mechanism opens nothing),
+    with `side_channels_requested` beside it."""
+    opened = {}
+    _run_ur_batch(tmp_path, monkeypatch, opened=opened,
+                  opens=lambda sid, side: () if int(sid[1:]) % 2 == 0 else side)
+    n_open = sum(1 for v in opened.values() if v)
+    assert 0 < n_open < len(opened)                                     # a mixed batch
+    summ = json.load(open(tmp_path / "batch_summary.json"))
+    assert summ["side_channels"] == [NH4] and summ["side_channels_files"] == {NH4: n_open}
+    assert summ["side_channels_requested"] == [NH4]
+    assert sorted(len(pf["side_channels"]) for pf in summ["per_file"]) == \
+        sorted(len(v) for v in opened.values())
+    # no file opened it: requested, recorded as not opened
+    nowhere = tmp_path / "nowhere"
+    nowhere.mkdir()
+    _run_ur_batch(nowhere, monkeypatch, opens=lambda sid, side: ())
+    summ = json.load(open(nowhere / "batch_summary.json"))
+    assert summ["side_channels"] == [] and summ["side_channels_files"] == {}
+    assert summ["side_channels_requested"] == [NH4] and summ["side_channels_source"] == "profile Ur"
 
 
 def test_the_nh4_admissibility_rule_reads_a_side_channel_run_by_ion_composition():
@@ -400,6 +466,49 @@ def test_the_pipeline_stamps_the_choice_before_the_manifest_snapshot(monkeypatch
     PL.run_batch(batch="B", dataset="D", reagent="Ur", base_out=str(tmp_path / "closed"), ts=ts,
                  do_report=False, side_channels=(), log=lambda *a: None)
     assert got["cfg"].side_channels == () and got["rec"]["cfg"].side_channels == ()
+
+
+def test_the_pool_stamps_the_choice_before_the_manifest_snapshot(monkeypatch, tmp_path):
+    from peaky.reporting import provenance as PV
+
+    got = {}
+    ts = pd.DataFrame({"sample_item_id": ["s1", "s2"], "mz": [100.0, 100.0], "height": [5.0, 5.0],
+                       "sample_batch_name": ["b1", "b2"]})
+    monkeypatch.setattr(IO, "connect", lambda *a, **k: types.SimpleNamespace())
+    monkeypatch.setattr(AB, "run", lambda **kw: got.__setitem__("cfg", kw["cfg"]) or {"summary": {}, "sample_ids": []})
+    monkeypatch.setattr(PL, "generate_report", lambda ctx, ts, **kw: {})
+    monkeypatch.setattr(PV, "record_run", lambda **kw: got.__setitem__("rec", kw))
+    monkeypatch.setattr(PL, "_with_residual_picks", lambda prov, res, ts, g: prov)
+    monkeypatch.setattr(PL, "_write_selected_samples", lambda *a, **k: None)
+    for side, want in ((None, (NH4,)), ((), ())):
+        got.clear()
+        PL.run_pooled_batches(batches="b.*", dataset="D", reagent="Ur", base_out=str(tmp_path / ("profile" if side is None else "closed")),
+                              ts=ts, do_report=False, per_group_reports=False, side_channels=side,
+                              log=lambda *a: None)
+        assert got["cfg"].side_channels == want and got["rec"]["cfg"].side_channels == want, side
+
+
+def test_the_mcp_assign_tool_applies_the_profile_side_channels(monkeypatch, tmp_path):
+    import time
+
+    from peaky import mcp_server as M
+
+    seen = []
+
+    def fake_run(sid, context="ambient-air", *, cfg=None, **kw):
+        seen.append(cfg.side_channels)
+        return {"ledger": pd.DataFrame(), "stats": {}}
+
+    monkeypatch.setattr(A, "run", fake_run)
+    monkeypatch.setattr(M, "JOBS", M.JobManager())
+    for reagent, want in (("Ur", (NH4,)), ("NO3", ())):
+        seen.clear()
+        jid = M.assign_sample("side-mcp", reagent=reagent, output_dir=str(tmp_path))["job_id"]
+        deadline = time.monotonic() + 30.0
+        while M.JOBS.get(jid).status not in ("done", "error") and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert M.JOBS.get(jid).status == "done", M.JOBS.get(jid).view()
+        assert seen == [want], reagent
 
 
 # --------------------------------------------------------------------------- the scorecard's arms
