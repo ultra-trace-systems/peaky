@@ -95,8 +95,8 @@ board and the page:
 | roster recall not lower | `roster_identified` — roster formulas read as themselves whose reading is identified | `roster_assigned` |
 | roster recall not lower (neutral or better) | `roster_neutral_or_better` — the same, identified or neutral (3c + 4a): a class list names no single compound, so its formulas never reach 3c | `roster_assigned` |
 | roster misreads not higher | `roster_misread_identified` — a roster line read as another neutral that is identified | `roster_misread` |
-| decoy rate not higher, per arm | `decoy_shift_identified_rate`, `decoy_shift_identified_lt_350_rate`, `decoy_ppm_identified_rate`, `decoy_adducts_identified_rate` | `decoy_shift_rate`, `decoy_adducts_rate` |
-| decoy rate not higher below m/z 350 (the headline shift arm: the ppm arms when they ran) | `decoy_headline_lt_350_rate` (Assigned) | `decoy_shift_rate` |
+| decoy rate not higher, per arm | `decoy_shift_identified_rate`, `decoy_shift_identified_lt_350_rate` (the Da shift arm; on an Orbitrap row the below-350 criterion is marked blind there), `decoy_ppm_identified_rate`, `decoy_adducts_identified_rate` | `decoy_shift_rate`, `decoy_ppm_rate`, `decoy_adducts_rate` (each arm's own Assigned rate) |
+| decoy rate not higher below m/z 350 (the headline shift arm: the ppm arms when they ran) | `decoy_headline_lt_350_rate` (Assigned) | none: the headline is read on Assigned already |
 | bright M0 not worse | `bright_m0_not_identified` (ion-only rows excluded, as for the old count) | `bright_m0_not_assigned` |
 | M1 families not worse | `m1_families` (unchanged) | `m1_families` |
 | cross-instrument agreement not lower | `m3_own_missing_identified` — the other instrument's identified rows (3c) that this run lacks | `m3_other_instrument_own_missing` |
@@ -109,7 +109,11 @@ a metric that reads the evidence scale needs the same scale (`scale` on the
 row; a row written before the key reads its `claims_schema`); a roster count
 needs the same M2 presence test (`roster_test`; 1 before the key); a decoy
 rate needs the same arm calibration (`decoy_calibration`; `own` before the
-key) and scoring (`decoy_scoring`). Otherwise the previous value is withheld
+key) and scoring (`decoy_scoring`); the headline below m/z 350 needs the
+same headline arm (`decoy_headline_arm`: the ppm arms, or the Da arm, which
+is blind there on an Orbitrap), and a ppm-arm rate (and a headline that
+quotes the ppm arms) the same shifts (`decoy_ppm_k`; none before the key).
+Otherwise the previous value is withheld
 and, where both rows hold a number, the card's §6 and the page's delta table
 say `not comparable: <why> (previous <value>)`, and the board's claims table
 says so in its last column -- 20 roster formulas identified on the
@@ -154,22 +158,32 @@ pre-0.10.0 scale and 2 on 0.10.0 is a change of scale, not a regression.
      polarity, looked for on the run's own channels in the time series:
      `assigned` as itself, `candidate`, `same ion` (the line is read as
      another neutral / adduct split of the same ion composition --
-     C10H15NO7 [M-H]- and C10H14O4 [M+NO3]- are one ion, and nothing in the
-     spectrum tells them apart: not a misread), `read as` something else (the
-     reading is shown), `unstamped` (present in the series, with the engine's
-     reason), `isotope/reagent line` (the only line there is a stamped
-     isotope satellite of another ion or a reagent line: no sighting) or
-     `absent`. The **presence test** (`ROSTER_TEST` 2, `roster_test` on the
+     C10H15NO7 [M-H]- and C10H14O4 [M+NO3]- are one composition, one exact
+     mass, and nothing in that line's mass tells them apart: not a misread),
+     `read as` something else (the reading is shown), `unstamped` (present in
+     the series, with the engine's reason), `isotope/reagent line` (the only
+     stamped lines there are isotope satellites of another ion or reagent
+     lines of another composition: no sighting) or `absent`. A reagent line
+     of the expected ion's own composition is a sighting: the reagent's
+     reference ions (the reagent ion, its water clusters) are `assigned`
+     there, read as the reagent, and any other source's formula is `same ion`.
+     The **presence test** (`ROSTER_TEST` 2, `roster_test` on the
      row): a line counts within `roster_window_ppm` -- 4 x the run's measured
      mass sigma (`mass_scale.sigma_ppm`), at least 1 ppm, at most the run's
      tolerance (a flat 6 ppm on an Orbitrap at ~0.2 ppm sigma reached
      neighbours 25 sigma away) -- and in >= 20 % of the spectra, stamped or
-     not. `present` counts every status but `isotope/reagent line` and
-     `absent`. Roster recall is reported per roster and per class; each
+     not; of the stamped lines that pass, the best-read one stands for the
+     formula (its own reading, then another split of its ion, then another
+     reading, then an isotope / reagent line; the nearest among equals).
+     `present` counts every status but `isotope/reagent line` and
+     `absent`. Roster recall is reported per roster and per class, and every
+     source's line on the card counts each status; each
      row carries the claim of the reading on its line, and `roster_claim`
      counts per roster the formulas read as themselves per claim,
      `neutral_or_better` (identified + neutral, side by side with identified)
-     and the misreads whose other reading is identified; the M2 block names
+     and the misreads whose other reading is identified -- per line read: the
+     claim of the one line M2 picked for a formula, not its best claim over
+     every channel it is read on; the M2 block names
      the level scale its claims read (`scale`), the test and its window.
    - *M3 found elsewhere*: neutrals the other path (`--other`, ≥ 2 files or
      Assigned) holds and this run lacks; and neutrals the other instrument
@@ -212,8 +226,10 @@ pre-0.10.0 scale and 2 on 0.10.0 is a change of scale, not a regression.
    default +9 and -9 ppm; `none` for none) scale every m/z by
    (1 + k x 1e-6): outside the file's match window -- the true formula is out
    of reach -- but inside the populated mass-defect band, where the formula
-   grid is dense, so the engine proposes wrong formulas and every tier gate
-   is tested. A shift inside the window (the wider of `PassConfig.search_ppm`
+   grid is dense, so the engine proposes wrong formulas and the mass,
+   degeneracy and pattern gates are exercised (a shift keeps every isotope
+   and label spacing, so no shift decoy tests the label / isotope vetoes).
+   A shift inside the window (the wider of `PassConfig.search_ppm`
    and the match window the file is scored at; 5 ppm on an Orbitrap, 15 ppm
    on a TOF or without a snapshot) is no decoy: it is skipped, and
    `decoy.ppm_skipped` says why. Each ppm arm (`decoy.ppm_arms`) is rated
@@ -232,7 +248,17 @@ pre-0.10.0 scale and 2 on 0.10.0 is a change of scale, not a regression.
    The card's
    **headline below m/z 350** (`decoy.headline`; board
    `decoy_headline_lt_350_rate`, `decoy_headline_arm`) is the pooled ppm
-   arms whenever they ran, else the 0.35 Da arm. `--decoy shift` runs both
+   arms whenever they ran, else the 0.35 Da arm; the line names the
+   calibration the arms actually ran at (`calibration_summary`: the
+   control's, their own, unrecorded on a re-count of ledgers kept before the
+   field, or mixed) and the M0 rows of any tier the arm committed below 350
+   against the control's -- on a TOF the ±9 ppm arms sit inside the 15 ppm
+   window and are skipped, and the 0.35 Da arm that the headline then quotes
+   commits few rows below 350 there too. The board's lead claims table
+   reads its decoy column from the same arm (`decoy_ppm_identified_rate` and
+   its below-350 rate, named with the shifts, when the ppm arms ran), and an
+   Orbitrap row's Da-arm number is marked blind below 350 (`decoy_orbitrap`
+   on the row). `--decoy shift` runs both
    kinds of shift arm, `--decoy ppm` the ppm arms only, `--decoy both` every
    arm. Each arm is
    scored at the measurement the run judged its file at -- the width, offset,
@@ -251,7 +277,8 @@ pre-0.10.0 scale and 2 on 0.10.0 is a change of scale, not a regression.
    (`tiers._calibrate`: the tiers, the degeneracy audit, the winner selection)
    are taken on the control arm's ledger, not on the arm's own commits. An
    arm's own backbone is made of wrong readings; when it is too small to
-   calibrate (a shifted backbone, or the wrong-adducts arm on any file), the
+   calibrate (a shifted backbone, or a wrong-adducts arm that commits few
+   rows), the
    arm runs with the mass z-test and the degeneracy audit off and keeps every
    mass fit -- it would bound an engine no real file runs, since a real file
    always calibrates. `decoy.calibration` says per file what its arms ran at
@@ -346,16 +373,20 @@ board round trip with a delta, and the CLI.
 them: the control calibration taken and given back, arm by arm; the ppm arm's
 m/z scaling, keys and kept-ledger names, a shift inside the match window
 skipped, the ppm arms pooled against the control counted once per arm, the
-headline (ppm arm first, else the 0.35 Da arm, marked blind on an Orbitrap),
+headline (ppm arm first, else the 0.35 Da arm, marked blind on an Orbitrap;
+the calibration it names read from the arms, never assumed),
 the 50-Da bins, a re-count of kept ppm-arm ledgers; a run's own channel never
-in the wrong set (and no arm when none is left), and the wrong-adducts arm's
-same-ion re-splits told from its new ions.
+in the wrong set (and no arm when none is left), the wrong-adducts arm's
+same-ion re-splits told from its new ions (on the same peak only), and the
+board's lead decoy cell and acceptance reading the headline arm.
 
 `tests/test_scorecard_roster.py` pins M2's presence test (the sigma window,
 the share of spectra, an isotope / reagent line no sighting, a same-ion split
-no misread), the roster claims side by side with their scale, and a delta
-across a scale, a presence test or a decoy calibration marked not comparable
-on the card, the board and the page.
+no misread, the best-read line in the window, a reagent line of the
+expected ion's composition a sighting), the roster claims side by side with
+their scale, and a delta across a scale, a presence test, a decoy
+calibration, a headline arm or a set of ppm shifts marked not comparable on
+the card, the board (both tables) and the page.
 
 `tests/test_scorecard_claims.py` writes in-core levels onto that run and adds
 a Candidate the acid branch identifies, an ion-only line and a per-file

@@ -226,6 +226,70 @@ def test_the_ppm_arms_pool_against_the_control_once_per_arm_and_lead_the_headlin
     assert "ppm shifts pooled" in page and "150-200" in page
 
 
+def test_the_headline_names_the_calibration_its_arms_ran_at(tmp_path, monkeypatch):
+    """The headline line reads the arms' calibration from the card: the control's when they took it, and never
+    claims it for ledgers kept before the field (calibrated on their own commits) or a mixed set."""
+    run = orbi_run(tmp_path)
+    fake_arms(monkeypatch)
+    kept = tmp_path / "kept"
+    dc = SC.decoy(run, "both", 0.35, 1, save_dir=str(kept), ppm_k=[9.0, -9.0])
+    line = SC.decoy_headline_lines(dc)[0]
+    assert "(ppm shift +9/-9 ppm, pooled, the arms at the control's calibration):" in line
+    # what the arms committed below 350 at all: 1 + 1 M0 rows against the control's 3, counted once per arm
+    assert dc["headline"]["m0_lt_350"] == 2 and dc["headline"]["control_m0_lt_350"] == 6
+    assert "Below 350 the arm commits 2 M0 rows of any tier against the control's 6" in line
+    # a re-count of ledgers kept before the calibration field
+    man = json.loads((kept / "manifest.json").read_text())
+    man.pop("calibration")
+    (kept / "manifest.json").write_text(json.dumps(man))
+    old = SC.decoy(run, "both", 0.35, 1, ledgers_dir=str(kept))
+    assert SC.calibration_summary(old) == "unrecorded"
+    line = SC.decoy_headline_lines(old)[0]
+    assert "control's calibration" not in line
+    assert "the arms' calibration unrecorded: ledgers kept before the field, calibrated on their own commits" in line
+    # two files, one of whose controls errored: the line says mixed and points at the note
+    mixed = dict(dc, calibration={"s1": "control", "s2": "own"})
+    line = SC.decoy_headline_lines(mixed)[0]
+    assert "control's calibration" not in line and "the arms' calibration mixed: see the calibration note" in line
+    # an old card on disk whose headline predates the coverage fields still renders
+    legacy = dict(dc, headline={k: v for k, v in dc["headline"].items() if not k.startswith(("m0", "control_m0"))})
+    assert "M0 rows of any tier" not in SC.decoy_headline_lines(legacy)[0]
+
+
+def test_the_board_and_acceptance_read_the_headline_arm(tmp_path, monkeypatch):
+    """The board's lead decoy cell reads the arm the headline quotes (the ppm arms, named with their shifts);
+    a Da-arm number below 350 on an Orbitrap row is marked blind, on the board and in the acceptance."""
+    run = orbi_run(tmp_path)
+    fake_arms(monkeypatch)
+    card = SC.build_card(run, rosters=SC.load_rosters(), board=[], log=lambda *a: None)
+    card["decoy"] = SC.decoy(run, "both", 0.35, 1, ppm_k=[9.0, -9.0])
+    row = SC.board_row(card)
+    assert row["decoy_orbitrap"] is True and row["decoy_headline_arm"] == "ppm"
+    row.update(decoy_ppm_identified_rate=4.0, decoy_ppm_identified_lt_350_rate=5.0, decoy_shift_identified_rate=0.0,
+               decoy_shift_identified_lt_350_rate=0.0)
+    assert SC.dshift_cell(row) == "ppm +9/-9: 4.0 (5.0)"
+    acc = {a["key"]: a for a in SC.acceptance(row)}
+    assert acc["decoy_shift_identified_lt_350_rate"]["criterion"] == (
+        "decoy rate not higher (Da shift arm, identified, below m/z 350; blind on an Orbitrap: no formula is "
+        "proposed below ~m/z 350, the ppm arms carry the bound)")
+    assert "blind" not in acc["decoy_ppm_identified_rate"]["criterion"]
+    assert (acc["decoy_ppm_identified_rate"]["old_key"], acc["decoy_headline_lt_350_rate"]["old_key"]) == (
+        "decoy_ppm_rate", None)
+    card.update(row=row, acceptance=SC.acceptance(row))
+    lines = "\n".join(SC.acceptance_lines(card))
+    assert "`decoy_headline_lt_350_rate` **33.3** (no older metric)" in lines
+    assert "`decoy_ppm_identified_rate` **4.0** (`decoy_ppm_rate` 37.5)" in lines
+    assert "`decoy_shift_rate`" not in lines.split("ppm shift arms")[1].split("\n")[0]
+    # without the ppm arms the headline is the Da arm: named, and blind below 350 on an Orbitrap
+    da = dict(row, decoy_headline_arm="shift")
+    assert SC.dshift_cell(da) == "Da arm: 0.0 (0.0) blind below 350 on an Orbitrap"
+    assert SC.dshift_cell(dict(da, decoy_orbitrap=False)) == "Da arm: 0.0 (0.0)"
+    # a row from before the headline: the Da arm's numbers, unmarked
+    assert SC.dshift_cell({"decoy_shift_identified_rate": 1.0}) == "1.0 (—)"
+    md = SC.render_board_md([dict(row, channel="B|NO3|cover", run="r1", written_utc="t", code="c")])
+    assert "| decoy shift identified % (below 350), headline arm |" in md and "| ppm +9/-9: 4.0 (5.0) |" in md
+
+
 def test_without_a_ppm_arm_the_headline_is_the_da_arm(tmp_path, monkeypatch):
     run = orbi_run(tmp_path)
     fake_arms(monkeypatch, dict(ARMS, shift=[300.0]))
@@ -296,13 +360,16 @@ def test_ion_level_counts_tell_a_resplit_of_the_controls_ion_from_a_new_ion():
         reading("p3", "C9H8O2", "[M+I]-", 274.96, height=300.0),     # a peak the control left unexplained: new
         reading("p4", "C5H8O4", "[M+Cl]-", 167.0, height=200.0),      # same peak id, different ion: new
         reading("p5", "C3H4O2", "[M+Cl]-", 107.0, tier="Candidate"),  # not Assigned: not counted
+        # the ion the control reads on p1, but on another peak: the arm put it where the control never did -- new
+        reading("p6", "C6H10O4", "[M+Cl]-", 190.0, height=100.0),
     ])
     assert SC.ion_key("C6H10O4", "[M+Cl]-") == SC.ion_key("C6H11ClO4", "[M-H]-")
     c = SC.ion_level_counts(arm, control)
-    assert (c["assigned_same_ion"], c["assigned_new_ion"], c["assigned_new_ion_lt_350"]) == (1, 3, 3)
+    assert (c["assigned_same_ion"], c["assigned_new_ion"], c["assigned_new_ion_lt_350"]) == (1, 4, 4)
     assert c["new_ion_examples"][0] == "C4H10O3 [M+Cl]- @ 173.0500"
+    assert "C6H10O4 [M+Cl]- @ 190.0000" in c["new_ion_examples"]
     # no control ledger: every Assigned row is a new ion
-    assert SC.ion_level_counts(arm, None)["assigned_new_ion"] == 4
+    assert SC.ion_level_counts(arm, None)["assigned_new_ion"] == 5
 
 
 def test_the_adducts_arm_reports_its_ion_level_rate_beside_the_reading_level(tmp_path, monkeypatch):

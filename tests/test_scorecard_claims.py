@@ -71,7 +71,7 @@ APPENDED_ROW_KEYS = [
     "decoy_ppm_established_rate", "decoy_ppm_control_assigned", "decoy_shift_lt_350_rate", "decoy_shift_ge_350_rate",
     "decoy_headline_arm", "decoy_headline_lt_350_rate", "decoy_wrong_adducts", "decoy_adducts_new_ion_rate",
     "decoy_adducts_new_ion_lt_350_rate", "decoy_adducts_same_ion_share", "roster_neutral_or_better", "roster_same_ion",
-    "roster_iso_reagent", "roster_test", "roster_window_ppm", "scale",
+    "roster_iso_reagent", "roster_test", "roster_window_ppm", "scale", "decoy_orbitrap",
 ]
 
 
@@ -524,6 +524,12 @@ def test_the_card_carries_claims_after_the_headline_and_the_acceptance_block(cru
                          "m3_other_instrument_own_missing"]
     assert acc["bright_m0_not_identified"]["value"] == 3 and acc["bright_m0_not_identified"]["old_key"] == "bright_m0_not_assigned"
     assert acc["m1_families"]["old_value"] == acc["m1_families"]["value"]
+    # the ppm arms sit beside their own Assigned rate; the headline (Assigned already) beside nothing -- never the
+    # Da arm's rate, which is blind below 350 on an Orbitrap
+    assert acc["decoy_ppm_identified_rate"]["old_key"] == "decoy_ppm_rate"
+    hl = acc["decoy_headline_lt_350_rate"]
+    assert hl["old_key"] is None and hl["old_value"] is None
+    assert row["decoy_orbitrap"] is None                                # no decoy ran
 
 
 def test_key_metrics_lead_with_the_claim_and_no_delta_crosses_a_scale():
