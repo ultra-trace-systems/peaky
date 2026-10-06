@@ -412,23 +412,33 @@ selected sample_ids (SAMPLING.md)
      absent over the batch: `tables/iso_checks.csv`, [EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md)
      `iso_veto`). This includes a species the known-species lock (step 4b)
      decided: a "known" reading whose own envelope the batch refutes is not
-     Assigned (`…; this overrules the known-species decision`) -- a C30
-     chlorinated paraffin `[M+Br]-` on the bromide/nitrate TOF batch carried one
-     Br's M+2 line where BrCl4 predicts 2.3×, and no ¹³C line: the reagent's
-     water cluster at the same nominal mass.
+     Assigned (`…; this overrules the known-species decision`). The lock runs
+     before the stamp and cannot read REQ, so a lock that displaced the vote's
+     winner is **demoted, not undone**: the row keeps the known reading, now
+     Candidate, and the vote's reading the lock moved to the head of
+     `alternatives` stays there (the note names it). The per-file test usually
+     gets there first: a C30 chlorinated paraffin `[M+Br]-` on the
+     bromide/nitrate TOF batch (one Br's M+2 line where BrCl4 predicts 2.3×, no
+     ¹³C line: the reagent's water cluster at the same nominal mass) was
+     Candidate in every file that carried it, so the vote already made it
+     Candidate and the lock only noted it.
    - **the ⁸¹Br doublet** (`doublets`) -- the row's line stands at 0.58-1.56×
      (0.6-1.6 × the ⁸¹Br/⁷⁹Br ratio) the line one ⁸¹Br spacing (1.99795 Da)
      below it in ≥ 50 % of the spectra showing it (each line the tallest within
      the merge window): it is that line's ⁸¹Br partner, not an M0 -- unless the
      reading's ion carries Br or Cl whose own M+2 line REQ sees in ≥ 50 % of its
-     testable spectra. A known-species lock is left to REQ.
+     testable spectra (REQ's seen share `det_frac` over the pair's stamped
+     spectra, read whatever REQ's verdict -- a pair stamped in one spectrum can
+     be exempt on it). A known-species lock is left to REQ.
    The per-file half of the package is the tier pass's (`tiers.apply_tof_m2`,
    [ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md)), so the vote already counts a
    file whose own peak list refutes the reading as a Candidate file. Measured
    offline on the bromide/nitrate TOF batch (the built functions on the run's
    stored per-file ledgers and stamped series, the vote re-run on every touched
-   cluster): merged Assigned 355 → 287 (per-file test 307; REQ 46 and the
-   doublet 15 more, 11 halogen readings exempt), the batch's three known-false
+   cluster, the known-species lock re-run on it): merged Assigned 355 → about
+   287 (the per-file test alone about 306; then REQ about 6 more and the doublet
+   13, 11 halogen readings exempt; the two gates alone, without the per-file
+   test, would take 46 and 15: 294), the batch's three known-false
    Assigned readings out, all 34 known-true readings kept (one loses two of its
    14 per-file Assigned files), the roster unchanged; on a nitrate-only
    low-resolution TOF nothing moves. `batch_summary.json["merge_gates"]["tof_m2"]`

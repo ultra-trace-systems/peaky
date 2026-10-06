@@ -217,6 +217,7 @@ series (the runs equal the replay row for row):
 from __future__ import annotations
 
 import math
+import re
 import warnings
 from itertools import product
 
@@ -1640,6 +1641,9 @@ def summary(table: pd.DataFrame | None, resolution=None) -> dict:
 # --------------------------------------------------------------------------- the TOF merged-row gates
 #: the merged row's tier_reason mark of a species lock_known_species decided
 KNOWN_LOCK_MARK = "known species decided once for the batch"
+#: ... and of a lock that displaced the vote's winner (its note goes on "; kept
+#: over the N-file X reading", the displaced reading heading `alternatives`)
+_KEPT_OVER = re.compile(re.escape(KNOWN_LOCK_MARK) + r"[^|]*; kept over the \d+-file ")
 
 
 def _merge_ppm(mass_scale) -> float:
@@ -1704,10 +1708,16 @@ def tof_m2_gates(merged: pd.DataFrame, table: pd.DataFrame | None, ts: pd.DataFr
 
       * REQ: the merged winner's pair is refuted by REQ's TOF branch -- the
         ion's own M+2 line absent over the batch (`_req_tof`). This includes a
-        species lock_known_species decided: a known reading whose own envelope
-        the batch refutes is not Assigned (a 'known' C30 chlorinated paraffin
-        [M+Br]- on the bromide TOF batch carried one Br's M+2, not BrCl4's, and
-        no 13C line: the reagent's water cluster at the same nominal mass).
+        species lock_known_species decided (it runs before the stamp, so it
+        cannot read REQ): a known reading whose own envelope the batch refutes
+        is not Assigned. A lock that displaced the vote's winner is demoted,
+        not undone -- the row keeps the known reading, now Candidate, and the
+        vote's reading the lock put at the head of `alternatives` stays there
+        (the row's note names it). The per-file test (tiers.apply_tof_m2)
+        usually gets there first: a 'known' C30 chlorinated paraffin [M+Br]-
+        on a bromide TOF batch (one Br's M+2 line where BrCl4 predicts 2.3x,
+        no 13C line: the reagent's water cluster at the same nominal mass) was
+        Candidate in every file, so the vote already made it Candidate.
       * the doublet: the row's line stands at TOF_DBL_LO..TOF_DBL_HI x the line
         one 81Br spacing below it in >= TOF_DBL_SHARE of the spectra showing it
         (`doublets`, within the batch's merge window) -- it is that line's 81Br
@@ -1741,6 +1751,18 @@ def tof_m2_gates(merged: pd.DataFrame, table: pd.DataFrame | None, ts: pd.DataFr
     def _locked(i):
         return KNOWN_LOCK_MARK in str(merged.at[i, "tier_reason"])
 
+    def _overruled(i) -> str:
+        """The note of a REQ-refuted known-species decision; a lock that displaced
+        the vote's winner names the reading it put at the head of `alternatives`."""
+        why = "; this overrules the known-species decision"
+        if not _KEPT_OVER.search(str(merged.at[i, "tier_reason"])) or "alternatives" not in merged.columns:
+            return why
+        alt = merged.at[i, "alternatives"]
+        alt = "" if alt is None or (not isinstance(alt, str) and pd.isna(alt)) else str(alt)
+        head = alt.split("; ")[0].strip()
+        return why + (f" (demoted, not undone: the vote's reading it was kept over, {head}, heads "
+                      "`alternatives`)" if head else "")
+
     for i in merged.index:
         k = (str(merged.at[i, "neutral_formula"]), str(merged.at[i, "adduct"]))
         if not _assigned(i) or k not in refuted:
@@ -1748,7 +1770,7 @@ def tof_m2_gates(merged: pd.DataFrame, table: pd.DataFrame | None, ts: pd.DataFr
         locked = _locked(i)
         merged.at[i, "tier"] = "Candidate"
         _note(merged, i, "Candidate: the batch refutes the ion's own M+2 line (REQ: " + refuted[k] + ")"
-              + ("; this overrules the known-species decision" if locked else ""))
+              + (_overruled(i) if locked else ""))
         out["req_demoted"] += 1
         out["known_demoted"] += int(locked)
     if ts is None or not len(ts):

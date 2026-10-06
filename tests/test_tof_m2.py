@@ -180,6 +180,26 @@ def test_a_composite_parent_predicts_from_its_own_share_and_a_heavy_commit_is_no
     assert T.tof_m2_verdicts(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP).empty
 
 
+def test_a_synthetic_sub_peak_at_the_m_plus_2_position_is_no_line():
+    """A composite's synthetic sub-peak (synthetic=True) is a share of a real
+    peak's counts, not a line of its own: sitting exactly where the ion's M+2
+    goes, at the predicted height, it must neither show the line nor hold the
+    position -- the reading is refuted as if the place were empty."""
+    pos = C.ion_mz(X, BR) + ISO.D_81BR
+    led, i = _tof_ledger(extra=[("P.2", pos, 97.0)])
+    j = led.index[led["peak_id"] == "P.2"][0]
+    led["synthetic"] = led["synthetic"].astype(object)
+    led.at[j, "synthetic"] = True
+    v = T.tof_m2_verdicts(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP)
+    assert v["status"].tolist() == [SAT.HL_ABSENT] and v["obs"].iloc[0] == 0.0
+    T.apply_tof_m2(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP, log=quiet)
+    assert led.at[i, "tier"] == T.TIER_CANDIDATE
+    # the same line as a real peak is the sighting
+    led, i = _tof_ledger(extra=[("R", pos, 97.0)])
+    T.apply_tof_m2(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP, log=quiet)
+    assert led.at[i, "tier"] == T.TIER_ASSIGNED
+
+
 def test_the_demotion_moves_the_tier_only_never_the_vote_class():
     led, i = _tof_ledger()
     L.ensure_flags(led)
@@ -274,6 +294,24 @@ def test_req_on_a_tof_needs_as_many_testable_as_blended_spectra():
     assert (r["n_used"], r["verdict"]) == (15, "untestable")
 
 
+def test_req_on_a_tof_does_not_test_a_pair_stamped_on_a_heavy_isotopologue():
+    """A Br2 ion is committed on its tallest line, 79Br81Br, ~2 Da above its
+    all-light m/z: its own M+2 is then not 2 Da above the stamp, so REQ must
+    not read the empty place there as a refutation."""
+    z = "C2H2Br2O2"
+
+    def build(i):
+        mz = C.ion_mz(z, H)
+        h0 = 1e4 * _wave(i)
+        return [_row(i, mz, 0.51 * h0),                                                     # 79Br2
+                _row(i, mz + ISO.D_81BR, h0, role="M0", nf=z, ad=H, ion=_ion(z, H)),          # the stamp
+                _row(i, mz + 2 * ISO.D_81BR, 0.49 * h0)]                                    # 81Br2
+    r = _get(_tm(_series(build), pairs=((z, H),)), "REQ", z)
+    assert r["verdict"] == "untestable" and not r["veto"] and r["n_used"] == 0
+    assert r["note"].endswith("not tested: the pair is stamped on a heavy isotopologue")
+    assert r["mz"] == pytest.approx(C.ion_mz(z, H) + ISO.D_81BR)
+
+
 def test_req_on_an_orbitrap_is_unchanged_by_the_tof_branch():
     from tests.test_iso_checks import SCALE_O
     r = _get(_tm(_series(lambda i: _tbr(i, ppm=1.5)), resolution=ORBI, scale=SCALE_O), "REQ", Y)
@@ -345,11 +383,55 @@ def test_the_81br_doublet_partner_is_no_m0_unless_its_own_m_plus_2_is_seen():
 
 
 def test_the_doublet_share_is_over_the_spectra_showing_the_line():
+    # 12 spectra in the band, 8 showing the line at 0.33x the one below, 20 not showing it at all: the share
+    # is 12 of the 20 spectra showing it (0.6, a partner), not 12 of all 40 (0.3)
     def build(i):
         rows = _doublet(i)
-        return rows if i < N // 2 else rows[1:] + [_row(i, 250.0, 3.0 * rows[1]["height"])]   # 0.33x below
-    d = IC.doublets(IC._Series(_series(build)), [250.0 + ISO.D_81BR], 12.0)
-    assert d.loc[0, "n_spectra"] == N and d.loc[0, "n_band"] == N // 2 and d.loc[0, "share"] == 0.5
+        if i < 12:
+            return rows
+        if i < 20:
+            return rows[1:] + [_row(i, 250.0, 3.0 * rows[1]["height"])]
+        return rows[:1]
+    ts = _series(build)
+    d = IC.doublets(IC._Series(ts), [250.0 + ISO.D_81BR], 12.0)
+    assert (d.loc[0, "n_spectra"], d.loc[0, "n_band"], d.loc[0, "share"]) == (20, 12, 0.6)
+    m = _merged([(250.0 + ISO.D_81BR, "C6H12O3S", H, "Assigned", None)])
+    g = IC.tof_m2_gates(m, None, ts, resolution=TOF, mass_scale={"merge_ppm": 12.0}, log=quiet)
+    assert g["doublet_demoted"] == 1 and m.at[0, "tier"] == "Candidate"
+    assert "in 12 of the 20 spectra showing it" in m.at[0, "tier_reason"]
+
+
+def test_a_lock_over_the_vote_that_req_refutes_is_demoted_not_undone():
+    """The known-species lock runs before the stamp, so it cannot read REQ: a
+    lock that put a known reading over the vote's winner is demoted by the
+    gate (Candidate, the known reading kept: no re-vote) and the row names the
+    vote's reading the lock moved to the head of `alternatives`."""
+    from peaky.batch import assign_batch as AB
+    known, vote = "C30H58Cl4", "C24H18O16"
+    mz = C.ion_mz(known, BR)
+    m = pd.DataFrame([dict(mz=mz, neutral_formula=vote, adduct=BR, tier="Assigned", ion_score=0.9, n_files=7,
+                           n_files_winner=5, n_files_ion=5, alternatives="", srcs="a,b,c,d,e,f,g",
+                           tier_reason=pd.NA)])
+    pool = [dict(src=s, neutral=known, adduct=BR, mz=mz, family="chlorinated_paraffin", label="paraffin C30Cl4",
+                 verdict="confirmed", why="corroborated by a confirmed 37Cl envelope (2 satellites)",
+                 summary="corroborated by a confirmed 37Cl envelope (2 satellites)", n_channels=1, n_satellites=2,
+                 ion_score=0.95, tier="Assigned", admitted_by=None, occurrence=None) for s in ("f", "g")]
+    cnt = AB.lock_known_species(m, pool, tol_ppm=6.0, log=quiet)
+    assert cnt["locked"] == 1 and m.at[0, "neutral_formula"] == known and m.at[0, "tier"] == "Assigned"
+    assert m.at[0, "alternatives"].startswith(f"{vote} {BR} x5 Assigned")
+    t = _req_table([(known, BR, True, 0.0), (vote, BR, False, 0.9)])
+    g = IC.tof_m2_gates(m, t, None, resolution=TOF, log=quiet)
+    assert (g["req_demoted"], g["known_demoted"]) == (1, 1)
+    assert m.at[0, "tier"] == "Candidate" and m.at[0, "neutral_formula"] == known          # demoted, not undone
+    assert m.at[0, "alternatives"].startswith(f"{vote} {BR} x5 Assigned")
+    assert m.at[0, "tier_reason"].endswith(
+        f"this overrules the known-species decision (demoted, not undone: the vote's reading it was kept over, "
+        f"{vote} {BR} x5 Assigned 0.90, heads `alternatives`)")
+    # a lock that only confirmed the vote's own reading has nothing displaced to name
+    m = _merged([(mz, known, BR, "Assigned", IC.KNOWN_LOCK_MARK + ": paraffin C30Cl4 -- confirmed in 2 files")])
+    m["alternatives"] = f"{vote} {BR} x2 Candidate 0.80"
+    IC.tof_m2_gates(m, _req_table([(known, BR, True, 0.0)]), None, resolution=TOF, log=quiet)
+    assert m.at[0, "tier_reason"].endswith("this overrules the known-species decision")
 
 
 # --------------------------------------------------------------------------- assign.run wiring
@@ -393,3 +475,102 @@ def test_assign_run_records_the_tests_counts_on_a_tof_and_skips_an_orbitrap():
         assert res["stats"]["tof_m2"]["skipped"] == "not a TOF"
     finally:
         IO.unregister_offline_sample(SID)
+
+
+def test_assign_run_hands_the_files_scoring_snapshot_to_the_stage():
+    """The stage's window is the file's own: a sample judged at a fitted sigma
+    of 8 ppm is searched within 3 sigma = 24 ppm (the scorer's 15 ppm alone
+    without the snapshot), so a bright Br ion whose 81Br line sits 20 ppm off
+    is seen there, not read as a split of its line."""
+    from peaky.io import io_mascope as IO
+    table = _tof_table()
+    mono = float(table.loc[table["peak_id"] == "L0", "mz"].iloc[0])
+    m2 = table["peak_id"].str.startswith("L") & (table["mz"] - mono).between(1.5, 2.5)
+    assert m2.any()
+    table.loc[m2, "mz"] = table.loc[m2, "mz"] * (1 + 20e-6)
+    snap = {"sigma_ppm": 8.0, "mu_ppm": 0.0, "mz_tolerance_ppm": 15.0, "instrument_type": "tof"}
+    lines = []
+    IO.unregister_offline_sample(SID)
+    try:
+        res = A.run(SID, context="ambient-air", cfg=PassConfig(noise_edge_batch_cps=0.74), peaks=table,
+                    use_cache=False, scoring=snap, adducts=["[M-H]-", "[M+Br]-", "[M+NO3]-"],
+                    reagent_n_relabel=False, resolving_power=Resolution.from_r(10_000),
+                    log=lambda *a, **k: lines.append(" ".join(str(x) for x in a)))
+    finally:
+        IO.unregister_offline_sample(SID)
+    assert res["pattern_scoring"]["sigma_ppm"] == 8.0 and res["stats"]["tof_m2"]["skipped"] is None
+    tof = [s for s in lines if s.startswith("[tiers] TOF ion M+2 line:")]
+    assert len(tof) == 1 and tof[0].endswith("(window 24 ppm)"), tof
+    led = res["ledger"]
+    bright = led[(led["role"] == "M0") & (led["neutral_formula"] == "C10H16O6") & (led["adduct"] == BR)]
+    v = T.tof_m2_verdicts(led, cfg=PassConfig(instrument_type="tof", noise_edge_batch_cps=0.74),
+                          resolving_power=Resolution.from_r(10_000), scoring=res["pattern_scoring"])
+    assert len(bright) == 1 and v.set_index("peak_id").at[bright["peak_id"].iloc[0], "status"] == SAT.HL_SEEN
+
+
+# --------------------------------------------------------------------------- assign_batch.run wiring
+def test_a_tof_class_batch_hands_the_batch_edge_to_req_and_the_series_to_the_gates(tmp_path, monkeypatch):
+    """End to end through assign_batch.run on a TOF-class batch (the per-file
+    assign and the IO layer stubbed): a Br reading whose own 81Br line no
+    spectrum shows is demoted by REQ, and a reading committed on the 81Br
+    partner of a Br1 ion's line is demoted by the doublet -- which needs the
+    stamped series. REQ's floor is 3x the BATCH's detection edge: a batch run
+    at another edge says another floor."""
+    import json
+    import os
+
+    from peaky.assignment import assign as A_
+    from peaky.batch import assign_batch as AB
+    from peaky.io import io_mascope as IO
+
+    rx, ry, q = ("C6H10O3", BR), ("C4H6O4", BR), ("C2H2NO8S", H)     # q: a non-halogen reading of ry's 81Br line
+    mx, my = C.ion_mz(*rx), C.ion_mz(*ry)
+    mq = my + ISO.D_81BR
+    t0 = pd.Timestamp("2021-02-18 00:00", tz="UTC")
+    rows = []
+    for i in range(14):
+        w = _wave(i)
+        lines = [(mx, 1e3 * w), (my, 1e3 * w), (mq, 0.97e3 * w)] + [(60.0 + 3.7 * j, 5.0) for j in range(80)]
+        rows += [dict(sample_item_id=f"s{i:02d}", sample_item_name=f"n{i:02d}", datetime_utc=t0 + pd.Timedelta(minutes=10 * i),
+                      peak_id=f"s{i:02d}_{k}", mz=float(m), height=float(h)) for k, (m, h) in enumerate(lines)]
+    pk = pd.DataFrame(rows)
+
+    def fake_assign(sid, context="ambient-air", **kw):
+        led = L.new_ledger(pd.DataFrame([("p1", mx, 1e3), ("p2", my, 1e3), ("p3", mq, 970.0)],
+                                        columns=["peak_id", "mz", "height"]))
+        for pid, (n, a) in (("p1", rx), ("p2", ry), ("p3", q)):
+            L.commit_assignment(led, pid, neutral_formula=n, adduct=a, ion_formula=_ion(n, a), ion_score=0.9,
+                                compound_score=0.9, ppm_error=0.1, pass_no=1, method="cheminfo+grid",
+                                confidence="High", commentary="stub")
+        T.apply_tiers(led)
+        led.loc[led["role"] == L.ROLE_M0, "tier"] = T.TIER_ASSIGNED
+        return {"ledger": led, "stats": {"noise_edge_cps": 5.0, "height_gate_cps": 5.0},
+                "plausibility_audit": [], "summaries": {}, "problems": []}
+
+    monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
+    monkeypatch.setattr(IO, "fetch_peaks", lambda client, sid, use_cache=True: pk[pk["sample_item_id"] == sid]
+                        [["peak_id", "mz", "height"]].reset_index(drop=True))
+    monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
+    monkeypatch.setattr(A_, "run", fake_assign)
+
+    def run(d, **kw):
+        AB.run(peaks=pk, ts_peaks=pk, reagent="Br", batch="test batch", out_dir=str(d), k_min=2, k_max=3,
+               min_gain=0.0, n_jobs=1, resolving_power=10_000, log=quiet, **kw)
+        summ = json.load(open(os.path.join(d, "batch_summary.json")))
+        iso = pd.read_csv(os.path.join(d, "tables", "iso_checks.csv"))
+        merged = pd.read_csv(os.path.join(d, "merged_ledger.csv"))
+        return summ, iso, merged
+
+    summ, iso, merged = run(tmp_path / "a")
+    g = summ["merge_gates"]["tof_m2"]
+    assert g["ran"] and g["req_demoted"] == 1 and g["doublet_demoted"] == 1, g
+    tier = {(n, a): t for n, a, t in zip(merged["neutral_formula"], merged["adduct"], merged["tier"])}
+    assert tier[rx] == "Candidate" and tier[q] == "Candidate" and tier[ry] == "Assigned", tier
+    edge = summ["noise_edge_batch_cps"]
+    req = iso[(iso["check"] == "REQ") & (iso["neutral_formula"] == rx[0])].iloc[0]
+    assert req["verdict"] == "absent" and f"under the {3 * edge:.3g}-cps floor" in req["note"]
+    # another batch edge, another floor: REQ reads the batch's edge, not its spectra's own
+    summ2, iso2, _m = run(tmp_path / "b", cfg=PassConfig(noise_edge_batch_cps=37.0))
+    assert summ2["noise_edge_batch_cps"] == 37.0 != edge
+    req2 = iso2[(iso2["check"] == "REQ") & (iso2["neutral_formula"] == rx[0])].iloc[0]
+    assert "under the 111-cps floor" in req2["note"], req2["note"]
