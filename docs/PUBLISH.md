@@ -57,6 +57,11 @@ Only committed **M0** rows carry one — peaky tiers nothing else, and null is h
 that is said. Absence is not agreement: Mascope's `tier_disagrees` filter
 excludes untiered rows from both answers.
 
+Mascope's tier column, tier strip, sorting, filters and roll-ups all read `tier`,
+so a row peaky holds Candidate shows there as `assigned` wherever the banding puts
+it; the publish summary leads with how many such rows the ledger has, and peaky's
+verdict stays readable in the `engine tier` column and the `tier_disagrees` filter.
+
 This is the point of the feature. On a real ledger, 195 of 1096 assigned rows
 were rows where peaky demoted a peak that Mascope's banding would have called
 `assigned` — disagreements that used to be flattened away and are now a filter
@@ -215,7 +220,11 @@ formula is then **measured** against every sample that holds that peak with the 
 seeded scorer - the same path its own untargeted search propagates through - so what the
 ledger shows is Mascope's fit of peaky's formula, tiered under the ledger's bands, with
 `peaky` named as the source. peaky's tiers, ion scores, file counts and jitter stay in the
-run directory; `--dry-run` shows exactly what will be sent. The run record's config
+run directory; `--dry-run` shows exactly what will be sent. Because a batch row carries no
+verdict, `publish-batch` sends only the merged rows peaky holds **Assigned** by default
+(the command counts the rows it held back); `--include-candidates` sends the Candidates
+too, with a warning, and the run's config records the sent rows by peaky's tier
+(`published_tiers`). The run record's config
 carries the batch summary's headline (`publish.BATCH_CONFIG_KEYS`: the reagent, the
 selection, the file offsets, the merged tier counts `merged_tiers` and, beside them, the
 claim tallies `claims` — merged, pooled, per stage and per tier), capped like a manifest;

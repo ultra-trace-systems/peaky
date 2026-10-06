@@ -391,8 +391,8 @@ def test_publish_batch_reads_the_claims_off_an_older_merged_ledger(tmp_path, cap
     # the CLI hands the merged ledger over (a dry run writes the payload)
     run = tmp_path / "run"
     run.mkdir()
-    merged.assign(mz=[100.0, 200.0, 300.0, 400.0], neutral_formula=["C5H8O2"] * 4,
-                  adduct=["[M-H]-"] * 4).to_csv(run / "merged_ledger.csv", index=False)
+    merged.assign(mz=[100.0, 200.0, 300.0, 400.0], neutral_formula=["C5H8O2"] * 4, adduct=["[M-H]-"] * 4,
+                  tier=["Assigned"] * 4).to_csv(run / "merged_ledger.csv", index=False)
     (run / "batch_summary.json").write_text(json.dumps({"merged_tiers": {"Assigned": 4}}))
     out = tmp_path / "payload.json"
     cli.cmd_publish_batch(cli.build_parser().parse_args(

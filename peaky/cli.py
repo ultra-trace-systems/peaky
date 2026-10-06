@@ -503,6 +503,22 @@ def cmd_gka(args) -> None:
 LEVELS_BEFORE_SCALE = ("older     {n} row(s) were levelled on a scale before the evidence scale: every such "
                        "letter publishes as no level and the row's claim as tentative")
 
+#: publish's `candidate_shown_assigned`, the line its summary leads with: Mascope's
+#: tier column, strip, filters and roll-ups read the tier Mascope derives, not peaky's
+CANDIDATE_SHOWN_ASSIGNED = ("note       {n} row(s) peaky holds Candidate will show as Mascope 'assigned' "
+                            "(Mascope derives its own tier); peaky's verdict is the 'engine tier' "
+                            "column / the tier_disagrees filter")
+
+#: publish-batch's line for the merged rows it held back (the batch import carries no verdict)
+BATCH_HELD_BACK = ("held back  {n} merged row(s) peaky does not hold Assigned ({tiers}): a batch "
+                   "row carries no verdict, so in Mascope they would land indistinguishable "
+                   "from Assigned rows; --include-candidates sends them")
+
+#: ...and the warning when --include-candidates sends them anyway
+BATCH_CANDIDATES_SENT = ("WARNING    --include-candidates: {n} of the {total} row(s) are not peaky "
+                         "Assigned ({tiers}); a batch row carries no verdict, so in Mascope they "
+                         "read like Assigned rows")
+
 
 def cmd_publish(args) -> None:
     """Publish a finished ledger into Mascope's peak-assignment run ledger.
@@ -582,7 +598,10 @@ def cmd_publish(args) -> None:
     rows, summary = P.build_rows(led, intensity_column=intensity, bands=bands,
                                  mechanism_ids=mechanism_ids)
 
-    print(f"\nsample     {sample_id}")
+    print()
+    if summary["candidate_shown_assigned"]:
+        print(CANDIDATE_SHOWN_ASSIGNED.format(n=summary["candidate_shown_assigned"]))
+    print(f"sample     {sample_id}")
     print(f"bands      assigned >= {bands['assigned']}, candidate >= {bands['candidate']}"
           "  (evidence scale = fit x plausibility)")
     print(f"rows       {summary['rows']} of {len(led)} ledger row(s)")
@@ -682,8 +701,10 @@ def cmd_publish_batch(args) -> None:
     themselves. The server matches each row to the nearest batch peak and then
     MEASURES the formula against every sample that holds the peak, so what the
     ledger shows is Mascope's own fit of peaky's formula, under peaky's name.
-    peaky's tiers, scores and jitter stay in the run directory; --dry-run is a
-    complete check of the translation."""
+    peaky's tiers, scores and jitter stay in the run directory - no verdict
+    travels with a row - so only the merged rows peaky holds Assigned are sent
+    unless --include-candidates; --dry-run is a complete check of the
+    translation."""
     import pandas as pd
 
     from peaky.io import publish as P
@@ -713,9 +734,23 @@ def cmd_publish_batch(args) -> None:
         print(f"[publish-batch] resolved {len(mechanism_ids)}/{len(adducts)} adduct(s) "
               "to ionization-mechanism ids")
 
-    rows, rs = P.build_batch_rows(merged, mechanism_ids=mechanism_ids,
-                                  ion_formulas=loaded["ion_formulas"])
+    try:
+        rows, rs = P.build_batch_rows(merged, mechanism_ids=mechanism_ids,
+                                      ion_formulas=loaded["ion_formulas"],
+                                      include_candidates=args.include_candidates)
+    except P.PublishError as exc:
+        sys.exit(f"Cannot publish this run: {exc}.")
     print(f"\nrows       {rs['rows']} of {len(merged)} merged row(s)")
+    if rs["held_back"]:
+        print(BATCH_HELD_BACK.format(
+            n=sum(rs["held_back"].values()),
+            tiers=", ".join(f"{t} {n}" for t, n in sorted(rs["held_back"].items()))))
+    not_assigned = {t: n for t, n in rs["by_tier"].items()
+                    if P.ENGINE_TIER_MAP.get(t.lower()) != P.TIER_ASSIGNED}
+    if not_assigned:
+        print(BATCH_CANDIDATES_SENT.format(
+            n=sum(not_assigned.values()), total=rs["rows"],
+            tiers=", ".join(f"{t} {n}" for t, n in sorted(not_assigned.items()))))
     if rs["dropped_no_formula"]:
         print(f"skipped    {rs['dropped_no_formula']} row(s) without a formula")
     print(f"ionization {rs['resolved_mechanisms']} row(s) carry a mechanism id -- the "
@@ -726,10 +761,13 @@ def cmd_publish_batch(args) -> None:
     if rs["derived_ion_formulas"]:
         print(f"ion formulas derived from neutral + adduct: {rs['derived_ion_formulas']}")
     if not rows:
+        if rs["held_back"]:
+            sys.exit("Nothing to publish: no merged row with a formula is Assigned "
+                     "(--include-candidates sends the others).")
         sys.exit("Nothing to publish: no merged row carries a formula.")
 
     version = args.engine_version or P.engine_version(None)
-    config = P.batch_config(summary, merged=merged)
+    config = P.batch_config(summary, merged=merged, published_tiers=rs["by_tier"])
     if config.get("levels_before_scale"):
         print(LEVELS_BEFORE_SCALE.format(n=config["levels_before_scale"]))
 
@@ -1234,6 +1272,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "it matters more than for a per-sample publish: the server "
                          "measures a row THROUGH its mechanism, so a row without one "
                          "lands nothing.")
+    pb.add_argument("--include-candidates", action="store_true",
+                    help="also send the merged rows peaky holds Candidate. Off by default: "
+                         "a batch row carries no verdict, so in Mascope a Candidate lands "
+                         "indistinguishable from an Assigned row. The run's config records "
+                         "the sent rows by peaky's tier (published_tiers)")
     pb.add_argument("--engine-version", default=None,
                     help="version string to stamp on the run (default: peaky's own)")
     pb.add_argument("--no-wait", action="store_true",

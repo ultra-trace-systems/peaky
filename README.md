@@ -248,7 +248,13 @@ in-app engine's own on the same sample. The row carries **two** tiers: peaky's
 own verdict (`engine_tier`) and Mascope's banding of the evidence (`tier`,
 derived server-side and never sent). Mascope tiers by threshold where peaky
 tiers mechanically, so the two disagree on real rows — which is the point, and
-the app can filter on it. Details and failure modes:
+the app can filter on it. Mascope's tier column, tier strip and filters read its
+own banding, so a row peaky holds Candidate can show there as `assigned` (the
+publish summary leads with how many); peaky's verdict is the `engine tier` column
+and the `tier_disagrees` filter. `peaky publish-batch <run_dir>` lands a batch
+run's merged ledger on Mascope's batch ledger, where a row carries no verdict at
+all, so it sends only the rows peaky holds Assigned unless you pass
+`--include-candidates`. Details and failure modes:
 **[docs/PUBLISH.md](docs/PUBLISH.md)**.
 
 Step-by-step walkthrough: **[QUICKSTART.md](QUICKSTART.md)**. Reagent depth, the
