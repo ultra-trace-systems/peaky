@@ -12,7 +12,7 @@ chemically-plausible IONS fall inside the *calibrated* mass window -- the honest
 What is counted: every ion THIS run could have committed there.
 
 * its channels -- the adducts the run scored (``adducts``: assign.run's detected
-  reagent channels plus the opportunistic ones the server resolved; a row on any
+  reagent channels plus the side channels it opened; a row on any
   other adduct adds its own). Until 2026-09 every run was audited with one fixed
   Br-CIMS set, so a uronium (+) channel enumerated only negative adducts (82 % of
   its M0 rows read "unique" at density 0) and a nitrate channel never tried

@@ -357,8 +357,8 @@ def _stage_plausibility(st):
 
 def _profile_name_for(adducts) -> str | None:
     """The registered reagent profile whose analyte channels are exactly
-    `adducts` (the run's forced or detected list, before the opportunistic
-    extras): its name, or None when no profile -- or more than one -- matches."""
+    `adducts` (the run's forced or detected list, before the side channels
+    join): its name, or None when no profile -- or more than one -- matches."""
     from peaky.chem import profiles as PR
     want = {str(a) for a in (adducts or ())}
     if not want:
@@ -759,44 +759,62 @@ def run(sample_id: str, context: str = "ambient-air", *,
         log("[reagent] WARNING: no adducts given and no server match names a known "
             "channel; assuming [M-H]- (negative). Pass adducts= (or --reagent) for a "
             "positive or sparse-match sample.")
-    analyte_adducts = list(adducts)     # before the opportunistic extras (the profile match)
+    analyte_adducts = list(adducts)     # before the side channels join (the profile match)
     # Polarity is read from the (detected or forced) adducts (cation forms end "+").
     polarity = "positive" if any(str(a).rstrip().endswith("+") for a in adducts) \
         else "negative"
-    # opportunistic extra channels, scored only if the server has the mechanism
-    # registered (auto-selection covers only the sample's own channels, so the
-    # ids must be passed explicitly). Negative (halide-CIMS):
-    #   +CO3-  carbonate adducts of aldehydes from lingering air ions
-    #   +Br2-  di-bromide reagent-cluster adducts of analytes -- the n_Br=2
-    #          "C/H lattice" residual is biogenic SOA seen this way (2026-06-12)
-    # NB: +Br3- is intentionally NOT a blanket scoring channel -- adding it lost
-    # 40 base M0s (incl. TFA) for 0 gains (heavier per-formula scoring times out
-    # batches; Br3- is the dominant reagent ion). Positive (urea-CIMS): the
-    # alkali / ammonium adducts the source also produces.
-    # LABELLED-AMMONIUM run: the ¹⁴N [M+NH4]+ adduct is the reagent's ~2 % ¹⁴N
+    # SIDE CHANNELS: the adducts the reagent profile DECLARES beside its analyte
+    # channels (ReagentProfile.side_channels: the uronium profile's [M+NH4]+), or
+    # the caller's explicit set (`--side-channels`, PassConfig.side_channels),
+    # scored only if the server has the mechanism registered (auto-selection
+    # covers only the sample's own channels, so the ids must be passed
+    # explicitly). Nothing is opened by polarity: a channel offered to every peak
+    # doubles the alias space, and the polarity-wide set this replaced (carbonate
+    # and di-bromide on every negative run, sodium and ammonium on every positive
+    # one) read, on the measured batches, ions the run already held under another
+    # reading or ions with no support of their own. Opt-in examples: [M+CO3]- on
+    # a source with real CO3- chemistry (carbonyl.CO3- air ions), [M+Br2]- for
+    # di-bromide clusters of analytes on a bromide source. NB: [M+Br3]- is a poor
+    # choice -- as a blanket channel it lost 40 base M0s (incl. TFA) for 0 gains
+    # (Br3- is the dominant reagent ion).
+    # LABELLED-AMMONIUM run: the 14N [M+NH4]+ adduct is the reagent's ~2 % 14N
     # impurity satellite (-0.99703 Da, modelled by the scorer's ^N purity), not
     # an analyte channel -- enumerating it would only re-claim those satellites
-    # as bogus M0s. Ambient ¹⁴NH₃ was not detectable above the impurity on the
-    # 2026-09-10 file (see profiles.NH4_15N). Keep the alkali adduct.
-    # ... and NO alkali channel either: [X+Na]+ sits 0.2 mDa from
-    # [(X-O2+C2H4)+^NH4]+ (Na - ^NH4 = 3.9584 Da; C2H4 - O2 = 3.9585 Da), so every
-    # ^NH4 adduct of an O>=2 neutral has a Na-adduct hydrocarbon twin that the
-    # complexity prior then prefers (palmitic acid became "C18H36 [M+Na]+" -- 114
-    # Na fits on the 2026-09-10 file, unresolvable at R 60k). A CI source makes no
-    # Na+; the labelled reagent reading is the parsimonious one.
+    # as bogus M0s (see profiles.NH4_15N). ... and NO alkali channel either:
+    # [X+Na]+ sits 0.2 mDa from [(X-O2+C2H4)+^NH4]+ (Na - ^NH4 = 3.9584 Da;
+    # C2H4 - O2 = 3.9585 Da), so every ^NH4 adduct of an O>=2 neutral has a
+    # Na-adduct hydrocarbon twin that the complexity prior then prefers. Both
+    # stay closed on a labelled-ammonium run even when asked for.
     labelled_nh4 = any("^NH4" in str(a) for a in adducts)
-    opportunistic = (([] if labelled_nh4 else ["[M+Na]+", "[M+NH4]+"])
-                     if polarity == "positive"
-                     else ["[M+CO3]-", "[M+Br2]-"])
+    sign = "+" if polarity == "positive" else "-"
+    requested = [str(a) for a in (getattr(cfg, "side_channels", None) or ())]
+    side_refused = {}
+    for a in requested:
+        if a in adducts:
+            continue                                  # already an analyte channel
+        if a not in io_mascope.ADDUCT_TO_MECH:
+            side_refused[a] = "no server mechanism"
+        elif not a.rstrip(".").endswith(sign):
+            side_refused[a] = f"not a {polarity} channel"
+        elif labelled_nh4 and a in ("[M+NH4]+", "[M+Na]+"):
+            side_refused[a] = "labelled-ammonium run"
+    side = [a for a in requested if a not in adducts and a not in side_refused]
     if peaks is not None:
-        # the offline sample's own channels are the only ones that resolve
+        # an offline sample resolves only the channels it registers: its own and
+        # the side channels this run opens -- so an offline run (and a decoy arm,
+        # which stamps the side channels its run recorded) opens what the run did
         io_mascope.register_offline_sample(
             sample_id, peaks,
-            [io_mascope.ADDUCT_TO_MECH[a] for a in adducts if a in io_mascope.ADDUCT_TO_MECH],
+            [io_mascope.ADDUCT_TO_MECH[a] for a in adducts + side if a in io_mascope.ADDUCT_TO_MECH],
             scoring=scoring)
-    extra_channels = [a for a in opportunistic
+    extra_channels = [a for a in side
                       if io_mascope.resolve_mechanism_ids(
                           client, [io_mascope.ADDUCT_TO_MECH[a]])]
+    if requested or side_refused:
+        _unres = [a for a in side if a not in extra_channels]
+        log(f"[run] side channels: opened {extra_channels or 'none'}"
+            + (f"; not resolved by the server {_unres}" if _unres else "")
+            + "".join(f"; {a} skipped ({why})" for a, why in side_refused.items()))
     mech_names = [io_mascope.ADDUCT_TO_MECH[a]
                   for a in adducts + extra_channels
                   if a in io_mascope.ADDUCT_TO_MECH]
@@ -807,9 +825,9 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # this goes in mechanism_ids rather than a parallel argument.
     cfg.mechanism_ids = (list(mech_map.values())
                          + io_mascope.local_mechanism_tokens(adducts)) or None
-    # the reagent halogen from the DECLARED channels, before the server's
-    # opportunistic ones join (C43): an [M+Br2]- side channel opened on a nitrate
-    # run does not make it a bromide reagent
+    # the reagent halogen from the DECLARED channels, before the side channels
+    # join: an [M+Br2]- side channel opened on a nitrate run does not make it a
+    # bromide reagent
     reagent_halogen = evidence.channel_halogen(adducts)
     adducts = adducts + [a for a in extra_channels if a not in adducts]
     has_halogen_adduct = any(h in str(a) for a in adducts
@@ -966,7 +984,10 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # the reagent halogen of the declared channels (C43) this file's evidence
     # read: a batch's merge vote computes the file's class in the parent with it
     st["reagent_halogen"] = reagent_halogen
-    st["admitted"] = {"height": adm["height"], "occurrence": adm["occurrence"],
+    # the side channels this file OPENED (asked for and resolved by the server;
+    # [] = none): two runs of one sample that differ here differ for this reason
+    st["side_channels"] = list(extra_channels)
+    st["admitted"] ={"height": adm["height"], "occurrence": adm["occurrence"],
                       "rejected": adm["rejected"]}
     log(f"[run] stats {json.dumps(st)}")
     return {"ledger": led, "stats": st, "summaries": summaries,
@@ -1011,6 +1032,7 @@ def main(argv=None):
     PR.apply_height_cutoff_x_edge(cfg, None, explicit=args.height_cutoff_x_edge,
                                   log=print)
     PR.apply_ion_only_channels(cfg, None)        # no profile here: the bucket stays off
+    PR.apply_side_channels(cfg, None)            # ... and so does every side channel
     out = run(args.sample_id, args.context, cfg=cfg, use_cache=not args.no_cache,
               do_pass2=not args.no_pass2, do_pass3=not args.no_pass3)
     # report.py will own file outputs; for now write the ledger + manifest

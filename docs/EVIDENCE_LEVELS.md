@@ -301,11 +301,12 @@ lift) and the merge vote's class (§13) read the reagent's halogen. It is the
 halogen the run's **declared analyte channels** name (`evidence.channel_halogen`):
 Br for a channel set holding `[M+Br]-` or `[M+HBr+Br]-` (a bromide or mixed
 nitrate/bromide reagent), likewise Cl / I, none for a halogen-free set.
-Declared, not opened: a side channel the server opens on a nitrate run
-(`[M+Br2]-`) makes it no bromide reagent.
+Declared, not opened: a side channel a nitrate run opens (`[M+Br2]-` asked for
+with `--side-channels`; [REAGENTS.md](REAGENTS.md) §3b) makes it no bromide
+reagent.
 
 - **Per file:** `assign.run` takes it from the channels before the
-  opportunistic ones join, hands it to the file's pair facts and records it in
+  side channels join, hands it to the file's pair facts and records it in
   the file's stats (`per_file[i].reagent_halogen` in `batch_summary.json`); a
   batch's parent computes the file's vote class with that same halogen.
 - **Pooled:** the batch's reagent profile's channels, recorded as

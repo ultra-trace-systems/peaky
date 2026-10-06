@@ -185,8 +185,8 @@ class PassConfig:
     residual_max_steps: int = 2
     # explicit ionization-mechanism ids for match_compounds. None = server
     # auto-selects the sample's configured channels; set by assign.run to the
-    # sample's channels PLUS extras like +CO3- so background air-ion adducts
-    # get scored too.
+    # sample's channels PLUS the side channels the run opened (`side_channels`)
+    # so their adducts get scored too.
     mechanism_ids: list | None = None
     # enumeration: the local grid is the primary, reliable candidate source.
     # cheminfo is an optional best-effort enrichment (compound names) and is the
@@ -294,6 +294,17 @@ class PassConfig:
     # stage does not run. A configuration knob, not a runtime field: it is
     # part of the reproducibility fingerprint.
     ion_only_channels: tuple | None = None
+    # SIDE CHANNELS: adducts scored on top of the run's analyte channels when the
+    # server resolves their mechanism (assign.run; an offline sample registers
+    # them). None = UNSET: `profiles.apply_side_channels` copies the reagent
+    # profile's declared tuple here (the uronium profile: ("[M+NH4]+",); every
+    # other bundled profile nothing) and treats a tuple this config ALREADY
+    # carries -- () included -- as the caller's explicit choice (`--side-channels`),
+    # which outranks the profile. Nothing is ever opened by polarity alone. A
+    # configuration knob, not a runtime field: it rides the cfg into every spawned
+    # worker and is part of the reproducibility fingerprint; what each file
+    # actually opened is in its stats (`side_channels`).
+    side_channels: tuple | None = None
     # Reference-list selection prior: a candidate neutral on an ACTIVE reference
     # peaklist (a published product of the sample's chemistry, or a known
     # contaminant) is far more likely real than a mass-coincidence monster of

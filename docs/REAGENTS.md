@@ -82,8 +82,9 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
    peaky's own envelope predictor `isotopes.isotope_pattern`; unset ⇒
    `isotopes.LABEL_PURITY_15N` = 0.98), and — for labelled reagents — `label_isotope` /
    `label_max` (the caret heavy isotope a *covalent product* can carry and its max
-   count; drives the heavy-isotope rescue in `labeled.py`), and the optional
-   `height_cutoff_x_edge` (§3a below). Built-ins: **`BR`**
+   count; drives the heavy-isotope rescue in `labeled.py`), the optional
+   `height_cutoff_x_edge` (§3a below), and the declared `side_channels` (§3b
+   below: `[M+NH4]⁺` on `UR`, none elsewhere). Built-ins: **`BR`**
    (Br⁻, neg, normalise on reagent), **`UR`** (urea/uronium, pos, normalise on
    TIC), **`NO3`** (nitrate, neg, reagent), **`NO3_15N`** (¹⁵N nitrate, neg, TIC,
    `purity 0.98`, `label_isotope='^N'`, `label_max=2`), **`IODIDE`**
@@ -143,8 +144,9 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
    > **Measured facts that shaped the profile:** (i) the ¹⁴N satellite / ¹⁵N
    > adduct ratio is 0.018–0.021 on the 20 brightest adducts → effective purity
    > 0.98 = the reagent's nominal 98 atom %, ambient ¹⁴NH₃ contributes nothing
-   > detectable, so **`[M+NH4]⁺` is not a channel** (assign.run drops it from the
-   > opportunistic set — it would only re-claim the satellites as bogus M0s), and
+   > detectable, so **`[M+NH4]⁺` is not a channel** (assign.run keeps it closed
+   > even when `--side-channels` asks — it would only re-claim the satellites as
+   > bogus M0s), and
    > **neither is `[M+Na]⁺`**: Na − ^NH4 = 3.9584 Da while C2H4 − O2 = 3.9585 Da, so
    > `[X+Na]⁺` of a hydrocarbon sits 0.2 mDa from `[(X−C2H4+O2)+^NH4]⁺` and the
    > complexity prior picks the hydrocarbon (palmitic acid read as C18H36·Na⁺; 114
@@ -245,6 +247,73 @@ The resolved multiple is recorded per run: `batch_summary.json`
 (`height_cutoff_x_edge` + `height_cutoff_x_edge_source`, the `gate` block with the
 derivation's transient-share table, plus each file's resolved `height_gate_cps`)
 and `run_manifest.json['config']` (the knob: a number, or `"auto"`).
+
+### 3b. `side_channels` — declared per reagent, closed by default
+
+A **side channel** is an adduct the reagent chemistry also makes beside its
+analyte channels (`adducts`). `assign.run` scores it on top of the analyte
+channels when the server has its mechanism (an offline sample registers it),
+on the run's own polarity only. Nothing is opened by polarity.
+
+| profile | `side_channels` | why |
+| --- | --- | --- |
+| `UR` | `[M+NH4]⁺` | the urea source makes ammonium adducts; the batch's amine gate decides each reading (below) |
+| every other built-in | none | — |
+
+- **Uronium `[M+NH4]⁺` rides with the amine gate.** The ammonium adduct of a
+  CHO neutral X is the same ion as `[M+H]⁺` of the amine X+NH₃, so the batch
+  decides each merged `[M+NH4]⁺` reading by time
+  (`cleanup.prefer_amine_over_ammonium`, `merge_gates.amine` in
+  `batch_summary.json`; SKILL.md *Reagent-aware chemistry*): it stays an
+  ammonium adduct when it tracks its own `[M+H]⁺` / urea parent, else it is
+  re-read as the protonated amine at Candidate (a siloxane, a protected
+  identity or a valence-impossible amine keeps it). The evidence scale reads
+  the same gate and the NH4 admissibility rule ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §6).
+  On a uronium Orbitrap batch 54 of the 78 merged Assigned ammonium readings
+  tracked their own parent at r ≥ 0.7. The gate is a batch stage (it needs the
+  batch time series); in every file, and so also in a single-sample
+  `peaky assign` run, the reagent-N isobar rule of the tier pass already holds
+  an ammonium reading at Candidate unless the same neutral is also read on
+  `[M+H]⁺` or on the urea adduct, or anchors a series
+  ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md), reagent-N isobar demotion).
+- **The opt-in.** `--side-channels ADDUCT ...` on `peaky assign`, `batch` and
+  `pool` (`PassConfig.side_channels`; `pipeline.run_batch(side_channels=)`)
+  opens exactly the channels named instead of the profile's;
+  `--side-channels none` closes them all, the uronium one included. Each must
+  be a channel the server can score (`io_mascope.ADDUCT_TO_MECH`). A channel of
+  the other polarity is skipped and logged; a labelled-ammonium run keeps
+  `[M+NH4]⁺` and `[M+Na]⁺` closed even when asked (the ¹⁴N impurity satellite
+  and the Na / ¹⁵NH₄ twin, §3 above). A `--reagent-config` profile declares its
+  own (`"side_channels": ["[M+CO3]-"]`); `compose` unions them. A forced
+  `--adducts` list has no profile, so its side channels stay closed unless
+  asked for.
+- **Why carbonate, di-bromide and sodium are off by default.** Before 0.10.0
+  `[M+CO3]⁻` and `[M+Br2]⁻` opened on every negative run and `[M+Na]⁺` /
+  `[M+NH4]⁺` on every positive one whenever the server listed the mechanism.
+  On the batches measured they read nothing the data support. On a
+  labelled-nitrate Orbitrap batch 72 of 77 Assigned `[M+CO3]⁻` readings were the
+  ion the closed run holds as a radical-anion Candidate (the carbonate cluster of
+  the C(n−1) neutral and the radical anion of the Cn neutral are one ion, so
+  the ¹³C line cannot split them), and the carbonate reading's neutral never
+  co-varied best. On a bromide/nitrate TOF batch the CO₃⁻ ion was present in
+  2 of 230 spectra, and 20 of the 22 `[M+Br2]⁻` readings with a testable M+2
+  line failed it. On a uronium batch none of 8 `[M+Na]⁺` readings tracked a
+  partner. Where the chemistry is real -- a source with a bright CO₃⁻ ion --
+  open it: `--side-channels '[M+CO3]-'`.
+- **The record.** Each file's stats carry the channels it opened
+  (`side_channels`, `[]` = none: two runs of one sample that differ here differ
+  for this reason); `batch_summary.json` records `side_channels` (the union the
+  files opened), `side_channels_files` (files per channel),
+  `side_channels_requested` and `side_channels_source`; the run manifest's
+  config carries the knob. The scorecard's decoy arms on the run's own channels
+  open what the run recorded ([SCORECARD.md](SCORECARD.md)).
+- **The reagent halogen reads the declared channels.** An opted-in
+  `[M+Br2]⁻` on a nitrate run leaves the run's reagent halogen unset
+  ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §3.4).
+- **Not the evidence scale's lock.** `evidence.SIDE_CHANNELS_LOCKED` is a
+  different switch: it keeps formate, acetate, CO₃⁻, … out of the evidence
+  scale's decomposition grid whatever the engine scored
+  ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §6.1).
 
 3. **Pick the cluster-library key** (`reagent_for_adducts`). From the analyte
    adducts: `^NH4` → `"ammonium15N"` (`_AMMONIUM_15N_KEY`); `CH4N2O` → `"urea"`;
@@ -366,6 +435,7 @@ and `run_manifest.json['config']` (the knob: a number, or `"auto"`).
 | --- | --- |
 | `ReagentProfile` | the run's mode config: polarity, adducts, ranges, normaliser, reagent_ion_re, detect_adduct, context, purity |
 | `build_library` | `[(label, ion_mz, ion_formula)]` — the enumerated reagent-cluster ions; a halide cluster's label carries its core's isotopologue tag (`[Br1+1xH2O]- (81Br)`), which the batch stamp reads to keep the isotopologues of one cluster formula apart |
+| `ReagentProfile.side_channels` | the side channels a run of the reagent opens when the server resolves them (§3b); `batch_summary.json` records what the files opened (`side_channels`, `side_channels_files`) and what was asked for (`side_channels_requested`, `side_channels_source`) |
 | `ReagentProfile.water_cores` | the reagent-side cores whose water ladder a batch measures on its own time series (`batch/reagent_water.py`, [MERGE.md](MERGE.md) §3 step 4a) — declaring a core claims nothing by itself |
 | `label_reagents` | count of ledger peaks set to `role='reagent'` (each with a known `ion_formula`) |
 | `reagent_for_adducts` | the cluster-library key (`"Br"`/`"I"`/`"Cl"`/`"urea"`/`None`) |
@@ -453,6 +523,7 @@ and `run_manifest.json['config']` (the knob: a number, or `"auto"`).
 | `profiles.resolve` | name/alias or `auto` (detect_adduct, else an error) → a profile |
 | `profiles.register` / `from_dict` / `load_config` | registry + JSON/TOML reagent loading |
 | `profiles.resolve_height_cutoff_x_edge` / `height_cutoff_x_edge_source` / `apply_height_cutoff_x_edge` | the height-gate multiple: resolve (explicit > profile > default), name its source, stamp it on a `PassConfig` |
+| `profiles.apply_side_channels` / `side_channels_source` | the side channels: resolve (explicit > the cfg's own tuple > the profile's declaration > none), stamp them on `PassConfig.side_channels`, name their source |
 | `profiles._detect_polarity` | the polarity word in the auto-detect error (`+`/`−` from the mechanisms' charge, else a `polarity` column) |
 | `reagents.reagent_for_adducts` | analyte adducts → cluster-library key |
 | `reagents.build_library` | enumerate the reagent-cluster ions (halide + positive) |

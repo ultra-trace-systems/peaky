@@ -86,6 +86,20 @@ class ReagentProfile:
     # = off (every other bundled profile: an unscoped fact would lift two-channel
     # rows of any chemistry).
     neutral_pair: tuple = ()
+    # SIDE CHANNELS: adducts the chemistry also makes beside its analyte channels,
+    # scored on top of `adducts` when the server resolves their mechanism
+    # (assign.run). DECLARED here, never opened by polarity: an extra channel
+    # offered to every peak doubles the alias space, and on the measured batches
+    # the polarity-wide set read ions the run already held, or ions with no
+    # support (a carbonate cluster of the C(n-1) neutral is the same ion as the
+    # Cn radical anion; a di-bromide reading whose own 81Br line is missing; a
+    # sodium adduct that tracks no partner). Only the uronium profile declares
+    # one: [M+NH4]+, the ammonium adduct the urea source makes, which the batch's
+    # amine gate (cleanup.prefer_amine_over_ammonium) then confirms by time
+    # behaviour or re-reads as the protonated amine. Empty = closed. A run opens
+    # others with `--side-channels` (PassConfig.side_channels), which outranks
+    # this tuple; copied onto the cfg by `apply_side_channels`.
+    side_channels: tuple = ()
     aliases: tuple = field(default_factory=tuple)
 
 
@@ -116,6 +130,8 @@ UR = ReagentProfile(
     detect_adduct="[M+(CH4N2O)H]+",
     context="uronium",
     neutral_pair=("[M+H]+", "[M+(CH4N2O)H]+"),
+    # the ammonium adduct of the urea source, kept or re-read by the batch's amine gate
+    side_channels=("[M+NH4]+",),
     aliases=("ur", "uronium", "urea", "urea-cims", "ur+"),
 )
 
@@ -276,7 +292,7 @@ EASYIC = ReagentProfile(
 #   * ¹⁴N satellite / ¹⁵N adduct = 0.018-0.021 on the 20 brightest adducts ->
 #     effective purity 0.98 (= the reagent's nominal 98 atom %); ambient ¹⁴NH₃
 #     is not visible, so [M+NH4]+ is NOT an analyte channel here (it would only
-#     re-claim the satellites; assign.run drops it from the opportunistic set).
+#     re-claim the satellites; assign.run keeps it closed even when asked for).
 #   * the bare reagent ions (^NH4+ 19.031, ^NH4+·H2O 37.041, (^NH3)2H+ 37.054)
 #     sit BELOW the m/z 40-600 window and no water/ammonia cluster of them is
 #     seen in-window -> the correlation layer normalises on TIC (the NO3_15N /
@@ -356,6 +372,8 @@ _CONFIG_FIELDS = (
     "water_cores",
     # the (bare, cluster) neutral pair of rule U: a two-item list in the config
     "neutral_pair",
+    # declared side channels (scored when the server resolves them): a list in the config
+    "side_channels",
 )
 
 
@@ -378,6 +396,8 @@ def from_dict(entry: dict) -> "ReagentProfile":
         kw["ion_only_channels"] = tuple(kw["ion_only_channels"] or ())
     if "water_cores" in kw:
         kw["water_cores"] = tuple(kw["water_cores"] or ())
+    if "side_channels" in kw:
+        kw["side_channels"] = _side_tuple(kw["side_channels"])
     if "neutral_pair" in kw:
         kw["neutral_pair"] = tuple(kw["neutral_pair"] or ())
         if kw["neutral_pair"] and len(kw["neutral_pair"]) != 2:
@@ -394,7 +414,8 @@ def load_config(path: str) -> list:
     carries the ReagentProfile fields listed in `_CONFIG_FIELDS`: the required
     name/label/polarity/adducts/normaliser/reagent_ion_re/ranges/detect_adduct,
     plus optional context/aliases, the labelled-reagent trio purity /
-    label_isotope / label_max, and height_cutoff_x_edge."""
+    label_isotope / label_max, height_cutoff_x_edge and the declared
+    side_channels (a list of adduct labels; empty = closed)."""
     import json
     import os
 
@@ -539,6 +560,69 @@ def apply_ion_only_channels(cfg, profile: "ReagentProfile | None" = None, *,
     return cur
 
 
+#: the word that closes every side channel on the command line (`--side-channels none`)
+SIDE_CHANNELS_NONE = "none"
+
+
+def _side_tuple(value) -> tuple:
+    """A side-channel list as stored: a tuple of adduct labels, in order, once
+    each. A bare string is one adduct (a config's `"side_channels": "[M+NH4]+"`),
+    and the word `none` (any case) or an empty value is the empty tuple."""
+    if value is None:
+        return ()
+    items = [value] if isinstance(value, str) else list(value)
+    out: list[str] = []
+    for a in items:
+        a = str(a).strip()
+        if not a or a.lower() == SIDE_CHANNELS_NONE:
+            continue
+        if a not in out:
+            out.append(a)
+    return tuple(out)
+
+
+def side_channels_source(channels, profile: "ReagentProfile | None" = None) -> str:
+    """Where a run's side channels came from, for the run log and the batch
+    summary: the profile's own declaration, an explicit choice (a flag, a cfg
+    field, a library caller), or nothing declared. A tuple equal to the
+    profile's was stamped from it on the way down (pipeline -> assign_batch), so
+    it keeps the profile's credit -- the `apply_ion_only_channels` rule."""
+    cur = _side_tuple(channels)
+    prof_t = _side_tuple(getattr(profile, "side_channels", ())) if profile is not None else ()
+    if profile is not None and cur == prof_t:
+        return f"profile {profile.name}" if cur else f"profile {profile.name} (declares none)"
+    return "explicit config" if channels is not None else "no profile"
+
+
+def apply_side_channels(cfg, profile: "ReagentProfile | None" = None, *,
+                        explicit=None, log=None) -> tuple:
+    """Stamp the side channels a run may open onto a PassConfig; return them.
+
+    The resolution order of `apply_height_cutoff_x_edge`: an `explicit` value
+    (the `--side-channels` flag; `()` or `none` closes them all) > a tuple the
+    cfg ALREADY carries (set deliberately by its caller, or stamped by an
+    earlier call on the way down -- an empty one included, which is why
+    `PassConfig.side_channels` is None when unset) > the profile's own
+    `side_channels` > nothing. No profile (a forced `--adducts` list, a
+    context-only entry point) declares nothing, so every side channel stays
+    closed unless asked for. assign.run opens a stamped channel only when the
+    server resolves its mechanism (offline: the sample registers it), and only
+    on the run's polarity."""
+    if explicit is not None:
+        cfg.side_channels = _side_tuple(explicit)
+    cur = getattr(cfg, "side_channels", None)
+    if cur is None:
+        cur = _side_tuple(getattr(profile, "side_channels", ())) if profile is not None else ()
+        source = side_channels_source(None if profile is None else cur, profile)
+    else:
+        cur = _side_tuple(cur)
+        source = side_channels_source(cur, profile)
+    cfg.side_channels = cur
+    if log is not None:
+        log(f"[gate] side channels {list(cur) if cur else 'closed'} (from {source})")
+    return cur
+
+
 def _merge_ranges(sources: list[str]) -> str:
     """Union of element boxes: widest [lo, hi] per element, first-seen order."""
     from peaky.chem import chemistry as C
@@ -565,7 +649,8 @@ def compose(profiles: "list[ReagentProfile]") -> ReagentProfile:
     every nitrate-clustered analyte is then missed outright or forced into a bromide
     interpretation, with nothing in the log to say so.
 
-    Merge rules: adducts and reagent-ion regexes are unioned; the element box takes
+    Merge rules: adducts, declared side channels and reagent-ion regexes are
+    unioned; the element box takes
     the widest bound per element; `normaliser` stays "reagent" only if every
     component agrees (a component that must normalise on TIC, because its reagent
     ions sit outside the acquisition window, forces TIC for the whole); a single
@@ -612,6 +697,13 @@ def compose(profiles: "list[ReagentProfile]") -> ReagentProfile:
         for c in (p.water_cores or ()):
             if c not in water:
                 water.append(c)
+    # declared side channels are unioned like the adduct menu: a component's own
+    # side chemistry stays declared in the mix
+    side: list[str] = []
+    for p in ps:
+        for a in (p.side_channels or ()):
+            if a not in side:
+                side.append(a)
     # the neutral pair survives only when every component that declares one
     # declares the same pair (two different pairs would be two rules)
     pairs = {tuple(p.neutral_pair) for p in ps if p.neutral_pair}
@@ -632,6 +724,7 @@ def compose(profiles: "list[ReagentProfile]") -> ReagentProfile:
         ion_only_channels=tuple(ion_only),
         water_cores=tuple(water),
         neutral_pair=next(iter(pairs)) if len(pairs) == 1 else (),
+        side_channels=tuple(side),
         aliases=(),
     )
 

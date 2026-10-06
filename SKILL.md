@@ -188,8 +188,15 @@ The pipeline was built negative-mode Br-specialized; positive-mode support
 (2026-06-16) is reagent/polarity-driven, detected from the adducts:
 
 - **`uronium` context** (positive urea-CIMS): N-heavy VK priors, wider C46/O32
-  grid, channels `[M+H]+` / `[M+(CH4N2O)H]+` (urea adduct, +61.0396) + opportunistic
-  `[M+Na]+`/`[M+NH4]+`; urea `[urea_n+H]+` reagent-cluster library.
+  grid, channels `[M+H]+` / `[M+(CH4N2O)H]+` (urea adduct, +61.0396) + the declared
+  side channel `[M+NH4]+` (the batch's amine gate keeps or re-reads each reading);
+  urea `[urea_n+H]+` reagent-cluster library.
+- **Side channels are declared per reagent, closed by default**
+  (`ReagentProfile.side_channels`; docs/REAGENTS.md §3b): only Ur declares one
+  (`[M+NH4]+`). `--side-channels ADDUCT ...` on assign / batch / pool opens exactly
+  those instead (e.g. `'[M+CO3]-'` on a source with a bright CO3- ion), `none`
+  closes them all. `[M+CO3]-`, `[M+Br2]-` and `[M+Na]+` are no longer opened by
+  polarity; `batch_summary.json['side_channels']` records what the files opened.
 - **Br-specific passes are guarded in positive mode**: `detect_composites` is
   gated on a halogen adduct (its M+1 test misfires without one); the carbon-clamp
   skips Si (²⁹Si dominates the M+1, not ¹³C); di-bromide / iso-pair / `reagent_element`
@@ -201,7 +208,7 @@ The pipeline was built negative-mode Br-specialized; positive-mode support
   degeneracy and the reagent-N isobar gate do not apply; ambient amines are read on
   `[M+H]+` at their ¹⁴N mass. The ¹⁴N reagent impurity (2 %, measured 0.018–0.021
   on the 2026-09-10 file) is the scorer's `^N` purity satellite, so `[M+NH4]+` is
-  dropped from the opportunistic channels. Oxygenates dehydrate in-source
+  kept closed, as is `[M+Na]+`, even when `--side-channels` asks. Oxygenates dehydrate in-source
   (`[M+H-H2O]+`, `[M+^NH4-H2O]+`, both MS2-proven): `cleanup.relabel_ammonium_dehydration`
   re-reads those alkene/enone readings onto the corroborated hydrate. Reagent ions
   (19.03/37.04/37.05) sit below a 40 Da window → TIC normaliser.
