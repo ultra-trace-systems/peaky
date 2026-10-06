@@ -53,14 +53,14 @@ def test_an_infinite_resolving_power_is_tof_class():
 
 
 def test_the_mass_scale_defaults():
-    """No mass scale: the stamp window is 6 ppm and sigma unknown (the Orbitrap
-    window stays 1 ppm); a scale without stamp_ppm stamps at its tol_ppm."""
+    """No mass scale: sigma unknown -- the TOF's M+2 window is the scorer's 15 ppm,
+    three sigmas where that is wider; the Orbitrap window stays 1 ppm."""
     ts = _series(lambda i: _br(i, present=lambda i: False))
-    assert _get(_measure(ts, [(Y, H)], resolution=TOF, scale=None), "REQ", Y)["window_ppm"] == 6.0
+    assert _get(_measure(ts, [(Y, H)], resolution=TOF, scale=None), "REQ", Y)["window_ppm"] == 15.0
     assert _get(_measure(ts, [(Y, H)], resolution=TOF, scale={"sigma_ppm": 3.6, "tol_ppm": 12.0}),
-                "REQ", Y)["window_ppm"] == 12.0
-    assert _get(_measure(ts, [(Y, H)], resolution=TOF, scale={"sigma_ppm": 3.6, "stamp_ppm": float("nan"),
-                                                               "tol_ppm": 11.0}), "REQ", Y)["window_ppm"] == 11.0
+                "REQ", Y)["window_ppm"] == 15.0
+    assert _get(_measure(ts, [(Y, H)], resolution=TOF, scale={"sigma_ppm": 6.0, "stamp_ppm": float("nan"),
+                                                               "tol_ppm": 11.0}), "REQ", Y)["window_ppm"] == 18.0
     assert _get(_measure(ts, [(Y, H)], scale={"stamp_ppm": 6.0}), "REQ", Y)["window_ppm"] == 1.0
     # ... and a 1.5 ppm line is absent there (a sigma read as 0.5 ppm would widen it to 2)
     off = _series(lambda i: _br(i, ppm=1.5))
@@ -433,15 +433,17 @@ def test_req_counts_the_line_in_detectable_spectra_only():
     assert r["n_used"] == 10 and r["n_present"] == 0 and r["verdict"] == "absent"
 
 
-def test_req_tof_wide_window_is_twenty_ppm():
-    for ppm, verdict in ((18.0, "present"), (22.0, "absent")):
+def test_req_tof_has_one_window_and_reads_a_near_miss_as_a_split_line():
+    """The TOF branch has no second (20 ppm) window any more: a line outside the
+    M+2 window but inside half a FWHM is an unresolved split (untestable), and
+    the stamp window never widens the M+2 window."""
+    for ppm in (18.0, 22.0):
         r = _get(_measure(_series(lambda i, ppm=ppm: _br(i, ppm=ppm)), [(Y, H)], resolution=TOF, scale=SCALE_T),
                  "REQ", Y)
-        assert r["verdict"] == verdict, ppm
-    # a stamp window wider than 20 ppm: the wide count is the union of both windows
+        assert r["verdict"] == "untestable" and np.isnan(r["n_present_wide"]), ppm
     r = _get(_measure(_series(lambda i: _br(i, ppm=22.0)), [(Y, H)], resolution=TOF,
                       scale={"sigma_ppm": 3.6, "stamp_ppm": 25.0}), "REQ", Y)
-    assert r["verdict"] == "present" and r["n_present"] == N and r["n_present_wide"] == N
+    assert r["verdict"] == "untestable" and r["window_ppm"] == 15.0
 
 
 def test_req_a_line_counts_at_the_blend_centroid_or_the_pure_component():

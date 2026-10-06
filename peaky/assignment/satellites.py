@@ -42,9 +42,10 @@ included. On a bromide TOF an [M+Br]- reading's 81Br line is the one line its
 own composition guarantees, and the twin test above never asks for it (the
 reagent masks the neutral's window). At R ~10 000 the whole M+2 cluster (81Br,
 37Cl, 34S, 30Si, 18O, 13C2) is one line, so the prediction is the cluster's
-summed height (isotopes.nominal_cluster). The tier pass judges each file's
-peak list with it (`tiers.apply_tof_m2`); see its docstring for the rule and
-the measurement behind the numbers.
+summed height (isotopes.nominal_cluster). The same primitive judges one file's
+peak list (the tier pass, `tiers.apply_tof_m2`) and every spectrum of a batch
+(the TOF branch of the batch REQ check, `batch.iso_checks`); see its docstring
+for the rule and the measurement behind the numbers.
 """
 from __future__ import annotations
 

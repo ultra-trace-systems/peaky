@@ -1,8 +1,12 @@
 """The TOF ion-M+2 test: one primitive (satellites.heavy_line_verdict) asks
 whether the ION's own Br / Cl M+2 line is where its composition puts it -- the
-reagent adduct's halogen included -- and the tier pass reads it
-(tiers.apply_tof_m2, the assign stage `tof_m2`): an Assigned per-file M0 whose
-line the file could show and does not is Candidate.
+reagent adduct's halogen included -- and two callers read it:
+
+  * the tier pass (tiers.apply_tof_m2, the assign stage `tof_m2`): an Assigned
+    per-file M0 whose line the file could show and does not is Candidate;
+  * the batch REQ check on a TOF-class batch (iso_checks._req_tof): the same
+    test in every spectrum of the stamped series, refuted over >= 10 testable
+    spectra where the line is seen in < 30 % of them.
 
 Synthetic, offline; every threshold tested at its edge.
 """
@@ -18,10 +22,11 @@ from peaky.assignment import ledger as L
 from peaky.assignment import satellites as SAT
 from peaky.assignment import tiers as T
 from peaky.assignment.passes.config import PassConfig
+from peaky.batch import iso_checks as IC
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 from peaky.chem.resolution import Resolution
-from tests.test_iso_checks import _ion
+from tests.test_iso_checks import N, ORBI, SCALE_T, TOF, _get, _ion, _row, _series, _wave
 
 BR = "[M+Br]-"
 X = "C6H10O3"                       # a CHO neutral: on [M+Br]- its ion carries the reagent's one Br
@@ -190,6 +195,87 @@ def test_the_stage_is_the_last_tier_word_before_the_evidence_level():
     assert names.index("tiers") < names.index("demote_speculative") < names.index("reflist_rescue") < k
     assert names[k - 1] == "iso_env_final" and names[k + 1] == "evidence"
     assert not A._STAGES[k].safe
+
+
+# --------------------------------------------------------------------------- the batch REQ check (TOF branch)
+Y = "C6H9BrO3"
+H = "[M-H]-"
+
+
+def _tbr(i, *, h=1e4, seen=lambda i: True, ppm=0.0, rel=0.9728, n=Y):
+    """A bromine ion's M0 stamp (its ion carries the neutral's one Br) and, where `seen(i)`, its 81Br line
+    `ppm` off at `rel` x the M0."""
+    mz = C.ion_mz(n, H)
+    h0 = h * _wave(i)
+    rows = [_row(i, mz, h0, role="M0", nf=n, ad=H, ion=_ion(n, H))]
+    if seen(i):
+        rows.append(_row(i, (mz + ISO.D_81BR) * (1 + ppm * 1e-6), rel * h0, role="iso_child", label="81Br"))
+    return rows
+
+
+def _tm(ts, pairs=((Y, H),), edge=None, scale=SCALE_T, resolution=TOF):
+    from tests.test_iso_checks import _frames
+    return IC.measure(ts, _frames(list(pairs)), None, resolution=resolution, mass_scale=scale, edge_cps=edge,
+                      log=quiet)
+
+
+def test_req_on_a_tof_reads_the_ions_own_line_with_the_tier_pass_primitive():
+    r = _get(_tm(_series(lambda i: _tbr(i))), "REQ", Y)
+    assert r["verdict"] == "present" and not r["veto"] and r["line"] == "M+2 (81Br)"
+    assert r["n_used"] == N and r["n_present"] == N and r["det_frac"] == 1.0 and r["window_ppm"] == 15.0
+    r = _get(_tm(_series(lambda i: _tbr(i, seen=lambda i: False))), "REQ", Y)
+    assert r["verdict"] == "absent" and r["veto"] and r["n_present"] == 0
+    assert r["note"].startswith(f"the ion's own M+2 (81Br) line ({r['expected']:.2f}x the stamped line) seen in "
+                                f"0 of {N} testable spectra (within 15 ppm at >= 0.6x")
+    assert IC.veto(_tm(_series(lambda i: _tbr(i, seen=lambda i: False)))) == {(Y, H): "REQ: " + r["note"]}
+
+
+def test_req_on_a_tof_refutes_under_three_in_ten_over_ten_testable_spectra():
+    for n_test, n_seen, verdict in ((10, 2, "absent"), (10, 3, "present"), (9, 0, "untestable")):
+        def build(i, n_test=n_test, n_seen=n_seen):
+            # spectra past n_test hold a dim M0 whose line is predicted under the 3 x 10 cps floor
+            return _tbr(i, h=1e4 if i < n_test else 20.0 / _wave(i), seen=lambda i: i < n_seen)
+        r = _get(_tm(_series(build)), "REQ", Y)
+        assert r["verdict"] == verdict and r["n_used"] == n_test, (n_test, n_seen)
+
+
+def test_req_on_a_tof_floor_is_three_times_the_batch_edge():
+    ts = _series(lambda i: _tbr(i, h=60.0 / _wave(i), seen=lambda i: False))    # predicted ~59 cps
+    assert _get(_tm(ts), "REQ", Y)["verdict"] == "absent"                        # median edge 10: floor 30
+    assert _get(_tm(ts, edge=15.0), "REQ", Y)["verdict"] == "absent"             # floor 45
+    assert _get(_tm(ts, edge=25.0), "REQ", Y)["verdict"] == "untestable"         # floor 75: every spectrum dim
+
+
+def test_req_on_a_tof_window_and_blend_guards():
+    # 12 ppm: seen; 17 ppm: not seen, but within half a FWHM -> blended, untestable; 3 sigma of 6 ppm: seen
+    assert _get(_tm(_series(lambda i: _tbr(i, ppm=12.0))), "REQ", Y)["verdict"] == "present"
+    r = _get(_tm(_series(lambda i: _tbr(i, ppm=17.0))), "REQ", Y)
+    assert r["verdict"] == "untestable" and r["occupied"] == 1.0
+    assert _get(_tm(_series(lambda i: _tbr(i, ppm=17.0)), scale={"sigma_ppm": 6.0, "stamp_ppm": 9.0}),
+                "REQ", Y)["verdict"] == "present"
+    # 75 ppm at 0.97x (outside the split reach, under the prediction within one FWHM): absent
+    assert _get(_tm(_series(lambda i: _tbr(i, ppm=75.0))), "REQ", Y)["verdict"] == "absent"
+    # ... at 1.2x it is another ion's line holding the position: untestable
+    assert _get(_tm(_series(lambda i: _tbr(i, ppm=75.0, rel=1.2))), "REQ", Y)["verdict"] == "untestable"
+
+
+def test_req_on_a_tof_needs_as_many_testable_as_blended_spectra():
+    def build(i):
+        return _tbr(i, seen=lambda i: i >= 20, ppm=0.0 if i < 30 else 17.0)
+    # 20 spectra absent, 10 seen, 10 blended: seen in 10 of 30 testable (0.33, not under 0.3) -> present
+    r = _get(_tm(_series(build)), "REQ", Y)
+    assert (r["n_used"], r["n_present"], r["verdict"]) == (30, 10, "present")
+
+    def build2(i):
+        return _tbr(i, seen=lambda i: i >= 15, ppm=17.0)        # 15 absent, 25 blended
+    r = _get(_tm(_series(build2)), "REQ", Y)
+    assert (r["n_used"], r["verdict"]) == (15, "untestable")
+
+
+def test_req_on_an_orbitrap_is_unchanged_by_the_tof_branch():
+    from tests.test_iso_checks import SCALE_O
+    r = _get(_tm(_series(lambda i: _tbr(i, ppm=1.5)), resolution=ORBI, scale=SCALE_O), "REQ", Y)
+    assert r["verdict"] == "absent" and r["window_ppm"] == 1.0 and "detectable spectra" in r["note"]
 
 
 # --------------------------------------------------------------------------- assign.run wiring

@@ -2082,7 +2082,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # judged against the batch's element budget: `context`); written for every
     # run (empty without a time series); a refuted pair is rejected (5b)
     iso_table = _IC.measure(ts_annot, level_frames, prof, resolution=rp, mass_scale=scale,
-                            x_edge=x_edge, context=context, log=log)
+                            x_edge=x_edge, context=context, edge_cps=getattr(cfg, "noise_edge_batch_cps", None),
+                            log=log)
     iso_table.to_csv(os.path.join(TAB, "iso_checks.csv"), index=False)
     # THE EVIDENCE LEVEL (the scale of peaky 0.10.0): the batch's per-file
     # ledgers pooled as ONE source (cover + residual files; every file-count
