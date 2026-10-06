@@ -79,6 +79,11 @@ loop** — the AI orchestrates, it never does the chemistry — which is
 why results are reproducible and auditable. It is not an autonomous agent; you stay
 in the loop and it asks when a choice (reagent, cutoff) actually matters.
 
+**On TOF data** the evidence levels of 0.10.0 are not assessed (`NA`), and the tier
+rests on mass and isotope evidence. Where the formula space is crowded, at higher
+m/z, mass alone cannot separate formulas: treat an Assigned reading without isotope
+support (no isotopologue line of its own in the ledger) as mass-only.
+
 ## Install
 
 Needs Python ≥ 3.12. Everything (including `mascope-sdk`) installs from public PyPI —
