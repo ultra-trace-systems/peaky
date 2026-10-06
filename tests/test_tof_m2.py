@@ -1,12 +1,14 @@
-"""The TOF ion-M+2 test: one primitive (satellites.heavy_line_verdict) asks
+"""The TOF ion-M+2 package: one primitive (satellites.heavy_line_verdict) asks
 whether the ION's own Br / Cl M+2 line is where its composition puts it -- the
-reagent adduct's halogen included -- and two callers read it:
+reagent adduct's halogen included -- and three callers read it:
 
   * the tier pass (tiers.apply_tof_m2, the assign stage `tof_m2`): an Assigned
     per-file M0 whose line the file could show and does not is Candidate;
   * the batch REQ check on a TOF-class batch (iso_checks._req_tof): the same
     test in every spectrum of the stamped series, refuted over >= 10 testable
-    spectra where the line is seen in < 30 % of them.
+    spectra where the line is seen in < 30 % of them;
+  * the merged-row gates after the stamp (iso_checks.tof_m2_gates): a REQ
+    refutation and the 81Br doublet demote the merged winner, no re-vote.
 
 Synthetic, offline; every threshold tested at its edge.
 """
@@ -276,6 +278,78 @@ def test_req_on_an_orbitrap_is_unchanged_by_the_tof_branch():
     from tests.test_iso_checks import SCALE_O
     r = _get(_tm(_series(lambda i: _tbr(i, ppm=1.5)), resolution=ORBI, scale=SCALE_O), "REQ", Y)
     assert r["verdict"] == "absent" and r["window_ppm"] == 1.0 and "detectable spectra" in r["note"]
+
+
+# --------------------------------------------------------------------------- the merged-row gates
+def _merged(rows):
+    return pd.DataFrame(rows, columns=["mz", "neutral_formula", "adduct", "tier", "tier_reason"])
+
+
+def _req_table(rows):
+    return pd.DataFrame([dict(check="REQ", neutral_formula=n, adduct=a, veto=v, det_frac=f, note="the note")
+                         for n, a, v, f in rows])
+
+
+def test_a_req_refutation_demotes_the_merged_winner_and_overrules_a_known_lock_without_a_revote():
+    m = _merged([(250.0, "C9H12O8", BR, "Assigned", None),
+                 (637.25, "C30H58Cl4", BR, "Assigned", IC.KNOWN_LOCK_MARK + ": chlorinated paraffin ..."),
+                 (300.0, "C7H8O4", BR, "Candidate", None),
+                 (320.0, "C8H12O4", BR, "Assigned", None)])
+    t = _req_table([("C9H12O8", BR, True, 0.0), ("C30H58Cl4", BR, True, 0.0), ("C7H8O4", BR, True, 0.0),
+                    ("C8H12O4", BR, False, 0.9)])
+    g = IC.tof_m2_gates(m, t, None, resolution=TOF, log=quiet)
+    assert g["ran"] and g["req_demoted"] == 2 and g["known_demoted"] == 1
+    assert m["tier"].tolist() == ["Candidate", "Candidate", "Candidate", "Assigned"]
+    assert m["neutral_formula"].tolist() == ["C9H12O8", "C30H58Cl4", "C7H8O4", "C8H12O4"]     # no re-vote
+    assert m.at[0, "tier_reason"] == "Candidate: the batch refutes the ion's own M+2 line (REQ: the note)"
+    assert m.at[1, "tier_reason"].endswith("this overrules the known-species decision")
+    assert pd.isna(m.at[2, "tier_reason"])
+
+
+def test_the_gates_run_on_a_tof_class_width_model_only():
+    for res, why in ((ORBI, "not a TOF-class batch"), (None, "no width model")):
+        m = _merged([(250.0, "C9H12O8", BR, "Assigned", None)])
+        g = IC.tof_m2_gates(m, _req_table([("C9H12O8", BR, True, 0.0)]), None, resolution=res, log=quiet)
+        assert not g["ran"] and g["skipped"] == why and m.at[0, "tier"] == "Assigned"
+
+
+def _doublet(i, ratio=0.97):
+    """A Br1 ion's 79Br line at m/z 250 and, one 81Br spacing above, its partner at `ratio` x it."""
+    h0 = 1e3 * _wave(i)
+    return [_row(i, 250.0, h0, role="M0", nf="C4H6O4", ad=BR, ion=_ion("C4H6O4", BR)),
+            _row(i, 250.0 + ISO.D_81BR, ratio * h0)]
+
+
+def test_the_81br_doublet_partner_is_no_m0_unless_its_own_m_plus_2_is_seen():
+    mz = 250.0 + ISO.D_81BR
+    ts = _series(_doublet)
+    for nf, ad, seen, tier in (("C6H12O3S", H, None, "Candidate"),     # no halogen: the partner, demoted
+                               (X, BR, 0.8, "Assigned"),               # a Br reading whose own M+2 is seen
+                               (X, BR, 0.2, "Candidate"),              # ... whose own M+2 is not
+                               (X, BR, None, "Candidate")):            # ... untested
+        m = _merged([(mz, nf, ad, "Assigned", None)])
+        t = _req_table([] if seen is None else [(nf, ad, False, seen)])
+        g = IC.tof_m2_gates(m, t, ts, resolution=TOF, mass_scale={"merge_ppm": 12.0}, log=quiet)
+        assert m.at[0, "tier"] == tier, (nf, ad, seen)
+        if tier == "Candidate":
+            assert g["doublet_demoted"] == 1 and "the 81Br partner of the line 1.9980 Da below it" in m.at[0, "tier_reason"]
+            assert f"in {N} of the {N} spectra showing it" in m.at[0, "tier_reason"]
+    # outside 0.58-1.56x (a line twice the one below) it is no partner
+    m = _merged([(mz, "C6H12O3S", H, "Assigned", None)])
+    IC.tof_m2_gates(m, None, _series(lambda i: _doublet(i, ratio=2.0)), resolution=TOF, log=quiet)
+    assert m.at[0, "tier"] == "Assigned"
+    # a known-species lock is left to REQ
+    m = _merged([(mz, "C6H12O3S", H, "Assigned", IC.KNOWN_LOCK_MARK)])
+    IC.tof_m2_gates(m, None, ts, resolution=TOF, log=quiet)
+    assert m.at[0, "tier"] == "Assigned"
+
+
+def test_the_doublet_share_is_over_the_spectra_showing_the_line():
+    def build(i):
+        rows = _doublet(i)
+        return rows if i < N // 2 else rows[1:] + [_row(i, 250.0, 3.0 * rows[1]["height"])]   # 0.33x below
+    d = IC.doublets(IC._Series(_series(build)), [250.0 + ISO.D_81BR], 12.0)
+    assert d.loc[0, "n_spectra"] == N and d.loc[0, "n_band"] == N // 2 and d.loc[0, "share"] == 0.5
 
 
 # --------------------------------------------------------------------------- assign.run wiring

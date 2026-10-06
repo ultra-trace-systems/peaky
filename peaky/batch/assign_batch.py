@@ -2085,6 +2085,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                             x_edge=x_edge, context=context, edge_cps=getattr(cfg, "noise_edge_batch_cps", None),
                             log=log)
     iso_table.to_csv(os.path.join(TAB, "iso_checks.csv"), index=False)
+    # the TOF ion-M+2 gates (iso_checks.tof_m2_gates; TOF-class batches only): a
+    # merged winner whose own M+2 line REQ refutes over the batch -- a species the
+    # known-species lock decided included -- and a merged line that is the 81Br
+    # partner of the line one spacing below it are Candidate. No re-vote: the
+    # winner and its reading stay, the row says why.
+    merge_gates["tof_m2"] = _IC.tof_m2_gates(merged, iso_table, ts_annot, resolution=rp, mass_scale=scale,
+                                             log=log)
     # THE EVIDENCE LEVEL (the scale of peaky 0.10.0): the batch's per-file
     # ledgers pooled as ONE source (cover + residual files; every file-count
     # minimum 3), re-read from the per_file/<sid>_ledger.csv files just written

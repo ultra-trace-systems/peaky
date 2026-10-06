@@ -54,6 +54,8 @@ selected sample_ids (SAMPLING.md)
  the stamp window sized to the batch's per-ion scatter
    ▼
  merged_ledger.csv  +  jitter.csv  +  batch_summary.json  →  _batch_ts.parquet stamp
+   ▼  (TOF-class only) the ion-M+2 gates: a REQ-refuted winner and an 81Br doublet
+      partner are Candidate, no re-vote (step 6b)
 ```
 
 ---
@@ -396,6 +398,42 @@ selected sample_ids (SAMPLING.md)
    `selected_samples.csv` gains the picks (role `residual`),
    `tables/residual_bins.csv` the targeted bins, and
    `batch_summary.json['selection']['residual']` the record. Off, nothing changes.
+
+6b. **The TOF ion-M+2 gates** (`iso_checks.tof_m2_gates`; after the stamp and
+   the batch isotope checks, TOF-class batches only -- a width model under the
+   Orbitrap class's resolving power; without one nothing runs). On a TOF an
+   `[M+Br]-` reading's own ⁸¹Br line is the one line its composition
+   guarantees, and the per-file twin test never asks for it (the reagent's
+   halogen masks the neutral's window). Two demotions, Assigned → Candidate,
+   with **no re-vote** (the winner and its reading stay; the row says why in
+   `tier_reason`):
+   - **REQ** -- the merged winner's pair is refuted by the TOF branch of the
+     batch REQ check (the ion's own M+2 line, the reagent's halogen included,
+     absent over the batch: `tables/iso_checks.csv`, [EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md)
+     `iso_veto`). This includes a species the known-species lock (step 4b)
+     decided: a "known" reading whose own envelope the batch refutes is not
+     Assigned (`…; this overrules the known-species decision`) -- a C30
+     chlorinated paraffin `[M+Br]-` on the bromide/nitrate TOF batch carried one
+     Br's M+2 line where BrCl4 predicts 2.3×, and no ¹³C line: the reagent's
+     water cluster at the same nominal mass.
+   - **the ⁸¹Br doublet** (`doublets`) -- the row's line stands at 0.58-1.56×
+     (0.6-1.6 × the ⁸¹Br/⁷⁹Br ratio) the line one ⁸¹Br spacing (1.99795 Da)
+     below it in ≥ 50 % of the spectra showing it (each line the tallest within
+     the merge window): it is that line's ⁸¹Br partner, not an M0 -- unless the
+     reading's ion carries Br or Cl whose own M+2 line REQ sees in ≥ 50 % of its
+     testable spectra. A known-species lock is left to REQ.
+   The per-file half of the package is the tier pass's (`tiers.apply_tof_m2`,
+   [ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md)), so the vote already counts a
+   file whose own peak list refutes the reading as a Candidate file. Measured
+   offline on the bromide/nitrate TOF batch (the built functions on the run's
+   stored per-file ledgers and stamped series, the vote re-run on every touched
+   cluster): merged Assigned 355 → 287 (per-file test 307; REQ 46 and the
+   doublet 15 more, 11 halogen readings exempt), the batch's three known-false
+   Assigned readings out, all 34 known-true readings kept (one loses two of its
+   14 per-file Assigned files), the roster unchanged; on a nitrate-only
+   low-resolution TOF nothing moves. `batch_summary.json["merge_gates"]["tof_m2"]`
+   records `ran`, `req_demoted`, `known_demoted`, `doublet_demoted`,
+   `doublet_exempt` (and `skipped` when it did not run).
 
 7. **Pool the plausibility audit + write artifacts.** Per-file plausibility
    demotes are pooled and written; `merged_ledger.csv` (root), `jitter.csv`

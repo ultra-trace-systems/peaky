@@ -917,16 +917,27 @@ try:
         check("run: the merged ledger carries the vote and a tier_reason column",
               {"n_files_winner", "alternatives", "tier_reason"} <= set(res["merged"].columns),
               list(res["merged"].columns))
-        check("run: batch_summary records the merged-level gates (the known-species decision "
-              "and the reagent-water ladder always -- nothing pooled, no rung here; no polarity "
-              "gate in negative mode)",
-              set(summ.get("merge_gates", {})) == {"known", "reagent_water"}
+        check("run: batch_summary records the merged-level gates (the known-species decision, "
+              "the reagent-water ladder and the TOF ion-M+2 gates always -- nothing pooled, no rung "
+              "here, the TOF gates skipped on an Orbitrap-class batch; no polarity gate in negative mode)",
+              set(summ.get("merge_gates", {})) == {"known", "reagent_water", "tof_m2"}
               and summ["merge_gates"]["known"] == {"pooled": 0, "locked": 0, "confirmed_kept": 0,
                                                    "conflict": 0, "lead_only": 0, "mass_only_outvoted": 0,
                                                    "no_cluster": 0}
               and summ["merge_gates"]["reagent_water"]["n_rungs"] == 0
-              and summ["merge_gates"]["reagent_water"]["n_stripped"] == 0,
+              and summ["merge_gates"]["reagent_water"]["n_stripped"] == 0
+              and summ["merge_gates"]["tof_m2"]["ran"] is False
+              and summ["merge_gates"]["tof_m2"]["skipped"] == "not a TOF-class batch",
               summ.get("merge_gates"))
+    # ... and on a TOF-class batch (a width model under the Orbitrap class's R) the TOF gates run
+    with tempfile.TemporaryDirectory() as _d7:
+        AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch", out_dir=_d7, k_min=2, k_max=3,
+               min_gain=0.0, n_jobs=1, resolving_power=10_000, log=lambda *a: None)
+        summ7 = json.load(open(os.path.join(_d7, "batch_summary.json")))
+        check("run: a TOF-class batch runs the TOF ion-M+2 gates after the stamp (nothing to demote here)",
+              summ7["merge_gates"]["tof_m2"] == {"ran": True, "req_demoted": 0, "known_demoted": 0,
+                                                 "doublet_demoted": 0, "doublet_exempt": 0},
+              summ7["merge_gates"].get("tof_m2"))
         # 8 samples: fewer than the 10 spectra the persistence table needs, so the
         # 'auto' policy has nothing to derive the floor from and falls back to the
         # numeric default -- stamped as a NUMBER on every per-file cfg, with a

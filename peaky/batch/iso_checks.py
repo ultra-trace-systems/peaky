@@ -53,7 +53,8 @@ rule C).
         REQ_TOF_NMIN testable spectra, at least as many as the blended ones,
         where it is seen in < REQ_TOF_SEEN_MAX of them. Both classes: a pair
         with no stamp takes the tallest peak within the stamp window of its
-        pooled m/z.
+        pooled m/z. On a TOF-class batch a refuted merged winner is Candidate
+        (`tof_m2_gates`, after the stamp).
   HIGH    (a heavy line too high for the formula; variant V4) -- per pooled
         pair: at any heavy offset (81Br, 37Cl, 34S, 30Si, 18O, 13C2) the nearest
         peak within HIGH_TOL_PPM (Orbitrap 1, TOF 10) co-varies with the M0
@@ -154,8 +155,9 @@ series (the runs equal the replay row for row):
           identified -0.257; the TOF: 94 / 27 at both windows (Br 0.96, Cl 0.70),
           identified 0.000, ion -0.126. The TOF branch re-read as the ion's own
           M+2 line: 993 of 3273 pooled pairs refuted on the bromide /
-          nitrate TOF batch (the former branch: 117); 70 of 254 on a
-          nitrate-only low-resolution TOF (9).
+          nitrate TOF batch (the former branch: 117); with the per-file test
+          and the doublet its merged Assigned rows go 355 -> 287 (none of its 34
+          true readings lost); a nitrate-only low-resolution TOF moves 0.
   HIGH    labelled nitrate: 11 refuted, 5 merged moves (chloride adducts read as
           aromatic [M+^NO3]-), ion -0.202; uronium: none (no Br fits m/z 131.08);
           the TOF: 64 / 23, 6 merged moves; none identified.
@@ -260,6 +262,14 @@ REQ_MERGE_FWHM = 1.0
 # as many as the blended ones, where it is seen in < REQ_TOF_SEEN_MAX of them
 REQ_TOF_NMIN = 10
 REQ_TOF_SEEN_MAX = 0.3
+# --- the TOF merged-row gates (`tof_m2_gates`, after the stamp)
+#: the doublet: a merged row's line at TOF_DBL_LO..TOF_DBL_HI x the line one
+#: 79Br -> 81Br spacing below it, in >= TOF_DBL_SHARE of the spectra showing it,
+#: is that line's 81Br partner, not an M0 -- unless its own reading carries Br /
+#: Cl whose M+2 the batch sees (REQ's seen share >= TOF_DBL_OWN_SEEN)
+TOF_DBL_LO, TOF_DBL_HI = 0.58, 1.56
+TOF_DBL_SHARE = 0.5
+TOF_DBL_OWN_SEEN = 0.5
 #: an element's heavy lines, as tall as this batch shows them: the median seen/theory
 #: height over the pairs whose line is present in >= REQ_EFF_SEEN of >= REQ_NMIN
 #: detectable spectra, from >= REQ_EFF_PAIRS pairs, read within [REQ_EFF_FLOOR, 1]
@@ -1626,3 +1636,147 @@ def summary(table: pd.DataFrame | None, resolution=None) -> dict:
         out[c] = {"tested": int(len(t)), **head, **{k: int((v == k).sum()) for k in VERDICTS[c]}}
     return out
 
+
+# --------------------------------------------------------------------------- the TOF merged-row gates
+#: the merged row's tier_reason mark of a species lock_known_species decided
+KNOWN_LOCK_MARK = "known species decided once for the batch"
+
+
+def _merge_ppm(mass_scale) -> float:
+    """The batch's merge window (traces.MassScale.merge_ppm, else its tol_ppm, else 6)."""
+    if mass_scale is None:
+        return 6.0
+    get = mass_scale.get if isinstance(mass_scale, dict) else (lambda k, d=None: getattr(mass_scale, k, d))
+    for k in ("merge_ppm", "tol_ppm"):
+        try:
+            v = float(get(k))
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(v) and v > 0:
+            return v
+    return 6.0
+
+
+def _tallest_height(S: _Series, codes, targets, ppm) -> np.ndarray:
+    """The tallest line within +-ppm of each (spectrum, target), 0 where none (vectorised)."""
+    lo, hi = S.window(codes, targets, ppm)
+    k = hi - lo
+    out = np.zeros(len(lo))
+    for off in range(int(k.max()) if len(k) else 0):
+        sel = k > off
+        out[sel] = np.maximum(out[sel], S.h[lo[sel] + off])
+    return out
+
+
+def doublets(S: _Series, mzs, ppm: float) -> pd.DataFrame:
+    """Per merged line (m/z): over the spectra showing it (a line within `ppm`),
+    how often it stands at TOF_DBL_LO..TOF_DBL_HI x the line one 79Br -> 81Br
+    spacing below it (LOCK_D['Br']) -- the 81Br partner of a Br1 ion, not an
+    M0. Columns n_spectra, n_band, share (n_band / n_spectra; 0 where none),
+    median_ratio."""
+    mzs = np.asarray(mzs, dtype=float)
+    m = len(mzs)
+    if not m or not S.n:
+        return pd.DataFrame({"n_spectra": np.zeros(m, int), "n_band": np.zeros(m, int),
+                             "share": np.zeros(m), "median_ratio": np.full(m, np.nan)})
+    codes = np.repeat(np.arange(S.n), m)
+    tg = np.tile(mzs, S.n)
+    P = _tallest_height(S, codes, tg, ppm).reshape(S.n, m)
+    Q = _tallest_height(S, codes, tg - LOCK_D["Br"], ppm).reshape(S.n, m)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        r = np.where((P > 0) & (Q > 0), P / np.where(Q > 0, Q, 1.0), np.nan)
+    n_p = (P > 0).sum(axis=0)
+    band = ((r >= TOF_DBL_LO) & (r <= TOF_DBL_HI)).sum(axis=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        med = np.nanmedian(r, axis=0) if S.n else np.full(m, np.nan)
+    return pd.DataFrame({"n_spectra": n_p, "n_band": band, "share": np.where(n_p > 0, band / np.maximum(n_p, 1), 0.0),
+                         "median_ratio": med})
+
+
+def tof_m2_gates(merged: pd.DataFrame, table: pd.DataFrame | None, ts: pd.DataFrame | None, *,
+                 resolution=None, mass_scale=None, log=print) -> dict:
+    """The TOF ion-M+2 gates on the merged ledger, after the stamp (in place).
+
+    TOF-class batches only (a width model whose class is 'tof'; without one
+    nothing runs). Two demotions, Assigned -> Candidate, no re-vote (the winner
+    and its reading stay; the row says why):
+
+      * REQ: the merged winner's pair is refuted by REQ's TOF branch -- the
+        ion's own M+2 line absent over the batch (`_req_tof`). This includes a
+        species lock_known_species decided: a known reading whose own envelope
+        the batch refutes is not Assigned (a 'known' C30 chlorinated paraffin
+        [M+Br]- on the bromide TOF batch carried one Br's M+2, not BrCl4's, and
+        no 13C line: the reagent's water cluster at the same nominal mass).
+      * the doublet: the row's line stands at TOF_DBL_LO..TOF_DBL_HI x the line
+        one 81Br spacing below it in >= TOF_DBL_SHARE of the spectra showing it
+        (`doublets`, within the batch's merge window) -- it is that line's 81Br
+        partner, not an M0 -- unless its reading's ion carries Br / Cl whose own
+        M+2 REQ sees in >= TOF_DBL_OWN_SEEN of its testable spectra. A known
+        lock is left to REQ.
+
+    Returns counts for batch_summary['merge_gates']['tof_m2']."""
+    out = {"ran": False, "req_demoted": 0, "known_demoted": 0, "doublet_demoted": 0, "doublet_exempt": 0}
+    rp = _resolution(resolution)
+    if rp is None or instrument_class(rp) != "tof":
+        out["skipped"] = "no width model" if rp is None else "not a TOF-class batch"
+        return out
+    out["ran"] = True
+    if merged is None or not len(merged) or "tier" not in merged.columns:
+        return out
+    from peaky.assignment.cleanup import _note
+    from peaky.assignment.tiers import _ion_counts
+    if "tier_reason" not in merged.columns:
+        merged["tier_reason"] = pd.NA
+    req = (table[table["check"].astype(str) == "REQ"] if table is not None and len(table) and "check" in table.columns
+           else pd.DataFrame(columns=list(TABLE_COLUMNS)))
+    refuted = {(str(n), str(a)): str(x) for n, a, v, x in zip(req["neutral_formula"], req["adduct"],
+                                                               req["veto"].map(_truth), req["note"]) if v}
+    seen = {(str(n), str(a)): (float(f) if pd.notna(f) else np.nan)
+            for n, a, f in zip(req["neutral_formula"], req["adduct"], pd.to_numeric(req["det_frac"], errors="coerce"))}
+
+    def _assigned(i):
+        return str(merged.at[i, "tier"]) == "Assigned"
+
+    def _locked(i):
+        return KNOWN_LOCK_MARK in str(merged.at[i, "tier_reason"])
+
+    for i in merged.index:
+        k = (str(merged.at[i, "neutral_formula"]), str(merged.at[i, "adduct"]))
+        if not _assigned(i) or k not in refuted:
+            continue
+        locked = _locked(i)
+        merged.at[i, "tier"] = "Candidate"
+        _note(merged, i, "Candidate: the batch refutes the ion's own M+2 line (REQ: " + refuted[k] + ")"
+              + ("; this overrules the known-species decision" if locked else ""))
+        out["req_demoted"] += 1
+        out["known_demoted"] += int(locked)
+    if ts is None or not len(ts):
+        return out
+    S = _Series(ts)
+    idx = [i for i in merged.index if _assigned(i) and not _locked(i)]
+    if not idx or not S.n:
+        return out
+    ppm = _merge_ppm(mass_scale)
+    mzs = pd.to_numeric(merged.loc[idx, "mz"], errors="coerce").to_numpy(dtype=float)
+    ok = np.isfinite(mzs)
+    idx = [i for i, g in zip(idx, ok) if g]
+    d = doublets(S, mzs[ok], ppm)
+    for i, r in zip(idx, d.itertuples(index=False)):
+        if not (r.n_spectra > 0 and r.share >= TOF_DBL_SHARE):
+            continue
+        k = (str(merged.at[i, "neutral_formula"]), str(merged.at[i, "adduct"]))
+        ion = _ion_counts(*k) or {}
+        own = seen.get(k, np.nan)
+        if (ion.get("Br", 0) or ion.get("Cl", 0)) and np.isfinite(own) and own >= TOF_DBL_OWN_SEEN:
+            out["doublet_exempt"] += 1
+            continue
+        merged.at[i, "tier"] = "Candidate"
+        _note(merged, i, f"Candidate: the line is the 81Br partner of the line {LOCK_D['Br']:.4f} Da below it "
+                         f"({TOF_DBL_LO:g}-{TOF_DBL_HI:g}x it in {int(r.n_band)} of the {int(r.n_spectra)} spectra "
+                         f"showing it, median {r.median_ratio:.2f}x), not an M0")
+        out["doublet_demoted"] += 1
+    log(f"[tof_m2] TOF ion-M+2 gates on the merged ledger: {out['req_demoted']} Assigned -> Candidate by REQ "
+        f"({out['known_demoted']} known-species decisions overruled), {out['doublet_demoted']} by the 81Br doublet "
+        f"({out['doublet_exempt']} halogen readings exempt: their own M+2 seen)")
+    return out
