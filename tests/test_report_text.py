@@ -224,3 +224,31 @@ def test_the_cover_names_the_package_version_and_a_sha_only_when_there_is_one(tm
     assert R._skill_version(str(tmp_path)) == "peaky 1.2.3 · git abcdef0"
     (tmp_path / "run_manifest.json").write_text("{not json")
     assert R._skill_version(str(tmp_path)) == "peaky 1.2.3 · git abcdef0"
+
+
+# --------------------------------------------------------------------------- the Methods text reads the run's record
+def test_the_amine_r_minimum_is_the_runs_or_the_code_default_never_a_stale_constant():
+    import inspect
+
+    from peaky.batch import assign_batch as AB
+    from peaky import pipeline as PL
+    default = inspect.signature(AB.run).parameters["amine_r_min"].default
+    # the batch path's own default and the pipeline's agree with what the page falls back to
+    assert inspect.signature(PL.run_batch).parameters["amine_r_min"].default == default
+    assert R._amine_r_min({"batch": {"amine_r_min": 0.8}}) == (0.8, True)
+    assert R._amine_r_min({"batch": {"evidence_levels": {"amine_r_min": 0.55}}}) == (0.55, True)
+    assert R._amine_r_min({"batch": {}}) == (float(default), False)
+    assert R._amine_r_text({"batch": {"amine_r_min": 0.6}}) == "r>=0.6"
+    assert "the code default" in R._amine_r_text({})
+    assert "0.7" not in R._amine_r_text({"batch": {"amine_r_min": 0.6}})
+
+
+def test_the_methods_name_the_scorer_the_run_recorded():
+    assert "in-process (the local scorer)" in R._scorer_text({"batch": {"scorer": "local"}})
+    assert "by the server (match_compounds)" in R._scorer_text({"batch": {"scorer": "server"}})
+    assert "did not record which" in R._scorer_text({"batch": {}})
+
+
+def test_recorded_numbers_print_formatted():
+    assert R._num(9.22777806538331, ".2f") == "9.23" and R._num(6, ".2f") == "6.00"
+    assert R._num(None, ".2f") == "?" and R._num("x", ".3g", "n/a") == "n/a"

@@ -877,6 +877,8 @@ try:
         s = summ["selection"]
         check("run: the pooled level stage ran (Orbitrap class, persisted calibrations, every pair levelled)",
               *_pooled_levelled(_d, summ))
+        check("run: batch_summary names the scorer that judged the candidates",
+              summ.get("scorer") == ("local" if IO._local_scoring_enabled() else "server"), summ.get("scorer"))
         check("run: batch_summary carries the selection block",
               s["method"] == "presence-cover" and s["k"] == 3 and s["n_samples"] == 8
               and s["n_bins"] == 100, s)

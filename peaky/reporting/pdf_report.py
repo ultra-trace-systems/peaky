@@ -537,6 +537,48 @@ def _pct(part, whole):
     return 100.0 * part / whole if whole else 0.0
 
 
+def _num(v, fmt: str, missing: str = "?") -> str:
+    """A recorded number in `fmt` (a long float never prints raw); `missing` when
+    it is absent or not a number."""
+    try:
+        return format(float(v), fmt)
+    except (TypeError, ValueError):
+        return missing
+
+
+def _amine_r_min(ctx) -> tuple[float, bool]:
+    """(the amine co-variation r minimum of the run, whether the run recorded it):
+    batch_summary's `amine_r_min` (or its evidence-level block's), else the
+    batch's code default, read off assign_batch.run so the two cannot part."""
+    b = ctx.get("batch") or {}
+    for v in (b.get("amine_r_min"), (b.get("evidence_levels") or {}).get("amine_r_min")):
+        try:
+            return float(v), True
+        except (TypeError, ValueError):
+            continue
+    import inspect
+
+    from peaky.batch import assign_batch as AB
+    return float(inspect.signature(AB.run).parameters["amine_r_min"].default), False
+
+
+def _amine_r_text(ctx) -> str:
+    """'r>=0.6' with the source of the number when the run did not record it."""
+    r, recorded = _amine_r_min(ctx)
+    return f"r>={r:g}" if recorded else f"r>={r:g}, the code default; the run did not record it"
+
+
+def _scorer_text(ctx) -> str:
+    """How the run scored its candidates, from batch_summary's `scorer`."""
+    sc = (ctx.get("batch") or {}).get("scorer")
+    if sc == "local":
+        return "isotope-pattern scoring of every candidate in-process (the local scorer)"
+    if sc == "server":
+        return "isotope-pattern scoring by the server (match_compounds)"
+    return ("isotope-pattern scoring of every candidate (in-process by default, the server's "
+            "match_compounds with PEAKY_LOCAL_SCORING=0; this run did not record which)")
+
+
 def _share(frac: float) -> str:
     """A fraction as a whole percent that never rounds a non-zero share to 0% or a
     partial one to 100% ('<1%', '>99%')."""
@@ -853,10 +895,10 @@ def cover(ctx, pdf):
     if _tr.get("n_rows"):
         head.append(("dim", f"   traces: {_tr.get('n_recentred', 0)} of {_tr['n_rows']} ledger anchors "
                             f"re-centred on their own trace (median move "
-                            f"{_tr.get('median_abs_move_ppm', 0)} ppm), {_tr.get('n_collapsed', 0)} "
+                            f"{_num(_tr.get('median_abs_move_ppm', 0), '.3g')} ppm), {_tr.get('n_collapsed', 0)} "
                             f"competing labels collapsed onto {_tr.get('n_traces', '?')} traces; "
-                            f"stamping window ±{_tr.get('stamp_tol_ppm', '?')} ppm "
-                            f"(per-ion scatter {_tr.get('sigma_ppm', 'n/a')} ppm)"))
+                            f"stamping window ±{_num(_tr.get('stamp_tol_ppm'), '.2f')} ppm "
+                            f"(per-ion scatter {_num(_tr.get('sigma_ppm'), '.3g', 'n/a')} ppm)"))
     j = ctx.get("jitter", {})
     if j:
         nm = ctx.get("n_multifile")
@@ -1100,8 +1142,8 @@ def coverage(ctx, pdf):
 
     idn = ctx["tiers"].get("Assigned", 0); cn = ctx["tiers"].get("Candidate", 0)
     lines = [("h", "Reading this page"), ("gap", 0.3),
-             ("b", f"• {idn} Assigned vs {cn} Candidate. Match score = the server "
-                   "isotope-scored compound match (0-1)."),
+             ("b", f"• {idn} Assigned vs {cn} Candidate. Match score = the isotope-pattern match score of "
+                   "the ion (0-1)."),
              ("b", "• Mass accuracy: ppm error of the matched peaks (boxes = IQR, line = median; "
                    "near 0 = well calibrated)."),
              ("b", "• Ion channel names the adduct each compound was assigned on. It counts a "
@@ -1116,9 +1158,9 @@ def coverage(ctx, pdf):
     # exist); never print it on a negative-mode (e.g. Br-) report.
     pos = any(("NH4" in str(k)) or ("CH4N2O" in str(k)) for k in ctx.get("adduct_counts", {}))
     if pos:
-        lines += [("dim", "[M+NH4]+ is mass/isotope-identical to [M+H]+ of the +NH3 amine -- kept as NH4 only"),
-                  ("dim", "when its trace co-varies (r>=0.7) with the protonated/urea parent, else re-read as the"),
-                  ("dim", "amine (a parsimony prior, not a measurement). Peak roles -> Methods page.")]
+        lines += [("dim", "[M+NH4]+ is mass/isotope-identical to [M+H]+ of the +NH3 amine -- kept as NH4 only "
+                          f"when its trace co-varies ({_amine_r_text(ctx)}) with the protonated/urea parent, else "
+                          "re-read as the amine (a parsimony prior, not a measurement). Peak roles -> Methods page.")]
     else:
         lines += [("dim", "Peak roles are defined on the Methods page.")]
     _text_lines(fig, lines, y0=0.40, dy=0.029, bottom=0.05)
@@ -1819,13 +1861,13 @@ def methods(ctx, pdf):
     lines = [
         ("h", "Pipeline"), ("gap", 0.3),
         *_selection_lines(ctx),
-        ("b", "• Each file: multi-pass formula assignment, server isotope-scored matching"),
-        ("b", "  (match_compounds), isotope-envelope completion, calibrated tiering."),
+        ("b", f"• Each file: multi-pass formula assignment, {_scorer_text(ctx)}, isotope-envelope "
+              "completion, calibrated tiering."),
         ("b", "• Clusters: log-correlation (raw or reagent-normalised) of the full-batch"),
         ("b", "  time series, complete-linkage at r>0.6 (signed distance keeps anti-phase apart)."),
         ("gap", 0.5),
         ("dim", f"Parameters: m/z merge tol {ctx.get('batch', {}).get('tol_ppm', 6.0)} ppm · "
-                "cluster r>0.6 · amine co-variation r>=0.7."),
+                f"cluster r>0.6 · amine co-variation {_amine_r_text(ctx)}."),
     ]
     g = ctx.get("clusters", {}).get("gates", {})
     if g:
@@ -1878,10 +1920,11 @@ def methods(ctx, pdf):
                         "'explained signal'"),
                   ("b", "  is split into analyte vs reagent on the quality page.")]
     if any(("NH4" in str(k)) or ("CH4N2O" in str(k)) for k in ctx.get("adduct_counts", {})):
-        lines += [("b", "• Positive urea-CIMS: [M+NH4]+ adducts are mass/isotope-identical to the"),
-                  ("b", "  protonated +NH3 amine; uncorroborated ones are re-read as the amine"),
-                  ("b", "  (co-variation r>=0.7), which raises the CHON count — a parsimony prior,"),
-                  ("b", "  not a measurement (see Composition for the degeneracy it leaves).")]
+        lines += [("b", "• Positive urea-CIMS: [M+NH4]+ adducts are mass/isotope-identical to the protonated "
+                        "+NH3 amine; uncorroborated ones are re-read as the amine (an NH4 adduct is kept when "
+                        f"its trace co-varies with its parent, {_amine_r_text(ctx)}), which raises the CHON "
+                        "count — a parsimony prior, not a measurement (see Composition for the degeneracy "
+                        "it leaves).")]
     _text_lines(fig, lines, y0=0.92, dy=0.0216, size=9.5)
     if ctx.get("generated"):
         fig.text(0.08, 0.035, f"peaky · generated {ctx['generated']}", fontsize=8, color=GREY)
@@ -1893,7 +1936,7 @@ def assignments_table(ctx, pdf):
     confirmed on each. One row per (neutral, channel): a compound assigned on
     several adducts lists each channel separately, with the neutral printed once
     per group. Channels are ordered within a compound; compounds are ordered by
-    neutral mass. 'isotopes' = the isotopologue labels the server confirmed for
+    neutral mass. 'isotopes' = the isotopologue labels the scorer confirmed for
     that channel (union across the selected files). Paginated; the full data
     is also in merged_ledger.csv + the per-file ledgers."""
     import matplotlib.pyplot as plt

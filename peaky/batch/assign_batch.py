@@ -2239,6 +2239,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "noise_edge_batch_cps": getattr(cfg, "noise_edge_batch_cps", None),
         "tol_ppm": tol_ppm, "offsets_ppm": offsets,
         "pattern_scoring": scorings,
+        # which scorer judged the candidates: 'local' (in-process, the default) or
+        # 'server' (match_compounds; PEAKY_LOCAL_SCORING=0) -- the report's Methods name it
+        "scorer": "local" if IO._local_scoring_enabled() else "server",
         # the batch's mass scale (traces.MassScale): the measured per-ion scatter
         # and the merge / stamping windows sized from it (tol_ppm above is the
         # BINNING tolerance and the floor of both; unmeasured, both equal it)
