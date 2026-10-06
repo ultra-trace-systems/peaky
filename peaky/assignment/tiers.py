@@ -13,7 +13,9 @@ ledger columns (reproducible, no judgment calls at report time):
                 profile.
 
   Candidate  -- a plausible formula, honestly ambiguous. Reasons: base
-                confidence Low/Suspect; an effective-score near-tie; close
+                confidence Low/Suspect; a locked reading (pass-0 known
+                species, pass-7 certified neutral) whose ion score is under
+                the engine's Suspect band edge; an effective-score near-tie; close
                 alternatives in the window without isotope/cross-channel
                 discrimination; the honest cross-family mass-degeneracy audit
                 (degeneracy.py) finding many distinct plausible ions on the
@@ -105,6 +107,22 @@ CAL_SIGMA_FLOOR = 0.15   # ppm; a lucky-tight core must not reject everything
 # them both silicon false readings of the finish line (0.65 and 1.5 counts,
 # 'Good' on an anchor and a sub-count kid).
 TOF_ASSIGN_FLOOR_X_EDGE = 3.0
+# The score floor on locked readings. A pass-0 known species and a pass-7
+# certified neutral earn their tier from a lock -- the list identity, or the
+# channels' convergent neutral mass -- and the tier engine used to take the
+# lock's word whatever the ion's own match score: a known species is Assigned
+# by its own branch before the Low/Suspect one is asked, and a certified
+# commit is labelled 'Good (certified)' with no score floor. On spectra shifted
+# a few ppm off their true formulas (the populated-defect decoy) both paths
+# Assigned wrong readings at ion scores down to 0.001 (most of the known-species
+# ones recovered chlorinated paraffins, whose 37Cl spacing a shift keeps), while
+# the unshifted control files' known-species locks all scored above 0.5 and
+# their certified commits 0.74 or more. A locked commit
+# whose ion score is under the engine's own Suspect band edge
+# (PassConfig.tau_suspect, `lock_score_floor`) is Candidate. A source-solvent
+# cluster (`known:solvent_cluster`) is exempt: it is never scored (ion_score 0
+# by construction), its gate is the exact ladder step, and its branch comes first.
+LOCKED_SCORE_METHODS = ("known:", "certified:")
 # The absolute (mDa) floor on the mass-dependent sigma is owned by
 # PassConfig.cal_abs_floor_mda (default masscal.ABS_FLOOR_MDA); apply_tiers /
 # compute_tiers take the cfg and _calibrate carries the value on the _Cal.
@@ -486,6 +504,19 @@ def _abs_floor(cfg) -> float:
     return float(getattr(cfg, "cal_abs_floor_mda", MC.ABS_FLOOR_MDA))
 
 
+def lock_score_floor(cfg) -> float:
+    """The ion score a locked reading (`LOCKED_SCORE_METHODS`) needs for tier
+    Assigned: PassConfig.tau_suspect -- the edge of the engine's own Suspect
+    band, under which `passes.core.confidence_label` rejects a reading
+    outright -- or its default when no cfg is given."""
+    v = getattr(cfg, "tau_suspect", None)
+    if v is None:
+        # lazy: the passes package loads modules that import this one
+        from peaky.assignment.passes.config import PassConfig
+        v = PassConfig.tau_suspect
+    return float(v)
+
+
 def tof_assign_floor(cfg) -> float | None:
     """The height (cps) under which a TOF M0 is Candidate whatever else
     corroborates it (C46), or None: off a TOF, with no cfg, or with no edge
@@ -513,7 +544,8 @@ def _tof_floor_edge(cfg) -> tuple[float | None, str]:
 def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
     """One row per M0 peak: [peak_id, tier, tier_reason, candidate_density,
     density_capped]. Pure; does not mutate the ledger. `cfg` (a PassConfig)
-    supplies cal_abs_floor_mda for the mass-error gate; None = its default."""
+    supplies cal_abs_floor_mda for the mass-error gate and tau_suspect for the
+    lock score floor; None = their defaults."""
     m0 = ledger[ledger["role"] == L.ROLE_M0]
     # corroboration sources
     kids_of = ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
@@ -547,6 +579,8 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
     # the counting-detector floor (C46): None off a TOF
     tof_floor = tof_assign_floor(cfg)
     floor_edge, floor_src = _tof_floor_edge(cfg) if tof_floor is not None else (None, "file")
+    # the score a locked reading (pass-0 known species, pass-7 certified) needs
+    score_floor = lock_score_floor(cfg)
 
     rows = []
     for _, r in m0.iterrows():
@@ -618,6 +652,9 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
         tier, reason = TIER_ASSIGNED, ""
         _h0 = r.get("height")
         _h0 = float(_h0) if pd.notna(_h0) else None
+        # the ion's own match score, as the commit recorded it (None when none was)
+        _isc = pd.to_numeric(r.get("ion_score"), errors="coerce")
+        _isc = float(_isc) if pd.notna(_isc) else None
         if tof_floor is not None and _h0 is not None and _h0 < tof_floor:
             # C46: a handful-of-ions centroid on a counting detector. Whatever
             # hangs under it (a kid, a series step) is itself sub-edge, so it
@@ -638,6 +675,19 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
                       "reading (the implied neutral has DBE < 0): committed on "
                       "exact mass plus an exact ladder step off an observed "
                       "monomer channel")
+        elif (method.startswith(LOCKED_SCORE_METHODS) and _isc is not None
+              and _isc < score_floor):
+            # a lock decides which formula the peak is read as; it does not make
+            # the spectrum carry it. Under the engine's own Suspect band edge the
+            # ion's match score does not support the reading (see
+            # LOCKED_SCORE_METHODS), whatever the lock's other gates said.
+            tier = TIER_CANDIDATE
+            what = ("known species (pass-0 locked list)" if method.startswith("known:")
+                    else "certified neutral (pass-7 multi-channel certificate)")
+            reason = (f"{what} with ion score {_isc:.2f}, under the engine's Suspect band "
+                      f"edge ({score_floor:.2f}): the lock fixes which formula the peak is "
+                      "read as, but the ion's own match score does not support it at the "
+                      "identification bar")
         elif method.startswith("known:"):
             reason = ("known species (pass-0 locked list, mass + own-twin "
                       "self-consistency gated)"
@@ -930,7 +980,8 @@ def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
 def apply_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
     """Stamp tier / tier_reason / candidate_density onto the M0 rows of the
     ledger (in place; returns the ledger). Non-M0 rows keep NA. `cfg` (the run's
-    PassConfig) supplies cal_abs_floor_mda; None = its default (report re-tier)."""
+    PassConfig) supplies cal_abs_floor_mda and tau_suspect; None = their
+    defaults (report re-tier)."""
     for col in ("tier", "tier_reason", "candidate_density"):
         if col not in ledger.columns:
             ledger[col] = pd.Series(pd.NA, index=ledger.index, dtype="object")
