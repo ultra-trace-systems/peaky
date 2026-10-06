@@ -175,6 +175,75 @@ def test_pool_auto_stops_before_assigning_when_nothing_is_diagnostic(monkeypatch
 
 
 # --------------------------------------------------------------------------- #
+# assign_batch.run(batch=NAME): the sample roster carries no server match
+# --------------------------------------------------------------------------- #
+class _Resolved:
+    id, name, n_same_name = "B1", "uronium run", 1
+
+
+class _StopAfterResolve(Exception):
+    pass
+
+
+_RESOLVE = P.resolve            # the real resolver, before any test patches it
+
+
+def _ab_batch(monkeypatch, tmp_path, **kw):
+    """assign_batch.run(batch=...) with the server stubbed and a positive roster
+    (polarity '+', no ionization_mechanism); stops right after the reagent is
+    resolved, so nothing is assigned. Returns the resolved profile's name."""
+    roster = pd.DataFrame({"sample_item_id": [f"s{i}" for i in range(3)],
+                           "sample_item_name": [f"file{i}" for i in range(3)],
+                           "datetime_utc": pd.Timestamp("2021-03-04"),
+                           "tic": 1e6, "polarity": "+"})
+    monkeypatch.setattr(IO, "connect", lambda *a, **k: _FakeClient())
+    monkeypatch.setattr(IO, "resolve_batch", lambda client, batch, dataset=None: _Resolved())
+    monkeypatch.setattr(IO, "fetch_batch_samples",
+                        lambda client, bid, dataset=None, **k: roster.copy())
+    got = {}
+
+    def spy(reagent="auto", peaks=None, **k):
+        got["name"] = _RESOLVE(reagent, peaks, **k).name
+        raise _StopAfterResolve
+
+    monkeypatch.setattr(P, "resolve", spy)
+    with pytest.raises(_StopAfterResolve):
+        AB.run(batch="uronium run", dataset="D", out_dir=str(tmp_path),
+               log=lambda *a: None, **kw)
+    return got["name"]
+
+
+def test_assign_batch_auto_on_the_roster_alone_raises_asking_for_the_reagent(monkeypatch, tmp_path):
+    # before: the roster's polarity '+' picked the first positive profile (a guess)
+    with pytest.raises(ValueError) as e:
+        _ab_batch(monkeypatch, tmp_path)
+    msg = str(e.value)
+    assert "roster" in msg and "reagent=NAME" in msg and "ts_peaks=" in msg
+    assert "mechanisms seen" not in msg          # the matches were never read
+    assert cli._friendly_server_error(e.value) is None
+
+
+def test_assign_batch_auto_reads_the_time_series_matches(monkeypatch, tmp_path):
+    ts = _table(["+(CH4N2O)H+", "+H+"] * 3)
+    assert _ab_batch(monkeypatch, tmp_path, ts_peaks=ts) == "Ur"
+    # an explicit reagent never reads either table
+    assert _ab_batch(monkeypatch, tmp_path, reagent="Br") == "Br"
+
+
+def test_auto_reagent_table_prefers_the_table_with_matches():
+    ts = _table(["+Br-", "-H+"])
+    blank = _table([])                                   # the column, all empty
+    trimmed = ts[["sample_item_id", "mz", "height", "datetime_utc"]]
+    assert AB._auto_reagent_table("auto", ts, None) is ts
+    assert AB._auto_reagent_table("auto", blank, ts) is ts
+    assert AB._auto_reagent_table("auto", trimmed, ts) is ts
+    assert AB._auto_reagent_table("auto", blank, None) is blank   # resolve raises, naming none
+    assert AB._auto_reagent_table("Br", trimmed, ts) is trimmed   # a name reads nothing
+    with pytest.raises(ValueError, match="ts_peaks="):
+        AB._auto_reagent_table("auto", trimmed, trimmed)
+
+
+# --------------------------------------------------------------------------- #
 # peaky assign / MCP assign_sample: stop, never adducts=None
 # --------------------------------------------------------------------------- #
 def _stub_sample(monkeypatch, raw):

@@ -650,8 +650,8 @@ def resolve(
 ) -> ReagentProfile:
     """Return a ReagentProfile. `reagent` may be a name/alias, a '+'-joined
     combination ('NO3+Br'), or 'auto' to detect from a loaded peak table (its server
-    adduct mechanisms, then polarity). `config` (a JSON/TOML path) registers
-    extra/override reagents before resolving.
+    adduct mechanisms; it raises when none is diagnostic). `config` (a JSON/TOML
+    path) registers extra/override reagents before resolving.
 
     Auto-detect returns EVERY reagent system the peak table evidences, composed into
     one profile (see `compose`) -- not the first that happens to match. A module

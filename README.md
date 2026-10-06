@@ -208,9 +208,10 @@ peaky curate copy-samples --sample-ids <ID...> \
     --to-workspace "<ws>" --to-dataset "<ds>" --to-batch "<batch>"
 ```
 
-`--reagent` forces the analyte channels (a positive/sparse sample otherwise
-mis-detects as negative). `peaky mass-qc` probes the 30-ion nitrate core (or the
-provisional bromide ladder) in the batch time series and reports whether the axis
+`--reagent` forces the analyte channels (`auto` reads the sample's server matches
+and stops with an error when none names a reagent; pass `--reagent` then).
+`peaky mass-qc` probes the 30-ion nitrate core (or the provisional bromide
+ladder) in the batch time series and reports whether the axis
 is flat, offset, curved, drifting or blended — an external yardstick, so a wrong
 axis is caught before the engine self-calibrates on its own output.
 `--rolling-centre` lets each merged ion's centre roll along the batch where its

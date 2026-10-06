@@ -55,9 +55,10 @@ peaky list samples  --batch "<your batch>" --dataset "<your workspace>"
 peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|auto> \
     --output-dir ~/peaky-output/<name>
 ```
-`--reagent` forces the analyte channels (a positive/sparse sample otherwise
-mis-detects as negative). Writes `<ID>_<UTC>_{ledger.csv, assignments.xlsx,
-summary.md, manifest.json, gka.html}`. A ~1000-peak sample takes ≈5 min.
+`--reagent` forces the analyte channels (`auto` reads the sample's server matches
+and stops with an error when none names a reagent; pass `--reagent` then).
+Writes `<ID>_<UTC>_{ledger.csv, assignments.xlsx, summary.md, manifest.json,
+gka.html}`. A ~1000-peak sample takes ≈5 min.
 
 ## 5. Assign a whole batch (recommended)
 

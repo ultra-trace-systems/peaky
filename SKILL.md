@@ -284,8 +284,10 @@ pipeline assigns a **presence-cover subset and merges by m/z**:
   the picks in order with `bins_new` / `coverage`, and `.attrs['selection']` with
   the achieved coverage + stop reason. The merge has no prevalence filter, so this
   selection is what decides recall.
-- **`assign_batch.run(batch=NAME | peaks=, reagent='auto', out_dir=, ts_peaks=, amine_r_min=0.6)`**
-  — resolves the `profiles.ReagentProfile`, runs `assign.run` per selected file
+- **`assign_batch.run(batch=NAME | peaks=, reagent=, out_dir=, ts_peaks=, amine_r_min=0.6)`**
+  — resolves the `profiles.ReagentProfile` (`reagent='auto'`, the default, reads the
+  server matches of `peaks`, else of `ts_peaks`; the `batch=` roster carries none, so
+  `batch=` alone needs `reagent=NAME`), runs `assign.run` per selected file
   (keeps each `per_file/<sid>_ledger.csv`), then an **offset-aware merge** (`align`)
   - a file-to-file **jitter** table. Pass `ts_peaks` (the full-batch per-peak time
     series) to enable the positive-mode NH4→amine gate below. Writes `merged_ledger.csv`

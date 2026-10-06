@@ -222,11 +222,11 @@ urea/uronium `Ur⁺`, nitrate `NO3` / ¹⁵N-nitrate `NO3_15N`, iodide `IODIDE`,
 charge-transfer `EASYIC`, ¹⁵N-ammonium `NH4_15N` — bundling polarity, adducts,
 normaliser ion, the chemistry context, and (for a labelled reagent) its isotopic
 `purity` and covalent-label fields. `resolve('auto', peaks)` detects the
-reagent from the spectrum; passing `--reagent` forces it (a sparse positive sample
-otherwise mis-detects as negative). New reagents are added from a JSON/TOML file
-via `register()` / `load_config()` (`--reagent-config`) **without forking the
-package**. The reagent is the single switch that makes the same pipeline
-negative- or positive-mode.
+reagent from the sample's server matches, never the batch name, and stops with
+an error when none names a reagent; passing `--reagent` forces it. New
+reagents are added from a JSON/TOML file via `register()` / `load_config()`
+(`--reagent-config`) **without forking the package**. The reagent is the
+single switch that makes the same pipeline negative- or positive-mode.
 
 ---
 
