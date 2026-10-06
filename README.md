@@ -192,7 +192,7 @@ peaky mass-qc --batch "<your batch>" --dataset "<your workspace>" --reagent NO3 
 peaky mass-qc --ts <run>/per_file/_batch_ts.parquet --reagent Br
 
 # TOF batches: the rolling centre and per-trace stamping window (off by default),
-# or assign the persistent ions ONCE from their centred traces instead of a file cover
+# or (EXPERIMENTAL) assign the persistent ions ONCE from their centred traces instead of a file cover
 peaky batch ... --rolling-centre
 peaky batch ... --trace-first --resolving-power 6500
 
@@ -218,8 +218,11 @@ axis is caught before the engine self-calibrates on its own output.
 drift is resolvable and sizes its stamping window from its own scatter;
 `--trace-first` (with `--resolving-power`, the instrument's R) builds the batch's
 persistent traces, centres and gates them, applies the mass-qc wave, and assigns
-them as one synthetic sample through the same merge, stamp and residual stages —
-the TOF path, where a per-file mass scatters ~13 ppm and a trace centre is good to ~2. `--no-residual` skips the second, targeted selection
+them as one synthetic sample through the same merge, stamp and residual stages.
+It is **EXPERIMENTAL**: on its one A/B it recovered about half the ions a file
+cover found, because the isotope evidence that earns Assigned lives inside a spectrum
+and a trace sample averages it away — use it for batch-level centred masses, not
+as a replacement for the cover path. `--no-residual` skips the second, targeted selection
 (`--residual-min-x-edge` / `--residual-min-cps` / `--residual-k-max` tune it). `--jobs/-j N` (or `PEAKY_JOBS`) assigns the selected
 samples across `N` worker processes — ~3.5× faster on multicore, output identical
 to a serial run; default is your physical-core count, `--jobs 1` is the serial
