@@ -269,6 +269,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               height_cutoff_x_edge: float | None = None,
               height_cutoff_cps: float | None = None,
               side_channels=None,
+              tof_flag_mz: float | None = None,
               n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Full batch pipeline in ONE call: sample-subset ASSIGN (live match_compounds)
     -> merge -> cluster figures -> Van Krevelen -> PDF report, into one versioned run
@@ -297,12 +298,16 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     `side_channels` (a list of adducts, () = every one closed) is the
     `--side-channels` choice; None leaves the reagent profile's declared side
     channels (`ReagentProfile.side_channels`) in force.
+    `tof_flag_mz` sets PassConfig.tof_flag_mz, the m/z at which the TOF
+    mass-only flag's reason switches (None keeps the config's; see
+    assignment/mass_only.py).
     Returns {ctx, assign, cluster, vk, report_pdf}."""
     from peaky.batch import assign_batch as AB
 
     cfg = gate_config(assign_kw.pop("cfg", None), occurrence_min=occurrence_min,
                       height_cutoff_x_edge=height_cutoff_x_edge,
                       height_cutoff_cps=height_cutoff_cps)
+    tof_flag_config(cfg, tof_flag_mz)
     assign_kw["cfg"] = cfg
 
     t_start = time.time()          # whole-pipeline wall clock -> returned elapsed_s
@@ -382,7 +387,10 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                 # the batch's mass scale: measured scatter + the merge / stamping
                 # windows sized from it (a run-derived count, like the admission
                 # threshold: the config fingerprint holds only the binning knob)
-                "mass_scale": summ.get("mass_scale")},
+                "mass_scale": summ.get("mass_scale"),
+                # the TOF mass-only flag's tallies (threshold, Assigned / flagged
+                # below and at or above it); the threshold knob is in the config
+                "tof_flag": summ.get("tof_flag")},
         # Keyed by sample: a batch run describes many, and what publishes into
         # Mascope is one sample's run, which has to say what scored it.
         extra={"pattern_scoring": summ.get("pattern_scoring") or {}},
@@ -418,6 +426,15 @@ def gate_config(cfg=None, *, occurrence_min=None, height_cutoff_x_edge=None,
                                     else float(height_cutoff_x_edge))
     if height_cutoff_cps is not None:
         cfg.height_cutoff_cps = float(height_cutoff_cps)
+    return cfg
+
+
+def tof_flag_config(cfg, tof_flag_mz=None):
+    """Put `tof_flag_mz` (an m/z above 0) on the run's PassConfig as the TOF
+    mass-only flag's threshold; None keeps the config's own. Returns cfg."""
+    if tof_flag_mz is not None:
+        from peaky.assignment import mass_only as MO
+        cfg.tof_flag_mz = MO.check_threshold(tof_flag_mz)
     return cfg
 
 
@@ -492,6 +509,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                        height_cutoff_x_edge: float | None = None,
                        height_cutoff_cps: float | None = None,
                        side_channels=None,
+                       tof_flag_mz: float | None = None,
                        n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Pool the batches matching `batches` (a regex over batch names) into ONE
     unified ledger, then emit a whole-pool report plus one report per group.
@@ -522,6 +540,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     cfg = gate_config(assign_kw.pop("cfg", None), occurrence_min=occurrence_min,
                       height_cutoff_x_edge=height_cutoff_x_edge,
                       height_cutoff_cps=height_cutoff_cps)
+    tof_flag_config(cfg, tof_flag_mz)
     assign_kw["cfg"] = cfg
     when = when or datetime.now(timezone.utc)     # ONE stamp: pool + every group ctx agree
     if isinstance(ts, str):
@@ -628,7 +647,8 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                 # the batch's mass scale: measured scatter + the merge / stamping
                 # windows sized from it (a run-derived count, like the admission
                 # threshold: the config fingerprint holds only the binning knob)
-                "mass_scale": summ.get("mass_scale")},
+                "mass_scale": summ.get("mass_scale"),
+                "tof_flag": summ.get("tof_flag")},
         extra={"pattern_scoring": summ.get("pattern_scoring") or {}},
         created_utc=ctx.when.isoformat(), log=log)
     elapsed = round(time.time() - t_start, 1)

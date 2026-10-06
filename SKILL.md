@@ -89,6 +89,7 @@ peaky batch --batch "<batch>" --dataset "<workspace>" --reagent <Br|Ur|...> \
 # a TOF batch: measure the axis first, then roll the centres (trace-first: EXPERIMENTAL)
 peaky mass-qc --batch "<batch>" --dataset "<workspace>" --reagent <NO3|NO3_15N|Br> [--ts <ts.parquet>]
 peaky batch ... --rolling-centre                      # adaptive centre + per-trace stamp window
+peaky batch ... --tof-flag-mz 350                     # TOF: the m/z where the mass-only flag says "saturated"
 peaky batch ... --trace-first --resolving-power 6500  # EXPERIMENTAL: one synthetic sample of centred traces
 
 # MANY same-chemistry batches -> ONE unified ledger + whole-pool + per-group reports

@@ -843,6 +843,7 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
     Mutates `merged` in place; returns counts (pooled, locked, confirmed_kept,
     conflict, lead_only, no_cluster) for `batch_summary["merge_gates"]`."""
     from peaky.assignment.cleanup import _note
+    from peaky.assignment.mass_only import KNOWN_DECIDED
     counts = {k: 0 for k in ("pooled", "locked", "confirmed_kept", "conflict",
                              "lead_only", "mass_only_outvoted", "no_cluster")}
     if not pool or merged is None or not len(merged) or "mz" not in merged.columns:
@@ -898,7 +899,9 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
         old_n = (int(merged.at[i, "n_files_winner"])
                  if "n_files_winner" in merged.columns and pd.notna(merged.at[i, "n_files_winner"])
                  else 0)
-        head = (f"known species decided once for the batch: {label} ({nf} {ad}) -- "
+        # the note's opening words are what the TOF mass-only flag reads as
+        # "the batch decided this known species" (an exempt row)
+        head = (f"{KNOWN_DECIDED}: {label} ({nf} {ad}) -- "
                 f"{_pool_summary(conf, dfr, ref)}")
         if conf and not ref:
             if same:
@@ -2177,6 +2180,20 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         log(f"[assign_batch] ion-only rows: {_io_merged} merged ({ion_only_summary['per_file_rows']} "
             f"per-file rows in {ion_only_summary['n_files_with']} of {len(_io_files)} files) on "
             f"{ion_only_summary['channels']}")
+    # The TOF mass-only flag (assignment/mass_only.py): on a TOF-class run, every
+    # Assigned reading that no isotope line of the neutral's own elements supports
+    # in any of its Assigned files is FLAGGED -- `mass_only` + a short reason on
+    # the merged row, never a tier or a level: a decoy-measured fact about what
+    # the reading rests on (the formula space saturates with m/z on a TOF), kept
+    # visible instead of hiding what makes it at high masses. Read off the same
+    # per-file ledgers the levels pooled; the class is the batch width model's,
+    # else the files' scoring class. The columns exist on every run (empty off a TOF).
+    from peaky.assignment import mass_only as _MO
+    tof_flag = _MO.flag_merged(
+        merged, level_ledgers,
+        klass=_MO.instrument_class(resolution=rp, instrument_types=[(s_ or {}).get("instrument_type")
+                                                                    for s_ in scorings.values()]),
+        threshold=_MO.flag_mz(_cfg), halogen=level_summary["reagent_halogen"], resolution=rp, log=log)
     merged.to_csv(os.path.join(out_dir, "merged_ledger.csv"), index=False)
     jitter.to_csv(os.path.join(TAB, "jitter.csv"), index=False)
     # the reagent-water rungs and the merged readings they displaced (always written:
@@ -2339,6 +2356,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # carrying an `ion_only_of` link, per-file rows behind them, files holding
         # any, and their merged levels
         "ion_only": ion_only_summary,
+        # the TOF mass-only flag (assignment/mass_only.py): the class it keyed on,
+        # whether it ran, the m/z threshold of its two reasons, and the Assigned /
+        # flagged counts below and at or above it (tier and level unchanged)
+        "tof_flag": tof_flag,
         "reflists_active": RL.active_versions(reflists_active),   # [(id, data_version)]
         # how the lists were activated: {tags, matched: {tag: [[field, keyword]]},
         # active: [[id, version, how]]} (the evidence level's context source)

@@ -448,6 +448,14 @@ selected sample_ids (SAMPLING.md)
 7. **Pool the plausibility audit + write artifacts.** Per-file plausibility
    demotes are pooled and written; `merged_ledger.csv` (root), `jitter.csv`
    (tables/), `selected_samples.csv`, and `batch_summary.json` are emitted.
+   Just before the merged ledger is written, after the evidence levels are
+   stamped, a TOF-class run's Assigned rows take the **mass-only flag**
+   (`assignment/mass_only.flag_merged`): `mass_only` / `mass_only_reason` from
+   the same per-file ledgers the levels pooled — `True` where no file holding
+   the reading at Assigned shows an isotope line of the neutral's own elements
+   at 0.5-2x its expected height, known species exempt. An annotation only: no
+   tier, level, claim or reading moves ([OUTPUTS.md](OUTPUTS.md),
+   `batch_summary.json['tof_flag']`).
 
 8. **Jitter report** (`jitter_report`, standalone analysis). Per-file offset =
    median observed-vs-theoretical ppm of its assignments (`_theo_ppm`). Then:

@@ -1460,12 +1460,23 @@ def missed_m3(run: Run, other: Run | None, other_instrument: Run | None, other_l
 # ---------------------------------------------------------------------------
 # 5. is it right
 # ---------------------------------------------------------------------------
+def mass_only_census(run: Run) -> dict | None:
+    """The TOF mass-only flag of the run's Assigned rows (peaky/assignment/mass_only.py), re-read off the merged
+    ledger and split at the run's own threshold (batch_summary['tof_flag'], else the package default):
+    {threshold_mz, n_assigned, n_flagged, below, at_or_above}; None on a run without flag values (not a
+    TOF-class run, or made before the flag)."""
+    from peaky.assignment import mass_only as MO
+    thr = ((run.summary or {}).get("tof_flag") or {}).get("threshold_mz") or MO.DEFAULT_TOF_FLAG_MZ
+    return MO.counts(run.ledger, thr)
+
+
 def census(run: Run) -> dict:
     """Element census of the Assigned neutrals: heteroatoms in a clean
-    oxidation experiment are contamination or error until named."""
+    oxidation experiment are contamination or error until named. On a TOF-class
+    run it also counts the Assigned rows the mass-only flag marks (`mass_only`)."""
     led = run.ledger
     if "neutral_formula" not in led.columns:
-        return {"n_assigned": 0, "elements": {}, "examples": {}}
+        return {"n_assigned": 0, "elements": {}, "examples": {}, "mass_only": None}
     ass = led[(col(led, "tier", "") == "Assigned") & led["neutral_formula"].notna()]
     out, examples = {}, {}
     for e in CENSUS:
@@ -1478,7 +1489,18 @@ def census(run: Run) -> dict:
     out[f"C>{C_HEAVY}"] = int(len(heavy))
     if not heavy.empty:
         examples[f"C>{C_HEAVY}"] = ", ".join(f"{r.neutral_formula} {getattr(r, 'adduct', '')}" for r in heavy.head(4).itertuples())
-    return {"n_assigned": int(len(ass)), "elements": out, "examples": examples}
+    return {"n_assigned": int(len(ass)), "elements": out, "examples": examples, "mass_only": mass_only_census(run)}
+
+
+def mass_only_line(mo: dict | None) -> str:
+    """The census line on the TOF mass-only flag ('' without one)."""
+    if not mo:
+        return ""
+    b, a, thr = mo["below"], mo["at_or_above"], mo["threshold_mz"]
+    return (f"TOF mass-only flag: {mo['n_flagged']} of {mo['n_assigned']} Assigned rows have no isotope line of the "
+            f"neutral's own elements in any Assigned file -- {b['flagged']} of {b['assigned']} below m/z {thr:g} "
+            f"(the reading rests on mass alone), {a['flagged']} of {a['assigned']} at or above it (formula space "
+            "saturated on a TOF); tier unchanged")
 
 
 # --- decoy ------------------------------------------------------------------
@@ -2490,6 +2512,7 @@ KEY_METRICS = [
     ("c13_within_1", "13C carbon count within 1", 0),
     ("hetero_present", "heteroatom line present", 0),
     ("census_halogen", "Assigned with Cl/Br/F", 0),
+    ("census_mass_only", "Assigned mass-only (TOF flag)", 0),
     ("m3_other_instrument_own_missing", "M3 own missing", 0),
 ]
 #: the metrics that read the evidence scale: never diffed between rows of two scales (`claims_schema`)
@@ -2800,6 +2823,12 @@ def board_row(card: dict) -> dict:
     })
     # an Orbitrap decoy file: the Da arm's numbers below m/z 350 are blind there (`DA_ARM_BLIND`)
     row["decoy_orbitrap"] = bool(dc.get("orbitrap")) if dc.get("mode") not in (None, "none") else None
+    # the TOF mass-only flag (None off a TOF, or on a run made before it): the flagged Assigned rows, and the
+    # split at the run's threshold -- appended, so the board's older columns keep their order
+    mo = cz.get("mass_only") or {}
+    row["census_mass_only"] = mo.get("n_flagged")
+    row["census_mass_only_split"] = ({k: mo.get(k) for k in ("threshold_mz", "n_assigned", "below", "at_or_above")}
+                                     if mo else None)
     return row
 
 
@@ -3188,6 +3217,8 @@ def render_md(card: dict) -> str:
           "| element | Assigned rows | examples |", "|---|---:|---|"]
     for k, v in cz["elements"].items():
         L.append(f"| {k} | {v} | {cz['examples'].get(k, '')} |")
+    if cz.get("mass_only"):
+        L += ["", f"- {mass_only_line(cz['mass_only'])}"]
     L += ["", "### (c) decoy false-discovery bound", ""]
     if _scoring_note(dc):
         L += [_scoring_note(dc), ""]
@@ -3674,6 +3705,8 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
         out.append("</div><div>")
         cz_rows = [{"element": k, "rows": v, "examples": cz["examples"].get(k, "")} for k, v in cz["elements"].items()]
         out.append("<p class=\"note\"><b>Element census of Assigned neutrals</b></p>" + html_table(cz_rows, [("element", "element"), ("rows", "Assigned rows"), ("examples", "examples")], mono=("element", "examples")))
+        if cz.get("mass_only"):
+            out.append(f"<p class=\"note\">{_h(mass_only_line(cz['mass_only']))}</p>")
         out.append("</div></div>")
         miss_rows = [x for x in m2["rows"] if x["status"] in ("read as", "same ion", "unstamped", "candidate")]
         out.append(html_table(miss_rows[:40], [("source", "source"), ("name", "name"), ("neutral", "neutral"), ("status", "status"), ("adduct", "channel"), ("mz", "m/z"), ("cps", "med cps"), ("in", "in"), ("read", "read as"), ("reason", "engine's reason"), ("ledger", "in ledger")], {"mz": 4}, mono=("neutral", "adduct", "read", "in")))

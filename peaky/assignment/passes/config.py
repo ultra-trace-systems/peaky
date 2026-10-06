@@ -314,6 +314,14 @@ class PassConfig:
     # the run's context-active reference lists (reflists.active_lists).
     reflist_formulas: frozenset = frozenset()
     reflist_prior: float = 0.04
+    # The TOF mass-only flag (assignment/mass_only.py): on a TOF-class run every
+    # Assigned reading with no isotope line of its own elements in any Assigned
+    # file is FLAGGED `mass_only` -- never demoted. This m/z only picks the
+    # flag's reason: at or above it a TOF's formula space is saturated (a
+    # shifted-mass decoy is Assigned as often as the real spectrum, measured on
+    # two TOFs); below it the reading rests on mass alone. A configuration knob
+    # (`--tof-flag-mz`), recorded in batch_summary['tof_flag'] and fingerprinted.
+    tof_flag_mz: float = 350.0
 
     # Fields a RUN stamps onto the cfg PER SAMPLE -- assign.run directly, and
     # `calibrate` for the fitted cal_mu/cal_sigma. They are run-derived (they
