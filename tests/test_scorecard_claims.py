@@ -376,7 +376,7 @@ def test_kept_arm_ledgers_recount_to_the_same_card(run_dir_claims, tmp_path, cap
     manifest = json.loads((kept / "manifest.json").read_text())
     assert manifest == {"mode": "both", "offset_da": 0.35, "files": ["s1"], "adducts_used": SC.load_run(str(run_dir_claims)).adducts,
                         "wrong_adducts": SC.wrong_adducts("-"), "scoring": {"s1": "class-fallback"},   # no pattern_scoring: pre-0.9.0
-                        "scoring_detail": {}, "code": SC.engine_code()}
+                        "scoring_detail": {}, "calibration": {"s1": "control"}, "code": SC.engine_code()}
     first = json.loads((out / name / "scorecard.json").read_text())["decoy"]
     assert first["control"]["assigned"] >= 2 and "by_claim" in first["control"]
     # a re-count from the kept ledgers: no engine run, the same numbers
@@ -389,6 +389,7 @@ def test_kept_arm_ledgers_recount_to_the_same_card(run_dir_claims, tmp_path, cap
     again = json.loads((tmp_path / "again" / name / "scorecard.json").read_text())["decoy"]
     assert again["mode"] == "both" and again["ledgers"] == {"source": "saved", "dir": str(kept), "code": manifest["code"]}
     assert again["scoring"] == manifest["scoring"]                     # what the kept ledgers were judged at, as kept
+    assert again["calibration"] == manifest["calibration"]             # and the calibration they ran at
     for arm in ("control", "shift", "adducts"):
         assert again[arm] == first[arm]
     assert not (tmp_path / "again" / name / "decoy").exists()          # a re-count keeps nothing new
@@ -491,7 +492,7 @@ def test_the_card_carries_claims_after_the_headline_and_the_acceptance_block(cru
     assert keys.index("claims") == keys.index("headline") + 1
     row = card["row"]
     assert list(row)[: len(OLD_ROW_KEYS)] == OLD_ROW_KEYS and "axes_hist" not in row
-    assert list(row)[len(OLD_ROW_KEYS):] == CLAIM_ROW_KEYS + ["decoy_scoring"]
+    assert list(row)[len(OLD_ROW_KEYS):] == CLAIM_ROW_KEYS + ["decoy_scoring", "decoy_calibration"]
     assert (row["claim_identified"], row["claim_neutral"], row["claim_ion"], row["claim_tentative"],
             row["claim_reagent"], row["claim_not_assessed"]) == (2, 1, 2, 1, 0, 1)
     assert row["claim_unmatched_signal"] == pytest.approx(100.0 * 80 / COMMITTED)

@@ -26,7 +26,7 @@ the merged ledger, `per_file/*_ledger.csv`, `per_file/_batch_ts.parquet`,
 | `<out>/<run name>/SCORECARD.md` | the card: §0 the claim, then six numbered sections (below) |
 | `<out>/<run name>/scorecard.json` | the same, as data — every table as records |
 | `<out>/<run name>/decoy/<file>__<arm>.csv.gz` | each decoy arm's engine ledger (`control`, `shift`, `adducts`), kept for a re-count |
-| `<out>/<run name>/decoy/manifest.json` | what those ledgers were made with: mode, offset, files, adduct sets, per file the scoring its arms were judged at (`inherited` / `class-fallback`) and the inherited width, offset, window, floor and anchors (`scoring_detail`), engine code |
+| `<out>/<run name>/decoy/manifest.json` | what those ledgers were made with: mode, offset, files, adduct sets, per file the scoring its arms were judged at (`inherited` / `class-fallback`) and the inherited width, offset, window, floor and anchors (`scoring_detail`), per file the mass calibration its arms ran at (`calibration`: `control` / `own`), engine code |
 | `<out>/scoreboard.jsonl` | one row per run, appended; the board's memory |
 | `<out>/SCOREBOARD.md` | the claims table first, then every channel's latest row with its delta to the row before (`## All metrics`) |
 | `<out>/scoreboard.html` | the page source of "Peaky Scoreboard": the claims table, the channel table and one tabbed panel per run |
@@ -184,6 +184,21 @@ and the tables show a dash.
    omit its floor, the library default -- a width or window not above zero,
    an abundance floor outside [0, 1)) counts as none: those arms take the
    offline class fallback, a TOF's width at zero offset.
+   Every arm but the control also runs at its file's **control calibration**
+   (`inherited_calibration`): the pass-stage mass fit (`passes.calibrate`:
+   the mass gate's mu, sigma and 1/mz trend) and the tier engine's
+   (`tiers._calibrate`: the tiers, the degeneracy audit, the winner selection)
+   are taken on the control arm's ledger, not on the arm's own commits. An
+   arm's own backbone is made of wrong readings; when it is too small to
+   calibrate (a shifted backbone, or the wrong-adducts arm on any file), the
+   arm runs with the mass z-test and the degeneracy audit off and keeps every
+   mass fit -- it would bound an engine no real file runs, since a real file
+   always calibrates. `decoy.calibration` says per file what its arms ran at
+   (`control`; `own` where the control arm errored and left nothing to
+   inherit; `unrecorded` on a re-count of ledgers kept before the field), the
+   manifest keeps it, and the board row records one word
+   (`decoy_calibration`). The arms are levelled at the file's run window, as
+   before.
    What an arm does NOT inherit from the run: the opportunistic channels the
    server opened for it (offline, only the run's declared adducts resolve),
    its batch-derived height cutoff, its pre-calibration prior offset, its

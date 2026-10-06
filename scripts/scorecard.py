@@ -57,6 +57,7 @@ rows and the time series.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import glob
 import html
@@ -1501,6 +1502,19 @@ def _scoring_note(dc: dict) -> str:
             f"arm does not take {DECOY_NOT_INHERITED} (card C39).")
 
 
+CALIBRATION_WORDS = {"control": "its file's control arm (inherited)", "own": "its own commits (no control ledger)",
+                     "unrecorded": "unrecorded (ledgers kept before the field)"}
+
+
+def _calibration_note(dc: dict) -> str:
+    cal = (dc or {}).get("calibration")
+    if not isinstance(cal, dict) or not cal:
+        return ""
+    return ("arm mass calibration: " + ", ".join(f"`{f}` {CALIBRATION_WORDS.get(k, k)}" for f, k in cal.items())
+            + ". A decoy arm's own backbone is made of wrong readings; calibrated on it, an arm that fails to "
+              "calibrate runs with the mass z-test and the degeneracy audit off.")
+
+
 def run_engine_offline(run: Run, peaks: pd.DataFrame, sample_id: str, adducts: list[str], log=lambda *a: None,
                        scoring=None) -> pd.DataFrame:
     """`assign.run(peaks=)` on one table with the run's own profile settings,
@@ -1545,6 +1559,57 @@ def run_engine_offline(run: Run, peaks: pd.DataFrame, sample_id: str, adducts: l
     finally:
         IO.unregister_offline_sample(sample_id)
     return res["ledger"]
+
+
+@contextlib.contextmanager
+def inherited_calibration(control: pd.DataFrame | None, log=lambda *a: None):
+    """While a decoy arm's engine runs, its mass calibration is the one its file's CONTROL arm gives: the
+    pass-stage fit (`passes.calibrate`, the mass gate's mu / sigma and 1/mz trend) and the tier engine's
+    (`tiers._calibrate`, read by the tiers, the degeneracy audit and the winner selection) are both taken on the
+    control's ledger, not on the arm's own commits. An arm's own backbone is made of wrong formulas (a shifted
+    spectrum) or wrong channels (the wrong adducts); when it is too small to calibrate, the arm runs with the
+    mass z-test and the degeneracy audit OFF and keeps every mass fit -- it would bound an engine no run ever
+    is. A real file always calibrates, so the arm is judged at the file's real instrument accuracy.
+
+    Yields True when the calibration is inherited, False when there is no control ledger to take it from (the
+    arm then calibrates on its own commits). Process-local: both functions are restored on exit."""
+    if control is None or control.empty or "role" not in control.columns:
+        yield False
+        return
+    from peaky.assignment import passes as PA
+    from peaky.assignment import tiers as TI
+
+    m0 = control[control["role"] == "M0"]
+    kids = (control.loc[control["role"] == "iso_child", "parent_peak_id"].value_counts()
+            if "parent_peak_id" in control.columns else pd.Series(dtype=int))
+    own_pass, own_tier = PA.calibrate, TI._calibrate
+    cache: dict = {}
+
+    def pass_cal(_ledger, cfg, *, log=print):
+        log("[calibrate] inherited: fitted on the control arm's ledger")
+        return own_pass(control, cfg, log=log)
+
+    def tier_cal(_m0, _kids_of, **kw):
+        key = repr(sorted(kw.items()))
+        if key not in cache:
+            cache[key] = own_tier(m0, kids, **kw)
+        return cache[key]
+
+    PA.calibrate, TI._calibrate = pass_cal, tier_cal
+    try:
+        yield True
+    finally:
+        PA.calibrate, TI._calibrate = own_pass, own_tier
+
+
+def calibration_summary(dc: dict) -> str | None:
+    """One word for what a card's decoy arms were calibrated at: 'control' (every arm took its file's control
+    calibration), 'own' (an arm's own commits), 'mixed', or 'unrecorded' (ledgers kept before the field)."""
+    cal = (dc or {}).get("calibration")
+    if not cal:
+        return None
+    kinds = set(cal.values()) if isinstance(cal, dict) else {str(cal)}
+    return kinds.pop() if len(kinds) == 1 else "mixed"
 
 
 CLAIM_COUNTS = ("pairs", "lt_350", "ge_350", "assigned", "assigned_lt_350", "assigned_ge_350")
@@ -1723,6 +1788,9 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
     # numbers -- on a TOF the brightest file can be the batch's worst-fitted one
     out["scoring"] = (kept.get("scoring") or {f: "unrecorded" for f in files} if ledgers_dir
                       else {f: ("inherited" if decoy_scoring(run, f) else "class-fallback") for f in files})
+    # per file, the mass calibration its decoy arms ran at (`inherited_calibration`): its control arm's, or the
+    # arm's own where the control gave none
+    out["calibration"] = (kept.get("calibration") or {f: "unrecorded" for f in files} if ledgers_dir else {})
     if ledgers_dir:
         out["scoring_detail"] = kept.get("scoring_detail") or {}
     else:
@@ -1746,9 +1814,15 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
             if ledgers_dir:
                 led = pd.read_csv(arm_ledger_path(ledgers_dir, file_id, key), low_memory=False)
                 read = led
-            else:
+            elif key == "control":
                 led = run_engine_offline(run, peaks, sample_id, adducts, log, scoring=decoy_scoring(run, file_id))
                 read = _reparsed(led)
+            else:
+                with inherited_calibration(ctx.get(file_id), log) as inherited:
+                    led = run_engine_offline(run, peaks, sample_id, adducts, log, scoring=decoy_scoring(run, file_id))
+                read = _reparsed(led)
+                if out["calibration"].get(file_id) != "own":
+                    out["calibration"][file_id] = "control" if inherited else "own"
             if key == "control":
                 ctx[file_id] = read
             lv, level_error = {m: None for m in ARM_MODES}, None
@@ -1792,7 +1866,7 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
             arm("adducts", peaks, f, wrong_adducts(run.polarity))
     if saved:
         manifest = {k: out[k] for k in ("mode", "offset_da", "files", "adducts_used", "wrong_adducts", "scoring",
-                                        "scoring_detail")}
+                                        "scoring_detail", "calibration")}
         try:
             with open(os.path.join(save_dir, DECOY_MANIFEST), "w") as fh:
                 json.dump(manifest | {"code": out["ledgers"]["code"]}, fh, indent=1, default=_json_default)
@@ -2198,6 +2272,8 @@ def board_row(card: dict) -> dict:
     })
     # what the decoy arms were judged at (C35): appended, so the board's older columns keep their order
     row["decoy_scoring"] = decoy_scoring_summary(dc)
+    # and the mass calibration they ran at: the control's (inherited) or their own
+    row["decoy_calibration"] = calibration_summary(dc)
     return row
 
 
@@ -2482,6 +2558,8 @@ def render_md(card: dict) -> str:
     L += ["", "### (c) decoy false-discovery bound", ""]
     if _scoring_note(dc):
         L += [_scoring_note(dc), ""]
+    if _calibration_note(dc):
+        L += [_calibration_note(dc), ""]
     if dc.get("control") and "error" not in dc["control"]:
         L += [f"offline engine on the brightest {len(dc['files'])} cover file(s) `{', '.join(dc['files'])}`; control = the file as it is.", "",
               f"| arm | M0 rows | Assigned | < {DECOY_MZ_SPLIT:.0f} / >= | Candidate | neutrals | level 3c | rate vs control (Assigned) "
@@ -2926,6 +3004,8 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
         out.append("<h3>Decoy false-discovery bound</h3>")
         if _scoring_note(dc):
             out.append(f"<p class=\"note\">{html.escape(_scoring_note(dc).replace('`', ''))}</p>")
+        if _calibration_note(dc):
+            out.append(f"<p class=\"note\">{html.escape(_calibration_note(dc).replace('`', ''))}</p>")
         if dc.get("control") and "error" not in dc["control"]:
             dc_rows = []
             for key, label in (("control", "control (as is)"), ("shift", f"shift {dc.get('offset_da', 0):+.2f} Da"), ("adducts", f"wrong adducts {dc.get('wrong_adducts')}")):
