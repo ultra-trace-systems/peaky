@@ -77,10 +77,18 @@ All thresholds are the named constants from `cluster.py` (see §4).
    admit/reject. Two gates are selectable via `cluster_batch(gate=…)`:
 
    - **`median`** (default, `gate="median"`) — the intensity gate: enter iff
-     `nanmedian` of the channel ≥ `FLOOR_DEFAULT (200 cps)`. Reproduces historical
-     output exactly, but is blind to transients — because it keys on the *median*
-     of detected points it drops a sharp low-abundance burst (bright in only a few
-     bins, so its median stays below floor) while admitting a steady dim channel.
+     `nanmedian` of the channel ≥ the assigned floor. The floor is
+     `FLOOR_X_EDGE` (3.33) × the batch's typical detection edge
+     (`batch_summary.json` `noise_edge_batch_cps`, the median of the files' own
+     1st-percentile peak heights, written by the batch run); a run directory
+     without that key keeps `FLOOR_DEFAULT` (200 cps). The multiple is the old
+     200 cps over the ~60 cps edge of the Orbitrap batches it was tuned on, so an
+     Orbitrap batch keeps its families, while a counting TOF (edge ~0.5–1 cps)
+     clusters at its own scale instead of only its reagent ions clearing 200 cps.
+     `cluster_batch(floor=…)` pins it. The gate is blind to transients — because
+     it keys on the *median* of detected points it drops a sharp low-abundance
+     burst (bright in only a few bins, so its median stays below floor) while
+     admitting a steady dim channel.
 
    - **`episode`** (`gate="episode", min_run=3`) — the temporal gate: enter iff
      the channel is **detected (nonzero) in ≥ `min_run` consecutive time bins**,
@@ -150,7 +158,10 @@ All in `peaky/batch/cluster.py` (entry floor in `clustering.py`).
 | constant | value | role |
 | --- | --- | --- |
 | `MIN_POINTS` | 8 | finite trace points required to correlate (persistence) |
-| `FLOOR_DEFAULT` | 200 cps | `median`-gate entry brightness floor — `nanmedian` of the channel |
+| `FLOOR_X_EDGE` | 3.33 | `median`-gate entry floor of an assigned channel, × the batch noise edge (`clustering.py`) |
+| `UNASSIGNED_FLOOR_X_EDGE` | 0.83 | brightness floor of an unassigned bin, × the batch noise edge (`clustering.py`) |
+| `FLOOR_DEFAULT` / `UNASSIGNED_FLOOR_DEFAULT` | 200 / 50 cps | the two floors when the run records no batch noise edge |
+| `TOP_N_DEFAULT` | 400 | at most this many unassigned bins join the unified clustering, and at most this many varying leftover bins are clustered — the brightest by median (`cluster_batch(top_n=…)`, `None` = no cap) |
 | `min_run` | 3 | `episode`-gate entry: min consecutive detected bins (`cluster_batch` param, not a `cluster.py` constant) |
 | `DIST_T` | 0.40 | clustering cut: `1 − r`, so members share **r > 0.60** |
 | `MIN_MEMBERS` | 3 | smallest reported family |
@@ -195,14 +206,20 @@ All in `peaky/batch/cluster.py` (entry floor in `clustering.py`).
 | `figures/clusters_changing_<tag>_p*.png` | family panels (raw cps, log y) |
 | `tables/clusters_changers_<tag>.csv` | big standalone movers (`fold`, `peak_hour`) |
 | `tables/clusters_flat_<tag>.csv` | bunched flat background (`cluster=0`) |
-| `clusters_summary.json` | the gate values + funnel counts the PDF report documents, incl. `entry_gate` (`"median"` \| `"episode"`) and `min_consecutive_bins` (the `min_run` used when `entry_gate="episode"`) in the gates metadata |
+| `clusters_summary.json` | the gate values + funnel counts the PDF report documents, incl. `entry_gate` (`"median"` \| `"episode"`), `min_consecutive_bins` (the `min_run` used when `entry_gate="episode"`), the two floors with the `noise_edge_batch_cps` and `floor_source` they came from, and `unassigned_top_n` in the gates metadata |
 
 ---
 
 ## 7. The unassigned-peak path (variant)
 
 The same engine clusters TS bins that match **no** assigned species ("unexplained").
-Differences from the assigned path: brightness floor **50 cps** (median); a
+Differences from the assigned path: brightness floor `UNASSIGNED_FLOOR_X_EDGE`
+(0.83) × the batch noise edge, **50 cps** without one (median); the union entrants
+and the clustered varying set are each capped at `top_n` (400) bins, the brightest
+by median — a batch whose edge sits below practical detection (a low-count TOF)
+otherwise traces thousands of noise bins; the bins left out are counted in
+`clusters_summary.json` (`n_union_over_cap`, `n_varying_over_cap`) and flagged
+`over_cap` in `tables/clusters_unassigned_<tag>.csv`; a
 **pre-cluster `split_varying` gate** — a bin is clustered only if `cv ≥ 0.30`
 (`FLAT_CV`) **or** smoothed max/median **≥ `PEAK_RANGE` 1.7** (a brief synchronized
 spike barely moves cv, so the burst term catches it); and correlation is on
@@ -214,7 +231,7 @@ spike barely moves cv, so the burst term catches it); and correlation is on
 
 - **Brightness gate uses `nanmedian`** (median of *detected* samples), so it is
   blind to detection *sparsity*: a channel detected in only 1–2 bright bins can
-  pass `med ≥ 200`. The `episode` gate option exists to key on temporal coherence
+  pass the median floor. The `episode` gate option exists to key on temporal coherence
   instead.
 - **The `episode` gate is NOT exposed on the `peaky batch` CLI.** It is only
   reachable via the `cluster_batch(gate="episode", …)` parameter, so **default

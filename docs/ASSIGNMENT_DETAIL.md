@@ -524,7 +524,7 @@ For each selected sample: `assign.run` → save `per_file/<sid>_ledger.csv` → 
 ### 7.2 Assigned-analyte path
 
 1. Build ion-mz map from M0 (formula|adduct → mz); extract reagent mz from per-file ledgers.
-2. Median + CV per channel; **brightness gate `FLOOR_DEFAULT=200.0 cps`** (median) and `≥8` finite points.
+2. Median + CV per channel; **brightness gate `FLOOR_X_EDGE=3.33` × the batch noise edge** (`batch_summary.noise_edge_batch_cps`; `FLOOR_DEFAULT=200.0 cps` when the run has none) on the median, and `≥8` finite points.
 3. `correlate` (log10, Pearson, `MIN_POINTS=8`) on RAW traces (preserves multi-channel sums).
 4. `cluster(dist_t=DIST_T=0.40, link='complete', min_members=MIN_MEMBERS=3)` — cut at `r > 0.60`.
 5. `merge_similar(merge_r=MERGE_R=0.85, complete linkage on centroids)` — fold near-duplicate families.
@@ -534,7 +534,7 @@ For each selected sample: `assign.run` → save `per_file/<sid>_ledger.csv` → 
 
 ### 7.3 Unexplained funnel (the gates)
 
-A TS bin enters unassigned clustering only if: **median `≥ 50.0 cps`** AND `≥8` finite samples AND NOT within **`8.0 ppm`** of any explained peak (M0 + iso_child + reagent + artifact from per-file ledgers — using all roles, else satellites would falsely look unassigned). Then `split_varying(cv_min=FLAT_CV=0.30, range_min=PEAK_RANGE=1.7, smooth_w=SMOOTH_W=3)` partitions into **varying** (CV ≥ 0.30 OR smoothed max/median ≥ 1.7, catching transient bursts) and **flat**; only varying traces are correlated and clustered (`dist_t=0.40`, `min_members=3`) on REAGENT-NORMALISED traces. Flat bins are bunched, not clustered (their shape is noise).
+A TS bin enters unassigned clustering only if: **median `≥ UNASSIGNED_FLOOR_X_EDGE=0.83` × the batch noise edge** (`50.0 cps` without one) AND `≥8` finite samples AND NOT within **`8.0 ppm`** of any explained peak (M0 + iso_child + reagent + artifact from per-file ledgers — using all roles, else satellites would falsely look unassigned). Then `split_varying(cv_min=FLAT_CV=0.30, range_min=PEAK_RANGE=1.7, smooth_w=SMOOTH_W=3)` partitions into **varying** (CV ≥ 0.30 OR smoothed max/median ≥ 1.7, catching transient bursts) and **flat**; only varying traces are correlated and clustered (`dist_t=0.40`, `min_members=3`) on REAGENT-NORMALISED traces. Flat bins are bunched, not clustered (their shape is noise). The union entrants and the varying set are each capped at the `TOP_N_DEFAULT=400` brightest by median; the rest are counted (`n_union_over_cap`, `n_varying_over_cap`) and flagged `over_cap` in the unassigned CSV. Panel y-axes bottom out at the unassigned floor (or the 1st percentile of the traces, whichever is higher).
 
 ### 7.4 Channel-agreement QC
 

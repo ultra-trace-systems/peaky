@@ -38,8 +38,22 @@ from peaky.batch import cluster as CL
 from peaky import paths as PT
 from peaky.batch import timeseries as TS
 
-__version__ = "0.2.0"  # + unified assigned+unassigned residual clustering
-FLOOR_DEFAULT = 200.0   # min median cps for a channel to enter clustering (legacy gate)
+__version__ = "0.3.0"  # + floors scaled to the batch noise edge, capped unassigned set
+# Brightness floors (median cps). A run whose batch_summary.json records the batch's
+# typical detection edge (`noise_edge_batch_cps`, written by assign_batch) gets floors
+# at multiples of that edge; a run without it (or an edge that is not a positive
+# number) keeps the legacy absolute floors. The multiples are the legacy floors over
+# the ~60 cps edge of the Orbitrap batches they were tuned on (200/60, 50/60), so an
+# Orbitrap run keeps its figures, while on a counting TOF (edge ~0.5-1 cps) the
+# absolute floors admitted only the reagent ions and their ringing satellites.
+FLOOR_DEFAULT = 200.0             # assigned-channel floor without a batch edge
+UNASSIGNED_FLOOR_DEFAULT = 50.0   # unassigned-bin floor without a batch edge
+FLOOR_X_EDGE = 3.33               # assigned-channel floor = this x the batch edge
+UNASSIGNED_FLOOR_X_EDGE = 0.83    # unassigned-bin floor = this x the batch edge
+TOP_N_DEFAULT = 400     # at most this many unassigned bins join the unified clustering,
+                        # and at most this many varying leftover bins are clustered --
+                        # the brightest by median. An edge below practical detection
+                        # (a low-count TOF) otherwise traces thousands of noise bins.
 UNION_PRESENCE = 0.30   # an UNASSIGNED bin joins the unified clustering only if it is
                         # detected in at least this fraction of samples (precision over
                         # recall: episodic sub-30% unknowns stay in the unassigned set)
@@ -60,8 +74,70 @@ def _longest_detected_run(tr) -> int:
     return best
 
 
+def batch_noise_edge(out_dir) -> float | None:
+    """The run's batch detection edge, `batch_summary.json['noise_edge_batch_cps']`
+    in `out_dir` (written by assign_batch). None when the file or the key is
+    missing (a run dir older than the key), unreadable, or not a positive finite
+    number."""
+    path = os.path.join(os.path.expanduser(out_dir), "batch_summary.json")
+    try:
+        with open(path) as fh:
+            val = float(json.load(fh).get("noise_edge_batch_cps"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    return val if np.isfinite(val) and val > 0 else None
+
+
+def resolve_floors(edge, *, floor=None, unassigned_floor=None,
+                   floor_x_edge: float = FLOOR_X_EDGE,
+                   unassigned_floor_x_edge: float = UNASSIGNED_FLOOR_X_EDGE):
+    """(assigned floor, unassigned floor, source) in cps. A positive finite `edge`
+    gives `floor_x_edge` / `unassigned_floor_x_edge` times it; otherwise the legacy
+    FLOOR_DEFAULT / UNASSIGNED_FLOOR_DEFAULT. An explicit `floor` /
+    `unassigned_floor` wins over either."""
+    try:
+        edge = float(edge) if edge is not None else None
+    except (TypeError, ValueError):
+        edge = None
+    if edge is not None and np.isfinite(edge) and edge > 0:
+        a, u = floor_x_edge * edge, unassigned_floor_x_edge * edge
+        source = "batch noise edge"
+    else:
+        a, u = FLOOR_DEFAULT, UNASSIGNED_FLOOR_DEFAULT
+        source = "default (no batch noise edge)"
+    if floor is not None:
+        a = float(floor)
+    if unassigned_floor is not None:
+        u = float(unassigned_floor)
+    if floor is not None or unassigned_floor is not None:
+        source += "; set by the caller: " + ", ".join(
+            n for n, v in (("assigned", floor), ("unassigned", unassigned_floor)) if v is not None)
+    return a, u, source
+
+
+def top_by_median(items, median, n):
+    """(kept, over): the `n` brightest of `items` by `median[item]` (input order kept
+    among the kept ones; a non-finite median ranks last), and the rest in input
+    order. `n=None` keeps everything."""
+    items = list(items)
+    if n is None or len(items) <= n:
+        return items, []
+
+    def _key(i):
+        m = float(median[items[i]])
+        return (-m if np.isfinite(m) else np.inf, i)
+    keep = set(sorted(range(len(items)), key=_key)[:n])
+    return ([b for i, b in enumerate(items) if i in keep],
+            [b for i, b in enumerate(items) if i not in keep])
+
+
 def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
-                  floor: float = FLOOR_DEFAULT, bin_minutes: int | None = None,
+                  floor: float | None = None, unassigned_floor: float | None = None,
+                  noise_edge_batch_cps: float | None = None,
+                  floor_x_edge: float = FLOOR_X_EDGE,
+                  unassigned_floor_x_edge: float = UNASSIGNED_FLOOR_X_EDGE,
+                  top_n: int | None = TOP_N_DEFAULT,
+                  bin_minutes: int | None = None,
                   gate: str = "median", min_run: int = 3,
                   corr_space: str = "residual",
                   log=print) -> dict:
@@ -82,14 +158,36 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
               on raw traces; only the similarity input changes. In residual space the
               gated UNASSIGNED bins join the SAME clustering (unified peak space) —
               families are labeled by their assigned members; anchor-free ones 'novel'.
+    floor / unassigned_floor : median-cps brightness floors of the assigned channels
+              and of the unassigned bins. Default (None): `floor_x_edge` /
+              `unassigned_floor_x_edge` times the batch noise edge
+              (`noise_edge_batch_cps`, else `batch_summary.json` in `out_dir`), or the
+              legacy FLOOR_DEFAULT / UNASSIGNED_FLOOR_DEFAULT when there is no edge.
+    top_n   : at most this many unassigned bins join the unified clustering and at
+              most this many varying leftover bins are clustered, the brightest by
+              median (None = no cap); the rest are counted in the summary and
+              flagged `over_cap` in the unassigned CSV.
     """
     OUT = os.path.expanduser(out_dir)
+    if top_n is not None and int(top_n) < 1:
+        raise ValueError(f"top_n must be >= 1 or None, got {top_n!r}")
+    top_n = int(top_n) if top_n is not None else None
     P = PT.run_paths(OUT).ensure()
     FIG, TAB = P.figures, P.tables       # .png -> figures/, .csv/.xlsx -> tables/
     tag = tag or profile.name
     label = label or profile.label
     ADDUCTS, NORM = profile.adducts, profile.normaliser
-    FLOOR = floor
+    EDGE = (noise_edge_batch_cps if noise_edge_batch_cps is not None
+            else batch_noise_edge(OUT))
+    try:
+        EDGE = float(EDGE) if EDGE is not None else None
+    except (TypeError, ValueError):
+        EDGE = None
+    if EDGE is not None and not (np.isfinite(EDGE) and EDGE > 0):
+        EDGE = None
+    FLOOR, UN_FLOOR, floor_source = resolve_floors(
+        EDGE, floor=floor, unassigned_floor=unassigned_floor,
+        floor_x_edge=floor_x_edge, unassigned_floor_x_edge=unassigned_floor_x_edge)
 
     # clear stale cluster pages so a shorter run (fewer pages) can't leave orphans
     # that the report would still glob in
@@ -121,6 +219,9 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
         corr_space = "raw"
     log(f"=== {tag} ({label}) : merged M0={len(merged)}, TS samples={ts['sample_item_id'].nunique()}, "
         f"span={span_min:.0f}min -> res={'native/sample' if BIN_MIN is None else str(BIN_MIN)+'min'} ===")
+    log(f"[floors] assigned >= {FLOOR:.3g} cps, unassigned >= {UN_FLOOR:.3g} cps median "
+        f"({floor_source}{f', edge {EDGE:.3g} cps' if EDGE is not None else ''}); "
+        f"traced unassigned / varying sets capped at {top_n if top_n is not None else 'no cap'}")
 
     def cv_of(traces, cols):
         out = {}
@@ -172,7 +273,7 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
 
     median_h = mat.median()
     un_bins = [b for b in mat.columns if not is_assigned(float(bin_mz[b]))
-               and median_h[b] >= 50.0 and mat[b].notna().sum() >= CL.MIN_POINTS]
+               and median_h[b] >= UN_FLOOR and mat[b].notna().sum() >= CL.MIN_POINTS]
     log(f"UNASSIGNED bins: {len(un_bins)} (of {mat.shape[1]} TS bins)")
     # union-entry gates for an unassigned bin (precision over recall):
     #   presence >= UNION_PRESENCE of samples (an episodic sub-30% unknown stays in
@@ -189,6 +290,12 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
     un_enter = ([b for b in un_bins if presence[b] >= UNION_PRESENCE
                  and iso_parent[b] is None]
                 if corr_space == "residual" else [])
+    # cap the union at the top_n brightest (by median); the rest stay outside it
+    # and take the leftover path below, where the varying set is capped the same way
+    un_enter, un_union_over = top_by_median(un_enter, median_h, top_n)
+    if un_union_over:
+        log(f"UNION cap: {len(un_union_over)} more qualifying unassigned bins left to the "
+            f"leftover set (top {top_n} by median kept)")
     un_key = {b: f"?{float(bin_mz[b]):.4f}" for b in un_enter}
     key_bin = {v: k for k, v in un_key.items()}
     union_map = {**ion_mz, **{un_key[b]: float(bin_mz[b]) for b in un_enter}}
@@ -261,7 +368,7 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
     clust_cols = clust_assigned + clust_unknown
     log(f"CLUSTERING {len(clust_assigned)} organic ion-channels + {len(clust_unknown)} "
         f"unassigned bins on {corr_space.upper()} shape (entry gate='{gate}'"
-        f"{f', min_run={min_run}' if gate=='episode' else f', floor={FLOOR:.0f}cps'}; no cv gate)")
+        f"{f', min_run={min_run}' if gate=='episode' else f', floor={FLOOR:.3g}cps'}; no cv gate)")
     if corr_space == "residual":
         corr_frame, r2_cm, cm_trace = CL.decompose(traces_raw, clust_cols, grid,
                                                    ref_cols=clust_assigned)
@@ -346,8 +453,10 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
     posc = traces_raw[clust_cols].values if clust_cols else np.array([])
     posc = posc[np.isfinite(posc) & (posc > 0)]
     # top = true max (+20% log headroom), NOT a 99.5 pct cap, so the brightest
-    # traces are never clipped at the high end; bottom stays a 1-pct/50-cps floor.
-    ylimc = (max(50, np.percentile(posc, 1)), float(np.nanmax(posc)) * 1.2) if len(posc) else None
+    # traces are never clipped at the high end; bottom = the 1st percentile, not
+    # below the unassigned brightness floor (50 cps without a batch edge; a fixed
+    # 50 cps drew a TOF's few-cps families as empty panels).
+    ylimc = (max(UN_FLOOR, np.percentile(posc, 1)), float(np.nanmax(posc)) * 1.2) if len(posc) else None
     Zc = (Lg - Lg.mean()) / Lg.std() if len(clust_cols) else Lg
     _space_note = ("clustered on DE-GLUED residuals (diel anomaly + shared-mode removed); "
                    if corr_space == "residual" else "")
@@ -403,7 +512,7 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
     truly_flat = [c for c in flat_cols if c not in _cmset and c not in set(structured)]
     pos = traces_raw[flat_cols].values if flat_cols else np.array([])
     pos = pos[np.isfinite(pos) & (pos > 0)]
-    ylim = (max(50, np.percentile(pos, 1)), float(np.nanmax(pos)) * 1.2) if len(pos) else None
+    ylim = (max(UN_FLOOR, np.percentile(pos, 1)), float(np.nanmax(pos)) * 1.2) if len(pos) else None
     log(f"BACKGROUND: {len(flat_cols)} channels — {len(cm_carriers)} common-mode carriers / "
         f"{len(structured)} low-amplitude diel-structured / {len(truly_flat)} flat (bunched)")
     _pages = []
@@ -500,13 +609,18 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
     # cluster only the varying ones, bunch the flat tail. hours=ggrid also promotes
     # low-amplitude but diel-STRUCTURED bins (the amplitude gates can't see them).
     un_vary, un_flat = CL.split_varying(un_raw, un_left, hours=ggrid)
+    # cap the clustered varying set at the top_n brightest (by median): the rest is
+    # counted and flagged in the CSV, not drawn
+    un_vary, un_vary_over = top_by_median(un_vary, median_h, top_n)
     log(f"UNASSIGNED leftover ({len(un_left)} bins outside the union, "
         f"+{len(un_sat)} isotope satellites bunched separately): "
-        f"{len(un_vary)} varying / {len(un_flat)} flat (bunched)")
+        f"{len(un_vary)} varying / {len(un_flat)} flat (bunched)"
+        + (f"; {len(un_vary_over)} more varying bins over the cap of {top_n} not drawn"
+           if un_vary_over else ""))
     mzlab = lambda b: f"{bin_mz[b]:.4f}"
     posu = un_raw[un_left].values if un_left else np.array([])
     posu = posu[np.isfinite(posu) & (posu > 0)]
-    ylimu = (max(50, np.percentile(posu, 1)), float(np.nanmax(posu)) * 1.2) if len(posu) else None
+    ylimu = (max(UN_FLOOR, np.percentile(posu, 1)), float(np.nanmax(posu)) * 1.2) if len(posu) else None
     Lgu, cmu = CL.correlate(un_norm, un_vary)
     labu, bigu = CL.cluster(cmu)
     rowsu, Zu = CL.cluster_rows(un_vary, labu, bigu, cmu, un_raw, ggrid,
@@ -537,6 +651,7 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
                                        "should be absorbed once assignment-side satellite claiming covers them"))
     labu_idx = set(labu.index)
     _unset = set(un_enter)
+    _over = set(un_vary_over)
 
     def _un_cluster(b):
         if b in _unset:
@@ -550,6 +665,8 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
                   "presence": [round(presence[b], 2) for b in un_bins],
                   "isotope_parent_mz": [round(iso_parent[b], 4) if iso_parent[b] else ""
                                         for b in un_bins],
+                  # passed every gate but left out of the traced figures by top_n
+                  "over_cap": [b in _over for b in un_bins],
                   "median_cps": [round(float(median_h[b]), 0) for b in un_bins]}).to_csv(f"{TAB}/clusters_unassigned_{tag}.csv", index=False)
 
     # GATE / FUNNEL summary -> the single source of truth the PDF report reads to
@@ -563,8 +680,13 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
         "corr_space": corr_space,                       # 'residual' (de-glued) | 'raw'
         "gates": {
             "match_tol_ppm": 8.0,                       # is_assigned() tolerance
-            "unassigned_median_cps_floor": 50.0,        # un_bins brightness floor
+            "unassigned_median_cps_floor": UN_FLOOR,    # un_bins brightness floor
             "assigned_clustering_floor_cps": FLOOR,     # assigned-channel floor (median gate)
+            "noise_edge_batch_cps": EDGE,               # the edge the floors scale with (None = none)
+            "floor_source": floor_source,               # batch noise edge | default | caller
+            "assigned_floor_x_edge": floor_x_edge,
+            "unassigned_floor_x_edge": unassigned_floor_x_edge,
+            "unassigned_top_n": top_n,                  # union / varying cap (None = no cap)
             "entry_gate": gate,                         # 'median' | 'episode'
             "min_consecutive_bins": min_run,            # episode-gate run length
             "min_trace_points": CL.MIN_POINTS,          # persistence gate
@@ -586,11 +708,13 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
             "n_unassigned_any": n_unassigned_any,
             "n_after_brightness_persistence": len(un_bins),
             "n_entered_union": len(un_enter),
+            "n_union_over_cap": len(un_union_over),     # qualified, left to the leftover set
             "n_isotope_rejected": int(sum(1 for b in un_bins if iso_parent[b] is not None)),
             "n_below_presence": int(sum(1 for b in un_bins if presence[b] < UNION_PRESENCE
                                         and iso_parent[b] is None)),
             "n_in_families": int(_n_unk_in_fam),
             "n_varying_plotted": len(un_vary),
+            "n_varying_over_cap": len(un_vary_over),    # varying, not drawn (top_n)
             "n_flat_bunched": len(un_flat),
             "n_isotope_satellites_bunched": len(un_sat),
             "n_clusters": len(bigu),
