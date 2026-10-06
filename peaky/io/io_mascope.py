@@ -725,19 +725,27 @@ def _local_mech_names(mechanism_ids: list[str] | None) -> list[str]:
             for m in (mechanism_ids or []) if str(m).startswith(LOCAL_MECH_PREFIX)]
 
 
-def detect_adducts(peaks: pd.DataFrame) -> list[str]:
-    """Infer the reagent/adduct system from the sample's own peak matches
-    (the `ionization_mechanism` column). This is what makes a Br-CIMS sample
-    get [M+Br]- offered as an interpretation instead of forcing Br into the
-    neutral. Falls back to [M-H]- if nothing is recognised."""
+def recognised_adducts(peaks: pd.DataFrame) -> list[str]:
+    """The adduct channels the sample's own peak matches name (the
+    `ionization_mechanism` column, either notation), first-seen order; [] when
+    there is no column or nothing in it maps to a known channel."""
     if peaks is None or "ionization_mechanism" not in peaks.columns:
-        return ["[M-H]-"]
+        return []
     out: list[str] = []
     for name in peaks["ionization_mechanism"].dropna().unique():
         a = MECH_TO_ADDUCT.get(_mechanism_key(name))
         if a and a not in out:
             out.append(a)
-    return out or ["[M-H]-"]
+    return out
+
+
+def detect_adducts(peaks: pd.DataFrame) -> list[str]:
+    """Infer the reagent/adduct system from the sample's own peak matches
+    (the `ionization_mechanism` column). This is what makes a Br-CIMS sample
+    get [M+Br]- offered as an interpretation instead of forcing Br into the
+    neutral. Falls back to [M-H]- if nothing is recognised (see
+    `recognised_adducts` for the list without that default)."""
+    return recognised_adducts(peaks) or ["[M-H]-"]
 
 
 def sample_mass_errors(peaks: pd.DataFrame, *,
