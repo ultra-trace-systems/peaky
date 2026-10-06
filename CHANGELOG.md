@@ -8,6 +8,44 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Side channels are declared per reagent and closed by default; `--side-channels` opens them.**
+  `assign.run` opened [M+CO3]- and [M+Br2]- on every negative run and [M+Na]+ / [M+NH4]+ on every
+  positive run whenever the server listed the mechanism (Mascope 1.10 lists them all), and nothing
+  closed them: no flag, profile field or config knob, and a spawned worker re-resolved them on its
+  own client. On the batches measured the polarity-wide set mostly re-read ions the run already
+  held under another reading, or had no support of their own: on a labelled-nitrate Orbitrap batch
+  72 of 77 Assigned [M+CO3]- readings were the ion the closed run holds as a radical-anion
+  Candidate (the carbonate cluster of the C(n-1) neutral is the radical anion of the Cn neutral),
+  and in the 45 of the 77 where the readings' neutrals had lines to test, the carbonate
+  reading's neutral co-varied better than both the radical-anion and the superoxide reading's
+  in 16, never at r >= 0.85, and less well than one of them in 29; on a bromide/nitrate TOF
+  batch the CO3- ion was present in 2 of 230 spectra and 20 of the 22 [M+Br2]- readings with a
+  testable M+2 line failed it; on a uronium batch none of 8 [M+Na]+ readings tracked a partner,
+  while 54 of 78 [M+NH4]+ readings tracked their own [M+H]+ / urea parent at r >= 0.7.
+  `ReagentProfile.side_channels` now declares them: the uronium profile [M+NH4]+, which the batch's
+  amine gate keeps (it tracks its parent) or re-reads as the protonated amine at Candidate, every
+  other built-in profile none; a `--reagent-config` profile declares its own and `compose` unions
+  them. `--side-channels ADDUCT ...` on `peaky assign`, `batch` and `pool`
+  (`PassConfig.side_channels`, `pipeline.run_batch(side_channels=)`) opens exactly the channels
+  named instead, `--side-channels none` closes them all; a channel of the other polarity or
+  without a server mechanism is skipped and logged, and a labelled-ammonium run keeps [M+NH4]+ and
+  [M+Na]+ closed. The choice is a `PassConfig` field, so it reaches every spawned worker and the
+  run manifest. Each file's stats record the channels it opened (`side_channels`), and
+  `batch_summary.json` the union, the files per channel, the requested set and its source; an
+  offline sample registers the side channels its run opens, so the scorecard's arms on the run's
+  own channels open what the run recorded (the wrong-adducts arm reads its wrong set alone).
+  Runs of every profile but uronium now run in the configuration the closed measurements used.
+  Offline on a uronium Orbitrap batch, with a stand-in server listing every mechanism, the default
+  opened [M+NH4]+ in all 10 files and nothing else; merged Assigned went 723 -> 648 (79 of them
+  [M+NH4]+, the amine gate keeping 78 readings it confirmed by co-variation with their parent,
+  2-h bins at r >= 0.6, and re-reading 67) and the batch's truth
+  rows read 35 of 42 TRUE and 0 of 8 FALSE against 29 and 4 with `--side-channels none`, which
+  reproduces the measured closed run reading for reading. A tier rule that would also follow the
+  NH4 admissibility rule was measured and not built: it changes no Assigned reading on that batch
+  and would cap 3 of 239 Assigned ammonium readings on a second uronium batch, among them the
+  known-species adduct of a cyclic siloxane and a reading the amine gate found tracking its
+  parent.
+  docs/REAGENTS.md section 3b, README, SKILL.md, docs/OUTPUTS.md, docs/SCORECARD.md.
 - **`--reagent auto` stops with an error instead of guessing a profile.** When none of the peak
   table's server matches is a reagent's diagnostic adduct (no matches at all, or only generic
   ones such as [M+H]+ / [M-H]-), `profiles.resolve` used to return the first registered profile
@@ -105,6 +143,131 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The bromide machinery reads the declared channels, not an opted-in halogen side channel.**
+  `has_halogen_adduct`, the switch of the halide reagents' even-shift composite stage, was
+  computed after the side channels joined the run's adducts, so an [M+Br2]- side channel on a
+  nitrate run turned the de-blend on: on a labelled-nitrate Orbitrap batch run with the
+  polarity-wide channels open, 162 composite splits over its 12 files (none in the closed run)
+  and 8 synthetic co-component rows Assigned in the per-file ledgers, while the merged list did
+  not change. The reagent-cluster library key (and with it the reagent element) and pass 3's
+  cluster key read the joined list too, so the same side channel loaded the Br library (in an
+  offline probe its Br-, 81Br- and Br3- peaks became reagent rows), gave the arbitration and the
+  cleanup's bromide-cluster stage a Br reagent element, and handed pass 3 the Br key, which runs
+  its HBr-cluster resolution and opens the bromo-organic family; an opted-in [M+Cl]-, [M+I2]- or
+  [M+I3]- did the same for its halide. All of them now read the declared analyte channels,
+  the footing the reagent halogen already had; a bromide or iodide run, and every run with its
+  side channels at the default, is unchanged.
+- **A certified neutral, or a known species on one ion channel, whose ion score is under the
+  engine's Suspect band edge is Candidate.** A pass-0 known species and a pass-7 certified
+  neutral earn their tier from a lock -- the list identity, or the channels' convergent neutral
+  mass -- and the tier engine took the lock's word whatever the ion's own match score: a known
+  species locked at 'Low (...)' was Assigned by its own branch before the Low/Suspect rule was
+  asked, and pass 7 labels a certificate 'Good (certified)' with no score floor. The scorecard's
+  ppm decoy found both: on spectra shifted a few ppm off their true formulas, wrong known species
+  (most of them recovered chlorinated paraffins, whose 37Cl spacing a shift keeps) and certified
+  P formulas were Assigned at ion scores down to 0.001. A `certified:` commit whose `ion_score`
+  is under `PassConfig.tau_suspect` (0.50, the engine's existing Suspect band edge) is now
+  Candidate, with a reason naming the score and the edge (`tiers.LOCKED_SCORE_METHODS`,
+  `tiers.lock_score_floor`); so is a `known:` commit, unless the file commits the same neutral
+  on a second ion channel (the tier engine's own cross-channel leg) -- a score under the edge is
+  no evidence against a real reading: bright, sub-ppm cyclosiloxanes with their own 29Si/30Si
+  lines and DMSO with its 34S line score 0.02-0.49, and of 18 decoy known-species locks only one
+  had a second channel. A certificate is multi-channel by construction, so its other channels
+  spare no member; a ladder rung carries its weakest anchored member's score. A source-solvent
+  cluster (never scored) keeps its ladder gate, and a row with no recorded score is not judged.
+  The merge carries the per-file tier as before; a known species the batch locks or keeps while
+  no confirming file holds it at Assigned now says so on the merged row. Offline on the three
+  regression batches (per-file ledgers re-tiered, the merge replayed): labelled-nitrate Orbitrap
+  1 of 3525 per-file Assigned rows demoted, merged Assigned 514 unchanged; uronium Orbitrap 2 of
+  4067, merged 723 -> 722 (a one-file certified urea adduct); bromide/nitrate TOF 11 of 1512,
+  merged 355 -> 354; truth-set recall and known-false Assigned unchanged. Scorecard ppm decoy
+  (copies of the runs, calibration inherited): labelled-nitrate +-9 ppm decoy Assigned 51 -> 45
+  (7.70 % -> 6.80 % of 2 x 331 matched control readings), uronium +-6 ppm 41 -> 35 (2.61 % ->
+  2.23 % of 2 x 784), +-9 ppm unchanged (33); every control unchanged. The cost, on offline
+  batches of other profiles: real single-channel known species the scorer rates under the edge
+  are now Candidate in the merged ledger -- ethanol `[M-H]+` on EasyIC, HNO2 and H2SO4 `[M-H]-`
+  on iodide (up to 70 k counts), the D5 siloxane's `[M+H]+` / `[M+^NH4]+` readings on
+  15N-ammonium where no file holds both channels. docs/ASSIGNMENT_DETAIL.md §1.6 and
+  docs/CERTIFIED_NEUTRAL.md.
+- **On a TOF the reagent-water ladder reads its high rungs as water clusters, not organics.** The
+  ladder gate judged each rung against decoys at fixed Da offsets (+-0.02 / 0.035 / 0.05) and ended a
+  ladder at its first weak rung. At m/z 450-700 a TOF line is 0.05-0.07 Da wide: the offsets sit
+  inside it, on the weak satellites a TOF picker reports beside a bright line (about a tenth of its
+  height, ~1-1.5 FWHM below and ~0.5-1 FWHM above), and in a humid stretch one weak rung ends the
+  contiguous ladder. On a bromide/nitrate TOF batch eight Br-.(H2O)n rungs between n = 21 and 35,
+  NO3-.(H2O)29-34 and HNO3.NO3-.(H2O)27/31 stayed Assigned as C18-C36 organics -- a "known"
+  C30H58Cl4 [M+Br]- was Br-.(H2O)31, its M+1 line at 0.02x where C30 needs 0.33x. When the batch's
+  width model is TOF-class (R < 50 000 at m/z 200) each rung now takes a TOF rung test per segment:
+  present in half the spectra; at least 3x the mean presence of up to twelve decoys at +-2..5
+  FWHM(m), skipping a decoy that sits on another declared core's ladder; on its ladder, which runs
+  through every rung present in a quarter of the spectra and whose rungs beyond the contiguous part
+  must co-vary with their present neighbours (median r of log height >= 0.8 over >= 8 shared
+  spectra); and, where the rung is bright enough to show a C5 line's 13C, an M+1/M0 within the
+  cluster's own plus five carbons (not asked where the M+1 line would blend with a rung of another
+  declared core present in that segment). After the TOF test a merged row on a passing rung leaves
+  the merged ledger only when a file carrying its winning reading lies in a segment where the rung
+  passed; a reading carried only by files of other segments is another line at that m/z and stays,
+  with a note on its `tier_reason`. An Orbitrap-class width model, or none, keeps the fixed-offset
+  test and the batch-wide strip exactly. `batch_summary.json` records the TOF test under
+  `merge_gates.reagent_water.rung_test`. Measured offline on the batch's own time series and
+  per-file readings: 121 -> 181 passing rungs, every earlier rung kept; the 72 rows stripped before
+  are stripped still and 54 more leave, 19 of them Assigned -- 18 of the batch's 19 Assigned organic
+  readings at a water-cluster m/z (the 19th, at HBr.Br-.(H2O)15, has no declared core and no ladder
+  in the data) and C4H11NO3S [M+Br]- on HNO3.Br-.(H2O)5, an ambiguous gap rung of weak lines.
+  C14H15N3O5 [M+NO3]- stays: it sits on Br-.(H2O)16, a rung of the humid segment only, but its
+  reading comes from dry-segment files, where the line has no 81Br twin. No truth reading of the
+  batch is stripped; the nearest truth row sits 24 ppm (observed m/z) from a passing rung, against a
+  9.2 ppm window. Two low-resolution nitrate TOF batches and both Orbitrap batches pass the same
+  rungs as before.
+  docs/MERGE.md step 4a, `tests/test_reagent_water.py`.
+- **On a TOF an Assigned reading must show its ion's own M+2 line.** A `[M+Br]-` reading was
+  never asked for its own 81Br line: the per-file twin test asks for the neutral's Br / Cl / S
+  line, and on a bromide adduct the reagent's halogen masks that window, so the test stood down
+  exactly where the ion's composition guarantees a line at ~0.97x the parent. A new primitive,
+  `satellites.heavy_line_verdict`, predicts the ion's whole nominal M+2 cluster
+  (`isotopes.nominal_cluster`: 81Br, 37Cl, 34S, 18O, 13C2 ..., one line at R ~10 000; the reagent
+  adduct's halogen included), tests it where it reaches the counting-detector floor (3x the
+  batch's detection edge), sees it at >= 0.6x within max(15 ppm, 3x the file's fitted sigma),
+  and reads it untestable where another line within one FWHM is at least as tall or the lines
+  within half a FWHM could be a split of it. The new assign stage `tof_m2`
+  (`tiers.apply_tof_m2`), the last tier word on a TOF, makes an Assigned M0 whose line is absent
+  Candidate and says which line, its predicted height and what the row was otherwise Assigned
+  on; known species are tested like any row. It only demotes and sets no flag, so the merge
+  vote's class is untouched; the run's stats record its counts (`tof_m2`). Offline on a
+  bromide/nitrate TOF batch: 153 per-file Assigned readings demoted, merged Assigned 355 -> about
+  306 on its own. Off a TOF, without a width model or without a detection edge it does nothing (two
+  Orbitrap batches: no row moves).
+- **The batch REQ check on a TOF reads the ion's own M+2 line with the same primitive.** Its TOF
+  branch asked for halogen lines only where they were predicted at 3x each spectrum's height
+  gate (15x its edge on the bromide/nitrate TOF batch: 2848 of 3273 Br / Cl pairs untestable),
+  took any peak inside the stamp window or 20 ppm as the line, and had no blend guard. It now
+  judges the ion's own M+2 line in every spectrum showing the pair with
+  `satellites.heavy_line_verdict` -- floor 3x the batch's detection edge (`iso_checks.measure`
+  takes it as `edge_cps`), window max(15 ppm, 3x the batch's per-ion scatter), both blend
+  guards -- and refutes a pair over >= 10 testable spectra, at least as many as the blended
+  ones, where the line is seen in < 30 % of them; `occupied` is the share of its spectra whose
+  M+2 position is blended. On that batch REQ now refutes 993 of 3273 pairs (117 before); the
+  Orbitrap branch and the Orbitrap batches' tables are unchanged byte for byte.
+- **On a TOF a merged winner its own M+2 line refutes is Candidate -- a known species
+  included -- and an 81Br doublet partner is no M0.** The batch REQ veto never reached a TOF's
+  tier, `lock_known_species` (which runs before the batch's isotope checks) could keep a
+  "known" reading Assigned that they contradict, and a merged line standing at ~1x the line one
+  81Br spacing below it was Assigned as an M0 of its own. `iso_checks.tof_m2_gates` runs after
+  the stamp on TOF-class batches only and demotes, with no re-vote: a winner whose pair REQ
+  refutes -- a known-species decision included, and the row says so; a lock that displaced the
+  vote's winner is demoted, not undone (the row keeps the known reading, now Candidate, and
+  names the vote's reading at the head of `alternatives`) -- and a line at 0.58-1.56x the line
+  1.99795 Da below it in >= 50 % of the spectra showing it (`iso_checks.doublets`), unless its
+  reading's ion carries Br / Cl whose own M+2 REQ sees in >= 50 % of its stamped spectra.
+  `batch_summary.json["merge_gates"]["tof_m2"]` records the counts. With the per-file test,
+  offline on the bromide/nitrate TOF batch: merged Assigned 355 -> about 287 (133 -> 85 at m/z
+  >= 350; on top of the per-file test REQ about 6 and the doublet 13, 11 halogen readings
+  exempt); its three known-false Assigned readings out; a "known" C30 chlorinated paraffin
+  `[M+Br]-` (one Br's M+2 line where BrCl4 predicts 2.3x, no 13C line: the reagent's water
+  cluster at the same nominal mass) Candidate too, the per-file test already refuting it in
+  every file that carried it; all 34 known-true readings kept; the roster's recall unchanged.
+  A nitrate-only low-resolution TOF does not move (282 -> 282). docs/MERGE.md section 3 step
+  6b, docs/ASSIGNMENT_DETAIL.md, docs/OUTPUTS.md.
 - **`--reagent auto` no longer reads the polarity from the batch or sample name.** The polarity
   guess looked for a bare '+' or '-' in a `polarity` column, then in the batch name, and only
   then in the mechanisms, so a dated batch name ("<date> - <date>") read as negative: a positive
@@ -403,6 +566,45 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A TOF-class batch flags the readings that rest on mass alone (`mass_only`), and never demotes
+  them.** On a TOF the formula grid saturates with m/z: a shifted-mass decoy of a bromide/nitrate
+  TOF batch, pooled over seven files, was Assigned 21 times below m/z 350 against 292 for the real
+  spectra, but 234 times at or above it against 122, and a lower-resolution nitrate TOF showed the
+  decoy at the real level from m/z 350 up in one decoy arm and from about m/z 450 up in another;
+  below that, too, most TOF readings show no isotope line of their own. The merged ledger now
+  carries `mass_only` (bool) and `mass_only_reason` on every Assigned row of a TOF-class run
+  (`assignment/mass_only.py`): `True` when no file that holds the reading at tier Assigned shows an
+  attached isotope child of its M0 at its exact spacing and 0.5-2x its expected height that
+  measures an element the neutral itself supplies (the 13C line of an organic neutral; 37Cl / 81Br
+  / 34S / 29Si / 30Si of a neutral carrying the element -- the reagent's own 81Br twin never counts;
+  the evidence scale's per-file line test), pass-0 known species exempt. On a run whose reagent
+  channels carry a halogen, a line of that halogen counts only when the ion holds more of it than
+  one reagent channel puts on an ion (two, by `[M+HBr+Br]-`): `C8H6BrNO4 [M+NO3]-` and
+  `C8H6N2O7 [M+Br]-` are one ion, so their 81Br line keeps neither unflagged, whichever label the
+  engine picked. Only attached lines count: a peak at the right spacing that the scorer did not
+  attach is not seen. The reason says the reading rests on mass alone below `PassConfig.tof_flag_mz`
+  (`--tof-flag-mz` on `peaky batch`, `pool` and `assign`, default 350) and that a TOF's formula
+  space is saturated at or above it. `False` is not support at or above the threshold: there even a
+  present line is weak (a shifted spectrum keeps real isotope spacings), and on the bromide/nitrate
+  TOF's seven-file decoy arms the line test left 58 shifted-decoy readings at or above m/z 350
+  unflagged against 12 real ones; below m/z 350 it flagged all 21 decoy readings. Candidate rows
+  and every row of an Orbitrap-class run keep the columns empty. `batch_summary.json['tof_flag']`
+  records the class, the threshold and the Assigned / flagged counts either side of it (also under
+  the manifest's counts); the PDF Findings page says them in one sentence, adds that an unmarked
+  reading at or above the threshold is not supported either, and marks flagged species with a
+  dagger in its species lists and the appendix; a single-sample workbook shows the two columns on
+  its Assigned sheet and a *TOF mass-only flag* Summary section; the scorecard's element census
+  counts them (board keys `census_mass_only`, `census_mass_only_split`, appended). Tier, evidence
+  level and claim are untouched: re-stamped offline on copies of a bromide/nitrate TOF batch and a
+  low-resolution nitrate TOF batch, every original merged column stayed byte-identical while the
+  flag marked 261 of 355 Assigned readings (164 of 222 below m/z 350, 97 of 133 at or above; 31
+  known species exempt) and 250 of 282 (176 of 193, 74 of 89); two Orbitrap batches got empty
+  columns. Of the bromide/nitrate TOF batch's 34 true readings 8 carry the flag (every true reading
+  of that batch sits below m/z 350): four small bromide adducts whose only attached line is the
+  reagent's 81Br (two of them show an in-band 13C peak the scorer did not attach), and four nitrate
+  clusters of oxidation products without an attached in-band 13C line. The flag says what a reading
+  rests on, not that it is wrong. README, docs/OUTPUTS.md, docs/MERGE.md, docs/QC_AND_REPORT.md and
+  docs/SCORECARD.md.
 - **`peaky publish` leads its summary with the rows peaky holds Candidate that Mascope will show
   as `assigned`.** Mascope's tier column, tier strip, tier filter and roll-ups read the tier it
   derives from fit x plausibility, not peaky's; the dry run printed only the total disagreement.
