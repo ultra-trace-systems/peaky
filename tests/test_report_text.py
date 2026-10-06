@@ -201,3 +201,26 @@ def test_the_oligomer_list_keeps_assigned_neutrals_only():
     assert CMP.oligomer_flag(merged) == ["C20H30O14", "C20H32O10"]
     assert CMP.oligomer_flag(merged, tiers=None) == ["C21H34O12", "C20H30O14", "C20H32O10", "C19H30O12"]
     assert CMP.oligomer_flag(merged.drop(columns=["tier"])) == CMP.oligomer_flag(merged, tiers=None)
+
+
+# --------------------------------------------------------------------------- the cover names the code
+def test_the_cover_names_the_package_version_and_a_sha_only_when_there_is_one(tmp_path, monkeypatch):
+    import json
+
+    import peaky
+    from peaky.reporting import provenance as PV
+    monkeypatch.setattr(peaky, "__version__", "1.2.3", raising=False)
+    monkeypatch.setattr(PV, "git_info", lambda path: {})              # a pip install: no checkout
+    assert R._skill_version(str(tmp_path)) == "peaky 1.2.3"            # no 'git ?', no module version
+    monkeypatch.setattr(PV, "git_info", lambda path: {"commit": "abcdef0123456789", "dirty": False})
+    assert R._skill_version(None) == "peaky 1.2.3 · git abcdef0"
+    # the run's own manifest names the code that assigned it; other report code is named beside it
+    (tmp_path / "run_manifest.json").write_text(json.dumps(
+        {"code": {"package_version": "1.2.0", "git": {"commit": "0123456789abcdef", "dirty": True}}}))
+    assert R._skill_version(str(tmp_path)) == ("assigned by peaky 1.2.0 · git 0123456+modified · "
+                                               "report by peaky 1.2.3 · git abcdef0")
+    (tmp_path / "run_manifest.json").write_text(json.dumps(
+        {"code": {"package_version": "1.2.3", "git": {"commit": "abcdef0123456789", "dirty": False}}}))
+    assert R._skill_version(str(tmp_path)) == "peaky 1.2.3 · git abcdef0"
+    (tmp_path / "run_manifest.json").write_text("{not json")
+    assert R._skill_version(str(tmp_path)) == "peaky 1.2.3 · git abcdef0"
