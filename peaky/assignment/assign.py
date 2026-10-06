@@ -240,6 +240,10 @@ class _RunState:
     # how the run's reference lists were activated (levels.lists.activation_record:
     # {tags, matched}); None = not recorded (the context source then says so)
     reflists_context: object = None
+    # the sample's scoring snapshot (io_mascope.scoring_snapshot): its fitted
+    # mass sigma and the scorer's match window size the TOF ion-M+2 test's
+    # search window (tiers.apply_tof_m2); None = the scorer's TOF window alone
+    scoring: object = None
     summaries: dict = field(default_factory=dict)
     plaus_audit: list = field(default_factory=list)
 
@@ -619,6 +623,14 @@ _STAGES = [
     # brightest "unexplained" peak of a positive urea-CIMS ambient batch run).
     _Stage("iso_env_final",
            lambda st: passes.complete_isotope_envelopes(st.led, st.cfg, log=st.log)),
+    # the ION's own M+2 line on a TOF (tiers.apply_tof_m2): an Assigned M0 whose
+    # ion's Br / Cl line the file could show and does not is Candidate. The last
+    # tier word: after the reference-list rescue (which stamps Assigned after the
+    # tier pass) and after the speculative-residual demote (which sets the vote's
+    # flags on Assigned rows only) -- demote-only, no flag. Off a TOF it is a no-op.
+    _Stage("tof_m2", lambda st: tiers.apply_tof_m2(
+        st.led, cfg=st.cfg, resolving_power=st.resolving_power, scoring=st.scoring, log=st.log),
+           safe=False),
     # evidence levels -- not `safe`: a level that cannot be computed is a bug,
     # not a lost stage. The stage order above is the design (spec §6.1).
     _Stage("evidence", _stage_evidence, safe=False),
@@ -917,7 +929,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
             reagent_halogen=reagent_halogen,
             reagent_profile=(getattr(reagent_profile, "name", None) or reagent_profile
                              or _profile_name_for(analyte_adducts)),
-            reflists_context=reflists_context)
+            reflists_context=reflists_context, scoring=scoring_snapshot)
         restart = False
         for stg in _STAGES:
             if not stg.when(st):
@@ -974,6 +986,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
     st["noise_edge_batch_cps"] = getattr(cfg, "noise_edge_batch_cps", None)
     st["instrument_type"] = getattr(cfg, "instrument_type", None)
     st["tof_assign_floor_cps"] = tiers.tof_assign_floor(cfg)
+    # the TOF ion-M+2 test's counts (tiers.apply_tof_m2; `skipped` says why it did not run)
+    st["tof_m2"] = summaries.get("tof_m2")
     st["snr_source"] = scoring_snapshot.get("snr_source")
     st["height_gate_cps"] = cfg.height_cutoff     # RESOLVED gate (the knob is cfg.height_cutoff_cps)
     # the multiple the gate was resolved FROM (profile-supplied or the package

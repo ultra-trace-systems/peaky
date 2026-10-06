@@ -958,6 +958,140 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
                                        "candidate_density", "density_capped"])
 
 
+# ---------------------------------------------------------------------------
+# the ION's own M+2 line on a TOF (satellites.heavy_line_verdict)
+# ---------------------------------------------------------------------------
+#: a committed line farther than this from its ion's all-light m/z sits on a
+#: heavy isotopologue; its M+2 is not where the test would look
+TOF_M2_MONO_DA = 0.5
+TOF_M2_COLUMNS = ["peak_id", "ion", "label", "ratio", "pred", "obs", "status", "window_ppm", "floor"]
+
+
+def _fwhm_at(rp, mz: np.ndarray) -> np.ndarray:
+    """The width model's FWHM (Da) at each m/z (chem.resolution.Resolution.fwhm, vectorised)."""
+    return float(rp.coef) * np.power(np.asarray(mz, dtype=float), float(rp.exponent)) + float(rp.offset)
+
+
+def tof_m2_verdicts(ledger: pd.DataFrame, *, cfg=None, resolving_power=None, scoring=None):
+    """The ION's own M+2 line of every M0 row whose ion carries Br or Cl, on a
+    TOF: one row per tested M0 (TOF_M2_COLUMNS; status = the
+    satellites.heavy_line_verdict verdict). None when the test cannot run: off
+    a TOF or with no detection edge (`tof_assign_floor` is None), or with no
+    width model (`resolving_power`, a chem.resolution.Resolution: the blend
+    guards need the peak width). `scoring` is the file's scoring snapshot (its
+    fitted `sigma_ppm` and the scorer's `mz_tolerance_ppm` size the window;
+    satellites.heavy_line_window_ppm).
+
+    The lines are every real picked peak of the file (synthetic composite
+    sub-peaks are no line); the parent's height is its own share of a
+    composite (height x assigned_fraction). A row committed on a heavy
+    isotopologue (TOF_M2_MONO_DA off its ion's all-light m/z) is not tested."""
+    floor = tof_assign_floor(cfg)
+    if floor is None or resolving_power is None or ledger is None or not len(ledger):
+        return None
+    from peaky.chem.resolution import Resolution
+    try:
+        rp = Resolution.coerce(resolving_power)
+    except (TypeError, ValueError):
+        return None
+    sc = scoring if isinstance(scoring, dict) else {}
+    win = SAT.heavy_line_window_ppm(sc.get("sigma_ppm"), sc.get("mz_tolerance_ppm"))
+    mz_all = pd.to_numeric(ledger["mz"], errors="coerce")
+    h_all = pd.to_numeric(ledger["height"], errors="coerce")
+    real = ~(ledger["synthetic"].map(_truthy).fillna(False).astype(bool)
+             if "synthetic" in ledger.columns else pd.Series(False, index=ledger.index))
+    keep = real & mz_all.notna() & (h_all > 0)
+    lines_mz = mz_all[keep].to_numpy(dtype=float)
+    lines_h = h_all[keep].to_numpy(dtype=float)
+    m0 = ledger[ledger["role"] == L.ROLE_M0]
+    recs = []
+    for i, r in m0.iterrows():
+        ion = _ion_counts(r.get("neutral_formula"), r.get("adduct"))
+        if not ion:
+            continue
+        ratio, shift, label = SAT.heavy_line_prediction(ion)
+        if ratio <= 0:
+            continue
+        mz0, h0 = mz_all.at[i], h_all.at[i]
+        if pd.isna(mz0) or pd.isna(h0) or h0 <= 0:
+            continue
+        try:
+            mono = C.ion_mz(str(r.get("neutral_formula")), str(r.get("adduct")))
+        except Exception:             # noqa: BLE001 -- an unparseable adduct: no mono check
+            mono = float("nan")
+        if np.isfinite(mono) and abs(float(mz0) - mono) > TOF_M2_MONO_DA:
+            continue
+        af = pd.to_numeric(r.get("assigned_fraction"), errors="coerce")
+        share = float(af) if pd.notna(af) and 0 < float(af) <= 1 else 1.0
+        sign = "-" if str(r.get("adduct")).rstrip(".").endswith("-") else "+"
+        recs.append((r["peak_id"], C.format_formula(ion) + sign, label, ratio, shift, float(mz0),
+                     float(h0) * share))
+    if not recs:
+        return pd.DataFrame(columns=TOF_M2_COLUMNS)
+    pid, ions, labs, ratio, shift, mz0, h0 = (list(x) for x in zip(*recs))
+    ratio, shift, mz0, h0 = (np.asarray(x, dtype=float) for x in (ratio, shift, mz0, h0))
+    v = SAT.heavy_line_verdict(lines_mz, lines_h, mz0, h0, ratio, shift, floor, win_ppm=win,
+                               fwhm=_fwhm_at(rp, mz0 + shift))
+    return pd.DataFrame({"peak_id": pid, "ion": ions, "label": labs, "ratio": ratio, "pred": v["pred"],
+                         "obs": v["obs"], "status": v["status"], "window_ppm": win, "floor": floor},
+                        columns=TOF_M2_COLUMNS)
+
+
+def tof_m2_reason(v) -> str:
+    """The tier reason of an absent M+2 line (one tof_m2_verdicts row)."""
+    frac = float(v["obs"]) / float(v["pred"]) if float(v["pred"]) > 0 else 0.0
+    seen = (f"the tallest line within {float(v['window_ppm']):g} ppm is {frac:.2f}x it"
+            if float(v["obs"]) > 0 else f"no line within {float(v['window_ppm']):g} ppm")
+    return (f"ion M+2 line absent (TOF): {v['ion']} predicts its {v['label']} line at "
+            f"{float(v['ratio']):.2f}x the parent ({SAT._cps(v['pred'])} cps, over the "
+            f"{float(v['floor']):.3g}-cps floor); {seen}, under the {SAT.HEAVY_LINE_FRAC:g}x a "
+            "sighting needs, and nothing within one peak width could hold it -- the ion's own "
+            "isotope envelope refutes the reading whatever else corroborates it")
+
+
+def apply_tof_m2(ledger: pd.DataFrame, *, cfg=None, resolving_power=None, scoring=None, log=print) -> dict:
+    """The TOF's ion-M+2 test as the last tier word (in place): an Assigned M0
+    whose ion's own Br / Cl M+2 line the file could show and does not
+    (tof_m2_verdicts: absent) becomes Candidate, its reason naming the missing
+    line and its predicted height and keeping what it was otherwise Assigned
+    on. Demote-only, and it sets no flag: the merge vote's class reads the
+    ledger's evidence, not the tier, so it is untouched.
+
+    Why after every other tier stage and not inside compute_tiers: the
+    speculative-residual demote (cleanup.demote_speculative_residual) reads only
+    Assigned rows and sets the lead / below-assignability flags the vote class
+    reads -- a row this test had already demoted would lose them -- and the
+    reference-list rescue stamps Assigned after the tier pass. Off a TOF, with
+    no edge or with no width model, nothing runs. Returns counts for the
+    run's stats (None-valued `skipped` when it ran)."""
+    out = {"tested": 0, "seen": 0, "absent": 0, "blended": 0, "dim": 0, "demoted": 0, "skipped": None}
+    t = tof_m2_verdicts(ledger, cfg=cfg, resolving_power=resolving_power, scoring=scoring)
+    if t is None:
+        out["skipped"] = ("not a TOF" if tof_assign_floor(cfg) is None else "no width model")
+        return out
+    for k in ("seen", "absent", "blended", "dim"):
+        out[k] = int((t["status"] == k).sum())
+    out["tested"] = int(len(t))
+    if "tier_reason" in ledger.columns and ledger["tier_reason"].dtype != object:
+        ledger["tier_reason"] = ledger["tier_reason"].astype("object")
+    by_pid = {p: i for i, p in zip(ledger.index[ledger["role"] == L.ROLE_M0],
+                                   ledger.loc[ledger["role"] == L.ROLE_M0, "peak_id"])}
+    for v in t[t["status"] == SAT.HL_ABSENT].to_dict("records"):
+        i = by_pid.get(v["peak_id"])
+        if i is None or str(ledger.at[i, "tier"]) != TIER_ASSIGNED:
+            continue
+        prev = ledger.at[i, "tier_reason"] if "tier_reason" in ledger.columns else None
+        prev = "" if prev is None or (not isinstance(prev, str) and pd.isna(prev)) else str(prev)
+        ledger.at[i, "tier"] = TIER_CANDIDATE
+        ledger.at[i, "tier_reason"] = tof_m2_reason(v) + (f" (otherwise Assigned: {prev})" if prev else "")
+        out["demoted"] += 1
+    if out["tested"]:
+        log(f"[tiers] TOF ion M+2 line: {out['tested']} Br/Cl ions tested -- {out['seen']} seen, "
+            f"{out['absent']} absent, {out['blended']} blended, {out['dim']} under the floor; "
+            f"{out['demoted']} Assigned -> Candidate (window {float(t['window_ppm'].iloc[0]):g} ppm)")
+    return out
+
+
 def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
     """Q1: write `ppm_error_cal` = ppm_error − mu (OFFSET ONLY), where mu is the
     robust per-file mass offset the tier engine already fits from the corroborated
