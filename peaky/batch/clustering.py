@@ -131,6 +131,24 @@ def top_by_median(items, median, n):
             [b for i, b in enumerate(items) if i not in keep])
 
 
+def family_label(members, tier_of, median, unassigned=()) -> str:
+    """The family's 'co-varies with X' label. X is the brightest (by median)
+    Assigned-tier member when the family has one, else the brightest member with a
+    formula; 'novel (no assigned anchor)' when every member is an unassigned bin.
+    `members` are 'formula|adduct' keys (and '?<mz>' keys, listed in `unassigned`);
+    `tier_of` maps a key to its merged tier, `median` to its median cps. Ranking by
+    brightness alone named a Candidate reading although an Assigned member was
+    there to name the family by."""
+    unassigned = set(unassigned)
+
+    def _rank(m):
+        v = float(median.get(m, 0) or 0)
+        return (str(tier_of.get(m, "")) != "Assigned", -v if np.isfinite(v) else np.inf)
+    anchors = sorted((m for m in members if m not in unassigned), key=_rank)
+    return (f"co-varies with {anchors[0].split('|')[0]}" if anchors
+            else "novel (no assigned anchor)")
+
+
 def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
                   floor: float | None = None, unassigned_floor: float | None = None,
                   noise_edge_batch_cps: float | None = None,
@@ -389,13 +407,10 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
     flat_cluster_members = [m for r in flat_rows for m in r[1]]
     remainder = [k for k in clust_cols if int(lab.get(k, -1)) not in dyn_ids]   # not in a DYNAMIC family
     # label each family by its assigned members (chemical CONTEXT for the unknowns:
-    # "co-varies with X", never "is X"); a family with no assigned anchor is NOVEL.
-    clabels = {}
-    for cid, mem, *_ in rows:
-        anchors = sorted((m for m in mem if m not in key_bin),
-                         key=lambda m: -med.get(m, 0))
-        clabels[int(cid)] = (f"co-varies with {anchors[0].split('|')[0]}" if anchors
-                             else "novel (no assigned anchor)")
+    # "co-varies with X", never "is X"), an Assigned-tier member first when the
+    # family has one; a family with no assigned anchor is NOVEL.
+    tier_of = dict(zip(chan["key"], chan["tier"]))
+    clabels = {int(cid): family_label(mem, tier_of, med, key_bin) for cid, mem, *_ in rows}
     # cohesion backstop: mean within-cluster r in the SAME space that built the
     # clusters; a family below COHESION_MIN is flagged (reported, never re-cut).
     cohesion = CL.validate_cohesion(rows, cm)

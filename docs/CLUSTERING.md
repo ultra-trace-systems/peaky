@@ -137,7 +137,12 @@ All thresholds are the named constants from `cluster.py` (see §4).
 
 7. **Shape label** (`shape_of`). On the z-scored family mean, compare
    `mean(first 6)` vs `mean(last 6)` with gap 0.5 → `rise` / `fall` / `peak`,
-   plus the `peak_hour`.
+   plus the `peak_hour`. The family's **name** (`cluster_label`,
+   `clustering.family_label`) is `co-varies with X`: X is the brightest
+   (by median) member whose merged tier is Assigned, or the brightest member
+   with a formula when no member is Assigned; a family of unassigned bins only is
+   `novel (no assigned anchor)`. It gives the unknowns chemical context, never an
+   identity.
 
 8. **Big standalone changers** (`big_changers`). Channels in the *remainder*
    (didn't join a family) whose smoothed max/median is **≥ `BIG_CHANGE_FOLD`
