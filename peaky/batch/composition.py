@@ -20,11 +20,12 @@ batch whose reagent ion reads as an analyte on a third (3); all addressed here:
      `collapsed_composition` quantify and optionally collapse that degeneracy, so
      the page can report the count "two ways" (as-assigned vs ammonium-as-CHO).
 
-  3. CARBON-FREE IONS. A reagent ion read as an analyte (HNO3 as NO3- and
-     HNO3.NO3- on a nitrate inlet), an inorganic acid or a peroxide is no organic
-     chemistry: `composition_class` puts every carbon-free neutral in its own
-     `INORGANIC` class, and `assigned_composition` weights the Assigned readings
-     only, the carbon-free ones apart from CHO / CHON / CHOS.
+  3. INORGANIC IONS. A reagent ion read as an analyte (HNO3 as NO3- and
+     HNO3.NO3- on a nitrate inlet), an inorganic acid, a peroxide, or carbon held
+     only as a carbon oxide or a pseudo-halide (CO2, ICN, INCO, HNCO on an iodide
+     inlet) is no organic chemistry: `composition_class` puts every such neutral
+     in its own `INORGANIC` class, and `assigned_composition` weights the
+     Assigned readings only, the inorganic ones apart from CHO / CHON / CHOS.
 
 All pure (formula arithmetic only); no I/O, no plotting. `neutral_signal` is a
 {neutral_formula -> summed cps} map the caller builds from the per-file M0 rows;
@@ -48,22 +49,48 @@ def backbone(formula: str) -> str:
     return "CHO"
 
 
-#: the class of a carbon-free neutral -- the reagent ion's own readings (HNO3 as
-#: NO3- or HNO3.NO3-), inorganic acids, peroxides -- reported apart from the
-#: organic backbones (CHO / CHON / CHOS), never folded into them
+#: the class of an inorganic neutral -- the reagent ion's own readings (HNO3 as
+#: NO3- or HNO3.NO3-), inorganic acids, peroxides, and carbon held only as a
+#: carbon oxide / sulfide or a pseudo-halide (`is_inorganic_carbon`) -- reported
+#: apart from the organic backbones (CHO / CHON / CHOS), never folded into them
 INORGANIC = "inorganic"
 #: the organic backbone classes, in print order
 ORGANIC_CLASSES = ("CHO", "CHON", "CHOS")
 
+_HALOGENS = ("F", "Cl", "Br", "I")
+_PSEUDO_HALIDE_ELEMENTS = frozenset({"C", "H", "N", "O", "S", *_HALOGENS})
+
+
+def _count(c: dict, el: str) -> int:
+    """Atoms of `el` in a parsed formula, a labelled isotope (^N, ^C) included."""
+    return int(c.get(el, 0)) + int(c.get("^" + el, 0))
+
+
+def is_inorganic_carbon(formula: str) -> bool:
+    """One carbon held the way inorganic chemistry holds it: a carbon oxide or
+    sulfide (CO, CO2, CO3, OCS, CS2: no H, nothing but O / S beside the carbon),
+    or a pseudo-halide -- a cyanide, cyanate, fulminate or thiocyanate with at
+    most one H and at most one halogen (HCN, HNCO, HSCN, ICN, INCO, ClCN,
+    NCNO2). Formic acid (CH2O2), fluoroform (CHF3) and a polyhalogenated
+    one-carbon species (chloropicrin CCl3NO2) stay organic."""
+    c = C.parse_formula(str(formula))
+    if not c or _count(c, "C") != 1 or not {k.lstrip("^") for k in c} <= _PSEUDO_HALIDE_ELEMENTS:
+        return False
+    n_h, n_x = _count(c, "H"), sum(_count(c, x) for x in _HALOGENS)
+    if not _count(c, "N"):
+        return n_h == 0 and n_x == 0
+    return n_h <= 1 and n_x <= 1
+
 
 def is_inorganic(formula: str) -> bool:
-    """A carbon-free neutral formula (a non-empty one: a missing formula is no class)."""
+    """An inorganic neutral formula: carbon-free (a non-empty formula: a missing
+    one is no class), or one carbon held as inorganic carbon (`is_inorganic_carbon`)."""
     c = C.parse_formula(str(formula))
-    return bool(c) and not c.get("C", 0)
+    return bool(c) and (not _count(c, "C") or is_inorganic_carbon(formula))
 
 
 def composition_class(formula: str) -> str:
-    """`INORGANIC` for a carbon-free neutral, else its organic `backbone`."""
+    """`INORGANIC` for an inorganic neutral (`is_inorganic`), else its organic `backbone`."""
     return INORGANIC if is_inorganic(formula) else backbone(formula)
 
 
@@ -80,27 +107,43 @@ def assigned_readings(merged) -> set:
 
 
 def assigned_composition(merged, reading_signal: dict) -> dict:
-    """The composition of the run's ASSIGNED readings, carbon-free ones apart.
+    """The composition of the run's ASSIGNED readings, inorganic ones apart.
 
     `reading_signal` = {(neutral, adduct): summed per-file M0 height}. Only the
     readings a merged row holds at tier Assigned count (`assigned_readings`).
     Returns {signal: {class: cps} over ORGANIC_CLASSES + INORGANIC, total,
     organic_frac: {class: share of the organic signal}, inorganic_frac: share
-    of the total, count: {class: distinct Assigned neutrals}, n_readings}."""
+    of the total, count: {class: distinct Assigned neutrals}, n_readings,
+    by_neutral: {organic neutral: (class, cps over its Assigned readings)}}."""
     keep = assigned_readings(merged)
     sig: dict = {}
     neutrals: dict = {}
+    by_neutral: dict = {}
     for (n, a) in keep:
         kl = composition_class(n)
-        sig[kl] = sig.get(kl, 0.0) + float(reading_signal.get((n, a), 0.0) or 0.0)
+        v = float(reading_signal.get((n, a), 0.0) or 0.0)
+        sig[kl] = sig.get(kl, 0.0) + v
         neutrals.setdefault(kl, set()).add(n)
+        if kl != INORGANIC:
+            by_neutral[n] = (kl, by_neutral.get(n, (kl, 0.0))[1] + v)
     total = sum(sig.values())
     organic = sum(v for k, v in sig.items() if k != INORGANIC)
     return {"signal": sig, "total": total,
             "organic_frac": {k: v / organic for k, v in sig.items() if k != INORGANIC and organic > 0},
             "inorganic_frac": (sig.get(INORGANIC, 0.0) / total) if total > 0 else 0.0,
             "count": {k: len(v) for k, v in neutrals.items()},
-            "n_readings": len(keep)}
+            "n_readings": len(keep), "by_neutral": by_neutral}
+
+
+def top_share(ac: dict, klass: str = "CHO", n: int = 5) -> float:
+    """The share of the Assigned ORGANIC signal the `n` brightest neutrals of
+    `klass` carry (`assigned_composition`'s `by_neutral`); 0 without organic signal."""
+    bn = ac.get("by_neutral") or {}
+    organic = sum(v for _k, v in bn.values())
+    if not organic > 0:
+        return 0.0
+    top = sorted((v for k, v in bn.values() if k == klass), reverse=True)[:n]
+    return float(sum(top)) / organic
 
 
 def minus_nh3(formula: str) -> str | None:
@@ -166,7 +209,7 @@ def amine_shadow_stats(merged) -> dict:
 def collapsed_composition(merged) -> tuple[dict, dict, int]:
     """Two-way backbone counts: (as_assigned, ammonium_as_cho, n_collapsed).
 
-    Classes are `composition_class` (a carbon-free neutral is `INORGANIC`).
+    Classes are `composition_class` (an inorganic neutral is `INORGANIC`).
     `ammonium_as_cho` re-reads every shadowed amine (one with a present X-NH3 twin)
     back into its CHO twin's class — i.e. the composition if the parsimony NH4->amine
     re-read had NOT been applied to the cases where the bare CHO is independently
@@ -187,7 +230,7 @@ def top_species_by_signal(merged, neutral_signal: dict, *, n: int = 8,
                           inorganic: bool | None = None) -> list[dict]:
     """Top-n distinct neutrals by summed M0 signal, with class (`composition_class`)
     + signal fraction (of ALL of `neutral_signal`). `inorganic` = False keeps the
-    organic neutrals only, True the carbon-free ones only, None both. Useful for a
+    organic neutrals only, True the inorganic ones only (`is_inorganic`), None both. Useful for a
     findings page: the chemistry lives in a handful of bright peaks."""
     tot = sum(float(v or 0.0) for v in neutral_signal.values()) or 1.0
     rows = []

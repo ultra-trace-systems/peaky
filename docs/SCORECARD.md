@@ -45,7 +45,7 @@ docs/EVIDENCE_LEVELS.md §1.1), and two buckets reported beside the claims:
 | claim | levels | what a reader may say |
 |---|---|---|
 | identified | 1, 2, 3c | the compound is named: ion established, split pinned and a named context-list entry |
-| neutral | 4a | the neutral is established, with no named identity |
+| neutral | 4a | the neutral is established among the run's declared reagent channels, with no named identity ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §1.1) |
 | ion | 4b | the ion composition is established; the neutral / adduct split or the process stays open |
 | tentative | 5a, 5b, no level | a competitor is left, the reading is rejected, or the row has no level |
 | reagent (bucket) | `reagent` | a reagent ion or reagent cluster, not levelled |

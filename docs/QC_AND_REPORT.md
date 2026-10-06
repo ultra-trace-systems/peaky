@@ -96,7 +96,7 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
 
 5. **Load context once** (`load_context`). Read the artifacts and derive every
    number a section needs: `n_m0`, `tiers`, `n_neutrals`, **`composition`** (by
-   CHO/CHON/CHOS backbone), `hetero` side-counts (Si/F/Cl-Br bearing),
+   CHO/CHON/CHOS backbone, inorganic neutrals apart), `hetero` side-counts (Si/F/Cl-Br bearing),
    `score_by_tier`, `adduct_counts`, the representative `samples`, pooled
    `role_count`, the **`bright_ledger`** (max-height full ledger → the QC figure),
    `role_signal`, **`role_signal_frac`**, `neutral_signal`, `expl_mz`,
@@ -184,7 +184,11 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
 - **`role_signal_frac`** — signal share split analyte / reagent / unexplained; the
   honest coverage number behind the headline.
 - **`composition`** — neutral counts by CHO/CHON/CHOS backbone (Si/F/halogen folded
-  in, via `analyte_viz.backbone_class`).
+  in), an inorganic neutral a class of its own (`composition.composition_class`:
+  carbon-free, or carbon only as a carbon oxide or a cyanide / cyanate such as
+  ICN or HNCO). **`assigned_comp`** — the composition by signal of the readings
+  held at tier Assigned only (`composition.assigned_composition`), which the
+  Findings and Composition pages print.
 - **`score_by_tier` / `adduct_signal`** — mean `ion_score` per tier; signal share
   per ion channel.
 - **`claim_signal`** — the committed-peak signal by claim: per-file M0 height

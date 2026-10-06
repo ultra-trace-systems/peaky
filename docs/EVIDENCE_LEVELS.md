@@ -912,9 +912,10 @@ release in `evidence.py`).
   organic M0 rows with an isotope line. A table of a few hundred peaks may give
   no file that many (2-9 per file on the iodide and NO+ Orbitrap tables it was
   measured on); then no pair is levelled (`NO_RUN_WINDOW_TEXT`) and every claim
-  reads tentative. The run says so once: `batch_summary.json` key
-  `levels_not_assessed_reason`, a console WARNING, the PDF cover and Evidence
-  levels page, and the workbook's Summary sheet.
+  reads tentative. A batch run says so once: the `batch_summary.json` key
+  `levels_not_assessed_reason`, a console WARNING and the PDF cover and
+  Evidence levels page (whose no-level rows name the same reason); a
+  single-sample workbook says it on its Summary sheet.
 - **One file alone** cannot be levelled without a calibration, and a
   single-sample run without a width model reads `NA` (§10.1).
 

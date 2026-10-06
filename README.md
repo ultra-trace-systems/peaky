@@ -39,7 +39,8 @@ Prefer to do it by hand? Follow **[QUICKSTART.md](QUICKSTART.md)**, or the
   annotation, with an **evidence level** (3c–5b on the evidence scale, a
   CIMS-adapted Schymanski scale for Orbitrap-class data; `NA` on a TOF) on every
   committed formula and the **claim** it supports beside the tier — identified (the
-  compound named), neutral (the neutral established), ion (the ion composition
+  compound named), neutral (the neutral established among the run's declared
+  reagent channels), ion (the ion composition
   established) or tentative. Produces a
   tiered Excel (Assigned / Candidate / below-assignability) with commentary, close alternatives, per-isotopologue scores, and a peak-ownership
   audit, plus an interactive rotating-GKA widget.

@@ -940,8 +940,8 @@ def cover(ctx, pdf):
     _close(pdf, fig)
 
 
-#: the end share of a run's samples whose maximum is a rise the run ends on: no
-#: decay can follow it inside the run, so it is never called a transient event
+#: the end share of a run's samples in which a maximum sits too close to the end
+#: of the run to tell a transient from a rise, so it is never called a transient event
 EVENT_LATE_FRAC = 0.10
 
 
@@ -952,7 +952,8 @@ def _event_sentence(hours, total, *, bar: float | None = None,
     third of the samples). It says 'a transient event' only when the maximum
     reaches the report's own transient bar (`bar`, default cluster.PEAK_RANGE:
     the burst bar a varying trace is held to) and does not sit in the last
-    `late_frac` of the samples; a maximum that late is a rise the run ends on.
+    `late_frac` of the samples: a maximum that late is too close to the end of
+    the run to tell a transient from a rise, and the sentence says so.
     Below the bar it says there is none and gives the band (5th-95th
     percentile) the samples sit in. None with fewer than 3 finite samples or
     no positive baseline."""
@@ -977,22 +978,38 @@ def _event_sentence(hours, total, *, bar: float | None = None,
         return (f"Total signal peaks at hour {pk_h:.1f} — {ratio:.1f}x the late-run baseline (the median of "
                 f"the last third of the samples) — then decays (a transient event).")
     if ratio >= bar:
-        return (f"Total signal reaches its maximum at hour {pk_h:.1f}, in the last {late_frac:.0%} of the "
-                f"samples ({ratio:.1f}x the late-run baseline, the median of the last third): a rise the run "
-                "ends on, not a transient seen to decay.")
+        return (f"Total signal reaches its maximum at hour {pk_h:.1f}, {ratio:.1f}x the late-run baseline (the "
+                f"median of the last third of the samples), in the last {late_frac:.0%} of the samples: too close "
+                "to the end of the run to tell a transient event from a rise.")
     lo, hi = np.percentile(tv / base, [5, 95])
     return (f"No transient event: the total signal's maximum (hour {pk_h:.1f}) is {ratio:.2f}x the late-run "
             f"baseline (the median of the last third of the samples), below the report's {bar:.1f}x transient "
             f"bar; 90% of the samples lie within {lo:.2f}-{hi:.2f}x of that baseline.")
 
 
+#: the bright-CHO clause: the `BRIGHT_CHO_N` brightest CHO neutrals carry at
+#: least `BRIGHT_CHO_SHARE` of the Assigned organic signal
+BRIGHT_CHO_N = 5
+BRIGHT_CHO_SHARE = 0.5
+#: what the inorganic class holds, in a reader's words (composition.is_inorganic)
+INORGANIC_WHAT = "carbon-free, or carbon only as a carbon oxide / sulfide or a cyanide / cyanate"
+
+
+def _has_ammonium_channel(ctx) -> bool:
+    """Whether the run reads an NH4+ or a urea adduct: the channels whose [M+NH4]+ /
+    amine degeneracy the ammonium/amine re-read acts on."""
+    return any(("NH4" in str(k)) or ("CH4N2O" in str(k)) for k in ctx.get("adduct_counts", {}))
+
+
 def _composition_lines(ctx) -> list:
     """The Findings bullet on what the chemistry is, by signal: the Assigned
     readings only (composition.assigned_composition), the organic classes as
-    shares of the organic signal, the carbon-free reagent / inorganic ions as a
-    share of all Assigned signal, beside the CHON share by count of the same
-    Assigned organic neutrals. The '(a few bright CHO species ...)' clause only
-    when CHO carries more than half of the organic signal."""
+    shares of the organic signal beside the CHON share by count of the same
+    Assigned organic neutrals, then the inorganic ions (reagent ions, inorganic
+    acids, carbon oxides, pseudo-halides) as a share of all Assigned signal.
+    The ammonium/amine note only on a run with an NH4+ or urea channel; the
+    bright-CHO clause only when the `BRIGHT_CHO_N` brightest CHO neutrals carry
+    `BRIGHT_CHO_SHARE` of the organic signal, and scoped to it."""
     from peaky.batch import composition as CMP
     ac = ctx.get("assigned_comp") or {}
     of = ac.get("organic_frac") or {}
@@ -1005,14 +1022,18 @@ def _composition_lines(ctx) -> list:
         parts = " / ".join(f"{_share(of[k])} {k}" for k in CMP.ORGANIC_CLASSES if k in of)
         out.append(("b", f"• By signal, the Assigned organic readings are {parts} — vs "
                          f"{_pct(cnt.get('CHON', 0), n_org):.0f}% CHON by count of the same neutrals"))
+        if _has_ammonium_channel(ctx):   # the CHON count inflation is the amine re-read
+            out.append(("b", "  (the count is inflated by mass-degenerate ammonium/amine re-reads; "
+                             "see Composition)."))
+        top = CMP.top_share(ac, "CHO", BRIGHT_CHO_N)
+        if top >= BRIGHT_CHO_SHARE:
+            k = min(BRIGHT_CHO_N, sum(1 for kl, _v in (ac.get("by_neutral") or {}).values() if kl == "CHO"))
+            who = "The brightest CHO neutral carries" if k == 1 else f"The {k} brightest CHO neutrals carry"
+            out.append(("b", f"  {who} {_share(top)} of the Assigned organic signal: a few bright CHO species "
+                             "carry most of it."))
     if ac.get("inorganic_frac", 0.0) > 0:
-        out.append(("b", f"  Carbon-free reagent and inorganic ions carry {_share(ac['inorganic_frac'])} of "
-                         "the Assigned M0 signal; they are kept out of CHO / CHON / CHOS."))
-    if of and ctx.get("positive"):   # the CHON count inflation is the amine re-read (positive only)
-        out.append(("b", "  (the count is inflated by mass-degenerate ammonium/amine re-reads; "
-                         "see Composition)."))
-    elif of.get("CHO", 0.0) > 0.5:
-        out.append(("b", "  (a few bright CHO species carry most of the signal)."))
+        out.append(("b", f"  Reagent and inorganic ions ({INORGANIC_WHAT}) carry {_share(ac['inorganic_frac'])} "
+                         "of the Assigned M0 signal; they are kept out of CHO / CHON / CHOS."))
     return out
 
 
@@ -1050,8 +1071,8 @@ def findings(ctx, pdf):
     inorg = ctx.get("top_inorganic", [])
     if top or inorg:
         lines += [("gap", 0.6), ("h", "Top species by signal"), ("gap", 0.25),
-                  ("dim", "share = of all per-file M0 height (every tier); carbon-free reagent and "
-                          "inorganic ions are listed apart, below")]
+                  ("dim", "share = of all per-file M0 height (every tier); reagent and inorganic ions are "
+                          "listed apart, below")]
     if top and ctx.get("claim_of_pair"):
         # the neutral's best claim over its channels (identified > neutral > ion > tentative)
         best = _best_claims(ctx["claim_of_pair"])
@@ -1065,7 +1086,7 @@ def findings(ctx, pdf):
             lines.append(("m", f"   {r['frac']*100:>4.1f}%   {r['klass']:5s}   {r['neutral_formula']}"))
     if inorg:
         items = [f"{r['neutral_formula']} {_share1(r['frac'])}" for r in inorg[:6]]
-        lines.append(("m", "   reagent and inorganic ions (carbon-free):"))
+        lines.append(("m", "   reagent and inorganic ions (C-free or inorganic C):"))
         for k in range(0, len(items), 3):             # 3 per line (a mono line never wraps)
             lines.append(("m", "      " + ", ".join(items[k:k + 3])))
     n_olig_cand = int(ctx.get("n_oligomers_candidate_only") or 0)
@@ -1083,8 +1104,8 @@ def findings(ctx, pdf):
                   ("dim", "oligomers, often the most event-specific signal"
                           + (f" ({len(olig)} of {n_olig} shown)." if n_olig > len(olig) else "."))]
         if n_olig_cand:
-            lines.append(("dim", f"{n_olig_cand} more high-C high-O neutral(s) hold Candidate readings only "
-                                 "and are not listed."))
+            lines.append(("dim", f"{n_olig_cand} more high-C high-O neutral(s) hold no Assigned reading (Candidate "
+                                 "or ion-only rows only) and are not listed."))
     _text_lines(fig, lines, y0=0.52, dy=0.027, size=9.5)
     _close(pdf, fig)
 
@@ -1181,6 +1202,32 @@ def coverage(ctx, pdf):
         lines += [("dim", "Peak roles are defined on the Methods page.")]
     _text_lines(fig, lines, y0=0.40, dy=0.029, bottom=0.05)
     _close(pdf, fig)
+
+
+def _unlevelled_text(merged, *, see: str = "") -> str:
+    """'N merged row(s) carry no level ...; they read tentative', with the reason
+    each row's evidence gives: no file of the run calibrated the degeneracy
+    window (`see` points at the run-level notice), no pooled pair holds the
+    reading (a batch-level re-read), or another reason the evidence names.
+    '' when every row carries a level."""
+    from peaky.assignment import evidence as EV
+    nl = merged["evidence_level"].isna() if "evidence_level" in merged.columns else pd.Series(dtype=bool)
+    n = int(nl.sum())
+    if not n:
+        return ""
+    ev = (merged.loc[nl, "evidence"].astype(str) if "evidence" in merged.columns
+          else pd.Series("", index=merged.index[nl]))
+    n_cal = int(ev.isin([EV.NO_RUN_WINDOW_TEXT, EV.NO_WINDOW_TEXT]).sum())
+    n_pp = int((ev == EV.NO_POOLED_PAIR_TEXT).sum())
+    parts = [(n_cal, "because no file of the run calibrated the degeneracy window" + (f" ({see})" if see else "")),
+             (n_pp, "because their reading exists in no pooled pair (a batch-level re-read)"),
+             (n - n_cal - n_pp, "for the reason their evidence gives" if "evidence" in merged.columns
+              else "(the run records no reason)")]
+    parts = [(k, why) for k, why in parts if k]
+    if len(parts) == 1:
+        return f"{n} merged row(s) carry no level {parts[0][1]}; they read tentative."
+    return (f"{n} merged row(s) carry no level and read tentative: "
+            + "; ".join(f"{k} {why}" for k, why in parts) + ".")
 
 
 def claims(ctx, pdf):
@@ -1336,8 +1383,7 @@ def claims(ctx, pdf):
         lines.append(("b", f"• {ctx['n_unlevelled']} merged row(s) carry {OLD_SCALE_NO_LEVEL} (or no level at "
                            "all) and read tentative."))
     elif ctx.get("n_unlevelled"):
-        lines.append(("b", f"• {ctx['n_unlevelled']} merged row(s) carry no level (a batch-level "
-                           "re-read) and read tentative."))
+        lines.append(("b", "• " + _unlevelled_text(merged, see="see the Evidence levels page")))
     _text_lines(fig, lines, y0=bot - 0.085, dy=0.0178, size=9, bottom=0.04)
     _close(pdf, fig)
 
@@ -1408,8 +1454,7 @@ def evidence_levels(ctx, pdf):
         lines.append(("dim", f"{n_na} merged row(s) carry {OLD_SCALE_NO_LEVEL} (or no level at all); they read "
                              "tentative."))
     elif n_na:
-        lines.append(("dim", f"{n_na} merged row(s) carry no level: their reading exists in no pooled pair (a "
-                             "batch-level re-read); they read tentative."))
+        lines.append(("dim", _unlevelled_text(merged, see="see above" if ctx.get("levels_not_assessed") else "")))
     note = scale_note(info)
     if note:
         lines.append(("dim", f"This run was {note}."))
@@ -1434,9 +1479,9 @@ def evidence_levels(ctx, pdf):
 
 
 def _class_label(kl: str) -> str:
-    """The composition table's short label of a class (carbon-free -> 'C-free')."""
+    """The composition table's short label of a class (inorganic -> 'inorg.')."""
     from peaky.batch import composition as CMP
-    return "C-free" if kl == CMP.INORGANIC else kl
+    return "inorg." if kl == CMP.INORGANIC else kl
 
 
 def composition(ctx, pdf):
@@ -1452,7 +1497,8 @@ def composition(ctx, pdf):
              ("dim", "by COUNT — each compound once, regardless of how bright it is")]
     for kl in (*CMP.ORGANIC_CLASSES, CMP.INORGANIC):
         if kl in comp:
-            lines.append(("m", f"   {_class_label(kl):6s} {comp[kl]:>4}   ({_pct(comp[kl], ctx['n_neutrals']):.0f}%)"))
+            lines.append(("m", f"   {_class_label(kl):6s} {comp[kl]:>4}   "
+                               f"({_share(comp[kl] / max(ctx['n_neutrals'], 1))})"))
     if ac.get("total", 0) > 0:
         of = ac.get("organic_frac") or {}
         lines += [("gap", 0.8),
@@ -1465,7 +1511,7 @@ def composition(ctx, pdf):
                 lines.append(("m", f"   {kl:6s} {_share(of[kl]):>4} of the Assigned organic signal"))
         if ac.get("signal", {}).get(CMP.INORGANIC):
             lines.append(("m", f"   {_class_label(CMP.INORGANIC):6s} {_share(ac['inorganic_frac']):>4} of all "
-                               "Assigned M0 signal (carbon-free reagent / inorganic ions, kept apart)"))
+                               "Assigned M0 signal (reagent / inorganic ions, kept apart)"))
     sh = ctx.get("shadow", {}); coll = ctx.get("comp_collapsed", {})
     if sh.get("n_shadowed") and ctx.get("positive"):    # the re-read is positive urea-CIMS only
         lines += [("gap", 0.8),
@@ -1483,8 +1529,9 @@ def composition(ctx, pdf):
               ("dim", f"Si/F/halogen are folded into the {present or 'organic'} backbone, not split out"),
               ("dim", "(a siloxane with no N is CHO; a fluorinated species with N is CHON)."),
               ("dim", "Si = PDMS/silicone inlet bleed; F/halogen are reagent/contaminant ladders."),
-              ("dim", "A carbon-free neutral (C-free: the reagent ion's own reading, an inorganic acid,"),
-              ("dim", "a peroxide) is a class of its own, never CHO or CHON.")]
+              ("dim", "An inorganic neutral (inorg.: the reagent ion's own reading, an inorganic acid or"),
+              ("dim", "peroxide, a carbon oxide, a cyanide / cyanate such as ICN or HNCO) is a class of its"),
+              ("dim", "own, never CHO or CHON.")]
     _text_lines(fig, lines, y0=0.89, dy=0.028)
     _close(pdf, fig)
     if "vk" in ctx["fig"]:

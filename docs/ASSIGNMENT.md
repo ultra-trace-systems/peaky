@@ -336,8 +336,9 @@ columns** (no judgment calls at report time):
 a formula; the **evidence level** says what the evidence behind a committed
 formula is worth, and the **claim** what a reader may say of it (identified /
 neutral / ion / tentative): 3c (a named compound), 4a (the neutral
-established), 4b (the ion composition established), 5a (a competitor left in
-the calibrated window), 5b (rejected). It is assessed on Orbitrap-class data
+established among the run's declared reagent channels), 4b (the ion
+composition established), 5a (a competitor left in the calibrated window), 5b
+(rejected). It is assessed on Orbitrap-class data
 only (`NA` on a TOF), never feeds back into a tier, and is specified in
 [EVIDENCE_LEVELS](EVIDENCE_LEVELS.md).
 

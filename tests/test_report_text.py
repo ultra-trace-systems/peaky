@@ -31,11 +31,13 @@ def test_a_peak_over_the_bar_that_decays_is_a_transient_event():
     assert s.startswith(f"Total signal peaks at hour {_hours(120)[32]:.1f}")
 
 
-def test_a_maximum_in_the_last_tenth_of_the_samples_is_a_rise_the_run_ends_on():
+def test_a_maximum_in_the_last_tenth_of_the_samples_is_too_close_to_the_end_to_call():
     tt = np.full(120, 100.0)
-    tt[-3:] = [150.0, 200.0, 260.0]                   # over the bar, but at the very end
+    tt[-3:] = [150.0, 260.0, 120.0]                   # over the bar and decaying, but at the very end
     s = R._event_sentence(_hours(120), tt)
-    assert "transient event" not in s and "rise the run ends on" in s
+    assert "a transient event." not in s and "decays" not in s
+    assert "in the last 10% of the samples: too close to the end of the run to tell a transient event from a rise" in s
+    assert "rise the run ends on" not in s            # it does not claim that no decay follows
     # the same late maximum under the bar is simply no transient
     tt[-3:] = [105.0, 108.0, 110.0]
     assert R._event_sentence(_hours(120), tt).startswith("No transient event")
@@ -131,6 +133,21 @@ def test_carbon_free_neutrals_are_their_own_class_and_the_backbone_is_unchanged(
     assert not CMP.is_inorganic("") and not CMP.is_inorganic("nan")
 
 
+def test_one_carbon_held_as_inorganic_carbon_is_inorganic_and_organic_one_carbon_species_are_not():
+    from peaky.batch import composition as CMP
+    # the pseudo-halides an iodide inlet reads (iodine cyanide, iodine isocyanate), the cyanide /
+    # cyanate family, a nitryl cyanide, the carbon oxides and sulfides; a 15N label counts as N
+    for f in ("CNI", "CINO", "C^NI", "CHNO", "CHN", "CClN", "CHNS", "CN2O2", "CO", "CO2", "CO3", "COS", "CS2"):
+        assert CMP.is_inorganic_carbon(f) and CMP.composition_class(f) == CMP.INORGANIC, f
+    # formic acid, carbonic / performic acid, fluoroform, urea, nitromethane, methylamine,
+    # chloropicrin, a perfluorinated one-carbon fit and cyanogen (two carbons) stay organic
+    for f, kl in (("CH2O2", "CHO"), ("CH2O3", "CHO"), ("CHF3", "CHO"), ("CH4N2O", "CHON"), ("CH3NO2", "CHON"),
+                  ("CH5N", "CHON"), ("CCl3NO2", "CHON"), ("CF5NO4", "CHON"), ("C2N2", "CHON"),
+                  ("C10H16O4", "CHO")):
+        assert not CMP.is_inorganic_carbon(f) and CMP.composition_class(f) == kl, f
+    assert not CMP.is_inorganic_carbon("HNO3")         # carbon-free: inorganic by the other rule
+
+
 def test_the_assigned_composition_weights_assigned_readings_only_with_the_reagent_ion_apart():
     from peaky.batch import composition as CMP
     merged = _merged_rows([
@@ -155,19 +172,39 @@ def test_the_assigned_composition_weights_assigned_readings_only_with_the_reagen
 
 
 def test_the_findings_bullet_names_the_inorganic_share_and_gates_the_bright_cho_clause():
+    from peaky.batch import composition as CMP
     lines = R._composition_lines({"assigned_comp": {
         "n_readings": 4, "total": 1000.0, "inorganic_frac": 0.9, "organic_frac": {"CHO": 0.8, "CHON": 0.2},
-        "count": {"inorganic": 1, "CHO": 1, "CHON": 1}, "signal": {"inorganic": 900.0}}})
-    txt = " ".join(t for _s, t in lines)
-    assert "the Assigned organic readings are 80% CHO / 20% CHON" in txt
-    assert "50% CHON by count of the same neutrals" in txt
-    assert "Carbon-free reagent and inorganic ions carry 90% of the Assigned M0 signal" in txt
-    assert "a few bright CHO species" in txt
-    lines = R._composition_lines({"assigned_comp": {
-        "n_readings": 3, "total": 100.0, "inorganic_frac": 0.0, "organic_frac": {"CHO": 0.4, "CHON": 0.6},
-        "count": {"CHO": 2, "CHON": 1}, "signal": {}}})
-    txt = " ".join(t for _s, t in lines)
-    assert "a few bright CHO species" not in txt and "Carbon-free" not in txt
+        "count": {"inorganic": 1, "CHO": 1, "CHON": 1}, "signal": {"inorganic": 900.0},
+        "by_neutral": {"C10H16O4": ("CHO", 80.0), "C10H17NO7": ("CHON", 20.0)}}})
+    txt = [t for _s, t in lines]
+    assert "the Assigned organic readings are 80% CHO / 20% CHON" in txt[0]
+    assert "50% CHON by count of the same neutrals" in txt[0]
+    # the bright-CHO clause is scoped to the organic signal and sits before the inorganic line
+    assert txt[1] == ("  The brightest CHO neutral carries 80% of the Assigned organic signal: a few "
+                      "bright CHO species carry most of it.")
+    assert txt[2].startswith("  Reagent and inorganic ions (carbon-free, or carbon only as a carbon oxide / sulfide "
+                             "or a cyanide / cyanate) carry 90% of the Assigned M0 signal")
+    assert not any("ammonium/amine" in t for t in txt)    # no NH4+ / urea channel
+    # five of eight equal CHO neutrals carry exactly half of the organic signal: the clause, at the bar
+    spread = {f"C{k}H{2 * k}O5": ("CHO", 10.0) for k in range(5, 13)}           # 8 x 10 cps CHO
+    spread["C10H17NO7"] = ("CHON", 20.0)
+    ac = {"n_readings": 9, "total": 100.0, "inorganic_frac": 0.0, "organic_frac": {"CHO": 0.8, "CHON": 0.2},
+          "count": {"CHO": 8, "CHON": 1}, "signal": {}, "by_neutral": spread}
+    assert CMP.top_share(ac, "CHO", R.BRIGHT_CHO_N) == R.BRIGHT_CHO_SHARE == 0.5
+    assert "The 5 brightest CHO neutrals carry 50% of the Assigned organic signal" in " ".join(
+        t for _s, t in R._composition_lines({"assigned_comp": ac}))
+    # CHO 82% of the organic signal, but spread over nine neutrals (top five 45%): no clause
+    ac = dict(ac, organic_frac={"CHO": 90 / 110, "CHON": 20 / 110},
+              by_neutral=dict(spread, C13H26O5=("CHO", 10.0)))
+    assert CMP.top_share(ac, "CHO", 5) == 50 / 110
+    txt = " ".join(t for _s, t in R._composition_lines({"assigned_comp": ac}))
+    assert "82% CHO" in txt and "a few bright CHO species" not in txt and "Reagent and inorganic" not in txt
+    # the ammonium/amine note needs an NH4+ or a urea channel, not just a positive polarity
+    no_nh4 = {"assigned_comp": ac, "positive": True, "adduct_counts": {"[M+H]+": 3, "[M]+.": 2}}
+    assert "ammonium/amine" not in " ".join(t for _s, t in R._composition_lines(no_nh4))
+    nh4 = dict(no_nh4, adduct_counts={"[M+H]+": 3, "[M+NH4]+": 2})
+    assert "ammonium/amine re-reads" in " ".join(t for _s, t in R._composition_lines(nh4))
     assert R._composition_lines({"assigned_comp": {"n_readings": 0}})[0][1].startswith("• No reading is held")
 
 
