@@ -889,6 +889,11 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                         for r in conf)
         weak_note = ("; capped Candidate (one ion channel and one satellite line in every "
                      "confirming file: two independent lines are needed for Assigned)")
+        # every confirming file holds the reading at Candidate (its own tier rules:
+        # the lock score floor, the counting-detector floor) -- say so on the row
+        cand_note = ("; Candidate: no confirming file holds it at Assigned (see the "
+                     "per-file tier reasons)"
+                     if conf and all(str(r.get("tier")) != TIER_ASSIGNED for r in conf) else "")
         old_nf, old_ad = _s(merged.at[i, "neutral_formula"]), _s(merged.at[i, "adduct"])
         old_n = (int(merged.at[i, "n_files_winner"])
                  if "n_files_winner" in merged.columns and pd.notna(merged.at[i, "n_files_winner"])
@@ -901,7 +906,9 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                           and _s(merged.at[i, "tier"]) == TIER_ASSIGNED)
                 if capped:
                     merged.at[i, "tier"] = TIER_CANDIDATE
-                _note(merged, i, head + (weak_note if capped else ""))
+                _note(merged, i, head + (weak_note if capped else "")
+                      + (cand_note if not capped and "tier" in merged.columns
+                         and _s(merged.at[i, "tier"]) == TIER_CANDIDATE else ""))
                 counts["confirmed_kept"] += 1
                 continue
             if mass_only:
@@ -939,7 +946,9 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                     merged.at[i, col] = n_in
             merged.at[i, "alternatives"] = "; ".join([old] + keep)
             _note(merged, i, f"{head}; kept over the {old_n}-file {old_nf} {old_ad} reading "
-                             f"(vote {n_in} of {n_total} files)" + ("" if two_lines else weak_note))
+                             f"(vote {n_in} of {n_total} files)"
+                             + ((cand_note if _s(merged.at[i, "tier"]) == TIER_CANDIDATE else "")
+                                if two_lines else weak_note))
             counts["locked"] += 1
         elif conf and ref:
             n_r = len({r["src"] for r in ref})

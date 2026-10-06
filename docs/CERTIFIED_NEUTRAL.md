@@ -63,11 +63,15 @@ whitelist (pass 0) — a gatekeeper that can only find what someone listed.
    rungs above the oracle's registered channels (e.g. `[M+2R+H]+`) commit as
    `certified:ladder-rung` with the rung's own ppm vs the certified core (so
    the calibrated mass-gate audit judges them like any commit). The tier
-   engine holds a member whose own `ion_score` is under
-   `PassConfig.tau_suspect` (0.50) at Candidate whatever its label: the
-   certificate converges the channels' neutral masses, it does not make that
-   ion's pattern fit (`tiers.LOCKED_SCORE_METHODS`,
-   [ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §1.6).
+   engine holds a member whose `ion_score` is under `PassConfig.tau_suspect`
+   (0.50) at Candidate whatever its label: the certificate converges the
+   channels' neutral masses, it does not make that ion's pattern fit, and its
+   other channels do not spare the member (a certificate has them by
+   construction). An anchored member carries its own score; a ladder rung has
+   none of its own and is committed with the weakest anchored member's
+   `ion_score`, so the rung is demoted whenever that member is under the edge
+   (`tiers.LOCKED_SCORE_METHODS`, [ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md)
+   §1.6).
 6. **Optional TS layer**: when a batch `ts_peaks` is available, member-channel
    time co-variation (`ts_covariation`, minimum pairwise log-r) is annotated as
    further corroboration; anti-correlated members (r<0.3) veto the commit.

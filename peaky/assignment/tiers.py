@@ -13,9 +13,10 @@ ledger columns (reproducible, no judgment calls at report time):
                 profile.
 
   Candidate  -- a plausible formula, honestly ambiguous. Reasons: base
-                confidence Low/Suspect; a locked reading (pass-0 known
-                species, pass-7 certified neutral) whose ion score is under
-                the engine's Suspect band edge; an effective-score near-tie; close
+                confidence Low/Suspect; a locked reading (a pass-7 certified
+                neutral, or a pass-0 known species on one ion channel) whose
+                ion score is under the engine's Suspect band edge; an
+                effective-score near-tie; close
                 alternatives in the window without isotope/cross-channel
                 discrimination; the honest cross-family mass-degeneracy audit
                 (degeneracy.py) finding many distinct plausible ions on the
@@ -114,14 +115,25 @@ TOF_ASSIGN_FLOOR_X_EDGE = 3.0
 # by its own branch before the Low/Suspect one is asked, and a certified
 # commit is labelled 'Good (certified)' with no score floor. On spectra shifted
 # a few ppm off their true formulas (the populated-defect decoy) both paths
-# Assigned wrong readings at ion scores down to 0.001 (most of the known-species
-# ones recovered chlorinated paraffins, whose 37Cl spacing a shift keeps), while
-# the unshifted control files' known-species locks all scored above 0.5 and
-# their certified commits 0.74 or more. A locked commit
-# whose ion score is under the engine's own Suspect band edge
-# (PassConfig.tau_suspect, `lock_score_floor`) is Candidate. A source-solvent
-# cluster (`known:solvent_cluster`) is exempt: it is never scored (ion_score 0
-# by construction), its gate is the exact ladder step, and its branch comes first.
+# Assigned wrong readings at ion scores down to 0.001: 18 of the 23 known
+# species Assigned over six shift arms of one labelled-nitrate Orbitrap file
+# (13 of them recovered chlorinated paraffins, whose 37Cl spacing a shift
+# keeps), and 6 of the 9 certified P formulas on two uronium Orbitrap files.
+# In the decoy study's unshifted control arms every Assigned known species
+# scored over 0.5, and every certified commit the uronium controls Assigned
+# 0.74 or more (the labelled-nitrate control Assigned none). A certified
+# commit whose ion score is under the engine's own Suspect band edge
+# (PassConfig.tau_suspect, `lock_score_floor`) is Candidate. So is a known
+# species, unless the same neutral is committed on a second ion channel in the
+# file (`cross_channel`, the engine's own corroboration leg): the score is not
+# evidence against a real reading -- bright, sub-ppm cyclosiloxanes with their
+# own 29Si/30Si lines attached, and DMSO with its 34S line, score 0.02-0.49 on
+# other reagent profiles -- and only 1 of the 18 decoy locks had a second
+# channel. A certificate converges two or more channels by construction, so
+# that leg tells a certified decoy nothing and does not spare one. A
+# source-solvent cluster (`known:solvent_cluster`) is exempt: it is never
+# scored (ion_score 0 by construction), its gate is the exact ladder step, and
+# its branch comes first.
 LOCKED_SCORE_METHODS = ("known:", "certified:")
 # The absolute (mDa) floor on the mass-dependent sigma is owned by
 # PassConfig.cal_abs_floor_mda (default masscal.ABS_FLOOR_MDA); apply_tiers /
@@ -506,9 +518,10 @@ def _abs_floor(cfg) -> float:
 
 def lock_score_floor(cfg) -> float:
     """The ion score a locked reading (`LOCKED_SCORE_METHODS`) needs for tier
-    Assigned: PassConfig.tau_suspect -- the edge of the engine's own Suspect
-    band, under which `passes.core.confidence_label` rejects a reading
-    outright -- or its default when no cfg is given."""
+    Assigned (a known species with a second ion channel in the file is spared):
+    PassConfig.tau_suspect -- the edge of the engine's own Suspect band, under
+    which `passes.core.confidence_label` rejects a reading outright -- or its
+    default when no cfg is given."""
     v = getattr(cfg, "tau_suspect", None)
     if v is None:
         # lazy: the passes package loads modules that import this one
@@ -676,23 +689,35 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
                       "exact mass plus an exact ladder step off an observed "
                       "monomer channel")
         elif (method.startswith(LOCKED_SCORE_METHODS) and _isc is not None
-              and _isc < score_floor):
+              and _isc < score_floor
+              and not (method.startswith("known:") and cross_channel)):
             # a lock decides which formula the peak is read as; it does not make
             # the spectrum carry it. Under the engine's own Suspect band edge the
-            # ion's match score does not support the reading (see
-            # LOCKED_SCORE_METHODS), whatever the lock's other gates said.
+            # scorer lends the reading no support, and a single-channel known
+            # species or a certificate member then has nothing left but the
+            # lock (see LOCKED_SCORE_METHODS).
             tier = TIER_CANDIDATE
-            what = ("known species (pass-0 locked list)" if method.startswith("known:")
-                    else "certified neutral (pass-7 multi-channel certificate)")
-            reason = (f"{what} with ion score {_isc:.2f}, under the engine's Suspect band "
-                      f"edge ({score_floor:.2f}): the lock fixes which formula the peak is "
-                      "read as, but the ion's own match score does not support it at the "
-                      "identification bar")
+            if method.startswith("known:"):
+                reason = (f"known species (pass-0 locked list) with ion score {_isc:.2f}, under "
+                          f"the engine's Suspect band edge ({score_floor:.2f}), on one ion "
+                          "channel: the lock fixes which formula the peak is read as, but "
+                          "neither the ion's match score nor a second channel of the neutral "
+                          "in this file supports it at the identification bar")
+            else:
+                reason = (f"certified neutral (pass-7 multi-channel certificate) with ion score "
+                          f"{_isc:.2f}, under the engine's Suspect band edge ({score_floor:.2f}): "
+                          "the certificate converges the channels' neutral masses, but this "
+                          "ion's match score does not support it at the identification bar")
         elif method.startswith("known:"):
             reason = ("known species (pass-0 locked list, mass + own-twin "
                       "self-consistency gated)"
                       + _known_route(r, int(chan_count.get(formula, 0)),
                                      kid_labels_of.get(r["peak_id"], ())))
+            if _isc is not None and _isc < score_floor:
+                # spared by the second channel (the floor branch above)
+                reason += (f"; ion score {_isc:.2f} under the engine's Suspect band edge "
+                           f"({score_floor:.2f}), held Assigned by the neutral's second ion "
+                           "channel in this file")
         elif method.startswith("cluster:solvent"):
             # A source-solvent cluster ion whose composition ALSO reads as a
             # covalent neutral ([(C2H6O)2-H]+ == protonated C4H10O2). The
