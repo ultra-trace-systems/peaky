@@ -72,6 +72,7 @@ def _reflist_chance_text(n_near: int, null: dict, *, near_ppm: float = REFLIST_N
     lo, hi, med = vals[0], vals[-1], float(np.median(vals))
     sh = sorted({abs(float(s)) for s in null})
     span = f"±{sh[0]:g}-{sh[-1]:g} ppm" if len(sh) > 1 else f"±{sh[0]:g} ppm"
+    rng = f"{lo}" if lo == hi else f"{lo}-{hi}"
     if n_near > hi:
         verdict = (f"exceed that chance level ({n_near / med:.1f}x its median)" if med > 0
                    else "exceed that chance level")
@@ -79,7 +80,7 @@ def _reflist_chance_text(n_near: int, null: dict, *, near_ppm: float = REFLIST_N
         verdict = "are within that chance level: a match here is no evidence by itself"
     else:
         verdict = "are below that chance level: a match here is no evidence by itself"
-    return (f"Chance level: the same unexplained peaks shifted by {span} give {lo}-{hi} matches within "
+    return (f"Chance level: the same unexplained peaks shifted by {span} give {rng} matches within "
             f"{near_ppm:g} ppm; the {n_near} observed near-0-ppm matches {verdict}.")
 
 
@@ -586,6 +587,12 @@ def _scorer_text(ctx) -> str:
             "match_compounds with PEAKY_LOCAL_SCORING=0; this run did not record which)")
 
 
+def _share1(frac: float) -> str:
+    """A fraction as a percent to one decimal; a non-zero one under 0.05 % is '<0.1%'."""
+    v = 100.0 * float(frac)
+    return "<0.1%" if 0.0 < v < 0.05 else f"{v:.1f}%"
+
+
 def _share(frac: float) -> str:
     """A fraction as a whole percent that never rounds a non-zero share to 0% or a
     partial one to 100% ('<1%', '>99%')."""
@@ -1057,7 +1064,7 @@ def findings(ctx, pdf):
         for r in top[:8]:
             lines.append(("m", f"   {r['frac']*100:>4.1f}%   {r['klass']:5s}   {r['neutral_formula']}"))
     if inorg:
-        items = [f"{r['neutral_formula']} {r['frac'] * 100:.1f}%" for r in inorg[:6]]
+        items = [f"{r['neutral_formula']} {_share1(r['frac'])}" for r in inorg[:6]]
         lines.append(("m", "   reagent and inorganic ions (carbon-free):"))
         for k in range(0, len(items), 3):             # 3 per line (a mono line never wraps)
             lines.append(("m", "      " + ", ".join(items[k:k + 3])))

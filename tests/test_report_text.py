@@ -71,7 +71,7 @@ def test_the_chance_null_reruns_the_rescue_match_on_shifted_masses():
     assert all(v == 0 for v in null.values())          # a sparse list: nothing by chance
     assert R.reflist_chance(obs, [toy], ["[M-H]-"], shifts=(0.0,)) == {0.0: 2}
     s = R._reflist_chance_text(2, null)
-    assert "±15-40 ppm give 0-0 matches within 1 ppm" in s and "exceed that chance level" in s
+    assert "±15-40 ppm give 0 matches within 1 ppm" in s and "exceed that chance level" in s
 
 
 def test_the_chance_sentence_says_at_or_below_chance_when_the_null_matches_more():
@@ -185,6 +185,7 @@ def test_top_species_split_organic_from_carbon_free():
 
 def test_a_share_never_rounds_a_nonzero_class_to_zero_or_a_partial_one_to_all():
     assert [R._share(x) for x in (0.0, 0.003, 0.2, 0.996, 1.0)] == ["0%", "<1%", "20%", ">99%", "100%"]
+    assert [R._share1(x) for x in (0.0, 0.0002, 0.413)] == ["0.0%", "<0.1%", "41.3%"]
 
 
 # --------------------------------------------------------------------------- the oligomer line: Assigned members only
