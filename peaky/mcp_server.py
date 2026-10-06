@@ -256,7 +256,10 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
     written ledger CSV path. `height_cutoff` is an ABSOLUTE cps
     override of the height-gated passes; default = a multiple of the sample's own
     noise edge (instrument-independent) — the reagent profile's own multiple when
-    it carries one, else the package default (1x)."""
+    it carries one, else the package default (1x). `reagent="auto"` reads the
+    reagent from the sample's own server matches; when none of them is a reagent's
+    diagnostic adduct the job ends in an error naming what it saw -- pass the
+    reagent by name then."""
     out_dir = os.path.expanduser(output_dir or os.path.join(_OUT_DEFAULT, "mcp-assign"))
 
     def work(log):
@@ -264,9 +267,17 @@ def assign_sample(sample_id: str, reagent: str = "auto", context: str = "",
         from peaky.assignment import reflists as RL
         from peaky.chem import profiles
         os.makedirs(out_dir, exist_ok=True)
-        rp = profiles.resolve(reagent) if reagent != "auto" else None
-        adducts = list(rp.adducts) if rp else None
-        ctx = context or (rp.context if rp else "ambient-air")
+        if reagent == "auto":
+            # the sample's own server matches name the reagent, or the job stops
+            # with the reason -- as `peaky assign` does. adducts=None would hand
+            # assign.run its per-sample default, [M-H]-, whatever the polarity.
+            from peaky.io import io_mascope as IO
+            rp = profiles.resolve("auto", IO.fetch_peaks(IO.connect(), sample_id))
+            log(f"[reagent] auto-detected {rp.name} ({rp.label})")
+        else:
+            rp = profiles.resolve(reagent)
+        adducts = list(rp.adducts)
+        ctx = context or rp.context
         cfg = passes.PassConfig(height_cutoff_cps=height_cutoff)
         # relative gate: the profile's own multiple of the sample's noise edge
         # when it carries one, else the package default (logged once).

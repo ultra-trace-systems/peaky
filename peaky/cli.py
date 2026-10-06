@@ -121,10 +121,13 @@ def cmd_list(args) -> None:
 def _resolve_reagent(args, *, with_profile: bool = False):
     """Return (adducts, context, note). Forces the analyte channels so a positive
     or sparse-match sample never silently falls back to [M-H]- (wrong polarity).
-    adducts=None means 'let assign.run auto-detect from the sample'.
+    `--reagent auto` that cannot name the reagent from the sample's own server
+    matches STOPS (profiles.resolve raises; the CLI boundary prints the reason and
+    the known reagents) -- it no longer hands assign.run adducts=None, whose
+    per-sample default is [M-H]-.
 
     `with_profile=True` appends the resolved ReagentProfile itself (None when
-    --adducts forced the channels, or auto-detect found no known profile), which
+    --adducts forced the channels), which
     the caller needs for the profile's own tuning: the noise-edge gate multiple,
     the labelled-reagent isotopic purity, and the profile's label -- the second
     piece of run metadata the reference-list unlock reads, exactly as
@@ -150,14 +153,9 @@ def _resolve_reagent(args, *, with_profile: bool = False):
 
     client = IO.connect()
     raw = IO.fetch_peaks(client, args.sample_id, use_cache=not args.no_cache)
-    try:
-        prof = profiles.resolve("auto", raw, config=config)
-        return out(list(prof.adducts), (args.context or prof.context),
-                   f"auto-detected {prof.name} ({prof.label})", prof)
-    except Exception as e:                           # noqa: BLE001
-        return out(None, (args.context or "ambient-air"),
-                   (f"auto-detect found no known profile ({e}); using per-sample adduct "
-                    "detection — pass --reagent explicitly for a positive/sparse sample"))
+    prof = profiles.resolve("auto", raw, config=config)   # raises: stop, never guess
+    return out(list(prof.adducts), (args.context or prof.context),
+               f"auto-detected {prof.name} ({prof.label})", prof)
 
 
 def _add_progress_flag(p) -> None:
@@ -1034,7 +1032,8 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--sample-id", required=True)
     pa.add_argument("--reagent", default="auto",
                     help="reagent profile: auto | Br | Ur | ... — forces the analyte "
-                         "channels + default context ('auto' detects from the sample)")
+                         "channels + default context ('auto' detects from the sample's "
+                         "own server matches and stops when none names a reagent)")
     pa.add_argument("--adducts", nargs="+", default=None,
                     help="explicit analyte adduct channels (overrides --reagent)")
     pa.add_argument("--context", default=None,
@@ -1069,7 +1068,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "a unique substring also works; an ambiguous one is refused, "
                          "never pooled)")
     pb.add_argument("--dataset", default=None, help="dataset (workspace) name")
-    pb.add_argument("--reagent", default="auto", help="auto | Br | Ur | NO3 | I | ...")
+    pb.add_argument("--reagent", default="auto",
+                    help="auto | Br | Ur | NO3 | I | ... ('auto' reads the batch's server "
+                         "matches and stops when none names a reagent)")
     pb.add_argument("--reagent-config", default=None,
                     help="JSON/TOML file registering extra reagent profiles")
     pb.add_argument("--out-dir", default=None,
@@ -1101,7 +1102,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "'HR-CIMS 100-500.*zone' (matches the per-zone batches "
                          "of one mode x range). Passed to the server UNescaped.")
     pp.add_argument("--dataset", default=None, help="dataset (workspace) name")
-    pp.add_argument("--reagent", default="auto", help="auto | Br | Ur | NO3 | NO3_15N | I | ...")
+    pp.add_argument("--reagent", default="auto",
+                    help="auto | Br | Ur | NO3 | NO3_15N | I | ... ('auto' reads the pooled "
+                         "server matches and stops when none names a reagent)")
     pp.add_argument("--reagent-config", default=None,
                     help="JSON/TOML file registering extra reagent profiles")
     pp.add_argument("--out-name", default=None,

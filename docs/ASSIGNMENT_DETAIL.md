@@ -556,7 +556,7 @@ A TS bin enters unassigned clustering only if: **median `â‰¥ 50.0 cps`** AND `â‰
 
 ### 8.2 Profiles (profiles.py)
 
-`ReagentProfile` (profiles.py): `name, label, polarity, adducts, normaliser ('reagent'|'tic'), reagent_ion_re, ranges, detect_adduct, context, aliases`. Built-ins BR, UR, NO3, NO3_15N (profiles.py). Br/NO3 use `normaliser='reagent'` ([Br3]- dominates); NO3_15N uses `'tic'` (15NO3 clusters below the acquisition window); UR uses `'tic'` (positive mode). `register`/`from_dict`/`load_config` (JSON/TOML) support user reagents. `resolve(reagent='auto', peaks, config)` (profiles.py) looks up by name/alias or auto-detects via `detect_adducts` then polarity.
+`ReagentProfile` (profiles.py): `name, label, polarity, adducts, normaliser ('reagent'|'tic'), reagent_ion_re, ranges, detect_adduct, context, aliases`. Built-ins BR, UR, NO3, NO3_15N (profiles.py). Br/NO3 use `normaliser='reagent'` ([Br3]- dominates); NO3_15N uses `'tic'` (15NO3 clusters below the acquisition window); UR uses `'tic'` (positive mode). `register`/`from_dict`/`load_config` (JSON/TOML) support user reagents. `resolve(reagent='auto', peaks, config)` (profiles.py) looks up by name/alias or auto-detects from the server's matches (`recognised_adducts`, every diagnostic adduct present composed) and raises, naming the mechanisms seen, when none is diagnostic (no polarity guess; names are never read).
 
 ### 8.3 Contexts (contexts.py)
 

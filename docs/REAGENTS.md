@@ -435,9 +435,10 @@ and `run_manifest.json['config']` (the knob: a number, or `"auto"`).
   reagent runs on both a TOF and an Orbitrap), so it is left `None` = the package
   policy — derive it from the batch — and a site pins it for its own instrument
   in a `--reagent-config` profile (§3a).
-- **Auto-detect needs peaks**; with no diagnostic adduct it falls back to polarity,
-  and a sparse positive sample can mis-detect as negative — pass `--reagent` to
-  force it.
+- **Auto-detect needs peaks** and reads only their server matches (the ionization
+  mechanisms; never the batch or sample name). With no diagnostic adduct among
+  them it stops with an error naming the mechanisms it saw and their polarity,
+  rather than guess a profile — pass `--reagent` to name the reagent.
 
 ---
 

@@ -6,15 +6,20 @@ Pinned here, offline and on synthetic tables:
     then from a `polarity` column's words -- never from a batch or sample name;
   * no diagnostic adduct -> ValueError naming the mechanisms seen (no guess of the
     first registered profile of the polarity);
-  * `peaky pool` resolves on the full pooled table, not the 4-column trim.
+  * `peaky pool` resolves on the full pooled table, not the 4-column trim;
+  * `peaky assign` and the MCP `assign_sample` tool stop with that reason instead
+    of handing assign.run adducts=None (whose per-sample default is [M-H]-).
 """
+import time
 from datetime import datetime
 
 import pandas as pd
 import pytest
 
 from peaky import cli
+from peaky import mcp_server as M
 from peaky import pipeline as PL
+from peaky.assignment import assign as A
 from peaky.batch import assign_batch as AB
 from peaky.chem import profiles as P
 from peaky.io import io_mascope as IO
@@ -167,3 +172,99 @@ def test_pool_auto_resolves_on_the_untrimmed_table(monkeypatch, tmp_path):
 def test_pool_auto_stops_before_assigning_when_nothing_is_diagnostic(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match="mechanisms seen: \\[M\\+H\\]\\+"):
         _pool(monkeypatch, tmp_path, _table(["+H+"] * 4))
+
+
+# --------------------------------------------------------------------------- #
+# peaky assign / MCP assign_sample: stop, never adducts=None
+# --------------------------------------------------------------------------- #
+def _stub_sample(monkeypatch, raw):
+    calls = []
+    monkeypatch.setattr(cli, "_require_creds", lambda *a, **k: None)
+    monkeypatch.setattr(IO, "connect", lambda *a, **k: _FakeClient())
+    monkeypatch.setattr(IO, "fetch_peaks", lambda client, sid, use_cache=True: raw.copy())
+
+    def fake_run(sample_id, context="ambient-air", **kw):
+        calls.append(kw)
+        return {"ledger": pd.DataFrame({"mz": [100.0], "height": [1.0], "role": ["M0"],
+                                        "neutral_formula": ["C5H8O"], "adduct": ["[M+H]+"]}),
+                "stats": {}}
+
+    monkeypatch.setattr(A, "run", fake_run)
+    return calls
+
+
+def _assign_args(tmp_path, *extra):
+    return cli.build_parser().parse_args(
+        ["assign", "--sample-id", "S1", "--output-dir", str(tmp_path), *extra])
+
+
+def test_cli_assign_auto_resolves_from_the_sample(monkeypatch, tmp_path):
+    _stub_sample(monkeypatch, _table(["+(CH4N2O)H+", "+H+"]))
+    ad, ctx, note, prof = cli._resolve_reagent(_assign_args(tmp_path), with_profile=True)
+    assert prof.name == "Ur" and ad == list(P.UR.adducts) and "auto-detected Ur" in note
+
+
+def test_cli_assign_auto_stops_instead_of_the_deprotonation_default(monkeypatch, tmp_path, capsys):
+    calls = _stub_sample(monkeypatch, _table(["[M+H]+", "[M+Na]+"]))
+    with pytest.raises(ValueError, match="could not auto-detect reagent"):
+        cli._resolve_reagent(_assign_args(tmp_path))
+    rc = cli._run_guarded(lambda: cli.cmd_assign(_assign_args(tmp_path)))
+    err = capsys.readouterr().err
+    assert rc == 1 and "could not auto-detect reagent" in err and "--reagent" in err
+    assert calls == [], "assign.run must not run on a guessed reagent"
+
+
+def test_cli_explicit_reagent_is_unchanged(monkeypatch, tmp_path):
+    _stub_sample(monkeypatch, _table([]))          # nothing diagnostic: irrelevant here
+    ad, ctx, note = cli._resolve_reagent(_assign_args(tmp_path, "--reagent", "Ur"))
+    assert ad == list(P.UR.adducts) and ctx == P.UR.context
+    ad, ctx, note = cli._resolve_reagent(_assign_args(tmp_path, "--adducts", "[M+H]+"))
+    assert ad == ["[M+H]+"]
+
+
+def _wait(jid, timeout=30.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        job = M.JOBS.get(jid)
+        if job.status in ("done", "error"):
+            return job
+        time.sleep(0.02)
+    raise AssertionError(f"job {jid} did not finish")
+
+
+def test_mcp_assign_sample_auto(monkeypatch, tmp_path):
+    monkeypatch.setattr(M, "JOBS", M.JobManager())
+    calls = _stub_sample(monkeypatch, _table(["+(CH4N2O)H+", "+H+"]))
+    job = _wait(M.assign_sample("S1", output_dir=str(tmp_path))["job_id"])
+    assert job.status == "done", job.view()
+    assert calls[-1]["adducts"] == list(P.UR.adducts)
+
+    calls = _stub_sample(monkeypatch, _table(["+H+"]))
+    job = _wait(M.assign_sample("S2", output_dir=str(tmp_path))["job_id"])
+    assert job.status == "error" and "could not auto-detect reagent" in job.error
+    assert calls == []
+
+
+# --------------------------------------------------------------------------- #
+# assign.run's own per-sample default is no longer silent
+# --------------------------------------------------------------------------- #
+def _run_engine(monkeypatch, raw, adducts):
+    from peaky.assignment import passes as PA
+
+    monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
+    monkeypatch.setattr(IO, "fetch_peaks", lambda client, sid, use_cache=True: raw.copy())
+    monkeypatch.setattr(IO, "resolve_mechanism_ids", lambda client, names: {})
+    monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
+    monkeypatch.setattr(IO, "score_candidates", lambda *a, **k: pd.DataFrame())
+    lines = []
+    A.run("SID", "ambient-air", cfg=PA.PassConfig(height_cutoff_cps=1.0), adducts=adducts,
+          use_cache=False, log=lines.append)
+    return [str(x) for x in lines if "[reagent] WARNING" in str(x)]
+
+
+def test_assign_run_warns_when_it_falls_back_to_deprotonation(monkeypatch):
+    raw = pd.DataFrame({"peak_id": [f"p{i}" for i in range(20)],
+                        "mz": [120.0 + 9.1 * i for i in range(20)],
+                        "height": [50.0 + 100 * i for i in range(20)]})
+    assert len(_run_engine(monkeypatch, raw, None)) == 1
+    assert _run_engine(monkeypatch, raw, ["[M-H]-"]) == []
