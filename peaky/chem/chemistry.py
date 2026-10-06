@@ -434,22 +434,32 @@ def complexity_penalty(formula: str | dict[str, int], scale: float = 0.01,
     return min(raw * scale, cap)
 
 
-_GRID_CACHE: dict = {}
+_GRID_CACHE: dict = {}        # (box, mass bounds) -> (sorted grid, its mass column)
 _GRID_CACHE_MAX = 16
+
+
+def _grid_and_masses(ranges: dict[str, tuple[int, int]], mass_min: float,
+                     mass_max: float) -> tuple[list[tuple[float, str]], list[float]]:
+    """Memoised sorted grid and its mass column -- enumeration is pure, and
+    callers like chain-head candidate generation hit the same element box many
+    times per run. The mass column is built once with the grid: rebuilt on
+    every call it cost 20-40 ms on the ~214k-formula box of the 15N-label
+    stage, which calls it thousands of times per file."""
+    key = (tuple(sorted(ranges.items())), round(mass_min, 3), round(mass_max, 3))
+    hit = _GRID_CACHE.get(key)
+    if hit is None:
+        g = sorted(enumerate_grid(ranges, mass_min, mass_max))
+        hit = (g, [m for m, _ in g])
+        if len(_GRID_CACHE) >= _GRID_CACHE_MAX:
+            _GRID_CACHE.clear()
+        _GRID_CACHE[key] = hit
+    return hit
 
 
 def _grid_cached(ranges: dict[str, tuple[int, int]], mass_min: float,
                  mass_max: float) -> list[tuple[float, str]]:
-    """Memoised sorted grid -- enumeration is pure, and callers like chain-head
-    candidate generation hit the same element box many times per run."""
-    key = (tuple(sorted(ranges.items())), round(mass_min, 3), round(mass_max, 3))
-    g = _GRID_CACHE.get(key)
-    if g is None:
-        g = sorted(enumerate_grid(ranges, mass_min, mass_max))
-        if len(_GRID_CACHE) >= _GRID_CACHE_MAX:
-            _GRID_CACHE.clear()
-        _GRID_CACHE[key] = g
-    return g
+    """The memoised sorted grid (`_grid_and_masses`)."""
+    return _grid_and_masses(ranges, mass_min, mass_max)[0]
 
 
 def candidates_for_peaks(
@@ -470,8 +480,7 @@ def candidates_for_peaks(
     on every cluster adduct -- 1.8x for H2SO4 . Br-, 1.6x for H2SO4 . NO3-, 2.3x
     for acetic acid . Br- -- so candidates the scorer would have accepted were
     never enumerated. On [M-H]- / [M+H]+ the two differ by ~1 %."""
-    grid = _grid_cached(ranges, mass_min, mass_max)
-    masses = [g[0] for g in grid]
+    grid, masses = _grid_and_masses(ranges, mass_min, mass_max)
     shifts = [ADDUCT_SHIFTS[a] for a in adducts if a in ADDUCT_SHIFTS]
     accepted: set[str] = set()
     for mz in peak_mzs:
