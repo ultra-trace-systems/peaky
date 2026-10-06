@@ -70,7 +70,8 @@ APPENDED_ROW_KEYS = [
     "decoy_ppm_ge_350_rate", "decoy_ppm_identified_rate", "decoy_ppm_identified_lt_350_rate",
     "decoy_ppm_established_rate", "decoy_ppm_control_assigned", "decoy_shift_lt_350_rate", "decoy_shift_ge_350_rate",
     "decoy_headline_arm", "decoy_headline_lt_350_rate", "decoy_wrong_adducts", "decoy_adducts_new_ion_rate",
-    "decoy_adducts_new_ion_lt_350_rate", "decoy_adducts_same_ion_share",
+    "decoy_adducts_new_ion_lt_350_rate", "decoy_adducts_same_ion_share", "roster_neutral_or_better", "roster_same_ion",
+    "roster_iso_reagent", "roster_test", "roster_window_ppm", "scale",
 ]
 
 
@@ -207,7 +208,8 @@ def test_m2_joins_the_claim_of_the_reading_on_each_roster_line(crun, tmp_path):
     m2 = SC.missed_m2(crun, ions, tracks, rosters, lv)
     assert m2["roster"] == before["roster"] and before["roster_claim"] == {}      # _recall untouched
     assert m2["roster_claim"]["ap"] == {"identified": 1, "neutral": 1, "ion": 0, "tentative": 1, "reagent": 0,
-                                        "not assessed": 0, "misread_identified": 0}
+                                        "not assessed": 0, "neutral_or_better": 2, "misread_identified": 0}
+    assert m2["scale"] == "peaky 0.10.0" and m2["test"] == SC.ROSTER_TEST == 2
     claim = {r["neutral"]: r["claim"] for r in m2["rows"] if r["source"] == "roster:ap"}
     assert claim == {A[0]: "identified", B[0]: "neutral", Cc[0]: "tentative", "C10H16O10": "", D[0]: ""}
     # the HOM's line read as another neutral the run identifies: an identified misread
@@ -514,7 +516,8 @@ def test_the_card_carries_claims_after_the_headline_and_the_acceptance_block(cru
     assert row["bright_m0_not_identified"] == 3 and row["bright_m0_not_assigned"] == 0
     assert row["decoy_shift_identified_rate"] is None                  # no decoy ran
     acc = {a["key"]: a for a in card["acceptance"]}
-    assert list(acc) == ["roster_identified", "roster_misread_identified", "decoy_shift_identified_rate",
+    assert list(acc) == ["roster_identified", "roster_neutral_or_better", "roster_misread_identified",
+                         "decoy_shift_identified_rate",
                          "decoy_shift_identified_lt_350_rate", "decoy_shift_established_rate",
                          "decoy_ppm_identified_rate", "decoy_headline_lt_350_rate",
                          "decoy_adducts_identified_rate", "bright_m0_not_identified", "m1_families",
@@ -588,7 +591,9 @@ def test_the_board_leads_with_claims_and_old_rows_show_dashes(crun, tmp_path):
     md = (out / crun.name / "SCORECARD.md").read_text()
     assert "| identified rows | — | 2 | — |" in md
     s6 = md[md.index("## 6. Delta"):].splitlines()
-    assert s6[4] == "| metric | previous | now | delta |" and s6[5] == "|---|---:|---:|---:|"   # a dash does not left-align
+    # a dash does not left-align; the roster counts of the older presence test are marked, not diffed
+    assert s6[4] == "| metric | previous | now | delta | note |" and s6[5] == "|---|---:|---:|---:|---|"
+    assert "| roster present | — | 4 | — | not comparable: roster presence test 1 -> 2 (previous 4) |" in md
     page = html.unescape((out / "scoreboard.html").read_text())         # the page is ASCII with entities
     assert "The claim — identified / neutral / ion / tentative" in page and "Acceptance" in page
     assert "card predates C13" not in page

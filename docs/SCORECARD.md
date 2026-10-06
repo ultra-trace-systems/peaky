@@ -93,6 +93,7 @@ board and the page:
 | criterion | read on (identified class) | the old metric, kept |
 |---|---|---|
 | roster recall not lower | `roster_identified` — roster formulas read as themselves whose reading is identified | `roster_assigned` |
+| roster recall not lower (neutral or better) | `roster_neutral_or_better` — the same, identified or neutral (3c + 4a): a class list names no single compound, so its formulas never reach 3c | `roster_assigned` |
 | roster misreads not higher | `roster_misread_identified` — a roster line read as another neutral that is identified | `roster_misread` |
 | decoy rate not higher, per arm | `decoy_shift_identified_rate`, `decoy_shift_identified_lt_350_rate`, `decoy_ppm_identified_rate`, `decoy_adducts_identified_rate` | `decoy_shift_rate`, `decoy_adducts_rate` |
 | decoy rate not higher below m/z 350 (the headline shift arm: the ppm arms when they ran) | `decoy_headline_lt_350_rate` (Assigned) | `decoy_shift_rate` |
@@ -102,6 +103,17 @@ board and the page:
 
 The board rows written before the claim lack these keys: the delta reads None
 and the tables show a dash.
+
+A delta is taken only between two rows **measured alike** (`comparable`):
+a metric that reads the evidence scale needs the same scale (`scale` on the
+row; a row written before the key reads its `claims_schema`); a roster count
+needs the same M2 presence test (`roster_test`; 1 before the key); a decoy
+rate needs the same arm calibration (`decoy_calibration`; `own` before the
+key) and scoring (`decoy_scoring`). Otherwise the previous value is withheld
+and, where both rows hold a number, the card's §6 and the page's delta table
+say `not comparable: <why> (previous <value>)`, and the board's claims table
+says so in its last column -- 20 roster formulas identified on the
+pre-0.10.0 scale and 2 on 0.10.0 is a change of scale, not a regression.
 
 ## The six sections
 
@@ -140,12 +152,25 @@ and the tables show a dash.
      (`peaky/data/rosters/*.csv`), the reagent's reference ions
      (`chem.reference_ions`) and the pass-0 known species of the run's
      polarity, looked for on the run's own channels in the time series:
-     `assigned` as itself, `candidate`, `read as` something else (the reading
-     is shown), `unstamped` (present in the series, with the engine's reason)
-     or `absent`. Roster recall is reported per roster and per class; each
+     `assigned` as itself, `candidate`, `same ion` (the line is read as
+     another neutral / adduct split of the same ion composition --
+     C10H15NO7 [M-H]- and C10H14O4 [M+NO3]- are one ion, and nothing in the
+     spectrum tells them apart: not a misread), `read as` something else (the
+     reading is shown), `unstamped` (present in the series, with the engine's
+     reason), `isotope/reagent line` (the only line there is a stamped
+     isotope satellite of another ion or a reagent line: no sighting) or
+     `absent`. The **presence test** (`ROSTER_TEST` 2, `roster_test` on the
+     row): a line counts within `roster_window_ppm` -- 4 x the run's measured
+     mass sigma (`mass_scale.sigma_ppm`), at least 1 ppm, at most the run's
+     tolerance (a flat 6 ppm on an Orbitrap at ~0.2 ppm sigma reached
+     neighbours 25 sigma away) -- and in >= 20 % of the spectra, stamped or
+     not. `present` counts every status but `isotope/reagent line` and
+     `absent`. Roster recall is reported per roster and per class; each
      row carries the claim of the reading on its line, and `roster_claim`
-     counts per roster the formulas read as themselves per claim and the
-     misreads whose other reading is identified.
+     counts per roster the formulas read as themselves per claim,
+     `neutral_or_better` (identified + neutral, side by side with identified)
+     and the misreads whose other reading is identified; the M2 block names
+     the level scale its claims read (`scale`), the test and its window.
    - *M3 found elsewhere*: neutrals the other path (`--other`, ≥ 2 files or
      Assigned) holds and this run lacks; and neutrals the other instrument
      (`--other-instrument`) establishes — level 3c, 4a or 4b on the evidence
@@ -256,11 +281,9 @@ and the tables show a dash.
    field existed) and `decoy.scoring_detail` the inherited numbers, both kept
    in the decoy manifest for a re-count; the card prints them under the decoy
    heading and the board row records one word for the card (`decoy_scoring`:
-   one of those, or `mixed`). Nothing renders it yet: the board's tables,
-   the page's run-panel deltas and the card's own delta section all compare
-   a decoy rate with the previous row's whatever scoring made either, so a
-   delta across a change of scoring compares two different bounds unmarked
-   (card C41). Two units sit
+   one of those, or `mixed`). A delta of a decoy rate across a change of
+   scoring or of arm calibration is marked not comparable (see
+   Acceptance). Two units sit
    side by side: the tier counts are M0 **rows**; the level vector and the
    **per-claim** counts are distinct (neutral_formula, adduct) M0 **pairs** of
    any tier, each pair's m/z and tier taken from its brightest M0 row (the
@@ -288,7 +311,9 @@ and the tables show a dash.
    `resolvability` stamp's class counts over the per-file rows) with the
    per-file rows the separability / satellite tier rules capped at Candidate.
 6. **Delta** against the previous row of the same channel, for the metrics
-   the board tracks — the claim metrics first.
+   the board tracks — the claim metrics first; a metric measured differently
+   on the two rows has no delta and a `note` column says why (see
+   Acceptance).
 
 ## Levels
 
@@ -325,6 +350,12 @@ headline (ppm arm first, else the 0.35 Da arm, marked blind on an Orbitrap),
 the 50-Da bins, a re-count of kept ppm-arm ledgers; a run's own channel never
 in the wrong set (and no arm when none is left), and the wrong-adducts arm's
 same-ion re-splits told from its new ions.
+
+`tests/test_scorecard_roster.py` pins M2's presence test (the sigma window,
+the share of spectra, an isotope / reagent line no sighting, a same-ion split
+no misread), the roster claims side by side with their scale, and a delta
+across a scale, a presence test or a decoy calibration marked not comparable
+on the card, the board and the page.
 
 `tests/test_scorecard_claims.py` writes in-core levels onto that run and adds
 a Candidate the acid branch identifies, an ion-only line and a per-file
