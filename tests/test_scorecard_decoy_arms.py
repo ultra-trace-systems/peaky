@@ -252,3 +252,79 @@ def test_kept_ppm_arm_ledgers_recount_to_the_same_numbers(tmp_path, monkeypatch)
         assert again[key] == first[key], key
     assert again["ppm_arms"] == first["ppm_arms"]
 
+
+# --------------------------------------------------------------------------- the wrong-adducts arm at the ion level
+def reading(pid, neutral, adduct, mz, tier="Assigned", height=100.0):
+    return dict(peak_id=pid, role="M0", tier=tier, mz=mz, height=height, neutral_formula=neutral, adduct=adduct,
+                method="cheminfo+grid", ion_formula=None, confidence="High")
+
+
+def test_a_runs_own_channel_is_never_a_wrong_adduct(tmp_path):
+    run = SC.load_run(str(write_run(tmp_path / "out")))
+    assert SC.wrong_adducts_for(run) == ["[M+Cl]-", "[M+I]-"]                      # a nitrate run reads neither
+    # an iodide run reads [M+I]-: only [M+Cl]- is wrong for it
+    iodide = SC.load_run(str(write_run(tmp_path / "iod")))
+    iodide.summary["reagent"] = "I"
+    iodide.profile = SC.profile_for("I")
+    assert "[M+I]-" in SC.own_adducts(iodide) and SC.wrong_adducts_for(iodide) == ["[M+Cl]-"]
+    # a side channel the run opened and committed on is its own, wherever it shows (a ledger, a summary list)
+    pf = run.per_file.copy()
+    pf.loc[pf.index[0], "adduct"] = "[M+Cl]-"
+    opened = SC.Run(run.path, run.ledger, dict(run.summary, side_channels=["[M+I]-"]), run.manifest, run.ts, pf,
+                    profile=run.profile)
+    assert SC.wrong_adducts_for(opened) == []
+
+
+def test_the_adducts_arm_is_not_run_when_every_wrong_adduct_is_the_runs_own(tmp_path, monkeypatch):
+    run = SC.load_run(str(write_run(tmp_path / "out")))
+    run.summary["side_channels"] = ["[M+Cl]-", "[M+I]-"]
+    seen = fake_arms(monkeypatch)
+    dc = SC.decoy(run, "adducts", 0.35, 1)
+    assert "adducts" not in seen and dc["adducts"] is None and dc["wrong_adducts"] == []
+    assert dc["adducts_skipped"] == "every wrong-adduct candidate ['[M+Cl]-', '[M+I]-'] is one of the run's own channels"
+
+
+def test_ion_level_counts_tell_a_resplit_of_the_controls_ion_from_a_new_ion():
+    control = pd.DataFrame([
+        reading("p1", "C6H11ClO4", "[M-H]-", 181.03),          # ion C6H10ClO4-
+        reading("p2", "C7H10O5", "[M-H]-", 173.05),
+        reading("p4", "C5H8O4", "[M-H]-", 131.03, tier="Candidate"),
+    ])
+    arm = pd.DataFrame([
+        reading("p1", "C6H10O4", "[M+Cl]-", 181.03, height=500.0),   # the same ion, split as a chloride cluster
+        reading("p2", "C4H10O3", "[M+Cl]-", 173.05, height=400.0),   # another ion on a read peak: new
+        reading("p3", "C9H8O2", "[M+I]-", 274.96, height=300.0),     # a peak the control left unexplained: new
+        reading("p4", "C5H8O4", "[M+Cl]-", 167.0, height=200.0),      # same peak id, different ion: new
+        reading("p5", "C3H4O2", "[M+Cl]-", 107.0, tier="Candidate"),  # not Assigned: not counted
+    ])
+    assert SC.ion_key("C6H10O4", "[M+Cl]-") == SC.ion_key("C6H11ClO4", "[M-H]-")
+    c = SC.ion_level_counts(arm, control)
+    assert (c["assigned_same_ion"], c["assigned_new_ion"], c["assigned_new_ion_lt_350"]) == (1, 3, 3)
+    assert c["new_ion_examples"][0] == "C4H10O3 [M+Cl]- @ 173.0500"
+    # no control ledger: every Assigned row is a new ion
+    assert SC.ion_level_counts(arm, None)["assigned_new_ion"] == 4
+
+
+def test_the_adducts_arm_reports_its_ion_level_rate_beside_the_reading_level(tmp_path, monkeypatch):
+    run = SC.load_run(str(write_run(tmp_path / "out")))
+    ledgers = {
+        "control": [reading("p1", "C6H11ClO4", "[M-H]-", 181.03), reading("p2", "C7H10O5", "[M-H]-", 173.05),
+                    reading("p3", "C8H12O4", "[M-H]-", 171.07), reading("p4", "C10H16O3", "[M-H]-", 183.1)],
+        "adducts": [reading("p1", "C6H10O4", "[M+Cl]-", 181.03), reading("p2", "C4H10O3", "[M+Cl]-", 173.05)],
+    }
+    monkeypatch.setattr(SC, "run_engine_offline", lambda run_, peaks, sample_id, adducts, log=None, scoring=None:
+                        pd.DataFrame(ledgers[sample_id.rsplit("-", 1)[1]]))
+    monkeypatch.setattr(SC, "level_arm", lambda *a, **k: pd.DataFrame())
+    dc = SC.decoy(run, "adducts", 0.35, 1)
+    ad = dc["adducts"]
+    assert ad["assigned"] == 2 and ad["assigned_rate"] == pytest.approx(50.0)          # reading level: 2 of 4
+    assert ad["assigned_same_ion"] == 1 and ad["assigned_new_ion"] == 1
+    assert ad["new_ion_rate"] == pytest.approx(25.0) and ad["same_ion_share"] == pytest.approx(50.0)
+    card = SC.build_card(run, rosters=SC.load_rosters(), board=[], log=lambda *a: None)
+    card["decoy"] = dc
+    row = SC.board_row(card)
+    assert row["decoy_adducts_rate"] == pytest.approx(50.0) and row["decoy_adducts_new_ion_rate"] == pytest.approx(25.0)
+    assert row["decoy_wrong_adducts"] == ["[M+Cl]-", "[M+I]-"]
+    md = SC.render_md(card)
+    assert "of 2 Assigned, 1 (50.0 %) carry the ion composition of the control's reading" in md
+    assert "**1 new ions = 25.0 % of the control's Assigned**" in md and "reading-level 50.0 %" in md

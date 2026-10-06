@@ -171,7 +171,11 @@ and the tables show a dash.
    on the brightest cover file(s) as they are (the control), with every m/z
    shifted (two kinds of arm, below), and with the adduct set of the
    wrong polarity chemistry (`[M+Cl]-`/`[M+I]-` on a negative run,
-   `[M+Na]+`/`[M+NH4]+` on a positive one); what is still Assigned, per tier
+   `[M+Na]+`/`[M+NH4]+` on a positive one) less every channel the run
+   itself reads (`own_adducts`: its profile's adducts, every adduct its
+   ledgers commit, a side channel it opened -- an iodide run's `[M+I]-` is
+   never "wrong"; with nothing left the arm does not run and
+   `decoy.adducts_skipped` says so); what is still Assigned, per tier
    and level, is the error bound, reported on either side of m/z 350
    (Assigned and its rate against the control's Assigned on the same side)
    and per 50-Da m/z bin (`decoy.bins`: control, the 0.35 Da arm and the ppm
@@ -189,7 +193,18 @@ and the tables show a dash.
    on a TOF or without a snapshot) is no decoy: it is skipped, and
    `decoy.ppm_skipped` says why. Each ppm arm (`decoy.ppm_arms`) is rated
    against its files' control; pooled (`decoy.ppm`) they are rated against
-   the control counted once per arm that ran (`ppm.control`). The card's
+   the control counted once per arm that ran (`ppm.control`). The
+   wrong-adducts arm is also counted at the **ion level**
+   (`ion_level_counts`): an Assigned row whose ion composition equals the
+   control's M0 reading on the same peak (any tier) only re-splits an ion the
+   run already reads -- `X [M+NH4]+` is the ion of `X+NH3 [M+H]+` -- and is
+   wrong only about the neutral, by construction of the arm; a different
+   composition, or a peak the control left unexplained, is a NEW ion.
+   `decoy.adducts` carries `assigned_same_ion`, `assigned_new_ion`,
+   `new_ion_rate` (new ions against the control's Assigned, below m/z 350
+   too) and `same_ion_share`, beside the reading-level `assigned_rate`; the
+   board row `decoy_adducts_new_ion_rate` and `decoy_adducts_same_ion_share`.
+   The card's
    **headline below m/z 350** (`decoy.headline`; board
    `decoy_headline_lt_350_rate`, `decoy_headline_arm`) is the pooled ppm
    arms whenever they ran, else the 0.35 Da arm. `--decoy shift` runs both
@@ -307,7 +322,9 @@ them: the control calibration taken and given back, arm by arm; the ppm arm's
 m/z scaling, keys and kept-ledger names, a shift inside the match window
 skipped, the ppm arms pooled against the control counted once per arm, the
 headline (ppm arm first, else the 0.35 Da arm, marked blind on an Orbitrap),
-the 50-Da bins, and a re-count of kept ppm-arm ledgers.
+the 50-Da bins, a re-count of kept ppm-arm ledgers; a run's own channel never
+in the wrong set (and no arm when none is left), and the wrong-adducts arm's
+same-ion re-splits told from its new ions.
 
 `tests/test_scorecard_claims.py` writes in-core levels onto that run and adds
 a Candidate the acid branch identifies, an ion-only line and a per-file

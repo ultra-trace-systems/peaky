@@ -69,7 +69,8 @@ APPENDED_ROW_KEYS = [
     "decoy_scoring", "decoy_calibration", "decoy_ppm_k", "decoy_ppm_rate", "decoy_ppm_lt_350_rate",
     "decoy_ppm_ge_350_rate", "decoy_ppm_identified_rate", "decoy_ppm_identified_lt_350_rate",
     "decoy_ppm_established_rate", "decoy_ppm_control_assigned", "decoy_shift_lt_350_rate", "decoy_shift_ge_350_rate",
-    "decoy_headline_arm", "decoy_headline_lt_350_rate",
+    "decoy_headline_arm", "decoy_headline_lt_350_rate", "decoy_wrong_adducts", "decoy_adducts_new_ion_rate",
+    "decoy_adducts_new_ion_lt_350_rate", "decoy_adducts_same_ion_share",
 ]
 
 

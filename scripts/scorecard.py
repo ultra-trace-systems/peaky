@@ -1499,6 +1499,73 @@ def wrong_adducts(polarity: str) -> list[str]:
     return list(WRONG_ADDUCTS.get(polarity, WRONG_ADDUCTS["-"]))
 
 
+def own_adducts(run: "Run") -> set[str]:
+    """Every channel the run itself reads: its profile's adducts, every adduct its merged and per-file ledgers
+    commit (an opportunistic side channel the server opened included), and any channel list its batch summary
+    records."""
+    own = set(run.adducts)
+    for frame in (run.ledger, run.per_file):
+        if frame is not None and "adduct" in frame.columns:
+            own |= set(frame["adduct"].dropna().astype(str))
+    for key, val in (run.summary or {}).items():
+        if str(key).endswith("channels") and isinstance(val, (list, tuple)):
+            own |= {str(v) for v in val if isinstance(v, str)}
+    return {a for a in own if a and a.lower() != "nan"}
+
+
+def wrong_adducts_for(run: "Run") -> list[str]:
+    """The wrong-adducts arm's channels: the polarity's wrong set minus every channel the run itself reads -- an
+    adduct the run's own chemistry makes (iodide's [M+I]-, a side channel the run opened) is never 'wrong'."""
+    own = own_adducts(run)
+    return [a for a in wrong_adducts(run.polarity) if a not in own]
+
+
+def ion_key(neutral, adduct, ion=None) -> str | None:
+    """The ion composition of a reading (`evidence.ion_composition`) as one formula string; None when the row
+    carries no reading. Two splits of one ion (C10H14O4 [M+NO3]- and C10H15NO7 [M-H]-) share a key."""
+    if not is_str(neutral) or not is_str(adduct):
+        return None
+    try:
+        counts = EV.ion_composition(neutral, adduct, ion)
+    except Exception:  # noqa: BLE001 - an unparseable reading has no key
+        return None
+    return C.format_formula(counts) if counts else None
+
+
+def ion_level_counts(arm_led: pd.DataFrame, control_led: pd.DataFrame | None) -> dict:
+    """The wrong-adducts arm at the ION level: of its Assigned M0 rows (ion-only rows aside), how many carry the
+    same ion composition as a control M0 reading on the same peak (any tier: another split of an ion the run
+    already reads, by construction of the arm) and how many a NEW ion (a different composition, or a peak the
+    control left unexplained). Only the new ions are wrong at the ion level."""
+    out = {"assigned_same_ion": 0, "assigned_new_ion": 0, "assigned_new_ion_lt_350": 0, "new_ion_examples": []}
+    if arm_led is None or arm_led.empty or "role" not in arm_led.columns:
+        return out
+    m0 = arm_led[arm_led["role"] == "M0"]
+    if m0.empty:
+        return out
+    m0 = m0[(col(m0, "tier", "") == "Assigned") & ~ion_only_mask(m0)]
+    ctrl_ions: dict[str, set] = {}
+    if control_led is not None and not control_led.empty and "role" in control_led.columns:
+        cm = control_led[control_led["role"] == "M0"]
+        for pid, n, a, i in zip(col(cm, "peak_id").astype(str), col(cm, "neutral_formula"), col(cm, "adduct"),
+                                col(cm, "ion_formula")):
+            k = ion_key(n, a, i)
+            if k:
+                ctrl_ions.setdefault(pid, set()).add(k)
+    new = []
+    for r in m0.itertuples(index=False):
+        k = ion_key(getattr(r, "neutral_formula", None), getattr(r, "adduct", None), getattr(r, "ion_formula", None))
+        if k is not None and k in ctrl_ions.get(str(getattr(r, "peak_id", "")), set()):
+            out["assigned_same_ion"] += 1
+        else:
+            out["assigned_new_ion"] += 1
+            mz = float(getattr(r, "mz", np.nan))
+            out["assigned_new_ion_lt_350"] += int(mz < DECOY_MZ_SPLIT)
+            new.append((float(getattr(r, "height", 0) or 0), f"{r.neutral_formula} {r.adduct} @ {mz:.4f}"))
+    out["new_ion_examples"] = [t for _h, t in sorted(new, key=lambda x: -x[0])[:6]]
+    return out
+
+
 def brightest_files(run: Run, n: int) -> list[str]:
     pf = run.per_file
     if pf.empty:
@@ -1868,7 +1935,26 @@ def _total(items: list[dict]) -> dict:
             "levels": {lv: int(sum(x["levels"].get(lv, 0) for x in st)) for lv in LEVELS},
             "by_claim": {c: {k: int(sum(x["by_claim"][c][k] for x in st)) for k in CLAIM_COUNTS} for c in CLAIM_KEYS},
             **{k: int(sum(x[k] for x in st)) for k in ("identified", "identified_lt_350", "established")}}
+    # the wrong-adducts arm's ion level (`ion_level_counts`)
+    if all("assigned_new_ion" in i for i in items):
+        total.update({k: int(sum(i[k] for i in items)) for k in ION_LEVEL_KEYS})
+        total["new_ion_examples"] = [t for i in items for t in i.get("new_ion_examples", [])][:6]
     return total
+
+
+#: the wrong-adducts arm's ion-level counts
+ION_LEVEL_KEYS = ("assigned_same_ion", "assigned_new_ion", "assigned_new_ion_lt_350")
+
+
+def _ion_rates(a: dict, ctrl: dict) -> None:
+    """The wrong-adducts arm's ion-level rate (in place): its Assigned NEW ions against the control's Assigned,
+    beside the reading-level `assigned_rate`; and the share of its Assigned that only re-split an ion the control
+    already reads."""
+    if "assigned_new_ion" not in a:
+        return
+    a["new_ion_rate"] = pct(a["assigned_new_ion"], ctrl["assigned"])
+    a["new_ion_lt_350_rate"] = pct_or_none(a["assigned_new_ion_lt_350"], ctrl["assigned_lt_350"])
+    a["same_ion_share"] = pct_or_none(a["assigned_same_ion"], a["assigned"])
 
 
 def _rates(a: dict, ctrl: dict) -> None:
@@ -1972,13 +2058,18 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
     # a re-count reads the shifts the kept ledgers were made at (none before the ppm arm existed)
     ppm_k = [float(k) for k in (kept.get("ppm_k", []) if ledgers_dir else ppm_k)] if "ppm" in families else []
     out = {"mode": mode, "offset_da": offset_da, "files": files, "control": None, "shift": None, "adducts": None,
-           "adducts_used": kept.get("adducts_used", run.adducts), "wrong_adducts": kept.get("wrong_adducts", wrong_adducts(run.polarity)),
+           "adducts_used": kept.get("adducts_used", run.adducts), "wrong_adducts": kept.get("wrong_adducts", wrong_adducts_for(run)),
            "ledgers": {"source": "saved" if ledgers_dir else "engine", "dir": ledgers_dir or save_dir,
                        "code": kept.get("code") if ledgers_dir else engine_code()},
            "ppm_k": ppm_k, "ppm": None, "ppm_arms": {},
            # per arm key, why it did not run on which file (a ppm shift inside the file's match window)
            "ppm_skipped": dict(kept.get("ppm_skipped") or {}) if ledgers_dir else {}}
     out["instrument"] = {f: decoy_instrument(run, f) for f in files}
+    # a run's own channel in the wrong set (ledgers kept before the arm left them out): its rate is no error rate
+    out["wrong_adducts_own"] = sorted(set(out["wrong_adducts"]) & own_adducts(run))
+    if "adducts" in families and not out["wrong_adducts"]:
+        out["adducts_skipped"] = (f"every wrong-adduct candidate {wrong_adducts(run.polarity)} is one of the run's "
+                                  "own channels")
     out["orbitrap"] = any(v == "orbi" for v in out["instrument"].values())
     if kept:
         log(f"[decoy] re-count of the ledgers made at {offset_da:+.3f} Da"
@@ -2041,6 +2132,9 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
                     level_error = f"{type(exc).__name__}: {exc}"
                     log(f"[decoy] {sample_id}: {key} arm not levelled -- {level_error}")
             counts = _ledger_counts(led, sample_id, lv["adapted"], lv["strict"])
+            if key == "adducts":
+                # the arm at the ion level: a re-split of an ion the control reads is no new ion
+                counts.update(ion_level_counts(read, ctx.get(file_id)))
             if level_error:
                 counts["level_error"] = level_error
             agg[key].append((file_id, counts))
@@ -2080,9 +2174,9 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
                     continue
             log(f"[decoy] {f}: ppm shift {k:+g}")
             arm(key, decoy_ppm_peaks(peaks, k), f, run.adducts)
-        if "adducts" in families:
-            log(f"[decoy] {f}: wrong adducts {wrong_adducts(run.polarity)}")
-            arm("adducts", peaks, f, wrong_adducts(run.polarity))
+        if "adducts" in families and out["wrong_adducts"]:
+            log(f"[decoy] {f}: wrong adducts {out['wrong_adducts']}")
+            arm("adducts", peaks, f, list(out["wrong_adducts"]))
     if saved:
         manifest = {k: out[k] for k in ("mode", "offset_da", "ppm_k", "ppm_skipped", "files", "adducts_used",
                                         "wrong_adducts", "scoring", "scoring_detail", "calibration")}
@@ -2109,6 +2203,8 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
     for key in ("shift", "adducts"):
         if out[key] and ctrl and "error" not in out[key]:
             _rates(out[key], ctrl)
+            if key == "adducts":
+                _ion_rates(out[key], ctrl)
     # the ppm arms: each against the control of the files it ran on; pooled over every shift, against the control
     # counted once per arm that ran on the file
     ctrl_of = {f: c for f, c in agg["control"]}
@@ -2276,6 +2372,7 @@ KEY_METRICS = [
     ("roster_misread", "roster read as other", 0),
     ("decoy_shift_rate", "decoy (shift) Assigned %", 1),
     ("decoy_adducts_rate", "decoy (adducts) Assigned %", 1),
+    ("decoy_adducts_new_ion_rate", "decoy (adducts) new ions Assigned %", 1),
     # the populated-defect ppm-shift arms (pooled) and the shift arm the card quotes below m/z 350
     ("decoy_headline_lt_350_rate", "decoy (headline shift arm) Assigned below 350 %", 1),
     ("decoy_ppm_rate", "decoy (ppm shift) Assigned %", 1),
@@ -2514,6 +2611,11 @@ def board_row(card: dict) -> dict:
         "decoy_shift_ge_350_rate": shift.get("assigned_ge_350_rate"),
         "decoy_headline_arm": hl.get("arm"),
         "decoy_headline_lt_350_rate": hl.get("rate_lt_350"),
+        # the wrong-adducts arm at the ion level (new ions only) beside its reading-level `decoy_adducts_rate`
+        "decoy_wrong_adducts": dc.get("wrong_adducts"),
+        "decoy_adducts_new_ion_rate": add.get("new_ion_rate"),
+        "decoy_adducts_new_ion_lt_350_rate": add.get("new_ion_lt_350_rate"),
+        "decoy_adducts_same_ion_share": add.get("same_ion_share"),
     })
     return row
 
@@ -2741,6 +2843,26 @@ def decoy_skip_lines(dc: dict) -> list[str]:
     return out
 
 
+def decoy_adducts_lines(dc: dict) -> list[str]:
+    """The wrong-adducts arm at the ion level, beside its reading-level rate; and why it did not run, or which
+    of its adducts the run reads itself."""
+    out = []
+    if dc.get("adducts_skipped"):
+        out.append(f"wrong adducts not run: {dc['adducts_skipped']}")
+    if dc.get("wrong_adducts_own"):
+        out.append(f"the kept wrong-adducts ledgers include the run's own channel(s) {dc['wrong_adducts_own']}: "
+                   "their reading-level rate is no error rate; read the ion level")
+    a = dc.get("adducts")
+    if isinstance(a, dict) and "error" not in a and "assigned_new_ion" in a:
+        out.append(f"wrong adducts at the ion level: of {a['assigned']} Assigned, {a['assigned_same_ion']} "
+                   f"({_d(a.get('same_ion_share'), 1)} %) carry the ion composition of the control's reading on the "
+                   f"same peak (another split of an ion the run reads); **{a['assigned_new_ion']} new ions = "
+                   f"{_d(a.get('new_ion_rate'), 1)} % of the control's Assigned** (below {DECOY_MZ_SPLIT:.0f}: "
+                   f"{_d(a.get('new_ion_lt_350_rate'), 1)} %), against the reading-level {_d(a.get('assigned_rate'), 1)} %"
+                   + (f"; brightest new ions: {'; '.join(a['new_ion_examples'])}" if a.get("new_ion_examples") else ""))
+    return out
+
+
 def decoy_headline_lines(dc: dict) -> list[str]:
     """The shift arm the card quotes below m/z 350, as one bold line (empty when no shift arm ran)."""
     hl = dc.get("headline") or decoy_headline(dc)
@@ -2873,6 +2995,7 @@ def render_md(card: dict) -> str:
         L.append("")
         for why in decoy_skip_lines(dc):
             L.append(f"- {why}")
+        L += [f"- {x}" for x in decoy_adducts_lines(dc)]
         for key in ("control", "shift", "ppm", "adducts"):
             a = dc.get(key)
             if a and "error" not in a:
@@ -3020,8 +3143,8 @@ def render_board_md(board: list[dict]) -> str:
     for rec in claim_board_rows(board):
         L.append("| " + " | ".join([rec["channel"].replace("|", " · ")] + [str(rec[k]) for k, _ in CLAIM_BOARD_COLUMNS[1:]]) + " |")
     L += ["", "## All metrics", ""]
-    L += ["| channel | run | code | Assigned | Candidate | ion-only | neutrals | stamped signal % | unstamped merged | bright M0 not Assigned | unstamped in top 50 | levels | identified level | M1 fam. | M1 signal % | roster A/present/n | Cl+Br+F | decoy shift % | decoy adducts % | 13C ok/n | hetero ok/n | decoy headline < 350 % |",
-          "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|---:|---:|---:|---|---|---:|"]
+    L += ["| channel | run | code | Assigned | Candidate | ion-only | neutrals | stamped signal % | unstamped merged | bright M0 not Assigned | unstamped in top 50 | levels | identified level | M1 fam. | M1 signal % | roster A/present/n | Cl+Br+F | decoy shift % | decoy adducts % | 13C ok/n | hetero ok/n | decoy headline < 350 % | decoy adducts new-ion % |",
+          "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|---:|---:|---:|---|---|---:|---:|"]
     for r in rows:
         prev = previous_row(board, r["channel"], before=r)
 
@@ -3042,7 +3165,7 @@ def render_board_md(board: list[dict]) -> str:
             f"{r.get('roster_assigned', '')}/{r.get('roster_present', '')}/{r.get('roster_n', '')}", cell("census_halogen"),
             cell("decoy_shift_rate", 1), cell("decoy_adducts_rate", 1),
             f"{r.get('c13_within_1', '')}/{r.get('c13_n', '')}", f"{r.get('hetero_present', '')}/{r.get('hetero_n', '')}",
-            cell("decoy_headline_lt_350_rate", 1),
+            cell("decoy_headline_lt_350_rate", 1), cell("decoy_adducts_new_ion_rate", 1),
         ]) + " |")
     L += ["", "Per-run cards: `<run name>/SCORECARD.md` beside this file. The page `scoreboard.html` is the same data.", ""]
     return "\n".join(L)
@@ -3064,6 +3187,7 @@ GOOD_DIRECTION = {  # +1: up is good, -1: down is good; absent = neutral
     "decoy_shift_established_rate": -1, "decoy_adducts_established_rate": -1, "m3_other_instrument_own_missing": -1,
     # the ppm-shift arms
     "decoy_headline_lt_350_rate": -1, "decoy_ppm_rate": -1, "decoy_ppm_identified_rate": -1,
+    "decoy_adducts_new_ion_rate": -1,
 }
 METRIC_KEYS = {label: key for key, label, _ in KEY_METRICS}
 
@@ -3329,8 +3453,8 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
                                                                                                                                   ("rate_split", f"Assigned % < {DECOY_MZ_SPLIT:.0f} / ≥"),
                                                                                                                                   ("ident", "identified pairs"), ("ident_split", f"identified < {DECOY_MZ_SPLIT:.0f} / ≥"), ("ident_rate", "identified % of control"), ("ident_lt_rate", f"identified < {DECOY_MZ_SPLIT:.0f} % of control"),
                                                                                                                                   ("examples", "brightest Assigned")], {"rate": 1, "ident_rate": 1, "ident_lt_rate": 1}, mono=("examples", "ident_split", "rate_split")))
-            for why in decoy_skip_lines(dc):
-                out.append(f"<p class=\"note\">{html.escape(why.replace('`', ''))}</p>")
+            for why in decoy_skip_lines(dc) + decoy_adducts_lines(dc):
+                out.append(f"<p class=\"note\">{html.escape(why.replace('`', '').replace('**', ''))}</p>")
             bins = dc.get("bins") or decoy_bins(dc)
             if bins:
                 out.append(f"<p class=\"note\">Assigned by {DECOY_BIN_DA}-Da m/z bin (ppm arms pooled, against the control counted once per ppm arm)</p>"
