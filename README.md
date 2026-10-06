@@ -265,15 +265,31 @@ module map, and chemistry rules: **[SKILL.md](SKILL.md)**.
 
 ## Validation
 
-Peaky is validated end-to-end on a representative two-reagent CIMS oxidation
-experiment (cover-selected subset assigned → merged → clustering → Van Krevelen →
-PDF report):
+A release is validated on whole `peaky batch` runs of real CIMS data — both
+polarities, Orbitrap and TOF — against yardsticks that do not rest on the
+engine's own scores:
 
-- **Br⁻ CIMS run** — 80 samples / ~96 min → merged **502 M0**
-  (402 Assigned / 100 Candidate), ~4× the per-file coverage.
-- **Ur⁺ CIMS run** — 81 samples / ~97 min → merged **1319 M0**
-  (1065 Assigned / 254 Candidate); the positive-mode NH₄→amine co-variation gate
-  is applied at merge.
+- **A frozen truth set per run.** Readings of each validation run are checked by
+  hand against the raw spectra (isotope lines, adduct partners, time behaviour),
+  marked TRUE or FALSE, and frozen before the code under test changes. A release
+  is scored on how many TRUE readings it still assigns and how many FALSE
+  readings it assigns.
+- **Decoy arms.** The engine is re-run offline on the same peak tables with every
+  m/z shifted off its true mass (the mass-shift arm) and with the adduct set of
+  the wrong chemistry (the wrong-adduct arm). A shifted peak that is still
+  Assigned is false by construction, so the shift arm bounds the error rate,
+  counted per tier and evidence level and separately at high m/z, where the
+  formula space is crowded enough for a shifted mass to find a formula. The
+  wrong-adduct arm shows how readily the engine reads ions through chemistry the
+  run did not have (some such readings are the same ion written another way).
+- **Isotope checks.** An Assigned reading has to survive its own isotopologues:
+  the carbon count its ¹³C satellite implies, the line each heteroatom demands
+  (³⁴S, ³⁷Cl, ⁸¹Br, ²⁹Si), and satellites and adduct partners that co-vary with
+  their parent over the batch.
+
+`scripts/scorecard.py` runs the decoy arms and the isotope checks on any run
+directory ([docs/SCORECARD.md](docs/SCORECARD.md)); the truth sets belong to the
+validation data and are not part of this repository.
 
 ## Development
 
