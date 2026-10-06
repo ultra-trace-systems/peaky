@@ -37,6 +37,52 @@ INK = "#222222"
 GREY = "#777777"
 
 
+#: the reference-list rescue's mass window (ppm) and the 'near-0-ppm' band its
+#: chance level is quoted for
+REFLIST_TOL_PPM = 4.0
+REFLIST_NEAR_PPM = 1.0
+#: the shifts (ppm) of the chance null: the same unexplained m/z set moved well
+#: outside the match window, still inside the same dense formula space
+REFLIST_NULL_SHIFTS_PPM = (-40.0, -25.0, -15.0, 15.0, 25.0, 40.0)
+
+
+def reflist_chance(mz_values, lists, adducts, *, tol_ppm: float = REFLIST_TOL_PPM,
+                   near_ppm: float = REFLIST_NEAR_PPM,
+                   shifts=REFLIST_NULL_SHIFTS_PPM) -> dict:
+    """{shift ppm: matches within `near_ppm`} when the reference-list mass match
+    (reflists.match_by_mass, the rescue's own call) is re-run on `mz_values`
+    moved by each shift: the number of near-0-ppm matches a peak set of this
+    size and mass distribution gets by chance against these lists and adducts.
+    An unexplained set is the peaks no formula fitted, so on a dense spectrum it
+    can match LESS often than chance; only this null says which."""
+    out = {}
+    for s in shifts:
+        res = RL.match_by_mass([float(m) * (1.0 + float(s) * 1e-6) for m in mz_values],
+                               lists, adducts, tol_ppm=tol_ppm)
+        out[float(s)] = int(sum(abs(r["ppm"]) <= near_ppm for r in res))
+    return out
+
+
+def _reflist_chance_text(n_near: int, null: dict, *, near_ppm: float = REFLIST_NEAR_PPM) -> str:
+    """The sentence comparing the observed near-0-ppm matches with the shifted null
+    (`reflist_chance`); '' without a null."""
+    if not null:
+        return ""
+    vals = sorted(int(v) for v in null.values())
+    lo, hi, med = vals[0], vals[-1], float(np.median(vals))
+    sh = sorted({abs(float(s)) for s in null})
+    span = f"±{sh[0]:g}-{sh[-1]:g} ppm" if len(sh) > 1 else f"±{sh[0]:g} ppm"
+    if n_near > hi:
+        verdict = (f"exceed that chance level ({n_near / med:.1f}x its median)" if med > 0
+                   else "exceed that chance level")
+    elif n_near >= lo:
+        verdict = "are within that chance level: a match here is no evidence by itself"
+    else:
+        verdict = "are below that chance level: a match here is no evidence by itself"
+    return (f"Chance level: the same unexplained peaks shifted by {span} give {lo}-{hi} matches within "
+            f"{near_ppm:g} ppm; the {n_near} observed near-0-ppm matches {verdict}.")
+
+
 # ---------------------------------------------------------------------------
 # context: load everything the report needs, once
 # ---------------------------------------------------------------------------
@@ -229,7 +275,7 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
                 adducts = list(ctx.get("adduct_counts", {}).keys()) or ["[M-H]-"]
                 un_mz = a.loc[a["role"] == "unexplained", "mz"].dropna()
                 un_mz = sorted(set(round(float(x), 5) for x in un_mz))
-                rescue = RL.match_by_mass(un_mz, lists, adducts, tol_ppm=4.0)
+                rescue = RL.match_by_mass(un_mz, lists, adducts, tol_ppm=REFLIST_TOL_PPM)
                 by_id = {L.id: L for L in lists}            # attach compound names (contaminants)
                 for m in rescue:
                     nm = (by_id.get(m["list"]).meta_of or {}).get(m["formula"], {})
@@ -238,7 +284,9 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
                     "tags": sorted(tags), "lists": [L.id for L in lists],
                     "cites": [L.cite() for L in lists],
                     "n_candidate": int(cand.nunique()), "corroborated": corr,
-                    "n_unexplained": len(un_mz), "rescue": rescue}
+                    "n_unexplained": len(un_mz), "rescue": rescue,
+                    # the chance level of the near-0-ppm matches, measured on this run
+                    "null_near": reflist_chance(un_mz, lists, adducts)}
         except Exception:
             pass
 
@@ -1373,11 +1421,12 @@ def reference_lists(ctx, pdf):
     if len(corr) > 12:
         lines.append(("dim", f"   … +{len(corr) - 12} more (tables/reflist_matches_{ctx['tag']}.csv)"))
 
-    nbest = sum(1 for m in rescue if abs(m["ppm"]) <= 1.0)
+    nbest = sum(1 for m in rescue if abs(m["ppm"]) <= REFLIST_NEAR_PPM)
     lines += [("gap", 0.7),
               ("h", f"Unexplained peaks matching a known formula: {len(rescue)} of {rl['n_unexplained']}"),
               ("gap", 0.25),
-              ("dim", f"matched BY MASS under the reagent adducts ({nbest} within 1 ppm) — LEADS to verify,"),
+              ("dim", f"matched BY MASS under the reagent adducts ({nbest} within {REFLIST_NEAR_PPM:g} ppm) — "
+                      "LEADS to verify,"),
               ("dim", "not assignments; isotope/co-variation confirmation still required."),
               ("m", "    obs m/z     formula      adduct        ppm   identity")]
     for m in sorted(rescue, key=lambda x: abs(x["ppm"]))[:18]:
@@ -1387,9 +1436,11 @@ def reference_lists(ctx, pdf):
     if len(rescue) > 18:
         lines.append(("dim", f"   … +{len(rescue) - 18} more (tables/reflist_matches_{ctx['tag']}.csv)"))
     lines += [("gap", 0.6),
-              ("dim", "Soft prior: formula membership is literature evidence, not a measurement. The"),
-              ("dim", "near-0-ppm matches far exceed chance (a list this size yields ~single-digit random"),
-              ("dim", "hits at this tolerance); larger-ppm matches are weaker and flagged by their ppm.")]
+              ("dim", "Soft prior: formula membership is literature evidence, not a measurement.")]
+    chance = _reflist_chance_text(nbest, rl.get("null_near") or {})
+    if chance:
+        lines.append(("dim", chance))
+    lines.append(("dim", "Larger-ppm matches are weaker and flagged by their ppm."))
     # paginate so the (variable-length) corroboration + rescue tables never clip
     PER = 40
     pages = [lines[i:i + PER] for i in range(0, len(lines), PER)] or [[]]
