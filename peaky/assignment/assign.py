@@ -830,7 +830,11 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # bromide reagent
     reagent_halogen = evidence.channel_halogen(adducts)
     adducts = adducts + [a for a in extra_channels if a not in adducts]
-    has_halogen_adduct = any(h in str(a) for a in adducts
+    # ... and so is the composite (even-shift) de-blend's switch: it is the
+    # halide reagents' test, so an opted-in [M+Br2]- side channel on a nitrate
+    # run must not turn it on (a halogen side channel on a halide run changes
+    # nothing: the declared channels already carry the halogen)
+    has_halogen_adduct = any(h in str(a) for a in analyte_adducts
                              for h in ("Br", "Cl", "I"))
     # rough mass offset from the sample's own matches -> seeds the pre-calibration
     # pass-0 gate (the pass-1 self-calibration refines it). Without it a large

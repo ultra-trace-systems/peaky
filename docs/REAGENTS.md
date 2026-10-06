@@ -307,9 +307,10 @@ on the run's own polarity only. Nothing is opened by polarity.
   `side_channels_requested` and `side_channels_source`; the run manifest's
   config carries the knob. The scorecard's decoy arms on the run's own channels
   open what the run recorded ([SCORECARD.md](SCORECARD.md)).
-- **The reagent halogen reads the declared channels.** An opted-in
-  `[M+Br2]⁻` on a nitrate run leaves the run's reagent halogen unset
-  ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §3.4).
+- **The composite de-blend and the reagent halogen read the declared
+  channels.** The even-shift composite test is the halide reagents' test, so
+  an opted-in `[M+Br2]⁻` on a nitrate run leaves it off, as it leaves the run's
+  reagent halogen unset ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §3.4).
 - **Not the evidence scale's lock.** `evidence.SIDE_CHANNELS_LOCKED` is a
   different switch: it keeps formate, acetate, CO₃⁻, … out of the evidence
   scale's decomposition grid whatever the engine scored

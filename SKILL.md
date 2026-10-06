@@ -198,7 +198,9 @@ The pipeline was built negative-mode Br-specialized; positive-mode support
   closes them all. `[M+CO3]-`, `[M+Br2]-` and `[M+Na]+` are no longer opened by
   polarity; `batch_summary.json['side_channels']` records what the files opened.
 - **Br-specific passes are guarded in positive mode**: `detect_composites` is
-  gated on a halogen adduct (its M+1 test misfires without one); the carbon-clamp
+  gated on a halogen among the declared analyte channels (its M+1 test misfires
+  without one; an opted-in halogen side channel such as `[M+Br2]-` on a nitrate
+  run does not turn it on); the carbon-clamp
   skips Si (²⁹Si dominates the M+1, not ¹³C); di-bromide / iso-pair / `reagent_element`
   logic goes inert when no halogen is in the adduct.
 - **`NH4_15N` profile / `ammonium-15n` context (¹⁵N-labelled ammonium⁺,

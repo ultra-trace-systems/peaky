@@ -9,8 +9,9 @@ channels asked for, `none` closes them all.
 Pins: the per-profile defaults and the config field; the resolution order
 (explicit > the cfg's own tuple > the profile) and the compose union; the cfg
 field survives the pickling that carries it into a spawned worker; an offline
-run registers and opens its side channels and records them per file; a channel
-of the other polarity, without a server
+run registers and opens its side channels and records them per file; the
+composite de-blend reads the DECLARED channels (a nitrate run with an opted-in
+[M+Br2]- skips it); a channel of the other polarity, without a server
 mechanism, or on a labelled-ammonium run is skipped and said so; the batch
 summary records what was asked for and what the files opened; the amine gate
 acts on a side-channel [M+NH4]+ reading at the merge and on the evidence
@@ -186,6 +187,19 @@ def test_an_opted_in_channel_opens_and_one_of_the_other_polarity_or_without_a_me
     assert side == ["[run] side channels: opened ['[M+Br2]-']; [M+Na]+ skipped (not a negative channel); "
                     "[M+K]+ skipped (no server mechanism)"]
     assert out["stats"]["reagent_halogen"] is None          # declared, not opened: still no bromide reagent
+
+
+def test_the_composite_de_blend_reads_the_declared_channels_not_an_opted_in_halogen_side_channel():
+    """The even-shift composite test is the halide reagents'; an [M+Br2]- side
+    channel opened on a nitrate run must not switch it on (a bromide run's
+    declared channels already carry the halogen)."""
+    out, _ = _offline("side-no3-br2", P.NO3.adducts, "ambient-air", NO3_MZ,
+                      PCfg.PassConfig(side_channels=("[M+Br2]-",)))
+    assert out["stats"]["side_channels"] == ["[M+Br2]-"]
+    assert out["summaries"]["composite"] == {"flagged": 0, "skipped": "no halogen adduct"}
+    br, _ = _offline("side-br", P.BR.adducts, "ambient-air",
+                     [C.ion_mz("C5H8O4", "[M+Br]-"), C.ion_mz("C5H8O4", "[M-H]-"), 140.2], PCfg.PassConfig())
+    assert br["summaries"]["composite"].get("skipped") is None          # a bromide run keeps the test
 
 
 def test_a_labelled_ammonium_run_keeps_the_ammonium_and_sodium_channels_closed_even_when_asked():
