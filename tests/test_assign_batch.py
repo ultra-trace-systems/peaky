@@ -877,6 +877,9 @@ try:
         s = summ["selection"]
         check("run: the pooled level stage ran (Orbitrap class, persisted calibrations, every pair levelled)",
               *_pooled_levelled(_d, summ))
+        check("run: a calibrated batch has no levels-not-assessed reason",
+              "levels_not_assessed_reason" in summ and summ["levels_not_assessed_reason"] is None,
+              summ.get("levels_not_assessed_reason"))
         check("run: batch_summary names the scorer that judged the candidates",
               summ.get("scorer") == ("local" if IO._local_scoring_enabled() else "server"), summ.get("scorer"))
         check("run: batch_summary carries the selection block",
@@ -1014,6 +1017,31 @@ try:
         check("serial run: the caller's cfg comes back unmutated by the assign",
               _parent.cal_mu is None and _parent.cal_sigma is None,
               (_parent.cal_mu, _parent.cal_sigma))
+    finally:
+        _A.run = _fake_assign
+
+    # a sparse peak table: no file calibrates the degeneracy window, so the scale
+    # assesses nothing -- and the run says so once, in the summary and the console
+    def _uncalibrated_assign(sid, context="ambient-air", **kw):
+        _out = _fake_assign(sid, context, **kw)
+        _out["stats"]["degeneracy_cal"] = None
+        return _out
+
+    _A.run = _uncalibrated_assign
+    _log6: list = []
+    try:
+        with tempfile.TemporaryDirectory() as _d6:
+            AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch", out_dir=_d6,
+                   k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power=100_000,
+                   log=lambda *a: _log6.append(" ".join(map(str, a))))
+            summ6 = json.load(open(os.path.join(_d6, "batch_summary.json")))
+        _why6 = summ6.get("levels_not_assessed_reason") or ""
+        check("run: no file calibrated -> batch_summary says the levels were not assessed, and why",
+              _why6.startswith("Evidence levels were not assessed") and "isotope-backed core rows" in _why6,
+              _why6)
+        check("run: ... and the console carries it once as a WARNING",
+              sum("WARNING" in _l and "not assessed" in _l for _l in _log6) == 1,
+              [_l for _l in _log6 if "WARNING" in _l])
     finally:
         _A.run = _fake_assign
 

@@ -907,6 +907,14 @@ release in `evidence.py`).
   gate alone (the admissibility rule applies to `[M+H]+` readings); the level
   text's mode FLAG needs EVERY named entry flagged while the tag needs ANY; the
   mode flags are substring tests on name and origin.
+- **A sparse peak table levels nothing.** The run window comes from the files'
+  degeneracy calibration, which needs at least `tiers.CAL_MIN_N` (20) High/Good
+  organic M0 rows with an isotope line. A table of a few hundred peaks may give
+  no file that many (2-9 per file on the iodide and NO+ Orbitrap tables it was
+  measured on); then no pair is levelled (`NO_RUN_WINDOW_TEXT`) and every claim
+  reads tentative. The run says so once: `batch_summary.json` key
+  `levels_not_assessed_reason`, a console WARNING, the PDF cover and Evidence
+  levels page, and the workbook's Summary sheet.
 - **One file alone** cannot be levelled without a calibration, and a
   single-sample run without a width model reads `NA` (§10.1).
 

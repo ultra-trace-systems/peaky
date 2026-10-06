@@ -430,6 +430,13 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
     cc = f"{TAB}/clusters_changing_{tag}.csv"
     if os.path.exists(cc):
         ctx["changing_csv"] = pd.read_csv(cc)
+    # a run the evidence scale assessed nothing on because no file calibrated: the
+    # batch summary's reason, else read off the merged rows (a run made before the key)
+    na = (ctx.get("batch") or {}).get("levels_not_assessed_reason")
+    if not na and {"evidence", "evidence_level"} <= set(merged.columns):
+        from peaky.assignment import evidence as _EV
+        na = _EV.levels_not_assessed_reason(merged["evidence"], merged["evidence_level"])
+    ctx["levels_not_assessed"] = na or None
     return ctx
 
 
@@ -810,6 +817,8 @@ def cover(ctx, pdf):
         else:
             head.append(("dim", "   read from the evidence level; the tier below is a separate "
                                 "verdict -- see the Claims page"))
+        if ctx.get("levels_not_assessed"):
+            head.append(("dim", f"   {ctx['levels_not_assessed']}"))
     head += [
         ("b", f"Unique analytes assigned (M0):   {ctx['n_m0']}   "
               f"({idn} Assigned / {cn} Candidate)"),
@@ -1361,6 +1370,8 @@ def evidence_levels(ctx, pdf):
     # the per-file maximum per channel (load_context), else by match score
     mx = ctx.get("max_h_by_channel", {}) or {}
     lines = [("h", "By level"), ("gap", 0.3)]
+    if ctx.get("levels_not_assessed"):
+        lines += [("b", ctx["levels_not_assessed"]), ("gap", 0.3)]
     if counts.get("NA") and counts["NA"] == sum(counts.values()):
         reason = info.get("na_reason") or EV.LEVEL_MEANING["NA"]
         lines += [("b", f"{reason[:1].upper()}{reason[1:]}. The scale rates Orbitrap-class runs only; every "

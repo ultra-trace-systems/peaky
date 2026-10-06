@@ -270,3 +270,42 @@ def test_the_neutral_claim_says_it_holds_among_the_declared_channels_everywhere_
     assert bc[(bc.section == "summary") & (bc.claim == "neutral")]["meaning"].iloc[0] == meaning
     rm = XL.legend_sheet(claims=True)
     assert (rm.explanation == meaning).any()
+
+
+# --------------------------------------------------------------------------- the sparse-calibration notice
+def test_levels_not_assessed_only_when_no_file_calibrated():
+    from peaky.assignment import evidence as EV
+    why = EV.levels_not_assessed_reason([EV.NO_RUN_WINDOW_TEXT] * 3, ["", None, ""])
+    assert why.startswith("Evidence levels were not assessed") and "at least 20" in why
+    assert EV.levels_not_assessed_reason([EV.NO_WINDOW_TEXT], [None]) == why    # a file levelled alone
+    assert EV.levels_not_assessed_reason([EV.NO_RUN_WINDOW_TEXT, "x"], ["", "4a"]) is None
+    assert EV.levels_not_assessed_reason(["not assessed on this instrument class"], ["NA"]) is None
+    assert EV.levels_not_assessed_reason([], []) is None and EV.levels_not_assessed_reason(None) is None
+
+
+def test_the_workbook_summary_says_once_that_levels_were_not_assessed():
+    import numpy as np
+    import pandas as pd
+
+    from peaky.assignment import evidence as EV
+    from peaky.assignment import ledger as L
+    from peaky.assignment import tiers as T
+    from peaky.reporting import report as XL
+    led = L.new_ledger(pd.DataFrame({"peak_id": ["A", "B"], "mz": [215.0925, 231.1238],
+                                     "height": [1e5, 5e4]}))
+    for pid, f in (("A", "C10H16O5"), ("B", "C11H20O5")):
+        L.commit_assignment(led, pid, neutral_formula=f, adduct="[M-H]-", ion_formula=f, ion_score=0.9,
+                            compound_score=0.9, ppm_error=0.1, pass_no=1, method="cheminfo",
+                            confidence="High", commentary="stub")
+    T.apply_tiers(led)
+    m0 = led["role"] == L.ROLE_M0
+    led["evidence_level"] = pd.Series(np.nan, index=led.index, dtype=object)
+    led["evidence"] = pd.Series(np.nan, index=led.index, dtype=object)
+    led.loc[m0, "evidence"] = EV.NO_WINDOW_TEXT
+    ss = XL.summary_stats(led, context="ambient-air")
+    na = ss[(ss.section == "Evidence levels") & (ss.metric == "not assessed")]
+    assert len(na) == 1 and na.value.iloc[0].startswith("Evidence levels were not assessed")
+    led.loc[m0, "evidence_level"] = "4b"
+    led.loc[m0, "evidence"] = "ion established"
+    ss = XL.summary_stats(led, context="ambient-air")
+    assert not ((ss.section == "Evidence levels") & (ss.metric == "not assessed")).any()

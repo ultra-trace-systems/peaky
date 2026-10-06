@@ -1230,6 +1230,26 @@ NO_RUN_WINDOW_PARTNERS = ("no file of the source is calibrated (no run window): 
                           "so it gives no other-source partners")
 
 
+def levels_not_assessed_reason(evidence, levels=None) -> str | None:
+    """The run-level notice when the scale assessed nothing because no file was
+    calibrated: no row carries a level of the scale (`LEVELS`) and some row's
+    evidence is the no-window text (`NO_RUN_WINDOW_TEXT` on a pooled source,
+    `NO_WINDOW_TEXT` on a file levelled alone). ``evidence`` / ``levels`` are a
+    ledger's or a level frame's `evidence` and `evidence_level` columns. None
+    when the scale did assess the run (or did not run: no such evidence)."""
+    from peaky.assignment import tiers as _T
+    ev = pd.Series(evidence if evidence is not None else [], dtype=object).dropna().astype(str)
+    if not ev.isin([NO_RUN_WINDOW_TEXT, NO_WINDOW_TEXT]).any():
+        return None
+    if levels is not None:
+        lv = pd.Series(levels, dtype=object).dropna().astype(str).str.strip()
+        if lv.isin(LEVELS).any():
+            return None
+    return (f"Evidence levels were not assessed: no file had enough isotope-backed core rows (at least "
+            f"{_T.CAL_MIN_N} High/Good organic M0 rows with an isotope line) to calibrate the degeneracy "
+            "window, so every committed row reads no level and its claim tentative.")
+
+
 def partner_source_problem(run_dir: str) -> str:
     """Why an Orbitrap-class --corroborate run dir cannot be levelled in this
     process, so gives no other-source partners ('' when it can): its batch

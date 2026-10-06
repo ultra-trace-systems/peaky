@@ -2116,6 +2116,14 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         f"file(s), instrument class {klass or 'unknown'}: {ev_summary['pooled']} "
         f"({ev_summary['n_pairs']} neutral/adduct pairs); {ev_summary['n_unstamped']} merged row(s) "
         f"without a pooled pair -> tables/evidence_levels.csv")
+    # an Orbitrap-class batch none of whose files calibrated the degeneracy window
+    # (a sparse peak table: too few isotope-backed core rows) has no level at all --
+    # said once for the run, in the summary, the console and the report, not only
+    # row by row in the evidence column
+    levels_na_reason = (EV.levels_not_assessed_reason(levels["evidence"], levels["evidence_level"])
+                        if len(levels) and {"evidence", "evidence_level"} <= set(levels.columns) else None)
+    if levels_na_reason:
+        log(f"[assign_batch] WARNING: {levels_na_reason}")
     # the claim each level supports, tallied beside the tier (never read off it)
     claims_summary = _claims_summary(merged, levels)
     log("[assign_batch] claims (merged): "
@@ -2273,6 +2281,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # the claim each level supports (identified / neutral / ion / tentative +
         # the reagent and not-assessed buckets), merged / pooled / per stage / per tier
         "claims": claims_summary,
+        # why the scale assessed nothing on this run (no file calibrated), else null
+        "levels_not_assessed_reason": levels_na_reason,
         # the ion-only bucket (the `ion_only` stage): channels opened, merged rows
         # carrying an `ion_only_of` link, per-file rows behind them, files holding
         # any, and their merged levels
