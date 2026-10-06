@@ -84,3 +84,34 @@ def test_the_chance_sentence_says_at_or_below_chance_when_the_null_matches_more(
     s = R._reflist_chance_text(261, orbi)
     assert "exceed that chance level (4.2x its median)" in s
     assert R._reflist_chance_text(5, {}) == ""
+
+
+# --------------------------------------------------------------------------- `peaky report` reads the run's record
+def test_peaky_report_takes_the_batch_and_dataset_from_the_run_manifest(tmp_path, monkeypatch):
+    import argparse
+    import json
+
+    from peaky import cli
+    from peaky import pipeline as PL
+
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "run_manifest.json").write_text(json.dumps(
+        {"input": {"batch_name": "Batch A", "dataset": "Workspace X", "reagent": "Br"}}))
+    seen = {}
+
+    def fake(ctx, ts, *, subject=None, **kw):
+        seen.update(batch=ctx.batch_name, dataset=ctx.dataset, ts=ts)
+        return {}
+
+    monkeypatch.setattr(PL, "generate_report", fake)
+    args = argparse.Namespace(reagent="Br", run_dir=str(run), batch=None, dataset=None, tag=None,
+                              run_id=None, generated=None, ts=str(tmp_path / "ts.parquet"), subject=None)
+    cli.cmd_report(args)
+    assert seen["batch"] == "Batch A" and seen["dataset"] == "Workspace X"
+    cli.cmd_report(argparse.Namespace(**{**vars(args), "batch": "B", "dataset": "Y"}))
+    assert seen["batch"] == "B" and seen["dataset"] == "Y"           # the flags win
+    (run / "run_manifest.json").unlink()
+    cli.cmd_report(args)                                              # no manifest: as before
+    assert seen["dataset"] is None and seen["batch"] == "Br- CIMS"
+    assert cli.report_inputs_of(str(tmp_path / "nowhere")) == {}

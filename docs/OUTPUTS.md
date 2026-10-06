@@ -265,4 +265,6 @@ run-folder name + `run_manifest.json`. See
 
 > `peaky report --run-dir <folder> ...` regenerates the `figures/` + `report/`
 > artifacts of an existing run **offline** (no assignment, no network) from the
-> ledgers already on disk + the TS parquet.
+> ledgers already on disk + the TS parquet. The batch name and the dataset name
+> come from the run's `run_manifest.json` (override with `--batch` / `--dataset`),
+> so the regenerated report unlocks the same reference lists the run did.

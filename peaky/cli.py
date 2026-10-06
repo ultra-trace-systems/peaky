@@ -426,6 +426,17 @@ def cmd_pool(args) -> None:
         _progress_hold_note(prog)
 
 
+def report_inputs_of(run_dir: str) -> dict:
+    """The `input` block of a run folder's run_manifest.json (batch_name,
+    dataset, reagent, ...); {} when the folder has no readable manifest."""
+    try:
+        with open(os.path.join(run_dir, "run_manifest.json"), encoding="utf-8") as fh:
+            inp = (json.load(fh) or {}).get("input")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return inp if isinstance(inp, dict) else {}
+
+
 def cmd_report(args) -> None:
     # offline: regenerate cluster figures + Van Krevelen + the PDF report from an
     # existing run folder's ledgers (no assignment, no network).
@@ -434,11 +445,16 @@ def cmd_report(args) -> None:
 
     prof = P.resolve(args.reagent)
     run_dir = os.path.expanduser(args.run_dir)
+    # the run's own record: the batch name titles the report and, with the
+    # dataset name, unlocks the reference lists the run itself used -- without
+    # it a regenerated report loses every chemistry-specific list
+    inp = report_inputs_of(run_dir)
     ctx = PL.RunContext(
-        out_dir=run_dir, batch_name=(args.batch or prof.label),
+        out_dir=run_dir, batch_name=(args.batch or inp.get("batch_name") or prof.label),
         tag=(args.tag or prof.name), label=prof.label, when=None,
         run_id=(args.run_id or os.path.basename(run_dir.rstrip("/"))),
-        generated=(args.generated or ""), profile=prof)
+        generated=(args.generated or ""), profile=prof,
+        dataset=(getattr(args, "dataset", None) or inp.get("dataset")))
     out = PL.generate_report(ctx, os.path.expanduser(args.ts), subject=args.subject)
     print("wrote", out.get("report_pdf"))
     if out.get("report_pdf_small"):
@@ -1184,7 +1200,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="run folder holding merged_ledger.csv + per_file/")
     pr.add_argument("--reagent", required=True, help="Br | Ur | NO3 | ...")
     pr.add_argument("--ts", required=True, help="full-batch TS parquet")
-    pr.add_argument("--batch", default=None, help="batch name for the report title")
+    pr.add_argument("--batch", default=None,
+                    help="batch name for the report title (default: the run manifest's)")
+    pr.add_argument("--dataset", default=None,
+                    help="dataset name the reference lists are unlocked from (default: the run manifest's)")
     pr.add_argument("--tag", default=None, help="filename token (default: reagent name)")
     pr.add_argument("--run-id", default=None, help="Report ID (default: run-dir basename)")
     pr.add_argument("--generated", default=None, help="generated stamp for the cover")
