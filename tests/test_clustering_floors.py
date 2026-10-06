@@ -1,11 +1,14 @@
-"""Brightness floors of the time-series clustering scale with the batch noise edge.
+"""Brightness floors of the time-series clustering follow the batch noise edge down.
 
 The floors were absolute (200 cps for an assigned channel, 50 cps for an
-unassigned bin): right for an Orbitrap batch whose detection edge sits near
-60 cps, but a counting TOF (edge ~0.5-1 cps) only clears them with its reagent
-ions. They are now multiples of `batch_summary.json['noise_edge_batch_cps']`
-when the run records it, and the legacy cps values when it does not; the
-traced unassigned set is capped at the `top_n` brightest by median.
+unassigned bin). On a counting TOF (edge ~0.5-1 cps) few channels clear them
+(a bromide/nitrate TOF batch: 10 assigned channels and 16 unassigned bins, 3
+families, no unassigned cluster). They are now min(legacy floor, multiple x
+`batch_summary.json['noise_edge_batch_cps']`) when the run records the edge, so
+the edge only lowers them -- an Orbitrap batch with an edge at or above ~60 cps
+keeps 200 / 50 cps -- and the legacy values when it does not; the traced
+unassigned set is capped at the `top_n` brightest by median. The panel axes
+follow the unassigned floor, and the PDF prints the floors and the cap.
 """
 import json
 from datetime import datetime, timedelta, timezone
@@ -66,6 +69,27 @@ def test_floors_scale_with_the_edge():
     assert (a2, u2) == pytest.approx((6.0, 1.2))
 
 
+@pytest.mark.parametrize("edge", [60.755, 61.209, 152.8, 201.16, 758.06])
+def test_an_edge_above_60_cps_keeps_the_legacy_floors(edge):
+    """The edge only lowers the floors: Orbitrap batches record edges of 35-758
+    cps, and a scaled floor above 200 / 50 cps would thin their figures."""
+    a, u, src = CLU.resolve_floors(edge)
+    assert (a, u) == (CLU.FLOOR_DEFAULT, CLU.UNASSIGNED_FLOOR_DEFAULT) == (200.0, 50.0)
+    assert src == "batch noise edge (capped at the default: assigned, unassigned)"
+    # custom multiples are capped the same way
+    assert CLU.resolve_floors(edge, floor_x_edge=50.0, unassigned_floor_x_edge=5.0)[:2] == (200.0, 50.0)
+
+
+def test_an_edge_below_60_cps_lowers_the_floors():
+    a, u, src = CLU.resolve_floors(35.07)
+    assert a == pytest.approx(3.33 * 35.07) and u == pytest.approx(0.83 * 35.07)
+    assert src == "batch noise edge"
+    # between the two caps (3.33 x 60.1 > 200, 0.83 x 60.1 < 50) only one is capped
+    a, u, src = CLU.resolve_floors(60.1)
+    assert a == 200.0 and u == pytest.approx(0.83 * 60.1) and u < 50.0
+    assert src.endswith("(capped at the default: assigned)")
+
+
 def test_an_explicit_floor_wins_over_the_edge():
     a, u, src = CLU.resolve_floors(0.6, floor=100.0)
     assert a == 100.0 and u == pytest.approx(CLU.UNASSIGNED_FLOOR_X_EDGE * 0.6)
@@ -81,6 +105,16 @@ def test_top_by_median_keeps_the_brightest_in_input_order():
     assert CLU.top_by_median(list("ab"), med, 5) == (["a", "b"], [])
     kept4, over4 = CLU.top_by_median(list("abcde"), med, 4)
     assert over4 == ["e"]                         # a non-finite median ranks last
+
+
+def test_cps_round_keeps_sub_cps_medians_visible():
+    assert CLU.cps_round(0.47162) == 0.472
+    assert CLU.cps_round(2.649) == 2.65
+    assert CLU.cps_round(1.353e-4) == 1.35e-4
+    assert CLU.cps_round(57.26) == 57.3
+    assert CLU.cps_round(123456.7) == 123457.0    # whole cps from 100 up, as before
+    assert CLU.cps_round(0) == 0.0
+    assert np.isnan(CLU.cps_round(float("nan")))
 
 
 # ---- a synthetic week of a TOF-scale batch -----------------------------------------
@@ -123,6 +157,27 @@ def _week(scale, n_unknown=1):
     return ts, merged
 
 
+def _with_leftovers(ts, merged, scale):
+    """Add three flat Candidate channels (they land on the background page) and an
+    episodic unknown detected in 40 of the 169 samples (below the union's presence
+    bar, so it takes the leftover unassigned path), both at 2000 x `scale` cps."""
+    rng = np.random.default_rng(11)
+    n = ts["sample_item_id"].nunique()
+    flat_mz = [400.0 + 5.1 * j for j in range(3)]
+    rows = []
+    for i in range(n):
+        sid, t = f"L{i:03d}", T0 + timedelta(hours=i)
+        rows += [(sid, t, fmz, scale * 2000 * (1 + 0.02 * rng.standard_normal())) for fmz in flat_mz]
+        if i % 4 == 0 and i < 160:
+            rows.append((sid, t, 199.5, scale * 2000 * (1 + 0.5 * np.sin(i / 7))))
+    ts = pd.concat([ts, pd.DataFrame(rows, columns=ts.columns)], ignore_index=True)
+    merged = pd.concat([merged, pd.DataFrame(
+        [{"neutral_formula": f"C{14 + j}H{20 + 2 * j}O6", "adduct": "[M+Br]-", "mz": fmz,
+          "ion_score": .8, "tier": "Candidate"} for j, fmz in enumerate(flat_mz)])],
+        ignore_index=True)
+    return ts, merged
+
+
 def _run_dir(path, merged, **summary):
     path.mkdir(parents=True, exist_ok=True)
     merged.to_csv(path / "merged_ledger.csv", index=False)
@@ -156,6 +211,10 @@ def test_a_tof_scale_batch_clusters_at_its_own_edge(tmp_path):
     assert s_new["assigned"]["n_dynamic_families"] >= 1
     assert s_new["unassigned"]["n_entered_union"] >= 1
     assert s_new["unassigned"]["n_in_families"] >= 1
+    # the CSVs keep the few-cps medians the floors rank by (not rounded to whole cps)
+    for name in ("clusters_changing_T.csv", "clusters_unassigned_T.csv"):
+        med = pd.read_csv(new / "tables" / name)["median_cps"]
+        assert len(med) and (med < 10).all() and (med != med.round(0)).any(), (name, list(med))
 
 
 def test_the_same_batch_at_orbitrap_scale_is_unchanged_without_an_edge(tmp_path):
@@ -180,20 +239,88 @@ def test_an_explicit_edge_argument_overrides_the_summary(tmp_path):
     assert s["assigned"]["n_dynamic_families"] >= 1
 
 
-def test_the_panel_axis_floor_follows_the_unassigned_floor(tmp_path, monkeypatch):
-    """A fixed 50 cps bottom drew a few-cps family as an empty panel."""
-    seen = []
-    orig = CL.render_clusters
+def test_an_orbitrap_batch_with_a_high_edge_keeps_its_clusters(tmp_path):
+    """An edge above ~60 cps leaves the floors, and so every count, as without it."""
+    ts, merged = _week(scale=1.0, n_unknown=4)
+    ts, merged = _with_leftovers(ts, merged, 1.0)
+    s0 = CLU.cluster_batch(str(_run_dir(tmp_path / "noedge", merged)), ts, P.resolve("Br"),
+                           tag="O", log=lambda *a: None)["summary"]
+    s1 = CLU.cluster_batch(str(_run_dir(tmp_path / "edge", merged, noise_edge_batch_cps=758.06)),
+                           ts, P.resolve("Br"), tag="O", log=lambda *a: None)["summary"]
+    assert s1["gates"]["assigned_clustering_floor_cps"] == 200.0
+    assert s1["gates"]["unassigned_median_cps_floor"] == 50.0
+    assert s1["gates"]["floor_source"].startswith("batch noise edge (capped")
+    assert s1["assigned"] == s0["assigned"] and s1["unassigned"] == s0["unassigned"]
+    assert s0["assigned"]["n_dynamic_families"] >= 1
 
-    def spy(rows, *a, **kw):
-        seen.append(kw.get("ylim"))
-        return orig(rows, *a, **kw)
-    monkeypatch.setattr(CL, "render_clusters", spy)
-    ts, merged = _week(scale=1e-3)
+
+def test_the_panel_axes_follow_the_unassigned_floor(tmp_path, monkeypatch):
+    """With the floors at the edge scale, a fixed 50 cps axis bottom would draw a
+    few-cps family, background or unexplained trace as an empty panel: the family,
+    background and unassigned pages all bottom out at the unassigned floor."""
+    seen = []
+
+    def spying(name):
+        orig = getattr(CL, name)
+
+        def spy(*a, **kw):
+            path = next((x for x in a if isinstance(x, str)), "")
+            seen.append((name, str(path).rsplit("/", 1)[-1], kw.get("ylim")))
+            return orig(*a, **kw)
+        monkeypatch.setattr(CL, name, spy)
+    for name in ("render_clusters", "render_flat_panel", "render_grouped_flat"):
+        spying(name)
+    ts, merged = _with_leftovers(*_week(scale=1e-3), 1e-3)
     d = _run_dir(tmp_path / "ax", merged, noise_edge_batch_cps=0.3)
-    CLU.cluster_batch(str(d), ts, P.resolve("Br"), tag="Y", log=lambda *a: None)
-    changing = seen[0]                            # the family pages render first
-    assert changing is not None and changing[0] < 5.0 < changing[1]
+    s = CLU.cluster_batch(str(d), ts, P.resolve("Br"), tag="Y", log=lambda *a: None)["summary"]
+    assert s["assigned"]["n_flat_background"] >= 1
+    assert s["unassigned"]["n_below_presence"] >= 1          # the episodic unknown
+    pages = {p: y for _, p, y in seen}
+    for page in ("clusters_changing_Y", "clusters_flat_Y_p1.png", "clusters_unassigned_Y"):
+        assert page in pages, sorted(pages)
+        lo, hi = pages[page]
+        assert lo < min(5.0, hi), (page, lo, hi)      # a 50 cps bottom: blank or inverted
+        assert lo >= s["gates"]["unassigned_median_cps_floor"]
+
+
+def test_the_pdf_prints_tof_floors_and_the_cap(monkeypatch):
+    """The report printed the floors with :.0f ('median >= 0 cps' on a TOF) and its
+    unexplained funnel did not know about the top_n cap."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from peaky.reporting import pdf_report as R
+
+    pages = []
+    monkeypatch.setattr(R, "_text_lines", lambda fig, lines, **kw: pages.append(lines))
+    monkeypatch.setattr(R, "_close", lambda pdf, fig: plt.close(fig))
+    gates = {"match_tol_ppm": 8.0, "unassigned_median_cps_floor": 0.47162,
+             "assigned_clustering_floor_cps": 1.8922, "unassigned_top_n": 400,
+             "entry_gate": "median", "min_trace_points": 8, "varying_cv_min": 0.3,
+             "varying_burst_range": 1.7, "cluster_corr_r": 0.6, "merge_corr_r": 0.85,
+             "min_cluster_members": 3, "big_change_fold": 5.0, "union_presence_min": 0.3}
+    un = {"n_ts_bins": 9000, "n_unassigned_any": 8200, "n_after_brightness_persistence": 7695,
+          "n_entered_union": 400, "n_union_over_cap": 1251, "n_isotope_rejected": 127,
+          "n_in_families": 90, "n_varying_plotted": 400, "n_varying_over_cap": 5900,
+          "n_flat_bunched": 868, "n_isotope_satellites_bunched": 127, "n_clusters": 14}
+    ctx = {"tag": "T", "clusters": {"gates": gates, "unassigned": un}}
+    R._unexplained_gate_page(ctx, None)
+    R.methods(ctx, None)
+    funnel = "\n".join(str(t) for _, t in pages[0])
+    meth = "\n".join(str(t) for _, t in pages[1])
+    assert "median ≥ 0.472 cps" in funnel
+    assert "1251 more qualified" in funnel and "400 brightest" in funnel
+    assert "5900 more VARYING" in funnel and "over_cap" in funnel
+    assert "unexplained ≥0.472 cps median; assigned ≥1.89 cps" in meth
+    # an uncapped Orbitrap run prints the legacy floors as before, with no cap lines
+    pages.clear()
+    gates.update(unassigned_median_cps_floor=50.0, assigned_clustering_floor_cps=200.0)
+    un.update(n_union_over_cap=0, n_varying_over_cap=0)
+    R._unexplained_gate_page(ctx, None)
+    R.methods(ctx, None)
+    funnel = "\n".join(str(t) for _, t in pages[0])
+    assert "median ≥ 50 cps" in funnel and "over_cap" not in funnel and "more qualified" not in funnel
+    assert "unexplained ≥50 cps median; assigned ≥200 cps" in "\n".join(str(t) for _, t in pages[1])
 
 
 def test_the_traced_unassigned_set_is_capped_by_median(tmp_path):

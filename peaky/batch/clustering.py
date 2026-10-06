@@ -38,22 +38,28 @@ from peaky.batch import cluster as CL
 from peaky import paths as PT
 from peaky.batch import timeseries as TS
 
-__version__ = "0.3.0"  # + floors scaled to the batch noise edge, capped unassigned set
-# Brightness floors (median cps). A run whose batch_summary.json records the batch's
-# typical detection edge (`noise_edge_batch_cps`, written by assign_batch) gets floors
-# at multiples of that edge; a run without it (or an edge that is not a positive
-# number) keeps the legacy absolute floors. The multiples are the legacy floors over
-# the ~60 cps edge of the Orbitrap batches they were tuned on (200/60, 50/60), so an
-# Orbitrap run keeps its figures, while on a counting TOF (edge ~0.5-1 cps) the
-# absolute floors admitted only the reagent ions and their ringing satellites.
-FLOOR_DEFAULT = 200.0             # assigned-channel floor without a batch edge
-UNASSIGNED_FLOOR_DEFAULT = 50.0   # unassigned-bin floor without a batch edge
-FLOOR_X_EDGE = 3.33               # assigned-channel floor = this x the batch edge
-UNASSIGNED_FLOOR_X_EDGE = 0.83    # unassigned-bin floor = this x the batch edge
+__version__ = "0.3.0"  # + floors lowered to the batch noise edge, capped unassigned set
+# Brightness floors (median cps). The legacy absolute floors (200 cps for an assigned
+# channel, 50 cps for an unassigned bin) are a CEILING: a run whose
+# batch_summary.json records the batch's typical detection edge
+# (`noise_edge_batch_cps`, written by assign_batch) gets min(legacy floor, multiple x
+# edge), so the edge can only LOWER the floors. The multiples are the legacy floors
+# over the ~61 cps edge measured on two Orbitrap batches (200/60, 50/60); an Orbitrap
+# batch whose edge sits at or above ~60 cps keeps exactly 200 / 50 cps. On a counting
+# TOF (edge ~0.5-1 cps) the absolute floors let few channels through (a bromide/nitrate
+# TOF batch: 10 assigned channels and 16 unassigned bins, 3 families, 2 of them reagent
+# ions with their ringing satellites, no unassigned cluster); at the edge scale it
+# clusters at its own detection level. A run without the key (or an edge that is not
+# a positive number) keeps the legacy floors.
+FLOOR_DEFAULT = 200.0             # assigned-channel floor without a batch edge (and its ceiling)
+UNASSIGNED_FLOOR_DEFAULT = 50.0   # unassigned-bin floor without a batch edge (and its ceiling)
+FLOOR_X_EDGE = 3.33               # assigned-channel floor = this x the batch edge (capped)
+UNASSIGNED_FLOOR_X_EDGE = 0.83    # unassigned-bin floor = this x the batch edge (capped)
 TOP_N_DEFAULT = 400     # at most this many unassigned bins join the unified clustering,
                         # and at most this many varying leftover bins are clustered --
-                        # the brightest by median. An edge below practical detection
-                        # (a low-count TOF) otherwise traces thousands of noise bins.
+                        # the brightest by median. An edge far below the practical
+                        # detection level (e.g. a batch exported in sub-unit heights)
+                        # otherwise admits thousands of bins.
 UNION_PRESENCE = 0.30   # an UNASSIGNED bin joins the unified clustering only if it is
                         # detected in at least this fraction of samples (precision over
                         # recall: episodic sub-30% unknowns stay in the unassigned set)
@@ -92,16 +98,23 @@ def resolve_floors(edge, *, floor=None, unassigned_floor=None,
                    floor_x_edge: float = FLOOR_X_EDGE,
                    unassigned_floor_x_edge: float = UNASSIGNED_FLOOR_X_EDGE):
     """(assigned floor, unassigned floor, source) in cps. A positive finite `edge`
-    gives `floor_x_edge` / `unassigned_floor_x_edge` times it; otherwise the legacy
-    FLOOR_DEFAULT / UNASSIGNED_FLOOR_DEFAULT. An explicit `floor` /
-    `unassigned_floor` wins over either."""
+    gives `floor_x_edge` / `unassigned_floor_x_edge` times it, capped at the legacy
+    FLOOR_DEFAULT / UNASSIGNED_FLOOR_DEFAULT (the edge only lowers a floor: an
+    Orbitrap batch with a high edge keeps the floors its figures were built with);
+    without an edge, the legacy floors. An explicit `floor` / `unassigned_floor`
+    wins over either."""
     try:
         edge = float(edge) if edge is not None else None
     except (TypeError, ValueError):
         edge = None
     if edge is not None and np.isfinite(edge) and edge > 0:
-        a, u = floor_x_edge * edge, unassigned_floor_x_edge * edge
-        source = "batch noise edge"
+        a_e, u_e = floor_x_edge * edge, unassigned_floor_x_edge * edge
+        a, u = min(FLOOR_DEFAULT, a_e), min(UNASSIGNED_FLOOR_DEFAULT, u_e)
+        capped = [n for n, scaled, legacy in (("assigned", a_e, FLOOR_DEFAULT),
+                                              ("unassigned", u_e, UNASSIGNED_FLOOR_DEFAULT))
+                  if scaled >= legacy]
+        source = "batch noise edge" + (
+            f" (capped at the default: {', '.join(capped)})" if capped else "")
     else:
         a, u = FLOOR_DEFAULT, UNASSIGNED_FLOOR_DEFAULT
         source = "default (no batch noise edge)"
@@ -113,6 +126,17 @@ def resolve_floors(edge, *, floor=None, unassigned_floor=None,
         source += "; set by the caller: " + ", ".join(
             n for n, v in (("assigned", floor), ("unassigned", unassigned_floor)) if v is not None)
     return a, u, source
+
+
+def cps_round(v) -> float:
+    """A median cps for the cluster CSVs: whole cps from 100 cps up, 3 significant
+    figures below (a TOF channel at 0.47 or 2.6 cps no longer reads 0 or 3, and the
+    sub-cps medians the floors and the top_n cap rank by stay visible). Non-finite
+    values pass through."""
+    v = float(v)
+    if not np.isfinite(v) or abs(v) >= 100:
+        return round(v, 0) if np.isfinite(v) else v
+    return float(f"{v:.3g}")
 
 
 def top_by_median(items, median, n):
@@ -179,12 +203,15 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
     floor / unassigned_floor : median-cps brightness floors of the assigned channels
               and of the unassigned bins. Default (None): `floor_x_edge` /
               `unassigned_floor_x_edge` times the batch noise edge
-              (`noise_edge_batch_cps`, else `batch_summary.json` in `out_dir`), or the
-              legacy FLOOR_DEFAULT / UNASSIGNED_FLOOR_DEFAULT when there is no edge.
+              (`noise_edge_batch_cps`, else `batch_summary.json` in `out_dir`),
+              capped at the legacy FLOOR_DEFAULT / UNASSIGNED_FLOOR_DEFAULT, which
+              also apply when there is no edge.
     top_n   : at most this many unassigned bins join the unified clustering and at
               most this many varying leftover bins are clustered, the brightest by
-              median (None = no cap); the rest are counted in the summary and
-              flagged `over_cap` in the unassigned CSV.
+              median (None = no cap). Qualifying bins over the union cap move to the
+              leftover path (`n_union_over_cap`); varying leftover bins over the cap
+              are not drawn (`n_varying_over_cap`, flagged `over_cap` in the
+              unassigned CSV). The two counts overlap.
     """
     OUT = os.path.expanduser(out_dir)
     if top_n is not None and int(top_n) < 1:
@@ -352,13 +379,13 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
                     "channel": V.ADDUCT_SUFFIX.get(str(r.adduct), str(r.adduct)),
                     "adduct": r.adduct, "m_z": round(float(r.mz), 4),
                     "match_score": round(float(r.ion_score), 3), "tier": r.tier,
-                    "median_cps": round(med.get(r.key, 0), 0),
+                    "median_cps": cps_round(med.get(r.key, 0)),
                     "cv": round(cv.get(r.key, float("nan")), 3),
                     "member_type": "assigned"}
             for r in chan.itertuples()}
     meta.update({k: {"neutral_formula": "", "channel": "?", "adduct": "",
                      "m_z": round(union_map[k], 4), "match_score": "",
-                     "tier": "unassigned", "median_cps": round(med.get(k, 0), 0),
+                     "tier": "unassigned", "median_cps": cps_round(med.get(k, 0)),
                      "cv": round(cv.get(k, float("nan")), 3),
                      "member_type": "unassigned"} for k in key_bin})
     MCOLS = ["member_type", "neutral_formula", "channel", "m_z", "match_score",
@@ -452,7 +479,7 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
                   "channel": [meta[c]["channel"] for c, _, _ in changers],
                   "fold": [round(f, 1) for _, f, _ in changers],
                   "peak_hour": [round(ph, 2) for _, _, ph in changers],
-                  "median_cps": [round(med[c], 0) for c, _, _ in changers]}).to_csv(f"{TAB}/clusters_changers_{tag}.csv", index=False)
+                  "median_cps": [cps_round(med[c]) for c, _, _ in changers]}).to_csv(f"{TAB}/clusters_changers_{tag}.csv", index=False)
     _n_unk_in_fam = sum(1 for r in rows for m in r[1] if m in key_bin)
     _n_novel = sum(1 for v in clabels.values() if v.startswith("novel"))
     log(f"CHANGING: {len(rows)} dynamic families covering {sum(len(r[1]) for r in rows)} "
@@ -469,8 +496,10 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
     posc = posc[np.isfinite(posc) & (posc > 0)]
     # top = true max (+20% log headroom), NOT a 99.5 pct cap, so the brightest
     # traces are never clipped at the high end; bottom = the 1st percentile, not
-    # below the unassigned brightness floor (50 cps without a batch edge; a fixed
-    # 50 cps drew a TOF's few-cps families as empty panels).
+    # below the unassigned brightness floor (50 cps without a batch edge). With the
+    # floors at a TOF's edge scale, a fixed 50 cps bottom would draw its few-cps
+    # families as empty panels, so the axis follows the floor (same on the
+    # background and unassigned pages below).
     ylimc = (max(UN_FLOOR, np.percentile(posc, 1)), float(np.nanmax(posc)) * 1.2) if len(posc) else None
     Zc = (Lg - Lg.mean()) / Lg.std() if len(clust_cols) else Lg
     _space_note = ("clustered on DE-GLUED residuals (diel anomaly + shared-mode removed); "
@@ -501,7 +530,7 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
                   "gain_vs_family": [round(gain.get(c, float("nan")), 2) for c in clustered],
                   "r2_common_mode": [round(float(r2_cm.get(c, float("nan"))), 3) for c in clustered],
                   "cv": [round(cv[c], 3) for c in clustered],
-                  "median_cps": [round(med[c], 0) for c in clustered]}).to_csv(f"{TAB}/clusters_changing_{tag}.csv", index=False)
+                  "median_cps": [cps_round(med[c]) for c in clustered]}).to_csv(f"{TAB}/clusters_changing_{tag}.csv", index=False)
 
     # BACKGROUND = the uncorrelated remainder + Si contamination, split THREE ways:
     #   1. COMMON-MODE carriers (residual mode): channels whose anomaly variance was
@@ -584,7 +613,7 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
                   "diurnal_eta2": [round(eta2[c], 3) for c in flat_cols],
                   "r2_common_mode": [round(float(r2_cm.get(c, float("nan"))), 3) for c in flat_cols],
                   "cv": [round(cv[c], 3) for c in flat_cols],
-                  "median_cps": [round(med[c], 0) for c in flat_cols]}).to_csv(f"{TAB}/clusters_flat_{tag}.csv", index=False)
+                  "median_cps": [cps_round(med[c]) for c in flat_cols]}).to_csv(f"{TAB}/clusters_flat_{tag}.csv", index=False)
 
     # CHANNEL-AGREEMENT QC: do a neutral's ion channels actually track in time?
     ca = V.channel_agreement(ts, merged[["neutral_formula", "adduct", "mz"]], bin_minutes=BIN_MIN)
@@ -682,7 +711,7 @@ def cluster_batch(out_dir, ts, profile, *, merged=None, tag=None, label=None,
                                         for b in un_bins],
                   # passed every gate but left out of the traced figures by top_n
                   "over_cap": [b in _over for b in un_bins],
-                  "median_cps": [round(float(median_h[b]), 0) for b in un_bins]}).to_csv(f"{TAB}/clusters_unassigned_{tag}.csv", index=False)
+                  "median_cps": [cps_round(median_h[b]) for b in un_bins]}).to_csv(f"{TAB}/clusters_unassigned_{tag}.csv", index=False)
 
     # GATE / FUNNEL summary -> the single source of truth the PDF report reads to
     # DOCUMENT the thresholds these figures apply and the unexplained funnel counts

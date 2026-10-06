@@ -1445,6 +1445,13 @@ def changers(ctx, pdf):
         _image_page(pdf, p, "")             # fit-to-A4 (the PNG is already A4 portrait)
 
 
+def _cps_text(v) -> str:
+    """A clustering floor in cps for the page text: whole cps from 100 up, 3
+    significant figures below (a TOF floor of 0.47 cps must not print as '0')."""
+    v = float(v)
+    return f"{v:.0f}" if abs(v) >= 100 else f"{v:.3g}"
+
+
 def _unexplained_gate_page(ctx, pdf):
     """Caption page placed JUST BEFORE the unexplained-cluster figures: spells out
     the brightness/persistence/variation gates and the live funnel, so a reader at
@@ -1468,7 +1475,7 @@ def _unexplained_gate_page(ctx, pdf):
         ("b", f"(M0 / isotope / reagent / artifact) within {g.get('match_tol_ppm', 8):.0f} ppm. To be TRACKED over"),
         ("b", "time a bin must additionally clear two bars:"),
         ("gap", 0.4),
-        ("m", f"   • brightness:  median ≥ {g.get('unassigned_median_cps_floor', 50):.0f} cps"),
+        ("m", f"   • brightness:  median ≥ {_cps_text(g.get('unassigned_median_cps_floor', 50))} cps"),
         ("m", f"   • persistence: detected in ≥ {g.get('min_trace_points', 8)} of the time points"),
         ("gap", 0.4),
         ("b", f"{ngate} bins pass. These are then split by time behaviour:"),
@@ -1483,10 +1490,28 @@ def _unexplained_gate_page(ctx, pdf):
             ("m", "                legend '? m/z'). Isotope satellites rejected: "
                   f"{un.get('n_isotope_rejected', 0)}."),
         ]
+    # the top_n cap (clusters_summary 'unassigned_top_n'): bins over it moved out of
+    # the union / were not drawn; listed so the funnel still adds up
+    topn = g.get("unassigned_top_n")
+    nuover = un.get("n_union_over_cap") or 0
+    nvover = un.get("n_varying_over_cap") or 0
+    if nuover:
+        lines += [
+            ("m", f"   • {nuover} more qualified for the union but were over the cap of the"),
+            ("m", f"                {topn} brightest (by median); they take the split below."),
+        ]
     lines += [
         ("m", f"   • {nvary} VARYING  — a sustained change (cv ≥ {g.get('varying_cv_min', 0.3):.2f}) or a transient"),
         ("m", f"                burst (peak/median ≥ {g.get('varying_burst_range', 1.7):.1f}); drawn individually,"),
         ("m", f"                grouped into {ncl} co-varying cluster(s)."),
+    ]
+    if nvover:
+        lines += [
+            ("m", f"   • {nvover} more VARYING bins passed every gate but are NOT drawn: only"),
+            ("m", f"                the {topn} brightest (by median) are clustered; the rest are"),
+            ("m", f"                flagged over_cap in tables/clusters_unassigned_{tag}.csv."),
+        ]
+    lines += [
         ("m", f"   • {nflat} FLAT / non-varying — bunched into one faint median-only panel."),
     ]
     if dropped:
@@ -1632,13 +1657,13 @@ def methods(ctx, pdf):
         if g.get("entry_gate") == "episode":
             assigned_rule = [
                 ("b", f"• An assigned channel is TRACKED only if detected (nonzero) in ≥{g.get('min_consecutive_bins', 3)} consecutive"),
-                ("b", f"  time bins — a real episode, not a sporadic spike (unexplained bins ≥{g['unassigned_median_cps_floor']:.0f} cps median)."),
+                ("b", f"  time bins — a real episode, not a sporadic spike (unexplained bins ≥{_cps_text(g['unassigned_median_cps_floor'])} cps median)."),
             ]
         else:
             assigned_rule = [
                 ("b", f"• A bin/channel is TRACKED only if detected in ≥{g['min_trace_points']} time points and above the"),
-                ("b", f"  brightness floor (unexplained ≥{g['unassigned_median_cps_floor']:.0f} cps median; "
-                      f"assigned ≥{g['assigned_clustering_floor_cps']:.0f} cps)."),
+                ("b", f"  brightness floor (unexplained ≥{_cps_text(g['unassigned_median_cps_floor'])} cps median; "
+                      f"assigned ≥{_cps_text(g['assigned_clustering_floor_cps'])} cps)."),
             ]
         lines += [
             ("gap", 0.6),
