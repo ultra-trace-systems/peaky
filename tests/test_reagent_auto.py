@@ -5,14 +5,20 @@ Pinned here, offline and on synthetic tables:
   * polarity comes from the mechanisms' own charge (standard or legacy spelling),
     then from a `polarity` column's words -- never from a batch or sample name;
   * no diagnostic adduct -> ValueError naming the mechanisms seen (no guess of the
-    first registered profile of the polarity).
+    first registered profile of the polarity);
+  * `peaky pool` resolves on the full pooled table, not the 4-column trim.
 """
+from datetime import datetime
+
 import pandas as pd
 import pytest
 
 from peaky import cli
+from peaky import pipeline as PL
+from peaky.batch import assign_batch as AB
 from peaky.chem import profiles as P
 from peaky.io import io_mascope as IO
+from peaky.reporting import provenance as PV
 
 # a batch name full of hyphens (as dated, instrument-coded names are), and one carrying a "+"
 HYPHENS = "Instrument-A uronium run - zone-2 - zone-3"
@@ -124,3 +130,40 @@ def test_recognised_adducts_has_no_default():
     assert IO.recognised_adducts(pd.DataFrame({"mz": [1.0]})) == []
     assert IO.detect_adducts(_table([])) == ["[M-H]-"]          # unchanged
     assert IO.recognised_adducts(_table(["+Br-", "-H+", "+Br-"])) == ["[M+Br]-", "[M-H]-"]
+
+
+# --------------------------------------------------------------------------- #
+# peaky pool: resolve on the full pooled table, then trim
+# --------------------------------------------------------------------------- #
+class _FakeClient:
+    pass
+
+
+def _pool(monkeypatch, tmp_path, ts):
+    got = {}
+
+    def fake_ab(**kw):
+        got["ab"] = kw
+        return {"summary": {}, "sample_ids": []}
+
+    monkeypatch.setattr(AB, "run", fake_ab)
+    monkeypatch.setattr(PL, "generate_report", lambda ctx, ts, **kw: {})
+    monkeypatch.setattr(PV, "record_run", lambda **kw: None)
+    monkeypatch.setattr(IO, "connect", lambda *a, **k: _FakeClient())
+    PL.run_pooled_batches(batches="b.*", dataset="D", reagent="auto",
+                          base_out=str(tmp_path), ts=ts, when=datetime(2021, 3, 4, 12),
+                          do_report=False, per_group_reports=False,
+                          log=lambda *a: None)
+    return got
+
+
+def test_pool_auto_resolves_on_the_untrimmed_table(monkeypatch, tmp_path):
+    got = _pool(monkeypatch, tmp_path, _table(["+(CH4N2O)H+", "+H+"] * 3))
+    assert got["ab"]["reagent"] == "Ur"
+    # the workers still get the trimmed table
+    assert "ionization_mechanism" not in got["ab"]["peaks"].columns
+
+
+def test_pool_auto_stops_before_assigning_when_nothing_is_diagnostic(monkeypatch, tmp_path):
+    with pytest.raises(ValueError, match="mechanisms seen: \\[M\\+H\\]\\+"):
+        _pool(monkeypatch, tmp_path, _table(["+H+"] * 4))
