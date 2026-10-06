@@ -174,10 +174,10 @@ def reason(mz, threshold: float) -> str:
         hi = False
     if hi:
         return (f"mass only at m/z >= {float(threshold):g}: a TOF's formula space is saturated here "
-                "(decoy-measured on two TOFs); no attached isotope line of the neutral's own elements in "
-                "any Assigned file")
-    return ("mass only: the reading rests on mass alone -- no attached isotope line of the neutral's own "
-            "elements at its expected height in any Assigned file")
+                "(decoy-measured on two TOFs); no attached isotope line in any Assigned file speaks for the "
+                "neutral (see the flag's definition)")
+    return ("mass only: the reading rests on mass alone -- no attached isotope line in any Assigned file "
+            "speaks for the neutral (see the flag's definition)")
 
 
 def _ion_key(neutral, adduct) -> tuple:

@@ -675,8 +675,8 @@ def summary_stats(ledger: pd.DataFrame, *, context: str = "",
     if mo is not None:
         thr = mo["threshold_mz"]
         sec = "TOF mass-only flag"
-        add(sec, "Assigned, flagged", f"{mo['n_flagged']} of {mo['n_assigned']} -- no attached isotope line of "
-                                      "the neutral's own elements at its expected height; tier unchanged")
+        add(sec, "Assigned, flagged", f"{mo['n_flagged']} of {mo['n_assigned']} -- no attached isotope line "
+                                      "speaks for the neutral; tier unchanged")
         add(sec, f"below m/z {thr:g}", f"{mo['below']['flagged']} of {mo['below']['assigned']} Assigned -- "
                                       "the reading rests on mass alone")
         add(sec, f"at or above m/z {thr:g}",

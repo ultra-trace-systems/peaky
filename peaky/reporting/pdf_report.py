@@ -476,8 +476,8 @@ def _mass_only_sentence(ctx) -> str | None:
     if not mo or not mo.get("n_assigned"):
         return None
     b, a, thr = mo["below"], mo["at_or_above"], mo["threshold_mz"]
-    return (f"Mass-only readings (TOF): {mo['n_flagged']} of {mo['n_assigned']} Assigned readings show no "
-            f"attached isotope line of the neutral's own elements in any file that assigned them \u2014 "
+    return (f"Mass-only readings (TOF): {mo['n_flagged']} of {mo['n_assigned']} Assigned readings have no "
+            f"attached isotope line that speaks for the neutral in any file that assigned them \u2014 "
             f"{b['flagged']} of {b['assigned']} below m/z {thr:g}, where the reading rests on mass alone, and "
             f"{a['flagged']} of {a['assigned']} at or above it, where a TOF's formula space is saturated (a "
             f"shifted-mass decoy is Assigned as often as the real spectrum on two TOFs); they keep their tier "

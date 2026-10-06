@@ -416,12 +416,11 @@ selected sample_ids (SAMPLING.md)
      before the stamp and cannot read REQ, so a lock that displaced the vote's
      winner is **demoted, not undone**: the row keeps the known reading, now
      Candidate, and the vote's reading the lock moved to the head of
-     `alternatives` stays there (the note names it). The per-file test usually
-     gets there first: a C30 chlorinated paraffin `[M+Br]-` on the
-     bromide/nitrate TOF batch (one Br's M+2 line where BrCl4 predicts 2.3×, no
-     ¹³C line: the reagent's water cluster at the same nominal mass) was
-     Candidate in every file that carried it, so the vote already made it
-     Candidate and the lock only noted it.
+     `alternatives` stays there (the note names it). On the bromide/nitrate TOF batch a 'known' C30 chlorinated paraffin
+     `[M+Br]-` (one Br's M+2 line where BrCl4 predicts 2.3×, no ¹³C line) is the
+     reagent's water cluster Br⁻(H₂O)₃₁: the TOF rung test of the reagent-water
+     ladder (step 4a) strips it before the lock runs; without that rung, the
+     per-file M+2 test holds it Candidate in every file and the lock only notes it.
    - **the ⁸¹Br doublet** (`doublets`) -- the row's line stands at 0.58-1.56×
      (0.6-1.6 × the ⁸¹Br/⁷⁹Br ratio) the line one ⁸¹Br spacing (1.99795 Da)
      below it in ≥ 50 % of the spectra showing it (each line the tallest within

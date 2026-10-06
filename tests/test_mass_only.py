@@ -496,8 +496,8 @@ def test_the_pdf_says_the_counts_once_and_marks_the_species_tables(tmp_path, mon
     assert ctx["mass_only"]["n_flagged"] == 3
     assert ctx["mass_only_neutrals"] == {"C10H16O6", "C20H30O10", "C10H16O7"}
     txt = " ".join(" ".join(_page(monkeypatch, tmp_path, R.findings, ctx)).split())
-    assert ("Mass-only readings (TOF): 3 of 7 Assigned readings show no attached isotope line of the neutral's "
-            "own elements in any file that assigned them") in txt
+    assert ("Mass-only readings (TOF): 3 of 7 Assigned readings have no attached isotope line that speaks for "
+            "the neutral in any file that assigned them") in txt
     assert "2 of 5 below m/z 350, where the reading rests on mass alone, and 1 of 2 at or above it" in txt
     assert "At or above m/z 350 an unmarked reading is not supported either" in txt
     assert f"C10H16O6{R.MASS_ONLY_MARK}" in txt and f"C10H16O5{R.MASS_ONLY_MARK}" not in txt
@@ -542,3 +542,14 @@ def test_the_scorecard_census_counts_the_flag_at_the_runs_threshold():
     plain = SimpleNamespace(ledger=_merged(), summary={})
     assert SC.census(plain)["mass_only"] is None and SC.mass_only_line(None) == ""
     assert not math.isnan(mo["threshold_mz"])
+
+
+def test_the_reason_claims_no_more_than_the_flag_knows():
+    """A row flagged although its ion carries an in-band 81Br line (a line a
+    reagent channel could supply) must not read as if no own-element line
+    existed: the reason says no line speaks for the neutral."""
+    for mz in (320.94, 359.98):
+        r = MO.reason(mz, 350.0)
+        assert "speaks for the neutral" in r and "own elements" not in r, r
+    assert MO.reason(359.98, 350.0).startswith("mass only at m/z >= 350")
+    assert MO.reason(320.94, 350.0).startswith("mass only: the reading rests on mass alone")

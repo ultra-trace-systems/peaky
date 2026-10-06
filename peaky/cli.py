@@ -1090,8 +1090,8 @@ def _tof_flag_mz(v: str) -> float:
 
 def _add_tof_flag_arg(p) -> None:
     p.add_argument("--tof-flag-mz", type=_tof_flag_mz, default=None, metavar="MZ",
-                   help="TOF mass-only flag: on a TOF-class run every Assigned reading with no "
-                        "attached isotope line of the neutral's own elements in any Assigned file is "
+                   help="TOF mass-only flag: on a TOF-class run every Assigned reading that no "
+                        "attached isotope line in any Assigned file speaks for is "
                         "flagged (column mass_only + mass_only_reason), never demoted. At or "
                         "above this m/z the reason says the formula space is saturated (a "
                         "shifted-mass decoy is Assigned as often as the real spectrum, measured "

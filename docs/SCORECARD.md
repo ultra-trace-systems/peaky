@@ -207,7 +207,7 @@ pre-0.10.0 scale and 2 on 0.10.0 is a change of scale, not a regression.
    until the user signs them off); (b) the element census of Assigned
    neutrals — F, Si, P, Cl, Br, S, N and C > 20, with examples — and, on a
    TOF-class run, the Assigned rows the **mass-only flag** marks (no attached
-   isotope line of the neutral's own elements in any Assigned file;
+   isotope line in any Assigned file speaks for the neutral;
    [OUTPUTS.md](OUTPUTS.md)), split at the run's `tof_flag.threshold_mz`
    (board keys `census_mass_only` and `census_mass_only_split`, appended;
    `null` off a TOF and on a run made before the flag); (c) the

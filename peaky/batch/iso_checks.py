@@ -1640,7 +1640,7 @@ def summary(table: pd.DataFrame | None, resolution=None) -> dict:
 
 # --------------------------------------------------------------------------- the TOF merged-row gates
 #: the merged row's tier_reason mark of a species lock_known_species decided
-KNOWN_LOCK_MARK = "known species decided once for the batch"
+from peaky.assignment.mass_only import KNOWN_DECIDED as KNOWN_LOCK_MARK  # noqa: E402  (one literal, two readers)
 #: ... and of a lock that displaced the vote's winner (its note goes on "; kept
 #: over the N-file X reading", the displaced reading heading `alternatives`)
 _KEPT_OVER = re.compile(re.escape(KNOWN_LOCK_MARK) + r"[^|]*; kept over the \d+-file ")
@@ -1713,11 +1713,12 @@ def tof_m2_gates(merged: pd.DataFrame, table: pd.DataFrame | None, ts: pd.DataFr
         is not Assigned. A lock that displaced the vote's winner is demoted,
         not undone -- the row keeps the known reading, now Candidate, and the
         vote's reading the lock put at the head of `alternatives` stays there
-        (the row's note names it). The per-file test (tiers.apply_tof_m2)
-        usually gets there first: a 'known' C30 chlorinated paraffin [M+Br]-
-        on a bromide TOF batch (one Br's M+2 line where BrCl4 predicts 2.3x,
-        no 13C line: the reagent's water cluster at the same nominal mass) was
-        Candidate in every file, so the vote already made it Candidate.
+        (the row's note names it). On a bromide TOF batch a 'known' C30
+        chlorinated paraffin [M+Br]- (one Br's M+2 line where BrCl4 predicts
+        2.3x, no 13C line) is the reagent's water cluster Br-(H2O)31: the TOF
+        rung test of the reagent-water ladder strips it before the lock; without
+        that rung the per-file test (tiers.apply_tof_m2) holds it Candidate in
+        every file, so the vote already makes it Candidate.
       * the doublet: the row's line stands at TOF_DBL_LO..TOF_DBL_HI x the line
         one 81Br spacing below it in >= TOF_DBL_SHARE of the spectra showing it
         (`doublets`, within the batch's merge window) -- it is that line's 81Br
