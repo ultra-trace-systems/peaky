@@ -185,3 +185,19 @@ def test_top_species_split_organic_from_carbon_free():
 
 def test_a_share_never_rounds_a_nonzero_class_to_zero_or_a_partial_one_to_all():
     assert [R._share(x) for x in (0.0, 0.003, 0.2, 0.996, 1.0)] == ["0%", "<1%", "20%", ">99%", "100%"]
+
+
+# --------------------------------------------------------------------------- the oligomer line: Assigned members only
+def test_the_oligomer_list_keeps_assigned_neutrals_only():
+    from peaky.batch import composition as CMP
+    merged = _merged_rows([
+        ("C20H30O14", "[M+NO3]-", "Assigned", None),
+        ("C19H30O12", "[M+NO3]-", "Candidate", None),          # Candidate only: not listed
+        ("C20H32O10", "[M+NO3]-", "Candidate", None),
+        ("C20H32O10", "[M-H]-", "Assigned", None),             # Assigned on another channel: listed
+        ("C21H34O12", "[M]-.", "Candidate", "p9"),             # ion-only: never
+        ("C10H16O4", "[M+NO3]-", "Assigned", None),            # not high-C
+    ])
+    assert CMP.oligomer_flag(merged) == ["C20H30O14", "C20H32O10"]
+    assert CMP.oligomer_flag(merged, tiers=None) == ["C21H34O12", "C20H30O14", "C20H32O10", "C19H30O12"]
+    assert CMP.oligomer_flag(merged.drop(columns=["tier"])) == CMP.oligomer_flag(merged, tiers=None)

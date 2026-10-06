@@ -305,7 +305,8 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
     ctx["comp_asg"], ctx["comp_collapsed"], ctx["n_collapsed"] = CMP.collapsed_composition(merged)
     ctx["top_species"] = CMP.top_species_by_signal(merged, nsig, n=8, inorganic=False)
     ctx["top_inorganic"] = CMP.top_species_by_signal(merged, nsig, n=6, inorganic=True)
-    ctx["oligomers"] = CMP.oligomer_flag(merged)
+    ctx["oligomers"] = CMP.oligomer_flag(merged)                 # Assigned neutrals only
+    ctx["n_oligomers_candidate_only"] = len(CMP.oligomer_flag(merged, tiers=None)) - len(ctx["oligomers"])
     # polarity (gates positive-only messaging: the amine re-read, the shadow note)
     # + chemical-plausibility QC of the assignments
     ctx["positive"] = any(str(k).rstrip().endswith("+") for k in ctx.get("adduct_counts", {}))
@@ -995,15 +996,23 @@ def findings(ctx, pdf):
         lines.append(("m", "   reagent and inorganic ions (carbon-free):"))
         for k in range(0, len(items), 3):             # 3 per line (a mono line never wraps)
             lines.append(("m", "      " + ", ".join(items[k:k + 3])))
-    if olig:
+    n_olig_cand = int(ctx.get("n_oligomers_candidate_only") or 0)
+    if olig or n_olig_cand:
         nsig = ctx.get("neutral_signal", {})
+        n_olig = len(olig)
         olig = sorted(olig, key=lambda f: nsig.get(f, 0.0), reverse=True)[:12]
-        lines += [("gap", 0.6), ("h", "Accretion / oligomer products (high C & O, by signal)"),
+        lines += [("gap", 0.6), ("h", "Accretion / oligomer products (Assigned, high C & O, by signal)"),
                   ("gap", 0.25)]
         for k in range(0, len(olig), 6):           # wrap ~6 formulas per line (no edge clip)
             lines.append(("m", "   " + ", ".join(olig[k:k + 6])))
-        lines += [("dim", "high-carbon high-oxygen neutrals — candidate HOM dimers / oligomers,"),
-                  ("dim", "often the most event-specific signal.")]
+        if not olig:
+            lines.append(("m", "   none at tier Assigned"))
+        lines += [("dim", "high-carbon high-oxygen neutrals held at tier Assigned — candidate HOM dimers /"),
+                  ("dim", "oligomers, often the most event-specific signal"
+                          + (f" ({len(olig)} of {n_olig} shown)." if n_olig > len(olig) else "."))]
+        if n_olig_cand:
+            lines.append(("dim", f"{n_olig_cand} more high-C high-O neutral(s) hold Candidate readings only "
+                                 "and are not listed."))
     _text_lines(fig, lines, y0=0.52, dy=0.027, size=9.5)
     _close(pdf, fig)
 

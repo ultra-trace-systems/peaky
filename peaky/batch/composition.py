@@ -205,12 +205,21 @@ def top_species_by_signal(merged, neutral_signal: dict, *, n: int = 8,
     return rows[:n]
 
 
-def oligomer_flag(merged, *, c_min: int = 18, c_max: int = 40, o_min: int = 7) -> list[str]:
+def oligomer_flag(merged, *, c_min: int = 18, c_max: int = 40, o_min: int = 7,
+                  tiers=("Assigned",)) -> list[str]:
     """Distinct neutrals that look like accretion / oligomer products (high carbon
     AND high oxygen) — the HOM dimers that are often the most event-specific signal.
     `c_max` excludes the absurdly large fits (C>40 in a monoterpene system is almost
-    always a high-heteroatom mass coincidence, not a real oligomer). Returned sorted
-    by carbon then oxygen; the caller may re-sort by signal."""
+    always a high-heteroatom mass coincidence, not a real oligomer). Only neutrals
+    a merged row holds at one of `tiers` count (default Assigned; never an ion-only
+    row): a Candidate reading of that size is a mass fit the run did not confirm.
+    `tiers=None`, or a ledger without a tier column, keeps every neutral. Returned
+    sorted by carbon then oxygen; the caller may re-sort by signal."""
+    if tiers is not None and merged is not None and "tier" in getattr(merged, "columns", []):
+        m = merged[merged["tier"].astype(str).isin(set(tiers))]
+        if "ion_only_of" in m.columns:
+            m = m[m["ion_only_of"].isna()]
+        merged = m
     out = []
     for f in _neutrals(merged):
         c = C.parse_formula(f)
