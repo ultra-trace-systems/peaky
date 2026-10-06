@@ -8,6 +8,75 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`--reagent auto` stops with an error instead of guessing a profile.** When none of the peak
+  table's server matches is a reagent's diagnostic adduct (no matches at all, or only generic
+  ones such as [M+H]+ / [M-H]-), `profiles.resolve` used to return the first registered profile
+  of the guessed polarity -- bromide for every negative guess, uronium for every positive one.
+  It now raises, naming the mechanisms it saw, their polarity, the signatures auto-detect reads
+  and the known reagents, and asks for `--reagent`; `peaky batch`, `peaky pool` and
+  `peaky assign` print that reason and exit 1 before any assignment runs, and an MCP job ends in
+  an error carrying it. Detection reads the server's matches without `detect_adducts`' [M-H]-
+  default (new `io_mascope.recognised_adducts`), so an unmatched table cannot select a profile
+  that declares that channel. A table with a diagnostic adduct resolves exactly as before:
+  offline on the time-series inputs of a labelled-nitrate Orbitrap batch, a uronium Orbitrap
+  batch and a bromide/nitrate TOF batch, auto still gives NO3+NO3_15N, Ur and Br+NO3. From
+  Python, `assign_batch.run(batch=NAME)` with its default `reagent='auto'` no longer resolves on
+  the batch's sample roster, which carries a polarity but no server match (a positive roster
+  gave Ur and a negative one Br, whatever the reagent): it reads the matches of `peaks=`, else
+  of `ts_peaks=`, and with neither raises asking for `reagent=NAME` or the per-peak time series.
+  `peaky batch` / `peaky pool` already pass the resolved name.
+- **`peaky publish-batch` sends the merged rows peaky holds Assigned, not every row.** A batch
+  import row carries the m/z, the neutral and ion formulas and the mechanism id but no verdict,
+  so every merged Candidate landed in Mascope's batch ledger indistinguishable from an Assigned
+  reading (a bromide/nitrate TOF batch: 2536 rows sent for 355 Assigned; two Orbitrap batches:
+  1392 for 514 and 1083 for 723). `publish.build_batch_rows` now leaves the other rows out
+  (counted by peaky's tier in `held_back`, and printed by the command) unless
+  `--include-candidates` (`include_candidates=True`), which sends them with a warning; the run's
+  config records the sent rows by peaky's tier (`published_tiers`), since the rows cannot say
+  it. A merged ledger with no `tier` column is refused unless every row is asked for. When rows
+  are held back from a ledger levelled before the evidence scale, the command says that its
+  "older" count and the config's claims tally cover the whole merged ledger, not only the rows
+  sent. The ledger, the tiers and the per-sample payload are unchanged. README and
+  docs/PUBLISH.md.
+- **README: the Validation section says how a release is validated, not an older engine's
+  counts.** The merged M0 and tier counts it quoted came from two batch runs of an engine that
+  has since changed its tiers and gates and gained the evidence scale. It now describes the
+  yardsticks without numbers: a frozen per-run truth set of TRUE / FALSE readings checked
+  against the raw spectra with evidence computed outside the engine; mass-shift and wrong-adduct
+  decoy arms re-run offline on the run's brightest cover file(s), the shift arm estimating how
+  often a mass with no true formula is still Assigned, reported below and above m/z 350 because
+  a 0.35 Da shift reads near zero below ~350 by construction; and the scorecard's isotope checks
+  (13C carbon count, heteroatom lines, satellite and partner co-variation), with a pointer to
+  `scripts/scorecard.py`. This release's measured numbers follow its validation run.
+- **The `neutral` claim is defined among the run's declared reagent channels.** A 4a reading is
+  pinned with the side channels (formate, acetate, chloride, ...) locked, and on a
+  labelled-nitrate batch a family of ten C11/C12 `[M-H]-` readings carrying a quarter of the
+  committed M0 height is claimed neutral while the own 15NO3- cluster of its three brightest
+  members is seen in 0, 0 and 6 of 305 spectra. `CLAIM_MEANING["neutral"]` (the workbook's By
+  claim, Summary and Read me), the PDF Claims page legend and notes, the README,
+  `docs/OUTPUTS.md`, `docs/ASSIGNMENT.md`, `docs/SCORECARD.md` and the claim table of
+  `docs/EVIDENCE_LEVELS.md` now say that the neutral is established among the declared channels
+  and that a side channel the run keeps locked (e.g. formate or acetate on a nitrate source)
+  could re-read an `[M-H]-` ion as a cluster of a smaller neutral, which the row's evidence then
+  names ("side channels locked"). No level changes.
+- **The 15N-label stage no longer spends a minute per file copying one list.**
+  `chemistry.candidates_for_peaks` rebuilt the memoised grid's mass column on every call; on the
+  label stage's box (213,758 formulas) that cost 20-40 ms a call, ~3800 times on one
+  labelled-nitrate Orbitrap file, so the stage took 73-113 s per file (31 % of the per-file
+  stage time on that batch) while filling nothing. The grid cache now keeps the mass column with
+  the grid (`_grid_and_masses`; `_grid_cached` still returns the grid). Measured offline with a
+  stub scorer, the label stage's candidate enumeration drops from 63-79 s to 0.06 s per file
+  with an identical scorer input (the stage's one scoring call remains and is not in that
+  figure). No caller's candidate set changes (0 of 3816 label-stage calls, and 0 of 3603 calls
+  over the residual, cleanup, siloxane and chain-head boxes on a labelled-nitrate, a uronium and
+  a bromide/nitrate TOF batch). (`tests/test_chemistry_grid.py`.)
+- **`scripts/scorecard.py`: a delta is taken only between two rows measured alike.** A metric
+  that reads the evidence scale needs the same scale, a roster count the same presence test, a
+  decoy rate the same arm calibration and scoring, the headline below m/z 350 the same headline
+  arm (ppm or Da) and a ppm-arm rate the same shifts; otherwise the previous value is withheld
+  and the card's delta table, the page's and the board's claims table say
+  `not comparable: <why> (previous <value>)` -- 20 roster formulas identified on the pre-0.10.0
+  scale and 2 on 0.10.0 is a change of scale, not a regression.
 - **Three rule changes of the evidence scale (C47; the user's decisions of 2026-10-05, after
   the scale landed).** (1) `lowconf` alone -- every row of a pair Low / Suspect and no other
   rejection -- is a **5a ceiling, not a 5b rejection**: the pair is levelled on its facts
@@ -36,6 +105,215 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`--reagent auto` no longer reads the polarity from the batch or sample name.** The polarity
+  guess looked for a bare '+' or '-' in a `polarity` column, then in the batch name, and only
+  then in the mechanisms, so a dated batch name ("<date> - <date>") read as negative: a positive
+  uronium batch whose matches were blank, or only [M+H]+ / [M+Na]+, resolved to the bromide
+  profile with no warning, and a name carrying '+' sent a negative batch to the uronium profile.
+  Polarity now comes from the charge each server mechanism carries in the standard notation (the
+  legacy '-H+' reads negative), then from a `polarity` column's words; names are never read. On
+  the three real inputs above with only their (de)protonation matches kept, all three -- the
+  positive uronium batch included -- resolved to Br before and now stop, naming [M+H]+ /
+  positive and [M-H]- / negative.
+- **`peaky pool` with its default `--reagent auto` works.** The pooled table was trimmed to its
+  four time-series columns before the reagent was resolved, dropping the `ionization_mechanism`
+  column auto-detect reads, so every default pool run raised "could not auto-detect reagent".
+  The reagent is now resolved on the full table, as `peaky batch` does; the workers still get
+  the trimmed table. On the three real inputs above the pool path now hands the assignment
+  NO3+NO3_15N, Ur and Br+NO3 (before: an error on all three).
+- **`peaky assign` and the MCP `assign_sample` tool no longer fall back to [M-H]- when
+  auto-detect fails.** `peaky assign` caught the failure, printed a note and let `assign.run`
+  read the channels per sample, which defaults to [M-H]- in negative mode when nothing is
+  recognised; the MCP tool skipped auto-detect altogether and always took that per-sample path
+  (bare matched channels, ambient-air context). Both now resolve the profile from the sample's
+  own matches -- the MCP tool thereby takes the detected profile's channels, context, label and
+  purity, as `peaky assign` does -- and stop with the resolver's reason when that fails. An
+  explicit `--reagent` / `--adducts` is unchanged; `assign.run` called from Python without
+  adducts keeps its per-sample default but now logs a WARNING when that default is a fallback.
+- **README and SKILL.md: `--trace-first` is experimental, not "the TOF path".** The README
+  presented it as the TOF path with a per-file scatter figure from one low-resolution TOF, and
+  the skill offered it as an equal alternative to rolling the centres; both now use the CLI's
+  own wording: EXPERIMENTAL, on its one A/B it recovered about half the ions a file cover found
+  in two or more files and Assigned fewer of them (the isotope evidence that earns Assigned
+  lives inside a spectrum, and a trace sample averages it away), for batch-level centred masses
+  and not a replacement for the cover path.
+- **The PDF calls the total signal a transient event only when the data show one.** The Findings
+  page printed "peaks at hour X -- N x the late-run baseline -- then decays (a transient event)"
+  on every run, whatever N was: on a labelled-nitrate Orbitrap batch, a uronium batch and a
+  bromide/nitrate TOF batch the maximum was 1.10x, 1.31x and 1.08x the late-run baseline, all
+  under the 1.7x burst bar the same report holds a varying trace to, and the TOF's maximum sat
+  at sample 224 of 230. The sentence now says "a transient event" only when the maximum reaches
+  `cluster.PEAK_RANGE` and does not sit in the last 10 % of the samples (a later one is said to
+  sit too close to the end of the run to tell a transient from a rise); below the bar it says
+  there is none and gives the band 90 % of the samples lie in relative to the baseline
+  (0.66-1.09x on the nitrate batch, which dips well below its maximum).
+- **The reference-list page measures its chance level instead of asserting it.** A hard-coded
+  sentence said the near-0-ppm matches "far exceed chance (~single-digit random hits)". The page
+  now re-runs the rescue's own mass match on the unexplained m/z set shifted by -40..+40 ppm
+  (six shifts, never inside the match window) and prints the range of matches within 1 ppm
+  beside the observed count, saying whether the observed count exceeds it (with the ratio to its
+  median), falls within it, or falls below it (then a match is no evidence by itself). Measured:
+  the labelled-nitrate batch 261 vs 44-103, the uronium batch 96 vs 1-22, the bromide/nitrate
+  TOF 110 vs 238-296 (below chance). About 0.1 s per report.
+- **Composition no longer counts reagent ions or inorganic carbon as organic chemistry, and
+  weights Assigned readings only.** Every neutral was classed CHO / CHON / CHOS by its N and S
+  and weighted over every tier, so on the bromide/nitrate TOF the nitrate reagent ion itself
+  (HNO3 read as NO3-, HNO3.NO3- and HNO3.Br-: 41 % of all M0 height) made the batch "41% CHO /
+  54% CHON", and "(a few bright CHO species carry most of the signal)" followed on every
+  negative-mode run. An inorganic neutral is now its own class (`composition.composition_class`;
+  `backbone()` is unchanged): a carbon-free one, or one whose single carbon is a carbon oxide /
+  sulfide (CO, CO2, OCS, CS2) or a cyanide / cyanate with at most one H and one halogen (HCN,
+  HNCO, ICN, INCO, ClCN; `composition.is_inorganic_carbon`); formic acid, urea, fluoroform and
+  chloropicrin stay organic. The composition by signal covers the (neutral, adduct) readings
+  held at tier Assigned only (`composition.assigned_composition`) and says so: the organic
+  classes as shares of the Assigned organic signal, the inorganic ions as a share of all
+  Assigned signal. The bright-CHO clause appears only when the five brightest CHO neutrals carry
+  at least half of the Assigned organic signal, and says so with the number, before the
+  inorganic line; the ammonium/amine count note only on a run with an NH4+ or urea channel (it
+  printed on an NO+ batch with neither). "Top species" lists organic neutrals, with the
+  inorganic ones on a separate "reagent and inorganic ions" line; the Composition page counts
+  them in an `inorg.` row. The TOF now reads 94 / 3 / 3 % CHO / CHON / CHOS with inorganic ions
+  at 67 % of the Assigned signal and its five brightest CHO neutrals at 78 % of the organic
+  signal; an iodide Orbitrap batch 89 / 4 / 7 % with 89 % inorganic (it printed "15% CHO / 85%
+  CHON ... a few bright CHO species carry most of the signal", that CHON being INO2, INCO, HNO3
+  and ICN: 54, 16, 7 and 5 % of all M0 height); the labelled-nitrate batch loses the bright-CHO
+  clause (its five brightest CHO neutrals carry 33 % of the organic signal). The ledgers are
+  unchanged: a reagent-identity reading stays a correct reading.
+- **The oligomer line lists Assigned neutrals only.** "Accretion / oligomer products" took every
+  high-carbon, high-oxygen neutral of the merged ledger: 27 of 27 were Candidate readings on the
+  labelled-nitrate batch, 12 of 13 on the uronium batch, 352 of 380 on the TOF.
+  `composition.oligomer_flag` takes `tiers` (default Assigned; never an ion-only row), and the
+  page says how many it shows of how many and how many more hold no Assigned reading (0, 1 and
+  28 Assigned on those batches).
+- **The PDF cover names the package version, and a git commit only when there is one.** It
+  printed "peaky (assign v0.6.1) · git <sha>", the version of one module rather than of the
+  package, and "git ?" on any install that is not a git checkout. It now prints "peaky
+  <version>" and "· git <short sha>" (with "+modified" for uncommitted changes) only from a
+  checkout; a run folder's `run_manifest.json` names the code that assigned the run, and a
+  report regenerated by other code names both.
+- **The Methods text reads the run's own settings.** "amine co-variation r>=0.7" now prints the
+  run's `amine_r_min` (the code default is 0.6; a run that did not record it says it shows the
+  default); "server isotope-scored matching" now names the scorer the run recorded in the new
+  `batch_summary.json` key `scorer` (`local`, the in-process default, or `server` under
+  `PEAKY_LOCAL_SCORING=0`), and a run without the key says scoring is in-process by default; the
+  cover's trace line prints the stamping window to two decimals (it printed "±9.22777806538331
+  ppm") and the median move and per-ion scatter to three significant figures.
+- **`peaky report` regenerates a run's report with the run's own batch and dataset names.** It
+  titled the report with the reagent label and passed no dataset name, so a report regenerated
+  offline lost every reference list the dataset name had unlocked (on the TOF run folder: the
+  terpene-oxidation list and its page section). The batch and dataset names now come from the
+  run folder's `run_manifest.json`; `--batch` keeps precedence and a new `--dataset` flag
+  overrides the dataset.
+- **A run whose files never calibrated says once that its evidence levels were not assessed.**
+  On sparse Orbitrap tables (an iodide and an NO+ batch: 2-9 isotope-backed core rows per file
+  against the calibration's 20) no file calibrates the degeneracy window, so every pair reads
+  "no level · no file of the source is calibrated" (190 of 190 and 169 of 169 pooled pairs) and
+  every claim tentative, with no word of it above the row level.
+  `evidence.levels_not_assessed_reason` recognises the state; `assign_batch` records it as
+  `batch_summary.json['levels_not_assessed_reason']` (null otherwise) and logs one console
+  WARNING; the PDF cover and Evidence levels page print the sentence (read off the merged rows
+  for a run made before the key), and a single-sample workbook prints it on its Summary sheet.
+  The Claims and Evidence levels pages now give each no-level row the reason its evidence names:
+  on those batches they said all 188 and 165 rows were "a batch-level re-read" (a merged reading
+  no pooled pair holds), which none was. No level or tier changes.
+- **A foreign peak on a labelled reading's 14N impurity line is present, not 'too low'.** A
+  reading whose ion carries the 15N label (`^N`) predicts the labelled reagent's 14N impurity
+  line at -0.997 Da (~2 % of M0 per label). Only the engine's own twin or child (or the M0 of a
+  reading the levels already refuted) matches it, and an occupied peak at >= half the impurity
+  level counted as present, but a free peak the engine had left unexplained -- at that exact m/z
+  sits the same neutral's 14N nitrate cluster, which can sit far above the impurity level -- was
+  read as the line 'too low' whatever its height, so a correct 15N-nitrate cluster was refuted
+  by its own isotope lines (5b). Any other peak there at >= half the impurity level now leaves
+  the line present (tested, neither bad nor matched; no positive credit); below half it is still
+  too low (`levels.lines.eval_candidate`; the reference `scripts/level_ledger.py` shares it).
+  Re-levelled offline, a labelled-nitrate Orbitrap batch: at the pooled batch level
+  (`tables/evidence_levels.csv`) exactly one pair moves, C10H18O4 [M+^NO3]- 5b -> 4a (tentative
+  -> neutral; 1902 pairs 8/162/258/476/998 -> 8/163/258/476/997); levelled per file (the
+  per-file ledgers, and the levels of a single-file `peaky assign`), 20 readings of five
+  C10H18Ox [M+^NO3]- pairs (x = 2, 4-7) move 5b -> 5a in 11 of 12 files, their claim stays
+  tentative, and 581 more readings change only their evidence/tag text. A uronium batch and the
+  level fixtures do not move, and no tier moves. docs/EVIDENCE_LEVELS.md 5.3.
+- **The time-series clustering floors follow a low batch noise edge down, so a TOF batch gets
+  its families.** The cluster figures gated channels on absolute median floors -- 200 cps for an
+  assigned ion channel, 50 cps for an unassigned bin -- and started every panel's log axis at 50
+  cps. On a counting TOF (edge ~0.5-1 cps) few channels cleared them: on a bromide/nitrate TOF
+  batch only 10 assigned channels and 16 unassigned bins, giving 3 families (2 of them reagent
+  ions with their ringing satellites) and no unassigned cluster. The floors are now 3.33x
+  (assigned) and 0.83x (unassigned) the batch's typical detection edge (`batch_summary.json`
+  `noise_edge_batch_cps`), capped at the old 200 / 50 cps: the edge only lowers them, so an
+  Orbitrap batch whose edge sits at or above ~60 cps keeps its floors and its figures, and a run
+  directory without the key keeps 200 / 50 cps. With floors at a TOF's scale a fixed 50 cps axis
+  bottom would draw few-cps families as empty panels, so the panel axes bottom out at the
+  unassigned floor. Because an edge can sit far below the practical detection level (e.g. a
+  batch exported in sub-unit heights), at most `top_n` (400) unassigned bins join the unified
+  clustering and at most 400 varying leftover bins are clustered, the brightest by median;
+  `clusters_summary.json` counts the qualifying bins moved to the leftover path
+  (`n_union_over_cap`) and the varying bins not drawn (`n_varying_over_cap`, flagged `over_cap`
+  in `tables/clusters_unassigned_<tag>.csv`) -- the two counts overlap. The summary's gates
+  record both floors, the edge and their source (`floor_source`); the PDF prints sub-cps floors
+  to 3 significant figures (they printed as "0 cps") and lists the bins the cap left out, so its
+  unexplained funnel adds up; the cluster CSVs write `median_cps` to 3 significant figures below
+  100 cps. New `cluster_batch` parameters: `unassigned_floor`, `noise_edge_batch_cps`,
+  `floor_x_edge`, `unassigned_floor_x_edge`, `top_n` (`floor` still pins the assigned floor).
+  Measured by replaying the clustering stage on copies of finished runs: five Orbitrap batches
+  with edges of 61-758 cps give the same families, figures and tables as before (apart from the
+  new `over_cap` column and the family names below); an EasyIC Orbitrap batch (edge 35 cps,
+  floors 117 / 29 cps) gates 426 unassigned bins instead of 232, with the same 1 family and 5
+  pages; the bromide/nitrate TOF 3 -> 64 families (16 -> 497 channels), 0 -> 9 unassigned
+  clusters, 4 -> 33 pages at the edge the batch run now records (70 families, 546 channels, 35
+  pages at the run's older recorded edge); a low-resolution nitrate TOF 0 -> 44 families, 0 ->
+  14 unassigned clusters, 2 -> 33 pages (uncapped: 137 clusters, 109 pages).
+- **A co-varying family is named by an Assigned member when it has one.** The `co-varies with X`
+  label took the brightest member with a formula whatever its tier, so a family holding Assigned
+  readings was often named by a Candidate one (labelled-nitrate Orbitrap batch: 16 of 39 labels
+  named a non-Assigned member, 8 of them with an Assigned member in the family). Members now
+  rank Assigned first, then by median (`clustering.family_label`); families and their members do
+  not change. Labels on a non-Assigned member: labelled nitrate 16 -> 8 of 39, uronium 5 -> 1 of
+  14, iodide 2 -> 0 of 13, bromide/nitrate TOF 31 -> 16 of 64 (41 -> 20 of 70 at the run's older
+  recorded edge), a low-resolution nitrate TOF 27 -> 21 of 44 -- each one left in a family with
+  no Assigned member.
+- **`scripts/scorecard.py`: every decoy arm runs at its file's control calibration.** An arm
+  calibrated on its own commits, which are wrong readings by construction; where that backbone
+  was too small to calibrate (every wrong-adducts arm on a TOF batch, a -6 ppm shifted arm on
+  the uronium Orbitrap batch: 16 rows, 20 needed) the arm ran with the mass z-test and the
+  degeneracy audit off and kept every mass fit, bounding an engine no real file runs (that arm
+  Assigned 32 rows, 21 of them certified formulas; at the control's calibration 13; the
+  wrong-adducts arm of the bromide/nitrate TOF batch's brightest file Assigned 87 rows against
+  the control's 58, at the control's calibration 42 -- still 72 % of the control, 39 of them new
+  ions: an open engine finding on the TOF, not a resolved artefact). Now `passes.calibrate` and
+  `tiers._calibrate` take the control arm's ledger for the length of each arm's engine run
+  (`inherited_calibration`); `decoy.calibration`, the decoy manifest and the board row
+  (`decoy_calibration`) say what the arms ran at.
+- **`scripts/scorecard.py`: the wrong-adducts arm counts new ions beside readings, and never
+  calls a run's own channel wrong.** Most of the arm's Assigned rows only re-split an ion the
+  run already reads (X [M+NH4]+ is the ion of X+NH3 [M+H]+): on the uronium Orbitrap batch's
+  brightest file the arm Assigns 343 rows, 85.1 % of the control's 403 Assigned; 334 of them
+  carry the ion composition of the control's M0 reading on the same peak (any tier: for 119 of
+  them the control holds that reading only below Assigned, and 218 of the 343 sit on a peak the
+  control Assigned); 9 are new ions (2.2 %). On the labelled-nitrate batch's brightest file the
+  arm Assigns 22 (6.6 %), 4 of them re-splits: 18 new ions = 5.4 %. `decoy.adducts` now carries
+  `assigned_same_ion`, `assigned_new_ion`, `new_ion_rate` and `same_ion_share` beside the
+  reading-level rate (board `decoy_adducts_new_ion_rate`). The wrong set leaves out every
+  channel the run itself reads (its profile's adducts, every adduct its ledgers commit, a side
+  channel it opened) -- an iodide run's `[M+I]-` was declared wrong -- and with nothing left the
+  arm does not run.
+- **`scripts/scorecard.py`: the roster block names its scale, counts neutral-or-better, and its
+  presence test sees only the formula's own line.** M2 looked for a roster line within a flat 6
+  ppm (25 sigma on an Orbitrap), took the nearest stamped line in any share of the spectra,
+  counted another ion's isotope satellite or a reagent line as a sighting, and called another
+  split of the same ion composition a misread. Now the window is 4 x the run's measured mass
+  sigma (1 ppm at least, the tolerance at most), a line counts in >= 20 % of the spectra stamped
+  or not, and of the lines that pass the best-read one stands for the formula; an isotope
+  satellite of another ion, or a reagent line of another composition, is no sighting, while a
+  reagent line of the expected ion's own composition is (the reagent's reference ions -- its
+  ion, its water clusters -- are read as themselves there); a same-composition split is
+  `same ion`. Measured on the labelled-nitrate and uronium Orbitrap batches and the
+  bromide/nitrate TOF batch (59 roster formulas): present 33 / 34 / 35 -> 28 / 30 / 26, misread
+  9 / 2 / 11 -> 1 / 0 / 2. The roster claims carry `neutral_or_better` (3c + 4a, per line read:
+  the claim of the line M2 picked) beside `identified` (a class list never reaches 3c; board
+  `roster_neutral_or_better`, a tracked metric and an acceptance criterion), the card counts
+  every M2 status for every source, and the M2 block and the board row name their level scale
+  (`scale`) and presence test (`roster_test`).
 - **The signal-to-noise the score reads is judged before it is believed (C46).** Three
   terms of the v2 fit are set by a peak's `signal_to_noise`: whether an ABSENT predicted
   line is charged (rel x SNR_base >= k_detect), the intensity tolerance of a matched line
@@ -125,6 +403,55 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`peaky publish` leads its summary with the rows peaky holds Candidate that Mascope will show
+  as `assigned`.** Mascope's tier column, tier strip, tier filter and roll-ups read the tier it
+  derives from fit x plausibility, not peaky's; the dry run printed only the total disagreement.
+  `publish.build_rows` now counts `candidate_shown_assigned` (a Candidate that Mascope's banding
+  calls `assigned`, not every disagreement), and the summary's first line gives that count and
+  says where peaky's verdict is read (the `engine tier` column, the `tier_disagrees` filter).
+  Summed over files: 4246, 2129 and 9166 such rows (against 5081, 2155 and 9560 disagreements)
+  on a labelled-nitrate Orbitrap batch, a uronium Orbitrap batch and a bromide/nitrate TOF
+  batch.
+- **README: a TOF caveat.** On TOF data the evidence levels of 0.10.0 are not assessed (`NA`)
+  and the tier rests on mass and isotope evidence. Where the formula space is crowded (at higher
+  m/z, and at any m/z on a low-resolution TOF) mass alone cannot separate formulas, so an
+  Assigned reading without isotope support is to be read as mass-only. Isotope support is the
+  line the ion's formula demands (reagent atoms included) at the predicted ratio; an
+  isotopologue row in the ledger is not support by itself, and at higher m/z on a TOF even a
+  present line is weak evidence.
+- **README: a known limit for very bright Orbitrap ions.** On a high-intensity Orbitrap the
+  brightest ions can sit about +0.6 to +1.0 ppm off their formula's mass while their own isotope
+  lines sit on centre; their pattern score then falls low enough that 0.10.0 commits no reading
+  for them.
+- **`scripts/scorecard.py`: a populated-defect ppm-shift decoy arm.** The 0.35 Da shift arm
+  moves every line below ~m/z 350 into the empty mass-defect gap where no CHNOS formula sits, so
+  on an Orbitrap the engine proposes nothing there, no tier gate is tested and the arm reads 0 %
+  whatever the tiers do (on the uronium Orbitrap batch's brightest file: 2 M0 rows, none
+  Assigned, against the control's 700 / 403 Assigned). The new arms scale every m/z by (1 + k x
+  1e-6), default k = +9 and -9 ppm (`--decoy-ppm`; `none` for none): outside the file's match
+  window, inside the populated band where the formula grid is dense, so wrong formulas are
+  proposed and the mass, degeneracy and pattern gates are exercised (a shift keeps every isotope
+  and label spacing, so no shift decoy tests the label / isotope vetoes). A shift inside the
+  window (the wider of the grid's 3 ppm and the window the file is scored at: 5 ppm on an
+  Orbitrap, 15 ppm on a TOF) is skipped and says why. Each arm is rated against its files'
+  control; pooled, against the control counted once per arm. Every arm now reports its Assigned
+  rate below and at or above m/z 350 and per 50-Da bin (`decoy.bins`); the card leads the decoy
+  section with the headline below m/z 350 (`decoy.headline`: the ppm arms when they ran, else
+  the 0.35 Da arm, labelled blind below ~350 on an Orbitrap and kept for continuity), naming the
+  calibration the arms actually ran at and the M0 rows the arm committed below 350 against the
+  control's; new board-row keys (`decoy_ppm_*`, `decoy_headline_lt_350_rate`,
+  `decoy_headline_arm`, `decoy_orbitrap`) and two acceptance criteria (the ppm arms' identified
+  rate beside their own Assigned rate; the headline, Assigned already, beside no older metric).
+  The board's lead claims table reads its decoy column from the headline arm (the ppm arms named
+  with their shifts), and an Orbitrap row's 0.35 Da number below 350 is marked blind there, on
+  the board and in the acceptance block. `--decoy shift` runs both kinds of shift arm,
+  `--decoy ppm` the ppm arms only, `--decoy both` every arm. On that file the control reproduces
+  the run's per-file ledger (696 of 696 common M0 rows, same reading and tier) and the ppm arms
+  Assign 6 (+9 ppm) and 9 (-9 ppm): 15 of 806 = 1.9 %, below m/z 350 12 of 790 = 1.5 %; over the
+  batch's two brightest files 33 of 1568 = 2.1 % (below 350 1.7 %, at or above 7 of 34). On the
+  labelled-nitrate Orbitrap batch's brightest file (control 331 Assigned, 790 of 809 common M0
+  rows as the run read them) the ppm arms Assign 21 and 30: 51 of 662 = 7.7 %, below m/z 350 48
+  of 660 = 7.3 %, where the 0.35 Da arm Assigns none below 350.
 - **The evidence scale of peaky 0.10.0.** Every committed formula carries, beside its tier, an
   evidence level that says what the evidence behind it is worth (`docs/EVIDENCE_LEVELS.md`, the
   contract; `peaky/assignment/levels/`, the machinery; `peaky.assignment.evidence`, the entry
