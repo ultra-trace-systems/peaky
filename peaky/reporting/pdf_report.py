@@ -108,7 +108,6 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
                  generated: str = "", batch_name: str | None = None,
                  dataset: str | None = None,
                  run_id: str | None = None) -> dict:
-    from peaky.reporting import analyte_viz as V
     from peaky.chem import chemistry as C
     out_dir = os.path.expanduser(out_dir)
     RP = PT.run_paths(out_dir)
@@ -150,8 +149,10 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
     ctx["tiers"] = merged["tier"].value_counts().to_dict()
     u = merged.drop_duplicates("neutral_formula").copy()
     ctx["n_neutrals"] = len(u)
-    # composition by CHO/CHON/CHOS backbone (Si/F/halogen folded in)
-    ctx["composition"] = u["neutral_formula"].map(V.backbone_class).value_counts().to_dict()
+    # composition by CHO/CHON/CHOS backbone (Si/F/halogen folded in); a carbon-free
+    # neutral (a reagent ion's own reading, an inorganic acid) is its own class
+    from peaky.batch import composition as CMP
+    ctx["composition"] = u["neutral_formula"].map(CMP.composition_class).value_counts().to_dict()
     # heteroatom side-counts (additions to the backbone)
     cnt = u["neutral_formula"].map(lambda f: C.parse_formula(str(f)))
     ctx["hetero"] = {
@@ -211,6 +212,11 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
             ns = m0a.groupby(m0a["neutral_formula"].astype(str))["h"].sum()
             ctx["neutral_signal"] = {k: float(v) for k, v in ns.items()
                                      if k and k != "nan"}
+            # ... and per (neutral, adduct) reading: the Assigned-only composition
+            if "adduct" in m0a.columns:
+                rs = m0a.groupby([m0a["neutral_formula"].astype(str), m0a["adduct"].astype(str)])["h"].sum()
+                ctx["reading_signal"] = {(n, ad): float(v) for (n, ad), v in rs.items()
+                                         if n and n != "nan"}
         ctx["expl_mz"] = np.sort(a.loc[a["role"].astype(str) != "unexplained",
                                        "mz"].dropna().to_numpy())
         ctx["_flag_ev_src"] = a          # kept for scrutiny-evidence enrichment below
@@ -291,12 +297,14 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
             pass
 
     # signal-weighted composition + ammonium/amine degeneracy (composition page)
-    from peaky.batch import composition as CMP
     nsig = ctx.get("neutral_signal", {})
     ctx["sig_comp_frac"], ctx["sig_comp_abs"] = CMP.signal_by_backbone(merged, nsig)
+    # what the pages print: the Assigned readings only, carbon-free ions apart
+    ctx["assigned_comp"] = CMP.assigned_composition(merged, ctx.get("reading_signal", {}))
     ctx["shadow"] = CMP.amine_shadow_stats(merged)
     ctx["comp_asg"], ctx["comp_collapsed"], ctx["n_collapsed"] = CMP.collapsed_composition(merged)
-    ctx["top_species"] = CMP.top_species_by_signal(merged, nsig, n=8)
+    ctx["top_species"] = CMP.top_species_by_signal(merged, nsig, n=8, inorganic=False)
+    ctx["top_inorganic"] = CMP.top_species_by_signal(merged, nsig, n=6, inorganic=True)
     ctx["oligomers"] = CMP.oligomer_flag(merged)
     # polarity (gates positive-only messaging: the amine re-read, the shadow note)
     # + chemical-plausibility QC of the assignments
@@ -512,6 +520,17 @@ def _image_page(pdf, png, title, *, landscape=False, dpi=200, native=False, src_
 
 def _pct(part, whole):
     return 100.0 * part / whole if whole else 0.0
+
+
+def _share(frac: float) -> str:
+    """A fraction as a whole percent that never rounds a non-zero share to 0% or a
+    partial one to 100% ('<1%', '>99%')."""
+    v = 100.0 * float(frac)
+    if 0.0 < v < 0.5:
+        return "<1%"
+    if 99.5 <= v < 100.0:
+        return ">99%"
+    return f"{v:.0f}%"
 
 
 # readable descriptor for each ion channel (so the breakdown names the actual adduct)
@@ -894,6 +913,36 @@ def _event_sentence(hours, total, *, bar: float | None = None,
             f"bar; 90% of the samples lie within {lo:.2f}-{hi:.2f}x of that baseline.")
 
 
+def _composition_lines(ctx) -> list:
+    """The Findings bullet on what the chemistry is, by signal: the Assigned
+    readings only (composition.assigned_composition), the organic classes as
+    shares of the organic signal, the carbon-free reagent / inorganic ions as a
+    share of all Assigned signal, beside the CHON share by count of the same
+    Assigned organic neutrals. The '(a few bright CHO species ...)' clause only
+    when CHO carries more than half of the organic signal."""
+    from peaky.batch import composition as CMP
+    ac = ctx.get("assigned_comp") or {}
+    of = ac.get("organic_frac") or {}
+    if not ac.get("n_readings"):
+        return [("b", "• No reading is held at tier Assigned, so no composition by signal is given.")]
+    out = []
+    if of:
+        cnt = ac.get("count", {})
+        n_org = sum(v for k, v in cnt.items() if k != CMP.INORGANIC)
+        parts = " / ".join(f"{_share(of[k])} {k}" for k in CMP.ORGANIC_CLASSES if k in of)
+        out.append(("b", f"• By signal, the Assigned organic readings are {parts} — vs "
+                         f"{_pct(cnt.get('CHON', 0), n_org):.0f}% CHON by count of the same neutrals"))
+    if ac.get("inorganic_frac", 0.0) > 0:
+        out.append(("b", f"  Carbon-free reagent and inorganic ions carry {_share(ac['inorganic_frac'])} of "
+                         "the Assigned M0 signal; they are kept out of CHO / CHON / CHOS."))
+    if of and ctx.get("positive"):   # the CHON count inflation is the amine re-read (positive only)
+        out.append(("b", "  (the count is inflated by mass-degenerate ammonium/amine re-reads; "
+                         "see Composition)."))
+    elif of.get("CHO", 0.0) > 0.5:
+        out.append(("b", "  (a few bright CHO species carry most of the signal)."))
+    return out
+
+
 def findings(ctx, pdf):
     """Plain-language findings page (after the claim summary): the event time-trace
     plus data-driven takeaways — top species by signal, signal-weighted
@@ -903,7 +952,7 @@ def findings(ctx, pdf):
     import matplotlib.pyplot as plt
     ev = ctx.get("event"); top = ctx.get("top_species", [])
     scf = ctx.get("sig_comp_frac", {}); olig = ctx.get("oligomers", [])
-    if not (ev or top):
+    if not (ev or top or ctx.get("top_inorganic")):
         return
     fig = plt.figure(figsize=A4)
     fig.text(0.08, 0.955, "Findings", fontsize=16, weight="bold", color=INK)
@@ -924,29 +973,28 @@ def findings(ctx, pdf):
     lines = []
     if rise_txt:
         lines += [("b", "• " + rise_txt)]
-    if scf:
-        cc = ctx.get("comp_asg", {}); nn = ctx.get("n_neutrals", 1)
-        cho = scf.get("CHO", 0) * 100; chon = scf.get("CHON", 0) * 100
-        lines += [("b", f"• By signal the assigned chemistry is {cho:.0f}% CHO / {chon:.0f}% CHON"
-                        f" — vs {_pct(cc.get('CHON', 0), nn):.0f}% CHON by compound count")]
-        if ctx.get("positive"):     # the CHON count inflation is the amine re-read (positive only)
-            lines += [("b", "  (the count is inflated by mass-degenerate ammonium/amine re-reads; "
-                            "see Composition).")]
-        else:
-            lines += [("b", "  (a few bright CHO species carry most of the signal).")]
+    lines += _composition_lines(ctx) if scf else []
+    inorg = ctx.get("top_inorganic", [])
+    if top or inorg:
+        lines += [("gap", 0.6), ("h", "Top species by signal"), ("gap", 0.25),
+                  ("dim", "share = of all per-file M0 height (every tier); carbon-free reagent and "
+                          "inorganic ions are listed apart, below")]
     if top and ctx.get("claim_of_pair"):
         # the neutral's best claim over its channels (identified > neutral > ion > tentative)
         best = _best_claims(ctx["claim_of_pair"])
-        lines += [("gap", 0.6), ("h", "Top species by signal"), ("gap", 0.25),
-                  ("m", f"   share   class   {'claim':<12}   neutral")]
+        lines.append(("m", f"   share   class   {'claim':<12}   neutral"))
         for r in top[:8]:
             lines.append(("m", f"   {r['frac']*100:>4.1f}%   {r['klass']:5s}   "
                                f"{best.get(str(r['neutral_formula']), '-'):<12}   {r['neutral_formula']}"))
     elif top:
-        lines += [("gap", 0.6), ("h", "Top species by signal"), ("gap", 0.25),
-                  ("m", "   share   class   neutral")]
+        lines.append(("m", "   share   class   neutral"))
         for r in top[:8]:
             lines.append(("m", f"   {r['frac']*100:>4.1f}%   {r['klass']:5s}   {r['neutral_formula']}"))
+    if inorg:
+        items = [f"{r['neutral_formula']} {r['frac'] * 100:.1f}%" for r in inorg[:6]]
+        lines.append(("m", "   reagent and inorganic ions (carbon-free):"))
+        for k in range(0, len(items), 3):             # 3 per line (a mono line never wraps)
+            lines.append(("m", "      " + ", ".join(items[k:k + 3])))
     if olig:
         nsig = ctx.get("neutral_signal", {})
         olig = sorted(olig, key=lambda f: nsig.get(f, 0.0), reverse=True)[:12]
@@ -1297,27 +1345,39 @@ def evidence_levels(ctx, pdf):
     _close(pdf, fig)
 
 
+def _class_label(kl: str) -> str:
+    """The composition table's short label of a class (carbon-free -> 'C-free')."""
+    from peaky.batch import composition as CMP
+    return "C-free" if kl == CMP.INORGANIC else kl
+
+
 def composition(ctx, pdf):
     import matplotlib.pyplot as plt
     fig = plt.figure(figsize=A4)            # text page FIRST, then the VK figure
     fig.text(0.08, 0.95, "Composition of the assigned peaks", fontsize=15, weight="bold", color=INK)
+    from peaky.batch import composition as CMP
     comp = ctx.get("composition", {})
     het = ctx.get("hetero", {})
-    scf = ctx.get("sig_comp_frac", {})
-    lines = [("h", f"Distinct neutral compounds by backbone ({ctx['n_neutrals']} total)"),
+    ac = ctx.get("assigned_comp") or {}
+    lines = [("h", f"Distinct neutral compounds by class ({ctx['n_neutrals']} total, every tier)"),
              ("gap", 0.3),
              ("dim", "by COUNT — each compound once, regardless of how bright it is")]
-    for kl in ("CHO", "CHON", "CHOS"):
+    for kl in (*CMP.ORGANIC_CLASSES, CMP.INORGANIC):
         if kl in comp:
-            lines.append(("m", f"   {kl:6s} {comp[kl]:>4}   ({_pct(comp[kl], ctx['n_neutrals']):.0f}%)"))
-    if scf:
+            lines.append(("m", f"   {_class_label(kl):6s} {comp[kl]:>4}   ({_pct(comp[kl], ctx['n_neutrals']):.0f}%)"))
+    if ac.get("total", 0) > 0:
+        of = ac.get("organic_frac") or {}
         lines += [("gap", 0.8),
-                  ("h", "Same compounds, weighted by signal"),
+                  ("h", "Assigned readings, weighted by signal"),
                   ("gap", 0.3),
-                  ("dim", "where the chemistry actually is — a few bright species carry most signal")]
-        for kl in ("CHO", "CHON", "CHOS"):
-            if kl in scf:
-                lines.append(("m", f"   {kl:6s} {scf[kl]*100:>3.0f}% of assigned signal"))
+                  ("dim", f"the {ac.get('n_readings', 0)} (neutral, adduct) readings held at tier Assigned, each "
+                          "weighted by its summed per-file M0 height; Candidate readings are left out")]
+        for kl in CMP.ORGANIC_CLASSES:
+            if kl in of:
+                lines.append(("m", f"   {kl:6s} {_share(of[kl]):>4} of the Assigned organic signal"))
+        if ac.get("signal", {}).get(CMP.INORGANIC):
+            lines.append(("m", f"   {_class_label(CMP.INORGANIC):6s} {_share(ac['inorganic_frac']):>4} of all "
+                               "Assigned M0 signal (carbon-free reagent / inorganic ions, kept apart)"))
     sh = ctx.get("shadow", {}); coll = ctx.get("comp_collapsed", {})
     if sh.get("n_shadowed") and ctx.get("positive"):    # the re-read is positive urea-CIMS only
         lines += [("gap", 0.8),
@@ -1330,11 +1390,13 @@ def composition(ctx, pdf):
               ("gap", 0.3)]
     for k, v in het.items():
         lines.append(("m", f"   {k:24s} {v}"))
-    present = "/".join(k for k in ("CHO", "CHON", "CHOS") if k in comp)
+    present = "/".join(k for k in CMP.ORGANIC_CLASSES if k in comp)
     lines += [("gap", 0.8),
-              ("dim", f"Si/F/halogen are folded into the {present} backbone, not split out"),
+              ("dim", f"Si/F/halogen are folded into the {present or 'organic'} backbone, not split out"),
               ("dim", "(a siloxane with no N is CHO; a fluorinated species with N is CHON)."),
-              ("dim", "Si = PDMS/silicone inlet bleed; F/halogen are reagent/contaminant ladders.")]
+              ("dim", "Si = PDMS/silicone inlet bleed; F/halogen are reagent/contaminant ladders."),
+              ("dim", "A carbon-free neutral (C-free: the reagent ion's own reading, an inorganic acid,"),
+              ("dim", "a peroxide) is a class of its own, never CHO or CHON.")]
     _text_lines(fig, lines, y0=0.89, dy=0.028)
     _close(pdf, fig)
     if "vk" in ctx["fig"]:

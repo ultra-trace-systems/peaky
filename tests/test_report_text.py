@@ -115,3 +115,73 @@ def test_peaky_report_takes_the_batch_and_dataset_from_the_run_manifest(tmp_path
     cli.cmd_report(args)                                              # no manifest: as before
     assert seen["dataset"] is None and seen["batch"] == "Br- CIMS"
     assert cli.report_inputs_of(str(tmp_path / "nowhere")) == {}
+
+
+# --------------------------------------------------------------------------- composition: carbon-free ions apart, Assigned only
+def _merged_rows(rows):
+    import pandas as pd
+    return pd.DataFrame(rows, columns=["neutral_formula", "adduct", "tier", "ion_only_of"])
+
+
+def test_carbon_free_neutrals_are_their_own_class_and_the_backbone_is_unchanged():
+    from peaky.batch import composition as CMP
+    assert CMP.composition_class("HNO3") == CMP.INORGANIC and CMP.backbone("HNO3") == "CHON"
+    assert CMP.composition_class("H2O2") == CMP.INORGANIC and CMP.backbone("H2O2") == "CHO"
+    assert CMP.composition_class("CH2O2") == "CHO" and CMP.composition_class("C10H17NO7") == "CHON"
+    assert not CMP.is_inorganic("") and not CMP.is_inorganic("nan")
+
+
+def test_the_assigned_composition_weights_assigned_readings_only_with_the_reagent_ion_apart():
+    from peaky.batch import composition as CMP
+    merged = _merged_rows([
+        ("HNO3", "[M-H]-", "Assigned", None),               # the nitrate reagent ion, read as an analyte
+        ("HNO3", "[M+NO3]-", "Assigned", None),             # its dimer
+        ("C10H16O4", "[M+NO3]-", "Assigned", None),
+        ("C10H17NO7", "[M+NO3]-", "Assigned", None),
+        ("C20H30O12", "[M+NO3]-", "Candidate", None),        # a Candidate: left out
+        ("C10H16O4", "[M]-.", "Candidate", "p1"),            # an ion-only row: never Assigned
+    ])
+    sig = {("HNO3", "[M-H]-"): 600.0, ("HNO3", "[M+NO3]-"): 300.0, ("C10H16O4", "[M+NO3]-"): 80.0,
+           ("C10H17NO7", "[M+NO3]-"): 20.0, ("C20H30O12", "[M+NO3]-"): 500.0, ("C10H16O4", "[M]-."): 99.0}
+    ac = CMP.assigned_composition(merged, sig)
+    assert ac["n_readings"] == 4 and ac["total"] == 1000.0
+    assert ac["inorganic_frac"] == 0.9
+    assert ac["organic_frac"] == {"CHO": 0.8, "CHON": 0.2}             # of the organic 100 cps
+    assert ac["count"] == {CMP.INORGANIC: 1, "CHO": 1, "CHON": 1}
+    # the old all-tier backbone booked the reagent ion as CHON
+    frac, _ = CMP.signal_by_backbone(merged, {"HNO3": 900.0, "C10H16O4": 179.0, "C10H17NO7": 20.0,
+                                              "C20H30O12": 500.0})
+    assert frac["CHON"] > 0.5
+
+
+def test_the_findings_bullet_names_the_inorganic_share_and_gates_the_bright_cho_clause():
+    lines = R._composition_lines({"assigned_comp": {
+        "n_readings": 4, "total": 1000.0, "inorganic_frac": 0.9, "organic_frac": {"CHO": 0.8, "CHON": 0.2},
+        "count": {"inorganic": 1, "CHO": 1, "CHON": 1}, "signal": {"inorganic": 900.0}}})
+    txt = " ".join(t for _s, t in lines)
+    assert "the Assigned organic readings are 80% CHO / 20% CHON" in txt
+    assert "50% CHON by count of the same neutrals" in txt
+    assert "Carbon-free reagent and inorganic ions carry 90% of the Assigned M0 signal" in txt
+    assert "a few bright CHO species" in txt
+    lines = R._composition_lines({"assigned_comp": {
+        "n_readings": 3, "total": 100.0, "inorganic_frac": 0.0, "organic_frac": {"CHO": 0.4, "CHON": 0.6},
+        "count": {"CHO": 2, "CHON": 1}, "signal": {}}})
+    txt = " ".join(t for _s, t in lines)
+    assert "a few bright CHO species" not in txt and "Carbon-free" not in txt
+    assert R._composition_lines({"assigned_comp": {"n_readings": 0}})[0][1].startswith("• No reading is held")
+
+
+def test_top_species_split_organic_from_carbon_free():
+    from peaky.batch import composition as CMP
+    merged = _merged_rows([("HNO3", "[M-H]-", "Assigned", None), ("C10H16O4", "[M+NO3]-", "Assigned", None),
+                           ("H2O2", "[M+NO3]-", "Assigned", None)])
+    sig = {"HNO3": 900.0, "C10H16O4": 80.0, "H2O2": 20.0}
+    org = CMP.top_species_by_signal(merged, sig, inorganic=False)
+    ino = CMP.top_species_by_signal(merged, sig, inorganic=True)
+    assert [r["neutral_formula"] for r in org] == ["C10H16O4"] and org[0]["frac"] == 0.08
+    assert [r["neutral_formula"] for r in ino] == ["HNO3", "H2O2"] and ino[0]["klass"] == CMP.INORGANIC
+    assert len(CMP.top_species_by_signal(merged, sig)) == 3
+
+
+def test_a_share_never_rounds_a_nonzero_class_to_zero_or_a_partial_one_to_all():
+    assert [R._share(x) for x in (0.0, 0.003, 0.2, 0.996, 1.0)] == ["0%", "<1%", "20%", ">99%", "100%"]

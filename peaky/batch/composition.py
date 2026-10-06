@@ -2,7 +2,8 @@
 ammonium/amine degeneracy.
 
 The composition page used to report distinct-neutral COUNTS by backbone only. For
-a positive urea-CIMS batch that is misleading on two fronts, both addressed here:
+a positive urea-CIMS batch that is misleading on two fronts (1, 2), and on any
+batch whose reagent ion reads as an analyte on a third (3); all addressed here:
 
   1. SIGNAL vs COUNT. A compound is counted once regardless of abundance, so a
      swarm of dim species can dominate the count while a few bright ones carry the
@@ -19,8 +20,15 @@ a positive urea-CIMS batch that is misleading on two fronts, both addressed here
      `collapsed_composition` quantify and optionally collapse that degeneracy, so
      the page can report the count "two ways" (as-assigned vs ammonium-as-CHO).
 
+  3. CARBON-FREE IONS. A reagent ion read as an analyte (HNO3 as NO3- and
+     HNO3.NO3- on a nitrate inlet), an inorganic acid or a peroxide is no organic
+     chemistry: `composition_class` puts every carbon-free neutral in its own
+     `INORGANIC` class, and `assigned_composition` weights the Assigned readings
+     only, the carbon-free ones apart from CHO / CHON / CHOS.
+
 All pure (formula arithmetic only); no I/O, no plotting. `neutral_signal` is a
-{neutral_formula -> summed cps} map the caller builds from the per-file M0 rows.
+{neutral_formula -> summed cps} map the caller builds from the per-file M0 rows;
+`reading_signal` the same per (neutral_formula, adduct) reading.
 """
 from __future__ import annotations
 
@@ -38,6 +46,61 @@ def backbone(formula: str) -> str:
     if c.get("N", 0):
         return "CHON"
     return "CHO"
+
+
+#: the class of a carbon-free neutral -- the reagent ion's own readings (HNO3 as
+#: NO3- or HNO3.NO3-), inorganic acids, peroxides -- reported apart from the
+#: organic backbones (CHO / CHON / CHOS), never folded into them
+INORGANIC = "inorganic"
+#: the organic backbone classes, in print order
+ORGANIC_CLASSES = ("CHO", "CHON", "CHOS")
+
+
+def is_inorganic(formula: str) -> bool:
+    """A carbon-free neutral formula (a non-empty one: a missing formula is no class)."""
+    c = C.parse_formula(str(formula))
+    return bool(c) and not c.get("C", 0)
+
+
+def composition_class(formula: str) -> str:
+    """`INORGANIC` for a carbon-free neutral, else its organic `backbone`."""
+    return INORGANIC if is_inorganic(formula) else backbone(formula)
+
+
+def assigned_readings(merged) -> set:
+    """The (neutral_formula, adduct) readings a merged row holds at tier Assigned
+    (an ion-only row, `ion_only_of` set, is never one)."""
+    if merged is None or not len(merged) or "tier" not in merged.columns:
+        return set()
+    m = merged[merged["tier"].astype(str) == "Assigned"]
+    if "ion_only_of" in m.columns:
+        m = m[m["ion_only_of"].isna()]
+    return {(str(n), str(a)) for n, a in zip(m["neutral_formula"], m["adduct"])
+            if str(n) not in ("", "nan")}
+
+
+def assigned_composition(merged, reading_signal: dict) -> dict:
+    """The composition of the run's ASSIGNED readings, carbon-free ones apart.
+
+    `reading_signal` = {(neutral, adduct): summed per-file M0 height}. Only the
+    readings a merged row holds at tier Assigned count (`assigned_readings`).
+    Returns {signal: {class: cps} over ORGANIC_CLASSES + INORGANIC, total,
+    organic_frac: {class: share of the organic signal}, inorganic_frac: share
+    of the total, count: {class: distinct Assigned neutrals}, n_readings}."""
+    keep = assigned_readings(merged)
+    sig: dict = {}
+    neutrals: dict = {}
+    for (n, a) in keep:
+        kl = composition_class(n)
+        sig[kl] = sig.get(kl, 0.0) + float(reading_signal.get((n, a), 0.0) or 0.0)
+        neutrals.setdefault(kl, set()).add(n)
+    total = sum(sig.values())
+    organic = sum(v for k, v in sig.items() if k != INORGANIC)
+    return {"signal": sig, "total": total,
+            "organic_frac": {k: v / organic for k, v in sig.items() if k != INORGANIC and organic > 0},
+            "inorganic_frac": (sig.get(INORGANIC, 0.0) / total) if total > 0 else 0.0,
+            "count": {k: len(v) for k, v in neutrals.items()},
+            "n_readings": len(keep)}
 
 
 def minus_nh3(formula: str) -> str | None:
@@ -103,35 +166,41 @@ def amine_shadow_stats(merged) -> dict:
 def collapsed_composition(merged) -> tuple[dict, dict, int]:
     """Two-way backbone counts: (as_assigned, ammonium_as_cho, n_collapsed).
 
+    Classes are `composition_class` (a carbon-free neutral is `INORGANIC`).
     `ammonium_as_cho` re-reads every shadowed amine (one with a present X-NH3 twin)
     back into its CHO twin's class — i.e. the composition if the parsimony NH4->amine
     re-read had NOT been applied to the cases where the bare CHO is independently
     seen. The twin already exists, so collapsing just removes the duplicate amine."""
     neu = set(_neutrals(merged))
-    as_assigned = dict(Counter(backbone(f) for f in neu))
+    as_assigned = dict(Counter(composition_class(f) for f in neu))
     dropped: Counter = Counter()
     for f in neu:
         if C.parse_formula(f).get("N", 0) >= 1:
             twin = minus_nh3(f)
             if twin is not None and twin in neu:
-                dropped[backbone(f)] += 1
+                dropped[composition_class(f)] += 1
     collapsed = {k: as_assigned.get(k, 0) - dropped.get(k, 0) for k in as_assigned}
     return as_assigned, collapsed, int(sum(dropped.values()))
 
 
-def top_species_by_signal(merged, neutral_signal: dict, *, n: int = 8) -> list[dict]:
-    """Top-n distinct neutrals by summed M0 signal, with class + signal fraction.
-    Useful for a findings page: the chemistry lives in a handful of bright peaks."""
+def top_species_by_signal(merged, neutral_signal: dict, *, n: int = 8,
+                          inorganic: bool | None = None) -> list[dict]:
+    """Top-n distinct neutrals by summed M0 signal, with class (`composition_class`)
+    + signal fraction (of ALL of `neutral_signal`). `inorganic` = False keeps the
+    organic neutrals only, True the carbon-free ones only, None both. Useful for a
+    findings page: the chemistry lives in a handful of bright peaks."""
     tot = sum(float(v or 0.0) for v in neutral_signal.values()) or 1.0
     rows = []
     seen = set()
     for f in _neutrals(merged):
+        if inorganic is not None and is_inorganic(f) != inorganic:
+            continue
         if f in seen:
             continue
         seen.add(f)
         rows.append({"neutral_formula": f, "signal": float(neutral_signal.get(f, 0.0) or 0.0),
                      "frac": float(neutral_signal.get(f, 0.0) or 0.0) / tot,
-                     "klass": backbone(f)})
+                     "klass": composition_class(f)})
     rows.sort(key=lambda r: r["signal"], reverse=True)
     return rows[:n]
 
