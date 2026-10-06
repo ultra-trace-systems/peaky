@@ -1497,7 +1497,8 @@ def batch_config(
     letters were read so. `published_tiers` (the sent rows by peaky's tier,
     :func:`build_batch_rows`' ``by_tier``) is recorded as given: the rows
     themselves carry no verdict, so this is where the run says which of
-    peaky's tiers it holds.
+    peaky's tiers it holds. The claims tally and `levels_before_scale`
+    describe the whole merged ledger, not the subset `published_tiers` counts.
     """
     config = {k: summary[k] for k in BATCH_CONFIG_KEYS if summary and k in summary}
     if published_tiers is not None:

@@ -57,10 +57,11 @@ Only committed **M0** rows carry one — peaky tiers nothing else, and null is h
 that is said. Absence is not agreement: Mascope's `tier_disagrees` filter
 excludes untiered rows from both answers.
 
-Mascope's tier column, tier strip, sorting, filters and roll-ups all read `tier`,
-so a row peaky holds Candidate shows there as `assigned` wherever the banding puts
-it; the publish summary leads with how many such rows the ledger has, and peaky's
-verdict stays readable in the `engine tier` column and the `tier_disagrees` filter.
+Mascope's tier column, tier strip, sorting, roll-ups and every filter but
+`tier_disagrees` read `tier`, so a row peaky holds Candidate shows there as
+`assigned` wherever the banding puts it; the publish summary leads with how many
+such rows the ledger has, and peaky's verdict stays readable in the `engine tier`
+column and the `tier_disagrees` filter.
 
 This is the point of the feature. On a real ledger, 195 of 1096 assigned rows
 were rows where peaky demoted a peak that Mascope's banding would have called

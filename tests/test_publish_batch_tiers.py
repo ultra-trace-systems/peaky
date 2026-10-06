@@ -113,6 +113,26 @@ def test_cli_include_candidates_sends_them_with_a_warning(tmp_path, capsys):
     assert payload["config"]["published_tiers"] == {"Assigned": 1, "Candidate": 2, "Identified": 1}
 
 
+def test_cli_publish_batch_says_the_old_scale_count_is_over_the_merged_ledger(tmp_path, capsys):
+    # levelled before the evidence scale: the config's count covers all four
+    # lettered merged rows, while only the two Assigned ones are sent
+    old = _merged(evidence_level=["2b", "4a", "4b", None, "2a"], evidence_axes=["iso", "iso", "", None, "iso"])
+    cli.cmd_publish_batch(cli.build_parser().parse_args(
+        ["publish-batch", str(_run_dir(tmp_path, old)), "--dry-run", "--no-resolve-mechanisms"]))
+    text = capsys.readouterr().out
+    assert cli.LEVELS_BEFORE_SCALE.format(n=4) in text
+    assert cli.BATCH_LEVELS_OF_MERGED.format(sent=2, total=5) in text
+    # sending every row, nothing is held back and the count needs no rider
+    (tmp_path / "run2").mkdir()
+    old.to_csv(tmp_path / "run2" / "merged_ledger.csv", index=False)
+    (tmp_path / "run2" / "batch_summary.json").write_text("{}")
+    cli.cmd_publish_batch(cli.build_parser().parse_args(
+        ["publish-batch", str(tmp_path / "run2"), "--dry-run", "--no-resolve-mechanisms", "--include-candidates"]))
+    text = capsys.readouterr().out
+    assert cli.LEVELS_BEFORE_SCALE.format(n=4) in text
+    assert "not only the" not in text
+
+
 def test_cli_publish_batch_stops_when_nothing_is_assigned(tmp_path, capsys):
     run = _run_dir(tmp_path, _merged(tier=["Candidate"] * 5))
     with pytest.raises(SystemExit, match="no merged row with a formula is Assigned"):
@@ -141,14 +161,28 @@ def _ledger(tiers, ion_scores):
     })
 
 
+#: one row of each kind the per-sample note must tell apart, under the default
+#: bands (assigned >= 0.75, candidate >= 0.45): peaky's tier, the fit, and the
+#: tier Mascope derives from that fit
+_MIXED = [
+    ("Candidate", 0.99),  # Mascope 'assigned' -- the one row the note counts
+    ("Candidate", 0.5),   # Mascope 'candidate' -- agrees
+    ("Assigned", 0.99),   # Mascope 'assigned' -- agrees
+    ("Assigned", 0.5),    # Mascope 'candidate' -- a disagreement the other way
+    ("Candidate", 0.2),   # Mascope 'below_assignability' -- a disagreement, not shown assigned
+]
+
+
 def test_build_rows_counts_the_candidates_mascope_will_call_assigned():
     bands = P.DEFAULT_TIER_BANDS
-    # a high fit peaky demoted -> Mascope 'assigned'; a low-fit Candidate stays
-    # 'candidate' in Mascope too; an Assigned row agrees
-    _, summary = P.build_rows(_ledger(["Candidate", "Candidate", "Assigned"], [0.99, 0.5, 0.99]),
-                              intensity_column="height", bands=bands)
+    tiers, fits = zip(*_MIXED)
+    rows, summary = P.build_rows(_ledger(list(tiers), list(fits)), intensity_column="height", bands=bands)
+    assert [r["engine_tier"] for r in rows] == ["candidate", "candidate", "assigned", "assigned", "candidate"]
+    assert summary["by_predicted_tier"] == {"assigned": 2, "candidate": 2, "below_assignability": 1}
+    # only the Candidate Mascope bands 'assigned': not every disagreement, and not
+    # a Candidate Mascope bands anything other than 'candidate'
     assert summary["candidate_shown_assigned"] == 1
-    assert summary["engine_tier_disagreements"] == 1
+    assert summary["engine_tier_disagreements"] == 3
     _, none = P.build_rows(_ledger(["Assigned"], [0.99]), intensity_column="height", bands=bands)
     assert none["candidate_shown_assigned"] == 0
 
@@ -162,10 +196,17 @@ def _publish_text(tmp_path, capsys, led):
 
 
 def test_cli_publish_summary_leads_with_the_candidates_mascope_will_call_assigned(tmp_path, capsys):
-    text = _publish_text(tmp_path, capsys, _ledger(["Candidate", "Candidate", "Assigned"], [0.99, 0.98, 0.99]))
+    # two Candidates Mascope bands 'assigned', plus the rows of _MIXED that
+    # disagree without being shown assigned: 2 such rows, 4 disagreements
+    tiers, fits = zip(*([("Candidate", 0.98)] + _MIXED))
+    text = _publish_text(tmp_path, capsys, _ledger(list(tiers), list(fits)))
     lines = [ln for ln in text.splitlines() if ln.strip()]
     note = cli.CANDIDATE_SHOWN_ASSIGNED.format(n=2)
     assert note in lines
+    # the note's count is the Candidates shown assigned, not the disagreements,
+    # which keep their own line
+    assert cli.CANDIDATE_SHOWN_ASSIGNED.format(n=4) not in text
+    assert "disagree   4 row(s)" in text
     # it leads the summary: the first line after the intensity line, before the sample
     assert lines.index(note) == lines.index(next(ln for ln in lines if ln.startswith("sample "))) - 1
     assert "engine tier" in note and "tier_disagrees" in note

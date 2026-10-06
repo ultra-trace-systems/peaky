@@ -504,7 +504,7 @@ LEVELS_BEFORE_SCALE = ("older     {n} row(s) were levelled on a scale before the
                        "letter publishes as no level and the row's claim as tentative")
 
 #: publish's `candidate_shown_assigned`, the line its summary leads with: Mascope's
-#: tier column, strip, filters and roll-ups read the tier Mascope derives, not peaky's
+#: tier column, strip, tier filter and roll-ups read the tier Mascope derives, not peaky's
 CANDIDATE_SHOWN_ASSIGNED = ("note       {n} row(s) peaky holds Candidate will show as Mascope 'assigned' "
                             "(Mascope derives its own tier); peaky's verdict is the 'engine tier' "
                             "column / the tier_disagrees filter")
@@ -518,6 +518,11 @@ BATCH_HELD_BACK = ("held back  {n} merged row(s) peaky does not hold Assigned ({
 BATCH_CANDIDATES_SENT = ("WARNING    --include-candidates: {n} of the {total} row(s) are not peaky "
                          "Assigned ({tiers}); a batch row carries no verdict, so in Mascope they "
                          "read like Assigned rows")
+
+#: publish-batch's run config counts its claims and old-scale letters over the whole merged
+#: ledger, which is no longer the set of rows sent once some are held back
+BATCH_LEVELS_OF_MERGED = ("           (that count and the run config's claims tally are over the whole "
+                          "merged ledger of {total} row(s), not only the {sent} sent)")
 
 
 def cmd_publish(args) -> None:
@@ -770,6 +775,8 @@ def cmd_publish_batch(args) -> None:
     config = P.batch_config(summary, merged=merged, published_tiers=rs["by_tier"])
     if config.get("levels_before_scale"):
         print(LEVELS_BEFORE_SCALE.format(n=config["levels_before_scale"]))
+        if rs["held_back"]:
+            print(BATCH_LEVELS_OF_MERGED.format(sent=rs["rows"], total=len(merged)))
 
     if args.dry_run:
         print(f"\n[dry-run] nothing sent. engine_version {version}, "

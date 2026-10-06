@@ -80,9 +80,18 @@ why results are reproducible and auditable. It is not an autonomous agent; you s
 in the loop and it asks when a choice (reagent, cutoff) actually matters.
 
 **On TOF data** the evidence levels of 0.10.0 are not assessed (`NA`), and the tier
-rests on mass and isotope evidence. Where the formula space is crowded, at higher
-m/z, mass alone cannot separate formulas: treat an Assigned reading without isotope
-support (no isotopologue line of its own in the ledger) as mass-only.
+rests on mass and isotope evidence. Where the formula space is crowded — at higher
+m/z, and at any m/z on a low-resolution TOF (R of a few thousand) — mass alone
+cannot separate formulas: treat an Assigned reading without isotope support as
+mass-only. Isotope support is the line the ion's formula demands (reagent atoms
+included) at the predicted ratio: ⁸¹Br about 1:1 for one Br, 1:2:1 for two, a ¹³C
+satellite that matches the carbon count. An isotopologue row in the ledger is not
+support by itself, and at higher m/z on a TOF even a present line is weak evidence.
+
+**Very bright ions on a high-intensity Orbitrap** can sit about +0.6 to +1.0 ppm
+off their formula's mass while their own isotope lines sit on centre; the pattern
+score then falls low enough that 0.10.0 commits no reading for them, so a batch's
+brightest analytes can be left without a formula rather than misassigned.
 
 ## Install
 
@@ -225,9 +234,9 @@ drift is resolvable and sizes its stamping window from its own scatter;
 persistent traces, centres and gates them, applies the mass-qc wave, and assigns
 them as one synthetic sample through the same merge, stamp and residual stages.
 It is **EXPERIMENTAL**: on its one A/B it recovered about half the ions a file
-cover found, because the isotope evidence that earns Assigned lives inside a spectrum
-and a trace sample averages it away — use it for batch-level centred masses, not
-as a replacement for the cover path. `--no-residual` skips the second, targeted selection
+cover found in two or more files and Assigned fewer of them, because the isotope
+evidence that earns Assigned lives inside a spectrum and a trace sample averages it
+away — use it for batch-level centred masses, not as a replacement for the cover path. `--no-residual` skips the second, targeted selection
 (`--residual-min-x-edge` / `--residual-min-cps` / `--residual-k-max` tune it). `--jobs/-j N` (or `PEAKY_JOBS`) assigns the selected
 samples across `N` worker processes — ~3.5× faster on multicore, output identical
 to a serial run; default is your physical-core count, `--jobs 1` is the serial
@@ -256,7 +265,7 @@ in-app engine's own on the same sample. The row carries **two** tiers: peaky's
 own verdict (`engine_tier`) and Mascope's banding of the evidence (`tier`,
 derived server-side and never sent). Mascope tiers by threshold where peaky
 tiers mechanically, so the two disagree on real rows — which is the point, and
-the app can filter on it. Mascope's tier column, tier strip and filters read its
+the app can filter on it. Mascope's tier column, tier strip and tier filter read its
 own banding, so a row peaky holds Candidate can show there as `assigned` (the
 publish summary leads with how many); peaky's verdict is the `engine tier` column
 and the `tier_disagrees` filter. `peaky publish-batch <run_dir>` lands a batch
@@ -274,23 +283,26 @@ A release is validated on whole `peaky batch` runs of real CIMS data — both
 polarities, Orbitrap and TOF — against yardsticks that do not rest on the
 engine's own scores:
 
-- **A frozen truth set per run.** Readings of each validation run are checked by
-  hand against the raw spectra (isotope lines, adduct partners, time behaviour),
-  marked TRUE or FALSE, and frozen before the code under test changes. A release
-  is scored on how many TRUE readings it still assigns and how many FALSE
-  readings it assigns.
-- **Decoy arms.** The engine is re-run offline on the same peak tables with every
-  m/z shifted off its true mass (the mass-shift arm) and with the adduct set of
-  the wrong chemistry (the wrong-adduct arm). A shifted peak that is still
-  Assigned is false by construction, so the shift arm bounds the error rate,
-  counted per tier and evidence level and separately at high m/z, where the
-  formula space is crowded enough for a shifted mass to find a formula. The
-  wrong-adduct arm shows how readily the engine reads ions through chemistry the
-  run did not have (some such readings are the same ion written another way).
-- **Isotope checks.** An Assigned reading has to survive its own isotopologues:
-  the carbon count its ¹³C satellite implies, the line each heteroatom demands
-  (³⁴S, ³⁷Cl, ⁸¹Br, ²⁹Si), and satellites and adduct partners that co-vary with
-  their parent over the batch.
+- **A frozen truth set per run.** Readings of each validation run are checked
+  against the raw spectra (isotope lines, adduct partners, time behaviour), with
+  the evidence computed outside the engine; each reading is reviewed, marked TRUE
+  or FALSE, and frozen before the code under test changes. A release is scored on
+  how many TRUE readings it still assigns and how many FALSE readings it assigns.
+- **Decoy arms.** The engine is re-run offline on the run's brightest cover
+  file(s) with every m/z shifted off its true mass (the mass-shift arm) and with
+  the adduct set of the wrong chemistry (the wrong-adduct arm). A shifted peak
+  that is still Assigned is false by construction, so the shift arm estimates how
+  often the engine Assigns a mass with no true formula behind it, counted per tier
+  and evidence level. It is reported below and above m/z 350, because a fixed
+  0.35 Da shift lands in the empty mass-defect gap below ~350 and reads near zero
+  there by construction; that range needs a shift of a few ppm, inside the
+  formula grid. The wrong-adduct arm shows how readily the engine reads ions
+  through chemistry the run did not have (some such readings are the same ion
+  written another way).
+- **Isotope checks.** The scorecard tests each Assigned reading against its own
+  isotopologues: the carbon count its ¹³C satellite implies, whether the ledger
+  holds the line each heteroatom of the ion demands (³⁴S, ³⁷Cl, ⁸¹Br, ²⁹Si), and
+  whether satellites and adduct partners co-vary with their parent over the batch.
 
 `scripts/scorecard.py` runs the decoy arms and the isotope checks on any run
 directory ([docs/SCORECARD.md](docs/SCORECARD.md)); the truth sets belong to the
