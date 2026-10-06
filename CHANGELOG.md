@@ -157,38 +157,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [M+I3]- did the same for its halide. All of them now read the declared analyte channels,
   the footing the reagent halogen already had; a bromide or iodide run, and every run with its
   side channels at the default, is unchanged.
-- **A certified neutral, or a known species on one ion channel, whose ion score is under the
-  engine's Suspect band edge is Candidate.** A pass-0 known species and a pass-7 certified
-  neutral earn their tier from a lock -- the list identity, or the channels' convergent neutral
-  mass -- and the tier engine took the lock's word whatever the ion's own match score: a known
-  species locked at 'Low (...)' was Assigned by its own branch before the Low/Suspect rule was
-  asked, and pass 7 labels a certificate 'Good (certified)' with no score floor. The scorecard's
-  ppm decoy found both: on spectra shifted a few ppm off their true formulas, wrong known species
-  (most of them recovered chlorinated paraffins, whose 37Cl spacing a shift keeps) and certified
-  P formulas were Assigned at ion scores down to 0.001. A `certified:` commit whose `ion_score`
-  is under `PassConfig.tau_suspect` (0.50, the engine's existing Suspect band edge) is now
-  Candidate, with a reason naming the score and the edge (`tiers.LOCKED_SCORE_METHODS`,
-  `tiers.lock_score_floor`); so is a `known:` commit, unless the file commits the same neutral
-  on a second ion channel (the tier engine's own cross-channel leg) -- a score under the edge is
-  no evidence against a real reading: bright, sub-ppm cyclosiloxanes with their own 29Si/30Si
-  lines and DMSO with its 34S line score 0.02-0.49, and of 18 decoy known-species locks only one
-  had a second channel. A certificate is multi-channel by construction, so its other channels
-  spare no member; a ladder rung carries its weakest anchored member's score. A source-solvent
-  cluster (never scored) keeps its ladder gate, and a row with no recorded score is not judged.
-  The merge carries the per-file tier as before; a known species the batch locks or keeps while
-  no confirming file holds it at Assigned now says so on the merged row. Offline on the three
-  regression batches (per-file ledgers re-tiered, the merge replayed): labelled-nitrate Orbitrap
-  1 of 3525 per-file Assigned rows demoted, merged Assigned 514 unchanged; uronium Orbitrap 2 of
-  4067, merged 723 -> 722 (a one-file certified urea adduct); bromide/nitrate TOF 11 of 1512,
-  merged 355 -> 354; truth-set recall and known-false Assigned unchanged. Scorecard ppm decoy
-  (copies of the runs, calibration inherited): labelled-nitrate +-9 ppm decoy Assigned 51 -> 45
-  (7.70 % -> 6.80 % of 2 x 331 matched control readings), uronium +-6 ppm 41 -> 35 (2.61 % ->
-  2.23 % of 2 x 784), +-9 ppm unchanged (33); every control unchanged. The cost, on offline
-  batches of other profiles: real single-channel known species the scorer rates under the edge
-  are now Candidate in the merged ledger -- ethanol `[M-H]+` on EasyIC, HNO2 and H2SO4 `[M-H]-`
-  on iodide (up to 70 k counts), the D5 siloxane's `[M+H]+` / `[M+^NH4]+` readings on
-  15N-ammonium where no file holds both channels. docs/ASSIGNMENT_DETAIL.md §1.6 and
-  docs/CERTIFIED_NEUTRAL.md.
+- **A certified neutral whose ion score is under the engine's Suspect band edge is Candidate.**
+  A pass-7 certified neutral earns its tier from the channels' convergent neutral mass, and pass 7
+  labelled it 'Good (certified)' with no score floor. The scorecard's ppm decoy found wrong
+  certified P formulas Assigned on spectra shifted a few ppm off their true formulas, at ion
+  scores far under those of the certified commits the unshifted controls Assigned (all >= 0.74).
+  A `certified:` commit whose `ion_score` is under `PassConfig.tau_suspect` (0.50, the engine's
+  existing Suspect band edge) is now Candidate, with a reason naming the score and the edge
+  (`tiers.LOCKED_SCORE_METHODS`, `tiers.lock_score_floor`). A certificate is multi-channel by
+  construction, so its other channels spare no member; a ladder rung carries its weakest anchored
+  member's score; a row with no recorded score is not judged. Pass-0 known species are not
+  floored: the decoy also Assigned known-species locks at low scores, but real known species score
+  in the same range (NO2- and HSO4- on an iodide batch, ethanol on an NO+ batch, cyclosiloxanes
+  with their own 29Si/30Si lines: 0.03-0.48, against 0.001-0.49 for the decoy locks), so a floor
+  there removes real readings as fast as decoys. A known species the batch locks or keeps while
+  no confirming file holds it at Assigned now says so on the merged row. Offline (per-file
+  ledgers re-tiered, decoy arms re-tiered): no real per-file Assigned reading of the checked
+  batches is demoted; uronium +-6 ppm decoy Assigned 41 -> 35 (2.61 % -> 2.23 % of 2 x 784
+  matched control readings), the uncalibrated uronium -6/+6 arms 47 -> 29; the labelled-nitrate
+  decoy is unchanged (its low-score decoys are known-species locks). docs/ASSIGNMENT_DETAIL.md
+  §1.6 and docs/CERTIFIED_NEUTRAL.md.
 - **On a TOF the reagent-water ladder reads its high rungs as water clusters, not organics.** The
   ladder gate judged each rung against decoys at fixed Da offsets (+-0.02 / 0.035 / 0.05) and ended a
   ladder at its first weak rung. At m/z 450-700 a TOF line is 0.05-0.07 Da wide: the offsets sit

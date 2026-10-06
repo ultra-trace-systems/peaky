@@ -1,17 +1,12 @@
-"""The score floor on locked readings (tiers.LOCKED_SCORE_METHODS).
+"""The score floor on certified readings (tiers.LOCKED_SCORE_METHODS).
 
-A pass-0 known species and a pass-7 certified neutral earn their tier from a
-lock (the list identity; the channels' convergent neutral mass), and the tier
-engine used to take the lock's word whatever the ion's own match score: a
-known species was Assigned by its own branch before the Low/Suspect one was
-asked, and a certified commit carries 'Good (certified)' with no score floor.
-On a spectrum shifted a few ppm off its true formulas both paths Assigned wrong
-readings at ion scores down to 0.001. Under the engine's own Suspect band edge
-(PassConfig.tau_suspect) a certified commit is Candidate, and so is a known
-species unless the same neutral is committed on a second ion channel in the
-file: the score alone is no evidence against a real reading (bright
-cyclosiloxanes with their own 29Si/30Si lines score under the edge), and the
-decoy's known-species locks almost never had a second channel.
+A pass-7 certified neutral earns its tier from the channels' convergent neutral
+mass and carried 'Good (certified)' with no score floor; on a spectrum shifted a
+few ppm off its true formulas that path Assigned wrong readings at low ion
+scores. Under the engine's own Suspect band edge (PassConfig.tau_suspect) a
+certified commit is Candidate. A pass-0 known species is not floored: real
+known species (NO2-, HSO4-, ethanol, cyclosiloxanes) score in the same range as
+the decoy's known-species locks, so its lock keeps its own branch.
 
 Offline.
 """
@@ -91,13 +86,14 @@ class TestTheFloor:
         assert T.lock_score_floor(None) == PassConfig().tau_suspect == pytest.approx(0.50)
         assert T.lock_score_floor(PassConfig(tau_suspect=0.3)) == pytest.approx(0.3)
 
-    def test_a_known_species_lock_under_the_floor_is_candidate(self):
+    def test_a_known_species_lock_under_the_edge_is_not_floored(self):
         t = _tiers(_ledger())
-        assert t["K1"][0] == T.TIER_CANDIDATE
-        assert t["K1"][1].startswith("known species (pass-0 locked list) with ion score 0.03")
-        assert "Suspect band edge (0.50), on one ion channel" in t["K1"][1]
+        assert t["K1"][0] == T.TIER_ASSIGNED, t["K1"]
+        assert t["K1"][1].startswith("known species (pass-0 locked list, mass + own-twin"), t["K1"]
+        assert "Suspect band edge" not in t["K1"][1]
         # the recovered chlorinated paraffin is a known: lock like any other
-        assert t["R1"][0] == T.TIER_CANDIDATE and "ion score 0.14" in t["R1"][1]
+        assert t["R1"][0] == T.TIER_ASSIGNED and "Suspect band edge" not in t["R1"][1]
+        assert not T.LOCKED_SCORE_METHODS[0].startswith("known:") and len(T.LOCKED_SCORE_METHODS) == 1
 
     def test_a_known_species_lock_at_or_over_the_floor_keeps_its_branch(self):
         t = _tiers(_ledger())
@@ -115,25 +111,13 @@ class TestTheFloor:
         # second channel, as before
         assert t["C2"][0] == T.TIER_ASSIGNED and "second ionization channel" in t["C2"][1]
 
-    def test_a_second_ion_channel_of_the_neutral_spares_a_known_species(self):
-        """The engine's own cross-channel leg: the same listed neutral committed on
-        a second ion channel in the file holds a known species Assigned under the
-        edge, and the reason says so."""
-        t = _tiers(_ledger(k1_second_channel=True))
-        assert t["K1"][0] == T.TIER_ASSIGNED, t["K1"]
-        assert "corroborated by 2 ion channels" in t["K1"][1]
-        assert ("ion score 0.03 under the engine's Suspect band edge (0.50), held Assigned by "
-                "the neutral's second ion channel in this file") in t["K1"][1]
-        assert t["K5"][0] == T.TIER_ASSIGNED and "Suspect band edge" not in t["K5"][1]
-        # the single-channel locks are judged as before
-        assert _tiers(_ledger(k1_second_channel=True))["R1"][0] == T.TIER_CANDIDATE
-
-    def test_two_channels_both_under_the_edge_hold_each_other(self):
-        """Both channels of a bright, isotope-confirmed cyclosiloxane can score
-        under the edge; the two-channel reading stands on the channels."""
+    def test_a_known_species_on_two_channels_keeps_its_route_text(self):
+        """A second ion channel of the listed neutral is still reported as the
+        known species' corroboration route; no floor text appears."""
         t = _tiers(_ledger({"K5": 0.20}, k1_second_channel=True))
         assert t["K1"][0] == T.TIER_ASSIGNED and t["K5"][0] == T.TIER_ASSIGNED
-        assert "ion score 0.20 under the engine's Suspect band edge" in t["K5"][1]
+        assert "corroborated by 2 ion channels" in t["K1"][1]
+        assert "Suspect band edge" not in t["K1"][1] and "Suspect band edge" not in t["K5"][1]
 
     def test_a_certified_ladder_rung_is_floored_too(self):
         led = _ledger()
@@ -150,23 +134,24 @@ class TestTheFloor:
     def test_the_floor_follows_the_cfg(self):
         t = _tiers(_ledger(), cfg=PassConfig(tau_suspect=0.3))
         assert t["C1"][0] == T.TIER_ASSIGNED          # 0.41 clears a 0.3 edge
-        assert t["K1"][0] == T.TIER_CANDIDATE and "Suspect band edge (0.30)" in t["K1"][1]
+        t = _tiers(_ledger({"C1": 0.25}), cfg=PassConfig(tau_suspect=0.3))
+        assert t["C1"][0] == T.TIER_CANDIDATE and "Suspect band edge (0.30)" in t["C1"][1]
 
     def test_a_lock_with_no_recorded_score_is_not_floored(self):
         """No number, no judgment: a ledger written without the commit's score (an
         old CSV, a hand-built frame) keeps the lock's own branch."""
         led = _ledger()
-        led.loc[led["peak_id"] == "K1", "ion_score"] = np.nan
-        assert _tiers(led)["K1"][0] == T.TIER_ASSIGNED
+        led.loc[led["peak_id"] == "C1", "ion_score"] = np.nan
+        assert _tiers(led)["C1"][0] == T.TIER_ASSIGNED
 
     def test_rows_off_the_locked_paths_are_untouched(self):
         """A grid commit at the same low score is judged by its own branches, as before."""
         led = _ledger()
-        i = led.index[led["peak_id"] == "K1"][0]
+        i = led.index[led["peak_id"] == "C1"][0]
         led.at[i, "method"] = "cheminfo+grid"
         led.at[i, "confidence"] = "Good"
         t = _tiers(led)
-        assert "ion score" not in str(t["K1"][1])
+        assert "Suspect band edge" not in str(t["C1"][1])
 
     def test_a_csv_round_trip_gives_the_same_verdicts(self, tmp_path):
         led = _ledger()
@@ -177,22 +162,24 @@ class TestTheFloor:
     def test_apply_tiers_stamps_the_floor(self):
         led = T.apply_tiers(_ledger())
         by = led.set_index("peak_id")
-        assert by.at["K1", "tier"] == T.TIER_CANDIDATE and by.at["C1", "tier"] == T.TIER_CANDIDATE
+        assert by.at["C1", "tier"] == T.TIER_CANDIDATE and by.at["K1", "tier"] == T.TIER_ASSIGNED
         assert by.at["K3", "tier"] == T.TIER_ASSIGNED and by.at["S1", "tier"] == T.TIER_ASSIGNED
 
 
-def test_a_reading_locked_under_the_floor_in_every_file_is_candidate_at_the_merge():
+def test_a_reading_certified_under_the_floor_in_every_file_is_candidate_at_the_merge():
     """The batch's merged tier is the winning reading's best per-file tier: a
-    known-species reading whose every file holds it under the floor loses
-    Assigned, one that some file holds over the floor keeps it."""
+    certified reading whose every file holds it under the floor loses Assigned,
+    one that some file holds over the floor keeps it; a known species under the
+    edge keeps Assigned."""
     per_file = {}
-    for src, (s_low, s_mix) in {"f1": (0.03, 0.80), "f2": (0.45, 0.45)}.items():
-        led = T.apply_tiers(_ledger({"K1": s_low, "K2": s_mix}))
+    for src, (s_low, s_mix) in {"f1": (0.30, 0.80), "f2": (0.45, 0.45)}.items():
+        led = T.apply_tiers(_ledger({"C1": s_low, "C2": s_mix, "K1": 0.03}))
         per_file[src] = led[led["role"] == "M0"]
     merged, _jit = align(per_file)
     by = merged.set_index(merged["neutral_formula"] + " " + merged["adduct"])
-    assert by.at["C4HF7O2 [M+^NO3]-", "tier"] == T.TIER_CANDIDATE
-    assert by.at["C6HF11O2 [M-H]-", "tier"] == T.TIER_ASSIGNED
+    assert by.at["C4H15N4O2P [M+H]+", "tier"] == T.TIER_CANDIDATE
+    assert by.at["C4H15N4O2P [M+(CH4N2O)H]+", "tier"] == T.TIER_ASSIGNED
+    assert by.at["C4HF7O2 [M+^NO3]-", "tier"] == T.TIER_ASSIGNED
 
 
 def _pool(tier: str, *, srcs=("f1", "f2")) -> list[dict]:
@@ -204,9 +191,12 @@ def _pool(tier: str, *, srcs=("f1", "f2")) -> list[dict]:
 
 
 def _merged_two_files():
+    """K1's reading merged over two files, held at Candidate there (as a per-file
+    rule such as the counting-detector floor would hold it)."""
     per_file = {}
     for src in ("f1", "f2"):
         led = T.apply_tiers(_ledger())
+        led.loc[led["peak_id"] == "K1", "tier"] = T.TIER_CANDIDATE
         per_file[src] = led[led["role"] == "M0"]
     merged, _jit = align(per_file)
     return merged, merged.index[(merged["neutral_formula"] == "C4HF7O2")
@@ -216,7 +206,7 @@ def _merged_two_files():
 @pytest.mark.parametrize("vote_winner", ["species", "other"])
 def test_the_merged_row_says_why_a_batch_known_species_is_candidate(vote_winner):
     """lock_known_species: when every confirming file holds the reading at
-    Candidate (here the score floor) the merged row says so, whether the vote
+    Candidate (here a per-file rule) the merged row says so, whether the vote
     already read the species (kept) or the batch locks it over another reading."""
     merged, i = _merged_two_files()
     if vote_winner == "other":
