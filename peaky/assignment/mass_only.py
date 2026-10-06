@@ -32,17 +32,33 @@ that
      neutral is).
 
 That is the evidence scale's own per-file fact (the `multiline_elements` of
-evidence._measure, read with `per_file=True`), so the flag and the scale read
-one line test. The scorer's `isotopologues` list counts only through the
-children it attached: a listed line another reading owns is that reading's
-peak, not this one's evidence.
+evidence._measure, read with `per_file=True`), with one rule on top: on a run
+whose reagent channels carry a halogen X (`reagent_halogen`, the batch's
+declared channels), a line of X counts only when the ION holds more X than a
+reagent channel of X can put on it (`reagent_supply`: 2, by [M+HX+X]-). Below
+that the line is the same line whatever the label: C8H6BrNO4 [M+NO3]- and
+C8H6N2O7 [M+Br]- are one ion, C8H6BrN2O7-, and the second's 81Br line is the
+reagent's twin -- so the first's must not keep it unflagged either. A 13C line
+still counts beside it. The test reads the ATTACHED children only: a line the
+scorer did not attach (a peak no reading owns, near the noise edge) is not
+seen, and a listed line another reading owns is that reading's peak, not this
+one's evidence.
+
+WHAT `False` MEANS. A line in band, nothing more. At or above the threshold on a
+TOF even that is weak: a shifted spectrum keeps real isotope spacings, and a
+0.5-2x 13C band bounds the carbon count only to a factor of two. Measured on the
+bromide/nitrate TOF's seven-file shifted-mass decoy arms, the line test left
+58 decoy readings at or above m/z 350 unflagged against 12 real ones, and
+flagged all 21 decoy readings below it. So `False` at or above the threshold is
+not support; below it the flag does separate a decoy from a real reading.
 
 EXEMPT. A pass-0 known species -- a `known:` commit at tier Assigned in one of
 the reading's files, or the batch's known-species decision on the merged row
 (`KNOWN_DECIDED`) -- is never flagged: its identity is the curated list's.
 
 Entry points: `instrument_class`, `flag_merged` (a batch's merged ledger, from
-its per-file ledgers), `flag_ledger` (one sample's ledger), `counts` (re-read
+its per-file ledgers), `flag_ledger` (one sample's ledger), `pair_facts` /
+`counted_lines` / `reagent_supply` (the line test), `counts` (re-read
 the tallies off a flagged frame), `flag_mz` / `check_threshold`.
 """
 
@@ -72,12 +88,43 @@ COLUMNS = (COLUMN, REASON_COLUMN)
 KNOWN_DECIDED = "known species decided once for the batch"
 
 #: one sentence for docs, the batch summary and the report legends
-DEFINITION = ("no isotope line of the neutral's own elements (13C of an organic neutral; 37Cl / 81Br / "
-              "34S / 29Si / 30Si of a neutral that carries the element; never the reagent's own twin) "
-              "sits at its exact spacing and 0.5-2x its expected height in any file that holds the "
-              "reading at tier Assigned; pass-0 known species are exempt; tier and level unchanged")
+DEFINITION = ("no attached isotope line of the neutral's own elements (13C of an organic neutral; 37Cl / "
+              "81Br / 34S / 29Si / 30Si of a neutral that carries the element; never the reagent's own "
+              "twin, nor a line of the reagent halogen on an ion that holds no more of it than a reagent "
+              "channel supplies) sits at its exact spacing and 0.5-2x its expected height in any file that "
+              "holds the reading at tier Assigned; pass-0 known species are exempt; tier and level "
+              "unchanged; at or above the threshold an unflagged reading is not supported either")
 
 _TOF = "tof"
+
+
+def reagent_supply(halogen) -> int:
+    """The most atoms of the reagent halogen `halogen` one reagent channel of it
+    puts on an ion -- the larger of [M+X]- and [M+HX+X]- (the channel forms
+    evidence.channel_halogen names), read off a one-carbon probe: 2. 0 without a
+    reagent halogen (a nitrate or uronium run: no reagent twin to confuse)."""
+    if not halogen or str(halogen) not in EV.HALOGEN_SATELLITE:
+        return 0
+    x = str(halogen)
+    return max(int(EV.ion_composition("C", a, None).get(x, 0)) for a in (f"[M+{x}]-", f"[M+H{x}+{x}]-"))
+
+
+def counted_lines(lines, neutral, adduct, ion=None, *, halogen=None) -> set:
+    """The own-element lines (`lines`: the evidence scale's `multiline_elements`,
+    a set or a '|'-joined string) that keep a reading unflagged: all of them,
+    except a line of the reagent halogen on an ion that holds no more of it than
+    a reagent channel supplies (`reagent_supply`) -- the same ion under a
+    reagent-adduct label has that line as the reagent's twin."""
+    own = set(filter(None, lines.split("|"))) if isinstance(lines, str) else set(lines or ())
+    supply = reagent_supply(halogen)
+    if supply and halogen in own:
+        try:
+            n = int(EV.ion_composition(neutral, adduct, ion).get(halogen, 0))
+        except Exception:      # noqa: BLE001 -- an unparsable reading keeps no halogen line
+            n = 0
+        if n <= supply:
+            own.discard(halogen)
+    return own
 
 
 def check_threshold(value) -> float:
@@ -127,9 +174,9 @@ def reason(mz, threshold: float) -> str:
         hi = False
     if hi:
         return (f"mass only at m/z >= {float(threshold):g}: a TOF's formula space is saturated here "
-                "(decoy-measured on two TOFs); no isotope line of the neutral's own elements in any "
-                "Assigned file")
-    return ("mass only: the reading rests on mass alone -- no isotope line of the neutral's own "
+                "(decoy-measured on two TOFs); no attached isotope line of the neutral's own elements in "
+                "any Assigned file")
+    return ("mass only: the reading rests on mass alone -- no attached isotope line of the neutral's own "
             "elements at its expected height in any Assigned file")
 
 
@@ -146,14 +193,16 @@ def _ion_key(neutral, adduct) -> tuple:
     return tuple(sorted((k, int(v)) for k, v in comp.items() if v)) + (sign,)
 
 
-_FACT_COLUMNS = ["neutral_formula", "adduct", "assigned", "known", "positive", "own_lines"]
+_FACT_COLUMNS = ["neutral_formula", "adduct", "assigned", "known", "positive", "own_lines", "scale_lines"]
 
 
 def pair_facts(ledger: pd.DataFrame, *, halogen=None, resolution=None) -> pd.DataFrame:
     """One row per (neutral_formula, adduct) the ledger (ONE file) commits:
     `assigned` (a row of the pair is tier Assigned), `known` (a row is a pass-0
-    `known:` commit), `own_lines` (the elements of its positive lines,
-    '|'-joined) and `positive` (any). See the module note for the line test."""
+    `known:` commit), `scale_lines` (the evidence scale's own-element lines,
+    '|'-joined), `own_lines` (those the flag counts: `counted_lines` under the
+    reagent halogen `halogen`) and `positive` (any). See the module note for the
+    line test."""
     if ledger is None or not len(ledger) or "role" not in ledger.columns:
         return pd.DataFrame(columns=_FACT_COLUMNS)
     frame = EV.trim(ledger)
@@ -164,7 +213,11 @@ def pair_facts(ledger: pd.DataFrame, *, halogen=None, resolution=None) -> pd.Dat
     facts = EV._measure(frame, halogen=halogen, resolution=resolution, per_file=True)
     if facts.empty:
         return pd.DataFrame(columns=_FACT_COLUMNS)
-    own = facts["multiline_elements"].fillna("").astype(str)
+    scale = facts["multiline_elements"].fillna("").astype(str)
+    ions = facts["ion"] if "ion" in facts.columns else pd.Series(None, index=facts.index)
+    own = pd.Series(["|".join(sorted(counted_lines(v, nf, ad, ion, halogen=halogen)))
+                     for v, nf, ad, ion in zip(scale, facts["neutral_formula"], facts["adduct"], ions)],
+                    index=facts.index, dtype=object)
     return pd.DataFrame({
         "neutral_formula": facts["neutral_formula"].astype(str),
         "adduct": facts["adduct"].astype(str),
@@ -172,6 +225,7 @@ def pair_facts(ledger: pd.DataFrame, *, halogen=None, resolution=None) -> pd.Dat
         "known": facts["known_fam"].fillna("").astype(str).ne("").to_numpy(),
         "positive": own.ne("").to_numpy(),
         "own_lines": own.to_numpy(),
+        "scale_lines": scale.to_numpy(),
     })
 
 
@@ -204,7 +258,7 @@ def describe(block: dict) -> str:
     b, a = block["below"], block["at_or_above"]
     thr = block["threshold_mz"]
     return (f"[tof-flag] {block['n_flagged']} of {block['n_assigned']} Assigned readings rest on mass alone "
-            f"(no own isotope line in any Assigned file; {block['n_known']} known species exempt): "
+            f"(no attached own isotope line in any Assigned file; {block['n_known']} known species exempt): "
             f"{b['flagged']} of {b['assigned']} below m/z {thr:g}, {a['flagged']} of {a['assigned']} at or "
             "above it (formula space saturated there); tier and level unchanged")
 

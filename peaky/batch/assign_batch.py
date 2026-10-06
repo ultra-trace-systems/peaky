@@ -2181,7 +2181,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             f"per-file rows in {ion_only_summary['n_files_with']} of {len(_io_files)} files) on "
             f"{ion_only_summary['channels']}")
     # The TOF mass-only flag (assignment/mass_only.py): on a TOF-class run, every
-    # Assigned reading that no isotope line of the neutral's own elements supports
+    # Assigned reading that no attached isotope line of the neutral's own elements supports
     # in any of its Assigned files is FLAGGED -- `mass_only` + a short reason on
     # the merged row, never a tier or a level: a decoy-measured fact about what
     # the reading rests on (the formula space saturates with m/z on a TOF), kept

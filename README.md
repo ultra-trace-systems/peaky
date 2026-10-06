@@ -89,11 +89,12 @@ included) at the predicted ratio: ⁸¹Br about 1:1 for one Br, 1:2:1 for two, a
 satellite that matches the carbon count. An isotopologue row in the ledger is not
 support by itself, and at higher m/z on a TOF even a present line is weak evidence.
 A TOF-class batch marks these rows itself: `mass_only` on the merged ledger flags
-an Assigned reading that no isotope line of the neutral's own elements supports, at
-its expected height, in any file that assigned it (a reagent's own ⁸¹Br twin shows
-the adduct, not the neutral; known species are exempt). The flag is information —
-tier and level are unchanged — and at or above m/z 350 (`--tof-flag-mz`) its reason
-says the formula space is saturated there ([docs/OUTPUTS.md](docs/OUTPUTS.md)).
+an Assigned reading that no attached isotope line of the neutral's own elements
+supports, at its expected height, in any file that assigned it (a reagent's own ⁸¹Br
+twin shows the adduct, not the neutral; known species are exempt). The flag is
+information — tier and level are unchanged — and at or above m/z 350
+(`--tof-flag-mz`) its reason says the formula space is saturated there; an unflagged
+reading there is not supported either ([docs/OUTPUTS.md](docs/OUTPUTS.md)).
 
 **Very bright ions on a high-intensity Orbitrap** can sit about +0.6 to +1.0 ppm
 off their formula's mass while their own isotope lines sit on centre; the pattern

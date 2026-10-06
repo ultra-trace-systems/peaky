@@ -477,11 +477,12 @@ def _mass_only_sentence(ctx) -> str | None:
         return None
     b, a, thr = mo["below"], mo["at_or_above"], mo["threshold_mz"]
     return (f"Mass-only readings (TOF): {mo['n_flagged']} of {mo['n_assigned']} Assigned readings show no "
-            f"isotope line of the neutral's own elements in any file that assigned them \u2014 "
+            f"attached isotope line of the neutral's own elements in any file that assigned them \u2014 "
             f"{b['flagged']} of {b['assigned']} below m/z {thr:g}, where the reading rests on mass alone, and "
             f"{a['flagged']} of {a['assigned']} at or above it, where a TOF's formula space is saturated (a "
             f"shifted-mass decoy is Assigned as often as the real spectrum on two TOFs); they keep their tier "
-            f"and are marked {MASS_ONLY_MARK} in the species tables.")
+            f"and are marked {MASS_ONLY_MARK} in the species tables. At or above m/z {thr:g} an unmarked "
+            f"reading is not supported either: an isotope line there is weak evidence.")
 
 
 # ---------------------------------------------------------------------------
@@ -1159,8 +1160,8 @@ def findings(ctx, pdf):
                   ("dim", "oligomers, often the most event-specific signal"
                           + (f" ({len(olig)} of {n_olig} shown)." if n_olig > len(olig) else "."))]
         if any(f in mo_n for f in olig):
-            lines.append(("dim", f"{MASS_ONLY_MARK} = TOF mass-only flag (no isotope line of the neutral's own "
-                                 "elements in any Assigned file; tier unchanged)."))
+            lines.append(("dim", f"{MASS_ONLY_MARK} = TOF mass-only flag (no attached isotope line of the neutral's "
+                                 "own elements in any Assigned file; tier unchanged)."))
         if n_olig_cand:
             lines.append(("dim", f"{n_olig_cand} more high-C high-O neutral(s) hold no Assigned reading (Candidate "
                                  "or ion-only rows only) and are not listed."))
@@ -2105,8 +2106,8 @@ def assignments_table(ctx, pdf):
                   ("dim", f"  max cps = {_scope} · f = files seen · isotopes = confirmed"
                           + (" · claim = read from the evidence level" if has_claim else ""))]
     if mo_pairs:                             # the TOF mass-only marker's legend, on every page
-        rows.append(("dim", f"  {MASS_ONLY_MARK} = TOF mass-only flag: no isotope line of the neutral's own "
-                            "elements in any Assigned file (tier unchanged)"))
+        rows.append(("dim", f"  {MASS_ONLY_MARK} = TOF mass-only flag: no attached isotope line of the neutral's "
+                            "own elements in any Assigned file (tier unchanged)"))
     last = None
     for _, r in df.iterrows():
         nf, ad = r["neutral_formula"], r["adduct"]

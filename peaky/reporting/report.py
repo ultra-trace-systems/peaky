@@ -675,13 +675,14 @@ def summary_stats(ledger: pd.DataFrame, *, context: str = "",
     if mo is not None:
         thr = mo["threshold_mz"]
         sec = "TOF mass-only flag"
-        add(sec, "Assigned, flagged", f"{mo['n_flagged']} of {mo['n_assigned']} -- no isotope line of the "
-                                      "neutral's own elements at its expected height; tier unchanged")
+        add(sec, "Assigned, flagged", f"{mo['n_flagged']} of {mo['n_assigned']} -- no attached isotope line of "
+                                      "the neutral's own elements at its expected height; tier unchanged")
         add(sec, f"below m/z {thr:g}", f"{mo['below']['flagged']} of {mo['below']['assigned']} Assigned -- "
                                       "the reading rests on mass alone")
         add(sec, f"at or above m/z {thr:g}",
             f"{mo['at_or_above']['flagged']} of {mo['at_or_above']['assigned']} Assigned -- a TOF's formula "
-            "space is saturated here (decoy-measured on two TOFs)")
+            "space is saturated here (decoy-measured on two TOFs); an unflagged reading here is not "
+            "supported either")
     if len(m0):
         base = m0["confidence"].map(T.base_confidence)
         for lab in ("High", "Good", "Low", "Suspect"):
@@ -805,7 +806,11 @@ def legend_sheet(*, claims: bool = False, mass_only: bool = False) -> pd.DataFra
             ("TOF mass-only flag", "mass_only_reason", "Why: below the threshold (default m/z 350) the "
              "reading rests on mass alone; at or above it a TOF's formula space is saturated -- a "
              "shifted-mass decoy spectrum is Assigned as often as the real one (measured on two TOFs). "
-             "An isotope line, an MS2 spectrum or a standard would confirm the reading."),
+             "An isotope line, an MS2 spectrum or a standard would support the reading. FALSE is not "
+             "support at or above the threshold: there even a present line is weak (a shifted spectrum "
+             "keeps real isotope spacings, and a 0.5-2x 13C band bounds the carbon count only to a "
+             "factor of two), and on a TOF's shifted-mass decoy the line test left more decoy readings "
+             "unflagged there than real ones."),
         ]
     if claims:
         rows = [

@@ -303,7 +303,7 @@ def cmd_assign(args) -> None:
         # that just ran are this run's real stage count (stage bar full).
         prog.sample_done()
         prog.phase("report")            # writing xlsx/md/gka is not "done" yet
-        _write_assign_outputs(args, out, base, tof_flag_mz=cfg.tof_flag_mz)
+        _write_assign_outputs(args, out, base)
         prog.finish(out.get("stats"))
         _progress_hold_note(prog)
 
@@ -317,18 +317,21 @@ def _claims_text(claims) -> str:
     return " | ".join(f"{k} {v}" for k, v in claims.items())
 
 
-def _write_assign_outputs(args, out, base, *, tof_flag_mz=None) -> None:
+def _write_assign_outputs(args, out, base) -> None:
     """Write the single-sample run's artifacts + print its summary. Split out of
     cmd_assign so the progress window stays open across the write + report.
     On a TOF-class sample the ledger first takes the mass-only flag
-    (assignment/mass_only.py; its tallies land in the manifest's stats)."""
+    (assignment/mass_only.py; its tallies land in the manifest's stats), at the
+    threshold `--tof-flag-mz` gave (the same value cmd_assign put on the cfg;
+    the package default without one)."""
     from peaky.assignment import mass_only as MO
     from peaky.reporting import gka_widget
     from peaky.reporting import report
 
     led = out["ledger"]
     st0 = out.get("stats") or {}
-    thr = MO.check_threshold(MO.DEFAULT_TOF_FLAG_MZ if tof_flag_mz is None else tof_flag_mz)
+    _thr = getattr(args, "tof_flag_mz", None)
+    thr = MO.check_threshold(MO.DEFAULT_TOF_FLAG_MZ if _thr is None else _thr)
     flag = MO.flag_ledger(led, klass=MO.instrument_class(resolution=st0.get("resolution"),
                                                          instrument_types=[st0.get("instrument_type")]),
                           threshold=thr, halogen=st0.get("reagent_halogen"),
@@ -1088,7 +1091,7 @@ def _tof_flag_mz(v: str) -> float:
 def _add_tof_flag_arg(p) -> None:
     p.add_argument("--tof-flag-mz", type=_tof_flag_mz, default=None, metavar="MZ",
                    help="TOF mass-only flag: on a TOF-class run every Assigned reading with no "
-                        "isotope line of the neutral's own elements in any Assigned file is "
+                        "attached isotope line of the neutral's own elements in any Assigned file is "
                         "flagged (column mass_only + mass_only_reason), never demoted. At or "
                         "above this m/z the reason says the formula space is saturated (a "
                         "shifted-mass decoy is Assigned as often as the real spectrum, measured "

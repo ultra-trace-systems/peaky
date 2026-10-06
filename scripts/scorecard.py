@@ -1497,8 +1497,8 @@ def mass_only_line(mo: dict | None) -> str:
     if not mo:
         return ""
     b, a, thr = mo["below"], mo["at_or_above"], mo["threshold_mz"]
-    return (f"TOF mass-only flag: {mo['n_flagged']} of {mo['n_assigned']} Assigned rows have no isotope line of the "
-            f"neutral's own elements in any Assigned file -- {b['flagged']} of {b['assigned']} below m/z {thr:g} "
+    return (f"TOF mass-only flag: {mo['n_flagged']} of {mo['n_assigned']} Assigned rows have no attached isotope line "
+            f"of the neutral's own elements in any Assigned file -- {b['flagged']} of {b['assigned']} below m/z {thr:g} "
             f"(the reading rests on mass alone), {a['flagged']} of {a['assigned']} at or above it (formula space "
             "saturated on a TOF); tier unchanged")
 
