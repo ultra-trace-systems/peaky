@@ -1828,7 +1828,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             # the rung test follows the width model: decoys at fixed Da offsets on an
             # Orbitrap, scaled to the line width (gaps allowed, M+1 carbon test) on a TOF
             rwater = _RW.measure(ts_peaks, prof, tol_ppm=scale.stamp_ppm, log=log, resolution=rp)
-        merged, rw_stripped = _RW.strip_rung_rows(merged, rwater["rungs"], tol_ppm=scale.stamp_ppm, log=log)
+        # after the TOF test a row leaves only when a file carrying its winning reading
+        # (jitter) lies in a segment where its rung passed (segment_of; None otherwise)
+        merged, rw_stripped = _RW.strip_rung_rows(merged, rwater["rungs"], tol_ppm=scale.stamp_ppm, log=log,
+                                                  jitter=jitter, segment_of=rwater.get("segment_of"))
         # The merged row's tier_reason (from align: the vote's exemption, else NA)
         # also takes the batch-level gates' notes below (cleanup._note appends to
         # it): a re-read can leave the merged formula different from EVERY per-file

@@ -24,13 +24,14 @@ So the ladder is MEASURED on the batch's own time series, per acquisition segmen
                  binds while MIN_PRESENCE > DECOY_X x DECOY_FLOOR). A rung that
                  passes in any segment is a reagent ion of the batch -- stamped and
                  stripped over every segment (a known limit: a peak that is the rung
-                 after a restart and something else before it goes with the rung).
+                 after a restart and something else before it goes with the rung;
+                 the TOF test below strips by segment instead).
   * the window -- the batch's stamping half-window (`MassScale.stamp_ppm`).
 
 That fixed-offset test is the ORBITRAP's (or any batch without a width model). On a TOF
 it fails where the ladder matters most: at m/z 450-700 the line is 0.05-0.07 Da wide, so
 offsets of 0.02-0.05 Da sit inside the line, where a TOF picker reports the line's own
-weak satellites (about 10 % of its height, ~1-1.5 FWHM below and ~1 FWHM above it), and
+weak satellites (about 10 % of its height, ~1-1.5 FWHM below and ~0.5-1 FWHM above it), and
 a crowded humid spectrum leaves one weak rung that ends the contiguous ladder. On a
 bromide/nitrate TOF batch eight Br-.(H2O)n rungs between n = 21 and 35,
 NO3-.(H2O)29..34 and HNO3.NO3-.(H2O)27/31 of one humid stretch stayed Assigned as
@@ -57,14 +58,20 @@ where C30 needs 0.33x). So when the batch's width model is TOF-class
                  TOF_M1_CARBONS carbons would show its 13C line above the picker's local
                  floor (the TOF_M1_FLOOR_QUANTILE height within +-TOF_M1_FLOOR_SPAN_DA),
                  the observed M+1/M0 must stay below the cluster's own (2H/17O/15N) plus
-                 TOF_M1_CARBONS x 1.07 %; a line holding more carbon is not the rung.
+                 TOF_M1_CARBONS x 1.07 %; a line holding more carbon is not the rung. An
+                 M+1 position within TOF_M1_BLEND_FWHM FWHM (+ the window) of a rung of
+                 another declared core present in the segment is not tested: a TOF line
+                 there blends with that reagent rung, whose height is not 13C.
 
 A passing rung becomes a reagent row of the batch stamp (`stamp_rows`), and a merged
 ANALYTE row whose m/z sits within the window of a passing rung is taken out of the
 merged ledger (`strip_rung_rows`) and listed in tables/reagent_water.csv: its reading
-is the water cluster. The per-file ledgers are untouched. Nothing here tiers or levels
-a row; a profile without water cores, or a batch where no core is present, changes
-nothing.
+is the water cluster. After the TOF test the strip follows the segments: a row leaves
+only when a file carrying its winning reading lies in a segment where the rung passed;
+a reading carried only by files of segments where the rung did not pass is another line
+at the rung's m/z there, and stays (with a note on its `tier_reason`). The per-file
+ledgers are untouched. Nothing here tiers or levels a row; a profile without water
+cores, or a batch where no core is present, changes nothing.
 """
 from __future__ import annotations
 
@@ -88,12 +95,14 @@ GAP_X_MEDIAN = 5.0
 MIN_SEGMENT_SPECTRA = 10
 
 # The TOF rung test (a TOF-class width model; see the module docstring). Measured on a
-# bromide/nitrate TOF batch: the line's own satellites sit at -1.0..-1.6 and
-# +0.65..+1.2 FWHM, so decoys start at 2 FWHM; the weakest rung inside a humid ladder is
+# bromide/nitrate TOF batch: the line's own satellites sit at -1.0..-1.75 and mostly
+# +0.5..+0.75 FWHM, so decoys start at 2 FWHM; the weakest rung inside a humid ladder is
 # present in 0.33 of its segment and the first absent one in <= 0.21 (link at 0.25);
-# off-rung lines co-vary with the ladder at median r 0.25-0.33 (share >= 0.8: 0.15-0.24),
-# its rungs at 0.96-0.99 (0.85-0.99); a bright rung's M+1 excess over its own reaches
-# 4.1 carbon-equivalents in that crowded spectrum (veto at 5), the readings it displaced
+# off-rung lines at the decoy positions co-vary with the ladder at median r 0.25-0.33
+# (share >= 0.8: 0.15-0.24; every present off-ladder line at m/z 300-900 against the two
+# nearest present rungs: share 0.23 in the humid segment, 0.40 in the dry one), its rungs
+# at 0.96-0.99 (0.85-0.99); a bright rung's M+1 excess over its own reaches 4.1
+# carbon-equivalents in that crowded spectrum (veto at 5), the readings it displaced
 # need 13-36.
 #: decoy offsets of the TOF test, in FWHM at the rung's m/z (both signs)
 TOF_DECOY_FWHM = (2.0, 2.5, 3.0, 3.5, 4.0, 5.0)
@@ -110,6 +119,10 @@ TOF_COVARY_MIN_SPECTRA = 8
 TOF_M1_CARBONS = 5
 TOF_M1_FLOOR_QUANTILE = 0.05
 TOF_M1_FLOOR_SPAN_DA = 25.0
+#: an M+1 position this close (FWHM, plus the window) to a rung of another declared core
+#: present in the segment is not tested: the TOF picker reports lines >= ~0.5 FWHM apart
+#: as two peaks (the satellites above), closer ones as one blended line
+TOF_M1_BLEND_FWHM = 0.5
 
 #: halogen isotopologues a core is enumerated over (mass, tag) -- the reagent
 #: library's own tags, so a rung row joins the per-file `[Br1+1xH2O]- (79Br)` rows
@@ -321,6 +334,16 @@ def _match(peaks: dict, sids, targets: np.ndarray, tol_ppm: float):
     return hit, hgt, mzs
 
 
+def _nearest(sorted_pos: np.ndarray, pos) -> np.ndarray:
+    """Distance from each of `pos` to the nearest of `sorted_pos` (inf when there is none)."""
+    pos = np.asarray(pos, dtype=float)
+    if not len(sorted_pos):
+        return np.full(pos.shape, np.inf)
+    j = np.searchsorted(sorted_pos, pos)
+    return np.minimum(np.abs(sorted_pos[np.minimum(j, len(sorted_pos) - 1)] - pos),
+                      np.abs(sorted_pos[np.maximum(j - 1, 0)] - pos))
+
+
 def _covary(hit: np.ndarray, hgt: np.ndarray, present: np.ndarray, *, span: int = TOF_COVARY_SPAN,
             min_spectra: int = TOF_COVARY_MIN_SPECTRA) -> np.ndarray:
     """Per rung, the median Pearson r of its log height with each PRESENT rung within
@@ -370,6 +393,9 @@ def _detect_tof(ts: pd.DataFrame, cs: list, *, tol_ppm: float, fwhm, charge: str
         floors[s] = (mz[o], h[o])
     ns = np.arange(1, n_max + 1)
     ladders = [c.mz + np.arange(0, n_max + 1) * WATER for c in cs]
+    # every core's presence per segment: a ladder exists where its core is present
+    core_pres = {s: _match(peaks, sids, np.array([c.mz for c in cs]), tol_ppm)[0].mean(axis=0)
+                 for s, sids in by_seg.items()}
     r13 = I.ISOTOPE_RATIO["13C"]
     rows = []
     for ci, core in enumerate(cs):
@@ -381,18 +407,13 @@ def _detect_tof(ts: pd.DataFrame, cs: list, *, tol_ppm: float, fwhm, charge: str
         for k in TOF_DECOY_FWHM:
             for sign in (-1.0, 1.0):
                 pos = rung_mz + sign * k * fw
-                keep = np.ones(len(pos), dtype=bool)
-                if len(others):
-                    j = np.searchsorted(others, pos)
-                    near = np.minimum(np.abs(others[np.minimum(j, len(others) - 1)] - pos),
-                                      np.abs(others[np.maximum(j - 1, 0)] - pos))
-                    keep = near > TOF_DECOY_CLEAR_FWHM * fw + pos * tol_ppm * 1e-6
+                keep = _nearest(others, pos) > TOF_DECOY_CLEAR_FWHM * fw + pos * tol_ppm * 1e-6
                 decoys.append((pos, keep))
         q_own = np.array([cluster_m1_ratio(core, int(n)) for n in ns])
+        m1_exact = rung_mz + I.D_13C
         passed: dict[int, list] = {}
         for s, sids in by_seg.items():
-            core_hit, _, _ = _match(peaks, sids, np.array([core.mz]), tol_ppm)
-            if core_hit.mean() < min_presence:
+            if core_pres[s][ci] < min_presence:
                 continue
             hit, hgt, mzs = _match(peaks, sids, rung_mz, tol_ppm)
             pres = hit.mean(axis=0)
@@ -411,18 +432,25 @@ def _detect_tof(ts: pd.DataFrame, cs: list, *, tol_ppm: float, fwhm, charge: str
             ladder = linked & (contiguous | covaries)
             # the M+1 test of a bright rung
             carbon = np.zeros(len(ns), dtype=bool)
-            if has_h:
-                h1 = _match(peaks, sids, rung_mz + I.D_13C, tol_ppm)[1]
+            test = np.nonzero(present & ladder)[0]
+            if has_h and len(test):
+                # the rungs of the OTHER cores present here: an M+1 line that close blends with one
+                busy = [ladders[cj] for cj in range(len(cs)) if cj != ci and core_pres[s][cj] >= min_presence]
+                busy = np.sort(np.concatenate(busy)) if busy else np.empty(0)
+                blended = _nearest(busy, m1_exact[test]) <= (TOF_M1_BLEND_FWHM * fw[test]
+                                                             + m1_exact[test] * tol_ppm * 1e-6)
+                h1 = _match(peaks, sids, m1_exact[test], tol_ppm)[1]
                 fmz, fh = floors[s]
-                for i in np.nonzero(present & ladder)[0]:
+                for k, i in enumerate(test):
+                    if blended[k]:
+                        continue
                     on = hit[:, i]
                     h0 = float(np.median(hgt[on, i]))
-                    a, b = np.searchsorted(fmz, [rung_mz[i] + I.D_13C - TOF_M1_FLOOR_SPAN_DA,
-                                                 rung_mz[i] + I.D_13C + TOF_M1_FLOOR_SPAN_DA])
+                    a, b = np.searchsorted(fmz, [m1_exact[i] - TOF_M1_FLOOR_SPAN_DA, m1_exact[i] + TOF_M1_FLOOR_SPAN_DA])
                     if b <= a or not I.satellite_observable(
                             "C", TOF_M1_CARBONS, h0, float(np.quantile(fh[a:b], TOF_M1_FLOOR_QUANTILE))):
                         continue
-                    q = float(h1[on, i].sum() / max(hgt[on, i].sum(), 1e-300))
+                    q = float(h1[on, k].sum() / max(hgt[on, i].sum(), 1e-300))
                     carbon[i] = q - q_own[i] >= TOF_M1_CARBONS * r13
             ok = present & ladder & (pres >= decoy_x * np.maximum(dec, decoy_floor)) & ~carbon
             for k in np.nonzero(ok)[0]:
@@ -432,10 +460,71 @@ def _detect_tof(ts: pd.DataFrame, cs: list, *, tol_ppm: float, fwhm, charge: str
     return pd.DataFrame(rows, columns=columns) if rows else pd.DataFrame(columns=columns)
 
 
-def strip_rung_rows(merged: pd.DataFrame, rungs: pd.DataFrame, *, tol_ppm: float, log=print):
+def _txt(v) -> str:
+    """A reading's label component as text: '' for any NA."""
+    try:
+        if v is None or pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(v)
+
+
+def _segment_set(v) -> set:
+    """The segments a rung passed in, from its `segments` field ('0|1'); empty when unreadable."""
+    try:
+        return {int(float(p)) for p in str(v).split("|") if p.strip()}
+    except ValueError:
+        return set()
+
+
+def _reading_files(merged: pd.DataFrame, rows, jitter: pd.DataFrame) -> dict:
+    """{row position: [src ...]}: the files carrying each merged row's WINNING reading (its
+    neutral_formula + adduct) in its own align cluster -- the jitter cluster whose per-file
+    m/z mean is the row's m/z (`assign_batch.align`: the merged m/z is that mean) and, when
+    the row lists its files (`srcs`), whose files they are. A row with no such cluster is
+    left out (its files are unknown)."""
+    need = {"cluster", "src", "mz", "neutral_formula", "adduct"}
+    if jitter is None or not len(jitter) or not need <= set(jitter.columns):
+        return {}
+    mean = jitter.groupby("cluster")["mz"].mean()
+    o = np.argsort(mean.to_numpy(dtype=float), kind="mergesort")
+    cmz, cid = mean.to_numpy(dtype=float)[o], mean.index.to_numpy()[o]
+    out = {}
+    for i in rows:
+        m = float(pd.to_numeric(merged["mz"].iloc[i], errors="coerce"))
+        j = int(np.searchsorted(cmz, m))
+        near = [k for k in (j - 1, j) if 0 <= k < len(cmz)]
+        if not np.isfinite(m) or not near:
+            continue
+        k = min(near, key=lambda x: abs(cmz[x] - m))
+        if abs(cmz[k] - m) > abs(m) * 1e-9:
+            continue
+        g = jitter[jitter["cluster"] == cid[k]]
+        if "srcs" in merged.columns and _txt(merged["srcs"].iloc[i]):
+            if set(_txt(merged["srcs"].iloc[i]).split(",")) != set(g["src"].astype(str)):
+                continue
+        nf = _txt(merged["neutral_formula"].iloc[i]) if "neutral_formula" in merged.columns else ""
+        ad = _txt(merged["adduct"].iloc[i]) if "adduct" in merged.columns else ""
+        w = g[(g["neutral_formula"].map(_txt) == nf) & (g["adduct"].map(_txt) == ad)]
+        out[i] = [str(x) for x in w["src"]]
+    return out
+
+
+def strip_rung_rows(merged: pd.DataFrame, rungs: pd.DataFrame, *, tol_ppm: float, log=print,
+                    jitter: pd.DataFrame | None = None, segment_of=None):
     """(kept, stripped): the merged analyte rows whose m/z sits within tol of a passing
     rung's observed m/z are the water cluster, not the reading; they leave the merged
-    ledger. `stripped` carries the rung each one sat on (`rung`)."""
+    ledger. `stripped` carries the rung each one sat on (`rung`).
+
+    With `jitter` (align's per-file readings) and `segment_of` ({spectrum: segment};
+    `measure` returns it when the TOF test ran) the strip follows the segments: a row
+    leaves only when a file carrying its WINNING reading lies in a segment where its rung
+    passed. A reading carried only by files of segments where the rung did not pass reads
+    another line at the rung's m/z there (a ladder that reaches the rung in a humid
+    stretch can be absent in a dry one): it stays, with a note on its `tier_reason`. A row
+    whose reading's files have no known segment leaves as before. Without them (the
+    fixed-offset test) a passing rung strips over the whole batch."""
     if merged is None or not len(merged) or rungs is None or not len(rungs):
         return merged, (merged.iloc[0:0].copy() if merged is not None else pd.DataFrame())
     ref = pd.to_numeric(rungs["mz_obs"], errors="coerce").fillna(pd.to_numeric(rungs["mz"])).to_numpy()
@@ -443,20 +532,45 @@ def strip_rung_rows(merged: pd.DataFrame, rungs: pd.DataFrame, *, tol_ppm: float
     ref = ref[order]
     labels = [f"{rungs['core'].iloc[i]}{('(' + rungs['iso_tag'].iloc[i] + ')') if rungs['iso_tag'].iloc[i] else ''}"
               f".(H2O){int(rungs['n'].iloc[i])}" for i in order]
+    rung_segs = ([_segment_set(rungs["segments"].iloc[i]) for i in order] if "segments" in rungs.columns
+                 else [set() for _ in order])
     mz = pd.to_numeric(merged["mz"], errors="coerce").to_numpy()
     j = np.clip(np.searchsorted(ref, mz), 1, max(len(ref) - 1, 1))
     cand = np.stack([j - 1, np.minimum(j, len(ref) - 1)], axis=1) if len(ref) > 1 else np.zeros((len(mz), 2), int)
     rung_of = [None] * len(mz)
+    rung_k = [None] * len(mz)
     for i, m in enumerate(mz):
         if not np.isfinite(m):
             continue
         for k in cand[i]:
             if abs(ref[k] - m) <= m * tol_ppm * 1e-6:
-                rung_of[i] = labels[k]
+                rung_of[i], rung_k[i] = labels[k], k
                 break
     hit = np.array([r is not None for r in rung_of])
+    if jitter is not None and segment_of is not None and hit.any():
+        seg_map = {str(k): int(v) for k, v in pd.Series(segment_of).items()}
+        files = _reading_files(merged, np.nonzero(hit)[0], jitter)
+        spared = []
+        for i in np.nonzero(hit)[0]:
+            fseg = {seg_map[s] for s in files.get(i, ()) if s in seg_map}
+            rseg = rung_segs[rung_k[i]]
+            if fseg and rseg and not (fseg & rseg):
+                hit[i] = False
+                spared.append((i, rung_of[i], rseg, fseg))
+        if spared:
+            from peaky.assignment.cleanup import _note
+            merged = merged.copy()
+            for i, lab, rseg, fseg in spared:
+                _note(merged, merged.index[i],
+                      f"on the water rung {lab} of segment(s) {'|'.join(map(str, sorted(rseg)))}; its reading's "
+                      f"files are in segment(s) {'|'.join(map(str, sorted(fseg)))}, where that rung did not pass: "
+                      f"kept")
+            log(f"[reagent-water] {len(spared)} merged row(s) on a passing rung kept: their reading's files lie "
+                f"only in segments where the rung did not pass: "
+                + ", ".join(f"{_txt(merged['neutral_formula'].iloc[i])} {_txt(merged['adduct'].iloc[i])} ({lab})"
+                            for i, lab, _, _ in spared[:4]) + (" ..." if len(spared) > 4 else ""))
     stripped = merged.loc[hit].copy()
-    stripped["rung"] = [r for r in rung_of if r is not None]
+    stripped["rung"] = [r for r, h in zip(rung_of, hit) if h]
     kept = merged.loc[~hit].reset_index(drop=True)
     if len(stripped):
         log(f"[reagent-water] {len(stripped)} merged row(s) sit on a passing water rung and leave the "
@@ -507,30 +621,33 @@ def rung_test(resolution) -> dict | None:
             "decoy_x": DECOY_X, "min_presence": MIN_PRESENCE,
             "link_presence": TOF_LINK_SHARE * MIN_PRESENCE, "covary_r": TOF_COVARY_R,
             "covary_span": TOF_COVARY_SPAN, "covary_min_spectra": TOF_COVARY_MIN_SPECTRA,
-            "m1_carbons": TOF_M1_CARBONS}
+            "m1_carbons": TOF_M1_CARBONS, "m1_blend_fwhm": TOF_M1_BLEND_FWHM, "strip_by_segment": True}
 
 
 def measure(ts: pd.DataFrame | None, profile, *, tol_ppm: float, log=print, resolution=None) -> dict:
     """The batch's ladder for a reagent profile: {rungs, n_cores, segment_sizes,
-    tol_ppm, rung_test}. Empty rungs when the profile declares no water cores or there
-    is no time series. `resolution` is the batch's width model: TOF-class runs the TOF
-    rung test (`rung_test` records it), anything else the fixed-offset one
-    (`rung_test` None)."""
+    tol_ppm, rung_test, segment_of}. Empty rungs when the profile declares no water cores
+    or there is no time series. `resolution` is the batch's width model: TOF-class runs
+    the TOF rung test (`rung_test` records it; `segment_of` = {spectrum: segment}, which
+    makes `strip_rung_rows` strip by segment), anything else the fixed-offset one
+    (`rung_test` and `segment_of` None: the strip runs over the whole batch)."""
     wc = tuple(getattr(profile, "water_cores", None) or ())
     pol = getattr(profile, "polarity", "-") or "-"
     out = {"rungs": detect(None, (), tol_ppm=tol_ppm), "n_cores": len(cores(wc, polarity=pol)), "tol_ppm": float(tol_ppm),
-           "segment_sizes": {}, "rung_test": None}
+           "segment_sizes": {}, "rung_test": None, "segment_of": None}
     if not wc or ts is None or not len(ts):
         return out
     seg = segments(ts)
     out["segment_sizes"] = {str(k): int(v) for k, v in seg.value_counts().sort_index().items()}
     out["rung_test"] = rung_test(resolution)
+    if out["rung_test"]:
+        out["segment_of"] = seg
     out["rungs"] = detect(ts, wc, tol_ppm=tol_ppm, polarity=pol, resolution=resolution)
     r = out["rungs"]
     log(f"[reagent-water] {len(r)} passing rung(s) over {out['n_cores']} core(s) in "
         f"{len(out['segment_sizes'])} segment(s) {out['segment_sizes']} at +-{tol_ppm:.2f} ppm"
         + (f" (TOF rung test: decoys at {min(TOF_DECOY_FWHM):g}-{max(TOF_DECOY_FWHM):g} FWHM, gaps "
-           f"allowed, M+1 carbon test)" if out["rung_test"] else "")
+           f"allowed, M+1 carbon test, strip by segment)" if out["rung_test"] else "")
         + (": " + ", ".join(f"{c}{('(' + g + ')') if g else ''} n<={int(g_['n'].max())}"
                             for (c, g), g_ in r.groupby(["core", "iso_tag"], sort=False)) if len(r) else ""))
     return out
