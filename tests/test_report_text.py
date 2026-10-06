@@ -137,14 +137,21 @@ def test_one_carbon_held_as_inorganic_carbon_is_inorganic_and_organic_one_carbon
     from peaky.batch import composition as CMP
     # the pseudo-halides an iodide inlet reads (iodine cyanide, iodine isocyanate), the cyanide /
     # cyanate family, a nitryl cyanide, the carbon oxides and sulfides; a 15N label counts as N
-    for f in ("CNI", "CINO", "C^NI", "CHNO", "CHN", "CClN", "CHNS", "CN2O2", "CO", "CO2", "CO3", "COS", "CS2"):
+    for f in ("CNI", "CINO", "C^NI", "CHNO", "CHN", "CClN", "CHNS", "CN2O2", "CN2O3", "CN2O4", "CN2",
+              "CO", "CO2", "CO3", "COS", "CS2"):
         assert CMP.is_inorganic_carbon(f) and CMP.composition_class(f) == CMP.INORGANIC, f
     # formic acid, carbonic / performic acid, fluoroform, urea, nitromethane, methylamine,
-    # chloropicrin, a perfluorinated one-carbon fit and cyanogen (two carbons) stay organic
+    # chloropicrin, a perfluorinated one-carbon fit, cyanogen (two carbons) and the one-carbon
+    # polynitro organics (nitroform, tetranitromethane, chlorodinitromethane, a bromo-dinitro
+    # fit, a three-N fit) stay organic
     for f, kl in (("CH2O2", "CHO"), ("CH2O3", "CHO"), ("CHF3", "CHO"), ("CH4N2O", "CHON"), ("CH3NO2", "CHON"),
                   ("CH5N", "CHON"), ("CCl3NO2", "CHON"), ("CF5NO4", "CHON"), ("C2N2", "CHON"),
-                  ("C10H16O4", "CHO")):
+                  ("CHN3O6", "CHON"), ("CN4O8", "CHON"), ("CHClN2O4", "CHON"), ("CHBrN2O2", "CHON"),
+                  ("CHN3O2", "CHON"), ("C10H16O4", "CHO")):
         assert not CMP.is_inorganic_carbon(f) and CMP.composition_class(f) == kl, f
+    # a one-carbon species with an element outside C/H/N/O/S/halogens is never inorganic carbon
+    for f in ("CHNP", "CH3NSi", "CNNa"):
+        assert not CMP.is_inorganic_carbon(f), f
     assert not CMP.is_inorganic_carbon("HNO3")         # carbon-free: inorganic by the other rule
 
 
@@ -183,7 +190,7 @@ def test_the_findings_bullet_names_the_inorganic_share_and_gates_the_bright_cho_
     # the bright-CHO clause is scoped to the organic signal and sits before the inorganic line
     assert txt[1] == ("  The brightest CHO neutral carries 80% of the Assigned organic signal: a few "
                       "bright CHO species carry most of it.")
-    assert txt[2].startswith("  Reagent and inorganic ions (carbon-free, or carbon only as a carbon oxide / sulfide "
+    assert txt[2].startswith("  Reagent and inorganic ions (carbon-free, or one carbon only as a carbon oxide / sulfide "
                              "or a cyanide / cyanate) carry 90% of the Assigned M0 signal")
     assert not any("ammonium/amine" in t for t in txt)    # no NH4+ / urea channel
     # five of eight equal CHO neutrals carry exactly half of the organic signal: the clause, at the bar

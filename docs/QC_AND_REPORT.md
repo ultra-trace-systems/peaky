@@ -185,8 +185,8 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
   honest coverage number behind the headline.
 - **`composition`** — neutral counts by CHO/CHON/CHOS backbone (Si/F/halogen folded
   in), an inorganic neutral a class of its own (`composition.composition_class`:
-  carbon-free, or carbon only as a carbon oxide or a cyanide / cyanate such as
-  ICN or HNCO). **`assigned_comp`** — the composition by signal of the readings
+  carbon-free, or one carbon held only as a carbon oxide / sulfide or a cyanide /
+  cyanate such as ICN, HNCO or NCNO2; one-carbon polynitro species stay organic). **`assigned_comp`** — the composition by signal of the readings
   held at tier Assigned only (`composition.assigned_composition`), which the
   Findings and Composition pages print.
 - **`score_by_tier` / `adduct_signal`** — mean `ion_score` per tier; signal share

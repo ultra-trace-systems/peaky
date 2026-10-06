@@ -992,7 +992,7 @@ def _event_sentence(hours, total, *, bar: float | None = None,
 BRIGHT_CHO_N = 5
 BRIGHT_CHO_SHARE = 0.5
 #: what the inorganic class holds, in a reader's words (composition.is_inorganic)
-INORGANIC_WHAT = "carbon-free, or carbon only as a carbon oxide / sulfide or a cyanide / cyanate"
+INORGANIC_WHAT = "carbon-free, or one carbon only as a carbon oxide / sulfide or a cyanide / cyanate"
 
 
 def _has_ammonium_channel(ctx) -> bool:

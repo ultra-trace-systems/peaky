@@ -70,16 +70,21 @@ def is_inorganic_carbon(formula: str) -> bool:
     """One carbon held the way inorganic chemistry holds it: a carbon oxide or
     sulfide (CO, CO2, CO3, OCS, CS2: no H, nothing but O / S beside the carbon),
     or a pseudo-halide -- a cyanide, cyanate, fulminate or thiocyanate with at
-    most one H and at most one halogen (HCN, HNCO, HSCN, ICN, INCO, ClCN,
-    NCNO2). Formic acid (CH2O2), fluoroform (CHF3) and a polyhalogenated
-    one-carbon species (chloropicrin CCl3NO2) stay organic."""
+    most one H and at most one halogen (HCN, HNCO, HSCN, ICN, INCO, ClCN), or a
+    cyano group with one more N-oxide group and no H or halogen (nitryl cyanide
+    NCNO2, NC-ONO2). Formic acid (CH2O2), fluoroform (CHF3), a polyhalogenated
+    one-carbon species (chloropicrin CCl3NO2) and the one-carbon polynitro
+    organics (nitroform CHN3O6, tetranitromethane CN4O8, chlorodinitromethane
+    CHClN2O4) stay organic."""
     c = C.parse_formula(str(formula))
     if not c or _count(c, "C") != 1 or not {k.lstrip("^") for k in c} <= _PSEUDO_HALIDE_ELEMENTS:
         return False
-    n_h, n_x = _count(c, "H"), sum(_count(c, x) for x in _HALOGENS)
-    if not _count(c, "N"):
+    n_h, n_x, n_n = _count(c, "H"), sum(_count(c, x) for x in _HALOGENS), _count(c, "N")
+    if not n_n:
         return n_h == 0 and n_x == 0
-    return n_h <= 1 and n_x <= 1
+    if n_n == 1:
+        return n_h <= 1 and n_x <= 1
+    return n_n == 2 and n_h == 0 and n_x == 0
 
 
 def is_inorganic(formula: str) -> bool:
