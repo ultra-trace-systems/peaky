@@ -169,9 +169,12 @@ def test_reagent14n_line_holding_a_foreign_peak_is_present_not_too_low():
     assert l14["mode"] == "reagent14N" and l14["ratio"] == pytest.approx(0.02 / 0.98)
     cand = dict(lines=lines)
 
-    def recs(x_m0, role="unexplained", parent=None):
-        peak = ("x", m0 + l14["d"], x_m0 * 1e6, role, parent, None, None, None)
+    def recs(x_m0, role="unexplained", parent=None, reading=(None, None), refuted=False):
+        peak = ("x", m0 + l14["d"], x_m0 * 1e6, role, parent, *reading, None)
         ctx = _ctx(_t(rows + [peak] + _edges()), reagent="NO3+NO3_15N")
+        if refuted:
+            for s in SIDS:
+                ctx.files[s].refuted.add("|".join(reading))
         out = LN.eval_candidate(ctx, cand, _obs(m0), "")
         return out, _rec(out, LN.REAGENT14N_LABEL)
 
@@ -185,6 +188,13 @@ def test_reagent14n_line_holding_a_foreign_peak_is_present_not_too_low():
     assert LN.contradiction_a(out, 3) == [f"{LN.REAGENT14N_LABEL} ({l14['ratio']:.3g}x) too low in 3/3 files"]
     out, r = recs(0.3, role="iso_child", parent="p1")           # the engine's own child: matched
     assert (r["n_test"], r["n_ok"], r["n_occ"]) == (3, 3, 0)
+    assert LN.REAGENT14N_LABEL in LN.matched_elements(out, 3)[1]
+    other = ("C7H12O3", "[M+Br]-")                              # another reading's M0 on the line
+    out, r = recs(0.3, role="M0", reading=other)                # that reading stands: present, not matched
+    assert [p[0] for p in r["per"]] == ["occupied"] * 3 and (r["n_ok"], r["n_occ"], r["n_lo"]) == (0, 3, 0)
+    assert LN.REAGENT14N_LABEL not in LN.matched_elements(out, 3)[1]
+    out, r = recs(0.3, role="M0", reading=other, refuted=True)  # the levels refuted it: its M0 matches
+    assert [p[0] for p in r["per"]] == ["free"] * 3 and (r["n_ok"], r["n_occ"], r["n_lo"]) == (3, 0, 0)
     assert LN.REAGENT14N_LABEL in LN.matched_elements(out, 3)[1]
 
 

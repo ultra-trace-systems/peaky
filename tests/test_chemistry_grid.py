@@ -1,7 +1,8 @@
 """chemistry.candidates_for_peaks on the memoised grid: the mass column is
-cached with the grid (built once per element box, not once per call), and the
-candidate sets are exactly what a linear scan of the enumerated grid returns --
-cold cache, warm cache and after an eviction. Synthetic, offline."""
+cached with the grid (built once per element box, not once per call) and
+candidates_for_peaks reads it from the cache, and the candidate sets are
+exactly what a linear scan of the enumerated grid returns -- cold cache, warm
+cache and after an eviction. Synthetic, offline."""
 import random
 
 import pytest
@@ -88,3 +89,21 @@ def test_mass_column_is_built_once_with_the_grid(fresh_cache, monkeypatch):
     g2, m2 = C._grid_and_masses(box, 30.0, 900.0)
     assert g2 is grid and m2 is masses and len(built) == 1        # reused, never rebuilt per call
     assert C._grid_cached(box, 30.0, 900.0) is grid
+
+
+def test_candidates_for_peaks_reads_the_cached_mass_column_never_walks_the_grid(fresh_cache):
+    """The call site itself: on a warm cache candidates_for_peaks bisects the
+    cached mass column and indexes the grid; walking the whole grid (rebuilding
+    the mass column per call) fails."""
+    box = C.parse_ranges(BOX)
+    peaks = _peaks(box, n=20, seed=3)
+    want = C.candidates_for_peaks(peaks, box, ADDUCTS, ppm_tolerance=3.0)
+    assert want                                                   # the probe indexes real grid entries
+
+    class NoWalk(list):                                           # indexing allowed, iteration is not
+        def __iter__(self):
+            raise AssertionError("candidates_for_peaks walked the whole grid")
+
+    (key, (grid, masses)), = fresh_cache.items()
+    fresh_cache[key] = (NoWalk(grid), masses)
+    assert C.candidates_for_peaks(peaks, box, ADDUCTS, ppm_tolerance=3.0) == want

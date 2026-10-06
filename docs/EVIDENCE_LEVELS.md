@@ -415,11 +415,12 @@ seen in:
 - a reading whose ion carries the label (`^N`) predicts the labelled
   reagent's 14N impurity line, n(15N) × (1 − purity) / purity of M0 at
   −0.997 Da (`14N (reagent impurity)`): only the engine's own twin or child
-  there at ≥ 0.5× matches it; any other peak at ≥ 0.5× — another reading's M0
-  or an ion the engine left unexplained (the same neutral's 14N cluster sits
-  at exactly that m/z, often far above the impurity level) — leaves the line
-  present (tested, neither bad nor matched); below 0.5× it is too low (there
-  is no upper bound);
+  (or the M0 of a reading the levels already refuted) there at ≥ 0.5× matches
+  it; any other peak at ≥ 0.5× — an unrefuted reading's M0 or an ion the
+  engine left unexplained (the same neutral's 14N cluster sits at exactly that
+  m/z and can sit far above the impurity level) — leaves the line present
+  (tested, neither bad nor matched); below 0.5× it is too low (there is no
+  upper bound);
 - the line efficiency of each element is measured on the run (the median
   seen/theory height of the committed readings' single-element lines,
   clipped to [0.25, 1]).

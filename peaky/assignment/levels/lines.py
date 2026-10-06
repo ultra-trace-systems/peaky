@@ -193,7 +193,8 @@ def eval_candidate(ctx, cand: dict, obs: list, pairkey: str, collect=False, pair
     (a major line only); a too-high free line counts only on an iso child of
     the anchor; a minor line tests by its absence only. On the labelled
     reagent's 14N line any peak at >= half the impurity level is present; only
-    the engine's own twin / child matches it. ``pairkey`` and
+    the engine's own twin / child (or the M0 of a reading the levels already
+    refuted) matches it. ``pairkey`` and
     ``collect`` are kept for the reference's signature (unused)."""
     recs = []
     pair = pair or {}
@@ -223,9 +224,10 @@ def eval_candidate(ctx, cand: dict, obs: list, pairkey: str, collect=False, pair
             exp_lo = o["h"] * L["ratio_main"] * eff
             if L["mode"] == "reagent14N":
                 # the labelled reagent's 14N line: at least half the impurity level; a 14N reagent ion in the
-                # source adds to it (no upper bound); only the engine's own twin / child counts. Any other
-                # peak there at >= half the level -- another reading's M0 or a real ion the engine left
-                # unexplained -- leaves the line present (tested, neither bad nor matched), never 'too low'
+                # source adds to it (no upper bound); only the engine's own twin / child (or a refuted
+                # reading's M0, which probe() returns as 'free') matches. Any other peak there at >= half the
+                # level -- an unrefuted reading's M0 or a real ion the engine left unexplained -- leaves the
+                # line present (tested, neither bad nor matched), never 'too low'
                 ok = st == "free" and exp_h > 0 and hobs >= BAND[0] * exp_lo and fa.role[j] in ("iso_child", "M0")
                 occ_ok = st in ("occupied", "free") and exp_h > 0 and hobs >= BAND[0] * exp_lo
                 per.append((st, hobs, exp_h, det, ok, j))
