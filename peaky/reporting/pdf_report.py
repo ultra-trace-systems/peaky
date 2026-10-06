@@ -800,6 +800,52 @@ def cover(ctx, pdf):
     _close(pdf, fig)
 
 
+#: the end share of a run's samples whose maximum is a rise the run ends on: no
+#: decay can follow it inside the run, so it is never called a transient event
+EVENT_LATE_FRAC = 0.10
+
+
+def _event_sentence(hours, total, *, bar: float | None = None,
+                    late_frac: float = EVENT_LATE_FRAC) -> str | None:
+    """The Findings sentence on the per-sample total signal (`hours`, `total` in
+    time order), read against the late-run baseline (the median of the last
+    third of the samples). It says 'a transient event' only when the maximum
+    reaches the report's own transient bar (`bar`, default cluster.PEAK_RANGE:
+    the burst bar a varying trace is held to) and does not sit in the last
+    `late_frac` of the samples; a maximum that late is a rise the run ends on.
+    Below the bar it says there is none and gives the band (5th-95th
+    percentile) the samples sit in. None with fewer than 3 finite samples or
+    no positive baseline."""
+    if bar is None:
+        from peaky.batch import cluster as CL
+        bar = CL.PEAK_RANGE
+    h = np.asarray(hours, float)
+    tt = np.asarray(total, float)
+    ok = np.isfinite(tt)
+    n = int(ok.sum())
+    if n < 3:
+        return None
+    tv, hv = tt[ok], h[ok]
+    tail = tv[max(1, int(n * 2 / 3)):]
+    base = float(np.median(tail)) if len(tail) else float(np.median(tv))
+    if not base > 0:
+        return None
+    k = int(np.argmax(tv))
+    ratio, pk_h = float(tv[k]) / base, float(hv[k])
+    late = k >= n - max(1, int(np.ceil(n * late_frac)))
+    if ratio >= bar and not late:
+        return (f"Total signal peaks at hour {pk_h:.1f} — {ratio:.1f}x the late-run baseline (the median of "
+                f"the last third of the samples) — then decays (a transient event).")
+    if ratio >= bar:
+        return (f"Total signal reaches its maximum at hour {pk_h:.1f}, in the last {late_frac:.0%} of the "
+                f"samples ({ratio:.1f}x the late-run baseline, the median of the last third): a rise the run "
+                "ends on, not a transient seen to decay.")
+    lo, hi = np.percentile(tv / base, [5, 95])
+    return (f"No transient event: the total signal's maximum (hour {pk_h:.1f}) is {ratio:.2f}x the late-run "
+            f"baseline (the median of the last third of the samples), below the report's {bar:.1f}x transient "
+            f"bar; 90% of the samples lie within {lo:.2f}-{hi:.2f}x of that baseline.")
+
+
 def findings(ctx, pdf):
     """Plain-language findings page (after the claim summary): the event time-trace
     plus data-driven takeaways — top species by signal, signal-weighted
@@ -826,14 +872,7 @@ def findings(ctx, pdf):
         ax.set_title("Event overview — total signal vs time (dotted = assigned samples)",
                      loc="left", fontsize=10.5)
         ax.grid(alpha=0.3)
-        ok = np.isfinite(tt)
-        if ok.sum() >= 3:
-            tail = tt[ok][max(1, int(ok.sum() * 2 / 3)):]
-            base = float(np.median(tail)) if len(tail) else float(np.median(tt[ok]))
-            peak = float(np.nanmax(tt)); pk_h = float(h[int(np.nanargmax(tt))])
-            if base > 0:
-                rise_txt = (f"Total signal peaks at hour {pk_h:.1f} — {peak/base:.1f}x the "
-                            f"late-run baseline — then decays (a transient event).")
+        rise_txt = _event_sentence(h, tt)
     lines = []
     if rise_txt:
         lines += [("b", "• " + rise_txt)]
