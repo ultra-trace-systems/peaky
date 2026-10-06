@@ -225,9 +225,51 @@ selected sample_ids (SAMPLING.md)
    rungs stay two tracks). `tables/reagent_water.csv` lists the rungs and the
    readings each displaced; `batch_summary.json["merge_gates"]["reagent_water"]`
    the counts. The per-file ledgers are untouched. Two limits stand: a rung is
-   measured per segment but stamped and stripped over the whole batch, and a
-   halogen rung can pass for one isotopologue while its twin fails the decoy gate
-   on a neighbouring peak.
+   measured per segment but stamped and stripped over the whole batch, and on the
+   fixed-offset test a halogen rung can pass for one isotopologue while its twin
+   fails the decoy gate on a neighbouring peak.
+
+   **On a TOF the rung test changes** (the batch's width model is TOF-class: R <
+   50 000 at m/z 200; an Orbitrap-class model, or none, keeps the test above
+   exactly). Fixed Da offsets do not hold there: at m/z 450-700 the line is
+   0.05-0.07 Da wide, the offsets sit inside it, and a TOF picker reports the
+   line's own weak satellites (about a tenth of its height, ~1-1.5 FWHM below and
+   ~1 FWHM above), so a bright rung fails its own decoys; and in a humid stretch
+   one weak rung ends the contiguous ladder. On the bromide/nitrate TOF batch that
+   left eight Br-.(H2O)n rungs between n = 21 and 35, NO3-.(H2O)29-34 and
+   HNO3.NO3-.(H2O)27/31 Assigned as C18-C36 organics (a "known" C30H58Cl4
+   [M+Br]- was Br-.(H2O)31, its M+1 line at 0.02x where C30 needs 0.33x). Per
+   segment, the TOF test passes a rung that is (a) present in ≥ 50 % of the
+   spectra; (b) ≥ 3× the MEAN presence of up to twelve decoys at ±2, 2.5, 3,
+   3.5, 4 and 5 FWHM(m) -- the local chance of a peak in the window -- skipping
+   any decoy within 1.5 FWHM (+ the window) of a declared core or rung, which is
+   another ladder rather than chance; (c) on its ladder: the
+   ladder runs from the core through every rung present in ≥ 25 % of the spectra
+   (a weak rung carries it past, an absent one ends it), and a rung beyond the
+   contiguous part must co-vary with it -- median Pearson r of log height ≥ 0.8
+   with the present rungs within ±2, over ≥ 8 shared spectra; and (d) carries no
+   carbon: where the rung is bright enough that a C5 line's 13C would clear the
+   picker's local floor (the 5th-percentile height within ±25 Da), its M+1/M0
+   must stay under the cluster's own (2H/17O/15N) plus 5 × 1.07 %.
+   `merge_gates.reagent_water.rung_test` records the constants and the FWHM at
+   m/z 200 and 600 (present only when the TOF test ran; `decoy_presence` in
+   `tables/reagent_water.csv` is then the mean local decoy presence). Measured
+   offline on the bromide/nitrate TOF batch's own time series: 121 → 181 passing
+   rungs, every rung the fixed-offset test passed among them; 56 more merged rows
+   leave, 20 of them Assigned (the water clusters above, plus Br-.(H2O)8 =
+   C4H7NO4Si [M+NO3]-, Br-.(H2O)13 = C13H18N2O2 [M+Br]-, Br-.(H2O)16 =
+   C14H15N3O5 [M+NO3]- and HNO3.Br-.(H2O)5 = C4H11NO3S [M+Br]-); none of the
+   batch's truth rows sits within 27 ppm of a passing rung. The bright displaced
+   rungs' M+1/M0 is 0.00-0.05 (at most 3.3 carbon-equivalents) where the C13-C36
+   readings need 0.15-0.41. Two low-resolution nitrate TOF batches pass the same
+   rungs as before (a three-rung island 25 rungs above an absent ladder is not
+   taken), and both Orbitrap batches are unchanged. Measured, the constants have
+   room: the link presence at 0.2 or 0.3, and the carbon bar at 4 or 6, give the
+   same rungs, and neither the decoy skip nor the carbon test changes a rung of that
+   batch (they guard a crowded or a gap rung); co-variation at 0.9 passes three
+   fewer, NO3-.(H2O)29 (r 0.87) among them. Off-rung lines present in a segment
+   co-vary with its ladder at median r 0.25-0.33 (15-24 % reach 0.8), its rungs at
+   0.96-0.99.
 
 4b. **Known species, decided once** (`lock_known_species`; after the vote,
    before the polarity re-reads). Every file's known-species evidence is pooled

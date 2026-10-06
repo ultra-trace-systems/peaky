@@ -1825,7 +1825,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # passing rung is the water cluster and leaves the merged ledger (listed in
         # tables/reagent_water.csv); the rung joins the stamp as a reagent row below.
         if rwater is None:
-            rwater = _RW.measure(ts_peaks, prof, tol_ppm=scale.stamp_ppm, log=log)
+            # the rung test follows the width model: decoys at fixed Da offsets on an
+            # Orbitrap, scaled to the line width (gaps allowed, M+1 carbon test) on a TOF
+            rwater = _RW.measure(ts_peaks, prof, tol_ppm=scale.stamp_ppm, log=log, resolution=rp)
         merged, rw_stripped = _RW.strip_rung_rows(merged, rwater["rungs"], tol_ppm=scale.stamp_ppm, log=log)
         # The merged row's tier_reason (from align: the vote's exemption, else NA)
         # also takes the batch-level gates' notes below (cleanup._note appends to
@@ -1836,7 +1838,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         merge_gates: dict = {}
         merge_gates["reagent_water"] = _RW.summary(rwater["rungs"], rw_stripped, n_cores=rwater["n_cores"],
                                                    tol_ppm=rwater["tol_ppm"],
-                                                   segment_sizes=rwater["segment_sizes"])
+                                                   segment_sizes=rwater["segment_sizes"],
+                                                   rung_test=rwater.get("rung_test"))
         # Known species, decided ONCE for the batch by the evidence every file
         # pooled (the pass-0 commits and the leads it left on refused claims):
         # what the vote's curated exemption used to do, by evidence instead of
