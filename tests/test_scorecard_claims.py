@@ -64,6 +64,13 @@ CLAIM_ROW_KEYS = [
     "decoy_adducts_identified", "decoy_adducts_identified_rate", "decoy_adducts_identified_lt_350_rate",
     "decoy_adducts_established_rate", "m3_own_missing_identified", "m3_own_basis", "claims_schema",
 ]
+# appended after the claim keys, in this order, so every older column keeps its place
+APPENDED_ROW_KEYS = [
+    "decoy_scoring", "decoy_calibration", "decoy_ppm_k", "decoy_ppm_rate", "decoy_ppm_lt_350_rate",
+    "decoy_ppm_ge_350_rate", "decoy_ppm_identified_rate", "decoy_ppm_identified_lt_350_rate",
+    "decoy_ppm_established_rate", "decoy_ppm_control_assigned", "decoy_shift_lt_350_rate", "decoy_shift_ge_350_rate",
+    "decoy_headline_arm", "decoy_headline_lt_350_rate",
+]
 
 
 def write_claim_run(root: Path, name: str = "TEST-BATCH_2026-01-01T000000Z", defect: bool = False,
@@ -374,7 +381,11 @@ def test_kept_arm_ledgers_recount_to_the_same_card(run_dir_claims, tmp_path, cap
     with gzip.open(kept / "s1__control.csv.gz", "rt") as fh:
         assert "evidence_level" in fh.readline()
     manifest = json.loads((kept / "manifest.json").read_text())
-    assert manifest == {"mode": "both", "offset_da": 0.35, "files": ["s1"], "adducts_used": SC.load_run(str(run_dir_claims)).adducts,
+    # the default ppm shifts sit inside the class fallback's 15 ppm window of this snapshot-less file: skipped, said why
+    skipped = {SC.ppm_arm(k): {"s1": f"{k:+g} ppm is inside the 15 ppm match window: the true formula stays in reach, "
+                                     "so the arm is no decoy"} for k in SC.DECOY_PPM}
+    assert manifest == {"mode": "both", "offset_da": 0.35, "ppm_k": list(SC.DECOY_PPM), "ppm_skipped": skipped,
+                        "files": ["s1"], "adducts_used": SC.load_run(str(run_dir_claims)).adducts,
                         "wrong_adducts": SC.wrong_adducts("-"), "scoring": {"s1": "class-fallback"},   # no pattern_scoring: pre-0.9.0
                         "scoring_detail": {}, "calibration": {"s1": "control"}, "code": SC.engine_code()}
     first = json.loads((out / name / "scorecard.json").read_text())["decoy"]
@@ -492,7 +503,7 @@ def test_the_card_carries_claims_after_the_headline_and_the_acceptance_block(cru
     assert keys.index("claims") == keys.index("headline") + 1
     row = card["row"]
     assert list(row)[: len(OLD_ROW_KEYS)] == OLD_ROW_KEYS and "axes_hist" not in row
-    assert list(row)[len(OLD_ROW_KEYS):] == CLAIM_ROW_KEYS + ["decoy_scoring", "decoy_calibration"]
+    assert list(row)[len(OLD_ROW_KEYS):] == CLAIM_ROW_KEYS + APPENDED_ROW_KEYS
     assert (row["claim_identified"], row["claim_neutral"], row["claim_ion"], row["claim_tentative"],
             row["claim_reagent"], row["claim_not_assessed"]) == (2, 1, 2, 1, 0, 1)
     assert row["claim_unmatched_signal"] == pytest.approx(100.0 * 80 / COMMITTED)
@@ -504,6 +515,7 @@ def test_the_card_carries_claims_after_the_headline_and_the_acceptance_block(cru
     acc = {a["key"]: a for a in card["acceptance"]}
     assert list(acc) == ["roster_identified", "roster_misread_identified", "decoy_shift_identified_rate",
                          "decoy_shift_identified_lt_350_rate", "decoy_shift_established_rate",
+                         "decoy_ppm_identified_rate", "decoy_headline_lt_350_rate",
                          "decoy_adducts_identified_rate", "bright_m0_not_identified", "m1_families",
                          "m3_other_instrument_own_missing"]
     assert acc["bright_m0_not_identified"]["value"] == 3 and acc["bright_m0_not_identified"]["old_key"] == "bright_m0_not_assigned"

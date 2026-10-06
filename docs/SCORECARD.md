@@ -10,7 +10,7 @@ visible at once.
 ```bash
 python scripts/scorecard.py <run_dir>... [--levels levels.csv] [--other <run_dir>]
     [--other-instrument <run_dir> --overlap 'start,end' --mask 'start,end' --floor-cps 10 --floor-share 0.8]
-    [--decoy none|shift|adducts|both --decoy-offset 0.35 --decoy-files 1] [--decoy-ledgers DIR]
+    [--decoy none|shift|ppm|adducts|both --decoy-offset 0.35 --decoy-ppm=9,-9 --decoy-files 1] [--decoy-ledgers DIR]
     [--rosters DIR] [--out ~/peaky-output/scoreboard]
 ```
 
@@ -25,8 +25,8 @@ the merged ledger, `per_file/*_ledger.csv`, `per_file/_batch_ts.parquet`,
 |---|---|
 | `<out>/<run name>/SCORECARD.md` | the card: §0 the claim, then six numbered sections (below) |
 | `<out>/<run name>/scorecard.json` | the same, as data — every table as records |
-| `<out>/<run name>/decoy/<file>__<arm>.csv.gz` | each decoy arm's engine ledger (`control`, `shift`, `adducts`), kept for a re-count |
-| `<out>/<run name>/decoy/manifest.json` | what those ledgers were made with: mode, offset, files, adduct sets, per file the scoring its arms were judged at (`inherited` / `class-fallback`) and the inherited width, offset, window, floor and anchors (`scoring_detail`), per file the mass calibration its arms ran at (`calibration`: `control` / `own`), engine code |
+| `<out>/<run name>/decoy/<file>__<arm>.csv.gz` | each decoy arm's engine ledger (`control`, `shift`, one per ppm shift -- `ppmp9`, `ppmm9` -- and `adducts`), kept for a re-count |
+| `<out>/<run name>/decoy/manifest.json` | what those ledgers were made with: mode, offset, ppm shifts (`ppm_k`) and the ones skipped per file with why (`ppm_skipped`), files, adduct sets, per file the scoring its arms were judged at (`inherited` / `class-fallback`) and the inherited width, offset, window, floor and anchors (`scoring_detail`), per file the mass calibration its arms ran at (`calibration`: `control` / `own`), engine code |
 | `<out>/scoreboard.jsonl` | one row per run, appended; the board's memory |
 | `<out>/SCOREBOARD.md` | the claims table first, then every channel's latest row with its delta to the row before (`## All metrics`) |
 | `<out>/scoreboard.html` | the page source of "Peaky Scoreboard": the claims table, the channel table and one tabbed panel per run |
@@ -94,7 +94,8 @@ board and the page:
 |---|---|---|
 | roster recall not lower | `roster_identified` — roster formulas read as themselves whose reading is identified | `roster_assigned` |
 | roster misreads not higher | `roster_misread_identified` — a roster line read as another neutral that is identified | `roster_misread` |
-| decoy rate not higher, per arm | `decoy_shift_identified_rate`, `decoy_shift_identified_lt_350_rate`, `decoy_adducts_identified_rate` | `decoy_shift_rate`, `decoy_adducts_rate` |
+| decoy rate not higher, per arm | `decoy_shift_identified_rate`, `decoy_shift_identified_lt_350_rate`, `decoy_ppm_identified_rate`, `decoy_adducts_identified_rate` | `decoy_shift_rate`, `decoy_adducts_rate` |
+| decoy rate not higher below m/z 350 (the headline shift arm: the ppm arms when they ran) | `decoy_headline_lt_350_rate` (Assigned) | `decoy_shift_rate` |
 | bright M0 not worse | `bright_m0_not_identified` (ion-only rows excluded, as for the old count) | `bright_m0_not_assigned` |
 | M1 families not worse | `m1_families` (unchanged) | `m1_families` |
 | cross-instrument agreement not lower | `m3_own_missing_identified` — the other instrument's identified rows (3c) that this run lacks | `m3_other_instrument_own_missing` |
@@ -168,12 +169,32 @@ and the tables show a dash.
    neutrals — F, Si, P, Cl, Br, S, N and C > 20, with examples; (c) the
    **decoy false-discovery bound**: the engine run offline (`assign.run(peaks=)`)
    on the brightest cover file(s) as they are (the control), with every m/z
-   shifted by `--decoy-offset` (0.35 Da lands in the mass-defect gap below
-   ~m/z 350, where no CHNOS formula sits), and with the adduct set of the
+   shifted (two kinds of arm, below), and with the adduct set of the
    wrong polarity chemistry (`[M+Cl]-`/`[M+I]-` on a negative run,
    `[M+Na]+`/`[M+NH4]+` on a positive one); what is still Assigned, per tier
-   and level, is the error bound, reported on either side of m/z 350 because
-   the mass-defect gap a 0.35 Da shift lands in closes above it. Each arm is
+   and level, is the error bound, reported on either side of m/z 350
+   (Assigned and its rate against the control's Assigned on the same side)
+   and per 50-Da m/z bin (`decoy.bins`: control, the 0.35 Da arm and the ppm
+   arms, each with its rate). The **0.35 Da arm** (`shift`,
+   `--decoy-offset`) is kept for continuity: below ~m/z 350 it lands in the
+   mass-defect gap where no CHNOS formula sits, so on an Orbitrap the engine
+   proposes almost nothing there and no tier gate is tested; the card labels
+   it "blind below ~m/z 350 on an Orbitrap". The **ppm arms** (`--decoy-ppm`,
+   default +9 and -9 ppm; `none` for none) scale every m/z by
+   (1 + k x 1e-6): outside the file's match window -- the true formula is out
+   of reach -- but inside the populated mass-defect band, where the formula
+   grid is dense, so the engine proposes wrong formulas and every tier gate
+   is tested. A shift inside the window (the wider of `PassConfig.search_ppm`
+   and the match window the file is scored at; 5 ppm on an Orbitrap, 15 ppm
+   on a TOF or without a snapshot) is no decoy: it is skipped, and
+   `decoy.ppm_skipped` says why. Each ppm arm (`decoy.ppm_arms`) is rated
+   against its files' control; pooled (`decoy.ppm`) they are rated against
+   the control counted once per arm that ran (`ppm.control`). The card's
+   **headline below m/z 350** (`decoy.headline`; board
+   `decoy_headline_lt_350_rate`, `decoy_headline_arm`) is the pooled ppm
+   arms whenever they ran, else the 0.35 Da arm. `--decoy shift` runs both
+   kinds of shift arm, `--decoy ppm` the ppm arms only, `--decoy both` every
+   arm. Each arm is
    scored at the measurement the run judged its file at -- the width, offset,
    window and abundance floor of the file's `pattern_scoring` snapshot in the
    batch summary (a 0.9.0 run records one per sample) -- with the per-peak
@@ -236,8 +257,9 @@ and the tables show a dash.
    `manifest.json` beside it; `--decoy-ledgers DIR` (a scoreboard out dir, or
    the decoy dir itself) counts those ledgers instead of running the engine
    again — a re-score at no engine cost, the same counts. The card then
-   reports the manifest's offset, files, adduct sets and scoring, not the command
-   line's, and `ledgers.code` names the engine that made them. It implies
+   reports the manifest's offset, ppm shifts, files, adduct sets and scoring, not the command
+   line's, and `ledgers.code` names the engine that made them (ledgers kept
+   before the ppm arm carry none). It implies
    `--decoy both` unless `--decoy` is given; a missing ledger is that arm's
    error, and a DIR with no kept ledger for a run stops the scorecard before
    any card or board row is written. An arm that crashes the engine is
@@ -279,6 +301,13 @@ a shoulder, an unknown and a non-persistent bright track, and pins every
 panel's numbers, the M1 family grouping, the M2 statuses, the in-process and
 in-core level paths, the offline decoy engine run, M3 with a window, the
 board round trip with a delta, and the CLI.
+
+`tests/test_scorecard_decoy_arms.py` pins the decoy arms as a real file runs
+them: the control calibration taken and given back, arm by arm; the ppm arm's
+m/z scaling, keys and kept-ledger names, a shift inside the match window
+skipped, the ppm arms pooled against the control counted once per arm, the
+headline (ppm arm first, else the 0.35 Da arm, marked blind on an Orbitrap),
+the 50-Da bins, and a re-count of kept ppm-arm ledgers.
 
 `tests/test_scorecard_claims.py` writes in-core levels onto that run and adds
 a Candidate the acid branch identifies, an ion-only line and a per-file

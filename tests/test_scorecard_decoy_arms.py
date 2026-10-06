@@ -108,3 +108,147 @@ def test_an_arm_without_a_control_ledger_says_it_calibrated_on_its_own(tmp_path,
     dc = SC.decoy(run, "shift", 0.35, 1)
     assert dc["control"] == {"error": "ValueError: control failed"} and seen["shift"] is False
     assert dc["calibration"] == {"s1": "own"}
+
+
+# --------------------------------------------------------------------------- the populated-defect ppm-shift arm
+SNAP = {"score_version": 2, "sigma_ppm": 0.5, "mu_ppm": 0.1, "sigma_source": "fitted", "mu_source": "fitted",
+        "fitted_anchors": 60, "mz_tolerance_ppm": 5.0, "abundance_floor": 0.01, "instrument_type": "orbi",
+        "has_signal_to_noise": True}
+
+
+def orbi_run(tmp_path, window=5.0):
+    """The fixture run with an Orbitrap scoring snapshot (a `window` ppm match window) for each file."""
+    rd = write_run(tmp_path / "out")
+    summ = json.loads((rd / "batch_summary.json").read_text())
+    summ["pattern_scoring"] = {sid: dict(SNAP, mz_tolerance_ppm=window) for sid in ("s1", "s2")}
+    (rd / "batch_summary.json").write_text(json.dumps(summ))
+    return SC.load_run(str(rd))
+
+
+def committed(mzs, prefix="a") -> pd.DataFrame:
+    """Assigned M0 rows at the given m/z (one CHO reading each)."""
+    cols = ["peak_id", "role", "tier", "mz", "height", "neutral_formula", "adduct", "method", "ion_formula", "confidence"]
+    return pd.DataFrame([dict(peak_id=f"{prefix}{i}", role="M0", tier="Assigned", mz=mz, height=100.0 - i,
+                              neutral_formula=f"C{6 + i}H{8 + 2 * i}O4", adduct="[M-H]-", method="cheminfo+grid",
+                              ion_formula=f"C{6 + i}H{7 + 2 * i}O4-", confidence="High")
+                         for i, mz in enumerate(mzs)], columns=cols)
+
+
+ARMS = {"control": [120.0, 180.0, 260.0, 420.0], "shift": [], "ppmp9": [180.0], "ppmm9": [260.0, 420.0],
+        "adducts": []}
+
+
+def fake_arms(monkeypatch, arms=ARMS):
+    seen = {}
+
+    def fake(run_, peaks, sample_id, adducts, log=lambda *a: None, scoring=None):
+        arm = sample_id.rsplit("-", 1)[1]
+        seen[arm] = {"mz": peaks["mz"].to_numpy().copy(), "inherited": PA.calibrate is not own[0],
+                     "window": (scoring or {}).get("mz_tolerance_ppm")}
+        return committed(arms[arm], prefix=arm)
+
+    own = [PA.calibrate]
+    monkeypatch.setattr(SC, "run_engine_offline", fake)
+    monkeypatch.setattr(SC, "level_arm", lambda *a, **k: pd.DataFrame())
+    return seen
+
+
+def test_the_ppm_arm_scales_every_mz_and_names_itself():
+    peaks = pd.DataFrame({"peak_id": ["a", "b"], "mz": [100.0, 400.0], "height": [1.0, 2.0]})
+    up = SC.decoy_ppm_peaks(peaks, 9.0)
+    assert up["mz"].tolist() == pytest.approx([100.0009, 400.0036]) and up["peak_id"].tolist() == ["a_decoy", "b_decoy"]
+    assert peaks["mz"].tolist() == [100.0, 400.0]                                    # the input is left alone
+    assert SC.ppm_arm(9) == "ppmp9" and SC.ppm_arm(-9.0) == "ppmm9" and SC.ppm_arm(4.5) == "ppmp4d5"
+    assert SC.parse_ppm_list(None) == list(SC.DECOY_PPM) == [9.0, -9.0]
+    assert SC.parse_ppm_list("6,-6, 12") == [6.0, -6.0, 12.0] and SC.parse_ppm_list("none") == [] == SC.parse_ppm_list("0")
+    # kept-ledger names must stay readable by the level layer's arm-file pattern
+    from peaky.assignment.levels import source as SRC
+    assert SRC.ARM_FILE_RE.match(f"s1__{SC.ppm_arm(-4.5)}.csv.gz").group("arm") == "ppmm4d5"
+
+
+def test_a_ppm_shift_runs_only_outside_the_files_match_window(tmp_path, monkeypatch):
+    run = orbi_run(tmp_path)
+    assert SC.arm_window_ppm(run, "s1") == 5.0 and SC.decoy_instrument(run, "s1") == "orbi"
+    seen = fake_arms(monkeypatch)
+    dc = SC.decoy(run, "ppm", 0.35, 1, ppm_k=[9.0, -9.0, 4.0])
+    assert set(seen) == {"control", "ppmp9", "ppmm9"} and dc["shift"] is None and dc["adducts"] is None
+    assert dc["ppm_skipped"] == {"ppmp4": {"s1": "+4 ppm is inside the 5 ppm match window: the true formula stays "
+                                                 "in reach, so the arm is no decoy"}}
+    ctrl_mz = seen["control"]["mz"]
+    assert seen["ppmp9"]["mz"] == pytest.approx(ctrl_mz * (1 + 9e-6)) and seen["ppmm9"]["mz"] == pytest.approx(ctrl_mz * (1 - 9e-6))
+    assert seen["ppmp9"]["inherited"] and seen["ppmm9"]["inherited"] and not seen["control"]["inherited"]
+    # a file without a snapshot is scored at the class fallback's 15 ppm window: +-9 ppm is no decoy there
+    plain = SC.load_run(str(write_run(tmp_path / "plain")))
+    assert SC.arm_window_ppm(plain, "s1") == 15.0
+    fake_arms(monkeypatch)
+    dc2 = SC.decoy(plain, "ppm", 0.35, 1, ppm_k=[9.0, -9.0])
+    assert dc2["ppm"] is None and dc2["ppm_arms"] == {} and set(dc2["ppm_skipped"]) == {"ppmp9", "ppmm9"}
+    assert dc2["headline"] is None
+
+
+def test_the_ppm_arms_pool_against_the_control_once_per_arm_and_lead_the_headline(tmp_path, monkeypatch):
+    run = orbi_run(tmp_path)
+    fake_arms(monkeypatch)
+    dc = SC.decoy(run, "both", 0.35, 1, ppm_k=[9.0, -9.0])
+    ctrl, pp = dc["control"], dc["ppm"]
+    assert ctrl["assigned"] == 4 and ctrl["assigned_lt_350"] == 3 and ctrl["assigned_ge_350"] == 1
+    p9, m9 = dc["ppm_arms"]["ppmp9"], dc["ppm_arms"]["ppmm9"]
+    assert (p9["k"], p9["assigned"], p9["assigned_rate"]) == (9.0, 1, 25.0)
+    assert (m9["assigned_lt_350"], m9["assigned_ge_350"], m9["assigned_ge_350_rate"]) == (1, 1, 100.0)
+    # pooled: 3 decoy Assigned against the control counted twice (8; 6 below 350, 2 at or above)
+    assert pp["assigned"] == 3 and pp["n_arms"] == 2 and pp["control"]["assigned"] == 8
+    assert pp["assigned_rate"] == pytest.approx(37.5) and pp["assigned_lt_350_rate"] == pytest.approx(100 * 2 / 6)
+    assert pp["assigned_ge_350_rate"] == pytest.approx(50.0)
+    # the 0.35 Da arm proposes nothing here; the headline quotes the ppm arms
+    assert dc["shift"]["assigned"] == 0 and dc["shift"]["assigned_lt_350_rate"] == 0.0
+    hl = dc["headline"]
+    assert hl["arm"] == "ppm" and hl["rate_lt_350"] == pytest.approx(100 * 2 / 6) and "+9/-9 ppm" in hl["label"]
+    assert (hl["assigned_lt_350"], hl["control_assigned_lt_350"]) == (2, 6)
+    # per 50-Da bin: the control, the Da arm, and the ppm arms against the control counted twice
+    assert dc["bins"] == [
+        {"bin": "100-150", "control": 1, "shift": 0, "shift_rate": 0.0, "ppm": 0, "ppm_control": 2, "ppm_rate": 0.0},
+        {"bin": "150-200", "control": 1, "shift": 0, "shift_rate": 0.0, "ppm": 1, "ppm_control": 2, "ppm_rate": 50.0},
+        {"bin": "250-300", "control": 1, "shift": 0, "shift_rate": 0.0, "ppm": 1, "ppm_control": 2, "ppm_rate": 50.0},
+        {"bin": "400-450", "control": 1, "shift": 0, "shift_rate": 0.0, "ppm": 1, "ppm_control": 2, "ppm_rate": 50.0}]
+    # the card: the headline line, the Da arm marked blind on an Orbitrap, a row per arm, the bins
+    card = SC.build_card(run, rosters=SC.load_rosters(), board=[], log=lambda *a: None)
+    card["decoy"] = dc
+    row = SC.board_row(card)
+    assert row["decoy_headline_arm"] == "ppm" and row["decoy_headline_lt_350_rate"] == pytest.approx(100 * 2 / 6)
+    assert row["decoy_ppm_rate"] == pytest.approx(37.5) and row["decoy_ppm_k"] == [9.0, -9.0]
+    assert row["decoy_ppm_control_assigned"] == 8 and row["decoy_shift_lt_350_rate"] == 0.0
+    md = SC.render_md(card)
+    assert "**Shift decoy below m/z 350** (ppm shift +9/-9 ppm, pooled" in md and "**33.3 %**" in md
+    assert "| shift +0.35 Da (blind below ~m/z 350 on an Orbitrap) |" in md
+    assert "| shift +9 ppm |" in md and "| shift -9 ppm |" in md and "| ppm shifts pooled |" in md
+    assert "| 150-200 | 1 | 0 | 0.0 | 1 | 2 | 50.0 |" in md
+    page = SC.render_html([dict(card, row=row)], [row])
+    assert "ppm shifts pooled" in page and "150-200" in page
+
+
+def test_without_a_ppm_arm_the_headline_is_the_da_arm(tmp_path, monkeypatch):
+    run = orbi_run(tmp_path)
+    fake_arms(monkeypatch, dict(ARMS, shift=[300.0]))
+    dc = SC.decoy(run, "shift", 0.35, 1, ppm_k=[])
+    hl = dc["headline"]
+    assert hl["arm"] == "shift" and hl["label"] == "shift +0.35 Da (blind below ~m/z 350 on an Orbitrap)"
+    assert hl["rate_lt_350"] == pytest.approx(100 / 3) and dc["ppm"] is None and "ppm" not in {b for r in dc["bins"] for b in r}
+
+
+def test_kept_ppm_arm_ledgers_recount_to_the_same_numbers(tmp_path, monkeypatch):
+    run = orbi_run(tmp_path)
+    fake_arms(monkeypatch)
+    kept = tmp_path / "kept"
+    first = SC.decoy(run, "both", 0.35, 1, save_dir=str(kept), ppm_k=[9.0, -9.0, 4.0])
+    names = sorted(p.name for p in kept.iterdir())
+    assert names == ["manifest.json", "s1__adducts.csv.gz", "s1__control.csv.gz", "s1__ppmm9.csv.gz",
+                     "s1__ppmp9.csv.gz", "s1__shift.csv.gz"]
+    man = json.loads((kept / "manifest.json").read_text())
+    assert man["ppm_k"] == [9.0, -9.0, 4.0] and list(man["ppm_skipped"]) == ["ppmp4"]
+    monkeypatch.setattr(SC, "run_engine_offline", lambda *a, **k: (_ for _ in ()).throw(AssertionError("kept ledgers")))
+    again = SC.decoy(run, "both", 0.5, 1, ledgers_dir=str(kept), ppm_k=[6.0])     # the manifest wins
+    assert again["ppm_k"] == [9.0, -9.0, 4.0] and again["ppm_skipped"] == first["ppm_skipped"]
+    for key in ("ppm", "headline", "bins"):
+        assert again[key] == first[key], key
+    assert again["ppm_arms"] == first["ppm_arms"]
+

@@ -1429,6 +1429,72 @@ def decoy_peaks(peaks: pd.DataFrame, offset_da: float) -> pd.DataFrame:
     return out
 
 
+def decoy_ppm_peaks(peaks: pd.DataFrame, k_ppm: float) -> pd.DataFrame:
+    """Every m/z scaled by (1 + k_ppm * 1e-6): the same spectrum a few ppm off its true formulas. Outside the
+    match window the true formula is out of reach, but the shifted line still sits in the populated mass-defect
+    band, where the formula grid is dense -- so the engine proposes wrong formulas and every tier gate is
+    tested. (The 0.35 Da arm moves the lines into the empty gap below ~m/z 350, where nothing is proposed and
+    no gate is tested.)"""
+    out = peaks.copy()
+    out["mz"] = out["mz"] * (1.0 + float(k_ppm) * 1e-6)
+    out["peak_id"] = out["peak_id"].astype(str) + "_decoy"
+    return out
+
+
+#: the populated-defect shift arms run by default (ppm; each must sit outside the file's match window)
+DECOY_PPM = (9.0, -9.0)
+#: m/z bins of the decoy-by-mass table
+DECOY_BIN_DA = 50
+
+
+def ppm_arm(k_ppm: float) -> str:
+    """The arm key (and kept-ledger file tag) of a ppm-shift arm: +9 -> 'ppmp9', -4.5 -> 'ppmm4d5'."""
+    return "ppm" + ("p" if float(k_ppm) > 0 else "m") + f"{abs(float(k_ppm)):g}".replace(".", "d")
+
+
+def parse_ppm_list(text: str | None) -> list[float]:
+    """`--decoy-ppm` '9,-9' -> [9.0, -9.0]; 'none' / '' / '0' -> [] (no ppm arm)."""
+    if text is None:
+        return list(DECOY_PPM)
+    vals = []
+    for part in str(text).replace(";", ",").split(","):
+        part = part.strip()
+        if not part or part.lower() == "none":
+            continue
+        v = float(part)
+        if v != 0.0 and v not in vals:
+            vals.append(v)
+    return vals
+
+
+def arm_window_ppm(run: "Run", file_id: str) -> float:
+    """How far from a line the engine still reaches for a formula on this file: the wider of the grid's
+    enumeration window (`PassConfig.search_ppm`) and the match window the arm is scored at (the file's
+    `pattern_scoring` snapshot, else the class fallback's). A ppm-shift arm inside it is no decoy: the true
+    formula stays in reach."""
+    from mascope_tools.composition import resolve_match_tolerance_ppm
+
+    from peaky.assignment import passes as PA
+
+    snap = decoy_scoring(run, file_id)
+    window = None
+    if snap:
+        try:
+            window = float(snap.get("mz_tolerance_ppm"))
+        except (TypeError, ValueError):
+            window = None
+    if window is None or not np.isfinite(window):
+        window = float(resolve_match_tolerance_ppm(None))
+    return max(float(PA.PassConfig().search_ppm), window)
+
+
+def decoy_instrument(run: "Run", file_id: str) -> str | None:
+    """The instrument class the run's scoring snapshot names for the file ('orbi', 'tof'), or None."""
+    snap = decoy_scoring(run, file_id) or {}
+    kind = snap.get("instrument_type")
+    return str(kind) if kind else None
+
+
 def wrong_adducts(polarity: str) -> list[str]:
     return list(WRONG_ADDUCTS.get(polarity, WRONG_ADDUCTS["-"]))
 
@@ -1642,6 +1708,24 @@ def _claim_counts(m0: pd.DataFrame, tier: pd.Series, levels: pd.DataFrame) -> di
     return out
 
 
+def mz_bins(mz: pd.Series, width: int = DECOY_BIN_DA) -> dict:
+    """{lower edge as text: n} of the finite m/z values, `width` Da bins (text keys: the card is JSON)."""
+    v = pd.to_numeric(pd.Series(mz), errors="coerce")
+    v = v[np.isfinite(v)]
+    if v.empty:
+        return {}
+    lo = (np.floor(v.to_numpy(float) / width) * width).astype(int)
+    vals, counts = np.unique(lo, return_counts=True)
+    return {str(int(a)): int(b) for a, b in zip(vals, counts)}
+
+
+def _add_bins(a: dict, b: dict) -> dict:
+    out = dict(a or {})
+    for k, n in (b or {}).items():
+        out[k] = out.get(k, 0) + int(n)
+    return out
+
+
 def _levels_frame(pairs: pd.DataFrame | None) -> pd.DataFrame:
     """An arm's levelled pairs (`evidence.level_source`) as a levels frame (neutral, adduct, level)."""
     if pairs is None or pairs.empty:
@@ -1673,6 +1757,8 @@ def _ledger_counts(led: pd.DataFrame, label: str, levels: pd.DataFrame | None = 
         # so a decoy's Assigned rows are reported on either side of it
         "assigned_lt_350": int(((tier == "Assigned") & (mz < DECOY_MZ_SPLIT)).sum()),
         "assigned_ge_350": int(((tier == "Assigned") & (mz >= DECOY_MZ_SPLIT)).sum()),
+        # Assigned per m/z bin (key = the bin's lower edge, DECOY_BIN_DA wide)
+        "assigned_by_bin": mz_bins(mz[tier == "Assigned"]),
         "candidate": int((tier == "Candidate").sum()),
         "neutrals": int(col(m0, "neutral_formula").dropna().nunique()),
         "levels": level_vector(levels),
@@ -1756,31 +1842,149 @@ def engine_code() -> str:
     return f"{peaky.__version__} {commit[:9]}".strip()
 
 
+#: the count keys a decoy arm's totals sum over its files
+_SUM_KEYS = ("m0", "assigned", "assigned_lt_350", "assigned_ge_350", "candidate", "neutrals")
+#: the decoy modes and the arm families each runs (the control always runs)
+DECOY_MODES = {"none": (), "shift": ("shift", "ppm"), "ppm": ("ppm",), "adducts": ("adducts",),
+               "both": ("shift", "ppm", "adducts")}
+
+
+def _total(items: list[dict]) -> dict:
+    """One arm's counts summed over its files (or a ppm arm's over its files and shifts)."""
+    total = {k: int(sum(i[k] for i in items)) for k in _SUM_KEYS}
+    total["levels"] = {lv: int(sum(i["levels"].get(lv, 0) for i in items)) for lv in LEVELS}
+    total["examples"] = items[0]["examples"]
+    bins: dict = {}
+    for i in items:
+        bins = _add_bins(bins, i.get("assigned_by_bin"))
+    total["assigned_by_bin"] = dict(sorted(bins.items(), key=lambda kv: int(kv[0])))
+    if any("level_error" in i for i in items):
+        total["level_error"] = "; ".join(i["level_error"] for i in items if "level_error" in i)
+    total["by_claim"] = {c: {k: int(sum(i["by_claim"][c][k] for i in items)) for k in CLAIM_COUNTS} for c in CLAIM_KEYS}
+    total.update({k: int(sum(i[k] for i in items)) for k in IDENTIFIED_KEYS + ESTABLISHED_KEYS})
+    if all("strict" in i for i in items):
+        st = [i["strict"] for i in items]
+        total["strict"] = {
+            "levels": {lv: int(sum(x["levels"].get(lv, 0) for x in st)) for lv in LEVELS},
+            "by_claim": {c: {k: int(sum(x["by_claim"][c][k] for x in st)) for k in CLAIM_COUNTS} for c in CLAIM_KEYS},
+            **{k: int(sum(x[k] for x in st)) for k in ("identified", "identified_lt_350", "established")}}
+    return total
+
+
+def _rates(a: dict, ctrl: dict) -> None:
+    """An arm's rates against the control it is matched with (in place)."""
+    a["assigned_rate"] = pct(a["assigned"], ctrl["assigned"])
+    # the two sides of m/z 350, each against the control's Assigned on the same side (None = the control has none)
+    a["assigned_lt_350_rate"] = pct_or_none(a["assigned_lt_350"], ctrl["assigned_lt_350"])
+    a["assigned_ge_350_rate"] = pct_or_none(a["assigned_ge_350"], ctrl["assigned_ge_350"])
+    a["candidate_rate"] = pct(a["candidate"], ctrl["candidate"])
+    a["good_level_rate"] = pct(
+        sum(a["levels"].get(lv, 0) for lv in GOOD_LEVELS),
+        sum(ctrl["levels"].get(lv, 0) for lv in GOOD_LEVELS),
+    )
+    # per claim, against the control's pairs of the same claim (and m/z side);
+    # a control with no pair of that claim leaves the rate undefined (None), not 0 %
+    a["identified_rate"] = pct_or_none(a["identified"], ctrl["identified"])
+    a["identified_lt_350_rate"] = pct_or_none(a["identified_lt_350"], ctrl["identified_lt_350"])
+    a["identified_ge_350_rate"] = pct_or_none(a["identified_ge_350"], ctrl["identified_ge_350"])
+    a["identified_assigned_lt_350_rate"] = pct_or_none(a["identified_assigned_lt_350"], ctrl["identified_assigned_lt_350"])
+    a["established_rate"] = pct_or_none(a["established"], ctrl["established"])
+    a["established_lt_350_rate"] = pct_or_none(a["established_lt_350"], ctrl["established_lt_350"])
+    for c in ("neutral", "ion", "tentative", "not assessed"):
+        a[f"{c.replace(' ', '_')}_rate"] = pct_or_none(a["by_claim"][c]["pairs"], ctrl["by_claim"][c]["pairs"])
+    if "strict" in a and "strict" in ctrl:
+        a["strict"]["identified_rate"] = pct_or_none(a["strict"]["identified"], ctrl["strict"]["identified"])
+        a["strict"]["established_rate"] = pct_or_none(a["strict"]["established"], ctrl["strict"]["established"])
+
+
+def decoy_bins(dc: dict) -> list[dict]:
+    """Decoy against control Assigned per DECOY_BIN_DA m/z bin: the 0.35 Da arm against the control, the ppm arms
+    (pooled) against the control counted once per ppm arm that ran on the file. A bin no arm holds is left out."""
+    ctrl = dc.get("control") if isinstance(dc.get("control"), dict) and "error" not in dc["control"] else None
+    if not ctrl or "assigned_by_bin" not in ctrl:
+        return []
+    sh = dc.get("shift") if isinstance(dc.get("shift"), dict) and "error" not in dc["shift"] else None
+    pp = dc.get("ppm") if isinstance(dc.get("ppm"), dict) and "error" not in dc["ppm"] else None
+    pc = (pp or {}).get("control") or {}
+    keys = set(ctrl["assigned_by_bin"]) | set((sh or {}).get("assigned_by_bin") or {}) | set((pp or {}).get("assigned_by_bin") or {})
+    rows = []
+    for k in sorted(keys, key=int):
+        c = int(ctrl["assigned_by_bin"].get(k, 0))
+        rec = {"bin": f"{int(k)}-{int(k) + DECOY_BIN_DA}", "control": c}
+        if sh is not None:
+            s_ = int((sh.get("assigned_by_bin") or {}).get(k, 0))
+            rec.update(shift=s_, shift_rate=pct_or_none(s_, c))
+        if pp is not None:
+            p_, pcn = int((pp.get("assigned_by_bin") or {}).get(k, 0)), int((pc.get("assigned_by_bin") or {}).get(k, 0))
+            rec.update(ppm=p_, ppm_control=pcn, ppm_rate=pct_or_none(p_, pcn))
+        rows.append(rec)
+    return rows
+
+
+def decoy_headline(dc: dict) -> dict | None:
+    """The shift arm the card quotes below m/z 350: the ppm arms (pooled) when any ran, else the 0.35 Da arm. On an
+    Orbitrap the 0.35 Da arm is blind below ~350 (its lines land in the empty mass-defect gap, no formula is
+    proposed, no tier gate is tested), so its rate there is no bound."""
+    pp = dc.get("ppm") if isinstance(dc.get("ppm"), dict) and "error" not in dc["ppm"] else None
+    sh = dc.get("shift") if isinstance(dc.get("shift"), dict) and "error" not in dc["shift"] else None
+    ctrl = dc.get("control") if isinstance(dc.get("control"), dict) and "error" not in dc["control"] else None
+    if pp is not None and pp.get("control"):
+        a, c, arm = pp, pp["control"], "ppm"
+        label = "ppm shift " + "/".join(f"{k:+g}" for k in dc.get("ppm_k") or []) + " ppm, pooled"
+    elif sh is not None and ctrl is not None:
+        a, c, arm = sh, ctrl, "shift"
+        label = f"shift {dc.get('offset_da', 0):+.2f} Da" + (" (blind below ~m/z 350 on an Orbitrap)" if dc.get("orbitrap") else "")
+    else:
+        return None
+    return {"arm": arm, "label": label,
+            "assigned_lt_350": a["assigned_lt_350"], "control_assigned_lt_350": c["assigned_lt_350"],
+            "rate_lt_350": pct_or_none(a["assigned_lt_350"], c["assigned_lt_350"]),
+            "assigned_ge_350": a["assigned_ge_350"], "control_assigned_ge_350": c["assigned_ge_350"],
+            "rate_ge_350": pct_or_none(a["assigned_ge_350"], c["assigned_ge_350"]),
+            "identified_lt_350_rate": a.get("identified_lt_350_rate")}
+
+
 def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: None,
-          save_dir: str | None = None, ledgers_dir: str | None = None) -> dict:
+          save_dir: str | None = None, ledgers_dir: str | None = None, ppm_k=()) -> dict:
     """The decoy false-discovery bound: the engine, offline, on the brightest
     cover file(s) as they are (the control), with every m/z shifted, and with
     the wrong adduct set. What is still Assigned is the error bound; each arm's
     pairs are levelled in the run's context as the reference levels a decoy arm
     (`level_arm`: adapted minima; strict in a field of its own).
 
+    Two shift arms: `shift` adds `offset_da` to every m/z (0.35 Da, kept for continuity; on an Orbitrap it lands
+    in the empty mass-defect gap below ~m/z 350 and tests nothing there), and one `ppm` arm per k of `ppm_k`
+    scales every m/z by (1 + k * 1e-6) -- outside the file's match window, inside the populated band
+    (`decoy_ppm_peaks`). A k inside the window (`arm_window_ppm`) is skipped and says why. Every arm runs at
+    the file's control calibration (`inherited_calibration`).
+
     `save_dir` keeps each arm's engine ledger (`arm_ledger_path`) and what they
     were made with (`DECOY_MANIFEST`); `ledgers_dir` counts the ledgers kept
     there instead of running the engine again -- the same counts at no engine
-    cost (a missing ledger is that arm's error), with the offset, files and
+    cost (a missing ledger is that arm's error), with the offset, ppm shifts, files and
     adduct sets of the manifest when there is one."""
     if mode == "none" or run.per_file.empty:
         return {"mode": mode, "files": [], "control": None, "shift": None, "adducts": None}
+    families = DECOY_MODES.get(mode, DECOY_MODES["both"])
     kept = _read_json(os.path.join(ledgers_dir, DECOY_MANIFEST)) if ledgers_dir else {}
     files = kept["files"] if "files" in kept else brightest_files(run, n_files)
     offset_da = kept.get("offset_da", offset_da)
+    # a re-count reads the shifts the kept ledgers were made at (none before the ppm arm existed)
+    ppm_k = [float(k) for k in (kept.get("ppm_k", []) if ledgers_dir else ppm_k)] if "ppm" in families else []
     out = {"mode": mode, "offset_da": offset_da, "files": files, "control": None, "shift": None, "adducts": None,
            "adducts_used": kept.get("adducts_used", run.adducts), "wrong_adducts": kept.get("wrong_adducts", wrong_adducts(run.polarity)),
            "ledgers": {"source": "saved" if ledgers_dir else "engine", "dir": ledgers_dir or save_dir,
-                       "code": kept.get("code") if ledgers_dir else engine_code()}}
+                       "code": kept.get("code") if ledgers_dir else engine_code()},
+           "ppm_k": ppm_k, "ppm": None, "ppm_arms": {},
+           # per arm key, why it did not run on which file (a ppm shift inside the file's match window)
+           "ppm_skipped": dict(kept.get("ppm_skipped") or {}) if ledgers_dir else {}}
+    out["instrument"] = {f: decoy_instrument(run, f) for f in files}
+    out["orbitrap"] = any(v == "orbi" for v in out["instrument"].values())
     if kept:
-        log(f"[decoy] re-count of the ledgers made at {offset_da:+.3f} Da on {files} by {kept.get('code')}")
-    agg: dict[str, list] = {"control": [], "shift": [], "adducts": []}
+        log(f"[decoy] re-count of the ledgers made at {offset_da:+.3f} Da"
+            + (f" and {'/'.join(f'{k:+g}' for k in ppm_k)} ppm" if ppm_k else "") + f" on {files} by {kept.get('code')}")
+    # per arm key: [(file, counts)]
+    agg: dict[str, list] = {"control": [], "shift": [], "adducts": [], **{ppm_arm(k): [] for k in ppm_k}}
     errors: dict[str, str] = {}
     saved: list[str] = []
     ctx: dict = {}            # the run's source (built once, at the first arm) and each file's control ledger
@@ -1839,7 +2043,7 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
             counts = _ledger_counts(led, sample_id, lv["adapted"], lv["strict"])
             if level_error:
                 counts["level_error"] = level_error
-            agg[key].append(counts)
+            agg[key].append((file_id, counts))
         except Exception as exc:  # noqa: BLE001 - anything the engine raises
             errors[key] = f"{type(exc).__name__}: {exc}"
             log(f"[decoy] {sample_id}: {key} arm failed -- {errors[key]}")
@@ -1858,62 +2062,75 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
             continue
         log(f"[decoy] {f}: {len(peaks)} peaks, control {'re-count' if ledgers_dir else 'run'}")
         arm("control", peaks, f, run.adducts)
-        if mode in ("shift", "both"):
+        if "shift" in families:
             log(f"[decoy] {f}: shift {offset_da:+.3f} Da")
             arm("shift", decoy_peaks(peaks, offset_da), f, run.adducts)
-        if mode in ("adducts", "both"):
+        for k in ppm_k:
+            key = ppm_arm(k)
+            if ledgers_dir:
+                if f in (out["ppm_skipped"].get(key) or {}):
+                    continue
+            else:
+                window = arm_window_ppm(run, f)
+                if abs(k) <= window:
+                    why = (f"{k:+g} ppm is inside the {window:g} ppm match window: the true formula stays in "
+                           f"reach, so the arm is no decoy")
+                    out["ppm_skipped"].setdefault(key, {})[f] = why
+                    log(f"[decoy] {f}: ppm shift {k:+g} skipped -- {why}")
+                    continue
+            log(f"[decoy] {f}: ppm shift {k:+g}")
+            arm(key, decoy_ppm_peaks(peaks, k), f, run.adducts)
+        if "adducts" in families:
             log(f"[decoy] {f}: wrong adducts {wrong_adducts(run.polarity)}")
             arm("adducts", peaks, f, wrong_adducts(run.polarity))
     if saved:
-        manifest = {k: out[k] for k in ("mode", "offset_da", "files", "adducts_used", "wrong_adducts", "scoring",
-                                        "scoring_detail", "calibration")}
+        manifest = {k: out[k] for k in ("mode", "offset_da", "ppm_k", "ppm_skipped", "files", "adducts_used",
+                                        "wrong_adducts", "scoring", "scoring_detail", "calibration")}
         try:
             with open(os.path.join(save_dir, DECOY_MANIFEST), "w") as fh:
                 json.dump(manifest | {"code": out["ledgers"]["code"]}, fh, indent=1, default=_json_default)
         except OSError as exc:
             log(f"[decoy] manifest not kept -- {exc}")
+    ppm_keys = {ppm_arm(k): k for k in ppm_k}
     for key, err in errors.items():
-        out[key] = {"error": err}
+        if key in ppm_keys:
+            out["ppm_arms"][key] = {"error": err, "k": ppm_keys[key]}
+        else:
+            out[key] = {"error": err}
     for key, items in agg.items():
         if not items:
             continue
-        total = {k: int(sum(i[k] for i in items)) for k in ("m0", "assigned", "assigned_lt_350", "assigned_ge_350", "candidate", "neutrals")}
-        total["levels"] = {lv: int(sum(i["levels"].get(lv, 0) for i in items)) for lv in LEVELS}
-        total["examples"] = items[0]["examples"]
-        if any("level_error" in i for i in items):
-            total["level_error"] = "; ".join(i["level_error"] for i in items if "level_error" in i)
-        total["by_claim"] = {c: {k: int(sum(i["by_claim"][c][k] for i in items)) for k in CLAIM_COUNTS} for c in CLAIM_KEYS}
-        total.update({k: int(sum(i[k] for i in items)) for k in IDENTIFIED_KEYS + ESTABLISHED_KEYS})
-        if all("strict" in i for i in items):
-            st = [i["strict"] for i in items]
-            total["strict"] = {
-                "levels": {lv: int(sum(x["levels"].get(lv, 0) for x in st)) for lv in LEVELS},
-                "by_claim": {c: {k: int(sum(x["by_claim"][c][k] for x in st)) for k in CLAIM_COUNTS} for c in CLAIM_KEYS},
-                **{k: int(sum(x[k] for x in st)) for k in ("identified", "identified_lt_350", "established")}}
-        out[key] = total
+        total = _total([c for _f, c in items])
+        if key in ppm_keys:
+            out["ppm_arms"][key] = dict(total, k=ppm_keys[key])
+        else:
+            out[key] = total
     ctrl = out["control"] if out["control"] and "error" not in out["control"] else None
     for key in ("shift", "adducts"):
         if out[key] and ctrl and "error" not in out[key]:
-            a = out[key]
-            a["assigned_rate"] = pct(a["assigned"], ctrl["assigned"])
-            a["candidate_rate"] = pct(a["candidate"], ctrl["candidate"])
-            a["good_level_rate"] = pct(
-                sum(a["levels"].get(lv, 0) for lv in GOOD_LEVELS),
-                sum(ctrl["levels"].get(lv, 0) for lv in GOOD_LEVELS),
-            )
-            # per claim, against the control's pairs of the same claim (and m/z side);
-            # a control with no pair of that claim leaves the rate undefined (None), not 0 %
-            a["identified_rate"] = pct_or_none(a["identified"], ctrl["identified"])
-            a["identified_lt_350_rate"] = pct_or_none(a["identified_lt_350"], ctrl["identified_lt_350"])
-            a["identified_ge_350_rate"] = pct_or_none(a["identified_ge_350"], ctrl["identified_ge_350"])
-            a["identified_assigned_lt_350_rate"] = pct_or_none(a["identified_assigned_lt_350"], ctrl["identified_assigned_lt_350"])
-            a["established_rate"] = pct_or_none(a["established"], ctrl["established"])
-            a["established_lt_350_rate"] = pct_or_none(a["established_lt_350"], ctrl["established_lt_350"])
-            for c in ("neutral", "ion", "tentative", "not assessed"):
-                a[f"{c.replace(' ', '_')}_rate"] = pct_or_none(a["by_claim"][c]["pairs"], ctrl["by_claim"][c]["pairs"])
-            if "strict" in a and "strict" in ctrl:
-                a["strict"]["identified_rate"] = pct_or_none(a["strict"]["identified"], ctrl["strict"]["identified"])
-                a["strict"]["established_rate"] = pct_or_none(a["strict"]["established"], ctrl["strict"]["established"])
+            _rates(out[key], ctrl)
+    # the ppm arms: each against the control of the files it ran on; pooled over every shift, against the control
+    # counted once per arm that ran on the file
+    ctrl_of = {f: c for f, c in agg["control"]}
+    pooled, matched = [], []
+    for key, k in ppm_keys.items():
+        items = [(f, c) for f, c in agg[key] if f in ctrl_of]
+        if not items:
+            continue
+        mine = _total([ctrl_of[f] for f, _c in items])
+        _rates(out["ppm_arms"][key], mine)
+        out["ppm_arms"][key]["control_assigned"] = mine["assigned"]
+        pooled += [c for _f, c in items]
+        matched += [ctrl_of[f] for f, _c in items]
+    if pooled:
+        out["ppm"] = _total(pooled)
+        out["ppm"]["control"] = _total(matched)
+        out["ppm"]["n_arms"] = len(pooled)
+        _rates(out["ppm"], out["ppm"]["control"])
+    elif ppm_k and any(isinstance(v, dict) and "error" in v for v in out["ppm_arms"].values()):
+        out["ppm"] = {"error": "; ".join(v["error"] for v in out["ppm_arms"].values() if "error" in v)}
+    out["bins"] = decoy_bins(out)
+    out["headline"] = decoy_headline(out)
     return out
 
 
@@ -2059,6 +2276,10 @@ KEY_METRICS = [
     ("roster_misread", "roster read as other", 0),
     ("decoy_shift_rate", "decoy (shift) Assigned %", 1),
     ("decoy_adducts_rate", "decoy (adducts) Assigned %", 1),
+    # the populated-defect ppm-shift arms (pooled) and the shift arm the card quotes below m/z 350
+    ("decoy_headline_lt_350_rate", "decoy (headline shift arm) Assigned below 350 %", 1),
+    ("decoy_ppm_rate", "decoy (ppm shift) Assigned %", 1),
+    ("decoy_ppm_identified_rate", "decoy (ppm shift) identified %", 1),
     ("c13_within_1", "13C carbon count within 1", 0),
     ("hetero_present", "heteroatom line present", 0),
     ("census_halogen", "Assigned with Cl/Br/F", 0),
@@ -2067,7 +2288,8 @@ KEY_METRICS = [
 #: the metrics that read the evidence scale: never diffed between rows of two scales (`claims_schema`)
 SCALE_KEYS = frozenset({k for k, _l, _n in KEY_METRICS if k.startswith(("claim_", "decoy_shift_identified",
                                                                           "decoy_adducts_identified",
-                                                                          "decoy_shift_established"))}
+                                                                          "decoy_shift_established",
+                                                                          "decoy_ppm_identified"))}
                        | {"bright_m0_not_identified", "roster_identified", "roster_misread_identified",
                           "m3_own_missing_identified", "good_levels", "m3_other_instrument_missing",
                           "m3_other_instrument_own_missing"})
@@ -2123,7 +2345,7 @@ def delta(row: dict, prev: dict | None) -> list[dict]:
 def build_card(run: Run, *, levels_csv=None, other=None, other_instrument=None, rosters=None,
                decoy_mode="none", decoy_offset=0.35, decoy_files=1, overlap=None, masks=(),
                floor_cps=10.0, floor_share=0.8, board=None, log=print,
-               decoy_save_dir=None, decoy_ledgers=None) -> dict:
+               decoy_save_dir=None, decoy_ledgers=None, decoy_ppm=DECOY_PPM) -> dict:
     log(f"[scorecard] {run.name}: {run.reagent} {run.path_kind}, {run.n_spectra} spectra")
     ions = ion_table(run)
     tracks = unstamped_tracks(run)
@@ -2149,7 +2371,7 @@ def build_card(run: Run, *, levels_csv=None, other=None, other_instrument=None, 
                         own_levels=other_own),
         "census": census(run),
         "decoy": decoy(run, decoy_mode, decoy_offset, decoy_files, log=log,
-                       save_dir=decoy_save_dir, ledgers_dir=decoy_ledgers),
+                       save_dir=decoy_save_dir, ledgers_dir=decoy_ledgers, ppm_k=decoy_ppm),
         "falsification": falsification(run),
         "rosters_unreviewed": True,
     }
@@ -2274,6 +2496,25 @@ def board_row(card: dict) -> dict:
     row["decoy_scoring"] = decoy_scoring_summary(dc)
     # and the mass calibration they ran at: the control's (inherited) or their own
     row["decoy_calibration"] = calibration_summary(dc)
+    # the populated-defect ppm-shift arms (pooled over their shifts and files), the two sides of m/z 350 of the
+    # 0.35 Da arm, and the shift arm the card quotes below 350 (ppm when it ran; the 0.35 Da arm is blind there on
+    # an Orbitrap)
+    ppm = dc.get("ppm") if isinstance(dc.get("ppm"), dict) and "error" not in dc["ppm"] else {}
+    hl = dc.get("headline") or {}
+    row.update({
+        "decoy_ppm_k": dc.get("ppm_k"),
+        "decoy_ppm_rate": ppm.get("assigned_rate"),
+        "decoy_ppm_lt_350_rate": ppm.get("assigned_lt_350_rate"),
+        "decoy_ppm_ge_350_rate": ppm.get("assigned_ge_350_rate"),
+        "decoy_ppm_identified_rate": ppm.get("identified_rate"),
+        "decoy_ppm_identified_lt_350_rate": ppm.get("identified_lt_350_rate"),
+        "decoy_ppm_established_rate": ppm.get("established_rate"),
+        "decoy_ppm_control_assigned": (ppm.get("control") or {}).get("assigned"),
+        "decoy_shift_lt_350_rate": shift.get("assigned_lt_350_rate"),
+        "decoy_shift_ge_350_rate": shift.get("assigned_ge_350_rate"),
+        "decoy_headline_arm": hl.get("arm"),
+        "decoy_headline_lt_350_rate": hl.get("rate_lt_350"),
+    })
     return row
 
 
@@ -2287,6 +2528,9 @@ ACCEPTANCE = [
     ("decoy rate not higher (shift arm, identified, below m/z 350)", "decoy_shift_identified_lt_350_rate",
      "decoy_shift_rate"),
     ("decoy rate not higher (shift arm, neutral established)", "decoy_shift_established_rate", "decoy_shift_rate"),
+    ("decoy rate not higher (ppm shift arm, identified)", "decoy_ppm_identified_rate", "decoy_shift_rate"),
+    ("decoy rate not higher (headline shift arm, Assigned, below m/z 350)", "decoy_headline_lt_350_rate",
+     "decoy_shift_rate"),
     ("decoy rate not higher (wrong-adducts arm, identified)", "decoy_adducts_identified_rate", "decoy_adducts_rate"),
     ("bright M0 not identified not higher", "bright_m0_not_identified", "bright_m0_not_assigned"),
     ("M1 families not worse", "m1_families", "m1_families"),
@@ -2329,6 +2573,7 @@ CLAIM_TABLE_COLUMNS = [
     ("signal", "signal %"), ("signal_assigned", "Assigned signal %"),
     ("decoy", "decoy pairs: control / shift / adducts"), ("shift_split", "shift below 350 / at or above"),
     ("adducts_split", "adducts below 350 / at or above"),
+    ("ppm_split", "ppm shift below 350 / at or above"),
 ]
 DISAGREE_COLUMNS = [
     ("kind", "disagreement"), ("mz", "m/z"), ("neutral", "neutral"), ("adduct", "adduct"), ("tier", "tier"),
@@ -2376,9 +2621,11 @@ def claim_table(card: dict) -> list[dict]:
             "decoy": " / ".join(_d(arm(k, c)) for k in ("control", "shift", "adducts")),
             "shift_split": f"{_d(arm('shift', c, 'lt_350'))} / {_d(arm('shift', c, 'ge_350'))}",
             "adducts_split": f"{_d(arm('adducts', c, 'lt_350'))} / {_d(arm('adducts', c, 'ge_350'))}",
+            "ppm_split": f"{_d(arm('ppm', c, 'lt_350'))} / {_d(arm('ppm', c, 'ge_350'))}",
         })
     out.append({"class": "unmatched", "levels": "per-file reading no merged row carries", "rows": None, "tiers": "",
-                "signal": share.get("unmatched"), "signal_assigned": None, "decoy": "", "shift_split": "", "adducts_split": ""})
+                "signal": share.get("unmatched"), "signal_assigned": None, "decoy": "", "shift_split": "", "adducts_split": "",
+                "ppm_split": ""})
     return out
 
 
@@ -2462,6 +2709,50 @@ def render_claims_md(card: dict) -> list[str]:
     L += ["", "**Acceptance** — read on the identified class; the metric each criterion was read on before, in parentheses:", ""]
     L += acceptance_lines(card) + [""]
     return L
+
+
+DECOY_BIN_COLUMNS = [("bin", "m/z"), ("control", "control Assigned"), ("shift", "shift (Da) Assigned"),
+                     ("shift_rate", "shift (Da) % of control"), ("ppm", "ppm shifts Assigned"),
+                     ("ppm_control", "control x ppm arms"), ("ppm_rate", "ppm % of control")]
+
+
+def decoy_arm_rows(dc: dict) -> list[tuple[str, str, dict | None]]:
+    """(key, label, counts) of every arm the card shows, in order: control, the 0.35 Da shift (labelled blind
+    below ~m/z 350 on an Orbitrap), each ppm shift, the ppm shifts pooled, the wrong adducts."""
+    rows = [("control", "control (as is)", dc.get("control"))]
+    if dc.get("shift"):
+        rows.append(("shift", f"shift {dc.get('offset_da', 0):+.2f} Da"
+                     + (" (blind below ~m/z 350 on an Orbitrap)" if dc.get("orbitrap") else ""), dc.get("shift")))
+    for key, a in (dc.get("ppm_arms") or {}).items():
+        rows.append((key, f"shift {a.get('k', 0):+g} ppm", a))
+    if dc.get("ppm") and len(dc.get("ppm_arms") or {}) > 1:
+        rows.append(("ppm", "ppm shifts pooled", dc.get("ppm")))
+    if dc.get("adducts"):
+        rows.append(("adducts", f"wrong adducts {dc.get('wrong_adducts')}", dc.get("adducts")))
+    return rows
+
+
+def decoy_skip_lines(dc: dict) -> list[str]:
+    """One line per ppm shift that did not run on a file, with why."""
+    out = []
+    for key, per_file in (dc.get("ppm_skipped") or {}).items():
+        for f, why in (per_file or {}).items():
+            out.append(f"{key} on `{f}` not run: {why}")
+    return out
+
+
+def decoy_headline_lines(dc: dict) -> list[str]:
+    """The shift arm the card quotes below m/z 350, as one bold line (empty when no shift arm ran)."""
+    hl = dc.get("headline") or decoy_headline(dc)
+    if not hl:
+        return []
+    return [f"**Shift decoy below m/z {DECOY_MZ_SPLIT:.0f}** ({hl['label']}, the arms at the control's calibration): "
+            f"{hl['assigned_lt_350']} Assigned against {hl['control_assigned_lt_350']} in the control = "
+            f"**{_d(hl.get('rate_lt_350'), 1)} %**; at or above {DECOY_MZ_SPLIT:.0f}: {hl['assigned_ge_350']} / "
+            f"{hl['control_assigned_ge_350']} = {_d(hl.get('rate_ge_350'), 1)} %."
+            + (" The 0.35 Da arm is kept for continuity; below ~m/z 350 on an Orbitrap it proposes almost nothing "
+               "and bounds no tier gate." if hl["arm"] == "ppm" and dc.get("orbitrap") and dc.get("shift") else ""),
+            ""]
 
 
 def render_md(card: dict) -> str:
@@ -2561,24 +2852,28 @@ def render_md(card: dict) -> str:
     if _calibration_note(dc):
         L += [_calibration_note(dc), ""]
     if dc.get("control") and "error" not in dc["control"]:
-        L += [f"offline engine on the brightest {len(dc['files'])} cover file(s) `{', '.join(dc['files'])}`; control = the file as it is.", "",
-              f"| arm | M0 rows | Assigned | < {DECOY_MZ_SPLIT:.0f} / >= | Candidate | neutrals | level 3c | rate vs control (Assigned) "
+        L += [f"offline engine on the brightest {len(dc['files'])} cover file(s) `{', '.join(dc['files'])}`; control = the file as it is.", ""]
+        L += decoy_headline_lines(dc)
+        L += [f"| arm | M0 rows | Assigned | < {DECOY_MZ_SPLIT:.0f} / >= | Candidate | neutrals | level 3c | rate vs control (Assigned) "
               f"| identified pairs | identified < {DECOY_MZ_SPLIT:.0f} / >= | identified Assigned < {DECOY_MZ_SPLIT:.0f} "
-              f"| identified rate | identified < {DECOY_MZ_SPLIT:.0f} rate | ion / tentative pairs |",
-              "|---|---:|---:|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---|"]
-        for key, label in (("control", "control (as is)"), ("shift", f"shift {dc.get('offset_da', 0):+.2f} Da"), ("adducts", f"wrong adducts {dc.get('wrong_adducts')}")):
-            a = dc.get(key)
+              f"| identified rate | identified < {DECOY_MZ_SPLIT:.0f} rate | ion / tentative pairs "
+              f"| Assigned rate < {DECOY_MZ_SPLIT:.0f} / >= |",
+              "|---|---:|---:|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---|---|"]
+        for key, label, a in decoy_arm_rows(dc):
             if a and "error" in a:
-                L.append(f"| {label} | engine error: {a['error']} | | | | | | | | | | | | |")
+                L.append(f"| {label} | engine error: {a['error']} | | | | | | | | | | | | | |")
             elif a:
                 good = sum(a["levels"].get(lv, 0) for lv in GOOD_LEVELS)
                 bc = a.get("by_claim") or {}
                 L.append(f"| {label} | {a['m0']} | {a['assigned']} | {a.get('assigned_lt_350', '')} / {a.get('assigned_ge_350', '')} | {a['candidate']} | {a['neutrals']} | {good} | {_p(a.get('assigned_rate'))} "
                          f"| {_d(a.get('identified'))} | {_d(a.get('identified_lt_350'))} / {_d(a.get('identified_ge_350'))} | {_d(a.get('identified_assigned_lt_350'))} "
                          f"| {_d(a.get('identified_rate'), 1)} | {_d(a.get('identified_lt_350_rate'), 1)} "
-                         f"| {_d((bc.get('ion') or {}).get('pairs'))} / {_d((bc.get('tentative') or {}).get('pairs'))} |")
+                         f"| {_d((bc.get('ion') or {}).get('pairs'))} / {_d((bc.get('tentative') or {}).get('pairs'))} "
+                         f"| {_d(a.get('assigned_lt_350_rate'), 1)} / {_d(a.get('assigned_ge_350_rate'), 1)} |")
         L.append("")
-        for key in ("control", "shift", "adducts"):
+        for why in decoy_skip_lines(dc):
+            L.append(f"- {why}")
+        for key in ("control", "shift", "ppm", "adducts"):
             a = dc.get(key)
             if a and "error" not in a:
                 st = a.get("strict") or {}
@@ -2587,10 +2882,15 @@ def render_md(card: dict) -> str:
                          + (f", rate {_d(a.get('established_rate'), 1)} %" if key != "control" else "")
                          + (f"; strict minima: {'/'.join(str(st['levels'].get(k, 0)) for k in LEVELS)}, identified "
                             f"{_d(st.get('identified'))}" if st else ""))
-        for key in ("shift", "adducts"):
+        for key in ("shift", "ppm", "adducts"):
             a = dc.get(key)
             if a and a.get("examples"):
                 L.append(f"\n{key} arm, brightest decoy Assigned: " + "; ".join(a["examples"]))
+        bins = dc.get("bins") or decoy_bins(dc)
+        if bins:
+            L += ["", f"Assigned by {DECOY_BIN_DA}-Da m/z bin (the ppm arms pooled, against the control counted once per "
+                      "ppm arm that ran on the file):", ""]
+            L += md_table(bins, DECOY_BIN_COLUMNS, {"shift_rate": 1, "ppm_rate": 1}, missing=DASH)
     else:
         L += [f"*(decoy mode `{dc.get('mode')}`: not run)*"]
     L += ["", "### (d) falsification survival", ""]
@@ -2720,8 +3020,8 @@ def render_board_md(board: list[dict]) -> str:
     for rec in claim_board_rows(board):
         L.append("| " + " | ".join([rec["channel"].replace("|", " · ")] + [str(rec[k]) for k, _ in CLAIM_BOARD_COLUMNS[1:]]) + " |")
     L += ["", "## All metrics", ""]
-    L += ["| channel | run | code | Assigned | Candidate | ion-only | neutrals | stamped signal % | unstamped merged | bright M0 not Assigned | unstamped in top 50 | levels | identified level | M1 fam. | M1 signal % | roster A/present/n | Cl+Br+F | decoy shift % | decoy adducts % | 13C ok/n | hetero ok/n |",
-          "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|---:|---:|---:|---|---|"]
+    L += ["| channel | run | code | Assigned | Candidate | ion-only | neutrals | stamped signal % | unstamped merged | bright M0 not Assigned | unstamped in top 50 | levels | identified level | M1 fam. | M1 signal % | roster A/present/n | Cl+Br+F | decoy shift % | decoy adducts % | 13C ok/n | hetero ok/n | decoy headline < 350 % |",
+          "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|---:|---:|---:|---|---|---:|"]
     for r in rows:
         prev = previous_row(board, r["channel"], before=r)
 
@@ -2742,6 +3042,7 @@ def render_board_md(board: list[dict]) -> str:
             f"{r.get('roster_assigned', '')}/{r.get('roster_present', '')}/{r.get('roster_n', '')}", cell("census_halogen"),
             cell("decoy_shift_rate", 1), cell("decoy_adducts_rate", 1),
             f"{r.get('c13_within_1', '')}/{r.get('c13_n', '')}", f"{r.get('hetero_present', '')}/{r.get('hetero_n', '')}",
+            cell("decoy_headline_lt_350_rate", 1),
         ]) + " |")
     L += ["", "Per-run cards: `<run name>/SCORECARD.md` beside this file. The page `scoreboard.html` is the same data.", ""]
     return "\n".join(L)
@@ -2761,6 +3062,8 @@ GOOD_DIRECTION = {  # +1: up is good, -1: down is good; absent = neutral
     "roster_identified": 1, "claim_identified": 1, "claim_identified_signal": 1,
     # the evidence scale of peaky 0.10.0
     "decoy_shift_established_rate": -1, "decoy_adducts_established_rate": -1, "m3_other_instrument_own_missing": -1,
+    # the ppm-shift arms
+    "decoy_headline_lt_350_rate": -1, "decoy_ppm_rate": -1, "decoy_ppm_identified_rate": -1,
 }
 METRIC_KEYS = {label: key for key, label, _ in KEY_METRICS}
 
@@ -2960,6 +3263,7 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
             tile("rows at level 3c", "good_levels"), tile("M1 families", "m1_families"), tile("M1 signal %", "m1_signal_share", 1),
             tile("roster Assigned", "roster_assigned"), tile("roster present", "roster_present"), tile("Assigned with Cl/Br/F", "census_halogen"),
             tile("decoy shift Assigned %", "decoy_shift_rate", 1), tile("decoy adducts Assigned %", "decoy_adducts_rate", 1),
+            tile("decoy headline Assigned < 350 %", "decoy_headline_lt_350_rate", 1),
         ]) + "</div>")
         out.append(f"<p class=\"note\">levels ({_h('/'.join(LEVELS) if r.get('claims_schema') == CLAIMS_SCHEMA else '/'.join(OLD_LEVELS))}): "
                    f"<span class=\"mono\">{_h(level_cell(r))}</span> · by channel (Assigned/all) "
@@ -3008,19 +3312,29 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
             out.append(f"<p class=\"note\">{html.escape(_calibration_note(dc).replace('`', ''))}</p>")
         if dc.get("control") and "error" not in dc["control"]:
             dc_rows = []
-            for key, label in (("control", "control (as is)"), ("shift", f"shift {dc.get('offset_da', 0):+.2f} Da"), ("adducts", f"wrong adducts {dc.get('wrong_adducts')}")):
-                a = dc.get(key)
+            for key, label, a in decoy_arm_rows(dc):
                 if a and "error" in a:
                     dc_rows.append({"arm": label, "examples": f"engine error: {a['error']}"})
                 elif a:
                     dc_rows.append({"arm": label, "m0": a["m0"], "assigned": a["assigned"], "split": f"{a.get('assigned_lt_350', '')} / {a.get('assigned_ge_350', '')}", "candidate": a["candidate"], "neutrals": a["neutrals"],
                                     "good": sum(a["levels"].get(lv, 0) for lv in GOOD_LEVELS), "rate": a.get("assigned_rate"),
+                                    "rate_split": f"{_d(a.get('assigned_lt_350_rate'), 1)} / {_d(a.get('assigned_ge_350_rate'), 1)}",
                                     "ident": a.get("identified"), "ident_split": f"{_d(a.get('identified_lt_350'))} / {_d(a.get('identified_ge_350'))}",
                                     "ident_rate": a.get("identified_rate"), "ident_lt_rate": a.get("identified_lt_350_rate"),
                                     "examples": "; ".join(a.get("examples", [])[:4])})
+            hl = [x for x in decoy_headline_lines(dc) if x]
+            if hl:
+                out.append(f"<p class=\"note\">{html.escape(hl[0].replace('**', ''))}</p>")
             out.append(f"<p class=\"note\">offline engine on <span class=\"mono\">{_h(', '.join(dc['files']))}</span></p>" + html_table(dc_rows, [("arm", "arm"), ("m0", "M0 rows"), ("assigned", "Assigned"), ("split", f"< {DECOY_MZ_SPLIT:.0f} / ≥"), ("candidate", "Candidate"), ("neutrals", "neutrals"), ("good", "level 3c"), ("rate", "Assigned % of control"),
+                                                                                                                                  ("rate_split", f"Assigned % < {DECOY_MZ_SPLIT:.0f} / ≥"),
                                                                                                                                   ("ident", "identified pairs"), ("ident_split", f"identified < {DECOY_MZ_SPLIT:.0f} / ≥"), ("ident_rate", "identified % of control"), ("ident_lt_rate", f"identified < {DECOY_MZ_SPLIT:.0f} % of control"),
-                                                                                                                                  ("examples", "brightest Assigned")], {"rate": 1, "ident_rate": 1, "ident_lt_rate": 1}, mono=("examples", "ident_split")))
+                                                                                                                                  ("examples", "brightest Assigned")], {"rate": 1, "ident_rate": 1, "ident_lt_rate": 1}, mono=("examples", "ident_split", "rate_split")))
+            for why in decoy_skip_lines(dc):
+                out.append(f"<p class=\"note\">{html.escape(why.replace('`', ''))}</p>")
+            bins = dc.get("bins") or decoy_bins(dc)
+            if bins:
+                out.append(f"<p class=\"note\">Assigned by {DECOY_BIN_DA}-Da m/z bin (ppm arms pooled, against the control counted once per ppm arm)</p>"
+                           + html_table(bins, DECOY_BIN_COLUMNS, {"shift_rate": 1, "ppm_rate": 1}, mono=("bin",)))
         else:
             out.append(f"<p class=\"note\">decoy mode <span class=\"mono\">{_h(dc.get('mode'))}</span>: not run</p>")
         out.append("<h3>Falsification survival</h3><ul class=\"note\">")
@@ -3116,9 +3430,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mask", action="append", default=[], help="UTC window 'start,end' to exclude (a gap); repeatable")
     ap.add_argument("--floor-cps", type=float, default=10.0, help="other-instrument detection floor: median cps (default 10)")
     ap.add_argument("--floor-share", type=float, default=0.8, help="... present in this share of spectra (default 0.8)")
-    ap.add_argument("--decoy", choices=("none", "shift", "adducts", "both"), default=None,
-                    help="run the offline engine on decoy input (default none; both with --decoy-ledgers)")
+    ap.add_argument("--decoy", choices=tuple(DECOY_MODES), default=None,
+                    help="run the offline engine on decoy input: shift = the Da arm and the ppm arms, ppm = the ppm "
+                         "arms only, adducts = the wrong adducts, both = every arm (default none; both with "
+                         "--decoy-ledgers)")
     ap.add_argument("--decoy-offset", type=float, default=0.35, help="Da added to every m/z in the shift decoy (default 0.35)")
+    ap.add_argument("--decoy-ppm", default=None,
+                    help="ppm shifts of the populated-defect shift arms, comma-separated (default "
+                         + ",".join(f"{k:+g}" for k in DECOY_PPM) + "; 'none' = no ppm arm); a shift inside a "
+                         "file's match window is skipped")
     ap.add_argument("--decoy-files", type=int, default=1, help="brightest cover files to run the decoy on (default 1)")
     ap.add_argument("--decoy-ledgers", help="count the arm ledgers an earlier card kept (<DIR>/<run>/decoy/<file>__<arm>.csv.gz, "
                                             "DIR a scoreboard out dir or the decoy dir itself) instead of running the engine, "
@@ -3154,6 +3474,7 @@ def main(argv: list[str] | None = None) -> int:
         cards.append(build_card(
             run, levels_csv=args.levels, other=other, other_instrument=other_instrument, rosters=rosters,
             decoy_mode=decoy_mode, decoy_offset=args.decoy_offset, decoy_files=args.decoy_files,
+            decoy_ppm=parse_ppm_list(args.decoy_ppm),
             overlap=_parse_window(args.overlap), masks=[_parse_window(m) for m in args.mask],
             floor_cps=args.floor_cps, floor_share=args.floor_share, board=board, log=log,
             decoy_save_dir=None if ledgers else os.path.join(args.out, run.name, "decoy"), decoy_ledgers=ledgers,
