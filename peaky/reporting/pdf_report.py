@@ -1188,10 +1188,12 @@ def claims(ctx, pdf):
     fig = plt.figure(figsize=A4)
     fig.text(0.08, 0.965, "Claims — what each formula lets you say", fontsize=15, weight="bold",
              color=INK)
-    _text_lines(fig, [("dim", "identified = evidence level 3c (a named context-list entry) · neutral = 4a "
-                              "(the neutral established) · ion = 4b (the ion composition; neutral / adduct "
-                              "open) · tentative = 5a, 5b or no level. Reagent and not assessed (NA) are "
-                              "buckets beside the claims. The tier is unchanged and shown beside it.")],
+    # three wrapped lines at most: the axes title below clears them
+    _text_lines(fig, [("dim", "identified = level 3c (a named context-list entry) · neutral = 4a (the neutral "
+                              "established among the run's declared reagent channels) · ion = 4b (the ion "
+                              "composition; neutral / adduct open) · tentative = 5a, 5b or no level. Reagent and "
+                              "not assessed (NA) are buckets beside the claims; the tier is shown beside them, "
+                              "unchanged.")],
                 y0=0.948, dy=0.0155, size=9.5)
     keys = _claim_keys(cc, sig)
 
@@ -1290,10 +1292,13 @@ def claims(ctx, pdf):
     lines += [("gap", 0.6), ("h", "Reading this page"), ("gap", 0.3),
               ("b", "• The claim is read from the evidence level alone (Evidence levels page): identified = a "
                     "named context-list entry names the neutral (the ion established and the split pinned); "
-                    "neutral = the neutral is established by a positive fact, with no named identity; ion = "
-                    "the ion composition is established, the neutral / adduct split or the process stays "
-                    "open; tentative = a competitor ion is left, a check rejected the reading, or the row "
-                    "has no level."),
+                    "neutral = the neutral is established by a positive fact among the run's declared "
+                    "reagent channels, with no named identity; ion = the ion composition is established, the "
+                    "neutral / adduct split or the process stays open; tentative = a competitor ion is left, "
+                    "a check rejected the reading, or the row has no level."),
+              ("b", "• 'Neutral' holds for the declared channels only: a side channel the run keeps locked "
+                    "(e.g. formate or acetate on a nitrate source) could re-read an [M-H]- ion as a cluster of "
+                    "a smaller neutral; where one would, the row's evidence says 'side channels locked'."),
               ("b", "• The tier (Assigned / Candidate) is a separate verdict from the same ledger columns. "
                     "The two can disagree; neither is read off or corrected from the other.")]
     if sig:

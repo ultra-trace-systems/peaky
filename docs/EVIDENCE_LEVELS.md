@@ -58,7 +58,7 @@ buckets are reported beside them, never folded into them:
 | claim | levels | what a reader may say (`CLAIM_MEANING`) |
 |---|---|---|
 | `identified` | 1, 2, 3c (`CLAIM_IDENTIFIED`) | the compound is named: ion established, split pinned and a named context-list entry |
-| `neutral` | 4a (`CLAIM_NEUTRAL`) | the neutral is established, with no named identity |
+| `neutral` | 4a (`CLAIM_NEUTRAL`) | the neutral is established among the run's declared reagent channels, with no named identity (a locked side channel could re-read an `[M-H]-` ion as a cluster of a smaller neutral; §12) |
 | `ion` | 4b (`CLAIM_ION`) | the ion composition is established; the neutral / adduct split or the process stays open |
 | `tentative` | 5a, 5b, no level | a competitor is left, the reading is rejected, or the row has no level |
 | `reagent` (bucket) | `reagent` | a reagent ion or reagent cluster, not levelled |

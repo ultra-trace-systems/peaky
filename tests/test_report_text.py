@@ -252,3 +252,21 @@ def test_the_methods_name_the_scorer_the_run_recorded():
 def test_recorded_numbers_print_formatted():
     assert R._num(9.22777806538331, ".2f") == "9.23" and R._num(6, ".2f") == "6.00"
     assert R._num(None, ".2f") == "?" and R._num("x", ".3g", "n/a") == "n/a"
+
+
+# --------------------------------------------------------------------------- the 'neutral' claim is scoped to the declared channels
+def test_the_neutral_claim_says_it_holds_among_the_declared_channels_everywhere_it_is_defined():
+    import pandas as pd
+
+    from peaky.assignment import evidence as EV
+    from peaky.reporting import report as XL
+    meaning = EV.CLAIM_MEANING["neutral"]
+    assert "among the run's declared reagent channels" in meaning
+    assert "side channels locked" in meaning and "[M-H]-" in meaning
+    # the workbook's By claim sheet and Read me carry the same definition
+    m0 = pd.DataFrame({"evidence_level": ["4a"], "tier": ["Assigned"], "height": [1.0], "mz": [100.0],
+                       "neutral_formula": ["C5H8O4"], "adduct": ["[M-H]-"], "claim": ["neutral"]})
+    bc = XL.claim_sheet(m0)
+    assert bc[(bc.section == "summary") & (bc.claim == "neutral")]["meaning"].iloc[0] == meaning
+    rm = XL.legend_sheet(claims=True)
+    assert (rm.explanation == meaning).any()
