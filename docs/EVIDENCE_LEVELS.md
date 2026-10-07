@@ -353,13 +353,13 @@ whole run.
   outside the enumerable space that no widening admits: nothing could be
   enumerated or tested.
 - **The lowconf ceiling (5a).** `lowconf` alone (every row Low / Suspect and no
-  other rejection) does not reject (C47, 2026-10-05): the pair is levelled on
+  other rejection) does not reject: the pair is levelled on
   its facts — untestable stays 5b, competitors left stay 5a — and reads at most
   **5a**, `engine confidence Low/Suspect in every file: not established (5a
   ceiling; a file at Good or High lifts it), not refuted` (tag kind `lowconf 5a
   ceiling`). It still anchors nothing: no member of the series exclusion, no
   route, no ladder. The flag tracked the calibration centre more than the
-  chemistry (the C42 recentring alone moved 40 pairs out of it and 13 in); on
+  chemistry (the mass-dependent recentring alone moved 40 pairs out of it and 13 in); on
   the two Orbitrap runs the scale was validated on it was the only reason of
   86 (labelled nitrate) and 174 (uronium) 5b pairs.
 
@@ -385,7 +385,7 @@ The **space** is the run's element space exactly as the degeneracy audit
 builds it: the context profile plus the contaminant families at least
 `FAMILY_MIN_FILES` (2) of its files opened (`context.family_union`; every family
 on a one-file source; a family one file alone opened is kept on
-`RunContext.families_dropped`, C47 — before, one Candidate row in one file
+`RunContext.families_dropped` — before, one Candidate row in one file
 opened `fluorinated` for every pair of a uronium run), plus the curated formulas (the pass-0 registry of
 the polarity and the active reference lists), over the reagent profile's
 adducts and the pair's own adduct. A committed neutral the space drops is
@@ -609,7 +609,7 @@ not a confirmation (the engine caps it at Candidate).
 context-list entry matches the neutral (by its element counts, on any adduct;
 a labelled neutral never matches). 3c does not need a positive fact.
 
-**The list that rescued the reading cannot certify it** (C47): a pair that is a
+**The list that rescued the reading cannot certify it**: a pair that is a
 tentative lead with setter `reflist_dim` in any file — the reference list
 rescued the dim reading — does not reach 3c through that list's named entry.
 It takes the level its other facts give (4a / 4b), carries the tag `3c
@@ -880,11 +880,11 @@ release in `evidence.py`).
   "reagent-N isobar unresolved" note says the same. Two routes could split it
   once validated; today they are a tag (LR 1.28).
 - **The lead / list circularity, half closed.** A reference list that rescued
-  a dim reading (`reflist_dim`) no longer certifies it at 3c (§7, C47); a
+  a dim reading (`reflist_dim`) no longer certifies it at 3c (§7); a
   `known:` registry commit still reaches 3c through its own registry family.
   A tentative lead has no level effect; the `lead` tag is printed on every
   level so the reader sees it.
-- **The run-level family union needs two files** (§5.2, C47). A family one
+- **The run-level family union needs two files** (§5.2). A family one
   file alone opened is recorded (`families_dropped`) and admits no competitor;
   a batch of one file keeps every family it opened.
 - **NH4 tracking as a positive fact** has a measured LR of 1.25 (two-hour

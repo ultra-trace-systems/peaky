@@ -115,14 +115,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and the card's delta table, the page's and the board's claims table say
   `not comparable: <why> (previous <value>)` -- 20 roster formulas identified on the pre-0.10.0
   scale and 2 on 0.10.0 is a change of scale, not a regression.
-- **Three rule changes of the evidence scale (C47; the user's decisions of 2026-10-05, after
+- **Three rule changes of the evidence scale (decided after
   the scale landed).** (1) `lowconf` alone -- every row of a pair Low / Suspect and no other
   rejection -- is a **5a ceiling, not a 5b rejection**: the pair is levelled on its facts
   (untestable stays 5b, competitors left stay 5a) and reads at most 5a, `engine confidence
   Low/Suspect in every file: not established (5a ceiling; a file at Good or High lifts it), not
   refuted` (tag kind `lowconf 5a ceiling`); it still anchors nothing (no member of the series
   exclusion, no route, no ladder). The flag tracked the calibration centre more than the
-  chemistry (the C42 recentring alone moved 40 pairs out of it and 13 in). (2) **A contaminant
+  chemistry (the mass-dependent recentring alone moved 40 pairs out of it and 13 in). (2) **A contaminant
   family opens the run's space only from >= 2 files** (`levels.context.FAMILY_MIN_FILES`,
   `family_union`; every family on a one-file source; the families one file alone opened are
   kept on `RunContext.families_dropped`), the scale's other 2-file minima: one Candidate row in
@@ -131,15 +131,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   whose setter is `reflist_dim` takes the level its other facts give (tag kind `3c withheld
   (list rescued the lead)`; at 4a `would_lift` says so). `scripts/level_ledger.py` carries the
   same three rules (parity with the core, row for row). Tiers and the merge vote are untouched,
-  so no tier, claim-by-tier or finish-line number moves. Measured post hoc on the C42 Orbitrap
-  baselines against the C45 reference levels: labelled nitrate 86 pairs 5b -> 5a and the two
+  so no tier, claim-by-tier or truth-set number moves. Measured post hoc on two Orbitrap
+  validation runs against their levels before the change: labelled nitrate 86 pairs 5b -> 5a and the two
   reflist-rescued 3c pairs (BHA C11H16O2 and dimethyl phthalate C10H10O4 [M-H]-) 3c -> 4b,
   nothing else (vector 1906 10/161/256/395/1084 -> 8/161/258/481/998); uronium 174 pairs 5b -> 5a, 128
   5a -> 4b, 2 5a -> 4a and C6H15O4P [M+H]+ 5a -> 3c (1196 16/55/701/239/185 -> 17/57/829/282/11:
   the 5b bucket is 11 pairs). The level fixtures move with it (`tests/fixtures/levels/
   expected_levels_v1.csv.gz`, re-cut: nitrate 1850 9/186/290/500/864/1/0, uronium 1161
-  17/75/913/140/16/0/0) and so do the golden vectors kept outside the repository -- both pending
-  the user's sign-off. docs/EVIDENCE_LEVELS.md sections 2.4, 3.2, 4, 5.2, 7, 9, 11 and 12.
+  17/75/913/140/16/0/0) and so do the golden vectors kept outside the repository.
+  docs/EVIDENCE_LEVELS.md sections 2.4, 3.2, 4, 5.2, 7, 9, 11 and 12.
 
 ### Fixed
 
@@ -474,7 +474,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `roster_neutral_or_better`, a tracked metric and an acceptance criterion), the card counts
   every M2 status for every source, and the M2 block and the board row name their level scale
   (`scale`) and presence test (`roster_test`).
-- **The signal-to-noise the score reads is judged before it is believed (C46).** Three
+- **The signal-to-noise the score reads is judged before it is believed.** Three
   terms of the v2 fit are set by a peak's `signal_to_noise`: whether an ABSENT predicted
   line is charged (rel x SNR_base >= k_detect), the intensity tolerance of a matched line
   and the centroiding term of its mass width. The column the server sends was taken at its
@@ -496,17 +496,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   lower bound: a matched line's ratio tolerance is at least its Poisson scatter, and an absent
   line is charged only where even this bound says it was within reach (an absent 81Br line
   from ~10 cps at a 0.74 cps edge; a 13C line only on bright ions). The run log and each
-  file's stats say so (`snr_source`). Offline replica on the C42 TOF run (28 files, 10 309
+  file's stats say so (`snr_source`). Offline replica on a bromide/nitrate TOF validation run (28 files, 10 309
   readings; the server column reproduces the ledger scores: median and 95th-percentile
   difference 0, 50 rows differ by more than 0.01): 155 of 1622 per-file Assigned rows score
   under the Good bar with the fallback, 107 of them from above it (58 [M+Br]-, 30
   [M+HBr+Br]-, 16 [M+NO3]-: the 81Br line absent or off); the per-row median change is
-  +0.0006; every true row of the frozen finish line keeps at least half of its files (one
+  +0.0006; every TRUE reading of the run's frozen truth set keeps at least half of its files (one
   pair exactly half). The Orbitrap runs are untouched (their column passes). The reference-
   list rescue (pass 8), which stamps tiers after the tier pass, honours the floor below; the
   network scorer (`PEAKY_LOCAL_SCORING=0`) still reads the server column, whatever the
   snapshot says.
-- **A counting-detector floor for the TOF tier (C46).** On a TOF an M0 under 3x (the scorer's
+- **A counting-detector floor for the TOF tier.** On a TOF an M0 under 3x (the scorer's
   own `k_detect`) the batch's typical detection edge -- the median of its files' own
   1st-percentile heights, which `assign_batch` now measures once per batch
   (`PassConfig.noise_edge_batch_cps`, `batch_summary.noise_edge_batch_cps`) -- is Candidate
@@ -517,17 +517,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sub-edge. A file's own edge follows its total ion count: two files of the bromide/nitrate
   TOF batch with a 5x lower count had edges of 0.10-0.13 against the batch's 0.47-0.96; the
   batch carried 466 of its 1622 Assigned M0 rows under 3 counts, 136 of them in those two
-  files (of their 188 Assigned rows), among them both silicon false readings of the frozen
-  finish line (C10H24N2Si and C11H11N3OSi [M+Br]- at 1.5 and 0.65 counts, 'Good' on a series
+  files (of their 188 Assigned rows), among them both silicon FALSE readings of the frozen
+  truth set (C10H24N2Si and C11H11N3OSi [M+Br]- at 1.5 and 0.65 counts, 'Good' on a series
   anchor and a sub-count kid). At the batch's floor (2.22 cps on the cached peaks of all 28
   files; 1.70 on the live run's 18 cover files) 331 per-file Assigned rows are under it; every
-  true row of the finish line keeps at least half of its files. The per-file stats carry the
+  TRUE reading of the truth set keeps at least half of its files. The per-file stats carry the
   floor in force (`tof_assign_floor_cps`, None off a TOF) and the class (`instrument_type`);
   a decoy arm of the scorecard takes the run's batch edge (`batch_summary.
   noise_edge_batch_cps`), so it is tiered at the floor the run was. The edge is measured on
   the first per-file stage's files (the cover; on a trace-first run the residual picks); the
   trace sample itself (averaged traces, no class) never sees the floor.
-- **The fit scores a mass at the sample's own m/z-dependent centre (C42).** The v2 score
+- **The fit scores a mass at the sample's own m/z-dependent centre.** The v2 score
   judged every line against ONE offset per sample (its server matches' median), and the
   pass-1 calibration that could fit the instrument's 1/mz mass trend selected its backbone
   by that same score -- so it saw only rows already near the constant offset, and on the
@@ -549,14 +549,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   labelled-nitrate files): the first fit (b 0.16-0.21 mDa, coverage from m/z 139-157)
   is refined by the re-run (b 0.207-0.218, coverage from m/z 131), within the pre-0.9.0
   engine's per-file fits (0.16-0.22).
-- **"unique formula in the calibrated window" needs the degeneracy audit (C42c).** On an
+- **"unique formula in the calibrated window" needs the degeneracy audit.** On an
   uncalibrated file the audit is skipped and stamps nothing, yet a row with no stored
   rival still read the unique-window text (the mixed TOF: 59 of 67 such per-file gains).
   It now reads "no rival formula in the search window (degeneracy not measured: file
   uncalibrated)". The tier is unchanged; the evidence levels never read the text.
-- **The reagent halogen comes from the declared channels (C43).** The pair facts and the merge
+- **The reagent halogen comes from the declared channels.** The pair facts and the merge
   vote's class named it from the commonest committed cluster adduct; on the mixed Br-/NO3- TOF
-  that count flipped (3907 [M+NO3]- : 3847 [M+Br]- per-file M0) and switched the C11+c
+  that count flipped (3907 [M+NO3]- : 3847 [M+Br]- per-file M0) and switched the
   reagent-81Br rule (`reagent_only_iso`) off for the whole run. `evidence.channel_halogen` reads the run's
   declared channels (`assign.run`, before opportunistic ones) and the batch profile's
   (`assign_batch`); the count remains the fallback where no channels are known.
@@ -723,7 +723,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     assignment. The vote note in `tier_reason` and `tables/jitter.csv` (`vote_class`, 0 / 1 /
     2) print the class, never a level.
     The class is computed in the batch's parent with the reagent halogen the file's own run read
-    from its declared channels (C43; carried back in the file's stats, `per_file[i].reagent_halogen`);
+    from its declared channels (carried back in the file's stats, `per_file[i].reagent_halogen`);
     the pooled pair facts read the batch profile's (`batch_summary["reagent_halogen"]`), which a
     post-hoc re-level reads back.
   - **Never written:** the development builds' `evidence_axes`, `level_reason` and
@@ -738,7 +738,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     circularity, the run-level family union) are listed in the spec's section 12. The per-file
     stage costs about 5-20 s per Orbitrap file.
 
-- **A halogen lock answers a tentative lead (C11+b, rule H).** A lead is unsupported,
+- **A halogen lock answers a tentative lead (rule H).** A lead is unsupported,
   not contradicted -- a speculative residual fit, a reference-list match too dim to
   confirm, a commit outside the element budget. A fourth batch check,
   `H` in `batch/iso_checks.py`, now writes a POSITIVE fact per pooled pair whose ion
@@ -790,7 +790,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   construction) -- and none is below assignability is lifted: the pooled pair facts
   read its lead False and record the lift (`lead_lift`, `lock_note` in
   `tables/evidence_levels.csv`), so the evidence scale prints no `lead` tag on it; no
-  step of the scale reads the lift, the C11+a vetoes and rule K outrank it, and the
+  step of the scale reads the lift, the isotope-check vetoes and rule K outrank it, and the
   per-file ledgers, the tier and the vote never see it. `tables/iso_checks.csv` gains
   the `H` rows and their columns
   (`lock`, `element`, `n_halogen`, `ratio_lo` / `ratio_hi`, `heavy_cl` / `heavy_br`,
@@ -826,7 +826,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the seven more Si-free ions whose +1 region sits 1.4-2.6 mDa below their own +1
   position, 1.2-2.1 mDa above 29Si). `tests/test_halogen_lock_*.py`.
 
-- **Isotope checks test what a formula claims about its own isotope lines (C11+a).**
+- **Isotope checks test what a formula claims about its own isotope lines.**
   The per-file isotope test only asks whether a child it found sits in the band; three
   batch checks (`batch/iso_checks.py`, on the stamped batch series) ask what the
   formula claims and refute it -- the pair reads 5b (`iso_veto`) -- where the series
@@ -1360,7 +1360,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - **An isotope child is evidence at its exact spacing from the committed line, in its
-  count-aware band (C11+c).** The scorer commits an ion's most ABUNDANT isotopologue (a Br2
+  count-aware band.** The scorer commits an ion's most ABUNDANT isotopologue (a Br2
   ion on 79Br81Br, a Cl4 ion on a 37Cl line) and labels its lines counted from the MONO line
   (`81Br2`, `M0`, `13C+81Br`); peaky's own passes label theirs from the PARENT line
   (`2x81Br`, `81Br(pair)`, `81Br+13C`, `M+5`). The pair facts read a child by the part of its
@@ -1398,12 +1398,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   off-line parent of the three batches is committed on a lighter one, and an open question); the
   isotopologues list holds `iso` only through an entry that passes the same test;
   `iso_labels` lists the kept lines' whole labels. The Br-free `reagent_only_iso` hold of
-  C11+a is released with it (its line expects 0: no isotope support). The width model
+  the isotope checks is released with it (its line expects 0: no isotope support). The width model
   reaches every path that reads the facts (a `--corroborate` run dir and a script source read
   their own `batch_summary.json`), and the script reads isotopologues lists JSON first like the
   engine.
-  LANDING numbers, measured offline (an online run is blocked: Mascope renamed its ionization
-  mechanisms, card C30), one variable against the trunk's final runs, whose per-file A.run
+  LANDING numbers, measured offline (an online run was blocked then: Mascope had renamed its
+  ionization mechanisms), one variable against the trunk's final runs, whose per-file A.run
   ledgers, merged ledger and tables the offline tools reproduce byte for byte (every time-series
   stamp too). On the three regression batches' STORED per-file ledgers the test reads
   dibromoacetic acid's 81Br2 and 79Br2 lines around its 79Br81Br-committed M0 and no longer
@@ -1444,7 +1444,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `tests/test_isotope_children.py`, `tests/test_isotope_levels.py`; every synthetic child of the
   level tests now sits at its label's exact spacing from its parent.
 
-- **The ledger records which setter made a row a tentative lead (`lead_by`, C11+b).**
+- **The ledger records which setter made a row a tentative lead (`lead_by`).**
   Per-file ledgers gain a column beside `tentative_lead`: the setter's code
   (`reflist_dim`, `off_budget`, `spec_n3` / `spec_gapfill` / `spec_minor` for the three
   speculative-residual reasons, `radical_anion`, `reagent_n`; pipe-joined where two
@@ -1456,13 +1456,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   moves with the column.
 
 - **A reagent-halogen isotope line is the reagent's only where the reagent put the
-  halogen there (C11+a).** `reagent_only_iso` (the pair fact "the sole isotope support is
+  halogen there.** `reagent_only_iso` (the pair fact "the sole isotope support is
   the reagent's own halogen", which the merge vote's class reads) now clears where the
   ion's halogen is all the neutral's own: a brominated neutral's `[M-H]-` or `[M+NO3]-`
   carries its own 81Br line (hypobromous acid's nitrate cluster at m/z 157.909). An ion carrying none of
   the reagent halogen keeps the flag: a 1:1 +2 Da line on a Br-free ion says it
   carries a Br its formula lacks, and is no support for that formula (the flag held
-  until a count-aware isotope band judges it per file, C11+c; the batch's HIGH check
+  until a count-aware isotope band judges it per file; the batch's HIGH check
   refutes such a reading). On the bromide / nitrate TOF regression batch 23 per-file
   M0 rows (15 pairs; pooled 13, 8 merged) lose the flag, all brominated neutrals'
   nitrate clusters; the Orbitrap batches do not move.
@@ -1482,7 +1482,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ledger without the column reads False). A commit, a clear or a displacement now resets
   both flags (`below_assignability` was never reset before; on the regression runs that clears it
   on six displaced isotope-child rows and moves nothing). Publish carries the column.
-  This is the split the isotope checks and the halogen lock (C11+) build on: a lock
+  This is the split the isotope checks and the halogen lock build on: a lock
   can answer a lead; nothing answers a contradiction. On the three
   regression batches (one variable against the previous trunk run): 0 of 1419 / 1148 /
   2239 merged rows change ion or tier; the lead moves from
@@ -1576,8 +1576,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   competitor slots on three channels were cross-family mixtures no pass can commit (F+Si+N,
   F+Si+Cl, ...), on the uronium channel F / Cl / Br formulas its context rules out; and the
   committed formula itself lay outside the box on 6-45 % of the rows (C > 20, O > 12, P, S2 ...),
-  where density 0 then read "unique" -- the quantity C2b's "degeneracy is the
-  wrong discriminator" rested on. The count is now every ion the run could have committed inside
+  where density 0 then read "unique" -- the quantity an earlier "degeneracy is the
+  wrong discriminator" finding rested on. The count is now every ion the run could have committed inside
   the calibrated window: **its channels** (the adducts it scored -- the detected reagent channels
   and the opportunistic ones the server resolved; a row on any other adduct adds its own), **its
   element space** (the context's element budget and filter; a cap the context sets to zero raised
@@ -1741,7 +1741,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- **A decoy arm is scored at what its file was scored at, not at a TOF's width (C35).** Under
+- **A decoy arm is scored at what its file was scored at, not at a TOF's width.** Under
   the v2 fit a sample's width, offset and window come from its server record and its own
   server matches (`io_mascope.scoring_for_sample`); an offline sample has neither, so it is
   scored at the more forgiving class -- a TOF's -- at zero offset. The scorecard's decoy arms
@@ -1762,15 +1762,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`decoy.scoring` / `decoy.scoring_detail`, kept in the decoy manifest for a re-count), and
   the board row appends `decoy_scoring`; nothing renders it yet, so a decoy delta across a
   change of scoring -- on the board, the page's run panels or the card's delta section -- is
-  not marked (card C41). What an arm still does not
+  not marked. What an arm still does not
   inherit -- the run's opportunistic channels, height cutoff, prior offset, occurrence table,
   time series, reference lists and corroboration -- is listed on the card and in
-  docs/SCORECARD.md (card C39). The trace-first synthetic sample stays at
+  docs/SCORECARD.md. The trace-first synthetic sample stays at
   the class fallback (scored at an Orbitrap's width it lost a third of a batch's
-  assignments, mostly for want of a signal-to-noise: card C38). Re-registering an offline
+  assignments, mostly for want of a signal-to-noise). Re-registering an offline
   sample forgets the scoring computed for its old table.
 
-- **A labelled adduct keeps its 15N when the ion is read from neutral + adduct (C11+c).** The
+- **A labelled adduct keeps its 15N when the ion is read from neutral + adduct.** The
   isotope line test reads every line against the ion's mono m/z, from the stored ion string
   when it is signed, else neutral + adduct -- and that fallback (`tiers._ion_counts`) dropped a
   labelled reagent's caret, so an unsigned `[M+^NO3]-` / `[M+^NH4]+` row read 14N: its mass sat
@@ -1790,7 +1790,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   batch table and time-series stamp. `tests/test_isotope_levels.py`,
   `tests/test_isotope_children.py`, `tests/test_known_ion_kids.py`.
 
-- **A known or certified ion takes its own isotope lines (C11+c, I7).** The scorer returns
+- **A known or certified ion takes its own isotope lines.** The scorer returns
   the lines of every ion of a compound; pass 0 (known species) and pass 7 (certified neutral)
   hung all of them under whichever ion they committed -- HNO4's nitrate cluster carried the
   81Br line of HNO4.Br- 18.93 Da up, the PFCAs' nitrate clusters their bromide clusters'
@@ -1820,8 +1820,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   carries no Br counts only on a certificate of >= 3 channels (`cert.n_channels`), where two
   other ions confirm the mass: on two -- one file, two ions and the reagent's own line -- it is
   not enough, and such a certificate reads Low (certified) with no displacement
-  strength (the user's decision of 2026-10-02, option B; it supersedes the decision of 2026-10-01
-  to count the line on two channels as on three). Lines of the winner's own elements (34S, 37Cl,
+  strength (this supersedes an earlier rule that counted the line on two channels as on
+  three). Lines of the winner's own elements (34S, 37Cl,
   alone or combined -- `13C+37Cl`, `81Br+37Cl` --; the 81Br of a winner that carries Br, which
   pass 7's P / S / Cl box never certifies on the
   pipeline's own runs) count on two channels as on three. The label is not without consequence,
@@ -1897,8 +1897,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   1556 time-series stamp rows (0.28 % of the signal) change their stamped ion or its m/z. Pooled:
   see the entry above.
 
-- **The Br doublet spacing of the residual pass is the exact 81Br - 79Br difference (C11+c,
-  I5).** `residual.D_PAIR_BR` was 1.997795, 0.16 mDa below the exact 1.9979535 its +-8 ppm pair
+- **The Br doublet spacing of the residual pass is the exact 81Br - 79Br difference.**
+  `residual.D_PAIR_BR` was 1.997795, 0.16 mDa below the exact 1.9979535 its +-8 ppm pair
   finder and +-6 ppm residual characterisation centre on; now exact, with a value pin. Only dim
   doublets at the window's rim appear or disappear (per file); the residual tags shift from
   'iso-partner 81Br' toward '37Cl' where a partner sat between the two spacings.
@@ -1914,7 +1914,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   whole-label reading puts in band (0.9728 expected).
 
 - **The isotope checks measure a batch whose committed pairs are all carbon-free.**
-  Rule C (`batch/iso_checks.py`, C11+a) raised `KeyError: 'mz'` when no stamped pair
+  Rule C (`batch/iso_checks.py`) raised `KeyError: 'mz'` when no stamped pair
   carried carbon, which stopped the batch run at its evidence stage; it now tests nothing
   there, and REQ, HIGH and rule H run as on any batch. Real batches always carry carbon
   pairs; rule H gives a carbon-free pair (HBr) a line to read.

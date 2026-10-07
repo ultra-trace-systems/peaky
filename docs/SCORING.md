@@ -74,7 +74,7 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   mode and charges an absent line on predicted abundance alone, which is a
   different reading of every faint line — so `fetch_peaks` caches to a versioned
   file rather than reusing a frame from before the column existed. **The column is
-  judged before it is believed** (C46, `local_scoring.assess_snr`): a signal-to-noise
+  judged before it is believed** (`local_scoring.assess_snr`): a signal-to-noise
   tracks height, and on one TOF the server's column does not (Spearman −0.07..0.17 over
   a file's peaks against 0.99–1.00 on every Orbitrap file; a 478-count peak carried 1.1, a
   2-count peak 12), which read as an SNR excuses every missing line of a bright ion and
@@ -129,9 +129,9 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   snapshot; the trace-first sample stays at the class fallback: scored at an
   Orbitrap's width with an assumed-zero offset it lost a third of a batch's
   assignments, mostly because its traces carry no signal-to-noise (adding it
-  recovers 135 of R2's 209 lost) and partly because their offsets are ones the
+  recovers 135 of the uronium batch's 209 lost) and partly because their offsets are ones the
   class width cannot absorb -- uncorrected outside the wave's range and
-  over-corrected inside it on R1 (card C38).
+  over-corrected inside it on the labelled-nitrate batch.
 - **`formulas`** — candidate neutral formulas (the grid + cheminfo union).
 - **channels** — either peaky `adducts` (labels like `[M+Br]-`) or already-resolved
   mascope **`mechanisms`** strings (`[M+Br]-`); the dispatcher passes the latter, which
@@ -179,7 +179,7 @@ All thresholds are the named constants from `local_scoring.py` (see §4).
 
 6. **Score the ion** (`score_pattern_v2`). One score per ion, on
    `(obs_ppm − centre, obs_int, obs_snr, pred_rel)` -- `centre` the sample's
-   constant `scoring.mu_ppm`, or (C42) once the sample's own calibration
+   constant `scoring.mu_ppm`, or, once the sample's own calibration
    accepted a 1/mz mass trend, that trend's centre at each line's own m/z
    (`centre=` a `masscal.MassTrend`, clamped to its m/z coverage) -- at
    `sigma_ppm=scoring.sigma_ppm`: each line contributes a Gaussian mass
@@ -192,7 +192,7 @@ All thresholds are the named constants from `local_scoring.py` (see §4).
    The same `compound_score` / `ion_score` is copied onto every isotopologue row
    of that ion, and so is `ion_score_massfree`: the same score with every
    matched line's error at the centre -- the isotope pattern alone, which the
-   calibration picks its trend backbone by (C42).
+   calibration picks its trend backbone by.
 
 7. **Categorize** (`_category`). `score ≥ PROBABLE_THRESHOLD (0.8)` → `probable`;
    `≥ POSSIBLE_THRESHOLD (0.4)` → `possible`; else `unlikely`. Bands on the fit's
