@@ -76,8 +76,9 @@ check("uv.lock pins the same version for this package",
 # --- the CHANGELOG has a section for the version under development ----------
 CHANGELOG = (ROOT / "CHANGELOG.md").read_text()
 # `## [x.y.z] - YYYY-MM-DD` or `## [x.y.z] — YYYY-MM-DD` (both dashes are in use)
+# A PEP 440 pre-release (`## [0.10.0b1] — ...`) is a release too: it is tagged and archived.
 RELEASED = {v: d for v, d in re.findall(
-    r"^## \[(\d+\.\d+\.\d+)\]\s*[—-]\s*(\d{4}-\d{2}-\d{2})", CHANGELOG, re.M)}
+    r"^## \[(\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?)\]\s*[—-]\s*(\d{4}-\d{2}-\d{2})", CHANGELOG, re.M)}
 check("the CHANGELOG has released sections with parseable dates", len(RELEASED) >= 2,
       sorted(RELEASED))
 check("an [Unreleased] section is open for work in progress",
