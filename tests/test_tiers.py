@@ -542,6 +542,32 @@ check("satellite: CSV round-trip keeps the refuted / untestable verdicts",
       _ts_rt.at["R", "tier"] == "Candidate" and _ts_rt.at["S1", "tier"] == "Candidate" and _ts_rt.at["S3", "tier"] == "Assigned")
 
 
+# --- pd.NA in the string columns must not blow up the tier pass ----------------
+# A ledger reaches compute_tiers with NULLABLE dtypes whenever rows were appended
+# without a column, or when it was read back with nullable string dtypes.
+# `str(v or "")` raises on pd.NA -- "boolean value of NA is ambiguous" -- which killed
+# `peaky batch` on the NO3_15N profile while the single-sample path (float NaN,
+# falsy) survived. tiers._txt has to absorb both.
+check("_txt maps every missing flavour to ''",
+      (T._txt(pd.NA), T._txt(float("nan")), T._txt(None)) == ("", "", ""),
+      (T._txt(pd.NA), T._txt(float("nan")), T._txt(None)))
+check("_txt leaves a real value alone", T._txt("occurrence") == "occurrence")
+
+_na = led.copy()
+for _col, _val in (("admitted_by", "occurrence"), ("method", "pass1"),
+                   ("commentary", "note")):
+    _na[_col] = pd.array([_val] + [pd.NA] * (len(_na) - 1), dtype="string")
+_na["neutral_formula"] = pd.array(
+    ["C10H16O2"] + [pd.NA] * (len(_na) - 1), dtype="string")
+try:
+    _t_na = T.compute_tiers(_na)              # must not raise; rows may be dropped
+    _ok, _why = "tier" in _t_na.columns and len(_t_na) > 0, list(_t_na.columns)
+except TypeError as exc:                      # the regression
+    _ok, _why = False, repr(exc)
+check("compute_tiers survives pd.NA in admitted_by/method/commentary/formula",
+      _ok, _why)
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

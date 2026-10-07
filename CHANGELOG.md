@@ -143,6 +143,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The tier pass survives nullable string columns.** `tiers` read its string columns as
+  `str(v or "")`, which raises "boolean value of NA is ambiguous" on `pd.NA`, and a ledger
+  carries `pd.NA` whenever rows were appended without a column or it was read back with
+  nullable string dtypes; `compute_tiers` then stopped in its calibration step on the first
+  row whose neutral formula was missing (0.9.0 died the same way on a `--reagent NO3_15N`
+  batch, where the labelled-reagent rescue leaves `admitted_by` unset). `tiers._txt` is an
+  NA/NaN/None-safe `str()`, and the module's ledger string reads go through it
+  (`admitted_by` was already read null-safely).
+
 - **The bromide machinery reads the declared channels, not an opted-in halogen side channel.**
   `has_halogen_adduct`, the switch of the halide reagents' even-shift composite stage, was
   computed after the side channels joined the run's adducts, so an [M+Br2]- side channel on a
