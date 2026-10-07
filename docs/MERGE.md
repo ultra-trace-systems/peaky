@@ -54,6 +54,8 @@ selected sample_ids (SAMPLING.md)
  the stamp window sized to the batch's per-ion scatter
    ▼
  merged_ledger.csv  +  jitter.csv  +  batch_summary.json  →  _batch_ts.parquet stamp
+   ▼  (TOF-class only) the ion-M+2 gates: a REQ-refuted winner and an 81Br doublet
+      partner are Candidate, no re-vote (step 6b)
 ```
 
 ---
@@ -225,9 +227,78 @@ selected sample_ids (SAMPLING.md)
    rungs stay two tracks). `tables/reagent_water.csv` lists the rungs and the
    readings each displaced; `batch_summary.json["merge_gates"]["reagent_water"]`
    the counts. The per-file ledgers are untouched. Two limits stand: a rung is
-   measured per segment but stamped and stripped over the whole batch, and a
-   halogen rung can pass for one isotopologue while its twin fails the decoy gate
-   on a neighbouring peak.
+   measured per segment but stamped over the whole batch (and, on the fixed-offset
+   test, stripped over it), and on the fixed-offset test a halogen rung can pass
+   for one isotopologue while its twin fails the decoy gate on a neighbouring peak.
+
+   **On a TOF the rung test changes** (the batch's width model is TOF-class: R <
+   50 000 at m/z 200; an Orbitrap-class model, or none, keeps the test above
+   exactly). Fixed Da offsets do not hold there: at m/z 450-700 the line is
+   0.05-0.07 Da wide, the offsets sit inside it, and a TOF picker reports the
+   line's own weak satellites (about a tenth of its height, ~1-1.5 FWHM below and
+   ~0.5-1 FWHM above), so a bright rung fails its own decoys; and in a humid
+   stretch one weak rung ends the contiguous ladder. On the bromide/nitrate TOF
+   batch that left eight Br-.(H2O)n rungs between n = 21 and 35, NO3-.(H2O)29-34
+   and HNO3.NO3-.(H2O)27/31 Assigned as C18-C36 organics (a "known" C30H58Cl4
+   [M+Br]- was Br-.(H2O)31, its M+1 line at 0.02x where C30 needs 0.33x). Per
+   segment, the TOF test passes a rung that is (a) present in ≥ 50 % of the
+   spectra; (b) ≥ 3× the MEAN presence of up to twelve decoys at ±2, 2.5, 3,
+   3.5, 4 and 5 FWHM(m) -- the local chance of a peak in the window -- skipping
+   any decoy within 1.5 FWHM (+ the window) of another declared core or its
+   rungs, which is another ladder rather than chance; (c) on its ladder: the
+   ladder runs from the core through every rung present in ≥ 25 % of the spectra
+   (a weak rung carries it past, an absent one ends it), and a rung beyond the
+   contiguous part must co-vary with it -- median Pearson r of log height ≥ 0.8
+   with the present rungs within ±2, over ≥ 8 shared spectra; and (d) carries no
+   carbon: where the rung is bright enough that a C5 line's 13C would clear the
+   picker's local floor (the 5th-percentile height within ±25 Da), its M+1/M0
+   must stay under the cluster's own (2H/17O/15N) plus 5 × 1.07 % -- except where
+   its M+1 position sits within 0.5 FWHM (+ the window) of a rung of another
+   declared core present in the segment, where a TOF line is the blend of both and
+   the test is not asked (the M+1 of Br-.(H2O)n lies 6 mDa from
+   (HNO3)2.NO3-.(H2O)n-6). After the TOF test **the strip follows the segments**:
+   a merged row on a passing rung leaves only when a file carrying its winning
+   reading (`tables/jitter.csv`) lies in a segment where the rung passed; a
+   reading carried only by files of segments where the rung did not pass reads
+   another line at the rung's m/z, and stays, with a note on its `tier_reason`
+   (the stamp still takes every passing rung over the whole batch). On the
+   bromide/nitrate TOF batch C14H15N3O5 [M+NO3]- (m/z 367.091, Assigned) sits on
+   Br-.(H2O)16, which passes only in the humid segment; its reading comes from
+   three files of the dry segment, where the Br- ladder ends at n = 8 and the line
+   at that m/z has no ⁸¹Br twin -- not the water cluster, and it stays.
+   `merge_gates.reagent_water.rung_test` records the constants and the FWHM at
+   m/z 200 and 600 (present only when the TOF test ran; `decoy_presence` in
+   `tables/reagent_water.csv` is then the mean local decoy presence). Measured
+   offline on the bromide/nitrate TOF batch's own time series and per-file
+   readings: 121 → 181 passing rungs, every rung the fixed-offset test passed
+   among them; the 72 rows the fixed-offset test stripped are stripped still, and
+   54 more merged rows leave, 19 of them Assigned -- 18 of the batch's 19 Assigned
+   organic readings at a water-cluster m/z (the rungs above, Br-.(H2O)8 =
+   C4H7NO4Si [M+NO3]- and Br-.(H2O)13 = C13H18N2O2 [M+Br]-; the 19th, C13H18O11
+   [M+Br]- at HBr.Br-.(H2O)15, has no declared core and no ladder in the data) and
+   C4H11NO3S [M+Br]- on HNO3.Br-.(H2O)5, an ambiguous gap rung of weak lines (in
+   the dry segment, where that ladder ends at n = 4, a ⁷⁹Br/⁸¹Br pair of about the
+   same height sits 16-18 ppm below the rung).
+   Two rows stay on a rung by the segment rule: C14H15N3O5 [M+NO3]- above and a
+   one-file Candidate on HNO3.Br-.(H2O)7. No truth reading of the batch is among
+   the strips; the nearest truth row sits 24 ppm (observed m/z) from a passing
+   rung, against a 9.2 ppm window. The bright displaced rungs' M+1/M0 is
+   0.00-0.05 (at most 3.3 carbon-equivalents) where the C13-C36 readings need
+   0.15-0.41. Two low-resolution nitrate TOF batches pass the same rungs as
+   before (a three-rung island 25 rungs above an absent ladder is not taken), and
+   both Orbitrap batches are unchanged. Measured, the constants have room: the
+   link presence at 0.2 or 0.3, and the carbon bar at 4 or 6, give the same rungs,
+   and neither the decoy skip nor the carbon test changes a rung of that batch
+   (they guard a crowded or a gap rung); co-variation at 0.9 passes three fewer,
+   NO3-.(H2O)29 (r 0.87) among them. Lines at the decoy positions co-vary with a
+   ladder at median r 0.25-0.33 (15-24 % reach 0.8, on 34 / 48 lines), its rungs
+   at 0.96-0.99; over every present off-ladder line at m/z 300-900 against the two
+   nearest present rungs the share reaching 0.8 is 0.23 in the humid segment and
+   0.40 in the dry one, so the co-variation clause is weaker in a dry segment
+   (every gap rung that passes on that batch is in the humid one). A halogen rung
+   does not need its other isotopologue: HNO3.⁷⁹Br-.(H2O)6 and 8 pass as gap rungs
+   while HNO3.⁸¹Br-.(H2O)6 and 8 are absent in that segment (a ⁷⁹Br/⁸¹Br partner
+   test is an open item).
 
 4b. **Known species, decided once** (`lock_known_species`; after the vote,
    before the polarity re-reads). Every file's known-species evidence is pooled
@@ -328,9 +399,63 @@ selected sample_ids (SAMPLING.md)
    `tables/residual_bins.csv` the targeted bins, and
    `batch_summary.json['selection']['residual']` the record. Off, nothing changes.
 
+6b. **The TOF ion-M+2 gates** (`iso_checks.tof_m2_gates`; after the stamp and
+   the batch isotope checks, TOF-class batches only -- a width model under the
+   Orbitrap class's resolving power; without one nothing runs). On a TOF an
+   `[M+Br]-` reading's own ⁸¹Br line is the one line its composition
+   guarantees, and the per-file twin test never asks for it (the reagent's
+   halogen masks the neutral's window). Two demotions, Assigned → Candidate,
+   with **no re-vote** (the winner and its reading stay; the row says why in
+   `tier_reason`):
+   - **REQ** -- the merged winner's pair is refuted by the TOF branch of the
+     batch REQ check (the ion's own M+2 line, the reagent's halogen included,
+     absent over the batch: `tables/iso_checks.csv`, [EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md)
+     `iso_veto`). This includes a species the known-species lock (step 4b)
+     decided: a "known" reading whose own envelope the batch refutes is not
+     Assigned (`…; this overrules the known-species decision`). The lock runs
+     before the stamp and cannot read REQ, so a lock that displaced the vote's
+     winner is **demoted, not undone**: the row keeps the known reading, now
+     Candidate, and the vote's reading the lock moved to the head of
+     `alternatives` stays there (the note names it). On the bromide/nitrate TOF batch a 'known' C30 chlorinated paraffin
+     `[M+Br]-` (one Br's M+2 line where BrCl4 predicts 2.3×, no ¹³C line) is the
+     reagent's water cluster Br⁻(H₂O)₃₁: the TOF rung test of the reagent-water
+     ladder (step 4a) strips it before the lock runs; without that rung, the
+     per-file M+2 test holds it Candidate in every file and the lock only notes it.
+   - **the ⁸¹Br doublet** (`doublets`) -- the row's line stands at 0.58-1.56×
+     (0.6-1.6 × the ⁸¹Br/⁷⁹Br ratio) the line one ⁸¹Br spacing (1.99795 Da)
+     below it in ≥ 50 % of the spectra showing it (each line the tallest within
+     the merge window): it is that line's ⁸¹Br partner, not an M0 -- unless the
+     reading's ion carries Br or Cl whose own M+2 line REQ sees in ≥ 50 % of its
+     testable spectra (REQ's seen share `det_frac` over the pair's stamped
+     spectra, read whatever REQ's verdict -- a pair stamped in one spectrum can
+     be exempt on it). A known-species lock is left to REQ.
+   The per-file half of the package is the tier pass's (`tiers.apply_tof_m2`,
+   [ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md)), so the vote already counts a
+   file whose own peak list refutes the reading as a Candidate file. Measured
+   offline on the bromide/nitrate TOF batch (the built functions on the run's
+   stored per-file ledgers and stamped series, the vote re-run on every touched
+   cluster, the known-species lock re-run on it): merged Assigned 355 → about
+   287 (the per-file test alone about 306; then REQ about 6 more and the doublet
+   13, 11 halogen readings exempt; the two gates alone, without the per-file
+   test, would take 46 and 15: 294), the batch's three known-false
+   Assigned readings out, all 34 known-true readings kept (one loses two of its
+   14 per-file Assigned files), the roster unchanged; on a nitrate-only
+   low-resolution TOF nothing moves. `batch_summary.json["merge_gates"]["tof_m2"]`
+   records `ran`, `req_demoted`, `known_demoted`, `doublet_demoted`,
+   `doublet_exempt` (and `skipped` when it did not run).
+
 7. **Pool the plausibility audit + write artifacts.** Per-file plausibility
    demotes are pooled and written; `merged_ledger.csv` (root), `jitter.csv`
    (tables/), `selected_samples.csv`, and `batch_summary.json` are emitted.
+   Just before the merged ledger is written, after the evidence levels are
+   stamped, a TOF-class run's Assigned rows take the **mass-only flag**
+   (`assignment/mass_only.flag_merged`): `mass_only` / `mass_only_reason` from
+   the same per-file ledgers the levels pooled — `True` where no file holding
+   the reading at Assigned shows an attached isotope line of the neutral's own
+   elements at 0.5-2x its expected height (a line of the reagent halogen only on
+   an ion holding more of it than a reagent channel supplies), known species
+   exempt. An annotation only: no tier, level, claim or reading moves
+   ([OUTPUTS.md](OUTPUTS.md), `batch_summary.json['tof_flag']`).
 
 8. **Jitter report** (`jitter_report`, standalone analysis). Per-file offset =
    median observed-vs-theoretical ppm of its assignments (`_theo_ppm`). Then:

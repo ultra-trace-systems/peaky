@@ -334,3 +334,398 @@ def test_strip_and_stamp_read_the_observed_rung_not_the_exact_mass():
     assert kept.empty and len(stripped) == 1
     s = RW.stamp_rows(r)
     assert np.allclose(np.sort(s["mz"].to_numpy()), np.sort(r["mz_obs"].to_numpy()), rtol=0, atol=1e-6)
+
+
+# --- the TOF rung test (a TOF-class width model) -------------------------------------------------------
+from peaky.chem.resolution import Resolution  # noqa: E402
+
+TOF = Resolution.from_r(10_000)          # R < 50 000 at m/z 200: TOF class
+ORBI = Resolution.from_r(120_000)        # Orbitrap class
+
+
+def _ts_h(spectra):
+    """spectra: list of (minutes, [(m/z, height) ...]) -> a batch TS frame with heights."""
+    rows = []
+    for i, (minute, peaks) in enumerate(spectra):
+        for m, h in peaks:
+            rows.append(dict(sample_item_id=f"s{i:03d}", datetime_utc=T0 + pd.Timedelta(minutes=minute),
+                             mz=float(m), height=float(h)))
+    return pd.DataFrame(rows)
+
+
+def _rung(n, core=BR79):
+    return core + n * W
+
+
+def test_the_tof_test_runs_only_on_a_tof_class_width_model():
+    assert RW.tof_fwhm(None) is None and RW.tof_fwhm(ORBI) is None
+    assert RW.tof_fwhm(TOF)(200.0) == pytest.approx(0.02)
+    assert RW.tof_fwhm(TOF.as_dict())(600.0) == pytest.approx(0.06)
+    assert RW.rung_test(ORBI) is None and RW.rung_test(None) is None
+    rec = RW.rung_test(TOF)
+    assert rec["test"] == "tof" and rec["decoy_fwhm"] == [2.0, 2.5, 3.0, 3.5, 4.0, 5.0]
+    assert rec["link_presence"] == 0.25 and rec["covary_r"] == 0.8 and rec["m1_carbons"] == 5
+
+
+def test_an_orbitrap_class_model_keeps_the_fixed_offset_test_exactly():
+    decoy = BR79 + 4 * W + 0.035
+    ts = _ts([(i * 10, _ladder(6, extra=(decoy,))) for i in range(12)])
+    plain = RW.detect(ts, ("Br",), tol_ppm=5.0)
+    orbi = RW.detect(ts, ("Br",), tol_ppm=5.0, resolution=ORBI)
+    assert plain.to_csv(index=False) == orbi.to_csv(index=False)
+    assert orbi["n"].tolist() == [1, 2, 3, 5, 6]
+    out = RW.measure(ts, P.PROFILES["Br"], tol_ppm=5.0, log=lambda *a: None, resolution=ORBI)
+    assert out["rung_test"] is None
+    assert "rung_test" not in RW.summary(out["rungs"], None, n_cores=out["n_cores"], tol_ppm=5.0,
+                                         segment_sizes=out["segment_sizes"], rung_test=out["rung_test"])
+
+
+def test_the_lines_own_satellites_inside_two_fwhm_fail_the_fixed_offsets_not_the_tof_test():
+    """A TOF picker reports weak satellites of a line about 1-1.5 FWHM below and ~1 FWHM above
+    it. From m/z ~175 on (R 10 000) the fixed 0.035 / 0.02 Da decoys sit on them."""
+    spec = []
+    for i in range(12):
+        peaks = [(BR79, 5000.0)]
+        for n in range(1, 9):
+            peaks.append((_rung(n), 1000.0))
+            if n >= 6:
+                peaks += [(_rung(n) - 0.035, 100.0), (_rung(n) + 0.02, 100.0)]
+        spec.append((i * 10, peaks))
+    ts = _ts_h(spec)
+    assert RW.detect(ts, ("Br",), tol_ppm=5.0)["n"].tolist() == [1, 2, 3, 4, 5]
+    r = RW.detect(ts, ("Br",), tol_ppm=5.0, resolution=TOF)
+    assert r["n"].tolist() == list(range(1, 9))
+    assert set(r["decoy_presence"]) == {"0.00"}
+
+
+def _humid(*, link_hits, rung6=None, top=8, extra=()):
+    """12 spectra whose ladder (Br79 n = 1..top) scales with a common factor A(t); rung 4 is
+    seen in `link_hits` of them; rung 6's height is `rung6(A)` when given."""
+    spec = []
+    for i in range(12):
+        a = 1.0 + i
+        peaks = [(BR79, 5000.0 * a)]
+        for n in range(1, top + 1):
+            if n == 4 and i >= link_hits:
+                continue
+            h = 1000.0 * a / n
+            if n == 6 and rung6 is not None:
+                h = rung6(a)
+            peaks.append((_rung(n), h))
+        spec.append((i * 10, peaks + list(extra)))
+    return _ts_h(spec)
+
+
+def test_a_weak_rung_carries_the_ladder_past_it_and_the_rungs_beyond_must_co_vary():
+    ts = _humid(link_hits=4)                                     # rung 4 in 4/12 = 0.33: weak, not absent
+    assert RW.detect(ts, ("Br",), tol_ppm=5.0)["n"].tolist() == [1, 2, 3]       # fixed: the ladder ends
+    assert RW.detect(ts, ("Br",), tol_ppm=5.0, resolution=TOF)["n"].tolist() == [1, 2, 3, 5, 6, 7, 8]
+    # rung 6 runs AGAINST its ladder (r = -1 with its neighbours): it is not a rung of it; each
+    # other rung takes the median over its present neighbours within +-2, so one such line
+    # does not sink them
+    anti = _humid(link_hits=4, rung6=lambda a: 1000.0 * (13.0 - a), top=9)
+    assert RW.detect(anti, ("Br",), tol_ppm=5.0, resolution=TOF)["n"].tolist() == [1, 2, 3, 5, 7, 8, 9]
+
+
+def test_an_absent_rung_ends_the_ladder_an_island_beyond_it_does_not_pass():
+    ts = _humid(link_hits=2)                                     # rung 4 in 2/12 = 0.17 < 0.25: absent
+    assert RW.detect(ts, ("Br",), tol_ppm=5.0, resolution=TOF)["n"].tolist() == [1, 2, 3]
+    ts = _humid(link_hits=3)                                     # 3/12 = 0.25: a link
+    assert RW.detect(ts, ("Br",), tol_ppm=5.0, resolution=TOF)["n"].tolist() == [1, 2, 3, 5, 6, 7, 8]
+
+
+def test_the_tof_decoys_are_the_mean_local_chance_not_the_most_present_one():
+    fw = TOF.fwhm(_rung(4))
+    one = (_rung(4) + 2.0 * fw,)                                  # one real ion 2 FWHM above rung 4
+    ts = _ts([(i * 10, _ladder(6, extra=one)) for i in range(12)])
+    r = RW.detect(ts, ("Br",), tol_ppm=5.0, resolution=TOF)
+    assert r["n"].tolist() == [1, 2, 3, 4, 5, 6]
+    assert r.set_index("n").loc[4, "decoy_presence"] == "0.08"   # 1 of 12 decoys present in every spectrum
+    crowded = tuple(_rung(4) + s * k * fw for k in RW.TOF_DECOY_FWHM for s in (-1, 1))
+    ts = _ts([(i * 10, _ladder(6, extra=crowded)) for i in range(12)])
+    assert 4 not in RW.detect(ts, ("Br",), tol_ppm=5.0, resolution=TOF)["n"].tolist()
+
+
+def test_a_decoy_on_another_declared_ladder_is_skipped():
+    """Br3(79Br+81Br+81Br).(H2O)21 sits 0.2 FWHM from the -4 FWHM decoy of Br(79Br).(H2O)30 at
+    R 10 000: a peak there is that ladder, not chance -- with the Br3 core declared the decoy
+    is skipped."""
+    br3 = [c for c in RW.cores(("Br3",)) if c.tag == "79Br+81Br+81Br"][0]
+    fw = TOF.fwhm(_rung(30))
+    decoy = _rung(30) - 4.0 * fw
+    assert abs(br3.mz + 21 * W - decoy) < 0.25 * fw
+    ts = _ts([(i * 10, _ladder(30, extra=(decoy,))) for i in range(12)])
+    alone = RW.detect(ts, ("Br",), tol_ppm=5.0, resolution=TOF).set_index("n")
+    both = RW.detect(ts, ("Br", "Br3"), tol_ppm=5.0, resolution=TOF)
+    both = both[both["core"] == "Br"].set_index("n")
+    assert alone.loc[30, "decoy_presence"] == "0.08"            # counted as chance with Br3 undeclared
+    assert both.loc[30, "decoy_presence"] == "0.00"             # skipped when its ladder is declared
+
+
+def _bright(m1_height, *, rung_height=1000.0, noise=1.0):
+    """12 spectra: Br79 n = 1..6 at `rung_height`, rung 5 with an M+1 line of `m1_height`,
+    and weak picker-floor peaks half a mass unit off every rung."""
+    spec = []
+    for i in range(12):
+        peaks = [(BR79, 5000.0)] + [(_rung(n), rung_height) for n in range(1, 7)]
+        peaks += [(_rung(n) + 0.5, noise) for n in range(0, 7)] + [(_rung(n) - 0.5, noise) for n in range(1, 7)]
+        if m1_height:
+            peaks.append((_rung(5) + 1.003355, m1_height))
+        spec.append((i * 10, peaks))
+    return _ts_h(spec)
+
+
+def test_a_bright_rung_whose_m1_line_holds_carbon_is_not_the_rung():
+    # 13C line at 0.20x: about 19 carbons over the cluster's own M+1 -- an organic sits there
+    assert RW.detect(_bright(200.0), ("Br",), tol_ppm=5.0, resolution=TOF)["n"].tolist() == [1, 2, 3, 4, 6]
+    # at 0.01x the line is the cluster's own 17O / 2H (+ under one carbon): the rung passes
+    assert RW.detect(_bright(10.0), ("Br",), tol_ppm=5.0, resolution=TOF)["n"].tolist() == [1, 2, 3, 4, 5, 6]
+    # the fixed-offset test never asks
+    assert RW.detect(_bright(200.0), ("Br",), tol_ppm=5.0)["n"].tolist() == [1, 2, 3, 4, 5, 6]
+
+
+def test_the_m1_test_only_judges_a_rung_bright_enough_to_show_five_carbons():
+    """At height 5 over a floor of 1 a C5 line (0.27) could not have been seen: the M+1
+    line at 0.4x is not held against the rung."""
+    assert RW.detect(_bright(2.0, rung_height=5.0), ("Br",), tol_ppm=5.0,
+                     resolution=TOF)["n"].tolist() == [1, 2, 3, 4, 5, 6]
+
+
+def test_the_cluster_m1_ratio_counts_its_own_atoms():
+    br = RW.cores(("Br",))[0]
+    no3 = RW.cores(("NO3",))[0]
+    assert RW.cluster_m1_ratio(br, 0) == 0.0
+    assert RW.cluster_m1_ratio(br, 10) == pytest.approx(20 * 0.000115 + 10 * 0.00038 / 0.99757, rel=1e-9)
+    assert RW.cluster_m1_ratio(no3, 1) == pytest.approx(2 * 0.000115 + 0.00368 / 0.99632 + 4 * 0.00038 / 0.99757,
+                                                        rel=1e-9)
+
+
+def test_measure_and_summary_record_the_tof_test():
+    ts = _ts([(i * 10, _ladder(4)) for i in range(12)])
+    out = RW.measure(ts, P.PROFILES["Br"], tol_ppm=5.0, log=lambda *a: None, resolution=TOF.as_dict())
+    assert out["rung_test"]["test"] == "tof" and out["rung_test"]["fwhm_at_200"] == pytest.approx(0.02)
+    s = RW.summary(out["rungs"], None, n_cores=out["n_cores"], tol_ppm=5.0, segment_sizes=out["segment_sizes"],
+                   rung_test=out["rung_test"])
+    assert s["rung_test"] == out["rung_test"] and s["n_rungs"] == 4
+
+
+def test_a_tof_batch_strips_the_rung_its_satellites_hid_and_records_the_test(monkeypatch, tmp_path):
+    from peaky.assignment import assign as A
+    from peaky.assignment import ledger as L
+    from peaky.assignment import tiers as T
+    from peaky.io import io_mascope as IO
+
+    rung7 = _rung(7)
+    spec = []
+    for i in range(12):
+        peaks = [(BR79, 5000.0)] + [(_rung(n), 1000.0) for n in range(1, 9)] + [(250.1, 3000.0)]
+        peaks += [(m, 100.0) for n in range(6, 9) for m in (_rung(n) - 0.035, _rung(n) + 0.02)]
+        spec.append((i * 10, peaks))
+    ts = _ts_h(spec)
+
+    def fake_assign(sid, context="ambient-air", **kw):
+        led = L.new_ledger(pd.DataFrame([("p1", rung7, 1000.0), ("p2", 250.1, 3e3)],
+                                        columns=["peak_id", "mz", "height"]))
+        L.commit_assignment(led, "p1", neutral_formula="C7H10O7", adduct="[M-H]-", ion_formula="C7H9O7-",
+                            ion_score=0.9, compound_score=0.9, ppm_error=0.1, pass_no=1,
+                            method="cheminfo+grid", confidence="High", commentary="stub")
+        L.commit_assignment(led, "p2", neutral_formula="C9H16O6", adduct="[M-H]-", ion_formula="C9H15O6-",
+                            ion_score=0.9, compound_score=0.9, ppm_error=0.1, pass_no=1,
+                            method="cheminfo+grid", confidence="High", commentary="stub")
+        T.apply_tiers(led)
+        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
+                                         "degeneracy_cal": {"mu": 0.0, "sigma": 0.3}},
+                "plausibility_audit": [], "summaries": {}, "problems": []}
+
+    monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
+    monkeypatch.setattr(IO, "fetch_peaks", lambda client, sid, use_cache=True: pd.DataFrame(
+        {"peak_id": ["p1", "p2"], "mz": [rung7, 250.1], "height": [1000.0, 3e3]}))
+    monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
+    monkeypatch.setattr(A, "run", fake_assign)
+
+    def batch(out, rp):
+        AB.run(peaks=ts, ts_peaks=ts, reagent="Br", batch="test batch", out_dir=str(out), k_min=2, k_max=3,
+               min_gain=0.0, n_jobs=1, residual=False, tol_ppm=5.0, resolving_power=rp, log=lambda *a: None)
+        return (pd.read_csv(out / "merged_ledger.csv"),
+                json.load(open(out / "batch_summary.json"))["merge_gates"]["reagent_water"])
+
+    merged, rw = batch(tmp_path / "tof", 10_000)
+    assert merged["neutral_formula"].tolist() == ["C9H16O6"]                 # the rung reading left
+    assert rw["rung_test"]["test"] == "tof" and rw["n_rungs"] == 8
+    assert rw["stripped"] == ["C7H10O7 [M-H]- (Br(79Br).(H2O)7)"]
+    merged, rw = batch(tmp_path / "orbi", 120_000)                           # the fixed-offset test
+    assert sorted(merged["neutral_formula"]) == ["C7H10O7", "C9H16O6"]
+    assert "rung_test" not in rw and rw["n_rungs"] == 5
+
+
+def test_a_single_declared_core_runs_the_tof_test():
+    no3 = RW.cores(("NO3",))[0].mz
+    ts = _ts([(i * 10, [no3] + [no3 + n * W for n in range(1, 5)]) for i in range(12)])
+    assert RW.detect(ts, ("NO3",), tol_ppm=5.0, resolution=TOF)["n"].tolist() == [1, 2, 3, 4]
+    assert RW.detect(ts.drop(columns=["height"]), ("NO3",), tol_ppm=5.0, resolution=TOF)["n"].tolist() == [1, 2, 3, 4]
+
+
+# --- the TOF test's details: the cluster's own M+1, co-variation with PRESENT neighbours over enough spectra,
+# --- an M+1 line on another present ladder, and the strip by segment ----------------------------------------
+from peaky.chem import isotopes as I  # noqa: E402
+
+
+def _m1_ladder(top, m1, *, extra=(), noise=1.0):
+    """12 spectra: Br79 n = 1..top at 1000 with picker-floor peaks half a mass unit off every rung; `m1` =
+    {n: height of a line at rung n + 1.003355}; `extra` = further peaks (m/z) at 1000 in every spectrum."""
+    peaks = [(BR79, 5000.0)] + [(_rung(n), 1000.0) for n in range(1, top + 1)]
+    peaks += [(_rung(n) + d, noise) for n in range(0, top + 1) for d in (-0.5, 0.5)]
+    peaks += [(_rung(n) + I.D_13C, h) for n, h in m1.items()] + [(m, 1000.0) for m in extra]
+    return _ts_h([(i * 10, peaks) for i in range(12)])
+
+
+def test_the_m1_test_subtracts_the_clusters_own_heavy_isotopes():
+    """Br-.(H2O)30 carries an M+1 of its own (2H, 17O) of 0.018 -- more than one carbon's 1.07 %. A line at
+    that plus four carbons' worth is the cluster; at that plus six it holds carbon."""
+    r13 = I.ISOTOPE_RATIO["13C"]
+    q_own = RW.cluster_m1_ratio(RW.cores(("Br",))[0], 30)
+    assert q_own + 4 * r13 >= RW.TOF_M1_CARBONS * r13          # read without its own share it would fail
+    four = RW.detect(_m1_ladder(31, {30: 1000.0 * (q_own + 4 * r13)}), ("Br",), tol_ppm=5.0, resolution=TOF)
+    six = RW.detect(_m1_ladder(31, {30: 1000.0 * (q_own + 6 * r13)}), ("Br",), tol_ppm=5.0, resolution=TOF)
+    assert four["n"].tolist() == list(range(1, 32))
+    assert six["n"].tolist() == [n for n in range(1, 32) if n != 30]
+
+
+def test_an_m1_line_on_another_present_cores_ladder_is_not_weighed_as_carbon():
+    """The M+1 of Br-.(H2O)n sits 6 mDa from (HNO3)2.NO3-.(H2O)(n-6), a tenth of a TOF line width: a line
+    there is the blend of both. A 0.2x line at the M+1 of Br-.(H2O)20 vetoes the rung -- unless the
+    (HNO3)2.NO3- core is declared AND present in the segment (only then is there a ladder to blend with)."""
+    h2 = RW.cores(("H2N3O9",))[0]
+    assert abs(h2.mz + 14 * W - (_rung(20) + I.D_13C)) < 0.5 * TOF.fwhm(_rung(20))
+
+    def n(ts, wc):
+        return RW.detect(ts, wc, tol_ppm=5.0, resolution=TOF)
+    alone, absent = n(_m1_ladder(21, {20: 200.0}), ("Br",)), n(_m1_ladder(21, {20: 200.0}), ("Br", "H2N3O9"))
+    present = n(_m1_ladder(21, {20: 200.0}, extra=(h2.mz,)), ("Br", "H2N3O9"))
+    assert 20 not in alone[alone["core"] == "Br"]["n"].tolist()
+    assert 20 not in absent[absent["core"] == "Br"]["n"].tolist()
+    assert 20 in present[present["core"] == "Br"]["n"].tolist()
+    assert RW.rung_test(TOF)["m1_blend_fwhm"] == RW.TOF_M1_BLEND_FWHM == 0.5
+
+
+def _gap_ladder(n_spec, rows):
+    """`n_spec` spectra; rows = {n: (spectra holding the rung, height(A))}, A = 1 + spectrum index; the core
+    in every spectrum. Rungs 1..3 at a constant height (no co-variation to read: they are contiguous)."""
+    spec = []
+    for i in range(n_spec):
+        a = 1.0 + i
+        peaks = [(BR79, 5000.0)] + [(_rung(k), 1000.0) for k in (1, 2, 3)]
+        peaks += [(_rung(k), f(a)) for k, (hits, f) in rows.items() if i < hits]
+        spec.append((i * 10, peaks))
+    return _ts_h(spec)
+
+
+def test_co_variation_counts_only_present_neighbours():
+    """Rung 5 lies beyond a weak link (rung 4 in 9/20). Its neighbours: rung 4 and rung 6 (9/20, below the 50 %
+    presence) run WITH it, rung 7 (present) AGAINST it. Only the present neighbour is read: rung 5 is not
+    on the ladder; with rung 7 running with it, it is."""
+    up, down = (lambda a: 100.0 * a), (lambda a: 100.0 / a)
+    against = _gap_ladder(20, {4: (9, up), 5: (20, up), 6: (9, up), 7: (20, down)})
+    along = _gap_ladder(20, {4: (9, up), 5: (20, up), 6: (9, up), 7: (20, up)})
+    assert 5 not in RW.detect(against, ("Br",), tol_ppm=5.0, resolution=TOF)["n"].tolist()
+    assert 5 in RW.detect(along, ("Br",), tol_ppm=5.0, resolution=TOF)["n"].tolist()
+
+
+def test_co_variation_needs_eight_shared_spectra():
+    """Rung 5 beyond a weak link; its only present neighbour (rung 6) runs with it in 7 of 12 spectra: too few
+    to read an r. In 8 of 12 it carries rung 5 onto the ladder."""
+    up = lambda a: 100.0 * a                                                      # noqa: E731
+    seven = _gap_ladder(12, {4: (4, up), 5: (12, up), 6: (7, up)})
+    eight = _gap_ladder(12, {4: (4, up), 5: (12, up), 6: (8, up)})
+    assert RW.TOF_COVARY_MIN_SPECTRA == 8
+    assert 5 not in RW.detect(seven, ("Br",), tol_ppm=5.0, resolution=TOF)["n"].tolist()
+    assert 5 in RW.detect(eight, ("Br",), tol_ppm=5.0, resolution=TOF)["n"].tolist()
+
+
+def _dry_and_humid():
+    """Segment 0 (s000-s011): the ladder ends at n = 3; a 490-min gap; segment 1 (s012-s023): n = 1..6."""
+    dry = [(i * 10, _ladder(3)) for i in range(12)]
+    humid = [(600 + i * 10, _ladder(6)) for i in range(12)]
+    return _ts(dry + humid)
+
+
+def test_after_the_tof_test_a_row_leaves_only_where_its_readings_files_saw_the_rung():
+    ts = _dry_and_humid()
+    out = RW.measure(ts, P.PROFILES["Br"], tol_ppm=5.0, log=lambda *a: None, resolution=TOF)
+    r = out["rungs"]
+    assert out["segment_of"].to_dict() == {f"s{i:03d}": (0 if i < 12 else 1) for i in range(24)}
+    assert r.set_index("n").loc[2, "segments"] == "0|1" and r.set_index("n").loc[5, "segments"] == "1"
+
+    def m0(rows):
+        return pd.DataFrame(rows, columns=["mz", "neutral_formula", "adduct", "tier", "ion_score"])
+    files = {f"s{i:03d}": [] for i in (1, 2, 3, 13, 14, 15)}
+    for s in ("s001", "s002", "s003"):           # dry files: a line of their own at rung 5's m/z, and rung 2
+        files[s] += [(_rung(5), "C9H8O4", "[M+NO3]-", "Assigned", 0.9), (_rung(2), "C2H4O4", "[M-H]-", "Assigned", 0.9)]
+    for s in ("s013", "s014"):                   # humid files read rung 5 otherwise (outvoted 3 to 2)
+        files[s] += [(_rung(5), "C7H10O7", "[M-H]-", "Candidate", 0.5)]
+    files["s015"] += [(_rung(6), "C8H14O7", "[M-H]-", "Assigned", 0.9)]
+    merged, jitter = AB.align({k: m0(v) for k, v in files.items()}, tol_ppm=5.0)
+    assert merged.set_index("neutral_formula").loc["C9H8O4", "n_files"] == 5
+    kept, stripped = RW.strip_rung_rows(merged, r, tol_ppm=5.0, log=lambda *a: None, jitter=jitter,
+                                        segment_of=out["segment_of"])
+    # rung 2 passes in the dry segment too, rung 6 is read in the humid one: both leave; the 5-file row read
+    # C9H8O4 by three dry files sits on a rung of the humid segment only: it stays, and says why
+    assert sorted(stripped["rung"]) == ["Br(79Br).(H2O)2", "Br(79Br).(H2O)6"]
+    assert kept["neutral_formula"].tolist() == ["C9H8O4"]
+    note = kept["tier_reason"].iloc[0]
+    assert "Br(79Br).(H2O)5 of segment(s) 1" in note and "files are in segment(s) 0" in note
+    # without the per-file readings, or without segments (the fixed-offset test), the rung strips batch-wide
+    for kw in ({}, {"jitter": jitter}, {"segment_of": out["segment_of"]}):
+        assert RW.strip_rung_rows(merged, r, tol_ppm=5.0, log=lambda *a: None, **kw)[0].empty
+    # a row whose cluster is not in the per-file readings is stripped as before
+    assert RW.strip_rung_rows(merged, r, tol_ppm=5.0, log=lambda *a: None, jitter=jitter.iloc[0:0],
+                              segment_of=out["segment_of"])[0].empty
+    assert RW.measure(ts, P.PROFILES["Br"], tol_ppm=5.0, log=lambda *a: None, resolution=ORBI)["segment_of"] is None
+
+
+def test_a_tof_batch_keeps_a_dry_segment_reading_on_a_humid_segment_rung(monkeypatch, tmp_path):
+    """End to end: the dry files read their own line at rung 5's m/z (the ladder ends at n = 3 there) and keep
+    it; the humid files' reading of rung 6 leaves."""
+    from peaky.assignment import assign as A
+    from peaky.assignment import ledger as L
+    from peaky.assignment import tiers as T
+    from peaky.io import io_mascope as IO
+
+    dry = [(i * 10, [(BR79, 5000.0)] + [(_rung(n), 1000.0) for n in (1, 2, 3, 5)] + [(250.1, 3000.0)]) for i in range(12)]
+    humid = [(600 + i * 10, [(BR79, 5000.0)] + [(_rung(n), 1000.0) for n in range(1, 7)]) for i in range(12)]
+    ts = _ts_h(dry + humid)
+
+    def is_dry(sid):
+        return int(str(sid)[1:]) < 12
+
+    def fake_assign(sid, context="ambient-air", **kw):
+        rows = ([("p1", _rung(5), 1000.0, "C9H8O4", "C9H7O4-"), ("p2", 250.1, 3e3, "C9H16O6", "C9H15O6-")] if is_dry(sid)
+                else [("p1", _rung(6), 1000.0, "C8H14O7", "C8H13O7-")])
+        led = L.new_ledger(pd.DataFrame([r[:3] for r in rows], columns=["peak_id", "mz", "height"]))
+        for pid, _, _, nf, ion in rows:
+            L.commit_assignment(led, pid, neutral_formula=nf, adduct="[M-H]-", ion_formula=ion, ion_score=0.9,
+                                compound_score=0.9, ppm_error=0.1, pass_no=1, method="cheminfo+grid",
+                                confidence="High", commentary="stub")
+        T.apply_tiers(led)
+        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
+                                         "degeneracy_cal": {"mu": 0.0, "sigma": 0.3}},
+                "plausibility_audit": [], "summaries": {}, "problems": []}
+
+    def fake_peaks(client, sid, use_cache=True):
+        g = ts[ts["sample_item_id"] == sid]
+        return pd.DataFrame({"peak_id": [f"p{i}" for i in range(len(g))], "mz": g["mz"].to_numpy(),
+                             "height": g["height"].to_numpy()})
+
+    monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
+    monkeypatch.setattr(IO, "fetch_peaks", fake_peaks)
+    monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
+    monkeypatch.setattr(A, "run", fake_assign)
+    AB.run(peaks=ts, ts_peaks=ts, reagent="Br", batch="test batch", out_dir=str(tmp_path), k_min=2, k_max=3,
+           min_gain=0.0, n_jobs=1, residual=False, tol_ppm=5.0, resolving_power=10_000, log=lambda *a: None)
+    merged = pd.read_csv(tmp_path / "merged_ledger.csv")
+    rw = json.load(open(tmp_path / "batch_summary.json"))["merge_gates"]["reagent_water"]
+    assert rw["rung_test"]["strip_by_segment"] is True and rw["segments"] == {"0": 12, "1": 12}
+    assert rw["stripped"] == ["C8H14O7 [M-H]- (Br(79Br).(H2O)6)"]
+    assert sorted(merged["neutral_formula"]) == ["C9H16O6", "C9H8O4"]
+    note = merged.set_index("neutral_formula").loc["C9H8O4", "tier_reason"]
+    assert "Br(79Br).(H2O)5 of segment(s) 1" in note and "files are in segment(s) 0" in note

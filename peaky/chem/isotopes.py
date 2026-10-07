@@ -722,6 +722,20 @@ def _ion_lines(ckey: tuple, max_nominal: int = 12, floor: float = 1e-7) -> tuple
     return tuple((heavy_key(h), heavy_shift(h), p) for h, p in lines)
 
 
+def nominal_cluster(counts: dict, nominal: int = 2) -> tuple[float, float]:
+    """The ion's lines at one NOMINAL heavy shift, read as one: (their summed
+    probability relative to the all-light line, their probability-weighted
+    shift). What a peak wider than the cluster's fine structure shows -- a
+    TOF's M+2 is 81Br, 37Cl, 34S, 30Si, 18O, 13C2 and 13C15N within ~11 mDa,
+    one line at R ~10 000. (0.0, nan) when the ion forms no line there."""
+    lines = _ion_lines(heavy_key({k: v for k, v in counts.items() if v}), max_nominal=int(nominal))
+    sel = [(s, p) for k, s, p in lines if k and _heavy_nominal(k) == int(nominal)]
+    tot = float(sum(p for _s, p in sel))
+    if tot <= 0:
+        return 0.0, float("nan")
+    return tot, float(sum(s * p for s, p in sel) / tot)
+
+
 def generic_expectation(counts: dict, hp: dict, delta: float, half_width: float) -> tuple[float, float]:
     """A generic 'M+n' child `delta` Da from its parent: (the ion's lines within
     `half_width` Da of that shift summed, relative to the committed line; their

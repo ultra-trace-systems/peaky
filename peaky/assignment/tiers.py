@@ -13,7 +13,10 @@ ledger columns (reproducible, no judgment calls at report time):
                 profile.
 
   Candidate  -- a plausible formula, honestly ambiguous. Reasons: base
-                confidence Low/Suspect; an effective-score near-tie; close
+                confidence Low/Suspect; a locked reading (a pass-7 certified
+                neutral, or a pass-0 known species on one ion channel) whose
+                ion score is under the engine's Suspect band edge; an
+                effective-score near-tie; close
                 alternatives in the window without isotope/cross-channel
                 discrimination; the honest cross-family mass-degeneracy audit
                 (degeneracy.py) finding many distinct plausible ions on the
@@ -105,6 +108,23 @@ CAL_SIGMA_FLOOR = 0.15   # ppm; a lucky-tight core must not reject everything
 # them both silicon false readings of the finish line (0.65 and 1.5 counts,
 # 'Good' on an anchor and a sub-count kid).
 TOF_ASSIGN_FLOOR_X_EDGE = 3.0
+# The score floor on certified readings. A pass-7 certified neutral earns its
+# tier from a lock -- the channels' convergent neutral mass -- and was labelled
+# 'Good (certified)' with no score floor. On spectra shifted a few ppm off
+# their true formulas (the populated-defect decoy) that path Assigned wrong
+# readings at low ion scores (6 of the 9 certified P formulas on two uronium
+# Orbitrap files), while every certified commit the unshifted uronium controls
+# Assigned scored 0.74 or more. A certified commit whose ion score is under the
+# engine's own Suspect band edge (PassConfig.tau_suspect, `lock_score_floor`)
+# is Candidate. A certificate converges two or more channels by construction,
+# so a second channel tells a certified decoy nothing and does not spare one.
+# A pass-0 known species is NOT floored: its locks' scores overlap the decoys'
+# entirely (real bright known species -- NO2- and HSO4- on an iodide run,
+# ethanol on an NO+ run, cyclosiloxanes with their own 29Si/30Si lines -- score
+# 0.03-0.48, decoy known locks 0.001-0.49), so a score floor there removes real
+# readings as fast as decoys. A source-solvent cluster (`known:solvent_cluster`)
+# is never scored (ion_score 0 by construction); its gate is the exact ladder step.
+LOCKED_SCORE_METHODS = ("certified:",)
 # The absolute (mDa) floor on the mass-dependent sigma is owned by
 # PassConfig.cal_abs_floor_mda (default masscal.ABS_FLOOR_MDA); apply_tiers /
 # compute_tiers take the cfg and _calibrate carries the value on the _Cal.
@@ -486,6 +506,20 @@ def _abs_floor(cfg) -> float:
     return float(getattr(cfg, "cal_abs_floor_mda", MC.ABS_FLOOR_MDA))
 
 
+def lock_score_floor(cfg) -> float:
+    """The ion score a certified reading (`LOCKED_SCORE_METHODS`) needs for tier
+    Assigned:
+    PassConfig.tau_suspect -- the edge of the engine's own Suspect band, under
+    which `passes.core.confidence_label` rejects a reading outright -- or its
+    default when no cfg is given."""
+    v = getattr(cfg, "tau_suspect", None)
+    if v is None:
+        # lazy: the passes package loads modules that import this one
+        from peaky.assignment.passes.config import PassConfig
+        v = PassConfig.tau_suspect
+    return float(v)
+
+
 def tof_assign_floor(cfg) -> float | None:
     """The height (cps) under which a TOF M0 is Candidate whatever else
     corroborates it (C46), or None: off a TOF, with no cfg, or with no edge
@@ -513,7 +547,8 @@ def _tof_floor_edge(cfg) -> tuple[float | None, str]:
 def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
     """One row per M0 peak: [peak_id, tier, tier_reason, candidate_density,
     density_capped]. Pure; does not mutate the ledger. `cfg` (a PassConfig)
-    supplies cal_abs_floor_mda for the mass-error gate; None = its default."""
+    supplies cal_abs_floor_mda for the mass-error gate and tau_suspect for the
+    lock score floor; None = their defaults."""
     m0 = ledger[ledger["role"] == L.ROLE_M0]
     # corroboration sources
     kids_of = ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
@@ -547,6 +582,8 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
     # the counting-detector floor (C46): None off a TOF
     tof_floor = tof_assign_floor(cfg)
     floor_edge, floor_src = _tof_floor_edge(cfg) if tof_floor is not None else (None, "file")
+    # the score a locked reading (pass-0 known species, pass-7 certified) needs
+    score_floor = lock_score_floor(cfg)
 
     rows = []
     for _, r in m0.iterrows():
@@ -618,6 +655,9 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
         tier, reason = TIER_ASSIGNED, ""
         _h0 = r.get("height")
         _h0 = float(_h0) if pd.notna(_h0) else None
+        # the ion's own match score, as the commit recorded it (None when none was)
+        _isc = pd.to_numeric(r.get("ion_score"), errors="coerce")
+        _isc = float(_isc) if pd.notna(_isc) else None
         if tof_floor is not None and _h0 is not None and _h0 < tof_floor:
             # C46: a handful-of-ions centroid on a counting detector. Whatever
             # hangs under it (a kid, a series step) is itself sub-edge, so it
@@ -638,6 +678,16 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
                       "reading (the implied neutral has DBE < 0): committed on "
                       "exact mass plus an exact ladder step off an observed "
                       "monomer channel")
+        elif (method.startswith(LOCKED_SCORE_METHODS) and _isc is not None
+              and _isc < score_floor):
+            # a certificate decides which formula the peak is read as; it does
+            # not make the spectrum carry it. Under the engine's own Suspect band
+            # edge the scorer lends the member no support (see LOCKED_SCORE_METHODS).
+            tier = TIER_CANDIDATE
+            reason = (f"certified neutral (pass-7 multi-channel certificate) with ion score "
+                      f"{_isc:.2f}, under the engine's Suspect band edge ({score_floor:.2f}): "
+                      "the certificate converges the channels' neutral masses, but this "
+                      "ion's match score does not support it at the identification bar")
         elif method.startswith("known:"):
             reason = ("known species (pass-0 locked list, mass + own-twin "
                       "self-consistency gated)"
@@ -883,6 +933,140 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
                                        "candidate_density", "density_capped"])
 
 
+# ---------------------------------------------------------------------------
+# the ION's own M+2 line on a TOF (satellites.heavy_line_verdict)
+# ---------------------------------------------------------------------------
+#: a committed line farther than this from its ion's all-light m/z sits on a
+#: heavy isotopologue; its M+2 is not where the test would look
+TOF_M2_MONO_DA = 0.5
+TOF_M2_COLUMNS = ["peak_id", "ion", "label", "ratio", "pred", "obs", "status", "window_ppm", "floor"]
+
+
+def _fwhm_at(rp, mz: np.ndarray) -> np.ndarray:
+    """The width model's FWHM (Da) at each m/z (chem.resolution.Resolution.fwhm, vectorised)."""
+    return float(rp.coef) * np.power(np.asarray(mz, dtype=float), float(rp.exponent)) + float(rp.offset)
+
+
+def tof_m2_verdicts(ledger: pd.DataFrame, *, cfg=None, resolving_power=None, scoring=None):
+    """The ION's own M+2 line of every M0 row whose ion carries Br or Cl, on a
+    TOF: one row per tested M0 (TOF_M2_COLUMNS; status = the
+    satellites.heavy_line_verdict verdict). None when the test cannot run: off
+    a TOF or with no detection edge (`tof_assign_floor` is None), or with no
+    width model (`resolving_power`, a chem.resolution.Resolution: the blend
+    guards need the peak width). `scoring` is the file's scoring snapshot (its
+    fitted `sigma_ppm` and the scorer's `mz_tolerance_ppm` size the window;
+    satellites.heavy_line_window_ppm).
+
+    The lines are every real picked peak of the file (synthetic composite
+    sub-peaks are no line); the parent's height is its own share of a
+    composite (height x assigned_fraction). A row committed on a heavy
+    isotopologue (TOF_M2_MONO_DA off its ion's all-light m/z) is not tested."""
+    floor = tof_assign_floor(cfg)
+    if floor is None or resolving_power is None or ledger is None or not len(ledger):
+        return None
+    from peaky.chem.resolution import Resolution
+    try:
+        rp = Resolution.coerce(resolving_power)
+    except (TypeError, ValueError):
+        return None
+    sc = scoring if isinstance(scoring, dict) else {}
+    win = SAT.heavy_line_window_ppm(sc.get("sigma_ppm"), sc.get("mz_tolerance_ppm"))
+    mz_all = pd.to_numeric(ledger["mz"], errors="coerce")
+    h_all = pd.to_numeric(ledger["height"], errors="coerce")
+    real = ~(ledger["synthetic"].map(_truthy).fillna(False).astype(bool)
+             if "synthetic" in ledger.columns else pd.Series(False, index=ledger.index))
+    keep = real & mz_all.notna() & (h_all > 0)
+    lines_mz = mz_all[keep].to_numpy(dtype=float)
+    lines_h = h_all[keep].to_numpy(dtype=float)
+    m0 = ledger[ledger["role"] == L.ROLE_M0]
+    recs = []
+    for i, r in m0.iterrows():
+        ion = _ion_counts(r.get("neutral_formula"), r.get("adduct"))
+        if not ion:
+            continue
+        ratio, shift, label = SAT.heavy_line_prediction(ion)
+        if ratio <= 0:
+            continue
+        mz0, h0 = mz_all.at[i], h_all.at[i]
+        if pd.isna(mz0) or pd.isna(h0) or h0 <= 0:
+            continue
+        try:
+            mono = C.ion_mz(str(r.get("neutral_formula")), str(r.get("adduct")))
+        except Exception:             # noqa: BLE001 -- an unparseable adduct: no mono check
+            mono = float("nan")
+        if np.isfinite(mono) and abs(float(mz0) - mono) > TOF_M2_MONO_DA:
+            continue
+        af = pd.to_numeric(r.get("assigned_fraction"), errors="coerce")
+        share = float(af) if pd.notna(af) and 0 < float(af) <= 1 else 1.0
+        sign = "-" if str(r.get("adduct")).rstrip(".").endswith("-") else "+"
+        recs.append((r["peak_id"], C.format_formula(ion) + sign, label, ratio, shift, float(mz0),
+                     float(h0) * share))
+    if not recs:
+        return pd.DataFrame(columns=TOF_M2_COLUMNS)
+    pid, ions, labs, ratio, shift, mz0, h0 = (list(x) for x in zip(*recs))
+    ratio, shift, mz0, h0 = (np.asarray(x, dtype=float) for x in (ratio, shift, mz0, h0))
+    v = SAT.heavy_line_verdict(lines_mz, lines_h, mz0, h0, ratio, shift, floor, win_ppm=win,
+                               fwhm=_fwhm_at(rp, mz0 + shift))
+    return pd.DataFrame({"peak_id": pid, "ion": ions, "label": labs, "ratio": ratio, "pred": v["pred"],
+                         "obs": v["obs"], "status": v["status"], "window_ppm": win, "floor": floor},
+                        columns=TOF_M2_COLUMNS)
+
+
+def tof_m2_reason(v) -> str:
+    """The tier reason of an absent M+2 line (one tof_m2_verdicts row)."""
+    frac = float(v["obs"]) / float(v["pred"]) if float(v["pred"]) > 0 else 0.0
+    seen = (f"the tallest line within {float(v['window_ppm']):g} ppm is {frac:.2f}x it"
+            if float(v["obs"]) > 0 else f"no line within {float(v['window_ppm']):g} ppm")
+    return (f"ion M+2 line absent (TOF): {v['ion']} predicts its {v['label']} line at "
+            f"{float(v['ratio']):.2f}x the parent ({SAT._cps(v['pred'])} cps, over the "
+            f"{float(v['floor']):.3g}-cps floor); {seen}, under the {SAT.HEAVY_LINE_FRAC:g}x a "
+            "sighting needs, and nothing within one peak width could hold it -- the ion's own "
+            "isotope envelope refutes the reading whatever else corroborates it")
+
+
+def apply_tof_m2(ledger: pd.DataFrame, *, cfg=None, resolving_power=None, scoring=None, log=print) -> dict:
+    """The TOF's ion-M+2 test as the last tier word (in place): an Assigned M0
+    whose ion's own Br / Cl M+2 line the file could show and does not
+    (tof_m2_verdicts: absent) becomes Candidate, its reason naming the missing
+    line and its predicted height and keeping what it was otherwise Assigned
+    on. Demote-only, and it sets no flag: the merge vote's class reads the
+    ledger's evidence, not the tier, so it is untouched.
+
+    Why after every other tier stage and not inside compute_tiers: the
+    speculative-residual demote (cleanup.demote_speculative_residual) reads only
+    Assigned rows and sets the lead / below-assignability flags the vote class
+    reads -- a row this test had already demoted would lose them -- and the
+    reference-list rescue stamps Assigned after the tier pass. Off a TOF, with
+    no edge or with no width model, nothing runs. Returns counts for the
+    run's stats (None-valued `skipped` when it ran)."""
+    out = {"tested": 0, "seen": 0, "absent": 0, "blended": 0, "dim": 0, "demoted": 0, "skipped": None}
+    t = tof_m2_verdicts(ledger, cfg=cfg, resolving_power=resolving_power, scoring=scoring)
+    if t is None:
+        out["skipped"] = ("not a TOF" if tof_assign_floor(cfg) is None else "no width model")
+        return out
+    for k in ("seen", "absent", "blended", "dim"):
+        out[k] = int((t["status"] == k).sum())
+    out["tested"] = int(len(t))
+    if "tier_reason" in ledger.columns and ledger["tier_reason"].dtype != object:
+        ledger["tier_reason"] = ledger["tier_reason"].astype("object")
+    by_pid = {p: i for i, p in zip(ledger.index[ledger["role"] == L.ROLE_M0],
+                                   ledger.loc[ledger["role"] == L.ROLE_M0, "peak_id"])}
+    for v in t[t["status"] == SAT.HL_ABSENT].to_dict("records"):
+        i = by_pid.get(v["peak_id"])
+        if i is None or str(ledger.at[i, "tier"]) != TIER_ASSIGNED:
+            continue
+        prev = ledger.at[i, "tier_reason"] if "tier_reason" in ledger.columns else None
+        prev = "" if prev is None or (not isinstance(prev, str) and pd.isna(prev)) else str(prev)
+        ledger.at[i, "tier"] = TIER_CANDIDATE
+        ledger.at[i, "tier_reason"] = tof_m2_reason(v) + (f" (otherwise Assigned: {prev})" if prev else "")
+        out["demoted"] += 1
+    if out["tested"]:
+        log(f"[tiers] TOF ion M+2 line: {out['tested']} Br/Cl ions tested -- {out['seen']} seen, "
+            f"{out['absent']} absent, {out['blended']} blended, {out['dim']} under the floor; "
+            f"{out['demoted']} Assigned -> Candidate (window {float(t['window_ppm'].iloc[0]):g} ppm)")
+    return out
+
+
 def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
     """Q1: write `ppm_error_cal` = ppm_error − mu (OFFSET ONLY), where mu is the
     robust per-file mass offset the tier engine already fits from the corroborated
@@ -930,7 +1114,8 @@ def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
 def apply_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
     """Stamp tier / tier_reason / candidate_density onto the M0 rows of the
     ledger (in place; returns the ledger). Non-M0 rows keep NA. `cfg` (the run's
-    PassConfig) supplies cal_abs_floor_mda; None = its default (report re-tier)."""
+    PassConfig) supplies cal_abs_floor_mda and tau_suspect; None = their
+    defaults (report re-tier)."""
     for col in ("tier", "tier_reason", "candidate_density"):
         if col not in ledger.columns:
             ledger[col] = pd.Series(pd.NA, index=ledger.index, dtype="object")

@@ -25,6 +25,7 @@ import pandas as pd
 from peaky.chem import contexts as X
 from peaky.assignment import evidence as EV
 from peaky.assignment import ledger as L
+from peaky.assignment import mass_only as MO
 from peaky.assignment import tiers as T
 
 __version__ = "0.5.0"  # the evidence scale of peaky 0.10.0 (the level columns, By claim over six keys)
@@ -294,8 +295,11 @@ def _candidate_rows(cand: pd.DataFrame, *, levels: bool = False) -> pd.DataFrame
 
 
 def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
-                 sample_id: str = "") -> dict[str, pd.DataFrame]:
-    """Return the report sheets as DataFrames (insertion order == sheet order)."""
+                 sample_id: str = "", *, tof_flag_mz=None) -> dict[str, pd.DataFrame]:
+    """Return the report sheets as DataFrames (insertion order == sheet order).
+    A ledger carrying the TOF mass-only flag (assignment/mass_only.py) shows it on
+    the Assigned sheet and counts it in the Summary, split at `tof_flag_mz`
+    (None = the package default); a ledger without it renders as before."""
     led = ledger.copy()
     # tiering: stamp if the ledger does not carry it (e.g. an old CSV)
     if "tier" not in led.columns or led.loc[led["role"] == L.ROLE_M0, "tier"].isna().all():
@@ -335,6 +339,11 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
     if has_levels:
         _j = acols.index("confidence") + 1
         acols[_j:_j] = LEVEL_COLUMNS
+    # the TOF mass-only flag, beside the tier's own reason (only where the ledger carries it)
+    has_flag = MO.counts(led) is not None
+    if has_flag:
+        _j = acols.index("tier_reason") + 1
+        acols[_j:_j] = list(MO.COLUMNS)
     # the tier's own reason keeps its ledger name: `evidence` is the level's column
     identified = (ident[acols].sort_values("height", ascending=False)) if len(ident) else \
         pd.DataFrame(columns=acols)
@@ -443,8 +452,8 @@ def build_sheets(ledger: pd.DataFrame, context: str = "ambient-air",
 
     sheets = {
         "Summary": summary_stats(led, context=context, sample_id=sample_id,
-                                 scale_info=_info if has_levels else None),
-        "Read me": legend_sheet(claims=has_levels),
+                                 scale_info=_info if has_levels else None, tof_flag_mz=tof_flag_mz),
+        "Read me": legend_sheet(claims=has_levels, mass_only=has_flag),
         "Assigned": identified,
         "Candidates": candidates,
         "Below assignability": below,
@@ -577,9 +586,12 @@ def evidence_level_sheet(m0: pd.DataFrame, n_bright: int = 20, *, no_level: str 
 
 
 def summary_stats(ledger: pd.DataFrame, *, context: str = "",
-                  sample_id: str = "", scale_info: dict | None = None) -> pd.DataFrame:
+                  sample_id: str = "", scale_info: dict | None = None,
+                  tof_flag_mz=None) -> pd.DataFrame:
     """The **Summary** sheet. `scale_info` is `scale_view`'s info when the caller
-    has already read the level columns (build_sheets); else they are read here."""
+    has already read the level columns (build_sheets); else they are read here.
+    A ledger carrying the TOF mass-only flag gets a section of its counts, split
+    at `tof_flag_mz` (None = the package default)."""
     if "evidence_level" in ledger.columns and scale_info is None:
         ledger, scale_info = scale_view(ledger)
     st = L.stats(ledger)
@@ -659,6 +671,18 @@ def summary_stats(ledger: pd.DataFrame, *, context: str = "",
                 f"{n_none}  ({100 * n_none / len(m0):.0f}% of assignments) -- not levelled "
                 "(the row's evidence says why); reads tentative")
 
+    mo = MO.counts(ledger, MO.DEFAULT_TOF_FLAG_MZ if tof_flag_mz is None else tof_flag_mz)
+    if mo is not None:
+        thr = mo["threshold_mz"]
+        sec = "TOF mass-only flag"
+        add(sec, "Assigned, flagged", f"{mo['n_flagged']} of {mo['n_assigned']} -- no attached isotope line "
+                                      "speaks for the neutral; tier unchanged")
+        add(sec, f"below m/z {thr:g}", f"{mo['below']['flagged']} of {mo['below']['assigned']} Assigned -- "
+                                      "the reading rests on mass alone")
+        add(sec, f"at or above m/z {thr:g}",
+            f"{mo['at_or_above']['flagged']} of {mo['at_or_above']['assigned']} Assigned -- a TOF's formula "
+            "space is saturated here (decoy-measured on two TOFs); an unflagged reading here is not "
+            "supported either")
     if len(m0):
         base = m0["confidence"].map(T.base_confidence)
         for lab in ("High", "Good", "Low", "Suspect"):
@@ -698,9 +722,10 @@ _LEVEL_COLUMN_LEGEND = [
 ]
 
 
-def legend_sheet(*, claims: bool = False) -> pd.DataFrame:
+def legend_sheet(*, claims: bool = False, mass_only: bool = False) -> pd.DataFrame:
     """The **Read me** sheet. With `claims` (a ledger that carries evidence levels)
-    it opens on the claim classes."""
+    it opens on the claim classes; with `mass_only` (a ledger carrying the TOF
+    mass-only flag) it explains the flag's two columns."""
     rows = [
         ("Tiers", "Assigned", "Formula unique in the calibrated mass window, "
          "or corroborated by independent evidence: Mascope-confirmed "
@@ -773,6 +798,20 @@ def legend_sheet(*, claims: bool = False) -> pd.DataFrame:
          "truth; every sheet here is a mechanical view of it. Commentary "
          "strings are generated from ledger columns and are reproducible."),
     ]
+    if mass_only:
+        rows += [
+            ("TOF mass-only flag", "mass_only", "TRUE on an Assigned row of a TOF-class run when "
+             + MO.DEFINITION + ". Information, not a verdict: the tier and the evidence level are "
+             "unchanged. Empty on Candidate rows and off a TOF."),
+            ("TOF mass-only flag", "mass_only_reason", "Why: below the threshold (default m/z 350) the "
+             "reading rests on mass alone; at or above it a TOF's formula space is saturated -- a "
+             "shifted-mass decoy spectrum is Assigned as often as the real one (measured on two TOFs). "
+             "An isotope line, an MS2 spectrum or a standard would support the reading. FALSE is not "
+             "support at or above the threshold: there even a present line is weak (a shifted spectrum "
+             "keeps real isotope spacings, and a 0.5-2x 13C band bounds the carbon count only to a "
+             "factor of two), and on a TOF's shifted-mass decoy the line test left more decoy readings "
+             "unflagged there than real ones."),
+        ]
     if claims:
         rows = [
             ("Claims", "claim", "What a committed formula lets you say, read from its "
@@ -808,7 +847,9 @@ _WRAP_COLS = {"commentary": 70, "why_candidate": 46,
               "evidence": 80, "would_lift": 50, "competitors_left": 44, "tags": 60,
               "context": 40, "context_source": 44, "tag_kinds": 52,
               "meaning": 60, "level_hist": 36,
-              "interpretation": 52, "explanation": 90, "value": 46}
+              "interpretation": 52, "explanation": 90, "value": 46,
+              # the TOF mass-only flag's reason (assignment/mass_only.py)
+              "mass_only_reason": 50}
 
 _FILL = {
     "good":    ("C6EFCE", "006100"),
@@ -903,6 +944,9 @@ def _style_sheet(ws, df, *, chip_cols=(), band_by=None):
                 kind = _CLAIM_CHIP.get(str(val))
             elif col in _LEVEL_COLS:
                 kind = _LEVEL_CHIP.get(str(val))
+            elif col == MO.COLUMN:
+                # the flag is information, not a verdict: blue, never red
+                kind = "info" if EV.truthy(val) else None
             else:
                 kind = _chip(val)
             if kind:
@@ -948,10 +992,10 @@ def _style_summary(ws, df):
 
 
 def write_excel(ledger: pd.DataFrame, path: str | Path,
-                context: str = "ambient-air", sample_id: str = ""):
-    sheets = build_sheets(ledger, context, sample_id)
+                context: str = "ambient-air", sample_id: str = "", *, tof_flag_mz=None):
+    sheets = build_sheets(ledger, context, sample_id, tof_flag_mz=tof_flag_mz)
     chip_cols = ("tier", "confidence", "residual_evidence", "best_tier", "evidence_level", "level",
-                 "claim", "best_claim")
+                 "claim", "best_claim", MO.COLUMN)
     with pd.ExcelWriter(path, engine="openpyxl") as xl:
         for name, df in sheets.items():
             out = df if len(df) else pd.DataFrame({"(empty)": []})

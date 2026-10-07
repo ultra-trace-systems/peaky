@@ -226,6 +226,8 @@ def cmd_assign(args) -> None:
     cfg = passes.PassConfig(ppm=args.ppm, search_ppm=args.search_ppm,
                             height_cutoff_cps=args.height_cutoff,
                             occurrence_min=args.occurrence_min)
+    if getattr(args, "tof_flag_mz", None) is not None:
+        cfg.tof_flag_mz = args.tof_flag_mz
     profiles.apply_height_cutoff_x_edge(cfg, prof,
                                         explicit=args.height_cutoff_x_edge, log=print)
     profiles.apply_ion_only_channels(cfg, prof, log=print)
@@ -317,14 +319,30 @@ def _claims_text(claims) -> str:
 
 def _write_assign_outputs(args, out, base) -> None:
     """Write the single-sample run's artifacts + print its summary. Split out of
-    cmd_assign so the progress window stays open across the write + report."""
+    cmd_assign so the progress window stays open across the write + report.
+    On a TOF-class sample the ledger first takes the mass-only flag
+    (assignment/mass_only.py; its tallies land in the manifest's stats), at the
+    threshold `--tof-flag-mz` gave (the same value cmd_assign put on the cfg;
+    the package default without one)."""
+    from peaky.assignment import mass_only as MO
     from peaky.reporting import gka_widget
     from peaky.reporting import report
 
     led = out["ledger"]
+    st0 = out.get("stats") or {}
+    _thr = getattr(args, "tof_flag_mz", None)
+    thr = MO.check_threshold(MO.DEFAULT_TOF_FLAG_MZ if _thr is None else _thr)
+    flag = MO.flag_ledger(led, klass=MO.instrument_class(resolution=st0.get("resolution"),
+                                                         instrument_types=[st0.get("instrument_type")]),
+                          threshold=thr, halogen=st0.get("reagent_halogen"),
+                          resolution=st0.get("resolution"))
+    if isinstance(out.get("stats"), dict):
+        out["stats"]["tof_flag"] = flag
+    if flag["applied"]:
+        print(MO.describe(flag))
     led.to_csv(f"{base}_ledger.csv", index=False)
     report.write_excel(led, f"{base}_assignments.xlsx", out["context"],
-                       sample_id=args.sample_id)
+                       sample_id=args.sample_id, tof_flag_mz=thr)
     report.write_markdown(out, f"{base}_summary.md")
     manifest = {k: v for k, v in out.items() if k != "ledger"}
     Path(f"{base}_manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
@@ -379,7 +397,8 @@ def cmd_batch(args) -> None:
                            trace_first=getattr(args, "trace_first", False),
                            resolving_power=getattr(args, "resolving_power", None),
                            trace_episodes=getattr(args, "trace_episodes", False),
-                           corroborate=list(getattr(args, "corroborate", []) or []), log=prog)
+                           corroborate=list(getattr(args, "corroborate", []) or []),
+                           tof_flag_mz=getattr(args, "tof_flag_mz", None), log=prog)
         # the window's final numbers come from the RETURNED summary, never from
         # parsing the log -- exact by construction.
         prog.finish((res.get("assign") or {}).get("summary"))
@@ -417,7 +436,8 @@ def cmd_pool(args) -> None:
             height_cutoff_x_edge=args.height_cutoff_x_edge,
             height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
             side_channels=side,
-            rolling_centre=getattr(args, "rolling_centre", False), log=prog)
+            rolling_centre=getattr(args, "rolling_centre", False),
+            tof_flag_mz=getattr(args, "tof_flag_mz", None), log=prog)
         prog.finish((res.get("assign") or {}).get("summary"))
         ctx = res["ctx"]
         print(f"\n[pool] unified ledger -> {ctx.out_dir} in {res.get('elapsed_s', '?')}s")
@@ -1059,6 +1079,27 @@ def _side_channels_arg(values):
     return profiles._side_tuple(words)
 
 
+def _tof_flag_mz(v: str) -> float:
+    """argparse type for --tof-flag-mz: an m/z above 0."""
+    from peaky.assignment import mass_only as MO
+    try:
+        return MO.check_threshold(v)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
+def _add_tof_flag_arg(p) -> None:
+    p.add_argument("--tof-flag-mz", type=_tof_flag_mz, default=None, metavar="MZ",
+                   help="TOF mass-only flag: on a TOF-class run every Assigned reading that no "
+                        "attached isotope line in any Assigned file speaks for is "
+                        "flagged (column mass_only + mass_only_reason), never demoted. At or "
+                        "above this m/z the reason says the formula space is saturated (a "
+                        "shifted-mass decoy is Assigned as often as the real spectrum, measured "
+                        "on two TOFs), below it that the reading rests on mass alone. Default "
+                        "350; recorded in batch_summary['tof_flag'] and the run manifest. "
+                        "No effect off a TOF")
+
+
 def _add_trace_first_flags(p) -> None:
     p.add_argument("--trace-first", action="store_true", default=False,
                    help="assign the batch's persistent ions ONCE from their centred traces "
@@ -1167,6 +1208,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_admission_args(pa)
     _add_side_channels_flag(pa)
     _add_corroborate_flag(pa)
+    _add_tof_flag_arg(pa)
     _add_progress_flag(pa)
     pa.set_defaults(func=cmd_assign)
 
@@ -1195,6 +1237,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_rolling_flag(pb)
     _add_trace_first_flags(pb)
     _add_corroborate_flag(pb)
+    _add_tof_flag_arg(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "
@@ -1237,6 +1280,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_admission_args(pp)
     _add_side_channels_flag(pp)
     _add_rolling_flag(pp)
+    _add_tof_flag_arg(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "
                          "(default: physical cores; env PEAKY_JOBS honored)")

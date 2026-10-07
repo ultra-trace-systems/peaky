@@ -72,6 +72,7 @@ APPENDED_ROW_KEYS = [
     "decoy_headline_arm", "decoy_headline_lt_350_rate", "decoy_wrong_adducts", "decoy_adducts_new_ion_rate",
     "decoy_adducts_new_ion_lt_350_rate", "decoy_adducts_same_ion_share", "roster_neutral_or_better", "roster_same_ion",
     "roster_iso_reagent", "roster_test", "roster_window_ppm", "scale", "decoy_orbitrap",
+    "census_mass_only", "census_mass_only_split",
 ]
 
 

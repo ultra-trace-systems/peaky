@@ -438,7 +438,51 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
         from peaky.assignment import evidence as _EV
         na = _EV.levels_not_assessed_reason(merged["evidence"], merged["evidence_level"])
     ctx["levels_not_assessed"] = na or None
+    ctx.update(_mass_only_context(ctx))
     return ctx
+
+
+#: the marker the species tables put on a TOF mass-only reading (assignment/mass_only.py)
+MASS_ONLY_MARK = "\u2020"
+
+
+def _mass_only_context(ctx) -> dict:
+    """The TOF mass-only flag as the pages read it, off the merged ledger (the
+    single source): `mass_only` = the counts split at the run's threshold
+    (batch_summary['tof_flag'], else the package default), `mass_only_pairs` =
+    the flagged Assigned readings, `mass_only_neutrals` = the neutrals every
+    Assigned reading of which is flagged. {} on a run without flag values (not a
+    TOF, or made before the flag)."""
+    from peaky.assignment import mass_only as MO
+    merged = ctx.get("merged")
+    thr = ((ctx.get("batch") or {}).get("tof_flag") or {}).get("threshold_mz") or MO.DEFAULT_TOF_FLAG_MZ
+    try:
+        mo = MO.counts(merged, thr)
+    except ValueError:
+        mo = None
+    if mo is None:
+        return {}
+    asg = merged["tier"].astype(str).eq("Assigned")
+    fl = MO.flagged(merged) & asg
+    nf, ad = merged["neutral_formula"].astype(str), merged["adduct"].astype(str)
+    every = fl[asg].groupby(nf[asg]).all()
+    return {"mass_only": mo, "mass_only_pairs": set(zip(nf[fl], ad[fl])),
+            "mass_only_neutrals": set(every[every].index)}
+
+
+def _mass_only_sentence(ctx) -> str | None:
+    """The Findings sentence on the TOF mass-only flag, None without one."""
+    mo = ctx.get("mass_only")
+    if not mo or not mo.get("n_assigned"):
+        return None
+    b, a, thr = mo["below"], mo["at_or_above"], mo["threshold_mz"]
+    return (f"Mass-only readings (TOF): {mo['n_flagged']} of {mo['n_assigned']} Assigned readings have no "
+            f"attached isotope line that speaks for the neutral in any file that assigned them \u2014 "
+            f"{b['flagged']} of {b['assigned']} below m/z {thr:g}, where the reading rests on mass alone, and "
+            f"{a['flagged']} of {a['assigned']} at or above it, where a TOF's formula space is saturated (a "
+            f"shifted-mass decoy is Assigned as often as the real spectrum on two TOFs); they keep their tier "
+            f"and are marked {MASS_ONLY_MARK} in the species tables. At or above m/z {thr:g} an unmarked "
+            f"reading is not supported either: an isotope line there is weak evidence.")
 
 
 # ---------------------------------------------------------------------------
@@ -1068,6 +1112,13 @@ def findings(ctx, pdf):
     if rise_txt:
         lines += [("b", "• " + rise_txt)]
     lines += _composition_lines(ctx) if scf else []
+    mo_txt = _mass_only_sentence(ctx)
+    if mo_txt:
+        lines += [("b", "• " + mo_txt)]
+    mo_n = ctx.get("mass_only_neutrals") or set()
+
+    def _mk(f) -> str:                      # the species tables' mass-only marker
+        return MASS_ONLY_MARK if str(f) in mo_n else ""
     inorg = ctx.get("top_inorganic", [])
     if top or inorg:
         lines += [("gap", 0.6), ("h", "Top species by signal"), ("gap", 0.25),
@@ -1079,11 +1130,16 @@ def findings(ctx, pdf):
         lines.append(("m", f"   share   class   {'claim':<12}   neutral"))
         for r in top[:8]:
             lines.append(("m", f"   {r['frac']*100:>4.1f}%   {r['klass']:5s}   "
-                               f"{best.get(str(r['neutral_formula']), '-'):<12}   {r['neutral_formula']}"))
+                               f"{best.get(str(r['neutral_formula']), '-'):<12}   {r['neutral_formula']}"
+                               f"{_mk(r['neutral_formula'])}"))
     elif top:
         lines.append(("m", "   share   class   neutral"))
         for r in top[:8]:
-            lines.append(("m", f"   {r['frac']*100:>4.1f}%   {r['klass']:5s}   {r['neutral_formula']}"))
+            lines.append(("m", f"   {r['frac']*100:>4.1f}%   {r['klass']:5s}   {r['neutral_formula']}"
+                               f"{_mk(r['neutral_formula'])}"))
+    if top and mo_n and any(str(r["neutral_formula"]) in mo_n for r in top[:8]):
+        lines.append(("dim", f"{MASS_ONLY_MARK} = TOF mass-only flag: every Assigned reading of the neutral rests "
+                             "on mass alone (tier unchanged)"))
     if inorg:
         items = [f"{r['neutral_formula']} {_share1(r['frac'])}" for r in inorg[:6]]
         lines.append(("m", "   reagent and inorganic ions (C-free or inorganic C):"))
@@ -1097,12 +1153,15 @@ def findings(ctx, pdf):
         lines += [("gap", 0.6), ("h", "Accretion / oligomer products (Assigned, high C & O, by signal)"),
                   ("gap", 0.25)]
         for k in range(0, len(olig), 6):           # wrap ~6 formulas per line (no edge clip)
-            lines.append(("m", "   " + ", ".join(olig[k:k + 6])))
+            lines.append(("m", "   " + ", ".join(f + _mk(f) for f in olig[k:k + 6])))
         if not olig:
             lines.append(("m", "   none at tier Assigned"))
         lines += [("dim", "high-carbon high-oxygen neutrals held at tier Assigned — candidate HOM dimers /"),
                   ("dim", "oligomers, often the most event-specific signal"
                           + (f" ({len(olig)} of {n_olig} shown)." if n_olig > len(olig) else "."))]
+        if any(f in mo_n for f in olig):
+            lines.append(("dim", f"{MASS_ONLY_MARK} = TOF mass-only flag (no attached isotope line of the neutral's "
+                                 "own elements in any Assigned file; tier unchanged)."))
         if n_olig_cand:
             lines.append(("dim", f"{n_olig_cand} more high-C high-O neutral(s) hold no Assigned reading (Candidate "
                                  "or ion-only rows only) and are not listed."))
@@ -2042,9 +2101,13 @@ def assignments_table(ctx, pdf):
     head = (f"{'neutral':<{NW}}{'m/z':>10}  {'channel':<{AW}}{'tier':<11}"
             + (f"{'claim':<{CW}}" if has_claim else "")
             + f"{'score':>6}{'max cps':>8}{'  f':>4}  isotopes")
+    mo_pairs = ctx.get("mass_only_pairs") or set()
     rows: list = [("m", head),
                   ("dim", f"  max cps = {_scope} · f = files seen · isotopes = confirmed"
                           + (" · claim = read from the evidence level" if has_claim else ""))]
+    if mo_pairs:                             # the TOF mass-only marker's legend, on every page
+        rows.append(("dim", f"  {MASS_ONLY_MARK} = TOF mass-only flag: no attached isotope line of the neutral's "
+                            "own elements in any Assigned file (tier unchanged)"))
     last = None
     for _, r in df.iterrows():
         nf, ad = r["neutral_formula"], r["adduct"]
@@ -2056,7 +2119,7 @@ def assignments_table(ctx, pdf):
             itxt = itxt[:IW - 1] + "…"
         sc = r.get("ion_score")
         scs = f"{float(sc):.2f}" if pd.notna(sc) else "  - "
-        tier = str(r.get("tier", ""))[:10]
+        tier = str(r.get("tier", ""))[:9] + (MASS_ONLY_MARK if (nf, ad) in mo_pairs else "")
         nf_files = r.get("n_files", "")
         adv = ad if len(ad) <= AW else ad[:AW - 1] + "…"
         ih = _cps(max_h.get((nf, ad)))
@@ -2064,7 +2127,7 @@ def assignments_table(ctx, pdf):
         rows.append(("m", f"{shown:<{NW}}{float(r['mz']):>10.4f}  {adv:<{AW}}"
                           f"{tier:<11}{clm}{scs:>6}{ih:>8}{str(nf_files):>4}  {itxt}"))
 
-    header, body = rows[:2], rows[2:]
+    header, body = rows[:3 if mo_pairs else 2], rows[3 if mo_pairs else 2:]
     PER = 50
     npages = max(1, (len(body) + PER - 1) // PER)
     n_neutrals = df["neutral_formula"].nunique()

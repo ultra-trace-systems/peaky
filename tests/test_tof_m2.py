@@ -1,0 +1,576 @@
+"""The TOF ion-M+2 package: one primitive (satellites.heavy_line_verdict) asks
+whether the ION's own Br / Cl M+2 line is where its composition puts it -- the
+reagent adduct's halogen included -- and three callers read it:
+
+  * the tier pass (tiers.apply_tof_m2, the assign stage `tof_m2`): an Assigned
+    per-file M0 whose line the file could show and does not is Candidate;
+  * the batch REQ check on a TOF-class batch (iso_checks._req_tof): the same
+    test in every spectrum of the stamped series, refuted over >= 10 testable
+    spectra where the line is seen in < 30 % of them;
+  * the merged-row gates after the stamp (iso_checks.tof_m2_gates): a REQ
+    refutation and the 81Br doublet demote the merged winner, no re-vote.
+
+Synthetic, offline; every threshold tested at its edge.
+"""
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from peaky.assignment import assign as A
+from peaky.assignment import evidence as EV
+from peaky.assignment import ledger as L
+from peaky.assignment import satellites as SAT
+from peaky.assignment import tiers as T
+from peaky.assignment.passes.config import PassConfig
+from peaky.batch import iso_checks as IC
+from peaky.chem import chemistry as C
+from peaky.chem import isotopes as ISO
+from peaky.chem.resolution import Resolution
+from tests.test_iso_checks import N, ORBI, SCALE_T, TOF, _get, _ion, _row, _series, _wave
+
+BR = "[M+Br]-"
+X = "C6H10O3"                       # a CHO neutral: on [M+Br]- its ion carries the reagent's one Br
+RP = Resolution.from_r(10_000)
+TOF_CFG = dict(instrument_type="tof", noise_edge_batch_cps=1.0)      # floor 3 cps
+
+
+def quiet(*a, **k):
+    pass
+
+
+# --------------------------------------------------------------------------- the primitive
+def test_the_prediction_is_the_ions_whole_m_plus_2_cluster_reagent_halogen_included():
+    ion = T._ion_counts(X, BR)
+    ratio, shift, label = SAT.heavy_line_prediction(ion)
+    want = ISO.nominal_cluster(ion, 2)
+    assert (ratio, shift) == pytest.approx(want) and label == "81Br"
+    # the cluster adds 18O / 13C2 to the one 81Br: a little above the bare per-atom ratio
+    assert ISO.R_81BR_PER_BR < ratio < ISO.R_81BR_PER_BR + 0.02
+    assert shift == pytest.approx(ISO.D_81BR, abs=5e-4)
+    r2, _s, lab2 = SAT.heavy_line_prediction(T._ion_counts("C30H58Cl4", BR))
+    assert lab2 == "81Br/37Cl" and r2 == pytest.approx(ISO.R_81BR_PER_BR + 4 * ISO.R_37CL_PER_CL, abs=0.06)
+    assert SAT.heavy_line_prediction(T._ion_counts("C6H10O3S", "[M+NO3]-"))[0] == 0.0     # 34S alone: no test
+    assert SAT.heavy_line_prediction(T._ion_counts("C2H3ClO2", "[M+NO3]-"))[2] == "37Cl"
+
+
+def test_the_window_is_the_scorers_or_three_fitted_sigmas():
+    assert SAT.heavy_line_window_ppm() == SAT.HEAVY_LINE_MIN_PPM == 15.0
+    assert SAT.heavy_line_window_ppm(4.0) == 15.0
+    assert SAT.heavy_line_window_ppm(8.75) == pytest.approx(26.25)
+    assert SAT.heavy_line_window_ppm(4.0, tol_ppm=20.0) == 20.0
+    assert SAT.heavy_line_window_ppm(float("nan"), tol_ppm=None) == 15.0
+
+
+def _verdict(lines, h0=100.0, floor=3.0, ratio=0.98, win=15.0, m0=300.0):
+    mz = np.array([m0] + [m0 + ISO.D_81BR + d for d, _h in lines])
+    h = np.array([h0] + [hh for _d, hh in lines])
+    v = SAT.heavy_line_verdict(mz, h, m0, h0, ratio, ISO.D_81BR, floor, win_ppm=win, fwhm=m0 / 10_000)
+    return v["status"][0]
+
+
+def test_seen_absent_dim_and_none():
+    fw = 300.0 / 10_000                                          # 0.03 Da = 100 ppm at m/z 300
+    assert _verdict([(0.0, 97.0)]) == SAT.HL_SEEN
+    assert _verdict([(14e-6 * 302, 60.0)]) == SAT.HL_SEEN       # 14 ppm, 0.61x the prediction
+    assert _verdict([]) == SAT.HL_ABSENT
+    assert _verdict([(0.0, 50.0)]) == SAT.HL_ABSENT             # 0.51x: under 0.6x, and alone in its reach
+    assert _verdict([(0.75 * fw, 90.0)]) == SAT.HL_ABSENT       # outside the split reach, under pred in 1 FWHM
+    assert _verdict([], h0=3.0) == SAT.HL_DIM                   # predicted 2.9 cps under the 3-cps floor
+    v = SAT.heavy_line_verdict([300.0], [100.0], 300.0, 100.0, 0.0, float("nan"), 3.0, win_ppm=15, fwhm=0.03)
+    assert v["status"][0] == SAT.HL_NONE
+    v = SAT.heavy_line_verdict([300.0], [100.0], 300.0, 100.0, 0.98, ISO.D_81BR, None, win_ppm=15, fwhm=0.03)
+    assert v["status"][0] == SAT.HL_DIM                          # no floor: nothing is testable
+
+
+def test_the_two_blend_guards_make_a_held_or_split_position_untestable():
+    fw = 300.0 / 10_000
+    # another ion's line within one FWHM at >= the prediction holds the position
+    assert _verdict([(0.9 * fw, 99.0)]) == SAT.HL_BLENDED
+    assert _verdict([(0.9 * fw, 97.0)]) == SAT.HL_ABSENT        # under the prediction: no hold
+    # an unresolved split: two sub-peaks within half a FWHM summing to >= 0.6x
+    assert _verdict([(-0.3 * fw, 31.0), (0.3 * fw, 31.0)]) == SAT.HL_BLENDED
+    assert _verdict([(-0.3 * fw, 28.0), (0.3 * fw, 28.0)]) == SAT.HL_ABSENT      # 56 < 0.6 x 98
+
+
+# --------------------------------------------------------------------------- the tier pass
+def _tof_ledger(*, m2=None, h0=100.0, neutral=X, adduct=BR, method="cheminfo+grid", tier="Assigned",
+                extra=(), share=None):
+    mz0 = C.ion_mz(neutral, adduct)
+    rows = [("P", mz0, h0)] + ([("Q", mz0 + ISO.D_81BR + m2[0], m2[1])] if m2 else []) + list(extra)
+    rows += [(f"f{k}", 100.0 + 3.1 * k, 2.0) for k in range(20)]
+    led = L.new_ledger(pd.DataFrame(rows, columns=["peak_id", "mz", "height"]))
+    L.commit_assignment(led, "P", neutral_formula=neutral, adduct=adduct, ion_formula=_ion(neutral, adduct),
+                        ion_score=0.95, compound_score=0.95, ppm_error=0.1, pass_no=1, method=method,
+                        confidence="High", commentary="stub")
+    i = led.index[led["peak_id"] == "P"][0]
+    led["tier"] = led["tier"].astype(object)
+    led["tier_reason"] = led["tier_reason"].astype(object)
+    led.at[i, "tier"], led.at[i, "tier_reason"] = tier, "unique formula in the calibrated window"
+    if share is not None:
+        led.at[i, "assigned_fraction"] = share
+    return led, i
+
+
+def test_an_absent_ion_m_plus_2_line_makes_the_tof_row_candidate_and_says_which_line():
+    led, i = _tof_ledger()
+    out = T.apply_tof_m2(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP, log=quiet)
+    assert out["tested"] == 1 and out["absent"] == 1 and out["demoted"] == 1 and out["skipped"] is None
+    assert led.at[i, "tier"] == T.TIER_CANDIDATE
+    why = led.at[i, "tier_reason"]
+    assert why.startswith("ion M+2 line absent (TOF): C6H10BrO3- predicts its 81Br line at 0.98x")
+    assert "(98 cps, over the 3-cps floor)" in why and "no line within 15 ppm" in why
+    assert why.endswith("(otherwise Assigned: unique formula in the calibrated window)")
+
+
+def test_the_line_present_dim_or_held_leaves_the_tier():
+    held = 0.9 * C.ion_mz(X, BR) / 10_000                                 # 0.9 FWHM out, 1.2x: another line
+    for m2, h0 in (((0.0, 97.0), 100.0), (None, 2.5), ((held, 120.0), 100.0)):
+        led, i = _tof_ledger(m2=m2, h0=h0)
+        T.apply_tof_m2(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP, log=quiet)
+        assert led.at[i, "tier"] == T.TIER_ASSIGNED, (m2, h0)
+    led, i = _tof_ledger(m2=(0.0, 40.0))                                   # present at 0.4x: refuted
+    T.apply_tof_m2(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP, log=quiet)
+    assert led.at[i, "tier"] == T.TIER_CANDIDATE and "the tallest line within 15 ppm is 0.41x it" in \
+        led.at[i, "tier_reason"]
+
+
+def test_the_window_widens_with_the_files_fitted_sigma():
+    off = 20e-6 * C.ion_mz(X, BR)                                          # the line 20 ppm out, 0.97x
+    for sigma, tier in ((4.0, T.TIER_ASSIGNED), (8.0, T.TIER_ASSIGNED)):
+        led, i = _tof_ledger(m2=(off, 97.0))
+        T.apply_tof_m2(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP, scoring={"sigma_ppm": sigma}, log=quiet)
+        assert led.at[i, "tier"] == tier
+    # 15 ppm: not seen, but inside half a FWHM -> blended (untestable); 24 ppm: seen
+    v4 = T.tof_m2_verdicts(_tof_ledger(m2=(off, 97.0))[0], cfg=PassConfig(**TOF_CFG), resolving_power=RP,
+                           scoring={"sigma_ppm": 4.0})
+    v8 = T.tof_m2_verdicts(_tof_ledger(m2=(off, 97.0))[0], cfg=PassConfig(**TOF_CFG), resolving_power=RP,
+                           scoring={"sigma_ppm": 8.0, "mz_tolerance_ppm": 15.0})
+    assert v4["status"].tolist() == [SAT.HL_BLENDED] and v4["window_ppm"].iloc[0] == 15.0
+    assert v8["status"].tolist() == [SAT.HL_SEEN] and v8["window_ppm"].iloc[0] == 24.0
+
+
+def test_off_a_tof_without_an_edge_or_a_width_model_nothing_moves():
+    for cfg, rp, why in ((PassConfig(instrument_type="orbi", noise_edge_batch_cps=1.0), RP, "not a TOF"),
+                         (PassConfig(instrument_type="tof"), RP, "not a TOF"),
+                         (None, RP, "not a TOF"),
+                         (PassConfig(**TOF_CFG), None, "no width model")):
+        led, i = _tof_ledger()
+        out = T.apply_tof_m2(led, cfg=cfg, resolving_power=rp, log=quiet)
+        assert out["skipped"] == why and led.at[i, "tier"] == T.TIER_ASSIGNED
+
+
+def test_known_species_rows_are_tested_and_candidate_rows_keep_their_reason():
+    led, i = _tof_ledger(neutral="C30H58Cl4", method="known:chlorinated_paraffin",
+                         m2=(0.0, 43.0))                      # the line one Br makes, not BrCl4's 2.3x
+    T.apply_tof_m2(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP, log=quiet)
+    assert led.at[i, "tier"] == T.TIER_CANDIDATE and "81Br/37Cl line at 2.3" in led.at[i, "tier_reason"]
+    led, i = _tof_ledger(tier="Candidate")
+    T.apply_tof_m2(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP, log=quiet)
+    assert led.at[i, "tier"] == "Candidate" and led.at[i, "tier_reason"] == "unique formula in the calibrated window"
+
+
+def test_a_composite_parent_predicts_from_its_own_share_and_a_heavy_commit_is_not_tested():
+    led, i = _tof_ledger(m2=(0.0, 50.0), share=0.5)           # 50 cps is 1.0x of half the 100-cps peak
+    T.apply_tof_m2(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP, log=quiet)
+    assert led.at[i, "tier"] == T.TIER_ASSIGNED
+    led, i = _tof_ledger()
+    led.at[i, "mz"] = float(led.at[i, "mz"]) + ISO.D_81BR       # committed on the 81Br line itself
+    assert T.tof_m2_verdicts(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP).empty
+
+
+def test_a_synthetic_sub_peak_at_the_m_plus_2_position_is_no_line():
+    """A composite's synthetic sub-peak (synthetic=True) is a share of a real
+    peak's counts, not a line of its own: sitting exactly where the ion's M+2
+    goes, at the predicted height, it must neither show the line nor hold the
+    position -- the reading is refuted as if the place were empty."""
+    pos = C.ion_mz(X, BR) + ISO.D_81BR
+    led, i = _tof_ledger(extra=[("P.2", pos, 97.0)])
+    j = led.index[led["peak_id"] == "P.2"][0]
+    led["synthetic"] = led["synthetic"].astype(object)
+    led.at[j, "synthetic"] = True
+    v = T.tof_m2_verdicts(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP)
+    assert v["status"].tolist() == [SAT.HL_ABSENT] and v["obs"].iloc[0] == 0.0
+    T.apply_tof_m2(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP, log=quiet)
+    assert led.at[i, "tier"] == T.TIER_CANDIDATE
+    # the same line as a real peak is the sighting
+    led, i = _tof_ledger(extra=[("R", pos, 97.0)])
+    T.apply_tof_m2(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP, log=quiet)
+    assert led.at[i, "tier"] == T.TIER_ASSIGNED
+
+
+def test_the_demotion_moves_the_tier_only_never_the_vote_class():
+    led, i = _tof_ledger()
+    L.ensure_flags(led)
+    before = EV.vote_classes(EV.trim(led))
+    flags = led[list(L.ASSIGNABILITY_FLAGS)].copy()
+    T.apply_tof_m2(led, cfg=PassConfig(**TOF_CFG), resolving_power=RP, log=quiet)
+    assert led.at[i, "tier"] == T.TIER_CANDIDATE
+    assert EV.vote_classes(EV.trim(led)).equals(before)
+    assert led[list(L.ASSIGNABILITY_FLAGS)].equals(flags)
+
+
+def test_the_stage_is_the_last_tier_word_before_the_evidence_level():
+    names = [s.name for s in A._STAGES]
+    k = names.index("tof_m2")
+    assert names.index("tiers") < names.index("demote_speculative") < names.index("reflist_rescue") < k
+    assert names[k - 1] == "iso_env_final" and names[k + 1] == "evidence"
+    assert not A._STAGES[k].safe
+
+
+# --------------------------------------------------------------------------- the batch REQ check (TOF branch)
+Y = "C6H9BrO3"
+H = "[M-H]-"
+
+
+def _tbr(i, *, h=1e4, seen=lambda i: True, ppm=0.0, rel=0.9728, n=Y):
+    """A bromine ion's M0 stamp (its ion carries the neutral's one Br) and, where `seen(i)`, its 81Br line
+    `ppm` off at `rel` x the M0."""
+    mz = C.ion_mz(n, H)
+    h0 = h * _wave(i)
+    rows = [_row(i, mz, h0, role="M0", nf=n, ad=H, ion=_ion(n, H))]
+    if seen(i):
+        rows.append(_row(i, (mz + ISO.D_81BR) * (1 + ppm * 1e-6), rel * h0, role="iso_child", label="81Br"))
+    return rows
+
+
+def _tm(ts, pairs=((Y, H),), edge=None, scale=SCALE_T, resolution=TOF):
+    from tests.test_iso_checks import _frames
+    return IC.measure(ts, _frames(list(pairs)), None, resolution=resolution, mass_scale=scale, edge_cps=edge,
+                      log=quiet)
+
+
+def test_req_on_a_tof_reads_the_ions_own_line_with_the_tier_pass_primitive():
+    r = _get(_tm(_series(lambda i: _tbr(i))), "REQ", Y)
+    assert r["verdict"] == "present" and not r["veto"] and r["line"] == "M+2 (81Br)"
+    assert r["n_used"] == N and r["n_present"] == N and r["det_frac"] == 1.0 and r["window_ppm"] == 15.0
+    r = _get(_tm(_series(lambda i: _tbr(i, seen=lambda i: False))), "REQ", Y)
+    assert r["verdict"] == "absent" and r["veto"] and r["n_present"] == 0
+    assert r["note"].startswith(f"the ion's own M+2 (81Br) line ({r['expected']:.2f}x the stamped line) seen in "
+                                f"0 of {N} testable spectra (within 15 ppm at >= 0.6x")
+    assert IC.veto(_tm(_series(lambda i: _tbr(i, seen=lambda i: False)))) == {(Y, H): "REQ: " + r["note"]}
+
+
+def test_req_on_a_tof_refutes_under_three_in_ten_over_ten_testable_spectra():
+    for n_test, n_seen, verdict in ((10, 2, "absent"), (10, 3, "present"), (9, 0, "untestable")):
+        def build(i, n_test=n_test, n_seen=n_seen):
+            # spectra past n_test hold a dim M0 whose line is predicted under the 3 x 10 cps floor
+            return _tbr(i, h=1e4 if i < n_test else 20.0 / _wave(i), seen=lambda i: i < n_seen)
+        r = _get(_tm(_series(build)), "REQ", Y)
+        assert r["verdict"] == verdict and r["n_used"] == n_test, (n_test, n_seen)
+
+
+def test_req_on_a_tof_floor_is_three_times_the_batch_edge():
+    ts = _series(lambda i: _tbr(i, h=60.0 / _wave(i), seen=lambda i: False))    # predicted ~59 cps
+    assert _get(_tm(ts), "REQ", Y)["verdict"] == "absent"                        # median edge 10: floor 30
+    assert _get(_tm(ts, edge=15.0), "REQ", Y)["verdict"] == "absent"             # floor 45
+    assert _get(_tm(ts, edge=25.0), "REQ", Y)["verdict"] == "untestable"         # floor 75: every spectrum dim
+
+
+def test_req_on_a_tof_window_and_blend_guards():
+    # 12 ppm: seen; 17 ppm: not seen, but within half a FWHM -> blended, untestable; 3 sigma of 6 ppm: seen
+    assert _get(_tm(_series(lambda i: _tbr(i, ppm=12.0))), "REQ", Y)["verdict"] == "present"
+    r = _get(_tm(_series(lambda i: _tbr(i, ppm=17.0))), "REQ", Y)
+    assert r["verdict"] == "untestable" and r["occupied"] == 1.0
+    assert _get(_tm(_series(lambda i: _tbr(i, ppm=17.0)), scale={"sigma_ppm": 6.0, "stamp_ppm": 9.0}),
+                "REQ", Y)["verdict"] == "present"
+    # 75 ppm at 0.97x (outside the split reach, under the prediction within one FWHM): absent
+    assert _get(_tm(_series(lambda i: _tbr(i, ppm=75.0))), "REQ", Y)["verdict"] == "absent"
+    # ... at 1.2x it is another ion's line holding the position: untestable
+    assert _get(_tm(_series(lambda i: _tbr(i, ppm=75.0, rel=1.2))), "REQ", Y)["verdict"] == "untestable"
+
+
+def test_req_on_a_tof_needs_as_many_testable_as_blended_spectra():
+    def build(i):
+        return _tbr(i, seen=lambda i: i >= 20, ppm=0.0 if i < 30 else 17.0)
+    # 20 spectra absent, 10 seen, 10 blended: seen in 10 of 30 testable (0.33, not under 0.3) -> present
+    r = _get(_tm(_series(build)), "REQ", Y)
+    assert (r["n_used"], r["n_present"], r["verdict"]) == (30, 10, "present")
+
+    def build2(i):
+        return _tbr(i, seen=lambda i: i >= 15, ppm=17.0)        # 15 absent, 25 blended
+    r = _get(_tm(_series(build2)), "REQ", Y)
+    assert (r["n_used"], r["verdict"]) == (15, "untestable")
+
+
+def test_req_on_a_tof_does_not_test_a_pair_stamped_on_a_heavy_isotopologue():
+    """A Br2 ion is committed on its tallest line, 79Br81Br, ~2 Da above its
+    all-light m/z: its own M+2 is then not 2 Da above the stamp, so REQ must
+    not read the empty place there as a refutation."""
+    z = "C2H2Br2O2"
+
+    def build(i):
+        mz = C.ion_mz(z, H)
+        h0 = 1e4 * _wave(i)
+        return [_row(i, mz, 0.51 * h0),                                                     # 79Br2
+                _row(i, mz + ISO.D_81BR, h0, role="M0", nf=z, ad=H, ion=_ion(z, H)),          # the stamp
+                _row(i, mz + 2 * ISO.D_81BR, 0.49 * h0)]                                    # 81Br2
+    r = _get(_tm(_series(build), pairs=((z, H),)), "REQ", z)
+    assert r["verdict"] == "untestable" and not r["veto"] and r["n_used"] == 0
+    assert r["note"].endswith("not tested: the pair is stamped on a heavy isotopologue")
+    assert r["mz"] == pytest.approx(C.ion_mz(z, H) + ISO.D_81BR)
+
+
+def test_req_on_an_orbitrap_is_unchanged_by_the_tof_branch():
+    from tests.test_iso_checks import SCALE_O
+    r = _get(_tm(_series(lambda i: _tbr(i, ppm=1.5)), resolution=ORBI, scale=SCALE_O), "REQ", Y)
+    assert r["verdict"] == "absent" and r["window_ppm"] == 1.0 and "detectable spectra" in r["note"]
+
+
+# --------------------------------------------------------------------------- the merged-row gates
+def _merged(rows):
+    return pd.DataFrame(rows, columns=["mz", "neutral_formula", "adduct", "tier", "tier_reason"])
+
+
+def _req_table(rows):
+    return pd.DataFrame([dict(check="REQ", neutral_formula=n, adduct=a, veto=v, det_frac=f, note="the note")
+                         for n, a, v, f in rows])
+
+
+def test_a_req_refutation_demotes_the_merged_winner_and_overrules_a_known_lock_without_a_revote():
+    m = _merged([(250.0, "C9H12O8", BR, "Assigned", None),
+                 (637.25, "C30H58Cl4", BR, "Assigned", IC.KNOWN_LOCK_MARK + ": chlorinated paraffin ..."),
+                 (300.0, "C7H8O4", BR, "Candidate", None),
+                 (320.0, "C8H12O4", BR, "Assigned", None)])
+    t = _req_table([("C9H12O8", BR, True, 0.0), ("C30H58Cl4", BR, True, 0.0), ("C7H8O4", BR, True, 0.0),
+                    ("C8H12O4", BR, False, 0.9)])
+    g = IC.tof_m2_gates(m, t, None, resolution=TOF, log=quiet)
+    assert g["ran"] and g["req_demoted"] == 2 and g["known_demoted"] == 1
+    assert m["tier"].tolist() == ["Candidate", "Candidate", "Candidate", "Assigned"]
+    assert m["neutral_formula"].tolist() == ["C9H12O8", "C30H58Cl4", "C7H8O4", "C8H12O4"]     # no re-vote
+    assert m.at[0, "tier_reason"] == "Candidate: the batch refutes the ion's own M+2 line (REQ: the note)"
+    assert m.at[1, "tier_reason"].endswith("this overrules the known-species decision")
+    assert pd.isna(m.at[2, "tier_reason"])
+
+
+def test_the_gates_run_on_a_tof_class_width_model_only():
+    for res, why in ((ORBI, "not a TOF-class batch"), (None, "no width model")):
+        m = _merged([(250.0, "C9H12O8", BR, "Assigned", None)])
+        g = IC.tof_m2_gates(m, _req_table([("C9H12O8", BR, True, 0.0)]), None, resolution=res, log=quiet)
+        assert not g["ran"] and g["skipped"] == why and m.at[0, "tier"] == "Assigned"
+
+
+def _doublet(i, ratio=0.97):
+    """A Br1 ion's 79Br line at m/z 250 and, one 81Br spacing above, its partner at `ratio` x it."""
+    h0 = 1e3 * _wave(i)
+    return [_row(i, 250.0, h0, role="M0", nf="C4H6O4", ad=BR, ion=_ion("C4H6O4", BR)),
+            _row(i, 250.0 + ISO.D_81BR, ratio * h0)]
+
+
+def test_the_81br_doublet_partner_is_no_m0_unless_its_own_m_plus_2_is_seen():
+    mz = 250.0 + ISO.D_81BR
+    ts = _series(_doublet)
+    for nf, ad, seen, tier in (("C6H12O3S", H, None, "Candidate"),     # no halogen: the partner, demoted
+                               (X, BR, 0.8, "Assigned"),               # a Br reading whose own M+2 is seen
+                               (X, BR, 0.2, "Candidate"),              # ... whose own M+2 is not
+                               (X, BR, None, "Candidate")):            # ... untested
+        m = _merged([(mz, nf, ad, "Assigned", None)])
+        t = _req_table([] if seen is None else [(nf, ad, False, seen)])
+        g = IC.tof_m2_gates(m, t, ts, resolution=TOF, mass_scale={"merge_ppm": 12.0}, log=quiet)
+        assert m.at[0, "tier"] == tier, (nf, ad, seen)
+        if tier == "Candidate":
+            assert g["doublet_demoted"] == 1 and "the 81Br partner of the line 1.9980 Da below it" in m.at[0, "tier_reason"]
+            assert f"in {N} of the {N} spectra showing it" in m.at[0, "tier_reason"]
+    # outside 0.58-1.56x (a line twice the one below) it is no partner
+    m = _merged([(mz, "C6H12O3S", H, "Assigned", None)])
+    IC.tof_m2_gates(m, None, _series(lambda i: _doublet(i, ratio=2.0)), resolution=TOF, log=quiet)
+    assert m.at[0, "tier"] == "Assigned"
+    # a known-species lock is left to REQ
+    m = _merged([(mz, "C6H12O3S", H, "Assigned", IC.KNOWN_LOCK_MARK)])
+    IC.tof_m2_gates(m, None, ts, resolution=TOF, log=quiet)
+    assert m.at[0, "tier"] == "Assigned"
+
+
+def test_the_doublet_share_is_over_the_spectra_showing_the_line():
+    # 12 spectra in the band, 8 showing the line at 0.33x the one below, 20 not showing it at all: the share
+    # is 12 of the 20 spectra showing it (0.6, a partner), not 12 of all 40 (0.3)
+    def build(i):
+        rows = _doublet(i)
+        if i < 12:
+            return rows
+        if i < 20:
+            return rows[1:] + [_row(i, 250.0, 3.0 * rows[1]["height"])]
+        return rows[:1]
+    ts = _series(build)
+    d = IC.doublets(IC._Series(ts), [250.0 + ISO.D_81BR], 12.0)
+    assert (d.loc[0, "n_spectra"], d.loc[0, "n_band"], d.loc[0, "share"]) == (20, 12, 0.6)
+    m = _merged([(250.0 + ISO.D_81BR, "C6H12O3S", H, "Assigned", None)])
+    g = IC.tof_m2_gates(m, None, ts, resolution=TOF, mass_scale={"merge_ppm": 12.0}, log=quiet)
+    assert g["doublet_demoted"] == 1 and m.at[0, "tier"] == "Candidate"
+    assert "in 12 of the 20 spectra showing it" in m.at[0, "tier_reason"]
+
+
+def test_a_lock_over_the_vote_that_req_refutes_is_demoted_not_undone():
+    """The known-species lock runs before the stamp, so it cannot read REQ: a
+    lock that put a known reading over the vote's winner is demoted by the
+    gate (Candidate, the known reading kept: no re-vote) and the row names the
+    vote's reading the lock moved to the head of `alternatives`."""
+    from peaky.batch import assign_batch as AB
+    known, vote = "C30H58Cl4", "C24H18O16"
+    mz = C.ion_mz(known, BR)
+    m = pd.DataFrame([dict(mz=mz, neutral_formula=vote, adduct=BR, tier="Assigned", ion_score=0.9, n_files=7,
+                           n_files_winner=5, n_files_ion=5, alternatives="", srcs="a,b,c,d,e,f,g",
+                           tier_reason=pd.NA)])
+    pool = [dict(src=s, neutral=known, adduct=BR, mz=mz, family="chlorinated_paraffin", label="paraffin C30Cl4",
+                 verdict="confirmed", why="corroborated by a confirmed 37Cl envelope (2 satellites)",
+                 summary="corroborated by a confirmed 37Cl envelope (2 satellites)", n_channels=1, n_satellites=2,
+                 ion_score=0.95, tier="Assigned", admitted_by=None, occurrence=None) for s in ("f", "g")]
+    cnt = AB.lock_known_species(m, pool, tol_ppm=6.0, log=quiet)
+    assert cnt["locked"] == 1 and m.at[0, "neutral_formula"] == known and m.at[0, "tier"] == "Assigned"
+    assert m.at[0, "alternatives"].startswith(f"{vote} {BR} x5 Assigned")
+    t = _req_table([(known, BR, True, 0.0), (vote, BR, False, 0.9)])
+    g = IC.tof_m2_gates(m, t, None, resolution=TOF, log=quiet)
+    assert (g["req_demoted"], g["known_demoted"]) == (1, 1)
+    assert m.at[0, "tier"] == "Candidate" and m.at[0, "neutral_formula"] == known          # demoted, not undone
+    assert m.at[0, "alternatives"].startswith(f"{vote} {BR} x5 Assigned")
+    assert m.at[0, "tier_reason"].endswith(
+        f"this overrules the known-species decision (demoted, not undone: the vote's reading it was kept over, "
+        f"{vote} {BR} x5 Assigned 0.90, heads `alternatives`)")
+    # a lock that only confirmed the vote's own reading has nothing displaced to name
+    m = _merged([(mz, known, BR, "Assigned", IC.KNOWN_LOCK_MARK + ": paraffin C30Cl4 -- confirmed in 2 files")])
+    m["alternatives"] = f"{vote} {BR} x2 Candidate 0.80"
+    IC.tof_m2_gates(m, _req_table([(known, BR, True, 0.0)]), None, resolution=TOF, log=quiet)
+    assert m.at[0, "tier_reason"].endswith("this overrules the known-species decision")
+
+
+# --------------------------------------------------------------------------- assign.run wiring
+SID = "offline-tof-m2"
+
+
+def _tof_table(n_filler: int = 60, seed: int = 3) -> pd.DataFrame:
+    """A bromide-CIMS-like TOF peak list: every line of the [M+Br]- cluster of C10H16O6 and dim fillers; the
+    table's signal-to-noise has nothing to do with height (as on a real TOF)."""
+    from mascope_tools.composition.heuristic_filter import anchor_on_monoisotopic, predict_isotopes
+    rng = np.random.default_rng(seed)
+    mzs, ints, _labels = anchor_on_monoisotopic(*predict_isotopes("C10H16O6Br", -1))
+    rel = ints / ints[0]
+    rows = [{"peak_id": f"L{i}", "mz": float(m), "height": 500.0 * float(r)}
+            for i, (m, r) in enumerate(zip(mzs, rel)) if r >= 0.01]
+    rows += [{"peak_id": f"f{j}", "mz": 60.0 + j * 5.37, "height": float(rng.uniform(0.6, 6.0))}
+             for j in range(n_filler)]
+    t = pd.DataFrame(rows)
+    t["signal_to_noise"] = rng.uniform(0.5, 2.0, len(t))
+    return t
+
+
+def test_assign_run_records_the_tests_counts_on_a_tof_and_skips_an_orbitrap():
+    from peaky.io import io_mascope as IO
+    IO.unregister_offline_sample(SID)
+    try:
+        table = _tof_table()
+        res = A.run(SID, context="ambient-air", cfg=PassConfig(noise_edge_batch_cps=0.74), peaks=table,
+                    use_cache=False, scoring="tof", adducts=["[M-H]-", "[M+Br]-", "[M+NO3]-"],
+                    reagent_n_relabel=False, resolving_power=Resolution.from_r(10_000), log=quiet)
+        st = res["stats"]["tof_m2"]
+        assert st["skipped"] is None and st["tested"] >= 1
+        led = res["ledger"]
+        bright = led[(led["role"] == "M0") & (led["neutral_formula"] == "C10H16O6") & (led["adduct"] == BR)]
+        assert len(bright) and (bright["tier"] == "Assigned").all()       # its own 81Br line is in the table
+        IO.unregister_offline_sample(SID)
+        table["signal_to_noise"] = table["height"] / 20.0
+        res = A.run(SID, context="ambient-air", cfg=PassConfig(noise_edge_batch_cps=0.74), peaks=table,
+                    use_cache=False, scoring="orbi", adducts=["[M-H]-", "[M+Br]-", "[M+NO3]-"],
+                    reagent_n_relabel=False, resolving_power=Resolution.from_r(10_000), log=quiet)
+        assert res["stats"]["tof_m2"]["skipped"] == "not a TOF"
+    finally:
+        IO.unregister_offline_sample(SID)
+
+
+def test_assign_run_hands_the_files_scoring_snapshot_to_the_stage():
+    """The stage's window is the file's own: a sample judged at a fitted sigma
+    of 8 ppm is searched within 3 sigma = 24 ppm (the scorer's 15 ppm alone
+    without the snapshot), so a bright Br ion whose 81Br line sits 20 ppm off
+    is seen there, not read as a split of its line."""
+    from peaky.io import io_mascope as IO
+    table = _tof_table()
+    mono = float(table.loc[table["peak_id"] == "L0", "mz"].iloc[0])
+    m2 = table["peak_id"].str.startswith("L") & (table["mz"] - mono).between(1.5, 2.5)
+    assert m2.any()
+    table.loc[m2, "mz"] = table.loc[m2, "mz"] * (1 + 20e-6)
+    snap = {"sigma_ppm": 8.0, "mu_ppm": 0.0, "mz_tolerance_ppm": 15.0, "instrument_type": "tof"}
+    lines = []
+    IO.unregister_offline_sample(SID)
+    try:
+        res = A.run(SID, context="ambient-air", cfg=PassConfig(noise_edge_batch_cps=0.74), peaks=table,
+                    use_cache=False, scoring=snap, adducts=["[M-H]-", "[M+Br]-", "[M+NO3]-"],
+                    reagent_n_relabel=False, resolving_power=Resolution.from_r(10_000),
+                    log=lambda *a, **k: lines.append(" ".join(str(x) for x in a)))
+    finally:
+        IO.unregister_offline_sample(SID)
+    assert res["pattern_scoring"]["sigma_ppm"] == 8.0 and res["stats"]["tof_m2"]["skipped"] is None
+    tof = [s for s in lines if s.startswith("[tiers] TOF ion M+2 line:")]
+    assert len(tof) == 1 and tof[0].endswith("(window 24 ppm)"), tof
+    led = res["ledger"]
+    bright = led[(led["role"] == "M0") & (led["neutral_formula"] == "C10H16O6") & (led["adduct"] == BR)]
+    v = T.tof_m2_verdicts(led, cfg=PassConfig(instrument_type="tof", noise_edge_batch_cps=0.74),
+                          resolving_power=Resolution.from_r(10_000), scoring=res["pattern_scoring"])
+    assert len(bright) == 1 and v.set_index("peak_id").at[bright["peak_id"].iloc[0], "status"] == SAT.HL_SEEN
+
+
+# --------------------------------------------------------------------------- assign_batch.run wiring
+def test_a_tof_class_batch_hands_the_batch_edge_to_req_and_the_series_to_the_gates(tmp_path, monkeypatch):
+    """End to end through assign_batch.run on a TOF-class batch (the per-file
+    assign and the IO layer stubbed): a Br reading whose own 81Br line no
+    spectrum shows is demoted by REQ, and a reading committed on the 81Br
+    partner of a Br1 ion's line is demoted by the doublet -- which needs the
+    stamped series. REQ's floor is 3x the BATCH's detection edge: a batch run
+    at another edge says another floor."""
+    import json
+    import os
+
+    from peaky.assignment import assign as A_
+    from peaky.batch import assign_batch as AB
+    from peaky.io import io_mascope as IO
+
+    rx, ry, q = ("C6H10O3", BR), ("C4H6O4", BR), ("C2H2NO8S", H)     # q: a non-halogen reading of ry's 81Br line
+    mx, my = C.ion_mz(*rx), C.ion_mz(*ry)
+    mq = my + ISO.D_81BR
+    t0 = pd.Timestamp("2021-02-18 00:00", tz="UTC")
+    rows = []
+    for i in range(14):
+        w = _wave(i)
+        lines = [(mx, 1e3 * w), (my, 1e3 * w), (mq, 0.97e3 * w)] + [(60.0 + 3.7 * j, 5.0) for j in range(80)]
+        rows += [dict(sample_item_id=f"s{i:02d}", sample_item_name=f"n{i:02d}", datetime_utc=t0 + pd.Timedelta(minutes=10 * i),
+                      peak_id=f"s{i:02d}_{k}", mz=float(m), height=float(h)) for k, (m, h) in enumerate(lines)]
+    pk = pd.DataFrame(rows)
+
+    def fake_assign(sid, context="ambient-air", **kw):
+        led = L.new_ledger(pd.DataFrame([("p1", mx, 1e3), ("p2", my, 1e3), ("p3", mq, 970.0)],
+                                        columns=["peak_id", "mz", "height"]))
+        for pid, (n, a) in (("p1", rx), ("p2", ry), ("p3", q)):
+            L.commit_assignment(led, pid, neutral_formula=n, adduct=a, ion_formula=_ion(n, a), ion_score=0.9,
+                                compound_score=0.9, ppm_error=0.1, pass_no=1, method="cheminfo+grid",
+                                confidence="High", commentary="stub")
+        T.apply_tiers(led)
+        led.loc[led["role"] == L.ROLE_M0, "tier"] = T.TIER_ASSIGNED
+        return {"ledger": led, "stats": {"noise_edge_cps": 5.0, "height_gate_cps": 5.0},
+                "plausibility_audit": [], "summaries": {}, "problems": []}
+
+    monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
+    monkeypatch.setattr(IO, "fetch_peaks", lambda client, sid, use_cache=True: pk[pk["sample_item_id"] == sid]
+                        [["peak_id", "mz", "height"]].reset_index(drop=True))
+    monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
+    monkeypatch.setattr(A_, "run", fake_assign)
+
+    def run(d, **kw):
+        AB.run(peaks=pk, ts_peaks=pk, reagent="Br", batch="test batch", out_dir=str(d), k_min=2, k_max=3,
+               min_gain=0.0, n_jobs=1, resolving_power=10_000, log=quiet, **kw)
+        summ = json.load(open(os.path.join(d, "batch_summary.json")))
+        iso = pd.read_csv(os.path.join(d, "tables", "iso_checks.csv"))
+        merged = pd.read_csv(os.path.join(d, "merged_ledger.csv"))
+        return summ, iso, merged
+
+    summ, iso, merged = run(tmp_path / "a")
+    g = summ["merge_gates"]["tof_m2"]
+    assert g["ran"] and g["req_demoted"] == 1 and g["doublet_demoted"] == 1, g
+    tier = {(n, a): t for n, a, t in zip(merged["neutral_formula"], merged["adduct"], merged["tier"])}
+    assert tier[rx] == "Candidate" and tier[q] == "Candidate" and tier[ry] == "Assigned", tier
+    edge = summ["noise_edge_batch_cps"]
+    req = iso[(iso["check"] == "REQ") & (iso["neutral_formula"] == rx[0])].iloc[0]
+    assert req["verdict"] == "absent" and f"under the {3 * edge:.3g}-cps floor" in req["note"]
+    # another batch edge, another floor: REQ reads the batch's edge, not its spectra's own
+    summ2, iso2, _m = run(tmp_path / "b", cfg=PassConfig(noise_edge_batch_cps=37.0))
+    assert summ2["noise_edge_batch_cps"] == 37.0 != edge
+    req2 = iso2[(iso2["check"] == "REQ") & (iso2["neutral_formula"] == rx[0])].iloc[0]
+    assert "under the 111-cps floor" in req2["note"], req2["note"]

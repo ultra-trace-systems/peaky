@@ -319,21 +319,21 @@ def test_req_floor_is_the_height_gate_of_the_batch():
     assert _get(_measure(build, [(Y, H)], x_edge="auto"), "REQ", Y)["verdict"] == "absent"
 
 
-def test_req_window_is_one_ppm_on_an_orbitrap_and_two_windows_on_a_tof():
+def test_req_window_is_one_ppm_on_an_orbitrap_and_the_m2_window_on_a_tof():
     near, off = _series(lambda i: _br(i, ppm=0.8)), _series(lambda i: _br(i, ppm=1.5))
     assert _get(_measure(near, [(Y, H)]), "REQ", Y)["verdict"] == "present"
     r = _get(_measure(off, [(Y, H)]), "REQ", Y)
     assert r["verdict"] == "absent" and r["window_ppm"] == 1.0
     # 4 sigma widens it
     assert _get(_measure(off, [(Y, H)], scale={"sigma_ppm": 0.4, "stamp_ppm": 6.0}), "REQ", Y)["verdict"] == "present"
-    # the TOF vetoes only when the line is absent at the stamp window AND at 20 ppm
-    for ppm, verdict in ((5.0, "present"), (15.0, "present"), (25.0, "absent")):
+    # a TOF reads the ion's own M+2 line by the tier pass's primitive (tests/test_tof_m2.py): within the
+    # scorer's 15 ppm (or 3 sigma) it is seen; just outside, at a TOF's resolving power, it is an
+    # unresolved split of the line -- untestable, never absent
+    for ppm, verdict in ((5.0, "present"), (12.0, "present"), (25.0, "untestable")):
         r = _get(_measure(_series(lambda i: _br(i, ppm=ppm)), [(Y, H)], resolution=TOF, scale=SCALE_T), "REQ", Y)
-        assert r["verdict"] == verdict, ppm
-    r = _get(_measure(_series(lambda i: _br(i, ppm=15.0)), [(Y, H)], resolution=TOF, scale=SCALE_T), "REQ", Y)
-    assert r["n_present"] == 0 and r["n_present_wide"] == N and r["window_ppm"] == 9.074
+        assert r["verdict"] == verdict and r["window_ppm"] == 15.0, ppm
     r = _get(_measure(_series(lambda i: _br(i, ppm=25.0)), [(Y, H)], resolution=TOF, scale=SCALE_T), "REQ", Y)
-    assert "within 9.07 and 20 ppm" in r["note"]
+    assert r["n_present"] == 0 and r["occupied"] == 1.0 and f"{N} blended" in r["note"]
 
 
 def test_req_places_the_lines_on_the_stamped_isotopologue():

@@ -194,6 +194,14 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
 - **`claim_signal`** — the committed-peak signal by claim: per-file M0 height
   credited with its reading's merged claim over all per-file M0 height, the
   readings no merged row carries apart as `unmatched`.
+- **`mass_only`** / **`mass_only_pairs`** / **`mass_only_neutrals`** — the TOF
+  mass-only flag read off the merged ledger (`assignment/mass_only.py`;
+  [OUTPUTS.md](OUTPUTS.md)): the Assigned / flagged counts either side of the
+  run's `tof_flag.threshold_mz`, the flagged readings and the neutrals every
+  Assigned reading of which is flagged. The Findings page prints them in one
+  sentence and marks those neutrals with † in its top-species and oligomer
+  lists; the appendix marks the flagged readings (`Assigned†`). Absent off a TOF
+  and on a run made before the flag: no sentence, no marker.
 
 ---
 

@@ -843,6 +843,7 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
     Mutates `merged` in place; returns counts (pooled, locked, confirmed_kept,
     conflict, lead_only, no_cluster) for `batch_summary["merge_gates"]`."""
     from peaky.assignment.cleanup import _note
+    from peaky.assignment.mass_only import KNOWN_DECIDED
     counts = {k: 0 for k in ("pooled", "locked", "confirmed_kept", "conflict",
                              "lead_only", "mass_only_outvoted", "no_cluster")}
     if not pool or merged is None or not len(merged) or "mz" not in merged.columns:
@@ -889,11 +890,18 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                         for r in conf)
         weak_note = ("; capped Candidate (one ion channel and one satellite line in every "
                      "confirming file: two independent lines are needed for Assigned)")
+        # every confirming file holds the reading at Candidate (its own tier rules:
+        # the lock score floor, the counting-detector floor) -- say so on the row
+        cand_note = ("; Candidate: no confirming file holds it at Assigned (see the "
+                     "per-file tier reasons)"
+                     if conf and all(str(r.get("tier")) != TIER_ASSIGNED for r in conf) else "")
         old_nf, old_ad = _s(merged.at[i, "neutral_formula"]), _s(merged.at[i, "adduct"])
         old_n = (int(merged.at[i, "n_files_winner"])
                  if "n_files_winner" in merged.columns and pd.notna(merged.at[i, "n_files_winner"])
                  else 0)
-        head = (f"known species decided once for the batch: {label} ({nf} {ad}) -- "
+        # the note's opening words are what the TOF mass-only flag reads as
+        # "the batch decided this known species" (an exempt row)
+        head = (f"{KNOWN_DECIDED}: {label} ({nf} {ad}) -- "
                 f"{_pool_summary(conf, dfr, ref)}")
         if conf and not ref:
             if same:
@@ -901,7 +909,9 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                           and _s(merged.at[i, "tier"]) == TIER_ASSIGNED)
                 if capped:
                     merged.at[i, "tier"] = TIER_CANDIDATE
-                _note(merged, i, head + (weak_note if capped else ""))
+                _note(merged, i, head + (weak_note if capped else "")
+                      + (cand_note if not capped and "tier" in merged.columns
+                         and _s(merged.at[i, "tier"]) == TIER_CANDIDATE else ""))
                 counts["confirmed_kept"] += 1
                 continue
             if mass_only:
@@ -939,7 +949,9 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                     merged.at[i, col] = n_in
             merged.at[i, "alternatives"] = "; ".join([old] + keep)
             _note(merged, i, f"{head}; kept over the {old_n}-file {old_nf} {old_ad} reading "
-                             f"(vote {n_in} of {n_total} files)" + ("" if two_lines else weak_note))
+                             f"(vote {n_in} of {n_total} files)"
+                             + ((cand_note if _s(merged.at[i, "tier"]) == TIER_CANDIDATE else "")
+                                if two_lines else weak_note))
             counts["locked"] += 1
         elif conf and ref:
             n_r = len({r["src"] for r in ref})
@@ -1816,8 +1828,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # passing rung is the water cluster and leaves the merged ledger (listed in
         # tables/reagent_water.csv); the rung joins the stamp as a reagent row below.
         if rwater is None:
-            rwater = _RW.measure(ts_peaks, prof, tol_ppm=scale.stamp_ppm, log=log)
-        merged, rw_stripped = _RW.strip_rung_rows(merged, rwater["rungs"], tol_ppm=scale.stamp_ppm, log=log)
+            # the rung test follows the width model: decoys at fixed Da offsets on an
+            # Orbitrap, scaled to the line width (gaps allowed, M+1 carbon test) on a TOF
+            rwater = _RW.measure(ts_peaks, prof, tol_ppm=scale.stamp_ppm, log=log, resolution=rp)
+        # after the TOF test a row leaves only when a file carrying its winning reading
+        # (jitter) lies in a segment where its rung passed (segment_of; None otherwise)
+        merged, rw_stripped = _RW.strip_rung_rows(merged, rwater["rungs"], tol_ppm=scale.stamp_ppm, log=log,
+                                                  jitter=jitter, segment_of=rwater.get("segment_of"))
         # The merged row's tier_reason (from align: the vote's exemption, else NA)
         # also takes the batch-level gates' notes below (cleanup._note appends to
         # it): a re-read can leave the merged formula different from EVERY per-file
@@ -1827,7 +1844,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         merge_gates: dict = {}
         merge_gates["reagent_water"] = _RW.summary(rwater["rungs"], rw_stripped, n_cores=rwater["n_cores"],
                                                    tol_ppm=rwater["tol_ppm"],
-                                                   segment_sizes=rwater["segment_sizes"])
+                                                   segment_sizes=rwater["segment_sizes"],
+                                                   rung_test=rwater.get("rung_test"))
         # Known species, decided ONCE for the batch by the evidence every file
         # pooled (the pass-0 commits and the leads it left on refused claims):
         # what the vote's curated exemption used to do, by evidence instead of
@@ -2067,8 +2085,16 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # judged against the batch's element budget: `context`); written for every
     # run (empty without a time series); a refuted pair is rejected (5b)
     iso_table = _IC.measure(ts_annot, level_frames, prof, resolution=rp, mass_scale=scale,
-                            x_edge=x_edge, context=context, log=log)
+                            x_edge=x_edge, context=context, edge_cps=getattr(cfg, "noise_edge_batch_cps", None),
+                            log=log)
     iso_table.to_csv(os.path.join(TAB, "iso_checks.csv"), index=False)
+    # the TOF ion-M+2 gates (iso_checks.tof_m2_gates; TOF-class batches only): a
+    # merged winner whose own M+2 line REQ refutes over the batch -- a species the
+    # known-species lock decided included -- and a merged line that is the 81Br
+    # partner of the line one spacing below it are Candidate. No re-vote: the
+    # winner and its reading stay, the row says why.
+    merge_gates["tof_m2"] = _IC.tof_m2_gates(merged, iso_table, ts_annot, resolution=rp, mass_scale=scale,
+                                             log=log)
     # THE EVIDENCE LEVEL (the scale of peaky 0.10.0): the batch's per-file
     # ledgers pooled as ONE source (cover + residual files; every file-count
     # minimum 3), re-read from the per_file/<sid>_ledger.csv files just written
@@ -2154,6 +2180,20 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         log(f"[assign_batch] ion-only rows: {_io_merged} merged ({ion_only_summary['per_file_rows']} "
             f"per-file rows in {ion_only_summary['n_files_with']} of {len(_io_files)} files) on "
             f"{ion_only_summary['channels']}")
+    # The TOF mass-only flag (assignment/mass_only.py): on a TOF-class run, every
+    # Assigned reading that no attached isotope line speaking for the neutral supports
+    # in any of its Assigned files is FLAGGED -- `mass_only` + a short reason on
+    # the merged row, never a tier or a level: a decoy-measured fact about what
+    # the reading rests on (the formula space saturates with m/z on a TOF), kept
+    # visible instead of hiding what makes it at high masses. Read off the same
+    # per-file ledgers the levels pooled; the class is the batch width model's,
+    # else the files' scoring class. The columns exist on every run (empty off a TOF).
+    from peaky.assignment import mass_only as _MO
+    tof_flag = _MO.flag_merged(
+        merged, level_ledgers,
+        klass=_MO.instrument_class(resolution=rp, instrument_types=[(s_ or {}).get("instrument_type")
+                                                                    for s_ in scorings.values()]),
+        threshold=_MO.flag_mz(_cfg), halogen=level_summary["reagent_halogen"], resolution=rp, log=log)
     merged.to_csv(os.path.join(out_dir, "merged_ledger.csv"), index=False)
     jitter.to_csv(os.path.join(TAB, "jitter.csv"), index=False)
     # the reagent-water rungs and the merged readings they displaced (always written:
@@ -2316,6 +2356,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # carrying an `ion_only_of` link, per-file rows behind them, files holding
         # any, and their merged levels
         "ion_only": ion_only_summary,
+        # the TOF mass-only flag (assignment/mass_only.py): the class it keyed on,
+        # whether it ran, the m/z threshold of its two reasons, and the Assigned /
+        # flagged counts below and at or above it (tier and level unchanged)
+        "tof_flag": tof_flag,
         "reflists_active": RL.active_versions(reflists_active),   # [(id, data_version)]
         # how the lists were activated: {tags, matched: {tag: [[field, keyword]]},
         # active: [[id, version, how]]} (the evidence level's context source)
