@@ -48,7 +48,7 @@ whitelist (pass 0) — a gatekeeper that can only find what someone listed.
    (`score_candidates`); the winner must be server-anchored on **≥2 member
    channels** with on-calibration ppm; S/Cl/Br winners want their diagnostic
    heavy-isotope envelope (³⁴S/³⁷Cl/⁸¹Br — ¹³C never counts): a line under an
-   ion the certificate commits, a member's (C11+c). A line whose only
+   ion the certificate commits, a member's. A line whose only
    diagnostic isotope is the bromide reagent's ⁸¹Br (`81Br`, `13C+81Br`,
    `81Br2`; ¹³C, ¹⁸O, ¹⁵N or ³³S beside it adds none), under a committed
    bromide cluster of a winner without Br, counts only on a certificate of

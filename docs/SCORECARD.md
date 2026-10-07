@@ -303,11 +303,11 @@ pre-0.10.0 scale and 2 on 0.10.0 is a change of scale, not a regression.
    control is the engine on the file under the arm's own settings, not the
    run's per-file ledger. They differ most in M0 and Assigned rows on a TOF
    batch, and (on the pre-release level scale, which read the corroborating
-   source) in the identified class on a corroborated batch (R2, 0.9.0:
+   source) in the identified class on a corroborated batch (a uronium Orbitrap batch, 0.9.0:
    the control holds 11 identified pairs where the run's file holds 50, 43 of
-   them identified only through corroboration); card C39. On a TOF the
+   them identified only through corroboration). On a TOF the
    brightest file -- the decoy file -- can be the batch's worst-fitted one
-   (R3: 8.75 ppm on 29 anchors, where the batch's median fitted width is
+   (the bromide/nitrate TOF batch: 8.75 ppm on 29 anchors, where the batch's median fitted width is
    3.0), and its arms are scored at that; the card prints each file's
    inherited width, offset, window, floor and anchors. Per file,
    `decoy.scoring` says what the arms were scored at (`inherited` /

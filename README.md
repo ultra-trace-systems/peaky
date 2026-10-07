@@ -309,8 +309,8 @@ engine's own scores:
   often the engine Assigns a mass with no true formula behind it, counted per tier
   and evidence level. It is reported below and above m/z 350, because a fixed
   0.35 Da shift lands in the empty mass-defect gap below ~350 and reads near zero
-  there by construction; that range needs a shift of a few ppm, inside the
-  formula grid. The wrong-adduct arm shows how readily the engine reads ions
+  there by construction; below it a ppm-shift arm (every m/z a few ppm off,
+  the control's calibration kept) tests the formula grid. The wrong-adduct arm shows how readily the engine reads ions
   through chemistry the run did not have (some such readings are the same ion
   written another way).
 - **Isotope checks.** The scorecard tests each Assigned reading against its own
@@ -321,6 +321,24 @@ engine's own scores:
 `scripts/scorecard.py` runs the decoy arms and the isotope checks on any run
 directory ([docs/SCORECARD.md](docs/SCORECARD.md)); the truth sets belong to the
 validation data and are not part of this repository.
+
+**This release, measured.** Three whole batches run with the default
+configuration (`peaky batch`, declared side channels, no patches): a
+labelled-nitrate Orbitrap batch (12 files), a uronium Orbitrap batch (10 files)
+and a bromide/nitrate TOF batch (28 files). The decoy arms ran on each batch's
+brightest file; a rate is the shifted copies' Assigned readings over the
+control's Assigned readings, counted once per shifted copy.
+
+| batch | truth set: TRUE Assigned | FALSE Assigned | merged Assigned | shift decoy arm |
+|---|---|---|---|---|
+| labelled nitrate, Orbitrap | 38 of 41 | 0 of 12 | 506 | ±9 ppm: 51 of 662 (7.7 %); below m/z 350 48 of 660 (7.3 %) |
+| uronium, Orbitrap | 35 of 42 | 0 of 8 | 644 | ±9 ppm: 9 of 796 (1.1 %) |
+| bromide/nitrate TOF | 34 of 34 | 0 of 10 | 266 | +0.35 Da below m/z 350: 3 of 32 (9.4 %); at or above: 39 against the control's 23 |
+
+On the TOF batch the shift arm Assigns more readings at or above m/z 350 than
+the control does, so an Assigned TOF reading there rests on its mass alone; such
+readings carry the `mass_only` flag rather than a demotion (196 of the batch's
+266 Assigned readings, 50 of the 67 at or above m/z 350).
 
 ## Development
 

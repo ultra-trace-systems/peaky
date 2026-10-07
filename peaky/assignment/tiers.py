@@ -292,6 +292,27 @@ _ADDUCT_TOKENS = re.compile(r"([+-])\^?([A-Za-z0-9]+)")
 _ADDUCT_TOKENS_LABELLED = re.compile(r"([+-])(\^?[A-Za-z0-9]+)")
 
 
+def _txt(v) -> str:
+    """``str(v)`` with every missing flavour -> ``""``.
+
+    ``str(v or "")`` looks equivalent but raises on ``pd.NA``: a nullable column
+    (``string``/``boolean``/``Int64``) yields ``pd.NA``, whose ``__bool__`` is
+    "TypeError: boolean value of NA is ambiguous", so ``or`` cannot test it. A
+    ledger reaches here with nullable dtypes whenever rows were appended without
+    the column (the labelled-reagent rescue fills ``admitted_by`` only for peaks
+    that went through admission), which killed `peaky batch` on the NO3_15N
+    profile while the single-sample path -- float NaN, which is falsy -- survived.
+    """
+    if v is None:
+        return ""
+    try:
+        if bool(pd.isna(v)):
+            return ""
+    except (TypeError, ValueError):        # array-like / non-scalar: not missing
+        pass
+    return str(v)
+
+
 def _ion_counts(neutral, adduct, *, labelled: bool = False) -> dict | None:
     """Element counts of the ION for a (neutral, adduct) reading, or None when
     the adduct string is not parseable. '[M+HBr+Br]-' adds H, 2x Br, etc.
@@ -299,12 +320,13 @@ def _ion_counts(neutral, adduct, *, labelled: bool = False) -> dict | None:
     as parse_formula reads the signed ion string -- what an ion's MASS needs
     (the isotope lines' mono m/z, a rung's ion formula); by default it folds
     into its element (the tier gates compare compositions, not masses)."""
+    neutral, adduct = _txt(neutral), _txt(adduct)
     if not neutral or not adduct:
         return None
-    s = str(adduct).strip()
+    s = adduct.strip()
     if not s.startswith("[M"):
         return None
-    cnt = dict(C.parse_formula(str(neutral)))
+    cnt = dict(C.parse_formula(neutral))
     # flatten parenthesised adduct groups, e.g. '[M+(CH4N2O)H]+' -> '+CH4N2OH',
     # so the urea/uronium reagent cluster is counted (element counts are additive;
     # parse_formula merges the repeated H). Without this the parens swallow the
@@ -352,19 +374,19 @@ def _reagent_n_isobar(row, alts_all: list[dict]):
     vote's label stage -- which trusts an Assigned label as a corroborated one
     -- is only as honest as this flag. None in negative mode (no N-donor adduct
     fires) and on unparseable rows: the rule is then inert. Truthy when set."""
-    w_add = str(row.get("adduct") or "")
+    w_add = _txt(row.get("adduct"))
     if not w_add.endswith("]+"):
         return None
     ion0 = _ion_counts(row.get("neutral_formula"), w_add)
     if ion0 is None:
         return None
-    w_n = C.parse_formula(str(row.get("neutral_formula") or "")).get("N", 0)
+    w_n = C.parse_formula(_txt(row.get("neutral_formula"))).get("N", 0)
     donor = w_add in N_DONOR_ADDUCTS
     for a in alts_all:
-        a_add = str(a.get("adduct") or "")
+        a_add = _txt(a.get("adduct"))
         if _ion_counts(a.get("formula"), a_add) != ion0:
             continue
-        a_n = C.parse_formula(str(a.get("formula") or "")).get("N", 0)
+        a_n = C.parse_formula(_txt(a.get("formula"))).get("N", 0)
         if donor and a_n > w_n:
             return ("donor", str(a.get("formula")), a_add)
         if not donor and a_add in N_DONOR_ADDUCTS and a_n < w_n:
@@ -393,11 +415,11 @@ def _margin_density_tie(row, alts: list[dict], n_aliased: int,
     else:
         # old ledger: the mechanical commentary holds the true eff margin --
         # but only trust it when no alias was filtered (it may name the alias)
-        m = _TRAILS_RE.search(str(row.get("commentary") or ""))
+        m = _TRAILS_RE.search(_txt(row.get("commentary")))
         wr = _winner_raw(row)
         if m and n_aliased == 0:
             margin = float(m.group(1))
-            tied = "(TIE)" in str(row.get("commentary") or "") or margin < TIE_MARGIN
+            tied = "(TIE)" in _txt(row.get("commentary")) or margin < TIE_MARGIN
             n_close = 1 if margin < CLOSE_MARGIN else 0
             if wr is not None and len(alts) > 1:
                 n_close = max(n_close, sum(
@@ -450,7 +472,7 @@ def _calibrate(m0: pd.DataFrame, kids_of: pd.Series, *,
     ppms = []
     mzs = []
     for _, r in m0.iterrows():
-        counts = C.parse_formula(str(r.get("neutral_formula") or ""))
+        counts = C.parse_formula(_txt(r.get("neutral_formula")))
         if any(counts.get(e, 0) for e in ("F", "Cl", "Br", "Si", "S")):
             continue
         if counts.get("N", 0) > 1:
@@ -587,7 +609,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
 
     rows = []
     for _, r in m0.iterrows():
-        formula = str(r.get("neutral_formula") or "")
+        formula = _txt(r.get("neutral_formula"))
         counts = C.parse_formula(formula)
         base = base_confidence(r.get("confidence"))
         alts_all = _alts(r.get("alternatives"))
@@ -600,7 +622,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
             stored = _truthy(r.get("tied"))
             if stored is not None:
                 tied = stored
-            elif "(TIE)" in str(r.get("commentary") or ""):
+            elif "(TIE)" in _txt(r.get("commentary")):
                 tied = True
         iso_ev = (kids_of.get(r["peak_id"], 0) > 0) or bool(_alts(r.get("isotopologues")))
         cross_channel = int(chan_count.get(formula, 0)) >= 2
@@ -636,7 +658,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
         _adm = r.get("admitted_by")
         persist_only = isinstance(_adm, str) and _adm == "occurrence"
 
-        method = str(r.get("method") or "")
+        method = _txt(r.get("method"))
         # the picked peak's separability (assignment/resolvability.py) and the
         # diagnostic-satellite verdict on the neutral's Br / Cl / S (assignment/
         # satellites.py) -- read once here, worded in the reasons below. Si keeps
@@ -1161,7 +1183,7 @@ def flag_below_assignability(ledger: pd.DataFrame) -> int:
         o = C.parse_formula(nf).get("O", 0) if nf and nf != "nan" else 0
         if o >= 11 and _saturated(ledger.loc[i]):
             ledger.at[i, "below_assignability"] = True
-            ledger.at[i, "tier_reason"] = (str(ledger.at[i, "tier_reason"] or "")
+            ledger.at[i, "tier_reason"] = (_txt(ledger.at[i, "tier_reason"])
                 + " | below-assignability (O>=11, mass-saturated)").strip(" |")
             n += 1
     return n

@@ -182,12 +182,12 @@ All in `peaky/chem/isotopes.py`.
   (a Br2 ion on 79Br81Br); peaky's own labels (`_label_for_shift`, pass 4's
   `(pair)`, the reclaim tails) count from the PARENT line (`2x81Br`, `81Br(pair)`,
   `81Br+13C`, `M+5`). No column records the producer, so the per-file isotope facts
-  (`evidence._measure`, which the merge vote's class reads) read a child both ways against the committed line (C11+c, `resolve_child`
+  (`evidence._measure`, which the merge vote's class reads) read a child both ways against the committed line (`resolve_child`
   and `judge_source` below). The evidence scale probes isotope lines with its
   own line model (docs/EVIDENCE_LEVELS.md §5.3).
 - **`D_81BR` was corrected** to 1.9979521 (AME2020) from a stale 0.16 mDa-low
   value. The residual pass's doublet constant is the exact 1.9979535 of
-  chemistry's masses since C11+c (it was the same stale value); the two agree to
+  chemistry's masses since 0.10.0 (it was the same stale value); the two agree to
   1.4 µDa, far inside every window that reads them.
 
 ---
@@ -202,7 +202,7 @@ All in `peaky/chem/isotopes.py`.
 | `_find_partner` | nearest peak to a target m/z within ppm (the satellite probe) |
 | `constrain_ranges` | apply prescan evidence to the grid box (cap C, zero unsupported heteroatoms) |
 | `PrescanResult` | the evidence record (+ `as_dict` for the run manifest) |
-| `split_label` / `parse_label_part` | (C11+c) a child label's `+` parts and each part's heavy atoms (`kx`, counts, `(pair)`, `81Br/37Cl(pair)`, `M0`, `M+n`) |
+| `split_label` / `parse_label_part` | a child label's `+` parts and each part's heavy atoms (`kx`, counts, `(pair)`, `81Br/37Cl(pair)`, `M0`, `M+n`) |
 | `heavy_probability` | P(a heavy configuration) vs the all-light line: the multinomial over the ion's atoms |
 | `committed_configuration` | the parent's committed isotopologue, read off its m/z (5 / 20 ppm) |
 | `resolve_child` | a label read both ways against the committed line: shift, readings, joint expectation, the elements it adds |
