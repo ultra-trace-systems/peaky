@@ -325,7 +325,7 @@ def _stage_plausibility(st):
     demote: a commit whose neutral lies outside the run context's element budget
     (contexts.element_budget) and that no curated list names -- the pass-0
     registry for this polarity/context or an active reference list -- is
-    Candidate + below_assignability (plausibility.demote_off_budget)."""
+    Candidate + tentative_lead (plausibility.demote_off_budget)."""
     label = getattr(st.profile, "label", None)
     curated = passes.known_formulas(getattr(st.profile, "polarity", "negative"), label)
     curated = curated | frozenset(getattr(st.cfg, "reflist_formulas", None) or ())

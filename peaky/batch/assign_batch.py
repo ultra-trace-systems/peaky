@@ -59,6 +59,8 @@ import pandas as pd
 
 from peaky import paths as PT
 from peaky.chem import profiles as P
+from peaky.batch import label_twins as _LT
+from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sampling as SS
 
 __version__ = "0.10.0"  # the vote reads the per-file EVIDENCE: a cluster's ions are
@@ -1410,6 +1412,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     per_file, offsets, per_stats = {}, {}, []
     scorings: dict = {}        # per-sample pattern_scoring, for the run manifest
     level_frames: dict = {}    # sid -> its ledger's M0/iso rows + predicate columns
+    alias_ties: dict = {}      # sid -> its tied [M+NO3]- rows and whether the tie is alias-only (rule K)
                                # (evidence.trim): the pooled batch level's input
     identified_aux: list = []  # per-file identified-ion rows (reagent/iso/artifact
                                # + analyte ion_formula) for the parquet stamp
@@ -1441,6 +1444,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         on the trace ledger re-read as Assigned by three residual files)."""
         led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)
         level_frames[sid] = EV.trim(led)
+        alias_ties[sid] = _LT.alias_only_ties(led)
         plaus_audit.extend(plaus)
         protected_neutrals.update(_protected_neutrals(led))
         known_pool.extend(known_evidence(led, src=sid))
@@ -1561,9 +1565,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     from peaky.chem import reagents as _RG
     from peaky.assignment import plausibility as PL
     from peaky.batch import timeseries as _TS
+    from peaky.batch import reagent_water as _RW
     _rgk = _RG.reagent_for_adducts(list(prof.adducts or []))
 
     scale = None   # the batch's traces.MassScale, measured at the first merge
+    rwater = None  # the reagent-water ladder (batch.reagent_water), measured at the first merge
 
     def _merge() -> dict:
         """align() over EVERY per-file ledger so far, then the merged-level
@@ -1582,7 +1588,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         time series), so that path is the flat-window run exactly; on an Orbitrap
         (0.2-0.3 ppm scatter) both sit on the tolerance floor and nothing moves
         either; a TOF (3-4 ppm) merges at up to 2x the tolerance."""
-        nonlocal scale
+        nonlocal scale, rwater
         if scale is None:
             seeds = [pd.to_numeric(df["mz"], errors="coerce").to_numpy(dtype=float)
                      * (1.0 - float(offsets.get(sid, 0.0) or 0.0) / 1e6)
@@ -1599,6 +1605,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # per-file reagent lock/reclaim (older per-file ledgers predate that fix).
         if _rgk:
             merged, _rgstrip = _RG.strip_reagent_cluster_rows(merged, _rgk, log=log)
+        # The reagent-water ladder (C15, batch/reagent_water.py): the rungs
+        # core.(H2O)n of the profile's water cores that this batch's own time series
+        # shows -- core and lower rungs present in half an acquisition segment's
+        # spectra, the rung 3x above its decoy offsets. A merged analyte row on a
+        # passing rung is the water cluster and leaves the merged ledger (listed in
+        # tables/reagent_water.csv); the rung joins the stamp as a reagent row below.
+        if rwater is None:
+            rwater = _RW.measure(ts_peaks, prof, tol_ppm=scale.stamp_ppm, log=log)
+        merged, rw_stripped = _RW.strip_rung_rows(merged, rwater["rungs"], tol_ppm=scale.stamp_ppm, log=log)
         # The merged row's tier_reason (from align: the vote's exemption, else NA)
         # also takes the batch-level gates' notes below (cleanup._note appends to
         # it): a re-read can leave the merged formula different from EVERY per-file
@@ -1606,6 +1621,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         if "tier_reason" not in merged.columns:
             merged["tier_reason"] = pd.NA
         merge_gates: dict = {}
+        merge_gates["reagent_water"] = _RW.summary(rwater["rungs"], rw_stripped, n_cores=rwater["n_cores"],
+                                                   tol_ppm=rwater["tol_ppm"],
+                                                   segment_sizes=rwater["segment_sizes"])
         # Known species, decided ONCE for the batch by the evidence every file
         # pooled (the pass-0 commits and the leads it left on refused claims):
         # what the vote's curated exemption used to do, by evidence instead of
@@ -1676,7 +1694,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                     f"{len(tracks or {})} rows stamp along a rolling track")
         out = {"merged": merged, "jitter": jitter, "merge_gates": merge_gates,
                "trace_info": trace_info, "stamp_tol": stamp_tol, "ts_annot": None,
-               "predicted_rows": {}, "predicted_tracks": None}
+               "predicted_rows": {}, "predicted_tracks": None,
+               "reagent_water": _RW.table(rwater["rungs"], rw_stripped)}
         # Stamp the batch time-series peaks with their assigned formula/channel.
         # Downstream time-series analysis then has neutral_formula / adduct / tier /
         # ion_mz per peak, not just m/z. No-op when ts_peaks is unavailable.
@@ -1688,6 +1707,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             # reagent tracks alone are ~77% of total signal).
             _aux = (pd.concat(identified_aux, ignore_index=True)
                     if identified_aux else None)
+            # ... plus the batch's passing reagent-water rungs (reagent rows)
+            _rw_rows = _RW.stamp_rows(rwater["rungs"])
+            if len(_rw_rows):
+                _aux = _rw_rows if _aux is None else pd.concat([_aux, _rw_rows], ignore_index=True)
             # ... plus the PREDICTED diagnostic isotope satellites (13C / 81Br /
             # 37Cl / 15N / 34S / 29Si / 30Si / 18O) of every merged M0 with a known
             # ion formula that no per-file ledger claimed -- the faint 15N / 18O
@@ -1827,7 +1850,19 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # merged rows carry none of the predicate columns, so they are never read for
     # this; a merged row whose reading no per-file ledger holds (a batch-level
     # re-read) stays NA, and the count says so.
-    levels = EV.level_pooled(level_frames, cross=cross)
+    # rule U (docs/EVIDENCE_LEVELS.md §4 row 9'): the profile's neutral pair,
+    # measured on the stamped batch time series over the pooled ledgers; the
+    # table is written for every run (empty without a pair or a time series)
+    _pair = tuple(getattr(prof, "neutral_pair", ()) or ())
+    pairs_table = _NP.measure(ts_annot, level_frames, _pair, log=log)
+    pairs_table.to_csv(os.path.join(TAB, "neutral_pairs.csv"), index=False)
+    # rule K (docs/EVIDENCE_LEVELS.md §3 label_untie / label_veto): on a 15N-labelled
+    # nitrate channel the 14N and 15N lines of one cluster arbitrate each other's
+    # reading on the same series; written for every run (empty out of scope)
+    twins_table = _LT.measure(ts_annot, level_frames, prof, alias_ties=alias_ties, log=log)
+    twins_table.to_csv(os.path.join(TAB, "label_twins.csv"), index=False)
+    levels = EV.level_pooled(level_frames, cross=cross, upair=_NP.neutrals(pairs_table),
+                             label=_LT.facts(twins_table))
     merged = EV.stamp_merged(merged, levels)
     levels.to_csv(os.path.join(TAB, "evidence_levels.csv"), index=False)
     ev_summary = {
@@ -1839,6 +1874,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "n_pairs": int(len(levels)),
         "n_unstamped": int(merged["evidence_level"].isna().sum()) if len(merged) else 0,
         "n_corroborate": int(len(cross)), "cross_source": cross_sources,
+        "neutral_pairs": _NP.summary(pairs_table, _pair),
+        "label_twins": _LT.summary(twins_table, prof),
     }
     log(f"[assign_batch] evidence levels over {len(level_frames)} pooled file(s): "
         f"{ev_summary['pooled']} ({ev_summary['n_pairs']} neutral/adduct pairs); "
@@ -1867,6 +1904,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             f"{ion_only_summary['channels']}")
     merged.to_csv(os.path.join(out_dir, "merged_ledger.csv"), index=False)
     jitter.to_csv(os.path.join(TAB, "jitter.csv"), index=False)
+    # the reagent-water rungs and the merged readings they displaced (always written:
+    # a stable artifact set; header only when the profile declares no water cores)
+    res_m["reagent_water"].to_csv(os.path.join(TAB, "reagent_water.csv"), index=False)
     # the FINAL per_file/_batch_ts.parquet (in parallel mode this overwrites the raw
     # worker-transfer copy)
     if ts_annot is not None:

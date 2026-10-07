@@ -67,6 +67,23 @@ class ReagentProfile:
     # [M-H]- rows and commits Candidate rows on this adduct only. Empty = off.
     # Copied onto PassConfig.ion_only_channels by `apply_ion_only_channels`.
     ion_only_channels: tuple = ()
+    # REAGENT-WATER CORES (C15, batch.reagent_water): the neutral compositions of
+    # the reagent-side core ions whose water clusters core.(H2O)n the batch looks
+    # for in its own time series. A rung becomes a reagent row only where the
+    # batch shows it -- the core and every lower rung present in half a segment's
+    # spectra, the rung itself 3x above its decoy offsets -- so declaring a core
+    # never claims a peak by itself. Halogen isotopologues are enumerated by the
+    # module. Empty = off (the positive-mode profiles: urea.H+.H2O is 5e-5 of
+    # urea.H+ on the uronium Orbitrap).
+    water_cores: tuple = ()
+    # NEUTRAL PAIR (rule U, docs/EVIDENCE_LEVELS.md §3 `upair`, §4 row 9'): a
+    # (bare, cluster) adduct pair of this chemistry whose two ions, seen together
+    # at exact mass and co-varying, establish the NEUTRAL the way the acid branch
+    # does on the anion channels -- the uronium pair ([M+H]+, [M+(CH4N2O)H]+).
+    # `batch/neutral_pairs.py` measures the fact from the batch time series. Empty
+    # = off (every other bundled profile: an unscoped fact would lift two-channel
+    # rows of any chemistry).
+    neutral_pair: tuple = ()
     aliases: tuple = field(default_factory=tuple)
 
 
@@ -80,6 +97,9 @@ BR = ReagentProfile(
     ranges="C0-40 H0-80 N0-3 O0-18 S0-2 Cl0-2 Br0-2",
     detect_adduct="[M+Br]-",
     context="ambient-air",
+    # Br- / Br2-. / Br3- and HNO3.Br- (a mixed-inlet core: its water ladder is a
+    # reagent-side series like NO3-'s; the core itself stays the HNO3 [M+Br]- reading)
+    water_cores=("Br", "Br2", "Br3", "HBrNO3"),
     aliases=("br", "bromide", "br-cims", "br-"),
 )
 
@@ -93,6 +113,7 @@ UR = ReagentProfile(
     ranges="C0-40 H0-90 N0-8 O0-15 S0-2",
     detect_adduct="[M+(CH4N2O)H]+",
     context="uronium",
+    neutral_pair=("[M+H]+", "[M+(CH4N2O)H]+"),
     aliases=("ur", "uronium", "urea", "urea-cims", "ur+"),
 )
 
@@ -119,6 +140,9 @@ NO3 = ReagentProfile(
     detect_adduct="[M+NO3]-",
     context="ambient-air",
     ion_only_channels=("[M]-.",),   # the electron-attachment line beside each acid's [M-H]-
+    # NO3-, HNO3.NO3-, (HNO3)2.NO3- and NO2- (the cores stay the HNO3 / HNO2 readings;
+    # only their water clusters are reagent-side)
+    water_cores=("NO3", "HN2O6", "H2N3O9", "NO2"),
     aliases=("no3", "nitrate", "no3-", "nitrate-cims"),
 )
 
@@ -142,6 +166,7 @@ NO3_15N = ReagentProfile(
     label_isotope="^N",   # covalent 15N products (organonitrates) rescued by labeled.py
     label_max=2,          # up to di-organonitrate
     ion_only_channels=("[M]-.",),   # as NO3: the M-. line beside each acid's [M-H]-
+    water_cores=("^NO3", "H^N2O6", "H2^N3O9"),   # the labelled cores (the monomer and dimer sit below a m/z 130 window)
     aliases=(
         "no3-15n",
         "15no3",
@@ -325,6 +350,10 @@ _CONFIG_FIELDS = (
     "label_max",
     # ion-only channels (`[M]-.` on the nitrate profiles): a list in the config
     "ion_only_channels",
+    # reagent-water cores (batch.reagent_water): a list of neutral compositions
+    "water_cores",
+    # the (bare, cluster) neutral pair of rule U: a two-item list in the config
+    "neutral_pair",
 )
 
 
@@ -345,6 +374,12 @@ def from_dict(entry: dict) -> "ReagentProfile":
         kw["aliases"] = tuple(kw["aliases"])
     if "ion_only_channels" in kw:
         kw["ion_only_channels"] = tuple(kw["ion_only_channels"] or ())
+    if "water_cores" in kw:
+        kw["water_cores"] = tuple(kw["water_cores"] or ())
+    if "neutral_pair" in kw:
+        kw["neutral_pair"] = tuple(kw["neutral_pair"] or ())
+        if kw["neutral_pair"] and len(kw["neutral_pair"]) != 2:
+            raise ValueError(f"neutral_pair must be two adducts (bare, cluster), got {kw['neutral_pair']!r}")
     if kw.get("height_cutoff_x_edge") is not None:
         kw["height_cutoff_x_edge"] = _x_edge_value(kw["height_cutoff_x_edge"])  # 'auto' or a number
     return ReagentProfile(**kw)
@@ -569,6 +604,15 @@ def compose(profiles: "list[ReagentProfile]") -> ReagentProfile:
         for a in (p.ion_only_channels or ()):
             if a not in ion_only:
                 ion_only.append(a)
+    # reagent-water cores are unioned too: a mixed NO3/Br inlet carries both ladders
+    water: list[str] = []
+    for p in ps:
+        for c in (p.water_cores or ()):
+            if c not in water:
+                water.append(c)
+    # the neutral pair survives only when every component that declares one
+    # declares the same pair (two different pairs would be two rules)
+    pairs = {tuple(p.neutral_pair) for p in ps if p.neutral_pair}
     return ReagentProfile(
         name="+".join(p.name for p in ps),
         label=" / ".join(p.label for p in ps),
@@ -584,6 +628,8 @@ def compose(profiles: "list[ReagentProfile]") -> ReagentProfile:
         label_max=lab.label_max if lab else 2,
         height_cutoff_x_edge=next(iter(edge)) if len(edge) == 1 else None,
         ion_only_channels=tuple(ion_only),
+        water_cores=tuple(water),
+        neutral_pair=next(iter(pairs)) if len(pairs) == 1 else (),
         aliases=(),
     )
 

@@ -332,7 +332,7 @@ ledi = pd.DataFrame([
     dict(role="M0", neutral_formula="C7H10",   adduct="[M]-.",    tier="Assigned", commentary="", below_assignability=False),  # electron attach -> exempt
 ])
 outi = CU.demote_implausible_ionization(ledi, log=lambda *a: None)
-check("ionization demote: 3 heteroatom-free via FG-requiring anion channels", outi == {"ionization_demoted": 3}, outi)
+check("ionization demote: 3 heteroatom-free via FG-requiring anion channels", outi == {"ionization_demoted": 3, "ionization_demoted_n_only": 0}, outi)
 check("ionization demote: C7H10 [M-H]- -> Candidate + below_assignability",
       ledi.loc[0, "tier"] == "Candidate" and bool(ledi.loc[0, "below_assignability"]))
 check("ionization demote: C2H2 [M+CO3]- demoted",
@@ -404,11 +404,16 @@ ledr = pd.DataFrame([
 ])
 orr = CU.demote_speculative_residual(ledr, _Cfg(), log=lambda *a: None)
 check("residual demote: 3 (N3 / 0-anchor series / off-cal); cheminfo HOM acid protected", orr == {"residual_demoted": 3}, orr)
-check("residual demote: C6H5N3 -> Candidate+below",
-      ledr.loc[0, "tier"] == "Candidate" and bool(ledr.loc[0, "below_assignability"]))
-check("residual demote: C12H6O (0-anchor/sole-minor) -> Candidate", ledr.loc[1, "tier"] == "Candidate")
+check("residual demote: C6H5N3 (N3, no isotope) -> Candidate + tentative lead, not below (C19(c))",
+      ledr.loc[0, "tier"] == "Candidate" and bool(ledr.loc[0, "tentative_lead"])
+      and not bool(ledr.loc[0, "below_assignability"]))
+check("residual demote: C12H6O (0-anchor/sole-minor) -> Candidate + tentative lead",
+      ledr.loc[1, "tier"] == "Candidate" and bool(ledr.loc[1, "tentative_lead"])
+      and not bool(ledr.loc[1, "below_assignability"]))
 check("residual demote: legit cheminfo+grid HOM acid untouched", ledr.loc[2, "tier"] == "Assigned")
-check("residual demote: off-cal residual -> Candidate", ledr.loc[3, "tier"] == "Candidate")
+check("residual demote: off-cal residual -> Candidate + below (the mass disagrees: hard)",
+      ledr.loc[3, "tier"] == "Candidate" and bool(ledr.loc[3, "below_assignability"])
+      and not bool(ledr.loc[3, "tentative_lead"]))
 
 
 # ---- radical-anion relabel (hydrocarbon FG-cluster -> M-. of closed-shell neutral) ----
@@ -421,19 +426,21 @@ ledrad = pd.DataFrame([
 outrad = CU.relabel_radical_anions(ledrad, log=lambda *a: None)
 check("radical: 2 hydrocarbon CO3 clusters relabeled", outrad["radical_relabeled"] == 2, outrad)
 check("radical: 1 corroborated (C4H4O3 has [M-H]-)", outrad["radical_corroborated"] == 1, outrad)
-check("radical: C3H4 [M+CO3]- -> C4H4O3 [M]-. corroborated, VISIBLE (not below_assignability)",
+check("radical: C3H4 [M+CO3]- -> C4H4O3 [M]-. corroborated, VISIBLE (neither flag)",
       ledrad.loc[0, "neutral_formula"] == "C4H4O3" and ledrad.loc[0, "adduct"] == "[M]-."
-      and not bool(ledrad.loc[0, "below_assignability"]))
-check("radical: C6H6 [M+CO3]- -> C7H6O3 [M]-. uncorroborated, Candidate+below (still SHOWN)",
+      and not bool(ledrad.loc[0, "below_assignability"]) and not bool(ledrad.loc[0, "tentative_lead"]))
+check("radical: C6H6 [M+CO3]- -> C7H6O3 [M]-. uncorroborated, Candidate + tentative lead (still SHOWN)",
       ledrad.loc[2, "neutral_formula"] == "C7H6O3" and ledrad.loc[2, "adduct"] == "[M]-."
-      and ledrad.loc[2, "tier"] == "Candidate" and bool(ledrad.loc[2, "below_assignability"]))
+      and ledrad.loc[2, "tier"] == "Candidate" and bool(ledrad.loc[2, "tentative_lead"]))
+check("radical: the hard flag the uncorroborated row already carried stays (a row both mark stays hard)",
+      bool(ledrad.loc[2, "below_assignability"]))
 check("radical: corroborating [M-H]- row untouched",
       ledrad.loc[1, "neutral_formula"] == "C4H4O3" and ledrad.loc[1, "adduct"] == "[M-H]-")
 check("radical: oxygenated C6H12O6 [M-H]- untouched", ledrad.loc[3, "adduct"] == "[M-H]-")
 # the relabeled radicals must now ESCAPE the hydrocarbon implausible-ionization demote
 outi_rad = CU.demote_implausible_ionization(ledrad, log=lambda *a: None)
 check("radical: relabeled radicals escape implausible-ionization demote",
-      outi_rad == {"ionization_demoted": 0}, outi_rad)
+      outi_rad == {"ionization_demoted": 0, "ionization_demoted_n_only": 0}, outi_rad)
 
 
 # ---- positive-mode reagent-N re-read (hydrocarbon via urea/NH4 -> [M+H]+ N-heterocycle) ----
@@ -446,9 +453,10 @@ ledrn = pd.DataFrame([
 ])
 outrn = CU.relabel_reagent_n_adducts(ledrn, log=lambda *a: None)
 check("reagent-N: 2 hydrocarbon urea/NH4 clusters re-read", outrn == {"reagent_n_relabeled": 2}, outrn)
-check("reagent-N: C5H6 [M+(CH4N2O)H]+ -> C6H10N2O [M+H]+ Candidate+below",
+check("reagent-N: C5H6 [M+(CH4N2O)H]+ -> C6H10N2O [M+H]+ Candidate + tentative lead (C19(c))",
       ledrn.loc[0, "neutral_formula"] == "C6H10N2O" and ledrn.loc[0, "adduct"] == "[M+H]+"
-      and ledrn.loc[0, "tier"] == "Candidate" and bool(ledrn.loc[0, "below_assignability"]))
+      and ledrn.loc[0, "tier"] == "Candidate" and bool(ledrn.loc[0, "tentative_lead"])
+      and not bool(ledrn.loc[0, "below_assignability"]))
 check("reagent-N: C5H4 [M+NH4]+ -> C5H7N [M+H]+", ledrn.loc[1, "neutral_formula"] == "C5H7N")
 check("reagent-N: terpene C10H16 [M+NH4]+ KEPT (it has its own [M+H]+)",
       ledrn.loc[2, "neutral_formula"] == "C10H16" and ledrn.loc[2, "adduct"] == "[M+NH4]+")

@@ -176,7 +176,7 @@ check("edge default: the isotope-confirmed lead is CONFIRMED",
 check("edge default: a predicted 13C satellite BELOW the gate stays tentative",
       counts["tentative"] == 1
       and "dim" in str(led.loc[led.peak_id == "dim", "confidence"].iloc[0])
-      and bool(led.loc[led.peak_id == "dim", "below_assignability"].iloc[0]), counts)
+      and bool(led.loc[led.peak_id == "dim", "tentative_lead"].iloc[0]), counts)
 check("edge default: a satellite ABOVE the gate that never showed is left unexplained",
       L.role_of(led, "bright") == L.ROLE_UNEXPLAINED, counts)
 
@@ -187,7 +187,7 @@ check("raising x_edge moves the gate (edge-relative, not absolute)",
       cfg_hi.height_cutoff == 100.0 * EDGE2)
 check("with the gate above its predicted satellite the bright peak flips to tentative",
       counts_hi["tentative"] == 2 and L.role_of(led_hi, "bright") == L.ROLE_M0
-      and bool(led_hi.loc[led_hi.peak_id == "bright", "below_assignability"].iloc[0]),
+      and bool(led_hi.loc[led_hi.peak_id == "bright", "tentative_lead"].iloc[0]),
       counts_hi)
 # and a 1000x quieter instrument (edge 0.1 cps) confirms nothing changed but the
 # edge: the dim peak's satellite is now ABOVE the gate, so it is no longer excused.

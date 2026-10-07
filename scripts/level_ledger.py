@@ -8,6 +8,8 @@ terms of columns a peaky ledger already carries, and it is the yardstick the
 in-core `evidence_level` column (Phase B) must reproduce row for row.
 
     python scripts/level_ledger.py <source>... [--corroborate <source>]
+                                   [--upair [<neutral_pairs.csv>]]
+                                   [--label-twins [<label_twins.csv>]]
                                    [--out levels.csv]
 
 A *source* is a batch run dir (its `per_file/*_ledger.csv`, or `merged_ledger.csv`
@@ -28,8 +30,10 @@ One row out per `(source, neutral_formula, adduct)` over the source's M0 rows.
 The scale, in the order the predicates are tried:
 
     5b  the assignment argues with itself — a near-tie the arbiter broke, a row
-        below assignability, or a score the engine itself calls Low/Suspect;
-        also a mass-degenerate row with no corroborating axis at all
+        below assignability or a tentative lead, or a score the engine itself
+        calls Low/Suspect, or (rule K, --label-twins) the labelled reagent's 14N
+        twin refutes the cluster reading; also a mass-degenerate row with no
+        corroborating axis at all
     2b  a curated identity on a formula that admits essentially one structure
     3a  a named compound class, isomers open (PFCA, nitroaromatic, …)
     3b  a substituent only, via the gas-phase acidity branch: the same neutral
@@ -41,7 +45,8 @@ The scale, in the order the predicates are tried:
         pins the ion and says nothing about the neutral (CIMS-specific; there is
         no Schymanski analogue)
     4a  formula confirmed and the NEUTRAL established: two orthogonal axes, at
-        least one from outside this channel's ionization chemistry
+        least one from outside this channel's ionization chemistry -- or (9',
+        rule U, --upair) the channel's neutral pair on a supported formula
     4b  formula confirmed, one corroboration
 
 The four axes are: a verified isotopologue, a second adduct channel, a
@@ -76,7 +81,17 @@ ISOTOPE_ABUNDANCE = {
     "30Si": 0.0335,
 }
 C13_PER_CARBON = 0.0107
+# 15N and 18O are expected per atom of the ion (heavy / light natural abundance;
+# a caret '^N' atom is already 15N and is not counted)
+PER_ATOM_ABUNDANCE = {"15N": ("N", 0.00368 / 0.99632), "18O": ("O", 0.00205 / 0.99757)}
 RATIO_LO, RATIO_HI = 0.5, 2.0
+# the element an isotope child's tag measures ('13C2' -> C, '2x81Br' -> Br,
+# '81Br(pair)' -> Br, '14N' -> N); 'M' (a generic M+n child) names none
+TAG_ELEMENT = re.compile(r"^(?:\d+x)?\d+([A-Z][a-z]?)\d*(?:\(pair\))?$")
+# an ion carrying Br or Cl owns its M+2 region: its 81Br / 37Cl line buries an
+# 18O satellite, so an '18O' line there is not measured
+M2_OWNERS = ("Br", "Cl")
+FORMULA_TOKEN = re.compile(r"(\^?)([A-Z][a-z]?)(\d*)")
 
 # The scope of each pass-0 family (docs/EVIDENCE_LEVELS.md section 4.1): a family
 # whose entries are hand-listed compounds asserts a COMPOUND, one generated from a
@@ -184,6 +199,46 @@ def count_element(formula, element: str) -> int:
     return int(match.group(1)) if match.group(1) else 1
 
 
+def composition(formula, fold: bool = True, labelled: bool = False) -> dict:
+    """Element counts of a formula; a caret isotope ('^N') folds into its
+    element unless `fold` is False, when it is left out (it is already heavy),
+    or `labelled` is True, when it is its own key ('^N')."""
+    out: dict = {}
+    if not isinstance(formula, str):
+        return out
+    for caret, element, n in FORMULA_TOKEN.findall(formula):
+        if caret and labelled:
+            element = caret + element
+        elif caret and not fold:
+            continue
+        out[element] = out.get(element, 0) + (int(n) if n else 1)
+    return out
+
+
+def expected_ratio(tag: str, ion_formula) -> float | None:
+    """Natural height ratio of an isotope child to its M0, None when unknown."""
+    if tag.startswith("13C"):
+        carbons = count_element(ion_formula, "C")
+        return C13_PER_CARBON * carbons if carbons else None
+    if tag in PER_ATOM_ABUNDANCE:
+        element, per_atom = PER_ATOM_ABUNDANCE[tag]
+        counts = composition(ion_formula, fold=False)
+        if element == "O" and any(counts.get(e, 0) for e in M2_OWNERS):
+            return None
+        atoms = counts.get(element, 0)
+        return per_atom * atoms if atoms else None
+    return ISOTOPE_ABUNDANCE.get(tag)
+
+
+def neutral_elements(neutral, ion) -> set:
+    """Elements whose isotope line speaks for the neutral: the neutral supplies
+    more than half of the ion's atoms of the element (else the line measures
+    the reagent -- 15N on a urea adduct of an N-free neutral, 81Br on a bromide
+    adduct)."""
+    own, whole = composition(neutral, labelled=True), composition(ion, labelled=True)
+    return {e for e, n in own.items() if n > 0 and 2 * n > whole.get(e, 0)}
+
+
 def is_ion_only(frame: pd.DataFrame) -> pd.Series:
     """Rows the ion-only stage wrote (see ION_ONLY_ADDUCTS)."""
     adduct = column(frame, "adduct", "").fillna("").astype(str).isin(ION_ONLY_ADDUCTS)
@@ -279,6 +334,7 @@ def measure_source(
 
     labels: dict[tuple, set] = {}
     ratio_ok: dict[tuple, bool] = {}
+    in_band: dict[tuple, set] = {}   # the elements with an in-band line
     for _, child in iso.iterrows():
         parent = parents.get((child["__file"], child.get("parent_peak_id")))
         if parent is None:
@@ -293,13 +349,13 @@ def measure_source(
         ratio = float(child["height"]) / height
         if not np.isfinite(ratio):
             continue
-        if tag.startswith("13C"):
-            carbons = count_element(parent.get("ion_formula"), "C")
-            expected = C13_PER_CARBON * carbons if carbons else None
-        else:
-            expected = ISOTOPE_ABUNDANCE.get(tag)
+        expected = expected_ratio(tag, parent.get("ion_formula"))
         if expected and RATIO_LO <= ratio / expected <= RATIO_HI:
             ratio_ok[key] = True
+            match = TAG_ELEMENT.match(tag)
+            if match:
+                element = "^N" if tag.startswith("14N") else match.group(1)
+                in_band.setdefault(key, set()).add(element)
 
     # per-neutral facts, over the source's REGULAR M0 rows (an ion-only row is
     # its parent's composition on another adduct, not a second channel for it)
@@ -319,6 +375,9 @@ def measure_source(
         "isotopologues",
         "tied",
         "below_assignability",
+        # C19(c): the lead half of the old flag; a ledger written before the
+        # split carries none, reads False, and keeps its leads in below
+        "tentative_lead",
         "degeneracy_density",
         "ion_formula",
         "tier",
@@ -344,6 +403,8 @@ def measure_source(
         }
         carbon_ev = any(t.startswith("13C") for t in tags)
         ion_only = bool(group["ion_only"].any())
+        own = in_band.get(key, set()) & neutral_elements(
+            neutral, str(group["ion_formula"].iloc[0]))
         aset = set() if ion_only else adduct_sets.get(neutral, set())
         rows.append(
             dict(
@@ -357,7 +418,8 @@ def measure_source(
                 known_fam=known.iloc[0][6:] if len(known) else "",
                 iso=bool(ratio_ok.get(key, False))
                 or bool(group["isotopologues"].map(lambda v: len(as_list(v)) > 0).any()),
-                multiline=len(tags) >= 2,
+                multiline=len(own) >= 2,
+                multiline_elements="|".join(sorted(own)),
                 carbon_ev=carbon_ev,
                 chan2=(not ion_only) and int(channels.get(neutral, 0)) >= 2,
                 anchor=(not ion_only) and bool(
@@ -373,6 +435,7 @@ def measure_source(
                 iso_labels="|".join(sorted(tags)),
                 tied=bool(group["tied"].map(truthy).all()),
                 below=bool(group["below_assignability"].map(truthy).any()),
+                lead=bool(group["tentative_lead"].map(truthy).any()),
                 lowconf=bool(
                     group["confidence"].map(first_word).isin(LOW_CONFIDENCE).all()
                 ),
@@ -404,7 +467,9 @@ def measure_source(
 
 def level_of(row) -> str:
     """The decision table. Order matters: the first predicate that holds wins."""
-    hard = bool(row.tied) or bool(row.below) or bool(row.lowconf)
+    # a tentative lead (C19(c)) is hard like below assignability until rule H
+    hard = (bool(row.tied) or bool(row.below) or bool(getattr(row, "lead", False))
+            or bool(row.lowconf) or bool(getattr(row, "label_veto", False)))
     degenerate = bool(row.saturated) or (
         pd.notna(row.degeneracy) and row.degeneracy >= 3
     )
@@ -428,16 +493,57 @@ def level_of(row) -> str:
         return "4d"
     if row.n_axes >= 2 and row.cross:
         return "4a"
+    # 9' (rule U): the profile's neutral pair establishes the neutral; the
+    # formula needs its own support -- an isotope, or one plausible ion on a
+    # resolved peak
+    if bool(getattr(row, "upair", False)) and (row.iso or (unique and row.res_ok)):
+        return "4a"
     return "4b"
 
 
-def assign_levels(df: pd.DataFrame, corroborating: set[str]) -> pd.DataFrame:
-    """Add the axes, the derived flags and the level to measured rows."""
+#: rule K's one-channel fold (the 14N and 15N nitrate clusters of one neutral)
+LABEL_FOLD = {"[M+NO3]-": "[M+^NO3]-", "[M+15NO3]-": "[M+^NO3]-"}
+
+
+def relabel_pools(df: pd.DataFrame, alien: set) -> pd.DataFrame:
+    """Rule K on the per-neutral facts: chan2 and branch recomputed over the
+    regular rows minus the `alien` 14N lines, the two nitrate clusters of one
+    neutral counted as one channel; an alien row takes neither."""
+    df = df.copy()
+    keys = list(zip(df["neutral"].astype(str), df["adduct"].astype(str)))
+    out = pd.Series([k in alien for k in keys], index=df.index, dtype=bool) | df["ion_only"].astype(bool)
+    reg = df[~out]
+    chans = reg.assign(ch=reg["adduct"].map(lambda a: LABEL_FOLD.get(a, a))).groupby("neutral")["ch"].nunique()
+    adds = reg.groupby("neutral")["adduct"].agg(lambda s: set(s.astype(str)))
+    df["chan2"] = [(not o) and int(chans.get(n, 0)) >= 2 for n, o in zip(df["neutral"], out)]
+    df["branch"] = [(not o) and bool(adds.get(n, set()) & BARE_ADDUCTS) and bool(adds.get(n, set()) & CLUSTER_ADDUCTS)
+                    for n, o in zip(df["neutral"], out)]
+    return df
+
+
+def assign_levels(df: pd.DataFrame, corroborating: set[str], upair: set[str] | None = None,
+                  label: dict | None = None) -> pd.DataFrame:
+    """Add the axes, the derived flags and the level to measured rows. `upair`
+    is the batch's neutral-pair set (rule U); `label` the labelled-nitrate twin
+    facts (rule K: {'untie', 'veto', 'alien'}, `label_twin_facts`): the 14N lines
+    it could not tie to their neutral's 15N cluster leave the neutral's pools,
+    the two clusters count as one channel, a tie the 15N sibling breaks is
+    cleared and a refuted reading is hard. Facts, never axes."""
     df = df.copy()
     df["known_fam"] = df["known_fam"].fillna("")
     if "ion_only" not in df.columns:
         df["ion_only"] = False
     df["corroborated"] = df["neutral"].isin(corroborating) & ~df["ion_only"].astype(bool)
+    df["upair"] = df["neutral"].isin(upair or set()) & ~df["ion_only"].astype(bool)
+    if label:
+        df = relabel_pools(df, {(str(n), str(a)) for n, a in (label.get("alien") or set())})
+    keys = list(zip(df["neutral"].astype(str), df["adduct"].astype(str)))
+    untie = {(str(n), str(a)) for n, a in ((label or {}).get("untie") or set())}
+    veto = {(str(n), str(a)) for n, a in ((label or {}).get("veto") or {})}
+    df["label_untie"] = (pd.Series([k in untie for k in keys], index=df.index, dtype=bool)
+                         & df["tied"].astype(bool) & ~df["ion_only"].astype(bool))
+    df.loc[df["label_untie"], "tied"] = False
+    df["label_veto"] = pd.Series([k in veto for k in keys], index=df.index, dtype=bool) & ~df["ion_only"].astype(bool)
     df["n_axes"] = df[["iso", "chan2", "anchor", "corroborated"]].sum(axis=1)
     df["cross"] = df.corroborated | df.multiline | df.known_fam.ne("")
     df["neutral_backed"] = (
@@ -492,9 +598,62 @@ def source_good_neutrals(path: str) -> tuple[str, pd.DataFrame | None, set[str]]
     return label, frame, own_good_neutrals(frame)
 
 
-def run(sources: list[str], corroborate: list[str]) -> pd.DataFrame:
+def upair_neutrals(path: str) -> set[str]:
+    """The neutrals whose neutral pair holds, read from a batch's
+    tables/neutral_pairs.csv (a run dir, or an --out-dir holding one run) or
+    from that CSV itself. A source without the table says so on stderr."""
+    table = path
+    if os.path.isdir(path):
+        table = os.path.join(path, "tables", "neutral_pairs.csv")
+        if not os.path.isfile(table):
+            found = sorted(glob.glob(os.path.join(path, "*", "tables", "neutral_pairs.csv")))
+            if len(found) == 1:
+                table = found[0]
+    if not os.path.isfile(table):
+        print(f"  --upair: no neutral_pairs.csv for {path}; rule U does not fire there", file=sys.stderr)
+        return set()
+    frame = pd.read_csv(table)
+    if "upair" not in frame.columns:
+        return set()
+    held = frame["upair"].map(truthy)
+    return set(frame.loc[held, "neutral_formula"].astype(str))
+
+
+def label_twin_facts(path: str) -> dict | None:
+    """{'untie', 'veto', 'alien'} -- the labelled-nitrate twin facts (rule K)
+    read from a batch's tables/label_twins.csv (a run dir, or an --out-dir holding
+    one run) or from that CSV itself; None when there is no table or it is empty
+    (out of scope). A source without the table says so on stderr."""
+    table = path
+    if os.path.isdir(path):
+        table = os.path.join(path, "tables", "label_twins.csv")
+        if not os.path.isfile(table):
+            found = sorted(glob.glob(os.path.join(path, "*", "tables", "label_twins.csv")))
+            if len(found) == 1:
+                table = found[0]
+    if not os.path.isfile(table):
+        print(f"  --label-twins: no label_twins.csv for {path}; rule K does not fire there", file=sys.stderr)
+        return None
+    frame = pd.read_csv(table)
+    if frame.empty:
+        return None
+    out = {}
+    for col in ("untie", "veto", "alien"):
+        if col not in frame.columns:
+            out[col] = set()
+            continue
+        held = frame[col].map(truthy)
+        out[col] = set(zip(frame.loc[held, "neutral_formula"].astype(str), frame.loc[held, "adduct"].astype(str)))
+    return out
+
+
+def run(sources: list[str], corroborate: list[str], upair: str | None = None,
+        twins: str | None = None) -> pd.DataFrame:
     """Level every source, each corroborated by the others plus --corroborate —
-    by the neutrals each of them holds at 4b or better on its own evidence."""
+    by the neutrals each of them holds at 4b or better on its own evidence.
+    `upair`: 'auto' reads each run-dir source's own tables/neutral_pairs.csv;
+    a CSV path applies that table to every levelled source; None = rule U off.
+    `twins`: the same for tables/label_twins.csv (rule K)."""
     measured = {}
     neutrals = {}
     for path in sources:
@@ -507,12 +666,31 @@ def run(sources: list[str], corroborate: list[str]) -> pd.DataFrame:
     for path in corroborate:
         neutrals[f"--corroborate:{path}"] = source_good_neutrals(path)[2]
     out = []
-    for path, (label, frame) in measured.items():
+    for path, (label_, frame) in measured.items():
         others: set[str] = set()
         for other, values in neutrals.items():
             if other != path:
                 others |= values
-        out.append(assign_levels(frame, others))
+        held = set()
+        if upair == "auto":
+            held = upair_neutrals(path)
+        elif upair:
+            held = upair_neutrals(upair)
+        label = None
+        if twins == "auto":
+            label = label_twin_facts(path)
+        elif twins:
+            # one named table applies only to the source it was measured on: every
+            # pair it names (untie, veto, alien) must be one of the source's pairs
+            facts = label_twin_facts(twins)
+            named = set().union(*(set(facts[k]) for k in ("untie", "veto", "alien"))) if facts else set()
+            pairs = set(zip(frame["neutral"].astype(str), frame["adduct"].astype(str)))
+            if facts is not None and named <= pairs:
+                label = facts
+            elif facts is not None:
+                print(f"  --label-twins: {label_} does not hold the pairs the table names; rule K does not fire there",
+                      file=sys.stderr)
+        out.append(assign_levels(frame, others, held, label))
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
 
 
@@ -531,10 +709,27 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="a source that corroborates but is not itself levelled",
     )
+    parser.add_argument(
+        "--upair",
+        nargs="?",
+        const="auto",
+        default=None,
+        help="rule U: read each batch source's tables/neutral_pairs.csv (no value), "
+        "or apply this neutral-pair CSV to every levelled source",
+    )
+    parser.add_argument(
+        "--label-twins",
+        nargs="?",
+        const="auto",
+        default=None,
+        dest="twins",
+        help="rule K: read each batch source's tables/label_twins.csv (no value), "
+        "or apply this label-twin CSV to every levelled source",
+    )
     parser.add_argument("--out", help="write the levelled rows here as CSV")
     args = parser.parse_args(argv)
 
-    df = run(args.sources, args.corroborate)
+    df = run(args.sources, args.corroborate, args.upair, args.twins)
     if df.empty:
         print("nothing to level", file=sys.stderr)
         return 1

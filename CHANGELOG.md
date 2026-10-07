@@ -8,6 +8,115 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **On a labelled-nitrate channel the reagent's two isotopologues arbitrate each
+  other's reading (rule K).** A 15N-labelled nitrate reagent sees one neutral X's
+  cluster twice, 0.997 Da apart: big as [X+^NO3]- and small as [X+NO3]- (the reagent's
+  14N impurity plus ambient 14N nitrate). The batch now tests each line against the
+  other on its own stamped time series (`batch/label_twins.py`, profiles labelled `^N`
+  that cluster on `[M+^NO3]-`). A committed 14N line TRACKS X's cluster when its
+  14N/15N ratio follows the batch's cluster ratio through the run (the per-spectrum
+  median over the bright CHO acid clusters committed on `[M+^NO3]-`, the tested pair
+  left out: ratio 0.5-2, sd(log) <= 0.25, r >= 0.8 over >= 50 of >= 100 co-detected
+  spectra). A tracking line breaks the arbiter's tie with the same-ion organonitrate
+  [X'-H]- where every file's tie is with that alias alone; a line tested but noisy,
+  or below the cluster ratio (an organonitrate can only add 14N: trifluoroacetic
+  acid's cluster runs at the reagent's own impurity, 0.12x), still counts as X's
+  cluster; a line above twice the cluster ratio, or whose 15N partner is absent in
+  >= 80 % of its spectra, is cluster or organonitrate undecided and reads 5b. An
+  absent or untestable line gives X nothing (no second channel, no acid branch), and
+  so does a line above twice the ratio unless its 15N partner is present in >= 80 %
+  of its spectra: then the partner shows X's cluster (the aged-SOA tracer C8H12O6,
+  a 14N line at 2.1x with its partner in 127 of 130 spectra, keeps its acid branch). The
+  two lines of one cluster are one channel, never two. In the other direction a
+  labelled [Y+^NO3]- reading is refuted (5b) when the 14N twin its reagent must carry,
+  (1 - purity) / purity of its height (`ReagentProfile.purity`), is absent from the
+  spectra where the batch's own 13C detection curve says it would be seen and the scan
+  reached it. Facts of the pooled batch only: never an axis, never in `cross`, never
+  per file (the per-file level, the tier and the vote keep the arbiter's tie).
+  `tables/label_twins.csv` holds every line's verdict and every reading's test,
+  `batch_summary.json` the funnel (`evidence_levels.label_twins`),
+  `scripts/level_ledger.py --label-twins` reads the table in lockstep and
+  `scripts/scorecard.py` reads it as the run's own evidence. On the labelled-nitrate
+  regression batch (one variable against the previous trunk run; the run equals the
+  offline replay row for row): of 291 committed 14N lines 14 track, 18 are consistent,
+  13 excess, 220 have no 15N partner and 26 are untestable; 8 tied rows untie 5b -> 3b
+  (0.18 % of the signal); 2 labelled readings are refuted (0 of 42 / 53 expected twin
+  sightings); 72 merged rows change level, none their ion or tier; the identified
+  share of the time-series signal falls from 48.3 % to 45.1 % (of committed M0 height
+  55.9 -> 52.2 %), almost all of it C11-C12 [M-H]- acids whose only cluster was a 14N
+  line with no 15N partner in any spectrum (3b -> 4b, "ion pinned, neutral open").
+  The uronium and TOF batches are out of scope and do not move. The golden vectors
+  stand; a fifth (the labelled-nitrate run levelled with its table, 1848 ->
+  0/12/197/14/264/95/22/144/1100) joins the regression check, and the labelled-nitrate
+  fixture set carries its label-twin table (1707 -> 0/11/174/9/206/151/0/38/1118 with
+  it). `tests/test_label_twins*.py`. The measured 37Cl lock on Cl-free labelled
+  readings is left to the isotope checks (a too-high heavy line), not to this rule.
+
+- **A uronium neutral pair establishes the neutral (rule U, evidence level 4a).** A
+  uronium channel has no acid branch -- the pattern that lets the anion channels say
+  "the same neutral, deprotonated and clustered". Its equivalent is the protonated
+  and the urea-clustered ion of one neutral, 60.0324 Da apart. A reagent profile can
+  now declare such a pair (`ReagentProfile.neutral_pair`; the bundled uronium profile
+  declares `([M+H]+, [M+(CH4N2O)H]+)`, every other profile none), and the batch
+  measures it on its own stamped time series (`batch/neutral_pairs.py`): the neutral is
+  committed under both adducts, carries only C, H and O, both ions sit at exact mass
+  (within 2 ppm in at least half the spectra, signed median within 1 ppm), their heights
+  co-vary (r >= 0.5 on the log scale), the stamp gives both to this neutral, and
+  neither ion's 13C line contradicts the carbon count. Such a neutral's rows level 4a
+  when the formula has its own support (an isotope line, or one plausible ion on a
+  resolved peak) -- a new row 9' after the two-axis row, so no existing 4a changes its
+  reason. The fact is never an axis, never in `cross`, batch only, and profile-scoped:
+  computed on every channel it would lift TOF and nitrate rows, and the golden vectors
+  would move. `tables/neutral_pairs.csv` records every clause per neutral,
+  `batch_summary.json` the funnel (`evidence_levels.neutral_pairs`), and
+  `scripts/level_ledger.py --upair` reads the table in lockstep. The round-3 design
+  also held pairs whose two lines drift apart through the batch's steps, and a
+  fragment of a brighter parent; both tests read hand-dated steady states of one
+  batch, no batch-generic form reproduced them, and they are not built.
+  `tests/test_neutral_pairs.py`; a uronium set joins the golden fixtures with its pair
+  table. On the uronium regression batch (one variable against the previous trunk run):
+  167 of the 344 neutrals committed on both adducts hold the pair; 254 merged rows go
+  from ion to identified and the identified share of the time-series signal from
+  52.2 % to 73.8 % (ion 34.1 -> 12.6 %); the run equals the offline pre-check row for
+  row, and every row of round 3's recommended set (230) is among the 254. What the
+  dropped vetoes let through: 16 of the rows (1.35 % of the signal) that round 3 found
+  to have a second source in one line, 10 of them (0.34 %) not established by the pair.
+
+- **The reagent-ion water ladder, measured on the batch's own time series.** A soft-interface
+  CIMS carries its reagent ions hydrated -- Br-.(H2O)n, NO3-.(H2O)n, HNO3.NO3-.(H2O)n --
+  and how far a ladder reaches moves with the source and the humidity: on the five-day
+  bromide/nitrate TOF regression batch it ends at n <= 8 (Br-) and n <= 5 (NO3-) before an
+  instrument restart and runs past n = 15 after it, where the rungs were committed as
+  C1-C37 organics (C13H12O8 [M-H]- = Br-.(H2O)12, C13H22N2O4 [M+NO3]- = NO3-.(H2O)15). The
+  reagent library declared only the first halide rung and no nitrate rung at all. A new
+  batch step (`peaky/batch/reagent_water.py`, run once after the vote) looks for
+  core.(H2O)n, n = 1..45, of every core the profile declares (`ReagentProfile.water_cores`:
+  Br- / Br2-. / Br3- / HNO3.Br- on the bromide profile, NO3- / HNO3.NO3- / (HNO3)2.NO3- /
+  NO2- on the nitrate one, the labelled cores on 15N-nitrate, none on the positive
+  profiles; `compose()` unions them; a config profile may declare its own) per
+  acquisition segment (a gap longer than max(60 min, 5x the median spacing) cuts; a
+  segment under 10 spectra joins its neighbour). A rung passes when, in some segment, the core and every
+  lower rung are present in >= 50 % of the spectra within the stamping window and the
+  rung is >= 3x the presence of its decoy offsets (its 0.02 floor never binds while the
+  presence bar is 50 %). A merged analyte row on a passing rung
+  leaves the merged ledger as the water cluster it is; the rung becomes a reagent row of
+  the batch stamp. `tables/reagent_water.csv` lists the rungs and the readings each
+  displaced, `batch_summary.json["merge_gates"]["reagent_water"]` the counts. The
+  per-file ledgers are untouched; nothing is tiered or levelled by it. Measured offline
+  before the build and reproduced by the run: 114 passing rungs and 70 displaced rows on
+  the TOF batch (42 Assigned; identified rows 227 -> 214, each of the 13 held by evidence
+  the ladders themselves make: NO3-.(H2O)n and HNO3.NO3-.(H2O)n differ by HNO3 like an
+  acid's two channels); the unexplained share of its time-series signal falls from 16.95 %
+  to 5.75 %, identified signal 12.95 -> 12.91 %, and nothing else in the merged ledger
+  changes. 0 rungs on both Orbitrap batches, whose outputs are identical (the
+  labelled-nitrate window starts at m/z 130, above five of its seven cores, and the two
+  trimer cores inside it are absent; the uronium profile declares none). Known limits:
+  the rungs are measured per segment but stamped and stripped batch-wide, so one Assigned
+  row that is a real species before the restart and the water rung after it left with
+  the rung; and a halogen rung passes for one isotopologue while its twin fails the decoy
+  gate on neighbouring peaks, leaving about 60 merged rows on unstamped rungs.
+  `tests/test_reagent_water.py`.
+
 - **Claims -- what a committed formula lets a reader say: identified, ion or tentative.** The nine
   evidence levels say how good the evidence is; a reader of a result table asks something coarser
   -- may this formula be reported as a compound? -- and the tier (print or offer) does not answer
@@ -540,6 +649,82 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A tentative lead is its own flag (`tentative_lead`), apart from `below_assignability`.**
+  `below_assignability` said two things: the assignment argues with itself (O >= 11 on
+  a saturated formula, an O-monster, a carbon cluster, an implausible ionization, an
+  off-calibration residual, unconfirmed F >= 4), or the proposal is only unsupported.
+  The second half is now a per-row column of its own, written by the reference-list
+  dim rescue, the element-budget demote, the speculative-residual demote (N >= 3 with no
+  isotope, a series gap-fill with no anchors, a sole minor channel), an uncorroborated
+  radical anion and the reagent-N re-read; every other setter keeps
+  `below_assignability`, and a row both flags mark stays hard. The evidence level pools
+  the lead over any row, treats it as hard and gives it the same reason as before
+  ("5b: below assignability"), so no level, reason or claim moves; the ion-only parent
+  choice and the Below assignability sheet read either flag; the tier engine reads
+  neither. `scripts/level_ledger.py` reads it in lockstep (a ledger without the column
+  reads False, so old ledgers and the golden vectors do not move -- and a checkout
+  before this change must not level or corroborate the new ledgers: it would ignore the
+  lead). A commit, a clear or a displacement now resets both flags
+  (`below_assignability` was never reset before; on the regression runs that clears it
+  on six displaced isotope-child rows and moves nothing). Publish carries the column.
+  This is the split the isotope checks and the halogen lock (C11+) build on: a lead
+  can stop being hard where a later rule lifts it; a contradiction cannot. On the three
+  regression batches (one variable against the previous trunk run): 0 of 1419 / 1148 /
+  2239 merged rows change ion, tier, level, reason or claim; the lead moves from
+  `below_assignability` to `tentative_lead` on 1288 / 37 / 1319 per-file M0 rows (128 /
+  13 / 645 pooled pairs). `tests/test_tentative_lead*.py`.
+
+- **`multiline` counts two elements the neutral supplies, each by an in-band line.**
+  `multiline` is the only term inside one channel that can carry a pair to 4a ("formula
+  confirmed and the neutral established"). It counted raw satellite tags, so a 13C line
+  with its 13C2 line (one element twice), the urea's own 15N on a urea adduct, the
+  bromide's own 81Br on a bromide adduct and a generic `M+n` child all made "two lines"
+  (2026-09-26 output audit). It now needs lines of two distinct elements, each within
+  0.5-2x of its natural abundance, each supplied mostly by the neutral: more than half
+  of the ion's atoms of the element. The 18O line of an oxygen-rich neutral's urea
+  adduct counts (4 of 5 O); the 18O line of formic acid's nitrate cluster does not (2 of
+  5). 15N and 18O join the ratio band, per atom of the ion like 13C per carbon, so they
+  also count toward the isotope axis. The evidence table records the elements
+  (`multiline_elements`). An ion carrying Br or Cl does not have its 18O line measured:
+  the halogen's 81Br / 37Cl line owns the M+2 region (one peak with it on a TOF). The
+  same-air TOF golden moves: seven bromide-adduct 4a pairs that counted the reagent's
+  81Br go to 4b. On the regression runs it moves 4a -> 4b: 1 labelled-nitrate row (two
+  chlorine lines), 10 uronium rows (the urea's 15N, 13C with 13C2, or an out-of-band
+  18O line; rule U lifts 8 of them back) and 11 TOF rows (the bromide's 81Br, or
+  nitrate's 18O on formic acid; four more are water rungs the reagent-water ladder
+  already removed), taking the TOF's identified signal from 12.9 % to 11.2 % (formic
+  acid alone 1.5 %: its ion stays pinned, its neutral no longer counts as shown). No
+  decoy arm gains an identified row (the uronium control arm goes 27 -> 15).
+  `tests/test_multiline_elements.py`.
+
+- **The ionization check covers N-only neutrals.** `cleanup.demote_implausible_ionization`
+  demoted only a pure hydrocarbon read through an anion channel (`[M-H]-` or a cluster;
+  electron attachment exempt): any N or O skipped the test, although an aliphatic amine has
+  no acidic proton either. It now also demotes an **N-only** neutral (`cleanup.anion_implausible`):
+  C >= 1, N >= 1, no S / P / halogen / Si, and O = 0, or O = 1 with DBE <= 1, or O = 2 with
+  DBE <= 0 -- formulas no carboxylic acid or phenol fits. Same channels, same demotion
+  (Assigned -> Candidate + `below_assignability`, so the pair levels 5b), its own note, and a
+  second count in the stage summary (`ionization_demoted_n_only`). A heavy-isotope label folds
+  into its element, so a `^N`-only neutral is judged as an N-compound instead of passing as a
+  hydrocarbon. Why: a uniform +0.35 Da shift keeps every inter-peak spacing, so the shifted
+  labelled-nitrate spectrum rebuilt H-saturated N2 formulas (C21H46N2, C22H46N2O, C25H54N2O2 as
+  `[M-H]-` and `[M+^NO3]-`) at 3b on their two-channel axes; the census of this rule
+  (seven definitions on the three regression runs and all decoy arms) takes the Assigned
+  identified rows at m/z >= 350 on that arm from 17 to 0 at a cost of 0 Assigned rows on the
+  labelled-nitrate run and 7 on the TOF run -- the aryl-amine C13H12N2 / C13H14N2 family,
+  plausible chemistry a formula-only rule cannot exempt. `tests/test_ionization_plausibility.py`.
+  Run on both anion regression batches (one variable against the previous trunk runs, same
+  inputs): the labelled-nitrate run changes one Candidate row (C5H13NO2 `[M+NO3]-`, 4c -> 5b,
+  an amino-diol the formula rule cannot tell from junk); the TOF run demotes the predicted
+  seven Assigned readings, Assigned 497 -> 491 and identified 228 -> 227, identified signal
+  unchanged (48.30 % and 12.95 % of all time-series signal). Two TOF peaks are re-read once
+  their reading drops: m/z 332.146 goes to a Candidate nitrate cluster, and m/z 511.175 to
+  another Assigned reading, C35H28O2S `[M-H]-` (4b on an anchor alone), which the peak's own
+  1:1 M+2 doublet contradicts -- an isotope check that never refutes a too-high line, left to
+  the isotope-check card. On the labelled-nitrate shift decoy the Assigned identified rows at
+  m/z >= 350 go 17 -> 0 (shift Assigned 87 -> 44, identified 23 -> 2, both Candidate); the
+  control and adduct arms keep their Assigned counts there, and no decoy arm gains a row.
+
 - **Flatness labels a row; it no longer tiers it.** The general flat-background
   demote added above capped every flat `Assigned` commit at `Candidate` whenever the
   run varies. It was written for a certified-mixture run, where the EasyIC
@@ -755,6 +940,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [M-H]- (…): the reagent-cluster reading is kept …"). Same answer whatever the channel order.
 
 ### Fixed
+
+- **The two isotopologues of a bromide water cluster stamped as one line between them.**
+  `reagents.build_library` labelled `[Br1+1xH2O]-` (and every halide-core cluster) without
+  the core's isotopologue tag, so its 79Br and 81Br lines shared (ion formula, no tag) in
+  the batch stamp and were stamped once at their median m/z (97.93 for Br-.H2O), which
+  matches neither peak: the TOF's largest water family (8 % of its signal) stayed
+  unstamped. The label now carries the tag like the bare core's (`[Br1+1xH2O]- (81Br)`),
+  and `timeseries.identified_rows` already reads it. `tests/test_reagent_water.py`.
 
 - **The two O-rich rules read the window the way their reasons say.** `below_assignability`
   for O >= 11 (`tiers.flag_below_assignability`, reason "O>=11, mass-saturated") fired on any

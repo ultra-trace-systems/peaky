@@ -173,6 +173,13 @@ def test_batch_run_recomputes_the_level_on_the_pooled_files(tmp_path, monkeypatc
     pairs = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv")
     assert set(EV.COLUMNS) <= set(pairs.columns) and len(pairs) == 2
     assert res["evidence"] is not None and len(res["evidence"]) == 2
+    # rule U: the neutral-pair table is written on every run; a bromide profile
+    # declares no pair, so it is empty and lifts nothing
+    from peaky.batch import neutral_pairs as NP
+    np_table = pd.read_csv(tmp_path / "tables" / "neutral_pairs.csv")
+    assert list(np_table.columns) == list(NP.TABLE_COLUMNS) and np_table.empty
+    assert ev["neutral_pairs"] == {"pair": [], "neutrals": 0, "upair": 0}
+    assert "upair" not in row.evidence_axes.iloc[0]
 
 
 def test_corroborating_neutrals_resolves_run_dirs_and_csvs(tmp_path):

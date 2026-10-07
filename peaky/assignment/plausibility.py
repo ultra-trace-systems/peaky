@@ -163,7 +163,8 @@ def scan(merged, *, polarity: str | None = None) -> list[dict]:
 # Stage 3: demote-ONLY hardening (never deletes a row)
 #
 # Every function below DEMOTES an Assigned M0 to Candidate (+ stamps
-# below_assignability). None of them can clear/delete a row, so the worst-case
+# below_assignability; the element-budget demote stamps tentative_lead instead).
+# None of them can clear/delete a row, so the worst-case
 # failure is an over-cautious Candidate, never a lost peak. Each appends one dict
 # per touched peak to `audit` (when a list is passed) so assign/assign_batch can
 # write tables/plausibility_audit_*.
@@ -203,14 +204,17 @@ def _append_note(ledger, i, note):
         ledger.at[i, "commentary"] = (prev + "; " + note) if prev and prev != "nan" else note
 
 
-def _demote_row(ledger, i, *, reason, audit, evidence, degeneracy_note, n_iso):
-    """Demote one M0 -> Candidate + below_assignability, append the note, and log
-    one audit record. Demote-only: tier moves Assigned->Candidate, nothing is
-    cleared."""
+def _demote_row(ledger, i, *, reason, audit, evidence, degeneracy_note, n_iso, lead=False):
+    """Demote one M0 -> Candidate + below_assignability (`lead=True`: + the
+    tentative_lead flag instead -- the proposal is unsupported, not contradicted;
+    ledger.ASSIGNABILITY_FLAGS), append the note, and log one audit record.
+    Demote-only: tier moves Assigned->Candidate, nothing is cleared."""
     before = str(ledger.at[i, "tier"]) if "tier" in ledger.columns else ""
     if "tier" in ledger.columns and before == "Assigned":
         ledger.at[i, "tier"] = "Candidate"
-    if "below_assignability" in ledger.columns:
+    if lead:
+        L.mark_lead(ledger, i)
+    elif "below_assignability" in ledger.columns:
         ledger.at[i, "below_assignability"] = True
     _append_note(ledger, i, reason)
     if audit is not None:
@@ -292,8 +296,9 @@ def demote_off_budget(ledger: pd.DataFrame, *, context: str | None,
     and CAN commit one; that evidence proposes the neutral MASS, and it is then
     read back as the axes (chan2, the acid branch, an anchor) that the evidence
     level and the tier count as confirmation. So an off-budget formula that no
-    curated list names is Candidate + below_assignability -- the evidence level
-    reads that as 5b. `curated` is every formula the pass-0 registry names for
+    curated list names is Candidate + tentative_lead (C19(c): the proposal is
+    unsupported, not contradicted; before the split it was below_assignability)
+    -- the evidence level reads that as 5b. `curated` is every formula the pass-0 registry names for
     this polarity/context plus the active reference lists
     (assign._stage_plausibility), exempt whichever pass committed it. Measured on
     a same-air TOF/Orbitrap pair before the rule: the TOF's Assigned
@@ -346,8 +351,10 @@ def demote_off_budget(ledger: pd.DataFrame, *, context: str | None,
         reason = (f"outside the {profile.label} element budget ({why}) and on no curated list "
                   "-- a widened search proposed this formula; its axes confirm a neutral mass, "
                   "not this composition")
+        # a lead, not a contradiction: the widened search's evidence proposed the
+        # neutral mass and nothing tests this composition either way (C19(c))
         _demote_row(ledger, i, reason=reason, audit=audit, evidence=str(why),
-                    degeneracy_note=note, n_iso=ni)
+                    degeneracy_note=note, n_iso=ni, lead=True)
         n += 1
     log(f"[plausibility] demoted {n} commits outside the {profile.label} element budget "
         f"(not on a curated list); kept {kept} fluorinated CF2-series members")

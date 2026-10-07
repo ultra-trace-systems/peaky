@@ -1,6 +1,7 @@
 """The element-budget demote (plausibility.demote_off_budget): a commit whose
 neutral lies outside the run context's element budget and that no curated list
-names is Candidate + below_assignability, and the evidence level reads 5b.
+names is Candidate + tentative_lead (C19(c): unsupported, not contradicted; it
+was below_assignability before the split), and the evidence level reads 5b.
 
 The budget is contexts.element_budget -- steps 1-3 of filter_by_profile (the
 structural gate, the carbon-free allowlist, the heteroatom caps), never the
@@ -88,15 +89,17 @@ def _ledger(rows):
     return pd.DataFrame(out)
 
 
-def test_off_budget_commit_is_candidate_below_assignability_with_a_note_and_an_audit_row():
+def test_off_budget_commit_is_candidate_tentative_lead_with_a_note_and_an_audit_row():
     led = _ledger([dict(neutral_formula="C5H6ClN2OP", method="certified:multi-channel"),
                    dict(neutral_formula="C10H16O5")])
     audit = []
     out = PL.demote_off_budget(led, context="ambient-air", audit=audit, log=lambda *a: None)
     assert out == {"budget_demoted": 1, "budget_cf2_kept": 0}
-    assert led.loc[0, "tier"] == "Candidate" and bool(led.loc[0, "below_assignability"])
+    assert led.loc[0, "tier"] == "Candidate" and bool(led.loc[0, "tentative_lead"])
+    assert not bool(led.loc[0, "below_assignability"])        # a lead, not a contradiction (C19(c))
     assert "outside the ambient-air element budget (P=1 > 0)" in led.loc[0, "commentary"]
-    assert led.loc[1, "tier"] == "Assigned" and not bool(led.loc[1, "below_assignability"])
+    assert led.loc[1, "tier"] == "Assigned" and not bool(led.loc[1, "tentative_lead"])
+    assert not bool(led.loc[1, "below_assignability"])
     assert len(audit) == 1 and audit[0]["evidence"] == "P=1 > 0" and audit[0]["before_tier"] == "Assigned"
 
 
@@ -137,8 +140,9 @@ def test_candidates_are_flagged_and_other_roles_are_untouched():
     audit = []
     out = PL.demote_off_budget(led, context="ambient-air", audit=audit, log=lambda *a: None)
     assert out == {"budget_demoted": 1, "budget_cf2_kept": 0}
-    assert led.loc[0, "tier"] == "Candidate" and bool(led.loc[0, "below_assignability"])
-    assert not bool(led.loc[1, "below_assignability"]) and not bool(led.loc[2, "below_assignability"])
+    assert led.loc[0, "tier"] == "Candidate" and bool(led.loc[0, "tentative_lead"])
+    assert not led["below_assignability"].any()
+    assert not bool(led.loc[1, "tentative_lead"]) and not bool(led.loc[2, "tentative_lead"])
     assert audit[0]["before_tier"] == "Candidate"
 
 
@@ -161,7 +165,8 @@ def test_consistent_cf2_series_members_keep_their_fluorine():
     out = PL.demote_off_budget(led, context="ambient-air", audit=audit, log=lambda *a: None)
     assert out == {"budget_demoted": 1, "budget_cf2_kept": 2}
     assert list(led["tier"]) == ["Assigned", "Assigned", "Candidate"]
-    assert not bool(led.loc[0, "below_assignability"]) and not bool(led.loc[1, "below_assignability"])
+    assert not bool(led.loc[0, "tentative_lead"]) and not bool(led.loc[1, "tentative_lead"])
+    assert bool(led.loc[2, "tentative_lead"]) and not led["below_assignability"].any()
     assert [a["neutral_formula"] for a in audit] == ["C5HF3O2"]
 
 

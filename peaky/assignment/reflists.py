@@ -302,7 +302,7 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
     Decision per matched peak (mass gate: server ion_score >= tau_low AND on-cal z):
       * isotope-CONFIRMED  -> commit literature-anchored M0 (Good/Assigned-grade);
       * too DIM to confirm (the predicted 13C M+1 falls below height_cutoff, so no
-        satellite COULD show) -> commit a low-quality Candidate + below_assignability
+        satellite COULD show) -> commit a low-quality Candidate + tentative_lead
         so the lead is never lost back to 'unexplained' (the user's small-peak rule);
       * isotopes EXPECTED (bright enough) but absent, or off-cal / poor score
         -> leave unexplained (a real mass coincidence, not corroborated).
@@ -406,9 +406,10 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
                                             "confirm isotopes -- tentative lead, not confirmed."
                                             + alias_note))
             ledger.at[i, "tier"] = "Candidate"
-            if "below_assignability" not in ledger.columns:
-                ledger["below_assignability"] = False
-            ledger.at[i, "below_assignability"] = True
+            # a lead, not a contradiction: nothing could test the formula here
+            # (C19(c)); the flags are created where the tier stage has not
+            L.ensure_flags(ledger)
+            L.mark_lead(ledger, i)
             tentative += 1
         # else: bright enough to show isotopes but none confirmed -> mass coincidence, leave
     log(f"[reflist] rescue-verify: {rescued} confirmed + {tentative} tentative "

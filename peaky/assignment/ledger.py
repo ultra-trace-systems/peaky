@@ -109,9 +109,88 @@ _ASSIGN_COLS: dict[str, object] = {
 
 _REQUIRED_IDENTITY = ("peak_id", "mz")
 
+# The two per-row assignability flags (C19(c), docs/EVIDENCE_LEVELS.md §2):
+#   below_assignability -- the assignment argues with itself: O >= 11 on a
+#       mass-saturated window, an O-monster, a carbon cluster, a carbon-rich
+#       skeleton, an impossible ionization, an off-calibration residual fit,
+#       unconfirmed F >= 4;
+#   tentative_lead -- the proposal is unsupported, not contradicted: a
+#       reference-list match too dim to show its isotopes, a commit outside the
+#       element budget that no curated list names, a speculative residual fit
+#       (N >= 3 with no isotope, a gap-fill with no anchors, a sole minor
+#       channel), an uncorroborated radical anion, a reagent-N re-read.
+# The evidence level reads either as `hard` (5b) today. Neither is in
+# `_ASSIGN_COLS`: the tier stage creates both (tiers.flag_below_assignability;
+# the reference-list rescue on a ledger it reaches first), so a ledger that was
+# never tiered -- and the merged ledger, whose schema is assign_batch._M0_COLS --
+# carries neither and a setter writes nothing there. Both describe the committed
+# FORMULA, not the peak: a commit, a clear and a displacement reset them.
+FLAG_BELOW = "below_assignability"
+FLAG_LEAD = "tentative_lead"
+ASSIGNABILITY_FLAGS = (FLAG_BELOW, FLAG_LEAD)
+
 
 class LedgerError(Exception):
     pass
+
+
+def _truthy(value) -> bool:
+    """Null-safe truthiness of a flag cell: NaN, NA, None, '' and 'false' are False."""
+    if value is None or value is pd.NA:
+        return False
+    if isinstance(value, float) and np.isnan(value):
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    try:
+        return bool(value)
+    except (TypeError, ValueError):
+        return False
+
+
+def has_flags(ledger: pd.DataFrame) -> bool:
+    """Whether the ledger carries the assignability flags (either column)."""
+    return any(col in ledger.columns for col in ASSIGNABILITY_FLAGS)
+
+
+def ensure_flags(ledger: pd.DataFrame) -> pd.DataFrame:
+    """Create whichever of the two flag columns is missing, all False."""
+    for col in ASSIGNABILITY_FLAGS:
+        if col not in ledger.columns:
+            ledger[col] = False
+    return ledger
+
+
+def mark_lead(ledger: pd.DataFrame, i) -> bool:
+    """Flag row `i` (an index label) a tentative lead. Written only where the
+    ledger carries the flags -- the gate the below_assignability setters use --
+    creating the lead column beside an older ledger's below_assignability;
+    below_assignability itself is left as it is (a row both flags mark stays
+    hard). Returns whether it wrote."""
+    if not has_flags(ledger):
+        return False
+    ensure_flags(ledger)
+    ledger.at[i, FLAG_LEAD] = True
+    return True
+
+
+def flagged(frame: pd.DataFrame) -> pd.Series:
+    """below_assignability OR tentative_lead per row, null-safe; a missing
+    column reads False. What every reader that excludes or caps a flagged row
+    reads, so the split moves no tier, no level and no parent choice."""
+    out = pd.Series(False, index=frame.index, dtype=bool)
+    for col in ASSIGNABILITY_FLAGS:
+        if col in frame.columns:
+            out = out | frame[col].map(_truthy).astype(bool)
+    return out
+
+
+def reset_flags(ledger: pd.DataFrame, i) -> None:
+    """Both flags False on row `i` (an index label), where the ledger carries
+    them (a column is never created here). commit / clear / displace call it."""
+    for col in ASSIGNABILITY_FLAGS:
+        if col in ledger.columns:
+            ledger.at[i, col] = False
 
 
 def new_ledger(peaks: pd.DataFrame) -> pd.DataFrame:
@@ -239,6 +318,7 @@ def commit_assignment(
     ledger.at[i, "commentary"] = commentary
     ledger.at[i, "alternatives"] = json.dumps(alternatives or [])
     ledger.at[i, "isotopologues"] = json.dumps(isotopologues or [])
+    reset_flags(ledger, i)   # a flag judged the previous formula, not this one
     return ledger
 
 
@@ -272,6 +352,8 @@ def attach_isotopologue(
     return ledger
 
 
+#: what clear / displace reset (the two assignability flags too, where the
+#: ledger carries them: `reset_flags`)
 _ASSIGNMENT_FIELDS = {
     "neutral_formula": pd.NA, "adduct": pd.NA, "ion_formula": pd.NA,
     "ion_score": np.nan, "compound_score": np.nan, "ppm_error": np.nan,
@@ -303,6 +385,7 @@ def clear_assignment(ledger: pd.DataFrame, peak_id, *, reason: str) -> pd.DataFr
     old = ledger.at[i, "commentary"]
     for col, na in _ASSIGNMENT_FIELDS.items():
         ledger.at[i, col] = na
+    reset_flags(ledger, i)
     ledger.at[i, "role"] = ROLE_UNEXPLAINED
     ledger.at[i, "commentary"] = (f"CLEARED ({reason}). Was: {old}"
                                   if old is not pd.NA and pd.notna(old) else
@@ -337,6 +420,7 @@ def displace_to_isotopologue(
             glab.split("+") + iso_label.split("+"))))
     for col, na in _ASSIGNMENT_FIELDS.items():
         ledger.at[ci, col] = na
+    reset_flags(ledger, ci)
     attach_isotopologue(ledger, child_peak_id, parent_peak_id,
                         iso_label=iso_label, iso_match_score=iso_match_score,
                         overwrite=True)
