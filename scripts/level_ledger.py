@@ -16,7 +16,12 @@ levelled; naming two of them ALSO gives each the other as corroboration, which
 is what "the same neutral, seen through a second, independent channel" means —
 the other reagent channel of one instrument, or the other instrument sampling
 the same air. `--corroborate` adds a source that corroborates but is not itself
-levelled.
+levelled. A source corroborates only the neutrals it holds at level 4b or
+better by its OWN evidence — levelled first with no corroboration at all, so
+two sources can never lift each other on nothing but their agreement (a 5b
+formula the other grid also enumerated is two grids agreeing, not a second
+sighting). A merged ledger has no predicate columns: its stored level is read
+without its own `corroborated` axis.
 
 One row out per `(source, neutral_formula, adduct)` over the source's M0 rows.
 
@@ -73,18 +78,47 @@ ISOTOPE_ABUNDANCE = {
 C13_PER_CARBON = 0.0107
 RATIO_LO, RATIO_HI = 0.5, 2.0
 
-# Curated families whose formula admits essentially one structure in this
-# chemistry, and those that name a class only.
-UNIQUE_FAMILIES = {"atmospheric", "reactive_iodine"}
-CLASS_ONLY_FAMILIES = {
-    "nitroaromatic",
-    "perfluoroacid",
-    "chlorinated_paraffin",
-    "organophosphate",
-    "organothiophosphate",
-    "indoor_sulfur",
-    "cyclosiloxane",
+# The scope of each pass-0 family (docs/EVIDENCE_LEVELS.md section 4.1): a family
+# whose entries are hand-listed compounds asserts a COMPOUND, one generated from a
+# formula loop asserts a CLASS. 2b needs compound scope AND a one-structure formula
+# in peaky/data/isomer_space.csv; any other curated commit is 3a. A family not
+# listed is read as a class. (Until 2026-09-22 this script kept two hand-made sets
+# -- {atmospheric, reactive_iodine} always 2b, six others always 3a -- which
+# agreed with the spec on every golden row but not on the positive-mode families:
+# cyclosiloxane D3/D5/D7 read 3a here and 2b in core, and contaminant:silanediol
+# was in neither set. The spec is the design; the sets were the bug.)
+KNOWN_FAMILY_SCOPE = {
+    "atmospheric": "compound",
+    "reactive_iodine": "compound",
+    "ambient_inorganic": "compound",
+    "nitroaromatic": "compound",
+    "cyclosiloxane": "compound",
+    "indoor_sulfur": "compound",
+    "organophosphate": "compound",
+    "organothiophosphate": "compound",
+    "easyic_hydride": "compound",
+    "perfluoroacid": "class",
+    "chlorinated_paraffin": "class",
+    "contaminant:silanediol": "class",
 }
+ISOMER_SPACE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "peaky", "data", "isomer_space.csv")
+_STRUCTURES: dict | None = None
+
+
+def plausible_structures(formula: str) -> int | None:
+    """The isomer space's structure count for `formula`, None when absent."""
+    global _STRUCTURES
+    if _STRUCTURES is None:
+        _STRUCTURES = {}
+        if os.path.isfile(ISOMER_SPACE):
+            space = pd.read_csv(ISOMER_SPACE)
+            for f, n in zip(space["formula"].astype(str).str.strip(),
+                            pd.to_numeric(space["n_plausible_structures"], errors="coerce")):
+                if pd.notna(n):
+                    _STRUCTURES[f] = int(n)
+    return _STRUCTURES.get(str(formula).strip())
 
 BARE_ADDUCTS = {"[M-H]-"}
 CLUSTER_ADDUCTS = {
@@ -97,6 +131,13 @@ CLUSTER_ADDUCTS = {
 }
 RESOLVED = {"resolved", "isolated"}
 LOW_CONFIDENCE = {"Low", "Suspect"}
+# ION-ONLY rows (the engine's `ion_only` stage): the electron-attachment line
+# beside a committed [M-H]- acid, on "[M]-." with method `ion_only:*` (a merged
+# ledger carries the `ion_only_of` link instead). Levelled on their own
+# satellite alone (4d with one, 5a without); never a second channel or a
+# corroboration for anything, in either direction -- as evidence.py does.
+ION_ONLY_ADDUCTS = {"[M]-."}
+ION_ONLY_METHOD_PREFIX = "ion_only:"
 
 # The heavy satellite a reagent halogen contributes. Iodine is monoisotopic, so
 # an iodide reagent can never produce a reagent-only isotope pattern.
@@ -141,6 +182,16 @@ def count_element(formula, element: str) -> int:
     if not match:
         return 0
     return int(match.group(1)) if match.group(1) else 1
+
+
+def is_ion_only(frame: pd.DataFrame) -> pd.Series:
+    """Rows the ion-only stage wrote (see ION_ONLY_ADDUCTS)."""
+    adduct = column(frame, "adduct", "").fillna("").astype(str).isin(ION_ONLY_ADDUCTS)
+    method = column(frame, "method", "").fillna("").astype(str).str.startswith(ION_ONLY_METHOD_PREFIX)
+    mask = adduct & method
+    if "ion_only_of" in frame.columns:
+        mask = mask | (adduct & frame["ion_only_of"].notna())
+    return mask
 
 
 def column(frame: pd.DataFrame, name: str, default=np.nan) -> pd.Series:
@@ -218,6 +269,8 @@ def measure_source(
 
     m0["neutral_formula"] = column(m0, "neutral_formula").fillna("").astype(str)
     m0["adduct"] = column(m0, "adduct").fillna("").astype(str)
+    m0["ion_only"] = is_ion_only(m0).to_numpy()
+    regular = m0[~m0["ion_only"]]
 
     # parent lookup: the M0 row an isotope child hangs off, within its own file
     parents = {}
@@ -248,9 +301,10 @@ def measure_source(
         if expected and RATIO_LO <= ratio / expected <= RATIO_HI:
             ratio_ok[key] = True
 
-    # per-neutral facts, over the source's M0 rows
-    channels = m0.groupby("neutral_formula")["adduct"].nunique()
-    adduct_sets = m0.groupby("neutral_formula")["adduct"].agg(
+    # per-neutral facts, over the source's REGULAR M0 rows (an ion-only row is
+    # its parent's composition on another adduct, not a second channel for it)
+    channels = regular.groupby("neutral_formula")["adduct"].nunique()
+    adduct_sets = regular.groupby("neutral_formula")["adduct"].agg(
         lambda s: set(s.dropna().astype(str))
     )
     satellite = HALOGEN_SATELLITE.get(halogen) if halogen else None
@@ -289,11 +343,14 @@ def measure_source(
             if str(v).strip() and str(v).strip().lower() != "nan"
         }
         carbon_ev = any(t.startswith("13C") for t in tags)
+        ion_only = bool(group["ion_only"].any())
+        aset = set() if ion_only else adduct_sets.get(neutral, set())
         rows.append(
             dict(
                 source=label,
                 neutral=neutral,
                 adduct=adduct,
+                ion_only=ion_only,
                 ion=str(group["ion_formula"].iloc[0]),
                 mz=float(pd.to_numeric(group["mz"], errors="coerce").median()),
                 tier="Assigned" if (group["tier"] == "Assigned").any() else "Candidate",
@@ -302,14 +359,14 @@ def measure_source(
                 or bool(group["isotopologues"].map(lambda v: len(as_list(v)) > 0).any()),
                 multiline=len(tags) >= 2,
                 carbon_ev=carbon_ev,
-                chan2=int(channels.get(neutral, 0)) >= 2,
-                anchor=bool(
+                chan2=(not ion_only) and int(channels.get(neutral, 0)) >= 2,
+                anchor=(not ion_only) and bool(
                     group["anchor_peak_id"].notna().any()
                     or group["series_unit"].notna().any()
                 ),
-                branch=bool(adduct_sets.get(neutral, set()) & BARE_ADDUCTS)
-                and bool(adduct_sets.get(neutral, set()) & CLUSTER_ADDUCTS),
-                reagent_only_iso=bool(satellite)
+                branch=bool(aset & BARE_ADDUCTS) and bool(aset & CLUSTER_ADDUCTS),
+                reagent_only_iso=(not ion_only)
+                and bool(satellite)
                 and bool(tags)
                 and not carbon_ev
                 and all(t.startswith(satellite) for t in tags),
@@ -354,11 +411,14 @@ def level_of(row) -> str:
     unique = pd.notna(row.degeneracy) and row.degeneracy <= 1
     if hard:
         return "5b"
+    if bool(getattr(row, "ion_only", False)):
+        return "4d" if row.iso else "5a"
     if degenerate and row.n_axes == 0:
         return "5b"
-    if row.known_fam in UNIQUE_FAMILIES:
-        return "2b"
-    if row.known_fam in CLASS_ONLY_FAMILIES:
+    if row.known_fam:
+        if (KNOWN_FAMILY_SCOPE.get(row.known_fam, "class") == "compound"
+                and plausible_structures(row.neutral) == 1):
+            return "2b"
         return "3a"
     if row.branch:
         return "3b"
@@ -375,7 +435,9 @@ def assign_levels(df: pd.DataFrame, corroborating: set[str]) -> pd.DataFrame:
     """Add the axes, the derived flags and the level to measured rows."""
     df = df.copy()
     df["known_fam"] = df["known_fam"].fillna("")
-    df["corroborated"] = df["neutral"].isin(corroborating)
+    if "ion_only" not in df.columns:
+        df["ion_only"] = False
+    df["corroborated"] = df["neutral"].isin(corroborating) & ~df["ion_only"].astype(bool)
     df["n_axes"] = df[["iso", "chan2", "anchor", "corroborated"]].sum(axis=1)
     df["cross"] = df.corroborated | df.multiline | df.known_fam.ne("")
     df["neutral_backed"] = (
@@ -385,26 +447,65 @@ def assign_levels(df: pd.DataFrame, corroborating: set[str]) -> pd.DataFrame:
     return df
 
 
+#: a source corroborates the neutrals it holds at one of these levels by its own
+#: evidence (4b or better; 1 and 2a never fire)
+CORROBORATING_LEVELS = {"1", "2a", "2b", "3a", "3b", "4a", "4b"}
+OWN_AXES = {"iso", "chan2", "anchor"}
+
+
+def own_good_neutrals(frame: pd.DataFrame) -> set[str]:
+    """The neutrals a measured source holds at 4b or better when it is levelled
+    with NO corroboration — its own evidence only. Ion-only pairs never count."""
+    own = assign_levels(frame, set())
+    ok = own["level"].isin(CORROBORATING_LEVELS) & ~own["ion_only"].astype(bool)
+    return set(own.loc[ok, "neutral"].astype(str)) - {""}
+
+
+def stored_good_neutrals(ledger: pd.DataFrame, label: str) -> set[str]:
+    """A merged ledger (no predicate columns): the rows its stored level puts at
+    4b or better that still hold an axis of their own once `corroborated` is
+    taken away (a level the axis alone produced does not count)."""
+    if "evidence_level" not in ledger.columns:
+        raise SystemExit(f"{label}: neither per-file predicate columns nor an evidence_level column")
+    ledger = ledger[~is_ion_only(ledger)]
+    keep = []
+    for level, axes in zip(ledger["evidence_level"], column(ledger, "evidence_axes", "")):
+        parts = set(str(axes).split("|")) if pd.notna(axes) else set()
+        good = str(level) in CORROBORATING_LEVELS
+        if good and "corroborated" in parts:
+            own = parts & OWN_AXES
+            good = bool(own) and not (own == {"iso"} and "reagent_only_iso" in parts)
+        keep.append(good)
+    return set(column(ledger, "neutral_formula")[np.array(keep, dtype=bool)].dropna().astype(str)) - {""}
+
+
+def source_good_neutrals(path: str) -> tuple[str, pd.DataFrame | None, set[str]]:
+    """(label, measured frame or None, the neutrals it corroborates) for one source."""
+    label, ledger = load_source(path)
+    if "role" not in ledger.columns:
+        return label, None, stored_good_neutrals(ledger, label)
+    halogen = detect_reagent_halogen(ledger[column(ledger, "role").astype(str) == "M0"])
+    frame = measure_source(label, ledger, halogen)
+    if frame.empty:
+        return label, None, set()
+    frame["reagent_halogen"] = halogen or ""
+    return label, frame, own_good_neutrals(frame)
+
+
 def run(sources: list[str], corroborate: list[str]) -> pd.DataFrame:
-    """Level every source, each corroborated by the others plus --corroborate."""
+    """Level every source, each corroborated by the others plus --corroborate —
+    by the neutrals each of them holds at 4b or better on its own evidence."""
     measured = {}
     neutrals = {}
     for path in sources:
-        label, ledger = load_source(path)
-        halogen = detect_reagent_halogen(ledger[column(ledger, "role").astype(str) == "M0"])
-        frame = measure_source(label, ledger, halogen)
-        if frame.empty:
+        label, frame, good = source_good_neutrals(path)
+        if frame is None:
             print(f"  {label}: no M0 rows, skipped", file=sys.stderr)
             continue
-        frame["reagent_halogen"] = halogen or ""
         measured[path] = (label, frame)
-        neutrals[path] = set(frame["neutral"])
+        neutrals[path] = good
     for path in corroborate:
-        label, ledger = load_source(path)
-        role = column(ledger, "role").astype(str)
-        neutrals[f"--corroborate:{path}"] = set(
-            column(ledger[role == "M0"], "neutral_formula").dropna().astype(str)
-        )
+        neutrals[f"--corroborate:{path}"] = source_good_neutrals(path)[2]
     out = []
     for path, (label, frame) in measured.items():
         others: set[str] = set()

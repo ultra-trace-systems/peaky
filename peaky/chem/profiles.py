@@ -55,6 +55,18 @@ class ReagentProfile:
     # ones when nothing strong matched, so a stray stamp can never bolt a phantom
     # reagent onto a real one.
     detect_weak: bool = False
+    # ION-ONLY channels (cleanup.commit_ion_only_electron_attachment, pipeline
+    # stage `ion_only`): adducts a profile opens for the committed-composition,
+    # open-process bucket. "[M]-." = the radical anion an O-rich closed-shell
+    # acid forms when a primary source ion (an electron / O2-.) attaches instead
+    # of the reagent: the +1.0078 Da line beside the acid's [M-H]-, pinned to
+    # the acid's composition by exact mass and its own 13C, anti-correlated with
+    # the acid and switching with the source state. NEVER a grid channel (every
+    # even-mass peak would gain a CHO radical-anion reading against the
+    # organonitrate [M-H]- and 13C lines): the stage anchors on committed
+    # [M-H]- rows and commits Candidate rows on this adduct only. Empty = off.
+    # Copied onto PassConfig.ion_only_channels by `apply_ion_only_channels`.
+    ion_only_channels: tuple = ()
     aliases: tuple = field(default_factory=tuple)
 
 
@@ -106,6 +118,7 @@ NO3 = ReagentProfile(
     ranges="C0-40 H0-60 N0-3 O0-25 S0-2",
     detect_adduct="[M+NO3]-",
     context="ambient-air",
+    ion_only_channels=("[M]-.",),   # the electron-attachment line beside each acid's [M-H]-
     aliases=("no3", "nitrate", "no3-", "nitrate-cims"),
 )
 
@@ -128,6 +141,7 @@ NO3_15N = ReagentProfile(
     purity=0.98,  # ~98% 15N reagent
     label_isotope="^N",   # covalent 15N products (organonitrates) rescued by labeled.py
     label_max=2,          # up to di-organonitrate
+    ion_only_channels=("[M]-.",),   # as NO3: the M-. line beside each acid's [M-H]-
     aliases=(
         "no3-15n",
         "15no3",
@@ -309,6 +323,8 @@ _CONFIG_FIELDS = (
     "purity",
     "label_isotope",
     "label_max",
+    # ion-only channels (`[M]-.` on the nitrate profiles): a list in the config
+    "ion_only_channels",
 )
 
 
@@ -327,6 +343,8 @@ def from_dict(entry: dict) -> "ReagentProfile":
     kw = {k: entry[k] for k in _CONFIG_FIELDS if k in entry}
     if "aliases" in kw:
         kw["aliases"] = tuple(kw["aliases"])
+    if "ion_only_channels" in kw:
+        kw["ion_only_channels"] = tuple(kw["ion_only_channels"] or ())
     if kw.get("height_cutoff_x_edge") is not None:
         kw["height_cutoff_x_edge"] = _x_edge_value(kw["height_cutoff_x_edge"])  # 'auto' or a number
     return ReagentProfile(**kw)
@@ -457,6 +475,33 @@ def apply_height_cutoff_x_edge(cfg, profile: "ReagentProfile | None" = None, *,
     return value, source
 
 
+def apply_ion_only_channels(cfg, profile: "ReagentProfile | None" = None, *,
+                            log=None) -> tuple:
+    """Stamp the ion-only channels in force onto a PassConfig; return them.
+    The same explicitness rule as `apply_height_cutoff_x_edge`: a cfg that
+    ALREADY carries a tuple -- an empty one included -- was set deliberately by
+    its caller (an A/B arm switching the bucket off against a profile that
+    declares it) and outranks the profile, which is why
+    `PassConfig.ion_only_channels` is None when unset rather than pre-filled
+    with (). No profile (a context-only entry point, `--reagent auto` on the
+    MCP path) resolves to nothing: the stage stays off."""
+    cur = getattr(cfg, "ion_only_channels", None)
+    if cur is None:
+        cur = tuple(getattr(profile, "ion_only_channels", ()) or ()) if profile is not None else ()
+        cfg.ion_only_channels = cur
+        source = f"profile {profile.name}" if (profile is not None and cur) else "no profile channel"
+    else:
+        cur = tuple(cur)
+        prof_t = tuple(getattr(profile, "ion_only_channels", ()) or ()) if profile is not None else ()
+        # a tuple equal to the profile's was stamped from it by an earlier call on
+        # the way down (pipeline -> assign_batch); only a DIFFERENT tuple is an override
+        source = (f"profile {profile.name}" if (profile is not None and cur == prof_t)
+                  else "explicit config")
+    if log is not None and cur:
+        log(f"[gate] ion-only channels {list(cur)} (from {source})")
+    return cur
+
+
 def _merge_ranges(sources: list[str]) -> str:
     """Union of element boxes: widest [lo, hi] per element, first-seen order."""
     from peaky.chem import chemistry as C
@@ -517,6 +562,13 @@ def compose(profiles: "list[ReagentProfile]") -> ReagentProfile:
     res = [p.reagent_ion_re for p in ps if p.reagent_ion_re]
     ctx = {p.context for p in ps}
     edge = {p.height_cutoff_x_edge for p in ps}
+    # ion-only channels are unioned like the adduct menu: a component that opens
+    # the electron-attachment bucket keeps it in the mix (NO3+Br, NO3+NO3_15N)
+    ion_only: list[str] = []
+    for p in ps:
+        for a in (p.ion_only_channels or ()):
+            if a not in ion_only:
+                ion_only.append(a)
     return ReagentProfile(
         name="+".join(p.name for p in ps),
         label=" / ".join(p.label for p in ps),
@@ -531,6 +583,7 @@ def compose(profiles: "list[ReagentProfile]") -> ReagentProfile:
         label_isotope=lab.label_isotope if lab else None,
         label_max=lab.label_max if lab else 2,
         height_cutoff_x_edge=next(iter(edge)) if len(edge) == 1 else None,
+        ion_only_channels=tuple(ion_only),
         aliases=(),
     )
 

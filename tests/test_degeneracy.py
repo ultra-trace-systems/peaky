@@ -1,111 +1,281 @@
-"""Offline tests for degeneracy.py. Run: python3 tests/test_degeneracy.py
-Uses a TINY element box (fast grid) + an injected calibration so no network and
-no 1-2 min full-range build."""
-import sys
-from pathlib import Path
+"""The degeneracy audit (degeneracy.py) counts the ions THIS run could have
+committed inside the calibrated window: its channels, its element space (the
+context's budget, a zero cap raised by a family the file opened, the curated
+formulas), no box. A commit outside that space gives a lower bound -- enough to
+decide "degenerate", never "unique" -- and below three ions the density is not
+measured (NaN). Offline: no network, no grid build."""
+import dataclasses
+import random
+from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
+import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from peaky import chemistry as C          # noqa: E402
-from peaky import ledger as L             # noqa: E402
-from peaky import degeneracy as D         # noqa: E402
+from peaky.assignment import assign as A
+from peaky.assignment import degeneracy as D
+from peaky.assignment import evidence as EV
+from peaky.assignment import ledger as L
+from peaky.assignment import passes
+from peaky.assignment import plausibility as PL
+from peaky.assignment import tiers as T
+from peaky.chem import chemistry as C
+from peaky.chem import contexts as X
 
-PASS = FAIL = 0
-
-
-def check(name, cond, detail=""):
-    global PASS, FAIL
-    if cond:
-        PASS += 1
-        print(f"  ok  {name}")
-    else:
-        FAIL += 1
-        print(f"FAIL  {name}  {detail}")
+URONIUM = ("[M+H]+", "[M+(CH4N2O)H]+")
+NITRATE = ("[M+NO3]-", "[M-H]-", "[M+^NO3]-")
 
 
-TINY = "C0-14 H0-28 N0-2 O0-7 S0-1 F0-8"
-
-# --- deterministic unit checks --------------------------------------------
-check("uncalibrated -> empty", D.measure_degeneracy(
-    L.new_ledger(pd.DataFrame({"peak_id": ["a"], "mz": [200.0], "height": [1.0]})),
-    cal=None) == {})
-
-# same-ion decomposition alias collapses to one canonical ion
-a1 = D._canonical_ion("C2H3BrO2", "[M+Br]-")     # ion C2H3Br2O2
-a2 = D._canonical_ion("C2H2O2", "[M+HBr+Br]-")    # +H +Br +Br -> C2H3Br2O2
-check("covalent/cluster aliases share one canonical ion", a1 == a2 and a1 is not None, (a1, a2))
-# iodide analog with a MIXED-sign adduct: acid.I2 cluster vs covalent [M+I]-
-a3 = D._canonical_ion("CH2O2", "[M-H+I2]-")       # -H +I +I -> CHI2O2
-a4 = D._canonical_ion("CHIO2", "[M+I]-")          # +I        -> CHI2O2
-check("acid.I2 / covalent-I aliases share one canonical ion",
-      a3 == a4 and a3 is not None, (a3, a4))
-
-prof = D.relaxed_profile(__import__("peaky.chem.contexts", fromlist=["get_context"]).get_context("ambient-air"))
-check("relaxed profile lifts the F cap", prof.max_F >= 10 and prof.max_Si >= 6)
-
-# --- integration: brute-find a near-isobar [M-H]- pair, expect density>=2 ---
-from peaky.chem import contexts as X  # noqa: E402
-grid = sorted(C._grid_cached(C.parse_ranges(TINY), 30.0, 300.0))
-shift = C.ADDUCT_SHIFTS["[M-H]-"]
-prof_r = D.relaxed_profile(X.get_context("ambient-air"))
-def plausible(fm):
-    return X.filter_by_profile(fm, prof_r)[0]
-pair = None
-for i in range(len(grid) - 1):
-    m, f = grid[i]
-    if not (150 <= m <= 260) or not plausible(f):
-        continue
-    for j in range(i + 1, len(grid)):
-        m2, f2 = grid[j]
-        if m2 - m > 0.003:
-            break
-        # both plausible, distinct, and < 6 ppm apart (each within 3 ppm of mid)
-        if f != f2 and plausible(f2) and abs(m2 - m) / m * 1e6 < 6:
-            pair = (m, f, m2, f2)
-            break
-    if pair:
-        break
-check("found a near-isobar pair in the tiny grid", pair is not None, "no plausible near-isobar < 6 ppm")
-
-if pair:
-    m, f, m2, f2 = pair
-    mz = (m + m2) / 2 + shift          # peak between the two ion masses
-    led = L.new_ledger(pd.DataFrame({"peak_id": ["P", "Q"], "mz": [mz, 999.0],
-                                     "height": [1e4, 1e4]}))
-    L.commit_assignment(led, "P", neutral_formula=f, adduct="[M-H]-",
-                        ion_formula=f"{f}-", ion_score=0.9, compound_score=0.9,
-                        ppm_error=0.0, pass_no=1, method="cheminfo+grid",
-                        confidence="Good", commentary="x")
-    # window sigma 6 ppm, k 3 -> +/-18 ppm so the <6 ppm pair both fall in
-    res = D.measure_degeneracy(led, cal=(0.0, 6.0), box=TINY,
-                               adducts=("[M-H]-",), k_sigma=3.0)
-    dP = res.get("P", {})
-    check("degenerate peak: density >= 2", dP.get("density", 0) >= 2, dP)
-    check("degenerate peak: note flags MASS-DEGENERATE",
-          "MASS-DEGENERATE" in dP.get("note", ""), dP.get("note"))
-    check("note names the competitor formula", f2 in dP.get("note", "") or
-          any(f2 in a for a in dP.get("alts", [])), dP)
-
-# a clean low-mass peak (its own [M-H]- mass) -> density 1, 'unique' note
-clean_mz = C.neutral_mass("C3H6O2") + shift
-led2 = L.new_ledger(pd.DataFrame({"peak_id": ["U"], "mz": [clean_mz], "height": [1e4]}))
-L.commit_assignment(led2, "U", neutral_formula="C3H6O2", adduct="[M-H]-",
-                    ion_formula="C3H5O2-", ion_score=0.9, compound_score=0.9,
-                    ppm_error=0.0, pass_no=1, method="cheminfo+grid",
-                    confidence="Good", commentary="x")
-resU = D.measure_degeneracy(led2, cal=(0.0, 1.0), box=TINY, adducts=("[M-H]-",))
-check("low-mass clean peak: density == 1", resU.get("U", {}).get("density") == 1, resU.get("U"))
-
-# apply_degeneracy stamps the columns
-D.apply_degeneracy(led2, cal=(0.0, 1.0), box=TINY, adducts=("[M-H]-",))
-check("apply_degeneracy stamps degeneracy_note on M0",
-      led2.loc[led2.peak_id == "U", "degeneracy_note"].notna().all())
-
-def test_all():
-    assert FAIL == 0, f"{FAIL} checks failed"
+def _ledger(rows):
+    """rows: (peak_id, neutral, adduct); each peak sits at its reading's exact m/z."""
+    mzs = [C.neutral_mass(f) + C.ADDUCT_SHIFTS[a] for _, f, a in rows]
+    led = L.new_ledger(pd.DataFrame({"peak_id": [p for p, _, _ in rows], "mz": mzs,
+                                     "height": [1e4] * len(rows)}))
+    for p, f, a in rows:
+        L.commit_assignment(led, p, neutral_formula=f, adduct=a, ion_formula=f"{f}{a[-1]}",
+                            ion_score=0.9, compound_score=0.9, ppm_error=0.0, pass_no=1,
+                            method="cheminfo+grid", confidence="Good", commentary="x")
+    return led
 
 
-if __name__ == "__main__":
-    print(f"\n{PASS} passed, {FAIL} failed")
-    sys.exit(1 if FAIL else 0)
+def _measure(rows, *, sigma=0.2, **kw):
+    return D.measure_degeneracy(_ledger(rows), cal=(0.0, sigma), **kw)
+
+
+def _competitor_adducts(res):
+    return {a.split(" (")[0].split(" ", 1)[1] for a in res["alts"]}
+
+
+# --------------------------------------------------------------------------- the solver
+def test_solver_proposes_exactly_the_grid_enumerators_formulas():
+    """The analytic per-window solve is the grid enumerator's formula set (<= 3 heteroatom types),
+    window by window: 1.9-Da windows tiling 20-400 Da, so every formula of the space is compared --
+    P is in the space so Senior's cap is not implied by H >= 0 -- plus exact-hit windows."""
+    prof = dataclasses.replace(X.get_context("ambient-air"), max_N=1, max_S=1, max_P=1, max_Si=0, max_Cl=1,
+                               max_Br=0, max_F=0, grid_c_max=12, grid_o_max=6)
+    cb = D._combos(D._caps(prof))
+    grid = [(m, f) for m, f in C.enumerate_grid({"C": (0, 12), "H": (0, 60), "N": (0, 1), "O": (0, 6),
+                                                 "S": (0, 1), "P": (0, 1), "Cl": (0, 1)}, 20.0, 400.0)
+            if D._het_types(C.parse_formula(f)) <= D.MAX_HET_TYPES]
+    rng = random.Random(7)
+    # 1.9-Da tiles: just under the solver's 2 x m(H) limit, wide enough that Senior's cap -- which the
+    # carbon pruning enforces on its own inside a narrower window -- has to decide some formulas
+    windows = [(20.0 + 1.9 * k, 21.9 + 1.9 * k) for k in range(200)]
+    windows += [(m - 1e-7, m + 1e-7) for m, _ in rng.sample(grid, 20)]       # exact hits
+    n = 0
+    for lo, hi in windows:
+        want = {f for m, f in grid if lo <= m <= hi}
+        rep, cv, hv = D._solve(cb, 12, lo, hi)
+        got = {D._formula(cb, i, c, h) for i, c, h in zip(rep, cv, hv)}
+        assert got == want, (lo, hi, sorted(got ^ want))
+        n += len(want)
+    assert n > 10_000
+
+
+def test_the_window_is_applied_exactly():
+    """Inclusive at the edge (to float noise), and not a nanodalton wider -- the DBE solve alone
+    carries a tolerance of that size, so the mass test has to be applied on its own."""
+    cb = D._combos(D._caps(X.get_context("ambient-air")))
+    m = C.neutral_mass("C10H16O5")
+    def got(lo, hi):
+        rep, cv, hv = D._solve(cb, 40, lo, hi)
+        return {D._formula(cb, i, c, h) for i, c, h in zip(rep, cv, hv)}
+    assert "C10H16O5" in got(m - 1e-3, m + 1e-12) and "C10H16O5" in got(m - 1e-12, m + 1e-3)
+    assert "C10H16O5" not in got(m + 1e-9, m + 1e-3)
+    assert "C10H16O5" not in got(m - 1e-3, m - 1e-9)
+
+
+@pytest.mark.parametrize("name", sorted({id(p): n for n, p in X.CONTEXTS.items()}.values()))
+def test_every_context_enumerates_inside_the_ceiling(name):
+    """A context that leaves a cap at its 99 default must not open a 99-atom loop."""
+    prof = X.get_context(name)
+    for p in D.space_profiles(prof, tuple(X.CONTAMINANT_FAMILIES)):
+        caps = D._caps(p)
+        assert all(caps[e] <= D.ELEMENT_CEILING[e] for e in D.ELEMENT_CEILING)
+        assert len(D._combos(caps)["A"]) < 1_000_000
+
+
+# --------------------------------------------------------------------------- channels
+def test_a_positive_channel_is_audited_on_its_own_adducts():
+    """Uronium: every competitor is a cation reading (the old fixed Br-CIMS set made
+    the channel enumerate only anions, and 82 % of its rows read "unique" at 0). The
+    urea channel adds no ion of its own there: X [M+(CH4N2O)H]+ is X+CH4N2O [M+H]+."""
+    res = _measure([("P", "C10H16O5", "[M+H]+")], sigma=3.0, context="uronium", adducts=URONIUM)["P"]
+    assert res["measured"] and not res["lower_bound"]
+    assert res["density"] >= 2
+    assert all(a.endswith("+") for a in _competitor_adducts(res))
+
+
+def test_every_channel_of_the_run_counts():
+    """A labelled-nitrate row meets its competitors on the run's other channels too."""
+    row = [("P", "C10H16O7", "[M+^NO3]-")]
+    full = _measure(row, sigma=3.0, context="ambient-air", adducts=NITRATE)["P"]
+    own = _measure(row, sigma=3.0, context="ambient-air", adducts=("[M+^NO3]-",))["P"]
+    assert "[M-H]-" in _competitor_adducts(full)
+    assert "[M-H]-" not in _competitor_adducts(own)
+    assert own["density"] < full["density"]
+
+
+def test_a_row_on_another_adduct_adds_its_own():
+    """A commit on an adduct outside the run's channels is still found on its own."""
+    res = _measure([("P", "C10H16O5", "[M-H]-")], context="ambient-air", adducts=("[M+NO3]-",))["P"]
+    assert res["measured"] and not res["lower_bound"] and res["density"] >= 1
+
+
+def test_same_ion_readings_collapse():
+    assert D._canonical_ion("C2H3BrO2", "[M+Br]-") == D._canonical_ion("C2H2O2", "[M+HBr+Br]-")
+    assert D._canonical_ion("CH2O2", "[M-H+I2]-") == D._canonical_ion("CHIO2", "[M+I]-")
+    assert D._canonical_ion("C8H18O5", "[M+NH4]+") == D._canonical_ion("C8H21NO5", "[M+H]+")
+
+
+# --------------------------------------------------------------------------- the element space
+def test_space_profiles_raise_only_a_zero_cap():
+    amb = X.get_context("ambient-air")
+    profs = D.space_profiles(amb, ("fluorinated", "siloxane", "organosulfate"))
+    assert len(profs) == 2 and profs[1].max_F == 17 and profs[1].max_Si == amb.max_Si
+    assert D.space_profiles(amb, ("siloxane",)) == [amb]                 # Si 1 binds on ambient
+    ur = D.space_profiles("uronium", ("fluorinated",))
+    assert len(ur) == 2 and ur[1].max_F == 17
+
+
+def test_opened_families_reads_declared_reagent_evidence_and_commits():
+    ev = pd.DataFrame({"action": ["fluorinated", "glycol_peg", None], "significant": [True, False, True]})
+    led = _ledger([("P", "C10H16O5", "[M-H]-")])
+    led.loc[led.peak_id == "P", "method"] = "contaminant:halogen_dbp"
+    fams = D.opened_families(X.get_context("ambient-air"), "Br", ev, led)
+    assert fams == ("organosulfate", "nitrate", "siloxane", "amine", "bromo_organic", "fluorinated",
+                    "halogen_dbp")
+    assert D.opened_families(None, None, None, None) == ()
+
+
+def test_fluorine_counts_only_where_the_file_opened_it():
+    pfoa = [("P", "C8HF15O2", "[M-H]-")]
+    closed = _measure(pfoa, context="ambient-air", adducts=NITRATE)["P"]
+    assert closed["lower_bound"]                                   # F is off the ambient budget
+    opened = _measure(pfoa, context="ambient-air", adducts=NITRATE, families=("fluorinated",))["P"]
+    assert opened["measured"] and not opened["lower_bound"] and opened["density"] >= 1
+    curated = _measure(pfoa, context="ambient-air", adducts=NITRATE, curated={"C8HF15O2"})["P"]
+    assert curated["measured"] and not curated["lower_bound"]      # a curated list names it
+
+
+def test_every_competitor_passes_the_context_filter():
+    """The space is the context's own: its Van Krevelen and minimum-carbon rules bind competitors."""
+    res = _measure([("P", "C10H16O5", "[M-H]-")], sigma=15.0, context="ambient-air", adducts=NITRATE,
+                   max_alts=500)["P"]
+    assert res["density"] > 10
+    for alt in res["alts"]:
+        assert X.filter_by_profile(alt.split(" ")[0], X.get_context("ambient-air"))[0], alt
+
+
+def test_the_commit_outside_the_context_filter_is_outside_the_space():
+    """In the budget but outside the context's filter ((H+X)/C 0.5 < 0.7): a bound, not a count."""
+    res = _measure([("P", "C8H4O4", "[M-H]-")], sigma=0.05, context="ambient-air", adducts=NITRATE)["P"]
+    assert res["lower_bound"] and np.isnan(res["density"]) and "context filter" in res["note"]
+
+
+def test_a_curated_commit_off_the_window_is_in_the_space():
+    """Off the window is not off the space when a curated list names the formula."""
+    led = _ledger([("P", "C8HF15O2", "[M-H]-")])
+    led.loc[led.peak_id == "P", "mz"] = float(led.loc[led.peak_id == "P", "mz"].iloc[0]) * (1 + 5e-6)
+    res = D.measure_degeneracy(led, cal=(0.0, 0.2), context="ambient-air", adducts=NITRATE,
+                               curated={"C8HF15O2"})["P"]
+    assert not res["lower_bound"] and res["measured"]
+
+
+def test_uronium_never_counts_a_halogen_competitor():
+    res = _measure([("P", "C12H22O6", "[M+H]+")], sigma=4.0, context="uronium", adducts=URONIUM)["P"]
+    assert res["density"] >= 2
+    for alt in res["alts"]:
+        cnt = C.parse_formula(alt.split(" ")[0])
+        assert not any(cnt.get(e, 0) for e in ("F", "Cl", "Br", "I")), alt
+
+
+# --------------------------------------------------------------------------- no box
+def test_a_heavy_commit_is_inside_its_own_count():
+    """C22H42O6 (outside the old C<=20 box) is measured -- the old audit left it out of
+    its own count and density 0 read as 'unique'."""
+    res = _measure([("P", "C22H42O6", "[M+(CH4N2O)H]+")], context="uronium", adducts=URONIUM)["P"]
+    assert res["measured"] and not res["lower_bound"] and res["density"] >= 1
+    hom = _measure([("P", "C10H16O13", "[M+NO3]-")], context="ambient-air", adducts=NITRATE)["P"]
+    assert hom["measured"] and not hom["lower_bound"]              # O13 > the old O<=12
+
+
+# --------------------------------------------------------------------------- outside the space
+def test_an_off_space_commit_is_a_lower_bound_or_not_measured():
+    row = [("P", "C10H15O4P", "[M-H]-")]                           # P: off the ambient budget
+    tight = _measure(row, sigma=0.05, context="ambient-air", adducts=NITRATE)["P"]
+    assert not tight["measured"] and np.isnan(tight["density"])
+    assert tight["note"].startswith("not measured")
+    # the note must not read as saturated / degenerate anywhere downstream
+    assert not PL._mass_degenerate({"degeneracy_density": pd.NA, "degeneracy_note": tight["note"]})
+    assert T._degeneracy({"degeneracy_density": pd.NA, "degeneracy_note": tight["note"]}) == (None, False)
+    wide = _measure(row, sigma=12.0, context="ambient-air", adducts=NITRATE)["P"]
+    assert wide["measured"] and wide["lower_bound"] and wide["density"] >= 3
+    assert "at least" in wide["note"] and "lower bound" in wide["note"]
+    assert T._degeneracy({"degeneracy_density": wide["density"], "degeneracy_note": wide["note"]})[1]
+
+
+def test_the_lower_bound_decides_at_three():
+    """Off-space commit with one other ion: not measured; with two: 'at least 3', degenerate."""
+    row = [("P", "C10H15O4P", "[M-H]-")]
+    one = _measure(row, sigma=0.2, context="ambient-air", adducts=NITRATE)["P"]
+    assert np.isnan(one["density"]) and "; 1 other plausible ion(s)" in one["note"]
+    two = _measure(row, sigma=0.3, context="ambient-air", adducts=NITRATE)["P"]
+    assert two["density"] == 3 and two["lower_bound"] and "at least 3" in two["note"]
+    assert T._degeneracy({"degeneracy_density": two["density"], "degeneracy_note": two["note"]})[1]
+
+
+def test_a_curated_formula_competes_off_budget():
+    """A curated formula counts wherever its ion lands in the window, off-budget or not."""
+    row = [("P", "C10H16O5", "[M-H]-")]
+    cur = _measure(row, sigma=15.0, context="ambient-air", adducts=NITRATE, curated={"C10H17O3P"},
+                   max_alts=500)["P"]
+    plain = _measure(row, sigma=15.0, context="ambient-air", adducts=NITRATE, max_alts=500)["P"]
+    assert any(a.startswith("C10H17O3P ") for a in cur["alts"])
+    assert not any(a.startswith("C10H17O3P ") for a in plain["alts"])
+    assert cur["density"] == plain["density"] + 1
+
+
+def test_outside_the_window_is_not_outside_the_space():
+    """An in-space commit off the window counts only what the window holds."""
+    led = _ledger([("P", "C10H16O5", "[M-H]-")])
+    led.loc[led.peak_id == "P", "mz"] = float(led.loc[led.peak_id == "P", "mz"].iloc[0]) * (1 + 5e-6)
+    res = D.measure_degeneracy(led, cal=(0.0, 0.2), context="ambient-air", adducts=NITRATE)["P"]
+    assert res["measured"] and not res["lower_bound"]
+
+
+def test_apply_stamps_na_and_the_level_reads_not_measured():
+    led = _ledger([("P", "C10H15O4P", "[M-H]-"), ("Q", "C10H16O5", "[M-H]-")])
+    D.apply_degeneracy(led, cal=(0.0, 0.05), context="ambient-air", adducts=NITRATE)
+    p = led.loc[led.peak_id == "P"].iloc[0]
+    assert pd.isna(p["degeneracy_density"]) and str(p["degeneracy_note"]).startswith("not measured")
+    q = led.loc[led.peak_id == "Q"].iloc[0]
+    assert float(q["degeneracy_density"]) >= 1
+    facts = EV._measure(led.assign(**{"__file": "f"}), halogen=None)
+    assert np.isnan(float(facts.loc[facts.neutral_formula == "C10H15O4P", "degeneracy"].iloc[0]))
+
+
+def test_uncalibrated_is_skipped():
+    assert D.measure_degeneracy(_ledger([("P", "C10H16O5", "[M-H]-")]), cal=None) == {}
+
+
+# --------------------------------------------------------------------------- the stage
+def test_the_stage_audits_the_runs_channels_and_space(monkeypatch):
+    seen = {}
+
+    def fake(led, **kw):
+        seen.update(kw)
+        return led
+
+    monkeypatch.setattr(D, "apply_degeneracy", fake)
+    ev = pd.DataFrame({"action": ["fluorinated"], "significant": [True]})
+    st = SimpleNamespace(profile=X.get_context("uronium"), cfg=SimpleNamespace(reflist_formulas=frozenset({"C9H9Q"})),
+                         series_carry={"evidence": ev}, do_pass3=True, reagent=None,
+                         led=_ledger([("P", "C10H16O5", "[M+H]+")]), adducts=list(URONIUM),
+                         log=lambda *a: None)
+    out = A._stage_degeneracy(st)
+    assert seen["adducts"] == list(URONIUM) and seen["context"] is st.profile
+    assert set(X.get_context("uronium").pass3_families) <= set(seen["families"])
+    assert "fluorinated" in seen["families"]
+    assert passes.known_formulas("positive", "uronium") <= seen["curated"] and "C9H9Q" in seen["curated"]
+    assert out["channels"] == list(URONIUM) and "fluorinated" in out["families"]

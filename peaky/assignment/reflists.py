@@ -248,18 +248,48 @@ def match_assigned(neutral_formulas, lists, *, include_radicals: bool = False) -
     return res
 
 
+# The bare (covalent) channels: a deprotonated / protonated molecular ion with
+# no reagent cluster. Two list entries can name the SAME ION under two of the
+# run's adducts -- an acid's reagent cluster and the deprotonated organonitrate
+# one HNO3 heavier (C5H6O6 [M+NO3]- and C5H7NO9 [M-H]- are both C5H6NO9-) --
+# and then neither the mass nor the isotopes can separate them. At such a tie
+# the CLUSTER reading is kept: it is the reagent's native detection (the
+# list's own `native_detection`) and the tier engine's standing policy for a
+# same-ion decomposition alias (tiers._drop_decomposition_aliases, 2026-06-11);
+# the covalent reading is recorded on the row as the alias. Before this the
+# winner was whichever entry the formula frozenset iterated first -- hash order,
+# different in every interpreter -- and three TOF peaks flipped reading between
+# byte-identical runs.
+BARE_ADDUCTS = frozenset({"[M-H]-", "[M+H]+", "[M-H]+", "[M]-.", "[M]+."})
+#: two targets within this many ppm of each other are one ion (a same-ion pair
+#: differs by float rounding only, ~1e-9 ppm)
+TIE_PPM = 1e-6
+
+
+def _adduct_rank(adduct: str, adducts) -> tuple:
+    """Order among same-ion entries: a cluster channel before a bare one, then
+    the run's own channel order, then the text."""
+    try:
+        pos = list(adducts).index(adduct)
+    except ValueError:
+        pos = len(adducts)
+    return (1 if adduct in BARE_ADDUCTS else 0, pos, adduct)
+
+
 def _target_table(lists, adducts, include_radicals: bool):
-    """Sorted [(mz, formula, adduct, list_id)] of every list formula under every
-    reagent adduct — built once per match call."""
+    """Sorted [(mz, formula, adduct, list_id, rank)] of every list formula under
+    every reagent adduct -- built once per match call. Fully ordered (mass, then
+    `_adduct_rank`, then the formula and list text), so the same catalog gives
+    the same table in every interpreter."""
     rows = []
     for L in lists:
-        for f in L.pool(include_radicals):
+        for f in sorted(L.pool(include_radicals)):
             for a in adducts:
                 try:
-                    rows.append((C.ion_mz(f, a), f, a, L.id))
+                    rows.append((C.ion_mz(f, a), f, a, L.id, _adduct_rank(a, adducts)))
                 except Exception:
                     continue
-    rows.sort(key=lambda r: r[0])
+    rows.sort(key=lambda r: (r[0], r[4], r[1], r[3]))
     return rows
 
 
@@ -296,7 +326,7 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
     for m in matches:
         pid = by_mz.get(round(m["obs_mz"], 5))
         if pid is not None and pid not in want:
-            want[pid] = (m["formula"], m["adduct"], m["list"])
+            want[pid] = (m["formula"], m["adduct"], m["list"], m.get("aliases") or [])
             allf.add(m["formula"])
     if not allf:
         return {"rescued": 0, "tentative": 0}
@@ -311,7 +341,7 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
     floor = getattr(cfg, "tau_low", 0.70)
     hcut = cfg.height_cutoff          # resolved gate (raises if unresolved: fail closed)
     rescued = tentative = 0
-    for pid, (formula, adduct, lid) in want.items():
+    for pid, (formula, adduct, lid, aliases) in want.items():
         idx = ledger.index[ledger["peak_id"] == pid]
         if not len(idx) or ledger.at[idx[0], "role"] != L.ROLE_UNEXPLAINED:
             continue
@@ -341,14 +371,27 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
         # unverifiable rescue must land tentative, never Assigned.
         iso_observable = ISO.satellite_observable("C", nC, h, hcut)
         srcs = next((Ls.cite().split(",")[0] for Ls in lists if Ls.id == lid), lid)
+        # a same-ion alias on the list (see BARE_ADDUCTS): recorded on the row,
+        # in `alternatives` and in the commentary, never a competing candidate
+        alts = [{"formula": al["formula"], "adduct": al["adduct"], "list": al["list"],
+                 "note": "same ion (exact-mass alias): not separable by mass or isotopes"}
+                for al in aliases] or None
+        alias_note = ("" if not aliases else
+                      " Same ion as " + ", ".join(f"{al['formula']} {al['adduct']} ({al['list']})"
+                                                  for al in aliases)
+                      + ": the reagent-cluster reading is kept (the list's native detection; "
+                      "the decomposition-alias policy), the covalent reading is its alias -- "
+                      "no mass or isotope evidence can separate them.")
         # runs AFTER apply_tiers (like the F/carbon demotes), so set tier explicitly.
         if iso_ok:
             L.commit_assignment(ledger, pid, neutral_formula=formula, adduct=adduct,
                                 ion_formula=str(top["ion_formula"]), ion_score=score,
                                 compound_score=score, ppm_error=ppm, pass_no=8,
                                 method=f"reflist-rescue:{lid}", confidence="Good (literature)",
+                                alternatives=alts,
                                 commentary=(f"Reference-list match ({srcs}); server score "
-                                            f"{score:.2f}, isotope-confirmed, z={z:.1f}."))
+                                            f"{score:.2f}, isotope-confirmed, z={z:.1f}."
+                                            + alias_note))
             ledger.at[i, "tier"] = "Assigned"
             rescued += 1
         elif not iso_observable:                       # too dim to confirm -> tentative
@@ -357,9 +400,11 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
                                 compound_score=score, ppm_error=ppm, pass_no=8,
                                 method=f"reflist-rescue:{lid}",
                                 confidence="Candidate (literature, dim)",
+                                alternatives=alts,
                                 commentary=(f"Reference-list match ({srcs}); server score "
                                             f"{score:.2f}, z={z:.1f}. Too dim ({h:.0f} cps) to "
-                                            "confirm isotopes -- tentative lead, not confirmed."))
+                                            "confirm isotopes -- tentative lead, not confirmed."
+                                            + alias_note))
             ledger.at[i, "tier"] = "Candidate"
             if "below_assignability" not in ledger.columns:
                 ledger["below_assignability"] = False
@@ -376,7 +421,10 @@ def match_by_mass(mz_values, lists, adducts, *, tol_ppm: float = 5.0,
     """Rescue/annotate UNEXPLAINED peaks (which have no formula) BY MASS: for each
     observed m/z, find the closest list-formula ion (any reagent adduct) within
     `tol_ppm`. Returns one dict per matched observed peak (best match only):
-    {obs_mz, formula, adduct, list, ppm, target_mz}."""
+    {obs_mz, formula, adduct, list, ppm, target_mz, aliases}, where `aliases`
+    lists the OTHER list entries that name the same ion (within `TIE_PPM` of the
+    winner: an acid's reagent cluster vs the deprotonated organonitrate of the
+    same list), the cluster reading having won the tie (`_adduct_rank`)."""
     targets = _target_table(lists, adducts, include_radicals)
     if not targets:
         return []
@@ -392,13 +440,22 @@ def match_by_mass(mz_values, lists, adducts, *, tol_ppm: float = 5.0,
         w = obs * tol_ppm * 1e-6
         lo = bisect.bisect_left(tmz, obs - w)
         hi = bisect.bisect_right(tmz, obs + w)
-        best = None
+        hits = []
         for j in range(lo, hi):
-            m, f, a, lid = targets[j]
+            m, f, a, lid, rank = targets[j]
             ppm = (obs - m) / obs * 1e6
-            if abs(ppm) <= tol_ppm and (best is None or abs(ppm) < abs(best["ppm"])):
-                best = {"obs_mz": round(obs, 5), "formula": f, "adduct": a,
-                        "list": lid, "ppm": round(ppm, 2), "target_mz": round(m, 5)}
-        if best:
-            out.append(best)
+            if abs(ppm) <= tol_ppm:
+                hits.append((abs(ppm), rank, f, lid, a, ppm, m))
+        if not hits:
+            continue
+        best_abs = min(h[0] for h in hits)
+        # the nearest target wins; targets within TIE_PPM of it are the same ion,
+        # ranked by channel (cluster first), then formula and list text
+        ties = sorted((h for h in hits if h[0] <= best_abs + TIE_PPM),
+                      key=lambda h: (h[1], h[2], h[3]))
+        _, _, f, lid, a, ppm, m = ties[0]
+        out.append({"obs_mz": round(obs, 5), "formula": f, "adduct": a,
+                    "list": lid, "ppm": round(ppm, 2), "target_mz": round(m, 5),
+                    "aliases": [{"formula": t[2], "adduct": t[4], "list": t[3]}
+                                for t in ties[1:] if (t[2], t[4]) != (f, a)]})
     return out

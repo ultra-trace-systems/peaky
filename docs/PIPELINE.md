@@ -43,6 +43,7 @@ REPORTING    ledger → figures + PDF                 VANKREVELEN · GKA · QC_A
 | --- | --- | --- |
 | [`ASSIGNMENT.md`](ASSIGNMENT.md) | `assignment/*` | what assignment does + what the results mean (for a scientist) |
 | [`ASSIGNMENT_DETAIL.md`](ASSIGNMENT_DETAIL.md) | `assignment/*` | the full pass-by-pass internals (arbitration, tiers, cleanup, degeneracy) |
+| [`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) | `assignment/evidence.py` | what the evidence behind a committed formula is worth (2b…5b, beside the tier) and the claim that level supports (identified / ion / tentative) |
 
 ## 4. Batch — many samples → one merged ledger
 

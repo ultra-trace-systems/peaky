@@ -8,7 +8,7 @@ whole pipeline), [`SAMPLING.md`](SAMPLING.md) (which bins on `build_matrix`), an
 [`CLUSTERING.md`](CLUSTERING.md) (which clusters traces built on the same cadence).
 
 **Code:** `peaky/batch/timeseries.py`. All pure pandas/numpy, no network. It never
-changes a formula — only the tier/role annotation, with commentary.
+changes a formula or a tier — it labels rows (`ts_*` columns), with commentary.
 
 > Keep this in sync with the code. Every threshold below is a named constant or a
 > literal in `timeseries.py`; if you change one there, change it here.
@@ -23,8 +23,8 @@ is the analyte **normalised to the reagent ion** (removes instrument-sensitivity
 reagent-flow common-mode drift). Then a **flat** normalised trace (low cv, no
 diel) is background, and a **variable** trace that co-varies with a known family is
 real ambient chemistry. This module builds the matrix, measures each bin's
-variability + family correlation, and applies **conservative** auto-actions
-(demote a TS-confirmed flat background commit; flag inlet contaminants).
+variability + family correlation, and **labels** each committed row (background,
+inlet contaminant, ambient). A label never changes a tier or a formula.
 
 ```
 batch peaks (sample_item_id, mz, height)
@@ -38,7 +38,7 @@ batch peaks (sample_item_id, mz, height)
    │  family_trace + correlate: r_mono / r_formic (z-scored log-traces)
    ▼  _disposition(formula, cv, r_mono, r_formic)
  stamp ledger M0 rows: ts_cv_norm / ts_r_mono / ts_r_formic / ts_disposition
-   └─ conservative demote: flat di-bromide / CO3 Assigned → Candidate
+   └─ label only: no tier, tier_reason or formula is touched
 ```
 
 ---
@@ -54,7 +54,7 @@ batch peaks (sample_item_id, mz, height)
 
 ## 3. The transformation, stage by stage
 
-1. **Build the matrix** (`build_matrix`, `tol_ppm` = `DEFAULT_TOL_PPM` 5.0). Sort
+1. **Build the matrix** (`build_matrix`, `tol_ppm` = `DEFAULT_TOL_PPM` 6.0 = `sampling.BATCH_TOL_PPM`). Sort
    peaks by m/z, single-linkage gap-cluster into **m/z bins**
    (`cumsum(diff/mz·1e6 > tol_ppm)`), set each bin's centre to the
    **intensity-weighted mean** `Σ(mz·h)/Σh`, and pivot to a **samples × bins**
@@ -87,10 +87,11 @@ batch peaks (sample_item_id, mz, height)
    - `r_mono ≥ COVARY_R (0.70)` → ambient biogenic-SOA; `r_formic ≥ 0.9` → ambient
      acid/oxygenate pool; `cv ≥ 0.45` → ambient variable; else intermediate.
 
-7. **Stamp + conservatively demote** (`apply_timeseries`). Write the four `ts_*`
-   columns onto each M0 row. If `demote` and a row is `Assigned` **and** its
-   disposition is a flat **di-bromide** or **CO3-channel** background, cap it at
-   `Candidate` with a tier-reason note. Nothing else is changed — never a formula.
+7. **Stamp** (`apply_timeseries`). Write the four `ts_*` columns onto each M0 row.
+   Nothing else is changed: not a tier, not a tier reason, never a formula. A flat
+   **di-bromide** or **CO3-channel** commit was capped at `Candidate` here until
+   2026-09-26; its label (`background:di-bromide cluster`, `background:CO3-channel`)
+   already says background, so it now keeps its tier like every other row.
 
 8. **Cadence helper** (`auto_bin_minutes`). The time-bin width for the
    correlation/cluster/VK layer: the **native median inter-sample cadence**,
@@ -111,7 +112,7 @@ All in `peaky/batch/timeseries.py`.
 
 | constant | value | role |
 | --- | --- | --- |
-| `DEFAULT_TOL_PPM` | 5.0 | m/z-bin gap tolerance (matrix) + ledger↔bin matching |
+| `DEFAULT_TOL_PPM` | 6.0 (`= sampling.BATCH_TOL_PPM`) | m/z-bin gap tolerance (matrix) + ledger↔bin matching — the binning tolerance |
 | `reagent_total` `tol_ppm` | 8.0 | window matching a reagent ion m/z to a bin |
 | `FLAT_CV` | 0.25 | `cv_norm` below this → flat / background |
 | `COVARY_R` | 0.70 | correlation above this → co-varies with the family |
@@ -133,7 +134,7 @@ All in `peaky/batch/timeseries.py`.
 - **`r_mono` / `r_formic`** — Pearson r of a bin's z-scored **log10** trace against
   a family's z-scored mean log-trace; the co-variation evidence.
 - **`ts_disposition`** — the categorical verdict (`background:…` / `ambient:…` /
-  `intermediate`) that drives the conservative demote.
+  `intermediate`). It labels the row; it never tiers it.
 
 ---
 
@@ -143,7 +144,7 @@ All in `peaky/batch/timeseries.py`.
 | --- | --- |
 | `build_matrix` | `(matrix, bin_mz)` — samples × m/z-bin intensities + bin centres |
 | ledger `ts_cv_norm` / `ts_r_mono` / `ts_r_formic` / `ts_disposition` | per-M0 time-series annotation (in place) |
-| `apply_timeseries` summary | `{annotated, demoted, ambient, background}` |
+| `apply_timeseries` summary | `{annotated, ambient, background}`; once a matrix is built also `normaliser`, `varying_frac`, `flat_informative`, and `normaliser_cv` when a reagent basis exists |
 | `trace` | tidy `[datetime_utc, <value>]` for one compound; `attrs`: mz, assignment, n_peak_ids, tol_ppm |
 
 ---
@@ -160,9 +161,13 @@ All in `peaky/batch/timeseries.py`.
 - **Normalisation removes common-mode drift.** Dividing by the reagent total
   cancels instrument-sensitivity and reagent-flow swings, so `cv_norm` reflects
   chemistry, not the source.
-- **Conservative by design.** It never edits a formula and only demotes a flat
-  **di-bromide / CO3** Assigned commit (TS-confirmed background) — every other
-  disposition is annotation + commentary.
+- **Annotation only.** It never edits a formula or a tier; every disposition,
+  the di-bromide / CO3 channels included, is a label.
+- **Flatness labels, it never tiers.** A flat trace says where an ion comes from,
+  not what it is, so a flat row keeps the tier its identity evidence earned and the
+  verdict is in `ts_disposition`. `flat_informative` in the summary (at least
+  `MIN_VARYING_FRAC` of the bins vary) says whether a background label means anything
+  in this run: in a steady-state batch every bin is flat.
 - **Reagent-less profiles pass through.** Uronium / ¹⁵N-nitrate normalise on TIC
   (their reagent ions sit below the acquisition window — a positive urea-CIMS
   spectrum starts at ~m/z 122, excluding the 61/121 uronium reagent ions); the
@@ -180,10 +185,13 @@ All in `peaky/batch/timeseries.py`.
 
 ## 9. Trace reconciliation — between the merge and the stamp
 
-`recentre_ledger`, `collapse_trace_labels` and `stamp_tolerance` run in
-`assign_batch.run` after the merge (and the sidelobe flag) and before
-`annotate_peaks`; all three read the batch through `batch/traces.PeakIndex`, the
-same m/z-sorted index the admission table is built on.
+`recentre_ledger` and `collapse_trace_labels` run in `assign_batch.run` after
+the merge (and the sidelobe flag) and before `annotate_peaks`; both read the
+batch through `batch/traces.PeakIndex`, the same m/z-sorted index the admission
+table is built on. The stamping window comes from the batch's `traces.MassScale`,
+measured ONCE before the merge (the same per-ion scatter sizes the merge window,
+see [`MERGE.md`](MERGE.md) §3); `stamp_tolerance` is the same rule for a caller
+that only has a merged ledger.
 
 **Why.** The merged m/z is an *anchor* minted from the few assigned samples. On
 a TOF the assignment snaps it to theory — a formula is only committed where a
@@ -220,12 +228,17 @@ validates the diagnosis.
    C15H21NO3 whose anchor happened to sit 0.25 ppm from the centre (score 0.846
    vs 0.960); the score ordering picked the reference-list label in 4 of 4
    same-file, same-tier ties where exactly one label was on the list.
-3. **`stamp_tolerance`** — the stamping half-window = max(tol, min(2·tol,
+3. **The stamping window** — `MassScale.stamp_ppm` = max(tol, min(2·tol,
    2.5·σ)), σ = the **third quartile** of the per-trace robust scatter
    (`traces.batch_scatter_ppm`; the dim traces scatter more — 3.6 vs 1.2 ppm on
    the TOF — and are the ones a window sized from the bright ones loses; the top
-   decile on one Orbitrap mode is a scan-edge artefact 40× the median). An
-   Orbitrap (0.24–0.34 ppm) keeps 6 ppm; a TOF (3.8–4.2 ppm) gets ~10 ppm.
+   decile on one Orbitrap mode is a scan-edge artefact 40× the median), measured
+   once per batch at the mean-shifted per-file anchors before the merge
+   (`traces.measure_mass_scale`; on the Orbitrap channels it equals the number
+   the merged ledger's own trace centres give to three decimals, on the TOF 3.73
+   vs 3.83 ppm). An Orbitrap (0.24–0.34 ppm) keeps 6 ppm; a TOF (3.7–4.2 ppm)
+   gets ~9–10 ppm. `stamp_tolerance(index, centres)` is the same rule for a
+   caller with only a merged ledger.
    `annotate_peaks` then stamps from `stamping_frame`, which uses `mz_trace` and
    skips collapsed rows; the one-to-one contest is unchanged.
 
@@ -238,7 +251,7 @@ C10H16O9 0.135 → 0.857; two Orbitrap batches 0.754 → 0.754 and 0.542 → 0.5
 | --- | --- | --- |
 | `RECENTRE_MAX_DRIFT_PPM` | 10.0 | an anchor may move at most this far (median move 2.7 ppm; ±10 delivers +11.6 of the +12.7 pp total) |
 | `RECENTRE_GUARD_COV` / `RECENTRE_GUARD_PPM` | 0.10 / 6.0 | the low-evidence guard: an anchor under 10 % coverage may not move > 6 ppm uncorroborated |
-| `STAMP_TOL_SIGMA` / `STAMP_TOL_MAX_X` | 2.5 / 2.0 | window = this many σ, never wider than this × the merge tolerance |
+| `STAMP_TOL_SIGMA` / `STAMP_TOL_MAX_X` (= `traces.WINDOW_SIGMA` / `WINDOW_MAX_X`) | 2.5 / 2.0 | window = this many σ, never narrower than the binning tolerance, never wider than this × it (`traces.window_ppm`, the one rule; the merge window uses `MERGE_GAP_SIGMA` = 2.5·√2) |
 | `traces.SCATTER_Q` | 0.75 | the per-trace scatter quantile that sizes the window |
 | `traces.MZ_FLOOR_DA` | 1.5 mDa | every window is ±max(tol ppm, this) — the stamp's own floor, shared by occurrence and trace |
 | `PRED_SAT_LABELS` | 13C 81Br 37Cl 15N 34S 29Si 30Si 18O | the diagnostic satellite lines the stamp PREDICTS for every merged M0 (`cleanup.reclaim_satellites`' set) |
@@ -282,7 +295,7 @@ one-to-one contest for a predicted line runs among the surviving candidates.
 | `bin_metrics` | per-bin presence / median / `cv_norm` |
 | `family_trace` / `correlate` | z-scored log family trace; per-bin Pearson r |
 | `_disposition` | formula + (cv, r_mono, r_formic) → background/ambient/intermediate |
-| `apply_timeseries` | stamp `ts_*` columns; conservative flat-background demote |
+| `apply_timeseries` | stamp the `ts_*` columns (labels only; no tier change) |
 | `find_ts_parquet` / `trace` | locate the run's TS parquet; one-compound reproducible trace |
 | `recentre_ledger` / `collapse_trace_labels` / `stamp_tolerance` | §9: re-centre merged anchors on their traces, collapse competing labels, size the stamp window |
 | `identified_rows` / `stamping_frame` / `predicted_satellite_rows` / `annotate_peaks` | the parquet stamp: every identified ion per file → one union frame (analytes + observed reagent / satellite / artifact rows + the PREDICTED diagnostic satellites of every M0, `stamp_source`) → every TS peak stamped, known rows first, predicted lines gated on the parent's same-sample height |

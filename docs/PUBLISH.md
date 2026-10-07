@@ -149,7 +149,14 @@ Mascope presents as its own calibrated judgement:
   is this" answerable when the two engines are compared. The *verdict* has a
   column of its own now (`engine_tier`), so the blob is the **explanation** —
   `tier_reason`, `confidence`, the arbitration numbers, the commentary — rather
-  than the answer.
+  than the answer. The evidence level travels there too (`evidence_level`,
+  `evidence_axes`, `level_reason`, `n_plausible_structures`) with the **claim**
+  it supports (`claim`: `identified` / `ion` / `tentative`,
+  [`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §1.1); `NA` values are dropped.
+  The claim is never a tier and is never routed into a tier field: its value
+  `identified` is not the legacy tier spelling `Identified` that the
+  `engine_tier` mapping reads as `assigned` (§1), and sent there it would
+  publish every identified row as `assigned` whatever peaky's tier.
 
 `calibration` is **required** and is what replaces the m/z verification gate an
 import bypasses. peaky discloses honestly: it calibrates its mass axis from its
@@ -205,7 +212,11 @@ formula is then **measured** against every sample that holds that peak with the 
 seeded scorer - the same path its own untargeted search propagates through - so what the
 ledger shows is Mascope's fit of peaky's formula, tiered under the ledger's bands, with
 `peaky` named as the source. peaky's tiers, ion scores, file counts and jitter stay in the
-run directory; `--dry-run` shows exactly what will be sent.
+run directory; `--dry-run` shows exactly what will be sent. The run record's config
+carries the batch summary's headline (`publish.BATCH_CONFIG_KEYS`: the reagent, the
+selection, the file offsets, the merged tier counts `merged_tiers` and, beside them, the
+claim tallies `claims` — merged, pooled, per stage and per tier), capped like a manifest;
+the rows themselves carry no claim.
 
 Three consequences worth knowing:
 

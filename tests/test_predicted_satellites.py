@@ -150,9 +150,14 @@ sf_off = TS.stamping_frame(merged, idf, tol_ppm=6.0, predict_satellites=False)
 check("stamping_frame: predict_satellites=False restores the observed-only stamp",
       not (sf_off.stamp_source == "predicted").any() and len(sf_off) == 3
       and sf_off.attrs["predicted_satellites"] == {})
-check("stamping_frame: no ion_formula anywhere -> nothing to predict, analytes only",
-      len(TS.stamping_frame(merged, None)) == 2
-      and (TS.stamping_frame(merged, None).stamp_source == "M0").all())
+# no per-file table at all: the analyte ions are DERIVED from the readings
+# (the same fallback a batch-level re-read gets) and their lines predicted --
+# the frame never leaves an analyte without an ion when it can name one
+_sfn = TS.stamping_frame(merged, None)
+check("stamping_frame: no per-file table -> the analyte ions are derived from the readings, lines predicted",
+      (_sfn.stamp_source == "M0").sum() == 2
+      and _sfn.loc[_sfn.stamp_source == "M0", "ion_formula"].tolist() == [F_UREA, F_NH4]
+      and (_sfn.stamp_source == "predicted").sum() == 6, _sfn[["ion_formula", "iso_label", "stamp_source"]].to_dict("records"))
 
 
 # --- annotate_peaks: the intensity gate on predicted lines ---------------------
@@ -379,6 +384,36 @@ idr = TS.identified_rows(led)
 check("identified_rows: still reports only what the ledger CLAIMED (no predicted rows there)",
       len(idr) == 2 and set(idr.role) == {"M0", "iso_child"}
       and "stamp_source" not in idr.columns)
+
+
+# --- a merged reading no per-file ledger holds (a batch-level re-read) --------
+# The reagent-N re-read on the merged frame turns C8H14 [M+(CH4N2O)H]+ into
+# C9H18N2O [M+H]+ -- the SAME ion -- but the per-file ledgers only ever held the
+# hydrocarbon reading, so the modal lookup found no ion for the new key and the
+# row stamped its peaks with a neutral and no ion. Blank ion = "unknown" to the
+# residual universe and the scorecard: every one of the 7 re-read rows of a
+# 10-file uronium batch was reported unstamped in all 319 spectra. The frame
+# now derives the ion from the reading itself.
+MZ_R = 171.1492
+merged_r = pd.DataFrame({"mz": [MZ_R], "neutral_formula": ["C9H18N2O"], "adduct": ["[M+H]+"],
+                         "tier": ["Candidate"]})
+idf_r = pd.DataFrame([(MZ_R, "M0", "C9H19N2O+", None, "C8H14", "[M+(CH4N2O)H]+")], columns=COLS)
+sf_r = TS.stamping_frame(merged_r, idf_r, tol_ppm=6.0)
+m0_r = sf_r[sf_r.stamp_source == "M0"]
+check("stamping_frame: a re-read merged row derives its ion from neutral + adduct",
+      len(m0_r) == 1 and m0_r.iloc[0]["ion_formula"] == "C9H19N2O+", m0_r.to_dict("records"))
+check("stamping_frame: ... and so gains its predicted satellites",
+      {"13C", "15N"} <= set(sf_r.loc[sf_r.stamp_source == "predicted", "iso_label"]),
+      sf_r[["ion_formula", "iso_label", "stamp_source"]].to_dict("records"))
+ts_r = pd.DataFrame({"sample_item_id": ["s1"], "mz": [MZ_R + 2e-5], "height": [24676.0]})
+ann_r = TS.annotate_peaks(ts_r, sf_r, tol_ppm=6.0)
+check("annotate: the re-read row's peak is stamped with an ion, not just a neutral",
+      ann_r.loc[0, "neutral_formula"] == "C9H18N2O" and ann_r.loc[0, "ion_formula"] == "C9H19N2O+"
+      and ann_r.loc[0, "role"] == "M0", ann_r.iloc[0].to_dict())
+check("stamping_frame: a per-file ion still wins over the derivation (ordinary rows unchanged)",
+      sf[sf.stamp_source == "M0"].set_index("neutral_formula").at["C12H27O4P", "ion_formula"] == F_UREA)
+check("stamping_frame: a merged frame with no per-file table derives every analyte ion",
+      TS.stamping_frame(merged_r, None, tol_ppm=6.0).iloc[0]["ion_formula"] == "C9H19N2O+")
 
 
 def test_all():

@@ -286,6 +286,35 @@ def test_m3_names_what_the_other_path_and_instrument_found(run, tmp_path):
     assert m3w["other_instrument"]["n_spectra_in_window"] == 0 and m3w["other_instrument"]["n_missing"] == 0
 
 
+def test_m3_also_counts_by_the_other_instruments_own_evidence(run, tmp_path):
+    """The other instrument's in-core level can owe a rung to its own --corroborate
+    source -- on a same-air pair, the run being scored -- so M3 is counted a second
+    time on the other's OWN evidence (its per-file ledgers, no cross set)."""
+    import dataclasses
+    other_dir = write_run(tmp_path / "other")
+    led = pd.read_csv(other_dir / "merged_ledger.csv")
+    led["evidence_level"], led["evidence_axes"] = "4a", "iso|corroborated|files:2"   # the stamp says 4a everywhere
+    led.to_csv(other_dir / "merged_ledger.csv", index=False)
+    other = SC.load_run(str(other_dir))
+    own = SC.own_levels_for(other)
+    lv = dict(zip(own.neutral, own.level))
+    assert lv[A[0]] == "4b"                                        # its own 13C line
+    assert {lv[n] for n in (B[0], Cc[0], E[0], D[0])} == {"4c"}    # unique, but no axis of its own
+    in_core = SC.levels_for(other, None, [])
+    lacks_b = dataclasses.replace(run, ledger=run.ledger[run.ledger.neutral_formula != B[0]])
+    m3 = SC.missed_m3(lacks_b, None, other, in_core, None, [], 10.0, 0.8, own_levels=own)
+    assert m3["other_instrument"]["n_good"] == 5 and m3["other_instrument_own"]["n_good"] == 1
+    assert [r["neutral"] for r in m3["other_instrument"]["rows"]] == [B[0]]   # 4a by the stamp alone
+    assert m3["other_instrument_own"]["n_missing"] == 0
+    lacks_a = dataclasses.replace(run, ledger=run.ledger[run.ledger.neutral_formula != A[0]])
+    m3a = SC.missed_m3(lacks_a, None, other, in_core, None, [], 10.0, 0.8, own_levels=own)
+    assert [r["neutral"] for r in m3a["other_instrument_own"]["rows"]] == [A[0]]
+    # the card carries both counts; without an other instrument neither is computed
+    card = SC.build_card(lacks_b, other_instrument=other, rosters=SC.load_rosters(), board=[], log=lambda *a: None)
+    assert card["row"]["m3_other_instrument_missing"] == 1 and card["row"]["m3_other_instrument_own_missing"] == 0
+    assert SC.missed_m3(run, None, None, None, None, [], 10.0, 0.8)["other_instrument_own"] is None
+
+
 def test_card_board_and_pages_round_trip_with_a_delta(run, rosters, tmp_path):
     out = tmp_path / "board"
     card = SC.build_card(run, rosters=rosters, board=[], log=lambda *a: None)
@@ -346,3 +375,47 @@ def test_m1_names_a_reagent_water_cluster_across_a_denser_ladder(run):
     m1 = SC.missed_m1(run, ions, tracks, coverage_rows=[])
     row = next(r for r in m1["rows"] if abs(r["mz"] - (78.9189 + SC.WATER)) < 1e-3)
     assert row["family"] == "reagent + 1x H2O" and row["parent"].startswith("Br- @ 78.9189")
+
+
+def test_decoy_ledger_counts_prefer_the_engines_own_level():
+    """_ledger_counts rates a decoy arm by the in-core `evidence_level` when the
+    engine wrote it (the same leveller as the run it bounds); an older engine's
+    ledger is levelled post hoc by the reference script."""
+    base = dict(role="M0", tier="Assigned", mz=200.0, height=100.0, adduct="[M-H]-",
+                ion_formula="C10H15O4", method="cheminfo", confidence="High")
+    led = pd.DataFrame([dict(base, peak_id="a", neutral_formula="C10H16O4", evidence_level="4b"),
+                        dict(base, peak_id="b", neutral_formula="C9H14O4", evidence_level="5b", tier="Candidate"),
+                        dict(peak_id="r", role="reagent", tier=None, mz=62.0, height=1e5, adduct=None,
+                             neutral_formula=None, ion_formula="NO3-", method=None, confidence=None, evidence_level=None)])
+    c = SC._ledger_counts(led, "f")
+    assert c["m0"] == 2 and c["assigned"] == 1 and c["levels"]["4b"] == 1 and c["levels"]["5b"] == 1
+    old = led.drop(columns=["evidence_level"])
+    c0 = SC._ledger_counts(old, "f")
+    assert c0["m0"] == 2 and sum(c0["levels"].values()) == 2      # levelled post hoc instead
+
+
+def test_the_offline_engine_run_carries_the_runs_own_width_model(run_dir, monkeypatch):
+    """A decoy arm must be rated by the same separability rule as the run it
+    bounds: the recorded width model rides into assign.run(peaks=)."""
+    import json as _json
+    from peaky.assignment import assign as A
+    from peaky.chem import resolution as RES
+    seen = {}
+
+    def fake_run(sample_id, context="ambient-air", **kw):
+        seen.update(kw)
+        return {"ledger": pd.DataFrame({"role": [], "tier": []})}
+
+    monkeypatch.setattr(A, "run", fake_run)
+    peaks = pd.DataFrame({"peak_id": ["a"], "mz": [200.0], "height": [10.0]})
+    r0 = SC.load_run(str(run_dir))
+    SC.run_engine_offline(r0, peaks, "x-control", ["[M-H]-"])
+    assert "resolving_power" not in seen
+    summ = _json.loads((run_dir / "batch_summary.json").read_text())
+    summ["resolution"] = RES.Resolution(coef=1.0 / 9500.0, exponent=1.0, n_peaks=9, source="measured").as_dict()
+    (run_dir / "batch_summary.json").write_text(_json.dumps(summ))
+    r1 = SC.load_run(str(run_dir))
+    seen.clear()
+    SC.run_engine_offline(r1, peaks, "x-control", ["[M-H]-"])
+    assert isinstance(seen.get("resolving_power"), RES.Resolution)
+    assert seen["resolving_power"].r_at(200.0) == pytest.approx(9500.0)

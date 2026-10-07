@@ -37,11 +37,12 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
    │ split_categories (5 tier/roles)      per_file/*, figures/, *_summary.json)
    │ mass_defect = mz − round(mz)          │ load_context  → ctx (all derived numbers)
    ▼                                       ▼
- panel (a): defect vs m/z              SECTIONS: cover · findings · coverage ·
- panel (b): ppm vs m/z + polyfit        composition · scrutiny · reference_lists ·
-   trend (slope mppm/Th, intercept)      gka · qc_massdefect · families · changers ·
-   ▼                                      clusters · methods · assignments_table
- gka_… / qc_… PNG                         │ build → PdfPages (one bad section ≠ fatal)
+ panel (a): defect vs m/z              SECTIONS: cover · claims · findings ·
+ panel (b): ppm vs m/z + polyfit        coverage · evidence_levels · composition ·
+   trend (slope mppm/Th, intercept)      scrutiny · reference_lists · gka ·
+   ▼                                      qc_massdefect · families · changers ·
+ gka_… / qc_… PNG                         clusters · methods · assignments_table
+                                          │ build → PdfPages (one bad section ≠ fatal)
                                           ▼  compress_pdf (optional companion)
                                         report_<run-id>.pdf
 ```
@@ -100,6 +101,13 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
    `role_count`, the **`bright_ledger`** (max-height full ledger → the QC figure),
    `role_signal`, **`role_signal_frac`**, `neutral_signal`, `expl_mz`,
    `iso_by_channel`, `ppm_by_cat`, `adduct_signal`, and the reference-list priors.
+   When the merged ledger carries `evidence_level`: `evidence_levels` and the
+   **claims** ([`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §1.1) — each merged
+   row's stored `claim`, else (a run made before the column) `claim_class` of
+   its level — as `claims` (per merged row), `claim_by_tier` (the tier ×
+   claim crosstab, the ion-only rows as their own `ion-only` row),
+   `claim_of_pair` and `n_unlevelled` (merged rows with no level, read
+   tentative); with the per-file ledgers, the claim signal of step 7.
 
 6. **Honest "explained" share** (`role_signal_frac`). Split total signal into
    `analyte = (M0 + iso_child)/total`, `reagent = reagent/total`,
@@ -107,7 +115,20 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
    reagent ion, so the coverage headline reports analyte share separately —
    "explained" by count is *not* "analyte characterised" by signal.
 
-7. **Draw the sections** (`SECTIONS`, `build`). 13 ordered sections (cover →
+7. **Claim signal share** (`_claim_signal`). Every per-file M0 height is
+   credited with the MERGED claim — and the merged tier / crosstab row — of its
+   `(neutral_formula, adduct)`; the denominator is ALL per-file M0 height, and a
+   reading no merged row carries is its own `unmatched` bucket (printed "no
+   merged row"), never folded into tentative. `claim_signal` holds the four
+   shares (they sum to 1), `claim_signal_assigned` the merged-Assigned part of
+   each claim, `claim_signal_by_tier` the crosstab by signal. The cover's
+   summary opens on the claim counts and these shares; the `claims` page (the
+   second section) draws them as bars, tabulates rows / share / signal / tier
+   split per claim and the crosstab, and lists the brightest rows where tier
+   and claim part (Assigned but tentative, Candidate but identified) — the
+   tier is shown beside the claim, never corrected from it. No levels, no page.
+
+8. **Draw the sections** (`SECTIONS`, `build`). 15 ordered sections (cover →
    `assignments_table`). `build` iterates them into a `PdfPages`; a section that
    throws is caught and rendered as a one-page error note — **one bad section never
    kills the report**. The `qc_massdefect` section calls `render_qc` on
@@ -115,7 +136,7 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
    `_image_page` (fit-to-A4 at `dpi` 200, or `native=True` → page = image size at
    `src_dpi` 170 for tall cluster panels).
 
-8. **Optional compressed companion** (`compress_pdf`). Downsample each embedded
+9. **Optional compressed companion** (`compress_pdf`). Downsample each embedded
    raster to `max_px` (850) on its long edge, re-encode JPEG at `quality` 58 (text
    stays vector); skipped if the input is under `min_mb` (2.0) or PyMuPDF/Pillow
    aren't installed. Deliberately **outside `build`** so the primary report stays
@@ -136,7 +157,7 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
 | `CAL_SIGMA_FLOOR` | 0.15 | floor on the core's `1.4826·MAD` sigma (`tiers._calibrate`) |
 | `CAL_MIN_N` | 20 | min core peaks required before an offset is fit |
 | `A4` | (8.27, 11.69) in | portrait page size |
-| `SECTIONS` | 13 functions | the ordered report spine (cover…assignments_table) |
+| `SECTIONS` | 15 functions | the ordered report spine (cover, claims … assignments_table) |
 | `_image_page` `dpi` / `src_dpi` | 200 / 170 | fit-to-A4 raster dpi / native page-size dpi |
 | `_ISO_C13` | 1.0033548 | ¹³C−¹²C, to recover an isotopologue's mass error |
 | `compress_pdf` `max_px` | 850 | long-edge pixel cap when downsampling figures |
@@ -160,6 +181,9 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
   in, via `analyte_viz.backbone_class`).
 - **`score_by_tier` / `adduct_signal`** — mean `ion_score` per tier; signal share
   per ion channel.
+- **`claim_signal`** — the committed-peak signal by claim: per-file M0 height
+  credited with its reading's merged claim over all per-file M0 height, the
+  readings no merged row carries apart as `unmatched`.
 
 ---
 
@@ -169,7 +193,7 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
 | --- | --- |
 | `figures/qc_<tag>.png` (via `qc_massdefect`) | two-panel mass-defect + ppm-error QC figure |
 | `figures/gka_<tag>.png` | the GKA findings page ([`GKA.md`](GKA.md)) embedded by the `gka` section |
-| `report/report_<run-id>.pdf` | the standard iterable A4 report (13 sections) |
+| `report/report_<run-id>.pdf` | the standard iterable A4 report (15 sections) |
 | `report/report_<run-id>_compressed.pdf` | optional size-reduced companion (full report untouched) |
 
 ---
@@ -219,5 +243,6 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
 | `pdf_report.load_context` | read run artifacts → the `ctx` of derived numbers |
 | `pdf_report.SECTIONS` / `build` | the ordered spine; assemble the PdfPages (fault-tolerant) |
 | `pdf_report.cover…assignments_table` | the individual page builders |
+| `pdf_report._claim_signal` | per-file M0 height credited with the merged claim of its reading; the `unmatched` bucket apart |
 | `pdf_report._image_page` | embed a PNG (fit-to-A4 or native page size) |
 | `pdf_report.compress_pdf` | optional raster-downsampled email companion |

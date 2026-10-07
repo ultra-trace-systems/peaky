@@ -418,6 +418,130 @@ check("stamp_calibrated_ppm stashes only the centre the column used",
       dict(led_tr.attrs))
 
 
+# ---- the reagent-N isobar flag fires on BOTH sides of the pair --------------
+# The donor side (an N-free neutral on an N-donating adduct) was always flagged;
+# the amine side -- the protonated N-richer neutral, with the same-ion N-poorer
+# alternative on the donor adduct -- reached Assigned as "unique formula in the
+# calibrated window" once the alias was dropped, with nothing discriminating it
+# (C5H12N2S [M+H]+ Assigned in 2 files at 133.079 against C5H9NS [M+NH4]+ in 10).
+_rn = L.new_ledger(pd.DataFrame({"peak_id": ["am", "am2", "dn"],
+                                 "mz": [133.0794, 193.1088, 133.0794],
+                                 "height": [5e4, 2e4, 5e4]}))
+
+
+def _commit_rn(pid, nf, ad, alt_nf, alt_ad):
+    L.commit_assignment(_rn, pid, neutral_formula=nf, adduct=ad, ion_formula="C5H13N2S+",
+                        ion_score=0.95, compound_score=0.95, eff_score=0.9, eff_margin=0.3,
+                        tied=False, ppm_error=0.2, pass_no=1, method="cheminfo+grid",
+                        confidence="High", commentary="Pass 1",
+                        alternatives=[{"formula": alt_nf, "adduct": alt_ad, "ion_score": 0.95,
+                                       "raw_score": 0.95, "eff_score": 0.9, "ppm": 0.2}])
+
+
+_commit_rn("am", "C5H12N2S", "[M+H]+", "C5H9NS", "[M+NH4]+")     # the amine side, one channel
+_commit_rn("dn", "C5H9NS", "[M+NH4]+", "C5H12N2S", "[M+H]+")     # the donor side, one channel
+check("_reagent_n_isobar: the amine side is flagged, naming its alias",
+      T._reagent_n_isobar(_rn[_rn.peak_id == "am"].iloc[0], [{"formula": "C5H9NS", "adduct": "[M+NH4]+"}])
+      == ("amine", "C5H9NS", "[M+NH4]+"))
+check("_reagent_n_isobar: the donor side is flagged as before",
+      T._reagent_n_isobar(_rn[_rn.peak_id == "dn"].iloc[0], [{"formula": "C5H12N2S", "adduct": "[M+H]+"}])
+      == ("donor", "C5H12N2S", "[M+H]+"))
+check("_reagent_n_isobar: negative mode / a different ion / an N-richer alias on [M+H]+ -> None",
+      T._reagent_n_isobar({"neutral_formula": "C5H12N2S", "adduct": "[M-H]-"},
+                          [{"formula": "C5H9NS", "adduct": "[M+Br]-"}]) is None
+      and T._reagent_n_isobar(_rn[_rn.peak_id == "am"].iloc[0],
+                              [{"formula": "C6H12O2", "adduct": "[M+H]+"}]) is None
+      and T._reagent_n_isobar({"neutral_formula": "C5H9NS", "adduct": "[M+H]+"},
+                              [{"formula": "C5H12N2S", "adduct": "[M+H]+"}]) is None)
+_trn = T.compute_tiers(_rn).set_index("peak_id")
+check("amine-side winner with a single channel -> Candidate, the alias named on the row",
+      _trn.at["am", "tier"] == "Candidate"
+      and _trn.at["am", "tier_reason"] == ("reagent-N isobar unresolved: C5H12N2S [M+H]+ is the same "
+                                           "ion as C5H9NS [M+NH4]+ (the N-poorer neutral on an N-donating "
+                                           "reagent adduct), and no second channel / series anchor fixes "
+                                           "the nitrogen count (isotopes cannot — identical ion)"),
+      _trn.at["am", "tier_reason"])
+check("donor-side winner with a single channel -> Candidate, the wording unchanged",
+      _trn.at["dn", "tier"] == "Candidate" and "N-heavier" in _trn.at["dn", "tier_reason"],
+      _trn.at["dn", "tier_reason"])
+# a second channel of the protonated neutral fixes the nitrogen count on the amine side
+L.commit_assignment(_rn, "am2", neutral_formula="C5H12N2S", adduct="[M+(CH4N2O)H]+",
+                    ion_formula="C6H17N4OS+", ion_score=0.9, compound_score=0.9, eff_score=0.85,
+                    eff_margin=0.3, tied=False, ppm_error=0.1, pass_no=5,
+                    method="completion:known-neutral", confidence="Good", commentary="Pass 5")
+_trn2 = T.compute_tiers(_rn).set_index("peak_id")
+check("amine-side winner with its urea channel too -> Assigned, the row says which channel fixed it",
+      _trn2.at["am", "tier"] == "Assigned"
+      and _trn2.at["am", "tier_reason"] == ("reagent-N isobar: nitrogen count fixed by a second "
+                                            "ionization channel of the protonated neutral"),
+      _trn2.at["am", "tier_reason"])
+
+
+# ---- the diagnostic-satellite verdict on every committed Br / Cl / S row -------------
+# (assignment/satellites.py, read by the tier engine): a line the file could show and
+# did not refutes the count whatever else corroborates the row; a line the file could
+# not show leaves it untested, and an untested count with nothing else is Candidate.
+from peaky.chem import isotopes as _ISO  # noqa: E402
+from peaky.assignment.passes.config import PassConfig as _PC  # noqa: E402
+
+_sat_peaks = pd.DataFrame([
+    ("R", 300.0, 2000.0),                       # bromo-organic, 81Br line ABSENT (pred 1945 cps)
+    ("Ranc", 314.0157, 1500.0),                 # its CH2 series partner (an anchor for R)
+    ("S1", 320.0, 100.0),                       # organosulfate, 34S line predicted 4.4 cps: untestable
+    ("S2", 340.0, 100.0),                       # same, but the neutral also sits on a second channel
+    ("S2b", 419.9, 60.0),
+    ("S3", 360.0, 5000.0),                      # organosulfate with its 34S line PRESENT (pred 222)
+    ("S3t", 360.0 + _ISO.D_34S, 200.0),
+    ("M", 380.0, 2000.0),                       # bromo-organic ON the bromide adduct: masked
+    ("Mt", 380.0 + _ISO.D_81BR, 1900.0),
+    ("K", 400.0, 2000.0),                       # a known-species commit: never re-judged here
+], columns=["peak_id", "mz", "height"])
+_sat = L.new_ledger(_sat_peaks)
+
+
+def _c(pid, nf, ad, ion, **kw):
+    a = dict(neutral_formula=nf, adduct=ad, ion_formula=ion, ion_score=0.9, compound_score=0.9,
+             eff_score=0.9, eff_margin=0.3, tied=False, ppm_error=0.1, pass_no=1,
+             method="cheminfo+grid", confidence="High", commentary="Pass 1")
+    a.update(kw)
+    L.commit_assignment(_sat, pid, **a)
+
+
+_c("R", "C12H17BrO2", "[M-H]-", "C12H16BrO2-", method="residual:series", anchor_peak_id="Ranc", series_unit="CH2")
+_c("S1", "C10H16O5S", "[M-H]-", "C10H15O5S-")
+_c("S2", "C11H18O5S", "[M-H]-", "C11H17O5S-")
+_c("S2b", "C11H18O5S", "[M+Br]-", "C11H18O5S.Br-", pass_no=5, method="completion:known-neutral")
+_c("S3", "C12H20O5S", "[M-H]-", "C12H19O5S-")
+_c("M", "C13H19BrO3", "[M+Br]-", "C13H19BrO3.Br-")
+_c("K", "C14H21BrO2", "[M-H]-", "C14H20BrO2-", pass_no=0, method="known:contaminant:x")
+_ts = T.compute_tiers(_sat, cfg=_PC(height_cutoff_cps=10.0)).set_index("peak_id")
+
+check("satellite: an absent 81Br line predicted at 195x the floor refutes the Br count, anchor or not",
+      _ts.at["R", "tier"] == "Candidate" and _ts.at["R", "tier_reason"].startswith("Br count refuted by its isotope envelope")
+      and "no 81Br line" in _ts.at["R", "tier_reason"], _ts.at["R", "tier_reason"])
+check("satellite: a 34S line predicted under 4x the floor is untestable; with nothing else it is Candidate",
+      _ts.at["S1", "tier"] == "Candidate" and _ts.at["S1", "tier_reason"].startswith("S1 untestable at this intensity")
+      and "for want of evidence" in _ts.at["S1", "tier_reason"], _ts.at["S1", "tier_reason"])
+check("satellite: the same untestable S with a second channel stays Assigned and says the count is untested",
+      _ts.at["S2", "tier"] == "Assigned" and "second ionization channel" in _ts.at["S2", "tier_reason"]
+      and "S count untested" in _ts.at["S2", "tier_reason"], _ts.at["S2", "tier_reason"])
+check("satellite: a present, consistent 34S line supports -- Assigned, and the row says the line is there",
+      _ts.at["S3", "tier"] == "Assigned" and "S envelope line present" in _ts.at["S3", "tier_reason"],
+      _ts.at["S3", "tier_reason"])
+check("satellite: a bromo-organic on the bromide adduct is masked by the reagent's own 81Br line -> untestable, not refuted",
+      _ts.at["M", "tier"] == "Candidate" and "untestable" in _ts.at["M", "tier_reason"]
+      and "reagent adduct's 81Br line" in _ts.at["M", "tier_reason"], _ts.at["M", "tier_reason"])
+check("satellite: a known-species commit is never re-judged by the tier's twin test",
+      _ts.at["K", "tier"] == "Assigned" and "known species" in _ts.at["K", "tier_reason"], _ts.at["K", "tier_reason"])
+_ts0 = T.compute_tiers(_sat).set_index("peak_id")
+check("satellite: with no resolved floor nothing is refuted or capped as untestable (nothing can be ruled out)",
+      _ts0.at["R", "tier"] == "Assigned" and _ts0.at["S1", "tier"] == "Assigned", (_ts0.at["R", "tier_reason"], _ts0.at["S1", "tier_reason"]))
+# CSV round trip: the verdict is recomputed from the ledger, so it survives a string round trip
+_ts_rt = T.compute_tiers(pd.read_csv(io.StringIO(_sat.to_csv(index=False))), cfg=_PC(height_cutoff_cps=10.0)).set_index("peak_id")
+check("satellite: CSV round-trip keeps the refuted / untestable verdicts",
+      _ts_rt.at["R", "tier"] == "Candidate" and _ts_rt.at["S1", "tier"] == "Candidate" and _ts_rt.at["S3", "tier"] == "Assigned")
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 
@@ -425,3 +549,58 @@ def test_all():
 if __name__ == "__main__":
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
+
+
+def test_persist_only_read_is_null_safe():
+    """`admitted_by` is float NaN on a row the admission gate never stamped and
+    pd.NA on an offline ledger (the scorecard's decoy arms). The old read
+    `str(r.get("admitted_by") or "")` gave "nan" on the first (False by accident)
+    and RAISED on the second; both must tier like an unstamped row."""
+    import numpy as np
+    from peaky.assignment import ledger as L
+    from peaky.assignment import tiers as T
+    rows = []
+    for pid, adm in (("a", np.nan), ("b", pd.NA), ("c", None), ("d", "occurrence"), ("e", "height")):
+        rows.append(dict(peak_id=pid, mz=200.0 + len(rows), height=1000.0))
+    led = L.new_ledger(pd.DataFrame(rows))
+    led["admitted_by"] = [np.nan, pd.NA, None, "occurrence", "height"]
+    for pid in "abcde":
+        L.commit_assignment(led, pid, neutral_formula="C10H16O4", adduct="[M-H]-", ion_formula="C10H15O4-",
+                            ion_score=0.9, compound_score=0.9, ppm_error=0.1, pass_no=1, method="cheminfo",
+                            confidence="High", commentary="t")
+    T.apply_tiers(led)                       # must not raise on the pd.NA row
+    by = led.set_index("peak_id")
+    assert by.loc["a", "tier"] == by.loc["b", "tier"] == by.loc["c", "tier"] == by.loc["e", "tier"]
+    assert by.loc["d", "tier"] == "Candidate"   # persistence-admitted, uncorroborated
+
+
+def test_below_assignability_reads_a_saturated_note_only():
+    """`below_assignability` (O >= 11) needs the audit's MASS-SATURATED flag, as its reason
+    says. A MASS-DEGENERATE window (3-8 ions, a lower bound included) stays degenerate for
+    the tier's cap but is not flagged below assignability."""
+    from peaky.assignment import tiers as T
+    tail = (" — the committed formula lies outside this run's enumerated space (C41 > the "
+            "context's C40), so the count is a lower bound")
+    notes = {
+        "sat": (12, "MASS-SATURATED: 12 plausible formulas (≤3 heteroatom types) within ±3σ "
+                    "calibrated window — not identifiable from accurate mass alone"),
+        "sat_lb": (9, "MASS-SATURATED: at least 9 plausible formulas (≤3 heteroatom types) within "
+                      "±3σ calibrated window" + tail),
+        "deg8": (8, "MASS-DEGENERATE: 8 plausible ions within ±3σ calibrated window — competitors: "
+                    "C9H12O13 [M+NO3]- (+0.40 ppm)"),
+        "deg_lb": (3, "MASS-DEGENERATE: at least 3 plausible ions within ±3σ calibrated window — "
+                      "competitors: C9H12O13 [M+NO3]- (+0.40 ppm); C12H10O10 [M-H]- (-1.1 ppm)" + tail),
+    }
+    ba = pd.DataFrame([dict(peak_id=p, role="M0", neutral_formula="C10H16O11", degeneracy_density=d,
+                            degeneracy_note=n, tier="Candidate", tier_reason="r")
+                       for p, (d, n) in notes.items()])
+    assert T.flag_below_assignability(ba) == 2
+    by = ba.set_index("peak_id")
+    assert bool(by.loc["sat", "below_assignability"]) and bool(by.loc["sat_lb", "below_assignability"])
+    assert not bool(by.loc["deg8", "below_assignability"]) and not bool(by.loc["deg_lb", "below_assignability"])
+    assert by.loc["sat", "tier_reason"] == "r | below-assignability (O>=11, mass-saturated)"
+    assert by.loc["deg8", "tier_reason"] == "r"
+    # still degenerate for the tier's cap
+    assert T._degeneracy(by.loc["deg8"])[1] and T._degeneracy(by.loc["deg_lb"])[1]
+    assert not T._saturated(by.loc["deg8"]) and T._saturated(by.loc["sat_lb"])
+    assert not T._saturated({"degeneracy_note": pd.NA}) and not T._saturated({})

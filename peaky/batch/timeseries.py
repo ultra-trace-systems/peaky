@@ -14,9 +14,9 @@ instrument-sensitivity + reagent-flow common-mode drift), and then
 This module ingests a batch's per-sample peak table, builds the reagent-normalised
 intensity matrix, measures each peak's variability (`cv_norm`) and (optionally)
 its correlation to reference family traces, and stamps a `ts_*` disposition onto
-the ledger. It then applies CONSERVATIVE auto-actions: demote a flat di-bromide /
-background-channel commit (TS-confirmed background) and flag inlet contaminants.
-It never changes a formula -- only the tier/role annotation, with commentary.
+the ledger. The disposition LABELS a row (background / ambient / inlet
+contaminant); it never changes a formula or a tier. Flatness says where an ion
+comes from, not what it is.
 
 All pure pandas/numpy; no network. Reference (2026-06-16 time-series unlock).
 """
@@ -31,9 +31,13 @@ import numpy as np
 import pandas as pd
 
 from peaky.assignment import ledger as L
+from peaky.batch import traces as TR
 
-__version__ = "0.3.0"  # predicted diagnostic satellites in the batch stamp (stamp_source,
-                       # track coherence); 0.2.1: bin_ids, the row-aligned bin rule
+__version__ = "0.3.2"  # flatness labels a row (ts_disposition) and never tiers it, on the
+                       # di-bromide / CO3 channels too (apply_timeseries has no demote switch);
+                       # 0.3.1: the general flat demote removed; 0.3.0: predicted diagnostic
+                       # satellites in the batch stamp (stamp_source, track coherence);
+                       # 0.2.1: bin_ids, the row-aligned bin rule
 
 DEFAULT_TOL_PPM = 5.0
 FLAT_CV = 0.25          # cv_norm below this == flat / background
@@ -500,13 +504,13 @@ RECENTRE_GUARD_COV = 0.10       # an anchor covering < this share of spectra ...
 RECENTRE_GUARD_PPM = 6.0        # ... may not move further than this uncorroborated
                                 # (one such row re-centred to 84 % coverage on peaks
                                 # that tracked nothing, r 0.19)
-STAMP_TOL_SIGMA = 2.5           # stamping half-window = this many per-ion sigmas ...
-STAMP_TOL_MAX_X = 2.0           # ... never wider than this x the merge tolerance
+STAMP_TOL_SIGMA = TR.WINDOW_SIGMA   # stamping half-window = this many per-ion sigmas ...
+STAMP_TOL_MAX_X = TR.WINDOW_MAX_X   # ... never wider than this x the binning tolerance
+                                    # (the one window rule: traces.window_ppm / MassScale)
 TRACE_WINNER, TRACE_COLLAPSED, TRACE_SINGLE = "winner", "collapsed", "single"
 
 
 def _trace_index(ts_peaks, index, tol_ppm):
-    from peaky.batch import traces as TR
     if index is not None:
         return index
     if ts_peaks is None or not len(ts_peaks):
@@ -701,19 +705,23 @@ def stamp_tolerance(index, centres, *, tol_ppm: float = DEFAULT_TOL_PPM,
     a window that cuts through it loses real spectra to the one-to-one contest
     (measured on a 230-spectrum TOF batch: a 12 ppm window doubled the share of
     ions gaining > 5 pp of coverage over a 6 ppm one, 21 -> 42 %, with the share
-    losing unchanged at 3.7 %)."""
-    from peaky.batch import traces as TR
+    losing unchanged at 3.7 %).
+
+    A batch run does not call this: it measures ONE `traces.MassScale` before its
+    merge (the same estimator, at the mean-shifted per-file anchors) and reads
+    `stamp_ppm` off it, so the merge window and the stamping window come from
+    one sigma. This function is the same rule for a caller that only has a
+    merged ledger."""
     sigma = TR.batch_scatter_ppm(index, centres, tol_ppm=tol_ppm) if index is not None else float("nan")
     if not np.isfinite(sigma):
         return float(tol_ppm), float("nan")
-    return float(max(tol_ppm, min(max_x * tol_ppm, k_sigma * sigma))), round(float(sigma), 3)
+    return TR.window_ppm(tol_ppm, sigma, k_sigma=k_sigma, max_x=max_x), round(float(sigma), 3)
 
 
 def _rolling_centres(merged: pd.DataFrame, idx, mzt: np.ndarray, tol_ppm: float,
                      times_by_code, out: dict, log) -> None:
     """The rolling path of `recentre_ledger` (in place on `merged` and `mzt`)."""
     from peaky.batch import centre as CE
-    from peaky.batch import traces as TR
 
     n = len(merged)
     merged["trace_key"] = np.arange(n, dtype=np.int64)
@@ -1051,7 +1059,9 @@ def stamping_frame(merged: pd.DataFrame,
     iso_label stamped on them).
 
     Analyte rows keep every merged column and gain role='M0' + the modal
-    per-file ion_formula for their (neutral_formula, adduct) key. Non-analyte
+    per-file ion_formula for their (neutral_formula, adduct) key -- or, for a
+    reading no per-file ledger holds (a batch-level re-read), the ion derived
+    from the reading itself (`publish.ion_formula_for`). Non-analyte
     rows are aggregated across files: reagent / iso_child by (ion_formula,
     iso_label) at the median m/z; artifacts (no formula key) by m/z gap
     clustering (>3 mDa starts a new track).
@@ -1113,6 +1123,24 @@ def stamping_frame(merged: pd.DataFrame,
                     start = i
         if aux:
             stamp = pd.concat([stamp, pd.DataFrame(aux)], ignore_index=True)
+    # A merged reading NO per-file ledger holds -- a batch-level re-read on the
+    # merged frame (cleanup.relabel_reagent_n_adducts, prefer_amine_over_ammonium,
+    # a known-species lock) -- has no per-file ion to borrow, so the modal lookup
+    # above leaves it blank; and blank means "unknown" to everything downstream
+    # (the residual universe, the scorecard, the predicted satellites). Such a
+    # row stamped its peaks with a neutral and no ion, and the batch then read
+    # the same track as unexplained: every one of the 7 reagent-N re-read rows of
+    # a 10-file uronium batch, in all 319 spectra, and none of the other 1141.
+    # Derive the ion from the reading itself (the same fallback the publish
+    # path uses for a merged row); a per-file ion, where one exists, still wins.
+    if {"neutral_formula", "adduct"} <= set(stamp.columns):
+        need = (stamp["ion_formula"].isna() & stamp["neutral_formula"].notna()
+                & stamp["adduct"].notna() & (stamp["role"] == "M0"))
+        if need.any():
+            from peaky.io.publish import ion_formula_for
+            stamp.loc[need, "ion_formula"] = [
+                ion_formula_for(str(n), str(a))
+                for n, a in zip(stamp.loc[need, "neutral_formula"], stamp.loc[need, "adduct"])]
     stamp["stamp_id"] = np.arange(len(stamp))
     stamp["parent_stamp_id"] = -1
     stamp["iso_rel"] = np.nan
@@ -1640,14 +1668,13 @@ def _disposition(row, cv, r_mono, r_formic):
 
 def apply_timeseries(ledger: pd.DataFrame, peaks: pd.DataFrame, *,
                      reagent_mzs=None, mono_anchor_mzs=None, formic_mz=None,
-                     tol_ppm: float = DEFAULT_TOL_PPM, demote=True, log=print) -> dict:
+                     tol_ppm: float = DEFAULT_TOL_PPM, log=print) -> dict:
     """Annotate `ledger` (in place) with ts_cv_norm / ts_r_mono / ts_r_formic /
-    ts_disposition from the time-series `peaks` table, and (if demote) cap a flat
-    di-bromide / CO3-channel Assigned commit at Candidate (TS-confirmed
-    background). Returns a summary dict. Reagent normaliser + anchors are taken
-    from the ledger when not supplied.
+    ts_disposition from the time-series `peaks` table. No tier, tier_reason or
+    formula is touched. Returns a summary dict. Reagent normaliser + anchors are
+    taken from the ledger when not supplied.
     """
-    summary = {"annotated": 0, "demoted": 0, "ambient": 0, "background": 0}
+    summary = {"annotated": 0, "ambient": 0, "background": 0}
     for col in ("ts_cv_norm", "ts_r_mono", "ts_r_formic", "ts_disposition"):
         if col not in ledger.columns:
             ledger[col] = np.nan if col != "ts_disposition" else ""
@@ -1717,17 +1744,16 @@ def apply_timeseries(ledger: pd.DataFrame, peaks: pd.DataFrame, *,
 
     # Does this batch's chemistry actually MOVE? Flatness only means background
     # against a run that varies. In a steady-state run -- a held chamber, a single
-    # constant flow -- every bin is flat, cv carries no information, and demoting
-    # on it would cap the whole ledger. So the general flat-demote below is armed
-    # only when a real fraction of the spectrum varies. On the 2026-09-22 dilution
-    # series 55 % of bins clear FLAT_CV, and the certified analytes sit at
-    # cv_norm 1.1-3.8 against 0.06-0.13 for the calibrant's PAH background -- a
-    # 9-65x separation, so the threshold is nowhere near either population.
+    # constant flow -- every bin is flat and cv carries no information. The verdict
+    # is reported (`flat_informative`) so a reader can tell a background label that
+    # means something from one that cannot; nothing is tiered on it (see below). On
+    # the 2026-09-22 dilution series 55 % of bins clear FLAT_CV, and the certified
+    # analytes sit at cv_norm 1.1-3.8 against 0.06-0.13 for the calibrant's PAH
+    # background -- a 9-65x separation.
     cv_all = pd.to_numeric(met["cv_norm"], errors="coerce").dropna()
     varying_frac = float((cv_all >= FLAT_CV).mean()) if len(cv_all) else 0.0
-    flat_demote_armed = varying_frac >= MIN_VARYING_FRAC
     summary["varying_frac"] = round(varying_frac, 3)
-    summary["flat_demote_armed"] = flat_demote_armed
+    summary["flat_informative"] = varying_frac >= MIN_VARYING_FRAC
 
     # stamp the ledger (M0 rows)
     for i in ledger.index[ledger["role"] == L.ROLE_M0]:
@@ -1748,32 +1774,33 @@ def apply_timeseries(ledger: pd.DataFrame, peaks: pd.DataFrame, *,
             summary["ambient"] += 1
         elif disp.startswith("background"):
             summary["background"] += 1
-            # Auto-demote: a commit the time series shows to be background must
-            # not stay Assigned. The di-bromide / CO3 channels are demoted on the
-            # channel alone; ANY other flat commit is demoted only while
-            # flat_demote_armed (see above).
+            # FLATNESS LABELS A ROW; IT DOES NOT TIER IT. A flat trace says where
+            # an ion comes from -- a steady inlet, the source, the calibrant -- not
+            # what it is: a formula that its isotope pattern and a second ion
+            # channel confirm is exactly as right when its trace is flat. So the
+            # verdict lives in `ts_disposition` and the tier stays with the
+            # identity evidence.
             #
-            # This is the general answer to a source whose brightest background is
-            # not a reagent cluster and cannot be enumerated. On the 2026-09-22
-            # certified mixture the EasyIC calibrant's PAH ladder (C13H8, C14H10,
-            # C14H12, C15H8, C15H10, C15H12) and most of the air-plasma C/N/O
-            # family committed as Assigned ANALYTES in a cylinder that contains
-            # none of them -- while being flat to 0.06-0.24 cv_norm through a step
-            # that moved every real component 100x. Naming those compositions in
-            # the reagent library was the alternative and was rejected: they are
-            # genuine targets in other runs (chem/reagents._EASYIC_SOURCE_IONS
-            # records why). Behaviour is what separates them, so behaviour is what
-            # tiers them -- and in a run where anthracene really does vary, it
-            # varies, and keeps its tier.
-            channel_flat = "di-bromide" in disp or "CO3-channel" in disp
-            if demote and str(ledger.at[i, "tier"]) == "Assigned" and (
-                    channel_flat or flat_demote_armed):
-                why = ("flat background (reagent/inlet)" if channel_flat
-                       else f"flat through a varying run (cv_norm {cv:.2f} < {FLAT_CV})")
-                ledger.at[i, "tier"] = "Candidate"
-                ledger.at[i, "tier_reason"] = (str(ledger.at[i, "tier_reason"] or "")
-                    + f" | time-series: {why}, demoted").strip(" |")
-                summary["demoted"] += 1
+            # That is also the answer to the 2026-09-22 certified mixture, where
+            # the EasyIC calibrant's PAH ladder (C13H8, C14H10, C14H12, C15H8,
+            # C15H10, C15H12) and most of the air-plasma C/N/O family sat at
+            # Assigned in a cylinder that contains none of them, flat to 0.06-0.24
+            # cv_norm through a step that moved every real component 100x. They
+            # are what they are; what a reader must see is that they are
+            # BACKGROUND, and the label says so. A general flat-demote tried for
+            # that case (2026-09-23) also capped rows with isotope and
+            # second-channel confirmation on a varying chamber batch -- HNO3
+            # [M-H]- among them -- and changed no decoy rate. Naming the PAH and
+            # C/N/O compositions in the reagent library stays rejected for the
+            # reason chem/reagents._EASYIC_SOURCE_IONS records.
+            #
+            # The same holds on the reagent-cluster channels. A flat di-bromide
+            # or CO3-channel commit was capped at Candidate here until 2026-09-26,
+            # although its label (`background:di-bromide cluster`,
+            # `background:CO3-channel`) already says background. On a bromide
+            # TOF that cap took IBr (a known species, the ion IBr2-) and rows
+            # confirmed by their isotope pattern or a second ion channel, and it
+            # moved no roster, bright-peak or decoy metric.
     log(f"[timeseries] {summary}")
     return summary
 

@@ -222,6 +222,7 @@ def cmd_assign(args) -> None:
                             occurrence_min=args.occurrence_min)
     profiles.apply_height_cutoff_x_edge(cfg, prof,
                                         explicit=args.height_cutoff_x_edge, log=print)
+    profiles.apply_ion_only_channels(cfg, prof, log=print)
     # the labelled-reagent purity rides on the same resolved profile
     purity = getattr(prof, "purity", None)
     od = Path(args.output_dir).expanduser()
@@ -268,6 +269,13 @@ def cmd_assign(args) -> None:
                  # same account `peaky batch` gives of the same batch
                  else f"persistence path off: {ADM.why_off(cfg, occurrence)}"))
 
+    # --corroborate: the other channel's / instrument's neutrals = the
+    # `corroborated` axis of the evidence levels (docs/EVIDENCE_LEVELS.md)
+    from peaky.assignment import evidence as EV
+    cross = EV.corroborating_neutrals(getattr(args, "corroborate", []) or [])
+    if cross:
+        print(f"[levels] corroborated by {len(cross)} neutral(s) from "
+              f"{len(args.corroborate)} source(s)")
     # `prog` IS the log callable (a transparent pass-through to print whenever
     # the window is off), so the run below is identical either way.
     with PG.open_progress(f"peaky \u00b7 assign {args.sample_id}",
@@ -276,8 +284,10 @@ def cmd_assign(args) -> None:
         out = assign.run(args.sample_id, context, cfg=cfg, use_cache=not args.no_cache,
                          do_pass2=not args.no_pass2, do_pass3=not args.no_pass3,
                          do_pass4=not args.no_pass4, do_pass5=not args.no_pass5,
+                         resolving_power=args.resolving_power,
                          adducts=adducts, ts_peaks=ts_peaks, label_purity=purity,
                          occurrence=occurrence, reflists_active=reflists_active,
+                         corroborate=cross,
                          log=prog, checkpoint_dir=str(od / "checkpoints"))
         # Nothing on this path logs the `(i/N) done` line assign_batch emits, so
         # say it directly: the one sample is in (samples bar 1/1) and the stages
@@ -287,6 +297,14 @@ def cmd_assign(args) -> None:
         _write_assign_outputs(args, out, base)
         prog.finish(out.get("stats"))
         _progress_hold_note(prog)
+
+
+def _claims_text(claims) -> str:
+    """'identified N | ion N | tentative N' from a claim tally ({claim: n}, in
+    evidence.CLAIMS order), '' when there is none."""
+    if not isinstance(claims, dict) or not claims:
+        return ""
+    return " | ".join(f"{k} {v}" for k, v in claims.items())
 
 
 def _write_assign_outputs(args, out, base) -> None:
@@ -321,6 +339,9 @@ def _write_assign_outputs(args, out, base) -> None:
     print(f"\nwrote {base}_*.{{csv,xlsx,md,json,html}} (+ _gka_unexplained.html)")
     print(f"assigned {st['by_role']['M0']} | iso {st['by_role']['iso_child']} | "
           f"reagent {st['by_role']['reagent']} | unexplained {st['by_role']['unexplained']}")
+    claims = _claims_text(((out.get("summaries") or {}).get("evidence") or {}).get("claims"))
+    if claims:
+        print(f"claims: {claims}")
     head = (f"peaks explained {100*(1-cf['unexplained']):.1f}% | " if cf else "")
     print(head + f"signal explained {expl:.1f}%  | "
           f"ledger problems: {out['problems'] or 'none'}")
@@ -347,12 +368,17 @@ def cmd_batch(args) -> None:
                            rolling_centre=getattr(args, "rolling_centre", False),
                            trace_first=getattr(args, "trace_first", False),
                            resolving_power=getattr(args, "resolving_power", None),
-                           trace_episodes=getattr(args, "trace_episodes", False), log=prog)
+                           trace_episodes=getattr(args, "trace_episodes", False),
+                           corroborate=list(getattr(args, "corroborate", []) or []), log=prog)
         # the window's final numbers come from the RETURNED summary, never from
         # parsing the log -- exact by construction.
         prog.finish((res.get("assign") or {}).get("summary"))
         ctx = res["ctx"]
         print(f"\n[batch] done -> {ctx.out_dir} in {res.get('elapsed_s', '?')}s")
+        claims = _claims_text((((res.get("assign") or {}).get("summary") or {})
+                               .get("claims") or {}).get("merged"))
+        if claims:
+            print(f"  claims (merged): {claims}")
         if res.get("report_pdf"):
             print(f"  report: {res['report_pdf']}")
         if res.get("report_pdf_small"):
@@ -383,6 +409,10 @@ def cmd_pool(args) -> None:
         prog.finish((res.get("assign") or {}).get("summary"))
         ctx = res["ctx"]
         print(f"\n[pool] unified ledger -> {ctx.out_dir} in {res.get('elapsed_s', '?')}s")
+        claims = _claims_text((((res.get("assign") or {}).get("summary") or {})
+                               .get("claims") or {}).get("merged"))
+        if claims:
+            print(f"  claims (merged): {claims}")
         if res.get("report_pdf"):
             print(f"  report: {res['report_pdf']}")
         if res.get("group_runs"):
@@ -688,7 +718,7 @@ def cmd_publish_batch(args) -> None:
         sys.exit("Nothing to publish: no merged row carries a formula.")
 
     version = args.engine_version or P.engine_version(None)
-    config = P.batch_config(summary)
+    config = P.batch_config(summary, merged=merged)
 
     if args.dry_run:
         print(f"\n[dry-run] nothing sent. engine_version {version}, "
@@ -898,6 +928,17 @@ def _add_rolling_flag(p) -> None:
                         "per ion, as before")
 
 
+def _add_corroborate_flag(p) -> None:
+    p.add_argument("--corroborate", action="append", default=[], metavar="SOURCE",
+                   help="a run dir, an out-dir holding one run, or a ledger CSV whose "
+                        "neutrals corroborate this run's evidence levels -- the other "
+                        "reagent channel, or the other instrument on the same air; "
+                        "repeatable. A source corroborates only the neutrals it pins on "
+                        "its own (level 4b or better with no cross set), and "
+                        "corroboration is formula evidence only: it can carry a row to "
+                        "level 4a, never above (docs/EVIDENCE_LEVELS.md)")
+
+
 def _add_trace_first_flags(p) -> None:
     p.add_argument("--trace-first", action="store_true", default=False,
                    help="assign the batch's persistent ions ONCE from their centred traces "
@@ -917,8 +958,10 @@ def _add_trace_first_flags(p) -> None:
                         "batch, so the persistence floor cannot see one. Off by default: it is "
                         "not yet validated end to end")
     p.add_argument("--resolving-power", default=None, metavar="R|auto",
-                   help="peak width for --trace-first, which sizes the dedup cell (0.4 HWHM) "
-                        "and the resolvability flag. Default 'auto': MEASURE it from the raw "
+                   help="peak width: sizes --trace-first's dedup cell (0.4 HWHM) and stamps the "
+                        "resolvability flag on every per-file ledger (a blended peak with no "
+                        "isotope / second-channel / series corroboration is capped at "
+                        "Candidate; 'none' skips the stamp). Default 'auto': MEASURE it from the raw "
                         "profile of isolated peaks across the batch's mass range, which also "
                         "reports how it scales (constant on a TOF, as m^-1/2 on an Orbitrap). "
                         "Give a number to declare it instead (e.g. 6500), which assumes it is "
@@ -994,7 +1037,14 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--ts-batch", default=None,
                     help="batch name to load as the time series (optional TS step)")
     pa.add_argument("--ts-dataset", default=None, help="dataset for --ts-batch")
+    pa.add_argument("--resolving-power", default="auto", metavar="R|auto|none",
+                    help="peak width for the resolvability stamp (how separable each assigned "
+                         "peak is from its nearest picked neighbour; a blended peak with no "
+                         "isotope / second-channel / series corroboration is capped at "
+                         "Candidate). Default 'auto': MEASURE it from this sample's raw profile. "
+                         "Give a number to declare it instead, or 'none' to skip the stamp")
     _add_admission_args(pa)
+    _add_corroborate_flag(pa)
     _add_progress_flag(pa)
     pa.set_defaults(func=cmd_assign)
 
@@ -1019,6 +1069,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_admission_args(pb)
     _add_rolling_flag(pb)
     _add_trace_first_flags(pb)
+    _add_corroborate_flag(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "

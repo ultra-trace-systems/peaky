@@ -18,6 +18,7 @@ flagged set is small and defensible (the clear coincidences), not a dragnet.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import numpy as np
@@ -25,8 +26,9 @@ import pandas as pd
 
 from peaky.chem import chemistry as C
 from peaky.assignment import ledger as L
+from peaky.assignment import tiers as T
 
-__version__ = "0.3.0"   # carbon-cluster rule: F no longer exempts (F counts as H)
+__version__ = "0.4.0"   # element-budget demote (demote_off_budget); 0.3.0 carbon-cluster rule: F no longer exempts
 
 # thresholds (loose on purpose — flag the clear coincidences only)
 N_HIGH_OC = 3       # N>=3 combined with...
@@ -48,8 +50,9 @@ F_HIGH = 4          # F>=this -> heavily fluorinated; F is monoisotopic, so the 
 #     signature. It is NOT a niso gate -- a 13C satellite confirms the CARBON
 #     count, not the O count, so an O-monster carrying a real 13C twin is still an
 #     O-monster. Real HOMs top out at O/C ~1.14, so OC_MONSTER=1.3 spares every
-#     genuine oxidation product. (The DEMOTE additionally requires mass-saturation
-#     from the degeneracy audit; the plain reason-string oracle reports the ratio.)
+#     genuine oxidation product. (The DEMOTE additionally requires a mass-degenerate
+#     window from the degeneracy audit -- the tier engine's own threshold, >= 3
+#     plausible ions or MASS-SATURATED; the plain reason-string oracle reports the ratio.)
 #
 #   * CARBON-CLUSTER: DBE/C >= DBE_PER_C_MONSTER (equivalently H <= N+2) on an
 #     C>=2 skeleton is a bare-carbon mass coincidence (e.g. C5H2, C24H2, C12HF --
@@ -166,13 +169,14 @@ def scan(merged, *, polarity: str | None = None) -> list[dict]:
 # write tables/plausibility_audit_*.
 # ===========================================================================
 
-def _is_saturated(note) -> bool:
-    """A degeneracy_note that flags the mass as saturated/degenerate -- the
-    second leg of the O-monster demote (the ratio alone is not enough; the mass
-    must also be one arbitrary pick of a degenerate set)."""
-    s = "" if note is None or (isinstance(note, float) and pd.isna(note)) else str(note)
-    low = s.lower()
-    return "satur" in low or "degener" in low
+def _mass_degenerate(row) -> bool:
+    """The second leg of the O-monster demote: the tier engine's own "degenerate"
+    window (`tiers._degeneracy`: more than DEGEN_DEMOTE_DENSITY plausible ions, a
+    lower bound included, or the audit's MASS-SATURATED flag) -- the ratio alone is
+    not enough, the mass must also be one pick of a degenerate set. Two ions is not:
+    the audit counts the commit itself, so a small high-O/C acid with one competitor
+    reads density 2 -- a choice between two, not an arbitrary pick."""
+    return T._degeneracy(row)[1]
 
 
 def _iso_count(s) -> int:
@@ -223,11 +227,12 @@ def _demote_row(ledger, i, *, reason, audit, evidence, degeneracy_note, n_iso):
 
 def demote_oxygen_monsters(ledger: pd.DataFrame, *, audit=None, log=print) -> dict:
     """Demote M0 assignments that are oxygen-lattice 'monsters': O/C > OC_MONSTER
-    AND mass-saturated (the degeneracy audit flags ~dozens of plausible ions on
-    the mass). NOT niso-gated -- a 13C satellite confirms the carbon count, not the
-    oxygen count, so it would wrongly exempt a real O-monster. Real HOMs (O/C<=1.14)
-    are spared by the ratio cut; non-saturated high-O fits are spared by the second
-    leg. Assigned->Candidate + below_assignability. Demote-only."""
+    AND mass-degenerate (the degeneracy audit counts >= 3 plausible ions in the
+    calibrated window, or flags it MASS-SATURATED). NOT niso-gated -- a 13C satellite
+    confirms the carbon count, not the oxygen count, so it would wrongly exempt a
+    real O-monster. Real HOMs (O/C<=1.14) are spared by the ratio cut; high-O fits
+    on a unique or two-ion window (the small polyacids: oxalic, malonic ...) are
+    spared by the second leg. Assigned->Candidate + below_assignability. Demote-only."""
     n = 0
     has_note = "degeneracy_note" in ledger.columns
     for i in _m0_index(ledger):
@@ -235,15 +240,15 @@ def demote_oxygen_monsters(ledger: pd.DataFrame, *, audit=None, log=print) -> di
         if not is_oxygen_monster(cnt):
             continue
         note = ledger.at[i, "degeneracy_note"] if has_note else None
-        if not _is_saturated(note):     # ratio alone is not enough -- needs saturation
+        if not _mass_degenerate(ledger.loc[i]):   # ratio alone is not enough -- needs a degenerate mass
             continue
         ni = _iso_count(ledger.at[i, "isotopologues"]) if "isotopologues" in ledger.columns else 0
         reason = (f"oxygen-lattice monster (O/C {_oc(cnt):.2f} > {OC_MONSTER}, "
-                  "mass-saturated) -- one arbitrary pick of a sub-ppm-degenerate set")
+                  "mass-degenerate) -- one pick of a sub-ppm-degenerate set")
         _demote_row(ledger, i, reason=reason, audit=audit,
                     evidence=f"O/C={_oc(cnt):.2f}", degeneracy_note=note, n_iso=ni)
         n += 1
-    log(f"[plausibility] demoted {n} oxygen-lattice monsters (O/C>{OC_MONSTER}, mass-saturated)")
+    log(f"[plausibility] demoted {n} oxygen-lattice monsters (O/C>{OC_MONSTER}, mass-degenerate)")
     return {"o_demoted": n}
 
 
@@ -274,13 +279,115 @@ def demote_carbon_clusters(ledger: pd.DataFrame, *, audit=None, log=print) -> di
     return {"c_cluster_demoted": n}
 
 
-def demote_implausible(ledger: pd.DataFrame, *, audit=None, log=print) -> dict:
-    """The two shared-oracle demotes that fire on a single-file or merged ledger
-    without a time series: O-monster + carbon-cluster. Both are demote-only and
-    feed the same audit list."""
+def demote_off_budget(ledger: pd.DataFrame, *, context: str | None,
+                      curated=frozenset(), audit=None, log=print) -> dict:
+    """Demote M0 commits whose neutral lies outside the run context's ELEMENT
+    BUDGET (contexts.element_budget: the structural gate, the carbon-free
+    allowlist, the heteroatom caps) and that no curated list names.
+
+    The per-peak grid never proposes such a formula -- ambient-air keeps P, F and
+    I at zero because they are monoisotopic and can never be isotope-confirmed,
+    and S at one. Other commit paths widen the search on evidence of their own
+    (a multi-channel certificate, a series extrapolation, a contaminant family)
+    and CAN commit one; that evidence proposes the neutral MASS, and it is then
+    read back as the axes (chan2, the acid branch, an anchor) that the evidence
+    level and the tier count as confirmation. So an off-budget formula that no
+    curated list names is Candidate + below_assignability -- the evidence level
+    reads that as 5b. `curated` is every formula the pass-0 registry names for
+    this polarity/context plus the active reference lists
+    (assign._stage_plausibility), exempt whichever pass committed it. Measured on
+    a same-air TOF/Orbitrap pair before the rule: the TOF's Assigned
+    phosphorus and multi-sulfur neutrals were ALL such commits.
+
+    One element has evidence of its own that no isotope can give: fluorine, whose
+    only stable isotope is 19F, is pinned by a CF2 STEP -- two committed rows on
+    the same adduct whose neutrals differ by exactly CF2 carry, between them, two
+    more fluorines (at Orbitrap accuracy no other composition difference sits
+    within the window; the nearest, CH3Cl and O3H2, are 4.5 and 3.6 mDa away).
+    So a formula whose only budget violation is fluorine is KEPT when the ledger
+    commits its CF2 neighbour (neutral +/- CF2, same adduct) -- a consistent
+    member of a fluorinated homologous series, the same standing an isotope line
+    gives Cl, Br or S. The step pins the fluorine difference, not the rest of the
+    formula; the level still reads the row's own axes. Measured on the same pair:
+    peak pairs one CF2 apart were 20x chance on the labelled-nitrate Orbitrap and
+    4x on the ~10k TOF (where ~1 in 4 such pairs is chance), and the fluorinated
+    rows the budget would demote from Assigned were almost all NOT chain members.
+    Demote-only; `context=None` is a no-op."""
+    if not context:
+        return {"budget_demoted": 0, "budget_cf2_kept": 0}
+    from peaky.chem import contexts as X
+    profile = X.get_context(context)
+    open_f = dataclasses.replace(profile, max_F=10 ** 6)   # the budget with fluorine lifted
+    curated = frozenset(curated or ())
+    verdict: dict = {}
+    n = kept = 0
+    has_method = "method" in ledger.columns
+    committed = _committed_pairs(ledger)
+    for i in _m0_index(ledger):
+        neutral = ledger.at[i, "neutral_formula"]
+        if not isinstance(neutral, str) or not neutral.strip() or neutral in curated:
+            continue
+        # an ion-only row carries its parent acid's composition (evidence.py);
+        # it is levelled on its own satellite and never judged here
+        if has_method and str(ledger.at[i, "method"]).startswith("ion_only:"):
+            continue
+        if neutral not in verdict:
+            verdict[neutral] = X.element_budget(neutral, profile)
+        ok, why = verdict[neutral]
+        if ok:
+            continue
+        adduct = ledger.at[i, "adduct"] if "adduct" in ledger.columns else None
+        if (X.element_budget(neutral, open_f)[0]
+                and any((nb, adduct) in committed for nb in _cf2_neighbours(neutral))):
+            kept += 1          # fluorine is the only violation and its CF2 step is committed
+            continue
+        ni = _iso_count(ledger.at[i, "isotopologues"]) if "isotopologues" in ledger.columns else 0
+        note = ledger.at[i, "degeneracy_note"] if "degeneracy_note" in ledger.columns else None
+        reason = (f"outside the {profile.label} element budget ({why}) and on no curated list "
+                  "-- a widened search proposed this formula; its axes confirm a neutral mass, "
+                  "not this composition")
+        _demote_row(ledger, i, reason=reason, audit=audit, evidence=str(why),
+                    degeneracy_note=note, n_iso=ni)
+        n += 1
+    log(f"[plausibility] demoted {n} commits outside the {profile.label} element budget "
+        f"(not on a curated list); kept {kept} fluorinated CF2-series members")
+    return {"budget_demoted": n, "budget_cf2_kept": kept}
+
+
+def _committed_pairs(ledger: pd.DataFrame) -> set:
+    """(neutral_formula, adduct) of every committed M0 row of the ledger."""
+    if "neutral_formula" not in ledger.columns or "adduct" not in ledger.columns:
+        return set()
+    m0 = ledger.loc[_m0_index(ledger)]
+    return {(str(n), a) for n, a in zip(m0["neutral_formula"], m0["adduct"]) if isinstance(n, str) and n}
+
+
+def _cf2_neighbours(neutral: str) -> list:
+    """The neutral one CF2 lighter and one CF2 heavier (the lighter only when it
+    exists: at least one C and two F to remove)."""
+    cnt = C.parse_formula(neutral)
+    out = []
+    for k in (-1, 1):
+        c = dict(cnt)
+        c["C"] = c.get("C", 0) + k
+        c["F"] = c.get("F", 0) + 2 * k
+        if c["C"] >= 1 and c["F"] >= 0:
+            out.append(C.format_formula({el: v for el, v in c.items() if v}))
+    return out
+
+
+def demote_implausible(ledger: pd.DataFrame, *, audit=None, log=print,
+                       context: str | None = None, curated=frozenset()) -> dict:
+    """The shared-oracle demotes that fire on a single-file or merged ledger
+    without a time series: O-monster + carbon-cluster, and -- given the run's
+    `context` -- the element-budget demote (`demote_off_budget`). All are
+    demote-only and feed the same audit list."""
     o = demote_oxygen_monsters(ledger, audit=audit, log=log)
     c = demote_carbon_clusters(ledger, audit=audit, log=log)
-    return {**o, **c}
+    if not context:
+        return {**o, **c}
+    b = demote_off_budget(ledger, context=context, curated=curated, audit=audit, log=log)
+    return {**o, **c, **b}
 
 
 _AUDIT_COLS = ["mz", "neutral_formula", "before_tier", "after_tier_or_role",

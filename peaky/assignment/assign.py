@@ -10,6 +10,8 @@ import argparse
 import json
 from dataclasses import dataclass, field
 
+import pandas as pd
+
 from peaky.assignment import admission
 from peaky.assignment import cleanup
 from peaky.chem import contexts
@@ -20,9 +22,12 @@ from peaky.assignment import labeled
 from peaky.assignment import ladders
 from peaky.assignment import ledger
 from peaky.assignment import passes
+from peaky.assignment import evidence
 from peaky.assignment import plausibility
 from peaky.chem import reagents
+from peaky.chem import resolution as RES
 from peaky.assignment import reflists
+from peaky.assignment import resolvability
 from peaky.assignment import residual
 from peaky.assignment import siloxane
 from peaky.assignment import solvent_clusters
@@ -119,15 +124,43 @@ def module_versions() -> dict:
     return dict(_MODULE_VERSIONS_CACHE)
 
 
-def _degen_summary(led) -> dict:
-    """Compact manifest summary of the degeneracy audit."""
+def _degen_summary(led, channels=None, families=None) -> dict:
+    """Compact manifest summary of the degeneracy audit: how many M0 rows it
+    measured, how many it could only bound (the committed formula outside the
+    run's space) or not measure, and the channels / opened families it counted."""
     m0 = led[led["role"] == ledger.ROLE_M0]
-    d = m0["degeneracy_density"].dropna()
+    note = m0["degeneracy_note"].astype(str) if "degeneracy_note" in m0.columns else pd.Series(dtype=str)
+    out = {"not_measured": int(note.str.startswith("not measured").sum()),
+           "lower_bound": int(note.str.contains("count is a lower bound", regex=False).sum())}
+    if channels is not None:
+        out["channels"] = list(channels)
+    if families is not None:
+        out["families"] = list(families)
+    d = pd.to_numeric(m0["degeneracy_density"], errors="coerce").dropna() \
+        if "degeneracy_density" in m0.columns else pd.Series(dtype=float)
     if not len(d):
-        return {"measured": 0}
+        return {"measured": 0, **out}
     d = d.astype(int)
     return {"measured": int(len(d)), "degenerate_ge2": int((d >= 2).sum()),
-            "max_density": int(d.max())}
+            "max_density": int(d.max()), **out}
+
+
+def _stage_degeneracy(st):
+    """The honest mass-degeneracy count (degeneracy.py) over what THIS run could
+    commit: its channels (the adducts it scored), the context's element budget
+    widened by the contaminant families this file opened -- declared by the
+    context, the reagent's organohalogen family, the GKA evidence pass 3 carried --
+    and the curated formulas (the pass-0 registry, the active reference lists)."""
+    polarity = getattr(st.profile, "polarity", "negative")
+    curated = passes.known_formulas(polarity, getattr(st.profile, "label", None))
+    curated = curated | frozenset(getattr(st.cfg, "reflist_formulas", None) or ())
+    carry = st.series_carry or {}
+    families = degeneracy.opened_families(
+        st.profile if st.do_pass3 else None, st.reagent if st.do_pass3 else None,
+        carry.get("evidence"), st.led)
+    degeneracy.apply_degeneracy(st.led, context=st.profile, adducts=st.adducts,
+                                families=families, curated=curated, log=st.log)
+    return _degen_summary(st.led, st.adducts, families)
 
 
 def _module_hashes() -> dict:
@@ -178,6 +211,13 @@ class _RunState:
     # GKA series evidence measured in the pass-3 CURATED phase and handed to the
     # late `pass3_series` stage (a DataFrame + member sets; never serialized).
     series_carry: object = None
+    # the neutral formulas a --corroborate source holds (the other reagent
+    # channel / instrument): the `corroborated` axis of the evidence levels
+    # (docs/EVIDENCE_LEVELS.md §3); empty on a bare run
+    corroborate: set = field(default_factory=set)
+    # the peak-width model the `resolvability` stage reads (chem.resolution);
+    # None = no model, the stage is skipped and its columns stay NA
+    resolving_power: object = None
     summaries: dict = field(default_factory=dict)
     plaus_audit: list = field(default_factory=list)
 
@@ -280,6 +320,69 @@ def _stage_timeseries(st):
         st.led, st.ts_peaks, reagent_mzs=ts_reagent_mzs, log=st.log)
 
 
+def _stage_plausibility(st):
+    """The shared-oracle demotes (O-monster, carbon cluster) and the element-budget
+    demote: a commit whose neutral lies outside the run context's element budget
+    (contexts.element_budget) and that no curated list names -- the pass-0
+    registry for this polarity/context or an active reference list -- is
+    Candidate + below_assignability (plausibility.demote_off_budget)."""
+    label = getattr(st.profile, "label", None)
+    curated = passes.known_formulas(getattr(st.profile, "polarity", "negative"), label)
+    curated = curated | frozenset(getattr(st.cfg, "reflist_formulas", None) or ())
+    return plausibility.demote_implausible(
+        st.led, audit=st.plaus_audit, log=st.log, context=label, curated=curated)
+
+
+def _stage_evidence(st):
+    """Evidence level on every committed M0 (docs/EVIDENCE_LEVELS.md): what the
+    evidence behind the formula is worth on the CIMS-adapted Schymanski scale,
+    from the columns the ledger already carries. Runs after every tier and
+    demote stage, the reflist rescue and the final envelope sweep (the
+    satellites the `iso` axis reads), before `timeseries` (ts_* only). The
+    claim each level supports (identified / ion / tentative) is stamped beside
+    it and tallied on the log line; it changes no tier."""
+    s = evidence.apply_levels(st.led, cfg=st.cfg, cross=st.corroborate)
+    claims = s.get("claims") or {}
+    st.log(f"[run] evidence levels {s['levels']} on {s['n_levelled']} M0 rows "
+           f"({s['n_pairs']} neutral/adduct pairs; corroborated by {s['n_corroborate']} neutrals); "
+           "claims " + " | ".join(f"{k} {claims.get(k, 0)}" for k in evidence.CLAIMS))
+    return s
+
+
+def _stage_resolvability(st):
+    """Nearest-neighbour separability of every M0 peak from the run's width
+    model (assignment/resolvability.py): a tier input (a blended peak with no
+    isotope / second-channel / series corroboration is capped at Candidate) and
+    a level input (4c needs a separable peak). Skipped without a model, and
+    when the ledger already carries the flag (the trace-first synthetic sample
+    stamps its own at the trace build)."""
+    return resolvability.stamp_resolvability(st.led, st.resolving_power, log=st.log)
+
+
+def _width_model(resolving_power, client, sample_id, raw, log):
+    """The peak-width model the `resolvability` stage reads (chem.resolution):
+    None -> None; 'auto' -> measured from this sample's raw profile when a
+    server is there, None offline; a number -> constant R; a Resolution as is.
+    A measurement that cannot be made is a log line, never a failed run: the
+    stage then skips and the level is computed without it."""
+    if resolving_power is None:
+        return None
+    if isinstance(resolving_power, RES.Resolution):
+        return resolving_power
+    if isinstance(resolving_power, str):
+        if resolving_power.strip().lower() == "none":
+            return None
+        if resolving_power.strip().lower() != "auto":
+            return RES.Resolution.from_r(float(resolving_power))
+        if client is None:
+            log("[resolvability] no server to measure the peak width from (offline sample); "
+                "pass resolving_power=<R> to declare one")
+            return None
+        from peaky.batch import tracefirst as TFT   # lazy: the batch package imports this module
+        return TFT.measure_resolution(client, sample_id, peaks=raw, log=log)
+    return RES.Resolution.coerce(resolving_power)
+
+
 # The assignment pipeline AS DATA -- read top to bottom to see exactly what runs,
 # in what order, under what condition. `safe` wraps a stage so a failure can't lose
 # prior work; `store` keeps its summary. Authoritative stage table: ARCHITECTURE.md §4.
@@ -370,9 +473,13 @@ _STAGES = [
     # over-ranked can't keep the M0 slot it will only ever be tier-demoted out of.
     _Stage("rearbitrate", lambda st: passes.rearbitrate_offcal_degenerate(
         st.led, st.cfg, log=st.log)),
+    # separability of each M0 peak from its nearest picked neighbour -- MUST precede
+    # tiers (a blended, uncorroborated peak is capped) and evidence (level 4c reads it).
+    _Stage("resolvability", _stage_resolvability,
+           when=lambda st: st.resolving_power is not None and not resolvability.already_stamped(st.led),
+           safe=False),
     # honest mass-degeneracy measurement -- MUST precede tiers (the tier engine reads it).
-    _Stage("degeneracy", lambda st: _degen_summary(
-        degeneracy.apply_degeneracy(st.led, context=st.profile.label, log=st.log))),
+    _Stage("degeneracy", _stage_degeneracy),
     # report tier, then the post-tier de-risking demotes (each gets the last word).
     _Stage("tiers", lambda st: tiers.apply_tiers(st.led, cfg=st.cfg), safe=False, store=False),
     _Stage("demote_fluorine",
@@ -434,12 +541,23 @@ _STAGES = [
     _Stage("demote_speculative",
            lambda st: cleanup.demote_speculative_residual(st.led, st.cfg, log=st.log),
            safe=False, store=False),
-    _Stage("plausibility", lambda st: plausibility.demote_implausible(
-        st.led, audit=st.plaus_audit, log=st.log), safe=False),
+    _Stage("plausibility", _stage_plausibility, safe=False),
     # rescue-verify the still-unexplained residual against active reference peaklists.
     _Stage("reflist_rescue", lambda st: reflists.rescue_unexplained_by_reflist(
         st.client, st.sample_id, st.led, st.profile, st.cfg, st.reflists_active,
         st.adducts, log=st.log), when=lambda st: bool(st.reflists_active)),
+    # ION-ONLY rows: the +1.0078 Da electron-attachment line beside each committed
+    # [M-H]- acid, committed as a Candidate "[M]-." whose composition is pinned
+    # (exact mass, own 13C) while the ionization process and the neutral stay
+    # open. Post-tier (it sets its own tier, like reflist_rescue), BEFORE the
+    # final envelope sweep (which then claims the new row's own 13C), `evidence`
+    # (which levels it 4d / 5a on its own satellite and never lets it corroborate
+    # its parent) and `timeseries` (which stamps it). Only where the profile
+    # opened the channel (cfg.ion_only_channels); not `safe`: a bucket that
+    # cannot be filled is a bug, not a lost stage.
+    _Stage("ion_only", lambda st: cleanup.commit_ion_only_electron_attachment(
+        st.led, st.cfg, log=st.log),
+           when=lambda st: bool(getattr(st.cfg, "ion_only_channels", None)), safe=False),
     # final envelope sweep: an M0 committed AFTER the three earlier sweeps (a pass-8
     # reflist rescue, or a parent whose earlier assignment was cleared and re-won,
     # orphaning its children) still owes its satellites -- without this its bright
@@ -447,6 +565,9 @@ _STAGES = [
     # brightest "unexplained" peak of a positive urea-CIMS ambient batch run).
     _Stage("iso_env_final",
            lambda st: passes.complete_isotope_envelopes(st.led, st.cfg, log=st.log)),
+    # evidence levels -- not `safe`: a level that cannot be computed is a bug,
+    # not a lost stage. The stage order above is the design (spec §6.1).
+    _Stage("evidence", _stage_evidence, safe=False),
     _Stage("timeseries", _stage_timeseries,
            when=lambda st: st.ts_peaks is not None and len(st.ts_peaks)),
 ]
@@ -458,13 +579,21 @@ def run(sample_id: str, context: str = "ambient-air", *,
         do_pass5: bool = True, do_pass_certified: bool = True,
         ts_peaks=None, adducts=None, reflists_active=None,
         label_isotope=None, label_max=2, label_purity=None, occurrence=None,
-        reagent_n_relabel: bool = True, peaks=None,
-        log=print, checkpoint_dir=None) -> dict:
+        reagent_n_relabel: bool = True, peaks=None, corroborate=None,
+        resolving_power=None, log=print, checkpoint_dir=None) -> dict:
     """Assign one sample. `peaks` (a DataFrame in the shape fetch_peaks returns:
     peak_id, mz, height, area ...) makes the run OFFLINE: the table is served
     as `sample_id` from memory, no server is contacted, the local scorer does
     the mass and isotope maths, and only the given `adducts` are open. The
-    trace-first batch path and the tests use it."""
+    trace-first batch path and the tests use it. `corroborate` is the set of
+    neutral formulas a corroborating source holds (the other reagent channel or
+    instrument on the same air; `evidence.corroborating_neutrals` resolves run
+    dirs / ledger CSVs to it): the `corroborated` axis of the evidence levels.
+    `resolving_power` is the peak-width model of the `resolvability` stage: None =
+    no stage (its columns stay NA), 'auto' = measure it from this sample's raw
+    profile when a server is there (an offline run cannot), a number = a constant
+    R, or a `chem.resolution.Resolution`; a batch measures ONE model and hands it
+    to every file."""
     cfg = cfg or passes.PassConfig()
     # the reagent bottle's isotopic purity (ReagentProfile.purity), published for
     # the two consumers that model a '^X' ion's unlabelled impurity line: the
@@ -489,6 +618,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
 
     raw = io_mascope.fetch_peaks(client, sample_id, use_cache=use_cache)
     led = ledger.new_ledger(raw)
+    width_model = _width_model(resolving_power, client, sample_id, raw, log)
     # The sample's noise edge (p1 of its picked heights) anchors every height
     # gate in the passes (cfg.height_cutoff = x_edge * edge): absolute cps
     # thresholds do not transfer between instruments/modes (see passes.config).
@@ -613,7 +743,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
         do_pass_certified=do_pass_certified,
         reflists_active=reflists_active, ts_peaks=ts_peaks,
         label_isotope=label_isotope, label_max=label_max, log=log,
-        checkpoint_dir=checkpoint_dir, reagent_n_relabel=reagent_n_relabel)
+        checkpoint_dir=checkpoint_dir, reagent_n_relabel=reagent_n_relabel,
+        corroborate=set(corroborate or ()), resolving_power=width_model)
     for stg in _STAGES:
         if not stg.when(st):
             continue
@@ -633,6 +764,9 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # the multiple the gate was resolved FROM (profile-supplied or the package
     # default) -- the gate in cps alone cannot be read back without it.
     st["height_cutoff_x_edge"] = cfg.height_cutoff_x_edge_resolved
+    # the width model the resolvability stage used (None = not stamped) and its class counts
+    st["resolution"] = width_model.as_dict() if width_model is not None else None
+    st["resolvability"] = (summaries.get("resolvability") or {}).get("counts")
     st["admitted"] = {"height": adm["height"], "occurrence": adm["occurrence"],
                       "rejected": adm["rejected"]}
     log(f"[run] stats {json.dumps(st)}")
@@ -677,6 +811,7 @@ def main(argv=None):
                             height_cutoff_cps=args.height_cutoff)
     PR.apply_height_cutoff_x_edge(cfg, None, explicit=args.height_cutoff_x_edge,
                                   log=print)
+    PR.apply_ion_only_channels(cfg, None)        # no profile here: the bucket stays off
     out = run(args.sample_id, args.context, cfg=cfg, use_cache=not args.no_cache,
               do_pass2=not args.no_pass2, do_pass3=not args.no_pass3)
     # report.py will own file outputs; for now write the ledger + manifest

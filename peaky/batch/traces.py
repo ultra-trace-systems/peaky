@@ -42,10 +42,13 @@ with -- construction and lookup are one function. Pure numpy/pandas.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"  # MassScale: one measured scatter per batch, the merge and stamp
+                       # windows sized from it (0.1.0: PeakIndex, the trace question)
 
 MZ_FLOOR_DA = 1.5e-3      # window half-width floor (annotate_peaks' own; absorbs the
                           # raw-vs-calibrated offset at low m/z). EVERY window here
@@ -266,6 +269,15 @@ class PeakIndex:
 SCATTER_Q = 0.75          # the per-trace scatter quantile that sizes a batch's window
 
 
+def _trace_scatters(index: PeakIndex, centres, tol_ppm: float | None,
+                    min_members: int) -> np.ndarray:
+    """`scatter_ppm` at every finite centre, the unmeasurable ones (fewer than
+    `min_members` spectra) dropped."""
+    vals = [index.scatter_ppm(float(c), tol_ppm, min_members)
+            for c in np.asarray(centres, dtype=float) if np.isfinite(c)]
+    return np.asarray([v for v in vals if np.isfinite(v)], dtype=float)
+
+
 def batch_scatter_ppm(index: PeakIndex, centres, *, tol_ppm: float | None = None,
                       min_members: int = SCATTER_MIN_MEMBERS, q: float = SCATTER_Q) -> float:
     """The per-ion mass scatter a stamping window has to fit: the `q` quantile
@@ -278,7 +290,140 @@ def batch_scatter_ppm(index: PeakIndex, centres, *, tol_ppm: float | None = None
     decile either: on one Orbitrap mode it is 8 ppm -- a scan-edge pile-up 40x the
     median -- while the third quartile there is 0.34 ppm. Measured third quartiles:
     3.8-4.2 ppm on a TOF, 0.24-0.34 ppm on Orbitrap modes."""
-    vals = [index.scatter_ppm(float(c), tol_ppm, min_members)
-            for c in np.asarray(centres, dtype=float) if np.isfinite(c)]
-    vals = [v for v in vals if np.isfinite(v)]
-    return float(np.quantile(vals, q)) if vals else float("nan")
+    vals = _trace_scatters(index, centres, tol_ppm, min_members)
+    return float(np.quantile(vals, q)) if len(vals) else float("nan")
+
+
+# ---------------------------------------------------------------------------
+# the batch's mass scale: ONE measured scatter, and every window a batch-level
+# rule sizes from it
+# ---------------------------------------------------------------------------
+WINDOW_SIGMA = 2.5        # a one-draw window (a peak against its trace centre: the
+                          # stamp) = this many sigmas of the per-ion scatter ...
+WINDOW_MAX_X = 2.0        # ... never wider than this x the binning tolerance, and never
+                          # narrower than the tolerance itself (the floor an Orbitrap
+                          # sits on: its 0.2-0.3 ppm scatter is far inside 6 ppm)
+MERGE_GAP_SIGMA = WINDOW_SIGMA * float(np.sqrt(2.0))
+                          # the merge tests the GAP between two per-file anchors of one
+                          # ion -- the difference of two draws, sqrt(2) wider than one
+                          # draw about the centre -- so the same confidence as the
+                          # stamp's window needs sqrt(2) x the sigmas (3.54). Measured on
+                          # a 28-file TOF batch (sigma 3.7 ppm): the 6 ppm window minted
+                          # two rows for one ion 135 times (adjacent merged rows closer
+                          # than the stamping window) and the trace stage collapsed 125
+                          # of them afterwards; at 12 ppm none is left and no cluster
+                          # holds two picked peaks of one file (that starts at 15 ppm).
+                          # On two Orbitrap channels (0.2-0.3 ppm) the merge is inert
+                          # from 3 to 9.5 ppm: no cluster at 6 ppm holds two peaks of
+                          # one file, and a tighter window only cuts one ion's
+                          # per-file cloud in two (54 extra rows at 0.5 ppm).
+MASS_SCALE_MAX_DRIFT_PPM = 10.0
+                          # a seed anchor may walk at most this far onto its trace
+                          # before the scatter is read (timeseries.RECENTRE_MAX_DRIFT_PPM)
+
+
+def window_ppm(tol_ppm: float, sigma_ppm, *, k_sigma: float = WINDOW_SIGMA,
+               max_x: float = WINDOW_MAX_X) -> float:
+    """The one window rule: max(tol, min(max_x * tol, k_sigma * sigma)) -- the
+    tolerance itself when `sigma_ppm` is not finite (nothing was measured)."""
+    tol = float(tol_ppm)
+    if sigma_ppm is None or not np.isfinite(sigma_ppm):
+        return tol
+    return float(max(tol, min(max_x * tol, k_sigma * float(sigma_ppm))))
+
+
+@dataclass(frozen=True)
+class MassScale:
+    """The batch's mass scale: the binning tolerance every batch-level table is
+    built at (`tol_ppm` = sampling.BATCH_TOL_PPM: the selector's bins, the
+    admission table, the trace index), the per-ion mass scatter measured ONCE
+    from the batch's own time series (`sigma_ppm`, NaN when there was nothing
+    to measure it from), and the two windows sized from it by `window_ppm`:
+
+      merge_ppm  the gap between two per-file anchors that still means one ion
+                 (assign_batch.align, lock_known_species, collapse_trace_labels)
+      stamp_ppm  the half-window a batch peak may sit from its trace centre
+                 (timeseries.stamping_frame / annotate_peaks)
+
+    Unmeasured, both windows ARE the tolerance, so a run without a time series
+    is exactly the flat-window run."""
+    tol_ppm: float
+    sigma_ppm: float = float("nan")
+    n_traces: int = 0
+    n_seeds: int = 0
+    k_merge: float = MERGE_GAP_SIGMA
+    k_stamp: float = WINDOW_SIGMA
+    max_x: float = WINDOW_MAX_X
+
+    @property
+    def measured(self) -> bool:
+        return bool(np.isfinite(self.sigma_ppm))
+
+    @property
+    def merge_ppm(self) -> float:
+        return window_ppm(self.tol_ppm, self.sigma_ppm, k_sigma=self.k_merge, max_x=self.max_x)
+
+    @property
+    def stamp_ppm(self) -> float:
+        return window_ppm(self.tol_ppm, self.sigma_ppm, k_sigma=self.k_stamp, max_x=self.max_x)
+
+    def as_dict(self) -> dict:
+        return {"tol_ppm": float(self.tol_ppm),
+                "sigma_ppm": round(float(self.sigma_ppm), 3) if self.measured else None,
+                "n_traces": int(self.n_traces), "n_seeds": int(self.n_seeds),
+                "merge_ppm": round(self.merge_ppm, 3), "stamp_ppm": round(self.stamp_ppm, 3),
+                "k_merge": round(float(self.k_merge), 4), "k_stamp": float(self.k_stamp),
+                "max_x": float(self.max_x),
+                "source": "measured" if self.measured else "unmeasured"}
+
+    def describe(self) -> str:
+        if not self.measured:
+            return (f"per-ion mass scatter not measured (no time series, or no trace populated "
+                    f"enough) -> merge and stamping windows = the binning tolerance "
+                    f"+-{self.tol_ppm:g} ppm")
+        return (f"per-ion mass scatter {self.sigma_ppm:.3f} ppm (third quartile of "
+                f"{self.n_traces} traces, from {self.n_seeds} per-file anchors) -> merge window "
+                f"+-{self.merge_ppm:.3g} ppm ({self.k_merge:.2f} sigma), stamping window "
+                f"+-{self.stamp_ppm:.3g} ppm ({self.k_stamp:g} sigma); both no narrower than the "
+                f"binning tolerance {self.tol_ppm:g} ppm and no wider than {self.max_x:g}x it")
+
+
+def measure_mass_scale(index: PeakIndex | None, seeds, *, tol_ppm: float,
+                       max_drift_ppm: float = MASS_SCALE_MAX_DRIFT_PPM,
+                       min_members: int = SCATTER_MIN_MEMBERS, q: float = SCATTER_Q,
+                       **windows) -> MassScale:
+    """Measure the batch's MassScale from its time series (`index`) at the traces
+    the given `seeds` label -- the per-file ledger anchors, offset-corrected, the
+    only centres that exist before the merge.
+
+    Each seed walks onto its trace first (`mean_shift`, never further than
+    `max_drift_ppm`): a per-file anchor is one spectrum's draw, and a scatter read
+    around an off-centre anchor through a +-tol window is truncated on one side
+    and reads low (measured on a TOF batch: 3.1 ppm around the raw anchors, 3.7
+    around the shifted ones, 3.8 at the merged ledger's own trace centres). The
+    shifted centres are then gap-clustered at `tol_ppm` and each cluster's median
+    taken, so an ion that several files anchored counts ONCE. `sigma_ppm` is the
+    `q` quantile (third quartile, see `batch_scatter_ppm`) of the per-trace
+    scatter over those centres; `n_traces` counts the ones populated enough to
+    measure. No index / no seeds / no populated trace -> an unmeasured scale
+    (both windows = `tol_ppm`). `windows` (`k_merge`, `k_stamp`, `max_x`) pass
+    to the MassScale."""
+    tol = float(tol_ppm)
+    seeds = np.asarray(seeds, dtype=float) if seeds is not None else np.empty(0)
+    seeds = seeds[np.isfinite(seeds)]
+    n_seeds = int(len(seeds))
+    if index is None or n_seeds == 0 or not len(index):
+        return MassScale(tol_ppm=tol, n_seeds=n_seeds, **windows)
+    shifted = np.sort(np.array([index.mean_shift(float(c), tol_ppm=tol, max_drift_ppm=max_drift_ppm)
+                                for c in np.unique(seeds)], dtype=float))
+    if len(shifted) > 1:
+        gaps = np.diff(shifted) / shifted[:-1] * 1e6
+        cid = np.concatenate([[0], np.cumsum(gaps > tol)])
+        centres = pd.Series(shifted).groupby(cid).median().to_numpy(dtype=float)
+    else:
+        centres = shifted
+    vals = _trace_scatters(index, centres, tol, min_members)
+    if not len(vals):
+        return MassScale(tol_ppm=tol, n_seeds=n_seeds, **windows)
+    return MassScale(tol_ppm=tol, sigma_ppm=float(np.quantile(vals, q)),
+                     n_traces=int(len(vals)), n_seeds=n_seeds, **windows)

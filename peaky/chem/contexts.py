@@ -360,16 +360,22 @@ def filter_by_context(formula: str, context: str = "ambient-air") -> tuple[bool,
     return filter_by_profile(formula, get_context(context))
 
 
-def filter_by_profile(formula: str, profile: "ContextProfile") -> tuple[bool, str | None]:
-    """Return (keep, reason) for a formula against an explicit profile. Same
-    rules as filter_by_context but takes the profile directly -- used by the
-    degeneracy audit with a relaxed profile (the contaminant families the
-    pipeline can open raise the strict ambient F/Si caps)."""
+def element_budget(formula: str, profile: "ContextProfile | str") -> tuple[bool, str | None]:
+    """Return (keep, reason) for the context's ELEMENT BUDGET alone -- steps 1-3
+    of `filter_by_profile`: the universal structural gate (integer DBE >= 0,
+    Senior), the carbon-free allowlist, and the heteroatom caps. Not the
+    halogen/Si minimum-carbon scaffold (a reagent-alias guard) and not the Van
+    Krevelen windows, which shape what the grid ENUMERATES and would reject real
+    aromatics (nitrobenzoic acid, DBE/C 0.86).
+
+    The budget is what a commit made outside the per-peak grid must still
+    respect unless a curated list names the formula: ambient-air sets max_P /
+    max_F / max_I = 0 because those elements are monoisotopic and can never be
+    isotope-confirmed, and max_S = 1. `plausibility.demote_off_budget` holds
+    every other commit path to it."""
+    if isinstance(profile, str):
+        profile = get_context(profile)
     cnt = C.parse_formula(formula)
-    nC = cnt.get("C", 0); nH = cnt.get("H", 0); nN = cnt.get("N", 0)
-    nO = cnt.get("O", 0); nS = cnt.get("S", 0); nP = cnt.get("P", 0)
-    nF = cnt.get("F", 0); nCl = cnt.get("Cl", 0); nBr = cnt.get("Br", 0)
-    nI = cnt.get("I", 0); nSi = cnt.get("Si", 0)
 
     # 1. universal structural gate (integer DBE>=0, Senior)
     ok, why = C.dbe_ok(cnt)
@@ -377,19 +383,39 @@ def filter_by_profile(formula: str, profile: "ContextProfile") -> tuple[bool, st
         return False, why
 
     # 2. inorganic / no-carbon: only a tight atmospheric allowlist
-    if nC == 0:
+    if cnt.get("C", 0) == 0:
         allowed = _inorganic_allowed(cnt)
         if profile.label in ("ambient-air", "chamber", "indoor-air") and allowed:
             return True, None
         return False, "no carbon"
 
     # 3. heteroatom caps
-    for el, cap, n in (("N", profile.max_N, nN), ("S", profile.max_S, nS),
-                       ("P", profile.max_P, nP), ("F", profile.max_F, nF),
-                       ("Cl", profile.max_Cl, nCl), ("Br", profile.max_Br, nBr),
-                       ("I", profile.max_I, nI), ("Si", profile.max_Si, nSi)):
+    for el, cap in (("N", profile.max_N), ("S", profile.max_S),
+                    ("P", profile.max_P), ("F", profile.max_F),
+                    ("Cl", profile.max_Cl), ("Br", profile.max_Br),
+                    ("I", profile.max_I), ("Si", profile.max_Si)):
+        n = cnt.get(el, 0)
         if n > cap:
             return False, f"{el}={n} > {cap}"
+    return True, None
+
+
+def filter_by_profile(formula: str, profile: "ContextProfile") -> tuple[bool, str | None]:
+    """Return (keep, reason) for a formula against an explicit profile. Same
+    rules as filter_by_context but takes the profile directly -- used by the
+    degeneracy audit with a relaxed profile (the contaminant families the
+    pipeline can open raise the strict ambient F/Si caps)."""
+    # 1-3. the element budget (structural gate, carbon-free allowlist, caps)
+    ok, why = element_budget(formula, profile)
+    if not ok:
+        return False, why
+    cnt = C.parse_formula(formula)
+    nC = cnt.get("C", 0); nH = cnt.get("H", 0); nN = cnt.get("N", 0)
+    nO = cnt.get("O", 0)
+    nF = cnt.get("F", 0); nCl = cnt.get("Cl", 0); nBr = cnt.get("Br", 0)
+    nI = cnt.get("I", 0); nSi = cnt.get("Si", 0)
+    if nC == 0:
+        return True, None   # an allowlisted carbon-free analyte
 
     # 4. heteroatom-in-neutral minimum carbon scaffold (reagent-alias guard)
     for el, min_c in profile.min_C_for.items():

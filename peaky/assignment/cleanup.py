@@ -1239,6 +1239,193 @@ def relabel_ammonium_dehydration(ledger: pd.DataFrame, *, adduct: str = "[M+^NH4
     return out
 
 
+# ---------------------------------------------------------------------------
+# ION-ONLY rows: the electron-attachment line beside each committed acid
+# ---------------------------------------------------------------------------
+# On a nitrate CIMS the bright O-rich acids show a second line +1.00783 Da (one H)
+# above their [M-H]-: the composition of the ACID ITSELF as a radical anion, exact
+# to 0.05 mDa and pinned by its own 13C. It is not chemistry of the air -- over a
+# multi-day batch the family is anti-correlated with its acids (r -0.8..-0.9),
+# moves as one class and collapses 25x within an hour while the [M+NO3]- cluster
+# of the same formula stays flat: a SOURCE-STATE effect, unconverted primary ions
+# (an electron / O2-.) attaching to compounds with a high electron affinity. The
+# ion composition is committed; the ionization process and the neutral stay
+# open; nothing existing moves. The peak sits 4.47 mDa above the parent's 13C
+# line (H - 13C shift), which is why the stage needs the two separability
+# guards below and is NEVER a grid channel (every even-mass peak would gain a
+# CHO radical-anion reading against the organonitrate [M-H]- and 13C lines).
+ION_ONLY_ADDUCT = "[M]-."
+ION_ONLY_METHOD = "ion_only:electron_attachment"
+ION_ONLY_PARENT_ADDUCT = "[M-H]-"
+#: |z| on the calibrated mass gate a candidate must pass (the Z_TAIL of the
+#: labelled rescue / the tier demote: 2.6 sigma)
+ION_ONLY_Z = 2.6
+#: the window when the run is uncalibrated (no cal_mu): +-3 ppm
+ION_ONLY_PPM_UNCAL = 3.0
+#: the H - 13C shift: the +H position sits this far ABOVE the parent's 13C line
+ION_ONLY_GAP_DA = C.M["H"] - 1.0033548
+#: separability, read off the file's own picked peaks: a picker that reports
+#: adjacent peaks this close together demonstrably resolves the 13C / +H pair
+#: (an Orbitrap below ~m/z 350 picks hundreds of such pairs per file, a ~4k
+#: TOF none anywhere -- its M+1 is one blended peak). Slack for centroid error.
+ION_ONLY_SEP_SLACK = 1.25
+#: ... counted within +- this many Da of the parent (resolution falls with mass)
+ION_ONLY_SEP_HALF_WINDOW_DA = 50.0
+#: ... and at least this many pairs before the region counts as resolving
+ION_ONLY_SEP_MIN_PAIRS = 3
+
+
+def _resolved_pair_centres(mz_all: np.ndarray) -> np.ndarray:
+    """m/z of every adjacent picked-peak pair closer than the 13C/+H gap
+    (x slack): where the picker demonstrably resolves peaks at that spacing."""
+    s = np.sort(mz_all[np.isfinite(mz_all)])
+    if len(s) < 2:
+        return np.empty(0)
+    d = np.diff(s)
+    return ((s[1:] + s[:-1]) / 2.0)[d <= ION_ONLY_SEP_SLACK * ION_ONLY_GAP_DA]
+
+
+def _resolves_at(centres: np.ndarray, mz: float) -> bool:
+    lo, hi = mz - ION_ONLY_SEP_HALF_WINDOW_DA, mz + ION_ONLY_SEP_HALF_WINDOW_DA
+    return int(((centres >= lo) & (centres <= hi)).sum()) >= ION_ONLY_SEP_MIN_PAIRS
+
+
+def commit_ion_only_electron_attachment(ledger: pd.DataFrame, cfg=None, *, log=print) -> dict:
+    """Commit the +1.00783 Da electron-attachment line of every committed
+    [M-H]- parent as an ION-ONLY Candidate row on `[M]-.` (module note above).
+
+    Per parent (a committed M0 on `[M-H]-`, any tier, not below assignability,
+    at least one carbon): the UNEXPLAINED peak -- never an M0, isotopologue,
+    reagent or artifact -- nearest the parent neutral's M-. mass and inside the
+    calibrated gate (|z| <= ION_ONLY_Z via passes.core.z_of, the mass-dependent
+    centre when fitted; +-ION_ONLY_PPM_UNCAL ppm uncalibrated). Two guards keep
+    a 13C line, or an unresolved 13C/+H blend, out of the bucket:
+      * the GATE guard -- the gate's half-width at that m/z must be under half
+        the 4.47 mDa gap, else the gate itself cannot tell the two positions
+        apart (a badly calibrated instrument);
+      * the RESOLUTION guard -- the file's own picked peaks must show at least
+        ION_ONLY_SEP_MIN_PAIRS adjacent pairs at <= 1.25 x the gap within
+        +-50 Da of the parent, else the picker does not resolve that spacing
+        there (every ~4k TOF; an Orbitrap above ~m/z 400).
+    The new row: neutral = the parent's composition, adduct "[M]-.", ion
+    formula "<composition>-", method `ion_only:electron_attachment`, pass 9,
+    tier Candidate, confidence "Good (ion only)", `ion_only_of` = the parent's
+    peak_id, the shift in mDa and the height ratio in the commentary; never an
+    anchor or series tie (those are evidence axes), never locked, never below
+    assignability. The parent row is not touched. Returns counts."""
+    channels = tuple(getattr(cfg, "ion_only_channels", None) or ())
+    out = {"ion_only_committed": 0, "ion_only_parents": 0, "ion_only_candidates": 0,
+           "ion_only_skipped_gate": 0, "ion_only_skipped_unresolved": 0,
+           "ion_only_channels": list(channels)}
+    if ION_ONLY_ADDUCT not in channels:
+        return out
+    need = {"mz", "height", "role", "adduct", "neutral_formula", "peak_id"}
+    if not need.issubset(ledger.columns):
+        return out
+    if "ion_only_of" not in ledger.columns:
+        ledger["ion_only_of"] = pd.NA
+    from peaky.assignment.passes import core as PC
+
+    mz_all = pd.to_numeric(ledger["mz"], errors="coerce").to_numpy(dtype=float)
+    centres = _resolved_pair_centres(mz_all)
+    role = ledger["role"].astype(str)
+    has_ba = "below_assignability" in ledger.columns
+    has_tier = "tier" in ledger.columns
+    m0 = (role == L.ROLE_M0) & ledger["adduct"].astype(str).eq(ION_ONLY_PARENT_ADDUCT)
+    if has_ba:
+        m0 &= ~ledger["below_assignability"].map(lambda v: bool(v) if not _is_na(v) else False)
+    parents = ledger.index[m0]
+    heights = pd.to_numeric(ledger["height"], errors="coerce")
+    # the brightest parent claims first (a peak is committed once; a later parent
+    # whose line is now an M0 sees no unexplained peak there)
+    parents = sorted(parents, key=lambda i: -(heights.at[i] if pd.notna(heights.at[i]) else 0.0))
+    mu = getattr(cfg, "cal_mu", None)
+    sigma = getattr(cfg, "cal_sigma", None)
+    calibrated = mu is not None and sigma is not None
+    for i in parents:
+        X = _norm_formula(ledger.at[i, "neutral_formula"])
+        if not X:
+            continue
+        cnt = C.parse_formula(X)
+        if cnt.get("C", 0) < 1:
+            continue
+        out["ion_only_parents"] += 1
+        theo = C.ion_mz(X, ION_ONLY_ADDUCT)
+        # the gate half-width at this mass, in Da
+        if calibrated:
+            half_ppm = ION_ONLY_Z * float(PC.cal_sigma_at(cfg, theo))
+        else:
+            half_ppm = ION_ONLY_PPM_UNCAL
+        half_da = half_ppm * theo * 1e-6
+        if half_da >= ION_ONLY_GAP_DA / 2.0:
+            out["ion_only_skipped_gate"] += 1
+            continue
+        if not _resolves_at(centres, theo):
+            out["ion_only_skipped_unresolved"] += 1
+            continue
+        # the nearest UNEXPLAINED peak inside the gate
+        un = ledger.index[(role == L.ROLE_UNEXPLAINED)
+                          & (np.abs(mz_all - theo) <= half_da)]
+        if not len(un):
+            continue
+        out["ion_only_candidates"] += 1
+        best, best_ppm = None, None
+        for j in un:
+            ppm = (float(ledger.at[j, "mz"]) - theo) / theo * 1e6
+            if calibrated:
+                z = PC.z_of(ppm, cfg, mz=theo)
+                if z is None or z > ION_ONLY_Z:
+                    continue
+            elif abs(ppm) > ION_ONLY_PPM_UNCAL:
+                continue
+            if best is None or abs(ppm) < abs(best_ppm):
+                best, best_ppm = j, ppm
+        if best is None:
+            continue
+        j = best
+        h_par = float(heights.at[i]) if pd.notna(heights.at[i]) else 0.0
+        h_un = float(heights.at[j]) if pd.notna(heights.at[j]) else 0.0
+        ratio = (h_un / h_par) if h_par > 0 else float("nan")
+        delta_mda = (float(ledger.at[j, "mz"]) - float(ledger.at[i, "mz"])) * 1e3
+        ion = {k: v for k, v in cnt.items() if v}
+        parent_pid = ledger.at[i, "peak_id"]
+        parent_ion = str(ledger.at[i, "ion_formula"]) if "ion_formula" in ledger.columns else f"{X} {ION_ONLY_PARENT_ADDUCT}"
+        L.commit_assignment(
+            ledger, ledger.at[j, "peak_id"], neutral_formula=X, adduct=ION_ONLY_ADDUCT,
+            ion_formula=C.format_formula(ion) + "-", ion_score=0.0,
+            ppm_error=best_ppm, pass_no=9, method=ION_ONLY_METHOD,
+            confidence="Good (ion only)",
+            commentary=(f"ion-only: radical anion {X}-. at +{delta_mda:.2f} mDa from its "
+                        f"{ION_ONLY_PARENT_ADDUCT} parent {parent_ion} (peak {parent_pid}); "
+                        f"{ratio:.2f}x the parent ({h_un:.3g} vs {h_par:.3g} cps); the composition "
+                        f"is pinned by exact mass, the ionization process and the neutral are open"))
+        if has_tier:
+            ledger.at[j, "tier"] = "Candidate"
+            if "tier_reason" in ledger.columns:
+                ledger.at[j, "tier_reason"] = ("ion-only: composition pinned by exact mass; "
+                                               "ionization process and neutral open")
+        if has_ba:
+            ledger.at[j, "below_assignability"] = False
+        ledger.at[j, "ion_only_of"] = parent_pid
+        out["ion_only_committed"] += 1
+    if out["ion_only_skipped_unresolved"] and not out["ion_only_committed"] and not out["ion_only_candidates"]:
+        log(f"[ion-only] skipped: the picker does not resolve peaks at the 13C/+H spacing "
+            f"({ION_ONLY_GAP_DA * 1e3:.2f} mDa) near any of the {out['ion_only_parents']} "
+            f"{ION_ONLY_PARENT_ADDUCT} parents ({out['ion_only_skipped_unresolved']} unresolved"
+            + (f", {out['ion_only_skipped_gate']} gate too wide" if out["ion_only_skipped_gate"] else "")
+            + ") -- no ion-only row committed")
+    elif out["ion_only_skipped_gate"] and not out["ion_only_committed"] and not out["ion_only_candidates"]:
+        log(f"[ion-only] skipped: the calibrated mass gate cannot separate the +H position from "
+            f"the 13C line for any of the {out['ion_only_parents']} parents "
+            f"({out['ion_only_skipped_gate']} gate too wide) -- no ion-only row committed")
+    else:
+        log(f"[ion-only] {out['ion_only_committed']} {ION_ONLY_ADDUCT} row(s) committed beside "
+            f"{out['ion_only_parents']} {ION_ONLY_PARENT_ADDUCT} parents ({out['ion_only_candidates']} "
+            f"had an unexplained peak in the gate; skipped {out['ion_only_skipped_unresolved']} "
+            f"unresolved, {out['ion_only_skipped_gate']} gate too wide)")
+    return out
+
+
 def _norm_formula(f) -> str:
     """Canonicalise a neutral formula string (re-parse + re-format) so parent
     lookups compare like-for-like regardless of element ordering."""

@@ -56,6 +56,7 @@ from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
+from peaky.assignment import satellites as SAT
 
 __version__ = "0.9.0"  # + source-solvent cluster cap (cluster:solvent -> Candidate)
                        # (history) mass-dependent z via masscal (range clamp; floor
@@ -111,15 +112,18 @@ BACKGROUND_CHANNELS = ("[M+CO3]-", "[M+HBr+CO3]-", "[M+O2]-", "[M]-.")
 # discrimination (each donor is individually spoofable). Only an N-FREE sibling
 # channel ([M+H]+ / [M+Na]+ / [M+K]+) -- or the jointly-unfakeable NH4+urea pair
 # (no single CHON neutral can present as both) -- fixes the nitrogen count, and
-# hence the DBE / Van Krevelen class. See _reagent_n_isobar.
+# hence the DBE / Van Krevelen class. See _reagent_n_isobar -- which flags the
+# pair from EITHER side: the N-free neutral on the donor adduct, and the
+# protonated N-richer neutral whose same-ion alias sits on a donor adduct.
 N_DONOR_ADDUCTS = ("[M+NH4]+", "[M+(CH4N2O)H]+")
 
 # Honest cross-family mass degeneracy (degeneracy.measure_degeneracy, stamped as
 # degeneracy_density / degeneracy_note). The per-pass candidate_density only
 # counts competitors inside the ONE narrow element box that peak's pass
 # enumerated; the degeneracy audit re-counts how many distinct plausible IONS
-# fall in the calibrated window across ALL families (CHO/CHON, fluorinated, Si,
-# S, halogen ...). A high count means the mass is not identifiable from accurate
+# fall in the calibrated window across every family the run could have committed
+# (its channels, its context's element budget and the families the file opened,
+# the curated formulas -- degeneracy.py). A high count means the mass is not identifiable from accurate
 # mass alone. So a commit that is degenerate at this honest level AND carries no
 # extra-spectral corroboration (committed isotopologue child / stored
 # isotopologue / second ionization channel / series anchor) must be capped at
@@ -221,11 +225,16 @@ def _degeneracy(row) -> tuple[int | None, bool]:
             density = int(float(d))
         except (TypeError, ValueError):
             density = None
-    note = row.get("degeneracy_note")
-    note = "" if note is None or pd.isna(note) else str(note)
-    flagged = "MASS-SATURATED" in note
-    is_degen = (density is not None and density > DEGEN_DEMOTE_DENSITY) or flagged
+    is_degen = (density is not None and density > DEGEN_DEMOTE_DENSITY) or _saturated(row)
     return density, is_degen
+
+
+def _saturated(row) -> bool:
+    """The degeneracy audit's MASS-SATURATED flag (more than degeneracy.py's
+    SATURATION_DENSITY plausible formulas in the window, a lower bound included):
+    the mass alone cannot pick one. Stronger than degenerate (> 2 ions)."""
+    note = row.get("degeneracy_note")
+    return note is not None and not pd.isna(note) and "MASS-SATURATED" in str(note)
 
 
 def _winner_raw(row) -> float | None:
@@ -281,29 +290,45 @@ def _drop_decomposition_aliases(row, alts: list[dict]) -> tuple[list[dict], int]
     return kept, len(alts) - len(kept)
 
 
-def _reagent_n_isobar(row, alts_all: list[dict]) -> bool:
-    """True when the winner sits on a positive-mode N-DONATING reagent adduct AND a
-    same-ion alternative reads that donated nitrogen as ANALYTE nitrogen (a strictly
-    N-richer neutral). That pair is the reagent-N ambiguity: spectrally identical
-    (same ion, same isotopes), so the reported nitrogen count / DBE is a chemistry
-    guess unless an N-FREE sibling channel (or the joint NH4+urea pair) resolves it.
-    _drop_decomposition_aliases silently removes the alternative as a 'same-ion
-    decomposition alias' -- correct for a covalent-vs-cluster split, but WRONG here:
-    these are genuinely different neutrals, so the row must not then advertise a
-    'unique formula in the calibrated window'. Returns False in negative mode (no
-    N-donor adduct fires) and on unparseable rows -- the rule is then inert."""
+def _reagent_n_isobar(row, alts_all: list[dict]):
+    """The positive-mode reagent-N ambiguity, in EITHER direction, or None.
+
+    ("donor", alt_formula, alt_adduct) when the winner sits on an N-DONATING
+    reagent adduct and a same-ion alternative reads the donated nitrogen as
+    ANALYTE nitrogen (a strictly N-richer neutral); ("amine", alt_formula,
+    alt_adduct) when the winner is that protonated N-richer neutral and a
+    same-ion alternative reads part of its nitrogen as the reagent's (a strictly
+    N-poorer neutral on an N-donating adduct). The two members of such a pair
+    are spectrally identical (same ion, same isotopes), so WHICHEVER side won,
+    the reported nitrogen count / DBE is a chemistry guess until a
+    discriminating channel resolves it -- and the row must not advertise a
+    'unique formula in the calibrated window': _drop_decomposition_aliases
+    silently removes the alias, which is right for a covalent-vs-cluster split
+    of ONE neutral and wrong here, where they are two different neutrals. The
+    flag used to fire on the donor side only, so the amine-side reading reached
+    Assigned as 'unique in the window' with nothing discriminating it (C5H12N2S
+    [M+H]+ Assigned in two files against C5H9NS [M+NH4]+ in ten), and the batch
+    vote's label stage -- which trusts an Assigned label as a corroborated one
+    -- is only as honest as this flag. None in negative mode (no N-donor adduct
+    fires) and on unparseable rows: the rule is then inert. Truthy when set."""
     w_add = str(row.get("adduct") or "")
-    if w_add not in N_DONOR_ADDUCTS:
-        return False
+    if not w_add.endswith("]+"):
+        return None
     ion0 = _ion_counts(row.get("neutral_formula"), w_add)
     if ion0 is None:
-        return False
+        return None
     w_n = C.parse_formula(str(row.get("neutral_formula") or "")).get("N", 0)
+    donor = w_add in N_DONOR_ADDUCTS
     for a in alts_all:
-        if _ion_counts(a.get("formula"), a.get("adduct")) == ion0 \
-                and C.parse_formula(str(a.get("formula") or "")).get("N", 0) > w_n:
-            return True
-    return False
+        a_add = str(a.get("adduct") or "")
+        if _ion_counts(a.get("formula"), a_add) != ion0:
+            continue
+        a_n = C.parse_formula(str(a.get("formula") or "")).get("N", 0)
+        if donor and a_n > w_n:
+            return ("donor", str(a.get("formula")), a_add)
+        if not donor and a_add in N_DONOR_ADDUCTS and a_n < w_n:
+            return ("amine", str(a.get("formula")), a_add)
+    return None
 
 
 def _margin_density_tie(row, alts: list[dict], n_aliased: int,
@@ -500,13 +525,19 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
         # settle. Downgrade the corroboration to what actually discriminates: an
         # N-free sibling channel, the joint NH4+urea pair, or a series anchor.
         reagent_n = _reagent_n_isobar(r, alts_all)
-        nfree_sib = nh4_urea = False
+        nfree_sib = nh4_urea = second_chan = False
         if reagent_n:
             adset = adducts_of.get(formula, set())
-            nfree_sib = any(a not in N_DONOR_ADDUCTS for a in adset)
-            nh4_urea = {"[M+NH4]+", "[M+(CH4N2O)H]+"}.issubset(adset)
             iso_ev = False                        # same ion => isotopes tell nothing
-            cross_channel = nfree_sib or nh4_urea  # hollow N-only diversity doesn't count
+            if reagent_n[0] == "donor":
+                nfree_sib = any(a not in N_DONOR_ADDUCTS for a in adset)
+                nh4_urea = {"[M+NH4]+", "[M+(CH4N2O)H]+"}.issubset(adset)
+                cross_channel = nfree_sib or nh4_urea  # hollow N-only diversity doesn't count
+            else:
+                # the amine side: the N-poorer alias can present as THIS ion only,
+                # so any second channel of the protonated neutral discriminates
+                second_chan = len(adset) >= 2
+                cross_channel = second_chan
         corroborated = iso_ev or cross_channel or has_anchor
         degen_density, mass_degenerate = _degeneracy(r)
         # admission provenance: a peak that was eligible for formula search only
@@ -514,9 +545,28 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
         # is a real ion, but at that intensity the isotopologues are sub-count,
         # so nothing constrains WHICH formula it got. Persistence gates entry;
         # only corroboration may gate the tier (see assignment/admission.py).
-        persist_only = str(r.get("admitted_by") or "") == "occurrence"
+        # null-safe: admitted_by is float NaN on a row the admission gate never
+        # stamped (NaN is truthy, so the old `or ""` read gave "nan" -- False by
+        # accident) and pd.NA on an offline ledger, where `pd.NA or ""` RAISES.
+        _adm = r.get("admitted_by")
+        persist_only = isinstance(_adm, str) and _adm == "occurrence"
 
         method = str(r.get("method") or "")
+        # the picked peak's separability (assignment/resolvability.py) and the
+        # diagnostic-satellite verdict on the neutral's Br / Cl / S (assignment/
+        # satellites.py) -- read once here, worded in the reasons below. Si keeps
+        # its own rule further down (on a TOF its 29Si M+1 is unresolved from 13C).
+        _rv = r.get("resolvability")
+        resolv = _rv.strip() if isinstance(_rv, str) else ""
+        _sep = float(r.get("sep_hwhm")) if pd.notna(r.get("sep_hwhm")) else float("nan")
+        _dc = float(r.get("d_crit_hwhm")) if pd.notna(r.get("d_crit_hwhm")) else float("nan")
+        twin = None
+        if not method.startswith(("known:", "ion_only:")):
+            _el = SAT.twin_element(counts, elements=SAT.TIER_ELEMENTS)
+            if _el:
+                _ion = _ion_counts(formula, r.get("adduct")) or counts
+                twin = SAT.twin_verdict(ledger, r["peak_id"], _ion, sat_floor, element=_el,
+                                        masked_by=SAT.reagent_masks(_el, counts, _ion))
         tier, reason = TIER_ASSIGNED, ""
         if method.startswith("known:solvent_cluster"):
             # a source-solvent cluster whose composition has NO covalent reading
@@ -551,6 +601,13 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
             tier = TIER_CANDIDATE
             reason = (f"{base} confidence: score/mass evidence below the "
                       "identification bar")
+        elif twin is not None and twin["kind"] == "refuted":
+            # the spectrum contradicts the heteroatom count: a diagnostic line the
+            # file could show (predicted at >= 4x its noise edge) is absent, or sits
+            # under 0.6x its prediction. Physics, not bookkeeping -- a second channel
+            # or a series step cannot put back a line that is not there.
+            tier = TIER_CANDIDATE
+            reason = f"{twin['twin']} count refuted by its isotope envelope: {twin['why']}"
         elif persist_only and not corroborated:
             tier = TIER_CANDIDATE
             _occ = r.get("occurrence")
@@ -626,16 +683,48 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
                       f"corroboration: {het} has no minor isotope, so the {het} "
                       "count is a mass-only claim with no possible isotope "
                       "confirmation and no independent channel to fix it")
+        elif (twin is not None and twin["kind"] == "untestable" and sat_floor is not None
+              and not corroborated):
+            # the line that would prove the heteroatom is predicted under 4x this
+            # file's noise edge (or the reagent's own halogen line fills its window):
+            # nothing could have tested the count, and nothing else supports it
+            tier = TIER_CANDIDATE
+            reason = (f"{twin['twin']}{counts.get(twin['twin'], 0)} untestable at this intensity: "
+                      f"{twin['why']}; with no isotope / cross-channel / series corroboration "
+                      "nothing supports the heteroatom count (Candidate for want of evidence, "
+                      "not against it)")
+        elif resolv in ("blended", "unresolvable") and not corroborated:
+            # the picked centroid is not the ion's own: a neighbour within the
+            # bimodality separation (assignment/resolvability.py) displaces it, so
+            # the mass the formula was fitted to carries the neighbour's pull
+            tier = TIER_CANDIDATE
+            if resolv == "unresolvable":
+                reason = (f"unresolvable peak: the nearest picked neighbour is {_sep:.2f} HWHM away, "
+                          "under the 0.4-HWHM fit floor (one observable, not two), so the fitted "
+                          "mass is not this ion's own; no isotope / cross-channel / series "
+                          "corroboration")
+            else:
+                reason = (f"blended peak: the nearest picked neighbour is {_sep:.2f} HWHM away and "
+                          f"two peaks of this height ratio separate only beyond {_dc:.2f}, so the "
+                          "centroid is displaced and the fitted mass is not this ion's own; no "
+                          "isotope / cross-channel / series corroboration")
         elif reagent_n and not corroborated:
             # positive-mode reagent-N isobar with nothing to fix the nitrogen
             # count: the ion reads equally as an N-free neutral on an N-donating
             # reagent adduct or as the protonated N-heavier neutral, and there is
-            # no N-free sibling channel, no joint NH4+urea pair, and no anchor.
+            # no discriminating channel and no anchor -- on either side of the pair.
             tier = TIER_CANDIDATE
-            reason = (f"reagent-N isobar unresolved: {formula} {r.get('adduct')} "
-                      "is the same ion as a protonated N-heavier neutral, and no "
-                      "N-free channel / joint NH4+urea / series anchor fixes the "
-                      "nitrogen count (isotopes cannot — identical ion)")
+            if reagent_n[0] == "donor":
+                reason = (f"reagent-N isobar unresolved: {formula} {r.get('adduct')} "
+                          "is the same ion as a protonated N-heavier neutral, and no "
+                          "N-free channel / joint NH4+urea / series anchor fixes the "
+                          "nitrogen count (isotopes cannot — identical ion)")
+            else:
+                reason = (f"reagent-N isobar unresolved: {formula} {r.get('adduct')} "
+                          f"is the same ion as {reagent_n[1]} {reagent_n[2]} (the "
+                          "N-poorer neutral on an N-donating reagent adduct), and no "
+                          "second channel / series anchor fixes the nitrogen count "
+                          "(isotopes cannot — identical ion)")
         elif tied and not (cross_channel or has_anchor):
             # a spectral eff-score tie cannot be broken by isotopes (they are
             # already in the score) -- only extra-spectral corroboration
@@ -691,7 +780,9 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
             # exists; it is simply ruled out by the discriminating channel).
             how = ("an N-free sibling channel" if nfree_sib
                    else "the joint [M+NH4]+/[M+urea·H]+ pair (unfakeable by one "
-                        "neutral)" if nh4_urea else "series-anchor support")
+                        "neutral)" if nh4_urea
+                   else "a second ionization channel of the protonated neutral" if second_chan
+                   else "series-anchor support")
             reason = f"reagent-N isobar: nitrogen count fixed by {how}"
         else:
             parts = []
@@ -709,6 +800,13 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
                 parts.append("seen in a second ionization channel")
             if has_anchor:
                 parts.append("series-anchor support")
+            if twin is not None and twin["kind"] == "supported":
+                parts.append(f"{twin['twin']} envelope line present in the spectrum")
+            elif twin is not None and twin["kind"] == "untestable" and sat_floor is not None:
+                parts.append(f"{twin['twin']} count untested (its line predicted under the floor)")
+            if resolv in ("blended", "unresolvable"):
+                parts.append(f"{resolv} peak ({_sep:.2f} HWHM from its neighbour), carried by "
+                             "the corroboration")
             reason = "; ".join(parts)
         rows.append({"peak_id": r["peak_id"], "tier": tier, "tier_reason": reason,
                      "candidate_density": density, "density_capped": capped})
@@ -795,15 +893,16 @@ def flag_below_assignability(ledger: pd.DataFrame) -> int:
     formula is one arbitrary pick of a sub-ppm-degenerate set, not an ID. Stamp a
     `below_assignability` flag so the report lists them as a constrained mass, not
     a confident formula. They are already capped at Candidate by the tier rules;
-    this is the explicit do-not-trust-the-formula disposition."""
+    this is the explicit do-not-trust-the-formula disposition. A MASS-DEGENERATE
+    window (3-8 ions) is not enough: the degeneracy cap holds an uncorroborated
+    commit there, and an isotope or second channel may still pick the formula."""
     if "below_assignability" not in ledger.columns:
         ledger["below_assignability"] = False
     n = 0
     for i in ledger.index[ledger["role"] == L.ROLE_M0]:
         nf = str(ledger.at[i, "neutral_formula"])
         o = C.parse_formula(nf).get("O", 0) if nf and nf != "nan" else 0
-        _density, is_degen = _degeneracy(ledger.loc[i])
-        if o >= 11 and is_degen:
+        if o >= 11 and _saturated(ledger.loc[i]):
             ledger.at[i, "below_assignability"] = True
             ledger.at[i, "tier_reason"] = (str(ledger.at[i, "tier_reason"] or "")
                 + " | below-assignability (O>=11, mass-saturated)").strip(" |")

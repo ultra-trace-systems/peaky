@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 
+import functools
+import json
+
 import pandas as pd
 
 from peaky.chem import chemistry as C
 from peaky.chem import contexts as X
+from peaky.chem import isotopes as ISO
 from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
+from peaky.assignment import satellites as _SAT
 from peaky.assignment import series_gka as G
 
 
@@ -20,6 +25,7 @@ from .postprocess import _DBR, _peak_near, _si_m1_consistent
 __all__ = [
     "_silanediol_series",
     "_known_species",
+    "known_formulas",
     "_D37CL",
     "_RECOVERABLE_KNOWN_FAMS",
     "run_pass0_known",
@@ -302,6 +308,14 @@ def _known_species(polarity: str = "negative", context: str | None = None) -> di
     }
 
 
+def known_formulas(polarity: str = "negative", context: str | None = None) -> frozenset[str]:
+    """Every formula the pass-0 registry names for this polarity / context, all
+    families together -- the curated half of the plausibility element-budget
+    exemption (plausibility.demote_off_budget): a formula a curated list names
+    is admitted by that list, whichever pass committed it."""
+    return frozenset(f for family in _known_species(polarity, context).values() for f in family)
+
+
 _D37CL = 1.9970499
 
 # The `atmospheric` known species that must be corroborated before they are
@@ -315,6 +329,70 @@ _ATMOS_CORROBORATE = frozenset({"H2O4S", "CH4O3S"})
 
 
 _RECOVERABLE_KNOWN_FAMS = {"chlorinated_paraffin"}
+
+
+# the twin test lives in assignment/satellites.py (the tier engine reads it too);
+# the names pass 0 has always used keep resolving here
+_twin_element = _SAT.twin_element
+_TWIN_LINES = _SAT.TWIN_LINES
+TWIN_REFUTE_X_FLOOR = _SAT.TWIN_REFUTE_X_FLOOR
+TWIN_MIN_FRAC = _SAT.TWIN_MIN_FRAC
+_TWIN_PPM = _SAT.TWIN_PPM
+
+
+def _twin_verdict(ledger: pd.DataFrame, pid, counts: dict, cfg: PassConfig) -> dict:
+    """What a refused single-channel known claim leaves behind, judged on the
+    LEDGER, never on the scorer's silence (`satellites.twin_verdict`, which the
+    tier engine applies to every committed heteroatom row as well): `refuted`
+    when a diagnostic line the file could show (predicted at >=
+    TWIN_REFUTE_X_FLOOR x the resolved gate) is absent from the ledger or sits
+    under TWIN_MIN_FRAC of its predicted height; `deferred` otherwise -- no twin
+    element at all (a composition monoisotopic in every heteroatom), no resolved
+    gate, every line predicted under the multiple (absent: untestable; present:
+    support, its ratio censored), or every testable line present and consistent
+    (the scorer did not credit it, but the ledger holds it). The batch pools
+    these verdicts across files (assign_batch.lock_known_species): silence never
+    votes against a species, a refutation does. Returns the four fields a
+    `known_lead` records: verdict, twin, why, summary.
+
+    Measured on a 10-file uronium batch: the D5 cyclosiloxane urea adduct shows
+    the 29Si line at 0.16-0.22x and the 30Si line at 0.10-0.17x the parent in
+    EVERY file (predicted 0.26 / 0.15), yet the scorer credited the envelope in
+    two files only -- a scorer-based verdict called the other eight refutations."""
+    try:
+        floor = cfg.height_cutoff
+    except Exception:                                    # noqa: BLE001 -- unresolved gate
+        floor = None
+    v = _SAT.twin_verdict(ledger, pid, counts, floor, prefix="single channel; ")
+    return {k: v[k] for k in ("verdict", "twin", "why", "summary")}
+
+
+def _record_known_lead(ledger: pd.DataFrame, pid, *, formula: str, fam: str, lbl: str,
+                       adduct: str, ion_formula, mz: float, ppm, ion_score, channels: int,
+                       verdict: str, why: str, twin: str | None = None,
+                       summary: str | None = None) -> None:
+    """Stamp `known_lead` on the peak's ledger row: the known-species reading
+    pass 0 anchored on-cal in this file but did not commit, with its `verdict`
+    (`deferred` = the file could not test it; `refuted` = it tested it and it
+    failed), `why` (with this file's numbers) and `summary` (the same reason
+    without them, so the batch can count files per reason on the merged row).
+    One JSON record per peak; a peak is one ion, so the
+    first refused claim on it stands. The row itself is untouched otherwise --
+    the grid may still assign it -- and the batch reads the record back
+    (assign_batch.known_evidence) to decide the species once, by evidence."""
+    if "known_lead" not in ledger.columns:
+        ledger["known_lead"] = pd.NA
+    idx = ledger.index[ledger["peak_id"] == pid]
+    if not len(idx) or pd.notna(ledger.at[idx[0], "known_lead"]):
+        return
+    ledger.at[idx[0], "known_lead"] = json.dumps({
+        "formula": formula, "family": fam, "label": lbl, "adduct": adduct,
+        "ion_formula": None if ion_formula is None or pd.isna(ion_formula) else str(ion_formula),
+        "mz": round(float(mz), 5),
+        "ppm": None if ppm is None or pd.isna(ppm) else round(float(ppm), 3),
+        "ion_score": None if ion_score is None or pd.isna(ion_score) else round(float(ion_score), 3),
+        "channels": int(channels), "verdict": verdict, "twin": twin, "why": why,
+        "summary": summary or why})
 
 
 def run_pass0_known(
@@ -412,6 +490,17 @@ def run_pass0_known(
         try:
             if L.role_of(ledger, pid) != L.ROLE_UNEXPLAINED:
                 continue
+            fam, lbl = label_of[r["compound_formula"]]
+            _cnt = C.parse_formula(r["compound_formula"])
+            # the record a refused claim leaves on the peak (`known_lead`): the
+            # batch pools it with the other files' commits and leads and decides
+            # the species once, by evidence (assign_batch.lock_known_species)
+            _lead = functools.partial(
+                _record_known_lead, ledger, pid, formula=r["compound_formula"],
+                fam=fam, lbl=lbl, adduct=_mech_to_adduct(r),
+                ion_formula=r["ion_formula"], mz=float(r["sample_peak_mz"]),
+                ppm=ppm, ion_score=r["ion_score"],
+                channels=ope_channels.get(r["compound_formula"], 0))
             # self-twin consistency: a [M+Br]- contaminant claim must own a
             # consistent 81Br twin of its OWN. v25 lesson: silanediol n=1
             # (170.9482) collided with lactic acid's 81Br child (170.9485);
@@ -430,8 +519,10 @@ def run_pass0_known(
                         f"own-81Br-twin ratio {rt:.2f} inconsistent "
                         f"(composite or wrong claim)"
                     )
+                    _lead(verdict="refuted", twin="Br",
+                          why=f"own 81Br twin ratio {rt:.2f} outside 0.5-1.7 (composite or wrong claim)",
+                          summary="own 81Br twin ratio inconsistent (composite or wrong claim)")
                     continue
-            fam, lbl = label_of[r["compound_formula"]]
             # organophosphates are monoisotopic in P -> require >=2 ion channels
             # (e.g. [M+H]+ AND [M+(urea)H]+) before locking, since there is no
             # isotope twin to confirm a single-channel mass coincidence. The one
@@ -451,6 +542,7 @@ def run_pass0_known(
                     "single ion channel, no 29Si/30Si envelope (methylsiloxane needs "
                     ">=2 channels or the Si envelope)"
                 )
+                _lead(**_twin_verdict(ledger, pid, _cnt, cfg))
                 continue
             if (
                 (fam in ("organophosphate", "organothiophosphate", "indoor_sulfur")
@@ -468,6 +560,7 @@ def run_pass0_known(
                        else "P needs >=2 channels or an isotope twin")
                     + " to corroborate)"
                 )
+                _lead(**_twin_verdict(ledger, pid, _cnt, cfg))
                 continue
             tag = (
                 "atmospheric"
@@ -526,6 +619,7 @@ def run_pass0_known(
                     f"[pass0] skip {r['compound_formula']} @{float(r['sample_peak_mz']):.4f}: "
                     f"³⁷Cl envelope not confirmed (n_kids={n_kids})"
                 )
+                _lead(**_twin_verdict(ledger, pid, _cnt, cfg))
                 continue
             # silanediol / any Si-rich known species: the 29Si M+1 must MATCH the Si
             # count, not merely exist. A high-O organic is mass-degenerate with a Si_k
@@ -552,6 +646,10 @@ def run_pass0_known(
                         "a high-O organic) -- left for the grid"
                     )
                     out["si_underclaimed"] = out.get("si_underclaimed", 0) + 1
+                    # the gate judged the picked M+1 against a BLENDED 29Si+13C
+                    # prediction; the lead is judged on the resolved lines (the
+                    # 29Si line alone, and the 30Si line) like every other refusal
+                    _lead(**_twin_verdict(ledger, pid, _c0, cfg))
                     continue
             conf = (
                 f"Good ({tag})"

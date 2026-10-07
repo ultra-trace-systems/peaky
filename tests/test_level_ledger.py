@@ -136,8 +136,13 @@ BROMIDE_ROWS = [
     m0("b_bulk", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br", mz=235.0),
 ]
 
-# The corroborating source: it need only carry the neutral.
-OTHER_ROWS = [m0("o_cross", "C10H16O4", adduct="[M+NO3]-", mz=262.0)]
+# The corroborating source: it must pin the neutral by an axis of its OWN (here a
+# 13C line at the ratio of ten carbons) -- a source corroborates only what it holds
+# at 4b or better on its own evidence.
+OTHER_ROWS = [
+    m0("o_cross", "C10H16O4", adduct="[M+NO3]-", ion="C10H16NO7", mz=262.0),
+    child("o_cross_iso", "o_cross", "13C+1", 107.0),
+]
 
 
 def write_ledger(path: Path, rows) -> Path:
@@ -222,6 +227,41 @@ def test_corroboration_is_symmetric_and_external_sources_are_not_levelled(source
     assert levels(alone)[("C10H16O4", "[M-H]-")] == "4b"
 
 
+def test_a_source_that_only_carries_the_neutral_does_not_corroborate(tmp_path, sources):
+    """A 5a sighting (exact mass, no axis) is the other grid enumerating the same
+    formula, not a second sighting -- while the direction that IS a sighting
+    still counts: the run pins C10H16O4 by its own 13C line (4b), so it
+    corroborates the bare source's row."""
+    run_dir, _, _ = sources
+    bare = write_ledger(tmp_path / "bare_ledger.csv", [m0("o", "C10H16O4", adduct="[M+NO3]-", mz=262.0, degeneracy=None)])
+    assert levels(LL.run([str(run_dir)], [str(bare)]))[("C10H16O4", "[M-H]-")] == "4b"
+    both = LL.run([str(run_dir), str(bare)], [])
+    run_row = both[(both.source == "NITRATE_2026") & (both.neutral == "C10H16O4")].iloc[0]
+    bare_row = both[both.source == "bare_ledger"].iloc[0]
+    assert not run_row.corroborated and run_row.level == "4b"
+    assert bare_row.corroborated and bare_row.level == "4b"
+
+
+def test_two_sources_that_only_agree_cannot_lift_each_other(tmp_path):
+    x = write_ledger(tmp_path / "x_ledger.csv", [m0("p", "C6H10O4", degeneracy=5.0)])
+    y = write_ledger(tmp_path / "y_ledger.csv", [m0("q", "C6H10O4", adduct="[M+NO3]-", mz=208.0, degeneracy=5.0)])
+    both = LL.run([str(x), str(y)], [])
+    assert set(both.level) == {"5b"} and not both.corroborated.any()
+
+
+def test_a_merged_ledger_corroborates_by_its_stored_level_without_its_own_axis(tmp_path, sources):
+    run_dir, _, _ = sources
+    merged_dir = tmp_path / "OTHER_RUN"
+    merged_dir.mkdir()
+    pd.DataFrame([
+        dict(neutral_formula="C10H16O4", adduct="[M+NO3]-", evidence_level="4b", evidence_axes="corroborated|files:2"),
+        dict(neutral_formula="C9H14O4", adduct="[M+NO3]-", evidence_level="4a", evidence_axes="iso|corroborated|files:2"),
+    ]).to_csv(merged_dir / "merged_ledger.csv", index=False)
+    got = levels(LL.run([str(run_dir)], [str(merged_dir)]))
+    assert got[("C10H16O4", "[M-H]-")] == "4b"     # the stored 4b was the axis alone: no sighting
+    assert got[("C9H14O4", "[M-H]-")] == "4a"      # the stored 4a keeps its own 13C: series tie + corroboration
+
+
 def test_resolvability_only_binds_where_it_was_measured(tmp_path):
     """The cover path never measures it; a row is not punished for its absence."""
     rows = [m0("p", "C7H12O3", degeneracy=0.5, resolvability="blended")]
@@ -293,3 +333,27 @@ def test_merged_ledger_is_used_when_there_is_no_per_file_dir(tmp_path):
     run_dir = tmp_path / "RUN_2026"
     write_ledger(run_dir / "merged_ledger.csv", NITRATE_ROWS)
     assert len(LL.run([str(run_dir)], [])) == 10
+
+
+# --------------------------------------------------------------------------- family scope (2026-09-22)
+def _curated(neutral, family, adduct="[M-H]-"):
+    """The level of one curated commit, on its own, uncorroborated."""
+    led = pd.DataFrame([m0("p", neutral, adduct=adduct, method=f"known:{family}")],
+                       columns=LEDGER_COLUMNS)
+    led["__file"] = "f"
+    return LL.assign_levels(LL.measure_source("f", led, None), set()).level.iloc[0]
+
+
+def test_curated_scope_follows_the_spec_not_a_hand_made_set():
+    """docs/EVIDENCE_LEVELS.md section 4.1: 2b = a COMPOUND-scope family AND a
+    one-structure formula in the isomer space; every other curated commit is 3a.
+    Until 2026-09-22 this script kept two hand-made sets that read cyclosiloxane
+    as a class (3a, in core 2b) and knew no contaminant:silanediol."""
+    assert _curated("C6H18O3Si3", "cyclosiloxane", "[M+H]+") == "2b"          # D3: one structure
+    assert _curated("C2H8O2Si", "contaminant:silanediol", "[M+NO3]-") == "3a"  # class scope
+    assert _curated("C6H5NO3", "nitroaromatic") == "3a"                        # compound scope, three isomers
+    assert _curated("C2HF3O2", "perfluoroacid") == "3a"                        # class scope, even at one structure
+    assert _curated("HNO3", "atmospheric") == "2b"
+    assert _curated("C99H99O99", "atmospheric") == "3a"                        # compound scope, not in the space
+    assert LL.KNOWN_FAMILY_SCOPE["contaminant:silanediol"] == "class"
+    assert LL.plausible_structures("C6H18O3Si3") == 1 and LL.plausible_structures("C99H99O99") is None

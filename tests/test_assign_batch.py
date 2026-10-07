@@ -198,46 +198,323 @@ check("vote: the 5-file consensus case still wins, with the 2-file Na reading li
       row["n_files_winner"] == 5 and row["n_files_ion"] == 5 and not bool(row["ion_agree"])
       and row["alternatives"] == "C17H31N5O6 [M+Na]+ x2 Assigned 1.00", row.to_dict())
 
-# a CURATED identity (reference-list rescue / pass-0 known species: a list's
-# identity, not the grid's) that reached Assigned somewhere is never outvoted by
-# grid readings: at m/z 579.171 the D7 cyclosiloxane urea adduct, locked in ONE
-# file, faced a 9-file C27H30O14 the per-file engine itself flags as an O14 monster.
+# a KNOWN-SPECIES identity is no longer exempt from the vote: the vote is the
+# files' count and corroboration, nothing else. What the curated exemption used
+# to do is decided ONCE for the batch by the evidence the files pooled
+# (`known_evidence` -> `lock_known_species`), on the merged ledger, AFTER the
+# vote. The case: at m/z 579.171 the D7 cyclosiloxane urea adduct, locked in ONE
+# file on its 29Si/30Si envelope, faced a 9-file C27H30O14 the per-file engine
+# itself flags as an O14 monster -- and in those 9 files pass 0 had anchored D7
+# on-cal but could not test it (a single channel, the twin below the floor).
+check("align no longer takes a curated set (the exemption is gone)",
+      "curated" not in __import__("inspect").signature(AB.align).parameters
+      and not hasattr(AB, "_curated_neutrals") and not hasattr(AB, "_CURATED_METHODS"))
 prot = {**_files(9, 579.1710, "C27H30O14", "[M+H]+", "Candidate", 0.99),
         **_files(1, 579.1710, "C14H42O7Si7", "[M+(CH4N2O)H]+", "Assigned", 0.83, start=9)}
-mp, _ = AB.align(prot, tol_ppm=6.0, curated={"C14H42O7Si7"})
-check("vote: a curated identity beats a grid majority, and the vote is still recorded",
-      mp.iloc[0]["neutral_formula"] == "C14H42O7Si7" and mp.iloc[0]["n_files_winner"] == 1
-      and mp.iloc[0]["n_files"] == 10
-      and mp.iloc[0]["alternatives"] == "C27H30O14 [M+H]+ x9 Candidate 0.99",
+mp, _ = AB.align(prot, tol_ppm=6.0)
+check("vote: without the exemption the 9-file grid reading wins the vote itself, no note",
+      mp.iloc[0]["neutral_formula"] == "C27H30O14" and mp.iloc[0]["n_files_winner"] == 9
+      and pd.isna(mp.iloc[0]["tier_reason"])
+      and mp.iloc[0]["alternatives"] == "C14H42O7Si7 [M+(CH4N2O)H]+ x1 Assigned 0.83",
       mp.to_dict("records"))
-check("vote: the exemption is explained on the row",
-      mp.iloc[0]["tier_reason"] == "curated identity kept over the 9-file C27H30O14 [M+H]+ "
-                                   "reading (vote 1 of 10 files)", mp.iloc[0]["tier_reason"])
-mnp, _ = AB.align(prot, tol_ppm=6.0)
-check("vote: without the curated set the same cluster goes to the majority, no note",
-      mnp.iloc[0]["neutral_formula"] == "C27H30O14" and pd.isna(mnp.iloc[0]["tier_reason"]),
-      mnp.to_dict("records"))
-# ... and the exemption is from the file COUNT, not from corroboration: sulfolane
-# (known list, 1 file, Assigned) at m/z 181.065 met fluorenone C13H8O [M+H]+
-# Assigned in 9 files -- a real contest, which the count decides.
+_D7 = dict(neutral="C14H42O7Si7", adduct="[M+(CH4N2O)H]+", family="cyclosiloxane",
+           label="tetradecamethylcycloheptasiloxane (D7)", mz=579.1710)
+
+
+def _ev(src, verdict, why, ion_score=0.83):
+    return dict(_D7, src=src, verdict=verdict, why=why, ion_score=ion_score,
+                tier="Assigned" if verdict == "confirmed" else None,
+                admitted_by="height" if verdict == "confirmed" else None,
+                occurrence=0.9 if verdict == "confirmed" else None)
+
+
+pool = ([dict(_ev("v09", "confirmed", "corroborated by a confirmed 29Si/30Si envelope (2 satellites)"),
+              n_channels=1, n_satellites=2)]
+        + [_ev(f"v{i:02d}", "deferred", "single channel; the Si twin is predicted below the detection floor")
+           for i in range(9)])
+mk = mp.copy()
+g = AB.lock_known_species(mk, pool, tol_ppm=6.0, log=lambda *a: None)
+row = mk.iloc[0]
+check("lock: confirmed in 1 file (two satellite lines), untestable in 9, refuted in 0 -> the merged row is D7, Assigned",
+      row["neutral_formula"] == "C14H42O7Si7" and row["adduct"] == "[M+(CH4N2O)H]+"
+      and row["tier"] == "Assigned" and abs(float(row["ion_score"]) - 0.83) < 1e-9
+      and row["n_files_winner"] == 1 and row["n_files_ion"] == 1 and row["n_files"] == 10,
+      row.to_dict())
+check("lock: the vote's winner moves to the head of the alternatives, the known reading leaves them",
+      row["alternatives"] == "C27H30O14 [M+H]+ x9 Candidate 0.99", repr(row["alternatives"]))
+_tr = str(row["tier_reason"])
+check("lock: the row says the evidence and what it overrode",
+      _tr.startswith("known species decided once for the batch: tetradecamethylcycloheptasiloxane (D7) "
+                     "(C14H42O7Si7 [M+(CH4N2O)H]+) -- confirmed in 1 file (corroborated by a confirmed "
+                     "29Si/30Si envelope (2 satellites)); could not test it in 9 files (single channel; "
+                     "the Si twin is predicted below the detection floor)")
+      and _tr.endswith("; kept over the 9-file C27H30O14 [M+H]+ reading (vote 1 of 10 files)"), _tr)
+check("lock: counts", g == {"pooled": 1, "locked": 1, "confirmed_kept": 0, "conflict": 0,
+                            "lead_only": 0, "mass_only_outvoted": 0, "no_cluster": 0}, g)
+check("lock: admitted_by / occurrence come from the confirmed file's row, not the loser's",
+      row["admitted_by"] == "height" and abs(float(row["occurrence"]) - 0.9) < 1e-9, row.to_dict())
+# ONE channel and ONE satellite line in every confirming file (the real D7: two
+# files, the urea adduct alone, the 29Si line alone, the 30Si line never testable
+# at that intensity -- J12) -> the reading is locked, the tier capped at Candidate
+pool1 = ([dict(_ev(f"v{i:02d}", "confirmed", "corroborated by a confirmed 29Si/30Si envelope (1 satellite)"),
+               n_channels=1, n_satellites=1) for i in (8, 9)]
+         + [_ev(f"v{i:02d}", "deferred", "29Si and 30Si lines predicted under 4x the floor") for i in range(8)])
+mk1 = mp.copy()
+g1 = AB.lock_known_species(mk1, pool1, tol_ppm=6.0, log=lambda *a: None)
+check("lock: one channel + one satellite in every confirming file -> locked as D7 but capped Candidate, said on the row",
+      mk1.iloc[0]["neutral_formula"] == "C14H42O7Si7" and mk1.iloc[0]["tier"] == "Candidate" and g1["locked"] == 1
+      and str(mk1.iloc[0]["tier_reason"]).endswith("(vote 2 of 10 files); capped Candidate (one ion channel and one "
+                                                   "satellite line in every confirming file: two independent lines "
+                                                   "are needed for Assigned)"),
+      mk1.iloc[0].to_dict())
+# ... and a second channel in ONE confirming file is enough for Assigned
+pool2 = [dict(p) for p in pool1]; pool2[0]["n_channels"] = 2
+mk2 = mp.copy(); AB.lock_known_species(mk2, pool2, tol_ppm=6.0, log=lambda *a: None)
+check("lock: a second channel in one confirming file -> Assigned, no cap note",
+      mk2.iloc[0]["tier"] == "Assigned" and "capped" not in str(mk2.iloc[0]["tier_reason"]), mk2.iloc[0].to_dict())
+# the same cap on a row the vote already gave to the species (confirmed_kept)
+kept1, _ = AB.align(_files(2, 283.0960, "C6H18O3Si3", "[M+(CH4N2O)H]+", "Assigned", 0.9), tol_ppm=6.0)
+gk = AB.lock_known_species(kept1, [dict(neutral="C6H18O3Si3", adduct="[M+(CH4N2O)H]+", family="cyclosiloxane",
+                                        label="D3", src=f"v{i:02d}", mz=283.0960, verdict="confirmed",
+                                        why="corroborated by a confirmed 29Si/30Si envelope (1 satellite)",
+                                        summary="corroborated by a confirmed 29Si/30Si envelope (1 satellite)",
+                                        n_channels=1, n_satellites=1, ion_score=0.9, tier="Assigned",
+                                        admitted_by="height", occurrence=0.5) for i in range(2)],
+                           tol_ppm=6.0, log=lambda *a: None)
+check("lock: a kept known row backed by one channel and one satellite everywhere is capped Candidate too",
+      gk["confirmed_kept"] == 1 and kept1.iloc[0]["tier"] == "Candidate"
+      and str(kept1.iloc[0]["tier_reason"]).endswith("two independent lines are needed for Assigned)"),
+      kept1.iloc[0].to_dict())
+# REFUTED anywhere: a file that could show the twin and did not contradicts the
+# lock; the species is left to the vote and the row says so. Sulfolane at
+# 181.065 (34S-confirmed in one file) vs fluorenone C13H8O [M+H]+ Assigned in
+# nine: the nine bright files show no 34S, so the count decides -- by evidence.
 sulf = {**_files(9, 181.0647, "C13H8O", "[M+H]+", "Assigned", 0.99),
         **_files(1, 181.0647, "C4H8O2S", "[M+(CH4N2O)H]+", "Assigned", 0.95, start=9)}
-msu, _ = AB.align(sulf, tol_ppm=6.0, curated={"C4H8O2S"})
-check("vote: a curated reading does NOT override a grid reading Assigned in more files",
-      msu.iloc[0]["neutral_formula"] == "C13H8O" and msu.iloc[0]["n_files_winner"] == 9
-      and pd.isna(msu.iloc[0]["tier_reason"])
-      and msu.iloc[0]["alternatives"] == "C4H8O2S [M+(CH4N2O)H]+ x1 Assigned 0.95",
-      msu.to_dict("records"))
-# ... but a curated reading that never reached Assigned has no claim on the vote
-weak = {**_files(3, 346.0741, "C4H23NO2Si6", "[M+(CH4N2O)H]+", "Candidate", 0.98),
-        **_files(1, 346.0741, "C19H8ClN", "[M+(CH4N2O)H]+", "Candidate", 0.90, start=3)}
-mw, _ = AB.align(weak, tol_ppm=6.0, curated={"C19H8ClN"})
-check("vote: a Candidate-only curated reading does not override the majority",
-      mw.iloc[0]["neutral_formula"] == "C4H23NO2Si6" and mw.iloc[0]["n_files_winner"] == 3,
-      mw.to_dict("records"))
-check("vote: a unanimous curated reading carries no exemption note",
-      pd.isna(AB.align({"a": m0([(500.0, "C21H21O4P", "[M+(CH4N2O)H]+", "Assigned", 0.9)])},
-                       curated={"C21H21O4P"})[0].iloc[0]["tier_reason"]))
+ms, _ = AB.align(sulf, tol_ppm=6.0)
+_SF = dict(neutral="C4H8O2S", adduct="[M+(CH4N2O)H]+", family="indoor_sulfur", label="sulfolane",
+           mz=181.0647, tier=None, admitted_by=None, occurrence=None)
+pool_s = ([dict(_SF, src="v09", verdict="confirmed", ion_score=0.95, tier="Assigned",
+                admitted_by="height", occurrence=0.8,
+                why="corroborated by a confirmed 34S envelope (single channel)")]
+          + [dict(_SF, src=f"v{i:02d}", verdict="refuted", ion_score=0.9,
+                  why="single channel; the S twin is predicted above the floor and was not matched")
+             for i in range(9)])
+gs = AB.lock_known_species(ms, pool_s, tol_ppm=6.0, log=lambda *a: None)
+check("lock: refuted in 9 files -> not locked, the vote's fluorenone stands, the conflict is on the row",
+      ms.iloc[0]["neutral_formula"] == "C13H8O" and ms.iloc[0]["tier"] == "Assigned"
+      and gs["conflict"] == 1 and gs["locked"] == 0
+      and str(ms.iloc[0]["tier_reason"]) == ("known species sulfolane (C4H8O2S [M+(CH4N2O)H]+) confirmed "
+                                             "in 1 file but refuted in 9 (single channel; the S twin is "
+                                             "predicted above the floor and was not matched); left to the vote"),
+      ms.iloc[0].to_dict())
+# ... and when the vote's winner IS the conflicted species (the other files left
+# the peak unexplained, so the one confirming file "won" 1-0) the merged tier is
+# capped: one file's Assigned cannot stand for a batch that refuted it in nine
+alone, _ = AB.align(_files(1, 181.0647, "C4H8O2S", "[M+(CH4N2O)H]+", "Assigned", 0.95, start=9), tol_ppm=6.0)
+ga = AB.lock_known_species(alone, pool_s, tol_ppm=6.0, log=lambda *a: None)
+check("lock: the conflicted species as the row's own reading -> capped Candidate, said on the row",
+      alone.iloc[0]["neutral_formula"] == "C4H8O2S" and alone.iloc[0]["tier"] == "Candidate"
+      and ga["conflict"] == 1
+      and str(alone.iloc[0]["tier_reason"]).endswith("; left to the vote; capped Candidate (refuted in more "
+                                                      "files than confirmed)"),
+      alone.iloc[0].to_dict())
+# a summary (the reason without the file's numbers) is what the note counts files by
+pool_sum = [dict(_D7, src=f"v{i:02d}", verdict="deferred", ion_score=0.8, tier=None, admitted_by=None,
+                 occurrence=None, why=f"single channel; 29Si predicted at {60 + i} cps, under 2x the 60-cps floor",
+                 summary="29Si and 30Si lines predicted under 2x the floor") for i in range(3)] + \
+           [dict(_D7, src="v09", verdict="deferred", ion_score=0.8, tier=None, admitted_by=None, occurrence=None,
+                 why="single channel; 29Si line at 0.28x the parent (predicted 0.36) -- present in the ledger, not credited by the scorer",
+                 summary="29Si line present at the predicted ratio, not credited by the scorer")]
+check("_pool_summary: counts files per distinct summary, never repeating a file's numbers",
+      AB._pool_summary([], pool_sum, []) == ("could not test it in 4 files (29Si and 30Si lines predicted "
+                                             "under 2x the floor [3 files] / 29Si line present at the "
+                                             "predicted ratio, not credited by the scorer [1 file])"),
+      AB._pool_summary([], pool_sum, []))
+# DEFERRED only (never confirmed anywhere): a lead on the row, not a lock --
+# tricresyl phosphate anchored single-channel in 3 files against a grid reading
+weak, _ = AB.align(_files(3, 429.1574, "C15H24N4O10", "[M+H]+", "Candidate", 0.98), tol_ppm=6.0)
+pool_w = [dict(neutral="C21H21O4P", adduct="[M+(CH4N2O)H]+", family="organophosphate",
+               label="tricresyl phosphate (TMPP / TCrP)", src=f"v{i:02d}", mz=429.1574,
+               verdict="deferred", why="single channel; no diagnostic twin to test (monoisotopic)",
+               ion_score=0.7, tier=None, admitted_by=None, occurrence=None) for i in range(3)]
+gw = AB.lock_known_species(weak, pool_w, tol_ppm=6.0, log=lambda *a: None)
+check("lock: a lead anchored in 3 files but confirmed in none is noted, not locked",
+      weak.iloc[0]["neutral_formula"] == "C15H24N4O10" and gw["lead_only"] == 1 and gw["locked"] == 0
+      and str(weak.iloc[0]["tier_reason"]) == ("known-species lead: tricresyl phosphate (TMPP / TCrP) "
+                                               "(C21H21O4P [M+(CH4N2O)H]+) anchored on-cal in 3 files but "
+                                               "never corroborated (single channel; no diagnostic twin to "
+                                               "test (monoisotopic)); not locked"),
+      weak.iloc[0].to_dict())
+# confirmed AND already the vote's winner: the row gains the evidence, nothing else moves
+uni, _ = AB.align({"a": m0([(500.0, "C21H21O4P", "[M+(CH4N2O)H]+", "Assigned", 0.9)])}, tol_ppm=6.0)
+_TCP = dict(neutral="C21H21O4P", adduct="[M+(CH4N2O)H]+", family="organophosphate",
+            label="tricresyl phosphate (TMPP / TCrP)", src="a", mz=500.0, verdict="confirmed",
+            why="corroborated by 2 ion channels", ion_score=0.9, tier="Assigned",
+            admitted_by="height", occurrence=1.0, n_channels=2, n_satellites=0)
+gu = AB.lock_known_species(uni, [_TCP], tol_ppm=6.0, log=lambda *a: None)
+check("lock: a confirmed species the vote already chose keeps its row and gains the evidence note",
+      gu["confirmed_kept"] == 1 and uni.iloc[0]["neutral_formula"] == "C21H21O4P"
+      and uni.iloc[0]["alternatives"] == ""
+      and uni.iloc[0]["tier_reason"] == ("known species decided once for the batch: tricresyl phosphate "
+                                         "(TMPP / TCrP) (C21H21O4P [M+(CH4N2O)H]+) -- confirmed in 1 file "
+                                         "(corroborated by 2 ion channels)"),
+      uni.iloc[0].to_dict())
+gn = AB.lock_known_species(uni, [dict(_TCP, neutral="C6H15O4P", adduct="[M+H]+", mz=183.078)],
+                           tol_ppm=6.0, log=lambda *a: None)
+# a MASS-ONLY family (the PFCAs: no twin, no second channel demanded) carries
+# nothing to pool beyond the count of files it fitted in: a PFCA [M-H]- on-cal in
+# 2 files of a ~4k TOF must not displace an 11-file 81Br-corroborated CHOS [M+Br]-
+# reading 6 ppm away -- the vote stands, the row says so
+pf = {**_files(11, 362.9717, "C12H12O8", "[M+Br]-", "Assigned", 0.91),
+      **_files(2, 362.9700, "C7HF13O2", "[M-H]-", "Assigned", 0.98, start=11)}
+mpf, _ = AB.align(pf, tol_ppm=6.0)
+_PF = dict(neutral="C7HF13O2", adduct="[M-H]-", family="perfluoroacid", label="perfluoro-C7 acid (PFCA)",
+           verdict="confirmed", why=AB.MASS_ONLY_ROUTE, summary=AB.MASS_ONLY_ROUTE, ion_score=0.98,
+           tier="Assigned", admitted_by="height", occurrence=0.6)
+gpf = AB.lock_known_species(mpf, [dict(_PF, src="v11", mz=362.9700), dict(_PF, src="v12", mz=362.9701)],
+                            tol_ppm=6.0, log=lambda *a: None)
+check("lock: a mass-only species confirmed in 2 files does NOT override the 11-file vote; noted",
+      mpf.iloc[0]["neutral_formula"] == "C12H12O8" and mpf.iloc[0]["tier"] == "Assigned"
+      and gpf["mass_only_outvoted"] == 1 and gpf["locked"] == 0
+      and str(mpf.iloc[0]["tier_reason"]) == ("mass-only known species perfluoro-C7 acid (PFCA) (C7HF13O2 "
+                                              "[M-H]-) anchored on-cal in 2 files; the vote's 11-file C12H12O8 "
+                                              "[M+Br]- reading stands (exact mass alone cannot overrule a "
+                                              "reading carried by more files)"),
+      mpf.iloc[0].to_dict())
+# ... and a mass-only species the vote itself chose is simply confirmed on its row
+uni_pf, _ = AB.align(_files(3, 112.9857, "C2HF3O2", "[M-H]-", "Assigned", 0.9), tol_ppm=6.0)
+gpu = AB.lock_known_species(uni_pf, [dict(_PF, neutral="C2HF3O2", label="TFA", src=f"v{i:02d}", mz=112.9857)
+                                     for i in range(3)], tol_ppm=6.0, log=lambda *a: None)
+check("lock: a mass-only species the vote chose -> confirmed_kept",
+      gpu["confirmed_kept"] == 1 and gpu["mass_only_outvoted"] == 0 and uni_pf.iloc[0]["neutral_formula"] == "C2HF3O2")
+# MEMBERSHIP, not the m/z window: a chlorinated paraffin 37Cl-confirmed in ONE
+# file whose own m/z sits 7.5 ppm from the mean of a cluster the 12-file grid
+# reading dominates -- the vote lists it in `alternatives`, so the lock finds it
+_mcp = pd.DataFrame([dict(mz=680.9847, neutral_formula="C25H18N2O16", adduct="[M+Br]-", tier="Candidate",
+                          ion_score=0.90, n_files=13, n_files_ion=12, n_files_winner=12,
+                          alternatives="C24H40Cl10 [M-H]- x1 Assigned 0.58", tier_reason=pd.NA,
+                          srcs=",".join(f"v{i:02d}" for i in range(13)), admitted_by="height", occurrence=0.5)])
+gcp = AB.lock_known_species(_mcp, [dict(neutral="C24H40Cl10", adduct="[M-H]-", family="chlorinated_paraffin",
+                                        label="chlorinated paraffin C24Cl10", src="v12", mz=680.9898,
+                                        verdict="confirmed", why="corroborated by a 37Cl envelope (2 satellites)",
+                                        summary="corroborated by a 37Cl envelope (2 satellites)", ion_score=0.58,
+                                        tier="Assigned", admitted_by="height", occurrence=0.1,
+                                        n_channels=1, n_satellites=2)],
+                            tol_ppm=6.0, log=lambda *a: None)
+check("lock: a reading the vote lists in `alternatives` is found by membership, 7.5 ppm off the cluster mean",
+      gcp["locked"] == 1 and gcp["no_cluster"] == 0 and _mcp.iloc[0]["neutral_formula"] == "C24H40Cl10"
+      and _mcp.iloc[0]["alternatives"] == "C25H18N2O16 [M+Br]- x12 Candidate 0.90"
+      and str(_mcp.iloc[0]["tier_reason"]).endswith("kept over the 12-file C25H18N2O16 [M+Br]- reading (vote 1 of 13 files)"),
+      _mcp.iloc[0].to_dict())
+check("lock: a pooled ion with no merged row within tolerance is counted, nothing moves",
+      gn["no_cluster"] == 1 and gn["locked"] == 0 and uni.iloc[0]["neutral_formula"] == "C21H21O4P")
+check("lock: an empty pool / an empty frame is a no-op",
+      AB.lock_known_species(uni, [], tol_ppm=6.0, log=lambda *a: None)["pooled"] == 0
+      and AB.lock_known_species(pd.DataFrame(columns=["mz"]), pool, tol_ppm=6.0,
+                                log=lambda *a: None)["pooled"] == 0)
+# known_evidence reads a per-file ledger: the committed known: rows (with the
+# route pass 0 wrote into the commentary) and the known_lead records
+_ledk = pd.DataFrame([
+    dict(role="M0", peak_id="p1", mz=579.1710, neutral_formula="C14H42O7Si7", adduct="[M+(CH4N2O)H]+",
+         method="known:cyclosiloxane", tier="Assigned", ion_score=0.83, admitted_by="height", occurrence=0.9,
+         commentary=("Pass 0 (known methylsiloxane): C14H42O7Si7 [M+(CH4N2O)H]+ = "
+                     "tetradecamethylcycloheptasiloxane (D7), ppm 0.30, ion score 0.83; volatile "
+                     "methylsiloxane (PDMS monomer/oligomer, indoor/lab contaminant); corroborated by "
+                     "a confirmed 29Si/30Si envelope (single channel)"), known_lead=pd.NA),
+    dict(role="M0", peak_id="p2", mz=429.1574, neutral_formula="C15H24N4O10", adduct="[M+H]+",
+         method="cheminfo+grid", tier="Candidate", ion_score=0.98, admitted_by="height", occurrence=0.5,
+         commentary="Pass 1",
+         known_lead=('{"formula": "C21H21O4P", "family": "organophosphate", "label": "tricresyl phosphate '
+                     '(TMPP / TCrP)", "adduct": "[M+(CH4N2O)H]+", "ion_formula": "C22H26N2O5P+", '
+                     '"mz": 429.1574, "ppm": 0.4, "ion_score": 0.7, "channels": 1, "verdict": "deferred", '
+                     '"twin": null, "why": "single channel; no diagnostic twin to test (monoisotopic)", '
+                     '"summary": "no diagnostic twin to test (monoisotopic)"}')),
+    dict(role="M0", peak_id="p4", mz=112.9857, neutral_formula="C2HF3O2", adduct="[M-H]-",
+         method="known:perfluoroacid", tier="Assigned", ion_score=0.9, admitted_by=pd.NA, occurrence=float("nan"),
+         commentary=("Pass 0 (known perfluoroacid): C2HF3O2 [M-H]- = trifluoroacetic acid (TFA), ppm 0.10, "
+                     "ion score 0.90; perfluorocarboxylic acid (F off the grid); known PFCA series formula, "
+                     "exact-mass committed"), known_lead=pd.NA),
+    dict(role="unexplained", peak_id="p3", mz=100.0, neutral_formula=pd.NA, adduct=pd.NA, method=pd.NA,
+         tier=pd.NA, ion_score=float("nan"), admitted_by=pd.NA, occurrence=float("nan"), commentary=pd.NA,
+         known_lead=pd.NA),
+])
+_ke = AB.known_evidence(_ledk, src="f1")
+check("known_evidence: two confirmed records (route / exact mass), one lead with its verdict; nothing else",
+      len(_ke) == 3 and _ke[0]["verdict"] == "confirmed" and _ke[0]["src"] == "f1"
+      and _ke[0]["label"] == "tetradecamethylcycloheptasiloxane (D7)"
+      and _ke[0]["why"] == "corroborated by a confirmed 29Si/30Si envelope (single channel)"
+      and _ke[0]["family"] == "cyclosiloxane" and abs(_ke[0]["ion_score"] - 0.83) < 1e-9
+      and _ke[0]["tier"] == "Assigned" and _ke[0]["admitted_by"] == "height"
+      and _ke[1]["neutral"] == "C2HF3O2" and _ke[1]["label"] == "trifluoroacetic acid (TFA)"
+      and _ke[1]["why"] == "exact mass, on-cal (the family's own rule)"
+      and _ke[1]["admitted_by"] is None and _ke[1]["occurrence"] is None
+      and _ke[1]["summary"] == "exact mass, on-cal (the family's own rule)"
+      and _ke[0]["n_channels"] == 1 and _ke[0]["n_satellites"] == 0
+      and _ke[2] == dict(src="f1", neutral="C21H21O4P", adduct="[M+(CH4N2O)H]+", mz=429.1574,
+                         family="organophosphate", label="tricresyl phosphate (TMPP / TCrP)",
+                         verdict="deferred", why="single channel; no diagnostic twin to test (monoisotopic)",
+                         summary="no diagnostic twin to test (monoisotopic)", n_channels=1, n_satellites=0,
+                         ion_score=0.7, tier=None, admitted_by=None, occurrence=None), _ke)
+check("known_evidence: missing columns -> empty", AB.known_evidence(pd.DataFrame({"x": [1]})) == [])
+# the route is read off the ROW: a chlorinated paraffin names no "corroborated by"
+# but records the 37Cl lines it locked on; a PFCA's recorded 81Br line is the
+# REAGENT's twin (no Br in the neutral) and buys it nothing; an iodine bromide's
+# 81Br2 is the neutral's own
+_ledr = pd.DataFrame([
+    dict(role="M0", peak_id="cp", mz=680.9898, neutral_formula="C24H40Cl10", adduct="[M-H]-",
+         method="known:chlorinated_paraffin", tier="Assigned", ion_score=0.58,
+         commentary=("Pass 0 (known chlorinated-paraffin): C24H40Cl10 [M-H]- = chlorinated paraffin C24Cl10, "
+                     "ppm 2.12, ion score 0.58; chlorinated paraffin (Cl off the grid); 37Cl envelope confirmed "
+                     "(2 satellites), isotope-locked"),
+         isotopologues='[{"label": "37Cl3", "score": 0.9, "peak_id": "a"}, {"label": "37Cl4", "score": 0.8, "peak_id": "b"}]'),
+    dict(role="M0", peak_id="pf", mz=192.9118, neutral_formula="C2HF3O2", adduct="[M+Br]-",
+         method="known:perfluoroacid", tier="Assigned", ion_score=0.9,
+         commentary=("Pass 0 (known perfluoroacid): C2HF3O2 [M+Br]- = perfluoro-C2 acid (PFCA), ppm 1.5, ion score "
+                     "0.90; perfluorocarboxylic acid (F off the grid); known PFCA series formula, exact-mass committed"),
+         isotopologues='[{"label": "13C", "score": 0.9, "peak_id": "c"}, {"label": "81Br", "score": 0.95, "peak_id": "d"}]'),
+    dict(role="M0", peak_id="ib", mz=286.7401, neutral_formula="IBr", adduct="[M+Br]-",
+         method="known:reactive_iodine", tier="Assigned", ion_score=0.7,
+         commentary="Pass 0 (known reactive-iodine): IBr [M+Br]- = iodine monobromide, ppm 1.54, ion score 0.70",
+         isotopologues='[{"label": "81Br2", "score": 0.9, "peak_id": "e"}]'),
+])
+_kr = {r["neutral"]: (r["why"], r["n_channels"], r["n_satellites"]) for r in AB.known_evidence(_ledr, src="f")}
+check("known_evidence: the paraffin's route is its recorded 37Cl envelope, the PFCA is mass-only, IBr its own 81Br",
+      _kr == {"C24H40Cl10": ("corroborated by a confirmed 37Cl envelope (2 satellites)", 1, 2),
+              "C2HF3O2": (AB.MASS_ONLY_ROUTE, 1, 0),
+              "IBr": ("corroborated by a confirmed 81Br envelope (1 satellite)", 1, 1)}, _kr)
+check("_known_route: a second ledger channel first; the commentary phrase ('by' or 'across') when nothing is recorded; else None",
+      AB._known_route("x; corroborated across 2 ion channels (monoisotopic P)", "C6H15O4P", None) == "2 ion channels (monoisotopic P)"
+      and AB._known_route("no phrase", "C6H15O4P", None, n_channels=2) == "2 ion channels"
+      and AB._known_route("no phrase", "C24H40Cl10", None) is None
+      and AB._known_route("no phrase", "C24H40Cl10", "not json") is None)
+# a satellite recorded in the row's list AND as an iso_child row is one peak
+check("_own_satellites: the same peak in the isotopologues list and as a child row counts once; a reagent 81Br is not the neutral's",
+      AB._own_satellites("C24H40Cl10", '[{"label": "37Cl", "peak_id": "k1"}]', [("k1", "37Cl"), ("k2", "37Cl2")]) == ["37Cl", "37Cl2"]
+      and AB._own_satellites("C2HF3O2", '[{"label": "81Br", "peak_id": "k1"}]', [("k1", "81Br")]) == [])
+# what pass 0 really records on the TOF's paraffins: an `M0` two Da below the committed 37Cl line and
+# an `M+6` are envelope lines and count; two labels on ONE peak (37Cl2 / 81Br+37Cl, unresolved) are
+# one line; a 13C child never counts; the reagent's 81Br on a Cl-only neutral counts only as the
+# 37Cl part of a composite label
+check("_own_satellites: envelope members M0 / M+6 count, two labels on one peak count once, 13C does not",
+      AB._own_satellites("C12H21Cl5", '[{"label": "M0", "peak_id": "a"}, {"label": "81Br+37Cl", "peak_id": "b"}]',
+                         [("c", "M+6"), ("b", "81Br+37Cl"), ("d", "13C")]) == ["M0", "81Br+37Cl", "M+6"]
+      and AB._own_satellites("C15H26Cl6", '[{"label": "37Cl2", "peak_id": "j"}, {"label": "81Br+37Cl", "peak_id": "j"}]',
+                             [("j", "81Br+37Cl")]) == ["37Cl2"]
+      and AB._own_satellites("C2HF3O2", '[{"label": "M0", "peak_id": "a"}, {"label": "13C", "peak_id": "b"}]', []) == ["M0"])
+# ... and the pool of that one file locks nothing the file did not already read:
+# the D7 row is confirmed where it stands, the TCP lead is noted on the grid row
+_mk2 = pd.DataFrame([dict(mz=579.1710, neutral_formula="C14H42O7Si7", adduct="[M+(CH4N2O)H]+", tier="Assigned",
+                          ion_score=0.83, n_files=1, n_files_ion=1, n_files_winner=1, alternatives="",
+                          tier_reason=pd.NA, srcs="f1"),
+                     dict(mz=429.1574, neutral_formula="C15H24N4O10", adduct="[M+H]+", tier="Candidate",
+                          ion_score=0.98, n_files=1, n_files_ion=1, n_files_winner=1, alternatives="",
+                          tier_reason=pd.NA, srcs="f1")])
+_g2 = AB.lock_known_species(_mk2, _ke, tol_ppm=6.0, log=lambda *a: None)
+check("lock over known_evidence: confirmed_kept 1, lead_only 1, no_cluster 1 (TFA has no row here)",
+      _g2 == {"pooled": 3, "locked": 0, "confirmed_kept": 1, "conflict": 0, "lead_only": 1,
+              "mass_only_outvoted": 0, "no_cluster": 1}
+      and str(_mk2.iloc[1]["tier_reason"]).startswith("known-species lead: tricresyl phosphate"), _g2)
 
 # an unparseable adduct is its own ion (no crash, no false merge of labels)
 odd, _ = AB.align({"a": m0([(320.145, "C6H19N4PS2", "[M+1R+NH4]+", "Candidate", 0.9)]),
@@ -264,6 +541,142 @@ f2, _ = AB.align(dict(reversed(list(full.items()))), tol_ppm=6.0)
 check("vote: a full tie resolves the same way in either file order",
       f1.iloc[0]["neutral_formula"] == f2.iloc[0]["neutral_formula"] == "C10H12O2",
       (f1.iloc[0]["neutral_formula"], f2.iloc[0]["neutral_formula"]))
+
+# --- THE VOTE READS THE EVIDENCE: the evidence class ranks ions before the count
+# With one TOF ion's readings finally in one row (the merge window sized from
+# the batch's own scatter), the count alone handed the peak to bromide adducts
+# of N-compounds read in more files over the reading the other instrument
+# confirms. Each ion now takes the best per-file evidence class of its readings
+# ({2b, 3a, 3b, 4a} or the `corroborated` axis > {4b, 4c, 4d} > {5a, 5b}) and
+# the count decides among equals; the label stage and the ion-only-last rule
+# are unchanged. The four cases are the C2 board's own losses.
+def m0e(rows):
+    return pd.DataFrame(rows, columns=["mz", "neutral_formula", "adduct", "tier", "ion_score",
+                                       "evidence_level", "evidence_axes"])
+
+
+def _filese(n, mz, nf, ad, tier, ion, level, axes, start=0):
+    return {f"e{start + i:02d}": m0e([(mz + 1e-4 * i, nf, ad, tier, ion, level, axes)]) for i in range(n)}
+
+
+check("evidence class: the neutral established (2b/3a/3b/4a) or corroborated is 2, the formula/ion pinned is 1, mass-only 0",
+      [AB._evidence_class(lv, "") for lv in ("2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b", None)]
+      == [2, 2, 2, 2, 1, 1, 1, 0, 0, 0]
+      and AB._evidence_class("5b", "iso|corroborated|carbon") == 2 and AB._evidence_class("4b", "corroborated") == 2
+      and AB._evidence_class("5b", "iso|uncorroborated") == 0)
+# case 1: pinic acid, a 1-vs-1 tie the count could not decide -- the old vote
+# fell through to ion_score and picked a silicon formula over the reading the
+# other instrument corroborates
+pin = {"a": m0e([(248.0762, "C12H15NO3Si", "[M-H]-", "Candidate", 0.947, "5b", "")]),
+       "b": m0e([(248.0762, "C9H14O4", "[M+NO3]-", "Candidate", 0.917, "4b", "corroborated")])}
+mp, jp = AB.align(pin, tol_ppm=12.0)
+check("evidence: pinic acid C9H14O4 [M+NO3]- (4b corroborated, 1 file) beats the 1-file silicon formula (5b) that out-scored it",
+      len(mp) == 1 and mp.iloc[0]["neutral_formula"] == "C9H14O4" and mp.iloc[0]["adduct"] == "[M+NO3]-",
+      mp.to_dict("records"))
+check("evidence: the row says the evidence decided, not the count",
+      mp.iloc[0]["tier_reason"] == "evidence outranks the count: kept C9H14O4 [M+NO3]- (4b corroborated in 1 of 2 "
+                                   "files) over the 1-file C12H15NO3Si [M-H]- (5b)", mp.iloc[0]["tier_reason"])
+check("evidence: the loser is listed as before", mp.iloc[0]["alternatives"] == "C12H15NO3Si [M-H]- x1 Candidate 0.95",
+      repr(mp.iloc[0]["alternatives"]))
+check("evidence: jitter.csv carries each file's own level",
+      "evidence_level" in jp.columns and sorted(jp["evidence_level"].astype(str)) == ["4b", "5b"], jp.to_dict("records"))
+pin_br = {"a": m0e([(265.0089, "C2H9N3O6S", "[M+NO3]-", "Candidate", 0.944, "5b", "")]),
+          "b": m0e([(265.0089, "C9H14O4", "[M+Br]-", "Candidate", 0.909, "4b", "corroborated")])}
+mpb, _ = AB.align(pin_br, tol_ppm=12.0)
+check("evidence: pinic acid's [M+Br]- reading wins its row the same way",
+      mpb.iloc[0]["neutral_formula"] == "C9H14O4" and mpb.iloc[0]["adduct"] == "[M+Br]-", mpb.to_dict("records"))
+# case 2: C9H16O6 [M+NO3]- Assigned at 4a in 2 files against C14H21N [M+Br]- in 9
+hom6 = {**_filese(9, 282.0853, "C14H21N", "[M+Br]-", "Candidate", 0.93, "5a", ""),
+        **_filese(2, 282.0831, "C9H16O6", "[M+NO3]-", "Assigned", 0.95, "4a", "iso|chan2|corroborated|branch", start=9)}
+m6, _ = AB.align(hom6, tol_ppm=12.0)
+_h6 = m6.iloc[0]
+check("evidence: C9H16O6 [M+NO3]- (4a, 2 files) beats C14H21N [M+Br]- (5a, 9 files) whatever the count",
+      len(m6) == 1 and _h6["neutral_formula"] == "C9H16O6" and _h6["tier"] == "Assigned"
+      and _h6["n_files"] == 11 and _h6["n_files_ion"] == 2 and _h6["n_files_winner"] == 2, _h6.to_dict())
+check("evidence: the 9-file loser heads the alternatives and the note names it",
+      _h6["alternatives"] == "C14H21N [M+Br]- x9 Candidate 0.93"
+      and _h6["tier_reason"] == "evidence outranks the count: kept C9H16O6 [M+NO3]- (4a corroborated in 2 of 11 "
+                                "files) over the 9-file C14H21N [M+Br]- (5a)", _h6.to_dict())
+# case 3: C10H16O9 [M+NO3]- read below assignability (5b) in 2 files, but the
+# other instrument holds the neutral: the corroborated axis lifts it over the
+# 3-file mass-only C15H21NO3 [M+Br]-
+hom9 = {**_filese(3, 342.0698, "C15H21NO3", "[M+Br]-", "Candidate", 0.90, "5b", ""),
+        **_filese(2, 342.0698, "C10H16O9", "[M+NO3]-", "Candidate", 0.85, "5b", "iso|corroborated|carbon", start=3)}
+m9, _ = AB.align(hom9, tol_ppm=12.0)
+check("evidence: a corroborated 5b reading (C10H16O9, 2 files) beats an uncorroborated 5b read in 3 files",
+      m9.iloc[0]["neutral_formula"] == "C10H16O9" and m9.iloc[0]["n_files_ion"] == 2
+      and str(m9.iloc[0]["tier_reason"]).startswith("evidence outranks the count: kept C10H16O9 [M+NO3]- (5b corroborated in 2 of 5 files) over the 3-file C15H21NO3 [M+Br]- (5b)"),
+      m9.iloc[0].to_dict())
+# case 4: C10H18O9 [M+NO3]- in ONE file (4b corroborated) against two mass-only
+# ions read in 4 and 3 files; both losers stay listed, biggest first
+hom18 = {**_filese(4, 344.0857, "C15H23NO3", "[M+Br]-", "Candidate", 0.92, "5b", ""),
+         **_filese(3, 344.0857, "C11H9NO9", "[M+NO3]-", "Candidate", 0.91, "5b", "", start=4),
+         **_filese(1, 344.0840, "C10H18O9", "[M+NO3]-", "Candidate", 0.88, "4b", "corroborated", start=7)}
+m18, _ = AB.align(hom18, tol_ppm=12.0)
+check("evidence: C10H18O9 [M+NO3]- (1 file, 4b corroborated) beats the 4-file and the 3-file mass-only ions",
+      m18.iloc[0]["neutral_formula"] == "C10H18O9" and m18.iloc[0]["n_files"] == 8 and m18.iloc[0]["n_files_ion"] == 1
+      and m18.iloc[0]["alternatives"] == "C15H23NO3 [M+Br]- x4 Candidate 0.92; C11H9NO9 [M+NO3]- x3 Candidate 0.91",
+      m18.iloc[0].to_dict())
+check("evidence: the note names the biggest of the lower-class ions",
+      m18.iloc[0]["tier_reason"] == "evidence outranks the count: kept C10H18O9 [M+NO3]- (4b corroborated in 1 of 8 "
+                                    "files) over the 4-file C15H23NO3 [M+Br]- (5b)", m18.iloc[0]["tier_reason"])
+# the count decides among EQUALS: two class-2 ions, 3 files at 4a vs 2 files at 3b
+eq = {**_filese(3, 300.0, "C10H12O2", "[M+H]+", "Candidate", 0.90, "4a", "iso|chan2"),
+      **_filese(2, 300.0, "C9H12N2O", "[M+H]+", "Candidate", 0.99, "3b", "branch", start=3)}
+meq, _ = AB.align(eq, tol_ppm=6.0)
+check("evidence: among ions of one class the count decides (3 files at 4a beat 2 files at 3b), no note",
+      meq.iloc[0]["neutral_formula"] == "C10H12O2" and meq.iloc[0]["n_files_ion"] == 3 and pd.isna(meq.iloc[0]["tier_reason"]),
+      meq.iloc[0].to_dict())
+eq0 = {**_filese(4, 300.0, "C10H12O2", "[M+H]+", "Candidate", 0.90, "5b", ""),
+       **_filese(1, 300.0, "C9H12N2O", "[M+H]+", "Assigned", 0.99, "5a", "", start=4)}
+meq0, _ = AB.align(eq0, tol_ppm=6.0)
+check("evidence: two mass-only ions are equals, the count decides as before (4 Candidate files beat 1 Assigned)",
+      meq0.iloc[0]["neutral_formula"] == "C10H12O2" and pd.isna(meq0.iloc[0]["tier_reason"]), meq0.iloc[0].to_dict())
+# the middle class: the formula pinned (4b) in one file beats exact mass alone in nine
+mid = {**_filese(9, 304.9071, "C16H2S", "[M+Br]-", "Candidate", 0.95, "5b", ""),
+       **_filese(1, 304.9071, "C10HF3O3", "[M+Br]-", "Assigned", 0.90, "4b", "iso", start=9)}
+mmid, _ = AB.align(mid, tol_ppm=12.0)
+check("evidence: a 4b reading in 1 file beats a 5b reading in 9 (the middle class outranks mass-only)",
+      mmid.iloc[0]["neutral_formula"] == "C10HF3O3"
+      and mmid.iloc[0]["tier_reason"] == "evidence outranks the count: kept C10HF3O3 [M+Br]- (4b in 1 of 10 files) "
+                                         "over the 9-file C16H2S [M+Br]- (5b)", mmid.iloc[0].to_dict())
+# an Orbitrap-like cluster: the many-file reading is also the best-evidenced one -- nothing moves, no note
+noop = {**_filese(8, 217.12, "C10H16O2", "[M+H]+", "Assigned", 0.91, "3b", "chan2|branch"),
+        **_filese(2, 217.12, "C9H16N2O", "[M+H]+", "Candidate", 0.99, "5b", "", start=8)}
+mno, _ = AB.align(noop, tol_ppm=6.0)
+check("evidence: the many-file best-class reading wins as before, no note",
+      mno.iloc[0]["neutral_formula"] == "C10H16O2" and mno.iloc[0]["n_files_ion"] == 8 and pd.isna(mno.iloc[0]["tier_reason"]),
+      mno.iloc[0].to_dict())
+# frames WITHOUT the evidence columns: every reading is class 0 and the vote is the count it was
+_nocol, _ = AB.align(vote, tol_ppm=6.0)
+_nacol, _ = AB.align({k: v.assign(evidence_level=pd.NA, evidence_axes=pd.NA) for k, v in vote.items()}, tol_ppm=6.0)
+check("evidence: frames without the columns (or with NA levels) vote by the count exactly as before",
+      _nocol["neutral_formula"].iloc[0] == "C10H12O2" and _nocol.drop(columns=[]).equals(_nacol), (_nocol.to_dict("records"), _nacol.to_dict("records")))
+# the ion-only-last rule is unchanged: an ion-only reading levelled 4d in 3 files
+# still yields to a regular mass-only reading in 1
+io = {**{f"i{i}": pd.DataFrame([(100.0, "C4H6O2", "[M]-.", "Candidate", 0.8, "4d", "iso|ion_only", "p1")],
+                                columns=["mz", "neutral_formula", "adduct", "tier", "ion_score", "evidence_level", "evidence_axes", "ion_only_of"])
+         for i in range(3)},
+      "r": pd.DataFrame([(100.0, "C3H2O3", "[M-H]-", "Candidate", 0.7, "5b", "", pd.NA)],
+                        columns=["mz", "neutral_formula", "adduct", "tier", "ion_score", "evidence_level", "evidence_axes", "ion_only_of"])}
+mio, _ = AB.align(io, tol_ppm=6.0)
+check("evidence: an ion-only reading (4d, 3 files) still ranks below a regular reading (5b, 1 file)",
+      mio.iloc[0]["neutral_formula"] == "C3H2O3" and str(mio.iloc[0]["tier_reason"]).startswith("regular reading kept over the 3-file"),
+      mio.iloc[0].to_dict())
+# the label stage is unchanged: the same ion read two ways -- the label Assigned in
+# a file wins over the label Candidate in more files even when the latter carries the better level
+lbl = {**_filese(3, 252.1230, "C13H17NO4", "[M+H]+", "Candidate", 0.98, "3b", "branch"),
+       **_filese(1, 252.1230, "C13H14O4", "[M+NH4]+", "Assigned", 0.97, "5b", "", start=3)}
+mlb, _ = AB.align(lbl, tol_ppm=6.0)
+check("evidence: within one ion the label stage still goes by corroboration (Assigned in 1 beats Candidate in 3)",
+      mlb.iloc[0]["neutral_formula"] == "C13H14O4" and bool(mlb.iloc[0]["ion_agree"])
+      and str(mlb.iloc[0]["tier_reason"]).startswith("same ion C13H18NO4+ read two ways"), mlb.iloc[0].to_dict())
+# determinism with the new key
+for _name, _d in (("HOM C10H18O9", hom18), ("pinic acid", pin)):
+    _m1, _j1 = AB.align(_d, tol_ppm=12.0)
+    _m2, _j2 = AB.align(dict(reversed(list(_d.items()))), tol_ppm=12.0)
+    check(f"evidence ({_name}): reversed file order -> identical merged frame", _m1.equals(_m2),
+          (_m1.to_dict("records"), _m2.to_dict("records")))
 
 # --- empty input ------------------------------------------------------------
 me, je = AB.align({})
@@ -309,10 +722,6 @@ check("_protected_neutrals: reflist/known/certified in; grid/siloxane out",
       _prot == {"C10H15NO2S", "C10H19O6PS2", "C6H10O2"}, _prot)
 check("_protected_neutrals: missing columns -> empty set",
       AB._protected_neutrals(pd.DataFrame({"x": [1]})) == set())
-# the vote's exemption is the CURATED subset: a list's identity, not the file's
-# own multi-channel evidence for a grid formula (that is already in the tier)
-check("_curated_neutrals: reflist/known in; certified (and grid/siloxane) out",
-      AB._curated_neutrals(_ledp) == {"C10H15NO2S", "C10H19O6PS2"}, AB._curated_neutrals(_ledp))
 
 # --- admission provenance survives the merge --------------------------------
 # The merged ledger is the deliverable: a reader must be able to see that a row
@@ -459,8 +868,13 @@ try:
         check("run: the merged ledger carries the vote and a tier_reason column",
               {"n_files_winner", "alternatives", "tier_reason"} <= set(res["merged"].columns),
               list(res["merged"].columns))
-        check("run: batch_summary records the merged-level gates (none in negative mode)",
-              summ.get("merge_gates") == {}, summ.get("merge_gates"))
+        check("run: batch_summary records the merged-level gates (the known-species decision "
+              "always -- nothing pooled here; no polarity gate in negative mode)",
+              set(summ.get("merge_gates", {})) == {"known"}
+              and summ["merge_gates"]["known"] == {"pooled": 0, "locked": 0, "confirmed_kept": 0,
+                                                   "conflict": 0, "lead_only": 0, "mass_only_outvoted": 0,
+                                                   "no_cluster": 0},
+              summ.get("merge_gates"))
         # 8 samples: fewer than the 10 spectra the persistence table needs, so the
         # 'auto' policy has nothing to derive the floor from and falls back to the
         # numeric default -- stamped as a NUMBER on every per-file cfg, with a
@@ -1047,6 +1461,97 @@ finally:
     os.environ.pop("PEAKY_MATCH_WORKERS", None)
     IO.connect, IO.fetch_peaks = _saved["connect"], _saved["fetch_peaks"]
     IO.estimate_offset, _A.run = _saved["estimate_offset"], _saved["run"]
+
+
+# ---- the batch's width model: measured ONCE, handed to every per-file run --------------
+from peaky.batch import tracefirst as _TFT  # noqa: E402
+from peaky.chem import resolution as _RES  # noqa: E402
+
+_saved_meas = _TFT.measure_resolution
+_MEAS_CALLS = []
+
+
+def _fake_measure(client, sid, peaks=None, log=print, **kw):
+    _MEAS_CALLS.append(sid)
+    return _RES.Resolution(coef=1.0 / 9500.0, exponent=1.0, n_peaks=9, source="measured")
+
+
+IO.connect = lambda *a, **k: "CLIENT"
+IO.fetch_peaks = lambda client, sid, use_cache=True: pd.DataFrame(
+    {"peak_id": ["p1"], "mz": [_C.ion_mz(_F, "[M-H]-")], "height": [1.0e5]})
+IO.estimate_offset = lambda raw: 0.0
+_A.run = _fake_assign
+_TFT.measure_resolution = _fake_measure
+try:
+    with tempfile.TemporaryDirectory() as _d:
+        _SEEN_KW.clear(); _MEAS_CALLS.clear(); _lines = []
+        AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch", out_dir=_d,
+               k_min=2, k_max=3, min_gain=0.0, n_jobs=1, log=_lines.append)
+        summ = json.load(open(os.path.join(_d, "batch_summary.json")))
+        _rps = [kw.get("resolving_power") for kw in _SEEN_KW]
+        check("width model: measured ONCE on a middling spectrum and handed to every per-file run",
+              len(_MEAS_CALLS) == 1 and len(_rps) == 3
+              and all(isinstance(r, _RES.Resolution) and r.r_at(200.0) == 9500.0 for r in _rps),
+              (_MEAS_CALLS, _rps))
+        check("width model: the middling spectrum by peak count is the probe",
+              _MEAS_CALLS[0] in _PK["sample_item_id"].unique(), _MEAS_CALLS)
+        check("width model: batch_summary records the model and the (empty here) class counts",
+              summ["resolution"]["source"] == "measured" and summ["resolution"]["r_at_200"] == 9500.0
+              and summ["resolvability"] == {}, (summ.get("resolution"), summ.get("resolvability")))
+    with tempfile.TemporaryDirectory() as _d:
+        _SEEN_KW.clear(); _MEAS_CALLS.clear()
+        AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch", out_dir=_d,
+               k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power=6500, log=lambda *a: None)
+        summ = json.load(open(os.path.join(_d, "batch_summary.json")))
+        check("width model: a declared R is coerced, nothing is measured",
+              not _MEAS_CALLS and all(kw["resolving_power"].r_at(200.0) == 6500.0 for kw in _SEEN_KW)
+              and summ["resolution"]["source"] == "declared", (_MEAS_CALLS, summ.get("resolution")))
+    with tempfile.TemporaryDirectory() as _d:
+        _SEEN_KW.clear(); _MEAS_CALLS.clear()
+        AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch", out_dir=_d,
+               k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power="none", log=lambda *a: None)
+        summ = json.load(open(os.path.join(_d, "batch_summary.json")))
+        check("width model: 'none' declines the stamp -- no measurement, None to every file, null in the summary",
+              not _MEAS_CALLS and all(kw["resolving_power"] is None for kw in _SEEN_KW)
+              and summ["resolution"] is None, (_MEAS_CALLS, summ.get("resolution")))
+    _TFT.measure_resolution = lambda *a, **k: None
+    with tempfile.TemporaryDirectory() as _d:
+        _SEEN_KW.clear(); _lines = []
+        AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch", out_dir=_d,
+               k_min=2, k_max=3, min_gain=0.0, n_jobs=1, log=_lines.append)
+        summ = json.load(open(os.path.join(_d, "batch_summary.json")))
+        check("width model: a measurement that cannot be made is a log line on the cover path, never a failed run",
+              all(kw["resolving_power"] is None for kw in _SEEN_KW) and summ["resolution"] is None
+              and summ["n_files"] == 3, (summ.get("resolution"), summ.get("n_files")))
+    check("_sum_counts adds class counts across files and skips None",
+          AB._sum_counts([{"blended": 2, "isolated": 1}, None, {"blended": 3}]) == {"blended": 5, "isolated": 1}
+          and AB._sum_counts([]) == {})
+finally:
+    _TFT.measure_resolution = _saved_meas
+    IO.connect, IO.fetch_peaks = _saved["connect"], _saved["fetch_peaks"]
+    IO.estimate_offset, _A.run = _saved["estimate_offset"], _saved["run"]
+
+
+# --- FLATNESS SURVIVES THE MERGE AS A LABEL: the time series labels a row
+# (ts_disposition / ts_cv_norm) and never tiers it, so the merged row carries the
+# label of the row that donates its tier -- otherwise a batch reader would see a
+# flat calibrant background as a plain Assigned analyte.
+def m0t(rows):
+    return pd.DataFrame(rows, columns=["mz", "neutral_formula", "adduct", "tier", "ion_score",
+                                       "ts_disposition", "ts_cv_norm"])
+
+
+flat_lab = {"a": m0t([(178.0777, "C14H10", "[M]+.", "Assigned", 0.95, "background:flat (TS-flat)", 0.07)]),
+            "b": m0t([(178.0778, "C14H10", "[M]+.", "Candidate", 0.97, "ambient:variable", 0.61)])}
+mfl, _ = AB.align(flat_lab, tol_ppm=6.0)
+check("the merged row carries the donor row's ts_disposition (the Assigned file's label, not the other file's)",
+      len(mfl) == 1 and mfl.iloc[0]["tier"] == "Assigned"
+      and mfl.iloc[0]["ts_disposition"] == "background:flat (TS-flat)", mfl.to_dict("records"))
+check("  -> and its ts_cv_norm", float(mfl.iloc[0]["ts_cv_norm"]) == 0.07, mfl.to_dict("records"))
+nolab, _ = AB.align({"a": m0([(500.0, "C20H30O8", "[M+H]+", "Assigned", 0.9)])}, tol_ppm=6.0)
+check("a batch without a time series merges as before (label NA, no crash)",
+      len(nolab) == 1 and pd.isna(nolab.iloc[0]["ts_disposition"]) and pd.isna(nolab.iloc[0]["ts_cv_norm"]),
+      nolab.to_dict("records"))
 
 
 def test_all():

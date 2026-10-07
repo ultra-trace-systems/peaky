@@ -326,6 +326,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     # manifest below both use (assign_batch.run re-resolves it onto that cfg
     # and logs it once).
     P.apply_height_cutoff_x_edge(cfg, prof)
+    P.apply_ion_only_channels(cfg, prof)      # the profile's ion-only channels, same rule
     # The manifest fingerprints a snapshot taken HERE, before the assign runs: it
     # pins the run to the configuration it was GIVEN, never to what the assign
     # fitted from the data (the calibrated cal_mu/cal_sigma land on this same cfg
@@ -360,6 +361,8 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         ts_path=ctx.ts_path,
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
+                # the claim each merged row's level supports, beside its tier
+                "merged_claims": (summ.get("claims") or {}).get("merged"),
                 "n_samples": summ.get("n_files"),
                 "selection": summ.get("selection"),
                 # the admission gate as RESOLVED for this run (knob, threshold,
@@ -369,7 +372,11 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                 # counts; likewise the batch-derived brightness floor (`gate`) and
                 # the trace reconciliation of the merged ledger (`traces`)
                 "admission": summ.get("admission"),
-                "gate": summ.get("gate"), "traces": summ.get("traces")},
+                "gate": summ.get("gate"), "traces": summ.get("traces"),
+                # the batch's mass scale: measured scatter + the merge / stamping
+                # windows sized from it (a run-derived count, like the admission
+                # threshold: the config fingerprint holds only the binning knob)
+                "mass_scale": summ.get("mass_scale")},
         # Keyed by sample: a batch run describes many, and what publishes into
         # Mascope is one sample's run, which has to say what scored it.
         extra={"pattern_scoring": summ.get("pattern_scoring") or {}},
@@ -550,6 +557,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     prof = P.resolve(reagent, ts[ts_cols], config=config)
     # same one-multiple-per-run rule as run_batch, onto the same cfg (see there)
     P.apply_height_cutoff_x_edge(cfg, prof)
+    P.apply_ion_only_channels(cfg, prof)
     cfg_snapshot = copy.deepcopy(cfg)        # pre-assign, as in run_batch (see there)
     pool_label = out_name or pool_name(batches)
     ctx = make_run_context(base_out, pool_label, prof, when=when, dataset=dataset)
@@ -598,10 +606,16 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
         cfg=cfg_snapshot, ts_path=ctx.ts_path,       # carries the resolved x_edge
         counts={"merged_M0": summ.get("merged_M0"),
                 "merged_tiers": summ.get("merged_tiers"),
+                # the claim each merged row's level supports, beside its tier
+                "merged_claims": (summ.get("claims") or {}).get("merged"),
                 "n_samples": summ.get("n_files"), "n_groups": len(groups),
                 "selection": summ.get("selection"),
                 "admission": summ.get("admission"),
-                "gate": summ.get("gate"), "traces": summ.get("traces")},
+                "gate": summ.get("gate"), "traces": summ.get("traces"),
+                # the batch's mass scale: measured scatter + the merge / stamping
+                # windows sized from it (a run-derived count, like the admission
+                # threshold: the config fingerprint holds only the binning knob)
+                "mass_scale": summ.get("mass_scale")},
         extra={"pattern_scoring": summ.get("pattern_scoring") or {}},
         created_utc=ctx.when.isoformat(), log=log)
     elapsed = round(time.time() - t_start, 1)

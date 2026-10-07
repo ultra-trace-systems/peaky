@@ -33,7 +33,7 @@ file), a disagreement the spectra never had.
 
 ### OPEN follow-ups from session 6 (priority order)
 
-1. **Batch-level known-species lock (retires the curated exemption).** The pass-0
+1. **DONE 2026-09-23 (peakydev, C5): batch-level known-species lock (retires the curated exemption)** — pass 0 leaves a `known_lead` (deferred / refuted, with why) on every on-cal claim it refuses; the batch pools those with the `known:` commits (`assign_batch.known_evidence`) and decides each ion once on the merged ledger (`lock_known_species`, MERGE.md §3 step 4b); `align(curated=)` and `_curated_neutrals` are gone. The original item: The pass-0
    lock (`known:cyclosiloxane`, `known:organophosphate`, `known:indoor_sulfur`) fires
    in 1 of 10 files because its own-twin gate (²⁹Si/³⁰Si/³⁴S) is per file; the other
    9 files then grid-fit the same peak as an O14 / N4O10 formula they themselves flag
@@ -50,7 +50,7 @@ file), a disagreement the spectra never had.
    that run's TS how the 269 `kept_covary` and 348 `relabeled` rows split by sibling
    corroboration before deciding whether a sibling-corroborated adduct should need
    tracking, or whether "presence-cap" (parent present, flat) should keep the adduct.
-3. **`_reagent_n_isobar` is one-directional.** It flags the winner only when the winner
+3. **DONE 2026-09-23 (peakydev, C5): `_reagent_n_isobar` is symmetric** — it returns `("donor" | "amine", alias formula, alias adduct)`; the amine-side winner is capped at Candidate unless a second channel of its own or an anchor fixes the count. The original item: It flags the winner only when the winner
    sits on an N-donating adduct; the amine-direction winner (`[M+H]+` of the N-richer
    neutral) is not flagged, so it can reach Assigned as "unique formula in the calibrated
    window" with no discriminating evidence (`C5H12N2S [M+H]+` Assigned in 2 files at
