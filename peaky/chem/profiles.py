@@ -345,6 +345,11 @@ PROFILES: dict[str, ReagentProfile] = {
     NH4_15N.name: NH4_15N,
 }
 _BY_ALIAS = {a: p for p in PROFILES.values() for a in (p.name.lower(), *p.aliases)}
+# the registry as the package ships it: what a freshly imported module holds
+# (a spawned worker process), against which `registry_extras` reads what a
+# caller added
+_BUILTIN_PROFILES = dict(PROFILES)
+_BUILTIN_ALIAS = dict(_BY_ALIAS)
 
 
 # --- registry / config-driven reagents ------------------------------------
@@ -436,6 +441,26 @@ def load_config(path: str) -> list:
     else:
         entries = data
     return [register(from_dict(e)) for e in entries]
+
+
+def registry_extras() -> tuple[dict, dict]:
+    """What this process's registry holds beyond the built-ins: the profiles
+    `register` / `load_config` added or replaced, and the aliases that point at
+    them, as a picklable `(profiles, aliases)` pair. A spawned process imports
+    this module afresh -- built-ins only -- so a profile registered from a
+    --reagent-config file is an unknown reagent there until it is handed these
+    (`register_extras`); the batch's worker pool does exactly that."""
+    return ({k: p for k, p in PROFILES.items() if _BUILTIN_PROFILES.get(k) is not p},
+            {a: p for a, p in _BY_ALIAS.items() if _BUILTIN_ALIAS.get(a) is not p})
+
+
+def register_extras(extras) -> None:
+    """Apply another process's `registry_extras()` to this one's registry, so a
+    name or alias resolves here to the profile it resolved to there. None or
+    empty is a no-op."""
+    profs, aliases = extras or ({}, {})
+    PROFILES.update(profs)
+    _BY_ALIAS.update(aliases)
 
 
 # --- the noise-edge height gate's multiple ---------------------------------
