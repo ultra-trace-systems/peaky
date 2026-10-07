@@ -460,7 +460,7 @@ def test_the_card_prints_what_the_arms_were_judged_at_and_a_recount_keeps_it(run
     assert "arms judged at: `s1` inherited (sigma 0.71 ppm, mu -1.25 ppm, window 5 ppm, floor 0.02, 23 anchors)" in md
     page = html.unescape(SC.render_html([card], [card["row"]]))          # the page writes non-ASCII as entities
     for text in (md, page):
-        for item in ("opportunistic channels", "height cutoff", "prior offset", "occurrence table", "time series",
+        for item in ("side channels the run recorded opening", "height cutoff", "prior offset", "occurrence table", "time series",
                      "active reference lists", "or corroboration (card C39)", "abundance floor"):
             assert item in text, item
     # the note stands whatever the control arm did, in md as in html

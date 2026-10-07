@@ -351,7 +351,7 @@ def test_the_note_names_every_item_an_arm_does_not_inherit_and_a_non_fitted_widt
     det = dict({k: TOF[k] for k in ("sigma_ppm", "mu_ppm", "mz_tolerance_ppm", "abundance_floor", "fitted_anchors")},
                sigma_source="instrument_class")
     note = SC._scoring_note({"scoring": {"f": "inherited"}, "scoring_detail": {"f": det}})
-    for item in ("opportunistic channels", "height cutoff", "prior offset", "occurrence table", "time series",
+    for item in ("side channels the run recorded opening", "height cutoff", "prior offset", "occurrence table", "time series",
                  "reference lists", "corroboration", "abundance floor"):
         assert item in note, item
     assert "the run's own instrument_class width" in note

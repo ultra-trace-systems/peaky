@@ -598,9 +598,10 @@ def resolve_mechanism_ids(client, names: list[str]) -> dict[str, str]:
 
     With no client (an offline sample) a name is its own id, and only the
     channels the registered offline samples declare resolve -- matched by the
-    same key, so a sample declared in either spelling opens its channels -- and
-    the opportunistic extra channels stay closed, as on a server that does not
-    list them."""
+    same key, so a sample declared in either spelling opens its channels; a
+    side channel resolves only when the sample registered it too (assign.run
+    registers the side channels the run opens), as on a server that does not
+    list it otherwise."""
     if client is None:
         allowed = {_mechanism_key(m) for m in _offline_mechanisms()}
         return {n: n for n in names if _mechanism_key(n) in allowed}

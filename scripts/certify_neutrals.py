@@ -118,6 +118,7 @@ def main(argv=None):
         # `log=`: a "[gate] ..." line here would announce a gate that isn't used.
         PR.apply_height_cutoff_x_edge(cfg, rp)
         PR.apply_ion_only_channels(cfg, rp)      # same one-rule-one-place reason as above
+        PR.apply_side_channels(cfg, rp)          # ditto (pass 7 scores the declared adducts only)
         cfg.mechanism_ids = IO.resolve_mechanism_ids(client, list(rp.adducts))
         s = P.run_pass_certified(client, args.sample_id, led_run, profile, cfg,
                                  list(rp.adducts), reagent=cluster_reagent,

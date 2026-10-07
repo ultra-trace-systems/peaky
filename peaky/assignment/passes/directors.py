@@ -1608,6 +1608,10 @@ def run_pass2(
     return total
 
 
+# run_pass3's `reagent` default: read the key from the adducts it is given
+_KEY_FROM_ADDUCTS = object()
+
+
 def run_pass3(
     client,
     sample_id: str,
@@ -1620,9 +1624,16 @@ def run_pass3(
     log=print,
     phase: str = "all",
     carried: dict | None = None,
+    reagent=_KEY_FROM_ADDUCTS,
 ) -> dict:
     """``phase`` splits this pass in two so that EVIDENCE-OPENED families claim
     last, not first.
+
+    ``reagent`` is the run's cluster-library key (``assign.run`` passes the one
+    it read from the DECLARED channels): ``adducts`` also carries the opened side
+    channels, and an [M+Br2]- side channel on a nitrate run must not start the
+    HBr-cluster resolution or open the bromo-organic family. Unset, the key is
+    read from ``adducts``.
 
     ``curated`` runs the HX/I2 cluster resolution and the profile's own families,
     detects the GKA series structure, and hands it back in ``_carry`` WITHOUT
@@ -1649,7 +1660,8 @@ def run_pass3(
     total = {"committed": 0, "locked": 0, "iso_attached": 0}
     from peaky.chem import reagents as _RG
 
-    reagent = _RG.reagent_for_adducts(adducts)
+    if reagent is _KEY_FROM_ADDUCTS:
+        reagent = _RG.reagent_for_adducts(adducts)
 
     # --- HX-cluster resolution (halide CIMS) -------------------------------
     # A peak at anchor+HX under [M+X]- is the analyte's HX cluster

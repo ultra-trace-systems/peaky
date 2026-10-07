@@ -287,11 +287,13 @@ pre-0.10.0 scale and 2 on 0.10.0 is a change of scale, not a regression.
    manifest keeps it, and the board row records one word
    (`decoy_calibration`). The arms are levelled at the file's run window, as
    before.
-   What an arm does NOT inherit from the run: the opportunistic channels the
-   server opened for it (offline, only the run's declared adducts resolve),
-   its batch-derived height cutoff, its pre-calibration prior offset, its
-   batch occurrence table, its batch time series (pass 7's time-series
-   corroboration and the time-series stage), its active reference lists (the
+   An arm on the run's own channels (control, shift, ppm) opens the side
+   channels the run recorded opening (`batch_summary.side_channels`; none for
+   a run that recorded none); the wrong-adducts arm reads its wrong set alone.
+   What an arm does NOT inherit from the run: its batch-derived height
+   cutoff, its pre-calibration prior offset, its batch occurrence table, its
+   batch time series (pass 7's time-series corroboration and the time-series
+   stage), its active reference lists (the
    reflist prior and the pass-8 rescue) and its corroboration -- so the
    control is the engine on the file under the arm's own settings, not the
    run's per-file ledger. They differ most in M0 and Assigned rows on a TOF

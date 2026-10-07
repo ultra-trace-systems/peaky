@@ -218,6 +218,7 @@ def cmd_assign(args) -> None:
     from peaky.chem import profiles
     from peaky import progress as PG
 
+    side = _side_channels_arg(getattr(args, "side_channels", None))   # stops on a bad adduct, before any work
     # the reagent first: the profile may carry its own height-gate multiple, and
     # the flag (default None = not given) outranks it.
     adducts, context, note, prof = _resolve_reagent(args, with_profile=True)
@@ -228,6 +229,9 @@ def cmd_assign(args) -> None:
     profiles.apply_height_cutoff_x_edge(cfg, prof,
                                         explicit=args.height_cutoff_x_edge, log=print)
     profiles.apply_ion_only_channels(cfg, prof, log=print)
+    # the profile's declared side channels, unless --side-channels chose (a forced
+    # --adducts list has no profile: closed unless asked for)
+    profiles.apply_side_channels(cfg, prof, explicit=side, log=print)
     # the labelled-reagent purity rides on the same resolved profile
     purity = getattr(prof, "purity", None)
     od = Path(args.output_dir).expanduser()
@@ -356,6 +360,7 @@ def cmd_batch(args) -> None:
     from peaky import pipeline as PL
     from peaky import progress as PG
 
+    side = _side_channels_arg(getattr(args, "side_channels", None))   # stops on a bad adduct, before any work
     with PG.open_progress(f"peaky \u00b7 batch {args.batch}", flag=args.progress) as prog:
         res = PL.run_batch(batch=args.batch, dataset=args.dataset, reagent=args.reagent,
                            base_out=resolve_out_dir(args.out_dir), ts=args.ts,
@@ -369,6 +374,7 @@ def cmd_batch(args) -> None:
                            occurrence_min=args.occurrence_min,
                            height_cutoff_x_edge=args.height_cutoff_x_edge,
                            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
+                           side_channels=side,
                            rolling_centre=getattr(args, "rolling_centre", False),
                            trace_first=getattr(args, "trace_first", False),
                            resolving_power=getattr(args, "resolving_power", None),
@@ -395,6 +401,7 @@ def cmd_pool(args) -> None:
     from peaky import pipeline as PL
     from peaky import progress as PG
 
+    side = _side_channels_arg(getattr(args, "side_channels", None))   # stops on a bad adduct, before any work
     with PG.open_progress(f"peaky \u00b7 pool {args.batches}",
                           flag=args.progress) as prog:
         res = PL.run_pooled_batches(
@@ -409,6 +416,7 @@ def cmd_pool(args) -> None:
             occurrence_min=args.occurrence_min,
             height_cutoff_x_edge=args.height_cutoff_x_edge,
             height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
+            side_channels=side,
             rolling_centre=getattr(args, "rolling_centre", False), log=prog)
         prog.finish((res.get("assign") or {}).get("summary"))
         ctx = res["ctx"]
@@ -1013,6 +1021,44 @@ def _add_corroborate_flag(p) -> None:
                         "`peaky assign` records it and ignores it")
 
 
+def _add_side_channels_flag(p) -> None:
+    """`--side-channels`, shared by assign / batch / pool."""
+    p.add_argument("--side-channels", nargs="+", default=None, metavar="ADDUCT",
+                   help="side channels: extra adducts scored beside the reagent's analyte "
+                        "channels when the server has their mechanism. Default: the ones the "
+                        "reagent profile declares -- [M+NH4]+ on Ur (kept or re-read as the "
+                        "protonated amine by the batch's amine gate), none on every other "
+                        "built-in profile. Give a list to open exactly those instead (e.g. "
+                        "--side-channels '[M+CO3]-' on a source with real CO3- chemistry, "
+                        "'[M+Br2]-' for di-bromide clusters) or 'none' to close them all "
+                        "(Ur included). [M+CO3]-, [M+Br2]- and [M+Na]+ are off by default: on "
+                        "the batches measured they mostly re-read ions the run already held "
+                        "or had no support of their own. The opened channels are recorded per "
+                        "file and in batch_summary.json (side_channels)")
+
+
+def _side_channels_arg(values):
+    """The `--side-channels` values as the cfg stores them: None (flag not given:
+    the profile decides), () for `none`, else the tuple of adducts -- each one a
+    channel the server can score (`io_mascope.ADDUCT_TO_MECH`), or the command
+    stops naming the ones it can take."""
+    if values is None:
+        return None
+    from peaky.chem import profiles
+    from peaky.io import io_mascope as IO
+
+    words = [str(v).strip() for v in values if str(v).strip()]
+    if any(w.lower() == profiles.SIDE_CHANNELS_NONE for w in words):
+        if len(words) > 1:
+            sys.exit("--side-channels: 'none' closes every side channel; give it alone")
+        return ()
+    bad = [w for w in words if w not in IO.ADDUCT_TO_MECH]
+    if bad:
+        sys.exit(f"--side-channels: no server mechanism for {', '.join(bad)}; a side channel is "
+                 f"one of {', '.join(IO.ADDUCT_TO_MECH)} (or 'none')")
+    return profiles._side_tuple(words)
+
+
 def _add_trace_first_flags(p) -> None:
     p.add_argument("--trace-first", action="store_true", default=False,
                    help="assign the batch's persistent ions ONCE from their centred traces "
@@ -1119,6 +1165,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "Candidate). Default 'auto': MEASURE it from this sample's raw profile. "
                          "Give a number to declare it instead, or 'none' to skip the stamp")
     _add_admission_args(pa)
+    _add_side_channels_flag(pa)
     _add_corroborate_flag(pa)
     _add_progress_flag(pa)
     pa.set_defaults(func=cmd_assign)
@@ -1144,6 +1191,7 @@ def build_parser() -> argparse.ArgumentParser:
     pb.add_argument("--no-report", action="store_true", help="skip the PDF report")
     _add_selection_args(pb)
     _add_admission_args(pb)
+    _add_side_channels_flag(pb)
     _add_rolling_flag(pb)
     _add_trace_first_flags(pb)
     _add_corroborate_flag(pb)
@@ -1187,6 +1235,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="only the whole-pool report; skip the per-group ones")
     _add_selection_args(pp)
     _add_admission_args(pp)
+    _add_side_channels_flag(pp)
     _add_rolling_flag(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "

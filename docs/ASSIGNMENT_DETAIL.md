@@ -326,7 +326,7 @@ Isotope pairs + series chains, DBE-only plausibility (no `match_compounds`, just
 
 ### Composites and Pass 6
 
-- `detect_composites` (in passes/postprocess.py): flags (does not demote) M0s whose intensity exceeds what their halogen-free M+1 (13C/29Si/15N) implies — `min_m1_rel≥0.06`, `excess_frac≥0.25`, `min_excess≥400 cps`, `ppm=8.0`. Halogen content guessed from the even-shift M+2/M+4 residual. Runs only when `has_halogen_adduct` (in positive mode an even shift is isotope structure, not co-component).
+- `detect_composites` (in passes/postprocess.py): flags (does not demote) M0s whose intensity exceeds what their halogen-free M+1 (13C/29Si/15N) implies — `min_m1_rel≥0.06`, `excess_frac≥0.25`, `min_excess≥400 cps`, `ppm=8.0`. Halogen content guessed from the even-shift M+2/M+4 residual. Runs only when `has_halogen_adduct` -- a halogen among the run's DECLARED analyte channels, not a side channel it opened (an opted-in `[M+Br2]-` on a nitrate run leaves it off; docs/REAGENTS.md §3b); in positive mode an even shift is isotope structure, not co-component.
 - `split_composites` (in passes/postprocess.py): de-blends — owner keeps `assigned_fraction` of measured height; a synthetic sub-peak `<id>.2` (same m/z, `synthetic=True`, `host_peak_id`) carries the co-component share + halogen guess. Signal conserved.
 - **Pass 6 (ladder)**: gapfill homolog/oxidation diagonals; then the 3rd `complete_isotope_envelopes`.
 

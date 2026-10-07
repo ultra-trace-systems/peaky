@@ -27,8 +27,8 @@ class ContextProfile:
     label: str
     description: str
     # Ion-source polarity. "negative" is the Br/halide-CIMS default the pipeline
-    # was built around; "positive" (urea-CIMS / APCI+) switches the opportunistic
-    # channels to cation adducts and turns OFF the Br-specific composite test
+    # was built around; "positive" (urea-CIMS / APCI+) reads cation adducts
+    # and turns OFF the Br-specific composite test
     # (its halogen-free-M+1 discriminator needs a halogen adduct to read the
     # co-component off the even-shift residual -- see assign.run).
     polarity: str = "negative"

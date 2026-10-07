@@ -220,8 +220,10 @@ fit" alone never wins:
 `profiles.py` defines one `ReagentProfile` per reagent system — bromide `Br⁻`,
 urea/uronium `Ur⁺`, nitrate `NO3` / ¹⁵N-nitrate `NO3_15N`, iodide `IODIDE`,
 charge-transfer `EASYIC`, ¹⁵N-ammonium `NH4_15N` — bundling polarity, adducts,
-normaliser ion, the chemistry context, and (for a labelled reagent) its isotopic
-`purity` and covalent-label fields. `resolve('auto', peaks)` detects the
+normaliser ion, the chemistry context, the declared side channels (extra adducts
+scored when the server resolves them: `[M+NH4]⁺` on uronium, none elsewhere;
+`--side-channels` overrides, [REAGENTS.md](REAGENTS.md) §3b) and (for a labelled
+reagent) its isotopic `purity` and covalent-label fields. `resolve('auto', peaks)` detects the
 reagent from the sample's server matches, never the batch name, and stops with
 an error when none names a reagent; passing `--reagent` forces it. New
 reagents are added from a JSON/TOML file via `register()` / `load_config()`

@@ -225,6 +225,12 @@ peaky curate copy-samples --sample-ids <ID...> \
 
 `--reagent` forces the analyte channels (`auto` reads the sample's server matches
 and stops with an error when none names a reagent; pass `--reagent` then).
+Extra adduct channels (side channels) are declared per reagent and closed by
+default: only `Ur` opens one, `[M+NH4]+`, which the batch's amine gate keeps or
+re-reads as the protonated amine. `--side-channels ADDUCT ...` opens exactly the
+channels you name instead (e.g. `--side-channels '[M+CO3]-'` on a source with a
+bright CO3- ion) and `--side-channels none` closes them all; what each file opened
+is recorded in `batch_summary.json` (docs/REAGENTS.md §3b).
 `peaky mass-qc` probes the 30-ion nitrate core (or the provisional bromide
 ladder) in the batch time series and reports whether the axis
 is flat, offset, curved, drifting or blended — an external yardstick, so a wrong

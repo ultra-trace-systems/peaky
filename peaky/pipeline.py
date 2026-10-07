@@ -268,6 +268,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               occurrence_min: float | None = None,
               height_cutoff_x_edge: float | None = None,
               height_cutoff_cps: float | None = None,
+              side_channels=None,
               n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Full batch pipeline in ONE call: sample-subset ASSIGN (live match_compounds)
     -> merge -> cluster figures -> Van Krevelen -> PDF report, into one versioned run
@@ -293,6 +294,9 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     batch-derived threshold; 0 = brightness only), `height_cutoff_x_edge` falls
     through to the reagent profile's own multiple and only then to the package
     default, and `height_cutoff_cps` means no absolute override.
+    `side_channels` (a list of adducts, () = every one closed) is the
+    `--side-channels` choice; None leaves the reagent profile's declared side
+    channels (`ReagentProfile.side_channels`) in force.
     Returns {ctx, assign, cluster, vk, report_pdf}."""
     from peaky.batch import assign_batch as AB
 
@@ -327,6 +331,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     # and logs it once).
     P.apply_height_cutoff_x_edge(cfg, prof)
     P.apply_ion_only_channels(cfg, prof)      # the profile's ion-only channels, same rule
+    P.apply_side_channels(cfg, prof, explicit=side_channels)   # declared side channels, a flag outranks them
     # The manifest fingerprints a snapshot taken HERE, before the assign runs: it
     # pins the run to the configuration it was GIVEN, never to what the assign
     # fitted from the data (the calibrated cal_mu/cal_sigma land on this same cfg
@@ -486,6 +491,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                        occurrence_min: float | None = None,
                        height_cutoff_x_edge: float | None = None,
                        height_cutoff_cps: float | None = None,
+                       side_channels=None,
                        n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Pool the batches matching `batches` (a regex over batch names) into ONE
     unified ledger, then emit a whole-pool report plus one report per group.
@@ -501,6 +507,8 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     be visible. `A.run` fetches each selected sample's peaks from the server itself;
     the pooled `ts` only drives selection, clustering and the amine gate, so it is
     trimmed to the TS columns for the workers.
+
+    `side_channels` is the `--side-channels` choice, as in `run_batch`.
 
     `group_by` is the column that splits the pool (default `sample_batch_name`: one
     group per matched batch). Per-group reports share the unified `merged_ledger.csv`
@@ -561,6 +569,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     # same one-multiple-per-run rule as run_batch, onto the same cfg (see there)
     P.apply_height_cutoff_x_edge(cfg, prof)
     P.apply_ion_only_channels(cfg, prof)
+    P.apply_side_channels(cfg, prof, explicit=side_channels)
     cfg_snapshot = copy.deepcopy(cfg)        # pre-assign, as in run_batch (see there)
     pool_label = out_name or pool_name(batches)
     ctx = make_run_context(base_out, pool_label, prof, when=when, dataset=dataset)

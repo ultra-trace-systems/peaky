@@ -1586,7 +1586,7 @@ def wrong_adducts(polarity: str) -> list[str]:
 
 def own_adducts(run: "Run") -> set[str]:
     """Every channel the run itself reads: its profile's adducts, every adduct its merged and per-file ledgers
-    commit (an opportunistic side channel the server opened included), and any channel list its batch summary
+    commit (a side channel the run opened included), and any channel list its batch summary
     records."""
     own = set(run.adducts)
     for frame in (run.ledger, run.per_file):
@@ -1695,7 +1695,7 @@ def _g(v) -> str:
 
 
 #: what a decoy arm does not take from the run it bounds (card C39)
-DECOY_NOT_INHERITED = ("its opportunistic channels, batch height cutoff, pre-calibration prior offset, batch occurrence "
+DECOY_NOT_INHERITED = ("its batch height cutoff, pre-calibration prior offset, batch occurrence "
                        "table, batch time series, active reference lists (the reflist prior and the pass-8 rescue) "
                        "or corroboration")
 
@@ -1716,7 +1716,8 @@ def _scoring_note(dc: dict) -> str:
         else:
             parts.append(f"`{f}` {k}")
     return ("arms judged at: " + ", ".join(parts)
-            + f". Inherited = the run's width, offset, window and abundance floor and the file's signal-to-noise; an "
+            + f". Inherited = the run's width, offset, window and abundance floor, the file's signal-to-noise and, on "
+            f"the arms that read the run's own channels, the side channels the run recorded opening; an "
             f"arm does not take {DECOY_NOT_INHERITED} (card C39).")
 
 
@@ -1733,11 +1734,26 @@ def _calibration_note(dc: dict) -> str:
               "calibrate runs with the mass z-test and the degeneracy audit off.")
 
 
+def run_side_channels(run: "Run") -> tuple:
+    """The side channels the run's files opened (`batch_summary['side_channels']`, the union over its files),
+    () when the summary records none -- a run made before the record existed, which on the measured runs is a
+    closed run; its decoy arms keep the offline default (only the declared channels resolve)."""
+    rec = (run.summary or {}).get("side_channels")
+    if not isinstance(rec, (list, tuple)):
+        return ()
+    return tuple(str(a) for a in rec if isinstance(a, str) and a)
+
+
 def run_engine_offline(run: Run, peaks: pd.DataFrame, sample_id: str, adducts: list[str], log=lambda *a: None,
                        scoring=None) -> pd.DataFrame:
     """`assign.run(peaks=)` on one table with the run's own profile settings,
     judged at `scoring` (`decoy_scoring`; None = the offline class fallback).
-    Returns the ledger. Needs the local scorer (the default)."""
+    Returns the ledger. Needs the local scorer (the default).
+
+    An arm on the run's own channels (`adducts` = the run's: control, shift, ppm)
+    opens the side channels the run recorded opening (`run_side_channels`), so it
+    bounds the run as it was assigned; the wrong-adducts arm reads its wrong set
+    alone. A run that recorded none (made before the record existed) opens none."""
     import copy
 
     from peaky.assignment import assign as A
@@ -1748,6 +1764,8 @@ def run_engine_offline(run: Run, peaks: pd.DataFrame, sample_id: str, adducts: l
     cfg = PA.PassConfig()
     P.apply_height_cutoff_x_edge(cfg, run.profile, log=log)
     P.apply_ion_only_channels(cfg, run.profile, log=log)
+    own_chemistry = set(map(str, adducts)) == set(map(str, run.adducts or ()))
+    P.apply_side_channels(cfg, run.profile, explicit=run_side_channels(run) if own_chemistry else (), log=log)
     # the batch's typical detection edge the run's tier pass sized its counting-
     # detector floor from (C46): an arm bounds the run AS TIERED, so it takes the
     # same footing (its own file's edge alone would put a low-count file's floor

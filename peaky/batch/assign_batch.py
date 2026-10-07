@@ -1279,7 +1279,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     `reagent='auto'` reads the server matches of `peaks`, else of `ts_peaks`;
     the batch= roster carries none, so batch= alone needs a reagent name
     (`_auto_reagent_table`). `context` defaults to the reagent profile's
-    context. Extra kwargs pass through to assign.run. Writes (see paths.RunPaths): merged_ledger.csv +
+    context. The side channels every file may open are the profile's declared
+    ones (`ReagentProfile.side_channels`; the uronium profile's [M+NH4]+) unless
+    `cfg.side_channels` is already set (a `--side-channels` choice, () = closed);
+    batch_summary records the requested set and what the files opened.
+    Extra kwargs pass through to assign.run. Writes (see paths.RunPaths): merged_ledger.csv +
     batch_summary.json at the run root, per_file/<sid>_ledger.csv, and
     tables/{selected_samples,jitter}.csv.
 
@@ -1357,6 +1361,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # the ion-only channels the profile opens ("[M]-." on the nitrate profiles),
     # copied by the same explicitness rule: a cfg that already carries a tuple wins
     P.apply_ion_only_channels(cfg, prof, log=log)
+    # the side channels the profile declares (uronium: [M+NH4]+), same rule: a cfg
+    # that already carries a tuple (--side-channels, () included) wins. The cfg
+    # rides base_kw into every spawned worker, so each file opens exactly these.
+    P.apply_side_channels(cfg, prof, log=log)
+    side_source = P.side_channels_source(cfg.side_channels, prof)
     assign_kw["cfg"] = cfg
     selection = dict(selection_meta or {})
     sel = None                 # our own cover table (None on the sample_ids= path)
@@ -2221,8 +2230,28 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # the record of the second stage, beside the cover's (`selection` is our
         # own dict: a caller's selection_meta was copied above)
         selection["residual"] = residual_meta
+    # the side channels the files OPENED (each file's stats carries its own list),
+    # unioned in file order, and how many files opened each
+    side_opened: list = []
+    side_files: dict = {}
+    for x in per_stats:
+        for a in (x.get("side_channels") or ()):
+            if a not in side_opened:
+                side_opened.append(a)
+            side_files[a] = side_files.get(a, 0) + 1
+    if side_opened:
+        log(f"[assign_batch] side channels opened: "
+            + ", ".join(f"{a} ({side_files[a]} of {len(per_stats)} files)" for a in side_opened))
     summary = {
         "reagent": prof.name, "label": prof.label, "context": context,
+        # the side channels the run asked for (`side_channels_requested`, from
+        # `side_channels_source`) and the run-level union the files actually opened
+        # (`side_channels`; per file: per_file[].side_channels, files per channel:
+        # `side_channels_files`) -- a decoy arm opens what this records
+        "side_channels": side_opened,
+        "side_channels_files": side_files,
+        "side_channels_requested": list(cfg.side_channels or ()),
+        "side_channels_source": side_source,
         # the reagent halogen of the profile's declared channels (C43): what the
         # pooled pair facts read, and what a post-hoc re-level of this run reads
         "reagent_halogen": level_summary["reagent_halogen"],
