@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0b1] — 2026-10-07 (pre-release: the evidence scale, the isotope checks, the m/z-dependent mass centre, declared side channels, the TOF M+2 and mass-only gates)
+
 ### Changed
 
 - **Side channels are declared per reagent and closed by default; `--side-channels` opens them.**

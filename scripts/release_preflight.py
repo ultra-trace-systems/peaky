@@ -186,7 +186,7 @@ def main(argv=None) -> int:
     # ---- 5. release-day specifics ------------------------------------------ #
     print("\nRELEASE")
     released = dict(re.findall(
-        r"^## \[(\d+\.\d+\.\d+)\]\s*[—-]\s*(\d{4}-\d{2}-\d{2})",
+        r"^## \[(\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?)\]\s*[—-]\s*(\d{4}-\d{2}-\d{2})",
         (root / "CHANGELOG.md").read_text(), re.M))
     cl_date = released.get(version)
     _say(OK if cl_date else BAD, "CHANGELOG has a dated section",

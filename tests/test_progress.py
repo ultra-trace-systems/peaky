@@ -543,7 +543,8 @@ _SECTIONS = re.split(r"^## \[", CHANGELOG, flags=re.M)[1:]
 
 
 def _parts(version: str) -> tuple[int, ...]:
-    return tuple(int(p) for p in version.split("."))
+    # the X.Y.Z release; a pre-release suffix (0.10.0b1) belongs to that release's train
+    return tuple(int(x) for x in re.match(r"(\d+)\.(\d+)\.(\d+)", version).groups())
 
 
 def _shipped_or_shipping(section: str) -> bool:
@@ -553,7 +554,7 @@ def _shipped_or_shipping(section: str) -> bool:
     pyproject's."""
     if section.startswith("Unreleased]\n"):
         return True
-    m = re.match(r"(\d+\.\d+\.\d+)\]", section)
+    m = re.match(r"(\d+\.\d+\.\d+)(?:(?:a|b|rc)\d+)?\]", section)
     return bool(m) and _parts(m.group(1)) <= _parts(_VERSION)
 
 
