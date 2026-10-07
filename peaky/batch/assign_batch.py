@@ -1021,8 +1021,14 @@ def batch_noise_edge(client, sample_ids, *, edges=None) -> float | None:
     return float(np.median(vals)) if vals else None
 
 
-def _worker_init(context, reflists_active, base_kw, ts_path):
+def _worker_init(context, reflists_active, base_kw, ts_path, reagents=None):
     global _W
+    # A spawned worker imports the reagent registry afresh -- built-ins only. The
+    # parent's added profiles (--reagent-config, register()) ride in as
+    # `reagents` (profiles.registry_extras) and are registered here, before any
+    # per-file stage resolves the run's reagent by name (the evidence space
+    # does), or a config-only profile is an unknown reagent in every worker.
+    P.register_extras(reagents)
     _W = {"context": context, "reflists_active": reflists_active,
           "base_kw": base_kw, "ts_path": ts_path, "ts": None}
 
@@ -1737,7 +1743,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             with ProcessPoolExecutor(
                     max_workers=n_jobs, mp_context=_mp.get_context("spawn"),
                     initializer=_worker_init,
-                    initargs=(context, reflists_active, base_kw, ts_path)) as ex:
+                    initargs=(context, reflists_active, base_kw, ts_path,
+                              P.registry_extras())) as ex:
                 futs = {ex.submit(_assign_one, sid): sid for sid in ids}
                 for done, fut in enumerate(as_completed(futs), offset + 1):
                     out = fut.result()

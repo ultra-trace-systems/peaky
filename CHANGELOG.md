@@ -145,6 +145,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A `--reagent-config` profile reaches the batch's parallel workers.** `peaky batch` / `pool`
+  with `--reagent NAME --reagent-config FILE --jobs N` (N > 1) registered the profile in the
+  parent only; the assign pool's workers are spawned interpreters whose registry holds the
+  built-ins, so the per-file evidence stage's lookup of the run's reagent raised
+  `KeyError: unknown reagent 'NAME'` in every worker (`--jobs 1` ran). The pool now hands each
+  worker the profiles and aliases the parent added or replaced (`profiles.registry_extras`,
+  registered by `assign_batch._worker_init`), however they were registered.
+
 - **The tier pass survives nullable string columns.** `tiers` read its string columns as
   `str(v or "")`, which raises "boolean value of NA is ambiguous" on `pd.NA`, and a ledger
   carries `pd.NA` whenever rows were appended without a column or it was read back with
