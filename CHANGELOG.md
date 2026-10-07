@@ -6,8 +6,89 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Three rule changes of the evidence scale (C47; the user's decisions of 2026-10-05, after
+  the scale landed).** (1) `lowconf` alone -- every row of a pair Low / Suspect and no other
+  rejection -- is a **5a ceiling, not a 5b rejection**: the pair is levelled on its facts
+  (untestable stays 5b, competitors left stay 5a) and reads at most 5a, `engine confidence
+  Low/Suspect in every file: not established (5a ceiling; a file at Good or High lifts it), not
+  refuted` (tag kind `lowconf 5a ceiling`); it still anchors nothing (no member of the series
+  exclusion, no route, no ladder). The flag tracked the calibration centre more than the
+  chemistry (the C42 recentring alone moved 40 pairs out of it and 13 in). (2) **A contaminant
+  family opens the run's space only from >= 2 files** (`levels.context.FAMILY_MIN_FILES`,
+  `family_union`; every family on a one-file source; the families one file alone opened are
+  kept on `RunContext.families_dropped`), the scale's other 2-file minima: one Candidate row in
+  one file of the uronium run had opened `fluorinated` for all of its 1196 pairs. (3) **A
+  reference list that rescued a dim reading cannot also certify it at 3c**: a tentative lead
+  whose setter is `reflist_dim` takes the level its other facts give (tag kind `3c withheld
+  (list rescued the lead)`; at 4a `would_lift` says so). `scripts/level_ledger.py` carries the
+  same three rules (parity with the core, row for row). Tiers and the merge vote are untouched,
+  so no tier, claim-by-tier or finish-line number moves. Measured post hoc on the C42 Orbitrap
+  baselines against the C45 reference levels: labelled nitrate 86 pairs 5b -> 5a and the two
+  reflist-rescued 3c pairs (BHA C11H16O2 and dimethyl phthalate C10H10O4 [M-H]-) 3c -> 4b,
+  nothing else (vector 1906 10/161/256/395/1084 -> 8/161/258/481/998); uronium 174 pairs 5b -> 5a, 128
+  5a -> 4b, 2 5a -> 4a and C6H15O4P [M+H]+ 5a -> 3c (1196 16/55/701/239/185 -> 17/57/829/282/11:
+  the 5b bucket is 11 pairs). The level fixtures move with it (`tests/fixtures/levels/
+  expected_levels_v1.csv.gz`, re-cut: nitrate 1850 9/186/290/500/864/1/0, uronium 1161
+  17/75/913/140/16/0/0) and so do the golden vectors kept outside the repository -- both pending
+  the user's sign-off. docs/EVIDENCE_LEVELS.md sections 2.4, 3.2, 4, 5.2, 7, 9, 11 and 12.
+
 ### Fixed
 
+- **The signal-to-noise the score reads is judged before it is believed (C46).** Three
+  terms of the v2 fit are set by a peak's `signal_to_noise`: whether an ABSENT predicted
+  line is charged (rel x SNR_base >= k_detect), the intensity tolerance of a matched line
+  and the centroiding term of its mass width. The column the server sends was taken at its
+  word, and on the bromide/nitrate TOF it is not a signal-to-noise at all: over a file's
+  ~1500-2600 picked peaks it does not track height (Spearman -0.07..0.17 in 28/28 files; a
+  478-count peak carries 1.1, a 2-count peak 12) where every Orbitrap file gives 0.99-1.00
+  with an implied noise that is flat within a file (~19 cps on the uronium files). Read as an
+  SNR it excused every missing line of a bright ion (no 81Br line of a bromide cluster was
+  ever charged: 89 Assigned [M+Br]- rows had no 81Br child hung under them) and charged dim
+  ions for lines they could never show. Now `scoring_for_sample` judges the
+  column once per sample (`local_scoring.assess_snr`: Spearman of height vs the column over
+  the file's peaks, >= 0.5 is a signal-to-noise; fewer than 30 peaks are not judged) and
+  records the verdict in the scoring snapshot (`snr_source` server / none /
+  poisson_fallback, `snr_spearman`, `snr_n`, `snr_edge`; a stand-in judges its own table);
+  where the column fails, the local scorer reads the counting-statistics SNR of an
+  ion-counting detector, h / sqrt(h + edge^2) (the peak's Poisson noise in quadrature with
+  the picker's detection edge, the file's 1st-percentile height). The heights of a TOF file
+  are per-file averages, so the true ion counts are higher and this SNR is a conservative
+  lower bound: a matched line's ratio tolerance is at least its Poisson scatter, and an absent
+  line is charged only where even this bound says it was within reach (an absent 81Br line
+  from ~10 cps at a 0.74 cps edge; a 13C line only on bright ions). The run log and each
+  file's stats say so (`snr_source`). Offline replica on the C42 TOF run (28 files, 10 309
+  readings; the server column reproduces the ledger scores: median and 95th-percentile
+  difference 0, 50 rows differ by more than 0.01): 155 of 1622 per-file Assigned rows score
+  under the Good bar with the fallback, 107 of them from above it (58 [M+Br]-, 30
+  [M+HBr+Br]-, 16 [M+NO3]-: the 81Br line absent or off); the per-row median change is
+  +0.0006; every true row of the frozen finish line keeps at least half of its files (one
+  pair exactly half). The Orbitrap runs are untouched (their column passes). The reference-
+  list rescue (pass 8), which stamps tiers after the tier pass, honours the floor below; the
+  network scorer (`PEAKY_LOCAL_SCORING=0`) still reads the server column, whatever the
+  snapshot says.
+- **A counting-detector floor for the TOF tier (C46).** On a TOF an M0 under 3x (the scorer's
+  own `k_detect`) the batch's typical detection edge -- the median of its files' own
+  1st-percentile heights, which `assign_batch` now measures once per batch
+  (`PassConfig.noise_edge_batch_cps`, `batch_summary.noise_edge_batch_cps`) -- is Candidate
+  whatever hangs under it (`tiers.tof_assign_floor`, `TOF_ASSIGN_FLOOR_X_EDGE`; the file's
+  own edge on a single-sample run; `PassConfig.instrument_type` from the scoring snapshot
+  keys it, so an Orbitrap never sees it). A handful-of-ions centroid has no testable mass and
+  no testable isotope line, and the kid or series step that corroborated it is itself
+  sub-edge. A file's own edge follows its total ion count: two files of the bromide/nitrate
+  TOF batch with a 5x lower count had edges of 0.10-0.13 against the batch's 0.47-0.96; the
+  batch carried 466 of its 1622 Assigned M0 rows under 3 counts, 136 of them in those two
+  files (of their 188 Assigned rows), among them both silicon false readings of the frozen
+  finish line (C10H24N2Si and C11H11N3OSi [M+Br]- at 1.5 and 0.65 counts, 'Good' on a series
+  anchor and a sub-count kid). At the batch's floor (2.22 cps on the cached peaks of all 28
+  files; 1.70 on the live run's 18 cover files) 331 per-file Assigned rows are under it; every
+  true row of the finish line keeps at least half of its files. The per-file stats carry the
+  floor in force (`tof_assign_floor_cps`, None off a TOF) and the class (`instrument_type`);
+  a decoy arm of the scorecard takes the run's batch edge (`batch_summary.
+  noise_edge_batch_cps`), so it is tiered at the floor the run was. The edge is measured on
+  the first per-file stage's files (the cover; on a trace-first run the residual picks); the
+  trace sample itself (averaged traces, no class) never sees the floor.
 - **The fit scores a mass at the sample's own m/z-dependent centre (C42).** The v2 score
   judged every line against ONE offset per sample (its server matches' median), and the
   pass-1 calibration that could fit the instrument's 1/mz mass trend selected its backbone

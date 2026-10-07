@@ -47,8 +47,11 @@ EXPECTED = FIX / "expected_levels_v1.csv.gz"
 VECTOR_ORDER = "/".join([*SC.LEVELS, *SC.BUCKETS])
 #: the golden vectors (pairs, 3c/4a/4b/5a/5b/reagent/NA) -- pending the user's sign-off
 GOLDEN = {
-    "v1_nitrate": (1850, "10/186/289/472/892/1/0"),
-    "v1_uronium": (1161, "17/75/913/125/31/0/0"),
+    # C47 (2026-10-05): the lowconf ceiling moves 28 (nitrate) / 15 (uronium) pairs 5b -> 5a, and one nitrate 3c
+    # (a reflist_dim lead certified by the list that rescued it) reads 4b; before: 10/186/289/472/892/1/0 and
+    # 17/75/913/125/31/0/0 (the C45 landing, signed off 2026-10-05) -- PENDING the user's sign-off
+    "v1_nitrate": (1850, "9/186/290/500/864/1/0"),
+    "v1_uronium": (1161, "17/75/913/140/16/0/0"),
 }
 
 

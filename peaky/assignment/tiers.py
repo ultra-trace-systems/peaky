@@ -91,6 +91,20 @@ F_H_COHERENCE = 2        # an F-bearing formula with H>1 needs F >= this x H to
 Z_TAIL_DEMOTE = 2.6      # |z| beyond which an UNCORROBORATED commit is demoted
 CAL_MIN_N = 20           # need this many core peaks to trust the calibration
 CAL_SIGMA_FLOOR = 0.15   # ppm; a lucky-tight core must not reject everything
+# The counting-detector floor (C46): on a TOF an M0 under this multiple of the
+# batch's typical detection edge (the median of its files' 1st-percentile
+# heights; the file's own edge on a single-sample run) cannot be tier Assigned.
+# The multiple is the scorer's own detectability threshold (k_detect = 3: a
+# line under 3x the noise is read as undetectable), so an M0 under it is itself
+# a line nothing could have tested -- neither its mass (a handful-of-ions
+# centroid) nor any isotope line it predicts. The floor is the BATCH's because
+# a file's own edge follows its total ion count: on the bromide/nitrate TOF
+# batch two files with a 5x lower count had edges of 0.10-0.13 against the
+# batch's 0.47-0.96; the batch carried 466 of its 1622 Assigned M0 rows under
+# 3 counts, 136 of them in those two files (of their 188 Assigned rows), among
+# them both silicon false readings of the finish line (0.65 and 1.5 counts,
+# 'Good' on an anchor and a sub-count kid).
+TOF_ASSIGN_FLOOR_X_EDGE = 3.0
 # The absolute (mDa) floor on the mass-dependent sigma is owned by
 # PassConfig.cal_abs_floor_mda (default masscal.ABS_FLOOR_MDA); apply_tiers /
 # compute_tiers take the cfg and _calibrate carries the value on the _Cal.
@@ -472,6 +486,30 @@ def _abs_floor(cfg) -> float:
     return float(getattr(cfg, "cal_abs_floor_mda", MC.ABS_FLOOR_MDA))
 
 
+def tof_assign_floor(cfg) -> float | None:
+    """The height (cps) under which a TOF M0 is Candidate whatever else
+    corroborates it (C46), or None: off a TOF, with no cfg, or with no edge
+    (`noise_edge_batch_cps`, else `noise_edge_cps`) to size it from."""
+    if cfg is None or str(getattr(cfg, "instrument_type", "") or "").strip().lower() != "tof":
+        return None
+    edge = _tof_floor_edge(cfg)[0]
+    return None if edge is None else TOF_ASSIGN_FLOOR_X_EDGE * edge
+
+
+def _tof_floor_edge(cfg) -> tuple[float | None, str]:
+    """(edge, 'batch' | 'file') the floor is sized from: the batch's typical
+    edge where the batch set one, else the file's own."""
+    for attr, label in (("noise_edge_batch_cps", "batch"), ("noise_edge_cps", "file")):
+        e = getattr(cfg, attr, None)
+        try:
+            e = float(e) if e is not None else None
+        except (TypeError, ValueError):
+            e = None
+        if e is not None and np.isfinite(e) and e > 0:
+            return e, label
+    return None, "file"
+
+
 def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
     """One row per M0 peak: [peak_id, tier, tier_reason, candidate_density,
     density_capped]. Pure; does not mutate the ledger. `cfg` (a PassConfig)
@@ -506,6 +544,9 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
         sat_floor = cfg.height_cutoff if cfg is not None else None
     except RuntimeError:
         sat_floor = None
+    # the counting-detector floor (C46): None off a TOF
+    tof_floor = tof_assign_floor(cfg)
+    floor_edge, floor_src = _tof_floor_edge(cfg) if tof_floor is not None else (None, "file")
 
     rows = []
     for _, r in m0.iterrows():
@@ -575,7 +616,20 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
                 twin = SAT.twin_verdict(ledger, r["peak_id"], _ion, sat_floor, element=_el,
                                         masked_by=SAT.reagent_masks(_el, counts, _ion))
         tier, reason = TIER_ASSIGNED, ""
-        if method.startswith("known:solvent_cluster"):
+        _h0 = r.get("height")
+        _h0 = float(_h0) if pd.notna(_h0) else None
+        if tof_floor is not None and _h0 is not None and _h0 < tof_floor:
+            # C46: a handful-of-ions centroid on a counting detector. Whatever
+            # hangs under it (a kid, a series step) is itself sub-edge, so it
+            # is no corroboration; the rule is unconditional and comes first.
+            tier = TIER_CANDIDATE
+            reason = (f"sub-edge centroid on a counting detector: {_h0:.3g} counts against the "
+                      f"{'batch' if floor_src == 'batch' else 'file'}'s detection edge "
+                      f"{floor_edge:.3g} ({TOF_ASSIGN_FLOOR_X_EDGE:g}x = {tof_floor:.3g}); a line this "
+                      "faint is itself read as undetectable, so neither its mass nor any isotope "
+                      "line it predicts can be tested, and a low-signal file picks hundreds of "
+                      "such centroids (Candidate for want of evidence, not against it)")
+        elif method.startswith("known:solvent_cluster"):
             # a source-solvent cluster whose composition has NO covalent reading
             # (the implied neutral's DBE is negative). Its own gate is the
             # ladder, not the own-twin check the halide known species earn their

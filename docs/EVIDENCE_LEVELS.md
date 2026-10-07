@@ -188,11 +188,11 @@ side channel would open ends
 | level | text |
 |---|---|
 | 3c | `level 2 (MS2 / standards) is not automatic` |
-| 4a | `3c needs a NAMED context-list entry naming the neutral` (+ ` (the class-list match is a tag only)` when a class list matched) |
+| 4a | `3c needs a NAMED context-list entry naming the neutral` (+ ` (the class-list match is a tag only)` when a class list matched); 3c withheld (§7): `3c withheld: the named entry is on the list that rescued this reading -- an independent named list, or MS2 / standards` |
 | 4b, pinned | `4a needs a positive fact (an own in-band isotope line of the neutral's elements, the 15N label, or NH4 tracking)` (+ `; 3c needs a named context-list entry` when none matched) |
 | 4b, open | `split not pinned: <split text>` |
 | 4b, ion-only | `ion-only channel: the neutral and the process stay open` |
-| 5a | `competitors left: <first six>` (+ ` (+<n> more)`) |
+| 5a | `competitors left: <first six>` (+ ` (+<n> more)`); the lowconf ceiling (§4): `engine confidence Low/Suspect in every file: not established (5a ceiling; a file at Good or High lifts it), not refuted` |
 | 5b | `refuted: <reasons>`, or `nothing could be enumerated or tested` |
 | reagent | `reagent ion / reagent cluster (not levelled)` |
 
@@ -269,7 +269,7 @@ Pooled over the source's files (a batch: `tied` and `lowconf` need ALL rows,
 |---|---|---|
 | `iso_veto` | the isotope checks, `tables/iso_checks.csv` (batch only; rules C / REQ / HIGH on the stamped time series) | step 0: rejected (5b) |
 | `label_veto` | the 15N-twin facts of a labelled-nitrate batch, `tables/label_twins.csv` (batch only) | step 0: rejected (5b); its `alien` set (a 14N line the label shows is another ion) also stops a label pin |
-| `lowconf` | every row's confidence `Low` / `Suspect` | step 0: rejected (5b) |
+| `lowconf` | every row's confidence `Low` / `Suspect` | step 0: the 5a ceiling (§4) |
 | `below` | `below_assignability` (the assignment argues with itself) on any row | step 0: rejected (5b) by an implausible-chemistry setter; O≥11 on a mass-saturated window alone is a tag (§4) |
 | `lead` / `lead_by` | `tentative_lead` (the proposal is unsupported, not contradicted) and its setter | **no level effect**: printed as the `lead` tag on every level |
 | `tied` | the arbiter's near-tie | a `tie` tag on 5a; no level effect |
@@ -339,7 +339,7 @@ whole run.
 
   Evidence: `reagent bucket · reagent identity (urea + H2O) · ...`.
 - **5b.** Any one of these rejects the pair:
-  - `iso_veto`, `label_veto` or `lowconf`;
+  - `iso_veto` or `label_veto`;
   - the committed reading is contradicted by its own isotope lines (§5.3);
   - a `below_assignability` setter of implausible chemistry: the O-monster,
     the carbon cluster, an implausibly carbon-rich skeleton, an implausible
@@ -351,6 +351,16 @@ whole run.
 - **Untestable (5b).** An ion with no composition, or a committed neutral
   outside the enumerable space that no widening admits: nothing could be
   enumerated or tested.
+- **The lowconf ceiling (5a).** `lowconf` alone (every row Low / Suspect and no
+  other rejection) does not reject (C47, 2026-10-05): the pair is levelled on
+  its facts — untestable stays 5b, competitors left stay 5a — and reads at most
+  **5a**, `engine confidence Low/Suspect in every file: not established (5a
+  ceiling; a file at Good or High lifts it), not refuted` (tag kind `lowconf 5a
+  ceiling`). It still anchors nothing: no member of the series exclusion, no
+  route, no ladder. The flag tracked the calibration centre more than the
+  chemistry (the C42 recentring alone moved 40 pairs out of it and 13 in); on
+  the two Orbitrap runs the scale was validated on it was the only reason of
+  86 (labelled nitrate) and 174 (uronium) 5b pairs.
 
 ## 5. Step 1 — the ion formula → else 5a
 
@@ -371,8 +381,11 @@ enumeration refuses a non-finite window.
 ### 5.2 The space and the competitors
 
 The **space** is the run's element space exactly as the degeneracy audit
-builds it: the context profile plus the contaminant families any file opened
-(the run-level union, §12), plus the curated formulas (the pass-0 registry of
+builds it: the context profile plus the contaminant families at least
+`FAMILY_MIN_FILES` (2) of its files opened (`context.family_union`; every family
+on a one-file source; a family one file alone opened is kept on
+`RunContext.families_dropped`, C47 — before, one Candidate row in one file
+opened `fluorinated` for every pair of a uronium run), plus the curated formulas (the pass-0 registry of
 the polarity and the active reference lists), over the reagent profile's
 adducts and the pair's own adduct. A committed neutral the space drops is
 enumerated in the space widened to admit its class, so same-class competitors
@@ -586,6 +599,15 @@ not a confirmation (the engine caps it at Candidate).
 context-list entry matches the neutral (by its element counts, on any adduct;
 a labelled neutral never matches). 3c does not need a positive fact.
 
+**The list that rescued the reading cannot certify it** (C47): a pair that is a
+tentative lead with setter `reflist_dim` in any file — the reference list
+rescued the dim reading — does not reach 3c through that list's named entry.
+It takes the level its other facts give (4a / 4b), carries the tag `3c
+withheld: the named entry is on the list that rescued this reading (lead:
+reflist_dim) ...` (tag kind `3c withheld (list rescued the lead)`) and, at 4a,
+`would_lift` = `3c withheld: ... an independent named list, or MS2 /
+standards`. The named entry is still printed in `named_list` and `context`.
+
 A run's context lists are its active reference lists and the pass-0 registry
 of its polarity and context.
 
@@ -661,7 +683,9 @@ X±delta (LR <lr>, <n> CHO neutrals)`.
 | `amine default` / `NH4 reading kept by the amine gate` (and the kind `NH4 reading dropped by the gate`) | the gate's decision on the admissible NH4 readings | gate tracking: 73.8 % of 191 Y track their parent vs 59.0 % for neighbours' parents (LR 1.25) | a brightness-matched tracking null at LR ≥ ~8, or a reagent-NH3 modulation test |
 | `two routes alias-vetoed` (routes alias-vetoed) | positive runs: the NH4+ alias Y = X − NH3 is a committed, plausible neutral and the gate keeps its NH4 reading | — | — |
 | formate alias text (route alias locked) | negative runs: `formate alias Y (X - CH2O2) would explain both route ions (side channel locked: not applied)` | — | — |
-| `lead: <setter> (a tentative lead: not answered by an own isotope line)` | the pair carries `tentative_lead` in any file; printed on every level | — | see the lead / list circularity, §12 |
+| `lead: <setter> (a tentative lead: not answered by an own isotope line)` | the pair carries `tentative_lead` in any file; printed on every level | — | a `reflist_dim` lead withholds 3c from that list (§7) |
+| `3c withheld: ...` (3c withheld (list rescued the lead)) | a pinned, established pair with a named entry on the list that rescued it (§7) | n/a: a rule | an independent named list, or MS2 / standards |
+| `engine confidence Low/Suspect in every file: 5a ceiling ...` (lowconf 5a ceiling) | `lowconf` alone (§4) | n/a: a rule | a file at Good or High |
 | `tie`, `suspect match: <reading> [<list>]` | on 5a: the arbiter's near-tie; exactly one candidate in the window is on a list | — | — |
 | `series exclusion xN`, `O>=11 on a mass-saturated window (...)`, `list favours <X>` | step-1 notes; `list favours` on an open split where exactly one plausible decomposition is listed | — | — |
 
@@ -817,6 +841,8 @@ release in `evidence.py`).
 | `TWIN_Q`, `TWIN_MIN_PAIRS`, `TWIN_BRIGHT_X` | 0.10, 3, 10 | a file's 15N twin ratio |
 | `ROUTE_COFILES` | 2 (1 on one file) | two routes: co-seen in ≥ 2 files |
 | `LADDER_MIN_FILES`, `CROSS_MIN_FILES`, `HOMO_MIN_ANCHORS` | 2, 2, 2 | ladder, partner, anchored chain |
+| `FAMILY_MIN_FILES` | 2 (1 on one file) | a contaminant family opens the run's space (§5.2) |
+| `LOWCONF_REASON`, `LOWCONF_CEILING_WHY`, `LEAD_RESCUE_SETTER`, `LIFT_3C_WITHHELD` | §4, §7 | the lowconf ceiling; 3c withheld |
 | `LADDER_UNITS` | CH2, CF2 | ladders and series exclusion |
 | `MAX_PASSES` | 20 | series exclusion / ladder iteration |
 | `AMINE_R_MIN`, `AMINE_R_REJECT`, `AMINE_MIN_OVERLAP` | 0.6 (the run's `amine_r_min` when set), 0.2, 12 two-hour bins | the amine gate |
@@ -843,16 +869,14 @@ release in `evidence.py`).
   Orbitrap run's committed height sat at 4b for this reason. The engine's own
   "reagent-N isobar unresolved" note says the same. Two routes could split it
   once validated; today they are a tag (LR 1.28).
-- **The lead / list circularity.** A reference list that rescued a dim reading
-  (a tentative lead, `reflist_dim`) can also certify it at 3c through the same
-  named entry; a `known:` registry commit reaches 3c through its own registry
-  family likewise. A tentative lead has no level effect. The `lead` tag is
-  printed on every level so the reader sees it.
-- **The run-level family union.** The space is the union of the families any
-  file of the run opened. One file opening a family (e.g. `fluorinated`)
-  admits that family's competitors for every pair of the run: on one uronium
-  run, a single file did so, and 122 urea clusters went 4b → 5a behind
-  F / Si / P competitors, with one 3c pair going to 5a.
+- **The lead / list circularity, half closed.** A reference list that rescued
+  a dim reading (`reflist_dim`) no longer certifies it at 3c (§7, C47); a
+  `known:` registry commit still reaches 3c through its own registry family.
+  A tentative lead has no level effect; the `lead` tag is printed on every
+  level so the reader sees it.
+- **The run-level family union needs two files** (§5.2, C47). A family one
+  file alone opened is recorded (`families_dropped`) and admits no competitor;
+  a batch of one file keeps every family it opened.
 - **NH4 tracking as a positive fact** has a measured LR of 1.25 (two-hour
   tracking is mostly family-wide co-variation). It fired on no pair in the runs
   the scale was built on, which committed no `[M+NH4]+` row.

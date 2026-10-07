@@ -110,6 +110,16 @@ class PassConfig:
     height_cutoff_x_edge: float | str | None = None
     height_cutoff_cps: float | None = None
     noise_edge_cps: float | None = None   # runtime: set per sample by assign.run
+    # The batch's TYPICAL detection edge -- the median of its files' own
+    # (assign_batch sets it once per batch; None on a single-sample run) -- and
+    # the sample's instrument class ('orbi' / 'tof' / None, from its scoring
+    # snapshot; assign.run sets it). Both runtime. The tier pass keys its
+    # counting-detector floor on them (tiers.tof_assign_floor, C46): a TOF M0
+    # under k_detect x the batch's typical edge cannot be tier Assigned -- a
+    # file whose own edge sits far under the batch's (a 5x lower total ion
+    # count) otherwise lets handful-of-ions centroids through every gate.
+    noise_edge_batch_cps: float | None = None
+    instrument_type: str | None = None
     # Detection floor the post-run ISOTOPE AUDIT judges satellites against
     # (postprocess.audit_isotopes): "would this formula's 13C satellite be
     # comfortably visible?" and "is this measured satellite reliable?". None =
@@ -304,6 +314,7 @@ class PassConfig:
     # asdict()/pickle/deepcopy are unaffected.
     RUNTIME_FIELDS: ClassVar[tuple[str, ...]] = (
         "mechanism_ids", "prior_offset", "reagent_element", "noise_edge_cps",
+        "noise_edge_batch_cps", "instrument_type",          # C46: the batch and assign.run stamp them
         # passes.calibrate fits these onto the cfg during a run: they are the
         # calibration's OUTPUT, not user knobs. The pipeline now hands the same
         # cfg to the provenance manifest, so leaving any of them in would make

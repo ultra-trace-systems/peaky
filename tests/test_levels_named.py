@@ -285,10 +285,17 @@ def test_siloxane_the_admissibility_rule_overrides_the_si_exception():
     assert _one(dict(SILOX, **C13), "uronium", ts=NO_PARENT_TS).evidence_level == "4a"
 
 
-def test_siloxane_rejected_is_5b_whatever_the_gate():
+def test_siloxane_lowconf_alone_is_the_5a_ceiling_whatever_the_gate():
+    """C47: lowconf alone no longer rejects; the pair reads at most 5a."""
     r = _one(dict(SILOX, lowconf=True), "uronium", ts=NO_PARENT_TS, per_file=SILOX_Y_ION)
-    assert r.evidence_level == "5b" and r.would_lift == "refuted: lowconf"
-    assert r.evidence.startswith("5b · rejected: lowconf · ion: unique in the calibrated window · split: ")
+    assert r.evidence_level == "5a" and r.would_lift == DC.LOWCONF_CEILING_WHY
+    assert r.evidence.startswith("5a · " + DC.LOWCONF_CEILING_WHY + " · ion: unique in the calibrated window · split: ")
+    assert "lowconf 5a ceiling" in r.tag_kinds.split("|")
+
+
+def test_siloxane_lowconf_with_a_veto_is_still_5b():
+    r = _one(dict(SILOX, lowconf=True, iso_veto=True), "uronium", ts=NO_PARENT_TS, per_file=SILOX_Y_ION)
+    assert r.evidence_level == "5b" and r.would_lift == "refuted: iso_veto; lowconf"
 
 
 # =========================================================================== named entries and their flags
@@ -486,7 +493,7 @@ def test_hbr_on_the_labelled_cluster_is_the_reagent_bucket():
 
 def test_reagent_mutant_a_non_reagent_combination_is_levelled():
     r = _one(dict(neutral_formula="HBrO", adduct="[M+^NO3]-", lowconf=True), "nitrate")
-    assert r.evidence_level == "5b" and r.would_lift == "refuted: lowconf"
+    assert r.evidence_level == "5a" and r.would_lift == DC.LOWCONF_CEILING_WHY     # C47: the lowconf ceiling
 
 
 # =========================================================================== NA: a TOF-class source

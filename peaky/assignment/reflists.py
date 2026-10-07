@@ -380,6 +380,11 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
     z_acc = getattr(cfg, "cal_z_accept", 2.0)
     floor = getattr(cfg, "tau_low", 0.70)
     hcut = cfg.height_cutoff          # resolved gate (raises if unresolved: fail closed)
+    # the counting-detector floor of the tier pass (C46): this stage runs AFTER
+    # apply_tiers and stamps tiers itself, so it has to honour the floor too --
+    # a sub-floor TOF centroid matched to a list formula is a lead, never Assigned
+    from peaky.assignment import tiers as _T
+    tof_floor = _T.tof_assign_floor(cfg)
     rescued = tentative = 0
     for pid, (formula, adduct, lid, aliases) in want.items():
         idx = ledger.index[ledger["peak_id"] == pid]
@@ -422,8 +427,9 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
                       + ": the reagent-cluster reading is kept (the list's native detection; "
                       "the decomposition-alias policy), the covalent reading is its alias -- "
                       "no mass or isotope evidence can separate them.")
+        sub_floor = tof_floor is not None and h < tof_floor
         # runs AFTER apply_tiers (like the F/carbon demotes), so set tier explicitly.
-        if iso_ok:
+        if iso_ok and not sub_floor:
             L.commit_assignment(ledger, pid, neutral_formula=formula, adduct=adduct,
                                 ion_formula=str(top["ion_formula"]), ion_score=score,
                                 compound_score=score, ppm_error=ppm, pass_no=8,
@@ -434,7 +440,7 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
                                             + alias_note))
             ledger.at[i, "tier"] = "Assigned"
             rescued += 1
-        elif not iso_observable:                       # too dim to confirm -> tentative
+        elif not iso_observable or sub_floor:          # too dim to confirm -> tentative
             L.commit_assignment(ledger, pid, neutral_formula=formula, adduct=adduct,
                                 ion_formula=str(top["ion_formula"]), ion_score=score,
                                 compound_score=score, ppm_error=ppm, pass_no=8,
@@ -444,6 +450,9 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
                                 commentary=(f"Reference-list match ({srcs}); server score "
                                             f"{score:.2f}, z={z:.1f}. Too dim ({h:.0f} cps) to "
                                             "confirm isotopes -- tentative lead, not confirmed."
+                                            + (f" Under the counting-detector floor ({tof_floor:.3g} cps): "
+                                               "a sub-edge centroid, whatever matched its 13C window."
+                                               if sub_floor else "")
                                             + alias_note))
             ledger.at[i, "tier"] = "Candidate"
             # a lead, not a contradiction: nothing could test the formula here
