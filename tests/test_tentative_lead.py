@@ -147,7 +147,7 @@ def test_the_off_budget_demote_writes_the_lead_and_keeps_its_note_and_audit():
 
 def test_the_demote_row_takes_a_lead_argument():
     led = _tiered([dict(peak_id="p", role="M0", neutral_formula="C10H16O5", adduct="[M-H]-")])
-    PL._demote_row(led, 0, reason="r", audit=None, evidence="e", degeneracy_note=None, n_iso=0, lead=True)
+    PL._demote_row(led, 0, reason="r", audit=None, evidence="e", degeneracy_note=None, n_iso=0, lead="off_budget")
     assert _flags(led, 0) == (False, True)
     PL._demote_row(led, 0, reason="r", audit=None, evidence="e", degeneracy_note=None, n_iso=0)
     assert _flags(led, 0) == (True, True)                  # a hard demote on a lead: both, still hard
@@ -239,7 +239,10 @@ LEDGER_COLUMNS = list(EV.PREDICATE_COLUMNS)
 
 
 def _m0(peak_id, neutral, adduct="[M-H]-", *, below=False, lead=False, tied=False, anchor=None,
-        confidence="High", mz=200.0):
+        confidence="High", mz=None):
+    from tests.test_evidence import ion_mz_of
+    if mz is None and neutral:
+        mz = ion_mz_of(neutral, adduct)
     return {"role": "M0", "peak_id": peak_id, "parent_peak_id": None, "iso_label": None,
             "neutral_formula": neutral, "adduct": adduct, "ion_formula": neutral, "mz": mz,
             "height": 1000.0, "tier": "Candidate", "method": "pass2", "confidence": confidence,
@@ -250,6 +253,7 @@ def _m0(peak_id, neutral, adduct="[M-H]-", *, below=False, lead=False, tied=Fals
 
 
 def _child(peak_id, parent, label, height):
+    """An isotope child; `_frame` puts it at its label's exact spacing from its parent (C11+c)."""
     row = _m0(peak_id, None, adduct=None)
     row.update(role="iso_child", parent_peak_id=parent, iso_label=label, height=height,
                degeneracy_density=None)
@@ -257,7 +261,8 @@ def _child(peak_id, parent, label, height):
 
 
 def _frame(rows):
-    return pd.DataFrame(rows, columns=LEDGER_COLUMNS)
+    from tests.test_evidence import place
+    return pd.DataFrame(place(rows), columns=LEDGER_COLUMNS)
 
 
 def test_the_lead_is_a_predicate_column_trim_keeps():
@@ -282,8 +287,8 @@ def test_a_lead_only_pair_is_5b_with_the_reason_a_below_row_gives():
 
 
 def test_the_pooled_lead_is_any_row():
-    one = _frame([_m0("a", "C8H12O4", lead=True, anchor="x"), _m0("b", "C9H14O4", anchor="x", mz=210.0)])
-    two = _frame([_m0("a", "C8H12O4", anchor="x"), _m0("b", "C9H14O4", anchor="x", mz=210.0)])
+    one = _frame([_m0("a", "C8H12O4", lead=True, anchor="x"), _m0("b", "C9H14O4", anchor="x")])
+    two = _frame([_m0("a", "C8H12O4", anchor="x"), _m0("b", "C9H14O4", anchor="x")])
     pairs = EV.level_pooled({"f1": one, "f2": two}).set_index("neutral_formula")
     assert bool(pairs.at["C8H12O4", "lead"]) and not bool(pairs.at["C8H12O4", "below"])
     assert pairs.at["C8H12O4", "evidence_level"] == "5b"
@@ -296,8 +301,8 @@ def _mixed(flag: str) -> pd.DataFrame:
     with the flagged rows carrying the flag in the `flag` column."""
     lead_col = {"below": dict(below=True), "lead": dict(lead=True)}[flag]
     rows = [
-        _m0("br1", "C10H16O5", **lead_col), _m0("br2", "C10H16O5", "[M+NO3]-", mz=262.0),
-        _m0("ch1", "C6H8O5", anchor="z", **lead_col), _m0("ch2", "C6H8O5", "[M+Br]-", mz=240.0),
+        _m0("br1", "C10H16O5", **lead_col), _m0("br2", "C10H16O5", "[M+NO3]-"),
+        _m0("ch1", "C6H8O5", anchor="z", **lead_col), _m0("ch2", "C6H8O5", "[M+Br]-"),
         _m0("iso", "C9H14O4", **lead_col), _child("iso13", "iso", "13C", 100.0),
         _m0("tie", "C5H8O4", tied=True, **lead_col),
         _m0("kn", "HNO3", **lead_col), _m0("clean", "C7H10O4", anchor="z"),
@@ -454,7 +459,7 @@ def test_the_flag_helpers():
     assert list(L.flagged(frame.drop(columns=[LEAD]))) == [True, False, False, False, False]
     assert not L.flagged(pd.DataFrame({"x": [1]})).any() and not L.has_flags(pd.DataFrame({"x": [1]}))
     bare = pd.DataFrame({"x": [1, 2]})
-    assert L.mark_lead(bare, 0) is False and LEAD not in bare.columns
+    assert L.mark_lead(bare, 0, "spec_n3") is False and LEAD not in bare.columns
     old = pd.DataFrame({BELOW: [False, False]})
-    assert L.mark_lead(old, 1) is True and list(old[LEAD]) == [False, True]
+    assert L.mark_lead(old, 1, "spec_n3") is True and list(old[LEAD]) == [False, True]
     assert L.ASSIGNABILITY_FLAGS == (BELOW, LEAD)

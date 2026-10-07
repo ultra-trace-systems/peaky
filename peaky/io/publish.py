@@ -542,6 +542,8 @@ _ENGINE_PROVENANCE_COLUMNS = (
     "below_assignability",
     # the lead half of the old flag (C19(c)): unsupported, not contradicted
     "tentative_lead",
+    # ... and the setter that made the row a lead (C11+b, ledger.LEAD_SETTERS)
+    "lead_by",
     # the evidence level (docs/EVIDENCE_LEVELS.md): what the evidence behind the
     # formula is worth on the CIMS-adapted Schymanski scale, and why
     "evidence_level",

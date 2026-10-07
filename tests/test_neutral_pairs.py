@@ -23,7 +23,7 @@ from peaky.assignment import evidence as EV
 from peaky.batch import neutral_pairs as NP
 from peaky.chem import chemistry as C
 from peaky.chem import profiles as P
-from tests.test_evidence import GOLDEN, _pooled, _vector, child, ledger, m0
+from tests.test_evidence import GOLDEN, ORBI_NO_LOCK, _pooled, _vector, child, ledger, m0
 
 PAIR = ("[M+H]+", "[M+(CH4N2O)H]+")
 N_SPECTRA = 60
@@ -219,10 +219,11 @@ def test_a_leaked_fact_would_move_the_goldens():
     n_tof, n_orbi = EV.source_neutrals(tof), EV.source_neutrals(orbi)
     for pooled, cross, key in ((tof, n_orbi, "tof"), (orbi, n_tof, "orbi")):
         base = EV.level_pooled(pooled, cross=cross)
-        assert (len(base), _vector(base.evidence_level)) == GOLDEN[key]
+        gold = {"tof": GOLDEN["tof"], "orbi": ORBI_NO_LOCK}[key]      # the orbi set without its lock table
+        assert (len(base), _vector(base.evidence_level)) == gold
         leak = set(base.loc[base["chan2"] & ~base["neutral_formula"].str.contains("N"), "neutral_formula"])
         moved = EV.level_pooled(pooled, cross=cross, upair=leak)
-        assert _vector(moved.evidence_level) != GOLDEN[key], key
+        assert _vector(moved.evidence_level) != gold, key
     # the scope: the same series and ledgers hold pairs under the uronium profile's
     # declaration and none under any profile that declares no pair
     spec = {n: {"phase": k * 0.7} for k, n in enumerate(GOOD)}

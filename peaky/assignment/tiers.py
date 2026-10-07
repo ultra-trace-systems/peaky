@@ -253,11 +253,18 @@ def _alt_raw(a: dict) -> float | None:
 # optional '^' after the sign = heavy-isotope-labelled reagent (e.g. +^NO3 for the
 # ¹⁵N nitrate cluster); element COUNTS are isotope-independent so drop the marker.
 _ADDUCT_TOKENS = re.compile(r"([+-])\^?([A-Za-z0-9]+)")
+# ... or keep it: the token '^NO3' parses to {'^N': 1, 'O': 3}, as a signed
+# labelled ion string does (`labelled=True`)
+_ADDUCT_TOKENS_LABELLED = re.compile(r"([+-])(\^?[A-Za-z0-9]+)")
 
 
-def _ion_counts(neutral, adduct) -> dict | None:
+def _ion_counts(neutral, adduct, *, labelled: bool = False) -> dict | None:
     """Element counts of the ION for a (neutral, adduct) reading, or None when
-    the adduct string is not parseable. '[M+HBr+Br]-' adds H, 2x Br, etc."""
+    the adduct string is not parseable. '[M+HBr+Br]-' adds H, 2x Br, etc.
+    `labelled`: a labelled reagent atom stays its own key ('^N' of '[M+^NO3]-'),
+    as parse_formula reads the signed ion string -- what an ion's MASS needs
+    (the isotope lines' mono m/z, a rung's ion formula); by default it folds
+    into its element (the tier gates compare compositions, not masses)."""
     if not neutral or not adduct:
         return None
     s = str(adduct).strip()
@@ -270,7 +277,7 @@ def _ion_counts(neutral, adduct) -> dict | None:
     # whole token and the reagent's N is silently dropped -- which hid the
     # urea-channel reagent-N isobars from both the alias-dedup and the tier gate.
     inner = s.split("]")[0][2:].replace("(", "").replace(")", "")
-    for sign, tok in _ADDUCT_TOKENS.findall(inner):
+    for sign, tok in (_ADDUCT_TOKENS_LABELLED if labelled else _ADDUCT_TOKENS).findall(inner):
         for el, n in C.parse_formula(tok).items():
             cnt[el] = cnt.get(el, 0) + (n if sign == "+" else -n)
     return {k: v for k, v in cnt.items() if v}

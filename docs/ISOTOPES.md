@@ -176,9 +176,18 @@ All in `peaky/chem/isotopes.py`.
   line at their intensity-weighted mass, mirroring what the peak picker resolves.
 - **Labels are formula-aware.** `_label_for_shift` only names combinations the
   formula can form, so a 1-Br ion never gets an `81Br2` label.
-- **`D_81BR` was corrected** to 1.9979521 (AME2020) to stay consistent with the
-  doublet constant the residual pass uses — a stale 0.16 mDa-low value broke that
-  agreement.
+- **Two label conventions share the ledger's `iso_label`.** The scorer's labels
+  count heavy atoms from the ion's MONO line (`81Br2`, `M0` = the mono line below
+  a heavy parent, `13C+81Br`) and it commits an ion's most ABUNDANT isotopologue
+  (a Br2 ion on 79Br81Br); peaky's own labels (`_label_for_shift`, pass 4's
+  `(pair)`, the reclaim tails) count from the PARENT line (`2x81Br`, `81Br(pair)`,
+  `81Br+13C`, `M+5`). No column records the producer, so the evidence levels read
+  a child both ways against the committed line (C11+c, `resolve_child` and
+  `judge_source` below; docs/EVIDENCE_LEVELS.md §3.2).
+- **`D_81BR` was corrected** to 1.9979521 (AME2020) from a stale 0.16 mDa-low
+  value. The residual pass's doublet constant is the exact 1.9979535 of
+  chemistry's masses since C11+c (it was the same stale value); the two agree to
+  1.4 µDa, far inside every window that reads them.
 
 ---
 
@@ -192,3 +201,9 @@ All in `peaky/chem/isotopes.py`.
 | `_find_partner` | nearest peak to a target m/z within ppm (the satellite probe) |
 | `constrain_ranges` | apply prescan evidence to the grid box (cap C, zero unsupported heteroatoms) |
 | `PrescanResult` | the evidence record (+ `as_dict` for the run manifest) |
+| `split_label` / `parse_label_part` | (C11+c) a child label's `+` parts and each part's heavy atoms (`kx`, counts, `(pair)`, `81Br/37Cl(pair)`, `M0`, `M+n`) |
+| `heavy_probability` | P(a heavy configuration) vs the all-light line: the multinomial over the ion's atoms |
+| `committed_configuration` | the parent's committed isotopologue, read off its m/z (5 / 20 ppm) |
+| `resolve_child` | a label read both ways against the committed line: shift, readings, joint expectation, the elements it adds |
+| `fit_position_sigma` / `position_window_ppm` | σ(h)² = a² + b²/h self-fitted on a source's `13C` children; max(1 ppm, 4σ(h)) |
+| `judge_source` / `line_facts` | one source's children and isotopologues lists placed and banded; what a pair's kept lines give |

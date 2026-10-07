@@ -142,7 +142,7 @@ def test_apply_levels_stamps_the_claim_on_m0_rows_only():
 def test_the_stage_log_line_carries_the_claims():
     led = _ledger()
     lines = []
-    st = types.SimpleNamespace(led=led, cfg=None, corroborate=set(), log=lines.append)
+    st = types.SimpleNamespace(led=led, cfg=None, corroborate=set(), resolving_power=None, log=lines.append)
     s = A._stage_evidence(st)
     line = next(ln for ln in lines if "evidence levels" in ln)
     c = s["claims"]

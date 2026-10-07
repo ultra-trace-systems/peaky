@@ -409,7 +409,7 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
             # a lead, not a contradiction: nothing could test the formula here
             # (C19(c)); the flags are created where the tier stage has not
             L.ensure_flags(ledger)
-            L.mark_lead(ledger, i)
+            L.mark_lead(ledger, i, "reflist_dim")
             tentative += 1
         # else: bright enough to show isotopes but none confirmed -> mass coincidence, leave
     log(f"[reflist] rescue-verify: {rescued} confirmed + {tentative} tentative "

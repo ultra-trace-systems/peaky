@@ -587,18 +587,23 @@ def run_pass0_known(
                 if fam == "indoor_sulfur"
                 else "contaminant"
             )
-            fam_kids = kids[kids["compound_formula"] == r["compound_formula"]]
+            # this ION's own scored satellites (C11+c, I7): the scorer returns the
+            # lines of every ion of a known compound, and keyed on the compound
+            # alone an ion took its OTHER ions' lines -- HNO4's nitrate cluster the
+            # 81Br line of HNO4.Br- 18.93 Da up, a PFCA's [M+NO3]- its bromide
+            # cluster's, TPPO's urea adduct its [M+H]+ ion's 13C 59 Da below
+            fam_kids = kids[(kids["compound_formula"] == r["compound_formula"])
+                            & (kids["ion_formula"] == r["ion_formula"])]
             n_kids = int((fam_kids["sample_peak_id"] != pid).sum())
-            # The Mascope-scored satellites this commit RESTS ON. For a
-            # single-channel P / S / Si species these ARE the licensing evidence --
-            # the ³⁴S/³⁷Cl/⁸¹Br (or ²⁹Si/³⁰Si) envelope that stood in for the 2nd ion
-            # channel in the gate above -- so recording them is what makes that gate
-            # auditable from the ledger instead of from this source file. Same
-            # {label, score, peak_id} shape core.py's `_iso_list` writes, and the same
-            # set the attach loop below walks, so `isotopologues` is empty exactly
-            # when no satellite was matched. The gate itself judges the compound
-            # across channels (`iso_confirmed` is keyed on compound_formula alone),
-            # so the recorded evidence is scoped the same way.
+            # The Mascope-scored satellites this commit RESTS ON -- the ion's own
+            # (above): what the chlorinated-paraffin gate and the confidence below
+            # count, what the attach loop hangs under this M0, and what is recorded
+            # in `isotopologues` (same {label, score, peak_id} shape core.py's
+            # `_iso_list` writes, empty exactly when the ion matched no satellite).
+            # The single-channel P / S / Si gates above (`iso_confirmed`,
+            # `iso_confirmed_si`) stay keyed on the compound: an envelope of ANY of
+            # its ions shows the compound is there; they license the commit, the
+            # ion's own lines are its evidence.
             _iso_ev = [
                 {
                     "label": k["iso_label"],
@@ -1874,6 +1879,29 @@ _CERT_ENUM_TOL_MDA = 2.0    # candidate-enumeration window around the certified
 _CERT_DIAG_ISO = ("34S", "37Cl", "81Br")   # 13C excluded -- refutes nothing
 
 
+def _rung_ion(winner: str, hit, reagent: str | None, scored_ions: dict) -> str | None:
+    """The ion formula of a pass-7 ladder rung (C11+c): the oracle's own ion
+    string where it scored the rung's channel (`scored_ions`: adduct -> ion),
+    else neutral + the rung's reagent units + its adduct; None when neither
+    reads. Committed without one, a rung stored the bare NEUTRAL as its ion, so
+    its own heavy line could not attach and the isotope audit refused it."""
+    if hit.cluster_order == 0 and hit.adduct in scored_ions:
+        return scored_ions[hit.adduct]
+    from peaky.assignment.tiers import _ion_counts
+    from peaky.chem import reagents as RG
+    counts = _ion_counts(winner, hit.adduct, labelled=True)          # a labelled reagent keeps its '^N'
+    if not counts:
+        return None
+    if hit.cluster_order:
+        unit = RG._POSITIVE_REAGENTS.get(reagent or "")
+        if not unit:
+            return None
+        for el, n in C.parse_formula(unit).items():
+            counts[el] = counts.get(el, 0) + n * int(hit.cluster_order)
+    sign = str(hit.adduct).rstrip(".")[-1:]
+    return C.format_formula(counts) + sign if sign in ("+", "-") else None
+
+
 def run_pass_certified(
     client,
     sample_id: str,
@@ -1897,7 +1925,10 @@ def run_pass_certified(
     commit the winning formula onto EVERY member peak (same neutral, each under
     its own channel label) so the tier engine's cross-channel corroboration
     sees the certificate. S/Cl/Br winners additionally want their diagnostic
-    isotope envelope; a matched one earns Good confidence.
+    isotope envelope -- a 34S / 37Cl / 81Br line under an ion the certificate
+    commits (the reagent's 81Br line of a committed bromide cluster of a Br-free
+    winner only on a certificate of >= 3 channels); a matched one earns Good
+    confidence.
 
     ts_peaks is OPTIONAL (a batch may not include the reagent mass range, and a
     single-sample run has no TS at all): when provided, member-channel time
@@ -1993,12 +2024,32 @@ def run_pass_certified(
             continue   # the oracle must anchor >=2 member channels
         n_anchored, eff, winner, win_rows = ranked[0]
         tied = len(ranked) > 1 and ranked[1][0] == n_anchored and (eff - ranked[1][1]) < 0.02
-        # diagnostic-isotope gate for isotope-confirmable winners (13C never counts)
+        anchored_by_pid = {r["sample_peak_id"]: r for _, r in win_rows.iterrows()}
+        # the oracle's own ion string per channel of the winner (anchored or not):
+        # a ladder rung on a registered channel is committed under it
+        win_ions = {_mech_to_adduct(r_): r_["ion_formula"]
+                    for _, r_ in scored[scored["is_base"] & (scored["compound_formula"] == winner)].iterrows()
+                    if isinstance(r_["ion_formula"], str) and r_["ion_formula"]}
+        # the ion each member is committed under: an anchored member the oracle's
+        # string, a ladder rung `_rung_ion`
+        member_ion = {h.peak_id: (anchored_by_pid[h.peak_id]["ion_formula"] if h.peak_id in anchored_by_pid
+                                  else _rung_ion(winner, h, reagent, win_ions)) for h in cert.hits}
+        # diagnostic-isotope gate for isotope-confirmable winners (13C never counts),
+        # keyed on the IONS the certificate commits (C11+c): a line the scorer found
+        # under another ion of the winner (a bromide cluster no member is) is no
+        # line of the certificate. A line naming only the reagent halogen's heavy
+        # isotope ('81Br', '13C+81Br') of a winner that carries no Br counts only on a
+        # certificate of >= 3 channels, where two other ions confirm (the user,
+        # 2026-10-02): on two, one file, two ions and the reagent's own line are not
+        # enough. The winner's own 34S / 37Cl (and a Br winner's 81Br) count on two.
         wf = C.parse_formula(winner)
         wants_iso = any(wf.get(el, 0) > 0 for el in ("S", "Cl", "Br"))
-        win_kids = kids[kids["compound_formula"] == winner]
+        cert_ions = {i for i in member_ion.values() if isinstance(i, str) and i}
+        win_kids = kids[(kids["compound_formula"] == winner) & kids["ion_formula"].isin(cert_ions)]
+        diag = (_CERT_DIAG_ISO if wf.get("Br", 0) or cert.n_channels >= 3
+                else tuple(d for d in _CERT_DIAG_ISO if d != "81Br"))
         iso_ok = bool(win_kids["iso_label"].astype(str).str.contains(
-            "|".join(_CERT_DIAG_ISO), na=False).any())
+            "|".join(diag), na=False).any())
         # optional TS corroboration (guarded: fully optional)
         ts_note = ""
         if ts_peaks is not None and len(ts_peaks):
@@ -2022,7 +2073,6 @@ def run_pass_certified(
                      + ", ".join(f"{h.mz:.4f}[{h.adduct}"
                                  + (f"+{h.cluster_order}R]" if h.cluster_order else "]")
                                  for h in cert.hits))
-        anchored_by_pid = {r["sample_peak_id"]: r for _, r in win_rows.iterrows()}
         committed_any = False
         strong_cert = iso_ok or cert.n_channels >= 3
         displaced_note: dict = {}
@@ -2086,6 +2136,7 @@ def run_pass_certified(
                         ledger, h.peak_id,
                         neutral_formula=winner,
                         adduct=rung_adduct,
+                        ion_formula=member_ion[h.peak_id],
                         ion_score=float(win_rows["ion_score"].min()),
                         ppm_error=float(rung_ppm),
                         tied=tied,
@@ -2100,7 +2151,14 @@ def run_pass_certified(
                     out["rungs_committed"] += 1
                 out["peaks_claimed"] += 1
                 committed_any = True
+                # the committed ion's OWN scored satellites (C11+c, I7b): keyed on
+                # the compound alone, every member took the lines of the certificate's
+                # other ions (chloroacetic acid's bromide cluster its nitrate
+                # cluster's 37Cl lines, 14.93 Da below it); a ladder rung reads its
+                # own ion (`_rung_ion`)
+                h_ion = member_ion[h.peak_id]
                 for _, k in kids[(kids["compound_formula"] == winner)
+                                 & (kids["ion_formula"] == h_ion)
                                  & (kids["sample_peak_id"] != h.peak_id)].iterrows():
                     try:
                         L.attach_isotopologue(ledger, k["sample_peak_id"], h.peak_id,

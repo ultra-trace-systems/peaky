@@ -45,12 +45,35 @@ LEDGER_COLUMNS = [
 ]
 
 
+def exact_mz(neutral, adduct, ion=None, default=200.0):
+    """The exact m/z of the ion a reading makes (the script's own masses); `default` when it does not parse."""
+    if not neutral or not adduct:
+        return default
+    counts = {e: v for e, v in LL.ion_counts(neutral, adduct, ion).items() if v}
+    mz = LL.mono_mz(counts, LL.ion_sign(ion, adduct))
+    return mz if mz == mz else default
+
+
+def label_shift(label):
+    """The exact shift a child label names from its parent (parent-relative, the whole label)."""
+    tot = 0.0
+    for part in LL.split_label(label):
+        kind, v = LL.parse_label_part(part)
+        if kind == "set":
+            tot += LL.heavy_shift(v)
+        elif kind == "alt":
+            tot += LL.heavy_shift(v[0])
+        elif kind == "gen":
+            tot += v * LL.ISOTOPE_SPACING["13C"]
+    return tot
+
+
 def m0(
     peak_id,
     neutral,
     adduct="[M-H]-",
     ion=None,
-    mz=200.0,
+    mz=None,
     height=1000.0,
     tier="Assigned",
     method="pass2",
@@ -63,7 +86,10 @@ def m0(
     series_unit=None,
     anchor=None,
 ):
-    """One committed neutral. Defaults are deliberately uncorroborated."""
+    """One committed neutral at its ion's exact m/z unless told otherwise. Defaults are deliberately
+    uncorroborated."""
+    if mz is None:
+        mz = exact_mz(neutral, adduct, ion)
     return {
         "role": "M0",
         "peak_id": peak_id,
@@ -91,9 +117,11 @@ def m0(
 
 
 def child(peak_id, parent, label, height):
-    """One isotope satellite hanging off an M0 row."""
+    """One isotope satellite hanging off an M0 row; `write_ledger` puts it at its label's exact spacing from
+    its parent (C11+c: a line counts only there)."""
     row = m0(peak_id, None, adduct=None, height=height)
     row.update(
+        mz=None,
         role="iso_child",
         parent_peak_id=parent,
         iso_label=label,
@@ -116,7 +144,7 @@ NITRATE_ROWS = [
     m0("p_class", "C8HF15O2", method="known:perfluoroacid"),
     # 3b -- the same neutral deprotonated AND clustered: a substituent only
     m0("p_acid1", "C10H16O5", adduct="[M-H]-"),
-    m0("p_acid2", "C10H16O5", adduct="[M+NO3]-", mz=262.0),
+    m0("p_acid2", "C10H16O5", adduct="[M+NO3]-"),
     # 4c -- unopposed on a separable peak, but nothing corroborates it
     m0("p_uniq", "C7H12O3", degeneracy=0.5, resolvability="resolved"),
     # 5a -- the same row on a peak the width model calls blended
@@ -131,23 +159,30 @@ NITRATE_ROWS = [
 # One bromide-channel source: its clusters carry Br, so an 81Br satellite pins
 # the ion and not the neutral.
 BROMIDE_ROWS = [
-    m0("b_reag", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br", mz=221.0),
+    m0("b_reag", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br"),
     child("b_reag_iso", "b_reag", "81Br+1", 950.0),
-    m0("b_bulk", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br", mz=235.0),
+    m0("b_bulk", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br"),
 ]
 
 # The corroborating source: it must pin the neutral by an axis of its OWN (here a
 # 13C line at the ratio of ten carbons) -- a source corroborates only what it holds
 # at 4b or better on its own evidence.
 OTHER_ROWS = [
-    m0("o_cross", "C10H16O4", adduct="[M+NO3]-", ion="C10H16NO7", mz=262.0),
+    m0("o_cross", "C10H16O4", adduct="[M+NO3]-", ion="C10H16NO7"),
     child("o_cross_iso", "o_cross", "13C+1", 107.0),
 ]
 
 
+def place(rows):
+    mz = {r["peak_id"]: r["mz"] for r in rows if r.get("role") == "M0"}
+    return [dict(r, mz=mz[r["parent_peak_id"]] + label_shift(r.get("iso_label")))
+            if r.get("role") == "iso_child" and r.get("mz") is None and r.get("parent_peak_id") in mz else r
+            for r in rows]
+
+
 def write_ledger(path: Path, rows) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows, columns=LEDGER_COLUMNS).to_csv(path, index=False)
+    pd.DataFrame(place(rows), columns=LEDGER_COLUMNS).to_csv(path, index=False)
     return path
 
 
@@ -233,7 +268,7 @@ def test_a_source_that_only_carries_the_neutral_does_not_corroborate(tmp_path, s
     still counts: the run pins C10H16O4 by its own 13C line (4b), so it
     corroborates the bare source's row."""
     run_dir, _, _ = sources
-    bare = write_ledger(tmp_path / "bare_ledger.csv", [m0("o", "C10H16O4", adduct="[M+NO3]-", mz=262.0, degeneracy=None)])
+    bare = write_ledger(tmp_path / "bare_ledger.csv", [m0("o", "C10H16O4", adduct="[M+NO3]-", degeneracy=None)])
     assert levels(LL.run([str(run_dir)], [str(bare)]))[("C10H16O4", "[M-H]-")] == "4b"
     both = LL.run([str(run_dir), str(bare)], [])
     run_row = both[(both.source == "NITRATE_2026") & (both.neutral == "C10H16O4")].iloc[0]
@@ -244,7 +279,7 @@ def test_a_source_that_only_carries_the_neutral_does_not_corroborate(tmp_path, s
 
 def test_two_sources_that_only_agree_cannot_lift_each_other(tmp_path):
     x = write_ledger(tmp_path / "x_ledger.csv", [m0("p", "C6H10O4", degeneracy=5.0)])
-    y = write_ledger(tmp_path / "y_ledger.csv", [m0("q", "C6H10O4", adduct="[M+NO3]-", mz=208.0, degeneracy=5.0)])
+    y = write_ledger(tmp_path / "y_ledger.csv", [m0("q", "C6H10O4", adduct="[M+NO3]-", degeneracy=5.0)])
     both = LL.run([str(x), str(y)], [])
     assert set(both.level) == {"5b"} and not both.corroborated.any()
 
@@ -357,3 +392,39 @@ def test_curated_scope_follows_the_spec_not_a_hand_made_set():
     assert _curated("C99H99O99", "atmospheric") == "3a"                        # compound scope, not in the space
     assert LL.KNOWN_FAMILY_SCOPE["contaminant:silanediol"] == "class"
     assert LL.plausible_structures("C6H18O3Si3") == 1 and LL.plausible_structures("C99H99O99") is None
+
+
+# --------------------------------------------------------------------------- JSON lists (C11+c c1)
+def test_a_list_with_a_null_score_reads_as_written_in_the_script_and_the_engine():
+    """The ledger writes the satellite list with json.dumps: a line without a
+    per-line score (the chlorinated-paraffin recovery, the residual pairs) is
+    `"score": null`, which ast.literal_eval cannot read. The script read such a
+    list as EMPTY while the engine (evidence.as_list, JSON first) read it; since
+    C11+c both read it as written, and a repr'd list still reads."""
+    from peaky.assignment import evidence as EV
+    cell = '[{"label": "37Cl", "score": null, "peak_id": "a"}, {"label": "37Cl", "score": null, "peak_id": "b"}]'
+    assert LL.as_list(cell) == EV.as_list(cell) == [{"label": "37Cl", "score": None, "peak_id": "a"},
+                                                    {"label": "37Cl", "score": None, "peak_id": "b"}]
+    assert LL.as_list("[{'label': '13C', 'score': 0.9}]") == EV.as_list("[{'label': '13C', 'score': 0.9}]")
+    assert LL.as_list("not a list") == EV.as_list("not a list") == []
+    assert LL.as_list('{"label": "13C"}') == EV.as_list('{"label": "13C"}') == []      # a dict is no list
+    assert LL.as_list("") == LL.as_list(float("nan")) == []
+
+
+def test_the_paraffin_fixture_row_levels_alike_per_file():
+    """The Orbitrap fixture's chlorinated paraffin C10H18Cl4 [M+^NO3]- in file
+    orbi_07 (and orbi_12) holds `iso` through its null-score list alone: the
+    engine read it, the script did not (script 5b vs engine 3a on that file as
+    its own source). Script and engine now level it alike, fact for fact."""
+    import glob
+
+    from peaky.assignment import evidence as EV
+    fix = Path(__file__).resolve().parent / "fixtures" / "levels"
+    for name in ("orbi_07", "orbi_12"):
+        led = pd.read_csv(fix / f"{name}_ledger.csv.gz", low_memory=False)
+        core = EV.level_pooled({name: led})
+        ref = LL.assign_levels(LL.measure_source(name, led.assign(__file=name), None), set())
+        a = core[core.neutral_formula == "C10H18Cl4"].iloc[0]
+        b = ref[ref.neutral == "C10H18Cl4"].iloc[0]
+        assert (a.evidence_level, bool(a.iso)) == (b.level, bool(b.iso)), name
+    assert glob.glob(str(fix / "orbi_07_ledger.csv.gz"))

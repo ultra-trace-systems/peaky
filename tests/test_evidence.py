@@ -21,6 +21,8 @@ import pandas as pd
 import pytest
 
 from peaky.assignment import evidence as EV  # noqa: E402
+from peaky.batch import iso_checks as IC  # noqa: E402
+from peaky.chem import isotopes as ISO  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "levels"
 ORDER = ["2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
@@ -30,17 +32,38 @@ ORDER = ["2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
 # 6/16/182/38/260/79/91/135/2557 and 0/12/217/44/215/119/0/30/1070). C17
 # (2026-09-27, `multiline` counts in-band elements the neutral supplies) moved
 # the TOF set only: seven bromide-adduct 4a rows whose second line was the
-# reagent's 81Br go to 4b; it was 6/15/182/22/247/82/99/138/2573.
+# reagent's 81Br go to 4b; it was 6/15/182/22/247/82/99/138/2573. C11+a (2026-09-27,
+# `reagent_only_iso` only where the ION carries more of the reagent halogen than
+# the neutral) moved it again: six bromide-channel [M-H]- rows 4d -> 4b (four
+# brominated neutrals whose 81Br line is their own, two Br-free ions); it was
+# 6/15/182/15/254/82/99/138/2573.
+# C11+b (rule H, decision D8, 2026-09-28): the Orbitrap and the uronium sets are
+# levelled with their lock tables (orbi_iso_checks.csv / ur_iso_checks.csv: the
+# rule H lock rows of the live runs), and the four live-locked lead pairs carry
+# their flag in tentative_lead -- the Orbitrap set's HBr [M+^NO3]-, C6H9ClO3 and
+# C6H10Cl2O4 [M-H]- and the uronium set's C7H11ClO2 [M+(CH4N2O)H]+ lift 5b -> 4b.
+# Without the tables the vectors are as before (ORBI_NO_LOCK, UR_NO_LOCK).
+# C11+c (2026-09-30: an isotope child counts only at its label's exact spacing
+# from the COMMITTED parent line and in band under its count-aware expectation;
+# the isotopologues list answers the same question) moved every vector. Before it
+# tv 21/15/107/16/143/15/10/37/1009, tof 6/15/182/15/258/82/95/138/2573, orbi
+# 0/11/217/9/206/139/0/35/1090 (no lock 0/11/217/9/203/139/0/35/1093), ur
+# 4/4/0/331/377/291/0/82/72 (pair table alone 4/4/0/331/376/291/0/82/73, neither
+# 4/4/0/25/682/291/0/82/73); tests/fixtures/levels/README.md lists the rows.
 GOLDEN = {
-    "tv": (1373, "21/15/107/16/143/15/10/37/1009"),
-    "tof": (3364, "6/15/182/15/254/82/99/138/2573"),
-    "orbi": (1707, "0/11/217/9/203/139/0/35/1093"),
+    "tv": (1373, "21/15/107/15/145/15/9/37/1009"),
+    "tof": (3364, "6/15/182/14/267/85/84/135/2576"),
+    "orbi": (1707, "0/10/217/9/205/138/0/35/1093"),
     # the uronium set (C17 + U, 2026-09-27): one source, no corroboration, levelled
-    # with its neutral-pair table (rule U, row 9'); without the table it reads
-    # 4/4/0/25/682/291/0/82/73
-    "ur": (1161, "4/4/0/331/376/291/0/82/73"),
+    # with its neutral-pair table (rule U, row 9') and its lock table (C11+b);
+    # without either it reads 4/4/0/17/687/293/0/82/74
+    "ur": (1161, "4/4/0/330/375/293/0/82/73"),
 }
-UR_WITHOUT_PAIR = "4/4/0/25/682/291/0/82/73"
+UR_WITHOUT_PAIR = "4/4/0/17/687/293/0/82/74"
+#: the Orbitrap set without its lock table, the uronium set with its neutral-pair
+#: table alone -- the goldens before C11+b, and the base a leak guard levels at
+ORBI_NO_LOCK = (1707, "0/10/217/9/202/138/0/35/1096")
+UR_NO_LOCK = "4/4/0/330/374/293/0/82/74"
 
 LEDGER_COLUMNS = [
     "role", "peak_id", "parent_peak_id", "iso_label", "neutral_formula", "adduct",
@@ -51,11 +74,50 @@ LEDGER_COLUMNS = [
 
 
 # --------------------------------------------------------------------------- builders
-def m0(peak_id, neutral, adduct="[M-H]-", ion=None, mz=200.0, height=1000.0,
+def ion_mz_of(neutral, adduct, ion=None, default=200.0) -> float:
+    """The exact m/z of the ion a (neutral, adduct[, ion]) reading makes; `default` when it does not parse."""
+    if not neutral or not adduct:
+        return default
+    counts = {e: v for e, v in EV.ion_composition(neutral, adduct, ion).items() if v}
+    mz = ISO.mono_mz(counts, ISO.ion_sign(ion, adduct))
+    return mz if mz == mz else default
+
+
+def label_shift(label) -> float:
+    """The exact shift a child label names from its parent (the parent-relative reading of the whole
+    label; the tests' legacy '+<digit>' note is no part: '13C+1' is a 13C line)."""
+    tot = 0.0
+    for part in ISO.split_label(label):
+        kind, v = ISO.parse_label_part(part)
+        if kind == "set":
+            tot += ISO.heavy_shift(v)
+        elif kind == "alt":
+            tot += ISO.heavy_shift(v[0])
+        elif kind == "gen":
+            tot += v * ISO.ISOTOPE_SPACING["13C"]
+    return tot
+
+
+def place(rows) -> list:
+    """C11+c: a child line counts only at its label's exact spacing from its parent, so every synthetic
+    child built without an m/z is put there (its parent's m/z + `label_shift`)."""
+    mz = {r["peak_id"]: r["mz"] for r in rows if r.get("role") == "M0"}
+    out = []
+    for r in rows:
+        if r.get("role") == "iso_child" and r.get("mz") is None and r.get("parent_peak_id") in mz:
+            r = dict(r, mz=mz[r["parent_peak_id"]] + label_shift(r.get("iso_label")))
+        out.append(r)
+    return out
+
+
+def m0(peak_id, neutral, adduct="[M-H]-", ion=None, mz=None, height=1000.0,
        tier="Assigned", method="pass2", confidence="High", tied=False, below=False,
        degeneracy=0.5, note="", resolvability="resolved", series_unit=None,
        anchor=None, isotopologues=""):
-    """One committed neutral; the defaults are deliberately uncorroborated."""
+    """One committed neutral at its ion's exact m/z unless told otherwise; the defaults are deliberately
+    uncorroborated."""
+    if mz is None:
+        mz = ion_mz_of(neutral, adduct, ion)
     return {
         "role": "M0", "peak_id": peak_id, "parent_peak_id": None, "iso_label": None,
         "neutral_formula": neutral, "adduct": adduct, "ion_formula": ion or neutral,
@@ -68,9 +130,11 @@ def m0(peak_id, neutral, adduct="[M-H]-", ion=None, mz=200.0, height=1000.0,
     }
 
 
-def child(peak_id, parent, label, height):
-    """One isotope satellite hanging off an M0 row."""
-    row = m0(peak_id, None, adduct=None, height=height)
+def child(peak_id, parent, label, height, mz=None):
+    """One isotope satellite hanging off an M0 row: at `mz`, else (`ledger`) at its label's exact spacing
+    from its parent."""
+    row = m0(peak_id, None, adduct=None, height=height, mz=mz)
+    row["mz"] = mz
     row.update(role="iso_child", parent_peak_id=parent, iso_label=label,
                tier="Assigned", degeneracy_density=None)
     return row
@@ -83,7 +147,7 @@ def reagent(peak_id, formula, mz):
 
 
 def ledger(rows) -> pd.DataFrame:
-    return pd.DataFrame(rows, columns=LEDGER_COLUMNS)
+    return pd.DataFrame(place(rows), columns=LEDGER_COLUMNS)
 
 
 def level_of(rows, **kw) -> dict:
@@ -109,8 +173,8 @@ CASES = {
         [m0("p", "C8HF15O2", method="pass2")],                  # not curated -> 4c (unique, resolved, no axis)
     ),
     "3b": (
-        [m0("p1", "C10H16O5"), m0("p2", "C10H16O5", adduct="[M+NO3]-", mz=262.0)],
-        [m0("p1", "C10H16O5"), m0("p2", "C10H16O5", adduct="[M+^NO3]-", mz=263.0)],
+        [m0("p1", "C10H16O5"), m0("p2", "C10H16O5", adduct="[M+NO3]-")],
+        [m0("p1", "C10H16O5"), m0("p2", "C10H16O5", adduct="[M+^NO3]-")],
         # ^ still deprotonated + clustered: the mutant is below, in test_level_3b
     ),
     "4c": (
@@ -123,8 +187,8 @@ CASES = {
     ),
     "4b": (
         [m0("p", "C9H14O4", series_unit="CH2")],
-        [m0("p", "C9H14O4", adduct="[M+NO3]-", mz=247.0, series_unit="CH2"),
-         m0("q", "C9H14O4", adduct="[M+^NO3]-", mz=248.0)],
+        [m0("p", "C9H14O4", adduct="[M+NO3]-", series_unit="CH2"),
+         m0("q", "C9H14O4", adduct="[M+^NO3]-")],
         # ^ two axes (anchor + second cluster channel) but neither outside the chemistry -> still 4b
     ),
     "4a": (
@@ -132,12 +196,12 @@ CASES = {
         [m0("p", "C10H16O4", ion="C10H15O4", height=1000.0)],           # no iso axis -> 4b
     ),
     "4d": (
-        [m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br", mz=221.0),
+        [m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br"),
          child("c", "p", "81Br+1", 950.0),
-         m0("q", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br", mz=235.0)],
-        [m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br", mz=221.0),
+         m0("q", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br")],
+        [m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br"),
          child("c", "p", "81Br+1", 950.0), child("c2", "p", "13C+1", 86.0),
-         m0("q", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br", mz=235.0)],  # carbon pins the neutral -> 4b
+         m0("q", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br")],  # carbon pins the neutral -> 4b
     ),
 }
 
@@ -173,8 +237,8 @@ def test_level_3b_acid_branch():
     lv = level_of(ok)
     assert lv[("C10H16O5", "[M-H]-")] == "3b" and lv[("C10H16O5", "[M+NO3]-")] == "3b"
     # mutant: two CLUSTER channels are not a branch -> chan2 only -> 4b
-    mut = [m0("p1", "C10H16O5", adduct="[M+NO3]-", mz=262.0),
-           m0("p2", "C10H16O5", adduct="[M+^NO3]-", mz=263.0)]
+    mut = [m0("p1", "C10H16O5", adduct="[M+NO3]-"),
+           m0("p2", "C10H16O5", adduct="[M+^NO3]-")]
     assert level_of(mut)[("C10H16O5", "[M+NO3]-")] == "4b"
 
 
@@ -215,10 +279,99 @@ def test_level_4d_reagent_halogen_pins_the_ion_not_the_neutral():
     ok, mut = CASES["4d"]
     assert level_of(ok)[("C8H14O2", "[M+Br]-")] == "4d"
     assert level_of(mut)[("C8H14O2", "[M+Br]-")] == "4b"
-    # the same satellite on a nitrate channel (no reagent halogen) is ordinary isotope evidence
-    nitrate = [m0("p", "C8H14O2", adduct="[M+NO3]-", ion="C8H14O2NO3", mz=204.0),
-               child("c", "p", "81Br+1", 950.0), m0("q", "C9H16O2", adduct="[M+NO3]-", mz=218.0)]
-    assert level_of(nitrate)[("C8H14O2", "[M+NO3]-")] == "4b"
+    # a brominated neutral's own 81Br line on a nitrate channel (no reagent halogen) is ordinary isotope
+    # evidence (C11+c: a Br-free ion makes no 81Br line at all -- its expectation is 0)
+    nitrate = [m0("p", "C8H13BrO2", adduct="[M+NO3]-", ion="C8H13BrNO5-", mz=281.9983),
+               child("c", "p", "81Br", 950.0, mz=281.9983 + 1.9979535),
+               m0("q", "C9H16O2", adduct="[M+NO3]-")]
+    assert level_of(nitrate)[("C8H13BrO2", "[M+NO3]-")] == "4b"
+    brfree = [m0("p", "C8H14O2", adduct="[M+NO3]-", ion="C8H14NO5-", mz=204.0877),
+              child("c", "p", "81Br", 950.0, mz=204.0877 + 1.9979535),
+              m0("q", "C9H16O2", adduct="[M+NO3]-")]
+    assert level_of(brfree)[("C8H14O2", "[M+NO3]-")] == "4c"
+
+
+def _bromide_channel(*rows):
+    """`rows` on a bromide channel: two [M+Br]- commits make Br the reagent halogen."""
+    return [*rows, m0("q", "C9H16O2", adduct="[M+Br]-", ion="C9H16O2Br-"),
+            m0("r", "C9H18O2", adduct="[M+Br]-", ion="C9H18O2Br-")]
+
+
+def test_the_reagent_satellite_needs_the_ion_to_carry_the_reagent_halogen():
+    """C11+a: `reagent_only_iso` clears only where the ion's reagent halogen is
+    all the neutral's own -- on a brominated neutral's [M-H]- the 81Br line is
+    the neutral's. The reagent's line (the ion carries more of the halogen than
+    the neutral) keeps the flag. An ion carrying NONE of it: a 1:1 +2 Da line
+    on a Br-free ion is no line of that ion (C11+c: its count-aware expectation
+    is 0, never in band, so the pair has no isotope axis and no 4d) -- and C11+c
+    released the 2026-09-27 hold: the flag means only "the reagent put the
+    halogen on the ion"."""
+    def facts(rows):
+        out = EV.level_pooled({"f": ledger(rows)})
+        return {(n, a): (lv, roi) for n, a, lv, roi in
+                zip(out.neutral_formula, out.adduct, out.evidence_level, out.reagent_only_iso)}
+    br = 1.9979535
+    brfree = _bromide_channel(m0("p", "C8H14O4", ion="C8H13O4-", mz=173.0819),
+                              child("c", "p", "81Br", 950.0, mz=173.0819 + br))
+    assert facts(brfree)[("C8H14O4", "[M-H]-")] == ("4c", False)
+    own = _bromide_channel(m0("p", "C7H11BrO4", ion="C7H10BrO4-", mz=236.9768),
+                           child("c", "p", "81Br", 950.0, mz=236.9768 + br))
+    assert facts(own)[("C7H11BrO4", "[M-H]-")] == ("4b", False)
+    # the reagent's own line: a bromide adduct of a Br-free neutral, and of a brominated one (Br2 > Br)
+    adduct = _bromide_channel(m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2Br-", mz=221.0183),
+                              child("c", "p", "81Br", 950.0, mz=221.0183 + br))
+    assert facts(adduct)[("C8H14O2", "[M+Br]-")] == ("4d", True)
+    # the Br2 ion is committed on its 79Br81Br line (the scorer's most abundant): its 81Br2 line sits
+    # 1.998 Da above it at 0.486x (C11+c; against the mono line the same child at 0.95x of a 1.9456
+    # expectation falls out of band)
+    more = _bromide_channel(m0("p", "C7H11BrO4", adduct="[M+Br]-", ion="C7H11Br2O4-", mz=316.9030 + br),
+                            child("c", "p", "81Br2", 486.0, mz=316.9030 + 2 * br))
+    assert facts(more)[("C7H11BrO4", "[M+Br]-")] == ("4d", True)
+    mono = _bromide_channel(m0("p", "C7H11BrO4", adduct="[M+Br]-", ion="C7H11Br2O4-", mz=316.9030),
+                            child("c", "p", "81Br", 950.0, mz=316.9030 + br))
+    assert facts(mono)[("C7H11BrO4", "[M+Br]-")] == ("4c", True)
+    # a ledger row that stored the NEUTRAL as its ion formula: the adduct carries the reagent
+    stored = _bromide_channel(m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2", mz=221.0183),
+                              child("c", "p", "81Br", 950.0, mz=221.0183 + br))
+    assert facts(stored)[("C8H14O2", "[M+Br]-")] == ("4d", True)
+    assert EV.carries_reagent("C8H14O2", "[M+HBr+Br]-", "C8H14O2", "Br")
+    assert not EV.carries_reagent("C7H11BrO4", "[M+NO3]-", "C7H11BrNO7-", "Br")
+    assert not EV.carries_reagent("C8H14O2", "[M+Br]-", "C8H14O2Br-", None)
+    # the hold is released: an ion carrying none of the halogen does not carry the reagent's
+    assert not hasattr(EV, "not_the_neutrals_line")
+    assert not EV.carries_reagent("C8H14O4", "[M-H]-", "C8H13O4-", "Br")
+    assert not EV.carries_reagent("C6H11NO6S", "[M+NO3]-", "C6H11N2O9S-", "Br")
+    assert not EV.carries_reagent("C7H11BrO4", "[M-H]-", "C7H10BrO4-", "Br")
+    assert not EV.carries_reagent("HBrO", "[M+NO3]-", "HBrNO4-", "Br")
+    assert EV.carries_reagent("C8H14O2", "[M+Br]-", "C8H14O2Br-", "Br")
+    assert EV.ion_composition("C8H14O2", "[M+HBr+Br]-", "nan") == {"C": 8, "H": 15, "O": 2, "Br": 2}
+
+
+def test_the_reference_script_reads_the_reagent_satellite_like_the_engine():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("level_ledger", Path(__file__).resolve().parents[1]
+                                                  / "scripts" / "level_ledger.py")
+    LL = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(LL)
+    br = 1.9979535
+    rows = ledger(_bromide_channel(
+        m0("p", "C8H14O4", ion="C8H13O4-", mz=173.0819), child("c", "p", "81Br", 950.0, mz=173.0819 + br),
+        m0("s", "C7H11BrO4", ion="C7H10BrO4-", mz=236.9768), child("d", "s", "81Br", 950.0, mz=236.9768 + br),
+        m0("t", "C8H14O2", adduct="[M+Br]-", ion="C8H14O2", mz=221.0183),
+        child("e", "t", "81Br", 950.0, mz=221.0183 + br),
+        m0("u", "C7H11BrO4", adduct="[M+Br]-", ion="C7H11Br2O4-", mz=316.9030 + br),
+        child("g", "u", "81Br2", 486.0, mz=316.9030 + 2 * br)))
+    core = EV.level_pooled({"s1": rows})
+    ref = LL.assign_levels(LL.measure_source("s1", rows.assign(__file="s1"), "Br"), set())
+    m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
+    assert len(m) == len(core) == 6
+    assert (m["reagent_only_iso_x"] == m["reagent_only_iso_y"]).all() and (m["evidence_level"] == m["level"]).all()
+    assert set(m.loc[m["reagent_only_iso_x"], "neutral_formula"]) == {"C8H14O2", "C7H11BrO4"}
+    assert set(m.loc[m["reagent_only_iso_x"], "adduct"]) == {"[M+Br]-"}
+    assert LL.ion_composition("C8H14O2", "[M+HBr+Br]-", float("nan")) == {"C": 8, "H": 15, "O": 2, "Br": 2}
+    assert not LL.carries_reagent("C7H11BrO4", "[M-H]-", "C7H10BrO4-", "Br")
+    assert not LL.carries_reagent("C8H14O4", "[M-H]-", "C8H13O4-", "Br")
+    assert not hasattr(LL, "not_the_neutrals_line")
 
 
 # --------------------------------------------------------------------------- contract
@@ -278,6 +431,11 @@ def _vector(levels: pd.Series) -> str:
     return "/".join(str(int(c.get(k, 0))) for k in ORDER)
 
 
+def _iso(prefix: str) -> dict:
+    """A golden set's rule H lock table as level_pooled reads it (C11+b)."""
+    return IC.facts(pd.read_csv(FIXTURES / f"{prefix}_iso_checks.csv"))
+
+
 @pytest.fixture(scope="module")
 def expected():
     return pd.read_csv(FIXTURES / "expected_levels.csv")
@@ -297,9 +455,11 @@ def test_golden_same_air_pair():
     tof, orbi = _pooled("tof"), _pooled("orbi")
     n_tof, n_orbi = EV.source_neutrals(tof), EV.source_neutrals(orbi)
     t = EV.level_pooled(tof, cross=n_orbi)
-    o = EV.level_pooled(orbi, cross=n_tof)
+    o = EV.level_pooled(orbi, cross=n_tof, iso=_iso("orbi"))
     assert (len(t), _vector(t.evidence_level)) == GOLDEN["tof"]
     assert (len(o), _vector(o.evidence_level)) == GOLDEN["orbi"]
+    no_lock = EV.level_pooled(orbi, cross=n_tof)
+    assert (len(no_lock), _vector(no_lock.evidence_level)) == ORBI_NO_LOCK
 
 
 def _ur_pairs() -> set:
@@ -309,15 +469,16 @@ def _ur_pairs() -> set:
 
 def test_golden_uronium_neutral_pair():
     """Rule U on the uronium set: the pair table lifts 306 ion pairs to 4a;
-    without it the vector is C17's alone."""
+    without it the vector is C17's alone. The lock table (C11+b) lifts one lead."""
     ur = _pooled("ur")
-    with_pair = EV.level_pooled(ur, upair=_ur_pairs())
+    with_pair = EV.level_pooled(ur, upair=_ur_pairs(), iso=_iso("ur"))
     assert (len(with_pair), _vector(with_pair.evidence_level)) == GOLDEN["ur"]
+    assert _vector(EV.level_pooled(ur, upair=_ur_pairs()).evidence_level) == UR_NO_LOCK
     assert _vector(EV.level_pooled(ur).evidence_level) == UR_WITHOUT_PAIR
 
 
 def test_uronium_rows_match_the_reference_script(expected):
-    got = EV.level_pooled(_pooled("ur"), upair=_ur_pairs()).assign(source="ur")
+    got = EV.level_pooled(_pooled("ur"), upair=_ur_pairs(), iso=_iso("ur")).assign(source="ur")
     exp = expected[expected.source == "ur"]
     assert len(exp) == GOLDEN["ur"][0]
     m = exp.merge(got, left_on=["source", "neutral", "adduct"],
@@ -330,7 +491,7 @@ def test_rows_match_the_reference_script_row_for_row(expected):
     tof, orbi = _pooled("tof"), _pooled("orbi")
     n_tof, n_orbi = EV.source_neutrals(tof), EV.source_neutrals(orbi)
     got = pd.concat([EV.level_pooled(tof, cross=n_orbi).assign(source="tof"),
-                     EV.level_pooled(orbi, cross=n_tof).assign(source="orbi")])
+                     EV.level_pooled(orbi, cross=n_tof, iso=_iso("orbi")).assign(source="orbi")])
     exp = expected[expected.source.isin(["tof", "orbi"])]
     m = exp.merge(got, left_on=["source", "neutral", "adduct"],
                   right_on=["source", "neutral_formula", "adduct"], how="left")
@@ -339,11 +500,48 @@ def test_rows_match_the_reference_script_row_for_row(expected):
     assert bad.empty, bad[["source", "neutral", "adduct", "level", "evidence_level"]].head(20)
 
 
+#: the reference script's per-row facts in expected_levels.csv (tests/fixtures/levels/README.md)
+FIXTURE_FACTS = ["iso", "chan2", "anchor", "corroborated", "branch", "reagent_only_iso", "known_fam", "tied",
+                 "below", "lowconf", "degeneracy", "saturated", "res_ok", "n_files", "n_axes"]
+
+
+def _cell(v) -> str:
+    """One fact cell as text, alike from the CSV and from the engine (bools, integral floats, NaN)."""
+    if v is None or (isinstance(v, float) and v != v):
+        return ""
+    if isinstance(v, bool) or type(v).__name__ == "bool_":
+        return str(bool(v))
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
+
+
+def test_every_fixture_row_matches_the_reference_script_fact_for_fact(expected):
+    """Not only the level: every fact the reference script recorded for a fixture row (iso, reagent_only_iso,
+    chan2, ... -- C11+c moved several at unchanged levels) is the engine's, on all five sources."""
+    tof, orbi = _pooled("tof"), _pooled("orbi")
+    no3, br = _read("tv_nitrate"), _read("tv_bromide")
+    got = pd.concat([
+        EV.level_pooled(tof, cross=EV.source_neutrals(orbi)).assign(source="tof"),
+        EV.level_pooled(orbi, cross=EV.source_neutrals(tof), iso=_iso("orbi")).assign(source="orbi"),
+        EV.level_pooled(_pooled("ur"), upair=_ur_pairs(), iso=_iso("ur")).assign(source="ur"),
+        EV.level_pooled({"tv_nitrate": no3}, cross=EV.source_neutrals({"tv_bromide": br})).assign(source="tv_nitrate"),
+        EV.level_pooled({"tv_bromide": br}, cross=EV.source_neutrals({"tv_nitrate": no3})).assign(source="tv_bromide")])
+    m = expected.merge(got, left_on=["source", "neutral", "adduct"],
+                       right_on=["source", "neutral_formula", "adduct"], how="left", suffixes=("", "_engine"))
+    assert len(m) == len(expected) and m.evidence_level.notna().all(), "every reference row must be levelled"
+    assert (m.level == m.evidence_level).all()
+    for c in FIXTURE_FACTS:
+        a, b = m[c].map(_cell), m[c + "_engine"].map(_cell)
+        bad = m.loc[a != b, ["source", "neutral", "adduct", c, c + "_engine"]]
+        assert bad.empty, (c, bad.head(10).to_dict("records"))
+
+
 def test_pooled_equals_the_script_on_the_same_files():
     """level_pooled over N files is the reference pooling: all rows of a pair across
     files decide tied/lowconf, any row decides below, chan2 sees every file."""
     a = [m0("p", "C9H14O4", tied=True)]
-    b = [m0("q", "C9H14O4", tied=False, adduct="[M+NO3]-", mz=247.0)]
+    b = [m0("q", "C9H14O4", tied=False, adduct="[M+NO3]-")]
     out = EV.level_pooled({"f1": ledger(a), "f2": ledger(b)})
     lv = dict(zip(zip(out.neutral_formula, out.adduct), out.evidence_level))
     assert lv[("C9H14O4", "[M-H]-")] == "5b"       # that pair's only row is tied: hard
@@ -382,7 +580,7 @@ def test_a_source_corroborates_only_what_it_holds_at_4b_or_better_by_its_own_evi
         m0("b", "C8HF15O2", method="known:perfluoroacid"),                                     # 3a
         m0("c", "C7H12O4"),                                                                    # 4c: no axis
         m0("d", "C6H8O4", tied=True, anchor="a"),                                              # 5b: tied
-        m0("e", "C9H14O4", adduct="[M]-.", method="ion_only:electron_attachment", mz=186.09),  # ion-only
+        m0("e", "C9H14O4", adduct="[M]-.", method="ion_only:electron_attachment"),  # ion-only
     ])
     assert EV.source_neutrals({"s": src}) == {"C10H16O4", "C8HF15O2"}
     assert EV.source_neutrals({"s": src}, max_level="4c") == {"C10H16O4", "C8HF15O2", "C7H12O4"}
@@ -393,7 +591,7 @@ def test_two_sources_that_only_agree_cannot_lift_each_other():
     (5b on each) used to hand each other the `corroborated` axis and climb to 4b
     together; each is now corroborated only by what the other pins on its own."""
     x = ledger([m0("p", "C6H10O4", degeneracy=5.0)])
-    y = ledger([m0("q", "C6H10O4", degeneracy=5.0, adduct="[M+NO3]-", mz=208.0)])
+    y = ledger([m0("q", "C6H10O4", degeneracy=5.0, adduct="[M+NO3]-")])
     for me, other in ((x, y), (y, x)):
         cross = EV.source_neutrals({"other": other})
         assert cross == set()

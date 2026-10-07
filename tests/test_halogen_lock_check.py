@@ -1,0 +1,675 @@
+"""C11+b rule H, the check: the exact-spacing halogen lock (EVIDENCE_LEVELS §3
+`lead_lift`; batch/iso_checks.py).
+
+A fourth check of the batch time series writes one row per pooled pair whose ION
+carries Cl or Br, with a POSITIVE fact -- `lock` -- and never a veto. It locks
+when the ion's stamped M0 has a partner at the exact 37Cl - 35Cl / 81Br - 79Br
+spacing (1 ppm) in >= 60 % of >= 20 M0 spectra, co-varying with it (r(log
+area) >= 0.8), at a pooled area ratio of 0.65-1.45 x n x 0.3198 (Cl) / 0.9728
+(Br) for the ion's count n; unless the M0 is itself the heavy line of a lighter
+one (either spacing), the ion carries Si >= 3 or both halogens, or the batch's
+reagent could have put the halogen there (it supplies as many as the ion
+carries). Where a 30Si line can sit inside the 1 ppm window (a Cl ion from m/z
+~206) a Cl lock is refused when the M+1 region shows the 29Si line a Si-rich
+ion making the partner from 30Si must carry (the 2026-09-28 decision: the
+29Si line decides; the three scenarios the user was shown are tested here);
+where 29Si and 13C blend, the +1 peak's position decides, and a reading that
+itself carries Si is also refused on its excess (the 2026-09-29 decision:
+scenario 2 dim and under an apex-reporting picker, the Si2-reading corner and
+the TOF note are tested here too). The synthetic series carry exact ratios, so
+each gate is tested at its edge.
+
+Run: pytest tests/test_halogen_lock_check.py -q
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import io
+import math
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from peaky.batch import iso_checks as IC
+from peaky.chem import chemistry as C
+from peaky.chem import profiles as P
+from tests.test_iso_checks import (
+    FILL, H, LABEL, N, NO3, ORBI, SCALE_O, SCALE_T, TOF, _c13, _frames, _get, _ion, _ll, _measure, _row, _series,
+    _wave, quiet)
+
+CL1, BR1, CL2 = "C6H9ClO3", "C2H3BrO2", "C4H6Cl2O2"      # a chloro acid, bromoacetic, a dichloro acid
+BIG_CL = "C10H17ClO4"                                     # a chloro acid above m/z 206
+BROMIDE = P.resolve("Br")                                 # supplies up to 2 Br per ion ([M+HBr+Br]-)
+MIXED = P.resolve("Br+NO3")
+
+
+def _el(n, a) -> str:
+    ion = C.parse_formula(_ion(n, a).rstrip("+-"))
+    return "Cl" if ion.get("Cl") else "Br"
+
+
+def _orth(x: np.ndarray, seed_phase: float = 0.3) -> np.ndarray:
+    """A pattern with zero mean and no correlation with `x`."""
+    u = np.cos(2 * np.pi * np.arange(len(x)) / 5.0 + seed_phase)
+    u = u - u.mean()
+    xc = x - x.mean()
+    u = u - (u @ xc) / (xc @ xc) * xc
+    return u / np.sqrt(u @ u / len(u))
+
+
+def _noise_for(r: float, h0: np.ndarray) -> np.ndarray:
+    """log-area noise that gives a line r(log area) == r with its M0 over all spectra."""
+    x = np.log(h0)
+    vx = x.var()
+    return _orth(x) * np.sqrt(vx * (1.0 / r ** 2 - 1.0))
+
+
+def _h0(h=1e5, phase=0.0):
+    return np.array([h * _wave(i, phase) for i in range(N)])
+
+
+def _hal(i, n=CL1, a=H, *, ratio=None, d=None, off_ppm=0.0, present=lambda i: True, h=1e5, phase=0.0,
+         noise=None, stamp=True, stamp_shift=0.0, n_m0=N, lighter=None, ld=None, lpresent=lambda i: True,
+         lrole=""):
+    """An M0 stamp of (n, a), its 13C line (the ion's own carbons, as
+    test_iso_checks._c13 builds it: rule C reads the ion as it is) and its
+    partner `d` Da above (default the ion's own halogen spacing, `off_ppm` off
+    it) at `ratio` x its area (default the ion's count x per atom); with the
+    default partner, an ion carrying two or more of the halogen also shows its
+    heavier lines (k spacings up, C(n, k) x per-atom^k: a Br2 ion's 81Br2 line,
+    which REQ requires); `lighter`: a line `ld` Da below at M0 / `lighter`."""
+    if i >= n_m0:
+        return []
+    el = _el(n, a)
+    ion = C.parse_formula(_ion(n, a).rstrip("+-"))
+    own_pattern = ratio is None and d is None and not off_ppm
+    ratio = ion[el] * IC.LOCK_PER_ATOM[el] if ratio is None else ratio
+    d = IC.LOCK_D[el] if d is None else d
+    mz = C.ion_mz(n, a) + stamp_shift
+    h0 = h * _wave(i, phase)
+    rows = [_row(i, mz, h0, role="M0", nf=n, ad=a, ion=_ion(n, a)) if stamp else _row(i, mz, h0)]
+    if ion.get("C", 0):
+        h1 = h0 * (ion["C"] * IC.R13C + ion.get("O", 0) * IC.R17O)
+        rows.append(_row(i, mz + IC.D13C, h1, h1 * ((mz + 1) / mz) ** 1.5, role="iso_child", label="13C"))
+    if present(i):
+        a1 = ratio * h0 * (np.exp(noise[i]) if noise is not None else 1.0)
+        rows.append(_row(i, mz + d + off_ppm * 1e-6 * mz, a1, role="iso_child",
+                         label=IC.LOCK_OFFSET[el]))
+        if own_pattern:
+            p = IC.LOCK_PER_ATOM[el]
+            rows += [_row(i, mz + k * d, math.comb(ion[el], k) * p ** k * h0, role="iso_child",
+                          label=f"{IC.LOCK_OFFSET[el][:2]}{el}{k}") for k in range(2, ion[el] + 1)]
+    if lighter is not None and lpresent(i):
+        rows.append(_row(i, mz - ld, h0 / lighter, role=lrole))
+    return rows
+
+
+def _h(build, pairs, **kw) -> pd.DataFrame:
+    return _measure(_series(build), pairs, **kw)
+
+
+def _verdict(build, n=CL1, a=H, **kw) -> pd.Series:
+    return _get(_h(build, [(n, a)], **kw), "H", n, a)
+
+
+def _lock_only(build, n=CL1, a=H, **kw) -> pd.Series:
+    """The H row of a pair that locks and that nothing refutes: no C / REQ / HIGH
+    veto on it in the same table (a lock the batch also vetoes could never lift)."""
+    t = _h(build, [(n, a)], **kw)
+    r = _get(t, "H", n, a)
+    assert r["verdict"] == "lock" and bool(r["lock"]), r["note"]
+    assert (n, a) not in IC.veto(t), IC.veto(t).get((n, a))
+    return r
+
+
+def _inorganic(n, a, prof, **kw) -> pd.Series:
+    """The verdict on a carbon-free ion (HBr, HNO3), beside a carbon-bearing pair
+    (a batch always carries some; rule C, which runs first, reads its 13C line);
+    no check refutes the pair."""
+    ref = "C10H16O4"
+    t = _h(lambda i: _hal(i, n, a, **kw) + _c13(i, ref, H, phase=2.0), [(n, a), (ref, H)], prof=prof)
+    assert (n, a) not in IC.veto(t)
+    return _get(t, "H", n, a)
+
+
+# =========================================================================== the lock
+@pytest.mark.parametrize("n, ratio, verdict", [
+    (CL1, 0.3198, "lock"), (BR1, 0.9728, "lock"), (CL2, 2 * 0.3198, "lock"),
+    (CL2, 0.3198, "no_lock"),                       # a one-Cl line on a two-Cl ion: the n multiplier
+    (CL1, 2 * 0.3198, "no_lock"),                   # ... and the other way
+])
+def test_a_line_at_the_ions_count_locks(n, ratio, verdict):
+    t = _h(lambda i: _hal(i, n, ratio=ratio), [(n, H)])
+    r = _get(t, "H", n, H)
+    assert r["verdict"] == verdict and bool(r["lock"]) == (verdict == "lock")
+    assert (n, H) not in IC.veto(t)                          # nothing else refutes the pair
+    assert not bool(r["veto"]) and r["check"] == "H" and r["instrument"] == "orbitrap"
+    el = _el(n, H)
+    k = C.parse_formula(_ion(n, H).rstrip("-"))[el]
+    assert (r["element"], int(r["n_halogen"]), r["offset"]) == (el, k, IC.LOCK_OFFSET[el])
+    assert (r["ratio_lo"], r["ratio_hi"]) == pytest.approx(IC.count_window(el, k))
+    assert r["ratio_area"] == pytest.approx(ratio) and r["presence"] == 1.0 and r["n_spectra"] == N
+
+
+def test_the_count_window_and_the_gates_at_their_edges():
+    assert IC.count_window("Cl", 1) == pytest.approx((0.65 * 0.3198, 1.45 * 0.3198))
+    assert IC.count_window("Br", 2) == pytest.approx((0.65 * 2 * 0.9728, 1.45 * 2 * 0.9728))
+    lo, hi = IC.count_window("Cl", 2)
+    ok = dict(presence=0.6, r=0.8, ratio=lo, lo=lo, hi=hi)
+    assert IC.lock_gates(**ok) and IC.lock_gates(**dict(ok, ratio=hi))
+    for bad in (dict(presence=np.nextafter(0.6, 0)), dict(r=np.nextafter(0.8, 0)),
+                dict(ratio=np.nextafter(lo, 0)), dict(ratio=np.nextafter(hi, 9)), dict(r=np.nan),
+                dict(ratio=np.nan)):
+        assert not IC.lock_gates(**dict(ok, **bad)), bad
+    # on the series: just inside and just outside each end of the one- and two-Cl windows
+    for n in (CL1, CL2):
+        k = C.parse_formula(_ion(n, H).rstrip("-"))["Cl"]
+        for f, verdict in ((0.649, "no_lock"), (0.651, "lock"), (1.449, "lock"), (1.451, "no_lock")):
+            assert _verdict(lambda i: _hal(i, n, ratio=f * k * 0.3198), n)["verdict"] == verdict, (n, f)
+
+
+@pytest.mark.parametrize("n, off, verdict", [
+    (CL1, 0.99, "lock"), (CL1, 1.01, "no_lock"), (CL1, -0.99, "lock"), (CL1, -1.01, "no_lock"),
+    (BIG_CL, 0.99, "lock"), (BIG_CL, 1.01, "no_lock"), (BIG_CL, -0.99, "lock"), (BIG_CL, -1.01, "no_lock"),
+    (BR1, -0.99, "lock"), (BR1, -1.01, "no_lock"), (BR1, 0.99, "lock"), (BR1, 1.01, "no_lock")])
+def test_the_partner_window_is_one_ppm(n, off, verdict):
+    """The plain +-1 ppm window at every mass, both sides, below (CL1, m/z 163)
+    and above (BIG_CL, m/z 235: Si-tested, no 29Si line) LOCK_SI_MZ."""
+    assert (C.ion_mz(n, H) > IC.LOCK_SI_MZ) is (n == BIG_CL)
+    r = _verdict(lambda i: _hal(i, n, off_ppm=off), n)
+    assert r["verdict"] == verdict
+    if verdict == "no_lock":
+        assert r["n_used"] == 0 and f"no line at the {IC.LOCK_OFFSET[_el(n, H)]} offset" in r["note"]
+
+
+@pytest.mark.parametrize("n, spacing", [(BR1, 1.9979521), (CL1, 1.9970499), (BIG_CL, 1.9970499)])
+def test_the_partner_is_looked_for_at_the_literal_spacing(n, spacing):
+    """The partner placed at the LITERAL 81Br - 79Br / 37Cl - 35Cl spacing
+    (the isotope table's), not the module's constant: 0.8 ppm off locks, 1.2 ppm off does
+    not -- a LOCK_D that is wrong by a few tenths of a mDa (0.73 ppm at m/z 137)
+    moves one side out of the window."""
+    for off, verdict in ((0.8, "lock"), (-0.8, "lock"), (1.2, "no_lock"), (-1.2, "no_lock")):
+        assert _verdict(lambda i: _hal(i, n, d=spacing, off_ppm=off), n)["verdict"] == verdict, (n, off)
+
+
+def test_presence_is_counted_over_the_m0s_spectra():
+    assert _verdict(lambda i: _hal(i, present=lambda i: i < 24))["verdict"] == "lock"          # 24 / 40 = 0.6
+    r = _verdict(lambda i: _hal(i, present=lambda i: i < 23))
+    assert r["verdict"] == "no_lock" and "present in < 60%" in r["note"]
+    # 12 of 20 stamps locks, 11 of 20 does not: the denominator is the M0's own spectra
+    assert _verdict(lambda i: _hal(i, n_m0=20, present=lambda i: i < 12))["verdict"] == "lock"
+    assert _verdict(lambda i: _hal(i, n_m0=20, present=lambda i: i < 11))["verdict"] == "no_lock"
+    r = _verdict(lambda i: _hal(i, n_m0=19))
+    assert r["verdict"] == "untestable" and "stamped in 19 spectra (needs 20)" in r["note"]
+
+
+def test_the_line_must_co_vary_with_the_m0():
+    h0 = _h0()
+    for r_target, verdict in ((0.805, "lock"), (0.795, "no_lock")):
+        noise = _noise_for(r_target, h0)
+        r = _verdict(lambda i: _hal(i, noise=noise, ratio=0.30))
+        assert r["r"] == pytest.approx(r_target, abs=1e-9)
+        assert r["verdict"] == verdict
+    # a line running against the M0 never locks, however tall it reads
+    anti = -2.0 * (np.log(h0) - np.log(h0).mean())
+    assert _verdict(lambda i: _hal(i, noise=anti, ratio=0.30))["verdict"] == "no_lock"
+
+
+# =========================================================================== the heavy check
+@pytest.mark.parametrize("ld_el, lighter, heavy", [
+    ("Cl", 1.0, True),        # the M0 is 1.0x a line one 37Cl spacing below: the Cl3 / Cl4 window
+    ("Cl", 1.8, True),        # only the Cl4 window holds 1.8 (the heavy check tries Cl up to 4)
+    ("Cl", 0.15, False),      # below one Cl (0.208)
+    ("Cl", 2.0, False),       # above four
+    ("Br", 1.0, True),        # one Br
+    ("Br", 1.9, True),        # only the Br2 window holds 1.9
+    ("Br", 3.0, False),       # above two
+])
+def test_the_heavy_check_at_both_spacings(ld_el, lighter, heavy):
+    r = _verdict(lambda i: _hal(i, lighter=lighter, ld=IC.LOCK_D[ld_el]))
+    assert r["verdict"] == ("heavy" if heavy else "lock") and bool(r["lock"]) != heavy
+    assert bool(r[f"heavy_{ld_el.lower()}"]) == heavy and not bool(r[f"heavy_{'br' if ld_el == 'Cl' else 'cl'}"])
+    if heavy:
+        assert f"one {IC.LOCK_OFFSET[ld_el]} spacing below it" in r["note"]
+
+
+def test_the_lighter_line_needs_its_own_presence_and_correlation():
+    assert _verdict(lambda i: _hal(i, lighter=1.0, ld=IC.LOCK_D["Cl"], lpresent=lambda i: i < 24))["verdict"] == \
+        "heavy"
+    assert _verdict(lambda i: _hal(i, lighter=1.0, ld=IC.LOCK_D["Cl"], lpresent=lambda i: i < 23))["verdict"] == \
+        "lock"
+    h0 = _h0()
+    anti = np.exp(2.0 * (np.log(h0) - np.log(h0).mean()))           # a lighter line running against the M0
+    r = _verdict(lambda i: _hal(i, lighter=1.0 * anti[i], ld=IC.LOCK_D["Cl"]))
+    assert r["verdict"] == "lock" and not bool(r["heavy_cl"])
+
+
+# =========================================================================== untestable
+def test_si_3_is_never_locked_si_2_is():
+    si2, si3 = "C5H15ClOSi2", "C7H21ClO2Si3"          # chloro-pentamethyldisiloxane, -heptamethyltrisiloxane
+    a = "[M+NO3]-"
+    _lock_only(lambda i: _hal(i, si2, a), si2, a)
+    r = _verdict(lambda i: _hal(i, si3, a), si3, a)
+    assert r["verdict"] == "untestable" and "Si3" in r["note"] and not bool(r["lock"])
+
+
+def test_a_mixed_halogen_ion_is_untestable():
+    n = "C2H2BrClO2"                                  # bromochloroacetic acid
+    r = _verdict(lambda i: _hal(i, n, d=IC.LOCK_D["Cl"], ratio=0.3198), n)
+    assert r["verdict"] == "untestable" and "both Cl and Br" in r["note"]
+
+
+def test_an_unstamped_pair_is_untestable():
+    r = _verdict(lambda i: _hal(i, stamp=False))
+    assert r["verdict"] == "untestable" and "no M0 stamp" in r["note"] and not bool(r["stamped"])
+
+
+def test_a_pair_stamped_on_a_heavy_isotopologue_is_untestable():
+    n = "C2H2Br2O2"                                   # dibromoacetic acid, committed on its 79Br81Br line
+    r = _verdict(lambda i: _hal(i, n, stamp_shift=IC.LOCK_D["Br"], ratio=0.5), n)
+    assert r["verdict"] == "untestable" and "heavy isotopologue" in r["note"]
+    # on its all-light line, the 2 x 0.97 line of two bromines locks (and its 81Br2 line is there: REQ holds)
+    _lock_only(lambda i: _hal(i, n), n)
+
+
+# =========================================================================== the reagent (D2)
+def test_the_reagent_supply_reads_the_batchs_adducts():
+    assert IC.reagent_supply(BROMIDE.adducts, "Br") == 2 and IC.reagent_supply(MIXED.adducts, "Br") == 2
+    assert IC.reagent_supply(BROMIDE.adducts, "Cl") == 0
+    assert IC.reagent_supply(NO3.adducts, "Br") == 0 and IC.reagent_supply(LABEL.adducts, "Br") == 0
+    assert IC.reagent_supply(["[M+Br]-", "[M-H]-"], "Br") == 1
+    assert IC.reagent_supply([], "Cl") == IC.reagent_supply(None, "Cl") == 0
+
+
+def test_a_bromide_batch_never_locks_a_line_its_reagent_could_make():
+    """The same ion BrHNO3- read either way: the bromide batch's reagent put the Br
+    there (the R3 shape: a perfect 1:1 line) -- whatever the adduct label says."""
+    for n, a in (("HNO3", "[M+Br]-"), ("HBr", "[M+NO3]-")):
+        r = _inorganic(n, a, MIXED)
+        assert r["verdict"] == "reagent" and not bool(r["lock"]), (n, a)
+        assert "reagent puts up to 2 Br" in r["note"] and r["ratio_area"] == pytest.approx(0.9728)
+    r = _verdict(lambda i: _hal(i, BR1, "[M+Br]-"), BR1, "[M+Br]-", prof=BROMIDE)
+    assert r["verdict"] == "reagent"                                 # Br2 ion, the reagent supplies 2
+
+
+def test_an_ion_carrying_more_than_the_reagent_supplies_locks():
+    one = dataclasses.replace(BROMIDE, adducts=["[M+Br]-", "[M-H]-"])   # a bromide batch without [M+HBr+Br]-
+    r = _lock_only(lambda i: _hal(i, BR1, "[M+Br]-"), BR1, "[M+Br]-", prof=one)
+    assert int(r["n_halogen"]) == 2
+    # a chlorine ion on a bromide batch: the reagent supplies no Cl
+    _lock_only(lambda i: _hal(i), prof=BROMIDE)
+
+
+def test_a_nitrate_batch_locks_the_samples_bromine_whatever_the_label():
+    for n, a, prof in (("HBr", "[M+^NO3]-", LABEL), ("HBr", "[M+NO3]-", NO3), ("HNO3", "[M+Br]-", NO3)):
+        assert _inorganic(n, a, prof)["verdict"] == "lock", (n, a)
+    # no profile: the batch's committed adducts stand in for its reagent
+    assert _inorganic("HNO3", "[M+Br]-", None)["verdict"] == "reagent"
+
+
+def test_a_batch_of_carbon_free_pairs_only_is_measured():
+    """Rule C finds no 13C line to read where no committed pair carries carbon:
+    it tests nothing (it once raised on such a batch) and rule H still locks the
+    sample's HBr."""
+    n, a = "HBr", "[M+^NO3]-"
+    t = _h(lambda i: _hal(i, n, a), [(n, a)], prof=LABEL)
+    assert not (t["check"] == "C").any() and _get(t, "H", n, a)["verdict"] == "lock"
+    assert IC.summary(t, ORBI)["C"]["tested"] == 0 and IC.summary(t, ORBI)["locked_pairs"] == 1
+
+
+# =========================================================================== the silicon test (the 29Si line decides)
+UR = P.resolve("Ur")
+HI_RES = {"coef": 200 / 240_000 / 200 ** 1.5, "exponent": 1.5}    # R 240 000 at m/z 200: 29Si / 13C apart at m/z 520
+LO_RES = {"coef": 200 / 100_000 / 200 ** 1.5, "exponent": 1.5}    # R 100 000 at m/z 200: blended from m/z ~306
+SI7, CLR, UA = "C14H42O7Si7", "C22H23N6O7Cl", "[M+H]+"            # the D7 siloxane, its Cl reading 0.26 ppm off
+UU = "[M+(CH4N2O)H]+"
+BIG = "C16H29ClO6"                                                  # a chloro acid at m/z 351
+#: the six CHNOS(+Si <= 2)+Cl readings of the D7 siloxane's [M+H]+ within 1 ppm (refute round 2's enumeration);
+#: the two carbon-richest are the ones rule C can read on a dim ion
+R2_READINGS = ("C22H31N2O6S2Cl", "C22H23N6O7Cl", "C30H27O4SCl",
+               "C22H35N2O2S3SiCl",                             # privacy-ok: a molecular formula, not an id
+               "C29H27O5SiCl", "C21H35N2O3S2Si2Cl")
+RULE_C_READS_DIM = ("C30H27O4SCl", "C29H27O5SiCl")
+#: the D7 urea cluster's one Si2 reading the position alone lets through (the re-measure's corner)
+SI2_READING = "C13H31N8O6SSi2Cl"                                   # privacy-ok: a molecular formula, not an id
+
+
+def _blend(parts):
+    """(position, area) of lines the peak picker reads as one: area-weighted."""
+    a = sum(x for _d, x in parts)
+    return sum(d * x for d, x in parts) / a, a
+
+
+def _siloxane(i, picker="centroid", *, reading=CLR, adduct=UA, h=1e5):
+    """The D7 siloxane's `adduct` ion (the [M+H]+ at m/z 519 or its urea
+    cluster at 579) stamped as its Cl `reading`. Its +1 lines: 29Si (7 x 0.0508)
+    and 13C with 17O and 2H (the urea cluster's two 15N, 2.5 mDa below 29Si, are
+    left out) -- as the peak picker reports them: two peaks where it parts them
+    (`parted`), else ONE peak, either a full-area centroid (`centroid`: at their
+    area-weighted position, carrying every line's area) or at the blend's apex
+    (`apex`: AT the 29Si position, carrying the 29Si line and half the 13C
+    group's area -- how R2's peak list reports a siloxane's +1 blend, refute
+    round 2's convention); its M+2: 30Si (7 x 0.0335) and 29Si2 blended, 0.29x
+    at +0.4 ppm from the 37Cl spacing, inside the Cl1 window -- the line the lock
+    would take for 37Cl. `h`: the M0's height scale (x the wave)."""
+    ion = C.parse_formula(_ion(SI7, adduct).rstrip("+"))
+    a29, a30 = IC.LOCK_SI_PER_ATOM["29Si"], IC.LOCK_SI_PER_ATOM["30Si"]
+    c13 = [(IC.D13C, ion["C"] * IC.R13C), (1.0042169, ion["O"] * IC.R17O), (1.0062767, ion["H"] * 0.000115)]
+    p29 = (IC.D29SI, 7 * a29)
+    mz, h0 = C.ion_mz(SI7, adduct), h * _wave(i)
+    rows = [_row(i, mz, h0, role="M0", nf=reading, ad=adduct, ion=_ion(reading, adduct))]
+    plus1 = {"parted": [p29, _blend(c13)], "centroid": [_blend([p29] + c13)],
+             "apex": [(IC.D29SI, p29[1] + 0.5 * _blend(c13)[1])]}[picker]
+    for d, x in plus1:
+        rows.append(_row(i, mz + d, x * h0))
+    d2, x2 = _blend([(IC.D30SI, 7 * a30), (2 * IC.D29SI, 21 * a29 ** 2)])
+    return rows + [_row(i, mz + d2, x2 * h0)]
+
+
+def test_the_siloxane_fixture_is_the_d7_ion_read_as_chlorine():
+    assert abs(C.ion_mz(CLR, UA) - C.ion_mz(SI7, UA)) / C.ion_mz(SI7, UA) * 1e6 < 0.3
+    lo, hi = IC.count_window("Cl", 1)
+    a29, a30 = IC.LOCK_SI_PER_ATOM["29Si"], IC.LOCK_SI_PER_ATOM["30Si"]
+    d2, x2 = _blend([(IC.D30SI, 7 * a30), (2 * IC.D29SI, 21 * a29 ** 2)])
+    assert lo <= x2 <= hi and abs(d2 - IC.LOCK_D["Cl"]) / C.ion_mz(SI7, UA) * 1e6 < IC.LOCK_TOL_PPM
+    for rp, fwhm_lt in ((HI_RES, True), (ORBI, False)):
+        assert (IC._resolution(rp).fwhm(C.ion_mz(SI7, UA) + 1) < IC.D13C - IC.D29SI) is fwhm_lt
+
+
+def test_a_chlorine_line_measured_low_locks_below_the_silicon_window():
+    """Scenario 1: at m/z 193 a 37Cl line 0.15 mDa low (-0.78 ppm) sits nearer
+    the 30Si spacing than its own -- but no 30Si line can enter the 1 ppm window
+    below LOCK_SI_MZ, so the full window stands and nothing reads silicon."""
+    n = "C7H11ClO4"
+    mz = C.ion_mz(n, H)
+    assert mz < IC.LOCK_SI_MZ
+    for mda in (-0.15, 0.15):
+        r = _lock_only(lambda i: _hal(i, n, off_ppm=mda * 1e-3 / mz * 1e6), n)
+        assert r["offset_mda"] == pytest.approx(mda, abs=1e-6)
+        assert r["si29_mode"] == "" and np.isnan(r["si_n"]) and "29Si" not in r["note"]
+
+
+@pytest.mark.parametrize("rp, mode, seen", [(HI_RES, "resolved", 7 * 0.0508), (ORBI, "blended", 0.249),
+                                             (HI_RES, "unparted", 0.249)])
+def test_a_siloxane_read_as_a_chlorine_formula_is_refused(rp, mode, seen):
+    """Scenario 2: the D7 siloxane stamped as C22H23N6O7Cl. Its 30Si + 29Si2 line
+    passes every gate of a 37Cl line; read as 30Si it makes Si8.6, whose 29Si
+    line (0.44x) must be there -- and is: resolved, the 29Si peak itself (0.36x);
+    blended, the +1 line reads 0.25x above the Cl reading's own +1 (0.27x) and
+    sits 2.6 mDa below its 13C position; unparted -- the width model parts the
+    two lines but the peak picker reports one (refute B6: two Gaussians at this
+    height ratio part only from ~1.15 FWHM) -- no 29Si line is present at its
+    own position, so the +1 region decides as where they blend. Blended and
+    unparted, the +1 lines are a full-area centroid (one peak at their
+    area-weighted position carrying all their area); the apex-reporting picker
+    (one peak at 29Si carrying part of the area) is pinned on the dim ion
+    below, read as each of its six Cl formulas."""
+    picker = "parted" if mode == "resolved" else "centroid"
+    t = _measure(_series(lambda i: _siloxane(i, picker)), [(CLR, UA)], prof=UR, resolution=rp)
+    r = _get(t, "H", CLR, UA)
+    assert r["verdict"] == "si_rich" and not bool(r["lock"]) and not bool(r["veto"])
+    assert r["si29_mode"] == mode and r["si_n"] == pytest.approx(8.62, abs=0.01)
+    assert r["si29_expected"] == pytest.approx(0.438, abs=1e-3) and r["si29_seen"] == pytest.approx(seen, abs=2e-3)
+    assert f"the M+1 region carries the 29Si line of a Si8.6 reading of the line ({seen:.2f}x of 0.44x, {mode})" \
+        in r["note"]
+    if mode != "resolved":                  # the position decides: 1.20 mDa above 29Si, the mark at 2.28
+        assert "its +1 peak sits 1.20 mDa above 29Si, at least half-way toward that reading's blend (<= 2.28)" \
+            in r["note"]
+    assert IC.lock(t) == {} and IC.summary(t, rp)["H"]["si_rich"] == 1
+    # and rule C refutes the reading on a bright ion: its +1 line is no 13C line of 22 carbons
+    assert IC.veto(t)[(CLR, UA)].startswith("rule C: ") and _get(t, "C", CLR, UA)["verdict"] == "contradict"
+
+
+@pytest.mark.parametrize("picker, rp, mode", [("centroid", ORBI, "blended"), ("apex", ORBI, "blended"),
+                                              ("centroid", HI_RES, "unparted")])
+def test_a_dim_siloxane_read_as_a_chlorine_formula_is_refused_whatever_the_picker_reports(picker, rp, mode):
+    """Scenario 2 dim (the 2026-09-29 decision, after refute round 2): the D7
+    siloxane's [M+H]+ at 8 x the noise edge (every line above the edge; the
+    13C line of a reading's carbons too dim for rule C, bar the two
+    carbon-richest readings), read as each of the six Cl formulas within 1 ppm,
+    under both blend models (and the centroid where the width model would part
+    29Si from 13C: unparted). Its +1 region sits 1.20 mDa above 29Si as a
+    full-area centroid and AT 29Si as the apex -- at least half-way toward every
+    reading's Si blend, and every reading is refused (si_rich), the four rule C
+    cannot read with nothing else refuting them. The excess test as built
+    before (excess AND position) locked 2 of those 4 as a centroid and all 4 as
+    an apex: a reading's extra carbons absorb the 29Si excess, an apex carries
+    only part of the blend's area, and rule C cannot read a dim ion."""
+    tables = {n: _measure(_series(lambda i: _siloxane(i, picker, reading=n, h=8 * FILL)), [(n, UA)], prof=UR,
+                          resolution=rp) for n in R2_READINGS}
+    assert {n: _get(t, "H", n, UA)["verdict"] for n, t in tables.items()} == dict.fromkeys(R2_READINGS, "si_rich")
+    for reading, t in tables.items():
+        r = _get(t, "H", reading, UA)
+        assert r["si29_mode"] == mode and r["si_n"] == pytest.approx(8.62, abs=0.01)
+        at = "1.20" if picker == "centroid" else "0.00"
+        assert f"its +1 peak sits {at} mDa above 29Si, at least half-way toward that reading's blend" in r["note"]
+        c = _get(t, "C", reading, UA)["verdict"]
+        veto = IC.veto(t).get((reading, UA), "")
+        if reading in RULE_C_READS_DIM:
+            assert c == "contradict" and veto.startswith("rule C: "), reading
+        else:
+            assert c == "untestable" and veto == "", reading       # nothing but the silicon test stops it
+
+
+@pytest.mark.parametrize("h", [1e5, 8 * FILL])
+def test_a_si2_reading_whose_own_29si_hides_the_shift_is_refused_on_the_excess(h):
+    """The Si-reading guard (the 2026-09-29 decision): the D7 siloxane's urea
+    cluster (m/z 579) stamped as its N8 S Si2 Cl reading (`SI2_READING`, 0.19
+    ppm off), its +1 lines a full-area centroid. The reading carries two 29Si of its own, so its own +1
+    line sits 1.71 mDa above 29Si and the half-way mark toward a Si8.6
+    reading's blend at 1.20 -- the siloxane's region, at 1.26, misses it by
+    0.06 mDa: the position alone locks it (the one misread the re-measure found
+    it lifting), and rule C cannot read the reading at any brightness (13C is
+    under half its +1 line). A reading carrying 1-2 Si is also refused on the
+    excess: the region reads 0.22x above the reading's own +1 line, at least
+    half the 0.44x 29Si line a Si8.6 reading implies -- refused (si_rich)."""
+    n = SI2_READING
+    ts = _series(lambda i: _siloxane(i, reading=n, adduct=UU, h=h))
+    t = _measure(ts, [(n, UU)], prof=UR, resolution=ORBI)
+    r = _get(t, "H", n, UU)
+    assert (r["verdict"], r["si29_mode"]) == ("si_rich", "blended") and IC.veto(t) == {}
+    assert _get(t, "C", n, UU)["verdict"] == "untestable"
+    assert r["si29_seen"] == pytest.approx(0.2220, abs=1e-4) and r["si29_expected"] == pytest.approx(0.4377, abs=1e-4)
+    assert "the reading carries Si2 and its +1 peak reads at least half that 29Si above the reading's own" in r["note"]
+    # the anatomy of the corner: the position misses, the excess alone refuses
+    S = IC._Series(ts)
+    g = S.m0[(n, UU)]
+    codes, pm, pa, ph = (g["code"].to_numpy(), g["mz"].to_numpy(float), g["area"].to_numpy(float),
+                         g["height"].to_numpy(float))
+    si = IC._silicon(S, codes, pm, pa, ph, r["ratio_area"], IC.ion_counts(n, UU, ""), IC._resolution(ORBI), -2)
+    assert (si["at"] - IC.D29SI) * 1e3 == pytest.approx(1.263, abs=1e-3)
+    assert (si["at_max"] - IC.D29SI) * 1e3 == pytest.approx(1.204, abs=1e-3)
+    assert IC.m1_line(IC.ion_counts(n, UU, ""))[1] - IC.D29SI == pytest.approx(1.708e-3, abs=1e-6)
+    assert not si["at"] <= si["at_max"] and si["seen"] >= IC.LOCK_SI_FRAC * si["expected"] and si["holds"]
+
+
+def test_on_a_tof_the_plus_one_line_read_low_refuses_a_real_chlorine_lock():
+    """The TOF note (the 2026-09-29 decision): a TOF-class batch blends 29Si
+    and 13C at every mass, and its peak list reads an ion's +1 region ~1.3 mDa
+    below the ion's own +1 position (the median over the regression TOF's 69
+    present regions); the seven Si-free ions the position alone refused there,
+    where the excess test had not, sit 1.4-2.6 mDa below theirs (the
+    area-weighted region, the median over the spectra; 1.7-2.5 mDa below the
+    13C spacing, 1.2-2.1 mDa above 29Si). There the position is no silicon
+    signature: the chloro acid's own 13C line read 2.0 mDa low, 1.79 mDa above
+    29Si, sits past the half-way mark (2.44 mDa above 29Si for its 16
+    carbons) and a real Cl lock is refused. Harmless while no TOF Cl lock
+    forms above m/z 206.3 (the batch's one TOF lock, C2H3ClO2 [M+NO3]- at m/z
+    156, sits below the silicon test's threshold; the TOF's own 81Br partners
+    sit 6.8 ppm off the exact spacing at the median) -- and pinned so that such
+    a TOF lock, if one ever forms, meets it; the same line where it belongs
+    locks."""
+    def build(low_mda):
+        def b(i):
+            rows = _hal(i, BIG)
+            next(r for r in rows if r["iso_label"] == "13C")["mz"] -= low_mda * 1e-3
+            return rows
+        return b
+    r = _lock_only(build(0.0), BIG, resolution=TOF, scale=SCALE_T)
+    assert (r["instrument"], r["si29_mode"]) == ("tof", "blended") and abs(r["si29_seen"]) < 0.01
+    r = _verdict(build(2.0), BIG, resolution=TOF, scale=SCALE_T)
+    assert (r["verdict"], r["si29_mode"]) == ("si_rich", "blended") and abs(r["si29_seen"]) < 0.01
+    assert "its +1 peak sits 1.79 mDa above 29Si, at least half-way toward that reading's blend (<= 2.44)" \
+        in r["note"]
+
+
+@pytest.mark.parametrize("rp, mode", [(ORBI, "unparted"), (LO_RES, "blended")])
+def test_a_chlorine_line_measured_low_locks_above_the_silicon_window(rp, mode):
+    """Scenario 3: at m/z 351 a 37Cl line 0.15 mDa low (-0.43 ppm) is where a
+    30Si line could sit, so the silicon test runs -- and finds no 29Si line (a
+    chlorinated ion carries none; where the width model parts it from 13C, none
+    at its own position, and the +1 region holds only the ion's 13C line): the
+    full window stands and it locks."""
+    mz = C.ion_mz(BIG, H)
+    assert mz > IC.LOCK_SI_MZ and (IC._resolution(rp).fwhm(mz + 1) < IC.D13C - IC.D29SI) is (mode == "unparted")
+    r = _lock_only(lambda i: _hal(i, BIG, off_ppm=-0.15e-3 / mz * 1e6), BIG, resolution=rp)
+    assert r["si29_mode"] == mode and r["offset_mda"] == pytest.approx(-0.15, abs=1e-6)
+    assert r["si_n"] == pytest.approx(0.3198 / IC.LOCK_SI_PER_ATOM["30Si"])
+    assert abs(r["si29_seen"]) < 0.01
+    assert "no 29Si line of a Si9.5 reading of the line" in r["note"]
+
+
+def test_the_silicon_window_starts_where_30si_enters_the_lock_window():
+    """LOCK_SI_MZ: the M0 m/z at which the 30Si spacing (0.206 mDa below 37Cl) is
+    exactly LOCK_TOL_PPM of it -- derived, not set: 206.3 with the AME2020 30Si
+    spacing (1.9968436; 205.7 with the isotope table's 1.9968442); 81Br never
+    (30Si sits 1.11 mDa below it, past 1 ppm below m/z ~1100)."""
+    assert IC.LOCK_SI_MZ == pytest.approx((IC.LOCK_D["Cl"] - IC.D30SI) / (IC.LOCK_TOL_PPM * 1e-6))
+    assert IC.LOCK_SI_MZ == pytest.approx((1.9970499 - 1.9968436) / 1e-6) == pytest.approx(206.3, abs=0.01)
+    assert IC.silicon_window("Cl", IC.LOCK_SI_MZ) and not IC.silicon_window("Cl", np.nextafter(IC.LOCK_SI_MZ, 0))
+    assert not IC.silicon_window("Br", 1000.0) and not IC.silicon_window("Cl", float("nan"))
+    assert (IC.LOCK_D["Br"] - IC.D30SI) / 1e-6 > 1100
+    # on the series: C8H11ClO4 [M-H]- at m/z 205.03 and C7H10ClNO4 [M-H]- at 206.02 (inside
+    # the 0.6 Da the table's rounding added) are not tested, C8H13ClO4 [M-H]- at 207.04 is
+    for n, mode in (("C8H11ClO4", ""), ("C7H10ClNO4", ""), ("C8H13ClO4", "unparted")):
+        r = _lock_only(lambda i: _hal(i, n), n)
+        assert r["si29_mode"] == mode, n
+    # a bromine lock above it is never tested
+    r = _verdict(lambda i: _hal(i, "C10H17BrO4"), "C10H17BrO4")
+    assert r["verdict"] == "lock" and r["mz"] > 270 and r["si29_mode"] == ""
+
+
+@pytest.mark.parametrize("mda", [-8.0, -4.0, 4.0, 8.0])
+def test_a_decoy_spacing_never_locks(mda):
+    for n in (CL1, BR1):
+        d = IC.LOCK_D[_el(n, H)] + mda / 1e3
+        assert _verdict(lambda i: _hal(i, n, d=d), n)["verdict"] == "no_lock", (n, mda)
+
+
+# =========================================================================== the budget (the CF2 analogue)
+def test_budget_ok_is_the_budget_with_the_locked_halogen_lifted():
+    assert IC.budget_verdict(CL1, "Cl", "uronium") == (True, "Cl=1 > 0")          # Cl its only violation
+    assert IC.budget_verdict("C4H7ClO2S2", "Cl", "ambient-air") == (False, "S=2 > 1")
+    assert IC.budget_verdict("C4H7ClO2S2", "Cl", "uronium") == (True, "Cl=1 > 0")
+    assert IC.budget_verdict(CL1, "Cl", "ambient-air") == (True, "")
+    assert IC.budget_verdict("C4H7ClO2S2", "Cl", None) == (True, "")
+    assert IC.budget_verdict(CL1, "Cl", "no-such-context") == (True, "")
+    t = IC.measure(_series(lambda i: _hal(i) + _hal(i, "C4H7ClO2S2", phase=1.0)),
+                   _frames([(CL1, H), ("C4H7ClO2S2", H)]), NO3, resolution=ORBI, mass_scale=SCALE_O,
+                   context="ambient-air", log=quiet)
+    a, b = _get(t, "H", CL1), _get(t, "H", "C4H7ClO2S2")
+    assert (bool(a["budget_ok"]), a["budget_why"]) == (True, "")
+    assert (bool(b["budget_ok"]), b["budget_why"]) == (False, "S=2 > 1")
+    assert bool(a["lock"]) and bool(b["lock"])        # the lock is the line's; the budget gate is the lift's
+
+
+# =========================================================================== the table and its facts
+def _table(**kw):
+    """A lock (CL1), a no-lock (BR1 without its line), a vetoed pair (Y: no 81Br
+    line, REQ) and a halogen-free pair (no H row)."""
+    y = "C6H9BrO3"
+    pairs = [(CL1, H), (BR1, H), (y, H), ("C10H16O4", H)]
+    ts = _series(lambda i: _hal(i) + _hal(i, BR1, present=lambda i: False, phase=0.5)
+                 + _hal(i, y, present=lambda i: False, phase=1.0, h=1e4) + _c13(i, "C10H16O4", H, phase=2.0))
+    return _measure(ts, pairs, **kw)
+
+
+def test_the_h_rows_never_veto_and_the_facts_carry_the_locks():
+    t = _table()
+    assert list(t.columns) == list(IC.TABLE_COLUMNS)
+    h = t[t["check"] == "H"]
+    assert set(h["neutral_formula"]) == {CL1, BR1, "C6H9BrO3"}              # only ions carrying Cl / Br
+    assert not h["veto"].any() and t["lock"].dtype == bool
+    assert not t.loc[t["check"] != "H", "lock"].any()
+    assert IC.veto(t) == IC.veto(t[t["check"] != "H"]) and ("C6H9BrO3", H) in IC.veto(t)
+    f = IC.facts(t)
+    assert set(f) == {"veto", "lock"} and f["veto"] == IC.veto(t)
+    assert set(f["lock"]) == {(CL1, H)}
+    lk = f["lock"][(CL1, H)]
+    assert set(lk) == {"element", "n", "budget_ok", "note"}
+    assert (lk["element"], lk["n"], lk["budget_ok"]) == ("Cl", 1, True) and lk["note"] == _get(t, "H", CL1)["note"]
+    s = IC.summary(t, ORBI)
+    assert s["locked_pairs"] == 1 and s["vetoed_pairs"] == len(IC.veto(t)) and s["tested"] == len(t)
+    assert s["H"] == {"tested": 3, "locked": 1, "lock": 1, "no_lock": 2, "si_rich": 0, "heavy": 0,
+                      "reagent": 0, "untestable": 0}
+    assert "vetoed" in s["REQ"] and "locked" not in s["REQ"]
+
+
+def test_a_table_read_back_from_csv_gives_the_same_facts_in_both_readers(tmp_path):
+    t = _table(x_edge=1.0)
+    p = tmp_path / "iso_checks.csv"
+    t.to_csv(p, index=False)
+    back = pd.read_csv(p)
+    assert IC.facts(back) == IC.facts(t)
+    assert _ll().iso_check_facts(str(p)) == IC.facts(t)
+    # only a rule H row locks: a `lock` cell on another check's row is no lock (a hand-edited table)
+    odd = back.copy()
+    odd.loc[odd["check"] == "REQ", "lock"] = True
+    odd.to_csv(p, index=False)
+    assert IC.lock(odd) == IC.lock(t) and _ll().iso_check_facts(str(p))["lock"] == IC.lock(t)
+
+
+def test_a_table_written_before_rule_h_has_no_locks():
+    t = _table()
+    old = t[t["check"] != "H"].drop(columns=["lock", "element", "n_halogen", "ratio_lo", "ratio_hi", "heavy_cl",
+                                             "heavy_br", "budget_ok", "budget_why"])
+    assert IC.lock(old) == {} and IC.facts(old) == {"veto": IC.veto(t), "lock": {}}
+    buf = io.StringIO()
+    old.to_csv(buf, index=False)
+    assert IC.facts(pd.read_csv(io.StringIO(buf.getvalue())))["lock"] == {}
+    assert IC.summary(old, ORBI)["H"]["tested"] == 0 and IC.summary(old, ORBI)["locked_pairs"] == 0
+
+
+def test_the_tof_class_runs_rule_h_too():
+    r = _lock_only(lambda i: _hal(i), resolution=TOF, scale=SCALE_T)
+    assert r["instrument"] == "tof"
+    # the TOF's stamp window is no excuse: the partner window stays 1 ppm
+    assert _verdict(lambda i: _hal(i, off_ppm=3.0), resolution=TOF, scale=SCALE_T)["verdict"] == "no_lock"
+
+
+def test_the_log_counts_the_locks():
+    """The pair locks and nothing refutes it (rule C reads its 13C line), so the
+    tail counts the locks apart from the vetoes: 0 vetoed, 1 locked."""
+    seen = []
+    t = IC.measure(_series(lambda i: _hal(i)), _frames([(CL1, H)]), NO3, resolution=ORBI, mass_scale=SCALE_O,
+                   log=seen.append)
+    assert not t["veto"].any() and _get(t, "C", CL1)["verdict"] == "agree"
+    line = [x for x in seen if x.startswith("[iso_checks]") and "rule H" in x]
+    assert line and "rule H 1 tested, 1 locked" in line[0] and "rule C 1 tested, 0 refuted" in line[0]
+    assert line[0].split("->")[1].strip().startswith("0 pair(s) vetoed, 1 locked")
+
+
+# =========================================================================== the batch
+def test_a_batch_writes_the_h_rows_with_its_context_and_their_funnel(tmp_path, monkeypatch):
+    """assign_batch.run hands the check its own context (the element budget each
+    file demoted against) and writes the H rows and the funnel."""
+    import json
+
+    from tests.test_iso_checks import Y, _run_batch
+    seen = {}
+    real = IC.measure
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real(*a, **kw)
+    monkeypatch.setattr(IC, "measure", spy)
+    _run_batch(tmp_path, monkeypatch)
+    assert seen.get("context") == "ambient-air"
+    table = pd.read_csv(tmp_path / "tables" / "iso_checks.csv")
+    h = table[table["check"] == "H"]
+    assert list(zip(h["neutral_formula"], h["adduct"])) == [(Y, H)]           # the one ion carrying Br
+    assert h["verdict"].iloc[0] == "no_lock" and not h["veto"].any() and bool(h["budget_ok"].iloc[0])
+    summ = json.load(open(tmp_path / "batch_summary.json"))["evidence_levels"]["iso_checks"]
+    assert summ["locked_pairs"] == 0 and summ["H"]["tested"] == 1 and summ["H"]["no_lock"] == 1

@@ -85,7 +85,7 @@ def test_apply_levels_on_a_real_ledger_writes_the_four_columns():
 def test_the_stage_function_logs_and_returns_the_summary():
     led = _ledger()
     lines = []
-    st = types.SimpleNamespace(led=led, cfg=None, corroborate=set(), log=lines.append)
+    st = types.SimpleNamespace(led=led, cfg=None, corroborate=set(), resolving_power=None, log=lines.append)
     s = A._stage_evidence(st)
     assert s["levels"] and any("evidence levels" in ln for ln in lines)
     assert "evidence_level" in led.columns

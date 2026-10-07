@@ -119,7 +119,8 @@ _REQUIRED_IDENTITY = ("peak_id", "mz")
 #       element budget that no curated list names, a speculative residual fit
 #       (N >= 3 with no isotope, a gap-fill with no anchors, a sole minor
 #       channel), an uncorroborated radical anion, a reagent-N re-read.
-# The evidence level reads either as `hard` (5b) today. Neither is in
+# The evidence level reads either as `hard` (5b); on the pooled batch a halogen
+# lock lifts a lead it answers (rule H, C11+b: evidence._measure). Neither is in
 # `_ASSIGN_COLS`: the tier stage creates both (tiers.flag_below_assignability;
 # the reference-list rescue on a ledger it reaches first), so a ledger that was
 # never tiered -- and the merged ledger, whose schema is assign_batch._M0_COLS --
@@ -128,6 +129,21 @@ _REQUIRED_IDENTITY = ("peak_id", "mz")
 FLAG_BELOW = "below_assignability"
 FLAG_LEAD = "tentative_lead"
 ASSIGNABILITY_FLAGS = (FLAG_BELOW, FLAG_LEAD)
+# Which setter made a row a tentative lead (C11+b): pipe-joined, sorted codes of
+# LEAD_SETTERS, "" where the row is no lead. Not a flag -- `flagged()` never reads
+# it -- but provenance the pooled batch level needs: a halogen lock (rule H) lifts
+# a lead only where every setter behind it is one the lock answers, and the
+# commentary that also names the setter is not among the columns the pooled level
+# keeps. Created and reset with the flags; a ledger written before it has no such
+# column, and the pooled level takes such a lead for any setter, the element
+# budget's included (evidence.lead_liftable).
+LEAD_BY = "lead_by"
+#: the codes `lead_by` names a lead's setter with: the reference-list dim rescue,
+#: the element-budget demote, the three speculative-residual reasons (N >= 3 with
+#: no isotope, a series gap-fill with no anchors, a sole minor channel), the
+#: uncorroborated radical anion and the reagent-N re-read
+LEAD_SETTERS = ("reflist_dim", "off_budget", "spec_n3", "spec_gapfill", "spec_minor", "radical_anion",
+                "reagent_n")
 
 
 class LedgerError(Exception):
@@ -154,24 +170,47 @@ def has_flags(ledger: pd.DataFrame) -> bool:
 
 
 def ensure_flags(ledger: pd.DataFrame) -> pd.DataFrame:
-    """Create whichever of the two flag columns is missing, all False."""
+    """Create whichever of the two flag columns is missing, all False, and the
+    `lead_by` provenance column beside them, all ""."""
     for col in ASSIGNABILITY_FLAGS:
         if col not in ledger.columns:
             ledger[col] = False
+    if LEAD_BY not in ledger.columns:
+        ledger[LEAD_BY] = ""
     return ledger
 
 
-def mark_lead(ledger: pd.DataFrame, i) -> bool:
-    """Flag row `i` (an index label) a tentative lead. Written only where the
+def lead_setters(value) -> frozenset:
+    """The setter codes a `lead_by` cell names; empty for "", NaN or None."""
+    if value is None or value is pd.NA or (isinstance(value, float) and np.isnan(value)):
+        return frozenset()
+    return frozenset(s for s in str(value).split("|") if s.strip() and s.strip().lower() != "nan")
+
+
+def mark_lead(ledger: pd.DataFrame, i, by: str) -> bool:
+    """Flag row `i` (an index label) a tentative lead set by `by` (one of
+    LEAD_SETTERS, appended to the row's `lead_by`). Written only where the
     ledger carries the flags -- the gate the below_assignability setters use --
     creating the lead column beside an older ledger's below_assignability;
     below_assignability itself is left as it is (a row both flags mark stays
     hard). Returns whether it wrote."""
+    if by not in LEAD_SETTERS:
+        raise LedgerError(f"unknown lead setter {by!r}; known: {LEAD_SETTERS}")
     if not has_flags(ledger):
         return False
     ensure_flags(ledger)
     ledger.at[i, FLAG_LEAD] = True
+    _set_lead_by(ledger, i, "|".join(sorted(lead_setters(ledger.at[i, LEAD_BY]) | {by})))
     return True
+
+
+def _set_lead_by(ledger: pd.DataFrame, i, value: str) -> None:
+    """Write a `lead_by` cell; a column read back all-empty from a CSV is float
+    NaN, which takes no text, so it becomes text first ("" where empty)."""
+    col = ledger[LEAD_BY]
+    if not (col.dtype == object or pd.api.types.is_string_dtype(col.dtype)):
+        ledger[LEAD_BY] = col.astype(object).where(col.notna(), "")
+    ledger.at[i, LEAD_BY] = value
 
 
 def flagged(frame: pd.DataFrame) -> pd.Series:
@@ -186,11 +225,14 @@ def flagged(frame: pd.DataFrame) -> pd.Series:
 
 
 def reset_flags(ledger: pd.DataFrame, i) -> None:
-    """Both flags False on row `i` (an index label), where the ledger carries
-    them (a column is never created here). commit / clear / displace call it."""
+    """Both flags False and `lead_by` "" on row `i` (an index label), where the
+    ledger carries them (a column is never created here). commit / clear /
+    displace call it."""
     for col in ASSIGNABILITY_FLAGS:
         if col in ledger.columns:
             ledger.at[i, col] = False
+    if LEAD_BY in ledger.columns:
+        _set_lead_by(ledger, i, "")
 
 
 def new_ledger(peaks: pd.DataFrame) -> pd.DataFrame:

@@ -59,6 +59,7 @@ import pandas as pd
 
 from peaky import paths as PT
 from peaky.chem import profiles as P
+from peaky.batch import iso_checks as _IC
 from peaky.batch import label_twins as _LT
 from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sampling as SS
@@ -1861,8 +1862,17 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # reading on the same series; written for every run (empty out of scope)
     twins_table = _LT.measure(ts_annot, level_frames, prof, alias_ties=alias_ties, log=log)
     twins_table.to_csv(os.path.join(TAB, "label_twins.csv"), index=False)
+    # the isotope checks (C11+, docs/EVIDENCE_LEVELS.md §3 iso_veto, lead_lift): rule C,
+    # REQ and HIGH read each committed formula's isotope claims off the same stamped
+    # series (the instrument class from the batch's width model), rule H its exact
+    # halogen line (a lock, judged against the batch's element budget: `context`);
+    # written for every run (empty without a time series); a refuted pair is hard 5b
+    # and leaves its neutral's pools
+    iso_table = _IC.measure(ts_annot, level_frames, prof, resolution=rp, mass_scale=scale,
+                            x_edge=x_edge, context=context, log=log)
+    iso_table.to_csv(os.path.join(TAB, "iso_checks.csv"), index=False)
     levels = EV.level_pooled(level_frames, cross=cross, upair=_NP.neutrals(pairs_table),
-                             label=_LT.facts(twins_table))
+                             label=_LT.facts(twins_table), iso=_IC.facts(iso_table), resolution=rp)
     merged = EV.stamp_merged(merged, levels)
     levels.to_csv(os.path.join(TAB, "evidence_levels.csv"), index=False)
     ev_summary = {
@@ -1876,9 +1886,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "n_corroborate": int(len(cross)), "cross_source": cross_sources,
         "neutral_pairs": _NP.summary(pairs_table, _pair),
         "label_twins": _LT.summary(twins_table, prof),
+        "iso_checks": _IC.summary(iso_table, rp),
+        # rule H (C11+b): the pooled pairs whose tentative lead a halogen lock lifted
+        "lead_lifted": int(levels["lead_lift"].sum()) if len(levels) and "lead_lift" in levels.columns else 0,
     }
     log(f"[assign_batch] evidence levels over {len(level_frames)} pooled file(s): "
-        f"{ev_summary['pooled']} ({ev_summary['n_pairs']} neutral/adduct pairs); "
+        f"{ev_summary['pooled']} ({ev_summary['n_pairs']} neutral/adduct pairs, "
+        f"{ev_summary['lead_lifted']} lead(s) lifted by a halogen lock); "
         f"{ev_summary['n_unstamped']} merged row(s) without a per-file reading "
         f"-> tables/evidence_levels.csv")
     # the claim each level supports, tallied beside the tier (never read off it)

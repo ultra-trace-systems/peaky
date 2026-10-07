@@ -47,7 +47,16 @@ whitelist (pass 0) — a gatekeeper that can only find what someone listed.
 4. **Score + gate**: candidates go through the standard oracle
    (`score_candidates`); the winner must be server-anchored on **≥2 member
    channels** with on-calibration ppm; S/Cl/Br winners want their diagnostic
-   heavy-isotope envelope (³⁴S/³⁷Cl/⁸¹Br — ¹³C never counts).
+   heavy-isotope envelope (³⁴S/³⁷Cl/⁸¹Br — ¹³C never counts): a line under an
+   ion the certificate commits, a member's (C11+c). A line whose only
+   diagnostic isotope is the bromide reagent's ⁸¹Br (`81Br`, `13C+81Br`,
+   `81Br2`; ¹³C, ¹⁸O, ¹⁵N or ³³S beside it adds none), under a committed
+   bromide cluster of a winner without Br, counts only on a certificate of
+   ≥3 channels — on two, one file, two ions and the reagent's own line are not
+   enough (the user, 2026-10-02) — while the winner's own ³⁴S / ³⁷Cl, alone or
+   in a combined line (`13C+37Cl`, `81Br+37Cl`), and a Br winner's ⁸¹Br count
+   on two channels as on three ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md)
+   §3.0).
 5. **Commit** (`method=certified:multi-channel`): the same certified neutral
    is committed onto *every* member peak under its own channel label — so the
    tier engine's cross-channel corroboration sees the certificate. Ladder

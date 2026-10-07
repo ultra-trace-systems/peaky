@@ -451,8 +451,9 @@ def levels_for(run: Run, levels_csv: str | None, corroborate: list[str]) -> pd.D
 def own_levels_for(run: Run) -> pd.DataFrame:
     """One row per (neutral, adduct) the run's per-file ledgers commit, levelled
     on the run's OWN evidence: its files pooled as one source with NO cross set
-    and its own neutral-pair and label-twin tables (`evidence.level_pooled`; rules U
-    and K are the run's own evidence, not a corroboration) -- the level a `--corroborate` source is judged by
+    and its own neutral-pair, label-twin and isotope-check tables (`evidence.level_pooled`;
+    rules U and K, the C11+ checks and rule H's locks are the run's own evidence, not a corroboration)
+    -- the level a `--corroborate` source is judged by
     (docs/EVIDENCE_LEVELS.md §6.4). The merged ledger's in-core level can owe a
     rung to the run's own `--corroborate` source, and for M3 that source is the
     run being scored (two instruments corroborate each other), so the in-core
@@ -475,7 +476,15 @@ def own_levels_for(run: Run) -> pd.DataFrame:
     if os.path.isfile(table):
         from peaky.batch import label_twins as LT
         label = LT.facts(pd.read_csv(table))
-    pairs = EV.level_pooled(frames, cross=None, upair=upair, label=label)
+    # ... and its isotope checks (C11+; their vetoes and rule H's locks): measured on its own time series
+    iso = None
+    table = os.path.join(run.path, "tables", "iso_checks.csv")
+    if os.path.isfile(table):
+        from peaky.batch import iso_checks as IC
+        iso = IC.facts(pd.read_csv(table))
+    # ... and its width model (the isotope children's committed line and 'M+n' window, C11+c)
+    resolution = (getattr(run, "summary", None) or {}).get("resolution")
+    pairs = EV.level_pooled(frames, cross=None, upair=upair, label=label, iso=iso, resolution=resolution)
     if pairs.empty:
         return empty
     pairs = pairs[~pairs["ion_only"].astype(bool)]
