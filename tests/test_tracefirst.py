@@ -170,6 +170,33 @@ def test_the_batch_run_takes_the_trace_first_path(ts, tmp_path):
     assert js["trace_first"]["n_traces"] == tf["n_traces"]
 
 
+def test_the_trace_sample_stays_at_the_class_fallback_on_an_orbitrap_batch(ts, tmp_path):
+    """The synthetic trace sample has no server record and no server matches: it is scored at the offline class
+    fallback (a TOF's width and window, zero offset) even on an Orbitrap batch. Scoring it at the Orbitrap class
+    instead lost a third of an Orbitrap batch's Assigned rows (R1 366 -> 233, R2 642 -> 433): the traces keep offsets
+    the wave leaves uncorrected and carry no signal-to-noise, so a tight width with an assumed-zero offset rejects
+    them (card C38). The stub serves an Orbitrap record for every real sample and none for the synthetic one, as the
+    server does."""
+    from mascope_tools.composition import resolve_fallback_sigma_ppm, resolve_match_tolerance_ppm, scoring_sigma_ppm
+    real_connect = IO.connect
+
+    def get(sid):
+        if str(sid).startswith("traces-"):
+            raise LookupError("404")
+        return {"instrument_type": "orbi"}
+    IO.connect = lambda *a, **k: SimpleNamespace(name="stub-client", samples=SimpleNamespace(get=get))
+    try:
+        AB.run(peaks=ts, ts_peaks=ts, reagent="NO3", batch="test batch", out_dir=str(tmp_path), trace_first=True,
+               resolving_power=6500.0, residual=False, n_jobs=1, log=lambda *a: None)
+    finally:
+        IO.connect = real_connect
+        IO.unregister_offline_sample("traces-test-batch")
+    snap = json.load(open(tmp_path / "batch_summary.json"))["pattern_scoring"]["traces-test-batch"]
+    assert snap["sigma_source"] == "instrument_class" and snap["mu_source"] == "assumed_zero"
+    assert snap["instrument_type"] is None and snap["mz_tolerance_ppm"] == resolve_match_tolerance_ppm(None)
+    assert snap["sigma_ppm"] == pytest.approx(scoring_sigma_ppm(None, resolve_fallback_sigma_ppm(None)), abs=1e-4)
+
+
 def test_trace_first_measures_the_width_and_says_so_when_it_cannot(ts, tmp_path):
     """No --resolving-power means MEASURE it. When the profile cannot be read --
     here a client that serves none -- the run stops with an actionable message

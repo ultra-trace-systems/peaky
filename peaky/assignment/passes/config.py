@@ -223,6 +223,13 @@ class PassConfig:
     cal_sigma_trend: float | None = None
     cal_mz_lo: float | None = None
     cal_mz_hi: float | None = None
+    cal_trend_n: int | None = None   # backbone points the accepted trend kept
+    # C42: once calibrate() accepts a mass trend, assign.run re-scores the file
+    # from pass 0 with every candidate line judged against the trend's centre at
+    # its own m/z (io_mascope.set_scoring_trend) instead of the one constant
+    # offset. False: the run fits no scoring trend of its own (the pre-C42
+    # behaviour); a trend a stand-in inherited with its snapshot still applies.
+    score_at_trend: bool = True
     # absolute floor (mDa) on the trend sigma, active only where it exceeds the
     # ppm sigma (below ~m/z 120 at sigma 0.25 ppm) -- see masscal.ABS_FLOOR_MDA
     # for the physics. This field is the single runtime owner of the value; the
@@ -305,7 +312,7 @@ class PassConfig:
         # reason -- a deliberate manifest schema change (manifests written
         # earlier carry the two as a record of the run's calibration centre,
         # and batch_summary.json still reports the per-file offsets).
-        "cal_a", "cal_b", "cal_sigma_trend", "cal_mz_lo", "cal_mz_hi",
+        "cal_a", "cal_b", "cal_sigma_trend", "cal_mz_lo", "cal_mz_hi", "cal_trend_n",
         "cal_mu", "cal_sigma",
         "occurrence_threshold", "occurrence_resolved")
 

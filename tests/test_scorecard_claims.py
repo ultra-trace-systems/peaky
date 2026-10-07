@@ -282,7 +282,7 @@ def test_ledger_counts_split_by_claim_on_the_post_hoc_path_too():
 
 
 def _arms(monkeypatch, shift_rows, adduct_rows=None, fail=None):
-    def fake(run_, peaks, sample_id, adducts, log=lambda *a: None):
+    def fake(run_, peaks, sample_id, adducts, log=lambda *a: None, scoring=None):
         arm = sample_id.rsplit("-", 1)[1]
         if arm == fail:
             raise TypeError("boolean value of NA is ambiguous")
@@ -308,7 +308,7 @@ def test_decoy_sums_the_claims_and_rates_them_against_the_control(crun, monkeypa
 def test_a_claim_rate_against_a_control_with_none_of_that_claim_is_undefined(crun, monkeypatch):
     # the control holds one ion pair (4b); the shift arm one identified pair (4a)
     arms = {"control": [LEDGER[4]], "shift": [LEDGER[2]], "adducts": [LEDGER[4]]}
-    monkeypatch.setattr(SC, "run_engine_offline", lambda run_, peaks, sample_id, adducts, log=None:
+    monkeypatch.setattr(SC, "run_engine_offline", lambda run_, peaks, sample_id, adducts, log=None, scoring=None:
                         _decoy_ledger(arms[sample_id.rsplit("-", 1)[1]]))
     card = SC.build_card(crun, rosters=SC.load_rosters(), board=[], log=lambda *a: None, decoy_mode="both")
     dc = card["decoy"]
@@ -346,7 +346,8 @@ def test_kept_arm_ledgers_recount_to_the_same_card(run_dir_claims, tmp_path, cap
         assert "evidence_level" in fh.readline()
     manifest = json.loads((kept / "manifest.json").read_text())
     assert manifest == {"mode": "both", "offset_da": 0.35, "files": ["s1"], "adducts_used": SC.load_run(str(run_dir_claims)).adducts,
-                        "wrong_adducts": SC.wrong_adducts("-"), "code": SC.engine_code()}
+                        "wrong_adducts": SC.wrong_adducts("-"), "scoring": {"s1": "class-fallback"},   # no pattern_scoring: pre-0.9.0
+                        "scoring_detail": {}, "code": SC.engine_code()}
     first = json.loads((out / name / "scorecard.json").read_text())["decoy"]
     assert first["control"]["assigned"] >= 2 and "by_claim" in first["control"]
     # a re-count from the kept ledgers: no engine run, the same numbers
@@ -358,6 +359,7 @@ def test_kept_arm_ledgers_recount_to_the_same_card(run_dir_claims, tmp_path, cap
         SC.run_engine_offline = monkey
     again = json.loads((tmp_path / "again" / name / "scorecard.json").read_text())["decoy"]
     assert again["mode"] == "both" and again["ledgers"] == {"source": "saved", "dir": str(kept), "code": manifest["code"]}
+    assert again["scoring"] == manifest["scoring"]                     # what the kept ledgers were judged at, as kept
     for arm in ("control", "shift", "adducts"):
         assert again[arm] == first[arm]
     assert not (tmp_path / "again" / name / "decoy").exists()          # a re-count keeps nothing new
@@ -392,13 +394,75 @@ def run_dir_claims(tmp_path):
     return write_claim_run(tmp_path / "out")
 
 
+def test_the_card_prints_what_the_arms_were_judged_at_and_a_recount_keeps_it(run_dir_claims, tmp_path, monkeypatch):
+    """C35: a file whose run recorded a snapshot has its arms scored at it; the card prints that per file with the
+    inherited numbers and everything an arm does not inherit (md and html, the note escaped, whatever the control
+    arm did), the board row carries one word, and a re-count from the kept ledgers gives back the same detail."""
+    _arms(monkeypatch, LEDGER[2:4], LEDGER[4:5])
+    bs = run_dir_claims / "batch_summary.json"
+    summ = json.loads(bs.read_text())
+    summ["pattern_scoring"] = {"s1": {"sigma_ppm": 0.71, "mu_ppm": -1.25, "mz_tolerance_ppm": 5.0, "abundance_floor": 0.02,
+                                      "sigma_source": "fitted", "mu_source": "fitted", "fitted_anchors": 23}}
+    bs.write_text(json.dumps(summ))
+    out = tmp_path / "board"
+    assert SC.main([str(run_dir_claims), "--out", str(out), "--decoy", "both", "--quiet"]) == 0
+    name = run_dir_claims.name
+    card = json.loads((out / name / "scorecard.json").read_text())
+    assert card["decoy"]["scoring"] == {"s1": "inherited"} and card["row"]["decoy_scoring"] == "inherited"
+    detail = {"sigma_ppm": 0.71, "mu_ppm": -1.25, "mz_tolerance_ppm": 5.0, "abundance_floor": 0.02, "fitted_anchors": 23,
+              "sigma_source": "fitted"}
+    assert card["decoy"]["scoring_detail"] == {"s1": detail}
+    md = (out / name / "SCORECARD.md").read_text()
+    assert "arms judged at: `s1` inherited (sigma 0.71 ppm, mu -1.25 ppm, window 5 ppm, floor 0.02, 23 anchors)" in md
+    page = html.unescape(SC.render_html([card], [card["row"]]))          # the page writes non-ASCII as entities
+    for text in (md, page):
+        for item in ("opportunistic channels", "height cutoff", "prior offset", "occurrence table", "time series",
+                     "active reference lists", "or corroboration (card C39)", "abundance floor"):
+            assert item in text, item
+    # the note stands whatever the control arm did, in md as in html
+    broken = dict(card, decoy=dict(card["decoy"], control={"error": "TypeError: boom"}))
+    assert "arms judged at" in SC.render_md(broken) and "arms judged at" in SC.render_html([broken], [card["row"]])
+    odd = dict(card, decoy=dict(card["decoy"], scoring={"<img src=x>": "class-fallback"}))
+    page = SC.render_html([odd], [card["row"]])
+    assert "&lt;img src=x&gt;" in page and "<img src=x>" not in page
+    # the kept manifest carries the scoring and its numbers; a re-count reads them back, not the run's summary
+    kept = out / name / "decoy"
+    manifest = json.loads((kept / "manifest.json").read_text())
+    assert manifest["scoring"] == {"s1": "inherited"} and manifest["scoring_detail"] == {"s1": detail}
+    summ["pattern_scoring"] = {"s1": dict(summ["pattern_scoring"]["s1"], sigma_ppm="garbled")}
+    bs.write_text(json.dumps(summ))
+    assert SC.main([str(run_dir_claims), "--out", str(tmp_path / "again"), "--decoy-ledgers", str(out), "--quiet"]) == 0
+    again = json.loads((tmp_path / "again" / name / "scorecard.json").read_text())["decoy"]
+    assert again["scoring"] == {"s1": "inherited"} and again["scoring_detail"] == {"s1": detail}
+
+
+def test_the_board_row_says_class_fallback_and_mixed(run_dir_claims, tmp_path, monkeypatch):
+    _arms(monkeypatch, LEDGER[2:4], LEDGER[4:5])
+    name = run_dir_claims.name
+    assert SC.main([str(run_dir_claims), "--out", str(tmp_path / "a"), "--decoy", "shift", "--quiet"]) == 0
+    assert json.loads((tmp_path / "a" / name / "scorecard.json").read_text())["row"]["decoy_scoring"] == "class-fallback"
+    files = SC.brightest_files(SC.load_run(str(run_dir_claims)), 2)
+    assert len(files) == 2
+    bs = run_dir_claims / "batch_summary.json"
+    summ = json.loads(bs.read_text())
+    summ["pattern_scoring"] = {files[1]: {"sigma_ppm": 3.2, "mu_ppm": -0.65, "mz_tolerance_ppm": 15.0,
+                                          "abundance_floor": 0.02, "sigma_source": "fitted", "fitted_anchors": 29}}
+    bs.write_text(json.dumps(summ))                                  # the second file inherits, the brightest not
+    assert SC.main([str(run_dir_claims), "--out", str(tmp_path / "b"), "--decoy", "shift", "--decoy-files", "2",
+                    "--quiet"]) == 0
+    card = json.loads((tmp_path / "b" / name / "scorecard.json").read_text())
+    assert card["decoy"]["scoring"] == {files[0]: "class-fallback", files[1]: "inherited"}
+    assert card["row"]["decoy_scoring"] == "mixed"
+
+
 # --------------------------------------------------------------------------- the card, the board, the page
 def test_the_card_carries_claims_after_the_headline_and_the_acceptance_block(crun):
     card = SC.build_card(crun, rosters=SC.load_rosters(), board=[], log=lambda *a: None)
     keys = list(card)
     assert keys.index("claims") == keys.index("headline") + 1
     row = card["row"]
-    assert list(row)[: len(OLD_ROW_KEYS)] == OLD_ROW_KEYS and list(row)[len(OLD_ROW_KEYS):] == CLAIM_ROW_KEYS
+    assert list(row)[: len(OLD_ROW_KEYS)] == OLD_ROW_KEYS
+    assert list(row)[len(OLD_ROW_KEYS):] == CLAIM_ROW_KEYS + ["decoy_scoring"]           # appended by C35
     assert (row["claim_identified"], row["claim_ion"], row["claim_tentative"]) == (4, 2, 1)
     assert row["claim_unmatched_signal"] == pytest.approx(100.0 * 80 / COMMITTED)
     assert row["claim_assigned_tentative"] == 1 and row["claim_candidate_identified"] == 1

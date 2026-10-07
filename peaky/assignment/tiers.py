@@ -794,7 +794,15 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
         else:
             parts = []
             if density == 1:
-                parts.append("unique formula in the calibrated window"
+                # "unique in the calibrated window" is a statement of the
+                # degeneracy audit; where it never ran (an uncalibrated file:
+                # degeneracy.measure_degeneracy skipped, no stamp) the search
+                # merely stored no rival -- say that, not uniqueness (C42c).
+                parts.append(("unique formula in the calibrated window"
+                              if degen_density is not None else
+                              "no rival formula in the search window (degeneracy not "
+                              "measured" + ("" if cal is not None else
+                                            ": file uncalibrated") + ")")
                              + (f" ({n_aliased} same-ion decomposition "
                                 "reading(s) excluded)" if n_aliased else ""))
             else:

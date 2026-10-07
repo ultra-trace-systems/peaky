@@ -139,6 +139,28 @@ def centre(a: float, b: float, mz: float,
     return a + b * 1000.0 / m
 
 
+def centre_array(a: float, b: float, mz, mz_lo: float | None = None,
+                 mz_hi: float | None = None) -> np.ndarray:
+    """`centre` over an array of m/z (the local scorer's per-line centre, C42):
+    the same clamp to [mz_lo, mz_hi], vectorised."""
+    m = np.asarray(mz, dtype=float)
+    lo = -np.inf if mz_lo is None else float(mz_lo)
+    hi = np.inf if mz_hi is None else float(mz_hi)
+    return a + b * 1000.0 / np.clip(m, lo, hi)
+
+
+def trend_shift(t1: "MassTrend", t2: "MassTrend", n: int = 64) -> float:
+    """Largest |centre difference| (ppm) between two trends over the union of
+    their m/z coverage, each clamped to its own: how far apart two fits would
+    put a line anywhere either one was fitted."""
+    lo = min(x for x in (t1.mz_lo, t2.mz_lo, 50.0) if x is not None)
+    hi = max(x for x in (t1.mz_hi, t2.mz_hi, lo + 1.0) if x is not None)
+    grid = np.geomspace(lo, hi, n)
+    c1 = centre_array(t1.a, t1.b, grid, t1.mz_lo, t1.mz_hi)
+    c2 = centre_array(t2.a, t2.b, grid, t2.mz_lo, t2.mz_hi)
+    return float(np.max(np.abs(c1 - c2)))
+
+
 def sigma_at(sigma_ppm: float, mz: float, abs_floor_mda: float = ABS_FLOOR_MDA) -> float:
     """The trend sigma at m/z: the ppm sigma, floored by the absolute floor
     expressed in ppm at that mass (active only where the floor exceeds it).

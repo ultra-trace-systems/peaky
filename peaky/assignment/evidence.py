@@ -400,6 +400,29 @@ def _structures(isomer_space: pd.DataFrame | None) -> dict:
 # ---------------------------------------------------------------------------
 # the source
 # ---------------------------------------------------------------------------
+#: `halogen=` default of the level entry points: name it from the committed
+#: cluster adducts (`detect_reagent_halogen`), for a caller that knows no channels.
+DETECT_HALOGEN = "detect"
+
+
+def channel_halogen(adducts) -> str | None:
+    """The reagent halogen named by a run's DECLARED analyte channels (C43): Br
+    for a channel set holding [M+Br]- or [M+HBr+Br]- (a bromide or mixed
+    nitrate/bromide reagent), likewise Cl / I; None for a halogen-free set.
+
+    The run's profile says which reagent it is; a count of the committed cluster
+    adducts (`detect_reagent_halogen`) only guesses it, and on a mixed Br-/NO3-
+    TOF it flips with every change that moves a few readings between the two
+    channels (3907 [M+NO3]- to 3847 [M+Br]- per-file M0 on the rebased trunk:
+    None, and the reagent-81Br rule went off for the whole run)."""
+    for a in adducts or ():
+        a = str(a).strip()
+        for x in ("Br", "Cl", "I"):
+            if a in (f"[M+{x}]-", f"[M+H{x}+{x}]-"):
+                return x
+    return None
+
+
 def detect_reagent_halogen(m0: pd.DataFrame) -> str | None:
     """The halogen of the channel's commonest CLUSTER adduct, or None.
 
@@ -787,7 +810,8 @@ def _axes_string(r, *, with_files: bool) -> str:
 
 
 def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: bool = False,
-                 upair=None, label=None, iso=None, resolution=None, per_file: bool = False) -> pd.DataFrame:
+                 upair=None, label=None, iso=None, resolution=None, per_file: bool = False,
+                 halogen=DETECT_HALOGEN) -> pd.DataFrame:
     """Level every (neutral, adduct) pair of the frames pooled as ONE source.
     `upair`: the neutrals whose declared neutral pair holds (rule U, measured by
     batch/neutral_pairs.py on the batch time series; pooled only). `label`: the
@@ -802,7 +826,9 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
     H, C11+b) whose lead the lock answers is lifted (`_measure`), unless a check
     or rule K refutes the reading. `resolution`: the source's width model (the
     isotope children's committed-line tolerance and 'M+n' window, C11+c);
-    `per_file`: the frames are one file levelled inside its run."""
+    `per_file`: the frames are one file levelled inside its run. `halogen`: the
+    reagent halogen (`channel_halogen` of the run's declared channels, C43);
+    the default names it from the committed cluster adducts instead."""
     parts = []
     for src, frame in frames.items():
         f = frame.copy()
@@ -812,7 +838,8 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
         return pd.DataFrame(columns=["neutral_formula", "adduct", *COLUMNS])
     frame = pd.concat(parts, ignore_index=True, sort=False)
     role = _col(frame, "role").astype(str)
-    halogen = detect_reagent_halogen(frame[role == "M0"])
+    if halogen == DETECT_HALOGEN:
+        halogen = detect_reagent_halogen(frame[role == "M0"])
     label = label or None
     iso_veto = {(str(n), str(a)): str(v or "") for (n, a), v in (((iso or {}).get("veto")) or {}).items()}
     alien = set((label or {}).get("alien") or set()) | set(iso_veto)
@@ -867,7 +894,7 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
 # public API
 # ---------------------------------------------------------------------------
 def compute_levels(ledger: pd.DataFrame, *, cfg=None, isomer_space=None, cross=None,
-                   resolution=None) -> pd.DataFrame:
+                   resolution=None, halogen=DETECT_HALOGEN) -> pd.DataFrame:
     """Pure: one row per M0 row of `ledger` (index = the ledger's index) with
     `peak_id` and the five columns. `cross` = the corroborating neutral formulas
     (the other reagent channel / instrument / `--corroborate` source);
@@ -885,7 +912,7 @@ def compute_levels(ledger: pd.DataFrame, *, cfg=None, isomer_space=None, cross=N
     if m0.empty:
         return empty
     pairs = _level_pairs({"": ledger}, cross=cross, isomer_space=isomer_space, with_files=False,
-                         resolution=resolution, per_file=True)
+                         resolution=resolution, per_file=True, halogen=halogen)
     if pairs.empty:
         return empty
     key = pd.DataFrame({
@@ -908,12 +935,14 @@ def summarize(levels: pd.Series) -> dict:
     return {k: int(counts[k]) for k in LEVELS if k in counts.index and counts[k]}
 
 
-def apply_levels(ledger: pd.DataFrame, *, cfg=None, cross=None, isomer_space=None, resolution=None) -> dict:
+def apply_levels(ledger: pd.DataFrame, *, cfg=None, cross=None, isomer_space=None, resolution=None,
+                 halogen=DETECT_HALOGEN) -> dict:
     """The `evidence` stage: write the five columns onto `ledger` in place (NA
     on every non-M0 row, `claim` included: only a committed formula makes a
     claim) and return the stage summary. `resolution`: the run's width model."""
     cross = {str(x) for x in (cross or set())}
-    out = compute_levels(ledger, cfg=cfg, isomer_space=isomer_space, cross=cross, resolution=resolution)
+    out = compute_levels(ledger, cfg=cfg, isomer_space=isomer_space, cross=cross, resolution=resolution,
+                         halogen=halogen)
     n = len(ledger)
     for c in ("evidence_level", "evidence_axes", "level_reason", "claim"):
         ledger[c] = pd.Series([pd.NA] * n, index=ledger.index, dtype=object)
@@ -944,7 +973,7 @@ def _n_pairs(ledger: pd.DataFrame) -> int:
 
 
 def level_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None, label=None,
-                 iso=None, resolution=None) -> pd.DataFrame:
+                 iso=None, resolution=None, halogen=DETECT_HALOGEN) -> pd.DataFrame:
     """A batch's per-file ledgers ({label: frame}) pooled as ONE source: one row
     per (neutral_formula, adduct) over all files with the four columns and every
     fact of §3 (`chan2` sees a second adduct in ANY file, `iso` any file's
@@ -956,7 +985,7 @@ def level_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None, l
     width model (`instrument`; None = class-less).
     `evidence_axes` ends with `files:<n>`."""
     return _level_pairs(dict(per_file), cross=cross, isomer_space=isomer_space, with_files=True, upair=upair,
-                        label=label, iso=iso, resolution=resolution)
+                        label=label, iso=iso, resolution=resolution, halogen=halogen)
 
 
 def stamp_merged(merged: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:

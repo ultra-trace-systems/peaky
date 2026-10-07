@@ -69,6 +69,60 @@ MIN_OFFSET_ANCHORS = 5
 #: `scoring_for_sample` and `scoring_snapshot`).
 _SCORING_CACHE: dict = {}
 
+#: Per-sample mass-dependent scoring centre (C42): a `masscal.MassTrend` the
+#: sample's own calibration accepted (`set_scoring_trend`, from assign.run) or
+#: its stand-in inherited with a measured sample's snapshot. Candidates of a
+#: sample listed here are scored against the trend's centre at each line's m/z
+#: instead of the snapshot's one offset. `_SCORING_TREND_INHERITED` holds the
+#: ids whose trend came with the snapshot, which a new run keeps.
+_SCORING_TREND: dict = {}
+_SCORING_TREND_INHERITED: set = set()
+
+
+def _trend_record(trend) -> dict:
+    return {"a": round(float(trend.a), 6), "b": round(float(trend.b), 6),
+            "sigma": round(float(trend.sigma), 6), "n": int(trend.n),
+            "mz_lo": None if trend.mz_lo is None else round(float(trend.mz_lo), 4),
+            "mz_hi": None if trend.mz_hi is None else round(float(trend.mz_hi), 4)}
+
+
+def _trend_from_record(rec: dict):
+    from peaky.assignment.masscal import MassTrend
+    return MassTrend(float(rec["a"]), float(rec["b"]), float(rec.get("sigma") or 0.0),
+                     int(rec.get("n") or 0),
+                     None if rec.get("mz_lo") is None else float(rec["mz_lo"]),
+                     None if rec.get("mz_hi") is None else float(rec["mz_hi"]))
+
+
+def set_scoring_trend(sample_id: str, trend) -> None:
+    """Score this sample's candidates against `trend` (a `masscal.MassTrend`)
+    from now on, and record it in the sample's scoring snapshot (`mu_source`
+    "trend", the fit under `trend`) so a run's record and every stand-in that
+    inherits the snapshot (a decoy arm) are judged at the same centre."""
+    _SCORING_TREND[sample_id] = trend
+    if sample_id in _SCORING_CACHE:
+        scoring, snap = _SCORING_CACHE[sample_id]
+        snap = dict(snap)
+        snap["mu_source"] = "trend"
+        snap["trend"] = _trend_record(trend)
+        _SCORING_CACHE[sample_id] = (scoring, snap)
+
+
+def scoring_trend(sample_id: str):
+    """The sample's mass-dependent scoring centre, or None (constant offset)."""
+    return _SCORING_TREND.get(sample_id)
+
+
+def reset_scoring_trend(sample_id: str) -> None:
+    """Forget a trend the sample's OWN calibration set (a new run of it fits its
+    own); a trend inherited with a stand-in's snapshot stays."""
+    if sample_id in _SCORING_TREND_INHERITED:
+        return
+    if _SCORING_TREND.pop(sample_id, None) is not None:
+        # the cached snapshot names the trend; the next scoring_for_sample
+        # recomputes it from the (cached) peaks
+        _SCORING_CACHE.pop(sample_id, None)
+
 
 def _find_env(explicit: str | None = None) -> str:
     # precedence: explicit arg (e.g. CLI --env) > $MASCOPE_ENV > the search list.
@@ -407,17 +461,96 @@ def fetch_pooled_peaks(client, dataset: str, batches_regex: str, *,
 # assign.run(..., peaks=frame) runs the whole engine on the local scorer with no
 # round trip at all.
 _OFFLINE: dict[str, tuple[pd.DataFrame, frozenset]] = {}
+# What an offline sample is scored at, when it stands in for a measured one
+# (`register_offline_sample(scoring=)`): see `scoring_for_sample`.
+_OFFLINE_SCORING: dict = {}
 
 
-def register_offline_sample(sample_id: str, peaks: pd.DataFrame, mechanisms=()) -> None:
+def register_offline_sample(sample_id: str, peaks: pd.DataFrame, mechanisms=(), *,
+                            scoring=None) -> None:
     """Serve `peaks` as `sample_id` from now on (this process only); `mechanisms`
     are the mechanism names its channels use ('[M-H]-', '[M+NO3]-', ...; the
-    legacy '-H+' spelling names the same channel)."""
+    legacy '-H+' spelling names the same channel).
+
+    `scoring` is what the sample is judged at. An offline sample has no server
+    record to name its instrument and usually no server matches to fit a width
+    from, so without it `scoring_for_sample` falls back to the more forgiving
+    class (a TOF's) at zero offset -- wrong for a table that stands in for a
+    measured sample, such as a decoy arm of a scored run. Pass the measured
+    sample's `pattern_scoring` snapshot (a run's batch summary records one per
+    sample) or a `PatternScoring` to be judged exactly as it was, or an
+    instrument class ('orbi' / 'tof') to be judged at that class's width.
+    Registering again replaces the table and the scoring and forgets any
+    scoring computed for the old table."""
+    _check_offline_scoring(scoring)
+    if isinstance(scoring, str):
+        scoring = scoring.strip().lower()
     _OFFLINE[sample_id] = (peaks, frozenset(mechanisms))
+    _OFFLINE_SCORING[sample_id] = scoring
+    _SCORING_CACHE.pop(sample_id, None)
+    _SCORING_TREND.pop(sample_id, None)
+    _SCORING_TREND_INHERITED.discard(sample_id)
+
+
+def _check_offline_scoring(scoring) -> None:
+    """Refuse a `register_offline_sample(scoring=)` that could not be scored at:
+    a class other than 'orbi' / 'tof'; a snapshot or `PatternScoring` whose
+    width, offset or window is not a finite real number (an unset width or
+    offset of a `PatternScoring` is allowed: the library default / zero), whose
+    width or window is not > 0, or whose abundance floor is not in [0, 1) (a
+    snapshot may omit its floor: the library default); or any other type."""
+    from numbers import Real
+
+    from mascope_tools.composition import PatternScoring
+
+    def num(v, name, *, optional=False):
+        if v is None and optional:
+            return None
+        if isinstance(v, bool) or not isinstance(v, Real):        # text, None, a container: not a number
+            raise ValueError(f"{name} is not a number: {v!r}")
+        try:
+            x = float(v)
+        except (ValueError, OverflowError):
+            raise ValueError(f"{name} is not a number: {v!r}") from None
+        if not np.isfinite(x):
+            raise ValueError(f"{name} is not finite: {v!r}")
+        return x
+
+    if scoring is None:
+        return
+    if isinstance(scoring, str):
+        if scoring.strip().lower() not in ("orbi", "tof"):
+            raise ValueError(f"an offline sample's instrument class is 'orbi' or 'tof', not {scoring!r}")
+        return
+    if isinstance(scoring, PatternScoring):
+        sigma = num(scoring.sigma_ppm, "sigma_ppm", optional=True)
+        num(scoring.mu_ppm, "mu_ppm", optional=True)
+        window = num(scoring.mz_tolerance_ppm, "mz_tolerance_ppm")
+        floor = num(scoring.abundance_floor, "abundance_floor")
+    elif isinstance(scoring, dict):
+        try:
+            sigma = num(scoring.get("sigma_ppm"), "sigma_ppm")
+            num(scoring.get("mu_ppm"), "mu_ppm")
+            window = num(scoring.get("mz_tolerance_ppm"), "mz_tolerance_ppm")
+            floor = num(scoring.get("abundance_floor"), "abundance_floor", optional=True)
+        except ValueError as e:
+            raise ValueError(f"a pattern_scoring snapshot to inherit needs finite numbers for sigma_ppm, "
+                             f"mu_ppm and mz_tolerance_ppm, and abundance_floor if given: {e}") from None
+    else:
+        raise TypeError(f"an offline sample's scoring is a pattern_scoring snapshot, a PatternScoring or "
+                        f"'orbi' / 'tof', not {type(scoring).__name__}")
+    if (sigma is not None and sigma <= 0) or window <= 0:
+        raise ValueError(f"an inherited width and window must be > 0: sigma {sigma}, window {window}")
+    if floor is not None and not 0 <= floor < 1:
+        raise ValueError(f"an inherited abundance floor is in [0, 1): {floor}")
 
 
 def unregister_offline_sample(sample_id: str) -> None:
     _OFFLINE.pop(sample_id, None)
+    _OFFLINE_SCORING.pop(sample_id, None)
+    _SCORING_CACHE.pop(sample_id, None)
+    _SCORING_TREND.pop(sample_id, None)
+    _SCORING_TREND_INHERITED.discard(sample_id)
 
 
 def is_offline_sample(sample_id: str) -> bool:
@@ -709,6 +842,11 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
     (`estimate_offset`, eight matches before it states an offset at all). They
     decide which candidates are considered rather than how a considered one
     scores, and widening that is a change to the search.
+
+    An offline sample has no record and usually no anchors: registered with a
+    `scoring` (`register_offline_sample`) it is judged at that -- a measured
+    sample's snapshot or `PatternScoring` as it is (`sigma_source` /
+    `mu_source` "inherited"), an instrument class as that class's width.
     """
     from mascope_tools.composition import (
         PatternScoring,
@@ -720,11 +858,23 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
 
     if not refresh and sample_id in _SCORING_CACHE:
         return _SCORING_CACHE[sample_id][0]
+    given = _OFFLINE_SCORING.get(sample_id) if sample_id in _OFFLINE else None
+    if given is not None and not isinstance(given, str):
+        raw = fetch_peaks(client, sample_id) if peaks is None else peaks
+        scoring, snapshot = _inherited_scoring(given, raw)
+        _SCORING_CACHE[sample_id] = (scoring, snapshot)
+        if isinstance(given, dict) and given.get("trend"):
+            # the measured sample was scored at its mass trend: so is its stand-in
+            _SCORING_TREND[sample_id] = _trend_from_record(given["trend"])
+            _SCORING_TREND_INHERITED.add(sample_id)
+        return scoring
     try:
         record = client.samples.get(sample_id)
     except Exception:
         record = None
-    kind = instrument_type_for(record if isinstance(record, dict) else None)
+    # an offline sample registered with an instrument class is judged at it
+    kind = (given if isinstance(given, str)
+            else instrument_type_for(record if isinstance(record, dict) else None))
     window = resolve_match_tolerance_ppm(kind)
     raw = fetch_peaks(client, sample_id) if peaks is None else peaks
     # An anchor outside the matching window is not a match at this instrument,
@@ -775,6 +925,55 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
     }
     _SCORING_CACHE[sample_id] = (scoring, snapshot)
     return scoring
+
+
+def _has_snr(raw) -> bool:
+    return (bool(pd.to_numeric(raw["signal_to_noise"], errors="coerce").notna().any())
+            if "signal_to_noise" in getattr(raw, "columns", []) else False)
+
+
+def _inherited_scoring(given, raw):
+    """(PatternScoring, snapshot) for an offline sample judged at another
+    sample's measurement: `given` is that sample's `pattern_scoring` snapshot
+    or a `PatternScoring`. The snapshot keeps the measurement's numbers and
+    says it was inherited (`sigma_source` / `mu_source`, the originals under
+    `inherited`); whether peaks carry a signal-to-noise is this table's own."""
+    from mascope_tools.composition import PatternScoring
+
+    if isinstance(given, PatternScoring):
+        scoring, src = given, {"sigma_source": None, "mu_source": None}
+        if scoring.sigma_ppm is None or scoring.mu_ppm is None:
+            # an unset width is the library's own default, as score_pattern_v2 reads it; an
+            # unset offset is none measured, zero
+            from mascope_tools.composition.heuristic_filter import FALLBACK_SIGMA_PPM
+            scoring = PatternScoring(
+                sigma_ppm=FALLBACK_SIGMA_PPM if scoring.sigma_ppm is None else scoring.sigma_ppm,
+                mu_ppm=0.0 if scoring.mu_ppm is None else scoring.mu_ppm,
+                mz_tolerance_ppm=scoring.mz_tolerance_ppm, abundance_floor=scoring.abundance_floor)
+    else:
+        src = dict(given)
+        kw = {"sigma_ppm": float(src["sigma_ppm"]), "mu_ppm": float(src["mu_ppm"]),
+              "mz_tolerance_ppm": float(src["mz_tolerance_ppm"])}
+        if src.get("abundance_floor") is not None:
+            kw["abundance_floor"] = float(src["abundance_floor"])
+        scoring = PatternScoring(**kw)
+    snapshot = {
+        "score_version": SCORE_VERSION,
+        "sigma_ppm": round(float(scoring.sigma_ppm), 4),
+        "mu_ppm": round(float(scoring.mu_ppm), 4),
+        "sigma_source": "inherited",
+        "mu_source": "inherited",
+        **({"trend": dict(src["trend"])} if src.get("trend") else {}),
+        "inherited": {"sigma_source": src.get("sigma_source"), "mu_source": src.get("mu_source"),
+                      "fitted_anchors": src.get("fitted_anchors"),
+                      "has_signal_to_noise": src.get("has_signal_to_noise")},
+        "fitted_anchors": 0,
+        "mz_tolerance_ppm": float(scoring.mz_tolerance_ppm),
+        "abundance_floor": float(scoring.abundance_floor),
+        "instrument_type": src.get("instrument_type"),
+        "has_signal_to_noise": _has_snr(raw),
+    }
+    return scoring, snapshot
 
 
 def scoring_snapshot(client, sample_id: str, peaks: pd.DataFrame | None = None) -> dict:
@@ -1041,6 +1240,7 @@ def _score_candidates_local(client, sample_id, formulas, mechanism_ids):
     out = local_scoring.score_candidates_local(
         raw, formulas, mechanisms=mechs,
         scoring=scoring_for_sample(client, sample_id, raw),
+        centre=scoring_trend(sample_id),
     )
     out.attrs["match_batches"] = 0
     out.attrs["match_batch_failures"] = []

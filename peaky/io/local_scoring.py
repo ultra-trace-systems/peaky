@@ -103,6 +103,7 @@ def score_candidates_local(
     *,
     mechanisms: list[str] | None = None,
     scoring=None,
+    centre=None,
     purity: float | None = None,
     mz_col: str = "mz",
     intensity_col: str = "height",
@@ -120,6 +121,20 @@ def score_candidates_local(
     `io_mascope.scoring_for_sample` builds it from the sample's own targeted
     matches and its instrument class. Passing nothing scores at the library's
     defaults, which are an Orbitrap's.
+
+    `centre` (C42) is the sample's own mass-dependent centre, a
+    `masscal.MassTrend` its calibration accepted: each line's error is then
+    judged against the centre at THAT line's m/z (clamped to the trend's m/z
+    coverage) instead of the one offset in `scoring`. An Orbitrap whose error
+    runs as 1/mz (+0.8 ppm at m/z 131, -0.2 at 400 on the labelled-nitrate run)
+    otherwise has every low-mass ion judged ~1 sigma off a centre it does not
+    sit at. None keeps the constant offset.
+
+    Every row also carries `ion_score_massfree`: the same score with every
+    matched line's mass error set to the centre, i.e. what the isotope pattern
+    alone says. The calibration selects the rows it fits the mass trend on by
+    it (passes.core.calibrate), so the trend is not measured on rows a
+    mis-centred mass term already filtered to sit near the constant offset.
 
     A `signal_to_noise` column on `peaks` is carried into the score, where it
     decides how a faint line is judged: an absent line is charged only where the
@@ -139,6 +154,7 @@ def score_candidates_local(
         score_pattern_v2,
     )
 
+    from peaky.assignment import masscal as MC
     from peaky.chem import isotopes as ISO
 
     # A '^X' candidate's envelope carries the reagent's unlabelled impurity line,
@@ -256,9 +272,25 @@ def score_candidates_local(
 
             if base_int is None:  # M0 not detected -> not a candidate at all
                 continue
+            if centre is not None:
+                line_centre = MC.centre_array(centre.a, centre.b, pred_mz,
+                                              centre.mz_lo, centre.mz_hi)
+            else:
+                line_centre = scoring.mu_ppm
             score = float(
                 score_pattern_v2(
-                    obs_ppm - scoring.mu_ppm,
+                    obs_ppm - line_centre,
+                    obs_int,
+                    obs_snr,
+                    pred_rel,
+                    sigma_ppm=scoring.sigma_ppm,
+                    k_detect=DETECT_SNR_K,
+                )
+            )
+            # the isotope pattern alone: every matched line at the centre
+            score_massfree = float(
+                score_pattern_v2(
+                    np.zeros_like(obs_ppm),
                     obs_int,
                     obs_snr,
                     pred_rel,
@@ -277,6 +309,7 @@ def score_candidates_local(
                         "compound_category": cat,
                         "ion_formula": ion,
                         "ion_score": score,
+                        "ion_score_massfree": score_massfree,
                         "ion_category": cat,
                         "mechanism_id": im.mascope_notation,
                         "isotope_formula": ion if label == "M0" else f"[{label}]{ion}",

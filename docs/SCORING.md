@@ -98,6 +98,23 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   measurement. On a bromide TOF sample with three anchors, two mis-matched to the
   same wrong species, the median landed at −10.4 ppm for a source the engine
   measures within 0.3 ppm of calibration.
+
+  **An offline sample has neither a record nor anchors.** A table served from
+  memory (`register_offline_sample`: a scorecard decoy arm, the trace-first
+  synthetic sample, a test) has no server record to name its class and usually
+  no server matches, so on its own it is scored at the more forgiving class — a
+  TOF's width and window — at an assumed-zero offset. Registered with a
+  `scoring` (`register_offline_sample(..., scoring=)`, `assign.run(peaks=,
+  scoring=)`) it is judged at that instead: a measured sample's
+  `pattern_scoring` snapshot or a `PatternScoring` as it is (`sigma_source` /
+  `mu_source` `inherited`, the originals under `inherited`), or an instrument
+  class at that class's width. The scorecard's decoy arms inherit their file's
+  snapshot; the trace-first sample stays at the class fallback: scored at an
+  Orbitrap's width with an assumed-zero offset it lost a third of a batch's
+  assignments, mostly because its traces carry no signal-to-noise (adding it
+  recovers 135 of R2's 209 lost) and partly because their offsets are ones the
+  class width cannot absorb -- uncorrected outside the wave's range and
+  over-corrected inside it on R1 (card C38).
 - **`formulas`** — candidate neutral formulas (the grid + cheminfo union).
 - **channels** — either peaky `adducts` (labels like `[M+Br]-`) or already-resolved
   mascope **`mechanisms`** strings (`[M+Br]-`); the dispatcher passes the latter, which
@@ -144,7 +161,10 @@ All thresholds are the named constants from `local_scoring.py` (see §4).
    wrong abundance is **not** attributed — it stays unmatched.
 
 6. **Score the ion** (`score_pattern_v2`). One score per ion, on
-   `(obs_ppm − scoring.mu_ppm, obs_int, obs_snr, pred_rel)` at
+   `(obs_ppm − centre, obs_int, obs_snr, pred_rel)` -- `centre` the sample's
+   constant `scoring.mu_ppm`, or (C42) once the sample's own calibration
+   accepted a 1/mz mass trend, that trend's centre at each line's own m/z
+   (`centre=` a `masscal.MassTrend`, clamped to its m/z coverage) -- at
    `sigma_ppm=scoring.sigma_ppm`: each line contributes a Gaussian mass
    likelihood times an intensity likelihood whose tolerance is set by that
    peak's signal-to-noise, an **absent** line contributes a miss penalty iff the
@@ -153,7 +173,9 @@ All thresholds are the named constants from `local_scoring.py` (see §4).
    predicted-abundance-weighted geometric mean. Reported `ppm_error` stays the
    raw measured error: the offset belongs to the calibration, not to the row.
    The same `compound_score` / `ion_score` is copied onto every isotopologue row
-   of that ion.
+   of that ion, and so is `ion_score_massfree`: the same score with every
+   matched line's error at the centre -- the isotope pattern alone, which the
+   calibration picks its trend backbone by (C42).
 
 7. **Categorize** (`_category`). `score ≥ PROBABLE_THRESHOLD (0.8)` → `probable`;
    `≥ POSSIBLE_THRESHOLD (0.4)` → `possible`; else `unlikely`. Bands on the fit's

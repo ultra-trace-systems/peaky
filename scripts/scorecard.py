@@ -1406,7 +1406,9 @@ def census(run: Run) -> dict:
 
 
 # --- decoy ------------------------------------------------------------------
-PEAK_COLS = ["sample_item_id", "peak_id", "mz", "sparsity", "area", "height"]
+# signal_to_noise: the v2 fit charges a missing line only where the noise says it was visible, so a decoy arm
+# without it would be judged in the no-SNR mode while its file was not (a run before 0.9.0 has no such column)
+PEAK_COLS = ["sample_item_id", "peak_id", "mz", "sparsity", "area", "height", "signal_to_noise"]
 MATCH_COLS = ("match_score_isotope", "relative_abundance", "target_isotope_id", "target_isotope_formula",
               "target_ion_id", "target_ion_formula", "target_compound_id", "target_compound_name",
               "target_compound_formula", "target_collection_ids", "match_score_ion", "match_score_compound",
@@ -1447,8 +1449,71 @@ def brightest_files(run: Run, n: int) -> list[str]:
     return list(order.index[:n])
 
 
-def run_engine_offline(run: Run, peaks: pd.DataFrame, sample_id: str, adducts: list[str], log=lambda *a: None) -> pd.DataFrame:
-    """`assign.run(peaks=)` on one table with the run's own profile settings.
+def decoy_scoring(run: Run, file_id: str) -> dict | None:
+    """What the run judged `file_id` at: its `pattern_scoring` snapshot in the
+    batch summary (a 0.9.0 run records one per sample), or None for a run that
+    predates it. A decoy arm of that file is judged at the same measurement --
+    width, offset, window and abundance floor -- so the arm bounds the run as scored, not a
+    forgiving class fallback (card C35)."""
+    from peaky.io import io_mascope as IO
+
+    ps = run.summary.get("pattern_scoring")
+    snap = ps.get(file_id) if isinstance(ps, dict) else None
+    if not isinstance(snap, dict):
+        return None
+    try:            # the registration's own check, so the card's label and the arm's scoring cannot disagree
+        IO._check_offline_scoring(snap)
+    except (TypeError, ValueError):
+        return None
+    return snap
+
+
+def decoy_scoring_summary(dc: dict) -> str | None:
+    """One word for what a card's decoy arms were judged at: 'inherited' (every
+    file at the run's own measurement of it), 'class-fallback', 'mixed', or
+    'unrecorded' (a kept manifest from before the field existed)."""
+    sc = (dc or {}).get("scoring")
+    if not sc:
+        return None
+    kinds = set(sc.values()) if isinstance(sc, dict) else {str(sc)}
+    return kinds.pop() if len(kinds) == 1 else "mixed"
+
+
+def _g(v) -> str:
+    """A small number to three significant figures (an abundance floor of 0.004 is not 0.00)."""
+    return f"{float(v):.3g}" if isinstance(v, (int, float)) and not isinstance(v, bool) else DASH
+
+
+#: what a decoy arm does not take from the run it bounds (card C39)
+DECOY_NOT_INHERITED = ("its opportunistic channels, batch height cutoff, pre-calibration prior offset, batch occurrence "
+                       "table, batch time series, active reference lists (the reflist prior and the pass-8 rescue) "
+                       "or corroboration")
+
+
+def _scoring_note(dc: dict) -> str:
+    sc = (dc or {}).get("scoring")
+    if not isinstance(sc, dict) or not sc:
+        return ""
+    det = (dc or {}).get("scoring_detail") or {}
+    parts = []
+    for f, k in sc.items():
+        d = det.get(f) or {}
+        if k == "inherited" and d:
+            src = "" if d.get("sigma_source") == "fitted" else f", the run's own {d.get('sigma_source')} width"
+            parts.append(f"`{f}` inherited (sigma {_d(d.get('sigma_ppm'), 2)} ppm, mu {_d(d.get('mu_ppm'), 2)} ppm, "
+                         f"window {_d(d.get('mz_tolerance_ppm'), 0)} ppm, floor {_g(d.get('abundance_floor'))}, "
+                         f"{_d(d.get('fitted_anchors'))} anchors{src})")
+        else:
+            parts.append(f"`{f}` {k}")
+    return ("arms judged at: " + ", ".join(parts)
+            + f". Inherited = the run's width, offset, window and abundance floor and the file's signal-to-noise; an "
+            f"arm does not take {DECOY_NOT_INHERITED} (card C39).")
+
+
+def run_engine_offline(run: Run, peaks: pd.DataFrame, sample_id: str, adducts: list[str], log=lambda *a: None,
+                       scoring=None) -> pd.DataFrame:
+    """`assign.run(peaks=)` on one table with the run's own profile settings,
+    judged at `scoring` (`decoy_scoring`; None = the offline class fallback).
     Returns the ledger. Needs the local scorer (the default)."""
     import copy
 
@@ -1475,7 +1540,8 @@ def run_engine_offline(run: Run, peaks: pd.DataFrame, sample_id: str, adducts: l
             kw["label_purity"] = run.profile.purity
     context = (run.profile.context if run.profile is not None else None) or run.summary.get("context") or "ambient-air"
     try:
-        res = A.run(sample_id, context=context, cfg=copy.deepcopy(cfg), peaks=peaks, use_cache=False, log=log, **kw)
+        res = A.run(sample_id, context=context, cfg=copy.deepcopy(cfg), peaks=peaks, use_cache=False, log=log,
+                    scoring=scoring, **kw)
     finally:
         IO.unregister_offline_sample(sample_id)
     return res["ledger"]
@@ -1613,6 +1679,24 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
     agg: dict[str, list] = {"control": [], "shift": [], "adducts": []}
     errors: dict[str, str] = {}
     saved: list[str] = []
+    # per file, what its arms were judged at (attempted: an arm that errors keeps its file's label) and the inherited
+    # numbers -- on a TOF the brightest file can be the batch's worst-fitted one
+    out["scoring"] = (kept.get("scoring") or {f: "unrecorded" for f in files} if ledgers_dir
+                      else {f: ("inherited" if decoy_scoring(run, f) else "class-fallback") for f in files})
+    if ledgers_dir:
+        out["scoring_detail"] = kept.get("scoring_detail") or {}
+    else:
+        from mascope_tools.composition import PatternScoring
+
+        out["scoring_detail"] = {}
+        for f in files:
+            snap = decoy_scoring(run, f)
+            if snap:
+                det = {k: snap.get(k) for k in ("sigma_ppm", "mu_ppm", "mz_tolerance_ppm", "abundance_floor",
+                                                "fitted_anchors", "sigma_source")}
+                if det["abundance_floor"] is None:          # an omitted floor is the library's: what the arm got
+                    det["abundance_floor"] = PatternScoring().abundance_floor
+                out["scoring_detail"][f] = det
 
     def arm(key: str, peaks: pd.DataFrame, file_id: str, adducts: list[str]) -> None:
         # a decoy arm that crashes the engine is a finding, not a reason to lose
@@ -1622,7 +1706,7 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
             if ledgers_dir:
                 led = pd.read_csv(arm_ledger_path(ledgers_dir, file_id, key), low_memory=False)
             else:
-                led = run_engine_offline(run, peaks, sample_id, adducts, log)
+                led = run_engine_offline(run, peaks, sample_id, adducts, log, scoring=decoy_scoring(run, file_id))
             agg[key].append(_ledger_counts(led, sample_id))
         except Exception as exc:  # noqa: BLE001 - anything the engine raises
             errors[key] = f"{type(exc).__name__}: {exc}"
@@ -1640,7 +1724,7 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
         peaks = raw_peaks_of(run, f)
         if peaks.empty:
             continue
-        log(f"[decoy] {f}: {len(peaks)} peaks, control run")
+        log(f"[decoy] {f}: {len(peaks)} peaks, control {'re-count' if ledgers_dir else 'run'}")
         arm("control", peaks, f, run.adducts)
         if mode in ("shift", "both"):
             log(f"[decoy] {f}: shift {offset_da:+.3f} Da")
@@ -1649,7 +1733,8 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
             log(f"[decoy] {f}: wrong adducts {wrong_adducts(run.polarity)}")
             arm("adducts", peaks, f, wrong_adducts(run.polarity))
     if saved:
-        manifest = {k: out[k] for k in ("mode", "offset_da", "files", "adducts_used", "wrong_adducts")}
+        manifest = {k: out[k] for k in ("mode", "offset_da", "files", "adducts_used", "wrong_adducts", "scoring",
+                                        "scoring_detail")}
         try:
             with open(os.path.join(save_dir, DECOY_MANIFEST), "w") as fh:
                 json.dump(manifest | {"code": out["ledgers"]["code"]}, fh, indent=1, default=_json_default)
@@ -2009,6 +2094,8 @@ def board_row(card: dict) -> dict:
         "m3_own_missing_identified": (own.get("n_missing_by_claim") or {}).get("identified"),
         "claims_schema": CLAIMS_SCHEMA,
     })
+    # what the decoy arms were judged at (C35): appended, so the board's older columns keep their order
+    row["decoy_scoring"] = decoy_scoring_summary(dc)
     return row
 
 
@@ -2257,6 +2344,8 @@ def render_md(card: dict) -> str:
     for k, v in cz["elements"].items():
         L.append(f"| {k} | {v} | {cz['examples'].get(k, '')} |")
     L += ["", "### (c) decoy false-discovery bound", ""]
+    if _scoring_note(dc):
+        L += [_scoring_note(dc), ""]
     if dc.get("control") and "error" not in dc["control"]:
         L += [f"offline engine on the brightest {len(dc['files'])} cover file(s) `{', '.join(dc['files'])}`; control = the file as it is.", "",
               f"| arm | M0 rows | Assigned | < {DECOY_MZ_SPLIT:.0f} / >= | Candidate | neutrals | level <= 4a | rate vs control (Assigned) "
@@ -2659,6 +2748,8 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
                 out.append(f"<p class=\"note\">by the other instrument's <b>own</b> evidence (no cross set — the level a --corroborate source is judged by): {oo['n_missing']} of its {oo['n_good']} rows at level ≤ 4b pass the floor and are absent here</p>")
                 out.append(html_table(oo["rows"], [("neutral", "neutral"), ("adduct", "other adduct"), ("level", "own level"), ("axes", "own axes"), ("med_cps", "med cps there"), ("share", "share %")], {"share": 0}, mono=("neutral", "adduct", "level")))
         out.append("<h3>Decoy false-discovery bound</h3>")
+        if _scoring_note(dc):
+            out.append(f"<p class=\"note\">{html.escape(_scoring_note(dc).replace('`', ''))}</p>")
         if dc.get("control") and "error" not in dc["control"]:
             dc_rows = []
             for key, label in (("control", "control (as is)"), ("shift", f"shift {dc.get('offset_da', 0):+.2f} Da"), ("adducts", f"wrong adducts {dc.get('wrong_adducts')}")):

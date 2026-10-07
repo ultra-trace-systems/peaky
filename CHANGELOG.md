@@ -6,6 +6,43 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The fit scores a mass at the sample's own m/z-dependent centre (C42).** The v2 score
+  judged every line against ONE offset per sample (its server matches' median), and the
+  pass-1 calibration that could fit the instrument's 1/mz mass trend selected its backbone
+  by that same score -- so it saw only rows already near the constant offset, and on the
+  15N-nitrate Orbitrap rejected the trend in 12/12 files (all 12 pooled too), leaving the
+  bright low-mass acids (C5H8O4 / C6H6O4 / C7H8O3 [M-H]-, +0.7-0.9 ppm at m/z 131-141
+  where the instrument centre is +0.7-0.8) at v2 0.50-0.68: Candidate, level 5b.
+  Now (a) the local scorer also reports `ion_score_massfree` (the isotope pattern alone;
+  a new ledger column) and takes a per-line `centre`; (b) `calibrate()` fits the trend on
+  CHO-CHON rows whose pattern-only score is Good AND that carry an observed isotope line
+  (an untested pattern -- a dim O-rich coincidence with every satellite below detection --
+  scores ~1 and sat ~0.4 ppm off the trend above m/z 400); (c) once a trend is accepted
+  `assign.run` re-runs the file from pass 0 with every line judged at the trend's centre
+  at its own m/z (`PassConfig.score_at_trend`, default on) -- again while the re-run's
+  own calibration moves the trend by more than 0.05 ppm anywhere (at most twice), so the
+  file ends scored at the trend its gates use -- and records the trend in the sample's
+  `pattern_scoring` snapshot (`mu_source: "trend"`; a batch carries it back from each
+  worker), which a decoy arm inherits. The network scorer (`PEAKY_LOCAL_SCORING=0`)
+  judges one offset: there nothing re-runs. Single-file check (passes 0-1, three
+  labelled-nitrate files): the first fit (b 0.16-0.21 mDa, coverage from m/z 139-157)
+  is refined by the re-run (b 0.207-0.218, coverage from m/z 131), within the pre-0.9.0
+  engine's per-file fits (0.16-0.22).
+- **"unique formula in the calibrated window" needs the degeneracy audit (C42c).** On an
+  uncalibrated file the audit is skipped and stamps nothing, yet a row with no stored
+  rival still read the unique-window text (the mixed TOF: 59 of 67 such per-file gains).
+  It now reads "no rival formula in the search window (degeneracy not measured: file
+  uncalibrated)". The tier is unchanged; the levels never read the text (their `unique`
+  is the audit's own stamp).
+- **The reagent halogen comes from the declared channels (C43).** The evidence levels named
+  it from the commonest committed cluster adduct; on the mixed Br-/NO3- TOF that count
+  flipped (3907 [M+NO3]- : 3847 [M+Br]- per-file M0) and switched the C11+c reagent-81Br
+  rule off for the whole run (4d 49 -> 0). `evidence.channel_halogen` reads the run's
+  declared channels (`assign.run`, before opportunistic ones) and the batch profile's
+  (`assign_batch`); the count remains the fallback where no channels are known.
+
 ### Added
 
 - **A halogen lock lifts a tentative lead (C11+b, rule H).** A lead is unsupported,
@@ -1206,6 +1243,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [M-H]- (…): the reagent-cluster reading is kept …"). Same answer whatever the channel order.
 
 ### Fixed
+
+- **A decoy arm is scored at what its file was scored at, not at a TOF's width (C35).** Under
+  the v2 fit a sample's width, offset and window come from its server record and its own
+  server matches (`io_mascope.scoring_for_sample`); an offline sample has neither, so it is
+  scored at the more forgiving class -- a TOF's -- at zero offset. The scorecard's decoy arms
+  are offline samples, so an Orbitrap run's arms were judged at a TOF's width while the run
+  was judged at its own fitted one. `register_offline_sample(..., scoring=)` (and
+  `assign.run(peaks=, scoring=)`, refused without `peaks=`) now takes a measured sample's
+  `pattern_scoring` snapshot, a `PatternScoring` or an instrument class ('orbi' / 'tof');
+  `scoring_for_sample` judges the sample at it and the snapshot says `inherited`. A class
+  other than those, a width, offset, window or floor that is not a finite number (a
+  `PatternScoring` may leave its width or offset unset: the library default / zero; a
+  snapshot may omit its floor), a width or window not above zero, an abundance floor
+  outside [0, 1), or any other type is refused at registration. Each decoy arm inherits its
+  file's snapshot from the run's batch summary (`scorecard.decoy_scoring`, by the same
+  check; a run from before 0.9.0, or a snapshot that fails it, leaves the arm at the class
+  fallback) and keeps the per-peak `signal_to_noise` of its per-file ledger (it was dropped,
+  so an arm was judged in the no-SNR mode its file was not). The card prints per file what
+  the arms were scored at, with the inherited width, offset, window, floor and anchors
+  (`decoy.scoring` / `decoy.scoring_detail`, kept in the decoy manifest for a re-count), and
+  the board row appends `decoy_scoring`; nothing renders it yet, so a decoy delta across a
+  change of scoring -- on the board, the page's run panels or the card's delta section -- is
+  not marked (card C41). What an arm still does not
+  inherit -- the run's opportunistic channels, height cutoff, prior offset, occurrence table,
+  time series, reference lists and corroboration -- is listed on the card and in
+  docs/SCORECARD.md (card C39). The trace-first synthetic sample stays at
+  the class fallback (scored at an Orbitrap's width it lost a third of a batch's
+  assignments, mostly for want of a signal-to-noise: card C38). Re-registering an offline
+  sample forgets the scoring computed for its old table.
 
 - **A labelled adduct keeps its 15N when the ion is read from neutral + adduct (C11+c).** The
   isotope line test reads every line against the ion's mono m/z, from the stored ion string
