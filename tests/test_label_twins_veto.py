@@ -27,7 +27,7 @@ from peaky.chem import chemistry as C
 from tests.test_evidence import ledger, m0
 from tests.test_label_twins import LABEL, NO3, NO3L, _frames, _measure, _refs_spec, _row, _series
 
-T0 = pd.Timestamp("2026-08-11 00:00", tz="UTC")
+T0 = pd.Timestamp("2021-02-18 00:00", tz="UTC")
 N = 120
 N_BINS = len(LT.PDET_EDGES) - 1
 F0 = 0.02 / 0.98

@@ -1,8 +1,96 @@
-# Level fixtures — the four golden sets behind `tests/test_evidence.py`
+# Level fixtures
+
+Two families of sets live here:
+
+- `v1_nitrate/`, `v1_uronium/` with `expected_levels_v1.csv.gz` and
+  `expected_vectors_v1.json` -- **the evidence scale** (docs/EVIDENCE_LEVELS.md),
+  end to end on two real Orbitrap batches (`tests/test_levels_fixtures.py`);
+- the older flat sets (`tv_*`, `tof_*`, `orbi_*`, `ur_*`, `expected_levels.csv`)
+  -- the golden sets of the merge vote's private decision (below).
+
+## The evidence-scale sets: `v1_nitrate`, `v1_uronium`
+
+Each is a batch run directory cut to what the scale's pooled stage reads, so
+`evidence.source_from_run_dir(<set>)` + `evidence.level_source` level it with no
+other input (the test materialises the gzipped files as plain CSV first):
+
+| set | the batch | files | ledger rows (M0) | time-series rows | merged rows | pairs |
+|---|---|---:|---:|---:|---:|---:|
+| `v1_nitrate` | a labelled-nitrate (`NO3+NO3_15N`) Orbitrap batch, context `ambient-air` | 12 | 17,845 (9,874) | 45,241 | 1,420 | 1,850 |
+| `v1_uronium` | a uronium (`Ur`) Orbitrap batch, context `uronium` | 10 | 12,741 (8,076) | 261,888 | 1,148 | 1,161 |
+
+Each set holds `batch_summary.json`, `merged_ledger.csv.gz`,
+`per_file/<sid>_ledger.csv.gz` + `per_file/_batch_ts.parquet` and
+`tables/{iso_checks,label_twins,neutral_pairs}.csv.gz` (5.9 MB for both sets).
+
+**The cut rules** (the cutter, `build_fixtures.py`, lives outside the
+repository because it reads the real run directories; what it writes is
+scrubbed):
+
+- **per-file ledgers**: EVERY row (the isotope probes read every row with a
+  height, not only the committed ones), in the 33 columns the stage reads;
+  sample ids replaced by `s01`, `s02`, ... in the sorted order of the originals
+  (the stage reads files in sorted sample-id order, so the order is kept); peak
+  ids replaced by per-file sequential ids (`p00001`, ... in row order)
+  everywhere they appear (`peak_id`, `parent_peak_id`, `anchor_peak_id`, the
+  `isotopologues` / `alternatives` JSON);
+- **merged ledger**: the reading columns the amine gate and the ion index read
+  (`neutral_formula`, `adduct`, `mz`, `tier`);
+- **time series**: the committed M0 rows (route co-variation) and, on the
+  positive (uronium) batch, every row within 8.5 ppm of a mass the amine gate
+  looks up (recorded while levelling the full run), in the columns those
+  readers use; m/z rounded to 1e-6, heights to 5 significant digits, sample
+  ids mapped as above; every timestamp shifted by one constant whole-day offset
+  (the acquisition dates are not kept; a whole day is a multiple of the gate's
+  2-h bins, so every bin holds the same spectra and every level is unchanged);
+- **batch summary**: the width model, reagent, context, label, the active
+  reference lists and their activation record (the keywords that matched,
+  never the batch / dataset names) and the per-file gates (the runs predate
+  the persisted degeneracy calibration, so the stage refits each file's
+  window from its stored degeneracy counts, as it does on any older run);
+- **tables**: the batch checks' rows in the columns their fact readers take.
+
+When they were cut, every set levelled from the fixture equalled the level of
+its FULL run directory (no other-source partners) on every output and fact
+column -- the proof that the cut lost nothing the stage reads.
+
+**`expected_levels_v1.csv.gz`** is the level table the core gave then: one row
+per (`set`, `neutral_formula`, `adduct`), 3,011 rows, with the scale's eight
+columns and the decisive step facts (split, positive fact, named list, NH4 /
+window / chloride notes, tag kinds, the internal pass's raw level and why --
+test facts here; the written tables carry `anchor_kind` / `anchor_why`
+instead -- competitor counts, files). Gzipped because the privacy scanner reads
+a 16-letter neutral formula as an id. **`expected_vectors_v1.json`** holds the
+golden vectors, pairs per level in the order 3c/4a/4b/5a/5b/reagent/NA:
+`v1_nitrate` 1,850 = 10/186/289/472/892/1/0, `v1_uronium` 1,161 =
+17/75/913/125/31/0/0. Both are pinned until the user signs off the vectors; a
+change that moves them is a change of the scale and must say so. Regenerate
+from the fixtures in the repo with `build_fixtures.py --expected-only` (no run
+directory read); `--check` compares a fresh table with the repo's.
+
+`scripts/level_ledger.py` re-levels the same run directories with its own
+decision layer and must agree row for row (`tests/test_levels_fixtures.py`).
+
+## The pre-scale sets: the merge vote's private decision
+
+**What these sets pin now.** They were cut for the level scale peaky used
+before the evidence scale (docs/EVIDENCE_LEVELS.md), and that decision now
+lives on, privately, as the merge vote's class (`evidence.vote_classes`,
+docs/EVIDENCE_LEVELS.md §13; docs/MERGE.md §3 step 4). The vectors and
+`expected_levels.csv` below are that private decision's output; its rung names
+(`2b` … `5b`, the axes, the cross set) are internal labels, never shown to a
+user, and are NOT levels of the evidence scale. The sets carry no width model,
+so under the evidence scale every pair of them reads `NA` (not assessed); the
+scale's own tests build their frames in `tests/test_levels_*.py`. The private
+names the tests reach the decision through are `evidence._series_pooled`
+(pooled), `evidence._series_levels` (one ledger), `evidence.vote_classes`,
+`evidence._source_neutrals` and `evidence.vote_cross_neutrals` (the cross set).
+The rest of this file is the record of how the sets and vectors were cut, in
+the vocabulary of the time.
 
 Fifty-two per-file ledgers from four real runs (and one neutral-pair table, one label-twin table and two lock tables), trimmed to what the evidence
 levels read: the `M0` and `iso_child` rows and the columns the predicates in
-`docs/EVIDENCE_LEVELS.md` named when they were cut -- twenty-two on the TV and
+the level documentation named when they were cut -- twenty-two on the TV and
 uronium sets, twenty-one on the TOF and Orbitrap sets (no `resolvability`). They
 predate `tentative_lead` (C19(c), 2026-09-27): where the column is missing it
 reads False, their leads sit in `below_assignability`, and no vector moved with
@@ -24,7 +112,7 @@ level and every predicate input, written by `scripts/level_ledger.py`; the
 in-core `evidence` stage must reproduce it row for row -- level and every
 recorded fact (`test_every_fixture_row_matches_the_reference_script_fact_for_fact`)
 -- and the vectors exactly. Each pair corroborates by what the other source pins on its own (4b or
-better with no cross set, `docs/EVIDENCE_LEVELS.md` §6.4); the file was
+better with no cross set, the vote's cross set); the file was
 regenerated for that rule (183 of 6,444 levels moved, all downward; the vectors
 before it were 21/15/107/38/162/9/9/33/979, 6/16/182/38/260/79/91/135/2557 and
 0/12/217/44/215/119/0/30/1070). Rebuild it from the fixtures with
@@ -82,8 +170,7 @@ from the parent's COMMITTED isotopologue -- max(1 ppm, 4 sigma(h)) self-fitted o
 the set's own '13C' children, pcal and the neighbour's pull rescuing, 'M+n'
 exempt -- and in band under its count-aware expectation relative to that line;
 the whole label is read, the isotopologues list answers the same question, and
-the Br-free hold on `reagent_only_iso` is released; docs/EVIDENCE_LEVELS.md
-§3.2) regenerated `expected_levels.csv` from the unchanged fixtures:
+the Br-free hold on `reagent_only_iso` is released) regenerated `expected_levels.csv` from the unchanged fixtures:
 47 of 7,605 levels move, and the isotope facts (`iso`, `reagent_only_iso`) of
 others. The sets carry no width model: the committed line is read within the
 class-less 20 ppm and an 'M+n' line within 12 mDa. tv (6): TV-BR C12H22O,

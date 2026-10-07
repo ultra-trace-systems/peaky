@@ -1,63 +1,70 @@
-"""Rate every assigned neutral in a ledger on the CIMS-adapted Schymanski scale.
+"""The evidence scale of peaky 0.10.0, restated: the executable reference.
 
-Schymanski's confidence levels were written for LC-HRMS with a fragment spectrum
-and a compound library. A chemical-ionization run has neither: there is one
-adduct channel, no MS2, and the reagent takes part in the ion. This script is
-the executable reference for the adaptation — it says what a level MEANS in
-terms of columns a peaky ledger already carries, and it is the yardstick the
-in-core `evidence_level` column (Phase B) must reproduce row for row.
+The engine levels every committed (neutral_formula, adduct) pair of a source
+(`peaky.assignment.evidence`: the batch's pooled files, one file alone, or one
+file in a main run's context). This script shares the engine's FACT layer --
+the source, the run context, the competitors and their isotope tests, the
+decompositions, the amine gate's verdicts, the context lists, the routes table
+and the CH2 / CF2 series -- and states the DECISION layer again, on its own,
+from the build document of the scale: the order of step 0, the step-1 outcome,
+the split's outcome per rule, the level and the would-lift texts. It never
+calls `peaky.assignment.levels.decide`. The engine must give the same level and
+the same would-lift text as this script on every pair (tests/test_level_ledger.py
+on synthetic sources and their mutants; outside the repo on real runs).
 
-    python scripts/level_ledger.py <source>... [--corroborate <source>]
-                                   [--upair [<neutral_pairs.csv>]]
-                                   [--label-twins [<label_twins.csv>]]
-                                   [--iso-checks [<iso_checks.csv>]]
-                                   [--out levels.csv]
+    python scripts/level_ledger.py <run dir>... [--corroborate <run dir>...]
+                                   [--mode run|adapted|strict] [--main <run dir>]
+                                   [--resolving-power R --reagent NAME [--context NAME]]
+                                   [--out levels.csv] [--vector]
 
-A *source* is a batch run dir (its `per_file/*_ledger.csv`, or `merged_ledger.csv`
-when there is no per-file directory) or a single ledger CSV. Every source is
-levelled; naming two of them ALSO gives each the other as corroboration, which
-is what "the same neutral, seen through a second, independent channel" means —
-the other reagent channel of one instrument, or the other instrument sampling
-the same air. `--corroborate` adds a source that corroborates but is not itself
-levelled. A source corroborates only the neutrals it holds at level 4b or
-better by its OWN evidence — levelled first with no corroboration at all, so
-two sources can never lift each other on nothing but their agreement (a 5b
-formula the other grid also enumerated is two grids agreeing, not a second
-sighting). A merged ledger has no predicate columns: its stored level is read
-without its own `corroborated` axis.
+A run dir holds merged_ledger.csv, per_file/*_ledger.csv,
+per_file/_batch_ts.parquet, batch_summary.json and tables/{iso_checks,
+label_twins}.csv; it is levelled as one pooled source ('run', every file-count
+minimum 3). A ledger CSV is one file: levelled alone ('adapted', the minima 1;
+'strict', the batch minima) or, with --main, in that run's context exactly as a
+decoy arm. A lone ledger has no width model: it reads NA unless
+--resolving-power (R at m/z 200) and --reagent (the profile) are given; it is
+then levelled as the per-file stage of a single-sample `peaky assign`: the
+profile's context (--context overrides it), the lists that context and the
+profile label activate, the profile channels' halogen and the --window
+calibration (MU,SIGMA; else refitted from its degeneracy counts). Lists a
+batch or dataset name activated are not known to a lone ledger.
+--corroborate names other-source partners: each Orbitrap-class run dir is
+levelled once with no partners and its route / ladder / listed pairs become a
+TAG on the levelled pairs (they can still anchor the series exclusion of step
+1, as in the engine); a TOF-class or class-less source gives none.
 
-One row out per `(source, neutral_formula, adduct)` over the source's M0 rows.
+Output: one row per pair -- source, neutral_formula, adduct, evidence_level,
+claim, would_lift, competitors_left and the decisive facts (reagent identity,
+rejections, split rule and text, positive fact, named entry, the internal
+pass's level). --vector prints, per source, ``n 3c/4a/4b/5a/5b/reagent/NA`` and
+the share of the committed per-file M0 height per level: every per-file M0
+reading takes its pair's level, a reading no merged row carries is
+'unmatched', and the denominator holds them all.
 
-The scale, in the order the predicates are tried:
+The scale, in the order the outcomes are tried (the first that applies):
 
-    5b  the assignment argues with itself — a near-tie the arbiter broke, a row
-        below assignability or a tentative lead (with --iso-checks, one a
-        halogen lock of the batch answers is lifted: rule H, C11+b), or a score
-        the engine itself calls Low/Suspect, or (rule K, --label-twins) the
-        labelled reagent's 14N twin refutes the cluster reading, or (C11+,
-        --iso-checks) an isotope check of the batch's time series refutes the
-        formula; also a mass-degenerate row with no corroborating axis at all
-    2b  a curated identity on a formula that admits essentially one structure
-    3a  a named compound class, isomers open (PFCA, nitroaromatic, …)
-    3b  a substituent only, via the gas-phase acidity branch: the same neutral
-        appears both deprotonated and clustered
-    4c  formula unopposed — unique at the calibrated sigma on a peak the width
-        model says is separable — but nothing corroborates it
-    5a  the same, on a peak that is not unique
-    4d  ION formula only: the sole isotope support is the reagent halogen, which
-        pins the ion and says nothing about the neutral (CIMS-specific; there is
-        no Schymanski analogue)
-    4a  formula confirmed and the NEUTRAL established: two orthogonal axes, at
-        least one from outside this channel's ionization chemistry -- or (9',
-        rule U, --upair) the channel's neutral pair on a supported formula
-    4b  formula confirmed, one corroboration
+    reagent  the neutral is made only of the reagent's own molecules and is
+             read on a reagent adduct (a bucket, not a level)
+    5b       rejected (iso_veto, label_veto, lowconf, an implausible-chemistry
+             below-assignability setter -- O>=11 alone is a tag -- or the
+             committed reading's own isotope lines contradict it), or nothing
+             could be enumerated or tested
+    5a       a competitor ion is left in the calibrated window (after the
+             isotope tests and the CH2 / CF2 series exclusion)
+    4b       the channel reads the ion only
+    3c       split pinned and a NAMED context-list entry names the neutral
+    4a       split pinned and a positive fact (an own in-band isotope line of
+             an element of the neutral, the 15N label, an NH4 adduct that
+             tracks its parent)
+    4b       everything else (split open, or pinned with no positive fact)
+    NA       not assessed: the source's width model does not resolve
+             >= 50 000 at m/z 200, or there is none
 
-The four axes are: a verified isotopologue, a second adduct channel, a
-homologous-series or anchor tie, and the corroborating source. Levels 1 and 2a
-need an authentic standard or a library spectrum and never fire here.
-
-Recovered on 2026-09-21 from the transcript that first ran it; the golden count
-vectors it must reproduce are in `tests/test_level_ledger.py`.
+The pre-0.10.0 B-series reference this script used to be is kept below it,
+frozen, for the merge vote's private evidence class and its tests
+(`series_run`, `series_main`, `series_level_of`, `SERIES_LEVEL_ORDER`,
+`measure_source`, `assign_levels`, ...). No user-facing level reads it.
 """
 
 from __future__ import annotations
@@ -70,13 +77,799 @@ import math
 import os
 import re
 import sys
+from collections import defaultdict
 from functools import lru_cache
 from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
 
-LEVEL_ORDER = ["1", "2a", "2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
+
+from peaky.assignment import evidence as EV  # noqa: E402
+from peaky.assignment.levels import routes as RT  # noqa: E402
+from peaky.assignment.levels import source as SRC  # noqa: E402
+from peaky.assignment.levels import space as SP  # noqa: E402
+from peaky.assignment.levels import split as SPL  # noqa: E402
+from peaky.chem import chemistry as C  # noqa: E402
+
+# ===========================================================================
+# the scale
+# ===========================================================================
+LEVEL_ORDER = list(EV.LEVEL_ORDER)          # 1 2 3c 4a 4b 5a 5b (1 and 2 never fire)
+LEVELS = list(EV.LEVELS)                    # 3c 4a 4b 5a 5b
+BUCKETS = list(EV.BUCKETS)                  # reagent NA
+VECTOR_KEYS = LEVELS + BUCKETS              # the --vector order
+MODES = ("run", "adapted", "strict")
+
+# ===========================================================================
+# step 0: sort out
+# ===========================================================================
+#: the reagent's own molecules, each with the element that marks it, read off in this order; water (marked by
+#: O) takes the oxygen left over. Keyed by polarity, as the engine keys them.
+REAGENT_MOLECULES = {
+    "negative": (("HNO3", "N", {"H": 1, "N": 1, "O": 3}), ("H^NO3", "^N", {"H": 1, "^N": 1, "O": 3}),
+                 ("HBr", "Br", {"H": 1, "Br": 1}), ("H2O", "O", {"H": 2, "O": 1})),
+    "positive": (("urea", "C", {"C": 1, "H": 4, "N": 2, "O": 1}), ("NH3", "N", {"N": 1, "H": 3}),
+                 ("H2O", "O", {"H": 2, "O": 1})),
+}
+#: the reagent adducts a reagent molecule is read on; water alone counts only on a cluster adduct
+REAGENT_ON = {"negative": {"[M-H]-", "[M+NO3]-", "[M+^NO3]-", "[M+Br]-"},
+              "positive": {"[M+H]+", "[M+(CH4N2O)H]+", "[M+NH4]+"}}
+WATER_ON = {"[M+NO3]-", "[M+^NO3]-", "[M+Br]-", "[M+(CH4N2O)H]+", "[M+NH4]+"}
+#: the rejections, in the order the evidence lists them
+REJECT_FLAGS = ("iso_veto", "label_veto", "lowconf")
+#: the one below-assignability setter that is a degeneracy statement (a tag), not a rejection
+O11_SETTER = "O-count beyond validated chemistry (O>=11, mass-saturated)"
+OWN_REASONS_MAX = 160          # the contradicting isotope reasons printed in a rejection
+
+
+def txt(v) -> str:
+    """A text cell; NaN / NA / None / 'nan' / '<NA>' read as ''."""
+    if v is None or v is pd.NA or (isinstance(v, float) and np.isnan(v)):
+        return ""
+    s = str(v)
+    return "" if s in ("nan", "<NA>") else s
+
+
+def on(v) -> bool:
+    """A flag cell (NaN-safe)."""
+    return bool(v) if isinstance(v, (bool, np.bool_)) else bool(EV.truthy(v))
+
+
+def counts_of(formula) -> dict:
+    """Element counts, zero counts dropped; {} when unreadable."""
+    try:
+        return {k: int(v) for k, v in C.parse_formula(str(formula)).items() if v}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def reagent_identity(neutral, adduct, pol) -> str:
+    """'HNO3', '2HNO3 + H2O', 'urea + NH3' ... when the neutral is a sum of the
+    reagent's own molecules read on a reagent adduct, with >= 1 molecule that
+    is not water (water alone only on a cluster adduct); else ''."""
+    if adduct not in REAGENT_ON.get(pol, ()):
+        return ""
+    rest = counts_of(neutral)
+    if not rest:
+        return ""
+    taken = []
+    for name, marker, mol in REAGENT_MOLECULES[pol]:
+        k = rest.get(marker, 0)
+        for el, v in mol.items():
+            rest[el] = rest.get(el, 0) - k * v
+        if any(v < 0 for v in rest.values()):
+            return ""
+        taken.append((name, k))
+    if any(v for v in rest.values()):
+        return ""
+    water = dict(taken).get("H2O", 0)
+    if not any(k for name, k in taken if name != "H2O") and not (water > 0 and adduct in WATER_ON):
+        return ""
+    return " + ".join((f"{k}{name}" if k > 1 else name) for name, k in taken if k)
+
+
+def rejections(row: dict, below: dict) -> tuple[list[str], bool]:
+    """(the rejections of a pair, in order; whether O>=11 is its only below setter -- a tag)."""
+    out = [flag for flag in REJECT_FLAGS if on(row.get(flag))]
+    o11 = False
+    if on(row.get("below")):
+        setters = list((below or {}).get("setters") or [])
+        if setters and set(setters) <= {O11_SETTER}:
+            o11 = True
+        else:
+            # a below flag no setter explains is rejected too (as built)
+            out.append("below: " + (" & ".join(setters) if setters else "setter not found"))
+    if on(row.get("committed_contradicted")):
+        out.append("own isotopes: " + txt(row.get("committed_reasons"))[:OWN_REASONS_MAX])
+    return out, o11
+
+
+# ===========================================================================
+# step 2: the split -- its outcome per rule
+# ===========================================================================
+#: the rules in the order they are tried; the first that decides wins
+SPLIT_RULES = (
+    ("no ion composition", "open"),
+    ("ion-only channel", "open"),
+    ("label", "PINNED"),                      # the ion carries ^N on a ^N adduct (no label veto, not rule K)
+    ("label on an unlabelled adduct", "open"),
+    ("amine gate: committed NH4", "gate"),    # PINNED when the gate keeps it, else open (amine default)
+    ("amine gate: admissible NH4 reading", "open"),
+    ("only decomposition", "PINNED"),
+    ("halogen count", "PINNED"),              # rule (iii): as coded it is subsumed by 'only decomposition'
+    ("committed neutral not plausible", "open"),
+    ("k decompositions", "open"),
+)
+#: the X+reagent isobar's molecules (adduct a = adduct d + R), keyed by polarity
+ISOBAR_MOLECULES = {"positive": (("urea", {"C": 1, "H": 4, "N": 2, "O": 1}),),
+                    "negative": (("HNO3", {"H": 1, "N": 1, "O": 3}), ("H^NO3", {"H": 1, "^N": 1, "O": 3}),
+                                 ("HBr", {"H": 1, "Br": 1}))}
+NH4 = "[M+NH4]+"
+PROTONATED = "[M+H]+"
+WINDOW_WHY = "context filter"
+
+
+def grid_of(S) -> list[str]:
+    """The split grid: the decomposition adducts and the side channels, minus every LOCKED side channel (the
+    uronium run's own [M+NH4]+ is not a side channel there); chloride joins only when unlocked."""
+    lk = {a for a, nm in SPL.SIDE_CHANNEL_NAMES.items() if SPL.is_locked(nm)} \
+        - SPL.OWN_REAGENT_CHANNEL.get(S.pol, set())
+    grid = [a for a in S.ctx.decomp_adducts if a not in lk]
+    for a in SPL.SIDE[S.pol]:
+        if a not in lk and a not in grid and SP.adduct_delta(a) is not None:
+            grid.append(a)
+    for a, nm in SPL.V1_SIDE_EXTRA.get(S.pol, {}).items():
+        if not SPL.is_locked(nm) and a not in grid:
+            grid.append(a)
+    return grid
+
+
+def _readings(ds, k=5) -> str:
+    return "; ".join(f"{d['neutral']} {d['adduct']}" for d in ds[:k]) + (f" (+{len(ds) - k})" if len(ds) > k else "")
+
+
+def _window_readings(ws) -> str:
+    return "; ".join(f"{d['neutral']} {d['adduct']} ({str(d['why']).replace(WINDOW_WHY + ': ', '')})" for d in ws)
+
+
+def _is_committed(d, n, a) -> bool:
+    return d["adduct"] == a and SP.same_formula(d["neutral"], n)
+
+
+def _isobar_molecule(pol, a, d) -> str:
+    """R when reading d is X + R on an adduct without R (a = d's adduct + R); else ''."""
+    da, dd = SP.adduct_delta(a), SP.adduct_delta(d["adduct"])
+    if da is None or dd is None:
+        return ""
+    diff = {k: da.get(k, 0) - dd.get(k, 0) for k in set(da) | set(dd)}
+    diff = {k: v for k, v in diff.items() if v}
+    return next((name for name, mol in ISOBAR_MOLECULES.get(pol, ()) if diff == mol), "")
+
+
+def split_rules(S, row: dict, grid) -> dict:
+    """The split of one pair: dict(pinned, rule, text, label_pin, track). ``text`` is the split text the
+    evidence and the would-lift print (without the locked-channel note a pinned split may carry)."""
+    n, a = str(row["neutral_formula"]), str(row["adduct"])
+
+    def out(rule, text, plaus=(), label_pin=False, track=False, kept=False):
+        kind = dict(SPLIT_RULES)[rule]
+        pinned = kind == "PINNED" or (kind == "gate" and kept)
+        return dict(pinned=pinned, rule=rule, text=text, label_pin=label_pin, track=track, n_plausible=len(plaus))
+
+    counts = SP.ion_counts_of(n, a, row.get("ion"))
+    if not counts:
+        return out("no ion composition", "no ion composition")
+    decs = S.ctx.decompositions(counts, n, a, adducts=grid)
+    plaus = [d for d in decs if d["ok"] and d["neutral"]]
+    if on(row.get("ion_only")) or a in SP.ION_ONLY:
+        return out("ion-only channel", "ion-only channel (process open)", plaus)
+    labelled_ion = bool(S.ctx.labelled) and counts.get("^N", 0) > 0
+    if labelled_ion and "^" in a and not on(row.get("label_veto")) and (n, a) not in S.alien:
+        return out("label", "label (the ion carries the reagent's ^N)", plaus, label_pin=True)
+    if labelled_ion and "^" not in a:
+        lab = [d for d in plaus if "^" in d["adduct"]]
+        return out("label on an unlabelled adduct",
+                   ("label points to the cluster reading: " + _readings(lab, 3)) if lab
+                   else "the ion carries ^N but no plausible cluster reading", plaus)
+    # ---- the amine gate (a positive run whose grid holds [M+NH4]+) ----
+    gate = S.gate if (S.gate is not None and NH4 in grid) else None
+    note, pre, adm_note, amine = "", "", "", False
+    if gate is not None:
+        if a == NH4:
+            # a committed NH4 reading: the gate alone decides it (the admissibility rule does not apply)
+            g = gate(n)
+            if g["kept"]:
+                text = (f"NH4 adduct tracks its parent ({g['how']})" if g["track"]
+                        else f"NH4 adduct kept by the amine gate: {g['how']}")
+                return out("amine gate: committed NH4", text, plaus, track=bool(g["track"]), kept=True)
+            return out("amine gate: committed NH4",
+                       f"amine default (NH4 reading unconfirmed: {g['how']}; the engine's gate reads this ion as "
+                       f"{g.get('amine', '?')} [M+H]+)", plaus)
+        amine = a == PROTONATED          # the NH4 admissibility rule asks only about an [M+H]+ (amine) reading
+        nh4 = [d for d in plaus if d["adduct"] == NH4]
+        bad = [d for d in nh4 if amine and not gate.nh4_admissibility(d["neutral"])["ok"]]
+        live = [d for d in nh4 if not any(d is x for x in bad)]
+        bad_txt = "; ".join(f"{d['neutral']} [M+NH4]+ -- {gate.nh4_admissibility(d['neutral'])['why']}" for d in bad)
+        plaus = [d for d in plaus if not any(d is x for x in bad)]
+        verdict = [(d, gate(d["neutral"])) for d in live]
+        kept = [(d, g) for d, g in verdict if g["kept"]]
+        dropped = [(d, g) for d, g in verdict if not g["kept"]]
+        if amine:
+            other_reading = [(d["neutral"], gate.nh4_admissibility(d["neutral"])) for d in live]
+            other_reading = [(y, ga) for y, ga in other_reading if ga["present"] and not ga["own_name"]]
+            if other_reading:
+                adm_note = (" [NH4 admissibility rule: Y's uronium adduct ion is present under another reading: "
+                            + "; ".join(f"{y} -- {ga['why'].replace('uronium adduct ion present: ', '')}"
+                                        for y, ga in other_reading) + "]")
+        plaus = [d for d in plaus if not (d["adduct"] == NH4 and any(d is x for x, _ in dropped))]
+        others = [d for d in plaus if not _is_committed(d, n, a) and d["adduct"] != NH4]
+        also = f"; also {len(others)} other decomposition(s): {_readings(others, 3)}" if others else ""
+        if amine and verdict:
+            # an [M+H]+ with an admissible NH4 reading stays open
+            if kept:
+                return out("amine gate: admissible NH4 reading", "NH4 reading kept by the amine gate: " + "; ".join(
+                    f"{d['neutral']} [M+NH4]+ ({g['how']})" for d, g in kept)
+                    + " -- the committed [M+H]+ (amine) reading is contested" + also + adm_note, plaus)
+            return out("amine gate: admissible NH4 reading", "amine default (NH4 reading unconfirmed: " + "; ".join(
+                f"{d['neutral']} [M+NH4]+ -- {g['how']}" for d, g in dropped) + ")" + also + adm_note, plaus)
+        if not amine and (verdict or bad):
+            parts = []
+            if dropped:
+                parts.append("NH4 reading not kept by the amine gate: " + "; ".join(
+                    f"{d['neutral']} [M+NH4]+ -- {g['how']}" for d, g in dropped))
+            if kept:
+                parts.append("NH4 reading kept by the amine gate: " + "; ".join(
+                    f"{d['neutral']} [M+NH4]+ ({g['how']})" for d, g in kept))
+            note = "; ".join(parts)
+        if amine and bad_txt:
+            pre = f"NH4 reading inadmissible: no uronium adduct of Y ({bad_txt}); "
+    sfx = (f" [{note}]" if note else "") + adm_note
+    # ---- the context window: a reading only the window excludes; the X+reagent isobar stays live ----
+    window = []
+    for d in decs:
+        if d["ok"] or not d["neutral"] or not str(d["why"]).startswith(WINDOW_WHY) or _is_committed(d, n, a):
+            continue
+        if gate is not None and d["adduct"] == NH4 and (
+                (amine and not gate.nh4_admissibility(d["neutral"])["ok"]) or not gate(d["neutral"])["kept"]):
+            continue          # the gate or the admissibility rule removes it, not the window
+        window.append(d)
+    isobar = [(d, _isobar_molecule(S.pol, a, d)) for d in window]
+    isobar = [(d, m) for d, m in isobar if m]
+    if isobar:
+        plaus = plaus + [d for d, _m in isobar]
+        window = [d for d in window if not any(d is x for x, _ in isobar)]
+        sfx += " [X+reagent isobar admitted over the context window: " + "; ".join(
+            f"{d['neutral']} {d['adduct']} (X+{m}; window {str(d['why']).replace(WINDOW_WHY + ': ', '')})"
+            for d, m in isobar) + "]"
+    self_ok = any(_is_committed(d, n, a) for d in plaus)
+    if len(plaus) == 1 and self_ok:
+        wtxt = f" [pinned only by the context window: {_window_readings(window)}]" if window else ""
+        return out("only decomposition", pre + "only decomposition" + sfx + wtxt, plaus)
+    matched = {x for x in txt(row.get("committed_matched")).split(",") if x}
+    for el in ("Br", "Cl"):
+        if counts.get(el, 0) and el in matched and counts[el] > SP.reagent_supply(grid, el):
+            carriers = [d for d in plaus if d["counts"].get(el, 0) > 0]
+            if len(carriers) == 1 and carriers[0]["adduct"] == a:
+                wk = [d for d in window if d["counts"].get(el, 0) > 0]
+                wtxt = f" [pinned only by the context window: {_window_readings(wk)}]" if wk else ""
+                return out("halogen count", pre + "halogen count" + sfx + wtxt, plaus)
+    if not self_ok:
+        why = next((d["why"] for d in decs if d["adduct"] == a), "")
+        return out("committed neutral not plausible", f"committed neutral not plausible ({why}); {len(plaus)} "
+                   "plausible: " + _readings(plaus, 4) + sfx, plaus)
+    return out("k decompositions", pre + f"{len(plaus)} decompositions: " + _readings(plaus) + sfx, plaus)
+
+
+# ===========================================================================
+# step 1 + the internal pass: competitors left after the series exclusion
+# ===========================================================================
+MAX_PASSES = 20                 # the series exclusion and its route anchors iterate to a fixed point
+ROUTE_ALIASES = {"negative": (("formate", {"C": 1, "H": 2, "O": 2}, "deprotonation"),),
+                 "positive": (("NH4+", {"N": 1, "H": 3}, "protonation"),)}
+
+
+def _left(S, keys) -> dict:
+    """{pair index: [competitor left by the isotope tests]} (route-excluded competitors count as left)."""
+    pos = {k: i for i, k in enumerate(keys)}
+    out = defaultdict(list)
+    if S.comps is None or not len(S.comps):
+        return out
+    for r in S.comps.to_dict("records"):
+        i = pos.get((str(r["neutral_formula"]), str(r["adduct"])))
+        if i is None or str(r["status"]) != "left":
+            continue
+        out[i].append(dict(name=str(r["competitor"]), kind=str(r["kind"]), neutral=txt(r["comp_neutral"]),
+                           adduct=str(r["comp_adduct"]) if txt(r["comp_adduct"]) else str(r["adduct"])))
+    return out
+
+
+def _route_anchored(S, rows, keys, f, partners) -> np.ndarray:
+    """Pairs with two routes (both route ions of an own route-class pair in the same file in >= 2 files, 1 on a
+    one-file source; no alias of a committed neutral explains both -- the aliases are locked side channels by
+    default) or an other-source partner (split pinned, >= 2 files), whose committed neutral is plausible."""
+    n = len(rows)
+    out = np.zeros(n, bool)
+    excl = {k for k, x in zip(keys, f["contradicted"]) if x} | set(S.alien)
+    excl |= {k for k, r in zip(keys, rows) if on(r.get("iso_veto")) or on(r.get("label_veto"))}
+    excl |= {keys[i] for i in range(n) if f["rej"][i] or f["reagent"][i]}
+    cof = 1 if S.arm else RT.ROUTE_COFILES
+    table, _byfile = RT.routes_table(S.pf, S.run_classes, excl, cof, S.skip_m0)
+    aliases = [x for x in ROUTE_ALIASES.get(S.pol, ()) if not SPL.is_locked(x[0])]
+    committed_ok = {keys[i][0] for i in range(n) if f["member"][i]}
+    for i, (nn, aa) in enumerate(keys):
+        own_cls = RT.route_class(aa)
+        if own_cls is None or (nn, aa) in excl or f["ion_only"][i]:
+            continue
+        own = False
+        t = table.get(nn)
+        for (A, B), nco in (t["co"].items() if t is not None else ()):
+            if own_cls not in (A, B) or nco < cof:
+                continue
+            explained = False
+            for _name, L, base in aliases:
+                if base not in (A, B):
+                    continue
+                Y = RT.fsub(RT.fcounts(nn), L)
+                if Y and S.ctx.space.plausible_neutral(Y)[0] and C.format_formula(Y) in committed_ok:
+                    explained = True
+                    break
+            own = own or not explained
+        cross = bool(partners) and f["nfiles"][i] >= RT.CROSS_MIN_FILES and not S.arm and f["pinned"][i] and any(
+            cl not in S.run_classes for cl in partners.get(nn, {}))
+        out[i] = (own or cross) and on(rows[i].get("committed_plausible"))
+    return out
+
+
+def _inpass(i, f, left, routes, homo, lmin):
+    """The internal pass's (level, why) of pair i: the scale's step 0 + step 1, then route / ladder / listed
+    levels (never output: they anchor the series exclusion and make other-source partners)."""
+    if f["reagent"][i]:
+        return "reagent", "reagent identity (" + f["reagent"][i] + ")"
+    if f["rej"][i]:
+        return "5b", "rejected: " + "; ".join(f["rej"][i])
+    if f["untestable"][i]:
+        return "5b", "untestable"
+    if left:
+        return "5a", f"competitors left ({len(left)})"
+    if f["ion_only"][i]:
+        return "4b", "ion formula only"
+    if routes[i]:
+        return ("3a" if f["listed"][i] else "3b"), "routes"
+    h = homo.get(i)
+    if h and h["anchored"] and f["pinned"][i] and f["nfiles"][i] >= lmin:
+        return ("3a" if f["listed"][i] else "3d"), "ladder"
+    if f["pinned"][i] and f["listed"][i]:
+        return "3c", "split pinned + listed"
+    if f["pinned"][i] and f["posfact"][i]:
+        return "4a", "split pinned + positive fact"
+    return "4b", ("split pinned, no positive fact" if f["pinned"][i] else "split open")
+
+
+#: what anchored a pair in the internal pass, as the tables print it (the raw in-pass level stays in memory):
+#: (anchor_kind, anchor_why) per in-pass (level, why); any other in-pass level is no anchor -- kind 'none', why
+#: the pass's own reason
+ANCHOR_TEXT = {("3b", "routes"): ("two routes", "two routes"), ("3a", "routes"): ("two routes", "two routes + listed"),
+               ("3d", "ladder"): ("ladder", "ladder"), ("3a", "ladder"): ("ladder", "ladder + listed"),
+               ("3c", "split pinned + listed"): ("listed", "split pinned + listed")}
+
+
+def anchor_of(level, why) -> tuple[str, str]:
+    """(anchor_kind, anchor_why) of an in-pass (level, why)."""
+    return ANCHOR_TEXT.get((level, why), ("none", why))
+
+
+# ===========================================================================
+# steps 3 + 4: the level, and what would lift it
+# ===========================================================================
+LIFT = {
+    "reagent": "reagent ion / reagent cluster (not levelled)",
+    "untestable": "nothing could be enumerated or tested",
+    "ion-only": "ion-only channel: the neutral and the process stay open",
+    "4b pinned": ("4a needs a positive fact (an own in-band isotope line of the neutral's elements, the 15N label, "
+                  "or NH4 tracking)"),
+    "4b pinned, no name": "; 3c needs a named context-list entry",
+    "4a": "3c needs a NAMED context-list entry naming the neutral",
+    "4a, class entry": " (the class-list match is a tag only)",
+    "3c": "level 2 (MS2 / standards) is not automatic",
+}
+LEFT_SHOWN = 6                  # the competitors a 5a would-lift names
+
+
+def level_of(f: dict) -> str:
+    """The level of one pair from its facts: the first outcome that applies."""
+    if f["reagent"]:
+        return "reagent"
+    if f["rejected"] or f["untestable"]:
+        return "5b"
+    if f["left"]:
+        return "5a"
+    if f["ion_only"]:
+        return "4b"
+    if f["pinned"] and f["named"]:
+        return "3c"
+    if f["pinned"] and (f["posfact"] or f["track"]):
+        return "4a"
+    return "4b"
+
+
+def would_lift(level: str, f: dict) -> str:
+    if level == "reagent":
+        return LIFT["reagent"]
+    if level == "5b":
+        # the rejection text with its 'rejected: ' read as 'refuted: ' (every occurrence, as built)
+        return ("rejected: " + "; ".join(f["rejected"])).replace("rejected: ", "refuted: ") if f["rejected"] \
+            else LIFT["untestable"]
+    if level == "5a":
+        names = [c["name"] for c in f["left"]]
+        return "competitors left: " + "; ".join(names[:LEFT_SHOWN]) + (
+            f" (+{len(names) - LEFT_SHOWN} more)" if len(names) > LEFT_SHOWN else "")
+    if level == "4b":
+        if f["ion_only"]:
+            return LIFT["ion-only"]
+        if not f["pinned"]:
+            return "split not pinned: " + f["split_text"]
+        return LIFT["4b pinned"] + ("" if f["named"] else LIFT["4b pinned, no name"])
+    if level == "4a":
+        return LIFT["4a"] + (LIFT["4a, class entry"] if f["class_entry"] else "")
+    return LIFT["3c"]
+
+
+# ===========================================================================
+# a prepared source -> one row per pair
+# ===========================================================================
+DECISION_COLUMNS = ["neutral_formula", "adduct", "evidence_level", "claim", "would_lift", "competitors_left",
+                    "n_left", "reagent_identity", "rejected_by", "o11_tag", "untestable", "ion_only", "split_pinned",
+                    "split_rule", "split_text", "positive_fact", "named_entry", "class_entry", "anchor_kind",
+                    "anchor_why", "n_series_excl", "iterations", "n_files_obs", "mz", "height",
+                    *EV.INTERNAL_COLUMNS]
+
+
+def decide(S, partners=None) -> pd.DataFrame:
+    """The scale's decision over a prepared source (`peaky.assignment.levels.source.prepared`): one row per pair
+    with the level, its claim, what would lift it and the facts that decided it. ``partners`` = {neutral: {route
+    class: [text]}} (other-source partners: they anchor the series exclusion of step 1; never a level)."""
+    P = S.P.reset_index(drop=True)
+    rows = P.to_dict("records")
+    n = len(rows)
+    keys = [(str(r["neutral_formula"]), str(r["adduct"])) for r in rows]
+    nfiles = pd.to_numeric(P["n_files_obs"], errors="coerce").fillna(0).astype(int).to_numpy() if n else []
+    grid = grid_of(S) if n else []
+    f = defaultdict(list)
+    for i, r in enumerate(rows):
+        nn, aa = keys[i]
+        rej, o11 = rejections(r, S.below.get(keys[i], {}))
+        sp = split_rules(S, r, grid)
+        elements = set(counts_of(nn))
+        matched = {x for x in txt(r.get("committed_matched")).split(",") if x}
+        hits = S.lists.hits(nn)
+        f["reagent"].append(reagent_identity(nn, aa, S.pol))
+        f["rej"].append(rej)
+        f["o11"].append(o11)
+        f["untestable"].append(on(r.get("no_comp_info")))
+        f["ion_only"].append(on(r.get("ion_only_reading")))
+        f["contradicted"].append(on(r.get("committed_contradicted")))
+        f["split"].append(sp)
+        f["pinned"].append(sp["pinned"])
+        f["posfact"].append(sp["label_pin"] or bool(matched & elements))
+        f["named"].append([h for h in hits if h["named"]])
+        f["class_entry"].append([h for h in hits if not h["named"]])
+        f["listed"].append(bool(hits))
+        f["nfiles"].append(int(nfiles[i]))
+    f["member"] = [not f["rej"][i] and not f["untestable"][i] and not f["reagent"][i] for i in range(n)]
+    if S.arm:
+        partners = None
+    left_of = _left(S, keys)
+    routes = _route_anchored(S, rows, keys, f, partners) if n else np.zeros(0, bool)
+    member = np.array(f["member"], dtype=bool)
+    member_ions = {k for i in np.flatnonzero(member)
+                   for k in [RT.ion_key(keys[i][0], keys[i][1], rows[i].get("ion"))] if k}
+    D = P[["neutral_formula", "adduct", "mz"]].copy()
+    lmin = 1 if S.arm else RT.LADDER_MIN_FILES
+
+    def one_pass(excluded, homo):
+        lefts = [[c for c in left_of.get(i, []) if c["name"] not in excluded.get(i, {})] for i in range(n)]
+        return [_inpass(i, f, lefts[i], routes, homo, lmin) for i in range(n)], lefts
+
+    excluded, homo = {}, {}
+    inp, lefts = one_pass(excluded, homo)
+    iterations = 0
+    for iterations in range(1, MAX_PASSES + 1):
+        anchor = np.array([lv in ("3a", "3b") and why == "routes" for lv, why in inp], dtype=bool)
+        D["_lv"] = [lv for lv, _w in inp]
+        homo = RT.homologue_facts(D, member, anchor, tol_ppm=S.tol_ppm, units=RT.LADDER_UNITS)
+        new = RT.series_exclusions(D, {i: v for i, v in left_of.items() if member[i]}, homo, member_ions)
+        inp2, lefts2 = one_pass(new, homo)
+        done = new == excluded and [lv for lv, _w in inp2] == [lv for lv, _w in inp]
+        excluded, inp, lefts = new, inp2, lefts2
+        if done:
+            break
+    recs = []
+    for i in range(n):
+        sp = f["split"][i]
+        g = dict(reagent=f["reagent"][i], rejected=f["rej"][i], untestable=f["untestable"][i], left=lefts[i],
+                 ion_only=f["ion_only"][i], pinned=sp["pinned"], named=f["named"][i], posfact=f["posfact"][i],
+                 track=sp["track"], split_text=sp["text"], class_entry=f["class_entry"][i])
+        lv = level_of(g)
+        pf = []
+        if sp["label_pin"]:
+            pf.append("15N label")
+        els = {x for x in txt(rows[i].get("committed_matched")).split(",") if x} & set(counts_of(keys[i][0]))
+        if els:
+            pf.append(f"own in-band isotope line(s) {txt(rows[i].get('committed_matched_lines'))} "
+                      f"({','.join(sorted(els))} of the neutral)")
+        if sp["track"]:
+            pf.append("NH4 adduct tracks its parent")
+        recs.append(dict(
+            neutral_formula=keys[i][0], adduct=keys[i][1], evidence_level=lv, claim=EV.claim_class(lv),
+            would_lift=would_lift(lv, g), competitors_left="; ".join(c["name"] for c in lefts[i]),
+            n_left=len(lefts[i]), reagent_identity=f["reagent"][i], rejected_by="; ".join(f["rej"][i]),
+            o11_tag=f["o11"][i], untestable=f["untestable"][i], ion_only=f["ion_only"][i],
+            split_pinned=sp["pinned"], split_rule=sp["rule"], split_text=sp["text"], positive_fact="; ".join(pf),
+            named_entry="; ".join(f"{h['id']} = {h['name']}" for h in f["named"][i]),
+            class_entry="; ".join(h["id"] for h in f["class_entry"][i]),
+            anchor_kind=anchor_of(*inp[i])[0], anchor_why=anchor_of(*inp[i])[1],
+            inpass_level=inp[i][0], inpass_why=inp[i][1], n_series_excl=len(excluded.get(i, {})),
+            iterations=iterations, n_files_obs=f["nfiles"][i], mz=rows[i].get("mz"), height=rows[i].get("height")))
+    return pd.DataFrame(recs, columns=DECISION_COLUMNS)
+
+
+def _blank_rows(src) -> pd.DataFrame:
+    keys = set()
+    for led in src.per_file.values():
+        m0 = led[led["role"].astype(str) == "M0"]
+        keys |= {(nn, aa) for nn, aa in zip(m0["neutral_formula"].fillna("").astype(str),
+                                            m0["adduct"].fillna("").astype(str)) if nn and aa}
+    out = pd.DataFrame([dict(neutral_formula=nn, adduct=aa) for nn, aa in sorted(keys)],
+                       columns=["neutral_formula", "adduct"])
+    return out.reindex(columns=DECISION_COLUMNS)
+
+
+def na_rows(src) -> pd.DataFrame:
+    """Every committed (neutral, adduct) of the source's per-file M0 rows, NA: the class gate comes before any
+    fact work."""
+    out = _blank_rows(src)
+    out["evidence_level"] = "NA"
+    out["claim"] = EV.CLAIM_NA
+    out["would_lift"] = ""
+    return out
+
+
+def no_window_rows(src, why: str = EV.NO_WINDOW_TEXT) -> pd.DataFrame:
+    """A lone file with no calibrated window (no calibration of its own, no run sigma to borrow), or a pooled
+    source none of whose files is calibrated (``why`` = EV.NO_RUN_WINDOW_TEXT): no level, claim tentative, and why
+    (the engine's per-file and pooled stages say the same in `evidence`)."""
+    out = _blank_rows(src)
+    out["evidence_level"] = ""
+    out["claim"] = "tentative"
+    out["would_lift"] = why
+    return out
+
+
+def decide_source(src, partners=None) -> pd.DataFrame:
+    """Level a Source (`evidence.source_from_run_dir` / `source_from_frames`) with this script's decision: NA
+    unless the source's width model is Orbitrap-class; partners never on a one-file adapted source."""
+    klass, _r200 = src.instrument()
+    if klass != "orbitrap":
+        return na_rows(src)
+    if not SRC.committed_pairs(src.per_file):
+        return _blank_rows(src)          # nothing committed: no pair to level (no row, the columns)
+    if SRC.no_run_window(src):
+        return no_window_rows(src, EV.NO_RUN_WINDOW_TEXT)   # no file calibrated: no window to enumerate in
+    return decide(SRC.prepared(src), None if src.one_file_minima else partners)
+
+
+# ===========================================================================
+# sources from disk, partners, the vector
+# ===========================================================================
+def _is_run_dir(path) -> bool:
+    return os.path.isdir(path) and os.path.isfile(os.path.join(path, "batch_summary.json")) and \
+        os.path.isdir(os.path.join(path, "per_file"))
+
+
+def run_dir_of(path) -> str | None:
+    """The run dir itself, or the out dir holding exactly one; None for anything else."""
+    path = os.path.expanduser(str(path).rstrip("/"))
+    if _is_run_dir(path):
+        return path
+    if os.path.isdir(path):
+        inner = [d for d in sorted(glob.glob(os.path.join(path, "*"))) if _is_run_dir(d)]
+        if len(inner) == 1:
+            return inner[0]
+    return None
+
+
+def resolution_for(r200: float) -> dict:
+    """An Orbitrap-shaped width model (FWHM ~ m^1.5) resolving ``r200`` at m/z 200, as a batch summary records it."""
+    from peaky.chem.resolution import Resolution
+    return Resolution(coef=(200.0 / float(r200)) / 200.0 ** 1.5, exponent=1.5, offset=0.0, source="declared").as_dict()
+
+
+def lone_run_inputs(sid, *, reagent, context=None, resolution=None, **kw):
+    """The run inputs of a lone ledger CSV, built as the per-file stage of a single-sample run builds its own
+    (assign._stage_evidence after cli's assign): the profile's context unless ``context`` names one, the reference
+    lists that context and the profile label activate (the always-active lists included) with their activation
+    record, and the halogen of the profile's declared channels. What a lone CSV cannot know -- a batch's or
+    dataset's name (keyword-activated lists), the file's height gate -- falls back as the stage's own fallbacks do."""
+    from peaky.assignment import reflists as RL
+    from peaky.chem import profiles as PR
+    try:
+        prof = PR.resolve(str(reagent))
+    except (KeyError, ValueError) as e:
+        raise SystemExit(f"--reagent {reagent!r}: {e}") from None
+    ctx_name = context or prof.context
+    lists, _tags, record = RL.activate(ctx_name, prof.label or "", record=True, fields=("context", "reagent label"))
+    return EV.file_run_inputs(sample_id=sid, reagent=reagent, context=ctx_name, resolution=resolution,
+                              reflists_active=RL.active_versions(lists), activation=record,
+                              reagent_halogen=EV.channel_halogen(prof.adducts), **kw)
+
+
+def source_of(path, *, mode=None, main=None, resolving_power=None, reagent=None, context=None, window=None):
+    """(label, Source) of one argument: a run dir (or its out dir), or one ledger CSV (alone, or in ``main``'s
+    context)."""
+    rd = run_dir_of(path)
+    if rd is not None:
+        return os.path.basename(rd), EV.source_from_run_dir(rd, mode=mode or "run")
+    path = os.path.expanduser(str(path))
+    if not os.path.isfile(path):
+        raise SystemExit(f"{path}: neither a run dir (batch_summary.json + per_file/) nor a ledger CSV")
+    if (mode or "adapted") == "run":
+        raise SystemExit(f"{path}: a ledger CSV is one file: --mode adapted or strict")
+    if main is not None:
+        return os.path.basename(path), EV.source_from_run_dir(path, main=main, mode=mode or "adapted")
+    src = EV.source_from_run_dir(path, mode=mode or "adapted")
+    if resolving_power:
+        if not reagent:
+            raise SystemExit(f"{path}: --resolving-power on a lone ledger needs --reagent (its profile)")
+        sid = next(iter(src.per_file))
+        kw = {} if window is None else {"degeneracy_cal": tuple(window)}
+        ri = lone_run_inputs(sid, reagent=reagent, context=context, resolution=resolution_for(resolving_power), **kw)
+        src = EV.source_from_frames(src.per_file, run_inputs=ri, mode=mode or "adapted", name=sid, label=sid)
+        # the step-1 window: the file's calibration when given, else refitted from its degeneracy counts
+        from peaky.assignment.levels import context as CX
+        src.win = CX.run_windows(src.summary, src.per_file)
+        if not np.isfinite(CX.window_table(src.win)[1][1]):
+            src.no_window = True
+    return os.path.basename(path), src
+
+
+def partners_of(paths, log=print) -> dict:
+    """Other-source partners from --corroborate run dirs: each Orbitrap-class run dir levelled once with no
+    partners (this script's decision); a TOF-class / class-less source, a CSV, an Orbitrap run dir none of whose
+    files is calibrated (no run window) or one whose reagent profile / context is not known here gives none (logged,
+    with the batch's reason)."""
+    merged = {}
+    for p in paths:
+        rd = run_dir_of(p)
+        if rd is None:
+            log(f"  --corroborate {p}: not a run dir -- no partners")
+            continue
+        src = EV.source_from_run_dir(rd)
+        klass, r200 = src.instrument()
+        if klass != "orbitrap":
+            log(f"  --corroborate {os.path.basename(rd)}: {klass or 'class-less'} source -- no partners")
+            continue
+        why = EV.partner_source_problem(rd)
+        if why:
+            log(f"  --corroborate {os.path.basename(rd)}: {why} -- no partners")
+            continue
+        if SRC.no_run_window(src):
+            log(f"  --corroborate {os.path.basename(rd)}: {EV.NO_RUN_WINDOW_PARTNERS}")
+            continue
+        got = RT.partners_from(decide_source(src), os.path.basename(rd))
+        log(f"  --corroborate {os.path.basename(rd)}: {len(got)} partner neutral(s)")
+        merged = RT.merge_partners(merged, got)
+    return merged
+
+
+def run(paths, corroborate=(), *, mode=None, main=None, resolving_power=None, reagent=None, context=None,
+        window=None, log=print) -> pd.DataFrame:
+    """Level every path with this script's decision; one row per (source, pair). The --corroborate partners are
+    computed only when a source can take them (Orbitrap-class, not a one-file adapted source)."""
+    main_src = EV.source_from_run_dir(run_dir_of(main) or main) if main else None
+    sources = [source_of(p, mode=mode, main=main_src, resolving_power=resolving_power, reagent=reagent,
+                         context=context, window=window) for p in paths]
+    takes = any(src.instrument()[0] == "orbitrap" and not src.one_file_minima for _l, src in sources)
+    partners = partners_of(corroborate, log=log) if (corroborate and takes) else None
+    out = []
+    for label, src in sources:
+        df = no_window_rows(src) if getattr(src, "no_window", False) else decide_source(src, partners)
+        df.insert(0, "source", label)
+        out.append(df)
+    return pd.concat(out, ignore_index=True) if out else pd.DataFrame(columns=["source"] + DECISION_COLUMNS)
+
+
+def vector(levels: pd.DataFrame) -> dict:
+    """{level: n pairs} over 3c 4a 4b 5a 5b reagent NA (zeros kept)."""
+    c = levels["evidence_level"].astype(str).value_counts() if len(levels) else pd.Series(dtype=int)
+    return {k: int(c.get(k, 0)) for k in VECTOR_KEYS}
+
+
+def height_share(levels: pd.DataFrame, per_file: dict, merged: pd.DataFrame | None) -> dict:
+    """% of the committed per-file M0 height per level: every per-file M0 reading takes its pair's level; a
+    reading no merged row carries is 'unmatched' (no merged ledger: none is); the denominator holds them all."""
+    lv = dict(zip(zip(levels["neutral_formula"].astype(str), levels["adduct"].astype(str)),
+                  levels["evidence_level"].astype(str)))
+    mkeys = None if merged is None else set(zip(merged["neutral_formula"].fillna("").astype(str),
+                                                merged["adduct"].fillna("").astype(str)))
+    acc = defaultdict(float)
+    for led in per_file.values():
+        m0 = led[led["role"].astype(str) == "M0"]
+        h = pd.to_numeric(m0["height"], errors="coerce").fillna(0.0).to_numpy()
+        for hh, k in zip(h, zip(m0["neutral_formula"].fillna("").astype(str), m0["adduct"].fillna("").astype(str))):
+            acc["unmatched" if (mkeys is not None and k not in mkeys) else lv.get(k, "(no pair)")] += float(hh)
+    tot = sum(acc.values())
+    keys = VECTOR_KEYS + ["unmatched", "(no pair)"]
+    return {k: (100.0 * acc.get(k, 0.0) / tot if tot else float("nan")) for k in keys}
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="The evidence scale of peaky " + EV.SCALE_RELEASE
+                                 + ", restated: level run dirs or ledgers post hoc.")
+    ap.add_argument("paths", nargs="+", help="run dirs (or the out dir holding one) or ledger CSVs")
+    ap.add_argument("--corroborate", action="append", default=[],
+                    help="an Orbitrap-class run dir whose route / ladder / listed pairs become other-source partners "
+                         "(a tag; they can anchor the series exclusion); repeatable")
+    ap.add_argument("--mode", choices=MODES, default=None,
+                    help="run (a run dir, every minimum 3; the default), adapted (one file, minima 1; the default for "
+                         "a CSV) or strict (one file, the batch minima)")
+    ap.add_argument("--main", help="a run dir: level each ledger CSV in its context, like a decoy arm")
+    ap.add_argument("--resolving-power", type=float, help="R at m/z 200 for a lone ledger CSV (else it reads NA)")
+    ap.add_argument("--reagent", help="the reagent profile of a lone ledger CSV levelled with --resolving-power")
+    ap.add_argument("--context", help="the context of a lone ledger CSV (default: the reagent profile's context); "
+                                      "it and the profile label activate the reference lists, as `peaky assign` does")
+    ap.add_argument("--window", help="MU,SIGMA (ppm): a lone ledger's calibration (its batch_summary per_file "
+                                     "degeneracy_cal); default: refitted from its degeneracy counts")
+    ap.add_argument("--out", help="write the levelled pairs here as CSV")
+    ap.add_argument("--vector", action="store_true",
+                    help="print n 3c/4a/4b/5a/5b/reagent/NA and the %% of committed M0 height per level")
+    args = ap.parse_args(argv)
+    log = (lambda *a: print(*a, file=sys.stderr))
+    window = tuple(float(x) for x in args.window.split(",")) if args.window else None
+    df = run(args.paths, args.corroborate, mode=args.mode, main=args.main, resolving_power=args.resolving_power,
+             reagent=args.reagent, context=args.context, window=window, log=log)
+    if df.empty:
+        print("nothing to level", file=sys.stderr)
+        return 1
+    if args.out:
+        os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
+        EV.for_output(df).to_csv(args.out, index=False)      # the raw in-pass tokens stay in memory
+    order = "/".join(VECTOR_KEYS)
+    for (label, group), path in zip(df.groupby("source", sort=False), args.paths):
+        v = vector(group)
+        print(f"{label}  n={len(group)}")
+        print(f"  {order}")
+        print("  " + "/".join(str(v[k]) for k in VECTOR_KEYS))
+        if args.vector:
+            rd = run_dir_of(path)
+            if rd is not None:
+                per_file = {os.path.basename(p)[: -len("_ledger.csv")]: pd.read_csv(p, low_memory=False)
+                            for p in sorted(glob.glob(os.path.join(rd, "per_file", "*_ledger.csv")))}
+                mp = os.path.join(rd, "merged_ledger.csv")
+                merged = pd.read_csv(mp, low_memory=False) if os.path.isfile(mp) else None
+            else:
+                per_file, merged = {label: pd.read_csv(os.path.expanduser(path), low_memory=False)}, None
+            share = height_share(group, per_file, merged)
+            print("  % of committed M0 height: " + "; ".join(
+                f"{k} {share[k]:.2f}" for k in VECTOR_KEYS + ["unmatched", "(no pair)"] if np.isfinite(share[k])))
+    if args.out:
+        print(f"\nwrote {args.out}")
+    return 0
+
+
+# ===========================================================================
+# the pre-0.10.0 B-series reference (frozen): the merge vote's private class and its tests
+# ===========================================================================
+# The pre-0.10.0 B-series predicates, frozen (the merge vote's private evidence class reads the same
+# facts in core: `peaky.assignment.evidence.vote_classes`). Renamed where the scale above took the name:
+# `series_run` (was `run`), `series_main` (was `main`), `series_level_of` (was `level_of`),
+# `SERIES_LEVEL_ORDER` (was `LEVEL_ORDER`). No user-facing level reads anything below.
+#
+
+SERIES_LEVEL_ORDER = ["1", "2a", "2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
 
 # Natural abundance of the heavy isotope relative to the light one, for the
 # satellite the audit looks for. 13C is per carbon and computed from the ion.
@@ -317,7 +1110,7 @@ def neutral_elements(neutral, ion) -> set:
 
 # ===========================================================================
 # ISOTOPE CHILDREN JUDGED AGAINST THE COMMITTED LINE (C11+c) -- the standalone
-# twin of peaky/chem/isotopes.py's section of the same name (this script imports
+# twin of peaky/chem/isotopes.py's section of the same name (this B-series section uses
 # no peaky code). The committed line is read off the parent's m/z, each child
 # label both ways (parent-relative / mono-counted), a line counts within
 # max(1 ppm, 4 sigma(h)) of its exact spacing (sigma(h) self-fitted on the
@@ -335,7 +1128,7 @@ HEAVY_ISOTOPES: dict[str, tuple[str, float]] = {
     "30Si": ("Si", 29.973770136), "2H": ("H", 2.0141017781),
 }
 #: monoisotopic element masses an ion's mono m/z is summed from (chemistry.M
-#: plus the two alkali adduct metals -- a copy: the script imports no peaky code)
+#: plus the two alkali adduct metals -- a copy: this B-series section uses no peaky code)
 ELEMENT_MASS: dict[str, float] = {
     "C": 12.0, "H": 1.0078250319, "O": 15.9949146221, "N": 14.0030740052, "S": 31.97207069, "P": 30.97376163,
     "Si": 27.976926535, "F": 18.9984031627, "Cl": 34.96885268, "Br": 78.9183371, "I": 126.9044719,
@@ -1308,7 +2101,7 @@ def measure_source(
     return pd.DataFrame(rows)
 
 
-def level_of(row) -> str:
+def series_level_of(row) -> str:
     """The decision table. Order matters: the first predicate that holds wins."""
     # a tentative lead (C19(c)) is hard like below assignability; a halogen lock
     # (rule H, C11+b) that lifts it has already set `lead` False (lift_leads)
@@ -1462,7 +2255,7 @@ def assign_levels(df: pd.DataFrame, corroborating: set[str], upair: set[str] | N
     df["neutral_backed"] = (
         df.corroborated | df.chan2 | df.anchor | df.known_fam.ne("") | df.carbon_ev
     )
-    df["level"] = df.apply(level_of, axis=1)
+    df["level"] = df.apply(series_level_of, axis=1)
     return df
 
 
@@ -1609,7 +2402,7 @@ def iso_check_facts(path: str) -> dict | None:
     return {"veto": veto, "lock": lock}
 
 
-def run(sources: list[str], corroborate: list[str], upair: str | None = None,
+def series_run(sources: list[str], corroborate: list[str], upair: str | None = None,
         twins: str | None = None, iso: str | None = None) -> pd.DataFrame:
     """Level every source, each corroborated by the others plus --corroborate —
     by the neutrals each of them holds at 4b or better on its own evidence.
@@ -1672,7 +2465,7 @@ def run(sources: list[str], corroborate: list[str], upair: str | None = None,
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
 
 
-def main(argv: list[str] | None = None) -> int:
+def series_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="CIMS-adapted Schymanski evidence levels over a peaky ledger."
     )
@@ -1717,7 +2510,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", help="write the levelled rows here as CSV")
     args = parser.parse_args(argv)
 
-    df = run(args.sources, args.corroborate, args.upair, args.twins, args.iso)
+    df = series_run(args.sources, args.corroborate, args.upair, args.twins, args.iso)
     if df.empty:
         print("nothing to level", file=sys.stderr)
         return 1
@@ -1725,7 +2518,7 @@ def main(argv: list[str] | None = None) -> int:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
         df.to_csv(args.out, index=False)
 
-    order = [k for k in LEVEL_ORDER if k not in ("1", "2a")]
+    order = [k for k in SERIES_LEVEL_ORDER if k not in ("1", "2a")]
     for label, group in df.groupby("source", sort=False):
         halogen = group["reagent_halogen"].iloc[0] or "none"
         counts = group.level.value_counts()

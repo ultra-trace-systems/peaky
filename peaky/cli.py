@@ -205,6 +205,13 @@ def _progress_hold_note(prog) -> None:
         pass
 
 
+#: the one line a single-sample `assign --corroborate` logs: the flag feeds a batch's merge vote (which a single
+#: sample does not have) and a batch's other-source partner tag (never a level unlock; it can anchor a series exclusion)
+CORROBORATE_IGNORED = ("[levels] --corroborate ({n} source(s)) is ignored here: a single-sample run has no merge "
+                       "vote and no other-source partners (both are a batch's); this sample's evidence levels are "
+                       "its file levelled alone")
+
+
 def cmd_assign(args) -> None:
     _require_creds()
     from peaky.assignment import assign
@@ -239,7 +246,8 @@ def cmd_assign(args) -> None:
     from peaky.assignment import reflists as RL
 
     reagent_label = getattr(prof, "label", "") or ""
-    reflists_active, tags = RL.activate(context, reagent_label)
+    reflists_active, tags, rl_record = RL.activate(context, reagent_label, record=True,
+                                                   fields=("context", "reagent label"))
     if reflists_active:
         print(f"[reflists] active: {RL.active_versions(reflists_active)} "
               f"(context {sorted(tags) or 'contaminants-only'})")
@@ -269,13 +277,10 @@ def cmd_assign(args) -> None:
                  # same account `peaky batch` gives of the same batch
                  else f"persistence path off: {ADM.why_off(cfg, occurrence)}"))
 
-    # --corroborate: the other channel's / instrument's neutrals = the
-    # `corroborated` axis of the evidence levels (docs/EVIDENCE_LEVELS.md)
-    from peaky.assignment import evidence as EV
-    cross = EV.corroborating_neutrals(getattr(args, "corroborate", []) or [])
-    if cross:
-        print(f"[levels] corroborated by {len(cross)} neutral(s) from "
-              f"{len(args.corroborate)} source(s)")
+    # --corroborate feeds a batch's merge vote and its other-source partner tag;
+    # a single sample has neither (its evidence level is the file levelled alone)
+    if getattr(args, "corroborate", None):
+        print(CORROBORATE_IGNORED.format(n=len(args.corroborate)))
     # `prog` IS the log callable (a transparent pass-through to print whenever
     # the window is off), so the run below is identical either way.
     with PG.open_progress(f"peaky \u00b7 assign {args.sample_id}",
@@ -287,7 +292,7 @@ def cmd_assign(args) -> None:
                          resolving_power=args.resolving_power,
                          adducts=adducts, ts_peaks=ts_peaks, label_purity=purity,
                          occurrence=occurrence, reflists_active=reflists_active,
-                         corroborate=cross,
+                         reagent_profile=getattr(prof, "name", None), reflists_context=rl_record,
                          log=prog, checkpoint_dir=str(od / "checkpoints"))
         # Nothing on this path logs the `(i/N) done` line assign_batch emits, so
         # say it directly: the one sample is in (samples bar 1/1) and the stages
@@ -300,8 +305,9 @@ def cmd_assign(args) -> None:
 
 
 def _claims_text(claims) -> str:
-    """'identified N | ion N | tentative N' from a claim tally ({claim: n}, in
-    evidence.CLAIMS order), '' when there is none."""
+    """'identified N | neutral N | ion N | tentative N | reagent N | not assessed N'
+    from a claim tally ({claim: n}, in evidence.CLAIM_KEYS order: the four
+    claims, then the two buckets), '' when there is none."""
     if not isinstance(claims, dict) or not claims:
         return ""
     return " | ".join(f"{k} {v}" for k, v in claims.items())
@@ -495,6 +501,11 @@ def cmd_gka(args) -> None:
     print(f"wrote {out}  ({len(pts)} points)")
 
 
+#: publish's `levels_before_scale` (a ledger levelled on a scale before the evidence scale), said in one line
+LEVELS_BEFORE_SCALE = ("older     {n} row(s) were levelled on a scale before the evidence scale: every such "
+                       "letter publishes as no level and the row's claim as tentative")
+
+
 def cmd_publish(args) -> None:
     """Publish a finished ledger into Mascope's peak-assignment run ledger.
 
@@ -589,6 +600,8 @@ def cmd_publish(args) -> None:
     if summary.get("resolved_mechanisms"):
         print(f"ionization {summary['resolved_mechanisms']} row(s) carry a mechanism "
               "id -- the fit view needs one, and it is part of a verification's identity")
+    if summary.get("levels_before_scale"):
+        print(LEVELS_BEFORE_SCALE.format(n=summary["levels_before_scale"]))
     for label, key in (("skipped synthetic", "dropped_synthetic"),
                        ("skipped incomplete", "dropped_incomplete"),
                        ("iso formulas inherited", "inherited_formulas")):
@@ -719,6 +732,8 @@ def cmd_publish_batch(args) -> None:
 
     version = args.engine_version or P.engine_version(None)
     config = P.batch_config(summary, merged=merged)
+    if config.get("levels_before_scale"):
+        print(LEVELS_BEFORE_SCALE.format(n=config["levels_before_scale"]))
 
     if args.dry_run:
         print(f"\n[dry-run] nothing sent. engine_version {version}, "
@@ -930,13 +945,13 @@ def _add_rolling_flag(p) -> None:
 
 def _add_corroborate_flag(p) -> None:
     p.add_argument("--corroborate", action="append", default=[], metavar="SOURCE",
-                   help="a run dir, an out-dir holding one run, or a ledger CSV whose "
-                        "neutrals corroborate this run's evidence levels -- the other "
-                        "reagent channel, or the other instrument on the same air; "
-                        "repeatable. A source corroborates only the neutrals it pins on "
-                        "its own (level 4b or better with no cross set), and "
-                        "corroboration is formula evidence only: it can carry a row to "
-                        "level 4a, never above (docs/EVIDENCE_LEVELS.md)")
+                   help="a run dir, an out-dir holding one run, or a ledger CSV of the "
+                        "other reagent channel or the other instrument on the same air; "
+                        "repeatable. It feeds the merge vote's evidence class and (Orbitrap "
+                        "run dirs) the other-source partner tag, which never unlocks an "
+                        "evidence level but can anchor the series exclusion that lifts a "
+                        "pair out of 5a (docs/EVIDENCE_LEVELS.md). A single sample has neither: "
+                        "`peaky assign` records it and ignores it")
 
 
 def _add_trace_first_flags(p) -> None:

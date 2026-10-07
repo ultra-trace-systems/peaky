@@ -35,7 +35,8 @@ What is counted: every ion THIS run could have committed there.
 A commit outside that space (off-budget and uncurated -- the plausibility stage
 demotes those anyway -- or outside the context filter) makes the count a LOWER
 BOUND: the others plus itself. At >= 3 that still decides "degenerate"; below 3
-the density is not measured (NaN): never 4c, never degenerate-5b, no tier cap.
+the density is not measured (NaN): never "unique" and never "degenerate" for
+the merge vote's private class (docs/EVIDENCE_LEVELS.md section 13), no tier cap.
 
 The enumeration is analytic and per peak (no grid): for every heteroatom
 combination the neutral mass is linear in the carbon count and the DBE, so the
@@ -63,6 +64,7 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
+import re
 from bisect import bisect_left, bisect_right
 
 import numpy as np
@@ -292,6 +294,108 @@ def _ledger_adducts(m0: pd.DataFrame) -> list[str]:
     return list(dict.fromkeys(a for a in ad if a in C.ADDUCT_SHIFTS))
 
 
+# ---------------------------------------------------------------------------
+# the enumeration (public: the evidence levels enumerate competitors with it)
+# ---------------------------------------------------------------------------
+def filter_kind(reason) -> str:
+    """A context-filter failure reason with its numbers blanked: the RULE that
+    failed, not the value (``'O=7 implausible for C=2'`` -> ``'O=# implausible
+    for C=#'``). A widened space admits failures of the kinds it names."""
+    return re.sub(r"[-+]?\d+(?:\.\d+)?", "#", str(reason))
+
+
+class EnumerationSpace:
+    """One run's element space, ready to enumerate: the context profile (+ one
+    profile per opened family, ``space_profiles``) with each profile's
+    heteroatom combinations, and the curated formulas by mass. ``accept_kinds``
+    admits context-filter failures of those kinds (``filter_kind``; empty = the
+    filter decides). Memoises its filter verdicts and canonical ion keys."""
+
+    def __init__(self, profiles: list, curated=frozenset(), *, accept_kinds=frozenset()):
+        self.profiles = list(profiles)
+        self.curated = frozenset(str(f) for f in (curated or ()))
+        self.accept_kinds = frozenset(accept_kinds)
+        self._build_spaces()
+        self.cur_m, self.cur_f = _curated_masses(self.curated)
+        self._ok: dict = {}
+        self._ion: dict = {}
+
+    def _build_spaces(self) -> None:
+        base_caps = _caps(self.profiles[0])
+        self.spaces = []
+        for i, prof in enumerate(self.profiles):
+            caps = _caps(prof)
+            require = frozenset(e for e in ELEMENT_CEILING if caps[e] > base_caps[e]) if i else frozenset()
+            self.spaces.append((prof, _combos(caps, require), int(getattr(prof, "grid_c_max", 40))))
+
+    def admits(self, si: int, neutral: str) -> bool:
+        """Profile ``si``'s context filter keeps ``neutral`` (or fails it on an
+        accepted kind)."""
+        ok = self._ok.get((si, neutral))
+        if ok is None:
+            keep, why = X.filter_by_profile(neutral, self.spaces[si][0])
+            ok = bool(keep) or bool(self.accept_kinds and why and filter_kind(why) in self.accept_kinds)
+            self._ok[(si, neutral)] = ok
+        return ok
+
+    def canon(self, neutral: str, adduct: str) -> str | None:
+        """The canonical ion key (``_canonical_ion``), memoised."""
+        k = (neutral, adduct)
+        v = self._ion.get(k, 0)
+        if v == 0:
+            v = self._ion[k] = _canonical_ion(neutral, adduct)
+        return v
+
+
+def enumeration_space(context, families=(), curated=frozenset(), *, accept_kinds=frozenset()) -> EnumerationSpace:
+    """The space ``measure_degeneracy`` counts in: ``context`` (a ContextProfile
+    or its name) with the opened ``families``, plus the ``curated`` formulas."""
+    return EnumerationSpace(space_profiles(context, families), curated, accept_kinds=accept_kinds)
+
+
+def enumerate_window(mz: float, lo_ppm: float, hi_ppm: float, channels, space: EnumerationSpace, *,
+                     centre: float | None = None) -> dict[str, tuple[str, str, float]]:
+    """``{ion_key: (neutral, adduct, ppm)}`` of EVERY plausible ion of ``space``
+    on ``channels`` whose ppm error at ``mz`` lies in [lo_ppm, hi_ppm]
+    (inclusive; no truncation). Within one ion key the reading closest to
+    ``centre`` (default: the window's midpoint) wins. A channel without an
+    adduct shift is skipped. A non-finite window is refused (ValueError): it
+    would admit every ion of the space."""
+    if not (np.isfinite(lo_ppm) and np.isfinite(hi_ppm)):
+        raise ValueError(f"enumerate_window: a non-finite ppm window [{lo_ppm}, {hi_ppm}] at m/z {mz} "
+                         "(an uncalibrated source has no window to enumerate in)")
+    ion_lo = mz / (1 + hi_ppm * 1e-6)
+    ion_hi = mz / (1 + lo_ppm * 1e-6)
+    mid = 0.5 * (lo_ppm + hi_ppm) if centre is None else centre
+    found: dict[str, tuple[str, str, float]] = {}
+
+    def _take(neutral: str, adduct: str, theo_ion: float):
+        ion = space.canon(neutral, adduct)
+        if ion is None:
+            return
+        ppm = (mz - theo_ion) / theo_ion * 1e6
+        prev = found.get(ion)
+        if prev is None or abs(ppm - mid) < abs(prev[2] - mid):
+            found[ion] = (neutral, adduct, ppm)
+
+    for adduct in channels:
+        if adduct not in C.ADDUCT_SHIFTS:
+            continue
+        shift = C.ADDUCT_SHIFTS[adduct]
+        m_lo, m_hi = ion_lo - shift, ion_hi - shift
+        if m_hi < 1:
+            continue
+        for si, (_prof, cb, cmax) in enumerate(space.spaces):
+            rep, cv, hv = _solve(cb, cmax, m_lo, m_hi)
+            for i, c, h in zip(rep, cv, hv):
+                neutral = _formula(cb, i, c, h)
+                if space.admits(si, neutral):
+                    _take(neutral, adduct, float(cb["base"][i]) + 12.0 * int(c) + int(h) * _MH + shift)
+        for j in range(bisect_left(space.cur_m, m_lo), bisect_right(space.cur_m, m_hi)):
+            _take(space.cur_f[j], adduct, space.cur_m[j] + shift)
+    return found
+
+
 def measure_degeneracy(ledger: pd.DataFrame, *, cal: tuple[float, float] | None,
                        context: str = "ambient-air", adducts=None, families=(),
                        curated=frozenset(), k_sigma: float = K_SIGMA,
@@ -311,23 +415,15 @@ def measure_degeneracy(ledger: pd.DataFrame, *, cal: tuple[float, float] | None,
     m0 = ledger[ledger["role"] == L.ROLE_M0]
     channels = [a for a in (list(adducts) if adducts else _ledger_adducts(m0)) if a in C.ADDUCT_SHIFTS]
     channels = list(dict.fromkeys(channels))
-    profiles = space_profiles(context, families)
+    space = enumeration_space(context, families, curated)
+    profiles, cur = space.profiles, space.curated
     base_caps = _caps(profiles[0])
-    spaces = []
-    for i, prof in enumerate(profiles):
-        caps = _caps(prof)
-        require = frozenset(e for e in ELEMENT_CEILING if caps[e] > base_caps[e]) if i else frozenset()
-        spaces.append((prof, _combos(caps, require), int(getattr(prof, "grid_c_max", 40))))
-    cur = frozenset(str(f) for f in (curated or ()))
-    cur_m, cur_f = _curated_masses(cur)
     raised = sorted({f"{e}<={_caps(p)[e]}" for p in profiles[1:] for e in ELEMENT_CEILING
                      if _caps(p)[e] > base_caps[e]})
     log(f"[degeneracy] channels {channels}; space: the {profiles[0].label} budget"
         + (f" + {', '.join(raised)} (opened families)" if raised else "")
         + f" + {len(cur)} curated; window [{lo_ppm:+.2f},{hi_ppm:+.2f}] ppm")
 
-    ok_cache: dict = {}
-    ion_cache: dict = {}
     out: dict[str, dict] = {}
     for _, r in m0.iterrows():
         mz = r.get("mz")
@@ -336,38 +432,7 @@ def measure_degeneracy(ledger: pd.DataFrame, *, cal: tuple[float, float] | None,
         mz = float(mz)
         nf, ad = str(r.get("neutral_formula") or ""), str(r.get("adduct") or "")
         chans = channels + ([ad] if ad in C.ADDUCT_SHIFTS and ad not in channels else [])
-        ion_lo = mz / (1 + hi_ppm * 1e-6)
-        ion_hi = mz / (1 + lo_ppm * 1e-6)
-        found: dict[str, tuple[str, str, float]] = {}   # ion -> (neutral, adduct, ppm)
-
-        def _take(neutral: str, adduct: str, theo_ion: float):
-            ion = ion_cache.get((neutral, adduct), 0)
-            if ion == 0:
-                ion = ion_cache[(neutral, adduct)] = _canonical_ion(neutral, adduct)
-            if ion is None:
-                return
-            ppm = (mz - theo_ion) / theo_ion * 1e6
-            prev = found.get(ion)
-            if prev is None or abs(ppm - mu) < abs(prev[2] - mu):
-                found[ion] = (neutral, adduct, ppm)
-
-        for adduct in chans:
-            shift = C.ADDUCT_SHIFTS[adduct]
-            m_lo, m_hi = ion_lo - shift, ion_hi - shift
-            if m_hi < 1:
-                continue
-            for si, (prof, cb, cmax) in enumerate(spaces):
-                rep, cv, hv = _solve(cb, cmax, m_lo, m_hi)
-                for i, c, h in zip(rep, cv, hv):
-                    neutral = _formula(cb, i, c, h)
-                    ok = ok_cache.get((si, neutral))
-                    if ok is None:
-                        ok = bool(X.filter_by_profile(neutral, prof)[0])
-                        ok_cache[(si, neutral)] = ok
-                    if ok:
-                        _take(neutral, adduct, float(cb["base"][i]) + 12.0 * int(c) + int(h) * _MH + shift)
-            for j in range(bisect_left(cur_m, m_lo), bisect_right(cur_m, m_hi)):
-                _take(cur_f[j], adduct, cur_m[j] + shift)
+        found = enumerate_window(mz, lo_ppm, hi_ppm, chans, space, centre=mu)
 
         assigned_ion = _canonical_ion(nf, ad) if ad in C.ADDUCT_SHIFTS else None
         comp = sorted((v for k, v in found.items() if k != assigned_ion), key=lambda t: abs(t[2] - mu))

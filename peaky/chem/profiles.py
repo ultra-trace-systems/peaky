@@ -76,11 +76,13 @@ class ReagentProfile:
     # module. Empty = off (the positive-mode profiles: urea.H+.H2O is 5e-5 of
     # urea.H+ on the uronium Orbitrap).
     water_cores: tuple = ()
-    # NEUTRAL PAIR (rule U, docs/EVIDENCE_LEVELS.md §3 `upair`, §4 row 9'): a
+    # NEUTRAL PAIR (rule U, docs/EVIDENCE_LEVELS.md section 3.2 `upair`): a
     # (bare, cluster) adduct pair of this chemistry whose two ions, seen together
-    # at exact mass and co-varying, establish the NEUTRAL the way the acid branch
-    # does on the anion channels -- the uronium pair ([M+H]+, [M+(CH4N2O)H]+).
-    # `batch/neutral_pairs.py` measures the fact from the batch time series. Empty
+    # at exact mass and co-varying, were read as establishing the NEUTRAL the way
+    # the acid branch does on the anion channels -- the uronium pair ([M+H]+,
+    # [M+(CH4N2O)H]+). `batch/neutral_pairs.py` measures the fact from the batch
+    # time series; the evidence scale records it and reads it nowhere (the same
+    # two routes are a tag there, at their measured base rate). Empty
     # = off (every other bundled profile: an unscoped fact would lift two-channel
     # rows of any chemistry).
     neutral_pair: tuple = ()

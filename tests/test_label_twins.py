@@ -49,7 +49,7 @@ def _series(spec: dict) -> pd.DataFrame:
     first `share` of the spectra only), share15 (the 15N line in the first
     `share15` of the spectra only; 0 = never), twin_shift (Da added to the 14N
     line's position), c13 (write the 15N line's 13C line; default True)."""
-    t0 = pd.Timestamp("2026-08-11 00:00", tz="UTC")
+    t0 = pd.Timestamp("2021-02-18 00:00", tz="UTC")
     rng = np.random.default_rng(7)
     rows = []
     for i in range(N_SPECTRA):
@@ -336,7 +336,7 @@ def _dim_rows(frames, ts):
         for i in range(N_SPECTRA):
             h = 1000.0 * (1.2 + 0.8 * np.sin(i / 7.0 + k))
             rows.append(dict(sample_item_id=f"s{i:03d}",
-                             datetime_utc=pd.Timestamp("2026-08-11", tz="UTC") + pd.Timedelta(minutes=20 * i),
+                             datetime_utc=pd.Timestamp("2021-02-18", tz="UTC") + pd.Timedelta(minutes=20 * i),
                              mz=C.ion_mz(n, "[M-H]-"), height=h, area=h, role="M0", neutral_formula=n,
                              adduct="[M-H]-"))
     frames = dict(frames, f2=EV.trim(ledger(extra)))
@@ -425,22 +425,32 @@ def _nitrate_rows(x="C10H18O4", *, tied=True, iso=True):
 
 
 def K(untie=(), veto=None, alien=()) -> dict:
-    """Rule K's facts as batch/label_twins.facts hands them to level_pooled."""
+    """Rule K's facts as batch/label_twins.facts hands them to the fact layer."""
     return {"untie": set(untie), "veto": dict(veto or {}), "alien": set(alien)}
 
 
+#: the hard inputs of the pre-0.10.0 decision, in its order (a hard input made it reject the pair)
+HARD = ("tied", "below", "lead", "lowconf", "label_veto", "iso_veto")
+
+
+def _hard(r) -> tuple:
+    return tuple(h for h in HARD if bool(getattr(r, h) if not isinstance(r, (dict, pd.Series)) else r[h]))
+
+
 def _levels(frame, **kw) -> dict:
-    out = EV.level_pooled({"f": frame}, **kw)
-    return {a: (lv, ax, why) for a, lv, ax, why in
-            zip(out.adduct, out.evidence_level, out.evidence_axes, out.level_reason)}
+    """{adduct: (hard inputs, facts string)} of the pooled fact layer over one file. Rule K's facts
+    moved the pre-0.10.0 level; that level reaches no output since peaky 0.10.0, so its tests read
+    the hard inputs and the facts string (`evidence_axes`: the axes and facts the pair holds)."""
+    out = EV._series_pooled({"f": frame}, **kw)
+    return {r.adduct: (_hard(r), r.evidence_axes) for r in out.itertuples(index=False)}
 
 
 def test_the_untie_lets_the_acid_branch_read():
     x = "C10H18O4"
     base = _levels(_nitrate_rows(x))
-    assert base[NO3][0] == "5b" and "near-tie" in base[NO3][2]
+    assert base[NO3][0] == ("tied",)
     lv = _levels(_nitrate_rows(x), label=K(untie={(x, NO3)}))
-    assert lv[NO3][0] == "3b" and "label_untie" in lv[NO3][1] and "acid branch" in lv[NO3][2]
+    assert lv[NO3][0] == () and "label_untie" in lv[NO3][1] and "branch" in lv[NO3][1].split("|")
     assert lv["[M-H]-"] == base["[M-H]-"] and lv[NO3L] == base[NO3L]
     # an untie of a pair that is not tied changes nothing and is not recorded
     lv = _levels(_nitrate_rows(x, tied=False), label=K(untie={(x, NO3)}))
@@ -449,24 +459,24 @@ def test_the_untie_lets_the_acid_branch_read():
     # other hard inputs still hold
     rows = _nitrate_rows(x)
     rows.loc[rows.peak_id == "n14", "below_assignability"] = True
-    assert _levels(rows, label=K(untie={(x, NO3)}))[NO3][0] == "5b"
+    assert _levels(rows, label=K(untie={(x, NO3)}))[NO3][0] == ("below",)
 
 
 def test_the_veto_is_a_hard_input_with_its_numbers():
     x = "C10H18O4"
     note = "no 14N twin: seen in 0 of 42 expected detections"
-    lv = _levels(_nitrate_rows(x, tied=False), label=K(veto={(x, NO3L): note}))
-    level, axes, why = lv[NO3L]
-    assert level == "5b" and "label_veto" in axes
-    assert why == f"5b: the reagent's two isotopologues refute the cluster reading ({note})"
-    assert _levels(_nitrate_rows(x, tied=False), label=K(veto={(x, NO3L): ""}))[NO3L][2] == \
-        "5b: the reagent's two isotopologues refute the cluster reading"
-    # it outranks the curated identity and the branch, as every hard input does
+    out = EV._series_pooled({"f": _nitrate_rows(x, tied=False)}, label=K(veto={(x, NO3L): note})).set_index("adduct")
+    assert _hard(out.loc[NO3L]) == ("label_veto",) and "label_veto" in out.loc[NO3L, "evidence_axes"]
+    assert out.loc[NO3L, "label_note"] == note
+    # the scale rejects it at step 0 (tests/test_levels_named.py `test_label_mutants`)
+    blank = EV._series_pooled({"f": _nitrate_rows(x, tied=False)}, label=K(veto={(x, NO3L): ""})).set_index("adduct")
+    assert _hard(blank.loc[NO3L]) == ("label_veto",) and blank.loc[NO3L, "label_note"] == ""
+    # it stands beside the curated identity and the branch, as every hard input does
     rows = _nitrate_rows(x, tied=False)
     rows.loc[rows.peak_id == "n15", "method"] = "known:atmospheric"
-    assert _levels(rows, label=K(veto={(x, NO3L): note}))[NO3L][0] == "5b"
+    assert _levels(rows, label=K(veto={(x, NO3L): note}))[NO3L][0] == ("label_veto",)
     # a veto keyed on another adduct leaves this one alone
-    assert _levels(_nitrate_rows(x, tied=False), label=K(veto={(x, NO3): note}))[NO3L][0] != "5b"
+    assert _levels(_nitrate_rows(x, tied=False), label=K(veto={(x, NO3): note}))[NO3L][0] == ()
 
 
 def test_ion_only_pairs_never_take_the_facts():
@@ -474,9 +484,9 @@ def test_ion_only_pairs_never_take_the_facts():
     rows = _nitrate_rows(x)
     io = m0("io", x, adduct="[M]-.", ion=x, mz=C.ion_mz(x, "[M-H]-") + 1.0078, method="ion_only:ea", tied=True)
     frame = pd.concat([rows, ledger([io])], ignore_index=True)
-    out = EV.level_pooled({"f": frame}, label=K(untie={(x, "[M]-.")}, veto={(x, "[M]-."): "x"})).set_index("adduct")
+    out = EV._series_pooled({"f": frame}, label=K(untie={(x, "[M]-.")}, veto={(x, "[M]-."): "x"})).set_index("adduct")
     assert not out.loc["[M]-.", "label_untie"] and not out.loc["[M]-.", "label_veto"]
-    assert out.loc["[M]-.", "evidence_level"] == "5b"            # still tied: the untie never reaches it
+    assert _hard(out.loc["[M]-."]) == ("tied",)                  # still tied: the untie never reaches it
 
 
 def _j1_rows(j="C11H18O6", *, tied=False):
@@ -490,17 +500,18 @@ def _j1_rows(j="C11H18O6", *, tied=False):
 def test_an_alien_14n_line_gives_its_neutral_nothing_and_takes_nothing():
     j = "C11H18O6"
     base = _levels(_j1_rows(j))
-    assert base["[M-H]-"][0] == "3b" and base[NO3][0] == "3b"          # the branch rests on the 14N line
+    assert "branch" in base["[M-H]-"][1].split("|") and "branch" in base[NO3][1].split("|")   # on the 14N line
     note = "no 15N partner: seen in 0 of the 305 spectra of the 14N line; cluster or organonitrate undecided"
     lv = _levels(_j1_rows(j), label=K(alien={(j, NO3)}, veto={(j, NO3): note}))
-    assert lv["[M-H]-"][0] == "4b" and "branch" not in lv["[M-H]-"][1] and "chan2" not in lv["[M-H]-"][1]
-    assert lv[NO3][0] == "5b" and "two isotopologues refute" in lv[NO3][2] and note in lv[NO3][2]
+    assert lv["[M-H]-"][0] == () and "branch" not in lv["[M-H]-"][1] and "chan2" not in lv["[M-H]-"][1]
+    assert lv["[M-H]-"][1].split("|")[0] == "iso"                          # its own 13C line is left
+    assert lv[NO3][0] == ("label_veto",)
     # an untestable line (alien, no veto) takes nothing either: its own axes decide
     lv = _levels(_j1_rows(j), label=K(alien={(j, NO3)}))
-    assert lv[NO3][0] == "4b" and "branch" not in lv[NO3][1] and "chan2" not in lv[NO3][1]
-    assert lv["[M-H]-"][0] == "4b"
+    assert lv[NO3][0] == () and "branch" not in lv[NO3][1] and "chan2" not in lv[NO3][1]
+    assert lv[NO3][1].split("|")[0] == "iso" and lv["[M-H]-"][1].split("|")[0] == "iso"
     # a line that is not alien keeps the branch
-    assert _levels(_j1_rows(j), label=K())["[M-H]-"][0] == "3b"
+    assert "branch" in _levels(_j1_rows(j), label=K())["[M-H]-"][1].split("|")
 
 
 def test_the_two_nitrate_clusters_of_one_neutral_are_one_channel():
@@ -508,17 +519,17 @@ def test_the_two_nitrate_clusters_of_one_neutral_are_one_channel():
     rows = ledger([m0("n14", x, adduct=NO3, ion=x + "NO3", mz=C.ion_mz(x, NO3)),
                    m0("n15", x, adduct=NO3L, ion=x + "^NO3", mz=C.ion_mz(x, NO3L)),
                    child("c1", "n15", "13C+1", 1000.0 * EV.C13_PER_CARBON * 4)])
-    base = EV.level_pooled({"f": rows}).set_index("adduct")
-    got = EV.level_pooled({"f": rows}, label=K()).set_index("adduct")
+    base = EV._series_pooled({"f": rows}).set_index("adduct")
+    got = EV._series_pooled({"f": rows}, label=K()).set_index("adduct")
     assert base["chan2"].all() and not got["chan2"].any()
-    assert base.loc[NO3L, "evidence_level"] == "4b" and got.loc[NO3L, "evidence_level"] == "4b"
+    assert base.loc[NO3L, "iso"] and got.loc[NO3L, "iso"]
     # with the deprotonated line the neutral still has two channels and the branch
     rows = pd.concat([rows, ledger([m0("h", x, adduct="[M-H]-", ion=x, mz=C.ion_mz(x, "[M-H]-"))])],
                      ignore_index=True)
-    got = EV.level_pooled({"f": rows}, label=K()).set_index("adduct")
+    got = EV._series_pooled({"f": rows}, label=K()).set_index("adduct")
     assert got["chan2"].all() and got["branch"].all()
     # the fold never touches a profile without the facts: label=None is the old engine
-    assert EV.level_pooled({"f": rows}, label=None).equals(EV.level_pooled({"f": rows}))
+    assert EV._series_pooled({"f": rows}, label=None).equals(EV._series_pooled({"f": rows}))
 
 
 def test_the_reference_script_relabels_the_pools_like_the_engine():
@@ -528,62 +539,65 @@ def test_the_reference_script_relabels_the_pools_like_the_engine():
                                            m0("a15", x, adduct=NO3L, ion=x + "^NO3", mz=C.ion_mz(x, NO3L))])],
                      ignore_index=True)
     lab = K(alien={(j, NO3)}, veto={(j, NO3): "n"})
-    core = EV.level_pooled({"s1": rows}, label=lab)
+    core = EV._series_pooled({"s1": rows}, label=lab)
     frame = LL.measure_source("s1", rows.assign(__file="s1"), None)
     ref = LL.assign_levels(frame, set(), None, lab)
     m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
     assert len(m) == len(core) == 4
-    assert (m["evidence_level"] == m["level"]).all()
+    assert (m["evidence_level"] == m["level"]).all()             # the private decision, alike in both
     assert (m["chan2_x"] == m["chan2_y"]).all() and (m["branch_x"] == m["branch_y"]).all()
 
 
 def test_the_facts_are_never_axes_nor_in_cross_nor_per_file():
     x = "C10H18O4"
-    base = EV.level_pooled({"f": _nitrate_rows(x)})
-    out = EV.level_pooled({"f": _nitrate_rows(x)}, label=K(untie={(x, NO3)}, veto={(x, NO3L): "n"}))
+    base = EV._series_pooled({"f": _nitrate_rows(x)})
+    out = EV._series_pooled({"f": _nitrate_rows(x)}, label=K(untie={(x, NO3)}, veto={(x, NO3L): "n"}))
     assert (out["n_axes"].to_numpy() == base["n_axes"].to_numpy()).all()
     assert (out["cross"].to_numpy() == base["cross"].to_numpy()).all()
-    # the cross set re-levels a source on its own per-file evidence, without rule K (§6.3)
-    assert x in EV.source_neutrals({"f": _nitrate_rows(x)})
+    # the cross set re-levels a source on its own per-file evidence, without rule K (section 6.3)
+    assert x in EV._source_neutrals({"f": _nitrate_rows(x)})
     import inspect
-    assert "label" not in inspect.signature(EV.source_neutrals).parameters
-    per_file = EV.compute_levels(_nitrate_rows(x))
-    assert "5b" in set(per_file["evidence_level"])                # the per-file tie stands
-    assert "label" not in inspect.signature(EV.compute_levels).parameters
+    assert "label" not in inspect.signature(EV._source_neutrals).parameters
+    # the merge vote reads the file alone: the per-file tie stands (class 0 on the tied reading)
+    led = _nitrate_rows(x)
+    cls = EV.vote_classes(led)
+    assert cls.loc[led.index[led.peak_id == "n14"][0]] == 0
+    assert "label" not in inspect.signature(EV.vote_classes).parameters
 
 
 # --------------------------------------------------------------------------- the leak guard
 def test_a_leaked_fact_would_move_the_goldens():
     """Leak mutants: untie every tied [M+NO3]- pair, veto every [M+^NO3]- pair
-    -- the golden vectors catch both. The facts come only from a batch time
+    -- the golden fact vectors catch both. The facts come only from a batch time
     series of a labelled-nitrate profile, which no golden source carries."""
     from tests.test_evidence import _read
     no3, br = _read("tv_nitrate"), _read("tv_bromide")
-    cross = EV.source_neutrals({"tv_bromide": br})
-    base = EV.level_pooled({"tv_nitrate": no3}, cross=cross)
+    cross = EV._source_neutrals({"tv_bromide": br})
+    base = EV._series_pooled({"tv_nitrate": no3}, cross=cross)
     tied = set(zip(base.loc[base["tied"] & base["adduct"].eq(NO3), "neutral_formula"],
                    base.loc[base["tied"] & base["adduct"].eq(NO3), "adduct"]))
     assert tied
-    moved = EV.level_pooled({"tv_nitrate": no3}, cross=cross, label=K(untie=tied))
-    assert _vector(moved.evidence_level) != _vector(base.evidence_level)
+    moved = EV._series_pooled({"tv_nitrate": no3}, cross=cross, label=K(untie=tied))
+    assert _vector(moved) != _vector(base)
     tof, orbi = _pooled("tof"), _pooled("orbi")
-    base = EV.level_pooled(orbi, cross=EV.source_neutrals(tof))
-    assert (len(base), _vector(base.evidence_level)) == ORBI_NO_LOCK
+    base = EV._series_pooled(orbi, cross=EV._source_neutrals(tof))
+    assert (len(base), _vector(base)) == ORBI_NO_LOCK
     labelled = base[base["adduct"].eq(NO3L)]
-    moved = EV.level_pooled(orbi, cross=EV.source_neutrals(tof),
-                            label=K(veto={(n, NO3L): "" for n in labelled["neutral_formula"]}))
-    assert _vector(moved.evidence_level) != ORBI_NO_LOCK[1]
+    moved = EV._series_pooled(orbi, cross=EV._source_neutrals(tof),
+                              label=K(veto={(n, NO3L): "" for n in labelled["neutral_formula"]}))
+    assert _vector(moved) != ORBI_NO_LOCK[1]
     # the one-channel fold alone (an empty fact set that is not None) moves it too
-    moved = EV.level_pooled(orbi, cross=EV.source_neutrals(tof), label=K())
-    assert _vector(moved.evidence_level) != ORBI_NO_LOCK[1]
+    moved = EV._series_pooled(orbi, cross=EV._source_neutrals(tof), label=K())
+    assert _vector(moved) != ORBI_NO_LOCK[1]
     # ... and alien 14N lines leaving their neutral's pools
     lines = set(zip(base.loc[base["adduct"].eq(NO3), "neutral_formula"], base.loc[base["adduct"].eq(NO3), "adduct"]))
-    moved = EV.level_pooled({"tv_nitrate": no3}, cross=cross, label=K(alien=lines))
-    assert _vector(moved.evidence_level) != _vector(EV.level_pooled({"tv_nitrate": no3}, cross=cross).evidence_level)
+    moved = EV._series_pooled({"tv_nitrate": no3}, cross=cross, label=K(alien=lines))
+    assert _vector(moved) != _vector(EV._series_pooled({"tv_nitrate": no3}, cross=cross))
 
 
 # --------------------------------------------------------------------------- the reference script
 def _ll():
+    """The reference script with the pre-0.10.0 decision, or skip."""
     import importlib.util
     from pathlib import Path
     spec = importlib.util.spec_from_file_location(
@@ -607,78 +621,53 @@ def test_the_reference_script_reads_the_table_like_the_engine(tmp_path):
     pd.DataFrame({"neutral_formula": [x, y, x], "adduct": [NO3, NO3L, NO3L], "untie": [True, False, False],
                   "veto": [False, True, False], "note": ["", "no 14N twin", ""]}).to_csv(
         run / "tables" / "label_twins.csv", index=False)
-    off = LL.run([str(run)], []).set_index(["neutral", "adduct"])["level"]
-    on = LL.run([str(run)], [], None, "auto").set_index(["neutral", "adduct"])["level"]
-    assert off[(x, NO3)] == "5b" and on[(x, NO3)] == "3b"
-    assert off[(y, NO3L)] == "4b" and on[(y, NO3L)] == "5b"
-    explicit = LL.run([str(run)], [], None, str(run / "tables" / "label_twins.csv"))
-    assert list(explicit["level"]) == list(on.reset_index()["level"])
-    assert list(LL.run([str(tmp_path / "out")], [], None, "auto")["level"]) == list(on.reset_index()["level"])
-    core = EV.level_pooled({"s1": rows}, label=K(untie={(x, NO3)}, veto={(y, NO3L): "no 14N twin"}))
+    off = LL.series_run([str(run)], []).set_index(["neutral", "adduct"])
+    on = LL.series_run([str(run)], [], None, "auto").set_index(["neutral", "adduct"])
+    # the table read: x's 14N line untied (the acid branch reads), y's labelled reading vetoed
+    assert bool(off.at[(x, NO3), "tied"]) and not bool(on.at[(x, NO3), "tied"]) and bool(on.at[(x, NO3), "label_untie"])
+    assert not bool(off.at[(y, NO3L), "label_veto"]) and bool(on.at[(y, NO3L), "label_veto"])
+    explicit = LL.series_run([str(run)], [], None, str(run / "tables" / "label_twins.csv"))
+    assert list(explicit["level"]) == list(on["level"])
+    assert list(LL.series_run([str(tmp_path / "out")], [], None, "auto")["level"]) == list(on["level"])
+    core = EV._series_pooled({"s1": rows}, label=K(untie={(x, NO3)}, veto={(y, NO3L): "no 14N twin"}))
     m = core.merge(on.reset_index(), left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
-    assert len(m) == len(core) and (m["evidence_level"] == m["level"]).all()
+    assert len(m) == len(core) and (m["evidence_level"] == m["level"]).all()     # the private decision, alike
     out = tmp_path / "levels.csv"
-    assert LL.main([str(run), "--label-twins", "--out", str(out)]) == 0
-    got = pd.read_csv(out).set_index(["neutral", "adduct"])["level"]
-    assert got[(x, NO3)] == "3b" and got[(y, NO3L)] == "5b"
-    assert LL.main([str(run), "--out", str(out)]) == 0
-    assert pd.read_csv(out).set_index(["neutral", "adduct"])["level"][(y, NO3L)] == "4b"
+    assert LL.series_main([str(run), "--label-twins", "--out", str(out)]) == 0
+    got = pd.read_csv(out).set_index(["neutral", "adduct"])
+    assert list(got["level"]) == list(on["level"]) and bool(got.at[(y, NO3L), "label_veto"])
+    assert LL.series_main([str(run), "--out", str(out)]) == 0
+    assert list(pd.read_csv(out)["level"]) == list(off["level"])
     empty = tmp_path / "bare"
     (empty / "per_file").mkdir(parents=True)
     rows.to_csv(empty / "per_file" / "s1_ledger.csv", index=False)
     assert LL.label_twin_facts(str(empty)) is None
     # one named table fires only on a source that holds every pair it names: this table names
-    # C11H18O6's 14N line, and a source holding it is levelled with it (5b line, 4b acid); a
-    # source that does not hold the pairs is untouched
+    # C11H18O6's 14N line, and a source holding it is levelled with it (the line vetoed and alien,
+    # the acid without its branch); a source that does not hold the pairs is untouched
     other = tmp_path / "other"
     (other / "per_file").mkdir(parents=True)
     _j1_rows().to_csv(other / "per_file" / "s1_ledger.csv", index=False)
     table = tmp_path / "t.csv"
     pd.DataFrame({"neutral_formula": ["C11H18O6"], "adduct": [NO3], "untie": [False], "veto": [True],
                   "alien": [True], "note": ["n"]}).to_csv(table, index=False)
-    got = LL.run([str(other)], [], None, str(table)).set_index("adduct")["level"]
-    assert got["[M-H]-"] == "4b" and got[NO3] == "5b"
+    got = LL.series_run([str(other)], [], None, str(table)).set_index("adduct")
+    assert bool(got.at[NO3, "label_veto"]) and not bool(got.at["[M-H]-", "branch"])
     third = tmp_path / "third"
     (third / "per_file").mkdir(parents=True)
     _j1_rows("C11H18O5").to_csv(third / "per_file" / "s1_ledger.csv", index=False)
-    assert set(LL.run([str(third)], [], None, str(table))["level"]) == {"3b"}
-
-
-# --------------------------------------------------------------------------- the scorecard
-def test_the_scorecard_reads_the_twins_as_the_runs_own_evidence(tmp_path, monkeypatch):
-    import importlib.util
-    import sys
-    import types
-    from pathlib import Path
-    spec = importlib.util.spec_from_file_location(
-        "scorecard", Path(__file__).resolve().parents[1] / "scripts" / "scorecard.py")
-    SC = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, "scorecard", SC)
-    spec.loader.exec_module(SC)
-    seen = {}
-    real = SC.EV.level_pooled
-
-    def spy(frames, **kw):
-        seen.update(kw)
-        return real(frames, **kw)
-    monkeypatch.setattr(SC.EV, "level_pooled", spy)
-    x = "C10H18O4"
-    run_dir = tmp_path / "RUN"
-    (run_dir / "tables").mkdir(parents=True)
-    pd.DataFrame({"neutral_formula": [x, x], "adduct": [NO3, NO3L], "untie": [True, False],
-                  "veto": [False, True], "note": ["", "n"]}).to_csv(run_dir / "tables" / "label_twins.csv",
-                                                                    index=False)
-    run = types.SimpleNamespace(path=str(run_dir), per_file=_nitrate_rows(x).assign(__file="s1"))
-    SC.own_levels_for(run)
-    assert seen.get("label") == {"untie": {(x, NO3)}, "veto": {(x, NO3L): "n"}, "alien": set()}
+    untouched = LL.series_run([str(third)], [], None, str(table))
+    assert not untouched["label_veto"].any() and untouched["branch"].all()
 
 
 # --------------------------------------------------------------------------- the batch, end to end
 def test_a_labelled_nitrate_batch_writes_the_table_and_levels_it(tmp_path, monkeypatch):
     """assign_batch.run on the composed NO3+NO3_15N profile: the table is written
-    from the stamped series, the summary carries the funnel, the alias-only tied
-    [X+NO3]- row of a cluster that follows k_cl reads 3b on the merged ledger, and
-    a labelled cluster without its 14N twin reads 5b."""
+    from the stamped series, the summary carries the funnel, the pooled fact table
+    unties the alias-only tied [X+NO3]- row of a cluster that follows k_cl and
+    vetoes a labelled cluster without its 14N twin -- which the evidence scale
+    rejects (5b, "refuted: label_veto") on the merged ledger. (Before peaky
+    0.10.0 the untied row read 3b, the acid branch; the scale reads no branch.)"""
     from peaky.assignment import assign as A
     from peaky.assignment import ledger as L
     from peaky.assignment import tiers as T
@@ -708,7 +697,8 @@ def test_a_labelled_nitrate_batch_writes_the_table_and_levels_it(tmp_path, monke
         T.apply_tiers(led)
         led["degeneracy_density"] = 0.5
         led["resolvability"] = "resolved"
-        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
+                                         "degeneracy_cal": {"mu": 0.0, "sigma": 0.3}},
                 "plausibility_audit": [], "summaries": {}, "problems": []}
 
     monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
@@ -716,20 +706,23 @@ def test_a_labelled_nitrate_batch_writes_the_table_and_levels_it(tmp_path, monke
         {"peak_id": ["A"], "mz": [200.1], "height": [1.0e5]}))
     monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
     monkeypatch.setattr(A, "run", fake_assign)
+    # the merged rows' levels below need an Orbitrap-class width model (the facts do not)
     AB.run(peaks=pk, ts_peaks=pk, reagent="NO3+NO3_15N", batch="test batch", out_dir=str(tmp_path),
-           k_min=2, k_max=3, min_gain=0.0, n_jobs=1, log=lambda *a: None)
+           k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power=100_000, log=lambda *a: None)
     table = pd.read_csv(tmp_path / "tables" / "label_twins.csv")
     assert list(table.columns) == list(LT.TABLE_COLUMNS)
     assert LT.untie(table) == {(x, NO3)} and set(LT.veto(table)) == {(y, NO3L)}
     summ = json.load(open(tmp_path / "batch_summary.json"))["evidence_levels"]["label_twins"]
     assert summ["in_scope"] is True and summ["untie"] == 1 and summ["refuted"] == 1
-    merged = pd.read_csv(tmp_path / "merged_ledger.csv").set_index(["neutral_formula", "adduct"])
-    assert merged.loc[(x, NO3), "evidence_level"] == "3b"
-    assert "label_untie" in merged.loc[(x, NO3), "evidence_axes"]
-    assert merged.loc[(y, NO3L), "evidence_level"] == "5b"
-    assert "two isotopologues refute" in merged.loc[(y, NO3L), "level_reason"]
-    ev = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv")
+    ev = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv", keep_default_na=False)
     assert {"label_untie", "label_veto", "label_note"} <= set(ev.columns)
+    ev = ev.set_index(["neutral_formula", "adduct"])
+    assert EV.truthy(ev.at[(x, NO3), "label_untie"]) and not EV.truthy(ev.at[(x, NO3), "tied"])
+    assert EV.truthy(ev.at[(y, NO3L), "label_veto"])
+    merged = pd.read_csv(tmp_path / "merged_ledger.csv", keep_default_na=False).set_index(["neutral_formula", "adduct"])
+    assert "evidence_axes" not in merged.columns and "level_reason" not in merged.columns
+    assert merged.at[(y, NO3L), "evidence_level"] == "5b"            # an Orbitrap-class batch: levelled
+    assert "label_veto" in merged.at[(y, NO3L), "would_lift"]
 
 
 def test_an_unlabelled_batch_writes_an_empty_table(tmp_path, monkeypatch):
@@ -742,15 +735,18 @@ def test_an_unlabelled_batch_writes_an_empty_table(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- the real golden set
-ORBI_K = (1707, "0/10/174/9/205/150/0/38/1121")   # C11+c; before it 0/11/174/9/206/151/0/38/1118
+#: the 'orbi' set's fact vector with rule K's table (tests/test_evidence.py FACT_ORDER; its level
+#: vector before peaky 0.10.0: 0/10/174/9/205/150/0/38/1121)
+ORBI_K = (1707, "238/39/218/393/179/391/0/0/411/890/3/0/14/706/91/0/0/24/0")
 
 
 def test_the_labelled_nitrate_golden_set_with_its_label_twin_table(tmp_path):
     """The 'orbi' fixtures (a labelled-nitrate Orbitrap, corroborated by the TOF set)
     levelled with rule K's table, measured by batch/label_twins.py on that run's
     stamped series: 63 committed 14N lines (13 track, 14 consistent, 9 excess, 13
-    absent, 14 untestable), 2 labelled readings refuted, nothing tied. Engine and
-    reference script agree row for row; without the table the golden stands."""
+    absent, 14 untestable), 2 labelled readings refuted, nothing tied: 24 vetoes
+    and 43 fewer second channels (the fold). Engine and reference script agree row
+    for row; without the table the golden stands."""
     from tests.test_evidence import FIXTURES
     table = pd.read_csv(FIXTURES / "orbi_label_twins.csv")
     c14 = table[(table["adduct"] == NO3) & table["committed"]]
@@ -758,17 +754,17 @@ def test_the_labelled_nitrate_golden_set_with_its_label_twin_table(tmp_path):
         "tracks": 13, "consistent": 14, "untestable": 14, "absent": 13, "excess": 9}
     assert int(table["veto"].sum()) == 22 + 2 and not table["untie"].any()
     tof, orbi = _pooled("tof"), _pooled("orbi")
-    cross = EV.source_neutrals(tof)
-    core = EV.level_pooled(orbi, cross=cross, label=LT.facts(table))
-    assert (len(core), _vector(core.evidence_level)) == ORBI_K
-    assert _vector(EV.level_pooled(orbi, cross=cross).evidence_level) == ORBI_NO_LOCK[1]
+    cross = EV._source_neutrals(tof)
+    core = EV._series_pooled(orbi, cross=cross, label=LT.facts(table))
+    assert (len(core), _vector(core)) == ORBI_K
+    assert _vector(EV._series_pooled(orbi, cross=cross)) == ORBI_NO_LOCK[1]
     LL = _ll()
     for name in ("orbi", "tof"):
         d = tmp_path / name / "per_file"
         d.mkdir(parents=True)
         for p in sorted(FIXTURES.glob(f"{name}_*_ledger.csv.gz")):
             pd.read_csv(p, low_memory=False).to_csv(d / p.name[:-3], index=False)
-    ref = LL.run([str(tmp_path / "orbi")], [str(tmp_path / "tof")], None, str(FIXTURES / "orbi_label_twins.csv"))
+    ref = LL.series_run([str(tmp_path / "orbi")], [str(tmp_path / "tof")], None, str(FIXTURES / "orbi_label_twins.csv"))
     m = core.merge(ref, left_on=["neutral_formula", "adduct"], right_on=["neutral", "adduct"])
     assert len(m) == len(core) == len(ref)
     assert (m["evidence_level"] == m["level"]).all()

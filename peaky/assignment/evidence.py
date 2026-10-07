@@ -1,68 +1,55 @@
 """Evidence levels -- what the evidence behind a committed formula is worth.
 
 `tier` says whether the engine will *print* a formula (Assigned) or only *offer*
-it (Candidate). A level says what the evidence behind a committed formula is
-worth on the scale a reader of an identification paper already knows --
-Schymanski et al. (2014), Environ. Sci. Technol. 48, 2097 -- numbered downward
-(1 = best) and adapted to chemical ionization, where there is no chromatography,
-no fragment spectrum, no library, and the reagent is part of the ion. The
-contract is docs/EVIDENCE_LEVELS.md; the executable reference every predicate
-here reproduces row for row is scripts/level_ledger.py.
+it (Candidate). The evidence level says what the evidence behind a committed
+formula is worth, on a scale numbered downward (1 = best) after Schymanski et
+al. (2014), Environ. Sci. Technol. 48, 2097, adapted to chemical ionization:
+the evidence scale of peaky 0.10.0 (`SCALE_RELEASE`; the vocabulary lives in
+peaky.assignment.levels.scale, the machinery in peaky.assignment.levels, the
+contract in docs/EVIDENCE_LEVELS.md).
 
-One level per committed M0 row. It is computed per (neutral_formula, adduct)
-over the rows that share the pair inside one SOURCE -- a file, or a batch's
-pooled files -- and stamped on every M0 row of the pair. Isotope children,
-reagent ions, artifacts and unexplained peaks carry no level.
+    3c  ion established, the neutral / adduct split pinned, and a NAMED
+        context-list entry names the neutral (claim: identified)
+    4a  ion established, split pinned, and a positive fact (an own isotope line
+        of the neutral's elements, the 15N label, an NH4 adduct tracking its
+        parent) (claim: neutral)
+    4b  ion established; the split open, pinned without a positive fact, or the
+        channel reads the ion only (claim: ion)
+    5a  a competitor ion is left in the calibrated window (claim: tentative)
+    5b  rejected by a check, or nothing could be enumerated or tested
+    reagent  a reagent ion or reagent cluster (a bucket, not a level)
+    NA  not assessed on this instrument class: the scale needs a width model
+        resolving >= 50 000 at m/z 200 (`ORBITRAP_R200`); a TOF-class or
+        class-less source reads NA and nothing else is computed
 
-The scale, in the order the predicates are tried (the first that holds wins):
+Levels 1 and 2 (an authentic standard, a library spectrum) are defined and
+never assigned. One level per committed M0 row, computed per (neutral_formula,
+adduct) over a SOURCE: the batch's pooled files (`level_batch`, every
+file-count minimum 3; stamped on the merged ledger by `stamp_merged`) or one
+file alone (`apply_levels`, the per-file `evidence` stage, "adapted" minima 1).
 
-    5b  the assignment argues with itself: a near-tie the arbiter broke, a row
-        below assignability or a tentative lead (the two halves of the old
-        flag, C19(c); on the pooled batch a halogen lock lifts a lead it
-        answers, rule H, C11+b), a score the engine calls Low/Suspect, (rule K,
-        batch only) the labelled reagent's 14N twin refuting the cluster
-        reading, or (C11+, batch only) an isotope check refuting the formula;
-        also a mass-degenerate pair with no corroborating axis at all
-    2b  a curated identity (compound-scope pass-0 family) on a formula the
-        isomer space says admits one structure
-    3a  any other curated commit: a named class, isomers open
-    3b  the gas-phase-acidity branch: the same neutral deprotonated AND clustered
-    4c  formula unopposed -- one plausible ion in the calibrated window on a
-        separable peak -- but nothing corroborates it
-    5a  exact mass only; no discriminating test was possible
-    4d  ION formula only: the sole isotope support is the reagent halogen, which
-        pins the ion and says nothing about the neutral (CIMS-specific)
-    4a  formula confirmed AND the neutral established: two orthogonal axes, at
-        least one from outside this channel's ionization chemistry -- or, on a
-        batch whose profile declares a neutral pair (rule U, row 9'), the pair
-        on a formula with its own support
-    4b  formula confirmed, one corroboration
+Entry points: `apply_levels`, `level_batch`, `stamp_merged`, `level_source`
+(any `Source`: `source_from_frames` / `source_from_run_dir`),
+`partners_from`, `summarize`, `claim_class`, `summarize_claims`.
 
-The four axes: a verified isotopologue (`iso`), a second adduct channel
-(`chan2`), a homologous-series or anchor tie (`anchor`), and a corroborating
-source (`corroborated`: the other reagent channel, the other instrument on the
-same air, or a `--corroborate` source, holding the neutral at 4b or better by
-its OWN evidence -- `source_neutrals`). Levels 1 and 2a need an authentic
-standard or a library spectrum and never fire.
-
-Entry points: `apply_levels` (the `evidence` stage of assign.run: writes the
-five columns in place), `compute_levels` (pure, one row per M0), `level_pooled`
-(a batch's per-file ledgers as ONE source, one row per pair), `stamp_merged`
-(join the pooled result onto the merged ledger by ion) and
-`corroborating_neutrals` (the cross set of the `--corroborate` sources).
-
-The claim (C13): `claim_class` reads a level as what a reader may say about
-the committed formula -- `identified` (1-4a, the neutral established), `ion`
-(4b-4d, the ion composition pinned, the neutral / adduct split open) or
-`tentative` (5a, 5b, no level). It is stamped with the level on every committed
-M0 row (per file and merged) and read by nothing upstream; `tier` stays the
-engine's print-or-offer verdict and can disagree with it.
+THE MERGE VOTE'S EVIDENCE CLASS (private to the vote, never a user-facing
+level): the batch merge ranks a cluster's ions by the class of their per-file
+readings before the file count (batch/assign_batch.py `_vote`). That class is
+computed here, privately, by the pre-0.10.0 decision over the per-file facts
+(`_measure` / `_level_pairs` / `_decide` and the `--corroborate` cross set
+`vote_cross_neutrals`), so the vote -- the only path from evidence to
+assignments -- is unchanged by the scale: `vote_classes` returns 2 (the
+formula confirmed and the neutral backed by two axes or a corroborating
+source), 1 (the formula confirmed) or 0 (unconfirmed) per M0 row. The facts
+`_level_pairs` measures (iso_veto, label_veto, lowconf, below, ion_only, ...)
+are also the scale's step-0 inputs.
 """
 
 from __future__ import annotations
 
 import ast
 import glob
+import json
 import os
 import re
 from functools import lru_cache
@@ -72,50 +59,78 @@ import pandas as pd
 
 from peaky import paths as PT
 from peaky.assignment.ledger import lead_setters
+from peaky.assignment.levels import scale as SCALE
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 
 # ---------------------------------------------------------------------------
-# the scale
+# the scale (peaky.assignment.levels.scale): levels, buckets, claims, columns
 # ---------------------------------------------------------------------------
-LEVEL_ORDER = ["1", "2a", "2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
-#: the levels that can fire today (1 and 2a are defined and never assigned)
-LEVELS = LEVEL_ORDER[2:]
-LEVEL_MEANING = {
-    "1": "confirmed by an authentic standard in the same source and chemistry (never fires)",
-    "2a": "matched to a library spectrum (never fires: CIMS has none)",
-    "2b": "curated identity on a formula that admits one structure",
-    "3a": "curated class, isomers open",
-    "3b": "acid branch: the same neutral deprotonated and clustered (a substituent only)",
-    "4a": "formula confirmed and the neutral established: two axes, one outside the channel",
-    "4b": "formula confirmed, one corroboration",
-    "4c": "formula unopposed on a separable peak, nothing corroborates it",
-    "4d": "ion formula only: the reagent halogen pins the ion, not the neutral",
-    "5a": "exact mass only; no discriminating test was possible",
-    "5b": ("the assignment argues with itself (near-tie, below assignability or a tentative lead no halogen lock "
-           "lifts, Low/Suspect, or degenerate with no axis)"),
+SCALE_RELEASE = SCALE.SCALE_RELEASE
+LEVEL_ORDER = list(SCALE.LEVEL_ORDER)
+LEVELS = list(SCALE.LEVELS)
+BUCKETS = list(SCALE.BUCKETS)
+LEVEL_MEANING = dict(SCALE.LEVEL_MEANING)
+CLAIMS = SCALE.CLAIMS
+CLAIM_REAGENT = SCALE.CLAIM_REAGENT
+CLAIM_NA = SCALE.CLAIM_NA
+#: the four claims and the two buckets reported beside them, in that order
+CLAIM_KEYS = SCALE.CLAIM_KEYS
+CLAIM_IDENTIFIED = SCALE.CLAIM_IDENTIFIED
+CLAIM_NEUTRAL = SCALE.CLAIM_NEUTRAL
+CLAIM_ION = SCALE.CLAIM_ION
+CLAIM_MEANING = dict(SCALE.CLAIM_MEANING)
+#: the columns every committed M0 row carries (empty off M0)
+COLUMNS = SCALE.COLUMNS
+#: in-memory only: the internal pass's raw tokens (tables write anchor_kind / anchor_why; `for_output`)
+INTERNAL_COLUMNS = SCALE.INTERNAL_COLUMNS
+for_output = SCALE.for_output
+claim_class = SCALE.claim_class
+summarize = SCALE.summarize
+summarize_claims = SCALE.summarize_claims
+#: THE side-channel switch: formate, acetate, CO3-, O2-, O3-, NH4+ (except a
+#: positive run's own [M+NH4]+), Na+ and chloride never enter the split grid or
+#: the route classes while locked. UNLOCKED is the sweep hook: a channel name
+#: there (e.g. "formate") is unlocked alone.
+SIDE_CHANNELS_LOCKED = True
+UNLOCKED: frozenset = frozenset()
+
+# ---------------------------------------------------------------------------
+# the merge vote's private evidence class (the pre-0.10.0 decision; never shown)
+# ---------------------------------------------------------------------------
+_SERIES_ORDER = ["1", "2a", "2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
+#: the vote's class 2: the neutral established (a curated identity or class,
+#: the acid branch, or two axes with one outside the channel) -- plus any
+#: reading the --corroborate source backs (`_AXES` 'corroborated')
+_VOTE_GOOD = frozenset({"1", "2a", "2b", "3a", "3b", "4a"})
+#: the vote's class 1: the formula or the ion confirmed, the neutral not
+_VOTE_MID = frozenset({"4b", "4c", "4d"})
+#: what a vote note prints for a class (never a level name)
+VOTE_CLASS_TEXT = {2: "neutral backed", 1: "formula confirmed", 0: "unconfirmed"}
+VOTE_CLASS_MEANING = {
+    2: "the formula is confirmed and the neutral backed by two axes or a corroborating source",
+    1: "the formula is confirmed",
+    0: "unconfirmed: exact mass alone, or the reading argues with itself",
 }
-#: what a committed formula lets a reader say, read off its level (C13). The
-#: tier is a separate verdict (print / offer) and can disagree with it.
-CLAIMS = ("identified", "ion", "tentative")
-#: identified = the neutral established (a curated identity or class, the acid
-#: branch, or two axes with one outside the channel); these are also the vote's
-#: EVIDENCE_CLASS_GOOD / _MID sets in assign_batch, which add the corroborated
-#: axis on top -- the vote class is not the claim.
-CLAIM_IDENTIFIED = frozenset({"1", "2a", "2b", "3a", "3b", "4a"})
-CLAIM_ION = frozenset({"4b", "4c", "4d"})
-CLAIM_MEANING = {
-    "identified": "the neutral is established (levels 1-4a): the formula can be reported as a compound or class",
-    "ion": "the ion composition is pinned, the neutral / adduct split is open (levels 4b-4d)",
-    "tentative": "exact mass only, or the assignment argues with itself (5a, 5b, or no level)",
-}
-#: the five columns the stage writes, in order (`claim` is a pure function of
-#: `evidence_level` and is read by nothing upstream: not the tiers, not the
-#: merge vote, not the cross set)
-COLUMNS = ("evidence_level", "evidence_axes", "level_reason", "n_plausible_structures", "claim")
-#: the four axes, in the order `evidence_axes` lists them
-AXES = ("iso", "chan2", "anchor", "corroborated")
-#: what the pooled batch recompute reads -- `trim()` keeps these of a ledger
+_SERIES_COLUMNS = ("evidence_level", "evidence_axes", "level_reason", "n_plausible_structures", "claim")
+#: the four axes of the private decision, in the order its axes string lists them
+_AXES = ("iso", "chan2", "anchor", "corroborated")
+
+
+def _series_claim(level) -> str:
+    """The private decision's own claim column (kept so `_level_pairs` returns
+    the frame it always did; read by nothing user-facing)."""
+    if level is None or (not isinstance(level, str) and pd.isna(level)):
+        return "tentative"
+    lv = str(level).strip()
+    if lv in _VOTE_GOOD:
+        return "identified"
+    if lv in _VOTE_MID:
+        return "ion"
+    return "tentative"
+
+
+#: what the batch checks and the vote class read per file -- `trim()` keeps these of a ledger
 PREDICATE_COLUMNS = (
     "role", "peak_id", "parent_peak_id", "iso_label", "neutral_formula", "adduct",
     "ion_formula", "mz", "height", "tier", "method", "confidence", "tied",
@@ -216,27 +231,6 @@ def family_scope(family: str) -> str:
 # ---------------------------------------------------------------------------
 # null-safe cell readers (the script's, verbatim in behaviour)
 # ---------------------------------------------------------------------------
-def claim_class(level) -> str:
-    """The claim a level supports: 'identified' (1-4a), 'ion' (4b-4d) or
-    'tentative' (5a, 5b, or no level). Callers decide which rows carry a claim
-    at all: a committed M0 row always does; an isotope child, a reagent ion or
-    an unexplained peak does not."""
-    if level is None or (not isinstance(level, str) and pd.isna(level)):
-        return "tentative"
-    lv = str(level).strip()
-    if lv in CLAIM_IDENTIFIED:
-        return "identified"
-    if lv in CLAIM_ION:
-        return "ion"
-    return "tentative"
-
-
-def summarize_claims(claims) -> dict:
-    """{claim: n} over the three classes in CLAIMS order, zeros kept; NA skipped."""
-    counts = pd.Series(claims, dtype=object).dropna().astype(str).value_counts()
-    return {k: int(counts.get(k, 0)) for k in CLAIMS}
-
-
 def truthy(value) -> bool:
     """Null-safe truthiness: NaN, NA, None and 'false'/'' are all False.
     `bool(numpy.nan)` is True and once inflated 5b by 127 rows."""
@@ -691,8 +685,10 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None,
 # the decision table
 # ---------------------------------------------------------------------------
 def _decide(r) -> tuple[str, str]:
-    """(level, reason) for one evidence record. Order matters: the first
-    predicate that holds wins -- docs/EVIDENCE_LEVELS.md §4."""
+    """The merge vote's PRIVATE class decision (the decision peaky used before
+    the evidence scale; its letters are never shown, `vote_classes` folds them
+    to 0 / 1 / 2 -- docs/EVIDENCE_LEVELS.md §13): (private level, reason) for
+    one pair-fact record. Order matters: the first predicate that holds wins."""
     deg = r.degeneracy
     hard = []
     if r.tied:
@@ -742,7 +738,7 @@ def _decide(r) -> tuple[str, str]:
         return "3a", f"3a: curated class ({fam}), isomers open"
     if r.branch:
         return "3b", "3b: acid branch, the same neutral seen deprotonated and clustered"
-    held = " + ".join(a for a in AXES if getattr(r, a))
+    held = " + ".join(a for a in _AXES if getattr(r, a))
     if r.n_axes == 0:
         unique = pd.notna(deg) and deg <= 1
         if unique and r.res_ok:
@@ -781,7 +777,7 @@ def _decide(r) -> tuple[str, str]:
 
 
 def _axes_string(r, *, with_files: bool) -> str:
-    parts = [a for a in AXES if getattr(r, a)]
+    parts = [a for a in _AXES if getattr(r, a)]
     if r.multiline:
         parts.append("multiline")
     if r.carbon_ev:
@@ -835,7 +831,7 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
         f["__file"] = str(src)
         parts.append(f)
     if not parts:
-        return pd.DataFrame(columns=["neutral_formula", "adduct", *COLUMNS])
+        return pd.DataFrame(columns=["neutral_formula", "adduct", *_SERIES_COLUMNS])
     frame = pd.concat(parts, ignore_index=True, sort=False)
     role = _col(frame, "role").astype(str)
     if halogen == DETECT_HALOGEN:
@@ -851,7 +847,7 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
     facts = _measure(frame, halogen=halogen, alien=alien or None, fold=LABEL_FOLD if label else None,
                      lift=lift or None, resolution=resolution, per_file=per_file)
     if facts.empty:
-        return pd.DataFrame(columns=["neutral_formula", "adduct", *COLUMNS])
+        return pd.DataFrame(columns=["neutral_formula", "adduct", *_SERIES_COLUMNS])
     cross = {str(x) for x in (cross or set())}
     structures = _structures(isomer_space)
     # an ion-only row is never corroborated: its neutral is the parent's, and a
@@ -876,7 +872,7 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
     # ion-only pair too (a refuted composition is refuted on any channel)
     facts["iso_veto"] = pd.Series([k in iso_veto for k in keys], index=facts.index, dtype=bool)
     facts["iso_note"] = [iso_veto.get(k, "") if v else "" for k, v in zip(keys, facts["iso_veto"])]
-    facts["n_axes"] = facts[list(AXES)].sum(axis=1).astype(int)
+    facts["n_axes"] = facts[list(_AXES)].sum(axis=1).astype(int)
     facts["cross"] = facts["corroborated"] | facts["multiline"] | facts["known_fam"].ne("")
     facts["neutral_backed"] = (facts["corroborated"] | facts["chan2"] | facts["anchor"]
                                | facts["known_fam"].ne("") | facts["carbon_ev"])
@@ -886,21 +882,21 @@ def _level_pairs(frames: dict, *, cross=None, isomer_space=None, with_files: boo
     facts["evidence_level"] = [d[0] for d in decided]
     facts["level_reason"] = [d[1] for d in decided]
     facts["evidence_axes"] = [_axes_string(r, with_files=with_files) for r in facts.itertuples(index=False)]
-    facts["claim"] = facts["evidence_level"].map(claim_class)
+    facts["claim"] = facts["evidence_level"].map(_series_claim)
     return facts
 
 
 # ---------------------------------------------------------------------------
-# public API
+# the merge vote's class: the private decision per file
 # ---------------------------------------------------------------------------
-def compute_levels(ledger: pd.DataFrame, *, cfg=None, isomer_space=None, cross=None,
-                   resolution=None, halogen=DETECT_HALOGEN) -> pd.DataFrame:
+def _series_levels(ledger: pd.DataFrame, *, isomer_space=None, cross=None, resolution=None,
+                   halogen=DETECT_HALOGEN) -> pd.DataFrame:
     """Pure: one row per M0 row of `ledger` (index = the ledger's index) with
-    `peak_id` and the five columns. `cross` = the corroborating neutral formulas
-    (the other reagent channel / instrument / `--corroborate` source);
-    `resolution` = the run's width model (the per-file `resolvability` stage's,
-    `instrument`); `cfg` is accepted for stage-call symmetry and not read -- no
-    predicate is tunable."""
+    `peak_id` and the private decision's five columns (`_SERIES_COLUMNS`),
+    the file levelled alone (``per_file=True``). `cross` = the --corroborate
+    cross set (`vote_cross_neutrals`); `resolution` = the run's width model;
+    `halogen` = the reagent halogen (`channel_halogen`, C43; the default counts
+    the committed clusters)."""
     role = _col(ledger, "role").astype(str)
     m0 = ledger[role == "M0"]
     empty = pd.DataFrame({"peak_id": pd.Series(dtype=object),
@@ -920,47 +916,44 @@ def compute_levels(ledger: pd.DataFrame, *, cfg=None, isomer_space=None, cross=N
         "neutral_formula": _col(m0, "neutral_formula").fillna("").astype(str).values,
         "adduct": _col(m0, "adduct").fillna("").astype(str).values,
     }, index=m0.index)
-    out = key.merge(pairs[["neutral_formula", "adduct", *COLUMNS]],
+    out = key.merge(pairs[["neutral_formula", "adduct", *_SERIES_COLUMNS]],
                     on=["neutral_formula", "adduct"], how="left")
     out.index = m0.index
     out["n_plausible_structures"] = out["n_plausible_structures"].astype("Int64")
-    # every committed M0 row carries a claim; one with no level reads tentative
-    out["claim"] = out["evidence_level"].map(claim_class)
-    return out[["peak_id", *COLUMNS]]
+    out["claim"] = out["evidence_level"].map(_series_claim)
+    return out[["peak_id", *_SERIES_COLUMNS]]
 
 
-def summarize(levels: pd.Series) -> dict:
-    """{level: n} over the nine levels that can fire, in scale order, zeros dropped."""
-    counts = pd.Series(levels).dropna().astype(str).value_counts()
-    return {k: int(counts[k]) for k in LEVELS if k in counts.index and counts[k]}
+def _vote_class_of(level, axes) -> int:
+    """The vote class of one private (level, axes) reading: 2 when the level
+    says the neutral is established (2b / 3a / 3b / 4a) or the axes hold the
+    --corroborate source's agreement (`corroborated`: the source pins the
+    neutral on its own, this reading at any level); 1 when the formula or the
+    ion is confirmed (4b / 4c / 4d); 0 otherwise (5a, 5b, no level)."""
+    lv = "" if level is None or (not isinstance(level, str) and pd.isna(level)) else str(level)
+    ax = "" if axes is None or (not isinstance(axes, str) and pd.isna(axes)) else str(axes)
+    if lv in _VOTE_GOOD or "corroborated" in ax.split("|"):
+        return 2
+    if lv in _VOTE_MID:
+        return 1
+    return 0
 
 
-def apply_levels(ledger: pd.DataFrame, *, cfg=None, cross=None, isomer_space=None, resolution=None,
-                 halogen=DETECT_HALOGEN) -> dict:
-    """The `evidence` stage: write the five columns onto `ledger` in place (NA
-    on every non-M0 row, `claim` included: only a committed formula makes a
-    claim) and return the stage summary. `resolution`: the run's width model."""
-    cross = {str(x) for x in (cross or set())}
-    out = compute_levels(ledger, cfg=cfg, isomer_space=isomer_space, cross=cross, resolution=resolution,
-                         halogen=halogen)
-    n = len(ledger)
-    for c in ("evidence_level", "evidence_axes", "level_reason", "claim"):
-        ledger[c] = pd.Series([pd.NA] * n, index=ledger.index, dtype=object)
-    ledger["n_plausible_structures"] = pd.array([pd.NA] * n, dtype="Int64")
-    if len(out):
-        for c in ("evidence_level", "evidence_axes", "level_reason", "claim"):
-            ledger.loc[out.index, c] = out[c].astype(object).values
-        ledger.loc[out.index, "n_plausible_structures"] = out["n_plausible_structures"].values
-    axes = {}
-    for s in out["evidence_axes"].dropna().astype(str) if len(out) else []:
-        for a in s.split("|"):
-            if a in AXES:
-                axes[a] = axes.get(a, 0) + 1
-    return {"levels": summarize(out["evidence_level"]) if len(out) else {},
-            "claims": summarize_claims(out["claim"] if len(out) else []),
-            "n_levelled": int(out["evidence_level"].notna().sum()) if len(out) else 0,
-            "n_pairs": _n_pairs(ledger),
-            "n_corroborate": len(cross), "axes": axes}
+def vote_classes(trim_frame: pd.DataFrame, *, cross=None, resolution=None, isomer_space=None,
+                 halogen=DETECT_HALOGEN) -> pd.Series:
+    """The merge vote's evidence class (0 / 1 / 2, see `VOTE_CLASS_TEXT`) of
+    every M0 row of one file's ledger (`trim(ledger)` or the full ledger:
+    the same answer), indexed like those rows. `cross` = the --corroborate
+    cross set (`vote_cross_neutrals`), `resolution` = the batch's width model,
+    `halogen` = the reagent halogen the file's own run read (`channel_halogen` of
+    its declared channels, C43; the default counts the committed clusters).
+    Private to the vote: never written to a ledger, never a level."""
+    lv = _series_levels(trim_frame, isomer_space=isomer_space, cross={str(x) for x in (cross or set())},
+                        resolution=resolution, halogen=halogen)
+    if lv.empty:
+        return pd.Series([], dtype="int64")
+    return pd.Series([_vote_class_of(a, b) for a, b in zip(lv["evidence_level"], lv["evidence_axes"])],
+                     index=lv.index, dtype="int64")
 
 
 def _n_pairs(ledger: pd.DataFrame) -> int:
@@ -972,60 +965,25 @@ def _n_pairs(ledger: pd.DataFrame) -> int:
                              "a": _col(m0, "adduct").fillna("").astype(str)}).drop_duplicates().shape[0])
 
 
-def level_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None, label=None,
-                 iso=None, resolution=None, halogen=DETECT_HALOGEN) -> pd.DataFrame:
-    """A batch's per-file ledgers ({label: frame}) pooled as ONE source: one row
-    per (neutral_formula, adduct) over all files with the four columns and every
-    fact of §3 (`chan2` sees a second adduct in ANY file, `iso` any file's
-    satellite, `tied`/`lowconf` need ALL rows across files, `below` and `lead` any).
-    `upair` is the neutral-pair set of rule U (batch/neutral_pairs.neutrals);
-    `label` is rule K's labelled-nitrate twin facts (batch/label_twins.facts);
-    `iso` the isotope checks' vetoes and locks (C11+, batch/iso_checks.facts);
-    all three exist only here, on the pooled batch. `resolution`: the batch's
-    width model (`instrument`; None = class-less).
-    `evidence_axes` ends with `files:<n>`."""
+def _series_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None, label=None,
+                   iso=None, resolution=None, halogen=DETECT_HALOGEN) -> pd.DataFrame:
+    """The private decision over a batch's per-file ledgers ({label: frame})
+    pooled as ONE source (the --corroborate cross set's own levels)."""
     return _level_pairs(dict(per_file), cross=cross, isomer_space=isomer_space, with_files=True, upair=upair,
                         label=label, iso=iso, resolution=resolution, halogen=halogen)
 
 
-def stamp_merged(merged: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:
-    """Join the pooled result onto a merged ledger by (neutral_formula, adduct)
-    -- each merged row is one ion, so the join is one-to-one. A merged row whose
-    reading exists in no per-file ledger (a batch-level re-read) stays NA and
-    its `claim` reads tentative: every merged row is a committed reading."""
-    out = merged.copy()
-    n = len(out)
-    for c in ("evidence_level", "evidence_axes", "level_reason"):
-        out[c] = pd.Series([pd.NA] * n, index=out.index, dtype=object)
-    out["n_plausible_structures"] = pd.array([pd.NA] * n, dtype="Int64")
-    out["claim"] = pd.Series(["tentative"] * n, index=out.index, dtype=object)
-    if not n or pairs is None or pairs.empty:
-        return out
-    # the claim is re-read off the joined level, so a pairs frame without one joins too
-    right = pairs[["neutral_formula", "adduct", *(c for c in COLUMNS if c != "claim")]].copy()
-    right["__n"] = right["neutral_formula"].fillna("").astype(str)
-    right["__a"] = right["adduct"].fillna("").astype(str)
-    right = right.drop_duplicates(["__n", "__a"]).set_index(["__n", "__a"])
-    idx = pd.MultiIndex.from_arrays([_col(out, "neutral_formula").fillna("").astype(str).values,
-                                     _col(out, "adduct").fillna("").astype(str).values])
-    hit = right.reindex(idx)
-    for c in ("evidence_level", "evidence_axes", "level_reason"):
-        out[c] = pd.Series(hit[c].astype(object).values, index=out.index, dtype=object).where(hit[c].notna().values, pd.NA)
-    out["n_plausible_structures"] = pd.array(hit["n_plausible_structures"].values, dtype="Int64")
-    out["claim"] = pd.Series([claim_class(v) for v in out["evidence_level"]], index=out.index, dtype=object)
-    return out
-
-
 def trim(ledger: pd.DataFrame) -> pd.DataFrame:
     """The M0 + isotope rows and the predicate columns of a ledger -- what the
-    pooled batch recompute keeps per file (the rest of the ledger is on disk)."""
+    batch checks (iso_checks, label_twins, neutral_pairs) and the vote class
+    read per file (the rest of the ledger is on disk)."""
     role = _col(ledger, "role").astype(str)
     keep = ledger[role.isin(["M0", "iso_child"])]
     return keep[[c for c in PREDICATE_COLUMNS if c in keep.columns]].copy()
 
 
 # ---------------------------------------------------------------------------
-# --corroborate sources
+# --corroborate sources: the vote's cross set
 # ---------------------------------------------------------------------------
 def resolve_source(path: str) -> tuple[str, list[str]]:
     """(label, ledger csv paths) for a run dir (its per_file/*_ledger.csv, else
@@ -1051,31 +1009,27 @@ def resolve_source(path: str) -> tuple[str, list[str]]:
     raise FileNotFoundError(f"no ledger under {path}")
 
 
-#: The level a --corroborate source must hold a neutral at, by its OWN evidence,
-#: for its sighting to count as the `corroborated` axis: the formula confirmed
-#: by an axis of the source's own -- 4b -- or better. Below that the source's
-#: grid only ENUMERATED the same formula at a peak (4c unopposed but
-#: unconfirmed, 4d the ion only, 5a exact mass alone, 5b arguing with itself):
-#: two grids agreeing, not a second sighting of the neutral. Measured on the
-#: same-air pair before the rule: of 1521 neutrals the labelled-nitrate
-#: Orbitrap offered the TOF, 379 pass; of 3728 the TOF offered the Orbitrap,
-#: 435 (3437 of its pairs are 5b -- a 10k-resolution TOF can seldom pin a
-#: formula), and of the TOF's 49 vote winners lifted by the axis alone, 28
-#: rested on an Orbitrap 5a / 5b (docs/EVIDENCE_LEVELS.md §6.4).
-CORROBORATE_MAX_LEVEL = "4b"
-_AXES_OWN = frozenset(a for a in AXES if a != "corroborated")
+#: The private level a --corroborate source must hold a neutral at, by its OWN
+#: evidence, for its sighting to count for the vote: the formula confirmed by
+#: an axis of the source's own -- 4b -- or better. Below that the source's grid
+#: only ENUMERATED the same formula at a peak: two grids agreeing, not a second
+#: sighting of the neutral. Measured on the same-air pair before the rule: of
+#: 1521 neutrals the labelled-nitrate Orbitrap offered the TOF, 379 pass; of
+#: 3728 the TOF offered the Orbitrap, 435, and of the TOF's 49 vote winners
+#: lifted by the agreement alone, 28 rested on an Orbitrap mass-only reading.
+_VOTE_CROSS_MAX_LEVEL = "4b"
+_AXES_OWN = frozenset(a for a in _AXES if a != "corroborated")
 
 
 def _rank(level) -> int:
-    return LEVEL_ORDER.index(level) if level in LEVEL_ORDER else len(LEVEL_ORDER)
+    return _SERIES_ORDER.index(level) if level in _SERIES_ORDER else len(_SERIES_ORDER)
 
 
 def _stored_own_good(level, axes, max_level: str) -> bool:
-    """A merged ledger's stored level read WITHOUT its own `corroborated` axis
-    (a merged row carries no predicate column to re-level it from): good when
-    the level is `max_level` or better and it still holds an axis of its own
-    once `corroborated` is taken away -- a level the axis alone produced (a 4b
-    of one corroboration, a known-family row with no other axis) does not count."""
+    """A merged ledger's stored private level read WITHOUT its own `corroborated`
+    axis (a merged row carries no predicate column to re-level it from): good
+    when the level is `max_level` or better and it still holds an axis of its
+    own once `corroborated` is taken away."""
     lv = str(level) if pd.notna(level) else ""
     if _rank(lv) > _rank(max_level):
         return False
@@ -1088,23 +1042,22 @@ def _stored_own_good(level, axes, max_level: str) -> bool:
     return True
 
 
-def source_neutrals(per_file: dict, *, isomer_space=None, max_level: str = CORROBORATE_MAX_LEVEL,
-                    resolution=None) -> set[str]:
+def _source_neutrals(per_file: dict, *, isomer_space=None, max_level: str = _VOTE_CROSS_MAX_LEVEL,
+                     resolution=None) -> set[str]:
     """The neutral formulas a source ({label: ledger}) holds at `max_level` or
-    better by its OWN evidence: the ledgers pooled as ONE source and levelled
-    with NO cross set (`level_pooled`, the batch's own merged-row level), so a
-    source that was itself run with --corroborate cannot hand a run back the
-    agreement it got from it. Ion-only pairs never count. A ledger without a
-    `role` column is a merged ledger: it carries none of the predicate columns,
-    so its stored `evidence_level` is read instead, without its own
-    `corroborated` axis (`_stored_own_good`). `resolution`: the source's own
-    width model (`source_resolution`), None = class-less."""
+    better by its OWN evidence (the private decision, the ledgers pooled as ONE
+    source with NO cross set, so a source run with --corroborate cannot hand a
+    run back the agreement it got from it). Ion-only pairs never count. A
+    ledger without a `role` column is a merged ledger: its stored private level
+    (`evidence_level` + `evidence_axes`, written before peaky 0.10.0) is read
+    instead; a merged ledger of the evidence scale carries no such class -- name
+    the run dir. `resolution`: the source's own width model."""
     frames = {k: f for k, f in per_file.items() if "role" in f.columns}
     merged = {k: f for k, f in per_file.items() if "role" not in f.columns}
     out: set[str] = set()
     if frames:
-        pairs = level_pooled({k: trim(f) for k, f in frames.items()}, cross=None, isomer_space=isomer_space,
-                             resolution=resolution)
+        pairs = _series_pooled({k: trim(f) for k, f in frames.items()}, cross=None, isomer_space=isomer_space,
+                               resolution=resolution)
         if len(pairs):
             ok = (pairs["evidence_level"].map(_rank) <= _rank(max_level)) & ~pairs["ion_only"].astype(bool)
             out |= set(pairs.loc[ok, "neutral_formula"].astype(str))
@@ -1114,6 +1067,11 @@ def source_neutrals(per_file: dict, *, isomer_space=None, max_level: str = CORRO
                 f"--corroborate source {label!r} carries neither the per-file predicate columns nor an "
                 "evidence_level column (a merged ledger from before the levels?) -- name the run dir, "
                 "whose per_file/ ledgers the source's own levels are computed from")
+        if "evidence_axes" not in f.columns:
+            raise ValueError(
+                f"--corroborate source {label!r} is a merged ledger of the evidence scale (no evidence_axes): "
+                "its levels are not the merge vote's class -- name the run dir, whose per_file/ ledgers "
+                "the source's own class is computed from")
         f = f[~is_ion_only(f)]
         ok = np.array([_stored_own_good(lv, ax, max_level)
                        for lv, ax in zip(f["evidence_level"], _col(f, "evidence_axes", ""))], dtype=bool)
@@ -1122,12 +1080,13 @@ def source_neutrals(per_file: dict, *, isomer_space=None, max_level: str = CORRO
     return out
 
 
-def corroborating_neutrals(sources) -> set[str]:
-    """The cross set a run is corroborated by: for every source in `sources`
-    (a run dir, an out-dir holding one run, a ledger CSV, or a frame), the
-    neutral formulas it holds at level <= 4b by its own evidence
-    (`source_neutrals`). A run dir is read through its per-file ledgers, which
-    carry every fact a level reads."""
+def vote_cross_neutrals(sources) -> set[str]:
+    """The merge vote's cross set from the --corroborate sources: for every
+    source (a run dir, an out-dir holding one run, a ledger CSV, or a frame),
+    the neutral formulas it holds by its own evidence at the private level 4b
+    or better (`_source_neutrals`). A run dir is read through its per-file
+    ledgers with its own width model. It feeds the vote's class only; it never
+    moves an evidence level."""
     out: set[str] = set()
     for src in sources or []:
         resolution = None
@@ -1138,7 +1097,7 @@ def corroborating_neutrals(sources) -> set[str]:
             per_file = {(os.path.basename(f) if len(files) > 1 else label): pd.read_csv(f, low_memory=False)
                         for f in files}
             resolution = source_resolution(src)
-        out |= source_neutrals(per_file, resolution=resolution)
+        out |= _source_neutrals(per_file, resolution=resolution)
     return out
 
 
@@ -1165,3 +1124,249 @@ def source_resolution(path) -> dict | None:
     except (OSError, ValueError):
         return None
     return res if isinstance(res, dict) and res.get("coef") is not None else None
+
+
+# ---------------------------------------------------------------------------
+# the evidence scale of peaky 0.10.0: entry points (machinery in peaky.assignment.levels)
+# ---------------------------------------------------------------------------
+def __getattr__(name):
+    # `RunInputs` (levels.source) without importing the machinery at module load
+    if name == "RunInputs":
+        from peaky.assignment.levels.source import RunInputs
+        return RunInputs
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def source_from_frames(per_file: dict, *, run_inputs, mode: str = "run", name: str = "", label: str = "",
+                       main=None, arm=None, wrong_adducts=(), control_ledger=None):
+    """A Source of the evidence scale from in-memory FULL ledgers
+    ({sample_id: ledger}) and `RunInputs` (levels/source.py)."""
+    from peaky.assignment.levels import source as SRC
+    return SRC.source_from_frames(per_file, run_inputs=run_inputs, mode=mode, name=name, label=label, main=main,
+                                  arm=arm, wrong_adducts=wrong_adducts, control_ledger=control_ledger)
+
+
+def source_from_run_dir(path, *, main=None, mode: str | None = None, name: str | None = None,
+                        label: str | None = None):
+    """A Source from a batch run directory, or from ONE ledger CSV (levelled
+    alone, or in a ``main`` run's context like a decoy arm; ``mode``
+    'adapted' or 'strict')."""
+    from peaky.assignment.levels import source as SRC
+    return SRC.source_from_run_dir(path, main=main, mode=mode, name=name, label=label)
+
+
+def level_source(src, *, partners=None) -> pd.DataFrame:
+    """Level a Source: one row per (neutral_formula, adduct) with the scale's
+    `COLUMNS` and the step facts. ``partners``: other-source partners
+    (`partners_from`)."""
+    from peaky.assignment.levels import source as SRC
+    return SRC.level_source(src, partners=partners)
+
+
+def level_batch(per_file: dict, *, run_inputs, partners=None) -> pd.DataFrame:
+    """A batch's FULL per-file ledgers ({sample_id: ledger}) levelled as ONE
+    pooled source (minima 3) with the run's other inputs (`RunInputs`)."""
+    return level_source(source_from_frames(per_file, run_inputs=run_inputs, mode="run"), partners=partners)
+
+
+def partners_from(levels: pd.DataFrame, label: str, **kw) -> dict:
+    """The other-source partners a levelled source gives (its route / ladder /
+    listed pairs, not ion-only; side-channel route classes dropped while
+    locked): {neutral: {route class: ['<label> <neutral> <adduct> <how>']}}."""
+    from peaky.assignment.levels import routes as RT
+    return RT.partners_from(levels, label, **kw)
+
+
+def _resolution_dict(resolution) -> dict | None:
+    """A width model as the dict a batch summary records (None without one)."""
+    if resolution is None:
+        return None
+    if isinstance(resolution, dict):
+        return resolution if resolution.get("coef") is not None else None
+    from peaky.chem.resolution import Resolution
+    return Resolution.coerce(resolution).as_dict()
+
+
+def file_run_inputs(*, sample_id: str, reagent: str | None, context: str | None, resolution=None,
+                    reflists_active=None, height_gate_cps=None, noise_edge_cps=None, degeneracy_cal="absent",
+                    label: str = "", activation=None, reagent_halogen=DETECT_HALOGEN):
+    """The `RunInputs` of ONE file levelled alone (the per-file stage, D2 b):
+    no time series, no merged ledger, no batch checks; the file's gate and,
+    when the degeneracy stage persisted one, its calibration (``degeneracy_cal``
+    = (mu, sigma) | None = uncalibrated; the default 'absent' = not persisted:
+    the window is then refitted from the file's own degeneracy counts).
+    ``reagent_halogen``: the halogen of the run's declared channels
+    (`channel_halogen`, C43) the pair facts read; the default counts the
+    committed clusters."""
+    from peaky.assignment.levels.source import RunInputs
+    st = dict(sample_id=str(sample_id), height_gate_cps=height_gate_cps, noise_edge_cps=noise_edge_cps)
+    if degeneracy_cal != "absent":
+        st["degeneracy_cal"] = (None if degeneracy_cal is None
+                                else {"mu": float(degeneracy_cal[0]), "sigma": float(degeneracy_cal[1])})
+    summary = dict(reagent=reagent, context=context or "ambient-air", label=label or "",
+                   reflists_active=[list(x) for x in (reflists_active or [])],
+                   resolution=_resolution_dict(resolution), per_file=[st], reagent_halogen=reagent_halogen)
+    if activation is not None:
+        summary["reflists_context"] = activation
+    return RunInputs(summary=summary, activation=activation)
+
+
+#: the evidence text of a committed M0 row the per-file stage could not level
+NO_REAGENT_TEXT = ("no level · the run's reagent profile is unknown (its adducts match no registered profile): "
+                   "the enumeration space cannot be built")
+
+
+#: ... and of one whose file has no calibrated window (an uncalibrated file levelled alone)
+NO_WINDOW_TEXT = ("no level · the file is uncalibrated (no calibration core for the degeneracy audit) and, "
+                  "levelled alone, has no run sigma to borrow: no calibrated window to enumerate competitors in")
+
+#: ... and of every pair of a pooled source none of whose files is calibrated (no run window)
+NO_RUN_WINDOW_TEXT = ("no level · no file of the source is calibrated (no calibration core for the degeneracy audit "
+                      "in any file): no run window to enumerate competitors in")
+
+#: why such a source, named by --corroborate, gives no other-source partners (the batch and
+#: scripts/level_ledger.py log it and skip the source: its pairs carry no level, so none anchors a partner)
+NO_RUN_WINDOW_PARTNERS = ("no file of the source is calibrated (no run window): its pairs carry no level, "
+                          "so it gives no other-source partners")
+
+
+def partner_source_problem(run_dir: str) -> str:
+    """Why an Orbitrap-class --corroborate run dir cannot be levelled in this
+    process, so gives no other-source partners ('' when it can): its batch
+    summary names no reagent profile or context, or one this process does not
+    know -- a run made under a ``--reagent-config`` profile, say. The partner
+    tag is an optional extra: such a source is logged and skipped, never a
+    crash of the batch that asked for it."""
+    from peaky.chem import contexts as _X
+    from peaky.chem import profiles as _PR
+    try:
+        with open(os.path.join(os.path.expanduser(str(run_dir)), "batch_summary.json")) as fh:
+            summary = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return f"its batch_summary.json cannot be read ({type(exc).__name__})"
+    reagent, context = summary.get("reagent"), summary.get("context")
+    if not reagent:
+        return "its batch summary names no reagent profile"
+    try:
+        _PR.resolve(reagent)
+    except (KeyError, ValueError):
+        return f"its reagent profile {reagent!r} is not registered here"
+    if not context:
+        return "its batch summary names no context"
+    try:
+        _X.get_context(context)
+    except (KeyError, ValueError):
+        return f"its context {context!r} is not known here"
+    return ""
+
+
+def no_run_window(src) -> bool:
+    """Whether an Orbitrap-class Source has no run window: none of its files is
+    calibrated, so it is not levelled (`NO_RUN_WINDOW_TEXT`) and gives no
+    other-source partners (`NO_RUN_WINDOW_PARTNERS`)."""
+    from peaky.assignment.levels import source as SRC
+    return SRC.no_run_window(src)
+
+
+def _blank_columns(frame: pd.DataFrame) -> None:
+    n = len(frame)
+    for c in COLUMNS:
+        frame[c] = pd.Series([pd.NA] * n, index=frame.index, dtype=object)
+
+
+def _stamp_pairs(frame: pd.DataFrame, rows: pd.Series, pairs: pd.DataFrame | None) -> pd.Series:
+    """Write `pairs`' COLUMNS onto the `rows` (a boolean mask) of `frame` by
+    (neutral_formula, adduct), in place; returns the mask of the rows that
+    found a pair."""
+    hit_mask = pd.Series(False, index=frame.index)
+    if pairs is None or pairs.empty or not rows.any():
+        return hit_mask
+    right = pairs[["neutral_formula", "adduct", *COLUMNS]].copy()
+    right["__n"] = right["neutral_formula"].fillna("").astype(str)
+    right["__a"] = right["adduct"].fillna("").astype(str)
+    right = right.drop_duplicates(["__n", "__a"]).set_index(["__n", "__a"])
+    sub = frame.loc[rows]
+    idx = pd.MultiIndex.from_arrays([_col(sub, "neutral_formula").fillna("").astype(str).values,
+                                     _col(sub, "adduct").fillna("").astype(str).values])
+    hit = right.reindex(idx)
+    found = hit["evidence_level"].notna().to_numpy()
+    for c in COLUMNS:
+        vals = hit[c].astype(object).to_numpy()
+        vals = np.where(found, vals, pd.NA)
+        frame.loc[sub.index, c] = pd.Series(vals, index=sub.index, dtype=object)
+    hit_mask.loc[sub.index] = found
+    return hit_mask
+
+
+def apply_levels(ledger: pd.DataFrame, *, cfg=None, resolution=None, run_inputs=None,
+                 sample_id: str | None = None) -> dict:
+    """The per-file `evidence` stage (D2 b): the file levelled ALONE in
+    "adapted" mode (every file-count minimum 1, no time series, no merged
+    ledger, no partners; the amine gate on its no-time-series path with the
+    file's own ledger as the ion index and protected set; the window = the
+    degeneracy stage's calibration). Writes `COLUMNS` on every committed M0
+    row, in place (empty on every other row); returns {levels, claims,
+    n_levelled, n_pairs, instrument}. The instrument class comes from
+    ``resolution`` (else the run inputs' width model): a TOF-class or
+    class-less file reads NA before any fact work. ``cfg`` is accepted for
+    stage-call symmetry and not read."""
+    sid = str(sample_id or "file")
+    if run_inputs is None:
+        run_inputs = file_run_inputs(sample_id=sid, reagent=None, context=None, resolution=resolution)
+    summary = run_inputs.summary
+    if resolution is not None:
+        summary["resolution"] = _resolution_dict(resolution)
+    pf = summary.get("per_file") or []
+    if pf:
+        sid = str(pf[0].get("sample_id") or sid)
+    _blank_columns(ledger)
+    role = _col(ledger, "role").astype(str)
+    m0 = role == "M0"
+    from peaky.assignment.levels import source as SRC
+    src = SRC.source_from_frames({sid: ledger}, run_inputs=run_inputs, mode="adapted", name=sid, label=sid)
+    klass, r200 = src.instrument()
+    pairs, why = None, ""
+    if klass != "orbitrap":
+        # not assessed: the scale's columns only -- no fact work on a file it does not rate
+        pairs = SRC.na_frame(src, facts=False)
+    elif not summary.get("reagent"):
+        why = NO_REAGENT_TEXT
+    else:
+        # the step-1 window: the degeneracy stage's calibration (else the D10
+        # refit); a file with no calibration has no window of its own and, alone,
+        # no run sigma to borrow -- it is not levelled, and says so
+        from peaky.assignment.levels import context as CX
+        src.win = CX.run_windows(summary, src.per_file)
+        if not np.isfinite(CX.window_table(src.win)[1][1]):
+            why = NO_WINDOW_TEXT
+    if why:
+        ledger.loc[m0, "evidence"] = why
+    else:
+        if pairs is None:
+            pairs = level_source(src)
+        _stamp_pairs(ledger, m0, pairs)
+    ledger.loc[m0, "claim"] = [claim_class(v) for v in ledger.loc[m0, "evidence_level"]]
+    lv = ledger.loc[m0, "evidence_level"]
+    return {"levels": summarize(lv), "claims": summarize_claims(ledger.loc[m0, "claim"]),
+            "n_levelled": int(lv.notna().sum()), "n_pairs": _n_pairs(ledger),
+            "instrument": {"class": klass, "r200": None if not np.isfinite(r200) else round(float(r200), 1)}}
+
+
+#: the evidence text of a merged row whose reading no pooled pair holds
+NO_POOLED_PAIR_TEXT = "no pooled pair: a batch-level re-read"
+
+
+def stamp_merged(merged: pd.DataFrame, pairs: pd.DataFrame | None) -> pd.DataFrame:
+    """Join the pooled levels (`level_batch`) onto a merged ledger by
+    (neutral_formula, adduct) -- each merged row is one ion, so the join is
+    one-to-one. Every merged row is a committed reading and carries a claim: a
+    row whose reading no pooled pair holds (a batch-level re-read) gets no
+    level, claim tentative and the evidence `NO_POOLED_PAIR_TEXT`."""
+    out = merged.copy()
+    _blank_columns(out)
+    if not len(out):
+        return out
+    hit = _stamp_pairs(out, pd.Series(True, index=out.index), pairs)
+    out.loc[~hit, "evidence"] = NO_POOLED_PAIR_TEXT
+    out["claim"] = pd.Series([claim_class(v) for v in out["evidence_level"]], index=out.index, dtype=object)
+    return out

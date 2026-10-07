@@ -424,9 +424,11 @@ def constrain_ranges(base_ranges: dict[str, tuple[int, int]],
 # ISOTOPE CHILDREN JUDGED AGAINST THE COMMITTED LINE (C11+c)
 #
 # An isotope child of a committed M0 row (ledger role `iso_child`) says "this
-# line is the parent's isotopologue". The evidence levels
-# (assignment/evidence.py) read it as evidence only where the line sits at its
-# label's exact spacing and is as tall as the ion's composition makes it. Three
+# line is the parent's isotopologue". The per-file isotope facts
+# (assignment/evidence.py `_measure`, read by the merge vote's class) read it as
+# evidence only where the line sits at its label's exact spacing and is as tall
+# as the ion's composition makes it. (The evidence scale probes the lines itself,
+# assignment/levels/lines.py.) Three
 # things the ledger does not record decide both:
 #
 #   * the COMMITTED line. The scorer commits an ion's most abundant

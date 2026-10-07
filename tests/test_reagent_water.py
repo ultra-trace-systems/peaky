@@ -230,7 +230,8 @@ def test_a_batch_strips_the_rung_row_stamps_the_ladder_and_writes_the_table(monk
                             ion_score=0.9, compound_score=0.9, ppm_error=0.1, pass_no=1,
                             method="cheminfo+grid", confidence="High", commentary="stub")
         T.apply_tiers(led)
-        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
+                                         "degeneracy_cal": {"mu": 0.0, "sigma": 0.3}},   # as a real run persists
                 "plausibility_audit": [], "summaries": {}, "problems": []}
 
     monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
@@ -264,6 +265,10 @@ def test_a_batch_strips_the_rung_row_stamps_the_ladder_and_writes_the_table(monk
     assert set(at5["role"]) == {"reagent"} and set(at5["ion_formula"]) == {"H10BrO5-"}
     at250 = stamped[np.isclose(stamped["mz"], 250.1)]
     assert set(at250["neutral_formula"]) == {"C9H16O6"}
+    # the pooled level stage ran with every file's persisted calibration, to its class gate (no width model: NA)
+    el = summ["evidence_levels"]
+    assert el["n_pairs"] > 0 and el["pooled"] == {"NA": el["n_pairs"]}
+    assert all(pf["degeneracy_cal"] == {"mu": 0.0, "sigma": 0.3} for pf in summ["per_file"])
 
 
 # --- the constants the rule stands on ----------------------------------------------------------------

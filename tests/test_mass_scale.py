@@ -167,7 +167,8 @@ def _stub_engine(monkeypatch, anchors: dict):
                              ppm_error=0.1, pass_no=1, method="cheminfo+grid",
                              confidence="High", commentary="stub")
         _T.apply_tiers(led)
-        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
+                                         "degeneracy_cal": {"mu": 0.0, "sigma": 0.3}},   # as a real run persists
                 "plausibility_audit": [], "summaries": {}, "problems": []}
     monkeypatch.setattr(_A, "run", fake)
 
@@ -183,6 +184,11 @@ def _run(tmp_path, monkeypatch, *, ts: bool):
            out_dir=str(tmp_path), k_min=2, k_max=2, min_gain=0.0, n_jobs=1, residual=False,
            resolving_power="none", log=lines.append)
     summ = json.load(open(tmp_path / "batch_summary.json"))
+    # the pooled level stage ran with every file's persisted calibration, to its class gate: a declined
+    # width model reads NA on every pair
+    el = summ["evidence_levels"]
+    assert el["n_pairs"] > 0 and el["pooled"] == {"NA": el["n_pairs"]}
+    assert all(pf["degeneracy_cal"] == {"mu": 0.0, "sigma": 0.3} for pf in summ["per_file"])
     merged = pd.read_csv(tmp_path / "merged_ledger.csv")
     per_file = {sid: AB._m0(pd.read_csv(tmp_path / "per_file" / f"{sid}_ledger.csv"))
                 for sid in summ["sample_ids"]}

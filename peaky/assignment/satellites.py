@@ -29,7 +29,8 @@ from the neutral. When the reagent adduct itself brings Br or Cl, its own heavy
 line sits in the same M+2 window as the neutral's 34S / 37Cl / 81Br (within
 2.2 mDa), and at picked-height precision the neutral's share cannot be read
 off -- the tier caller marks such a test masked (untestable), never refuted:
-the levels call that case 4d, "ion pinned, neutral not".
+the ion is pinned, the neutral's element is not (the merge vote's private
+class reads it so: docs/EVIDENCE_LEVELS.md section 13).
 
 This module imports only chemistry: `tiers` reads it and `passes.postprocess`
 reads `tiers`, so the twin test cannot live in the passes package.

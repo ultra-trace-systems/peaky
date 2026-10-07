@@ -279,3 +279,32 @@ def test_the_stage_audits_the_runs_channels_and_space(monkeypatch):
     assert "fluorinated" in seen["families"]
     assert passes.known_formulas("positive", "uronium") <= seen["curated"] and "C9H9Q" in seen["curated"]
     assert out["channels"] == list(URONIUM) and "fluorinated" in out["families"]
+
+
+def test_the_stage_keeps_its_own_calibration_for_the_evidence_level(monkeypatch):
+    """The stage computes the calibration its window is centred on once, hands
+    it to the count and keeps (mu, sigma) on the run state (`degeneracy_cal`,
+    None when uncalibrated): the evidence level's step-1 window is that same
+    calibration, and assign.run persists it in the file's stats."""
+    seen = {}
+
+    def fake(led, **kw):
+        seen.update(kw)
+        return led
+
+    monkeypatch.setattr(D, "apply_degeneracy", fake)
+    led = _ledger([("P", "C10H16O5", "[M-H]-")])
+
+    def stage(cal):
+        monkeypatch.setattr(T, "_calibrate", lambda m0, kids, **kw: cal)
+        st = SimpleNamespace(profile=X.get_context("ambient-air"), cfg=SimpleNamespace(reflist_formulas=frozenset()),
+                             series_carry=None, do_pass3=False, reagent=None, led=led, adducts=list(NITRATE),
+                             log=lambda *a: None)
+        A._stage_degeneracy(st)
+        return st, seen["cal"]
+
+    st, cal = stage(T._Cal(0.25, 0.6))
+    assert st.degeneracy_cal == (0.25, 0.6) and isinstance(st.degeneracy_cal[0], float)
+    assert tuple(cal) == (0.25, 0.6)                 # the count is centred on the same calibration
+    st, cal = stage(None)
+    assert st.degeneracy_cal is None and cal is None

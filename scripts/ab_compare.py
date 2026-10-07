@@ -27,8 +27,16 @@ Reported, A as the reference and B as the challenger:
 * recovery — the neutrals A found in at least `--min-files` files that B lacks,
   split by occurrence and median m/z, the headline number for a path change;
 * evidence levels — the `evidence_level` histogram, when the column is there;
-* claims — the claim histogram (identified / ion / tentative), when either
-  column is there.
+* claims — the claim histogram (identified / neutral / ion / tentative, then the
+  reagent and not-assessed buckets), when either column is there.
+
+The level token `NA` (not assessed on this instrument class) is literal: the
+merged ledger's `evidence_level` is re-read as written, so it is never mistaken
+for "no level". A run levelled on a scale before the evidence scale (it carries
+`evidence_axes` / `level_reason`, or a letter this scale does not define) has
+every letter read as no level (an old 4a is not a 4a of this scale) and its
+claims re-read on this scale (tentative); its levels are not compared letter
+for letter with a run on the current scale.
 """
 
 from __future__ import annotations
@@ -45,12 +53,28 @@ import pandas as pd
 
 TS_COLUMNS = ["sample_item_id", "neutral_formula", "adduct"]
 
-# The claim a level supports (peaky.assignment.evidence.CLAIMS and its level
-# sets), kept here so the script reads a run dir without peaky installed; a
-# test pins them equal to the package's.
-CLAIMS = ("identified", "ion", "tentative")
-CLAIM_IDENTIFIED = frozenset({"1", "2a", "2b", "3a", "3b", "4a"})
-CLAIM_ION = frozenset({"4b", "4c", "4d"})
+# The evidence scale's vocabulary (peaky.assignment.evidence: LEVEL_ORDER,
+# BUCKETS, CLAIMS, the buckets' claims and the level sets), kept here so the
+# script reads a run dir without peaky installed; a test pins them equal to the
+# package's.
+LEVEL_ORDER = ["1", "2", "3c", "4a", "4b", "5a", "5b"]
+BUCKETS = ["reagent", "NA"]
+CLAIMS = ("identified", "neutral", "ion", "tentative")
+CLAIM_REAGENT = "reagent"
+CLAIM_NA = "not assessed"
+CLAIM_KEYS = CLAIMS + (CLAIM_REAGENT, CLAIM_NA)
+CLAIM_IDENTIFIED = frozenset({"1", "2", "3c"})
+CLAIM_NEUTRAL = frozenset({"4a"})
+CLAIM_ION = frozenset({"4b"})
+#: every letter the scale defines; any other is a level of an older scale
+KNOWN_LEVELS = frozenset(LEVEL_ORDER) | frozenset(BUCKETS)
+#: columns only a ledger levelled before the scale carries
+OLD_LEVEL_COLUMNS = ("evidence_axes", "level_reason", "n_plausible_structures")
+try:        # the release names the older scale; without peaky installed it is just "older"
+    from peaky.assignment.levels.scale import SCALE_RELEASE as _RELEASE
+    OLD_SCALE_NO_LEVEL = f"no level (pre-{_RELEASE} scale)"
+except ImportError:  # pragma: no cover - peaky not importable
+    OLD_SCALE_NO_LEVEL = "no level (older scale)"
 # What a shared ion is compared on: (report field, ledger column).
 CHANGE_FIELDS = (("tier", "tier"), ("level", "evidence_level"), ("claim", "claim"))
 CHANGED_ROWS_SHOWN = 20
@@ -130,9 +154,21 @@ class Run:
         return {}
 
 
+def _literal_na(ledger: pd.DataFrame, path: str) -> pd.DataFrame:
+    """Put back the literal level token `NA` the default CSV parser read as NaN
+    (the column re-read as written)."""
+    if "evidence_level" not in ledger.columns:
+        return ledger
+    literal = pd.read_csv(path, usecols=["evidence_level"], dtype=str,
+                          keep_default_na=False)["evidence_level"]
+    level = ledger["evidence_level"].astype(object).where(literal.ne("NA").values, "NA")
+    return ledger.assign(evidence_level=level)
+
+
 def load_run(path: str) -> Run:
     run_dir = resolve_run_dir(path)
-    ledger = pd.read_csv(os.path.join(run_dir, "merged_ledger.csv"), low_memory=False)
+    merged_path = os.path.join(run_dir, "merged_ledger.csv")
+    ledger = _literal_na(pd.read_csv(merged_path, low_memory=False), merged_path)
 
     summary_path = os.path.join(run_dir, "batch_summary.json")
     summary = {}
@@ -248,47 +284,96 @@ def _bucket_table(
     return out[out["lost"] > 0]
 
 
+def _ledger(run) -> pd.DataFrame:
+    return run.ledger if isinstance(run, Run) else run
+
+
+def _unknown_levels(led: pd.DataFrame) -> pd.Series:
+    """The rows whose level letter this scale does not define."""
+    level = led["evidence_level"].astype(object)
+    return level.notna() & ~level.astype(str).str.strip().isin(KNOWN_LEVELS)
+
+
+def before_scale(run) -> bool:
+    """Whether the run was levelled on a scale before the evidence scale: it
+    carries a pre-scale level column or a letter this scale does not define."""
+    led = _ledger(run)
+    if "evidence_level" not in led.columns:
+        return False
+    return any(c in led.columns for c in OLD_LEVEL_COLUMNS) or bool(_unknown_levels(led).any())
+
+
+def _lettered(led: pd.DataFrame) -> pd.Series:
+    """The rows that carry a level letter."""
+    level = led["evidence_level"].astype(object)
+    return level.notna() & level.astype(str).str.strip().ne("")
+
+
+def levels_of(run) -> pd.Series | None:
+    """The merged rows' levels on this scale: on a run levelled before it EVERY
+    letter reads as no level (OLD_SCALE_NO_LEVEL) -- the letters both scales
+    share too, since an old 4a is not a 4a of this scale. None when the ledger
+    carries no `evidence_level`."""
+    led = _ledger(run)
+    if "evidence_level" not in led.columns:
+        return None
+    level = led["evidence_level"].astype(object)
+    return level.where(~_lettered(led), None) if before_scale(led) else level
+
+
 def evidence_hist(run: Run) -> pd.Series | None:
     if "evidence_level" not in run.ledger.columns:
         return None
-    return run.ledger["evidence_level"].fillna("—").astype(str).value_counts().sort_index()
+    level = run.ledger["evidence_level"].astype(object)
+    if before_scale(run.ledger):            # an old letter is no level of this scale, whatever its name
+        level = level.where(~_lettered(run.ledger), OLD_SCALE_NO_LEVEL)
+    counts = level.fillna("—").astype(str).value_counts()
+    order = {k: i for i, k in enumerate([*LEVEL_ORDER, *BUCKETS])}
+    return counts.loc[sorted(counts.index, key=lambda k: (order.get(k, len(order)), k))]
 
 
 def claim_class(level) -> str:
     """The claim a level supports, read as evidence.claim_class reads it:
-    'identified' (1-4a), 'ion' (4b-4d), 'tentative' (5a, 5b or no level)."""
+    'identified' (3c; 1 and 2 never assigned), 'neutral' (4a), 'ion' (4b),
+    'tentative' (5a, 5b or no level), and the buckets 'reagent' / 'not assessed'
+    (NA)."""
     if level is None or (not isinstance(level, str) and pd.isna(level)):
         return "tentative"
     lv = str(level).strip()
     if lv in CLAIM_IDENTIFIED:
         return "identified"
+    if lv in CLAIM_NEUTRAL:
+        return "neutral"
     if lv in CLAIM_ION:
         return "ion"
+    if lv == "reagent":
+        return CLAIM_REAGENT
+    if lv == "NA":
+        return CLAIM_NA
     return "tentative"
 
 
-def _ledger(run) -> pd.DataFrame:
-    return run.ledger if isinstance(run, Run) else run
-
-
 def claim_source(run) -> str | None:
-    """'stamped' (the ledger carries `claim`), 'derived' (read off
-    `evidence_level`: the run predates the column) or None (neither)."""
-    cols = _ledger(run).columns
-    if "claim" in cols:
+    """'stamped' (the ledger carries `claim` on this scale), 'derived' (read
+    off `evidence_level`: the run predates the column, or was levelled before
+    the scale so its stored claim is re-read) or None (neither)."""
+    led = _ledger(run)
+    cols = led.columns
+    if "claim" in cols and not before_scale(led):
         return "stamped"
     return "derived" if "evidence_level" in cols else None
 
 
 def claims_of(run) -> pd.Series | None:
     """The claim of every merged row: the `claim` column when the ledger
-    carries one, else read off `evidence_level`; None when it has neither."""
+    carries one on this scale, else read off its levels on this scale; None
+    when it has neither."""
     led = _ledger(run)
     source = claim_source(led)
     if source == "stamped":
         return led["claim"].astype(object)
     if source == "derived":
-        return led["evidence_level"].map(claim_class).astype(object)
+        return levels_of(led).map(claim_class).astype(object)
     return None
 
 
@@ -304,6 +389,9 @@ def _keyed(led: pd.DataFrame) -> pd.DataFrame:
     compared fields as strings (no value reads '—'). k numbers the repeats of
     one ion in m/z order, so a repeated ion pairs row by row, never n x m."""
     claims = claims_of(led)
+    levels = levels_of(led)
+    if levels is not None and before_scale(led):     # an old letter is no level of this scale, whatever its name
+        levels = levels.where(~_lettered(led), OLD_SCALE_NO_LEVEL)
     sub = led[led["neutral_formula"].notna()]
     out = pd.DataFrame(
         {
@@ -315,7 +403,8 @@ def _keyed(led: pd.DataFrame) -> pd.DataFrame:
         index=sub.index,
     )
     for field, col in CHANGE_FIELDS:
-        values = claims if col == "claim" else (led[col] if col in led.columns else None)
+        values = (claims if col == "claim" else levels if col == "evidence_level"
+                  else (led[col] if col in led.columns else None))
         out[field] = (values.loc[sub.index].fillna("—").astype(str)
                       if values is not None else "—")
     out = out.sort_values("mz", kind="stable")
@@ -341,8 +430,14 @@ def row_changes(a, b) -> dict:
     joined = ka.merge(kb, on=["neutral", "adduct", "k"], how="outer",
                       suffixes=("_a", "_b"), indicator=True)
     shared = joined[joined["_merge"] == "both"]
+    # a pre-scale run's letters are not this scale's: every one reads as no level
+    # (OLD_SCALE_NO_LEVEL), and its level is compared only with another pre-scale
+    # run's (no letter of either is a level here; its claims, re-read on this
+    # scale, always are compared)
+    same_scale = before_scale(la) == before_scale(lb)
     changed = {field: shared[f"{field}_a"] != shared[f"{field}_b"]
-               for field, col in CHANGE_FIELDS if _carries(la, col) and _carries(lb, col)}
+               for field, col in CHANGE_FIELDS
+               if _carries(la, col) and _carries(lb, col) and (field != "level" or same_scale)}
     rows = (shared[pd.concat(changed.values(), axis=1).any(axis=1)]
             if len(shared) and changed else shared.iloc[:0])
     return {
@@ -477,7 +572,15 @@ def build_report(
         "sides being no change.\n"
     )
     for label, run in (("A", run_a), ("B", run_b)):
-        if claim_source(run) == "derived":
+        if before_scale(run):
+            n_old = int(_lettered(run.ledger).sum())
+            w(f"> Run {label} was levelled on a scale before the evidence scale: "
+              + (f"its {n_old} levelled row(s) read as {OLD_SCALE_NO_LEVEL} (the letters this scale shares "
+                 "too), so its claims read tentative" if n_old else "it carries no level of this scale")
+              + ("" if before_scale(run_a) == before_scale(run_b)
+                 else ", and its levels are not compared with the other run's")
+              + ".\n")
+        elif claim_source(run) == "derived":
             w(f"> Run {label}'s ledger has no `claim` column: its claims are read "
               "off `evidence_level`.\n")
         elif claim_source(run) is None:
@@ -590,13 +693,12 @@ def build_report(
     if ca is None and cb is None:
         w("Neither ledger carries `claim` or `evidence_level`.\n")
     else:
-        extra = sorted(
-            (set(ca.index if ca is not None else ()) | set(cb.index if cb is not None else ()))
-            - set(CLAIMS)
-        )
+        seen = set(ca.index if ca is not None else ()) | set(cb.index if cb is not None else ())
+        buckets = [c for c in (CLAIM_REAGENT, CLAIM_NA) if c in seen]
+        extra = sorted(seen - set(CLAIM_KEYS))
         w("| claim | A | B | delta |")
         w("|---|---:|---:|---:|")
-        for claim in (*CLAIMS, *extra):
+        for claim in (*CLAIMS, *buckets, *extra):
             # A run with neither column has no claims to count, not zero of
             # each -- as with the stages, saying 0 invents a finding.
             va = str(int(ca.get(claim, 0))) if ca is not None else "n/a"

@@ -101,8 +101,11 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
    `role_count`, the **`bright_ledger`** (max-height full ledger → the QC figure),
    `role_signal`, **`role_signal_frac`**, `neutral_signal`, `expl_mz`,
    `iso_by_channel`, `ppm_by_cat`, `adduct_signal`, and the reference-list priors.
-   When the merged ledger carries `evidence_level`: `evidence_levels` and the
-   **claims** ([`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §1.1) — each merged
+   When the merged ledger carries `evidence_level`: `evidence_levels` (the
+   levels and buckets of the evidence scale; `NA` is a literal token, not a
+   missing value) and the
+   **claims** ([`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §1.1: identified /
+   neutral / ion / tentative, with the reagent and not-assessed buckets) — each merged
    row's stored `claim`, else (a run made before the column) `claim_class` of
    its level — as `claims` (per merged row), `claim_by_tier` (the tier ×
    claim crosstab, the ion-only rows as their own `ion-only` row),
@@ -119,14 +122,17 @@ brightest full per-sample ledger        run artifacts (merged_ledger.csv,
    credited with the MERGED claim — and the merged tier / crosstab row — of its
    `(neutral_formula, adduct)`; the denominator is ALL per-file M0 height, and a
    reading no merged row carries is its own `unmatched` bucket (printed "no
-   merged row"), never folded into tentative. `claim_signal` holds the four
-   shares (they sum to 1), `claim_signal_assigned` the merged-Assigned part of
+   merged row"), never folded into tentative. `claim_signal` holds one share
+   per claim and bucket plus `unmatched` (they sum to 1), `claim_signal_assigned` the merged-Assigned part of
    each claim, `claim_signal_by_tier` the crosstab by signal. The cover's
    summary opens on the claim counts and these shares; the `claims` page (the
    second section) draws them as bars, tabulates rows / share / signal / tier
    split per claim and the crosstab, and lists the brightest rows where tier
    and claim part (Assigned but tentative, Candidate but identified) — the
    tier is shown beside the claim, never corrected from it. No levels, no page.
+   On a TOF-class or class-less run every level reads `NA`: the claims page and
+   the evidence-levels page say the scale was not assessed on this instrument
+   class instead of counting levels.
 
 8. **Draw the sections** (`SECTIONS`, `build`). 15 ordered sections (cover →
    `assignments_table`). `build` iterates them into a `PdfPages`; a section that

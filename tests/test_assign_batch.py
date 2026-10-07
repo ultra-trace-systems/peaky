@@ -542,24 +542,33 @@ check("vote: a full tie resolves the same way in either file order",
       f1.iloc[0]["neutral_formula"] == f2.iloc[0]["neutral_formula"] == "C10H12O2",
       (f1.iloc[0]["neutral_formula"], f2.iloc[0]["neutral_formula"]))
 
-# --- THE VOTE READS THE EVIDENCE: the evidence class ranks ions before the count
+# --- THE VOTE READS THE EVIDENCE: the vote class ranks ions before the count
 # With one TOF ion's readings finally in one row (the merge window sized from
 # the batch's own scatter), the count alone handed the peak to bromide adducts
 # of N-compounds read in more files over the reading the other instrument
-# confirms. Each ion now takes the best per-file evidence class of its readings
-# ({2b, 3a, 3b, 4a} or the `corroborated` axis > {4b, 4c, 4d} > {5a, 5b}) and
-# the count decides among equals; the label stage and the ion-only-last rule
-# are unchanged. The four cases are the C2 board's own losses.
+# confirms. Each ion now takes the best per-file VOTE CLASS of its readings
+# (the parent's `vote_class` column: neutral backed 2 > formula confirmed 1 >
+# unconfirmed 0) and the count decides among equals; the label stage and the
+# ion-only-last rule are unchanged. The four cases are the C2 board's own
+# losses. The frames below state each reading's private decision (level, axes)
+# and carry the class `_evidence_class` maps it to -- exactly what the parent
+# computes per file (evidence.vote_classes) -- and never the level itself.
+def _with_class(df):
+    df = df.copy()
+    df["vote_class"] = [AB._evidence_class(a, b) for a, b in zip(df["evidence_level"], df["evidence_axes"])]
+    return df.drop(columns=["evidence_level", "evidence_axes"])
+
+
 def m0e(rows):
-    return pd.DataFrame(rows, columns=["mz", "neutral_formula", "adduct", "tier", "ion_score",
-                                       "evidence_level", "evidence_axes"])
+    return _with_class(pd.DataFrame(rows, columns=["mz", "neutral_formula", "adduct", "tier", "ion_score",
+                                                   "evidence_level", "evidence_axes"]))
 
 
 def _filese(n, mz, nf, ad, tier, ion, level, axes, start=0):
     return {f"e{start + i:02d}": m0e([(mz + 1e-4 * i, nf, ad, tier, ion, level, axes)]) for i in range(n)}
 
 
-check("evidence class: the neutral established (2b/3a/3b/4a) or corroborated is 2, the formula/ion pinned is 1, mass-only 0",
+check("vote class: the private decision's neutral established (2b/3a/3b/4a) or corroborated is 2, formula/ion confirmed 1, else 0",
       [AB._evidence_class(lv, "") for lv in ("2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b", None)]
       == [2, 2, 2, 2, 1, 1, 1, 0, 0, 0]
       and AB._evidence_class("5b", "iso|corroborated|carbon") == 2 and AB._evidence_class("4b", "corroborated") == 2
@@ -574,12 +583,13 @@ check("evidence: pinic acid C9H14O4 [M+NO3]- (4b corroborated, 1 file) beats the
       len(mp) == 1 and mp.iloc[0]["neutral_formula"] == "C9H14O4" and mp.iloc[0]["adduct"] == "[M+NO3]-",
       mp.to_dict("records"))
 check("evidence: the row says the evidence decided, not the count",
-      mp.iloc[0]["tier_reason"] == "evidence outranks the count: kept C9H14O4 [M+NO3]- (4b corroborated in 1 of 2 "
-                                   "files) over the 1-file C12H15NO3Si [M-H]- (5b)", mp.iloc[0]["tier_reason"])
+      mp.iloc[0]["tier_reason"] == "evidence outranks the count: kept C9H14O4 [M+NO3]- (neutral backed in 1 of 2 "
+                                   "files) over the 1-file C12H15NO3Si [M-H]- (unconfirmed)", mp.iloc[0]["tier_reason"])
 check("evidence: the loser is listed as before", mp.iloc[0]["alternatives"] == "C12H15NO3Si [M-H]- x1 Candidate 0.95",
       repr(mp.iloc[0]["alternatives"]))
-check("evidence: jitter.csv carries each file's own level",
-      "evidence_level" in jp.columns and sorted(jp["evidence_level"].astype(str)) == ["4b", "5b"], jp.to_dict("records"))
+check("evidence: jitter.csv carries each file's own vote class (an int), never a level",
+      "vote_class" in jp.columns and "evidence_level" not in jp.columns
+      and sorted(int(x) for x in jp["vote_class"]) == [0, 2], jp.to_dict("records"))
 pin_br = {"a": m0e([(265.0089, "C2H9N3O6S", "[M+NO3]-", "Candidate", 0.944, "5b", "")]),
           "b": m0e([(265.0089, "C9H14O4", "[M+Br]-", "Candidate", 0.909, "4b", "corroborated")])}
 mpb, _ = AB.align(pin_br, tol_ppm=12.0)
@@ -595,8 +605,8 @@ check("evidence: C9H16O6 [M+NO3]- (4a, 2 files) beats C14H21N [M+Br]- (5a, 9 fil
       and _h6["n_files"] == 11 and _h6["n_files_ion"] == 2 and _h6["n_files_winner"] == 2, _h6.to_dict())
 check("evidence: the 9-file loser heads the alternatives and the note names it",
       _h6["alternatives"] == "C14H21N [M+Br]- x9 Candidate 0.93"
-      and _h6["tier_reason"] == "evidence outranks the count: kept C9H16O6 [M+NO3]- (4a corroborated in 2 of 11 "
-                                "files) over the 9-file C14H21N [M+Br]- (5a)", _h6.to_dict())
+      and _h6["tier_reason"] == "evidence outranks the count: kept C9H16O6 [M+NO3]- (neutral backed in 2 of 11 "
+                                "files) over the 9-file C14H21N [M+Br]- (unconfirmed)", _h6.to_dict())
 # case 3: C10H16O9 [M+NO3]- read below assignability (5b) in 2 files, but the
 # other instrument holds the neutral: the corroborated axis lifts it over the
 # 3-file mass-only C15H21NO3 [M+Br]-
@@ -605,7 +615,7 @@ hom9 = {**_filese(3, 342.0698, "C15H21NO3", "[M+Br]-", "Candidate", 0.90, "5b", 
 m9, _ = AB.align(hom9, tol_ppm=12.0)
 check("evidence: a corroborated 5b reading (C10H16O9, 2 files) beats an uncorroborated 5b read in 3 files",
       m9.iloc[0]["neutral_formula"] == "C10H16O9" and m9.iloc[0]["n_files_ion"] == 2
-      and str(m9.iloc[0]["tier_reason"]).startswith("evidence outranks the count: kept C10H16O9 [M+NO3]- (5b corroborated in 2 of 5 files) over the 3-file C15H21NO3 [M+Br]- (5b)"),
+      and str(m9.iloc[0]["tier_reason"]).startswith("evidence outranks the count: kept C10H16O9 [M+NO3]- (neutral backed in 2 of 5 files) over the 3-file C15H21NO3 [M+Br]- (unconfirmed)"),
       m9.iloc[0].to_dict())
 # case 4: C10H18O9 [M+NO3]- in ONE file (4b corroborated) against two mass-only
 # ions read in 4 and 3 files; both losers stay listed, biggest first
@@ -618,8 +628,8 @@ check("evidence: C10H18O9 [M+NO3]- (1 file, 4b corroborated) beats the 4-file an
       and m18.iloc[0]["alternatives"] == "C15H23NO3 [M+Br]- x4 Candidate 0.92; C11H9NO9 [M+NO3]- x3 Candidate 0.91",
       m18.iloc[0].to_dict())
 check("evidence: the note names the biggest of the lower-class ions",
-      m18.iloc[0]["tier_reason"] == "evidence outranks the count: kept C10H18O9 [M+NO3]- (4b corroborated in 1 of 8 "
-                                    "files) over the 4-file C15H23NO3 [M+Br]- (5b)", m18.iloc[0]["tier_reason"])
+      m18.iloc[0]["tier_reason"] == "evidence outranks the count: kept C10H18O9 [M+NO3]- (neutral backed in 1 of 8 "
+                                    "files) over the 4-file C15H23NO3 [M+Br]- (unconfirmed)", m18.iloc[0]["tier_reason"])
 # the count decides among EQUALS: two class-2 ions, 3 files at 4a vs 2 files at 3b
 eq = {**_filese(3, 300.0, "C10H12O2", "[M+H]+", "Candidate", 0.90, "4a", "iso|chan2"),
       **_filese(2, 300.0, "C9H12N2O", "[M+H]+", "Candidate", 0.99, "3b", "branch", start=3)}
@@ -638,8 +648,8 @@ mid = {**_filese(9, 304.9071, "C16H2S", "[M+Br]-", "Candidate", 0.95, "5b", ""),
 mmid, _ = AB.align(mid, tol_ppm=12.0)
 check("evidence: a 4b reading in 1 file beats a 5b reading in 9 (the middle class outranks mass-only)",
       mmid.iloc[0]["neutral_formula"] == "C10HF3O3"
-      and mmid.iloc[0]["tier_reason"] == "evidence outranks the count: kept C10HF3O3 [M+Br]- (4b in 1 of 10 files) "
-                                         "over the 9-file C16H2S [M+Br]- (5b)", mmid.iloc[0].to_dict())
+      and mmid.iloc[0]["tier_reason"] == "evidence outranks the count: kept C10HF3O3 [M+Br]- (formula confirmed in 1 "
+                                         "of 10 files) over the 9-file C16H2S [M+Br]- (unconfirmed)", mmid.iloc[0].to_dict())
 # an Orbitrap-like cluster: the many-file reading is also the best-evidenced one -- nothing moves, no note
 noop = {**_filese(8, 217.12, "C10H16O2", "[M+H]+", "Assigned", 0.91, "3b", "chan2|branch"),
         **_filese(2, 217.12, "C9H16N2O", "[M+H]+", "Candidate", 0.99, "5b", "", start=8)}
@@ -649,16 +659,16 @@ check("evidence: the many-file best-class reading wins as before, no note",
       mno.iloc[0].to_dict())
 # frames WITHOUT the evidence columns: every reading is class 0 and the vote is the count it was
 _nocol, _ = AB.align(vote, tol_ppm=6.0)
-_nacol, _ = AB.align({k: v.assign(evidence_level=pd.NA, evidence_axes=pd.NA) for k, v in vote.items()}, tol_ppm=6.0)
-check("evidence: frames without the columns (or with NA levels) vote by the count exactly as before",
+_nacol, _ = AB.align({k: v.assign(vote_class=pd.NA) for k, v in vote.items()}, tol_ppm=6.0)
+check("evidence: frames without the class (or with an NA class) vote by the count exactly as before",
       _nocol["neutral_formula"].iloc[0] == "C10H12O2" and _nocol.drop(columns=[]).equals(_nacol), (_nocol.to_dict("records"), _nacol.to_dict("records")))
 # the ion-only-last rule is unchanged: an ion-only reading levelled 4d in 3 files
 # still yields to a regular mass-only reading in 1
-io = {**{f"i{i}": pd.DataFrame([(100.0, "C4H6O2", "[M]-.", "Candidate", 0.8, "4d", "iso|ion_only", "p1")],
-                                columns=["mz", "neutral_formula", "adduct", "tier", "ion_score", "evidence_level", "evidence_axes", "ion_only_of"])
+io = {**{f"i{i}": _with_class(pd.DataFrame([(100.0, "C4H6O2", "[M]-.", "Candidate", 0.8, "4d", "iso|ion_only", "p1")],
+                                columns=["mz", "neutral_formula", "adduct", "tier", "ion_score", "evidence_level", "evidence_axes", "ion_only_of"]))
          for i in range(3)},
-      "r": pd.DataFrame([(100.0, "C3H2O3", "[M-H]-", "Candidate", 0.7, "5b", "", pd.NA)],
-                        columns=["mz", "neutral_formula", "adduct", "tier", "ion_score", "evidence_level", "evidence_axes", "ion_only_of"])}
+      "r": _with_class(pd.DataFrame([(100.0, "C3H2O3", "[M-H]-", "Candidate", 0.7, "5b", "", pd.NA)],
+                        columns=["mz", "neutral_formula", "adduct", "tier", "ion_score", "evidence_level", "evidence_axes", "ion_only_of"]))}
 mio, _ = AB.align(io, tol_ppm=6.0)
 check("evidence: an ion-only reading (4d, 3 files) still ranks below a regular reading (5b, 1 file)",
       mio.iloc[0]["neutral_formula"] == "C3H2O3" and str(mio.iloc[0]["tier_reason"]).startswith("regular reading kept over the 3-file"),
@@ -671,6 +681,12 @@ mlb, _ = AB.align(lbl, tol_ppm=6.0)
 check("evidence: within one ion the label stage still goes by corroboration (Assigned in 1 beats Candidate in 3)",
       mlb.iloc[0]["neutral_formula"] == "C13H14O4" and bool(mlb.iloc[0]["ion_agree"])
       and str(mlb.iloc[0]["tier_reason"]).startswith("same ion C13H18NO4+ read two ways"), mlb.iloc[0].to_dict())
+# the notes name a class, never a level of any scale (the pre-0.10.0 decision is private to the vote)
+import re as _re
+_notes = [str(x) for _m in (mp, mpb, m6, m9, m18, mmid) for x in _m["tier_reason"].dropna()]
+check("evidence: every vote note names the class text, no level token",
+      _notes and all(("neutral backed" in n or "formula confirmed" in n) for n in _notes)
+      and not any(_re.search(r"\(\s*[1-5][a-d]?\b|\b[1-5][a-d]\b", n) for n in _notes), _notes)
 # determinism with the new key
 for _name, _d in (("HOM C10H18O9", hom18), ("pinic acid", pin)):
     _m1, _j1 = AB.align(_d, tol_ppm=12.0)
@@ -806,6 +822,10 @@ _PK = _batch_table(_SPEC)
 _F = "C10H16O5"
 
 
+#: what every fake file's degeneracy stage persists, as a real run's does (stats["degeneracy_cal"])
+_CAL = {"mu": 0.0, "sigma": 0.3}
+
+
 _SEEN_CFG = []
 _SEEN_KW = []
 
@@ -822,8 +842,23 @@ def _fake_assign(sid, context="ambient-air", **kw):
                          ppm_error=0.1, pass_no=1, method="cheminfo+grid",
                          confidence="High", commentary="stub")
     _T.apply_tiers(led)
-    return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+    return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
+                                     "degeneracy_cal": dict(_CAL)},
             "plausibility_audit": [], "summaries": {}, "problems": []}
+
+
+def _pooled_levelled(d, summ):
+    """(ok, detail): the pooled level stage really ran on the batch in ``d`` -- an Orbitrap-class width model
+    (declared: the fakes give no measured one), the per-file calibrations in the summary, so a run window,
+    and every pooled pair levelled on the scale (no NA, none at the no-run-window text)."""
+    from peaky.assignment import evidence as _EV
+    ev = pd.read_csv(os.path.join(d, "tables", "evidence_levels.csv"), keep_default_na=False)
+    el = summ["evidence_levels"]
+    cals = [pf.get("degeneracy_cal") for pf in summ["per_file"]]
+    ok = (el["instrument"]["class"] == "orbitrap" and all(c == _CAL for c in cals)
+          and el["n_pairs"] == len(ev) > 0 and set(ev["evidence_level"]) <= set(_EV.LEVELS) | {"reagent"}
+          and _EV.NO_RUN_WINDOW_TEXT not in set(ev["evidence"]) and sum(el["pooled"].values()) == len(ev))
+    return ok, (el.get("instrument"), el.get("pooled"), cals)
 
 
 _saved = {"connect": IO.connect, "fetch_peaks": IO.fetch_peaks,
@@ -837,9 +872,11 @@ try:
     with tempfile.TemporaryDirectory() as _d:
         res = AB.run(peaks=_PK, ts_peaks=_PK, reagent="Br", batch="test batch",
                      out_dir=_d, k_min=2, k_max=3, min_gain=0.0, n_jobs=1,
-                     log=lambda *a: None)
+                     resolving_power=100_000, log=lambda *a: None)   # Orbitrap class: the pooled levels run
         summ = json.load(open(os.path.join(_d, "batch_summary.json")))
         s = summ["selection"]
+        check("run: the pooled level stage ran (Orbitrap class, persisted calibrations, every pair levelled)",
+              *_pooled_levelled(_d, summ))
         check("run: batch_summary carries the selection block",
               s["method"] == "presence-cover" and s["k"] == 3 and s["n_samples"] == 8
               and s["n_bins"] == 100, s)
@@ -1064,7 +1101,8 @@ def _positive_assign(sid, context="ambient-air", **kw):
                              ppm_error=0.1, pass_no=1, method="cheminfo+grid",
                              confidence="High", commentary="stub")
     _T.apply_tiers(led)
-    return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+    return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
+                                     "degeneracy_cal": dict(_CAL)},
             "plausibility_audit": [], "summaries": {}, "problems": []}
 
 
@@ -1077,11 +1115,13 @@ try:
     with tempfile.TemporaryDirectory() as _dp:
         resp = AB.run(peaks=_PK, ts_peaks=_PK, reagent="Ur", batch="test batch",
                       out_dir=_dp, k_min=2, k_max=3, min_gain=0.0, n_jobs=1,
-                      log=lambda *a: None)
+                      resolving_power=100_000, log=lambda *a: None)   # Orbitrap class: the pooled levels run
         mg = resp["merged"]
         summp = json.load(open(os.path.join(_dp, "batch_summary.json")))
         r_nh4 = mg.iloc[(mg["mz"] - _HC_MZ).abs().argmin()]
         r_ur = mg.iloc[(mg["mz"] - _UR_MZ).abs().argmin()]
+        check("positive run: the pooled level stage ran (Orbitrap class, persisted calibrations, every pair levelled)",
+              *_pooled_levelled(_dp, summp))
         check("positive run: the per-file ledgers AGREE (no per-file re-read split the ion)",
               bool(r_nh4["formula_agree"]) and bool(r_nh4["ion_agree"])
               and r_nh4["n_files_winner"] == r_nh4["n_files_ion"] == r_nh4["n_files"] == 3
@@ -1185,7 +1225,8 @@ def _fake_assign_staged(sid, context="ambient-air", **kw):
                              ppm_error=0.3, pass_no=1, method="cheminfo+grid",
                              confidence="Medium", commentary="stub")
     _T.apply_tiers(led)
-    return {"ledger": led, "stats": {"noise_edge_cps": 500.0, "height_gate_cps": 500.0},
+    return {"ledger": led, "stats": {"noise_edge_cps": 500.0, "height_gate_cps": 500.0,
+                                     "degeneracy_cal": dict(_CAL)},
             "plausibility_audit": [], "summaries": {}, "problems": []}
 
 
@@ -1212,10 +1253,12 @@ class _FakePool:
         return f
 
 
-def _run_staged(d, **kw):
+def _run_staged(d, resolving_power=100_000, **kw):
+    """One staged run; an Orbitrap-class width model by default, so the pooled levels run over both stages
+    (the fakes give no measured one: class-less, every pair would read NA at the class gate)."""
     lines = []
     res = AB.run(peaks=_RPK, ts_peaks=_RPK, reagent="Br", batch="test batch", out_dir=d,
-                 k_min=2, k_max=2, min_gain=0.0, log=lines.append, **kw)
+                 k_min=2, k_max=2, min_gain=0.0, log=lines.append, resolving_power=resolving_power, **kw)
     summ = json.load(open(os.path.join(d, "batch_summary.json")))
     return res, summ, lines
 
@@ -1238,6 +1281,10 @@ try:
         _SEEN_CFG.clear()
         res, summ, lines = _run_staged(_d, n_jobs=1)
         r = summ["selection"]["residual"]
+        _ok, _det = _pooled_levelled(_d, summ)
+        check("residual run: the pooled level stage ran over both stages (every pair levelled, per stage too)",
+              _ok and set(summ["evidence_levels"]["per_stage"]) == {"cover", "residual"},
+              (_det, summ["evidence_levels"].get("per_stage")))
         check("residual run: the cover stops at k_max=2 (a0, a1) and the z files stay unpicked",
               summ["selection"]["k"] == 2 and summ["selection"]["stop_reason"] == "k_max"
               and summ["n_files_by_stage"] == {"cover": 2, "residual": 2},

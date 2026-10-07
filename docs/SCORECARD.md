@@ -39,13 +39,22 @@ against its previous row.
 ## 0. The claim
 
 Every committed reading carries, beside its tier, the **claim** its evidence
-level supports (`evidence.claim_class`, docs/EVIDENCE_LEVELS.md):
+level supports on the evidence scale (`evidence.claim_class`,
+docs/EVIDENCE_LEVELS.md §1.1), and two buckets reported beside the claims:
 
 | claim | levels | what a reader may say |
 |---|---|---|
-| identified | 1, 2a, 2b, 3a, 3b, 4a | the neutral is established: the formula can be reported as a compound or class |
-| ion | 4b, 4c, 4d | the ion composition is pinned; the neutral / adduct split is open |
-| tentative | 5a, 5b, no level | exact mass only, or the assignment argues with itself |
+| identified | 1, 2, 3c | the compound is named: ion established, split pinned and a named context-list entry |
+| neutral | 4a | the neutral is established, with no named identity |
+| ion | 4b | the ion composition is established; the neutral / adduct split or the process stays open |
+| tentative | 5a, 5b, no level | a competitor is left, the reading is rejected, or the row has no level |
+| reagent (bucket) | `reagent` | a reagent ion or reagent cluster, not levelled |
+| not assessed (bucket) | `NA` | not assessed on this instrument class (a TOF-class or class-less run) |
+
+The card's claim block is schema 2 (`CLAIMS_SCHEMA = 2`: the six keys above,
+zeros kept). Board rows written under schema 1 (three claims on the pre-release
+level scale) still render beside new ones; their deltas against a schema-2 row
+read None.
 
 The card always derives the claim from `evidence_level` (a run made before the
 `claim` column existed carries none; one made before the in-core level takes
@@ -55,8 +64,8 @@ the rows whose stored claim differs from the derived one are counted as
 makes a claim; every merged row has one (a row with no level reads tentative).
 
 - **Merged rows per claim**, and the **tier × claim crosstab** with three tier
-  rows: Assigned, Candidate and ion-only (the `ion_only_of` rows, levels 4d /
-  5a, kept out of the Candidate row as the headline keeps them), by rows and by
+  rows: Assigned, Candidate and ion-only (the `ion_only_of` rows, 4b at best,
+  kept out of the Candidate row as the headline keeps them), by rows and by
   signal.
 - **Signal per claim.** The committed signal is every per-file M0 reading
   (`per_file/*_ledger.csv`, `role == 'M0'`, `height`) over all assigned files.
@@ -68,13 +77,12 @@ makes a claim; every merged row has one (a row with no level reads tentative).
 - **Disagreeing rows.** Tier and claim are separate verdicts and are not
   nested: a Candidate can be identified (the vote was split, the evidence is
   good) and an Assigned row can be tentative. The card counts both kinds and
-  lists them brightest first with the level reason and the tier reason; it
+  lists them brightest first with the evidence string and the tier reason; it
   never changes one from the other.
-- **Corroboration.** The identified rows are split by the channel's OWN
-  evidence (`own_levels_for`: its per-file ledgers levelled with no cross
-  set): identified alone, or identified only with the corroborating source,
-  with the own-evidence levels of the latter. An identified row that is 5b on
-  its own evidence is flagged by name.
+- **No corroboration split.** The evidence scale never reads the
+  `--corroborate` source (another source's sighting is a tag), so a run's
+  levels ARE its own evidence and the card no longer splits the identified
+  rows by corroboration.
 
 ## Acceptance
 
@@ -89,7 +97,7 @@ board and the page:
 | decoy rate not higher, per arm | `decoy_shift_identified_rate`, `decoy_shift_identified_lt_350_rate`, `decoy_adducts_identified_rate` | `decoy_shift_rate`, `decoy_adducts_rate` |
 | bright M0 not worse | `bright_m0_not_identified` (ion-only rows excluded, as for the old count) | `bright_m0_not_assigned` |
 | M1 families not worse | `m1_families` (unchanged) | `m1_families` |
-| cross-instrument agreement not lower | `m3_own_missing_identified` — the other instrument's rows at level <= 4a by its own evidence that this run lacks | `m3_other_instrument_own_missing` |
+| cross-instrument agreement not lower | `m3_own_missing_identified` — the other instrument's identified rows (3c) that this run lacks | `m3_other_instrument_own_missing` |
 
 The board rows written before the claim lack these keys: the delta reads None
 and the tables show a dash.
@@ -103,13 +111,13 @@ and the tables show a dash.
    (the batch-level reagent-N re-read drops the stamp, for one), not a
    chemistry question, and the rows are listed with their `tier_reason`.
 2. **The brightest 50 ions** by median height over the batch, with role,
-   reading, tier, evidence level, claim and axes — and the count of bright M0
+   reading, tier, evidence level, claim and tag kinds — and the count of bright M0
    rows that are not Assigned (and not identified), plus how many of the
    batch's 50 brightest tracks overall are unstamped (those are named in M1).
    Every bright ion is either explained or a named miss.
-3. **The best-evidence 50** (level ≤ 4a first, then most axes, then
-   brightest), the level vector `2b/3a/3b/4a/4b/4c/4d/5a/5b`, the rows per
-   claim and the axes histogram over every levelled row.
+3. **The best-evidence 50** (the best level first, then the brightest), the level
+   vector `3c/4a/4b/5a/5b/reagent/NA`, the rows per claim and the tag-kind
+   histogram over every levelled row.
 4. **What was missed.**
    - *M1 unexplained*: the brightest unstamped **tracks** (the unstamped
      peaks binned by the batch tolerance) present in ≥ 50 % of spectra. Each
@@ -139,19 +147,22 @@ and the tables show a dash.
      misreads whose other reading is identified.
    - *M3 found elsewhere*: neutrals the other path (`--other`, ≥ 2 files or
      Assigned) holds and this run lacks; and neutrals the other instrument
-     (`--other-instrument`) holds at level ≤ 4b, above the detection floor
-     inside the overlap window (with the masked gaps removed), that this run
-     lacks — counted twice: by the other instrument's merged in-core level
-     (`m3_other_instrument_missing`, the original metric) and by its **own**
-     evidence, its per-file ledgers levelled with no cross set
-     (`m3_other_instrument_own_missing`, `own_levels_for`). The two differ where
-     the other instrument's in-core level owes a rung to its own
-     `--corroborate` source — on a same-air pair that source is the run being
-     scored, so the first count can hold this run's own agreement against it
-     (EVIDENCE_LEVELS.md §6.4). Both counts are split by claim
-     (`n_good_by_claim`, `n_missing_by_claim`: identified = the other's level
-     <= 4a, ion = 4b), before the listed rows are cut to 40. The other
-     instrument also corroborates this run's levels.
+     (`--other-instrument`) establishes — level 3c, 4a or 4b on the evidence
+     scale — above the detection floor inside the overlap window (with the
+     masked gaps removed), that this run lacks, counted twice on two level
+     sets that differ: `m3_other_instrument_missing` reads the other
+     instrument's in-core level (for a run levelled before the scale, its
+     post-hoc level with this run as its `--corroborate` partner), which keeps
+     its ion-only readings and can owe a series anchor to an other-source
+     partner (its `--corroborate` sources, which may be this run);
+     `m3_other_instrument_own_missing` reads its own evidence
+     (`own_levels_for`: its files pooled with no other-source partner), with
+     the ion-only readings left out. Where the other instrument
+     is TOF-class or class-less its rows read `NA` (not assessed), so M3
+     counts its **Assigned** rows instead and its metric label says so. The
+     counts are split by claim (`n_good_by_claim`, `n_missing_by_claim`:
+     identified = 3c, neutral = 4a, ion = 4b), before the listed rows are cut
+     to 40. The other instrument's levels never feed this run's levels.
 5. **Is it right.** (a) roster recall (see M2; the rosters are unreviewed
    until the user signs them off); (b) the element census of Assigned
    neutrals — F, Si, P, Cl, Br, S, N and C > 20, with examples; (c) the
@@ -181,7 +192,8 @@ and the tables show a dash.
    reflist prior and the pass-8 rescue) and its corroboration -- so the
    control is the engine on the file under the arm's own settings, not the
    run's per-file ledger. They differ most in M0 and Assigned rows on a TOF
-   batch, and in the identified class on a corroborated batch (R2, 0.9.0:
+   batch, and (on the pre-release level scale, which read the corroborating
+   source) in the identified class on a corroborated batch (R2, 0.9.0:
    the control holds 11 identified pairs where the run's file holds 50, 43 of
    them identified only through corroboration); card C39. On a TOF the
    brightest file -- the decoy file -- can be the batch's worst-fitted one
@@ -201,10 +213,9 @@ and the tables show a dash.
    side by side: the tier counts are M0 **rows**; the level vector and the
    **per-claim** counts are distinct (neutral_formula, adduct) M0 **pairs** of
    any tier, each pair's m/z and tier taken from its brightest M0 row (the
-   Assigned-only variants beside them). Each arm reports identified / ion /
-   tentative pairs below and above m/z 350, and its rate against the
-   control's pairs of the same claim (`identified_rate` equals the old
-   `good_level_rate`); where the control holds no pair of that claim the rate
+   Assigned-only variants beside them). Each arm reports its pairs per claim and
+   bucket below and above m/z 350, and its rate against the control's pairs
+   of the same claim; where the control holds no pair of that claim the rate
    is undefined (`null`, a dash on the card), not 0 %. Each arm's engine
    ledger is kept as `<out>/<run>/decoy/<file>__<arm>.csv.gz`, with
    `manifest.json` beside it; `--decoy-ledgers DIR` (a scoreboard out dir, or
@@ -229,12 +240,13 @@ and the tables show a dash.
 
 ## Levels
 
-Until the in-core `evidence_level` column exists (Phase B of the plan), the
-level column comes from `scripts/level_ledger.py`, run in-process on the run
-dir (corroborated by `--other-instrument` when given). `--levels` takes that
-script's `--out` CSV instead. When the merged ledger carries
-`evidence_level` (and `evidence_axes`), it is preferred and the script is not
-run.
+The merged ledger's in-core `evidence_level` (the evidence scale,
+docs/EVIDENCE_LEVELS.md) is preferred. A run made before the scale carries no
+such column (or the pre-release one): the level then comes from
+`scripts/level_ledger.py`, run in-process on the run dir, and `--levels` takes
+that script's `--out` CSV instead. The scorecard reads `NA` with
+`keep_default_na=False` (or from `claim`), so "not assessed" never folds into
+"no level".
 
 ## Rosters
 
@@ -257,8 +269,7 @@ board round trip with a delta, and the CLI.
 a Candidate the acid branch identifies, an ion-only line and a per-file
 reading no merged row carries, and pins the claim block (rows, the crosstab
 with its ion-only row, the signal shares with the unmatched bucket, the
-disagreeing rows, the corroboration split through `own_levels_for`, the stamp
-mismatch), the claim on the brightest / best-evidence / M2 / M3 panels, the
+disagreeing rows, the stamp mismatch), the claim on the brightest / best-evidence / M2 / M3 panels, the
 decoy pairs per claim on the in-core and post-hoc level paths, the per-claim
 rates (undefined against a control with none of the claim), an errored arm
 left exactly as its error, the kept arm ledgers re-counted by `--decoy-ledgers`

@@ -1,10 +1,18 @@
-"""Rule K on the level (EVIDENCE_LEVELS §3 `label_untie` / `label_alien` /
-`label_veto`, §4 row 1, §6.3, §7): what the labelled-nitrate twin facts do to
-the pooled level, pinned in the engine (`evidence._measure` / `_level_pairs` /
-`_decide` / `_axes_string`), in the reference script (`level_ledger.relabel_pools`
-/ `assign_levels` / `label_twin_facts` / `run`), in `scorecard.own_levels_for` and
-in `assign_batch`'s wiring -- each where a mutant of the rule survived
+"""Rule K on the level facts (`label_untie` / `label_alien` / `label_veto`): what
+the labelled-nitrate twin facts do to the pooled fact layer, pinned in the
+engine (`evidence._measure` / `_level_pairs` / `_axes_string`), in the
+reference script while it holds the pre-0.10.0 decision
+(`level_ledger.relabel_pools` / `assign_levels` / `label_twin_facts` / `run`)
+and in `assign_batch`'s wiring -- each where a mutant of the rule survived
 `tests/test_label_twins.py`.
+
+Before peaky 0.10.0 these tests pinned the pooled level the facts gave (3b on
+an untied acid branch, 5b on a veto ...). That decision is private now and
+never sees rule K (the merge vote reads each file alone); the evidence scale
+reads a veto as a step-0 rejection. So the tests pin the hard inputs and the
+facts string (`_levels`: (hard inputs, `evidence_axes`)), and the reference
+script's private level only as equal to the engine's. The scorecard no longer
+levels a run itself, so its rule-K test is gone.
 
 The facts: an untie clears the arbiter's tie of its own reading only, and only
 where that reading is tied; a veto is a hard input, joined last into the hard
@@ -20,10 +28,7 @@ Run: pytest tests/test_label_twins_levels.py -q
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
-import types
 from pathlib import Path
 
 import pandas as pd
@@ -32,13 +37,11 @@ from peaky.assignment import evidence as EV
 from peaky.batch import label_twins as LT
 from peaky.chem import chemistry as C
 from tests.test_evidence import child, ledger, m0
-from tests.test_label_twins import (LABEL, NO3, NO3L, K, _frames, _j1_rows, _levels, _ll, _nitrate_rows, _refs_spec,
-                                    _series)
+from tests.test_label_twins import (LABEL, NO3, NO3L, K, _frames, _hard, _j1_rows, _levels, _ll, _nitrate_rows,
+                                    _refs_spec, _series)
 
 X, Y, Z, J, W, V = "C10H18O4", "C9H14O4", "C12H14O2", "C11H18O6", "C4H6O4", "C5H8O4"
 IO, NO3_15 = "[M]-.", "[M+15NO3]-"
-BRANCH = "3b: acid branch, the same neutral seen deprotonated and clustered"
-REFUTE = "the reagent's two isotopologues refute the cluster reading"
 
 
 # --------------------------------------------------------------------------- builders
@@ -78,20 +81,29 @@ LAB = K(untie={(X, NO3), (X, IO), (Y, NO3)},
         veto={(Z, NO3L): "no 14N twin", (J, NO3): "no 15N partner", (X, IO): "x", (Y, IO): "y"},
         alien={(J, NO3)})
 
-#: the combo's pooled level with LAB, per (neutral, adduct)
+#: the combo's pooled facts with LAB, per (neutral, adduct): (hard inputs, facts string). Before peaky
+#: 0.10.0 they read 3b (X, Y: the acid branch), 5b (X's tied ion-only line, J's and Z's vetoed clusters),
+#: 4b (J's [M-H]-, its own 13C line), 4c (W, V: one channel each by the fold), 5a (Y's ion-only line).
 COMBO_LEVELS = {
-    (X, NO3): "3b", (X, NO3L): "3b", (X, "[M-H]-"): "3b", (X, IO): "5b",
-    (J, NO3): "5b", (J, "[M-H]-"): "4b",
-    (Z, NO3L): "5b",
-    (W, NO3): "4c", (W, NO3L): "4c", (V, NO3_15): "4c", (V, NO3L): "4c",
-    (Y, NO3): "3b", (Y, "[M-H]-"): "3b", (Y, IO): "5a",
+    (X, NO3): ((), "chan2|branch|label_untie|files:1"), (X, NO3L): ((), "iso|chan2|carbon|branch|files:1"),
+    (X, "[M-H]-"): ((), "chan2|branch|files:1"), (X, IO): (("tied",), "ion_only|files:1"),
+    (J, NO3): (("label_veto",), "iso|carbon|label_veto|files:1"), (J, "[M-H]-"): ((), "iso|carbon|files:1"),
+    (Z, NO3L): (("label_veto",), "iso|carbon|label_veto|files:1"),
+    (W, NO3): ((), "files:1"), (W, NO3L): ((), "files:1"), (V, NO3_15): ((), "files:1"), (V, NO3L): ((), "files:1"),
+    (Y, NO3): ((), "chan2|branch|files:1"), (Y, "[M-H]-"): ((), "chan2|branch|files:1"),
+    (Y, IO): ((), "ion_only|files:1"),
 }
 
 FACT_COLUMNS = ["chan2", "branch", "tied", "label_untie", "label_veto"]
 
 
 def _engine(rows: pd.DataFrame, label=None) -> pd.DataFrame:
-    return EV.level_pooled({"s1": rows}, label=label).set_index(["neutral_formula", "adduct"])
+    return EV._series_pooled({"s1": rows}, label=label).set_index(["neutral_formula", "adduct"])
+
+
+def _facts_of(frame: pd.DataFrame) -> dict:
+    """{(neutral, adduct): (hard inputs, facts string)} of an indexed engine table."""
+    return {k: (_hard(r), r["evidence_axes"]) for k, r in frame.iterrows()}
 
 
 def _script(rows: pd.DataFrame, label=None) -> pd.DataFrame:
@@ -131,52 +143,52 @@ def test_the_untie_clears_only_its_own_reading():
     rows = _nitrate_rows(X)
     rows.loc[rows.peak_id.isin(["h", "n15"]), "tied"] = True
     lv = _levels(rows, label=K(untie={(X, NO3)}))
-    assert lv[NO3] == ("3b", "chan2|branch|label_untie|files:1", BRANCH)
-    assert lv["[M-H]-"] == ("5b", "chan2|branch|files:1", "5b: near-tie broken by the arbiter")
-    assert lv[NO3L] == ("5b", "iso|chan2|carbon|branch|files:1", "5b: near-tie broken by the arbiter")
+    assert lv[NO3] == ((), "chan2|branch|label_untie|files:1")
+    assert lv["[M-H]-"] == (("tied",), "chan2|branch|files:1")
+    assert lv[NO3L] == (("tied",), "iso|chan2|carbon|branch|files:1")
     ref = _script(rows, K(untie={(X, NO3)}))
-    assert _levels_of(ref, "level") == {(X, NO3): "3b", (X, "[M-H]-"): "5b", (X, NO3L): "5b"}
+    assert {k: _hard(r) for k, r in ref.iterrows()} == {(X, NO3): (), (X, "[M-H]-"): ("tied",), (X, NO3L): ("tied",)}
     assert _levels_of(ref, "label_untie") == {(X, NO3): True, (X, "[M-H]-"): False, (X, NO3L): False}
+    assert _levels_of(ref, "level") == _levels_of(_engine(rows, K(untie={(X, NO3)})), "evidence_level")
 
 
 def test_the_untie_leaves_a_low_confidence_row_hard():
     """The untie clears `tied` only: a row the engine also rates Low/Suspect stays
-    5b on that input alone."""
+    hard on that input alone (and the scale rejects it at step 0: lowconf)."""
     rows = _nitrate_rows(X)
     rows.loc[rows.peak_id == "n14", "confidence"] = "Low"
     lv = _levels(rows, label=K(untie={(X, NO3)}))
-    assert lv[NO3] == ("5b", "chan2|branch|label_untie|files:1", "5b: engine confidence Low/Suspect")
-    assert _script(rows, K(untie={(X, NO3)})).loc[(X, NO3), "level"] == "5b"
+    assert lv[NO3] == (("lowconf",), "chan2|branch|label_untie|files:1")
+    assert _hard(_script(rows, K(untie={(X, NO3)})).loc[(X, NO3)]) == ("lowconf",)
 
 
 # --------------------------------------------------------------------------- the veto and the strings
 def test_the_label_tokens_sit_in_the_documented_order():
-    """§7: evidence_axes reads ... upair, label_untie, label_veto, known:<family>, files:<n>."""
+    """The facts string reads ... upair, label_untie, label_veto, known:<family>, files:<n>."""
     rows = _nitrate_rows(X)
     rows.loc[rows.peak_id == "n14", "method"] = "known:atmospheric"
     lv = _levels(rows, label=K(untie={(X, NO3)}, veto={(X, NO3): "n"}))
-    assert lv[NO3] == ("5b", "chan2|branch|label_untie|label_veto|known:atmospheric|files:1", f"5b: {REFUTE} (n)")
+    assert lv[NO3] == (("label_veto",), "chan2|branch|label_untie|label_veto|known:atmospheric|files:1")
 
 
-def test_the_veto_reason_joins_the_other_hard_inputs_last():
-    """§4 row 1: the hard reasons read tie, below, lowconf, then the veto with its
-    note -- one joined list, never a separate branch."""
+def test_the_veto_joins_the_other_hard_inputs():
+    """The veto is one hard input among tie, below, lowconf -- held together,
+    never a separate branch -- and carries its note."""
     rows = _nitrate_rows(X, tied=False)
     rows.loc[rows.peak_id == "n15", ["tied", "below_assignability"]] = True
     rows.loc[rows.peak_id == "n15", "confidence"] = "Suspect"
     lv = _levels(rows, label=K(veto={(X, NO3L): "n"}))
-    assert lv[NO3L] == ("5b", "iso|chan2|carbon|branch|label_veto|files:1",
-                        "5b: near-tie broken by the arbiter; below assignability; "
-                        f"engine confidence Low/Suspect; {REFUTE} (n)")
+    assert lv[NO3L] == (("tied", "below", "lowconf", "label_veto"), "iso|chan2|carbon|branch|label_veto|files:1")
     rows = _nitrate_rows(X, tied=False)
     rows.loc[rows.peak_id == "n15", "tied"] = True
-    assert _levels(rows, label=K(veto={(X, NO3L): "n"}))[NO3L][2] == f"5b: near-tie broken by the arbiter; {REFUTE} (n)"
+    out = _engine(rows, K(veto={(X, NO3L): "n"}))
+    assert _hard(out.loc[(X, NO3L)]) == ("tied", "label_veto") and out.loc[(X, NO3L), "label_note"] == "n"
 
 
 def test_a_none_note_reads_as_no_note():
-    """A veto whose note is None refutes without a parenthesis and records ''."""
+    """A veto whose note is None refutes and records ''."""
     out = _engine(_nitrate_rows(X, tied=False), K(veto={(X, NO3L): None}))
-    assert out.loc[(X, NO3L), "level_reason"] == f"5b: {REFUTE}"
+    assert _hard(out.loc[(X, NO3L)]) == ("label_veto",)
     assert out.loc[(X, NO3L), "label_note"] == "" and bool(out.loc[(X, NO3L), "label_veto"])
 
 
@@ -193,7 +205,7 @@ def test_the_rule_k_columns_follow_upair_in_order():
     """evidence_levels.csv carries upair, label_untie, label_veto, label_note in that
     order (OUTPUTS.md), with or without the facts."""
     for label in (None, LAB):
-        cols = list(EV.level_pooled({"f": _combo()}, label=label).columns)
+        cols = list(EV._series_pooled({"f": _combo()}, label=label).columns)
         i = cols.index("upair")
         assert cols[i:i + 4] == ["upair", "label_untie", "label_veto", "label_note"], label
 
@@ -212,11 +224,9 @@ def test_an_alien_line_takes_no_pool_fact_but_keeps_its_own_axes():
     out = _engine(rows, lab)
     a = out.loc[(X, NO3)]
     assert (a.chan2, a.branch, a.anchor, a.iso, a.carbon_ev) == (False, False, True, True, True)
-    assert (a.evidence_level, a.evidence_axes, a.level_reason) == (
-        "4b", "iso|anchor|carbon|files:1", "4b: iso + anchor, none outside the channel's chemistry")
+    assert (_hard(a), a.evidence_axes, a.n_axes, bool(a.cross)) == ((), "iso|anchor|carbon|files:1", 2, False)
     for adduct in ("[M-H]-", NO3L):
-        assert out.loc[(X, adduct), "evidence_level"] == "3b" and out.loc[(X, adduct), "branch"], adduct
-        assert out.loc[(X, adduct), "chan2"], adduct
+        assert out.loc[(X, adduct), "branch"] and out.loc[(X, adduct), "chan2"], adduct
     ref = _script(rows, lab)
     for key in out.index:
         assert ref.loc[key, "level"] == out.loc[key, "evidence_level"], key
@@ -225,16 +235,13 @@ def test_an_alien_line_takes_no_pool_fact_but_keeps_its_own_axes():
 
 
 def test_an_alien_line_gives_its_neutral_nothing_in_the_script_too():
-    """J1: the C11 acid whose only cluster is an alien 14N line leaves the branch in
-    the engine and in the reference script alike (3b -> 4b)."""
+    """J1: the C11 acid whose only cluster is an alien 14N line loses the branch in
+    the engine and in the reference script alike (each reading keeps its own 13C line)."""
     lab = K(alien={(J, NO3)})
     for got in (_engine(_j1_rows(J), lab), _script(_j1_rows(J), lab)):
-        lvl = "evidence_level" if "evidence_level" in got.columns else "level"
-        assert got.loc[(J, "[M-H]-"), lvl] == "4b" and got.loc[(J, NO3), lvl] == "4b"
-        assert not got["chan2"].any() and not got["branch"].any()
+        assert not got["chan2"].any() and not got["branch"].any() and got["iso"].all()
     for got in (_engine(_j1_rows(J), K()), _script(_j1_rows(J), K())):
-        lvl = "evidence_level" if "evidence_level" in got.columns else "level"
-        assert got.loc[(J, "[M-H]-"), lvl] == "3b" and got["branch"].all()
+        assert got["branch"].all() and got["chan2"].all()
 
 
 def test_a_reagent_dominated_cluster_keeps_the_acid_branch():
@@ -252,17 +259,16 @@ def test_a_reagent_dominated_cluster_keeps_the_acid_branch():
     assert (tfa, NO3) not in facts["alien"] and not any(k[0] == tfa for k in facts["veto"])
     led = pd.concat([frames["f1"], EV.trim(ledger([m0("t", tfa, adduct="[M-H]-", ion="C2F3O2",
                                                         mz=C.ion_mz(tfa, "[M-H]-"))]))], ignore_index=True)
-    out = EV.level_pooled({"f1": led}, label=facts).set_index(["neutral_formula", "adduct"])
-    assert {a: out.loc[(tfa, a), "evidence_level"] for a in ("[M-H]-", NO3, NO3L)} == \
-        {"[M-H]-": "3b", NO3: "3b", NO3L: "3b"}
-    out = EV.level_pooled({"f1": led}, label=K(alien={(tfa, NO3)})).set_index(["neutral_formula", "adduct"])
-    assert out.loc[(tfa, "[M-H]-"), "level_reason"] == BRANCH and out.loc[(tfa, NO3L), "evidence_level"] == "3b"
-    assert out.loc[(tfa, NO3), "evidence_level"] == "4c"
-    # committed through the perfluoroacid family (§4.1's boundary case) the class wins: 3a, never below
+    out = EV._series_pooled({"f1": led}, label=facts).set_index(["neutral_formula", "adduct"])
+    assert all(out.loc[(tfa, a), "branch"] and _hard(out.loc[(tfa, a)]) == () for a in ("[M-H]-", NO3, NO3L))
+    out = EV._series_pooled({"f1": led}, label=K(alien={(tfa, NO3)})).set_index(["neutral_formula", "adduct"])
+    assert out.loc[(tfa, "[M-H]-"), "branch"] and out.loc[(tfa, NO3L), "branch"]
+    assert not out.loc[(tfa, NO3), "branch"] and not out.loc[(tfa, NO3), "chan2"] and out.loc[(tfa, NO3), "n_axes"] == 0
+    # committed through the perfluoroacid family the curated class is a fact of its own, never below
     led.loc[led["adduct"].eq("[M-H]-") & led["neutral_formula"].eq(tfa), "method"] = "known:perfluoroacid"
-    out = EV.level_pooled({"f1": led}, label=facts).set_index(["neutral_formula", "adduct"])
-    assert out.loc[(tfa, "[M-H]-"), "level_reason"] == "3a: curated class (perfluoroacid), isomers open"
-    assert out.loc[(tfa, "[M-H]-"), "claim"] == "identified" and out.loc[(tfa, NO3), "evidence_level"] == "3b"
+    out = EV._series_pooled({"f1": led}, label=facts).set_index(["neutral_formula", "adduct"])
+    assert out.loc[(tfa, "[M-H]-"), "known_fam"] == "perfluoroacid" and _hard(out.loc[(tfa, "[M-H]-")]) == ()
+    assert out.loc[(tfa, NO3), "branch"]
 
 
 # --------------------------------------------------------------------------- the fold
@@ -278,28 +284,29 @@ def test_both_spellings_of_the_14n_cluster_fold_into_the_15n_channel():
         assert [bool(got.loc[k, "chan2"]) for k in keys] == [False] * 4
     for got in (_engine(rows, None), _script(rows, None)):
         assert [bool(got.loc[k, "chan2"]) for k in keys] == [True] * 4
-    assert [_engine(rows, None).loc[k, "evidence_level"] for k in keys] == ["4b"] * 4
-    assert [_engine(rows, K()).loc[k, "evidence_level"] for k in keys] == ["4c"] * 4
+    assert [int(_engine(rows, None).loc[k, "n_axes"]) for k in keys] == [1] * 4      # the second channel
+    assert [int(_engine(rows, K()).loc[k, "n_axes"]) for k in keys] == [0] * 4
 
 
 def test_an_empty_fact_dict_is_no_rule_k():
     """label={} is label=None: no fact and no fold (the engine and the script)."""
     rows = _combo()
-    assert EV.level_pooled({"s1": rows}, label={}).equals(EV.level_pooled({"s1": rows}, label=None))
-    assert EV.level_pooled({"s1": rows}, label={}).equals(EV.level_pooled({"s1": rows}))
+    assert EV._series_pooled({"s1": rows}, label={}).equals(EV._series_pooled({"s1": rows}, label=None))
+    assert EV._series_pooled({"s1": rows}, label={}).equals(EV._series_pooled({"s1": rows}))
     assert _script(rows, {}).equals(_script(rows, None))
     assert bool(_script(rows, {}).loc[(W, NO3), "chan2"])
 
 
 # --------------------------------------------------------------------------- engine / script lockstep
 def test_the_reference_script_levels_rule_k_in_lockstep_with_the_engine():
-    """Alien, fold, untie and veto together: the script's level and every rule K
-    fact column match the engine's, row for row; the untie never lands on an
-    untied or an ion-only pair and the veto never on an ion-only one."""
+    """Alien, fold, untie and veto together: the script's private level and every
+    rule K fact column match the engine's, row for row; the untie never lands on
+    an untied or an ion-only pair and the veto never on an ion-only one."""
     rows = _combo()
     core, ref = _engine(rows, LAB), _script(rows, LAB)
     assert sorted(core.index) == sorted(ref.index) == sorted(COMBO_LEVELS)
-    assert _levels_of(core, "evidence_level") == _levels_of(ref, "level") == COMBO_LEVELS
+    assert _facts_of(core) == COMBO_LEVELS
+    assert _levels_of(core, "evidence_level") == _levels_of(ref, "level")
     for c in FACT_COLUMNS:
         assert _levels_of(core, c) == {k: bool(v) for k, v in _levels_of(ref, c).items()}, c
     assert {k for k, v in _levels_of(ref, "label_untie").items() if v} == {(X, NO3)}
@@ -317,8 +324,9 @@ def test_the_reference_script_reads_every_fact_from_a_run_table(tmp_path):
     run = _run_dir(tmp_path / "RUN_1", _combo(), table)
     assert LT.facts(table) == LAB
     assert LL.label_twin_facts(str(run)) == {"untie": LAB["untie"], "veto": set(LAB["veto"]), "alien": LAB["alien"]}
-    got = LL.run([str(run)], [], None, "auto").set_index(["neutral", "adduct"])
-    assert _levels_of(got, "level") == COMBO_LEVELS
+    got = LL.series_run([str(run)], [], None, "auto").set_index(["neutral", "adduct"])
+    assert _levels_of(got, "level") == _levels_of(_engine(_combo(), LAB), "evidence_level")
+    assert {k: _hard(r) for k, r in got.iterrows()} == {k: v[0] for k, v in COMBO_LEVELS.items()}
     assert _levels_of(got, "chan2") == _levels_of(_engine(_combo(), LAB), "chan2")
 
 
@@ -333,14 +341,14 @@ def test_a_named_table_reaches_only_the_source_holding_its_pairs(tmp_path):
                     child("zc", "z15", "13C+1", 1000.0 * EV.C13_PER_CARBON * 12)])
     labelled = _run_dir(tmp_path / "labelled", zrows)
     other = _run_dir(tmp_path / "other", _j1_rows(J))
-    got = LL.run([str(labelled), str(other)], [], None, str(zcsv)).set_index(["neutral", "adduct"])
-    assert got.loc[(Z, NO3L), "level"] == "5b" and bool(got.loc[(Z, NO3L), "label_veto"])
-    assert got.loc[(J, "[M-H]-"), "level"] == "3b" and got.loc[(J, NO3), "level"] == "3b"
-    got = LL.run([str(labelled), str(other)], [], None, str(jcsv)).set_index(["neutral", "adduct"])
-    assert got.loc[(Z, NO3L), "level"] == "4b"
-    assert got.loc[(J, "[M-H]-"), "level"] == "4b" and got.loc[(J, NO3), "level"] == "5b"
-    off = LL.run([str(labelled)], [], None, None).set_index(["neutral", "adduct"])
-    assert off.loc[(Z, NO3L), "level"] == "4b"
+    got = LL.series_run([str(labelled), str(other)], [], None, str(zcsv)).set_index(["neutral", "adduct"])
+    assert bool(got.loc[(Z, NO3L), "label_veto"])
+    assert got.loc[(J, "[M-H]-"), "branch"] and got.loc[(J, NO3), "branch"] and not got.loc[(J, NO3), "label_veto"]
+    got = LL.series_run([str(labelled), str(other)], [], None, str(jcsv)).set_index(["neutral", "adduct"])
+    assert not got.loc[(Z, NO3L), "label_veto"]
+    assert not got.loc[(J, "[M-H]-"), "branch"] and bool(got.loc[(J, NO3), "label_veto"])
+    off = LL.series_run([str(labelled)], [], None, None).set_index(["neutral", "adduct"])
+    assert not off.loc[(Z, NO3L), "label_veto"]
 
 
 def test_a_missing_or_empty_table_is_no_rule_k(tmp_path):
@@ -353,9 +361,9 @@ def test_a_missing_or_empty_table_is_no_rule_k(tmp_path):
     assert LL.label_twin_facts(str(bare)) is None
     assert LL.label_twin_facts(str(empty)) is None
     assert LL.label_twin_facts(str(empty / "tables" / "label_twins.csv")) is None
-    off = list(LL.run([str(bare)], [], None, None)["level"])
+    off = list(LL.series_run([str(bare)], [], None, None)["level"])
     for path, twins in ((bare, "auto"), (empty, "auto"), (bare, str(empty / "tables" / "label_twins.csv"))):
-        got = LL.run([str(path)], [], None, twins).set_index(["neutral", "adduct"])
+        got = LL.series_run([str(path)], [], None, twins).set_index(["neutral", "adduct"])
         assert list(got["level"]) == off, (path, twins)
         assert bool(got.loc[(W, NO3), "chan2"]) and not got["label_untie"].any() and not got["label_veto"].any()
 
@@ -394,44 +402,13 @@ def test_a_table_without_a_fact_column_reads_that_fact_empty(tmp_path):
     assert LL.label_twin_facts(str(csv)) == {"untie": {(X, NO3)}, "veto": set(), "alien": set()}
 
 
-# --------------------------------------------------------------------------- the scorecard
-def _scorecard(monkeypatch):
-    spec = importlib.util.spec_from_file_location(
-        "scorecard", Path(__file__).resolve().parents[1] / "scripts" / "scorecard.py")
-    SC = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, "scorecard", SC)
-    spec.loader.exec_module(SC)
-    return SC
-
-
-def test_the_scorecard_levels_a_run_on_its_own_rule_k_facts(tmp_path, monkeypatch):
-    """own_levels_for reads the run's label_twins.csv as its own evidence: the
-    levels are the engine's with those facts (alien and fold included); with no
-    table or a header-only one, the engine's without them."""
-    SC = _scorecard(monkeypatch)
-    rows = _combo().assign(__file="s1")
-    regular = {k: v for k, v in COMBO_LEVELS.items() if k[1] != IO}
-
-    def own(path):
-        got = SC.own_levels_for(types.SimpleNamespace(path=str(path), per_file=rows)).set_index(["neutral", "adduct"])
-        return got["level"].to_dict(), got["axes"].to_dict()
-
-    lv, _ = own(_run_dir(tmp_path / "with", _combo(), _table(LAB)))
-    assert lv == regular
-    base = _engine(_combo(), None)
-    plain = {k: base.loc[k, "evidence_level"] for k in regular}
-    for d in (_run_dir(tmp_path / "none", _combo()),
-              _run_dir(tmp_path / "empty", _combo(), pd.DataFrame(columns=list(LT.TABLE_COLUMNS)))):
-        lv, axes = own(d)
-        assert lv == plain and lv[(J, "[M-H]-")] == "3b" and lv[(Z, NO3L)] == "4b"
-        assert "chan2" in axes[(W, NO3)].split("|")
-
-
 # --------------------------------------------------------------------------- the batch, end to end
-def _batch(tmp_path, monkeypatch, spec, commits, tie_alts):
+def _batch(tmp_path, monkeypatch, spec, commits, tie_alts, resolving_power=None):
     """assign_batch.run on the composed NO3+NO3_15N profile with a stub per-file
     assignment: every file commits `commits`; tie_alts(n_call, neutral, adduct)
-    gives a row's alternatives (None = not tied). Returns the calls in order."""
+    gives a row's alternatives (None = not tied). Class-less unless
+    `resolving_power` is given (the pooled facts are written either way; a
+    level needs an Orbitrap-class width model). Returns the calls in order."""
     from peaky.assignment import assign as A
     from peaky.assignment import ledger as L
     from peaky.assignment import tiers as T
@@ -459,7 +436,8 @@ def _batch(tmp_path, monkeypatch, spec, commits, tie_alts):
         T.apply_tiers(led)
         led["degeneracy_density"] = 0.5
         led["resolvability"] = "resolved"
-        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
+                                         "degeneracy_cal": {"mu": 0.0, "sigma": 0.3}},
                 "plausibility_audit": [], "summaries": {}, "problems": []}
 
     monkeypatch.setattr(IOM, "connect", lambda *a, **k: "CLIENT")
@@ -468,7 +446,7 @@ def _batch(tmp_path, monkeypatch, spec, commits, tie_alts):
     monkeypatch.setattr(IOM, "estimate_offset", lambda raw: 0.0)
     monkeypatch.setattr(A, "run", fake_assign)
     AB.run(peaks=pk, ts_peaks=pk, reagent="NO3+NO3_15N", batch="test batch", out_dir=str(tmp_path),
-           k_min=2, k_max=3, min_gain=0.0, n_jobs=1, log=lambda *a: None)
+           k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power=resolving_power, log=lambda *a: None)
     return calls
 
 
@@ -484,7 +462,8 @@ def test_one_file_with_a_foreign_tie_keeps_the_batch_tie(tmp_path, monkeypatch):
     first file's tie on it is also with a different ion (C11H22O5 [M+Cl]-), so X
     keeps its tie while X2 -- alias-only in every file -- unties; J's 14N line has
     no 15N partner: alien and refuted, so J's [M-H]- loses the branch (the facts
-    reach the pooled level whole) and the summary counts it."""
+    reach the pooled fact table whole), the scale rejects J's line at step 0
+    and the summary counts it."""
     x, x2, j = "C10H18O3", "C10H16O4", J
     spec = _refs_spec(**{x: {"phase": 2.0}, j: {"phase": 0.9, "share15": 0.0}})
     commits = ([(n, NO3L) for n in spec if n != j]
@@ -499,21 +478,21 @@ def test_one_file_with_a_foreign_tie_keeps_the_batch_tie(tmp_path, monkeypatch):
                          "eff_score": 0.88, "ppm": 0.3})
         return alts
 
-    calls = _batch(tmp_path, monkeypatch, spec, commits, tie_alts)
+    calls = _batch(tmp_path, monkeypatch, spec, commits, tie_alts, resolving_power=100_000)   # J's level: Orbitrap
     assert len(calls) >= 2
     table = pd.read_csv(tmp_path / "tables" / "label_twins.csv")
     rows = table[table.adduct == NO3].set_index("neutral_formula")
     assert bool(rows.loc[x, "cluster_k"]) and not rows.loc[x, "alias_only_tie"] and not rows.loc[x, "untie"]
     assert bool(rows.loc[x2, "alias_only_tie"]) and bool(rows.loc[x2, "untie"])
     assert rows.loc[j, "line_verdict"] == "absent" and bool(rows.loc[j, "alien"]) and bool(rows.loc[j, "veto"])
-    merged = pd.read_csv(tmp_path / "merged_ledger.csv").set_index(["neutral_formula", "adduct"])
-    assert merged.loc[(x, NO3), "evidence_level"] == "5b"
-    assert merged.loc[(x2, NO3), "evidence_level"] == "3b" and "label_untie" in merged.loc[(x2, NO3), "evidence_axes"]
-    assert merged.loc[(j, NO3), "evidence_level"] == "5b" and REFUTE in merged.loc[(j, NO3), "level_reason"]
-    assert merged.loc[(j, "[M-H]-"), "evidence_level"] == "4c"
     ev = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv").set_index(["neutral_formula", "adduct"])
+    assert bool(ev.loc[(x, NO3), "tied"]) and not bool(ev.loc[(x2, NO3), "tied"])
+    assert bool(ev.loc[(j, NO3), "label_veto"])
     assert not ev.loc[(j, "[M-H]-"), "chan2"] and not ev.loc[(j, "[M-H]-"), "branch"]
     assert {k for k in ev.index if ev.loc[k, "label_untie"]} == {(x2, NO3)}
+    merged = pd.read_csv(tmp_path / "merged_ledger.csv", keep_default_na=False) \
+        .set_index(["neutral_formula", "adduct"])
+    assert merged.loc[(j, NO3), "evidence_level"] == "5b" and "label_veto" in merged.loc[(j, NO3), "would_lift"]
     summ = json.load(open(tmp_path / "batch_summary.json"))["evidence_levels"]["label_twins"]
     assert (summ["in_scope"], summ["untie"], summ["alien"], summ["lines_absent"], summ["lines_refuted"]) == \
         (True, 1, 1, 1, 1)
@@ -536,6 +515,8 @@ def test_a_labelled_batch_with_no_labelled_reading_still_judges_its_14n_lines(tm
     summ = json.load(open(tmp_path / "batch_summary.json"))["evidence_levels"]["label_twins"]
     assert summ["in_scope"] is True and summ["committed_lines"] == 1 and summ["lines_untestable"] == 1
     assert summ["alien"] == 1 and summ["readings"] == 0 and summ["refuted"] == 0
-    ev = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv")
-    assert not ev["label_untie"].any() and not ev["label_veto"].any()
-    assert ev.set_index("adduct")["chan2"].to_dict() == {NO3: False, NO3_15: False}
+    # a class-less batch: not assessed, and the pooled facts are in the table all the same
+    ev = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv", keep_default_na=False)
+    assert set(ev["evidence_level"]) == {"NA"} and set(ev["claim"]) == {"not assessed"}
+    assert not ev["label_untie"].map(EV.truthy).any() and not ev["label_veto"].map(EV.truthy).any()
+    assert ev.set_index("adduct")["chan2"].map(EV.truthy).to_dict() == {NO3: False, NO3_15: False}

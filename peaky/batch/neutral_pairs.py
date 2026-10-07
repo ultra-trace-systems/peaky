@@ -1,4 +1,4 @@
-"""The neutral-pair fact of rule U (docs/EVIDENCE_LEVELS.md §3 `upair`, §4 row 9').
+"""The neutral-pair fact of rule U (`upair`: a pooled pair fact, docs/EVIDENCE_LEVELS.md §3.2; read by the merge vote's private class, §13).
 
 A reagent chemistry whose profile declares a (bare, cluster) adduct pair --
 the uronium profile: ([M+H]+, [M+(CH4N2O)H]+), `ReagentProfile.neutral_pair` --
@@ -7,7 +7,7 @@ When both are committed and the batch's raw time series says one neutral makes
 both, the pair establishes M the way the acid branch (deprotonated AND clustered)
 does on the anion channels. The fact is measured once per batch, over the
 stamped batch time series and the pooled per-file ledgers, and read by the
-pooled level recompute (`evidence.level_pooled(..., upair=...)`): never per
+pooled pair facts (`evidence._level_pairs(..., upair=...)`, a fact of the table): never per
 file, never an axis, never in `cross`, never on a profile without a pair.
 
 `upair(M)` holds when ALL of:

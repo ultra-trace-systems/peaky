@@ -149,10 +149,13 @@ Mascope presents as its own calibrated judgement:
   is this" answerable when the two engines are compared. The *verdict* has a
   column of its own now (`engine_tier`), so the blob is the **explanation** —
   `tier_reason`, `confidence`, the arbitration numbers, the commentary — rather
-  than the answer. The evidence level travels there too (`evidence_level`,
-  `evidence_axes`, `level_reason`, `n_plausible_structures`) with the **claim**
-  it supports (`claim`: `identified` / `ion` / `tentative`,
-  [`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §1.1); `NA` values are dropped.
+  than the answer. The evidence level travels there too, as the evidence scale's eight columns
+  (`evidence_level`, `evidence`, `would_lift`, `competitors_left`, `tags`,
+  `context`, `context_source` and the **claim** it supports, `claim`:
+  `identified` / `neutral` / `ion` / `tentative`, or the buckets `reagent` /
+  `not assessed`, [`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §1.1); empty
+  values are dropped, and a row not assessed on its instrument class carries the
+  claim `not assessed`.
   The claim is never a tier and is never routed into a tier field: its value
   `identified` is not the legacy tier spelling `Identified` that the
   `engine_tier` mapping reads as `assigned` (§1), and sent there it would

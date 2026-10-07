@@ -5,10 +5,11 @@ Measured for every run that has a model -- a batch measures one from the raw
 profile of a middling spectrum (`batch.tracefirst.measure_resolution`) and hands
 it to every per-file run; a single-sample run measures its own when a server is
 there; `--resolving-power R` declares one; an offline run with no model skips
-the stage and the columns stay NA (a level is then computed without it:
-docs/EVIDENCE_LEVELS.md `res_ok`). Until this stage existed the flag was
-trace-first only, so the cover path -- every baseline run -- rated `4c` and
-`Assigned` without knowing whether the picked centroid was the ion's own.
+the stage and the columns stay NA (the pair fact `res_ok` then reads "not measured", never
+"blended": docs/EVIDENCE_LEVELS.md section 3.2). Until this stage existed the
+flag was trace-first only, so the cover path -- every baseline run -- counted
+its peaks as separable and `Assigned` without knowing whether the picked
+centroid was the ion's own.
 
 What it stamps, on M0 rows only (NA elsewhere): `resolvability` in `isolated`
 / `resolved` / `blended` / `unresolvable`, `sep_hwhm` (distance to the nearest
@@ -20,7 +21,8 @@ sub-peaks of the composite de-blending, which are not picked peaks.
 
 Read by `tiers` (a blended / unresolvable M0 with no isotope, second-channel or
 series corroboration is capped at Candidate: the mass the formula was fitted to
-is not the ion's own) and by `evidence` (level 4c needs a separable peak).
+is not the ion's own) and by `evidence`'s pair facts (`res_ok`: the merge vote's
+private class wants a separable peak, docs/EVIDENCE_LEVELS.md section 13).
 Never a filter: no row is removed or re-assigned here.
 
 Measured before the stage was written (two same-air batches, per-file Assigned

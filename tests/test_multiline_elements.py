@@ -1,7 +1,11 @@
 """`multiline` counts ELEMENTS the neutral supplies, each by an in-band line (C17).
 
-`multiline` is the only intra-channel outside term of level 4a (docs/EVIDENCE_LEVELS.md
-§3): two isotope lines of the ion that speak for the NEUTRAL. Until C17 it was
+`multiline` was the only intra-channel outside term of the pre-0.10.0 level 4a:
+two isotope lines of the ion that speak for the NEUTRAL. That decision lives on,
+private, as the merge vote's class (`multiline` with another axis backs the
+neutral: class 2); the fact is a column of tables/evidence_levels.csv. (The
+evidence scale's own positive fact -- an own in-band line of an element the
+neutral contains -- is computed by its line model, tests/test_levels_lines.py.) Until C17 it was
 "two or more raw satellite tags", so a 13C line plus the 13C2 line (one element
 twice), a urea adduct's own 15N, a bromide adduct's own 81Br or a generic 'M+n'
 child all made it (2026-09-26 output audit, K01). Now: two distinct elements,
@@ -17,7 +21,7 @@ from __future__ import annotations
 import pandas as pd
 
 from peaky.assignment import evidence as EV
-from tests.test_evidence import child, ledger, level_of, m0
+from tests.test_evidence import child, ledger, m0, vote_of
 
 N15 = EV.PER_ATOM_ABUNDANCE["15N"][1]
 O18 = EV.PER_ATOM_ABUNDANCE["18O"][1]
@@ -25,7 +29,7 @@ O18 = EV.PER_ATOM_ABUNDANCE["18O"][1]
 
 def facts(rows) -> dict:
     """{(neutral, adduct): the pooled evidence record} of a synthetic ledger."""
-    out = EV.level_pooled({"f": ledger(rows)})
+    out = EV._series_pooled({"f": ledger(rows)})
     return {(r.neutral_formula, r.adduct): r for r in out.itertuples(index=False)}
 
 
@@ -80,7 +84,7 @@ def test_13C_and_13C2_are_one_element():
             c13("c", "p", 22), child("d", "p", "13C2+2", 1000.0 * (0.0107 * 22) ** 2 / 2)]
     r = facts(rows)[("C22H42O6", "[M+H]+")]
     assert r.iso and not r.multiline and r.multiline_elements == "C"
-    assert level_of(rows)[("C22H42O6", "[M+H]+")] == "4b"      # iso + anchor, nothing outside
+    assert vote_of(rows)[("C22H42O6", "[M+H]+")] == 1           # iso + anchor, nothing outside
 
 
 def test_a_urea_adducts_own_15N_is_not_the_neutrals():
@@ -97,7 +101,7 @@ def test_the_18O_line_of_an_O_rich_neutral_on_urea_is_the_neutrals():
             c13("c", "p", 11), child("o", "p", "18O+2", 1000.0 * 5 * O18)]
     r = facts(rows)[("C10H16O4", "[M+(CH4N2O)H]+")]
     assert r.multiline and r.multiline_elements == "C|O"
-    assert level_of(rows)[("C10H16O4", "[M+(CH4N2O)H]+")] == "4a"
+    assert vote_of(rows)[("C10H16O4", "[M+(CH4N2O)H]+")] == 2    # two elements: the neutral backed
 
 
 def test_a_line_outside_its_ratio_band_counts_for_nothing():
@@ -118,12 +122,12 @@ def test_formic_acids_nitrate_18O_measures_the_nitrate():
 
 def test_an_M_plus_4_child_on_a_bromide_adduct_is_no_line():
     """The audit's golden: a bromide adduct with the reagent's 81Br line and a
-    generic 'M+4' child held 4a on 'two lines'; neither speaks for the neutral."""
+    generic 'M+4' child held 'two lines' (4a); neither speaks for the neutral."""
     rows = [m0("p", "C8H14O2", adduct="[M+Br]-", ion="C8H14BrO2", height=1000.0, series_unit="CH2"),
             c13("c", "p", 8), child("b", "p", "81Br+2", 972.8), child("m", "p", "M+4", 40.0)]
     r = facts(rows)[("C8H14O2", "[M+Br]-")]
     assert r.iso and not r.multiline and r.multiline_elements == "C"
-    assert level_of(rows)[("C8H14O2", "[M+Br]-")] == "4b"
+    assert vote_of(rows)[("C8H14O2", "[M+Br]-")] == 1
 
 
 def test_an_18O_line_of_a_bromide_or_chloride_ion_is_not_measured():
@@ -151,12 +155,13 @@ def test_an_18O_line_alone_now_gives_the_isotope_axis():
     assert not facts(rows)[("C10H16O8", "[M-H]-")].iso
 
 
-def test_the_4a_reason_names_the_two_elements():
+def test_the_two_elements_are_recorded():
+    """The facts string lists `multiline` and the fact names the two elements."""
     ion = "C11H21N2O5"
     rows = [m0("p", "C10H16O4", adduct="[M+(CH4N2O)H]+", ion=ion, height=1000.0, series_unit="CH2"),
             c13("c", "p", 11), child("o", "p", "18O+2", 1000.0 * 5 * O18)]
-    out = EV.level_pooled({"f": ledger(rows)})
-    assert "(C, O)" in out.level_reason.iloc[0]
+    out = EV._series_pooled({"f": ledger(rows)})
+    assert out.multiline_elements.iloc[0] == "C|O" and "multiline" in out.evidence_axes.iloc[0].split("|")
 
 
 def test_the_reference_script_agrees_on_each_case():

@@ -20,7 +20,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import scorecard as SC  # noqa: E402
+from peaky.assignment import evidence as EV  # noqa: E402
 from peaky.chem import chemistry as C  # noqa: E402
+from peaky.chem.resolution import Resolution  # noqa: E402
 
 D13C = 1.0033548
 H = C.M["H"]
@@ -33,6 +35,13 @@ B = ("C9H14O4", C.ion_mz("C9H14O4", "[M-H]-"), 500.0)      # pinic acid
 Cc = ("C8H12O4", C.ion_mz("C8H12O4", "[M-H]-"), 250.0)     # terpenylic acid
 E = ("C22H42O4", C.ion_mz("C22H42O4", "[M-H]-"), 120.0)    # DEHA: the C>20 contaminant
 D = ("C5H10O6", C.ion_mz("C5H10O6", "[M-H]-"), 90.0)       # merged, never stamped
+ORBI = Resolution(coef=0.002 / 200 ** 1.5, exponent=1.5, offset=0.0).as_dict()     # R(200) = 100 000
+TOF = Resolution(coef=1.0 / 9500.0, exponent=1.0, n_peaks=9, source="measured").as_dict()
+
+
+def ion_of(neutral: str, adduct: str = "[M-H]-") -> str:
+    """The ion formula a ledger writes: the ion's composition with its charge sign."""
+    return C.format_formula(EV.ion_composition(neutral, adduct, None)) + adduct[-1]
 
 UNSTAMPED = [  # (mz, height, in how many spectra)
     (A[1] + H, 80.0, 4),          # +H family
@@ -52,7 +61,7 @@ def _ts() -> pd.DataFrame:
         for j, (neutral, mz, h) in enumerate((A, B, Cc, E)):
             rows.append(dict(sample_item_id=sid, datetime_utc=t, peak_id=f"{sid}-p{j}", mz=mz, height=h, area=h * 1.2,
                              neutral_formula=neutral, adduct="[M-H]-", tier="Assigned", ion_mz=mz, role="M0",
-                             ion_formula=C.format_formula(C.parse_formula(neutral)) + "-", iso_label=None,
+                             ion_formula=ion_of(neutral), iso_label=None,
                              stamp_source="M0", dup_candidate=False, intensity_suspect=False))
         # A's 13C satellite: 10 carbons x 1.07 %
         rows.append(dict(sample_item_id=sid, datetime_utc=t, peak_id=f"{sid}-iso", mz=A[1] + D13C, height=107.0, area=128.0,
@@ -69,12 +78,13 @@ def _ts() -> pd.DataFrame:
 def _per_file(sid: str) -> pd.DataFrame:
     rows = []
     for j, (neutral, mz, h) in enumerate((A, B, Cc, E, D)):
-        ion = C.format_formula(C.parse_formula(neutral)) + "-"
+        ion = ion_of(neutral)
         isos = json.dumps([{"label": "13C", "score": 0.95, "peak_id": f"{sid}-iso"}]) if neutral == A[0] else "[]"
         rows.append(dict(sample_item_id=sid, peak_id=f"{sid}-p{j}", mz=mz, height=h, area=h * 1.2, role="M0",
                          neutral_formula=neutral, adduct="[M-H]-", ion_formula=ion, tier="Assigned", method="cheminfo+grid",
                          confidence="High", tied=False, below_assignability=False, degeneracy_density=1.0, degeneracy_note="unique",
-                         isotopologues=isos, parent_peak_id=None, iso_label=None, commentary="", anchor_peak_id=None, series_unit=None))
+                         isotopologues=isos, parent_peak_id=None, iso_label=None, commentary="", anchor_peak_id=None, series_unit=None,
+                         ppm_error=0.0, ppm_error_cal=0.0))
     rows.append(dict(sample_item_id=sid, peak_id=f"{sid}-iso", mz=A[1] + D13C, height=107.0, area=128.0, role="iso_child",
                      neutral_formula=None, adduct=None, ion_formula="C10H15O3-", tier=None, method=None, confidence=None, tied=False,
                      below_assignability=False, degeneracy_density=np.nan, degeneracy_note=None, isotopologues=None,
@@ -98,7 +108,8 @@ def _merged() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def write_run(root: Path, name: str = "TEST-BATCH_2026-01-01T000000Z") -> Path:
+def write_run(root: Path, name: str = "TEST-BATCH_2026-01-01T000000Z", resolution=None) -> Path:
+    """The fixture run; ``resolution`` = a width model recorded in its summary (none: class-less, levels read NA)."""
     run = root / name
     (run / "per_file").mkdir(parents=True)
     (run / "tables").mkdir()
@@ -106,10 +117,15 @@ def write_run(root: Path, name: str = "TEST-BATCH_2026-01-01T000000Z") -> Path:
     _ts().to_parquet(run / "per_file" / "_batch_ts.parquet", index=False)
     for sid in SAMPLES[:2]:
         _per_file(sid).to_csv(run / "per_file" / f"{sid}_ledger.csv", index=False)
-    (run / "batch_summary.json").write_text(json.dumps({
+    summary = {
         "reagent": "NO3", "batch_name": "TEST BATCH", "tol_ppm": 6.0, "n_files": 2, "trace_first": None,
         "merge_gates": {"reagent_n": {"reagent_n_relabeled": 1}}, "elapsed_s": 60.0,
-        "n_in_all_files": 5, "n_single_file": 0, "ion_disagreements": 0}))
+        "n_in_all_files": 5, "n_single_file": 0, "ion_disagreements": 0}
+    if resolution is not None:
+        summary.update(resolution=resolution, context="ambient-air", reflists_active=[],
+                       per_file=[dict(sample_id=sid, height_gate_cps=10.0, degeneracy_cal={"mu": 0.0, "sigma": 0.3})
+                                 for sid in SAMPLES[:2]])
+    (run / "batch_summary.json").write_text(json.dumps(summary))
     (run / "run_manifest.json").write_text(json.dumps({"code": {"package_version": "0.0-test", "git": {"commit": "abcdef0123456", "dirty": False}}}))
     return run
 
@@ -172,35 +188,84 @@ def test_headline_stamped_shares_and_stamp_coverage(run):
     assert cov["n_unstamped"] == 1 and cov["rows"][0]["neutral"] == "C5H10O6" and cov["reagent_n_relabeled"] == 1
 
 
-def test_levels_are_computed_in_process_and_prefer_the_in_core_column(run, run_dir):
-    lv = SC.levels_for(run, None, [])
-    got = dict(zip(zip(lv["neutral"], lv["adduct"]), lv["level"]))
-    assert got[("C10H16O3", "[M-H]-")] == "4b"          # the 13C satellite is one axis
-    assert got[("C9H14O4", "[M-H]-")] == "4c"           # unique, unopposed, no axis
-    assert SC.level_vector(lv) == {"2b": 0, "3a": 0, "3b": 0, "4a": 0, "4b": 1, "4c": 4, "4d": 0, "5a": 0, "5b": 0}
+def _stamp_scale(run_dir: Path, levels: dict) -> None:
+    """Write the evidence scale's columns on the merged ledger, as a run made with the scale does."""
     led = pd.read_csv(run_dir / "merged_ledger.csv")
-    led["evidence_level"] = "3a"
-    led["evidence_axes"] = "iso|chan2"
+    lv = [levels.get((n, a), "4b") for n, a in zip(led.neutral_formula, led.adduct)]
+    for c in EV.COLUMNS:
+        led[c] = ""
+    led["evidence_level"] = lv
+    led["would_lift"] = [f"lift {v}" for v in lv]
+    led["claim"] = [EV.claim_class(v) for v in lv]
     led.to_csv(run_dir / "merged_ledger.csv", index=False)
-    run2 = SC.load_run(str(run_dir))
-    lv2 = SC.levels_for(run2, None, [])
-    assert set(lv2["level"]) == {"3a"} and set(lv2["n_axes"]) == {2} and set(lv2["source"]) == {"in-core"}
 
 
-def test_brightest_ranks_by_median_height_and_counts_the_unstamped(run):
+def test_a_class_less_run_is_levelled_post_hoc_and_reads_na(run):
+    lv = SC.levels_for(run, None, [])
+    assert set(lv["level"]) == {"NA"} and set(lv["source"]) == {"post-hoc"} and len(lv) == 5
+    assert SC.level_vector(lv) == {"3c": 0, "4a": 0, "4b": 0, "5a": 0, "5b": 0, "reagent": 0, "NA": 5}
+    assert {SC.claim_of(v) for v in lv["level"]} == {"not assessed"}
+
+
+def test_an_orbitrap_run_is_levelled_post_hoc_by_the_reference_exactly_as_the_engine_levels_it(tmp_path):
+    rd = write_run(tmp_path / "orbi", resolution=ORBI)
+    run = SC.load_run(str(rd))
+    assert not run.scale
+    lv = SC.levels_for(run, None, [])
+    core = EV.level_source(EV.source_from_run_dir(str(rd)))
+    got = dict(zip(zip(lv["neutral"], lv["adduct"]), lv["level"]))
+    assert got == dict(zip(zip(core["neutral_formula"], core["adduct"]), core["evidence_level"]))
+    assert "NA" not in set(lv["level"]) and set(lv["source"]) == {"post-hoc"}
+    own = SC.own_levels_for(run)
+    assert dict(zip(zip(own["neutral"], own["adduct"]), own["level"])) == got
+
+
+def test_the_in_core_level_is_preferred_and_its_na_survives_the_csv(run_dir):
+    _stamp_scale(run_dir, {(A[0], "[M-H]-"): "3c", (B[0], "[M-H]-"): "NA"})
+    run = SC.load_run(str(run_dir))
+    assert run.scale and run.ledger["evidence_level"].tolist().count("NA") == 1   # the literal bucket, not NaN
+    lv = SC.levels_for(run, None, [])
+    assert set(lv["source"]) == {"in-core"}
+    assert SC.level_vector(lv) == {"3c": 1, "4a": 0, "4b": 3, "5a": 0, "5b": 0, "reagent": 0, "NA": 1}
+    assert lv.set_index("neutral").loc[A[0], "would_lift"] == "lift 3c"
+
+
+def test_a_pre_scale_merged_level_is_never_read_and_a_pre_scale_levels_csv_is_refused(run_dir, tmp_path):
+    led = pd.read_csv(run_dir / "merged_ledger.csv")
+    led["evidence_level"], led["evidence_axes"] = "3a", "iso|chan2"           # a pre-0.10.0 run
+    led.to_csv(run_dir / "merged_ledger.csv", index=False)
+    run = SC.load_run(str(run_dir))
+    assert not run.scale and set(SC.levels_for(run, None, [])["level"]) == {"NA"}
+    old = tmp_path / "old_levels.csv"
+    pd.DataFrame({"source": [run.name], "neutral": [A[0]], "adduct": ["[M-H]-"], "level": ["4b"]}).to_csv(old, index=False)
+    with pytest.raises(SystemExit, match="pre-0.10.0 levels table"):
+        SC.levels_for(run, str(old), [])
+    new = tmp_path / "levels.csv"
+    pd.DataFrame({"source": [run.name], "neutral_formula": [A[0]], "adduct": ["[M-H]-"], "evidence_level": ["NA"],
+                  "would_lift": [""]}).to_csv(new, index=False)
+    lv = SC.levels_for(run, str(new), [])
+    assert lv["level"].tolist() == ["NA"] and set(lv["source"]) == {"csv"}
+
+
+def test_brightest_ranks_by_median_height_and_counts_the_unstamped(run_dir):
+    _stamp_scale(run_dir, {(A[0], "[M-H]-"): "3c", (B[0], "[M-H]-"): "NA"})
+    run = SC.load_run(str(run_dir))
     ions, tracks, lv = SC.ion_table(run), SC.unstamped_tracks(run), SC.levels_for(run, None, [])
     b = SC.brightest(run, ions, tracks, lv, n=3)
     assert [r["neutral"] for r in b["rows"]] == ["C10H16O3", "C9H14O4", "C8H12O4"]
-    assert b["rows"][0]["level"] == "4b" and b["rows"][0]["axes"] == "iso"
-    assert b["m0_not_assigned"] == 0
+    assert [(r["level"], r["claim"]) for r in b["rows"]] == [("3c", "identified"), ("NA", "not assessed"), ("4b", "ion")]
+    assert b["m0_not_assigned"] == 0 and b["m0_not_identified"] == 1 and b["m0_not_assessed"] == 1
     # the batch's three brightest tracks overall: A 1000, B 500 and the 1-spectrum 500 track
     assert b["unstamped_in_top"] == 1
 
 
-def test_best_evidence_orders_good_levels_first(run):
-    ions, lv = SC.ion_table(run), SC.levels_for(run, None, [])
-    e = SC.best_evidence(run, ions, lv, n=2)
-    assert e["rows"][0]["neutral"] == "C10H16O3" and e["axes_hist"] == {0: 4, 1: 1} and e["n_good"] == 0
+def test_best_evidence_orders_by_level_then_brightness(run_dir):
+    _stamp_scale(run_dir, {(B[0], "[M-H]-"): "3c", (A[0], "[M-H]-"): "4a", (Cc[0], "[M-H]-"): "5b"})
+    run = SC.load_run(str(run_dir))
+    e = SC.best_evidence(run, SC.ion_table(run), SC.levels_for(run, None, []), n=3)
+    assert [r["neutral"] for r in e["rows"]] == [B[0], A[0], E[0]]
+    assert e["n_good"] == 1 and e["n_established"] == 2 and e["rows"][0]["would_lift"] == "lift 3c"
+    assert e["by_claim"] == {"identified": 1, "neutral": 1, "ion": 2, "tentative": 1, "reagent": 0, "not assessed": 0}
 
 
 def test_m1_groups_the_plus_h_comb_into_one_family_and_names_the_rest(run):
@@ -286,33 +351,59 @@ def test_m3_names_what_the_other_path_and_instrument_found(run, tmp_path):
     assert m3w["other_instrument"]["n_spectra_in_window"] == 0 and m3w["other_instrument"]["n_missing"] == 0
 
 
-def test_m3_also_counts_by_the_other_instruments_own_evidence(run, tmp_path):
-    """The other instrument's in-core level can owe a rung to its own --corroborate
-    source -- on a same-air pair, the run being scored -- so M3 is counted a second
-    time on the other's OWN evidence (its per-file ledgers, no cross set)."""
+def test_m3_cuts_at_4b_and_counts_the_assigned_rows_of_an_instrument_it_does_not_assess(run, tmp_path):
+    """M3 counts the other instrument's neutrals at level <= 4b on the scale; where its rows are not assessed (a
+    TOF: NA) it counts its Assigned rows instead, and its basis says so -- once by its in-core level and once by
+    its own evidence (its files pooled with no other-source partner)."""
     import dataclasses
-    other_dir = write_run(tmp_path / "other")
-    led = pd.read_csv(other_dir / "merged_ledger.csv")
-    led["evidence_level"], led["evidence_axes"] = "4a", "iso|corroborated|files:2"   # the stamp says 4a everywhere
-    led.to_csv(other_dir / "merged_ledger.csv", index=False)
+    other_dir = write_run(tmp_path / "other", resolution=TOF)
+    _stamp_scale(other_dir, {(A[0], "[M-H]-"): "3c", (B[0], "[M-H]-"): "4b", (Cc[0], "[M-H]-"): "5a",
+                             (E[0], "[M-H]-"): "5b", (D[0], "[M-H]-"): "4a"})
     other = SC.load_run(str(other_dir))
-    own = SC.own_levels_for(other)
-    lv = dict(zip(own.neutral, own.level))
-    assert lv[A[0]] == "4b"                                        # its own 13C line
-    assert {lv[n] for n in (B[0], Cc[0], E[0], D[0])} == {"4c"}    # unique, but no axis of its own
     in_core = SC.levels_for(other, None, [])
-    lacks_b = dataclasses.replace(run, ledger=run.ledger[run.ledger.neutral_formula != B[0]])
-    m3 = SC.missed_m3(lacks_b, None, other, in_core, None, [], 10.0, 0.8, own_levels=own)
-    assert m3["other_instrument"]["n_good"] == 5 and m3["other_instrument_own"]["n_good"] == 1
-    assert [r["neutral"] for r in m3["other_instrument"]["rows"]] == [B[0]]   # 4a by the stamp alone
-    assert m3["other_instrument_own"]["n_missing"] == 0
-    lacks_a = dataclasses.replace(run, ledger=run.ledger[run.ledger.neutral_formula != A[0]])
-    m3a = SC.missed_m3(lacks_a, None, other, in_core, None, [], 10.0, 0.8, own_levels=own)
-    assert [r["neutral"] for r in m3a["other_instrument_own"]["rows"]] == [A[0]]
-    # the card carries both counts; without an other instrument neither is computed
-    card = SC.build_card(lacks_b, other_instrument=other, rosters=SC.load_rosters(), board=[], log=lambda *a: None)
-    assert card["row"]["m3_other_instrument_missing"] == 1 and card["row"]["m3_other_instrument_own_missing"] == 0
+    own = SC.own_levels_for(other)
+    assert set(own["level"]) == {"NA"}                               # a TOF-class source: not assessed
+    lacks = dataclasses.replace(run, ledger=run.ledger[~run.ledger.neutral_formula.isin([A[0], B[0], Cc[0]])])
+    m3 = SC.missed_m3(lacks, None, other, in_core, None, [], 10.0, 0.8, own_levels=own)
+    oi, oo = m3["other_instrument"], m3["other_instrument_own"]
+    assert oi["basis"] == SC.M3_BASIS_LEVEL and oi["n_good"] == 3          # A 3c, B 4b, D 4a (D never stamped)
+    assert [r["neutral"] for r in oi["rows"]] == [A[0], B[0]] and oi["n_missing_by_claim"]["identified"] == 1
+    assert oo["basis"] == SC.M3_BASIS_ASSIGNED and oo["n_good"] == 5         # every Assigned row
+    assert oo["n_missing"] == 3 and oo["n_missing_by_claim"]["not assessed"] == 3
+    card = SC.build_card(lacks, other_instrument=other, rosters=SC.load_rosters(), board=[], log=lambda *a: None)
+    row = card["row"]
+    assert row["m3_other_instrument_missing"] == 2 and row["m3_other_instrument_own_missing"] == 3
+    assert row["m3_own_basis"] == SC.M3_BASIS_ASSIGNED
+    crit = {a["key"]: a for a in card["acceptance"]}["m3_other_instrument_own_missing"]
+    assert crit["value"] == 3 and crit["criterion"].endswith(SC.M3_BASIS_ASSIGNED)
+    assert "rows (Assigned rows (the other instrument is not assessed on this scale)) pass the floor" in SC.render_md(card)
     assert SC.missed_m3(run, None, None, None, None, [], 10.0, 0.8)["other_instrument_own"] is None
+
+
+def test_m3_counts_on_two_level_sets_that_keep_and_drop_the_ion_only_readings(tmp_path, monkeypatch):
+    """docs/SCORECARD.md M3: the in-core level set keeps the other instrument's ion-only readings (and can owe an
+    anchor to its partners); the own-evidence set (`own_levels_for`) leaves the ion-only readings out -- so the
+    two counts are not the same rows."""
+    other_dir = write_run(tmp_path / "other", resolution=ORBI)
+    _stamp_scale(other_dir, {(A[0], "[M-H]-"): "4b", (B[0], "[M-H]-"): "4a"})
+    other = SC.load_run(str(other_dir))
+    in_core = SC.levels_for(other, None, [])
+    pooled = pd.DataFrame(dict(neutral_formula=[A[0], B[0]], adduct=["[M-H]-", "[M-H]-"], evidence_level=["4b", "4a"],
+                               would_lift=["", ""], ion_only_reading=[True, False]))   # A read on an ion-only channel
+    monkeypatch.setattr(SC.EV, "level_source", lambda src, **kw: pooled)
+    own = SC.own_levels_for(other)
+    assert (A[0], "[M-H]-") in set(zip(in_core["neutral"], in_core["adduct"]))
+    assert set(zip(own["neutral"], own["adduct"])) == {(B[0], "[M-H]-")} and set(own["source"]) == {"own"}
+    m3 = SC.missed_m3(dataclasses_replace_ledger(SC.load_run(str(write_run(tmp_path / "me"))), [A[0], B[0]]), None,
+                      other, in_core, None, [], 10.0, 0.8, own_levels=own)
+    oi, oo = m3["other_instrument"], m3["other_instrument_own"]
+    assert sorted(r["neutral"] for r in oi["rows"]) == sorted([A[0], B[0]]) and oi["n_missing"] == 2
+    assert [r["neutral"] for r in oo["rows"]] == [B[0]] and oo["n_missing"] == 1
+
+
+def dataclasses_replace_ledger(run, drop):
+    import dataclasses
+    return dataclasses.replace(run, ledger=run.ledger[~run.ledger.neutral_formula.isin(drop)])
 
 
 def test_card_board_and_pages_round_trip_with_a_delta(run, rosters, tmp_path):
@@ -377,21 +468,22 @@ def test_m1_names_a_reagent_water_cluster_across_a_denser_ladder(run):
     assert row["family"] == "reagent + 1x H2O" and row["parent"].startswith("Br- @ 78.9189")
 
 
-def test_decoy_ledger_counts_prefer_the_engines_own_level():
-    """_ledger_counts rates a decoy arm by the in-core `evidence_level` when the
-    engine wrote it (the same leveller as the run it bounds); an older engine's
-    ledger is levelled post hoc by the reference script."""
+def test_decoy_ledger_counts_read_the_arm_levels_given_not_the_ledgers_own():
+    """_ledger_counts rates a decoy arm by the levels it is handed (the arm levelled in its run's context), never
+    by a per-file level the engine wrote on the arm's own ledger; strict minima in a field of their own."""
     base = dict(role="M0", tier="Assigned", mz=200.0, height=100.0, adduct="[M-H]-",
                 ion_formula="C10H15O4", method="cheminfo", confidence="High")
-    led = pd.DataFrame([dict(base, peak_id="a", neutral_formula="C10H16O4", evidence_level="4b"),
-                        dict(base, peak_id="b", neutral_formula="C9H14O4", evidence_level="5b", tier="Candidate"),
+    led = pd.DataFrame([dict(base, peak_id="a", neutral_formula="C10H16O4", evidence_level="3c"),
+                        dict(base, peak_id="b", neutral_formula="C9H14O4", evidence_level="3c", tier="Candidate"),
                         dict(peak_id="r", role="reagent", tier=None, mz=62.0, height=1e5, adduct=None,
                              neutral_formula=None, ion_formula="NO3-", method=None, confidence=None, evidence_level=None)])
-    c = SC._ledger_counts(led, "f")
+    lv = pd.DataFrame(dict(neutral=["C10H16O4", "C9H14O4"], adduct=["[M-H]-"] * 2, level=["4b", "5b"]))
+    st = lv.assign(level=["5a", "5b"])
+    c = SC._ledger_counts(led, "f", lv, st)
     assert c["m0"] == 2 and c["assigned"] == 1 and c["levels"]["4b"] == 1 and c["levels"]["5b"] == 1
-    old = led.drop(columns=["evidence_level"])
-    c0 = SC._ledger_counts(old, "f")
-    assert c0["m0"] == 2 and sum(c0["levels"].values()) == 2      # levelled post hoc instead
+    assert c["identified"] == 0 and c["by_claim"]["ion"]["pairs"] == 1 and c["strict"]["levels"]["5a"] == 1
+    none = SC._ledger_counts(led, "f")
+    assert sum(none["levels"].values()) == 0 and none["by_claim"]["tentative"]["pairs"] == 2   # no level: tentative
 
 
 def test_the_offline_engine_run_carries_the_runs_own_width_model(run_dir, monkeypatch):

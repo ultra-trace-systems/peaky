@@ -28,7 +28,7 @@ from tests.test_label_twins_levels import J, X, _engine, _run_dir, _script
 from tests.test_label_twins_veto import F0, MZ15, TWIN, Y, _ones, _ts, _veto
 
 N = TL.N_SPECTRA
-T0 = pd.Timestamp("2026-08-11", tz="UTC")
+T0 = pd.Timestamp("2021-02-18", tz="UTC")
 QUIET = lambda *a: None   # noqa: E731
 
 
@@ -244,54 +244,58 @@ def test_summary_counts_a_legacy_table_on_its_14n_lines():
     assert (s["committed_lines"], s["lines_consistent"], s["untie"], s["readings"], s["passes"]) == (1, 1, 0, 1, 1)
 
 
-# =========================================================================== the level (engine)
+# =========================================================================== the level facts (engine)
 def test_an_alien_line_keeps_its_own_multiline():
-    """An alien 14N line keeps its own multiline (C|S): iso + anchor + multiline = 4a, engine and script."""
+    """An alien 14N line keeps its own multiline (C|S) -- with iso and the anchor, the
+    neutral backed (the merge vote's class 2), engine and script alike."""
     s = "C8H6O2S"
     rows = ledger([m0("n14", s, adduct=NO3, ion="C8H6NO5S", mz=C.ion_mz(s, NO3), anchor="a"),
                    child("c1", "n14", "13C+1", 1000.0 * EV.C13_PER_CARBON * 8),
                    child("c2", "n14", "34S", 1000.0 * 0.0443)])
     lab = K(alien={(s, NO3)})
     r = _engine(rows, lab).loc[(s, NO3)]
-    assert (bool(r.multiline), r.multiline_elements, r.evidence_level) == (True, "C|S", "4a")
-    assert _engine(rows).loc[(s, NO3), "evidence_level"] == "4a"
-    assert _script(rows, lab).loc[(s, NO3), "level"] == "4a"
+    assert (bool(r.multiline), r.multiline_elements, bool(r.iso), bool(r.anchor)) == (True, "C|S", True, True)
+    assert EV._vote_class_of(r.evidence_level, r.evidence_axes) == 2
+    assert _engine(rows).loc[(s, NO3), "evidence_level"] == r.evidence_level
+    assert _script(rows, lab).loc[(s, NO3), "level"] == r.evidence_level
 
 
 def test_an_alien_line_keeps_its_own_reagent_satellite_fact():
-    """An alien line keeps its own reagent_only_iso (81Br only): 4d, engine and script alike."""
+    """An alien line keeps its own reagent_only_iso (81Br only), engine and script alike."""
     y, br = "C6H10O5", "[M+Br]-"
     rows = ledger([m0("b", y, adduct=br, ion=y + "Br", mz=C.ion_mz(y, br)),
                    child("b81", "b", "81Br", 1000.0 * 0.9728)])
     lab = K(alien={(y, br)})
     r = _engine(rows, lab).loc[(y, br)]
-    assert bool(r.reagent_only_iso) and r.evidence_level == "4d"
-    assert _engine(rows).loc[(y, br), "evidence_level"] == "4d"
+    assert bool(r.reagent_only_iso) and bool(r.iso) and not bool(r.neutral_backed)
+    assert bool(_engine(rows).loc[(y, br), "reagent_only_iso"])
     LL = _ll()
     frame = LL.measure_source("s1", rows.assign(__file="s1"), "Br")
-    assert LL.assign_levels(frame, set(), None, lab).set_index(["neutral", "adduct"]).loc[(y, br), "level"] == "4d"
+    got = LL.assign_levels(frame, set(), None, lab).set_index(["neutral", "adduct"]).loc[(y, br)]
+    assert bool(got["reagent_only_iso"]) and got["level"] == r.evidence_level
 
 
 def test_an_untie_on_a_below_row_clears_only_the_tie():
-    """The untie is guarded by the tie alone: a tied below row takes label_untie and reads 5b on below."""
+    """The untie is guarded by the tie alone: a tied below row takes label_untie and stays hard on below."""
     rows = _nitrate_rows(X)
     rows.loc[rows.peak_id == "n14", "below_assignability"] = True
     lv = _levels(rows, label=K(untie={(X, NO3)}))
-    assert lv[NO3] == ("5b", "chan2|branch|label_untie|files:1", "5b: below assignability")
+    assert lv[NO3] == (("below",), "chan2|branch|label_untie|files:1")
     ref = _script(rows, K(untie={(X, NO3)}))
     assert bool(ref.loc[(X, NO3), "label_untie"]) and not bool(ref.loc[(X, NO3), "tied"])
-    assert ref.loc[(X, NO3), "level"] == "5b"
+    assert bool(ref.loc[(X, NO3), "below"])
 
 
 def test_decide_without_a_label_veto_field_is_not_vetoed():
-    """evidence._decide: a record without the label_veto field is not vetoed (the absent fact is False)."""
+    """evidence._decide (the merge vote's private decision): a record without the label_veto field is
+    not vetoed (the absent fact is False) -- the formula confirmed, class 1; with the veto, unconfirmed."""
     r = NS(degeneracy=1.0, tied=False, below=False, lowconf=False, ion_only=False, iso=True, saturated=False,
            n_axes=1, known_fam="", branch=False, neutral_backed=True, reagent_only_iso=False, cross=False,
            res_ok=True, upair=False, n_plausible_structures=pd.NA, resolvability="resolved", corroborated=False,
            chan2=False, anchor=False)
-    assert EV._decide(r) == ("4b", "4b: one corroboration (iso)")
-    assert EV._decide(NS(**vars(r), label_veto=True, label_note="n")) == (
-        "5b", "5b: the reagent's two isotopologues refute the cluster reading (n)")
+    assert EV._vote_class_of(EV._decide(r)[0], "iso") == 1
+    vetoed = EV._decide(NS(**vars(r), label_veto=True, label_note="n"))
+    assert EV._vote_class_of(vetoed[0], "iso") == 0 and vetoed[1].endswith("(n)")
 
 
 # =========================================================================== the reference script
@@ -301,8 +305,14 @@ def test_level_of_without_a_label_veto_column_is_not_vetoed():
     frame = pd.DataFrame([dict(degeneracy=1.0, tied=False, below=False, lowconf=False, ion_only=False, iso=True,
                                saturated=False, n_axes=1, known_fam="", branch=False, neutral_backed=True,
                                reagent_only_iso=False, cross=False, res_ok=True, upair=False, neutral="C10H16O5")])
-    assert frame.apply(LL.level_of, axis=1).tolist() == ["4b"]
-    assert frame.assign(label_veto=True).apply(LL.level_of, axis=1).tolist() == ["5b"]
+    rec = frame.iloc[0].to_dict()
+    assert frame.apply(LL.series_level_of, axis=1).tolist() == [EV._decide(NS(**rec, chan2=False, anchor=False,
+                                                                      corroborated=False,
+                                                                      n_plausible_structures=pd.NA))[0]]
+    vetoed = frame.assign(label_veto=True).apply(LL.series_level_of, axis=1).tolist()
+    assert vetoed != frame.apply(LL.series_level_of, axis=1).tolist()
+    assert vetoed == [EV._decide(NS(**rec, label_veto=True, chan2=False, anchor=False, corroborated=False,
+                                    n_plausible_structures=pd.NA))[0]]
 
 
 def test_auto_reads_a_runs_own_table_whatever_its_adducts(tmp_path):
@@ -311,10 +321,11 @@ def test_auto_reads_a_runs_own_table_whatever_its_adducts(tmp_path):
     table = LT.measure(_series(spec), {"f1": EV.trim(_j1_rows(J))}, LABEL, log=QUIET)
     run = _run_dir(tmp_path / "RUN_1", _j1_rows(J), table)
     LL = _ll()
-    got = LL.run([str(run)], [], None, "auto").set_index(["neutral", "adduct"])["level"]
-    assert (got[(J, "[M-H]-")], got[(J, NO3)]) == ("4b", "5b")
-    core = _engine(_j1_rows(J), LT.facts(table))["evidence_level"]
-    assert (core[(J, "[M-H]-")], core[(J, NO3)]) == ("4b", "5b")
+    got = LL.series_run([str(run)], [], None, "auto").set_index(["neutral", "adduct"])
+    core = _engine(_j1_rows(J), LT.facts(table))
+    assert bool(got.loc[(J, NO3), "label_veto"]) and not bool(got.loc[(J, "[M-H]-"), "branch"])
+    assert bool(core.loc[(J, NO3), "label_veto"]) and not bool(core.loc[(J, "[M-H]-"), "branch"])
+    assert got["level"].to_dict() == core["evidence_level"].to_dict()
 
 
 def test_the_reference_script_reads_a_hand_edited_table_strictly(tmp_path):
@@ -344,11 +355,13 @@ def test_a_named_table_fires_on_its_own_batch_even_without_a_labelled_commit(tmp
     run.mkdir(parents=True)
     rows.to_csv(run / "s1_ledger.csv", index=False)
     LL = _ll()
-    got = LL.run([str(tmp_path / "run")], [], None, str(csv)).set_index("adduct")["level"]
-    core = EV.level_pooled({"s1": rows}, label=LT.facts(table)).set_index("adduct")["evidence_level"]
-    assert got.to_dict() == core.to_dict() and got["[M+NO3]-"] == "5b"
+    got = LL.series_run([str(tmp_path / "run")], [], None, str(csv)).set_index("adduct")
+    core = EV._series_pooled({"s1": rows}, label=LT.facts(table)).set_index("adduct")
+    assert got["level"].to_dict() == core["evidence_level"].to_dict()
+    assert bool(got.at["[M+NO3]-", "label_veto"]) and bool(core.at["[M+NO3]-", "label_veto"])
     other = tmp_path / "other" / "per_file"
     other.mkdir(parents=True)
     _j1_rows("C11H18O5").to_csv(other / "s1_ledger.csv", index=False)
-    assert set(LL.run([str(tmp_path / "other")], [], None, str(csv))["level"]) == {"3b"}
+    untouched = LL.series_run([str(tmp_path / "other")], [], None, str(csv))
+    assert not untouched["label_veto"].any() and untouched["branch"].all()
 

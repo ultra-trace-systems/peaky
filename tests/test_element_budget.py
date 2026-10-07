@@ -103,16 +103,22 @@ def test_off_budget_commit_is_candidate_tentative_lead_with_a_note_and_an_audit_
     assert len(audit) == 1 and audit[0]["evidence"] == "P=1 > 0" and audit[0]["before_tier"] == "Assigned"
 
 
-def test_the_level_reads_the_demote_as_5b():
+def test_the_levels_read_the_demote_as_a_lead():
+    """The off-budget demote writes a tentative lead: the merge vote's class drops
+    from 2 (the certificate read back as the acid branch) to 0 (the lead is a
+    hard input of its private decision); the evidence scale prints it as a lead
+    tag naming its setter (tests/test_levels_decide.py) -- a lead moves no level there."""
     led = _ledger([dict(neutral_formula="C4H8N2S3", adduct="[M-H]-", method="certified:multi-channel"),
                    dict(neutral_formula="C4H8N2S3", adduct="[M+NO3]-", method="certified:multi-channel",
                         peak_id="q", mz=241.97)])
-    before = EV.compute_levels(led)
-    assert set(before["evidence_level"]) == {"3b"}            # the certificate read back as the acid branch
+    before = EV._level_pairs({"": led}, per_file=True)
+    assert before["branch"].all() and not before["lead"].any()
+    assert set(EV.vote_classes(led)) == {2}
     PL.demote_off_budget(led, context="ambient-air", log=lambda *a: None)
-    after = EV.compute_levels(led)
-    assert set(after["evidence_level"]) == {"5b"}
-    assert all("below assignability" in r for r in after["level_reason"])
+    after = EV._level_pairs({"": led}, per_file=True)
+    assert after["lead"].all() and not after["below"].any()
+    assert set(EV.vote_classes(led)) == {0}
+    assert set(led.loc[led["role"] == "M0", "lead_by"]) == {"off_budget"}
 
 
 def test_a_curated_formula_is_exempt_whichever_pass_committed_it():

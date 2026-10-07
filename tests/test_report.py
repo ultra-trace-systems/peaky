@@ -52,8 +52,10 @@ check("A and C are both Assigned (iso-confirmed / unique)",
       (ident.get("neutral_formula"), cand.get("formula")))
 check("identified carries commentary",
       ident["commentary"].str.contains("C10H16O4").any())
-check("identified carries evidence text",
-      ident["evidence"].str.contains("isotopologue").any(), ident["evidence"].tolist())
+# the tier's reason keeps its ledger name: `evidence` is the evidence level's column
+check("identified carries the tier reason under its own name",
+      "evidence" not in ident.columns
+      and ident["tier_reason"].str.contains("isotopologue").any(), ident["tier_reason"].tolist())
 check("alternatives rendered to text",
       ident["alternatives_text"].str.contains("C9H13NO5").any(),
       ident["alternatives_text"].tolist())
@@ -75,6 +77,9 @@ check("ownership names a satellite's owner, not just its peak_id",
 check("unassigned has D", "D" in set(sheets["Unassigned"]["peak_id"]))
 check("unassigned evidence interpreted",
       sheets["Unassigned"]["interpretation"].notna().all())
+check("the residual class is residual_evidence, not evidence",
+      "residual_evidence" in sheets["Unassigned"].columns
+      and "evidence" not in sheets["Unassigned"].columns, list(sheets["Unassigned"].columns))
 check("compound_class assigned", "C10 monomer" in set(ident["compound_class"]))
 
 # a tied Good with no corroboration must land in Candidates, expanded per formula

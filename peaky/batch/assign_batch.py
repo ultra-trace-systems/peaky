@@ -18,15 +18,15 @@ genuine same-peak is not split by a per-file calibration shift, while the report
 jitter separates the raw spread from the calibration-removed (residual) spread.
 
 Within a cluster the files VOTE, in two stages: the ION of the best EVIDENCE
-CLASS wins -- each ion takes the best per-file evidence level of its readings
-(the neutral established or corroborated > the formula / ion pinned > exact mass
-alone; `_evidence_class`) -- and among ions of one class the ion carried by the
+CLASS wins -- each ion takes the best per-file vote class of its readings
+(neutral backed > formula confirmed > unconfirmed; `evidence.vote_classes`,
+private to the vote and never a user-facing level) -- and among ions of one class the ion carried by the
 most files (tier and ion_score break ties); among that ion's labels -- the same
 ion read as C13H14O4 [M+NH4]+ or as C13H17NO4 [M+H]+ -- the one Assigned in the
 most files wins, because on such a pair Assigned means a discriminating channel
 was present and Candidate means the file had nothing to decide with. The losing
 readings stay on the merged row (`alternatives`, `n_files_ion`, `n_files_winner`,
-`ion_agree`) as well as in jitter.csv (with each file's own evidence level).
+`ion_agree`) as well as in jitter.csv (with each file's own vote class).
 The two positive-mode re-reads that can change a reading -- the hydrocarbon-on-
 N-cluster re-read and the ammonium/amine gate -- are decided ONCE on the merged
 ledger, from the union of every file's evidence, and say so in `tier_reason`.
@@ -65,9 +65,11 @@ from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sampling as SS
 
 __version__ = "0.10.0"  # the vote reads the per-file EVIDENCE: a cluster's ions are
-                        # ranked by the best evidence class of their readings before the
-                        # file count (_evidence_class; align carries evidence_level /
-                        # evidence_axes; jitter.csv carries the level)
+                        # ranked by the best vote class of their readings before the
+                        # file count (evidence.vote_classes, computed in the parent and
+                        # carried as `vote_class`; jitter.csv carries the class); the
+                        # merged ledger is levelled on the evidence scale of the release
+                        # (evidence.level_batch on the pooled per-file ledgers)
                         # (0.9.0: the merge window is sized from the batch's own mass scatter
                         # -- traces.MassScale: one sigma per batch, merge + stamp windows from
                         # it; batch_summary['mass_scale'] -- the flat DEFAULT_TOL_PPM stays
@@ -98,61 +100,46 @@ _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score",
             "resolvability", "sep_hwhm",   # the winner file's peak separability (assignment/resolvability.py), when present
             "ts_disposition", "ts_cv_norm",  # the winner file's time-series label (batch/timeseries.py): flatness is a
                                              # label, never a tier, so the merged row must carry it, when present
-            "evidence_level", "evidence_axes"]   # the file's own evidence level + axes (assignment/evidence.py): the vote's
-                                                 # evidence class reads them (_evidence_class), when present
+            "vote_class"]   # the reading's vote class (0 / 1 / 2, evidence.vote_classes; computed in the parent,
+                            # never written to a ledger): `_vote` ranks ions by it before the count, when present
 
 # THE VOTE'S EVIDENCE CLASS of one per-file reading (the key after the ion-only
-# rule and before the file count in `_vote`). The tier engine levels every
-# committed reading per file (docs/EVIDENCE_LEVELS.md): a curated identity (2b,
-# 3a), the acid branch (3b) and a neutral established by two axes with one
-# outside the channel (4a) say the NEUTRAL is right; a reading the `--corroborate`
-# source pins on its own evidence (the `corroborated` axis: the source holds the
-# neutral at 4b or better with no cross set; this reading itself at whatever
-# level) has the other instrument's / channel's word for its neutral; 4b / 4c / 4d say the FORMULA
-# or the ION is pinned and the neutral is not; 5a / 5b are exact mass alone or
-# an assignment that argues with itself. Three classes, compared before any
-# count: a reading of the first kind outranks one of the second whatever the
-# file count, and one of the second outranks a mass-only reading; the count
-# decides among equals. Measured on a 28-file TOF batch merged at its own 12 ppm
-# window: with one ion's readings finally in one row, the count alone handed the
-# peak of the Orbitrap-confirmed acid C9H16O6 [M+NO3]- (Assigned, 4a, 2 files)
-# to C14H21N [M+Br]- (5a, 9 files), and the roster's pinic acid C9H14O4 (4b
-# corroborated, 1 file) lost a 1-vs-1 tie on ion_score to a silicon formula --
-# neither a bromide adduct of an amine nor an organosilicon is a reading a
-# negative-mode CIMS should carry over the one the other instrument confirms.
-# These two sets equal evidence.CLAIM_IDENTIFIED / CLAIM_ION by design, but the
-# vote class adds the `corroborated` axis on top (a corroborated reading at any
-# level ranks with the good class), so the vote class is not the claim and is never
-# routed through evidence.claim_class.
-EVIDENCE_CLASS_GOOD = frozenset({"1", "2a", "2b", "3a", "3b", "4a"})   # the neutral established
-EVIDENCE_CLASS_MID = frozenset({"4b", "4c", "4d"})                      # the formula / the ion pinned
-CORROBORATED_AXIS = "corroborated"   # the `evidence_axes` token of the --corroborate source's agreement
-_LEVEL_RANK = {lv: i for i, lv in enumerate(["1", "2a", "2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"])}
-
-
-def _has_axis(axes, name: str) -> bool:
-    """True when `name` is one of the `|`-separated tokens of an evidence_axes string."""
-    return name in _s(axes).split("|")
+# rule and before the file count in `_vote`): 2 = neutral backed (the formula
+# confirmed and the neutral backed by two axes or a corroborating source -- the
+# `--corroborate` source holds the neutral on its own evidence), 1 = formula
+# confirmed, 0 = unconfirmed (exact mass alone, or the reading argues with
+# itself). It is computed per file in the parent (`_apply`: evidence.vote_classes
+# over the file's ledger, the --corroborate cross set and the batch's width
+# model) by the decision the vote has always read, kept PRIVATE to it: the
+# evidence scale of the release is a reader's grade of the committed formula and
+# never moves a reading. A reading of the first class outranks one of the second
+# whatever the file count, and one of the second outranks an unconfirmed one;
+# the count decides among equals. Measured on a 28-file TOF batch merged at its
+# own 12 ppm window: with one ion's readings finally in one row, the count alone
+# handed the peak of the Orbitrap-confirmed acid C9H16O6 [M+NO3]- (neutral
+# backed, 2 files) to C14H21N [M+Br]- (unconfirmed, 9 files), and the roster's
+# pinic acid C9H14O4 (corroborated, 1 file) lost a 1-vs-1 tie on ion_score to a
+# silicon formula.
+VOTE_CLASS = "vote_class"
+_OWN_VOTE_CLASS = "__own_vote_class"   # a ledger's vote class carried through a merge (trace-first), never written
 
 
 def _evidence_class(level, axes) -> int:
-    """2 = the neutral established (2b / 3a / 3b / 4a) or corroborated by the
-    --corroborate source (the `corroborated` axis -- the source pins the neutral
-    on its own, this reading at any level); 1 = the formula
-    or the ion pinned (4b / 4c / 4d); 0 = exact mass alone / self-contradicting
-    (5a / 5b) or no level at all."""
-    lv = _s(level)
-    if lv in EVIDENCE_CLASS_GOOD or _has_axis(axes, CORROBORATED_AXIS):
-        return 2
-    if lv in EVIDENCE_CLASS_MID:
-        return 1
-    return 0
+    """The vote class of one reading from the private decision's (level, axes)
+    -- evidence._vote_class_of: 2 for an established neutral or the
+    --corroborate source's agreement, 1 for a confirmed formula / ion, else 0."""
+    from peaky.assignment import evidence as _EV
+    return _EV._vote_class_of(level, axes)
 
 
-def _level_text(level_rank, corroborated) -> str:
-    """'3b', '4b corroborated', '-' (no level): the evidence a vote note names."""
-    lv = next((k for k, v in _LEVEL_RANK.items() if v == int(level_rank)), "-")
-    return lv + (" corroborated" if int(corroborated) else "")
+def _class_text(cls) -> str:
+    """'neutral backed' / 'formula confirmed' / 'unconfirmed': what a vote note
+    names (evidence.VOTE_CLASS_TEXT; never a level)."""
+    from peaky.assignment import evidence as _EV
+    try:
+        return _EV.VOTE_CLASS_TEXT.get(int(cls), "unconfirmed")
+    except (TypeError, ValueError):
+        return "unconfirmed"
 
 
 # ---------------------------------------------------------------------------
@@ -209,18 +196,17 @@ def _ion_key(nf: str, ad: str) -> str:
 def _vote(g: pd.DataFrame):
     """Rank one cluster's readings in two stages. Returns (ions, labels):
     `ions` one row per ion (_ion, n_files, n_assigned, best_ion, regular,
-    best_cls, best_lr, corroborated), best first; `labels` one row per
+    best_cls), best first; `labels` one row per
     (neutral_formula, adduct) reading of EVERY ion (_ion, _nf, _ad, n_files,
     n_assigned, best_ion, ...), the winning ion's readings ranked best first
     and listed first, the other ions' readings after them in ion order.
 
     1. WHICH ION sits at this m/z is what files can genuinely disagree on, and
        the EVIDENCE decides it before the count: each ion takes the best
-       evidence class of its per-file readings (`_evidence_class` over the
-       file's own `evidence_level` / `evidence_axes` -- the neutral established
-       or corroborated, above the formula / ion pinned, above exact mass alone;
-       every reading is class 0 when the frames carry no level, and the vote is
-       then the pure count it was), and the ion of the best class wins; among
+       vote class of its per-file readings (the `vote_class` column,
+       evidence.vote_classes -- neutral backed, above formula confirmed, above
+       unconfirmed; every reading is class 0 when the frames carry no class,
+       and the vote is then the pure count it was), and the ion of the best class wins; among
        ions of one class the ion carried by the most FILES wins, the number of
        files carrying it at Assigned tier and the best ion_score only break
        ties, and the ion's own text is the last key -- so a full tie resolves
@@ -231,9 +217,9 @@ def _vote(g: pd.DataFrame):
        Why the evidence first: once the merge window put one TOF ion's readings
        in one row (they used to sit in rows of their own, 8-12 ppm apart, each
        looking unanimous), a 4-file mass-only reading (5b) outvoted a 1-file
-       reading with an acid-branch corroboration (3b) at the same peak, and the
+       reading with an acid-branch corroboration (neutral backed) at the same peak, and the
        board lost the Orbitrap-confirmed HOMs and the roster's pinic acid to
-       bromide adducts of N-compounds read in more files. A per-file level is
+       bromide adducts of N-compounds read in more files. A per-file class is
        a measurement of THAT file's evidence for the reading; the count of
        files is a measurement of persistence. The first says which reading is
        right, the second how often it was seen -- and a reading no file could
@@ -259,18 +245,12 @@ def _vote(g: pd.DataFrame):
        ties. On the 15-file uronium run 16 of the 43 same-ion splits had a majority
        label nobody had corroborated against a minority label some file had."""
     assigned = g["_r"] >= TIER_RANK[TIER_ASSIGNED]
-    # the evidence class of every per-file reading (0 everywhere when the frames
-    # carry no level: a pure `align()` caller without the evidence stage), the
-    # rank of its level (for the row's note) and its corroborated axis
-    if "evidence_level" in g.columns:
-        axes = g["evidence_axes"] if "evidence_axes" in g.columns else pd.Series("", index=g.index)
-        cls = pd.Series([_evidence_class(a, b) for a, b in zip(g["evidence_level"], axes)], index=g.index)
-        lrank = pd.Series([_LEVEL_RANK.get(_s(v), len(_LEVEL_RANK)) for v in g["evidence_level"]], index=g.index)
-        corr = pd.Series([int(_has_axis(b, CORROBORATED_AXIS)) for b in axes], index=g.index)
+    # the vote class of every per-file reading (0 everywhere when the frames
+    # carry none: a pure `align()` caller without the parent's class)
+    if VOTE_CLASS in g.columns:
+        cls = pd.to_numeric(g[VOTE_CLASS], errors="coerce").fillna(0).astype(int)
     else:
         cls = pd.Series(0, index=g.index)
-        lrank = pd.Series(len(_LEVEL_RANK), index=g.index)
-        corr = pd.Series(0, index=g.index)
     # an ION-ONLY reading (the `ion_only` stage: the acid's own composition as
     # a radical anion, committed beside its [M-H]- parent with an `ion_only_of`
     # link) is a bucket kept apart from the tiers, and it must not MOVE a
@@ -284,17 +264,17 @@ def _vote(g: pd.DataFrame):
           else pd.Series(False, index=g.index))
     gg = g.assign(_asrc=g["src"].where(assigned),       # the file, when Assigned there
                   _reg=(~io).astype(int),                # 1 = a regular reading in this file
-                  _cls=cls, _lr=lrank, _corr=corr)
+                  _cls=cls)
     lab = (gg.groupby(["_ion", "_nf", "_ad"], sort=True)  # text order = last key
              .agg(n_files=("src", "nunique"),
                   n_assigned=("_asrc", "nunique"),        # FILES at Assigned, not rows
                   best_ion=("ion_score", "max"), regular=("_reg", "max"),
-                  best_cls=("_cls", "max"), best_lr=("_lr", "min"), corroborated=("_corr", "max"))
+                  best_cls=("_cls", "max"))
              .reset_index())
     ions = (gg.groupby("_ion", sort=True)
               .agg(n_files=("src", "nunique"), n_assigned=("_asrc", "nunique"),
                    best_ion=("ion_score", "max"), regular=("_reg", "max"),
-                   best_cls=("_cls", "max"), best_lr=("_lr", "min"), corroborated=("_corr", "max"))
+                   best_cls=("_cls", "max"))
               .reset_index())
     ions = ions.sort_values(["regular", "best_cls", "n_files", "n_assigned", "best_ion"],
                             ascending=False, kind="mergesort")   # stable: keeps text order
@@ -320,10 +300,9 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
     cluster's reading (see `_vote`: the evidence class, then the count, decides
     WHICH ION; corroboration decides WHICH LABEL of it).
 
-    per_file : {src -> DataFrame with _M0_COLS; `evidence_level` / `evidence_axes`
-    are the file's own levels (assignment/evidence.py) and feed the vote's
-    evidence class -- without them every reading is class 0 and the vote is
-    the pure count}. offsets : {src -> median ppm}
+    per_file : {src -> DataFrame with _M0_COLS; `vote_class` is each reading's
+    vote class (evidence.vote_classes) -- without it every reading is class 0
+    and the vote is the pure count}. offsets : {src -> median ppm}
     (subtracted before clustering so a per-file calibration shift does not split
     a peak). A known-species identity gets no exemption here: the batch decides
     it after the vote, by pooled evidence (`lock_known_species`). stages : {src ->
@@ -343,13 +322,13 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
               the winning reading), alternatives (the losing readings, best
               first, '' when unanimous), ion_agree (one ion in the cluster),
               formula_agree (one neutral), tier_reason (NA unless the vote had
-              something to explain: an ion chosen by its evidence class over a
+              something to explain: an ion chosen by its vote class over a
               lower-class ion carried by at least as many files, a label chosen
               by corroboration over a bigger count, or a regular reading kept
               over an ion-only one carried by more files); srcs[, stage],
               mz_jitter_ppm_raw, mz_jitter_ppm_caldj.
       jitter  long form, one row per (cluster, file): cluster, src, mz,
-              neutral_formula, adduct, tier, ion_score, evidence_level -- every
+              neutral_formula, adduct, tier, ion_score, vote_class -- every
               reading, winner or not.
 
     The previous rule ranked the number of ASSIGNED files first, which let one
@@ -405,10 +384,10 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
                 big = lower.sort_values(["n_files", "best_cls"], ascending=False, kind="mergesort").iloc[0]
                 big_lab = lab[lab["_ion"] == big["_ion"]].iloc[0]
                 notes.append(f"evidence outranks the count: kept {win['_nf']} {win['_ad']} "
-                             f"({_level_text(win_ion['best_lr'], win_ion['corroborated'])} in "
+                             f"({_class_text(win_ion['best_cls'])} in "
                              f"{int(win_ion['n_files'])} of {n_total} files) over the "
                              f"{int(big['n_files'])}-file {big_lab['_nf']} {big_lab['_ad']} "
-                             f"({_level_text(big['best_lr'], big['corroborated'])})")
+                             f"({_class_text(big['best_cls'])})")
         if int(win_ion.get("regular", 1)) and len(others):
             # an ion-only reading carried by MORE files than the regular winner
             # stayed an alternative on purpose (see _vote): say so on the row
@@ -460,7 +439,8 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
                                     neutral_formula=r.get("neutral_formula"),
                                     adduct=r.get("adduct"), tier=r.get("tier"),
                                     ion_score=r.get("ion_score"),
-                                    evidence_level=r.get("evidence_level", pd.NA)))
+                                    vote_class=(int(r[VOTE_CLASS]) if VOTE_CLASS in r.index
+                                                and pd.notna(r[VOTE_CLASS]) else pd.NA)))
     merged = pd.DataFrame(merged_rows).sort_values("mz").reset_index(drop=True)
     jitter = pd.DataFrame(jitter_rows)
     return merged, jitter
@@ -1087,10 +1067,107 @@ def _width_model_for_batch(resolving_power, client, table, log):
     return TFT.measure_resolution(client, probe, log=log)
 
 
+def _reparsed(frame: pd.DataFrame | None) -> pd.DataFrame | None:
+    """`frame` as a reader of its CSV sees it (written and re-read with the
+    parser a post-hoc re-level uses), so the in-run evidence level and a re-level
+    of the run dir read the same values."""
+    if frame is None:
+        return None
+    import io as _io
+    return pd.read_csv(_io.StringIO(frame.to_csv(index=False)), low_memory=False)
+
+
+def _ts_for_levels(ts: pd.DataFrame | None) -> pd.DataFrame | None:
+    """The stamped batch time series as the evidence level reads it from the
+    run's per_file/_batch_ts.parquet: its level columns, through a parquet
+    round trip (the same dtypes a post-hoc re-level reads)."""
+    if ts is None:
+        return None
+    from peaky.assignment.levels import context as _CX
+    cols = [c for c in _CX.TS_COLUMNS if c in ts.columns]
+    import io as _io
+    try:
+        buf = _io.BytesIO()
+        ts[cols].to_parquet(buf)
+        buf.seek(0)
+        return pd.read_parquet(buf)
+    except Exception:  # noqa: BLE001 -- no parquet engine: the frame itself
+        return ts[cols].copy()
+
+
+def _instrument_of(rp) -> tuple:
+    """(class or None, R at m/z 200 or None) of the batch's width model."""
+    from peaky.assignment import evidence as EV
+    if rp is None:
+        return None, None
+    klass, _fw = EV.instrument(rp)
+    try:
+        r = float(rp.r_at(200.0))
+    except Exception:  # noqa: BLE001
+        r = float("nan")
+    return klass, (round(r, 1) if np.isfinite(r) else None)
+
+
+def _run_dir_of(path: str) -> str | None:
+    """The batch run directory a --corroborate source names (the dir itself, or
+    the one run an out-dir holds); None for a ledger CSV or anything else."""
+    path = os.path.expanduser(str(path).rstrip("/"))
+    if not os.path.isdir(path):
+        return None
+    if os.path.isfile(os.path.join(path, "batch_summary.json")) and os.path.isdir(os.path.join(path, "per_file")):
+        return path
+    inner = [os.path.join(path, d) for d in sorted(os.listdir(path))]
+    runs = [d for d in inner if os.path.isfile(os.path.join(d, "batch_summary.json"))
+            and os.path.isdir(os.path.join(d, "per_file"))]
+    return runs[0] if len(runs) == 1 else None
+
+
+def _corroborate_partners(sources, *, log=print) -> tuple[dict, dict]:
+    """The evidence scale's other-source partners from the --corroborate
+    sources (D9): each Orbitrap-class RUN DIR levelled once by the scale with
+    no partners of its own, `evidence.partners_from` taken under the run dir's
+    name. A TOF-class or class-less run dir, a ledger CSV or a merged-only
+    source gives none (its levels would be NA, or it carries no run context),
+    nor does an Orbitrap run dir none of whose files is calibrated (no run
+    window: its pairs carry no level), or whose reagent profile or context this
+    process does not know (`evidence.partner_source_problem`): logged and skipped. Returns (partners, {source label: n neutrals})."""
+    from peaky.assignment import evidence as EV
+    from peaky.assignment.levels import routes as _RT
+    parts, counts = [], {}
+    for src in sources or []:
+        run = _run_dir_of(src)
+        label = os.path.basename(os.path.expanduser(str(src).rstrip("/")))
+        if run is None:
+            log(f"[assign_batch] --corroborate {label}: not a batch run dir -- feeds the merge vote only, "
+                "no other-source partners")
+            continue
+        klass = EV.instrument(EV.source_resolution(run))[0]
+        if klass != "orbitrap":
+            log(f"[assign_batch] --corroborate {label}: instrument class {klass or 'unknown'} -- its evidence "
+                "levels are NA, so it gives no other-source partners (the merge vote still reads it)")
+            continue
+        why = EV.partner_source_problem(run)
+        if why:
+            log(f"[assign_batch] --corroborate {label}: {why} -- no other-source partners "
+                "(the merge vote still reads it)")
+            continue
+        src = EV.source_from_run_dir(run)
+        if EV.no_run_window(src):
+            log(f"[assign_batch] --corroborate {label}: {EV.NO_RUN_WINDOW_PARTNERS} (the merge vote still reads it)")
+            continue
+        lv = EV.level_source(src)
+        p = EV.partners_from(lv, os.path.basename(run))
+        parts.append(p)
+        counts[os.path.basename(run)] = int(len(p))
+        log(f"[assign_batch] --corroborate {label}: {len(p)} neutral(s) with an other-source partner")
+    return (_RT.merge_partners(*parts) if parts else {}), counts
+
+
 def _claims_summary(merged: pd.DataFrame, levels: pd.DataFrame) -> dict:
-    """batch_summary['claims']: the claim each level supports (evidence.claim_class,
-    C13) counted per merged row, per pooled (neutral, adduct) pair, per stage
-    and per tier. An ion-only merged row (an `ion_only_of` link) counts under
+    """batch_summary['claims']: the claim each level supports (evidence.claim_class:
+    identified / neutral / ion / tentative + the reagent and not-assessed
+    buckets, every tally over evidence.CLAIM_KEYS) counted per merged row, per
+    pooled (neutral, adduct) pair, per stage and per tier. An ion-only merged row (an `ion_only_of` link) counts under
     its own key 'ion-only', not under its tier. Tier and claim are separate
     verdicts: they are tallied side by side and neither is read off the other.
     `n_unlevelled` = merged rows with no level (their claim reads tentative)."""
@@ -1164,15 +1241,21 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
 
     `corroborate`: run dirs / ledger CSVs (or a ready set of neutral formulas)
     whose neutrals corroborate this run -- the other reagent channel, or the
-    other instrument on the same air -- each source by the neutrals it holds at
-    4b or better on its own evidence (`evidence.corroborating_neutrals`). It is the `corroborated` axis of the
-    evidence levels (docs/EVIDENCE_LEVELS.md): the per-file `evidence` stage
-    reads it, and so does the batch level, which is recomputed on the POOLED
-    per-file ledgers (cover + residual files as one source) and stamped on the
-    merged ledger by (neutral_formula, adduct) -- the merged rows carry none of
-    the predicate columns. batch_summary['evidence_levels'] records the counts;
-    tables/evidence_levels.csv the facts behind every pair. The claim each level
-    supports (identified / ion / tentative) is stamped on every merged row and
+    other instrument on the same air. It feeds the merge vote's evidence class
+    (each source by the neutrals it holds by its own evidence,
+    `evidence.vote_cross_neutrals`) and, from an Orbitrap-class run dir, the
+    evidence scale's other-source partner tag (`evidence.partners_from` of the
+    source levelled once with no partners), which never unlocks an evidence
+    level but, as a route, can anchor the series exclusion that lifts a pair out
+    of 5a.
+    The evidence level of the merged ledger is computed on the POOLED per-file
+    ledgers (cover + residual files as one source, every file-count minimum 3;
+    `evidence.level_batch`) and stamped on the merged ledger by
+    (neutral_formula, adduct); the per-file ledgers keep their own per-file
+    (adapted) level. batch_summary['evidence_levels'] records the counts,
+    tables/evidence_levels.csv the level and the facts behind every pair. The
+    claim each level supports (identified / neutral / ion / tentative, plus the
+    reagent and not-assessed buckets) is stamped on every merged row and
     tallied in batch_summary['claims'] (merged, pooled, per stage, per tier with
     the ion-only rows apart); it changes no ion, tier or level."""
     from peaky.assignment import assign as A
@@ -1225,7 +1308,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # The peak-width model, resolved ONCE for the batch (chem.resolution) and
     # handed to every per-file run: it sizes trace-first's dedup cell and, on
     # every path, the `resolvability` stamp each per-file ledger carries (a
-    # blended, uncorroborated peak is capped at Candidate; level 4c reads it).
+    # blended, uncorroborated peak is capped at Candidate; the vote's class reads it)
+    # and, per file and pooled, the evidence level's instrument class.
     # MEASURED from the raw profile by default -- a TOF can be tuned anywhere
     # and a declared number is a guess -- and the caller's only when they gave
     # one. A measurement that cannot be made stops trace-first (nothing sizes
@@ -1296,17 +1380,21 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # batch one answer. An explicit reagent_n_relabel=True in assign_kw restores
     # the per-file re-read (and the merged-level pass then stands down).
     assign_kw.setdefault("reagent_n_relabel", False)
-    # --corroborate: the neutrals of the named sources, or a ready set. Read by
-    # the per-file evidence stage (through assign_kw) and by the pooled batch
-    # level below; the paths are recorded so the run says what corroborated it.
+    # --corroborate: the neutrals of the named sources, or a ready set -- the
+    # merge vote's cross set (the vote class is computed per file in `_apply`);
+    # the Orbitrap-class run dirs among the sources also give the evidence
+    # scale's other-source partners (below, at the pooled level). The paths are
+    # recorded so the run says what corroborated it.
     if isinstance(corroborate, (set, frozenset)):
         cross_sources, cross = [], {str(x) for x in corroborate}
     else:
         cross_sources = [str(x) for x in (corroborate or [])]
-        cross = EV.corroborating_neutrals(cross_sources)
-    assign_kw["corroborate"] = cross
+        cross = EV.vote_cross_neutrals(cross_sources)
     # the batch's width model -> every per-file `resolvability` stage (never re-measured per file)
+    # and the per-file evidence stage's instrument class
     assign_kw["resolving_power"] = rp
+    # the reagent profile whose adducts span the evidence level's enumeration space
+    assign_kw.setdefault("reagent_profile", prof.name)
     if cross_sources:
         log(f"[assign_batch] --corroborate: {len(cross)} neutral(s) from {len(cross_sources)} source(s)")
     # labelled-reagent covalent-product rescue (e.g. 15N-organonitrates); no-op
@@ -1409,15 +1497,19 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # specific lists when the batch OR DATASET name -- the chemistry often lives
     # only in the latter -- matches) -> selection prior + rescue.
     from peaky.assignment import reflists as RL
-    reflists_active, _tags = RL.activate(batch or "", dataset or "", getattr(prof, "label", ""))
+    reflists_active, _tags, rl_record = RL.activate(batch or "", dataset or "", getattr(prof, "label", ""),
+                                                    record=True)
+    # how they were activated (which keyword in which name): the evidence
+    # scale's context source, per file and pooled (batch_summary["reflists_context"])
+    assign_kw.setdefault("reflists_context", rl_record)
     if reflists_active:
         log(f"[assign_batch] reference lists active: {RL.active_versions(reflists_active)} "
             f"(context {sorted(_tags) or 'contaminants-only'})")
     per_file, offsets, per_stats = {}, {}, []
     scorings: dict = {}        # per-sample pattern_scoring, for the run manifest
     level_frames: dict = {}    # sid -> its ledger's M0/iso rows + predicate columns
+                               # (evidence.trim): the batch checks' input
     alias_ties: dict = {}      # sid -> its tied [M+NO3]- rows and whether the tie is alias-only (rule K)
-                               # (evidence.trim): the pooled batch level's input
     identified_aux: list = []  # per-file identified-ion rows (reagent/iso/artifact
                                # + analyte ion_formula) for the parquet stamp
     plaus_audit: list = []     # per-file O-monster / carbon-cluster demotes, pooled
@@ -1435,6 +1527,12 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     residual_scope: list = []      # [sorted residual-bin m/z] once the residual stage runs
     scope_counts: dict = {}        # sid -> (kept, total) M0 rows under the trace-first scope
 
+    def _vote_class(led, stats):
+        """The reading's vote class over one file's ledger AS ITS RUN RETURNED IT
+        (evidence.vote_classes; see VOTE_CLASS), indexed by the ledger's rows."""
+        return EV.vote_classes(EV.trim(led), cross=cross, resolution=rp,
+                               halogen=(stats or {}).get("reagent_halogen", EV.DETECT_HALOGEN))
+
     def _apply(sid, led, plaus, stats, stage, scoring=None):
         """Parent-side reduce (called in sample_ids order): write the per-file CSV
         and fold this sample into the accumulators. Order-fixed so align() -- which
@@ -1446,6 +1544,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         merge back in on top of the traces -- the per-file lottery trace-first
         exists to avoid -- and out-vote a trace's reading (measured: a Candidate
         on the trace ledger re-read as Assigned by three residual files)."""
+        # the trace-first sample hands in its class computed BEFORE the trace
+        # columns were merged on (see the call): carried as a private column,
+        # never written
+        own_class = led.pop(_OWN_VOTE_CLASS) if _OWN_VOTE_CLASS in led.columns else None
         led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)
         level_frames[sid] = EV.trim(led)
         alias_ties[sid] = _LT.alias_only_ties(led)
@@ -1453,6 +1555,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         protected_neutrals.update(_protected_neutrals(led))
         known_pool.extend(known_evidence(led, src=sid))
         m0 = _m0(led)
+        # the reading's vote class (private to the vote: the decision it has
+        # always read, over this file's facts, the --corroborate cross set, the
+        # batch's width model and the reagent halogen the file's own run read --
+        # the declared channels' (C43), carried back in its stats) -- joined by
+        # row before any subset below
+        vc = own_class if own_class is not None else _vote_class(led, stats)
+        m0[VOTE_CLASS] = pd.to_numeric(vc.reindex(m0.index), errors="coerce").fillna(0).astype(int)
         if stage == STAGE_RESIDUAL and trace_sample is not None and residual_scope:
             bmz = residual_scope[0]
             pmz = pd.to_numeric(m0["mz"], errors="coerce").to_numpy(dtype=float)
@@ -1563,7 +1672,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             f"{len(trace_sample.peaks)} trace peaks) ...")
         res = A.run(trace_sample.sample_id, context=context, log=log,
                     reflists_active=reflists_active, peaks=trace_sample.peaks, **kw)
-        led = res["ledger"].merge(
+        # The vote class is read off the ledger the engine returned, BEFORE the
+        # trace columns are merged on: the trace table carries its own
+        # `resolvability` / `sep_hwhm`, so after the merge the ledger's columns
+        # are suffixed (_x / _y) and a class read there sees no resolvability --
+        # a blended exact-mass reading would count as "formula confirmed" (the
+        # per-file stage before 0.10.0 read the unmerged ledger: unconfirmed).
+        own = res["ledger"]
+        own = own.assign(**{_OWN_VOTE_CLASS: _vote_class(own, res.get("stats"))})
+        led = own.merge(
             trace_sample.traces[[c for c in TFT.TRACE_COLS if c in trace_sample.traces.columns]],
             on="peak_id", how="left")
         trace_sample.traces.to_csv(os.path.join(TAB, "traces.csv"), index=False)
@@ -1855,38 +1972,61 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     n_audit = PL.write_audit(plaus_audit, os.path.join(TAB, f"plausibility_audit_{prof.name}.csv"))
     log(f"[assign_batch] plausibility audit: {n_audit} touched peaks "
         f"-> tables/plausibility_audit_{prof.name}.csv")
-    # evidence levels: recomputed on the POOLED per-file ledgers (cover + residual
-    # files as ONE source -- chan2 sees a second adduct in any file, tied/lowconf
-    # need all rows across files) and stamped on the merged ledger by ion. The
-    # merged rows carry none of the predicate columns, so they are never read for
-    # this; a merged row whose reading no per-file ledger holds (a batch-level
-    # re-read) stays NA, and the count says so.
-    # rule U (docs/EVIDENCE_LEVELS.md §4 row 9'): the profile's neutral pair,
-    # measured on the stamped batch time series over the pooled ledgers; the
-    # table is written for every run (empty without a pair or a time series)
+    # the batch checks over the pooled per-file ledgers (their facts are step-0
+    # inputs of the evidence level below: a vetoed pair is rejected).
+    # rule U: the profile's neutral pair, measured on the stamped batch time
+    # series over the pooled ledgers; the table is written for every run (empty
+    # without a pair or a time series)
     _pair = tuple(getattr(prof, "neutral_pair", ()) or ())
     pairs_table = _NP.measure(ts_annot, level_frames, _pair, log=log)
     pairs_table.to_csv(os.path.join(TAB, "neutral_pairs.csv"), index=False)
-    # rule K (docs/EVIDENCE_LEVELS.md §3 label_untie / label_veto): on a 15N-labelled
+    # rule K (label_untie / label_veto): on a 15N-labelled
     # nitrate channel the 14N and 15N lines of one cluster arbitrate each other's
     # reading on the same series; written for every run (empty out of scope)
     twins_table = _LT.measure(ts_annot, level_frames, prof, alias_ties=alias_ties, log=log)
     twins_table.to_csv(os.path.join(TAB, "label_twins.csv"), index=False)
-    # the isotope checks (C11+, docs/EVIDENCE_LEVELS.md §3 iso_veto, lead_lift): rule C,
-    # REQ and HIGH read each committed formula's isotope claims off the same stamped
-    # series (the instrument class from the batch's width model), rule H its exact
-    # halogen line (a lock, judged against the batch's element budget: `context`);
-    # written for every run (empty without a time series); a refuted pair is hard 5b
-    # and leaves its neutral's pools
+    # the isotope checks (iso_veto): rule C, REQ and HIGH read each committed
+    # formula's isotope claims off the same stamped series (the instrument class
+    # from the batch's width model), rule H its exact halogen line (a lock,
+    # judged against the batch's element budget: `context`); written for every
+    # run (empty without a time series); a refuted pair is rejected (5b)
     iso_table = _IC.measure(ts_annot, level_frames, prof, resolution=rp, mass_scale=scale,
                             x_edge=x_edge, context=context, log=log)
     iso_table.to_csv(os.path.join(TAB, "iso_checks.csv"), index=False)
-    levels = EV.level_pooled(level_frames, cross=cross, upair=_NP.neutrals(pairs_table),
-                             label=_LT.facts(twins_table), iso=_IC.facts(iso_table), resolution=rp,
-                             halogen=EV.channel_halogen(prof.adducts))
+    # THE EVIDENCE LEVEL (the scale of peaky 0.10.0): the batch's per-file
+    # ledgers pooled as ONE source (cover + residual files; every file-count
+    # minimum 3), re-read from the per_file/<sid>_ledger.csv files just written
+    # in sorted sample-id order with the parser a post-hoc re-level uses, so the
+    # run and `scripts/level_ledger.py` on its run dir see the same inputs; with
+    # the stamped time series, the merged ledger (the NH4 rule's ion index), the
+    # protected neutrals, the per-file gates and degeneracy calibrations, and the
+    # batch checks' vetoes. Stamped on the merged ledger by (neutral, adduct); a
+    # merged row no pooled pair holds (a batch-level re-read) gets no level.
+    from peaky.assignment.levels import lists as _LS
+    rl_context = _LS.reflists_context(reflists_active, rl_record)
+    level_summary = {
+        "reagent": prof.name, "label": prof.label, "context": context,
+        "reflists_active": [list(x) for x in RL.active_versions(reflists_active)],
+        "reflists_context": rl_context,
+        "resolution": rp.as_dict() if rp is not None else None,
+        "per_file": copy.deepcopy(per_stats), "amine_r_min": float(amine_r_min),
+        # the pair facts' reagent halogen: the profile's declared channels (C43)
+        "reagent_halogen": EV.channel_halogen(prof.adducts),
+    }
+    level_ledgers = {sid: pd.read_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), low_memory=False)
+                     for sid in sorted(level_frames)}
+    run_inputs = EV.RunInputs(
+        summary=level_summary, merged=_reparsed(merged), ts=_ts_for_levels(ts_annot),
+        iso_checks=iso_table, label_twins=twins_table, neutral_pairs=pairs_table,
+        protected=set(protected_neutrals), activation=rl_record)
+    partners, partner_counts = _corroborate_partners(cross_sources, log=log)
+    levels = EV.level_batch(level_ledgers, run_inputs=run_inputs, partners=partners or None)
     merged = EV.stamp_merged(merged, levels)
-    levels.to_csv(os.path.join(TAB, "evidence_levels.csv"), index=False)
+    EV.for_output(levels).to_csv(os.path.join(TAB, "evidence_levels.csv"), index=False)
+    klass, r200 = _instrument_of(rp)
     ev_summary = {
+        "scale": f"peaky {EV.SCALE_RELEASE}",
+        "instrument": {"class": klass, "r200": r200},
         "pooled": EV.summarize(levels["evidence_level"]) if len(levels) else {},
         "merged": EV.summarize(merged["evidence_level"]) if len(merged) else {},
         "per_stage": ({str(s_): EV.summarize(merged.loc[merged["stage"] == s_, "evidence_level"])
@@ -1894,22 +2034,25 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                       if len(merged) and "stage" in merged.columns else {}),
         "n_pairs": int(len(levels)),
         "n_unstamped": int(merged["evidence_level"].isna().sum()) if len(merged) else 0,
+        "side_channels_locked": bool(EV.SIDE_CHANNELS_LOCKED),
+        "unlocked": sorted(EV.UNLOCKED),
+        # the --corroborate sources: what fed the vote's cross set, and the
+        # other-source partners each Orbitrap-class run dir gave
         "n_corroborate": int(len(cross)), "cross_source": cross_sources,
+        "partners": partner_counts,
+        "amine_r_min": float(amine_r_min),
         "neutral_pairs": _NP.summary(pairs_table, _pair),
         "label_twins": _LT.summary(twins_table, prof),
         "iso_checks": _IC.summary(iso_table, rp),
-        # rule H (C11+b): the pooled pairs whose tentative lead a halogen lock lifted
-        "lead_lifted": int(levels["lead_lift"].sum()) if len(levels) and "lead_lift" in levels.columns else 0,
     }
-    log(f"[assign_batch] evidence levels over {len(level_frames)} pooled file(s): "
-        f"{ev_summary['pooled']} ({ev_summary['n_pairs']} neutral/adduct pairs, "
-        f"{ev_summary['lead_lifted']} lead(s) lifted by a halogen lock); "
-        f"{ev_summary['n_unstamped']} merged row(s) without a per-file reading "
-        f"-> tables/evidence_levels.csv")
+    log(f"[assign_batch] evidence levels (peaky {EV.SCALE_RELEASE}) over {len(level_ledgers)} pooled "
+        f"file(s), instrument class {klass or 'unknown'}: {ev_summary['pooled']} "
+        f"({ev_summary['n_pairs']} neutral/adduct pairs); {ev_summary['n_unstamped']} merged row(s) "
+        f"without a pooled pair -> tables/evidence_levels.csv")
     # the claim each level supports, tallied beside the tier (never read off it)
     claims_summary = _claims_summary(merged, levels)
     log("[assign_batch] claims (merged): "
-        + " | ".join(f"{k} {claims_summary['merged'][k]}" for k in EV.CLAIMS))
+        + " | ".join(f"{k} {claims_summary['merged'][k]}" for k in EV.CLAIM_KEYS))
     # ion-only rows (the `ion_only` stage): merged rows carrying the link, the
     # per-file rows behind them, and the files that hold any -- so the bucket
     # is on record beside the tiers it is deliberately kept apart from
@@ -2005,6 +2148,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         selection["residual"] = residual_meta
     summary = {
         "reagent": prof.name, "label": prof.label, "context": context,
+        # the reagent halogen of the profile's declared channels (C43): what the
+        # pooled pair facts read, and what a post-hoc re-level of this run reads
+        "reagent_halogen": level_summary["reagent_halogen"],
         "batch_name": batch,
         "selection": selection,
         "trace_first": trace_sample.summary() if trace_sample is not None else None,
@@ -2048,16 +2194,21 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "plausibility_audit_rows": n_audit,
         # the evidence levels (docs/EVIDENCE_LEVELS.md): pooled = one count per
         # (neutral, adduct) pair over the pooled files; merged = per merged row;
-        # per_stage = merged rows by cover / residual; cross_source = what
-        # corroborated the run
+        # per_stage = merged rows by cover / residual; over the levels and the
+        # reagent / NA buckets
         "evidence_levels": ev_summary,
-        # the claim each level supports (identified / ion / tentative), merged / pooled / per stage / per tier
+        # the claim each level supports (identified / neutral / ion / tentative +
+        # the reagent and not-assessed buckets), merged / pooled / per stage / per tier
         "claims": claims_summary,
-        # the ion-only bucket (docs/EVIDENCE_LEVELS.md §3, the `ion_only` stage):
-        # channels opened, merged rows carrying an `ion_only_of` link, per-file
-        # rows behind them, files holding any, and their levels (4d / 5a)
+        # the ion-only bucket (the `ion_only` stage): channels opened, merged rows
+        # carrying an `ion_only_of` link, per-file rows behind them, files holding
+        # any, and their merged levels
         "ion_only": ion_only_summary,
         "reflists_active": RL.active_versions(reflists_active),   # [(id, data_version)]
+        # how the lists were activated: {tags, matched: {tag: [[field, keyword]]},
+        # active: [[id, version, how]]} (the evidence level's context source)
+        "reflists_context": rl_context,
+        "amine_r_min": float(amine_r_min),
         "per_file": per_stats,
         # RUN-TIME metadata, not material data: how long the assignment actually
         # took, alongside the n_jobs that produced it (a duration is meaningless

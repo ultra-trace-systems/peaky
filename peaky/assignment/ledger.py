@@ -100,8 +100,8 @@ _ASSIGN_COLS: dict[str, object] = {
     # (assignment/resolvability.py, from the run's width model): 'isolated' /
     # 'resolved' / 'blended' / 'unresolvable', the separation and the
     # bimodality threshold in HWHM at that mass. NA without a width model and on
-    # every non-M0 row. A tier input (tiers.py) and a level input (4c), never a
-    # filter.
+    # every non-M0 row. A tier input (tiers.py) and an input of the merge vote's
+    # class (evidence._measure), never a filter.
     "resolvability": pd.NA,
     "sep_hwhm": np.nan,
     "d_crit_hwhm": np.nan,
@@ -113,7 +113,7 @@ _ASSIGN_COLS: dict[str, object] = {
 
 _REQUIRED_IDENTITY = ("peak_id", "mz")
 
-# The two per-row assignability flags (C19(c), docs/EVIDENCE_LEVELS.md §2):
+# The two per-row assignability flags (C19(c), docs/EVIDENCE_LEVELS.md §3.2):
 #   below_assignability -- the assignment argues with itself: O >= 11 on a
 #       mass-saturated window, an O-monster, a carbon cluster, a carbon-rich
 #       skeleton, an impossible ionization, an off-calibration residual fit,
@@ -123,8 +123,11 @@ _REQUIRED_IDENTITY = ("peak_id", "mz")
 #       element budget that no curated list names, a speculative residual fit
 #       (N >= 3 with no isotope, a gap-fill with no anchors, a sole minor
 #       channel), an uncorroborated radical anion, a reagent-N re-read.
-# The evidence level reads either as `hard` (5b); on the pooled batch a halogen
-# lock lifts a lead it answers (rule H, C11+b: evidence._measure). Neither is in
+# The evidence level rejects a pair below assignability (5b) unless O >= 11 on a
+# mass-saturated window is its only setter (a tag), and gives a tentative lead no
+# level effect (the `lead` tag). The merge vote's class still reads both as hard
+# (evidence._measure, per file); on the pooled facts a halogen lock lifts a lead
+# it answers (rule H, C11+b: `lead_lift`, recorded only). Neither is in
 # `_ASSIGN_COLS`: the tier stage creates both (tiers.flag_below_assignability;
 # the reference-list rescue on a ledger it reaches first), so a ledger that was
 # never tiered -- and the merged ledger, whose schema is assign_batch._M0_COLS --

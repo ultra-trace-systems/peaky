@@ -564,3 +564,48 @@ def test_the_episode_pass_is_off_unless_asked_for():
                                 resolving_power=60000.0, log=lambda *a: None)
     assert (off.traces["kind"] == "episode").sum() == 0
     assert (on.traces["kind"] == "episode").sum() >= 1
+
+
+def test_under_trace_first_the_vote_class_is_read_off_the_ledger_the_engine_returned(ts, tmp_path, monkeypatch):
+    """The trace table carries its own `resolvability`, so the trace sample's
+    ledger, once the trace columns are merged on, holds resolvability_x/_y. The
+    vote class must be the one of the ledger the engine RETURNED (as the per-file
+    stage before 0.10.0 read it): a blended exact-mass reading with one plausible
+    ion in the window is unconfirmed (class 0) -- read off the merged ledger it
+    sees no resolvability and counts as formula confirmed (class 1)."""
+    from peaky.assignment import evidence as EV
+    seen = {}
+    real_run = A.run
+
+    def run_blended(*a, **k):
+        res = real_run(*a, **k)
+        led = res["ledger"].copy()
+        m0 = led["role"].astype(str) == "M0"
+        led.loc[m0, "resolvability"] = "blended"
+        led.loc[m0, "degeneracy_density"] = 1.0
+        res["ledger"] = led
+        seen["ledger"], seen["stats"] = led.copy(), dict(res.get("stats") or {})
+        return res
+    monkeypatch.setattr(A, "run", run_blended)
+    monkeypatch.setattr(IO, "connect", lambda *a, **k: SimpleNamespace(name="stub-client"))
+    AB.run(peaks=ts, ts_peaks=ts, reagent="NO3", batch="test batch", out_dir=str(tmp_path), trace_first=True,
+           resolving_power=6500.0, residual=False, n_jobs=1, log=lambda *a: None)
+    assert "resolvability" in pd.read_csv(tmp_path / "tables" / "traces.csv").columns
+    led = seen["ledger"]
+    hal = seen["stats"].get("reagent_halogen", EV.DETECT_HALOGEN)
+    own = EV.vote_classes(EV.trim(led), resolution=6500.0, halogen=hal)
+    # the same ledger without the measurement: what a read of the merged ledger sees
+    unmeasured = EV.vote_classes(EV.trim(led.drop(columns=["resolvability"])), resolution=6500.0, halogen=hal)
+    m0 = led[led["role"].astype(str) == "M0"]
+    want = {(round(float(z), 6), n, a): int(c) for z, n, a, c in
+            zip(m0["mz"], m0["neutral_formula"], m0["adduct"], own.reindex(m0.index))}
+    jit = pd.read_csv(tmp_path / "tables" / "jitter.csv")
+    got = {(round(float(z), 6), n, a): int(c) for z, n, a, c in
+           zip(jit["mz"], jit["neutral_formula"], jit["adduct"], jit["vote_class"])}
+    assert got and set(got) <= set(want)
+    assert got == {k: want[k] for k in got}
+    # the case is live: some reading is unconfirmed only because its peak is blended
+    flipped = (own != unmeasured).reindex(m0.index)
+    assert flipped.any() and (own[flipped] == 0).all()
+    assert any(want[k] == 0 for k in got if (k in want))
+    assert "__own_vote_class" not in pd.read_csv(tmp_path / "per_file" / "traces-test-batch_ledger.csv").columns

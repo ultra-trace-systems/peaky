@@ -1,0 +1,110 @@
+{
+ "context": "ambient-air",
+ "label": "NO3- CIMS / [15N]O3- CIMS",
+ "per_file": [
+  {
+   "height_gate_cps": 61.169055972394105,
+   "noise_edge_cps": 61.169055972394105,
+   "sample_id": "s08"
+  },
+  {
+   "height_gate_cps": 56.9112653750135,
+   "noise_edge_cps": 56.9112653750135,
+   "sample_id": "s11"
+  },
+  {
+   "height_gate_cps": 62.27115990372249,
+   "noise_edge_cps": 62.27115990372249,
+   "sample_id": "s02"
+  },
+  {
+   "height_gate_cps": 61.909157612033205,
+   "noise_edge_cps": 61.909157612033205,
+   "sample_id": "s09"
+  },
+  {
+   "height_gate_cps": 57.430925865325605,
+   "noise_edge_cps": 57.430925865325605,
+   "sample_id": "s10"
+  },
+  {
+   "height_gate_cps": 61.295631282150346,
+   "noise_edge_cps": 61.295631282150346,
+   "sample_id": "s01"
+  },
+  {
+   "height_gate_cps": 61.7539515045487,
+   "noise_edge_cps": 61.7539515045487,
+   "sample_id": "s07"
+  },
+  {
+   "height_gate_cps": 56.69597953000593,
+   "noise_edge_cps": 56.69597953000593,
+   "sample_id": "s03"
+  },
+  {
+   "height_gate_cps": 62.51299025061663,
+   "noise_edge_cps": 62.51299025061663,
+   "sample_id": "s04"
+  },
+  {
+   "height_gate_cps": 60.34086418253724,
+   "noise_edge_cps": 60.34086418253724,
+   "sample_id": "s12"
+  },
+  {
+   "height_gate_cps": 57.3642928640185,
+   "noise_edge_cps": 57.3642928640185,
+   "sample_id": "s05"
+  },
+  {
+   "height_gate_cps": 58.484147891053226,
+   "noise_edge_cps": 58.484147891053226,
+   "sample_id": "s06"
+  }
+ ],
+ "reagent": "NO3+NO3_15N",
+ "reflists_active": [
+  [
+   "contaminants_keller2008",
+   "2008.2"
+  ],
+  [
+   "monoterpene_hom_kang2024",
+   "2024.2"
+  ]
+ ],
+ "reflists_context": {
+  "matched": {
+   "ap_ox": [
+    [
+     "dataset",
+     "ap oxidation"
+    ]
+   ],
+   "monoterpene_ox": [
+    [
+     "dataset",
+     "ap oxidation"
+    ]
+   ]
+  },
+  "tags": [
+   "ap_ox",
+   "monoterpene_ox"
+  ]
+ },
+ "resolution": {
+  "coef": 5.013422119522578e-07,
+  "exponent": 1.534422315285749,
+  "n_peaks": 10,
+  "offset": 0.0,
+  "r_at_200": 117528.70458844787,
+  "r_at_600": 65337.07734409186,
+  "r_spread": [
+   79747.37989959924,
+   119674.34664362502
+  ],
+  "source": "measured"
+ }
+}

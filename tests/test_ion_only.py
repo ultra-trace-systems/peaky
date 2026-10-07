@@ -5,11 +5,14 @@ pinned while the ionization process and the neutral stay open.
 Pins: the stage's placement and gate; the profile knob and its copy rule; the
 commit itself (row shape, link, commentary, nothing existing moves); the two
 separability guards (the calibrated gate vs the 13C/+H gap, the picker's
-resolved-pair evidence); the evidence levels (own 13C -> 4d, else 5a; never a
-second channel or a corroboration in either direction; the reference script
-agrees); the batch path (the merged row carries the link, batch_summary counts
-the bucket); publish (no mechanism for the adduct -> null); the scorecard
-(counted on its own, kept out of the Candidate tile).
+resolved-pair evidence); the level facts (an ion-only row with its own 13C
+line has the isotope axis -- the merge vote's class 1, the formula confirmed --
+else exact mass only, class 0; never a second channel or a corroboration in
+either direction; the reference script agrees while it holds the pre-0.10.0
+decision; the evidence scale reads an ion-only row as 4b "ion formula only",
+tests/test_levels_decide.py); the batch path (the merged row carries the link,
+batch_summary counts the bucket); publish (no mechanism for the adduct ->
+null); the scorecard (counted on its own, kept out of the Candidate tile).
 
 Run: pytest tests/test_ion_only.py -q
 """
@@ -24,7 +27,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from peaky.assignment import assign as A
 from peaky.assignment import cleanup as CL
@@ -170,25 +172,31 @@ def test_commits_the_radical_anion_beside_its_acid_and_nothing_else_moves():
     assert out2["ion_only_committed"] == 0 and out2["ion_only_candidates"] == 0
 
 
+def _private(led) -> pd.DataFrame:
+    """The private decision per M0 row of one file (the merge vote's input), with its class."""
+    out = EV._series_levels(led).set_index("peak_id")
+    out["cls"] = [EV._vote_class_of(a, b) for a, b in zip(out.evidence_level, out.evidence_axes)]
+    return out
+
+
 def test_the_final_sweep_claims_the_new_rows_own_13c_and_the_levels_follow():
     led = _ledger()
-    parent_before = EV.compute_levels(led).set_index("peak_id").loc["A", "evidence_level"]
+    parent_before = _private(led).loc["A"]
     CL.commit_ion_only_electron_attachment(led, _cfg(), log=lambda *a: None)
     PP.complete_isotope_envelopes(led, _cfg(), log=lambda *a: None)
     assert _row(led, "H13")["role"] == L.ROLE_ISO and _row(led, "H13")["parent_peak_id"] == "H"
+    by = _private(led)
+    assert by.loc["A", "evidence_level"] == parent_before["evidence_level"] and by.loc["A", "cls"] == 1  # unchanged
+    assert by.loc["H", "evidence_axes"].split("|")[:1] == ["iso"] and "ion_only" in by.loc["H", "evidence_axes"]
+    assert by.loc["H", "cls"] == 1                                       # its own 13C: the formula confirmed
+    assert "H13" not in by.index                                         # an isotope row carries no level
     EV.apply_levels(led)
-    by = led.set_index("peak_id")
-    assert by.loc["A", "evidence_level"] == parent_before == "4b"          # unchanged
-    assert by.loc["H", "evidence_level"] == "4d"
-    assert by.loc["H", "level_reason"].startswith("4d: ion-only channel")
-    assert "ion_only" in by.loc["H", "evidence_axes"] and "iso" in by.loc["H", "evidence_axes"]
-    assert pd.isna(by.loc["H13", "evidence_level"])
+    assert pd.isna(led.set_index("peak_id").loc["H13", "evidence_level"])
     # without its own satellite the row is exact mass only
     led2 = _ledger(ea_13c=False)
     CL.commit_ion_only_electron_attachment(led2, _cfg(), log=lambda *a: None)
-    EV.apply_levels(led2)
-    assert led2.set_index("peak_id").loc["H", "evidence_level"] == "5a"
-    assert led2.set_index("peak_id").loc["H", "level_reason"].startswith("5a: ion-only channel")
+    by2 = _private(led2)
+    assert "iso" not in by2.loc["H", "evidence_axes"].split("|") and by2.loc["H", "cls"] == 0
 
 
 # --------------------------------------------------------------------------- the guards
@@ -276,49 +284,52 @@ def test_occupied_positions_and_excluded_parents_are_left_alone():
 
 # --------------------------------------------------------------------------- the levels
 def test_an_ion_only_row_is_never_a_second_channel_nor_a_corroboration_either_way():
-    led = _ledger(with_13c=False)             # the parent alone: no axis -> 5a (degeneracy unmeasured)
-    parent_alone = EV.compute_levels(led).set_index("peak_id").loc["A", "evidence_level"]
+    led = _ledger(with_13c=False)             # the parent alone: no axis (degeneracy unmeasured), class 0
+    parent_alone = _private(led).loc["A"]
     CL.commit_ion_only_electron_attachment(led, _cfg(), log=lambda *a: None)
     PP.complete_isotope_envelopes(led, _cfg(), log=lambda *a: None)
-    lv = EV.compute_levels(led).set_index("peak_id")
-    assert lv.loc["A", "evidence_level"] == parent_alone == "5a"        # no chan2 from the ion-only row
-    assert "chan2" not in lv.loc["A", "evidence_axes"]
-    assert lv.loc["H", "evidence_level"] == "4d"
+    lv = _private(led)
+    assert lv.loc["A", "evidence_level"] == parent_alone["evidence_level"] and lv.loc["A", "cls"] == 0
+    assert "chan2" not in lv.loc["A", "evidence_axes"]                   # no chan2 from the ion-only row
+    assert lv.loc["H", "cls"] == 1 and "iso" in lv.loc["H", "evidence_axes"].split("|")
     # a corroborating source that names X corroborates the ACID, never the ion-only row
-    lv = EV.compute_levels(led, cross={X}).set_index("peak_id")
-    assert "corroborated" in lv.loc["A", "evidence_axes"] and lv.loc["A", "evidence_level"] == "4b"
-    assert "corroborated" not in lv.loc["H", "evidence_axes"] and lv.loc["H", "evidence_level"] == "4d"
+    lv = EV._series_levels(led, cross={X}).set_index("peak_id")
+    assert "corroborated" in lv.loc["A", "evidence_axes"] and "corroborated" not in lv.loc["H", "evidence_axes"]
+    cls = EV.vote_classes(led, cross={X})
+    by = dict(zip(led.loc[cls.index, "peak_id"], cls))
+    assert by["A"] == 2 and by["H"] == 1
     # and the ion-only row never contributes its neutral to a cross set -- at ANY
     # level (max_level 5b admits every level; the default 4b would hide the rule:
     # both regular rows here are 5a, pinned by nothing of their own)
     only_ion_only = led[led["peak_id"].isin(["H", "H13", "B"])]
-    assert EV.source_neutrals({"f": only_ion_only}, max_level="5b") == {"C8H12O4"}
-    assert EV.source_neutrals({"f": led}, max_level="5b") == {X, "C8H12O4"}
-    assert EV.corroborating_neutrals([led]) == set()          # a 5a sighting corroborates nothing
+    assert EV._source_neutrals({"f": only_ion_only}, max_level="5b") == {"C8H12O4"}
+    assert EV._source_neutrals({"f": led}, max_level="5b") == {X, "C8H12O4"}
+    assert EV.vote_cross_neutrals([led]) == set()            # an exact-mass sighting corroborates nothing
     # the pair table records the flag
-    pairs = EV.level_pooled({"f": EV.trim(led)})
+    pairs = EV._series_pooled({"f": EV.trim(led)})
     assert pairs.set_index(["neutral_formula", "adduct"]).loc[(X, "[M]-."), "ion_only"] == True  # noqa: E712
     assert pairs.set_index(["neutral_formula", "adduct"]).loc[(X, "[M-H]-"), "ion_only"] == False  # noqa: E712
     # a merged ledger (no method column) is recognised by its link
     merged = pd.DataFrame({"neutral_formula": [X, X], "adduct": ["[M-H]-", "[M]-."], "ion_only_of": [pd.NA, "A"]})
     assert EV.is_ion_only(merged).tolist() == [False, True]
-    assert EV.source_neutrals({"m": merged.assign(role="M0")}, max_level="5b") == {X}
-    # ... and a merged ledger read by its stored level leaves the linked row out too
+    assert EV._source_neutrals({"m": merged.assign(role="M0")}, max_level="5b") == {X}
+    # ... and a merged ledger read by its stored (pre-0.10.0) level leaves the linked row out too
     stored = merged.assign(evidence_level=["4b", "4d"], evidence_axes=["iso|files:2", "iso|ion_only|files:2"])
-    assert EV.source_neutrals({"m": stored}) == {X}
+    assert EV._source_neutrals({"m": stored}) == {X}
 
 
 def test_the_reference_script_levels_ion_only_rows_exactly_as_the_core_does():
     led = _ledger()
     CL.commit_ion_only_electron_attachment(led, _cfg(), log=lambda *a: None)
     PP.complete_isotope_envelopes(led, _cfg(), log=lambda *a: None)
-    core = EV.compute_levels(led, cross={X}).merge(led[["peak_id", "neutral_formula", "adduct"]], on="peak_id")
+    core = EV._series_levels(led, cross={X}).merge(led[["peak_id", "neutral_formula", "adduct"]], on="peak_id")
     frame = led.assign(__file="f")
     script = LL.assign_levels(LL.measure_source("f", frame, None), {X})
-    got = {(r.neutral, r.adduct): r.level for r in script.itertuples()}
-    for r in core.itertuples():
-        assert got[(r.neutral_formula, r.adduct)] == r.evidence_level, (r.neutral_formula, r.adduct)
-    assert got[(X, "[M]-.")] == "4d" and got[(X, "[M-H]-")] == "4a"      # iso + corroborated
+    got = {(r.neutral, r.adduct): r for r in script.itertuples()}
+    for r in core.itertuples():                                    # the private decision, alike in both
+        assert got[(r.neutral_formula, r.adduct)].level == r.evidence_level, (r.neutral_formula, r.adduct)
+    assert bool(got[(X, "[M]-.")].ion_only) and bool(got[(X, "[M]-.")].iso)
+    assert bool(got[(X, "[M-H]-")].iso) and not bool(got[(X, "[M-H]-")].ion_only)
     # and the script's cross sets skip ion-only rows too
     frame2 = led[led["peak_id"].isin(["H", "H13", "B"])].assign(__file="g")
     assert set(LL.measure_source("g", frame2, None).query("~ion_only")["neutral"]) == {"C8H12O4"}
@@ -349,7 +360,8 @@ def test_batch_merged_row_carries_the_link_and_the_summary_counts_the_bucket(tmp
         CL.commit_ion_only_electron_attachment(led, _cfg(), log=lambda *a: None)
         PP.complete_isotope_envelopes(led, _cfg(), log=lambda *a: None)
         EV.apply_levels(led)
-        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0},
+        return {"ledger": led, "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
+                                         "degeneracy_cal": {"mu": 0.0, "sigma": 0.3}},   # as a real run persists
                 "plausibility_audit": [], "summaries": {}, "problems": []}
 
     monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
@@ -364,19 +376,31 @@ def test_batch_merged_row_carries_the_link_and_the_summary_counts_the_bucket(tmp
     merged = pd.read_csv(tmp_path / "merged_ledger.csv")
     row = merged[(merged.neutral_formula == X) & (merged.adduct == "[M]-.")]
     assert len(row) == 1 and row.ion_only_of.iloc[0] == "A" and row.tier.iloc[0] == "Candidate"
-    assert row.evidence_level.iloc[0] == "4d"
+    # a batch with no width model reads NA on the evidence scale (not assessed), the bucket included
+    assert row.claim.iloc[0] == "not assessed"
     acid = merged[(merged.neutral_formula == X) & (merged.adduct == "[M-H]-")]
-    assert len(acid) == 1 and pd.isna(acid.ion_only_of.iloc[0]) and acid.evidence_level.iloc[0] == "4b"
+    assert len(acid) == 1 and pd.isna(acid.ion_only_of.iloc[0]) and acid.claim.iloc[0] == "not assessed"
+    ev = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv", keep_default_na=False)
+    assert set(ev["evidence_level"]) == {"NA"}
     summ = json.load(open(tmp_path / "batch_summary.json"))
     io = summ["ion_only"]
     assert io["channels"] == ["[M]-."] and io["merged"] == 1 and io["n_files_with"] == len(seen)
-    assert io["per_file_rows"] == len(seen) and io["merged_levels"] == {"4d": 1}
-    # a Br run opens no channel and reports an empty bucket
+    assert io["per_file_rows"] == len(seen) and io["merged_levels"] == {"NA": 1}
+    # the pooled stage ran (to its class gate: no width model) with every file's persisted calibration
+    assert summ["evidence_levels"]["pooled"] == {"NA": len(ev)} and summ["evidence_levels"]["n_pairs"] == len(ev)
+    assert all(pf["degeneracy_cal"] == {"mu": 0.0, "sigma": 0.3} for pf in summ["per_file"])
+    # a Br run opens no channel and reports an empty bucket; with an Orbitrap-class width model and the
+    # persisted calibrations its pooled stage levels every pair on the scale
     seen.clear()
     AB.run(peaks=pk, ts_peaks=pk, reagent="Br", batch="test batch", out_dir=str(tmp_path / "br"),
-           k_min=2, k_max=3, min_gain=0.0, n_jobs=1, log=lambda *a: None)
+           k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power=100_000, log=lambda *a: None)
     assert all(kw["cfg"].ion_only_channels == () for kw in seen)
-    assert json.load(open(tmp_path / "br" / "batch_summary.json"))["ion_only"]["channels"] == []
+    br = json.load(open(tmp_path / "br" / "batch_summary.json"))
+    assert br["ion_only"]["channels"] == []
+    evb = pd.read_csv(tmp_path / "br" / "tables" / "evidence_levels.csv", keep_default_na=False)
+    assert br["evidence_levels"]["instrument"]["class"] == "orbitrap" and len(evb) > 0
+    assert set(evb["evidence_level"]) <= set(EV.LEVELS) | {"reagent"}
+    assert EV.NO_RUN_WINDOW_TEXT not in set(evb["evidence"])
 
 
 def test_publish_sends_a_null_mechanism_for_the_ion_only_adduct():
@@ -400,9 +424,11 @@ def test_scorecard_counts_the_bucket_on_its_own_and_keeps_it_out_of_the_candidat
     led.loc[led["peak_id"] == "B", "tier"] = "Candidate"
     run = types.SimpleNamespace(ledger=led, ts=None, name="r", channel="c|x", reagent="NO3", path_kind="cover",
                                 code="abc", summary={"n_files": 1}, n_spectra=0, per_file=pd.DataFrame())
+    run.scale = SC.Run.scale.fget(run)               # the real property: the ledger carries the scale's columns
+    assert run.scale
     h = SC.headline(run, pd.DataFrame(columns=["ion_mz"]))
     assert h["assigned"] == 1 and h["candidate"] == 1 and h["ion_only"] == 1
-    assert h["ion_only_levels"] == {"5a": 1}          # no sweep ran here: exact mass only
+    assert h["ion_only_levels"] == {"NA": 1}          # the synthetic file has no width model: not assessed
     assert ("ion_only", "ion-only rows", 0) in SC.KEY_METRICS
     counts = SC._ledger_counts(led, "f")
     assert counts["candidate"] == 1 and counts["assigned"] == 1
@@ -463,8 +489,8 @@ def test_the_final_sweep_never_displaces_an_existing_row_on_behalf_of_an_ion_onl
     led.loc[led["peak_id"] == "H13", "tier"] = "Candidate"
     PP.complete_isotope_envelopes(led, _cfg(), log=lambda *a: None)
     assert _row(led, "H13")["role"] == L.ROLE_M0 and _row(led, "H13")["neutral_formula"] == "C2H7NO3"
-    EV.apply_levels(led)
-    assert led.set_index("peak_id").loc["H", "evidence_level"] == "5a"      # no satellite of its own
+    by = _private(led)
+    assert "iso" not in by.loc["H", "evidence_axes"].split("|") and by.loc["H", "cls"] == 0   # no satellite of its own
     # the same weak row under a REGULAR parent is still displaced (the sweep's own rule):
     # re-commit the acid's 13C peak as a weak M0 of another neutral (A is not locked)
     led2 = _ledger()

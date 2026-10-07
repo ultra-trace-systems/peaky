@@ -332,6 +332,15 @@ columns** (no judgment calls at report time):
   peak-by-peak (isotope-partner / has-constraints / isolated). Presented as a
   *constrained mass*, not a confident formula.
 
+**Beside the tier, an evidence level.** The tier says whether the engine prints
+a formula; the **evidence level** says what the evidence behind a committed
+formula is worth, and the **claim** what a reader may say of it (identified /
+neutral / ion / tentative): 3c (a named compound), 4a (the neutral
+established), 4b (the ion composition established), 5a (a competitor left in
+the calibrated window), 5b (rejected). It is assessed on Orbitrap-class data
+only (`NA` on a TOF), never feeds back into a tier, and is specified in
+[EVIDENCE_LEVELS](EVIDENCE_LEVELS.md).
+
 Reported mass errors carry a **calibrated `ppm_error_cal`** column alongside the
 raw `ppm_error`: an offset-only correction that subtracts the robust median mass
 error of the corroborated pure-organic core, so QC reads and provenance sit on a

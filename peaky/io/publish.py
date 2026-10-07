@@ -545,14 +545,20 @@ _ENGINE_PROVENANCE_COLUMNS = (
     # ... and the setter that made the row a lead (C11+b, ledger.LEAD_SETTERS)
     "lead_by",
     # the evidence level (docs/EVIDENCE_LEVELS.md): what the evidence behind the
-    # formula is worth on the CIMS-adapted Schymanski scale, and why
+    # formula is worth on the evidence scale, and why -- evidence.COLUMNS: the
+    # level, its reasons, what would lift it, the competitors left, the tags,
+    # the context-list entries and how those lists were activated
     "evidence_level",
-    "evidence_axes",
-    "level_reason",
-    "n_plausible_structures",
-    # the claim the level supports (C13): identified / ion / tentative. Never
-    # routed into a tier field -- ENGINE_TIER_MAP reads the legacy tier spelling
-    # 'Identified' as Assigned, which is not this
+    "evidence",
+    "would_lift",
+    "competitors_left",
+    "tags",
+    "context",
+    "context_source",
+    # the claim the level supports: identified / neutral / ion / tentative, or
+    # the reagent / not-assessed bucket. Never routed into a tier field --
+    # ENGINE_TIER_MAP reads the legacy tier spelling 'Identified' as Assigned,
+    # which is not this
     "claim",
     "iso_match_score",
     "compound_score",
@@ -623,6 +629,19 @@ def build_rows(
         dropped_synthetic = int(synthetic.sum())
         frame = frame[~synthetic]
 
+    # A ledger levelled on a scale before the evidence scale carries pre-scale
+    # columns or letters this scale does not define: EVERY letter of it publishes
+    # as no level -- the ones both scales share too (an old 4a is not a 4a of
+    # this scale) -- and the stored claim (read on the old scale) is re-read off
+    # the level, so it reads tentative; never a pre-scale letter under the
+    # current name.
+    levels_before_scale = 0
+    lettered = levelled_before_scale(frame)
+    if lettered is not None:
+        levels_before_scale = int(lettered.sum())
+        frame = frame.assign(evidence_level=frame["evidence_level"].astype(object).where(~lettered, None))
+        if "claim" in frame.columns:
+            frame = frame.drop(columns=["claim"])
     # A ledger written before the claim column (C13) still carries the level the
     # claim is read off: its committed M0 rows publish the claim claim_class
     # derives, every other role none -- the rows a current run stamps.
@@ -631,6 +650,17 @@ def build_rows(
 
         m0 = frame["role"].astype(str) == "M0"
         frame = frame.assign(claim=frame["evidence_level"].map(EV.claim_class).where(m0))
+    # The level token NA (not assessed) is literal, and a ledger read with the
+    # default CSV parser holds NaN in its place: the row's claim ("not
+    # assessed") tells the two apart, so the level is published as written.
+    if "claim" in frame.columns and "evidence_level" in frame.columns:
+        from peaky.assignment import evidence as EV
+
+        lost = frame["evidence_level"].isna() & frame["claim"].astype(object).eq(EV.CLAIM_NA)
+        if lost.any():
+            frame = frame.assign(
+                evidence_level=frame["evidence_level"].astype(object).where(~lost, "NA")
+            )
 
     # An iso_child publishes its owner's formula: Mascope models the family by
     # having the child carry the M0's committed formula, and the child's own
@@ -795,6 +825,9 @@ def build_rows(
         "resolved_mechanisms": resolved_mechanisms,
         "reserved_provenance_dropped": sorted(reserved_seen),
         "exact_plausibility": EXACT_PLAUSIBILITY,
+        # rows of a ledger levelled before the evidence scale: every level letter
+        # published as no level (their claim read on this scale: tentative)
+        "levels_before_scale": levels_before_scale,
     }
     return rows, summary
 
@@ -1391,8 +1424,26 @@ BATCH_CONFIG_KEYS = (
     "n_in_all_files",
     "n_single_file",
     "formula_disagreements",
-    "claims",   # the claim tallies (identified / ion / tentative), beside merged_tiers
+    "claims",   # the claim tallies (the four claims + reagent + not assessed), beside merged_tiers
 )
+
+
+def levelled_before_scale(frame: pd.DataFrame) -> pd.Series | None:
+    """The rows carrying a level letter when `frame` was levelled on a scale
+    before the evidence scale (it carries `evidence_axes` / `level_reason`, or
+    a letter this scale does not define) -- every such letter reads as no level
+    here, the shared ones included; None for a ledger on this scale (or with no
+    level at all)."""
+    if "evidence_level" not in frame.columns:
+        return None
+    from peaky.assignment import evidence as EV
+
+    text = frame["evidence_level"].astype(object)
+    lettered = text.notna() & text.astype(str).str.strip().ne("")
+    unknown = lettered & ~text.astype(str).str.strip().isin(set(EV.LEVEL_ORDER) | set(EV.BUCKETS))
+    if unknown.any() or {"evidence_axes", "level_reason"} & set(frame.columns):
+        return lettered
+    return None
 
 
 def batch_config(
@@ -1404,10 +1455,20 @@ def batch_config(
 
     A summary written before the claim tallies (C13) has no 'claims'; given the
     merged ledger, its merged tally is read off the rows' `claim`, or off their
-    `evidence_level` through claim_class when the ledger predates that too.
+    `evidence_level` through claim_class when the ledger predates that too. A
+    merged ledger levelled before the evidence scale has no level of this scale
+    (`levelled_before_scale`): its recorded tally (read on the old scale) is
+    replaced by every row tentative, and `levels_before_scale` says how many
+    letters were read so.
     """
     config = {k: summary[k] for k in BATCH_CONFIG_KEYS if summary and k in summary}
-    if "claims" not in config and merged is not None:
+    old = levelled_before_scale(merged) if merged is not None else None
+    if old is not None:
+        from peaky.assignment import evidence as EV
+
+        config["claims"] = {"merged": EV.summarize_claims([EV.claim_class(None)] * len(merged))}
+        config["levels_before_scale"] = int(old.sum())
+    elif "claims" not in config and merged is not None:
         from peaky.assignment import evidence as EV
 
         if "claim" in merged.columns:

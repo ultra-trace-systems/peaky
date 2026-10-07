@@ -9,9 +9,9 @@ them the same way so the sessions can be compared:
                            series never carries — a stamping defect, not a
                            chemistry question)
     how good is it         the brightest 50 ions with their reading, tier,
-                           evidence level and axes — every bright ion is either
+                           evidence level and claim — every bright ion is either
                            explained or a named miss; the best-evidence 50; the
-                           level and axes histograms; the roster recall; the
+                           level vector; the roster recall; the
                            element census; the DECOY false-discovery bound (the
                            engine run offline on m/z-shifted input, and on the
                            wrong adduct set); falsification survival (the 13C
@@ -25,12 +25,15 @@ them the same way so the sessions can be compared:
                            and by its own evidence), or the other path on the
                            same batch, found and this run did not
 
-Beside the tier, every committed reading carries the CLAIM its evidence level
-supports (identified 1-4a / ion 4b-4d / tentative 5a, 5b, none): §0 counts it
-by merged row and by committed per-file M0 signal, crosses it with the tier,
-lists the rows where the two disagree and splits the identified rows by the
-channel's own evidence. The acceptance metrics read the identified class; every
-older metric keeps its key and meaning beside it.
+Beside the tier, every committed reading carries the CLAIM its level on the
+evidence scale of peaky 0.10.0 supports: identified (3c), neutral (4a), ion
+(4b), tentative (5a, 5b, none), and two buckets reported beside them, reagent
+and not assessed (NA: the instrument class is not assessed). §0 counts it by
+merged row and by committed per-file M0 signal, crosses it with the tier and
+lists the rows where the two disagree. The acceptance metrics read the
+identified class; every older metric keeps its key beside it. A board row
+carries `claims_schema` 2; rows written on the pre-0.10.0 scale (schema 1) or
+before the claim (none) still render, and no delta is taken across scales.
 
     python scripts/scorecard.py <run_dir>... [--levels levels.csv]
         [--other <run_dir>] [--other-instrument <run_dir>]
@@ -39,9 +42,11 @@ older metric keeps its key and meaning beside it.
 Per run: `<out>/<run name>/SCORECARD.md` and `scorecard.json` (and the decoy
 arms' engine ledgers under `decoy/`), one row appended to
 `<out>/scoreboard.jsonl`, and `<out>/SCOREBOARD.md` + `scoreboard.html`
-regenerated over every channel's latest row with its delta. The level column
-comes from `scripts/level_ledger.py` (run in-process) until the in-core
-`evidence_level` column exists, which is then preferred.
+regenerated over every channel's latest row with its delta. The level is the
+merged ledger's in-core `evidence_level` when the run wrote the scale's columns;
+a run made before the scale is levelled post hoc by `scripts/level_ledger.py`
+(in-process, the same fact layer); a decoy arm is levelled in its run's context
+exactly as the reference levels it (adapted, and strict in a field of its own).
 
 Never read `tables/residual_bins.csv` for the misses: it lists only the bins
 absent from every cover file, and every headline miss of the first cut sat
@@ -71,7 +76,7 @@ if REPO not in sys.path:
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-import level_ledger as LL  # noqa: E402  (scripts/level_ledger.py)
+import level_ledger as LL  # noqa: E402  (scripts/level_ledger.py: the scale's executable reference)
 from peaky.assignment import evidence as EV  # noqa: E402
 from peaky.chem import chemistry as C  # noqa: E402
 from peaky.paths import pkg_data  # noqa: E402
@@ -79,11 +84,20 @@ from peaky.paths import pkg_data  # noqa: E402
 __version__ = "0.1.0"
 
 DEFAULT_OUT = os.path.expanduser("~/peaky-output/scoreboard")
-LEVELS = [k for k in LL.LEVEL_ORDER if k not in ("1", "2a")]  # 2b .. 5b
-# "best evidence" = level <= 4a = the levels of the identified claim (EV.CLAIM_IDENTIFIED)
+LEVELS = list(EV.LEVELS) + list(EV.BUCKETS)   # the level vector: 3c 4a 4b 5a 5b reagent NA
+# the pre-0.10.0 vector a schema-1 board row carries (rendered as it was, never diffed against the scale's)
+OLD_LEVELS = ["2b", "3a", "3b", "4a", "4b", "4c", "4d", "5a", "5b"]
+# "best evidence" = the levels of the identified claim (EV.CLAIM_IDENTIFIED): 3c
 GOOD_LEVELS = {lv for lv in LEVELS if EV.claim_class(lv) == "identified"}
-CLAIM_LEVELS = {"identified": "1-4a", "ion": "4b-4d", "tentative": "5a, 5b, none"}
-CLAIMS_SCHEMA = 1       # board rows carrying the claim keys; older rows have none
+# the neutral established: identified + neutral (3c, 4a)
+ESTABLISHED_LEVELS = {lv for lv in LEVELS if EV.claim_class(lv) in ("identified", "neutral")}
+# M3: the other instrument's rows at level <= 4b
+M3_LEVELS = {lv for lv in LEVELS if EV.claim_class(lv) in ("identified", "neutral", "ion")}
+CLAIM_KEYS = list(EV.CLAIM_KEYS)               # identified neutral ion tentative + reagent, not assessed
+CLAIM_LEVELS = {"identified": "3c", "neutral": "4a", "ion": "4b", "tentative": "5a, 5b, none",
+                "reagent": "reagent bucket", "not assessed": "NA"}
+CLAIMS_SCHEMA = 2       # 2: the evidence scale of peaky 0.10.0; 1: the pre-0.10.0 scale; none: before the claim
+C13_PER_CARBON = 0.0107  # the 13C satellite per carbon (falsification)
 BARE = {"[M-H]-", "[M+H]+"}
 TOP_N = 50
 PRESENCE = 0.5          # M1: a track present in >= this share of spectra
@@ -221,6 +235,12 @@ class Run:
         return f"{slug}|{self.reagent}|{self.path_kind}"
 
     @property
+    def scale(self) -> bool:
+        """True when the merged ledger carries the columns of the evidence scale of peaky 0.10.0 (its
+        `evidence_level` is then the scale's; a run made before it carries the pre-0.10.0 level, never read)."""
+        return set(EV.COLUMNS) <= set(self.ledger.columns)
+
+    @property
     def code(self) -> str:
         """`<package version> <git commit>` from run_manifest.json (`code.package_version`,
         `code.git.commit`; older shapes read too)."""
@@ -230,16 +250,26 @@ class Run:
         return f"{pkg} {str(git)[:9]}".strip()
 
 
+def read_ledger(path: str) -> pd.DataFrame:
+    """A ledger CSV with its `evidence_level` read literally: the scale writes the bucket `NA` as text, which
+    pandas' default parser would turn into NaN (no level); an empty cell stays NaN."""
+    frame = pd.read_csv(path, low_memory=False)
+    if "evidence_level" in frame.columns:
+        lv = pd.read_csv(path, usecols=["evidence_level"], keep_default_na=False, dtype=str)["evidence_level"]
+        frame["evidence_level"] = lv.where(lv != "", np.nan).values
+    return frame
+
+
 def load_run(path: str) -> Run:
     path = resolve_run_dir(path)
-    ledger = pd.read_csv(os.path.join(path, "merged_ledger.csv"), low_memory=False)
+    ledger = read_ledger(os.path.join(path, "merged_ledger.csv"))
     summary = _read_json(os.path.join(path, "batch_summary.json"))
     manifest = _read_json(os.path.join(path, "run_manifest.json"))
     ts_path = os.path.join(path, "per_file", "_batch_ts.parquet")
     ts = pd.read_parquet(ts_path) if os.path.isfile(ts_path) else None
     frames = []
     for f in sorted(glob.glob(os.path.join(path, "per_file", "*_ledger.csv"))):
-        frame = pd.read_csv(f, low_memory=False)
+        frame = read_ledger(f)
         frame["__file"] = re.sub(r"_ledger\.csv$", "", os.path.basename(f))
         frames.append(frame)
     per_file = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -346,7 +376,7 @@ def as_list(value) -> list:
     try:
         parsed = json.loads(value)
     except ValueError:
-        return LL.as_list(value)
+        return EV.as_list(value)
     return parsed if isinstance(parsed, list) else []
 
 
@@ -406,98 +436,68 @@ def unstamped_tracks(run: Run) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # levels
 # ---------------------------------------------------------------------------
-def levels_for(run: Run, levels_csv: str | None, corroborate: list[str]) -> pd.DataFrame:
-    """One row per (neutral, adduct) with `level`, `n_axes` and the axes.
+LEVEL_FRAME = ["neutral", "adduct", "level", "would_lift", "source"]
 
-    Prefers an in-core `evidence_level` column on the merged ledger; else the
-    CSV `scripts/level_ledger.py --out` wrote; else levels the run in-process,
-    corroborated by the run dirs in `corroborate` (the other instrument)."""
+
+def levels_for(run: Run, levels_csv: str | None, corroborate: list[str], log=lambda *a: None) -> pd.DataFrame:
+    """One row per (neutral, adduct) with its `level` on the evidence scale of peaky 0.10.0 and what would lift it.
+
+    The merged ledger's in-core level when the run wrote the scale's columns (`source` in-core); else the CSV
+    `scripts/level_ledger.py --out` wrote (`csv`; a CSV of the pre-0.10.0 script is refused); else the run
+    levelled post hoc by `scripts/level_ledger.py` in-process (`post-hoc`), with the run dirs in `corroborate`
+    (the other instrument) as other-source partners -- a tag, never a level."""
     led = run.ledger
-    if "evidence_level" in led.columns:
-        out = led[["neutral_formula", "adduct", "evidence_level"]].rename(
-            columns={"neutral_formula": "neutral", "evidence_level": "level"}
-        )
-        axes = col(led, "evidence_axes", "")
-        out["axes"] = axes.fillna("").astype(str)
-        # the in-core string lists the four axes first, then modifiers
-        # (multiline / carbon / branch / reagent_only_iso / known:<fam> / files:<n>)
-        # -- only the axes count
-        out["n_axes"] = out["axes"].map(
-            lambda s: len([a for a in re.split(r"[|,;]", s)
-                           if a in ("iso", "chan2", "anchor", "corroborated")]))
-        out["source"] = "in-core"
+    if run.scale:
+        out = pd.DataFrame({"neutral": led["neutral_formula"], "adduct": led["adduct"],
+                            "level": led["evidence_level"], "would_lift": col(led, "would_lift", ""),
+                            "source": "in-core"})
         return out.drop_duplicates(["neutral", "adduct"])
     if levels_csv:
-        df = pd.read_csv(levels_csv, low_memory=False)
+        df = read_ledger(levels_csv)
+        if "evidence_level" not in df.columns:
+            raise SystemExit(f"--levels {levels_csv}: no evidence_level column (a pre-0.10.0 levels table); "
+                             "re-level with scripts/level_ledger.py")
         if "source" in df.columns and run.name in set(df["source"]):
             df = df[df["source"] == run.name]
+        src = "csv"
     else:
-        if run.per_file.empty and "role" not in led.columns:
-            return pd.DataFrame(columns=["neutral", "adduct", "level", "n_axes", "axes"])
-        df = LL.run([run.path], list(corroborate))
-        if not df.empty and "source" in df.columns:
-            df = df[df["source"] == run.name] if run.name in set(df["source"]) else df
+        if run.per_file.empty:
+            return pd.DataFrame(columns=LEVEL_FRAME)
+        df = LL.run([run.path], list(corroborate), log=log)
+        df["evidence_level"] = df["evidence_level"].where(df["evidence_level"].astype(str) != "", np.nan)
+        src = "post-hoc"
     if df.empty:
-        return pd.DataFrame(columns=["neutral", "adduct", "level", "n_axes", "axes"])
-    axes_cols = [c for c in ("iso", "chan2", "anchor", "corroborated") if c in df.columns]
-    df = df.copy()
-    df["axes"] = df.apply(lambda r: ",".join(c for c in axes_cols if LL.truthy(r[c])), axis=1)
-    if "n_axes" not in df.columns:
-        df["n_axes"] = df["axes"].map(lambda s: len([a for a in s.split(",") if a]))
-    keep = ["neutral", "adduct", "level", "n_axes", "axes"] + [c for c in ("known_fam",) if c in df.columns]
-    return df[keep].drop_duplicates(["neutral", "adduct"])
+        return pd.DataFrame(columns=LEVEL_FRAME)
+    out = pd.DataFrame({"neutral": df["neutral_formula"].astype(str).values, "adduct": df["adduct"].astype(str).values,
+                        "level": df["evidence_level"].values, "would_lift": col(df, "would_lift", "").values,
+                        "source": src})
+    return out.drop_duplicates(["neutral", "adduct"])
 
 
-def own_levels_for(run: Run) -> pd.DataFrame:
-    """One row per (neutral, adduct) the run's per-file ledgers commit, levelled
-    on the run's OWN evidence: its files pooled as one source with NO cross set
-    and its own neutral-pair, label-twin and isotope-check tables (`evidence.level_pooled`;
-    rules U and K, the C11+ checks and rule H's locks are the run's own evidence, not a corroboration)
-    -- the level a `--corroborate` source is judged by
-    (docs/EVIDENCE_LEVELS.md §6.4). The merged ledger's in-core level can owe a
-    rung to the run's own `--corroborate` source, and for M3 that source is the
-    run being scored (two instruments corroborate each other), so the in-core
-    level would count the scored run's agreement as the other's finding."""
-    pf = run.per_file
-    empty = pd.DataFrame(columns=["neutral", "adduct", "level", "n_axes", "axes", "source"])
-    if pf is None or pf.empty or "role" not in pf.columns:
+def own_levels_for(run: Run, log=lambda *a: None) -> pd.DataFrame:
+    """One row per (neutral, adduct) the run's per-file ledgers commit, levelled on the run's OWN evidence: its
+    files pooled as one source with no other-source partners (`evidence.level_source` on
+    `evidence.source_from_run_dir`, the pooled entry the batch itself uses; a run made before the scale is
+    levelled the same way). Ion-only readings are left out. The level a run's in-core stage gave can owe a series
+    anchor to its own --corroborate partners -- for M3 the run being scored -- so M3 is counted on this too."""
+    empty = pd.DataFrame(columns=LEVEL_FRAME)
+    if run.per_file is None or run.per_file.empty or "role" not in run.per_file.columns:
         return empty
-    frames = {k: EV.trim(g) for k, g in pf.groupby("__file", sort=True)}
-    # the run's neutral pair (rule U) is its OWN evidence: read the batch's table
-    upair = set()
-    table = os.path.join(run.path, "tables", "neutral_pairs.csv")
-    if os.path.isfile(table):
-        t = pd.read_csv(table)
-        if "upair" in t.columns:
-            upair = set(t.loc[t["upair"].map(EV.truthy), "neutral_formula"].astype(str))
-    # ... and so are its labelled-nitrate twin facts (rule K)
-    label = None
-    table = os.path.join(run.path, "tables", "label_twins.csv")
-    if os.path.isfile(table):
-        from peaky.batch import label_twins as LT
-        label = LT.facts(pd.read_csv(table))
-    # ... and its isotope checks (C11+; their vetoes and rule H's locks): measured on its own time series
-    iso = None
-    table = os.path.join(run.path, "tables", "iso_checks.csv")
-    if os.path.isfile(table):
-        from peaky.batch import iso_checks as IC
-        iso = IC.facts(pd.read_csv(table))
-    # ... and its width model (the isotope children's committed line and 'M+n' window, C11+c)
-    resolution = (getattr(run, "summary", None) or {}).get("resolution")
-    pairs = EV.level_pooled(frames, cross=None, upair=upair, label=label, iso=iso, resolution=resolution)
+    pairs = EV.level_source(EV.source_from_run_dir(run.path))
     if pairs.empty:
         return empty
-    pairs = pairs[~pairs["ion_only"].astype(bool)]
-    out = pairs[["neutral_formula", "adduct", "evidence_level", "evidence_axes"]].rename(
-        columns={"neutral_formula": "neutral", "evidence_level": "level", "evidence_axes": "axes"})
-    out["n_axes"] = out["axes"].map(
-        lambda s: len([a for a in str(s).split("|") if a in ("iso", "chan2", "anchor", "corroborated")]))
-    out["source"] = "own"
+    if "ion_only_reading" in pairs.columns:
+        pairs = pairs[~pairs["ion_only_reading"].map(EV.truthy).astype(bool)]
+    out = pd.DataFrame({"neutral": pairs["neutral_formula"].astype(str).values,
+                        "adduct": pairs["adduct"].astype(str).values,
+                        "level": pairs["evidence_level"].where(pairs["evidence_level"].astype(str) != "", np.nan).values,
+                        "would_lift": col(pairs, "would_lift", "").values, "source": "own"})
     return out.drop_duplicates(["neutral", "adduct"])
 
 
 def level_vector(levels: pd.DataFrame) -> dict:
-    counts = levels["level"].value_counts() if "level" in levels.columns else pd.Series(dtype=int)
+    """{level: n} over 3c 4a 4b 5a 5b reagent NA (zeros kept)."""
+    counts = levels["level"].astype(str).value_counts() if "level" in levels.columns else pd.Series(dtype=int)
     return {k: int(counts.get(k, 0)) for k in LEVELS}
 
 
@@ -506,11 +506,10 @@ def level_rank(level) -> int:
 
 
 def claim_of(level) -> str:
-    """The claim a level supports (`evidence.claim_class`): identified (1-4a),
-    ion (4b-4d) or tentative (5a, 5b, no level). A blank or 'nan' cell -- what a
-    CSV round trip leaves of a missing level -- reads as no level. The card
-    always derives the claim from the level: runs made before the `claim`
-    column existed carry none."""
+    """The claim a level supports (`evidence.claim_class`): identified (3c), neutral (4a), ion (4b), tentative
+    (5a, 5b, no level), and the buckets reagent and not assessed (NA). A blank or 'nan' cell -- what a CSV round
+    trip leaves of a missing level -- reads as no level; the literal `NA` is not assessed. The card always
+    derives the claim from the level."""
     if isinstance(level, str) and level.strip().lower() in ("", "nan", "none", "<na>"):
         level = None
     return EV.claim_class(level)
@@ -560,7 +559,8 @@ def headline(run: Run, ions: pd.DataFrame) -> dict:
         "assigned": int((tier == "Assigned").sum()),
         "candidate": int(((tier == "Candidate") & ~ion_only).sum()),
         "ion_only": int(ion_only.sum()),
-        "ion_only_levels": col(led, "evidence_level", "")[ion_only].fillna("").astype(str).value_counts().to_dict() if ion_only.any() else {},
+        "ion_only_levels": (col(led, "evidence_level", "")[ion_only].fillna("").astype(str).value_counts().to_dict()
+                            if ion_only.any() and run.scale else {}),
         "neutrals": int(col(led, "neutral_formula").dropna().nunique()),
         "neutrals_assigned": int(led.loc[tier == "Assigned", "neutral_formula"].dropna().nunique()) if "neutral_formula" in led.columns else 0,
         "by_stage": col(led, "stage", "cover").fillna("cover").value_counts().to_dict(),
@@ -627,7 +627,7 @@ def stamp_coverage(run: Run, ions: pd.DataFrame) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 0. the claim: identified / ion / tentative
+# 0. the claim: identified / neutral / ion / tentative (+ reagent, not assessed)
 # ---------------------------------------------------------------------------
 TIER_BUCKETS = ("Assigned", "Candidate", "ion-only")
 
@@ -645,11 +645,11 @@ def tier_bucket(tier: pd.Series, ion_only: pd.Series) -> pd.Series:
 
 
 def merged_claims(run: Run, levels: pd.DataFrame) -> pd.DataFrame:
-    """One row per merged row: its level (the in-core `evidence_level`, else
-    the `levels` join), the claim derived from it, the tier bucket, and the
-    stored `claim` cell when the run wrote one."""
+    """One row per merged row: its level (the in-core `evidence_level` of a run on the scale, else the `levels`
+    join), the claim derived from it, the tier bucket, and the stored `claim` cell when the run wrote one on the
+    scale (a pre-0.10.0 claim is not read)."""
     led = run.ledger
-    if "evidence_level" in led.columns:
+    if run.scale:
         level = led["evidence_level"]
     else:
         lv = level_map(levels)
@@ -662,7 +662,7 @@ def merged_claims(run: Run, levels: pd.DataFrame) -> pd.DataFrame:
     }, index=led.index)
     out["claim"] = level.map(claim_of)
     out["bucket"] = tier_bucket(out["tier"], ion_only_mask(led))
-    if "claim" in led.columns:
+    if run.scale and "claim" in led.columns:
         out["stored"] = led["claim"].map(lambda v: str(v) if is_str(v) else None)
     return out
 
@@ -690,12 +690,13 @@ def per_file_signal(run: Run, merged: pd.DataFrame) -> pd.DataFrame:
 def stamp_mismatch(run: Run, merged: pd.DataFrame) -> dict:
     """Rows whose stored `claim` differs from the one derived from their level
     (a per-file row other than M0 should carry none). None where the run wrote
-    no `claim` column -- it predates the column; expected 0 otherwise."""
+    no `claim` column on the scale -- it predates it; expected 0 otherwise."""
     out = {"merged": None, "per_file": None}
     if "stored" in merged.columns:
         out["merged"] = int((merged["stored"].fillna("") != merged["claim"]).sum())
     pf = run.per_file
-    if pf is not None and not pf.empty and "claim" in pf.columns and "role" in pf.columns:
+    if run.scale and pf is not None and not pf.empty and "claim" in pf.columns and "role" in pf.columns \
+            and "evidence_level" in pf.columns:
         stored = pf["claim"].map(lambda v: str(v) if is_str(v) else "")
         m0 = pf["role"] == "M0"
         derived = col(pf, "evidence_level").map(claim_of).where(m0, "")
@@ -703,15 +704,14 @@ def stamp_mismatch(run: Run, merged: pd.DataFrame) -> dict:
     return out
 
 
-def claims(run: Run, levels: pd.DataFrame, own: pd.DataFrame | None = None) -> dict:
+def claims(run: Run, levels: pd.DataFrame) -> dict:
     """The claim each committed reading supports, beside its tier: merged rows
     per class and the tier x claim crosstab (rows and signal); the committed
     per-file M0 signal per class, with the readings no merged row carries as an
-    explicit `unmatched` bucket; the rows where tier and claim disagree; and how
-    many identified rows the channel identifies ALONE (`own`, its per-file
-    ledgers levelled with no cross set) against those that owe the class to the
-    corroborating source. The acceptance metrics read the identified class; the
-    tier is a separate verdict and is never changed from it."""
+    explicit `unmatched` bucket; and the rows where tier and claim disagree.
+    The classes are the four claims and the two buckets reported beside them
+    (reagent, not assessed). The acceptance metrics read the identified class;
+    the tier is a separate verdict and is never changed from it."""
     led = run.ledger
     merged = merged_claims(run, levels)
     sig = per_file_signal(run, merged)
@@ -722,19 +722,21 @@ def claims(run: Run, levels: pd.DataFrame, own: pd.DataFrame | None = None) -> d
     def share(mask) -> float:
         return pct(float(sig.loc[mask, "height"].sum()), committed) if committed else float("nan")
 
-    by_rows = {b: {c: int(((merged["bucket"] == b) & (merged["claim"] == c)).sum()) for c in EV.CLAIMS} for b in TIER_BUCKETS}
-    by_signal = {b: {c: share((sig["bucket"] == b) & (sig["claim"] == c)) for c in EV.CLAIMS} for b in TIER_BUCKETS}
+    by_rows = {b: {c: int(((merged["bucket"] == b) & (merged["claim"] == c)).sum()) for c in CLAIM_KEYS} for b in TIER_BUCKETS}
+    by_signal = {b: {c: share((sig["bucket"] == b) & (sig["claim"] == c)) for c in CLAIM_KEYS} for b in TIER_BUCKETS}
     signal = {
         "committed": committed,
         "n_m0": int(len(sig)),
         "n_unmatched": int((sig["claim"] == "unmatched").sum()),
-        "share": {c: share(sig["claim"] == c) for c in (*EV.CLAIMS, "unmatched")},
-        "share_assigned": {c: share((sig["claim"] == c) & (sig["bucket"] == "Assigned")) for c in EV.CLAIMS},
+        "share": {c: share(sig["claim"] == c) for c in (*CLAIM_KEYS, "unmatched")},
+        "share_assigned": {c: share((sig["claim"] == c) & (sig["bucket"] == "Assigned")) for c in CLAIM_KEYS},
     }
     # the signal each merged row's reading carries over the per-file ledgers
     pair_h = sig.groupby(["neutral", "adduct"])["height"].sum().to_dict() if len(sig) else {}
     row_share = pd.Series([pct(pair_h.get(k, 0.0), committed) if committed else float("nan")
                            for k in zip(merged["neutral"], merged["adduct"])], index=merged.index)
+    lift = {(str(n), str(a)): str(w) for n, a, w in zip(levels.get("neutral", []), levels.get("adduct", []),
+                                                         levels.get("would_lift", [])) if is_str(w)}
 
     def row_of(i, kind: str | None = None) -> dict:
         r = led.loc[i]
@@ -744,7 +746,7 @@ def claims(run: Run, levels: pd.DataFrame, own: pd.DataFrame | None = None) -> d
             "tier": merged.at[i, "tier"], "level": merged.at[i, "level"], "claim": merged.at[i, "claim"],
             "n_files": int(r["n_files"]) if pd.notna(r.get("n_files")) else None,
             "signal_share": float(row_share.at[i]),
-            "level_reason": str(r["level_reason"]) if is_str(r.get("level_reason")) else "",
+            "would_lift": lift.get((merged.at[i, "neutral"], merged.at[i, "adduct"]), ""),
             "tier_reason": str(r["tier_reason"]) if is_str(r.get("tier_reason")) else "",
         }
         if kind:
@@ -755,43 +757,11 @@ def claims(run: Run, levels: pd.DataFrame, own: pd.DataFrame | None = None) -> d
     c_i = merged.index[(merged["bucket"] == "Candidate") & (merged["claim"] == "identified")]
     dis = [row_of(i, "Assigned but tentative") for i in a_t] + [row_of(i, "Candidate but identified") for i in c_i]
     dis.sort(key=lambda r: -(r["signal_share"] if np.isfinite(r["signal_share"]) else -1.0))
-
-    # corroboration: the identified rows whose class survives on the channel's
-    # own evidence, and those that reach it only with the corroborating source
-    corr = None
-    if own is not None and run.per_file is not None and not run.per_file.empty:
-        own_lv = level_map(own)
-        own_axes = dict(zip(zip(own["neutral"].astype(str), own["adduct"].astype(str)), own["axes"].astype(str))) if not own.empty else {}
-        ident = merged.index[merged["claim"] == "identified"]
-        own_level = pd.Series([own_lv.get((merged.at[i, "neutral"], merged.at[i, "adduct"])) for i in ident], index=ident, dtype=object)
-        alone = own_level.map(claim_of) == "identified"
-        via = ident[~alone.values]
-        via_levels = own_level[via].map(lambda v: str(v) if is_str(v) else "(none)").value_counts()
-        axes = col(led, "evidence_axes", "")
-        rows = []
-        for i in via:
-            rr = row_of(i)
-            k = (rr["neutral"], rr["adduct"])
-            rows.append({"mz": rr["mz"], "neutral": rr["neutral"], "adduct": rr["adduct"], "tier": rr["tier"],
-                         "level": rr["level"], "own_level": str(own_lv[k]) if is_str(own_lv.get(k)) else "",
-                         "axes": str(axes.at[i]) if is_str(axes.at[i]) else "", "own_axes": own_axes.get(k, ""),
-                         "signal_share": rr["signal_share"]})
-        rows.sort(key=lambda r: -(r["signal_share"] if np.isfinite(r["signal_share"]) else -1.0))
-        ev = run.summary.get("evidence_levels") or {}
-        corr = {
-            "identified": int(len(ident)),
-            "own_identified": int(alone.sum()),
-            "via_cross": int(len(via)),
-            "via_cross_own_levels": {str(k): int(v) for k, v in via_levels.items()},
-            "own_5b_identified": int((own_level.astype(str) == "5b").sum()),
-            "own_5b_rows": [f"{r['neutral']} {r['adduct']}" for r in rows if r["own_level"] == "5b"][:12],
-            "sources": [os.path.basename(str(s).rstrip("/")) for s in (ev.get("cross_source") or [])],
-            "n_corroborate": ev.get("n_corroborate"),
-            "rows": rows[:40],
-        }
     return {
+        "scale": f"peaky {EV.SCALE_RELEASE}",
         "meaning": dict(EV.CLAIM_MEANING),
         "levels": dict(CLAIM_LEVELS),
+        "level_source": str(levels["source"].iloc[0]) if len(levels) and "source" in levels.columns else None,
         "n_rows": int(len(merged)),
         "rows": EV.summarize_claims(merged["claim"]),
         "by_tier": {"rows": by_rows, "signal": by_signal},
@@ -801,7 +771,6 @@ def claims(run: Run, levels: pd.DataFrame, own: pd.DataFrame | None = None) -> d
             "candidate_identified": int(len(c_i)),
             "rows": dis[:60],
         },
-        "corroboration": corr,
         "stamp_mismatch": int(sum(checked)) if checked else None,
         "stamp_mismatch_by_ledger": mismatch,
     }
@@ -812,10 +781,12 @@ def claims(run: Run, levels: pd.DataFrame, own: pd.DataFrame | None = None) -> d
 # ---------------------------------------------------------------------------
 def brightest(run: Run, ions: pd.DataFrame, tracks: pd.DataFrame, levels: pd.DataFrame, n: int = TOP_N) -> dict:
     """The n brightest stamped ions (median height over the batch) with their
-    reading, tier, level and axes; and how many of the batch's n brightest
-    TRACKS overall are unstamped (those are named in M1)."""
+    reading, tier, level and claim; and how many of the batch's n brightest
+    TRACKS overall are unstamped (those are named in M1). A bright M0 not
+    assessed (NA) is counted apart from the ones not identified."""
     if ions.empty:
-        return {"rows": [], "m0_not_assigned": 0, "m0_not_identified": 0, "unstamped_in_top": 0, "n": 0}
+        return {"rows": [], "m0_not_assigned": 0, "m0_not_identified": 0, "m0_not_assessed": 0,
+                "unstamped_in_top": 0, "n": 0}
     lv = levels.set_index(["neutral", "adduct"]) if not levels.empty else None
     top = ions.sort_values("med_h", ascending=False).head(n)
     # the ion-only bucket (`[M]-.` rows carrying an `ion_only_of` link on the merged
@@ -829,11 +800,11 @@ def brightest(run: Run, ions: pd.DataFrame, tracks: pd.DataFrame, levels: pd.Dat
         io_pairs = set(zip(led.loc[io, "neutral_formula"].astype(str), col(led, "adduct", "").astype(str)[io]))
     rows = []
     for r in top.itertuples():
-        level, axes = "", ""
+        level = ""
         if lv is not None and is_str(r.neutral) and (r.neutral, r.adduct) in lv.index:
             hit = lv.loc[(r.neutral, r.adduct)]
             hit = hit.iloc[0] if isinstance(hit, pd.DataFrame) else hit
-            level, axes = str(hit["level"]), str(hit["axes"])
+            level = str(hit["level"]) if is_str(hit["level"]) else ""
         ion_only = is_str(r.neutral) and (str(r.neutral), str(r.adduct)) in io_pairs
         rows.append(
             {
@@ -846,7 +817,6 @@ def brightest(run: Run, ions: pd.DataFrame, tracks: pd.DataFrame, levels: pd.Dat
                 "adduct": str(r.adduct) if is_str(r.adduct) else "",
                 "tier": str(r.tier) if is_str(r.tier) else "",
                 "level": level,
-                "axes": axes,
                 "suspect": bool(r.suspect),
                 "ion_only": bool(ion_only),
                 # only a committed M0 reading makes a claim; one with no level reads tentative
@@ -854,7 +824,9 @@ def brightest(run: Run, ions: pd.DataFrame, tracks: pd.DataFrame, levels: pd.Dat
             }
         )
     m0_not_assigned = sum(1 for r in rows if r["role"] == "M0" and r["tier"] != "Assigned" and not r["ion_only"])
-    m0_not_identified = sum(1 for r in rows if r["role"] == "M0" and r["claim"] != "identified" and not r["ion_only"])
+    m0_not_identified = sum(1 for r in rows if r["role"] == "M0" and r["claim"] not in ("identified", EV.CLAIM_NA)
+                            and not r["ion_only"])
+    m0_not_assessed = sum(1 for r in rows if r["role"] == "M0" and r["claim"] == EV.CLAIM_NA and not r["ion_only"])
     # the batch's brightest tracks overall: stamped ions and unstamped tracks together
     all_tracks = pd.concat(
         [
@@ -868,6 +840,7 @@ def brightest(run: Run, ions: pd.DataFrame, tracks: pd.DataFrame, levels: pd.Dat
         "n": len(rows),
         "m0_not_assigned": int(m0_not_assigned),
         "m0_not_identified": int(m0_not_identified),
+        "m0_not_assessed": int(m0_not_assessed),
         "ion_only_in_top": int(sum(1 for r in rows if r["ion_only"])),
         "by_role": {k: int(v) for k, v in pd.Series([r["role"] for r in rows]).value_counts().items()},
         "unstamped_in_top": int((all_tracks["kind"] == "unstamped").sum()),
@@ -875,16 +848,16 @@ def brightest(run: Run, ions: pd.DataFrame, tracks: pd.DataFrame, levels: pd.Dat
 
 
 def best_evidence(run: Run, ions: pd.DataFrame, levels: pd.DataFrame, n: int = TOP_N) -> dict:
-    """The n best-evidence M0 rows: level <= 4a first, then most axes, then
-    brightest; plus the level and axes histograms over every levelled row."""
+    """The n best-evidence M0 rows: in level order (3c first), then brightest;
+    plus the level vector and the claims over every levelled row."""
     if levels.empty:
-        return {"rows": [], "levels": level_vector(levels), "axes_hist": {}, "n_good": 0,
+        return {"rows": [], "levels": level_vector(levels), "n_good": 0, "n_established": 0, "n_levelled": 0,
                 "by_claim": EV.summarize_claims([])}
     m0 = ions[ions["role"] == "M0"][["neutral", "adduct", "ion_mz", "med_h", "n", "tier"]] if not ions.empty else pd.DataFrame()
     df = levels.merge(m0, on=["neutral", "adduct"], how="left") if not m0.empty else levels.assign(ion_mz=np.nan, med_h=np.nan, n=np.nan, tier="")
     df["rank"] = df["level"].map(level_rank)
     df["good"] = df["level"].isin(GOOD_LEVELS)
-    top = df.sort_values(["good", "n_axes", "med_h"], ascending=[False, False, False]).head(n)
+    top = df.sort_values(["rank", "med_h"], ascending=[True, False], na_position="last").head(n)
     rows = [
         {
             "neutral": str(r.neutral),
@@ -893,17 +866,17 @@ def best_evidence(run: Run, ions: pd.DataFrame, levels: pd.DataFrame, n: int = T
             "med_cps": float(r.med_h) if pd.notna(r.med_h) else None,
             "in": f"{int(r.n)}/{run.n_spectra}" if pd.notna(r.n) else "",
             "tier": str(r.tier) if is_str(r.tier) else "",
-            "level": str(r.level),
+            "level": str(r.level) if is_str(r.level) else "",
             "claim": claim_of(r.level),
-            "axes": str(r.axes),
+            "would_lift": str(r.would_lift)[:120] if is_str(getattr(r, "would_lift", "")) else "",
         }
         for r in top.itertuples()
     ]
     return {
         "rows": rows,
         "levels": level_vector(levels),
-        "axes_hist": {int(k): int(v) for k, v in levels["n_axes"].value_counts().sort_index().items()},
         "n_good": int(df["good"].sum()),
+        "n_established": int(df["level"].isin(ESTABLISHED_LEVELS).sum()),
         "n_levelled": int(len(df)),
         "by_claim": EV.summarize_claims(levels["level"].map(claim_of)),
     }
@@ -1267,7 +1240,7 @@ def missed_m2(run: Run, ions: pd.DataFrame, tracks: pd.DataFrame, rosters: pd.Da
             per_class[name] = {c: _recall(gc) for c, gc in g.groupby("cls")}
             if lv is not None:
                 itself = g.loc[g["status"].isin(("assigned", "candidate")), "claim"]
-                roster_claim[name] = {c: int((itself == c).sum()) for c in EV.CLAIMS}
+                roster_claim[name] = {c: int((itself == c).sum()) for c in CLAIM_KEYS}
                 roster_claim[name]["misread_identified"] = int(((g["status"] == "read as") & (g["claim"] == "identified")).sum())
         sources = {s: _recall(g) for s, g in df[~df["source"].str.startswith("roster:")].groupby("source")}
     else:
@@ -1310,17 +1283,34 @@ def _parse_window(text: str | None) -> tuple | None:
     return (a, b)
 
 
+#: M3's basis when the other instrument's rows are not assessed (a TOF): its Assigned rows instead (D23)
+M3_BASIS_LEVEL = "level <= 4b (3c / 4a / 4b)"
+M3_BASIS_ASSIGNED = "Assigned rows (the other instrument is not assessed on this scale)"
+
+
 def _m3_other_instrument(mine: set, other_instrument: Run | None, levels: pd.DataFrame | None,
                          overlap: tuple | None, masks: list[tuple], floor_cps: float, floor_share: float) -> dict | None:
-    """The neutrals the other INSTRUMENT holds at level <= 4b (by `levels`),
-    above the detection floor inside the overlap window, that this run lacks."""
+    """The neutrals the other INSTRUMENT holds at level <= 4b (by `levels`), above the detection floor inside the
+    overlap window, that this run lacks. Where the other instrument's rows are not assessed (NA: a TOF), its
+    Assigned rows count instead, and the basis says so."""
     if other_instrument is None or levels is None or levels.empty or other_instrument.ts is None:
         return None
     ots = other_instrument.ts
     keep = _window_mask(ots, overlap, masks)
     w = ots[keep & ots["neutral_formula"].notna() & ~col(ots, "dup_candidate", False).fillna(False).astype(bool)]
     n_in_window = int(ots.loc[keep, "sample_item_id"].nunique()) if "sample_item_id" in ots.columns else 0
-    good = levels[levels["level"].map(level_rank) <= level_rank("4b")]
+    oled = other_instrument.ledger
+    is_a = (col(oled, "tier", "") == "Assigned").to_numpy()
+    assigned = {k for k, a in zip(zip(col(oled, "neutral_formula").fillna("").astype(str),
+                                      col(oled, "adduct").fillna("").astype(str)), is_a) if a}
+    lv = levels["level"].astype(str)
+    na = lv == "NA"
+    by_level = lv.isin(M3_LEVELS)
+    by_tier = na & pd.Series([k in assigned for k in zip(levels["neutral"].astype(str), levels["adduct"].astype(str))],
+                             index=levels.index)
+    good = levels[by_level | by_tier]
+    basis = M3_BASIS_ASSIGNED if (na.all() and len(levels)) else (
+        M3_BASIS_LEVEL + "; Assigned where not assessed" if na.any() else M3_BASIS_LEVEL)
     rows = []
     for r in good.itertuples():
         tr = w[(w["neutral_formula"] == r.neutral) & (w["adduct"] == r.adduct)]
@@ -1332,18 +1322,19 @@ def _m3_other_instrument(mine: set, other_instrument: Run | None, levels: pd.Dat
             continue
         if r.neutral in mine:
             continue
-        rows.append({"neutral": str(r.neutral), "adduct": str(r.adduct), "level": str(r.level), "axes": str(r.axes),
+        rows.append({"neutral": str(r.neutral), "adduct": str(r.adduct), "level": str(r.level),
                      "med_cps": med, "share": float(share * 100)})
     rows.sort(key=lambda x: (level_rank(x["level"]), -x["med_cps"]))
-    # the same split by the claim the other's level supports: identified (<= 4a) and ion (4b)
+    # the same split by the claim the other's level supports
     good_claim = good["level"].map(claim_of)
     miss_claim = [claim_of(x["level"]) for x in rows]
+    keys = ("identified", "neutral", "ion", EV.CLAIM_NA)
     return {
-        "run": other_instrument.name, "reagent": other_instrument.reagent,
+        "run": other_instrument.name, "reagent": other_instrument.reagent, "basis": basis,
         "n_good": int(len(good)), "n_spectra_in_window": n_in_window,
         "n_missing": int(len(rows)),
-        "n_good_by_claim": {c: int((good_claim == c).sum()) for c in ("identified", "ion")},
-        "n_missing_by_claim": {c: int(sum(1 for m in miss_claim if m == c)) for c in ("identified", "ion")},
+        "n_good_by_claim": {c: int((good_claim == c).sum()) for c in keys},
+        "n_missing_by_claim": {c: int(sum(1 for m in miss_claim if m == c)) for c in keys},
         "rows": rows[:40],
         "window": [str(overlap[0]), str(overlap[1])] if overlap else None,
         "floor": {"cps": floor_cps, "share": floor_share},
@@ -1354,11 +1345,11 @@ def missed_m3(run: Run, other: Run | None, other_instrument: Run | None, other_l
               overlap: tuple | None, masks: list[tuple], floor_cps: float, floor_share: float,
               own_levels: pd.DataFrame | None = None) -> dict:
     """M3: neutrals the other path found (>= 2 files or Assigned) that this run
-    lacks; and neutrals the other INSTRUMENT holds at level <= 4b, above the
-    detection floor inside the overlap window, that this run lacks -- once by
-    `other_levels` (its merged ledger's in-core level) and once by `own_levels`
-    (its own evidence, `own_levels_for`; the in-core level can owe a rung to
-    THIS run's agreement when the two corroborate each other)."""
+    lacks; and neutrals the other INSTRUMENT holds at level <= 4b (its Assigned
+    rows where it is not assessed), above the detection floor inside the overlap
+    window, that this run lacks -- once by `other_levels` (its merged ledger's
+    in-core level) and once by `own_levels` (its own evidence, `own_levels_for`:
+    no other-source partners, so none of THIS run's pairs anchors its series)."""
     mine = set(run.ledger["neutral_formula"].dropna().astype(str)) if "neutral_formula" in run.ledger.columns else set()
     out = {"other_path": None, "other_instrument": None, "other_instrument_own": None}
     if other is not None and "neutral_formula" in other.ledger.columns:
@@ -1550,6 +1541,7 @@ def run_engine_offline(run: Run, peaks: pd.DataFrame, sample_id: str, adducts: l
 CLAIM_COUNTS = ("pairs", "lt_350", "ge_350", "assigned", "assigned_lt_350", "assigned_ge_350")
 IDENTIFIED_KEYS = ("identified", "identified_lt_350", "identified_ge_350",
                    "identified_assigned", "identified_assigned_lt_350", "identified_assigned_ge_350")
+ESTABLISHED_KEYS = ("established", "established_lt_350")
 
 
 def _claim_counts(m0: pd.DataFrame, tier: pd.Series, levels: pd.DataFrame) -> dict:
@@ -1557,7 +1549,7 @@ def _claim_counts(m0: pd.DataFrame, tier: pd.Series, levels: pd.DataFrame) -> di
     unit: one per distinct (neutral_formula, adduct) M0 pair of any tier, with
     the pair's level (the one the level vector counts) and the m/z and tier of
     its brightest M0 row. A pair with no level reads tentative."""
-    out = {c: dict.fromkeys(CLAIM_COUNTS, 0) for c in EV.CLAIMS}
+    out = {c: dict.fromkeys(CLAIM_COUNTS, 0) for c in CLAIM_KEYS}
     if m0.empty:
         return out
     lv = level_map(levels)
@@ -1576,29 +1568,31 @@ def _claim_counts(m0: pd.DataFrame, tier: pd.Series, levels: pd.DataFrame) -> di
     return out
 
 
-def _ledger_counts(led: pd.DataFrame, label: str) -> dict:
+def _levels_frame(pairs: pd.DataFrame | None) -> pd.DataFrame:
+    """An arm's levelled pairs (`evidence.level_source`) as a levels frame (neutral, adduct, level)."""
+    if pairs is None or pairs.empty:
+        return pd.DataFrame(columns=LEVEL_FRAME)
+    lv = pairs["evidence_level"].where(pairs["evidence_level"].astype(str) != "", np.nan)
+    return pd.DataFrame({"neutral": pairs["neutral_formula"].astype(str).values,
+                         "adduct": pairs["adduct"].astype(str).values, "level": lv.values,
+                         "would_lift": col(pairs, "would_lift", "").values, "source": "arm"})
+
+
+def _ledger_counts(led: pd.DataFrame, label: str, levels: pd.DataFrame | None = None,
+                   strict: pd.DataFrame | None = None) -> dict:
+    """One decoy arm's counts: the tier counts of its ledger and, per (neutral, adduct) pair, the claim of its
+    level -- `levels` (the arm levelled in its run's context, adapted minima, as the reference levels it) and,
+    in a field of its own, `strict` (the run's minima)."""
     m0 = led[led["role"] == "M0"] if "role" in led.columns else led.iloc[0:0]
     tier = col(m0, "tier", "")
     if len(m0):
         tier = tier.where(~ion_only_mask(m0), "")    # the ion-only bucket is not a tier count
-    frame = m0.assign(__file=label)
-    levels = pd.DataFrame()
-    if not frame.empty and "evidence_level" in m0.columns and m0["evidence_level"].notna().any():
-        # the engine at this tip levels its own rows (the `evidence` stage): the
-        # decoy arms are then rated by the SAME leveller as the run they bound
-        levels = (m0.drop_duplicates(["neutral_formula", "adduct"])
-                    .rename(columns={"evidence_level": "level"})[["neutral_formula", "adduct", "level"]])
-    elif not frame.empty:
-        # an older engine: level the ledger the way level_ledger does (no corroboration)
-        full = led.assign(__file=label)
-        halogen = LL.detect_reagent_halogen(frame)
-        measured = LL.measure_source(label, full, halogen)
-        if not measured.empty:
-            levels = LL.assign_levels(measured, set())
+    levels = levels if levels is not None else pd.DataFrame(columns=LEVEL_FRAME)
     mz = pd.to_numeric(col(m0, "mz"), errors="coerce")
     by_claim = _claim_counts(m0, tier, levels)
     ident = by_claim["identified"]
-    return {
+    est = {k: by_claim["identified"][k] + by_claim["neutral"][k] for k in CLAIM_COUNTS}
+    out = {
         "m0": int(len(m0)),
         "assigned": int((tier == "Assigned").sum()),
         # the mass-defect gap a 0.35 Da shift lands in closes above ~m/z 350,
@@ -1621,7 +1615,41 @@ def _ledger_counts(led: pd.DataFrame, label: str) -> dict:
         "identified_assigned": ident["assigned"],
         "identified_assigned_lt_350": ident["assigned_lt_350"],
         "identified_assigned_ge_350": ident["assigned_ge_350"],
+        # the neutral established (identified + neutral: 3c, 4a)
+        "established": est["pairs"],
+        "established_lt_350": est["lt_350"],
     }
+    if strict is not None or levels.empty:
+        strict = strict if strict is not None else pd.DataFrame(columns=LEVEL_FRAME)
+        sb = _claim_counts(m0, tier, strict)
+        out["strict"] = {"levels": level_vector(strict), "by_claim": sb, "identified": sb["identified"]["pairs"],
+                         "identified_lt_350": sb["identified"]["lt_350"],
+                         "established": sb["identified"]["pairs"] + sb["neutral"]["pairs"]}
+    return out
+
+
+#: the decoy arm's level modes: adapted (the reference's arm minima, 1) and strict (the run's minima)
+ARM_MODES = ("adapted", "strict")
+
+
+def _reparsed(led: pd.DataFrame) -> pd.DataFrame:
+    """A ledger as a CSV round trip reads it back: an arm levelled from memory and the same arm re-counted from
+    its kept file see the same values."""
+    import io
+    if led.empty:
+        return led.copy()
+    return pd.read_csv(io.StringIO(led.to_csv(index=False)), low_memory=False)
+
+
+def level_arm(main_src, led: pd.DataFrame, file_id: str, arm: str, mode: str, wrong=(), control=None):
+    """One decoy arm's ledger levelled in its run's context, exactly as `evidence.source_from_run_dir(<file>__<arm>
+    .csv, main=<run dir>, mode=...)` levels a kept arm file: the run's window, gate, lists and scan; on the
+    'adducts' arm the wrong adducts join the grid; the control arm's calibration where the run has none."""
+    src = EV.source_from_frames({file_id: led}, run_inputs=EV.RunInputs(summary=main_src.summary), mode=mode,
+                                name=f"{main_src.name}-{arm}-{mode}", main=main_src, arm=arm,
+                                wrong_adducts=list(wrong) if arm == "adducts" else (),
+                                control_ledger=led if arm == "control" else control)
+    return EV.level_source(src)
 
 
 #: beside the kept arm ledgers: what they were made with (mode, offset, files,
@@ -1658,7 +1686,9 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
           save_dir: str | None = None, ledgers_dir: str | None = None) -> dict:
     """The decoy false-discovery bound: the engine, offline, on the brightest
     cover file(s) as they are (the control), with every m/z shifted, and with
-    the wrong adduct set. What is still Assigned is the error bound.
+    the wrong adduct set. What is still Assigned is the error bound; each arm's
+    pairs are levelled in the run's context as the reference levels a decoy arm
+    (`level_arm`: adapted minima; strict in a field of its own).
 
     `save_dir` keeps each arm's engine ledger (`arm_ledger_path`) and what they
     were made with (`DECOY_MANIFEST`); `ledgers_dir` counts the ledgers kept
@@ -1679,6 +1709,7 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
     agg: dict[str, list] = {"control": [], "shift": [], "adducts": []}
     errors: dict[str, str] = {}
     saved: list[str] = []
+    ctx: dict = {}            # the run's source (built once, at the first arm) and each file's control ledger
     # per file, what its arms were judged at (attempted: an arm that errors keeps its file's label) and the inherited
     # numbers -- on a TOF the brightest file can be the batch's worst-fitted one
     out["scoring"] = (kept.get("scoring") or {f: "unrecorded" for f in files} if ledgers_dir
@@ -1705,9 +1736,27 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
         try:
             if ledgers_dir:
                 led = pd.read_csv(arm_ledger_path(ledgers_dir, file_id, key), low_memory=False)
+                read = led
             else:
                 led = run_engine_offline(run, peaks, sample_id, adducts, log, scoring=decoy_scoring(run, file_id))
-            agg[key].append(_ledger_counts(led, sample_id))
+                read = _reparsed(led)
+            if key == "control":
+                ctx[file_id] = read
+            lv, level_error = {m: None for m in ARM_MODES}, None
+            if "role" in read.columns and (read["role"].astype(str) == "M0").any():
+                # an arm the engine committed nothing on has no pair to level
+                try:
+                    if "main" not in ctx:
+                        ctx["main"] = EV.source_from_run_dir(run.path)
+                    lv = {m: _levels_frame(level_arm(ctx["main"], read, file_id, key, m, wrong=out["wrong_adducts"],
+                                                     control=ctx.get(file_id))) for m in ARM_MODES}
+                except Exception as exc:  # noqa: BLE001 - a levelling failure keeps the arm's tier counts
+                    level_error = f"{type(exc).__name__}: {exc}"
+                    log(f"[decoy] {sample_id}: {key} arm not levelled -- {level_error}")
+            counts = _ledger_counts(led, sample_id, lv["adapted"], lv["strict"])
+            if level_error:
+                counts["level_error"] = level_error
+            agg[key].append(counts)
         except Exception as exc:  # noqa: BLE001 - anything the engine raises
             errors[key] = f"{type(exc).__name__}: {exc}"
             log(f"[decoy] {sample_id}: {key} arm failed -- {errors[key]}")
@@ -1748,8 +1797,16 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
         total = {k: int(sum(i[k] for i in items)) for k in ("m0", "assigned", "assigned_lt_350", "assigned_ge_350", "candidate", "neutrals")}
         total["levels"] = {lv: int(sum(i["levels"].get(lv, 0) for i in items)) for lv in LEVELS}
         total["examples"] = items[0]["examples"]
-        total["by_claim"] = {c: {k: int(sum(i["by_claim"][c][k] for i in items)) for k in CLAIM_COUNTS} for c in EV.CLAIMS}
-        total.update({k: int(sum(i[k] for i in items)) for k in IDENTIFIED_KEYS})
+        if any("level_error" in i for i in items):
+            total["level_error"] = "; ".join(i["level_error"] for i in items if "level_error" in i)
+        total["by_claim"] = {c: {k: int(sum(i["by_claim"][c][k] for i in items)) for k in CLAIM_COUNTS} for c in CLAIM_KEYS}
+        total.update({k: int(sum(i[k] for i in items)) for k in IDENTIFIED_KEYS + ESTABLISHED_KEYS})
+        if all("strict" in i for i in items):
+            st = [i["strict"] for i in items]
+            total["strict"] = {
+                "levels": {lv: int(sum(x["levels"].get(lv, 0) for x in st)) for lv in LEVELS},
+                "by_claim": {c: {k: int(sum(x["by_claim"][c][k] for x in st)) for k in CLAIM_COUNTS} for c in CLAIM_KEYS},
+                **{k: int(sum(x[k] for x in st)) for k in ("identified", "identified_lt_350", "established")}}
         out[key] = total
     ctrl = out["control"] if out["control"] and "error" not in out["control"] else None
     for key in ("shift", "adducts"):
@@ -1767,8 +1824,13 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
             a["identified_lt_350_rate"] = pct_or_none(a["identified_lt_350"], ctrl["identified_lt_350"])
             a["identified_ge_350_rate"] = pct_or_none(a["identified_ge_350"], ctrl["identified_ge_350"])
             a["identified_assigned_lt_350_rate"] = pct_or_none(a["identified_assigned_lt_350"], ctrl["identified_assigned_lt_350"])
-            a["ion_rate"] = pct_or_none(a["by_claim"]["ion"]["pairs"], ctrl["by_claim"]["ion"]["pairs"])
-            a["tentative_rate"] = pct_or_none(a["by_claim"]["tentative"]["pairs"], ctrl["by_claim"]["tentative"]["pairs"])
+            a["established_rate"] = pct_or_none(a["established"], ctrl["established"])
+            a["established_lt_350_rate"] = pct_or_none(a["established_lt_350"], ctrl["established_lt_350"])
+            for c in ("neutral", "ion", "tentative", "not assessed"):
+                a[f"{c.replace(' ', '_')}_rate"] = pct_or_none(a["by_claim"][c]["pairs"], ctrl["by_claim"][c]["pairs"])
+            if "strict" in a and "strict" in ctrl:
+                a["strict"]["identified_rate"] = pct_or_none(a["strict"]["identified"], ctrl["strict"]["identified"])
+                a["strict"]["established_rate"] = pct_or_none(a["strict"]["established"], ctrl["strict"]["established"])
     return out
 
 
@@ -1801,7 +1863,7 @@ def falsification(run: Run) -> dict:
                 sat = next((i for i in isos if isinstance(i, dict) and str(i.get("label", "")) == "13C"), None)
                 sat_pid = sat.get("peak_id") if sat else kid_13c.get(r.peak_id)
                 if sat_pid is not None and n_c and pd.notna(r.height) and r.height > 0 and sat_pid in heights:
-                    implied = heights[sat_pid] / float(r.height) / LL.C13_PER_CARBON
+                    implied = heights[sat_pid] / float(r.height) / C13_PER_CARBON
                     rows.append({"neutral": r.neutral_formula, "adduct": r.adduct, "mz": float(r.mz), "height": float(r.height),
                                  "c_formula": n_c, "c_implied": float(implied), "delta": float(implied - n_c)})
                 for e, line in HETERO_LINES.items():
@@ -1879,11 +1941,14 @@ def falsification(run: Run) -> dict:
 # 6. delta against the previous row of the same channel
 # ---------------------------------------------------------------------------
 KEY_METRICS = [
-    # the claim (C13) leads: the acceptance reads the identified class
+    # the claim leads: the acceptance reads the identified class
     ("claim_identified", "identified rows", 0),
+    ("claim_neutral", "neutral rows", 0),
     ("claim_ion", "ion rows", 0),
     ("claim_tentative", "tentative rows", 0),
+    ("claim_not_assessed", "not-assessed rows", 0),
     ("claim_identified_signal", "identified signal %", 1),
+    ("claim_neutral_signal", "neutral signal %", 1),
     ("claim_unmatched_signal", "unmatched signal %", 1),
     ("claim_assigned_tentative", "Assigned but tentative", 0),
     ("claim_candidate_identified", "Candidate but identified", 0),
@@ -1893,6 +1958,7 @@ KEY_METRICS = [
     ("decoy_shift_identified_rate", "decoy (shift) identified %", 1),
     ("decoy_shift_identified_lt_350_rate", "decoy (shift) identified below 350 %", 1),
     ("decoy_adducts_identified_rate", "decoy (adducts) identified %", 1),
+    ("decoy_shift_established_rate", "decoy (shift) neutral established %", 1),
     ("m3_own_missing_identified", "M3 own missing (identified)", 0),
     ("assigned", "Assigned rows", 0),
     ("candidate", "Candidate rows", 0),
@@ -1902,7 +1968,7 @@ KEY_METRICS = [
     ("unstamped_merged", "merged rows unstamped", 0),
     ("bright_m0_not_assigned", "bright M0 not Assigned", 0),
     ("bright_unstamped", "unstamped in brightest 50", 0),
-    ("good_levels", "rows at level <= 4a", 0),
+    ("good_levels", "rows at level 3c (identified)", 0),
     ("m1_families", "M1 families", 0),
     ("m1_signal_share", "M1 unstamped signal %", 1),
     ("roster_present", "roster present", 0),
@@ -1915,6 +1981,18 @@ KEY_METRICS = [
     ("census_halogen", "Assigned with Cl/Br/F", 0),
     ("m3_other_instrument_own_missing", "M3 own missing", 0),
 ]
+#: the metrics that read the evidence scale: never diffed between rows of two scales (`claims_schema`)
+SCALE_KEYS = frozenset({k for k, _l, _n in KEY_METRICS if k.startswith(("claim_", "decoy_shift_identified",
+                                                                          "decoy_adducts_identified",
+                                                                          "decoy_shift_established"))}
+                       | {"bright_m0_not_identified", "roster_identified", "roster_misread_identified",
+                          "m3_own_missing_identified", "good_levels", "m3_other_instrument_missing",
+                          "m3_other_instrument_own_missing"})
+
+
+def same_scale(row: dict, prev: dict | None) -> bool:
+    """Two board rows read the same evidence scale (equal `claims_schema`; none = before the claim)."""
+    return prev is not None and row.get("claims_schema") == prev.get("claims_schema")
 
 
 def read_board(path: str) -> list[dict]:
@@ -1943,10 +2021,12 @@ def previous_row(board: list[dict], channel: str, before: dict | None = None) ->
 
 
 def delta(row: dict, prev: dict | None) -> list[dict]:
+    """Each key metric against the previous row; a metric that reads the evidence scale has no previous value
+    across two scales (the previous row's `claims_schema` differs)."""
     out = []
     for key, label, nd in KEY_METRICS:
         now = row.get(key)
-        was = prev.get(key) if prev else None
+        was = prev.get(key) if prev and (key not in SCALE_KEYS or same_scale(row, prev)) else None
         d = None
         if isinstance(now, (int, float)) and isinstance(was, (int, float)) and np.isfinite(now) and np.isfinite(was):
             d = now - was
@@ -1965,11 +2045,11 @@ def build_card(run: Run, *, levels_csv=None, other=None, other_instrument=None, 
     ions = ion_table(run)
     tracks = unstamped_tracks(run)
     corroborate = [other_instrument.path] if other_instrument is not None else []
-    levels = levels_for(run, levels_csv, corroborate)
+    levels = levels_for(run, levels_csv, corroborate, log=log)
     other_levels = other_own = None
     if other_instrument is not None:
-        other_levels = levels_for(other_instrument, None, [run.path])
-        other_own = own_levels_for(other_instrument)
+        other_levels = levels_for(other_instrument, None, [run.path], log=log)
+        other_own = own_levels_for(other_instrument, log=log)
     rosters = load_rosters() if rosters is None else rosters
     head = headline(run, ions)
     card = {
@@ -1977,7 +2057,7 @@ def build_card(run: Run, *, levels_csv=None, other=None, other_instrument=None, 
         "written_utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "run_dir": run.path,
         "headline": head,
-        "claims": claims(run, levels, own_levels_for(run)),
+        "claims": claims(run, levels),
         "brightest": brightest(run, ions, tracks, levels),
         "evidence": best_evidence(run, ions, levels),
         "m1": missed_m1(run, ions, tracks, coverage_rows=head["stamp_coverage"].get("rows")),
@@ -2028,7 +2108,6 @@ def board_row(card: dict) -> dict:
         "bright_unstamped": b["unstamped_in_top"],
         "levels": e["levels"],
         "good_levels": sum(e["levels"].get(k, 0) for k in GOOD_LEVELS),
-        "axes_hist": e["axes_hist"],
         "m1_tracks": m1["n_tracks"],
         "m1_families": m1.get("n_families", 0),
         "m1_signal_share": m1["signal_share"],
@@ -2053,7 +2132,7 @@ def board_row(card: dict) -> dict:
         "m3_other_instrument_missing": ((card["m3"].get("other_instrument") or {}).get("n_missing")),
         "m3_other_instrument_own_missing": ((card["m3"].get("other_instrument_own") or {}).get("n_missing")),
     }
-    # the claim (C13): appended after every older key, which keeps its meaning
+    # the claim: appended after every older key; `claims_schema` names the scale they read
     cl = card.get("claims") or {}
     rows_c = cl.get("rows") or {}
     sig = cl.get("signal") or {}
@@ -2067,31 +2146,45 @@ def board_row(card: dict) -> dict:
     own = card["m3"].get("other_instrument_own") or {}
     row.update({
         "claim_identified": rows_c.get("identified"),
+        "claim_neutral": rows_c.get("neutral"),
         "claim_ion": rows_c.get("ion"),
         "claim_tentative": rows_c.get("tentative"),
+        "claim_reagent": rows_c.get("reagent"),
+        "claim_not_assessed": rows_c.get(EV.CLAIM_NA),
         "claim_identified_signal": share.get("identified"),
+        "claim_neutral_signal": share.get("neutral"),
         "claim_ion_signal": share.get("ion"),
         "claim_tentative_signal": share.get("tentative"),
+        "claim_reagent_signal": share.get("reagent"),
+        "claim_not_assessed_signal": share.get(EV.CLAIM_NA),
         "claim_unmatched_signal": share.get("unmatched"),
         "claim_assigned_identified_signal": share_a.get("identified"),
+        "claim_assigned_neutral_signal": share_a.get("neutral"),
         "claim_assigned_ion_signal": share_a.get("ion"),
         "claim_assigned_tentative": dis.get("assigned_tentative"),
         "claim_candidate_identified": dis.get("candidate_identified"),
-        "claim_identified_via_cross": (cl.get("corroboration") or {}).get("via_cross"),
         "claim_stamp_mismatch": cl.get("stamp_mismatch"),
+        "claim_level_source": cl.get("level_source"),
         "bright_m0_not_identified": b.get("m0_not_identified"),
+        "bright_m0_not_assessed": b.get("m0_not_assessed"),
         "roster_identified": rc.get("identified"),
+        "roster_neutral": rc.get("neutral"),
         "roster_misread_identified": rc.get("misread_identified"),
         "decoy_control_identified": ctrl.get("identified"),
         "decoy_control_identified_lt_350": ctrl.get("identified_lt_350"),
+        "decoy_control_established": ctrl.get("established"),
         "decoy_shift_identified": shift.get("identified"),
         "decoy_shift_identified_lt_350": shift.get("identified_lt_350"),
         "decoy_shift_identified_rate": shift.get("identified_rate"),
         "decoy_shift_identified_lt_350_rate": shift.get("identified_lt_350_rate"),
+        "decoy_shift_established_rate": shift.get("established_rate"),
+        "decoy_shift_strict_identified_rate": (shift.get("strict") or {}).get("identified_rate"),
         "decoy_adducts_identified": add.get("identified"),
         "decoy_adducts_identified_rate": add.get("identified_rate"),
         "decoy_adducts_identified_lt_350_rate": add.get("identified_lt_350_rate"),
+        "decoy_adducts_established_rate": add.get("established_rate"),
         "m3_own_missing_identified": (own.get("n_missing_by_claim") or {}).get("identified"),
+        "m3_own_basis": own.get("basis"),
         "claims_schema": CLAIMS_SCHEMA,
     })
     # what the decoy arms were judged at (C35): appended, so the board's older columns keep their order
@@ -2099,24 +2192,33 @@ def board_row(card: dict) -> dict:
     return row
 
 
-#: today's acceptance criteria, read on the identified class; each keeps the
-#: metric it replaces beside it: (criterion, key, the key it was read on)
+#: today's acceptance criteria on the evidence scale of peaky 0.10.0, read on the identified class (3c) and, where
+#: the scale makes identified rare, the neutral established (3c + 4a); each keeps the metric it replaces beside it:
+#: (criterion, key, the key it was read on)
 ACCEPTANCE = [
-    ("roster recall not lower", "roster_identified", "roster_assigned"),
-    ("roster misreads not higher", "roster_misread_identified", "roster_misread"),
-    ("decoy rate not higher (shift arm)", "decoy_shift_identified_rate", "decoy_shift_rate"),
-    ("decoy rate not higher (shift arm, below m/z 350)", "decoy_shift_identified_lt_350_rate", "decoy_shift_rate"),
-    ("decoy rate not higher (wrong-adducts arm)", "decoy_adducts_identified_rate", "decoy_adducts_rate"),
+    ("roster recall not lower (identified)", "roster_identified", "roster_assigned"),
+    ("roster misreads not higher (identified)", "roster_misread_identified", "roster_misread"),
+    ("decoy rate not higher (shift arm, identified)", "decoy_shift_identified_rate", "decoy_shift_rate"),
+    ("decoy rate not higher (shift arm, identified, below m/z 350)", "decoy_shift_identified_lt_350_rate",
+     "decoy_shift_rate"),
+    ("decoy rate not higher (shift arm, neutral established)", "decoy_shift_established_rate", "decoy_shift_rate"),
+    ("decoy rate not higher (wrong-adducts arm, identified)", "decoy_adducts_identified_rate", "decoy_adducts_rate"),
     ("bright M0 not identified not higher", "bright_m0_not_identified", "bright_m0_not_assigned"),
     ("M1 families not worse", "m1_families", "m1_families"),
-    ("cross-instrument agreement not lower (own-evidence M3)", "m3_own_missing_identified", "m3_other_instrument_own_missing"),
+    ("cross-instrument agreement not lower (own-evidence M3)", "m3_other_instrument_own_missing",
+     "m3_own_missing_identified"),
 ]
 
 
 def acceptance(row: dict) -> list[dict]:
-    """The acceptance criteria on a board row: the identified-class value and the old one."""
-    return [{"criterion": c, "key": k, "value": row.get(k), "old_key": ok, "old_value": row.get(ok)}
-            for c, k, ok in ACCEPTANCE]
+    """The acceptance criteria on a board row: the scale's value and the old one; the M3 criterion names its
+    basis (level <= 4b, or the other instrument's Assigned rows where it is not assessed)."""
+    out = []
+    for c, k, ok in ACCEPTANCE:
+        if k == "m3_other_instrument_own_missing" and row.get("m3_own_basis"):
+            c = f"{c}: {row['m3_own_basis']}"
+        out.append({"criterion": c, "key": k, "value": row.get(k), "old_key": ok, "old_value": row.get(ok)})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2143,15 +2245,23 @@ CLAIM_TABLE_COLUMNS = [
     ("decoy", "decoy pairs: control / shift / adducts"), ("shift_split", "shift below 350 / at or above"),
     ("adducts_split", "adducts below 350 / at or above"),
 ]
-CROSSTAB_COLUMNS = [
-    ("tier", "tier"), ("identified", "identified"), ("ion", "ion"), ("tentative", "tentative"), ("total", "rows"),
-    ("identified_sig", "identified signal %"), ("ion_sig", "ion signal %"), ("tentative_sig", "tentative signal %"),
-]
 DISAGREE_COLUMNS = [
     ("kind", "disagreement"), ("mz", "m/z"), ("neutral", "neutral"), ("adduct", "adduct"), ("tier", "tier"),
     ("level", "level"), ("claim", "claim"), ("n_files", "files"), ("signal_share", "signal %"),
-    ("level_reason", "level reason"), ("tier_reason", "tier reason"),
+    ("would_lift", "what would lift it"), ("tier_reason", "tier reason"),
 ]
+
+
+def claim_keys_of(cl: dict | None) -> list[str]:
+    """The claim classes a card's claim block counts, in its own order: the scale's six on a card of the evidence
+    scale of peaky 0.10.0, the three of the pre-0.10.0 scale on an older card."""
+    rows = (cl or {}).get("rows") or {}
+    return list(rows) if rows else list(CLAIM_KEYS)
+
+
+def crosstab_columns(keys) -> list[tuple[str, str]]:
+    return ([("tier", "tier")] + [(c, c) for c in keys] + [("total", "rows")]
+            + [(f"{c}_sig", f"{c} signal %") for c in keys])
 
 
 def claim_table(card: dict) -> list[dict]:
@@ -2164,6 +2274,7 @@ def claim_table(card: dict) -> list[dict]:
     bt = (cl.get("by_tier") or {}).get("rows") or {}
     sig = cl.get("signal") or {}
     share, share_a = sig.get("share") or {}, sig.get("share_assigned") or {}
+    levels_of = cl.get("levels") or CLAIM_LEVELS
 
     def arm(key: str, c: str, field: str = "pairs"):
         a = dc.get(key)
@@ -2172,9 +2283,9 @@ def claim_table(card: dict) -> list[dict]:
         return "error" if "error" in a else ((a.get("by_claim") or {}).get(c) or {}).get(field)
 
     out = []
-    for c in EV.CLAIMS:
+    for c in claim_keys_of(cl):
         out.append({
-            "class": c, "levels": CLAIM_LEVELS[c], "rows": (cl.get("rows") or {}).get(c),
+            "class": c, "levels": levels_of.get(c, CLAIM_LEVELS.get(c, "")), "rows": (cl.get("rows") or {}).get(c),
             "tiers": " / ".join(_d((bt.get(k) or {}).get(c)) for k in TIER_BUCKETS),
             "signal": share.get(c), "signal_assigned": share_a.get(c),
             "decoy": " / ".join(_d(arm(k, c)) for k in ("control", "shift", "adducts")),
@@ -2189,21 +2300,22 @@ def claim_table(card: dict) -> list[dict]:
 def crosstab_rows(cl: dict) -> list[dict]:
     """Tier x claim: merged rows per tier bucket and claim, and their signal %."""
     bt = cl.get("by_tier") or {}
+    keys = claim_keys_of(cl)
     out = []
     for k in TIER_BUCKETS:
         r = (bt.get("rows") or {}).get(k) or {}
         g = (bt.get("signal") or {}).get(k) or {}
-        out.append({"tier": k, **{c: r.get(c, 0) for c in EV.CLAIMS}, "total": int(sum(r.get(c, 0) for c in EV.CLAIMS)),
-                    **{f"{c}_sig": g.get(c) for c in EV.CLAIMS}})
+        out.append({"tier": k, **{c: r.get(c, 0) for c in keys}, "total": int(sum(r.get(c, 0) for c in keys)),
+                    **{f"{c}_sig": g.get(c) for c in keys}})
     return out
 
 
 def corroboration_line(cl: dict) -> str:
-    """How many identified rows the channel identifies alone, and how many owe
-    the class to the corroborating source (with their own-evidence levels)."""
+    """A pre-0.10.0 card's split of its identified rows by the channel's own evidence (the scale has no
+    corroboration axis: an other-source partner is a tag); '' on a card of the scale."""
     co = cl.get("corroboration")
     if not co:
-        return "no per-file ledgers: the identified rows cannot be split by their own evidence"
+        return ""
     src = ", ".join(co.get("sources") or []) or "the corroborating source"
     lv = ", ".join(f"{k} {v}" for k, v in (co.get("via_cross_own_levels") or {}).items())
     line = (f"identified {co['identified']} = {co['own_identified']} on this channel's own evidence (its per-file ledgers "
@@ -2224,31 +2336,45 @@ def acceptance_lines(card: dict) -> list[str]:
     return out
 
 
+CLAIM_SENTENCE = (
+    "The claim is read off the level on the evidence scale of peaky " + EV.SCALE_RELEASE + ": identified = 3c (ion "
+    "established, split pinned, a named context-list entry), neutral = 4a (split pinned and a positive fact), ion = "
+    "4b (the ion composition; the split or the process open), tentative = 5a, 5b or no level; reagent (a reagent "
+    "ion or cluster) and not assessed (NA: the instrument class is not assessed) are reported beside the claims, "
+    "never folded into them.")
+
+
 def render_claims_md(card: dict) -> list[str]:
     """§0 of SCORECARD.md: the claim beside the tier."""
     cl = card.get("claims")
-    L = ["## 0. The claim — identified / ion / tentative", "",
-         "acceptance reads the identified class (evidence level <= 4a); tier unchanged and kept", ""]
+    L = ["## 0. The claim — identified / neutral / ion / tentative", "",
+         "acceptance reads the identified class (evidence level 3c); tier unchanged and kept", ""]
     if not cl:
         return L + ["*(card predates C13)*", ""]
     sig = cl.get("signal") or {}
-    L += [f"The claim is read off the evidence level (identified 1-4a: the neutral established; ion 4b-4d: the ion "
-          f"composition pinned; tentative 5a, 5b or none). Merged rows {fmt(cl['n_rows'])}; signal = the committed per-file "
+    old = "neutral" not in claim_keys_of(cl)
+    src = cl.get("level_source")
+    L += [(("A card on the pre-0.10.0 scale (identified 1-4a, ion 4b-4d, tentative 5a, 5b or none). ") if old
+           else CLAIM_SENTENCE + (f" Levels: {src}." if src else ""))
+          + f" Merged rows {fmt(cl['n_rows'])}; signal = the committed per-file "
           f"M0 height ({fmt(sig.get('n_m0'))} readings), each reading taking its merged row's claim and tier; "
           f"{fmt(sig.get('n_unmatched'))} readings no merged row carries are the `unmatched` bucket. Decoy pairs are the "
-          f"arms' distinct (neutral, adduct) M0 pairs of any tier."
+          f"arms' distinct (neutral, adduct) M0 pairs of any tier, levelled in the run's context (adapted minima)."
           + (f" Stored `claim` cells differing from the level: **{cl['stamp_mismatch']}**." if cl.get("stamp_mismatch") is not None else ""), ""]
     L += md_table(claim_table(card), CLAIM_TABLE_COLUMNS, {"signal": 1, "signal_assigned": 1})
     L += ["", "Tier x claim (the two are separate verdicts and are not nested; neither is changed from the other):", ""]
-    L += md_table(crosstab_rows(cl), CROSSTAB_COLUMNS, {"identified_sig": 1, "ion_sig": 1, "tentative_sig": 1})
+    keys = claim_keys_of(cl)
+    L += md_table(crosstab_rows(cl), crosstab_columns(keys), {f"{c}_sig": 1 for c in keys})
     dis = cl.get("disagree") or {}
     L += ["", f"Disagreeing rows: Assigned but tentative **{dis.get('assigned_tentative')}**, Candidate but identified "
           f"**{dis.get('candidate_identified')}** (brightest first, up to 40):", ""]
-    rows = [dict(r, level_reason=r.get("level_reason", "")[:100], tier_reason=r.get("tier_reason", "")[:100])
-            for r in (dis.get("rows") or [])[:40]]
+    rows = [dict(r, would_lift=str(r.get("would_lift") or r.get("level_reason") or "")[:100],
+                 tier_reason=r.get("tier_reason", "")[:100]) for r in (dis.get("rows") or [])[:40]]
     L += md_table(rows, DISAGREE_COLUMNS, {"mz": 4, "signal_share": 3})
-    L += ["", f"**Corroboration:** {corroboration_line(cl)}", ""]
-    L += ["**Acceptance** — read on the identified class; the metric each criterion was read on before, in parentheses:", ""]
+    co = corroboration_line(cl)
+    if co:
+        L += ["", f"**Corroboration (pre-0.10.0):** {co}"]
+    L += ["", "**Acceptance** — read on the identified class; the metric each criterion was read on before, in parentheses:", ""]
     L += acceptance_lines(card) + [""]
     return L
 
@@ -2283,16 +2409,17 @@ def render_md(card: dict) -> str:
     L += [f"## 2. The brightest {b['n']} ions (median height over the batch)", "",
           f"roles: " + ", ".join(f"{k} {v}" for k, v in b.get("by_role", {}).items())
           + f" · **bright M0 not Assigned: {b['m0_not_assigned']}** · bright M0 not identified: {_d(b.get('m0_not_identified'))}"
+          + (f" (not assessed: {b['m0_not_assessed']})" if b.get("m0_not_assessed") else "")
           + f" · unstamped tracks among the batch's brightest {TOP_N}: **{b['unstamped_in_top']}** (named in M1)", ""]
-    L += md_table(b["rows"], [("ion_mz", "ion m/z"), ("med_cps", "med cps"), ("in", "in"), ("role", "role"), ("ion", "ion"), ("neutral", "neutral"), ("adduct", "adduct"), ("tier", "tier"), ("level", "level"), ("claim", "claim"), ("axes", "axes"), ("ion_only", "ion-only")], {"ion_mz": 4})
+    L += md_table(b["rows"], [("ion_mz", "ion m/z"), ("med_cps", "med cps"), ("in", "in"), ("role", "role"), ("ion", "ion"), ("neutral", "neutral"), ("adduct", "adduct"), ("tier", "tier"), ("level", "level"), ("claim", "claim"), ("ion_only", "ion-only")], {"ion_mz": 4})
     L += [""]
     # 3 best evidence
     vec = "/".join(str(e["levels"].get(k, 0)) for k in LEVELS)
     L += [f"## 3. The best-evidence {len(e['rows'])} rows", "",
-          f"levels ({'/'.join(LEVELS)}): **{vec}** over {fmt(e.get('n_levelled', 0))} rows; at level <= 4a: {e['n_good']}; "
-          "axes histogram: " + ", ".join(f"{k} axes {v}" for k, v in e["axes_hist"].items()), "",
-          "claims (identified / ion / tentative): " + " / ".join(_d((e.get("by_claim") or {}).get(c)) for c in EV.CLAIMS), ""]
-    L += md_table(e["rows"], [("neutral", "neutral"), ("adduct", "adduct"), ("ion_mz", "ion m/z"), ("med_cps", "med cps"), ("in", "in"), ("tier", "tier"), ("level", "level"), ("claim", "claim"), ("axes", "axes")], {"ion_mz": 4})
+          f"levels ({'/'.join(LEVELS)}): **{vec}** over {fmt(e.get('n_levelled', 0))} rows; identified (3c): {e['n_good']}; "
+          f"neutral established (3c + 4a): {_d(e.get('n_established'))}", "",
+          f"claims ({' / '.join(CLAIM_KEYS)}): " + " / ".join(_d((e.get("by_claim") or {}).get(c)) for c in CLAIM_KEYS), ""]
+    L += md_table(e["rows"], [("neutral", "neutral"), ("adduct", "adduct"), ("ion_mz", "ion m/z"), ("med_cps", "med cps"), ("in", "in"), ("tier", "tier"), ("level", "level"), ("claim", "claim"), ("would_lift", "what would lift it")], {"ion_mz": 4})
     L += [""]
     # 4 missed
     L += ["## 4. What was missed", "",
@@ -2323,17 +2450,17 @@ def render_md(card: dict) -> str:
         L += [""]
     oi = m3.get("other_instrument")
     if oi:
-        L += [f"- other instrument `{oi['run']}` ({oi['reagent']}): {oi['n_missing']} of its {oi['n_good']} rows at level <= 4b pass the floor "
+        L += [f"- other instrument `{oi['run']}` ({oi['reagent']}): {oi['n_missing']} of its {oi['n_good']} rows ({oi.get('basis', M3_BASIS_LEVEL)}) pass the floor "
               f"({oi['floor']['cps']} cps median in {int(oi['floor']['share'] * 100)} % of {oi['n_spectra_in_window']} spectra"
               + (f", window {oi['window'][0][:16]} -> {oi['window'][1][:16]}" if oi.get("window") else "") + ") and are absent here", ""]
-        L += md_table(oi["rows"], [("neutral", "neutral"), ("adduct", "other adduct"), ("level", "level"), ("axes", "axes"), ("med_cps", "med cps there"), ("share", "share %")], {"share": 0})
+        L += md_table(oi["rows"], [("neutral", "neutral"), ("adduct", "other adduct"), ("level", "level"), ("med_cps", "med cps there"), ("share", "share %")], {"share": 0})
         L += [""]
     oo = m3.get("other_instrument_own")
     if oo:
-        L += [f"- the same by the other instrument's OWN evidence (its files levelled with no cross set, the level a "
-              f"`--corroborate` source is judged by; its in-core level can owe a rung to this run's agreement): "
-              f"{oo['n_missing']} of its {oo['n_good']} rows at level <= 4b pass the floor and are absent here", ""]
-        L += md_table(oo["rows"], [("neutral", "neutral"), ("adduct", "other adduct"), ("level", "own level"), ("axes", "own axes"), ("med_cps", "med cps there"), ("share", "share %")], {"share": 0})
+        L += [f"- the same by the other instrument's OWN evidence (its files pooled with no other-source partners; its "
+              f"in-core series can owe an anchor to this run): "
+              f"{oo['n_missing']} of its {oo['n_good']} rows ({oo.get('basis', M3_BASIS_LEVEL)}) pass the floor and are absent here", ""]
+        L += md_table(oo["rows"], [("neutral", "neutral"), ("adduct", "other adduct"), ("level", "own level"), ("med_cps", "med cps there"), ("share", "share %")], {"share": 0})
         L += [""]
     if not op and not oi:
         L += ["*(no --other / --other-instrument given)*", ""]
@@ -2348,7 +2475,7 @@ def render_md(card: dict) -> str:
         L += [_scoring_note(dc), ""]
     if dc.get("control") and "error" not in dc["control"]:
         L += [f"offline engine on the brightest {len(dc['files'])} cover file(s) `{', '.join(dc['files'])}`; control = the file as it is.", "",
-              f"| arm | M0 rows | Assigned | < {DECOY_MZ_SPLIT:.0f} / >= | Candidate | neutrals | level <= 4a | rate vs control (Assigned) "
+              f"| arm | M0 rows | Assigned | < {DECOY_MZ_SPLIT:.0f} / >= | Candidate | neutrals | level 3c | rate vs control (Assigned) "
               f"| identified pairs | identified < {DECOY_MZ_SPLIT:.0f} / >= | identified Assigned < {DECOY_MZ_SPLIT:.0f} "
               f"| identified rate | identified < {DECOY_MZ_SPLIT:.0f} rate | ion / tentative pairs |",
               "|---|---:|---:|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---|"]
@@ -2363,6 +2490,16 @@ def render_md(card: dict) -> str:
                          f"| {_d(a.get('identified'))} | {_d(a.get('identified_lt_350'))} / {_d(a.get('identified_ge_350'))} | {_d(a.get('identified_assigned_lt_350'))} "
                          f"| {_d(a.get('identified_rate'), 1)} | {_d(a.get('identified_lt_350_rate'), 1)} "
                          f"| {_d((bc.get('ion') or {}).get('pairs'))} / {_d((bc.get('tentative') or {}).get('pairs'))} |")
+        L.append("")
+        for key in ("control", "shift", "adducts"):
+            a = dc.get(key)
+            if a and "error" not in a:
+                st = a.get("strict") or {}
+                L.append(f"- {key}: levels ({'/'.join(LEVELS)}) {'/'.join(str(a['levels'].get(k, 0)) for k in LEVELS)}; "
+                         f"neutral established (3c + 4a) {_d(a.get('established'))}"
+                         + (f", rate {_d(a.get('established_rate'), 1)} %" if key != "control" else "")
+                         + (f"; strict minima: {'/'.join(str(st['levels'].get(k, 0)) for k in LEVELS)}, identified "
+                            f"{_d(st.get('identified'))}" if st else ""))
         for key in ("shift", "adducts"):
             a = dc.get(key)
             if a and a.get("examples"):
@@ -2414,20 +2551,32 @@ def latest_rows(board: list[dict]) -> list[dict]:
 
 
 CLAIM_BOARD_COLUMNS = [
-    ("channel", "channel"), ("run", "run"), ("identified", "identified"), ("ion", "ion"), ("tentative", "tentative"),
-    ("identified_sig", "identified sig %"), ("ion_sig", "ion sig %"), ("tentative_sig", "tentative sig %"),
-    ("unmatched_sig", "unmatched sig %"), ("assigned_tentative", "Assigned but tentative"),
-    ("candidate_identified", "Candidate but identified"), ("bright", "bright M0 not identified"),
-    ("roster", "roster identified / present / n"), ("misread", "roster misread identified"),
-    ("dshift", "decoy shift identified % (below 350)"), ("dadd", "decoy adducts identified %"),
-    ("m3", "M3 own missing (identified)"),
+    ("channel", "channel"), ("run", "run"), ("scale", "scale"), ("identified", "identified"), ("neutral", "neutral"),
+    ("ion", "ion"), ("tentative", "tentative"), ("not_assessed", "not assessed"),
+    ("identified_sig", "identified sig %"), ("neutral_sig", "neutral sig %"), ("ion_sig", "ion sig %"),
+    ("tentative_sig", "tentative sig %"), ("unmatched_sig", "unmatched sig %"),
+    ("assigned_tentative", "Assigned but tentative"), ("candidate_identified", "Candidate but identified"),
+    ("bright", "bright M0 not identified"), ("roster", "roster identified / present / n"),
+    ("misread", "roster misread identified"), ("dshift", "decoy shift identified % (below 350)"),
+    ("dadd", "decoy adducts identified %"), ("m3", "M3 own missing"),
 ]
+#: what a board row's `claims_schema` reads
+SCALE_NAME = {2: EV.SCALE_RELEASE, 1: "pre-0.10.0"}
+
+
+def level_cell(r: dict) -> str:
+    """A board row's level vector: the scale's on a schema-2 row, the pre-0.10.0 one (marked) on an older row."""
+    lv = r.get("levels") or {}
+    if r.get("claims_schema") == CLAIMS_SCHEMA:
+        return "/".join(str(lv.get(k, 0)) for k in LEVELS)
+    return "pre-0.10.0 " + "/".join(str(lv.get(k, 0)) for k in OLD_LEVELS)
 
 
 def claim_board_rows(board: list[dict]) -> list[dict]:
     """The claims table of the board: every channel's latest row, its claim
-    metrics as text cells with the delta to the row before it; a row written
-    before the claim existed shows dashes."""
+    metrics as text cells with the delta to the row before it on the same
+    scale; a row written before the claim shows dashes, a pre-0.10.0 row its
+    own numbers under its scale's name (dashes where the scale has no key)."""
     out = []
     for r in latest_rows(board):
         prev = previous_row(board, r["channel"], before=r)
@@ -2435,26 +2584,32 @@ def claim_board_rows(board: list[dict]) -> list[dict]:
         if r.get("claims_schema") is None:
             out.append(rec | {k: DASH for k, _ in CLAIM_BOARD_COLUMNS[2:]})
             continue
+        same = same_scale(r, prev)
 
         def cell(key, nd=0):
             v = r.get(key)
             s = _d(v, nd)
-            if prev is not None and isinstance(v, (int, float)) and isinstance(prev.get(key), (int, float)):
+            if same and isinstance(v, (int, float)) and isinstance(prev.get(key), (int, float)):
                 d = v - prev[key]
                 if abs(d) >= (0.05 if nd else 1):
                     s += f" ({d:+.{nd}f})"
             return s
 
         rec.update({
-            "identified": cell("claim_identified"), "ion": cell("claim_ion"), "tentative": cell("claim_tentative"),
-            "identified_sig": cell("claim_identified_signal", 1), "ion_sig": cell("claim_ion_signal", 1),
+            "scale": SCALE_NAME.get(r.get("claims_schema"), str(r.get("claims_schema"))),
+            "identified": cell("claim_identified"), "neutral": cell("claim_neutral"), "ion": cell("claim_ion"),
+            "tentative": cell("claim_tentative"), "not_assessed": cell("claim_not_assessed"),
+            "identified_sig": cell("claim_identified_signal", 1), "neutral_sig": cell("claim_neutral_signal", 1),
+            "ion_sig": cell("claim_ion_signal", 1),
             "tentative_sig": cell("claim_tentative_signal", 1), "unmatched_sig": cell("claim_unmatched_signal", 1),
             "assigned_tentative": cell("claim_assigned_tentative"), "candidate_identified": cell("claim_candidate_identified"),
             "bright": cell("bright_m0_not_identified"),
             "roster": f"{_d(r.get('roster_identified'))} / {_d(r.get('roster_present'))} / {_d(r.get('roster_n'))}",
             "misread": cell("roster_misread_identified"),
             "dshift": f"{_d(r.get('decoy_shift_identified_rate'), 1)} ({_d(r.get('decoy_shift_identified_lt_350_rate'), 1)})",
-            "dadd": cell("decoy_adducts_identified_rate", 1), "m3": cell("m3_own_missing_identified"),
+            "dadd": cell("decoy_adducts_identified_rate", 1),
+            "m3": cell("m3_other_instrument_own_missing") if r.get("claims_schema") == CLAIMS_SCHEMA
+            else cell("m3_own_missing_identified"),
         })
         out.append(rec)
     return out
@@ -2463,18 +2618,22 @@ def claim_board_rows(board: list[dict]) -> list[dict]:
 def render_board_md(board: list[dict]) -> str:
     rows = latest_rows(board)
     L = ["# Peaky Scoreboard", "", f"regenerated {dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} · {len(rows)} channels · {len(board)} rows in `scoreboard.jsonl`", "",
-         "One row per channel, its latest scorecard, and the delta to the row before it. Levels are 2b/3a/3b/4a/4b/4c/4d/5a/5b.", ""]
-    # the claim first: the acceptance reads the identified class (evidence level <= 4a)
+         "One row per channel, its latest scorecard, and the delta to the row before it on the same scale. Levels "
+         f"are {'/'.join(LEVELS)} (the evidence scale of peaky {EV.SCALE_RELEASE}); a row written on the pre-0.10.0 "
+         f"scale shows its own vector ({'/'.join(OLD_LEVELS)}), marked.", ""]
+    # the claim first: the acceptance reads the identified class (evidence level 3c)
     L += ["## Claims — acceptance reads the identified class", "",
-          "identified = evidence level 1-4a (the neutral established), ion = 4b-4d (the ion composition pinned), "
-          "tentative = 5a, 5b or none; signal % = share of the committed per-file M0 signal, `unmatched` = readings no "
-          "merged row carries. The tier is kept beside it; a row written before the claim shows dashes.", ""]
+          "identified = 3c (a named context-list entry on a pinned split), neutral = 4a (pinned + a positive fact), "
+          "ion = 4b, tentative = 5a, 5b or none; not assessed = NA (the instrument class is not assessed). Signal % = "
+          "share of the committed per-file M0 signal, `unmatched` = readings no merged row carries. The tier is kept "
+          "beside it; a row written before the claim shows dashes, a pre-0.10.0 row its own claims (identified "
+          "1-4a, ion 4b-4d) under its scale's name, never diffed against the scale's.", ""]
     L += ["| " + " | ".join(h for _, h in CLAIM_BOARD_COLUMNS) + " |",
-          "|---|---|" + "---:|" * (len(CLAIM_BOARD_COLUMNS) - 2)]
+          "|---|---|---|" + "---:|" * (len(CLAIM_BOARD_COLUMNS) - 3)]
     for rec in claim_board_rows(board):
         L.append("| " + " | ".join([rec["channel"].replace("|", " · ")] + [str(rec[k]) for k, _ in CLAIM_BOARD_COLUMNS[1:]]) + " |")
     L += ["", "## All metrics", ""]
-    L += ["| channel | run | code | Assigned | Candidate | ion-only | neutrals | stamped signal % | unstamped merged | bright M0 not Assigned | unstamped in top 50 | levels | <= 4a | M1 fam. | M1 signal % | roster A/present/n | Cl+Br+F | decoy shift % | decoy adducts % | 13C ok/n | hetero ok/n |",
+    L += ["| channel | run | code | Assigned | Candidate | ion-only | neutrals | stamped signal % | unstamped merged | bright M0 not Assigned | unstamped in top 50 | levels | identified level | M1 fam. | M1 signal % | roster A/present/n | Cl+Br+F | decoy shift % | decoy adducts % | 13C ok/n | hetero ok/n |",
           "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|---:|---:|---:|---|---|"]
     for r in rows:
         prev = previous_row(board, r["channel"], before=r)
@@ -2482,17 +2641,17 @@ def render_board_md(board: list[dict]) -> str:
         def cell(key, nd=0):
             v = r.get(key)
             s = fmt(v, nd) if isinstance(v, (int, float)) else (v or "")
-            if prev is not None and isinstance(v, (int, float)) and isinstance(prev.get(key), (int, float)):
+            if prev is not None and (key not in SCALE_KEYS or same_scale(r, prev)) \
+                    and isinstance(v, (int, float)) and isinstance(prev.get(key), (int, float)):
                 d = v - prev[key]
                 if abs(d) >= (0.05 if nd else 1):
                     s += f" ({d:+.{nd}f})"
             return s
 
-        lv = r.get("levels") or {}
         L.append("| " + " | ".join([
             r["channel"].replace("|", " · "), r["run"][-24:], r.get("code", ""), cell("assigned"), cell("candidate"), cell("ion_only"), cell("neutrals"), cell("stamped_signal_share", 1),
             cell("unstamped_merged"), cell("bright_m0_not_assigned"), cell("bright_unstamped"),
-            "/".join(str(lv.get(k, 0)) for k in LEVELS), cell("good_levels"), cell("m1_families"), cell("m1_signal_share", 1),
+            level_cell(r), cell("good_levels"), cell("m1_families"), cell("m1_signal_share", 1),
             f"{r.get('roster_assigned', '')}/{r.get('roster_present', '')}/{r.get('roster_n', '')}", cell("census_halogen"),
             cell("decoy_shift_rate", 1), cell("decoy_adducts_rate", 1),
             f"{r.get('c13_within_1', '')}/{r.get('c13_n', '')}", f"{r.get('hetero_present', '')}/{r.get('hetero_n', '')}",
@@ -2513,6 +2672,8 @@ GOOD_DIRECTION = {  # +1: up is good, -1: down is good; absent = neutral
     "decoy_adducts_identified_lt_350_rate": -1, "bright_m0_not_identified": -1, "roster_misread_identified": -1,
     "claim_assigned_tentative": -1, "claim_unmatched_signal": -1, "m3_own_missing_identified": -1,
     "roster_identified": 1, "claim_identified": 1, "claim_identified_signal": 1,
+    # the evidence scale of peaky 0.10.0
+    "decoy_shift_established_rate": -1, "decoy_adducts_established_rate": -1, "m3_other_instrument_own_missing": -1,
 }
 METRIC_KEYS = {label: key for key, label, _ in KEY_METRICS}
 
@@ -2612,21 +2773,23 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
            "<div class=\"eyebrow\">peaky · assignment quality, every session</div>", "<h1>Peaky Scoreboard</h1>",
            "<p>One row per channel: what the latest run assigned, how much of the signal it explains, what its evidence is worth, and what it missed. "
            "The delta is against the row before it on the same channel. Rosters are unreviewed until the user signs them off.</p>",
-           "<p>Acceptance reads the <b>identified</b> class (evidence level ≤ 4a: the neutral established); "
-           "<b>ion</b> is 4b–4d (the ion composition pinned), <b>tentative</b> 5a, 5b or none. The tier is unchanged and kept beside it.</p>",
+           f"<p>Acceptance reads the <b>identified</b> class (evidence level 3c on the evidence scale of peaky {EV.SCALE_RELEASE}: "
+           "a named context-list entry on a pinned split); <b>neutral</b> is 4a (pinned + a positive fact), <b>ion</b> 4b, "
+           "<b>tentative</b> 5a, 5b or none, and <b>not assessed</b> NA (the instrument class is not assessed). The tier is "
+           "unchanged and kept beside it. A pre-0.10.0 row shows its own claims, never diffed against the scale's.</p>",
            f"<div class=\"meta\">regenerated {stamp} · {len(rows)} channels · {len(board)} rows</div>", "</header>"]
     # the claim first
     out += ["<h2>Claims</h2>"]
-    out.append(html_table(claim_board_rows(board), CLAIM_BOARD_COLUMNS, mono=("channel", "run", "roster", "dshift")))
+    out.append(html_table(claim_board_rows(board), CLAIM_BOARD_COLUMNS, mono=("channel", "run", "scale", "roster", "dshift")))
     # channel table
     out += ["<h2>Channels</h2>"]
     ch_rows = []
     for r in rows:
         prev = previous_row(board, r["channel"], before=r)
-        lv = r.get("levels") or {}
-
         def d(key):
             if prev is None or not isinstance(r.get(key), (int, float)) or not isinstance(prev.get(key), (int, float)):
+                return None
+            if key in SCALE_KEYS and not same_scale(r, prev):
                 return None
             return r[key] - prev[key]
 
@@ -2634,7 +2797,7 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
             "channel": r["channel"], "run": r["run"][-24:], "code": r.get("code", ""), "assigned": r.get("assigned"), "d_assigned": d("assigned"),
             "candidate": r.get("candidate"), "ion_only": r.get("ion_only"), "neutrals": r.get("neutrals"), "signal": r.get("stamped_signal_share"),
             "unst": r.get("unstamped_merged"), "bright": r.get("bright_m0_not_assigned"), "bright_un": r.get("bright_unstamped"),
-            "levels": "/".join(str(lv.get(k, 0)) for k in LEVELS), "good": r.get("good_levels"),
+            "levels": level_cell(r), "good": r.get("good_levels"),
             "fam": r.get("m1_families"), "m1": r.get("m1_signal_share"),
             "roster": f"{r.get('roster_assigned', '')}/{r.get('roster_present', '')}/{r.get('roster_n', '')}",
             "hal": r.get("census_halogen"), "dshift": r.get("decoy_shift_rate"), "dadd": r.get("decoy_adducts_rate"),
@@ -2642,7 +2805,7 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
         })
     out.append(html_table(ch_rows, [("channel", "channel"), ("run", "run"), ("code", "code"), ("assigned", "Assigned"), ("d_assigned", "Δ"), ("candidate", "Candidate"),
                                     ("ion_only", "ion-only"), ("neutrals", "neutrals"), ("signal", "stamped signal %"), ("unst", "unstamped merged"), ("bright", "bright M0 not Assigned"),
-                                    ("bright_un", "unstamped in top 50"), ("levels", "levels 2b…5b"), ("good", "≤ 4a"), ("fam", "M1 families"), ("m1", "M1 signal %"),
+                                    ("bright_un", "unstamped in top 50"), ("levels", "levels " + "/".join(LEVELS)), ("good", "identified level"), ("fam", "M1 families"), ("m1", "M1 signal %"),
                                     ("roster", "roster A/present/n"), ("hal", "Cl+Br+F"), ("dshift", "decoy shift %"), ("dadd", "decoy adducts %"), ("c13", "13C ok/n"), ("het", "hetero ok/n")],
                           {"signal": 1, "m1": 1, "dshift": 1, "dadd": 1, "d_assigned": 0}, mono=("channel", "run", "code", "levels", "roster", "c13", "het")))
     # per-run panels
@@ -2668,26 +2831,30 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
         cl = c.get("claims")
         if cl:
             out.append("<div class=\"tiles\">" + "".join([
-                tile("identified", "claim_identified"), tile("ion", "claim_ion"), tile("tentative", "claim_tentative"),
+                tile("identified", "claim_identified"), tile("neutral", "claim_neutral"), tile("ion", "claim_ion"),
+                tile("tentative", "claim_tentative"), tile("not assessed", "claim_not_assessed"),
                 tile("identified signal %", "claim_identified_signal", 1), tile("unmatched signal %", "claim_unmatched_signal", 1),
                 tile("Assigned but tentative", "claim_assigned_tentative"), tile("Candidate but identified", "claim_candidate_identified"),
                 tile("bright M0 not identified", "bright_m0_not_identified"), tile("roster identified", "roster_identified"),
                 tile("decoy shift identified %", "decoy_shift_identified_rate", 1),
                 tile("decoy shift identified < 350 %", "decoy_shift_identified_lt_350_rate", 1),
                 tile("decoy adducts identified %", "decoy_adducts_identified_rate", 1),
-                tile("M3 own missing (identified)", "m3_own_missing_identified"),
+                tile("decoy shift neutral established %", "decoy_shift_established_rate", 1),
+                tile("M3 own missing", "m3_other_instrument_own_missing"),
             ]) + "</div>")
-            out.append("<h3>The claim — identified / ion / tentative</h3>")
+            out.append("<h3>The claim — identified / neutral / ion / tentative</h3>")
             out.append(html_table(claim_table(c), CLAIM_TABLE_COLUMNS, {"signal": 1, "signal_assigned": 1},
                                   mono=("levels", "tiers", "decoy", "shift_split", "adducts_split")))
             out.append("<p class=\"note\">Tier × claim — separate verdicts, not nested; neither is changed from the other.</p>")
-            out.append(html_table(crosstab_rows(cl), CROSSTAB_COLUMNS, {"identified_sig": 1, "ion_sig": 1, "tentative_sig": 1}))
+            keys = claim_keys_of(cl)
+            out.append(html_table(crosstab_rows(cl), crosstab_columns(keys), {f"{c}_sig": 1 for c in keys}))
             dis = cl.get("disagree") or {}
             out.append(f"<p class=\"note\">Disagreeing rows: Assigned but tentative {_h(dis.get('assigned_tentative'))}, "
                        f"Candidate but identified {_h(dis.get('candidate_identified'))} (brightest 25)</p>")
             out.append(html_table((dis.get("rows") or [])[:25], DISAGREE_COLUMNS, {"mz": 4, "signal_share": 3},
                                   mono=("neutral", "adduct", "level")))
-            out.append(f"<p class=\"note\">{_h(corroboration_line(cl))}</p>")
+            if corroboration_line(cl):
+                out.append(f"<p class=\"note\">pre-0.10.0: {_h(corroboration_line(cl))}</p>")
             acc = c.get("acceptance") or []
             if acc:
                 items = []
@@ -2703,21 +2870,21 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
             tile("spectra", "n_spectra"), tile("Assigned", "assigned"), tile("Candidate", "candidate"), tile("ion-only", "ion_only"), tile("neutrals", "neutrals"),
             tile("stamped signal %", "stamped_signal_share", 1), tile("merged rows unstamped", "unstamped_merged"),
             tile("bright M0 not Assigned", "bright_m0_not_assigned"), tile("unstamped in top 50", "bright_unstamped"),
-            tile("rows at level ≤ 4a", "good_levels"), tile("M1 families", "m1_families"), tile("M1 signal %", "m1_signal_share", 1),
+            tile("rows at level 3c", "good_levels"), tile("M1 families", "m1_families"), tile("M1 signal %", "m1_signal_share", 1),
             tile("roster Assigned", "roster_assigned"), tile("roster present", "roster_present"), tile("Assigned with Cl/Br/F", "census_halogen"),
             tile("decoy shift Assigned %", "decoy_shift_rate", 1), tile("decoy adducts Assigned %", "decoy_adducts_rate", 1),
         ]) + "</div>")
-        out.append(f"<p class=\"note\">levels ({'/'.join(LEVELS)}): <span class=\"mono\">{'/'.join(str(e['levels'].get(k, 0)) for k in LEVELS)}</span> · "
-                   f"axes histogram {_h(', '.join(f'{k}: {v}' for k, v in e['axes_hist'].items()))} · by channel (Assigned/all) "
+        out.append(f"<p class=\"note\">levels ({_h('/'.join(LEVELS) if r.get('claims_schema') == CLAIMS_SCHEMA else '/'.join(OLD_LEVELS))}): "
+                   f"<span class=\"mono\">{_h(level_cell(r))}</span> · by channel (Assigned/all) "
                    f"{_h(', '.join(f'{k or chr(63)} {h['by_adduct_assigned'].get(k, 0)}/{v}' for k, v in h['by_adduct'].items()))}</p>")
         sc = h["stamp_coverage"]
         if sc.get("rows"):
             out.append(f"<h3>Stamp coverage — {sc['n_unstamped']} merged rows the time series never carries</h3>")
             out.append(html_table(sc["rows"][:15], [("mz", "m/z"), ("neutral", "neutral"), ("adduct", "adduct"), ("tier", "tier"), ("n_files", "files"), ("alternatives", "alternatives"), ("tier_reason", "tier reason")], {"mz": 4}, mono=("neutral", "adduct")))
         out.append(f"<h3>Brightest {b['n']} ions — bright M0 not Assigned: {b['m0_not_assigned']}, unstamped tracks among the brightest {TOP_N}: {b['unstamped_in_top']}</h3>")
-        out.append(html_table(b["rows"], [("ion_mz", "ion m/z"), ("med_cps", "med cps"), ("in", "in"), ("role", "role"), ("ion", "ion"), ("neutral", "neutral"), ("adduct", "adduct"), ("tier", "tier"), ("level", "level"), ("axes", "axes")], {"ion_mz": 4}, mono=("ion", "neutral", "adduct", "in", "level")))
-        out.append(f"<h3>Best evidence — {e['n_good']} rows at level ≤ 4a</h3>")
-        out.append(html_table(e["rows"][:25], [("neutral", "neutral"), ("adduct", "adduct"), ("ion_mz", "ion m/z"), ("med_cps", "med cps"), ("in", "in"), ("tier", "tier"), ("level", "level"), ("axes", "axes")], {"ion_mz": 4}, mono=("neutral", "adduct", "in", "level")))
+        out.append(html_table(b["rows"], [("ion_mz", "ion m/z"), ("med_cps", "med cps"), ("in", "in"), ("role", "role"), ("ion", "ion"), ("neutral", "neutral"), ("adduct", "adduct"), ("tier", "tier"), ("level", "level"), ("claim", "claim")], {"ion_mz": 4}, mono=("ion", "neutral", "adduct", "in", "level")))
+        out.append(f"<h3>Best evidence — {e['n_good']} rows at level 3c (identified)</h3>")
+        out.append(html_table(e["rows"][:25], [("neutral", "neutral"), ("adduct", "adduct"), ("ion_mz", "ion m/z"), ("med_cps", "med cps"), ("in", "in"), ("tier", "tier"), ("level", "level"), ("claim", "claim"), ("would_lift", "what would lift it")], {"ion_mz": 4}, mono=("neutral", "adduct", "in", "level")))
         out.append(f"<h3>M1 — {m1['n_tracks']} unstamped tracks in ≥ {int(PRESENCE * 100)} % of spectra, {_p(m1['signal_share'])} % of the signal, grouped into families</h3>")
         out.append(html_table(m1["families"], [("family", "family"), ("n_tracks", "tracks"), ("signal_share", "signal %"), ("max_cps", "max med cps"), ("examples", "brightest examples (parent)")], {"signal_share": 2}, mono=("examples",)))
         out.append(html_table(m1["rows"], [("mz", "m/z"), ("med_cps", "med cps"), ("in", "in"), ("nearest_stamped", "nearest stamped"), ("d_mda", "Δ mDa"), ("family", "family"), ("tag", "residual tag"), ("c_count", "13C carbons"), ("reason", "engine's reason")], {"mz": 4, "d_mda": 1}, mono=("nearest_stamped", "in")))
@@ -2741,12 +2908,12 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
                 out.append(f"<p class=\"note\">other path <span class=\"mono\">{_h(op['run'])}</span> ({_h(op['path'])}): {op['n_missing']} of its {op['n_solid']} solid neutrals are absent here</p>")
                 out.append(html_table(op["rows"], [("neutral", "neutral"), ("adduct", "adduct"), ("mz", "m/z"), ("tier", "tier"), ("n_files", "files")], {"mz": 4}, mono=("neutral", "adduct")))
             if oi:
-                out.append(f"<p class=\"note\">other instrument <span class=\"mono\">{_h(oi['run'])}</span> ({_h(oi['reagent'])}): {oi['n_missing']} of its {oi['n_good']} rows at level ≤ 4b pass the floor and are absent here</p>")
-                out.append(html_table(oi["rows"], [("neutral", "neutral"), ("adduct", "other adduct"), ("level", "level"), ("axes", "axes"), ("med_cps", "med cps there"), ("share", "share %")], {"share": 0}, mono=("neutral", "adduct", "level")))
+                out.append(f"<p class=\"note\">other instrument <span class=\"mono\">{_h(oi['run'])}</span> ({_h(oi['reagent'])}): {oi['n_missing']} of its {oi['n_good']} rows ({_h(oi.get('basis', 'level ≤ 4b'))}) pass the floor and are absent here</p>")
+                out.append(html_table(oi["rows"], [("neutral", "neutral"), ("adduct", "other adduct"), ("level", "level"), ("med_cps", "med cps there"), ("share", "share %")], {"share": 0}, mono=("neutral", "adduct", "level")))
             oo = m3.get("other_instrument_own")
             if oo:
-                out.append(f"<p class=\"note\">by the other instrument's <b>own</b> evidence (no cross set — the level a --corroborate source is judged by): {oo['n_missing']} of its {oo['n_good']} rows at level ≤ 4b pass the floor and are absent here</p>")
-                out.append(html_table(oo["rows"], [("neutral", "neutral"), ("adduct", "other adduct"), ("level", "own level"), ("axes", "own axes"), ("med_cps", "med cps there"), ("share", "share %")], {"share": 0}, mono=("neutral", "adduct", "level")))
+                out.append(f"<p class=\"note\">by the other instrument's <b>own</b> evidence (no other-source partners): {oo['n_missing']} of its {oo['n_good']} rows ({_h(oo.get('basis', 'level ≤ 4b'))}) pass the floor and are absent here</p>")
+                out.append(html_table(oo["rows"], [("neutral", "neutral"), ("adduct", "other adduct"), ("level", "own level"), ("med_cps", "med cps there"), ("share", "share %")], {"share": 0}, mono=("neutral", "adduct", "level")))
         out.append("<h3>Decoy false-discovery bound</h3>")
         if _scoring_note(dc):
             out.append(f"<p class=\"note\">{html.escape(_scoring_note(dc).replace('`', ''))}</p>")
@@ -2762,7 +2929,7 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
                                     "ident": a.get("identified"), "ident_split": f"{_d(a.get('identified_lt_350'))} / {_d(a.get('identified_ge_350'))}",
                                     "ident_rate": a.get("identified_rate"), "ident_lt_rate": a.get("identified_lt_350_rate"),
                                     "examples": "; ".join(a.get("examples", [])[:4])})
-            out.append(f"<p class=\"note\">offline engine on <span class=\"mono\">{_h(', '.join(dc['files']))}</span></p>" + html_table(dc_rows, [("arm", "arm"), ("m0", "M0 rows"), ("assigned", "Assigned"), ("split", f"< {DECOY_MZ_SPLIT:.0f} / ≥"), ("candidate", "Candidate"), ("neutrals", "neutrals"), ("good", "≤ 4a"), ("rate", "Assigned % of control"),
+            out.append(f"<p class=\"note\">offline engine on <span class=\"mono\">{_h(', '.join(dc['files']))}</span></p>" + html_table(dc_rows, [("arm", "arm"), ("m0", "M0 rows"), ("assigned", "Assigned"), ("split", f"< {DECOY_MZ_SPLIT:.0f} / ≥"), ("candidate", "Candidate"), ("neutrals", "neutrals"), ("good", "level 3c"), ("rate", "Assigned % of control"),
                                                                                                                                   ("ident", "identified pairs"), ("ident_split", f"identified < {DECOY_MZ_SPLIT:.0f} / ≥"), ("ident_rate", "identified % of control"), ("ident_lt_rate", f"identified < {DECOY_MZ_SPLIT:.0f} % of control"),
                                                                                                                                   ("examples", "brightest Assigned")], {"rate": 1, "ident_rate": 1, "ident_lt_rate": 1}, mono=("examples", "ident_split")))
         else:
@@ -2851,9 +3018,11 @@ def _json_default(o):
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="The scorecard: what a peaky batch run assigned, how good it is, what it missed.")
     ap.add_argument("run_dirs", nargs="+", help="run dirs (or the --out-dir holding exactly one)")
-    ap.add_argument("--levels", help="levels CSV from scripts/level_ledger.py --out (default: level in-process)")
+    ap.add_argument("--levels", help="levels CSV from scripts/level_ledger.py --out, for a run made before the scale "
+                                     "(default: the in-core level, else level_ledger.py in-process)")
     ap.add_argument("--other", help="the other PATH on the same batch (cover vs trace-first)")
-    ap.add_argument("--other-instrument", help="the other analyser on the same air (corroborates the levels; feeds M3)")
+    ap.add_argument("--other-instrument", help="the other analyser on the same air (feeds M3; an other-source partner "
+                                               "when a run is levelled post hoc -- a tag, never a level)")
     ap.add_argument("--overlap", help="UTC window 'start,end' both instruments recorded, e.g. '2026-01-01T06:00,2026-01-03T18:00'")
     ap.add_argument("--mask", action="append", default=[], help="UTC window 'start,end' to exclude (a gap); repeatable")
     ap.add_argument("--floor-cps", type=float, default=10.0, help="other-instrument detection floor: median cps (default 10)")
@@ -2904,8 +3073,9 @@ def main(argv: list[str] | None = None) -> int:
     for card in cards:
         r = card["row"]
         lv = r["levels"]
-        print(f"{r['run']}: identified {r['claim_identified']} / ion {r['claim_ion']} / tentative {r['claim_tentative']} "
-              f"(signal {_p(r['claim_identified_signal'])} / {_p(r['claim_ion_signal'])} / {_p(r['claim_tentative_signal'])} %); "
+        print(f"{r['run']}: identified {r['claim_identified']} / neutral {r['claim_neutral']} / ion {r['claim_ion']} / "
+              f"tentative {r['claim_tentative']} (signal {_p(r['claim_identified_signal'])} / {_p(r['claim_neutral_signal'])} / "
+              f"{_p(r['claim_ion_signal'])} / {_p(r['claim_tentative_signal'])} %); not assessed {r['claim_not_assessed']}; "
               f"Assigned {r['assigned']} / Candidate {r['candidate']} / neutrals {r['neutrals']}; stamped signal {_p(r['stamped_signal_share'])} %; "
               f"unstamped merged {r['unstamped_merged']}; bright M0 not Assigned {r['bright_m0_not_assigned']}; levels {'/'.join(str(lv.get(k, 0)) for k in LEVELS)}; "
               f"M1 {r['m1_families']} families / {_p(r['m1_signal_share'])} %; roster {r['roster_assigned']}/{r['roster_present']}/{r['roster_n']}")

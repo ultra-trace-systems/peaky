@@ -1,7 +1,18 @@
-"""C11+c on the levels: an isotope child is evidence where it sits at its label's
-exact spacing from the COMMITTED parent line and is as tall as the ion's
-composition makes it (count-aware, relative to that line); the isotopologues
-list answers the same question; a dropped child is dropped for every fact.
+"""C11+c on the level facts: an isotope child is evidence where it sits at its
+label's exact spacing from the COMMITTED parent line and is as tall as the
+ion's composition makes it (count-aware, relative to that line); the
+isotopologues list answers the same question; a dropped child is dropped for
+every fact.
+
+These facts (`iso`, `carbon_ev`, `multiline`, `reagent_only_iso`, the kept
+labels) are the private fact layer's (peaky.assignment.evidence `_level_pairs`):
+they feed the merge vote's class and the fact columns of
+tables/evidence_levels.csv. Before peaky 0.10.0 each case also pinned the level
+those facts gave (4c no line, 4b an own line, 4d only the reagent halogen's
+line, 4a lines of two of the neutral's elements). That level reaches no output
+any more, so each case asserts the reading itself (`_axis`, from the facts);
+the scale reads isotope lines with its own line model
+(tests/test_levels_lines.py), not these facts.
 
 Every source here is physically possible: each ion at its exact m/z (its
 committed isotopologue's where that is not the mono line), each child at its
@@ -90,19 +101,14 @@ def frame(rows) -> pd.DataFrame:
 
 
 def _both(rows, resolution=RES_ORBI, *, per_file=False, cross=None) -> dict:
-    """{(neutral, adduct): (level, facts)} from the engine -- pooled, or per file -- and the SAME from the
-    reference script (asserted)."""
+    """{(neutral, adduct): (private level, facts)} from the fact layer -- pooled, or the file alone -- and
+    the SAME from the pre-0.10.0 reference script while it exists (asserted)."""
     led = frame(rows)
-    if per_file:
-        out = EV.compute_levels(led, resolution=resolution, cross=cross)
-        j = led[led.role == "M0"][["peak_id", "neutral_formula", "adduct"]].merge(out, on="peak_id")
-        per = {(n, a): lv for n, a, lv in zip(j.neutral_formula, j.adduct, j.evidence_level)}
-        pooled = EV.level_pooled({"f": led}, resolution=resolution, cross=cross)
-        facts = {(r.neutral_formula, r.adduct): r for r in pooled.itertuples(index=False)}
-        eng = {k: (per[k], facts[k]) for k in per}
+    if per_file:     # the file levelled alone, as the merge vote reads it
+        out = EV._level_pairs({"": led}, per_file=True, resolution=resolution, cross=cross)
     else:
-        pooled = EV.level_pooled({"f": led}, resolution=resolution, cross=cross)
-        eng = {(r.neutral_formula, r.adduct): (r.evidence_level, r) for r in pooled.itertuples(index=False)}
+        out = EV._series_pooled({"f": led}, resolution=resolution, cross=cross)
+    eng = {(r.neutral_formula, r.adduct): (r.evidence_level, r) for r in out.itertuples(index=False)}
     halogen = LL.detect_reagent_halogen(led[led.role == "M0"])
     ref = LL.assign_levels(LL.measure_source("f", led.assign(__file="f"), halogen, resolution, per_file),
                            set(cross or ()))
@@ -115,8 +121,18 @@ def _both(rows, resolution=RES_ORBI, *, per_file=False, cross=None) -> dict:
     return eng
 
 
-def _level(got, neutral, adduct="[M-H]-"):
-    return got[(neutral, adduct)][0]
+def _axis(got, neutral, adduct="[M-H]-"):
+    """The isotope reading of a pair, from its facts: 'two lines' (lines of two of the neutral's
+    elements), 'own line' (an isotope axis of the ion), 'reagent line' (the sole line is the reagent
+    halogen's, put on the ion by the reagent: the ion pinned, not the neutral), 'no line'."""
+    f = _fact(got, neutral, adduct)
+    if f.multiline:
+        return "two lines"
+    if not f.iso:
+        return "no line"
+    if f.reagent_only_iso and not f.neutral_backed:
+        return "reagent line"
+    return "own line"
 
 
 def _fact(got, neutral, adduct="[M-H]-"):
@@ -137,17 +153,17 @@ def test_a_line_off_its_exact_position_counts_only_where_its_height_allows_the_o
                                           right_on="peak_id", suffixes=("", "_p"))
     fit = I.fit_position_sigma((t.mz - t.mz_p - SP["13C"]) / t.mz_p * 1e6, t.height)
     assert I.position_window_ppm(1.07e5, fit) < 1.5 < I.position_window_ppm(110.0, fit)
-    assert _level(got, "C10H16O4") == "4c" and not _fact(got, "C10H16O4").iso
-    assert _level(got, "C11H18O4") == "4b" and _fact(got, "C11H18O4").iso
+    assert _axis(got, "C10H16O4") == "no line" and not _fact(got, "C10H16O4").iso
+    assert _axis(got, "C11H18O4") == "own line" and _fact(got, "C11H18O4").iso
     # at its exact position the bright line counts
     rows[-3] = kid("ac", bright, "13C", 1.07e5, SP["13C"], 0.0)
-    assert _level(_both(rows), "C10H16O4") == "4b"
+    assert _axis(_both(rows), "C10H16O4") == "own line"
 
 
 def test_a_source_with_fewer_than_40_13c_children_is_not_tested():
     bright = parent("a", "C10H16O4", height=1e6)
     rows = background(n=38) + [bright, kid("ac", bright, "13C", 1.07e5, SP["13C"], 1.5)]
-    assert _level(_both(rows), "C10H16O4") == "4b"
+    assert _axis(_both(rows), "C10H16O4") == "own line"
 
 
 def test_n1_a_brighter_neighbour_pulls_the_line_toward_itself():
@@ -155,9 +171,9 @@ def test_n1_a_brighter_neighbour_pulls_the_line_toward_itself():
     25x brighter [M-H]- line of the neutral with two more H, 4.47 mDa above (at
     its own exact m/z, `_n1`). Not 3x the child, or the child displaced away from
     it, and the line stays dropped."""
-    assert _level(_both(_n1(nb_height=2.7e6)[0]), "C10H16O5", "[M]-.") == "4b"
-    assert _level(_both(_n1(nb_height=1.0e4)[0]), "C10H16O5", "[M]-.") == "4c"          # not 3x the child
-    assert _level(_both(_n1(nb_height=2.7e6, off_ppm=-3.0)[0]), "C10H16O5", "[M]-.") == "4c"   # the other side
+    assert _axis(_both(_n1(nb_height=2.7e6)[0]), "C10H16O5", "[M]-.") == "own line"
+    assert _axis(_both(_n1(nb_height=1.0e4)[0]), "C10H16O5", "[M]-.") == "no line"          # not 3x the child
+    assert _axis(_both(_n1(nb_height=2.7e6, off_ppm=-3.0)[0]), "C10H16O5", "[M]-.") == "no line"   # the other side
 
 
 def test_pcal_a_displaced_parent_line_places_its_line_through_the_calibration():
@@ -165,9 +181,9 @@ def test_pcal_a_displaced_parent_line_places_its_line_through_the_calibration():
     (ppm_error_cal +3): its 13C child, at the TRUE parent + 1.00335, counts."""
     p = parent("a", "C12H20O4", height=1e6, off_ppm=3.0, pcal=3.0)
     rows = background() + [p, kid("ac", p, "13C", 1.28e5, SP["13C"], 0.0)]
-    assert _level(_both(rows), "C12H20O4") == "4b"
+    assert _axis(_both(rows), "C12H20O4") == "own line"
     rows[-2] = dict(p, ppm_error_cal=0.0)                            # uncalibrated: 3 ppm off, dropped
-    assert _level(_both(rows), "C12H20O4") == "4c"
+    assert _axis(_both(rows), "C12H20O4") == "no line"
 
 
 def test_a_tof_line_30_ppm_off_is_dropped_and_5_ppm_off_counts():
@@ -176,10 +192,10 @@ def test_a_tof_line_30_ppm_off_is_dropped_and_5_ppm_off_counts():
     p = parent("a", "C7H11BrO4", height=1e5)
     rows = background(a=2.5, b=1.8) + [p, kid("ab", p, "81Br", 0.97e5, SP["81Br"], 30.0)]
     got = _both(rows, RES_TOF)
-    assert _level(got, "C7H11BrO4") == "4c" and _fact(got, "C7H11BrO4").iso_labels == ""
+    assert _axis(got, "C7H11BrO4") == "no line" and _fact(got, "C7H11BrO4").iso_labels == ""
     rows[-1] = kid("ab", p, "81Br", 0.97e5, SP["81Br"], 5.0)
     got = _both(rows, RES_TOF)
-    assert _level(got, "C7H11BrO4") == "4b" and _fact(got, "C7H11BrO4").iso_labels == "81Br"
+    assert _axis(got, "C7H11BrO4") == "own line" and _fact(got, "C7H11BrO4").iso_labels == "81Br"
 
 
 def test_the_per_file_tof_guard():
@@ -188,10 +204,10 @@ def test_the_per_file_tof_guard():
     file; pooled, or on an Orbitrap-class file, the same line drops."""
     p = parent("a", "C7H11BrO4", height=1e5)
     rows = background(a=0.0, b=6.0, exact=True) + [p, kid("ab", p, "81Br", 0.97e5, SP["81Br"], 6.0)]
-    assert _level(_both(rows, RES_TOF, per_file=True), "C7H11BrO4") == "4b"      # guarded: no test
-    assert _level(_both(rows, RES_ORBI, per_file=True), "C7H11BrO4") == "4c"     # Orbitrap-class: tested
-    assert _level(_both(rows, RES_TOF), "C7H11BrO4") == "4c"                     # pooled: no guard
-    assert _level(_both(rows, None, per_file=True), "C7H11BrO4") == "4c"         # class-less: no guard
+    assert _axis(_both(rows, RES_TOF, per_file=True), "C7H11BrO4") == "own line"      # guarded: no test
+    assert _axis(_both(rows, RES_ORBI, per_file=True), "C7H11BrO4") == "no line"     # Orbitrap-class: tested
+    assert _axis(_both(rows, RES_TOF), "C7H11BrO4") == "no line"                     # pooled: no guard
+    assert _axis(_both(rows, None, per_file=True), "C7H11BrO4") == "no line"         # class-less: no guard
 
 
 def test_a_dropped_line_is_dropped_for_every_fact():
@@ -204,11 +220,11 @@ def test_a_dropped_line_is_dropped_for_every_fact():
              parent("q", "C9H16O2", "[M+Br]-"), parent("r", "C9H18O2", "[M+Br]-")]
     got = _both(rows)
     f = _fact(got, "C8H14O2", "[M+Br]-")
-    assert _level(got, "C8H14O2", "[M+Br]-") == "4d"
+    assert _axis(got, "C8H14O2", "[M+Br]-") == "reagent line"
     assert f.iso_labels == "81Br" and not f.carbon_ev and f.reagent_only_iso
     rows[-4] = kid("ac", p, "13C", 0.86e5, SP["13C"], 0.0)                     # placed: carbon pins it
     got = _both(rows)
-    assert _level(got, "C8H14O2", "[M+Br]-") == "4b" and _fact(got, "C8H14O2", "[M+Br]-").carbon_ev
+    assert _axis(got, "C8H14O2", "[M+Br]-") == "own line" and _fact(got, "C8H14O2", "[M+Br]-").carbon_ev
 
 
 # --------------------------------------------------------------------------- the committed line (I1, D4)
@@ -220,7 +236,7 @@ def test_dibromoacetic_acid_committed_on_79br81br_reads_both_its_neighbour_lines
     rows = background() + [p, kid("u", p, "81Br2", 0.49e5, SP["81Br"]), kid("d", p, "M0", 0.50e5, -SP["81Br"])]
     got = _both(rows)
     f = _fact(got, "C2H2Br2O2")
-    assert _level(got, "C2H2Br2O2") == "4b" and f.iso and f.iso_labels == "81Br2"
+    assert _axis(got, "C2H2Br2O2") == "own line" and f.iso and f.iso_labels == "81Br2"
     # read against the mono line (the old reading) the 81Br2 line expects 0.9728^2 and M0 nothing: still in
     # band for 81Br2 alone -- but put the parent at its mono position and the same lines sit 2 Da off
     q = parent("a", "C2H2Br2O2", height=1e5)
@@ -271,10 +287,10 @@ def test_chloroacetic_acids_m4_line_proves_its_chlorine():
     got = _both(rows, RES_TOF)
     f = _fact(got, "C2H3ClO2", "[M+Br]-")
     assert f.multiline and f.multiline_elements == "C|Cl"
-    assert _level(got, "C2H3ClO2", "[M+Br]-") == "4a"
+    assert _axis(got, "C2H3ClO2", "[M+Br]-") == "two lines"
     # without the M+4 line the Cl rests on nothing: 4b
     got = _both([r for r in rows if r["peak_id"] != "m4"], RES_TOF)
-    assert _level(got, "C2H3ClO2", "[M+Br]-") == "4b"
+    assert _axis(got, "C2H3ClO2", "[M+Br]-") == "own line"
 
 
 def test_an_m3_81br_13c_line_is_a_carbon_line():
@@ -285,7 +301,7 @@ def test_an_m3_81br_13c_line_is_a_carbon_line():
                                    kid("m3", p, "81Br+13C", 1e5 * 0.9728 * 7 * 0.0107, SP["81Br"] + SP["13C"]))
     got = _both(rows)
     f = _fact(got, "C7H6N2O6S", "[M+Br]-")
-    assert f.carbon_ev and not f.reagent_only_iso and _level(got, "C7H6N2O6S", "[M+Br]-") == "4b"
+    assert f.carbon_ev and not f.reagent_only_iso and _axis(got, "C7H6N2O6S", "[M+Br]-") == "own line"
     assert f.iso_labels == "81Br|81Br+13C"
 
 
@@ -312,13 +328,13 @@ def test_the_isotopologues_list_answers_the_same_question():
     other = orphan("o", p["_true"] + SP["13C"], 1.07e5)                     # an iso row at a's 13C position
     far = orphan("f", (p["_true"] + SP["13C"]) * (1 + 3e-6), 1.07e5)        # 3 ppm off that position
     rows += [p, other, far]
-    for peak, want in (("o", "4b"), ("f", "4c"), ("nowhere", "4c")):
+    for peak, want in (("o", "own line"), ("f", "no line"), ("nowhere", "no line")):
         p["isotopologues"] = json.dumps([{"label": "13C", "score": None, "peak_id": peak}])
-        assert _level(_both(rows), "C10H16O4") == want, peak
+        assert _axis(_both(rows), "C10H16O4") == want, peak
     # a list naming a line out of band (2x the expectation of 10 carbons ... 5x) does not count
     other["height"] = 5.35e5
     p["isotopologues"] = json.dumps([{"label": "13C", "score": 0.9, "peak_id": "o"}])
-    assert _level(_both(rows), "C10H16O4") == "4c"
+    assert _axis(_both(rows), "C10H16O4") == "no line"
 
 
 def test_the_committed_lines_tolerance_follows_the_instrument_class():
@@ -349,11 +365,11 @@ def test_a_line_only_the_full_halogen_count_makes_is_the_neutrals_halogen():
     p = parent("a", "C9H20BrN3O6", "[M+Br]-", height=1e5, heavy={"81Br": 1})
     low = kid("d", p, "M0", 0.51e5, -SP["81Br"])
     up = kid("u", p, "81Br2", 0.49e5, SP["81Br"])
-    for lines, flag, level in (([low], False, "4b"), ([low, up], False, "4b"), ([up], True, "4d")):
+    for lines, flag, level in (([low], False, "own line"), ([low, up], False, "own line"), ([up], True, "reagent line")):
         got = _both(background() + _bromide(p, *lines))
         f = _fact(got, "C9H20BrN3O6", "[M+Br]-")
         assert f.iso and f.reagent_only_iso == flag, [r["peak_id"] for r in lines]
-        assert _level(got, "C9H20BrN3O6", "[M+Br]-") == level, [r["peak_id"] for r in lines]
+        assert _axis(got, "C9H20BrN3O6", "[M+Br]-") == level, [r["peak_id"] for r in lines]
 
 
 def test_a_full_count_line_the_band_or_the_position_test_refuses_is_no_evidence():
@@ -365,7 +381,7 @@ def test_a_full_count_line_the_band_or_the_position_test_refuses_is_no_evidence(
     for low in (kid("d", p, "M0", 0.10e5, -SP["81Br"]), kid("d", p, "M0", 0.51e5, -SP["81Br"], 3.0)):
         got = _both(background() + _bromide(p, low, up))
         f = _fact(got, "C9H20BrN3O6", "[M+Br]-")
-        assert f.iso and f.reagent_only_iso and _level(got, "C9H20BrN3O6", "[M+Br]-") == "4d"
+        assert f.iso and f.reagent_only_iso and _axis(got, "C9H20BrN3O6", "[M+Br]-") == "reagent line"
 
 
 def test_a_br3_clusters_lines_where_a_br2_ion_puts_one_are_the_reagents():
@@ -378,14 +394,14 @@ def test_a_br3_clusters_lines_where_a_br2_ion_puts_one_are_the_reagents():
     p = parent("a", "C12H9BrN2", "[M+HBr+Br]-", height=1e5, heavy={"81Br": 1})
     up = kid("u", p, "81Br2", 0.97e5, SP["81Br"])
     for lines, flag, level in (
-            ([up], True, "4d"),
-            ([kid("d", p, "M0", 0.34e5, -SP["81Br"])], True, "4d"),
-            ([up, kid("t", p, "2x81Br", 0.32e5, 2 * SP["81Br"])], False, "4b"),
-            ([up, kid("t", p, "2x81Br", 1.23e5, 2 * SP["81Br"])], True, "4d")):
+            ([up], True, "reagent line"),
+            ([kid("d", p, "M0", 0.34e5, -SP["81Br"])], True, "reagent line"),
+            ([up, kid("t", p, "2x81Br", 0.32e5, 2 * SP["81Br"])], False, "own line"),
+            ([up, kid("t", p, "2x81Br", 1.23e5, 2 * SP["81Br"])], True, "reagent line")):
         got = _both(background() + _bromide(p, *lines))
         f = _fact(got, "C12H9BrN2", "[M+HBr+Br]-")
         assert f.iso and f.reagent_only_iso == flag, [(r["iso_label"], r["height"]) for r in lines]
-        assert _level(got, "C12H9BrN2", "[M+HBr+Br]-") == level, [(r["iso_label"], r["height"]) for r in lines]
+        assert _axis(got, "C12H9BrN2", "[M+HBr+Br]-") == level, [(r["iso_label"], r["height"]) for r in lines]
 
 
 def test_every_line_of_a_br_free_neutrals_hbr_br_cluster_is_the_reagents():
@@ -398,7 +414,7 @@ def test_every_line_of_a_br_free_neutrals_hbr_br_cluster_is_the_reagents():
     for lines in ([low], [up], [low, up]):
         got = _both(background() + _bromide(p, *lines))
         f = _fact(got, "C10H12O4", "[M+HBr+Br]-")
-        assert f.iso and f.reagent_only_iso and _level(got, "C10H12O4", "[M+HBr+Br]-") == "4d"
+        assert f.iso and f.reagent_only_iso and _axis(got, "C10H12O4", "[M+HBr+Br]-") == "reagent line"
 
 
 def test_the_full_count_line_is_read_from_the_line_the_parent_is_committed_on():
@@ -411,11 +427,11 @@ def test_the_full_count_line_is_read_from_the_line_the_parent_is_committed_on():
     p = parent("a", "C15H23BrO2", "[M+Br]-", height=1e5)
     two = kid("u", p, "81Br", 1.92e5, SP["81Br"])
     four = kid("t", p, "2x81Br", 0.97e5, 2 * SP["81Br"])
-    for lines, flag, level in (([two], True, "4d"), ([two, four], False, "4b"), ([four], False, "4b")):
+    for lines, flag, level in (([two], True, "reagent line"), ([two, four], False, "own line"), ([four], False, "own line")):
         got = _both(background() + _bromide(p, *lines))
         f = _fact(got, "C15H23BrO2", "[M+Br]-")
         assert f.iso and f.reagent_only_iso == flag, [r["peak_id"] for r in lines]
-        assert _level(got, "C15H23BrO2", "[M+Br]-") == level, [r["peak_id"] for r in lines]
+        assert _axis(got, "C15H23BrO2", "[M+Br]-") == level, [r["peak_id"] for r in lines]
 
 
 def test_a_br_free_neutrals_bromide_cluster_committed_on_its_81br_line_has_no_line_of_its_own():
@@ -426,7 +442,7 @@ def test_a_br_free_neutrals_bromide_cluster_committed_on_its_81br_line_has_no_li
     p = parent("a", "C10H18O3", "[M+Br]-", height=1e5, heavy={"81Br": 1})
     got = _both(background() + _bromide(p, kid("d", p, "M0", 1.03e5, -SP["81Br"])))
     f = _fact(got, "C10H18O3", "[M+Br]-")
-    assert f.iso and f.reagent_only_iso and _level(got, "C10H18O3", "[M+Br]-") == "4d"
+    assert f.iso and f.reagent_only_iso and _axis(got, "C10H18O3", "[M+Br]-") == "reagent line"
 
 
 def test_a_br2_neutrals_bromide_cluster_reads_its_own_halogen_lines():
@@ -437,13 +453,13 @@ def test_a_br2_neutrals_bromide_cluster_reads_its_own_halogen_lines():
     where the reagent's Br puts one: 4d. (The neutral's own count: capped at one Br, s would read 2 and the
     'M0' line the reagent's.)"""
     p = parent("a", "C8H8Br2O2", "[M+Br]-", height=1e5, heavy={"81Br": 1})
-    for line, flag, level in ((kid("d", p, "M0", 0.34e5, -SP["81Br"]), False, "4b"),
-                              (kid("t", p, "2x81Br", 0.32e5, 2 * SP["81Br"]), False, "4b"),
-                              (kid("u", p, "81Br2", 0.97e5, SP["81Br"]), True, "4d")):
+    for line, flag, level in ((kid("d", p, "M0", 0.34e5, -SP["81Br"]), False, "own line"),
+                              (kid("t", p, "2x81Br", 0.32e5, 2 * SP["81Br"]), False, "own line"),
+                              (kid("u", p, "81Br2", 0.97e5, SP["81Br"]), True, "reagent line")):
         got = _both(background() + _bromide(p, line))
         f = _fact(got, "C8H8Br2O2", "[M+Br]-")
         assert f.iso and f.reagent_only_iso == flag, line["iso_label"]
-        assert _level(got, "C8H8Br2O2", "[M+Br]-") == level, line["iso_label"]
+        assert _axis(got, "C8H8Br2O2", "[M+Br]-") == level, line["iso_label"]
 
 
 def test_an_out_of_band_m0_line_alone_stays_the_reagents():
@@ -455,7 +471,7 @@ def test_an_out_of_band_m0_line_alone_stays_the_reagents():
         p = parent("a", neutral, adduct, height=1e5, heavy={"81Br": 1})
         got = _both(background() + _bromide(p, kid("d", p, "M0", 1.6e5, -SP["81Br"])))
         f = _fact(got, neutral, adduct)
-        assert not f.iso and f.reagent_only_iso and _level(got, neutral, adduct) == "4c", neutral
+        assert not f.iso and f.reagent_only_iso and _axis(got, neutral, adduct) == "no line", neutral
 
 
 def test_a_br_cl_m0_line_beside_a_reagent_81br_line_is_no_reagent_line():
@@ -474,10 +490,10 @@ def test_a_br_cl_m0_line_beside_a_reagent_81br_line_is_no_reagent_line():
     lines = [kid("d", p, "M0", 3.2e5, -(SP["81Br"] + SP["37Cl"])), blend]
     got = _both(background() + _bromide(p, *lines))
     f = _fact(got, "C2H3ClO2", "[M+Br]-")
-    assert f.iso and not f.reagent_only_iso and _level(got, "C2H3ClO2", "[M+Br]-") == "4b"
+    assert f.iso and not f.reagent_only_iso and _axis(got, "C2H3ClO2", "[M+Br]-") == "own line"
     assert f.iso_labels == "81Br"                                    # the blend is kept, read as its '81Br' line
     alone = _both(background() + _bromide(p, blend))
-    assert _fact(alone, "C2H3ClO2", "[M+Br]-").reagent_only_iso and _level(alone, "C2H3ClO2", "[M+Br]-") == "4d"
+    assert _fact(alone, "C2H3ClO2", "[M+Br]-").reagent_only_iso and _axis(alone, "C2H3ClO2", "[M+Br]-") == "reagent line"
 
 
 def test_a_scorer_label_on_a_heavy_parent_credits_only_what_the_line_adds():
@@ -489,7 +505,7 @@ def test_a_scorer_label_on_a_heavy_parent_credits_only_what_the_line_adds():
     rows = background() + [p, kid("c", p, "13C+81Br", 1e5 * 8 * 0.0107, SP["13C"])]
     got = _both(rows)
     f = _fact(got, "C8H14Br2O4")
-    assert f.iso and f.multiline_elements == "C" and not f.multiline and _level(got, "C8H14Br2O4") == "4b"
+    assert f.iso and f.multiline_elements == "C" and not f.multiline and _axis(got, "C8H14Br2O4") == "own line"
 
 
 def test_carbon_is_a_placed_13c_line_whatever_its_height():
@@ -502,7 +518,7 @@ def test_carbon_is_a_placed_13c_line_whatever_its_height():
                                    kid("c", p, "13C", 3 * 8 * 0.0107 * 1e6, SP["13C"]))
     got = _both(rows)
     f = _fact(got, "C8H14O2", "[M+Br]-")
-    assert f.carbon_ev and not f.reagent_only_iso and _level(got, "C8H14O2", "[M+Br]-") == "4b"
+    assert f.carbon_ev and not f.reagent_only_iso and _axis(got, "C8H14O2", "[M+Br]-") == "own line"
 
 
 def test_an_m0_child_of_a_mono_parent_is_no_line_of_the_ion():
@@ -513,7 +529,7 @@ def test_an_m0_child_of_a_mono_parent_is_no_line_of_the_ion():
     p = parent("a", "C9H16O3", "[M+Br]-", height=1e5)
     rows = background(n=20) + _bromide(p, kid("m", p, "M0", 0.6e5, -SP["81Br"]))
     got = _both(rows)
-    assert not _fact(got, "C9H16O3", "[M+Br]-").iso and _level(got, "C9H16O3", "[M+Br]-") == "4c"
+    assert not _fact(got, "C9H16O3", "[M+Br]-").iso and _axis(got, "C9H16O3", "[M+Br]-") == "no line"
 
 
 # --------------------------------------------------------------------------- the hold released (I8, D1)
@@ -522,20 +538,23 @@ def test_a_br_free_ion_with_a_one_to_one_plus_2_line_takes_no_reagent_flag():
     up that the batch stamps as the reagent's water cluster. No Br on the ion:
     the line is none of its lines (expected 0), so no isotope axis, and it is not
     the reagent's line on THIS ion either (the hold is released). Mass-degenerate
-    with no axis: 5b, per file and pooled, no reagent_only_iso."""
+    with no axis, per file and pooled (it read 5b; the merge vote's class 0),
+    no reagent_only_iso."""
     p = parent("a", "C31H34O10", height=1e4, degeneracy=3.0)
     rows = background() + _bromide(p, kid("b", p, "81Br", 0.95e4, SP["81Br"]))
     for per_file in (False, True):
         got = _both(rows, per_file=per_file)
-        assert _level(got, "C31H34O10") == "5b"
+        f = _fact(got, "C31H34O10")
+        assert _axis(got, "C31H34O10") == "no line" and f.degeneracy >= 3 and f.n_axes == 0
+        assert EV._vote_class_of(f.evidence_level, f.evidence_axes) == 0
     f = _fact(_both(rows), "C31H34O10")
     assert not f.iso and not f.reagent_only_iso and f.iso_labels == "81Br"
-    assert "reagent_only_iso" not in f.evidence_axes and f.level_reason.startswith("5b: mass-degenerate")
+    assert "reagent_only_iso" not in f.evidence_axes
     # its bromide cluster (the reagent put the Br there) keeps the flag
     q = parent("c", "C9H14O3", "[M+Br]-", height=1e4)
     rows += [q, kid("qb", q, "81Br", 0.97e4, SP["81Br"])]
     f = _fact(_both(rows), "C9H14O3", "[M+Br]-")
-    assert f.reagent_only_iso and _level(_both(rows), "C9H14O3", "[M+Br]-") == "4d"
+    assert f.reagent_only_iso and _axis(_both(rows), "C9H14O3", "[M+Br]-") == "reagent line"
 
 
 # --------------------------------------------------------------------------- the decided edges, pinned (fix round 1)
@@ -557,11 +576,11 @@ def test_a_tof_file_whose_fit_has_an_intercept_is_position_tested_per_file():
     (a 0.03) -- is tested per file: an 81Br line 30 ppm (resp. 6 ppm) off its exact spacing drops."""
     p = parent("a", "C7H11BrO4", height=1e5)
     rows = background(a=2.5, b=1.8) + [p, kid("ab", p, "81Br", 0.97e5, SP["81Br"], 30.0)]
-    assert _level(_both(rows, RES_TOF, per_file=True), "C7H11BrO4") == "4c"
+    assert _axis(_both(rows, RES_TOF, per_file=True), "C7H11BrO4") == "no line"
     rows = background(a=0.03, b=6.0, exact=True) + [p, kid("ab", p, "81Br", 0.97e5, SP["81Br"], 6.0)]
-    assert _level(_both(rows, RES_TOF, per_file=True), "C7H11BrO4") == "4c"
+    assert _axis(_both(rows, RES_TOF, per_file=True), "C7H11BrO4") == "no line"
     rows = background(a=0.0, b=6.0, exact=True) + [p, kid("ab", p, "81Br", 0.97e5, SP["81Br"], 6.0)]
-    assert _level(_both(rows, RES_TOF, per_file=True), "C7H11BrO4") == "4b"    # on the floor: guarded
+    assert _axis(_both(rows, RES_TOF, per_file=True), "C7H11BrO4") == "own line"    # on the floor: guarded
 
 
 def test_exactly_40_13c_children_make_a_fit():
@@ -569,9 +588,9 @@ def test_exactly_40_13c_children_make_a_fit():
     '13C' child) = 40: the bright line 1.5 ppm off drops; 38 + 1 = 39 is not tested and it counts."""
     bright = parent("a", "C10H16O4", height=1e6)
     rows = background(n=39) + [bright, kid("ac", bright, "13C", 1.07e5, SP["13C"], 1.5)]
-    assert _level(_both(rows), "C10H16O4") == "4c"
+    assert _axis(_both(rows), "C10H16O4") == "no line"
     rows = background(n=38) + [bright, kid("ac", bright, "13C", 1.07e5, SP["13C"], 1.5)]
-    assert _level(_both(rows), "C10H16O4") == "4b"
+    assert _axis(_both(rows), "C10H16O4") == "own line"
 
 
 def test_a_thin_source_keeps_its_height_term():
@@ -579,7 +598,7 @@ def test_a_thin_source_keeps_its_height_term():
     its b / h term and the ~2-ppm window of a 110-cps line keeps it 1.5 ppm off."""
     dim = parent("b", "C11H18O4", height=935.0)
     rows = background(n=45) + [dim, kid("bc", dim, "13C", 110.0, SP["13C"], 1.5)]
-    assert _level(_both(rows), "C11H18O4") == "4b"
+    assert _axis(_both(rows), "C11H18O4") == "own line"
 
 
 def _n1(neutral="C10H16O5", *, nb_height=3.2e5, off_ppm=3.0, role="M0"):
@@ -598,8 +617,8 @@ def _n1(neutral="C10H16O5", *, nb_height=3.2e5, off_ppm=3.0, role="M0"):
 def test_n1_pulls_only_from_three_times_the_childs_height():
     """N1: a neighbour >= 3x the child's height. 3.0e4 (2.8x the 1.07e4 child) does not pull, 3.3e4 (3.08x)
     does."""
-    assert _level(_both(_n1(nb_height=3.0e4)[0]), "C10H16O5", "[M]-.") == "4c"
-    assert _level(_both(_n1(nb_height=3.3e4)[0]), "C10H16O5", "[M]-.") == "4b"
+    assert _axis(_both(_n1(nb_height=3.0e4)[0]), "C10H16O5", "[M]-.") == "no line"
+    assert _axis(_both(_n1(nb_height=3.3e4)[0]), "C10H16O5", "[M]-.") == "own line"
 
 
 def test_n1_reaches_25_ppm_of_the_exact_position():
@@ -607,10 +626,10 @@ def test_n1_reaches_25_ppm_of_the_exact_position():
     m/z 159 (C7H10O4 [M]-.: beyond the 25-ppm reach, a line 3 ppm off stays dropped)."""
     rows, nb, p = _n1("C10H16O5")
     assert (nb["mz"] - (p["mz"] + SP["13C"])) / nb["mz"] * 1e6 < 25.0
-    assert _level(_both(rows), "C10H16O5", "[M]-.") == "4b"
+    assert _axis(_both(rows), "C10H16O5", "[M]-.") == "own line"
     rows, nb, p = _n1("C7H10O4")
     assert (nb["mz"] - (p["mz"] + SP["13C"])) / nb["mz"] * 1e6 > 25.0
-    assert _level(_both(rows), "C7H10O4", "[M]-.") == "4c"
+    assert _axis(_both(rows), "C7H10O4", "[M]-.") == "no line"
 
 
 def test_n1_rescues_a_line_pulled_at_most_half_way():
@@ -618,8 +637,8 @@ def test_n1_rescues_a_line_pulled_at_most_half_way():
     9.3 ppm) is rescued, one 0.55 of the way (2.46 mDa, 11.3 ppm) is not."""
     x = parent("a", "C10H16O5", "[M]-.")["_true"] + SP["13C"]
     near, far = 0.45 * 0.00447 / x * 1e6, 0.55 * 0.00447 / x * 1e6
-    assert _level(_both(_n1(off_ppm=near)[0]), "C10H16O5", "[M]-.") == "4b"
-    assert _level(_both(_n1(off_ppm=far)[0]), "C10H16O5", "[M]-.") == "4c"
+    assert _axis(_both(_n1(off_ppm=near)[0]), "C10H16O5", "[M]-.") == "own line"
+    assert _axis(_both(_n1(off_ppm=far)[0]), "C10H16O5", "[M]-.") == "no line"
 
 
 def test_n1_and_the_list_read_only_the_rows_the_levelling_reads():
@@ -628,14 +647,14 @@ def test_n1_and_the_list_read_only_the_rows_the_levelling_reads():
     unexplained row at the exact 13C position answers nothing -- in the engine and the script alike (pooled,
     the same frame reaches both too)."""
     for per_file in (True, False):
-        assert _level(_both(_n1(role="unexplained")[0], per_file=per_file), "C10H16O5", "[M]-.") == "4c"
-        assert _level(_both(_n1()[0], per_file=per_file), "C10H16O5", "[M]-.") == "4b"     # an M0 row: pulls
+        assert _axis(_both(_n1(role="unexplained")[0], per_file=per_file), "C10H16O5", "[M]-.") == "no line"
+        assert _axis(_both(_n1()[0], per_file=per_file), "C10H16O5", "[M]-.") == "own line"     # an M0 row: pulls
     p, ent = _listed(1e6, 1.07e5)
     ent.update(role="unexplained", iso_label=None)
     for per_file in (True, False):
-        assert _level(_both(background() + [p, ent], per_file=per_file), "C10H16O4") == "4c"
+        assert _axis(_both(background() + [p, ent], per_file=per_file), "C10H16O4") == "no line"
     ent.update(role="iso_child", iso_label="13C")
-    assert _level(_both(background() + [p, ent]), "C10H16O4") == "4b"                   # an iso row: it answers
+    assert _axis(_both(background() + [p, ent]), "C10H16O4") == "own line"                   # an iso row: it answers
 
 
 # --------------------------------------------------------------------------- the list's own rules (D5)
@@ -656,10 +675,10 @@ def test_a_list_entry_is_placed_through_the_parents_calibration():
     names sits at the TRUE parent + 1.00335 -- placed through pcal, as a child would be (4b); uncalibrated,
     or with the calibration's sign the other way, it is 3 / 6 ppm off (4c)."""
     p, ent = _listed(1e6, 1.07e5, parent_off_ppm=3.0, pcal=3.0)
-    assert _level(_both(background() + [p, ent]), "C10H16O4") == "4b"
+    assert _axis(_both(background() + [p, ent]), "C10H16O4") == "own line"
     for pcal in (0.0, -3.0):
         p["ppm_error_cal"] = pcal
-        assert _level(_both(background() + [p, ent]), "C10H16O4") == "4c", pcal
+        assert _axis(_both(background() + [p, ent]), "C10H16O4") == "no line", pcal
 
 
 def test_a_list_entry_is_placed_at_its_own_height():
@@ -667,9 +686,9 @@ def test_a_list_entry_is_placed_at_its_own_height():
     ~2.4-ppm window places it (4b); the parent's height would give ~1.1 ppm. A bright entry the same 1.5 ppm
     off drops (4c)."""
     p, ent = _listed(1e3, 107.0, entry_off_ppm=1.5)
-    assert _level(_both(background() + [p, ent]), "C10H16O4") == "4b"
+    assert _axis(_both(background() + [p, ent]), "C10H16O4") == "own line"
     p, ent = _listed(1e6, 1.07e5, entry_off_ppm=1.5)
-    assert _level(_both(background() + [p, ent]), "C10H16O4") == "4c"
+    assert _axis(_both(background() + [p, ent]), "C10H16O4") == "no line"
 
 
 def test_a_list_entry_is_not_rescued_by_a_neighbour():
@@ -679,23 +698,26 @@ def test_a_list_entry_is_not_rescued_by_a_neighbour():
     child = rows[-2]
     ent = orphan("e", child["mz"], child["height"])
     q = dict(p, isotopologues=json.dumps([{"label": "13C", "score": 0.9, "peak_id": "e"}]))
-    assert _level(_both(background() + [q, ent, nb]), "C10H16O5", "[M]-.") == "4c"
-    assert _level(_both(rows), "C10H16O5", "[M]-.") == "4b"                         # as its child: rescued
+    assert _axis(_both(background() + [q, ent, nb]), "C10H16O5", "[M]-.") == "no line"
+    assert _axis(_both(rows), "C10H16O5", "[M]-.") == "own line"                         # as its child: rescued
 
 
 def test_a_list_entry_names_a_row_of_its_own_file():
     """Two files reuse peak ids (spec section 2): file f2's M0 names 'e' in its list; f2 has no row 'e',
-    f1's 'e' sits exactly at f2's parent's 13C position. The entry names no row of ITS file: 4c, in the
-    engine and the script; with 'e' in f2 it answers (4b)."""
+    f1's 'e' sits exactly at f2's parent's 13C position. The entry names no row of ITS file: no line, in the
+    engine and the script; with 'e' in f2 it answers (an own line)."""
     p, ent = _listed(1e6, 1.07e5)
-    for f2_rows, want in (([p], "4c"), ([p, ent], "4b")):
-        f1, f2 = frame(background() + ([ent] if want == "4c" else [])), frame(f2_rows)
-        out = EV.level_pooled({"f1": f1, "f2": f2}, resolution=RES_ORBI)
-        assert dict(zip(zip(out.neutral_formula, out.adduct), out.evidence_level))[("C10H16O4", "[M-H]-")] == want
+    for f2_rows, want in (([p], "no line"), ([p, ent], "own line")):
+        f1, f2 = frame(background() + ([ent] if want == "no line" else [])), frame(f2_rows)
+        out = EV._series_pooled({"f1": f1, "f2": f2}, resolution=RES_ORBI)
+        got = {(r.neutral_formula, r.adduct): (r.evidence_level, r) for r in out.itertuples(index=False)}
+        assert _axis(got, "C10H16O4") == want
         both = pd.concat([f1.assign(__file="f1"), f2.assign(__file="f2")], ignore_index=True)
         ref = LL.assign_levels(LL.measure_source("s", both, LL.detect_reagent_halogen(both[both.role == "M0"]),
                                                  RES_ORBI, False), set())
-        assert dict(zip(zip(ref.neutral, ref.adduct), ref.level))[("C10H16O4", "[M-H]-")] == want
+        # the script and the engine agree on the private decision (never output)
+        assert dict(zip(zip(ref.neutral, ref.adduct), ref.level))[("C10H16O4", "[M-H]-")] == got[("C10H16O4",
+                                                                                                 "[M-H]-")][0]
 
 
 def test_a_generic_list_entry_is_exempt_from_the_position_test():
@@ -704,7 +726,7 @@ def test_a_generic_list_entry_is_exempt_from_the_position_test():
     shift = 2 * SP["13C"] + 0.005
     e, _s = I.generic_expectation({"C": 10, "H": 15, "O": 4}, {}, shift, 0.012)
     p, ent = _listed(1e6, 1e6 * e, label="M+2", shift=shift)
-    assert e > 0 and _level(_both(background() + [p, ent]), "C10H16O4") == "4b"
+    assert e > 0 and _axis(_both(background() + [p, ent]), "C10H16O4") == "own line"
 
 
 def test_a_guarded_tof_file_does_not_position_test_its_list():
@@ -713,9 +735,9 @@ def test_a_guarded_tof_file_does_not_position_test_its_list():
     pooled (no guard) or on an Orbitrap-class file it drops (4c)."""
     p, ent = _listed(1e6, 1.07e5, entry_off_ppm=6.0)
     rows = background(a=0.0, b=6.0, exact=True) + [p, ent]
-    assert _level(_both(rows, RES_TOF, per_file=True), "C10H16O4") == "4b"
-    assert _level(_both(rows, RES_TOF), "C10H16O4") == "4c"
-    assert _level(_both(rows, RES_ORBI, per_file=True), "C10H16O4") == "4c"
+    assert _axis(_both(rows, RES_TOF, per_file=True), "C10H16O4") == "own line"
+    assert _axis(_both(rows, RES_TOF), "C10H16O4") == "no line"
+    assert _axis(_both(rows, RES_ORBI, per_file=True), "C10H16O4") == "no line"
 
 
 # --------------------------------------------------------------------------- the 'M+n' window (D2)
@@ -753,7 +775,7 @@ def test_a_13c2_line_is_a_carbon_line():
                                    kid("c2", p, "13C2", 1e5 * 231 * 0.0107 ** 2, 2 * SP["13C"]))
     got = _both(rows)
     f = _fact(got, "C22H42O6", "[M+Br]-")
-    assert f.carbon_ev and not f.reagent_only_iso and _level(got, "C22H42O6", "[M+Br]-") == "4b"
+    assert f.carbon_ev and not f.reagent_only_iso and _axis(got, "C22H42O6", "[M+Br]-") == "own line"
 
 
 # --------------------------------------------------------------------------- a labelled adduct read from neutral + adduct
