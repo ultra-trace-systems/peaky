@@ -156,6 +156,132 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   iodine reaches it through this family on the [M−H]⁻ / [M+NO3]⁻ channels, and that
   iodine stays off the neutral grid on purpose.
 
+- **`scripts/ab_compare.py` — an A/B between two `peaky batch` runs over one batch.**
+  `scripts/diff_runs.py` asks "same peaks, same formula?" and keys on
+  `(sample_item_id, peak_id)`; it cannot see a path change, because a cover of
+  files and `--trace-first` (or a fixed centre and `--rolling-centre`) rebuild the
+  peak set from scratch and share no peak ids at all. The new script keys on
+  chemistry instead and reports, from `merged_ledger.csv`,
+  `per_file/_batch_ts.parquet` and `batch_summary.json`: the tier and neutral
+  headline; the merged rows that pair across the runs within a ppm window yet read
+  a different `(neutral_formula, adduct)`; the per-ion share of samples carrying a
+  series, with every move above a threshold; and the headline number for a path
+  change — the share of the reference run's multi-file neutrals the challenger
+  keeps, split by occurrence and median m/z. It reads an `evidence_level`
+  histogram when the column is there and says so when it is not. A run dir may be
+  named directly or by the `--out-dir` that holds it. The `--rolling-centre`
+  block is read from both shapes it is written in — `traces.rolling` on the cover
+  path and a flat `n_rolling` under `trace_first` — because reading only one of
+  them described a batch that rolled 965 of its ions as a fixed-centre run. The
+  headline also breaks the merged rows down by selection stage and refuses to
+  compare two runs that did not run the same ones: a run with the residual stage
+  on carries rows a run without it never looked for, so crediting the difference
+  to whatever flag was under test reads a stage as an effect. A run dir that
+  predates the stage field reports `n/a`, not zero.
+
+  First use settled three open questions. `--rolling-centre` is inert on both
+  instrument classes: same commit, same batch, flag on against flag off gives
+  0 ion disagreements in 1148 rows on an Orbitrap and 0 in 7346 on a TOF, even
+  though 434 and 965 ions roll and the TOF centres move by a median 1.4 ppm.
+  `origin/main` against the five-PR stack on the same Orbitrap batch is
+  likewise identical. And `--trace-first`, run on an Orbitrap for the first
+  time, recovers 96.3 % of the cover path's neutrals against 47.9 % on a TOF,
+  so the recorded "the deficit is structural" reads as instrument-dependent.
+
+- **`scripts/scorecard.py` — what a `peaky batch` run assigned, how good it is, what
+  it missed, the same way every session.** One card per run (`SCORECARD.md` +
+  `scorecard.json`), one row appended to a scoreboard (`scoreboard.jsonl`), and the
+  board (`SCOREBOARD.md` + the page source `scoreboard.html`) regenerated over every
+  channel's latest row with its delta to the row before. It reads a finished run dir
+  only — the merged ledger, the per-file ledgers, `_batch_ts.parquet`,
+  `batch_summary.json`, `run_manifest.json` — and never a server. Six sections: the
+  headline with **stamp coverage** (merged rows the time series never carries — a
+  stamping defect, not a chemistry question); the brightest 50 ions with reading,
+  tier, evidence level and axes, and the count of bright M0 rows that are not
+  Assigned; the best-evidence 50 with the level vector and the axes histogram;
+  what was missed in three senses — **M1** the brightest unstamped tracks in >= 50 %
+  of spectra, each joined to the nearest stamped ion, to `characterize_residual`'s
+  tag and to the engine's own clearing reason, then **grouped into families by
+  their shift from the nearest parent** so a comb is one row (+H, isotope lines,
+  cluster lines, neutral losses, reagent-ladder lines, shoulders; a ±H tie between
+  two acids that differ by H2 reads as +H), **M2** every roster / reference-ion /
+  known-species neutral looked for on the run's own channels (assigned, candidate,
+  read as something else, present but unstamped with the reason, absent), **M3**
+  what the other path or the other instrument on the same air found at level <= 4b
+  above the detection floor inside the overlap window and this run lacks; is it
+  right — roster recall against cited rosters (`peaky/data/rosters/`, alpha-pinene
+  products and the usual contaminants; unreviewed until signed off), the element
+  census of Assigned neutrals, the **decoy false-discovery bound** (the engine run
+  offline on the brightest cover file as it is, with every m/z shifted by 0.35 Da,
+  and with the wrong polarity's adduct set — what is still Assigned is the error
+  bound, split at m/z 350 where the mass-defect gap closes; an arm that crashes
+  the engine is recorded, not fatal) and **falsification survival** (the 13C-implied carbon count against the
+  formula, the 34S / 37Cl / 81Br / 29Si line where the formula demands one, the time
+  covariance of satellites and adduct pairs with their parent); and the delta. The
+  level column comes from `scripts/level_ledger.py` run in-process until the in-core
+  `evidence_level` column exists, which is then preferred. Not built from
+  `tables/residual_bins.csv`: it lists only bins absent from every cover file, and
+  every headline miss of the first cut sat inside the cover files.
+
+  `scripts/level_ledger.py`'s null-safe truthiness now also covers `pd.NA`, which an
+  in-memory engine ledger carries where a CSV round-trip has NaN.
+
+  First use, on the existing run dirs (Scoreboard v0): four channels of one same-air
+  campaign, six run dirs, one card each, ~8-15 min per card with the decoy. A 15N-nitrate
+  Orbitrap batch (305 spectra): 633 Assigned / 681 Candidate / 1,138 neutrals, 93.3 % of
+  the signal stamped, 0 merged rows unstamped; the +4.5 mDa comb beside its bright acids is
+  one M1 family row -- `+H` of the `[M-H]-` parent, the M-. electron-attachment family, 66
+  tracks and 2.6 % of the signal -- and 535 of the 746 Assigned rows that demand a
+  halogen or sulfur isotope line have none; the +0.35 Da decoy keeps 19 % of the
+  brightest file's Assigned rows, every one an H-rich CHOS formula above m/z 450 where
+  the shift is absorbable. A mixed-reagent TOF batch (230 spectra): 618 / 2,027 / 2,320,
+  83.2 % stamped, the reagent's Br-.(H2O)n lines named; the decoy keeps 108 % of the
+  control's Assigned rows on the shifted axis and 183 % on the wrong adduct set -- the
+  TOF's Assigned tier is not mass-discriminating on that file -- and only 133 of 436
+  13C carbon counts land within one carbon. A uronium Orbitrap batch (319 spectra):
+  857 / 291 / 801, 97.7 % stamped, 7 merged rows unstamped and they are exactly the 7 rows
+  the merge's reagent-N re-read relabelled; the shifted axis keeps 0.3 % of Assigned rows
+  but the wrong adduct set keeps 74 %, because the adduct mass difference is absorbed into
+  the neutral formula (C22H42O6 on the urea channel reads as C23H43NO7 on ammonium): the
+  ion is pinned by mass, the neutral/adduct split is not. The same batch under
+  `origin/main` and under the stack: zero delta on every metric. Its `--trace-first`
+  run: 792 / 400 / 866, 35 of the cover's 744 multi-file neutrals absent, 11 of its own
+  503 absent from the cover. One engine defect surfaced and is left for its own fix:
+  `tiers.compute_tiers` reads `admitted_by` with a bare `or`, which raises on `pd.NA`
+  when the wrong-adducts arm runs on a negative file; the card records the arm's error.
+
+- **`scripts/level_ledger.py` — what a committed neutral's evidence is WORTH,
+  on a CIMS-adapted Schymanski scale.** Schymanski's confidence levels assume a
+  fragment spectrum and a compound library; a chemical-ionization run has
+  neither, and the reagent is part of the ion. This script is the executable
+  definition of the adaptation: eleven levels, each a predicate over columns a
+  ledger already carries, one row out per `(source, neutral_formula, adduct)`.
+  Four axes feed it — a verified isotopologue (a satellite whose height is
+  within a factor of two of what the formula's carbon count or the isotope's
+  abundance predicts), a second adduct channel, a homologous-series or anchor
+  tie, and a corroborating source. Naming two sources levels both and gives each
+  the other as that fourth axis; `--corroborate` adds a source that corroborates
+  without being levelled. A source is a run dir (`per_file/*_ledger.csv`, else
+  `merged_ledger.csv`) or a bare ledger CSV.
+
+  Two rulings in it are CIMS-specific and have no Schymanski analogue. **4d**:
+  when the only isotope support is the reagent halogen, the pattern pins the
+  ION and says nothing about the neutral, because a covalent `X(Br)[M-H]-` and a
+  cluster `Y·HBr·Br-` are the same ion — so a bromide channel's `81Br`-only rows
+  stop short of a formula. The channel's halogen is read from its commonest
+  **cluster** adduct, so a stray `[M+Br]-` on a nitrate channel does not make it
+  a bromide one. **3b**: a neutral seen both deprotonated and clustered has its
+  gas-phase acidity measured, which names a substituent without naming a
+  structure — a real level 3 reached with no MS². Resolvability binds only where
+  it was measured (the trace-first path); a cover run is not punished for not
+  having it.
+
+  The levels the pipeline itself will carry (`evidence_level`) must reproduce
+  this script row for row. It is pinned against three measured count vectors —
+  a two-channel TOF campaign and a two-instrument same-air pair — reproduced
+  exactly, and `tests/test_level_ledger.py` fixes the decision table on a
+  fixture where every level fires once.
+
 ### Fixed
 
 - **A mixed inlet got no calibrants at all.** `profiles.compose` names a
