@@ -203,6 +203,22 @@ check("D4 [M-CH3]+ is the same ion as [M+H]+ of the CH4-lighter neutral",
 check("isoprene [M-H]+ is the same ion as protonated cyclopentadiene",
       approx(C.ion_mz("C5H8", "[M-H]+"), C.ion_mz("C5H6", "[M+H]+"), 1e-9))
 
+# --- candidates_for_peaks: the tolerance is the ION's, whatever the adduct ---
+# A cluster adduct's neutral is lighter than its ion, so a ppm window applied to
+# the NEUTRAL mass is narrower than the same ppm on the ion by neutral/ion
+# (2.3x for acetic acid . Br-, 1.8x for H2SO4 . Br-). Probe with the peak placed
+# k ppm-on-the-ion off theory: the neutral must be found just under the
+# tolerance for EVERY adduct, and missed just over it.
+_box = C.parse_ranges("C0-3 H0-8 O0-4")
+for _adduct in ("[M-H]-", "[M+Br]-", "[M+NO3]-", "[M+NH4]+"):
+    _ion = C.ion_mz("C2H4O2", _adduct)
+    for _k, _want in ((9.5, True), (10.5, False)):
+        _cands = C.candidates_for_peaks([_ion * (1 + _k * 1e-6)], _box, [_adduct],
+                                        ppm_tolerance=10.0, mass_min=30, mass_max=200)
+        check(f"ion-space window: C2H4O2 {_adduct} at +{_k} ppm on the ion is "
+              f"{'found' if _want else 'missed'} at 10 ppm",
+              ("C2H4O2" in _cands) == _want, sorted(_cands)[:6])
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

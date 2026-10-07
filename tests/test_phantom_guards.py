@@ -243,6 +243,42 @@ check("iso-envelope: bright parents stay M0",
 check("iso-envelope (c3): ledger valid", L.validate(lg3) == [])
 
 
+# ============================================================================
+# (b2) the Si demote is OBSERVABILITY-aware: same tier, honest reason
+# "a twin that must appear if real" is only true when the twin was within reach.
+# On a peak too dim to show 29Si/30Si the demote still stands -- nothing supports
+# the silicon count -- but the reason must not record a refutation that could not
+# have happened.
+# ============================================================================
+si_peaks = pd.DataFrame({
+    "peak_id": ["si_seen", "si_unseen"],
+    "mz": [276.126, 277.126],
+    # gate 100 cps: 29Si is predicted at 0.051*h, so 1e4 -> 510 (visible),
+    # 1e3 -> 51 (below the floor, unobservable)
+    "height": [1.0e4, 1.0e3]})
+lgs = L.new_ledger(si_peaks)
+for pid in ("si_seen", "si_unseen"):
+    L.commit_assignment(lgs, pid, neutral_formula="C11H18O5Si", adduct="[M+NH4]+",
+                        ion_formula="C11H22NO5Si+", ion_score=0.90, compound_score=0.90,
+                        ppm_error=0.2, pass_no=3, method="grid", confidence="Good",
+                        commentary="pdms family fit")
+ts = T.compute_tiers(lgs, cfg=P.PassConfig(height_cutoff_cps=100.0)).set_index("peak_id")
+check("dim uncorroborated Si is still Candidate (no evidence either way)",
+      ts.at["si_unseen", "tier"] == T.TIER_CANDIDATE, ts.at["si_unseen", "tier_reason"])
+check("bright Si keeps the 'must appear if real' refutation",
+      "must appear if real" in ts.at["si_seen", "tier_reason"],
+      ts.at["si_seen", "tier_reason"])
+check("dim Si reason says the twin was untestable, not absent",
+      "below the detection floor" in ts.at["si_unseen", "tier_reason"]
+      and "must appear if real" not in ts.at["si_unseen", "tier_reason"],
+      ts.at["si_unseen", "tier_reason"])
+# without a cfg there is no resolved floor -> nothing can be ruled out -> today's reason
+ts_nofloor = T.compute_tiers(lgs).set_index("peak_id")
+check("no resolved gate -> dim Si keeps today's reason",
+      "must appear if real" in ts_nofloor.at["si_unseen", "tier_reason"],
+      ts_nofloor.at["si_unseen", "tier_reason"])
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

@@ -270,6 +270,63 @@ with tempfile.TemporaryDirectory() as d:
     check("built-in name 'I' itself is untouched by the alias shadow",
           P.resolve("I").name == "I")
 
+# ---- compose(): a module running MORE THAN ONE reagent at once --------------
+# Regression: resolve() used to return the FIRST profile whose detect_adduct matched
+# and drop the rest. A profile's `adducts` list is the only menu the passes see, so a
+# mixed nitrate/bromide batch resolved to Br alone can never offer [M+NO3]- -- every
+# nitrate-clustered analyte is missed or forced into a bromide reading, silently.
+_mix = P.compose([P.NO3, P.BR])
+check("compose unions the adduct menus (nitrate channel survives)",
+      "[M+NO3]-" in _mix.adducts and "[M+Br]-" in _mix.adducts)
+check("compose keeps the shared deprotonation channel once",
+      _mix.adducts.count("[M-H]-") == 1)
+check("compose widens the element box per element",
+      "O0-25" in _mix.ranges and "Br0-2" in _mix.ranges and "H0-80" in _mix.ranges)
+check("compose unions the reagent-ion regexes",
+      _mix.reagent_ion_re and "NO3" in _mix.reagent_ion_re and "Br" in _mix.reagent_ion_re)
+check("a composed profile is never itself auto-detected", _mix.detect_adduct is None)
+check("compose of one profile is that profile", P.compose([P.BR]) is P.BR)
+
+# a labelled reagent carries its label through the merge; its unlabelled
+# isotopologue is genuinely present (reagent purity < 1), so both channels are real.
+_lab = P.compose([P.NO3, P.NO3_15N])
+check("labelled+unlabelled nitrate keeps both cluster channels",
+      "[M+NO3]-" in _lab.adducts and "[M+^NO3]-" in _lab.adducts)
+check("compose carries the label isotope", _lab.label_isotope == "^N")
+check("compose carries the label purity", _lab.purity == 0.98)
+check("a TIC-normalised component forces TIC for the whole", _lab.normaliser == "tic")
+check("all-reagent components keep reagent normalisation", _mix.normaliser == "reagent")
+
+_err = None
+try:
+    P.compose([P.BR, P.UR])
+except ValueError as e:
+    _err = str(e)
+check("compose refuses to cross polarities", _err is not None and "polarity" in _err)
+
+check("explicit '+'-joined selection composes", P.resolve("NO3+Br").name == "NO3+Br")
+check("a plain alias still wins over '+' splitting", P.resolve("br").name == "Br")
+check("an alias that merely CONTAINS '+' is not split", P.resolve("ur+").name == "Ur")
+
+
+class _FakePeaks:
+    """Minimal stand-in for a peak table: only `columns` and __getitem__ are read."""
+    def __init__(self, mechs):
+        self._m = list(mechs)
+        self.columns = ["ionization_mechanism"]
+    def __getitem__(self, k):
+        import pandas as pd
+        return pd.Series(self._m, name=k)
+
+
+check("auto-detect composes every reagent system present",
+      set(P.resolve("auto", _FakePeaks(["+Br-", "+NO3-", "-H+"])).adducts)
+      >= {"[M+Br]-", "[M+NO3]-", "[M-H]-"})
+check("auto-detect keeps the labelled nitrate when both isotopologues show",
+      P.resolve("auto", _FakePeaks(["+NO3-", "+^NO3-", "-H+"])).label_isotope == "^N")
+check("auto-detect on a single reagent is unchanged",
+      P.resolve("auto", _FakePeaks(["+Br-", "-H+"])).name == "Br")
+
 # ---- restore the registry (no cross-test pollution) -------------------------
 P.PROFILES.clear(); P.PROFILES.update(_SAVED[0])
 P._BY_ALIAS.clear(); P._BY_ALIAS.update(_SAVED[1])

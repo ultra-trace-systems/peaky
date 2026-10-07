@@ -76,6 +76,14 @@ class PassConfig:
     # can never be scored); match_compounds keeps its 5 ppm window so it still
     # attributes real 29Si/81Br satellites, and the z-gate owns ppm rejection.
     search_ppm: float = 3.0  # grid enumeration tolerance
+    # Pass 3 runs in two halves: the profile's own contaminant families early,
+    # and the families opened by DETECTED GKA series structure after passes
+    # 4/5/7 (`pass3_series`). Series detection itself stays in the early half,
+    # on the full residual, and is carried forward -- only the claim order
+    # differs. False restores the single early pass-3 of <=0.8.x, which let an
+    # evidence-opened family out-claim the better-evidenced later passes for the
+    # same unexplained peaks; kept as an escape hatch and to A/B the change.
+    pass3_series_late: bool = True
     # Height gate for the height-gated passes (ladders, siloxane, residual,
     # reflist rescue, isotope-satellite checks). Expressed as a MULTIPLE of the
     # sample's own noise edge (`noise_edge`: the 1st percentile of its picked
@@ -102,6 +110,33 @@ class PassConfig:
     height_cutoff_x_edge: float | str | None = None
     height_cutoff_cps: float | None = None
     noise_edge_cps: float | None = None   # runtime: set per sample by assign.run
+    # Detection floor the post-run ISOTOPE AUDIT judges satellites against
+    # (postprocess.audit_isotopes): "would this formula's 13C satellite be
+    # comfortably visible?" and "is this measured satellite reliable?". None =
+    # the resolved height gate (`height_cutoff`), which is right when the sample
+    # IS a spectrum (the picker's floor and the gate share a footing). Set it
+    # when the sample is a derived table whose heights sit on a different footing
+    # -- batch-AVERAGED trace heights (absent = 0) compress every dim ion far
+    # below the per-spectrum floor its satellite must clear to be picked at all,
+    # so the gate (a multiple of the table's own 1st percentile) predicts
+    # "visible" satellites that no spectrum could show, and the audit clears
+    # genuine formulas. Give it the per-spectrum detection floor instead.
+    audit_floor_cps: float | None = None
+    # Mass gate of the pass-0 KNOWN-species commit (directors.run_pass0_known):
+    # |ppm - prior_offset| must not exceed it. 2.0 is the Orbitrap ruling; on a
+    # TOF whose weakly bound clusters sit systematically 7-11 ppm off theory,
+    # raise it to the instrument's own displacement so iodic / sulfuric / MSA
+    # clusters can commit (they are locked, so the calibrated gate never revisits
+    # them -- keep the list-specific tolerance honest).
+    pass0_ppm: float = 2.0
+    # How far from parent + 1.00335 the isotope audit looks for the 13C satellite
+    # (postprocess.audit_isotopes: the sweeper, the completeness check and its
+    # halogen-twin fallback). 5 ppm is the Orbitrap ruling, where 13C and the +H
+    # isobar of a neighbouring homolog are resolved. A ~4k-resolution TOF blends
+    # the two into one M+1 peak whose apex can sit up to 4.5 mDa (25 ppm at m/z
+    # 180) from the 13C position, so a 5 ppm search misses satellites that are
+    # plainly there and clears the formula. Set it to the instrument's M+1 blend.
+    audit_sat_ppm: float = 5.0
     # Persistence path of the admission gate (assignment/admission.py). This is
     # the KNOB: "auto" (default) = Otsu's split of the batch's (bimodal)
     # bin-occurrence distribution, 0.40-0.55 on every instrument measured; a

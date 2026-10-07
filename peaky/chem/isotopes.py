@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-__version__ = "0.3.0"  # + diag_min_rel: claim faint 15N/18O/single-heavy satellites (D_15N, D_30SI)
+__version__ = "0.4.0"  # + satellite_observable: the shared "could it have been seen?" predicate
 # delta-m (Da) between an isotopologue satellite and its monoisotopic parent
 # (AME2020 exact masses; 81Br-79Br = 80.9162897 - 78.9183376 = 1.9979521 --
 # was 1.997795, 0.16 mDa low and inconsistent with passes._DBR; fixed 2026-06-13)
@@ -41,6 +41,65 @@ R_29SI_PER_SI = 0.0510        # 29Si/28Si
 R_30SI_PER_SI = 0.0309        # 30Si/28Si
 R_15N_PER_N = 0.003640        # 15N/14N (faint: 0.36% per N)
 R_18O_PER_O = 0.002050        # 18O/16O (faint: 0.20% per O)
+
+
+# ---------------------------------------------------------------------------
+# OBSERVABILITY: could a satellite have been SEEN at all?
+#
+# Several rules in the engine argue from a MISSING satellite -- "a real Br would
+# show its 81Br twin, this one does not, so discount it" (passes.core's het-iso
+# gate, tiers' Si demote, the reflist rescue's isotope check). That argument is
+# only valid when the twin was within reach of the instrument: on a peak too dim
+# for its satellite to clear the picker's floor, ABSENCE IS NOT EVIDENCE, and
+# charging it anyway turns "we could not have looked" into "we looked and it was
+# not there". The predicate below is the shared test; every one of those sites
+# asks it before holding a missing satellite against a formula.
+#
+# Per-atom heavy/light ratio of the line that DIAGNOSES each element -- the one
+# a missing-satellite argument is actually about. Si has two (29Si at M+1, 30Si
+# at M+2) and either confirms it, so the brighter line decides whether the
+# question could have been answered at all. Elements with no
+# minor isotope (N, P, I, F) are absent on purpose: nothing about brightness can
+# make their count testable, so they never reach this predicate.
+DIAG_SATELLITE_RATIO: dict[str, float] = {
+    "C": R_13C_PER_C,
+    "Cl": R_37CL_PER_CL,
+    "Br": R_81BR_PER_BR,
+    "S": R_34S_PER_S,
+    "Si": max(R_29SI_PER_SI, R_30SI_PER_SI),
+}
+
+
+def satellite_height(element: str, n_atoms, parent_height) -> float:
+    """First-order predicted height of `element`'s diagnostic satellite on a
+    parent of `parent_height`: per-atom abundance ratio x atom count x parent.
+    First-order is the right precision here -- the question is "order of the
+    detection floor or not", and the multi-atom combinatorial correction (which
+    only ever RAISES the line) never decides it. Returns 0.0 for an element with
+    no diagnostic line, a non-positive count, or an unknown/absent height."""
+    r = DIAG_SATELLITE_RATIO.get(element)
+    if r is None or n_atoms is None or parent_height is None:
+        return 0.0
+    n, h = float(n_atoms), float(parent_height)
+    if not (n > 0) or not (h > 0):     # NaN-safe: a non-finite count/height is no line
+        return 0.0
+    return h * r * n
+
+
+def satellite_observable(element: str, n_atoms, parent_height, floor) -> bool:
+    """Would `element`'s diagnostic satellite clear `floor` on this parent?
+
+    False means the instrument COULD NOT HAVE SHOWN it, so its absence says
+    nothing about the formula. Callers differ on what an unknown parent height
+    means and must decide that themselves before calling: a height of 0/None
+    reads here as "not observable" (the reflist rescue's reading -- too dim to
+    confirm), so a caller that wants the opposite (passes.core: waive a penalty
+    only on POSITIVE evidence of unobservability) checks the height first.
+    `floor` None = no resolved detection floor -> nothing can be ruled out, so
+    True."""
+    if floor is None:
+        return True
+    return satellite_height(element, n_atoms, parent_height) >= float(floor)
 
 
 # Isotopic purity of the '^' labelled reagents -- the DEFAULT only. The value in

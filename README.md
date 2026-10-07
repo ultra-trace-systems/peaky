@@ -182,6 +182,16 @@ peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto
 peaky batch  --batch "<your batch>" --dataset "<your workspace>" \
     --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto> --out-dir ~/peaky-output --jobs 6 --progress
 
+# measure a batch's mass axis against formula-certain reference ions BEFORE assigning
+# (offset / trend / drift / blending, with the remedy each implies; --ts = offline)
+peaky mass-qc --batch "<your batch>" --dataset "<your workspace>" --reagent NO3 --out ./qc
+peaky mass-qc --ts <run>/per_file/_batch_ts.parquet --reagent Br
+
+# TOF batches: the rolling centre and per-trace stamping window (off by default),
+# or assign the persistent ions ONCE from their centred traces instead of a file cover
+peaky batch ... --rolling-centre
+peaky batch ... --trace-first --resolving-power 6500
+
 # publish a finished ledger back into Mascope's run ledger (run selector,
 # peak inspector, batch overview) — --dry-run translates and checks, sends nothing
 peaky publish output/<run>/<sample>_<stamp>_ledger.csv --dry-run
@@ -195,7 +205,16 @@ peaky curate copy-samples --sample-ids <ID...> \
 ```
 
 `--reagent` forces the analyte channels (a positive/sparse sample otherwise
-mis-detects as negative). `--no-residual` skips the second, targeted selection
+mis-detects as negative). `peaky mass-qc` probes the 30-ion nitrate core (or the
+provisional bromide ladder) in the batch time series and reports whether the axis
+is flat, offset, curved, drifting or blended — an external yardstick, so a wrong
+axis is caught before the engine self-calibrates on its own output.
+`--rolling-centre` lets each merged ion's centre roll along the batch where its
+drift is resolvable and sizes its stamping window from its own scatter;
+`--trace-first` (with `--resolving-power`, the instrument's R) builds the batch's
+persistent traces, centres and gates them, applies the mass-qc wave, and assigns
+them as one synthetic sample through the same merge, stamp and residual stages —
+the TOF path, where a per-file mass scatters ~13 ppm and a trace centre is good to ~2. `--no-residual` skips the second, targeted selection
 (`--residual-min-x-edge` / `--residual-min-cps` / `--residual-k-max` tune it). `--jobs/-j N` (or `PEAKY_JOBS`) assigns the selected
 samples across `N` worker processes — ~3.5× faster on multicore, output identical
 to a serial run; default is your physical-core count, `--jobs 1` is the serial

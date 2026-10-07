@@ -28,6 +28,7 @@ import warnings
 from dataclasses import dataclass
 
 from peaky.chem import chemistry as C
+from peaky.chem import isotopes as ISO
 from peaky.paths import pkg_data
 
 __version__ = "0.1.0"
@@ -333,7 +334,12 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
         iso_ok = bool(len(fr[(fr["compound_formula"] == formula) & (~fr["is_base"])
                              & (pd.to_numeric(fr["iso_score"], errors="coerce").fillna(0) > 0.4)]))
         nC = C.parse_formula(formula).get("C", 0)
-        iso_observable = 0.011 * nC * h >= hcut        # predicted 13C M+1 vs the floor
+        # predicted 13C M+1 vs the floor -- the shared observability predicate
+        # (chem/isotopes.satellite_observable), which passes.core's het-iso gate
+        # asks of 34S/37Cl/81Br/29Si for the same reason. h is 0.0 when the
+        # height is unknown, which reads as "not observable" here on purpose: an
+        # unverifiable rescue must land tentative, never Assigned.
+        iso_observable = ISO.satellite_observable("C", nC, h, hcut)
         srcs = next((Ls.cite().split(",")[0] for Ls in lists if Ls.id == lid), lid)
         # runs AFTER apply_tiers (like the F/carbon demotes), so set tier explicitly.
         if iso_ok:

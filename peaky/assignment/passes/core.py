@@ -7,6 +7,7 @@ import re
 import pandas as pd
 
 from peaky.chem import chemistry as C
+from peaky.chem import isotopes as ISO
 from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
 from peaky.assignment import series_gka as G
@@ -309,10 +310,32 @@ def arbitrate(scored: pd.DataFrame, cfg: PassConfig) -> dict:
         "S": ("34S", cfg.het_iso_penalty_S),
         "Si": (("29Si", "30Si"), cfg.het_iso_penalty_Si),
     }
+    # OBSERVABILITY of the gate above. The gate is an argument from a missing
+    # satellite, and it only holds when the satellite could have been SEEN: on a
+    # peak whose 34S/37Cl/81Br/29Si line is predicted below the picker's floor,
+    # the twin is absent because nothing could have shown it, not because the
+    # heteroatom is absent. Charging the gate there makes "we could not have
+    # looked" into evidence against the formula -- and since the penalty is
+    # subtracted from eff_score it does not merely soften the row, it hands the
+    # peak to a competing formula. So a sub-floor satellite WAIVES the gate; the
+    # plain complexity prior still applies, because unobservable is not
+    # confirmation either (same reading as the reflist rescue's dim branch,
+    # assignment/reflists.py -- "tentative lead, not confirmed"). The gate is
+    # resolved here rather than per row; an offline caller with no gate in force
+    # (PassConfig.height_cutoff raises) gets no waiver and today's behaviour.
+    try:
+        sat_floor = cfg.height_cutoff
+    except RuntimeError:
+        sat_floor = None
 
     def _evidence_penalty(row) -> float:
         cnt = C.parse_formula(row["compound_formula"])
         labs = iso_labels.get((row["compound_formula"], row["ion_formula"]), set())
+        # the M0's own height, in the units the gate is expressed in. UNKNOWN
+        # height -> no waiver: the waiver needs positive evidence that the
+        # satellite was out of reach, and a missing height is not that.
+        h = row.get("sample_peak_intensity")
+        h = float(h) if h is not None and pd.notna(h) else None
         pen = 0.0
         for el, n in cnt.items():
             if n <= 0 or el not in C._COMPLEXITY_WEIGHT:
@@ -324,10 +347,16 @@ def arbitrate(scored: pd.DataFrame, cfg: PassConfig) -> dict:
                 if el == cfg.reagent_element:
                     # ion isotope can't prove NEUTRAL ownership of the reagent
                     # halogen: keep the prior; gate only if not even ion-level
-                    # confirmation exists.
+                    # confirmation exists. NOT observability-waived: this branch
+                    # is about neutral-vs-ion OWNERSHIP of a halogen the reagent
+                    # also supplies, and the ion's twin is as bright as the ion --
+                    # brightness never made that question answerable.
                     pen += prior + (0.0 if confirmed else gate)
                 elif confirmed:
                     continue  # confirmed -> waive skepticism
+                elif (sat_floor is not None and h is not None
+                      and not ISO.satellite_observable(el, n, h, sat_floor)):
+                    pen += prior  # too dim to have shown the twin -> gate waived
                 else:
                     pen += prior + gate
             else:

@@ -6,6 +6,236 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`--trace-first` (batch): assign the batch's persistent ions ONCE, from their centred
+  traces.** Opt-in and EXPERIMENTAL — see the measured result at the end of this entry.
+  `--resolving-power` defaults to measuring the width from the raw profile. `peaky.batch.tracefirst` builds
+  the traces (`PeakIndex` seeds recurring in >= 5 % of spectra, brightest first, each
+  consuming its 0.4-HWHM dedup cell — the Cubison & Jimenez fit floor, below which two
+  positions are one observable), centres each one adaptively (`batch.centre`), measures
+  the axis against the reference ions and applies the fitted wave inside its calibrant
+  range (`batch.massqc` / `batch.wave`), sizes membership from the reference ions'
+  per-spectrum noise (4 sigma, never below the validated 12 ppm, never above half the
+  cell), rejects a seed whose members scatter as widely as a uniform fill of that window
+  would (their robust sd against the 0.74 W a fill gives; a fill recurring in half the
+  spectra is kept and flagged `fills_window`),
+  probes the isotopologue positions of every persistent trace (20 members and 60 %
+  co-occurrence with the parent, no width test — a dim satellite reads as a fill by
+  nature), stamps each trace's separability from its nearest neighbour (`resolvability`:
+  unresolvable / blended / resolved, a flag never a filter), and hands the engine ONE
+  synthetic sample — one peak per trace, batch-mean height (absent = 0), the co-registered
+  estimator the isotope ratios rest on. That sample goes through `assign.run` and then the
+  same merge, trace reconciliation, stamp and residual stages as a cover file (`n_files`
+  is 1; the residual stage still picks real files for what the trace stamp left
+  unexplained). `tables/traces.csv` carries every trace's measurements, `per_file/`
+  the trace ledger with them merged in, and `batch_summary.json['trace_first']` the
+  build's numbers and the mass-qc verdict.
+
+  **What it measures against a file cover, on a 4-day mixed-reagent TOF batch (230
+  spectra), same reagent and same commit.** Trace-first: 1,443 merged rows, 258 Assigned,
+  53 ion disagreements, 11 files. The cover: 2,645 rows, 618 Assigned, 802 disagreements,
+  28 files. Of the 1,141 neutrals the cover found in >= 2 files, trace-first recovers 547
+  (47.9 %). Split by peak brightness, the two meet on the brightest ions (57 % vs 61 %
+  Assigned above 50x the noise edge) and diverge in the working range (12 % vs 29 % at
+  5-10x). The cause is structural, not a gate: the isotope satellite that earns Assigned
+  sits in the same SPECTRUM as its parent, and a trace sample averages the batch into one
+  peak per ion — 22 % of Assigned traces carry a confirmed isotopologue against 10 % of
+  Candidates, and the rate collapses below 20 % occurrence. Trace centres are genuinely
+  precise (standard error 0.20-0.85 ppm against 0.83 ppm per file), so use this for
+  batch-level centred masses and for mass-qc, not to replace the cover. Untested end to
+  end: the 0.4-HWHM dedup cell (worth 4-9 points of offered positions on that batch) and
+  the hard-coded 5 ppm engine commit tolerance in `TRACE_DEFAULTS`, which is ~14x the
+  centre's own standard error here but is not derived from it.
+
+- **`--trace-episodes` (batch, with `--trace-first`): seed a trace BELOW the occurrence
+  floor for a short plume.** Off by default. The floor asks an ion to recur across the
+  batch, which an episode never does — 41 of those 1,141 cover neutrals sit under a 5 %
+  occurrence floor and never seeded at all. A second pass seeds when a candidate's
+  detections are packed into <= 5 % of the campaign (a contiguous run of k spectra reads
+  ~k/2n; scattered detections read 0.37-0.43) and it reaches 2x the batch noise edge.
+  Contiguity does the discriminating: of the 24 reachable ions only 10 reach 3x the edge.
+  It runs after the seeds, so an episode never takes a persistent ion's dedup cell. Off by
+  default because it offers 322 more positions for 20 the cover confirms, and no
+  end-to-end run has yet said what the other ~300 are.
+
+- **`assign.run(..., peaks=frame)` runs the engine OFFLINE.** `io_mascope` serves a
+  registered in-memory table as the sample (`register_offline_sample`), the mechanism
+  lookups resolve to the names themselves for the channels the sample declares (the
+  opportunistic extra channels stay closed, as on a server that does not list them), and
+  the local scorer does the maths — no connection, no cache. The trace-first path and
+  the tests use it; `tests/test_tracefirst.py` runs the whole engine on a synthetic trace
+  sample and finds its acids and their 13C.
+
+- **`--rolling-centre` (batch and pool): the adaptive centre in the trace reconciliation, a
+  stamping window per trace, and a stamp that follows a moving centre.** Off by default;
+  the default path is bit-identical to before (`tests/test_rolling_stamp.py` checks it). With
+  the flag, `timeseries.recentre_ledger` hands every merged ion's trace to `batch.centre`:
+  the per-spectrum noise `sigma_ppm`, the random-walk step `gamma_ppm` and the members'
+  scatter about their own centre `resid_ppm` land on the merged ledger with
+  `centre_scheme` / `centre_window` / `track_span_ppm`, and an ion whose drift is
+  resolvable and worth following gets a rolling centre (its `mz_trace` becomes the track's
+  median, the track itself goes to the stamp). `timeseries.stamp_tolerances` then sizes the
+  stamping half-window PER TRACE from that residual — the same
+  `max(tol, min(2 tol, 2.5 sigma))` rule as the batch window, applied row by row — instead of
+  one batch quantile for every ion (`stamp_tol_ppm` on the merged ledger; the batch window
+  stays the fallback). `annotate_peaks` reads `stamp_tol_ppm` per row and, given the tracks,
+  collects a rolling ion's candidates within its window plus half its track span and keeps
+  only those within the window of the centre interpolated at the peak's own timestamp — so
+  the window MOVES with the ion, and the one-to-one contest measures distance from the
+  moving centre. Without timestamps on the time series the rolling path is skipped and says
+  so. `batch_summary.json['traces']` records `rolling` (how many rows rolled, median window
+  and span) and `stamp_tol_per_trace`. Measured on synthetic batches: an ion wandering
+  ±12 ppm over 400 spectra is stamped in all of them with the track and in under 70 %
+  from its median; a static ion is untouched.
+
+- **`peaky mass-qc` — the batch's mass axis measured against an EXTERNAL reference.**
+  Pass 1 self-calibrates on the Assigned backbone, which is circular: an axis 30 ppm wrong
+  yields a self-consistent calibration and a batch of confident wrong formulas, and nothing in
+  the run log says the axis moved. The new command probes formula-certain reference ions
+  (`peaky.chem.reference_ions`: the 30-ion nitrate-CIMS core shipped as
+  `data/reference_ions/nitrate.csv` with grade / anchor / blend flags, its 15N-reagent variant
+  computed through `chem.ion_mz`, and a provisional bromide ladder whose every Br adduct
+  carries its 81Br twin) in a batch time series — live (`--batch`/`--dataset`) or offline
+  (`--ts parquet`, no credentials) — and reports per ion the occurrence, offset from theory,
+  per-spectrum noise, random-walk step and optimal window (`batch.centre`), then a verdict
+  with the remedy it implies: `clean`, `axis_offset` (flat bias → a constant), `axis_trend`
+  (a smooth wave → apply it), `blended` (ion-to-ion jumps, no smooth part → centre only,
+  widen the tolerance, cap the tier), with `drifting` appended when the centres roll.
+  `peaky.batch.wave` is the written model behind `axis_trend`: Chebyshev in `(m/z)^+1/2`
+  (TOF, flight time) or `(m/z)^-1/2` (Orbitrap, frequency), the degree chosen by leave-one-out
+  cross-validation over 0..5 — **0 included**, so a flat offset is expressible — under a
+  one-standard-error rule with an L1 score (a MAD-based score let noise buy a degree on 25
+  points), iteratively 3-sigma clipped about the median residual, and refusing to predict
+  outside the calibrant range. Two procedural rules from a calibration session that got them
+  wrong: every gate is absolute (a "below the batch median" gate deletes every persistent ion
+  of a TOF batch whose median jitter is 0), and a calibrant rule that relaxes when the strict
+  set is too small REPORTS WHICH TIER IT USED (`calibrant_tier`, `calibrant_tiers_tried`).
+  The 81Br twin is a free internal check: a Br adduct whose light and heavy lines disagree in
+  offset, height ratio or occurrence is withdrawn as a calibrant whatever the formula says.
+  Writes `mass_qc.csv` / `mass_qc.json`. No assignment behaviour changes.
+
+- **`peaky.batch.centre` — the adaptive trace-centre estimator.** A trace's per-spectrum
+  positions carry white noise `sigma` and a slow random walk `gamma`; both come out of the
+  trace's own structure function `S(k) = 0.5 · robust_var(x[i+k] − x[i]) = sigma² + 0.5 gamma² k`,
+  with no user parameter and no assumption about batch length. A rolling median over `W`
+  spectra has error `sigma²/W + gamma² W/24`, minimised at `W* = sqrt(24) · sigma / gamma`;
+  `trace_centre` rolls only when the series is long enough (`min_n`), a walk is resolvable
+  (`S(kmax)/S(1) >= min_rise`) and the predicted gain beats the batch median by `min_gain` —
+  otherwise the centre is the batch median, bit for bit, so short batches behave exactly as
+  before. A gap guard keeps a window from spanning a hole in the batch. `rolling_members`
+  re-collects a drifting trace along its own track and `batch_centres` runs the estimator
+  over a `PeakIndex`. Nothing calls it yet; `tests/test_centre.py` pins sigma/gamma recovery
+  within 15 %, `W*` within 1.5× of the empirical optimum, never-roll on pure noise,
+  always-roll on a walk, and the bit-identical median below `min_n`.
+
+- **`PassConfig.audit_floor_cps`** — the detection floor the post-run isotope audit
+  judges 13C satellites against (`postprocess.audit_isotopes`: "would the satellite be
+  comfortably visible?" and "is this measured satellite reliable?"). Default `None`
+  keeps the resolved height gate, which is right when the sample is a spectrum. Set it
+  when the sample is a derived table on a different footing: a batch of trace-averaged
+  heights (absent = 0) compresses every dim ion far below the per-spectrum floor its
+  satellite must clear to be picked, so the gate — a multiple of the table's own 1st
+  percentile — predicted "visible" satellites no spectrum could show and the audit
+  cleared 178 of 258 otherwise-silent formulas on a 766-spectrum TOF trace sample
+  (succinic acid among them).
+
+- **`PassConfig.audit_sat_ppm`** — how far from parent + 1.00335 the isotope audit
+  looks for the 13C satellite (sweeper, completeness check, halogen-twin fallback).
+  Default 5.0 is the Orbitrap ruling. A ~4k-resolution TOF blends 13C with the +H
+  isobar of a neighbouring homolog into one M+1 peak whose apex sits up to 4.5 mDa
+  (25 ppm at m/z 180) from the 13C position: on the same TOF trace sample 108 of 131
+  remaining missing-13C clears had a clean satellite trace 5–25 ppm away (succinic acid's
+  at 16.9 ppm). Set it to the instrument's M+1 blend.
+
+- **`PassConfig.pass0_ppm`** — the mass gate of the pass-0 known-species commit
+  (`directors.run_pass0_known`), previously hard-coded at 2 ppm. Default 2.0 is
+  unchanged. On a TOF whose weakly bound clusters sit 7–11 ppm high, the iodine acids
+  (`reactive_iodine` family: HOI, HIO2, HIO3 …), H2SO4·NO3⁻ and MSA could never commit;
+  raise it to the instrument's displacement. The nitrate profile now documents that
+  iodine reaches it through this family on the [M−H]⁻ / [M+NO3]⁻ channels, and that
+  iodine stays off the neutral grid on purpose.
+
+### Fixed
+
+- **A mixed inlet got no calibrants at all.** `profiles.compose` names a
+  two-reagent module `Br+NO3`; `reference_ions.get` matched only single-reagent aliases,
+  raised, and the trace builder read that as "no reference list", skipping mass-qc and the
+  wave entirely — so the mixed-reagent TOF, the case the wave exists for, was the one that
+  silently got no mass-axis measurement. `get` now unions the parts: 53 ions and 20 anchors
+  on `Br+NO3` against 30 and 11 from nitrate alone, the twelve 79/81Br twin pairs intact,
+  an ion certain in both kept once at its stronger grading.
+
+- **The mass wave was fitted in the wrong variable on an Orbitrap.** The mass-qc
+  call inside the trace builder passed `tof=True` as a literal, so a trace-first Orbitrap
+  run fitted its wave against flight time for an analyser that disperses in frequency.
+  `Resolution.is_tof` now reads the basis off the measured width exponent.
+
+- **A wave fit could stand on calibrants it had already discarded.** The clip loop
+  recorded each fit against the mask the NEXT clip proposed, so the `min_n` guard the
+  docstring promised never held: a real batch returned a degree-2 wave standing on 4
+  surviving calibrants out of 7. And `share` divided the survivors' residual by EVERY
+  calibrant's spread, two different sets, so any clip flattered it and an outlier in the
+  denominator could make noise read as an explained wave — a degree-ZERO fit reported
+  "explains 85 %". Both sides now come from the set the fit was judged on.
+
+- **The trace fill gate had no power to do its job.** `ks_uniform` compared a
+  trace's members against a uniform ON THEIR OWN RANGE, which divides out the width — the
+  only thing separating an ion from a fill. The statistic stopped depending on sigma at all
+  (a 1.35 ppm ion and a true fill both read ~0.21-0.25), so `KS * sqrt(n)` was a disguised
+  member count: a real ion was called a fill 100 % of the time at 10 members and 94 % at 40,
+  silently making the rule "keep an ion only if it occurs in ~37 % of spectra". It also read
+  "cannot reject uniform" as "is a fill". The test is now the width, and on that TOF batch
+  it takes the positions the trace layer offers from 65 % to 75 % of the cover's ions.
+
+- **The formula search applied its ppm tolerance to the neutral mass, not the ion.**
+  `chemistry.candidates_for_peaks` sized its window as `neutral_mass x search_ppm`,
+  but every caller passes ion m/z and means the ion's window (the scorer, the z-gate
+  and the commit tolerance are all on the ion). On a cluster adduct the neutral is
+  lighter than the ion, so the enumeration net was narrower than the search tolerance
+  by neutral/ion: 1.8x for H2SO4 . Br- (`search_ppm=12` reached 6.6 ppm on the ion),
+  1.6x for H2SO4 . NO3-, 2.3x for acetic acid . Br-; on [M-H]- / [M+H]+ the ratio is ~1
+  and nothing changes. Candidates the scorer would have accepted were never
+  enumerated, and the peak sat unexplained. The window is now `ion_mz x search_ppm`
+  for every adduct, and `tests/test_chemistry.py` probes a neutral at +9.5 / +10.5 ppm
+  on the ion through four adducts. A/B measurements are in the pull request.
+
+- **The heteroatom isotopologue gate charged peaks that could never have shown their
+  satellite.** `passes.core`'s `_evidence_penalty` subtracts a gate penalty (0.30
+  halogen / 0.12 S / 0.12 Si) from `eff_score` whenever a candidate's diagnostic
+  satellite — 37Cl, 81Br, 34S, 29Si/30Si — is unconfirmed, and it had no
+  observability test: a peak too dim for its satellite to clear the height gate was
+  charged exactly like a bright peak whose satellite is genuinely missing. That turns
+  "we could not have looked" into evidence against the formula, and because the
+  penalty is subtracted before arbitration it hands the peak to a rival. The gate is
+  now waived when the predicted satellite height (per-atom abundance × atom count ×
+  parent height) falls below `cfg.height_cutoff`; the plain complexity prior still
+  applies, because unobservable is not confirmation either — the same reading the
+  reference-list rescue already took for a dim 13C ("tentative lead, not confirmed").
+  That rescue now asks the shared predicate (`isotopes.satellite_observable`) instead
+  of its own inline `0.011 × nC × height`: 13C is 1.07 % per carbon there, 2.7 % lower,
+  so a rescue sitting exactly on the floor now lands tentative, and a missing floor
+  reads as observable instead of raising.
+  The reagent-element branch is deliberately NOT waived: it is about neutral-vs-ion
+  ownership of a halogen the reagent also supplies, and the ion's twin is as bright as
+  the ion, so brightness never made that question answerable. Measured on two
+  trace-first ledgers of a 1057-spectrum TOF sample (nitrate and bromide channels):
+  the gate was being charged against an unobservable satellite for 46 % / 34 % of the
+  S-bearing winners and 57 % / 42 % of the Si-bearing ones — and for none of the Cl
+  and almost none of the Br, whose twins are 32 % and 97 % of the parent and so are
+  visible wherever the parent is. 10 % / 8 % of all M0 winners changed effective
+  score (by up to 0.12).
+
+- **The Si tier demote stated a refutation that could not have happened.** The rule in
+  `tiers.compute_tiers` demotes an uncorroborated silicon formula because "silicon has
+  a strong M+1/M+2 twin that must appear if real" — true only when the twin was within
+  reach. The tier is unchanged (an uncorroborated formula has no evidence for its
+  silicon either way and must not read as Assigned), but on a peak whose twin is
+  predicted below the detection floor the reason now says the claim was untestable
+  rather than refuted: 39 rows across the two ledgers above. The mono-isotopic P/I and
+  partially-fluorinated rules need no such guard — those elements have no minor isotope
+  at all, so no brightness could ever have made their count testable.
+
 ## [0.9.0] — 2026-09-30 (the v2 fit at the sample's own width, the standard adduct notation, the abstraction and solvent-cluster channels, the privacy scan)
 
 ### Changed

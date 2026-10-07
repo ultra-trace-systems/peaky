@@ -188,6 +188,78 @@ we = arb4["winners"][arb4["winners"].peak_id == "E"].iloc[0]
 check("S candidate WITH 34S confirmed wins",
       we["neutral"] == "C8H12O6S", (we["neutral"], we["eff_score"]))
 
+# ---------- het-iso gate is OBSERVABILITY-aware ----------
+# The gate above argues from a MISSING satellite, which only means anything when
+# the satellite could have been seen. At h=1e4 with a 100 cps gate the 34S line
+# is predicted at 0.0443*1e4 = 443 cps -- plainly visible, so its absence counts.
+# At h=1000 it is predicted at 44 cps, BELOW the floor: nothing could have shown
+# it, so the gate (0.12) is waived and only the complexity prior (0.08) stands.
+CFG_GATE = P.PassConfig(height_cutoff_cps=100.0)
+
+
+def s_vs_chon(pid, h):
+    """Same contest twice: an S candidate (0.94) against a CHON alt (0.86) on a
+    peak of height `h`. eff = 0.94 - 0.08 [- 0.12 gate] vs 0.86 - 0.03."""
+    return pd.DataFrame([
+        iso_row(sample_peak_id=pid, compound_formula="C8H12O6S", compound_score=0.94,
+                ion_formula="C8H11O6S-", ion_score=0.94, ppm_error=0.3,
+                sample_peak_intensity=h),
+        iso_row(sample_peak_id=pid, compound_formula="C9H15NO5", compound_score=0.86,
+                ion_formula="C9H14NO5-", ion_score=0.86, ppm_error=0.5,
+                sample_peak_intensity=h),
+    ])
+
+
+w_bright = P.arbitrate(s_vs_chon("SB", 1.0e4), CFG_GATE)["winners"].iloc[0]
+check("bright S: 34S was observable and absent -> gate charged, CHON wins",
+      w_bright["neutral"] == "C9H15NO5",
+      (w_bright["neutral"], w_bright["eff_score"]))
+w_dim = P.arbitrate(s_vs_chon("SD", 1.0e3), CFG_GATE)["winners"].iloc[0]
+check("dim S: 34S predicted below the gate -> gate WAIVED, S wins",
+      w_dim["neutral"] == "C8H12O6S", (w_dim["neutral"], w_dim["eff_score"]))
+check("dim S keeps the plain complexity prior (0.94 - 0.08), gate not charged",
+      abs(w_dim["eff_score"] - 0.86) < 1e-9, w_dim["eff_score"])
+
+# the waiver is POSITIVE evidence of unobservability, not a default: with no
+# resolved gate (an offline caller) every peak keeps today's behaviour.
+w_nogate = P.arbitrate(s_vs_chon("SN", 1.0e3), CFG)["winners"].iloc[0]
+check("no resolved height gate -> no waiver, CHON still wins",
+      w_nogate["neutral"] == "C9H15NO5", w_nogate["neutral"])
+
+# ...and an UNKNOWN height is not evidence of dimness either.
+_sc_nan = s_vs_chon("SX", 1.0e3)
+_sc_nan["sample_peak_intensity"] = float("nan")
+w_nan = P.arbitrate(_sc_nan, CFG_GATE)["winners"].iloc[0]
+check("unknown height -> no waiver, CHON still wins",
+      w_nan["neutral"] == "C9H15NO5", w_nan["neutral"])
+
+# Si takes the same waiver on its 29Si/30Si twin (the brighter line decides).
+def si_row(pid, h):
+    return pd.DataFrame([
+        iso_row(sample_peak_id=pid, compound_formula="C8H16O5Si", compound_score=0.90,
+                ion_formula="C8H20NO5Si+", ion_score=0.90, ppm_error=0.2,
+                sample_peak_intensity=h)])
+
+
+si_bright = P.arbitrate(si_row("QB", 1.0e4), CFG_GATE)["winners"].iloc[0]
+si_dim = P.arbitrate(si_row("QD", 1.0e2), CFG_GATE)["winners"].iloc[0]
+check("bright Si pays prior+gate (0.20 cap + 0.12); dim Si pays the prior only",
+      abs(si_bright["eff_score"] - 0.58) < 1e-9
+      and abs(si_dim["eff_score"] - 0.70) < 1e-9,
+      (si_bright["eff_score"], si_dim["eff_score"]))
+
+# The REAGENT-element branch is about neutral-vs-ion ownership, not observability:
+# the reagent halogen's twin is as bright as the ion itself, so dimness never made
+# the question answerable and the branch keeps its full prior + gate.
+cfg_rg = P.PassConfig(height_cutoff_cps=100.0)
+cfg_rg.reagent_element = "Br"
+w_rg = P.arbitrate(pd.DataFrame([
+    iso_row(sample_peak_id="RG", compound_formula="C6H11BrO3", compound_score=0.90,
+            ion_formula="C6H10BrO3-", ion_score=0.90, ppm_error=0.3,
+            sample_peak_intensity=1.0)]), cfg_rg)["winners"].iloc[0]
+check("dim reagent-Br covalent reading is NOT waived (prior 0.20 + gate 0.30)",
+      abs(w_rg["eff_score"] - 0.40) < 1e-9, w_rg["eff_score"])
+
 # ---------- reagent-element alias: adduct reading beats covalent ----------
 # In Br-CIMS the ion C6H10BrO3- is equally covalent C6H11BrO3 [M-H]- or
 # C6H10O3 [M+Br]-. Both carry 81Br confirmation; with reagent_element="Br" the
@@ -1658,6 +1730,125 @@ check("iodine-bearing anchor (HIO3) never seeds an I2-cluster proposal",
       s_i2b["committed"] == 0
       and L.role_of(led_i2b, "t3") == L.ROLE_UNEXPLAINED, s_i2b)
 
+# ---------- audit floor (PassConfig.audit_floor_cps): a derived table whose heights
+# are batch-mean trace heights sits far below the per-spectrum floor its satellites
+# must clear to be picked, so the audit must judge "visible" against that floor
+led = mk_ledger([("Nf", 168.9505, 10300.0)])
+commit(led, "Nf", "C3H6O3", "C3H6BrO3-")
+s = P.audit_isotopes(led, P.PassConfig(height_cutoff_cps=100.0, audit_floor_cps=5000.0),
+                     log=lambda *a: None)
+check("audit floor: predicted satellite (330) below 1.5 x audit floor -> NOT cleared",
+      L.role_of(led, "Nf") == L.ROLE_M0 and s["c13_missing"] == 0, s)
+led = mk_ledger([("Ng", 168.9505, 10300.0)])
+commit(led, "Ng", "C3H6O3", "C3H6BrO3-")
+s = P.audit_isotopes(led, P.PassConfig(height_cutoff_cps=100.0, audit_floor_cps=150.0),
+                     log=lambda *a: None)
+check("audit floor: predicted satellite (330) above 1.5 x audit floor -> cleared as before",
+      L.role_of(led, "Ng") == L.ROLE_UNEXPLAINED and s["c13_missing"] == 1, s)
+led = mk_ledger([("Mf", 444.9861, 4761.0), ("Kf", 445.9895, 564.0)])
+commit(led, "Mf", "C19H15N2O4S", "C19H14BrN2O4S-")
+L.attach_isotopologue(led, "Kf", "Mf", iso_label="13C")
+s = P.audit_isotopes(led, P.PassConfig(height_cutoff_cps=100.0, audit_floor_cps=1000.0),
+                     log=lambda *a: None)
+check("audit floor: carbon clamp skips a satellite below the audit floor",
+      L.role_of(led, "Mf") == L.ROLE_M0 and s["c13_clamp"] == 0, s)
+
+# ---------- pass-0 gate (PassConfig.pass0_ppm): iodic acid [M-H]- on a nitrate-channel
+# run, 8 ppm off theory (a TOF whose weakly bound clusters sit high)
+check("iodic acid is a reactive-iodine known species in negative mode",
+      P._known_species("negative").get("reactive_iodine", {}).get("HIO3") is not None)
+mz_io3 = CH.ion_mz("HIO3", "[M-H]-")
+
+def fake_hio3(client, sample_id, formulas, *, mechanism_ids=None, **kw):
+    if "HIO3" not in formulas:
+        return pd.DataFrame([])
+    return pd.DataFrame([dict(
+        compound_formula="HIO3", compound_score=0.9, ion_formula="IO3-", ion_score=0.9,
+        iso_label="M0", is_base=True, theo_mz=mz_io3, rel_abundance=1.0, iso_score=0.9,
+        sample_peak_id="IO3", sample_peak_mz=mz_io3 * (1 + 8e-6),
+        sample_peak_intensity=500.0, ppm_error=8.0, abundance_error=0.0)])
+
+led_io = mk_ledger([("IO3", mz_io3 * (1 + 8e-6), 500.0)])
+s = P.run_pass0_known(None, "SID", led_io, PROF5, ACFG, ["[M+NO3]-", "[M-H]-"],
+                      score_fn=fake_hio3, log=lambda *a: None)
+check("pass0 default gate (2 ppm) refuses iodic acid at +8 ppm",
+      s["committed"] == 0 and L.role_of(led_io, "IO3") == L.ROLE_UNEXPLAINED, s)
+led_io = mk_ledger([("IO3", mz_io3 * (1 + 8e-6), 500.0)])
+s = P.run_pass0_known(None, "SID", led_io, PROF5,
+                      P.PassConfig(height_cutoff_cps=100.0, pass0_ppm=12.0),
+                      ["[M+NO3]-", "[M-H]-"], score_fn=fake_hio3, log=lambda *a: None)
+check("pass0 gate 12 ppm commits and locks iodic acid at +8 ppm",
+      s["committed"] == 1
+      and led_io.loc[led_io.peak_id == "IO3", "neutral_formula"].iloc[0] == "HIO3"
+      and L.is_locked(led_io, "IO3"), s)
+
+
+# ---------- audit satellite search (PassConfig.audit_sat_ppm): a TOF blends 13C with
+# the +H isobar, so the M+1 apex sits up to ~25 ppm from parent + 1.00335
+led = mk_ledger([("Ns", 168.9505, 10300.0), ("Ks", (168.9505 + 1.0033548) * (1 + 15e-6), 340.0)])
+commit(led, "Ns", "C3H6O3", "C3H6BrO3-")
+s = P.audit_isotopes(led, ACFG, log=lambda *a: None)
+check("audit sat search: default 5 ppm misses a satellite 15 ppm away -> cleared",
+      L.role_of(led, "Ns") == L.ROLE_UNEXPLAINED and s["c13_missing"] == 1, s)
+led = mk_ledger([("Nt", 168.9505, 10300.0), ("Kt", (168.9505 + 1.0033548) * (1 + 15e-6), 340.0)])
+commit(led, "Nt", "C3H6O3", "C3H6BrO3-")
+s = P.audit_isotopes(led, P.PassConfig(height_cutoff_cps=100.0, audit_sat_ppm=25.0),
+                     log=lambda *a: None)
+check("audit sat search: 25 ppm finds it, sweeps it up as the 13C child, nothing cleared",
+      L.role_of(led, "Nt") == L.ROLE_M0 and L.role_of(led, "Kt") == L.ROLE_ISO
+      and s["c13_missing"] == 0 and s["c13_attached"] == 1, s)
+
+
+
+# --- pass 3 split: evidence-opened families claim LAST ----------------------
+# The bug this pins: `pass3` ran before the residual/completion/certified passes
+# and claimed from the same unexplained pool, so a GKA-opened family took peaks
+# those passes would have explained better (its F commits reached `Assigned`
+# 2.0 % of the time against a 41 % batch baseline). The families are now split
+# across two stages; only the CLAIM order moved -- detection still happens in the
+# early phase, on the full residual, and is carried forward.
+from peaky.assignment import assign as _AS  # noqa: E402
+
+_sidx = {_s.name: _i for _i, _s in enumerate(_AS._STAGES)}
+check("pass 3 is split into a curated and a late series stage",
+      "pass3" in _sidx and "pass3_series" in _sidx, sorted(_sidx))
+check("  -> curated pass 3 still runs before passes 4/5/7",
+      _sidx["pass3"] < _sidx["pass4"] < _sidx["pass5"] < _sidx["pass_certified"],
+      _sidx)
+check("  -> evidence-opened families claim AFTER passes 4/5/7",
+      _sidx["pass_certified"] < _sidx["pass3_series"], _sidx)
+check("  -> but before the audits, so the mass gate judges them too",
+      _sidx["pass3_series"] < _sidx["audit"], _sidx)
+
+_ser = next(_s for _s in _AS._STAGES if _s.name == "pass3_series")
+
+
+class _StubSt:
+    def __init__(self, do_pass3=True, series_carry=None):
+        self.do_pass3, self.series_carry = do_pass3, series_carry
+
+
+check("late series stage is skipped when the curated phase carried nothing",
+      _ser.when(_StubSt(series_carry=None)) is False)
+check("  -> and runs once evidence is carried",
+      _ser.when(_StubSt(series_carry={"evidence": None})) is True)
+check("  -> --no-pass3 disables BOTH halves",
+      _ser.when(_StubSt(do_pass3=False, series_carry={"evidence": None})) is False)
+
+try:
+    from peaky.assignment.passes import directors as _DIR
+
+    _led = pd.DataFrame({"peak_id": ["p1"], "mz": [200.0],
+                         "role": [L.ROLE_UNEXPLAINED], "height": [1e5],
+                         "neutral_formula": [None]})
+    _DIR.run_pass3(None, "s", _led, None, None, CFG, ["[M-H]-"], phase="nonsense")
+    _bad_phase = False
+except ValueError as _e:
+    _bad_phase = "unknown phase" in str(_e)
+except Exception:
+    _bad_phase = False
+check("run_pass3 rejects an unknown phase", _bad_phase)
+
 
 # ---------- abstraction channels: an EXACT alias, so a MINOR channel ----------
 # C5H7+ @67.0542 is isoprene's hydride ion AND protonated cyclopentadiene: same
@@ -1695,3 +1886,4 @@ def test_all():
 if __name__ == "__main__":
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
+

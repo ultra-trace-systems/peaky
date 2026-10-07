@@ -599,6 +599,9 @@ def audit_isotopes(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> dict:
                 continue
 
     # --- 2-4. 13C physics on every surviving M0 ---
+    # the satellite detection floor: the height gate for a spectrum, or the
+    # caller's per-spectrum floor for a derived table (see PassConfig.audit_floor_cps)
+    floor = cfg.audit_floor_cps if cfg.audit_floor_cps is not None else cfg.height_cutoff
     kids = ledger[ledger["role"] == L.ROLE_ISO]
     for _, r in ledger[ledger["role"] == L.ROLE_M0].iterrows():
         if bool(r["locked"]):
@@ -612,7 +615,7 @@ def audit_isotopes(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> dict:
             & (kids["iso_label"].astype(str) == "13C")
         ]
         if not len(k):
-            j = _peak_near(mzs, r["mz"] + _D13C)
+            j = _peak_near(mzs, r["mz"] + _D13C, ppm=cfg.audit_sat_ppm)
             if (
                 j is not None
                 and ledger.at[j, "role"] == L.ROLE_UNEXPLAINED
@@ -637,7 +640,7 @@ def audit_isotopes(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> dict:
             # over-claim O-monster case always carries a BRIGHT 13C, so it fires.
             if (
                 n_c >= 8
-                and h_sat >= cfg.height_cutoff
+                and h_sat >= floor
                 and abs(c_est - n_c) > max(2.5, 0.35 * n_c)
             ):
                 try:
@@ -651,8 +654,8 @@ def audit_isotopes(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> dict:
                 except L.LedgerError:
                     pass
         elif (
-            expected >= 1.5 * cfg.height_cutoff
-            and _peak_near(mzs, r["mz"] + _D13C) is None
+            expected >= 1.5 * floor
+            and _peak_near(mzs, r["mz"] + _D13C, ppm=cfg.audit_sat_ppm) is None
         ):
             # twin-satellite fallback: when the peak has a halogen isotope
             # twin, the twin's OWN 13C satellite (13C+81Br / 13C+37Cl) is
@@ -664,7 +667,7 @@ def audit_isotopes(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> dict:
                 & ledger["iso_label"].astype(str).str.contains("Br|Cl", regex=True)
             ]
             if any(
-                _peak_near(mzs, float(t["mz"]) + _D13C) is not None
+                _peak_near(mzs, float(t["mz"]) + _D13C, ppm=cfg.audit_sat_ppm) is not None
                 for _, t in twins.iterrows()
             ):
                 continue

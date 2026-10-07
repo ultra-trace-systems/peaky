@@ -344,7 +344,10 @@ def cmd_batch(args) -> None:
                            occurrence_min=args.occurrence_min,
                            height_cutoff_x_edge=args.height_cutoff_x_edge,
                            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
-                           log=prog)
+                           rolling_centre=getattr(args, "rolling_centre", False),
+                           trace_first=getattr(args, "trace_first", False),
+                           resolving_power=getattr(args, "resolving_power", None),
+                           trace_episodes=getattr(args, "trace_episodes", False), log=prog)
         # the window's final numbers come from the RETURNED summary, never from
         # parsing the log -- exact by construction.
         prog.finish((res.get("assign") or {}).get("summary"))
@@ -375,7 +378,8 @@ def cmd_pool(args) -> None:
             residual_min_cps=args.residual_min_cps, residual_k_max=args.residual_k_max,
             occurrence_min=args.occurrence_min,
             height_cutoff_x_edge=args.height_cutoff_x_edge,
-            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs, log=prog)
+            height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
+            rolling_centre=getattr(args, "rolling_centre", False), log=prog)
         prog.finish((res.get("assign") or {}).get("summary"))
         ctx = res["ctx"]
         print(f"\n[pool] unified ledger -> {ctx.out_dir} in {res.get('elapsed_s', '?')}s")
@@ -405,6 +409,46 @@ def cmd_report(args) -> None:
     print("wrote", out.get("report_pdf"))
     if out.get("report_pdf_small"):
         print("wrote", out.get("report_pdf_small"), "(compressed)")
+
+
+def cmd_mass_qc(args) -> None:
+    """Measure a batch's mass axis against formula-certain reference ions."""
+    import json
+
+    from peaky import pipeline as PL
+    from peaky.batch import massqc as MQ
+    from peaky.chem import reference_ions as RI
+
+    try:
+        refs = RI.get(args.reagent)
+    except KeyError as exc:
+        sys.exit(str(exc))
+    if args.ts:
+        ts = PL.load(peaks=args.ts)
+        label = os.path.basename(args.ts)
+    else:
+        if not (args.batch and args.dataset):
+            sys.exit("mass-qc needs --ts <parquet>, or --batch and --dataset")
+        _require_creds()
+        from peaky.io import io_mascope as IO
+        client = IO.connect()
+        rb = IO.resolve_batch(client, args.batch, dataset=args.dataset)
+        ts = PL.load(batch=rb.id, dataset=args.dataset, client=client)
+        label = rb.name
+    tol = args.tol_ppm if args.tol_ppm is not None else (6.0 if args.orbitrap else 12.0)
+    print(f"[mass-qc] {label}: {ts['sample_item_id'].nunique()} spectra, {len(ts)} peaks; "
+          f"{len(refs)} {args.reagent} reference ions; membership +-{tol:g} ppm, "
+          f"probe +-{args.probe_ppm:g} ppm, wave in (m/z)^{'-' if args.orbitrap else '+'}1/2")
+    table, v = MQ.run(ts, refs, tol_ppm=tol, tof=not args.orbitrap, probe_ppm=args.probe_ppm)
+    MQ.report(table, v, log=print)
+    out = os.path.expanduser(args.out or ".")
+    os.makedirs(out, exist_ok=True)
+    table.to_csv(os.path.join(out, "mass_qc.csv"), index=False)
+    v = dict(v, batch=label, reagent=args.reagent, tol_ppm=float(tol),
+             probe_ppm=float(args.probe_ppm))
+    with open(os.path.join(out, "mass_qc.json"), "w", encoding="utf-8") as fh:
+        json.dump(v, fh, indent=1, default=str)
+    print(f"[mass-qc] wrote {os.path.join(out, 'mass_qc.csv')} and mass_qc.json")
 
 
 def cmd_gka(args) -> None:
@@ -844,6 +888,43 @@ def _auto_or_float(v: str):
         raise argparse.ArgumentTypeError(f"expected 'auto' or a number, got {v!r}")
 
 
+def _add_rolling_flag(p) -> None:
+    p.add_argument("--rolling-centre", action="store_true", default=False,
+                   help="trace-level reconciliation with the ADAPTIVE centre: every merged "
+                        "ion's trace is measured for per-spectrum noise and random-walk drift "
+                        "(batch.centre), its centre rolls along the batch where the drift is "
+                        "resolvable, its stamping window is sized from its own scatter, and the "
+                        "stamp follows the moving centre. Off = one batch centre and one window "
+                        "per ion, as before")
+
+
+def _add_trace_first_flags(p) -> None:
+    p.add_argument("--trace-first", action="store_true", default=False,
+                   help="assign the batch's persistent ions ONCE from their centred traces "
+                        "(batch.tracefirst) instead of a cover of files: traces are built, "
+                        "centred, gated, corrected by the mass-qc wave and handed to the engine "
+                        "as one synthetic sample, which then goes through the same merge / "
+                        "stamp / residual stages. EXPERIMENTAL: on the one batch it has been "
+                        "A/B'd against (a 4-day mixed-reagent TOF) it recovered 48%% of the "
+                        "ions a file cover found in >=2 files and assigned 258 against 618, "
+                        "because the isotope evidence that earns Assigned lives inside a "
+                        "spectrum and a trace sample averages it away. Use it for batch-level "
+                        "centred masses, not to replace the cover")
+    p.add_argument("--trace-episodes", action="store_true", default=False,
+                   help="with --trace-first, also seed traces BELOW the occurrence floor when "
+                        "a candidate's detections are packed into one stretch of the campaign "
+                        "and it clears the noise edge -- a short plume never recurs across a "
+                        "batch, so the persistence floor cannot see one. Off by default: it is "
+                        "not yet validated end to end")
+    p.add_argument("--resolving-power", default=None, metavar="R|auto",
+                   help="peak width for --trace-first, which sizes the dedup cell (0.4 HWHM) "
+                        "and the resolvability flag. Default 'auto': MEASURE it from the raw "
+                        "profile of isolated peaks across the batch's mass range, which also "
+                        "reports how it scales (constant on a TOF, as m^-1/2 on an Orbitrap). "
+                        "Give a number to declare it instead (e.g. 6500), which assumes it is "
+                        "the same at every mass")
+
+
 def _add_admission_args(sp) -> None:
     """The admission gate (assignment/admission.py): brightness OR persistence.
     Defined ONCE here for `assign`, `batch` and `pool` -- the three flags are one
@@ -936,6 +1017,8 @@ def build_parser() -> argparse.ArgumentParser:
     pb.add_argument("--no-report", action="store_true", help="skip the PDF report")
     _add_selection_args(pb)
     _add_admission_args(pb)
+    _add_rolling_flag(pb)
+    _add_trace_first_flags(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "
@@ -974,6 +1057,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="only the whole-pool report; skip the per-group ones")
     _add_selection_args(pp)
     _add_admission_args(pp)
+    _add_rolling_flag(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "
                          "(default: physical cores; env PEAKY_JOBS honored)")
@@ -992,6 +1076,26 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--generated", default=None, help="generated stamp for the cover")
     pr.add_argument("--subject", default=None)
     pr.set_defaults(func=cmd_report)
+
+    pq = sub.add_parser("mass-qc",
+                        help="measure a batch's mass axis against formula-certain reference "
+                             "ions: offset, trend, drift, blending -- and the remedy each implies")
+    pq.add_argument("--batch", default=None, help="batch id or name (with --dataset)")
+    pq.add_argument("--dataset", default=None)
+    pq.add_argument("--ts", default=None,
+                    help="cached full-batch TS parquet (offline; no credentials needed)")
+    pq.add_argument("--reagent", default="NO3",
+                    help="reference-ion table: NO3 (default), NO3_15N or Br. "
+                         "A '+'-joined combination ('Br+NO3') takes the union of "
+                         "both, for a module running a mixed inlet")
+    pq.add_argument("--tol-ppm", type=float, default=None,
+                    help="trace membership half-window (default 12 ppm; 6 with --orbitrap)")
+    pq.add_argument("--probe-ppm", type=float, default=50.0,
+                    help="how far from theory to look for each reference ion (default 50)")
+    pq.add_argument("--orbitrap", action="store_true",
+                    help="fit the wave in (m/z)^-1/2 (frequency) instead of (m/z)^+1/2 (flight time)")
+    pq.add_argument("--out", default=None, help="directory for mass_qc.csv / mass_qc.json (default .)")
+    pq.set_defaults(func=cmd_mass_qc)
 
     pg = sub.add_parser("gka", help="interactive rotating-GKA HTML from a ledger CSV")
     pg.add_argument("ledger_csv")

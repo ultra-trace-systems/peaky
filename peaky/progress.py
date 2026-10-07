@@ -51,11 +51,11 @@ __version__ = "0.1.1"   # + the solvent_clusters stage in NOMINAL_STAGES
 #
 # What it counts is the stages that TIME THEMSELVES: only an `assign._STAGES`
 # entry with `safe=True` emits `[run] <tag> took Xs`, and that line is the
-# parser's only cue. Counting all 38 table rows (21 of which are timed) capped
+# parser's only cue. Counting all 39 table rows (22 of which are timed) capped
 # the bar at 56% for any run that never got to learn the real number -- i.e.
 # every `peaky assign` run. tests/test_progress.py pins this against the real
 # stage table, so adding a timed stage fails a test rather than skewing the bar.
-NOMINAL_STAGES = 21
+NOMINAL_STAGES = 22
 
 # Every phase the window can show, in run order (`assign` is the long pole; the
 # rest are the tail). A phase with no entry here falls back to its bare name, so

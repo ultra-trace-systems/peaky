@@ -544,7 +544,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         residual_k_max: int = SS.RESIDUAL_K_MAX,
         residual_frac_of_max: float = SS.RESIDUAL_FRAC_OF_MAX,
         ts_peaks=None, amine_r_min: float = 0.6,
-        n_jobs: int | None = None, log=print, **assign_kw) -> dict:
+        n_jobs: int | None = None, rolling_centre: bool = False,
+        trace_first: bool = False, resolving_power=None, trace_episodes: bool = False,
+        log=print, **assign_kw) -> dict:
     """Assign the presence-cover subset of a batch and combine, keeping per-file
     ledgers. Provide EITHER `peaks` (a batch peak/sample table) OR `batch` (a
     batch id or name -- exact id > exact name > unique substring, an ambiguous
@@ -613,6 +615,44 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     assign_kw["cfg"] = cfg
     selection = dict(selection_meta or {})
     sel = None                 # our own cover table (None on the sample_ids= path)
+    trace_sample = None
+    if trace_first:
+        # TRACE-FIRST: no files are selected -- the batch's persistent ions are
+        # built as traces, centred, gated and handed to the engine as ONE
+        # synthetic sample (batch.tracefirst), which then goes through the same
+        # merge / reconciliation / stamp / residual stages as a cover file.
+        if ts_peaks is None:
+            raise ValueError("trace-first needs the batch time series (ts_peaks=)")
+        from peaky.batch import tracefirst as TFT
+        log("[phase] traces")
+        # The peak width sizes the dedup cell and the resolvability flag. MEASURE
+        # it from the raw profile by default -- a TOF can be tuned anywhere and a
+        # declared number is a guess -- and fall back to the caller's only when
+        # they gave one. A scalar is itself a model (constant R); the fit reports
+        # the exponent, so an Orbitrap's m^-1/2 comes out as such.
+        rp = resolving_power
+        if rp is None or (isinstance(rp, str) and rp.strip().lower() == "auto"):
+            # a MIDDLING spectrum: the richest is the most crowded, so the worst
+            # place to look for an isolated peak, and the sparsest may have none
+            counts = ts_peaks.groupby("sample_item_id").size().sort_values()
+            probe = str(counts.index[len(counts) // 2])
+            rp = TFT.measure_resolution(client, probe, log=log)
+            if rp is None:
+                raise ValueError(
+                    "could not measure the peak width from this batch's raw profile; pass "
+                    "--resolving-power <R> (the instrument's resolving power) instead")
+        else:
+            rp = TFT.Resolution.coerce(rp)
+            log(f"[traces] resolving power as given: {rp.describe()}")
+        trace_sample = TFT.build_trace_sample(
+            ts_peaks, sample_id=f"traces-{TFT.slug(batch or 'batch')}", reagent=prof.name,
+            resolving_power=rp, episodes=trace_episodes, log=log)
+        sample_ids = [trace_sample.sample_id]
+        selection = {"method": "trace-first", "k": 1, **trace_sample.summary()}
+        log(f"[assign_batch] trace-first: {selection['n_traces']} traces ({selection['n_seeds']} "
+            f"seeds + {selection['n_satellites']} satellite positions) from {selection['n_spectra']} "
+            f"spectra -> one synthetic sample")
+        log("[phase] assign")
     if sample_ids is None:
         # greedy presence set-cover over the batch's m/z bins. Needs the per-PEAK
         # table: the pipeline passes it as ts_peaks; `peaks` may already be one.
@@ -691,6 +731,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # admission table here AND the trace reconciliation of the merged ledger below,
     # so a peak's occurrence, its trace and its stamp are one object at one rule.
     _idx = TR.PeakIndex(ts_peaks, tol_ppm=tol_ppm) if ts_peaks is not None and len(ts_peaks) else None
+    # absolute hours per index sample code, for the rolling centre and the
+    # drift-following stamp (`rolling_centre`); None without timestamps
+    _hours = _TSN.sample_hours(_idx, ts_peaks) if rolling_centre and _idx is not None else None
     _occ, _thr = assign_kw.get("occurrence"), None
     if _on and _idx is not None and _occ is None:
         _occ = ADM.bin_occurrence(ts_peaks, tol_ppm=tol_ppm, index=_idx)
@@ -770,15 +813,38 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     n_jobs = _resolve_jobs(n_jobs, len(sample_ids))
     ts_path_written: list = []  # the raw-TS parquet the worker pool loads: written once
 
+    residual_scope: list = []      # [sorted residual-bin m/z] once the residual stage runs
+    scope_counts: dict = {}        # sid -> (kept, total) M0 rows under the trace-first scope
+
     def _apply(sid, led, plaus, stats, stage):
         """Parent-side reduce (called in sample_ids order): write the per-file CSV
         and fold this sample into the accumulators. Order-fixed so align() -- which
-        has order-sensitive tie-breaks -- yields byte-identical output either path."""
+        has order-sensitive tie-breaks -- yields byte-identical output either path.
+
+        Under TRACE-FIRST a residual file may only ADD what the trace stamp left
+        unexplained: its M0 rows are kept within `tol_ppm` of a residual bin and
+        dropped elsewhere. Otherwise ten per-file ledgers of a noisy TOF would
+        merge back in on top of the traces -- the per-file lottery trace-first
+        exists to avoid -- and out-vote a trace's reading (measured: a Candidate
+        on the trace ledger re-read as Assigned by three residual files)."""
         led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)
         plaus_audit.extend(plaus)
         protected_neutrals.update(_protected_neutrals(led))
         curated_neutrals.update(_curated_neutrals(led))
-        per_file[sid] = _m0(led)
+        m0 = _m0(led)
+        if stage == STAGE_RESIDUAL and trace_sample is not None and residual_scope:
+            bmz = residual_scope[0]
+            pmz = pd.to_numeric(m0["mz"], errors="coerce").to_numpy(dtype=float)
+            j = np.searchsorted(bmz, pmz)
+            jl = np.clip(j - 1, 0, len(bmz) - 1)
+            jr = np.clip(j, 0, len(bmz) - 1)
+            d = np.minimum(np.abs(bmz[jl] - pmz), np.abs(bmz[jr] - pmz))
+            keep = np.isfinite(pmz) & (d <= np.maximum(pmz * tol_ppm * 1e-6, TR.MZ_FLOOR_DA))
+            scope_counts[sid] = (int(keep.sum()), int(len(m0)))
+            log(f"[assign_batch]   {sid}: trace-first scope keeps {int(keep.sum())} of "
+                f"{len(m0)} M0 rows (those on a residual bin)")
+            m0 = m0[keep]
+        per_file[sid] = m0
         stages[sid] = stage
         from peaky.batch import timeseries as _TSI
         identified_aux.append(_TSI.identified_rows(led))
@@ -861,7 +927,23 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                     log(ln)
                 _apply(sid, out["ledger"], out["plausibility_audit"], out["stats"], stage)
 
-    _assign_files(list(sample_ids), STAGE_COVER, n_jobs)
+    if trace_sample is not None:
+        from peaky.batch import tracefirst as TFT
+        kw = dict(assign_kw, cfg=copy.deepcopy(cfg), occurrence=trace_sample.occurrence)
+        TFT.engine_settings(kw["cfg"], trace_sample, log=log)
+        log(f"[assign_batch] (1/1) assigning {trace_sample.sample_id} (offline, "
+            f"{len(trace_sample.peaks)} trace peaks) ...")
+        res = A.run(trace_sample.sample_id, context=context, log=log,
+                    reflists_active=reflists_active, peaks=trace_sample.peaks, **kw)
+        led = res["ledger"].merge(
+            trace_sample.traces[[c for c in TFT.TRACE_COLS if c in trace_sample.traces.columns]],
+            on="peak_id", how="left")
+        trace_sample.traces.to_csv(os.path.join(TAB, "traces.csv"), index=False)
+        _apply(trace_sample.sample_id, led, res.get("plausibility_audit") or [],
+               dict(res.get("stats", {})), STAGE_COVER)
+        log(f"[assign_batch] (1/1) done {trace_sample.sample_id}")
+    else:
+        _assign_files(list(sample_ids), STAGE_COVER, n_jobs)
 
     from peaky.chem import reagents as _RG
     from peaky.assignment import plausibility as PL
@@ -921,14 +1003,34 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # trace_id, trace_role); the stamp below reads them. No-op without a TS.
         trace_info: dict = {}
         stamp_tol = tol_ppm
+        tracks = None
         if _idx is not None and len(merged):
-            trace_info = _TS.recentre_ledger(merged, index=_idx, tol_ppm=tol_ppm, log=log)
+            trace_info = _TS.recentre_ledger(merged, index=_idx, tol_ppm=tol_ppm,
+                                             rolling=rolling_centre, times_by_code=_hours,
+                                             log=log)
+            tracks = trace_info.pop("tracks", None)
             trace_info.update(_TS.collapse_trace_labels(merged, tol_ppm=tol_ppm, log=log))
             stamp_tol, _sigma = _TS.stamp_tolerance(_idx, merged["mz_trace"], tol_ppm=tol_ppm)
             trace_info.update(stamp_tol_ppm=float(stamp_tol),
                               sigma_ppm=None if not np.isfinite(_sigma) else float(_sigma))
             log(f"[traces] per-ion mass scatter {_sigma if np.isfinite(_sigma) else 'n/a'} ppm -> "
                 f"stamping window +-{stamp_tol:g} ppm (merge tolerance {tol_ppm:g})")
+            if rolling_centre:
+                # the per-TRACE window: each row's own post-centring residual,
+                # the batch window where a row has none
+                merged["stamp_tol_ppm"] = _TS.stamp_tolerances(merged, tol_ppm=tol_ppm,
+                                                                fallback=stamp_tol, floor=stamp_tol)
+                _pt = merged["stamp_tol_ppm"]
+                trace_info["stamp_tol_per_trace"] = {
+                    "median_ppm": float(_pt.median()), "min_ppm": float(_pt.min()),
+                    "max_ppm": float(_pt.max()),
+                    "n_wider_than_batch": int((_pt > stamp_tol + 1e-9).sum()),
+                    "n_tighter_than_batch": int((_pt < stamp_tol - 1e-9).sum())}
+                log(f"[traces] per-trace stamping windows: median "
+                    f"{trace_info['stamp_tol_per_trace']['median_ppm']:.2f} ppm "
+                    f"({trace_info['stamp_tol_per_trace']['min_ppm']:.2f}-"
+                    f"{trace_info['stamp_tol_per_trace']['max_ppm']:.2f}); "
+                    f"{len(tracks or {})} rows stamp along a rolling track")
         out = {"merged": merged, "jitter": jitter, "merge_gates": merge_gates,
                "trace_info": trace_info, "stamp_tol": stamp_tol, "ts_annot": None,
                "predicted_rows": {}, "predicted_tracks": None}
@@ -959,7 +1061,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             _stamp = _TS.stamping_frame(merged, _aux, tol_ppm=stamp_tol)
             _stats: dict = {}
             out["ts_annot"] = _TS.annotate_peaks(ts_peaks, _stamp, tol_ppm=stamp_tol,
-                                                 stats=_stats)
+                                                 stats=_stats, tracks=tracks)
             out["predicted_rows"] = dict(_stamp.attrs.get("predicted_satellites") or {})
             out["predicted_tracks"] = _stats.get("predicted_tracks")
         return out
@@ -1003,6 +1105,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                                         min_x_edge=min_x, min_cps=min_cps,
                                         min_prevalence=min_prevalence, tol_ppm=tol_ppm)
             umeta = dict(bins.attrs.get("residual", {}))
+            if "bin_mz" in bins.columns:
+                residual_scope[:] = [np.sort(pd.to_numeric(bins["bin_mz"], errors="coerce")
+                                             .dropna().to_numpy(dtype=float))]
             # a sample counts for a bin only where its OWN gate would admit it:
             # the multiple x that sample's edge, or the absolute gate everywhere
             edge = pd.Series(bins.attrs.get("edge_cps") or {}, dtype=float)
@@ -1054,6 +1159,14 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                     f"-> {pfdir}")
                 sample_ids = list(sample_ids) + residual_ids
                 _assign_files(residual_ids, STAGE_RESIDUAL, min(n_jobs, len(residual_ids)))
+                if scope_counts:
+                    residual_meta["trace_first_scope"] = {
+                        "rows_kept": int(sum(k for k, _ in scope_counts.values())),
+                        "rows_total": int(sum(t for _, t in scope_counts.values())),
+                        "per_file": {sid: {"kept": k, "total": t} for sid, (k, t) in scope_counts.items()}}
+                    log(f"[assign_batch] trace-first scope: residual files contribute "
+                        f"{residual_meta['trace_first_scope']['rows_kept']} of "
+                        f"{residual_meta['trace_first_scope']['rows_total']} M0 rows (on residual bins)")
                 res_m = _merge()          # ONE align over cover + residual files
 
     # ---- write the run ------------------------------------------------------------
@@ -1142,6 +1255,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "reagent": prof.name, "label": prof.label, "context": context,
         "batch_name": batch,
         "selection": selection,
+        "trace_first": trace_sample.summary() if trace_sample is not None else None,
         "admission": occ_info,
         # the batch-derived brightness floor (empty when the multiple was pinned
         # by a flag / cfg / profile, or could not be derived): the transient share

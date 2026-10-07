@@ -461,17 +461,25 @@ def candidates_for_peaks(
     mass_max: float = 900.0,
 ) -> set[str]:
     """Return neutral formulas whose theoretical mass matches at least one peak
-    m/z under at least one adduct, within ppm tolerance."""
+    m/z under at least one adduct, within ppm tolerance.
+
+    The tolerance is the ION's: the window is ``mz * ppm_tolerance`` in Da for
+    every adduct, the same width the scorer, the z-gate and the commit tolerance
+    apply to the peak. Sizing it from the neutral mass instead (as this did
+    until 0.8.x) made the net narrower than the search tolerance by neutral/ion
+    on every cluster adduct -- 1.8x for H2SO4 . Br-, 1.6x for H2SO4 . NO3-, 2.3x
+    for acetic acid . Br- -- so candidates the scorer would have accepted were
+    never enumerated. On [M-H]- / [M+H]+ the two differ by ~1 %."""
     grid = _grid_cached(ranges, mass_min, mass_max)
     masses = [g[0] for g in grid]
     shifts = [ADDUCT_SHIFTS[a] for a in adducts if a in ADDUCT_SHIFTS]
     accepted: set[str] = set()
     for mz in peak_mzs:
+        tol = mz * ppm_tolerance * 1e-6            # the ion's window, in Da
         for shift in shifts:
             m_neu = mz - shift
             if m_neu < mass_min or m_neu > mass_max:
                 continue
-            tol = m_neu * ppm_tolerance * 1e-6
             lo = bisect.bisect_left(masses, m_neu - tol)
             hi = bisect.bisect_right(masses, m_neu + tol)
             for i in range(lo, hi):

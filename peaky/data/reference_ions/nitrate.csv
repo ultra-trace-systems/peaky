@@ -1,0 +1,31 @@
+neutral,channel,identity,grade,anchor,blend_flag
+HNO2,[M-H]-,nitrous acid,A,False,False
+HNO3,[M-H]-,nitric acid,A,True,False
+H2O,[M+NO3]-,water cluster NO3-.H2O,A,True,False
+C3H4O4,[M-H]-,malonic acid (C3 diacid),A,False,False
+CH2O2,[M+NO3]-,formic acid,B-TOF,True,False
+C2HF3O2,[M-H]-,trifluoroacetic acid (TFA),A,False,False
+HNO3,[M+NO3]-,nitric acid,A,True,False
+C5H4O5,[M-H]-,C5 oxo-diacid,A-,False,False
+C2H2O4,[M+NO3]-,oxalic acid (C2 diacid),B-TOF,True,False
+C2H4O4,[M+NO3]-,C2H4O4 acid,A-,False,False
+C4H4O3,[M+NO3]-,C4 anhydride (maleic anhydride),A-,False,False
+C3H4O4,[M+NO3]-,malonic acid (C3 diacid),A,True,False
+C7H4O5,[M-H]-,C7H4O5 (aromatic acid),B-TOF,False,False
+C2HF3O2,[M+NO3]-,trifluoroacetic acid (TFA),A,True,False
+C4H6O4,[M+NO3]-,succinic acid (C4 diacid),A,True,False
+C8H9NO2S,[M-H]-,C8H9NO2S (S/N organic),B-TOF,False,True
+C4H8O4,[M+NO3]-,C4H8O4 (tetrose / acid),A-,False,False
+H2N2O6,[M+NO3]-,nitric acid dimer (HNO3)2,B-TOF,True,False
+C5H6O4,[M+NO3]-,C5 unsaturated diacid (citraconic/glutaconic),A,True,False
+C5H8O4,[M+NO3]-,glutaric acid (C5 diacid),A,False,False
+C5H8O5,[M+NO3]-,hydroxy-glutaric acid,A,False,False
+C7H10O4,[M+NO3]-,C7 unsaturated diacid,A,True,False
+C7H12O4,[M+NO3]-,pimelic acid (C7 diacid),A,False,False
+C5H6O6,[M+NO3]-,C5 oxo-triacid,B-TOF,False,False
+C8H12O4,[M+NO3]-,pinic acid (C8 diacid),A,False,False
+C8H12O5,[M+NO3]-,hydroxy-pinic acid,A,False,False
+C9H14O5,[M+NO3]-,C9 oxidation product,A,False,False
+C7H11NO6,[M+NO3]-,C7H11NO6 organonitrate,B-TOF,False,False
+C10H14O6,[M+NO3]-,monoterpene HOM C10H14O6,A-,False,False
+C10H14O7,[M+NO3]-,monoterpene HOM C10H14O7,A-,False,True
