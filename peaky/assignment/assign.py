@@ -750,7 +750,15 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # detection is unreliable when a sample has few/no server matches (a positive
     # sample with no urea-channel match then falls back to [M-H]- and the whole
     # spectrum is mis-assigned in the wrong polarity). The explicit list wins.
-    adducts = list(adducts) if adducts else io_mascope.detect_adducts(raw)
+    adducts_given = bool(adducts)
+    adducts = list(adducts) if adducts_given else io_mascope.detect_adducts(raw)
+    if not adducts_given and not io_mascope.recognised_adducts(raw):
+        # no channels given and none of the sample's own matches names one: the
+        # [M-H]- detect_adducts returned is a DEFAULT, not a reading -- say so (the
+        # CLI and MCP entry points stop before this; a library caller passes adducts=)
+        log("[reagent] WARNING: no adducts given and no server match names a known "
+            "channel; assuming [M-H]- (negative). Pass adducts= (or --reagent) for a "
+            "positive or sparse-match sample.")
     analyte_adducts = list(adducts)     # before the opportunistic extras (the profile match)
     # Polarity is read from the (detected or forced) adducts (cation forms end "+").
     polarity = "positive" if any(str(a).rstrip().endswith("+") for a in adducts) \

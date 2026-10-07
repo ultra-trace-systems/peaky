@@ -524,7 +524,7 @@ For each selected sample: `assign.run` → save `per_file/<sid>_ledger.csv` → 
 ### 7.2 Assigned-analyte path
 
 1. Build ion-mz map from M0 (formula|adduct → mz); extract reagent mz from per-file ledgers.
-2. Median + CV per channel; **brightness gate `FLOOR_DEFAULT=200.0 cps`** (median) and `≥8` finite points.
+2. Median + CV per channel; **brightness gate `FLOOR_X_EDGE=3.33` × the batch noise edge, capped at `FLOOR_DEFAULT=200.0 cps`** (`batch_summary.noise_edge_batch_cps`; 200 cps when the run has none) on the median, and `≥8` finite points.
 3. `correlate` (log10, Pearson, `MIN_POINTS=8`) on RAW traces (preserves multi-channel sums).
 4. `cluster(dist_t=DIST_T=0.40, link='complete', min_members=MIN_MEMBERS=3)` — cut at `r > 0.60`.
 5. `merge_similar(merge_r=MERGE_R=0.85, complete linkage on centroids)` — fold near-duplicate families.
@@ -534,7 +534,7 @@ For each selected sample: `assign.run` → save `per_file/<sid>_ledger.csv` → 
 
 ### 7.3 Unexplained funnel (the gates)
 
-A TS bin enters unassigned clustering only if: **median `≥ 50.0 cps`** AND `≥8` finite samples AND NOT within **`8.0 ppm`** of any explained peak (M0 + iso_child + reagent + artifact from per-file ledgers — using all roles, else satellites would falsely look unassigned). Then `split_varying(cv_min=FLAT_CV=0.30, range_min=PEAK_RANGE=1.7, smooth_w=SMOOTH_W=3)` partitions into **varying** (CV ≥ 0.30 OR smoothed max/median ≥ 1.7, catching transient bursts) and **flat**; only varying traces are correlated and clustered (`dist_t=0.40`, `min_members=3`) on REAGENT-NORMALISED traces. Flat bins are bunched, not clustered (their shape is noise).
+A TS bin enters unassigned clustering only if: **median `≥ UNASSIGNED_FLOOR_X_EDGE=0.83` × the batch noise edge, capped at `50.0 cps`** (50 cps without one) AND `≥8` finite samples AND NOT within **`8.0 ppm`** of any explained peak (M0 + iso_child + reagent + artifact from per-file ledgers — using all roles, else satellites would falsely look unassigned). Then `split_varying(cv_min=FLAT_CV=0.30, range_min=PEAK_RANGE=1.7, smooth_w=SMOOTH_W=3)` partitions into **varying** (CV ≥ 0.30 OR smoothed max/median ≥ 1.7, catching transient bursts) and **flat**; only varying traces are correlated and clustered (`dist_t=0.40`, `min_members=3`) on REAGENT-NORMALISED traces. Flat bins are bunched, not clustered (their shape is noise). The union entrants and the varying set are each capped at the `TOP_N_DEFAULT=400` brightest by median: `n_union_over_cap` counts qualifying bins moved to the leftover path, `n_varying_over_cap` the varying bins not drawn (flagged `over_cap` in the unassigned CSV); the two counts overlap. Panel y-axes bottom out at the unassigned floor (or the 1st percentile of the traces, whichever is higher).
 
 ### 7.4 Channel-agreement QC
 
@@ -556,7 +556,7 @@ A TS bin enters unassigned clustering only if: **median `≥ 50.0 cps`** AND `�
 
 ### 8.2 Profiles (profiles.py)
 
-`ReagentProfile` (profiles.py): `name, label, polarity, adducts, normaliser ('reagent'|'tic'), reagent_ion_re, ranges, detect_adduct, context, aliases`. Built-ins BR, UR, NO3, NO3_15N (profiles.py). Br/NO3 use `normaliser='reagent'` ([Br3]- dominates); NO3_15N uses `'tic'` (15NO3 clusters below the acquisition window); UR uses `'tic'` (positive mode). `register`/`from_dict`/`load_config` (JSON/TOML) support user reagents. `resolve(reagent='auto', peaks, config)` (profiles.py) looks up by name/alias or auto-detects via `detect_adducts` then polarity.
+`ReagentProfile` (profiles.py): `name, label, polarity, adducts, normaliser ('reagent'|'tic'), reagent_ion_re, ranges, detect_adduct, context, aliases`. Built-ins BR, UR, NO3, NO3_15N (profiles.py). Br/NO3 use `normaliser='reagent'` ([Br3]- dominates); NO3_15N uses `'tic'` (15NO3 clusters below the acquisition window); UR uses `'tic'` (positive mode). `register`/`from_dict`/`load_config` (JSON/TOML) support user reagents. `resolve(reagent='auto', peaks, config)` (profiles.py) looks up by name/alias or auto-detects from the server's matches (`recognised_adducts`, every diagnostic adduct present composed) and raises, naming the mechanisms seen, when none is diagnostic (no polarity guess; names are never read).
 
 ### 8.3 Contexts (contexts.py)
 

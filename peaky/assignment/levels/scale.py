@@ -7,7 +7,8 @@ so a reader that must tell "not assessed" from "no level" reads the ``claim``
 column or passes ``keep_default_na=False``.
 
 The claim is what a reader may say about the committed formula: identified
-(level <= 3), neutral (4a: the neutral established, no named identity), ion
+(level <= 3), neutral (4a: the neutral established among the run's declared
+reagent channels, no named identity), ion
 (4b: the ion composition only) or tentative (5a, 5b, or a committed row with no
 level). The two buckets are reported beside the claims, never folded into
 them: reagent ("reagent") and NA ("not assessed").
@@ -41,7 +42,10 @@ CLAIM_NEUTRAL = frozenset({"4a"})
 CLAIM_ION = frozenset({"4b"})
 CLAIM_MEANING = {
     "identified": "the compound is named: ion established, split pinned and a named context-list entry (level <= 3)",
-    "neutral": "the neutral is established (4a): ion and split pinned with a positive fact; no named identity",
+    "neutral": ("the neutral is established (4a) among the run's declared reagent channels: ion and split "
+                "pinned with a positive fact; no named identity. A side channel the run keeps locked (e.g. "
+                "formate or acetate on a nitrate source) could re-read an [M-H]- ion as a cluster of a smaller "
+                "neutral; where one would, the row's evidence says 'side channels locked'"),
     "ion": "the ion composition is established (4b); the neutral / adduct split or the process stays open",
     "tentative": "a competitor is left, the reading is rejected, or the row has no level (5a, 5b, none)",
     "reagent": "a reagent ion or reagent cluster (not levelled)",

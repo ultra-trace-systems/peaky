@@ -64,6 +64,15 @@ CLAIM_ROW_KEYS = [
     "decoy_adducts_identified", "decoy_adducts_identified_rate", "decoy_adducts_identified_lt_350_rate",
     "decoy_adducts_established_rate", "m3_own_missing_identified", "m3_own_basis", "claims_schema",
 ]
+# appended after the claim keys, in this order, so every older column keeps its place
+APPENDED_ROW_KEYS = [
+    "decoy_scoring", "decoy_calibration", "decoy_ppm_k", "decoy_ppm_rate", "decoy_ppm_lt_350_rate",
+    "decoy_ppm_ge_350_rate", "decoy_ppm_identified_rate", "decoy_ppm_identified_lt_350_rate",
+    "decoy_ppm_established_rate", "decoy_ppm_control_assigned", "decoy_shift_lt_350_rate", "decoy_shift_ge_350_rate",
+    "decoy_headline_arm", "decoy_headline_lt_350_rate", "decoy_wrong_adducts", "decoy_adducts_new_ion_rate",
+    "decoy_adducts_new_ion_lt_350_rate", "decoy_adducts_same_ion_share", "roster_neutral_or_better", "roster_same_ion",
+    "roster_iso_reagent", "roster_test", "roster_window_ppm", "scale", "decoy_orbitrap",
+]
 
 
 def write_claim_run(root: Path, name: str = "TEST-BATCH_2026-01-01T000000Z", defect: bool = False,
@@ -199,7 +208,8 @@ def test_m2_joins_the_claim_of_the_reading_on_each_roster_line(crun, tmp_path):
     m2 = SC.missed_m2(crun, ions, tracks, rosters, lv)
     assert m2["roster"] == before["roster"] and before["roster_claim"] == {}      # _recall untouched
     assert m2["roster_claim"]["ap"] == {"identified": 1, "neutral": 1, "ion": 0, "tentative": 1, "reagent": 0,
-                                        "not assessed": 0, "misread_identified": 0}
+                                        "not assessed": 0, "neutral_or_better": 2, "misread_identified": 0}
+    assert m2["scale"] == "peaky 0.10.0" and m2["test"] == SC.ROSTER_TEST == 2
     claim = {r["neutral"]: r["claim"] for r in m2["rows"] if r["source"] == "roster:ap"}
     assert claim == {A[0]: "identified", B[0]: "neutral", Cc[0]: "tentative", "C10H16O10": "", D[0]: ""}
     # the HOM's line read as another neutral the run identifies: an identified misread
@@ -374,9 +384,13 @@ def test_kept_arm_ledgers_recount_to_the_same_card(run_dir_claims, tmp_path, cap
     with gzip.open(kept / "s1__control.csv.gz", "rt") as fh:
         assert "evidence_level" in fh.readline()
     manifest = json.loads((kept / "manifest.json").read_text())
-    assert manifest == {"mode": "both", "offset_da": 0.35, "files": ["s1"], "adducts_used": SC.load_run(str(run_dir_claims)).adducts,
+    # the default ppm shifts sit inside the class fallback's 15 ppm window of this snapshot-less file: skipped, said why
+    skipped = {SC.ppm_arm(k): {"s1": f"{k:+g} ppm is inside the 15 ppm match window: the true formula stays in reach, "
+                                     "so the arm is no decoy"} for k in SC.DECOY_PPM}
+    assert manifest == {"mode": "both", "offset_da": 0.35, "ppm_k": list(SC.DECOY_PPM), "ppm_skipped": skipped,
+                        "files": ["s1"], "adducts_used": SC.load_run(str(run_dir_claims)).adducts,
                         "wrong_adducts": SC.wrong_adducts("-"), "scoring": {"s1": "class-fallback"},   # no pattern_scoring: pre-0.9.0
-                        "scoring_detail": {}, "code": SC.engine_code()}
+                        "scoring_detail": {}, "calibration": {"s1": "control"}, "code": SC.engine_code()}
     first = json.loads((out / name / "scorecard.json").read_text())["decoy"]
     assert first["control"]["assigned"] >= 2 and "by_claim" in first["control"]
     # a re-count from the kept ledgers: no engine run, the same numbers
@@ -389,6 +403,7 @@ def test_kept_arm_ledgers_recount_to_the_same_card(run_dir_claims, tmp_path, cap
     again = json.loads((tmp_path / "again" / name / "scorecard.json").read_text())["decoy"]
     assert again["mode"] == "both" and again["ledgers"] == {"source": "saved", "dir": str(kept), "code": manifest["code"]}
     assert again["scoring"] == manifest["scoring"]                     # what the kept ledgers were judged at, as kept
+    assert again["calibration"] == manifest["calibration"]             # and the calibration they ran at
     for arm in ("control", "shift", "adducts"):
         assert again[arm] == first[arm]
     assert not (tmp_path / "again" / name / "decoy").exists()          # a re-count keeps nothing new
@@ -491,7 +506,7 @@ def test_the_card_carries_claims_after_the_headline_and_the_acceptance_block(cru
     assert keys.index("claims") == keys.index("headline") + 1
     row = card["row"]
     assert list(row)[: len(OLD_ROW_KEYS)] == OLD_ROW_KEYS and "axes_hist" not in row
-    assert list(row)[len(OLD_ROW_KEYS):] == CLAIM_ROW_KEYS + ["decoy_scoring"]
+    assert list(row)[len(OLD_ROW_KEYS):] == CLAIM_ROW_KEYS + APPENDED_ROW_KEYS
     assert (row["claim_identified"], row["claim_neutral"], row["claim_ion"], row["claim_tentative"],
             row["claim_reagent"], row["claim_not_assessed"]) == (2, 1, 2, 1, 0, 1)
     assert row["claim_unmatched_signal"] == pytest.approx(100.0 * 80 / COMMITTED)
@@ -501,12 +516,20 @@ def test_the_card_carries_claims_after_the_headline_and_the_acceptance_block(cru
     assert row["bright_m0_not_identified"] == 3 and row["bright_m0_not_assigned"] == 0
     assert row["decoy_shift_identified_rate"] is None                  # no decoy ran
     acc = {a["key"]: a for a in card["acceptance"]}
-    assert list(acc) == ["roster_identified", "roster_misread_identified", "decoy_shift_identified_rate",
+    assert list(acc) == ["roster_identified", "roster_neutral_or_better", "roster_misread_identified",
+                         "decoy_shift_identified_rate",
                          "decoy_shift_identified_lt_350_rate", "decoy_shift_established_rate",
+                         "decoy_ppm_identified_rate", "decoy_headline_lt_350_rate",
                          "decoy_adducts_identified_rate", "bright_m0_not_identified", "m1_families",
                          "m3_other_instrument_own_missing"]
     assert acc["bright_m0_not_identified"]["value"] == 3 and acc["bright_m0_not_identified"]["old_key"] == "bright_m0_not_assigned"
     assert acc["m1_families"]["old_value"] == acc["m1_families"]["value"]
+    # the ppm arms sit beside their own Assigned rate; the headline (Assigned already) beside nothing -- never the
+    # Da arm's rate, which is blind below 350 on an Orbitrap
+    assert acc["decoy_ppm_identified_rate"]["old_key"] == "decoy_ppm_rate"
+    hl = acc["decoy_headline_lt_350_rate"]
+    assert hl["old_key"] is None and hl["old_value"] is None
+    assert row["decoy_orbitrap"] is None                                # no decoy ran
 
 
 def test_key_metrics_lead_with_the_claim_and_no_delta_crosses_a_scale():
@@ -574,7 +597,9 @@ def test_the_board_leads_with_claims_and_old_rows_show_dashes(crun, tmp_path):
     md = (out / crun.name / "SCORECARD.md").read_text()
     assert "| identified rows | — | 2 | — |" in md
     s6 = md[md.index("## 6. Delta"):].splitlines()
-    assert s6[4] == "| metric | previous | now | delta |" and s6[5] == "|---|---:|---:|---:|"   # a dash does not left-align
+    # a dash does not left-align; the roster counts of the older presence test are marked, not diffed
+    assert s6[4] == "| metric | previous | now | delta | note |" and s6[5] == "|---|---:|---:|---:|---|"
+    assert "| roster present | — | 4 | — | not comparable: roster presence test 1 -> 2 (previous 4) |" in md
     page = html.unescape((out / "scoreboard.html").read_text())         # the page is ASCII with entities
     assert "The claim — identified / neutral / ion / tentative" in page and "Acceptance" in page
     assert "card predates C13" not in page

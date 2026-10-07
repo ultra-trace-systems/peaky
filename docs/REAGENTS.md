@@ -36,7 +36,7 @@ does two things:
 ```
 peaks  ──► resolve('auto', peaks)              name/alias ──► resolve(name)
               │ detect_adduct in sample? → profile      │
-              │ else polarity → profile                 ▼
+              │ else ValueError (name --reagent)        ▼
               ▼                              ReagentProfile {polarity, adducts,
         ReagentProfile  ────────────────────► ranges, normaliser, reagent_ion_re,
               │                                 detect_adduct, context, purity}
@@ -63,10 +63,13 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
 ## 3. The transformation, stage by stage
 
 1. **Resolve a profile** (`profiles.resolve`). A name/alias hits `_BY_ALIAS`
-   directly. `"auto"` detects from the sample: the **diagnostic `detect_adduct`**
-   among the server's own adduct mechanisms (`io_mascope.detect_adducts`) wins
-   first; failing that, **polarity** (`_detect_polarity`) picks the first
-   profile of that sign. A `config` path is loaded (registered) before resolving.
+   directly. `"auto"` detects from the sample: every **diagnostic `detect_adduct`**
+   among the server's own matches (`io_mascope.recognised_adducts`) is found and
+   the profiles they name are composed (a weak signature such as bare `[M]+.`
+   counts only when no specific one matched). When none is present it **raises**,
+   naming the mechanisms it saw and their polarity, and asks for `--reagent`; it
+   never picks a profile by polarity, and never reads the batch or sample name.
+   A `config` path is loaded (registered) before resolving.
 
 2. **The profile configures everything else.** `ReagentProfile` (frozen) carries:
    `polarity`, `adducts` (analyte channels), `ranges` (the grid box string fed to
@@ -435,9 +438,10 @@ and `run_manifest.json['config']` (the knob: a number, or `"auto"`).
   reagent runs on both a TOF and an Orbitrap), so it is left `None` = the package
   policy — derive it from the batch — and a site pins it for its own instrument
   in a `--reagent-config` profile (§3a).
-- **Auto-detect needs peaks**; with no diagnostic adduct it falls back to polarity,
-  and a sparse positive sample can mis-detect as negative — pass `--reagent` to
-  force it.
+- **Auto-detect needs peaks** and reads only their server matches (the ionization
+  mechanisms; never the batch or sample name). With no diagnostic adduct among
+  them it stops with an error naming the mechanisms it saw and their polarity,
+  rather than guess a profile — pass `--reagent` to name the reagent.
 
 ---
 
@@ -446,10 +450,10 @@ and `run_manifest.json['config']` (the knob: a number, or `"auto"`).
 | function | role |
 | --- | --- |
 | `profiles.ReagentProfile` | the frozen per-reagent config dataclass |
-| `profiles.resolve` | name/alias or `auto` (detect_adduct → polarity) → a profile |
+| `profiles.resolve` | name/alias or `auto` (detect_adduct, else an error) → a profile |
 | `profiles.register` / `from_dict` / `load_config` | registry + JSON/TOML reagent loading |
 | `profiles.resolve_height_cutoff_x_edge` / `height_cutoff_x_edge_source` / `apply_height_cutoff_x_edge` | the height-gate multiple: resolve (explicit > profile > default), name its source, stamp it on a `PassConfig` |
-| `profiles._detect_polarity` | infer `+`/`−` from the peak table |
+| `profiles._detect_polarity` | the polarity word in the auto-detect error (`+`/`−` from the mechanisms' charge, else a `polarity` column) |
 | `reagents.reagent_for_adducts` | analyte adducts → cluster-library key |
 | `reagents.build_library` | enumerate the reagent-cluster ions (halide + positive) |
 | `reagents._build_positive_library` | the `[Rₙ+H]⁺` protonated-reagent series |

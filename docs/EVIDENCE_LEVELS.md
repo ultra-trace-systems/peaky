@@ -58,7 +58,7 @@ buckets are reported beside them, never folded into them:
 | claim | levels | what a reader may say (`CLAIM_MEANING`) |
 |---|---|---|
 | `identified` | 1, 2, 3c (`CLAIM_IDENTIFIED`) | the compound is named: ion established, split pinned and a named context-list entry |
-| `neutral` | 4a (`CLAIM_NEUTRAL`) | the neutral is established, with no named identity |
+| `neutral` | 4a (`CLAIM_NEUTRAL`) | the neutral is established among the run's declared reagent channels, with no named identity (a locked side channel could re-read an `[M-H]-` ion as a cluster of a smaller neutral; §12) |
 | `ion` | 4b (`CLAIM_ION`) | the ion composition is established; the neutral / adduct split or the process stays open |
 | `tentative` | 5a, 5b, no level | a competitor is left, the reading is rejected, or the row has no level |
 | `reagent` (bucket) | `reagent` | a reagent ion or reagent cluster, not levelled |
@@ -412,6 +412,15 @@ seen in:
   within 0.5 Da of the file's first / last peak is untestable (`SCAN_MARGIN`);
   a 37Cl-bearing line is probed at its exact position, the resolution taken
   into account (`CL37_NEIGHBOUR_FWHM`);
+- a reading whose ion carries the label (`^N`) predicts the labelled
+  reagent's 14N impurity line, n(15N) × (1 − purity) / purity of M0 at
+  −0.997 Da (`14N (reagent impurity)`): only the engine's own twin or child
+  (or the M0 of a reading the levels already refuted) there at ≥ 0.5× matches
+  it; any other peak at ≥ 0.5× — an unrefuted reading's M0 or an ion the
+  engine left unexplained (the same neutral's 14N cluster sits at exactly that
+  m/z and can sit far above the impurity level) — leaves the line present
+  (tested, neither bad nor matched); below 0.5× it is too low (there is no
+  upper bound);
 - the line efficiency of each element is measured on the run (the median
   seen/theory height of the committed readings' single-element lines,
   clipped to [0.25, 1]).
@@ -898,6 +907,15 @@ release in `evidence.py`).
   gate alone (the admissibility rule applies to `[M+H]+` readings); the level
   text's mode FLAG needs EVERY named entry flagged while the tag needs ANY; the
   mode flags are substring tests on name and origin.
+- **A sparse peak table levels nothing.** The run window comes from the files'
+  degeneracy calibration, which needs at least `tiers.CAL_MIN_N` (20) High/Good
+  organic M0 rows with an isotope line. A table of a few hundred peaks may give
+  no file that many (2-9 per file on the iodide and NO+ Orbitrap tables it was
+  measured on); then no pair is levelled (`NO_RUN_WINDOW_TEXT`) and every claim
+  reads tentative. A batch run says so once: the `batch_summary.json` key
+  `levels_not_assessed_reason`, a console WARNING and the PDF cover and
+  Evidence levels page (whose no-level rows name the same reason); a
+  single-sample workbook says it on its Summary sheet.
 - **One file alone** cannot be levelled without a calibration, and a
   single-sample run without a width model reads `NA` (§10.1).
 

@@ -217,6 +217,8 @@ _rows, _summary = P.build_rows(
 check("a demotion peaky made is published as such",
       _rows[0]["engine_tier"] == "candidate")
 check("the disagreement is counted", _summary["engine_tier_disagreements"] == 1)
+check("a Candidate Mascope will call 'assigned' is counted apart",
+      _summary["candidate_shown_assigned"] == 1)
 check("an agreeing row is not counted as a disagreement",
       _rows[1]["engine_tier"] == "assigned")
 check("the predicted tiers are reported separately from peaky's",
@@ -552,10 +554,13 @@ merged = pd.DataFrame([
     {"mz": 203.0526, "neutral_formula": "C6H12O6", "adduct": "[M+Na]+", "tier": "Candidate",
      "ion_score": 0.6, "n_files": 1},
 ])
+# include_candidates: these checks pin the translation of every row; the
+# Assigned-only default is pinned in tests/test_publish_batch_tiers.py
 brows, bsum = P.build_batch_rows(
     merged,
     mechanism_ids={"[M+H]+": "mech-h", "[M+Na]+": "mech-na"},
     ion_formulas={("C6H12O6", "[M+H]+"): "C6H13O6+"},
+    include_candidates=True,
 )
 check("batch rows carry exactly the four fields the server reads",
       brows[0] == {"mz": 181.0707, "formula": "C6H12O6", "ion_formula": "C6H13O6+",

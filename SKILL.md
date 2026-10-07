@@ -86,10 +86,10 @@ peaky batch --batch "<batch>" --dataset "<workspace>" --reagent <Br|Ur|...> \
     [--no-residual | --residual-min-x-edge 5 --residual-min-cps N --residual-k-max 10] \
     --out-dir ~/peaky-output
 
-# a TOF batch: measure the axis first, then either roll the centres or go trace-first
+# a TOF batch: measure the axis first, then roll the centres (trace-first: EXPERIMENTAL)
 peaky mass-qc --batch "<batch>" --dataset "<workspace>" --reagent <NO3|NO3_15N|Br> [--ts <ts.parquet>]
 peaky batch ... --rolling-centre                      # adaptive centre + per-trace stamp window
-peaky batch ... --trace-first --resolving-power 6500  # one synthetic sample of centred traces
+peaky batch ... --trace-first --resolving-power 6500  # EXPERIMENTAL: one synthetic sample of centred traces
 
 # MANY same-chemistry batches -> ONE unified ledger + whole-pool + per-group reports
 peaky pool --batches "<regex over batch names>" --dataset "<workspace>" \
@@ -262,7 +262,10 @@ can't refute an off-grid P) standing in for the 2nd channel.
   KS uniform-fill gate, satellite positions by co-occurrence), applies the mass-qc wave
   inside its calibrant range and assigns ONE synthetic sample; merge, stamp and the
   residual stage run as usual. `tables/traces.csv` and `batch_summary.json['trace_first']`
-  carry the build. Opt-in; Orbitrap batches keep the file cover.
+  carry the build. Opt-in and EXPERIMENTAL: on its one A/B it recovered about half the
+  ions a file cover found in two or more files and Assigned fewer of them (the isotope
+  evidence that earns Assigned lives inside a spectrum); use it for batch-level centred
+  masses, not as a replacement for the cover. Orbitrap batches keep the file cover.
 
 ### Key flags
 
@@ -284,8 +287,10 @@ pipeline assigns a **presence-cover subset and merges by m/z**:
   the picks in order with `bins_new` / `coverage`, and `.attrs['selection']` with
   the achieved coverage + stop reason. The merge has no prevalence filter, so this
   selection is what decides recall.
-- **`assign_batch.run(batch=NAME | peaks=, reagent='auto', out_dir=, ts_peaks=, amine_r_min=0.6)`**
-  — resolves the `profiles.ReagentProfile`, runs `assign.run` per selected file
+- **`assign_batch.run(batch=NAME | peaks=, reagent=, out_dir=, ts_peaks=, amine_r_min=0.6)`**
+  — resolves the `profiles.ReagentProfile` (`reagent='auto'`, the default, reads the
+  server matches of `peaks`, else of `ts_peaks`; the `batch=` roster carries none, so
+  `batch=` alone needs `reagent=NAME`), runs `assign.run` per selected file
   (keeps each `per_file/<sid>_ledger.csv`), then an **offset-aware merge** (`align`)
   - a file-to-file **jitter** table. Pass `ts_peaks` (the full-batch per-peak time
     series) to enable the positive-mode NH4→amine gate below. Writes `merged_ledger.csv`

@@ -293,7 +293,8 @@ def test_m2_tells_assigned_from_unstamped_from_absent(run, rosters):
     assert status["C10H16O10"] == "absent"
     assert status["C5H10O6"] == "unstamped"                 # merged, in the series, never stamped
     assert status["C22H42O4"] == "assigned"
-    assert m2["roster"]["alpha_pinene"] == {"n": 4, "assigned": 2, "candidate": 0, "read_as": 0, "unstamped": 1, "absent": 1, "present": 3}
+    assert m2["roster"]["alpha_pinene"] == {"n": 4, "assigned": 2, "candidate": 0, "same_ion": 0, "read_as": 0, "unstamped": 1,
+                                            "iso_reagent": 0, "absent": 1, "present": 3}
     assert m2["roster_by_class"]["alpha_pinene"]["HOM"]["absent"] == 1
     names = {r["neutral"]: r["name"] for r in m2["rows"] if r["source"] == "roster:alpha_pinene"}
     assert names["C10H16O3"] == "pinonic acid"

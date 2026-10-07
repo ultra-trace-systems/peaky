@@ -391,8 +391,8 @@ def test_publish_batch_reads_the_claims_off_an_older_merged_ledger(tmp_path, cap
     # the CLI hands the merged ledger over (a dry run writes the payload)
     run = tmp_path / "run"
     run.mkdir()
-    merged.assign(mz=[100.0, 200.0, 300.0, 400.0], neutral_formula=["C5H8O2"] * 4,
-                  adduct=["[M-H]-"] * 4).to_csv(run / "merged_ledger.csv", index=False)
+    merged.assign(mz=[100.0, 200.0, 300.0, 400.0], neutral_formula=["C5H8O2"] * 4, adduct=["[M-H]-"] * 4,
+                  tier=["Assigned"] * 4).to_csv(run / "merged_ledger.csv", index=False)
     (run / "batch_summary.json").write_text(json.dumps({"merged_tiers": {"Assigned": 4}}))
     out = tmp_path / "payload.json"
     cli.cmd_publish_batch(cli.build_parser().parse_args(
@@ -512,14 +512,15 @@ def test_the_mcp_tools_return_the_claims(monkeypatch, tmp_path):
     monkeypatch.setattr(M, "JOBS", M.JobManager())
     monkeypatch.setattr(A, "run", lambda sample_id, context="ambient-air", **kw: {
         "ledger": led, "stats": {}, "summaries": {"evidence": {"claims": claims}}})
-    job = _wait(M.JOBS, M.assign_sample("sid1", output_dir=str(tmp_path))["job_id"])
+    # a named reagent: 'auto' would read the sample's own server matches first
+    job = _wait(M.JOBS, M.assign_sample("sid1", reagent="Br", output_dir=str(tmp_path))["job_id"])
     assert job.status == "done", job.view()
     assert job.result["claims"] == claims
     assert [r["claim"] for r in job.result["top_species"]] == ["ion", "identified"]   # brightest first
     # a ledger without the column (and a run without the summary): no claim key, claims None
     monkeypatch.setattr(A, "run", lambda sample_id, context="ambient-air", **kw: {
         "ledger": led.drop(columns=["claim"]), "stats": {}})
-    job = _wait(M.JOBS, M.assign_sample("sid1", output_dir=str(tmp_path))["job_id"])
+    job = _wait(M.JOBS, M.assign_sample("sid1", reagent="Br", output_dir=str(tmp_path))["job_id"])
     assert job.status == "done" and job.result["claims"] is None
     assert all("claim" not in r for r in job.result["top_species"])
 

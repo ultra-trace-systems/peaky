@@ -39,7 +39,8 @@ Prefer to do it by hand? Follow **[QUICKSTART.md](QUICKSTART.md)**, or the
   annotation, with an **evidence level** (3c–5b on the evidence scale, a
   CIMS-adapted Schymanski scale for Orbitrap-class data; `NA` on a TOF) on every
   committed formula and the **claim** it supports beside the tier — identified (the
-  compound named), neutral (the neutral established), ion (the ion composition
+  compound named), neutral (the neutral established among the run's declared
+  reagent channels), ion (the ion composition
   established) or tentative. Produces a
   tiered Excel (Assigned / Candidate / below-assignability) with commentary, close alternatives, per-isotopologue scores, and a peak-ownership
   audit, plus an interactive rotating-GKA widget.
@@ -78,6 +79,20 @@ evidence-gated heteroatoms/halogens) are structural. **No LLM is in the assignme
 loop** — the AI orchestrates, it never does the chemistry — which is
 why results are reproducible and auditable. It is not an autonomous agent; you stay
 in the loop and it asks when a choice (reagent, cutoff) actually matters.
+
+**On TOF data** the evidence levels of 0.10.0 are not assessed (`NA`), and the tier
+rests on mass and isotope evidence. Where the formula space is crowded — at higher
+m/z, and at any m/z on a low-resolution TOF (R of a few thousand) — mass alone
+cannot separate formulas: treat an Assigned reading without isotope support as
+mass-only. Isotope support is the line the ion's formula demands (reagent atoms
+included) at the predicted ratio: ⁸¹Br about 1:1 for one Br, 1:2:1 for two, a ¹³C
+satellite that matches the carbon count. An isotopologue row in the ledger is not
+support by itself, and at higher m/z on a TOF even a present line is weak evidence.
+
+**Very bright ions on a high-intensity Orbitrap** can sit about +0.6 to +1.0 ppm
+off their formula's mass while their own isotope lines sit on centre; the pattern
+score then falls low enough that 0.10.0 commits no reading for them, so a batch's
+brightest analytes can be left without a formula rather than misassigned.
 
 ## Install
 
@@ -192,7 +207,7 @@ peaky mass-qc --batch "<your batch>" --dataset "<your workspace>" --reagent NO3 
 peaky mass-qc --ts <run>/per_file/_batch_ts.parquet --reagent Br
 
 # TOF batches: the rolling centre and per-trace stamping window (off by default),
-# or assign the persistent ions ONCE from their centred traces instead of a file cover
+# or (EXPERIMENTAL) assign the persistent ions ONCE from their centred traces instead of a file cover
 peaky batch ... --rolling-centre
 peaky batch ... --trace-first --resolving-power 6500
 
@@ -208,17 +223,21 @@ peaky curate copy-samples --sample-ids <ID...> \
     --to-workspace "<ws>" --to-dataset "<ds>" --to-batch "<batch>"
 ```
 
-`--reagent` forces the analyte channels (a positive/sparse sample otherwise
-mis-detects as negative). `peaky mass-qc` probes the 30-ion nitrate core (or the
-provisional bromide ladder) in the batch time series and reports whether the axis
+`--reagent` forces the analyte channels (`auto` reads the sample's server matches
+and stops with an error when none names a reagent; pass `--reagent` then).
+`peaky mass-qc` probes the 30-ion nitrate core (or the provisional bromide
+ladder) in the batch time series and reports whether the axis
 is flat, offset, curved, drifting or blended — an external yardstick, so a wrong
 axis is caught before the engine self-calibrates on its own output.
 `--rolling-centre` lets each merged ion's centre roll along the batch where its
 drift is resolvable and sizes its stamping window from its own scatter;
 `--trace-first` (with `--resolving-power`, the instrument's R) builds the batch's
 persistent traces, centres and gates them, applies the mass-qc wave, and assigns
-them as one synthetic sample through the same merge, stamp and residual stages —
-the TOF path, where a per-file mass scatters ~13 ppm and a trace centre is good to ~2. `--no-residual` skips the second, targeted selection
+them as one synthetic sample through the same merge, stamp and residual stages.
+It is **EXPERIMENTAL**: on its one A/B it recovered about half the ions a file
+cover found in two or more files and Assigned fewer of them, because the isotope
+evidence that earns Assigned lives inside a spectrum and a trace sample averages it
+away — use it for batch-level centred masses, not as a replacement for the cover path. `--no-residual` skips the second, targeted selection
 (`--residual-min-x-edge` / `--residual-min-cps` / `--residual-k-max` tune it). `--jobs/-j N` (or `PEAKY_JOBS`) assigns the selected
 samples across `N` worker processes — ~3.5× faster on multicore, output identical
 to a serial run; default is your physical-core count, `--jobs 1` is the serial
@@ -247,7 +266,13 @@ in-app engine's own on the same sample. The row carries **two** tiers: peaky's
 own verdict (`engine_tier`) and Mascope's banding of the evidence (`tier`,
 derived server-side and never sent). Mascope tiers by threshold where peaky
 tiers mechanically, so the two disagree on real rows — which is the point, and
-the app can filter on it. Details and failure modes:
+the app can filter on it. Mascope's tier column, tier strip and tier filter read its
+own banding, so a row peaky holds Candidate can show there as `assigned` (the
+publish summary leads with how many); peaky's verdict is the `engine tier` column
+and the `tier_disagrees` filter. `peaky publish-batch <run_dir>` lands a batch
+run's merged ledger on Mascope's batch ledger, where a row carries no verdict at
+all, so it sends only the rows peaky holds Assigned unless you pass
+`--include-candidates`. Details and failure modes:
 **[docs/PUBLISH.md](docs/PUBLISH.md)**.
 
 Step-by-step walkthrough: **[QUICKSTART.md](QUICKSTART.md)**. Reagent depth, the
@@ -255,15 +280,34 @@ module map, and chemistry rules: **[SKILL.md](SKILL.md)**.
 
 ## Validation
 
-Peaky is validated end-to-end on a representative two-reagent CIMS oxidation
-experiment (cover-selected subset assigned → merged → clustering → Van Krevelen →
-PDF report):
+A release is validated on whole `peaky batch` runs of real CIMS data — both
+polarities, Orbitrap and TOF — against yardsticks that do not rest on the
+engine's own scores:
 
-- **Br⁻ CIMS run** — 80 samples / ~96 min → merged **502 M0**
-  (402 Assigned / 100 Candidate), ~4× the per-file coverage.
-- **Ur⁺ CIMS run** — 81 samples / ~97 min → merged **1319 M0**
-  (1065 Assigned / 254 Candidate); the positive-mode NH₄→amine co-variation gate
-  is applied at merge.
+- **A frozen truth set per run.** Readings of each validation run are checked
+  against the raw spectra (isotope lines, adduct partners, time behaviour), with
+  the evidence computed outside the engine; each reading is reviewed, marked TRUE
+  or FALSE, and frozen before the code under test changes. A release is scored on
+  how many TRUE readings it still assigns and how many FALSE readings it assigns.
+- **Decoy arms.** The engine is re-run offline on the run's brightest cover
+  file(s) with every m/z shifted off its true mass (the mass-shift arm) and with
+  the adduct set of the wrong chemistry (the wrong-adduct arm). A shifted peak
+  that is still Assigned is false by construction, so the shift arm estimates how
+  often the engine Assigns a mass with no true formula behind it, counted per tier
+  and evidence level. It is reported below and above m/z 350, because a fixed
+  0.35 Da shift lands in the empty mass-defect gap below ~350 and reads near zero
+  there by construction; that range needs a shift of a few ppm, inside the
+  formula grid. The wrong-adduct arm shows how readily the engine reads ions
+  through chemistry the run did not have (some such readings are the same ion
+  written another way).
+- **Isotope checks.** The scorecard tests each Assigned reading against its own
+  isotopologues: the carbon count its ¹³C satellite implies, whether the ledger
+  holds the line each heteroatom of the ion demands (³⁴S, ³⁷Cl, ⁸¹Br, ²⁹Si), and
+  whether satellites and adduct partners co-vary with their parent over the batch.
+
+`scripts/scorecard.py` runs the decoy arms and the isotope checks on any run
+directory ([docs/SCORECARD.md](docs/SCORECARD.md)); the truth sets belong to the
+validation data and are not part of this repository.
 
 ## Development
 

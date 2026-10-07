@@ -691,6 +691,7 @@ def build_rows(
     tier_counts: dict[str, int] = {}
     engine_tiers: dict[str, int] = {}
     disagreements = 0
+    candidate_shown_assigned = 0
     role_counts: dict[str, int] = {}
     reserved_seen: set[str] = set()
     inherited_formulas = 0
@@ -809,12 +810,19 @@ def build_rows(
         role_counts[role] = role_counts.get(role, 0) + 1
         if engine_tier is not None and engine_tier != predicted:
             disagreements += 1
+        # The disagreement a reader of Mascope's own tier column cannot see:
+        # peaky holds the row Candidate, Mascope's banding will call it assigned.
+        if engine_tier == TIER_CANDIDATE and predicted == TIER_ASSIGNED:
+            candidate_shown_assigned += 1
 
     summary = {
         "rows": len(rows),
         "by_predicted_tier": tier_counts,
         "by_engine_tier": engine_tiers,
         "engine_tier_disagreements": disagreements,
+        # rows peaky holds Candidate that Mascope's derived tier will show as
+        # 'assigned' (a subset of the disagreements)
+        "candidate_shown_assigned": candidate_shown_assigned,
         "by_role": role_counts,
         "intensity_column": intensity_column,
         "dropped_synthetic": dropped_synthetic,
@@ -1348,6 +1356,7 @@ def build_batch_rows(
     *,
     mechanism_ids: dict[str, str] | None = None,
     ion_formulas: dict[tuple[str, str], str] | None = None,
+    include_candidates: bool = False,
 ) -> tuple[list[dict], dict]:
     """Translate a merged batch ledger - one M0 per m/z cluster - into the
     batch import's rows.
@@ -1359,13 +1368,29 @@ def build_batch_rows(
     against every member of the batch peak it lands on, and a row without a
     mechanism id cannot be measured, so an unmappable adduct is reported.
 
+    Because no verdict travels, a row peaky holds Candidate would land in the
+    batch ledger indistinguishable from an Assigned one. By default only the
+    merged rows peaky holds Assigned are sent; the rest are counted in
+    ``held_back`` by peaky's tier, and ``include_candidates`` sends every row.
+
     :param merged: The merged ledger (``merged_ledger.csv``).
     :param mechanism_ids: Adduct notation -> mechanism id, as resolved against
         the deployment; an unmapped adduct sends null.
     :param ion_formulas: (neutral, adduct) -> ion formula from the per-file
         ledgers; a reading absent there is derived from the two.
-    :return: ``(rows, summary)``.
+    :param include_candidates: Send every merged row with a formula, whatever
+        peaky's tier, instead of the Assigned rows only.
+    :return: ``(rows, summary)``; the summary's ``by_tier`` counts the sent
+        rows by peaky's tier and ``held_back`` the rows left out for theirs.
+    :raises PublishError: When only Assigned rows are to be sent and the merged
+        ledger carries no ``tier`` column to tell them apart.
     """
+    if not include_candidates and "tier" not in merged.columns:
+        raise PublishError(
+            "the merged ledger carries no 'tier' column, so peaky's Assigned rows "
+            "cannot be told from its Candidates; publish-batch sends Assigned rows "
+            "only unless --include-candidates is given"
+        )
     rows: list[dict] = []
     summary: dict[str, Any] = {
         "rows": 0,
@@ -1373,6 +1398,9 @@ def build_batch_rows(
         "resolved_mechanisms": 0,
         "unresolved_adducts": Counter(),
         "derived_ion_formulas": 0,
+        "include_candidates": bool(include_candidates),
+        "by_tier": Counter(),
+        "held_back": Counter(),
     }
     for _, row in merged.iterrows():
         formula = _text(row.get("neutral_formula"))
@@ -1380,6 +1408,11 @@ def build_batch_rows(
         if not formula or mz is None or mz <= 0:
             summary["dropped_no_formula"] += 1
             continue
+        tier = _text(row.get("tier")) or "untiered"
+        if not include_candidates and ENGINE_TIER_MAP.get(tier.lower()) != TIER_ASSIGNED:
+            summary["held_back"][tier] += 1
+            continue
+        summary["by_tier"][tier] += 1
         adduct = _text(row.get("adduct"))
         mechanism_id = (mechanism_ids or {}).get(adduct) if adduct else None
         if adduct and mechanism_id is None:
@@ -1402,7 +1435,8 @@ def build_batch_rows(
             }
         )
     summary["rows"] = len(rows)
-    summary["unresolved_adducts"] = dict(summary["unresolved_adducts"])
+    for key in ("unresolved_adducts", "by_tier", "held_back"):
+        summary[key] = dict(summary[key])
     return rows, summary
 
 
@@ -1450,6 +1484,7 @@ def batch_config(
     summary: dict | None,
     log: Callable[[str], None] = print,
     merged: pd.DataFrame | None = None,
+    published_tiers: dict[str, int] | None = None,
 ) -> dict:
     """The batch run's config for the run record, capped like a manifest.
 
@@ -1459,9 +1494,15 @@ def batch_config(
     merged ledger levelled before the evidence scale has no level of this scale
     (`levelled_before_scale`): its recorded tally (read on the old scale) is
     replaced by every row tentative, and `levels_before_scale` says how many
-    letters were read so.
+    letters were read so. `published_tiers` (the sent rows by peaky's tier,
+    :func:`build_batch_rows`' ``by_tier``) is recorded as given: the rows
+    themselves carry no verdict, so this is where the run says which of
+    peaky's tiers it holds. The claims tally and `levels_before_scale`
+    describe the whole merged ledger, not the subset `published_tiers` counts.
     """
     config = {k: summary[k] for k in BATCH_CONFIG_KEYS if summary and k in summary}
+    if published_tiers is not None:
+        config["published_tiers"] = dict(published_tiers)
     old = levelled_before_scale(merged) if merged is not None else None
     if old is not None:
         from peaky.assignment import evidence as EV

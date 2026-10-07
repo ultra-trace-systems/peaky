@@ -155,6 +155,49 @@ def test_shadowed_and_offscan_lines_are_untestable():
     assert [p[0] for p in r2["per"]] == ["offscan"] * 3 and r2["n_det"] == 0
 
 
+def test_reagent14n_line_holding_a_foreign_peak_is_present_not_too_low():
+    """A labelled [M+^NO3]- reading predicts the reagent's 14N impurity line at
+    -0.997 Da (~2 % of M0). A real ion the engine left unexplained can sit at
+    that position, far above the impurity level: the line is present (an
+    occupant in band -- tested, not bad, not matched), not 'too low'. The same
+    peak below half the impurity level is still too low, and the engine's own
+    child there still matches."""
+    n, a = "C10H18O4", "[M+^NO3]-"
+    m0, rows = _own_lines(n, a, skip=(LN.REAGENT14N_LABEL,))
+    lines = LN.cand_lines(SP.ion_counts_of(n, a), 0.001, 0.0, 0.98)
+    l14 = _line(lines, LN.REAGENT14N_LABEL)
+    assert l14["mode"] == "reagent14N" and l14["ratio"] == pytest.approx(0.02 / 0.98)
+    cand = dict(lines=lines)
+
+    def recs(x_m0, role="unexplained", parent=None, reading=(None, None), refuted=False):
+        peak = ("x", m0 + l14["d"], x_m0 * 1e6, role, parent, *reading, None)
+        ctx = _ctx(_t(rows + [peak] + _edges()), reagent="NO3+NO3_15N")
+        if refuted:
+            for s in SIDS:
+                ctx.files[s].refuted.add("|".join(reading))
+        out = LN.eval_candidate(ctx, cand, _obs(m0), "")
+        return out, _rec(out, LN.REAGENT14N_LABEL)
+
+    out, r = recs(0.3)                                          # a foreign ion at 0.3 x M0 (15 x the impurity)
+    assert [p[0] for p in r["per"]] == ["free"] * 3
+    assert (r["n_det"], r["n_test"], r["n_occ"], r["n_ok"], r["n_lo"], r["n_bad"]) == (3, 3, 3, 0, 0, 0)
+    assert LN.contradiction_a(out, 3) == []
+    assert LN.REAGENT14N_LABEL not in LN.matched_elements(out, 3)[1]       # present, but no positive credit
+    out, r = recs(0.005)                                        # a quarter of the impurity level: too low
+    assert (r["n_test"], r["n_occ"], r["n_lo"]) == (3, 0, 3)
+    assert LN.contradiction_a(out, 3) == [f"{LN.REAGENT14N_LABEL} ({l14['ratio']:.3g}x) too low in 3/3 files"]
+    out, r = recs(0.3, role="iso_child", parent="p1")           # the engine's own child: matched
+    assert (r["n_test"], r["n_ok"], r["n_occ"]) == (3, 3, 0)
+    assert LN.REAGENT14N_LABEL in LN.matched_elements(out, 3)[1]
+    other = ("C7H12O3", "[M+Br]-")                              # another reading's M0 on the line
+    out, r = recs(0.3, role="M0", reading=other)                # that reading stands: present, not matched
+    assert [p[0] for p in r["per"]] == ["occupied"] * 3 and (r["n_ok"], r["n_occ"], r["n_lo"]) == (0, 3, 0)
+    assert LN.REAGENT14N_LABEL not in LN.matched_elements(out, 3)[1]
+    out, r = recs(0.3, role="M0", reading=other, refuted=True)  # the levels refuted it: its M0 matches
+    assert [p[0] for p in r["per"]] == ["free"] * 3 and (r["n_ok"], r["n_occ"], r["n_lo"]) == (3, 0, 0)
+    assert LN.REAGENT14N_LABEL in LN.matched_elements(out, 3)[1]
+
+
 # --------------------------------------------------------------------------- the exact 37Cl test
 def _cl37_span(m0):
     d = _line(LN.cand_lines(SP.ion_counts_of(CL, CLA), 0.001, 0.0, 0.98), "37Cl")["d"]

@@ -1227,6 +1227,30 @@ def _claims_summary(merged: pd.DataFrame, levels: pd.DataFrame) -> dict:
     }
 
 
+def _auto_reagent_table(reagent, peaks, ts_peaks):
+    """The table `reagent` is resolved on. A name never reads one (`peaks` passes
+    through). 'auto' reads the server's matches -- an `ionization_mechanism`
+    column -- so it takes `peaks` when that carries matches, else `ts_peaks`, else
+    whichever of the two has the (empty) column, which then raises naming what it
+    saw. The batch= roster is one row per sample with a polarity and no match:
+    resolving on it could only guess, so when neither table carries the column
+    this raises, asking for the reagent or the per-peak time series."""
+    if reagent != "auto":
+        return peaks
+    tables = [t for t in (peaks, ts_peaks)
+              if t is not None and "ionization_mechanism" in getattr(t, "columns", [])]
+    for t in tables:
+        if t["ionization_mechanism"].notna().any():
+            return t
+    if tables:
+        return tables[0]
+    raise ValueError(
+        "reagent='auto' reads the reagent from the batch's server matches (an "
+        "ionization_mechanism column), and neither peaks= nor ts_peaks= carries "
+        "one (the batch= sample roster never does): pass reagent=NAME, or the "
+        "batch's per-peak time series as ts_peaks=")
+
+
 def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         reagent: str = "auto", context: str | None = None,
         k_min: int = SS.K_MIN, k_max: int = SS.K_MAX, min_gain: float = SS.MIN_GAIN,
@@ -1252,8 +1276,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     `peaks`. `k_min`/`k_max`/`min_gain`/`min_prevalence` tune the cover (see
     sampling.py). `sample_ids` skips selection (the pooled path); pass its
     `selection_meta` so batch_summary still records how they were chosen.
-    `context` defaults to the reagent profile's context. Extra kwargs pass
-    through to assign.run. Writes (see paths.RunPaths): merged_ledger.csv +
+    `reagent='auto'` reads the server matches of `peaks`, else of `ts_peaks`;
+    the batch= roster carries none, so batch= alone needs a reagent name
+    (`_auto_reagent_table`). `context` defaults to the reagent profile's
+    context. Extra kwargs pass through to assign.run. Writes (see paths.RunPaths): merged_ledger.csv +
     batch_summary.json at the run root, per_file/<sid>_ledger.csv, and
     tables/{selected_samples,jitter}.csv.
 
@@ -1318,7 +1344,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         log(f"[assign_batch] fetched {len(peaks)} samples for batch {batch!r} "
             f"(id {rb.id})")
 
-    prof = P.resolve(reagent, peaks)
+    prof = P.resolve(reagent, _auto_reagent_table(reagent, peaks, ts_peaks))
     context = context or prof.context
     # The height-gated passes gate on a MULTIPLE of each sample's own noise edge.
     # Resolve that multiple ONCE for the batch -- the profile's own value when it
@@ -2090,6 +2116,14 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         f"file(s), instrument class {klass or 'unknown'}: {ev_summary['pooled']} "
         f"({ev_summary['n_pairs']} neutral/adduct pairs); {ev_summary['n_unstamped']} merged row(s) "
         f"without a pooled pair -> tables/evidence_levels.csv")
+    # an Orbitrap-class batch none of whose files calibrated the degeneracy window
+    # (a sparse peak table: too few isotope-backed core rows) has no level at all --
+    # said once for the run, in the summary, the console and the report, not only
+    # row by row in the evidence column
+    levels_na_reason = (EV.levels_not_assessed_reason(levels["evidence"], levels["evidence_level"])
+                        if len(levels) and {"evidence", "evidence_level"} <= set(levels.columns) else None)
+    if levels_na_reason:
+        log(f"[assign_batch] WARNING: {levels_na_reason}")
     # the claim each level supports, tallied beside the tier (never read off it)
     claims_summary = _claims_summary(merged, levels)
     log("[assign_batch] claims (merged): "
@@ -2213,6 +2247,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "noise_edge_batch_cps": getattr(cfg, "noise_edge_batch_cps", None),
         "tol_ppm": tol_ppm, "offsets_ppm": offsets,
         "pattern_scoring": scorings,
+        # which scorer judged the candidates: 'local' (in-process, the default) or
+        # 'server' (match_compounds; PEAKY_LOCAL_SCORING=0) -- the report's Methods name it
+        "scorer": "local" if IO._local_scoring_enabled() else "server",
         # the batch's mass scale (traces.MassScale): the measured per-ion scatter
         # and the merge / stamping windows sized from it (tol_ppm above is the
         # BINNING tolerance and the floor of both; unmeasured, both equal it)
@@ -2244,6 +2281,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # the claim each level supports (identified / neutral / ion / tentative +
         # the reagent and not-assessed buckets), merged / pooled / per stage / per tier
         "claims": claims_summary,
+        # why the scale assessed nothing on this run (no file calibrated), else null
+        "levels_not_assessed_reason": levels_na_reason,
         # the ion-only bucket (the `ion_only` stage): channels opened, merged rows
         # carrying an `ion_only_of` link, per-file rows behind them, files holding
         # any, and their merged levels

@@ -121,10 +121,13 @@ def cmd_list(args) -> None:
 def _resolve_reagent(args, *, with_profile: bool = False):
     """Return (adducts, context, note). Forces the analyte channels so a positive
     or sparse-match sample never silently falls back to [M-H]- (wrong polarity).
-    adducts=None means 'let assign.run auto-detect from the sample'.
+    `--reagent auto` that cannot name the reagent from the sample's own server
+    matches STOPS (profiles.resolve raises; the CLI boundary prints the reason and
+    the known reagents) -- it no longer hands assign.run adducts=None, whose
+    per-sample default is [M-H]-.
 
     `with_profile=True` appends the resolved ReagentProfile itself (None when
-    --adducts forced the channels, or auto-detect found no known profile), which
+    --adducts forced the channels), which
     the caller needs for the profile's own tuning: the noise-edge gate multiple,
     the labelled-reagent isotopic purity, and the profile's label -- the second
     piece of run metadata the reference-list unlock reads, exactly as
@@ -150,14 +153,9 @@ def _resolve_reagent(args, *, with_profile: bool = False):
 
     client = IO.connect()
     raw = IO.fetch_peaks(client, args.sample_id, use_cache=not args.no_cache)
-    try:
-        prof = profiles.resolve("auto", raw, config=config)
-        return out(list(prof.adducts), (args.context or prof.context),
-                   f"auto-detected {prof.name} ({prof.label})", prof)
-    except Exception as e:                           # noqa: BLE001
-        return out(None, (args.context or "ambient-air"),
-                   (f"auto-detect found no known profile ({e}); using per-sample adduct "
-                    "detection — pass --reagent explicitly for a positive/sparse sample"))
+    prof = profiles.resolve("auto", raw, config=config)   # raises: stop, never guess
+    return out(list(prof.adducts), (args.context or prof.context),
+               f"auto-detected {prof.name} ({prof.label})", prof)
 
 
 def _add_progress_flag(p) -> None:
@@ -428,6 +426,17 @@ def cmd_pool(args) -> None:
         _progress_hold_note(prog)
 
 
+def report_inputs_of(run_dir: str) -> dict:
+    """The `input` block of a run folder's run_manifest.json (batch_name,
+    dataset, reagent, ...); {} when the folder has no readable manifest."""
+    try:
+        with open(os.path.join(run_dir, "run_manifest.json"), encoding="utf-8") as fh:
+            inp = (json.load(fh) or {}).get("input")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return inp if isinstance(inp, dict) else {}
+
+
 def cmd_report(args) -> None:
     # offline: regenerate cluster figures + Van Krevelen + the PDF report from an
     # existing run folder's ledgers (no assignment, no network).
@@ -436,11 +445,16 @@ def cmd_report(args) -> None:
 
     prof = P.resolve(args.reagent)
     run_dir = os.path.expanduser(args.run_dir)
+    # the run's own record: the batch name titles the report and, with the
+    # dataset name, unlocks the reference lists the run itself used -- without
+    # it a regenerated report loses every chemistry-specific list
+    inp = report_inputs_of(run_dir)
     ctx = PL.RunContext(
-        out_dir=run_dir, batch_name=(args.batch or prof.label),
+        out_dir=run_dir, batch_name=(args.batch or inp.get("batch_name") or prof.label),
         tag=(args.tag or prof.name), label=prof.label, when=None,
         run_id=(args.run_id or os.path.basename(run_dir.rstrip("/"))),
-        generated=(args.generated or ""), profile=prof)
+        generated=(args.generated or ""), profile=prof,
+        dataset=(getattr(args, "dataset", None) or inp.get("dataset")))
     out = PL.generate_report(ctx, os.path.expanduser(args.ts), subject=args.subject)
     print("wrote", out.get("report_pdf"))
     if out.get("report_pdf_small"):
@@ -504,6 +518,27 @@ def cmd_gka(args) -> None:
 #: publish's `levels_before_scale` (a ledger levelled on a scale before the evidence scale), said in one line
 LEVELS_BEFORE_SCALE = ("older     {n} row(s) were levelled on a scale before the evidence scale: every such "
                        "letter publishes as no level and the row's claim as tentative")
+
+#: publish's `candidate_shown_assigned`, the line its summary leads with: Mascope's
+#: tier column, strip, tier filter and roll-ups read the tier Mascope derives, not peaky's
+CANDIDATE_SHOWN_ASSIGNED = ("note       {n} row(s) peaky holds Candidate will show as Mascope 'assigned' "
+                            "(Mascope derives its own tier); peaky's verdict is the 'engine tier' "
+                            "column / the tier_disagrees filter")
+
+#: publish-batch's line for the merged rows it held back (the batch import carries no verdict)
+BATCH_HELD_BACK = ("held back  {n} merged row(s) peaky does not hold Assigned ({tiers}): a batch "
+                   "row carries no verdict, so in Mascope they would land indistinguishable "
+                   "from Assigned rows; --include-candidates sends them")
+
+#: ...and the warning when --include-candidates sends them anyway
+BATCH_CANDIDATES_SENT = ("WARNING    --include-candidates: {n} of the {total} row(s) are not peaky "
+                         "Assigned ({tiers}); a batch row carries no verdict, so in Mascope they "
+                         "read like Assigned rows")
+
+#: publish-batch's run config counts its claims and old-scale letters over the whole merged
+#: ledger, which is no longer the set of rows sent once some are held back
+BATCH_LEVELS_OF_MERGED = ("           (that count and the run config's claims tally are over the whole "
+                          "merged ledger of {total} row(s), not only the {sent} sent)")
 
 
 def cmd_publish(args) -> None:
@@ -584,7 +619,10 @@ def cmd_publish(args) -> None:
     rows, summary = P.build_rows(led, intensity_column=intensity, bands=bands,
                                  mechanism_ids=mechanism_ids)
 
-    print(f"\nsample     {sample_id}")
+    print()
+    if summary["candidate_shown_assigned"]:
+        print(CANDIDATE_SHOWN_ASSIGNED.format(n=summary["candidate_shown_assigned"]))
+    print(f"sample     {sample_id}")
     print(f"bands      assigned >= {bands['assigned']}, candidate >= {bands['candidate']}"
           "  (evidence scale = fit x plausibility)")
     print(f"rows       {summary['rows']} of {len(led)} ledger row(s)")
@@ -684,8 +722,10 @@ def cmd_publish_batch(args) -> None:
     themselves. The server matches each row to the nearest batch peak and then
     MEASURES the formula against every sample that holds the peak, so what the
     ledger shows is Mascope's own fit of peaky's formula, under peaky's name.
-    peaky's tiers, scores and jitter stay in the run directory; --dry-run is a
-    complete check of the translation."""
+    peaky's tiers, scores and jitter stay in the run directory - no verdict
+    travels with a row - so only the merged rows peaky holds Assigned are sent
+    unless --include-candidates; --dry-run is a complete check of the
+    translation."""
     import pandas as pd
 
     from peaky.io import publish as P
@@ -715,9 +755,23 @@ def cmd_publish_batch(args) -> None:
         print(f"[publish-batch] resolved {len(mechanism_ids)}/{len(adducts)} adduct(s) "
               "to ionization-mechanism ids")
 
-    rows, rs = P.build_batch_rows(merged, mechanism_ids=mechanism_ids,
-                                  ion_formulas=loaded["ion_formulas"])
+    try:
+        rows, rs = P.build_batch_rows(merged, mechanism_ids=mechanism_ids,
+                                      ion_formulas=loaded["ion_formulas"],
+                                      include_candidates=args.include_candidates)
+    except P.PublishError as exc:
+        sys.exit(f"Cannot publish this run: {exc}.")
     print(f"\nrows       {rs['rows']} of {len(merged)} merged row(s)")
+    if rs["held_back"]:
+        print(BATCH_HELD_BACK.format(
+            n=sum(rs["held_back"].values()),
+            tiers=", ".join(f"{t} {n}" for t, n in sorted(rs["held_back"].items()))))
+    not_assigned = {t: n for t, n in rs["by_tier"].items()
+                    if P.ENGINE_TIER_MAP.get(t.lower()) != P.TIER_ASSIGNED}
+    if not_assigned:
+        print(BATCH_CANDIDATES_SENT.format(
+            n=sum(not_assigned.values()), total=rs["rows"],
+            tiers=", ".join(f"{t} {n}" for t, n in sorted(not_assigned.items()))))
     if rs["dropped_no_formula"]:
         print(f"skipped    {rs['dropped_no_formula']} row(s) without a formula")
     print(f"ionization {rs['resolved_mechanisms']} row(s) carry a mechanism id -- the "
@@ -728,12 +782,17 @@ def cmd_publish_batch(args) -> None:
     if rs["derived_ion_formulas"]:
         print(f"ion formulas derived from neutral + adduct: {rs['derived_ion_formulas']}")
     if not rows:
+        if rs["held_back"]:
+            sys.exit("Nothing to publish: no merged row with a formula is Assigned "
+                     "(--include-candidates sends the others).")
         sys.exit("Nothing to publish: no merged row carries a formula.")
 
     version = args.engine_version or P.engine_version(None)
-    config = P.batch_config(summary, merged=merged)
+    config = P.batch_config(summary, merged=merged, published_tiers=rs["by_tier"])
     if config.get("levels_before_scale"):
         print(LEVELS_BEFORE_SCALE.format(n=config["levels_before_scale"]))
+        if rs["held_back"]:
+            print(BATCH_LEVELS_OF_MERGED.format(sent=rs["rows"], total=len(merged)))
 
     if args.dry_run:
         print(f"\n[dry-run] nothing sent. engine_version {version}, "
@@ -1034,7 +1093,8 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--sample-id", required=True)
     pa.add_argument("--reagent", default="auto",
                     help="reagent profile: auto | Br | Ur | ... — forces the analyte "
-                         "channels + default context ('auto' detects from the sample)")
+                         "channels + default context ('auto' detects from the sample's "
+                         "own server matches and stops when none names a reagent)")
     pa.add_argument("--adducts", nargs="+", default=None,
                     help="explicit analyte adduct channels (overrides --reagent)")
     pa.add_argument("--context", default=None,
@@ -1069,7 +1129,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "a unique substring also works; an ambiguous one is refused, "
                          "never pooled)")
     pb.add_argument("--dataset", default=None, help="dataset (workspace) name")
-    pb.add_argument("--reagent", default="auto", help="auto | Br | Ur | NO3 | I | ...")
+    pb.add_argument("--reagent", default="auto",
+                    help="auto | Br | Ur | NO3 | I | ... ('auto' reads the batch's server "
+                         "matches and stops when none names a reagent)")
     pb.add_argument("--reagent-config", default=None,
                     help="JSON/TOML file registering extra reagent profiles")
     pb.add_argument("--out-dir", default=None,
@@ -1101,7 +1163,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "'HR-CIMS 100-500.*zone' (matches the per-zone batches "
                          "of one mode x range). Passed to the server UNescaped.")
     pp.add_argument("--dataset", default=None, help="dataset (workspace) name")
-    pp.add_argument("--reagent", default="auto", help="auto | Br | Ur | NO3 | NO3_15N | I | ...")
+    pp.add_argument("--reagent", default="auto",
+                    help="auto | Br | Ur | NO3 | NO3_15N | I | ... ('auto' reads the pooled "
+                         "server matches and stops when none names a reagent)")
     pp.add_argument("--reagent-config", default=None,
                     help="JSON/TOML file registering extra reagent profiles")
     pp.add_argument("--out-name", default=None,
@@ -1136,7 +1200,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="run folder holding merged_ledger.csv + per_file/")
     pr.add_argument("--reagent", required=True, help="Br | Ur | NO3 | ...")
     pr.add_argument("--ts", required=True, help="full-batch TS parquet")
-    pr.add_argument("--batch", default=None, help="batch name for the report title")
+    pr.add_argument("--batch", default=None,
+                    help="batch name for the report title (default: the run manifest's)")
+    pr.add_argument("--dataset", default=None,
+                    help="dataset name the reference lists are unlocked from (default: the run manifest's)")
     pr.add_argument("--tag", default=None, help="filename token (default: reagent name)")
     pr.add_argument("--run-id", default=None, help="Report ID (default: run-dir basename)")
     pr.add_argument("--generated", default=None, help="generated stamp for the cover")
@@ -1231,6 +1298,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "it matters more than for a per-sample publish: the server "
                          "measures a row THROUGH its mechanism, so a row without one "
                          "lands nothing.")
+    pb.add_argument("--include-candidates", action="store_true",
+                    help="also send the merged rows peaky holds Candidate. Off by default: "
+                         "a batch row carries no verdict, so in Mascope a Candidate lands "
+                         "indistinguishable from an Assigned row. The run's config records "
+                         "the sent rows by peaky's tier (published_tiers)")
     pb.add_argument("--engine-version", default=None,
                     help="version string to stamp on the run (default: peaky's own)")
     pb.add_argument("--no-wait", action="store_true",

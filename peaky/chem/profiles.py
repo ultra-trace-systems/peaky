@@ -4,8 +4,8 @@ the time-series, clustering and validation scripts.
 
 A profile is everything the pipeline needs to treat a batch's reagent correctly.
 New reagent = add a ReagentProfile, not edit code. `resolve()` picks one by name
-or auto-detects from a loaded peak table (polarity + the server's own adduct
-mechanisms via io_mascope.detect_adducts).
+or auto-detects from a loaded peak table (the server's own adduct mechanisms via
+io_mascope.recognised_adducts; it stops rather than guess when none is diagnostic).
 """
 
 from __future__ import annotations
@@ -650,14 +650,22 @@ def resolve(
 ) -> ReagentProfile:
     """Return a ReagentProfile. `reagent` may be a name/alias, a '+'-joined
     combination ('NO3+Br'), or 'auto' to detect from a loaded peak table (its server
-    adduct mechanisms, then polarity). `config` (a JSON/TOML path) registers
-    extra/override reagents before resolving.
+    adduct mechanisms; it raises when none is diagnostic). `config` (a JSON/TOML
+    path) registers extra/override reagents before resolving.
 
     Auto-detect returns EVERY reagent system the peak table evidences, composed into
     one profile (see `compose`) -- not the first that happens to match. A module
     running a mixed inlet, and a labelled reagent whose unlabelled isotopologue is
     also present, both show two diagnostic adducts, and taking one of them silently
-    discards the other channel's chemistry."""
+    discards the other channel's chemistry.
+
+    Auto-detect never GUESSES. When none of the table's server mechanisms is a
+    reagent's diagnostic adduct (no matches at all, or only generic ones such as
+    [M+H]+ / [M-H]-), it raises ValueError naming the mechanisms it saw and the
+    polarity they carry, and asks for an explicit reagent. Picking the first
+    registered profile of the polarity instead handed a uronium batch the bromide
+    profile, and a batch or sample NAME is never read: names carry dates and
+    instrument tokens whose hyphens are not charges."""
     if config:
         load_config(config)
     if reagent and reagent.lower() in _BY_ALIAS:
@@ -672,7 +680,9 @@ def resolve(
         raise ValueError("reagent='auto' needs a peaks table to detect from")
     from peaky.io import io_mascope as IO
 
-    seen = set(IO.detect_adducts(peaks))
+    # the channels the server's own matches name -- WITHOUT detect_adducts' [M-H]-
+    # default, so a table with no matches cannot select a profile that declares it
+    seen = set(IO.recognised_adducts(peaks))
     matched = [p for p in PROFILES.values() if p.detect_adduct and p.detect_adduct in seen]
     # Strong signatures name a specific reagent species and compose. Weak ones are
     # only believed when nothing strong matched (see ReagentProfile.detect_weak).
@@ -682,20 +692,60 @@ def resolve(
     hits = [p for p in matched if not _weak(p)] or matched
     if hits:
         return compose(hits)
-    # fall back on polarity if no diagnostic adduct matched
-    pol = _detect_polarity(peaks)
-    for p in PROFILES.values():
-        if p.polarity == pol:
-            return p
-    raise ValueError(f"could not auto-detect reagent (adducts={seen}, polarity={pol})")
+    mechs = _mechanism_keys(peaks)
+    pol = {"+": "positive", "-": "negative"}.get(_detect_polarity(peaks), "unknown")
+    shown = ", ".join(mechs[:12]) + (" ..." if len(mechs) > 12 else "") if mechs else "none"
+    signatures = ", ".join(f"{p.detect_adduct} ({p.name})"
+                           for p in PROFILES.values() if p.detect_adduct)
+    raise ValueError(
+        "could not auto-detect reagent: no server match names a reagent's diagnostic "
+        f"adduct (mechanisms seen: {shown}; polarity {pol}). Auto-detect reads these "
+        f"signatures: {signatures}. Name the reagent instead (--reagent NAME; known: "
+        f"{', '.join(PROFILES)}).")
+
+
+def _mechanism_keys(peaks) -> list[str]:
+    """The table's distinct server mechanisms in the standard notation
+    ('-H+' and '[M-H]-' are one key), first-seen order; [] without the column."""
+    if "ionization_mechanism" not in getattr(peaks, "columns", []):
+        return []
+    from peaky.io import io_mascope as IO
+
+    out: list[str] = []
+    for m in peaks["ionization_mechanism"].dropna().unique():
+        k = IO._mechanism_key(m)
+        if k and k not in out:
+            out.append(k)
+    return out
+
+
+def _charge_sign(key: str) -> str | None:
+    """The ion's charge sign of a mechanism in the standard notation, read after
+    the closing bracket ('[M+Br]-' -> '-', '[M]+.' -> '+'); None for text that
+    does not read as a mechanism. The legacy spelling's last character is NOT the
+    charge ('-H+' is the negative [M-H]-), hence the notation first."""
+    if not key.startswith("[") or "]" not in key:
+        return None
+    signs = {c for c in key.rsplit("]", 1)[1] if c in "+-"}
+    return signs.pop() if len(signs) == 1 else None
+
+
+_POLARITY_WORDS = {"+": "+", "positive": "+", "pos": "+",
+                   "-": "-", "negative": "-", "neg": "-"}
 
 
 def _detect_polarity(peaks) -> str | None:
-    for col in ("polarity", "sample_batch_name", "ionization_mechanism"):
-        if col in getattr(peaks, "columns", []):
-            s = " ".join(map(str, peaks[col].dropna().unique()[:20]))
-            if "+" in s and "-" not in s:
-                return "+"
-            if "-" in s and "+" not in s:
-                return "-"
+    """'+' / '-' from the table's own server mechanisms (the charge each one
+    carries), else from a 'polarity' column's words (positive / negative / + / -);
+    None when neither says, or they name both polarities. The batch and sample
+    names are never read: a dated or instrument-coded name is full of hyphens."""
+    signs = {s for s in map(_charge_sign, _mechanism_keys(peaks)) if s}
+    if signs:
+        return signs.pop() if len(signs) == 1 else None
+    if "polarity" in getattr(peaks, "columns", []):
+        words = {_POLARITY_WORDS.get(str(v).strip().lower())
+                 for v in peaks["polarity"].dropna().unique()}
+        words.discard(None)
+        if len(words) == 1:
+            return words.pop()
     return None

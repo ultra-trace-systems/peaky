@@ -523,6 +523,9 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
         log(f"[pool] loading pooled TS for /{batches}/ in {dataset!r} ...")
         ts = IO.fetch_pooled_peaks(IO.connect(), dataset, batches)
     ts = TS.collapse_peak_matches(ts, log=log)
+    # the reagent on the FULL pooled table, as run_batch does: auto-detect reads
+    # the server's ionization_mechanism column, which the ts_cols trim below drops
+    prof = P.resolve(reagent, ts, config=config)
     if group_by not in ts.columns:
         raise ValueError(f"group_by {group_by!r} not in pooled peaks "
                          f"(got {list(ts.columns)[:8]})")
@@ -555,7 +558,6 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     # each sample's assignment peaks itself; ts only drives selection/cluster/amine).
     ts_cols = [c for c in ("sample_item_id", "mz", "height", "datetime_utc")
                if c in ts.columns]
-    prof = P.resolve(reagent, ts[ts_cols], config=config)
     # same one-multiple-per-run rule as run_batch, onto the same cfg (see there)
     P.apply_height_cutoff_x_edge(cfg, prof)
     P.apply_ion_only_channels(cfg, prof)

@@ -57,6 +57,7 @@ rows and the time series.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import glob
 import html
@@ -101,7 +102,10 @@ C13_PER_CARBON = 0.0107  # the 13C satellite per carbon (falsification)
 BARE = {"[M-H]-", "[M+H]+"}
 TOP_N = 50
 PRESENCE = 0.5          # M1: a track present in >= this share of spectra
-ROSTER_PRESENCE = 0.2   # M2: a roster ion counts as present at this share
+ROSTER_PRESENCE = 0.2   # M2: an expected line counts as present at this share of spectra (stamped or not)
+ROSTER_SIGMA_K = 4.0    # M2: the presence window is this many of the run's measured mass sigmas ...
+ROSTER_MIN_PPM = 1.0    # ... but never narrower than this, and never wider than the run's tolerance
+ROSTER_TEST = 2         # M2's presence test: 2 = sigma window, share, isotope / reagent lines out, same ion apart
 FAMILY_MIN = 3          # M1: tracks sharing a shift before it is a family
 SHOULDER_MDA = 20.0     # M1: |delta| to a brighter stamped ion that reads as a shoulder
 SHIFT_TOL_MDA = 1.5     # M1: how close a delta must sit to a named shift
@@ -1163,17 +1167,79 @@ def expectations(run: Run, rosters: pd.DataFrame) -> pd.DataFrame:
     return df.drop_duplicates(["source", "neutral"]).reset_index(drop=True)
 
 
+def roster_window_ppm(run: Run) -> float:
+    """M2's presence window: ROSTER_SIGMA_K x the run's measured mass sigma (batch_summary `mass_scale.sigma_ppm`),
+    at least ROSTER_MIN_PPM, at most the run's tolerance (the tolerance itself when no sigma was measured). A flat
+    6 ppm on an Orbitrap at ~0.2 ppm sigma reaches a neighbour 25 sigma away."""
+    try:
+        sigma = float(((run.summary or {}).get("mass_scale") or {}).get("sigma_ppm") or 0.0)
+    except (TypeError, ValueError):
+        sigma = 0.0
+    if not np.isfinite(sigma) or sigma <= 0:
+        return float(run.tol_ppm)
+    return float(min(run.tol_ppm, max(ROSTER_SIGMA_K * sigma, ROSTER_MIN_PPM)))
+
+
+#: M2 statuses, best first; `present` counts every one but the last two
+M2_ORDER = {"assigned": 0, "candidate": 1, "same ion": 2, "read as": 3, "unstamped": 4, "isotope/reagent line": 5,
+            "absent": 6}
+
+
+def line_ion_key(ion) -> str | None:
+    """The composition of a stamped line's own ion formula (a charge-signed formula; a reagent line carries no
+    neutral), in `ion_key`'s form; None when there is none."""
+    if not is_str(ion) or not ion.strip().endswith(("+", "-")):
+        return None
+    try:
+        counts = C.parse_formula(ion.strip())
+    except Exception:  # noqa: BLE001 - an unparseable line has no key
+        return None
+    return C.format_formula(counts) if counts else None
+
+
+def _m2_line_status(s, neutral: str, source: str, want: str | None) -> str:
+    """What one stamped line in the window says about an expected neutral whose ion on this channel is `want`:
+    read as itself (Assigned / Candidate), another split of the same ion composition, another reading, or no
+    sighting (an isotope satellite of another ion, a reagent line of another composition). A reagent line of
+    the expected ion's own composition is that ion, read as the reagent: the reagent's reference ions (its ion,
+    its water clusters) are read as themselves there; for any other source it is the same ion."""
+    if str(s["role"]) == "M0":
+        if is_str(s["neutral"]) and s["neutral"] == neutral:
+            return "assigned" if s["tier"] == "Assigned" else "candidate"
+        same_ion = want is not None and ion_key(s["neutral"], s["adduct"], s["ion_formula"]) == want
+        return "same ion" if same_ion else "read as"
+    if str(s["role"]) == "reagent" and want is not None and line_ion_key(s["ion_formula"]) == want:
+        return "assigned" if source == "reference_ion" else "same ion"
+    return "isotope/reagent line"
+
+
 def missed_m2(run: Run, ions: pd.DataFrame, tracks: pd.DataFrame, rosters: pd.DataFrame,
               levels: pd.DataFrame | None = None) -> dict:
     """M2: every expected neutral, looked for on the run's own channels in the
-    time series: assigned as itself / read as something else / present but
-    unstamped (with the engine's reason) / absent. Roster recall per class.
+    time series: assigned as itself / the same ion read as another split of it /
+    read as something else / present but unstamped (with the engine's reason) /
+    on an isotope or reagent line / absent. Roster recall per class.
+
+    A line is looked for inside `roster_window_ppm` (the run's measured mass
+    sigma, not a flat tolerance) and counts only in >= ROSTER_PRESENCE of the
+    spectra, stamped or not; of the lines that pass, the best-read one stands
+    for the formula (`_m2_line_status`). An isotope satellite of another ion, or
+    a reagent line of another composition, is no sighting of the formula; a
+    reagent line of the formula's own ion composition is (the reagent's
+    reference ions are read as themselves there). A line read as another
+    neutral / adduct split of the SAME ion composition (C10H15NO7 [M-H]- and
+    C10H14O4 [M+NO3]- are one composition, one exact mass) is `same ion`, not a
+    misread: nothing in that line's mass tells the two apart.
+
     With `levels`, each row carries the claim of the reading on its line and
     `roster_claim` counts, per roster, the formulas read as themselves per
-    claim and the misreads whose other reading is identified."""
+    claim, `neutral_or_better` (identified + neutral) and the misreads whose
+    other reading is identified; `scale` names the level scale the claims read."""
     exp = expectations(run, rosters)
+    window = roster_window_ppm(run)
     if exp.empty:
-        return {"rows": [], "roster": {}, "sources": {}, "roster_claim": {}}
+        return {"rows": [], "roster": {}, "sources": {}, "roster_claim": {}, "scale": f"peaky {EV.SCALE_RELEASE}",
+                "test": ROSTER_TEST, "window_ppm": window}
     lv = level_map(levels) if levels is not None else None
     st_mz = ions["ion_mz"].to_numpy(float) if not ions.empty else np.array([])
     st = ions.reset_index(drop=True)
@@ -1193,28 +1259,39 @@ def missed_m2(run: Run, ions: pd.DataFrame, tracks: pd.DataFrame, rosters: pd.Da
                 target = C.ion_mz(e.neutral, adduct)
             except Exception:
                 continue
-            tol = run.tol_ppm * 1e-6 * target
-            # stamped ion on the line?
-            j, mz = nearest(st_mz, target)
-            if j is not None and abs(mz - target) <= tol:
-                s = st.iloc[j]
+            tol = window * 1e-6 * target
+            # the stamped lines in the window, present in enough spectra: the best-read one stands for the formula
+            # (a reading of the formula before another split of its ion, before another reading, before an
+            # isotope / reagent line), the nearest among equals
+            want = ion_key(e.neutral, adduct)
+            lo, hi = np.searchsorted(st_mz, target - tol, "left"), np.searchsorted(st_mz, target + tol, "right")
+            j, status = None, None
+            for i in range(lo, hi):
+                if float(st.iloc[i]["presence"]) < ROSTER_PRESENCE:
+                    continue
+                st_i = _m2_line_status(st.iloc[i], e.neutral, e.source, want)
+                if j is None or M2_ORDER[st_i] < M2_ORDER[status] or (
+                        st_i == status and abs(st_mz[i] - target) < abs(st_mz[j] - target)):
+                    j, status = i, st_i
+            if j is not None:
+                s, mz = st.iloc[j], st_mz[j]
                 same = is_str(s["neutral"]) and s["neutral"] == e.neutral
-                status = ("assigned" if s["tier"] == "Assigned" else "candidate") if same else "read as"
+                m0_line = str(s["role"]) == "M0"
                 cand = {"status": status, "adduct": adduct, "mz": float(mz), "cps": float(s["med_h"]), "in": f"{int(s['n'])}/{run.n_spectra}",
-                        "read": "" if same else f"{s['ion_formula']}" + (f" = {s['neutral']} {s['adduct']}" if is_str(s["neutral"]) else f" ({s['role']})"),
+                        "read": "" if same and m0_line else f"{s['ion_formula']}" + (f" = {s['neutral']} {s['adduct']}" if is_str(s["neutral"]) and m0_line else f" ({s['role']})"),
                         "reason": "",
                         # the committed reading on the line, whose claim the row carries
-                        "pair": (str(s["neutral"]), str(s["adduct"])) if is_str(s["neutral"]) and s["role"] == "M0" else None}
+                        "pair": (str(s["neutral"]), str(s["adduct"])) if is_str(s["neutral"]) and m0_line else None}
             else:
                 k, mz = nearest(tr_mz, target)
                 if k is not None and abs(mz - target) <= tol and tr.iloc[k]["presence"] >= ROSTER_PRESENCE:
                     t = tr.iloc[k]
-                    tag = _tag_for(tags, float(mz), run.tol_ppm)
+                    tag = _tag_for(tags, float(mz), window)
                     cand = {"status": "unstamped", "adduct": adduct, "mz": float(mz), "cps": float(t["med_h"]), "in": f"{int(t['n'])}/{run.n_spectra}",
                             "read": "", "reason": tag["reason"] or (tag["tag"] and f"residual tag: {tag['tag']}") or "", "pair": None}
                 else:
                     cand = {"status": "absent", "adduct": adduct, "mz": None, "cps": None, "in": "", "read": "", "reason": "", "pair": None}
-            order = {"assigned": 0, "candidate": 1, "read as": 2, "unstamped": 3, "absent": 4}
+            order = M2_ORDER
             if best is None or order[cand["status"]] < order[best["status"]] or (
                 cand["status"] == best["status"] and (cand["cps"] or 0) > (best["cps"] or 0)
             ):
@@ -1241,12 +1318,17 @@ def missed_m2(run: Run, ions: pd.DataFrame, tracks: pd.DataFrame, rosters: pd.Da
             if lv is not None:
                 itself = g.loc[g["status"].isin(("assigned", "candidate")), "claim"]
                 roster_claim[name] = {c: int((itself == c).sum()) for c in CLAIM_KEYS}
+                # identified (3c) beside neutral or better (3c + 4a): a class list (no named entry per formula)
+                # can never reach 3c, so identified alone is no recall metric for it. Per line read: the claim of
+                # the one line M2 picked for the formula, not its best claim over every channel it is read on
+                roster_claim[name]["neutral_or_better"] = roster_claim[name]["identified"] + roster_claim[name]["neutral"]
                 roster_claim[name]["misread_identified"] = int(((g["status"] == "read as") & (g["claim"] == "identified")).sum())
         sources = {s: _recall(g) for s, g in df[~df["source"].str.startswith("roster:")].groupby("source")}
     else:
         sources = {}
     return {"rows": rows, "roster": roster_summary, "roster_by_class": per_class, "sources": sources,
-            "roster_claim": roster_claim}
+            "roster_claim": roster_claim, "scale": f"peaky {EV.SCALE_RELEASE}", "test": ROSTER_TEST,
+            "window_ppm": window}
 
 
 def _recall(g: pd.DataFrame) -> dict:
@@ -1256,10 +1338,13 @@ def _recall(g: pd.DataFrame) -> dict:
         "n": n,
         "assigned": int((st == "assigned").sum()),
         "candidate": int((st == "candidate").sum()),
+        "same_ion": int((st == "same ion").sum()),
         "read_as": int((st == "read as").sum()),
         "unstamped": int((st == "unstamped").sum()),
+        "iso_reagent": int((st == "isotope/reagent line").sum()),
         "absent": int((st == "absent").sum()),
-        "present": int((st != "absent").sum()),
+        # an isotope or reagent line is no sighting of the formula
+        "present": int((~st.isin(("absent", "isotope/reagent line"))).sum()),
     }
 
 
@@ -1428,8 +1513,142 @@ def decoy_peaks(peaks: pd.DataFrame, offset_da: float) -> pd.DataFrame:
     return out
 
 
+def decoy_ppm_peaks(peaks: pd.DataFrame, k_ppm: float) -> pd.DataFrame:
+    """Every m/z scaled by (1 + k_ppm * 1e-6): the same spectrum a few ppm off its true formulas. Outside the
+    match window the true formula is out of reach, but the shifted line still sits in the populated mass-defect
+    band, where the formula grid is dense -- so the engine proposes wrong formulas and the mass, degeneracy and
+    pattern gates are exercised. A shift keeps every isotope and label spacing, so the label / isotope vetoes
+    are not: no shift decoy tests them. (The 0.35 Da arm moves the lines into the empty gap below ~m/z 350,
+    where nothing is proposed and no gate is tested.)"""
+    out = peaks.copy()
+    out["mz"] = out["mz"] * (1.0 + float(k_ppm) * 1e-6)
+    out["peak_id"] = out["peak_id"].astype(str) + "_decoy"
+    return out
+
+
+#: the populated-defect shift arms run by default (ppm; each must sit outside the file's match window)
+DECOY_PPM = (9.0, -9.0)
+#: m/z bins of the decoy-by-mass table
+DECOY_BIN_DA = 50
+
+
+def ppm_arm(k_ppm: float) -> str:
+    """The arm key (and kept-ledger file tag) of a ppm-shift arm: +9 -> 'ppmp9', -4.5 -> 'ppmm4d5'."""
+    return "ppm" + ("p" if float(k_ppm) > 0 else "m") + f"{abs(float(k_ppm)):g}".replace(".", "d")
+
+
+def parse_ppm_list(text: str | None) -> list[float]:
+    """`--decoy-ppm` '9,-9' -> [9.0, -9.0]; 'none' / '' / '0' -> [] (no ppm arm)."""
+    if text is None:
+        return list(DECOY_PPM)
+    vals = []
+    for part in str(text).replace(";", ",").split(","):
+        part = part.strip()
+        if not part or part.lower() == "none":
+            continue
+        v = float(part)
+        if v != 0.0 and v not in vals:
+            vals.append(v)
+    return vals
+
+
+def arm_window_ppm(run: "Run", file_id: str) -> float:
+    """How far from a line the engine still reaches for a formula on this file: the wider of the grid's
+    enumeration window (`PassConfig.search_ppm`) and the match window the arm is scored at (the file's
+    `pattern_scoring` snapshot, else the class fallback's). A ppm-shift arm inside it is no decoy: the true
+    formula stays in reach."""
+    from mascope_tools.composition import resolve_match_tolerance_ppm
+
+    from peaky.assignment import passes as PA
+
+    snap = decoy_scoring(run, file_id)
+    window = None
+    if snap:
+        try:
+            window = float(snap.get("mz_tolerance_ppm"))
+        except (TypeError, ValueError):
+            window = None
+    if window is None or not np.isfinite(window):
+        window = float(resolve_match_tolerance_ppm(None))
+    return max(float(PA.PassConfig().search_ppm), window)
+
+
+def decoy_instrument(run: "Run", file_id: str) -> str | None:
+    """The instrument class the run's scoring snapshot names for the file ('orbi', 'tof'), or None."""
+    snap = decoy_scoring(run, file_id) or {}
+    kind = snap.get("instrument_type")
+    return str(kind) if kind else None
+
+
 def wrong_adducts(polarity: str) -> list[str]:
     return list(WRONG_ADDUCTS.get(polarity, WRONG_ADDUCTS["-"]))
+
+
+def own_adducts(run: "Run") -> set[str]:
+    """Every channel the run itself reads: its profile's adducts, every adduct its merged and per-file ledgers
+    commit (an opportunistic side channel the server opened included), and any channel list its batch summary
+    records."""
+    own = set(run.adducts)
+    for frame in (run.ledger, run.per_file):
+        if frame is not None and "adduct" in frame.columns:
+            own |= set(frame["adduct"].dropna().astype(str))
+    for key, val in (run.summary or {}).items():
+        if str(key).endswith("channels") and isinstance(val, (list, tuple)):
+            own |= {str(v) for v in val if isinstance(v, str)}
+    return {a for a in own if a and a.lower() != "nan"}
+
+
+def wrong_adducts_for(run: "Run") -> list[str]:
+    """The wrong-adducts arm's channels: the polarity's wrong set minus every channel the run itself reads -- an
+    adduct the run's own chemistry makes (iodide's [M+I]-, a side channel the run opened) is never 'wrong'."""
+    own = own_adducts(run)
+    return [a for a in wrong_adducts(run.polarity) if a not in own]
+
+
+def ion_key(neutral, adduct, ion=None) -> str | None:
+    """The ion composition of a reading (`evidence.ion_composition`) as one formula string; None when the row
+    carries no reading. Two splits of one ion (C10H14O4 [M+NO3]- and C10H15NO7 [M-H]-) share a key."""
+    if not is_str(neutral) or not is_str(adduct):
+        return None
+    try:
+        counts = EV.ion_composition(neutral, adduct, ion)
+    except Exception:  # noqa: BLE001 - an unparseable reading has no key
+        return None
+    return C.format_formula(counts) if counts else None
+
+
+def ion_level_counts(arm_led: pd.DataFrame, control_led: pd.DataFrame | None) -> dict:
+    """The wrong-adducts arm at the ION level: of its Assigned M0 rows (ion-only rows aside), how many carry the
+    same ion composition as a control M0 reading on the same peak (any tier: another split of an ion the run
+    already reads, by construction of the arm) and how many a NEW ion (a different composition, or a peak the
+    control left unexplained). Only the new ions are wrong at the ion level."""
+    out = {"assigned_same_ion": 0, "assigned_new_ion": 0, "assigned_new_ion_lt_350": 0, "new_ion_examples": []}
+    if arm_led is None or arm_led.empty or "role" not in arm_led.columns:
+        return out
+    m0 = arm_led[arm_led["role"] == "M0"]
+    if m0.empty:
+        return out
+    m0 = m0[(col(m0, "tier", "") == "Assigned") & ~ion_only_mask(m0)]
+    ctrl_ions: dict[str, set] = {}
+    if control_led is not None and not control_led.empty and "role" in control_led.columns:
+        cm = control_led[control_led["role"] == "M0"]
+        for pid, n, a, i in zip(col(cm, "peak_id").astype(str), col(cm, "neutral_formula"), col(cm, "adduct"),
+                                col(cm, "ion_formula")):
+            k = ion_key(n, a, i)
+            if k:
+                ctrl_ions.setdefault(pid, set()).add(k)
+    new = []
+    for r in m0.itertuples(index=False):
+        k = ion_key(getattr(r, "neutral_formula", None), getattr(r, "adduct", None), getattr(r, "ion_formula", None))
+        if k is not None and k in ctrl_ions.get(str(getattr(r, "peak_id", "")), set()):
+            out["assigned_same_ion"] += 1
+        else:
+            out["assigned_new_ion"] += 1
+            mz = float(getattr(r, "mz", np.nan))
+            out["assigned_new_ion_lt_350"] += int(mz < DECOY_MZ_SPLIT)
+            new.append((float(getattr(r, "height", 0) or 0), f"{r.neutral_formula} {r.adduct} @ {mz:.4f}"))
+    out["new_ion_examples"] = [t for _h, t in sorted(new, key=lambda x: -x[0])[:6]]
+    return out
 
 
 def brightest_files(run: Run, n: int) -> list[str]:
@@ -1501,6 +1720,19 @@ def _scoring_note(dc: dict) -> str:
             f"arm does not take {DECOY_NOT_INHERITED} (card C39).")
 
 
+CALIBRATION_WORDS = {"control": "its file's control arm (inherited)", "own": "its own commits (no control ledger)",
+                     "unrecorded": "unrecorded (ledgers kept before the field)"}
+
+
+def _calibration_note(dc: dict) -> str:
+    cal = (dc or {}).get("calibration")
+    if not isinstance(cal, dict) or not cal:
+        return ""
+    return ("arm mass calibration: " + ", ".join(f"`{f}` {CALIBRATION_WORDS.get(k, k)}" for f, k in cal.items())
+            + ". A decoy arm's own backbone is made of wrong readings; calibrated on it, an arm that fails to "
+              "calibrate runs with the mass z-test and the degeneracy audit off.")
+
+
 def run_engine_offline(run: Run, peaks: pd.DataFrame, sample_id: str, adducts: list[str], log=lambda *a: None,
                        scoring=None) -> pd.DataFrame:
     """`assign.run(peaks=)` on one table with the run's own profile settings,
@@ -1547,6 +1779,57 @@ def run_engine_offline(run: Run, peaks: pd.DataFrame, sample_id: str, adducts: l
     return res["ledger"]
 
 
+@contextlib.contextmanager
+def inherited_calibration(control: pd.DataFrame | None, log=lambda *a: None):
+    """While a decoy arm's engine runs, its mass calibration is the one its file's CONTROL arm gives: the
+    pass-stage fit (`passes.calibrate`, the mass gate's mu / sigma and 1/mz trend) and the tier engine's
+    (`tiers._calibrate`, read by the tiers, the degeneracy audit and the winner selection) are both taken on the
+    control's ledger, not on the arm's own commits. An arm's own backbone is made of wrong formulas (a shifted
+    spectrum) or wrong channels (the wrong adducts); when it is too small to calibrate, the arm runs with the
+    mass z-test and the degeneracy audit OFF and keeps every mass fit -- it would bound an engine no run ever
+    is. A real file always calibrates, so the arm is judged at the file's real instrument accuracy.
+
+    Yields True when the calibration is inherited, False when there is no control ledger to take it from (the
+    arm then calibrates on its own commits). Process-local: both functions are restored on exit."""
+    if control is None or control.empty or "role" not in control.columns:
+        yield False
+        return
+    from peaky.assignment import passes as PA
+    from peaky.assignment import tiers as TI
+
+    m0 = control[control["role"] == "M0"]
+    kids = (control.loc[control["role"] == "iso_child", "parent_peak_id"].value_counts()
+            if "parent_peak_id" in control.columns else pd.Series(dtype=int))
+    own_pass, own_tier = PA.calibrate, TI._calibrate
+    cache: dict = {}
+
+    def pass_cal(_ledger, cfg, *, log=print):
+        log("[calibrate] inherited: fitted on the control arm's ledger")
+        return own_pass(control, cfg, log=log)
+
+    def tier_cal(_m0, _kids_of, **kw):
+        key = repr(sorted(kw.items()))
+        if key not in cache:
+            cache[key] = own_tier(m0, kids, **kw)
+        return cache[key]
+
+    PA.calibrate, TI._calibrate = pass_cal, tier_cal
+    try:
+        yield True
+    finally:
+        PA.calibrate, TI._calibrate = own_pass, own_tier
+
+
+def calibration_summary(dc: dict) -> str | None:
+    """One word for what a card's decoy arms were calibrated at: 'control' (every arm took its file's control
+    calibration), 'own' (an arm's own commits), 'mixed', or 'unrecorded' (ledgers kept before the field)."""
+    cal = (dc or {}).get("calibration")
+    if not cal:
+        return None
+    kinds = set(cal.values()) if isinstance(cal, dict) else {str(cal)}
+    return kinds.pop() if len(kinds) == 1 else "mixed"
+
+
 CLAIM_COUNTS = ("pairs", "lt_350", "ge_350", "assigned", "assigned_lt_350", "assigned_ge_350")
 IDENTIFIED_KEYS = ("identified", "identified_lt_350", "identified_ge_350",
                    "identified_assigned", "identified_assigned_lt_350", "identified_assigned_ge_350")
@@ -1577,6 +1860,24 @@ def _claim_counts(m0: pd.DataFrame, tier: pd.Series, levels: pd.DataFrame) -> di
     return out
 
 
+def mz_bins(mz: pd.Series, width: int = DECOY_BIN_DA) -> dict:
+    """{lower edge as text: n} of the finite m/z values, `width` Da bins (text keys: the card is JSON)."""
+    v = pd.to_numeric(pd.Series(mz), errors="coerce")
+    v = v[np.isfinite(v)]
+    if v.empty:
+        return {}
+    lo = (np.floor(v.to_numpy(float) / width) * width).astype(int)
+    vals, counts = np.unique(lo, return_counts=True)
+    return {str(int(a)): int(b) for a, b in zip(vals, counts)}
+
+
+def _add_bins(a: dict, b: dict) -> dict:
+    out = dict(a or {})
+    for k, n in (b or {}).items():
+        out[k] = out.get(k, 0) + int(n)
+    return out
+
+
 def _levels_frame(pairs: pd.DataFrame | None) -> pd.DataFrame:
     """An arm's levelled pairs (`evidence.level_source`) as a levels frame (neutral, adduct, level)."""
     if pairs is None or pairs.empty:
@@ -1603,11 +1904,15 @@ def _ledger_counts(led: pd.DataFrame, label: str, levels: pd.DataFrame | None = 
     est = {k: by_claim["identified"][k] + by_claim["neutral"][k] for k in CLAIM_COUNTS}
     out = {
         "m0": int(len(m0)),
+        # what the arm committed below m/z 350 at all: an arm that commits few rows there has tested few gates
+        "m0_lt_350": int((mz < DECOY_MZ_SPLIT).sum()),
         "assigned": int((tier == "Assigned").sum()),
         # the mass-defect gap a 0.35 Da shift lands in closes above ~m/z 350,
         # so a decoy's Assigned rows are reported on either side of it
         "assigned_lt_350": int(((tier == "Assigned") & (mz < DECOY_MZ_SPLIT)).sum()),
         "assigned_ge_350": int(((tier == "Assigned") & (mz >= DECOY_MZ_SPLIT)).sum()),
+        # Assigned per m/z bin (key = the bin's lower edge, DECOY_BIN_DA wide)
+        "assigned_by_bin": mz_bins(mz[tier == "Assigned"]),
         "candidate": int((tier == "Candidate").sum()),
         "neutrals": int(col(m0, "neutral_formula").dropna().nunique()),
         "levels": level_vector(levels),
@@ -1691,31 +1996,177 @@ def engine_code() -> str:
     return f"{peaky.__version__} {commit[:9]}".strip()
 
 
+#: the count keys a decoy arm's totals sum over its files
+_SUM_KEYS = ("m0", "m0_lt_350", "assigned", "assigned_lt_350", "assigned_ge_350", "candidate", "neutrals")
+#: the decoy modes and the arm families each runs (the control always runs)
+DECOY_MODES = {"none": (), "shift": ("shift", "ppm"), "ppm": ("ppm",), "adducts": ("adducts",),
+               "both": ("shift", "ppm", "adducts")}
+
+
+def _total(items: list[dict]) -> dict:
+    """One arm's counts summed over its files (or a ppm arm's over its files and shifts)."""
+    total = {k: int(sum(i[k] for i in items)) for k in _SUM_KEYS}
+    total["levels"] = {lv: int(sum(i["levels"].get(lv, 0) for i in items)) for lv in LEVELS}
+    total["examples"] = items[0]["examples"]
+    bins: dict = {}
+    for i in items:
+        bins = _add_bins(bins, i.get("assigned_by_bin"))
+    total["assigned_by_bin"] = dict(sorted(bins.items(), key=lambda kv: int(kv[0])))
+    if any("level_error" in i for i in items):
+        total["level_error"] = "; ".join(i["level_error"] for i in items if "level_error" in i)
+    total["by_claim"] = {c: {k: int(sum(i["by_claim"][c][k] for i in items)) for k in CLAIM_COUNTS} for c in CLAIM_KEYS}
+    total.update({k: int(sum(i[k] for i in items)) for k in IDENTIFIED_KEYS + ESTABLISHED_KEYS})
+    if all("strict" in i for i in items):
+        st = [i["strict"] for i in items]
+        total["strict"] = {
+            "levels": {lv: int(sum(x["levels"].get(lv, 0) for x in st)) for lv in LEVELS},
+            "by_claim": {c: {k: int(sum(x["by_claim"][c][k] for x in st)) for k in CLAIM_COUNTS} for c in CLAIM_KEYS},
+            **{k: int(sum(x[k] for x in st)) for k in ("identified", "identified_lt_350", "established")}}
+    # the wrong-adducts arm's ion level (`ion_level_counts`)
+    if all("assigned_new_ion" in i for i in items):
+        total.update({k: int(sum(i[k] for i in items)) for k in ION_LEVEL_KEYS})
+        total["new_ion_examples"] = [t for i in items for t in i.get("new_ion_examples", [])][:6]
+    return total
+
+
+#: the wrong-adducts arm's ion-level counts
+ION_LEVEL_KEYS = ("assigned_same_ion", "assigned_new_ion", "assigned_new_ion_lt_350")
+
+
+def _ion_rates(a: dict, ctrl: dict) -> None:
+    """The wrong-adducts arm's ion-level rate (in place): its Assigned NEW ions against the control's Assigned,
+    beside the reading-level `assigned_rate`; and the share of its Assigned that only re-split an ion the control
+    already reads."""
+    if "assigned_new_ion" not in a:
+        return
+    a["new_ion_rate"] = pct(a["assigned_new_ion"], ctrl["assigned"])
+    a["new_ion_lt_350_rate"] = pct_or_none(a["assigned_new_ion_lt_350"], ctrl["assigned_lt_350"])
+    a["same_ion_share"] = pct_or_none(a["assigned_same_ion"], a["assigned"])
+
+
+def _rates(a: dict, ctrl: dict) -> None:
+    """An arm's rates against the control it is matched with (in place)."""
+    a["assigned_rate"] = pct(a["assigned"], ctrl["assigned"])
+    # the two sides of m/z 350, each against the control's Assigned on the same side (None = the control has none)
+    a["assigned_lt_350_rate"] = pct_or_none(a["assigned_lt_350"], ctrl["assigned_lt_350"])
+    a["assigned_ge_350_rate"] = pct_or_none(a["assigned_ge_350"], ctrl["assigned_ge_350"])
+    a["candidate_rate"] = pct(a["candidate"], ctrl["candidate"])
+    a["good_level_rate"] = pct(
+        sum(a["levels"].get(lv, 0) for lv in GOOD_LEVELS),
+        sum(ctrl["levels"].get(lv, 0) for lv in GOOD_LEVELS),
+    )
+    # per claim, against the control's pairs of the same claim (and m/z side);
+    # a control with no pair of that claim leaves the rate undefined (None), not 0 %
+    a["identified_rate"] = pct_or_none(a["identified"], ctrl["identified"])
+    a["identified_lt_350_rate"] = pct_or_none(a["identified_lt_350"], ctrl["identified_lt_350"])
+    a["identified_ge_350_rate"] = pct_or_none(a["identified_ge_350"], ctrl["identified_ge_350"])
+    a["identified_assigned_lt_350_rate"] = pct_or_none(a["identified_assigned_lt_350"], ctrl["identified_assigned_lt_350"])
+    a["established_rate"] = pct_or_none(a["established"], ctrl["established"])
+    a["established_lt_350_rate"] = pct_or_none(a["established_lt_350"], ctrl["established_lt_350"])
+    for c in ("neutral", "ion", "tentative", "not assessed"):
+        a[f"{c.replace(' ', '_')}_rate"] = pct_or_none(a["by_claim"][c]["pairs"], ctrl["by_claim"][c]["pairs"])
+    if "strict" in a and "strict" in ctrl:
+        a["strict"]["identified_rate"] = pct_or_none(a["strict"]["identified"], ctrl["strict"]["identified"])
+        a["strict"]["established_rate"] = pct_or_none(a["strict"]["established"], ctrl["strict"]["established"])
+
+
+def decoy_bins(dc: dict) -> list[dict]:
+    """Decoy against control Assigned per DECOY_BIN_DA m/z bin: the 0.35 Da arm against the control, the ppm arms
+    (pooled) against the control counted once per ppm arm that ran on the file. A bin no arm holds is left out."""
+    ctrl = dc.get("control") if isinstance(dc.get("control"), dict) and "error" not in dc["control"] else None
+    if not ctrl or "assigned_by_bin" not in ctrl:
+        return []
+    sh = dc.get("shift") if isinstance(dc.get("shift"), dict) and "error" not in dc["shift"] else None
+    pp = dc.get("ppm") if isinstance(dc.get("ppm"), dict) and "error" not in dc["ppm"] else None
+    pc = (pp or {}).get("control") or {}
+    keys = set(ctrl["assigned_by_bin"]) | set((sh or {}).get("assigned_by_bin") or {}) | set((pp or {}).get("assigned_by_bin") or {})
+    rows = []
+    for k in sorted(keys, key=int):
+        c = int(ctrl["assigned_by_bin"].get(k, 0))
+        rec = {"bin": f"{int(k)}-{int(k) + DECOY_BIN_DA}", "control": c}
+        if sh is not None:
+            s_ = int((sh.get("assigned_by_bin") or {}).get(k, 0))
+            rec.update(shift=s_, shift_rate=pct_or_none(s_, c))
+        if pp is not None:
+            p_, pcn = int((pp.get("assigned_by_bin") or {}).get(k, 0)), int((pc.get("assigned_by_bin") or {}).get(k, 0))
+            rec.update(ppm=p_, ppm_control=pcn, ppm_rate=pct_or_none(p_, pcn))
+        rows.append(rec)
+    return rows
+
+
+def decoy_headline(dc: dict) -> dict | None:
+    """The shift arm the card quotes below m/z 350: the ppm arms (pooled) when any ran, else the 0.35 Da arm. On an
+    Orbitrap the 0.35 Da arm is blind below ~350 (its lines land in the empty mass-defect gap, no formula is
+    proposed, no tier gate is tested), so its rate there is no bound."""
+    pp = dc.get("ppm") if isinstance(dc.get("ppm"), dict) and "error" not in dc["ppm"] else None
+    sh = dc.get("shift") if isinstance(dc.get("shift"), dict) and "error" not in dc["shift"] else None
+    ctrl = dc.get("control") if isinstance(dc.get("control"), dict) and "error" not in dc["control"] else None
+    if pp is not None and pp.get("control"):
+        a, c, arm = pp, pp["control"], "ppm"
+        label = "ppm shift " + "/".join(f"{k:+g}" for k in dc.get("ppm_k") or []) + " ppm, pooled"
+    elif sh is not None and ctrl is not None:
+        a, c, arm = sh, ctrl, "shift"
+        label = f"shift {dc.get('offset_da', 0):+.2f} Da" + (" (blind below ~m/z 350 on an Orbitrap)" if dc.get("orbitrap") else "")
+    else:
+        return None
+    return {"arm": arm, "label": label,
+            "assigned_lt_350": a["assigned_lt_350"], "control_assigned_lt_350": c["assigned_lt_350"],
+            "rate_lt_350": pct_or_none(a["assigned_lt_350"], c["assigned_lt_350"]),
+            "assigned_ge_350": a["assigned_ge_350"], "control_assigned_ge_350": c["assigned_ge_350"],
+            "rate_ge_350": pct_or_none(a["assigned_ge_350"], c["assigned_ge_350"]),
+            "identified_lt_350_rate": a.get("identified_lt_350_rate"),
+            # how much the arm committed below 350 at all, against the control: an arm that commits few rows there
+            # (the Da arm in the mass-defect gap) has tested few gates, whatever its rate
+            "m0_lt_350": a.get("m0_lt_350"), "control_m0_lt_350": c.get("m0_lt_350")}
+
+
 def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: None,
-          save_dir: str | None = None, ledgers_dir: str | None = None) -> dict:
+          save_dir: str | None = None, ledgers_dir: str | None = None, ppm_k=()) -> dict:
     """The decoy false-discovery bound: the engine, offline, on the brightest
     cover file(s) as they are (the control), with every m/z shifted, and with
     the wrong adduct set. What is still Assigned is the error bound; each arm's
     pairs are levelled in the run's context as the reference levels a decoy arm
     (`level_arm`: adapted minima; strict in a field of its own).
 
+    Two shift arms: `shift` adds `offset_da` to every m/z (0.35 Da, kept for continuity; on an Orbitrap it lands
+    in the empty mass-defect gap below ~m/z 350 and tests nothing there), and one `ppm` arm per k of `ppm_k`
+    scales every m/z by (1 + k * 1e-6) -- outside the file's match window, inside the populated band
+    (`decoy_ppm_peaks`). A k inside the window (`arm_window_ppm`) is skipped and says why. Every arm runs at
+    the file's control calibration (`inherited_calibration`).
+
     `save_dir` keeps each arm's engine ledger (`arm_ledger_path`) and what they
     were made with (`DECOY_MANIFEST`); `ledgers_dir` counts the ledgers kept
     there instead of running the engine again -- the same counts at no engine
-    cost (a missing ledger is that arm's error), with the offset, files and
+    cost (a missing ledger is that arm's error), with the offset, ppm shifts, files and
     adduct sets of the manifest when there is one."""
     if mode == "none" or run.per_file.empty:
         return {"mode": mode, "files": [], "control": None, "shift": None, "adducts": None}
+    # a mode with no arm family of its own (the API's "control") runs the control alone, as it always did
+    families = DECOY_MODES.get(mode, ())
     kept = _read_json(os.path.join(ledgers_dir, DECOY_MANIFEST)) if ledgers_dir else {}
     files = kept["files"] if "files" in kept else brightest_files(run, n_files)
     offset_da = kept.get("offset_da", offset_da)
+    # a re-count reads the shifts the kept ledgers were made at (none before the ppm arm existed)
+    ppm_k = [float(k) for k in (kept.get("ppm_k", []) if ledgers_dir else ppm_k)] if "ppm" in families else []
     out = {"mode": mode, "offset_da": offset_da, "files": files, "control": None, "shift": None, "adducts": None,
-           "adducts_used": kept.get("adducts_used", run.adducts), "wrong_adducts": kept.get("wrong_adducts", wrong_adducts(run.polarity)),
+           "adducts_used": kept.get("adducts_used", run.adducts), "wrong_adducts": kept.get("wrong_adducts", wrong_adducts_for(run)),
            "ledgers": {"source": "saved" if ledgers_dir else "engine", "dir": ledgers_dir or save_dir,
-                       "code": kept.get("code") if ledgers_dir else engine_code()}}
+                       "code": kept.get("code") if ledgers_dir else engine_code()},
+           "ppm_k": ppm_k, "ppm": None, "ppm_arms": {},
+           # per arm key, why it did not run on which file (a ppm shift inside the file's match window)
+           "ppm_skipped": dict(kept.get("ppm_skipped") or {}) if ledgers_dir else {}}
+    out["instrument"] = {f: decoy_instrument(run, f) for f in files}
+    # a run's own channel in the wrong set (ledgers kept before the arm left them out): its rate is no error rate
+    out["wrong_adducts_own"] = sorted(set(out["wrong_adducts"]) & own_adducts(run))
+    if "adducts" in families and not out["wrong_adducts"]:
+        out["adducts_skipped"] = (f"every wrong-adduct candidate {wrong_adducts(run.polarity)} is one of the run's "
+                                  "own channels")
+    out["orbitrap"] = any(v == "orbi" for v in out["instrument"].values())
     if kept:
-        log(f"[decoy] re-count of the ledgers made at {offset_da:+.3f} Da on {files} by {kept.get('code')}")
-    agg: dict[str, list] = {"control": [], "shift": [], "adducts": []}
+        log(f"[decoy] re-count of the ledgers made at {offset_da:+.3f} Da"
+            + (f" and {'/'.join(f'{k:+g}' for k in ppm_k)} ppm" if ppm_k else "") + f" on {files} by {kept.get('code')}")
+    # per arm key: [(file, counts)]
+    agg: dict[str, list] = {"control": [], "shift": [], "adducts": [], **{ppm_arm(k): [] for k in ppm_k}}
     errors: dict[str, str] = {}
     saved: list[str] = []
     ctx: dict = {}            # the run's source (built once, at the first arm) and each file's control ledger
@@ -1723,6 +2174,9 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
     # numbers -- on a TOF the brightest file can be the batch's worst-fitted one
     out["scoring"] = (kept.get("scoring") or {f: "unrecorded" for f in files} if ledgers_dir
                       else {f: ("inherited" if decoy_scoring(run, f) else "class-fallback") for f in files})
+    # per file, the mass calibration its decoy arms ran at (`inherited_calibration`): its control arm's, or the
+    # arm's own where the control gave none
+    out["calibration"] = (kept.get("calibration") or {f: "unrecorded" for f in files} if ledgers_dir else {})
     if ledgers_dir:
         out["scoring_detail"] = kept.get("scoring_detail") or {}
     else:
@@ -1746,9 +2200,15 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
             if ledgers_dir:
                 led = pd.read_csv(arm_ledger_path(ledgers_dir, file_id, key), low_memory=False)
                 read = led
-            else:
+            elif key == "control":
                 led = run_engine_offline(run, peaks, sample_id, adducts, log, scoring=decoy_scoring(run, file_id))
                 read = _reparsed(led)
+            else:
+                with inherited_calibration(ctx.get(file_id), log) as inherited:
+                    led = run_engine_offline(run, peaks, sample_id, adducts, log, scoring=decoy_scoring(run, file_id))
+                read = _reparsed(led)
+                if out["calibration"].get(file_id) != "own":
+                    out["calibration"][file_id] = "control" if inherited else "own"
             if key == "control":
                 ctx[file_id] = read
             lv, level_error = {m: None for m in ARM_MODES}, None
@@ -1763,9 +2223,12 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
                     level_error = f"{type(exc).__name__}: {exc}"
                     log(f"[decoy] {sample_id}: {key} arm not levelled -- {level_error}")
             counts = _ledger_counts(led, sample_id, lv["adapted"], lv["strict"])
+            if key == "adducts":
+                # the arm at the ion level: a re-split of an ion the control reads is no new ion
+                counts.update(ion_level_counts(read, ctx.get(file_id)))
             if level_error:
                 counts["level_error"] = level_error
-            agg[key].append(counts)
+            agg[key].append((file_id, counts))
         except Exception as exc:  # noqa: BLE001 - anything the engine raises
             errors[key] = f"{type(exc).__name__}: {exc}"
             log(f"[decoy] {sample_id}: {key} arm failed -- {errors[key]}")
@@ -1784,62 +2247,77 @@ def decoy(run: Run, mode: str, offset_da: float, n_files: int, log=lambda *a: No
             continue
         log(f"[decoy] {f}: {len(peaks)} peaks, control {'re-count' if ledgers_dir else 'run'}")
         arm("control", peaks, f, run.adducts)
-        if mode in ("shift", "both"):
+        if "shift" in families:
             log(f"[decoy] {f}: shift {offset_da:+.3f} Da")
             arm("shift", decoy_peaks(peaks, offset_da), f, run.adducts)
-        if mode in ("adducts", "both"):
-            log(f"[decoy] {f}: wrong adducts {wrong_adducts(run.polarity)}")
-            arm("adducts", peaks, f, wrong_adducts(run.polarity))
+        for k in ppm_k:
+            key = ppm_arm(k)
+            if ledgers_dir:
+                if f in (out["ppm_skipped"].get(key) or {}):
+                    continue
+            else:
+                window = arm_window_ppm(run, f)
+                if abs(k) <= window:
+                    why = (f"{k:+g} ppm is inside the {window:g} ppm match window: the true formula stays in "
+                           f"reach, so the arm is no decoy")
+                    out["ppm_skipped"].setdefault(key, {})[f] = why
+                    log(f"[decoy] {f}: ppm shift {k:+g} skipped -- {why}")
+                    continue
+            log(f"[decoy] {f}: ppm shift {k:+g}")
+            arm(key, decoy_ppm_peaks(peaks, k), f, run.adducts)
+        if "adducts" in families and out["wrong_adducts"]:
+            log(f"[decoy] {f}: wrong adducts {out['wrong_adducts']}")
+            arm("adducts", peaks, f, list(out["wrong_adducts"]))
     if saved:
-        manifest = {k: out[k] for k in ("mode", "offset_da", "files", "adducts_used", "wrong_adducts", "scoring",
-                                        "scoring_detail")}
+        manifest = {k: out[k] for k in ("mode", "offset_da", "ppm_k", "ppm_skipped", "files", "adducts_used",
+                                        "wrong_adducts", "scoring", "scoring_detail", "calibration")}
         try:
             with open(os.path.join(save_dir, DECOY_MANIFEST), "w") as fh:
                 json.dump(manifest | {"code": out["ledgers"]["code"]}, fh, indent=1, default=_json_default)
         except OSError as exc:
             log(f"[decoy] manifest not kept -- {exc}")
+    ppm_keys = {ppm_arm(k): k for k in ppm_k}
     for key, err in errors.items():
-        out[key] = {"error": err}
+        if key in ppm_keys:
+            out["ppm_arms"][key] = {"error": err, "k": ppm_keys[key]}
+        else:
+            out[key] = {"error": err}
     for key, items in agg.items():
         if not items:
             continue
-        total = {k: int(sum(i[k] for i in items)) for k in ("m0", "assigned", "assigned_lt_350", "assigned_ge_350", "candidate", "neutrals")}
-        total["levels"] = {lv: int(sum(i["levels"].get(lv, 0) for i in items)) for lv in LEVELS}
-        total["examples"] = items[0]["examples"]
-        if any("level_error" in i for i in items):
-            total["level_error"] = "; ".join(i["level_error"] for i in items if "level_error" in i)
-        total["by_claim"] = {c: {k: int(sum(i["by_claim"][c][k] for i in items)) for k in CLAIM_COUNTS} for c in CLAIM_KEYS}
-        total.update({k: int(sum(i[k] for i in items)) for k in IDENTIFIED_KEYS + ESTABLISHED_KEYS})
-        if all("strict" in i for i in items):
-            st = [i["strict"] for i in items]
-            total["strict"] = {
-                "levels": {lv: int(sum(x["levels"].get(lv, 0) for x in st)) for lv in LEVELS},
-                "by_claim": {c: {k: int(sum(x["by_claim"][c][k] for x in st)) for k in CLAIM_COUNTS} for c in CLAIM_KEYS},
-                **{k: int(sum(x[k] for x in st)) for k in ("identified", "identified_lt_350", "established")}}
-        out[key] = total
+        total = _total([c for _f, c in items])
+        if key in ppm_keys:
+            out["ppm_arms"][key] = dict(total, k=ppm_keys[key])
+        else:
+            out[key] = total
     ctrl = out["control"] if out["control"] and "error" not in out["control"] else None
     for key in ("shift", "adducts"):
         if out[key] and ctrl and "error" not in out[key]:
-            a = out[key]
-            a["assigned_rate"] = pct(a["assigned"], ctrl["assigned"])
-            a["candidate_rate"] = pct(a["candidate"], ctrl["candidate"])
-            a["good_level_rate"] = pct(
-                sum(a["levels"].get(lv, 0) for lv in GOOD_LEVELS),
-                sum(ctrl["levels"].get(lv, 0) for lv in GOOD_LEVELS),
-            )
-            # per claim, against the control's pairs of the same claim (and m/z side);
-            # a control with no pair of that claim leaves the rate undefined (None), not 0 %
-            a["identified_rate"] = pct_or_none(a["identified"], ctrl["identified"])
-            a["identified_lt_350_rate"] = pct_or_none(a["identified_lt_350"], ctrl["identified_lt_350"])
-            a["identified_ge_350_rate"] = pct_or_none(a["identified_ge_350"], ctrl["identified_ge_350"])
-            a["identified_assigned_lt_350_rate"] = pct_or_none(a["identified_assigned_lt_350"], ctrl["identified_assigned_lt_350"])
-            a["established_rate"] = pct_or_none(a["established"], ctrl["established"])
-            a["established_lt_350_rate"] = pct_or_none(a["established_lt_350"], ctrl["established_lt_350"])
-            for c in ("neutral", "ion", "tentative", "not assessed"):
-                a[f"{c.replace(' ', '_')}_rate"] = pct_or_none(a["by_claim"][c]["pairs"], ctrl["by_claim"][c]["pairs"])
-            if "strict" in a and "strict" in ctrl:
-                a["strict"]["identified_rate"] = pct_or_none(a["strict"]["identified"], ctrl["strict"]["identified"])
-                a["strict"]["established_rate"] = pct_or_none(a["strict"]["established"], ctrl["strict"]["established"])
+            _rates(out[key], ctrl)
+            if key == "adducts":
+                _ion_rates(out[key], ctrl)
+    # the ppm arms: each against the control of the files it ran on; pooled over every shift, against the control
+    # counted once per arm that ran on the file
+    ctrl_of = {f: c for f, c in agg["control"]}
+    pooled, matched = [], []
+    for key, k in ppm_keys.items():
+        items = [(f, c) for f, c in agg[key] if f in ctrl_of]
+        if not items:
+            continue
+        mine = _total([ctrl_of[f] for f, _c in items])
+        _rates(out["ppm_arms"][key], mine)
+        out["ppm_arms"][key]["control_assigned"] = mine["assigned"]
+        pooled += [c for _f, c in items]
+        matched += [ctrl_of[f] for f, _c in items]
+    if pooled:
+        out["ppm"] = _total(pooled)
+        out["ppm"]["control"] = _total(matched)
+        out["ppm"]["n_arms"] = len(pooled)
+        _rates(out["ppm"], out["ppm"]["control"])
+    elif ppm_k and any(isinstance(v, dict) and "error" in v for v in out["ppm_arms"].values()):
+        out["ppm"] = {"error": "; ".join(v["error"] for v in out["ppm_arms"].values() if "error" in v)}
+    out["bins"] = decoy_bins(out)
+    out["headline"] = decoy_headline(out)
     return out
 
 
@@ -1963,6 +2441,7 @@ KEY_METRICS = [
     ("claim_candidate_identified", "Candidate but identified", 0),
     ("bright_m0_not_identified", "bright M0 not identified", 0),
     ("roster_identified", "roster identified", 0),
+    ("roster_neutral_or_better", "roster neutral or better", 0),
     ("roster_misread_identified", "roster read as other (identified)", 0),
     ("decoy_shift_identified_rate", "decoy (shift) identified %", 1),
     ("decoy_shift_identified_lt_350_rate", "decoy (shift) identified below 350 %", 1),
@@ -1985,6 +2464,11 @@ KEY_METRICS = [
     ("roster_misread", "roster read as other", 0),
     ("decoy_shift_rate", "decoy (shift) Assigned %", 1),
     ("decoy_adducts_rate", "decoy (adducts) Assigned %", 1),
+    ("decoy_adducts_new_ion_rate", "decoy (adducts) new ions Assigned %", 1),
+    # the populated-defect ppm-shift arms (pooled) and the shift arm the card quotes below m/z 350
+    ("decoy_headline_lt_350_rate", "decoy (headline shift arm) Assigned below 350 %", 1),
+    ("decoy_ppm_rate", "decoy (ppm shift) Assigned %", 1),
+    ("decoy_ppm_identified_rate", "decoy (ppm shift) identified %", 1),
     ("c13_within_1", "13C carbon count within 1", 0),
     ("hetero_present", "heteroatom line present", 0),
     ("census_halogen", "Assigned with Cl/Br/F", 0),
@@ -1993,15 +2477,68 @@ KEY_METRICS = [
 #: the metrics that read the evidence scale: never diffed between rows of two scales (`claims_schema`)
 SCALE_KEYS = frozenset({k for k, _l, _n in KEY_METRICS if k.startswith(("claim_", "decoy_shift_identified",
                                                                           "decoy_adducts_identified",
-                                                                          "decoy_shift_established"))}
+                                                                          "decoy_shift_established",
+                                                                          "decoy_ppm_identified"))}
                        | {"bright_m0_not_identified", "roster_identified", "roster_misread_identified",
-                          "m3_own_missing_identified", "good_levels", "m3_other_instrument_missing",
-                          "m3_other_instrument_own_missing"})
+                          "roster_neutral_or_better", "m3_own_missing_identified", "good_levels",
+                          "m3_other_instrument_missing", "m3_other_instrument_own_missing"})
+#: the metrics M2's presence test counts: never diffed between rows of two presence tests (`roster_test`)
+ROSTER_KEYS = frozenset({"roster_present", "roster_assigned", "roster_misread", "roster_unstamped", "roster_same_ion",
+                         "roster_identified", "roster_neutral", "roster_neutral_or_better", "roster_misread_identified"})
+
+
+def row_scale(row: dict) -> str:
+    """The evidence scale a board row's levels and claims read: its `scale` key, else its `claims_schema`'s
+    (a row written before the key), else 'before the claim'."""
+    if row.get("scale"):
+        return str(row["scale"])
+    cs = row.get("claims_schema")
+    return "before the claim" if cs is None else SCALE_NAME.get(cs, str(cs))
 
 
 def same_scale(row: dict, prev: dict | None) -> bool:
-    """Two board rows read the same evidence scale (equal `claims_schema`; none = before the claim)."""
-    return prev is not None and row.get("claims_schema") == prev.get("claims_schema")
+    """Two board rows read the same evidence scale (`row_scale`; none = before the claim)."""
+    return prev is not None and row_scale(row) == row_scale(prev)
+
+
+def ppm_shifts(row: dict) -> str:
+    """The ppm shifts a board row's ppm arms ran at, as one word ('+9/-9'; 'none' for a row without them)."""
+    ks = row.get("decoy_ppm_k")
+    if not ks:
+        return "none"
+    try:
+        return "/".join(f"{k:+g}" for k in sorted({float(k) for k in ks}, reverse=True))
+    except (TypeError, ValueError):
+        return str(ks)
+
+
+def comparable(row: dict, prev: dict | None, key: str) -> tuple[bool, str]:
+    """(True, '') when the metric `key` was measured alike on both rows; else (False, why): a level-scale change
+    for a metric that reads the scale, a change of M2's presence test for a roster count, a change of what the
+    decoy arms were calibrated at (control vs own; a row before the field ran its arms on their own) or scored at
+    (`decoy_scoring`) for a decoy rate; for the headline below m/z 350 a change of the arm it quotes
+    (`decoy_headline_arm`: the ppm arms or the Da arm, blind there on an Orbitrap), and for a ppm-arm rate (the
+    headline when it quotes the ppm arms) a change of the shifts they ran at (`decoy_ppm_k`)."""
+    if prev is None:
+        return False, "no previous row"
+    why = []
+    if key in SCALE_KEYS and not same_scale(row, prev):
+        why.append(f"level scale {row_scale(prev)} -> {row_scale(row)}")
+    if key in ROSTER_KEYS and (row.get("roster_test") or 1) != (prev.get("roster_test") or 1):
+        why.append(f"roster presence test {prev.get('roster_test') or 1} -> {row.get('roster_test') or 1}")
+    if key.startswith("decoy_"):
+        for field, before in (("decoy_calibration", "own"), ("decoy_scoring", "unrecorded")):
+            a, b = prev.get(field) or before, row.get(field) or before
+            if a != b:
+                why.append(f"{field.replace('_', ' ')} {a} -> {b}")
+    arm_a, arm_b = prev.get("decoy_headline_arm") or "none", row.get("decoy_headline_arm") or "none"
+    if key.startswith("decoy_headline") and arm_a != arm_b:
+        why.append(f"decoy headline arm {arm_a} -> {arm_b}")
+    if key.startswith("decoy_ppm") or (key.startswith("decoy_headline") and arm_a == arm_b == "ppm"):
+        a, b = ppm_shifts(prev), ppm_shifts(row)
+        if a != b:
+            why.append(f"decoy ppm shifts {a} -> {b}")
+    return (not why), "; ".join(why)
 
 
 def read_board(path: str) -> list[dict]:
@@ -2029,17 +2566,26 @@ def previous_row(board: list[dict], channel: str, before: dict | None = None) ->
     return rows[-1] if rows else None
 
 
+def _num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and np.isfinite(v)
+
+
 def delta(row: dict, prev: dict | None) -> list[dict]:
-    """Each key metric against the previous row; a metric that reads the evidence scale has no previous value
-    across two scales (the previous row's `claims_schema` differs)."""
+    """Each key metric against the previous row. A metric measured differently on the two rows (`comparable`: a
+    level-scale change, a new presence test, a new decoy calibration) has no previous value and no delta; where
+    both rows hold a number it says so in `note` ('not comparable: ...'), so 20 -> 2 across a scale change never
+    reads as a regression."""
     out = []
     for key, label, nd in KEY_METRICS:
         now = row.get(key)
-        was = prev.get(key) if prev and (key not in SCALE_KEYS or same_scale(row, prev)) else None
-        d = None
-        if isinstance(now, (int, float)) and isinstance(was, (int, float)) and np.isfinite(now) and np.isfinite(was):
-            d = now - was
-        out.append({"metric": label, "prev": was, "now": now, "delta": d, "nd": nd})
+        ok, why = comparable(row, prev, key) if prev else (False, "")
+        raw = prev.get(key) if prev else None
+        was = raw if ok else None
+        d = now - was if _num(now) and _num(was) else None
+        rec = {"metric": label, "prev": was, "now": now, "delta": d, "nd": nd}
+        if prev and not ok and _num(now) and _num(raw):
+            rec["note"] = f"not comparable: {why} (previous {fmt(raw, nd)})"
+        out.append(rec)
     return out
 
 
@@ -2049,7 +2595,7 @@ def delta(row: dict, prev: dict | None) -> list[dict]:
 def build_card(run: Run, *, levels_csv=None, other=None, other_instrument=None, rosters=None,
                decoy_mode="none", decoy_offset=0.35, decoy_files=1, overlap=None, masks=(),
                floor_cps=10.0, floor_share=0.8, board=None, log=print,
-               decoy_save_dir=None, decoy_ledgers=None) -> dict:
+               decoy_save_dir=None, decoy_ledgers=None, decoy_ppm=DECOY_PPM) -> dict:
     log(f"[scorecard] {run.name}: {run.reagent} {run.path_kind}, {run.n_spectra} spectra")
     ions = ion_table(run)
     tracks = unstamped_tracks(run)
@@ -2075,7 +2621,7 @@ def build_card(run: Run, *, levels_csv=None, other=None, other_instrument=None, 
                         own_levels=other_own),
         "census": census(run),
         "decoy": decoy(run, decoy_mode, decoy_offset, decoy_files, log=log,
-                       save_dir=decoy_save_dir, ledgers_dir=decoy_ledgers),
+                       save_dir=decoy_save_dir, ledgers_dir=decoy_ledgers, ppm_k=decoy_ppm),
         "falsification": falsification(run),
         "rosters_unreviewed": True,
     }
@@ -2198,19 +2744,64 @@ def board_row(card: dict) -> dict:
     })
     # what the decoy arms were judged at (C35): appended, so the board's older columns keep their order
     row["decoy_scoring"] = decoy_scoring_summary(dc)
+    # and the mass calibration they ran at: the control's (inherited) or their own
+    row["decoy_calibration"] = calibration_summary(dc)
+    # the populated-defect ppm-shift arms (pooled over their shifts and files), the two sides of m/z 350 of the
+    # 0.35 Da arm, and the shift arm the card quotes below 350 (ppm when it ran; the 0.35 Da arm is blind there on
+    # an Orbitrap)
+    ppm = dc.get("ppm") if isinstance(dc.get("ppm"), dict) and "error" not in dc["ppm"] else {}
+    hl = dc.get("headline") or {}
+    row.update({
+        "decoy_ppm_k": dc.get("ppm_k"),
+        "decoy_ppm_rate": ppm.get("assigned_rate"),
+        "decoy_ppm_lt_350_rate": ppm.get("assigned_lt_350_rate"),
+        "decoy_ppm_ge_350_rate": ppm.get("assigned_ge_350_rate"),
+        "decoy_ppm_identified_rate": ppm.get("identified_rate"),
+        "decoy_ppm_identified_lt_350_rate": ppm.get("identified_lt_350_rate"),
+        "decoy_ppm_established_rate": ppm.get("established_rate"),
+        "decoy_ppm_control_assigned": (ppm.get("control") or {}).get("assigned"),
+        "decoy_shift_lt_350_rate": shift.get("assigned_lt_350_rate"),
+        "decoy_shift_ge_350_rate": shift.get("assigned_ge_350_rate"),
+        "decoy_headline_arm": hl.get("arm"),
+        "decoy_headline_lt_350_rate": hl.get("rate_lt_350"),
+        # the wrong-adducts arm at the ion level (new ions only) beside its reading-level `decoy_adducts_rate`
+        "decoy_wrong_adducts": dc.get("wrong_adducts"),
+        "decoy_adducts_new_ion_rate": add.get("new_ion_rate"),
+        "decoy_adducts_new_ion_lt_350_rate": add.get("new_ion_lt_350_rate"),
+        "decoy_adducts_same_ion_share": add.get("same_ion_share"),
+    })
+    # the roster block: identified (3c) beside neutral or better (3c + 4a), the presence test that counted it and
+    # the level scale it reads -- a delta across either is not comparable (`comparable`)
+    row.update({
+        "roster_neutral_or_better": rc.get("neutral_or_better"),
+        "roster_same_ion": roster.get("same_ion"),
+        "roster_iso_reagent": roster.get("iso_reagent"),
+        "roster_test": m2.get("test"),
+        "roster_window_ppm": m2.get("window_ppm"),
+        "scale": EV.SCALE_RELEASE,
+    })
+    # an Orbitrap decoy file: the Da arm's numbers below m/z 350 are blind there (`DA_ARM_BLIND`)
+    row["decoy_orbitrap"] = bool(dc.get("orbitrap")) if dc.get("mode") not in (None, "none") else None
     return row
 
+
+#: what an Orbitrap row's Da-shift-arm number below m/z 350 is worth: its lines land in the empty mass-defect gap
+DA_ARM_BLIND = "blind on an Orbitrap: no formula is proposed below ~m/z 350, the ppm arms carry the bound"
 
 #: today's acceptance criteria on the evidence scale of peaky 0.10.0, read on the identified class (3c) and, where
 #: the scale makes identified rare, the neutral established (3c + 4a); each keeps the metric it replaces beside it:
 #: (criterion, key, the key it was read on)
 ACCEPTANCE = [
     ("roster recall not lower (identified)", "roster_identified", "roster_assigned"),
+    ("roster recall not lower (neutral or better)", "roster_neutral_or_better", "roster_assigned"),
     ("roster misreads not higher (identified)", "roster_misread_identified", "roster_misread"),
-    ("decoy rate not higher (shift arm, identified)", "decoy_shift_identified_rate", "decoy_shift_rate"),
-    ("decoy rate not higher (shift arm, identified, below m/z 350)", "decoy_shift_identified_lt_350_rate",
+    ("decoy rate not higher (Da shift arm, identified)", "decoy_shift_identified_rate", "decoy_shift_rate"),
+    ("decoy rate not higher (Da shift arm, identified, below m/z 350)", "decoy_shift_identified_lt_350_rate",
      "decoy_shift_rate"),
-    ("decoy rate not higher (shift arm, neutral established)", "decoy_shift_established_rate", "decoy_shift_rate"),
+    ("decoy rate not higher (Da shift arm, neutral established)", "decoy_shift_established_rate", "decoy_shift_rate"),
+    # the ppm arms beside their own Assigned rate; the headline is Assigned already and has no older metric
+    ("decoy rate not higher (ppm shift arms, identified)", "decoy_ppm_identified_rate", "decoy_ppm_rate"),
+    ("decoy rate not higher (headline shift arm, Assigned, below m/z 350)", "decoy_headline_lt_350_rate", None),
     ("decoy rate not higher (wrong-adducts arm, identified)", "decoy_adducts_identified_rate", "decoy_adducts_rate"),
     ("bright M0 not identified not higher", "bright_m0_not_identified", "bright_m0_not_assigned"),
     ("M1 families not worse", "m1_families", "m1_families"),
@@ -2226,7 +2817,10 @@ def acceptance(row: dict) -> list[dict]:
     for c, k, ok in ACCEPTANCE:
         if k == "m3_other_instrument_own_missing" and row.get("m3_own_basis"):
             c = f"{c}: {row['m3_own_basis']}"
-        out.append({"criterion": c, "key": k, "value": row.get(k), "old_key": ok, "old_value": row.get(ok)})
+        if k == "decoy_shift_identified_lt_350_rate" and row.get("decoy_orbitrap"):
+            c = f"{c[:-1]}; {DA_ARM_BLIND})" if c.endswith(")") else f"{c} ({DA_ARM_BLIND})"
+        out.append({"criterion": c, "key": k, "value": row.get(k), "old_key": ok,
+                    "old_value": row.get(ok) if ok else None})
     return out
 
 
@@ -2253,6 +2847,7 @@ CLAIM_TABLE_COLUMNS = [
     ("signal", "signal %"), ("signal_assigned", "Assigned signal %"),
     ("decoy", "decoy pairs: control / shift / adducts"), ("shift_split", "shift below 350 / at or above"),
     ("adducts_split", "adducts below 350 / at or above"),
+    ("ppm_split", "ppm shift below 350 / at or above"),
 ]
 DISAGREE_COLUMNS = [
     ("kind", "disagreement"), ("mz", "m/z"), ("neutral", "neutral"), ("adduct", "adduct"), ("tier", "tier"),
@@ -2300,9 +2895,11 @@ def claim_table(card: dict) -> list[dict]:
             "decoy": " / ".join(_d(arm(k, c)) for k in ("control", "shift", "adducts")),
             "shift_split": f"{_d(arm('shift', c, 'lt_350'))} / {_d(arm('shift', c, 'ge_350'))}",
             "adducts_split": f"{_d(arm('adducts', c, 'lt_350'))} / {_d(arm('adducts', c, 'ge_350'))}",
+            "ppm_split": f"{_d(arm('ppm', c, 'lt_350'))} / {_d(arm('ppm', c, 'ge_350'))}",
         })
     out.append({"class": "unmatched", "levels": "per-file reading no merged row carries", "rows": None, "tiers": "",
-                "signal": share.get("unmatched"), "signal_assigned": None, "decoy": "", "shift_split": "", "adducts_split": ""})
+                "signal": share.get("unmatched"), "signal_assigned": None, "decoy": "", "shift_split": "", "adducts_split": "",
+                "ppm_split": ""})
     return out
 
 
@@ -2341,7 +2938,8 @@ def acceptance_lines(card: dict) -> list[str]:
     out = []
     for a in card.get("acceptance") or []:
         nd = 1 if "rate" in a["key"] else 0
-        out.append(f"- {a['criterion']}: `{a['key']}` **{_d(a['value'], nd)}** (`{a['old_key']}` {_d(a['old_value'], nd)})")
+        out.append(f"- {a['criterion']}: `{a['key']}` **{_d(a['value'], nd)}**"
+                   + (f" (`{a['old_key']}` {_d(a['old_value'], nd)})" if a.get("old_key") else " (no older metric)"))
     return out
 
 
@@ -2386,6 +2984,84 @@ def render_claims_md(card: dict) -> list[str]:
     L += ["", "**Acceptance** — read on the identified class; the metric each criterion was read on before, in parentheses:", ""]
     L += acceptance_lines(card) + [""]
     return L
+
+
+DECOY_BIN_COLUMNS = [("bin", "m/z"), ("control", "control Assigned"), ("shift", "shift (Da) Assigned"),
+                     ("shift_rate", "shift (Da) % of control"), ("ppm", "ppm shifts Assigned"),
+                     ("ppm_control", "control x ppm arms"), ("ppm_rate", "ppm % of control")]
+
+
+def decoy_arm_rows(dc: dict) -> list[tuple[str, str, dict | None]]:
+    """(key, label, counts) of every arm the card shows, in order: control, the 0.35 Da shift (labelled blind
+    below ~m/z 350 on an Orbitrap), each ppm shift, the ppm shifts pooled, the wrong adducts."""
+    rows = [("control", "control (as is)", dc.get("control"))]
+    if dc.get("shift"):
+        rows.append(("shift", f"shift {dc.get('offset_da', 0):+.2f} Da"
+                     + (" (blind below ~m/z 350 on an Orbitrap)" if dc.get("orbitrap") else ""), dc.get("shift")))
+    for key, a in (dc.get("ppm_arms") or {}).items():
+        rows.append((key, f"shift {a.get('k', 0):+g} ppm", a))
+    if dc.get("ppm") and len(dc.get("ppm_arms") or {}) > 1:
+        rows.append(("ppm", "ppm shifts pooled", dc.get("ppm")))
+    if dc.get("adducts"):
+        rows.append(("adducts", f"wrong adducts {dc.get('wrong_adducts')}", dc.get("adducts")))
+    return rows
+
+
+def decoy_skip_lines(dc: dict) -> list[str]:
+    """One line per ppm shift that did not run on a file, with why."""
+    out = []
+    for key, per_file in (dc.get("ppm_skipped") or {}).items():
+        for f, why in (per_file or {}).items():
+            out.append(f"{key} on `{f}` not run: {why}")
+    return out
+
+
+def decoy_adducts_lines(dc: dict) -> list[str]:
+    """The wrong-adducts arm at the ion level, beside its reading-level rate; and why it did not run, or which
+    of its adducts the run reads itself."""
+    out = []
+    if dc.get("adducts_skipped"):
+        out.append(f"wrong adducts not run: {dc['adducts_skipped']}")
+    if dc.get("wrong_adducts_own"):
+        out.append(f"the kept wrong-adducts ledgers include the run's own channel(s) {dc['wrong_adducts_own']}: "
+                   "their reading-level rate is no error rate; read the ion level")
+    a = dc.get("adducts")
+    if isinstance(a, dict) and "error" not in a and "assigned_new_ion" in a:
+        out.append(f"wrong adducts at the ion level: of {a['assigned']} Assigned, {a['assigned_same_ion']} "
+                   f"({_d(a.get('same_ion_share'), 1)} %) carry the ion composition of the control's reading on the "
+                   f"same peak (another split of an ion the run reads); **{a['assigned_new_ion']} new ions = "
+                   f"{_d(a.get('new_ion_rate'), 1)} % of the control's Assigned** (below {DECOY_MZ_SPLIT:.0f}: "
+                   f"{_d(a.get('new_ion_lt_350_rate'), 1)} %), against the reading-level {_d(a.get('assigned_rate'), 1)} %"
+                   + (f"; brightest new ions: {'; '.join(a['new_ion_examples'])}" if a.get("new_ion_examples") else ""))
+    return out
+
+
+#: what the headline line says the arms were calibrated at, per `calibration_summary`
+HEADLINE_CALIBRATION = {
+    "control": "the arms at the control's calibration",
+    "own": "the arms calibrated on their own commits: no control ledger",
+    "unrecorded": "the arms' calibration unrecorded: ledgers kept before the field, calibrated on their own commits",
+    "mixed": "the arms' calibration mixed: see the calibration note",
+}
+
+
+def decoy_headline_lines(dc: dict) -> list[str]:
+    """The shift arm the card quotes below m/z 350, as one bold line (empty when no shift arm ran). It names the
+    calibration the arms actually ran at (`calibration_summary`) and what the arm committed below 350 at all."""
+    hl = dc.get("headline") or decoy_headline(dc)
+    if not hl:
+        return []
+    cal = HEADLINE_CALIBRATION.get(calibration_summary(dc) or "")
+    m0, cm0 = hl.get("m0_lt_350"), hl.get("control_m0_lt_350")
+    return [f"**Shift decoy below m/z {DECOY_MZ_SPLIT:.0f}** ({hl['label']}" + (f", {cal}" if cal else "") + "): "
+            f"{hl['assigned_lt_350']} Assigned against {hl['control_assigned_lt_350']} in the control = "
+            f"**{_d(hl.get('rate_lt_350'), 1)} %**; at or above {DECOY_MZ_SPLIT:.0f}: {hl['assigned_ge_350']} / "
+            f"{hl['control_assigned_ge_350']} = {_d(hl.get('rate_ge_350'), 1)} %."
+            + (f" Below {DECOY_MZ_SPLIT:.0f} the arm commits {m0} M0 rows of any tier against the control's {cm0} "
+               "(an arm that commits few there tests few gates)." if m0 is not None and cm0 is not None else "")
+            + (" The 0.35 Da arm is kept for continuity; below ~m/z 350 on an Orbitrap it proposes almost nothing "
+               "and bounds no tier gate." if hl["arm"] == "ppm" and dc.get("orbitrap") and dc.get("shift") else ""),
+            ""]
 
 
 def render_md(card: dict) -> str:
@@ -2440,15 +3116,30 @@ def render_md(card: dict) -> str:
     L += md_table(m1["rows"], [("mz", "m/z"), ("med_cps", "med cps"), ("in", "in"), ("nearest_stamped", "nearest stamped"), ("d_mda", "d mDa"), ("d_ppm", "d ppm"), ("family", "family"), ("tag", "residual tag"), ("c_count", "13C carbons"), ("reason", "engine's reason")], {"mz": 4, "d_mda": 1, "d_ppm": 1})
     L += [""]
     L += ["### M2 · expected but not assigned", ""]
+    if m2.get("window_ppm") is not None:
+        L += [f"A line counts within {m2['window_ppm']:.2f} ppm ({ROSTER_SIGMA_K:g} x the run's measured mass sigma, "
+              f"{ROSTER_MIN_PPM:g} ppm to the run's tolerance) in >= {int(ROSTER_PRESENCE * 100)} % of the spectra, the "
+              "best-read line in the window standing for the formula; an isotope satellite of another ion, or a reagent "
+              "line of another composition, is no sighting (a reagent line of the formula's own ion composition is: the "
+              "reagent's reference ions are read as themselves there); a line read as another split of the same ion is "
+              f"`same ion`, not a misread (presence test {m2.get('test')}). Claims on the level scale "
+              f"{m2.get('scale', '')}. The roster claims are per line read: the claim of the one line M2 picked for a "
+              "formula, not its best claim over every channel it is read on.", ""]
     for name, r in (m2.get("roster") or {}).items():
+        rc = (m2.get("roster_claim") or {}).get(name) or {}
         L.append(f"- roster `{name}` ({r['n']} formulas): present {r['present']}, Assigned as itself {r['assigned']}, Candidate {r['candidate']}, "
-                 f"read as something else {r['read_as']}, present but unstamped {r['unstamped']}, absent {r['absent']}")
+                 f"the same ion read as another split {r.get('same_ion', 0)}, read as something else {r['read_as']}, "
+                 f"present but unstamped {r['unstamped']}, on an isotope / reagent line only {r.get('iso_reagent', 0)}, absent {r['absent']}"
+                 + (f"; read as itself and identified (3c) {rc.get('identified', 0)}, neutral or better (3c + 4a) "
+                    f"{rc.get('neutral_or_better', rc.get('identified', 0) + rc.get('neutral', 0))}" if rc else ""))
         for cls, rc in (m2.get("roster_by_class", {}).get(name) or {}).items():
             L.append(f"  - {cls}: {rc['assigned']} Assigned / {rc['present']} present / {rc['n']}")
     for src, r in (m2.get("sources") or {}).items():
-        L.append(f"- `{src}` ({r['n']}): Assigned {r['assigned']}, Candidate {r['candidate']}, read as other {r['read_as']}, unstamped {r['unstamped']}, absent {r['absent']}")
+        L.append(f"- `{src}` ({r['n']}): Assigned {r['assigned']}, Candidate {r['candidate']}, the same ion read as "
+                 f"another split {r.get('same_ion', 0)}, read as other {r['read_as']}, unstamped {r['unstamped']}, on an "
+                 f"isotope / reagent line only {r.get('iso_reagent', 0)}, absent {r['absent']}")
     L += ["", "Rows that are present but NOT assigned as themselves (the misses):", ""]
-    miss_rows = [r for r in m2["rows"] if r["status"] in ("read as", "unstamped", "candidate")]
+    miss_rows = [r for r in m2["rows"] if r["status"] in ("read as", "same ion", "unstamped", "candidate")]
     L += md_table(miss_rows[:40], [("source", "source"), ("name", "name"), ("neutral", "neutral"), ("status", "status"), ("adduct", "channel"), ("mz", "m/z"), ("cps", "med cps"), ("in", "in"), ("read", "read as"), ("reason", "engine's reason"), ("ledger", "in ledger")], {"mz": 4})
     L += [""]
     L += ["### M3 · found elsewhere", ""]
@@ -2482,25 +3173,32 @@ def render_md(card: dict) -> str:
     L += ["", "### (c) decoy false-discovery bound", ""]
     if _scoring_note(dc):
         L += [_scoring_note(dc), ""]
+    if _calibration_note(dc):
+        L += [_calibration_note(dc), ""]
     if dc.get("control") and "error" not in dc["control"]:
-        L += [f"offline engine on the brightest {len(dc['files'])} cover file(s) `{', '.join(dc['files'])}`; control = the file as it is.", "",
-              f"| arm | M0 rows | Assigned | < {DECOY_MZ_SPLIT:.0f} / >= | Candidate | neutrals | level 3c | rate vs control (Assigned) "
+        L += [f"offline engine on the brightest {len(dc['files'])} cover file(s) `{', '.join(dc['files'])}`; control = the file as it is.", ""]
+        L += decoy_headline_lines(dc)
+        L += [f"| arm | M0 rows | Assigned | < {DECOY_MZ_SPLIT:.0f} / >= | Candidate | neutrals | level 3c | rate vs control (Assigned) "
               f"| identified pairs | identified < {DECOY_MZ_SPLIT:.0f} / >= | identified Assigned < {DECOY_MZ_SPLIT:.0f} "
-              f"| identified rate | identified < {DECOY_MZ_SPLIT:.0f} rate | ion / tentative pairs |",
-              "|---|---:|---:|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---|"]
-        for key, label in (("control", "control (as is)"), ("shift", f"shift {dc.get('offset_da', 0):+.2f} Da"), ("adducts", f"wrong adducts {dc.get('wrong_adducts')}")):
-            a = dc.get(key)
+              f"| identified rate | identified < {DECOY_MZ_SPLIT:.0f} rate | ion / tentative pairs "
+              f"| Assigned rate < {DECOY_MZ_SPLIT:.0f} / >= |",
+              "|---|---:|---:|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---|---|"]
+        for key, label, a in decoy_arm_rows(dc):
             if a and "error" in a:
-                L.append(f"| {label} | engine error: {a['error']} | | | | | | | | | | | | |")
+                L.append(f"| {label} | engine error: {a['error']} | | | | | | | | | | | | | |")
             elif a:
                 good = sum(a["levels"].get(lv, 0) for lv in GOOD_LEVELS)
                 bc = a.get("by_claim") or {}
                 L.append(f"| {label} | {a['m0']} | {a['assigned']} | {a.get('assigned_lt_350', '')} / {a.get('assigned_ge_350', '')} | {a['candidate']} | {a['neutrals']} | {good} | {_p(a.get('assigned_rate'))} "
                          f"| {_d(a.get('identified'))} | {_d(a.get('identified_lt_350'))} / {_d(a.get('identified_ge_350'))} | {_d(a.get('identified_assigned_lt_350'))} "
                          f"| {_d(a.get('identified_rate'), 1)} | {_d(a.get('identified_lt_350_rate'), 1)} "
-                         f"| {_d((bc.get('ion') or {}).get('pairs'))} / {_d((bc.get('tentative') or {}).get('pairs'))} |")
+                         f"| {_d((bc.get('ion') or {}).get('pairs'))} / {_d((bc.get('tentative') or {}).get('pairs'))} "
+                         f"| {_d(a.get('assigned_lt_350_rate'), 1)} / {_d(a.get('assigned_ge_350_rate'), 1)} |")
         L.append("")
-        for key in ("control", "shift", "adducts"):
+        for why in decoy_skip_lines(dc):
+            L.append(f"- {why}")
+        L += [f"- {x}" for x in decoy_adducts_lines(dc)]
+        for key in ("control", "shift", "ppm", "adducts"):
             a = dc.get(key)
             if a and "error" not in a:
                 st = a.get("strict") or {}
@@ -2509,10 +3207,15 @@ def render_md(card: dict) -> str:
                          + (f", rate {_d(a.get('established_rate'), 1)} %" if key != "control" else "")
                          + (f"; strict minima: {'/'.join(str(st['levels'].get(k, 0)) for k in LEVELS)}, identified "
                             f"{_d(st.get('identified'))}" if st else ""))
-        for key in ("shift", "adducts"):
+        for key in ("shift", "ppm", "adducts"):
             a = dc.get(key)
             if a and a.get("examples"):
                 L.append(f"\n{key} arm, brightest decoy Assigned: " + "; ".join(a["examples"]))
+        bins = dc.get("bins") or decoy_bins(dc)
+        if bins:
+            L += ["", f"Assigned by {DECOY_BIN_DA}-Da m/z bin (the ppm arms pooled, against the control counted once per "
+                      "ppm arm that ran on the file):", ""]
+            L += md_table(bins, DECOY_BIN_COLUMNS, {"shift_rate": 1, "ppm_rate": 1}, missing=DASH)
     else:
         L += [f"*(decoy mode `{dc.get('mode')}`: not run)*"]
     L += ["", "### (d) falsification survival", ""]
@@ -2540,9 +3243,13 @@ def render_md(card: dict) -> str:
     L += ["", "## 6. Delta against the previous row of this channel", ""]
     if card.get("previous"):
         L += [f"previous: `{card['previous']['run']}` written {card['previous']['written_utc']}", ""]
-        L += md_table([{"metric": d["metric"], "prev": d["prev"], "now": d["now"], "delta": d["delta"]} for d in card["delta"]],
-                      [("metric", "metric"), ("prev", "previous"), ("now", "now"), ("delta", "delta")], {"prev": 1, "now": 1, "delta": 1},
-                      missing=DASH)
+        # a metric measured differently on the two rows carries its note (and no delta)
+        cols = [("metric", "metric"), ("prev", "previous"), ("now", "now"), ("delta", "delta")]
+        if any(d.get("note") for d in card["delta"]):
+            cols.append(("note", "note"))
+        L += md_table([{"metric": d["metric"], "prev": d["prev"], "now": d["now"], "delta": d["delta"],
+                        "note": d.get("note") or ""} for d in card["delta"]],
+                      cols, {"prev": 1, "now": 1, "delta": 1}, missing=DASH)
     else:
         L += ["*(first row for this channel)*"]
     L += [""]
@@ -2565,9 +3272,9 @@ CLAIM_BOARD_COLUMNS = [
     ("identified_sig", "identified sig %"), ("neutral_sig", "neutral sig %"), ("ion_sig", "ion sig %"),
     ("tentative_sig", "tentative sig %"), ("unmatched_sig", "unmatched sig %"),
     ("assigned_tentative", "Assigned but tentative"), ("candidate_identified", "Candidate but identified"),
-    ("bright", "bright M0 not identified"), ("roster", "roster identified / present / n"),
-    ("misread", "roster misread identified"), ("dshift", "decoy shift identified % (below 350)"),
-    ("dadd", "decoy adducts identified %"), ("m3", "M3 own missing"),
+    ("bright", "bright M0 not identified"), ("roster", "roster identified / neutral or better / present / n"),
+    ("misread", "roster misread identified"), ("dshift", "decoy shift identified % (below 350), headline arm"),
+    ("dadd", "decoy adducts identified %"), ("m3", "M3 own missing"), ("basis", "vs previous row"),
 ]
 #: what a board row's `claims_schema` reads
 SCALE_NAME = {2: EV.SCALE_RELEASE, 1: "pre-0.10.0"}
@@ -2579,6 +3286,20 @@ def level_cell(r: dict) -> str:
     if r.get("claims_schema") == CLAIMS_SCHEMA:
         return "/".join(str(lv.get(k, 0)) for k in LEVELS)
     return "pre-0.10.0 " + "/".join(str(lv.get(k, 0)) for k in OLD_LEVELS)
+
+
+def dshift_cell(r: dict) -> str:
+    """The board's lead decoy cell: the identified rate (below m/z 350 in brackets) of the shift arm the row's
+    headline quotes -- the ppm arms when they ran, named with their shifts -- else the Da arm's, marked blind
+    below 350 on an Orbitrap row (a row before the headline shows the Da arm's, unmarked)."""
+    if r.get("decoy_headline_arm") == "ppm":
+        return (f"ppm {ppm_shifts(r)}: {_d(r.get('decoy_ppm_identified_rate'), 1)} "
+                f"({_d(r.get('decoy_ppm_identified_lt_350_rate'), 1)})")
+    s = f"{_d(r.get('decoy_shift_identified_rate'), 1)} ({_d(r.get('decoy_shift_identified_lt_350_rate'), 1)})"
+    if r.get("decoy_headline_arm") == "shift":
+        s = "Da arm: " + s
+    return s + (" blind below 350 on an Orbitrap" if r.get("decoy_orbitrap") and r.get("decoy_shift_rate") is not None
+                else "")
 
 
 def claim_board_rows(board: list[dict]) -> list[dict]:
@@ -2593,15 +3314,20 @@ def claim_board_rows(board: list[dict]) -> list[dict]:
         if r.get("claims_schema") is None:
             out.append(rec | {k: DASH for k, _ in CLAIM_BOARD_COLUMNS[2:]})
             continue
-        same = same_scale(r, prev)
+        notes: list[str] = []
 
         def cell(key, nd=0):
             v = r.get(key)
             s = _d(v, nd)
-            if same and isinstance(v, (int, float)) and isinstance(prev.get(key), (int, float)):
-                d = v - prev[key]
-                if abs(d) >= (0.05 if nd else 1):
-                    s += f" ({d:+.{nd}f})"
+            if prev is None or not _num(v) or not _num(prev.get(key)):
+                return s
+            ok, why = comparable(r, prev, key)
+            if not ok:
+                notes.extend(part for part in why.split("; ") if part not in notes)
+                return s
+            d = v - prev[key]
+            if abs(d) >= (0.05 if nd else 1):
+                s += f" ({d:+.{nd}f})"
             return s
 
         rec.update({
@@ -2613,13 +3339,24 @@ def claim_board_rows(board: list[dict]) -> list[dict]:
             "tentative_sig": cell("claim_tentative_signal", 1), "unmatched_sig": cell("claim_unmatched_signal", 1),
             "assigned_tentative": cell("claim_assigned_tentative"), "candidate_identified": cell("claim_candidate_identified"),
             "bright": cell("bright_m0_not_identified"),
-            "roster": f"{_d(r.get('roster_identified'))} / {_d(r.get('roster_present'))} / {_d(r.get('roster_n'))}",
+            "roster": f"{cell('roster_identified')} / {cell('roster_neutral_or_better')} / {cell('roster_present')} / "
+                      f"{_d(r.get('roster_n'))}",
             "misread": cell("roster_misread_identified"),
-            "dshift": f"{_d(r.get('decoy_shift_identified_rate'), 1)} ({_d(r.get('decoy_shift_identified_lt_350_rate'), 1)})",
+            "dshift": dshift_cell(r),
             "dadd": cell("decoy_adducts_identified_rate", 1),
             "m3": cell("m3_other_instrument_own_missing") if r.get("claims_schema") == CLAIMS_SCHEMA
             else cell("m3_own_missing_identified"),
         })
+        # the decoy cell carries no delta, but a change of the arm or shifts it reads is a change of measure
+        dkey = "decoy_ppm_identified_rate" if r.get("decoy_headline_arm") == "ppm" else "decoy_shift_identified_rate"
+        if prev is not None and _num(r.get(dkey)) and any(_num(prev.get(k)) for k in (
+                "decoy_ppm_identified_rate", "decoy_shift_identified_rate", "decoy_headline_lt_350_rate")):
+            for k in (dkey, "decoy_headline_lt_350_rate"):
+                ok, why = comparable(r, prev, k)
+                if not ok:
+                    notes.extend(part for part in why.split("; ") if part not in notes)
+        rec["basis"] = ("first row" if prev is None else
+                        ("not comparable: " + "; ".join(notes)) if notes else "same measure")
         out.append(rec)
     return out
 
@@ -2642,15 +3379,15 @@ def render_board_md(board: list[dict]) -> str:
     for rec in claim_board_rows(board):
         L.append("| " + " | ".join([rec["channel"].replace("|", " · ")] + [str(rec[k]) for k, _ in CLAIM_BOARD_COLUMNS[1:]]) + " |")
     L += ["", "## All metrics", ""]
-    L += ["| channel | run | code | Assigned | Candidate | ion-only | neutrals | stamped signal % | unstamped merged | bright M0 not Assigned | unstamped in top 50 | levels | identified level | M1 fam. | M1 signal % | roster A/present/n | Cl+Br+F | decoy shift % | decoy adducts % | 13C ok/n | hetero ok/n |",
-          "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|---:|---:|---:|---|---|"]
+    L += ["| channel | run | code | Assigned | Candidate | ion-only | neutrals | stamped signal % | unstamped merged | bright M0 not Assigned | unstamped in top 50 | levels | identified level | M1 fam. | M1 signal % | roster A/present/n | Cl+Br+F | decoy Da shift % | decoy adducts % | 13C ok/n | hetero ok/n | decoy headline < 350 % | decoy adducts new-ion % |",
+          "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|---:|---:|---:|---|---|---:|---:|"]
     for r in rows:
         prev = previous_row(board, r["channel"], before=r)
 
         def cell(key, nd=0):
             v = r.get(key)
             s = fmt(v, nd) if isinstance(v, (int, float)) else (v or "")
-            if prev is not None and (key not in SCALE_KEYS or same_scale(r, prev)) \
+            if prev is not None and comparable(r, prev, key)[0] \
                     and isinstance(v, (int, float)) and isinstance(prev.get(key), (int, float)):
                 d = v - prev[key]
                 if abs(d) >= (0.05 if nd else 1):
@@ -2664,6 +3401,7 @@ def render_board_md(board: list[dict]) -> str:
             f"{r.get('roster_assigned', '')}/{r.get('roster_present', '')}/{r.get('roster_n', '')}", cell("census_halogen"),
             cell("decoy_shift_rate", 1), cell("decoy_adducts_rate", 1),
             f"{r.get('c13_within_1', '')}/{r.get('c13_n', '')}", f"{r.get('hetero_present', '')}/{r.get('hetero_n', '')}",
+            cell("decoy_headline_lt_350_rate", 1), cell("decoy_adducts_new_ion_rate", 1),
         ]) + " |")
     L += ["", "Per-run cards: `<run name>/SCORECARD.md` beside this file. The page `scoreboard.html` is the same data.", ""]
     return "\n".join(L)
@@ -2680,9 +3418,12 @@ GOOD_DIRECTION = {  # +1: up is good, -1: down is good; absent = neutral
     "decoy_shift_identified_rate": -1, "decoy_shift_identified_lt_350_rate": -1, "decoy_adducts_identified_rate": -1,
     "decoy_adducts_identified_lt_350_rate": -1, "bright_m0_not_identified": -1, "roster_misread_identified": -1,
     "claim_assigned_tentative": -1, "claim_unmatched_signal": -1, "m3_own_missing_identified": -1,
-    "roster_identified": 1, "claim_identified": 1, "claim_identified_signal": 1,
+    "roster_identified": 1, "claim_identified": 1, "claim_identified_signal": 1, "roster_neutral_or_better": 1,
     # the evidence scale of peaky 0.10.0
     "decoy_shift_established_rate": -1, "decoy_adducts_established_rate": -1, "m3_other_instrument_own_missing": -1,
+    # the ppm-shift arms
+    "decoy_headline_lt_350_rate": -1, "decoy_ppm_rate": -1, "decoy_ppm_identified_rate": -1,
+    "decoy_adducts_new_ion_rate": -1,
 }
 METRIC_KEYS = {label: key for key, label, _ in KEY_METRICS}
 
@@ -2798,7 +3539,7 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
         def d(key):
             if prev is None or not isinstance(r.get(key), (int, float)) or not isinstance(prev.get(key), (int, float)):
                 return None
-            if key in SCALE_KEYS and not same_scale(r, prev):
+            if not comparable(r, prev, key)[0]:
                 return None
             return r[key] - prev[key]
 
@@ -2815,7 +3556,7 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
     out.append(html_table(ch_rows, [("channel", "channel"), ("run", "run"), ("code", "code"), ("assigned", "Assigned"), ("d_assigned", "Δ"), ("candidate", "Candidate"),
                                     ("ion_only", "ion-only"), ("neutrals", "neutrals"), ("signal", "stamped signal %"), ("unst", "unstamped merged"), ("bright", "bright M0 not Assigned"),
                                     ("bright_un", "unstamped in top 50"), ("levels", "levels " + "/".join(LEVELS)), ("good", "identified level"), ("fam", "M1 families"), ("m1", "M1 signal %"),
-                                    ("roster", "roster A/present/n"), ("hal", "Cl+Br+F"), ("dshift", "decoy shift %"), ("dadd", "decoy adducts %"), ("c13", "13C ok/n"), ("het", "hetero ok/n")],
+                                    ("roster", "roster A/present/n"), ("hal", "Cl+Br+F"), ("dshift", "decoy Da shift %"), ("dadd", "decoy adducts %"), ("c13", "13C ok/n"), ("het", "hetero ok/n")],
                           {"signal": 1, "m1": 1, "dshift": 1, "dadd": 1, "d_assigned": 0}, mono=("channel", "run", "code", "levels", "roster", "c13", "het")))
     # per-run panels
     panel_rows = [r for r in rows if r["run"] in by_run]
@@ -2845,8 +3586,10 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
                 tile("identified signal %", "claim_identified_signal", 1), tile("unmatched signal %", "claim_unmatched_signal", 1),
                 tile("Assigned but tentative", "claim_assigned_tentative"), tile("Candidate but identified", "claim_candidate_identified"),
                 tile("bright M0 not identified", "bright_m0_not_identified"), tile("roster identified", "roster_identified"),
-                tile("decoy shift identified %", "decoy_shift_identified_rate", 1),
-                tile("decoy shift identified < 350 %", "decoy_shift_identified_lt_350_rate", 1),
+                tile("decoy Da shift identified %", "decoy_shift_identified_rate", 1),
+                tile("decoy Da shift identified < 350 %" + (" (blind on an Orbitrap)" if r.get("decoy_orbitrap") else ""),
+                     "decoy_shift_identified_lt_350_rate", 1),
+                tile("decoy ppm shift identified %", "decoy_ppm_identified_rate", 1),
                 tile("decoy adducts identified %", "decoy_adducts_identified_rate", 1),
                 tile("decoy shift neutral established %", "decoy_shift_established_rate", 1),
                 tile("M3 own missing", "m3_other_instrument_own_missing"),
@@ -2870,7 +3613,8 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
                 for x in acc:
                     nd = 1 if "rate" in x["key"] else 0
                     items.append(f"<li>{_h(x['criterion'])}: <span class=\"mono\">{_h(x['key'])}</span> <b>{_h(_d(x['value'], nd))}</b> "
-                                 f"(<span class=\"mono\">{_h(x['old_key'])}</span> {_h(_d(x['old_value'], nd))})</li>")
+                                 + (f"(<span class=\"mono\">{_h(x['old_key'])}</span> {_h(_d(x['old_value'], nd))})"
+                                    if x.get("old_key") else "(no older metric)") + "</li>")
                 out.append("<p class=\"note\"><b>Acceptance</b> — read on the identified class; the old metric in parentheses</p>"
                            "<ul class=\"note\">" + "".join(items) + "</ul>")
         else:
@@ -2881,7 +3625,8 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
             tile("bright M0 not Assigned", "bright_m0_not_assigned"), tile("unstamped in top 50", "bright_unstamped"),
             tile("rows at level 3c", "good_levels"), tile("M1 families", "m1_families"), tile("M1 signal %", "m1_signal_share", 1),
             tile("roster Assigned", "roster_assigned"), tile("roster present", "roster_present"), tile("Assigned with Cl/Br/F", "census_halogen"),
-            tile("decoy shift Assigned %", "decoy_shift_rate", 1), tile("decoy adducts Assigned %", "decoy_adducts_rate", 1),
+            tile("decoy Da shift Assigned %", "decoy_shift_rate", 1), tile("decoy adducts Assigned %", "decoy_adducts_rate", 1),
+            tile("decoy headline Assigned < 350 %", "decoy_headline_lt_350_rate", 1),
         ]) + "</div>")
         out.append(f"<p class=\"note\">levels ({_h('/'.join(LEVELS) if r.get('claims_schema') == CLAIMS_SCHEMA else '/'.join(OLD_LEVELS))}): "
                    f"<span class=\"mono\">{_h(level_cell(r))}</span> · by channel (Assigned/all) "
@@ -2900,15 +3645,19 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
         out.append("<h3>M2 — expected but not assigned</h3><div class=\"two\"><div>")
         for name, rr in (m2.get("roster") or {}).items():
             out.append(f"<p class=\"note\"><span class=\"chip\">{_h(name)}</span> {rr['n']} formulas: <span class=\"chip good\">{rr['assigned']} Assigned</span>"
-                       f"<span class=\"chip\">{rr['candidate']} Candidate</span><span class=\"chip bad\">{rr['read_as']} read as other</span>"
-                       f"<span class=\"chip warn\">{rr['unstamped']} unstamped</span><span class=\"chip\">{rr['absent']} absent</span></p>")
+                       f"<span class=\"chip\">{rr['candidate']} Candidate</span><span class=\"chip\">{rr.get('same_ion', 0)} same ion</span>"
+                       f"<span class=\"chip bad\">{rr['read_as']} read as other</span>"
+                       f"<span class=\"chip warn\">{rr['unstamped']} unstamped</span><span class=\"chip\">{rr.get('iso_reagent', 0)} isotope / reagent line</span>"
+                       f"<span class=\"chip\">{rr['absent']} absent</span></p>")
         for src, rr in (m2.get("sources") or {}).items():
-            out.append(f"<p class=\"note\"><span class=\"chip\">{_h(src)}</span> {rr['n']}: {rr['assigned']} Assigned, {rr['candidate']} Candidate, {rr['read_as']} read as other, {rr['unstamped']} unstamped, {rr['absent']} absent</p>")
+            out.append(f"<p class=\"note\"><span class=\"chip\">{_h(src)}</span> {rr['n']}: {rr['assigned']} Assigned, {rr['candidate']} Candidate, "
+                       f"{rr.get('same_ion', 0)} same ion, {rr['read_as']} read as other, {rr['unstamped']} unstamped, "
+                       f"{rr.get('iso_reagent', 0)} isotope / reagent line, {rr['absent']} absent</p>")
         out.append("</div><div>")
         cz_rows = [{"element": k, "rows": v, "examples": cz["examples"].get(k, "")} for k, v in cz["elements"].items()]
         out.append("<p class=\"note\"><b>Element census of Assigned neutrals</b></p>" + html_table(cz_rows, [("element", "element"), ("rows", "Assigned rows"), ("examples", "examples")], mono=("element", "examples")))
         out.append("</div></div>")
-        miss_rows = [x for x in m2["rows"] if x["status"] in ("read as", "unstamped", "candidate")]
+        miss_rows = [x for x in m2["rows"] if x["status"] in ("read as", "same ion", "unstamped", "candidate")]
         out.append(html_table(miss_rows[:40], [("source", "source"), ("name", "name"), ("neutral", "neutral"), ("status", "status"), ("adduct", "channel"), ("mz", "m/z"), ("cps", "med cps"), ("in", "in"), ("read", "read as"), ("reason", "engine's reason"), ("ledger", "in ledger")], {"mz": 4}, mono=("neutral", "adduct", "read", "in")))
         op, oi = m3.get("other_path"), m3.get("other_instrument")
         if op or oi:
@@ -2926,21 +3675,33 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
         out.append("<h3>Decoy false-discovery bound</h3>")
         if _scoring_note(dc):
             out.append(f"<p class=\"note\">{html.escape(_scoring_note(dc).replace('`', ''))}</p>")
+        if _calibration_note(dc):
+            out.append(f"<p class=\"note\">{html.escape(_calibration_note(dc).replace('`', ''))}</p>")
         if dc.get("control") and "error" not in dc["control"]:
             dc_rows = []
-            for key, label in (("control", "control (as is)"), ("shift", f"shift {dc.get('offset_da', 0):+.2f} Da"), ("adducts", f"wrong adducts {dc.get('wrong_adducts')}")):
-                a = dc.get(key)
+            for key, label, a in decoy_arm_rows(dc):
                 if a and "error" in a:
                     dc_rows.append({"arm": label, "examples": f"engine error: {a['error']}"})
                 elif a:
                     dc_rows.append({"arm": label, "m0": a["m0"], "assigned": a["assigned"], "split": f"{a.get('assigned_lt_350', '')} / {a.get('assigned_ge_350', '')}", "candidate": a["candidate"], "neutrals": a["neutrals"],
                                     "good": sum(a["levels"].get(lv, 0) for lv in GOOD_LEVELS), "rate": a.get("assigned_rate"),
+                                    "rate_split": f"{_d(a.get('assigned_lt_350_rate'), 1)} / {_d(a.get('assigned_ge_350_rate'), 1)}",
                                     "ident": a.get("identified"), "ident_split": f"{_d(a.get('identified_lt_350'))} / {_d(a.get('identified_ge_350'))}",
                                     "ident_rate": a.get("identified_rate"), "ident_lt_rate": a.get("identified_lt_350_rate"),
                                     "examples": "; ".join(a.get("examples", [])[:4])})
+            hl = [x for x in decoy_headline_lines(dc) if x]
+            if hl:
+                out.append(f"<p class=\"note\">{html.escape(hl[0].replace('**', ''))}</p>")
             out.append(f"<p class=\"note\">offline engine on <span class=\"mono\">{_h(', '.join(dc['files']))}</span></p>" + html_table(dc_rows, [("arm", "arm"), ("m0", "M0 rows"), ("assigned", "Assigned"), ("split", f"< {DECOY_MZ_SPLIT:.0f} / ≥"), ("candidate", "Candidate"), ("neutrals", "neutrals"), ("good", "level 3c"), ("rate", "Assigned % of control"),
+                                                                                                                                  ("rate_split", f"Assigned % < {DECOY_MZ_SPLIT:.0f} / ≥"),
                                                                                                                                   ("ident", "identified pairs"), ("ident_split", f"identified < {DECOY_MZ_SPLIT:.0f} / ≥"), ("ident_rate", "identified % of control"), ("ident_lt_rate", f"identified < {DECOY_MZ_SPLIT:.0f} % of control"),
-                                                                                                                                  ("examples", "brightest Assigned")], {"rate": 1, "ident_rate": 1, "ident_lt_rate": 1}, mono=("examples", "ident_split")))
+                                                                                                                                  ("examples", "brightest Assigned")], {"rate": 1, "ident_rate": 1, "ident_lt_rate": 1}, mono=("examples", "ident_split", "rate_split")))
+            for why in decoy_skip_lines(dc) + decoy_adducts_lines(dc):
+                out.append(f"<p class=\"note\">{html.escape(why.replace('`', '').replace('**', ''))}</p>")
+            bins = dc.get("bins") or decoy_bins(dc)
+            if bins:
+                out.append(f"<p class=\"note\">Assigned by {DECOY_BIN_DA}-Da m/z bin (ppm arms pooled, against the control counted once per ppm arm)</p>"
+                           + html_table(bins, DECOY_BIN_COLUMNS, {"shift_rate": 1, "ppm_rate": 1}, mono=("bin",)))
         else:
             out.append(f"<p class=\"note\">decoy mode <span class=\"mono\">{_h(dc.get('mode'))}</span>: not run</p>")
         out.append("<h3>Falsification survival</h3><ul class=\"note\">")
@@ -2962,8 +3723,11 @@ def render_html(cards: list[dict], board: list[dict]) -> str:
         out.append("</ul>")
         if c.get("previous"):
             out.append(f"<h3>Delta vs <span class=\"mono\">{_h(c['previous']['run'])}</span></h3>")
-            out.append(html_table([{"metric": d_["metric"], "prev": d_["prev"], "now": d_["now"], "delta": d_["delta"]} for d_ in c["delta"]],
-                                  [("metric", "metric"), ("prev", "previous"), ("now", "now"), ("delta", "Δ")], {"prev": 1, "now": 1, "delta": 1}))
+            out.append(html_table([{"metric": d_["metric"], "prev": d_["prev"], "now": d_["now"], "delta": d_["delta"],
+                                    "note": d_.get("note") or ""} for d_ in c["delta"]],
+                                  [("metric", "metric"), ("prev", "previous"), ("now", "now"), ("delta", "Δ")]
+                                  + ([("note", "note")] if any(d_.get("note") for d_ in c["delta"]) else []),
+                                  {"prev": 1, "now": 1, "delta": 1}))
         out.append("</section>")
     out += [f"<script>{PAGE_JS}</script>", "</main>"]
     # entities, not raw UTF-8: the page must read the same however it is served
@@ -3036,9 +3800,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mask", action="append", default=[], help="UTC window 'start,end' to exclude (a gap); repeatable")
     ap.add_argument("--floor-cps", type=float, default=10.0, help="other-instrument detection floor: median cps (default 10)")
     ap.add_argument("--floor-share", type=float, default=0.8, help="... present in this share of spectra (default 0.8)")
-    ap.add_argument("--decoy", choices=("none", "shift", "adducts", "both"), default=None,
-                    help="run the offline engine on decoy input (default none; both with --decoy-ledgers)")
+    ap.add_argument("--decoy", choices=tuple(DECOY_MODES), default=None,
+                    help="run the offline engine on decoy input: shift = the Da arm and the ppm arms, ppm = the ppm "
+                         "arms only, adducts = the wrong adducts, both = every arm (default none; both with "
+                         "--decoy-ledgers)")
     ap.add_argument("--decoy-offset", type=float, default=0.35, help="Da added to every m/z in the shift decoy (default 0.35)")
+    ap.add_argument("--decoy-ppm", default=None,
+                    help="ppm shifts of the populated-defect shift arms, comma-separated (default "
+                         + ",".join(f"{k:+g}" for k in DECOY_PPM) + "; 'none' = no ppm arm); a shift inside a "
+                         "file's match window is skipped")
     ap.add_argument("--decoy-files", type=int, default=1, help="brightest cover files to run the decoy on (default 1)")
     ap.add_argument("--decoy-ledgers", help="count the arm ledgers an earlier card kept (<DIR>/<run>/decoy/<file>__<arm>.csv.gz, "
                                             "DIR a scoreboard out dir or the decoy dir itself) instead of running the engine, "
@@ -3074,6 +3844,7 @@ def main(argv: list[str] | None = None) -> int:
         cards.append(build_card(
             run, levels_csv=args.levels, other=other, other_instrument=other_instrument, rosters=rosters,
             decoy_mode=decoy_mode, decoy_offset=args.decoy_offset, decoy_files=args.decoy_files,
+            decoy_ppm=parse_ppm_list(args.decoy_ppm),
             overlap=_parse_window(args.overlap), masks=[_parse_window(m) for m in args.mask],
             floor_cps=args.floor_cps, floor_share=args.floor_share, board=board, log=log,
             decoy_save_dir=None if ledgers else os.path.join(args.out, run.name, "decoy"), decoy_ledgers=ledgers,

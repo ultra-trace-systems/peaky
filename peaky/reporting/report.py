@@ -639,6 +639,9 @@ def summary_stats(ledger: pd.DataFrame, *, context: str = "",
         info = scale_info or {}
         if info.get("n_na"):
             add("Evidence levels", "not assessed", info["na_reason"])
+        _why = (EV.levels_not_assessed_reason(m0["evidence"], lv) if "evidence" in m0.columns else None)
+        if _why:          # no file calibrated: the scale assessed nothing (said once, not only per row)
+            add("Evidence levels", "not assessed", _why)
         note = scale_note(info)
         if note:
             add("Evidence levels", "older scale", note)
