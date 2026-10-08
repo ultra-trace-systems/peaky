@@ -6,6 +6,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `blended` separability class was 1.39x too wide.** `chem.resolution.d_crit_hwhm`, the
+  separation at which two Gaussians of a given height ratio turn bimodal, converted its sigma table
+  to HWHM by multiplying by sqrt(2 ln 2) where it divides: equal heights read 2.36 HWHM instead of
+  2 sigma = 1.70 HWHM, a 1:50 pair 2.29 FWHM instead of 1.65. Every pair between the two thresholds
+  was stamped `blended` and, without isotope, second-channel or series corroboration, capped at
+  Candidate; it is now `resolved`. The `resolvability` / `d_crit_hwhm` columns of a run made
+  before the fix overstate the blended set by the same factor (`d_crit_hwhm` / 1.386 is the
+  corrected threshold).
+
 ## [0.10.0b1] — 2026-10-07 (pre-release: the evidence scale, the isotope checks, the m/z-dependent mass centre, declared side channels, the TOF M+2 and mass-only gates)
 
 ### Changed

@@ -28,7 +28,11 @@ Never a filter: no row is removed or re-assigned here.
 Measured before the stage was written (two same-air batches, per-file Assigned
 M0 rows, nearest picked neighbour within 8 HWHM): on a ~10k TOF 55 % of the
 Assigned rows are blended (1 FWHM ~ 30 mDa at m/z 300) and 11 % blended with
-no corroboration; on an Orbitrap (R ~120k at m/z 200) 13 % and 1 %.
+no corroboration; on an Orbitrap (R ~120k at m/z 200) 13 % and 1 %. Those
+shares were taken with a bimodality threshold 1.39x too wide (`d_crit_hwhm`
+converted sigma to HWHM the wrong way round, fixed since): they are upper
+bounds -- on an Orbitrap by up to several-fold, how far depending on how
+crowded the spectrum is.
 """
 from __future__ import annotations
 
