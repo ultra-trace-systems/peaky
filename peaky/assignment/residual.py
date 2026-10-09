@@ -45,7 +45,7 @@ from peaky.assignment import series_gka as G
 from peaky.assignment.passes import (PassConfig, arbitrate, confidence_label, z_of, _f,
                      _prefer_adduct_reading)
 
-__version__ = "0.3.2"  # the exact 81Br pair spacing (C11+c); 0.3.1 stage B: deterministic anchor
+__version__ = "0.3.3"  # the Orbitrap-class pair window; 0.3.2 the exact 81Br pair spacing (C11+c); 0.3.1 stage B: deterministic anchor
                        # tie-break (#8); 0.3.0: stage B draws from the admission gate (persistence
                        # OR brightness)
 
@@ -90,7 +90,23 @@ def carbon_count_from_13c(ledger: pd.DataFrame, peak_id, *, ppm: float = 6.0):
 # ---------------------------------------------------------------------------
 # Stage A helpers
 # ---------------------------------------------------------------------------
-def find_iso_pairs(ledger: pd.DataFrame, *, ppm_tol: float = 8.0,
+#: the iso-pair finder's spacing window off an Orbitrap-class run (ppm)
+ISO_PAIR_PPM = 8.0
+
+
+def iso_pair_ppm(cfg=None) -> float:
+    """The doublet finder's window for this run: the exact-offset window
+    (satellites.element_window_ppm of cfg.cal_sigma) on an Orbitrap-class run
+    (cfg.instrument_class, not trace-first's synthetic sample), else
+    ISO_PAIR_PPM."""
+    from peaky.assignment import satellites as SAT
+    if cfg is not None and getattr(cfg, "instrument_class", None) == "orbitrap" \
+            and not getattr(cfg, "trace_sample", False):
+        return SAT.element_window_ppm(getattr(cfg, "cal_sigma", None))
+    return ISO_PAIR_PPM
+
+
+def find_iso_pairs(ledger: pd.DataFrame, *, ppm_tol: float = ISO_PAIR_PPM,
                    min_height: float = 0.0) -> pd.DataFrame:
     """Find ~1.998-Da doublets within the UNEXPLAINED residual.
 
@@ -257,7 +273,11 @@ def stage_a_iso_pairs(client, sample_id: str, ledger: pd.DataFrame, profile,
                       score_fn=None, log=print) -> dict:
     score_fn = score_fn or IO.score_candidates
     out = {"committed": 0, "locked": 0, "iso_attached": 0}
-    pairs = find_iso_pairs(ledger, min_height=cfg.height_cutoff)
+    # the pair spacing's window: on an Orbitrap-class run the exact-offset one
+    # (max(1 ppm, 4 sigma)) -- at 8 ppm a real neighbour line 6.7 ppm under a
+    # predicted 81Br position was taken as the partner, and the Br formula it
+    # proposed had no 81Br line at all
+    pairs = find_iso_pairs(ledger, min_height=cfg.height_cutoff, ppm_tol=iso_pair_ppm(cfg))
     # the context decides which halogens a NEUTRAL may carry: a ~1.998-Da doublet
     # in a halogen-free positive run (max_Br = max_Cl = 0) is 34S / 30Si / 13C2
     # structure, never a Br/Cl pair -- 7 "C5H7BrO3 [M+^NH4]+" phantoms on the

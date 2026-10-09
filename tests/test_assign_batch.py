@@ -918,12 +918,15 @@ try:
               {"n_files_winner", "alternatives", "tier_reason"} <= set(res["merged"].columns),
               list(res["merged"].columns))
         check("run: batch_summary records the merged-level gates (the known-species decision, "
-              "the reagent-water ladder, the isotopologue rows and the TOF ion-M+2 gates always -- "
-              "nothing pooled, no rung here, the isotopologue gate skipped on a height-only series, "
-              "the TOF gates skipped on an Orbitrap-class batch; no polarity gate in negative mode)",
-              set(summ.get("merge_gates", {})) == {"known", "reagent_water", "isotopologue", "tof_m2"}
+              "the reagent-water ladder, the isotopologue rows, the element-signature removal and the "
+              "TOF ion-M+2 gates always -- nothing pooled, no rung or signature veto here, the "
+              "isotopologue gate skipped on a height-only series, the TOF gates skipped on an "
+              "Orbitrap-class batch; no polarity gate in negative mode)",
+              set(summ.get("merge_gates", {})) == {"known", "reagent_water", "isotopologue",
+                                                    "element_signature", "tof_m2"}
               and summ["merge_gates"]["isotopologue"]["ran"] is False
               and "no peak areas" in summ["merge_gates"]["isotopologue"]["skipped"]
+              and summ["merge_gates"]["element_signature"] == {"removed": 0, "pairs": []}
               and summ["merge_gates"]["known"] == {"pooled": 0, "locked": 0, "confirmed_kept": 0,
                                                    "conflict": 0, "lead_only": 0, "mass_only_outvoted": 0,
                                                    "no_cluster": 0}

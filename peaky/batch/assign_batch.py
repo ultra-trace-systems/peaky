@@ -2316,13 +2316,20 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             # batch. The per-file ledgers and their coverage figures are untouched.
             # A track explained this way carries an ion_formula, so the residual
             # stage (which reads the cover's stamp) no longer targets it.
-            _stamp = _TS.stamping_frame(merged, _aux, tol_ppm=stamp_tol)
-            _stats: dict = {}
-            out["ts_annot"] = _TS.annotate_peaks(ts_peaks, _stamp, tol_ppm=stamp_tol,
-                                                 stats=_stats, tracks=tracks)
-            out["predicted_rows"] = dict(_stamp.attrs.get("predicted_satellites") or {})
-            out["predicted_tracks"] = _stats.get("predicted_tracks")
+            out.update(_stamp_series(merged, _aux, stamp_tol, tracks))
+            # kept so a merged-row removal after the batch checks (the element-
+            # signature REQ removal below) can re-stamp with the same inputs
+            out["stamp_inputs"] = (_aux, tracks)
         return out
+
+    def _stamp_series(merged, aux, stamp_tol, tracks) -> dict:
+        """The whole-batch stamp of `merged` (+ the identified non-analyte rows
+        `aux`): {ts_annot, predicted_rows, predicted_tracks}."""
+        _stamp = _TS.stamping_frame(merged, aux, tol_ppm=stamp_tol)
+        _stats: dict = {}
+        ts = _TS.annotate_peaks(ts_peaks, _stamp, tol_ppm=stamp_tol, stats=_stats, tracks=tracks)
+        return {"ts_annot": ts, "predicted_rows": dict(_stamp.attrs.get("predicted_satellites") or {}),
+                "predicted_tracks": _stats.get("predicted_tracks")}
 
     res_m = _merge()
 
@@ -2465,6 +2472,29 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         iso_table = (pd.concat([iso_table, _sat_veto], ignore_index=True) if len(iso_table)
                      else _sat_veto)
     iso_table.to_csv(os.path.join(TAB, "iso_checks.csv"), index=False)
+    # a REQ veto on an element-signature line (81Br / 37Cl / 34S / 29Si / 30Si,
+    # Orbitrap-class) is the batch's own refutation of the element: the reading
+    # leaves the merged ledger (iso_checks.remove_signature_vetoed), not only 5b;
+    # a curated formula and a known-species decision stay
+    from peaky.assignment import passes as _PS
+    from peaky.chem import contexts as _CX
+    try:
+        _pol = _CX.get_context(context).polarity if context else "negative"
+    except Exception:  # noqa: BLE001 -- an unknown context: the registry's default
+        _pol = "negative"
+    _sig_exempt = (_PS.known_formulas(_pol, context) | RL.prior_formulas(reflists_active)
+                   if reflists_active else _PS.known_formulas(_pol, context))
+    merged, merge_gates["element_signature"] = _IC.remove_signature_vetoed(merged, iso_table,
+                                                                           exempt=_sig_exempt, log=log)
+    # ... and the batch series is RE-STAMPED from the merged ledger without them
+    # (the first stamp named them: _batch_ts.parquet, the levels' series and the
+    # TOF gates below must not), with the same inputs as the merge's stamp
+    if merge_gates["element_signature"]["removed"] and ts_annot is not None and res_m.get("stamp_inputs"):
+        _aux_s, _tracks_s = res_m["stamp_inputs"]
+        res_m.update(_stamp_series(merged, _aux_s, stamp_tol, _tracks_s))
+        ts_annot = res_m["ts_annot"]
+        merge_gates["element_signature"]["restamped"] = True
+        log("[iso_checks] the batch series re-stamped without the removed reading(s)")
     # the TOF ion-M+2 gates (iso_checks.tof_m2_gates; TOF-class batches only): a
     # merged winner whose own M+2 line REQ refutes over the batch -- a species the
     # known-species lock decided included -- and a merged line that is the 81Br

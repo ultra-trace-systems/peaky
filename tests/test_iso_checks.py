@@ -789,7 +789,9 @@ def test_a_batch_writes_the_table_and_levels_the_vetoes(tmp_path, monkeypatch):
     """assign_batch.run on an Orbitrap-class batch: the table is written from the
     stamped series, the summary carries the funnel, the pooled fact table carries
     each veto with the check's note, and the scale rejects each refuted pair on
-    the merged ledger (5b, "refuted: iso_veto")."""
+    the merged ledger (5b, "refuted: iso_veto") -- except a REQ veto on an
+    element-signature line (F3: Y's 81Br line absent where the batch would show
+    it), whose reading leaves the merged ledger, recorded in the merge gates."""
     _run_batch(tmp_path, monkeypatch)
     table = pd.read_csv(tmp_path / "tables" / "iso_checks.csv")
     assert list(table.columns) == list(IC.TABLE_COLUMNS)
@@ -804,9 +806,19 @@ def test_a_batch_writes_the_table_and_levels_the_vetoes(tmp_path, monkeypatch):
     ev = pd.read_csv(tmp_path / "tables" / "evidence_levels.csv", keep_default_na=False)
     assert {"iso_veto", "iso_note"} <= set(ev.columns)
     ev = ev.set_index(["neutral_formula", "adduct"])
+    assert IC.signature_vetoes(table) == {(Y, H): veto[(Y, H)].removeprefix("REQ: ")}
+    gates = json.load(open(tmp_path / "batch_summary.json"))["merge_gates"]["element_signature"]
+    assert gates["removed"] == 1 and gates["pairs"][0]["neutral_formula"] == Y and gates["restamped"]
+    assert (Y, H) not in merged.index
+    # the batch series is re-stamped after the removal: no peak names the removed reading
+    ts = pd.read_parquet(tmp_path / "per_file" / "_batch_ts.parquet")
+    assert not ((ts["neutral_formula"] == Y) & (ts["adduct"] == H)).any()
+    assert ((ts["neutral_formula"] == Z) & (ts["adduct"] == H)).any()      # a 5b reading keeps its stamp
     for k in veto:
-        assert merged.loc[k, "evidence_level"] == "5b" and merged.loc[k, "would_lift"].startswith("refuted: iso_veto")
         assert EV.truthy(ev.loc[k, "iso_veto"]) and ev.loc[k, "iso_note"] == veto[k]
+        if k == (Y, H):
+            continue
+        assert merged.loc[k, "evidence_level"] == "5b" and merged.loc[k, "would_lift"].startswith("refuted: iso_veto")
     assert (merged.loc[[(n, H) for n in REFS], "evidence_level"] != "5b").all()
 
 

@@ -1591,6 +1591,67 @@ def veto(table: pd.DataFrame | None) -> dict:
     return out
 
 
+#: the element-signature lines (F3): a REQ veto on one of these -- the line the
+#: element's own heavy isotope makes, absent at its exact position in the
+#: spectra that would show it -- removes the reading from the merged ledger
+SIGNATURE_ISOTOPES = ("81Br", "37Cl", "34S", "29Si", "30Si")
+
+
+def signature_vetoes(table: pd.DataFrame | None) -> dict:
+    """{(neutral, adduct): note} of the REQ vetoes on an Orbitrap-class batch
+    whose absent line is an element-signature line (SIGNATURE_ISOTOPES): the
+    batch has looked for the element's own line at its exact offset in every
+    spectrum bright enough to show it and found it in at most REQ_ABSENT_FRAC
+    of them. The other vetoes (rule C, HIGH, the TOF's whole-M+2 REQ, an
+    all-light Br2 line) keep their 5b."""
+    if table is None or not len(table) or not {"check", "veto", "line"} <= set(table.columns):
+        return {}
+    t = table[(table["check"].astype(str) == "REQ") & table["veto"].map(_truth)]
+    if "instrument" in t.columns:
+        t = t[t["instrument"].astype(str) == "orbitrap"]
+    out: dict = {}
+    for n, a, ln, x in zip(t["neutral_formula"], t["adduct"], t["line"], t["note"]):
+        lab = str(ln)
+        if any(iso in lab for iso in SIGNATURE_ISOTOPES):
+            out[(str(n), str(a))] = str(x) if isinstance(x, str) else lab
+    return out
+
+
+def remove_signature_vetoed(merged: pd.DataFrame, table: pd.DataFrame | None, *, exempt=frozenset(),
+                            log=print) -> tuple[pd.DataFrame, dict]:
+    """Drop from the merged ledger every row whose (neutral, adduct) the batch's
+    REQ check refutes on an element-signature line (`signature_vetoes`) --
+    the reading claims an element whose own line the batch does not show where
+    it would. `exempt`: neutrals a curated list stands behind; a known-species
+    decision (its tier_reason mark) is kept too. Returns (merged, summary).
+    The per-file ledgers keep their own readings (what each file's passes
+    committed); the caller (assign_batch.run) re-stamps the batch series from
+    the returned ledger, so _batch_ts.parquet names no removed reading."""
+    out = {"removed": 0, "pairs": []}
+    sv = signature_vetoes(table)
+    if merged is None or not len(merged) or not sv or "neutral_formula" not in merged.columns:
+        return merged, out
+    exempt = frozenset(exempt or ())
+    drop = []
+    for i in merged.index:
+        k = (str(merged.at[i, "neutral_formula"]), str(merged.at[i, "adduct"]))
+        if k not in sv or k[0] in exempt:
+            continue
+        if "tier_reason" in merged.columns and KNOWN_LOCK_MARK in str(merged.at[i, "tier_reason"]):
+            continue
+        drop.append(i)
+        out["pairs"].append({"neutral_formula": k[0], "adduct": k[1],
+                             "mz": float(pd.to_numeric(merged.at[i, "mz"], errors="coerce")),
+                             "tier": str(merged.at[i, "tier"]) if "tier" in merged.columns else "",
+                             "note": sv[k]})
+    if drop:
+        merged = merged.drop(index=drop).reset_index(drop=True)
+    out["removed"] = len(drop)
+    log(f"[iso_checks] element-signature REQ vetoes: {len(sv)} pair(s); {len(drop)} merged row(s) removed"
+        + (": " + ", ".join(f"{p['neutral_formula']} {p['adduct']}" for p in out["pairs"]) if drop else ""))
+    return merged, out
+
+
 def lock(table: pd.DataFrame | None) -> dict:
     """{(neutral, adduct): {'element', 'n', 'budget_ok', 'note'}} of the rule H
     rows that lock -- {} for a table written before rule H (no `lock` column,

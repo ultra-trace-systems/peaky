@@ -84,13 +84,22 @@ CONTAMINANT_FAMILIES: dict[str, dict] = {
     "nitrate":       {"add": {"N": (1, 2), "O": (3, 8)},
                       "adducts": ("[M-H]-", "[M+NO3]-", "[M+^NO3]-"),
                       "note": "organonitrate"},
+    # siloxane / pdms: `run_adducts` names the run channels the family may ALSO
+    # take beside its own `adducts` (a family without the key takes every one):
+    # the positive channels siloxanes show -- sodium / urea adducts, the methyl-
+    # loss quantifier ion, a charge-transfer source's radical cation and hydride
+    # abstraction -- never an anion cluster. Unioned with a nitrate source's
+    # [M+NO3]-, the grid fitted Si1 "clusters" (O6-O9, N) onto ordinary
+    # nitrate-cluster lines, none with a 29Si / 30Si line.
     "siloxane":      {"add": {"Si": (1, 6), "O": (1, 6), "C": (2, 12), "H": (6, 36)},
                       "adducts": ("[M+H]+", "[M+NH4]+", "[M+^NH4]+", "[M-H]-"),
+                      "run_adducts": ("[M+Na]+", "[M+(CH4N2O)H]+", "[M-CH3]+", "[M]+.", "[M-H]+"),
                       "note": "PDMS / siloxane column bleed (D3..D6)"},
     "pdms":          {"add": {"Si": (4, 12), "O": (3, 14), "C": (8, 26),
                               "H": (18, 78), "N": (0, 2)},
                       "adducts": ("[M+H]+", "[M+NH4]+", "[M+^NH4]+", "[M+Na]+",
                                   "[M+(CH4N2O)H]+"),
+                      "run_adducts": ("[M-CH3]+", "[M]+.", "[M-H]+"),
                       "note": "long-chain polydimethylsiloxane / silicone bleed "
                               "(Si-O-Si(CH3)2 ladder, +C2H6OSi = +74.019); the "
                               "Si>6 oligomers the short siloxane family can't reach"},

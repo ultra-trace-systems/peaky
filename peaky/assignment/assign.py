@@ -361,6 +361,26 @@ def _stage_plausibility(st):
         st.led, audit=st.plaus_audit, log=st.log, context=label, curated=curated)
 
 
+def _curated(st) -> frozenset:
+    """The formulas a curated list stands behind for this run: the pass-0
+    registry for its polarity/context and the active reference lists."""
+    polarity = getattr(st.profile, "polarity", "negative")
+    curated = passes.known_formulas(polarity, getattr(st.profile, "label", None))
+    return curated | frozenset(getattr(st.cfg, "reflist_formulas", None) or ())
+
+
+def _stage_element_evidence(st):
+    """The element-evidence gate (plausibility.gate_element_evidence): after
+    every proposer, before degeneracy / tiers, CLEAR a non-curated commit whose
+    heteroatom the file's own peak list contradicts -- an exact-offset 81Br /
+    37Cl / 34S / 29Si / 30Si line the file's calibration says it would show is
+    absent -- and a monoisotopic P / I a widened search put in a profile that
+    budgets it at 0. The class-gated half reads cfg.instrument_class."""
+    return plausibility.gate_element_evidence(
+        st.led, profile=st.profile, curated=_curated(st), cfg=st.cfg,
+        resolution=st.resolving_power, scoring=st.scoring, audit=st.plaus_audit, log=st.log)
+
+
 def _profile_name_for(adducts) -> str | None:
     """The registered reagent profile whose analyte channels are exactly
     `adducts` (the run's forced or detected list, before the side channels
@@ -514,7 +534,7 @@ _STAGES = [
     # the audits so the calibrated mass gate judges its commits like any other.
     _Stage("pass_certified", lambda st: passes.run_pass_certified(
         st.client, st.sample_id, st.led, st.profile, st.cfg, st.adducts,
-        reagent=st.reagent, ts_peaks=st.ts_peaks, log=st.log),
+        reagent=st.reagent, ts_peaks=st.ts_peaks, resolving_power=st.resolving_power, log=st.log),
            when=lambda st: st.do_pass_certified),
     # Pass 3, LATE half: families opened by detected GKA series structure claim
     # only what passes 4/5/7 left behind. Ordering matters -- run before pass 3
@@ -556,6 +576,12 @@ _STAGES = [
     # over-ranked can't keep the M0 slot it will only ever be tier-demoted out of.
     _Stage("rearbitrate", lambda st: passes.rearbitrate_offcal_degenerate(
         st.led, st.cfg, log=st.log)),
+    # the element-evidence gate: every proposer has run (passes 3/4/5/7, the late
+    # series families, pass 6, cleanup, siloxane, the labelled rescue,
+    # re-arbitration), so this is the last word on a widened search's heteroatom
+    # before degeneracy and tiers read the commit -- a contradicted one is
+    # CLEARED, its isotope children released (plausibility.gate_element_evidence)
+    _Stage("element_evidence", _stage_element_evidence, safe=False),
     # separability of each M0 peak from its nearest picked neighbour -- MUST precede
     # tiers (a blended, uncorroborated peak is capped) and the merge vote's class (reads it).
     _Stage("resolvability", _stage_resolvability,

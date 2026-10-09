@@ -606,6 +606,8 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
     floor_edge, floor_src = _tof_floor_edge(cfg) if tof_floor is not None else (None, "file")
     # the score a locked reading (pass-0 known species, pass-7 certified) needs
     score_floor = lock_score_floor(cfg)
+    # the twin test's window: the exact-offset one on an Orbitrap-class run
+    twin_ppm = SAT.twin_ppm(cfg)
 
     rows = []
     for _, r in m0.iterrows():
@@ -673,7 +675,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
             if _el:
                 _ion = _ion_counts(formula, r.get("adduct")) or counts
                 twin = SAT.twin_verdict(ledger, r["peak_id"], _ion, sat_floor, element=_el,
-                                        masked_by=SAT.reagent_masks(_el, counts, _ion))
+                                        masked_by=SAT.reagent_masks(_el, counts, _ion), ppm=twin_ppm)
         tier, reason = TIER_ASSIGNED, ""
         _h0 = r.get("height")
         _h0 = float(_h0) if pd.notna(_h0) else None

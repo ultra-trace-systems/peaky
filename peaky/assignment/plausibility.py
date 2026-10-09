@@ -28,7 +28,7 @@ from peaky.chem import chemistry as C
 from peaky.assignment import ledger as L
 from peaky.assignment import tiers as T
 
-__version__ = "0.4.0"   # element-budget demote (demote_off_budget); 0.3.0 carbon-cluster rule: F no longer exempts
+__version__ = "0.5.0"   # the element-evidence gate (gate_element_evidence); 0.4.0 element-budget demote (demote_off_budget); 0.3.0 carbon-cluster rule: F no longer exempts
 
 # thresholds (loose on purpose — flag the clear coincidences only)
 N_HIGH_OC = 3       # N>=3 combined with...
@@ -382,6 +382,195 @@ def _cf2_neighbours(neutral: str) -> list:
         c["F"] = c.get("F", 0) + 2 * k
         if c["C"] >= 1 and c["F"] >= 0:
             out.append(C.format_formula({el: v for el, v in c.items() if v}))
+    return out
+
+
+# ===========================================================================
+# The element-evidence gate: the one stage here that CLEARS a commit
+# ===========================================================================
+#: the methods of the per-peak grid (it never proposes S / P / Si / F / Cl / Br
+#: / I: build_ranges keeps them at zero), so a heteroatom there is not a widened
+#: proposal; and the methods a curated list stands behind
+_GRID_METHODS = ("cheminfo+grid", "grid")
+_EXEMPT_METHODS = ("known:", "ion_only:")
+#: the siloxane step: a committed neutral one C2H6OSi apart on the same adduct
+#: pins the silicon the way a CF2 step pins fluorine (demote_off_budget)
+_SILOXANE_UNIT = {"C": 2, "H": 6, "O": 1, "Si": 1}
+
+
+def _siloxane_neighbours(neutral: str) -> list:
+    """The neutral one C2H6OSi lighter (when it exists) and one heavier."""
+    cnt = C.parse_formula(neutral)
+    out = []
+    for k in (-1, 1):
+        c = {el: cnt.get(el, 0) + k * _SILOXANE_UNIT.get(el, 0) for el in set(cnt) | set(_SILOXANE_UNIT)}
+        if all(v >= 0 for v in c.values()) and c.get("Si", 0) >= 1 and c.get("C", 0) >= 1:
+            out.append(C.format_formula({el: v for el, v in c.items() if v}))
+    return out
+
+
+def _truth(v) -> bool:
+    if isinstance(v, str):
+        return v.strip().lower() == "true"
+    try:
+        return bool(v) and not pd.isna(v)
+    except (TypeError, ValueError):
+        return bool(v)
+
+
+def gate_element_evidence(ledger: pd.DataFrame, *, profile, curated=frozenset(), cfg=None,
+                          resolution=None, scoring=None, audit=None, log=print) -> dict:
+    """CLEAR (L.clear_assignment) a committed M0 whose heteroatom the file's
+    peak list contradicts -- the one rule of this module that removes a
+    commit rather than demoting it.
+
+    Every S / Cl / Br / Si / P / I formula a run commits came from a widened
+    search: the per-peak grid proposes C / H / N / O only. Those searches
+    propose a neutral MASS; nothing in them asks for the element's own line.
+    For each M0 row whose neutral no curated list names (`curated`: the pass-0
+    registry for this polarity/context plus the active reference lists), whose
+    method is not known: / ion_only:, and which is not locked:
+
+      * isotope elements -- Br, Cl and Si at any count, S at two or more, and
+        any S / Cl / Br / Si count over the profile's cap: cleared when
+        satellites.element_evidence says 'contradicted' (an exact-offset line
+        the file's own calibration calls observable is absent or too low).
+        'unobservable' keeps today's outcome (the budget demote's lead, the
+        tier's twin test). Si whose committed C2H6OSi neighbour on the same
+        adduct pins it (a siloxane ladder) is exempt, as the CF2 step exempts F.
+      * monoisotopic P / I -- cleared where the profile budgets the element at
+        0 (what demote_off_budget flags) and the formula came from a widened
+        proposer other than pass 7 (which applies the same rule at its source,
+        where it can see the certificate's channels: a reagent-acid pair is no
+        independent evidence, three channels are).
+      * F is untouched (demote_off_budget's CF2 rule).
+
+    The class decides what is tested: Orbitrap-class (cfg.instrument_class)
+    every isotope element at its exact offset; TOF-class Br / Cl by the ion's
+    own M+2 line (tiers.tof_m2_verdicts' primitive, with the run's width model
+    `resolution` -- none: no TOF verdict, as there), no S / Si verdicts;
+    unknown class, or trace-first's synthetic sample (batch-mean heights),
+    only the P / I rule. Returns counts; one audit row per cleared peak."""
+    from peaky.assignment import satellites as SAT
+    out = {"tested": 0, "cleared": 0, "cleared_isotope": 0, "cleared_mono": 0, "si_ladder_kept": 0,
+           "confirmed": 0, "contradicted": 0, "unobservable": 0}
+    if ledger is None or not len(ledger) or profile is None or "role" not in ledger.columns:
+        return out
+    curated = frozenset(curated or ())
+    klass = getattr(cfg, "instrument_class", None) if cfg is not None else None
+    if cfg is not None and getattr(cfg, "trace_sample", False):
+        klass = None
+    tof_floor = tof_win = tof_fwhm = None
+    if klass == "tof":
+        tof_floor = T.tof_assign_floor(cfg)
+        sc = scoring if isinstance(scoring, dict) else {}
+        tof_win = SAT.heavy_line_window_ppm(sc.get("sigma_ppm"), sc.get("mz_tolerance_ppm"))
+        # the run's width model, as tiers.tof_m2_verdicts reads it; none (offline,
+        # --resolving-power none): no TOF verdict, as there
+        if resolution is not None:
+            from peaky.chem.resolution import Resolution
+            try:
+                _rp = Resolution.coerce(resolution)
+            except (TypeError, ValueError):
+                _rp = None
+            if _rp is not None:
+                tof_fwhm = lambda m, _rp=_rp: float(T._fwhm_at(_rp, m))   # noqa: E731
+    ctx = SAT.evidence_context(ledger, klass=klass, cal_sigma=getattr(cfg, "cal_sigma", None),
+                               resolution=resolution, tof_floor=tof_floor, tof_win_ppm=tof_win,
+                               tof_fwhm=tof_fwhm)
+    committed = _committed_pairs(ledger)
+    has_locked = "locked" in ledger.columns
+    todo = []
+    for i in _m0_index(ledger):
+        neutral = ledger.at[i, "neutral_formula"]
+        if not isinstance(neutral, str) or not neutral.strip() or neutral in curated:
+            continue
+        # the proposer's own method: a re-arbitrated row ('rearb<-known:...')
+        # keeps its proposer's exemption and pass 7's own P / I judgement
+        method = SAT.base_method(ledger.at[i, "method"]) if "method" in ledger.columns else ""
+        if method.startswith(_EXEMPT_METHODS):
+            continue
+        if has_locked and _truth(ledger.at[i, "locked"]):
+            continue
+        nc = C.parse_formula(neutral)
+        if not any(nc.get(el, 0) for el in ("Br", "Cl", "S", "Si", "P", "I")):
+            continue
+        adduct = ledger.at[i, "adduct"] if "adduct" in ledger.columns else None
+        reasons, evid = [], []
+        # monoisotopic P / I, budgeted at 0, from a widened proposer (not pass 7)
+        widened = not method.startswith(_GRID_METHODS) and not method.startswith("certified:")
+        for el in ("P", "I"):
+            if nc.get(el, 0) and getattr(profile, f"max_{el}", 99) == 0 and widened:
+                reasons.append(f"{el}{nc[el]} outside the {profile.label} budget (max_{el} 0): {el} is "
+                               f"monoisotopic, no line can confirm it, and {method or 'a widened search'} "
+                               "proposed only the neutral mass")
+                evid.append(f"{el}{nc[el]}")
+        mono = bool(reasons)
+        # the isotope elements
+        ion = T._ion_counts(neutral, adduct) or SAT._ion_body(ledger.at[i, "ion_formula"]
+                                                                if "ion_formula" in ledger.columns else None)
+        tested_any = False
+        if ion and klass in ("orbitrap", "tof"):
+            try:
+                mono_mz = C.ion_mz(neutral, str(adduct))
+            except Exception:  # noqa: BLE001 -- an unparseable adduct: no mono check
+                mono_mz = float("nan")
+            mz0 = pd.to_numeric(ledger.at[i, "mz"], errors="coerce")
+            h0 = pd.to_numeric(ledger.at[i, "height"], errors="coerce")
+            if "assigned_fraction" in ledger.columns:
+                af = pd.to_numeric(ledger.at[i, "assigned_fraction"], errors="coerce")
+                if pd.notna(af) and 0 < float(af) <= 1 and pd.notna(h0):
+                    h0 = float(h0) * float(af)
+            on_mono = not (np.isfinite(mono_mz) and pd.notna(mz0) and abs(float(mz0) - mono_mz) > SAT.EE_MONO_DA)
+            for el in ("Br", "Cl", "Si", "S"):
+                n = int(nc.get(el, 0))
+                if not n:
+                    continue
+                cap = getattr(profile, f"max_{el}", 99)
+                if el == "S" and not (n >= 2 or n > cap):
+                    continue
+                if el == "Si" and any((nb, adduct) in committed for nb in _siloxane_neighbours(neutral)):
+                    out["si_ladder_kept"] += 1
+                    continue
+                if not on_mono:
+                    continue
+                v = SAT.element_evidence(ctx, mz0, h0, nc, ion, el)
+                tested_any = True
+                out[v["verdict"]] += 1
+                if v["verdict"] == SAT.EE_CONTRADICTED:
+                    reasons.append(f"{el}{n} contradicted by its isotope line: {v['why']}")
+                    evid.append(f"{el}{n} contradicted")
+        out["tested"] += int(tested_any)
+        if reasons:
+            todo.append((i, neutral, mono, reasons, evid))
+    for i, neutral, mono, reasons, evid in todo:
+        pid = ledger.at[i, "peak_id"]
+        before = str(ledger.at[i, "tier"]) if "tier" in ledger.columns else ""
+        ni = _iso_count(ledger.at[i, "isotopologues"]) if "isotopologues" in ledger.columns else 0
+        note = ledger.at[i, "degeneracy_note"] if "degeneracy_note" in ledger.columns else None
+        mz = ledger.at[i, "mz"] if "mz" in ledger.columns else None
+        reason = "element_evidence: " + "; ".join(reasons)
+        try:
+            L.clear_assignment(ledger, pid, reason=reason)
+        except L.LedgerError:
+            continue
+        out["cleared"] += 1
+        out["cleared_mono" if mono else "cleared_isotope"] += 1
+        if audit is not None:
+            audit.append({"mz": mz, "neutral_formula": neutral, "before_tier": before,
+                          "after_tier_or_role": L.ROLE_UNEXPLAINED, "reason": reason,
+                          "evidence": "; ".join(evid),
+                          "degeneracy_note": ("" if note is None or (isinstance(note, float) and pd.isna(note))
+                                              or note is pd.NA else str(note)),
+                          "n_iso": ni})
+    log(f"[element_evidence] {ctx.describe()}; rules: "
+        + ("isotope lines + " if klass in ("orbitrap", "tof") else "")
+        + f"P/I off-budget (widened proposers); {out['tested']} rows tested "
+        f"({out['confirmed']} confirmed, {out['contradicted']} contradicted, {out['unobservable']} unobservable), "
+        f"cleared {out['cleared']} ({out['cleared_isotope']} isotope, {out['cleared_mono']} P/I); "
+        f"{out['si_ladder_kept']} Si rows pinned by a siloxane step")
+    out["instrument_class"] = klass
+    out["calibration"] = ctx.cal.describe() if klass == "orbitrap" else None
     return out
 
 
