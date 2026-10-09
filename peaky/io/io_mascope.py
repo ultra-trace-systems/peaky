@@ -78,8 +78,8 @@ _SCORING_CACHE: dict = {}
 _SCORING_TREND: dict = {}
 _SCORING_TREND_INHERITED: set = set()
 
-#: The batch's m/z-axis correction (`peaky batch --mass-axis auto`,
-#: batch.massqc.correction): a `wave.WaveFit` per sample id. `fetch_peaks` hands
+#: The batch's m/z-axis correction (`peaky batch --mass-axis`): a
+#: `batch.axislock.AxisModel` or a `wave.WaveFit` (batch.massqc.correction) per sample id. `fetch_peaks` hands
 #: back every listed sample's peak table (an offline one included) with `mz`
 #: corrected by it in its scope (massqc.apply_correction); the disk cache keeps
 #: the server's m/z. assign_batch.run sets it for its own samples, hands it to
@@ -94,15 +94,16 @@ _AXIS: dict = {}
 
 def set_axis_correction(sample_ids, wave) -> None:
     """Correct the m/z of every peak table `fetch_peaks` serves for `sample_ids`
-    by `wave` (a `batch.wave.WaveFit` or its `as_dict`; None clears them).
+    by `wave` (a `batch.wave.WaveFit`, a `batch.axislock.AxisModel`, or either's
+    `as_dict`; None clears them).
     Replaces those samples' previous correction, and drops their cached scoring
     and scoring trend, which were read off the other axis."""
-    from peaky.batch.wave import WaveFit
+    from peaky.batch.massqc import fit_from_record
     ids = [str(s) for s in sample_ids]
     clear_axis_correction(ids)
     if wave is None:
         return
-    fit = wave if isinstance(wave, WaveFit) else WaveFit(**wave)
+    fit = fit_from_record(wave)
     for sid in ids:
         _AXIS[sid] = fit
 
@@ -118,7 +119,7 @@ def clear_axis_correction(sample_ids=None) -> None:
 
 
 def axis_correction(sample_id: str):
-    """The `WaveFit` that corrects this sample's m/z, or None."""
+    """The correction (AxisModel / WaveFit) applied to this sample's m/z, or None."""
     return _AXIS.get(str(sample_id))
 
 

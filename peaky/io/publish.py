@@ -1309,9 +1309,10 @@ def load_batch_run(run_dir: str) -> dict:
     """What a `peaky batch` run left on disk, for publishing.
 
     :param run_dir: The run's output directory.
-    :return: ``merged`` (the merged ledger), ``summary`` (``batch_summary.json``,
-        or None), ``ion_formulas`` ((neutral, adduct) -> ion formula gathered
-        from the per-file ledgers) and ``root``.
+    :return: ``merged`` (the merged ledger, its m/z back on the server's axis
+        when the run corrected it), ``summary`` (``batch_summary.json``, or
+        None), ``ion_formulas`` ((neutral, adduct) -> ion formula gathered from
+        the per-file ledgers) and ``root``.
     :raises PublishError: When the directory holds no merged ledger.
     """
     root = Path(run_dir).expanduser()
@@ -1329,6 +1330,16 @@ def load_batch_run(run_dir: str) -> dict:
         summary = json.loads(
             summary_path.read_text(encoding="utf-8"), parse_constant=lambda _c: None
         )
+    axis = (summary or {}).get("mass_axis") or {}
+    if axis.get("applied") and "mz" in merged.columns:
+        # The run corrected the batch's m/z axis (`peaky batch --mass-axis`); the
+        # server matches a row to its batch peak by m/z on ITS axis, so the
+        # merged m/z goes back there first (a correction can exceed the match
+        # tolerance: a lock model reaches several ppm).
+        from peaky.batch.assign_batch import to_server_axis
+
+        merged = merged.copy()
+        merged["mz"] = to_server_axis(merged["mz"].to_numpy(dtype=float), axis)
     ion_formulas: dict[tuple[str, str], str] = {}
     per_file = root / "per_file"
     if per_file.is_dir():

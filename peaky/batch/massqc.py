@@ -382,11 +382,12 @@ def report(t: pd.DataFrame, v: dict, log=print) -> None:
 #: uncorrected). Sized for the corrections the batch step applies, which it caps
 #: at MAX_CORRECTION_PPM; the probe itself searches PROBE_PPM wide.
 SCOPE_SLACK_PPM = 20.0
-#: the largest correction `peaky batch --mass-axis` applies: an Orbitrap axis further
-#: off than this is a broken calibration to fix at the instrument, not a residual to
-#: model. `peaky publish` matches a batch's merged m/z back to the server's peaks
-#: within 5 ppm and does not undo the correction: a correction this size leaves ~1
-#: ppm of that budget
+#: the largest correction the REFERENCE-ION wave applies (`peaky batch --mass-axis
+#: reference`): a wave fitted on ~25 reference ions further off than this is a broken
+#: calibration to fix at the instrument, not a residual to model. (`peaky publish
+#: --batch` puts a run's merged m/z back on the server's axis before matching it, so
+#: this bounds the model, not the publish; the lock model has its own cap,
+#: assign_batch.LOCK_MAX_CORRECTION_PPM.)
 MAX_CORRECTION_PPM = 4.0
 #: the verdicts whose remedy is a correction of the m/z axis (`correction`); a
 #: "+drifting" suffix keeps the axis remedy and adds the rolling centre's
@@ -415,10 +416,38 @@ def correction(v: dict) -> WaveFit | None:
     return fit
 
 
+def fit_from_record(wave):
+    """The correction a batch_summary['mass_axis']['wave'] record (or the object
+    itself) describes: a batch.axislock.AxisModel ('model': 'locks') or a WaveFit."""
+    from peaky.batch.axislock import AxisModel
+    if wave is None or isinstance(wave, (AxisModel, WaveFit)):
+        return wave
+    if isinstance(wave, dict) and wave.get("model") == "locks":
+        return AxisModel.from_dict(wave)
+    return WaveFit(**{k: (tuple(x) if k in ("domain", "mz_range") else x) for k, x in wave.items()})
+
+
+def invert_correction(fit, corrected) -> np.ndarray:
+    """The measured m/z each corrected one came from (`apply_correction` undone): a
+    lock model inverts segment by segment (AxisModel.invert); a wave by fixed-point
+    iteration, kept where the measured value it finds lies in the wave's scope (a
+    value outside it was never corrected)."""
+    c = np.asarray(corrected, dtype=float)
+    if hasattr(fit, "invert"):
+        return fit.invert(c)
+    raw = c.copy()
+    for _ in range(8):
+        raw = c / (1 - fit.predict(raw, extrapolate=True) * 1e-6)
+    return np.where(in_scope(fit, raw) & np.isfinite(c), raw, c)
+
+
 def in_scope(fit: WaveFit, mz) -> np.ndarray:
     """Which m/z a correction reaches: a trend, its calibrants' m/z range widened
-    by SCOPE_SLACK_PPM at each edge; a constant (K = 0), every finite m/z."""
+    by SCOPE_SLACK_PPM at each edge; a constant (K = 0), every finite m/z; a lock
+    model (batch.axislock.AxisModel), its own `in_scope`."""
     mz = np.asarray(mz, dtype=float)
+    if hasattr(fit, "in_scope"):          # batch.axislock.AxisModel: its own reach
+        return fit.in_scope(mz)
     if int(fit.K) == 0:
         return np.isfinite(mz)
     lo, hi = (float(x) for x in fit.mz_range)

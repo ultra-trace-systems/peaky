@@ -212,8 +212,9 @@ def _report_ts(ctx: RunContext, ts, res):
     store the corrected copy), or the caller's parquet as given -- a fed-back
     corrected one included, which the run restored before use. The PDF's coverage and batch-max tables read that recorded
     input, matching it to the ledger within 8 ppm, which a correction (capped at
-    massqc.MAX_CORRECTION_PPM) stays inside; a pool's per-group reports read
-    their raw slices the same way."""
+    massqc.MAX_CORRECTION_PPM for the reference wave, assign_batch.
+    LOCK_MAX_CORRECTION_PPM for the lock model) stays inside; a pool's per-group
+    reports read their raw slices the same way."""
     ax = (((res or {}).get("summary") or {}).get("mass_axis") or {}) if isinstance(res, dict) else {}
     got = res.get("ts_peaks") if isinstance(res, dict) else None
     if not ax.get("applied") or got is None:

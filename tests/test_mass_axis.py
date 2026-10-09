@@ -351,9 +351,9 @@ def test_server_side_scoring_holds_the_correction(refs, tmp_path, monkeypatch):
     seen = {}
     real = AB.measure_axis
 
-    def spy(ts, reagent, klass, *, hold=None, log=print):
+    def spy(ts, reagent, klass, *, hold=None, log=print, **kw):
         seen["hold"] = hold
-        return real(ts, reagent, klass, hold=hold, log=log)
+        return real(ts, reagent, klass, hold=hold, log=log, **kw)
 
     monkeypatch.setattr(AB, "measure_axis", spy)
     # the measurement alone: stop the run right after it

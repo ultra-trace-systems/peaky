@@ -1110,18 +1110,18 @@ def _add_tof_flag_arg(p) -> None:
 
 
 def _add_mass_axis_flag(p) -> None:
-    p.add_argument("--mass-axis", choices=("auto", "off"), default="auto",
-                   help="before the run picks its cover or assigns anything, measure the "
-                        "batch's m/z axis against the reagent's formula-certain reference ions "
-                        "(the `peaky mass-qc` probe, judged by the instrument's own rules) and, "
-                        "on an Orbitrap whose verdict is an axis error (a trend or a flat "
-                        "offset of 1 ppm or more, at most 4), correct the time series and every "
-                        "file's peak table: a trend inside the measured m/z range, an offset "
-                        "everywhere (auto, the default). A TOF, a pool of several batches and "
-                        "server-side scoring are measured, not corrected; a reagent without a "
-                        "reference-ion table (nitrate, labelled nitrate and bromide have one) "
-                        "is not measured. Recorded in batch_summary['mass_axis'] and "
-                        "tables/mass_axis.csv. off = skip it")
+    p.add_argument("--mass-axis", choices=("auto", "locks", "reference", "off"), default="auto",
+                   help="before the run picks its cover or assigns anything, model the batch's m/z "
+                        "axis and correct the time series and every file's peak table with it. "
+                        "auto (default): on an Orbitrap, from the batch's own peaks -- "
+                        "calibration-free locks (peaks whose formula is unique within +-5 ppm once "
+                        "their own isotope lines strike the rivals, and peaks one exact unit step "
+                        "from two locks), a spline through them and the steps the axis takes, "
+                        "applied when it predicts held-out locks -- falling back to the reagent's "
+                        "reference ions when the locks cannot build a model. locks / reference: "
+                        "force one. A TOF, a pool of several batches and server-side scoring are "
+                        "measured, not corrected. Recorded in batch_summary['mass_axis'], "
+                        "tables/mass_axis_locks.csv and tables/mass_axis.csv. off = skip it")
 
 
 def _add_trace_first_flags(p) -> None:

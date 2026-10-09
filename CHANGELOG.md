@@ -8,6 +8,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The batch's m/z axis is modelled from its own peaks (`--mass-axis auto`; `locks`,
+  `reference` and `off` force a path).** On an Orbitrap the correction below no longer rests on
+  the reagent's ~25 reference ions: `batch/axislock.py` finds calibration-free LOCKS -- recurring
+  peaks whose +-5 ppm window holds one closed-shell formula once the peak's own 13C / 34S /
+  37Cl / 81Br lines strike the rivals, then peaks one exact unit step (CH2, O, CO2 ...) from two
+  locks; isotopologues of a brighter peak and elements no isotope line confirms (F, a
+  non-reagent I) never lock -- fits a smoothing spline through their main body, drops locks off
+  it, adds +-1 ppm locks on the corrected axis, and walks up the range segment by segment to
+  model the STEPS an Orbitrap's axis can take (measured in the instrument's own centroids:
+  -2.6 ppm between two adjacent peaks, +2 ppm 30 Da higher). Between two segments across a
+  step, and past the first and last lock, nothing is corrected: there the step's position is
+  unknown. It is applied when it predicts held-out locks (5-fold) within 0.3 ppm or half the raw
+  error and some lock reads 1 ppm off, up to 7 ppm; the reference-ion wave stays the fallback
+  when the locks build no model, and a TOF is still only measured. On the nitrate Orbitrap batch below, ~480
+  locks span m/z 57-423 and held-out locks sit 0.11 ppm from the model (1.6 ppm raw); against
+  the independent assignment the same formula rose from 573 to 693 (m/z 365-423: from 0
+  to 62), a different formula fell from 11 to 10 of 935, and the ions peaky alone
+  holds fell from 40 to 26; on the batch's 1-microscan files, 387 -> 421 and
+  9 -> 8. `tables/mass_axis_locks.csv` lists every lock and how it was found.
 - **`peaky batch` / `pool` measure the batch's m/z axis and correct an Orbitrap's axis error
   before anything is assigned (`--mass-axis auto`, the default; `off` skips it).** The batch time
   series is probed against the reagent's formula-certain reference ions (the `peaky mass-qc`
@@ -25,9 +44,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ion-specific; a batch the server lists as TOF stays one whatever resolving power it is
   given), a pool spanning several batches (one wave would correct each batch by the others'
   axis), server-side scoring (`PEAKY_LOCAL_SCORING=0` scores the server's own peaks) and a
-  correction above 4 ppm anywhere (a calibration to fix at the instrument). `peaky publish`
-  does not undo the correction: it matches a batch's merged m/z back to the server's peaks
-  within 5 ppm, of which a correction uses up to 4. A reagent without a reference-ion
+  correction above 4 ppm anywhere (a calibration to fix at the instrument). `peaky publish
+  --batch` puts a corrected run's merged m/z back on the server's axis before matching it to
+  the batch peaks (within 5 ppm). A reagent without a reference-ion
   table (nitrate, labelled nitrate and bromide have one) is not measured, and the measurement
   never stops a batch. `batch_summary.json['mass_axis']` and the run manifest record the
   verdict, the wave, its scope, how far the peaks moved or why nothing was applied;
