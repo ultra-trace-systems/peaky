@@ -65,7 +65,10 @@ from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sampling as SS
 
 __version__ = "0.11.0"  # + the merged-ledger isotopologue gate and the element-signature
-                        # removal (one curated exempt set, reconciled: 'parent removed'),
+                        # removal (one curated exempt set, reconciled: 'parent removed';
+                        # the per-file ledgers record both decisions -- the gate's lines,
+                        # a removed reading released --, the parent's merged row lists
+                        # its lines: `isotopologue_lines`),
                         # the batch's resolved class in every isotope check, the n = 0
                         # reagent core, context_flags and batch_summary['warnings']
                         # (0.10.0: the vote reads the per-file EVIDENCE: a cluster's ions are
@@ -551,6 +554,36 @@ def jitter_report(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM):
     }
     return {"offsets": offsets, "by_formula": by_formula, "by_mz": by_mz,
             "summary": summary}
+
+
+#: the per-file stats keys `ledger.stats` computes: recounted on a ledger the batch rewrote
+_ROLE_STATS = ("n_peaks", "by_role", "signal_by_role", "count_frac_by_role", "n_synthetic", "by_confidence",
+               "by_tier")
+
+
+def _recount_roles(st: dict, ledger: pd.DataFrame, gate: dict | None = None, *,
+                   signature: dict | None = None) -> dict:
+    """A file's stats (its batch_summary['per_file'] entry) after the batch rewrote
+    its ledger: the role / signal / confidence / tier counts, `n_M0` and the
+    resolvability class counts recounted from the rewritten ledger (`ledger.stats`,
+    the M0 rows' `resolvability`), what the isotopologue rewrite did under
+    `isotopologue_gate` and what the element-signature release did under
+    `element_signature_gate`. Everything else stays the file's own run's record."""
+    from peaky.assignment import ledger as L
+    new = L.stats(ledger)
+    for k in _ROLE_STATS:
+        if k in new:
+            st[k] = new[k]
+    st["n_M0"] = int((ledger["role"] == L.ROLE_M0).sum()) if "role" in ledger.columns else st.get("n_M0")
+    if "resolvability" in ledger.columns and "role" in ledger.columns and st.get("resolvability") is not None:
+        # the class counts of the M0 rows (resolvability.stamp_resolvability), recounted
+        cls = ledger.loc[ledger["role"] == L.ROLE_M0, "resolvability"].dropna()
+        st["resolvability"] = {str(k): int(v) for k, v in cls.value_counts().to_dict().items()}
+    if gate:
+        st["isotopologue_gate"] = dict(gate)
+    if signature:
+        st["element_signature_gate"] = dict(signature)
+    return st
 
 
 def _m0(ledger: pd.DataFrame) -> pd.DataFrame:
@@ -1642,8 +1675,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     merged ledger before the stamp, which then gives the line to the parent
     (iso_checks.satellite_rows; tables/isotopologue_rows.csv,
     merge_gates['isotopologue']). Its pooled pair reads an isotope-check veto in the
-    evidence levels (check 'SAT' in tables/iso_checks.csv). The per-file ledgers keep
-    their own reading, and a single-sample `peaky assign` has no such gate."""
+    evidence levels (check 'SAT' in tables/iso_checks.csv). The per-file ledgers record
+    the line (iso_checks.reconcile_per_file), as they release a reading the
+    element-signature removal took out (iso_checks.release_signature_removed); a
+    single-sample `peaky assign` has neither."""
     from peaky.assignment import assign as A
     from peaky.assignment import evidence as EV
     from peaky.batch import timeseries as _TSN
@@ -1936,6 +1971,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         log(f"[assign_batch] reference lists active: {RL.active_versions(reflists_active)} "
             f"(context {sorted(_tags) or 'contaminants-only'})")
     per_file, offsets, per_stats = {}, {}, []
+    full_ledgers: dict = {}    # sid -> its full ledger as written: the merged-ledger
+                               # isotopologue gate's decision is recorded there after
+                               # the merge (iso_checks.reconcile_per_file)
     scorings: dict = {}        # per-sample pattern_scoring, for the run manifest
     level_frames: dict = {}    # sid -> its ledger's M0/iso rows + predicate columns
                                # (evidence.trim): the batch checks' input
@@ -1979,6 +2017,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # never written
         own_class = led.pop(_OWN_VOTE_CLASS) if _OWN_VOTE_CLASS in led.columns else None
         led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)
+        full_ledgers[sid] = led
         level_frames[sid] = EV.trim(led)
         alias_ties[sid] = _LT.alias_only_ties(led)
         plaus_audit.extend(plaus)
@@ -2334,9 +2373,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             # A track explained this way carries an ion_formula, so the residual
             # stage (which reads the cover's stamp) no longer targets it.
             out.update(_stamp_series(merged, _aux, stamp_tol, tracks))
-            # kept so a merged-row removal after the batch checks (the element-
-            # signature REQ removal below) can re-stamp with the same inputs
-            out["stamp_inputs"] = (_aux, tracks)
+            # kept so the re-stamp after the batch checks (a merged-row removal, a
+            # per-file rewrite; below) can stamp with the same inputs: the rungs
+            # apart, so the per-file rows can be re-read from rewritten ledgers
+            out["stamp_inputs"] = (_aux, tracks, _rw_rows)
         return out
 
     def _stamp_series(merged, aux, stamp_tol, tracks) -> dict:
@@ -2494,6 +2534,36 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                                                         merge_gates["element_signature"].get("pairs"), log=log)
     if isinstance(merge_gates.get("isotopologue"), dict):
         merge_gates["isotopologue"]["n_parent_removed"] = _n_orph
+    # ... and the per-file ledgers RECORD the decision (iso_checks.reconcile_per_file):
+    # a stripped reading's M0 row in a file becomes the parent's iso_child where that
+    # file commits the parent (a reagent parent's: a reagent isotopologue), else --
+    # and wherever the parent has just left -- it is released to unexplained. The
+    # rewritten ledgers replace per_file/<sid>_ledger.csv, the levels' frames and the
+    # file's role counts, so the evidence levels below, the report and a per-file
+    # publish read what the merged ledger decided. The batch checks above (neutral
+    # pairs, label twins, iso checks) were measured on the ledgers as the files wrote
+    # them; only the rows of the stripped and the removed readings differ there (their
+    # SAT / REQ vetoes stay in iso_checks.csv).
+    # ... and then the element-signature removal (iso_checks.release_signature_removed):
+    # every M0 row committing a reading that left is released to unexplained, so a
+    # per-file ledger, its levels and a per-file publish name no reading the batch
+    # refuted. iso_checks.record_per_file runs the two in that order.
+    _rewritten, _rw_summ, _sg_summ = _IC.record_per_file(
+        full_ledgers, res_m.get("isotopologue"), merge_gates["element_signature"].get("pairs"),
+        mass_scale=scale, log=log)
+    if isinstance(merge_gates.get("isotopologue"), dict):
+        merge_gates["isotopologue"]["per_file"] = _rw_summ
+    if merge_gates["element_signature"].get("removed"):
+        merge_gates["element_signature"]["per_file"] = _sg_summ
+    for sid in sorted(_rewritten):
+        _led = full_ledgers[sid]
+        _led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)
+        level_frames[sid] = EV.trim(_led)
+        for st_ in per_stats:
+            if str(st_.get("sample_id")) == str(sid):
+                _recount_roles(st_, _led, _rw_summ["files"].get(sid), signature=_sg_summ["files"].get(sid))
+    # the parent rows name the lines the gate gave them (one row per parent ion)
+    merged = _IC.parent_lines(merged, res_m.get("isotopologue"))
     # ... plus the merged-ledger isotopologue gate's strips (iso_checks.veto_rows,
     # check 'SAT'): the pooled pair of a line the merged ledger gave to its parent is
     # refuted the same way, so evidence_levels.csv agrees with the merged ledger
@@ -2504,13 +2574,27 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     iso_table.to_csv(os.path.join(TAB, "iso_checks.csv"), index=False)
     # ... and the batch series is RE-STAMPED from the merged ledger without them
     # (the first stamp named them: _batch_ts.parquet, the levels' series and the
-    # TOF gates below must not), with the same inputs as the merge's stamp
-    if merge_gates["element_signature"]["removed"] and ts_annot is not None and res_m.get("stamp_inputs"):
-        _aux_s, _tracks_s = res_m["stamp_inputs"]
+    # TOF gates below must not), with the same inputs as the merge's stamp -- the
+    # per-file identified rows re-read from the rewritten ledgers when either gate
+    # rewrote one (a released reading's isotope lines, a stripped reading's own,
+    # no longer name its ion)
+    _restamp = bool(merge_gates["element_signature"]["removed"] or _rewritten)
+    if _restamp and ts_annot is not None and res_m.get("stamp_inputs"):
+        _aux_s, _tracks_s, _rw_s = res_m["stamp_inputs"]
+        if _rewritten:
+            from peaky.batch import timeseries as _TSI
+            _parts = [_TSI.identified_rows(_l) for _l in full_ledgers.values()]
+            if _rw_s is not None and len(_rw_s):
+                _parts.append(_rw_s)
+            _aux_s = pd.concat(_parts, ignore_index=True) if _parts else None
         res_m.update(_stamp_series(merged, _aux_s, stamp_tol, _tracks_s))
         ts_annot = res_m["ts_annot"]
-        merge_gates["element_signature"]["restamped"] = True
-        log("[iso_checks] the batch series re-stamped without the removed reading(s)")
+        if merge_gates["element_signature"]["removed"]:
+            merge_gates["element_signature"]["restamped"] = True
+        if _rewritten and isinstance(merge_gates.get("isotopologue"), dict) and _rw_summ["files"]:
+            merge_gates["isotopologue"]["restamped"] = True
+        log("[iso_checks] the batch series re-stamped from the merged ledger and the per-file ledgers as "
+            "the merged-ledger gates left them")
     # the TOF ion-M+2 gates (iso_checks.tof_m2_gates; TOF-class batches only): a
     # merged winner whose own M+2 line REQ refutes over the batch -- a species the
     # known-species lock decided included -- and a merged line that is the 81Br

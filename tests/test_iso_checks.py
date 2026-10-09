@@ -21,6 +21,7 @@ Run: pytest tests/test_iso_checks.py -q
 from __future__ import annotations
 
 import json
+import os
 
 import numpy as np
 import pandas as pd
@@ -848,10 +849,24 @@ def test_a_batch_writes_the_table_and_levels_the_vetoes(tmp_path, monkeypatch):
     ts = pd.read_parquet(tmp_path / "per_file" / "_batch_ts.parquet")
     assert not ((ts["neutral_formula"] == Y) & (ts["adduct"] == H)).any()
     assert ((ts["neutral_formula"] == Z) & (ts["adduct"] == H)).any()      # a 5b reading keeps its stamp
+    # ... and the per-file ledgers release it (iso_checks.release_signature_removed): no
+    # file commits Y any more, so its pair is no longer levelled
+    per = {f: pd.read_csv(tmp_path / "per_file" / f) for f in os.listdir(tmp_path / "per_file")
+           if f.endswith("_ledger.csv")}
+    assert per and gates["per_file"]["released"] == len(per), gates["per_file"]
+    for f, led in per.items():
+        assert not ((led["neutral_formula"] == Y) & (led["role"] == "M0")).any(), f
+        r = led.loc[np.isclose(led["mz"], C.ion_mz(Y, H))].iloc[0]
+        assert r["role"] == "unexplained" and str(r["commentary"]).startswith(f"CLEARED ({IC.SIG_LEDGER_MARK}:")
+        assert "81Br" in str(r["commentary"]) and f"was {Y} {H}" in str(r["commentary"])
+    bs = json.load(open(tmp_path / "batch_summary.json"))
+    assert all(st["element_signature_gate"] == {"released": 1, "children": 0} for st in bs["per_file"]), \
+        [st.get("element_signature_gate") for st in bs["per_file"]]
+    assert (Y, H) not in ev.index
     for k in veto:
-        assert EV.truthy(ev.loc[k, "iso_veto"]) and ev.loc[k, "iso_note"] == veto[k]
         if k == (Y, H):
             continue
+        assert EV.truthy(ev.loc[k, "iso_veto"]) and ev.loc[k, "iso_note"] == veto[k]
         assert merged.loc[k, "evidence_level"] == "5b" and merged.loc[k, "would_lift"].startswith("refuted: iso_veto")
     assert (merged.loc[[(n, H) for n in REFS], "evidence_level"] != "5b").all()
 

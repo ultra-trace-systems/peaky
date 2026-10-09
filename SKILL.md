@@ -323,8 +323,9 @@ pipeline assigns a **presence-cover subset and merges by m/z**:
   (`tables/isotopologue_rows.csv`, check `SAT` in `tables/iso_checks.csv`), and the
   **element-signature removal** drops a reading whose element-signature line the
   batch REQ check refutes, then re-stamps the series. Both spare curated readings
-  and known-species decisions; the per-file ledgers keep their readings
-  (`batch_summary.json['merge_gates']`, `docs/MERGE.md` §3 steps 4c / 6a). The
+  and known-species decisions; the per-file ledgers record both (the line as
+  the parent's isotopologue, the removed reading released to unexplained;
+  `batch_summary.json['merge_gates']`, `docs/MERGE.md` §3 steps 4c / 6a). The
   (HNO3)2.NO3- dimer core is a reagent row (rung n = 0) of the reagent-water ladder
   on any class.
 - IDs must be fetched FRESH from the live server (`io_mascope.fetch_batch_samples`,

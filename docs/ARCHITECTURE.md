@@ -155,7 +155,8 @@ annotate_peaks                           row on another merged ion's isotope lin
    │  (_batch_ts.parquet)                spectrum from the trace centres at the stamp window
    ▼
 iso_checks.measure /                     the batch isotope checks; (Orbitrap class) a REQ veto on an
-remove_signature_vetoed                  element-signature line removes the reading, then re-stamp
+remove_signature_vetoed /                element-signature line removes the reading, releases it in
+release_signature_removed                the per-file ledgers, then re-stamp
    ▼
 generate_report (offline, no network):
    ├─ clustering.cluster_batch           correlation clusters of the batch time-series → A4 figure panels

@@ -1663,10 +1663,14 @@ def remove_signature_vetoed(merged: pd.DataFrame, table: pd.DataFrame | None, *,
     REQ check refutes on an element-signature line (`signature_vetoes`) --
     the reading claims an element whose own line the batch does not show where
     it would. `exempt`: neutrals a curated list stands behind; a known-species
-    decision (its tier_reason mark) is kept too. Returns (merged, summary).
-    The per-file ledgers keep their own readings (what each file's passes
-    committed); the caller (assign_batch.run) re-stamps the batch series from
-    the returned ledger, so _batch_ts.parquet names no removed reading.
+    decision (its tier_reason mark) is kept too. Returns (merged, summary);
+    each removed row's entry in summary['pairs'] says whether its reading left
+    the merged ledger (`reading_left`: False when another merged row of the same
+    reading stays, e.g. the one a known-species decision marks; `gone_pairs`).
+    The caller (assign_batch.run) records the removal in the per-file ledgers
+    (`record_per_file`) and re-stamps the batch series from the returned
+    ledger and the rewritten per-file ledgers, so neither names a removed
+    reading.
     `klass`: the batch's resolved instrument class (`batch_class`) -- anything
     but 'orbitrap' removes nothing (a TOF read as Orbitrap-class by its width
     model keeps its vetoes as 5b), whatever class the table's rows carry."""
@@ -1693,10 +1697,24 @@ def remove_signature_vetoed(merged: pd.DataFrame, table: pd.DataFrame | None, *,
                              "note": sv[k]})
     if drop:
         merged = merged.drop(index=drop).reset_index(drop=True)
+        # a reading can hold two merged rows (a split cluster, a collapsed loser on
+        # its trace); one the known-species decision marks stays, so the reading has
+        # not left the merged ledger: `reading_left` False, and nothing downstream
+        # (parent_removed, release_signature_removed) treats it as gone
+        held = set(zip(merged["neutral_formula"].astype(str), merged["adduct"].astype(str)))
+        for p in out["pairs"]:
+            p["reading_left"] = (p["neutral_formula"], p["adduct"]) not in held
     out["removed"] = len(drop)
     log(f"[iso_checks] element-signature REQ vetoes: {len(sv)} pair(s); {len(drop)} merged row(s) removed"
         + (": " + ", ".join(f"{p['neutral_formula']} {p['adduct']}" for p in out["pairs"]) if drop else ""))
     return merged, out
+
+
+def gone_pairs(removed_pairs) -> list:
+    """The entries of remove_signature_vetoed's summary['pairs'] whose reading left
+    the merged ledger (`reading_left`, True when absent: an entry written before
+    the key)."""
+    return [p for p in (removed_pairs or ()) if p.get("reading_left", True)]
 
 
 def lock(table: pd.DataFrame | None) -> dict:
@@ -2312,9 +2330,9 @@ SAT_PARENT_REMOVED = "parent removed"
 
 def parent_removed(table: pd.DataFrame | None, removed_pairs, *, log=print) -> tuple[pd.DataFrame, int]:
     """Reconcile the isotopologue table with the element-signature removal that runs
-    after it (`remove_signature_vetoed`, its summary's 'pairs'): a row the gate
-    stripped as the isotopologue of a parent reading that has since left the merged
-    ledger reads verdict SAT_PARENT_REMOVED, with a note -- the line is no longer
+    after it (`remove_signature_vetoed`, its summary's 'pairs' whose reading left:
+    `gone_pairs`): a row the gate stripped as the isotopologue of a parent reading
+    that has since left the merged ledger reads verdict SAT_PARENT_REMOVED, with a note -- the line is no longer
     read as that reading's satellite, so its pooled pair carries no SAT veto
     (`veto_rows` takes only 'isotopologue' rows) and the evidence levels judge it on
     its own evidence. The row stays out of the merged ledger and its line stays
@@ -2322,7 +2340,9 @@ def parent_removed(table: pd.DataFrame | None, removed_pairs, *, log=print) -> t
     ratio, which is no evidence for its own reading either. Returns (table, n)."""
     if table is None or not len(table) or not removed_pairs or "verdict" not in table.columns:
         return table, 0
-    gone = {(str(p["neutral_formula"]), str(p["adduct"])) for p in removed_pairs}
+    gone = {(str(p["neutral_formula"]), str(p["adduct"])) for p in gone_pairs(removed_pairs)}
+    if not gone:
+        return table, 0
     t = table.copy()
     hit = ((t["verdict"].astype(str) == "isotopologue").to_numpy(dtype=bool)
            & np.array([(_txt_of(n), _txt_of(a)) in gone for n, a in zip(t["parent_neutral"], t["parent_adduct"])],
@@ -2363,3 +2383,304 @@ def veto_rows(table: pd.DataFrame | None) -> pd.DataFrame:
         if c not in out.columns:
             out[c] = np.nan
     return out[list(TABLE_COLUMNS)].drop_duplicates(["neutral_formula", "adduct"]).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# the gate's decision in the per-file ledgers and on the parent's merged row
+# ---------------------------------------------------------------------------
+#: the commentary prefix of every per-file row the isotopologue gate rewrote
+SAT_LEDGER_MARK = "batch isotopologue gate"
+#: the per-reading columns a rewritten row stops carrying: they described the
+#: committed reading it no longer holds (the evidence-scale stamp of the file's own
+#: run, and the resolvability / degeneracy / calibrated-mass facts of its M0)
+_READING_COLUMNS = ("evidence_level", "evidence", "would_lift", "competitors_left", "tags", "context",
+                    "context_source", "claim", "resolvability", "sep_hwhm", "d_crit_hwhm", "degeneracy_density",
+                    "degeneracy_note", "ppm_error_cal", "ion_score_massfree")
+#: how far (x the merge window) a reading is followed off the gate's position: a
+#: file's own m/z of the line, or of the parent, may sit beyond one window from the
+#: trace-centred position the gate read
+_FOLLOW_X = 3.0
+
+
+def _nearest_row(led: pd.DataFrame, mask: np.ndarray, target: float, ppm: float):
+    """The ledger index of the row under `mask` nearest `target` within `ppm`, or None."""
+    mz = pd.to_numeric(led["mz"], errors="coerce").to_numpy(dtype=float)
+    d = np.abs(mz - target)
+    ok = mask & np.isfinite(d) & (d <= abs(target) * ppm * 1e-6)
+    if not ok.any():
+        return None
+    k = np.flatnonzero(ok)
+    return led.index[int(k[np.argmin(d[k])])]
+
+
+def _clear_noting_children(led: pd.DataFrame, i, *, reason: str, child_note: str) -> int:
+    """`ledger.clear_assignment` of row `i`, its released children noted: each
+    child's commentary reads 'CLEARED (<child_note>)' and keeps what it was, as
+    the cleared row's does (clear_assignment itself leaves a child's commentary
+    as it was). Returns the number of children released."""
+    from peaky.assignment import ledger as L
+    pid = led.at[i, "peak_id"]
+    kids = list(led.index[led["parent_peak_id"] == pid]) if "parent_peak_id" in led.columns else []
+    L.clear_assignment(led, pid, reason=reason)
+    for k in kids:
+        old = _txt_of(led.at[k, "commentary"]) if "commentary" in led.columns else ""
+        led.at[k, "commentary"] = f"CLEARED ({child_note})." + (f" Was: {old}" if old else "")
+    return len(kids)
+
+
+def _col_txt(led: pd.DataFrame, col: str) -> np.ndarray:
+    return led[col].map(_txt_of).to_numpy() if col in led.columns else np.full(len(led), "")
+
+
+def reconcile_per_file(ledgers: dict, table: pd.DataFrame | None, *, mass_scale=None,
+                       log=print) -> tuple[set, dict]:
+    """Record the isotopologue gate's decisions in the per-file ledgers (in place).
+
+    For every row of the gate's table that left the merged ledger (verdict
+    'isotopologue' or SAT_PARENT_REMOVED) and every ledger in `ledgers` ({sid: full
+    per-file ledger}): the M0 row on the line -- the nearest M0 within the batch's
+    merge window (`_merge_ppm`) of the gate's position, else the stripped reading
+    itself within _FOLLOW_X windows -- is rewritten through the ledger API:
+
+      * 'isotopologue', the parent committed in that file (its reading's M0 nearest
+        the parent's position within _FOLLOW_X windows): the row becomes the
+        parent's iso_child under the gate's label (`ledger.displace_to_isotopologue`:
+        the row's own children follow it to the parent, labels combined);
+      * 'isotopologue', a reagent parent the file marks reagent: the row is cleared
+        and marked a reagent isotopologue of that ion, as the reagent labeller
+        marks the reagent's own lines;
+      * 'isotopologue', the parent not committed in that file, and every
+        SAT_PARENT_REMOVED row: the row is released to unexplained
+        (`ledger.clear_assignment`; its own children with it).
+
+    Each rewritten row's commentary starts with SAT_LEDGER_MARK, names the parent
+    ion and the label, and keeps what the row was; its per-reading columns
+    (_READING_COLUMNS) are emptied. A locked row is rewritten all the same (the
+    batch decides after every file's passes) and keeps its lock. Rows on the line
+    in any other role -- already the parent's child, unexplained, reagent -- are
+    left as they are, and 'mixed' / 'exempt' rows of the table are never read.
+
+    Returns (the sids whose ledger changed, a summary: counts by action, per file,
+    and the ledger-invariant problems found after the rewrite, if any)."""
+    from peaky.assignment import ledger as L
+    summ = {"iso_child": 0, "reagent": 0, "released": 0, "released_parent_removed": 0, "files": {}}
+    changed: set = set()
+    if table is None or not len(table) or not ledgers or "verdict" not in table.columns:
+        return changed, summ
+    t = table[table["verdict"].astype(str).isin(["isotopologue", SAT_PARENT_REMOVED])]
+    if not len(t):
+        return changed, summ
+    ppm = _merge_ppm(mass_scale)
+    t = t.sort_values(["mz", "neutral_formula", "adduct"], kind="mergesort")
+    for _, r in t.iterrows():
+        rmz, pmz = float(r["mz"]), float(r["parent_mz"])
+        lab, pion = _txt_of(r["label"]), _txt_of(r["parent_ion"])
+        rn, ra = _txt_of(r["neutral_formula"]), _txt_of(r["adduct"])
+        pn, pa = _txt_of(r["parent_neutral"]), _txt_of(r["parent_adduct"])
+        removed = str(r["verdict"]) == SAT_PARENT_REMOVED
+        try:
+            stats = (f"area {float(r['rho_area']):.2f}x the predicted line over {int(r['n_both'])} spectra; "
+                     "tables/isotopologue_rows.csv")
+        except (TypeError, ValueError):
+            stats = "tables/isotopologue_rows.csv"
+        where = f"{pion} at m/z {pmz:.4f}"
+        # the gate's own measurement as the child's isotope fit: the batch area ratio's
+        # agreement with the parent's prediction (1 at x1.00, 0.75 at x0.75 or x1.33)
+        try:
+            rho = float(r["rho_area"])
+            fit = min(rho, 1.0 / rho) if rho > 0 and np.isfinite(rho) else None
+        except (TypeError, ValueError):
+            fit = None
+        for sid in sorted(ledgers):
+            led = ledgers[sid]
+            if led is None or not len(led) or not {"role", "mz", "peak_id"} <= set(led.columns):
+                continue
+            role = led["role"].astype(str).to_numpy()
+            nf, ad = _col_txt(led, "neutral_formula"), _col_txt(led, "adduct")
+            m0 = role == L.ROLE_M0
+            i = _nearest_row(led, m0, rmz, ppm)
+            if i is None:
+                i = _nearest_row(led, m0 & (nf == rn) & (ad == ra), rmz, _FOLLOW_X * ppm)
+            if i is None:
+                continue
+            own = " ".join(x for x in (_txt_of(led.at[i, "neutral_formula"]), _txt_of(led.at[i, "adduct"])) if x)
+            tier = _txt_of(led.at[i, "tier"]) if "tier" in led.columns else ""
+            was = f"was {own}" + (f", {tier}" if tier else "")
+            old = _txt_of(led.at[i, "commentary"]) if "commentary" in led.columns else ""
+            pid = led.at[i, "peak_id"]
+            locked = bool(led.at[i, "locked"]) if "locked" in led.columns else False
+            if locked:
+                led.at[i, "locked"] = False
+            parent = reagent = None
+            if not removed and pn:
+                parent = _nearest_row(led, m0 & (nf == pn) & (ad == pa), pmz, _FOLLOW_X * ppm)
+            elif not removed and "ion_formula" in led.columns:
+                reagent = _nearest_row(led, (role == L.ROLE_REAGENT) & (_col_txt(led, "ion_formula") == pion),
+                                       pmz, _FOLLOW_X * ppm)
+            per = summ["files"].setdefault(sid, {"iso_child": 0, "reagent": 0, "released": 0})
+            if parent is not None:
+                L.displace_to_isotopologue(led, pid, led.at[parent, "peak_id"], iso_label=lab,
+                                           iso_match_score=fit)
+                led.at[i, "commentary"] = (f"{SAT_LEDGER_MARK}: the {lab} line of {where} ({was}; {stats})"
+                                           + (f". Was: {old}" if old else ""))
+                action = "iso_child"
+            elif reagent is not None:
+                _clear_noting_children(led, i, reason=SAT_LEDGER_MARK,
+                                       child_note=f"{SAT_LEDGER_MARK}: a line of {own}, released with it")
+                L.mark_reagent(led, pid, f"reagent isotopologue: {lab} of {pion} ({lab}); {SAT_LEDGER_MARK}, "
+                                         f"{was}; {stats}" + (f". Was: {old}" if old else ""), ion_formula=pion)
+                action = "reagent"
+            else:
+                why = (f"{SAT_LEDGER_MARK}: the {lab} line of {where}, whose reading {pn} {pa} then left the "
+                       "merged ledger (an element-signature REQ veto): no longer read as its satellite, the line "
+                       f"unexplained ({was})" if removed else
+                       f"{SAT_LEDGER_MARK}: the {lab} line of {where}, which this file does not commit; the batch "
+                       f"series stamps the line as that ion's predicted satellite ({was}; {stats})")
+                _clear_noting_children(led, i, reason=why,
+                                       child_note=f"{SAT_LEDGER_MARK}: a line of {own}, released with it")
+                action = "released"
+                if removed:
+                    summ["released_parent_removed"] += 1
+            for c in _READING_COLUMNS:
+                if c in led.columns:
+                    led.at[i, c] = pd.NA
+            if locked:
+                led.at[i, "locked"] = True
+            summ[action] += 1
+            per[action] += 1
+            changed.add(sid)
+    problems = {sid: p for sid in sorted(changed) if (p := L.validate(ledgers[sid]))}
+    if problems:
+        summ["problems"] = problems
+    if changed:
+        log(f"[isotopologue] per-file ledgers: {summ['iso_child']} row(s) now the parent's iso_child, "
+            f"{summ['reagent']} a reagent isotopologue, {summ['released']} released to unexplained "
+            f"({summ['released_parent_removed']} of a removed parent) in {len(changed)} file(s)"
+            + (f"; LEDGER VALIDATION PROBLEMS {problems}" if problems else ""))
+    return changed, summ
+
+
+#: the commentary prefix of every per-file row the element-signature removal released
+SIG_LEDGER_MARK = "batch element-signature removal"
+
+
+def release_signature_removed(ledgers: dict, removed_pairs, *, log=print) -> tuple[set, dict]:
+    """Record the element-signature removal (`remove_signature_vetoed`, its summary's
+    'pairs') in the per-file ledgers (in place): every M0 row that commits a removed
+    reading (neutral, adduct) is released to unexplained through the ledger API
+    (`ledger.clear_assignment`; its own children with it), whatever its m/z -- the
+    batch refuted the reading, not one file's line. Its commentary starts with
+    SIG_LEDGER_MARK, names the refuted line (the REQ note) and keeps what the row
+    was; its per-reading columns (_READING_COLUMNS) are emptied. A locked row is
+    released all the same (the batch decides after every file's passes) and keeps
+    its lock. Rows in any other role are left as they are; a reading the removal
+    spared (a curated formula, a known-species decision) is not in the pairs.
+
+    Returns (the sids whose ledger changed, a summary: `released` M0 rows,
+    `children` released with them, `files` = {sid: {released, children}}, and the
+    ledger-invariant problems found after the rewrite, if any). Only the pairs
+    whose reading left the merged ledger are read (`gone_pairs`); each released
+    child's commentary says it went with the reading."""
+    from peaky.assignment import ledger as L
+    summ = {"released": 0, "children": 0, "files": {}}
+    changed: set = set()
+    notes = {(str(p["neutral_formula"]), str(p["adduct"])): p for p in gone_pairs(removed_pairs)}
+    if not ledgers or not notes:
+        return changed, summ
+    for sid in sorted(ledgers):
+        led = ledgers[sid]
+        if led is None or not len(led) or not {"role", "peak_id", "neutral_formula", "adduct"} <= set(led.columns):
+            continue
+        nf, ad = _col_txt(led, "neutral_formula"), _col_txt(led, "adduct")
+        hit = np.flatnonzero((led["role"].astype(str).to_numpy() == L.ROLE_M0)
+                             & np.array([(n, a) in notes for n, a in zip(nf, ad)], dtype=bool))
+        for k in hit:
+            i = led.index[int(k)]
+            p = notes[(nf[k], ad[k])]
+            tier = _txt_of(led.at[i, "tier"]) if "tier" in led.columns else ""
+            was = f"was {nf[k]} {ad[k]}" + (f", {tier}" if tier else "")
+            locked = bool(led.at[i, "locked"]) if "locked" in led.columns else False
+            if locked:
+                led.at[i, "locked"] = False
+            n_ch = _clear_noting_children(
+                led, i, reason=(f"{SIG_LEDGER_MARK}: the batch's REQ check refutes the reading on its "
+                                f"element-signature line ({_txt_of(p.get('note'))}); the reading left the "
+                                f"merged ledger ({was})"),
+                child_note=f"{SIG_LEDGER_MARK}: a line of the refuted reading {nf[k]} {ad[k]}, released with it")
+            for c in _READING_COLUMNS:
+                if c in led.columns:
+                    led.at[i, c] = pd.NA
+            if locked:
+                led.at[i, "locked"] = True
+            per = summ["files"].setdefault(sid, {"released": 0, "children": 0})
+            per["released"] += 1
+            per["children"] += n_ch
+            summ["released"] += 1
+            summ["children"] += n_ch
+            changed.add(sid)
+    problems = {sid: p for sid in sorted(changed) if (p := L.validate(ledgers[sid]))}
+    if problems:
+        summ["problems"] = problems
+    if changed:
+        log(f"[iso_checks] per-file ledgers: {summ['released']} M0 row(s) of a removed reading released to "
+            f"unexplained ({summ['children']} child line(s) with them) in {len(changed)} file(s)"
+            + (f"; LEDGER VALIDATION PROBLEMS {problems}" if problems else ""))
+    return changed, summ
+
+
+def record_per_file(ledgers: dict, table: pd.DataFrame | None, removed_pairs, *, mass_scale=None,
+                    log=print) -> tuple[set, dict, dict]:
+    """Record both merged-ledger gates in the per-file ledgers (in place), in the
+    one order that keeps each line's record: the isotopologue gate's rows first
+    (`reconcile_per_file`: a line becomes its parent's iso_child, or is released),
+    then the element-signature removal (`release_signature_removed`) over the M0
+    rows that are left. A reading the removal took out that a file had committed
+    on a parent's isotope line is that parent's line: the first step records it
+    so; releasing it first would leave the line unexplained.
+
+    Returns (the sids whose ledger changed, the isotopologue summary, the
+    element-signature summary)."""
+    rw, rw_summ = reconcile_per_file(ledgers, table, mass_scale=mass_scale, log=log)
+    sg, sg_summ = release_signature_removed(ledgers, removed_pairs, log=log)
+    return rw | sg, rw_summ, sg_summ
+
+
+#: the merged-ledger column listing, on a parent's row, the lines the gate gave it
+SAT_LINES_COLUMN = "isotopologue_lines"
+
+
+def parent_lines(merged: pd.DataFrame, table: pd.DataFrame | None) -> pd.DataFrame:
+    """The merged ledger with SAT_LINES_COLUMN: on each parent row the lines the
+    isotopologue gate assigned to it ('13C 283.0501 (area x1.00 of predicted, 9
+    spectra; was C14H10O5 [M-H]-)', '; '-joined in ascending m/z), empty elsewhere
+    and on every row when the gate stripped nothing (or did not run). The parent is
+    the merged row holding the parent reading nearest the gate's parent position; a
+    reagent parent has no merged row. One row per parent ion stays the contract."""
+    if merged is None:
+        return merged
+    out = merged.copy()
+    out[SAT_LINES_COLUMN] = ""
+    if not len(out) or table is None or not len(table) or "verdict" not in table.columns \
+            or not {"neutral_formula", "adduct"} <= set(out.columns):
+        return out
+    t = table[table["verdict"].astype(str) == "isotopologue"]
+    if not len(t):
+        return out
+    pos = pd.to_numeric(out["mz"], errors="coerce").to_numpy(dtype=float)
+    if "mz_trace" in out.columns:
+        mzt = pd.to_numeric(out["mz_trace"], errors="coerce").to_numpy(dtype=float)
+        pos = np.where(np.isfinite(mzt), mzt, pos)
+    nf, ad = _col_txt(out, "neutral_formula"), _col_txt(out, "adduct")
+    lines: dict = {}
+    for _, r in t.sort_values(["mz", "neutral_formula", "adduct"], kind="mergesort").iterrows():
+        pn, pa = _txt_of(r["parent_neutral"]), _txt_of(r["parent_adduct"])
+        hit = np.flatnonzero((nf == pn) & (ad == pa) & np.isfinite(pos)) if pn else []
+        if not len(hit):
+            continue
+        k = int(hit[np.argmin(np.abs(pos[hit] - float(r["parent_mz"])))])
+        was = " ".join(x for x in (_txt_of(r["neutral_formula"]), _txt_of(r["adduct"])) if x)
+        lines.setdefault(k, []).append(f"{_txt_of(r['label'])} {float(r['mz']):.4f} (area x{float(r['rho_area']):.2f} "
+                                       f"of predicted, {int(r['n_both'])} spectra; was {was})")
+    for k, v in lines.items():
+        out.iloc[k, out.columns.get_loc(SAT_LINES_COLUMN)] = "; ".join(v)
+    return out

@@ -360,7 +360,7 @@ One `plausibility_audit` row per cleared peak (`reason` `element_evidence: ...`)
 
 **Pass 7 reads the same predicate** (`directors.run_pass_certified`). On an Orbitrap-class run (not the trace sample) a certificate's isotope evidence (`iso_ok`) is the predicate confirming one of the winner's own S / Cl / Br / Si lines on a member ion -- or, on ≥ 3 channels, a member's own reagent-halogen line -- instead of a scorer label. A winner passes the gate when no member contradicts its element and, carrying a P / I its context budgets at 0 that no curated list names, it stands on ≥ 3 channels; displacing an incumbent needs (iso_ok or ≥ 3 channels) AND the gate. A **two-channel reagent-acid pair** (`[M-H]-` with one of `[M+NO3]-`, `[M+^NO3]-`, `[M+Br]-`, `[M+Cl]-`, `[M+I]-`, both bare: X and X·HX, the ordinary cluster pattern of every acid the source deprotonates) certifies the neutral mass only: it commits no non-curated off-budget P / I on any class, nor, on an Orbitrap-class run, an S / Cl / Br / Si winner none of whose elements the predicate confirms (`out["gated"]`).
 
-**At the merge** a batch REQ veto on an element-signature line removes the reading from the merged ledger ([MERGE.md](MERGE.md) §3 step 6a).
+**At the merge** a batch REQ veto on an element-signature line removes the reading from the merged ledger, and every per-file ledger that committed it releases the row to unexplained ([MERGE.md](MERGE.md) §3 step 6a).
 
 ### 3.7 Positive-mode reagent-N re-read (`relabel_reagent_n_adducts`, pipeline stage `relabel_reagent_n`, assign.py)
 

@@ -56,7 +56,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     lists), ion-only rows and isotope-labelled readings are exempt (a note). A stripped row
     whose parent the element-signature removal below takes out later is kept in the table,
     annotated `parent removed`. New table `tables/isotopologue_rows.csv`;
-    `batch_summary.json['merge_gates']['isotopologue']`.
+    `batch_summary.json['merge_gates']['isotopologue']`. The stripped line is a valid
+    assignment of the parent's isotopologue, so it is recorded, not dropped: in every
+    per-file ledger that committed the stripped reading as an M0 on the line, the row
+    becomes the parent's `iso_child` under the gate's label where that file commits the
+    parent (a reagent parent's: a reagent isotopologue), and is released to `unexplained`,
+    with a note naming the parent and the line, where it does not or where the parent
+    later left the merged ledger (`iso_checks.reconcile_per_file`). The rewritten ledgers
+    are what `per_file/<sid>_ledger.csv`, the evidence levels and the file's role counts
+    in `batch_summary.json` read, so per-file readers and a per-file publish agree with the
+    merged ledger, and the rows on the line no longer feed the stripped pair's level. Each parent's merged row
+    lists the lines it was given in the new column `isotopologue_lines` (one row per parent
+    ion stays the merged ledger's contract; the batch publish is unchanged).
   - **Element evidence: a heteroatom from a widened search needs its own isotope line.** The
     per-peak grid proposes only C / H / N / O, so every S, Cl, Br, Si, P or I formula comes
     from a widened proposer, which proposes a neutral mass and never asks for the element's
@@ -88,7 +99,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     merge, on a batch whose resolved class is Orbitrap, a batch REQ veto on an
     element-signature line removes the reading (curated and known-species readings stay):
     `batch_summary.json['merge_gates']['element_signature']`, and the series is re-stamped
-    without it.
+    without it. Every per-file ledger that committed a reading that left the merged ledger
+    releases the row, and its isotope lines, to `unexplained`, with a note naming the refuted
+    line (`iso_checks.release_signature_removed`); a reading another merged row still holds
+    (the one a known-species decision marks) reads `reading_left: false` and stays. Per-file
+    readers and a per-file publish then agree with the merged ledger, and no pooled pair holds
+    the removed reading. The re-stamp reads the rewritten per-file ledgers (after either merged
+    gate rewrote one), so no spectrum names a released reading's ion on its isotope lines.
   - **Nitrate Orbitrap runs read the carbon skeleton of organonitrates.** An -ONO2 / -NO2
     group adds N, 2 O and one DBE, so dinitrates, trinitrates and nitroaromatics failed Van
     Krevelen windows written for CHO skeletons. With `ContextProfile.nox_skeleton` on, the

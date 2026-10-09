@@ -529,11 +529,18 @@ def test_batch_strips_stamps_and_levels(tmp_path, monkeypatch):
     on = ts[np.isclose(ts["mz"], lmz)]
     assert len(on) == 14 and (on["neutral_formula"].isna() | (on["neutral_formula"].astype(str) == "")).all()
     assert (on["ion_formula"] == _ionf(*P)).all() and (on["role"] == "iso_child").all(), on[["role", "ion_formula"]]
-    # the pooled pair reads the veto, as the merged ledger does
-    # (this tiny batch calibrates no degeneracy window, so no level is assessed: the
-    # pair's hard fact is what the scale's step 0 reads -- 5b wherever levels run)
-    r = lev[(lev["neutral_formula"] == R[0]) & (lev["adduct"] == R[1])].iloc[0]
-    assert bool(r["iso_veto"]) and str(r["iso_note"]).startswith("isotopologue: the line is the 13C"), r.to_dict()
+    # the per-file ledgers record the line as the parent's 13C child
+    # (iso_checks.reconcile_per_file; tests/test_isotopologue_ledger.py), so the
+    # stripped pair is no longer pooled: no level, and the SAT veto below reads no pair
+    assert not ((lev["neutral_formula"] == R[0]) & (lev["adduct"] == R[1])).any()
+    for f in os.listdir(os.path.join(tmp_path / "a", "per_file")):
+        if f.endswith("_ledger.csv"):
+            pf = pd.read_csv(os.path.join(tmp_path / "a", "per_file", f))
+            r = pf.loc[np.isclose(pf["mz"], lmz)].iloc[0]
+            assert r["role"] == "iso_child" and r["iso_label"] == "13C" and r["parent_neutral_formula"] == P[0], f
+    assert g["per_file"]["iso_child"] >= 2 and g["per_file"]["released"] == 0, g["per_file"]
+    assert str(merged.loc[merged["neutral_formula"] == P[0], IC.SAT_LINES_COLUMN].iloc[0]).startswith(
+        f"13C {lmz:.4f} (area x")
     # the parent's 13C slot is free now: rule C reads its carbons and agrees
     assert not lev.loc[(lev["neutral_formula"] == P[0]) & (lev["adduct"] == P[1]), "iso_veto"].astype(bool).any()
     iso = pd.read_csv(os.path.join(tmp_path / "a", "tables", "iso_checks.csv"))
@@ -628,4 +635,15 @@ def test_batch_parent_removed_by_the_element_signature_gate(tmp_path, monkeypatc
     assert bool(req["veto"]) and "81Br" in str(req["line"])
     r = lev[(lev["neutral_formula"] == R[0]) & (lev["adduct"] == R[1])]
     assert not len(r) or not r["iso_veto"].astype(bool).any(), r.to_dict("records")
+    # the per-file ledgers release R's line: its parent reading has left
+    assert gates["isotopologue"]["per_file"]["released_parent_removed"] >= 2, gates["isotopologue"]["per_file"]
+    for f in os.listdir(os.path.join(d, "per_file")):
+        if f.endswith("_ledger.csv"):
+            pf = pd.read_csv(os.path.join(d, "per_file", f))
+            x = pf.loc[np.isclose(pf["mz"], lmz)].iloc[0]
+            assert x["role"] == "unexplained" and "then left the merged ledger" in str(x["commentary"]), f
+            # ... and PB's own reading, which the batch refuted, is released too
+            y = pf.loc[np.isclose(pf["mz"], pmz)].iloc[0]
+            assert y["role"] == "unexplained" and str(y["commentary"]).startswith(f"CLEARED ({IC.SIG_LEDGER_MARK}:")
+    assert gates["element_signature"]["per_file"]["released"] >= 2, gates["element_signature"]
     assert seen["sat"] == seen["remove"] and isinstance(seen["sat"], frozenset) and len(seen["sat"]) > 0
