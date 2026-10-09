@@ -358,7 +358,7 @@ def stage_a_iso_pairs(client, sample_id: str, ledger: pd.DataFrame, profile,
             f"residual left UNASSIGNED (not a clean result)")
         out["scoring_empty"] = True
         return out
-    arb = arbitrate(scored, cfg)
+    arb = arbitrate(scored, cfg, profile)
     win = arb.get("winners", pd.DataFrame())
     kids = arb.get("iso_children", pd.DataFrame())
     pair_by_light = {p["light_pid"]: p for _, p in pairs.iterrows()}
@@ -480,7 +480,7 @@ def stage_b_series(client, sample_id: str, ledger: pd.DataFrame, profile,
             # already in the ledger (CHIO2 [M+I]- == [HCOOH-H+I2]-) and
             # un-confirmable, 127I being monoisotopic. ambient-air's max_I=0 rejects
             # them here now, exactly as max_F/max_P=0 handle F and P.
-            keep, _why = X.filter_by_context(f, profile.label)
+            keep, _why = X.filter_by_context(f, profile)
             if not keep:
                 continue
             ok, _why = C.dbe_ok(f)        # structural gates: DBE + oxygen cap
@@ -504,7 +504,7 @@ def stage_b_series(client, sample_id: str, ledger: pd.DataFrame, profile,
             f"proposals -- server likely degraded; residual left UNASSIGNED")
         out["scoring_empty"] = True
         return out
-    arb = arbitrate(scored, cfg)
+    arb = arbitrate(scored, cfg, profile)
     for _, w in arb.get("winners", pd.DataFrame()).iterrows():
         f = w["neutral"]
         meta = proposals.get(f)

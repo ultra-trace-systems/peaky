@@ -63,7 +63,9 @@ where C30 needs 0.33x). So when the batch's width model is TOF-class
                  another declared core present in the segment is not tested: a TOF line
                  there blends with that reagent rung, whose height is not 13C.
 
-A passing rung becomes a reagent row of the batch stamp (`stamp_rows`), and a merged
+A declared core with no analyte reading (REAGENT_ONLY_CORES: the (HNO3)2.NO3- dimer
+core) that passes the same presence test is a reagent row too, as rung n = 0
+(`reagent_core_rows`). A passing rung becomes a reagent row of the batch stamp (`stamp_rows`), and a merged
 ANALYTE row whose m/z sits within the window of a passing rung is taken out of the
 merged ledger (`strip_rung_rows`) and listed in tables/reagent_water.csv: its reading
 is the water cluster. After the TOF test the strip follows the segments: a row leaves
@@ -624,6 +626,49 @@ def rung_test(resolution) -> dict | None:
             "m1_carbons": TOF_M1_CARBONS, "m1_blend_fwhm": TOF_M1_BLEND_FWHM, "strip_by_segment": True}
 
 
+#: declared cores with NO analyte reading: the (HNO3)2.NO3- dimer core and its 15N
+#: twin. NO3- and HNO3.NO3- are the HNO3 analyte readings (the bare monomer and the
+#: [M+NO3]- cluster) and stay so; the dimer core is reagent-side, like its water
+#: rungs, so the core line itself is a reagent row of the stamp (rung n = 0)
+REAGENT_ONLY_CORES = ("H2N3O9", "H2^N3O9")
+
+
+def reagent_core_rows(ts: pd.DataFrame | None, water_cores, *, tol_ppm: float, polarity: str = "-",
+                      min_presence: float = MIN_PRESENCE, decoy_x: float = DECOY_X,
+                      decoy_floor: float = DECOY_FLOOR, resolution=None) -> pd.DataFrame:
+    """The REAGENT_ONLY_CORES the profile declares, as rung rows with n = 0 (columns
+    TABLE_COLUMNS minus `displaced`), where the core passes the rung presence test in a
+    segment: present in >= `min_presence` of the segment's spectra and >= `decoy_x` x
+    its decoys (the fixed Da offsets' highest presence; on a TOF-class width model the
+    mean presence at +-TOF_DECOY_FWHM line widths, as the TOF rung test reads them)."""
+    empty = pd.DataFrame(columns=[c for c in TABLE_COLUMNS if c != "displaced"])
+    cs = [c for c in cores(water_cores, polarity=polarity) if c.composition in REAGENT_ONLY_CORES]
+    if not cs or ts is None or not len(ts):
+        return empty
+    fwhm = tof_fwhm(resolution)
+    seg = segments(ts)
+    frame = ts[["sample_item_id", "mz"]].dropna()
+    sorted_mz = {sid: np.sort(g["mz"].to_numpy(dtype=float)) for sid, g in frame.groupby("sample_item_id")}
+    by_seg = {s: list(seg.index[seg == s]) for s in sorted(seg.unique())}
+    charge = "+" if polarity == "+" else "-"
+    rows = []
+    for core in cs:
+        target = np.array([core.mz])
+        if fwhm is None:
+            offsets, pool = DECOY_OFFSETS_DA, np.max
+        else:
+            w = float(fwhm(core.mz))
+            offsets, pool = tuple(sgn * k * w for k in TOF_DECOY_FWHM for sgn in (-1.0, 1.0)), np.mean
+        passed: dict[int, list] = {}
+        for s, sids in by_seg.items():
+            pres, mzs = _presence(sorted_mz, sids, target, tol_ppm)
+            dec = float(pool([_presence(sorted_mz, sids, target + off, tol_ppm)[0][0] for off in offsets]))
+            if pres[0] >= min_presence and pres[0] >= decoy_x * max(dec, decoy_floor):
+                passed.setdefault(0, []).append((s, float(pres[0]), dec, mzs[0]))
+        rows.extend(_rung_rows(core, passed, charge))
+    return pd.DataFrame(rows, columns=empty.columns) if rows else empty
+
+
 def measure(ts: pd.DataFrame | None, profile, *, tol_ppm: float, log=print, resolution=None) -> dict:
     """The batch's ladder for a reagent profile: {rungs, n_cores, segment_sizes,
     tol_ppm, rung_test, segment_of}. Empty rungs when the profile declares no water cores
@@ -643,6 +688,11 @@ def measure(ts: pd.DataFrame | None, profile, *, tol_ppm: float, log=print, reso
     if out["rung_test"]:
         out["segment_of"] = seg
     out["rungs"] = detect(ts, wc, tol_ppm=tol_ppm, polarity=pol, resolution=resolution)
+    # ... and the declared reagent-only cores themselves (n = 0)
+    core_rows = reagent_core_rows(ts, wc, tol_ppm=tol_ppm, polarity=pol, resolution=resolution)
+    if len(core_rows):
+        out["rungs"] = (pd.concat([core_rows, out["rungs"]], ignore_index=True)
+                        if len(out["rungs"]) else core_rows)
     r = out["rungs"]
     log(f"[reagent-water] {len(r)} passing rung(s) over {out['n_cores']} core(s) in "
         f"{len(out['segment_sizes'])} segment(s) {out['segment_sizes']} at +-{tol_ppm:.2f} ppm"

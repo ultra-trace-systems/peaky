@@ -28,7 +28,7 @@ from peaky.chem import chemistry as C
 from peaky.assignment import ledger as L
 from peaky.assignment import tiers as T
 
-__version__ = "0.5.0"   # the element-evidence gate (gate_element_evidence); 0.4.0 element-budget demote (demote_off_budget); 0.3.0 carbon-cluster rule: F no longer exempts
+__version__ = "0.6.0"   # NOx-skeleton readings (profile=); 0.5.0 the element-evidence gate (gate_element_evidence); 0.4.0 element-budget demote (demote_off_budget); 0.3.0 carbon-cluster rule: F no longer exempts
 
 # thresholds (loose on purpose — flag the clear coincidences only)
 N_HIGH_OC = 3       # N>=3 combined with...
@@ -73,13 +73,50 @@ def _oc(cnt: dict) -> float:
     return cnt.get("O", 0) / nc if nc else 0.0
 
 
-def is_oxygen_monster(cnt: dict) -> bool:
-    """O/C strictly above OC_MONSTER (the oxygen-lattice mass-fit ratio). Pure
-    arithmetic -- the DEMOTE additionally gates on degeneracy mass-saturation."""
-    return cnt.get("C", 0) > 0 and _oc(cnt) > OC_MONSTER
+# --- the NOx-skeleton readings (a run whose context profile sets nox_skeleton) --
+# An -ONO2 / -NO2 group adds 2 O and one DBE to its carbon skeleton, so the raw
+# O/C and DBE/C of a dinitrate or a nitroaromatic read as an oxygen lattice or a
+# carbon cluster (a C5 dihydroxy dinitrate is O/C 1.6; dinitrophenol DBE/C 1.0).
+# With the profile's switch on, these gates read the skeleton too
+# (contexts.nox_skeletons: up to 3 groups) and fire only when EVERY reading
+# does. A formula with more N than the context's cap or than three groups can
+# carry is judged raw, as before, and so is a C1-C2 neutral: the context filter
+# reads no Van Krevelen ratio below Ceff 3 (contexts.vk_readings), and an
+# "aromatic" nitro skeleton means nothing at C2. Without a profile, or with the
+# switch off (positive mode, every other context), nothing changes.
+def _readings(cnt: dict, profile) -> list[dict]:
+    """The raw counts, then the NOx skeletons when the profile reads them, the
+    neutral has Ceff = C + Si >= 3 (as the filter's ratio test) and its N is
+    within min(3, the context's N cap)."""
+    out = [cnt]
+    if profile is None or not getattr(profile, "nox_skeleton", False):
+        return out
+    if cnt.get("C", 0) + cnt.get("Si", 0) < 3:
+        return out
+    from peaky.chem import contexts as X
+    n_all = cnt.get("N", 0) + cnt.get("^N", 0)
+    if n_all > min(X.NOX_K_MAX, int(getattr(profile, "max_N", 99))):
+        return out
+    return out + [sk for _k, sk in X.nox_skeletons(cnt, profile)]
 
 
-def is_carbon_cluster(cnt: dict) -> bool:
+def is_oxygen_monster(cnt: dict, profile=None) -> bool:
+    """O/C strictly above OC_MONSTER (the oxygen-lattice mass-fit ratio) on every
+    reading (`_readings`: the raw neutral, and its NOx skeletons when `profile`
+    reads them). Pure arithmetic -- the DEMOTE additionally gates on degeneracy
+    mass-saturation."""
+    return cnt.get("C", 0) > 0 and min(_oc(r) for r in _readings(cnt, profile)) > OC_MONSTER
+
+
+def _small_acid(cnt: dict, profile) -> bool:
+    """A C3-C4 polycarbonyl acid the profile's small-acid band admits."""
+    if profile is None or not getattr(profile, "small_acid_band", False):
+        return False
+    from peaky.chem import contexts as X
+    return X.small_acid_band_applies(cnt, profile)
+
+
+def is_carbon_cluster(cnt: dict, profile=None) -> bool:
     """C>=2 skeleton whose DBE/C >= DBE_PER_C_MONSTER, EXCLUDING radicals
     (half-integer DBE are exempt). H+halogen <= N+2 is the equivalent integer
     test (C.dbe already counts F/Cl/Br like H), but we compute the real DBE so
@@ -88,45 +125,65 @@ def is_carbon_cluster(cnt: dict) -> bool:
     (PFCA DBE/C~0.2) can never trip this gate, while C12HF / C25H3F3 style
     bare-carbon fits (DBE/C~1) previously slipped through on an F-free clause
     (2026-07-04 [15N]-nitrate run: 15 such F-decorated clusters tier-Assigned).
+    With a `profile` that reads NOx skeletons, a nitroaromatic is a cluster only
+    when its skeleton is one too (dinitrophenol reads as phenol, DBE/C 0.67);
+    with its small-acid band, a C3-C4 polycarbonyl acid the band admits
+    (acetylenedicarboxylic C4H2O4, DBE/C 1.0) is exempt.
     """
     nc = cnt.get("C", 0)
     if nc < 2:
         return False
     if C.odd_electron(cnt):            # half-integer DBE -> radical, EXEMPT
         return False
-    return C.dbe(cnt) / nc >= DBE_PER_C_MONSTER
+    if _small_acid(cnt, profile):
+        return False
+    return min(C.dbe(r) / nc for r in _readings(cnt, profile)) >= DBE_PER_C_MONSTER
+
+
+def _hetero_flag(cnt: dict) -> str | None:
+    """The heteroatom-coincidence flags of one reading (None when neither fires)."""
+    nc = cnt.get("C", 0)
+    n, o = cnt.get("N", 0), cnt.get("O", 0)
+    oc = o / nc if nc else 0.0
+    if n >= N_HIGH_OC and oc >= OC_HIGH:
+        return f"N{n}, O/C {oc:.1f} (heteroatom coincidence)"
+    if n >= N_VERY_HIGH and o >= O_HIGH:
+        return f"N{n}O{o} (heteroatom coincidence)"
+    return None
 
 
 def implausible(neutral_formula: str, *, tier: str | None = None,
-                polarity: str | None = None) -> str | None:
+                polarity: str | None = None, profile=None) -> str | None:
     """Return a short reason string if `neutral_formula` looks like a mass-coincidence
     fit rather than a real molecule, else None. Only Candidate-tier is scrutinised
     (pass tier=None to scrutinise regardless). `polarity` ('+'/'-') enables the
-    wrong-mode-halogen check."""
+    wrong-mode-halogen check. `profile` (the run's ContextProfile): with its
+    nox_skeleton switch the O/C, heteroatom and carbon-cluster checks read the
+    NOx skeletons too (`_readings`) and flag only when every reading does; a
+    formula with more N than min(3, the context's N cap) is judged raw."""
     if tier is not None and str(tier) != "Candidate":
         return None
     c = C.parse_formula(str(neutral_formula))
     nc = c.get("C", 0)
     if nc == 0:
         return None                      # carbon-free handled elsewhere (reagent/inorganic)
-    h, n, o = c.get("H", 0), c.get("N", 0), c.get("O", 0)
+    h, o = c.get("H", 0), c.get("O", 0)
     f = c.get("F", 0)
     br, cl = c.get("Br", 0), c.get("Cl", 0)
     hc, oc = h / nc, o / nc
     # Terse labels (the full meaning is spelled out in the scrutiny-page legend);
     # keeping them short stops the table overflowing the page width.
-    if is_oxygen_monster(c):    # O/C beyond the HOM ceiling -> oxygen-lattice monster
+    if is_oxygen_monster(c, profile):    # O/C beyond the HOM ceiling -> oxygen-lattice monster
         return f"O/C {oc:.1f} (oxygen-lattice monster)"
-    if n >= N_HIGH_OC and oc >= OC_HIGH:
-        return f"N{n}, O/C {oc:.1f} (heteroatom coincidence)"
-    if n >= N_VERY_HIGH and o >= O_HIGH:
-        return f"N{n}O{o} (heteroatom coincidence)"
+    het = _hetero_flag(c)
+    if het and all(_hetero_flag(r) for r in _readings(c, profile)[1:]):
+        return het
     if f >= F_HIGH:           # heavily fluorinated: 19F is 100% monoisotopic
         # NB any 13C/81Br satellites the row carries confirm the CARBON count / the
         # adduct halogen, NOT the fluorine -- 19F has no heavier stable isotope, so
         # the F COUNT is never isotope-confirmable (do NOT say "no isotope twin").
         return f"F{f}: 19F monoisotopic, fluorine count not isotope-confirmable"
-    if is_carbon_cluster(c):  # DBE/C>=1.0, F-free, integer-DBE (radicals exempt)
+    if is_carbon_cluster(c, profile):  # DBE/C>=1.0, integer-DBE (radicals exempt)
         return f"DBE/C {C.dbe(c) / nc:.2f} (carbon cluster, H<=N+2)"
     if f == 0 and hc < HC_FLOOR:     # genuine carbon-rich skeleton (F not displacing H)
         return f"H/C {hc:.2f} (carbon-rich)"
@@ -135,10 +192,11 @@ def implausible(neutral_formula: str, *, tier: str | None = None,
     return None
 
 
-def scan(merged, *, polarity: str | None = None) -> list[dict]:
+def scan(merged, *, polarity: str | None = None, profile=None) -> list[dict]:
     """Flag Candidate-only neutrals that look implausible. Returns one dict per
     distinct neutral: {neutral_formula, reason, ion_score, tier}. A neutral that is
-    Assigned in any ion channel is excluded (it is corroborated)."""
+    Assigned in any ion channel is excluded (it is corroborated). `profile`: the
+    run's ContextProfile (`implausible`)."""
     if merged is None or "neutral_formula" not in getattr(merged, "columns", []):
         return []
     g = merged.dropna(subset=["neutral_formula"]).copy()
@@ -150,7 +208,7 @@ def scan(merged, *, polarity: str | None = None) -> list[dict]:
     for f, sub in g.groupby("neutral_formula"):
         best = ("Assigned" if has_tier and (sub["tier"] == "Assigned").any()
                 else "Candidate")
-        reason = implausible(f, tier=best, polarity=polarity)
+        reason = implausible(f, tier=best, polarity=polarity, profile=profile)
         if reason:
             sc = sub["ion_score"].max() if "ion_score" in sub.columns else None
             out.append({"neutral_formula": f, "reason": reason, "tier": best,
@@ -230,19 +288,21 @@ def _demote_row(ledger, i, *, reason, audit, evidence, degeneracy_note, n_iso, l
             "n_iso": n_iso})
 
 
-def demote_oxygen_monsters(ledger: pd.DataFrame, *, audit=None, log=print) -> dict:
+def demote_oxygen_monsters(ledger: pd.DataFrame, *, audit=None, log=print, profile=None) -> dict:
     """Demote M0 assignments that are oxygen-lattice 'monsters': O/C > OC_MONSTER
     AND mass-degenerate (the degeneracy audit counts >= 3 plausible ions in the
     calibrated window, or flags it MASS-SATURATED). NOT niso-gated -- a 13C satellite
     confirms the carbon count, not the oxygen count, so it would wrongly exempt a
     real O-monster. Real HOMs (O/C<=1.14) are spared by the ratio cut; high-O fits
     on a unique or two-ion window (the small polyacids: oxalic, malonic ...) are
-    spared by the second leg. Assigned->Candidate + below_assignability. Demote-only."""
+    spared by the second leg. Assigned->Candidate + below_assignability. Demote-only.
+    `profile`: the run's ContextProfile -- with nox_skeleton an organonitrate
+    is judged on its skeleton O/C too (`is_oxygen_monster`)."""
     n = 0
     has_note = "degeneracy_note" in ledger.columns
     for i in _m0_index(ledger):
         cnt = C.parse_formula(str(ledger.at[i, "neutral_formula"] or ""))
-        if not is_oxygen_monster(cnt):
+        if not is_oxygen_monster(cnt, profile):
             continue
         note = ledger.at[i, "degeneracy_note"] if has_note else None
         if not _mass_degenerate(ledger.loc[i]):   # ratio alone is not enough -- needs a degenerate mass
@@ -257,18 +317,20 @@ def demote_oxygen_monsters(ledger: pd.DataFrame, *, audit=None, log=print) -> di
     return {"o_demoted": n}
 
 
-def demote_carbon_clusters(ledger: pd.DataFrame, *, audit=None, log=print) -> dict:
+def demote_carbon_clusters(ledger: pd.DataFrame, *, audit=None, log=print, profile=None) -> dict:
     """Demote M0 assignments resting on a bare-carbon skeleton: DBE/C >=
     DBE_PER_C_MONSTER (H+halogen<=N+2), C>=2, with the HALF-INTEGER-DBE radical
     EXEMPTION (radicals carry half-integer DBE; carbon-cluster monsters are
     integer-DBE). This is distinct from the H/C<0.35 carbon-rich demote in
     cleanup.py (kept unchanged): the two together cover the carbon-coincidence
     family without catching real aromatics (pyridine/coumarin/furfural sit below
-    DBE/C 1.0). Assigned->Candidate + below_assignability. Demote-only."""
+    DBE/C 1.0). Assigned->Candidate + below_assignability. Demote-only.
+    `profile`: the run's ContextProfile (`is_carbon_cluster`: the NOx skeleton
+    and the small-acid exemption)."""
     n = 0
     for i in _m0_index(ledger):
         cnt = C.parse_formula(str(ledger.at[i, "neutral_formula"] or ""))
-        if not is_carbon_cluster(cnt):
+        if not is_carbon_cluster(cnt, profile):
             continue
         nc = cnt.get("C", 0)
         dpc = C.dbe(cnt) / nc
@@ -284,7 +346,7 @@ def demote_carbon_clusters(ledger: pd.DataFrame, *, audit=None, log=print) -> di
     return {"c_cluster_demoted": n}
 
 
-def demote_off_budget(ledger: pd.DataFrame, *, context: str | None,
+def demote_off_budget(ledger: pd.DataFrame, *, context,
                       curated=frozenset(), audit=None, log=print) -> dict:
     """Demote M0 commits whose neutral lies outside the run context's ELEMENT
     BUDGET (contexts.element_budget: the structural gate, the carbon-free
@@ -323,7 +385,7 @@ def demote_off_budget(ledger: pd.DataFrame, *, context: str | None,
     if not context:
         return {"budget_demoted": 0, "budget_cf2_kept": 0}
     from peaky.chem import contexts as X
-    profile = X.get_context(context)
+    profile = X.as_profile(context)
     open_f = dataclasses.replace(profile, max_F=10 ** 6)   # the budget with fluorine lifted
     curated = frozenset(curated or ())
     verdict: dict = {}
@@ -575,13 +637,19 @@ def gate_element_evidence(ledger: pd.DataFrame, *, profile, curated=frozenset(),
 
 
 def demote_implausible(ledger: pd.DataFrame, *, audit=None, log=print,
-                       context: str | None = None, curated=frozenset()) -> dict:
+                       context=None, curated=frozenset()) -> dict:
     """The shared-oracle demotes that fire on a single-file or merged ledger
     without a time series: O-monster + carbon-cluster, and -- given the run's
-    `context` -- the element-budget demote (`demote_off_budget`). All are
-    demote-only and feed the same audit list."""
-    o = demote_oxygen_monsters(ledger, audit=audit, log=log)
-    c = demote_carbon_clusters(ledger, audit=audit, log=log)
+    `context` (a name, or the run's ContextProfile with its run-level switches,
+    which the O-monster and carbon-cluster reads honour) -- the element-budget
+    demote (`demote_off_budget`). All are demote-only and feed the same audit
+    list."""
+    profile = None
+    if context:
+        from peaky.chem import contexts as X
+        profile = X.as_profile(context)
+    o = demote_oxygen_monsters(ledger, audit=audit, log=log, profile=profile)
+    c = demote_carbon_clusters(ledger, audit=audit, log=log, profile=profile)
     if not context:
         return {**o, **c}
     b = demote_off_budget(ledger, context=context, curated=curated, audit=audit, log=log)

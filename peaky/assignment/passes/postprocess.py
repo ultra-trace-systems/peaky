@@ -812,7 +812,7 @@ def _ion_formula_str(neutral: str, adduct: str) -> str:
 
 
 def rearbitrate_offcal_degenerate(
-    ledger: pd.DataFrame, cfg: PassConfig, *, log=print
+    ledger: pd.DataFrame, cfg: PassConfig, *, log=print, profile=None
 ) -> dict:
     """Displace off-calibration, uncorroborated, high-DBE 'monster' M0 winners
     with an on-calibration, plausible, less-unsaturated stored alternative.
@@ -821,7 +821,10 @@ def rearbitrate_offcal_degenerate(
     off-cal gate is IDENTICAL to the one the report tier engine applies -- the
     point being to apply it at winner-selection, not only at tiering. Returns
     {'swapped': n}. Mutates the ledger in place (overwrite commits). No-op when
-    uncalibrated."""
+    uncalibrated. `profile`: the run's ContextProfile -- an alternative is
+    judged plausible on the same readings the run's plausibility demotes use
+    (`plausibility.implausible(profile=)`: the NOx skeleton on a nitrate run);
+    None = the raw gates."""
     from peaky.assignment import tiers as T
     from peaky.assignment import plausibility as PL
     from .core import confidence_label
@@ -877,7 +880,7 @@ def rearbitrate_offcal_degenerate(
                 continue
             if C.dbe(C.parse_formula(str(af))) >= dbe_w:  # only toward LESS unsaturation
                 continue
-            if PL.implausible(str(af)) is not None:    # ... and only to a plausible one
+            if PL.implausible(str(af), profile=profile) is not None:   # ... and only to a plausible one
                 continue
             raw = a.get("raw_score")
             raw = a.get("ion_score") if raw is None else raw

@@ -729,3 +729,57 @@ def test_a_tof_batch_keeps_a_dry_segment_reading_on_a_humid_segment_rung(monkeyp
     assert sorted(merged["neutral_formula"]) == ["C9H16O6", "C9H8O4"]
     note = merged.set_index("neutral_formula").loc["C9H8O4", "tier_reason"]
     assert "Br(79Br).(H2O)5 of segment(s) 1" in note and "files are in segment(s) 0" in note
+
+
+# --- the (HNO3)2.NO3- reagent core -------------------------------------------------------------------------
+def _no3_ts(extra, n=20):
+    t0 = pd.Timestamp("2026-01-01", tz="UTC")
+    rows = []
+    for i in range(n):
+        for m in [61.98837, 124.98402] + list(extra):
+            rows.append(dict(sample_item_id=f"s{i:02d}", datetime_utc=t0 + pd.Timedelta(minutes=i),
+                             mz=float(m), height=1000.0))
+    return pd.DataFrame(rows)
+
+
+def test_hno3_dimer_core_is_stamped_as_a_reagent_row():
+    core = [c for c in RW.cores(P.PROFILES["NO3"].water_cores) if c.composition == "H2N3O9"][0]
+    assert abs(core.mz - 187.9797) < 1e-3
+    out = RW.measure(_no3_ts([core.mz]), P.PROFILES["NO3"], tol_ppm=3.0, log=lambda *a: None)
+    r = out["rungs"]
+    row = r[(r["core"] == "H2N3O9") & (r["n"] == 0)]
+    assert len(row) == 1 and row["ion_formula"].iloc[0] == "H2N3O9-"
+    st = RW.stamp_rows(r)
+    assert "H2N3O9-" in set(st.loc[st["role"] == "reagent", "ion_formula"])
+    # absent core: nothing; NO3- / HNO3.NO3- (the HNO3 analyte readings) are never stamped
+    r0 = RW.measure(_no3_ts([]), P.PROFILES["NO3"], tol_ppm=3.0, log=lambda *a: None)["rungs"]
+    assert not len(r0[r0["n"] == 0])
+    assert set(r.loc[r["n"] == 0, "core"]) == {"H2N3O9"}
+    # the labelled twin under the 15N profile
+    core15 = [c for c in RW.cores(P.PROFILES["NO3_15N"].water_cores) if c.composition == "H2^N3O9"][0]
+    r15 = RW.measure(_no3_ts([core15.mz]), P.PROFILES["NO3_15N"], tol_ppm=3.0, log=lambda *a: None)["rungs"]
+    assert list(r15.loc[r15["n"] == 0, "core"]) == ["H2^N3O9"]
+    # a merged analyte row on the core's m/z is the reagent's, as on a rung
+    merged = pd.DataFrame({"mz": [core.mz, 250.0], "neutral_formula": ["C2H4O8", "C5H6O5"],
+                           "adduct": ["[M-H]-", "[M-H]-"], "tier": ["Candidate", "Assigned"]})
+    kept, stripped = RW.strip_rung_rows(merged, r, tol_ppm=3.0, log=lambda *a: None)
+    assert list(kept["neutral_formula"]) == ["C5H6O5"] and len(stripped) == 1
+    assert np.isfinite(r["mz"]).all()
+
+
+def test_the_dimer_core_needs_presence_and_a_clean_decoy():
+    """The core rides the rung test: present in 4 of 20 spectra it is not stamped (presence 0.2 <
+    MIN_PRESENCE); present everywhere with a line as present 0.02 Da off it (its decoy: the
+    highest decoy presence, not the lowest) it is not stamped either."""
+    core = [c for c in RW.cores(P.PROFILES["NO3"].water_cores) if c.composition == "H2N3O9"][0]
+
+    def n0(ts):
+        r = RW.measure(ts, P.PROFILES["NO3"], tol_ppm=3.0, log=lambda *a: None)["rungs"]
+        return r[(r["core"] == "H2N3O9") & (r["n"] == 0)]
+
+    sparse = _no3_ts([])
+    sparse = pd.concat([sparse, sparse.drop_duplicates("sample_item_id").head(4).assign(mz=core.mz)],
+                       ignore_index=True)
+    assert len(n0(sparse)) == 0
+    assert len(n0(_no3_ts([core.mz]))) == 1
+    assert len(n0(_no3_ts([core.mz, core.mz + 0.02]))) == 0

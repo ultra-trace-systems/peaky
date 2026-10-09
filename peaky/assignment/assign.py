@@ -357,8 +357,10 @@ def _stage_plausibility(st):
     label = getattr(st.profile, "label", None)
     curated = passes.known_formulas(getattr(st.profile, "polarity", "negative"), label)
     curated = curated | frozenset(getattr(st.cfg, "reflist_formulas", None) or ())
+    # the run's own profile (its run-level switches: the NOx skeleton reading)
     return plausibility.demote_implausible(
-        st.led, audit=st.plaus_audit, log=st.log, context=label, curated=curated)
+        st.led, audit=st.plaus_audit, log=st.log, context=st.profile if label else None,
+        curated=curated)
 
 
 def _curated(st) -> frozenset:
@@ -393,6 +395,33 @@ def _profile_name_for(adducts) -> str | None:
     return names[0] if len(names) == 1 else None
 
 
+def _reagent_name(reagent_profile, adducts) -> str | None:
+    """The registered name of the run's reagent profile: the caller's (a
+    ReagentProfile or any of its aliases), else the profile whose analyte
+    channels are exactly `adducts`; None when neither names one."""
+    from peaky.chem import profiles as PR
+    name = getattr(reagent_profile, "name", None) or reagent_profile or _profile_name_for(adducts)
+    if not name:
+        return None
+    try:
+        return PR.resolve(str(name)).name
+    except (KeyError, ValueError):
+        return str(name)
+
+
+def run_context_profile(profile, *, reagent_profile, adducts, instrument_class,
+                        trace_sample) -> "contexts.ContextProfile":
+    """The context profile a run judges its formulas on (`contexts.run_profile`):
+    ``profile`` (a ContextProfile or a context name) with the run-level switches
+    its reagent (`_reagent_name` of ``reagent_profile`` / ``adducts``), its
+    instrument class and the trace-first flag turn on. assign.run and a batch's
+    own record (assign_batch: the level summary, batch_summary.json) both call
+    this, so the two cannot derive different switches from the same inputs."""
+    return contexts.run_profile(
+        contexts.as_profile(profile), reagent=_reagent_name(reagent_profile, adducts),
+        instrument_class=instrument_class, trace_sample=bool(trace_sample))
+
+
 def _stage_evidence(st):
     """The evidence level of every committed M0 row on the scale of peaky
     0.10.0 (docs/EVIDENCE_LEVELS.md), the file levelled ALONE in "adapted"
@@ -413,6 +442,8 @@ def _stage_evidence(st):
     ri = evidence.file_run_inputs(
         sample_id=getattr(st, "sample_id", "") or "file", reagent=reagent,
         context=getattr(getattr(st, "profile", None), "label", None) or "ambient-air",
+        context_flags=(contexts.profile_flags(st.profile)
+                       if isinstance(getattr(st, "profile", None), contexts.ContextProfile) else None),
         resolution=getattr(st, "resolving_power", None),
         reflists_active=reflists.active_versions(getattr(st, "reflists_active", None)),
         height_gate_cps=gate, noise_edge_cps=getattr(st.cfg, "noise_edge_cps", None) if st.cfg is not None else None,
@@ -575,7 +606,7 @@ _STAGES = [
     # tiers see the committed formula), so a degenerate competitor the local scorer
     # over-ranked can't keep the M0 slot it will only ever be tier-demoted out of.
     _Stage("rearbitrate", lambda st: passes.rearbitrate_offcal_degenerate(
-        st.led, st.cfg, log=st.log)),
+        st.led, st.cfg, log=st.log, profile=st.profile)),
     # the element-evidence gate: every proposer has run (passes 3/4/5/7, the late
     # series families, pass 6, cleanup, siloxane, the labelled rescue,
     # re-arbitration), so this is the last word on a widened search's heteroatom
@@ -925,6 +956,17 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # the class-gated stages' instrument class: the batch's own when it handed one
     if cfg.instrument_class is None:
         cfg.instrument_class = instrument_class_of(cfg.instrument_type, width_model)
+    # the run's own context profile: a nitrate-reagent run on an Orbitrap-class
+    # axis reads the carbon skeleton of organonitrates / nitroaromatics and the
+    # C3-C4 small-acid band (contexts.run_profile); every consumer below -- the
+    # grid filter, residual, cleanup, the labelled rescue, degeneracy, the
+    # plausibility demotes and the evidence level's space -- sees THIS profile
+    profile = run_context_profile(
+        profile, reagent_profile=reagent_profile, adducts=analyte_adducts,
+        instrument_class=cfg.instrument_class, trace_sample=getattr(cfg, "trace_sample", False))
+    if contexts.profile_flags(profile):
+        log(f"[run] context {profile.label}: {', '.join(sorted(contexts.profile_flags(profile)))} on "
+            f"(nitrate reagent, {cfg.instrument_class}-class axis)")
     if scoring_snapshot.get("snr_source") == io_mascope.SNR_SOURCE_POISSON:
         _edge = scoring_snapshot.get("snr_edge")
         log(f"[run] signal-to-noise: the peak table's column does not track height "
@@ -1073,12 +1115,16 @@ def run(sample_id: str, context: str = "ambient-air", *,
     st["side_channels"] = list(extra_channels)
     st["admitted"] = {"height": adm["height"], "occurrence": adm["occurrence"],
                       "rejected": adm["rejected"]}
+    # the run-level switches of the context profile this file was judged on
+    # ({} = the named context as is): a batch checks its own record against them
+    st["context_flags"] = contexts.profile_flags(profile)
     log(f"[run] stats {json.dumps(st)}")
     return {"ledger": led, "stats": st, "summaries": summaries,
             "prescan": pre.as_dict(), "problems": problems,
             "plausibility_audit": plaus_audit,
             "module_versions": module_versions(),
             "module_hashes": _module_hashes(), "context": profile.label,
+            "context_flags": contexts.profile_flags(profile),
             "reflists_active": reflist_versions,     # [(id, data_version), ...]
             # What this sample's candidates were scored at. A run's assignments
             # cannot be read without it: the same envelope scores differently at

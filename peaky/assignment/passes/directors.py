@@ -1097,7 +1097,7 @@ def _resolve_hx_clusters(
         for s in (+1, -1):
             y2 = G.formula_add(y, "CH2", s)
             if y2 and y2 not in ys:
-                keep, _ = X.filter_by_context(y2, profile.label)
+                keep, _ = X.filter_by_context(y2, profile)
                 if keep:
                     ys[y2] = (apid, f"homolog of anchor {y} ({s:+d}CH2)")
     tgt = _target_peaks(ledger, cfg)
@@ -1286,7 +1286,7 @@ def _resolve_acid_i2_clusters(
         for s in (+1, -1):
             y2 = G.formula_add(y, "CH2", s)
             if y2 and y2 not in ys and y2 not in anchor_by_formula and _acid_ok(y2):
-                keep, _ = X.filter_by_context(y2, profile.label)
+                keep, _ = X.filter_by_context(y2, profile)
                 if keep:
                     ys[y2] = (apid, f"homolog of anchor {y} ({s:+d}CH2)")
     if not ys:
@@ -1431,8 +1431,9 @@ def _family_ok(formula: str, ranges: dict[str, tuple[int, int]]) -> bool:
     return True
 
 
-def _context_filter(formulas, context: str) -> list[str]:
-    """Context plausibility gate for the generic passes.
+def _context_filter(formulas, context) -> list[str]:
+    """Context plausibility gate for the generic passes. ``context`` is the run's
+    ContextProfile (its run-level switches: the NOx-skeleton reading) or a name.
 
     This is also where the OFF-GRID ELEMENT invariant is enforced, via the context's
     own heteroatom caps: `ambient-air` sets max_F/max_P/max_I = 0 because those
@@ -1525,13 +1526,13 @@ def run_pass1(
     # CHO-before-CHON preference, so no need for two separate sub-passes.
     ranges = build_ranges(profile, pre, include_N=True)
     formulas = _enumerate(client, mzs, mech_ids, ranges, cfg, adducts)
-    formulas = set(_context_filter(formulas, profile.label))
+    formulas = set(_context_filter(formulas, profile))
     log(f"[pass1] {len(formulas)} context-plausible CHO/CHON candidate formulas")
     scored = IO.score_candidates(
         client, sample_id, sorted(formulas), mechanism_ids=cfg.mechanism_ids
     )
     log(f"[pass1] scored rows={len(scored)}")
-    arb = arbitrate(scored, cfg)
+    arb = arbitrate(scored, cfg, profile)
     summary = commit_winners(
         ledger,
         arb,
@@ -1578,7 +1579,7 @@ def run_pass2(
                 mz, anchors, adducts, units=units, ppm=cfg.series_ppm, max_steps=1
             ):
                 proposals.add(p.neutral_formula)
-        proposals = set(_context_filter(proposals, profile.label)) - anchors - tried
+        proposals = set(_context_filter(proposals, profile)) - anchors - tried
         if not proposals:
             log(f"[pass2.{it}] no new proposals; stopping")
             break
@@ -1586,7 +1587,7 @@ def run_pass2(
         scored = IO.score_candidates(
             client, sample_id, sorted(proposals), mechanism_ids=cfg.mechanism_ids
         )
-        arb = arbitrate(scored, cfg)
+        arb = arbitrate(scored, cfg, profile)
         s = commit_winners(
             ledger,
             arb,
@@ -1835,7 +1836,7 @@ def run_pass3(
             if fam_key in fam_members:
                 formulas = {f for f in formulas if _family_ok(f, ranges)}
             else:
-                formulas = set(_context_filter(formulas, profile.label))
+                formulas = set(_context_filter(formulas, profile))
             if fam_key in ("bromo_organic", "chloro_organic"):
                 # drop covalent-X aliases of anchor.HX clusters: if stripping
                 # one HX from X yields an existing anchor, the cluster reading
@@ -1852,7 +1853,7 @@ def run_pass3(
             scored = IO.score_candidates(
                 client, sample_id, sorted(formulas), mechanism_ids=cfg.mechanism_ids
             )
-            arb = arbitrate(scored, cfg)
+            arb = arbitrate(scored, cfg, profile)
             s = commit_winners(
                 ledger,
                 arb,

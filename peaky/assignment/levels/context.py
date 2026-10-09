@@ -317,8 +317,14 @@ def mu_stamp(led: pd.DataFrame) -> float:
 
 
 def run_space_args(summary: dict) -> tuple:
-    """(reagent, context, reflists_active) of a batch summary."""
-    return summary["reagent"], summary["context"], summary.get("reflists_active")
+    """(reagent, context, reflists_active) of a batch summary. The context is
+    the run's ContextProfile when the summary records run-level switches
+    (``context_flags``: the NOx-skeleton reading), else its name."""
+    ctx = summary["context"]
+    flags = summary.get("context_flags")
+    if flags:
+        ctx = X.as_profile(ctx, flags)
+    return summary["reagent"], ctx, summary.get("reflists_active")
 
 
 def file_families(summary: dict, led: pd.DataFrame) -> tuple[str, ...]:

@@ -2513,8 +2513,25 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # merged row no pooled pair holds (a batch-level re-read) gets no level.
     from peaky.assignment.levels import lists as _LS
     rl_context = _LS.reflists_context(reflists_active, rl_record)
+    # the run-level switches of the batch's context profile, derived by the very
+    # helper assign.run calls on each file, from the same reagent, channels,
+    # instrument class and trace-first flag the files were handed; a file whose
+    # own run recorded other switches (a trace-first batch's residual files run
+    # without the trace flag) is named in the log -- the record is the batch's
+    from peaky.chem import contexts as _X
+    context_flags = _X.profile_flags(A.run_context_profile(
+        context, reagent_profile=assign_kw.get("reagent_profile") or prof.name,
+        adducts=assign_kw.get("adducts") or list(prof.adducts),
+        instrument_class=cfg.instrument_class, trace_sample=trace_sample is not None))
+    _off = sorted(str(s_.get("sample_id")) for s_ in per_stats
+                  if "context_flags" in s_ and s_["context_flags"] != context_flags)
+    if _off:
+        log(f"[assign_batch] context switches: the batch records {context_flags or 'none'}; "
+            f"{len(_off)} file(s) ran with other switches ({', '.join(_off[:5])}"
+            f"{', ...' if len(_off) > 5 else ''})")
     level_summary = {
         "reagent": prof.name, "label": prof.label, "context": context,
+        "context_flags": context_flags,
         "reflists_active": [list(x) for x in RL.active_versions(reflists_active)],
         "reflists_context": rl_context,
         "resolution": rp.as_dict() if rp is not None else None,
@@ -2694,6 +2711,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             + ", ".join(f"{a} ({side_files[a]} of {len(per_stats)} files)" for a in side_opened))
     summary = {
         "reagent": prof.name, "label": prof.label, "context": context,
+        # the context profile's run-level switches ({} = the named context as is)
+        "context_flags": context_flags,
         # the side channels the run asked for (`side_channels_requested`, from
         # `side_channels_source`) and the run-level union the files actually opened
         # (`side_channels`; per file: per_file[].side_channels, files per channel:
