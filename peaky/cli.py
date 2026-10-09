@@ -410,7 +410,8 @@ def cmd_batch(args) -> None:
                            trace_episodes=getattr(args, "trace_episodes", False),
                            corroborate=list(getattr(args, "corroborate", []) or []),
                            tof_flag_mz=getattr(args, "tof_flag_mz", None),
-                           mass_axis=getattr(args, "mass_axis", "auto"), log=prog,
+                           mass_axis=getattr(args, "mass_axis", "auto"),
+                           isotopologue_rows=not getattr(args, "no_isotopologue_gate", False), log=prog,
                            **_sidelobe_cfg(args))
         # the window's final numbers come from the RETURNED summary, never from
         # parsing the log -- exact by construction.
@@ -451,7 +452,8 @@ def cmd_pool(args) -> None:
             side_channels=side,
             rolling_centre=getattr(args, "rolling_centre", False),
             tof_flag_mz=getattr(args, "tof_flag_mz", None),
-            mass_axis=getattr(args, "mass_axis", "auto"), log=prog,
+            mass_axis=getattr(args, "mass_axis", "auto"),
+            isotopologue_rows=not getattr(args, "no_isotopologue_gate", False), log=prog,
             **_sidelobe_cfg(args))
         prog.finish((res.get("assign") or {}).get("summary"))
         ctx = res["ctx"]
@@ -1132,6 +1134,15 @@ def _add_sidelobe_flag(p) -> None:
                         "'sidelobe_guard'). No effect off an Orbitrap")
 
 
+def _add_isotopologue_flag(p) -> None:
+    p.add_argument("--no-isotopologue-gate", dest="no_isotopologue_gate", action="store_true", default=False,
+                   help="keep merged rows that sit on another merged ion's isotope line (13C, 18O, 15N, "
+                        "34S, 37Cl, 81Br, Si) at its expected area ratio across the batch. By default, on "
+                        "an Orbitrap-class batch whose time series carries peak areas, such a row leaves "
+                        "the merged ledger and its line is stamped as the parent's isotopologue "
+                        "(tables/isotopologue_rows.csv). For A/B runs")
+
+
 def _add_mass_axis_flag(p) -> None:
     p.add_argument("--mass-axis", choices=("auto", "locks", "reference", "off"), default="auto",
                    help="before the run picks its cover or assigns anything, model the batch's m/z "
@@ -1288,6 +1299,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_tof_flag_arg(pb)
     _add_mass_axis_flag(pb)
     _add_sidelobe_flag(pb)
+    _add_isotopologue_flag(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "
@@ -1333,6 +1345,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_tof_flag_arg(pp)
     _add_mass_axis_flag(pp)
     _add_sidelobe_flag(pp)
+    _add_isotopologue_flag(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "
                          "(default: physical cores; env PEAKY_JOBS honored)")

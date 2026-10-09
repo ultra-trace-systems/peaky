@@ -9,7 +9,11 @@ refuted pair leaves its neutral's chan2 / branch pools in both directions (rule
 K's `alien` mechanism). A fourth, rule H, writes a POSITIVE fact instead: the
 ion's exact halogen line, which lifts a tentative lead the line answers
 (evidence._measure). All four are batch facts: they need the stamped time
-series, never run per file, are never an axis, never in `cross`.
+series, never run per file, are never an axis, never in `cross`. A fifth, the
+merged-ledger isotopologue gate (`satellite_rows`, before the stamp; Orbitrap-
+class), removes a merged row whose line is another merged ion's isotopologue at
+its expected area ratio, and hands the stripped pair here as a veto (check 'SAT',
+`veto_rows`).
 
 The instrument class is batch-generic: Orbitrap-class when the batch's peak-width
 model resolves >= ORBITRAP_R200 at m/z 200 (`batch_summary.resolution.r_at_200`),
@@ -227,7 +231,7 @@ import pandas as pd
 from peaky.chem import chemistry as C
 
 CHECKS = ("C", "REQ", "HIGH", "H")
-CHECK_NAME = {"C": "rule C", "REQ": "REQ", "HIGH": "HIGH", "H": "rule H"}
+CHECK_NAME = {"C": "rule C", "REQ": "REQ", "HIGH": "HIGH", "H": "rule H", "SAT": "isotopologue"}
 #: the checks that refute (a veto); rule H writes a positive fact instead
 VETO_CHECKS = ("C", "REQ", "HIGH")
 #: Orbitrap-class: the batch's width model resolves at least this at m/z 200
@@ -1627,7 +1631,8 @@ def summary(table: pd.DataFrame | None, resolution=None) -> dict:
     klass = instrument_class(resolution)
     if table is None or not len(table):
         return {"instrument": klass, "tested": 0, "vetoed_pairs": 0, "locked_pairs": 0}
-    out = {"instrument": klass, "tested": int(len(table)), "vetoed_pairs": len(veto(table)),
+    n_sat = int((table["check"].astype(str) == "SAT").sum()) if "check" in table.columns else 0
+    out = {"instrument": klass, "tested": int(len(table)) - n_sat, "vetoed_pairs": len(veto(table)),
            "locked_pairs": len(lock(table))}
     for c in CHECKS:
         t = table[table["check"] == c]
@@ -1635,6 +1640,9 @@ def summary(table: pd.DataFrame | None, resolution=None) -> dict:
         head = ({"vetoed": int(t["veto"].map(_truth).sum())} if c in VETO_CHECKS else
                 {"locked": int(t["lock"].map(_truth).sum()) if "lock" in t.columns else 0})
         out[c] = {"tested": int(len(t)), **head, **{k: int((v == k).sum()) for k in VERDICTS[c]}}
+    if n_sat:
+        # the merged-ledger isotopologue gate's vetoes (`satellite_rows` / `veto_rows`)
+        out["SAT"] = {"vetoed": n_sat}
     return out
 
 
@@ -1803,3 +1811,404 @@ def tof_m2_gates(merged: pd.DataFrame, table: pd.DataFrame | None, ts: pd.DataFr
         f"({out['known_demoted']} known-species decisions overruled), {out['doublet_demoted']} by the 81Br doublet "
         f"({out['doublet_exempt']} halogen readings exempt: their own M+2 seen)")
     return out
+
+
+# --------------------------------------------------------------------------- the isotopologue rows (merged gate)
+# A merged row whose line is another merged ion's 13C / 18O / 15N / 34S / 37Cl /
+# 81Br / Si isotopologue keeps its own formula when every per-file arbitration
+# decided by score (a high-scoring reading on the 13C line of a lower-scoring
+# parent wins the child attach, and the merge votes over M0 rows only). The batch
+# reads the line against the parent's expected ratio, spectrum by spectrum, from
+# the peak AREAS of the time series (`satellite_rows`, docstring).
+#: the instrument classes the gate runs on (a TOF's M+1 / M+2 clusters blend 13C,
+#: 15N and 2H, and its merge window is wider than the lines' spacing: off there)
+SAT_CLASSES = ("orbitrap",)
+#: the parent's lines read: shift from its all-light line (Da), expected ratio floor
+SAT_SHIFT_MIN, SAT_SHIFT_MAX = 0.4, 4.1
+SAT_E_MIN = 1e-3
+#: the verdict: >= SAT_NMIN spectra holding the line and a parent; the median area
+#: ratio (observed / expected) in [SAT_RATIO_MIN, SAT_RATIO_MAX]; and fewer than
+#: max(1, SAT_TAIL_FRAC x n) spectra above SAT_TAIL_RHO (a real ion present in only
+#: some spectra pulls the median into the band while its own spectra stand 2-3x
+#: above it). A median in (SAT_RATIO_MAX, SAT_MIXED_MAX], or an in-band median
+#: that fails the tail test, is a MIXED line: a note, no tier change.
+SAT_NMIN = 3
+SAT_RATIO_MIN, SAT_RATIO_MAX = 0.4, 1.4
+SAT_MIXED_MAX = 4.0
+SAT_TAIL_RHO = 2.0
+SAT_TAIL_FRAC = 0.10
+SAT_TABLE_COLUMNS = (
+    "mz", "neutral_formula", "adduct", "ion", "tier", "ion_score", "verdict", "action",
+    "label", "expected", "parent_mz", "parent_ion", "parent_neutral", "parent_adduct", "parent_tier", "parents",
+    "offset_ppm", "rho_area", "rho_height", "n_both", "n_tail", "share",
+    "files_m0", "files_iso_parent", "files_other", "alternatives", "note",
+)
+#: an adduct group naming a heavy isotope: '+15NO3', '+13CO3', '+D2O', '-D' (the
+#: group's leading token, an element symbol not running on: '+Cu', '+Dy', '+13Cl'
+#: and '+2H' -- two protons -- are ordinary adducts)
+_LABEL_GROUP = re.compile(r"(?:13C|15N|18O|34S|D)(?![a-z])")
+_ADDUCT_GROUPS = re.compile(r"([+-])([^+\-\]]+)")
+
+
+def _sat_empty() -> pd.DataFrame:
+    return pd.DataFrame(columns=list(SAT_TABLE_COLUMNS))
+
+
+def _sat_label(tags: dict) -> str:
+    """'13C', '18O', '13C2', '13C+18O' -- the line's main component."""
+    return "+".join(f"{k}{v if v > 1 else ''}" for k, v in tags.items()) or "all-light"
+
+
+def _label_elements(tags: dict) -> set:
+    return {re.sub(r"^\d+", "", k) for k in tags}
+
+
+def _is_labelled(neutral, adduct) -> bool:
+    """A reading carrying an isotope label: a caret element ('^N') in its neutral or
+    adduct, or an adduct naming a heavy isotope ('[M+15NO3]-')."""
+    n, a = _txt_of(neutral), _txt_of(adduct)
+    if "^" in n or "^" in a:
+        return True
+    m = re.match(r"\[M(.*)\]", a)
+    return bool(m) and any(_LABEL_GROUP.match(grp) for _sign, grp in _ADDUCT_GROUPS.findall(m.group(1)))
+
+
+def _txt_of(v) -> str:
+    if v is None or (isinstance(v, float) and np.isnan(v)) or v is pd.NA:
+        return ""
+    s = str(v)
+    return "" if s in ("nan", "<NA>", "None") else s
+
+
+def _sibling_channel(adduct, prof) -> bool:
+    """The reading sits on a channel of a labelled pair (the 14N nitrate cluster on a
+    profile that also clusters on the 15N-labelled nitrate, or the labelled one)."""
+    from peaky.assignment import evidence as EV
+    a = _txt_of(adduct)
+    adds = set(getattr(prof, "adducts", None) or ())
+    lab = EV.LABEL_FOLD.get(a)
+    return bool((lab and lab != a and lab in adds) or (a in set(EV.LABEL_FOLD.values()) and a in adds))
+
+
+def _parent_lines(counts: dict, fwhm: float) -> list:
+    """[(shift, expected, tags)] of the ion's observable lines SAT_SHIFT_MIN..MAX Da
+    above its all-light line with expected ratio >= SAT_E_MIN (`fine_structure`,
+    components closer than one FWHM merged; the tags of each line's main component)."""
+    fs, cen, rel = _lines(fine_structure(counts), fwhm)
+    mono = int(np.argmin(np.abs(cen)))
+    r0 = float(rel[mono])
+    out = []
+    for ln in range(len(cen)):
+        sh, e = float(cen[ln]), float(rel[ln]) / r0
+        if not (SAT_SHIFT_MIN <= sh <= SAT_SHIFT_MAX) or e < SAT_E_MIN:
+            continue
+        g = fs[fs["line"] == ln]
+        out.append((sh, e, dict(g.loc[g["rel"].idxmax(), "tags"])))
+    return out
+
+
+def _role_votes(per_file: dict | None, r_mz: float, p_mz: float, ppm: float) -> tuple[int, int, int]:
+    """(files reading the line as an M0, as an isotope child of a line at the
+    parent's m/z, as anything else) -- informational."""
+    m0 = iso = other = 0
+    for led in (per_file or {}).values():
+        if led is None or not len(led) or "role" not in led.columns or "mz" not in led.columns:
+            continue
+        mz = pd.to_numeric(led["mz"], errors="coerce").to_numpy(dtype=float)
+        hit = np.nonzero(np.abs(mz - r_mz) <= r_mz * ppm * 1e-6)[0]
+        if not len(hit):
+            continue
+        roles = led["role"].astype(str).to_numpy()[hit]
+        if "M0" in roles:
+            m0 += 1
+            continue
+        if "iso_child" in roles and "parent_peak_id" in led.columns and "peak_id" in led.columns:
+            pmz = dict(zip(led["peak_id"].astype(str), mz))
+            par = [pmz.get(str(x), np.nan) for x in led["parent_peak_id"].to_numpy()[hit]]
+            if any(np.isfinite(x) and abs(x - p_mz) <= p_mz * ppm * 1e-6 for x in par):
+                iso += 1
+                continue
+        other += 1
+    return m0, iso, other
+
+
+def satellite_rows(merged: pd.DataFrame, ts: pd.DataFrame | None, *, resolution=None, mass_scale=None,
+                   klass="auto", prof=None, reagents: pd.DataFrame | None = None, per_file: dict | None = None,
+                   log=print):
+    """(kept, table, summary): the merged rows whose line is another merged ion's
+    isotopologue leave the merged ledger (the merged-row gate after the trace
+    reconciliation and before the stamp, so the stamp gives the line to the parent).
+
+    Scope: an Orbitrap-class batch (`klass`, the batch's resolved instrument class;
+    'auto' reads it off the width model) with a width model and a time series that
+    carries peak AREAS -- a height-only series is skipped (heights read ~0.75x of
+    areas on these lines, which would pull a mixed line into the band).
+
+    Parents: every merged row with a parseable ion composition (not ion-only, not a
+    collapsed trace label), plus the per-file reagent ions (`reagents`: mz,
+    ion_formula; one parent per ion formula at its median m/z), in ascending m/z.
+    Candidates: merged rows above a parent whose position (mz_trace where present)
+    sits within max(1 ppm, 4 sigma) of one of the parent's lines
+    (`_parent_lines`: 0.4-4.1 Da, expected >= 1e-3, components within one FWHM
+    merged). A row stripped earlier is never a parent.
+
+    Per spectrum: rho = A_R / sum_k(e_k A_Pk) over the parents present, each line
+    read as the tallest peak within the same window (areas; heights alongside, for
+    the record). Over the n spectra holding R and a parent: ISOTOPOLOGUE when n >=
+    SAT_NMIN, the median in [SAT_RATIO_MIN, SAT_RATIO_MAX] and fewer than max(1,
+    SAT_TAIL_FRAC n) spectra above SAT_TAIL_RHO -- the row leaves the merged ledger
+    and the main parent's tier_reason says so; MIXED when the median is in
+    (SAT_RATIO_MAX, SAT_MIXED_MAX] or the tail test fails -- a note on the row
+    only. Exempt (a note, never stripped): a known-species decision, an ion-only
+    row, an isotope-labelled reading, and a reading on a labelled pair's channel
+    when the line's label element is the label's.
+
+    `per_file` ({sid: ledger}) adds the per-file role votes to the table (files
+    reading the line as an M0 / as the parent's isotope child / else; for the
+    record only). Returns the kept merged ledger (original order, index reset), the
+    table (SAT_TABLE_COLUMNS; header only when nothing was found) and a summary for
+    batch_summary['merge_gates']['isotopologue']."""
+    summ = {"ran": False, "n_stripped": 0, "n_mixed": 0, "n_exempt": 0}
+    table = _sat_empty()
+    if merged is None or not len(merged):
+        summ["skipped"] = "no merged rows"
+        return merged, table, summ
+    if klass == "auto":
+        klass = instrument_class(resolution)
+    rp = _resolution(resolution)
+    why = (f"instrument class {klass or 'unknown'} (runs on {', '.join(SAT_CLASSES)})" if klass not in SAT_CLASSES
+           else "no width model" if rp is None
+           else "no time series" if ts is None or not len(ts)
+           else None)
+    if why is None:
+        area = pd.to_numeric(ts["area"], errors="coerce") if "area" in ts.columns else None
+        if area is None or not bool((np.isfinite(area.to_numpy(dtype=float)) & (area.to_numpy(dtype=float) > 0)).any()):
+            why = "the time series carries no peak areas (heights are not read in their place)"
+    if why is not None:
+        summ["skipped"] = why
+        log(f"[isotopologue] skipped: {why}")
+        return merged, table, summ
+    merged = merged.copy()
+    if "tier_reason" not in merged.columns:
+        merged["tier_reason"] = pd.NA
+    S = _Series(ts[[c for c in ("sample_item_id", "mz", "height", "area") if c in ts.columns]])
+    sigma, _stamp = _scale(mass_scale)
+    win = max(REQ_ORBI_MIN_PPM, REQ_ORBI_SIGMA_K * sigma if np.isfinite(sigma) else 0.0)
+    vote_ppm = _merge_ppm(mass_scale)
+    summ.update(ran=True, instrument=klass, window_ppm=round(float(win), 4),
+                constants={"shift_da": [SAT_SHIFT_MIN, SAT_SHIFT_MAX], "e_min": SAT_E_MIN, "n_min": SAT_NMIN,
+                           "ratio": [SAT_RATIO_MIN, SAT_RATIO_MAX], "mixed_max": SAT_MIXED_MAX,
+                           "tail_rho": SAT_TAIL_RHO, "tail_frac": SAT_TAIL_FRAC})
+    rows = merged.reset_index(drop=True)
+    pos = pd.to_numeric(rows["mz"], errors="coerce").to_numpy(dtype=float)
+    if "mz_trace" in rows.columns:
+        mzt = pd.to_numeric(rows["mz_trace"], errors="coerce").to_numpy(dtype=float)
+        pos = np.where(np.isfinite(mzt), mzt, pos)
+    nf = rows["neutral_formula"].map(_txt_of).to_numpy() if "neutral_formula" in rows.columns else np.full(len(rows), "")
+    ad = rows["adduct"].map(_txt_of).to_numpy() if "adduct" in rows.columns else np.full(len(rows), "")
+    tier = rows["tier"].map(_txt_of).to_numpy() if "tier" in rows.columns else np.full(len(rows), "")
+    reason = rows["tier_reason"].map(_txt_of).to_numpy()
+    io = (rows["ion_only_of"].map(_txt_of).to_numpy() != "") if "ion_only_of" in rows.columns \
+        else np.zeros(len(rows), bool)
+    collapsed = (rows["trace_role"].astype(str).to_numpy() == "collapsed") if "trace_role" in rows.columns \
+        else np.zeros(len(rows), bool)
+    # the parents: (m/z, counts, ion text, tier, neutral, adduct, merged row or -1 for a reagent ion)
+    parents = []
+    for i in range(len(rows)):
+        if io[i] or collapsed[i] or not np.isfinite(pos[i]):
+            continue
+        try:
+            cnt = ion_counts(nf[i], ad[i], None)
+        except Exception:  # noqa: BLE001 -- an unparseable reading is no parent
+            cnt = {}
+        if cnt:
+            sign = ad[i][-1] if ad[i][-1:] in ("+", "-") else ""
+            parents.append((pos[i], cnt, C.format_formula(cnt) + sign, tier[i], nf[i], ad[i], i))
+    if reagents is not None and len(reagents) and {"mz", "ion_formula"} <= set(reagents.columns):
+        rg = reagents.assign(__mz=pd.to_numeric(reagents["mz"], errors="coerce"),
+                             __f=reagents["ion_formula"].map(_txt_of))
+        if "iso_label" in rg.columns:          # a reagent's heavy lines are no parents of their own
+            rg = rg[rg["iso_label"].map(_txt_of) == ""]
+        rg = rg[(rg["__f"] != "") & np.isfinite(rg["__mz"])]
+        for f, g in rg.groupby("__f", sort=True):
+            try:
+                cnt = ion_counts("", "", f)
+            except Exception:  # noqa: BLE001
+                cnt = {}
+            if cnt:
+                parents.append((float(g["__mz"].median()), cnt, str(f), "reagent", "", "", -1))
+    parents.sort(key=lambda p: (p[0], p[2]))
+    summ["n_parents"] = len(parents)
+    # the candidates, by position
+    cand = np.array([i for i in range(len(rows)) if np.isfinite(pos[i]) and not collapsed[i]
+                     and tier[i] in ("Assigned", "Candidate")], dtype=int)
+    order = cand[np.lexsort((ad[cand], nf[cand], pos[cand]))] if len(cand) else cand
+    cpos = pos[order]
+    expect: dict[int, list] = {}
+    for pk, (pmz, cnt, ion, ptier, pn, pa, prow) in enumerate(parents):
+        for sh, e, tags in _parent_lines(cnt, rp.fwhm(pmz + 1.0)):
+            t = pmz + sh
+            lo = int(np.searchsorted(cpos, t - t * win * 1e-6, side="left"))
+            hi = int(np.searchsorted(cpos, t + t * win * 1e-6, side="right"))
+            for j in order[lo:hi]:
+                if j == prow:
+                    continue
+                expect.setdefault(int(j), []).append((pk, e, tags, (pos[j] - t) / t * 1e6))
+    summ["n_matched"] = len(expect)
+    codes = np.arange(S.n)
+    cache: dict = {}
+
+    def _read(key, mz):
+        if key not in cache:
+            k = S.tallest(codes, np.full(S.n, mz), win)
+            ok = k >= 0
+            cache[key] = (np.where(ok, S.a[np.maximum(k, 0)], np.nan), np.where(ok, S.h[np.maximum(k, 0)], np.nan))
+        return cache[key]
+
+    from peaky.assignment.cleanup import _note
+    stripped_rows: set = set()
+    out_rows = []
+    n_judged = 0
+    for j in order:                                   # ascending m/z: a parent is decided before its lines
+        j = int(j)
+        ps = [x for x in expect.get(j, []) if parents[x[0]][6] not in stripped_rows]
+        if not ps:
+            continue
+        aR, hR = _read(("r", j), pos[j])
+        den_a, den_h = np.zeros(S.n), np.zeros(S.n)
+        anyp = np.zeros(S.n, bool)
+        contrib = []
+        seen: list = []
+        for pk, e, tags, d in ps:
+            q = parents[pk][0]
+            if any(abs(q - x) <= q * win * 1e-6 for x in seen):
+                contrib.append(0.0)        # two parents on one peak (a reagent ion and a merged
+                continue                   # row): its area enters the expectation once
+            seen.append(q)
+            aP, hP = _read(("p", pk), q)
+            ok = np.isfinite(aP)
+            den_a[ok] += e * aP[ok]
+            den_h[ok] += e * hP[ok]
+            anyp |= ok
+            contrib.append(float(np.nansum(e * aP)))
+        both = anyp & np.isfinite(aR)
+        n = int(both.sum())
+        if n < SAT_NMIN:
+            continue
+        n_judged += 1
+        ra = aR[both] / den_a[both]
+        rh = hR[both] / den_h[both]
+        rho_a, rho_h = float(np.median(ra)), float(np.median(rh))
+        n_tail = int((ra > SAT_TAIL_RHO).sum())
+        tail_ok = n_tail < max(1.0, SAT_TAIL_FRAC * n)
+        in_band = SAT_RATIO_MIN <= rho_a <= SAT_RATIO_MAX
+        if in_band and tail_ok:
+            verdict = "isotopologue"
+        elif (in_band and not tail_ok) or SAT_RATIO_MAX < rho_a <= SAT_MIXED_MAX:
+            verdict = "mixed"
+        else:
+            continue
+        main = ps[int(np.argmax(contrib))]
+        pk, e, tags, d = main
+        pmz, _cnt, pion, ptier, pn, pa, prow = parents[pk]
+        lab = _sat_label(tags)
+        share = min(1.0, 1.0 / rho_a) if rho_a > 0 else float("nan")
+        exempt = ""
+        if verdict == "isotopologue":
+            if KNOWN_LOCK_MARK in reason[j]:
+                exempt = "a known-species decision"
+            elif io[j]:
+                exempt = "an ion-only row"
+            elif _is_labelled(nf[j], ad[j]):
+                exempt = "an isotope-labelled reading"
+            elif prof is not None and _sibling_channel(ad[j], prof) and (
+                    _label_elements(tags) & {"N"}):
+                exempt = "a reading on the labelled pair's channel, the line's label element the label's"
+            if exempt:
+                verdict = "exempt"
+        r_txt = f"{nf[j]} {ad[j]}".strip()
+        where = f"{pion} at m/z {pmz:.4f}" + (" (reagent)" if prow < 0 else "")
+        stats = (f"area {rho_a:.2f}x expected (height {rho_h:.2f}x) over {n} spectra, "
+                 f"{n_tail} above {SAT_TAIL_RHO:g}x")
+        idx_j = merged.index[j]
+        if verdict == "isotopologue":
+            note = f"the line is the {lab} isotopologue of {where}: {stats}"
+            stripped_rows.add(j)
+            if prow >= 0:
+                _note(merged, merged.index[prow],
+                      f"the line at m/z {pos[j]:.4f} (was {r_txt}) is its {lab} isotopologue ({stats}; "
+                      f"tables/isotopologue_rows.csv)")
+        elif verdict == "mixed" and in_band:
+            # the median reads the isotopologue, the upper tail a real ion: no share
+            # of the whole line, the median one and the spectra that hold more
+            note = (f"in the median spectrum {share:.0%} of this line is the {lab} isotopologue of {where}, "
+                    f"but {n_tail} of {n} spectra hold more than {SAT_TAIL_RHO:g}x the expected line: "
+                    f"a real ion shares it ({stats})")
+            _note(merged, idx_j, note)
+        elif verdict == "mixed":
+            note = f"{share:.0%} of this line is the {lab} isotopologue of {where} ({stats})"
+            _note(merged, idx_j, note)
+        else:
+            note = f"in band as the {lab} isotopologue of {where} ({stats}); kept: {exempt}"
+            _note(merged, idx_j, note)
+        m0v, isov, oth = _role_votes(per_file, float(pos[j]), float(pmz), vote_ppm)
+        try:
+            rion = C.format_formula(ion_counts(nf[j], ad[j], None) or {}) + (ad[j][-1] if ad[j][-1:] in ("+", "-")
+                                                                             else "")
+        except Exception:  # noqa: BLE001
+            rion = ""
+        out_rows.append({
+            "mz": float(pos[j]), "neutral_formula": nf[j], "adduct": ad[j], "ion": rion, "tier": tier[j],
+            "ion_score": rows["ion_score"].iloc[j] if "ion_score" in rows.columns else np.nan,
+            "verdict": verdict, "action": "stripped" if verdict == "isotopologue" else "note",
+            "label": lab, "expected": float(e), "parent_mz": float(pmz), "parent_ion": pion,
+            "parent_neutral": pn, "parent_adduct": pa, "parent_tier": ptier,
+            "parents": "; ".join(f"{parents[x[0]][2]} {parents[x[0]][0]:.4f} {_sat_label(x[2])} {x[1]:.4g}"
+                                 for x in ps),
+            "offset_ppm": float(d), "rho_area": rho_a, "rho_height": rho_h, "n_both": n, "n_tail": n_tail,
+            "share": share, "files_m0": m0v, "files_iso_parent": isov, "files_other": oth,
+            "alternatives": _txt_of(rows["alternatives"].iloc[j]) if "alternatives" in rows.columns else "",
+            "note": note})
+    if out_rows:
+        table = pd.DataFrame(out_rows)[list(SAT_TABLE_COLUMNS)]
+        table = table.sort_values(["mz", "neutral_formula", "adduct"], kind="mergesort").reset_index(drop=True)
+    keep = np.ones(len(merged), bool)
+    keep[list(stripped_rows)] = False
+    kept = merged.loc[keep].reset_index(drop=True)
+    st = table[table["verdict"] == "isotopologue"]
+    summ.update(n_judged=n_judged, n_stripped=int(len(st)),
+                n_stripped_assigned=int((st["tier"] == "Assigned").sum()),
+                n_mixed=int((table["verdict"] == "mixed").sum()), n_exempt=int((table["verdict"] == "exempt").sum()),
+                stripped=[f"{a} {b} = {c} of {p}" for a, b, c, p in
+                          zip(st["neutral_formula"], st["adduct"], st["label"], st["parent_ion"])])
+    log(f"[isotopologue] {klass}-class batch, window +-{win:g} ppm: {summ['n_matched']} merged row(s) on a "
+        f"parent's isotope line, {n_judged} judged over >= {SAT_NMIN} spectra -> {summ['n_stripped']} "
+        f"isotopologue row(s) leave the merged ledger ({summ['n_stripped_assigned']} Assigned), "
+        f"{summ['n_mixed']} mixed, {summ['n_exempt']} exempt (notes only)"
+        + (": " + ", ".join(summ["stripped"][:4]) + (" ..." if len(summ["stripped"]) > 4 else "")
+           if summ["stripped"] else ""))
+    return kept, table, summ
+
+
+def veto_rows(table: pd.DataFrame | None) -> pd.DataFrame:
+    """The stripped isotopologue rows as isotope-check vetoes (check 'SAT', TABLE_COLUMNS),
+    for the evidence level's inputs: the pooled pair of a line the merged ledger gave
+    to its parent reads 'an isotope check refutes the formula' (5b), as the merged
+    ledger does. Empty (header only) when nothing was stripped."""
+    if table is None or not len(table) or "verdict" not in table.columns:
+        return _empty()
+    t = table[table["verdict"].astype(str) == "isotopologue"]
+    t = t[(t["neutral_formula"].astype(str) != "") & (t["adduct"].astype(str) != "")]
+    if not len(t):
+        return _empty()
+    out = pd.DataFrame({
+        "neutral_formula": t["neutral_formula"].astype(str).to_numpy(), "adduct": t["adduct"].astype(str).to_numpy(),
+        "check": "SAT", "instrument": "orbitrap", "ion": t["ion"].to_numpy(), "mz": t["mz"].to_numpy(),
+        "stamped": False, "n_spectra": t["n_both"].to_numpy(), "n_used": t["n_both"].to_numpy(),
+        "verdict": "isotopologue", "veto": True, "line": t["label"].to_numpy(), "expected": t["expected"].to_numpy(),
+        "ratio_area": t["rho_area"].to_numpy(), "ratio_height": t["rho_height"].to_numpy(),
+        "lock": False, "note": t["note"].to_numpy()})
+    for c in TABLE_COLUMNS:
+        if c not in out.columns:
+            out[c] = np.nan
+    return out[list(TABLE_COLUMNS)].drop_duplicates(["neutral_formula", "adduct"]).reset_index(drop=True)

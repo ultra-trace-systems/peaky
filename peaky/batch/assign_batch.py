@@ -1553,6 +1553,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         n_jobs: int | None = None, rolling_centre: bool = False,
         trace_first: bool = False, resolving_power=None, trace_episodes: bool = False,
         corroborate=None, mass_axis: str = "auto", mass_axis_hold: str | None = None,
+        isotopologue_rows: bool = True,
         log=print, **assign_kw) -> dict:
     """Assign the presence-cover subset of a batch and combine, keeping per-file
     ledgers. Provide EITHER `peaks` (a batch peak/sample table) OR `batch` (a
@@ -1627,7 +1628,17 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     and the per-file scoring are then read on the corrected axis);
     tables/mass_axis_locks.csv the locks, tables/mass_axis.csv the reference
     ions when probed. Trace-first keeps its own wave
-    (batch.tracefirst) and 'off' reproduces a run without the step."""
+    (batch.tracefirst) and 'off' reproduces a run without the step.
+
+    `isotopologue_rows` (default on; CLI --no-isotopologue-gate turns it off): on an
+    Orbitrap-class batch whose time series carries peak areas, a merged row whose
+    line is another merged ion's (or a reagent ion's) 13C / 18O / 15N / 34S / 37Cl /
+    81Br / Si isotopologue at its expected area ratio over the batch leaves the
+    merged ledger before the stamp, which then gives the line to the parent
+    (iso_checks.satellite_rows; tables/isotopologue_rows.csv,
+    merge_gates['isotopologue']). Its pooled pair reads an isotope-check veto in the
+    evidence levels (check 'SAT' in tables/iso_checks.csv). The per-file ledgers keep
+    their own reading, and a single-sample `peaky assign` has no such gate."""
     from peaky.assignment import assign as A
     from peaky.assignment import evidence as EV
     from peaky.batch import timeseries as _TSN
@@ -2253,10 +2264,30 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                     f"({trace_info['stamp_tol_per_trace']['min_ppm']:.2f}-"
                     f"{trace_info['stamp_tol_per_trace']['max_ppm']:.2f}); "
                     f"{len(tracks or {})} rows stamp along a rolling track")
+        # The isotopologue rows (iso_checks.satellite_rows; Orbitrap-class batches
+        # with peak areas): a merged row whose line is another merged ion's (or a
+        # reagent ion's) isotopologue at the expected area ratio across the batch
+        # leaves the merged ledger HERE -- after the trace reconciliation (it reads
+        # mz_trace) and before the stamp, so the line is stamped as the parent's
+        # satellite and the residual stage does not target it. Stateless: the
+        # second merge (cover + residual) re-strips a row a residual file re-adds.
+        iso_rows = _IC._sat_empty()
+        if isotopologue_rows:
+            _rg = None
+            if identified_aux:
+                _ia = pd.concat(identified_aux, ignore_index=True)
+                _rg = _ia[_ia["role"].astype(str) == "reagent"] if "role" in _ia.columns else None
+            merged, iso_rows, merge_gates["isotopologue"] = _IC.satellite_rows(
+                merged, ts_peaks, resolution=rp, mass_scale=scale, klass=cfg.instrument_class, prof=prof,
+                reagents=_rg, per_file=level_frames, log=log)
+        else:
+            merge_gates["isotopologue"] = {"ran": False, "n_stripped": 0, "n_mixed": 0, "n_exempt": 0,
+                                           "skipped": "--no-isotopologue-gate"}
         out = {"merged": merged, "jitter": jitter, "merge_gates": merge_gates,
                "trace_info": trace_info, "stamp_tol": stamp_tol, "ts_annot": None,
                "predicted_rows": {}, "predicted_tracks": None,
-               "reagent_water": _RW.table(rwater["rungs"], rw_stripped)}
+               "reagent_water": _RW.table(rwater["rungs"], rw_stripped),
+               "isotopologue": iso_rows}
         # Stamp the batch time-series peaks with their assigned formula/channel.
         # Downstream time-series analysis then has neutral_formula / adduct / tier /
         # ion_mz per peak, not just m/z. No-op when ts_peaks is unavailable.
@@ -2426,6 +2457,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     iso_table = _IC.measure(ts_annot, level_frames, prof, resolution=rp, mass_scale=scale,
                             x_edge=x_edge, context=context, edge_cps=getattr(cfg, "noise_edge_batch_cps", None),
                             log=log)
+    # ... plus the merged-ledger isotopologue gate's strips (iso_checks.veto_rows,
+    # check 'SAT'): the pooled pair of a line the merged ledger gave to its parent is
+    # refuted the same way, so evidence_levels.csv agrees with the merged ledger
+    _sat_veto = _IC.veto_rows(res_m.get("isotopologue"))
+    if len(_sat_veto):
+        iso_table = (pd.concat([iso_table, _sat_veto], ignore_index=True) if len(iso_table)
+                     else _sat_veto)
     iso_table.to_csv(os.path.join(TAB, "iso_checks.csv"), index=False)
     # the TOF ion-M+2 gates (iso_checks.tof_m2_gates; TOF-class batches only): a
     # merged winner whose own M+2 line REQ refutes over the batch -- a species the
@@ -2538,6 +2576,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # the reagent-water rungs and the merged readings they displaced (always written:
     # a stable artifact set; header only when the profile declares no water cores)
     res_m["reagent_water"].to_csv(os.path.join(TAB, "reagent_water.csv"), index=False)
+    # the isotopologue rows the merged ledger gave to their parent, and the mixed /
+    # exempt lines it only noted (always written: header only when none)
+    res_m["isotopologue"].to_csv(os.path.join(TAB, "isotopologue_rows.csv"), index=False)
     # the FINAL per_file/_batch_ts.parquet (in parallel mode this overwrites the raw
     # worker-transfer copy)
     if ts_annot is not None:
