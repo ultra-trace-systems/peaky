@@ -398,7 +398,8 @@ def cmd_batch(args) -> None:
                            resolving_power=getattr(args, "resolving_power", None),
                            trace_episodes=getattr(args, "trace_episodes", False),
                            corroborate=list(getattr(args, "corroborate", []) or []),
-                           tof_flag_mz=getattr(args, "tof_flag_mz", None), log=prog)
+                           tof_flag_mz=getattr(args, "tof_flag_mz", None),
+                           mass_axis=getattr(args, "mass_axis", "auto"), log=prog)
         # the window's final numbers come from the RETURNED summary, never from
         # parsing the log -- exact by construction.
         prog.finish((res.get("assign") or {}).get("summary"))
@@ -437,7 +438,8 @@ def cmd_pool(args) -> None:
             height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
             side_channels=side,
             rolling_centre=getattr(args, "rolling_centre", False),
-            tof_flag_mz=getattr(args, "tof_flag_mz", None), log=prog)
+            tof_flag_mz=getattr(args, "tof_flag_mz", None),
+            mass_axis=getattr(args, "mass_axis", "auto"), log=prog)
         prog.finish((res.get("assign") or {}).get("summary"))
         ctx = res["ctx"]
         print(f"\n[pool] unified ledger -> {ctx.out_dir} in {res.get('elapsed_s', '?')}s")
@@ -504,6 +506,10 @@ def cmd_mass_qc(args) -> None:
     if args.ts:
         ts = PL.load(peaks=args.ts)
         label = os.path.basename(args.ts)
+        # a run's per_file/_batch_ts.parquet carries the axis correction it applied
+        # (mz_axis_ppm): judge the server's axis, as `peaky batch` does
+        from peaky.batch import assign_batch as AB
+        ts = AB.restore_axis(ts, log=print)
     else:
         if not (args.batch and args.dataset):
             sys.exit("mass-qc needs --ts <parquet>, or --batch and --dataset")
@@ -517,7 +523,10 @@ def cmd_mass_qc(args) -> None:
     print(f"[mass-qc] {label}: {ts['sample_item_id'].nunique()} spectra, {len(ts)} peaks; "
           f"{len(refs)} {args.reagent} reference ions; membership +-{tol:g} ppm, "
           f"probe +-{args.probe_ppm:g} ppm, wave in (m/z)^{'-' if args.orbitrap else '+'}1/2")
-    table, v = MQ.run(ts, refs, tol_ppm=tol, tof=not args.orbitrap, probe_ppm=args.probe_ppm)
+    # the instrument's own rules (massqc module note) -- the same judgement
+    # `peaky batch --mass-axis auto` acts on
+    table, v = MQ.run(ts, refs, tol_ppm=tol, tof=not args.orbitrap, probe_ppm=args.probe_ppm,
+                      per_instrument=True)
     MQ.report(table, v, log=print)
     out = os.path.expanduser(args.out or ".")
     os.makedirs(out, exist_ok=True)
@@ -1100,6 +1109,21 @@ def _add_tof_flag_arg(p) -> None:
                         "No effect off a TOF")
 
 
+def _add_mass_axis_flag(p) -> None:
+    p.add_argument("--mass-axis", choices=("auto", "off"), default="auto",
+                   help="before the run picks its cover or assigns anything, measure the "
+                        "batch's m/z axis against the reagent's formula-certain reference ions "
+                        "(the `peaky mass-qc` probe, judged by the instrument's own rules) and, "
+                        "on an Orbitrap whose verdict is an axis error (a trend or a flat "
+                        "offset of 1 ppm or more, at most 4), correct the time series and every "
+                        "file's peak table: a trend inside the measured m/z range, an offset "
+                        "everywhere (auto, the default). A TOF, a pool of several batches and "
+                        "server-side scoring are measured, not corrected; a reagent without a "
+                        "reference-ion table (nitrate, labelled nitrate and bromide have one) "
+                        "is not measured. Recorded in batch_summary['mass_axis'] and "
+                        "tables/mass_axis.csv. off = skip it")
+
+
 def _add_trace_first_flags(p) -> None:
     p.add_argument("--trace-first", action="store_true", default=False,
                    help="assign the batch's persistent ions ONCE from their centred traces "
@@ -1238,6 +1262,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_trace_first_flags(pb)
     _add_corroborate_flag(pb)
     _add_tof_flag_arg(pb)
+    _add_mass_axis_flag(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "
@@ -1281,6 +1306,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_side_channels_flag(pp)
     _add_rolling_flag(pp)
     _add_tof_flag_arg(pp)
+    _add_mass_axis_flag(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "
                          "(default: physical cores; env PEAKY_JOBS honored)")
@@ -1319,7 +1345,10 @@ def build_parser() -> argparse.ArgumentParser:
     pq.add_argument("--probe-ppm", type=float, default=50.0,
                     help="how far from theory to look for each reference ion (default 50)")
     pq.add_argument("--orbitrap", action="store_true",
-                    help="fit the wave in (m/z)^-1/2 (frequency) instead of (m/z)^+1/2 (flight time)")
+                    help="fit the wave in (m/z)^-1/2 (frequency) instead of (m/z)^+1/2 (flight "
+                         "time), and judge by an Orbitrap's own rules: every usable reference ion "
+                         "but the bright ones (reagent / lock-mass ions) calibrates, and the trend "
+                         "and offset bars are sized for an Orbitrap (batch/massqc.py)")
     pq.add_argument("--out", default=None, help="directory for mass_qc.csv / mass_qc.json (default .)")
     pq.set_defaults(func=cmd_mass_qc)
 

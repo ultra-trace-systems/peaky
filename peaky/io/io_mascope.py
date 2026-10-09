@@ -78,6 +78,49 @@ _SCORING_CACHE: dict = {}
 _SCORING_TREND: dict = {}
 _SCORING_TREND_INHERITED: set = set()
 
+#: The batch's m/z-axis correction (`peaky batch --mass-axis auto`,
+#: batch.massqc.correction): a `wave.WaveFit` per sample id. `fetch_peaks` hands
+#: back every listed sample's peak table (an offline one included) with `mz`
+#: corrected by it in its scope (massqc.apply_correction); the disk cache keeps
+#: the server's m/z. assign_batch.run sets it for its own samples, hands it to
+#: each spawned worker and clears those samples when it returns; the pipeline
+#: clears them again whether the run returned or raised. Keyed by sample, so a
+#: run never clears another run's samples (the MCP server runs jobs on threads of
+#: one process); runs that SHARE samples share their correction and its clears --
+#: a single-sample job on a sample of a batch that is running is served that
+#: batch's correction, and loses its cached scoring when the batch clears it.
+_AXIS: dict = {}
+
+
+def set_axis_correction(sample_ids, wave) -> None:
+    """Correct the m/z of every peak table `fetch_peaks` serves for `sample_ids`
+    by `wave` (a `batch.wave.WaveFit` or its `as_dict`; None clears them).
+    Replaces those samples' previous correction, and drops their cached scoring
+    and scoring trend, which were read off the other axis."""
+    from peaky.batch.wave import WaveFit
+    ids = [str(s) for s in sample_ids]
+    clear_axis_correction(ids)
+    if wave is None:
+        return
+    fit = wave if isinstance(wave, WaveFit) else WaveFit(**wave)
+    for sid in ids:
+        _AXIS[sid] = fit
+
+
+def clear_axis_correction(sample_ids=None) -> None:
+    """Forget the axis correction of `sample_ids` (every sample when None), with
+    the scoring cached and the trend fitted on the corrected axis."""
+    ids = list(_AXIS) if sample_ids is None else [str(s) for s in sample_ids]
+    for sid in ids:
+        _AXIS.pop(sid, None)
+        _SCORING_CACHE.pop(sid, None)
+        reset_scoring_trend(sid)
+
+
+def axis_correction(sample_id: str):
+    """The `WaveFit` that corrects this sample's m/z, or None."""
+    return _AXIS.get(str(sample_id))
+
 
 def _trend_record(trend) -> dict:
     return {"a": round(float(trend.a), 6), "b": round(float(trend.b), 6),
@@ -570,13 +613,16 @@ def fetch_peaks(client, sample_id: str, *, use_cache: bool = True,
     The cache file is versioned because the peaks payload gained the per-peak
     `signal_to_noise` the scorer judges a faint line by: a frame cached before
     the server sent it has no such column, and silently scoring without it is
-    the difference between charging an absent isotopologue and excusing it."""
+    the difference between charging an absent isotopologue and excusing it.
+
+    A sample under the batch's axis correction (`set_axis_correction`) comes
+    back with its `mz` corrected; the cache always holds the server's m/z."""
     if sample_id in _OFFLINE:
-        return _OFFLINE[sample_id][0].copy()
+        return _axis_corrected(sample_id, _OFFLINE[sample_id][0].copy())
     cdir = Path(cache_root) / sample_id
     cfile = cdir / "peaks.v2.parquet"
     if use_cache and cfile.exists():
-        return pd.read_parquet(cfile)
+        return _axis_corrected(sample_id, pd.read_parquet(cfile))
     peaks = client.samples.get_peaks(sample_id=sample_id, matches=True)
     if peaks is None or len(peaks) == 0:
         raise RuntimeError(f"no peaks returned for sample {sample_id!r}")
@@ -585,6 +631,16 @@ def fetch_peaks(client, sample_id: str, *, use_cache: bool = True,
         peaks.to_parquet(cfile)
     except Exception:
         peaks.to_csv(cdir / "peaks.csv", index=False)
+    return _axis_corrected(sample_id, peaks)
+
+
+def _axis_corrected(sample_id: str, peaks: pd.DataFrame) -> pd.DataFrame:
+    fit = _AXIS.get(str(sample_id))
+    if fit is None or "mz" not in peaks.columns:
+        return peaks
+    from peaky.batch.massqc import apply_correction
+    peaks = peaks.copy()
+    peaks["mz"] = apply_correction(fit, peaks["mz"].to_numpy(dtype=float))
     return peaks
 
 

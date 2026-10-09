@@ -6,6 +6,53 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`peaky batch` / `pool` measure the batch's m/z axis and correct an Orbitrap's axis error
+  before anything is assigned (`--mass-axis auto`, the default; `off` skips it).** The batch time
+  series is probed against the reagent's formula-certain reference ions (the `peaky mass-qc`
+  probe, judged by the instrument's own rules); on an Orbitrap whose verdict is an axis error
+  the time series and every file's peak table are corrected, in the parent and in every spawned
+  worker: a trend inside the reference ions' m/z range (left as is outside it, where its shape is
+  unmeasured), a flat offset at every m/z. Pass 1's per-file self-calibration models only a
+  constant plus a 1/(m/z) term, so an axis that rose and fell across the range left correct
+  formulas several scoring widths off-centre: on a nitrate Orbitrap batch whose axis read 0 ppm
+  at m/z 62, +2.4 ppm near m/z 200 and +0.2 ppm at m/z 308 (identically in every file), the
+  uncorrected run held 307 ions and put P/S/Cl formulas on CHON(N) ions; with the correction it
+  holds 641, and against an independent, hand-curated assignment of the same ions the same
+  formula rose from 171 to 573 and a different formula fell from 57 to 11. Measured but not
+  corrected: a TOF (its reference ions span m/z 62-220 and its offsets are mostly
+  ion-specific; a batch the server lists as TOF stays one whatever resolving power it is
+  given), a pool spanning several batches (one wave would correct each batch by the others'
+  axis), server-side scoring (`PEAKY_LOCAL_SCORING=0` scores the server's own peaks) and a
+  correction above 4 ppm anywhere (a calibration to fix at the instrument). `peaky publish`
+  does not undo the correction: it matches a batch's merged m/z back to the server's peaks
+  within 5 ppm, of which a correction uses up to 4. A reagent without a reference-ion
+  table (nitrate, labelled nitrate and bromide have one) is not measured, and the measurement
+  never stops a batch. `batch_summary.json['mass_axis']` and the run manifest record the
+  verdict, the wave, its scope, how far the peaks moved or why nothing was applied;
+  `tables/mass_axis.csv` the reference ions. A corrected series carries the shift it removed
+  (`mz_axis_ppm`), so a run's `per_file/_batch_ts.parquet` fed back with `--ts` is restored to
+  the server's axis first (`peaky mass-qc --ts` restores it too). The cluster and Van Krevelen
+  figures read the corrected series; the PDF's coverage tables and a pool's per-group reports
+  read the run's recorded input (the series it was given) within their 8 ppm windows. The
+  correction is held per sample: runs that share samples in one process (the MCP server's
+  threads) share it. Trace-first keeps its own wave.
+
+### Fixed
+
+- **`peaky mass-qc` measures batches of few spectra.** A reference ion needed 10 spectra to
+  count, so every batch of fewer (a time series of one aggregated spectrum per file) read
+  NO_REFERENCE although the ions sat in every file. The bar is now what half the batch is,
+  at least 3 and at most 10: unchanged from 20 spectra up.
+- **`peaky mass-qc --orbitrap` judges an Orbitrap by its own rules.** The calibrant ladder
+  and thresholds were sized on TOF batches: the anchor tier (an ion clean at TOF resolution)
+  stops at m/z 220, the reagent / lock-mass ions sit off the analyte axis, and a 4 ppm swing
+  or 2 ppm offset is ~10 Orbitrap scoring widths. On the batch above it reported a flat
+  +2.1 ppm offset. On an Orbitrap every usable reference ion now calibrates except those
+  over 100x the median height, and a trend needs a 1 ppm swing that predicts held-out ions
+  with half the constant's error (an offset: 1 ppm). A TOF is judged as before.
+
 ## [0.10.0b1] — 2026-10-07 (pre-release: the evidence scale, the isotope checks, the m/z-dependent mass centre, declared side channels, the TOF M+2 and mass-only gates)
 
 ### Changed

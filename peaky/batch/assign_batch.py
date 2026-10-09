@@ -1021,14 +1021,22 @@ def batch_noise_edge(client, sample_ids, *, edges=None) -> float | None:
     return float(np.median(vals)) if vals else None
 
 
-def _worker_init(context, reflists_active, base_kw, ts_path, reagents=None):
+def _worker_init(context, reflists_active, base_kw, ts_path, reagents=None, axis=None):
     global _W
+    from peaky.io import io_mascope as IO
     # A spawned worker imports the reagent registry afresh -- built-ins only. The
     # parent's added profiles (--reagent-config, register()) ride in as
     # `reagents` (profiles.registry_extras) and are registered here, before any
     # per-file stage resolves the run's reagent by name (the evidence space
     # does), or a config-only profile is an unknown reagent in every worker.
     P.register_extras(reagents)
+    # Likewise the batch's m/z-axis correction (`axis` = (sample ids, wave
+    # record), see measure_axis): it lives in the parent's io registry, and a
+    # worker that did not get it would assign every file on the raw axis.
+    if axis:
+        IO.set_axis_correction(*axis)
+    else:
+        IO.clear_axis_correction()
     _W = {"context": context, "reflists_active": reflists_active,
           "base_kw": base_kw, "ts_path": ts_path, "ts": None}
 
@@ -1113,6 +1121,159 @@ def _width_model_for_batch(resolving_power, client, table, log):
     counts = table.groupby("sample_item_id").size().sort_values()
     probe = str(counts.index[len(counts) // 2])
     return TFT.measure_resolution(client, probe, log=log)
+
+
+#: `--mass-axis`: 'auto' measures the batch's m/z axis against the reagent's
+#: reference ions and corrects it when the verdict is an axis error; 'off' skips it
+MASS_AXIS_MODES = ("auto", "off")
+
+
+def _roster_class(table) -> str | None:
+    """'orbitrap' / 'tof' from a roster's `instrument_type` (Mascope's 'orbi' /
+    'tof'), or None -- the fallback when no peak-width model was measured."""
+    if table is None or "instrument_type" not in getattr(table, "columns", ()):
+        return None
+    kinds = {str(k).lower() for k in table["instrument_type"].dropna().unique()}
+    if kinds == {"orbi"}:
+        return "orbitrap"
+    if kinds and kinds <= {"tof", "api"}:
+        return "tof"
+    return None
+
+
+#: the column a corrected time series carries: the ppm removed from each peak's
+#: m/z (0 where the correction does not reach). A series fed back in (`--ts` on a
+#: run's per_file/_batch_ts.parquet) is restored to the server's axis first
+#: (`restore_axis`), so its files' peak tables and its series sit on one axis.
+AXIS_COL = "mz_axis_ppm"
+
+
+def restore_axis(ts, *, log=print):
+    """`ts` on the server's m/z axis: an earlier run's correction (AXIS_COL)
+    undone, the column dropped. Unchanged when it carries none."""
+    if ts is None or AXIS_COL not in getattr(ts, "columns", ()):
+        return ts
+    d = pd.to_numeric(ts[AXIS_COL], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    out = ts.drop(columns=[AXIS_COL])
+    if np.any(d != 0):
+        out = out.copy()
+        out["mz"] = out["mz"].to_numpy(dtype=float) / (1 - d * 1e-6)
+        log(f"[mass-axis] the time series carries an earlier run's axis correction "
+            f"({int((d != 0).sum())} peaks): restored to the server's axis first")
+    return out
+
+
+def _axis_class(measured: str | None, roster: str | None) -> str | None:
+    """The class the axis step acts on: 'tof' when EITHER the width model or the
+    roster says TOF -- a TOF declared or measured at R >= the Orbitrap bar
+    (--resolving-power 60000) read as an Orbitrap and was corrected -- else the
+    width model's class, else the roster's."""
+    if "tof" in (measured, roster):
+        return "tof"
+    return measured or roster
+
+
+def measure_axis(ts, reagent: str, klass: str | None, *, hold: str | None = None, log=print):
+    """The batch's m/z axis against the reagent's formula-certain reference ions
+    (batch.massqc, judged by the instrument's own rules) and the correction its
+    verdict prescribes (massqc.correction). Returns (ts, info, table):
+
+      * `ts` -- the time series with `mz` corrected where the correction reaches
+        (massqc.in_scope) and the ppm removed in AXIS_COL, when it was applied;
+        else the frame as given;
+      * `info` -- the JSON-safe record batch_summary['mass_axis'] keeps (verdict,
+        the wave and its scope, how many peaks moved and by how much, or why
+        nothing was applied: `held`);
+      * `table` -- the per-reference-ion probe table, None when not measured.
+
+    Not measured (info['skipped'] says why) without a time series, an
+    instrument class (the wave's variable depends on it) or a reference table
+    for the reagent (one exists for the nitrate and bromide families), or when
+    the probe itself fails -- the measurement never stops a batch.
+
+    Measured but NOT applied (info['held'] says why): on a TOF (its reference
+    ions span m/z 62-220 and its offsets are mostly ion-specific -- a trend
+    corrected inside that span left a step of its full size at the edge), when
+    the caller holds it (`hold`: server-side scoring, which scores the server's
+    own peaks; a pool of several batches, which may sit on several axes), or
+    when the correction would exceed massqc.MAX_CORRECTION_PPM anywhere."""
+    from peaky.batch import massqc as MQ
+    from peaky.chem import reference_ions as RI
+
+    info: dict = {"applied": False, "verdict": None}
+
+    def _skip(why):
+        info["skipped"] = why
+        log(f"[mass-axis] not measured: {why}")
+        return ts, info, None
+
+    if ts is None or not len(ts):
+        return _skip("no batch time series")
+    if not {"sample_item_id", "mz", "height"} <= set(ts.columns):
+        return _skip("the time series lacks sample_item_id / mz / height")
+    if klass not in ("orbitrap", "tof"):
+        return _skip("instrument class unknown (no peak-width model)")
+    try:
+        refs = RI.get(reagent)
+    except KeyError:
+        return _skip(f"no reference-ion table for reagent {reagent!r}")
+    tof = klass == "tof"
+    tol = MQ.member_ppm(tof)
+    probe_ts = ts
+    if "datetime_utc" not in ts.columns:
+        # the times feed only the drift statistics; the spectra's order stands in
+        order = {s: i for i, s in enumerate(pd.unique(ts["sample_item_id"]))}
+        probe_ts = ts.assign(datetime_utc=pd.Timestamp("2000-01-01", tz="UTC")
+                             + pd.to_timedelta(ts["sample_item_id"].map(order), unit="h"))
+    log(f"[mass-axis] probing {len(refs)} {reagent} reference ions in "
+        f"{ts['sample_item_id'].nunique()} spectra ({klass}, membership +-{tol:g} ppm)")
+    try:
+        table, v = MQ.run(probe_ts, refs, tol_ppm=tol, tof=tof, per_instrument=True)
+    except Exception as exc:      # noqa: BLE001 -- a diagnostic never stops the batch
+        return _skip(f"the reference-ion probe failed ({type(exc).__name__}: {exc})")
+    MQ.report(table, v, log=lambda s: log(s.replace("[mass-qc]", "[mass-axis]")))
+    info.update(instrument=klass, verdict=v.get("verdict"), remedy=v.get("remedy"), qc=v)
+    fit = MQ.correction(v)
+    if fit is None:
+        log(f"[mass-axis] axis left as measured (verdict {v.get('verdict')})")
+        return ts, info, table
+    lo, hi = (float(x) for x in fit.mz_range)
+    grid = np.linspace(lo, hi, 200)
+    peak = float(np.nanmax(np.abs(fit.predict(grid, extrapolate=True))))
+    held = hold
+    if held is None and tof:
+        held = ("a TOF: measured, not applied (its calibrants are the anchor ions, clean "
+                "at TOF resolution over a narrow m/z span, and its offsets are mostly "
+                "ion-specific; see `peaky mass-qc`)")
+    if held is None and peak > MQ.MAX_CORRECTION_PPM:
+        held = (f"the correction reaches {peak:.1f} ppm, above {MQ.MAX_CORRECTION_PPM:g}: "
+                "a broken calibration to fix at the instrument, not a residual to model")
+    info.update(wave=fit.as_dict(), scope_mz=[lo, hi], max_abs_ppm=round(peak, 3))
+    if held is not None:
+        info["held"] = held
+        log(f"[mass-axis] {v.get('verdict')} NOT applied: {held}")
+        return ts, info, table
+    mz = ts["mz"].to_numpy(dtype=float)
+    inside = MQ.in_scope(fit, mz)
+    shift = np.zeros(len(mz))
+    if inside.any():
+        shift[inside] = fit.predict(mz[inside], extrapolate=True)
+    ts = ts.copy()
+    ts["mz"] = MQ.apply_correction(fit, mz)
+    ts[AXIS_COL] = shift
+    moved = shift[inside] if inside.any() else np.array([0.0])
+    info.update(applied=True, n_peaks=int(len(mz)), n_corrected=int(inside.sum()),
+                frac_outside=round(float(1 - inside.mean()), 4) if len(mz) else None,
+                shift_ppm={"min": round(float(np.min(moved)), 3),
+                           "median": round(float(np.median(moved)), 3),
+                           "max": round(float(np.max(moved)), 3)})
+    where = ("at every m/z (a constant)" if int(fit.K) == 0 else
+             f"inside m/z {lo:.0f}-{hi:.0f}; outside it the shape is unmeasured and the "
+             "axis is left as is")
+    log(f"[mass-axis] APPLIED {v.get('verdict')}: m/z corrected by "
+        f"{info['shift_ppm']['min']:+.2f}..{info['shift_ppm']['max']:+.2f} ppm "
+        f"({info['n_corrected']} of {info['n_peaks']} peaks) {where}")
+    return ts, info, table
 
 
 def _reparsed(frame: pd.DataFrame | None) -> pd.DataFrame | None:
@@ -1283,7 +1444,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         ts_peaks=None, amine_r_min: float = 0.6,
         n_jobs: int | None = None, rolling_centre: bool = False,
         trace_first: bool = False, resolving_power=None, trace_episodes: bool = False,
-        corroborate=None, log=print, **assign_kw) -> dict:
+        corroborate=None, mass_axis: str = "auto", mass_axis_hold: str | None = None,
+        log=print, **assign_kw) -> dict:
     """Assign the presence-cover subset of a batch and combine, keeping per-file
     ledgers. Provide EITHER `peaks` (a batch peak/sample table) OR `batch` (a
     batch id or name -- exact id > exact name > unique substring, an ambiguous
@@ -1335,12 +1497,32 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     claim each level supports (identified / neutral / ion / tentative, plus the
     reagent and not-assessed buckets) is stamped on every merged row and
     tallied in batch_summary['claims'] (merged, pooled, per stage, per tier with
-    the ion-only rows apart); it changes no ion, tier or level."""
+    the ion-only rows apart); it changes no ion, tier or level.
+
+    `mass_axis` ('auto', the default, or 'off'): before this run picks its cover
+    or assigns anything, 'auto' measures the batch's m/z axis against the
+    reagent's formula-certain reference ions (`measure_axis`, batch.massqc by the
+    instrument's own rules) and, on an Orbitrap whose verdict is an axis error,
+    corrects the time series and every file's peak table where the correction
+    reaches (io_mascope.set_axis_correction; the spawned workers get it too).
+    Pass 1's per-file self-calibration only models a constant plus a 1/(m/z)
+    term, so an axis that rises and falls across the range left correct formulas
+    off-centre by several of its widths. A TOF is measured, never corrected;
+    `mass_axis_hold` (a reason) measures without correcting -- the pooled path
+    passes one for a pool of several batches -- and so does server-side scoring
+    (PEAKY_LOCAL_SCORING=0), which scores the server's own peaks. A series that
+    carries an earlier run's correction is restored first (`restore_axis`).
+    batch_summary['mass_axis'] records the verdict and what moved (`offsets_ppm`
+    and the per-file scoring are then read on the corrected axis);
+    tables/mass_axis.csv the reference ions. Trace-first keeps its own wave
+    (batch.tracefirst) and 'off' reproduces a run without the step."""
     from peaky.assignment import assign as A
     from peaky.assignment import evidence as EV
     from peaky.batch import timeseries as _TSN
     from peaky.io import io_mascope as IO
 
+    if mass_axis not in MASS_AXIS_MODES:      # before any server call or folder
+        raise ValueError(f"mass_axis must be one of {MASS_AXIS_MODES}, got {mass_axis!r}")
     t_start = time.time()          # wall clock for summary['elapsed_s'] (see below)
     # ONE row per physical peak before anything reads the time series: Mascope
     # returns one row per target MATCH, which would double-count every peak two
@@ -1400,6 +1582,33 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # columns stay NA).
     rp = _width_model_for_batch(resolving_power, client,
                                 ts_peaks if ts_peaks is not None else peaks, log)
+    # The batch's m/z axis (see the docstring's `mass_axis`), measured and, on an
+    # axis error, corrected HERE -- before the cover is picked and before any
+    # file's peak table is read, so every stage sees one axis.
+    ts_peaks = restore_axis(ts_peaks, log=log)
+    axis_ids = ([str(s) for s in ts_peaks["sample_item_id"].unique()]
+                if ts_peaks is not None and "sample_item_id" in ts_peaks.columns else [])
+    IO.clear_axis_correction(axis_ids)     # this run's samples only (a thread may run another)
+    axis_args = None          # (sample ids, wave record) for the spawned workers
+    if mass_axis == "off":
+        axis_info = {"applied": False, "verdict": None, "skipped": "--mass-axis off"}
+    elif trace_first:
+        axis_info = {"applied": False, "verdict": None,
+                     "skipped": "trace-first applies its own wave (batch.tracefirst)"}
+    else:
+        hold = mass_axis_hold
+        if hold is None and not IO._local_scoring_enabled():
+            hold = ("server-side scoring (PEAKY_LOCAL_SCORING=0) scores the server's own "
+                    "peaks, on the server's axis")
+        ts_peaks, axis_info, axis_table = measure_axis(
+            ts_peaks, prof.name, _axis_class(_instrument_of(rp)[0], _roster_class(peaks)),
+            hold=hold, log=log)
+        if axis_table is not None:
+            axis_table.to_csv(os.path.join(TAB, "mass_axis.csv"), index=False)
+        if axis_info["applied"]:
+            axis_args = (axis_ids, axis_info["wave"])
+            IO.set_axis_correction(*axis_args)
+    axis_info = {"mode": mass_axis, **axis_info}
     if trace_first:
         # TRACE-FIRST: no files are selected -- the batch's persistent ions are
         # built as traces, centred, gated and handed to the engine as ONE
@@ -1744,7 +1953,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                     max_workers=n_jobs, mp_context=_mp.get_context("spawn"),
                     initializer=_worker_init,
                     initargs=(context, reflists_active, base_kw, ts_path,
-                              P.registry_extras())) as ex:
+                              P.registry_extras(), axis_args)) as ex:
                 futs = {ex.submit(_assign_one, sid): sid for sid in ids}
                 for done, fut in enumerate(as_completed(futs), offset + 1):
                     out = fut.result()
@@ -2322,6 +2531,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # tier pass's counting-detector floor (per file: tof_assign_floor_cps)
         "noise_edge_batch_cps": getattr(cfg, "noise_edge_batch_cps", None),
         "tol_ppm": tol_ppm, "offsets_ppm": offsets,
+        # the batch's m/z axis against the reagent's reference ions, and the
+        # correction applied to it before the cover was picked (measure_axis)
+        "mass_axis": axis_info,
         "pattern_scoring": scorings,
         # which scorer judged the candidates: 'local' (in-process, the default) or
         # 'server' (match_compounds; PEAKY_LOCAL_SCORING=0) -- the report's Methods name it
@@ -2404,8 +2616,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             f"file(s), {summary['merged_by_stage'].get(STAGE_RESIDUAL, 0)} ion(s) it alone holds")
     log(f"[assign_batch] assigned {len(sample_ids)} samples in "
         f"{summary['elapsed_s']:.1f}s (n_jobs={n_jobs})")
+    IO.clear_axis_correction(axis_ids)     # the correction belongs to this run only
     return {"profile": prof, "context": context, "sample_ids": sample_ids,
             "per_file": per_file, "offsets": offsets, "merged": merged,
             "jitter": jitter, "summary": summary, "out_dir": out_dir,
             "evidence": levels,
-            "residual_samples": rsel, "stages": dict(stages)}
+            "residual_samples": rsel, "stages": dict(stages),
+            # the time series every stage read (axis-corrected, with AXIS_COL, when
+            # summary['mass_axis']['applied']); the pipeline's cluster and Van
+            # Krevelen figures read it
+            "ts_peaks": ts_peaks}
