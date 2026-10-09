@@ -26,6 +26,7 @@ __all__ = [
     "_silanediol_series",
     "_known_species",
     "known_formulas",
+    "curated_formulas",
     "_D37CL",
     "_RECOVERABLE_KNOWN_FAMS",
     "run_pass0_known",
@@ -314,6 +315,18 @@ def known_formulas(polarity: str = "negative", context: str | None = None) -> fr
     exemption (plausibility.demote_off_budget): a formula a curated list names
     is admitted by that list, whichever pass committed it."""
     return frozenset(f for family in _known_species(polarity, context).values() for f in family)
+
+
+def curated_formulas(polarity: str = "negative", context: str | None = None,
+                     reflist_formulas=()) -> frozenset[str]:
+    """The formulas a curated list stands behind for a run: the pass-0 registry
+    for its polarity / context (`known_formulas`) and the active reference
+    lists' formulas (`reflist_formulas`: cfg.reflist_formulas, or
+    reflists.prior_formulas of the active lists). One set for every gate that
+    spares a curated reading: the plausibility demotes, the degeneracy count,
+    the element-evidence stage, pass 7's element gate, and the batch's
+    isotopologue gate and element-signature removal."""
+    return known_formulas(polarity, context) | frozenset(reflist_formulas or ())
 
 
 _D37CL = 1.9970499
@@ -1995,7 +2008,7 @@ def run_pass_certified(
     co-variation is annotated as extra corroboration; when None the pass is
     fully functional on the single-spectrum mass domain.
 
-    The element gate (F3). On an Orbitrap-class run (cfg.instrument_class, not
+    The element gate (the element_evidence stage's predicate). On an Orbitrap-class run (cfg.instrument_class, not
     trace-first's synthetic sample) the diagnostic envelope is the file's PEAK
     LIST, not a scorer label: `iso_ok` holds when the element-evidence
     predicate (satellites.element_evidence: the exact offset, the file's own
@@ -2042,10 +2055,11 @@ def run_pass_certified(
         log("[pass7] no multi-channel certificates in the residual")
         return out
     out["gated"] = 0
-    # the element gate's inputs (F3): the curated formulas, the class, the
-    # file's own exact-offset calibration (Orbitrap-class only)
-    curated = (known_formulas(getattr(profile, "polarity", "negative"), getattr(profile, "label", None))
-               | frozenset(getattr(cfg, "reflist_formulas", None) or ()))
+    # the element gate's inputs (the element_evidence stage's predicate): the
+    # curated formulas, the class, the file's own exact-offset calibration
+    # (Orbitrap-class only)
+    curated = curated_formulas(getattr(profile, "polarity", "negative"), getattr(profile, "label", None),
+                               getattr(cfg, "reflist_formulas", None))
     klass = None if getattr(cfg, "trace_sample", False) else getattr(cfg, "instrument_class", None)
     ee_ctx = (_SAT.evidence_context(ledger, klass="orbitrap", cal_sigma=getattr(cfg, "cal_sigma", None),
                                     resolution=resolving_power)
@@ -2136,7 +2150,7 @@ def run_pass_certified(
                 else tuple(d for d in _CERT_DIAG_ISO if d != "81Br"))
         iso_ok = bool(win_kids["iso_label"].astype(str).str.contains(
             "|".join(diag), na=False).any())
-        # the element gate (F3): on an Orbitrap-class run the peak list decides
+        # the element gate (element_evidence's predicate): on an Orbitrap-class run the peak list decides
         ee = _cert_element_evidence(ee_ctx, cert, member_ion, wf, reagent_lines=cert.n_channels >= 3)
         own = [el for el in _SAT.EE_ELEMENTS if wf.get(el, 0) > 0]
         own_confirmed = any(_SAT.EE_CONFIRMED in ee.get(el, ()) for el in own)

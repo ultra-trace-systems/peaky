@@ -28,7 +28,7 @@ from peaky.chem import chemistry as C
 from peaky.assignment import ledger as L
 from peaky.assignment import tiers as T
 
-__version__ = "0.6.0"   # NOx-skeleton readings (profile=); 0.5.0 the element-evidence gate (gate_element_evidence); 0.4.0 element-budget demote (demote_off_budget); 0.3.0 carbon-cluster rule: F no longer exempts
+__version__ = "0.6.1"   # a peak gate_element_evidence clears is locked; 0.6.0 NOx-skeleton readings (profile=); 0.5.0 the element-evidence gate (gate_element_evidence); 0.4.0 element-budget demote (demote_off_budget); 0.3.0 carbon-cluster rule: F no longer exempts
 
 # thresholds (loose on purpose — flag the clear coincidences only)
 N_HIGH_OC = 3       # N>=3 combined with...
@@ -453,6 +453,20 @@ def _cf2_neighbours(neutral: str) -> list:
 #: the methods of the per-peak grid (it never proposes S / P / Si / F / Cl / Br
 #: / I: build_ranges keeps them at zero), so a heteroatom there is not a widened
 #: proposal; and the methods a curated list stands behind
+#: the reason a peak cleared by `gate_element_evidence` carries (its commentary
+#: reads 'CLEARED (element_evidence: ...)'): `cleared_by_element_evidence`
+EE_REASON = "element_evidence"
+
+
+def cleared_by_element_evidence(ledger: pd.DataFrame, i) -> bool:
+    """Whether row `i` (an index label) is a peak `gate_element_evidence` cleared:
+    unexplained, locked, its commentary 'CLEARED (element_evidence: ...)'."""
+    if "commentary" not in ledger.columns or str(ledger.at[i, "role"]) != L.ROLE_UNEXPLAINED:
+        return False
+    c = ledger.at[i, "commentary"]
+    return isinstance(c, str) and c.startswith(f"CLEARED ({EE_REASON}:")
+
+
 _GRID_METHODS = ("cheminfo+grid", "grid")
 _EXEMPT_METHODS = ("known:", "ion_only:")
 #: the siloxane step: a committed neutral one C2H6OSi apart on the same adduct
@@ -469,15 +483,6 @@ def _siloxane_neighbours(neutral: str) -> list:
         if all(v >= 0 for v in c.values()) and c.get("Si", 0) >= 1 and c.get("C", 0) >= 1:
             out.append(C.format_formula({el: v for el, v in c.items() if v}))
     return out
-
-
-def _truth(v) -> bool:
-    if isinstance(v, str):
-        return v.strip().lower() == "true"
-    try:
-        return bool(v) and not pd.isna(v)
-    except (TypeError, ValueError):
-        return bool(v)
 
 
 def gate_element_evidence(ledger: pd.DataFrame, *, profile, curated=frozenset(), cfg=None,
@@ -512,7 +517,9 @@ def gate_element_evidence(ledger: pd.DataFrame, *, profile, curated=frozenset(),
     own M+2 line (tiers.tof_m2_verdicts' primitive, with the run's width model
     `resolution` -- none: no TOF verdict, as there), no S / Si verdicts;
     unknown class, or trace-first's synthetic sample (batch-mean heights),
-    only the P / I rule. Returns counts; one audit row per cleared peak."""
+    only the P / I rule. A cleared peak is locked (it stays unexplained; only
+    the final envelope sweep may claim it as an isotope line). Returns counts;
+    one audit row per cleared peak."""
     from peaky.assignment import satellites as SAT
     out = {"tested": 0, "cleared": 0, "cleared_isotope": 0, "cleared_mono": 0, "si_ladder_kept": 0,
            "confirmed": 0, "contradicted": 0, "unobservable": 0}
@@ -552,7 +559,7 @@ def gate_element_evidence(ledger: pd.DataFrame, *, profile, curated=frozenset(),
         method = SAT.base_method(ledger.at[i, "method"]) if "method" in ledger.columns else ""
         if method.startswith(_EXEMPT_METHODS):
             continue
-        if has_locked and _truth(ledger.at[i, "locked"]):
+        if has_locked and L._truthy(ledger.at[i, "locked"]):
             continue
         nc = C.parse_formula(neutral)
         if not any(nc.get(el, 0) for el in ("Br", "Cl", "S", "Si", "P", "I")):
@@ -611,11 +618,18 @@ def gate_element_evidence(ledger: pd.DataFrame, *, profile, curated=frozenset(),
         ni = _iso_count(ledger.at[i, "isotopologues"]) if "isotopologues" in ledger.columns else 0
         note = ledger.at[i, "degeneracy_note"] if "degeneracy_note" in ledger.columns else None
         mz = ledger.at[i, "mz"] if "mz" in ledger.columns else None
-        reason = "element_evidence: " + "; ".join(reasons)
+        reason = f"{EE_REASON}: " + "; ".join(reasons)
         try:
             L.clear_assignment(ledger, pid, reason=reason)
         except L.LedgerError:
             continue
+        # ... and LOCKED for the rest of the run: the file's own evidence just
+        # emptied it, so no later stage commits a new reading on it (the run's
+        # proposers have all run; the reference-list rescue and the ion-only
+        # rows would put one there). The final envelope sweep may still claim it
+        # as a committed M0's isotope line (passes.complete_isotope_envelopes):
+        # that explains the line, it proposes nothing.
+        L.lock_peaks(ledger, [pid])
         out["cleared"] += 1
         out["cleared_mono" if mono else "cleared_isotope"] += 1
         if audit is not None:

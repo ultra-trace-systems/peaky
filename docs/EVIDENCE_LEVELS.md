@@ -254,7 +254,10 @@ this table: one row per pair with the level, `claim`, `would_lift`,
 
 The isotope probes need **every** per-file ledger row with height > 0
 (unexplained, artifact and reagent rows included): a line is "present" when a
-peak is there, whatever the engine called it. A batch reads its per-file
+peak is there, whatever the engine called it -- except an `artifact` row (a
+side lobe the per-file guard marked, cleanup's ringing), which is no line: the
+probe reads the tallest OTHER peak in the window, and a position only
+artifacts hold is untestable (`shadowed`), never absent (§5.3). A batch reads its per-file
 ledgers from the `per_file/<sid>_ledger.csv` files it has just written, with
 pandas' default CSV parser, in sorted sample-id order, so the batch and a
 post-hoc re-level of its run directory see byte-identical inputs. Text cells
@@ -267,7 +270,7 @@ Pooled over the source's files (a batch: `tied` and `lowconf` need ALL rows,
 
 | fact | from | what the scale does with it |
 |---|---|---|
-| `iso_veto` | the isotope checks, `tables/iso_checks.csv` (batch only; rules C / REQ / HIGH on the stamped time series) | step 0: rejected (5b) |
+| `iso_veto` | the isotope checks, `tables/iso_checks.csv` (batch only; rules C / REQ / HIGH on the stamped time series, and the merged-ledger isotopologue gate's `SAT` rows) | step 0: rejected (5b). Two vetoes also take the reading out of the merged ledger, so the merged ledger and the pooled level agree: a `SAT` row (the line is another merged ion's isotopologue at its expected ratio; [MERGE.md](MERGE.md) §3 step 4c) and, on an Orbitrap-class batch, a `REQ` veto whose absent line is an element-signature line (⁸¹Br / ³⁷Cl / ³⁴S / ²⁹Si / ³⁰Si; step 6a) on a reading no curated list names and no known-species decision holds. The pair keeps its 5b in `tables/evidence_levels.csv`; the per-file ledgers keep their readings |
 | `label_veto` | the 15N-twin facts of a labelled-nitrate batch, `tables/label_twins.csv` (batch only) | step 0: rejected (5b); its `alien` set (a 14N line the label shows is another ion) also stops a label pin |
 | `lowconf` | every row's confidence `Low` / `Suspect` | step 0: the 5a ceiling (§4) |
 | `below` | `below_assignability` (the assignment argues with itself) on any row | step 0: rejected (5b) by an implausible-chemistry setter; O≥11 on a mass-saturated window alone is a tag (§4) |
@@ -288,8 +291,9 @@ False per file.
 ### 3.3 The run inputs
 
 What a source needs beyond its ledgers (`RunInputs`): the reagent profile
-name, the context, the polarity, the active reference lists and their
-activation record, the width model, the per-file stats (height gates and the
+name, the context (with the run-level switches of its context profile,
+`context_flags`: the NOx-skeleton readings of a nitrate Orbitrap run), the
+polarity, the active reference lists and their activation record, the width model, the per-file stats (height gates and the
 degeneracy stage's calibration), and for a batch the stamped time series, the
 merged ledger, the protected neutrals, the batch-check tables and the run's
 `amine_r_min`.
@@ -390,7 +394,13 @@ opened `fluorinated` for every pair of a uronium run), plus the curated formulas
 the polarity and the active reference lists), over the reagent profile's
 adducts and the pair's own adduct. A committed neutral the space drops is
 enumerated in the space widened to admit its class, so same-class competitors
-are still counted instead of the pair reading "unique" vacuously.
+are still counted instead of the pair reading "unique" vacuously. On a run
+whose context profile reads NOx skeletons (`context_flags`, a nitrate-reagent
+Orbitrap-class run; [ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §8.3) the space
+uses that profile: its filter admits an organonitrate through its carbon
+skeleton, and the widening reads the Van Krevelen reading that needs the least
+of it. A per-file level reads the file's own switches, the batch level the
+batch's record (`batch_summary.json['context_flags']`).
 
 The **competitors** of a pair are every ion of that space inside the window,
 probed at the pooled m/z in the run window and at each file's m/z in that
@@ -413,6 +423,11 @@ seen in:
   within 0.5 Da of the file's first / last peak is untestable (`SCAN_MARGIN`);
   a 37Cl-bearing line is probed at its exact position, the resolution taken
   into account (`CL37_NEIGHBOUR_FWHM`);
+- an `artifact` row is never the line: the probe skips it (also in the 25 ppm
+  reach for a displaced line, and when an isotope-line competitor's position is
+  read), and a line whose window only artifacts hold is untestable
+  (`shadowed`), so an artifact neither occupies a line nor empties it -- the
+  rule the element-evidence predicate and REQ follow on an Orbitrap;
 - a reading whose ion carries the label (`^N`) predicts the labelled
   reagent's 14N impurity line, n(15N) × (1 − purity) / purity of M0 at
   −0.997 Da (`14N (reagent impurity)`): only the engine's own twin or child
@@ -763,8 +778,8 @@ calibrated ...`; one calibrated file is enough to lend the others its sigma.
 - `claims`: `merged`, `pooled`, `per_stage`, `by_tier` (ion-only rows under
   their own `ion-only` key) — each over the six `CLAIM_KEYS`, zeros kept — and
   `n_unlevelled`;
-- `reflists_context` (§2.5), `amine_r_min` and `reagent_halogen` (§3.4) at
-  the top level; `ion_only.merged_levels`.
+- `reflists_context` (§2.5), `amine_r_min`, `reagent_halogen` (§3.4) and
+  `context_flags` (§5.2) at the top level; `ion_only.merged_levels`.
 
 `tables/evidence_levels.csv` is §2.6.
 

@@ -100,6 +100,12 @@ def _si_m1_consistent(
     return obs >= SI_M1_MIN_FRAC * pred
 
 
+def _ee_cleared(ledger: pd.DataFrame, i) -> bool:
+    """A peak the element-evidence stage cleared and locked (plausibility.cleared_by_element_evidence)."""
+    from peaky.assignment import plausibility as PL
+    return PL.cleared_by_element_evidence(ledger, i)
+
+
 def complete_isotope_envelopes(
     ledger: pd.DataFrame,
     cfg: PassConfig,
@@ -186,8 +192,11 @@ def complete_isotope_envelopes(
             if role_j == L.ROLE_UNEXPLAINED:
                 if 0.3 <= ratio <= 3.5:
                     try:
+                        # a peak the element-evidence stage cleared is locked against
+                        # new readings, not against being a committed M0's line
                         L.attach_isotopologue(
-                            ledger, tpid, pid, iso_label=label, iso_match_score=score
+                            ledger, tpid, pid, iso_label=label, iso_match_score=score,
+                            overwrite=_ee_cleared(ledger, j)
                         )
                         out["attached"] += 1
                     except L.LedgerError:

@@ -31,7 +31,22 @@ import pandas as pd
 from peaky.assignment import ledger as L
 from peaky.chem import sidelobes as SL
 
-__version__ = "1.0.0"   # the per-file Orbitrap side-lobe guard (before pass 0)
+__version__ = "1.2.0"   # + lobe_mask: the element-evidence predicate reads no line off a marked side lobe
+
+
+#: the start of a flagged row's commentary: what `lobe_mask` reads back
+LOBE_MARK = "Orbitrap side lobe"
+
+
+def lobe_mask(ledger: pd.DataFrame) -> np.ndarray:
+    """True on the rows this guard marked (role 'artifact', commentary starting
+    LOBE_MARK): peaks the profile does not hold. The element-evidence
+    predicate (assignment/satellites.py) reads no line off them."""
+    if ledger is None or not len(ledger) or "role" not in ledger.columns or "commentary" not in ledger.columns:
+        return np.zeros(0 if ledger is None else len(ledger), dtype=bool)
+    art = ledger["role"].astype(str).to_numpy() == L.ROLE_ARTIFACT
+    com = ledger["commentary"].map(lambda v: isinstance(v, str) and v.startswith(LOBE_MARK)).to_numpy(dtype=bool)
+    return art & com
 
 
 def _skip(reason: str, log) -> dict:
@@ -44,7 +59,8 @@ def flag_orbitrap_sidelobes(ledger: pd.DataFrame, width_model, cfg, *, log=print
 
     Every row of the ledger is a possible parent; only an unexplained, unlocked
     row is ever marked. Returns {'flagged': n, 'skipped': None or the reason,
-    'by_signature': {...}, 'n_mirror', 'n_no_signature', 'n_exempt',
+    'by_signature': {...}, 'n_mirror', 'n_no_signature', 'n_exempt' (fine-structure
+    names and '<isotope> line' for an isotope line of a brighter line),
     'signatures': the signatures tested (no 'narrow' when the calibration is not
     measured), 'calibration': {...}} -- the run's per-file stats carry it as
     'sidelobe_guard'."""
@@ -85,7 +101,7 @@ def flag_orbitrap_sidelobes(ledger: pd.DataFrame, width_model, cfg, *, log=print
         sig = res["signature"][i]
         L.mark_artifact(
             ledger, pids[i],
-            f"Orbitrap side lobe of m/z {mzs[j]:.4f} ({hts[j] / hts[i]:.0f}x brighter, "
+            f"{LOBE_MARK} of m/z {mzs[j]:.4f} ({hts[j] / hts[i]:.0f}x brighter, "
             f"{res['offset_fwhm'][i]:+.2f} FWHM = {res['offset_mda'][i]:+.1f} mDa; "
             f"{sig.replace('+', ', ')}): not a line of the profile, excluded from assignment")
         flagged.append(pids[i])
@@ -103,7 +119,8 @@ def flag_orbitrap_sidelobes(ledger: pd.DataFrame, width_model, cfg, *, log=print
         f"{cfg.sidelobe_band_fwhm[1]:g} parent FWHM; {cal_note}; tested "
         f"{'/'.join(signatures)}); signatures {by_sig}; spared "
         f"{res['n_no_signature']} with no artifact signature"
-        + (f", {sum(n_exempt.values())} isotope fine-structure lines {n_exempt}" if n_exempt else ""))
+        + (f", {sum(n_exempt.values())} isotope lines (fine structure, or on an isotopologue offset "
+           f"of a brighter line) {n_exempt}" if n_exempt else ""))
     return {"flagged": len(flagged), "skipped": None, "by_signature": by_sig,
             "n_mirror": int(res["n_mirror"]), "n_no_signature": int(res["n_no_signature"]),
             "n_exempt": n_exempt, "signatures": signatures, "calibration": cal_out}

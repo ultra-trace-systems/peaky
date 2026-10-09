@@ -38,7 +38,11 @@ from peaky.assignment import solvent_clusters
 from peaky.assignment import tiers
 from peaky.batch import timeseries
 
-__version__ = "0.6.1"  # the v2 fit (0.6.0) with main's solvent_clusters stage
+__version__ = "0.7.0"  # + the Orbitrap side-lobe guard before pass 0, the run's
+#                        context profile (the NOx-skeleton switches) and the
+#                        element_evidence stage (clears and locks a heteroatom
+#                        reading the file's own lines contradict)
+#                        0.6.1: the v2 fit (0.6.0) with main's solvent_clusters stage
 #                        (0.5.2) under it: a run stamped 0.6.0 was scored before
 #                        that stage existed, so the two are told apart.
 #                        0.6.0: every candidate scored with the v2 fit at the
@@ -155,9 +159,7 @@ def _stage_degeneracy(st):
     widened by the contaminant families this file opened -- declared by the
     context, the reagent's organohalogen family, the GKA evidence pass 3 carried --
     and the curated formulas (the pass-0 registry, the active reference lists)."""
-    polarity = getattr(st.profile, "polarity", "negative")
-    curated = passes.known_formulas(polarity, getattr(st.profile, "label", None))
-    curated = curated | frozenset(getattr(st.cfg, "reflist_formulas", None) or ())
+    curated = _curated(st)
     carry = st.series_carry or {}
     families = degeneracy.opened_families(
         st.profile if st.do_pass3 else None, st.reagent if st.do_pass3 else None,
@@ -355,20 +357,19 @@ def _stage_plausibility(st):
     registry for this polarity/context or an active reference list -- is
     Candidate + tentative_lead (plausibility.demote_off_budget)."""
     label = getattr(st.profile, "label", None)
-    curated = passes.known_formulas(getattr(st.profile, "polarity", "negative"), label)
-    curated = curated | frozenset(getattr(st.cfg, "reflist_formulas", None) or ())
     # the run's own profile (its run-level switches: the NOx skeleton reading)
     return plausibility.demote_implausible(
         st.led, audit=st.plaus_audit, log=st.log, context=st.profile if label else None,
-        curated=curated)
+        curated=_curated(st))
 
 
 def _curated(st) -> frozenset:
     """The formulas a curated list stands behind for this run: the pass-0
-    registry for its polarity/context and the active reference lists."""
-    polarity = getattr(st.profile, "polarity", "negative")
-    curated = passes.known_formulas(polarity, getattr(st.profile, "label", None))
-    return curated | frozenset(getattr(st.cfg, "reflist_formulas", None) or ())
+    registry for its polarity/context and the active reference lists
+    (passes.curated_formulas)."""
+    return passes.curated_formulas(getattr(st.profile, "polarity", "negative"),
+                                   getattr(st.profile, "label", None),
+                                   getattr(st.cfg, "reflist_formulas", None))
 
 
 def _stage_element_evidence(st):
@@ -611,7 +612,12 @@ _STAGES = [
     # series families, pass 6, cleanup, siloxane, the labelled rescue,
     # re-arbitration), so this is the last word on a widened search's heteroatom
     # before degeneracy and tiers read the commit -- a contradicted one is
-    # CLEARED, its isotope children released (plausibility.gate_element_evidence)
+    # CLEARED, its isotope children released (plausibility.gate_element_evidence).
+    # Not `safe`: `safe` keeps a run going past a stage that calls the server
+    # (a 500 must not lose prior passes); this one reads only the ledger, so a
+    # failure is a bug -- and skipping it would let every widened search's
+    # heteroatom through unchecked while the run looked normal (as `tiers` and
+    # `plausibility`, it fails the file instead).
     _Stage("element_evidence", _stage_element_evidence, safe=False),
     # separability of each M0 peak from its nearest picked neighbour -- MUST precede
     # tiers (a blended, uncorroborated peak is capped) and the merge vote's class (reads it).

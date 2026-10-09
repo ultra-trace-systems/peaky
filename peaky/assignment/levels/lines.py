@@ -146,7 +146,9 @@ def probe_exact_37cl(ctx, sid: str, span, tol: float, anchor_pid: str, own=(), h
     span (no 25 ppm neighbour reach); a peak at a labelled-reagent position more
     than CL37_NEIGHBOUR_FWHM from the span is resolved from it and ignored;
     nothing in the window but a peak >= SHADOW_FRAC x the expected height within
-    1 FWHM -> 'shadowed'. Returns FileArr.probe's (status, height, index)."""
+    1 FWHM -> 'shadowed'. An artifact row (FileArr.art) is never the line: in
+    the window, or tall enough within 1 FWHM, it leaves the line 'shadowed'.
+    Returns FileArr.probe's (status, height, index)."""
     fa = ctx.files[sid]
     fw = CL37_NEIGHBOUR_FWHM * ctx.fwhm(0.5 * (span[0] + span[1]))
     reach = max(tol, fw)
@@ -159,6 +161,10 @@ def probe_exact_37cl(ctx, sid: str, span, tol: float, anchor_pid: str, own=(), h
     keep = []
     blend = False
     for j in range(lo, hi):
+        if fa.art[j]:
+            # an artifact (side lobe, ringing) is no line: in the window it leaves the line untestable
+            blend = blend or dist(float(fa.mz[j])) <= tol or float(fa.h[j]) >= SHADOW_FRAC * h_exp
+            continue
         pos = labelled_line_at(ctx, sid, j)
         if pos is not None and dist(pos) > fw:
             ctx.cl37_flips += 1          # a resolved labelled-reagent line: not the 37Cl line
@@ -176,7 +182,7 @@ def probe_exact_37cl(ctx, sid: str, span, tol: float, anchor_pid: str, own=(), h
     r = fa.role[best]
     if r == "M0" and (fa.pk[best] in fa.refuted or fa.pk[best] in own):
         return "free", float(fa.h[best]), best
-    if r in ("M0", "reagent", "artifact") or (r == "iso_child" and fa.parent[best] != anchor_pid):
+    if r in ("M0", "reagent") or (r == "iso_child" and fa.parent[best] != anchor_pid):
         return "occupied", float(fa.h[best]), best
     return "free", float(fa.h[best]), best
 
@@ -547,8 +553,8 @@ def isoline_competitors(ctx, pair: dict, nmin: int) -> tuple[list, set]:
             pos = (ix.get("pos") or {}).get(pk)
             if pos is None:
                 lo_, hi_ = fa.window(v["pmz"], ctx.tol_da(v["pmz"], 0.0))
-                if hi_ > lo_:
-                    jj = lo_ + int(np.argmax(fa.h[lo_:hi_]))
+                if hi_ > lo_ and not fa.art[lo_:hi_].all():     # an artifact is not P's M0
+                    jj = lo_ + int(np.argmax(np.where(fa.art[lo_:hi_], -np.inf, fa.h[lo_:hi_])))
                     pos = (float(fa.mz[jj]), float(fa.h[jj]))
             exp_h = 0.0
             if pos is not None:

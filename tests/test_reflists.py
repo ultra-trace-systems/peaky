@@ -225,6 +225,17 @@ check("rescue: an unshared mass carries no alias (alternatives empty as before)"
       _json.loads(led[led.peak_id == "conf"].iloc[0]["alternatives"]) == [])
 
 
+# a LOCKED unexplained peak (the element-evidence stage locks the peaks it clears) is
+# never refilled by a list match: skipped, not a refused commit that loses the stage
+led5 = mk([("conf", mh(F_CONF), 1.0e5), ("dim", mh(F_DIM), 120.0)])
+L.lock_peaks(led5, ["conf"])
+out5 = RL.rescue_unexplained_by_reflist(None, "S", led5, None, cfg, [rl], ["[M-H]-"],
+                                        score_fn=oracle, log=lambda *a: None)
+check("rescue: a locked unexplained peak is skipped, the others are rescued as before",
+      out5 == {"rescued": 0, "tentative": 1} and L.role_of(led5, "conf") == L.ROLE_UNEXPLAINED
+      and L.role_of(led5, "dim") == L.ROLE_M0, out5)
+
+
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
 

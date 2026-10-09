@@ -61,7 +61,8 @@ from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
 from peaky.assignment import satellites as SAT
 
-__version__ = "0.9.0"  # + source-solvent cluster cap (cluster:solvent -> Candidate)
+__version__ = "0.9.1"  # + the twin test's exact-offset window on a calibrated Orbitrap-class run
+                       # 0.9.0: source-solvent cluster cap (cluster:solvent -> Candidate)
                        # (history) mass-dependent z via masscal (range clamp; floor
                        # owned by PassConfig) + persistent-weak cap
                        # (occurrence-admitted, uncorroborated -> Candidate)

@@ -1,4 +1,4 @@
-"""F3: the element-evidence gate.
+"""The element-evidence gate (the `element_evidence` stage).
 
 A formula carrying S / Cl / Br / Si / P / I always came from a widened search
 (the per-peak grid proposes C / H / N / O only), and none of those searches asks
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from peaky import ledger as L
 from peaky import passes as P
@@ -154,6 +155,39 @@ def test_a_br_line_absent_where_observable_contradicts_and_a_present_one_confirm
         assert v["verdict"] == verdict, v
 
 
+def test_a_side_lobe_on_the_81br_position_confirms_nothing_and_refutes_nothing():
+    """A peak the side-lobe guard marked (sidelobe_guard.lobe_mask) is not a line of the
+    profile: on the predicted 81Br position it no longer confirms the bromine, and since
+    the blend guard still reads it the position is untestable -- never an absence."""
+    from peaky.assignment import sidelobe_guard as SG
+    h0 = 200.0
+    pred = h0 * ISO.R_81BR_PER_BR
+    led = _file([("br", BR_MZ, h0), ("br81", BR_MZ + ISO.D_81BR, pred * 0.95)])
+    v = SAT.element_evidence(_ctx(led), BR_MZ, h0, {"Br": 1}, _ion(BR_N, BR_A), "Br")
+    assert v["verdict"] == SAT.EE_CONFIRMED, v
+    L.mark_artifact(led, "br81", f"{SG.LOBE_MARK} of m/z {BR_MZ + ISO.D_81BR + 0.003:.4f} (90x brighter)")
+    assert SG.lobe_mask(led).sum() == 1
+    v = SAT.element_evidence(_ctx(led), BR_MZ, h0, {"Br": 1}, _ion(BR_N, BR_A), "Br")
+    assert v["verdict"] == SAT.EE_UNOBSERVABLE and v["lines"][0]["status"] == "blended", v
+
+def test_a_ringing_artifact_on_the_81br_position_is_read_as_req_reads_it():
+    """Cleanup's ringing artifact carries the same role as a side lobe, and the stamped series
+    REQ reads cannot tell the two apart: on an Orbitrap the predicate reads it the same way
+    (no line, the position untestable). The TOF M+2 test reads every peak, as REQ's TOF branch
+    does -- its blend guards read the same list."""
+    from peaky.assignment import sidelobe_guard as SG
+    from peaky.chem.resolution import Resolution
+    h0 = 200.0
+    pred = h0 * ISO.R_81BR_PER_BR
+    led = _file([("br", BR_MZ, h0), ("br81", BR_MZ + ISO.D_81BR, pred * 0.95)])
+    L.mark_artifact(led, "br81", "FT ringing/sidelobe of a saturating parent")
+    assert SG.lobe_mask(led).sum() == 0
+    v = SAT.element_evidence(_ctx(led), BR_MZ, h0, {"Br": 1}, _ion(BR_N, BR_A), "Br")
+    assert v["verdict"] == SAT.EE_UNOBSERVABLE and v["lines"][0]["status"] == "blended", v
+    tof = SAT.evidence_context(led, klass="tof", tof_floor=1.0, tof_fwhm=Resolution.from_r(5000.0).fwhm)
+    assert SAT.element_evidence(tof, BR_MZ, h0, {"Br": 1}, _ion(BR_N, BR_A), "Br")["verdict"] == SAT.EE_CONFIRMED
+
+
 def test_a_neighbour_6p7_ppm_off_the_81br_position_is_not_credited():
     """The flagship case: a real neighbour line -6.7 ppm from the predicted 81Br position, at the
     predicted height. A 1 ppm window does not credit it, and as tall as the prediction alone it
@@ -264,6 +298,29 @@ def test_the_stage_clears_a_contradicted_br_row_and_releases_its_children():
     assert len(audit) == 1 and audit[0]["reason"].startswith("element_evidence: Br1 contradicted")
     # every calibration row stays
     assert (led.loc[led.peak_id.str.match(r"c\d+$"), "role"] == L.ROLE_M0).all()
+
+
+def test_a_cleared_peak_is_locked_against_new_readings_but_not_against_being_a_line():
+    """A peak the stage cleared stays unexplained for the rest of the run: it is locked,
+    so no later stage commits a new reading on it (an O-rich re-grid, a reference-list
+    rescue). The final envelope sweep may still claim it as a committed M0's 13C line:
+    that explains the line without proposing a formula."""
+    h0 = 200.0
+    rel = 10 * ISO.R_13C_PER_C                                    # C10H15O5-: its 13C line
+    pp_mz = BR_MZ - ISO.D_13C
+    led = _file([("br", BR_MZ, h0), ("pp", pp_mz, h0 / rel)])
+    _commit(led, "br", BR_N, BR_A)
+    s, _ = _gate(led)
+    assert s["cleared"] == 1 and _role(led, "br") == L.ROLE_UNEXPLAINED
+    assert L.is_locked(led, "br") and PL.cleared_by_element_evidence(led, led.index[led.peak_id == "br"][0])
+    with pytest.raises(L.LedgerError):
+        _commit(led, "br", "C9H10O13", BR_A, method="cheminfo+grid")
+    # the envelope sweep: a committed C10 parent one 13C spacing below claims it as its line
+    L.commit_assignment(led, "pp", neutral_formula="C10H16O5", adduct="[M-H]-", ion_formula="C10H15O5-",
+                        ion_score=0.95, ppm_error=0.1, pass_no=1, method="cheminfo+grid", confidence="Good",
+                        commentary="a parent committed late")
+    P.complete_isotope_envelopes(led, _cfg(), **NOLOG)
+    assert _role(led, "br") == L.ROLE_ISO and led.loc[led.peak_id == "br", "parent_peak_id"].iloc[0] == "pp"
 
 
 def test_the_stage_keeps_a_dim_br_row_a_curated_one_a_known_one_and_a_locked_one():
@@ -497,16 +554,44 @@ def test_the_siloxane_family_takes_no_anion_cluster_channel(monkeypatch):
 
 
 # --------------------------------------------------------------------------- the Orbitrap-class windows
-def test_the_pair_and_twin_windows_narrow_on_an_orbitrap():
-    assert RD.iso_pair_ppm(_cfg("orbitrap")) == 1.0
+def test_the_pair_and_twin_windows_narrow_on_a_calibrated_orbitrap():
+    """The exact-offset window max(1 ppm, 4 sigma) only once the file is calibrated
+    (cfg.cal_sigma set by passes.calibrate); before that, and off an Orbitrap or on
+    the trace sample, the wide windows the tests had before."""
+    assert RD.iso_pair_ppm(_cfg("orbitrap", cal_sigma=0.1)) == 1.0
     assert RD.iso_pair_ppm(_cfg("orbitrap", cal_sigma=0.5)) == 2.0
-    assert RD.iso_pair_ppm(_cfg("tof")) == RD.ISO_PAIR_PPM == RD.iso_pair_ppm(_cfg("orbitrap", trace_sample=True))
-    assert SAT.twin_ppm(_cfg("orbitrap")) == 1.0 and SAT.twin_ppm(_cfg(None)) == SAT.TWIN_PPM
+    assert RD.iso_pair_ppm(_cfg("orbitrap")) == RD.ISO_PAIR_PPM                    # not calibrated yet
+    assert RD.iso_pair_ppm(_cfg("tof", cal_sigma=0.1)) == RD.ISO_PAIR_PPM \
+        == RD.iso_pair_ppm(_cfg("orbitrap", trace_sample=True, cal_sigma=0.1))
+    assert SAT.twin_ppm(_cfg("orbitrap", cal_sigma=0.1)) == 1.0
+    assert SAT.twin_ppm(_cfg("orbitrap")) == SAT.twin_ppm(_cfg(None)) == SAT.TWIN_PPM
+    assert SAT.twin_ppm(_cfg("orbitrap", cal_sigma=float("nan"))) == SAT.TWIN_PPM
     light = 338.97204
     heavy = (light + RD.D_PAIR_BR) * (1 - 6.7e-6)          # a real neighbour, not the 81Br line
     led = L.new_ledger(pd.DataFrame({"peak_id": ["l", "x"], "mz": [light, heavy], "height": [40.0, 37.0]}))
     assert len(RD.find_iso_pairs(led, min_height=10.0)) == 1                       # 8 ppm: paired
-    assert len(RD.find_iso_pairs(led, min_height=10.0, ppm_tol=RD.iso_pair_ppm(_cfg("orbitrap")))) == 0
+    assert len(RD.find_iso_pairs(led, min_height=10.0,
+                                 ppm_tol=RD.iso_pair_ppm(_cfg("orbitrap", cal_sigma=0.1)))) == 0
+
+
+def test_pass0_does_not_refute_a_29si_line_before_the_file_is_calibrated():
+    """Pass 0 runs before `calibrate`: a known Si5 urea adduct whose 29Si line sits 1.01 ppm
+    off its exact offset (0.19x the parent against 0.26 predicted) and whose 30Si line is in
+    place reads 'deferred' (the line is seen), not 'refuted: no 29Si line' -- the narrowed
+    window would have refuted it and the batch's known-species lock would have counted it.
+    Once the file is calibrated (sigma 0.1 ppm: a 1-ppm window) the same offset is an absence."""
+    from peaky.assignment.passes import directors as D
+    counts = {"C": 11, "H": 35, "N": 2, "O": 6, "Si": 5}            # D5.UrH+
+    m0, h0 = 431.133634, 1500.0
+    si29 = (m0 + ISO.D_29SI) * (1 + 1.01e-6)
+    si30 = m0 + ISO.D_30SI
+    led = L.new_ledger(pd.DataFrame({"peak_id": ["p", "s29", "s30"], "mz": [m0, si29, si30],
+                                     "height": [h0, 0.19 * h0, 0.13 * h0]}))
+    v = D._twin_verdict(led, "p", counts, _cfg("orbitrap"))
+    assert v["verdict"] == "deferred" and v["twin"] == "Si", v
+    assert "29Si line at 0.19x" in v["why"]
+    v = D._twin_verdict(led, "p", counts, _cfg("orbitrap", cal_sigma=0.1))
+    assert v["verdict"] == "refuted" and "no 29Si line" in v["why"], v
 
 
 # --------------------------------------------------------------------------- the merge-time removal
@@ -681,6 +766,33 @@ def test_on_a_tof_the_stage_judges_br_by_the_ions_own_m2_line():
     _commit(led, "br", n, a, method="residual:iso-pair")
     s = PL.gate_element_evidence(led, profile=AIR, cfg=cfg, resolution=rp, curated=frozenset({n}), **NOLOG)
     assert s["cleared"] == 0
+
+
+def test_a_low_line_inside_the_window_is_reported_low_not_absent():
+    """A picked line inside the search window under the fraction a sighting needs contradicts
+    the element, but the reason says it is LOW with its share of the prediction -- not
+    'absent within N ppm' -- on a TOF and on an Orbitrap; a truly empty window still reads absent."""
+    from peaky.chem.resolution import Resolution
+    rp = Resolution.from_r(5000.0)
+    n, a = "C6H9BrO3", "[M-H]-"
+    mz = CH.ion_mz(n, a)
+    h0 = 400.0
+    pred = h0 * ISO.R_81BR_PER_BR
+    for extra, want in (([("m2", mz + ISO.D_81BR, 0.3 * pred)], "low (0.3"), ([], "absent within")):
+        led = _file([("br", mz, h0)] + extra)
+        _commit(led, "br", n, a, method="residual:iso-pair")
+        audit = []
+        s = PL.gate_element_evidence(led, profile=AIR, cfg=_tof_cfg(), resolution=rp, audit=audit, **NOLOG)
+        assert s["cleared"] == 1, (extra, s)
+        why = audit[0]["reason"]
+        assert want in why and "(TOF)" in why, why
+        if extra:
+            assert "absent" not in why, why
+    # Orbitrap: the 81Br line in place at 0.2x its prediction
+    led = _file([("br", BR_MZ, 200.0), ("b81", BR_MZ + ISO.D_81BR, 0.2 * 200.0 * ISO.R_81BR_PER_BR)])
+    v = SAT.element_evidence(_ctx(led), BR_MZ, 200.0, CH.parse_formula(BR_N), _ion(BR_N, BR_A), "Br")
+    assert v["verdict"] == SAT.EE_CONTRADICTED and "line low (0.20 of prediction" in v["why"], v["why"]
+    assert "no line within" not in v["why"]
 
 
 # --------------------------------------------------------------------------- pass 7: the gate on displacement

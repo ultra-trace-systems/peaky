@@ -45,7 +45,7 @@ from peaky.assignment import series_gka as G
 from peaky.assignment.passes import (PassConfig, arbitrate, confidence_label, z_of, _f,
                      _prefer_adduct_reading)
 
-__version__ = "0.3.3"  # the Orbitrap-class pair window; 0.3.2 the exact 81Br pair spacing (C11+c); 0.3.1 stage B: deterministic anchor
+__version__ = "0.3.4"  # the pair window stays wide until the file is calibrated; 0.3.3 the Orbitrap-class pair window; 0.3.2 the exact 81Br pair spacing (C11+c); 0.3.1 stage B: deterministic anchor
                        # tie-break (#8); 0.3.0: stage B draws from the admission gate (persistence
                        # OR brightness)
 
@@ -96,14 +96,11 @@ ISO_PAIR_PPM = 8.0
 
 def iso_pair_ppm(cfg=None) -> float:
     """The doublet finder's window for this run: the exact-offset window
-    (satellites.element_window_ppm of cfg.cal_sigma) on an Orbitrap-class run
-    (cfg.instrument_class, not trace-first's synthetic sample), else
-    ISO_PAIR_PPM."""
+    (satellites.exact_offset_ppm: max(1 ppm, 4 x cfg.cal_sigma)) on a
+    calibrated Orbitrap-class run (cfg.instrument_class, not trace-first's
+    synthetic sample), else ISO_PAIR_PPM -- an uncalibrated file keeps it."""
     from peaky.assignment import satellites as SAT
-    if cfg is not None and getattr(cfg, "instrument_class", None) == "orbitrap" \
-            and not getattr(cfg, "trace_sample", False):
-        return SAT.element_window_ppm(getattr(cfg, "cal_sigma", None))
-    return ISO_PAIR_PPM
+    return SAT.exact_offset_ppm(cfg, ISO_PAIR_PPM)
 
 
 def find_iso_pairs(ledger: pd.DataFrame, *, ppm_tol: float = ISO_PAIR_PPM,

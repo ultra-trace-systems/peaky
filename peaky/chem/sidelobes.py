@@ -32,11 +32,25 @@ H-rich ion's 2H line sits +2.92 mDa above its 13C line, right where a positive
 lobe would, and a C17+ single-N ion's 15N line -6.32 mDa below it, in the
 negative-lobe window at m/z ~450-500.
 
-A leaf module (numpy only): the ledger step is assignment/sidelobe_guard.py.
+A candidate of a line's own width (no 'narrow' signature) that sits at an
+isotopologue offset (13C, 15N, 29Si, 18O, 34S, 37Cl, 81Br; `ISOTOPOLOGUE_LINES`)
+of ANY brighter line of the same list, within max(1 ppm, 0.3 x that line's
+FWHM_eff), at a ratio to it that an ion of that mass can make
+(`isotopologue_link`), is exempt too: the 13C line of a neighbouring ion can sit
+two widths below a much brighter line (m/z 174.121, the 13C line of 173.117 at
+0.10x, beside a line 80-120x brighter at 174.124). The brighter line must not be
+in the lobe band of a brighter line itself -- a lobe of an ion's 13C line sits
+one 13C spacing above the same lobe of the ion, at the 13C ratio, and stays
+flagged.
+
+The ledger step is assignment/sidelobe_guard.py; this module reads only numpy
+and the isotope constants (chem.isotopes).
 """
 from __future__ import annotations
 
 import numpy as np
+
+from peaky.chem import isotopes as ISO
 
 #: a Gaussian's area per (height x FWHM): FWHM = area / (GAUSS_AREA * height)
 GAUSS_AREA = 1.0645
@@ -70,7 +84,9 @@ FINE_TOL_FWHM = 0.3
 #: ... and the parent's own isotopologue link to its brighter peak within this
 FINE_LINK_TOL_FWHM = 0.5
 
-_D13C = 1.0033548351
+#: exact spacings (AME2020): the fine-structure offsets below are mDa-scale
+#: DIFFERENCES of them, so 2H / 15N / 17O / 18O are kept here to 1e-10 Da
+_D13C = ISO.D_13C_EXACT
 _D2H = 1.0062767461
 _D15N = 0.9970348941
 _D17O = 1.0042171369
@@ -88,6 +104,35 @@ FINE_STRUCTURE = (
     ("15N-13C", _D13C, _D15N),                 # -6.320 mDa below the 13C line
     ("13C-15N", _D15N, _D13C),                 # +6.320 mDa above the 15N line
 )
+
+#: (label, spacing above the brighter line, per-atom ratio, the light atom's
+#: mass) of the isotopologue lines that exempt a candidate sitting on one of a
+#: brighter line of the list
+ISOTOPOLOGUE_LINES = (
+    ("13C", _D13C, ISO.R_13C_PER_C, 12.0),
+    ("15N", _D15N, ISO.R_15N_PER_N, 14.003074),
+    ("29Si", ISO.D_29SI, ISO.R_29SI_PER_SI, 27.976927),
+    ("18O", _D18O, ISO.R_18O_PER_O, 15.994915),
+    ("34S", ISO.D_34S, ISO.R_34S_PER_S, 31.972071),
+    ("37Cl", ISO.D_37CL, ISO.R_37CL_PER_CL, 34.968853),
+    ("81Br", ISO.D_81BR, ISO.R_81BR_PER_BR, 78.918338),
+)
+#: the 13C line's plausible share of its brighter line (~0.4 to ~47 carbons);
+#: the other lines' bands are this one scaled by their per-atom ratio / 13C's
+ISO_LINK_RATIO_13C = (0.004, 0.5)
+#: ... and never above this multiple of the share the most atoms the brighter
+#: line's mass holds would make (m / the atom's mass): a 13C line at 0.3x of an
+#: m/z 168 line would need 28 carbons
+ISO_LINK_MASS_CAP_X = 1.5
+#: the offset tolerance: the exact-offset window of the isotope tests
+#: (satellites.element_window_ppm, max(1 ppm, 4 sigma)) at its 1 ppm floor, since
+#: the guard runs before the file is calibrated. A wider, width-scaled tolerance
+#: (0.3 FWHM, ~2 ppm at m/z 170-230) was measured on a positive-mode Orbitrap
+#: batch: the 8 peaks it spared over this one were lobes (a -2.7 mDa lobe
+#: population of a bright line, a "13C" line at 3.4x its prediction, a "29Si"
+#: line of a Si-free ion), with the real 13C line a separate peak inside the
+#: window; a negative-mode batch flagged the same peaks under both.
+ISO_LINK_PPM = 1.0
 
 
 def model_fwhm(model, mz) -> np.ndarray:
@@ -161,6 +206,36 @@ def _fine_structure(i, j, m, h, fw_j, order, ms) -> str | None:
     return None
 
 
+def isotopologue_link(i, m, h, order, ms, valid, skip=()) -> tuple[int, str] | None:
+    """(k, label) when peak i sits at an isotopologue offset (`ISOTOPOLOGUE_LINES`)
+    of a brighter valid peak k of the list -- within ISO_LINK_PPM of the exact
+    offset, at h[i] / h[k] in that line's ratio band --
+    whose position is not in `skip` (the peaks in some line's lobe band); else None. The
+    band is ISO_LINK_RATIO_13C scaled by the line's per-atom ratio / 13C's,
+    capped at ISO_LINK_MASS_CAP_X x the share of the most atoms m[k] can hold.
+    The brightest such k is named."""
+    best = None
+    tol_max = ISO_LINK_PPM * 1e-6 * m[i]
+    lo13, hi13 = ISO_LINK_RATIO_13C
+    for label, d, r_atom, m_atom in ISOTOPOLOGUE_LINES:
+        target = m[i] - d
+        lo = np.searchsorted(ms, target - tol_max, "left")
+        hi = np.searchsorted(ms, target + tol_max, "right")
+        scale = r_atom / ISO.R_13C_PER_C
+        for kk in range(lo, hi):
+            k = int(order[kk])
+            if k == i or not valid[k] or k in skip or not h[k] > h[i]:
+                continue
+            if abs(m[i] - m[k] - d) > tol_max:
+                continue
+            cap = min(hi13 * scale, ISO_LINK_MASS_CAP_X * r_atom * m[k] / m_atom)
+            if not (lo13 * scale <= h[i] / h[k] <= cap):
+                continue
+            if best is None or h[k] > h[best[0]]:
+                best = (k, label)
+    return best
+
+
 def sidelobe_parents(mz, height, area, model, *, ratio: float = SIDELOBE_RATIO,
                      band_fwhm=SIDELOBE_BAND_FWHM, narrow: float = SIDELOBE_NARROW) -> dict:
     """Flag the same-spectrum side lobes of ONE peak list (module docstring).
@@ -173,7 +248,9 @@ def sidelobe_parents(mz, height, area, model, *, ratio: float = SIDELOBE_RATIO,
      'narrow' / 'neg-lobe' / 'mirror' ('' when not a lobe);
      'skipped': None or why nothing was tested; 'calibration': width_calibration;
      'n_no_signature': in-band, bright-parent peaks spared for want of a signature;
-     'n_exempt': {fine-structure name: count} spared as isotope lines;
+     'n_exempt': {fine-structure name, or '<label> line' for a line on an
+     isotopologue offset of a brighter line (`isotopologue_link`): count}
+     spared as isotope lines;
      'n_mirror': lobes whose parent has a lobe on the other side too;
      'signatures': the signatures tested -- all three when the calibration is
      measured, only 'neg-lobe' / 'mirror' when it is not}."""
@@ -227,36 +304,35 @@ def sidelobe_parents(mz, height, area, model, *, ratio: float = SIDELOBE_RATIO,
         d = (m[i] - m[j]) / fw_eff[j]
         return d if band_lo <= abs(d) <= band_hi else None
 
-    # one scan: every in-band bright-parent geometry (the mirror test reads them
-    # all -- a lobe's parent holding another one on the opposite side, whose own
-    # brightest parent may be a different line) and each peak's brightest parent.
-    # A line at a fine-structure spacing of its parent is a real isotope line, not
-    # a lobe: it is neither flagged nor mirror evidence for anything else.
-    parent_side: dict[int, set] = {}
-    cand = []
-    for i in range(n):
-        if not valid[i]:
-            continue
-        lo = np.searchsorted(ms, m[i] - span, "left")
-        hi = np.searchsorted(ms, m[i] + span, "right")
-        best, best_d, best_fs = -1, np.nan, None
-        for k in range(lo, hi):
-            j = int(order[k])
-            d = in_band(i, j)
-            if d is None:
+    def scan(spared):
+        """Every in-band bright-parent geometry (the mirror test reads them all
+        -- a lobe's parent holding another one on the opposite side, whose own
+        brightest parent may be a different line) and each peak's brightest
+        parent. A line at a fine-structure spacing of its parent, or in
+        `spared`, is a real isotope line, not a lobe: it is no mirror evidence."""
+        parent_side: dict[int, set] = {}
+        cand = []
+        for i in range(n):
+            if not valid[i]:
                 continue
-            fs = _fine_structure(i, j, m, h, fw_eff[j], order, ms)
-            if fs is None:
-                parent_side.setdefault(j, set()).add(float(np.sign(d)))
-            if best < 0 or h[j] > h[best]:
-                best, best_d, best_fs = j, d, fs
-        if best >= 0:
-            cand.append((i, best, best_d, best_fs))
+            lo = np.searchsorted(ms, m[i] - span, "left")
+            hi = np.searchsorted(ms, m[i] + span, "right")
+            best, best_d, best_fs = -1, np.nan, None
+            for k in range(lo, hi):
+                j = int(order[k])
+                d = in_band(i, j)
+                if d is None:
+                    continue
+                fs = _fine_structure(i, j, m, h, fw_eff[j], order, ms)
+                if fs is None and i not in spared:
+                    parent_side.setdefault(j, set()).add(float(np.sign(d)))
+                if best < 0 or h[j] > h[best]:
+                    best, best_d, best_fs = j, d, fs
+            if best >= 0:
+                cand.append((i, best, best_d, best_fs))
+        return parent_side, cand
 
-    n_no_sig = 0
-    exempt: dict[str, int] = {}
-    mirror_parents = set()
-    for i, j, d, fs in cand:
+    def signatures_of(i, j, d, parent_side):
         sig = []
         if "narrow" in signatures and np.isfinite(wrs[i]) and wrs[i] < narrow:
             sig.append("narrow")
@@ -265,9 +341,40 @@ def sidelobe_parents(mz, height, area, model, *, ratio: float = SIDELOBE_RATIO,
         mirrored = "mirror" in signatures and -float(np.sign(d)) in parent_side.get(j, ())
         if mirrored:
             sig.append("mirror")
+        return sig, mirrored
+
+    # first scan: the lobe candidates (a signature, no fine-structure spacing).
+    # A candidate of a line's own width (not 'narrow': an isotope line is as
+    # wide as any line, most lobes are narrower) on an isotopologue offset of a
+    # brighter line that is itself clear of every lobe geometry (no line ratio x
+    # brighter within the band of it) is that line's isotope line: spared, and
+    # the scan is re-read without it as mirror evidence. A brighter line that is itself in some line's band
+    # spares nothing: lobes repeat one isotope spacing apart at the parents'
+    # own isotope ratio (a lobe of an ion's 13C line sits one 13C spacing above
+    # the same lobe of the ion).
+    parent_side, cand = scan(frozenset())
+    in_some_band = {i for i, j, d, fs in cand}
+    lobes = [(i, signatures_of(i, j, d, parent_side)[0]) for i, j, d, fs in cand if fs is None]
+    iso_spared: dict[int, str] = {}
+    for i, sig in lobes:
+        if not sig or "narrow" in sig:
+            continue
+        link = isotopologue_link(i, m, h, order, ms, valid, skip=in_some_band)
+        if link is not None:
+            iso_spared[i] = f"{link[1]} line"
+    if iso_spared:
+        parent_side, cand = scan(frozenset(iso_spared))
+
+    n_no_sig = 0
+    exempt: dict[str, int] = {}
+    mirror_parents = set()
+    for i, j, d, fs in cand:
+        sig, mirrored = signatures_of(i, j, d, parent_side)
         if not sig:
             n_no_sig += 1
             continue
+        if fs is None:
+            fs = iso_spared.get(i)
         if fs is not None:
             exempt[fs] = exempt.get(fs, 0) + 1
             continue

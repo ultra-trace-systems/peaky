@@ -288,6 +288,19 @@ def _br(i, *, h=1e4, present=lambda i: True, ppm=0.0, n=Y, stamped=True):
     return rows
 
 
+def test_one_exact_offset_window_and_one_13c_spacing():
+    """REQ's Orbitrap branch, the isotopologue gate and the per-file element evidence
+    read one window rule, max(1 ppm, 4 sigma), and one exact 13C spacing (as does the
+    side-lobe rule's isotope exemption)."""
+    from peaky.assignment import satellites as SAT
+    from peaky.chem import isotopes as ISO
+    from peaky.chem import sidelobes as SL
+    for s in (None, float("nan"), -1.0, 0.0, 0.1, 0.25, 0.5, 2.0):
+        assert IC.exact_window_ppm(s) == SAT.element_window_ppm(s)
+    assert IC.exact_window_ppm(0.5) == 2.0 and IC.exact_window_ppm(0.1) == 1.0
+    assert IC.D13C == ISO.D_13C_EXACT == SAT.EE_CAL_LINES[0][0] == SL.ISOTOPOLOGUE_LINES[0][1]
+
+
 def test_req_refutes_a_bromine_formula_without_its_81br_line():
     t = _measure(_series(lambda i: _br(i)), [(Y, H)])
     r = _get(t, "REQ", Y)
@@ -299,6 +312,24 @@ def test_req_refutes_a_bromine_formula_without_its_81br_line():
     assert r["note"] == ("the M+2 (81Br) line (0.97x the stamped line) absent in 40 of 40 detectable spectra "
                          "(within 1 ppm)")
     assert IC.veto(t) == {(Y, H): "REQ: " + r["note"]}
+
+
+def test_req_reads_no_line_off_a_stamped_artifact():
+    """A stamped artifact (a per-file side lobe) on the 81Br position is no line: it is not
+    'present', and a spectrum where only an artifact holds the position is not testable
+    there -- so a series whose every 81Br line is an artifact is untestable, not absent,
+    and a real line in the other spectra still decides."""
+    def build(art):
+        def f(i):
+            rows = _br(i)
+            if art(i):
+                rows[-1].update(role="artifact", iso_label="")
+            return rows
+        return f
+    r = _get(_measure(_series(build(lambda i: True)), [(Y, H)]), "REQ", Y)
+    assert r["verdict"] == "untestable" and not r["veto"] and r["n_used"] == 0, r.to_dict()
+    r = _get(_measure(_series(build(lambda i: i < 30)), [(Y, H)]), "REQ", Y)
+    assert r["verdict"] == "present" and r["n_used"] == 10 and r["n_present"] == 10
 
 
 def test_req_absent_is_at_most_a_fifth_of_three_or_more_detectable_spectra():
@@ -751,7 +782,7 @@ def _batch(ts_rows=True):
     return pk
 
 
-def _run_batch(tmp_path, monkeypatch, *, ts=True, resolving_power=100_000):
+def _run_batch(tmp_path, monkeypatch, *, ts=True, resolving_power=100_000, roster=None):
     from peaky.assignment import assign as A
     from peaky.assignment import ledger as L
     from peaky.assignment import tiers as TT
@@ -781,6 +812,8 @@ def _run_batch(tmp_path, monkeypatch, *, ts=True, resolving_power=100_000):
     monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
     monkeypatch.setattr(A, "run", fake_assign)
     pk = _batch()
+    if roster is not None:
+        pk["instrument_type"] = roster
     AB.run(peaks=pk, ts_peaks=pk if ts else None, reagent="NO3", batch="test batch", out_dir=str(tmp_path),
            k_min=2, k_max=3, min_gain=0.0, n_jobs=1, resolving_power=resolving_power, log=lambda *a: None)
 
@@ -790,8 +823,9 @@ def test_a_batch_writes_the_table_and_levels_the_vetoes(tmp_path, monkeypatch):
     stamped series, the summary carries the funnel, the pooled fact table carries
     each veto with the check's note, and the scale rejects each refuted pair on
     the merged ledger (5b, "refuted: iso_veto") -- except a REQ veto on an
-    element-signature line (F3: Y's 81Br line absent where the batch would show
-    it), whose reading leaves the merged ledger, recorded in the merge gates."""
+    element-signature line (the element_evidence removal: Y's 81Br line absent
+    where the batch would show it), whose reading leaves the merged ledger,
+    recorded in the merge gates."""
     _run_batch(tmp_path, monkeypatch)
     table = pd.read_csv(tmp_path / "tables" / "iso_checks.csv")
     assert list(table.columns) == list(IC.TABLE_COLUMNS)
@@ -820,6 +854,33 @@ def test_a_batch_writes_the_table_and_levels_the_vetoes(tmp_path, monkeypatch):
             continue
         assert merged.loc[k, "evidence_level"] == "5b" and merged.loc[k, "would_lift"].startswith("refuted: iso_veto")
     assert (merged.loc[[(n, H) for n in REFS], "evidence_level"] != "5b").all()
+
+
+def test_a_tof_roster_declared_at_orbitrap_resolution_removes_nothing(tmp_path, monkeypatch):
+    """The same batch on a TOF roster declared at --resolving-power 100 000: the width
+    model alone reads Orbitrap-class, but the batch resolves TOF (the roster wins,
+    assign_batch._axis_class), and every check reads that one class -- REQ is the TOF's
+    own-M+2 test, no row is Orbitrap-class, and no element-signature REQ veto removes
+    a merged reading (the width model's class would have removed Y)."""
+    from peaky.batch import assign_batch as AB
+    rp = Resolution.coerce(100_000)
+    assert IC.instrument_class(rp) == "orbitrap"
+    assert IC.batch_class(rp, AB._axis_class(AB._instrument_of(rp)[0], "tof")) == "tof"
+    _run_batch(tmp_path, monkeypatch, roster="tof")
+    bs = json.load(open(tmp_path / "batch_summary.json"))
+    table = pd.read_csv(tmp_path / "tables" / "iso_checks.csv")
+    assert "orbitrap" not in set(table["instrument"].astype(str))
+    assert bs["evidence_levels"]["iso_checks"]["instrument"] == "tof"
+    assert bs["merge_gates"]["element_signature"]["removed"] == 0
+    merged = pd.read_csv(tmp_path / "merged_ledger.csv", keep_default_na=False) \
+        .set_index(["neutral_formula", "adduct"])
+    assert (Y, H) in merged.index
+    # ... and the removal itself refuses a non-Orbitrap class whatever the rows say
+    t = table.copy()
+    t.loc[:, "instrument"], t.loc[:, "check"], t.loc[:, "veto"], t.loc[:, "line"] = "orbitrap", "REQ", True, "81Br"
+    m = pd.DataFrame({"neutral_formula": [Y], "adduct": [H], "mz": [300.0], "tier": ["Candidate"]})
+    assert IC.remove_signature_vetoed(m, t, klass="orbitrap", log=quiet)[1]["removed"] == 1
+    assert IC.remove_signature_vetoed(m, t, klass="tof", log=quiet)[1]["removed"] == 0
 
 
 def test_a_batch_without_a_time_series_writes_an_empty_table(tmp_path, monkeypatch):

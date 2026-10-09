@@ -1138,7 +1138,8 @@ def _add_isotopologue_flag(p) -> None:
     p.add_argument("--no-isotopologue-gate", dest="no_isotopologue_gate", action="store_true", default=False,
                    help="keep merged rows that sit on another merged ion's isotope line (13C, 18O, 15N, "
                         "34S, 37Cl, 81Br, Si) at its expected area ratio across the batch. By default, on "
-                        "an Orbitrap-class batch whose time series carries peak areas, such a row leaves "
+                        "an Orbitrap-class batch with a width model whose time series carries peak areas, "
+                        "such a row (unless a curated list stands behind it) leaves "
                         "the merged ledger and its line is stamped as the parent's isotopologue "
                         "(tables/isotopologue_rows.csv). For A/B runs")
 

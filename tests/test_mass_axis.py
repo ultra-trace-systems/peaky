@@ -448,6 +448,26 @@ def test_the_run_manifest_records_the_axis(monkeypatch, tmp_path, refs):
     assert rep["ts"] is fixed                              # the figures read the corrected series
 
 
+def test_the_run_manifest_records_the_switches_outside_passconfig(monkeypatch, tmp_path, refs):
+    """The context profile's run-level switches and the isotopologue gate (a run kwarg, not a
+    PassConfig field) are in the manifest's counts, as the axis is: a --no-isotopologue-gate run
+    and a default one no longer leave the same record."""
+    from peaky import pipeline as PL
+    from peaky.reporting import provenance as PV
+    ts = _orbi_batch(np.random.default_rng(48), refs)
+    _stub_pipeline(monkeypatch, ts)
+    rec = {}
+    summ = {"context_flags": {"nox_skeleton": True},
+            "merge_gates": {"isotopologue": {"ran": False, "skipped": "--no-isotopologue-gate", "n_stripped": 0}}}
+    monkeypatch.setattr(AB, "run", lambda **kw: {"summary": summ})
+    monkeypatch.setattr(PL, "generate_report", lambda ctx, ts, **k: {})
+    monkeypatch.setattr(PV, "record_run", lambda **kw: rec.update(kw))
+    PL.run_batch(batch="switch batch", reagent="NO3", base_out=str(tmp_path), ts=ts, do_report=False, log=_quiet)
+    assert rec["counts"]["context_flags"] == {"nox_skeleton": True}
+    assert rec["counts"]["isotopologue_gate"] == {"ran": False, "skipped": "--no-isotopologue-gate"}
+    assert PL._switch_record({}) == {"context_flags": None, "isotopologue_gate": {"ran": False, "skipped": None}}
+
+
 # --- the CLI ----------------------------------------------------------------------------------
 
 def test_the_cli_flag_defaults_to_auto_and_reaches_both_pipelines(monkeypatch):

@@ -52,6 +52,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from peaky.assignment import ledger as L
 from peaky.chem import isotopes as ISO
 
 #: the diagnostic heavy-isotope lines tested, per element: (shift from M0,
@@ -417,7 +418,7 @@ EE_BLEND_MIN_FRAC = 0.25
 #: conservative R(200) (a wider reach reads more positions as possibly blended)
 EE_FALLBACK_R200 = 60_000.0
 #: the calibration lines: (shift, per-atom ratio, element, label)
-EE_CAL_LINES = ((1.0033548, ISO.R_13C_PER_C, "C", "13C"), (ISO.D_18O, ISO.R_18O_PER_O, "O", "18O"))
+EE_CAL_LINES = ((ISO.D_13C_EXACT, ISO.R_13C_PER_C, "C", "13C"), (ISO.D_18O, ISO.R_18O_PER_O, "O", "18O"))
 #: a committed line farther than this from its ion's all-light m/z sits on a
 #: heavy isotopologue (a Br2 ion on its 79Br81Br line): its lines are not where
 #: the predicate would look
@@ -436,29 +437,59 @@ def element_window_ppm(cal_sigma=None) -> float:
     return float(max(EE_MIN_PPM, EE_SIGMA_K * s)) if np.isfinite(s) and s > 0 else EE_MIN_PPM
 
 
-def twin_ppm(cfg=None) -> float:
-    """The twin test's search window for this run: on an Orbitrap-class run
-    (cfg.instrument_class, not trace-first's synthetic sample) the exact-offset
-    window (`element_window_ppm` of cfg.cal_sigma) -- at TWIN_PPM a neighbour
-    line 6.7 ppm from a predicted 81Br line was read as it; else TWIN_PPM."""
+def calibrated_sigma(cfg=None) -> float | None:
+    """The file's fitted calibration sigma (cfg.cal_sigma, set by
+    passes.calibrate) when it is a positive number, else None: the file is not
+    calibrated yet (pass 0 runs before `calibrate`) or its backbone was too
+    small to calibrate it."""
+    try:
+        s = float(getattr(cfg, "cal_sigma", None))
+    except (TypeError, ValueError):
+        return None
+    return s if np.isfinite(s) and s > 0 else None
+
+
+def exact_offset_ppm(cfg=None, wide: float = TWIN_PPM) -> float:
+    """A REFUTING search window for this run: on an Orbitrap-class run
+    (cfg.instrument_class, not trace-first's synthetic sample) whose file is
+    calibrated, the exact-offset window (`element_window_ppm` of cfg.cal_sigma);
+    else `wide`, the window the test had before. An uncalibrated file keeps the
+    wide window: its lines can sit more than EE_MIN_PPM off their exact offset
+    (a 29Si line 1.01 ppm off read 'no 29Si line' at pass 0), and an absence
+    read in a window narrower than the file's own scatter refutes a real line."""
     if cfg is not None and getattr(cfg, "instrument_class", None) == "orbitrap" \
             and not getattr(cfg, "trace_sample", False):
-        return element_window_ppm(getattr(cfg, "cal_sigma", None))
-    return TWIN_PPM
+        s = calibrated_sigma(cfg)
+        if s is not None:
+            return element_window_ppm(s)
+    return float(wide)
 
 
-def _peak_lines(ledger: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+def twin_ppm(cfg=None) -> float:
+    """The twin test's search window for this run (`exact_offset_ppm`): the
+    exact-offset window on a calibrated Orbitrap-class run -- at TWIN_PPM a
+    neighbour line 6.7 ppm from a predicted 81Br line was read as it -- else
+    TWIN_PPM."""
+    return exact_offset_ppm(cfg, TWIN_PPM)
+
+
+def _peak_lines(ledger: pd.DataFrame, *, artifacts: bool = True) -> tuple[np.ndarray, np.ndarray]:
     """(mz, height) of every real picked peak of the ledger, sorted by m/z
-    (synthetic composite sub-peaks are no line)."""
+    (synthetic composite sub-peaks are no line). `artifacts=False` also leaves
+    out every row a per-file stage marked 'artifact' -- the side lobes of the
+    Orbitrap guard (sidelobe_guard) and cleanup's ringing: peaks the profile
+    does not hold, so they confirm no line and set no floor. It is the rule
+    REQ's Orbitrap branch applies to the stamped series, where the two kinds
+    carry the same role and nothing else tells them apart."""
     if ledger is None or not len(ledger) or "mz" not in ledger.columns or "height" not in ledger.columns:
         return np.zeros(0), np.zeros(0)
     mz = pd.to_numeric(ledger["mz"], errors="coerce").to_numpy(dtype=float)
     h = pd.to_numeric(ledger["height"], errors="coerce").to_numpy(dtype=float)
     ok = np.isfinite(mz) & np.isfinite(h) & (h > 0)
     if "synthetic" in ledger.columns:
-        syn = ledger["synthetic"].map(lambda v: isinstance(v, (bool, np.bool_)) and bool(v)
-                                      or (isinstance(v, str) and v.strip().lower() == "true")).to_numpy(dtype=bool)
-        ok &= ~syn
+        ok &= ~ledger["synthetic"].map(L._truthy).to_numpy(dtype=bool)
+    if not artifacts and "role" in ledger.columns:
+        ok &= ledger["role"].astype(str).to_numpy() != L.ROLE_ARTIFACT
     mz, h = mz[ok], h[ok]
     o = np.argsort(mz, kind="mergesort")
     return mz[o], h[o]
@@ -638,15 +669,19 @@ def _ion_body(ion) -> dict:
 
 
 def element_calibration(ledger: pd.DataFrame, *, window_ppm: float, resolution=None,
-                        lines=None) -> ElementCalibration:
+                        lines=None, blend_lines=None) -> ElementCalibration:
     """The file's ElementCalibration: every committed M0 whose ION is C/H/N/O
     only (not Low / Suspect / tied, not an ion-only row) contributes its 13C
     line (and its 18O line), predicted at first order from the parent's height;
     each line's predicted height over the local floor, whether a peak sits
     within `window_ppm` of its exact offset, and the observed / predicted ratio.
     A position a neighbour could blend (`_blended`) is left out, as the
-    predicate leaves it out."""
-    mz, h = lines if lines is not None else _peak_lines(ledger)
+    predicate leaves it out. `lines` are the lines read (default: every picked
+    peak but the artifact rows), `blend_lines` the peaks the blend guard reads
+    (default: every picked peak -- an artifact at a position makes it
+    untestable rather than empty)."""
+    mz, h = lines if lines is not None else _peak_lines(ledger, artifacts=False)
+    bmz, bh = blend_lines if blend_lines is not None else _peak_lines(ledger)
     fwhm = _fwhm_fn(resolution)
     recs = _calibration_lines(ledger, mz, h, window_ppm)
     # pass 1: blends judged at EE_BLEND_MIN_FRAC; pass 2 at the file's own low ratio
@@ -657,7 +692,7 @@ def element_calibration(ledger: pd.DataFrame, *, window_ppm: float, resolution=N
             x = pred / fl
             if j is None:
                 frac = EE_BLEND_MIN_FRAC if cal is None else cal.low_ratio(x)
-                if _blended(mz, h, tgt, pred, tgt * window_ppm * 1e-6, fwhm(tgt), min_frac=frac):
+                if _blended(bmz, bh, tgt, pred, tgt * window_ppm * 1e-6, fwhm(tgt), min_frac=frac):
                     continue
             xs.append(x)
             found.append(j is not None)
@@ -710,9 +745,12 @@ class EvidenceContext:
     width model, and the TOF test does not run -- tiers.tof_m2_verdicts)."""
 
     def __init__(self, klass, mz, h, window_ppm, cal, fwhm, tof_floor=None, tof_win_ppm=None,
-                 tof_fwhm=None):
+                 tof_fwhm=None, blend_mz=None, blend_h=None):
         self.klass = klass
         self.mz, self.h = mz, h
+        # the blend guard's peaks: every picked peak, the artifact rows included
+        self.blend_mz = mz if blend_mz is None else blend_mz
+        self.blend_h = h if blend_h is None else blend_h
         self.window_ppm = window_ppm
         self.cal = cal
         self.fwhm = fwhm
@@ -738,13 +776,23 @@ def evidence_context(ledger: pd.DataFrame, *, klass: str | None, cal_sigma=None,
     `tof_fwhm` (mz -> FWHM, the run's width model: plausibility passes the
     run's Resolution through tiers._fwhm_at, as tof_m2_verdicts does) sizes the
     M+2 test's blend guards; without it a TOF verdict is 'unobservable' (an
-    Orbitrap-width fallback would read a TOF's blended M+2 line as absent)."""
-    mz, h = _peak_lines(ledger)
+    Orbitrap-width fallback would read a TOF's blended M+2 line as absent).
+    On an Orbitrap-class run an artifact row (a side lobe the per-file guard
+    marked, cleanup's ringing) is no line: it confirms nothing and sets no
+    local floor, but the blend guard still reads it (an artifact on a
+    predicted position leaves it untestable, never empty) -- REQ's Orbitrap
+    rule. The TOF M+2 test reads every peak, as REQ's TOF branch does: its
+    blend guards read the same list, so leaving a ringing row out there would
+    turn a blend into an absence."""
+    mz, h = _peak_lines(ledger, artifacts=klass != "orbitrap")
+    bmz, bh = _peak_lines(ledger)
     win = element_window_ppm(cal_sigma)
     fwhm = _fwhm_fn(resolution)
-    cal = (element_calibration(ledger, window_ppm=win, resolution=resolution, lines=(mz, h))
+    cal = (element_calibration(ledger, window_ppm=win, resolution=resolution, lines=(mz, h),
+                               blend_lines=(bmz, bh))
            if klass == "orbitrap" else ElementCalibration([], [], [], win))
-    return EvidenceContext(klass, mz, h, win, cal, fwhm, tof_floor, tof_win_ppm, tof_fwhm)
+    return EvidenceContext(klass, mz, h, win, cal, fwhm, tof_floor, tof_win_ppm, tof_fwhm,
+                           blend_mz=bmz, blend_h=bh)
 
 
 def _log_fit(obs: float, pred: float) -> float:
@@ -822,8 +870,14 @@ def element_evidence(ctx: EvidenceContext, mz0: float, h0: float, neutral_counts
             out["why"] = f"the ion's M+2 ({label}) line seen at {float(v['obs'][0]) / h0:.2f}x (TOF)"
         elif st == HL_ABSENT:
             out["verdict"] = EE_CONTRADICTED
+            obs = rec["obs"]
+            # a picked line inside the window, under the fraction a sighting needs,
+            # is LOW, not absent: say so with its share of the prediction
+            found = (f"low ({obs / rec['pred']:.2f} of prediction) within {win:g} ppm, under the "
+                     f"{HEAVY_LINE_FRAC:g} a sighting needs" if obs > 0 and rec["pred"] > 0
+                     else f"absent within {win:g} ppm")
             out["why"] = (f"the ion's M+2 ({label}) line, predicted at {ratio:.2f}x ({_cps(rec['pred'])} cps), "
-                          f"absent within {win:g} ppm (TOF)")
+                          f"{found} (TOF)")
         else:
             out["why"] = f"the ion's M+2 ({label}) line {st} (TOF)"
         return out
@@ -855,7 +909,8 @@ def element_evidence(ctx: EvidenceContext, mz0: float, h0: float, neutral_counts
                     if _log_fit(float(ctx.h[j]), pr) <= _log_fit(float(ctx.h[j]), pred):
                         rec["status"] = "reagent"
         else:
-            rec["status"] = ("blended" if _blended(ctx.mz, ctx.h, tgt, pred, tol, ctx.fwhm(tgt), min_frac=low)
+            rec["status"] = ("blended" if _blended(ctx.blend_mz, ctx.blend_h, tgt, pred, tol, ctx.fwhm(tgt),
+                                                   min_frac=low)
                              else "absent")
         out["lines"].append(rec)
         desc = (f"{label} predicted {_cps(pred)} cps ({x:.1f}x the {fl:.1f}-cps floor)" if np.isfinite(x)
@@ -864,7 +919,8 @@ def element_evidence(ctx: EvidenceContext, mz0: float, h0: float, neutral_counts
             seen.append(f"{label} line at {rec['obs_ratio']:.2f}x its prediction")
         elif rec["status"] in ("absent", "low") and obs_ok:
             contra.append(desc + (f", no line within {ctx.window_ppm:.2f} ppm" if rec["status"] == "absent"
-                                  else f", line at {rec['obs_ratio']:.2f}x (under the file's {low:.2f})"))
+                                  else f", line low ({rec['obs_ratio']:.2f} of prediction, under the "
+                                       f"file's {low:.2f}) within {ctx.window_ppm:.2f} ppm"))
         else:
             why = {"reagent": "fits the reagent's halogen alone", "high": "a taller line holds the position",
                    "blended": "a neighbour could hold it", "absent": "under the file's observable level",

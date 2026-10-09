@@ -27,7 +27,8 @@ from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
 from peaky.batch import timeseries as TS
 
-__version__ = "0.3.0"  # presence set-cover sample selection (one selector, batch + pool)
+__version__ = "0.3.1"  # the manifest counts record context_flags and the isotopologue gate;
+                       # 0.3.0: presence set-cover sample selection (one selector, batch + pool)
 
 # Content-stable epoch for SOURCE_DATE_EPOCH. NOT the run time: figures, workbooks
 # and the ledger are a PURE FUNCTION of the input data, so their embedded metadata
@@ -280,6 +281,15 @@ def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
     return out
 
 
+def _switch_record(summ: dict) -> dict:
+    """The provenance counts of the run's switches that live outside PassConfig:
+    the context profile's run-level switches (`context_flags`) and whether the
+    merged-ledger isotopologue gate ran or why not (`isotopologue_gate`)."""
+    gate = ((summ or {}).get("merge_gates") or {}).get("isotopologue") or {}
+    return {"context_flags": (summ or {}).get("context_flags"),
+            "isotopologue_gate": {"ran": bool(gate.get("ran", False)), "skipped": gate.get("skipped")}}
+
+
 def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               base_out: str, ts=None, when=None, subject: str | None = None,
               amine_r_min: float = 0.6, do_report=True, config: str | None = None,
@@ -428,6 +438,10 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                 # the m/z-axis measurement and the correction it applied
                 # (assign_batch.measure_axis; the mode is the --mass-axis knob)
                 "mass_axis": summ.get("mass_axis"),
+                # the run-level switches of the context profile and whether the
+                # merged-ledger isotopologue gate ran (a run kwarg, not a
+                # PassConfig field: the fingerprint alone cannot tell them apart)
+                **_switch_record(summ),
                 # the TOF mass-only flag's tallies (threshold, Assigned / flagged
                 # below and at or above it); the threshold knob is in the config
                 "tof_flag": summ.get("tof_flag")},
@@ -704,6 +718,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                 # threshold: the config fingerprint holds only the binning knob)
                 "mass_scale": summ.get("mass_scale"),
                 "mass_axis": summ.get("mass_axis"),
+                **_switch_record(summ),
                 "tof_flag": summ.get("tof_flag")},
         extra={"pattern_scoring": summ.get("pattern_scoring") or {}},
         created_utc=ctx.when.isoformat(), log=log)

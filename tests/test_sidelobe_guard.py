@@ -212,6 +212,70 @@ def test_the_exemption_needs_the_fine_structure_offset():
     assert set(f) == {"lobe"} and f["lobe"][0] == "C13" and r["n_exempt"] == {}
 
 
+D13C = SL.ISO.D_13C_EXACT
+
+
+def _neighbour_13c(ratio=0.10, w=W0, k_h=2300.0, bright=None):
+    """A neighbouring ion K at m/z 173.1172 and a line J ~100x brighter than K's 13C
+    line, placed so that the 13C line sits at J's negative-lobe offset."""
+    k = 173.1172
+    c13 = k + D13C
+    j = c13 + 2.35 * fw(c13)
+    rows = [_pk("K", k, k_h), _pk("J", j, 100.0 * ratio * k_h), _pk("C13", c13, ratio * k_h, w=w)]
+    if bright:
+        rows.append(_pk("KB", k - 2.4 * fw(k), bright))
+    return rows
+
+
+def test_the_13c_line_of_a_neighbouring_ion_beside_a_brighter_line_is_exempt():
+    """The real 13C line of a neighbouring ion (m/z 174.121, the 13C line of 173.117 at
+    0.10x) two widths below a line ~100x brighter, at the negative lobe's offset: a line's
+    width, on an exact 13C offset of a brighter line clear of every lobe band, at a share
+    a C9 ion makes -- an isotope line, not a lobe."""
+    rows = _neighbour_13c()
+    f, r = _flags(_table(rows))
+    assert f == {} and r["n_exempt"] == {"13C line": 1}
+    # without the neighbour it is J's negative lobe
+    f, r = _flags(_table([x for x in rows if x["peak_id"] != "K"]))
+    assert set(f) == {"C13"} and f["C13"][1] == "neg-lobe" and r["n_exempt"] == {}
+
+
+def test_the_isotopologue_exemption_needs_a_lines_width_a_plausible_share_and_a_clear_line():
+    # narrower than a line: a lobe, whatever it sits on
+    f, _ = _flags(_table(_neighbour_13c(w=0.45 * W0)))
+    assert set(f) == {"C13"} and "narrow" in f["C13"][1]
+    # 0.30x of an m/z 173 line would need ~28 carbons (cap 1.5 x 173/12 x 1.07 %): a lobe
+    f, r = _flags(_table(_neighbour_13c(ratio=0.30)))
+    assert set(f) == {"C13"} and r["n_exempt"] == {}
+    # a "brighter line" that sits in the lobe band of an even brighter one exempts nothing
+    f, r = _flags(_table(_neighbour_13c(bright=2300.0 * 60)))
+    assert "C13" in f and r["n_exempt"] == {}
+    # the offset must be the 13C spacing: 1 mDa off (~6 ppm, ~0.8 FWHM) it is a lobe
+    rows = _neighbour_13c()
+    rows[0] = _pk("K", 173.1172 - 1e-3, 2300.0)
+    f, _ = _flags(_table(rows))
+    assert set(f) == {"C13"}
+    # ... within the exact-offset window (SL.ISO_LINK_PPM, 1 ppm): 0.8 ppm off it is
+    # spared, 1.8 ppm off (a lobe population picked off a neighbour's 13C offset) it is not
+    for dppm, spared in ((0.8, True), (1.8, False)):
+        rows = _neighbour_13c()
+        rows[0] = _pk("K", 173.1172 - dppm * 1e-6 * (173.1172 + D13C), 2300.0)
+        f, _ = _flags(_table(rows))
+        assert (f == {}) is spared, (dppm, f)
+
+
+def test_a_lobe_of_an_ions_13c_line_is_not_spared_by_the_ions_own_lobe():
+    """Lobes repeat one isotope spacing apart at the parents' own ratio: the negative lobe
+    of an ion's 13C line sits one 13C spacing above the ion's own negative lobe, at the 13C
+    share. That 'brighter line' is in the ion's lobe band, so both stay lobes."""
+    mono = 200.0
+    c13 = mono + D13C
+    rows = [_pk("M", mono, 1e5), _pk("C13", c13, 1.1e4),
+            _pk("L0", mono - 2.35 * fw(mono), 1e5 / 150), _pk("L1", c13 - 2.35 * fw(c13), 1.1e4 / 150)]
+    f, r = _flags(_table(rows))
+    assert set(f) == {"L0", "L1"} and r["n_exempt"] == {}
+
+
 def test_a_real_line_at_ratio_40_in_the_negative_lobe_window_is_kept():
     t = _table([_parent(), _pk("real", P - 2.35 * fw(P), 1e4 / 40)])
     assert _flags(t)[0] == {}

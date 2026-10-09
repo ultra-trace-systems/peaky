@@ -183,9 +183,10 @@ _T0 = pd.Timestamp("2025-10-01 21:00:00", tz="UTC")
 _SIDS = [f"s{i}" for i in range(4)]
 
 
-def _batch(monkeypatch, tmp_path, scoring):
+def _batch(monkeypatch, tmp_path, scoring, off_file=None):
     """An offline 4-file batch through the real per-file assigner: every file serves the same
-    three lines (heights scaled per file)."""
+    three lines (heights scaled per file). `off_file`: that file's stats record no switches (a
+    file that ran with other switches than the batch, as a trace-first batch's residual files do)."""
     def file_table(sid):
         return _table(1.0 + 0.1 * _SIDS.index(sid))
 
@@ -202,6 +203,8 @@ def _batch(monkeypatch, tmp_path, scoring):
         res = real(sid, context=context, peaks=file_table(sid), scoring=scoring, use_cache=False,
                    **{**kw, "log": lambda *a: None})
         files[sid] = res["context_flags"]
+        if sid == off_file:
+            res["stats"]["context_flags"] = {}
         return res
 
     levelled: dict = {}
@@ -254,6 +257,18 @@ def test_a_batch_records_the_switches_its_files_ran_with(monkeypatch, tmp_path, 
     # the PDF judges the merged ledger on the same profile
     assert X.profile_flags(pdf_prof) == want
     assert ("C5H10N2O8" in set(merged["neutral_formula"].dropna())) == bool(want)
+
+
+def test_a_file_that_ran_with_other_switches_is_a_summary_warning(monkeypatch, tmp_path):
+    """The batch records one set of switches (the levels and the report read it); a file whose
+    own run recorded others is named in batch_summary['warnings'], not only in the log."""
+    summ, *_ = _batch(monkeypatch, tmp_path / "a", "orbi")
+    assert summ["warnings"] == []
+    monkeypatch.undo()
+    summ, *_ = _batch(monkeypatch, tmp_path / "b", "orbi", off_file="s1")
+    w = summ["warnings"]
+    assert len(w) == 1 and w[0]["what"] == "context_flags_mismatch", w
+    assert w[0]["batch"] == ON and w[0]["files"] == {"s1": {}} and "1 file(s)" in w[0]["message"]
 
 
 def test_the_shared_derivation_follows_reagent_class_and_trace_flag():

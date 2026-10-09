@@ -502,7 +502,7 @@ def test_the_reagent_line_alone_does_not_confirm_a_two_channel_certificate_of_a_
     through a counted line: methylphosphonic acid (CH5O3P) certified on its [M-H]- or [M+NO3]- ion and its bromide
     cluster, whose 1:1 '81Br' line is the only diagnostic line (the 13C / 18O lines, 1.1 / 0.6 %, under the floor):
     Low (certified). In a profile that budgets P (water: max_P 1), so that the P rule below does not decide it.
-    (F3: in ambient air, which budgets P at 0, the [M-H]- + [M+Br]- pair is a reagent-acid pair -- X and X.HBr,
+    (the element_evidence gate: in ambient air, which budgets P at 0, the [M-H]- + [M+Br]- pair is a reagent-acid pair -- X and X.HBr,
     the ordinary cluster pattern -- and commits nothing; the [M+NO3]- + [M+Br]- pair is no such pair and commits
     as before.)"""
     mpa = "CH5O3P"
@@ -668,7 +668,7 @@ def test_a_bromine_bearing_winners_lines_on_its_two_br_bromide_cluster_confirm_a
     winner that carries Br they count on two channels -- Good (certified), both lines under the [M+Br]- member. The
     box is opened to Br as for the Br winner above, and the oracle bases each ion on its all-light line, as the server
     does (`_m0_based`). In a profile that budgets P (water: max_P 1); in ambient air (max_P 0) the [M-H]- + [M+Br]-
-    pair is a reagent-acid pair and a non-curated P winner on it commits nothing (F3)."""
+    pair is a reagent-acid pair and a non-curated P winner on it commits nothing (pass 7's element gate)."""
     from peaky.assignment import certified_neutral as CN
     monkeypatch.setitem(CN._CERT_EXTRA, "Br", (0, 2))
     bep = "C2H6BrO3P"

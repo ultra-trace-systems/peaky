@@ -30,7 +30,7 @@ import pandas as pd
 from peaky import paths as PT
 from peaky.assignment import reflists as RL
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"   # the scrutiny page reads the run's context profile (batch_summary context_flags)
 
 A4 = (8.27, 11.69)                       # portrait inches
 INK = "#222222"
@@ -677,7 +677,8 @@ def _run_context_profile(out_dir: str):
     """The run's ContextProfile from its batch_summary.json (`context` +
     `context_flags`); None when the summary or its context is missing."""
     try:
-        bs = json.load(open(os.path.join(out_dir, "batch_summary.json")))
+        with open(os.path.join(out_dir, "batch_summary.json")) as fh:
+            bs = json.load(fh)
         if not bs.get("context"):
             return None
         from peaky.chem import contexts as X

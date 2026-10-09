@@ -159,6 +159,10 @@ class FileArr:
         self.h = d["height"].to_numpy(float)
         self.a = d["area"].fillna(0).to_numpy(float)
         self.role = d["role"].astype(str).to_numpy()
+        #: a peak a per-file stage marked 'artifact' (an Orbitrap side lobe, cleanup's ringing): not a
+        #: line of the profile. It is left out of every line pick; a position only artifacts hold is
+        #: untestable ('shadowed'), never empty -- the rule of the element-evidence predicate and REQ
+        self.art = self.role == "artifact"
         self.parent = d["parent_peak_id"].astype(object).where(d["parent_peak_id"].notna(), "").astype(str).to_numpy()
         self.pid = d["peak_id"].astype(str).to_numpy()
         self.pk = (d["neutral_formula"].fillna("").astype(str) + "|" + d["adduct"].fillna("").astype(str)).to_numpy()
@@ -181,18 +185,23 @@ class FileArr:
         toward a >= 3x taller neighbour within 25 ppm still counts (the
         isotopes module's N1 reach); else 'shadowed' when a peak >= SHADOW_FRAC
         x the expected height sits within ``shadow_da``. A refuted reading's M0
-        and the reading's own twin (``own``) are free; any other M0 / reagent /
-        artifact row or another parent's iso child is 'occupied'."""
+        and the reading's own twin (``own``) are free; any other M0 / reagent
+        row or another parent's iso child is 'occupied'. An artifact row (a
+        side lobe, ringing) is no line: the pick is the tallest OTHER peak
+        within tol, and a span only artifacts hold is 'shadowed' (untestable)
+        -- a lobe beside a line neither occupies it nor empties it."""
         lo_t, hi_t = span
         lo = np.searchsorted(self.mz, lo_t - tol_da, "left")
         hi = np.searchsorted(self.mz, hi_t + tol_da, "right")
+        if hi > lo and self.art[lo:hi].all():
+            return "shadowed", 0.0, -1
         if hi <= lo:
             reach = ISO.NEIGHBOUR_REACH_PPM * 1e-6 * hi_t
             l2 = np.searchsorted(self.mz, lo_t - reach, "left")
             h2 = np.searchsorted(self.mz, hi_t + reach, "right")
             best_c = -1
             for c in range(l2, h2):
-                if self.pid[c] == anchor_pid:
+                if self.pid[c] == anchor_pid or self.art[c]:
                     continue
                 cm = self.mz[c]
                 r = cm - hi_t if cm > hi_t else cm - lo_t
@@ -214,11 +223,11 @@ class FileArr:
                 if hi2 > lo2 and float(self.h[lo2:hi2].max()) >= LN.SHADOW_FRAC * h_exp:
                     return "shadowed", 0.0, -1
             return "absent", 0.0, -1
-        best = lo + int(np.argmax(self.h[lo:hi]))
+        best = lo + int(np.argmax(np.where(self.art[lo:hi], -np.inf, self.h[lo:hi])))
         r = self.role[best]
         if r == "M0" and (self.pk[best] in self.refuted or self.pk[best] in own):
             return "free", float(self.h[best]), best
-        if r in ("M0", "reagent", "artifact") or (r == "iso_child" and self.parent[best] != anchor_pid):
+        if r in ("M0", "reagent") or (r == "iso_child" and self.parent[best] != anchor_pid):
             return "occupied", float(self.h[best]), best
         return "free", float(self.h[best]), best
 

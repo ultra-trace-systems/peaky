@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from peaky.chem import chemistry as C
 
-__version__ = "0.5.0"   # + NOx-skeleton readings and the C3-C4 small-acid band (run-level switches)
+__version__ = "0.5.1"   # filter_by_profile: the raw-reading fall-through is an assertion; 0.5.0 NOx-skeleton readings and the C3-C4 small-acid band (run-level switches)
 
 
 @dataclass(frozen=True)
@@ -634,7 +634,9 @@ def filter_by_profile(formula: str, profile: "ContextProfile") -> tuple[bool, st
             win, val = getattr(profile, key), raw[key]
             if not (win[0] <= val <= win[1]):
                 return False, f"{name}={val:.2f} out of {win}"
-        return True, None    # unreachable: the raw reading failed some window
+        # no reading fits every window, and the raw reading (readings[0]) is one
+        # of them: some window above has already returned
+        raise AssertionError("filter_by_profile: a failed raw reading passed every window")
     elif nC in (1, 2):
         if nO > 2 * nC + 2:
             return False, f"O={nO} implausible for C={nC}"

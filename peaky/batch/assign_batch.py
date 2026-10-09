@@ -64,7 +64,11 @@ from peaky.batch import label_twins as _LT
 from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sampling as SS
 
-__version__ = "0.10.0"  # the vote reads the per-file EVIDENCE: a cluster's ions are
+__version__ = "0.11.0"  # + the merged-ledger isotopologue gate and the element-signature
+                        # removal (one curated exempt set, reconciled: 'parent removed'),
+                        # the batch's resolved class in every isotope check, the n = 0
+                        # reagent core, context_flags and batch_summary['warnings']
+                        # (0.10.0: the vote reads the per-file EVIDENCE: a cluster's ions are
                         # ranked by the best vote class of their readings before the
                         # file count (evidence.vote_classes, computed in the parent and
                         # carried as `vote_class`; jitter.csv carries the class); the
@@ -1631,7 +1635,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     (batch.tracefirst) and 'off' reproduces a run without the step.
 
     `isotopologue_rows` (default on; CLI --no-isotopologue-gate turns it off): on an
-    Orbitrap-class batch whose time series carries peak areas, a merged row whose
+    Orbitrap-class batch with a width model whose time series carries peak areas, a
+    merged row (not a curated reading: passes.curated_formulas) whose
     line is another merged ion's (or a reagent ion's) 13C / 18O / 15N / 34S / 37Cl /
     81Br / Si isotopologue at its expected area ratio over the batch leaves the
     merged ledger before the stamp, which then gives the line to the parent
@@ -2137,6 +2142,18 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     scale = None   # the batch's traces.MassScale, measured at the first merge
     rwater = None  # the reagent-water ladder (batch.reagent_water), measured at the first merge
 
+    # the formulas a curated list stands behind (the pass-0 registry for the
+    # batch's polarity / context and the active reference lists): one exempt set
+    # for both merged-ledger removal gates, the isotopologue gate and the
+    # element-signature removal (passes.curated_formulas)
+    from peaky.assignment import passes as _PS
+    from peaky.chem import contexts as _CX
+    try:
+        _pol = _CX.get_context(context).polarity if context else "negative"
+    except Exception:  # noqa: BLE001 -- an unknown context: the registry's default
+        _pol = "negative"
+    curated = _PS.curated_formulas(_pol, context, RL.prior_formulas(reflists_active) if reflists_active else ())
+
     def _merge() -> dict:
         """align() over EVERY per-file ledger so far, then the merged-level
         guards and re-reads, the trace reconciliation and the whole-batch stamp
@@ -2279,7 +2296,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 _rg = _ia[_ia["role"].astype(str) == "reagent"] if "role" in _ia.columns else None
             merged, iso_rows, merge_gates["isotopologue"] = _IC.satellite_rows(
                 merged, ts_peaks, resolution=rp, mass_scale=scale, klass=cfg.instrument_class, prof=prof,
-                reagents=_rg, per_file=level_frames, log=log)
+                reagents=_rg, per_file=level_frames, exempt=curated, log=log)
         else:
             merge_gates["isotopologue"] = {"ran": False, "n_stripped": 0, "n_mixed": 0, "n_exempt": 0,
                                            "skipped": "--no-isotopologue-gate"}
@@ -2458,12 +2475,25 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     twins_table.to_csv(os.path.join(TAB, "label_twins.csv"), index=False)
     # the isotope checks (iso_veto): rule C, REQ and HIGH read each committed
     # formula's isotope claims off the same stamped series (the instrument class
-    # from the batch's width model), rule H its exact halogen line (a lock,
+    # the batch resolved once, cfg.instrument_class: a TOF roster wins), rule H its exact halogen line (a lock,
     # judged against the batch's element budget: `context`); written for every
     # run (empty without a time series); a refuted pair is rejected (5b)
     iso_table = _IC.measure(ts_annot, level_frames, prof, resolution=rp, mass_scale=scale,
                             x_edge=x_edge, context=context, edge_cps=getattr(cfg, "noise_edge_batch_cps", None),
-                            log=log)
+                            klass=cfg.instrument_class, log=log)
+    # a REQ veto on an element-signature line (81Br / 37Cl / 34S / 29Si / 30Si,
+    # Orbitrap-class) is the batch's own refutation of the element: the reading
+    # leaves the merged ledger (iso_checks.remove_signature_vetoed), not only 5b;
+    # a curated formula and a known-species decision stay
+    merged, merge_gates["element_signature"] = _IC.remove_signature_vetoed(
+        merged, iso_table, exempt=curated, klass=_IC.batch_class(rp, cfg.instrument_class), log=log)
+    # ... a row the isotopologue gate stripped as the satellite of a reading that
+    # has just left is no longer that reading's satellite (iso_checks.parent_removed:
+    # verdict 'parent removed', no SAT veto) ...
+    res_m["isotopologue"], _n_orph = _IC.parent_removed(res_m.get("isotopologue"),
+                                                        merge_gates["element_signature"].get("pairs"), log=log)
+    if isinstance(merge_gates.get("isotopologue"), dict):
+        merge_gates["isotopologue"]["n_parent_removed"] = _n_orph
     # ... plus the merged-ledger isotopologue gate's strips (iso_checks.veto_rows,
     # check 'SAT'): the pooled pair of a line the merged ledger gave to its parent is
     # refuted the same way, so evidence_levels.csv agrees with the merged ledger
@@ -2472,20 +2502,6 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         iso_table = (pd.concat([iso_table, _sat_veto], ignore_index=True) if len(iso_table)
                      else _sat_veto)
     iso_table.to_csv(os.path.join(TAB, "iso_checks.csv"), index=False)
-    # a REQ veto on an element-signature line (81Br / 37Cl / 34S / 29Si / 30Si,
-    # Orbitrap-class) is the batch's own refutation of the element: the reading
-    # leaves the merged ledger (iso_checks.remove_signature_vetoed), not only 5b;
-    # a curated formula and a known-species decision stay
-    from peaky.assignment import passes as _PS
-    from peaky.chem import contexts as _CX
-    try:
-        _pol = _CX.get_context(context).polarity if context else "negative"
-    except Exception:  # noqa: BLE001 -- an unknown context: the registry's default
-        _pol = "negative"
-    _sig_exempt = (_PS.known_formulas(_pol, context) | RL.prior_formulas(reflists_active)
-                   if reflists_active else _PS.known_formulas(_pol, context))
-    merged, merge_gates["element_signature"] = _IC.remove_signature_vetoed(merged, iso_table,
-                                                                           exempt=_sig_exempt, log=log)
     # ... and the batch series is RE-STAMPED from the merged ledger without them
     # (the first stamp named them: _batch_ts.parquet, the levels' series and the
     # TOF gates below must not), with the same inputs as the merge's stamp
@@ -2501,7 +2517,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # partner of the line one spacing below it are Candidate. No re-vote: the
     # winner and its reading stay, the row says why.
     merge_gates["tof_m2"] = _IC.tof_m2_gates(merged, iso_table, ts_annot, resolution=rp, mass_scale=scale,
-                                             log=log)
+                                             klass=cfg.instrument_class, log=log)
     # THE EVIDENCE LEVEL (the scale of peaky 0.10.0): the batch's per-file
     # ledgers pooled as ONE source (cover + residual files; every file-count
     # minimum 3), re-read from the per_file/<sid>_ledger.csv files just written
@@ -2525,10 +2541,22 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         instrument_class=cfg.instrument_class, trace_sample=trace_sample is not None))
     _off = sorted(str(s_.get("sample_id")) for s_ in per_stats
                   if "context_flags" in s_ and s_["context_flags"] != context_flags)
+    # what a reader of batch_summary.json must know about the run's own record
+    # (`warnings`; [] when nothing): here, files whose own run recorded other
+    # context switches than the batch record the levels and the report read
+    run_warnings: list = []
     if _off:
         log(f"[assign_batch] context switches: the batch records {context_flags or 'none'}; "
             f"{len(_off)} file(s) ran with other switches ({', '.join(_off[:5])}"
             f"{', ...' if len(_off) > 5 else ''})")
+        run_warnings.append({
+            "what": "context_flags_mismatch",
+            "message": (f"{len(_off)} file(s) committed under other context switches than the batch "
+                        f"record ({context_flags or 'none'}) that the evidence levels and the report "
+                        "read; their skeleton-only readings are judged on the batch's switches"),
+            "batch": context_flags,
+            "files": {sid: next((s_.get("context_flags") for s_ in per_stats
+                                 if str(s_.get("sample_id")) == sid), None) for sid in _off}})
     level_summary = {
         "reagent": prof.name, "label": prof.label, "context": context,
         "context_flags": context_flags,
@@ -2569,7 +2597,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "amine_r_min": float(amine_r_min),
         "neutral_pairs": _NP.summary(pairs_table, _pair),
         "label_twins": _LT.summary(twins_table, prof),
-        "iso_checks": _IC.summary(iso_table, rp),
+        "iso_checks": _IC.summary(iso_table, rp, klass=cfg.instrument_class),
     }
     log(f"[assign_batch] evidence levels (peaky {EV.SCALE_RELEASE}) over {len(level_ledgers)} pooled "
         f"file(s), instrument class {klass or 'unknown'}: {ev_summary['pooled']} "
@@ -2713,6 +2741,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "reagent": prof.name, "label": prof.label, "context": context,
         # the context profile's run-level switches ({} = the named context as is)
         "context_flags": context_flags,
+        # what the run's record cannot say on its own (a list of {'what',
+        # 'message', ...}; [] when nothing): a trace-first batch's files that ran
+        # with other context switches than `context_flags`
+        "warnings": run_warnings,
         # the side channels the run asked for (`side_channels_requested`, from
         # `side_channels_source`) and the run-level union the files actually opened
         # (`side_channels`; per file: per_file[].side_channels, files per channel:

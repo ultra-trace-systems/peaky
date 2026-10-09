@@ -172,6 +172,17 @@ def test_commits_the_radical_anion_beside_its_acid_and_nothing_else_moves():
     assert out2["ion_only_committed"] == 0 and out2["ion_only_candidates"] == 0
 
 
+def test_a_locked_unexplained_peak_is_never_an_ion_only_row():
+    """A peak a stage emptied and locked (the element-evidence stage clears a contradicted
+    heteroatom reading and locks the peak) stays unexplained: the bucket skips it rather
+    than failing the file on the lock."""
+    led = _ledger()
+    L.lock_peaks(led, ["H"])
+    out = CL.commit_ion_only_electron_attachment(led, _cfg(), log=lambda *a: None)
+    assert out["ion_only_committed"] == 0 and out["ion_only_candidates"] == 0
+    assert _row(led, "H")["role"] == L.ROLE_UNEXPLAINED and L.validate(led) == []
+
+
 def _private(led) -> pd.DataFrame:
     """The private decision per M0 row of one file (the merge vote's input), with its class."""
     out = EV._series_levels(led).set_index("peak_id")

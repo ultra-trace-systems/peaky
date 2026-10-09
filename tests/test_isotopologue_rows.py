@@ -204,6 +204,35 @@ def test_known_species_and_labelled_standard_are_exempt():
     assert len(IC.veto_rows(tab)) == 0
 
 
+def test_a_curated_reading_is_exempt_as_in_the_element_signature_removal():
+    """One exempt policy for both merged-ledger removal gates: a reading a curated list
+    stands behind (`exempt`, passes.curated_formulas -- what remove_signature_vetoed
+    spares) is a note-only 'exempt' here too, with no SAT veto."""
+    merged, ts, lmz, e = _case(np.ones(9))
+    kept, tab, summ = _gate(merged, ts, exempt=frozenset({R[0]}))
+    assert R in _keys(kept) and summ["n_exempt"] == 1 and summ["n_stripped"] == 0
+    assert tab.iloc[0]["verdict"] == "exempt" and "kept: a curated formula" in tab.iloc[0]["note"]
+    assert len(IC.veto_rows(tab)) == 0
+    # a curated PARENT still strips the reading on its line: the policy spares a reading, not its lines
+    kept, tab, summ = _gate(merged, ts, exempt=frozenset({P[0]}))
+    assert R not in _keys(kept) and summ["n_stripped"] == 1
+
+
+def test_a_stripped_row_whose_parent_is_removed_reads_parent_removed():
+    """The element-signature removal runs after the gate: a row stripped as the
+    satellite of a reading that then leaves the merged ledger reads 'parent removed',
+    and its pooled pair no longer carries the SAT veto."""
+    merged, ts, lmz, e = _case(np.ones(9))
+    kept, tab, summ = _gate(merged, ts)
+    assert len(IC.veto_rows(tab)) == 1
+    same, n = IC.parent_removed(tab, [{"neutral_formula": X[0], "adduct": X[1]}], log=quiet)
+    assert n == 0 and same is tab
+    out, n = IC.parent_removed(tab, [{"neutral_formula": P[0], "adduct": P[1]}], log=quiet)
+    assert n == 1 and out.iloc[0]["verdict"] == IC.SAT_PARENT_REMOVED
+    assert "then left the merged ledger" in out.iloc[0]["note"] and out.iloc[0]["action"].startswith("stripped")
+    assert len(IC.veto_rows(out)) == 0 and tab.iloc[0]["verdict"] == "isotopologue"   # the input is untouched
+
+
 def test_ion_only_row_is_neither_parent_nor_stripped():
     merged, ts, lmz, e = _case(np.ones(9))
     merged.loc[np.isclose(merged["mz"], lmz), "ion_only_of"] = "C9H9O4"
@@ -517,3 +546,86 @@ def test_batch_strips_stamps_and_levels(tmp_path, monkeypatch):
     summ, merged, tab, lev, ts = run(tmp_path / "b", isotopologue_rows=False)
     assert R in _keys(merged) and not len(tab)
     assert summ["merge_gates"]["isotopologue"]["skipped"] == "--no-isotopologue-gate"
+
+
+def test_batch_parent_removed_by_the_element_signature_gate(tmp_path, monkeypatch):
+    """Both merged-ledger gates in one batch: R sits on the 13C line of a bromine reading
+    PB whose own 81Br line the batch never shows. The isotopologue gate strips R as PB's
+    satellite at the merge; REQ then refutes PB on its 81Br line and the element-signature
+    removal takes PB out. The table reconciles: R reads 'parent removed', its pooled pair
+    carries no SAT veto (iso_checks.csv, evidence_levels.csv), and the gates' summary
+    counts it. Both gates were handed the same curated exempt set."""
+    import json
+    import os
+
+    from peaky.assignment import assign as A_
+    from peaky.assignment import ledger as L
+    from peaky.assignment import tiers as T
+    from peaky.batch import assign_batch as AB
+    from peaky.io import io_mascope as IO
+
+    PB = ("C8H13BrO4", "[M-H]-")                         # an invented bromine reading
+    pmz = C.ion_mz(*PB)
+    lmz, e = _line(PB, "13C")
+    t0 = pd.Timestamp("2021-02-18 00:00", tz="UTC")
+    rows = []
+    for i in range(14):
+        w = 1e5 * (1.5 + np.sin(i / 2.0))
+        lines = [(pmz, w), (lmz, e * w * (1.0 + 0.05 * np.cos(i)))] + [(60.0 + 3.7 * j, 50.0) for j in range(80)]
+        rows += [dict(sample_item_id=f"s{i:02d}", sample_item_name=f"n{i:02d}",
+                      datetime_utc=t0 + pd.Timedelta(minutes=10 * i), peak_id=f"s{i:02d}_{k}", mz=float(m),
+                      height=0.75 * float(h), area=float(h)) for k, (m, h) in enumerate(lines)]
+    pk = pd.DataFrame(rows)
+
+    def _ionf(n, a):
+        return C.format_formula(T._ion_counts(n, a)) + "-"
+
+    def fake_assign(sid, context="ambient-air", **kw):
+        led = L.new_ledger(pd.DataFrame([("p1", pmz, 1e5), ("p2", lmz, 1e4)], columns=["peak_id", "mz", "height"]))
+        for pid, (n, a) in (("p1", PB), ("p2", R)):
+            L.commit_assignment(led, pid, neutral_formula=n, adduct=a, ion_formula=_ionf(n, a), ion_score=0.9,
+                                compound_score=0.9, ppm_error=0.1, pass_no=1, method="cheminfo+grid",
+                                confidence="High", commentary="stub")
+        T.apply_tiers(led)
+        led.loc[led["role"] == L.ROLE_M0, "tier"] = T.TIER_ASSIGNED
+        return {"ledger": led, "stats": {"noise_edge_cps": 50.0, "height_gate_cps": 50.0},
+                "plausibility_audit": [], "summaries": {}, "problems": []}
+
+    seen = {}
+    sat_rows, remove = IC.satellite_rows, IC.remove_signature_vetoed
+
+    def spy_sat(*a, **kw):
+        seen["sat"] = kw.get("exempt")
+        return sat_rows(*a, **kw)
+
+    def spy_remove(*a, **kw):
+        seen["remove"] = kw.get("exempt")
+        return remove(*a, **kw)
+
+    monkeypatch.setattr(IC, "satellite_rows", spy_sat)
+    monkeypatch.setattr(IC, "remove_signature_vetoed", spy_remove)
+    monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
+    monkeypatch.setattr(IO, "fetch_peaks", lambda client, sid, use_cache=True: pk[pk["sample_item_id"] == sid]
+                        [["peak_id", "mz", "height"]].reset_index(drop=True))
+    monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
+    monkeypatch.setattr(A_, "run", fake_assign)
+    d = tmp_path / "a"
+    AB.run(peaks=pk, ts_peaks=pk, reagent="NO3", batch="test batch", out_dir=str(d), k_min=2, k_max=3,
+           min_gain=0.0, n_jobs=1, resolving_power=Resolution.from_dict(ORBI), mass_axis="off",
+           residual=False, log=quiet)
+    summ = json.load(open(os.path.join(d, "batch_summary.json")))
+    merged = pd.read_csv(os.path.join(d, "merged_ledger.csv"))
+    tab = pd.read_csv(os.path.join(d, "tables", "isotopologue_rows.csv"))
+    iso = pd.read_csv(os.path.join(d, "tables", "iso_checks.csv"))
+    lev = pd.read_csv(os.path.join(d, "tables", "evidence_levels.csv"))
+    gates = summ["merge_gates"]
+    assert gates["isotopologue"]["n_stripped"] == 1 and gates["isotopologue"]["n_parent_removed"] == 1, gates
+    assert gates["element_signature"]["removed"] == 1, gates["element_signature"]
+    assert not ({PB, R} & _keys(merged)), merged
+    assert len(tab) == 1 and tab["verdict"].iloc[0] == IC.SAT_PARENT_REMOVED, tab.to_dict("records")
+    assert not (iso["check"] == "SAT").any()
+    req = iso[(iso["check"] == "REQ") & (iso["neutral_formula"] == PB[0])].iloc[0]
+    assert bool(req["veto"]) and "81Br" in str(req["line"])
+    r = lev[(lev["neutral_formula"] == R[0]) & (lev["adduct"] == R[1])]
+    assert not len(r) or not r["iso_veto"].astype(bool).any(), r.to_dict("records")
+    assert seen["sat"] == seen["remove"] and isinstance(seen["sat"], frozenset) and len(seen["sat"]) > 0

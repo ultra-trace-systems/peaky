@@ -33,7 +33,8 @@ from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
 from peaky.assignment import solvent_clusters as SC
 
-__version__ = "0.6.0"   # + easyic cluster-vs-covalent dual note (case 4)
+__version__ = "0.6.1"   # + the ion-only bucket skips a locked unexplained peak (an element-evidence clear)
+                        # 0.6.0: easyic cluster-vs-covalent dual note (case 4)
                         # (history) reclaim_satellites covers 15N/34S/29Si/30Si/18O
                         # (not just 13C/81Br/37Cl); v43-review fixes: ringing
                         # brightness floor (H4), CHO-only isotope-confirmed
@@ -1306,8 +1307,9 @@ def commit_ion_only_electron_attachment(ledger: pd.DataFrame, cfg=None, *, log=p
     [M-H]- parent as an ION-ONLY Candidate row on `[M]-.` (module note above).
 
     Per parent (a committed M0 on `[M-H]-`, any tier, flagged neither below
-    assignability nor a tentative lead, at least one carbon): the UNEXPLAINED
-    peak -- never an M0, isotopologue, reagent or artifact -- nearest the parent
+    assignability nor a tentative lead, at least one carbon): the UNEXPLAINED,
+    unlocked peak -- never an M0, isotopologue, reagent or artifact, nor a peak a
+    stage emptied and locked (the element-evidence clear) -- nearest the parent
     neutral's M-. mass and inside the calibrated gate (|z| <= ION_ONLY_Z via
     passes.core.z_of, the mass-dependent centre when fitted; +-ION_ONLY_PPM_UNCAL
     ppm uncalibrated). Two guards keep
@@ -1341,6 +1343,10 @@ def commit_ion_only_electron_attachment(ledger: pd.DataFrame, cfg=None, *, log=p
     mz_all = pd.to_numeric(ledger["mz"], errors="coerce").to_numpy(dtype=float)
     centres = _resolved_pair_centres(mz_all)
     role = ledger["role"].astype(str)
+    # a LOCKED unexplained peak stays unexplained (the element-evidence stage
+    # locks the peaks it clears): never an ion-only row
+    free = (~ledger["locked"].map(L._truthy).astype(bool) if "locked" in ledger.columns
+            else pd.Series(True, index=ledger.index))
     has_tier = "tier" in ledger.columns
     m0 = (role == L.ROLE_M0) & ledger["adduct"].astype(str).eq(ION_ONLY_PARENT_ADDUCT)
     # a flagged parent -- below assignability OR a tentative lead (C19(c): the
@@ -1376,7 +1382,7 @@ def commit_ion_only_electron_attachment(ledger: pd.DataFrame, cfg=None, *, log=p
             out["ion_only_skipped_unresolved"] += 1
             continue
         # the nearest UNEXPLAINED peak inside the gate
-        un = ledger.index[(role == L.ROLE_UNEXPLAINED)
+        un = ledger.index[(role == L.ROLE_UNEXPLAINED) & free
                           & (np.abs(mz_all - theo) <= half_da)]
         if not len(un):
             continue
