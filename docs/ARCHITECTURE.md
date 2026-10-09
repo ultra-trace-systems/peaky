@@ -84,6 +84,9 @@ hidden cross-pass state to reason about.
 Mascope sample_id
    │  io_mascope.fetch_peaks            pull peaks (+ Mascope's own matches), cache as parquet
    ▼
+side-lobe guard (Orbitrap only)         sidelobe_guard.flag_orbitrap_sidelobes (rule: chem/sidelobes.py)
+   │                                     lock weak same-spectrum lobes of >= 50x brighter lines as 'artifact'
+   ▼
 reagent + prescan                       profiles.resolve / reagents.label / isotopes.prescan
    │                                     detect adducts, label reagent-ion clusters, build grid constraints
    ▼
@@ -168,6 +171,7 @@ commitments the previous ones justify. (Condensed; the authoritative table is in
 
 | stage        | module            | what it commits                                                                 |
 | ------------ | ----------------- | ------------------------------------------------------------------------------- |
+| **Pre-0**    | `sidelobe_guard`  | the Orbitrap **side-lobe guard** (`sidelobe_guard`, before the reagent labelling and pass 0; Orbitrap class only, never on a trace sample): a weak peak 1-5 parent widths beside a ≥50× brighter line of the SAME spectrum, narrower than a line, at the negative lobe's offset (−2.6…−2.1 FWHM) or mirrored, is marked `artifact` and locked; isotope fine-structure lines (²H/¹⁷O/¹⁵N beside ¹³C, ¹³C¹⁵N↔¹⁸O) are exempt; per-file stats key `sidelobe_guard` (`{flagged, skipped, by_signature, n_mirror, n_no_signature, n_exempt, signatures, calibration}`); a measured width model with < 10 bright peaks to calibrate runs without the `narrow` signature |
 | **Pre**      | `reagents`/`isotopes` | detect reagent adducts; prescan isotope fingerprint; label reagent-ion clusters (Brₙ, BrO/BrO₂/BrO₃, ⁷⁹/⁸¹Br) so they are never candidates |
 | gate         | `admission`       | **admission gate** (nothing committed): stamps each peak's `occurrence` + `admitted_by`; eight sites draw candidates from `height ≥ edge-multiple OR occurrence ≥ batch threshold` — the pass-1 grid, pass-2 series growth, pass-3 families and pass-3's two cluster resolvers (the five callers of `directors._target_peaks`), plus the pass-6 ladder gap-fill, residual stage B and the siloxane ladder (residual stage A, the reflist rescue, pass-3's series *detection* statistics and the postprocess satellite tests are still brightness-only) |
 | **0**        | `passes`          | **known species** (committed + locked, first): atmospheric acids, nitroaromatics, PFCAs, ³⁷Cl-confirmed chlorinated paraffins, silanediols, +mode organophosphates — families the generic grid would miss |

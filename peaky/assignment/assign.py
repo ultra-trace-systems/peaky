@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -30,6 +31,7 @@ from peaky.chem import reagents
 from peaky.chem import resolution as RES
 from peaky.assignment import reflists
 from peaky.assignment import resolvability
+from peaky.assignment import sidelobe_guard
 from peaky.assignment import residual
 from peaky.assignment import siloxane
 from peaky.assignment import solvent_clusters
@@ -439,6 +441,29 @@ def _width_model(resolving_power, client, sample_id, raw, log):
         from peaky.batch import tracefirst as TFT   # lazy: the batch package imports this module
         return TFT.measure_resolution(client, sample_id, peaks=raw, log=log)
     return RES.Resolution.coerce(resolving_power)
+
+
+def instrument_class_of(instrument_type, width_model) -> str | None:
+    """'orbitrap' / 'tof' / None: the instrument class a single-sample run gates
+    its class-specific stages on (a batch hands its own, `cfg.instrument_class`).
+    The scoring snapshot's type when it names one; else a MEASURED or server width
+    model -- 'tof' when its dispersion says TOF, 'orbitrap' when it is m^1.5-like
+    and resolves >= 50 000 at m/z 200. A declared scalar R is a guess, not
+    evidence of the class: None, and the gated stages stay off."""
+    kind = str(instrument_type or "").strip().lower()
+    if kind in ("orbi", "orbitrap"):
+        return "orbitrap"
+    if kind in ("tof", "api"):
+        return "tof"
+    if width_model is None or getattr(width_model, "source", "declared") == "declared":
+        return None
+    if width_model.is_tof:
+        return "tof"
+    try:
+        r200 = float(width_model.r_at(200.0))
+    except Exception:  # noqa: BLE001
+        return None
+    return "orbitrap" if math.isfinite(r200) and r200 >= 50_000.0 else None
 
 
 # The assignment pipeline AS DATA -- read top to bottom to see exactly what runs,
@@ -871,6 +896,9 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # C46: the tier pass keys its counting-detector floor on the class, and a
     # run whose peak table's signal-to-noise was replaced says so once
     cfg.instrument_type = scoring_snapshot.get("instrument_type")
+    # the class-gated stages' instrument class: the batch's own when it handed one
+    if cfg.instrument_class is None:
+        cfg.instrument_class = instrument_class_of(cfg.instrument_type, width_model)
     if scoring_snapshot.get("snr_source") == io_mascope.SNR_SOURCE_POISSON:
         _edge = scoring_snapshot.get("snr_edge")
         log(f"[run] signal-to-noise: the peak table's column does not track height "
@@ -883,6 +911,13 @@ def run(sample_id: str, context: str = "ambient-air", *,
             f"({tiers.TOF_ASSIGN_FLOOR_X_EDGE:g}x the "
             + ("batch's typical" if cfg.noise_edge_batch_cps is not None else "file's own")
             + " detection edge) is Candidate")
+
+    # The Orbitrap same-spectrum side-lobe guard: weak list entries a few line
+    # widths beside a >= 50x brighter line of THIS file, narrower than a line or at
+    # the lobe's offset, are not lines of the profile -- marked 'artifact' and
+    # locked before any pass can give them a formula (and before the C42 re-run
+    # snapshot below, so a re-run keeps them). Off unless the class is Orbitrap.
+    sidelobe = sidelobe_guard.flag_orbitrap_sidelobes(led, width_model, cfg, log=log)
 
     pre = isotopes.prescan(led)
     log(f"[run] prescan {pre.as_dict()}")
@@ -996,6 +1031,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # the width model the resolvability stage used (None = not stamped) and its class counts
     st["resolution"] = width_model.as_dict() if width_model is not None else None
     st["resolvability"] = (summaries.get("resolvability") or {}).get("counts")
+    # the pre-pass Orbitrap side-lobe guard: how many rows it marked, or why it skipped
+    st["sidelobe_guard"] = sidelobe
     # the degeneracy stage's own calibration (mu, sigma) ppm -- the step-1 window
     # of the evidence level, per file and pooled; null = uncalibrated (no key
     # when the stage did not run)

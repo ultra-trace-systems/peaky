@@ -1694,6 +1694,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # columns stay NA).
     rp = _width_model_for_batch(resolving_power, client,
                                 ts_peaks if ts_peaks is not None else peaks, log)
+    # the class the class-gated per-file stages read (PassConfig.instrument_class):
+    # resolved ONCE here, a TOF roster winning over a width model that reads
+    # Orbitrap-class, and carried to every file by the cfg (workers included)
+    cfg.instrument_class = _axis_class(_instrument_of(rp)[0], _roster_class(peaks))
+    log(f"[assign_batch] instrument class: {cfg.instrument_class or 'unknown (class-gated stages off)'}")
     # The batch's m/z axis (see the docstring's `mass_axis`), measured and, on an
     # axis error, corrected HERE -- before the cover is picked and before any
     # file's peak table is read, so every stage sees one axis.
@@ -2088,6 +2093,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     if trace_sample is not None:
         from peaky.batch import tracefirst as TFT
         kw = dict(assign_kw, cfg=copy.deepcopy(cfg), occurrence=trace_sample.occurrence)
+        kw["cfg"].trace_sample = True      # batch-mean heights: no same-spectrum stages
         TFT.engine_settings(kw["cfg"], trace_sample, log=log)
         log(f"[assign_batch] (1/1) assigning {trace_sample.sample_id} (offline, "
             f"{len(trace_sample.peaks)} trace peaks) ...")

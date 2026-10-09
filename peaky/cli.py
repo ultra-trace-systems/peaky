@@ -228,6 +228,8 @@ def cmd_assign(args) -> None:
                             occurrence_min=args.occurrence_min)
     if getattr(args, "tof_flag_mz", None) is not None:
         cfg.tof_flag_mz = args.tof_flag_mz
+    if getattr(args, "no_sidelobe_guard", False):
+        cfg.sidelobe_guard = False
     profiles.apply_height_cutoff_x_edge(cfg, prof,
                                         explicit=args.height_cutoff_x_edge, log=print)
     profiles.apply_ion_only_channels(cfg, prof, log=print)
@@ -373,6 +375,15 @@ def _write_assign_outputs(args, out, base) -> None:
           f"ledger problems: {out['problems'] or 'none'}")
 
 
+def _sidelobe_cfg(args) -> dict:
+    """{'cfg': a PassConfig with the side-lobe guard off} when --no-sidelobe-guard
+    was given, else {} (the run builds its default PassConfig)."""
+    if not getattr(args, "no_sidelobe_guard", False):
+        return {}
+    from peaky.assignment import passes
+    return {"cfg": passes.PassConfig(sidelobe_guard=False)}
+
+
 def cmd_batch(args) -> None:
     _require_creds()
     from peaky import pipeline as PL
@@ -399,7 +410,8 @@ def cmd_batch(args) -> None:
                            trace_episodes=getattr(args, "trace_episodes", False),
                            corroborate=list(getattr(args, "corroborate", []) or []),
                            tof_flag_mz=getattr(args, "tof_flag_mz", None),
-                           mass_axis=getattr(args, "mass_axis", "auto"), log=prog)
+                           mass_axis=getattr(args, "mass_axis", "auto"), log=prog,
+                           **_sidelobe_cfg(args))
         # the window's final numbers come from the RETURNED summary, never from
         # parsing the log -- exact by construction.
         prog.finish((res.get("assign") or {}).get("summary"))
@@ -439,7 +451,8 @@ def cmd_pool(args) -> None:
             side_channels=side,
             rolling_centre=getattr(args, "rolling_centre", False),
             tof_flag_mz=getattr(args, "tof_flag_mz", None),
-            mass_axis=getattr(args, "mass_axis", "auto"), log=prog)
+            mass_axis=getattr(args, "mass_axis", "auto"), log=prog,
+            **_sidelobe_cfg(args))
         prog.finish((res.get("assign") or {}).get("summary"))
         ctx = res["ctx"]
         print(f"\n[pool] unified ledger -> {ctx.out_dir} in {res.get('elapsed_s', '?')}s")
@@ -1109,6 +1122,16 @@ def _add_tof_flag_arg(p) -> None:
                         "No effect off a TOF")
 
 
+def _add_sidelobe_flag(p) -> None:
+    p.add_argument("--no-sidelobe-guard", action="store_true", default=False,
+                   help="turn off the Orbitrap same-spectrum side-lobe guard. By default, on an "
+                        "Orbitrap-class run, a weak peak 1-5 line widths beside a >= 50x brighter "
+                        "line of the same file that is narrower than a line, sits at the lobe's "
+                        "offset or has a mirror lobe is marked 'artifact' before pass 0 and never "
+                        "given a formula (PassConfig.sidelobe_guard; the per-file stats record "
+                        "'sidelobe_guard'). No effect off an Orbitrap")
+
+
 def _add_mass_axis_flag(p) -> None:
     p.add_argument("--mass-axis", choices=("auto", "locks", "reference", "off"), default="auto",
                    help="before the run picks its cover or assigns anything, model the batch's m/z "
@@ -1233,6 +1256,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_side_channels_flag(pa)
     _add_corroborate_flag(pa)
     _add_tof_flag_arg(pa)
+    _add_sidelobe_flag(pa)
     _add_progress_flag(pa)
     pa.set_defaults(func=cmd_assign)
 
@@ -1263,6 +1287,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_corroborate_flag(pb)
     _add_tof_flag_arg(pb)
     _add_mass_axis_flag(pb)
+    _add_sidelobe_flag(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "
@@ -1307,6 +1332,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_rolling_flag(pp)
     _add_tof_flag_arg(pp)
     _add_mass_axis_flag(pp)
+    _add_sidelobe_flag(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "
                          "(default: physical cores; env PEAKY_JOBS honored)")

@@ -211,6 +211,7 @@ justify:
 
 | Pass | What it does |
 |---|---|
+| **Pre-0** | On an Orbitrap only: the **side-lobe guard** marks and locks, as `artifact`, weak peaks 1-5 line widths beside a ≥50× brighter line of the same spectrum that carry a lobe signature (narrower than a line, the negative lobe's −2.35 FWHM offset, or a mirror lobe); isotope fine-structure lines are exempt. Per-file stats key `sidelobe_guard` (`assignment/sidelobe_guard.py`, rule in `chem/sidelobes.py`). |
 | **Pre** | Detect reagent adducts; prescan the isotope fingerprint; **label reagent-ion clusters** (e.g. Brₙ, BrO/BrO₂/BrO₃ with both ⁷⁹/⁸¹Br) so they are never candidates. |
 | **0** | **Known species (committed + locked, runs first):** specific families that the generic grid/gates would otherwise miss — atmospheric acids/radicals, nitroaromatics, **PFCAs**, **chlorinated paraffins** (only with a confirmed ³⁷Cl envelope), silanediol contaminants, and (positive mode) **organophosphates** AND **organothiophosphate/-dithioate insecticides** (malathion family, chlorpyrifos, diazinon, parathion…; P off the grid, S above `max_S`). A P-bearing known species commits with **≥2 ion channels OR** a confirmed diagnostic ³⁴S/³⁷Cl/⁸¹Br isotope envelope (**not ¹³C**) substituting for the 2nd channel. |
 | **1** | Lock the high-confidence **CHO/CHON backbone**: grid-enumerate candidates, score with `match_compounds`, arbitrate (complexity-penalised, isotopologue-gated), commit the M0 owners + attach isotopologue children. Pass-1 self-calibration refines the mass offset. |

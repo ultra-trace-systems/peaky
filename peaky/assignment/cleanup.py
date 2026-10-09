@@ -64,6 +64,11 @@ def flag_ringing_artifacts(ledger: pd.DataFrame, *, factor: float = RING_FACTOR,
     sidelobes of a saturating ion are flagged, never a resolved independent
     neighbour.
 
+    On an Orbitrap the dim-parent case (a lobe beside a line that is 50x the lobe
+    but far below `min_parent`) is handled BEFORE pass 0 instead, by
+    `sidelobe_guard.flag_orbitrap_sidelobes`: it prevents the commit rather than
+    displacing one, so the warning below still holds.
+
     ⚠ UNEXPLAINED PEAKS ONLY -- AND DELIBERATELY SO. A pass that already committed
     an M0 onto a sidelobe makes it invisible here (this runs post-pass-6), which
     looks like an obvious bug to fix by also displacing committed M0s. DO NOT: it
