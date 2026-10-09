@@ -117,9 +117,27 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     record calls too) switches both on only for the NO3 / NO3_15N reagents on an
     Orbitrap-class run in a context that opens organonitrates; never on a TOF, an unknown
     class or the trace sample. A skeleton-only `[M-H]-` reading yields to its same-ion
-    `[M+NO3]-` twin. The switches are recorded in `batch_summary.json['context_flags']` and
-    each file's stats (`context_flags`); a trace-first batch whose residual files ran with
-    other switches says so under `batch_summary.json['warnings']`.
+    `[M+NO3]-` twin. A row whose outcome the skeleton reading changed is Candidate, never
+    Assigned: the reading presumes organonitrate chemistry that MS1 cannot confirm for one
+    formula. On NOx-free deuterium-labelled flow-reactor files it had made Assigned N3
+    formulas of deuterated products (C2 + D + O is N3 within 0.2 mDa) on peaks left
+    unexplained without it. "Changed": a proposer that runs the context filter admitted it
+    only on a skeleton reading, or the skeleton spared it the carbon-cluster demote or the
+    oxygen-monster demote on a mass-degenerate row, or re-arbitration took it only on its
+    skeleton, or it stands on such a row (a ladder fill's anchor, a completion row's
+    sibling; pass-2 and residual series children are not followed). Rows from
+    proposers that never read the windows (pass 6, completion, pass-7 certificates, a pass-3
+    family a GKA series opened, which now commits as `contaminant:<family>:gka`) are judged
+    by the demotes and their anchors alone. Curated readings keep their tier. `tier_reason` says how, per file and on the merged row;
+    `stats['nox_skeleton_gate']` and `batch_summary.json['nox_skeleton_gate']` count it. On
+    the NOx-chemistry nitrate batch below, 59 skeleton-reliant merged rows, all judged right,
+    are Candidate instead of Assigned (same ions: recall and the expert comparison do not
+    move; one merged row now reads its ion as the nitrate cluster its 1-microscan files hold,
+    not as a deprotonated molecule); on the deuterium-labelled files, Assigned formulas with
+    N >= 3 fall from 47 back to 31, the count before the skeleton readings. The switches
+    are recorded in `batch_summary.json['context_flags']` and each file's stats
+    (`context_flags`); a trace-first batch whose residual files ran with other switches says
+    so under `batch_summary.json['warnings']`.
   - **The (HNO3)2.NO3- dimer core is a reagent row** (rung n = 0 of the reagent-water
     ladder) when it passes the rung presence test, on any instrument class; it has no
     analyte reading, so a merged reading on it leaves the merged ledger as on any rung.
@@ -131,7 +149,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the siloxane adduct restriction and the (HNO3)2.NO3- reagent core (and, as on every class,
   the element gate's off-budget P / I rule). End to end on a private nitrate Orbitrap batch
   checked against its raw profiles, with all four gates together: Assigned precision 97.5 ->
-  99.3 %, Candidate precision 80.4 -> 97.7 %, and the recall of ions the raw profiles judged
+  99.3 % (539 rows; 598 before the skeleton tier cap), Candidate precision 80.4 -> 98.3 %
+  (97.7 % before the cap), and the recall of ions the raw profiles judged
   real 82.3 -> 90.2 %; against an independent expert assignment of 935 ions the same formula
   rose from 693 to 759 and a different formula fell from 10 to 1, and on the batch's
   1-microscan files from 421 to 463 and from 8 to 0. In A/B runs on a positive-mode Orbitrap
@@ -144,8 +163,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   curated exemption of the isotopologue gate, and the artifact rule of the evidence scale
   and of the element-evidence test). Only the positive-mode batch was re-run with all of
   them; replayed with the 1 ppm exemption window it keeps all 12 removals, and the artifact
-  rule moves no level there. The nitrate batch, re-run end to end with every fix, reproduces
-  the numbers above exactly (both its 100- and 1-microscan files).
+  rule moves no level there. The nitrate batch, re-run end to end with every fix and the
+  skeleton tier cap, reproduces the numbers above exactly (both its 100- and 1-microscan files).
 - **The batch's m/z axis is modelled from its own peaks (`--mass-axis auto`; `locks`,
   `reference` and `off` force a path).** On an Orbitrap the correction below no longer rests on
   the reagent's ~25 reference ions: `batch/axislock.py` finds calibration-free LOCKS -- recurring

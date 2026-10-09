@@ -38,7 +38,7 @@ from peaky.assignment import solvent_clusters
 from peaky.assignment import tiers
 from peaky.batch import timeseries
 
-__version__ = "0.7.0"  # + the Orbitrap side-lobe guard before pass 0, the run's
+__version__ = "0.7.1"  # + the run profile into the tier stage (the NOx-skeleton cap, stats["nox_skeleton_gate"]); 0.7.0 the Orbitrap side-lobe guard before pass 0, the run's
 #                        context profile (the NOx-skeleton switches) and the
 #                        element_evidence stage (clears and locks a heteroatom
 #                        reading the file's own lines contradict)
@@ -410,6 +410,14 @@ def _reagent_name(reagent_profile, adducts) -> str | None:
         return str(name)
 
 
+def _stage_tiers(st) -> None:
+    """The tier stage: tiers.apply_tiers with the run's profile (its NOx-skeleton
+    cap), and the cap's record taken HERE, before later stages rewrite rows
+    (tiers.nox_skeleton_summary; stats['nox_skeleton_gate'])."""
+    tiers.apply_tiers(st.led, cfg=st.cfg, profile=st.profile)
+    st.summaries["nox_skeleton_gate"] = tiers.nox_skeleton_summary(st.led, st.profile)
+
+
 def run_context_profile(profile, *, reagent_profile, adducts, instrument_class,
                         trace_sample) -> "contexts.ContextProfile":
     """The context profile a run judges its formulas on (`contexts.run_profile`):
@@ -627,7 +635,7 @@ _STAGES = [
     # honest mass-degeneracy measurement -- MUST precede tiers (the tier engine reads it).
     _Stage("degeneracy", _stage_degeneracy),
     # report tier, then the post-tier de-risking demotes (each gets the last word).
-    _Stage("tiers", lambda st: tiers.apply_tiers(st.led, cfg=st.cfg), safe=False, store=False),
+    _Stage("tiers", _stage_tiers, safe=False, store=False),
     _Stage("demote_fluorine",
            lambda st: cleanup.demote_unconfirmed_fluorine(st.led, log=st.log),
            safe=False, store=False),
@@ -679,7 +687,7 @@ _STAGES = [
     # [X+NO₃]- (exact isobar; ¹⁴NO₃ is off the labelled scoring grid). Tier preserved.
     # No-op unless the run is the labelled-nitrate profile (label_isotope '^N').
     _Stage("relabel_nitrate_clusters",
-           lambda st: cleanup.relabel_nitrate_clusters(st.led, log=st.log),
+           lambda st: cleanup.relabel_nitrate_clusters(st.led, log=st.log, profile=st.profile),
            when=lambda st: st.label_isotope == "^N", safe=False, store=False),
     _Stage("demote_ionization",
            lambda st: cleanup.demote_implausible_ionization(st.led, log=st.log),
@@ -1107,6 +1115,9 @@ def run(sample_id: str, context: str = "ambient-air", *,
     st["resolvability"] = (summaries.get("resolvability") or {}).get("counts")
     # the pre-pass Orbitrap side-lobe guard: how many rows it marked, or why it skipped
     st["sidelobe_guard"] = sidelobe
+    # the NOx-skeleton tier cap: the rows it made Candidate / noted, as the tier
+    # stage left them (None when the run reads no skeletons, or never tiered)
+    st["nox_skeleton_gate"] = summaries.get("nox_skeleton_gate")
     # the degeneracy stage's own calibration (mu, sigma) ppm -- the step-1 window
     # of the evidence level, per file and pooled; null = uncalibrated (no key
     # when the stage did not run)

@@ -1871,7 +1871,9 @@ def run_pass3(
                 ledger,
                 arb,
                 pass_no=3,
-                method=f"contaminant:{fam_key}",
+                # ':gka' = opened by a significant GKA series: structural-only
+                # filtering, no context filter (tiers.consults_context_filter)
+                method=f"contaminant:{fam_key}" + (":gka" if fam_key in fam_members else ""),
                 context=profile.label,
                 cfg=cfg,
                 lock=False,

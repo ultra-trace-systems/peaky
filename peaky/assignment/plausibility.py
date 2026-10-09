@@ -28,7 +28,7 @@ from peaky.chem import chemistry as C
 from peaky.assignment import ledger as L
 from peaky.assignment import tiers as T
 
-__version__ = "0.6.1"   # a peak gate_element_evidence clears is locked; 0.6.0 NOx-skeleton readings (profile=); 0.5.0 the element-evidence gate (gate_element_evidence); 0.4.0 element-budget demote (demote_off_budget); 0.3.0 carbon-cluster rule: F no longer exempts
+__version__ = "0.6.2"   # skeleton_reliance / rests_on_skeleton (the tier cap's predicate); 0.6.1 a peak gate_element_evidence clears is locked; 0.6.0 NOx-skeleton readings (profile=); 0.5.0 the element-evidence gate (gate_element_evidence); 0.4.0 element-budget demote (demote_off_budget); 0.3.0 carbon-cluster rule: F no longer exempts
 
 # thresholds (loose on purpose — flag the clear coincidences only)
 N_HIGH_OC = 3       # N>=3 combined with...
@@ -190,6 +190,55 @@ def implausible(neutral_formula: str, *, tier: str | None = None,
     if polarity == "+" and (br > 0 or cl > 0):
         return "halogen in neutral, +mode"
     return None
+
+
+#: skeleton_reliance's clause for a reading the context filter admits only on a skeleton
+SKELETON_ONLY_REASON = "passes the context windows only through its organonitrate-skeleton reading"
+
+
+def skeleton_reliance(neutral_formula: str, profile, *, filtered: bool = True, mass_degenerate: bool = False,
+                      rearbitrated: bool = False) -> str | None:
+    """How the run's NOx-skeleton reading changed the outcome for a row reading
+    `neutral_formula` (a short clause), or None when it did not -- or the profile
+    reads no skeletons:
+
+      * `filtered` (the row's proposer runs the context filter before it commits,
+        tiers.consults_context_filter): the filter passes the formula only on a
+        skeleton reading (contexts.skeleton_only);
+      * any row: the carbon-cluster demote (unconditional) would have fired on the
+        raw reading but not on the skeleton, or the oxygen-monster demote would
+        have, on a `mass_degenerate` row (its own second leg, `_mass_degenerate`);
+      * a `rearbitrated` row (re-arbitration accepts an alternative only when
+        `implausible` reads it clean under the run's profile): `implausible`
+        flags its raw reading only.
+
+    The raw reading is the same profile with `nox_skeleton` off, so the small-acid
+    band is never counted as a skeleton. Heavy-isotope labels fold first ('^N' is
+    N), as the labelled rescue reads its formulas."""
+    if profile is None or not getattr(profile, "nox_skeleton", False):
+        return None
+    from peaky.chem import contexts as X
+    cnt = C.fold_isotopes(C.parse_formula(str(neutral_formula)))
+    f = C.format_formula(cnt)
+    if filtered and X.skeleton_only(f, profile):
+        return SKELETON_ONLY_REASON
+    raw = dataclasses.replace(profile, nox_skeleton=False)
+    if is_carbon_cluster(cnt, raw) and not is_carbon_cluster(cnt, profile):
+        return "is spared the carbon-cluster demote only by its organonitrate-skeleton reading"
+    if mass_degenerate and is_oxygen_monster(cnt, raw) and not is_oxygen_monster(cnt, profile):
+        return ("is spared the oxygen-monster demote (a mass-degenerate window) only by its "
+                "organonitrate-skeleton reading")
+    if rearbitrated and implausible(f, profile=raw) is not None and implausible(f, profile=profile) is None:
+        return "was accepted by re-arbitration only on its organonitrate-skeleton reading"
+    return None
+
+
+def rests_on_skeleton(neutral_formula: str, profile, *, filtered: bool = True, mass_degenerate: bool = False,
+                      rearbitrated: bool = False) -> bool:
+    """True when the NOx-skeleton reading changed the outcome for the row
+    (`skeleton_reliance`)."""
+    return skeleton_reliance(neutral_formula, profile, filtered=filtered, mass_degenerate=mass_degenerate,
+                             rearbitrated=rearbitrated) is not None
 
 
 def scan(merged, *, polarity: str | None = None, profile=None) -> list[dict]:

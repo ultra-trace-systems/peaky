@@ -122,6 +122,14 @@ def test_a_nitrate_orbitrap_run_reads_the_skeleton_end_to_end(spies):
     d = _m0(res, "D0")
     assert d is not None and (d["neutral_formula"], d["adduct"]) == ("C5H10N2O8", "[M+NO3]-")
     assert int(d["pass_no"]) == 1
+    # ... and, admitted only through its skeleton, it is Candidate: the tier stage
+    # hands the run's profile to the tier engine (tiers.compute_tiers' skeleton cap),
+    # and the stats record what the cap did as the tier stage left the rows
+    from peaky.assignment import tiers as T
+    assert d["tier"] == T.TIER_CANDIDATE and str(d["tier_reason"]).startswith(T.NOX_SKELETON_CAP_MARK), d["tier_reason"]
+    m0 = res["ledger"][res["ledger"]["role"] == "M0"]
+    capped = int(m0["tier_reason"].astype(str).str.startswith(T.NOX_SKELETON_CAP_MARK).sum())
+    assert res["stats"]["nox_skeleton_gate"] == {"capped": capped, "noted": 0} and capped >= 1, res["stats"]
     # the twin tie-break in pass-1 arbitration: the cluster reading, not the skeleton-only twin
     t = _m0(res, "T0")
     assert t is not None and (t["neutral_formula"], t["adduct"]) == ("C3H6O2", "[M+NO3]-")
@@ -140,6 +148,7 @@ def test_a_nitrate_orbitrap_run_reads_the_skeleton_end_to_end(spies):
 def test_a_tof_run_and_a_trace_first_sample_keep_the_named_context(spies, scoring, trace_sample):
     res = _run(scoring, trace_sample)
     assert res["context_flags"] == {} and res["stats"]["context_flags"] == {}
+    assert res["stats"]["nox_skeleton_gate"] is None
     d = _m0(res, "D0")
     assert d is None or d["neutral_formula"] != "C5H10N2O8"
     assert "C5H10N2O8" not in set(res["ledger"]["neutral_formula"].dropna())
@@ -257,6 +266,19 @@ def test_a_batch_records_the_switches_its_files_ran_with(monkeypatch, tmp_path, 
     # the PDF judges the merged ledger on the same profile
     assert X.profile_flags(pdf_prof) == want
     assert ("C5H10N2O8" in set(merged["neutral_formula"].dropna())) == bool(want)
+    # the skeleton tier cap on the merged ledger: the dinitrate (skeleton-only) is
+    # Candidate in every file, and its merged row says so; a TOF batch records nothing
+    from peaky.assignment import tiers as T
+    if want:
+        d = merged[merged["neutral_formula"] == "C5H10N2O8"].iloc[0]
+        assert d["tier"] == T.TIER_CANDIDATE
+        assert f"{T.NOX_SKELETON_CAP_MARK}: Candidate in {len(_SIDS)} of the {len(_SIDS)} file(s)" in str(d["tier_reason"])
+        g = summ["nox_skeleton_gate"]
+        assert g["merged_capped"] >= 1 and g["files_capped"] >= len(_SIDS), g
+        assert g["files_capped"] == sum(pf["nox_skeleton_gate"]["capped"] for pf in summ["per_file"])
+    else:
+        assert summ["nox_skeleton_gate"] is None
+        assert all(pf["nox_skeleton_gate"] is None for pf in summ["per_file"])
 
 
 def test_a_file_that_ran_with_other_switches_is_a_summary_warning(monkeypatch, tmp_path):
@@ -288,3 +310,56 @@ def test_the_shared_derivation_follows_reagent_class_and_trace_flag():
     assert np.all([isinstance(A.run_context_profile(c, reagent_profile="NO3", adducts=ADDUCTS,
                                                     instrument_class="orbitrap", trace_sample=False),
                               X.ContextProfile) for c in ("ambient-air", X.get_context("chamber"))])
+
+
+def test_the_15n_cluster_reread_is_handed_the_run_profile(monkeypatch):
+    """A 15N-nitrate run's cluster re-read judges a skeleton-capped row again on its cluster
+    reading; it needs the run's profile for that (cleanup.relabel_nitrate_clusters(profile=))."""
+    from peaky.assignment import cleanup as CL
+    seen = {}
+    real = CL.relabel_nitrate_clusters
+
+    def spy(led, **kw):
+        seen["profile"] = kw.get("profile")
+        return real(led, **kw)
+
+    monkeypatch.setattr(CL, "relabel_nitrate_clusters", spy)
+    cfg = PassConfig()
+    A.run(SID, context="ambient-air", cfg=cfg, peaks=_table(), use_cache=False, scoring="orbi", adducts=ADDUCTS,
+          reagent_profile="NO3", reagent_n_relabel=False, label_isotope="^N", log=lambda *a: None)
+    assert isinstance(seen.get("profile"), X.ContextProfile) and X.profile_flags(seen["profile"]) == ON, seen
+
+
+def test_the_cap_record_is_taken_at_the_tier_stage(monkeypatch):
+    """stats['nox_skeleton_gate'] counts what the cap did when the tier stage ran, not what a
+    later stage left in the rows: a post-tier stage rewriting the capped rows' reasons does not
+    change it."""
+    from peaky.assignment import cleanup as CL
+    from peaky.assignment import tiers as T
+    real = CL.demote_unconfirmed_fluorine
+
+    def rewrite(led, **kw):
+        cap = led["tier_reason"].astype(str).str.startswith(T.NOX_SKELETON_CAP_MARK)
+        led.loc[cap, "tier_reason"] = "rewritten by a later stage"
+        return real(led, **kw)
+
+    monkeypatch.setattr(CL, "demote_unconfirmed_fluorine", rewrite)
+    res = _run()
+    m0 = res["ledger"][res["ledger"]["role"] == "M0"]
+    assert not m0["tier_reason"].astype(str).str.startswith(T.NOX_SKELETON_CAP_MARK).any()
+    assert res["stats"]["nox_skeleton_gate"]["capped"] >= 1, res["stats"]["nox_skeleton_gate"]
+
+
+def test_the_batch_record_sums_each_files_noted_rows(monkeypatch, tmp_path):
+    from peaky.assignment import tiers as T
+    real = T.nox_skeleton_summary
+
+    def with_noted(led, profile):
+        s = real(led, profile)
+        return None if s is None else {**s, "noted": s["noted"] + 2}
+
+    monkeypatch.setattr(T, "nox_skeleton_summary", with_noted)
+    summ, *_ = _batch(monkeypatch, tmp_path, "orbi")
+    g = summ["nox_skeleton_gate"]
+    assert g["files_noted"] == sum(pf["nox_skeleton_gate"]["noted"] for pf in summ["per_file"]) == 2 * len(_SIDS), g
+    assert g["files_capped"] == sum(pf["nox_skeleton_gate"]["capped"] for pf in summ["per_file"]), g

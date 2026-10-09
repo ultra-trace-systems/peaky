@@ -2564,6 +2564,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 _recount_roles(st_, _led, _rw_summ["files"].get(sid), signature=_sg_summ["files"].get(sid))
     # the parent rows name the lines the gate gave them (one row per parent ion)
     merged = _IC.parent_lines(merged, res_m.get("isotopologue"))
+    # the NOx-skeleton tier cap, said on the merged row: how many of the files that
+    # commit the reading capped it (tiers.merged_skeleton_notes; the tier is the vote's)
+    from peaky.assignment import tiers as _TI
+    merged, nox_skeleton_merged = _TI.merged_skeleton_notes(merged, full_ledgers)
     # ... plus the merged-ledger isotopologue gate's strips (iso_checks.veto_rows,
     # check 'SAT'): the pooled pair of a line the merged ledger gave to its parent is
     # refuted the same way, so evidence_levels.csv agrees with the merged ledger
@@ -2829,6 +2833,16 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # 'message', ...}; [] when nothing): a trace-first batch's files that ran
         # with other context switches than `context_flags`
         "warnings": run_warnings,
+        # the NOx-skeleton tier cap (null when the batch reads no skeletons): the
+        # merged rows whose reading a file capped / noted, and the per-file totals
+        "nox_skeleton_gate": ({**nox_skeleton_merged,
+                               "files_capped": int(sum((s_.get("nox_skeleton_gate") or {}).get("capped", 0)
+                                                       for s_ in per_stats)),
+                               "files_noted": int(sum((s_.get("nox_skeleton_gate") or {}).get("noted", 0)
+                                                      for s_ in per_stats))}
+                              if context_flags.get("nox_skeleton")
+                              # a trace-first batch records no switches, but its residual files read the skeleton
+                              or any(s_.get("nox_skeleton_gate") is not None for s_ in per_stats) else None),
         # the side channels the run asked for (`side_channels_requested`, from
         # `side_channels_source`) and the run-level union the files actually opened
         # (`side_channels`; per file: per_file[].side_channels, files per channel:

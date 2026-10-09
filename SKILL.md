@@ -480,7 +480,14 @@ offline from an existing run. (The old `run_assign.py` / `run_clusters.py` /
   `contexts.run_profile` turns both on only for the NO3 / NO3_15N reagents on an
   Orbitrap-class run in a context that opens organonitrates (never a TOF, an
   unknown class or the trace sample); a skeleton-only `[M-H]-` reading yields to its
-  same-ion `[M+NO3]-` twin. Recorded as `context_flags` (per file, per batch).
+  same-ion `[M+NO3]-` twin. Recorded as `context_flags` (per file, per batch). A row
+  whose outcome the skeleton changed -- admitted through it by a proposer that runs
+  the context filter, or spared the carbon-cluster / mass-degenerate O-monster demote,
+  or re-arbitrated on it, or standing on such a row (a ladder fill's anchor, a
+  completion row's sibling) -- is Candidate, never Assigned (MS1 cannot confirm the
+  chemistry the reading presumes; on deuterium-labelled data 14N3 is C2 + D + O
+  within 0.2 mDa); curated readings are exempt. `tier_reason` says how, per file and
+  on the merged row (`stats["nox_skeleton_gate"]`).
 
 ## Outputs
 
