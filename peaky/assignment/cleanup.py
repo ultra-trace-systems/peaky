@@ -11,7 +11,8 @@ which invent chemistry the spectrum doesn't support:
      -0.16 => >=2 reagent Br) that carries a Br isotope partner and has no sane
      covalent reading is a bromide reagent-cluster ion. Role -> 'reagent'.
 
-  3. recover_isotope_gated -- the genuine molecules the score gate dropped:
+  3. recover_isotope_gated -- the genuine molecules the score gate dropped, and a
+     committed halogen-free reading whose 37Cl / 81Br twin it leaves unexplained:
      enumerate ONLY low-complexity CHO/CHON/CHOS (+<=1 covalent Br/Cl), and
      commit a winner ONLY when the measured halogen isotope pattern CONFIRMS the
      candidate's halogen count (an independent corroboration that justifies the
@@ -249,11 +250,85 @@ def _pattern_ok(nbr_ion, ncl_ion, r2, r4):
     return False
 
 
+#: a halogen-free M0 whose M+2 line sits at the 37Cl / 81Br offset within this many ppm of its m/z
+HALOGEN_TWIN_PPM = 2.0
+
+
+#: an incumbent's attached isotopologue lines that are its OWN evidence (a label copy, an N / S / Si line): a reading
+#: they confirm is not re-read on a halogen twin
+_OWN_EVIDENCE = ("14N", "15N", "34S", "29Si", "30Si")
+
+
+def _halogen_twins(ledger):
+    """Committed, unlocked M0 rows whose ion carries no Cl / Br while an UNEXPLAINED line sits at their exact
+    37Cl or 81Br M+2 offset (within HALOGEN_TWIN_PPM; the nearer of the two offsets) at that halogen's ratio
+    (_pattern_ok for one Cl or one Br, on heights): the twin a halogen-free formula leaves unexplained.
+    Not taken: a Cl twin of a Si-bearing ion (its own 30Si line sits 0.2 mDa from the 37Cl offset); a line at a
+    13C / 13C2 / 18O / 34S / 30Si / 37Cl / 81Br offset of ANOTHER committed M0 (it may be that ion's line); an
+    incumbent with an attached label-copy / N / S / Si line (_OWN_EVIDENCE: evidence for its own reading).
+    {peak_id: (mz, height, r2, halogen)}."""
+    from peaky.chem import isotopes as ISO
+    pk = ledger.dropna(subset=["mz"]).sort_values("mz")
+    mzs, hts = pk["mz"].to_numpy(float), pk["height"].to_numpy(float)
+    roles = pk["role"].to_numpy()
+    m0_mz = np.sort(mzs[roles == L.ROLE_M0])
+
+    def nearest(arr, t):
+        j = int(np.searchsorted(arr, t))
+        best = None
+        for k in (j - 1, j):
+            if 0 <= k < len(arr) and abs(arr[k] - t) / t * 1e6 <= HALOGEN_TWIN_PPM:
+                if best is None or abs(arr[k] - t) < abs(arr[best] - t):
+                    best = k
+        return best
+
+    others = (ISO.D_13C, 2 * ISO.D_13C, ISO.D_18O, ISO.D_34S, ISO.D_30SI, ISO.D_37CL, ISO.D_81BR)
+
+    def of_another(line_mz, own_mz):
+        for d in others:
+            i = nearest(m0_mz, line_mz - d)
+            if i is not None and abs(m0_mz[i] - own_mz) > 1e-6:
+                return True
+        return False
+
+    kids = ledger[ledger["role"] == L.ROLE_ISO]
+    out = {}
+    m0 = ledger[(ledger["role"] == L.ROLE_M0) & ~ledger["locked"].astype(bool) & ledger["ion_formula"].notna()]
+    for _, r in m0.iterrows():
+        ic = C.parse_formula(str(r["ion_formula"]))
+        if ic.get("Cl", 0) or ic.get("Br", 0):
+            continue
+        mz, h = float(r["mz"]), float(r["height"])
+        if not (h > 0):
+            continue
+        labs = kids.loc[kids["parent_peak_id"] == r["peak_id"], "iso_label"].astype(str)
+        if any(any(e in lab for e in _OWN_EVIDENCE) for lab in labs):
+            continue
+        hits = []
+        for d, (nbr, ncl), el in ((ISO.D_37CL, (0, 1), "Cl"), (ISO.D_81BR, (1, 0), "Br")):
+            if el == "Cl" and ic.get("Si", 0):
+                continue
+            k = nearest(mzs, mz + d)
+            if k is not None:
+                hits.append((abs(mzs[k] - mz - d), k, nbr, ncl, el))
+        if not hits:
+            continue
+        _, k, nbr, ncl, el = min(hits)
+        if roles[k] != L.ROLE_UNEXPLAINED or not _pattern_ok(nbr, ncl, hts[k] / h, 0.0) or of_another(mzs[k], mz):
+            continue
+        out[r["peak_id"]] = (mz, h, float(hts[k] / h), el)
+    return out
+
+
 def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
                           score_fn=None, score_floor: float = 0.65,
                           z_max: float = 2.5, log=print) -> dict:
     """Recover genuine molecules the score gate dropped, gated on a CONFIRMED
-    halogen isotope pattern + a low-complexity clamp."""
+    halogen isotope pattern + a low-complexity clamp -- and re-read a committed
+    halogen-free M0 whose 37Cl / 81Br twin sits unexplained (_halogen_twins),
+    replacing it only with a halogen formula that passes the same gates. Runs
+    before reclaim_satellites: a twin that is another committed ion's isotope line
+    is excluded by offset in _halogen_twins instead."""
     score_fn = score_fn or IO.score_candidates
     mu = getattr(cfg, "cal_mu", None)
     sigma = getattr(cfg, "cal_sigma", None) or 0.5
@@ -268,11 +343,16 @@ def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
         return best
 
     un = ledger[ledger["role"] == L.ROLE_UNEXPLAINED]
+    # a committed halogen-free reading whose M+2 shows the halogen's twin, unexplained, is re-read here
+    # too: the twin is the evidence a formula without the halogen cannot account for (a C12 CHON reading of
+    # a C10 chlorinated product whose 37Cl line reads 0.33 of the M0 and whose 13C reads ~C11.6)
+    twins = _halogen_twins(ledger)
     ranges = C.parse_ranges(RECOVERY_BOX)
-    # enumerate per unexplained peak, union for ONE batched score
+    # enumerate per unexplained peak (and contradicted committed one), union for ONE batched score
     per = {}
     allf = set()
-    for _, p in un.iterrows():
+    targets = pd.concat([un, ledger[ledger["peak_id"].isin(list(twins))]])
+    for _, p in targets.iterrows():
         mz = float(p["mz"])
         cands = {f for f in C.candidates_for_peaks(
                     [mz], ranges, list(RECOVERY_ADDUCTS), ppm_tolerance=2.0,
@@ -295,9 +375,10 @@ def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
         return {"recovered": 0}
     fr = fr[fr["sample_peak_id"].notna() & (fr["sample_peak_intensity"] > 0)]
 
-    recovered = 0
+    recovered = swapped = 0
     for pid, (mz, h, _c) in per.items():
-        if ledger.loc[ledger.peak_id == pid, "role"].iloc[0] != L.ROLE_UNEXPLAINED:
+        role = ledger.loc[ledger.peak_id == pid, "role"].iloc[0]
+        if role != L.ROLE_UNEXPLAINED and not (pid in twins and role == L.ROLE_M0):
             continue
         sub = fr[(fr["sample_peak_mz"] - mz).abs() < 0.006].copy()
         if sub.empty:
@@ -331,6 +412,19 @@ def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
             continue
         ppm = float(chosen["ppm_error"])
         z = (ppm - mu) / sigma if mu is not None else 0.0
+        replaced = ""
+        if pid in twins:
+            row = ledger.loc[ledger.peak_id == pid].iloc[0]
+            if C.parse_formula(str(chosen["ion_formula"])).get(twins[pid][3], 0) == 0:
+                continue                              # the twin's own halogen, or no swap
+            replaced = (f" Replaces {row['neutral_formula']} {row['adduct']} (score {float(row['ion_score']):.2f}): "
+                        f"an unexplained line at the {twins[pid][3]} M+2 offset reads {twins[pid][2]:.2f} of the M0, "
+                        f"which {row['ion_formula']} has no {twins[pid][3]} to explain.")
+            try:
+                L.clear_assignment(ledger, pid, reason="halogen twin" + replaced)
+            except L.LedgerError:
+                continue
+            swapped += 1
         L.commit_assignment(
             ledger, pid, neutral_formula=neutral, adduct=adduct,
             ion_formula=str(chosen["ion_formula"]),
@@ -340,10 +434,11 @@ def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
             confidence="Good (recovered)",
             commentary=(f"Recovery: halogen isotope pattern confirms the ion "
                         f"(M+2/M0={r2:.2f}); score {chosen['ion_score']:.2f}, "
-                        f"z={z:+.1f} within calibrated accuracy."))
+                        f"z={z:+.1f} within calibrated accuracy." + replaced))
         recovered += 1
-    log(f"[cleanup] recovered {recovered} isotope-confirmed molecules")
-    return {"recovered": recovered}
+    log(f"[cleanup] recovered {recovered} isotope-confirmed molecules"
+        + (f" ({swapped} replacing a halogen-free reading that left the halogen's twin unexplained)" if swapped else ""))
+    return {"recovered": recovered, "halogen_twin_swaps": swapped}
 
 
 def _decompose(ion_formula, candidate_set):
@@ -1835,7 +1930,8 @@ def run_cleanup(client, sample_id, ledger, profile, cfg, *, log=print) -> dict:
     # NB: demote_unconfirmed_fluorine is NOT called here -- it must run AFTER
     # tiers.apply_tiers (which recomputes tier and would re-promote the F-monster).
     # assign.run calls it post-tiering.
-    return {"recovered": rec["recovered"], "clusters": clu["labelled"],
+    return {"recovered": rec["recovered"], "halogen_twin_swaps": rec.get("halogen_twin_swaps", 0),
+            "clusters": clu["labelled"],
             "cluster_covalent_ties": clu.get("covalent_ties", 0),
             "reagent_halocarbons": rhc["relabeled"],
             "artifacts": art["flagged"], "reclaimed_satellites": sat["reclaimed"],

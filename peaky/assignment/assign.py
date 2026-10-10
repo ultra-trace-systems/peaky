@@ -20,6 +20,7 @@ from peaky.chem import contexts
 from peaky.assignment import degeneracy
 from peaky.io import io_mascope
 from peaky.chem import isotopes
+from peaky.assignment import iso_response
 from peaky.assignment import labeled
 from peaky.assignment import ladders
 from peaky.assignment import ledger
@@ -767,6 +768,26 @@ def _trend_step(scoring_trend, fitted, *, local: bool, reruns: int) -> str:
     return "done"
 
 
+def _iso_mode(cfg, raw, local: bool) -> str:
+    """The run's isotope-line scoring (PassConfig.iso_response): "auto" / "area" on an Orbitrap-class run
+    scored locally whose peaks carry areas (>= 90 % finite, positive), else "off"."""
+    mode = str(getattr(cfg, "iso_response", "off") or "off").lower()
+    if mode not in ("auto", "area") or not local or getattr(cfg, "trace_sample", False):
+        return "off"
+    if getattr(cfg, "instrument_class", None) != "orbitrap":
+        return "off"
+    a = pd.to_numeric(raw["area"], errors="coerce") if raw is not None and "area" in raw else None
+    if a is None or not len(a) or float(((a > 0) & a.notna()).mean()) < 0.9:
+        return "off"
+    return mode
+
+
+def _committed_ions(led) -> list:
+    """(mz, ion_formula) of every committed M0 row; iso_response.fit keeps the CHO / CHON ones of >= 4 carbons."""
+    m = led[(led["role"] == ledger.ROLE_M0) & led["ion_formula"].notna()]
+    return list(zip(pd.to_numeric(m["mz"], errors="coerce"), m["ion_formula"]))
+
+
 def run(sample_id: str, context: str = "ambient-air", *,
         cfg: passes.PassConfig | None = None, use_cache: bool = True,
         do_pass2: bool = True, do_pass3: bool = True, do_pass4: bool = True,
@@ -959,6 +980,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # a trend a previous run of this sample left (same process) is that run's;
     # this run fits its own (C42). A stand-in's inherited trend stays.
     io_mascope.reset_scoring_trend(sample_id)
+    io_mascope.reset_iso_scoring(sample_id)
     scoring = io_mascope.scoring_for_sample(client, sample_id, raw)
     scoring_snapshot = io_mascope.scoring_snapshot(client, sample_id, raw)
     log(f"[run] scoring {io_mascope.describe_scoring(scoring)}"
@@ -1033,7 +1055,28 @@ def run(sample_id: str, context: str = "ambient-air", *,
     inherited = io_mascope.scoring_trend(sample_id) is not None
     local = io_mascope._local_scoring_enabled()
     reruns = 0
+    # isotope-line scoring (iso_response.py): an Orbitrap-class file reads its lines by area from pass 0;
+    # with "auto" the response fitted after calibrate re-runs the file once, from pass 0, against it. A
+    # stand-in registered with a measured sample's snapshot (a decoy arm) is read as that sample was, from
+    # the start (by height where the snapshot records no isotope-line scoring), and fits none.
+    iso_measured, iso_note = None, None
+    if io_mascope.iso_scoring_inherited(sample_id):
+        inh = io_mascope.iso_scoring(sample_id) or {}
+        iso_mode, iso_fit, iso_tried = "inherited", inh.get("resp"), True
+        iso_area, iso_note = inh.get("col") == "area", "inherited with the stand-in's snapshot"
+        log(f"[run] isotope lines read by {inh.get('col') or 'height'} "
+            f"({'against the inherited response' if iso_fit else 'no response'}; inherited)")
+    else:
+        iso_mode = _iso_mode(cfg, raw, local)
+        iso_fit, iso_tried, iso_area = None, iso_mode != "auto", iso_mode in ("auto", "area")
+        iso_note = {"off": "off (not an Orbitrap-class local run with areas, or switched off)",
+                    "area": "by area, no response (iso_response 'area')"}.get(iso_mode)
+        # recorded either way, so a stand-in judged at this run's snapshot reads its lines as this run did
+        io_mascope.set_iso_scoring(sample_id, col="area" if iso_area else "height")
+        if iso_area:
+            log(f"[run] isotope lines read by area ({'response fitted after calibrate' if iso_mode == 'auto' else 'no response'})")
     while True:
+        cfg.iso_response_fit, cfg.iso_area = iso_fit, iso_area
         st = _RunState(
             client=client, sample_id=sample_id, led=led, profile=profile, pre=pre,
             cfg=cfg, adducts=adducts, reagent=reagent, has_halogen=has_halogen_adduct,
@@ -1082,6 +1125,30 @@ def run(sample_id: str, context: str = "ambient-air", *,
                         f"{masscal.trend_shift(current, fitted):.3f} ppm"
                         + ("" if masscal.trend_shift(current, fitted) <= TREND_AGREE_PPM
                            else f" (re-run limit {MAX_TREND_RERUNS} reached)"))
+            if stg.name == "calibrate" and not restart and not iso_tried:
+                iso_tried = True
+                resp = iso_response.fit(io_mascope.peaks_for_scoring(sample_id, raw),
+                                        _committed_ions(st.led), col="area")
+                iso_measured = resp
+                if resp is None:
+                    iso_note = (f"fewer than {iso_response.MIN_POINTS} committed CHO/CHON 13C lines: "
+                                f"by area against the natural abundance")
+                    log(f"[run] isotope-line response: {iso_note}")
+                elif not iso_response.is_material(resp):
+                    iso_note = (f"not material (lowest point {min(resp['y']):.2f} >= {iso_response.MATERIAL}): "
+                                f"by area against the natural abundance")
+                    log(f"[run] isotope-line response {min(resp['y']):.2f}-{max(resp['y']):.2f} "
+                        f"(n={resp['n']}): not material, no re-run")
+                else:
+                    iso_note = "applied: the file re-ran from pass 0 against it"
+                    iso_fit = resp
+                    io_mascope.set_iso_scoring(sample_id, col="area", resp=resp)
+                    log(f"[run] isotope-line response "
+                        + ", ".join(f"{10 ** x:.0f}:{y:.2f}" for x, y in zip(resp['x'], resp['y']))
+                        + f" (expected line S/N: observed/predicted, n={resp['n']}); "
+                        f"re-running from pass 0 against it")
+                    restart = True
+                    break
         if not restart:
             break
         led, cfg = led0.copy(deep=True), copy.deepcopy(cfg0)
@@ -1098,6 +1165,12 @@ def run(sample_id: str, context: str = "ambient-air", *,
         log(f"[run] LEDGER VALIDATION PROBLEMS: {problems}")
     st = ledger.stats(led)
     st["noise_edge_cps"] = cfg.noise_edge_cps
+    # the isotope-line scoring the file was judged at (iso_response.py): mode and the fitted response
+    # (`fit` the one applied; `measured` what the file's committed rows gave, material or not; `note` why)
+    st["iso_response"] = {"mode": iso_mode, "area": iso_area, "fit": iso_fit, "measured": iso_measured,
+                          "note": iso_note}
+    # committed halogen-free readings the cleanup re-read on an unexplained 37Cl / 81Br twin
+    st["halogen_twin_swaps"] = (summaries.get("cleanup") or {}).get("halogen_twin_swaps", 0)
     # C46: the footing of the tier pass's counting-detector floor, the class it
     # keyed on, the floor in force (None off a TOF) and what SNR the lines were judged at
     st["noise_edge_batch_cps"] = getattr(cfg, "noise_edge_batch_cps", None)

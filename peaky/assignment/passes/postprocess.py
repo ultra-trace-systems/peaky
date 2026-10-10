@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 
 import pandas as pd
@@ -9,6 +10,7 @@ import pandas as pd
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 from peaky.assignment import ledger as L
+from peaky.assignment import iso_response as IR
 
 
 from .config import PassConfig
@@ -427,6 +429,15 @@ def split_composites(
     return pd.concat([ledger, add], ignore_index=True)
 
 
+def _num(v):
+    """a finite float, else None"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f and f not in (float("inf"), float("-inf")) else None
+
+
 def demote_carbon_inconsistent(
     ledger: pd.DataFrame, cfg: PassConfig, *, log=print
 ) -> int:
@@ -461,11 +472,13 @@ def demote_carbon_inconsistent(
         ]
         if len(k):
             h_sat = float(k.iloc[0]["height"])
+            a_sat = _num(k.iloc[0].get("area"))
         else:
             j = _peak_near(mzs, float(r["mz"]) + _D13C)
             if j is None or ledger.at[j, "role"] != L.ROLE_UNEXPLAINED:
                 continue
             h_sat = float(ledger.at[j, "height"])
+            a_sat = _num(ledger.at[j, "area"]) if "area" in ledger else None
         h0 = float(r["height"])
         if not (h0 > 0 and h_sat > 0):
             continue
@@ -476,8 +489,12 @@ def demote_carbon_inconsistent(
         # near the floor). The over-claim O-monster always has a BRIGHT 13C.
         if h_sat < cfg.height_cutoff:
             continue
-        c_est = (h_sat / h0) / _R13C
-        if abs(c_est - n_c) > max(2.5, 0.35 * n_c):
+        # raw and, where the run reads its lines by area (iso_response.py), by area against the file's
+        # response too: both must contradict, in the same direction
+        bad, c_est = IR.contradicts(getattr(cfg, "iso_response_fit", None), n_c, h0=h0, h_sat=h_sat,
+                                    a0=_num(r.get("area")), a_sat=a_sat, snr0=_num(r.get("signal_to_noise")),
+                                    area_mode=bool(getattr(cfg, "iso_area", False)))
+        if bad:
             try:
                 L.clear_assignment(
                     ledger,
@@ -622,13 +639,20 @@ def audit_isotopes(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> dict:
     # caller's per-spectrum floor for a derived table (see PassConfig.audit_floor_cps)
     floor = cfg.audit_floor_cps if cfg.audit_floor_cps is not None else cfg.height_cutoff
     kids = ledger[ledger["role"] == L.ROLE_ISO]
+    resp = getattr(cfg, "iso_response_fit", None)
     for _, r in ledger[ledger["role"] == L.ROLE_M0].iterrows():
         if bool(r["locked"]):
             continue
         n_c = C.parse_formula(str(r["ion_formula"])).get("C", 0)
         if n_c < 1:
             continue
-        expected = float(r["height"]) * _R13C * n_c
+        # the 13C height the summed list is expected to keep: the natural share x the file's median response
+        # at the line's expected S/N (a line near the scans' floor is lost in the scans it does not clear).
+        # The response is an AREA ratio and heights read lower still: the expectation is an upper bound
+        natural = float(r["height"]) * _R13C * n_c
+        snr0 = _num(r.get("signal_to_noise"))
+        x13 = math.log10(snr0 * _R13C * n_c) if snr0 and snr0 > 0 else None
+        expected = natural * (IR.scale(resp, x13) if resp else 1.0)
         k = kids[
             (kids["parent_peak_id"] == r["peak_id"])
             & (kids["iso_label"].astype(str) == "13C")
@@ -639,7 +663,8 @@ def audit_isotopes(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> dict:
                 j is not None
                 and ledger.at[j, "role"] == L.ROLE_UNEXPLAINED
                 and expected > 0
-                and 0.3 <= ledger.at[j, "height"] / expected <= 2.5
+                and ledger.at[j, "height"] >= 0.3 * expected
+                and ledger.at[j, "height"] <= 2.5 * natural
             ):
                 try:
                     L.attach_isotopologue(
@@ -651,7 +676,9 @@ def audit_isotopes(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> dict:
                     pass
         if len(k):
             h_sat = float(k.iloc[0]["height"])
-            c_est = (h_sat / float(r["height"])) / _R13C
+            bad, c_est = IR.contradicts(resp, n_c, h0=float(r["height"]),
+                                        h_sat=h_sat, a0=_num(r.get("area")), a_sat=_num(k.iloc[0].get("area")),
+                                        snr0=snr0, area_mode=bool(getattr(cfg, "iso_area", False)))
             # clamp ONLY on a reliably-measured 13C satellite (>= the detection
             # floor). A sub-floor 13C ratio is noise and under-reads carbon,
             # which would falsely clear genuine low-intensity M0s (the ~2k cps
@@ -660,7 +687,7 @@ def audit_isotopes(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> dict:
             if (
                 n_c >= 8
                 and h_sat >= floor
-                and abs(c_est - n_c) > max(2.5, 0.35 * n_c)
+                and bad
             ):
                 try:
                     L.clear_assignment(

@@ -56,12 +56,15 @@ D_13C = 1.0033548
 R_13C = 0.0107   # 13C abundance per carbon
 
 
-def carbon_count_from_13c(ledger: pd.DataFrame, peak_id, *, ppm: float = 6.0):
+def carbon_count_from_13c(ledger: pd.DataFrame, peak_id, *, ppm: float = 6.0, resp: dict | None = None,
+                          area: bool = False):
     """Measure a peak's carbon count from its 13C satellite, if present in the
     spectrum. Returns (c_lo, c_hi) bracketing the estimate (+/-1 carbon at high
     m/z where the satellite straddles two integers), or None when no usable
     satellite exists. This is the density-killer: a measured carbon count
-    collapses the candidate grid ~5x before any scoring (v17 audit)."""
+    collapses the candidate grid ~5x before any scoring (v17 audit).
+    `resp` (the file's minor-line response) / `area` (the run reads its isotope lines by area): the bracket
+    is the union of the raw height reading and the area reading against the response (1 without one)."""
     try:
         i = ledger.index[ledger["peak_id"] == peak_id][0]
     except IndexError:
@@ -80,6 +83,19 @@ def carbon_count_from_13c(ledger: pd.DataFrame, peak_id, *, ppm: float = 6.0):
     if not np.isfinite(hsat) or hsat <= 0 or hsat >= h0:
         return None
     c_est = (hsat / h0) / R_13C
+    lo, hi = max(1, int(np.floor(c_est)) - 1), int(np.ceil(c_est)) + 1
+    if resp or area:
+        # read against the file's minor-line response (iso_response.py): a 13C line near the scans'
+        # floor is under-read by the summed list, so its raw count is low by the response
+        from peaky.assignment import iso_response as IR
+        ar = ledger["area"] if "area" in ledger else None
+        a0 = float(ar.at[i]) if ar is not None else None
+        a1 = float(ar.at[j]) if ar is not None else None
+        snr = float(ledger.at[i, "signal_to_noise"]) if "signal_to_noise" in ledger else None
+        c_corr = IR.carbon_from_13c(resp, h0=h0, h_sat=hsat, a0=a0 if a0 == a0 else None,
+                                    a_sat=a1 if a1 == a1 else None, snr0=snr if snr == snr else None)
+        # the union of the raw and the corrected bracket: neither reading may exclude what the other allows
+        return (min(lo, max(1, int(np.floor(c_corr)) - 1)), max(hi, int(np.ceil(c_corr)) + 1))
     # +/-1 carbon tolerance, widened a touch for the Poisson noise on a small
     # satellite; never let the floor drop below 1
     lo = max(1, int(np.floor(c_est)) - 1)
@@ -92,6 +108,12 @@ def carbon_count_from_13c(ledger: pd.DataFrame, peak_id, *, ppm: float = 6.0):
 # ---------------------------------------------------------------------------
 #: the iso-pair finder's spacing window off an Orbitrap-class run (ppm)
 ISO_PAIR_PPM = 8.0
+
+
+def _carbon_clamp(ledger: pd.DataFrame, peak_id, sample_id: str):
+    """carbon_count_from_13c read as the sample's isotope lines are (io_mascope.iso_scoring)."""
+    iso = IO.iso_scoring(sample_id) or {}
+    return carbon_count_from_13c(ledger, peak_id, resp=iso.get("resp"), area=iso.get("col") == "area")
 
 
 def iso_pair_ppm(cfg=None) -> float:
@@ -329,7 +351,7 @@ def stage_a_iso_pairs(client, sample_id: str, ledger: pd.DataFrame, profile,
     n_clamped = 0
     for _, p in pairs.iterrows():
         ranges = dict(base_ranges)
-        clamp = carbon_count_from_13c(ledger, p["light_pid"])
+        clamp = _carbon_clamp(ledger, p["light_pid"], sample_id)
         if clamp is not None:
             ranges["C"] = clamp
             n_clamped += 1

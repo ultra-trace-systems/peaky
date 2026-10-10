@@ -262,6 +262,17 @@ class PassConfig:
     # offset. False: the run fits no scoring trend of its own (the pre-C42
     # behaviour); a trend a stand-in inherited with its snapshot still applies.
     score_at_trend: bool = True
+    # Isotope-line scoring on an Orbitrap-class run (assignment/iso_response.py): "auto" reads every line's
+    # ratio by AREA and, once calibrate has run, fits the file's minor-line response on its committed
+    # CHO / CHON rows (a 13C line near the scans' floor is under-read by the summed peak list) and re-runs
+    # the file from pass 0 against it when it is material; "area" reads by area without a response; "off"
+    # reads by height against the natural abundance (the behaviour before). Other classes: always "off".
+    iso_response: str = "auto"
+    # the response the run fitted (iso_response.fit's dict) -- runtime, read by the 13C carbon clamps
+    iso_response_fit: dict | None = None
+    # the run reads its isotope lines by area (iso_response "auto" / "area" in force, or inherited) --
+    # runtime: a 13C carbon clamp then clears only where the height AND the area reading contradict
+    iso_area: bool = False
     # absolute floor (mDa) on the trend sigma, active only where it exceeds the
     # ppm sigma (below ~m/z 120 at sigma 0.25 ppm) -- see masscal.ABS_FLOOR_MDA
     # for the physics. This field is the single runtime owner of the value; the
@@ -367,7 +378,8 @@ class PassConfig:
         # and batch_summary.json still reports the per-file offsets).
         "cal_a", "cal_b", "cal_sigma_trend", "cal_mz_lo", "cal_mz_hi", "cal_trend_n",
         "cal_mu", "cal_sigma",
-        "occurrence_threshold", "occurrence_resolved")
+        "occurrence_threshold", "occurrence_resolved",
+        "iso_response_fit", "iso_area")
 
     @property
     def height_cutoff_x_edge_resolved(self) -> float:
