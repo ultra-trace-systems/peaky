@@ -88,7 +88,12 @@ class ContextProfile:
 # ---------------------------------------------------------------------------
 # Contaminant families (Pass 3). Each is an additive element budget layered on
 # top of a CHO(N) core, plus the adducts they typically appear under. These are
-# *opened* per-context, never on by default.
+# *opened* per-context, never on by default. A family commits at the pass-1 bar
+# (tau_low) and under the commit contract (satellites.own_line_verdict): a
+# reading whose S / Cl / Br / Si line the file would show and does not is
+# refused. `line_gate` (optional, default 'refuse') = 'strict' also caps a
+# reading whose line is untestable at Low confidence (Candidate): the setting
+# for a family whose element has no other evidence route.
 # ---------------------------------------------------------------------------
 CONTAMINANT_FAMILIES: dict[str, dict] = {
     "organosulfate": {"add": {"S": (1, 1), "O": (3, 6)}, "adducts": ("[M-H]-",),

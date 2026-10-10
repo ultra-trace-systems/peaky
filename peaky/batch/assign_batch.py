@@ -64,7 +64,7 @@ from peaky.batch import label_twins as _LT
 from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sampling as SS
 
-__version__ = "0.11.0"  # + the merged-ledger isotopologue gate and the element-signature
+__version__ = "0.12.0"  # + the monotone known-species cap (own 13C counts; an exact-mass-only pool of a corroboration-demanding species is capped); 0.11.0 the merged-ledger isotopologue gate and the element-signature
                         # removal (one curated exempt set, reconciled: 'parent removed';
                         # the per-file ledgers record both decisions -- the gate's lines,
                         # a removed reading released --, the parent's merged row lists
@@ -686,6 +686,25 @@ def _own_satellites(neutral: str, isotopologues, kid_labels=()) -> list[str]:
     return [lab for lab in seen.values() if _counts(lab)]
 
 
+#: the label of a row's own 13C line (one line; a '13C+34S' line is the 34S line's)
+_C13_LABEL = "13C"
+
+
+def _own_c13(isotopologues, kid_labels=()) -> int:
+    """1 when the row records its own 13C line -- an `isotopologues` entry or an
+    iso_child labelled exactly '13C' -- else 0. It counts toward the known
+    species' two lines (`lock_known_species`): the carbon count is the
+    composition's own, a line no mass fit forges."""
+    try:
+        entries = (json.loads(isotopologues) if isinstance(isotopologues, str)
+                   else (isotopologues or []))
+    except (TypeError, ValueError):
+        entries = []
+    labs = [str(d.get("label", "")) for d in entries if isinstance(d, dict)]
+    labs += [str(k[1] if isinstance(k, tuple) else k) for k in kid_labels]
+    return int(any(lab.strip() == _C13_LABEL for lab in labs))
+
+
 def _known_route(commentary: str, neutral: str, isotopologues, *, n_channels: int = 0,
                  kid_labels=()) -> str | None:
     """The evidence a `known:` commit rests on, read off its own row: a second
@@ -722,8 +741,9 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
     Record: src, neutral, adduct, mz, family, label, verdict, why, summary (the
     reason without this file's numbers -- what the merged row counts files by),
     n_channels (the neutral's ion channels in that ledger), n_satellites (its
-    recorded own-element diagnostic lines), ion_score, tier, admitted_by,
-    occurrence (the last three None on a lead)."""
+    recorded own-element diagnostic lines), n_c13 (1 when its own 13C line is
+    recorded, `_own_c13`), ion_score, tier, admitted_by, occurrence (the last
+    three None on a lead)."""
     out: list[dict] = []
     if ledger is None or not len(ledger) \
             or not {"neutral_formula", "adduct", "mz"} <= set(ledger.columns):
@@ -769,6 +789,7 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
                 label=lab.group(1).strip() if lab else "",
                 verdict="confirmed", why=why, summary=why,
                 n_channels=n_ch, n_satellites=len(_own_satellites(nf, iso_cell, kid_labels)),
+                n_c13=_own_c13(iso_cell, kid_labels),
                 ion_score=_num(ledger.at[i, "ion_score"]) if "ion_score" in ledger.columns else None,
                 tier=_col(i, "tier") or None,
                 admitted_by=_col(i, "admitted_by") or None,
@@ -787,7 +808,7 @@ def known_evidence(ledger: pd.DataFrame, *, src=None) -> list[dict]:
                 family=_s(d.get("family")), label=_s(d.get("label")),
                 verdict=_s(d.get("verdict")) or "deferred", why=_s(d.get("why")),
                 summary=_s(d.get("summary")) or _s(d.get("why")),
-                n_channels=int(d.get("channels") or 0), n_satellites=0,
+                n_channels=int(d.get("channels") or 0), n_satellites=0, n_c13=0,
                 ion_score=_num(d.get("ion_score")), tier=None, admitted_by=None,
                 occurrence=None))
     return out
@@ -858,13 +879,22 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
         a PFCA `[M-H]-` on-cal in two files of a ~4k TOF cannot displace an
         11-file, 81Br-corroborated CHOS `[M+Br]-` reading 6 ppm away; the row
         notes it, the vote stands;
-      * a species of a family that demands corroboration is Assigned only when
-        some confirming file holds TWO independent lines of evidence beyond
-        the exact mass -- a second ion channel, or two own-element diagnostic
-        satellites (`n_channels >= 2 or n_satellites >= 2`); one channel and one
-        satellite line in every confirming file is capped at Candidate, locked
-        or kept (the D7 cyclosiloxane: two files, one channel, the 29Si line
-        alone, the 30Si line never testable at that intensity -- J12).
+      * a species whose pass-0 rule demands corroboration
+        (directors.known_demands_corroboration: the organophosphates, the
+        organo(thio)phosphates, the indoor organosulfur, the cyclosiloxanes, the
+        chlorinated paraffins, H2SO4 and MSA) is Assigned only when some
+        confirming file holds TWO independent lines of evidence beyond the
+        exact mass -- a second ion channel, or two of the neutral's own lines:
+        its diagnostic satellites and its own 13C line (`n_channels >= 2 or
+        n_satellites + n_c13 >= 2`); one line in every confirming file is
+        capped at Candidate, locked or kept (the D7 cyclosiloxane: two files,
+        one channel, the 29Si line alone, the 30Si line never testable at that
+        intensity -- J12), and so is exact mass alone in every one: the cap is
+        MONOTONE, a pool with more confirming lines never ranks below one with
+        fewer (a pure exact-mass H2SO4 pool had escaped it while one with a
+        34S line in a file was capped). A family whose own rule is exact mass
+        (the PFCAs, the nitroaromatics, the C0 acids, reactive iodine, the
+        silanediols) is never capped, at any line count.
 
     The merged row a pooled reading belongs to is found by MEMBERSHIP -- the
     row whose own reading or whose `alternatives` lists it (the vote names
@@ -881,6 +911,7 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
     conflict, lead_only, no_cluster) for `batch_summary["merge_gates"]`."""
     from peaky.assignment.cleanup import _note
     from peaky.assignment.mass_only import KNOWN_DECIDED
+    from peaky.assignment.passes.directors import known_demands_corroboration
     counts = {k: 0 for k in ("pooled", "locked", "confirmed_kept", "conflict",
                              "lead_only", "mass_only_outvoted", "no_cluster")}
     if not pool or merged is None or not len(merged) or "mz" not in merged.columns:
@@ -923,10 +954,17 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
         same = _s(merged.at[i, "neutral_formula"]) == nf and _s(merged.at[i, "adduct"]) == ad
         n_c = len({r["src"] for r in conf})
         mass_only = bool(conf) and all((r.get("summary") or r.get("why")) == MASS_ONLY_ROUTE for r in conf)
-        two_lines = any(int(r.get("n_channels") or 0) >= 2 or int(r.get("n_satellites") or 0) >= 2
-                        for r in conf)
-        weak_note = ("; capped Candidate (one ion channel and one satellite line in every "
-                     "confirming file: two independent lines are needed for Assigned)")
+        # the cap's domain is the species' own rule (monotone: the lines it counts
+        # are a second channel, the neutral's diagnostic satellites and its 13C)
+        demands = known_demands_corroboration(
+            next((str(r.get("family")) for r in recs if r.get("family")), ""), nf)
+        lines = max((2 if int(r.get("n_channels") or 0) >= 2
+                     else int(r.get("n_satellites") or 0) + int(r.get("n_c13") or 0) for r in conf), default=0)
+        two_lines = lines >= 2
+        weak_note = (("; capped Candidate (one ion channel and one satellite line in every "
+                      "confirming file: two independent lines are needed for Assigned)") if lines >= 1 else
+                     ("; capped Candidate (exact mass alone in every confirming file: the species' "
+                      "rule demands corroboration, and two independent lines are needed for Assigned)"))
         # every confirming file holds the reading at Candidate (its own tier rules:
         # the lock score floor, the counting-detector floor) -- say so on the row
         cand_note = ("; Candidate: no confirming file holds it at Assigned (see the "
@@ -942,7 +980,7 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                 f"{_pool_summary(conf, dfr, ref)}")
         if conf and not ref:
             if same:
-                capped = (not mass_only and not two_lines and "tier" in merged.columns
+                capped = (demands and not two_lines and "tier" in merged.columns
                           and _s(merged.at[i, "tier"]) == TIER_ASSIGNED)
                 if capped:
                     merged.at[i, "tier"] = TIER_CANDIDATE
@@ -972,7 +1010,8 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                        else max(n_in, old_n))
             merged.at[i, "neutral_formula"] = nf
             merged.at[i, "adduct"] = ad
-            merged.at[i, "tier"] = (best.get("tier") or TIER_ASSIGNED) if two_lines else TIER_CANDIDATE
+            uncapped = two_lines or not demands
+            merged.at[i, "tier"] = (best.get("tier") or TIER_ASSIGNED) if uncapped else TIER_CANDIDATE
             if "ion_score" in merged.columns:
                 scores = [r["ion_score"] for r in conf if r.get("ion_score") is not None]
                 merged.at[i, "ion_score"] = max(scores) if scores else np.nan
@@ -988,7 +1027,7 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
             _note(merged, i, f"{head}; kept over the {old_n}-file {old_nf} {old_ad} reading "
                              f"(vote {n_in} of {n_total} files)"
                              + ((cand_note if _s(merged.at[i, "tier"]) == TIER_CANDIDATE else "")
-                                if two_lines else weak_note))
+                                if uncapped else weak_note))
             counts["locked"] += 1
         elif conf and ref:
             n_r = len({r["src"] for r in ref})

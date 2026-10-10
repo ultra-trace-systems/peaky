@@ -517,17 +517,20 @@ def test_on_an_orbitrap_the_peak_list_not_the_scorer_label_confirms_the_envelope
 
 def test_a_contradicted_winner_never_displaces_an_incumbent():
     """[M+NO3]- + [M+Br]- (no reagent-acid pair): the scorer's '34S' label would have made the
-    certificate strong, but the file shows neither member's 34S line where it would: the winner is
-    gated -- committed on the unexplained member only, Low, the weak incumbent kept."""
+    certificate strong, but the file shows no member's 34S line where it would (the [M+NO3]-
+    member's predicted at 13x the gate and absent; the bromide member's masked by the reagent's
+    own 81Br): the commit contract refuses the certificate -- nothing committed, the weak
+    incumbent kept, the reason on the unexplained member's row."""
     mn, mb = CH.ion_mz(TAA, "[M+NO3]-"), CH.ion_mz(TAA, "[M+Br]-")
     members = [("n", "C2H4NO4S-", mn), ("b", "C2H4BrOS-", mb)]
     far = mn + ISO.D_34S + 0.0198
     led = _file([("n", mn, 3000.0), ("b", mb, 3000.0), ("far", far, 140.0)])
     _weak(led, "n")
     s, by = _p7(led, _scorer(TAA, members, [("far", "C2H4NO4S-", "34S", far)]), HN + ["[M+Br]-"])
-    assert s["displaced"] == 0 and s["committed"] == 1, s
+    assert s["displaced"] == 0 and s["committed"] == 0 and s["line_refused"] == 1, s
     assert by.loc["n", "neutral_formula"] == "C3H4N2O8"
-    assert by.loc["b", "neutral_formula"] == TAA and by.loc["b", "confidence"] == "Low (certified)"
+    assert by.loc["b", "role"] == L.ROLE_UNEXPLAINED
+    assert by.loc["b", "commentary"].startswith("REFUSED (own_line: C2H4OS [M+Br]- [pass 7 certified] -- 34S ")
 
 
 # --------------------------------------------------------------------------- the siloxane families' channels

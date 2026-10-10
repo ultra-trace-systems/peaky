@@ -35,7 +35,7 @@ from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
 from peaky.assignment import solvent_clusters as SC
 
-__version__ = "0.6.2"   # + the 15N cluster re-read judges a skeleton-capped row again (profile=); 0.6.1 the ion-only bucket skips a locked unexplained peak (an element-evidence clear)
+__version__ = "0.7.0"   # + the isotope-gated recovery reads the candidate's own M+2 offset on an Orbitrap-class run; 0.6.2 the 15N cluster re-read judges a skeleton-capped row again (profile=); 0.6.1 the ion-only bucket skips a locked unexplained peak (an element-evidence clear)
                         # 0.6.0: easyic cluster-vs-covalent dual note (case 4)
                         # (history) reclaim_satellites covers 15N/34S/29Si/30Si/18O
                         # (not just 13C/81Br/37Cl); v43-review fixes: ringing
@@ -235,6 +235,34 @@ def _measure_pattern(near, mz, h):
     return r2, r4
 
 
+def _own_pattern(near, mz, h, ion_formula, ppm):
+    """(r2, r4, ok) of a candidate ION's own M+2 / M+4 lines on an Orbitrap-class
+    run: each read at the ion's expected offset (the strongest predicted line
+    near +2 / +4 Da: 37Cl, 81Br, their merged pair) within `ppm`, and `ok` when
+    the M+2 line is there at satellites.ISO_RATIO_BAND x its prediction (and the
+    M+4 too where the ion predicts one above a tenth of the M0). Read at the
+    81Br offset in a 6-mDa window, a 37Cl candidate took another ion's M0 5.6
+    mDa away as its line."""
+    from peaky.assignment import satellites as SAT
+    from peaky.chem import isotopes as ISO
+    try:
+        pat = ISO.isotope_pattern(str(ion_formula), min_rel=0.01)
+    except Exception:  # noqa: BLE001 -- an unparseable ion: no own line
+        return 0.0, 0.0, False
+    out = []
+    for lo, hi in ((1.9, 2.1), (3.9, 4.1)):
+        lines = [(rel, d) for d, rel, _lab in pat if lo < d < hi]
+        if not lines:
+            out.append((0.0, 0.0))
+            continue
+        rel, d = max(lines)
+        p = near(mz + d, tol=(mz + d) * ppm * 1e-6)
+        out.append(((p[1] / h) if (p is not None and h > 0) else 0.0, rel))
+    (r2, rel2), (r4, rel4) = out
+    ok = rel2 > 0 and SAT.iso_ratio_ok(r2 / rel2) and (rel4 < 0.1 or SAT.iso_ratio_ok(r4 / rel4))
+    return r2, r4, ok
+
+
 def _pattern_ok(nbr_ion, ncl_ion, r2, r4):
     """Does the measured (r2, r4) confirm the candidate's halogen count?
     Recovery REQUIRES a halogen handle, so a (0 Br, 0 Cl) ion is rejected here
@@ -329,9 +357,16 @@ def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
     replacing it only with a halogen formula that passes the same gates. Runs
     before reclaim_satellites: a twin that is another committed ion's isotope line
     is excluded by offset in _halogen_twins instead."""
+    from peaky.assignment import satellites as SAT
     score_fn = score_fn or IO.score_candidates
     mu = getattr(cfg, "cal_mu", None)
     sigma = getattr(cfg, "cal_sigma", None) or 0.5
+    # on an Orbitrap-class run the M+2 is read at each candidate's OWN offset,
+    # within max(1 ppm, 3 sigma) of it, at 0.5-2x its prediction (_own_pattern)
+    own_ppm = (SAT.iso_position_ppm(cfg, getattr(cfg, "cal_sigma", None), wide=float("inf"))
+               if SAT.orbitrap_class(cfg) else None)
+    if own_ppm is not None and not np.isfinite(own_ppm):
+        own_ppm = None                                # uncalibrated: the 6-mDa reading as before
     pk = ledger.dropna(subset=["mz"]).sort_values("mz")
     mzs = pk["mz"].tolist(); hts = pk["height"].tolist()
     def near(t, tol=0.006):
@@ -393,8 +428,14 @@ def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
         chosen = None
         for _, r in sub.iterrows():
             ic = C.parse_formula(r["ion_formula"])
-            if _pattern_ok(ic.get("Br", 0), ic.get("Cl", 0), r2, r4):
+            r2c, r4c = r2, r4
+            if own_ppm is not None:
+                r2c, r4c, own_ok = _own_pattern(near, mz, h, r["ion_formula"], own_ppm)
+                if not own_ok:
+                    continue
+            if _pattern_ok(ic.get("Br", 0), ic.get("Cl", 0), r2c, r4c):
                 chosen = r
+                r2 = r2c
                 break
         if chosen is None:
             continue

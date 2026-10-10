@@ -455,7 +455,7 @@ check("known_evidence: two confirmed records (route / exact mass), one lead with
                          family="organophosphate", label="tricresyl phosphate (TMPP / TCrP)",
                          verdict="deferred", why="single channel; no diagnostic twin to test (monoisotopic)",
                          summary="no diagnostic twin to test (monoisotopic)", n_channels=1, n_satellites=0,
-                         ion_score=0.7, tier=None, admitted_by=None, occurrence=None), _ke)
+                         n_c13=0, ion_score=0.7, tier=None, admitted_by=None, occurrence=None), _ke)
 check("known_evidence: missing columns -> empty", AB.known_evidence(pd.DataFrame({"x": [1]})) == [])
 # the route is read off the ROW: a chlorinated paraffin names no "corroborated by"
 # but records the 37Cl lines it locked on; a PFCA's recorded 81Br line is the

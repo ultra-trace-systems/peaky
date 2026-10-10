@@ -5,16 +5,18 @@ from __future__ import annotations
 import math
 import re
 
+import numpy as np
 import pandas as pd
 
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 from peaky.assignment import ledger as L
 from peaky.assignment import iso_response as IR
+from peaky.assignment import satellites as SAT
 
 
 from .config import PassConfig
-from .core import z_of
+from .core import cal_sigma_at, z_of
 
 __all__ = [
     "_D13C",
@@ -108,6 +110,56 @@ def _ee_cleared(ledger: pd.DataFrame, i) -> bool:
     return PL.cleared_by_element_evidence(ledger, i)
 
 
+#: the fine-structure merge (Da) the strict own-line test reads (an Orbitrap at
+#: R ~170k resolves lines ~0.5 mDa apart that isotope_pattern's 6-mDa merge joins)
+FINE_MERGE_DA = 0.0005
+#: the merge window of the envelope pattern (isotopes.isotope_pattern's default)
+ENVELOPE_MERGE_DA = 0.006
+_CARBON_ONLY = re.compile(r"^13C\d*$")
+
+
+def _strict_line(dmass: float, label: str) -> bool:
+    """A heteroatom M+1 / M+2 line: the strict own-line test applies (not a
+    carbon-only 13C / 13C2 line, not the labelled reagent's 14N copy, not an
+    M+4+ multi-isotope centroid)."""
+    lab = str(label)
+    return dmass < 2.5 and not _CARBON_ONLY.match(lab) and lab != "14N"
+
+
+def _fine_lines(ion_formula: str) -> list:
+    """(shift, rel) of the ion's fine-structure lines up to +2.5 Da (FINE_MERGE_DA merge)."""
+    try:
+        return [(d, r) for d, r, _lab in ISO.isotope_pattern(ion_formula, min_rel=1e-4, max_shift=2.5,
+                                                             merge_da=FINE_MERGE_DA)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _own_line_ok(obs_mz: float, obs_h: float, pmz: float, ph: float, dmass: float, rel: float,
+                 fine: list, *, pos_ppm: float, floor) -> bool:
+    """Is the peak at (`obs_mz`, `obs_h`) the parent's own line predicted at
+    +`dmass` (`rel` of the parent, the envelope's merged line)? Its position
+    within `pos_ppm` of the merged line or of a fine-structure line merged into
+    it, and its height at satellites.ISO_RATIO_BAND x the merged prediction or
+    the nearest fine line's -- the lower bound 0.3 (the sweep's own) where the
+    line is predicted under the twin test's TWIN_REFUTE_X_FLOOR x the gate."""
+    comps = [(d, r) for d, r in fine if abs(d - dmass) <= ENVELOPE_MERGE_DA] or [(dmass, rel)]
+    tol = (pmz + dmass) * pos_ppm * 1e-6
+    near = [(abs(obs_mz - (pmz + d)), d, r) for d, r in [(dmass, rel)] + comps]
+    if min(t[0] for t in near) > tol:
+        return False
+    _dist, _d, r_near = min(near[1:] or near)
+    lo, hi = SAT.ISO_RATIO_BAND
+    censored = floor is not None and np.isfinite(floor) and floor > 0 \
+        and ph * rel < SAT.TWIN_REFUTE_X_FLOOR * floor
+    if censored:
+        lo = 0.3
+    for pred in (ph * rel, ph * r_near):
+        if pred > 0 and lo <= obs_h / pred <= hi:
+            return True
+    return False
+
+
 def complete_isotope_envelopes(
     ledger: pd.DataFrame,
     cfg: PassConfig,
@@ -135,9 +187,25 @@ def complete_isotope_envelopes(
     consistency gate is the discriminator against coincidental neighbours -- a
     real satellite sits at the predicted height, an independent compound does
     not. The match tolerance is tight for M+1/M+2 (to separate 13C from 29Si,
-    3.8 mDa apart) and looser for the multi-isotope M+4+ centroid."""
+    3.8 mDa apart) and looser for the multi-isotope M+4+ centroid.
+
+    On an Orbitrap-class run a HETEROATOM M+1 / M+2 line (15N, 18O, 34S, 29Si,
+    30Si, 37Cl, 81Br, ...; not a carbon-only 13C line, not the labelled reagent's
+    14N copy) is the parent's own only at its exact position and height
+    (`_own_line_ok`): within satellites.iso_position_ppm (max(1 ppm, 3 sigma) of
+    the file's calibration) of the predicted line or of one of the fine-structure
+    lines merged into it, at 0.5-2x the prediction (from 0.3x where the line is
+    predicted under the twin test's 4x the gate: its per-file height is censored
+    low there). A neighbour ion 3-4 ppm off a predicted 34S / 18O position at 2-3x
+    the ratio stays its own peak. Off an Orbitrap, and before the file is
+    calibrated, the windows are as above."""
     out = {"attached": 0, "displaced": 0}
     mzs = ledger["mz"]
+    strict = SAT.orbitrap_class(cfg)
+    try:
+        floor = float(cfg.height_cutoff) if strict else None
+    except Exception:  # noqa: BLE001 -- an unresolved gate: the 0.5x bound everywhere
+        floor = None
     order = ledger[ledger["role"] == L.ROLE_M0].sort_values("mz")["peak_id"].tolist()
     for pid in order:
         idx = ledger.index[ledger["peak_id"] == pid]
@@ -174,6 +242,8 @@ def complete_isotope_envelopes(
                                           max_shift=12.0, diag_min_rel=0.001)
         except Exception:
             continue
+        fine = None              # the fine-structure lines, read once per parent when a strict line needs them
+        pos_ppm = SAT.iso_position_ppm(cfg, cal_sigma_at(cfg, pmz), 5.0) if strict else 5.0
         for dmass, rel, label in pattern:
             # tolerance is shift-aware: M+1/M+2 must separate 13C (+1.0034) from
             # 29Si (+0.9996) -- 3.8 mDa apart -- so they use a tight window; the
@@ -188,6 +258,13 @@ def complete_isotope_envelopes(
             th = float(ledger.at[j, "height"])
             if not (th > 0):
                 continue
+            if strict and _strict_line(dmass, label):
+                if fine is None:
+                    fine = _fine_lines(str(ionf))
+                if not _own_line_ok(float(ledger.at[j, "mz"]), th, pmz, ph, dmass, rel, fine,
+                                    pos_ppm=pos_ppm, floor=floor):
+                    out["not_own"] = out.get("not_own", 0) + 1
+                    continue
             ratio = th / (ph * rel)
             score = min(ratio, 1.0 / ratio) if ratio > 0 else 0.0
             role_j = str(ledger.at[j, "role"])
