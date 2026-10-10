@@ -275,10 +275,11 @@ on the run's own polarity only. Nothing is opened by polarity.
   On a uronium Orbitrap batch 54 of the 78 merged Assigned ammonium readings
   tracked their own parent at r ≥ 0.7. The gate is a batch stage (it needs the
   batch time series); in every file, and so also in a single-sample
-  `peaky assign` run, the reagent-N isobar rule of the tier pass already holds
-  an ammonium reading at Candidate unless the same neutral is also read on
-  `[M+H]⁺` or on the urea adduct, or anchors a series
-  ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md), reagent-N isobar demotion).
+  `peaky assign` run, the reagent-N isobar rule of the tier pass marks an
+  ammonium reading's split open (`reagent-N split open`) unless the same
+  neutral is also read on `[M+H]⁺` or on the urea adduct, or anchors a series;
+  the tier reads the ion and stays with the other rules
+  ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md), reagent-N isobar).
 - **The opt-in.** `--side-channels ADDUCT ...` on `peaky assign`, `batch` and
   `pool` (`PassConfig.side_channels`; `pipeline.run_batch(side_channels=)`)
   opens exactly the channels named instead of the profile's;
@@ -371,9 +372,10 @@ on the run's own polarity only. Nothing is opened by polarity.
    - **CHO-via-N-cluster is isobaric with protonated CHON.** A CHO neutral seen as
      `[M+NH4]⁺` or `[M+(CH4N2O)H]⁺` yields the *same* ion formula as a CHON neutral
      seen as `[M+H]⁺` (e.g. `C12H14O4[M+NH4]⁺` and `C12H17NO4[M+H]⁺` are both
-     `C12H18NO4⁺`). Mass and isotopes cannot separate them — the tier layer demotes
-     such a commit to Candidate unless an extra-spectral discriminator corroborates
-     it. See the reagent-N isobar gate in
+     `C12H18NO4⁺`). Mass and isotopes cannot separate them — the split stays open
+     (the row says `reagent-N split open`, the evidence level reads 4b at best)
+     unless an extra-spectral discriminator fixes the nitrogen count; the tier
+     reads the ion. See the reagent-N isobar in
      [`ASSIGNMENT_DETAIL.md`](ASSIGNMENT_DETAIL.md) (tiers).
    - **A pure hydrocarbon "seen via an N-cluster" is re-read as an N-heterocycle.**
      A hydrocarbon has no site to bind `NH4⁺`/uronium and would show `[M+H]⁺`, so an

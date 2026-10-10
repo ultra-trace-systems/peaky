@@ -40,14 +40,17 @@ selected sample_ids (SAMPLING.md)
                    formula confirmed > unconfirmed; not the evidence level),
                    then most files (Assigned-file count, ion_score
                    break ties); a known species is decided after the vote
-     which LABEL of it -- the reading Assigned in the most files (a same-ion
-                   label split is the reagent-N isobar: Candidate = undecided)
+     which LABEL of it -- the reading Assigned, its nitrogen count fixed, in
+                   the most files (a same-ion label split is the reagent-N
+                   isobar: a file that could not fix it is undecided)
+   the merged tier = the best per-file tier of the winning reading
    n_files, n_files_ion, n_files_winner, alternatives, tier_reason, srcs,
    ion_agree, formula_agree, mz_jitter_ppm_raw, mz_jitter_ppm_caldj
    │  reagent-water ladder (batch/reagent_water.py): rungs core.(H2O)n measured on
    │   the batch TS; a merged row on a passing rung leaves, the rung is stamped
    │  (positive urea, ONCE on the merged ledger: relabel_reagent_n_adducts, then
-   │   prefer_amine_over_ammonium -- each writes what it did to tier_reason)
+   │   prefer_amine_over_ammonium -- each writes what it did to tier_reason; a
+   │   re-read changes the label, never the tier)
    ▼
  trace reconciliation (TIMESERIES.md §9): each row's anchor re-centred on its
  own trace (mz_trace), competing labels on one trace collapsed (trace_role),
@@ -72,7 +75,8 @@ selected sample_ids (SAMPLING.md)
   in the `_M0_COLS` schema (`mz`, `neutral_formula`, `adduct`, `tier`,
   `ion_score`, the admission / ion-only / resolvability provenance, and the
   reading's `vote_class` — computed in the parent from the file's own facts,
-  read by the vote), extracted by `_m0`.
+  read by the vote), extracted by `_m0`, which adds the vote's private
+  `vote_tier` from the file's tier and `tier_reason` (step 4).
 - `offsets` — `{src → median ppm}` from `io_mascope.estimate_offset`
   ([`DATA_IO.md`](DATA_IO.md)); missing → treated as 0.
 
@@ -154,21 +158,31 @@ selected sample_ids (SAMPLING.md)
      ranked first once that label had reached Assigned somewhere); it is now
      decided once for the batch, by pooled evidence, after the vote — step 4b.
    - **Which label** of the winning ion is decided by corroboration, not by count:
-     on a same-ion pair the tier engine marks a reading Assigned only when a
-     discriminating channel was present in that file (an N-free sibling, the joint
-     NH4+urea pair, a series anchor) and Candidate when it had nothing to decide
-     with, so counting Candidate files would be counting silence. The label
-     Assigned in the most files wins; file count and score break ties. When that
-     overrides a bigger count the row says so: `same ion C13H18NO4+ read two
-     ways: kept C13H14O4 [M+NH4]+ (Assigned in 5 of its 5 files) over the 6-file
-     C13H17NO4 [M+H]+ (Assigned in 0)`.
+     on a same-ion pair only a discriminating channel in that file (an N-free
+     sibling, the joint NH4+urea pair, a series anchor) fixes the nitrogen count,
+     and a file without one had nothing to decide with, so counting it would be
+     counting silence. The tier answers "is the ion right?" and both labels are
+     one ion, so the tier engine no longer caps an undecided file's reading
+     (it is Assigned on its ion's evidence) and says instead that its split is
+     open (`tiers.REAGENT_N_OPEN_MARK` in its `tier_reason`). The vote ranks by
+     its own tier, **`vote_tier`** (`_m0`, never written): the reading's tier,
+     but Candidate where the file left the split open. The label Assigned with
+     the nitrogen count fixed in the most files wins; file count and score break
+     ties. When that overrides a bigger count the row says so: `same ion
+     C13H18NO4+ read two ways: kept C13H14O4 [M+NH4]+ (Assigned with the nitrogen
+     count fixed in 5 of its 5 files) over the 6-file C13H17NO4 [M+H]+ (Assigned
+     with the nitrogen count fixed in 0)` -- `Assigned in` where no file of the
+     cluster left a split open. Frames without `vote_tier` (a pure `align()`
+     caller) vote on the tier, as before.
 
-   The winning reading's best per-file row (tier, then `ion_score`, then `src`)
-   supplies the merged `neutral_formula` / `adduct` / `tier` / `ion_score` /
+   The winning reading's best per-file row (`vote_tier`, then `ion_score`, then
+   `src`) supplies the merged `neutral_formula` / `adduct` / `ion_score` /
    `admitted_by` / `occurrence` / `resolvability` / `sep_hwhm` (the winner
    file's peak separability, when the run had a width model) / `ts_disposition` /
    `ts_cv_norm` (the winner file's time-series label, when the run had a time series:
    flatness labels a row and never tiers it, so the label has to survive the merge).
+   The merged **`tier`** is the best per-file tier of the winning reading (the
+   best row's own, unless `vote_tier` set a file's reagent-N reading back).
    The merged **`mz` is the mean of the cluster's
    raw m/z**. Also recorded: `n_files` (distinct srcs), `n_files_ion` (files
    carrying the winning ion), `n_files_winner` (files carrying the winning
@@ -465,6 +479,13 @@ selected sample_ids (SAMPLING.md)
      (mass/isotope-identical, simpler in an N-rich source) unless the adduct's
      trace tracks its parent — done at the **merged** level where cross-channel
      corroboration is complete.
+   Both re-reads are the **same ion** as the reading they replace, so they move
+   the label only: the row keeps the tier the vote gave the ion (until 0.10 both
+   set it to Candidate, so one ion's tier followed each batch's 2-h trace test
+   and flipped from batch to batch). Which neutral the ion is stays open, and
+   the evidence level says so: the re-read row takes the level of the pooled
+   pair it replaced (4b, the split open; 5a where that pair left a competitor),
+   [`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §10.2.
    `batch_summary.json["merge_gates"]` records both gates' counts beside the
    known-species decision's.
 
@@ -604,7 +625,8 @@ All in `peaky/batch/assign_batch.py`.
 | `DEFAULT_TOL_PPM` | 6.0 (`= sampling.BATCH_TOL_PPM`) | the BINNING tolerance (the selector's bins, the admission table, the trace index) and the default + floor of the merge window: what a pure `align()` call clusters at, and what `run` clusters at when nothing could be measured |
 | `traces.MassScale.merge_ppm` | `max(tol, min(2·tol, 2.5·√2·σ))` — 6 ppm on an Orbitrap, 12 on a TOF | the window `run` clusters at, from the batch's measured per-ion scatter σ (`traces.measure_mass_scale`, once per batch, before the first merge); `traces.MERGE_GAP_SIGMA` = 2.5·√2 = 3.54, `traces.WINDOW_MAX_X` = 2.0 |
 | `evidence.VOTE_CLASS_TEXT` | `{2: neutral backed, 1: formula confirmed, 0: unconfirmed}` | the vote class of a per-file reading (`evidence.vote_classes`, carried as `vote_class`) — the ion key before the file count — and the words a vote note prints for it. Private to the vote: never an evidence level, never read through `evidence.claim_class` |
-| `TIER_RANK` | `{Assigned:2, Candidate:1}` | the vote's Assigned-file count (a tie-break after the evidence class and the file count) and the best-row pick within the winning reading (then `ion_score`) |
+| `TIER_RANK` | `{Assigned:2, Candidate:1}` | the vote's Assigned-file count (a tie-break after the evidence class and the file count; the label stage's first key) and the best-row pick within the winning reading (then `ion_score`), each on `vote_tier`; the merged tier (the best per-file tier) |
+| `VOTE_TIER` | `vote_tier` | the vote's private tier: the reading's tier, Candidate where the file's `tier_reason` says its reagent-N split is open (`tiers.split_open`) |
 | `lock_known_species` `tol_ppm` / `mz_floor_da` | the merge window / 1.5 mDa | the window a pooled known-species ion is matched to its merged cluster with (`run` passes `MassScale.merge_ppm`; the stamp's mDa floor); a species confirmed in ≥ 1 file and refuted in none takes that cluster |
 | `_M0_COLS` | `[mz, neutral_formula, adduct, tier, ion_score, admitted_by, occurrence, ion_only_of, resolvability, sep_hwhm, ts_disposition, ts_cv_norm, vote_class]` | the per-file M0 schema aligned (admission / ion-only / separability provenance, carried for the winning row; the reading's vote class, read by `_vote` and never written to a ledger; absent columns are tolerated) |
 | `run` `amine_r_min` | 0.6 | min trace correlation for the positive amine re-read |
@@ -630,7 +652,8 @@ All in `peaky/batch/assign_batch.py`.
   neutral + adduct). `ion_agree` and not `formula_agree` = a same-ion label split
   (the reagent-N isobar), not a spectral disagreement.
 - **`alternatives`** — the losing readings, best first, each as
-  `formula adduct xN tier score` (the best tier / score any file gave it);
+  `formula adduct xN tier score` (the best tier / score any file gave it: the
+  tier itself, not `vote_tier`);
   `''` when unanimous. The per-file detail is `tables/jitter.csv`.
 - **`tier_reason`** (merged) — what the vote and the batch-level gates did to the
   row: an evidence-over-count ion choice (`evidence outranks the count: kept …
@@ -676,14 +699,16 @@ All in `peaky/batch/assign_batch.py`.
 - **Consensus = a vote, in two stages.** The per-file evidence class, then the
   count, picks the ION (tier and score only break ties; nothing is exempt — a
   known species is decided after the vote by pooled evidence), corroboration
-  picks its LABEL (the reading Assigned in the most files). The losers stay on
+  picks its LABEL (the reading Assigned, its nitrogen count fixed, in the most
+  files: `vote_tier`). The losers stay on
   the row (`alternatives`) and in `jitter.csv` (with each reading's vote class);
   `formula_agree` stays `False` on a split, and `ion_agree` tells a label split
   from a real contest. Frames without a vote class vote by the count exactly as before.
 - **The two positive-mode re-reads are merged-level** — the amine gate needs the
   full cross-channel picture, and the hydrocarbon-on-N-cluster re-read needs every
   file's `[M+H]⁺` rows at once; per file, the latter split one ion into two
-  readings across the batch. Both say what they did in the merged `tier_reason`.
+  readings across the batch. Both say what they did in the merged `tier_reason`,
+  and neither moves the tier: the re-read is the same ion.
 - **Two merge gates remove rows, and both rewrite the per-file ledgers.** The
   isotopologue gate (step 4c) and the element-signature removal (step 6a) take a
   reading out of the merged ledger. The isotopologue gate's line is a valid

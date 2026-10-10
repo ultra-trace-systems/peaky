@@ -24,6 +24,7 @@ from __future__ import annotations
 import bisect
 import dataclasses
 import json
+import re
 
 import numpy as np
 import pandas as pd
@@ -35,7 +36,8 @@ from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
 from peaky.assignment import solvent_clusters as SC
 
-__version__ = "0.6.2"   # + the 15N cluster re-read judges a skeleton-capped row again (profile=); 0.6.1 the ion-only bucket skips a locked unexplained peak (an element-evidence clear)
+__version__ = "0.7.0"   # + the reagent-N re-read and the amine gate keep the tier (the same ion); reread_source
+                        # 0.6.2: the 15N cluster re-read judges a skeleton-capped row again (profile=); 0.6.1 the ion-only bucket skips a locked unexplained peak (an element-evidence clear)
                         # 0.6.0: easyic cluster-vs-covalent dual note (case 4)
                         # (history) reclaim_satellites covers 15N/34S/29Si/30Si/18O
                         # (not just 13C/81Br/37Cl); v43-review fixes: ringing
@@ -1049,12 +1051,17 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
 
     SKIPPED when the same hydrocarbon also has its own [M+H]+ row -- then it is a
     genuine hydrocarbon (e.g. a terpene C10H16 that legitimately forms [M+NH4]+),
-    so its cluster adducts are left alone. The re-read is tiered Candidate +
-    tentative_lead (C19(c): unsupported, not contradicted): the specific
-    N-heterocycle is rarely cross-channel-confirmed and the region is often
-    reagent background, but the protonated-heterocycle label is the saner
-    best-guess and stays visible. Positive adducts only (negative reagents never
-    hit these).
+    so its cluster adducts are left alone. The re-read is a tentative_lead
+    (C19(c): unsupported, not contradicted): the specific N-heterocycle is rarely
+    cross-channel-confirmed and the region is often reagent background, but the
+    protonated-heterocycle label is the saner best-guess and stays visible. It is
+    the SAME ION, so it keeps its tier and confidence (the tier answers "is the
+    ion right?"; tiers.REAGENT_N_OPEN_MARK): the doubt is the split's, and the
+    evidence level keeps the split open. Until 0.10 the re-read was set to
+    Candidate and "Low (reagent-N re-read)" whatever the files had shown (the
+    trimethylamine ion of a uronium field batch, Assigned in 16 of 17 files,
+    came out of the merge as Candidate). Positive adducts only (negative
+    reagents never hit these).
 
     That skip key is a PRESENCE test, so on a batch it is applied ONCE to the
     merged ledger (assign_batch.run; the per-file stage is gated off with
@@ -1062,9 +1069,9 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
     [M+H]+ row was picked flips with each file's S/N, and the same ion then came
     out as C15H22 [M+NH4]+ in fourteen files and C15H25N [M+H]+ in the fifteenth.
     Works on a merged frame as it does on a ledger: `role` is optional, and the
-    columns it annotates (ion_formula, dbe, the assignability flags, confidence,
-    commentary, tier_reason) are each written only when present (the merged
-    ledger carries no flag, so none is written there)."""
+    columns it annotates (ion_formula, dbe, the assignability flags, commentary,
+    tier_reason) are each written only when present (the merged ledger carries
+    no flag, so none is written there)."""
     if "neutral_formula" not in ledger.columns or "adduct" not in ledger.columns:
         return {"reagent_n_relabeled": 0}
     hc_with_mh = {str(ledger.at[j, "neutral_formula"] or "")
@@ -1095,16 +1102,13 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
             ledger.at[i, "ion_formula"] = C.format_formula({**m2, "H": m2.get("H", 0) + 1}) + "+"
         if "dbe" in ledger.columns:
             ledger.at[i, "dbe"] = C.dbe(m2)
-        if str(ledger.at[i, "tier"]) == "Assigned":
-            ledger.at[i, "tier"] = "Candidate"
         L.mark_lead(ledger, i, "reagent_n")
-        if "confidence" in ledger.columns:
-            ledger.at[i, "confidence"] = "Low (reagent-N re-read)"
         note = (f"re-read {f_raw} {add_label} as [M+H]+ "
                 f"of {new}: a pure hydrocarbon has no site to bind the reagent N-cluster and "
                 "would show [M+H]+ if it ionized -- the cluster N belongs to the analyte "
                 "(N-heterocycle), not [M+reagent]+ of a hydrocarbon; tentative (this region "
-                "is often reagent background)")
+                "is often reagent background); the same ion, so the tier stands and the "
+                "split stays open")
         if "commentary" in ledger.columns:
             prev = str(ledger.at[i, "commentary"] or "")
             ledger.at[i, "commentary"] = (prev + "; " + note) if prev and prev != "nan" else note
@@ -1954,28 +1958,33 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
     batch time series (2 h-binned log-correlation r of the [M+NH4]+ trace vs the best
     of X's [M+H]+ / [M+(CH4N2O)H]+ parent traces):
 
-      * KEEP as [M+NH4]+ adduct (Assigned) ONLY when it TRACKS a shaped parent
+      * KEEP as [M+NH4]+ adduct ONLY when it TRACKS a shaped parent
         (r >= r_min, overlap >= min_overlap) -- confirmed same molecule.
-      * OTHERWISE default to [M+H]+ of the protonated CHON (amine X+NH3), at
-        Candidate tier: independent time trace (r <= r_reject), only weak tracking
+      * OTHERWISE default to [M+H]+ of the protonated CHON (amine X+NH3):
+        independent time trace (r <= r_reject), only weak tracking
         (r_reject<r<r_min), a flat unconfirmable parent, or a parent absent from the
         TS. We do NOT assert an ammonium adduct we cannot confirm.
 
     Overriding exceptions (keep [M+NH4]+):
       * X contains Si: ammonium adducts of siloxanes are real contaminant chemistry;
-        the +NH3 re-read would fabricate an "aminosiloxane". (Tier unchanged.)
+        the +NH3 re-read would fabricate an "aminosiloxane".
       * X is PROTECTED -- identity established by curation/cross-channel evidence
         independent of the NH4 channel (reflist-rescue / known-species / certified
         provenance; pass the neutral-formula set as `protected`). Holds e.g. NBBS.
-        (Tier unchanged.)
       * the amine X+NH3 is valence-impossible (saturated X -> negative DBE): the
-        ammonium reading is the only valid one, kept but capped Candidate.
+        ammonium reading is the only valid one, kept, unconfirmed.
 
     Without a time series (single-sample run) nothing can be confirmed, so every
-    non-Si/protected [M+NH4]+ defaults to the protonated CHON (Candidate).
+    non-Si/protected [M+NH4]+ defaults to the protonated CHON.
 
-    A re-read changes neutral_formula + adduct and caps the tier at Candidate (the
-    ion/m-z/score/ppm are identical). Mutates in place; returns a summary."""
+    A re-read changes neutral_formula + adduct only: the ion/m-z/score/ppm are
+    identical, so the row keeps the tier the vote gave the ion (the tier answers
+    "is the ion right?"; tiers.REAGENT_N_OPEN_MARK). Which neutral the ion is --
+    the amine default or the adduct -- is the split, which the evidence level
+    keeps open (docs/EVIDENCE_LEVELS.md §6.5). Until 0.10 every re-read and every
+    unconfirmed amine-impossible keep was capped at Candidate, which decided the
+    tier per batch from a 2-h trace test and flipped one ion's tier from batch to
+    batch. Mutates in place; returns a summary."""
     keys = ["relabeled", "kept_covary", "kept_protected", "kept_si", "forced_nh4"]
     if not {"neutral_formula", "adduct"} <= set(ledger.columns):
         return {k: 0 for k in keys}
@@ -1986,31 +1995,26 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
     verdict = _covariation_verdict(ledger, ts_peaks, r_min, r_reject, min_overlap)
     counts = {k: 0 for k in keys}
 
-    def _cap_tier(i):
-        if "tier" in ledger.columns and str(ledger.at[i, "tier"]) == "Assigned":
-            ledger.at[i, "tier"] = "Candidate"
-
     def _reread(i, X, *, why):
         """DEFAULT reading for an unconfirmed [M+NH4]+ mass: read it as [M+H]+ of the
-        protonated CHON (the amine X+NH3), at Candidate tier. Ammonium adducts are
-        rare, so the CHON reading wins unless the adduct is confirmed by tracking. If
-        the amine is valence-impossible the ammonium reading is the only valid one --
-        keep it, but still cap to Candidate (it is unconfirmed)."""
+        protonated CHON (the amine X+NH3). Ammonium adducts are rare, so the CHON
+        reading wins unless the adduct is confirmed by tracking. If the amine is
+        valence-impossible the ammonium reading is the only valid one -- keep it,
+        unconfirmed. Either way the ion and its tier stand: the doubt is the split's."""
         cnt = C.parse_formula(X)
         cnt["N"] = cnt.get("N", 0) + 1
         cnt["H"] = cnt.get("H", 0) + 3
         ok, _ = C.dbe_ok(cnt)
         if not ok:                                        # amine impossible -> keep NH4
-            _cap_tier(i)
             _note(ledger, i, f"[M+NH4]+ kept (amine valence-impossible), unconfirmed "
-                  f"({why}); capped Candidate")
+                  f"({why}); the split stays open, the tier reads the ion")
             counts["forced_nh4"] += 1
             return
         ledger.at[i, "neutral_formula"] = C.format_formula(cnt)
         ledger.at[i, "adduct"] = "[M+H]+"
-        _cap_tier(i)
-        _note(ledger, i, f"read as protonated CHON (amine {C.format_formula(cnt)}), "
-              f"Candidate: [M+NH4]+ of {X} not confirmed ({why})")
+        _note(ledger, i, f"read as protonated CHON (amine {C.format_formula(cnt)}): "
+              f"[M+NH4]+ of {X} not confirmed ({why}); the same ion, so the tier stands "
+              "and the split stays open")
         counts["relabeled"] += 1
 
     _WHY = {"reject": "independent time trace",
@@ -2037,14 +2041,37 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
         why = _WHY.get(v, "unconfirmed")
         if v in ("reject", "ambiguous"):
             why += f" (r={r:.2f})"
-        _reread(i, X, why=why)                            # DEFAULT: protonated CHON, Candidate
+        _reread(i, X, why=why)                            # DEFAULT: protonated CHON, tier kept
 
     mode = "co-variation" if ts_peaks is not None else "presence"
     log(f"[uronium-amine] ({mode}) default->CHON: {counts['relabeled']} read as "
-        f"protonated CHON (Candidate); {counts['kept_covary']} kept as [M+NH4]+ adduct "
+        f"protonated CHON (tier kept); {counts['kept_covary']} kept as [M+NH4]+ adduct "
         f"(tracks parent); {counts['kept_protected']} protected + {counts['kept_si']} Si "
         f"kept; {counts['forced_nh4']} amine-impossible kept-NH4")
     return counts
+
+
+#: the notes the two batch-level re-reads write on a merged row (relabel_reagent_n_adducts,
+#: prefer_amine_over_ammonium; the amine note before 0.10 read "..., Candidate: ..."):
+#: what `reread_source` reads back
+_REREAD_HC_RE = re.compile(r"re-read (\S+) (\[M\+[^\]]*\]\+) as \[M\+H\]\+ of (\S+?):")
+_REREAD_AMINE_RE = re.compile(r"read as protonated CHON \(amine (\S+)\)(?:, Candidate)?: "
+                              r"\[M\+NH4\]\+ of (\S+) not confirmed")
+
+
+def reread_source(tier_reason) -> tuple[str, str] | None:
+    """The (neutral, adduct) reading a batch-level re-read replaced, read back
+    from the note it wrote on the row's tier_reason; None when the row carries
+    no such note. The re-read row is the same ion as that reading: the
+    evidence level of its pooled pair is the ion's (evidence.stamp_merged)."""
+    t = "" if _is_na(tier_reason) else str(tier_reason)
+    m = _REREAD_AMINE_RE.search(t)
+    if m:
+        return m.group(2), "[M+NH4]+"
+    m = _REREAD_HC_RE.search(t)
+    if m:
+        return m.group(1), m.group(2)
+    return None
 
 
 def _is_na(v) -> bool:
@@ -2079,15 +2106,18 @@ def _covariation_verdict(ledger, ts_peaks, r_min, r_reject, min_overlap):
 
       'keep'            r >= r_min against a SHAPED parent -> real adduct.
       'reject'          r <= r_reject against a shaped parent -> re-read to amine.
-      'ambiguous'       r between the thresholds -> keep but cap Candidate.
+      'ambiguous'       r between the thresholds -> weak tracking, unconfirmed.
       'presence-keep'   no shaped parent overlaps testably, but X IS assigned as
-                        [M+H]+/urea in the ledger -> (no-TS path) keep uncapped.
-      'presence-cap'    same, but the TS path caps it Candidate (a present-but-flat
-                        parent cannot confirm the adduct).
+                        [M+H]+/urea in the ledger (the no-TS path).
+      'presence-cap'    same, on the TS path (a present-but-flat parent cannot
+                        confirm the adduct).
       'presence-reread' no shaped parent AND X is absent as [M+H]+/urea -> the
                         parent channels are missing, which refutes the ammonium
                         reading (a real X would protonate / form the dominant urea
                         adduct); re-read to the amine.
+
+    Only 'keep' keeps the [M+NH4]+ reading in `prefer_amine_over_ammonium`; every
+    other tag re-reads it (the tier stands either way).
 
     A parent is a valid correlation target only if it is SHAPED (cv >= FLAT_CV): a
     flat parent (steady background) has no time structure to track, and two flat

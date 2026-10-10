@@ -1379,18 +1379,80 @@ def apply_levels(ledger: pd.DataFrame, *, cfg=None, resolution=None, run_inputs=
 #: the evidence text of a merged row whose reading no pooled pair holds
 NO_POOLED_PAIR_TEXT = "no pooled pair: a batch-level re-read"
 
+#: the levels of a re-read's pooled pair that the re-read row takes: an ION
+#: established (3c / 4a / 4b: the re-read row is 4b, its split open) or a
+#: competitor ion left (5a, as the pair). A rejected pair (5b) is not carried --
+#: its reasons belong to the replaced reading (the hydrocarbon a re-read retires
+#: is 5b for being a hydrocarbon on an N-cluster) -- nor a bucket.
+REREAD_ION_LEVELS = ("3c", "4a", "4b")
+REREAD_CARRIED_LEVELS = REREAD_ION_LEVELS + ("5a",)
+
+
+def _segment(evidence: str, key: str) -> str:
+    """The text of the `<key>: ...` segment of an evidence string ('' if none)."""
+    for seg in str(evidence or "").split(" · "):
+        if seg.startswith(key + ": "):
+            return seg[len(key) + 2:]
+    return ""
+
+
+def _reread_level(pair: pd.Series, source: tuple[str, str]) -> dict:
+    """The COLUMNS of a batch-level re-read row from the pooled pair of the
+    reading it replaced (`source`): the same ion, so the ion step's outcome is
+    the pair's; the split is the re-read's own, and open."""
+    lvl = str(pair["evidence_level"])
+    ev = str(pair.get("evidence") or "")
+    what = f"batch-level re-read of the pooled pair {source[0]} {source[1]}, the same ion"
+    pair_split = _segment(ev, "split")
+    split = f"{what} (that pair's split: {pair_split})" if pair_split else what
+    out = {c: pair.get(c, pd.NA) for c in ("competitors_left", "tags", "context_source")}
+    out["context"] = pd.NA            # the pair's list matches name ITS neutral, not this one
+    if lvl in REREAD_ION_LEVELS:
+        out["evidence_level"] = "4b"
+        out["evidence"] = " · ".join([
+            "4b", f"ion: {_segment(ev, 'ion')}", f"split: open -- {split}", "positive fact: none",
+            "named list: none", f"context source: {pair.get('context_source') or ''}",
+            f"tags: {pair.get('tags') or 'none'}"])
+        out["would_lift"] = f"split not pinned: {split}"
+    else:
+        segs = [(f"split: {split}" if s.startswith("split: ") else s) for s in ev.split(" · ")]
+        out["evidence_level"] = lvl
+        out["evidence"] = " · ".join(segs)
+        out["would_lift"] = pair.get("would_lift", pd.NA)
+    out["claim"] = claim_class(out["evidence_level"])
+    return out
+
 
 def stamp_merged(merged: pd.DataFrame, pairs: pd.DataFrame | None) -> pd.DataFrame:
     """Join the pooled levels (`level_batch`) onto a merged ledger by
     (neutral_formula, adduct) -- each merged row is one ion, so the join is
-    one-to-one. Every merged row is a committed reading and carries a claim: a
-    row whose reading no pooled pair holds (a batch-level re-read) gets no
-    level, claim tentative and the evidence `NO_POOLED_PAIR_TEXT`."""
+    one-to-one. Every merged row is a committed reading and carries a claim.
+
+    A row whose reading no pooled pair holds is a batch-level re-read (the
+    hydrocarbon-on-N-cluster re-read, the amine gate): its note names the
+    reading it replaced (`cleanup.reread_source`), the same ion, whose pooled
+    pair carries the ion's level. An ion that pair established (3c / 4a / 4b)
+    makes the re-read row 4b -- the ion established, its split open (claim
+    'ion') -- and a competitor left (5a) leaves it 5a; the evidence names the
+    pair (`_reread_level`). Any other such row -- no note, no pooled pair of the
+    replaced reading, or a pair rejected (5b) or bucketed -- gets no level,
+    claim tentative and the evidence `NO_POOLED_PAIR_TEXT`."""
     out = merged.copy()
     _blank_columns(out)
     if not len(out):
         return out
     hit = _stamp_pairs(out, pd.Series(True, index=out.index), pairs)
     out.loc[~hit, "evidence"] = NO_POOLED_PAIR_TEXT
+    if (~hit).any() and pairs is not None and len(pairs) and "tier_reason" in out.columns:
+        from peaky.assignment.cleanup import reread_source
+        by_pair = {(str(n), str(a)): i for i, (n, a) in
+                   enumerate(zip(pairs["neutral_formula"], pairs["adduct"]))}
+        for i in out.index[~hit]:
+            src = reread_source(out.at[i, "tier_reason"])
+            j = by_pair.get(src) if src else None
+            if j is None or str(pairs["evidence_level"].iloc[j]) not in REREAD_CARRIED_LEVELS:
+                continue
+            for c, v in _reread_level(pairs.iloc[j], src).items():
+                out.at[i, c] = v
     out["claim"] = pd.Series([claim_class(v) for v in out["evidence_level"]], index=out.index, dtype=object)
     return out

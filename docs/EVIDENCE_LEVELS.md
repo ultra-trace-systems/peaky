@@ -74,12 +74,22 @@ buckets are reported beside them, never folded into them:
   one (per file from the file's own level, §10.1; on the merged ledger from
   the pooled level, §10.2). Isotope children, reagent ions, artifacts and
   unexplained peaks carry nothing (empty). A committed row with no level — a
-  merged row whose reading no pooled pair holds, or a file the per-file stage
-  could not level — reads `tentative`.
+  merged row whose reading no pooled pair holds and that is no levelled
+  re-read (§10.2), or a file the per-file stage could not level — reads
+  `tentative`.
 - **Tier and claim are separate verdicts.** The tier says whether the engine
   prints a formula; the claim says what the evidence lets a reader say of it.
   They are not nested, and the outputs show the two side by side. Neither is
   read off, corrected from or routed into the other.
+- **The tier answers "is the ion right?"; a doubt about the neutral / adduct
+  split or the ionization process is the claim's.** A rule whose doubt is the
+  split never moves the tier: the reagent-N isobar (the same ion read as an
+  N-free neutral on `[M+NH4]+` / urea or as a protonated N-richer neutral), the
+  amine gate's default and the hydrocarbon-on-N-cluster re-read each leave the
+  tier to the ion's own evidence, and the split step (§6) keeps such a pair
+  open, so it reads 4b (`ion`) at best. Until 0.10 the three capped the tier at
+  Candidate. A reader who takes Assigned for "neutral identified" reads the
+  claim: Assigned + `ion` is an established ion whose neutral is open.
 - **Nothing upstream reads it.** Not the tiers, not the merge vote (whose
   class is its own, §13), not a check: the level and the claim change no ion,
   no tier and no assignment.
@@ -161,7 +171,10 @@ Segments are separated by `" · "` (U+00B7 with a space on each side).
   (§10.1); a pooled pair of a batch none of whose files is calibrated reads
   `no level · no file of the source is calibrated (...): no run window to enumerate competitors in`
   (§10.2); a merged row no pooled pair holds reads
-  `no pooled pair: a batch-level re-read` (§10.2).
+  `no pooled pair: a batch-level re-read` (§10.2), unless it is a re-read
+  levelled from the pooled pair it replaced (§10.2: `split: open --
+  batch-level re-read of the pooled pair <neutral> <adduct>, the same ion
+  (that pair's split: <its split text>)`).
 
 The **ion text** is `unique in the calibrated window`, or
 `<n> competitor(s); isotopes exclude <k>; series excludes <s>; <m> left` (or
@@ -616,7 +629,9 @@ How the gate's result sets the split:
 | any other ion | kept | the NH4 reading stays a live decomposition |
 
 The amine default stays OPEN: the gate's fall-back to the amine is a default,
-not a confirmation (the engine caps it at Candidate).
+not a confirmation. It is the same ion, so the engine keeps the tier the merge
+vote gave the ion (until 0.10 it capped the re-read at Candidate); the open
+split is the only verdict on it.
 
 ## 7. Step 3 — level 3 = 3c only
 
@@ -756,9 +771,21 @@ residual stages) as ONE source with every file-count minimum 3
 (`evidence.level_batch`), with the stamped time series, the merged ledger, the
 protected neutrals, the per-file gates and calibrations, the batch checks and
 the `--corroborate` partners (§10.3). `evidence.stamp_merged` joins the result
-onto the merged ledger by `(neutral_formula, adduct)` (one-to-one); a merged
-row no pooled pair holds (a batch-level re-read) gets no level, claim
-tentative and the evidence `no pooled pair: a batch-level re-read`. The
+onto the merged ledger by `(neutral_formula, adduct)` (one-to-one). A merged
+row no pooled pair holds is a batch-level re-read (the hydrocarbon-on-N-cluster
+re-read or the amine gate, MERGE.md step 5): no file committed its reading,
+but its note names the reading it replaced (`cleanup.reread_source`), the same
+ion, and that reading's pooled pair carries the ion's level. Where that pair
+established the ion (3c, 4a or 4b) the re-read row is **4b** with its split
+open (`split: open -- batch-level re-read of the pooled pair <neutral>
+<adduct>, the same ion (that pair's split: ...)`, `would_lift` `split not
+pinned: ...`, no positive fact, no named list, `context` empty: the pair's list
+matches name its own neutral); where the pair left a competitor (5a) the row is
+5a with the pair's competitors and `would_lift`. A rejected pair (5b) is not
+carried -- its reasons belong to the replaced reading, e.g. a hydrocarbon on an
+N-cluster -- and neither is a bucket: such a row, or a re-read whose pair is
+missing, gets no level, claim tentative and the evidence `no pooled pair: a
+batch-level re-read`. The
 per-file ledgers keep their own per-file levels (§10.1), so a merged row can
 read 4a where its per-file rows read 4b, and the other way round. A batch
 none of whose Orbitrap-class files is calibrated (a one-file batch of an
@@ -892,8 +919,8 @@ release in `evidence.py`).
   nothing in the scale can choose between them (the reagent-isobar window rule
   keeps the split open uniformly for every X). About 70 % of a uronium
   Orbitrap run's committed height sat at 4b for this reason. The engine's own
-  "reagent-N isobar unresolved" note says the same. Two routes could split it
-  once validated; today they are a tag (LR 1.28).
+  "reagent-N split open" note says the same (it no longer caps the tier). Two
+  routes could split it once validated; today they are a tag (LR 1.28).
 - **The lead / list circularity, half closed.** A reference list that rescued
   a dim reading (`reflist_dim`) no longer certifies it at 3c (§7); a
   `known:` registry commit still reaches 3c through its own registry family.

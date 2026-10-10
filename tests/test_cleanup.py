@@ -173,7 +173,9 @@ check("envelope-tail: ledger valid", L.validate(ledt) == [])
 # --- prefer_amine_over_ammonium: default-to-CHON policy, no-TS (single-sample) ----
 # Ammonium adducts are rare; the burden of proof is on the adduct. Without a time
 # series nothing can be confirmed, so EVERY non-Si/protected [M+NH4]+ defaults to the
-# protonated CHON (amine X+NH3), Candidate tier -- even a presence-corroborated one.
+# protonated CHON (amine X+NH3) -- even a presence-corroborated one. The re-read is the
+# SAME ION, so the row keeps its tier (the tier answers "is the ion right?"): only the
+# label moves, and the note says the split stays open.
 leda = pd.DataFrame([
     dict(peak_id="a", mz=186.15, neutral_formula="C10H16O2", adduct="[M+NH4]+",
          role=L.ROLE_M0, tier="Assigned", tier_reason=""),   # -> protonated CHON
@@ -187,20 +189,25 @@ leda = pd.DataFrame([
          role=L.ROLE_ISO, tier="Assigned", tier_reason=""),
 ])
 outa = CU.prefer_amine_over_ammonium(leda, log=lambda *a, **k: None)
-check("amine no-TS: NH4 defaults to protonated CHON [M+H]+, capped Candidate",
+check("amine no-TS: NH4 defaults to protonated CHON [M+H]+, the tier kept (same ion)",
       leda.loc[0, "neutral_formula"] == "C10H19NO2" and leda.loc[0, "adduct"] == "[M+H]+"
-      and leda.loc[0, "tier"] == "Candidate", leda.loc[0].to_dict())
-check("amine no-TS: presence alone does NOT keep the ammonium adduct -> CHON",
+      and leda.loc[0, "tier"] == "Assigned", leda.loc[0].to_dict())
+check("amine no-TS: presence alone does NOT keep the ammonium adduct -> CHON, tier kept",
       leda.loc[1, "neutral_formula"] == "C9H19NO" and leda.loc[1, "adduct"] == "[M+H]+"
-      and leda.loc[1, "tier"] == "Candidate", leda.loc[1].to_dict())
-check("amine no-TS: amine-impossible X -> NH4 kept but capped Candidate",
+      and leda.loc[1, "tier"] == "Assigned", leda.loc[1].to_dict())
+check("amine no-TS: amine-impossible X -> NH4 kept, unconfirmed, the tier kept",
       leda.loc[3, "neutral_formula"] == "C6H14O4" and leda.loc[3, "adduct"] == "[M+NH4]+"
-      and leda.loc[3, "tier"] == "Candidate")
+      and leda.loc[3, "tier"] == "Assigned"
+      and "amine valence-impossible" in str(leda.loc[3, "tier_reason"])
+      and "Candidate" not in str(leda.loc[3, "tier_reason"]), leda.loc[3].to_dict())
 check("amine no-TS: summary counts",
       outa == {"relabeled": 2, "kept_covary": 0, "kept_protected": 0,
                "kept_si": 0, "forced_nh4": 1}, outa)
-check("amine no-TS: CHON reading noted in tier_reason",
-      "protonated CHON" in str(leda.loc[0, "tier_reason"]))
+check("amine no-TS: CHON reading noted in tier_reason, naming the replaced reading",
+      str(leda.loc[0, "tier_reason"]).startswith("read as protonated CHON (amine C10H19NO2): [M+NH4]+ of "
+                                                  "C10H16O2 not confirmed")
+      and CU.reread_source(leda.loc[0, "tier_reason"]) == ("C10H16O2", "[M+NH4]+"),
+      leda.loc[0, "tier_reason"])
 
 # --- amine gate: Si guard (siloxane NH4 adducts are real; aminosiloxanes are not)
 leds = pd.DataFrame([
@@ -266,25 +273,28 @@ def _row(pid): return ledb.loc[ledb.peak_id == pid].iloc[0]
 check("amine 3way: TRACKING NH4 (r>=0.6) is the ONLY way to keep the adduct, Assigned",
       _row("real_n")["adduct"] == "[M+NH4]+" and _row("real_n")["neutral_formula"] == REAL
       and _row("real_n")["tier"] == "Assigned", _row("real_n").to_dict())
-check("amine 3way: shaped NON-tracking NH4 (r<=0.2) -> protonated CHON, Candidate",
+check("amine 3way: shaped NON-tracking NH4 (r<=0.2) -> protonated CHON, tier kept",
       _row("rej_n")["adduct"] == "[M+H]+" and _row("rej_n")["neutral_formula"] == "C10H19NO2"
-      and _row("rej_n")["tier"] == "Candidate", _row("rej_n").to_dict())
-check("amine 3way: weak-tracking NH4 (0.2<r<0.6) -> DEFAULT to protonated CHON, Candidate",
+      and _row("rej_n")["tier"] == "Assigned", _row("rej_n").to_dict())
+check("amine 3way: weak-tracking NH4 (0.2<r<0.6) -> DEFAULT to protonated CHON, tier kept",
       _row("amb_n")["adduct"] == "[M+H]+" and _row("amb_n")["neutral_formula"] == "C9H17NO5"
-      and _row("amb_n")["tier"] == "Candidate", _row("amb_n").to_dict())
+      and _row("amb_n")["tier"] == "Assigned", _row("amb_n").to_dict())
 check("amine 3way: FLAT present parent (unconfirmable) -> DEFAULT to protonated CHON",
       _row("flat_n")["adduct"] == "[M+H]+" and _row("flat_n")["neutral_formula"] == "C10H21NO5"
-      and _row("flat_n")["tier"] == "Candidate", _row("flat_n").to_dict())
-check("amine 3way: parent ABSENT from TS -> protonated CHON, Candidate",
+      and _row("flat_n")["tier"] == "Assigned", _row("flat_n").to_dict())
+check("amine 3way: parent ABSENT from TS -> protonated CHON, tier kept",
       _row("abs_n")["adduct"] == "[M+H]+" and _row("abs_n")["neutral_formula"] == "C4H7NO"
-      and _row("abs_n")["tier"] == "Candidate", _row("abs_n").to_dict())
+      and _row("abs_n")["tier"] == "Assigned", _row("abs_n").to_dict())
+check("amine 3way: a Candidate re-read stays Candidate (the gate never lifts a tier either)",
+      CU.prefer_amine_over_ammonium(pd.DataFrame([dict(_nh4_row("c_n", ABSENT), tier="Candidate")]),
+                                    ts_peaks=tsb, log=lambda *a, **k: None)["relabeled"] == 1)
 check("amine 3way: Si-bearing NH4 kept as adduct (guard), Assigned",
       _row("si_n")["adduct"] == "[M+NH4]+" and _row("si_n")["tier"] == "Assigned")
 check("amine 3way: PROTECTED neutral kept as adduct despite r<=0.2, Assigned",
       _row("prot_n")["adduct"] == "[M+NH4]+" and _row("prot_n")["neutral_formula"] == PROT
       and _row("prot_n")["tier"] == "Assigned", _row("prot_n").to_dict())
-check("amine 3way: amine-impossible NH4 kept but capped Candidate",
-      _row("forced_n")["adduct"] == "[M+NH4]+" and _row("forced_n")["tier"] == "Candidate")
+check("amine 3way: amine-impossible NH4 kept, unconfirmed, the tier kept",
+      _row("forced_n")["adduct"] == "[M+NH4]+" and _row("forced_n")["tier"] == "Assigned")
 check("amine 3way: summary counts",
       outb == {"relabeled": 4, "kept_covary": 1, "kept_protected": 1,
                "kept_si": 1, "forced_nh4": 1}, outb)
@@ -453,11 +463,20 @@ ledrn = pd.DataFrame([
 ])
 outrn = CU.relabel_reagent_n_adducts(ledrn, log=lambda *a: None)
 check("reagent-N: 2 hydrocarbon urea/NH4 clusters re-read", outrn == {"reagent_n_relabeled": 2}, outrn)
-check("reagent-N: C5H6 [M+(CH4N2O)H]+ -> C6H10N2O [M+H]+ Candidate + tentative lead (C19(c))",
+check("reagent-N: C5H6 [M+(CH4N2O)H]+ -> C6H10N2O [M+H]+ + tentative lead (C19(c)), its tier kept",
       ledrn.loc[0, "neutral_formula"] == "C6H10N2O" and ledrn.loc[0, "adduct"] == "[M+H]+"
       and ledrn.loc[0, "tier"] == "Candidate" and bool(ledrn.loc[0, "tentative_lead"])
       and not bool(ledrn.loc[0, "below_assignability"]))
-check("reagent-N: C5H4 [M+NH4]+ -> C5H7N [M+H]+", ledrn.loc[1, "neutral_formula"] == "C5H7N")
+check("reagent-N: C5H4 [M+NH4]+ -> C5H7N [M+H]+, the same ion: Assigned stays Assigned, a lead",
+      ledrn.loc[1, "neutral_formula"] == "C5H7N" and ledrn.loc[1, "tier"] == "Assigned"
+      and bool(ledrn.loc[1, "tentative_lead"]) and ledrn.loc[1, "lead_by"] == "reagent_n",
+      ledrn.loc[1].to_dict())
+_ledrc = pd.DataFrame([dict(role="M0", neutral_formula="C5H4", adduct="[M+NH4]+", tier="Assigned",
+                            confidence="Good", commentary="", tier_reason="unique formula")])
+CU.relabel_reagent_n_adducts(_ledrc, log=lambda *a: None)
+check("reagent-N: the re-read keeps the row's confidence (no 'Low (reagent-N re-read)')",
+      _ledrc.loc[0, "confidence"] == "Good" and _ledrc.loc[0, "tier"] == "Assigned"
+      and CU.reread_source(_ledrc.loc[0, "tier_reason"]) == ("C5H4", "[M+NH4]+"), _ledrc.loc[0].to_dict())
 check("reagent-N: terpene C10H16 [M+NH4]+ KEPT (it has its own [M+H]+)",
       ledrn.loc[2, "neutral_formula"] == "C10H16" and ledrn.loc[2, "adduct"] == "[M+NH4]+")
 check("reagent-N: oxygenated C6H10O2 [M+NH4]+ untouched", ledrn.loc[4, "neutral_formula"] == "C6H10O2")
@@ -482,9 +501,9 @@ check("reagent-N merged: one re-read, the batch-wide [M+H]+ keeps the other",
 check("reagent-N merged: C15H22 [M+NH4]+ kept Assigned (its [M+H]+ is in the union)",
       ledm.loc[0, "neutral_formula"] == "C15H22" and ledm.loc[0, "adduct"] == "[M+NH4]+"
       and ledm.loc[0, "tier"] == "Assigned" and pd.isna(ledm.loc[0, "tier_reason"]))
-check("reagent-N merged: C11H20 uronium -> C12H24N2O [M+H]+ Candidate, noted in tier_reason",
+check("reagent-N merged: C11H20 uronium -> C12H24N2O [M+H]+, the vote's tier kept, noted in tier_reason",
       ledm.loc[2, "neutral_formula"] == "C12H24N2O" and ledm.loc[2, "adduct"] == "[M+H]+"
-      and ledm.loc[2, "tier"] == "Candidate"
+      and ledm.loc[2, "tier"] == "Assigned"
       and str(ledm.loc[2, "tier_reason"]).startswith("re-read C11H20 [M+(CH4N2O)H]+ as [M+H]+ of C12H24N2O"),
       ledm.loc[2].to_dict())
 

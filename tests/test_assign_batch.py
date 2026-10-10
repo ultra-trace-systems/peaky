@@ -1192,17 +1192,27 @@ try:
         # keeps the ammonium reading through the reagent-N pass for the whole batch;
         # the amine gate then has no trace to confirm the adduct against (the
         # synthetic TS holds no such ion) and, by its default-to-CHON policy, reads
-        # it as the amine -- and SAYS so on the merged row.
+        # it as the amine -- and SAYS so on the merged row. Both re-reads are the
+        # same ion as the reading they replace, so each keeps the tier the vote gave
+        # it (Assigned in every file here); the amine re-read takes the level of the
+        # pooled pair it replaced, the split open (4b, claim 'ion').
         check("positive run: the reagent-N pass re-read ONE reading (C11H20) and kept C15H22, which protonates in one file",
               summp["merge_gates"]["reagent_n"] == {"reagent_n_relabeled": 1}, summp.get("merge_gates"))
         check("positive run: the amine gate's re-read of C15H22 [M+NH4]+ is explained in tier_reason",
               r_nh4["neutral_formula"] == "C15H25N" and r_nh4["adduct"] == "[M+H]+"
-              and r_nh4["tier"] == "Candidate"
+              and r_nh4["tier"] == "Assigned"
               and "protonated CHON" in str(r_nh4["tier_reason"]) and "C15H22" in str(r_nh4["tier_reason"]),
               r_nh4.to_dict())
+        check("positive run: the amine re-read is levelled from the pooled pair it replaced (4b, split open)",
+              r_nh4["evidence_level"] == "4b" and r_nh4["claim"] == "ion"
+              and str(r_nh4["evidence"]).startswith("4b · ion: ")
+              and "split: open -- batch-level re-read of the pooled pair C15H22 [M+NH4]+, the same ion"
+              in str(r_nh4["evidence"])
+              and str(r_nh4["would_lift"]).startswith("split not pinned: batch-level re-read"),
+              (r_nh4["evidence_level"], r_nh4["evidence"], r_nh4["would_lift"]))
         check("positive run: C11H20 uronium (no [M+H]+ anywhere) re-read ONCE, naming the reading it replaced",
               r_ur["neutral_formula"] == "C12H24N2O" and r_ur["adduct"] == "[M+H]+"
-              and r_ur["tier"] == "Candidate" and r_ur["n_files_winner"] == 3
+              and r_ur["tier"] == "Assigned" and r_ur["n_files_winner"] == 3
               and str(r_ur["tier_reason"]).startswith("re-read C11H20 [M+(CH4N2O)H]+ as [M+H]+ of C12H24N2O"),
               r_ur.to_dict())
         check("positive run: batch_summary carries both gates' counts",
