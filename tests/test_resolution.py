@@ -37,8 +37,8 @@ def test_nearest_neighbour_classes_flag_isolated_resolved_blended_and_unresolvab
     assert np.isnan(sep["A"])
     assert sep["D"] == pytest.approx(5.0, rel=0.02) and sep["F"] == pytest.approx(1.5, rel=0.02)
     assert sep["H"] == pytest.approx(0.2, rel=0.05)
-    # equal heights become bimodal at ~2.36 HWHM, and that threshold is on the row
-    assert dict(zip(names, out["d_crit_hwhm"]))["F"] == pytest.approx(2.0 / (1.0 / 1.1774396), rel=1e-3)
+    # equal heights become bimodal at 2 sigma = 1.70 HWHM, and that threshold is on the row
+    assert dict(zip(names, out["d_crit_hwhm"]))["F"] == pytest.approx(2.0 / 1.1774396, rel=1e-3)
     # the neighbour index points back at the partner, in INPUT positions
     nb = dict(zip(names, out["neighbour"]))
     assert names[nb["E"]] == "F" and names[nb["F"]] == "E" and nb["A"] == -1
@@ -65,3 +65,28 @@ def test_fewer_than_two_peaks_are_isolated_and_a_nan_height_reads_as_zero():
     out = RES.nearest_neighbour_classes([300.0, 300.0 + 1.0 * hw], [1e4, float("nan")], 6500.0)
     # a zero-height partner is the dimmest possible ratio: still classified, never NaN
     assert out["resolvability"][0] in ("blended", "resolved") and np.isfinite(out["sep_hwhm"][0])
+
+
+def _n_maxima(d_hwhm: float, ratio: float) -> int:
+    """Local maxima of G(x) + ratio * G(x - d), counted on a fine grid. x is in
+    HWHM: exp(-ln2 x^2) is at half height at x = 1."""
+    x = np.linspace(-6.0, 14.0, 200001)
+    y = np.exp(-np.log(2.0) * x ** 2) + ratio * np.exp(-np.log(2.0) * (x - d_hwhm) ** 2)
+    dy = np.diff(y)
+    return int(np.sum((dy[:-1] > 0) & (dy[1:] <= 0)))
+
+
+@pytest.mark.parametrize("ratio", [1.0, 0.5, 0.1, 1.0 / 50, 0.01, 0.001])
+def test_d_crit_is_where_two_gaussians_of_that_height_ratio_turn_bimodal(ratio):
+    # brute force, in HWHM directly (a Gaussian at half height 1 HWHM from its
+    # centre): one maximum just inside the threshold, two just outside. The
+    # threshold was once 1.39x too wide (sigma -> HWHM multiplied where it
+    # divides), which stamped resolvable peaks `blended`.
+    dc = RES.d_crit_hwhm(ratio)
+    assert _n_maxima(0.98 * dc, ratio) == 1
+    assert _n_maxima(1.02 * dc, ratio) == 2
+
+
+def test_d_crit_matches_the_textbook_values():
+    assert RES.d_crit_hwhm(1.0) == pytest.approx(1.699, abs=2e-3)       # 2 sigma
+    assert RES.d_crit_hwhm(1.0 / 50) / 2.0 == pytest.approx(1.65, abs=5e-3)  # in FWHM

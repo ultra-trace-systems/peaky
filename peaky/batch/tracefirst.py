@@ -120,7 +120,7 @@ HI_RES_CELL_PPM = 6.0    # a dedup cell this narrow means a high-resolution inst
                          # trace-first is a TOF remedy, and says so rather than pretend
 # Sanity band for the supplied resolving power, read off the spectra themselves.
 # Two reported maxima cannot be closer than the summed profile is bimodal --
-# 2.36 HWHM at equal heights, more when unequal -- so the smallest spacings a
+# 1.70 HWHM (2 sigma) at equal heights, more when unequal -- so the smallest spacings a
 # picker reports bound the peak width. The bound is only a bound, because how
 # far into a flank a picker will call a maximum is the PICKER's property, not
 # the instrument's: measured at the 1st percentile of the within-spectrum

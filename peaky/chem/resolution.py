@@ -145,14 +145,16 @@ def dedup_ppm(mz: float, resolving_power) -> float:
     return Resolution.coerce(resolving_power).dedup_ppm(mz)
 
 
-_SIG_PER_HWHM = 1.0 / 1.1774396
+_HWHM_IN_SIGMA = 1.1774396  # HWHM = sqrt(2 ln 2) sigma, so d[HWHM] = d[sigma] / this
+# the bimodality threshold in sigma, at log10(height ratio): 2 sigma for equal heights
 _LOGR = np.array([0.0, -0.30103, -0.69897, -1.0, -1.30103, -1.69897, -2.0, -2.30103, -2.69897, -3.0])
 _DSIG = np.array([2.000, 2.628, 3.079, 3.354, 3.598, 3.888, 4.088, 4.277, 4.511, 4.679])
 
 
 def d_crit_hwhm(ratio: float) -> float:
     """Separation (HWHM) at which two Gaussians of height ratio `ratio` (<= 1)
-    become bimodal -- what a local-maximum picker needs to report two peaks."""
+    become bimodal -- what a local-maximum picker needs to report two peaks.
+    Equal heights: 2 sigma = 1.70 HWHM (0.85 FWHM); 1:50, 3.89 sigma = 1.65 FWHM."""
     r = float(min(max(ratio, 1e-12), 1.0))
     lr = np.log10(r)
     if lr >= _LOGR[0]:
@@ -162,7 +164,7 @@ def d_crit_hwhm(ratio: float) -> float:
         d = _DSIG[-1] + slope * (lr - _LOGR[-1])
     else:
         d = float(np.interp(lr, _LOGR[::-1], _DSIG[::-1]))
-    return d / _SIG_PER_HWHM
+    return d / _HWHM_IN_SIGMA
 
 
 def classify_pair(mz_a: float, h_a: float, mz_b: float, h_b: float, resolving_power: float) -> dict:
