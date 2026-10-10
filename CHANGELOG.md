@@ -305,6 +305,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   correction is held per sample: runs that share samples in one process (the MCP server's
   threads) share it. Trace-first keeps its own wave.
 
+- **Fluorine by evidence: a CF2 ladder lifts the fluorine refusals, its 15N alias's 14N twin
+  and its own 13C line refute it, the fluorinated family reaches F25, and the family's sub-mDa
+  aliases answer to their 13C line (`assignment/fluorine.py`).** 19F has no minor isotope, so a
+  partially fluorinated reading (F < 2H) was capped at Candidate and an F >= 4 reading flagged
+  below assignability ("unconfirmed fluorine", hard 5b) whatever the spectrum showed -- on a
+  15N-nitrate field batch's 128-600 window 52 truth lines sitting on CF2 ladders were refused
+  that way. A reading whose ion +/- k CF2 (k <= 3, every member still fluorinated) shows as >= 2
+  picked lines of its file (at the row's own m/z +/- k x 49.99681, inside the exact-offset window
+  on a calibrated Orbitrap, at 1/30-30x its height) is no longer refused: it is Candidate, without
+  the flag, until >= 3 members of its ladder are committed, and then takes the tier the normal
+  rules give it; the element-budget demote keeps such a full ladder member as it keeps a committed
+  CF2 step. Two lines refute a ladder and the refusal then stands, saying why: on a 15N-nitrate
+  ledger the 14N twin of the reading's C2F3 -> H2^NO4 alias (0.21 mDa; a line 0.99703 Da below
+  that reads as the alias's (n + 1) f, f the reagent's 14N impurity), and the row's own 13C line
+  when it contradicts the carbon count. The `fluorinated` family's F ceiling is 25 (was 17: the
+  chain propagation stopped at the first F18 member, whose C+8 H+1 F-5 alias then took the line)
+  and the degeneracy / level space's F ceiling follows it. In pass 3's fluorinated arbitration the
+  readings within 1 mDa of the top one are aliases; where the peak's 13C line is testable and
+  contradicts some aliases' carbon count but not all, each contradicted one pays 0.30 effective
+  score (C12H9F15 against C20H8F10 had been settled by a 0.3-ppm mass term). Replayed offline on
+  that batch's stored per-file ledgers (the tier stages and the stored alternatives, no
+  re-scoring): the 13C term moved 272 per-file winners onto the truth reading and none off it; the
+  ladder rule lifted 333 merged rows to Assigned (against the truth: 234 the same reading, 92
+  unverifiable, 6 against a tentative reading, 1 against a graded one) and took the pooled below
+  flag off 1555. No finish-line row moves.
+
 ### Fixed
 
 - **The `blended` separability class was 1.39x too wide.** `chem.resolution.d_crit_hwhm`, the

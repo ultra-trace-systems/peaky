@@ -8,6 +8,7 @@ import pandas as pd
 
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
+from peaky.assignment import fluorine as FL
 from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
 from peaky.assignment import series_gka as G
@@ -315,11 +316,17 @@ def _nitrate_twin_first(grp: pd.DataFrame, profile) -> tuple[pd.DataFrame, objec
     return grp, None
 
 
-def arbitrate(scored: pd.DataFrame, cfg: PassConfig, profile=None) -> dict:
+def arbitrate(scored: pd.DataFrame, cfg: PassConfig, profile=None, *,
+              c13_alias: dict | None = None) -> dict:
     """Decide a single best M0 owner per peak from the flat per-isotopologue
     scored table, with complexity-penalised effective scores. ``profile`` (the
     run's ContextProfile) turns on the NOx-skeleton twin tie-break
     (`_nitrate_twin_first`) when its ``nox_skeleton`` switch is set.
+    ``c13_alias`` ({peak_id: its 13C line}, fluorine.c13_lines; pass 3 hands it
+    for the fluorinated family) adds the 13C carbon-count term between a peak's
+    sub-mDa aliases (fluorine.c13_alias_penalties): where the line is testable,
+    a reading whose carbon count it contradicts pays an effective-score charge
+    -- the C8 vs H1F5 alias (0.16 mDa) is otherwise settled by the mass term.
 
     Returns:
       {
@@ -474,6 +481,14 @@ def arbitrate(scored: pd.DataFrame, cfg: PassConfig, profile=None) -> dict:
     winners = []
     for pid, grp in base.groupby("sample_peak_id"):
         grp = grp.sort_values("eff_score", ascending=False)
+        c13_note = None
+        if c13_alias is not None:
+            pen, c13_note = FL.c13_alias_penalties(grp, c13_alias.get(pid), cfg)
+            if pen:
+                grp = grp.assign(eff_score=grp["eff_score"] - pd.Series(pen).reindex(grp.index).fillna(0.0))
+                grp = grp.sort_values("eff_score", ascending=False)
+                if grp.index[0] in pen:
+                    c13_note = None            # the term did not decide this peak
         grp, demoted = _nitrate_twin_first(grp, profile)
         top = grp.iloc[0]
         n_iso = int(iso_count.get((top["compound_formula"], top["ion_formula"]), 0))
@@ -516,6 +531,8 @@ def arbitrate(scored: pd.DataFrame, cfg: PassConfig, profile=None) -> dict:
                 "alternatives": alts,
             }
         )
+        if c13_note:
+            winners[-1]["_c13_note"] = c13_note
     win_df = pd.DataFrame(winners)
 
     # iso children attributed to the winning (compound, ion) pairs only
@@ -1000,5 +1017,8 @@ def _commentary(w, pass_no, method) -> str:
             )
     note = w.get("_relabel_note") if hasattr(w, "get") else None
     if note:
+        base += note
+    note = w.get("_c13_note") if hasattr(w, "get") else None
+    if isinstance(note, str) and note:
         base += note
     return base

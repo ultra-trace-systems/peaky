@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 from peaky.chem import chemistry as C
+from peaky.assignment import fluorine as FL
 from peaky.assignment import ledger as L
 from peaky.assignment import tiers as T
 
@@ -396,7 +397,7 @@ def demote_carbon_clusters(ledger: pd.DataFrame, *, audit=None, log=print, profi
 
 
 def demote_off_budget(ledger: pd.DataFrame, *, context,
-                      curated=frozenset(), audit=None, log=print) -> dict:
+                      curated=frozenset(), audit=None, log=print, cfg=None) -> dict:
     """Demote M0 commits whose neutral lies outside the run context's ELEMENT
     BUDGET (contexts.element_budget: the structural gate, the carbon-free
     allowlist, the heteroatom caps) and that no curated list names.
@@ -430,7 +431,11 @@ def demote_off_budget(ledger: pd.DataFrame, *, context,
     peak pairs one CF2 apart were 20x chance on the labelled-nitrate Orbitrap and
     4x on the ~10k TOF (where ~1 in 4 such pairs is chance), and the fluorinated
     rows the budget would demote from Assigned were almost all NOT chain members.
-    Demote-only; `context=None` is a no-op."""
+    A row whose CF2 LADDER holds enough committed members (fluorine.py: lines of
+    the same remaining composition +/- k CF2, k <= 3, none refuted by its 15N
+    alias's 14N twin or its own 13C line) is kept the same way -- its steps may
+    skip a member -- and counts with them (`cfg`: the file's PassConfig, for the
+    ladder's windows and 13C floor). Demote-only; `context=None` is a no-op."""
     if not context:
         return {"budget_demoted": 0, "budget_cf2_kept": 0}
     from peaky.chem import contexts as X
@@ -441,6 +446,7 @@ def demote_off_budget(ledger: pd.DataFrame, *, context,
     n = kept = 0
     has_method = "method" in ledger.columns
     committed = _committed_pairs(ledger)
+    ladder = None
     for i in _m0_index(ledger):
         neutral = ledger.at[i, "neutral_formula"]
         if not isinstance(neutral, str) or not neutral.strip() or neutral in curated:
@@ -455,10 +461,16 @@ def demote_off_budget(ledger: pd.DataFrame, *, context,
         if ok:
             continue
         adduct = ledger.at[i, "adduct"] if "adduct" in ledger.columns else None
-        if (X.element_budget(neutral, open_f)[0]
-                and any((nb, adduct) in committed for nb in _cf2_neighbours(neutral))):
-            kept += 1          # fluorine is the only violation and its CF2 step is committed
-            continue
+        if X.element_budget(neutral, open_f)[0]:
+            if any((nb, adduct) in committed for nb in _cf2_neighbours(neutral)):
+                kept += 1      # fluorine is the only violation and its CF2 step is committed
+                continue
+            if ladder is None:
+                ladder = FL.verdicts(ledger, cfg=cfg)
+            fl = ladder.get(ledger.at[i, "peak_id"]) if "peak_id" in ledger.columns else None
+            if fl is not None and fl.full:
+                kept += 1      # ... or its CF2 ladder holds enough committed members
+                continue
         ni = _iso_count(ledger.at[i, "isotopologues"]) if "isotopologues" in ledger.columns else 0
         note = ledger.at[i, "degeneracy_note"] if "degeneracy_note" in ledger.columns else None
         reason = (f"outside the {profile.label} element budget ({why}) and on no curated list "
@@ -700,13 +712,13 @@ def gate_element_evidence(ledger: pd.DataFrame, *, profile, curated=frozenset(),
 
 
 def demote_implausible(ledger: pd.DataFrame, *, audit=None, log=print,
-                       context=None, curated=frozenset()) -> dict:
+                       context=None, curated=frozenset(), cfg=None) -> dict:
     """The shared-oracle demotes that fire on a single-file or merged ledger
     without a time series: O-monster + carbon-cluster, and -- given the run's
     `context` (a name, or the run's ContextProfile with its run-level switches,
     which the O-monster and carbon-cluster reads honour) -- the element-budget
     demote (`demote_off_budget`). All are demote-only and feed the same audit
-    list."""
+    list. `cfg`: the file's PassConfig (the CF2 ladder's windows, demote_off_budget)."""
     profile = None
     if context:
         from peaky.chem import contexts as X
@@ -715,7 +727,7 @@ def demote_implausible(ledger: pd.DataFrame, *, audit=None, log=print,
     c = demote_carbon_clusters(ledger, audit=audit, log=log, profile=profile)
     if not context:
         return {**o, **c}
-    b = demote_off_budget(ledger, context=context, curated=curated, audit=audit, log=log)
+    b = demote_off_budget(ledger, context=context, curated=curated, audit=audit, log=log, cfg=cfg)
     return {**o, **c, **b}
 
 

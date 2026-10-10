@@ -31,6 +31,7 @@ import pandas as pd
 from peaky.chem import chemistry as C
 from peaky.chem import contexts as X
 from peaky.assignment import degeneracy as D
+from peaky.assignment import fluorine as FL
 from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
 from peaky.assignment import solvent_clusters as SC
@@ -639,18 +640,27 @@ def _is_pfca(cnt: dict) -> bool:
 
 
 def demote_unconfirmed_fluorine(ledger: pd.DataFrame, *, f_min: int = F_DEMOTE_MIN,
-                                log=print) -> dict:
+                                cfg=None, log=print) -> dict:
     """Demote M0 assignments resting on UNCONFIRMED fluorine. ¹⁹F is 100%
     monoisotopic, so a high-F formula has NO isotope twin to corroborate it; when it
     is also not a known PFCA and carries no Cl/Br/S anchor (whose ³⁷Cl/⁸¹Br/³⁴S
     pattern WOULD confirm a heavy atom), a high-F fit is almost always a mass
     coincidence ('F-monster', e.g. C11H6F16). Demote Assigned->Candidate and flag
-    below_assignability. Real PFCAs and isotope-anchored F species are kept."""
-    n = 0
+    below_assignability. Real PFCAs and isotope-anchored F species are kept.
+
+    The fluorine evidence a spectrum CAN show is a CF2 ladder (fluorine.py: the
+    same remaining composition +/- k CF2 as picked lines of this file, at
+    consistent heights). A reading with enough ladder lines is not refused --
+    no below_assignability -- unless the 14N twin of its 15N alias or its own
+    13C line refutes it; it is Candidate until enough members of its ladder are
+    committed, and then keeps the tier the tier engine gave it. `cfg` (the
+    file's PassConfig) supplies the ladder's windows and the 13C floor."""
+    n = n_ladder = 0
     has_ba = "below_assignability" in ledger.columns
     has_iso = "isotopologues" in ledger.columns
     target = (ledger.index[ledger["role"] == L.ROLE_M0]
               if "role" in ledger.columns else ledger.index)   # merged ledger has no role col
+    ladder = FL.verdicts(ledger, cfg=cfg)
     for i in target:
         cnt = C.parse_formula(str(ledger.at[i, "neutral_formula"] or ""))
         if cnt.get("F", 0) < f_min:
@@ -670,18 +680,37 @@ def demote_unconfirmed_fluorine(ledger: pd.DataFrame, *, f_min: int = F_DEMOTE_M
                 continue
         elif cnt.get("Cl", 0) or cnt.get("Br", 0) or cnt.get("S", 0):
             continue
+        fl = ladder.get(ledger.at[i, "peak_id"]) if "peak_id" in ledger.columns else None
+        if fl is not None and fl.lift:
+            # fluorine read off a CF2 ladder: not refused (no below_assignability);
+            # Candidate until enough of its members are committed (the reason
+            # then says so), else the tier engine's tier stands
+            note = f"F{cnt.get('F', 0)} " + FL.lift_note(fl)
+            if not fl.full and str(ledger.at[i, "tier"]) == "Assigned":
+                ledger.at[i, "tier"] = "Candidate"
+                _note(ledger, i, note)
+            if "commentary" in ledger.columns:
+                prev = str(ledger.at[i, "commentary"] or "")
+                ledger.at[i, "commentary"] = (prev + "; " + note) if prev and prev != "nan" else note
+            n_ladder += 1
+            continue
         if str(ledger.at[i, "tier"]) == "Assigned":
             ledger.at[i, "tier"] = "Candidate"
         if has_ba:
             ledger.at[i, "below_assignability"] = True
         if "commentary" in ledger.columns:
             note = (f"unconfirmed fluorine (F{cnt.get('F', 0)}; ¹⁹F monoisotopic, no "
-                    "CONFIRMED Cl/Br/S isotope anchor, not a PFCA) -- likely mass coincidence")
+                    "CONFIRMED Cl/Br/S isotope anchor, not a PFCA) -- likely mass coincidence"
+                    + (f"; {FL.veto_note(fl)}" if fl is not None and fl.veto else ""))
             prev = str(ledger.at[i, "commentary"] or "")
             ledger.at[i, "commentary"] = (prev + "; " + note) if prev and prev != "nan" else note
         n += 1
-    log(f"[cleanup] demoted {n} unconfirmed-fluorine M0 (F>={f_min}, F-monsters)")
-    return {"f_demoted": n}
+    log(f"[cleanup] demoted {n} unconfirmed-fluorine M0 (F>={f_min}, F-monsters)"
+        + (f"; {n_ladder} kept on their CF2 ladder" if n_ladder else ""))
+    out = {"f_demoted": n}
+    if n_ladder:
+        out["f_ladder"] = n_ladder
+    return out
 
 
 HC_CARBON_MAX = 0.35   # H/C below this (F-free) -> implausibly carbon-rich skeleton

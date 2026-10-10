@@ -89,7 +89,7 @@ SATURATION_DENSITY = 8   # beyond this the mass is not identifiable by mass alon
 # of each any context cap or contaminant family names -- a context that leaves a
 # cap at its 99 default must not open a 99-atom loop.
 _ELS = ("N", "O", "S", "P", "Si", "F", "Cl", "Br", "I")
-ELEMENT_CEILING = {"N": 8, "S": 2, "P": 1, "Si": 12, "F": 17, "Cl": 4, "Br": 2, "I": 2}
+ELEMENT_CEILING = {"N": 8, "S": 2, "P": 1, "Si": 12, "F": 25, "Cl": 4, "Br": 2, "I": 2}
 # a halide reagent's own covalent-halogen family, which pass 3 opens on every file
 REAGENT_FAMILY = {"Br": "bromo_organic", "Cl": "chloro_organic"}
 _MH = C.M["H"]

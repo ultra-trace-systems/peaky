@@ -245,7 +245,10 @@ confirmed **diagnostic** heavy-isotope envelope (³⁴S / ³⁷Cl / ⁸¹Br, **n
 can't refute an off-grid P) standing in for the 2nd channel.
 `cleanup.demote_unconfirmed_fluorine` (run **after**
 `apply_tiers`) demotes F≥4 M0 that are not a PFCA and lack a Cl/Br/S anchor —
-¹⁹F mass-coincidence "monsters" → Candidate + `below_assignability`.
+¹⁹F mass-coincidence "monsters" → Candidate + `below_assignability` — unless the
+reading sits on a CF₂ ladder (`assignment/fluorine.py`: ≥ 2 lines ± k·CF₂ in the
+file, not refuted by its ¹⁵N alias's ¹⁴N twin or its own ¹³C line): then it is
+Candidate without the flag, and keeps its tier once 3 ladder members are committed.
 
 - **Mass offset ("be aware of the −X ppm"):** the reported `ppm_error` stays RAW,
   but every quality gate is offset-aware. `io_mascope.estimate_offset` seeds a

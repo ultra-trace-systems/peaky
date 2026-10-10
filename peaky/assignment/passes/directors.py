@@ -12,6 +12,7 @@ from peaky.chem import chemistry as C
 from peaky.chem import contexts as X
 from peaky.chem import isotopes as ISO
 from peaky.io import io_mascope as IO
+from peaky.assignment import fluorine as _FL
 from peaky.assignment import ledger as L
 from peaky.assignment import satellites as _SAT
 from peaky.assignment import series_gka as G
@@ -1866,7 +1867,10 @@ def run_pass3(
             scored = IO.score_candidates(
                 client, sample_id, sorted(formulas), mechanism_ids=cfg.mechanism_ids
             )
-            arb = arbitrate(scored, cfg, profile)
+            # the fluorinated family's sub-mDa aliases (C8 vs H1F5) also answer
+            # to the peak's 13C line (fluorine.c13_alias_penalties)
+            arb = arbitrate(scored, cfg, profile,
+                            c13_alias=(_FL.c13_lines(ledger, cfg) if fam_key == "fluorinated" else None))
             s = commit_winners(
                 ledger,
                 arb,

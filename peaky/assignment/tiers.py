@@ -59,6 +59,7 @@ from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
+from peaky.assignment import fluorine as FL
 from peaky.assignment import satellites as SAT
 
 __version__ = "0.10.0"  # + the NOx-skeleton tier cap (a skeleton-only reading is Candidate); 0.9.1 the twin test's exact-offset window on a calibrated Orbitrap-class run
@@ -777,6 +778,8 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
     score_floor = lock_score_floor(cfg)
     # the twin test's window: the exact-offset one on an Orbitrap-class run
     twin_ppm = SAT.twin_ppm(cfg)
+    # fluorine by evidence: each F reading's CF2 ladder in this file (fluorine.py)
+    f_ladder = FL.verdicts(ledger, cfg=cfg)
 
     rows = []
     for _, r in m0.iterrows():
@@ -931,16 +934,26 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
             reason = ("mixed Br/Cl halogenation: the isotope envelope pins the "
                       "halogen count but the backbone candidates stay ambiguous")
         elif (counts.get("F", 0) >= 1 and counts.get("H", 0) > 1
-              and counts["F"] < F_H_COHERENCE * counts["H"] and not iso_ev):
+              and counts["F"] < F_H_COHERENCE * counts["H"] and not iso_ev
+              and not (r["peak_id"] in f_ladder and f_ladder[r["peak_id"]].full)):
             # F is monoisotopic: no isotope evidence can confirm a fluorine
             # count, and a partially-fluorinated reading (H-rich, sub-PFAS F)
             # is the classic mass-fit absorber. A 13C child is the one real
-            # discriminator (it pins the carbon count), so it rescues.
+            # discriminator (it pins the carbon count), so it rescues. So does
+            # a CF2 ladder (fluorine.py): with enough lines the reading is not
+            # refused but stays Candidate; with enough COMMITTED members the
+            # normal tier rules below apply (the branch is skipped).
             tier = TIER_CANDIDATE
-            reason = (f"partially-fluorinated reading (F{counts['F']}/H{counts['H']}) "
-                      "below PFAS-like F/H coherence; F has no minor isotope, so "
-                      "the fluorine count is a mass-only claim with no possible "
-                      "isotope confirmation")
+            _fl = f_ladder.get(r["peak_id"])
+            if _fl is not None and _fl.lift:
+                reason = (f"partially-fluorinated reading (F{counts['F']}/H{counts['H']}): "
+                          + FL.lift_note(_fl))
+            else:
+                reason = (f"partially-fluorinated reading (F{counts['F']}/H{counts['H']}) "
+                          "below PFAS-like F/H coherence; F has no minor isotope, so "
+                          "the fluorine count is a mass-only claim with no possible "
+                          "isotope confirmation"
+                          + (f"; {FL.veto_note(_fl)}" if _fl is not None and _fl.veto else ""))
         elif counts.get("Si", 0) >= 1 and not corroborated:
             # Si carries a genuine, diagnostic 29Si(4.7%)+30Si(3.1%) M+1/M+2 twin,
             # so a real silicon species confirms it (a multi-Si siloxane trivially;
