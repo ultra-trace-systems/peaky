@@ -1277,18 +1277,31 @@ def _lock_model(ts, polarity, reagent_elements, info, log):
         log(f"[mass-axis] no lock model: {li.get('why')}")
         return None, False
     cv, raw, peak = li.get("cv_ppm"), li.get("raw_ppm"), li.get("max_abs_ppm")
-    segs = ", ".join(f"m/z {s['lo']:.0f}-{s['hi']:.0f} ({s['kind']}, {s['n']} locks)" for s in model.segments)
+    segs = ", ".join(f"m/z {s['lo']:.0f}-{s['hi']:.0f} ({s['kind']}, {s['n']} locks"
+                     f"{', from seeds' if s.get('seeded') else ''})" for s in model.segments)
+    if li.get("single_spectrum"):
+        log("[mass-axis] one spectrum: no recurrence to test, every peak counts (the isotope "
+            "strike and the curve's consistency are the guards)")
     log(f"[mass-axis] LOCKS: {li.get('n_pass1')} unique within +-{AL.LOCK_PPM:g} ppm, "
         f"{li.get('n_links')} by mass difference, {li.get('n_narrow')} on the fitted curve, "
         f"{li.get('n_off_curve')} dropped off it; segments {segs}")
+    for c in li.get("contested", []):
+        log(f"[mass-axis] m/z {c['lo']:.0f}-{c['hi']:.0f}: a segment from seeds, contested "
+            f"({c['seeds_on']} seeds on its line, {c['seeds_off']} off it, {c['jump_ppm']:+.2f} ppm "
+            "from the axis below): not built")
     for st in li.get("steps", []):
         log(f"[mass-axis] STEP {st['ppm']:+.2f} ppm between m/z {st['between'][0]:.2f} and "
             f"{st['between'][1]:.2f} (the instrument's axis; no smooth curve follows it)")
     for st in li.get("joins", []):
+        why = ("a step under the STEP's bar inside one walk segment" if st.get("split") else
+               "no step, the walk resumed past a sparse stretch")
         log(f"[mass-axis] segments join between m/z {st['between'][0]:.2f} and {st['between'][1]:.2f} "
-            f"({st['ppm']:+.2f} ppm: no step, the walk resumed past a sparse stretch)")
+            f"({st['ppm']:+.2f} ppm: {why}): bridged at the midpoint")
+    for a, b in li.get("unseen_gaps", []):
+        log(f"[mass-axis] no lock between m/z {a:.2f} and {b:.2f} (wider than {AL.JOIN_MAX_DA:g} Da): "
+            "the axis in between is unseen")
     if li.get("uncorrected_gaps"):
-        log("[mass-axis] left uncorrected between segments (the step lies somewhere in there): "
+        log("[mass-axis] left uncorrected between segments (a step, or an unseen stretch): "
             + ", ".join(f"m/z {a:.2f}-{b:.2f}" for a, b in li["uncorrected_gaps"]))
     log(f"[mass-axis] lock model: |error| median {raw} ppm raw -> {cv} ppm on held-out locks "
         f"(5-fold), largest correction {peak} ppm")
@@ -1334,7 +1347,8 @@ def measure_axis(ts, reagent: str, klass: str | None, *, hold: str | None = None
     probe fails; the measurement never stops a batch. Measured but NOT applied
     (info['held']) on a TOF, when the caller holds it (`hold`: server-side
     scoring; a pool of several batches), or when the correction would exceed the
-    model's cap (LOCK_MAX_CORRECTION_PPM / massqc.MAX_CORRECTION_PPM)."""
+    model's cap (LOCK_MAX_CORRECTION_PPM / massqc.MAX_CORRECTION_PPM; a lock model
+    whose walk segments alone pass it has those stretches cut and the rest applied)."""
     from peaky.batch import massqc as MQ
     from peaky.chem import reference_ions as RI
 
@@ -1361,8 +1375,22 @@ def measure_axis(ts, reagent: str, klass: str | None, *, hold: str | None = None
             if model is None:
                 return ts, info, None
             if hold is None and info["max_abs_ppm"] > LOCK_MAX_CORRECTION_PPM:
-                hold = (f"the correction reaches {info['max_abs_ppm']:.1f} ppm, above "
-                        f"{LOCK_MAX_CORRECTION_PPM:g}: a broken calibration to fix at the instrument")
+                cut = model.clipped(LOCK_MAX_CORRECTION_PPM)
+                if cut is None:
+                    hold = (f"the correction reaches {info['max_abs_ppm']:.1f} ppm, above "
+                            f"{LOCK_MAX_CORRECTION_PPM:g}: a broken calibration to fix at the instrument")
+                else:
+                    # a walk segment's line past the cap (its far end): that stretch is left
+                    # uncorrected, the rest applied
+                    log(f"[mass-axis] the correction passes {LOCK_MAX_CORRECTION_PPM:g} ppm in a walk "
+                        f"segment (up to {info['max_abs_ppm']:.1f}): that stretch left uncorrected")
+                    info["clipped_from"] = info["wave"]
+                    model = cut
+                    info.update(wave=model.as_dict(), scope_mz=list(model.mz_range),
+                                max_abs_ppm=round(model.max_abs_ppm(), 3))
+                    li = info.get("locks") or {}
+                    li["uncorrected_gaps"] = sorted((li.get("uncorrected_gaps") or []) + model.stats["clipped"])
+                    li["max_abs_ppm"] = info["max_abs_ppm"]
             if hold is not None:
                 info["held"] = hold
                 log(f"[mass-axis] {info['verdict']} NOT applied: {hold}")

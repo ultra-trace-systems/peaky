@@ -235,12 +235,15 @@ def test_a_hold_measures_the_lock_model_without_applying_it(stepped):
 
 
 def test_the_lock_cap_holds_an_axis_too_far_off(monkeypatch, stepped):
-    """A model whose correction reaches past LOCK_MAX_CORRECTION_PPM is measured,
+    """A model whose smooth curve reaches past LOCK_MAX_CORRECTION_PPM is measured,
     not applied: the PDF report matches the ledger to the uncorrected series
     within 8 ppm."""
     ts, _, model, info = stepped
-    far = dict(info, max_abs_ppm=AB.LOCK_MAX_CORRECTION_PPM + 2.0)
-    monkeypatch.setattr(AL, "fit", lambda *a, **k: (model, dict(far)))
+    d = model.as_dict()
+    d["segments"][0]["y"] = [y + AB.LOCK_MAX_CORRECTION_PPM for y in d["segments"][0]["y"]]
+    body = AL.AxisModel.from_dict(d)              # the smooth curve itself passes the cap
+    far = dict(info, max_abs_ppm=body.max_abs_ppm())
+    monkeypatch.setattr(AL, "fit", lambda *a, **k: (body, dict(far)))
     out, got, _ = AB.measure_axis(ts, "NO3", "orbitrap", log=_quiet)
     assert got["model"] == "locks" and not got["applied"] and "broken calibration" in got["held"]
     assert AB.AXIS_COL not in out.columns
@@ -686,6 +689,10 @@ def test_the_run_writes_the_locks_and_keeps_no_frame_in_its_summary(tmp_path, mo
 ])
 def test_the_lock_verdicts(monkeypatch, stepped, cv, raw, peak, applied, verdict):
     ts, _, model, info = stepped
+    if peak > AB.LOCK_MAX_CORRECTION_PPM:         # the smooth curve itself passes the cap
+        d = model.as_dict()
+        d["segments"][0]["y"] = [y + peak for y in d["segments"][0]["y"]]
+        model = AL.AxisModel.from_dict(d)
     fake = dict(info, cv_ppm=cv, raw_ppm=raw, max_abs_ppm=peak)
     monkeypatch.setattr(AL, "fit", lambda *a, **k: (model, dict(fake)))
     _, got, _ = AB.measure_axis(ts, "NO3", "orbitrap", log=_quiet)
@@ -827,3 +834,491 @@ def test_a_steep_rise_at_the_low_end_is_a_curve_not_outliers():
     assert model is not None, info.get("why")
     assert model.segments[0]["lo"] < 62.0
     assert len(_true_ions_off(model, truth, axis)) == 0
+
+
+# --- reach: one spectrum, restarts from seeds, steps the walk tilted across ------------
+
+def _dimers():
+    """Closed-shell CnHxNOy anions of three O-ladders one CH2 / H2 apart (C19H28,
+    C20H30, C20H32) -- dimer-like, m/z 400-600, joined to nothing below by one unit."""
+    out = []
+    for c, h in ((19, 28), (20, 30), (20, 32)):
+        for o in range(8, 19):
+            ion = AL.name({"C": c, "H": h, "N": 1, "O": o})
+            if 400 < AL.exact_mz(ion) < 600:
+                out.append(ion)
+    return out
+
+
+def _residuals(model, ions, axis):
+    th = np.array(sorted(AL.exact_mz(i) for i in ions))
+    meas = th * (1 + axis(th) * 1e-6)
+    inside = model.in_scope(meas)
+    return th, inside, axis(th) - np.where(inside, model.predict(meas), 0.0)
+
+
+def test_one_spectrum_is_modelled_without_a_recurrence_test():
+    """A batch of one spectrum (a single file's whole-file peak list) was refused --
+    'fewer than 2 spectra' -- and left uncorrected. Without recurrence the isotope
+    strike and the curve are the guards: every lock true, the ions on the axis."""
+    ts, truth = _batch(_stepped, n_files=1, seed=0)
+    model, info = AL.fit(ts, polarity="-", log=_quiet)
+    assert model is not None and info["single_spectrum"]
+    locks = pd.DataFrame(info["locks"])
+    # a noise peak recurs in the one spectrum it is in: a rare coincidence can lock, and
+    # sits within the curve's tolerance
+    assert len(locks) >= 100 and (~locks["ion"].isin(truth)).mean() <= 0.01
+    _, inside, resid = _residuals(model, truth, _stepped)
+    assert inside.mean() > 0.6 and np.mean(np.abs(resid[inside]) <= 0.5) > 0.9
+
+
+@pytest.mark.parametrize("step", [1.5, 0.0])
+def test_the_walk_restarts_from_seeds_past_a_stretch_no_unit_crosses(step):
+    """Monomer-like ions end below m/z 300, dimer-like ones start above 400: no unit
+    step joins them and the walk (anchors within ANCHOR_DA of its top) stopped at
+    the curve's end, the dimers left 1.5-2 ppm off. It restarts from seeds; a gap
+    that wide is never bridged, step or not -- its axis is unseen."""
+    axis = lambda m: 0.5 + 0.004 * (np.asarray(m, float) - 200) + step * (np.asarray(m, float) > 350)  # noqa: E731
+    low = [i for i in _truth(0) if AL.exact_mz(i) < 300]
+    ts, _ = _batch(axis, seed=0, truth=low + _dimers())
+    model, info = AL.fit(ts, polarity="-", log=_quiet)
+    assert any(s.get("seeded") for s in model.segments)
+    _, inside, resid = _residuals(model, _dimers(), axis)
+    assert inside.mean() > 0.7 and np.all(np.abs(resid[inside]) <= 0.5)
+    assert not model.in_scope(np.array([350.0])).any()
+    if step:
+        assert info["steps"] and not info["unseen_gaps"]
+    else:
+        assert info["unseen_gaps"] and not info["steps"] and not info["joins"]
+
+
+def test_splits_finds_a_step_and_not_a_slope():
+    """A walk's line accepts within SEG_TOL_PPM and refits as the walk climbs: across a
+    -0.8 ppm step between sparse, scattered locks it tilted and left the ions beside
+    the step 0.6-0.9 ppm off. The step is found: one slope, an offset per part."""
+    m = np.array([464.2, 464.2, 466.1, 466.2, 478.2, 478.2, 480.2, 494.2, 496.2, 510.2, 524.2, 528.2, 542.2])
+    noise = np.random.default_rng(0).normal(0, 0.08, len(m))
+    cuts, slope, offs = AL._splits(m, 3.0 - 0.012 * (m - 464) - 1.2 * (m > 500) + noise)
+    assert cuts == [0, 9] and abs(offs[1] - offs[0] + 1.2) < 0.25 and abs(slope + 0.012) < 0.01
+    cuts, _, _ = AL._splits(m, 1.0 + 0.03 * (m - 400) + noise)
+    assert cuts == [0]
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 3])
+@pytest.mark.parametrize("sep,floor", [(3.0, 0.0), (4.0, 0.0), (3.0, 12.0), (4.0, 12.0)])
+def test_a_peak_list_of_two_axis_states_moves_no_true_ion_the_wrong_way(seed, sep, floor):
+    """An acquisition whose axis moved 3-4 ppm part-way holds every ion twice in its
+    whole-file peak list (a copy under the peak picker's floor missing; copies closer than
+    the peak width merge into one centroid). Each copy's formula can be a seed, the seeds
+    sit on two lines, and a restart built a segment on the wrong state in half the
+    realisations, moving true ions ~3 ppm the wrong way."""
+    axis = lambda m: 0.5 + 0.004 * (np.asarray(m, float) - 200)        # noqa: E731
+    low = [i for i in _truth(seed) if AL.exact_mz(i) < 300]
+    ts, _ = _batch(axis, seed=seed, truth=low + _dimers())
+    up = ts[(ts["mz"] > 380) & (ts["height"] >= floor)].copy()
+    up["mz"] *= 1 + sep * 1e-6
+    ts = pd.concat([ts, up], ignore_index=True)
+    _, info, _ = AB.measure_axis(ts, "NO3", "orbitrap", log=_quiet)
+    assert not _no_true_ion_made_worse(info, _dimers(), axis)
+
+
+def test_a_walk_segment_past_the_cap_is_cut_and_the_rest_applied(monkeypatch, stepped):
+    """One walk segment's line reaching past LOCK_MAX_CORRECTION_PPM at its far end held
+    the whole model; that stretch is now left uncorrected and the rest applied."""
+    ts, _, model, info = stepped
+    d = model.as_dict()
+    d["segments"][-1]["a"] -= 3.6                       # the last line: -6.8 .. -7.3 ppm
+    far = AL.AxisModel.from_dict(d)
+    assert far.max_abs_ppm() > AB.LOCK_MAX_CORRECTION_PPM
+    monkeypatch.setattr(AL, "fit", lambda *a, **k: (far, dict(info, max_abs_ppm=far.max_abs_ppm())))
+    out, got, _ = AB.measure_axis(ts, "NO3", "orbitrap", log=_quiet)
+    assert got["applied"] and got["max_abs_ppm"] <= AB.LOCK_MAX_CORRECTION_PPM and "clipped_from" in got
+    assert np.abs(out[AB.AXIS_COL]).max() <= AB.LOCK_MAX_CORRECTION_PPM + 1e-6
+    cut = MQ.fit_from_record(got["wave"])
+    assert cut.segments[-1]["clipped"] and cut.segments[-1]["hi"] < far.segments[-1]["hi"]
+
+
+# --- refute round: radical aliases, walk joins, split parts ----------------------------
+
+def _rads(lo, hi, rng, n, *, nmin=0, nmax=1):
+    pool = [r for r in _radicals(lo, hi) if AL.parse(r)["C"] >= 10 and nmin <= AL.parse(r).get("N", 0) <= nmax]
+    return list(rng.choice(pool, n, replace=False))
+
+
+def _no_true_ion_made_worse(info, ions, axis):
+    """No true ion the applied model reaches ends > 0.5 ppm off AND further off than raw."""
+    if not info.get("applied"):
+        return []
+    model = MQ.fit_from_record(info["wave"])
+    th = np.array(sorted(AL.exact_mz(i) for i in ions))
+    meas = th * (1 + axis(th) * 1e-6)
+    err = (MQ.apply_correction(model, meas) - th) / th * 1e6
+    bad = model.in_scope(meas) & (np.abs(err) > np.maximum(0.5, np.abs(axis(th)) + 0.1))
+    return list(zip(th[bad].round(3), err[bad].round(2)))
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("n_rad,n_dim,nmin,nmax", [(80, 12, 0, 1), (40, 6, 0, 1), (80, 12, 3, 4)])
+def test_a_radical_band_above_a_stall_seeds_no_segment_on_its_alias_line(seed, n_rad, n_dim, nmin, nmax):
+    """Odd-electron ions (C >= 10) above a stretch no unit crosses read as their
+    N3 <-> C2H2O aliases (1.35 mDa: +2.2..3.4 ppm for N <= 1, -2.2..3.4 for N >= 3) --
+    unique, 13C-consistent, one family on one line. A restart seeded a segment there
+    (contested never fired: the true dimers are the minority) and moved the true dimers
+    ~3 ppm the wrong way, reporting a STEP the axis does not take."""
+    rng = np.random.default_rng(seed + 7)
+    axis = lambda m: 0.5 + 0.004 * (np.asarray(m, float) - 200)        # noqa: E731
+    dims = list(rng.choice(_dimers(), n_dim, replace=False))
+    rads = _rads(400, 600, rng, n_rad, nmin=nmin, nmax=nmax)
+    low = [i for i in _truth(seed) if AL.exact_mz(i) < 300]
+    ts, _ = _batch(axis, seed=seed, truth=low + dims + rads)
+    _, info, _ = AB.measure_axis(ts, "NO3", "orbitrap", log=_quiet)
+    assert not _no_true_ion_made_worse(info, dims, axis)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_radicals_past_a_step_out_of_the_seed_window_seed_nothing(seed):
+    """A +3.8 ppm step puts the true dimers 5.7 ppm off -- outside LOCK_PPM, so none of
+    them is a seed -- and 40 radicals' O3 <-> C3N(-H2) aliases (2.7 mDa) sit 3.6 ppm
+    below the axis: a restart built that line and moved the dimers from 5.7 to 6.5 ppm off."""
+    rng = np.random.default_rng(seed + 19)
+    axis = lambda m: 1.5 + 0.002 * (np.asarray(m, float) - 200) + 3.8 * (np.asarray(m, float) > 350)  # noqa: E731
+    low = [i for i in _truth(seed) if AL.exact_mz(i) < 300]
+    rads = _rads(400, 600, rng, 40)
+    ts, _ = _batch(axis, seed=seed, truth=low + _dimers() + rads)
+    _, info, _ = AB.measure_axis(ts, "NO3", "orbitrap", log=_quiet)
+    assert not _no_true_ion_made_worse(info, _dimers(), axis)
+
+
+def test_a_walk_join_wider_than_join_max_is_still_bridged():
+    """JOIN_MAX_DA (30 Da) was meant for gaps a RESTART leaves; it also cut a 41 Da join
+    the plain walk made (no seed involved) on a flat +2 ppm axis, and the 80 true ions in
+    the gap -- seen in half the spectra, so not locks -- went from 0.0 to 2.0 ppm off."""
+    axis = lambda m: np.full(np.shape(m), 2.0)                          # noqa: E731
+    truth = _truth(2)
+    hole = [x for x in truth if 295.0 < AL.exact_mz(x) < 335.0]
+    ts, _ = _batch(axis, seed=2, truth=truth)
+    drop = np.zeros(len(ts), bool)
+    for x in hole:
+        th = AL.exact_mz(x)
+        for t in (th, th + AL.D13C):
+            drop |= ((ts["mz"] - t).abs() / t < 10e-6) & ts["sample_item_id"].isin(["s3", "s4", "s5"])
+    model, info = AL.fit(ts[~drop].reset_index(drop=True), polarity="-", log=_quiet)
+    assert not any(s.get("seeded") for s in model.segments)              # the walk alone
+    th = np.array([AL.exact_mz(x) for x in hole])
+    assert model.in_scope(th * (1 + 2e-6)).mean() > 0.9, info["unseen_gaps"]
+
+
+def test_splits_never_makes_a_part_too_small_to_validate():
+    """A 2-lock part is its own segment (n=2): _segment_cv needs 4 and never checks it,
+    SEG_MIN_LOCKS (5, 'a family of radicals put 3-4 self-consistent wrong locks on one
+    line') no longer applies to it. Two locks at the segment's end 0.8 ppm off split off."""
+    m = np.arange(400.0, 426.0, 2.0)
+    e = np.r_[np.zeros(11), 0.8, 0.82] + np.random.default_rng(1).normal(0, 0.03, 13)
+    cuts, _, _ = AL._splits(m, e)
+    assert min(np.diff(cuts + [len(m)])) >= 4, cuts
+
+
+def test_clipped_drops_a_flat_line_segment_past_the_cap():
+    spline = {"kind": "spline", "lo": 100.0, "hi": 300.0, "n": 50,
+              "x": np.array([100.0, 300.0]), "y": np.array([1.0, 1.0])}
+    flat = {"kind": "line", "lo": 400.0, "hi": 450.0, "n": 8, "a": 8.0, "b": 0.0}
+    cut = AL.AxisModel(segments=[spline, flat]).clipped(7.0)
+    assert [s["kind"] for s in cut.segments] == ["spline"]
+
+
+def test_one_outlier_lock_is_never_its_own_part():
+    m = np.arange(400.0, 426.0, 2.0)
+    e = np.r_[np.zeros(12), 0.9] + np.random.default_rng(1).normal(0, 0.03, 13)
+    assert AL._splits(m, e)[0] == [0]
+
+
+def test_scatter_alone_seldom_splits():
+    m = np.arange(400.0, 426.0, 2.0)
+    n = sum(len(AL._splits(m, np.random.default_rng(s).normal(0, 0.3, 13))[0]) > 1 for s in range(200))
+    assert n <= 10, n                       # 5 / 200 with the SSE rule, 63 / 200 without
+
+
+def test_a_small_clean_step_is_no_split():
+    m = np.arange(400.0, 426.0, 2.0)
+    e = np.r_[np.zeros(7), np.full(6, 0.3)] + np.random.default_rng(2).normal(0, 0.02, 13)
+    assert AL._splits(m, e)[0] == [0]
+
+
+def test_a_seed_needs_a_measured_13c_line(monkeypatch):
+    """After the curve is fitted, the only +-LOCK_PPM candidate search is the seed scan;
+    it must never look at a bin without a measured 13C line. The dimers above m/z 500
+    lose their 13C lines here."""
+    truth = [i for i in _truth(0) if AL.exact_mz(i) < 300] + _dimers()
+    ts, _ = _batch(lambda q: 0.5 + 0.004 * (np.asarray(q, float) - 200), seed=0, truth=truth)
+    drop = np.zeros(len(ts), bool)
+    for x in _dimers():
+        t = AL.exact_mz(x) + AL.D13C
+        if t > 500:
+            drop |= (ts["mz"] - t).abs() / t < 10e-6
+    ts = ts[~drop].reset_index(drop=True)
+    calls, real = [], AL._candidates
+
+    def spy(b, space, bins, mz, tol):
+        calls.append((tol, bool(np.isfinite(b.r13))))
+        return real(b, space, bins, mz, tol)
+
+    monkeypatch.setattr(AL, "_candidates", spy)
+    AL.fit(ts, polarity="-", log=_quiet)
+    first_narrow = next(k for k, (tol, _) in enumerate(calls) if tol == AL.NARROW_PPM)
+    late = [ok13 for tol, ok13 in calls[first_narrow:] if tol == AL.LOCK_PPM]
+    assert late and all(late)
+
+
+def test_a_true_family_with_a_minority_of_radicals_is_built_from_its_first_seed():
+    for seed in (0, 1):
+        rng = np.random.default_rng(seed + 29)
+        axis = lambda q: 0.8 + 0.004 * (np.asarray(q, float) - 200)             # noqa: E731
+        dims = []
+        for c, h in ((19, 28), (20, 30), (20, 32), (18, 26), (19, 30)):
+            dims += [AL.name({"C": c, "H": h, "N": 1, "O": o}) for o in range(8, 19)
+                     if 400 < AL.exact_mz(AL.name({"C": c, "H": h, "N": 1, "O": o})) < 600]
+        dims = list(rng.choice(dims, len(dims), replace=False))
+        pool = [r for r in _radicals(400, 600) if AL.parse(r)["C"] >= 10 and AL.parse(r).get("N", 0) <= 1]
+        rads = list(rng.choice(pool, 30, replace=False))
+        low = [i for i in _truth(seed) if AL.exact_mz(i) < 300]
+        ts, _ = _batch(axis, seed=seed, truth=low + dims + rads)
+        _, info, _ = AB.measure_axis(ts, "NO3", "orbitrap", log=_quiet)
+        model = MQ.fit_from_record(info["wave"])
+        th = np.array([AL.exact_mz(i) for i in dims])
+        meas = th * (1 + axis(th) * 1e-6)
+        err = (MQ.apply_correction(model, meas) - th) / th * 1e6
+        assert np.mean(np.abs(err) <= 0.5) >= 0.97 and not info["locks"].get("contested")
+
+
+def test_a_twenty_da_hole_is_bridged_as_a_join():
+    truth = [i for i in _truth(5) if not 300 < AL.exact_mz(i) < 322]
+    ts, truth = _batch(lambda q: np.full(np.shape(q), 2.0), seed=5, truth=truth)
+    model, info = AL.fit(ts, polarity="-", log=_quiet)
+    assert not info["unseen_gaps"]
+    grid = np.linspace(302.0, 320.0, 50) * (1 + 2e-6)
+    assert model.in_scope(grid).all(), (info["joins"], info["uncorrected_gaps"])
+
+
+def test_a_step_inside_a_walk_segment_is_followed():
+    """A -2.5 ppm step at m/z 300 ends the curve; the walk climbs monomers + dimers and
+    meets a +1.2 ppm step at 360 that its line tilts across. With the split: 2 true
+    ions > 0.5 ppm off; with one line: 15."""
+    axis = lambda q: (1.5 - 0.004 * (np.asarray(q, float) - 300) - 2.5 * (np.asarray(q, float) > 300)   # noqa: E731
+                      + 1.2 * (np.asarray(q, float) > 360))
+    truth = _truth(1) + [i for i in _dimers()]
+    ts, _ = _batch(axis, seed=1, truth=truth)
+    ts = ts.copy()
+    _, info, _ = AB.measure_axis(ts, "NO3", "orbitrap", log=_quiet)
+    model = MQ.fit_from_record(info["wave"])
+    th = np.array(sorted(AL.exact_mz(i) for i in truth))
+    meas = th * (1 + axis(th) * 1e-6)
+    err = (MQ.apply_correction(model, meas) - th) / th * 1e6 if info.get("applied") else axis(th)
+    assert int((np.abs(err) > 0.5).sum()) <= 5
+
+
+def test_every_walk_lock_sits_on_its_segment_line():
+    for seed in (1, 5):
+        rng = np.random.default_rng(seed + 50)
+        base = _truth(seed)
+        odd = [i for i in _radicals(355, 440) if AL.parse(i)["C"] >= 6 and AL.parse(i)["O"] >= 4]
+        ts, _ = _batch(lambda q: 2.4 * np.exp(-((np.asarray(q, float) - 205.0) / 85.0) ** 2)
+                       - 0.03 * np.maximum(np.asarray(q, float) - 300.0, 0.0)
+                       - 2.6 * (np.asarray(q, float) > 364.6) + 2.2 * (np.asarray(q, float) > 394.0),
+                       seed=seed, truth=base + list(rng.choice(odd, 80, replace=False)))
+        model, info = AL.fit(ts, polarity="-", log=_quiet)
+        for k, s in enumerate(model.segments):
+            if s["kind"] != "line":
+                continue
+            own = [v for v in info["locks"] if v["how"] == f"segment {k + 1}"]
+            for v in own:
+                assert abs(v["ppm"] - (s["a"] + s["b"] * (v["mz"] - 400.0))) <= AL.SEG_TOL_PPM + 0.05, (k, v)
+
+
+def test_two_spectra_keep_the_recurrence_test():
+    ts, _ = _batch(seed=0, n_files=2)
+    _, info = AL.fit(ts, polarity="-", log=_quiet)
+    assert info["single_spectrum"] is False
+
+
+# --- refute round 2: a real step under a radical alias, the lazy scan, the clip record --
+
+def _flood(seed, step, nmin, nmax):
+    rng = np.random.default_rng(seed + 7)
+    axis = lambda m: (0.5 + 0.004 * (np.asarray(m, float) - 200)            # noqa: E731
+                      + step * (np.asarray(m, float) > 350))
+    dims = list(rng.choice(_dimers(), 12, replace=False))
+    rads = _rads(400, 600, rng, 80, nmin=nmin, nmax=nmax)
+    low = [i for i in _truth(seed) if AL.exact_mz(i) < 300]
+    ts, _ = _batch(axis, seed=seed, truth=low + dims + rads)
+    return ts, dims, axis
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("step", [-2.6, -2.0])
+def test_a_real_step_does_not_bring_a_radical_alias_under_the_jump_cap(seed, step):
+    """The N3 <-> C2H2O alias of N <= 1 radicals sits +3.4 ppm off at m/z 400; a real
+    -2.6 ppm step (the one measured on the Orbitrap) brings that line to +0.8..1.9 from the
+    axis below -- under SEED_JUMP_MAX -- while the true family's -2.6 is over it: the cap
+    picks the alias: 1-17 true ions 2.7-3.3 ppm the wrong way, a STEP of +1.3
+    reported for a -2.6 one."""
+    ts, dims, axis = _flood(seed, step, 0, 1)
+    _, info, _ = AB.measure_axis(ts, "NO3", "orbitrap", log=_quiet)
+    assert not _no_true_ion_made_worse(info, dims, axis)
+
+
+def _radicals_n34(lo, hi):
+    """Odd-electron anions C10-21 with N = 3-4 (their N3 <-> C2H2O alias drops 3 N)."""
+    out = []
+    for c in range(10, 22):
+        for h in range(3, 2 * c + 4):
+            for n in (3, 4):
+                if (h + n) % 2:
+                    continue
+                for o in range(2, 16):
+                    if o <= 2 * c + 3 * n + 2:
+                        ion = AL.name({"C": c, "H": h, "N": n, "O": o})
+                        if lo < AL.exact_mz(ion) < hi:
+                            out.append(ion)
+    return out
+
+
+@pytest.mark.xfail(strict=True, reason="known limit: radicals with N >= 3 read as their N0-1 aliases "
+                   "(C2H2O <-> N3) after a positive step, under SEED_JUMP_MAX and SEED_MAX_N")
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_no_segment_on_a_radical_alias_line_after_a_positive_step(seed):
+    """N >= 3 radicals alias 3.4 ppm BELOW the axis; a real +2.6 step brings that line
+    under the cap, and it was applied: the true dimers stay ~3 ppm off (from 4.2 raw), and
+    no STEP is reported."""
+    rng = np.random.default_rng(seed + 23)
+    axis = lambda m: (0.5 + 0.004 * (np.asarray(m, float) - 200)            # noqa: E731
+                      + 2.6 * (np.asarray(m, float) > 350))
+    rads = list(rng.choice(_radicals_n34(400, 600), 80, replace=False))
+    dims = list(rng.choice(_dimers(), 12, replace=False))
+    low = [i for i in _truth(seed) if AL.exact_mz(i) < 300]
+    ts, _ = _batch(axis, seed=seed, truth=low + dims + rads)
+    model, info = AL.fit(ts, polarity="-", log=_quiet)
+    alias = [v for v in info["locks"] if str(v["how"]).startswith("segment") and v["mz"] > 380
+             and v["ion"] not in set(dims)]
+    assert len(alias) < 5, (len(alias), [(s["lo"], s["hi"], s.get("a")) for s in model.segments])
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_alias_seeds_do_not_cost_the_true_family_its_segment(seed):
+    """Dense dimers with 60 radicals among them: the true segment (jump ~0.4 ppm) reads
+    41 seeds on its line and 28 off (the radicals' aliases, 3.4 ppm off -- a line the jump
+    cap would never build), so it is contested, and the contested-span skip then gives the
+    whole stretch up: the dimers stayed uncorrected."""
+    rng = np.random.default_rng(seed + 29)
+    axis = lambda m: 0.8 + 0.004 * (np.asarray(m, float) - 200)               # noqa: E731
+    dims = []
+    for c, h in ((19, 28), (20, 30), (20, 32), (18, 26), (19, 30)):
+        dims += [AL.name({"C": c, "H": h, "N": 1, "O": o}) for o in range(8, 19)
+                 if 400 < AL.exact_mz(AL.name({"C": c, "H": h, "N": 1, "O": o})) < 600]
+    dims = list(rng.choice(dims, len(dims), replace=False))
+    rads = _rads(400, 600, rng, 60)
+    low = [i for i in _truth(seed) if AL.exact_mz(i) < 300]
+    ts, _ = _batch(axis, seed=seed, truth=low + dims + rads)
+    _, info, _ = AB.measure_axis(ts, "NO3", "orbitrap", log=_quiet)
+    model = MQ.fit_from_record(info["wave"])
+    th = np.array([AL.exact_mz(i) for i in dims])
+    meas = th * (1 + axis(th) * 1e-6)
+    err = (MQ.apply_correction(model, meas) - th) / th * 1e6 if info.get("applied") else axis(th)
+    assert np.mean(np.abs(err) <= 0.5) >= 0.9
+
+
+def test_n_seed_bins_counts_the_lazy_scan():
+    """info['n_seed_bins'] is read before the lazy seed scan runs: 0 on every batch, also
+    on one that restarts 2-6 times."""
+    axis = lambda m: 0.5 + 0.004 * (np.asarray(m, float) - 200)               # noqa: E731
+    ts, _ = _batch(axis, seed=0, truth=[i for i in _truth(0) if AL.exact_mz(i) < 300] + _dimers())
+    _, info = AL.fit(ts, polarity="-", log=_quiet)
+    assert info["n_restarts"] > 0 and info["n_seed_bins"] > 0
+
+
+def test_clipped_lists_a_dropped_segment():
+    spline = {"kind": "spline", "lo": 100.0, "hi": 300.0, "n": 50,
+              "x": np.array([100.0, 300.0]), "y": np.array([1.0, 1.0])}
+    over = {"kind": "line", "lo": 400.0, "hi": 450.0, "n": 8, "a": 8.0, "b": 0.01}
+    cut = AL.AxisModel(segments=[spline, over]).clipped(7.0)
+    assert cut.stats["clipped"] == [[400.0, 450.0]]
+
+
+def test_the_clipped_stretch_is_an_uncorrected_gap(monkeypatch):
+    ts, _ = _batch(_stepped, seed=0)
+    model, info = AL.fit(ts, polarity="-", log=_quiet)
+    d = model.as_dict()
+    d["segments"][-1]["a"] -= 3.6
+    far = AL.AxisModel.from_dict(d)
+    monkeypatch.setattr(AL, "fit", lambda *a, **k: (far, dict(info, max_abs_ppm=far.max_abs_ppm())))
+    _, got, _ = AB.measure_axis(ts, "NO3", "orbitrap", log=_quiet)
+    cut = AL.AxisModel.from_dict(got["wave"]).segments[-1]
+    gaps = got["locks"]["uncorrected_gaps"]
+    assert any(abs(a - round(cut["hi"], 3)) < 1e-3 for a, _ in gaps), gaps
+
+
+def test_a_radical_alias_contested_by_the_cap_is_recorded(monkeypatch):
+    """With seeds of any N, a band of radicals seeds its aliases' line: the jump cap
+    refuses it, and the refusal is recorded (and logged)."""
+    monkeypatch.setattr(AL, "SEED_MAX_N", 4)
+    rng = np.random.default_rng(7)
+    axis = lambda m: 0.5 + 0.004 * (np.asarray(m, float) - 200)               # noqa: E731
+    dims = list(rng.choice(_dimers(), 12, replace=False))
+    rads = _rads(400, 600, rng, 80)
+    ts, _ = _batch(axis, seed=0, truth=[i for i in _truth(0) if AL.exact_mz(i) < 300] + dims + rads)
+    _, info = AL.fit(ts, polarity="-", log=_quiet)
+    assert any(abs(c["jump_ppm"]) > AL.SEED_JUMP_MAX for c in info.get("contested", []))
+
+
+def test_a_restart_past_a_twenty_da_stretch_is_joined():
+    axis = lambda m: 0.5 + 0.004 * (np.asarray(m, float) - 200)               # noqa: E731
+    low = [i for i in _truth(0) if AL.exact_mz(i) < 396]
+    ts, _ = _batch(axis, seed=0, truth=low + _dimers())
+    model, info = AL.fit(ts, polarity="-", log=_quiet)
+    seeded = [s for s in model.segments if s.get("seeded")]
+    assert seeded and not info["unseen_gaps"], (info["unseen_gaps"], info["joins"])
+
+
+# --- refute round 3: a contested family must not hide the one above; chained restarts ---
+
+def _ladders(lo, hi, ladders, olo, ohi):
+    out = []
+    for c, h in ladders:
+        for o in range(olo, ohi + 1):
+            ion = AL.name({"C": c, "H": h, "N": 1, "O": o})
+            if lo < AL.exact_mz(ion) < hi:
+                out.append(ion)
+    return out
+
+
+def _chain(seed, b=0.004, s1=0.0, s2=0.0):
+    """Monomers below m/z 300, dimer ladders at 400-500, trimer ladders at 560-720: two
+    restarts, the second past a gap wider than a join bridges."""
+    axis = lambda m: (0.5 + b * (np.asarray(m, float) - 200) + s1 * (np.asarray(m, float) > 350)  # noqa: E731
+                      + s2 * (np.asarray(m, float) > 530))
+    dims = [x for x in _dimers() if AL.exact_mz(x) < 500]
+    tri = _ladders(560, 720, ((29, 44), (30, 46), (31, 48)), 12, 24)
+    low = [i for i in _truth(seed) if AL.exact_mz(i) < 300]
+    ts, _ = _batch(axis, seed=seed, truth=low + dims + tri)
+    return ts, tri, axis
+
+
+@pytest.mark.parametrize("seed", [0, 1])
+def test_a_contested_family_does_not_hide_the_family_above_it(seed):
+    """Dimers 2.4 ppm above the curve are contested by the jump cap from seed after seed;
+    each contest of the same span counted toward CONTEST_STREAK, the walk stopped, and the
+    trimers 100 Da higher -- back at the curve's level -- stayed 2.3 ppm off."""
+    ts, tri, axis = _chain(seed, s1=2.4, s2=-2.4)
+    model, info = AL.fit(ts, polarity="-", log=_quiet)
+    th, inside, resid = _residuals(model, tri, axis)
+    assert inside.mean() > 0.8 and np.mean(np.abs(resid[inside]) <= 0.5) > 0.9, info.get("contested")
+
+
+@pytest.mark.parametrize("seed", [0, 1])
+def test_a_restart_above_a_segment_from_seeds_is_judged_against_it(seed):
+    """On an axis rising 0.01 ppm/Da, trimers 60 Da past a segment from seeds were judged
+    against the curve 300 Da below, held flat: the trend read as a 3 ppm jump, the
+    trimers were contested and left 4 ppm off."""
+    ts, tri, axis = _chain(seed, b=0.01)
+    model, info = AL.fit(ts, polarity="-", log=_quiet)
+    th, inside, resid = _residuals(model, tri, axis)
+    assert inside.mean() > 0.8 and np.mean(np.abs(resid[inside]) <= 0.5) > 0.9, info.get("contested")
