@@ -78,6 +78,15 @@ _SCORING_CACHE: dict = {}
 _SCORING_TREND: dict = {}
 _SCORING_TREND_INHERITED: set = set()
 
+#: Per-sample isotope-line scoring (assignment/iso_response.py): {"col": "area" | "height", "resp": a fitted
+#: response dict or None}. assign.run records it for every run (`PassConfig.iso_response`; "height" when off):
+#: the local scorer reads every line's ratio by `col` and, with a response, matches a minor C / O line in
+#: the band [the response's lower end at the line's expected S/N, its natural share] (iso_response.band).
+#: Absent: height, against the natural abundance.
+#: `_ISO_SCORING_INHERITED` holds the ids whose scoring came with a stand-in's snapshot, which a new run keeps.
+_ISO_SCORING: dict = {}
+_ISO_SCORING_INHERITED: set = set()
+
 #: The batch's m/z-axis correction (`peaky batch --mass-axis`): a
 #: `batch.axislock.AxisModel` or a `wave.WaveFit` (batch.massqc.correction) per sample id. `fetch_peaks` hands
 #: back every listed sample's peak table (an offline one included) with `mz`
@@ -166,6 +175,28 @@ def reset_scoring_trend(sample_id: str) -> None:
         # the cached snapshot names the trend; the next scoring_for_sample
         # recomputes it from the (cached) peaks
         _SCORING_CACHE.pop(sample_id, None)
+
+
+def set_iso_scoring(sample_id: str, *, col: str = "area", resp: dict | None = None) -> None:
+    """Score this sample's isotope lines by `col` and against the response `resp` from now on (the
+    sample's scoring snapshot records both, `iso_scoring`)."""
+    _ISO_SCORING[sample_id] = {"col": col, "resp": resp}
+
+
+def iso_scoring(sample_id: str) -> dict | None:
+    """The sample's isotope-line scoring ({"col", "resp"}), or None (height, unscaled)."""
+    return _ISO_SCORING.get(sample_id)
+
+
+def iso_scoring_inherited(sample_id: str) -> bool:
+    """Did the sample's isotope-line scoring come with a stand-in's snapshot (a decoy arm)?"""
+    return sample_id in _ISO_SCORING_INHERITED
+
+
+def reset_iso_scoring(sample_id: str) -> None:
+    """Forget the isotope-line scoring the sample's OWN run set; one inherited with a stand-in's snapshot stays."""
+    if sample_id not in _ISO_SCORING_INHERITED:
+        _ISO_SCORING.pop(sample_id, None)
 
 
 def _find_env(explicit: str | None = None) -> str:
@@ -534,6 +565,8 @@ def register_offline_sample(sample_id: str, peaks: pd.DataFrame, mechanisms=(), 
     _SCORING_CACHE.pop(sample_id, None)
     _SCORING_TREND.pop(sample_id, None)
     _SCORING_TREND_INHERITED.discard(sample_id)
+    _ISO_SCORING.pop(sample_id, None)
+    _ISO_SCORING_INHERITED.discard(sample_id)
 
 
 def _check_offline_scoring(scoring) -> None:
@@ -595,6 +628,8 @@ def unregister_offline_sample(sample_id: str) -> None:
     _SCORING_CACHE.pop(sample_id, None)
     _SCORING_TREND.pop(sample_id, None)
     _SCORING_TREND_INHERITED.discard(sample_id)
+    _ISO_SCORING.pop(sample_id, None)
+    _ISO_SCORING_INHERITED.discard(sample_id)
 
 
 def is_offline_sample(sample_id: str) -> bool:
@@ -933,6 +968,13 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
             # the measured sample was scored at its mass trend: so is its stand-in
             _SCORING_TREND[sample_id] = _trend_from_record(given["trend"])
             _SCORING_TREND_INHERITED.add(sample_id)
+        if isinstance(given, dict):
+            # the stand-in's isotope lines are read as the measured sample's were: by area / against its
+            # response where its snapshot records that, else by height (a run that read them so, or one
+            # recorded before the record existed)
+            iso = given.get("iso_scoring")
+            _ISO_SCORING[sample_id] = dict(iso) if isinstance(iso, dict) else {"col": "height", "resp": None}
+            _ISO_SCORING_INHERITED.add(sample_id)
         return scoring
     try:
         record = client.samples.get(sample_id)
@@ -1095,7 +1137,14 @@ def scoring_snapshot(client, sample_id: str, peaks: pd.DataFrame | None = None) 
     which is the first question about any disagreement between them.
     """
     scoring_for_sample(client, sample_id, peaks)
-    return dict(_SCORING_CACHE[sample_id][1])
+    snap = dict(_SCORING_CACHE[sample_id][1])
+    # the isotope-line scoring in force (set_iso_scoring, or a stand-in's inherited one): its one record
+    iso = _ISO_SCORING.get(sample_id)
+    if iso:
+        snap["iso_scoring"] = dict(iso)
+    else:
+        snap.pop("iso_scoring", None)
+    return snap
 
 
 def describe_scoring(scoring, *, instrument_type: str | None = None) -> str:
@@ -1349,10 +1398,13 @@ def _score_candidates_local(client, sample_id, formulas, mechanism_ids):
     # operator setting 15 for a TOF was saying what the class already knows,
     # and nothing said it for the width the mass is then scored against.
     scoring = scoring_for_sample(client, sample_id, raw)
+    iso = iso_scoring(sample_id) or {}
     out = local_scoring.score_candidates_local(
         peaks_for_scoring(sample_id, raw), formulas, mechanisms=mechs,
         scoring=scoring,
         centre=scoring_trend(sample_id),
+        intensity_col=iso.get("col") or "height",
+        iso_response=iso.get("resp"),
     )
     out.attrs["match_batches"] = 0
     out.attrs["match_batch_failures"] = []

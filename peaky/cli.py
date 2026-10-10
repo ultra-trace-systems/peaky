@@ -230,6 +230,8 @@ def cmd_assign(args) -> None:
         cfg.tof_flag_mz = args.tof_flag_mz
     if getattr(args, "no_sidelobe_guard", False):
         cfg.sidelobe_guard = False
+    if getattr(args, "iso_response", None):
+        cfg.iso_response = args.iso_response
     profiles.apply_height_cutoff_x_edge(cfg, prof,
                                         explicit=args.height_cutoff_x_edge, log=print)
     profiles.apply_ion_only_channels(cfg, prof, log=print)
@@ -376,12 +378,17 @@ def _write_assign_outputs(args, out, base) -> None:
 
 
 def _sidelobe_cfg(args) -> dict:
-    """{'cfg': a PassConfig with the side-lobe guard off} when --no-sidelobe-guard
-    was given, else {} (the run builds its default PassConfig)."""
-    if not getattr(args, "no_sidelobe_guard", False):
+    """{'cfg': a PassConfig with the side-lobe guard off (--no-sidelobe-guard) and / or the isotope-line
+    scoring chosen (--iso-response)} when either was given, else {} (the run builds its default PassConfig)."""
+    kw = {}
+    if getattr(args, "no_sidelobe_guard", False):
+        kw["sidelobe_guard"] = False
+    if getattr(args, "iso_response", None):
+        kw["iso_response"] = args.iso_response
+    if not kw:
         return {}
     from peaky.assignment import passes
-    return {"cfg": passes.PassConfig(sidelobe_guard=False)}
+    return {"cfg": passes.PassConfig(**kw)}
 
 
 def cmd_batch(args) -> None:
@@ -1134,6 +1141,16 @@ def _add_sidelobe_flag(p) -> None:
                         "'sidelobe_guard'). No effect off an Orbitrap")
 
 
+def _add_iso_response_flag(p) -> None:
+    p.add_argument("--iso-response", dest="iso_response", choices=("auto", "area", "off"), default=None,
+                   help="how an Orbitrap-class run reads its isotope lines (PassConfig.iso_response): 'auto' "
+                        "(default) by peak area, against the file's own minor-line response fitted on its "
+                        "committed CHO/CHON rows after calibration (a 13C line near the scans' detection floor "
+                        "reads low in the summed peak list); 'area' by area against the natural abundance; "
+                        "'off' by height against the natural abundance (as 0.10.0b1 reads them). The per-file stats "
+                        "record 'iso_response'. No effect off an Orbitrap")
+
+
 def _add_isotopologue_flag(p) -> None:
     p.add_argument("--no-isotopologue-gate", dest="no_isotopologue_gate", action="store_true", default=False,
                    help="keep merged rows that sit on another merged ion's isotope line (13C, 18O, 15N, "
@@ -1269,6 +1286,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_corroborate_flag(pa)
     _add_tof_flag_arg(pa)
     _add_sidelobe_flag(pa)
+    _add_iso_response_flag(pa)
     _add_progress_flag(pa)
     pa.set_defaults(func=cmd_assign)
 
@@ -1300,6 +1318,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_tof_flag_arg(pb)
     _add_mass_axis_flag(pb)
     _add_sidelobe_flag(pb)
+    _add_iso_response_flag(pb)
     _add_isotopologue_flag(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
@@ -1346,6 +1365,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_tof_flag_arg(pp)
     _add_mass_axis_flag(pp)
     _add_sidelobe_flag(pp)
+    _add_iso_response_flag(pp)
     _add_isotopologue_flag(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "

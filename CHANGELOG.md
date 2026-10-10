@@ -8,6 +8,54 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Orbitrap isotope lines are read by peak area, against the file's own minor-line response
+  (`PassConfig.iso_response`, `--iso-response {auto,area,off}` on assign / batch / pool).** An
+  Orbitrap scan keeps a line only where it clears that scan's detection floor, and the whole-file
+  peak list sums the scans: a minor 13C / 18O line near the floor reads low -- by area about 0.3x
+  its natural share where the line's expected S/N in the summed list is ~20 on 1-microscan files,
+  0.9-1.0x once it clears every scan -- and by height lower still. Scored by height against the
+  natural abundance, a true C10 product whose 13C line read 17 % low missed the pass-1 score
+  floor, and a 13C carbon count read C3-C6 and the carbon clamps cleared the formula. On an
+  Orbitrap-class run scored locally whose peaks carry areas (`auto`, the default), every line's
+  ratio is now read by area, and once calibrate has run the file fits its own response
+  (`assignment/iso_response.py`) on the 13C lines of its committed CHO / CHON rows: per bin of
+  expected line S/N, the median and the 20th percentile of observed / expected, made
+  non-decreasing and capped at 1.0. Where that response is material (lowest point under 0.9) the
+  file re-runs once from pass 0 against it: the scorer matches a minor C / O line anywhere in
+  [the 20th percentile at its expected S/N, its natural share] -- a reading inside costs nothing,
+  one outside is charged from the nearer end, and an absent line is judged visible at the lower
+  end; the 13C carbon clamps clear a formula only where the height reading and the
+  response-corrected area reading contradict it in the same direction; the missing-13C clear and
+  the 13C sweeper judge against the censored expectation; stage A's carbon bracket is the union
+  of both readings. A decoy arm judged at a run's snapshot reads its lines as that run did (by
+  height where the snapshot records no isotope-line scoring) and fits nothing; `stats
+  ['iso_response']` records the mode, the response measured and the one applied, and why. End to
+  end, against independently reported flow-reactor products (Assigned / Assigned + Candidate):
+  10 -> 17 / 23 -> 35 of 60 on one file, 9 -> 17 / 21 -> 28 of 60 on a three-file pool, 4 -> 6 /
+  6 -> 7 of 40; against an independent expert assignment of 934 ions on a nitrate batch's 1- and
+  100-microscan files, 390 -> 421 / 463 -> 488 and 532 -> 546 / 759 -> 761, with Assigned ions
+  off that list 12 -> 9 and 7 -> 7; on deuterium-labelled files Assigned N3+ formulas 14 -> 3.
+  The release acceptance set holds at 107 of 117 true readings Assigned and 0 of 30 known-false
+  ones (with the halogen re-read below; without it 106 and 1). Known limits: an over-claim on a
+  DIM line is no longer cleared by its 13C line (where the response is 0.64, C9 at its natural
+  share and C14 at 0.64 of its share read the same); on one Orbitrap, mid-S/N 13C lines read
+  7-13 % above their natural share by area (a dim line's fitted width is 1.1-1.35x its M0's) and
+  are charged as before; concurrent runs of one sample share the per-sample isotope-line state,
+  as they share the mass trend.
+- **A committed halogen-free reading whose 37Cl / 81Br twin sits unexplained is re-read by the
+  halogen recovery.** In a 15N-nitrate run Cl and C2H-4 15N are 0.044 mDa apart, so every
+  chlorinated [M-H]- ion is mass-identical to a [M+^NO3]- reading with two more carbons; only the
+  13C line and the 37Cl line tell them apart. `cleanup.recover_isotope_gated` now also scores a
+  committed, unlocked M0 whose ion carries no Cl / Br while an unexplained line sits at its exact
+  37Cl or 81Br M+2 offset (within `HALOGEN_TWIN_PPM` 2 ppm; the nearer offset names the halogen)
+  at the one-halogen ratio (`cleanup._halogen_twins`), and replaces the reading only with a CHO +
+  halogen formula that passes every recovery gate. Not taken: a Cl twin of a Si-bearing ion (its
+  30Si line sits 0.2 mDa from 37Cl), a line at an isotope offset of another committed M0, an
+  incumbent with an attached label-copy / N / S / Si line. The recovered row's commentary names
+  the reading it replaced; `stats['halogen_twin_swaps']`. On a 15N-nitrate acceptance batch it
+  re-reads a C8-C10 chlorinated [M-H]- series (merged Assigned 498 -> 519); on the other
+  reference batches it never fires. Known limit: it decides per file, and the merge's
+  evidence-before-count vote can let one re-read file decide the batch's reading.
 - **Precision gates keyed on the run's instrument class: Orbitrap side lobes, merged
   isotopologue rows, element evidence for widened heteroatoms, and the carbon skeleton of
   organonitrates (`--no-sidelobe-guard` and `--no-isotopologue-gate` turn the first two

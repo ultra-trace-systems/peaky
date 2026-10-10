@@ -130,6 +130,25 @@ def with_poisson_snr(peaks: pd.DataFrame, edge: float | None, *, height_col: str
     return p
 
 
+def pred_nat_i(pred_int, i) -> float:
+    """line i's natural-abundance share of the M0 (index 0)"""
+    return float(pred_int[i] / pred_int[0])
+
+
+def _respond(pred_rel, labels, snr0, resp):
+    """The lower end of every minor carbon / oxygen line's band: its predicted share x the response's lower
+    end at that line's expected S/N (the M0's S/N x its predicted share; iso_response.band); other lines
+    and the M0 unchanged."""
+    from peaky.assignment import iso_response as IR
+
+    out = np.array(pred_rel, dtype=float, copy=True)
+    for i, lab in enumerate(labels):
+        if i == 0 or not IR.is_scaled_label(lab):
+            continue
+        out[i] = IR.band(resp, out[i], snr0)
+    return out
+
+
 def adduct_to_mech(adduct: str) -> str:
     """peaky adduct label -> the mechanism string the library scores it as.
 
@@ -190,6 +209,7 @@ def score_candidates_local(
     intensity_col: str = "height",
     peak_id_col: str = "peak_id",
     snr_col: str = "signal_to_noise",
+    iso_response: dict | None = None,
 ) -> pd.DataFrame:
     """Score candidate NEUTRAL formulas against a sample's peaks, locally.
 
@@ -247,7 +267,11 @@ def score_candidates_local(
 
     scoring = scoring if scoring is not None else PatternScoring()
     has_snr = snr_col in peaks.columns
-    columns = [mz_col, intensity_col, peak_id_col] + ([snr_col] if has_snr else [])
+    # scored by another column (area): the lines' HEIGHTS are still what the rows report as their
+    # intensity -- every reader of `sample_peak_intensity` compares it with height gates in cps
+    keep_h = intensity_col != "height" and "height" in peaks.columns
+    columns = ([mz_col, intensity_col, peak_id_col] + (["height"] if keep_h else [])
+               + ([snr_col] if has_snr else []))
     peaks = (
         peaks[columns]
         .dropna(subset=[mz_col])
@@ -256,6 +280,7 @@ def score_candidates_local(
     )
     mzs = peaks[mz_col].to_numpy(dtype=float)
     ints = peaks[intensity_col].to_numpy(dtype=float)
+    hts = peaks["height"].to_numpy(dtype=float) if keep_h else ints
     pids = peaks[peak_id_col].to_numpy()
     # NaN where the file records no estimate for a peak. The score treats that
     # as "not measured" and judges the line at the instrument width, which is
@@ -312,8 +337,11 @@ def score_candidates_local(
             # carries none: in the score SNR only ever widens a tolerance, so a
             # NaN costs a candidate nothing it had earned.
             obs_snr = np.full(pred_mz.size, np.nan)
+            obs_h = np.zeros_like(pred_mz)
             matched_pid: list = [None] * len(pred_mz)
             base_int = None
+            cand_ints, resp = ints, iso_response
+            band_lo = None
 
             for i, pmz in enumerate(pred_mz):
                 d = pmz * scoring.mz_tolerance_ppm * 1e-6
@@ -328,23 +356,39 @@ def score_candidates_local(
                 # subtracts the sample's fitted offset from.
                 line_ppm = (mzs[k] - pmz) / pmz * 1e6
                 if i == 0:  # monoisotopic / base
-                    base_int = ints[k]
-                    obs_int[0] = ints[k]
+                    if keep_h and not (np.isfinite(ints[k]) and ints[k] > 0):
+                        # no usable area on this M0: the candidate is read by height, unscaled
+                        cand_ints, resp = hts, None
+                    base_int = cand_ints[k]
+                    obs_int[0] = cand_ints[k]
+                    obs_h[0] = hts[k]
                     obs_mz[0] = mzs[k]
                     obs_ppm[0] = line_ppm
                     obs_snr[0] = line_snr
                     matched_pid[0] = pids[k]
+                    if resp:
+                        # the file's own minor-line response (iso_response.py): a C / O line near the
+                        # scans' floor reads anywhere from its censored share up to its natural share
+                        band_lo = _respond(pred_rel, labels, line_snr, resp)
+                        pred_rel = band_lo.copy()
                     continue
                 if not base_int:
                     continue
-                rel_obs = ints[k] / base_int
+                rel_obs = cand_ints[k] / base_int
+                if keep_h and not (np.isfinite(rel_obs) and rel_obs > 0) and obs_h[0] > 0:
+                    # no usable area on this line: its height ratio (the lines of one envelope share a width)
+                    rel_obs = hts[k] / obs_h[0]
+                if band_lo is not None and band_lo[i] < pred_nat_i(pred_int, i):
+                    # inside [censored share, natural share]: consistent as read; outside: the nearer end
+                    pred_rel[i] = min(max(rel_obs, band_lo[i]), pred_nat_i(pred_int, i))
                 ierr = abs(pred_rel[i] - rel_obs) / pred_rel[i]
                 # A line whose height is nowhere near its prediction is not this
                 # ion's line. What the score then sees is an ABSENT line, which
                 # the detectability gate charges or ignores according to what
                 # the noise says it would have looked like.
                 if ierr <= INTENSITY_TOLERANCE:
-                    obs_int[i] = ints[k]
+                    obs_int[i] = rel_obs * base_int
+                    obs_h[i] = hts[k]
                     obs_mz[i] = mzs[k]
                     obs_ppm[i] = line_ppm
                     obs_int_err[i] = ierr
@@ -402,7 +446,7 @@ def score_candidates_local(
                         "iso_category": cat if matched else None,
                         "sample_peak_id": matched_pid[i],
                         "sample_peak_mz": float(obs_mz[i]) if matched else None,
-                        "sample_peak_intensity": float(obs_int[i]) if matched else None,
+                        "sample_peak_intensity": float(obs_h[i]) if matched else None,
                         "ppm_error": float(obs_ppm[i]) if matched else None,
                         "abundance_error": float(obs_int_err[i])
                         if matched and i > 0
