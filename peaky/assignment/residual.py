@@ -45,7 +45,7 @@ from peaky.assignment import series_gka as G
 from peaky.assignment.passes import (PassConfig, arbitrate, confidence_label, z_of, _f,
                      _prefer_adduct_reading)
 
-__version__ = "0.3.2"  # the exact 81Br pair spacing (C11+c); 0.3.1 stage B: deterministic anchor
+__version__ = "0.3.4"  # the pair window stays wide until the file is calibrated; 0.3.3 the Orbitrap-class pair window; 0.3.2 the exact 81Br pair spacing (C11+c); 0.3.1 stage B: deterministic anchor
                        # tie-break (#8); 0.3.0: stage B draws from the admission gate (persistence
                        # OR brightness)
 
@@ -90,7 +90,20 @@ def carbon_count_from_13c(ledger: pd.DataFrame, peak_id, *, ppm: float = 6.0):
 # ---------------------------------------------------------------------------
 # Stage A helpers
 # ---------------------------------------------------------------------------
-def find_iso_pairs(ledger: pd.DataFrame, *, ppm_tol: float = 8.0,
+#: the iso-pair finder's spacing window off an Orbitrap-class run (ppm)
+ISO_PAIR_PPM = 8.0
+
+
+def iso_pair_ppm(cfg=None) -> float:
+    """The doublet finder's window for this run: the exact-offset window
+    (satellites.exact_offset_ppm: max(1 ppm, 4 x cfg.cal_sigma)) on a
+    calibrated Orbitrap-class run (cfg.instrument_class, not trace-first's
+    synthetic sample), else ISO_PAIR_PPM -- an uncalibrated file keeps it."""
+    from peaky.assignment import satellites as SAT
+    return SAT.exact_offset_ppm(cfg, ISO_PAIR_PPM)
+
+
+def find_iso_pairs(ledger: pd.DataFrame, *, ppm_tol: float = ISO_PAIR_PPM,
                    min_height: float = 0.0) -> pd.DataFrame:
     """Find ~1.998-Da doublets within the UNEXPLAINED residual.
 
@@ -257,7 +270,11 @@ def stage_a_iso_pairs(client, sample_id: str, ledger: pd.DataFrame, profile,
                       score_fn=None, log=print) -> dict:
     score_fn = score_fn or IO.score_candidates
     out = {"committed": 0, "locked": 0, "iso_attached": 0}
-    pairs = find_iso_pairs(ledger, min_height=cfg.height_cutoff)
+    # the pair spacing's window: on an Orbitrap-class run the exact-offset one
+    # (max(1 ppm, 4 sigma)) -- at 8 ppm a real neighbour line 6.7 ppm under a
+    # predicted 81Br position was taken as the partner, and the Br formula it
+    # proposed had no 81Br line at all
+    pairs = find_iso_pairs(ledger, min_height=cfg.height_cutoff, ppm_tol=iso_pair_ppm(cfg))
     # the context decides which halogens a NEUTRAL may carry: a ~1.998-Da doublet
     # in a halogen-free positive run (max_Br = max_Cl = 0) is 34S / 30Si / 13C2
     # structure, never a Br/Cl pair -- 7 "C5H7BrO3 [M+^NH4]+" phantoms on the
@@ -338,7 +355,7 @@ def stage_a_iso_pairs(client, sample_id: str, ledger: pd.DataFrame, profile,
             f"residual left UNASSIGNED (not a clean result)")
         out["scoring_empty"] = True
         return out
-    arb = arbitrate(scored, cfg)
+    arb = arbitrate(scored, cfg, profile)
     win = arb.get("winners", pd.DataFrame())
     kids = arb.get("iso_children", pd.DataFrame())
     pair_by_light = {p["light_pid"]: p for _, p in pairs.iterrows()}
@@ -460,7 +477,7 @@ def stage_b_series(client, sample_id: str, ledger: pd.DataFrame, profile,
             # already in the ledger (CHIO2 [M+I]- == [HCOOH-H+I2]-) and
             # un-confirmable, 127I being monoisotopic. ambient-air's max_I=0 rejects
             # them here now, exactly as max_F/max_P=0 handle F and P.
-            keep, _why = X.filter_by_context(f, profile.label)
+            keep, _why = X.filter_by_context(f, profile)
             if not keep:
                 continue
             ok, _why = C.dbe_ok(f)        # structural gates: DBE + oxygen cap
@@ -484,7 +501,7 @@ def stage_b_series(client, sample_id: str, ledger: pd.DataFrame, profile,
             f"proposals -- server likely degraded; residual left UNASSIGNED")
         out["scoring_empty"] = True
         return out
-    arb = arbitrate(scored, cfg)
+    arb = arbitrate(scored, cfg, profile)
     for _, w in arb.get("winners", pd.DataFrame()).iterrows():
         f = w["neutral"]
         meta = proposals.get(f)

@@ -100,6 +100,12 @@ def _si_m1_consistent(
     return obs >= SI_M1_MIN_FRAC * pred
 
 
+def _ee_cleared(ledger: pd.DataFrame, i) -> bool:
+    """A peak the element-evidence stage cleared and locked (plausibility.cleared_by_element_evidence)."""
+    from peaky.assignment import plausibility as PL
+    return PL.cleared_by_element_evidence(ledger, i)
+
+
 def complete_isotope_envelopes(
     ledger: pd.DataFrame,
     cfg: PassConfig,
@@ -186,8 +192,11 @@ def complete_isotope_envelopes(
             if role_j == L.ROLE_UNEXPLAINED:
                 if 0.3 <= ratio <= 3.5:
                     try:
+                        # a peak the element-evidence stage cleared is locked against
+                        # new readings, not against being a committed M0's line
                         L.attach_isotopologue(
-                            ledger, tpid, pid, iso_label=label, iso_match_score=score
+                            ledger, tpid, pid, iso_label=label, iso_match_score=score,
+                            overwrite=_ee_cleared(ledger, j)
                         )
                         out["attached"] += 1
                     except L.LedgerError:
@@ -812,7 +821,7 @@ def _ion_formula_str(neutral: str, adduct: str) -> str:
 
 
 def rearbitrate_offcal_degenerate(
-    ledger: pd.DataFrame, cfg: PassConfig, *, log=print
+    ledger: pd.DataFrame, cfg: PassConfig, *, log=print, profile=None
 ) -> dict:
     """Displace off-calibration, uncorroborated, high-DBE 'monster' M0 winners
     with an on-calibration, plausible, less-unsaturated stored alternative.
@@ -821,7 +830,10 @@ def rearbitrate_offcal_degenerate(
     off-cal gate is IDENTICAL to the one the report tier engine applies -- the
     point being to apply it at winner-selection, not only at tiering. Returns
     {'swapped': n}. Mutates the ledger in place (overwrite commits). No-op when
-    uncalibrated."""
+    uncalibrated. `profile`: the run's ContextProfile -- an alternative is
+    judged plausible on the same readings the run's plausibility demotes use
+    (`plausibility.implausible(profile=)`: the NOx skeleton on a nitrate run);
+    None = the raw gates."""
     from peaky.assignment import tiers as T
     from peaky.assignment import plausibility as PL
     from .core import confidence_label
@@ -877,7 +889,7 @@ def rearbitrate_offcal_degenerate(
                 continue
             if C.dbe(C.parse_formula(str(af))) >= dbe_w:  # only toward LESS unsaturation
                 continue
-            if PL.implausible(str(af)) is not None:    # ... and only to a plausible one
+            if PL.implausible(str(af), profile=profile) is not None:   # ... and only to a plausible one
                 continue
             raw = a.get("raw_score")
             raw = a.get("ion_score") if raw is None else raw

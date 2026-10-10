@@ -52,8 +52,14 @@ selected sample_ids (SAMPLING.md)
  trace reconciliation (TIMESERIES.md §9): each row's anchor re-centred on its
  own trace (mz_trace), competing labels on one trace collapsed (trace_role),
  the stamp window sized to the batch's per-ion scatter
+   │  (Orbitrap-class, areas in the TS) the isotopologue gate: a merged row on
+   │   another merged ion's isotope line at its expected ratio leaves (step 4c)
    ▼
  merged_ledger.csv  +  jitter.csv  +  batch_summary.json  →  _batch_ts.parquet stamp
+   ▼  batch isotope checks (iso_checks.csv); (Orbitrap-class) a REQ veto on an
+   │   element-signature line removes the reading, the series is re-stamped (step 6a)
+   │  the isotopologue gate's lines recorded: per-file ledgers rewritten (the
+   │   parent's iso_child, else unexplained), the parent rows' isotopologue_lines
    ▼  (TOF-class only) the ion-M+2 gates: a REQ-refuted winner and an 81Br doublet
       partner are Candidate, no re-vote (step 6b)
 ```
@@ -211,9 +217,9 @@ selected sample_ids (SAMPLING.md)
    (Br- / Br2-. / Br3- / HNO3.Br- on the bromide profile; NO3- / HNO3.NO3- /
    (HNO3)2.NO3- / NO2- on the nitrate one; the labelled cores on ¹⁵N-nitrate;
    none on the positive profiles) are looked for in the batch's OWN time series
-   as core.(H2O)n, n = 1…45, per acquisition segment (the spectra cut at gaps
-   longer than max(60 min, 5× the median spacing); a segment under 10 spectra
-   joins its neighbour). A rung passes when, in some segment, the core and every
+   as core.(H2O)n, n = 1…45 (and a reagent-only core itself as n = 0, below),
+   per acquisition segment (the spectra cut at gaps longer than max(60 min, 5×
+   the median spacing); a segment under 10 spectra joins its neighbour). A rung passes when, in some segment, the core and every
    rung 1…n are present in ≥ 50 % of the spectra within the stamping window and
    the rung is ≥ 3× the presence of its decoy offsets (±0.02 / 0.035 / 0.05 Da;
    floor 0.02, inactive while the presence bar is 50 %). How far a ladder
@@ -224,7 +230,14 @@ selected sample_ids (SAMPLING.md)
    C13H12O8 [M-H]- at Br-.(H2O)12 and C13H22N2O4 [M+NO3]- at NO3-.(H2O)15 among
    them); every passing rung becomes a
    reagent row of the stamp (with its isotopologue tag, so the ⁷⁹Br and ⁸¹Br
-   rungs stay two tracks). `tables/reagent_water.csv` lists the rungs and the
+   rungs stay two tracks). A declared core with no analyte reading
+   (`REAGENT_ONLY_CORES`: the (HNO3)2.NO3- dimer core and its ¹⁵N twin, on any
+   instrument class) is tested too, as rung n = 0, by the same presence test
+   (≥ 50 % of a segment's spectra and ≥ 3× its decoys; on a TOF-class model the
+   mean presence of the width-scaled decoys): the core line itself becomes a
+   reagent row of the stamp, and a merged analyte reading on it leaves as on any
+   rung. NO3-, HNO3.NO3- and NO2- stay analyte readings (HNO3 and HNO2), so only
+   their water rungs are tested. `tables/reagent_water.csv` lists the rungs and the
    readings each displaced; `batch_summary.json["merge_gates"]["reagent_water"]`
    the counts. The per-file ledgers are untouched. Two limits stand: a rung is
    measured per segment but stamped over the whole batch (and, on the fixed-offset
@@ -367,6 +380,75 @@ selected sample_ids (SAMPLING.md)
    `locked`, `confirmed_kept`, `conflict`, `lead_only`, `mass_only_outvoted`,
    `no_cluster`).
 
+4c. **The isotopologue gate** (`iso_checks.satellite_rows`; inside the merge,
+   after the trace reconciliation and before the stamp; `isotopologue_rows=True`,
+   the default, `--no-isotopologue-gate` turns it off). Every per-file
+   arbitration decides by score, and the vote counts M0 rows only, so a
+   high-scoring reading on the ¹³C line of a lower-scoring parent can win its
+   peak in every file and reach the merged ledger as an ion of its own. The gate
+   runs on an Orbitrap-class batch (the batch's resolved `cfg.instrument_class`)
+   with a width model and a time series that carries peak AREAS (heights read
+   ~0.75× of areas on these lines, which would pull a mixed line into the band);
+   otherwise it records why it was skipped. Parents are every merged row with a
+   parseable ion composition (not ion-only, not a collapsed trace label) and the
+   per-file reagent ions; each parent's lines 0.4-4.1 Da above it with an
+   expected share ≥ 1e-3 (components within one FWHM merged) are matched to the
+   merged rows within max(1 ppm, 4 sigma) of the batch's mass scale. Per
+   spectrum the row's area is divided by the sum of each parent's expected
+   share × its area (each line the tallest peak in the window). Over the n ≥ 3
+   spectra holding both: a median ratio of 0.4-1.4× with fewer than max(1,
+   10 %) of the spectra above 2× is an **isotopologue** -- the row leaves the
+   merged ledger, the parent's `tier_reason` names the line, the stamp gives the
+   line to the parent, and the pooled pair is refuted as an isotope-check veto
+   (check `SAT` in `tables/iso_checks.csv`, so the evidence level agrees, 5b); a
+   median of 1.4-4×, or an in-band median that fails the tail test (a real ion
+   present in some spectra), is **mixed**: a note on the row, no change. In band
+   but **exempt** (a note): a known-species decision, a curated reading (the
+   pass-0 registry for the batch's polarity and context, and the active
+   reference lists -- the same set the element-signature removal of step 6a
+   spares), an ion-only row, an isotope-labelled reading, and a reading on a
+   labelled pair's channel whose line is the label's element. Rows are judged in
+   ascending m/z, so a stripped row is never a parent; the gate is stateless, so
+   the second merge (cover + residual) strips a row a residual file re-adds. A
+   single-sample `peaky assign` has no such gate.
+
+   **The line is recorded, not dropped** (`iso_checks.reconcile_per_file` and
+   `iso_checks.parent_lines`, after step 6a so a parent it removes is known; an
+   isotopologue line is a valid assignment of the parent's isotopologue). In
+   every per-file ledger that commits a stripped reading as an M0 on the line
+   (the nearest M0 within the merge window of the gate's position, else the
+   stripped reading within 3× that window), the row becomes the parent's
+   `iso_child` under the gate's label where the file commits the parent's
+   reading (`ledger.displace_to_isotopologue`: the row's own children follow it
+   to the parent, labels combined; the parent's own `isotopologues` record is
+   not refreshed), a `reagent` isotopologue of a reagent parent the file marks
+   reagent (the row is cleared first, so ITS children are released, not moved), and is released to `unexplained`
+   (`ledger.clear_assignment`) where the file does not commit the parent or the
+   parent left the merged ledger in step 6a. An `iso_child` row's
+   `iso_match_score` is the gate's own agreement, min(rho, 1/rho) of the batch
+   area ratio. The commentary carries the `batch isotopologue gate` mark (a
+   released row's inside the ledger's `CLEARED (` prefix) and names the parent
+   ion, the label and what the row was; the reading's per-row evidence, resolvability and degeneracy columns
+   are emptied; a locked row is rewritten and stays locked. Rows on the line in
+   any other role, and every `mixed` / `exempt` line, are untouched. The
+   rewritten ledgers replace `per_file/<sid>_ledger.csv`, the levels' per-file
+   frames and the file's role / tier / resolvability counts in `batch_summary.json["per_file"]`
+   (with an `isotopologue_gate` count), so the evidence levels -- which re-read
+   those files -- no longer level the stripped pair from the rows on its line (its `SAT` veto row stays in
+   `tables/iso_checks.csv`, reading no pooled pair), and a per-file publish or
+   reader agrees with the merged ledger. The batch checks of step 6a (neutral
+   pairs, label twins, iso checks) were measured on the ledgers as the files
+   wrote them. On the merged ledger each parent row lists the lines it was given
+   in `isotopologue_lines` (`13C 283.0501 (area x1.00 of predicted, 9 spectra;
+   was C14H10O5 [M-H]-)`, `; `-joined in ascending m/z; empty elsewhere): one
+   row per parent ion stays the merged ledger's contract, and the batch publish
+   still sends M0 rows only (the server models the isotope family from the
+   parent's formula). `merge_gates.isotopologue.per_file` counts the rewrites. `tables/isotopologue_rows.csv` lists every row read as an
+   isotopologue, mixed or exempt line (a row whose median falls outside 0.4-4×
+   is not listed) and `batch_summary.json["merge_gates"]["isotopologue"]` the
+   counts; a stripped row whose parent step 6a later removes stays listed,
+   annotated `parent removed`.
+
 5. **Positive urea re-reads, once per batch.** When `prof.polarity == "+"` two
    gates run on the merged ledger, and each writes its note to the merged row's
    `tier_reason` (the column is always present, `NA` where no gate spoke):
@@ -399,9 +481,55 @@ selected sample_ids (SAMPLING.md)
    `tables/residual_bins.csv` the targeted bins, and
    `batch_summary.json['selection']['residual']` the record. Off, nothing changes.
 
+6a. **The element-signature removal** (`iso_checks.remove_signature_vetoed`;
+   after the residual stage's merge and the batch isotope checks, before the TOF
+   gates; Orbitrap-class batches only, by the batch's resolved
+   `cfg.instrument_class` -- a TOF roster with a declared high resolving power
+   removes nothing, and REQ itself runs its TOF branch there). A `REQ` veto
+   (`tables/iso_checks.csv`) whose absent line is
+   an element-signature line -- ⁸¹Br, ³⁷Cl, ³⁴S, ²⁹Si or ³⁰Si, the element's own
+   heavy isotope at its exact offset, absent in the spectra bright enough to show
+   it -- is the batch's refutation of the element, so the reading leaves the
+   merged ledger instead of only reading 5b. A curated formula (the pass-0
+   registry for the batch's polarity and context, and the active reference lists)
+   and a known-species decision stay; every other veto (rule C, HIGH, the TOF's
+   whole-M+2 REQ, an all-light line) keeps its 5b. When a row leaves, the batch
+   series is **re-stamped** from the merged ledger without it, with the stamp's
+   own inputs, so `_batch_ts.parquet`, the levels' series and the TOF gates never
+   name the removed reading. A reading can hold two merged rows (a split
+   cluster, a collapsed loser on its trace); when the row a known-species
+   decision marks stays, the reading has not left the merged ledger, and its
+   pair reads `reading_left: false` -- nothing below treats it as gone
+   (`iso_checks.gone_pairs`). The per-file ledgers **record the removal**
+   (`iso_checks.release_signature_removed`, run after step 4c's rewrite by
+   `iso_checks.record_per_file`): every M0 row that commits a reading that
+   left, whatever its m/z, is released to `unexplained` (`ledger.clear_assignment`);
+   its commentary carries the `batch element-signature removal` mark inside the
+   ledger's `CLEARED (` prefix, names the refuted line (the REQ note) and what
+   the row was, its per-reading columns are emptied, and a locked row stays
+   locked. Its own isotope lines are released with it, each noted as a line of
+   the refuted reading. A line step 4c gave to the removed reading is released
+   too (see 4c). The rewritten ledgers replace `per_file/<sid>_ledger.csv`, the
+   levels' frames and the file's counts (with an `element_signature_gate`
+   count), so no pooled pair holds the removed reading (its `REQ` veto row stays
+   in `tables/iso_checks.csv`) and a per-file publish names no reading the batch
+   refuted. The re-stamp reads the per-file identified rows from the rewritten
+   ledgers whenever either gate rewrote one, so no spectrum names a released
+   reading's ion on its isotope lines (`merge_gates.isotopologue.restamped`
+   when step 4c's rewrite alone triggered it).
+   `batch_summary.json["merge_gates"]["element_signature"]` records `removed`,
+   the `pairs` (each with `reading_left`), `restamped` and `per_file`
+   (`released`, `children`, `files` per sample id, `problems` only on a
+   ledger-invariant failure) when a row was removed (`skipped` off an
+   Orbitrap-class batch). This is the batch half of the per-file
+   element-evidence gate ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §3.6b).
+
 6b. **The TOF ion-M+2 gates** (`iso_checks.tof_m2_gates`; after the stamp and
-   the batch isotope checks, TOF-class batches only -- a width model under the
-   Orbitrap class's resolving power; without one nothing runs). On a TOF an
+   the batch isotope checks, TOF-class batches only -- the batch's resolved
+   `cfg.instrument_class`, else a width model under the Orbitrap class's
+   resolving power; without a width model nothing runs). Every batch isotope
+   check reads that one class (`iso_checks.batch_class`), as the per-file stages
+   and the isotopologue gate do. On a TOF an
    `[M+Br]-` reading's own ⁸¹Br line is the one line its composition
    guarantees, and the per-file twin test never asks for it (the reagent's
    halogen masks the neutral's window). Two demotions, Assigned → Candidate,
@@ -526,11 +654,13 @@ All in `peaky/batch/assign_batch.py`.
 | --- | --- |
 | `merged_ledger.csv` (run root) | one row per m/z cluster: consensus mz, the winning reading, the vote (`n_files`, `n_files_ion`, `n_files_winner`, `alternatives`), `srcs`, `ion_agree`, `formula_agree`, `mz_jitter_ppm_raw/caldj`, the batch-level gates' `tier_reason`, `stage` (`cover` / `residual`; only when the residual stage is on), the pooled evidence level on the evidence scale — `evidence_level`, `evidence`, `would_lift`, `competitors_left`, `tags`, `context`, `context_source`, `claim` (stamped after the vote, never read by it; [`EVIDENCE_LEVELS.md`](EVIDENCE_LEVELS.md) §10.2), plus the trace reconciliation columns (`mz_anchor`, `mz_trace`, `trace_offset_ppm`, `trace_cov_anchor`, `trace_cov`, `trace_moved`, `trace_guarded`, `trace_id`, `trace_role`; [`TIMESERIES.md`](TIMESERIES.md) §9) — **the result** |
 | `tables/jitter.csv` | long form, one row per (cluster, file): `cluster`, `src`, `mz`, formula, adduct, tier, `ion_score`, `vote_class` (0 / 1 / 2: the vote class of that file's reading, the key the vote ranked ions by; not an evidence level) |
-| `per_file/<sid>_ledger.csv` | each assigned file's full single-sample ledger (audit / re-merge) |
+| `per_file/<sid>_ledger.csv` | each assigned file's full single-sample ledger (audit / re-merge), with the isotopologue gate's decisions recorded (step 4c: a stripped reading's M0 row is the parent's `iso_child`, else `unexplained`) |
 | `tables/selected_samples.csv` | the selected subset in pick order (`pick`, `role` ∈ `cover` / `pad` / `residual`, `bins_new`, `coverage`) |
-| `tables/reagent_water.csv` | the reagent-water ladder (step 4a): one row per passing rung — `core`, `iso_tag`, `n`, `ion_formula`, exact `mz` and observed `mz_obs`, the `segments` it passes in with their `presence` / `decoy_presence`, and the merged reading(s) it `displaced`; header only when nothing passes |
+| `tables/reagent_water.csv` | the reagent-water ladder (step 4a): one row per passing rung (n = 0 for a passing reagent-only core) — `core`, `iso_tag`, `n`, `ion_formula`, exact `mz` and observed `mz_obs`, the `segments` it passes in with their `presence` / `decoy_presence`, and the merged reading(s) it `displaced`; header only when nothing passes |
+| `tables/isotopologue_rows.csv` | the isotopologue gate (step 4c): one row per merged row judged on a parent's isotope line — the row, its `verdict` (`isotopologue` / `mixed` / `exempt`) and `action` (`stripped` / `note`), the line `label` and `expected` share, the main parent and every parent read, the median area / height ratios over `n_both` spectra, `n_tail`, the per-file role votes; header only when nothing was found or the gate did not run ([OUTPUTS.md](OUTPUTS.md)) |
+| `tables/iso_checks.csv` | the batch isotope checks ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §3.2), plus one `SAT` row per row the isotopologue gate stripped; a `REQ` veto on an element-signature line is what step 6a reads |
 | `tables/residual_bins.csv` | the residual stage's targeted bins (`bin_mz`, `prevalence`, `max_cps`, `max_x_edge`, `sample_at_max`, `covered_by`); written when the stage is on |
-| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason; `residual` sub-block: the funnel, the floor, k, coverage_of_residual, stop_reason, sample_ids), `n_files_by_stage` / `merged_by_stage` when the stage is on, the resolved height gate (`height_cutoff_x_edge` + its source, and the `gate` derivation block), the `admission` block, the `traces` block (re-centred / collapsed counts, per-ion scatter, stamp window), per-file offsets + noise edges, merged tier counts and the claim tallies beside them (`claims`), agreement counts, and `merge_gates` (the known-species decision, the positive-mode gates and `reagent_water`: cores, window, segments, rungs by core, the stripped readings) |
+| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason; `residual` sub-block: the funnel, the floor, k, coverage_of_residual, stop_reason, sample_ids), `n_files_by_stage` / `merged_by_stage` when the stage is on, the resolved height gate (`height_cutoff_x_edge` + its source, and the `gate` derivation block), the `admission` block, the `traces` block (re-centred / collapsed counts, per-ion scatter, stamp window), per-file offsets + noise edges, merged tier counts and the claim tallies beside them (`claims`), agreement counts, and `merge_gates` (the known-species decision, the positive-mode gates, `reagent_water`: cores, window, segments, rungs by core, the stripped readings; `isotopologue` (step 4c) and `element_signature` (step 6a); `tof_m2` (step 6b)), `context_flags` (the run-level switches of the batch's context profile) and `warnings` |
 | `jitter_report()` dict | `{offsets, by_formula, by_mz, summary}` — the standalone jitter analysis |
 
 ---
@@ -554,6 +684,20 @@ All in `peaky/batch/assign_batch.py`.
   full cross-channel picture, and the hydrocarbon-on-N-cluster re-read needs every
   file's `[M+H]⁺` rows at once; per file, the latter split one ion into two
   readings across the batch. Both say what they did in the merged `tier_reason`.
+- **Two merge gates remove rows, and both rewrite the per-file ledgers.** The
+  isotopologue gate (step 4c) and the element-signature removal (step 6a) take a
+  reading out of the merged ledger. The isotopologue gate's line is a valid
+  assignment -- the parent's isotopologue -- so it is recorded where it now
+  belongs: the parent's `isotopologue_lines` and, in each file that committed
+  the stripped reading on the line, the parent's `iso_child` (else an
+  `unexplained` row naming the parent and the line). The element-signature
+  removal refutes the reading itself, so each file that committed it releases
+  it to `unexplained` with a note. `iso_checks.record_per_file` runs the two in
+  that order (a removed reading a file committed on a parent's isotope line is
+  that parent's line), and the batch series is re-stamped from the rewritten
+  ledgers. Both spare curated readings and known-species decisions, both run on
+  an Orbitrap-class batch only (the batch's resolved instrument class), and
+  each lists what it did (`tables/isotopologue_rows.csv`, `merge_gates`).
 - **Fetch the batch by name for fresh ids.** `run(batch=…)` re-fetches the
   per-sample list live so the selected ids are valid for `get_peaks` (cached ids go
   stale / 404 when a server copy is renamed).
@@ -579,3 +723,9 @@ All in `peaky/batch/assign_batch.py`.
 | `merge_union` | just the merged frame from `align` |
 | `jitter_report` | by-formula raw-vs-residual spread + by-m/z formula disagreements |
 | `_theo_ppm` | observed-vs-theoretical ppm for an assigned (neutral, adduct) |
+| `reagent_water.reagent_core_rows` | the declared reagent-only cores (the (HNO3)2.NO3- dimer core) that pass the rung presence test, as n = 0 rungs (step 4a) |
+| `iso_checks.satellite_rows` | the isotopologue gate (step 4c): judge every merged row on its parents' isotope lines, strip the isotopologues, note the mixed / exempt lines |
+| `iso_checks.reconcile_per_file` / `iso_checks.parent_lines` | the isotopologue gate's lines recorded (step 4c): the per-file ledgers' M0 rows on a stripped line become the parent's `iso_child` (else `unexplained`); the parent's merged row lists its lines (`isotopologue_lines`) |
+| `iso_checks.veto_rows` | the stripped rows as `SAT` isotope-check vetoes for `tables/iso_checks.csv` and the evidence level |
+| `iso_checks.signature_vetoes` / `remove_signature_vetoed` / `gone_pairs` | the REQ vetoes on an element-signature line, their removal from the merged ledger, and the removed readings that left it (step 6a) |
+| `iso_checks.release_signature_removed` / `record_per_file` | the removal recorded (step 6a): every per-file M0 row of a reading that left is released to `unexplained`; `record_per_file` runs it after `reconcile_per_file` |

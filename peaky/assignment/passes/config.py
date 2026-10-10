@@ -8,6 +8,7 @@ from typing import ClassVar
 import numpy as np
 
 from peaky.assignment import masscal
+from peaky.chem import sidelobes as _SL
 
 
 __all__ = [
@@ -120,6 +121,27 @@ class PassConfig:
     # count) otherwise lets handful-of-ions centroids through every gate.
     noise_edge_batch_cps: float | None = None
     instrument_type: str | None = None
+    # The run's instrument CLASS for the class-gated stages: 'orbitrap', 'tof' or
+    # None (unknown: those stages stay off). Runtime. A batch sets it once from its
+    # resolved axis class (assign_batch._axis_class: a TOF roster wins over a width
+    # model that reads Orbitrap-class); a single-sample run resolves it in assign.run
+    # (`assign.instrument_class_of`). Distinct from `instrument_type`, which is the
+    # scoring snapshot's raw label ('orbi' / 'tof' / None).
+    instrument_class: str | None = None
+    # True on trace-first's synthetic sample, whose heights are batch means over
+    # traces, not one spectrum: stages that compare lines of ONE spectrum stay off.
+    trace_sample: bool = False
+    # The Orbitrap same-spectrum SIDE-LOBE GUARD (assignment/sidelobe_guard.py,
+    # before pass 0): a weak peak `sidelobe_band_fwhm` parent widths beside a line
+    # >= `sidelobe_ratio` x brighter of the SAME list, carrying an artifact
+    # signature (own width < `sidelobe_narrow` x the file's typical, the
+    # negative-lobe offset, or a mirror lobe), is marked 'artifact' and locked.
+    # Runs only when instrument_class is 'orbitrap' and never on a trace sample.
+    # The defaults are chem.sidelobes' constants (one source of truth).
+    sidelobe_guard: bool = True
+    sidelobe_ratio: float = _SL.SIDELOBE_RATIO
+    sidelobe_band_fwhm: tuple = _SL.SIDELOBE_BAND_FWHM
+    sidelobe_narrow: float = _SL.SIDELOBE_NARROW
     # Detection floor the post-run ISOTOPE AUDIT judges satellites against
     # (postprocess.audit_isotopes): "would this formula's 13C satellite be
     # comfortably visible?" and "is this measured satellite reliable?". None =
@@ -334,6 +356,7 @@ class PassConfig:
     RUNTIME_FIELDS: ClassVar[tuple[str, ...]] = (
         "mechanism_ids", "prior_offset", "reagent_element", "noise_edge_cps",
         "noise_edge_batch_cps", "instrument_type",          # C46: the batch and assign.run stamp them
+        "instrument_class", "trace_sample",                 # the batch / assign.run stamp them too
         # passes.calibrate fits these onto the cfg during a run: they are the
         # calibration's OUTPUT, not user knobs. The pipeline now hands the same
         # cfg to the provenance manifest, so leaving any of them in would make

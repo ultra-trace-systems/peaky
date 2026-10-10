@@ -35,6 +35,7 @@ from peaky.io import local_scoring as LS
 ACFG = P.PassConfig(height_cutoff_cps=100.0)
 AIR = XC.get_context("ambient-air")
 URO = XC.get_context("uronium")
+WATER = XC.get_context("water")                  # a negative-mode profile that budgets P (max_P 1)
 BR81 = 1.9979535
 C13 = 1.0033548
 
@@ -500,14 +501,26 @@ def test_the_reagent_line_alone_does_not_confirm_a_two_channel_certificate_of_a_
     """The same for a winner with no S / Cl / Br, which wants no isotope envelope and on two channels is Good only
     through a counted line: methylphosphonic acid (CH5O3P) certified on its [M-H]- or [M+NO3]- ion and its bromide
     cluster, whose 1:1 '81Br' line is the only diagnostic line (the 13C / 18O lines, 1.1 / 0.6 %, under the floor):
-    Low (certified)."""
+    Low (certified). In a profile that budgets P (water: max_P 1), so that the P rule below does not decide it.
+    (the element_evidence gate: in ambient air, which budgets P at 0, the [M-H]- + [M+Br]- pair is a reagent-acid pair -- X and X.HBr,
+    the ordinary cluster pattern -- and commits nothing; the [M+NO3]- + [M+Br]- pair is no such pair and commits
+    as before.)"""
     mpa = "CH5O3P"
     assert CH.dbe_ok(mpa)[0]
     for other in (("h", "CH4O3P", -1, 300.0), ("n", "CH5NO6P", -1, 300.0)):
         peaks = _spectrum([other, ("b", "CH5BrO3P", -1, 240.0)])
-        assert _diag_lines(peaks, mpa, BR_NO3) == {("CH5BrO3P-", "81Br", "b:81Br")}, other[0]
         led = L.new_ledger(peaks.copy())
         s, by = _certify(led, peaks, mpa, BR_NO3)
+        if other[0] == "h":
+            assert s["committed"] == 0 and s["gated"] == 1 and s["peaks_claimed"] == 0, s
+            assert L.role_of(led, "h") == L.ROLE_UNEXPLAINED and L.role_of(led, "b") == L.ROLE_UNEXPLAINED
+        else:
+            assert s["committed"] == 1 and s["peaks_claimed"] == 2 and s["gated"] == 0, s
+    for other in (("h", "CH4O3P", -1, 300.0), ("n", "CH5NO6P", -1, 300.0)):
+        peaks = _spectrum([other, ("b", "CH5BrO3P", -1, 240.0)])
+        assert _diag_lines(peaks, mpa, BR_NO3) == {("CH5BrO3P-", "81Br", "b:81Br")}, other[0]
+        led = L.new_ledger(peaks.copy())
+        s, by = _certify(led, peaks, mpa, BR_NO3, profile=WATER)
         assert s["committed"] == 1 and s["peaks_claimed"] == 2, (other[0], s)
         for pid in (other[0], "b"):
             assert by.loc[pid, "neutral_formula"] == mpa and by.loc[pid, "confidence"] == "Low (certified)", pid
@@ -654,7 +667,8 @@ def test_a_bromine_bearing_winners_lines_on_its_two_br_bromide_cluster_confirm_a
     (C2H6Br2O3P-, 0.51 : 1 : 0.49 at 1000 cps), whose '81Br' and '81Br2' lines are the only diagnostic lines: on a
     winner that carries Br they count on two channels -- Good (certified), both lines under the [M+Br]- member. The
     box is opened to Br as for the Br winner above, and the oracle bases each ion on its all-light line, as the server
-    does (`_m0_based`)."""
+    does (`_m0_based`). In a profile that budgets P (water: max_P 1); in ambient air (max_P 0) the [M-H]- + [M+Br]-
+    pair is a reagent-acid pair and a non-curated P winner on it commits nothing (pass 7's element gate)."""
     from peaky.assignment import certified_neutral as CN
     monkeypatch.setitem(CN._CERT_EXTRA, "Br", (0, 2))
     bep = "C2H6BrO3P"
@@ -664,7 +678,10 @@ def test_a_bromine_bearing_winners_lines_on_its_two_br_bromide_cluster_confirm_a
     assert _diag_lines(peaks, bep, BR_NO3, m0_base=True) == {("C2H6Br2O3P-", "81Br", "b:81Br"),
                                                              ("C2H6Br2O3P-", "81Br2", "b:81Br2")}
     led = L.new_ledger(peaks.copy())
-    s, by = _certify(led, peaks, bep, BR_NO3, m0_base=True)
+    s, _ = _certify(led, peaks, bep, BR_NO3, m0_base=True)
+    assert s["committed"] == 0 and s["gated"] == 1 and L.role_of(led, "b") == L.ROLE_UNEXPLAINED, s
+    led = L.new_ledger(peaks.copy())
+    s, by = _certify(led, peaks, bep, BR_NO3, m0_base=True, profile=WATER)
     assert s["committed"] == 1 and s["peaks_claimed"] == 2 and s["rungs_committed"] == 0, s
     for pid in ("h", "b"):
         assert by.loc[pid, "neutral_formula"] == bep and by.loc[pid, "confidence"] == "Good (certified)", pid

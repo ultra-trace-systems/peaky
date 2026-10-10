@@ -228,6 +228,8 @@ def cmd_assign(args) -> None:
                             occurrence_min=args.occurrence_min)
     if getattr(args, "tof_flag_mz", None) is not None:
         cfg.tof_flag_mz = args.tof_flag_mz
+    if getattr(args, "no_sidelobe_guard", False):
+        cfg.sidelobe_guard = False
     profiles.apply_height_cutoff_x_edge(cfg, prof,
                                         explicit=args.height_cutoff_x_edge, log=print)
     profiles.apply_ion_only_channels(cfg, prof, log=print)
@@ -373,6 +375,15 @@ def _write_assign_outputs(args, out, base) -> None:
           f"ledger problems: {out['problems'] or 'none'}")
 
 
+def _sidelobe_cfg(args) -> dict:
+    """{'cfg': a PassConfig with the side-lobe guard off} when --no-sidelobe-guard
+    was given, else {} (the run builds its default PassConfig)."""
+    if not getattr(args, "no_sidelobe_guard", False):
+        return {}
+    from peaky.assignment import passes
+    return {"cfg": passes.PassConfig(sidelobe_guard=False)}
+
+
 def cmd_batch(args) -> None:
     _require_creds()
     from peaky import pipeline as PL
@@ -398,7 +409,10 @@ def cmd_batch(args) -> None:
                            resolving_power=getattr(args, "resolving_power", None),
                            trace_episodes=getattr(args, "trace_episodes", False),
                            corroborate=list(getattr(args, "corroborate", []) or []),
-                           tof_flag_mz=getattr(args, "tof_flag_mz", None), log=prog)
+                           tof_flag_mz=getattr(args, "tof_flag_mz", None),
+                           mass_axis=getattr(args, "mass_axis", "auto"),
+                           isotopologue_rows=not getattr(args, "no_isotopologue_gate", False), log=prog,
+                           **_sidelobe_cfg(args))
         # the window's final numbers come from the RETURNED summary, never from
         # parsing the log -- exact by construction.
         prog.finish((res.get("assign") or {}).get("summary"))
@@ -437,7 +451,10 @@ def cmd_pool(args) -> None:
             height_cutoff_cps=args.height_cutoff, n_jobs=args.jobs,
             side_channels=side,
             rolling_centre=getattr(args, "rolling_centre", False),
-            tof_flag_mz=getattr(args, "tof_flag_mz", None), log=prog)
+            tof_flag_mz=getattr(args, "tof_flag_mz", None),
+            mass_axis=getattr(args, "mass_axis", "auto"),
+            isotopologue_rows=not getattr(args, "no_isotopologue_gate", False), log=prog,
+            **_sidelobe_cfg(args))
         prog.finish((res.get("assign") or {}).get("summary"))
         ctx = res["ctx"]
         print(f"\n[pool] unified ledger -> {ctx.out_dir} in {res.get('elapsed_s', '?')}s")
@@ -504,6 +521,10 @@ def cmd_mass_qc(args) -> None:
     if args.ts:
         ts = PL.load(peaks=args.ts)
         label = os.path.basename(args.ts)
+        # a run's per_file/_batch_ts.parquet carries the axis correction it applied
+        # (mz_axis_ppm): judge the server's axis, as `peaky batch` does
+        from peaky.batch import assign_batch as AB
+        ts = AB.restore_axis(ts, log=print)
     else:
         if not (args.batch and args.dataset):
             sys.exit("mass-qc needs --ts <parquet>, or --batch and --dataset")
@@ -517,7 +538,10 @@ def cmd_mass_qc(args) -> None:
     print(f"[mass-qc] {label}: {ts['sample_item_id'].nunique()} spectra, {len(ts)} peaks; "
           f"{len(refs)} {args.reagent} reference ions; membership +-{tol:g} ppm, "
           f"probe +-{args.probe_ppm:g} ppm, wave in (m/z)^{'-' if args.orbitrap else '+'}1/2")
-    table, v = MQ.run(ts, refs, tol_ppm=tol, tof=not args.orbitrap, probe_ppm=args.probe_ppm)
+    # the instrument's own rules (massqc module note) -- the same judgement
+    # `peaky batch --mass-axis auto` acts on
+    table, v = MQ.run(ts, refs, tol_ppm=tol, tof=not args.orbitrap, probe_ppm=args.probe_ppm,
+                      per_instrument=True)
     MQ.report(table, v, log=print)
     out = os.path.expanduser(args.out or ".")
     os.makedirs(out, exist_ok=True)
@@ -1100,6 +1124,41 @@ def _add_tof_flag_arg(p) -> None:
                         "No effect off a TOF")
 
 
+def _add_sidelobe_flag(p) -> None:
+    p.add_argument("--no-sidelobe-guard", action="store_true", default=False,
+                   help="turn off the Orbitrap same-spectrum side-lobe guard. By default, on an "
+                        "Orbitrap-class run, a weak peak 1-5 line widths beside a >= 50x brighter "
+                        "line of the same file that is narrower than a line, sits at the lobe's "
+                        "offset or has a mirror lobe is marked 'artifact' before pass 0 and never "
+                        "given a formula (PassConfig.sidelobe_guard; the per-file stats record "
+                        "'sidelobe_guard'). No effect off an Orbitrap")
+
+
+def _add_isotopologue_flag(p) -> None:
+    p.add_argument("--no-isotopologue-gate", dest="no_isotopologue_gate", action="store_true", default=False,
+                   help="keep merged rows that sit on another merged ion's isotope line (13C, 18O, 15N, "
+                        "34S, 37Cl, 81Br, Si) at its expected area ratio across the batch. By default, on "
+                        "an Orbitrap-class batch with a width model whose time series carries peak areas, "
+                        "such a row (unless a curated list stands behind it) leaves "
+                        "the merged ledger and its line is stamped as the parent's isotopologue "
+                        "(tables/isotopologue_rows.csv). For A/B runs")
+
+
+def _add_mass_axis_flag(p) -> None:
+    p.add_argument("--mass-axis", choices=("auto", "locks", "reference", "off"), default="auto",
+                   help="before the run picks its cover or assigns anything, model the batch's m/z "
+                        "axis and correct the time series and every file's peak table with it. "
+                        "auto (default): on an Orbitrap, from the batch's own peaks -- "
+                        "calibration-free locks (peaks whose formula is unique within +-5 ppm once "
+                        "their own isotope lines strike the rivals, and peaks one exact unit step "
+                        "from two locks), a spline through them and the steps the axis takes, "
+                        "applied when it predicts held-out locks -- falling back to the reagent's "
+                        "reference ions when the locks cannot build a model. locks / reference: "
+                        "force one. A TOF, a pool of several batches and server-side scoring are "
+                        "measured, not corrected. Recorded in batch_summary['mass_axis'], "
+                        "tables/mass_axis_locks.csv and tables/mass_axis.csv. off = skip it")
+
+
 def _add_trace_first_flags(p) -> None:
     p.add_argument("--trace-first", action="store_true", default=False,
                    help="assign the batch's persistent ions ONCE from their centred traces "
@@ -1209,6 +1268,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_side_channels_flag(pa)
     _add_corroborate_flag(pa)
     _add_tof_flag_arg(pa)
+    _add_sidelobe_flag(pa)
     _add_progress_flag(pa)
     pa.set_defaults(func=cmd_assign)
 
@@ -1238,6 +1298,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_trace_first_flags(pb)
     _add_corroborate_flag(pb)
     _add_tof_flag_arg(pb)
+    _add_mass_axis_flag(pb)
+    _add_sidelobe_flag(pb)
+    _add_isotopologue_flag(pb)
     pb.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign samples in parallel across N worker processes "
                          "(default: physical cores, capped at the sample count; "
@@ -1281,6 +1344,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_side_channels_flag(pp)
     _add_rolling_flag(pp)
     _add_tof_flag_arg(pp)
+    _add_mass_axis_flag(pp)
+    _add_sidelobe_flag(pp)
+    _add_isotopologue_flag(pp)
     pp.add_argument("--jobs", "-j", type=int, default=None,
                     help="assign the union in parallel across N worker processes "
                          "(default: physical cores; env PEAKY_JOBS honored)")
@@ -1319,7 +1385,10 @@ def build_parser() -> argparse.ArgumentParser:
     pq.add_argument("--probe-ppm", type=float, default=50.0,
                     help="how far from theory to look for each reference ion (default 50)")
     pq.add_argument("--orbitrap", action="store_true",
-                    help="fit the wave in (m/z)^-1/2 (frequency) instead of (m/z)^+1/2 (flight time)")
+                    help="fit the wave in (m/z)^-1/2 (frequency) instead of (m/z)^+1/2 (flight "
+                         "time), and judge by an Orbitrap's own rules: every usable reference ion "
+                         "but the bright ones (reagent / lock-mass ions) calibrates, and the trend "
+                         "and offset bars are sized for an Orbitrap (batch/massqc.py)")
     pq.add_argument("--out", default=None, help="directory for mass_qc.csv / mass_qc.json (default .)")
     pq.set_defaults(func=cmd_mass_qc)
 

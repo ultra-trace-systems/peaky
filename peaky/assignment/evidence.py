@@ -1189,7 +1189,8 @@ def _resolution_dict(resolution) -> dict | None:
 
 def file_run_inputs(*, sample_id: str, reagent: str | None, context: str | None, resolution=None,
                     reflists_active=None, height_gate_cps=None, noise_edge_cps=None, degeneracy_cal="absent",
-                    label: str = "", activation=None, reagent_halogen=DETECT_HALOGEN):
+                    label: str = "", activation=None, reagent_halogen=DETECT_HALOGEN,
+                    context_flags=None):
     """The `RunInputs` of ONE file levelled alone (the per-file stage, D2 b):
     no time series, no merged ledger, no batch checks; the file's gate and,
     when the degeneracy stage persisted one, its calibration (``degeneracy_cal``
@@ -1197,7 +1198,8 @@ def file_run_inputs(*, sample_id: str, reagent: str | None, context: str | None,
     the window is then refitted from the file's own degeneracy counts).
     ``reagent_halogen``: the halogen of the run's declared channels
     (`channel_halogen`, C43) the pair facts read; the default counts the
-    committed clusters."""
+    committed clusters. ``context_flags``: the run-level switches of the run's
+    context profile (``contexts.profile_flags``), applied to the level's space."""
     from peaky.assignment.levels.source import RunInputs
     st = dict(sample_id=str(sample_id), height_gate_cps=height_gate_cps, noise_edge_cps=noise_edge_cps)
     if degeneracy_cal != "absent":
@@ -1208,6 +1210,8 @@ def file_run_inputs(*, sample_id: str, reagent: str | None, context: str | None,
                    resolution=_resolution_dict(resolution), per_file=[st], reagent_halogen=reagent_halogen)
     if activation is not None:
         summary["reflists_context"] = activation
+    if context_flags:
+        summary["context_flags"] = dict(context_flags)
     return RunInputs(summary=summary, activation=activation)
 
 

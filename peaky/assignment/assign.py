@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -30,13 +31,18 @@ from peaky.chem import reagents
 from peaky.chem import resolution as RES
 from peaky.assignment import reflists
 from peaky.assignment import resolvability
+from peaky.assignment import sidelobe_guard
 from peaky.assignment import residual
 from peaky.assignment import siloxane
 from peaky.assignment import solvent_clusters
 from peaky.assignment import tiers
 from peaky.batch import timeseries
 
-__version__ = "0.6.1"  # the v2 fit (0.6.0) with main's solvent_clusters stage
+__version__ = "0.7.1"  # + the run profile into the tier stage (the NOx-skeleton cap, stats["nox_skeleton_gate"]); 0.7.0 the Orbitrap side-lobe guard before pass 0, the run's
+#                        context profile (the NOx-skeleton switches) and the
+#                        element_evidence stage (clears and locks a heteroatom
+#                        reading the file's own lines contradict)
+#                        0.6.1: the v2 fit (0.6.0) with main's solvent_clusters stage
 #                        (0.5.2) under it: a run stamped 0.6.0 was scored before
 #                        that stage existed, so the two are told apart.
 #                        0.6.0: every candidate scored with the v2 fit at the
@@ -153,9 +159,7 @@ def _stage_degeneracy(st):
     widened by the contaminant families this file opened -- declared by the
     context, the reagent's organohalogen family, the GKA evidence pass 3 carried --
     and the curated formulas (the pass-0 registry, the active reference lists)."""
-    polarity = getattr(st.profile, "polarity", "negative")
-    curated = passes.known_formulas(polarity, getattr(st.profile, "label", None))
-    curated = curated | frozenset(getattr(st.cfg, "reflist_formulas", None) or ())
+    curated = _curated(st)
     carry = st.series_carry or {}
     families = degeneracy.opened_families(
         st.profile if st.do_pass3 else None, st.reagent if st.do_pass3 else None,
@@ -353,10 +357,31 @@ def _stage_plausibility(st):
     registry for this polarity/context or an active reference list -- is
     Candidate + tentative_lead (plausibility.demote_off_budget)."""
     label = getattr(st.profile, "label", None)
-    curated = passes.known_formulas(getattr(st.profile, "polarity", "negative"), label)
-    curated = curated | frozenset(getattr(st.cfg, "reflist_formulas", None) or ())
+    # the run's own profile (its run-level switches: the NOx skeleton reading)
     return plausibility.demote_implausible(
-        st.led, audit=st.plaus_audit, log=st.log, context=label, curated=curated)
+        st.led, audit=st.plaus_audit, log=st.log, context=st.profile if label else None,
+        curated=_curated(st))
+
+
+def _curated(st) -> frozenset:
+    """The formulas a curated list stands behind for this run: the pass-0
+    registry for its polarity/context and the active reference lists
+    (passes.curated_formulas)."""
+    return passes.curated_formulas(getattr(st.profile, "polarity", "negative"),
+                                   getattr(st.profile, "label", None),
+                                   getattr(st.cfg, "reflist_formulas", None))
+
+
+def _stage_element_evidence(st):
+    """The element-evidence gate (plausibility.gate_element_evidence): after
+    every proposer, before degeneracy / tiers, CLEAR a non-curated commit whose
+    heteroatom the file's own peak list contradicts -- an exact-offset 81Br /
+    37Cl / 34S / 29Si / 30Si line the file's calibration says it would show is
+    absent -- and a monoisotopic P / I a widened search put in a profile that
+    budgets it at 0. The class-gated half reads cfg.instrument_class."""
+    return plausibility.gate_element_evidence(
+        st.led, profile=st.profile, curated=_curated(st), cfg=st.cfg,
+        resolution=st.resolving_power, scoring=st.scoring, audit=st.plaus_audit, log=st.log)
 
 
 def _profile_name_for(adducts) -> str | None:
@@ -369,6 +394,41 @@ def _profile_name_for(adducts) -> str | None:
         return None
     names = sorted({p.name for p in PR._BY_ALIAS.values() if set(p.adducts) == want})
     return names[0] if len(names) == 1 else None
+
+
+def _reagent_name(reagent_profile, adducts) -> str | None:
+    """The registered name of the run's reagent profile: the caller's (a
+    ReagentProfile or any of its aliases), else the profile whose analyte
+    channels are exactly `adducts`; None when neither names one."""
+    from peaky.chem import profiles as PR
+    name = getattr(reagent_profile, "name", None) or reagent_profile or _profile_name_for(adducts)
+    if not name:
+        return None
+    try:
+        return PR.resolve(str(name)).name
+    except (KeyError, ValueError):
+        return str(name)
+
+
+def _stage_tiers(st) -> None:
+    """The tier stage: tiers.apply_tiers with the run's profile (its NOx-skeleton
+    cap), and the cap's record taken HERE, before later stages rewrite rows
+    (tiers.nox_skeleton_summary; stats['nox_skeleton_gate'])."""
+    tiers.apply_tiers(st.led, cfg=st.cfg, profile=st.profile)
+    st.summaries["nox_skeleton_gate"] = tiers.nox_skeleton_summary(st.led, st.profile)
+
+
+def run_context_profile(profile, *, reagent_profile, adducts, instrument_class,
+                        trace_sample) -> "contexts.ContextProfile":
+    """The context profile a run judges its formulas on (`contexts.run_profile`):
+    ``profile`` (a ContextProfile or a context name) with the run-level switches
+    its reagent (`_reagent_name` of ``reagent_profile`` / ``adducts``), its
+    instrument class and the trace-first flag turn on. assign.run and a batch's
+    own record (assign_batch: the level summary, batch_summary.json) both call
+    this, so the two cannot derive different switches from the same inputs."""
+    return contexts.run_profile(
+        contexts.as_profile(profile), reagent=_reagent_name(reagent_profile, adducts),
+        instrument_class=instrument_class, trace_sample=bool(trace_sample))
 
 
 def _stage_evidence(st):
@@ -391,6 +451,8 @@ def _stage_evidence(st):
     ri = evidence.file_run_inputs(
         sample_id=getattr(st, "sample_id", "") or "file", reagent=reagent,
         context=getattr(getattr(st, "profile", None), "label", None) or "ambient-air",
+        context_flags=(contexts.profile_flags(st.profile)
+                       if isinstance(getattr(st, "profile", None), contexts.ContextProfile) else None),
         resolution=getattr(st, "resolving_power", None),
         reflists_active=reflists.active_versions(getattr(st, "reflists_active", None)),
         height_gate_cps=gate, noise_edge_cps=getattr(st.cfg, "noise_edge_cps", None) if st.cfg is not None else None,
@@ -441,6 +503,29 @@ def _width_model(resolving_power, client, sample_id, raw, log):
     return RES.Resolution.coerce(resolving_power)
 
 
+def instrument_class_of(instrument_type, width_model) -> str | None:
+    """'orbitrap' / 'tof' / None: the instrument class a single-sample run gates
+    its class-specific stages on (a batch hands its own, `cfg.instrument_class`).
+    The scoring snapshot's type when it names one; else a MEASURED or server width
+    model -- 'tof' when its dispersion says TOF, 'orbitrap' when it is m^1.5-like
+    and resolves >= 50 000 at m/z 200. A declared scalar R is a guess, not
+    evidence of the class: None, and the gated stages stay off."""
+    kind = str(instrument_type or "").strip().lower()
+    if kind in ("orbi", "orbitrap"):
+        return "orbitrap"
+    if kind in ("tof", "api"):
+        return "tof"
+    if width_model is None or getattr(width_model, "source", "declared") == "declared":
+        return None
+    if width_model.is_tof:
+        return "tof"
+    try:
+        r200 = float(width_model.r_at(200.0))
+    except Exception:  # noqa: BLE001
+        return None
+    return "orbitrap" if math.isfinite(r200) and r200 >= 50_000.0 else None
+
+
 # The assignment pipeline AS DATA -- read top to bottom to see exactly what runs,
 # in what order, under what condition. `safe` wraps a stage so a failure can't lose
 # prior work; `store` keeps its summary. Authoritative stage table: ARCHITECTURE.md §4.
@@ -489,7 +574,7 @@ _STAGES = [
     # the audits so the calibrated mass gate judges its commits like any other.
     _Stage("pass_certified", lambda st: passes.run_pass_certified(
         st.client, st.sample_id, st.led, st.profile, st.cfg, st.adducts,
-        reagent=st.reagent, ts_peaks=st.ts_peaks, log=st.log),
+        reagent=st.reagent, ts_peaks=st.ts_peaks, resolving_power=st.resolving_power, log=st.log),
            when=lambda st: st.do_pass_certified),
     # Pass 3, LATE half: families opened by detected GKA series structure claim
     # only what passes 4/5/7 left behind. Ordering matters -- run before pass 3
@@ -530,7 +615,18 @@ _STAGES = [
     # tiers see the committed formula), so a degenerate competitor the local scorer
     # over-ranked can't keep the M0 slot it will only ever be tier-demoted out of.
     _Stage("rearbitrate", lambda st: passes.rearbitrate_offcal_degenerate(
-        st.led, st.cfg, log=st.log)),
+        st.led, st.cfg, log=st.log, profile=st.profile)),
+    # the element-evidence gate: every proposer has run (passes 3/4/5/7, the late
+    # series families, pass 6, cleanup, siloxane, the labelled rescue,
+    # re-arbitration), so this is the last word on a widened search's heteroatom
+    # before degeneracy and tiers read the commit -- a contradicted one is
+    # CLEARED, its isotope children released (plausibility.gate_element_evidence).
+    # Not `safe`: `safe` keeps a run going past a stage that calls the server
+    # (a 500 must not lose prior passes); this one reads only the ledger, so a
+    # failure is a bug -- and skipping it would let every widened search's
+    # heteroatom through unchecked while the run looked normal (as `tiers` and
+    # `plausibility`, it fails the file instead).
+    _Stage("element_evidence", _stage_element_evidence, safe=False),
     # separability of each M0 peak from its nearest picked neighbour -- MUST precede
     # tiers (a blended, uncorroborated peak is capped) and the merge vote's class (reads it).
     _Stage("resolvability", _stage_resolvability,
@@ -539,7 +635,7 @@ _STAGES = [
     # honest mass-degeneracy measurement -- MUST precede tiers (the tier engine reads it).
     _Stage("degeneracy", _stage_degeneracy),
     # report tier, then the post-tier de-risking demotes (each gets the last word).
-    _Stage("tiers", lambda st: tiers.apply_tiers(st.led, cfg=st.cfg), safe=False, store=False),
+    _Stage("tiers", _stage_tiers, safe=False, store=False),
     _Stage("demote_fluorine",
            lambda st: cleanup.demote_unconfirmed_fluorine(st.led, log=st.log),
            safe=False, store=False),
@@ -591,7 +687,7 @@ _STAGES = [
     # [X+NO₃]- (exact isobar; ¹⁴NO₃ is off the labelled scoring grid). Tier preserved.
     # No-op unless the run is the labelled-nitrate profile (label_isotope '^N').
     _Stage("relabel_nitrate_clusters",
-           lambda st: cleanup.relabel_nitrate_clusters(st.led, log=st.log),
+           lambda st: cleanup.relabel_nitrate_clusters(st.led, log=st.log, profile=st.profile),
            when=lambda st: st.label_isotope == "^N", safe=False, store=False),
     _Stage("demote_ionization",
            lambda st: cleanup.demote_implausible_ionization(st.led, log=st.log),
@@ -871,6 +967,20 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # C46: the tier pass keys its counting-detector floor on the class, and a
     # run whose peak table's signal-to-noise was replaced says so once
     cfg.instrument_type = scoring_snapshot.get("instrument_type")
+    # the class-gated stages' instrument class: the batch's own when it handed one
+    if cfg.instrument_class is None:
+        cfg.instrument_class = instrument_class_of(cfg.instrument_type, width_model)
+    # the run's own context profile: a nitrate-reagent run on an Orbitrap-class
+    # axis reads the carbon skeleton of organonitrates / nitroaromatics and the
+    # C3-C4 small-acid band (contexts.run_profile); every consumer below -- the
+    # grid filter, residual, cleanup, the labelled rescue, degeneracy, the
+    # plausibility demotes and the evidence level's space -- sees THIS profile
+    profile = run_context_profile(
+        profile, reagent_profile=reagent_profile, adducts=analyte_adducts,
+        instrument_class=cfg.instrument_class, trace_sample=getattr(cfg, "trace_sample", False))
+    if contexts.profile_flags(profile):
+        log(f"[run] context {profile.label}: {', '.join(sorted(contexts.profile_flags(profile)))} on "
+            f"(nitrate reagent, {cfg.instrument_class}-class axis)")
     if scoring_snapshot.get("snr_source") == io_mascope.SNR_SOURCE_POISSON:
         _edge = scoring_snapshot.get("snr_edge")
         log(f"[run] signal-to-noise: the peak table's column does not track height "
@@ -883,6 +993,13 @@ def run(sample_id: str, context: str = "ambient-air", *,
             f"({tiers.TOF_ASSIGN_FLOOR_X_EDGE:g}x the "
             + ("batch's typical" if cfg.noise_edge_batch_cps is not None else "file's own")
             + " detection edge) is Candidate")
+
+    # The Orbitrap same-spectrum side-lobe guard: weak list entries a few line
+    # widths beside a >= 50x brighter line of THIS file, narrower than a line or at
+    # the lobe's offset, are not lines of the profile -- marked 'artifact' and
+    # locked before any pass can give them a formula (and before the C42 re-run
+    # snapshot below, so a re-run keeps them). Off unless the class is Orbitrap.
+    sidelobe = sidelobe_guard.flag_orbitrap_sidelobes(led, width_model, cfg, log=log)
 
     pre = isotopes.prescan(led)
     log(f"[run] prescan {pre.as_dict()}")
@@ -996,6 +1113,11 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # the width model the resolvability stage used (None = not stamped) and its class counts
     st["resolution"] = width_model.as_dict() if width_model is not None else None
     st["resolvability"] = (summaries.get("resolvability") or {}).get("counts")
+    # the pre-pass Orbitrap side-lobe guard: how many rows it marked, or why it skipped
+    st["sidelobe_guard"] = sidelobe
+    # the NOx-skeleton tier cap: the rows it made Candidate / noted, as the tier
+    # stage left them (None when the run reads no skeletons, or never tiered)
+    st["nox_skeleton_gate"] = summaries.get("nox_skeleton_gate")
     # the degeneracy stage's own calibration (mu, sigma) ppm -- the step-1 window
     # of the evidence level, per file and pooled; null = uncalibrated (no key
     # when the stage did not run)
@@ -1010,12 +1132,16 @@ def run(sample_id: str, context: str = "ambient-air", *,
     st["side_channels"] = list(extra_channels)
     st["admitted"] = {"height": adm["height"], "occurrence": adm["occurrence"],
                       "rejected": adm["rejected"]}
+    # the run-level switches of the context profile this file was judged on
+    # ({} = the named context as is): a batch checks its own record against them
+    st["context_flags"] = contexts.profile_flags(profile)
     log(f"[run] stats {json.dumps(st)}")
     return {"ledger": led, "stats": st, "summaries": summaries,
             "prescan": pre.as_dict(), "problems": problems,
             "plausibility_audit": plaus_audit,
             "module_versions": module_versions(),
             "module_hashes": _module_hashes(), "context": profile.label,
+            "context_flags": contexts.profile_flags(profile),
             "reflists_active": reflist_versions,     # [(id, data_version), ...]
             # What this sample's candidates were scored at. A run's assignments
             # cannot be read without it: the same envelope scores differently at

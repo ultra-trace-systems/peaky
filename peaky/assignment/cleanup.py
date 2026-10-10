@@ -21,6 +21,7 @@ which invent chemistry the spectrum doesn't support:
 from __future__ import annotations
 
 import bisect
+import dataclasses
 import json
 
 import numpy as np
@@ -33,7 +34,8 @@ from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
 from peaky.assignment import solvent_clusters as SC
 
-__version__ = "0.6.0"   # + easyic cluster-vs-covalent dual note (case 4)
+__version__ = "0.6.2"   # + the 15N cluster re-read judges a skeleton-capped row again (profile=); 0.6.1 the ion-only bucket skips a locked unexplained peak (an element-evidence clear)
+                        # 0.6.0: easyic cluster-vs-covalent dual note (case 4)
                         # (history) reclaim_satellites covers 15N/34S/29Si/30Si/18O
                         # (not just 13C/81Br/37Cl); v43-review fixes: ringing
                         # brightness floor (H4), CHO-only isotope-confirmed
@@ -63,6 +65,11 @@ def flag_ringing_artifacts(ledger: pd.DataFrame, *, factor: float = RING_FACTOR,
     brightness floor + the high factor together ensure only sub-resolution
     sidelobes of a saturating ion are flagged, never a resolved independent
     neighbour.
+
+    On an Orbitrap the dim-parent case (a lobe beside a line that is 50x the lobe
+    but far below `min_parent`) is handled BEFORE pass 0 instead, by
+    `sidelobe_guard.flag_orbitrap_sidelobes`: it prevents the commit rather than
+    displacing one, so the warning below still holds.
 
     ⚠ UNEXPLAINED PEAKS ONLY -- AND DELIBERATELY SO. A pass that already committed
     an M0 onto a sidelobe makes it invisible here (this runs post-pass-6), which
@@ -1301,8 +1308,9 @@ def commit_ion_only_electron_attachment(ledger: pd.DataFrame, cfg=None, *, log=p
     [M-H]- parent as an ION-ONLY Candidate row on `[M]-.` (module note above).
 
     Per parent (a committed M0 on `[M-H]-`, any tier, flagged neither below
-    assignability nor a tentative lead, at least one carbon): the UNEXPLAINED
-    peak -- never an M0, isotopologue, reagent or artifact -- nearest the parent
+    assignability nor a tentative lead, at least one carbon): the UNEXPLAINED,
+    unlocked peak -- never an M0, isotopologue, reagent or artifact, nor a peak a
+    stage emptied and locked (the element-evidence clear) -- nearest the parent
     neutral's M-. mass and inside the calibrated gate (|z| <= ION_ONLY_Z via
     passes.core.z_of, the mass-dependent centre when fitted; +-ION_ONLY_PPM_UNCAL
     ppm uncalibrated). Two guards keep
@@ -1336,6 +1344,10 @@ def commit_ion_only_electron_attachment(ledger: pd.DataFrame, cfg=None, *, log=p
     mz_all = pd.to_numeric(ledger["mz"], errors="coerce").to_numpy(dtype=float)
     centres = _resolved_pair_centres(mz_all)
     role = ledger["role"].astype(str)
+    # a LOCKED unexplained peak stays unexplained (the element-evidence stage
+    # locks the peaks it clears): never an ion-only row
+    free = (~ledger["locked"].map(L._truthy).astype(bool) if "locked" in ledger.columns
+            else pd.Series(True, index=ledger.index))
     has_tier = "tier" in ledger.columns
     m0 = (role == L.ROLE_M0) & ledger["adduct"].astype(str).eq(ION_ONLY_PARENT_ADDUCT)
     # a flagged parent -- below assignability OR a tentative lead (C19(c): the
@@ -1371,7 +1383,7 @@ def commit_ion_only_electron_attachment(ledger: pd.DataFrame, cfg=None, *, log=p
             out["ion_only_skipped_unresolved"] += 1
             continue
         # the nearest UNEXPLAINED peak inside the gate
-        un = ledger.index[(role == L.ROLE_UNEXPLAINED)
+        un = ledger.index[(role == L.ROLE_UNEXPLAINED) & free
                           & (np.abs(mz_all - theo) <= half_da)]
         if not len(un):
             continue
@@ -1441,7 +1453,63 @@ def _norm_formula(f) -> str:
         return ""
 
 
-def relabel_nitrate_clusters(ledger: pd.DataFrame, *, log=print) -> dict:
+def _rejudge_skeleton_cap(ledger: pd.DataFrame, i, xf: str, note: str, profile) -> str:
+    """The cluster re-read of a covalent row the NOx-skeleton tier cap made
+    Candidate (relabel_nitrate_clusters): Assigned back only when the cap was its
+    one demotion and the cluster reading X does not rely on the skeleton -- X
+    passes the run's windows on its raw reading and no demote leg depends on the
+    skeleton (plausibility.skeleton_reliance, as a filtered reading), the row was
+    not capped through re-arbitration (the swap itself rested on the skeleton),
+    no later demote flagged it (below_assignability / tentative_lead), it was not
+    capped for standing on a skeleton-reliant row (a one hop), the rows that
+    independently show X are not all capped themselves, and the run's profile is
+    known. X is judged as the row's proposer read the covalent
+    formula: a filtering proposer's X must pass the raw windows, a window-free
+    proposer's answers to the demote legs only. Otherwise it stays Candidate, its
+    reason still led by the cap mark. Returns the tier_reason to write."""
+    from peaky.assignment import plausibility as P
+    from peaky.assignment import satellites as SAT
+    from peaky.assignment import tiers as T
+
+    def _flag(col):
+        v = ledger.at[i, col] if col in ledger.columns else None
+        return bool(v) if isinstance(v, (bool, np.bool_)) else False
+
+    method = str(ledger.at[i, "method"]) if "method" in ledger.columns else ""
+    reason = str(ledger.at[i, "tier_reason"]) if isinstance(ledger.at[i, "tier_reason"], str) else ""
+    # the rows that independently show X (what the re-read leans on): all capped?
+    m0 = ledger["role"].astype(str) == L.ROLE_M0
+    corr = ledger[m0 & (ledger["neutral_formula"].astype(str) == xf)
+                  & ledger["adduct"].astype(str).isin(["[M-H]-", "[M+^NO3]-"])]
+    corr_reasons = corr["tier_reason"].map(lambda v: v if isinstance(v, str) else "") if len(corr) else []
+    why = None
+    if profile is None or not getattr(profile, "nox_skeleton", False):
+        why = "the run's skeleton profile is not known here"
+    elif T._HOP_ANCHOR in reason or T._HOP_COMPLETION in reason:
+        why = "it was capped for standing on a skeleton-reliant row, which the re-read does not change"
+    elif len(corr) and all(rs.startswith(T.NOX_SKELETON_CAP_MARK) for rs in corr_reasons):
+        why = f"the cluster parent {xf} is seen only on rows the cap holds Candidate"
+    elif method.startswith(SAT.REARB_PREFIX):
+        why = "re-arbitration chose the covalent reading only on its organonitrate-skeleton reading"
+    elif _flag("below_assignability") or _flag("tentative_lead"):
+        why = "a later check flagged the row below assignability"
+    else:
+        # X judged as the covalent row's proposer read it: a filtering proposer's X
+        # must pass the raw windows; a window-free one's answers to the demotes only
+        filtered = T.consults_context_filter(method)
+        rel = P.skeleton_reliance(xf, profile, filtered=filtered, mass_degenerate=T._degeneracy(ledger.loc[i])[1])
+        if rel is not None:
+            why = f"the cluster parent {xf} {rel}"
+        elif filtered and not X.filter_by_profile(xf, dataclasses.replace(profile, nox_skeleton=False))[0]:
+            why = f"the cluster parent {xf} fails the context windows on its raw reading"
+    if why is None:
+        ledger.at[i, "tier"] = T.TIER_ASSIGNED
+        return note + ("; Assigned: the cluster reading does not rest on the organonitrate-skeleton reading "
+                       "that capped the covalent one")
+    return f"{T.NOX_SKELETON_CAP_MARK}: Candidate as the covalent reading was ({why}); {note}"
+
+
+def relabel_nitrate_clusters(ledger: pd.DataFrame, *, log=print, profile=None) -> dict:
     """¹⁵N-nitrate isobar arbitration. In a ¹⁵N-NO₃⁻ CIMS run of a NOx-oxidation
     experiment the chamber holds abundant *unlabelled* ¹⁴NO₃⁻; a highly-oxygenated
     analyte X clusters with it to give [X+¹⁴NO₃]⁻ -- which is the EXACT same ion
@@ -1466,7 +1534,13 @@ def relabel_nitrate_clusters(ledger: pd.DataFrame, *, log=print) -> dict:
     tier the covalent fit earned is exactly what the cluster reading deserves.
 
     Gated by the caller on the labelled-nitrate profile (label_isotope '^N'); it is
-    only meaningful when ¹⁴NO₃ is off the scoring grid."""
+    only meaningful when ¹⁴NO₃ is off the scoring grid.
+
+    One exception to the preserved tier: a covalent reading the NOx-skeleton tier
+    cap made Candidate (tiers.NOX_SKELETON_CAP_MARK; `profile` = the run's) is
+    judged again on its cluster reading (`_rejudge_skeleton_cap`): Assigned back
+    only when the cap was its one demotion and X does not rely on the skeleton,
+    else still Candidate, its reason still led by the cap mark."""
     if "neutral_formula" not in ledger.columns or "adduct" not in ledger.columns:
         return {"nitrate_cluster_relabeled": 0}
     # parents independently present, by channel (normalised neutral strings).
@@ -1529,6 +1603,11 @@ def relabel_nitrate_clusters(ledger: pd.DataFrame, *, log=print) -> dict:
             prev = str(ledger.at[i, "commentary"] or "")
             ledger.at[i, "commentary"] = (prev + "; " + note) if prev and prev != "nan" else note
         if "tier_reason" in ledger.columns:
+            from peaky.assignment import tiers as T
+            prev_reason = ledger.at[i, "tier_reason"]
+            prev_reason = str(prev_reason) if isinstance(prev_reason, str) else ""
+            if prev_reason.startswith(T.NOX_SKELETON_CAP_MARK) and "tier" in ledger.columns:
+                note = _rejudge_skeleton_cap(ledger, i, xf, note, profile)
             ledger.at[i, "tier_reason"] = note
         n += 1
     log(f"[cleanup] re-read {n} covalent-organonitrate [M-H]- as chamber-¹⁴NO₃ clusters "

@@ -9,7 +9,11 @@ refuted pair leaves its neutral's chan2 / branch pools in both directions (rule
 K's `alien` mechanism). A fourth, rule H, writes a POSITIVE fact instead: the
 ion's exact halogen line, which lifts a tentative lead the line answers
 (evidence._measure). All four are batch facts: they need the stamped time
-series, never run per file, are never an axis, never in `cross`.
+series, never run per file, are never an axis, never in `cross`. A fifth, the
+merged-ledger isotopologue gate (`satellite_rows`, before the stamp; Orbitrap-
+class), removes a merged row whose line is another merged ion's isotopologue at
+its expected area ratio, and hands the stripped pair here as a veto (check 'SAT',
+`veto_rows`).
 
 The instrument class is batch-generic: Orbitrap-class when the batch's peak-width
 model resolves >= ORBITRAP_R200 at m/z 200 (`batch_summary.resolution.r_at_200`),
@@ -225,14 +229,15 @@ import numpy as np
 import pandas as pd
 
 from peaky.chem import chemistry as C
+from peaky.chem import isotopes as ISO
 
 CHECKS = ("C", "REQ", "HIGH", "H")
-CHECK_NAME = {"C": "rule C", "REQ": "REQ", "HIGH": "HIGH", "H": "rule H"}
+CHECK_NAME = {"C": "rule C", "REQ": "REQ", "HIGH": "HIGH", "H": "rule H", "SAT": "isotopologue"}
 #: the checks that refute (a veto); rule H writes a positive fact instead
 VETO_CHECKS = ("C", "REQ", "HIGH")
 #: Orbitrap-class: the batch's width model resolves at least this at m/z 200
 ORBITRAP_R200 = 50_000.0
-D13C = 1.0033548378
+D13C = ISO.D_13C_EXACT
 # --- rule C
 R13C = 0.010816
 R17O = 0.000381
@@ -254,8 +259,6 @@ REQ_SHARE = 0.5          # an S / Si component must be >= 50 % of its observable
 REQ_DET_X = 3.0          # detectable: expected height >= 3x the spectrum's floor
 REQ_NMIN = 3
 REQ_ABSENT_FRAC = 0.2
-REQ_ORBI_MIN_PPM = 1.0
-REQ_ORBI_SIGMA_K = 4.0
 REQ_MERGE_FWHM = 1.0
 # --- REQ on a TOF-class batch (`_req_tof`): the ION's own M+2 line in every
 # spectrum showing the pair, judged by satellites.heavy_line_verdict (the tier
@@ -281,7 +284,7 @@ REQ_EFF_PAIRS = 3
 REQ_EFF_FLOOR = 0.25
 _MIN_REL = 1e-5
 _ISO = {
-    "C": [(0.0, 0.98930), (1.0033548378, 0.01070, "13C")],
+    "C": [(0.0, 0.98930), (D13C, 0.01070, "13C")],
     "H": [(0.0, 0.999885), (1.0062767, 0.000115, "2H")],
     "N": [(0.0, 0.996360), (0.9970349, 0.003640, "15N")],
     "O": [(0.0, 0.997570), (1.0042169, 0.000380, "17O"), (2.0042464, 0.002050, "18O")],
@@ -395,6 +398,26 @@ def instrument_class(resolution) -> str:
     return "orbitrap" if np.isfinite(r) and r >= ORBITRAP_R200 else "tof"
 
 
+def batch_class(resolution, klass=None) -> str:
+    """The class the batch checks act on: the batch's RESOLVED class `klass`
+    (PassConfig.instrument_class, assign_batch's `_axis_class`: a TOF roster wins
+    over a width model that reads Orbitrap-class) when it names one, else the
+    width model's (`instrument_class`). One class source for REQ, rule C, HIGH,
+    rule H, the element-signature removal, the TOF gates and the isotopologue
+    gate: a TOF declared at --resolving-power 60000 is TOF-class in all of them."""
+    if klass in ("orbitrap", "tof"):
+        return klass
+    return instrument_class(resolution)
+
+
+def exact_window_ppm(sigma) -> float:
+    """The exact-offset search window (ppm) of REQ's Orbitrap branch and the
+    isotopologue gate: satellites.element_window_ppm of the batch's mass sigma,
+    max(1 ppm, 4 sigma) -- one rule with the per-file element-evidence test."""
+    from peaky.assignment import satellites as SAT
+    return SAT.element_window_ppm(sigma)
+
+
 def _scale(mass_scale) -> tuple[float, float]:
     """(sigma_ppm, stamp_ppm) of the batch's traces.MassScale (or its as_dict)."""
     if mass_scale is None:
@@ -429,6 +452,8 @@ class _Series:
         self.h = t["height"].to_numpy(float)
         self.a = t["area"].to_numpy(float)
         self.role = t["role"].to_numpy()
+        #: a stamped artifact (a side lobe or ringing a per-file stage marked): no line
+        self.artifact = self.role == "artifact"
         self.nf = t["neutral_formula"].to_numpy()
         self.ad = t["adduct"].to_numpy()
         self.label = t["iso_label"].to_numpy()
@@ -456,12 +481,18 @@ class _Series:
         hi = np.searchsorted(self.key, codes * 1e4 + targets + tol, "right")
         return lo, hi
 
-    def tallest(self, codes, targets, ppm):
-        """Index of the tallest peak within +-ppm of each (spectrum, target), -1 where none."""
+    def tallest(self, codes, targets, ppm, keep=None):
+        """Index of the tallest peak within +-ppm of each (spectrum, target), -1 where none;
+        with `keep` (a mask over the series) only among the peaks it keeps."""
         lo, hi = self.window(codes, targets, ppm)
         out = np.full(len(lo), -1, dtype=np.int64)
         for i in np.nonzero(hi > lo)[0]:
-            out[i] = lo[i] + int(np.argmax(self.h[lo[i]:hi[i]]))
+            hh = self.h[lo[i]:hi[i]]
+            if keep is not None:
+                hh = np.where(keep[lo[i]:hi[i]], hh, -np.inf)
+                if not np.isfinite(hh).any():
+                    continue
+            out[i] = lo[i] + int(np.argmax(hh))
         return out
 
     def nearest(self, codes, targets, ppm_of=None, ppm=None, reach=(-1, 0)):
@@ -747,7 +778,7 @@ def _req(S: _Series, pooled: pd.DataFrame, klass: str, rp, sigma: float, stamp: 
          x_edge: float, log=None) -> pd.DataFrame:
     """REQ on an Orbitrap-class batch (a TOF-class batch runs `_req_tof`)."""
     heavy = ("Br", "Cl", "S", "Si")
-    win = max(REQ_ORBI_MIN_PPM, REQ_ORBI_SIGMA_K * sigma if np.isfinite(sigma) else 0.0)
+    win = exact_window_ppm(sigma)
     floor = S.edge * x_edge
     # pass 1: every pair's required lines, where they would sit and what is there
     cases = []
@@ -780,8 +811,17 @@ def _req(S: _Series, pooled: pd.DataFrame, klass: str, rp, sigma: float, stamp: 
         for q in req:
             t1 = pm + (q["centroid"] - sc)
             t2 = pm + (q["pure"] - sc)
-            hl = _line_height(S, codes, t1, t2, win)
-            lines.append(dict(q, t1=t1, t2=t2, pres=hl > 0, seen=hl / np.maximum(ph * q["ratio"], 1e-12)))
+            # a stamped artifact (a per-file side lobe or ringing: the series
+            # carries the role, not which stage set it) is no line: it is not
+            # 'present', and a spectrum where only an artifact holds the
+            # position is not testable there either (neither seen nor absent).
+            # The per-file element-evidence test and the evidence levels read
+            # an Orbitrap file's artifact rows the same way; _req_tof reads
+            # every peak, as the TOF M+2 element-evidence test does
+            hl = _line_height(S, codes, t1, t2, win, keep=~S.artifact)
+            held = (hl <= 0) & (_line_height(S, codes, t1, t2, win, keep=S.artifact) > 0)
+            lines.append(dict(q, t1=t1, t2=t2, pres=hl > 0, held=held,
+                              seen=hl / np.maximum(ph * q["ratio"], 1e-12)))
         cases.append((r, stamped, codes, pm, ph, fl, lines))
     # the batch's own line efficiency per element (how tall the lines it sees come out)
     eff = line_efficiency(cases)
@@ -794,7 +834,7 @@ def _req(S: _Series, pooled: pd.DataFrame, klass: str, rp, sigma: float, stamp: 
         out = []
         for q in lines:
             e = _eff_of(eff, q["element"])
-            det = ph * q["ratio"] * e >= REQ_DET_X * fl
+            det = (ph * q["ratio"] * e >= REQ_DET_X * fl) & ~q["held"]
             nd = int(det.sum())
             pres = q["pres"]
             npd = int((pres & det).sum())
@@ -802,7 +842,7 @@ def _req(S: _Series, pooled: pd.DataFrame, klass: str, rp, sigma: float, stamp: 
             testable = nd >= REQ_NMIN
             absent = testable and frac <= REQ_ABSENT_FRAC
             npw = frw = np.nan
-            x = {k: v for k, v in q.items() if k not in ("t1", "t2", "pres", "seen")}
+            x = {k: v for k, v in q.items() if k not in ("t1", "t2", "pres", "held", "seen")}
             out.append(dict(x, eff=e, n_det=nd, n_present=npd, det_frac=frac, n_present_wide=npw,
                             det_frac_wide=frw, testable=testable, absent=absent))
         ab = [x for x in out if x["absent"]]
@@ -963,6 +1003,8 @@ def line_efficiency(cases) -> dict:
     for _r, _st, _codes, _pm, ph, fl, lines in cases:
         for q in lines:
             det = ph * q["ratio"] >= REQ_DET_X * fl
+            if "held" in q:
+                det = det & ~q["held"]
             nd = int(det.sum())
             if nd < REQ_NMIN:
                 continue
@@ -984,11 +1026,12 @@ def _eff_of(eff: dict, element: str) -> float:
     return 1.0
 
 
-def _line_height(S: _Series, codes, t1, t2, ppm) -> np.ndarray:
-    """The tallest peak within +-ppm of either position of each (spectrum, line), 0 where none."""
+def _line_height(S: _Series, codes, t1, t2, ppm, keep=None) -> np.ndarray:
+    """The tallest peak within +-ppm of either position of each (spectrum, line), 0 where
+    none; with `keep` only among the peaks it keeps (`_Series.tallest`)."""
     out = np.zeros(len(codes))
     for t in (t1, t2):
-        j = S.tallest(codes, t, ppm)
+        j = S.tallest(codes, t, ppm, keep=keep)
         ok = j >= 0
         out[ok] = np.maximum(out[ok], S.h[j[ok]])
     return out
@@ -1506,7 +1549,7 @@ def _lock_note(st: dict, el: str, n_x: int, lo: float, hi: float, npar: int, mz:
 # --------------------------------------------------------------------------- the table
 def measure(ts: pd.DataFrame | None, frames: dict, prof=None, *, resolution=None, mass_scale=None,
             x_edge: float = 1.0, context: str | None = None, edge_cps: float | None = None,
-            log=print) -> pd.DataFrame:
+            klass: str | None = None, log=print) -> pd.DataFrame:
     """The isotope-check table: one row per tested pooled pair and check (module
     docstring). `resolution` is the batch's width model (chem.resolution.Resolution
     or its as_dict; it decides the instrument class and REQ's observable lines),
@@ -1518,15 +1561,16 @@ def measure(ts: pd.DataFrame | None, frames: dict, prof=None, *, resolution=None
     plausibility stage demoted against; None = no budget), `edge_cps` the
     batch's typical detection edge (PassConfig.noise_edge_batch_cps: the TOF
     REQ test's floor is k_detect x it; None = the median of the spectra's own
-    edges). `prof` is the batch's reagent profile (rule C's 14N exemption, rule
-    H's reagent supply). Empty with a header when the batch has no time series
-    or no committed pair."""
+    edges). `klass` is the batch's resolved instrument class (`batch_class`;
+    None = the width model's). `prof` is the batch's reagent profile (rule C's
+    14N exemption, rule H's reagent supply). Empty with a header when the batch
+    has no time series or no committed pair."""
     if ts is None or not len(ts):
         return _empty()
     pooled = _pooled(frames)
     if pooled.empty:
         return _empty()
-    klass = instrument_class(resolution)
+    klass = batch_class(resolution, klass)
     rp = _resolution(resolution)
     sigma, stamp = _scale(mass_scale)
     S = _Series(ts)
@@ -1587,6 +1631,92 @@ def veto(table: pd.DataFrame | None) -> dict:
     return out
 
 
+#: the element-signature lines (the element_evidence removal): a REQ veto on one of these -- the line the
+#: element's own heavy isotope makes, absent at its exact position in the
+#: spectra that would show it -- removes the reading from the merged ledger
+SIGNATURE_ISOTOPES = ("81Br", "37Cl", "34S", "29Si", "30Si")
+
+
+def signature_vetoes(table: pd.DataFrame | None) -> dict:
+    """{(neutral, adduct): note} of the REQ vetoes on an Orbitrap-class batch
+    whose absent line is an element-signature line (SIGNATURE_ISOTOPES): the
+    batch has looked for the element's own line at its exact offset in every
+    spectrum bright enough to show it and found it in at most REQ_ABSENT_FRAC
+    of them. The other vetoes (rule C, HIGH, the TOF's whole-M+2 REQ, an
+    all-light Br2 line) keep their 5b."""
+    if table is None or not len(table) or not {"check", "veto", "line"} <= set(table.columns):
+        return {}
+    t = table[(table["check"].astype(str) == "REQ") & table["veto"].map(_truth)]
+    if "instrument" in t.columns:
+        t = t[t["instrument"].astype(str) == "orbitrap"]
+    out: dict = {}
+    for n, a, ln, x in zip(t["neutral_formula"], t["adduct"], t["line"], t["note"]):
+        lab = str(ln)
+        if any(iso in lab for iso in SIGNATURE_ISOTOPES):
+            out[(str(n), str(a))] = str(x) if isinstance(x, str) else lab
+    return out
+
+
+def remove_signature_vetoed(merged: pd.DataFrame, table: pd.DataFrame | None, *, exempt=frozenset(),
+                            klass: str | None = None, log=print) -> tuple[pd.DataFrame, dict]:
+    """Drop from the merged ledger every row whose (neutral, adduct) the batch's
+    REQ check refutes on an element-signature line (`signature_vetoes`) --
+    the reading claims an element whose own line the batch does not show where
+    it would. `exempt`: neutrals a curated list stands behind; a known-species
+    decision (its tier_reason mark) is kept too. Returns (merged, summary);
+    each removed row's entry in summary['pairs'] says whether its reading left
+    the merged ledger (`reading_left`: False when another merged row of the same
+    reading stays, e.g. the one a known-species decision marks; `gone_pairs`).
+    The caller (assign_batch.run) records the removal in the per-file ledgers
+    (`record_per_file`) and re-stamps the batch series from the returned
+    ledger and the rewritten per-file ledgers, so neither names a removed
+    reading.
+    `klass`: the batch's resolved instrument class (`batch_class`) -- anything
+    but 'orbitrap' removes nothing (a TOF read as Orbitrap-class by its width
+    model keeps its vetoes as 5b), whatever class the table's rows carry."""
+    out = {"removed": 0, "pairs": []}
+    if klass is not None and klass != "orbitrap":
+        out["skipped"] = f"instrument class {klass} (removes on an Orbitrap-class batch only)"
+        log(f"[iso_checks] element-signature removal skipped: {out['skipped']}")
+        return merged, out
+    sv = signature_vetoes(table)
+    if merged is None or not len(merged) or not sv or "neutral_formula" not in merged.columns:
+        return merged, out
+    exempt = frozenset(exempt or ())
+    drop = []
+    for i in merged.index:
+        k = (str(merged.at[i, "neutral_formula"]), str(merged.at[i, "adduct"]))
+        if k not in sv or k[0] in exempt:
+            continue
+        if "tier_reason" in merged.columns and KNOWN_LOCK_MARK in str(merged.at[i, "tier_reason"]):
+            continue
+        drop.append(i)
+        out["pairs"].append({"neutral_formula": k[0], "adduct": k[1],
+                             "mz": float(pd.to_numeric(merged.at[i, "mz"], errors="coerce")),
+                             "tier": str(merged.at[i, "tier"]) if "tier" in merged.columns else "",
+                             "note": sv[k]})
+    if drop:
+        merged = merged.drop(index=drop).reset_index(drop=True)
+        # a reading can hold two merged rows (a split cluster, a collapsed loser on
+        # its trace); one the known-species decision marks stays, so the reading has
+        # not left the merged ledger: `reading_left` False, and nothing downstream
+        # (parent_removed, release_signature_removed) treats it as gone
+        held = set(zip(merged["neutral_formula"].astype(str), merged["adduct"].astype(str)))
+        for p in out["pairs"]:
+            p["reading_left"] = (p["neutral_formula"], p["adduct"]) not in held
+    out["removed"] = len(drop)
+    log(f"[iso_checks] element-signature REQ vetoes: {len(sv)} pair(s); {len(drop)} merged row(s) removed"
+        + (": " + ", ".join(f"{p['neutral_formula']} {p['adduct']}" for p in out["pairs"]) if drop else ""))
+    return merged, out
+
+
+def gone_pairs(removed_pairs) -> list:
+    """The entries of remove_signature_vetoed's summary['pairs'] whose reading left
+    the merged ledger (`reading_left`, True when absent: an entry written before
+    the key)."""
+    return [p for p in (removed_pairs or ()) if p.get("reading_left", True)]
+
+
 def lock(table: pd.DataFrame | None) -> dict:
     """{(neutral, adduct): {'element', 'n', 'budget_ok', 'note'}} of the rule H
     rows that lock -- {} for a table written before rule H (no `lock` column,
@@ -1620,14 +1750,16 @@ def _truth(v) -> bool:
     return bool(v) if v is not None and not (isinstance(v, float) and np.isnan(v)) else False
 
 
-def summary(table: pd.DataFrame | None, resolution=None) -> dict:
+def summary(table: pd.DataFrame | None, resolution=None, klass: str | None = None) -> dict:
     """The funnel, for batch_summary.json: per check the pairs tested and each
     verdict's count (the vetoes of C / REQ / HIGH, the locks of rule H), and the
-    pairs vetoed and locked in all."""
-    klass = instrument_class(resolution)
+    pairs vetoed and locked in all. `klass`: the batch's resolved class
+    (`batch_class`)."""
+    klass = batch_class(resolution, klass)
     if table is None or not len(table):
         return {"instrument": klass, "tested": 0, "vetoed_pairs": 0, "locked_pairs": 0}
-    out = {"instrument": klass, "tested": int(len(table)), "vetoed_pairs": len(veto(table)),
+    n_sat = int((table["check"].astype(str) == "SAT").sum()) if "check" in table.columns else 0
+    out = {"instrument": klass, "tested": int(len(table)) - n_sat, "vetoed_pairs": len(veto(table)),
            "locked_pairs": len(lock(table))}
     for c in CHECKS:
         t = table[table["check"] == c]
@@ -1635,6 +1767,9 @@ def summary(table: pd.DataFrame | None, resolution=None) -> dict:
         head = ({"vetoed": int(t["veto"].map(_truth).sum())} if c in VETO_CHECKS else
                 {"locked": int(t["lock"].map(_truth).sum()) if "lock" in t.columns else 0})
         out[c] = {"tested": int(len(t)), **head, **{k: int((v == k).sum()) for k in VERDICTS[c]}}
+    if n_sat:
+        # the merged-ledger isotopologue gate's vetoes (`satellite_rows` / `veto_rows`)
+        out["SAT"] = {"vetoed": n_sat}
     return out
 
 
@@ -1699,11 +1834,12 @@ def doublets(S: _Series, mzs, ppm: float) -> pd.DataFrame:
 
 
 def tof_m2_gates(merged: pd.DataFrame, table: pd.DataFrame | None, ts: pd.DataFrame | None, *,
-                 resolution=None, mass_scale=None, log=print) -> dict:
+                 resolution=None, mass_scale=None, klass: str | None = None, log=print) -> dict:
     """The TOF ion-M+2 gates on the merged ledger, after the stamp (in place).
 
-    TOF-class batches only (a width model whose class is 'tof'; without one
-    nothing runs). Two demotions, Assigned -> Candidate, no re-vote (the winner
+    TOF-class batches only (`klass`, the batch's resolved class, else the
+    width model's: `batch_class`), with a width model (without one nothing
+    runs). Two demotions, Assigned -> Candidate, no re-vote (the winner
     and its reading stay; the row says why):
 
       * REQ: the merged winner's pair is refuted by REQ's TOF branch -- the
@@ -1729,7 +1865,7 @@ def tof_m2_gates(merged: pd.DataFrame, table: pd.DataFrame | None, ts: pd.DataFr
     Returns counts for batch_summary['merge_gates']['tof_m2']."""
     out = {"ran": False, "req_demoted": 0, "known_demoted": 0, "doublet_demoted": 0, "doublet_exempt": 0}
     rp = _resolution(resolution)
-    if rp is None or instrument_class(rp) != "tof":
+    if rp is None or batch_class(rp, klass) != "tof":
         out["skipped"] = "no width model" if rp is None else "not a TOF-class batch"
         return out
     out["ran"] = True
@@ -1802,4 +1938,749 @@ def tof_m2_gates(merged: pd.DataFrame, table: pd.DataFrame | None, ts: pd.DataFr
     log(f"[tof_m2] TOF ion-M+2 gates on the merged ledger: {out['req_demoted']} Assigned -> Candidate by REQ "
         f"({out['known_demoted']} known-species decisions overruled), {out['doublet_demoted']} by the 81Br doublet "
         f"({out['doublet_exempt']} halogen readings exempt: their own M+2 seen)")
+    return out
+
+
+# --------------------------------------------------------------------------- the isotopologue rows (merged gate)
+# A merged row whose line is another merged ion's 13C / 18O / 15N / 34S / 37Cl /
+# 81Br / Si isotopologue keeps its own formula when every per-file arbitration
+# decided by score (a high-scoring reading on the 13C line of a lower-scoring
+# parent wins the child attach, and the merge votes over M0 rows only). The batch
+# reads the line against the parent's expected ratio, spectrum by spectrum, from
+# the peak AREAS of the time series (`satellite_rows`, docstring).
+#: the instrument classes the gate runs on (a TOF's M+1 / M+2 clusters blend 13C,
+#: 15N and 2H, and its merge window is wider than the lines' spacing: off there)
+SAT_CLASSES = ("orbitrap",)
+#: the parent's lines read: shift from its all-light line (Da), expected ratio floor
+SAT_SHIFT_MIN, SAT_SHIFT_MAX = 0.4, 4.1
+SAT_E_MIN = 1e-3
+#: the verdict: >= SAT_NMIN spectra holding the line and a parent; the median area
+#: ratio (observed / expected) in [SAT_RATIO_MIN, SAT_RATIO_MAX]; and fewer than
+#: max(1, SAT_TAIL_FRAC x n) spectra above SAT_TAIL_RHO (a real ion present in only
+#: some spectra pulls the median into the band while its own spectra stand 2-3x
+#: above it). A median in (SAT_RATIO_MAX, SAT_MIXED_MAX], or an in-band median
+#: that fails the tail test, is a MIXED line: a note, no tier change.
+SAT_NMIN = 3
+SAT_RATIO_MIN, SAT_RATIO_MAX = 0.4, 1.4
+SAT_MIXED_MAX = 4.0
+SAT_TAIL_RHO = 2.0
+SAT_TAIL_FRAC = 0.10
+SAT_TABLE_COLUMNS = (
+    "mz", "neutral_formula", "adduct", "ion", "tier", "ion_score", "verdict", "action",
+    "label", "expected", "parent_mz", "parent_ion", "parent_neutral", "parent_adduct", "parent_tier", "parents",
+    "offset_ppm", "rho_area", "rho_height", "n_both", "n_tail", "share",
+    "files_m0", "files_iso_parent", "files_other", "alternatives", "note",
+)
+#: an adduct group naming a heavy isotope: '+15NO3', '+13CO3', '+D2O', '-D' (the
+#: group's leading token, an element symbol not running on: '+Cu', '+Dy', '+13Cl'
+#: and '+2H' -- two protons -- are ordinary adducts)
+_LABEL_GROUP = re.compile(r"(?:13C|15N|18O|34S|D)(?![a-z])")
+_ADDUCT_GROUPS = re.compile(r"([+-])([^+\-\]]+)")
+
+
+def _sat_empty() -> pd.DataFrame:
+    return pd.DataFrame(columns=list(SAT_TABLE_COLUMNS))
+
+
+def _sat_label(tags: dict) -> str:
+    """'13C', '18O', '13C2', '13C+18O' -- the line's main component."""
+    return "+".join(f"{k}{v if v > 1 else ''}" for k, v in tags.items()) or "all-light"
+
+
+def _label_elements(tags: dict) -> set:
+    return {re.sub(r"^\d+", "", k) for k in tags}
+
+
+def _is_labelled(neutral, adduct) -> bool:
+    """A reading carrying an isotope label: a caret element ('^N') in its neutral or
+    adduct, or an adduct naming a heavy isotope ('[M+15NO3]-')."""
+    n, a = _txt_of(neutral), _txt_of(adduct)
+    if "^" in n or "^" in a:
+        return True
+    m = re.match(r"\[M(.*)\]", a)
+    return bool(m) and any(_LABEL_GROUP.match(grp) for _sign, grp in _ADDUCT_GROUPS.findall(m.group(1)))
+
+
+def _txt_of(v) -> str:
+    if v is None or (isinstance(v, float) and np.isnan(v)) or v is pd.NA:
+        return ""
+    s = str(v)
+    return "" if s in ("nan", "<NA>", "None") else s
+
+
+def _sibling_channel(adduct, prof) -> bool:
+    """The reading sits on a channel of a labelled pair (the 14N nitrate cluster on a
+    profile that also clusters on the 15N-labelled nitrate, or the labelled one)."""
+    from peaky.assignment import evidence as EV
+    a = _txt_of(adduct)
+    adds = set(getattr(prof, "adducts", None) or ())
+    lab = EV.LABEL_FOLD.get(a)
+    return bool((lab and lab != a and lab in adds) or (a in set(EV.LABEL_FOLD.values()) and a in adds))
+
+
+def _parent_lines(counts: dict, fwhm: float) -> list:
+    """[(shift, expected, tags)] of the ion's observable lines SAT_SHIFT_MIN..MAX Da
+    above its all-light line with expected ratio >= SAT_E_MIN (`fine_structure`,
+    components closer than one FWHM merged; the tags of each line's main component)."""
+    fs, cen, rel = _lines(fine_structure(counts), fwhm)
+    mono = int(np.argmin(np.abs(cen)))
+    r0 = float(rel[mono])
+    out = []
+    for ln in range(len(cen)):
+        sh, e = float(cen[ln]), float(rel[ln]) / r0
+        if not (SAT_SHIFT_MIN <= sh <= SAT_SHIFT_MAX) or e < SAT_E_MIN:
+            continue
+        g = fs[fs["line"] == ln]
+        out.append((sh, e, dict(g.loc[g["rel"].idxmax(), "tags"])))
+    return out
+
+
+def _role_votes(per_file: dict | None, r_mz: float, p_mz: float, ppm: float) -> tuple[int, int, int]:
+    """(files reading the line as an M0, as an isotope child of a line at the
+    parent's m/z, as anything else) -- informational."""
+    m0 = iso = other = 0
+    for led in (per_file or {}).values():
+        if led is None or not len(led) or "role" not in led.columns or "mz" not in led.columns:
+            continue
+        mz = pd.to_numeric(led["mz"], errors="coerce").to_numpy(dtype=float)
+        hit = np.nonzero(np.abs(mz - r_mz) <= r_mz * ppm * 1e-6)[0]
+        if not len(hit):
+            continue
+        roles = led["role"].astype(str).to_numpy()[hit]
+        if "M0" in roles:
+            m0 += 1
+            continue
+        if "iso_child" in roles and "parent_peak_id" in led.columns and "peak_id" in led.columns:
+            pmz = dict(zip(led["peak_id"].astype(str), mz))
+            par = [pmz.get(str(x), np.nan) for x in led["parent_peak_id"].to_numpy()[hit]]
+            if any(np.isfinite(x) and abs(x - p_mz) <= p_mz * ppm * 1e-6 for x in par):
+                iso += 1
+                continue
+        other += 1
+    return m0, iso, other
+
+
+def satellite_rows(merged: pd.DataFrame, ts: pd.DataFrame | None, *, resolution=None, mass_scale=None,
+                   klass="auto", prof=None, reagents: pd.DataFrame | None = None, per_file: dict | None = None,
+                   exempt=frozenset(), log=print):
+    """(kept, table, summary): the merged rows whose line is another merged ion's
+    isotopologue leave the merged ledger (the merged-row gate after the trace
+    reconciliation and before the stamp, so the stamp gives the line to the parent).
+
+    Scope: an Orbitrap-class batch (`klass`, the batch's resolved instrument class;
+    'auto' reads it off the width model) with a width model and a time series that
+    carries peak AREAS -- a height-only series is skipped (heights read ~0.75x of
+    areas on these lines, which would pull a mixed line into the band).
+
+    Parents: every merged row with a parseable ion composition (not ion-only, not a
+    collapsed trace label), plus the per-file reagent ions (`reagents`: mz,
+    ion_formula; one parent per ion formula at its median m/z), in ascending m/z.
+    Candidates: merged rows above a parent whose position (mz_trace where present)
+    sits within max(1 ppm, 4 sigma) of one of the parent's lines
+    (`_parent_lines`: 0.4-4.1 Da, expected >= 1e-3, components within one FWHM
+    merged). A row stripped earlier is never a parent.
+
+    Per spectrum: rho = A_R / sum_k(e_k A_Pk) over the parents present, each line
+    read as the tallest peak within the same window (areas; heights alongside, for
+    the record). Over the n spectra holding R and a parent: ISOTOPOLOGUE when n >=
+    SAT_NMIN, the median in [SAT_RATIO_MIN, SAT_RATIO_MAX] and fewer than max(1,
+    SAT_TAIL_FRAC n) spectra above SAT_TAIL_RHO -- the row leaves the merged ledger
+    and the main parent's tier_reason says so; MIXED when the median is in
+    (SAT_RATIO_MAX, SAT_MIXED_MAX] or the tail test fails -- a note on the row
+    only. Exempt (a note, never stripped): a known-species decision, a curated
+    reading (`exempt`: the neutrals a curated list stands behind,
+    passes.curated_formulas -- the element-signature removal spares the same set),
+    an ion-only row, an isotope-labelled reading, and a reading on a labelled
+    pair's channel when the line's label element is the label's.
+
+    `per_file` ({sid: ledger}) adds the per-file role votes to the table (files
+    reading the line as an M0 / as the parent's isotope child / else; for the
+    record only). Returns the kept merged ledger (original order, index reset), the
+    table (SAT_TABLE_COLUMNS; header only when nothing was found) and a summary for
+    batch_summary['merge_gates']['isotopologue']."""
+    summ = {"ran": False, "n_stripped": 0, "n_mixed": 0, "n_exempt": 0}
+    table = _sat_empty()
+    if merged is None or not len(merged):
+        summ["skipped"] = "no merged rows"
+        return merged, table, summ
+    if klass == "auto":
+        klass = instrument_class(resolution)
+    rp = _resolution(resolution)
+    why = (f"instrument class {klass or 'unknown'} (runs on {', '.join(SAT_CLASSES)})" if klass not in SAT_CLASSES
+           else "no width model" if rp is None
+           else "no time series" if ts is None or not len(ts)
+           else None)
+    if why is None:
+        area = pd.to_numeric(ts["area"], errors="coerce") if "area" in ts.columns else None
+        if area is None or not bool((np.isfinite(area.to_numpy(dtype=float)) & (area.to_numpy(dtype=float) > 0)).any()):
+            why = "the time series carries no peak areas (heights are not read in their place)"
+    if why is not None:
+        summ["skipped"] = why
+        log(f"[isotopologue] skipped: {why}")
+        return merged, table, summ
+    merged = merged.copy()
+    if "tier_reason" not in merged.columns:
+        merged["tier_reason"] = pd.NA
+    S = _Series(ts[[c for c in ("sample_item_id", "mz", "height", "area") if c in ts.columns]])
+    sigma, _stamp = _scale(mass_scale)
+    win = exact_window_ppm(sigma)
+    vote_ppm = _merge_ppm(mass_scale)
+    summ.update(ran=True, instrument=klass, window_ppm=round(float(win), 4),
+                constants={"shift_da": [SAT_SHIFT_MIN, SAT_SHIFT_MAX], "e_min": SAT_E_MIN, "n_min": SAT_NMIN,
+                           "ratio": [SAT_RATIO_MIN, SAT_RATIO_MAX], "mixed_max": SAT_MIXED_MAX,
+                           "tail_rho": SAT_TAIL_RHO, "tail_frac": SAT_TAIL_FRAC})
+    rows = merged.reset_index(drop=True)
+    pos = pd.to_numeric(rows["mz"], errors="coerce").to_numpy(dtype=float)
+    if "mz_trace" in rows.columns:
+        mzt = pd.to_numeric(rows["mz_trace"], errors="coerce").to_numpy(dtype=float)
+        pos = np.where(np.isfinite(mzt), mzt, pos)
+    nf = rows["neutral_formula"].map(_txt_of).to_numpy() if "neutral_formula" in rows.columns else np.full(len(rows), "")
+    ad = rows["adduct"].map(_txt_of).to_numpy() if "adduct" in rows.columns else np.full(len(rows), "")
+    tier = rows["tier"].map(_txt_of).to_numpy() if "tier" in rows.columns else np.full(len(rows), "")
+    reason = rows["tier_reason"].map(_txt_of).to_numpy()
+    io = (rows["ion_only_of"].map(_txt_of).to_numpy() != "") if "ion_only_of" in rows.columns \
+        else np.zeros(len(rows), bool)
+    collapsed = (rows["trace_role"].astype(str).to_numpy() == "collapsed") if "trace_role" in rows.columns \
+        else np.zeros(len(rows), bool)
+    # the parents: (m/z, counts, ion text, tier, neutral, adduct, merged row or -1 for a reagent ion)
+    parents = []
+    for i in range(len(rows)):
+        if io[i] or collapsed[i] or not np.isfinite(pos[i]):
+            continue
+        try:
+            cnt = ion_counts(nf[i], ad[i], None)
+        except Exception:  # noqa: BLE001 -- an unparseable reading is no parent
+            cnt = {}
+        if cnt:
+            sign = ad[i][-1] if ad[i][-1:] in ("+", "-") else ""
+            parents.append((pos[i], cnt, C.format_formula(cnt) + sign, tier[i], nf[i], ad[i], i))
+    if reagents is not None and len(reagents) and {"mz", "ion_formula"} <= set(reagents.columns):
+        rg = reagents.assign(__mz=pd.to_numeric(reagents["mz"], errors="coerce"),
+                             __f=reagents["ion_formula"].map(_txt_of))
+        if "iso_label" in rg.columns:          # a reagent's heavy lines are no parents of their own
+            rg = rg[rg["iso_label"].map(_txt_of) == ""]
+        rg = rg[(rg["__f"] != "") & np.isfinite(rg["__mz"])]
+        for f, g in rg.groupby("__f", sort=True):
+            try:
+                cnt = ion_counts("", "", f)
+            except Exception:  # noqa: BLE001
+                cnt = {}
+            if cnt:
+                parents.append((float(g["__mz"].median()), cnt, str(f), "reagent", "", "", -1))
+    parents.sort(key=lambda p: (p[0], p[2]))
+    summ["n_parents"] = len(parents)
+    # the candidates, by position
+    cand = np.array([i for i in range(len(rows)) if np.isfinite(pos[i]) and not collapsed[i]
+                     and tier[i] in ("Assigned", "Candidate")], dtype=int)
+    order = cand[np.lexsort((ad[cand], nf[cand], pos[cand]))] if len(cand) else cand
+    cpos = pos[order]
+    expect: dict[int, list] = {}
+    for pk, (pmz, cnt, ion, ptier, pn, pa, prow) in enumerate(parents):
+        for sh, e, tags in _parent_lines(cnt, rp.fwhm(pmz + 1.0)):
+            t = pmz + sh
+            lo = int(np.searchsorted(cpos, t - t * win * 1e-6, side="left"))
+            hi = int(np.searchsorted(cpos, t + t * win * 1e-6, side="right"))
+            for j in order[lo:hi]:
+                if j == prow:
+                    continue
+                expect.setdefault(int(j), []).append((pk, e, tags, (pos[j] - t) / t * 1e6))
+    summ["n_matched"] = len(expect)
+    codes = np.arange(S.n)
+    cache: dict = {}
+
+    def _read(key, mz):
+        if key not in cache:
+            k = S.tallest(codes, np.full(S.n, mz), win)
+            ok = k >= 0
+            cache[key] = (np.where(ok, S.a[np.maximum(k, 0)], np.nan), np.where(ok, S.h[np.maximum(k, 0)], np.nan))
+        return cache[key]
+
+    from peaky.assignment.cleanup import _note
+    exempt = frozenset(exempt or ())
+    stripped_rows: set = set()
+    out_rows = []
+    n_judged = 0
+    for j in order:                                   # ascending m/z: a parent is decided before its lines
+        j = int(j)
+        ps = [x for x in expect.get(j, []) if parents[x[0]][6] not in stripped_rows]
+        if not ps:
+            continue
+        aR, hR = _read(("r", j), pos[j])
+        den_a, den_h = np.zeros(S.n), np.zeros(S.n)
+        anyp = np.zeros(S.n, bool)
+        contrib = []
+        seen: list = []
+        for pk, e, tags, d in ps:
+            q = parents[pk][0]
+            if any(abs(q - x) <= q * win * 1e-6 for x in seen):
+                contrib.append(0.0)        # two parents on one peak (a reagent ion and a merged
+                continue                   # row): its area enters the expectation once
+            seen.append(q)
+            aP, hP = _read(("p", pk), q)
+            ok = np.isfinite(aP)
+            den_a[ok] += e * aP[ok]
+            den_h[ok] += e * hP[ok]
+            anyp |= ok
+            contrib.append(float(np.nansum(e * aP)))
+        both = anyp & np.isfinite(aR)
+        n = int(both.sum())
+        if n < SAT_NMIN:
+            continue
+        n_judged += 1
+        ra = aR[both] / den_a[both]
+        rh = hR[both] / den_h[both]
+        rho_a, rho_h = float(np.median(ra)), float(np.median(rh))
+        n_tail = int((ra > SAT_TAIL_RHO).sum())
+        tail_ok = n_tail < max(1.0, SAT_TAIL_FRAC * n)
+        in_band = SAT_RATIO_MIN <= rho_a <= SAT_RATIO_MAX
+        if in_band and tail_ok:
+            verdict = "isotopologue"
+        elif (in_band and not tail_ok) or SAT_RATIO_MAX < rho_a <= SAT_MIXED_MAX:
+            verdict = "mixed"
+        else:
+            continue
+        main = ps[int(np.argmax(contrib))]
+        pk, e, tags, d = main
+        pmz, _cnt, pion, ptier, pn, pa, prow = parents[pk]
+        lab = _sat_label(tags)
+        share = min(1.0, 1.0 / rho_a) if rho_a > 0 else float("nan")
+        why_exempt = ""
+        if verdict == "isotopologue":
+            if KNOWN_LOCK_MARK in reason[j]:
+                why_exempt = "a known-species decision"
+            elif nf[j] in exempt:
+                why_exempt = "a curated formula (the known-species registry or an active reference list)"
+            elif io[j]:
+                why_exempt = "an ion-only row"
+            elif _is_labelled(nf[j], ad[j]):
+                why_exempt = "an isotope-labelled reading"
+            elif prof is not None and _sibling_channel(ad[j], prof) and (
+                    _label_elements(tags) & {"N"}):
+                why_exempt = "a reading on the labelled pair's channel, the line's label element the label's"
+            if why_exempt:
+                verdict = "exempt"
+        r_txt = f"{nf[j]} {ad[j]}".strip()
+        where = f"{pion} at m/z {pmz:.4f}" + (" (reagent)" if prow < 0 else "")
+        stats = (f"area {rho_a:.2f}x expected (height {rho_h:.2f}x) over {n} spectra, "
+                 f"{n_tail} above {SAT_TAIL_RHO:g}x")
+        idx_j = merged.index[j]
+        if verdict == "isotopologue":
+            note = f"the line is the {lab} isotopologue of {where}: {stats}"
+            stripped_rows.add(j)
+            if prow >= 0:
+                _note(merged, merged.index[prow],
+                      f"the line at m/z {pos[j]:.4f} (was {r_txt}) is its {lab} isotopologue ({stats}; "
+                      f"tables/isotopologue_rows.csv)")
+        elif verdict == "mixed" and in_band:
+            # the median reads the isotopologue, the upper tail a real ion: no share
+            # of the whole line, the median one and the spectra that hold more
+            note = (f"in the median spectrum {share:.0%} of this line is the {lab} isotopologue of {where}, "
+                    f"but {n_tail} of {n} spectra hold more than {SAT_TAIL_RHO:g}x the expected line: "
+                    f"a real ion shares it ({stats})")
+            _note(merged, idx_j, note)
+        elif verdict == "mixed":
+            note = f"{share:.0%} of this line is the {lab} isotopologue of {where} ({stats})"
+            _note(merged, idx_j, note)
+        else:
+            note = f"in band as the {lab} isotopologue of {where} ({stats}); kept: {why_exempt}"
+            _note(merged, idx_j, note)
+        m0v, isov, oth = _role_votes(per_file, float(pos[j]), float(pmz), vote_ppm)
+        try:
+            rion = C.format_formula(ion_counts(nf[j], ad[j], None) or {}) + (ad[j][-1] if ad[j][-1:] in ("+", "-")
+                                                                             else "")
+        except Exception:  # noqa: BLE001
+            rion = ""
+        out_rows.append({
+            "mz": float(pos[j]), "neutral_formula": nf[j], "adduct": ad[j], "ion": rion, "tier": tier[j],
+            "ion_score": rows["ion_score"].iloc[j] if "ion_score" in rows.columns else np.nan,
+            "verdict": verdict, "action": "stripped" if verdict == "isotopologue" else "note",
+            "label": lab, "expected": float(e), "parent_mz": float(pmz), "parent_ion": pion,
+            "parent_neutral": pn, "parent_adduct": pa, "parent_tier": ptier,
+            "parents": "; ".join(f"{parents[x[0]][2]} {parents[x[0]][0]:.4f} {_sat_label(x[2])} {x[1]:.4g}"
+                                 for x in ps),
+            "offset_ppm": float(d), "rho_area": rho_a, "rho_height": rho_h, "n_both": n, "n_tail": n_tail,
+            "share": share, "files_m0": m0v, "files_iso_parent": isov, "files_other": oth,
+            "alternatives": _txt_of(rows["alternatives"].iloc[j]) if "alternatives" in rows.columns else "",
+            "note": note})
+    if out_rows:
+        table = pd.DataFrame(out_rows)[list(SAT_TABLE_COLUMNS)]
+        table = table.sort_values(["mz", "neutral_formula", "adduct"], kind="mergesort").reset_index(drop=True)
+    keep = np.ones(len(merged), bool)
+    keep[list(stripped_rows)] = False
+    kept = merged.loc[keep].reset_index(drop=True)
+    st = table[table["verdict"] == "isotopologue"]
+    summ.update(n_judged=n_judged, n_stripped=int(len(st)),
+                n_stripped_assigned=int((st["tier"] == "Assigned").sum()),
+                n_mixed=int((table["verdict"] == "mixed").sum()), n_exempt=int((table["verdict"] == "exempt").sum()),
+                stripped=[f"{a} {b} = {c} of {p}" for a, b, c, p in
+                          zip(st["neutral_formula"], st["adduct"], st["label"], st["parent_ion"])])
+    log(f"[isotopologue] {klass}-class batch, window +-{win:g} ppm: {summ['n_matched']} merged row(s) on a "
+        f"parent's isotope line, {n_judged} judged over >= {SAT_NMIN} spectra -> {summ['n_stripped']} "
+        f"isotopologue row(s) leave the merged ledger ({summ['n_stripped_assigned']} Assigned), "
+        f"{summ['n_mixed']} mixed, {summ['n_exempt']} exempt (notes only)"
+        + (": " + ", ".join(summ["stripped"][:4]) + (" ..." if len(summ["stripped"]) > 4 else "")
+           if summ["stripped"] else ""))
+    return kept, table, summ
+
+
+#: the verdict of a stripped isotopologue row whose parent reading left the merged
+#: ledger afterwards (the element-signature removal): no SAT veto, see `parent_removed`
+SAT_PARENT_REMOVED = "parent removed"
+
+
+def parent_removed(table: pd.DataFrame | None, removed_pairs, *, log=print) -> tuple[pd.DataFrame, int]:
+    """Reconcile the isotopologue table with the element-signature removal that runs
+    after it (`remove_signature_vetoed`, its summary's 'pairs' whose reading left:
+    `gone_pairs`): a row the gate stripped as the isotopologue of a parent reading
+    that has since left the merged ledger reads verdict SAT_PARENT_REMOVED, with a note -- the line is no longer
+    read as that reading's satellite, so its pooled pair carries no SAT veto
+    (`veto_rows` takes only 'isotopologue' rows) and the evidence levels judge it on
+    its own evidence. The row stays out of the merged ledger and its line stays
+    unexplained: the line still sits at the refuted reading's isotope offset and
+    ratio, which is no evidence for its own reading either. Returns (table, n)."""
+    if table is None or not len(table) or not removed_pairs or "verdict" not in table.columns:
+        return table, 0
+    gone = {(str(p["neutral_formula"]), str(p["adduct"])) for p in gone_pairs(removed_pairs)}
+    if not gone:
+        return table, 0
+    t = table.copy()
+    hit = ((t["verdict"].astype(str) == "isotopologue").to_numpy(dtype=bool)
+           & np.array([(_txt_of(n), _txt_of(a)) in gone for n, a in zip(t["parent_neutral"], t["parent_adduct"])],
+                      dtype=bool))
+    n = int(hit.sum())
+    if not n:
+        return table, 0
+    t.loc[hit, "verdict"] = SAT_PARENT_REMOVED
+    t.loc[hit, "action"] = "stripped; parent removed"
+    t.loc[hit, "note"] = [f"{x}; its parent {pn} {pa} then left the merged ledger (an element-signature "
+                          f"REQ veto): no longer read as its satellite, no SAT veto, the line unexplained"
+                          for x, pn, pa in zip(t.loc[hit, "note"], t.loc[hit, "parent_neutral"],
+                                               t.loc[hit, "parent_adduct"])]
+    log(f"[isotopologue] {n} stripped row(s) whose parent the element-signature removal took out: "
+        + ", ".join(f"{a} {b}" for a, b in zip(t.loc[hit, "neutral_formula"], t.loc[hit, "adduct"])))
+    return t, n
+
+
+def veto_rows(table: pd.DataFrame | None) -> pd.DataFrame:
+    """The stripped isotopologue rows as isotope-check vetoes (check 'SAT', TABLE_COLUMNS),
+    for the evidence level's inputs: the pooled pair of a line the merged ledger gave
+    to its parent reads 'an isotope check refutes the formula' (5b), as the merged
+    ledger does. Empty (header only) when nothing was stripped."""
+    if table is None or not len(table) or "verdict" not in table.columns:
+        return _empty()
+    t = table[table["verdict"].astype(str) == "isotopologue"]
+    t = t[(t["neutral_formula"].astype(str) != "") & (t["adduct"].astype(str) != "")]
+    if not len(t):
+        return _empty()
+    out = pd.DataFrame({
+        "neutral_formula": t["neutral_formula"].astype(str).to_numpy(), "adduct": t["adduct"].astype(str).to_numpy(),
+        "check": "SAT", "instrument": "orbitrap", "ion": t["ion"].to_numpy(), "mz": t["mz"].to_numpy(),
+        "stamped": False, "n_spectra": t["n_both"].to_numpy(), "n_used": t["n_both"].to_numpy(),
+        "verdict": "isotopologue", "veto": True, "line": t["label"].to_numpy(), "expected": t["expected"].to_numpy(),
+        "ratio_area": t["rho_area"].to_numpy(), "ratio_height": t["rho_height"].to_numpy(),
+        "lock": False, "note": t["note"].to_numpy()})
+    for c in TABLE_COLUMNS:
+        if c not in out.columns:
+            out[c] = np.nan
+    return out[list(TABLE_COLUMNS)].drop_duplicates(["neutral_formula", "adduct"]).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# the gate's decision in the per-file ledgers and on the parent's merged row
+# ---------------------------------------------------------------------------
+#: the commentary prefix of every per-file row the isotopologue gate rewrote
+SAT_LEDGER_MARK = "batch isotopologue gate"
+#: the per-reading columns a rewritten row stops carrying: they described the
+#: committed reading it no longer holds (the evidence-scale stamp of the file's own
+#: run, and the resolvability / degeneracy / calibrated-mass facts of its M0)
+_READING_COLUMNS = ("evidence_level", "evidence", "would_lift", "competitors_left", "tags", "context",
+                    "context_source", "claim", "resolvability", "sep_hwhm", "d_crit_hwhm", "degeneracy_density",
+                    "degeneracy_note", "ppm_error_cal", "ion_score_massfree")
+#: how far (x the merge window) a reading is followed off the gate's position: a
+#: file's own m/z of the line, or of the parent, may sit beyond one window from the
+#: trace-centred position the gate read
+_FOLLOW_X = 3.0
+
+
+def _nearest_row(led: pd.DataFrame, mask: np.ndarray, target: float, ppm: float):
+    """The ledger index of the row under `mask` nearest `target` within `ppm`, or None."""
+    mz = pd.to_numeric(led["mz"], errors="coerce").to_numpy(dtype=float)
+    d = np.abs(mz - target)
+    ok = mask & np.isfinite(d) & (d <= abs(target) * ppm * 1e-6)
+    if not ok.any():
+        return None
+    k = np.flatnonzero(ok)
+    return led.index[int(k[np.argmin(d[k])])]
+
+
+def _clear_noting_children(led: pd.DataFrame, i, *, reason: str, child_note: str) -> int:
+    """`ledger.clear_assignment` of row `i`, its released children noted: each
+    child's commentary reads 'CLEARED (<child_note>)' and keeps what it was, as
+    the cleared row's does (clear_assignment itself leaves a child's commentary
+    as it was). Returns the number of children released."""
+    from peaky.assignment import ledger as L
+    pid = led.at[i, "peak_id"]
+    kids = list(led.index[led["parent_peak_id"] == pid]) if "parent_peak_id" in led.columns else []
+    L.clear_assignment(led, pid, reason=reason)
+    for k in kids:
+        old = _txt_of(led.at[k, "commentary"]) if "commentary" in led.columns else ""
+        led.at[k, "commentary"] = f"CLEARED ({child_note})." + (f" Was: {old}" if old else "")
+    return len(kids)
+
+
+def _col_txt(led: pd.DataFrame, col: str) -> np.ndarray:
+    return led[col].map(_txt_of).to_numpy() if col in led.columns else np.full(len(led), "")
+
+
+def reconcile_per_file(ledgers: dict, table: pd.DataFrame | None, *, mass_scale=None,
+                       log=print) -> tuple[set, dict]:
+    """Record the isotopologue gate's decisions in the per-file ledgers (in place).
+
+    For every row of the gate's table that left the merged ledger (verdict
+    'isotopologue' or SAT_PARENT_REMOVED) and every ledger in `ledgers` ({sid: full
+    per-file ledger}): the M0 row on the line -- the nearest M0 within the batch's
+    merge window (`_merge_ppm`) of the gate's position, else the stripped reading
+    itself within _FOLLOW_X windows -- is rewritten through the ledger API:
+
+      * 'isotopologue', the parent committed in that file (its reading's M0 nearest
+        the parent's position within _FOLLOW_X windows): the row becomes the
+        parent's iso_child under the gate's label (`ledger.displace_to_isotopologue`:
+        the row's own children follow it to the parent, labels combined);
+      * 'isotopologue', a reagent parent the file marks reagent: the row is cleared
+        and marked a reagent isotopologue of that ion, as the reagent labeller
+        marks the reagent's own lines;
+      * 'isotopologue', the parent not committed in that file, and every
+        SAT_PARENT_REMOVED row: the row is released to unexplained
+        (`ledger.clear_assignment`; its own children with it).
+
+    Each rewritten row's commentary starts with SAT_LEDGER_MARK, names the parent
+    ion and the label, and keeps what the row was; its per-reading columns
+    (_READING_COLUMNS) are emptied. A locked row is rewritten all the same (the
+    batch decides after every file's passes) and keeps its lock. Rows on the line
+    in any other role -- already the parent's child, unexplained, reagent -- are
+    left as they are, and 'mixed' / 'exempt' rows of the table are never read.
+
+    Returns (the sids whose ledger changed, a summary: counts by action, per file,
+    and the ledger-invariant problems found after the rewrite, if any)."""
+    from peaky.assignment import ledger as L
+    summ = {"iso_child": 0, "reagent": 0, "released": 0, "released_parent_removed": 0, "files": {}}
+    changed: set = set()
+    if table is None or not len(table) or not ledgers or "verdict" not in table.columns:
+        return changed, summ
+    t = table[table["verdict"].astype(str).isin(["isotopologue", SAT_PARENT_REMOVED])]
+    if not len(t):
+        return changed, summ
+    ppm = _merge_ppm(mass_scale)
+    t = t.sort_values(["mz", "neutral_formula", "adduct"], kind="mergesort")
+    for _, r in t.iterrows():
+        rmz, pmz = float(r["mz"]), float(r["parent_mz"])
+        lab, pion = _txt_of(r["label"]), _txt_of(r["parent_ion"])
+        rn, ra = _txt_of(r["neutral_formula"]), _txt_of(r["adduct"])
+        pn, pa = _txt_of(r["parent_neutral"]), _txt_of(r["parent_adduct"])
+        removed = str(r["verdict"]) == SAT_PARENT_REMOVED
+        try:
+            stats = (f"area {float(r['rho_area']):.2f}x the predicted line over {int(r['n_both'])} spectra; "
+                     "tables/isotopologue_rows.csv")
+        except (TypeError, ValueError):
+            stats = "tables/isotopologue_rows.csv"
+        where = f"{pion} at m/z {pmz:.4f}"
+        # the gate's own measurement as the child's isotope fit: the batch area ratio's
+        # agreement with the parent's prediction (1 at x1.00, 0.75 at x0.75 or x1.33)
+        try:
+            rho = float(r["rho_area"])
+            fit = min(rho, 1.0 / rho) if rho > 0 and np.isfinite(rho) else None
+        except (TypeError, ValueError):
+            fit = None
+        for sid in sorted(ledgers):
+            led = ledgers[sid]
+            if led is None or not len(led) or not {"role", "mz", "peak_id"} <= set(led.columns):
+                continue
+            role = led["role"].astype(str).to_numpy()
+            nf, ad = _col_txt(led, "neutral_formula"), _col_txt(led, "adduct")
+            m0 = role == L.ROLE_M0
+            i = _nearest_row(led, m0, rmz, ppm)
+            if i is None:
+                i = _nearest_row(led, m0 & (nf == rn) & (ad == ra), rmz, _FOLLOW_X * ppm)
+            if i is None:
+                continue
+            own = " ".join(x for x in (_txt_of(led.at[i, "neutral_formula"]), _txt_of(led.at[i, "adduct"])) if x)
+            tier = _txt_of(led.at[i, "tier"]) if "tier" in led.columns else ""
+            was = f"was {own}" + (f", {tier}" if tier else "")
+            old = _txt_of(led.at[i, "commentary"]) if "commentary" in led.columns else ""
+            pid = led.at[i, "peak_id"]
+            locked = bool(led.at[i, "locked"]) if "locked" in led.columns else False
+            if locked:
+                led.at[i, "locked"] = False
+            parent = reagent = None
+            if not removed and pn:
+                parent = _nearest_row(led, m0 & (nf == pn) & (ad == pa), pmz, _FOLLOW_X * ppm)
+            elif not removed and "ion_formula" in led.columns:
+                reagent = _nearest_row(led, (role == L.ROLE_REAGENT) & (_col_txt(led, "ion_formula") == pion),
+                                       pmz, _FOLLOW_X * ppm)
+            per = summ["files"].setdefault(sid, {"iso_child": 0, "reagent": 0, "released": 0})
+            if parent is not None:
+                L.displace_to_isotopologue(led, pid, led.at[parent, "peak_id"], iso_label=lab,
+                                           iso_match_score=fit)
+                led.at[i, "commentary"] = (f"{SAT_LEDGER_MARK}: the {lab} line of {where} ({was}; {stats})"
+                                           + (f". Was: {old}" if old else ""))
+                action = "iso_child"
+            elif reagent is not None:
+                _clear_noting_children(led, i, reason=SAT_LEDGER_MARK,
+                                       child_note=f"{SAT_LEDGER_MARK}: a line of {own}, released with it")
+                L.mark_reagent(led, pid, f"reagent isotopologue: {lab} of {pion} ({lab}); {SAT_LEDGER_MARK}, "
+                                         f"{was}; {stats}" + (f". Was: {old}" if old else ""), ion_formula=pion)
+                action = "reagent"
+            else:
+                why = (f"{SAT_LEDGER_MARK}: the {lab} line of {where}, whose reading {pn} {pa} then left the "
+                       "merged ledger (an element-signature REQ veto): no longer read as its satellite, the line "
+                       f"unexplained ({was})" if removed else
+                       f"{SAT_LEDGER_MARK}: the {lab} line of {where}, which this file does not commit; the batch "
+                       f"series stamps the line as that ion's predicted satellite ({was}; {stats})")
+                _clear_noting_children(led, i, reason=why,
+                                       child_note=f"{SAT_LEDGER_MARK}: a line of {own}, released with it")
+                action = "released"
+                if removed:
+                    summ["released_parent_removed"] += 1
+            for c in _READING_COLUMNS:
+                if c in led.columns:
+                    led.at[i, c] = pd.NA
+            if locked:
+                led.at[i, "locked"] = True
+            summ[action] += 1
+            per[action] += 1
+            changed.add(sid)
+    problems = {sid: p for sid in sorted(changed) if (p := L.validate(ledgers[sid]))}
+    if problems:
+        summ["problems"] = problems
+    if changed:
+        log(f"[isotopologue] per-file ledgers: {summ['iso_child']} row(s) now the parent's iso_child, "
+            f"{summ['reagent']} a reagent isotopologue, {summ['released']} released to unexplained "
+            f"({summ['released_parent_removed']} of a removed parent) in {len(changed)} file(s)"
+            + (f"; LEDGER VALIDATION PROBLEMS {problems}" if problems else ""))
+    return changed, summ
+
+
+#: the commentary prefix of every per-file row the element-signature removal released
+SIG_LEDGER_MARK = "batch element-signature removal"
+
+
+def release_signature_removed(ledgers: dict, removed_pairs, *, log=print) -> tuple[set, dict]:
+    """Record the element-signature removal (`remove_signature_vetoed`, its summary's
+    'pairs') in the per-file ledgers (in place): every M0 row that commits a removed
+    reading (neutral, adduct) is released to unexplained through the ledger API
+    (`ledger.clear_assignment`; its own children with it), whatever its m/z -- the
+    batch refuted the reading, not one file's line. Its commentary starts with
+    SIG_LEDGER_MARK, names the refuted line (the REQ note) and keeps what the row
+    was; its per-reading columns (_READING_COLUMNS) are emptied. A locked row is
+    released all the same (the batch decides after every file's passes) and keeps
+    its lock. Rows in any other role are left as they are; a reading the removal
+    spared (a curated formula, a known-species decision) is not in the pairs.
+
+    Returns (the sids whose ledger changed, a summary: `released` M0 rows,
+    `children` released with them, `files` = {sid: {released, children}}, and the
+    ledger-invariant problems found after the rewrite, if any). Only the pairs
+    whose reading left the merged ledger are read (`gone_pairs`); each released
+    child's commentary says it went with the reading."""
+    from peaky.assignment import ledger as L
+    summ = {"released": 0, "children": 0, "files": {}}
+    changed: set = set()
+    notes = {(str(p["neutral_formula"]), str(p["adduct"])): p for p in gone_pairs(removed_pairs)}
+    if not ledgers or not notes:
+        return changed, summ
+    for sid in sorted(ledgers):
+        led = ledgers[sid]
+        if led is None or not len(led) or not {"role", "peak_id", "neutral_formula", "adduct"} <= set(led.columns):
+            continue
+        nf, ad = _col_txt(led, "neutral_formula"), _col_txt(led, "adduct")
+        hit = np.flatnonzero((led["role"].astype(str).to_numpy() == L.ROLE_M0)
+                             & np.array([(n, a) in notes for n, a in zip(nf, ad)], dtype=bool))
+        for k in hit:
+            i = led.index[int(k)]
+            p = notes[(nf[k], ad[k])]
+            tier = _txt_of(led.at[i, "tier"]) if "tier" in led.columns else ""
+            was = f"was {nf[k]} {ad[k]}" + (f", {tier}" if tier else "")
+            locked = bool(led.at[i, "locked"]) if "locked" in led.columns else False
+            if locked:
+                led.at[i, "locked"] = False
+            n_ch = _clear_noting_children(
+                led, i, reason=(f"{SIG_LEDGER_MARK}: the batch's REQ check refutes the reading on its "
+                                f"element-signature line ({_txt_of(p.get('note'))}); the reading left the "
+                                f"merged ledger ({was})"),
+                child_note=f"{SIG_LEDGER_MARK}: a line of the refuted reading {nf[k]} {ad[k]}, released with it")
+            for c in _READING_COLUMNS:
+                if c in led.columns:
+                    led.at[i, c] = pd.NA
+            if locked:
+                led.at[i, "locked"] = True
+            per = summ["files"].setdefault(sid, {"released": 0, "children": 0})
+            per["released"] += 1
+            per["children"] += n_ch
+            summ["released"] += 1
+            summ["children"] += n_ch
+            changed.add(sid)
+    problems = {sid: p for sid in sorted(changed) if (p := L.validate(ledgers[sid]))}
+    if problems:
+        summ["problems"] = problems
+    if changed:
+        log(f"[iso_checks] per-file ledgers: {summ['released']} M0 row(s) of a removed reading released to "
+            f"unexplained ({summ['children']} child line(s) with them) in {len(changed)} file(s)"
+            + (f"; LEDGER VALIDATION PROBLEMS {problems}" if problems else ""))
+    return changed, summ
+
+
+def record_per_file(ledgers: dict, table: pd.DataFrame | None, removed_pairs, *, mass_scale=None,
+                    log=print) -> tuple[set, dict, dict]:
+    """Record both merged-ledger gates in the per-file ledgers (in place), in the
+    one order that keeps each line's record: the isotopologue gate's rows first
+    (`reconcile_per_file`: a line becomes its parent's iso_child, or is released),
+    then the element-signature removal (`release_signature_removed`) over the M0
+    rows that are left. A reading the removal took out that a file had committed
+    on a parent's isotope line is that parent's line: the first step records it
+    so; releasing it first would leave the line unexplained.
+
+    Returns (the sids whose ledger changed, the isotopologue summary, the
+    element-signature summary)."""
+    rw, rw_summ = reconcile_per_file(ledgers, table, mass_scale=mass_scale, log=log)
+    sg, sg_summ = release_signature_removed(ledgers, removed_pairs, log=log)
+    return rw | sg, rw_summ, sg_summ
+
+
+#: the merged-ledger column listing, on a parent's row, the lines the gate gave it
+SAT_LINES_COLUMN = "isotopologue_lines"
+
+
+def parent_lines(merged: pd.DataFrame, table: pd.DataFrame | None) -> pd.DataFrame:
+    """The merged ledger with SAT_LINES_COLUMN: on each parent row the lines the
+    isotopologue gate assigned to it ('13C 283.0501 (area x1.00 of predicted, 9
+    spectra; was C14H10O5 [M-H]-)', '; '-joined in ascending m/z), empty elsewhere
+    and on every row when the gate stripped nothing (or did not run). The parent is
+    the merged row holding the parent reading nearest the gate's parent position; a
+    reagent parent has no merged row. One row per parent ion stays the contract."""
+    if merged is None:
+        return merged
+    out = merged.copy()
+    out[SAT_LINES_COLUMN] = ""
+    if not len(out) or table is None or not len(table) or "verdict" not in table.columns \
+            or not {"neutral_formula", "adduct"} <= set(out.columns):
+        return out
+    t = table[table["verdict"].astype(str) == "isotopologue"]
+    if not len(t):
+        return out
+    pos = pd.to_numeric(out["mz"], errors="coerce").to_numpy(dtype=float)
+    if "mz_trace" in out.columns:
+        mzt = pd.to_numeric(out["mz_trace"], errors="coerce").to_numpy(dtype=float)
+        pos = np.where(np.isfinite(mzt), mzt, pos)
+    nf, ad = _col_txt(out, "neutral_formula"), _col_txt(out, "adduct")
+    lines: dict = {}
+    for _, r in t.sort_values(["mz", "neutral_formula", "adduct"], kind="mergesort").iterrows():
+        pn, pa = _txt_of(r["parent_neutral"]), _txt_of(r["parent_adduct"])
+        hit = np.flatnonzero((nf == pn) & (ad == pa) & np.isfinite(pos)) if pn else []
+        if not len(hit):
+            continue
+        k = int(hit[np.argmin(np.abs(pos[hit] - float(r["parent_mz"])))])
+        was = " ".join(x for x in (_txt_of(r["neutral_formula"]), _txt_of(r["adduct"])) if x)
+        lines.setdefault(k, []).append(f"{_txt_of(r['label'])} {float(r['mz']):.4f} (area x{float(r['rho_area']):.2f} "
+                                       f"of predicted, {int(r['n_both'])} spectra; was {was})")
+    for k, v in lines.items():
+        out.iloc[k, out.columns.get_loc(SAT_LINES_COLUMN)] = "; ".join(v)
     return out

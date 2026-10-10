@@ -238,6 +238,17 @@ re-reads as the protonated amine. `--side-channels ADDUCT ...` opens exactly the
 channels you name instead (e.g. `--side-channels '[M+CO3]-'` on a source with a
 bright CO3- ion) and `--side-channels none` closes them all; what each file opened
 is recorded in `batch_summary.json` (docs/REAGENTS.md §3b).
+On an Orbitrap a few precision gates run by default, keyed on the run's instrument
+class: weak same-spectrum side lobes of a much brighter line are marked `artifact`
+before any pass sees them (`--no-sidelobe-guard` keeps them assignable), a merged row
+that is another merged ion's isotope line at its expected ratio leaves the merged
+ledger (`--no-isotopologue-gate` keeps it; `tables/isotopologue_rows.csv`), and a
+nitrate-reagent run reads the carbon skeleton of organonitrates against its Van
+Krevelen windows. A Br / Cl / Si / S that a widened search proposed is cleared when
+its own isotope line contradicts it (Orbitrap: the exact-offset line; TOF: the
+Br / Cl M+2 line), and a P / I the context budgets at 0 stands only on a pass-7
+certificate that is more than a reagent-acid channel pair; a cleared peak is locked
+as unexplained (docs/ASSIGNMENT_DETAIL.md §3.6b, docs/MERGE.md §3).
 `peaky mass-qc` probes the 30-ion nitrate core (or the provisional bromide
 ladder) in the batch time series and reports whether the axis
 is flat, offset, curved, drifting or blended — an external yardstick, so a wrong

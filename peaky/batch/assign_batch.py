@@ -64,7 +64,14 @@ from peaky.batch import label_twins as _LT
 from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sampling as SS
 
-__version__ = "0.10.0"  # the vote reads the per-file EVIDENCE: a cluster's ions are
+__version__ = "0.11.0"  # + the merged-ledger isotopologue gate and the element-signature
+                        # removal (one curated exempt set, reconciled: 'parent removed';
+                        # the per-file ledgers record both decisions -- the gate's lines,
+                        # a removed reading released --, the parent's merged row lists
+                        # its lines: `isotopologue_lines`),
+                        # the batch's resolved class in every isotope check, the n = 0
+                        # reagent core, context_flags and batch_summary['warnings']
+                        # (0.10.0: the vote reads the per-file EVIDENCE: a cluster's ions are
                         # ranked by the best vote class of their readings before the
                         # file count (evidence.vote_classes, computed in the parent and
                         # carried as `vote_class`; jitter.csv carries the class); the
@@ -549,6 +556,36 @@ def jitter_report(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM):
             "summary": summary}
 
 
+#: the per-file stats keys `ledger.stats` computes: recounted on a ledger the batch rewrote
+_ROLE_STATS = ("n_peaks", "by_role", "signal_by_role", "count_frac_by_role", "n_synthetic", "by_confidence",
+               "by_tier")
+
+
+def _recount_roles(st: dict, ledger: pd.DataFrame, gate: dict | None = None, *,
+                   signature: dict | None = None) -> dict:
+    """A file's stats (its batch_summary['per_file'] entry) after the batch rewrote
+    its ledger: the role / signal / confidence / tier counts, `n_M0` and the
+    resolvability class counts recounted from the rewritten ledger (`ledger.stats`,
+    the M0 rows' `resolvability`), what the isotopologue rewrite did under
+    `isotopologue_gate` and what the element-signature release did under
+    `element_signature_gate`. Everything else stays the file's own run's record."""
+    from peaky.assignment import ledger as L
+    new = L.stats(ledger)
+    for k in _ROLE_STATS:
+        if k in new:
+            st[k] = new[k]
+    st["n_M0"] = int((ledger["role"] == L.ROLE_M0).sum()) if "role" in ledger.columns else st.get("n_M0")
+    if "resolvability" in ledger.columns and "role" in ledger.columns and st.get("resolvability") is not None:
+        # the class counts of the M0 rows (resolvability.stamp_resolvability), recounted
+        cls = ledger.loc[ledger["role"] == L.ROLE_M0, "resolvability"].dropna()
+        st["resolvability"] = {str(k): int(v) for k, v in cls.value_counts().to_dict().items()}
+    if gate:
+        st["isotopologue_gate"] = dict(gate)
+    if signature:
+        st["element_signature_gate"] = dict(signature)
+    return st
+
+
 def _m0(ledger: pd.DataFrame) -> pd.DataFrame:
     """Extract the M0 (assigned-compound) rows in the _M0_COLS schema."""
     role = ledger["role"] if "role" in ledger.columns else None
@@ -1021,14 +1058,22 @@ def batch_noise_edge(client, sample_ids, *, edges=None) -> float | None:
     return float(np.median(vals)) if vals else None
 
 
-def _worker_init(context, reflists_active, base_kw, ts_path, reagents=None):
+def _worker_init(context, reflists_active, base_kw, ts_path, reagents=None, axis=None):
     global _W
+    from peaky.io import io_mascope as IO
     # A spawned worker imports the reagent registry afresh -- built-ins only. The
     # parent's added profiles (--reagent-config, register()) ride in as
     # `reagents` (profiles.registry_extras) and are registered here, before any
     # per-file stage resolves the run's reagent by name (the evidence space
     # does), or a config-only profile is an unknown reagent in every worker.
     P.register_extras(reagents)
+    # Likewise the batch's m/z-axis correction (`axis` = (sample ids, wave
+    # record), see measure_axis): it lives in the parent's io registry, and a
+    # worker that did not get it would assign every file on the raw axis.
+    if axis:
+        IO.set_axis_correction(*axis)
+    else:
+        IO.clear_axis_correction()
     _W = {"context": context, "reflists_active": reflists_active,
           "base_kw": base_kw, "ts_path": ts_path, "ts": None}
 
@@ -1113,6 +1158,267 @@ def _width_model_for_batch(resolving_power, client, table, log):
     counts = table.groupby("sample_item_id").size().sort_values()
     probe = str(counts.index[len(counts) // 2])
     return TFT.measure_resolution(client, probe, log=log)
+
+
+#: `--mass-axis`: 'auto' models the batch's m/z axis from its own peaks (batch.axislock:
+#: calibration-free locks, a spline and the axis's steps) on an Orbitrap, falling back to
+#: the reagent's reference ions (batch.massqc) when the locks cannot build a model;
+#: 'locks' / 'reference' force one of the two; 'off' skips the step
+MASS_AXIS_MODES = ("auto", "locks", "reference", "off")
+#: the largest correction the LOCK model applies. Its corrections are evidence-backed
+#: by hundreds of locks, so it may exceed massqc.MAX_CORRECTION_PPM (sized for a wave
+#: fitted on ~25 reference ions); the bound left is the PDF report's: its coverage
+#: tables match the ledger to the run's recorded, uncorrected series within 8 ppm
+LOCK_MAX_CORRECTION_PPM = 7.0
+#: the lock model is predictive when it predicts held-out locks to within this (ppm), or
+#: half their raw error: a raw median alone read a calibrated body with a stepped top as
+#: 'unpredictive' (raw 0.02 ppm) and left 2-3.5 ppm steps uncorrected
+LOCK_CV_OK_PPM = 0.3
+
+
+def _roster_class(table) -> str | None:
+    """'orbitrap' / 'tof' from a roster's `instrument_type` (Mascope's 'orbi' /
+    'tof'), or None -- the fallback when no peak-width model was measured."""
+    if table is None or "instrument_type" not in getattr(table, "columns", ()):
+        return None
+    kinds = {str(k).lower() for k in table["instrument_type"].dropna().unique()}
+    if kinds == {"orbi"}:
+        return "orbitrap"
+    if kinds and kinds <= {"tof", "api"}:
+        return "tof"
+    return None
+
+
+#: the column a corrected time series carries: the ppm removed from each peak's
+#: m/z (0 where the correction does not reach). A series fed back in (`--ts` on a
+#: run's per_file/_batch_ts.parquet) is restored to the server's axis first
+#: (`restore_axis`), so its files' peak tables and its series sit on one axis.
+AXIS_COL = "mz_axis_ppm"
+
+
+def restore_axis(ts, *, log=print):
+    """`ts` on the server's m/z axis: an earlier run's correction (AXIS_COL)
+    undone, the column dropped. Unchanged when it carries none."""
+    if ts is None or AXIS_COL not in getattr(ts, "columns", ()):
+        return ts
+    d = pd.to_numeric(ts[AXIS_COL], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    out = ts.drop(columns=[AXIS_COL])
+    if np.any(d != 0):
+        out = out.copy()
+        out["mz"] = out["mz"].to_numpy(dtype=float) / (1 - d * 1e-6)
+        log(f"[mass-axis] the time series carries an earlier run's axis correction "
+            f"({int((d != 0).sum())} peaks): restored to the server's axis first")
+    return out
+
+
+def _axis_class(measured: str | None, roster: str | None) -> str | None:
+    """The class the axis step acts on: 'tof' when EITHER the width model or the
+    roster says TOF -- a TOF declared or measured at R >= the Orbitrap bar
+    (--resolving-power 60000) read as an Orbitrap and was corrected -- else the
+    width model's class, else the roster's."""
+    if "tof" in (measured, roster):
+        return "tof"
+    return measured or roster
+
+
+def to_server_axis(mz, axis_info):
+    """Corrected m/z back on the server's axis (massqc.invert_correction: segment by
+    segment for a lock model). `axis_info` is a run's batch_summary['mass_axis'];
+    unchanged when it applied nothing. A batch's merged ledger is matched to the
+    server's batch peaks by m/z (`peaky publish --batch`), so it must travel on the
+    server's axis."""
+    from peaky.batch import massqc as MQ
+    mz = np.asarray(mz, dtype=float)
+    if not axis_info or not axis_info.get("applied") or not axis_info.get("wave"):
+        return mz
+    return MQ.invert_correction(MQ.fit_from_record(axis_info["wave"]), mz)
+
+
+def _apply_axis(ts, fit, info, where, log):
+    """`ts` with `mz` corrected by `fit` where it reaches (AXIS_COL holds the ppm
+    removed), and `info` updated with what moved."""
+    from peaky.batch import massqc as MQ
+    mz = ts["mz"].to_numpy(dtype=float)
+    inside = MQ.in_scope(fit, mz)
+    shift = np.zeros(len(mz))
+    if inside.any():
+        shift[inside] = fit.predict(mz[inside], extrapolate=True)
+    ts = ts.copy()
+    ts["mz"] = MQ.apply_correction(fit, mz)
+    ts[AXIS_COL] = shift
+    moved = shift[inside] if inside.any() else np.array([0.0])
+    info.update(applied=True, n_peaks=int(len(mz)), n_corrected=int(inside.sum()),
+                frac_outside=round(float(1 - inside.mean()), 4) if len(mz) else None,
+                shift_ppm={"min": round(float(np.min(moved)), 3),
+                           "median": round(float(np.median(moved)), 3),
+                           "max": round(float(np.max(moved)), 3)})
+    log(f"[mass-axis] APPLIED {info.get('verdict')}: m/z corrected by "
+        f"{info['shift_ppm']['min']:+.2f}..{info['shift_ppm']['max']:+.2f} ppm "
+        f"({info['n_corrected']} of {info['n_peaks']} peaks) {where}")
+    return ts
+
+
+def _lock_model(ts, polarity, reagent_elements, info, log):
+    """axislock.fit on the batch and its verdict: (model to apply or None, done) --
+    `done` False when the locks could not build a model at all (the caller may
+    fall back to the reference ions)."""
+    from peaky.batch import axislock as AL
+    from peaky.batch import massqc as MQ
+    try:
+        model, li = AL.fit(ts, polarity=polarity, reagent_elements=reagent_elements, log=log)
+    except Exception as exc:      # noqa: BLE001 -- a diagnostic never stops the batch
+        info["locks"] = {"why": f"the lock model failed ({type(exc).__name__}: {exc})"}
+        log(f"[mass-axis] lock model failed: {type(exc).__name__}: {exc}")
+        return None, False
+    table = pd.DataFrame(li.pop("locks", []))
+    info["_locks_table"] = table
+    info["locks"] = li
+    if model is None:
+        log(f"[mass-axis] no lock model: {li.get('why')}")
+        return None, False
+    cv, raw, peak = li.get("cv_ppm"), li.get("raw_ppm"), li.get("max_abs_ppm")
+    segs = ", ".join(f"m/z {s['lo']:.0f}-{s['hi']:.0f} ({s['kind']}, {s['n']} locks)" for s in model.segments)
+    log(f"[mass-axis] LOCKS: {li.get('n_pass1')} unique within +-{AL.LOCK_PPM:g} ppm, "
+        f"{li.get('n_links')} by mass difference, {li.get('n_narrow')} on the fitted curve, "
+        f"{li.get('n_off_curve')} dropped off it; segments {segs}")
+    for st in li.get("steps", []):
+        log(f"[mass-axis] STEP {st['ppm']:+.2f} ppm between m/z {st['between'][0]:.2f} and "
+            f"{st['between'][1]:.2f} (the instrument's axis; no smooth curve follows it)")
+    for st in li.get("joins", []):
+        log(f"[mass-axis] segments join between m/z {st['between'][0]:.2f} and {st['between'][1]:.2f} "
+            f"({st['ppm']:+.2f} ppm: no step, the walk resumed past a sparse stretch)")
+    if li.get("uncorrected_gaps"):
+        log("[mass-axis] left uncorrected between segments (the step lies somewhere in there): "
+            + ", ".join(f"m/z {a:.2f}-{b:.2f}" for a, b in li["uncorrected_gaps"]))
+    log(f"[mass-axis] lock model: |error| median {raw} ppm raw -> {cv} ppm on held-out locks "
+        f"(5-fold), largest correction {peak} ppm")
+    info.update(model="locks", wave=model.as_dict(), scope_mz=list(model.mz_range),
+                max_abs_ppm=peak)
+    if cv is None or raw is None:
+        info["verdict"] = "locks_unvalidated"
+        return None, True
+    if peak is not None and peak < MQ.ORBI_OFFSET_FLAT_PPM and raw < MQ.ORBI_OFFSET_FLAT_PPM:
+        info["verdict"] = "axis_ok"
+        log(f"[mass-axis] axis_ok: no lock reads {MQ.ORBI_OFFSET_FLAT_PPM:g} ppm off; nothing to correct")
+        return None, True
+    if cv > max(LOCK_CV_OK_PPM, 0.5 * raw):
+        info["verdict"] = "locks_unpredictive"
+        log("[mass-axis] the lock model does not predict held-out locks: not applied")
+        return None, True
+    info["verdict"] = "axis_steps" if li.get("steps") else "axis_trend"
+    return model, True
+
+
+def measure_axis(ts, reagent: str, klass: str | None, *, hold: str | None = None,
+                 mode: str = "auto", polarity: str = "-", reagent_elements=(), log=print):
+    """The batch's m/z axis and the correction it prescribes. Returns (ts, info, table):
+
+      * `ts` -- the time series with `mz` corrected where the correction reaches
+        and the ppm removed in AXIS_COL, when it was applied; else as given;
+      * `info` -- the JSON-safe record batch_summary['mass_axis'] keeps (`model`
+        'locks' or 'reference', the verdict, the model and its scope, how many
+        peaks moved and by how much, or why nothing was applied: `held`);
+        info['_locks_table'] (popped by the caller) holds every lock;
+      * `table` -- the per-reference-ion probe table, None when not probed.
+
+    On an Orbitrap, 'auto' and 'locks' model the axis from the batch's own peaks
+    (batch.axislock: calibration-free locks, a smoothing spline, the steps the
+    instrument's axis takes); it is applied when it predicts held-out locks to
+    within half the raw error and some lock reads >= 1 ppm off. 'auto' falls back
+    to the reagent's reference ions (batch.massqc, the instrument's own rules)
+    only when the locks could not build a model; 'reference' goes there directly,
+    and a TOF always does (it is measured there, never corrected).
+
+    Not measured (info['skipped']) without a time series or an instrument class,
+    or -- reference path -- without a reference table for the reagent or when the
+    probe fails; the measurement never stops a batch. Measured but NOT applied
+    (info['held']) on a TOF, when the caller holds it (`hold`: server-side
+    scoring; a pool of several batches), or when the correction would exceed the
+    model's cap (LOCK_MAX_CORRECTION_PPM / massqc.MAX_CORRECTION_PPM)."""
+    from peaky.batch import massqc as MQ
+    from peaky.chem import reference_ions as RI
+
+    info: dict = {"applied": False, "verdict": None}
+
+    def _skip(why):
+        info["skipped"] = why
+        log(f"[mass-axis] not measured: {why}")
+        return ts, info, None
+
+    if ts is None or not len(ts):
+        return _skip("no batch time series")
+    if not {"sample_item_id", "mz", "height"} <= set(ts.columns):
+        return _skip("the time series lacks sample_item_id / mz / height")
+    if klass not in ("orbitrap", "tof"):
+        return _skip("instrument class unknown (no peak-width model)")
+    tof = klass == "tof"
+
+    if not tof and mode in ("auto", "locks"):
+        log(f"[mass-axis] modelling the axis from the batch's own peaks "
+            f"({ts['sample_item_id'].nunique()} spectra, {klass}, polarity {polarity})")
+        model, done = _lock_model(ts, polarity, tuple(reagent_elements or ()), info, log)
+        if done or mode == "locks":
+            if model is None:
+                return ts, info, None
+            if hold is None and info["max_abs_ppm"] > LOCK_MAX_CORRECTION_PPM:
+                hold = (f"the correction reaches {info['max_abs_ppm']:.1f} ppm, above "
+                        f"{LOCK_MAX_CORRECTION_PPM:g}: a broken calibration to fix at the instrument")
+            if hold is not None:
+                info["held"] = hold
+                log(f"[mass-axis] {info['verdict']} NOT applied: {hold}")
+                return ts, info, None
+            lo, hi = model.mz_range
+            ts = _apply_axis(ts, model, info, f"inside m/z {lo:.0f}-{hi:.0f} "
+                             f"({len(model.segments)} segment(s)); outside them -- below the first "
+                             "lock, above the last, in the gaps between segments -- left as is", log)
+            return ts, info, None
+        log("[mass-axis] falling back to the reagent's reference ions")
+
+    try:
+        refs = RI.get(reagent)
+    except KeyError:
+        return _skip(f"no reference-ion table for reagent {reagent!r}")
+    tol = MQ.member_ppm(tof)
+    probe_ts = ts
+    if "datetime_utc" not in ts.columns:
+        # the times feed only the drift statistics; the spectra's order stands in
+        order = {s: i for i, s in enumerate(pd.unique(ts["sample_item_id"]))}
+        probe_ts = ts.assign(datetime_utc=pd.Timestamp("2000-01-01", tz="UTC")
+                             + pd.to_timedelta(ts["sample_item_id"].map(order), unit="h"))
+    log(f"[mass-axis] probing {len(refs)} {reagent} reference ions in "
+        f"{ts['sample_item_id'].nunique()} spectra ({klass}, membership +-{tol:g} ppm)")
+    try:
+        table, v = MQ.run(probe_ts, refs, tol_ppm=tol, tof=tof, per_instrument=True)
+    except Exception as exc:      # noqa: BLE001 -- a diagnostic never stops the batch
+        return _skip(f"the reference-ion probe failed ({type(exc).__name__}: {exc})")
+    MQ.report(table, v, log=lambda s: log(s.replace("[mass-qc]", "[mass-axis]")))
+    info.update(model="reference", instrument=klass, verdict=v.get("verdict"),
+                remedy=v.get("remedy"), qc=v)
+    fit = MQ.correction(v)
+    if fit is None:
+        log(f"[mass-axis] axis left as measured (verdict {v.get('verdict')})")
+        return ts, info, table
+    lo, hi = (float(x) for x in fit.mz_range)
+    grid = np.linspace(lo, hi, 200)
+    peak = float(np.nanmax(np.abs(fit.predict(grid, extrapolate=True))))
+    held = hold
+    if held is None and tof:
+        held = ("a TOF: measured, not applied (its calibrants are the anchor ions, clean "
+                "at TOF resolution over a narrow m/z span, and its offsets are mostly "
+                "ion-specific; see `peaky mass-qc`)")
+    if held is None and peak > MQ.MAX_CORRECTION_PPM:
+        held = (f"the correction reaches {peak:.1f} ppm, above {MQ.MAX_CORRECTION_PPM:g}: "
+                "a broken calibration to fix at the instrument, not a residual to model")
+    info.update(wave=fit.as_dict(), scope_mz=[lo, hi], max_abs_ppm=round(peak, 3))
+    if held is not None:
+        info["held"] = held
+        log(f"[mass-axis] {v.get('verdict')} NOT applied: {held}")
+        return ts, info, table
+    where = ("at every m/z (a constant)" if int(fit.K) == 0 else
+             f"inside m/z {lo:.0f}-{hi:.0f}; outside it the shape is unmeasured and the "
+             "axis is left as is")
+    ts = _apply_axis(ts, fit, info, where, log)
+    return ts, info, table
 
 
 def _reparsed(frame: pd.DataFrame | None) -> pd.DataFrame | None:
@@ -1283,7 +1589,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         ts_peaks=None, amine_r_min: float = 0.6,
         n_jobs: int | None = None, rolling_centre: bool = False,
         trace_first: bool = False, resolving_power=None, trace_episodes: bool = False,
-        corroborate=None, log=print, **assign_kw) -> dict:
+        corroborate=None, mass_axis: str = "auto", mass_axis_hold: str | None = None,
+        isotopologue_rows: bool = True,
+        log=print, **assign_kw) -> dict:
     """Assign the presence-cover subset of a batch and combine, keeping per-file
     ledgers. Provide EITHER `peaks` (a batch peak/sample table) OR `batch` (a
     batch id or name -- exact id > exact name > unique substring, an ambiguous
@@ -1335,12 +1643,49 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     claim each level supports (identified / neutral / ion / tentative, plus the
     reagent and not-assessed buckets) is stamped on every merged row and
     tallied in batch_summary['claims'] (merged, pooled, per stage, per tier with
-    the ion-only rows apart); it changes no ion, tier or level."""
+    the ion-only rows apart); it changes no ion, tier or level.
+
+    `mass_axis` ('auto', the default; 'locks', 'reference' or 'off'): before this
+    run picks its cover or assigns anything, the batch's m/z axis is modelled
+    (`measure_axis`) and, on an Orbitrap whose model finds an axis error, the
+    time series and every file's peak table are corrected where the model
+    reaches (io_mascope.set_axis_correction; the spawned workers get it too).
+    'auto' models it from the batch's own peaks (batch.axislock: calibration-free
+    locks, a smoothing spline and the steps the instrument's axis takes) and
+    falls back to the reagent's formula-certain reference ions (batch.massqc)
+    only when the locks cannot build a model. Pass 1's per-file
+    self-calibration only models a constant plus a 1/(m/z) term, so an axis
+    that rises and falls -- or steps -- across the range left correct formulas
+    off-centre by several of its widths. A TOF is measured, never corrected;
+    `mass_axis_hold` (a reason) measures without correcting -- the pooled path
+    passes one for a pool of several batches -- and so does server-side scoring
+    (PEAKY_LOCAL_SCORING=0), which scores the server's own peaks. A series that
+    carries an earlier run's correction is restored first (`restore_axis`).
+    batch_summary['mass_axis'] records the model and what moved (`offsets_ppm`
+    and the per-file scoring are then read on the corrected axis);
+    tables/mass_axis_locks.csv the locks, tables/mass_axis.csv the reference
+    ions when probed. Trace-first keeps its own wave
+    (batch.tracefirst) and 'off' reproduces a run without the step.
+
+    `isotopologue_rows` (default on; CLI --no-isotopologue-gate turns it off): on an
+    Orbitrap-class batch with a width model whose time series carries peak areas, a
+    merged row (not a curated reading: passes.curated_formulas) whose
+    line is another merged ion's (or a reagent ion's) 13C / 18O / 15N / 34S / 37Cl /
+    81Br / Si isotopologue at its expected area ratio over the batch leaves the
+    merged ledger before the stamp, which then gives the line to the parent
+    (iso_checks.satellite_rows; tables/isotopologue_rows.csv,
+    merge_gates['isotopologue']). Its pooled pair reads an isotope-check veto in the
+    evidence levels (check 'SAT' in tables/iso_checks.csv). The per-file ledgers record
+    the line (iso_checks.reconcile_per_file), as they release a reading the
+    element-signature removal took out (iso_checks.release_signature_removed); a
+    single-sample `peaky assign` has neither."""
     from peaky.assignment import assign as A
     from peaky.assignment import evidence as EV
     from peaky.batch import timeseries as _TSN
     from peaky.io import io_mascope as IO
 
+    if mass_axis not in MASS_AXIS_MODES:      # before any server call or folder
+        raise ValueError(f"mass_axis must be one of {MASS_AXIS_MODES}, got {mass_axis!r}")
     t_start = time.time()          # wall clock for summary['elapsed_s'] (see below)
     # ONE row per physical peak before anything reads the time series: Mascope
     # returns one row per target MATCH, which would double-count every peak two
@@ -1400,6 +1745,43 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # columns stay NA).
     rp = _width_model_for_batch(resolving_power, client,
                                 ts_peaks if ts_peaks is not None else peaks, log)
+    # the class the class-gated per-file stages read (PassConfig.instrument_class):
+    # resolved ONCE here, a TOF roster winning over a width model that reads
+    # Orbitrap-class, and carried to every file by the cfg (workers included)
+    cfg.instrument_class = _axis_class(_instrument_of(rp)[0], _roster_class(peaks))
+    log(f"[assign_batch] instrument class: {cfg.instrument_class or 'unknown (class-gated stages off)'}")
+    # The batch's m/z axis (see the docstring's `mass_axis`), measured and, on an
+    # axis error, corrected HERE -- before the cover is picked and before any
+    # file's peak table is read, so every stage sees one axis.
+    ts_peaks = restore_axis(ts_peaks, log=log)
+    axis_ids = ([str(s) for s in ts_peaks["sample_item_id"].unique()]
+                if ts_peaks is not None and "sample_item_id" in ts_peaks.columns else [])
+    IO.clear_axis_correction(axis_ids)     # this run's samples only (a thread may run another)
+    axis_args = None          # (sample ids, wave record) for the spawned workers
+    if mass_axis == "off":
+        axis_info = {"applied": False, "verdict": None, "skipped": "--mass-axis off"}
+    elif trace_first:
+        axis_info = {"applied": False, "verdict": None,
+                     "skipped": "trace-first applies its own wave (batch.tracefirst)"}
+    else:
+        hold = mass_axis_hold
+        if hold is None and not IO._local_scoring_enabled():
+            hold = ("server-side scoring (PEAKY_LOCAL_SCORING=0) scores the server's own "
+                    "peaks, on the server's axis")
+        halogen = EV.channel_halogen(prof.adducts)
+        ts_peaks, axis_info, axis_table = measure_axis(
+            ts_peaks, prof.name, _axis_class(_instrument_of(rp)[0], _roster_class(peaks)),
+            hold=hold, mode=mass_axis, polarity=prof.polarity,
+            reagent_elements=(halogen,) if halogen else (), log=log)
+        if axis_table is not None:
+            axis_table.to_csv(os.path.join(TAB, "mass_axis.csv"), index=False)
+        locks_table = axis_info.pop("_locks_table", None)
+        if locks_table is not None and len(locks_table):
+            locks_table.to_csv(os.path.join(TAB, "mass_axis_locks.csv"), index=False)
+        if axis_info["applied"]:
+            axis_args = (axis_ids, axis_info["wave"])
+            IO.set_axis_correction(*axis_args)
+    axis_info = {"mode": mass_axis, **axis_info}
     if trace_first:
         # TRACE-FIRST: no files are selected -- the batch's persistent ions are
         # built as traces, centred, gated and handed to the engine as ONE
@@ -1589,6 +1971,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         log(f"[assign_batch] reference lists active: {RL.active_versions(reflists_active)} "
             f"(context {sorted(_tags) or 'contaminants-only'})")
     per_file, offsets, per_stats = {}, {}, []
+    full_ledgers: dict = {}    # sid -> its full ledger as written: the merged-ledger
+                               # isotopologue gate's decision is recorded there after
+                               # the merge (iso_checks.reconcile_per_file)
     scorings: dict = {}        # per-sample pattern_scoring, for the run manifest
     level_frames: dict = {}    # sid -> its ledger's M0/iso rows + predicate columns
                                # (evidence.trim): the batch checks' input
@@ -1632,6 +2017,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # never written
         own_class = led.pop(_OWN_VOTE_CLASS) if _OWN_VOTE_CLASS in led.columns else None
         led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)
+        full_ledgers[sid] = led
         level_frames[sid] = EV.trim(led)
         alias_ties[sid] = _LT.alias_only_ties(led)
         plaus_audit.extend(plaus)
@@ -1744,7 +2130,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                     max_workers=n_jobs, mp_context=_mp.get_context("spawn"),
                     initializer=_worker_init,
                     initargs=(context, reflists_active, base_kw, ts_path,
-                              P.registry_extras())) as ex:
+                              P.registry_extras(), axis_args)) as ex:
                 futs = {ex.submit(_assign_one, sid): sid for sid in ids}
                 for done, fut in enumerate(as_completed(futs), offset + 1):
                     out = fut.result()
@@ -1762,6 +2148,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     if trace_sample is not None:
         from peaky.batch import tracefirst as TFT
         kw = dict(assign_kw, cfg=copy.deepcopy(cfg), occurrence=trace_sample.occurrence)
+        kw["cfg"].trace_sample = True      # batch-mean heights: no same-spectrum stages
         TFT.engine_settings(kw["cfg"], trace_sample, log=log)
         log(f"[assign_batch] (1/1) assigning {trace_sample.sample_id} (offline, "
             f"{len(trace_sample.peaks)} trace peaks) ...")
@@ -1793,6 +2180,18 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
 
     scale = None   # the batch's traces.MassScale, measured at the first merge
     rwater = None  # the reagent-water ladder (batch.reagent_water), measured at the first merge
+
+    # the formulas a curated list stands behind (the pass-0 registry for the
+    # batch's polarity / context and the active reference lists): one exempt set
+    # for both merged-ledger removal gates, the isotopologue gate and the
+    # element-signature removal (passes.curated_formulas)
+    from peaky.assignment import passes as _PS
+    from peaky.chem import contexts as _CX
+    try:
+        _pol = _CX.get_context(context).polarity if context else "negative"
+    except Exception:  # noqa: BLE001 -- an unknown context: the registry's default
+        _pol = "negative"
+    curated = _PS.curated_formulas(_pol, context, RL.prior_formulas(reflists_active) if reflists_active else ())
 
     def _merge() -> dict:
         """align() over EVERY per-file ledger so far, then the merged-level
@@ -1921,10 +2320,30 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                     f"({trace_info['stamp_tol_per_trace']['min_ppm']:.2f}-"
                     f"{trace_info['stamp_tol_per_trace']['max_ppm']:.2f}); "
                     f"{len(tracks or {})} rows stamp along a rolling track")
+        # The isotopologue rows (iso_checks.satellite_rows; Orbitrap-class batches
+        # with peak areas): a merged row whose line is another merged ion's (or a
+        # reagent ion's) isotopologue at the expected area ratio across the batch
+        # leaves the merged ledger HERE -- after the trace reconciliation (it reads
+        # mz_trace) and before the stamp, so the line is stamped as the parent's
+        # satellite and the residual stage does not target it. Stateless: the
+        # second merge (cover + residual) re-strips a row a residual file re-adds.
+        iso_rows = _IC._sat_empty()
+        if isotopologue_rows:
+            _rg = None
+            if identified_aux:
+                _ia = pd.concat(identified_aux, ignore_index=True)
+                _rg = _ia[_ia["role"].astype(str) == "reagent"] if "role" in _ia.columns else None
+            merged, iso_rows, merge_gates["isotopologue"] = _IC.satellite_rows(
+                merged, ts_peaks, resolution=rp, mass_scale=scale, klass=cfg.instrument_class, prof=prof,
+                reagents=_rg, per_file=level_frames, exempt=curated, log=log)
+        else:
+            merge_gates["isotopologue"] = {"ran": False, "n_stripped": 0, "n_mixed": 0, "n_exempt": 0,
+                                           "skipped": "--no-isotopologue-gate"}
         out = {"merged": merged, "jitter": jitter, "merge_gates": merge_gates,
                "trace_info": trace_info, "stamp_tol": stamp_tol, "ts_annot": None,
                "predicted_rows": {}, "predicted_tracks": None,
-               "reagent_water": _RW.table(rwater["rungs"], rw_stripped)}
+               "reagent_water": _RW.table(rwater["rungs"], rw_stripped),
+               "isotopologue": iso_rows}
         # Stamp the batch time-series peaks with their assigned formula/channel.
         # Downstream time-series analysis then has neutral_formula / adduct / tier /
         # ion_mz per peak, not just m/z. No-op when ts_peaks is unavailable.
@@ -1953,13 +2372,21 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             # batch. The per-file ledgers and their coverage figures are untouched.
             # A track explained this way carries an ion_formula, so the residual
             # stage (which reads the cover's stamp) no longer targets it.
-            _stamp = _TS.stamping_frame(merged, _aux, tol_ppm=stamp_tol)
-            _stats: dict = {}
-            out["ts_annot"] = _TS.annotate_peaks(ts_peaks, _stamp, tol_ppm=stamp_tol,
-                                                 stats=_stats, tracks=tracks)
-            out["predicted_rows"] = dict(_stamp.attrs.get("predicted_satellites") or {})
-            out["predicted_tracks"] = _stats.get("predicted_tracks")
+            out.update(_stamp_series(merged, _aux, stamp_tol, tracks))
+            # kept so the re-stamp after the batch checks (a merged-row removal, a
+            # per-file rewrite; below) can stamp with the same inputs: the rungs
+            # apart, so the per-file rows can be re-read from rewritten ledgers
+            out["stamp_inputs"] = (_aux, tracks, _rw_rows)
         return out
+
+    def _stamp_series(merged, aux, stamp_tol, tracks) -> dict:
+        """The whole-batch stamp of `merged` (+ the identified non-analyte rows
+        `aux`): {ts_annot, predicted_rows, predicted_tracks}."""
+        _stamp = _TS.stamping_frame(merged, aux, tol_ppm=stamp_tol)
+        _stats: dict = {}
+        ts = _TS.annotate_peaks(ts_peaks, _stamp, tol_ppm=stamp_tol, stats=_stats, tracks=tracks)
+        return {"ts_annot": ts, "predicted_rows": dict(_stamp.attrs.get("predicted_satellites") or {}),
+                "predicted_tracks": _stats.get("predicted_tracks")}
 
     res_m = _merge()
 
@@ -2088,20 +2515,97 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     twins_table.to_csv(os.path.join(TAB, "label_twins.csv"), index=False)
     # the isotope checks (iso_veto): rule C, REQ and HIGH read each committed
     # formula's isotope claims off the same stamped series (the instrument class
-    # from the batch's width model), rule H its exact halogen line (a lock,
+    # the batch resolved once, cfg.instrument_class: a TOF roster wins), rule H its exact halogen line (a lock,
     # judged against the batch's element budget: `context`); written for every
     # run (empty without a time series); a refuted pair is rejected (5b)
     iso_table = _IC.measure(ts_annot, level_frames, prof, resolution=rp, mass_scale=scale,
                             x_edge=x_edge, context=context, edge_cps=getattr(cfg, "noise_edge_batch_cps", None),
-                            log=log)
+                            klass=cfg.instrument_class, log=log)
+    # a REQ veto on an element-signature line (81Br / 37Cl / 34S / 29Si / 30Si,
+    # Orbitrap-class) is the batch's own refutation of the element: the reading
+    # leaves the merged ledger (iso_checks.remove_signature_vetoed), not only 5b;
+    # a curated formula and a known-species decision stay
+    merged, merge_gates["element_signature"] = _IC.remove_signature_vetoed(
+        merged, iso_table, exempt=curated, klass=_IC.batch_class(rp, cfg.instrument_class), log=log)
+    # ... a row the isotopologue gate stripped as the satellite of a reading that
+    # has just left is no longer that reading's satellite (iso_checks.parent_removed:
+    # verdict 'parent removed', no SAT veto) ...
+    res_m["isotopologue"], _n_orph = _IC.parent_removed(res_m.get("isotopologue"),
+                                                        merge_gates["element_signature"].get("pairs"), log=log)
+    if isinstance(merge_gates.get("isotopologue"), dict):
+        merge_gates["isotopologue"]["n_parent_removed"] = _n_orph
+    # ... and the per-file ledgers RECORD the decision (iso_checks.reconcile_per_file):
+    # a stripped reading's M0 row in a file becomes the parent's iso_child where that
+    # file commits the parent (a reagent parent's: a reagent isotopologue), else --
+    # and wherever the parent has just left -- it is released to unexplained. The
+    # rewritten ledgers replace per_file/<sid>_ledger.csv, the levels' frames and the
+    # file's role counts, so the evidence levels below, the report and a per-file
+    # publish read what the merged ledger decided. The batch checks above (neutral
+    # pairs, label twins, iso checks) were measured on the ledgers as the files wrote
+    # them; only the rows of the stripped and the removed readings differ there (their
+    # SAT / REQ vetoes stay in iso_checks.csv).
+    # ... and then the element-signature removal (iso_checks.release_signature_removed):
+    # every M0 row committing a reading that left is released to unexplained, so a
+    # per-file ledger, its levels and a per-file publish name no reading the batch
+    # refuted. iso_checks.record_per_file runs the two in that order.
+    _rewritten, _rw_summ, _sg_summ = _IC.record_per_file(
+        full_ledgers, res_m.get("isotopologue"), merge_gates["element_signature"].get("pairs"),
+        mass_scale=scale, log=log)
+    if isinstance(merge_gates.get("isotopologue"), dict):
+        merge_gates["isotopologue"]["per_file"] = _rw_summ
+    if merge_gates["element_signature"].get("removed"):
+        merge_gates["element_signature"]["per_file"] = _sg_summ
+    for sid in sorted(_rewritten):
+        _led = full_ledgers[sid]
+        _led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)
+        level_frames[sid] = EV.trim(_led)
+        for st_ in per_stats:
+            if str(st_.get("sample_id")) == str(sid):
+                _recount_roles(st_, _led, _rw_summ["files"].get(sid), signature=_sg_summ["files"].get(sid))
+    # the parent rows name the lines the gate gave them (one row per parent ion)
+    merged = _IC.parent_lines(merged, res_m.get("isotopologue"))
+    # the NOx-skeleton tier cap, said on the merged row: how many of the files that
+    # commit the reading capped it (tiers.merged_skeleton_notes; the tier is the vote's)
+    from peaky.assignment import tiers as _TI
+    merged, nox_skeleton_merged = _TI.merged_skeleton_notes(merged, full_ledgers)
+    # ... plus the merged-ledger isotopologue gate's strips (iso_checks.veto_rows,
+    # check 'SAT'): the pooled pair of a line the merged ledger gave to its parent is
+    # refuted the same way, so evidence_levels.csv agrees with the merged ledger
+    _sat_veto = _IC.veto_rows(res_m.get("isotopologue"))
+    if len(_sat_veto):
+        iso_table = (pd.concat([iso_table, _sat_veto], ignore_index=True) if len(iso_table)
+                     else _sat_veto)
     iso_table.to_csv(os.path.join(TAB, "iso_checks.csv"), index=False)
+    # ... and the batch series is RE-STAMPED from the merged ledger without them
+    # (the first stamp named them: _batch_ts.parquet, the levels' series and the
+    # TOF gates below must not), with the same inputs as the merge's stamp -- the
+    # per-file identified rows re-read from the rewritten ledgers when either gate
+    # rewrote one (a released reading's isotope lines, a stripped reading's own,
+    # no longer name its ion)
+    _restamp = bool(merge_gates["element_signature"]["removed"] or _rewritten)
+    if _restamp and ts_annot is not None and res_m.get("stamp_inputs"):
+        _aux_s, _tracks_s, _rw_s = res_m["stamp_inputs"]
+        if _rewritten:
+            from peaky.batch import timeseries as _TSI
+            _parts = [_TSI.identified_rows(_l) for _l in full_ledgers.values()]
+            if _rw_s is not None and len(_rw_s):
+                _parts.append(_rw_s)
+            _aux_s = pd.concat(_parts, ignore_index=True) if _parts else None
+        res_m.update(_stamp_series(merged, _aux_s, stamp_tol, _tracks_s))
+        ts_annot = res_m["ts_annot"]
+        if merge_gates["element_signature"]["removed"]:
+            merge_gates["element_signature"]["restamped"] = True
+        if _rewritten and isinstance(merge_gates.get("isotopologue"), dict) and _rw_summ["files"]:
+            merge_gates["isotopologue"]["restamped"] = True
+        log("[iso_checks] the batch series re-stamped from the merged ledger and the per-file ledgers as "
+            "the merged-ledger gates left them")
     # the TOF ion-M+2 gates (iso_checks.tof_m2_gates; TOF-class batches only): a
     # merged winner whose own M+2 line REQ refutes over the batch -- a species the
     # known-species lock decided included -- and a merged line that is the 81Br
     # partner of the line one spacing below it are Candidate. No re-vote: the
     # winner and its reading stay, the row says why.
     merge_gates["tof_m2"] = _IC.tof_m2_gates(merged, iso_table, ts_annot, resolution=rp, mass_scale=scale,
-                                             log=log)
+                                             klass=cfg.instrument_class, log=log)
     # THE EVIDENCE LEVEL (the scale of peaky 0.10.0): the batch's per-file
     # ledgers pooled as ONE source (cover + residual files; every file-count
     # minimum 3), re-read from the per_file/<sid>_ledger.csv files just written
@@ -2113,8 +2617,37 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # merged row no pooled pair holds (a batch-level re-read) gets no level.
     from peaky.assignment.levels import lists as _LS
     rl_context = _LS.reflists_context(reflists_active, rl_record)
+    # the run-level switches of the batch's context profile, derived by the very
+    # helper assign.run calls on each file, from the same reagent, channels,
+    # instrument class and trace-first flag the files were handed; a file whose
+    # own run recorded other switches (a trace-first batch's residual files run
+    # without the trace flag) is named in the log -- the record is the batch's
+    from peaky.chem import contexts as _X
+    context_flags = _X.profile_flags(A.run_context_profile(
+        context, reagent_profile=assign_kw.get("reagent_profile") or prof.name,
+        adducts=assign_kw.get("adducts") or list(prof.adducts),
+        instrument_class=cfg.instrument_class, trace_sample=trace_sample is not None))
+    _off = sorted(str(s_.get("sample_id")) for s_ in per_stats
+                  if "context_flags" in s_ and s_["context_flags"] != context_flags)
+    # what a reader of batch_summary.json must know about the run's own record
+    # (`warnings`; [] when nothing): here, files whose own run recorded other
+    # context switches than the batch record the levels and the report read
+    run_warnings: list = []
+    if _off:
+        log(f"[assign_batch] context switches: the batch records {context_flags or 'none'}; "
+            f"{len(_off)} file(s) ran with other switches ({', '.join(_off[:5])}"
+            f"{', ...' if len(_off) > 5 else ''})")
+        run_warnings.append({
+            "what": "context_flags_mismatch",
+            "message": (f"{len(_off)} file(s) committed under other context switches than the batch "
+                        f"record ({context_flags or 'none'}) that the evidence levels and the report "
+                        "read; their skeleton-only readings are judged on the batch's switches"),
+            "batch": context_flags,
+            "files": {sid: next((s_.get("context_flags") for s_ in per_stats
+                                 if str(s_.get("sample_id")) == sid), None) for sid in _off}})
     level_summary = {
         "reagent": prof.name, "label": prof.label, "context": context,
+        "context_flags": context_flags,
         "reflists_active": [list(x) for x in RL.active_versions(reflists_active)],
         "reflists_context": rl_context,
         "resolution": rp.as_dict() if rp is not None else None,
@@ -2152,7 +2685,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         "amine_r_min": float(amine_r_min),
         "neutral_pairs": _NP.summary(pairs_table, _pair),
         "label_twins": _LT.summary(twins_table, prof),
-        "iso_checks": _IC.summary(iso_table, rp),
+        "iso_checks": _IC.summary(iso_table, rp, klass=cfg.instrument_class),
     }
     log(f"[assign_batch] evidence levels (peaky {EV.SCALE_RELEASE}) over {len(level_ledgers)} pooled "
         f"file(s), instrument class {klass or 'unknown'}: {ev_summary['pooled']} "
@@ -2206,6 +2739,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # the reagent-water rungs and the merged readings they displaced (always written:
     # a stable artifact set; header only when the profile declares no water cores)
     res_m["reagent_water"].to_csv(os.path.join(TAB, "reagent_water.csv"), index=False)
+    # the isotopologue rows the merged ledger gave to their parent, and the mixed /
+    # exempt lines it only noted (always written: header only when none)
+    res_m["isotopologue"].to_csv(os.path.join(TAB, "isotopologue_rows.csv"), index=False)
     # the FINAL per_file/_batch_ts.parquet (in parallel mode this overwrites the raw
     # worker-transfer copy)
     if ts_annot is not None:
@@ -2291,6 +2827,22 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             + ", ".join(f"{a} ({side_files[a]} of {len(per_stats)} files)" for a in side_opened))
     summary = {
         "reagent": prof.name, "label": prof.label, "context": context,
+        # the context profile's run-level switches ({} = the named context as is)
+        "context_flags": context_flags,
+        # what the run's record cannot say on its own (a list of {'what',
+        # 'message', ...}; [] when nothing): a trace-first batch's files that ran
+        # with other context switches than `context_flags`
+        "warnings": run_warnings,
+        # the NOx-skeleton tier cap (null when the batch reads no skeletons): the
+        # merged rows whose reading a file capped / noted, and the per-file totals
+        "nox_skeleton_gate": ({**nox_skeleton_merged,
+                               "files_capped": int(sum((s_.get("nox_skeleton_gate") or {}).get("capped", 0)
+                                                       for s_ in per_stats)),
+                               "files_noted": int(sum((s_.get("nox_skeleton_gate") or {}).get("noted", 0)
+                                                      for s_ in per_stats))}
+                              if context_flags.get("nox_skeleton")
+                              # a trace-first batch records no switches, but its residual files read the skeleton
+                              or any(s_.get("nox_skeleton_gate") is not None for s_ in per_stats) else None),
         # the side channels the run asked for (`side_channels_requested`, from
         # `side_channels_source`) and the run-level union the files actually opened
         # (`side_channels`; per file: per_file[].side_channels, files per channel:
@@ -2322,6 +2874,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # tier pass's counting-detector floor (per file: tof_assign_floor_cps)
         "noise_edge_batch_cps": getattr(cfg, "noise_edge_batch_cps", None),
         "tol_ppm": tol_ppm, "offsets_ppm": offsets,
+        # the batch's m/z axis against the reagent's reference ions, and the
+        # correction applied to it before the cover was picked (measure_axis)
+        "mass_axis": axis_info,
         "pattern_scoring": scorings,
         # which scorer judged the candidates: 'local' (in-process, the default) or
         # 'server' (match_compounds; PEAKY_LOCAL_SCORING=0) -- the report's Methods name it
@@ -2404,8 +2959,13 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             f"file(s), {summary['merged_by_stage'].get(STAGE_RESIDUAL, 0)} ion(s) it alone holds")
     log(f"[assign_batch] assigned {len(sample_ids)} samples in "
         f"{summary['elapsed_s']:.1f}s (n_jobs={n_jobs})")
+    IO.clear_axis_correction(axis_ids)     # the correction belongs to this run only
     return {"profile": prof, "context": context, "sample_ids": sample_ids,
             "per_file": per_file, "offsets": offsets, "merged": merged,
             "jitter": jitter, "summary": summary, "out_dir": out_dir,
             "evidence": levels,
-            "residual_samples": rsel, "stages": dict(stages)}
+            "residual_samples": rsel, "stages": dict(stages),
+            # the time series every stage read (axis-corrected, with AXIS_COL, when
+            # summary['mass_axis']['applied']); the pipeline's cluster and Van
+            # Krevelen figures read it
+            "ts_peaks": ts_peaks}

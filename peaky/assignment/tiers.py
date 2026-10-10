@@ -61,7 +61,8 @@ from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
 from peaky.assignment import satellites as SAT
 
-__version__ = "0.9.0"  # + source-solvent cluster cap (cluster:solvent -> Candidate)
+__version__ = "0.10.0"  # + the NOx-skeleton tier cap (a skeleton-only reading is Candidate); 0.9.1 the twin test's exact-offset window on a calibrated Orbitrap-class run
+                       # 0.9.0: source-solvent cluster cap (cluster:solvent -> Candidate)
                        # (history) mass-dependent z via masscal (range clamp; floor
                        # owned by PassConfig) + persistent-weak cap
                        # (occurrence-admitted, uncorroborated -> Candidate)
@@ -170,6 +171,168 @@ N_DONOR_ADDUCTS = ("[M+NH4]+", "[M+(CH4N2O)H]+")
 DEGEN_DEMOTE_DENSITY = 2
 
 _TRAILS_RE = re.compile(r"trails by ([0-9.]+)")
+
+
+#: The organonitrate-skeleton reading (contexts.nox_skeletons) widens the context
+#: and plausibility windows on the premise that the sample holds organonitrates
+#: -- a premise MS1 cannot confirm for one formula. A reading the run admits only
+#: through it (plausibility.rests_on_skeleton) is therefore Candidate: it keeps
+#: its formula (the recall the reading buys) without the identification grade.
+#: On NOx-free deuterium-labelled flow-reactor files the reading had made Assigned
+#: N3 formulas of deuterated products (C2 + D + O is N3 within 0.2 mDa) on peaks
+#: left unexplained without it. A count of the file's own organonitrates was
+#: tried as the licence and rejected: off the batches it was set on it tracked
+#: file size and scan window, and opened on zero-air blanks.
+#: The tier_reason mark of a row the cap made Candidate, and the note on a
+#: skeleton-only row that is Candidate for another reason or exempt.
+NOX_SKELETON_CAP_MARK = "skeleton-only reading"
+NOX_SKELETON_NOTE = "admitted through the organonitrate-skeleton reading"
+#: curated readings the cap never touches (the pass-0 registry, the reference
+#: lists; a re-arbitrated row keeps its proposer's -- satellites.base_method).
+#: Rows committed after the tier stage (reference-list rescues, ion-only rows,
+#: the ammonium dehydration re-read) never pass through the cap.
+NOX_SKELETON_EXEMPT_METHODS = ("known:", "reflist-rescue")
+#: the proposers that run the context filter (with the run's profile) before they
+#: commit: only their rows can have been ADMITTED through a skeleton reading. The
+#: pass-1 grid, pass-2 series, residual stage B, the isotope-recovery cleanup, the
+#: labelled rescue and the profile's pass-3 families (`contaminant:<family>`).
+NOX_FILTERED_METHODS = ("cheminfo+grid", "gka-series", "residual:series", "cleanup:iso-recovery", "labeled:",
+                        "contaminant:")
+#: a pass-3 family a significant GKA series opened commits with this suffix: it
+#: ran without the context filter (passes/directors.py)
+NOX_GKA_SUFFIX = ":gka"
+
+
+def consults_context_filter(method) -> bool:
+    """Whether the proposer behind `method` ran the context filter before it
+    committed (NOX_FILTERED_METHODS, minus a GKA-opened pass-3 family; a
+    re-arbitrated row's alternative came from its proposer's candidate set)."""
+    m = SAT.base_method(method)
+    return m.startswith(NOX_FILTERED_METHODS) and not m.endswith(NOX_GKA_SUFFIX)
+
+
+#: the one-hop readings (compute_tiers): a row the skeleton reading changed hands
+#: that dependence to rows that stand on it
+_HOP_ANCHOR = "stands on a ladder anchor whose reading rests on the organonitrate-skeleton reading"
+_HOP_COMPLETION = ("takes its neutral from a sibling reading the context filter admitted only through its "
+                   "organonitrate-skeleton reading")
+#: the note on a hop row the cap leaves as it was (Candidate for another reason):
+#: it was never admitted through a skeleton itself
+_HOP_NOTE = "stands on a row " + NOX_SKELETON_NOTE
+#: the pass number of the completion pass: only rows committed before it are
+#: what it read (passes/directors.py: anchors are High / Good M0 rows)
+_COMPLETION_PASS = 5
+
+
+def skeleton_reliance_rows(m0: pd.DataFrame, profile) -> tuple[dict, dict]:
+    """({peak_id: how} of the M0 rows the cap reads -- curated rows excluded --,
+    {peak_id: how} of the curated ones, noted only). A row's own reading
+    (plausibility.skeleton_reliance), then, to a fixed point, the rows that stand
+    on a reliant row: a pass-6 ladder fill whose anchor (`anchor_peak_id`) is
+    reliant, or a completion row whose neutral only skeleton-only filtered rows
+    supplied (pass 5 proposes the High / Good neutrals committed before it; no hop
+    when another such row holds the neutral without the skeleton). Not followed:
+    pass-2 and residual stage-B series children and completion's CH2-gap middles
+    (no anchor id recorded), a re-arbitrated fill (its anchor id is not kept); the
+    anchor is read as the tier stage finds it."""
+    from peaky.assignment import plausibility as P
+    own, curated = {}, {}
+    if profile is None or not getattr(profile, "nox_skeleton", False) or not len(m0):
+        return own, curated
+    rows = []
+    for _, r in m0.iterrows():
+        meth = _txt(r.get("method"))
+        how = P.skeleton_reliance(_txt(r.get("neutral_formula")), profile, filtered=consults_context_filter(meth),
+                                  mass_degenerate=_degeneracy(r)[1], rearbitrated=meth.startswith(SAT.REARB_PREFIX))
+        exempt = SAT.base_method(meth).startswith(NOX_SKELETON_EXEMPT_METHODS)
+        pno = pd.to_numeric(r.get("pass_no"), errors="coerce")
+        before5 = bool(pd.notna(pno) and pno < _COMPLETION_PASS)
+        trusted = base_confidence(r.get("confidence")) in ("High", "Good")
+        rows.append((r["peak_id"], meth, exempt, _txt(r.get("neutral_formula")), _txt(r.get("anchor_peak_id")),
+                     before5 and trusted))
+        if how:
+            (curated if exempt else own)[r["peak_id"]] = how
+    # the neutrals pass 5 could have taken only from skeleton-only filtered rows
+    supplied_skel = {n for pid, meth, ex, n, a, read in rows if read and own.get(pid) == P.SKELETON_ONLY_REASON}
+    supplied_plain = {n for pid, meth, ex, n, a, read in rows if read and pid not in own}
+    filtered_neutrals = supplied_skel - supplied_plain
+    changed = True
+    while changed:
+        changed = False
+        for pid, meth, exempt, n, anchor, _read in rows:
+            if exempt or pid in own:
+                continue
+            if anchor and anchor in own and SAT.base_method(meth).startswith("ladder:"):
+                own[pid] = _HOP_ANCHOR
+                changed = True
+            elif SAT.base_method(meth).startswith("completion:") and n in filtered_neutrals:
+                own[pid] = _HOP_COMPLETION
+                changed = True
+    return own, curated
+
+
+def nox_skeleton_summary(ledger: pd.DataFrame, profile) -> dict | None:
+    """What the skeleton cap did to the M0 rows (None when the profile reads no
+    skeletons): `capped` (made Candidate) and `noted` (skeleton-only rows left
+    as they were: Candidate for another reason, or exempt), by tier_reason. Read
+    right after the tier stage (assign.run), before later stages rewrite rows."""
+    if profile is None or not getattr(profile, "nox_skeleton", False) or "role" not in ledger.columns:
+        return None
+    m0 = ledger[ledger["role"] == L.ROLE_M0]
+    reasons = m0["tier_reason"].map(_txt) if "tier_reason" in m0.columns else pd.Series("", index=m0.index)
+    capped = reasons.str.startswith(NOX_SKELETON_CAP_MARK)
+    return {"capped": int(capped.sum()),
+            "noted": int((reasons.str.contains(NOX_SKELETON_NOTE, regex=False) & ~capped).sum())}
+
+
+def merged_skeleton_notes(merged: pd.DataFrame, ledgers: dict) -> tuple[pd.DataFrame, dict]:
+    """The skeleton cap on the merged ledger: a merged row whose reading the cap
+    made Candidate (or noted) in a per-file ledger gets, in its tier_reason, in
+    how many of the files that commit the reading ('; '-joined after any vote
+    note). The merged tier is the vote's (the best per-file tier): a Candidate
+    row is led by the cap mark and counted `merged_capped`; one a file holds
+    Assigned says so and is counted `merged_noted`, as is a row only noted.
+    Returns (merged, {merged_capped, merged_noted})."""
+    out = {"merged_capped": 0, "merged_noted": 0}
+    if merged is None or not len(merged) or not ledgers:
+        return merged, out
+    # per (neutral, adduct): the files that commit it, cap it, note it (a file
+    # holding the reading on two peaks counts once)
+    per: dict = {}
+    for sid, led in ledgers.items():
+        if led is None or not len(led) or not {"role", "neutral_formula", "adduct"} <= set(led.columns):
+            continue
+        m0 = led[led["role"] == L.ROLE_M0]
+        rs = m0["tier_reason"].map(_txt) if "tier_reason" in m0.columns else pd.Series("", index=m0.index)
+        for n, a, r in zip(m0["neutral_formula"].map(_txt), m0["adduct"].map(_txt), rs):
+            c = per.setdefault((n, a), (set(), set(), set()))
+            c[0].add(sid)
+            if r.startswith(NOX_SKELETON_CAP_MARK):
+                c[1].add(sid)
+            elif NOX_SKELETON_NOTE in r:
+                c[2].add(sid)
+    per = {k: (len(v[0]), len(v[1]), len(v[2] - v[1])) for k, v in per.items()}
+    out_m = merged.copy()
+    if "tier_reason" not in out_m.columns:
+        out_m["tier_reason"] = pd.NA
+    out_m["tier_reason"] = out_m["tier_reason"].astype("object")
+    for i in out_m.index:
+        c = per.get((_txt(out_m.at[i, "neutral_formula"]), _txt(out_m.at[i, "adduct"])))
+        if not c or not (c[1] or c[2]):
+            continue
+        assigned = "tier" in out_m.columns and _txt(out_m.at[i, "tier"]) == TIER_ASSIGNED
+        if c[1] and not assigned:
+            note = (f"{NOX_SKELETON_CAP_MARK}: Candidate in {c[1]} of the {c[0]} file(s) that commit it, "
+                    "the organonitrate-skeleton reading having changed its outcome there")
+        elif c[1]:
+            note = (f"{NOX_SKELETON_NOTE}: capped in {c[1]} of the {c[0]} file(s) that commit it, Assigned by a "
+                    "file that holds it otherwise")
+        else:
+            note = f"{NOX_SKELETON_NOTE} in {c[2]} of the {c[0]} file(s) that commit it"
+        prev = _txt(out_m.at[i, "tier_reason"])
+        out_m.at[i, "tier_reason"] = f"{prev}; {note}" if prev else note
+        out["merged_capped" if (c[1] and not assigned) else "merged_noted"] += 1
+    return out_m, out
 
 
 def base_confidence(conf) -> str:
@@ -566,12 +729,18 @@ def _tof_floor_edge(cfg) -> tuple[float | None, str]:
     return None, "file"
 
 
-def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
+def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFrame:
     """One row per M0 peak: [peak_id, tier, tier_reason, candidate_density,
     density_capped]. Pure; does not mutate the ledger. `cfg` (a PassConfig)
     supplies cal_abs_floor_mda for the mass-error gate and tau_suspect for the
-    lock score floor; None = their defaults."""
+    lock score floor; None = their defaults. `profile` (the run's
+    ContextProfile): with its NOx-skeleton reading on, an Assigned row the run
+    admits only through that reading is Candidate (NOX_SKELETON_CAP_MARK), and a
+    skeleton-only row left as it was says so (NOX_SKELETON_NOTE)."""
     m0 = ledger[ledger["role"] == L.ROLE_M0]
+    # the skeleton cap (NOX_SKELETON_CAP_MARK): which rows the NOx-skeleton reading
+    # changed, and how ({} when the profile reads no skeletons)
+    skel_own, skel_curated = skeleton_reliance_rows(m0, profile)
     # corroboration sources
     kids_of = ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
     # ...and WHICH satellites, not just how many: a known-species commit that
@@ -606,6 +775,8 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
     floor_edge, floor_src = _tof_floor_edge(cfg) if tof_floor is not None else (None, "file")
     # the score a locked reading (pass-0 known species, pass-7 certified) needs
     score_floor = lock_score_floor(cfg)
+    # the twin test's window: the exact-offset one on an Orbitrap-class run
+    twin_ppm = SAT.twin_ppm(cfg)
 
     rows = []
     for _, r in m0.iterrows():
@@ -673,7 +844,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
             if _el:
                 _ion = _ion_counts(formula, r.get("adduct")) or counts
                 twin = SAT.twin_verdict(ledger, r["peak_id"], _ion, sat_floor, element=_el,
-                                        masked_by=SAT.reagent_masks(_el, counts, _ion))
+                                        masked_by=SAT.reagent_masks(_el, counts, _ion), ppm=twin_ppm)
         tier, reason = TIER_ASSIGNED, ""
         _h0 = r.get("height")
         _h0 = float(_h0) if pd.notna(_h0) else None
@@ -949,6 +1120,21 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
                 parts.append(f"{resolv} peak ({_sep:.2f} HWHM from its neighbour), carried by "
                              "the corroboration")
             reason = "; ".join(parts)
+        _skel = skel_own.get(r["peak_id"]) or skel_curated.get(r["peak_id"])
+        if _skel:
+            # the skeleton reading (-ONO2 / -NO2 groups read off) presumes
+            # organonitrate chemistry, which MS1 cannot confirm for one formula:
+            # Candidate, never Assigned (a curated reading keeps its tier, noted)
+            if tier == TIER_ASSIGNED and r["peak_id"] in skel_own:
+                tier = TIER_CANDIDATE
+                reason = (f"{NOX_SKELETON_CAP_MARK}: {formula} {_skel}; the reading (-ONO2 / -NO2 groups read "
+                          "off) presumes organonitrate chemistry that MS1 cannot confirm"
+                          + ("; an N3 reading is also C2 + D + O within 0.2 mDa (a deuterated product)"
+                             if counts.get("N", 0) >= 3 else "")
+                          + (f" (otherwise Assigned: {reason})" if reason else ""))
+            else:
+                reason = ((reason + "; ") if reason else "") + (
+                    _HOP_NOTE if _skel in (_HOP_ANCHOR, _HOP_COMPLETION) else NOX_SKELETON_NOTE)
         rows.append({"peak_id": r["peak_id"], "tier": tier, "tier_reason": reason,
                      "candidate_density": density, "density_capped": capped})
     return pd.DataFrame(rows, columns=["peak_id", "tier", "tier_reason",
@@ -1133,11 +1319,12 @@ def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
     return mu, sigma
 
 
-def apply_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
+def apply_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFrame:
     """Stamp tier / tier_reason / candidate_density onto the M0 rows of the
     ledger (in place; returns the ledger). Non-M0 rows keep NA. `cfg` (the run's
     PassConfig) supplies cal_abs_floor_mda and tau_suspect; None = their
-    defaults (report re-tier)."""
+    defaults (report re-tier). `profile`: the run's ContextProfile, for the
+    NOx-skeleton cap (compute_tiers); None = no cap."""
     for col in ("tier", "tier_reason", "candidate_density"):
         if col not in ledger.columns:
             ledger[col] = pd.Series(pd.NA, index=ledger.index, dtype="object")
@@ -1145,7 +1332,7 @@ def apply_tiers(ledger: pd.DataFrame, *, cfg=None) -> pd.DataFrame:
             # candidate_density holds '>=N' strings; a float column (e.g. an
             # all-NaN CSV round-trip) must widen before the stamp
             ledger[col] = ledger[col].astype("object")
-    t = compute_tiers(ledger, cfg=cfg)
+    t = compute_tiers(ledger, cfg=cfg, profile=profile)
     if not len(t):
         return ledger
     idx = ledger.index[ledger["peak_id"].isin(t["peak_id"])]

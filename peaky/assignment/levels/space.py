@@ -103,11 +103,12 @@ def decompositions(space: "Space", counts: dict, neutral, adduct, adducts) -> li
 class Space(DG.EnumerationSpace):
     """The run's enumeration space: ``reagent`` (a profile name, its adducts
     are the channels), ``context`` (a context name), the run's active reference
-    lists (``[(id, version), ...]``) and the opened contaminant ``families``."""
+    lists (``[(id, version), ...]``) and the opened contaminant ``families``.
+    ``context`` may be the run's own ContextProfile (its run-level switches)."""
 
-    def __init__(self, reagent: str, context: str, reflists_active, families, *, catalog=None):
+    def __init__(self, reagent: str, context, reflists_active, families, *, catalog=None):
         self.prof = PR.resolve(reagent)
-        self.ctx = X.get_context(context)
+        self.ctx = X.as_profile(context)
         self.adducts = list(self.prof.adducts)
         self.reagent = RG.reagent_for_adducts(self.adducts)
         self.polarity = "positive" if any(str(a).rstrip().endswith("+") for a in self.adducts) else "negative"
@@ -174,8 +175,9 @@ class Space(DG.EnumerationSpace):
     def relaxed(self, neutral: str):
         """D5: this space widened just enough to admit the committed neutral's
         CLASS -- every profile's element caps, C/O box and Van Krevelen windows
-        raised to include it, its halogen / Si minimum-carbon rule lowered to
-        its own C, and a context-filter failure of the same kind as its own
+        raised to include it (on its reading that needs the least widening:
+        ``contexts.vk_readings``), its halogen / Si minimum-carbon rule lowered
+        to its own C, and a context-filter failure of the same kind as its own
         admitted (``accept_kinds``). None when no widening admits it. Memoised."""
         hit = self._relaxed.get(neutral, 0)
         if hit != 0:
@@ -183,15 +185,17 @@ class Space(DG.EnumerationSpace):
         cnt = {k: v for k, v in C.parse_formula(str(neutral)).items() if v}
         out = None
         if cnt:
-            nC, nSi = cnt.get("C", 0), cnt.get("Si", 0)
-            Ceff = nC + nSi
-            Heff = cnt.get("H", 0) + sum(cnt.get(x, 0) for x in ("F", "Cl", "Br", "I"))
-            vals = {}
-            if Ceff >= 3:
-                vals = {"h_to_c": Heff / Ceff, "o_to_c": cnt.get("O", 0) / Ceff, "n_to_c": cnt.get("N", 0) / Ceff,
-                        "dbe_to_c": C.dbe(cnt) / Ceff}
+            nC = cnt.get("C", 0)
             profs = []
             for prof in self.profiles:
+                # the Van Krevelen reading that needs the LEAST widening (the raw
+                # neutral, or a NOx skeleton when the profile reads them --
+                # contexts.vk_readings), judged on the windows the filter gives it
+                vals, wins = {}, {}
+                readings = X.vk_readings(cnt, prof)
+                if readings:
+                    k, vals = min(readings, key=lambda kr: X.vk_distance(kr[1], X.vk_windows(cnt, prof, kr[0])))
+                    wins = X.vk_windows(cnt, prof, k)
                 kw = {}
                 for el in DG.ELEMENT_CEILING:
                     n = cnt.get(el, 0)
@@ -203,7 +207,7 @@ class Space(DG.EnumerationSpace):
                     kw["grid_o_max"] = cnt.get("O", 0)
                 for name, v in vals.items():
                     lo, hi = getattr(prof, name)
-                    if not (lo <= v <= hi):
+                    if not (wins[name][0] <= v <= wins[name][1]):
                         kw[name] = (min(lo, v), max(hi, v))
                 mcf = dict(getattr(prof, "min_C_for", {}) or {})
                 ch = {el: nC for el, m in mcf.items() if cnt.get(el, 0) >= 1 and nC < m}

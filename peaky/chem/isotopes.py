@@ -24,11 +24,14 @@ from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
-__version__ = "0.5.1"  # + D4's full-count line (a position rule): a line only the full halogen count makes
+__version__ = "0.5.2"  # + D_13C_EXACT: the one exact 13C spacing the batch checks, the element evidence and the side-lobe rule share
 # delta-m (Da) between an isotopologue satellite and its monoisotopic parent
 # (AME2020 exact masses; 81Br-79Br = 80.9162897 - 78.9183376 = 1.9979521 --
 # was 1.997795, 0.16 mDa low and inconsistent with passes._DBR; fixed 2026-06-13)
 D_13C = 1.003355
+#: the exact 13C - 12C spacing (AME2020), for tests that read offsets at the
+#: 0.1 ppm level; D_13C above is the same spacing rounded to 1 microDa
+D_13C_EXACT = 1.0033548378
 D_37CL = 1.997050
 D_81BR = 1.9979521
 D_34S = 1.995796
