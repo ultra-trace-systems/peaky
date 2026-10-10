@@ -271,9 +271,55 @@ def relabel_confidence(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> i
     return n
 
 
-def arbitrate(scored: pd.DataFrame, cfg: PassConfig) -> dict:
+#: the nitrate cluster channels and the reagent atom each adds beside H O3
+_NITRATE_CLUSTER = {"[M+NO3]-": "N", "[M+^NO3]-": "^N"}
+
+
+def _nitrate_twin_first(grp: pd.DataFrame, profile) -> tuple[pd.DataFrame, object]:
+    """The NOx-skeleton twin tie-break. X [M+NO3]- and (X + HNO3) [M-H]- are the
+    same ion. Before the skeleton reading the context filter kept the [M-H]-
+    reading of an organonitrate-shaped X + HNO3 out, so the cluster reading was
+    the one reported; with it both often pass, and the order would fall to the
+    scores. So an [M-H]- winner the run's filter admits ONLY through a NOx
+    skeleton (contexts.skeleton_only) yields to its scored [M+NO3]- (or
+    [M+^NO3]-) twin -- the reagent-cluster reading is the preferred
+    decomposition (reflists, tiers._drop_decomposition_aliases). The opposite
+    case (a skeleton-only cluster reading beside a raw-admissible [M-H]- twin)
+    does not arise on the ambient C3-C8 CHNO grid: X + HNO3 keeps X's DBE/C and
+    raises O/C and N/C.
+
+    ``grp`` is one peak's rows sorted by eff_score; returns (rows with the
+    cluster reading first, the demoted twin's index or None). A no-op unless
+    ``profile.nox_skeleton`` is set."""
+    if profile is None or not getattr(profile, "nox_skeleton", False) or len(grp) < 2:
+        return grp, None
+    top = grp.iloc[0]
+    if top["adduct_label"] != "[M-H]-":
+        return grp, None
+    want = {k: v for k, v in C.parse_formula(str(top["compound_formula"])).items() if v}
+    for j in range(1, len(grp)):
+        r = grp.iloc[j]
+        atom = _NITRATE_CLUSTER.get(r["adduct_label"])
+        if atom is None:
+            continue
+        x = dict(C.parse_formula(str(r["compound_formula"])))
+        for el, n in (("H", 1), (atom, 1), ("O", 3)):
+            x[el] = x.get(el, 0) + n
+        if {k: v for k, v in x.items() if v} != want:
+            continue
+        from peaky.chem import contexts as X
+        if not X.skeleton_only(str(top["compound_formula"]), profile):
+            return grp, None
+        order = [j] + [i for i in range(len(grp)) if i != j]
+        return grp.iloc[order], grp.index[0]
+    return grp, None
+
+
+def arbitrate(scored: pd.DataFrame, cfg: PassConfig, profile=None) -> dict:
     """Decide a single best M0 owner per peak from the flat per-isotopologue
-    scored table, with complexity-penalised effective scores.
+    scored table, with complexity-penalised effective scores. ``profile`` (the
+    run's ContextProfile) turns on the NOx-skeleton twin tie-break
+    (`_nitrate_twin_first`) when its ``nox_skeleton`` switch is set.
 
     Returns:
       {
@@ -428,9 +474,13 @@ def arbitrate(scored: pd.DataFrame, cfg: PassConfig) -> dict:
     winners = []
     for pid, grp in base.groupby("sample_peak_id"):
         grp = grp.sort_values("eff_score", ascending=False)
+        grp, demoted = _nitrate_twin_first(grp, profile)
         top = grp.iloc[0]
         n_iso = int(iso_count.get((top["compound_formula"], top["ion_formula"]), 0))
-        runner_eff = float(grp.iloc[1]["eff_score"]) if len(grp) > 1 else None
+        # the margin is to the best OTHER reading: a demoted same-ion twin is
+        # not a competitor (tiers drops it from the alternatives too)
+        rivals = grp.iloc[1:] if demoted is None else grp.iloc[1:].drop(index=demoted)
+        runner_eff = float(rivals.iloc[0]["eff_score"]) if len(rivals) else None
         tied = runner_eff is not None and (float(top["eff_score"]) - runner_eff) < 0.05
         # keep up to 6 alternatives: candidate DENSITY is the report's
         # confidence currency (tiers.py), and a 3-deep list saturates too early

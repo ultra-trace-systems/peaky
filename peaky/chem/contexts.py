@@ -15,11 +15,13 @@ Adding a context = one CONTEXTS dict entry.
 """
 from __future__ import annotations
 
+import dataclasses
+import math
 from dataclasses import dataclass, field
 
 from peaky.chem import chemistry as C
 
-__version__ = "0.4.0"   # + ContextProfile.source_solvents (the cluster channel)
+__version__ = "0.5.1"   # filter_by_profile: the raw-reading fall-through is an assertion; 0.5.0 NOx-skeleton readings and the C3-C4 small-acid band (run-level switches)
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,18 @@ class ContextProfile:
     source_solvents: tuple = ()
     # contaminant families Pass 3 may open (keys into CONTAMINANT_FAMILIES)
     pass3_families: tuple = ()
+    # NOx SKELETON readings (`vk_readings`): judge the Van Krevelen windows on the
+    # carbon skeleton of an organonitrate / nitroaromatic as well as on the raw
+    # neutral. An -ONO2 / -NO2 group adds N, 2 O and one DBE and replaces an H,
+    # so a dinitrate's raw O/C and DBE/C sit outside windows written for CHO
+    # skeletons. Off on every built-in context: a run switches it on
+    # (`run_profile`) only where it has been validated.
+    nox_skeleton: bool = False
+    # C3-C4 POLYCARBONYL-ACID band (`small_acid_band_applies`): the raw reading of
+    # a C3-C4 CHO(S) acid may reach H/C 0.5, O/C 2.0 and DBE/C 1.0 (every carbon
+    # a carbonyl / carboxyl carbon: acetylenedicarboxylic C4H2O4, mesoxalic
+    # C3H2O5). Off by default, switched on with `nox_skeleton`.
+    small_acid_band: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -84,13 +98,22 @@ CONTAMINANT_FAMILIES: dict[str, dict] = {
     "nitrate":       {"add": {"N": (1, 2), "O": (3, 8)},
                       "adducts": ("[M-H]-", "[M+NO3]-", "[M+^NO3]-"),
                       "note": "organonitrate"},
+    # siloxane / pdms: `run_adducts` names the run channels the family may ALSO
+    # take beside its own `adducts` (a family without the key takes every one):
+    # the positive channels siloxanes show -- sodium / urea adducts, the methyl-
+    # loss quantifier ion, a charge-transfer source's radical cation and hydride
+    # abstraction -- never an anion cluster. Unioned with a nitrate source's
+    # [M+NO3]-, the grid fitted Si1 "clusters" (O6-O9, N) onto ordinary
+    # nitrate-cluster lines, none with a 29Si / 30Si line.
     "siloxane":      {"add": {"Si": (1, 6), "O": (1, 6), "C": (2, 12), "H": (6, 36)},
                       "adducts": ("[M+H]+", "[M+NH4]+", "[M+^NH4]+", "[M-H]-"),
+                      "run_adducts": ("[M+Na]+", "[M+(CH4N2O)H]+", "[M-CH3]+", "[M]+.", "[M-H]+"),
                       "note": "PDMS / siloxane column bleed (D3..D6)"},
     "pdms":          {"add": {"Si": (4, 12), "O": (3, 14), "C": (8, 26),
                               "H": (18, 78), "N": (0, 2)},
                       "adducts": ("[M+H]+", "[M+NH4]+", "[M+^NH4]+", "[M+Na]+",
                                   "[M+(CH4N2O)H]+"),
+                      "run_adducts": ("[M-CH3]+", "[M]+.", "[M-H]+"),
                       "note": "long-chain polydimethylsiloxane / silicone bleed "
                               "(Si-O-Si(CH3)2 ladder, +C2H6OSi = +74.019); the "
                               "Si>6 oligomers the short siloxane family can't reach"},
@@ -354,10 +377,12 @@ def get_context(name: str) -> ContextProfile:
     return p
 
 
-def filter_by_context(formula: str, context: str = "ambient-air") -> tuple[bool, str | None]:
+def filter_by_context(formula: str, context="ambient-air") -> tuple[bool, str | None]:
     """Return (keep, reason). Composes the universal structural gates from
-    chemistry.dbe_ok with the context-specific bounds."""
-    return filter_by_profile(formula, get_context(context))
+    chemistry.dbe_ok with the context-specific bounds. ``context`` is a context
+    name or a ContextProfile (a run's own, `run_profile`)."""
+    return filter_by_profile(formula, context if isinstance(context, ContextProfile)
+                             else get_context(context))
 
 
 def element_budget(formula: str, profile: "ContextProfile | str") -> tuple[bool, str | None]:
@@ -400,6 +425,172 @@ def element_budget(formula: str, profile: "ContextProfile | str") -> tuple[bool,
     return True, None
 
 
+# ---------------------------------------------------------------------------
+# Van Krevelen readings: the raw neutral, and the carbon skeleton of its NOx groups
+# ---------------------------------------------------------------------------
+#: the ratio windows a reading is judged on, in the order (and with the names)
+#: the filter's reason string reports them
+VK_WINDOWS = (("h_to_c", "(H+X)/C"), ("o_to_c", "O/C"), ("n_to_c", "N/C"), ("dbe_to_c", "DBE/C"))
+#: at most this many -ONO2 / -NO2 groups are discounted, whatever the context's
+#: N cap (a trinitrate -- nitroglycerin, a trinitro-aromatic -- is the chemical
+#: ceiling the readings credit)
+NOX_K_MAX = 3
+#: a skeleton at or above this DBE/C is aromatic enough to carry NITRO groups
+#: (R-NO2: 2 O per N, the skeleton keeps none of them); below it only the
+#: NITRATE stoichiometry (R-O-NO2: 3 O per N) is read
+NITRO_SKELETON_DBE_PER_C = 0.5
+#: the small-acid band's widened windows (raw reading only)
+SMALL_ACID_WINDOWS = {"h_to_c": (0.5, None), "o_to_c": (None, 2.0), "dbe_to_c": (None, 1.0)}
+#: the reagent profiles (chem.profiles names) whose runs read NOx skeletons
+NOX_SKELETON_REAGENTS = ("NO3", "NO3_15N")
+
+
+def nox_skeletons(cnt: dict, profile: "ContextProfile") -> list[tuple[int, dict]]:
+    """The NOx SKELETONS of a neutral, ``[(k, counts)]`` for k = k_max .. 1, when
+    ``profile.nox_skeleton`` is set ([] otherwise): k -NO2 groups replaced by H,
+    so H + k, N - k, O - 2k and DBE - k (removing an N is -1/2 DBE, adding an H
+    another -1/2). A nitrate R-O-NO2 reads as the alcohol R-OH (the bridging O
+    stays in the skeleton), a nitro R-NO2 as R-H.
+
+    k_max = min(N, floor(DBE), Ceff, NOX_K_MAX): each group needs an N, its
+    N=O double bond and its own carbon. A skeleton is kept when its
+    stoichiometry is a NITRATE one (it keeps >= k O, i.e. O >= 3k overall) or,
+    when its DBE/C >= NITRO_SKELETON_DBE_PER_C (aromatic), a NITRO one
+    (O >= 2k). A labelled (15N) N is a group's N first: a heavy nitrate group is
+    a nitrate group."""
+    if not getattr(profile, "nox_skeleton", False):
+        return []
+    cnt = {k: v for k, v in cnt.items() if v}
+    c_eff = cnt.get("C", 0) + cnt.get("Si", 0)
+    n_lab, n_n, n_o = cnt.get("^N", 0), cnt.get("N", 0), cnt.get("O", 0)
+    if c_eff < 1:
+        return []
+    d = C.dbe(cnt)
+    k_max = min(n_lab + n_n, int(math.floor(d + 1e-9)), c_eff, NOX_K_MAX)
+    out = []
+    for k in range(k_max, 0, -1):
+        o_s = n_o - 2 * k
+        if o_s < 0:
+            continue
+        if not (o_s >= k or (d - k) / c_eff >= NITRO_SKELETON_DBE_PER_C):
+            continue
+        skel = dict(cnt)
+        take_lab = min(k, n_lab)
+        skel["^N"] = n_lab - take_lab
+        skel["N"] = n_n - (k - take_lab)
+        skel["O"] = o_s
+        skel["H"] = cnt.get("H", 0) + k
+        out.append((k, {e: v for e, v in skel.items() if v}))
+    return out
+
+
+def _vk_ratios(cnt: dict) -> dict:
+    c_eff = cnt.get("C", 0) + cnt.get("Si", 0)
+    h_eff = cnt.get("H", 0) + sum(cnt.get(x, 0) for x in ("F", "Cl", "Br", "I"))
+    return {"h_to_c": h_eff / c_eff, "o_to_c": cnt.get("O", 0) / c_eff,
+            "n_to_c": cnt.get("N", 0) / c_eff, "dbe_to_c": C.dbe(cnt) / c_eff}
+
+
+def vk_readings(cnt: dict, profile: "ContextProfile") -> list[tuple[int, dict]]:
+    """The Van Krevelen readings of a neutral: ``[(k, {h_to_c, o_to_c, n_to_c,
+    dbe_to_c})]`` on Ceff = C + Si and Heff = H + halogens. ``k = 0`` (the raw
+    neutral, exactly the ratios the filter always read) comes first; then, only
+    when ``profile.nox_skeleton`` is set, the skeleton readings k = k_max .. 1
+    (`nox_skeletons`). The skeleton's N/C counts the N its groups did not take:
+    an amine or ring N keeps its window. Empty for Ceff < 3, where the ratios
+    mean nothing."""
+    cnt = {k: v for k, v in cnt.items() if v}
+    if cnt.get("C", 0) + cnt.get("Si", 0) < 3:
+        return []
+    return [(0, _vk_ratios(cnt))] + [(k, _vk_ratios(sk)) for k, sk in nox_skeletons(cnt, profile)]
+
+
+def small_acid_band_applies(cnt: dict, profile: "ContextProfile") -> bool:
+    """The C3-C4 polycarbonyl-acid band covers this neutral (raw reading only):
+    ``profile.small_acid_band`` set, 3 <= Ceff <= 4, no N, at least one H (an
+    acid), 2 <= O <= 2 Ceff and at least one C=O (DBE >= 1: a DBE-0 C3 with O/C 2
+    is all gem-diols, not an acid)."""
+    if not getattr(profile, "small_acid_band", False):
+        return False
+    c_eff = cnt.get("C", 0) + cnt.get("Si", 0)
+    n_o = cnt.get("O", 0)
+    return (3 <= c_eff <= 4 and cnt.get("N", 0) == 0 and cnt.get("^N", 0) == 0
+            and cnt.get("H", 0) >= 1 and 2 <= n_o <= 2 * c_eff and C.dbe(cnt) >= 1)
+
+
+def vk_windows(cnt: dict, profile: "ContextProfile", k: int) -> dict:
+    """``{window: (lo, hi)}`` reading ``k`` is judged on: the profile's own
+    windows, widened by the small-acid band for the raw reading it covers."""
+    win = {name: tuple(getattr(profile, name)) for name, _ in VK_WINDOWS}
+    if k == 0 and small_acid_band_applies(cnt, profile):
+        for name, (lo, hi) in SMALL_ACID_WINDOWS.items():
+            w_lo, w_hi = win[name]
+            win[name] = (min(w_lo, lo) if lo is not None else w_lo,
+                         max(w_hi, hi) if hi is not None else w_hi)
+    return win
+
+
+def vk_distance(ratios: dict, windows: dict) -> float:
+    """Total out-of-window distance of a reading (0 = inside every window)."""
+    tot = 0.0
+    for name, _ in VK_WINDOWS:
+        lo, hi = windows[name]
+        v = ratios[name]
+        tot += (lo - v) if v < lo else ((v - hi) if v > hi else 0.0)
+    return tot
+
+
+def vk_passing_k(cnt: dict, profile: "ContextProfile") -> int | None:
+    """The k of the first reading (raw first) inside every window, else None.
+    None also for Ceff < 3 (no ratio test there)."""
+    for k, r in vk_readings(cnt, profile):
+        if vk_distance(r, vk_windows(cnt, profile, k)) == 0.0:
+            return k
+    return None
+
+
+def skeleton_only(formula: str, profile: "ContextProfile") -> bool:
+    """The context filter admits ``formula`` ONLY through a NOx skeleton reading
+    (k >= 1): its raw reading fails the windows, a skeleton one passes."""
+    if not getattr(profile, "nox_skeleton", False):
+        return False
+    cnt = C.parse_formula(str(formula))
+    k = vk_passing_k(cnt, profile)
+    return bool(k) and filter_by_profile(str(formula), profile)[0]
+
+
+def run_profile(profile: "ContextProfile", *, reagent: str | None,
+                instrument_class: str | None, trace_sample: bool = False) -> "ContextProfile":
+    """The context profile a RUN judges its formulas on: ``profile`` with the
+    NOx-skeleton readings and the small-acid band switched on for a nitrate-
+    reagent run (``NOX_SKELETON_REAGENTS``) on an Orbitrap-class axis, in a
+    context that opens the organonitrate family; unchanged otherwise. Off on
+    the trace-first sample (its +-12 ppm search window), on TOF-class and
+    unknown-class runs and on every other reagent until validated there."""
+    on = (reagent in NOX_SKELETON_REAGENTS and instrument_class == "orbitrap"
+          and not trace_sample and "nitrate" in tuple(profile.pass3_families or ()))
+    if not on or (profile.nox_skeleton and profile.small_acid_band):
+        return profile
+    return dataclasses.replace(profile, nox_skeleton=True, small_acid_band=True)
+
+
+#: the ContextProfile switches a run can set beyond its named context
+PROFILE_FLAGS = ("nox_skeleton", "small_acid_band")
+
+
+def profile_flags(profile: "ContextProfile") -> dict:
+    """The run-level switches set on ``profile`` ({} when none is)."""
+    return {f: True for f in PROFILE_FLAGS if getattr(profile, f, False)}
+
+
+def as_profile(context, flags: dict | None = None) -> "ContextProfile":
+    """A ContextProfile from a profile or a context name, with the run-level
+    ``flags`` (``profile_flags``) applied."""
+    prof = context if isinstance(context, ContextProfile) else get_context(context)
+    kw = {f: bool(v) for f, v in (flags or {}).items() if f in PROFILE_FLAGS}
+    return dataclasses.replace(prof, **kw) if kw else prof
+
+
 def filter_by_profile(formula: str, profile: "ContextProfile") -> tuple[bool, str | None]:
     """Return (keep, reason) for a formula against an explicit profile. Same
     rules as filter_by_context but takes the profile directly -- used by the
@@ -410,10 +601,8 @@ def filter_by_profile(formula: str, profile: "ContextProfile") -> tuple[bool, st
     if not ok:
         return False, why
     cnt = C.parse_formula(formula)
-    nC = cnt.get("C", 0); nH = cnt.get("H", 0); nN = cnt.get("N", 0)
-    nO = cnt.get("O", 0)
-    nF = cnt.get("F", 0); nCl = cnt.get("Cl", 0); nBr = cnt.get("Br", 0)
-    nI = cnt.get("I", 0); nSi = cnt.get("Si", 0)
+    nC = cnt.get("C", 0); nN = cnt.get("N", 0)
+    nO = cnt.get("O", 0); nSi = cnt.get("Si", 0)
     if nC == 0:
         return True, None   # an allowlisted carbon-free analyte
 
@@ -429,16 +618,25 @@ def filter_by_profile(formula: str, profile: "ContextProfile") -> tuple[bool, st
     #      the hydrogen-equivalent numerator is Heff = H + F + Cl + Br + I.
     #      Without this, halogen-substituted compounds are falsely rejected:
     #      trichloroacetic acid C2HCl3O2 has H/C=0.5 but (H+X)/C=2.0.
-    d = C.dbe(cnt)
+    #    - With profile.nox_skeleton the carbon skeleton of up to NOX_K_MAX
+    #      -ONO2 / -NO2 groups is read too (`vk_readings`), and with
+    #      profile.small_acid_band a C3-C4 polycarbonyl acid's raw reading is
+    #      judged on the band's wider windows (`vk_windows`). A formula passes
+    #      when ANY reading is inside every window; a failure reports the RAW
+    #      reading on the profile's own windows, exactly as before.
     Ceff = nC + nSi
-    Heff = nH + nF + nCl + nBr + nI
     if Ceff >= 3:
-        for name, val, win in (("(H+X)/C", Heff / Ceff, profile.h_to_c),
-                               ("O/C", nO / Ceff, profile.o_to_c),
-                               ("N/C", nN / Ceff, profile.n_to_c),
-                               ("DBE/C", d / Ceff, profile.dbe_to_c)):
+        readings = vk_readings(cnt, profile)
+        if any(vk_distance(r, vk_windows(cnt, profile, k)) == 0.0 for k, r in readings):
+            return True, None
+        raw = readings[0][1]
+        for key, name in VK_WINDOWS:
+            win, val = getattr(profile, key), raw[key]
             if not (win[0] <= val <= win[1]):
                 return False, f"{name}={val:.2f} out of {win}"
+        # no reading fits every window, and the raw reading (readings[0]) is one
+        # of them: some window above has already returned
+        raise AssertionError("filter_by_profile: a failed raw reading passed every window")
     elif nC in (1, 2):
         if nO > 2 * nC + 2:
             return False, f"O={nO} implausible for C={nC}"

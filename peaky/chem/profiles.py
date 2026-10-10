@@ -158,8 +158,10 @@ NO3 = ReagentProfile(
     detect_adduct="[M+NO3]-",
     context="ambient-air",
     ion_only_channels=("[M]-.",),   # the electron-attachment line beside each acid's [M-H]-
-    # NO3-, HNO3.NO3-, (HNO3)2.NO3- and NO2- (the cores stay the HNO3 / HNO2 readings;
-    # only their water clusters are reagent-side)
+    # NO3-, HNO3.NO3-, (HNO3)2.NO3- and NO2-. NO3-, HNO3.NO3- and NO2- stay the HNO3 /
+    # HNO2 analyte readings and only their water clusters are reagent-side; the
+    # (HNO3)2.NO3- core has no analyte reading and is itself a reagent row
+    # (batch.reagent_water.REAGENT_ONLY_CORES), as are its water clusters
     water_cores=("NO3", "HN2O6", "H2N3O9", "NO2"),
     aliases=("no3", "nitrate", "no3-", "nitrate-cims"),
 )

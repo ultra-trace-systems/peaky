@@ -329,6 +329,8 @@ def test_trace_first_and_the_rolling_centre_compose(ts, tmp_path):
         IO.connect = real_connect
     summ = res["summary"]
     assert summ["trace_first"]["n_seeds"] == 4 and summ["traces"]["rolling"]["enabled"]
+    # trace-first applies its own wave: the batch's axis step stands aside
+    assert "trace-first" in summ["mass_axis"]["skipped"] and not summ["mass_axis"]["applied"]
     assert "stamp_tol_ppm" in res["merged"].columns
 
 

@@ -30,7 +30,7 @@ import pandas as pd
 from peaky import paths as PT
 from peaky.assignment import reflists as RL
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"   # the scrutiny page reads the run's context profile (batch_summary context_flags)
 
 A4 = (8.27, 11.69)                       # portrait inches
 INK = "#222222"
@@ -327,13 +327,16 @@ def load_context(out_dir: str, *, tag: str, label: str, ts_path: str | None = No
     ctx["positive"] = any(str(k).rstrip().endswith("+") for k in ctx.get("adduct_counts", {}))
     from peaky.assignment import plausibility as PL
     pol = "+" if ctx["positive"] else "-"
-    ctx["flagged"] = PL.scan(merged, polarity=pol)
+    # the run's context profile (its run-level switches: the NOx-skeleton reading
+    # the per-file demotes used), from batch_summary.json; None = the gates as is
+    run_prof = _run_context_profile(out_dir)
+    ctx["flagged"] = PL.scan(merged, polarity=pol, profile=run_prof)
     # enrich each flagged neutral with its evidence (ppm / isotopes / margin / sane
     # alternative) so the scrutiny page shows WHY it is suspect and whether a saner
     # formula was available — answering "how did we arrive at these?" on the page.
     ev_src = ctx.pop("_flag_ev_src", None)
     if ev_src is not None and ctx["flagged"]:
-        ev = _flag_evidence(ev_src, pol)
+        ev = _flag_evidence(ev_src, pol, run_prof)
         for d in ctx["flagged"]:
             d.update(ev.get(d["neutral_formula"], {}))
     # single source of truth for "formula disagreements": the merged ledger's own
@@ -670,7 +673,21 @@ def _adduct_label(a) -> str:
 _ISO_C13 = 1.0033548   # 13C - 12C; used to recover isotopologue mass error
 
 
-def _flag_evidence(a, polarity):
+def _run_context_profile(out_dir: str):
+    """The run's ContextProfile from its batch_summary.json (`context` +
+    `context_flags`); None when the summary or its context is missing."""
+    try:
+        with open(os.path.join(out_dir, "batch_summary.json")) as fh:
+            bs = json.load(fh)
+        if not bs.get("context"):
+            return None
+        from peaky.chem import contexts as X
+        return X.as_profile(bs["context"], bs.get("context_flags"))
+    except Exception:  # noqa: BLE001 -- an older or partial run dir: the gates as is
+        return None
+
+
+def _flag_evidence(a, polarity, profile=None):
     """Per-neutral evidence for the scrutiny page: smallest |ppm|, count of CONFIRMED
     isotopologues (0 = no corroboration), eff_margin to the runner-up, and whether a
     chemically PLAUSIBLE alternative existed within the candidate set (parsed from the
@@ -697,7 +714,8 @@ def _flag_evidence(a, polarity):
             try:
                 for d in json.loads(alt):
                     af = d.get("formula")
-                    if af and PL.implausible(af, tier="Candidate", polarity=polarity) is None:
+                    if af and PL.implausible(af, tier="Candidate", polarity=polarity,
+                                             profile=profile) is None:
                         sane = f"{af} @ {d.get('ppm'):+.2f} ppm" if d.get("ppm") is not None else af
                         break
             except Exception:

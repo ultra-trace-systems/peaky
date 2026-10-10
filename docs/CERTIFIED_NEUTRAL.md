@@ -57,6 +57,25 @@ whitelist (pass 0) — a gatekeeper that can only find what someone listed.
    in a combined line (`13C+37Cl`, `81Br+37Cl`), and a Br winner's ⁸¹Br count
    on two channels as on three ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md)
    §3.0).
+   **The element gate.** On an Orbitrap-class run (`cfg.instrument_class`, not
+   trace-first's synthetic sample) the envelope above is read off the file's
+   PEAK LIST instead of the scorer's labels: the element-evidence predicate
+   (`satellites.element_evidence`, the exact offset within max(1 ppm, 4 sigma),
+   the file's own detection calibration; [ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md)
+   §3.6b) must confirm one of the winner's own S / Cl / Br / Si lines on a
+   member ion, or, on ≥ 3 channels, a member's own reagent-halogen line. On every
+   class a winner passes the gate only when no member contradicts its element
+   (a verdict only an Orbitrap-class run gives) and, carrying a P / I its context budgets at 0 that no curated list names,
+   it stands on ≥ 3 channels; displacing a weak incumbent needs a strong
+   certificate AND the gate (a gated winner commits on unexplained peaks at
+   most). A **two-channel reagent-acid pair** -- `[M-H]-` with one of
+   `[M+NO3]-`, `[M+^NO3]-`, `[M+Br]-`, `[M+Cl]-`, `[M+I]-`, both bare, so the
+   members are X and X·HX, the ordinary cluster pattern of every acid the
+   source deprotonates -- certifies the neutral mass and nothing about an
+   off-grid element: it commits no non-curated off-budget P / I (any class) and,
+   on an Orbitrap-class run, no S / Cl / Br / Si winner none of whose elements
+   the predicate confirms (`gated` in the pass summary). The P / I forms stay
+   in the ranking, so a tie is still a tie.
 5. **Commit** (`method=certified:multi-channel`): the same certified neutral
    is committed onto *every* member peak under its own channel label — so the
    tier engine's cross-channel corroboration sees the certificate. Ladder

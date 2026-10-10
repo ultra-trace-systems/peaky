@@ -6,6 +6,242 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Precision gates keyed on the run's instrument class: Orbitrap side lobes, merged
+  isotopologue rows, element evidence for widened heteroatoms, and the carbon skeleton of
+  organonitrates (`--no-sidelobe-guard` and `--no-isotopologue-gate` turn the first two
+  off).** Each gate keeps a reading off a line that is not the reading's own, or lets a real
+  organonitrate through windows written for CHO skeletons. They read two new runtime fields
+  of `PassConfig` (kept out of the config fingerprint): `instrument_class` (`orbitrap` /
+  `tof` / `None` = unknown, every class-gated stage off) -- a batch resolves it once from
+  its axis class, a TOF roster winning over a width model that reads Orbitrap-class, and
+  hands it to every file and worker (the batch isotope checks, the merge-time removal and
+  the TOF M+2 gates read the same class, no longer the width model's alone); a single-sample
+  run takes the scoring snapshot's type, else a measured width model's class (a declared
+  scalar R is a guess: `None`) -- and `trace_sample` (trace-first's synthetic sample, whose
+  heights are batch means: no stage that compares lines of one spectrum runs there).
+  - **Side lobes, per file before pass 0 (Orbitrap class only).** An Orbitrap peak list can
+    hold weak entries 1-5 line widths beside a line at least 50x brighter that the raw
+    profile does not have; their offset scales with the parent's width, not with mass (a
+    negative lobe at -2.35 +/- 0.1 FWHM), and they are narrower than a line.
+    `chem/sidelobes.py` finds them within ONE peak list, in units of the parent's own
+    observed width (area / 1.0645 height) or the width model scaled by the file's median
+    observed/model ratio; a candidate also needs an artifact signature (narrower than 0.7x a
+    line, at the negative-lobe offset -2.6...-2.1 FWHM, or mirrored on the other side).
+    `assignment/sidelobe_guard.py` marks those rows `artifact` and locks them. Exempt:
+    isotope fine-structure lines (2H / 17O / 15N beside 13C, 13C15N <-> 18O) and a candidate
+    at an isotopologue offset of any brighter line of the list (a neighbouring ion's 13C
+    line is not a lobe), matched within the isotope tests' exact-offset window at its
+    pre-calibration floor (1 ppm; the guard runs before the file is calibrated). A wider,
+    width-scaled tolerance (0.3 FWHM, ~2 ppm at m/z 170-230) was measured on a positive-mode
+    Orbitrap batch: the 8 peaks it spared over 1 ppm were lobes (a -2.7 mDa lobe population of
+    a bright line whose real 13C line is a separate peak inside 1 ppm, a "13C" line at 3.4x its
+    prediction, a "29Si" line of a Si-free ion, a lobe the batch's A/B judged a correct
+    removal); a nitrate batch flagged the same peaks either way. Skipped on a TOF, an unknown class, the trace sample, without a
+    width model or peak areas, and on a file whose widths cannot calibrate the model; a file
+    with fewer than 10 bright peaks is tested on the geometric signatures only. Knobs
+    `PassConfig.sidelobe_guard / sidelobe_ratio / sidelobe_band_fwhm / sidelobe_narrow`;
+    per-file stats `sidelobe_guard`.
+  - **Merged isotopologue rows (batch, Orbitrap class).** With a width model and peak areas
+    in the time series, `iso_checks.satellite_rows` reads every merged row's line against
+    the 13C / 18O / 15N / 34S / 37Cl / 81Br / Si lines of every merged ion below it (and of
+    the reagent ions), spectrum by spectrum, within max(1 ppm, 4 sigma). A line whose area
+    ratio to its expected share has a median of 0.4-1.4x over >= 3 spectra, with fewer than
+    max(1, 10 %) of them above 2x, is the parent's isotopologue: the row leaves the merged
+    ledger before the stamp, the stamp gives the line to the parent, and the pooled pair
+    reads an isotope-check veto (check `SAT` in `tables/iso_checks.csv`, level 5b). A median
+    of 1.4-4x, or an in-band one that fails the tail test, is a mixed line: a note only.
+    Known-species decisions, curated readings (the pass-0 registry and the active reference
+    lists), ion-only rows and isotope-labelled readings are exempt (a note). A stripped row
+    whose parent the element-signature removal below takes out later is kept in the table,
+    annotated `parent removed`. New table `tables/isotopologue_rows.csv`;
+    `batch_summary.json['merge_gates']['isotopologue']`. The stripped line is a valid
+    assignment of the parent's isotopologue, so it is recorded, not dropped: in every
+    per-file ledger that committed the stripped reading as an M0 on the line, the row
+    becomes the parent's `iso_child` under the gate's label where that file commits the
+    parent (a reagent parent's: a reagent isotopologue), and is released to `unexplained`,
+    with a note naming the parent and the line, where it does not or where the parent
+    later left the merged ledger (`iso_checks.reconcile_per_file`). The rewritten ledgers
+    are what `per_file/<sid>_ledger.csv`, the evidence levels and the file's role counts
+    in `batch_summary.json` read, so per-file readers and a per-file publish agree with the
+    merged ledger, and the rows on the line no longer feed the stripped pair's level. Each parent's merged row
+    lists the lines it was given in the new column `isotopologue_lines` (one row per parent
+    ion stays the merged ledger's contract; the batch publish is unchanged).
+  - **Element evidence: a heteroatom from a widened search needs its own isotope line.** The
+    per-peak grid proposes only C / H / N / O, so every S, Cl, Br, Si, P or I formula comes
+    from a widened proposer, which proposes a neutral mass and never asks for the element's
+    line. `satellites.element_evidence` looks for 81Br / 37Cl / 34S / 29Si / 30Si at the
+    exact offset within max(1 ppm, 4 sigma), self-calibrated per file on the 13C / 18O lines
+    of its committed CHON rows (a logistic detection curve and the file's own ratio
+    percentiles; a file with fewer than 30 calibration lines contradicts nothing). On an
+    Orbitrap, a peak that a per-file stage marked `artifact` (a side lobe, or cleanup's
+    ringing) is no confirming line and sets no floor. It still leaves its position
+    untestable, which is how REQ reads an artifact stamp in the series; the TOF M+2 test
+    reads every peak. The new per-file stage
+    `element_evidence` (after re-arbitration, before resolvability, degeneracy and tiers)
+    CLEARS a non-curated, unlocked M0 whose Br / Cl / Si, S >= 2 or over-cap element is
+    contradicted, and a monoisotopic P / I that a widened proposer other than pass 7 put in
+    a profile that budgets it at 0 (every class); the cleared peak is locked as unexplained,
+    so no later stage gives it a formula. A picked line inside the window under the share a
+    sighting needs is reported `low (0.xx of prediction)`, not `absent`. On a TOF, Br / Cl
+    are judged by the ion's own M+2 line (with a width model; none: no verdict), with no S /
+    Si verdict; an unknown class and the trace sample keep the P / I rule only. Pass 7 on an
+    Orbitrap reads the predicate instead of a scorer label, and on every class a two-channel
+    `[M-H]-` / `[M+X]-` pair that differs by the reagent acid commits no off-budget P / I
+    (nor, on an Orbitrap, an S / Cl / Br / Si winner the peak list does not confirm). The
+    siloxane / pdms families take only the run channels siloxanes show (`run_adducts`),
+    never an anion cluster such as `[M+NO3]-` or `[M+Br]-`, on which they fitted Si1
+    "clusters" onto reagent-cluster lines. Once a file is calibrated, an Orbitrap-class run
+    searches the twin test (was 15 ppm) and the residual iso-pair finder (was 8 ppm) within
+    max(1 ppm, 4 sigma); before it (pass 0's known-species test) and in a file that never
+    calibrates they keep 15 / 8 ppm, since a line can sit more than 1 ppm off there. At the
+    merge, on a batch whose resolved class is Orbitrap, a batch REQ veto on an
+    element-signature line removes the reading (curated and known-species readings stay):
+    `batch_summary.json['merge_gates']['element_signature']`, and the series is re-stamped
+    without it. Every per-file ledger that committed a reading that left the merged ledger
+    releases the row, and its isotope lines, to `unexplained`, with a note naming the refuted
+    line (`iso_checks.release_signature_removed`); a reading another merged row still holds
+    (the one a known-species decision marks) reads `reading_left: false` and stays. Per-file
+    readers and a per-file publish then agree with the merged ledger, and no pooled pair holds
+    the removed reading. The re-stamp reads the rewritten per-file ledgers (after either merged
+    gate rewrote one), so no spectrum names a released reading's ion on its isotope lines.
+  - **Nitrate Orbitrap runs read the carbon skeleton of organonitrates.** An -ONO2 / -NO2
+    group adds N, 2 O and one DBE, so dinitrates, trinitrates and nitroaromatics failed Van
+    Krevelen windows written for CHO skeletons. With `ContextProfile.nox_skeleton` on, the
+    context filter, the plausibility demotes (O-monster, heteroatom coincidence, carbon
+    cluster), re-arbitration, the PDF scrutiny page and the evidence level's space also read
+    up to three groups' skeletons (Ceff >= 3), and a formula passes when any reading fits;
+    with `small_acid_band` on, C3-C4 polycarbonyl acids get wider windows.
+    `contexts.run_profile` (through `assign.run_context_profile`, which the batch's own
+    record calls too) switches both on only for the NO3 / NO3_15N reagents on an
+    Orbitrap-class run in a context that opens organonitrates; never on a TOF, an unknown
+    class or the trace sample. A skeleton-only `[M-H]-` reading yields to its same-ion
+    `[M+NO3]-` twin. A row whose outcome the skeleton reading changed is Candidate, never
+    Assigned: the reading presumes organonitrate chemistry that MS1 cannot confirm for one
+    formula. On NOx-free deuterium-labelled flow-reactor files it had made Assigned N3
+    formulas of deuterated products (C2 + D + O is N3 within 0.2 mDa) on peaks left
+    unexplained without it. "Changed": a proposer that runs the context filter admitted it
+    only on a skeleton reading, or the skeleton spared it the carbon-cluster demote or the
+    oxygen-monster demote on a mass-degenerate row, or re-arbitration took it only on its
+    skeleton, or it stands on such a row (a ladder fill's anchor, a completion row's
+    sibling; pass-2 and residual series children are not followed). Rows from
+    proposers that never read the windows (pass 6, completion, pass-7 certificates, a pass-3
+    family a GKA series opened, which now commits as `contaminant:<family>:gka`) are judged
+    by the demotes and their anchors alone. Curated readings keep their tier. `tier_reason` says how, per file and on the merged row;
+    `stats['nox_skeleton_gate']` and `batch_summary.json['nox_skeleton_gate']` count it. On
+    the NOx-chemistry nitrate batch below, 59 skeleton-reliant merged rows, all judged right,
+    are Candidate instead of Assigned (same ions: recall and the expert comparison do not
+    move; one merged row now reads its ion as the nitrate cluster its 1-microscan files hold,
+    not as a deprotonated molecule); on the deuterium-labelled files, Assigned formulas with
+    N >= 3 fall from 47 back to 31, the count before the skeleton readings. The switches
+    are recorded in `batch_summary.json['context_flags']` and each file's stats
+    (`context_flags`); a trace-first batch whose residual files ran with other switches says
+    so under `batch_summary.json['warnings']`.
+  - **The (HNO3)2.NO3- dimer core is a reagent row** (rung n = 0 of the reagent-water
+    ladder) when it passes the rung presence test, on any instrument class; it has no
+    analyte reading, so a merged reading on it leaves the merged ledger as on any rung.
+
+  The run manifest's counts carry `context_flags` and the isotopologue gate's state (a run
+  argument, not a config field). On a TOF the side-lobe guard, the isotopologue gate, the
+  narrowed windows, the merge-time removal and the skeleton readings are off, but four
+  pieces ARE active: the element gate's M+2 Br / Cl test, pass 7's two-channel P / I rule,
+  the siloxane adduct restriction and the (HNO3)2.NO3- reagent core (and, as on every class,
+  the element gate's off-budget P / I rule). End to end on a private nitrate Orbitrap batch
+  checked against its raw profiles, with all four gates together: Assigned precision 97.5 ->
+  99.3 % (539 rows; 598 before the skeleton tier cap), Candidate precision 80.4 -> 98.3 %
+  (97.7 % before the cap), and the recall of ions the raw profiles judged
+  real 82.3 -> 90.2 %; against an independent expert assignment of 935 ions the same formula
+  rose from 693 to 759 and a different formula fell from 10 to 1, and on the batch's
+  1-microscan files from 421 to 463 and from 8 to 0. In A/B runs on a positive-mode Orbitrap
+  batch 12 merged rows left, each judged correct; on a TOF NO3/Br batch with a truth set the
+  truth recall went from 32/34 to 33/34 with false readings staying at 0, and 166 merged
+  rows left (163 of them Candidates), most of them exotic P, PS, Cl, Si or Br-bearing
+  readings. These numbers were measured before the last review fixes above (the class source
+  of the merge-time removal, the calibrated twin window, the lobe exemption at isotopologue
+  offsets, side-lobe artifacts no longer confirming an element, the locked clear, the
+  curated exemption of the isotopologue gate, and the artifact rule of the evidence scale
+  and of the element-evidence test). Only the positive-mode batch was re-run with all of
+  them; replayed with the 1 ppm exemption window it keeps all 12 removals, and the artifact
+  rule moves no level there. The nitrate batch, re-run end to end with every fix and the
+  skeleton tier cap, reproduces the numbers above exactly (both its 100- and 1-microscan files).
+- **The batch's m/z axis is modelled from its own peaks (`--mass-axis auto`; `locks`,
+  `reference` and `off` force a path).** On an Orbitrap the correction below no longer rests on
+  the reagent's ~25 reference ions: `batch/axislock.py` finds calibration-free LOCKS -- recurring
+  peaks whose +-5 ppm window holds one closed-shell formula once the peak's own 13C / 34S /
+  37Cl / 81Br lines strike the rivals, then peaks one exact unit step (CH2, O, CO2 ...) from two
+  locks; isotopologues of a brighter peak and elements no isotope line confirms (F, a
+  non-reagent I) never lock -- fits a smoothing spline through their main body, drops locks off
+  it, adds +-1 ppm locks on the corrected axis, and walks up the range segment by segment to
+  model the STEPS an Orbitrap's axis can take (measured in the instrument's own centroids:
+  -2.6 ppm between two adjacent peaks, +2 ppm 30 Da higher). Between two segments across a
+  step, and past the first and last lock, nothing is corrected: there the step's position is
+  unknown. It is applied when it predicts held-out locks (5-fold) within 0.3 ppm or half the raw
+  error and some lock reads 1 ppm off, up to 7 ppm; the reference-ion wave stays the fallback
+  when the locks build no model, and a TOF is still only measured. On the nitrate Orbitrap batch below, ~480
+  locks span m/z 57-423 and held-out locks sit 0.11 ppm from the model (1.6 ppm raw); against
+  the independent assignment the same formula rose from 573 to 693 (m/z 365-423: from 0
+  to 62), a different formula fell from 11 to 10 of 935, and the ions peaky alone
+  holds fell from 40 to 26; on the batch's 1-microscan files, 387 -> 421 and
+  9 -> 8. `tables/mass_axis_locks.csv` lists every lock and how it was found.
+- **`peaky batch` / `pool` measure the batch's m/z axis and correct an Orbitrap's axis error
+  before anything is assigned (`--mass-axis auto`, the default; `off` skips it).** The batch time
+  series is probed against the reagent's formula-certain reference ions (the `peaky mass-qc`
+  probe, judged by the instrument's own rules); on an Orbitrap whose verdict is an axis error
+  the time series and every file's peak table are corrected, in the parent and in every spawned
+  worker: a trend inside the reference ions' m/z range (left as is outside it, where its shape is
+  unmeasured), a flat offset at every m/z. Pass 1's per-file self-calibration models only a
+  constant plus a 1/(m/z) term, so an axis that rose and fell across the range left correct
+  formulas several scoring widths off-centre: on a nitrate Orbitrap batch whose axis read 0 ppm
+  at m/z 62, +2.4 ppm near m/z 200 and +0.2 ppm at m/z 308 (identically in every file), the
+  uncorrected run held 307 ions and put P/S/Cl formulas on CHON(N) ions; with the correction it
+  holds 641, and against an independent, hand-curated assignment of the same ions the same
+  formula rose from 171 to 573 and a different formula fell from 57 to 11. Measured but not
+  corrected: a TOF (its reference ions span m/z 62-220 and its offsets are mostly
+  ion-specific; a batch the server lists as TOF stays one whatever resolving power it is
+  given), a pool spanning several batches (one wave would correct each batch by the others'
+  axis), server-side scoring (`PEAKY_LOCAL_SCORING=0` scores the server's own peaks) and a
+  correction above 4 ppm anywhere (a calibration to fix at the instrument). `peaky publish
+  --batch` puts a corrected run's merged m/z back on the server's axis before matching it to
+  the batch peaks (within 5 ppm). A reagent without a reference-ion
+  table (nitrate, labelled nitrate and bromide have one) is not measured, and the measurement
+  never stops a batch. `batch_summary.json['mass_axis']` and the run manifest record the
+  verdict, the wave, its scope, how far the peaks moved or why nothing was applied;
+  `tables/mass_axis.csv` the reference ions. A corrected series carries the shift it removed
+  (`mz_axis_ppm`), so a run's `per_file/_batch_ts.parquet` fed back with `--ts` is restored to
+  the server's axis first (`peaky mass-qc --ts` restores it too). The cluster and Van Krevelen
+  figures read the corrected series; the PDF's coverage tables and a pool's per-group reports
+  read the run's recorded input (the series it was given) within their 8 ppm windows. The
+  correction is held per sample: runs that share samples in one process (the MCP server's
+  threads) share it. Trace-first keeps its own wave.
+
+### Fixed
+
+- **The evidence scale reads no isotope line off an artifact row.** The line probe used to
+  take the tallest peak in a line's position window whatever its role, and it read an
+  artifact there as an occupant. Its 25 ppm reach for a displaced line could also pick an
+  artifact. So a side lobe beside a reading's 13C line, taller than the line, made the line
+  "occupied" (present but never matched), and the reading lost its 13C positive fact. The
+  probe now picks the tallest other peak, and the reach skips artifacts. A window only
+  artifacts hold is untestable (`shadowed`), never absent. The exact 37Cl probe and the
+  isotope-line competitors' position follow the same rule. It is the rule the
+  element-evidence predicate and REQ follow: an artifact confirms no line and refutes none.
+  On the two level fixtures no level moves; the evidence text of 4 pairs does (the expected
+  table is re-pinned). A reading whose 13C line is an unresolved doublet with a lobe now
+  has that file untestable rather than matched off the lobe, so it can fall short of the
+  three testable files a positive fact needs.
+- **`peaky mass-qc` measures batches of few spectra.** A reference ion needed 10 spectra to
+  count, so every batch of fewer (a time series of one aggregated spectrum per file) read
+  NO_REFERENCE although the ions sat in every file. The bar is now what half the batch is,
+  at least 3 and at most 10: unchanged from 20 spectra up.
+- **`peaky mass-qc --orbitrap` judges an Orbitrap by its own rules.** The calibrant ladder
+  and thresholds were sized on TOF batches: the anchor tier (an ion clean at TOF resolution)
+  stops at m/z 220, the reagent / lock-mass ions sit off the analyte axis, and a 4 ppm swing
+  or 2 ppm offset is ~10 Orbitrap scoring widths. On the batch above it reported a flat
+  +2.1 ppm offset. On an Orbitrap every usable reference ion now calibrates except those
+  over 100x the median height, and a trend needs a 1 ppm swing that predicts held-out ions
+  with half the constant's error (an offset: 1 ppm). A TOF is judged as before.
+
 ## [0.10.0b1] — 2026-10-07 (pre-release: the evidence scale, the isotope checks, the m/z-dependent mass centre, declared side channels, the TOF M+2 and mass-only gates)
 
 ### Changed

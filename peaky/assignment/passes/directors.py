@@ -26,6 +26,7 @@ __all__ = [
     "_silanediol_series",
     "_known_species",
     "known_formulas",
+    "curated_formulas",
     "_D37CL",
     "_RECOVERABLE_KNOWN_FAMS",
     "run_pass0_known",
@@ -316,6 +317,18 @@ def known_formulas(polarity: str = "negative", context: str | None = None) -> fr
     return frozenset(f for family in _known_species(polarity, context).values() for f in family)
 
 
+def curated_formulas(polarity: str = "negative", context: str | None = None,
+                     reflist_formulas=()) -> frozenset[str]:
+    """The formulas a curated list stands behind for a run: the pass-0 registry
+    for its polarity / context (`known_formulas`) and the active reference
+    lists' formulas (`reflist_formulas`: cfg.reflist_formulas, or
+    reflists.prior_formulas of the active lists). One set for every gate that
+    spares a curated reading: the plausibility demotes, the degeneracy count,
+    the element-evidence stage, pass 7's element gate, and the batch's
+    isotopologue gate and element-signature removal."""
+    return known_formulas(polarity, context) | frozenset(reflist_formulas or ())
+
+
 _D37CL = 1.9970499
 
 # The `atmospheric` known species that must be corroborated before they are
@@ -363,7 +376,7 @@ def _twin_verdict(ledger: pd.DataFrame, pid, counts: dict, cfg: PassConfig) -> d
         floor = cfg.height_cutoff
     except Exception:                                    # noqa: BLE001 -- unresolved gate
         floor = None
-    v = _SAT.twin_verdict(ledger, pid, counts, floor, prefix="single channel; ")
+    v = _SAT.twin_verdict(ledger, pid, counts, floor, prefix="single channel; ", ppm=_SAT.twin_ppm(cfg))
     return {k: v[k] for k in ("verdict", "twin", "why", "summary")}
 
 
@@ -1097,7 +1110,7 @@ def _resolve_hx_clusters(
         for s in (+1, -1):
             y2 = G.formula_add(y, "CH2", s)
             if y2 and y2 not in ys:
-                keep, _ = X.filter_by_context(y2, profile.label)
+                keep, _ = X.filter_by_context(y2, profile)
                 if keep:
                     ys[y2] = (apid, f"homolog of anchor {y} ({s:+d}CH2)")
     tgt = _target_peaks(ledger, cfg)
@@ -1286,7 +1299,7 @@ def _resolve_acid_i2_clusters(
         for s in (+1, -1):
             y2 = G.formula_add(y, "CH2", s)
             if y2 and y2 not in ys and y2 not in anchor_by_formula and _acid_ok(y2):
-                keep, _ = X.filter_by_context(y2, profile.label)
+                keep, _ = X.filter_by_context(y2, profile)
                 if keep:
                     ys[y2] = (apid, f"homolog of anchor {y} ({s:+d}CH2)")
     if not ys:
@@ -1431,8 +1444,9 @@ def _family_ok(formula: str, ranges: dict[str, tuple[int, int]]) -> bool:
     return True
 
 
-def _context_filter(formulas, context: str) -> list[str]:
-    """Context plausibility gate for the generic passes.
+def _context_filter(formulas, context) -> list[str]:
+    """Context plausibility gate for the generic passes. ``context`` is the run's
+    ContextProfile (its run-level switches: the NOx-skeleton reading) or a name.
 
     This is also where the OFF-GRID ELEMENT invariant is enforced, via the context's
     own heteroatom caps: `ambient-air` sets max_F/max_P/max_I = 0 because those
@@ -1525,13 +1539,13 @@ def run_pass1(
     # CHO-before-CHON preference, so no need for two separate sub-passes.
     ranges = build_ranges(profile, pre, include_N=True)
     formulas = _enumerate(client, mzs, mech_ids, ranges, cfg, adducts)
-    formulas = set(_context_filter(formulas, profile.label))
+    formulas = set(_context_filter(formulas, profile))
     log(f"[pass1] {len(formulas)} context-plausible CHO/CHON candidate formulas")
     scored = IO.score_candidates(
         client, sample_id, sorted(formulas), mechanism_ids=cfg.mechanism_ids
     )
     log(f"[pass1] scored rows={len(scored)}")
-    arb = arbitrate(scored, cfg)
+    arb = arbitrate(scored, cfg, profile)
     summary = commit_winners(
         ledger,
         arb,
@@ -1578,7 +1592,7 @@ def run_pass2(
                 mz, anchors, adducts, units=units, ppm=cfg.series_ppm, max_steps=1
             ):
                 proposals.add(p.neutral_formula)
-        proposals = set(_context_filter(proposals, profile.label)) - anchors - tried
+        proposals = set(_context_filter(proposals, profile)) - anchors - tried
         if not proposals:
             log(f"[pass2.{it}] no new proposals; stopping")
             break
@@ -1586,7 +1600,7 @@ def run_pass2(
         scored = IO.score_candidates(
             client, sample_id, sorted(proposals), mechanism_ids=cfg.mechanism_ids
         )
-        arb = arbitrate(scored, cfg)
+        arb = arbitrate(scored, cfg, profile)
         s = commit_winners(
             ledger,
             arb,
@@ -1771,10 +1785,16 @@ def run_pass3(
             # the 2 % impurity satellite, Na is a 0.2 mDa twin of the ^NH4 adduct).
             _excl = ({"[M+NH4]+", "[M+Na]+"} if any("^NH4" in str(a) for a in adducts)
                      else set())
+            # A family that declares `run_adducts` (siloxane, pdms) takes only
+            # those of the run's channels beside its own: unioned with a nitrate
+            # source's [M+NO3]-, the siloxane grid fitted Si1 "clusters" (O6-O9,
+            # N) onto ordinary nitrate-cluster lines -- no siloxane chemistry,
+            # none with a 29Si / 30Si line.
+            run_ok = fam.get("run_adducts")
             fam_adducts = list(
                 dict.fromkeys(
                     [a for a in fam["adducts"] if a in C.ADDUCT_SHIFTS and a not in _excl]
-                    + adducts
+                    + [a for a in adducts if run_ok is None or a in run_ok]
                 )
             )
             mech_ids = _mech_ids_for(client, fam_adducts)
@@ -1829,7 +1849,7 @@ def run_pass3(
             if fam_key in fam_members:
                 formulas = {f for f in formulas if _family_ok(f, ranges)}
             else:
-                formulas = set(_context_filter(formulas, profile.label))
+                formulas = set(_context_filter(formulas, profile))
             if fam_key in ("bromo_organic", "chloro_organic"):
                 # drop covalent-X aliases of anchor.HX clusters: if stripping
                 # one HX from X yields an existing anchor, the cluster reading
@@ -1846,12 +1866,14 @@ def run_pass3(
             scored = IO.score_candidates(
                 client, sample_id, sorted(formulas), mechanism_ids=cfg.mechanism_ids
             )
-            arb = arbitrate(scored, cfg)
+            arb = arbitrate(scored, cfg, profile)
             s = commit_winners(
                 ledger,
                 arb,
                 pass_no=3,
-                method=f"contaminant:{fam_key}",
+                # ':gka' = opened by a significant GKA series: structural-only
+                # filtering, no context filter (tiers.consults_context_filter)
+                method=f"contaminant:{fam_key}" + (":gka" if fam_key in fam_members else ""),
                 context=profile.label,
                 cfg=cfg,
                 lock=False,
@@ -1889,6 +1911,46 @@ _CERT_ENUM_TOL_MDA = 2.0    # candidate-enumeration window around the certified
 #                             core (tighter than the 3-mDa convergence gate: the
 #                             weighted core is sub-mDa when the channels agree)
 _CERT_DIAG_ISO = ("34S", "37Cl", "81Br")   # 13C excluded -- refutes nothing
+#: the anion adducts whose [M-H]- / [M+X]- pair differs by the reagent ACID HX
+#: (HNO3, HBr ...): the ordinary cluster pattern of every acid the source
+#: deprotonates, so such a two-channel certificate is no evidence for an
+#: off-grid element (`_reagent_acid_pair`)
+_REAGENT_ACID_ADDUCTS = frozenset({"[M+NO3]-", "[M+^NO3]-", "[M+Br]-", "[M+Cl]-", "[M+I]-"})
+
+
+def _reagent_acid_pair(cert) -> bool:
+    """A two-channel certificate whose members are X- and X.HX- -- [M-H]- and
+    the reagent anion's adduct, both bare (order 0): the members differ by the
+    reagent acid, the pattern every deprotonated acid of a nitrate (bromide)
+    source shows. It certifies the neutral MASS; it says nothing a lone peak
+    does not about an off-grid element."""
+    if cert.n_channels != 2 or any(h.cluster_order for h in cert.hits):
+        return False
+    ads = {h.adduct for h in cert.hits}
+    return len(ads) == 2 and "[M-H]-" in ads and len(ads & _REAGENT_ACID_ADDUCTS) == 1
+
+
+def _cert_element_evidence(ctx, cert, member_ion: dict, winner_counts: dict, *, reagent_lines: bool) -> dict:
+    """The element-evidence predicate (satellites.element_evidence) over a
+    certificate's member ions: {element: [verdicts]} for each of the winner's own
+    S / Cl / Br / Si, and -- `reagent_lines` -- under the key 'reagent' the ion's
+    own Br / Cl line of a member whose adduct brings a halogen the winner lacks
+    (the ion question: is the channel a real bromide cluster)."""
+    out: dict = {}
+    if ctx is None:
+        return out
+    for h in cert.hits:
+        ion = _SAT._ion_body(member_ion.get(h.peak_id))
+        if not ion:
+            continue
+        for el in _SAT.EE_ELEMENTS:
+            if winner_counts.get(el, 0) > 0:
+                out.setdefault(el, []).append(
+                    _SAT.element_evidence(ctx, h.mz, h.height, winner_counts, ion, el)["verdict"])
+            elif reagent_lines and el in ("Br", "Cl") and ion.get(el, 0) > 0:
+                out.setdefault("reagent", []).append(
+                    _SAT.element_evidence(ctx, h.mz, h.height, None, ion, el)["verdict"])
+    return out
 
 
 def _rung_ion(winner: str, hit, reagent: str | None, scored_ions: dict) -> str | None:
@@ -1925,6 +1987,7 @@ def run_pass_certified(
     reagent: str | None = None,
     ts_peaks=None,
     score_fn=None,
+    resolving_power=None,
     log=print,
 ) -> dict:
     """Pass 7 -- certified-neutral discovery over the unexplained residual.
@@ -1946,6 +2009,23 @@ def run_pass_certified(
     single-sample run has no TS at all): when provided, member-channel time
     co-variation is annotated as extra corroboration; when None the pass is
     fully functional on the single-spectrum mass domain.
+
+    The element gate (the element_evidence stage's predicate). On an Orbitrap-class run (cfg.instrument_class, not
+    trace-first's synthetic sample) the diagnostic envelope is the file's PEAK
+    LIST, not a scorer label: `iso_ok` holds when the element-evidence
+    predicate (satellites.element_evidence: the exact offset, the file's own
+    detection calibration) confirms one of the winner's own S / Cl / Br / Si
+    lines on a member ion -- or, on >= 3 channels, a member's own reagent
+    halogen line; elsewhere the scorer-label rule above stands (no exact-offset
+    test off an Orbitrap). A winner passes the gate when no member contradicts
+    its element and, carrying a monoisotopic P / I its profile budgets at 0
+    and no curated list names, it stands on >= 3 channels. Displacement needs
+    (iso_ok or >= 3 channels) AND the gate. A two-channel REAGENT-ACID pair
+    ([M-H]- with [M+NO3]- / [M+Br]-: X and X.HX, the ordinary cluster pattern)
+    commits nothing that is non-curated and carries such a P / I, nor -- on an
+    Orbitrap-class run -- an S / Cl / Br / Si winner none of whose elements the
+    predicate confirms. P / I forms stay in the ranking either way, so a tie is
+    a tie.
     """
     from peaky.assignment import certified_neutral as CN
 
@@ -1976,6 +2056,16 @@ def run_pass_certified(
     if not certs:
         log("[pass7] no multi-channel certificates in the residual")
         return out
+    out["gated"] = 0
+    # the element gate's inputs (the element_evidence stage's predicate): the
+    # curated formulas, the class, the file's own exact-offset calibration
+    # (Orbitrap-class only)
+    curated = curated_formulas(getattr(profile, "polarity", "negative"), getattr(profile, "label", None),
+                               getattr(cfg, "reflist_formulas", None))
+    klass = None if getattr(cfg, "trace_sample", False) else getattr(cfg, "instrument_class", None)
+    ee_ctx = (_SAT.evidence_context(ledger, klass="orbitrap", cal_sigma=getattr(cfg, "cal_sigma", None),
+                                    resolution=resolving_power)
+              if klass == "orbitrap" else None)
 
     # enumerate expanded-box candidates per certificate (off-grid P/S/Cl only:
     # plain CHON near the core is pass-1's territory and already lost there)
@@ -2062,6 +2152,26 @@ def run_pass_certified(
                 else tuple(d for d in _CERT_DIAG_ISO if d != "81Br"))
         iso_ok = bool(win_kids["iso_label"].astype(str).str.contains(
             "|".join(diag), na=False).any())
+        # the element gate (element_evidence's predicate): on an Orbitrap-class run the peak list decides
+        ee = _cert_element_evidence(ee_ctx, cert, member_ion, wf, reagent_lines=cert.n_channels >= 3)
+        own = [el for el in _SAT.EE_ELEMENTS if wf.get(el, 0) > 0]
+        own_confirmed = any(_SAT.EE_CONFIRMED in ee.get(el, ()) for el in own)
+        if ee_ctx is not None:
+            iso_ok = own_confirmed or _SAT.EE_CONFIRMED in ee.get("reagent", ())
+        contradicted = [el for el in own if _SAT.EE_CONTRADICTED in ee.get(el, ())]
+        non_curated = winner not in curated
+        mono_off = [el for el in ("P", "I")
+                    if wf.get(el, 0) > 0 and getattr(profile, f"max_{el}", 99) == 0 and non_curated]
+        gate_ok = not contradicted and not (mono_off and cert.n_channels < 3)
+        if _reagent_acid_pair(cert) and non_curated and (
+                mono_off or (ee_ctx is not None and own and not own_confirmed)):
+            out["gated"] += 1
+            why = (f"{'/'.join(mono_off)} budgeted at 0 in {getattr(profile, 'label', '?')}" if mono_off
+                   else f"no {'/'.join(own)} line confirmed in the peak list")
+            log(f"[pass7] {winner} @core {cert.core_mass:.4f} not committed: a two-channel "
+                f"{'/'.join(sorted(h.adduct for h in cert.hits))} pair differs by the reagent acid "
+                f"(the ordinary cluster pattern) and {why}")
+            continue
         # optional TS corroboration (guarded: fully optional)
         ts_note = ""
         if ts_peaks is not None and len(ts_peaks):
@@ -2086,7 +2196,9 @@ def run_pass_certified(
                                  + (f"+{h.cluster_order}R]" if h.cluster_order else "]")
                                  for h in cert.hits))
         committed_any = False
-        strong_cert = iso_ok or cert.n_channels >= 3
+        # a gated winner (an element contradicted, or an off-budget P / I on two
+        # channels) commits on unexplained peaks at most -- it never displaces
+        strong_cert = (iso_ok or cert.n_channels >= 3) and gate_ok
         displaced_note: dict = {}
         for h in cert.hits:
             try:

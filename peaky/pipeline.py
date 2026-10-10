@@ -27,7 +27,8 @@ from peaky.chem import profiles as P
 from peaky.batch import sampling as SS
 from peaky.batch import timeseries as TS
 
-__version__ = "0.3.0"  # presence set-cover sample selection (one selector, batch + pool)
+__version__ = "0.3.1"  # the manifest counts record context_flags and the isotopologue gate;
+                       # 0.3.0: presence set-cover sample selection (one selector, batch + pool)
 
 # Content-stable epoch for SOURCE_DATE_EPOCH. NOT the run time: figures, workbooks
 # and the ledger are a PURE FUNCTION of the input data, so their embedded metadata
@@ -203,6 +204,29 @@ def make_run_context(base_out: str, batch_name: str, profile, *, when=None,
         profile=profile, dataset=dataset, batch_id=batch_id)
 
 
+def _report_ts(ctx: RunContext, ts, res):
+    """The time series the cluster and Van Krevelen figures read: the assign
+    stage's axis-corrected one when it corrected the axis (batch_summary
+    ['mass_axis']['applied']), else `ts`. The run's recorded input
+    (ctx.ts_path, which provenance hashes) is what the run was given: the series
+    fetched live (written to data/ here, uncorrected, so generate_report does not
+    store the corrected copy), or the caller's parquet as given -- a fed-back
+    corrected one included, which the run restored before use. The PDF's coverage and batch-max tables read that recorded
+    input, matching it to the ledger within 8 ppm, which a correction (capped at
+    massqc.MAX_CORRECTION_PPM for the reference wave, assign_batch.
+    LOCK_MAX_CORRECTION_PPM for the lock model) stays inside; a pool's per-group
+    reports read their raw slices the same way."""
+    ax = (((res or {}).get("summary") or {}).get("mass_axis") or {}) if isinstance(res, dict) else {}
+    got = res.get("ts_peaks") if isinstance(res, dict) else None
+    if not ax.get("applied") or got is None:
+        return ts
+    if ctx.ts_path is None:
+        ctx.ts_path = os.path.join(PT.run_paths(ctx.out_dir).ensure().data,
+                                   f"{ctx.tag}_ts.parquet")
+        TS.collapse_peak_matches(ts).to_parquet(ctx.ts_path)
+    return got
+
+
 def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
                     do_cluster=True, do_vk=True, do_report=True, log=print) -> dict:
     """Offline generation half: cluster figures + Van Krevelen + the PDF report,
@@ -257,6 +281,15 @@ def generate_report(ctx: RunContext, ts, *, subject: str | None = None,
     return out
 
 
+def _switch_record(summ: dict) -> dict:
+    """The provenance counts of the run's switches that live outside PassConfig:
+    the context profile's run-level switches (`context_flags`) and whether the
+    merged-ledger isotopologue gate ran or why not (`isotopologue_gate`)."""
+    gate = ((summ or {}).get("merge_gates") or {}).get("isotopologue") or {}
+    return {"context_flags": (summ or {}).get("context_flags"),
+            "isotopologue_gate": {"ran": bool(gate.get("ran", False)), "skipped": gate.get("skipped")}}
+
+
 def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               base_out: str, ts=None, when=None, subject: str | None = None,
               amine_r_min: float = 0.6, do_report=True, config: str | None = None,
@@ -270,6 +303,7 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
               height_cutoff_cps: float | None = None,
               side_channels=None,
               tof_flag_mz: float | None = None,
+              mass_axis: str = "auto",
               n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Full batch pipeline in ONE call: sample-subset ASSIGN (live match_compounds)
     -> merge -> cluster figures -> Van Krevelen -> PDF report, into one versioned run
@@ -301,6 +335,11 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     `tof_flag_mz` sets PassConfig.tof_flag_mz, the m/z at which the TOF
     mass-only flag's reason switches (None keeps the config's; see
     assignment/mass_only.py).
+    `mass_axis` ('auto' / 'off') is assign_batch.run's: measure the batch's m/z
+    axis against the reagent's reference ions and, on an Orbitrap, correct an
+    axis error before anything is assigned. The cluster and Van Krevelen figures
+    then read the corrected time series (`_report_ts`); the run's recorded input
+    (ctx.ts_path) stays the uncorrected one.
     Returns {ctx, assign, cluster, vk, report_pdf}."""
     from peaky.batch import assign_batch as AB
 
@@ -329,6 +368,9 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
         log(f"[batch] fetching full-batch time series for {rb.name!r} ...")
         ts = load(batch=rb.id, dataset=dataset, client=client)
     ts = TS.collapse_peak_matches(ts, log=log)
+    # a series fed back from a run that corrected its axis goes back to the
+    # server's axis first (assign_batch.restore_axis), before anything trims it
+    ts = AB.restore_axis(ts, log=log)
     prof = P.resolve(reagent, ts, config=config)
     # One height-gate multiple for the whole run, stamped on the SAME cfg the
     # gate knobs above went onto -- the one the assignment and the provenance
@@ -349,13 +391,18 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
     log(f"[batch] {ctx.run_id} -> {ctx.out_dir}")
 
     log("[phase] assign")
-    res = AB.run(batch=rb.id, dataset=dataset, reagent=prof.name,
-                 out_dir=ctx.out_dir, ts_peaks=ts, amine_r_min=amine_r_min,
-                 k_min=k_min, k_max=k_max, min_gain=min_gain,
-                 residual=residual, residual_min_x_edge=residual_min_x_edge,
-                 residual_min_cps=residual_min_cps, residual_k_max=residual_k_max,
-                 n_jobs=n_jobs, log=log, **assign_kw)
-    gen = generate_report(ctx, ts, subject=subject, do_report=do_report, log=log)
+    try:
+        res = AB.run(batch=rb.id, dataset=dataset, reagent=prof.name,
+                     out_dir=ctx.out_dir, ts_peaks=ts, amine_r_min=amine_r_min,
+                     k_min=k_min, k_max=k_max, min_gain=min_gain,
+                     residual=residual, residual_min_x_edge=residual_min_x_edge,
+                     residual_min_cps=residual_min_cps, residual_k_max=residual_k_max,
+                     mass_axis=mass_axis, n_jobs=n_jobs, log=log, **assign_kw)
+    finally:
+        # never outlive the run, a failed one included; this run's samples only
+        IO.clear_axis_correction(ts["sample_item_id"].astype(str).unique())
+    gen = generate_report(ctx, _report_ts(ctx, ts, res), subject=subject,
+                          do_report=do_report, log=log)
 
     # provenance: pin this run to its exact code + input-data hash + config +
     # output hash, and append it to the cross-run registry. Best-effort (never
@@ -388,6 +435,13 @@ def run_batch(*, batch: str, dataset: str | None = None, reagent: str = "auto",
                 # windows sized from it (a run-derived count, like the admission
                 # threshold: the config fingerprint holds only the binning knob)
                 "mass_scale": summ.get("mass_scale"),
+                # the m/z-axis measurement and the correction it applied
+                # (assign_batch.measure_axis; the mode is the --mass-axis knob)
+                "mass_axis": summ.get("mass_axis"),
+                # the run-level switches of the context profile and whether the
+                # merged-ledger isotopologue gate ran (a run kwarg, not a
+                # PassConfig field: the fingerprint alone cannot tell them apart)
+                **_switch_record(summ),
                 # the TOF mass-only flag's tallies (threshold, Assigned / flagged
                 # below and at or above it); the threshold knob is in the config
                 "tof_flag": summ.get("tof_flag")},
@@ -510,6 +564,7 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                        height_cutoff_cps: float | None = None,
                        side_channels=None,
                        tof_flag_mz: float | None = None,
+                       mass_axis: str = "auto",
                        n_jobs: int | None = None, log=print, **assign_kw) -> dict:
     """Pool the batches matching `batches` (a regex over batch names) into ONE
     unified ledger, then emit a whole-pool report plus one report per group.
@@ -550,6 +605,9 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
         log(f"[pool] loading pooled TS for /{batches}/ in {dataset!r} ...")
         ts = IO.fetch_pooled_peaks(IO.connect(), dataset, batches)
     ts = TS.collapse_peak_matches(ts, log=log)
+    # a series fed back from a run that corrected its axis goes back to the
+    # server's axis first (assign_batch.restore_axis), before anything trims it
+    ts = AB.restore_axis(ts, log=log)
     # the reagent on the FULL pooled table, as run_batch does: auto-detect reads
     # the server's ionization_mechanism column, which the ts_cols trim below drops
     prof = P.resolve(reagent, ts, config=config)
@@ -600,20 +658,31 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
     # chemistry-specific reference lists (a pool or dataset named e.g.
     # 'apinene ...' -> the monoterpene list).
     log("[phase] assign")
-    res = AB.run(peaks=ts[ts_cols], ts_peaks=ts[ts_cols], reagent=prof.name,
-                 batch=pool_label, dataset=dataset, sample_ids=union,
-                 selection_meta=selection,
-                 residual=residual, residual_min_x_edge=residual_min_x_edge,
-                 residual_min_cps=residual_min_cps, residual_k_max=residual_k_max,
-                 out_dir=ctx.out_dir, amine_r_min=amine_r_min, n_jobs=n_jobs,
-                 log=log, **assign_kw)
+    # one wave per pool would correct each batch by the others' axis: a pool of
+    # several batches is measured as one but not corrected
+    n_batches = (ts["sample_batch_name"].nunique() if "sample_batch_name" in ts.columns
+                 else len(groups))
+    hold = (f"a pool of {n_batches} batches may sit on {n_batches} axes: measured as one, "
+            "not corrected (correct each with `peaky batch`)") if n_batches > 1 else None
+    try:
+        res = AB.run(peaks=ts[ts_cols], ts_peaks=ts[ts_cols], reagent=prof.name,
+                     batch=pool_label, dataset=dataset, sample_ids=union,
+                     selection_meta=selection,
+                     residual=residual, residual_min_x_edge=residual_min_x_edge,
+                     residual_min_cps=residual_min_cps, residual_k_max=residual_k_max,
+                     out_dir=ctx.out_dir, amine_r_min=amine_r_min, mass_axis=mass_axis,
+                     mass_axis_hold=hold, n_jobs=n_jobs, log=log, **assign_kw)
+    finally:
+        # never outlive the run, a failed one included; this run's samples only
+        IO.clear_axis_correction(ts["sample_item_id"].astype(str).unique())
     # the report's selected-samples section reads tables/selected_samples.csv;
     # the sample_ids= path skips AB.run's own writer, so emit it from the union prov
     # -- plus the residual stage's picks, which AB.run hands back (the pooled table
     # carries the group column, so they can be labelled and listed per group too).
     prov = _with_residual_picks(prov, res, ts, group_by)
     _write_selected_samples(ctx.out_dir, prov)
-    gen = generate_report(ctx, ts[ts_cols], subject=subject, do_report=do_report, log=log)
+    gen = generate_report(ctx, _report_ts(ctx, ts[ts_cols], res), subject=subject,
+                          do_report=do_report, log=log)
 
     group_runs = []
     if per_group_reports:
@@ -648,6 +717,8 @@ def run_pooled_batches(*, batches: str, dataset: str | None = None,
                 # windows sized from it (a run-derived count, like the admission
                 # threshold: the config fingerprint holds only the binning knob)
                 "mass_scale": summ.get("mass_scale"),
+                "mass_axis": summ.get("mass_axis"),
+                **_switch_record(summ),
                 "tof_flag": summ.get("tof_flag")},
         extra={"pattern_scoring": summ.get("pattern_scoring") or {}},
         created_utc=ctx.when.isoformat(), log=log)

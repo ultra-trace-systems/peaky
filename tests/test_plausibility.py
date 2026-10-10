@@ -225,3 +225,105 @@ def test_oxygen_monster_demote_needs_a_degenerate_window():
     for i in led.index:
         assert PL._mass_degenerate(led.loc[i]) == T._degeneracy(led.loc[i])[1]
     assert not PL._mass_degenerate({}) and not PL._mass_degenerate({"degeneracy_note": pd.NA})
+
+# ===========================================================================
+# The ambient NITRATE run (contexts.run_profile: a nitrate-reagent run on an
+# Orbitrap-class axis switches nox_skeleton + small_acid_band on). Every check
+# above passes no profile, and the positive-mode / every-other-context case
+# below passes one with the switches off: those expectations are unchanged.
+# Only the nitrate run reads the carbon skeleton of an organonitrate.
+# ===========================================================================
+def _nitrate_run():
+    from peaky.chem import contexts as X
+    return X.run_profile(X.get_context("ambient-air"), reagent="NO3", instrument_class="orbitrap")
+
+
+def test_nitrate_run_reads_organonitrate_skeletons_in_the_oxygen_gate():
+    """A C5 hydroxy nitrate C5H9NO7 is O/C 1.4 raw, 1.0 on its skeleton (C5H10O5); a C7
+    trihydroxy-carbonyl nitrate C7H11NO10 is 1.43 raw, 1.14 on its skeleton -- both under the
+    HOM ceiling the gate was set for (1.14), so NOT oxygen-lattice monsters on the nitrate run.
+    A CHO C5H2O8 has no NOx group to discount and stays one."""
+    prof = _nitrate_run()
+    for f in ("C5H9NO7", "C7H11NO10"):
+        assert PL.is_oxygen_monster(cf(f))                    # the raw gate (no profile): unchanged
+        assert not PL.is_oxygen_monster(cf(f), prof)
+    assert PL.is_oxygen_monster(cf("C5H2O8"), prof)
+
+
+def test_nitrate_run_spares_a_dinitrate_in_a_degenerate_window():
+    """C6H10N2O9 (raw O/C 1.5, skeleton C6H12O5 0.83) in a MASS-SATURATED window: demoted by the
+    raw gate, kept Assigned on the nitrate run."""
+    def led():
+        return pd.DataFrame([dict(role="M0", mz=250.0, neutral_formula="C6H10N2O9", tier="Assigned",
+                                  commentary="", below_assignability=False, isotopologues="[]",
+                                  degeneracy_note="MASS-SATURATED: 11 plausible formulas")])
+    raw, run = led(), led()
+    assert PL.demote_oxygen_monsters(raw, log=lambda *a: None) == {"o_demoted": 1}
+    assert PL.demote_oxygen_monsters(run, log=lambda *a: None, profile=_nitrate_run()) == {"o_demoted": 0}
+    assert run.at[0, "tier"] == "Assigned"
+    # demote_implausible takes the run's profile as its context and passes it on
+    both = led()
+    PL.demote_implausible(both, log=lambda *a: None, context=_nitrate_run())
+    assert both.at[0, "tier"] == "Assigned"
+
+
+def test_nitrate_run_scrutiny_flags():
+    """A Candidate trinitrate C5H9N3O10 (glycerol-like C5 skeleton C5H12O4 after 3 nitrate groups)
+    is not a 'heteroatom coincidence' on the nitrate run. The N-cap scrutiny stays: a formula with
+    more N than the context's cap (C8H6N4O9, C9H12N4O12: N4 > ambient max_N 3, beyond the three
+    groups the skeleton reading credits) is judged raw and still flagged."""
+    prof = _nitrate_run()
+    assert PL.implausible("C5H9N3O10", tier="Candidate") is not None
+    assert PL.implausible("C5H9N3O10", tier="Candidate", profile=prof) is None
+    assert PL.implausible("C8H6N4O9", tier="Candidate", profile=prof) is not None
+    assert PL.implausible("C9H12N4O12", tier="Candidate", profile=prof) is not None
+    # an ordinary CHO coincidence is untouched by the profile
+    assert "oxygen-lattice monster" in (PL.implausible("C5H4O8", tier="Candidate", profile=prof) or "")
+    led = pd.DataFrame({"neutral_formula": ["C5H9N3O10", "C9H12N4O12"], "tier": ["Candidate"] * 2,
+                        "ion_score": [0.9, 0.9]})
+    assert [d["neutral_formula"] for d in PL.scan(led, profile=prof)] == ["C9H12N4O12"]
+
+
+def test_nitrate_run_carbon_cluster_reads_the_skeleton_and_exempts_small_acids():
+    """Dinitrophenol C6H4N2O5 is DBE/C 1.0 raw (a 'carbon cluster') and phenol (0.67) on its
+    skeleton; acetylenedicarboxylic acid C4H2O4 (DBE/C 1.0) is a C3-C4 polycarbonyl acid the
+    small-acid band admits. Neither is demoted on the nitrate run; C24H2 still is."""
+    prof = _nitrate_run()
+    for f in ("C6H4N2O5", "C4H2O4", "C3H2O4"):
+        assert PL.is_carbon_cluster(cf(f))
+        assert not PL.is_carbon_cluster(cf(f), prof)
+    assert PL.is_carbon_cluster(cf("C24H2"), prof)
+    led = pd.DataFrame([dict(role="M0", mz=m, neutral_formula=f, tier="Assigned", commentary="",
+                             below_assignability=False, isotopologues="[]")
+                        for f, m in (("C4H2O4", 113.0), ("C6H4N2O5", 183.0), ("C24H2", 290.0))])
+    assert PL.demote_carbon_clusters(led, log=lambda *a: None, profile=prof) == {"c_cluster_demoted": 1}
+    assert list(led["tier"]) == ["Assigned", "Assigned", "Candidate"]
+
+
+def test_other_contexts_keep_the_raw_gates():
+    """Positive mode (uronium) and a TOF / trace-first nitrate run get no switches: every gate
+    reads the raw neutral exactly as with no profile."""
+    from peaky.chem import contexts as X
+    offs = [X.run_profile(X.get_context("uronium"), reagent="Ur", instrument_class="orbitrap"),
+            X.run_profile(X.get_context("ambient-air"), reagent="NO3", instrument_class="tof"),
+            X.run_profile(X.get_context("ambient-air"), reagent="NO3", instrument_class="orbitrap",
+                          trace_sample=True)]
+    for prof in offs:
+        assert not prof.nox_skeleton and not prof.small_acid_band
+        for f in ("C5H9NO7", "C6H4N2O5", "C4H2O4", "C5H9N3O10", "C9H12N4O12"):
+            assert PL.implausible(f, tier="Candidate", profile=prof) == PL.implausible(f, tier="Candidate")
+            assert PL.is_oxygen_monster(cf(f), prof) == PL.is_oxygen_monster(cf(f))
+            assert PL.is_carbon_cluster(cf(f), prof) == PL.is_carbon_cluster(cf(f))
+
+
+def test_nitrate_run_judges_c1_c2_and_skeleton_free_formulas_raw():
+    """The skeleton reading needs Ceff >= 3, as the context filter's ratio test: C2H4N2O2 stays a
+    carbon cluster and CH3NO3 / C2H3NO4 stay oxygen monsters on the nitrate run. A formula with
+    no NOx skeleton at all (C4H13N3O5, DBE 0) keeps its raw heteroatom flag."""
+    prof = _nitrate_run()
+    assert PL.is_carbon_cluster(cf("C2H4N2O2"), prof)
+    for f in ("CH3NO3", "C2H3NO4"):
+        assert PL.is_oxygen_monster(cf(f), prof), f
+    for f in ("C2H4N2O2", "CH3NO3", "C2H3NO4", "C4H13N3O5"):
+        assert PL.implausible(f, tier="Candidate", profile=prof) == PL.implausible(f, tier="Candidate"), f
+    assert "heteroatom coincidence" in PL.implausible("C4H13N3O5", tier="Candidate", profile=prof)

@@ -31,7 +31,7 @@ from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 from peaky.paths import pkg_data
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"   # the rescue skips a locked unexplained peak (an element-evidence clear)
 
 # Bundled peaklist catalog. Resolved from the package root (paths.pkg_data), not
 # this module's __file__, so it survives `reflists` moving into a sub-package.
@@ -348,7 +348,8 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
         -> leave unexplained (a real mass coincidence, not corroborated).
 
     A soft, provenance-tagged rescue: never overrides an existing assignment (only
-    ROLE_UNEXPLAINED peaks are touched), every commit records the source list."""
+    unlocked ROLE_UNEXPLAINED peaks are touched: a locked one was emptied for good,
+    the element-evidence clear), every commit records the source list."""
     import pandas as pd
 
     from peaky.io import io_mascope as IO
@@ -356,7 +357,12 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
     score_fn = score_fn or IO.score_candidates
     if not lists:
         return {"rescued": 0, "tentative": 0}
-    un = ledger[ledger["role"] == L.ROLE_UNEXPLAINED].dropna(subset=["mz"])
+    # a LOCKED unexplained peak is one a stage emptied for good (the element-
+    # evidence stage's clear: the file's own peak list contradicted the reading
+    # there) -- it stays unexplained, no list match refills it
+    free = (~ledger["locked"].map(L._truthy).astype(bool) if "locked" in ledger.columns
+            else pd.Series(True, index=ledger.index))
+    un = ledger[(ledger["role"] == L.ROLE_UNEXPLAINED) & free].dropna(subset=["mz"])
     if not len(un):
         return {"rescued": 0, "tentative": 0}
     mz_by_pid = {pid: float(m) for pid, m in zip(un["peak_id"], un["mz"])}

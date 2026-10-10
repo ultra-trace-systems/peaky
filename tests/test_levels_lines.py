@@ -155,6 +155,36 @@ def test_shadowed_and_offscan_lines_are_untestable():
     assert [p[0] for p in r2["per"]] == ["offscan"] * 3 and r2["n_det"] == 0
 
 
+def test_a_taller_side_lobe_beside_the_13c_line_neither_occupies_nor_empties_it():
+    """A per-file stage marked a peak 'artifact' (an Orbitrap side lobe of a brighter
+    neighbour) inside the position window of the reading's 13C line, taller than the
+    13C child itself. The pick skips it: the 13C child is read, in band, and the
+    reading keeps its 13C positive fact. A position only the artifact holds is
+    untestable ('shadowed'), never absent."""
+    m0, rows = _own_lines(PH, PHA)
+    lines = LN.cand_lines(SP.ion_counts_of(PH, PHA), 0.001, 0.0, 0.98)
+    d13 = _line(lines, "13C")
+    x13 = m0 + d13["d"]
+    lobe = ("lobe", x13 + 0.5e-6 * x13, 1e6 * d13["ratio"] * 1.4, "artifact", None, None, None, None)
+    ctx = _ctx(_t(rows + [lobe] + _edges()))
+    cand = dict(lines=LN.cand_lines(SP.ion_counts_of(PH, PHA), ctx.fwhm(m0), 0.0, 0.98))
+    recs = LN.eval_candidate(ctx, cand, _obs(m0), "")
+    r = _rec(recs, "13C")
+    assert [p[0] for p in r["per"]] == ["free"] * 3 and (r["n_test"], r["n_ok"], r["n_occ"]) == (3, 3, 0)
+    assert all(ctx.files[s].pid[p[5]] == "k13C" for s, p in zip(SIDS, r["per"]))
+    els, labs = LN.matched_elements(recs, 3)
+    assert "C" in els and "13C" in labs
+    # the 13C child gone: only the artifact holds the position -> untestable, not absent
+    ctx2 = _ctx(_t([x for x in rows if x[7] != "13C"] + [lobe] + _edges()))
+    recs2 = LN.eval_candidate(ctx2, cand, _obs(m0), "")
+    r2 = _rec(recs2, "13C")
+    assert [p[0] for p in r2["per"]] == ["shadowed"] * 3 and (r2["n_det"], r2["n_test"], r2["n_abs"]) == (3, 0, 0)
+    assert LN.contradiction_a(recs2, 3) == []
+    # the exact 37Cl probe reads it the same way
+    assert LN.probe_exact_37cl(ctx2, "a", (x13, x13), 1e-6 * x13, "p1", (), lobe[2])[0] == "shadowed"
+    assert LN.probe_exact_37cl(ctx, "a", (x13, x13), 1e-6 * x13, "p1", (), lobe[2])[:1] == ("free",)
+
+
 def test_reagent14n_line_holding_a_foreign_peak_is_present_not_too_low():
     """A labelled [M+^NO3]- reading predicts the reagent's 14N impurity line at
     -0.997 Da (~2 % of M0). A real ion the engine left unexplained can sit at
@@ -359,6 +389,60 @@ def test_isoline_competitor_listed_explained_or_excluded():
     assert comps[0]["why"] == f"isotope height: the peak is > 2x {pn} {pa}'s predicted 13C line in 4/5 files"
     comps, _ = run([10 * exp] * 5)                               # never explains half the peak: not listed
     assert comps == []
+
+
+def test_isoline_competitor_reads_no_artifact_as_the_other_readings_m0():
+    """In a file where the other reading P is not committed, its predicted line is
+    sized off the tallest peak at P's position -- never off an artifact row there: a
+    taller side lobe beside a weaker real peak does not inflate the prediction, and a
+    position only an artifact holds predicts nothing."""
+    pn, pa = "C6H10O5", "[M+NO3]-"
+    mp = C.ion_mz(pn, pa)
+    d13 = _line(LN.cand_lines(SP.ion_counts_of(pn, pa), 0.002, 0.0, 0.98), "13C")
+    sids = ("a", "b", "c", "d", "e")
+    exp = 1e6 * d13["ratio"]
+    q = ("Q", mp + d13["d"], 0.8 * exp, "M0", None, "C9H6N", "[M-H]-", None)
+
+    def run(last):
+        pf = {s: _t([("P", mp, 1e6, "M0", None, pn, pa, None), q] + _edges()) for s in sids[:-1]}
+        pf["e"] = _t(last + [q] + _edges())
+        ctx = _ctx(pf)
+        CX.prepare_indexes(ctx, pf)
+        pair = dict(key=("C9H6N", "[M-H]-"), pairkey="C9H6N|[M-H]-", own_pk=set(),
+                    obs=[dict(sid=s, mz=q[1], h=q[2], area=q[2], pid="Q") for s in sids])
+        return LN.isoline_competitors(ctx, pair, 3)
+
+    lobe = ("lobe", mp + 0.2e-6 * mp, 1e6, "artifact", None, None, None, None)
+    # a weak real peak at P's position plus a taller lobe: sized off the real peak (0.1x): not explained in e
+    _, expl = run([("x", mp, 1e5, "unexplained", None, None, None, None), lobe])
+    assert expl == {"a", "b", "c", "d"}
+    # only the lobe holds P's position: no prediction there
+    _, expl = run([lobe])
+    assert expl == {"a", "b", "c", "d"}
+    # the same peak not marked artifact is read as P's line in e
+    _, expl = run([lobe[:3] + ("unexplained",) + lobe[4:]])
+    assert expl == set(sids)
+
+
+def test_the_neighbour_reach_takes_no_artifact_as_a_displaced_line():
+    """An empty position window: a line displaced toward a >= 3x taller neighbour within
+    25 ppm still counts (the reach) -- but an artifact there is no line. With a shadow
+    window the span reads 'shadowed' (untestable), never 'free' off the artifact."""
+    m0, _ = _own_lines(PH, PHA)
+    d13 = _line(LN.cand_lines(SP.ion_counts_of(PH, PHA), 0.001, 0.0, 0.98), "13C")
+    x13 = m0 + d13["d"]
+    h_exp = 1e6 * d13["ratio"]
+    tol = 1e-6 * x13
+
+    def probe(role):
+        rows = [("p1", m0, 1e6, "M0", None, PH, PHA, None),
+                ("disp", x13 + 4e-6 * x13, h_exp, role, None, None, None, None),
+                ("nb", x13 + 12e-6 * x13, 10 * h_exp, "unexplained", None, None, None, None)] + _edges()
+        ctx = _ctx(_t(rows))
+        return ctx.files["a"].probe((x13, x13), tol, "p1", shadow_da=30e-6 * x13, h_exp=h_exp)[0]
+
+    assert probe("unexplained") == "free"          # a displaced line, credited by the reach
+    assert probe("artifact") == "shadowed"         # a displaced artifact: untestable, not the line
 
 
 # --------------------------------------------------------------------------- pass B
