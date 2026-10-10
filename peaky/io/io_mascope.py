@@ -100,6 +100,23 @@ _ISO_SCORING_INHERITED: set = set()
 #: batch's correction, and loses its cached scoring when the batch clears it.
 _AXIS: dict = {}
 
+#: Per-sample shift (ppm) the batch's axis correction applies OUTSIDE its model's
+#: scope to a sample with its own anchors (`_outside_shift`; None: none), cached
+#: with the correction. The model leaves the m/z it does not reach uncorrected; an
+#: anchored sample's fitted centre, measured on the corrected peaks, then no
+#: longer described them (their axis is the raw one), so they are moved by the
+#: correction the model applies where the sample's own anchors sit.
+_AXIS_OUTSIDE: dict = {}
+
+#: Per-sample SELF-CENTRE (assignment/selfcentre.py): `{"mu_ppm": float, ...the
+#: measurement}` for an anchorless Orbitrap sample the batch's axis did not reach,
+#: whose own backbone (chosen without the mass term) put its centre off zero.
+#: `scoring_for_sample` scores such a sample at it (`mu_source` "self") instead of
+#: an assumed zero; a sample with its own anchors or an axis correction never reads
+#: it. Set by the sample's own run (assign.run), forgotten by its next run, by a
+#: re-registration and with the batch's axis correction.
+_SELF_CENTRE: dict = {}
+
 
 def set_axis_correction(sample_ids, wave) -> None:
     """Correct the m/z of every peak table `fetch_peaks` serves for `sample_ids`
@@ -119,17 +136,41 @@ def set_axis_correction(sample_ids, wave) -> None:
 
 def clear_axis_correction(sample_ids=None) -> None:
     """Forget the axis correction of `sample_ids` (every sample when None), with
-    the scoring cached and the trend fitted on the corrected axis."""
+    the scoring cached and the trend and self-centre fitted on the corrected axis."""
     ids = list(_AXIS) if sample_ids is None else [str(s) for s in sample_ids]
     for sid in ids:
         _AXIS.pop(sid, None)
+        _AXIS_OUTSIDE.pop(sid, None)
         _SCORING_CACHE.pop(sid, None)
         reset_scoring_trend(sid)
+        _SELF_CENTRE.pop(sid, None)
 
 
 def axis_correction(sample_id: str):
     """The correction (AxisModel / WaveFit) applied to this sample's m/z, or None."""
     return _AXIS.get(str(sample_id))
+
+
+def set_self_centre(sample_id: str, record: dict) -> None:
+    """Score this sample at its own centre from now on (`record["mu_ppm"]`, the
+    self-centre measurement of assignment/selfcentre.py; the snapshot keeps the
+    rest under `self_centre`). Read only while the sample has fewer than
+    MIN_OFFSET_ANCHORS anchors and no axis correction; drops the cached scoring."""
+    _SELF_CENTRE[str(sample_id)] = dict(record)
+    _SCORING_CACHE.pop(str(sample_id), None)
+
+
+def self_centre(sample_id: str) -> dict | None:
+    """The sample's self-centre record, or None."""
+    rec = _SELF_CENTRE.get(str(sample_id))
+    return dict(rec) if rec is not None else None
+
+
+def reset_self_centre(sample_id: str) -> None:
+    """Forget the self-centre the sample's previous run set (a new run measures
+    its own); drops the cached scoring when there was one."""
+    if _SELF_CENTRE.pop(str(sample_id), None) is not None:
+        _SCORING_CACHE.pop(str(sample_id), None)
 
 
 def _trend_record(trend) -> dict:
@@ -563,6 +604,8 @@ def register_offline_sample(sample_id: str, peaks: pd.DataFrame, mechanisms=(), 
     _OFFLINE[sample_id] = (peaks, frozenset(mechanisms))
     _OFFLINE_SCORING[sample_id] = scoring
     _SCORING_CACHE.pop(sample_id, None)
+    _AXIS_OUTSIDE.pop(sample_id, None)
+    _SELF_CENTRE.pop(sample_id, None)
     _SCORING_TREND.pop(sample_id, None)
     _SCORING_TREND_INHERITED.discard(sample_id)
     _ISO_SCORING.pop(sample_id, None)
@@ -626,6 +669,8 @@ def unregister_offline_sample(sample_id: str) -> None:
     _OFFLINE.pop(sample_id, None)
     _OFFLINE_SCORING.pop(sample_id, None)
     _SCORING_CACHE.pop(sample_id, None)
+    _AXIS_OUTSIDE.pop(sample_id, None)
+    _SELF_CENTRE.pop(sample_id, None)
     _SCORING_TREND.pop(sample_id, None)
     _SCORING_TREND_INHERITED.discard(sample_id)
     _ISO_SCORING.pop(sample_id, None)
@@ -670,13 +715,66 @@ def fetch_peaks(client, sample_id: str, *, use_cache: bool = True,
     return _axis_corrected(sample_id, peaks)
 
 
+def _scope_share(fit, peaks) -> float | None:
+    """The share of `peaks`' m/z inside the axis correction's scope (massqc.in_scope),
+    rounded; None without peaks."""
+    from peaky.batch.massqc import in_scope
+    if fit is None or peaks is None or "mz" not in getattr(peaks, "columns", ()):
+        return None
+    if "peak_id" in peaks.columns:          # the raw table has one row per server match
+        peaks = peaks.drop_duplicates("peak_id")
+    mz = pd.to_numeric(peaks["mz"], errors="coerce").dropna().to_numpy(dtype=float)
+    if not len(mz):
+        return None
+    return round(float(np.mean(in_scope(fit, mz))), 4)
+
+
+#: the anchors (server matches within this many ppm) that size an anchored sample's
+#: correction outside the axis model's scope (`_outside_shift`): the Orbitrap
+#: matching window (the axis is corrected on an Orbitrap only)
+AXIS_ANCHOR_PPM = 5.0
+
+
+def _outside_shift(sample_id: str, fit, peaks: pd.DataFrame) -> float | None:
+    """The correction (ppm) an anchored sample's peaks outside the axis model's
+    scope take: the median correction the model applies at the sample's own
+    anchors inside its scope, when at least MIN_OFFSET_ANCHORS sit there; else
+    None (they stay uncorrected). Computed once per sample and correction."""
+    sid = str(sample_id)
+    if sid in _AXIS_OUTSIDE:
+        return _AXIS_OUTSIDE[sid]
+    from peaky.batch.massqc import in_scope
+    rows = _anchor_rows(peaks, max_abs_ppm=AXIS_ANCHOR_PPM)
+    shift = None
+    if len(rows) >= MIN_OFFSET_ANCHORS:
+        mz = np.array([m for m, _ in rows], dtype=float)
+        inside = in_scope(fit, mz)
+        if int(inside.sum()) >= MIN_OFFSET_ANCHORS:
+            shift = round(float(np.median(fit.predict(mz[inside], extrapolate=True))), 4)
+    _AXIS_OUTSIDE[sid] = shift
+    return shift
+
+
 def _axis_corrected(sample_id: str, peaks: pd.DataFrame) -> pd.DataFrame:
+    """`peaks` with `mz` corrected by the sample's axis correction where its model
+    reaches; outside, an anchored sample's peaks take the correction the model
+    applies at its anchors (`_outside_shift`) -- its anchors fix one centre for the
+    whole file, and on the corrected axis that centre no longer described the
+    peaks the model left alone (on an NO+ batch whose model stopped at m/z 129,
+    the fitted files' C9-C12 hydrocarbons above it fell from Good to Low) -- and
+    an anchorless sample's stay as they are."""
     fit = _AXIS.get(str(sample_id))
     if fit is None or "mz" not in peaks.columns:
         return peaks
-    from peaky.batch.massqc import apply_correction
+    from peaky.batch.massqc import apply_correction, in_scope
+    mz = peaks["mz"].to_numpy(dtype=float)
+    out = apply_correction(fit, mz)
+    shift = _outside_shift(sample_id, fit, peaks)
+    if shift:
+        outside = ~in_scope(fit, mz) & np.isfinite(mz)
+        out[outside] = mz[outside] * (1 - shift * 1e-6)
     peaks = peaks.copy()
-    peaks["mz"] = apply_correction(fit, peaks["mz"].to_numpy(dtype=float))
+    peaks["mz"] = out
     return peaks
 
 
@@ -857,12 +955,17 @@ def sample_mass_errors(peaks: pd.DataFrame, *,
         matching window, since an anchor outside that window is not a match.
     :return: The errors in ppm, in the frame's order.
     """
+    return [p for _, p in _anchor_rows(peaks, max_abs_ppm=max_abs_ppm)]
+
+
+def _anchor_rows(peaks: pd.DataFrame, *, max_abs_ppm: float = 10.0) -> list[tuple[float, float]]:
+    """`sample_mass_errors` with each anchor's m/z: [(mz, ppm error)], in the frame's order."""
     from peaky.chem import chemistry as C
     cols = {"target_compound_formula", "ionization_mechanism", "mz"}
     if peaks is None or not cols <= set(peaks.columns):
         return []
     iso_col = "target_isotope_formula" in peaks.columns
-    ppms: list[float] = []
+    out: list[tuple[float, float]] = []
     for r in peaks.dropna(subset=["target_compound_formula", "mz",
                                   "ionization_mechanism"]).itertuples():
         if iso_col and "[" in str(getattr(r, "target_isotope_formula", "") or ""):
@@ -876,8 +979,8 @@ def sample_mass_errors(peaks: pd.DataFrame, *,
             continue
         p = (float(r.mz) - theo) / theo * 1e6
         if abs(p) <= max_abs_ppm:
-            ppms.append(p)
-    return ppms
+            out.append((float(r.mz), p))
+    return out
 
 
 def estimate_offset(peaks: pd.DataFrame, *, min_n: int = 8) -> float | None:
@@ -933,7 +1036,10 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
         TOF's every candidate is several sigma out and scores near zero.
       * the offset - the same anchors' median, subtracted before a mass error is
         scored, so an instrument sitting at -1.5 ppm does not charge it to every
-        candidate.
+        candidate. Below MIN_OFFSET_ANCHORS: zero on peaks the batch's axis
+        correction moved (`mu_source` "axis"), else the sample's own self-centre
+        when its run measured one (`set_self_centre`, "self"), else an assumed
+        zero.
       * the window a predicted line may be matched in, the instrument class's.
 
     Cached per sample: the passes score many batches against one sample, and the
@@ -993,12 +1099,32 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
         # The fit reports no width and, with it, no offset. The width is
         # genuinely unmeasurable here; the offset is not.
         mu = float(np.median(anchors))
+    # Below MIN_OFFSET_ANCHORS the offset is not the anchors'. Two measurements can
+    # still stand for it: the batch's axis correction reached the sample (its peaks
+    # are moved onto the model's axis, so zero is right where the model reaches:
+    # "axis"), or the sample's own run measured its centre on a backbone chosen
+    # without the mass term (assignment/selfcentre.py: "self").
+    mu_source = "fitted" if len(anchors) >= MIN_OFFSET_ANCHORS else "assumed_zero"
+    axis_fit = _AXIS.get(str(sample_id))
+    own = _SELF_CENTRE.get(str(sample_id))
+    if axis_fit is not None and str(sample_id) not in _AXIS_OUTSIDE:
+        # the shift outside the model's scope is sized on the sample's own table
+        # (fetch_peaks caches it); `peaks` may be one a caller already corrected
+        try:
+            fetch_peaks(client, sample_id)
+        except Exception:      # noqa: BLE001 -- provenance only; the peaks were served
+            pass
+    if mu_source == "assumed_zero" and axis_fit is not None:
+        mu_source = "axis"
+    elif mu_source == "assumed_zero" and own is not None:
+        mu, mu_source = float(own["mu_ppm"]), "self"
     if mu is None:
         # The library answers None for an offset it did not measure, and a
         # sample can have too few anchors even for the rule above - a TOF file
         # whose matches were just cleared has none at all. Scoring at zero is
         # the only honest reading of "no offset measured", and the snapshot
-        # says `assumed_zero` so nothing downstream reads it as a measurement.
+        # says `assumed_zero` so nothing downstream reads it as a measurement
+        # (`axis` when the batch's axis correction moved the sample's peaks).
         mu = 0.0
     scoring = PatternScoring(
         sigma_ppm=scoring_sigma_ppm(sigma, resolve_fallback_sigma_ppm(kind)),
@@ -1013,9 +1139,15 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
         # means too few known ions matched to fit one and the class stood in.
         "sigma_source": "fitted" if sigma is not None else "instrument_class",
         # The offset stands on its own: a sample can measure one and not a width.
-        "mu_source": (
-            "fitted" if len(anchors) >= MIN_OFFSET_ANCHORS else "assumed_zero"
-        ),
+        # "fitted" (its own anchors), "axis" (none, but the batch's axis correction
+        # moved its peaks), "self" (none, its own backbone's centre), else
+        # "assumed_zero".
+        "mu_source": mu_source,
+        **({"axis_scope_share": _scope_share(axis_fit, raw)} if axis_fit is not None else {}),
+        **({"axis_outside_shift_ppm": _AXIS_OUTSIDE[str(sample_id)]}
+           if axis_fit is not None and _AXIS_OUTSIDE.get(str(sample_id)) is not None else {}),
+        **({"self_centre": {k: v for k, v in own.items() if k != "mu_ppm"}}
+           if mu_source == "self" else {}),
         "fitted_anchors": len(anchors),
         "mz_tolerance_ppm": float(scoring.mz_tolerance_ppm),
         "abundance_floor": float(scoring.abundance_floor),

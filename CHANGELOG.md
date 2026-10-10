@@ -8,6 +8,34 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A file with no Mascope anchors is scored at a measured centre, not an assumed zero: the batch's
+  axis correction where it reaches, else the file's own self-centre; and the lock model corrects
+  sub-ppm axes.** Below five anchors every candidate was judged at 0 ppm whatever the file's offset:
+  at the Orbitrap class width (0.58 ppm) a correct ion 0.6 ppm off misses the pass-1 floor, and the
+  pass-1 calibration, which only sees what that score let through, cannot find the offset. (1) The
+  lock model is applied once its largest correction reaches `LOCK_APPLY_PPM` (0.4 ppm, about 0.7x
+  the score width) instead of 1 ppm; a correction under 1 ppm only when its held-out locks sit
+  within half of it (`LOCK_SMALL_CV_SHARE`). On a field campaign's labelled-nitrate batches the
+  whole correction had hung on one lock reading 1.08 ppm against the old bar, and NO+ batches
+  sitting 0.5-0.6 ppm off (0.62-0.74 ppm at the largest correction, held-out locks 0.01-0.02 ppm)
+  were left uncorrected. Outside the model's scope an anchored file's peaks now take the correction
+  the model applies at its own anchors (`axis_outside_shift_ppm`): its anchors fix one centre for
+  the whole file, and measured on the corrected axis that centre no longer fitted the peaks the
+  model left alone (above its reach on those NO+ files, 371 of the anchored files' Assigned rows
+  would have scored under Good). (2) An Orbitrap-class file scored locally whose snapshot still reads
+  `assumed_zero` measures its centre before pass 0 (`assignment/selfcentre.py`,
+  `PassConfig.self_centre`): its bright unexplained peaks are enumerated as pass 1 enumerates them
+  and judged by the pattern-only score; the median raw error of the unique, pattern-Good,
+  13C-confirmed CHO/CHON readings (at least 8, scaled MAD at most 0.6 ppm, inside the search
+  window, at least 0.1 ppm from zero) is the centre every pass and re-run judges against. With
+  anchors stripped from anchored NO+ files it lands within ~0.1 ppm of the anchors' own centre.
+  `pattern_scoring.mu_source` now reads `fitted`, `axis` (the batch's correction reached the
+  file; `axis_scope_share`), `self` (the measurement under `self_centre`), `trend`, `inherited`
+  or `assumed_zero`; every `per_file` row records `mu_source`, `mu_ppm` and `self_centre`, and
+  `batch_summary.json['scoring_centres']` counts the files per source. A file with its own
+  anchors, a stand-in judged at an inherited snapshot (a decoy arm), the trace-first sample and a
+  TOF keep their centre; an anchored file not reached by a newly applied axis runs byte-identically.
+
 - **Orbitrap isotope lines are read by peak area, against the file's own minor-line response
   (`PassConfig.iso_response`, `--iso-response {auto,area,off}` on assign / batch / pool).** An
   Orbitrap scan keeps a line only where it clears that scan's detection floor, and the whole-file

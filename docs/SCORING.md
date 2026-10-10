@@ -116,6 +116,44 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   same wrong species, the median landed at −10.4 ppm for a source the engine
   measures within 0.3 ppm of calibration.
 
+  **Below five anchors the centre has two more sources before zero.** `mu_source`
+  reads, in order: `fitted` (the sample's own anchors); `axis` (none, but the
+  batch's m/z-axis correction reached the sample — `peaky batch --mass-axis`, its
+  peaks moved onto the model's axis, so zero is right where the model reaches; the
+  snapshot adds `axis_scope_share`, the share of the sample's peaks inside the
+  model's scope, as it does for every sample the correction reached); `self` (none,
+  and no axis correction: an Orbitrap-class file
+  scored locally measured its own centre before pass 0, `assignment/selfcentre.py`;
+  the measurement is under `self_centre`); else `assumed_zero`. A run that then
+  accepts a mass trend says `trend`; a stand-in says `inherited`. The self-centre
+  reads a backbone chosen without the mass term: the file's bright unexplained
+  peaks (≥ 10× its noise edge, under 100× its median height, the 150 brightest),
+  enumerated as pass 1 enumerates them (the CHON grid of the run's context and its
+  channels, ±`search_ppm` around the raw m/z) and judged by the pattern-only score;
+  a peak counts where exactly one ion formula's pattern holds there
+  (`ion_score_massfree` ≥ `tau_suspect`), and that reading is a CHO/CHON ion with
+  C ≥ 1, pattern-Good (≥ `tau_good`) and 13C-confirmed (its 13C line matched in
+  ratio within 1.5 ppm of the M0's error). The backbone's median raw error is the
+  centre when at least 8 points agree (scaled MAD ≤ 0.6 ppm), their bulk (centre ±
+  2 spreads) lies inside the search window and it sits ≥ 0.1 ppm from zero; the
+  file is then scored at it from pass 0 on, re-runs included, and the pass-0
+  known-species gate keeps its own centre (`prior_offset`). Zero was the only
+  honest reading only while nothing else had been measured: scored there, an
+  anchorless file 0.6 ppm off commits almost nothing at the class width, and the
+  pass-1 calibration cannot see why — its backbone is what the zero-centred score
+  let through. `PassConfig.self_centre = False` scores such a file at zero.
+
+  **An anchored file under the batch's axis correction keeps one axis.** The
+  model corrects only where its locks reach; its anchors are then measured on the
+  corrected peaks, and the centre they fit no longer describes the peaks the model
+  left alone. So outside the model's scope an anchored sample's peaks take the
+  correction the model applies where the sample's own anchors sit (the median of
+  the model at its in-scope anchors, at least five of them; `io_mascope._axis_corrected`,
+  the snapshot's `axis_outside_shift_ppm`). An anchorless sample's peaks outside
+  the scope stay uncorrected. Without it, on an NO+ batch whose model stopped at
+  m/z 129, the anchored files' C9-C12 hydrocarbons above it (judged at the fitted
+  centre of the corrected axis, 0.6 ppm off theirs) fell from Good to Low.
+
   **An offline sample has neither a record nor anchors.** A table served from
   memory (`register_offline_sample`: a scorecard decoy arm, the trace-first
   synthetic sample, a test) has no server record to name its class and usually
