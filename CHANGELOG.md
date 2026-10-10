@@ -165,6 +165,48 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   them; replayed with the 1 ppm exemption window it keeps all 12 removals, and the artifact
   rule moves no level there. The nitrate batch, re-run end to end with every fix and the
   skeleton tier cap, reproduces the numbers above exactly (both its 100- and 1-microscan files).
+- **The lock model reaches the upper m/z range, and a one-spectrum batch.** The walk above the
+  curve only climbed by one unit step (CH2, O, CO2 ...) from a lock within 60 Da, so it stopped
+  wherever no unit joins two families -- [M-H]- and [M+NO3]- ions, monomers and dimers 40 Da
+  apart -- and a batch of one spectrum was refused outright ('fewer than 2 spectra'): on
+  flow-tube nitrate batches whose products all sit at m/z 290-620, 1-3.5 ppm off, nothing there
+  was corrected (a 3-file pool's locks ended at m/z 342 and its gate read 'axis_ok'). Now:
+  a one-spectrum batch is modelled with no recurrence test (the isotope strike and the curve's
+  consistency are the guards); where the walk stalls it RESTARTS from SEEDS -- recurring peaks
+  above with a measured 13C line whose +-5 ppm window, within 4 ppm of the axis below, holds
+  one lockable formula with at most 2 N. A seed is provisional (off the segment's final line:
+  dropped), and a segment from seeds is CONTESTED, not built, unless the seeds on its line
+  outnumber the rivals off it two to one and it claims no jump from the axis below larger than
+  2 ppm: no formula chain links it there, and a band of radicals puts its closed-shell aliases
+  (N3 <-> C2H2O, 1.35 mDa: +3.4 ppm at m/z 400, three more N than the radical) on a
+  self-consistent line of their own -- a larger step is the walk's to cross. A step the walk's
+  line tilted across splits the segment into parts with one slope (each part at least 4
+  locks); a gap wider than 30 Da up to a segment from seeds is not bridged (its axis is
+  unseen); a walk segment whose line passes the 7 ppm cap at its far end has that stretch cut
+  instead of the whole model held. Three independent refute passes (adversarial synthetic
+  batches, mutation runs, the data claims re-scored) shaped the guards. On six single-file
+  nitrate batches the share of reference ions within +-0.5 ppm after correction rose from
+  25-46 % to 41-80 % (counting only ions that are not themselves locks: 14-35 % -> 29-70 %);
+  on two pools from 26 % (the old gate applied nothing) to 64 % and from 29 % to 34 %. End to
+  end, the independently reported products peaky assigns with the same ion formula rose from
+  6 to 23 of 60 and from 11 to 21 of 60 (pool), 8 -> 11 of 45 and 5 -> 5 of 40 where the
+  products above m/z 330 stay out of reach, the reference-grid ions from 5 to 23 and 7 to 28 on
+  two more files (and 5 -> 4 on one the model barely reaches); a different formula on a
+  reference ion rose with them (2 -> 6, 3 -> 4, 0 -> 1, 0 -> 1: mostly radicals read as
+  aromatic N2S formulas, and aromatic aliases of dimers 1 ppm away -- choices of the scorer the
+  corrected axis brings within reach). On the benchmark the lock model was built on, nothing
+  moved: 693 / 10 and 421 / 8 (same formula / different) as before; its 17 files, each modelled
+  alone, put 87-98 % of the reference ions within +-0.5 ppm with no wrong lock (they were
+  refused before). Known limits: a real step larger than 2 ppm across a stretch no unit crosses
+  is left uncorrected past it -- one such segment, correct (11 more benchmark ions agreed with
+  it), is no longer built, and its jump is the size of the alias segments the cap refuses;
+  radicals with 3+ N read as their N0-1 aliases after a positive step can still seed a wrong
+  segment; a family outside the formula space (deuterium-labelled products, read as N3
+  aliases) biases the locks by up to 0.8 ppm; in a peak list holding two axis states (every
+  ion twice, 3-6 ppm apart) no segment is built from seeds, while the walk still follows the
+  taller copy -- and where the model covers only the lower range, pass 1's window narrows
+  around the ions it leaves uncorrected: on two such positive-mode files the reported products
+  assigned fell from 12 to 2 of 71 and the reference-grid ions from 16 to 6.
 - **The batch's m/z axis is modelled from its own peaks (`--mass-axis auto`; `locks`,
   `reference` and `off` force a path).** On an Orbitrap the correction below no longer rests on
   the reagent's ~25 reference ions: `batch/axislock.py` finds calibration-free LOCKS -- recurring

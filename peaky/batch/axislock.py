@@ -26,7 +26,8 @@ The procedure (`fit`):
      Br only with their line recurring at the ratio the formula predicts). Then
      locks by exact mass difference: a peak one unit away from >= 2 locked ions
      that all propose the same (structurally valid) formula, nothing proposing
-     another.
+     another. A batch of ONE spectrum has no recurrence to test: every peak
+     counts, and the isotope strike and the curve's consistency are the guards.
   2. The SMOOTH axis: a smoothing spline (GCV) through the MAIN BODY of the
      locks -- the longest run without a MAX_GAP_DA gap or a step, and cut where
      the share of the recurring peaks that lock collapses (`_yield_span`: past an
@@ -46,10 +47,27 @@ The procedure (`fit`):
      inside it; when nothing more locks, the next segment starts above.
      A segment needs SEG_MIN_LOCKS locks on its line (off it: evicted), a slope
      no steeper than a smooth stretch and a jump from the one below no larger
-     than STEP_MAX_PPM; a stretch inside a segment where recurring peaks sit but
-     none fits its model is a HOLE, left uncorrected.
+     than STEP_MAX_PPM; a step the line tilted across (it accepts within
+     SEG_TOL_PPM, and an Orbitrap's axis can step by 1 ppm) splits it in parts
+     with one slope and their own offsets; a stretch inside a segment where
+     recurring peaks sit but none fits its model is a HOLE, left uncorrected.
+     Where nothing above the top links to the locks below -- a stretch wider
+     than an anchor's reach, or families no unit joins ([M-H]- and [M+NO3]-,
+     monomers and dimers) -- the walk RESTARTS from SEEDS: recurring peaks
+     above with a measured 13C line whose +-LOCK_PPM window, within
+     STEP_MAX_PPM of the axis below, holds one lockable formula with at most
+     SEED_MAX_N nitrogens (a radical's N3 alias carries three more). A seed is
+     provisional (off the segment's final line: dropped), and a segment built
+     from seeds whose span holds seeds off its line as well -- a radical's
+     alias is unique too, a band of radicals puts its aliases on a line of
+     their own, a peak list of two axis states puts every ion twice -- is
+     CONTESTED unless those on it outnumber them SEED_DOMINANCE to one; nor
+     may it claim a jump from the axis below larger than SEED_JUMP_MAX (no
+     formula chain links it there, and radicals' closed-shell aliases sit
+     further off).
   4. GAPS: two segments whose lines meet across their gap (a JOIN: the walk only
-     resumed past a sparse stretch) are bridged. Across a STEP, it lies somewhere in
+     resumed past a sparse stretch) are bridged -- up to a segment from seeds, only
+     across JOIN_MAX_DA: wider, the gap is UNSEEN, left uncorrected. Across a STEP, it lies somewhere in
      the gap. A recurring
      peak in it that holds a unique formula under exactly one side's model, one
      exact unit step from a lock on that side, extends that side; the rest of the gap -- and everything past the first and
@@ -142,6 +160,10 @@ HOLE_MIN_PEAKS = 3     # this many recurring peaks, none with a unique formula u
                        # is an excursion of the axis: left uncorrected
 HOLE_SHIFTS = tuple(sorted({sg * d for d in (1.5, 2.0, 2.5, 3.0, 3.5, 4.0) for sg in (-1, 1)}))
 SEG_BREAK_K = 3        # a step inside a segment: BREAK_K for its (fewer) locks
+SPLIT_PPM = 0.6        # ... and a step the walk's line tilted across (it accepts within
+SPLIT_SSE = 0.4        # SEG_TOL_PPM): the parts' offsets this far apart, the squared residual
+SPLIT_MIN = 4          # cut to this share, each part this many locks (a part of fewer has no
+SPLIT_MAX = 3          # held-out check); at most this many such steps per segment
 SEG_CV_MAX = 0.35      # a line segment whose own held-out locks scatter more than this (ppm,
                        # ~2x a real segment's) is not an axis: dropped, with the ones above it
 TRIM_K = 3             # the curve's last (first) 1..TRIM_K locks are cut when they all sit
@@ -150,8 +172,25 @@ TRIM_REF = 8           # > BREAK_PPM, on one side, off the line through the TRIM
 STEP_MIN_PPM = 1.0     # two segments' lines this far apart across their gap make a STEP;
                        # closer, the walk only resumed past a sparse stretch (a join)
 MIN_LOCKS = 30         # fewer locks than this: no model
+SEG_MAX = 12           # the walk builds at most this many line segments
+SEED_RESTARTS = 40     # ... and restarts from seeds at most this often
+SEED_ON_MIN = 1        # a segment a restart builds holds at least this many seeds on its line,
+SEED_DOMINANCE = 2.0   # and this many times the seeds in its span that sit off it (a band of
+                       # radicals puts their aliases' unique formulas on a line of their own)
+SEED_JUMP_MAX = 2.0    # a segment from seeds claims no larger jump from the axis below: no formula
+                       # chain links it to the locks there, and the closed-shell aliases of
+                       # radicals (N3 <-> C2H2O, 1.35 mDa: +3.4 ppm at m/z 400; O3 <-> C3NH-2,
+                       # 2.68 mDa) sit further off -- a larger step is the walk's to cross
+SEED_MAX_N = 2         # a seed holds no more N: a radical's closed-shell alias (N3 <-> C2H2O) carries
+                       # three more than the radical -- unique and 13C-consistent, so a family of
+                       # them would seed; an N3+ ion still locks on the walk
+CONTEST_STREAK = 4     # this many distinct contested spans in a row: the stretch above holds two
+                       # families everywhere (a peak list of two axis states) -- stop there
+JOIN_MAX_DA = 30.0     # a JOIN up to a segment from seeds bridges a gap no wider than this
+                       # (SEG_SPAN_DA); wider, the axis in between is unseen: left uncorrected
 SCOPE_SLACK_PPM = 3.0  # a segment's domain: its extreme locks' MEASURED m/z, +- the bin width
                        # (20 ppm carried a correction across a step to a peak 17 ppm past the edge)
+CACHE_PPM = 16.0       # the walk's candidate cache spans this around each bin (> MAX_ERR_PPM + NARROW_PPM)
 RANSAC_DRAWS = 2000
 RANSAC_MAX_SLOPE = 0.1  # ppm per Da; the steepest smooth stretch measured is ~0.07
 
@@ -461,6 +500,39 @@ class AxisModel:
             done |= ok
         return out
 
+    def clipped(self, cap: float) -> "AxisModel | None":
+        """The model with each line segment's domain cut to where its correction stays
+        within +-cap -- the stretch past it left uncorrected. None when the smooth curve
+        itself passes the cap (a broken calibration: nothing to cut) or no segment is
+        left."""
+        segs, cut = [], []
+        for s in self.segments:
+            if s["kind"] != "line":
+                if np.abs(self._eval(s, np.linspace(s["lo"], s["hi"], 400))).max() > cap:
+                    return None
+                segs.append(s)
+                continue
+            lo, hi, a, b = float(s["lo"]), float(s["hi"]), float(s["a"]), float(s["b"])
+            if b:
+                m1, m2 = sorted((400.0 + (cap - a) / b, 400.0 + (-cap - a) / b))
+                lo, hi = max(lo, m1), min(hi, m2)
+            elif abs(a) > cap:
+                continue
+            if hi <= lo:
+                cut.append([round(float(s["lo"]), 3), round(float(s["hi"]), 3)])
+                continue
+            if (lo, hi) != (s["lo"], s["hi"]):
+                cut += [[round(float(a), 3), round(float(b), 3)] for a, b in ((s["lo"], lo), (hi, s["hi"])) if b > a]
+                segs.append(dict(s, lo=lo, hi=hi, clipped=True))
+            else:
+                segs.append(s)
+        if not segs:
+            return None
+        out = AxisModel(segments=segs, n_locks=self.n_locks, stats=dict(self.stats))
+        out.stats["clipped"] = cut
+        out.stats["max_abs_ppm"] = round(out.max_abs_ppm(), 3)
+        return out
+
     def max_abs_ppm(self) -> float:
         """The largest correction the model applies anywhere in its domains."""
         vals = [np.abs(self._eval(s, np.linspace(s["lo"], s["hi"], 400))).max() for s in self.segments]
@@ -745,11 +817,15 @@ def fit(ts: pd.DataFrame, *, polarity: str = "-", reagent_elements=(), sample_co
     B = bins.table
     info: dict = {"n_spectra": bins.n_spectra, "n_bins": int(len(B)), "intensity": bins.intensity,
                   "n_iso_children": int(B["iso_child"].sum()) if len(B) else 0}
-    if bins.n_spectra < 2 or not len(B):
-        info["why"] = "fewer than 2 spectra: recurrence cannot tell ions from noise"
+    if bins.n_spectra < 1 or not len(B):
+        info["why"] = "no peaks"
         return None, info
-    need1 = max(2, math.ceil(PASS1_FRAC * bins.n_spectra - 1e-9))
-    need2 = max(2, math.ceil(EXT_FRAC * bins.n_spectra - 1e-9))
+    # one spectrum: no recurrence to test -- every peak counts, the isotope strike and the
+    # curve's consistency are the guards left
+    single = bins.n_spectra == 1
+    info["single_spectrum"] = single
+    need1 = 1 if single else max(2, math.ceil(PASS1_FRAC * bins.n_spectra - 1e-9))
+    need2 = 1 if single else max(2, math.ceil(EXT_FRAC * bins.n_spectra - 1e-9))
     rec = B[(B.n_files >= need2) & ~B.iso_child]
     strong = B[(B.n_files >= need1) & ~B.iso_child]
     med_h = float(strong["h"].median()) if len(strong) else 0.0
@@ -885,11 +961,32 @@ def fit(ts: pd.DataFrame, *, polarity: str = "-", reagent_elements=(), sample_co
              "x": grid, "y": curve(grid)}]
 
     # 3. the walk above the curve's last lock
-    top = hi_x
-    for _k in range(8):
-        sl: dict[int, str] = {}
-        line = None
-        last_ab = None
+    struck: dict[int, pd.DataFrame] = {}
+
+    def near_struck(i, mz_true, tol):
+        """_candidates for bin i, its struck formulas within CACHE_PPM of the bin computed
+        once (the strike reads the bin only; `near` picks each heavy-atom set's H count
+        the same way in any window): the walk asks for the same bins round after round."""
+        b = B.loc[i]
+        mz0 = float(b.mz)
+        if abs(mz_true - mz0) / mz0 * 1e6 + tol > CACHE_PPM:
+            return _candidates(b, space, bins, mz_true, tol)
+        if i not in struck:
+            struck[i] = _strike(space.near(mz0, CACHE_PPM), b, bins)
+        c = struck[i]
+        if c.empty:
+            return c
+        ppm = (mz_true - c["mz"].to_numpy()) / c["mz"].to_numpy() * 1e6
+        return c[np.abs(ppm) <= tol].assign(ppm=ppm[np.abs(ppm) <= tol])
+
+    def grow(top, seeds=None):
+        """The locks of the segment above `top`: the locks (and the segment's own)
+        +- one unit propose formulas for the recurring peaks above, the line most of
+        them agree on is the segment's axis, and a proposal on it that is the only
+        lockable formula there locks. `seeds` start the segment provisionally: one off
+        its final line is dropped (a radical's alias is unique too, a few ppm off)."""
+        sl = dict(seeds or {})
+        a_ = b_ = None
         for _rnd in range(15):
             anchors = {**{i: v["ion"] for i, v in locks.items()}, **sl}
             span_hi = (max(B.at[i, "mz"] for i in sl) if sl else top) + SEG_SPAN_DA
@@ -919,7 +1016,6 @@ def fit(ts: pd.DataFrame, *, polarity: str = "-", reagent_elements=(), sample_co
             if ab is None:
                 break
             a_, b_ = ab
-            last_ab = ab
             line = (lambda q, a_=a_, b_=b_: a_ + b_ * (np.asarray(q, float) - 400.0))
             added = 0
             for i, g in (H.groupby("i") if not H.empty else []):
@@ -930,16 +1026,28 @@ def fit(ts: pd.DataFrame, *, polarity: str = "-", reagent_elements=(), sample_co
                 f = ok["ion"].iloc[0]
                 # the proposal must also be the only formula there on this line that could
                 # ever lock (WALK_RIVALS): see the module constant
-                cands = _candidates(b, space, bins, float(b.mz) / (1 + float(line(b.mz)) * 1e-6), NARROW_PPM)
-                cands = _walk_rivals(cands, space)
+                cands = _walk_rivals(near_struck(i, float(b.mz) / (1 + float(line(b.mz)) * 1e-6), NARROW_PPM),
+                                     space)
                 if (cands is None or set(cands["ion"]) <= {f}) and accept(b, f):
                     sl[i] = f
                     added += 1
             if not added:
                 break
+        if seeds and a_ is not None:
+            for i in [i for i in seeds if i in sl]:
+                th = exact_mz(sl[i], polarity)
+                if abs((B.at[i, "mz"] - th) / th * 1e6 - (a_ + b_ * (B.at[i, "mz"] - 400.0))) > SEG_TOL_PPM:
+                    sl.pop(i)
+        return sl
+
+    def settle(sl):
+        """[(segment, its locks), ...] from a walk's locks -- or None when they make no
+        segment (a step the line tilted across splits it into parts): a step or a hole inside cuts it to its first run; locks off its line
+        are evicted and the line refitted (a lock from below the step heading the
+        segment bent its slope); steeper than any smooth stretch, too few locks left,
+        or a jump no Orbitrap step takes -> no segment."""
         if len(sl) < SEG_MIN_LOCKS:
-            break
-        # a step or a hole inside the segment: keep its first run, walk on from there
+            return None, None
         order = sorted(sl, key=lambda i: B.at[i, "mz"])
         m = np.array([B.at[i, "mz"] for i in order])
         e = np.array([(B.at[i, "mz"] - exact_mz(sl[i], polarity)) / exact_mz(sl[i], polarity) * 1e6
@@ -947,13 +1055,10 @@ def fit(ts: pd.DataFrame, *, polarity: str = "-", reagent_elements=(), sample_co
         # (the first run long enough to be a segment: a lone lock before a hole is dropped)
         runs = [r for r in _runs(m, e, SEG_BREAK_K) if r[1] - r[0] >= SEG_MIN_LOCKS]
         if not runs:
-            break
+            return None, None
         a0, b0 = runs[0]
         keep = order[a0:b0]
         m, e = m[a0:b0], e[a0:b0]
-        # the segment's line: locks off it evicted and the line refitted (a lock from below
-        # the step heading the segment bent its slope); steeper than any smooth stretch,
-        # too few locks left, or a jump no Orbitrap step takes -> no segment
         ok = np.ones(len(m), dtype=bool)
         b_, a_ = 0.0, float(np.mean(e))
         for _ in range(6):
@@ -967,20 +1072,156 @@ def fit(ts: pd.DataFrame, *, polarity: str = "-", reagent_elements=(), sample_co
         keep = [k for k, o in zip(keep, ok) if o]
         m, e = m[ok], e[ok]
         if len(keep) < SEG_MIN_LOCKS or abs(b_) > RANSAC_MAX_SLOPE:
-            break
+            return None, None
+        # a step the line tilted across: the segment in parts, one slope, one offset each
+        cuts, slope, offs = _splits(m, e)
+        if len(cuts) > 1 and abs(slope) <= RANSAC_MAX_SLOPE:
+            parts = [(c, d, o) for c, d, o in zip(cuts, cuts[1:] + [len(m)], offs)]
+        else:
+            parts = [(0, len(m), None)]
+            slope = b_
         prev = segs[-1]
-        mid = (prev["hi"] + float(m.min())) / 2
-        jump = float(a_ + b_ * (mid - 400.0) - AxisModel._eval(prev, mid))
-        if abs(jump) > STEP_MAX_PPM:
-            info.setdefault("rejected_segments", []).append(
-                {"lo": round(float(m.min()), 3), "hi": round(float(m.max()), 3), "jump_ppm": round(jump, 2)})
+        out = []
+        for c, d, off in parts:
+            mm, ee = m[c:d], e[c:d]
+            a_p = float(a_) if off is None else float(off)
+            mid = (prev["hi"] + float(mm.min())) / 2
+            jump = float(a_p + slope * (mid - 400.0) - AxisModel._eval(prev, mid))
+            if abs(jump) > STEP_MAX_PPM:
+                info.setdefault("rejected_segments", []).append(
+                    {"lo": round(float(mm.min()), 3), "hi": round(float(mm.max()), 3), "jump_ppm": round(jump, 2)})
+                break
+            sd = float(np.std(ee - (a_p + slope * (mm - 400.0))))
+            seg = {"kind": "line", "lo": float(mm.min()), "hi": float(mm.max()), "n": int(d - c),
+                   "a": a_p, "b": float(slope), "sd": sd}
+            if off is not None:
+                seg["split"] = True
+            out.append((seg, {i: sl[i] for i in keep[c:d]}))
+            prev = seg
+        return out or None, None
+
+    # SEEDS: recurring peaks above the curve whose +-LOCK_PPM window holds one LOCKABLE
+    # formula (WALK_RIVALS: F rivals are not counted, as on the walk) once the peak's own
+    # measured 13C line -- required -- and heavy lines have struck the rest. Not locks:
+    # where nothing above the walk's top links to the locks below (a stretch wider than an
+    # anchor's reach, or a family no unit joins: [M-H]- to [M+NO3]-, monomers to dimers),
+    # the walk restarts from the lowest seeds above and their line must hold.
+    seed_cands: dict[int, pd.DataFrame] = {}
+    scanned = []
+
+    def scan_seeds():
+        """Every candidate seed's struck lockable formulas within +-LOCK_PPM: once, and only
+        when a walk first stalls (a batch that never restarts pays nothing)."""
+        if scanned:
+            return
+        scanned.append(True)
+        for i, b in strong[strong.mz > hi_x].iterrows():
+            if i in locks or not np.isfinite(b.r13):
+                continue
+            c = _walk_rivals(_candidates(b, space, bins, float(b.mz), LOCK_PPM), space)
+            if c is not None and len(c):
+                seed_cands[i] = c
+
+    def seeds_above(lo):
+        """The seeds above `lo`: a bin's candidates within STEP_MAX_PPM of the axis below
+        (the segment it would join takes no larger jump), exactly one left."""
+        prev = segs[-1]
+        level = float(AxisModel._eval(prev, prev["hi"]))
+        out = {}
+        for i, c in seed_cands.items():
+            if B.at[i, "mz"] <= lo:
+                continue
+            c = c[(c["ppm"] - level).abs() <= STEP_MAX_PPM]
+            if len(c) == 1 and c["N"].iloc[0] <= SEED_MAX_N and accept(B.loc[i], c["ion"].iloc[0]):
+                out[i] = c["ion"].iloc[0]
+        return out
+
+    def below_at(x):
+        """The axis below, held at its last value past its last lock (continuing a slope
+        across a wide gap let a two-state line through)."""
+        pv = segs[-1]
+        return float(AxisModel._eval(pv, pv["hi"]))
+
+    def _seed_support(parts, seeds):
+        """Seeds inside the parts' span on their line (within SEG_TOL_PPM) and off it --
+        the off ones another family's unique formulas: a radical's alias, a second
+        family the window holds. An off seed further from the axis below than any
+        segment from seeds may jump (SEED_JUMP_MAX) is no rival: no such segment could
+        hold it."""
+        on = off = 0
+        for i, f in seeds.items():
+            mzi = float(B.at[i, "mz"])
+            seg = next((g for g, _ in parts if g["lo"] <= mzi <= g["hi"]), None)
+            if seg is None:
+                continue
+            th = exact_mz(f, polarity)
+            e = (mzi - th) / th * 1e6
+            if abs(e - float(AxisModel._eval(seg, mzi))) <= SEG_TOL_PPM:
+                on += 1
+            elif abs(e - below_at(mzi)) <= SEED_JUMP_MAX:
+                off += 1
+        return on, off
+
+    top = hi_x
+    tried = hi_x            # seeds at or below this have started a walk (or lie below the top)
+    n_restarts = streak = 0
+    last_contested = None
+    for _k in range(SEG_MAX):
+        parts, _ = settle(grow(top))
+        if parts is None:
+            # restart from the next seeds above: each in turn, the seeds within SEG_SPAN_DA
+            # of it the segment's own from the start
+            scan_seeds()
+            seeds = seeds_above(max(top, tried))
+            for s0 in sorted(float(B.at[i, "mz"]) for i in seeds):
+                if s0 <= tried or n_restarts >= SEED_RESTARTS or streak >= CONTEST_STREAK:
+                    continue
+                tried = s0
+                n_restarts += 1
+                start = {i: f for i, f in seeds.items() if s0 <= B.at[i, "mz"] <= s0 + SEG_SPAN_DA}
+                parts, _ = settle(grow(s0 - 1e-6, start))
+                if parts is None:
+                    # nothing grew from this window: the next restart starts past it
+                    tried = s0 + SEG_SPAN_DA / 2
+                    continue
+                if parts is not None:
+                    on, off = _seed_support(parts, seeds)
+                    # the jump from the axis below (held at its last value) at the gap's
+                    # midpoint and where the segment starts (a steep line across a wide gap
+                    # reads small at the midpoint and large where it starts)
+                    g0, pv = parts[0][0], segs[-1]
+                    mid0 = (pv["hi"] + g0["lo"]) / 2
+                    jump0 = max((float(AxisModel._eval(g0, mid0)) - below_at(mid0),
+                                 float(AxisModel._eval(g0, g0["lo"])) - below_at(g0["lo"])), key=abs)
+                    if on < SEED_ON_MIN or on < SEED_DOMINANCE * off or abs(jump0) > SEED_JUMP_MAX:
+                        info.setdefault("contested", []).append(
+                            {"lo": round(g0["lo"], 3), "hi": round(parts[-1][0]["hi"], 3),
+                             "seeds_on": on, "seeds_off": off, "jump_ppm": round(jump0, 2)})
+                        # the next restart starts at the next seed (a window started one seed
+                        # higher can build the segment this one tilted across a step) -- but a
+                        # span contested twice is skipped (one family rebuilt from seed after
+                        # seed spent the streak and hid the clean family above it); the streak
+                        # counts distinct contested spans
+                        hi_c = float(parts[-1][0]["hi"])
+                        if last_contested is not None and abs(hi_c - last_contested) <= 1.0:
+                            tried = max(tried, hi_c)
+                        else:
+                            streak += 1
+                        last_contested = hi_c
+                        parts = None
+                        continue
+                    streak, last_contested = 0, None
+                    g0["seeded"] = True
+                    break
+        if parts is None:
             break
-        sd = float(np.std(e - (a_ + b_ * (m - 400.0))))
-        for i in keep:
-            add(i, sl[i], f"segment {len(segs) + 1}")
-        segs.append({"kind": "line", "lo": float(m.min()), "hi": float(m.max()), "n": int(len(keep)),
-                     "a": float(a_), "b": float(b_), "sd": sd})
-        top = float(m.max())
+        for seg, own in parts:
+            for i, f in own.items():
+                add(i, f, f"segment {len(segs) + 1}")
+            segs.append(seg)
+        top = float(segs[-1]["hi"])
+    info["n_restarts"] = n_restarts
+    info["n_seed_bins"] = len(seed_cands)          # after the walk: the scan is lazy
     # a line segment whose own locks do not predict each other is no axis: drop it, and
     # the segments walked from it
     info["dropped_segments"] = []
@@ -1033,16 +1274,20 @@ def fit(ts: pd.DataFrame, *, polarity: str = "-", reagent_elements=(), sample_co
                           [locks[j]["ion"] for j in side], polarity=polarity, by="difference")
         return any(g == f for _, g, _, _ in rows)
 
-    gaps = []
+    gaps, unseen = [], []
     for s in range(len(segs) - 1):
         L, R = segs[s], segs[s + 1]
         mid = (L["hi"] + R["lo"]) / 2
         jump = float(AxisModel._eval(R, mid) - AxisModel._eval(L, mid))
-        if abs(jump) < STEP_MIN_PPM:
+        if abs(jump) < STEP_MIN_PPM and (R["lo"] - L["hi"] <= JOIN_MAX_DA or not R.get("seeded")):
             # a JOIN: no step between them, nothing ambiguous -- bridge the gap
-            joins.append({"between": [round(L["hi"], 3), round(R["lo"], 3)], "ppm": round(jump, 2)})
+            joins.append({"between": [round(L["hi"], 3), round(R["lo"], 3)], "ppm": round(jump, 2),
+                          "split": bool(R.get("split"))})
             L["hi"] = R["lo"] = mid
             continue
+        # no step either, but a restart from seeds past a stretch wider than a join
+        # bridges: the axis in between is unseen (the walk's own joins are bridged)
+        wide = abs(jump) < STEP_MIN_PPM and bool(R.get("seeded"))
         votes = []
         for i, b in rec[(rec.mz > L["hi"]) & (rec.mz < R["lo"])].iterrows():
             fl = _unique_lock(b, space, bins, float(b.mz) / (1 + float(AxisModel._eval(L, b.mz)) * 1e-6), NARROW_PPM)
@@ -1068,19 +1313,24 @@ def fit(ts: pd.DataFrame, *, polarity: str = "-", reagent_elements=(), sample_co
                 L["y"] = np.append(L["y"], L["y"][-1])
         mid = (L["hi"] + R["lo"]) / 2
         jump = float(AxisModel._eval(R, mid) - AxisModel._eval(L, mid))
-        steps.append({"between": [round(L["hi"], 3), round(R["lo"], 3)], "ppm": round(jump, 2)})
+        if wide:
+            unseen.append([round(L["hi"], 3), round(R["lo"], 3)])
+        else:
+            steps.append({"between": [round(L["hi"], 3), round(R["lo"], 3)], "ppm": round(jump, 2)})
         gaps.append([round(L["hi"], 3), round(R["lo"], 3)])
     model.n_locks = len(locks)
     info["steps"] = steps
     info["joins"] = joins
+    info["unseen_gaps"] = unseen
     info["uncorrected_gaps"] = gaps
     info["locks"] = _lock_table(locks)
     info.update(_validate(model, locks))
     info["max_abs_ppm"] = round(model.max_abs_ppm(), 3)
     info["cv_by_segment"] = [None] + [(round(s_["cv"], 3) if s_.get("cv") is not None else None) for s_ in segs[1:]]
-    model.stats = {k: info[k] for k in ("n_pass1", "n_links", "n_narrow", "n_off_curve", "steps", "joins",
+    model.stats = {k: info[k] for k in ("single_spectrum", "n_pass1", "n_links", "n_narrow", "n_off_curve",
+                                        "n_seed_bins", "n_restarts", "steps", "joins", "unseen_gaps",
                                         "uncorrected_gaps", "dropped_segments", "rejected_segments",
-                                        "holes", "cv_by_segment",
+                                        "contested", "holes", "cv_by_segment",
                                         "cv_ppm", "raw_ppm", "max_abs_ppm") if k in info}
     return model, info
 
@@ -1097,6 +1347,44 @@ def _segment_cv(locks, seg, how) -> float | None:
         b, a = np.polyfit(x[m] - 400.0, y[m], 1) if np.ptp(x[m]) > 0 else (0.0, y[m].mean())
         r.append(y[k] - (a + b * (x[k] - 400.0)))
     return float(np.median(np.abs(r)))
+
+
+def _splits(m, e) -> tuple[list, float, list]:
+    """Steps inside a walk segment's locks (m sorted): one slope shared by the whole
+    segment and one offset per part, a split added while the best one moves the parts
+    at least SPLIT_PPM apart, leaves each part SPLIT_MIN locks and cuts the squared
+    residual to SPLIT_SSE of the model without it. Returns (part start indices
+    [0, k1, ...], the slope, the offsets)."""
+    m, e = np.asarray(m, float), np.asarray(e, float)
+    n = len(m)
+    cuts = [0]
+
+    def fit(cs):
+        X = np.c_[m - 400.0, *[(np.arange(n) >= c).astype(float) if c else np.ones(n) for c in cs]]
+        coef, *_ = np.linalg.lstsq(X, e, rcond=None)
+        return coef, float(((e - X @ coef) ** 2).sum())
+
+    coef, sse = fit(cuts)
+    while len(cuts) <= SPLIT_MAX:
+        best = None
+        for k in range(SPLIT_MIN, n - SPLIT_MIN + 1):
+            if k in cuts:
+                continue
+            cs = sorted(cuts + [k])
+            if min(np.diff(cs + [n])) < SPLIT_MIN:
+                continue
+            c2, s2 = fit(cs)
+            if best is None or s2 < best[1]:
+                best = (cs, s2, c2, k)
+        if best is None:
+            break
+        cs, s2, c2, k = best
+        step = float(c2[1 + cs.index(k)])
+        if abs(step) < SPLIT_PPM or s2 > SPLIT_SSE * sse:
+            break
+        cuts, coef, sse = cs, c2, s2
+    offs = np.cumsum(coef[1:]).tolist()
+    return cuts, float(coef[0]), offs
 
 
 def _lock_table(locks) -> list:
