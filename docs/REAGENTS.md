@@ -25,7 +25,7 @@ does two things:
 
 1. **Profile selection** — pick (or auto-detect) one `ReagentProfile`, which is
    *everything the pipeline needs to treat the reagent correctly*: polarity, the
-   analyte adduct channels, the grid ranges, the normaliser (`reagent`/`tic`), the
+   analyte adduct channels, a documented element box (`ranges`, read by no search), the normaliser (`reagent`/`tic`), the
    reagent-ion regex, the assignment context, and any isotopic purity. **The
    reagent is the single switch that flips the same pipeline negative- or
    positive-mode.**
@@ -72,8 +72,13 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
    A `config` path is loaded (registered) before resolving.
 
 2. **The profile configures everything else.** `ReagentProfile` (frozen) carries:
-   `polarity`, `adducts` (analyte channels), `ranges` (the grid box string fed to
-   [`CHEMISTRY.md`](CHEMISTRY.md)), `normaliser` (`reagent` or `tic`, for the
+   `polarity`, `adducts` (analyte channels), `ranges` (the element box the
+   reagent's analytes span, as a [`CHEMISTRY.md`](CHEMISTRY.md) range string --
+   **documentation only**: no search reads it; the per-peak grid box is
+   `directors.build_ranges` from the context profile, CHO(N) only, and S / P / Si /
+   F / Cl / Br / I reach a neutral only through the context's pass-3 families and
+   the curated pass-0 lists, so widening the string widens nothing;
+   `tests/test_heteroatom_routes.py` pins this), `normaliser` (`reagent` or `tic`, for the
    TS/correlation layer), `reagent_ion_re` (regex on `ion_formula` picking reagent
    ions), `detect_adduct`, `context` (the assign-time mode + VK priors + caps), and
    `purity` (a labelled reagent's isotopic purity — `assign.run` publishes it via
@@ -97,7 +102,7 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
    > server-confirmed on the 2026-07-21 batch — HNO₃ as `[HNO3+I]⁻` *and*
    > `NO3⁻`, formic/acetic acid as `[M-H]⁻`). Because ¹²⁷I is the **only** iodine
    > isotope, covalent iodine cannot be isotope-confirmed and is kept **OFF the
-   > neutral grid** (no `I` in `IODIDE.ranges`, like F/P) — iodine reaches a neutral
+   > neutral grid** (`build_ranges` keeps every heteroatom at 0, like F/P; `IODIDE.ranges` names no `I` either) — iodine reaches a neutral
    > only via the adduct or the pass-0 `reactive_iodine` known-species family (HOI,
    > HIO₂, HIO₃, OIO, INO₂, INO₃, ICN, INCO, ICl, IBr — the canonical iodide-CIMS
    > analytes; 8 committed at <0.6 ppm on the 2026-07-21 batch; ICl/IBr carry
@@ -405,12 +410,12 @@ on the run's own polarity only. Nothing is opened by polarity.
 | `passes.config.DEFAULT_HEIGHT_CUTOFF_X_EDGE` | 1.0 | the numeric fallback — the ONE home for the number (`PassConfig.height_cutoff_x_edge_resolved` reads it for an unset or `"auto"` field) |
 | `admission.X_EDGE_GRID` / `MAX_TRANSIENT_SHARE` | 1, 1.5, 2, 3, 5, 8, 12, 20 / 0.20 | the derivation's grid and the largest transient share the brightness-admitted peaks may have |
 | `admission.PICKER_TAIL_X` / `PICKER_INTO_NOISE_FRACTION` | 0.75 / 0.0005 | the picker-tail statistic (the share of the batch's peaks below this multiple of their sample's 1st-percentile edge) and the share above which a picker counts as picking into the noise — the second condition for a raised floor |
-| `BR.ranges` | `C0-40 H0-80 N0-3 O0-18 S0-2 Cl0-2 Br0-2` | bromide grid box |
-| `UR.ranges` | `C0-40 H0-90 N0-8 O0-15 S0-2` | uronium grid box |
-| `NO3.ranges` / `NO3_15N.ranges` | `C0-40 H0-60 N0-3 O0-25 S0-2` | nitrate grid box |
+| `BR.ranges` | `C0-40 H0-80 N0-3 O0-18 S0-2 Cl0-2 Br0-2` | bromide element box (documentation: no search reads a profile's `ranges`) |
+| `UR.ranges` | `C0-40 H0-90 N0-8 O0-15 S0-2` | uronium element box (documentation) |
+| `NO3.ranges` / `NO3_15N.ranges` | `C0-40 H0-60 N0-3 O0-25 S0-2` | nitrate element box (documentation) |
 | `NO3_15N.purity` | 0.98 | ~98 % ¹⁵N reagent. Published by `assign.run` via `isotopes.set_label_purity`; read by BOTH the local scorer's `predict_isotopes` call and peaky's own envelope predictor (`isotopes.isotope_pattern`). `isotopes.LABEL_PURITY_15N` is only the fallback default |
-| `IODIDE.ranges` | `C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1` | iodide grid box (**no I** — covalent iodine is monoisotopic, off-grid) |
-| `NH4_15N.ranges` | `C0-40 H0-90 N0-6 O0-15 S0-2` | ¹⁵N-ammonium grid box (uronium-like positive box) |
+| `IODIDE.ranges` | `C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1` | iodide element box (documentation; **no I** — covalent iodine is monoisotopic, off-grid) |
+| `NH4_15N.ranges` | `C0-40 H0-90 N0-6 O0-15 S0-2` | ¹⁵N-ammonium element box (documentation; uronium-like positive box) |
 | `NH4_15N.purity` | 0.98 | ¹⁵N fraction of the ammonium reagent — measured 0.018–0.021 ¹⁴N/¹⁵N on the 2026-09-10 file (= nominal 98 atom %). Same two consumers as `NO3_15N.purity` |
 | `_AMMONIUM_15N_KEY` | `ammonium15N` | cluster-library key for `[M+^NH4]+` sources: `[(^NH3)n+H]+` n≤4, hydrates k≤3, + the ¹⁴N monomer twin |
 | `relabel_ammonium_dehydration` `ppm` / `own_adduct_max` / ceiling | 4.0 / 0.5 / 1.5× | dehydration-site match window; the alkene reading is re-read only while its OWN `[M+^NH4]+` is < 0.5× its `[M+H]+` (or, when it has no `[M+H]+` at all, ≤ 0.5× the parent's adduct), and never when the product is brighter than 1.5× the parent's strongest form |

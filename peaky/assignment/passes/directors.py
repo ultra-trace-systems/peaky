@@ -80,6 +80,14 @@ def _known_species(polarity: str = "negative", context: str | None = None) -> di
             "C18H39O7P": "tris(2-butoxyethyl) phosphate (TBEP)",
             "C24H51O4P": "tris(2-ethylhexyl) phosphate (TEHP)",
             "C21H21O4P": "tricresyl phosphate (TMPP / TCrP)",
+            # a phosphonate and a chlorinated phosphate ester, both seen in a
+            # field campaign's uronium blanks on two or three channels: DMMP
+            # ([M+H]+ and the urea adduct, 0.97-0.98 each) and the TCPP flame
+            # retardant ([M+H]+, [M+NH4]+ and the urea adduct, its 37Cl line at
+            # 0.93-0.96x M0 against the 0.96 three chlorines predict); the gate
+            # below is unchanged (>= 2 channels or a 37Cl / 34S / 81Br envelope)
+            "C3H9O3P": "dimethyl methylphosphonate (DMMP)",
+            "C9H18Cl3O4P": "tris(chloroisopropyl) phosphate (TCPP / TCIPP)",
         }
         # ORGANOTHIOPHOSPHATE / -DITHIOATE insecticides: agricultural
         # organophosphorus pesticides (P + 1-3 S), primary AMBIENT analytes over
@@ -1626,6 +1634,68 @@ def run_pass2(
 _KEY_FROM_ADDUCTS = object()
 
 
+def _iso_gate_targets(ledger: pd.DataFrame, tgt: pd.DataFrame, fam: dict, element: str, profile,
+                      cfg: PassConfig) -> dict | None:
+    """The peaks an isotope-gated family reads (contexts.family_iso_gate): the
+    target peaks with a picked partner at `element`'s exact offset, within the
+    own-line window (satellites.own_line_window_ppm), at a height the family's
+    counts allow (OWN_LINE_RATIO x 1..n_max atoms). None where no window exists
+    (not an Orbitrap-class run: the family is skipped). Returns {'mzs', 'pids',
+    'label', 'lines' (the file's real peak lines, sorted), 'window_ppm',
+    'element', 'profile' (the context with the element's cap lifted to the
+    family's)}."""
+    import dataclasses
+    win = _SAT.own_line_window_ppm(cfg)
+    if win is None:
+        return None
+    delta, per, label = _SAT.TWIN_LINES[element][0]
+    n_max = int(fam["add"][element][1])
+    lo, hi = _SAT.OWN_LINE_RATIO
+    lmz, lh = _SAT._peak_lines(ledger, artifacts=False)
+    mzs, pids = [], []
+    for pid, mz0, h0 in zip(tgt["peak_id"], pd.to_numeric(tgt["mz"], errors="coerce"),
+                            pd.to_numeric(tgt["height"], errors="coerce")):
+        if not (pd.notna(mz0) and pd.notna(h0) and h0 > 0):
+            continue
+        tg = float(mz0) + delta
+        j = _SAT._nearest(lmz, tg, tg * win * 1e-6)
+        if j is not None and lo * per <= float(lh[j]) / float(h0) <= hi * per * n_max:
+            mzs.append(float(mz0))
+            pids.append(pid)
+    lifted = dataclasses.replace(profile, **{f"max_{element}": n_max})
+    return {"mzs": mzs, "pids": set(pids), "label": label, "lines": (lmz, lh), "window_ppm": win,
+            "element": element, "profile": lifted}
+
+
+def _iso_gate_winners(ledger: pd.DataFrame, arb: dict, gate: dict, *, log=print, fam_key: str = "") -> dict:
+    """`arb` with only the winners of an isotope-gated family whose ION shows
+    its own line of the gate element (satellites.own_line, on the winner's
+    peak in this file), and only those winners' isotope children."""
+    from peaky.assignment.tiers import _ion_counts
+    win = arb.get("winners", pd.DataFrame())
+    if not len(win):
+        return arb
+    by_pid = ledger.drop_duplicates("peak_id").set_index("peak_id")
+    keep, refused = [], 0
+    for _, w in win.iterrows():
+        pid = w["peak_id"]
+        ion = _ion_counts(w["neutral"], w["adduct"])
+        ok = False
+        if pid in gate["pids"] and ion and pid in by_pid.index:
+            v = _SAT.own_line(gate["lines"][0], gate["lines"][1], by_pid.at[pid, "mz"], by_pid.at[pid, "height"],
+                              ion, gate["element"], window_ppm=gate["window_ppm"])
+            ok = bool(v["confirmed"])
+        keep.append(ok)
+        refused += int(not ok)
+    win = win[pd.Series(keep, index=win.index, dtype=bool)]
+    kids = arb.get("iso_children", pd.DataFrame())
+    if len(kids):
+        kids = kids[kids["parent_peak_id"].isin(set(win["peak_id"]))]
+    if refused:
+        log(f"[pass3:{fam_key}] {refused} winner(s) refused: no own {gate['label']} line at the ion's count")
+    return {**arb, "winners": win, "iso_children": kids}
+
+
 def run_pass3(
     client,
     sample_id: str,
@@ -1775,6 +1845,19 @@ def run_pass3(
         fam = X.CONTAMINANT_FAMILIES.get(fam_key)
         if not fam:
             continue
+        # an isotope-gated family (contexts.family_iso_gate) reads only the
+        # peaks that show a partner at its element's offset, and commits only
+        # where the ion's own line is seen (`_iso_gate_targets` / `_iso_gate_winners`)
+        gate = None
+        if X.family_iso_gate(fam_key):
+            gate = _iso_gate_targets(ledger, tgt, fam, X.family_iso_gate(fam_key), profile, cfg)
+            if gate is None:
+                log(f"[pass3:{fam_key}] skipped: its {X.family_iso_gate(fam_key)} gate reads the ion's own "
+                    "exact-offset line, an Orbitrap-class test")
+                continue
+            if not gate["mzs"]:
+                log(f"[pass3:{fam_key}] no unexplained peak shows a {gate['label']} partner; skipping")
+                continue
         try:
             ranges = build_ranges(
                 profile, pre, include_N=True, extra_elements=fam["add"]
@@ -1838,7 +1921,8 @@ def run_pass3(
                                 else:
                                     break
             else:
-                formulas = _enumerate(client, mzs, mech_ids, ranges, cfg, fam_adducts)
+                formulas = _enumerate(client, gate["mzs"] if gate else mzs, mech_ids, ranges, cfg,
+                                      fam_adducts)
             # Structural-only filtering is EARNED BY EVIDENCE: GKA-opened
             # families bypass the context caps (ambient max_F=0 would veto the
             # very candidates the detected CF2 chains justify), with the chain
@@ -1846,10 +1930,13 @@ def run_pass3(
             # families keep the full context filter -- without chain evidence,
             # dropping the ratio priors lets mass-fit junk flood in (v9/v10
             # lesson: 142 'amines').
+            # An isotope-gated family keeps the full context filter with only
+            # its own element's cap lifted to the family's (the gate is its
+            # evidence for that element, and for nothing else).
             if fam_key in fam_members:
                 formulas = {f for f in formulas if _family_ok(f, ranges)}
             else:
-                formulas = set(_context_filter(formulas, profile))
+                formulas = set(_context_filter(formulas, gate["profile"] if gate else profile))
             if fam_key in ("bromo_organic", "chloro_organic"):
                 # drop covalent-X aliases of anchor.HX clusters: if stripping
                 # one HX from X yields an existing anchor, the cluster reading
@@ -1867,6 +1954,8 @@ def run_pass3(
                 client, sample_id, sorted(formulas), mechanism_ids=cfg.mechanism_ids
             )
             arb = arbitrate(scored, cfg, profile)
+            if gate:
+                arb = _iso_gate_winners(ledger, arb, gate, log=log, fam_key=fam_key)
             s = commit_winners(
                 ledger,
                 arb,

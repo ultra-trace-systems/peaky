@@ -935,3 +935,109 @@ def element_evidence(ctx: EvidenceContext, mz0: float, h0: float, neutral_counts
     else:
         out["why"] = "; ".join(notes) + ("" if cal.calibrated else f" ({cal.describe()})")
     return out
+
+
+# ---------------------------------------------------------------------------
+# the element's OWN line, seen: a confirmation, never a refutation
+# ---------------------------------------------------------------------------
+# The tests above ask whether a heteroatom count is CONTRADICTED. Two places
+# need the other half -- a heteroatom the run's budget does not admit, admitted
+# on the one evidence an isotope element can give:
+#
+#   * the element-budget demote (`plausibility.demote_off_budget`): a commit
+#     outside the budget is a tentative lead unless its own 37Cl / 81Br / 34S
+#     line is seen, the standing a committed CF2 step gives fluorine;
+#   * the 37Cl-gated pass-3 family (`contexts.CONTAMINANT_FAMILIES`, key
+#     'iso_gate'; `passes.directors.run_pass3`): a positive source budgets no
+#     halogen (max_Cl 0), and the family commits a Cl reading only on a peak
+#     that shows the ion's own 37Cl line.
+#
+# Seen means a picked line (an artifact row is no line) within the window of
+# the exact offset, at OWN_LINE_RATIO x the first-order prediction from the
+# parent (h0 x per-atom ratio x the ion's atom count), fitting that count
+# better than one atom more (a Cl1 reading under a Cl2 ion's line is not
+# confirmed). Where fewer atoms of the element are also possible -- the
+# reagent adduct's own halogen, or the budget's cap on a count above it -- the
+# line must fit the full count better than that smaller one too: the line has
+# to show the atoms in question, not merely the element. The window is an
+# Orbitrap-class one (`own_line_window_ppm`): on a TOF the lines scatter by
+# several ppm and an M+2 cluster is one line, so nothing is confirmed there.
+#: the elements whose own line can confirm them (P, F, I are monoisotopic; Si
+#: keeps its own ladder rule)
+OWN_LINE_ELEMENTS = ("Br", "Cl", "S")
+#: the window: max(OWN_LINE_MIN_PPM, OWN_LINE_SIGMA_K x the file's calibration
+#: sigma); OWN_LINE_MIN_PPM before the file is calibrated (the line and its
+#: parent shift together, so the offset between them does not need the file's
+#: calibration; measured 13C offsets on a 100-microscan Orbitrap batch: |offset|
+#: p99 0.62 ppm)
+OWN_LINE_MIN_PPM = 1.0
+OWN_LINE_SIGMA_K = 3.0
+#: the observed / predicted band a seen line sits in
+OWN_LINE_RATIO = (0.5, 2.0)
+
+
+def own_line_window_ppm(cfg=None) -> float | None:
+    """The own-line window (ppm) of a run, or None where no line can confirm
+    an element: an Orbitrap-class run (cfg.instrument_class, not trace-first's
+    synthetic sample) only."""
+    if cfg is None or getattr(cfg, "instrument_class", None) != "orbitrap" \
+            or getattr(cfg, "trace_sample", False):
+        return None
+    s = calibrated_sigma(cfg)
+    return float(max(OWN_LINE_MIN_PPM, OWN_LINE_SIGMA_K * s)) if s is not None else OWN_LINE_MIN_PPM
+
+
+def own_line(mz: np.ndarray, h: np.ndarray, mz0: float, h0: float, ion_counts: dict, element: str, *,
+             window_ppm: float, n_fewer: int = 0) -> dict:
+    """Is `element`'s own diagnostic line seen beside the parent line (`mz0`,
+    `h0`, the ion's all-light line)? `mz` / `h`: the file's real peak lines,
+    sorted by m/z (`_peak_lines(ledger, artifacts=False)`). `n_fewer`: the
+    largest smaller atom count of the element the ion could also carry (the
+    reagent's own, or the budget's cap plus it); the line must fit
+    `ion_counts`' count better than it, and better than one atom more.
+
+    Returns {'confirmed', 'element', 'label', 'pred', 'obs_ratio', 'ppm', 'why'}
+    -- `pred` and `obs_ratio` relative to the parent's height."""
+    el = element
+    n = int((ion_counts or {}).get(el, 0) or 0)
+    out = {"confirmed": False, "element": el, "label": None, "pred": None, "obs_ratio": None,
+           "ppm": None, "why": ""}
+    if el not in OWN_LINE_ELEMENTS or n <= 0:
+        out["why"] = f"no {el} line to read"
+        return out
+    try:
+        mz0, h0 = float(mz0), float(h0)
+    except (TypeError, ValueError):
+        out["why"] = "no parent line"
+        return out
+    if not (np.isfinite(mz0) and np.isfinite(h0) and h0 > 0) or window_ppm is None:
+        out["why"] = "no parent line" if window_ppm is not None else "no exact-offset window (not Orbitrap-class)"
+        return out
+    delta, per, label = TWIN_LINES[el][0]
+    pred = per * n
+    tgt = mz0 + delta
+    out.update(label=label, pred=pred)
+    j = _nearest(np.asarray(mz, dtype=float), tgt, tgt * float(window_ppm) * 1e-6)
+    if j is None:
+        out["why"] = f"no {label} line within {window_ppm:.2f} ppm of +{delta:.5f}"
+        return out
+    r = float(h[j]) / h0
+    ppm = (float(mz[j]) - tgt) / tgt * 1e6
+    out.update(obs_ratio=r, ppm=ppm)
+    lo, hi = OWN_LINE_RATIO
+    if not lo * pred <= r <= hi * pred:
+        out["why"] = (f"{label} line at {r:.3f}x the parent, outside {lo:g}-{hi:g}x the predicted "
+                      f"{pred:.3f} ({ppm:+.2f} ppm)")
+        return out
+    k = int(n_fewer or 0)
+    if 0 < k < n and _log_fit(r, per * k) <= _log_fit(r, pred):
+        out["why"] = (f"{label} line at {r:.3f}x the parent fits {el}{k} ({per * k:.3f}) as well as "
+                      f"{el}{n} ({pred:.3f})")
+        return out
+    if _log_fit(r, per * (n + 1)) <= _log_fit(r, pred):
+        out["why"] = (f"{label} line at {r:.3f}x the parent fits {el}{n + 1} ({per * (n + 1):.3f}) as well as "
+                      f"{el}{n} ({pred:.3f})")
+        return out
+    out["confirmed"] = True
+    out["why"] = f"{label} line at {r / pred:.2f}x its prediction ({r:.3f}x the parent), {ppm:+.2f} ppm"
+    return out

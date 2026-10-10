@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from peaky.chem import chemistry as C
 
-__version__ = "0.5.1"   # filter_by_profile: the raw-reading fall-through is an assertion; 0.5.0 NOx-skeleton readings and the C3-C4 small-acid band (run-level switches)
+__version__ = "0.6.0"   # uronium / easyic open organosulfur and the 37Cl-gated organochlorine family (iso_gate); 0.5.1 filter_by_profile: the raw-reading fall-through is an assertion; 0.5.0 NOx-skeleton readings and the C3-C4 small-acid band (run-level switches)
 
 
 @dataclass(frozen=True)
@@ -145,7 +145,31 @@ CONTAMINANT_FAMILIES: dict[str, dict] = {
                       "note": "covalent organobromine (iso-gated on 81Br)"},
     "chloro_organic": {"add": {"Cl": (1, 2)}, "adducts": ("[M-H]-",),
                        "note": "covalent organochlorine (iso-gated on 37Cl)"},
+    # COVALENT CHLORINE ON A POSITIVE SOURCE. A positive source brings no
+    # halogen, so its context budgets none (uronium / easyic max_Cl 0) and no
+    # pass can propose one -- chlorophenol, chloroprene and atrazine stay
+    # unexplained however clean their 37Cl line. `iso_gate` makes this family
+    # an evidence-gated one (passes.directors.run_pass3): it reads only the
+    # peaks that show a partner at the 37Cl offset, enumerates Cl1-3 there with
+    # the context's Cl cap lifted to the family's (and no other rule loosened),
+    # and commits a winner only where the ION's own 37Cl line is seen at the
+    # predicted ratio (satellites.own_line) -- on an Orbitrap-class run; the
+    # family is skipped anywhere else. It opens no element space for the
+    # degeneracy count or the evidence level (degeneracy.space_profiles): a
+    # rival Cl reading there would need its own 37Cl line too, which the count
+    # does not test. Measured on a field campaign's stored uronium ledgers: the
+    # 37Cl lines of its chlorinated certificates read 0.70-1.09x their prediction
+    # (5th-95th percentile of 303 per-file rows) within 0.4 ppm (95 %).
+    "organochlorine": {"add": {"Cl": (1, 3)}, "adducts": ("[M+H]+",), "iso_gate": "Cl",
+                       "note": "covalent organochlorine on a positive source (37Cl-gated: "
+                               "committed only on its own 37Cl line)"},
 }
+
+
+def family_iso_gate(family: str) -> str | None:
+    """The element whose own isotope line each commit of `family` must show
+    (CONTAMINANT_FAMILIES 'iso_gate'), or None for an ordinary family."""
+    return (CONTAMINANT_FAMILIES.get(family) or {}).get("iso_gate")
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +296,10 @@ _URONIUM = ContextProfile(
     # refuses to build a ladder whose monomer it cannot see -- 93.0911 stays
     # unexplained there rather than becoming an unprovable cluster claim.
     source_solvents=("H2O", "CH4O", "C2H6O", "C3H6O"),
-    pass3_families=("amine", "siloxane", "pdms", "glycol_peg", "phthalate"),
+    # organosulfur: reduced S (thioureas, thiazoles, isothiazolinones) reaches
+    # a neutral only here (the grid is CHO(N)), held to the tier's 34S twin
+    # test; organochlorine: covalent Cl past max_Cl 0, only on its own 37Cl line
+    pass3_families=("amine", "organosulfur", "organochlorine", "siloxane", "pdms", "glycol_peg", "phthalate"),
 )
 
 _EASYIC = ContextProfile(
@@ -308,7 +335,9 @@ _EASYIC = ContextProfile(
     # Having the [M-H]+ hydride channel is what additionally opens the
     # hydride-bound ladder ([EtOH-H]+.EtOH = 91.0754) here.
     source_solvents=("H2O", "CH4O", "C2H6O", "C3H6O"),
-    pass3_families=("amine", "siloxane", "pdms", "glycol_peg", "phthalate"),
+    # organosulfur / organochlorine: as for uronium (thiazoles; chlorophenol,
+    # chloroprene as [M]+.)
+    pass3_families=("amine", "organosulfur", "organochlorine", "siloxane", "pdms", "glycol_peg", "phthalate"),
 )
 
 _NONE = ContextProfile(

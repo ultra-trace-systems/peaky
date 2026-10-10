@@ -8,6 +8,31 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Heteroatom routes and exemptions: an element enters by its own evidence.** (1) The
+  element-budget demote (`plausibility.demote_off_budget`) keeps a commit whose every
+  over-budget Cl / Br / S shows its own 37Cl / 81Br / 34S line in the file, on an
+  Orbitrap-class run (`satellites.own_line`: within max(1 ppm, 3 sigma) of the exact offset, at
+  0.5-2x the first-order prediction, fitting the ion's count better than one atom more and, over
+  a non-zero cap, better than the cap's count); the kept row names the line, the stage counts it
+  (`budget_iso_kept`). Before, only a committed CF2 step exempted anything, so pass-7
+  certificates of chlorinated thiazolinone-like ions on a positive source sat at Candidate with a
+  clean 37Cl line (replayed on a field campaign's stored uronium ledgers: their per-file rows keep
+  their tier in every zone; a Cl1 reading under a Cl2 line does not). (2) Uronium and EasyIC open
+  the `organosulfur` family (held to the tier's 34S twin test) and a new isotope-gated
+  `organochlorine` family (Cl1-3, `iso_gate: "Cl"`): it reads only peaks with a picked 37Cl-offset
+  partner, lifts the context's Cl cap (0) for its own filter only, commits a winner only on the
+  ion's own 37Cl line, runs only on an Orbitrap-class run, and opens no element space for the
+  degeneracy count or the evidence level. (3) DMMP (C3H9O3P) and TCPP (C9H18Cl3O4P) join the
+  positive organophosphate list behind its unchanged gate (>= 2 channels or a 37Cl / 34S / 81Br
+  envelope). (4) The carbon-cluster rule spares a formula whose O / N carry its unsaturation
+  (`hetero_unsaturated`: no F / Si, H/C >= 0.35, (O+N)/C >= 0.3, `skeleton_dbe` -- the DBE less the
+  most C=O / N=O its oxygen can form -- under 1.0 per carbon): oxalic acid, glyoxal,
+  nitrooxyacetic acid, croconic acid, a pyrimidinone and dinitrophenol are no longer demoted on
+  any run, while C24H2, C12HF, C15HFO2, C2O, C4H2O and the Si-N fits still are. (5) A reagent
+  profile's `ranges` string is documented as what it is -- documentation; enumeration reads
+  `build_ranges` and the families (a test pins it). Two NOx-skeleton test fixtures moved to
+  H-poor nitro fits, the only clusters the skeleton alone can still spare.
+
 - **Orbitrap isotope lines are read by peak area, against the file's own minor-line response
   (`PassConfig.iso_response`, `--iso-response {auto,area,off}` on assign / batch / pool).** An
   Orbitrap scan keeps a line only where it clears that scan's detection floor, and the whole-file
