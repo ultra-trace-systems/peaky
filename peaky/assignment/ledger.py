@@ -24,9 +24,10 @@ import json
 import numpy as np
 import pandas as pd
 
+from peaky.assignment import blocked as BL
 from peaky.chem import chemistry as C
 
-__version__ = "0.3.0"   # iso_child rows carry their parent's identity
+__version__ = "0.3.1"   # a clear records the reading it cleared (blocked.py); 0.3.0 iso_child rows carry their parent's identity
 
 ROLE_UNEXPLAINED = "unexplained"
 ROLE_M0 = "M0"
@@ -373,6 +374,7 @@ def commit_assignment(
     ledger.at[i, "alternatives"] = json.dumps(alternatives or [])
     ledger.at[i, "isotopologues"] = json.dumps(isotopologues or [])
     reset_flags(ledger, i)   # a flag judged the previous formula, not this one
+    BL.forget(ledger, i)     # no longer unexplained: no blocked reading
     return ledger
 
 
@@ -403,6 +405,7 @@ def attach_isotopologue(
     _stamp_parent_identity(ledger, ci, pi)
     ledger.at[ci, "iso_label"] = iso_label
     ledger.at[ci, "iso_match_score"] = (np.nan if iso_match_score is None else float(iso_match_score))
+    BL.forget(ledger, ci)
     return ledger
 
 
@@ -424,12 +427,15 @@ def clear_assignment(ledger: pd.DataFrame, peak_id, *, reason: str) -> pd.DataFr
 
     Its isotopologue children are orphaned by I2, so they are cleared back to
     unexplained too. Locked peaks are refused. `reason` is recorded in the
-    commentary so the demotion is auditable."""
+    commentary so the demotion is auditable, and the cleared reading with it
+    as the row's blocked reading (blocked.note_cleared: the run's recorder, or
+    the row itself on a ledger that carries the blocked columns)."""
     i = _row_index(ledger, peak_id)
     if bool(ledger.at[i, "locked"]):
         raise LedgerError(f"peak {peak_id!r} is locked; refusing to clear")
     if str(ledger.at[i, "role"]) != ROLE_M0:
         raise LedgerError(f"peak {peak_id!r} does not own an M0 assignment")
+    BL.note_cleared(ledger, i, reason, children=ledger.index[ledger["parent_peak_id"] == peak_id])
     for ci in ledger.index[ledger["parent_peak_id"] == peak_id]:
         ledger.at[ci, "role"] = ROLE_UNEXPLAINED
         ledger.at[ci, "parent_peak_id"] = pd.NA
@@ -494,6 +500,7 @@ def mark_reagent(ledger: pd.DataFrame, peak_id, label: str, *,
     ledger.at[i, "commentary"] = label
     if ion_formula is not None:   # a reagent cluster has a KNOWN formula -> record it
         ledger.at[i, "ion_formula"] = ion_formula
+    BL.forget(ledger, i)
     return ledger
 
 
@@ -507,6 +514,7 @@ def mark_artifact(ledger: pd.DataFrame, peak_id, label: str) -> pd.DataFrame:
                           f"{ledger.at[i, 'role']!r}); refusing to mark artifact")
     ledger.at[i, "role"] = ROLE_ARTIFACT
     ledger.at[i, "commentary"] = label
+    BL.forget(ledger, i)
     return ledger
 
 

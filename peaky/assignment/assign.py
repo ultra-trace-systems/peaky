@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from peaky.assignment import admission
+from peaky.assignment import blocked
 from peaky.assignment import cleanup
 from peaky.chem import contexts
 from peaky.assignment import degeneracy
@@ -39,7 +40,8 @@ from peaky.assignment import solvent_clusters
 from peaky.assignment import tiers
 from peaky.batch import timeseries
 
-__version__ = "0.7.1"  # + the run profile into the tier stage (the NOx-skeleton cap, stats["nox_skeleton_gate"]); 0.7.0 the Orbitrap side-lobe guard before pass 0, the run's
+__version__ = "0.7.2"  # + every unexplained row says why (blocked.py: blocked_reading / blocked_by)
+#                        0.7.1 the run profile into the tier stage (the NOx-skeleton cap, stats["nox_skeleton_gate"]); 0.7.0 the Orbitrap side-lobe guard before pass 0, the run's
 #                        context profile (the NOx-skeleton switches) and the
 #                        element_evidence stage (clears and locks a heteroatom
 #                        reading the file's own lines contradict)
@@ -1077,6 +1079,9 @@ def run(sample_id: str, context: str = "ambient-air", *,
             log(f"[run] isotope lines read by area ({'response fitted after calibrate' if iso_mode == 'auto' else 'no response'})")
     while True:
         cfg.iso_response_fit, cfg.iso_area = iso_fit, iso_area
+        # the exits of THIS pass through the stages (a re-run starts afresh):
+        # what each gate stopped, stamped on the unexplained rows at the end
+        blocked_rec = blocked.start()
         st = _RunState(
             client=client, sample_id=sample_id, led=led, profile=profile, pre=pre,
             cfg=cfg, adducts=adducts, reagent=reagent, has_halogen=has_halogen_adduct,
@@ -1155,6 +1160,16 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # the FINAL pass's state: its degeneracy calibration is the one the stats persist
     run_state = st
     led, summaries, plaus_audit = st.led, st.summaries, st.plaus_audit
+    # why each unexplained row is unexplained: the best reading a gate stopped on
+    # it and the gate (blocked.py) -- two columns appended after every other one,
+    # NA on every row that is not unexplained; nothing else is read or changed.
+    # A diagnostic: a failure is logged, never the file's run lost
+    try:
+        blocked.stamp(led, blocked_rec, client=client, sample_id=sample_id, cfg=cfg, log=log)
+    except Exception as e:  # noqa: BLE001
+        log(f"[blocked] WARNING the unexplained rows were not stamped: {type(e).__name__}: {e}")
+    finally:
+        blocked.stop()
     # the record of what the candidates were scored at, the trend included
     scoring_snapshot = io_mascope.scoring_snapshot(client, sample_id, raw)
     tc = led.loc[led["role"] == ledger.ROLE_M0, "tier"].value_counts().to_dict()

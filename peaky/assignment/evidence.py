@@ -59,6 +59,7 @@ import pandas as pd
 
 from peaky import paths as PT
 from peaky.assignment.ledger import lead_setters
+from peaky.assignment.tiers import CAL_MIN_N as _CAL_MIN_N
 from peaky.assignment.levels import scale as SCALE
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
@@ -1228,6 +1229,13 @@ NO_WINDOW_TEXT = ("no level · the file is uncalibrated (no calibration core for
 NO_RUN_WINDOW_TEXT = ("no level · no file of the source is calibrated (no calibration core for the degeneracy audit "
                       "in any file): no run window to enumerate competitors in")
 
+#: the `would_lift` of a pair with no level because no file is calibrated: what the
+#: calibration needs (tiers.CAL_MIN_N core rows, the degeneracy window's minimum) --
+#: on every pair of a pooled source none of whose files is calibrated, and on every
+#: committed row of an uncalibrated file levelled alone (NO_WINDOW_LIFT)
+NO_RUN_WINDOW_LIFT = f"no file of this source calibrated (needs ≥ {_CAL_MIN_N} isotope-backed core rows)"
+NO_WINDOW_LIFT = f"the file is not calibrated (needs ≥ {_CAL_MIN_N} isotope-backed core rows)"
+
 #: why such a source, named by --corroborate, gives no other-source partners (the batch and
 #: scripts/level_ledger.py log it and skip the source: its pairs carry no level, so none anchors a partner)
 NO_RUN_WINDOW_PARTNERS = ("no file of the source is calibrated (no run window): its pairs carry no level, "
@@ -1365,6 +1373,8 @@ def apply_levels(ledger: pd.DataFrame, *, cfg=None, resolution=None, run_inputs=
             why = NO_WINDOW_TEXT
     if why:
         ledger.loc[m0, "evidence"] = why
+        if why == NO_WINDOW_TEXT:
+            ledger.loc[m0, "would_lift"] = NO_WINDOW_LIFT
     else:
         if pairs is None:
             pairs = level_source(src)
@@ -1378,6 +1388,8 @@ def apply_levels(ledger: pd.DataFrame, *, cfg=None, resolution=None, run_inputs=
 
 #: the evidence text of a merged row whose reading no pooled pair holds
 NO_POOLED_PAIR_TEXT = "no pooled pair: a batch-level re-read"
+#: ... and its `would_lift`
+NO_POOLED_PAIR_LIFT = "batch-level re-read: the re-read pair is not levelled"
 
 
 def stamp_merged(merged: pd.DataFrame, pairs: pd.DataFrame | None) -> pd.DataFrame:
@@ -1385,12 +1397,14 @@ def stamp_merged(merged: pd.DataFrame, pairs: pd.DataFrame | None) -> pd.DataFra
     (neutral_formula, adduct) -- each merged row is one ion, so the join is
     one-to-one. Every merged row is a committed reading and carries a claim: a
     row whose reading no pooled pair holds (a batch-level re-read) gets no
-    level, claim tentative and the evidence `NO_POOLED_PAIR_TEXT`."""
+    level, claim tentative, the evidence `NO_POOLED_PAIR_TEXT` and the
+    would_lift `NO_POOLED_PAIR_LIFT`."""
     out = merged.copy()
     _blank_columns(out)
     if not len(out):
         return out
     hit = _stamp_pairs(out, pd.Series(True, index=out.index), pairs)
     out.loc[~hit, "evidence"] = NO_POOLED_PAIR_TEXT
+    out.loc[~hit, "would_lift"] = NO_POOLED_PAIR_LIFT
     out["claim"] = pd.Series([claim_class(v) for v in out["evidence_level"]], index=out.index, dtype=object)
     return out

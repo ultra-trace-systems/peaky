@@ -443,9 +443,13 @@ def no_run_window(src: Source) -> bool:
 def no_window_frame(src: Source) -> pd.DataFrame:
     """The level frame of a source with no run window (`no_run_window`): every
     committed pair without a level, claim tentative, the reason in `evidence`
-    (`evidence.NO_RUN_WINDOW_TEXT`), the pair facts beside it -- as the
-    per-file stage writes for an uncalibrated file levelled alone."""
-    return _unlevelled_frame(src, "", _ev().NO_RUN_WINDOW_TEXT, SC.claim_class(""), facts=True)
+    (`evidence.NO_RUN_WINDOW_TEXT`) and what would lift it in `would_lift`
+    (`evidence.NO_RUN_WINDOW_LIFT`: a calibrated file), the pair facts beside
+    it -- as the per-file stage writes for an uncalibrated file levelled alone."""
+    out = _unlevelled_frame(src, "", _ev().NO_RUN_WINDOW_TEXT, SC.claim_class(""), facts=True)
+    if len(out):
+        out["would_lift"] = _ev().NO_RUN_WINDOW_LIFT
+    return out
 
 
 def _unlevelled_frame(src: Source, level: str, evidence: str, claim: str, *, facts: bool) -> pd.DataFrame:
