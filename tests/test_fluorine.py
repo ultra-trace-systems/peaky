@@ -193,7 +193,7 @@ def _labelled(led: pd.DataFrame) -> pd.DataFrame:
     return led
 
 
-@pytest.mark.parametrize("ratio, refuted", [(0.02, True), (0.012, True), (0.2, False), (0.003, False)])
+@pytest.mark.parametrize("ratio, refuted", [(0.02, True), (0.012, True), (0.08, True), (0.2, False), (0.003, False)])
 def test_the_14n_twin_of_the_15n_alias_refutes_an_n_free_f_reading(ratio, refuted):
     twin = ("twin", _mz("C6H5F7O2") - FL.D_15N, 800.0 * ratio)
     led = _labelled(_ledger(SERIES, {"C6H5F7O2", "C7H5F9O2", "C8H5F11O2"}, extra=[twin]))
@@ -210,12 +210,14 @@ def test_the_twin_is_read_only_on_a_15n_nitrate_ledger():
     assert FL.verdicts(led, cfg=_cfg())["C6H5F7O2"].full
 
 
-def test_an_f_reading_on_the_labelled_cluster_keeps_a_twin_at_its_own_share():
-    """[M+^NO3]- of an F neutral carries one ^N (twin ~ f), its alias two (~ 2f)."""
+def test_an_f_reading_that_carries_15n_is_not_refuted_by_a_twin():
+    """[M+^NO3]- of an F neutral carries one ^N (its own twin ~ f), its alias two
+    (~ 2f); the 14N share is not known well enough to tell f from 2f (the air's
+    14N nitrate adds to the reagent's impurity), so no twin refutes it."""
     f = (1 - ISO.label_purity()) / ISO.label_purity()
     series = {nf: h for nf, h in SERIES.items()}
     rows = [dict(peak_id=nf, mz=_mz(nf, "[M+^NO3]-"), height=h) for nf, h in series.items()]
-    for share, refuted in ((1.0, False), (2.0, True)):
+    for share in (1.0, 2.0, 4.0):
         led = L.new_ledger(pd.DataFrame(rows + [dict(peak_id="twin", height=800.0 * f * share,
                                                      mz=_mz("C6H5F7O2", "[M+^NO3]-") - FL.D_15N)]))
         for nf in ("C6H5F7O2", "C7H5F9O2", "C8H5F11O2"):
@@ -224,7 +226,7 @@ def test_an_f_reading_on_the_labelled_cluster_keeps_a_twin_at_its_own_share():
                                 ppm_error=0.1, pass_no=3, method="contaminant:fluorinated:gka",
                                 confidence="High (fluorinated)", commentary="Pass 3")
         lad = FL.verdicts(led, cfg=_cfg())["C6H5F7O2"]
-        assert (lad.veto is not None) == refuted, (share, lad)
+        assert lad.veto is None and lad.full, (share, lad)
 
 
 def test_a_13c_line_that_contradicts_the_carbon_count_refutes_the_ladder():

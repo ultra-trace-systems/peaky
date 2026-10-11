@@ -26,11 +26,17 @@ file and hands the two refusals a verdict:
     - the 14N twin of its 15N alias. On a 15N-nitrate run C2F3 and H2^NO4 differ
       by 0.21 mDa (unresolvable), so every F reading with C >= 2 and F >= 3 has a
       same-mass reading with one more ^N, and the swap preserves the ladder. The
-      line one 15N-14N step (0.99703 Da) below carries the reagent's 14N impurity
-      f = (1 - purity) / purity per labelled atom: about n f of the M0 for a
-      reading with n ^N. A line there that reads as the alias's (n + 1) f -- inside
-      ALIAS_TWIN_BAND of it, and nearer to it than to the reading's own n f -- is
-      the alias's twin;
+      line one 15N-14N step (0.99703 Da) below carries the 14N share of a
+      labelled ion: f = (1 - purity) / purity per labelled atom from the reagent,
+      plus whatever 14N nitrate the air brings. Only a reading that carries NO ^N
+      is tested: it has no such line of its own, so a line there inside
+      ALIAS_TWIN_BAND of the alias's f is the alias's twin. A reading that carries
+      n ^N has its own twin at ~n f, and the share is not known well enough to
+      tell n f from the alias's (n + 1) f: on the campaign below the own twin of
+      the truth's one-^N F readings read 0.01-0.1 of the line (up to 5x the
+      98 % purity's f, 40 % of them above 2 f): a test against the nominal f
+      refuted 52 truth readings to catch one alias, which the test on ^N-free
+      readings catches too;
     - the 13C line: the row's own 13C line (its child, or an unclaimed line at
       +1.00336), at or above the file's detection floor, whose carbon count
       contradicts the formula's (iso_response.contradicts, the test the isotope
@@ -44,7 +50,10 @@ arbitrate (passes/core.py).
 Measured on the stored per-file ledgers of a 15N-nitrate field campaign
 (128-600 window): 52 truth lines on CF2 ladders were refused as 'unconfirmed
 fluorine'; their ladder neighbours sit at 0.03-10x the line's height (1st-99th
-percentile), so LADDER_HEIGHT_X = 30 leaves out only the extremes.
+percentile), so LADDER_HEIGHT_X = 30 leaves out only the extremes. The line test
+is specific: at decoy repeat units (CF2 +/- 3-10 mDa) >= 2 ladder lines are found
+for 0-1.2 % of the F readings against 76 % at the CF2 step (on a ~10k TOF, with
+the 2 ppm window: <= 0.4 % against 42 %).
 """
 from __future__ import annotations
 
@@ -73,7 +82,7 @@ LADDER_HEIGHT_X = 30.0                     # a ladder line reads within 1/30..30
 #: the 15N alias: C2F3 out, H2 ^N O4 in (0.21 mDa)
 ALIAS_OUT = {"C": 2, "F": 3}
 D_15N = C.M["^N"] - C.M["N"]               # 0.99703 Da
-ALIAS_TWIN_BAND = (0.5, 2.0)               # the twin reads within this x the alias's predicted share
+ALIAS_TWIN_BAND = (0.5, 5.0)               # the twin reads within this x the alias's nominal share f
 C13_PPM = 5.0                              # the 13C line's window where no exact-offset one holds (audit_sat_ppm)
 #: the 13C carbon-count term between sub-mDa aliases of the fluorinated family
 ALIAS_MDA = 1.0                            # aliases: ion masses within this of the arbitration's top reading
@@ -176,24 +185,21 @@ class _Lines:
 
 def _alias_twin(ion: dict, h0: float, lines: _Lines, mz0: float, ppm: float, f: float) -> str | None:
     """The 14N twin of the reading's C2F3 -> H2^NO4 alias, read as the alias's:
-    a reason, else None (no alias, no twin line, or a twin that reads as the
-    reading's own)."""
+    a reason, else None (no alias, a reading that carries ^N -- its own twin
+    cannot be told from its alias's --, no twin line, or one outside the band)."""
     if ion.get("C", 0) < ALIAS_OUT["C"] or ion.get("F", 0) < ALIAS_OUT["F"] or not (f > 0):
+        return None
+    if ion.get("^N", 0):
         return None
     hit = lines.near(mz0 - D_15N, ppm)
     if hit is None:
         return None
     r = hit[1] / h0
-    n_own = ion.get("^N", 0)
-    e_alias, e_own = (n_own + 1) * f, n_own * f
     lo, hi = ALIAS_TWIN_BAND
-    if not (lo * e_alias <= r <= hi * e_alias):
+    if not (lo * f <= r <= hi * f):
         return None
-    if n_own and abs(math.log(r / e_alias)) >= abs(math.log(r / e_own)):
-        return None
-    return (f"the 14N twin of its 15N alias (C2F3 -> H2^NO4, ^N{n_own + 1}) reads {r:.3f} of the line, "
-            f"the alias's {e_alias:.3f}" + (f" against the reading's {e_own:.3f}" if n_own else
-                                             " where the reading carries no ^N"))
+    return (f"the 14N twin of its 15N alias (C2F3 -> H2^NO4, ^N1) reads {r:.3f} of the line "
+            f"(the alias's share ~{f:.3f}) where the reading carries no ^N")
 
 
 def _c13_refutes(ledger: pd.DataFrame, i, ion: dict, lines: _Lines, cfg, kids: dict) -> str | None:
