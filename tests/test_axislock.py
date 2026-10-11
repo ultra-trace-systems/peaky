@@ -689,6 +689,8 @@ def test_the_run_writes_the_locks_and_keeps_no_frame_in_its_summary(tmp_path, mo
     (0.1, 0.2, 0.35, False, "axis_ok"),               # ... but nothing reads 0.4 ppm off
     (0.25, 0.3, 0.45, False, "axis_ok"),              # held-out error over half a sub-ppm correction
     (0.32, 0.8, 0.6, False, "axis_ok"),               # predictive by the general bar, not for 0.6 ppm
+    (0.35, 0.8, 0.6, False, "axis_ok"),               # a 0.35 ppm held-out error cannot correct 0.6
+    (0.3, 0.8, 0.6, True, "axis_steps"),              # ... one at exactly half of it can
     (0.5, 0.6, 0.9, False, "locks_unpredictive"),     # the general bar still comes first
     (0.1, 2.0, 9.0, False, "axis_steps"),             # over the 7 ppm cap: held
 ])

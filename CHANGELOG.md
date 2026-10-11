@@ -28,13 +28,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and judged by the pattern-only score; the median raw error of the unique, pattern-Good,
   13C-confirmed CHO/CHON readings (at least 8, scaled MAD at most 0.6 ppm, inside the search
   window, at least 0.1 ppm from zero) is the centre every pass and re-run judges against. With
-  anchors stripped from anchored NO+ files it lands within ~0.1 ppm of the anchors' own centre.
+  the anchors stripped from 121 anchored Orbitrap files it stated a centre on 70, a median
+  0.04 ppm (at most 0.22 ppm) from the anchors' own; sparse files state none.
   `pattern_scoring.mu_source` now reads `fitted`, `axis` (the batch's correction reached the
   file; `axis_scope_share`), `self` (the measurement under `self_centre`), `trend`, `inherited`
   or `assumed_zero`; every `per_file` row records `mu_source`, `mu_ppm` and `self_centre`, and
   `batch_summary.json['scoring_centres']` counts the files per source. A file with its own
   anchors, a stand-in judged at an inherited snapshot (a decoy arm), the trace-first sample and a
-  TOF keep their centre; an anchored file not reached by a newly applied axis runs byte-identically.
+  TOF keep their centre; an anchored file the batch's axis correction does not reach runs
+  byte-identically.
 
 - **Orbitrap isotope lines are read by peak area, against the file's own minor-line response
   (`PassConfig.iso_response`, `--iso-response {auto,area,off}` on assign / batch / pool).** An
