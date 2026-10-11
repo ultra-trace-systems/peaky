@@ -310,36 +310,38 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **One commit contract for the heteroatom routes: a reading shows its own isotope line, or it is
   not committed.** The per-peak grid proposes C / H / N / O only, so an S, Cl, Br or Si reading
   comes from a widened route, and those routes committed with weaker evidence than pass 1. On a
-  15N-nitrate field batch, pass-7 certificates committed P / S / Cl readings of fluorinated
-  lines whose 34S / 37Cl line was predicted at 2-4x the noise edge and absent in every file;
-  contaminant families committed at `tau_suspect` 0.50 (a siloxane Si3 reading took a bright S
-  line whose 29Si line no file showed); the isotope-gated recovery took another ion's M0 5.6 mDa
-  off as a 37Cl line; the envelope sweep attached neighbour ions 3-4 ppm off a predicted 34S /
-  18O position at 2-3.7x the ratio. Now, on an Orbitrap-class run:
-  (1) `satellites.own_line_verdict`: a reading whose neutral carries S / Cl / Br / Si must show
-  its own 34S / 37Cl / 81Br / 29Si / 30Si line at the exact offset where the line is predicted at
-  >= 2x the resolved height gate; absent there (and no neighbour could hold it as a blend) the
-  commit is refused and the peak's row says why (`REFUSED (own_line: ...)`). Untestable lines
-  (dim, masked by the reagent's halogen, held by a taller line) keep today's outcome; a route
-  that declares `line_gate='strict'` commits them at Low at most. Applied in `commit_winners`
-  (passes 1-3, 5), pass 7 (pooled over the certificate's members: one member showing the line is
-  enough), the residual's iso-pair and series stages, pass 6's ladder gap-fill, the reference-list
-  and labelled rescues, the off-cal re-arbitration's alternatives, and pass 0 (a refused known
-  species leaves a `deferred` lead under 4x the gate, `refuted` from 4x). (2) The pass-3 contaminant families
-  commit at `tau_low` (0.70), pass 1's bar. (3) The isotope-gated recovery reads each candidate's
-  M+2 at its own offset within max(2 ppm, 3 sigma) at 0.5-2x its prediction, and the envelope
-  sweep attaches or displaces a heteroatom M+1 / M+2 line only there (0.3-2x where the line is
-  predicted under 4x the gate). (4) The batch's known-species cap is monotone: the neutral's own
-  13C line counts toward the two lines, and a species whose pass-0 rule demands corroboration is
-  capped on exact mass alone too; a family whose rule is exact mass is never capped. Off an
-  Orbitrap (TOF, unknown class, the trace sample) items 1 and 3 are inert. Offline replay on the
-  stored ledgers of that campaign: 1,276 per-file heteroatom rows refused (6 Assigned, each still
-  Assigned in other files), 6,961 per-file contaminant-family rows under 0.70 no longer committed
-  (all Candidate), 858 of 3,114 sweep-attached heteroatom lines left as their own peaks; the
-  known-species cap lifts five truth lines to Assigned (2-(methylthio)benzothiazole x2,
-  tetramethylthiourea, dimethyl sulfoxide, a malathion transformation product) and drops one
-  (sulfuric acid, Assigned only where no file showed its 34S line). The release acceptance rows
-  touched by the contract (a chlorinated product, the D5 siloxane) show their lines.
+  15N-nitrate field batch, pass-7 certificates committed P / S / Cl readings of fluorinated lines
+  whose 34S / 37Cl line was predicted at 2-4x the noise edge and absent in every file; contaminant
+  families committed at `tau_suspect` 0.50 (a siloxane Si3 reading took a bright S line whose 29Si
+  line no file showed); the isotope-gated recovery took another ion's M0 5.6 mDa off as a 37Cl line;
+  the envelope sweep attached neighbour ions 2.6-4.8 ppm off a predicted 34S / 18O / 37Cl / 29Si
+  position, or at 2-3.7x the ratio. Now, on an Orbitrap-class run: (1)
+  `satellites.own_line_verdict`: a reading whose neutral carries S / Cl / Br / Si must show its own
+  34S / 37Cl / 81Br / 29Si / 30Si line at the exact offset where the line is predicted at 2x the
+  resolved height gate or more; absent there (and no neighbour could hold it as a blend) the commit
+  is refused and the peak's row says why (`REFUSED (own_line: ...)`). Untestable lines (dim, masked
+  by the reagent's halogen, held by a taller line) keep today's outcome; a route that declares
+  `line_gate='strict'` commits them at Low at most. Applied in `commit_winners` (passes 1-3, 5),
+  pass 7 (pooled over the certificate's members: one member showing the line is enough), the
+  residual's iso-pair and series stages, pass 6's ladder gap-fill, the reference-list and labelled
+  rescues, the off-cal re-arbitration's alternatives, and pass 0 (a refused known species leaves a
+  `deferred` lead under 4x the gate, `refuted` from 4x). (2) The pass-3 contaminant families commit
+  at `tau_low` (0.70), pass 1's bar. (3) The isotope-gated recovery reads each candidate's M+2 at
+  its own offset within max(2 ppm, 3 sigma) at 0.5-2x its prediction, and the envelope sweep
+  attaches or displaces a heteroatom M+1 / M+2 line only there (0.3-2x where the line is predicted
+  under 4x the gate); the 2-ppm floor is the satellite's own scatter (a weak line on the shoulder of
+  a taller fine-structure line is picked up to ~1.7 ppm toward it). (4) The batch's known-species
+  cap is monotone: the neutral's own 13C line counts toward the two lines, and a species whose
+  pass-0 rule demands corroboration is capped on exact mass alone too; a family whose rule is exact
+  mass is never capped. Off an Orbitrap (TOF, unknown class, the trace sample) items 1 and 3 are
+  inert. Offline replay on the stored ledgers of that campaign: 1,276 per-file heteroatom rows
+  refused (6 Assigned, each still Assigned in other files), 6,961 per-file contaminant-family rows
+  under 0.70 no longer committed (all Candidate), 694 of 3,114 sweep-attached heteroatom lines left
+  as their own peaks; the known-species cap lifts five truth lines to Assigned
+  (2-(methylthio)benzothiazole x2, tetramethylthiourea, dimethyl sulfoxide, a malathion
+  transformation product) and drops one (sulfuric acid, Assigned only where no file showed its 34S
+  line). The release acceptance rows touched by the contract (a chlorinated product, the D5
+  siloxane) show their lines.
 - **The `blended` separability class was 1.39x too wide.** `chem.resolution.d_crit_hwhm`, the
   separation at which two Gaussians of a given height ratio turn bimodal, converted its sigma table
   to HWHM by multiplying by sqrt(2 ln 2) where it divides: equal heights read 2.36 HWHM instead of
