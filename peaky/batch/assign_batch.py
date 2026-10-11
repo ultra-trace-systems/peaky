@@ -1475,13 +1475,17 @@ def scoring_centres(scorings: dict) -> dict:
     (`pattern_scoring`): `by_mu_source` (files per centre source: `fitted` anchors,
     the batch's `axis`, a `self`-centre, a `trend`, `inherited`, `assumed_zero`;
     `unrecorded` for a file with no snapshot) and `self` (`{sample id: centre ppm}`
-    of the self-centred files)."""
+    of the files scored at their self-centre). A self-centred file whose own
+    calibration then accepted a mass trend was scored at the trend: it counts as
+    `trend` and is not listed (its per-file `self_centre` keeps the measurement).
+    The merge does not read the self-centre: it aligns the files on their
+    pre-calibration offset (`per_file.offset_ppm`, io_mascope.estimate_offset)."""
     by: dict = {}
     own: dict = {}
     for sid, snap in (scorings or {}).items():
         src = (snap or {}).get("mu_source") or "unrecorded"
         by[src] = by.get(src, 0) + 1
-        if src == "self" or (snap or {}).get("self_centre") is not None:
+        if src == "self":
             own[sid] = (snap or {}).get("mu_ppm")
     return {"by_mu_source": dict(sorted(by.items())), "self": own}
 

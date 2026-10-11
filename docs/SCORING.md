@@ -121,8 +121,7 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   batch's m/z-axis correction reached the sample — `peaky batch --mass-axis`, its
   peaks moved onto the model's axis, so zero is right where the model reaches; the
   snapshot adds `axis_scope_share`, the share of the sample's peaks inside the
-  model's scope, as it does for every sample the correction reached); `self` (none,
-  and no axis correction: an Orbitrap-class file
+  model's scope); `self` (none, and no axis correction: an Orbitrap-class file
   scored locally measured its own centre before pass 0, `assignment/selfcentre.py`;
   the measurement is under `self_centre`); else `assumed_zero`. A run that then
   accepts a mass trend says `trend`; a stand-in says `inherited`. The self-centre
@@ -136,23 +135,29 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   ratio within 1.5 ppm of the M0's error). The backbone's median raw error is the
   centre when at least 8 points agree (scaled MAD ≤ 0.6 ppm), their bulk (centre ±
   2 spreads) lies inside the search window and it sits ≥ 0.1 ppm from zero; the
-  file is then scored at it from pass 0 on, re-runs included, and the pass-0
-  known-species gate keeps its own centre (`prior_offset`). Zero was the only
-  honest reading only while nothing else had been measured: scored there, an
+  file is then scored at it from pass 0 on, the isotope-response re-run included,
+  until a mass trend its calibration accepts takes over (`trend`), and the pass-0
+  known-species gate keeps its own centre (`prior_offset`). The batch's merge does
+  not read it: the files are aligned on their pre-calibration offset
+  (`per_file.offset_ppm`, `estimate_offset`), null below eight anchors. Zero was
+  the only honest reading only while nothing else had been measured: scored there, an
   anchorless file 0.6 ppm off commits almost nothing at the class width, and the
   pass-1 calibration cannot see why — its backbone is what the zero-centred score
   let through. `PassConfig.self_centre = False` scores such a file at zero.
 
-  **An anchored file under the batch's axis correction keeps one axis.** The
-  model corrects only where its locks reach; its anchors are then measured on the
-  corrected peaks, and the centre they fit no longer describes the peaks the model
-  left alone. So outside the model's scope an anchored sample's peaks take the
-  correction the model applies where the sample's own anchors sit (the median of
-  the model at its in-scope anchors, at least five of them; `io_mascope._axis_corrected`,
-  the snapshot's `axis_outside_shift_ppm`). An anchorless sample's peaks outside
-  the scope stay uncorrected. Without it, on an NO+ batch whose model stopped at
-  m/z 129, the anchored files' C9-C12 hydrocarbons above it (judged at the fitted
-  centre of the corrected axis, 0.6 ppm off theirs) fell from Good to Low.
+  **Outside the axis model's scope nothing is moved.** The model corrects only
+  where its locks reach; below or above them, and in a gap or hole between its
+  segments, every sample's peaks keep the server's m/z, an anchored sample's
+  included, because nothing measured the axis there. An anchored sample's centre
+  is its anchors', measured on the corrected peaks: on a batch whose model leaves
+  part of the file uncorrected that centre can sit off the peaks the model did not
+  reach (an NO+ batch whose locks stop near m/z 129: its anchored files'
+  C9-C12 hydrocarbons above it read 0.6 ppm off and fall from Good). Moving them by
+  the model's in-scope correction at the file's anchors fixed that batch and broke
+  a curved one (a labelled-nitrate batch whose correction swings from -2.5 ppm at
+  m/z 45 through +0.9 at m/z 100 to +0.2 at its edge, m/z 173: the peaks above it
+  moved 0.25-0.36 ppm off their file's centre), and the files' own out-of-scope
+  anchors, 0-12 of them, scatter as widely as the shift; so no rule is applied.
 
   **An offline sample has neither a record nor anchors.** A table served from
   memory (`register_offline_sample`: a scorecard decoy arm, the trace-first

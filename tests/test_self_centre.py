@@ -38,6 +38,8 @@ from peaky.assignment import assign as A  # noqa: E402
 from peaky.assignment import selfcentre as SC  # noqa: E402
 from peaky.assignment.passes import config as PCfg  # noqa: E402
 from peaky.batch import assign_batch as AB  # noqa: E402
+from peaky.batch import massqc as MQ  # noqa: E402
+from peaky.batch.axislock import AxisModel  # noqa: E402
 from peaky.batch.wave import WaveFit  # noqa: E402
 from peaky.chem import chemistry as C  # noqa: E402
 from peaky.io import io_mascope as IO  # noqa: E402
@@ -163,10 +165,12 @@ class TestTheCentreLadder:
 
 
 class TestOutsideTheAxisModelsScope:
-    """The batch's axis model corrects only where its locks reach. An anchored file's
-    fitted centre is measured on the corrected peaks, so the peaks the model left
-    alone would be judged at a centre that is no longer theirs: they take the
-    correction the model applies where the file's anchors sit."""
+    """The batch's axis model corrects only where its locks reach. Outside its scope --
+    below or above it, and in a gap or hole between its segments -- every sample's
+    peaks stay as the server measured them, an anchored sample's included: nothing
+    measured the axis there. (A shift sized on the model's in-scope correction at the
+    file's anchors moved a curved axis's peaks away from the file's own centre.) An
+    anchored file under the correction runs exactly as it did before the self-centre."""
 
     @staticmethod
     def _mzs(res, lo, hi):
@@ -174,49 +178,66 @@ class TestOutsideTheAxisModelsScope:
         m0 = led[(led["role"] == "M0") & (led["mz"] >= lo) & (led["mz"] <= hi)]
         return m0
 
-    def test_an_anchored_files_peaks_outside_the_scope_follow_its_anchors(self):
-        sid = "sc-out-anch"
-        IO.set_axis_correction([sid], _scoped(SHIFT, 120.0, 300.0))     # anchors (m/z 131-243) inside
-        res, _ = _run(sid, _peaks(anchors=8))
-        snap = res["pattern_scoring"]
-        assert snap["mu_source"] == "fitted" and snap["mu_ppm"] == pytest.approx(0.0, abs=0.02)
-        assert snap["axis_outside_shift_ppm"] == pytest.approx(SHIFT, abs=1e-3)
-        assert 0 < snap["axis_scope_share"] < 1
-        # every acid commits on mass, the ones above m/z 300 (outside the model) included
-        assert len(_m0(res)) == len(ACIDS) and (_m0(res)["ion_score"] > 0.9).all()
-        out = self._mzs(res, 300.5, 600.0)
-        assert len(out) and (out["ppm_error"].abs() < 0.05).all()
+    @staticmethod
+    def _stepped():
+        """A curved, stepped lock model with a gap: a spline over m/z 120-200 (0.5 ppm
+        falling to 0.1), nothing over 200-350, a line over 350-420 sitting 1.2 ppm off."""
+        return AxisModel(segments=[
+            {"kind": "spline", "lo": 120.0, "hi": 200.0, "n": 20,
+             "x": np.array([120.0, 160.0, 200.0]), "y": np.array([0.5, 0.25, 0.1])},
+            {"kind": "line", "lo": 350.0, "hi": 420.0, "n": 8, "a": -1.2, "b": 0.0}])
 
-    def test_without_the_shift_they_would_sit_off_the_fitted_centre(self, monkeypatch):
-        # the same file with the shift switched off: the peaks above m/z 300 stay
-        # on the raw axis while the anchors' centre reads the corrected one
-        sid = "sc-out-noshift"
-        monkeypatch.setattr(IO, "_outside_shift", lambda *a, **k: None)
-        IO.set_axis_correction([sid], _scoped(SHIFT, 120.0, 300.0))
-        res, _ = _run(sid, _peaks(anchors=8))
-        assert self._mzs(res, 300.5, 600.0).empty
+    def test_an_anchored_files_peaks_outside_the_scope_stay_as_served(self):
+        sid = "sc-out-anch"
+        peaks = _peaks(anchors=8)
+        IO.register_offline_sample(sid, peaks, ["[M-H]-"], scoring="orbi")
+        fit = self._stepped()
+        IO.set_axis_correction([sid], fit)
+        try:
+            got = IO.fetch_peaks(None, sid)["mz"].to_numpy()
+            raw = peaks["mz"].to_numpy()
+            # the correction where the model reaches, the raw m/z elsewhere: below it,
+            # in the gap between its segments and above it
+            assert np.array_equal(got, MQ.apply_correction(fit, raw))
+            out = ~MQ.in_scope(fit, raw)
+            gap = (raw > 201.0) & (raw < 349.0)
+            assert gap.any() and out[gap].all() and (raw[out] > 420.5).any()
+            assert np.array_equal(got[out], raw[out])
+            snap = IO.scoring_snapshot(None, sid)
+            assert snap["mu_source"] == "fitted"
+            assert not {"axis_scope_share", "axis_outside_shift_ppm", "self_centre"} & set(snap)
+        finally:
+            IO.unregister_offline_sample(sid)
+
+    def test_an_anchored_file_on_a_curved_stepped_axis_runs_as_before(self):
+        # the self-centre neither moves nor re-scores an anchored file the batch's axis
+        # corrects in part: ledger and snapshot are the same with it on and off, and the
+        # committed lines in the gap carry their raw m/z
+        peaks = _peaks(anchors=8)
+        runs = {}
+        for sid, on in (("sc-step-on", True), ("sc-step-off", False)):
+            IO.set_axis_correction([sid], self._stepped())
+            runs[on] = _run(sid, peaks, self_centre=on)
+        (on, log), (off, _) = runs[True], runs[False]
+        assert not any("[self-centre]" in m for m in log)
+        # its own anchors centre it (a curved remainder may still win it a C42 trend)
+        snap = on["pattern_scoring"]
+        assert snap["fitted_anchors"] >= IO.MIN_OFFSET_ANCHORS and snap["mu_source"] in ("fitted", "trend")
+        assert "self_centre" not in snap and on["stats"]["self_centre"] is None
+        pd.testing.assert_frame_equal(on["ledger"], off["ledger"])
+        assert on["pattern_scoring"] == off["pattern_scoring"]
+        gap = self._mzs(on, 201.0, 349.0)
+        raw = peaks.set_index("peak_id")["mz"]
+        assert len(gap) and np.array_equal(gap["mz"].to_numpy(), raw.loc[gap["peak_id"]].to_numpy())
 
     def test_an_anchorless_files_peaks_outside_the_scope_stay_uncorrected(self):
         sid = "sc-out-bare"
         IO.set_axis_correction([sid], _scoped(SHIFT, 120.0, 300.0))
         res, log = _run(sid)
         snap = res["pattern_scoring"]
-        assert snap["mu_source"] == "axis" and "axis_outside_shift_ppm" not in snap
+        assert snap["mu_source"] == "axis" and 0 < snap["axis_scope_share"] < 1
         assert not any("[self-centre]" in m for m in log)
         assert len(self._mzs(res, 120.0, 300.0)) and self._mzs(res, 300.5, 600.0).empty
-
-    def test_too_few_anchors_inside_the_scope_shift_nothing(self):
-        sid = "sc-out-few"
-        IO.register_offline_sample(sid, _peaks(anchors=8), ["[M-H]-"], scoring="orbi")
-        IO.set_axis_correction([sid], _scoped(SHIFT, 120.0, 140.0))     # 1 anchor inside
-        try:
-            got = IO.fetch_peaks(None, sid)
-            assert IO._AXIS_OUTSIDE[sid] is None
-            raw = _peaks(anchors=8).set_index("peak_id")["mz"]
-            far = got[got["mz"] > 141.0]
-            assert np.allclose(far["mz"].to_numpy(), raw.loc[far["peak_id"]].to_numpy(), rtol=0, atol=1e-12)
-        finally:
-            IO.unregister_offline_sample(sid)
 
 
 # --------------------------------------------------------------------------- the backbone
@@ -343,17 +364,26 @@ class TestTheRun:
         assert off["pattern_scoring"]["mu_source"] == "assumed_zero"
         assert off["stats"]["self_centre"] == {"applied": False, "why": "off (PassConfig.self_centre=False)"}
 
-    def test_the_centre_holds_through_every_re_run(self, monkeypatch):
+    def test_the_centre_holds_through_a_re_run(self, monkeypatch):
+        # force the isotope-response re-run (the file's flat 1.0 response made material):
+        # pass 1 runs twice, both times at the self-centre and with no trend in force, and
+        # the registry entry outlives the re-run's restore of led / cfg
         seen = []
         real = A.passes.run_pass1
 
         def spy(client, sid, led, profile, pre, cfg, adducts, log=print):
-            seen.append(IO.scoring_for_sample(client, sid).mu_ppm)
+            seen.append((IO.scoring_for_sample(client, sid).mu_ppm, IO.scoring_trend(sid)))
             return real(client, sid, led, profile, pre, cfg, adducts, log=log)
 
         monkeypatch.setattr(A.passes, "run_pass1", spy)
-        _run("sc-run-reruns")
-        assert seen and all(v == pytest.approx(SHIFT, abs=0.05) for v in seen), seen
+        monkeypatch.setattr(A.iso_response, "is_material", lambda resp: bool(resp))
+        res, log = _run("sc-run-reruns")
+        assert any("re-running from pass 0 against it" in m for m in log), log
+        assert len(seen) == 2, seen
+        assert all(mu == pytest.approx(SHIFT, abs=0.05) and trend is None for mu, trend in seen), seen
+        assert IO.self_centre("sc-run-reruns")["mu_ppm"] == pytest.approx(SHIFT, abs=0.05)
+        assert res["pattern_scoring"]["mu_source"] == "self"
+        assert len(_m0(res)) == len(ACIDS) and (_m0(res)["ion_score"] > 0.9).all()
 
     def test_a_file_at_zero_runs_as_before(self):
         on, log = _run("sc-zero-on", _peaks(shift=0.0))
@@ -389,12 +419,18 @@ class TestTheRun:
         assert snap["mu_ppm"] == pytest.approx(on["pattern_scoring"]["mu_ppm"])
 
     def test_a_ppm_decoy_stand_in_is_not_re_centred_onto_its_shift(self):
-        # the decoy arm's lines sit 3 ppm further off: judged at the measured centre
-        # they stay off it (a self-centre of the decoy would have moved onto them)
+        # the decoy arm's lines sit 3 ppm further off. Run as a measured file they would
+        # be centred on and commit Good; judged at the inherited centre none does
         on, _ = _run("sc-decoy-src")
-        arm, _ = _run("sc-decoy", _peaks(shift=SHIFT + 3.0), scoring=dict(on["pattern_scoring"]))
+        decoy = _peaks(shift=SHIFT + 3.0)
+        own, _ = _run("sc-decoy-own", decoy)
+        assert own["pattern_scoring"]["mu_source"] == "self"
+        assert own["pattern_scoring"]["mu_ppm"] == pytest.approx(SHIFT + 3.0, abs=0.05)
+        assert int((_m0(own)["ion_score"] >= 0.8).sum()) == len(ACIDS)
+        arm, log = _run("sc-decoy", decoy, scoring=dict(on["pattern_scoring"]))
+        assert not any("[self-centre]" in m for m in log)
         assert arm["pattern_scoring"]["mu_ppm"] == pytest.approx(on["pattern_scoring"]["mu_ppm"])
-        assert (_m0(arm)["ion_score"] < 0.5).all() if len(_m0(arm)) else True
+        assert int((_m0(arm)["ion_score"] >= 0.8).sum()) == 0
 
     def test_a_batch_worker_returns_the_self_centred_snapshot(self):
         kw = dict(cfg=PCfg.PassConfig(height_cutoff_cps=100), peaks=_peaks(), adducts=["[M-H]-"],
@@ -418,4 +454,5 @@ def test_the_batch_counts_each_files_centre_source():
     })
     assert got["by_mu_source"] == {"assumed_zero": 1, "axis": 1, "fitted": 1, "self": 1, "trend": 1,
                                    "unrecorded": 1}
-    assert got["self"] == {"b": -0.55, "c": -0.4}
+    # a self-centred file a trend then re-scored counts as `trend`, not as self-centred
+    assert got["self"] == {"b": -0.55}

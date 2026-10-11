@@ -1081,8 +1081,10 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # The SELF-CENTRE (assignment/selfcentre.py): an Orbitrap-class file with no centre
     # of its own (no anchors, no batch axis correction: `assumed_zero`) measures it once,
     # here, on a backbone chosen without the mass term, and every pass from pass 0 on --
-    # every re-run included: the centre lives in the io registry -- judges its lines
-    # against it. Reads the ledger, changes nothing in it or the cfg.
+    # the isotope-response re-run included: the centre lives in the io registry, which
+    # the re-run's restore of led / cfg does not touch -- judges its lines against it,
+    # until a mass trend this run's calibration accepts (C42) takes over the centre.
+    # Reads the ledger, changes nothing in it or the cfg.
     self_centre = None
     why_not = selfcentre.eligibility(scoring_snapshot, cfg, inherited=inherited, local=local)
     if why_not is None:
