@@ -474,13 +474,8 @@ def _own_line_refused(gate, ledger: pd.DataFrame, pid, w, route: str) -> bool:
     """The commit contract on a residual winner (satellites.own_line_verdict):
     True -- and the reason written on the peak's row -- when its neutral's own
     S / Cl / Br / Si line is absent where the file would show it."""
-    if not any(C.parse_formula(str(w["neutral"])).get(el, 0) for el in SAT.COMMIT_LINE_ELEMENTS):
-        return False
-    v = gate.row_verdict(ledger, pid, str(w["neutral"]), w.get("ion_formula"))
-    if v["verdict"] != SAT.LG_REFUSED:
-        return False
-    SAT.record_refusal(ledger, pid, reading=f"{w['neutral']} {w['adduct']}", route=route, why=v["why"])
-    return True
+    return gate.refuse(ledger, pid, str(w["neutral"]), w.get("ion_formula"),
+                       reading=f"{w['neutral']} {w['adduct']}", route=route)
 
 
 # ---------------------------------------------------------------------------

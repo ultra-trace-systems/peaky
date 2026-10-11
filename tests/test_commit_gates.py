@@ -32,6 +32,8 @@ import pandas as pd
 from peaky import ledger as L
 from peaky import passes as P
 from peaky.assignment import cleanup as CU
+from peaky.assignment import ladders as LAD
+from peaky.assignment import reflists as RL
 from peaky.assignment import residual as RD
 from peaky.assignment import satellites as SAT
 from peaky.assignment.passes import directors as D
@@ -307,7 +309,7 @@ def _recover(lines, cfg):
 def test_the_recovery_reads_the_candidates_own_37cl_line():
     """A foreign peak 5.6 mDa above the 37Cl position at the Cl ratio: read at the 81Br offset in a
     6-mDa window it was the candidate's '37Cl' line. On an Orbitrap-class run the M+2 is read at the
-    candidate's own offset within max(1 ppm, 3 sigma): no recovery. The line in place: recovered.
+    candidate's own offset within max(2 ppm, 3 sigma): no recovery. The line in place: recovered.
     Off an Orbitrap the reading is as before."""
     foreign = [("p", CL_MZ, 1e4), ("x", CL_MZ + ISO.D_37CL + 0.0056, 3300.0), ("bg", 180.0, 50.0)]
     out, led = _recover(foreign, _cfg())
@@ -319,10 +321,10 @@ def test_the_recovery_reads_the_candidates_own_37cl_line():
 
 
 # --------------------------------------------------------------------------- the envelope sweep
-def _env(lines, cfg):
+def _env(lines, cfg, neutral=OS, adduct="[M-H]-", ion=OS_ION):
     led = L.new_ledger(pd.DataFrame(lines, columns=["peak_id", "mz", "height"]))
-    L.commit_assignment(led, "p", neutral_formula=OS, adduct="[M-H]-", ion_formula=OS_ION, ion_score=0.9,
-                        ppm_error=0.1, pass_no=3, method="contaminant:organosulfate", confidence="Good",
+    L.commit_assignment(led, "p", neutral_formula=neutral, adduct=adduct, ion_formula=ion, ion_score=0.9,
+                        ppm_error=0.1, pass_no=3, method="contaminant:under-test", confidence="Good",
                         commentary="under test")
     cfg.cal_sigma = 0.3
     P.complete_isotope_envelopes(led, cfg, **NOLOG)
@@ -346,6 +348,112 @@ def test_the_sweep_attaches_a_heteroatom_line_only_at_its_position_and_ratio():
         assert L.role_of(led, "s") == want and L.role_of(led, "c") == L.ROLE_ISO, lines
     for lines in (off, high):
         assert L.role_of(_env(lines, _cfg(None)), "s") == L.ROLE_ISO
+
+
+def test_a_satellite_pulled_toward_a_taller_fine_line_is_still_the_parents():
+    """A cyclosiloxane [M+H]+: its 29Si line, resolved from the 13C line 3.8 mDa above it, is picked
+    pulled toward it (+1.5 ppm, as real 29Si lines sit on calibrated Orbitrap files) -- inside the
+    2-ppm floor, attached although 3 sigma of the bright backbone is 0.9 ppm; a line 3 ppm off at the
+    same height is another ion's."""
+    si = "C6H18O3Si3"
+    ion = "C6H19O3Si3+"
+    mz0 = CH.ion_mz(si, "[M+H]+")
+    si29 = mz0 + ISO.D_29SI
+    h29 = 3000.0 * 3 * ISO.R_29SI_PER_SI
+    for shift, want in ((1.5e-6, L.ROLE_ISO), (3e-6, L.ROLE_UNEXPLAINED)):
+        led = _env([("p", mz0, 3000.0), ("si", si29 * (1 + shift), h29)], _cfg(), neutral=si,
+                   adduct="[M+H]+", ion=ion)
+        assert L.role_of(led, "si") == want, shift
+    assert SAT.iso_position_ppm(_cfg(), 0.3, 5.0) == SAT.ISO_POS_MIN_PPM == 2.0
+    assert SAT.iso_position_ppm(_cfg(), 1.0, 5.0) == 3.0 and SAT.iso_position_ppm(_cfg(), 2.0, 5.0) == 5.0
+    assert SAT.iso_position_ppm(_cfg("tof"), 0.3, 5.0) == 5.0
+
+
+# --------------------------------------------------------------------------- the later routes
+def test_the_gate_refuse_helper_writes_why_once():
+    led = _file([("p", OS_MZ, 3000.0)])
+    gate = SAT.LineGate(led, _cfg())
+    assert gate.refuse(led, "p", OS, OS_ION, reading=f"{OS} [M-H]-", route="unit")
+    assert not gate.refuse(led, "p", "C5H10O5", "C5H9O5-", reading="x", route="unit")
+    assert led.set_index("peak_id").at["p", "commentary"].count("REFUSED (own_line:") == 1
+
+
+def test_a_ladder_gapfill_of_an_s_anchor_shows_its_own_line():
+    """Pass 6 walks CHONS anchors, so a gap-fill can carry S: the C6 homolog of an organosulfate
+    anchor is refused where its 34S line is absent, committed where it is in place, and committed as
+    before off an Orbitrap."""
+    gap = "C6H12O5S"
+    gmz = CH.ion_mz(gap, "[M-H]-")
+
+    def run(lines, cfg):
+        led = L.new_ledger(pd.DataFrame(lines, columns=["peak_id", "mz", "height"]))
+        L.commit_assignment(led, "a", neutral_formula=OS, adduct="[M-H]-", ion_formula=OS_ION, ion_score=0.95,
+                            compound_score=0.95, ppm_error=0.1, pass_no=1, method="cheminfo+grid",
+                            confidence="Good", commentary="anchor")
+        cfg.cal_mu, cfg.cal_sigma, cfg.mechanism_ids = 0.0, 0.5, None
+
+        def score(client, sid, formulas, mechanism_ids=None):
+            return pd.DataFrame([dict(is_base=True, sample_peak_id="g", sample_peak_mz=gmz, compound_formula=gap,
+                                      ion_formula="C6H11O5S-", ion_score=0.9, compound_score=0.9, ppm_error=0.1,
+                                      iso_label="M0", iso_score=None)]) if gap in formulas else pd.DataFrame()
+        out = LAD.run_ladder_gapfill(None, "S", led, AIR, cfg, ["[M-H]-"], score_fn=score, log=lambda *a: None)
+        return out, led
+    base = [("a", OS_MZ, 5000.0), ("g", gmz, 3000.0)]
+    out, led = run(base, _cfg())
+    assert out["committed"] == 0 and out["own_line_refused"] == 1, out
+    assert "REFUSED (own_line: C6H12O5S [M-H]- [pass 6 ladder:gapfill]" in led.set_index("peak_id").at["g", "commentary"]
+    out, led = run(base + [("g34", gmz + S34, 3000.0 * ISO.R_34S_PER_S)], _cfg())
+    assert out["committed"] == 1 and "own_line_refused" not in out, out
+    out, led = run(base, _cfg(None))
+    assert out["committed"] == 1, out
+
+
+def test_a_reference_list_rescue_shows_its_own_line():
+    """An isotope-confirmed (13C) list formula carrying S: refused where its 34S line is absent at 13x
+    the gate (the row says why, the summary counts it), rescued with the line in place."""
+    lst = RL.ReferenceList(id="unit", system="t", label="unit list", data_version="1", polarity="negative",
+                           native_detection="[M-H]-", applies_to_contexts=("x",), references=(),
+                           formulas=frozenset({OS}), radicals=frozenset(), conditions_of={OS: ()},
+                           source_file="u.json", always_active=False, meta_of={})
+
+    def score(client, sid, formulas, *, allow_partial=True, mechanism_ids=None):
+        row = dict(compound_formula=OS, compound_score=0.9, ion_formula=OS_ION, ion_score=0.9, iso_label="M0",
+                   is_base=True, iso_score=0.9, sample_peak_id="p", sample_peak_mz=OS_MZ,
+                   sample_peak_intensity=3000.0, ppm_error=0.1)
+        kid = dict(row, is_base=False, iso_label="13C", sample_peak_mz=OS_MZ + ISO.D_13C_EXACT, iso_score=0.95)
+        return pd.DataFrame([row, kid])
+
+    def run(lines, cfg):
+        led = L.new_ledger(pd.DataFrame(lines, columns=["peak_id", "mz", "height"]))
+        cfg.cal_mu, cfg.cal_sigma, cfg.mechanism_ids = 0.0, 0.3, None
+        return RL.rescue_unexplained_by_reflist(None, "S", led, None, cfg, [lst], ["[M-H]-"], score_fn=score,
+                                                log=lambda *a: None), led
+    out, led = run([("p", OS_MZ, 3000.0)], _cfg())
+    assert out == {"rescued": 0, "tentative": 0, "own_line_refused": 1}, out
+    assert L.role_of(led, "p") == L.ROLE_UNEXPLAINED
+    assert "[reflist-rescue:unit] -- 34S predicted" in led.set_index("peak_id").at["p", "commentary"]
+    out, led = run([("p", OS_MZ, 3000.0), ("p34", OS_MZ + S34, 3000.0 * ISO.R_34S_PER_S)], _cfg())
+    assert out == {"rescued": 1, "tentative": 0}, out
+    out, led = run([("p", OS_MZ, 3000.0)], _cfg(None))
+    assert out == {"rescued": 1, "tentative": 0}, out
+
+
+def test_the_offcal_rearbitration_never_swaps_to_a_refused_alternative():
+    """The off-cal aromatic monster of the re-arbitration test, its on-cal alternative now a sulfur
+    reading: with no 34S line where the file would show it the monster is kept (the tier engine
+    demotes it); off an Orbitrap the swap is made as before."""
+    from tests.test_rearbitrate import build_ledger
+
+    def run(cfg):
+        led = build_ledger()
+        i = led.index[led["peak_id"] == "P_swap"][0]
+        led.at[i, "alternatives"] = json.dumps([{"formula": "C21H23N3O6S", "adduct": "[M+Na]+", "ion_score": 0.70,
+                                                 "raw_score": 0.70, "eff_score": 0.61, "ppm": 0.15}])
+        return P.rearbitrate_offcal_degenerate(led, cfg, log=lambda *a: None), led.set_index("peak_id")
+    res, by = run(_cfg())
+    assert res["swapped"] == 0 and res["own_line_refused"] == 1 and by.at["P_swap", "neutral_formula"] == "C36H17N", res
+    res, by = run(_cfg(None))
+    assert res["swapped"] == 1 and by.at["P_swap", "neutral_formula"] == "C21H23N3O6S", res
 
 
 # --------------------------------------------------------------------------- the known-species cap

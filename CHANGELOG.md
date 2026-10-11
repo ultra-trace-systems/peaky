@@ -323,10 +323,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (dim, masked by the reagent's halogen, held by a taller line) keep today's outcome; a route
   that declares `line_gate='strict'` commits them at Low at most. Applied in `commit_winners`
   (passes 1-3, 5), pass 7 (pooled over the certificate's members: one member showing the line is
-  enough), the residual's iso-pair and series stages, and pass 0 (a refused known species leaves
-  a `deferred` lead under 4x the gate, `refuted` from 4x). (2) The pass-3 contaminant families
+  enough), the residual's iso-pair and series stages, pass 6's ladder gap-fill, the reference-list
+  and labelled rescues, the off-cal re-arbitration's alternatives, and pass 0 (a refused known
+  species leaves a `deferred` lead under 4x the gate, `refuted` from 4x). (2) The pass-3 contaminant families
   commit at `tau_low` (0.70), pass 1's bar. (3) The isotope-gated recovery reads each candidate's
-  M+2 at its own offset within max(1 ppm, 3 sigma) at 0.5-2x its prediction, and the envelope
+  M+2 at its own offset within max(2 ppm, 3 sigma) at 0.5-2x its prediction, and the envelope
   sweep attaches or displaces a heteroatom M+1 / M+2 line only there (0.3-2x where the line is
   predicted under 4x the gate). (4) The batch's known-species cap is monotone: the neutral's own
   13C line counts toward the two lines, and a species whose pass-0 rule demands corroboration is

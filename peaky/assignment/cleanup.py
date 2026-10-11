@@ -362,7 +362,7 @@ def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
     mu = getattr(cfg, "cal_mu", None)
     sigma = getattr(cfg, "cal_sigma", None) or 0.5
     # on an Orbitrap-class run the M+2 is read at each candidate's OWN offset,
-    # within max(1 ppm, 3 sigma) of it, at 0.5-2x its prediction (_own_pattern)
+    # within max(2 ppm, 3 sigma) of it, at 0.5-2x its prediction (_own_pattern)
     own_ppm = (SAT.iso_position_ppm(cfg, getattr(cfg, "cal_sigma", None), wide=float("inf"))
                if SAT.orbitrap_class(cfg) else None)
     if own_ppm is not None and not np.isfinite(own_ppm):

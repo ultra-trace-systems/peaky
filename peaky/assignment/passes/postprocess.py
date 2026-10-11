@@ -192,12 +192,12 @@ def complete_isotope_envelopes(
     On an Orbitrap-class run a HETEROATOM M+1 / M+2 line (15N, 18O, 34S, 29Si,
     30Si, 37Cl, 81Br, ...; not a carbon-only 13C line, not the labelled reagent's
     14N copy) is the parent's own only at its exact position and height
-    (`_own_line_ok`): within satellites.iso_position_ppm (max(1 ppm, 3 sigma) of
+    (`_own_line_ok`): within satellites.iso_position_ppm (max(2 ppm, 3 sigma) of
     the file's calibration) of the predicted line or of one of the fine-structure
     lines merged into it, at 0.5-2x the prediction (from 0.3x where the line is
     predicted under the twin test's 4x the gate: its per-file height is censored
-    low there). A neighbour ion 3-4 ppm off a predicted 34S / 18O position at 2-3x
-    the ratio stays its own peak. Off an Orbitrap, and before the file is
+    low there). A neighbour ion 2.6-4.8 ppm off a predicted 34S / 18O position or
+    at 2-3x the ratio stays its own peak. Off an Orbitrap, and before the file is
     calibrated, the windows are as above."""
     out = {"attached": 0, "displaced": 0}
     mzs = ledger["mz"]
@@ -953,6 +953,7 @@ def rearbitrate_offcal_degenerate(
         return out
     chan_count = m0.groupby("neutral_formula")["adduct"].nunique()
     reflist = cfg.reflist_formulas or frozenset()
+    gate = SAT.LineGate(ledger, cfg)     # the commit contract (Orbitrap-class; inert elsewhere)
 
     for pid in m0["peak_id"].tolist():
         idx = ledger.index[ledger["peak_id"] == pid]
@@ -994,6 +995,12 @@ def rearbitrate_offcal_degenerate(
             if C.dbe(C.parse_formula(str(af))) >= dbe_w:  # only toward LESS unsaturation
                 continue
             if PL.implausible(str(af), profile=profile) is not None:   # ... and only to a plausible one
+                continue
+            # ... and only to one whose own S / Cl / Br / Si line is not absent
+            # where the file would show it (the commit contract)
+            if gate.row_verdict(ledger, pid, str(af), _ion_formula_str(str(af), str(ad)))["verdict"] \
+                    == SAT.LG_REFUSED:
+                out["own_line_refused"] = out.get("own_line_refused", 0) + 1
                 continue
             raw = a.get("raw_score")
             raw = a.get("ion_score") if raw is None else raw

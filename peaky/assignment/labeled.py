@@ -26,7 +26,7 @@ from peaky.chem import contexts as X
 from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"  # + the commit contract (satellites.own_line_verdict)
 
 DELTA_15N = C.M["^N"] - C.M["N"]        # 0.99703 Da
 # CHON(S) box for the labelled re-enumeration (organonitrate products); wider O
@@ -150,7 +150,10 @@ def rescue_labeled(client, sample_id, ledger, context_profile, cfg, *,
             return abs(float(ppm)) <= 1.0
         return abs((float(ppm) - cal_mu) / cal_sigma) <= Z_TAIL
 
-    n_res = n_re = 0
+    n_res = n_re = n_line = 0
+    # the commit contract (satellites.own_line_verdict; Orbitrap-class, inert elsewhere)
+    from peaky.assignment import satellites as SAT
+    gate = SAT.LineGate(ledger, cfg)
     for i, info in per.items():
         mz = info["mz"]
         sub = fr[(fr["sample_peak_mz"] - mz).abs() < mz * 2.0 * 1e-6]
@@ -191,6 +194,10 @@ def rescue_labeled(client, sample_id, ledger, context_profile, cfg, *,
         adduct = _adduct_of(r, adducts)
         if ledger.at[i, "locked"]:
             continue
+        if gate.refuse(ledger, ledger.at[i, "peak_id"], neutral, r.get("ion_formula"),
+                       reading=f"{neutral} {adduct}", route="labeled:15N"):
+            n_line += 1
+            continue
         note = (f"{label}-labelled product re-read: covalent {label} from the "
                 f"labelled reagent (organonitrate); light-isotope grid was "
                 f"{('unexplained' if info['is_un'] else 'a mass-shift F-fit')} at "
@@ -206,8 +213,11 @@ def rescue_labeled(client, sample_id, ledger, context_profile, cfg, *,
         else:
             n_re += 1
     log(f"[labeled] {label}: filled {n_res} unexplained + re-read {n_re} F-fits "
-        f"as heavy-isotope products")
-    return {"rescued": n_res, "reread": n_re}
+        f"as heavy-isotope products" + (f"; {n_line} refused (own line absent)" if n_line else ""))
+    out = {"rescued": n_res, "reread": n_re}
+    if n_line:
+        out["own_line_refused"] = n_line
+    return out
 
 
 def _adduct_of(row, adducts: list[str]) -> str:

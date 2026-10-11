@@ -1120,11 +1120,16 @@ def pool_line_verdicts(verdicts) -> dict:
 #: halogen M+2) sits within max(ISO_POS_MIN_PPM, ISO_POS_SIGMA_K x the file's
 #: calibration sigma) of its expected offset on an Orbitrap-class run -- never
 #: wider than the stage's own window -- at ISO_RATIO_BAND x its prediction. A
-#: fixed 5-ppm / 6-mDa window took a neighbour ion 3-4 ppm off a predicted
-#: 34S / 18O position at 2-3x the ratio as the parent's line, and a recovery read
-#: another ion's M0 5.6 mDa off as its 37Cl line.
+#: fixed 5-ppm / 6-mDa window took a neighbour ion 2.6-4.8 ppm off a predicted
+#: 34S / 18O / 37Cl / 29Si position at 2-3.7x the ratio as the parent's line, and
+#: a recovery read another ion's M0 5.6 mDa off as its 37Cl line. The floor is
+#: the satellite's, not the bright backbone's sigma: a weak heteroatom line on
+#: the shoulder of a taller fine-structure line is picked pulled toward it (the
+#: 29Si / 30Si lines of cyclosiloxanes on calibrated Orbitrap files sit up to
+#: +1.7 ppm off, toward 13C / 13C2: 28-33 % of them beyond 1 ppm, <= 3 % beyond
+#: 2 ppm, while the 13C lines themselves stay within +-0.4 ppm).
 ISO_POS_SIGMA_K = 3.0
-ISO_POS_MIN_PPM = EE_MIN_PPM
+ISO_POS_MIN_PPM = 2.0
 ISO_RATIO_BAND = (0.5, 2.0)
 
 
@@ -1211,6 +1216,18 @@ class LineGate:
             if pd.notna(af) and 0 < float(af) <= 1 and pd.notna(h0):
                 h0 = float(h0) * float(af)
         return self.verdict(ledger.at[i, "mz"], h0, neutral, ion)
+
+    def refuse(self, ledger: pd.DataFrame, pid, neutral, ion=None, *, reading: str, route: str) -> bool:
+        """The contract at one commit: True -- and the reason written on the
+        peak's row (`record_refusal`) -- when `neutral`'s own line is refused at
+        `pid`; False with nothing to test, the line shown, or untestable."""
+        if not any(_counts_of(neutral).get(el, 0) for el in COMMIT_LINE_ELEMENTS):
+            return False
+        v = self.row_verdict(ledger, pid, neutral, ion)
+        if v["verdict"] != LG_REFUSED:
+            return False
+        record_refusal(ledger, pid, reading=reading, route=route, why=v["why"])
+        return True
 
 
 def _counts_of(formula) -> dict:
