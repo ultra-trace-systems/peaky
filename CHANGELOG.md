@@ -8,6 +8,34 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A batch calibrates the tier engine on a core pooled over its files when a file cannot calibrate
+  alone (`assignment/calpool.py`).** The per-file core needs `tiers.CAL_MIN_N` = 20 isotope-backed
+  High/Good organic rows; small scan windows never reach it (on a 15N-nitrate field batch: 0 of
+  183 files on the 40-600 and 65-120 windows, 0 of 84 on an NO+ 40-160 window), so their degeneracy
+  audit and z-tail gate were skipped and the evidence scale levelled nothing. After each per-file
+  stage the batch now pools, for the files that fell short: the rows the file core takes, with a
+  carbon-bearing neutral, no reagent identity and no reagent-library mass, one row per distinct ion
+  (the tallest), an ion only where it is isotope-backed in >= 2 files -- a pool of the per-file
+  cores as they stood collapsed onto the carbon-free HNO3 lines. With >= 15 distinct ions spanning
+  >= 0.25 of the committed m/z range it calibrates (median / scaled MAD / 0.15-ppm floor, no mass
+  trend). Each such file is lent the pooled width about its own centre (the median ppm error of
+  the rows its tier stage made Assigned; files of one batch sit a few tenths of a ppm apart) and
+  re-tiered without a re-run: the degeneracy audit and the tier stage again on the ledger as its
+  degeneracy stage found it (kept by the run for an uncalibrated file), the verdicts carried onto
+  every finished row a later stage did not rewrite, the O >= 11 and oxygen-monster flags, and its
+  own evidence level, all in that window; the pooled levels take it as the file's window. The
+  reasons name the "batch-pooled calibrated window". Replayed on the stored field runs: the six
+  65-120 batches calibrate (15-20 ions) and every merged row gets a level (5 per-file rows leave
+  Assigned on the z-tail); on the 128-600 window the 15 files (in 5 batches) that fell short now
+  apply the degeneracy cap their batch-mates already applied (461 of their 3,289 Assigned rows
+  become Candidate, 441 of them mass-degenerate), so a reading no longer reaches merged Assigned
+  only because its file skipped the audit; the 40-600 and NO+ batches stay unlevelled (0-10 ions)
+  and now say why. Recorded as `tier_calibration` on every per-file M0 row and on the merged rows
+  (`per_file` / `pooled` / `none`; a merged row the source of the file that donated its tier), on
+  each `per_file` stats row, and in batch_summary (`tier_calibration`: the batch's weakest
+  `source`, the files per source and the pool). Not re-run: the off-calibration re-arbitration (it
+  picks winners) and the pass engine's scoring (a Low / Suspect confidence stays).
+
 - **Orbitrap isotope lines are read by peak area, against the file's own minor-line response
   (`PassConfig.iso_response`, `--iso-response {auto,area,off}` on assign / batch / pool).** An
   Orbitrap scan keeps a line only where it clears that scan's detection floor, and the whole-file

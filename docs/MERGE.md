@@ -86,6 +86,42 @@ selected sample_ids (SAMPLING.md)
    at batch level (`assign_kw.setdefault("adducts", prof.adducts)`) so a per-sample
    match gap can't flip polarity.
 
+   **1a. The batch-pooled tier calibration** (`assignment/calpool.py`). Before a
+   stage's files are folded in, every file whose own core could not calibrate the
+   tier engine (fewer than `tiers.CAL_MIN_N` = 20 isotope-backed core rows: stats
+   `degeneracy_cal` null -- a small scan window) is lent the batch's pooled core.
+   The pool is decided ONCE, the first time a stage returns such a file, from
+   every per-file ledger assigned so far: the rows the file core takes
+   (`tiers.core_point`) with a carbon-bearing neutral, no reagent identity and no
+   reagent-library mass; one row per distinct ion (the tallest); an ion only where
+   it is isotope-backed in >= 2 files. It calibrates when it holds >= 15 distinct
+   ions spanning >= 0.25 of the committed m/z range ((mu, sigma) as the file
+   core's: median, scaled MAD, the 0.15-ppm floor; no mass trend). Such a file is
+   lent the pooled sigma about its OWN centre (`calpool.lent_calibration`: the
+   median ppm error of the rows its tier stage made Assigned, when it has >= 15,
+   else the pooled mu): the files of one batch sit a few tenths of a ppm apart, as
+   much as the pooled sigma, and a window centred on the pool would push a
+   shifted file's correct rows past the z-tail. It is then re-tiered without a
+   re-run (`calpool.apply_pool`): the degeneracy audit
+   and the tier stage again on the ledger as its degeneracy stage found it (the
+   run keeps that copy, `pool_inputs.at_tiers`), the verdicts carried onto every
+   finished row a later stage did not rewrite (a row a later stage only demoted
+   takes the calibrated words and keeps its tier), the O >= 11 below-assignability
+   flag and the oxygen-monster demote, and its own evidence level, all in the
+   pooled window. Its stats read `tier_calibration: pooled` and its lent window as
+   `degeneracy_cal`, which the pooled levels take as its window (§3, the level
+   stage). Not re-run: the off-calibration re-arbitration (a winner choice) and
+   the pass engine's scoring (a Low / Suspect confidence stays); a row a
+   post-tier re-read rewrote keeps its tier. A pool that falls short leaves the
+   files uncalibrated, and the `levels_not_assessed_reason` says why.
+   `batch_summary['tier_calibration']` records the batch's weakest source in one
+   word (`source`: `none` when any file stayed uncalibrated, else `pooled` when
+   any was lent the pool, else `per_file`), the files per source and the pool;
+   each merged row's `tier_calibration` is that of the file whose row donated its
+   tier. The trace-first sample is not pooled (one averaged file); a pool is
+   decided once, from the ledgers of the first stage that returns an
+   uncalibrated file (and the stages before it).
+
 2. **Offset-correct for alignment** (`align`). For each file,
    `_mz_adj = mz · (1 − offset_ppm/1e6)`. This is used **only** to cluster; the
    reported masses stay raw.

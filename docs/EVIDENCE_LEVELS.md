@@ -376,12 +376,16 @@ The calibration is the degeneracy audit's own (`stats["degeneracy_cal"] =
 {mu, sigma}`, persisted per file since the scale exists). A run made before
 that refits it: the (mu, sigma) that reproduces the stored
 `degeneracy_density` values on a grid around the recomputed calibration
-(kept when it reproduces ≥ 99 % of them). An uncalibrated file in a batch
-takes (median of `ppm_error - ppm_error_cal`, the run sigma), the run sigma
-being the median of the per-file sigmas. The run window is the median of the
-per-file windows. A source none of whose files is calibrated has no run
-sigma and no window: its pairs get no level (§2.3, "No level"), and the
-enumeration refuses a non-finite window.
+(kept when it reproduces ≥ 99 % of them). A file the batch calibrated on its
+pooled core (`tier_calibration: pooled` in its stats, assignment/calpool.py;
+MERGE.md §3 step 1a) has its lent window -- its own centre, the pooled sigma --
+as its `degeneracy_cal` and takes it as its window; the run window is read off the files that calibrated
+alone, and off the pooled windows only when none did. An uncalibrated file in a
+batch takes (median of `ppm_error - ppm_error_cal`, the run sigma), the run
+sigma being the median of the per-file sigmas. The run window is the median of
+the per-file windows. A source none of whose files is calibrated, alone or
+pooled, has no run sigma and no window: its pairs get no level (§2.3, "No
+level"), and the enumeration refuses a non-finite window.
 
 ### 5.2 The space and the competitors
 
@@ -762,9 +766,10 @@ tentative and the evidence `no pooled pair: a batch-level re-read`. The
 per-file ledgers keep their own per-file levels (§10.1), so a merged row can
 read 4a where its per-file rows read 4b, and the other way round. A batch
 none of whose Orbitrap-class files is calibrated (a one-file batch of an
-uncalibrated file included) has no run window: every pooled pair gets no
-level, claim tentative and the evidence `no level · no file of the source is
-calibrated ...`; one calibrated file is enough to lend the others its sigma.
+uncalibrated file included) and no pooled core (MERGE.md §3 step 1a) has no
+run window: every pooled pair gets no level, claim tentative and the evidence
+`no level · no file of the source is calibrated ...`; one calibrated file is
+enough to lend the others its sigma.
 
 `batch_summary.json` records:
 
@@ -927,11 +932,16 @@ release in `evidence.py`).
   degeneracy calibration, which needs at least `tiers.CAL_MIN_N` (20) High/Good
   organic M0 rows with an isotope line. A table of a few hundred peaks may give
   no file that many (2-9 per file on the iodide and NO+ Orbitrap tables it was
-  measured on); then no pair is levelled (`NO_RUN_WINDOW_TEXT`) and every claim
-  reads tentative. A batch run says so once: the `batch_summary.json` key
-  `levels_not_assessed_reason`, a console WARNING and the PDF cover and
-  Evidence levels page (whose no-level rows name the same reason); a
-  single-sample workbook says it on its Summary sheet.
+  measured on). A batch then pools its files' cores (MERGE.md §3 step 1a: >= 15
+  distinct carbon-bearing ions isotope-backed in >= 2 files, spread over the
+  committed m/z range) and levels on that; on a 15N-nitrate 65-120 window it
+  reaches 15-20 ions, on the 40-600 window and an NO+ 40-160 window 0-10
+  (their 13C lines sit under the edge). Where the pool falls short too, no pair
+  is levelled (`NO_RUN_WINDOW_TEXT`) and every claim reads tentative. A batch
+  run says so once: the `batch_summary.json` key `levels_not_assessed_reason`
+  (which then also says why the pool was not used), a console WARNING and the
+  PDF cover and Evidence levels page (whose no-level rows name the same
+  reason); a single-sample workbook says it on its Summary sheet.
 - **One file alone** cannot be levelled without a calibration, and a
   single-sample run without a width model reads `NA` (§10.1).
 

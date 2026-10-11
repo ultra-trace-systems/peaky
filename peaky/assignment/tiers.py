@@ -607,19 +607,81 @@ def density_text(density: int, capped: bool) -> str:
     return f">={density}" if capped else str(density)
 
 
+#: where a file's tier calibration came from (the `tier_calibration` column on
+#: its M0 rows and its batch_summary `per_file` entry): its own core
+#: (`_calibrate`), the batch's pooled core (assignment/calpool.py), or none
+CAL_SOURCE_PER_FILE, CAL_SOURCE_POOLED, CAL_SOURCE_NONE = "per_file", "pooled", "none"
+#: the window word a reason uses for a calibration of each source
+_WINDOW_WORD = {CAL_SOURCE_PER_FILE: "calibrated window", CAL_SOURCE_POOLED: "batch-pooled calibrated window"}
+#: the M0 rows' column naming where their file's tier calibration came from
+#: (CAL_SOURCE_PER_FILE / CAL_SOURCE_POOLED / CAL_SOURCE_NONE); NA on every other row
+TIER_CALIBRATION = "tier_calibration"
+
+
 class _Cal(tuple):
     """(mu, sigma) of the ppm error -- a plain 2-tuple for every `mu, sigma = cal`
     consumer -- that also carries the mass trend (masscal) as attributes:
     `a`, `b`, `sigma_t`, `mz_lo`, `mz_hi` (ppm = a + b*1000/mz on the backbone's
-    m/z coverage; None = constant model) and `abs_floor_mda`, the absolute floor
-    on the trend sigma (from PassConfig.cal_abs_floor_mda)."""
+    m/z coverage; None = constant model), `abs_floor_mda`, the absolute floor
+    on the trend sigma (from PassConfig.cal_abs_floor_mda), and `source`, where
+    the core came from (CAL_SOURCE_PER_FILE: the file's own; CAL_SOURCE_POOLED:
+    the batch's pooled core, assignment/calpool.py)."""
     def __new__(cls, mu, sigma, a=None, b=None, sigma_t=None, mz_lo=None, mz_hi=None,
-                abs_floor_mda=MC.ABS_FLOOR_MDA):
+                abs_floor_mda=MC.ABS_FLOOR_MDA, source=CAL_SOURCE_PER_FILE):
         obj = super().__new__(cls, (mu, sigma))
         obj.a, obj.b, obj.sigma_t = a, b, sigma_t
         obj.mz_lo, obj.mz_hi = mz_lo, mz_hi
         obj.abs_floor_mda = abs_floor_mda
+        obj.source = source
         return obj
+
+
+def _cal_source(cal) -> str:
+    """CAL_SOURCE_* of a calibration (None = CAL_SOURCE_NONE; a bare tuple is a file's own)."""
+    if cal is None:
+        return CAL_SOURCE_NONE
+    return getattr(cal, "source", CAL_SOURCE_PER_FILE)
+
+
+def core_point(r, kids_of) -> tuple[float, float] | None:
+    """(ppm_error, mz) of one M0 row when it belongs to the calibration core,
+    else None: pure-organic (no F/Cl/Br/Si/S, N <= 1), High/Good, isotopologue-
+    backed (an iso_child row pointing at it -- `kids_of` = their counts by
+    parent_peak_id -- or a stored isotopologue), |ppm| <= 15 (the gross-garbage
+    guard). mz is NaN when the row has none. `_calibrate` and the batch-pooled
+    core (assignment/calpool.py) read the same test."""
+    counts = C.parse_formula(_txt(r.get("neutral_formula")))
+    if any(counts.get(e, 0) for e in ("F", "Cl", "Br", "Si", "S")):
+        return None
+    if counts.get("N", 0) > 1:
+        return None
+    if base_confidence(r.get("confidence")) not in ("High", "Good"):
+        return None
+    if not ((kids_of.get(r["peak_id"], 0) > 0) or bool(_alts(r.get("isotopologues")))):
+        return None
+    p = r.get("ppm_error")
+    if p is None or pd.isna(p) or abs(float(p)) > 15:   # gross-garbage guard
+        return None
+    return float(p), (float(r.get("mz")) if r.get("mz") is not None and not pd.isna(r.get("mz")) else np.nan)
+
+
+def robust_centre(ppms, min_n: int) -> tuple[float, float, list]:
+    """(mu, sigma, kept positions) of a core's ppm errors: median + scaled MAD
+    (sigma floored at CAL_SIGMA_FLOOR) over the errors within 2 ppm of their
+    median -- all of them when fewer than `min_n` are."""
+    s = pd.Series(list(ppms), dtype=float)
+    # Outlier guard is RELATIVE to the robust median, not a 0-centered |ppm|<=2
+    # window: an absolute window excludes the entire backbone of a source with a
+    # large systematic offset (the uronium instrument sits at ~-2.4 ppm), leaving
+    # the tier engine uncalibrated. Centering on the median keeps the same core
+    # for a well-calibrated source (where the median is ~0) AND for an offset one.
+    center = float(s.median())
+    core = s[(s - center).abs() <= 2.0]
+    if len(core) < min_n:
+        core = s
+    mu = float(core.median())
+    sigma = max(float(1.4826 * (core - mu).abs().median()), CAL_SIGMA_FLOOR)
+    return mu, sigma, list(core.index)
 
 
 def _calibrate(m0: pd.DataFrame, kids_of: pd.Series, *,
@@ -629,41 +691,21 @@ def _calibrate(m0: pd.DataFrame, kids_of: pd.Series, *,
     if the core is too small. Robust (median + scaled MAD). The core is
     deliberately pure-organic (no halogen/Si/S, N<=1), High/Good, and
     isotopologue-backed -- the assignments we are most certain are correct, so
-    their mass errors define the instrument's real accuracy for this run.
-    `abs_floor_mda` is PassConfig.cal_abs_floor_mda (its default when the
-    caller has no cfg, e.g. a report-time re-tier)."""
+    their mass errors define the instrument's real accuracy for this run
+    (`core_point`). `abs_floor_mda` is PassConfig.cal_abs_floor_mda (its
+    default when the caller has no cfg, e.g. a report-time re-tier). A batch
+    whose file falls short calibrates it on a pooled core (calpool.py)."""
     ppms = []
     mzs = []
     for _, r in m0.iterrows():
-        counts = C.parse_formula(_txt(r.get("neutral_formula")))
-        if any(counts.get(e, 0) for e in ("F", "Cl", "Br", "Si", "S")):
+        pt = core_point(r, kids_of)
+        if pt is None:
             continue
-        if counts.get("N", 0) > 1:
-            continue
-        if base_confidence(r.get("confidence")) not in ("High", "Good"):
-            continue
-        if not ((kids_of.get(r["peak_id"], 0) > 0) or bool(_alts(r.get("isotopologues")))):
-            continue
-        p = r.get("ppm_error")
-        if p is None or pd.isna(p) or abs(float(p)) > 15:   # gross-garbage guard
-            continue
-        ppms.append(float(p))
-        mzs.append(float(r.get("mz")) if r.get("mz") is not None and not pd.isna(r.get("mz")) else np.nan)
+        ppms.append(pt[0])
+        mzs.append(pt[1])
     if len(ppms) < CAL_MIN_N:
         return None
-    s = pd.Series(ppms)
-    # Outlier guard is RELATIVE to the robust median, not a 0-centered |ppm|<=2
-    # window: an absolute window excludes the entire backbone of a source with a
-    # large systematic offset (the uronium instrument sits at ~-2.4 ppm), leaving
-    # the tier engine uncalibrated. Centering on the median keeps the same core
-    # for a well-calibrated source (where the median is ~0) AND for an offset one.
-    center = float(s.median())
-    core = s[(s - center).abs() <= 2.0]
-    if len(core) < CAL_MIN_N:
-        core = s
-    _keep = list(core.index)
-    mu = float(core.median())
-    sigma = max(float(1.4826 * (core - mu).abs().median()), CAL_SIGMA_FLOOR)
+    mu, sigma, _keep = robust_centre(ppms, CAL_MIN_N)
     # mass-dependent centre (masscal): fitted on the same core, when accepted
     fit = MC.fit_mass_trend(np.asarray(mzs, dtype=float)[np.asarray(_keep)],
                             np.asarray(ppms, dtype=float)[np.asarray(_keep)],
@@ -729,14 +771,21 @@ def _tof_floor_edge(cfg) -> tuple[float | None, str]:
     return None, "file"
 
 
-def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFrame:
+#: compute_tiers' default `cal`: calibrate on the ledger's own core (`_calibrate`)
+OWN_CAL = object()
+
+
+def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL) -> pd.DataFrame:
     """One row per M0 peak: [peak_id, tier, tier_reason, candidate_density,
     density_capped]. Pure; does not mutate the ledger. `cfg` (a PassConfig)
     supplies cal_abs_floor_mda for the mass-error gate and tau_suspect for the
     lock score floor; None = their defaults. `profile` (the run's
     ContextProfile): with its NOx-skeleton reading on, an Assigned row the run
     admits only through that reading is Candidate (NOX_SKELETON_CAP_MARK), and a
-    skeleton-only row left as it was says so (NOX_SKELETON_NOTE)."""
+    skeleton-only row left as it was says so (NOX_SKELETON_NOTE). `cal`: the
+    mass calibration the z-tail gate reads -- by default the ledger's own
+    (`_calibrate`); None = uncalibrated; a _Cal from elsewhere (the batch's
+    pooled core, calpool.py), whose source the reasons name."""
     m0 = ledger[ledger["role"] == L.ROLE_M0]
     # the skeleton cap (NOX_SKELETON_CAP_MARK): which rows the NOx-skeleton reading
     # changed, and how ({} when the profile reads no skeletons)
@@ -755,7 +804,11 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
     adducts_of = m0.groupby("neutral_formula")["adduct"].agg(
         lambda s: set(s.dropna().astype(str)))
     # (mu, sigma) ppm [+ the masscal trend], or None when uncalibrated
-    cal = _calibrate(m0, kids_of, abs_floor_mda=_abs_floor(cfg))
+    if cal is OWN_CAL:
+        cal = _calibrate(m0, kids_of, abs_floor_mda=_abs_floor(cfg))
+    # the window the reasons name: the file's own calibration, or the batch's pooled one
+    window = _WINDOW_WORD.get(_cal_source(cal), "calibrated window")
+    pooled = _cal_source(cal) == CAL_SOURCE_POOLED
     # primary detected channels = adducts carrying the High pass-1 backbone
     # (the unambiguous real reagent ions). A background channel that shows up
     # here (a genuine CO3-CIMS run) is treated as primary, not demoted.
@@ -1056,7 +1109,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
             z = _cal_z(cal, r["ppm_error"], r.get("mz"))
             tier = TIER_CANDIDATE
             reason = (f"mass error {float(r['ppm_error']):+.2f} ppm is {z:+.1f}"
-                      f"σ off the calibrated instrument accuracy "
+                      f"σ off the {'batch-pooled' if pooled else 'calibrated'} instrument accuracy "
                       f"({cal[0]:+.2f}±{cal[1]:.2f} ppm) with no isotope / "
                       "cross-channel / series corroboration "
                       "(mass-error-distribution test)")
@@ -1069,7 +1122,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
             tier = TIER_CANDIDATE
             if degen_density is not None:
                 reason = (f"mass-degenerate: {degen_density} plausible formulas "
-                          "share this mass within the calibrated window "
+                          f"share this mass within the {window} "
                           "(degeneracy audit) and no isotope / cross-channel / "
                           "series corroboration to break the tie — not "
                           "identifiable from accurate mass alone")
@@ -1095,7 +1148,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
                 # degeneracy audit; where it never ran (an uncalibrated file:
                 # degeneracy.measure_degeneracy skipped, no stamp) the search
                 # merely stored no rival -- say that, not uniqueness (C42c).
-                parts.append(("unique formula in the calibrated window"
+                parts.append((f"unique formula in the {window}"
                               if degen_density is not None else
                               "no rival formula in the search window (degeneracy not "
                               "measured" + ("" if cal is not None else
@@ -1319,20 +1372,30 @@ def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
     return mu, sigma
 
 
-def apply_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFrame:
-    """Stamp tier / tier_reason / candidate_density onto the M0 rows of the
-    ledger (in place; returns the ledger). Non-M0 rows keep NA. `cfg` (the run's
-    PassConfig) supplies cal_abs_floor_mda and tau_suspect; None = their
-    defaults (report re-tier). `profile`: the run's ContextProfile, for the
-    NOx-skeleton cap (compute_tiers); None = no cap."""
-    for col in ("tier", "tier_reason", "candidate_density"):
+def _tier_columns(ledger: pd.DataFrame) -> None:
+    """Create (or widen to object) the columns the tier stage writes."""
+    for col in ("tier", "tier_reason", "candidate_density", TIER_CALIBRATION):
         if col not in ledger.columns:
             ledger[col] = pd.Series(pd.NA, index=ledger.index, dtype="object")
         elif ledger[col].dtype != object:
             # candidate_density holds '>=N' strings; a float column (e.g. an
             # all-NaN CSV round-trip) must widen before the stamp
             ledger[col] = ledger[col].astype("object")
-    t = compute_tiers(ledger, cfg=cfg, profile=profile)
+
+
+def apply_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFrame:
+    """Stamp tier / tier_reason / candidate_density onto the M0 rows of the
+    ledger (in place; returns the ledger), and `tier_calibration` (whether the
+    file's own core calibrated the tier engine: CAL_SOURCE_PER_FILE, else
+    CAL_SOURCE_NONE). Non-M0 rows keep NA. `cfg` (the run's PassConfig)
+    supplies cal_abs_floor_mda and tau_suspect; None = their defaults (report
+    re-tier). `profile`: the run's ContextProfile, for the NOx-skeleton cap
+    (compute_tiers); None = no cap."""
+    _tier_columns(ledger)
+    m0 = ledger[ledger["role"] == L.ROLE_M0]
+    cal = _calibrate(m0, ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts(),
+                     abs_floor_mda=_abs_floor(cfg))
+    t = compute_tiers(ledger, cfg=cfg, profile=profile, cal=cal)
     if not len(t):
         return ledger
     idx = ledger.index[ledger["peak_id"].isin(t["peak_id"])]
@@ -1344,9 +1407,56 @@ def apply_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFrame
         ledger.at[i, "candidate_density"] = density_text(
             int(by_pid.at[pid, "candidate_density"]),
             bool(by_pid.at[pid, "density_capped"]))
+        ledger.at[i, TIER_CALIBRATION] = _cal_source(cal)
     stamp_calibrated_ppm(ledger)
     flag_below_assignability(ledger)
     return ledger
+
+
+def retier_calibrated(ledger: pd.DataFrame, base: pd.DataFrame, new: pd.DataFrame, *,
+                      source: str = CAL_SOURCE_POOLED) -> dict:
+    """Carry a re-run tier stage's verdicts onto a FINISHED ledger, in place.
+    `base` and `new` are compute_tiers frames over the ledger as the file's own
+    tier stage saw it: `base` the verdicts that stage gave (uncalibrated), `new`
+    those it gives with a calibration from elsewhere (the batch's pooled core,
+    calpool.py; `source` its CAL_SOURCE_*). A row whose stored tier and
+    tier_reason are still its `base` verdict takes its `new` one (tier, reason,
+    candidate_density); a row a later stage only demoted (its tier moved, its
+    reason is still the tier stage's: the plausibility demotes write theirs to
+    the commentary) takes the new reason and keeps that tier; a row a later
+    stage rewrote (a re-read, the ion-only bucket, a rescue committed after the
+    tier stage) keeps what it has -- that stage had the last word in the run
+    and keeps it. Every M0 row's `tier_calibration` reads `source`. Returns
+    {rows, retiered, demoted, promoted, reworded, kept}."""
+    _tier_columns(ledger)
+    out = {"rows": 0, "retiered": 0, "demoted": 0, "promoted": 0, "reworded": 0, "kept": 0}
+    b = base.set_index("peak_id") if len(base) else pd.DataFrame(columns=["tier", "tier_reason"])
+    n = new.set_index("peak_id") if len(new) else pd.DataFrame(columns=["tier", "tier_reason"])
+    for i in ledger.index[ledger["role"] == L.ROLE_M0]:
+        pid = ledger.at[i, "peak_id"]
+        ledger.at[i, TIER_CALIBRATION] = source
+        out["rows"] += 1
+        stored = (_txt(ledger.at[i, "tier"]), _txt(ledger.at[i, "tier_reason"]))
+        if pid not in b.index or pid not in n.index or stored[1] != _txt(b.at[pid, "tier_reason"]):
+            out["kept"] += 1
+            continue
+        verdict = (_txt(n.at[pid, "tier"]), _txt(n.at[pid, "tier_reason"]))
+        if stored[0] != _txt(b.at[pid, "tier"]):
+            verdict = (stored[0], verdict[1])      # a later stage's tier, the calibrated words
+        if verdict == stored:
+            continue
+        ledger.at[i, "tier"] = verdict[0]
+        ledger.at[i, "tier_reason"] = verdict[1]
+        ledger.at[i, "candidate_density"] = density_text(int(n.at[pid, "candidate_density"]),
+                                                         bool(n.at[pid, "density_capped"]))
+        out["retiered"] += 1
+        if stored[0] == TIER_ASSIGNED and verdict[0] == TIER_CANDIDATE:
+            out["demoted"] += 1
+        elif stored[0] == TIER_CANDIDATE and verdict[0] == TIER_ASSIGNED:
+            out["promoted"] += 1
+        else:
+            out["reworded"] += 1
+    return out
 
 
 def flag_below_assignability(ledger: pd.DataFrame) -> int:

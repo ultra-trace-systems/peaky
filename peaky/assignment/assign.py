@@ -172,9 +172,26 @@ def _stage_degeneracy(st):
     cal = tiers._calibrate(st.led[st.led["role"] == ledger.ROLE_M0],
                        st.led.loc[st.led["role"] == ledger.ROLE_ISO, "parent_peak_id"].value_counts())
     st.degeneracy_cal = None if cal is None else (float(cal[0]), float(cal[1]))
+    if cal is None:
+        # the ledger as the degeneracy and tier stages see it: a batch that lends
+        # this file its pooled calibration re-runs both on it (calpool.apply_pool)
+        st.at_tiers = st.led.copy(deep=True)
     degeneracy.apply_degeneracy(st.led, cal=cal, context=st.profile, adducts=st.adducts,
                                 families=families, curated=curated, log=st.log)
     return _degen_summary(st.led, st.adducts, families)
+
+
+def _pool_inputs(st):
+    """calpool.PoolInputs of a run whose degeneracy stage ran uncalibrated: the
+    ledger as that stage found it, the final cfg and profile, the channels, the
+    families the stage opened, the curated formulas and the evidence stage's
+    run inputs. None otherwise (a calibrated file, or the stage did not run)."""
+    if getattr(st, "degeneracy_cal", "absent") is not None or getattr(st, "at_tiers", None) is None:
+        return None
+    from peaky.assignment import calpool
+    fams = (st.summaries.get("degeneracy") or {}).get("families") or ()
+    return calpool.PoolInputs(at_tiers=st.at_tiers, cfg=st.cfg, profile=st.profile, adducts=list(st.adducts or []),
+                              families=tuple(fams), curated=_curated(st), level_inputs=st.level_inputs)
 
 
 def _module_hashes() -> dict:
@@ -249,6 +266,12 @@ class _RunState:
     # mass sigma and the scorer's match window size the TOF ion-M+2 test's
     # search window (tiers.apply_tof_m2); None = the scorer's TOF window alone
     scoring: object = None
+    # the run inputs the `evidence` stage levelled the file with (a batch
+    # re-levels an uncalibrated file in its pooled window: calpool.apply_pool)
+    level_inputs: object = None
+    # an uncalibrated file's ledger as the degeneracy stage found it (None on a
+    # calibrated one): what a batch-pooled calibration re-tiers it on
+    at_tiers: object = None
     summaries: dict = field(default_factory=dict)
     plaus_audit: list = field(default_factory=list)
 
@@ -460,6 +483,7 @@ def _stage_evidence(st):
         degeneracy_cal=getattr(st, "degeneracy_cal", "absent"),
         activation=getattr(st, "reflists_context", None),
         reagent_halogen=getattr(st, "reagent_halogen", evidence.DETECT_HALOGEN))
+    st.level_inputs = ri
     s = evidence.apply_levels(st.led, cfg=st.cfg, run_inputs=ri)
     claims = s.get("claims") or {}
     inst = s.get("instrument") or {}
@@ -1197,6 +1221,9 @@ def run(sample_id: str, context: str = "ambient-air", *,
     if run_state.degeneracy_cal != "absent":
         cal = run_state.degeneracy_cal
         st["degeneracy_cal"] = None if cal is None else {"mu": float(cal[0]), "sigma": float(cal[1])}
+        # where the tier engine's calibration came from: the file's own core, or
+        # none (a batch may then lend it the pooled one: calpool, 'pooled')
+        st["tier_calibration"] = tiers.CAL_SOURCE_NONE if cal is None else tiers.CAL_SOURCE_PER_FILE
     # the reagent halogen of the declared channels (C43) this file's evidence
     # read: a batch's merge vote computes the file's class in the parent with it
     st["reagent_halogen"] = reagent_halogen
@@ -1220,7 +1247,10 @@ def run(sample_id: str, context: str = "ambient-air", *,
             # cannot be read without it: the same envelope scores differently at
             # 0.3 ppm and at 3, and a published run carries it into the store.
             "pattern_scoring": scoring_snapshot,
-            "sample_id": sample_id}
+            "sample_id": sample_id,
+            # an uncalibrated file: what the steps a batch-pooled calibration
+            # re-applies read (calpool.apply_pool); None on a calibrated one
+            "pool_inputs": _pool_inputs(run_state)}
 
 
 def main(argv=None):
