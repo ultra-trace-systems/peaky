@@ -137,6 +137,27 @@ def test_every_note_is_a_no_op_outside_a_run():
     assert not BL.active()
 
 
+def test_a_run_on_another_thread_never_notes_into_or_stops_this_ones():
+    import threading
+    mine = BL.start()
+    seen = {}
+
+    def other():
+        seen["active_before"] = BL.active()
+        theirs = BL.start()
+        BL.note("q", "g", neutral="C1", adduct="[M-H]-")
+        BL.stop()
+        seen["theirs"] = set(theirs.blocks)
+
+    t = threading.Thread(target=other)
+    t.start()
+    t.join()
+    assert seen == {"active_before": False, "theirs": {"q"}}
+    assert BL.active() and not mine.blocks
+    BL.note("p", "g", neutral="C2", adduct="[M-H]-")
+    assert set(mine.blocks) == {"p"}
+
+
 # --------------------------------------------------------------------------- the ledger API
 def _ledger():
     led = L.new_ledger(pd.DataFrame({"peak_id": ["a", "b", "c"], "mz": [131.035, 132.038, 150.0],
