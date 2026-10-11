@@ -36,7 +36,8 @@ from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
 from peaky.assignment import solvent_clusters as SC
 
-__version__ = "0.7.0"   # + the reagent-N re-read and the amine gate keep the tier (the same ion); reread_source
+__version__ = "0.7.0"   # + the reagent-N re-read and the amine gate keep the tier (the same ion); reread_source;
+                        #   the reagent-N re-read is no tentative_lead any more (its doubt is the split's: the note)
                         # 0.6.2: the 15N cluster re-read judges a skeleton-capped row again (profile=); 0.6.1 the ion-only bucket skips a locked unexplained peak (an element-evidence clear)
                         # 0.6.0: easyic cluster-vs-covalent dual note (case 4)
                         # (history) reclaim_satellites covers 15N/34S/29Si/30Si/18O
@@ -1051,17 +1052,19 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
 
     SKIPPED when the same hydrocarbon also has its own [M+H]+ row -- then it is a
     genuine hydrocarbon (e.g. a terpene C10H16 that legitimately forms [M+NH4]+),
-    so its cluster adducts are left alone. The re-read is a tentative_lead
-    (C19(c): unsupported, not contradicted): the specific N-heterocycle is rarely
+    so its cluster adducts are left alone. The specific N-heterocycle is rarely
     cross-channel-confirmed and the region is often reagent background, but the
     protonated-heterocycle label is the saner best-guess and stays visible. It is
-    the SAME ION, so it keeps its tier and confidence (the tier answers "is the
-    ion right?"; tiers.REAGENT_N_OPEN_MARK): the doubt is the split's, and the
-    evidence level keeps the split open. Until 0.10 the re-read was set to
-    Candidate and "Low (reagent-N re-read)" whatever the files had shown (the
-    trimethylamine ion of a uronium field batch, Assigned in 16 of 17 files,
-    came out of the merge as Candidate). Positive adducts only (negative
-    reagents never hit these).
+    the SAME ION as the reading it replaces, so it keeps its tier and confidence
+    (the tier answers "is the ion right?"; tiers.REAGENT_N_OPEN_MARK): the doubt
+    is the split's, which the note says and the evidence level decides. Until
+    0.10 the re-read was set to Candidate, "Low (reagent-N re-read)" and a
+    tentative_lead (setter `reagent_n`, still read on older ledgers) whatever the
+    files had shown (the trimethylamine ion of a uronium field batch, Assigned in
+    16 of 17 files, came out of the merge as Candidate); a lead on a row that
+    keeps Assigned would list it among the single-sample workbook's "Below
+    assignability" rows as well. Positive adducts only (negative reagents never
+    hit these).
 
     That skip key is a PRESENCE test, so on a batch it is applied ONCE to the
     merged ledger (assign_batch.run; the per-file stage is gated off with
@@ -1069,9 +1072,8 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
     [M+H]+ row was picked flips with each file's S/N, and the same ion then came
     out as C15H22 [M+NH4]+ in fourteen files and C15H25N [M+H]+ in the fifteenth.
     Works on a merged frame as it does on a ledger: `role` is optional, and the
-    columns it annotates (ion_formula, dbe, the assignability flags, commentary,
-    tier_reason) are each written only when present (the merged ledger carries
-    no flag, so none is written there)."""
+    columns it annotates (ion_formula, dbe, commentary, tier_reason) are each
+    written only when present."""
     if "neutral_formula" not in ledger.columns or "adduct" not in ledger.columns:
         return {"reagent_n_relabeled": 0}
     hc_with_mh = {str(ledger.at[j, "neutral_formula"] or "")
@@ -1102,7 +1104,6 @@ def relabel_reagent_n_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
             ledger.at[i, "ion_formula"] = C.format_formula({**m2, "H": m2.get("H", 0) + 1}) + "+"
         if "dbe" in ledger.columns:
             ledger.at[i, "dbe"] = C.dbe(m2)
-        L.mark_lead(ledger, i, "reagent_n")
         note = (f"re-read {f_raw} {add_label} as [M+H]+ "
                 f"of {new}: a pure hydrocarbon has no site to bind the reagent N-cluster and "
                 "would show [M+H]+ if it ionized -- the cluster N belongs to the analyte "

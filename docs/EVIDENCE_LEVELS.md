@@ -86,9 +86,10 @@ buckets are reported beside them, never folded into them:
   split never moves the tier: the reagent-N isobar (the same ion read as an
   N-free neutral on `[M+NH4]+` / urea or as a protonated N-richer neutral), the
   amine gate's default and the hydrocarbon-on-N-cluster re-read each leave the
-  tier to the ion's own evidence, and the split step (§6) keeps such a pair
-  open, so it reads 4b (`ion`) at best. Until 0.10 the three capped the tier at
-  Candidate. A reader who takes Assigned for "neutral identified" reads the
+  tier to the ion's own evidence, and the split step (§6) decides such a pair:
+  it keeps most open, so they read 4b (`ion`) at best, and pins a few where the
+  NH4 admissibility rule rules a reading out. Until 0.10 the three capped the
+  tier at Candidate. A reader who takes Assigned for "neutral identified" reads the
   claim: Assigned + `ion` is an established ion whose neutral is open.
 - **Nothing upstream reads it.** Not the tiers, not the merge vote (whose
   class is its own, §13), not a check: the level and the claim change no ion,

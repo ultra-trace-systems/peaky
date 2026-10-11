@@ -61,7 +61,8 @@ from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
 from peaky.assignment import satellites as SAT
 
-__version__ = "0.11.0"  # + the reagent-N isobar is an open split, never a tier cap (the tier reads the ion; REAGENT_N_OPEN_MARK)
+__version__ = "0.11.0"  # + the reagent-N isobar is an open split, never a tier cap (the tier reads the ion; REAGENT_N_OPEN_MARK);
+                       #   an isobar ion that is N-rich in every reading and has nothing but its mass stays Candidate (REAGENT_N_RICH_MARK)
                        # 0.10.0: the NOx-skeleton tier cap (a skeleton-only reading is Candidate); 0.9.1 the twin test's exact-offset window on a calibrated Orbitrap-class run
                        # 0.9.0: source-solvent cluster cap (cluster:solvent -> Candidate)
                        # (history) mass-dependent z via masscal (range clamp; floor
@@ -164,6 +165,20 @@ N_DONOR_ADDUCTS = ("[M+NH4]+", "[M+(CH4N2O)H]+")
 #: unresolved"): on a uronium Orbitrap field campaign it held about a quarter of
 #: the merged Candidates while the ion was established in most files.
 REAGENT_N_OPEN_MARK = "reagent-N split open"
+#: The ion's own bar the isobar rows still meet (an ion-level rule, independent of
+#: the split): where EVERY stored reading of the ion carries at least this many
+#: analyte nitrogens (`_poorest_n`: the winner's neutral and each same-ion
+#: alternative's) and the ion has no isotope line, second channel or series anchor,
+#: its composition is a mass-only claim in the nitrogen-rich formula space, and the
+#: row is Candidate (REAGENT_N_RICH_MARK) -- the bar the speculative-residual demote
+#: sets a residual fit (N >= 3 with no isotope corroboration). Measured on a uronium
+#: Orbitrap file whose mass axis was shifted by +9 and by -9 ppm (decoy arms, where
+#: every Assigned reading is wrong): of the rows the isobar no longer capped, those
+#: with an N-rich ion were 16 of the 26 on the shifted arms and 1 of the 161 on the
+#: unshifted file; on a uronium field campaign they were 133 per-file rows, none on a
+#: grade-A/B line of its synthetic truth set and 13 on a line of another ion.
+REAGENT_N_RICH_MIN = 3
+REAGENT_N_RICH_MARK = "nitrogen-rich ion on mass alone"
 
 
 def reagent_n_note(formula, adduct, flag, *, fixed: bool, how: str = "") -> str:
@@ -176,11 +191,11 @@ def reagent_n_note(formula, adduct, flag, *, fixed: bool, how: str = "") -> str:
         return (f"{REAGENT_N_OPEN_MARK}: {formula} {adduct} is the same ion as {flag[1]} {flag[2]}, a "
                 "protonated N-heavier neutral, and no N-free channel / joint NH4+urea / series anchor "
                 "fixes the nitrogen count (isotopes cannot — identical ion); a doubt about the split, "
-                "not the ion: the tier reads the ion, the evidence level keeps the split open")
+                "not the ion: the tier reads the ion, the split is the evidence level's to decide")
     return (f"{REAGENT_N_OPEN_MARK}: {formula} {adduct} is the same ion as {flag[1]} {flag[2]} (the "
             "N-poorer neutral on an N-donating reagent adduct), and no second channel / series anchor "
             "fixes the nitrogen count (isotopes cannot — identical ion); a doubt about the split, not "
-            "the ion: the tier reads the ion, the evidence level keeps the split open")
+            "the ion: the tier reads the ion, the split is the evidence level's to decide")
 
 
 def split_open(tier_reason) -> bool:
@@ -594,6 +609,20 @@ def _reagent_n_isobar(row, alts_all: list[dict]):
     return None
 
 
+def _poorest_n(row, alts_all: list[dict]) -> int:
+    """The fewest analyte nitrogens any stored reading of the row's ion carries:
+    the winner's neutral and every same-ion alternative's (REAGENT_N_RICH_MIN
+    asks whether even the N-poorest reading is nitrogen-rich)."""
+    n = C.parse_formula(_txt(row.get("neutral_formula"))).get("N", 0)
+    ion0 = _ion_counts(row.get("neutral_formula"), row.get("adduct"))
+    if ion0 is None:
+        return n
+    for a in alts_all:
+        if _ion_counts(a.get("formula"), a.get("adduct")) == ion0:
+            n = min(n, C.parse_formula(_txt(a.get("formula"))).get("N", 0))
+    return n
+
+
 def _margin_density_tie(row, alts: list[dict], n_aliased: int,
                         n_stored: int) -> tuple[float | None, int, bool, bool]:
     """(margin to best real alternative, candidate density, capped?, tied?).
@@ -876,6 +905,8 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, _split_rows=N
                     else "series-anchor support"))
         # the isobar caps (and words a fixed count) only in the split-aware call
         cap_n = reagent_n if split_aware else None
+        # ...and the ion's own bar on such a row: the N-poorest reading's nitrogens
+        n_poor = _poorest_n(r, alts_all) if reagent_n else 0
         corroborated = iso_ev or cross_channel or has_anchor
         degen_density, mass_degenerate = _degeneracy(r)
         # admission provenance: a peak that was eligible for formula search only
@@ -1089,6 +1120,15 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, _split_rows=N
                           "N-poorer neutral on an N-donating reagent adduct), and no "
                           "second channel / series anchor fixes the nitrogen count "
                           "(isotopes cannot — identical ion)")
+        elif reagent_n and not corroborated and n_poor >= REAGENT_N_RICH_MIN:
+            # the ion's own bar where the isobar no longer caps (the split-aware call
+            # never gets here: its cap above takes the row first): every reading of
+            # this ion is nitrogen-rich and nothing but its mass supports it
+            tier = TIER_CANDIDATE
+            reason = (f"{REAGENT_N_RICH_MARK}: every stored reading of this ion carries "
+                      f">= {n_poor} analyte nitrogens and no isotope / cross-channel / series "
+                      "corroboration pins its composition; an N-rich composition on mass "
+                      "alone is speculative (Candidate for want of evidence, not against it)")
         elif tied and not (cross_channel or has_anchor):
             # a spectral eff-score tie cannot be broken by isotopes (they are
             # already in the score) -- only extra-spectral corroboration

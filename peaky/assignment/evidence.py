@@ -446,7 +446,8 @@ LABEL_FOLD = {"[M+NO3]-": "[M+^NO3]-", "[M+15NO3]-": "[M+^NO3]-"}
 #: to confirm its isotopes and -- only where the locked halogen is its sole
 #: violation (`budget_ok`, the CF2 analogue) -- a commit outside the element
 #: budget. The radical anion and the reagent-N re-read are never lifted: their
-#: neutrals carry no halogen, and their Low confidence stays hard.
+#: neutrals carry no halogen, and the radical anion's Low confidence stays hard
+#: (the reagent-N re-read is a lead only on a ledger written before cleanup 0.7).
 LIFTABLE_LEADS = frozenset({"spec_n3", "spec_gapfill", "spec_minor", "reflist_dim", "off_budget"})
 
 

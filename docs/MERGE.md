@@ -40,10 +40,10 @@ selected sample_ids (SAMPLING.md)
                    formula confirmed > unconfirmed; not the evidence level),
                    then most files (Assigned-file count, ion_score
                    break ties); a known species is decided after the vote
-     which LABEL of it -- the reading Assigned, its nitrogen count fixed, in
-                   the most files (a same-ion label split is the reagent-N
-                   isobar: a file that could not fix it is undecided)
-   the merged tier = the best per-file tier of the winning reading
+     which LABEL of it -- the reading Assigned, its nitrogen count not left
+                   open, in the most files (a same-ion label split is the
+                   reagent-N isobar: a file that could not fix it is undecided)
+   the merged tier = the best per-file tier of the winning ion (any label)
    n_files, n_files_ion, n_files_winner, alternatives, tier_reason, srcs,
    ion_agree, formula_agree, mz_jitter_ppm_raw, mz_jitter_ppm_caldj
    │  reagent-water ladder (batch/reagent_water.py): rungs core.(H2O)n measured on
@@ -167,13 +167,14 @@ selected sample_ids (SAMPLING.md)
      open (`tiers.REAGENT_N_OPEN_MARK` in its `tier_reason`). The vote ranks by
      its own tier, **`vote_tier`** (`_m0`, never written): the reading's tier,
      but Candidate where the file left the split open. The label Assigned with
-     the nitrogen count fixed in the most files wins; file count and score break
-     ties. When that overrides a bigger count the row says so: `same ion
-     C13H18NO4+ read two ways: kept C13H14O4 [M+NH4]+ (Assigned with the nitrogen
-     count fixed in 5 of its 5 files) over the 6-file C13H17NO4 [M+H]+ (Assigned
-     with the nitrogen count fixed in 0)` -- `Assigned in` where no file of the
-     cluster left a split open. Frames without `vote_tier` (a pure `align()`
-     caller) vote on the tier, as before.
+     its nitrogen count not left open in the most files wins (a discriminating
+     channel fixed it there, or the file stored no same-ion alias); file count
+     and score break ties. When that overrides a bigger count the row says so:
+     `same ion C13H18NO4+ read two ways: kept C13H14O4 [M+NH4]+ (Assigned,
+     nitrogen count not left open, in 5 of its 5 files) over the 6-file
+     C13H17NO4 [M+H]+ (Assigned, nitrogen count not left open, in 0)` --
+     `Assigned in` where no file of the winning ion left a split open. Frames
+     without `vote_tier` (a pure `align()` caller) vote on the tier, as before.
 
    The winning reading's best per-file row (`vote_tier`, then `ion_score`, then
    `src`) supplies the merged `neutral_formula` / `adduct` / `ion_score` /
@@ -181,8 +182,10 @@ selected sample_ids (SAMPLING.md)
    file's peak separability, when the run had a width model) / `ts_disposition` /
    `ts_cv_norm` (the winner file's time-series label, when the run had a time series:
    flatness labels a row and never tiers it, so the label has to survive the merge).
-   The merged **`tier`** is the best per-file tier of the winning reading (the
-   best row's own, unless `vote_tier` set a file's reagent-N reading back).
+   The merged **`tier`** is the best per-file tier of the winning ION, whichever
+   of its labels a file read it with (the best row's own, unless `vote_tier` set
+   a file's reagent-N reading back or a file Assigned the ion under the label the
+   vote did not keep): the tier answers "is the ion right?".
    The merged **`mz` is the mean of the cluster's
    raw m/z**. Also recorded: `n_files` (distinct srcs), `n_files_ion` (files
    carrying the winning ion), `n_files_winner` (files carrying the winning

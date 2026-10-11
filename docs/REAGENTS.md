@@ -266,8 +266,10 @@ on the run's own polarity only. Nothing is opened by polarity.
   (`cleanup.prefer_amine_over_ammonium`, `merge_gates.amine` in
   `batch_summary.json`; SKILL.md *Reagent-aware chemistry*): it stays an
   ammonium adduct when it tracks its own `[M+H]⁺` / urea parent, else it is
-  re-read as the protonated amine at Candidate (a siloxane, a protected
-  identity or a valence-impossible amine keeps it). The evidence scale decides
+  re-read as the protonated amine (a siloxane, a protected identity or a
+  valence-impossible amine keeps it). The re-read is the same ion, so it keeps
+  the tier the merge vote gave the ion; the open split is the evidence level's
+  (a batch-level re-read takes the level of the pooled pair it replaced). The evidence scale decides
   a committed `[M+NH4]⁺` reading by the same gate alone; its NH4 admissibility
   rule (an ammonium reading of Y needs a uronium adduct ion of Y in the run)
   applies to the ammonium decompositions of committed `[M+H]⁺` readings, not
@@ -373,9 +375,10 @@ on the run's own polarity only. Nothing is opened by polarity.
      `[M+NH4]⁺` or `[M+(CH4N2O)H]⁺` yields the *same* ion formula as a CHON neutral
      seen as `[M+H]⁺` (e.g. `C12H14O4[M+NH4]⁺` and `C12H17NO4[M+H]⁺` are both
      `C12H18NO4⁺`). Mass and isotopes cannot separate them — the split stays open
-     (the row says `reagent-N split open`, the evidence level reads 4b at best)
+     (the row says `reagent-N split open`; the evidence level decides it)
      unless an extra-spectral discriminator fixes the nitrogen count; the tier
-     reads the ion. See the reagent-N isobar in
+     reads the ion (and holds an ion that is nitrogen-rich in every reading on
+     mass alone at Candidate). See the reagent-N isobar in
      [`ASSIGNMENT_DETAIL.md`](ASSIGNMENT_DETAIL.md) (tiers).
    - **A pure hydrocarbon "seen via an N-cluster" is re-read as an N-heterocycle.**
      A hydrocarbon has no site to bind `NH4⁺`/uronium and would show `[M+H]⁺`, so an

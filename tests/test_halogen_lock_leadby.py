@@ -76,15 +76,18 @@ def test_the_off_budget_demote_names_itself():
     assert (_by(led, 0), _by(led, 1)) == ("off_budget", "")
 
 
-def test_the_radical_anion_and_the_reagent_n_reread_name_themselves():
+def test_the_radical_anion_names_itself_and_the_reagent_n_reread_is_no_lead():
     led = _tiered([dict(peak_id="u", role="M0", neutral_formula="C6H6", adduct="[M+CO3]-", ion_formula="",
                         dbe=4.0)])
     CL.relabel_radical_anions(led, **QUIET)
     assert _by(led, 0) == "radical_anion"
+    # the reagent-N re-read keeps its tier and writes no lead since cleanup 0.7 (the
+    # doubt is the split's); `reagent_n` stays a known setter for older ledgers
     led = _tiered([dict(peak_id="u", role="M0", neutral_formula="C5H6", adduct="[M+(CH4N2O)H]+",
                         ion_formula="", dbe=3.0)])
     CL.relabel_reagent_n_adducts(led, **QUIET)
-    assert _by(led, 0) == "reagent_n"
+    assert led.loc[0, "neutral_formula"] == "C6H10N2O" and _by(led, 0) == ""
+    assert not bool(led.loc[0, L.FLAG_LEAD]) and "reagent_n" in L.LEAD_SETTERS
 
 
 def test_a_corroborated_radical_anion_clears_the_code_with_the_flags():

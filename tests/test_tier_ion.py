@@ -10,10 +10,14 @@ pinned: the reagent-N isobar (tiers._reagent_n_isobar), the amine gate
     (its isotope lines); the row names the open split (tiers.REAGENT_N_OPEN_MARK)
     only where the split-aware verdict differed from the ion's, and a resolved
     split keeps its wording;
+  * an isobar ion that is nitrogen-rich in EVERY stored reading and has nothing
+    but its mass is Candidate on its own terms (tiers.REAGENT_N_RICH_MARK);
   * the merge vote's label stage still decides a same-ion pair by the files that
     fixed the nitrogen count (assign_batch.VOTE_TIER), the best-row pick is the
-    one it was, and the merged tier is the best per-file tier;
-  * the two re-reads change the label only: never the tier;
+    one it was, and the merged tier is the winning ion's best per-file tier (any
+    of its labels);
+  * the two re-reads change the label only: never the tier (and the hydrocarbon
+    re-read writes no tentative lead);
   * a re-read merged row takes the ion's level from the pooled pair it replaced
     (4b with the split open, or 5a), never a 5b or a bucket.
 
@@ -105,6 +109,61 @@ def test_a_row_without_the_isobar_is_untouched_by_the_split_verdict():
     assert tier == "Assigned" and not T.split_open(why) and "reagent-N" not in why
 
 
+def _reading_ledger(formula, adduct, alias, *, child=False):
+    """One positive reading (`formula` `adduct`) whose stored alternatives hold the
+    same-ion readings `alias` [(formula, adduct), ...]; `child` gives it a 13C child."""
+    mz = C.ion_mz(formula, adduct)
+    led = L.new_ledger(pd.DataFrame({"peak_id": ["R", "R13"], "mz": [mz, mz + 1.0033548],
+                                     "height": [5e4, 4.5e3]}))
+    alts = [{"formula": f, "adduct": a, "ion_score": 0.95, "raw_score": 0.95, "eff_score": 0.85,
+             "ppm": 0.2} for f, a in alias]
+    L.commit_assignment(led, "R", neutral_formula=formula, adduct=adduct, ion_formula="",
+                        ion_score=0.95, compound_score=0.95, eff_score=0.9, eff_margin=0.3, tied=False,
+                        ppm_error=0.2, pass_no=1, method="cheminfo+grid", confidence="High",
+                        commentary="Pass 1", alternatives=alts,
+                        isotopologues=([{"label": "13C", "score": 0.9, "peak_id": "R13"}] if child else None))
+    if child:
+        L.attach_isotopologue(led, "R13", "R", iso_label="13C", iso_match_score=0.9)
+    return led
+
+
+# C6H11N3O on urea is the ion C7H16N5O2+: read as C7H12N4O2 [M+NH4]+ or C7H15N5O2
+# [M+H]+ too -- every reading carries >= 3 analyte nitrogens
+_N_RICH = ("C6H11N3O", "[M+(CH4N2O)H]+", [("C7H12N4O2", "[M+NH4]+"), ("C7H15N5O2", "[M+H]+")])
+
+
+def test_a_nitrogen_rich_ion_on_mass_alone_stays_candidate_on_its_own_terms():
+    tier, why = _tier(_reading_ledger(*_N_RICH), "R")
+    assert tier == "Candidate"
+    assert why.startswith(T.REAGENT_N_RICH_MARK + ": every stored reading of this ion carries >= 3 "
+                          "analyte nitrogens")
+    # the split is still named, after the ion's own reason
+    assert T.split_open(why) and "C6H11N3O [M+(CH4N2O)H]+ is the same ion as C7H12N4O2 [M+NH4]+" in why
+    assert "reagent-N isobar unresolved" not in why
+
+
+def test_a_nitrogen_rich_ion_with_its_own_isotope_line_is_assigned():
+    tier, why = _tier(_reading_ledger(*_N_RICH, child=True), "R")
+    assert tier == "Assigned" and "isotopologue-confirmed" in why and T.split_open(why)
+    assert T.REAGENT_N_RICH_MARK not in why
+
+
+def test_the_n_poorest_reading_decides_whether_the_ion_is_nitrogen_rich():
+    # the amine-side N3 reading of an ion that also reads as an N1 neutral on urea
+    # (C6H14N3O2+): not N-rich in every reading, so the ion is Assigned on its mass
+    led = _reading_ledger("C6H13N3O2", "[M+H]+", [("C5H9NO", "[M+(CH4N2O)H]+")])
+    assert T._poorest_n(led.iloc[0], [{"formula": "C5H9NO", "adduct": "[M+(CH4N2O)H]+"}]) == 1
+    tier, why = _tier(led, "R")
+    assert tier == "Assigned" and T.split_open(why) and T.REAGENT_N_RICH_MARK not in why
+
+
+def test_the_nitrogen_bar_is_the_isobar_rows_only():
+    # the same N3 neutral with no same-ion alias stored: no isobar, no bar -- the
+    # row is what it was (the card changes nothing outside the reagent-N pairs)
+    tier, why = _tier(_reading_ledger("C6H11N3O", "[M+(CH4N2O)H]+", []), "R")
+    assert tier == "Assigned" and "reagent-N" not in why and T.REAGENT_N_RICH_MARK not in why
+
+
 # --------------------------------------------------------------------------- the vote
 def _pf(rows):
     """One file's M0 rows as `_m0` hands them to the vote (tier + tier_reason)."""
@@ -137,9 +196,9 @@ def test_the_label_stage_still_counts_the_files_that_fixed_the_nitrogen():
     m, jit = AB.align(files, tol_ppm=6.0)
     r = m.iloc[0]
     assert (r["neutral_formula"], r["adduct"], r["tier"]) == ("C13H14O4", "[M+NH4]+", "Assigned")
-    assert r["tier_reason"] == ("same ion C13H18NO4+ read two ways: kept C13H14O4 [M+NH4]+ (Assigned with the "
-                                "nitrogen count fixed in 5 of its 5 files) over the 6-file C13H17NO4 [M+H]+ "
-                                "(Assigned with the nitrogen count fixed in 0)")
+    assert r["tier_reason"] == ("same ion C13H18NO4+ read two ways: kept C13H14O4 [M+NH4]+ (Assigned, "
+                                "nitrogen count not left open, in 5 of its 5 files) over the 6-file "
+                                "C13H17NO4 [M+H]+ (Assigned, nitrogen count not left open, in 0)")
     # the losers' description prints their TIER
     assert r["alternatives"] == "C13H17NO4 [M+H]+ x6 Assigned 0.98"
     assert set(jit["tier"]) == {"Assigned"}
@@ -150,6 +209,25 @@ def test_an_ion_no_file_could_split_is_assigned_at_the_merge():
              for i in range(3)}
     r = AB.align(files, tol_ppm=6.0)[0].iloc[0]
     assert (r["neutral_formula"], r["tier"]) == ("C13H17NO4", "Assigned") and pd.isna(r["tier_reason"])
+
+
+def test_the_merged_tier_is_the_winning_ions_whichever_label_a_file_read():
+    # 4 files read the ion as the amine at Candidate, 2 as the NH4 adduct Assigned
+    # on the ion's evidence with the split open: the label goes to the 4 (no file
+    # fixed the nitrogen count), and the ion's tier is the 2 files' Assigned
+    files = {f"c{i}": _pf([(252.1230 + 1e-4 * i, "C13H17NO4", "[M+H]+", "Candidate", 0.98, "x")])
+             for i in range(4)}
+    files.update({f"a{i}": _pf([(252.1230 + 1e-4 * i, "C13H14O4", "[M+NH4]+", "Assigned", 0.97,
+                                 "isotopologue-confirmed; " + T.REAGENT_N_OPEN_MARK + ": ...")])
+                  for i in range(2)})
+    r = AB.align(files, tol_ppm=6.0)[0].iloc[0]
+    assert (r["neutral_formula"], r["adduct"], r["tier"]) == ("C13H17NO4", "[M+H]+", "Assigned")
+    assert r["alternatives"] == "C13H14O4 [M+NH4]+ x2 Assigned 0.97"
+    # with the vote's tier gone (a pure align() frame), the label stage counts the
+    # Assigned files and the merged row is the one it always was
+    plain = {k: v.drop(columns=[AB.VOTE_TIER]) for k, v in files.items()}
+    r = AB.align(plain, tol_ppm=6.0)[0].iloc[0]
+    assert (r["neutral_formula"], r["tier"]) == ("C13H14O4", "Assigned")
 
 
 def test_the_best_row_pick_is_the_one_it_was():

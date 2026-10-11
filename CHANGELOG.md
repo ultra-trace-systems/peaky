@@ -314,30 +314,42 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   from either side), the merge's amine gate (`cleanup.prefer_amine_over_ammonium`: an
   unconfirmed `[M+NH4]+` re-read as the `[M+H]+` amine, and the amine-impossible keep) and the
   merge's hydrocarbon-on-N-cluster re-read (`cleanup.relabel_reagent_n_adducts`, which also
-  set the confidence to "Low (reagent-N re-read)"). None of them moves the tier now. The
-  isobar row is tiered on its ion's own corroboration (its isotope lines and second channel
-  count again) and says `reagent-N split open: ...` (`tiers.REAGENT_N_OPEN_MARK`) where the
-  split-aware verdict -- the rules as the cap read them -- differs; a resolved count keeps
-  its `nitrogen count fixed by ...` wording, and a row another rule holds keeps its reason.
-  The re-reads change the label only and keep the tier the vote gave the ion; the labels
-  they write are unchanged. The merge vote ranks by a private `vote_tier` (Candidate where a
-  file's reagent-N split is open), so the label of a same-ion pair is still decided by the
-  files that fixed the nitrogen count and the best-row pick is the one it was; the merged
-  tier is the best per-file tier, and the losers' description prints their tier. A
-  batch-level re-read row is now levelled from the pooled pair it replaced (the same ion):
-  4b with its split open where that pair established the ion, 5a where it left a
-  competitor, still no level from a 5b pair (`evidence.stamp_merged`,
+  set the confidence to "Low (reagent-N re-read)" and a tentative lead). None of them moves
+  the tier now. An isobar row is tiered on its ion's own evidence: its isotope lines count
+  again, and a row with no isotope line, second channel or series anchor is no longer capped
+  -- it reads Assigned wherever no other rule holds it, on mass uniqueness alone (nine in ten
+  of the per-file rows that move on a uronium field campaign). One ion-level bar stays on
+  these rows: an ion that carries at least three analyte nitrogens in every stored reading
+  and has nothing but its mass is Candidate (`nitrogen-rich ion on mass alone`,
+  `tiers.REAGENT_N_RICH_MIN`, the speculative-residual demote's N >= 3 bar). The row says
+  `reagent-N split open: ...` (`tiers.REAGENT_N_OPEN_MARK`) where the split-aware verdict --
+  the rules as the cap read them -- differs; a resolved count keeps its `nitrogen count fixed
+  by ...` wording, and a row another rule holds keeps its reason. The re-reads change the
+  label only and keep the tier the vote gave the ion; the labels they write are unchanged.
+  The merge vote ranks by a private `vote_tier` (Candidate where a file's reagent-N split is
+  open), so the label of a same-ion pair is still decided by the files that could fix the
+  nitrogen count and the best-row pick is the one it was; the merged tier is the winning
+  ion's best per-file tier, whichever label a file read it with, and the losers' description
+  prints their tier. A batch-level re-read row is now levelled from the pooled pair it
+  replaced (the same ion): 4b with its split open where that pair established the ion, 5a
+  where it left a competitor, still no level from a 5b pair (`evidence.stamp_merged`,
   `cleanup.reread_source`). Negative-mode runs are byte-identical. Replayed offline on the
   stored ledgers of a uronium Orbitrap field campaign (12 batches), against its synthetic
-  truth set: truth A/B ions Assigned in some batch 2186 -> 2593 of 2671, per batch 10 642 ->
-  14 688 of 15 711 pairs, none lost; Assigned readings 2825 -> 3869 at precision 0.984 ->
-  0.983 (0 wrong ions, wrong role 1.4 -> 1.5 %); unlevelled merged rows 3592 -> 67. On the
-  release acceptance set the uronium run gains 4 true readings (34 -> 38 of 42) and 0 of its
-  8 known-false ones; the negative-mode runs do not move. Known limits: Assigned no longer
-  implies that the neutral is identified (read `claim`: Assigned + `ion` is an established
-  ion whose split is open); the isobar cap had also held N-rich mass fits on the urea
-  cluster, and a uronium decoy arm shifted by 9 ppm Assigns 12 -> 23 readings (the control
-  460 -> 616).
+  truth set (ion-level): truth A/B ions Assigned in some batch 2186 -> 2593 of 2671, per
+  batch 10 642 -> 14 688 of 15 711 pairs, none lost; Assigned readings 2825 -> 3860 at
+  precision 0.984 -> 0.984 (0 wrong ions, wrong role 1.4 -> 1.4 %); unlevelled merged rows
+  3592 -> 67. On the release acceptance set the uronium run gains 4 true readings (34 -> 38
+  of 42) and 0 of its 8 known-false ones; the negative-mode runs do not move. Known limits:
+  Assigned no longer implies that the neutral is identified (read `claim`: Assigned + `ion`
+  is an established ion whose split is open). At the reading level (the neutral / adduct
+  written) the amine gate's default re-reads ("only weak tracking", "parent flat") write the
+  amine where the truth set decides the split for the ammonium adduct in 412 of the 558 such
+  readings that move to Assigned on a decided line; over all three rules the truth A/B lines
+  whose Assigned reading writes a split the truth decides otherwise go 43 -> 167. On a
+  uronium decoy file (its mass axis shifted by +9 and by -9 ppm, every Assigned reading
+  wrong) the two shifted arms together Assign 18 -> 28 readings against 461 -> 621 on the
+  unshifted file before the post-tier demotes, 12 -> 17 against 460 -> 616 after them
+  (without the nitrogen bar 18 -> 44 and 12 -> 23).
 
 ### Fixed
 

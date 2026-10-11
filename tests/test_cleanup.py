@@ -463,13 +463,17 @@ ledrn = pd.DataFrame([
 ])
 outrn = CU.relabel_reagent_n_adducts(ledrn, log=lambda *a: None)
 check("reagent-N: 2 hydrocarbon urea/NH4 clusters re-read", outrn == {"reagent_n_relabeled": 2}, outrn)
-check("reagent-N: C5H6 [M+(CH4N2O)H]+ -> C6H10N2O [M+H]+ + tentative lead (C19(c)), its tier kept",
+# the same ion: its tier kept, and no tentative lead (since cleanup 0.7 the split's
+# doubt is the note's; a lead on a row that keeps Assigned listed it among the
+# single-sample workbook's "Below assignability" rows too)
+_lead = ledrn["tentative_lead"] if "tentative_lead" in ledrn.columns else pd.Series(False, index=ledrn.index)
+check("reagent-N: C5H6 [M+(CH4N2O)H]+ -> C6H10N2O [M+H]+, its tier kept, no lead",
       ledrn.loc[0, "neutral_formula"] == "C6H10N2O" and ledrn.loc[0, "adduct"] == "[M+H]+"
-      and ledrn.loc[0, "tier"] == "Candidate" and bool(ledrn.loc[0, "tentative_lead"])
+      and ledrn.loc[0, "tier"] == "Candidate" and not bool(_lead.loc[0])
       and not bool(ledrn.loc[0, "below_assignability"]))
-check("reagent-N: C5H4 [M+NH4]+ -> C5H7N [M+H]+, the same ion: Assigned stays Assigned, a lead",
+check("reagent-N: C5H4 [M+NH4]+ -> C5H7N [M+H]+, the same ion: Assigned stays Assigned, no lead",
       ledrn.loc[1, "neutral_formula"] == "C5H7N" and ledrn.loc[1, "tier"] == "Assigned"
-      and bool(ledrn.loc[1, "tentative_lead"]) and ledrn.loc[1, "lead_by"] == "reagent_n",
+      and not bool(_lead.loc[1]) and not bool(ledrn.loc[1, "below_assignability"]),
       ledrn.loc[1].to_dict())
 _ledrc = pd.DataFrame([dict(role="M0", neutral_formula="C5H4", adduct="[M+NH4]+", tier="Assigned",
                             confidence="Good", commentary="", tier_reason="unique formula")])

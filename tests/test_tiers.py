@@ -463,7 +463,7 @@ check("amine-side winner with a single channel -> Assigned on its ion, the open 
           "; reagent-N split open: C5H12N2S [M+H]+ is the same ion as C5H9NS [M+NH4]+ (the N-poorer "
           "neutral on an N-donating reagent adduct), and no second channel / series anchor fixes the "
           "nitrogen count (isotopes cannot — identical ion); a doubt about the split, not the ion: the "
-          "tier reads the ion, the evidence level keeps the split open")
+          "tier reads the ion, the split is the evidence level's to decide")
       and T.split_open(_trn.at["am", "tier_reason"]),
       _trn.at["am", "tier_reason"])
 check("donor-side winner with a single channel -> Assigned on its ion, the N-heavier alias named",

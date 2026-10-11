@@ -328,9 +328,12 @@ columns** (no judgment calls at report time):
   tier_reason says the neutral / adduct split is open (`reagent-N split open`)
   unless an extra-spectral discriminator fixes the nitrogen count: the same
   neutral in an N-free channel (`[M+H]+`/`[M+Na]+`/`[M+K]+`), the
-  jointly-unfakeable NH4+urea pair, or a series anchor. The evidence level keeps
-  such a split open (4b, claim `ion`, at best). Until 0.10 such a commit was
-  demoted to Candidate. Br is unaffected (halide, negative-only). See
+  jointly-unfakeable NH4+urea pair, or a series anchor. The evidence level
+  decides the split (most such pairs stay open: 4b, claim `ion`). Until 0.10
+  such a commit was demoted to Candidate; one ion-level bar stays: an ion that
+  carries three or more analyte nitrogens in every reading and has no isotope
+  line, second channel or series anchor is Candidate (`nitrogen-rich ion on
+  mass alone`). Br is unaffected (halide, negative-only). See
   [ASSIGNMENT_DETAIL](ASSIGNMENT_DETAIL.md) for the mechanics.
 - **Below assignability** — the **unexplained** residual, characterized
   peak-by-peak (isotope-partner / has-constraints / isolated). Presented as a
