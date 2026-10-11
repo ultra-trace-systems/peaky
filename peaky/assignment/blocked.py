@@ -52,6 +52,7 @@ from __future__ import annotations
 import bisect
 import functools
 import re
+import threading
 from dataclasses import dataclass
 
 import numpy as np
@@ -125,23 +126,27 @@ class Recorder:
         mine[key] = b
 
 
-_ACTIVE: Recorder | None = None
+#: the recorder of the run on THIS thread (a run is one thread's work; two runs on
+#: two threads -- the MCP server's jobs -- never note into, or stop, each other's)
+_STATE = threading.local()
+
+
+def _rec() -> Recorder | None:
+    return getattr(_STATE, "rec", None)
 
 
 def start() -> Recorder:
     """A fresh recorder for this run (replacing any earlier one)."""
-    global _ACTIVE
-    _ACTIVE = Recorder()
-    return _ACTIVE
+    _STATE.rec = Recorder()
+    return _STATE.rec
 
 
 def stop() -> None:
-    global _ACTIVE
-    _ACTIVE = None
+    _STATE.rec = None
 
 
 def active() -> bool:
-    return _ACTIVE is not None
+    return _rec() is not None
 
 
 def _guarded(fn):
@@ -152,10 +157,11 @@ def _guarded(fn):
         try:
             return fn(*a, **kw)
         except Exception as e:      # noqa: BLE001 -- a diagnostic must not fail a pass
-            if _ACTIVE is not None:
-                _ACTIVE.errors += 1
-                if _ACTIVE.first_error is None:
-                    _ACTIVE.first_error = f"{fn.__name__}: {type(e).__name__}: {e}"
+            rec = _rec()
+            if rec is not None:
+                rec.errors += 1
+                if rec.first_error is None:
+                    rec.first_error = f"{fn.__name__}: {type(e).__name__}: {e}"
             return None
     return wrapper
 
@@ -215,19 +221,31 @@ def compact_reason(why) -> str:
     return short(t) or "rejected"
 
 
-_CUT = re.compile(r" \(|: |(?<=[ =])[-+]?\d")
+#: where a gate text's detail starts: a parenthesis or a ': ' explanation
+_DETAIL = re.compile(r" \(|: ")
+#: a number or a comparison of two ending a word, alone or after '=', '<', '>'
+#: ('0.62<0.70', 'z=2.6>2.0', '|ppm|=1.20') -- never inside a word ('O<3x15N')
+_NUMBERS = re.compile(r"(?:(?<=[=<>])|^)[-+]?\d+(?:\.\d+)?(?:[<>][-+]?\d+(?:\.\d+)?)?$")
 
 
 def gate_class(text) -> str:
-    """A `blocked_by` text without its numbers and detail -- what a count
-    groups by: 'score<min_raw 0.62<0.70 (pass 1)' -> 'score<min_raw',
-    'cleared:mass-gate: z=2.2 ...' -> 'cleared:mass-gate'."""
+    """A `blocked_by` text without its numbers, formulas and detail -- what a
+    count groups by: 'score<min_raw 0.62<0.70 (pass 1)' -> 'score<min_raw',
+    'mass-gate z=2.6>2.0 without pattern (pass 1)' -> 'mass-gate z without
+    pattern', 'cleared:mass-gate: z=2.2 ...' -> 'cleared:mass-gate',
+    'cleared:displaced by certified-neutral C19H37ClN4O3' -> 'cleared:displaced
+    by certified-neutral'."""
     t = _txt(text)
     if t is None:
         return "(none)"
-    m = _CUT.search(t)
-    t = (t[: m.start()] if m else t).rstrip(" =<>:+-")
-    return t or "(none)"
+    m = _DETAIL.search(t)
+    keep = []
+    for k, w in enumerate((t[: m.start()] if m else t).split(" ")):
+        w = _NUMBERS.sub("", w).rstrip("=<>")
+        # a later word still carrying a digit is a formula or a count: dropped
+        if w and not (k and any(ch.isdigit() for ch in w)):
+            keep.append(w)
+    return " ".join(keep).rstrip(" =<>:+-") or "(none)"
 
 
 def ion_formula(neutral, adduct) -> str | None:
@@ -281,16 +299,17 @@ def reading_score(text) -> float | None:
 def note(peak_id, gate: str, *, neutral=None, adduct=None, ion=None, score=None, ppm=None,
          to_score: bool = False) -> None:
     """Record that `gate` stopped a reading (or, without `neutral`, the peak)."""
-    if _ACTIVE is None or peak_id is None:
+    rec = _rec()
+    if rec is None or peak_id is None:
         return
-    _ACTIVE.add(peak_id, str(gate), neutral=_txt(neutral), adduct=_txt(adduct), ion=_txt(ion),
+    rec.add(peak_id, str(gate), neutral=_txt(neutral), adduct=_txt(adduct), ion=_txt(ion),
                 score=_num(score), ppm=_num(ppm), to_score=bool(to_score))
 
 
 @_guarded
 def note_at(peak_id, gate: str, mz, *, neutral, adduct, **kw) -> None:
     """`note` with the ppm of the reading's ion against the peak's m/z `mz`."""
-    if _ACTIVE is None:
+    if _rec() is None:
         return
     ion = C.ion_mz(neutral, adduct)
     note(peak_id, gate, neutral=neutral, adduct=adduct, ppm=(float(mz) - ion) / ion * 1e6, **kw)
@@ -299,7 +318,7 @@ def note_at(peak_id, gate: str, mz, *, neutral, adduct, **kw) -> None:
 @_guarded
 def note_winner(w, gate: str) -> None:
     """An arbitration winner (`core.arbitrate`'s row) a commit gate refused."""
-    if _ACTIVE is None:
+    if _rec() is None:
         return
     g = w.get if hasattr(w, "get") else (lambda k, d=None: d)
     note(g("peak_id"), gate, neutral=g("neutral"), adduct=g("adduct"), ion=g("ion_formula"),
@@ -337,7 +356,7 @@ def note_context(targets: pd.DataFrame, rejected: dict, adducts, tol_ppm: float,
                  prefix: str = "context:") -> None:
     """The readings a context filter rejected ({formula: its reason}), each on
     the target peaks it reaches; scored later, at the stamp."""
-    if _ACTIVE is None or not rejected:
+    if _rec() is None or not rejected:
         return
     for p, f, a, ppm in attribute(targets, rejected, adducts, tol_ppm):
         note(p, prefix + compact_reason(rejected[f]), neutral=f, adduct=a, ppm=ppm, to_score=True)
@@ -347,14 +366,15 @@ def note_context(targets: pd.DataFrame, rejected: dict, adducts, tol_ppm: float,
 def note_grid(targets: pd.DataFrame, formulas, adducts, tol_ppm: float, box: str) -> None:
     """Pass 1's grid: which targets it gave a candidate (before the context
     filter) and which it could not reach (`box`: the grid box in words)."""
-    if _ACTIVE is None or targets is None or not len(targets):
+    rec = _rec()
+    if rec is None or targets is None or not len(targets):
         return
     hit = {p for p, *_ in attribute(targets, formulas, adducts, tol_ppm)}
     for p in targets["peak_id"]:
         if p in hit:
-            _ACTIVE.targets.add(p)
+            rec.targets.add(p)
         else:
-            _ACTIVE.box[p] = box
+            rec.box[p] = box
 
 
 def _row_reading(ledger: pd.DataFrame, i) -> dict:
@@ -385,8 +405,8 @@ def note_cleared(ledger: pd.DataFrame, i, reason, children=()) -> None:
     `children`, its isotope lines): during a run the recorder keeps the
     cleared reading; on a ledger that already carries the two columns (the
     batch's per-file rewrite) they are written on the rows directly."""
-    direct = carries_columns(ledger)
-    if not direct and _ACTIVE is None:
+    direct, rec = carries_columns(ledger), _rec()
+    if not direct and rec is None:
         return
     pid = ledger.at[i, "peak_id"]
     rd = _row_reading(ledger, i)
@@ -398,9 +418,9 @@ def note_cleared(ledger: pd.DataFrame, i, reason, children=()) -> None:
         for ci in children:
             _write(ledger, ci, None, rel)
         return
-    _ACTIVE.add(pid, gate, **rd)
+    rec.add(pid, gate, **rd)
     for ci in children:
-        _ACTIVE.add(ledger.at[ci, "peak_id"], rel)
+        rec.add(ledger.at[ci, "peak_id"], rel)
 
 
 @_guarded
@@ -493,7 +513,7 @@ def stamp(ledger: pd.DataFrame, rec: Recorder | None = None, *, client=None, sam
     """Write `blocked_reading` / `blocked_by` on every unexplained row (NA on
     every other row), from `rec` (default: the active recorder). Returns the
     rows per gate class."""
-    rec = rec if rec is not None else _ACTIVE
+    rec = rec if rec is not None else _rec()
     for c in COLUMNS:
         ledger[c] = pd.Series([pd.NA] * len(ledger), index=ledger.index, dtype=object)
     if rec is None or "role" not in ledger.columns or "peak_id" not in ledger.columns:
@@ -541,6 +561,11 @@ TABLE_COLUMNS = ("mz", "mz_min", "mz_max", "n_files", "n_rows", "median_height",
                  "reading", "n_files_reading", "reading_score_median", "gate", "gates")
 
 
+def _median_score(readings) -> float:
+    s = [x for x in map(reading_score, readings) if x is not None]
+    return float(np.median(s)) if s else np.nan
+
+
 def batch_table(ledgers: dict, *, tol_ppm: float, offsets: dict | None = None) -> pd.DataFrame:
     """One row per m/z cluster of the batch's unexplained per-file rows
     (single-linkage over the pooled rows at `tol_ppm`, the merge's window, on
@@ -586,8 +611,7 @@ def batch_table(ledgers: dict, *, tol_ppm: float, offsets: dict | None = None) -
         kk = g[g["key"] != ""]
         if len(kk):
             per = kk.groupby("key")["sid"].nunique()
-            med = kk.groupby("key")["reading"].agg(
-                lambda r: np.nanmedian([x for x in map(reading_score, r) if x is not None] or [np.nan]))
+            med = kk.groupby("key")["reading"].agg(_median_score)
             read = sorted(per.index, key=lambda k: (-per[k], -(med[k] if np.isfinite(med[k]) else -1.0), k))[0]
             n_read, s_med = int(per[read]), float(med[read])
         gc = g["klass"].value_counts()
