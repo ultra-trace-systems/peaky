@@ -13,7 +13,14 @@ Pass A (`q1_pass`), per pair:
   element counts (the same ion read another way) are not competitors. A
   committed neutral the space cannot produce through any channel is
   enumerated in the space widened to admit its class (D5); when no widening
-  admits it, nothing can be enumerated (``enum_ok`` False).
+  admits it, nothing can be enumerated (``enum_ok`` False). Where the run
+  opened a family without real evidence, or the level space drops a
+  cross-family mixture (D4), the ions only the SHADOW space (every opened
+  family, with mixtures: ``ctx.space_shadow``) proposes -- and an engine
+  alternative only it admits -- are kept on the committed reading as
+  ``uncounted``: listed in the record, never a competitor. A committed
+  neutral the level space does not admit is levelled in the shadow, as
+  before (`space.space_of`).
 - `lines.q1_isotopes` on the committed reading and every competitor (tests
   (a), (b), (c), (k); the matched elements), `lines.isoline_competitors`.
 
@@ -48,6 +55,9 @@ OFFWIN_Z = 3.0                # the committed reading's own median per-file |z| 
 OFFWIN_E_MAX_PPM = 50.0       # a per-file error beyond 50 ppm from the mono ion is read from the row's ppm_error
 NO_ENUM_NOTE = "committed neutral outside the enumerable space (no widening admits it)"
 NO_ION_OUTSIDE = "its adduct has no ion composition"
+#: D4: a competitor row the shadow space proposes and the level space does not (status; never left, never counted)
+UNCOUNTED = "uncounted"
+UNCOUNTED_WHY = "element family not open on evidence (or a cross-family mixture)"
 
 
 def _ev():
@@ -63,7 +73,9 @@ def build_candidates(ctx, pair: dict, want_alts: bool = True):
     predicted lines. Returns (cands, n engine alternatives added, the committed
     neutral's space reason (``outside``), n ties with the same ion)."""
     n, a = pair["key"]
-    sp = ctx.space
+    # D4: a committed neutral the level space does not admit is levelled in the shadow, as before (no uncounted list)
+    sp = SP.space_of(ctx, n)
+    shadow = getattr(ctx, "space_shadow", None) if sp is ctx.space else None
     mz = pair["mz"]
     counts0 = SP.ion_counts_of(n, a, pair.get("ion"))
     try:
@@ -103,6 +115,7 @@ def build_candidates(ctx, pair: dict, want_alts: bool = True):
     # the pooled m/z in the run window, plus every file's m/z in that file's window; the competitors are the union
     found = {}
     win_src = {}
+    probes = []
     if sp_enum is not None:
         probes = [(mz, lo, hi, "run")] if np.isfinite(mz) else []
         for o in pair.get("obs", []):
@@ -112,11 +125,15 @@ def build_candidates(ctx, pair: dict, want_alts: bool = True):
             for ion, v in sp_enum.enumerate(pmz, plo, phi, chans).items():
                 win_src.setdefault(ion, []).append(src)
                 if ion not in found:
-                    try:          # the competitor's error at the POOLED m/z (comparable across files)
-                        th = C.ion_mz(v[0], v[1])
-                        found[ion] = (v[0], v[1], (mz - th) / th * 1e6)
-                    except Exception:  # noqa: BLE001
-                        found[ion] = v
+                    found[ion] = _at_pooled(v, mz)
+    # D4: the shadow space (every opened family, with cross-family mixtures) proposes more: listed, never counted
+    # (the level space admits the committed neutral here, so the shadow, a superset, does too)
+    uncounted = {}
+    if shadow is not None and sp_enum is not None:
+        for pmz, plo, phi, _src in probes:
+            for ion, v in shadow.enumerate(pmz, plo, phi, chans).items():
+                if ion not in found and ion not in uncounted and ion != committed["ion_key"]:
+                    uncounted[ion] = _at_pooled(v, mz)
     comps = {}
     for ion, (cn, ca, ppm) in found.items():
         if ion == committed["ion_key"]:
@@ -143,6 +160,13 @@ def build_candidates(ctx, pair: dict, want_alts: bool = True):
                 if tied:
                     comps[ion]["src"] += "+tie"
                 continue
+            if (tied or inwin) and shadow is not None \
+                    and (sp_enum or sp).space_reason(str(alt["formula"])) is not None \
+                    and shadow.space_reason(str(alt["formula"])) is None:
+                # D4: the engine's reading needs a family the level space (as enumerated for this pair: D5-widened
+                # when the committed neutral needed it) does not open, or a cross-family mixture
+                uncounted.setdefault(ion, (str(alt["formula"]), str(alt["adduct"]), ppm))
+                continue
             if tied or inwin:
                 comps[ion] = dict(neutral=str(alt["formula"]), adduct=str(alt["adduct"]), ppm=ppm,
                                   src="tie" if tied else "alt")
@@ -162,7 +186,30 @@ def build_candidates(ctx, pair: dict, want_alts: bool = True):
     outside = sp.space_reason(n) if committed["ion_key"] is not None else NO_ION_OUTSIDE
     committed["relax_note"] = relax_note
     committed["enum_ok"] = sp_enum is not None
+    unc = []
+    for ion, (cn, ca, ppm) in sorted(uncounted.items(), key=lambda kv: abs(kv[1][2] - mu)
+                                     if np.isfinite(kv[1][2]) else NO_KEY_ORDER):
+        if ion in comps:
+            continue
+        cnt = SP.ion_counts_of(cn, ca)
+        if cnt and cnt == counts0:
+            continue
+        unc.append(dict(name=f"{cn} {ca}", neutral=cn, adduct=ca, counts=cnt, kind=UNCOUNTED, ion_key=ion, ppm=ppm,
+                        lines=ctx.lines(cnt, fw, 0.0) if cnt else []))
+    # the uncounted readings: still a hypothesis whose in-band line can refute another reading (test (b)),
+    # never a competitor (q1_pass)
+    committed["uncounted"] = unc
     return cands, n_alt_added, outside, n_tie_same
+
+
+def _at_pooled(v, mz):
+    """An enumerated (neutral, adduct, ppm) with the error re-read at the POOLED
+    m/z (comparable across files); as enumerated when the ion has no m/z."""
+    try:
+        th = C.ion_mz(v[0], v[1])
+        return (v[0], v[1], (mz - th) / th * 1e6)
+    except Exception:  # noqa: BLE001
+        return v
 
 
 def slim_q1(c: dict, nmin: int) -> dict:
@@ -191,12 +238,19 @@ def q1_pass(ctx, pairs: dict, nmin: int, *, progress=None) -> dict:
     res = {}
     for i, (k, pr) in enumerate(pairs.items()):
         cands, n_alt, outside, n_tie_same = build_candidates(ctx, pr)
+        # D4: an uncounted reading vouches for its lines in test (b) exactly as it did as a competitor; it is
+        # never one (kept on the committed reading as a name only)
+        unc = cands[0].pop("uncounted", [])
         if pr["obs"]:
-            LN.q1_isotopes(ctx, pr, cands, nmin)
+            mu = ctx.run_window[0]
+            LN.q1_isotopes(ctx, pr, cands[:1] + sorted(cands[1:] + unc, key=lambda c: abs(c["ppm"] - mu)
+                                                        if np.isfinite(c["ppm"]) else NO_KEY_ORDER), nmin)
         else:
             for c in cands:
                 c.update(recs=[], a=[], b=[], c="", c_agree="", k="", matched_els=set(), matched_labels=[],
                          contradicted=False)
+        cands[0]["uncounted"] = [dict(name=u["name"], neutral=u["neutral"], adduct=u["adduct"], ppm=u["ppm"])
+                                 for u in unc]
         isol, iso_expl = LN.isoline_competitors(ctx, pr, nmin) if pr["obs"] else ([], set())
         res[k] = dict(cands=[slim_q1(c, nmin) for c in cands], n_alt=n_alt, outside=outside, n_tie_same=n_tie_same,
                       isolines=isol, iso_explained=sorted(iso_expl))
@@ -250,7 +304,8 @@ def pass_b(ctx, facts: pd.DataFrame, pairs: dict, q1: dict) -> tuple[pd.DataFram
     ``facts`` = the pair table (neutral_formula, adduct + the B-series facts
     ``ion_only`` and ``lead``); ``pairs`` = `pairs_from_files`; ``q1`` =
     `q1_pass`. Returns (one row per pair, in ``facts`` order; the competitor
-    rows: COMP_COLUMNS, status 'excluded' (how 'isotopes') | 'left')."""
+    rows: COMP_COLUMNS, status 'excluded' (how 'isotopes') | 'left' |
+    'uncounted' (D4: only the shadow space proposes it; no level effect))."""
     truthy = _ev().truthy
     F = {(str(r.neutral_formula), str(r.adduct)): r
          for r in facts[["neutral_formula", "adduct", "ion_only", "lead"]].itertuples(index=False)}
@@ -299,6 +354,10 @@ def pass_b(ctx, facts: pd.DataFrame, pairs: dict, q1: dict) -> tuple[pd.DataFram
             comp_out.append(dict(neutral_formula=n, adduct=a, competitor=c["name"], kind=c["kind"], ppm=c["ppm"],
                                  status="excluded" if c["excluded"] else "left", how=c["how"], why=c["why"],
                                  window=c["win"], comp_neutral=c["neutral"], comp_adduct=c["adduct"]))
+        for c in com.get("uncounted", ()):
+            comp_out.append(dict(neutral_formula=n, adduct=a, competitor=c["name"], kind="mass", ppm=c["ppm"],
+                                 status=UNCOUNTED, how="level space", why=UNCOUNTED_WHY, window="",
+                                 comp_neutral=c["neutral"], comp_adduct=c["adduct"]))
         rows.append(dict(
             neutral_formula=n, adduct=a,
             n_files_obs=len(pr["obs"]),

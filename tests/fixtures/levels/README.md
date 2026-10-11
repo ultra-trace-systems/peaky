@@ -63,7 +63,11 @@ instead -- competitor counts, files). Gzipped because the privacy scanner reads
 a 16-letter neutral formula as an id. **`expected_vectors_v1.json`** holds the
 golden vectors, pairs per level in the order 3c/4a/4b/5a/5b/reagent/NA:
 `v1_nitrate` 1,850 = 10/186/289/472/892/1/0, `v1_uronium` 1,161 =
-17/75/913/125/31/0/0. Both are pinned until the user signs off the vectors; a
+17/75/913/125/31/0/0 when cut; now 9/186/301/489/864/1/0 and
+17/75/913/140/16/0/0 (the release fixes' lowconf ceiling, then the level space
+opening a family only on real evidence and without cross-family mixtures:
+11 nitrate pairs whose only competitor was an F+Cl formula read 4b instead of
+5a, `tests/test_levels_fixtures.py` names each step). Both are pinned until the user signs off the vectors; a
 change that moves them is a change of the scale and must say so. Regenerate
 from the fixtures in the repo with `build_fixtures.py --expected-only` (no run
 directory read); `--check` compares a fresh table with the repo's.

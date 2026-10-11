@@ -316,14 +316,18 @@ def context_of(src: Source):
     chans = list(ctx0.channels) + ([a for a in src.wrong_adducts + arm_adducts if a not in ctx0.channels]
                                    if src.arm == "adducts" else [])
     chans = list(dict.fromkeys(chans))
-    fams = CX.file_families(src.summary, led)
-    sp = SP.Space(*CX.run_space_args(src.summary), fams)
+    # the file's own families, the level space's rule (D4): only those it holds real evidence for
+    fams_open = CX.file_families(src.summary, led)
+    fams = CX.evidenced_families(src.summary, led, fams_open)
+    sp, shadow = CX.level_spaces(src.summary, fams, fams_open)
     dch = list(dict.fromkeys(list(ctx0.decomp_adducts) + chans))
     ctx = CX.RunContext(src.name, {fid: fa}, {fid: fa.gate}, {fid: win}, win, sp, ctx0.klass, ctx0.rp, ctx0.sig_fit,
                         ctx0.eff, src.nmin, chans, dch, ctx0.labelled, purity=ctx0.purity)
     ctx.engine_channels = list(ctx0.engine_channels)
     ctx.cse = ctx0.cse
     ctx.families = fams
+    ctx.families_unevidenced = tuple(f for f in fams_open if f not in fams)
+    ctx.space_shadow = shadow
     CX.prepare_indexes(ctx, {fid: led})
     ctx.twin_q = {fid: ctx0.twin_q[fid]} if fid in ctx0.twin_q else {}
     ctx.c13, _dev = CX.carbon_counts(ctx, None, facts, {fid: led}, src.nmin, ctx0.space.adducts, 0.0)

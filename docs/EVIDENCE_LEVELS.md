@@ -115,7 +115,7 @@ empty.
 | `evidence_level` | `3c` `4a` `4b` `5a` `5b`, or a bucket `reagent` / `NA` (§1); empty when the row has no level |
 | `evidence` | the evidence string (§2.3): the level, the decisive facts and the tags, in one line |
 | `would_lift` | what the pair lacks for the next level up (§2.4) |
-| `competitors_left` | the competitor ions left in the calibrated window after the isotope and series exclusions, `"; "`-joined, full list; an isotope-line competitor reads `<label> line of <neutral> <adduct>`; empty when none |
+| `competitors_left` | the competitor ions left in the calibrated window after the isotope and series exclusions, `"; "`-joined, full list; an isotope-line competitor reads `<label> line of <neutral> <adduct>`; then, after ` \|\| ` (or alone), `not counted (element family not open on evidence): <first six>` (+ ` (+<n> more)`) -- the ions only the shadow space proposes (§5.2), listed for transparency, never a competitor; empty when none |
 | `tags` | the tag texts (§9), `" \| "`-joined; empty when none |
 | `context` | the context-list entries that match the neutral (§7), named and class, `"; "`-joined: `reflist:<id> = <name>`, `registry:<family> = <label>` (named) or `reflist:<id>`, `registry:<family>` (class); empty when none |
 | `context_source` | how the lists that matched were activated; when nothing matched, how the run's lists were (§2.5) |
@@ -165,7 +165,8 @@ Segments are separated by `" · "` (U+00B7 with a space on each side).
 
 The **ion text** is `unique in the calibrated window`, or
 `<n> competitor(s); isotopes exclude <k>; series excludes <s>; <m> left` (or
-`none left`), then `; own lines in band: <lines>` when the committed reading
+`none left`), then `; <u> not counted (element family not open on evidence)`
+when the shadow space proposes more (§5.2), then `; own lines in band: <lines>` when the committed reading
 has matched lines, then ` [committed contradicted]` when its own lines refute
 it; or `untestable (no ion composition / outside the enumerable space)`.
 
@@ -385,14 +386,57 @@ enumeration refuses a non-finite window.
 
 ### 5.2 The space and the competitors
 
-The **space** is the run's element space exactly as the degeneracy audit
-builds it: the context profile plus the contaminant families at least
-`FAMILY_MIN_FILES` (2) of its files opened (`context.family_union`; every family
-on a one-file source; a family one file alone opened is kept on
-`RunContext.families_dropped` — before, one Candidate row in one file
-opened `fluorinated` for every pair of a uronium run), plus the curated formulas (the pass-0 registry of
-the polarity and the active reference lists), over the reagent profile's
-adducts and the pair's own adduct. A committed neutral the space drops is
+The **space** is the run's element space as the degeneracy audit builds it,
+narrowed to the families with real evidence and without cross-family
+mixtures: the context profile plus the contaminant families at least
+`FAMILY_MIN_FILES` (2) of its files hold real evidence for
+(`context.level_families`; every such family on a one-file source), plus the
+curated formulas (the pass-0 registry of the polarity and the active
+reference lists), over the reagent profile's adducts and the pair's own
+adduct.
+
+- **Real evidence** (`context.family_evidence`). The context's declared
+  pass-3 families and the reagent's own family are the context's space and
+  are kept. A family that committed rows opened (`contaminant:<family>` M0
+  rows, whatever their tier or GKA suffix) counts for a file only when a row
+  of it is Assigned, or the file committed that row's own diagnostic isotope
+  line (34S; 29Si / 30Si; 37Cl; 81Br: an isotope child or an `isotopologues`
+  record, the tier engine's bookkeeping). Fluorine has no minor isotope and a
+  fluorinated row's Assigned tier rests on mass alone, so `fluorinated` needs
+  a CF2-step chain of at least `FAMILY_F_CHAIN_MIN` (3) Assigned F-bearing
+  readings in the file (neutrals one CF2 apart on one adduct, by any route: a
+  perfluoroacid series from the pass-0 registry counts). A family at least two
+  files opened but fewer hold evidence for is kept on
+  `RunContext.families_unevidenced`; a family one file alone opened, on
+  `families_dropped`. Before, Candidate junk rows in two files opened
+  `fluorinated` for every pair of a uronium run, and its C2H-6N2O2 == FPSi
+  alias (0.064 mDa) parked the CHO urea adducts at 5a.
+- **No cross-family mixtures** (`space.level_profiles`). A family's profile
+  raises the caps the context sets to zero to the family's ceiling, as in the
+  degeneracy audit; it keeps another heteroatom of the context's budget only
+  when an open family brings that element too (N, the CHO(N) core, always).
+  With `fluorinated` open on a uronium run, a fluorine formula may carry Si
+  (siloxane / pdms are declared) but not P or S; on ambient air, not Cl or Br.
+  The context profile itself is unchanged.
+- **The shadow space** (`RunContext.space_shadow`): the space of every family
+  at least two files opened, with mixtures -- the space before this rule. The ions
+  only it proposes are not competitors: they are listed in
+  `competitors_left` after `not counted (element family not open on
+  evidence)` and counted in the ion text, and they still vouch for their own
+  in-band lines in test (b) (§5.3), so a line only such a reading explains
+  refutes the committed reading as it did before. An engine alternative only
+  the shadow space admits is not counted either. None when the two spaces
+  enumerate the same profiles.
+- **A reading the level space does not admit** (`space.space_of`). A
+  committed neutral the level space drops (a fluorine reading on a run whose
+  fluorine has no evidence, a cross-family mixture, or a neutral outside both
+  spaces, then D5-widened from the shadow) is levelled in the shadow space
+  exactly as before: its own family's competitors count, and its
+  decompositions, the split and the route aliases read the shadow too. The
+  narrower level space only takes competitors away from the readings it
+  admits.
+
+A committed neutral the space drops is
 enumerated in the space widened to admit its class, so same-class competitors
 are still counted instead of the pair reading "unique" vacuously. On a run
 whose context profile reads NOx skeletons (`context_flags`, a nitrate-reagent
@@ -446,7 +490,9 @@ The tests, per candidate:
 - **(a)** a line absent, too high or too low in ≥ 80 % (`ABSENT_FRAC`) of ≥ 3
   testable files (`NMIN_FILES`; 1 on a single-file source);
 - **(b)** another candidate's observed in-band line this one predicts nothing
-  comparable at (> 4× what it predicts there, `B_FACTOR`);
+  comparable at (> 4× what it predicts there, `B_FACTOR`); a reading only the
+  shadow space proposes (§5.2) is such a candidate too, never itself a
+  competitor;
 - **(c)** the observed carbon count (the batch's rule-C reading where it is
   testable, else the per-file 13C line) differs from the candidate's by more
   than max(1.5, 0.25 nC, 3 se) (`C_TOL_*`);
@@ -866,7 +912,8 @@ release in `evidence.py`).
 | `TWIN_Q`, `TWIN_MIN_PAIRS`, `TWIN_BRIGHT_X` | 0.10, 3, 10 | a file's 15N twin ratio |
 | `ROUTE_COFILES` | 2 (1 on one file) | two routes: co-seen in ≥ 2 files |
 | `LADDER_MIN_FILES`, `CROSS_MIN_FILES`, `HOMO_MIN_ANCHORS` | 2, 2, 2 | ladder, partner, anchored chain |
-| `FAMILY_MIN_FILES` | 2 (1 on one file) | a contaminant family opens the run's space (§5.2) |
+| `FAMILY_MIN_FILES` | 2 (1 on one file) | a contaminant family opens the run's space (§5.2): files that opened it, and files holding real evidence for it |
+| `FAMILY_DIAG_LINES`, `FAMILY_F_CHAIN_MIN` | 34S, 29Si / 30Si, 37Cl, 81Br; 3 | a family's real evidence: its own diagnostic line; for `fluorinated`, a CF2-step chain of Assigned readings (§5.2) |
 | `LOWCONF_REASON`, `LOWCONF_CEILING_WHY`, `LEAD_RESCUE_SETTER`, `LIFT_3C_WITHHELD` | §4, §7 | the lowconf ceiling; 3c withheld |
 | `LADDER_UNITS` | CH2, CF2 | ladders and series exclusion |
 | `MAX_PASSES` | 20 | series exclusion / ladder iteration |
@@ -899,9 +946,19 @@ release in `evidence.py`).
   `known:` registry commit still reaches 3c through its own registry family.
   A tentative lead has no level effect; the `lead` tag is printed on every
   level so the reader sees it.
-- **The run-level family union needs two files** (§5.2). A family one
-  file alone opened is recorded (`families_dropped`) and admits no competitor;
-  a batch of one file keeps every family it opened.
+- **The run-level family union needs two files with real evidence** (§5.2).
+  A family one file alone opened is recorded (`families_dropped`) and is
+  neither a competitor nor listed; one that two files opened but fewer than
+  two hold evidence for is recorded (`families_unevidenced`) and its ions are
+  listed as not counted. A batch of one file keeps every family it holds
+  evidence for. A declared family (the context's pass-3 list) needs no
+  evidence: none of them raises a cap the built-in contexts set to zero, so
+  today only row-opened families (fluorine everywhere; halogens on the
+  uronium / EasyIC / 15N-ammonium contexts) widen the space. Mixtures inside
+  the context's own budget (P + S + Si on uronium, Cl + S on ambient air) are
+  the context's space and stay. A committed neutral the level space's caps or
+  filter drop is enumerated in the space widened to its own counts (§5.2, the
+  D5 widening), which can admit a mixture of its own heteroatoms again.
 - **NH4 tracking as a positive fact** has a measured LR of 1.25 (two-hour
   tracking is mostly family-wide co-variation). It fired on no pair in the runs
   the scale was built on, which committed no `[M+NH4]+` row.

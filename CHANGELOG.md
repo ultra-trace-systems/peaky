@@ -307,6 +307,27 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The evidence scale opens a contaminant family only on real evidence, without cross-family
+  mixtures.** A family opened the level space (its competitors for every pair) from committed
+  `contaminant:<family>` rows in two files, Candidate junk included, and any competitor left
+  forces 5a: on a uronium batch a few Candidate fluorinated rows opened `fluorinated`, and the
+  C2H-6N2O2 == FPSi alias (0.064 mDa) of every CHO urea adduct (C15H32FPSi [M+H]+ beside
+  C16H22O·urea H+) parked hundreds of ions at 5a 'tentative'. A row-opened family now counts for
+  a file only when a row of it is Assigned or its own diagnostic line (34S, 29Si / 30Si, 37Cl,
+  81Br) is committed; `fluorinated`, whose rows no isotope can confirm, needs a CF2-step chain of
+  3 Assigned F readings on one adduct (a perfluoroacid series counts); it must hold in two files,
+  as before (`context.level_families`, `family_evidence`). The context's declared pass-3 families
+  stay. A family's profile keeps another heteroatom of the context's budget only when an open
+  family brings it (`space.level_profiles`): no F+P / F+S on a uronium run, no F+Cl / F+Br on
+  ambient air. The ions only the former space proposes are listed in `competitors_left` as `not
+  counted (element family not open on evidence)` and counted in the evidence text, never a
+  competitor; they still vouch for their own isotope lines in test (b), so a refutation through
+  one stands. A committed reading the narrower space does not admit (it needs such a family, or
+  is such a mixture) is levelled in the former space exactly as before (`space.space_of`), so a
+  fluorine reading meets its own family's competitors. `scripts/level_ledger.py` restates the record. The degeneracy
+  audit and every tier are unchanged. On the labelled-nitrate level fixture 11 pairs read 4b
+  instead of 5a (an F+Cl mixture was their only competitor; the expected table and vector are
+  re-pinned); the uronium fixture does not move.
 - **The `blended` separability class was 1.39x too wide.** `chem.resolution.d_crit_hwhm`, the
   separation at which two Gaussians of a given height ratio turn bimodal, converted its sigma table
   to HWHM by multiplying by sqrt(2 ln 2) where it divides: equal heights read 2.36 HWHM instead of
