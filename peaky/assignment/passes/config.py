@@ -128,6 +128,13 @@ class PassConfig:
     # (`assign.instrument_class_of`). Distinct from `instrument_type`, which is the
     # scoring snapshot's raw label ('orbi' / 'tof' / None).
     instrument_class: str | None = None
+    # The run's peak-width model (chem.resolution.Resolution; assign.run stamps
+    # the one its `resolvability` stage reads, None without one). Runtime. The
+    # commit contract's blend guard (satellites.LineGate) reads it on every
+    # route: without it the guard assumes a conservative R(200) = 60k, ~3x the
+    # measured FWHM of a 160-180k Orbitrap file, and reads a resolved neighbour
+    # 2-6 mDa off a predicted line as a possible blend.
+    width_model: object = None
     # True on trace-first's synthetic sample, whose heights are batch means over
     # traces, not one spectrum: stages that compare lines of ONE spectrum stay off.
     trace_sample: bool = False
@@ -368,6 +375,7 @@ class PassConfig:
         "mechanism_ids", "prior_offset", "reagent_element", "noise_edge_cps",
         "noise_edge_batch_cps", "instrument_type",          # C46: the batch and assign.run stamp them
         "instrument_class", "trace_sample",                 # the batch / assign.run stamp them too
+        "width_model",                                      # assign.run: the run's peak-width model
         # passes.calibrate fits these onto the cfg during a run: they are the
         # calibration's OUTPUT, not user knobs. The pipeline now hands the same
         # cfg to the provenance manifest, so leaving any of them in would make

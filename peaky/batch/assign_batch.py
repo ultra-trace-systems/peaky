@@ -879,22 +879,26 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
         a PFCA `[M-H]-` on-cal in two files of a ~4k TOF cannot displace an
         11-file, 81Br-corroborated CHOS `[M+Br]-` reading 6 ppm away; the row
         notes it, the vote stands;
-      * a species whose pass-0 rule demands corroboration
-        (directors.known_demands_corroboration: the organophosphates, the
-        organo(thio)phosphates, the indoor organosulfur, the cyclosiloxanes, the
-        chlorinated paraffins, H2SO4 and MSA) is Assigned only when some
-        confirming file holds TWO independent lines of evidence beyond the
-        exact mass -- a second ion channel, or two of the neutral's own lines:
-        its diagnostic satellites and its own 13C line (`n_channels >= 2 or
-        n_satellites + n_c13 >= 2`); one line in every confirming file is
-        capped at Candidate, locked or kept (the D7 cyclosiloxane: two files,
-        one channel, the 29Si line alone, the 30Si line never testable at that
-        intensity -- J12), and so is exact mass alone in every one: the cap is
-        MONOTONE, a pool with more confirming lines never ranks below one with
-        fewer (a pure exact-mass H2SO4 pool had escaped it while one with a
-        34S line in a file was capped). A family whose own rule is exact mass
-        (the PFCAs, the nitroaromatics, the C0 acids, reactive iodine, the
-        silanediols) is never capped, at any line count.
+      * TWO independent lines of evidence beyond the exact mass, in some
+        confirming file, are a second ion channel or two of the neutral's own
+        lines -- its diagnostic satellites and its own 13C line (`n_channels
+        >= 2 or n_satellites + n_c13 >= 2`). A species that LOCKS over the
+        vote's reading takes the confirmed files' best tier only with two
+        lines, whatever its family; with fewer it is locked at Candidate (an
+        exact-mass-only species never locks, above). Where the vote already
+        reads the species, the cap applies to a species whose pass-0 rule
+        demands corroboration (directors.known_demands_corroboration: the
+        organophosphates, the organo(thio)phosphates, the indoor organosulfur,
+        the cyclosiloxanes, the chlorinated paraffins, the silanediols -- their
+        Si M+1 gate --, H2SO4 and MSA): one line in every confirming file is
+        capped at Candidate (the D7 cyclosiloxane: two files, one channel, the
+        29Si line alone, the 30Si line never testable at that intensity --
+        J12), and so is exact mass alone in every one. The cap is MONOTONE: a
+        pool with more confirming lines never ranks below one with fewer (a
+        pure exact-mass H2SO4 pool had escaped it while one with a 34S line in
+        a file was capped). A species whose family's rule is exact mass (the
+        PFCAs, the nitroaromatics, the C0 acids, reactive iodine) is never
+        capped where the vote reads it, at any line count.
 
     The merged row a pooled reading belongs to is found by MEMBERSHIP -- the
     row whose own reading or whose `alternatives` lists it (the vote names
@@ -961,10 +965,21 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
         lines = max((2 if int(r.get("n_channels") or 0) >= 2
                      else int(r.get("n_satellites") or 0) + int(r.get("n_c13") or 0) for r in conf), default=0)
         two_lines = lines >= 2
-        weak_note = (("; capped Candidate (one ion channel and one satellite line in every "
-                      "confirming file: two independent lines are needed for Assigned)") if lines >= 1 else
-                     ("; capped Candidate (exact mass alone in every confirming file: the species' "
-                      "rule demands corroboration, and two independent lines are needed for Assigned)"))
+        # the cap's note names what it counted: a diagnostic satellite, the
+        # row's own 13C line where no confirming file recorded a satellite, or
+        # no line at all (exact mass, or a corroboration the rows did not record)
+        if lines >= 1:
+            one_line = ("one satellite line" if any(int(r.get("n_satellites") or 0) for r in conf)
+                        else "its own 13C line alone")
+            weak_note = (f"; capped Candidate (one ion channel and {one_line} in every "
+                         "confirming file: two independent lines are needed for Assigned)")
+        else:
+            weak_note = ("; capped Candidate ("
+                         + ("exact mass alone in every confirming file" if mass_only else
+                            "no second ion channel or own isotope line recorded in any confirming file")
+                         + (": the species' rule demands corroboration, and two independent lines are "
+                            "needed for Assigned)" if demands else
+                            ": two independent lines are needed to override the vote)"))
         # every confirming file holds the reading at Candidate (its own tier rules:
         # the lock score floor, the counting-detector floor) -- say so on the row
         cand_note = ("; Candidate: no confirming file holds it at Assigned (see the "
@@ -1010,8 +1025,10 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
                        else max(n_in, old_n))
             merged.at[i, "neutral_formula"] = nf
             merged.at[i, "adduct"] = ad
-            uncapped = two_lines or not demands
-            merged.at[i, "tier"] = (best.get("tier") or TIER_ASSIGNED) if uncapped else TIER_CANDIDATE
+            # overriding the vote takes two lines whatever the species' family: a
+            # species outside the cap's domain (exact mass is its rule) that
+            # displaces the majority reading on one line is the KNOWN-LOCK-DECOY
+            merged.at[i, "tier"] = (best.get("tier") or TIER_ASSIGNED) if two_lines else TIER_CANDIDATE
             if "ion_score" in merged.columns:
                 scores = [r["ion_score"] for r in conf if r.get("ion_score") is not None]
                 merged.at[i, "ion_score"] = max(scores) if scores else np.nan
@@ -1027,7 +1044,7 @@ def lock_known_species(merged: pd.DataFrame, pool: list, *, tol_ppm: float = DEF
             _note(merged, i, f"{head}; kept over the {old_n}-file {old_nf} {old_ad} reading "
                              f"(vote {n_in} of {n_total} files)"
                              + ((cand_note if _s(merged.at[i, "tier"]) == TIER_CANDIDATE else "")
-                                if uncapped else weak_note))
+                                if two_lines else weak_note))
             counts["locked"] += 1
         elif conf and ref:
             n_r = len({r["src"] for r in ref})

@@ -339,27 +339,34 @@ selected sample_ids (SAMPLING.md)
      channel; the Si twin is predicted below the detection floor); kept over the
      9-file C27H30O14 [M+H]+ reading (vote 1 of 10 files)`. A row the vote
      already gave to the species gains the note only. **Two lines for
-     Assigned**: a species whose pass-0 rule demands corroboration
+     Assigned**: two independent lines of evidence beyond the exact mass, in
+     some confirming file, are a second ion channel of the neutral in that
+     ledger, or two of the neutral's own lines: its diagnostic satellites and
+     its own ¹³C line (`n_channels ≥ 2 or n_satellites + n_c13 ≥ 2`, counted
+     by `known_evidence` from the ledger; a reagent's ⁸¹Br twin on a `[M+Br]-`
+     reading is not the neutral's). A species that **locks over the vote's
+     reading** keeps the confirming files' best tier only with two lines,
+     whatever its family; with fewer it is locked at Candidate (`…; capped
+     Candidate (one ion channel and one satellite line in every confirming
+     file: two independent lines are needed for Assigned)`) — overriding the
+     majority on one line is the known-species decoy, a dimethylsilanediol
+     trimer confirmed in 2 of 10 files (one ²⁹Si line, one exact mass) against
+     an 8-file CHOS reading. Where the vote **already reads the species**, the
+     cap applies to a species whose pass-0 rule demands corroboration
      (`directors.known_demands_corroboration`: the organophosphates, the
      organo(thio)phosphates, the indoor organosulfur, the cyclosiloxanes, the
-     chlorinated paraffins, H₂SO₄ and MSA) keeps the confirming files' Assigned
-     tier only when some confirming file holds two independent lines of
-     evidence beyond the exact mass — a second ion channel of the neutral in
-     that ledger, or two of the neutral's own lines: its diagnostic satellites
-     and its own ¹³C line (`n_channels ≥ 2 or n_satellites + n_c13 ≥ 2`,
-     counted by `known_evidence` from the ledger; a reagent's ⁸¹Br twin on a
-     `[M+Br]-` reading is not the neutral's); one line in every confirming file
-     is capped at Candidate, locked or kept (`…; capped Candidate (one ion
-     channel and one satellite line in every confirming file: two independent
-     lines are needed for Assigned)`) — the D7 cyclosiloxane, J12: two files,
-     the urea adduct alone, the ²⁹Si line alone, the ³⁰Si line never testable
-     at that intensity — and so is exact mass alone in every one (`…; capped
-     Candidate (exact mass alone in every confirming file: …)`). The cap is
-     **monotone**: a pool with more confirming lines never ranks below one with
-     fewer (a pure exact-mass H₂SO₄ pool used to stay Assigned while a pool
-     with one ³⁴S line was capped). A family whose own rule is exact mass (the
-     perfluoroacids, the nitroaromatics, the C0 acids, reactive iodine, the
-     silanediols) is outside the rule at any line count.
+     chlorinated paraffins, the silanediols — their Si M+1 gate —, H₂SO₄ and
+     MSA): one line in every confirming file is capped at Candidate — the D7
+     cyclosiloxane, J12: two files, the urea adduct alone, the ²⁹Si line alone,
+     the ³⁰Si line never testable at that intensity — and so is exact mass
+     alone in every one (`…; capped Candidate (exact mass alone in every
+     confirming file: …)`). The note names the line it counted (`one satellite
+     line`, or `its own 13C line alone`). The cap is **monotone**: a pool with
+     more confirming lines never ranks below one with fewer (a pure exact-mass
+     H₂SO₄ pool used to stay Assigned while a pool with one ³⁴S line was
+     capped). A species whose family's rule is exact mass (the perfluoroacids,
+     the nitroaromatics, the C0 acids, reactive iodine) is not capped where the
+     vote reads it, at any line count.
    - confirmed somewhere and refuted somewhere → left to the vote; the row
      records the conflict (`known species sulfolane (…) confirmed in 1 file but
      refuted in 9 (…); left to the vote`), and where the vote's own winner is the

@@ -20,7 +20,7 @@ from peaky.assignment import series_gka as G
 from .config import PassConfig
 from .core import (ABSTRACTION_ADDUCTS, _f, _mech_to_adduct, arbitrate,
                    commit_winners, confidence_label)
-from .postprocess import _DBR, _peak_near, _si_m1_consistent
+from .postprocess import _DBR, _peak_near, _si_m1_consistent, scored_line_is_own
 
 __all__ = [
     "_silanediol_series",
@@ -341,11 +341,13 @@ _D37CL = 1.9970499
 _ATMOS_CORROBORATE = frozenset({"H2O4S", "CH4O3S"})
 
 #: the pass-0 families whose rule DEMANDS corroboration beyond the exact mass
-#: (a second ion channel, or the element's own envelope); every other family
-#: commits on exact mass alone (the PFCAs, the nitroaromatics, the C0 acids,
-#: reactive iodine, the silanediols' own-twin check ...)
+#: (a second ion channel, or the element's own envelope -- the silanediols'
+#: Si M+1 line at >= SI_M1_MIN_FRAC of its prediction, `_si_m1_consistent`);
+#: every other family commits on exact mass alone (the PFCAs, the
+#: nitroaromatics, the C0 acids, reactive iodine ...)
 CORROBORATED_KNOWN_FAMILIES = frozenset({"organophosphate", "organothiophosphate", "indoor_sulfur",
-                                         "cyclosiloxane", "chlorinated_paraffin"})
+                                         "cyclosiloxane", "chlorinated_paraffin",
+                                         "contaminant:silanediol"})
 
 
 def known_demands_corroboration(family, formula) -> bool:
@@ -2122,6 +2124,7 @@ def run_pass_certified(
               if klass == "orbitrap" else None)
     # the commit contract (satellites.own_line_verdict; Orbitrap-class, inert elsewhere)
     line_gate = _SAT.LineGate(ledger, cfg, resolution=resolving_power)
+    own_cache: dict = {}       # the members' envelopes, for the own-line test of their scored lines
 
     # enumerate expanded-box candidates per certificate (off-grid P/S/Cl only:
     # plain CHON near the core is pass-1's territory and already lost there)
@@ -2357,6 +2360,14 @@ def run_pass_certified(
                 for _, k in kids[(kids["compound_formula"] == winner)
                                  & (kids["ion_formula"] == h_ion)
                                  & (kids["sample_peak_id"] != h.peak_id)].iterrows():
+                    # a heteroatom line is the member's own only by the envelope
+                    # sweep's test (calibrated Orbitrap-class run): the scorer's
+                    # window took a line 2.5-3.2 ppm off a P/S certificate's 34S
+                    # position as its 34S line
+                    if not scored_line_is_own(ledger, h.peak_id, k["sample_peak_id"], h_ion,
+                                              k["iso_label"], cfg, cache=own_cache):
+                        out["iso_not_own"] = out.get("iso_not_own", 0) + 1
+                        continue
                     try:
                         L.attach_isotopologue(ledger, k["sample_peak_id"], h.peak_id,
                                               iso_label=k["iso_label"],

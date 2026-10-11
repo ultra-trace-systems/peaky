@@ -948,11 +948,13 @@ def element_evidence(ctx: EvidenceContext, mz0: float, h0: float, neutral_counts
 # contract asks the question at the commit: a reading whose NEUTRAL carries S,
 # Cl, Br or Si must show its own line where the line is predicted at
 # COMMIT_LINE_X_FLOOR x the file's resolved height gate; absent there (no line
-# at the exact offset within the run's twin window, and no neighbour that could
-# hold it as a blend), the commit is refused and the peak stays free for a later
-# route. A line predicted under the multiple, masked by the reagent's own
-# halogen, or held by a taller line is UNTESTABLE: today's behaviour stands (a
-# route that declares the strict contract commits it no higher than Candidate).
+# at the exact offset within the run's twin window, floored at the envelope
+# sweep's ISO_POS_MIN_PPM, and no neighbour within the file's own line width
+# that could hold it as a blend), the commit is refused and the peak stays
+# free for a later route. A line predicted under the multiple, masked by the
+# reagent's own halogen, or held by a taller line is UNTESTABLE: today's
+# behaviour stands (a route that declares the strict contract commits it no
+# higher than Candidate).
 # A line present at any ratio is no refusal under TWIN_REFUTE_X_FLOOR (its
 # per-file height is censored there, see the module note); above it a picked
 # line under TWIN_MIN_FRAC of its prediction refutes, as the tier's twin test.
@@ -976,7 +978,7 @@ LINE_GATE_MODES = ("refuse", "strict")
 
 
 def own_line_verdict(mz, h, mz0, h0, neutral_counts: dict, ion_counts: dict | None, floor, *,
-                     ppm: float, fwhm=None, blend_mz=None, blend_h=None,
+                     ppm: float, fwhm=None, blend_mz=None, blend_h=None, blend_ppm: float | None = None,
                      x_floor: float = COMMIT_LINE_X_FLOOR) -> dict:
     """The commit contract's verdict on one reading at one parent line.
 
@@ -985,8 +987,11 @@ def own_line_verdict(mz, h, mz0, h0, neutral_counts: dict, ion_counts: dict | No
     the parent (the ion's all-light line); `neutral_counts` choose the elements
     (COMMIT_LINE_ELEMENTS the neutral carries), `ion_counts` scale the
     prediction (None: the neutral's); `floor` the resolved height gate (cps;
-    None: nothing is testable); `ppm` the search window; `fwhm` mz -> FWHM (Da)
-    for the blend guard (default an Orbitrap at EE_FALLBACK_R200).
+    None: nothing is testable); `ppm` the search window; `blend_ppm` the
+    position tolerance of the blend guard (default `ppm`; a search window
+    widened for a pulled satellite does not widen the guard's reach); `fwhm`
+    mz -> FWHM (Da) for the blend guard (default an Orbitrap at
+    EE_FALLBACK_R200).
 
     Per line: pred = h0 x per-atom ratio x the ION's count, at the exact offset.
     'seen' a line in the window at <= EE_RATIO_HIGH x pred (and, at >=
@@ -1036,6 +1041,7 @@ def own_line_verdict(mz, h, mz0, h0, neutral_counts: dict, ion_counts: dict | No
             tgt = mz0 + delta
             x = pred / fl
             tol = tgt * float(ppm) * 1e-6
+            btol = tol if blend_ppm is None else tgt * float(blend_ppm) * 1e-6
             j = _nearest(mz, tgt, tol)
             rec = {"element": el, "label": label, "pred": pred, "x": x, "obs_ratio": None, "status": ""}
             if j is not None:
@@ -1052,7 +1058,7 @@ def own_line_verdict(mz, h, mz0, h0, neutral_counts: dict, ion_counts: dict | No
                     rec["status"] = "dim"
             elif x < x_floor:
                 rec["status"] = "dim"
-            elif _blended(bmz, bh, tgt, pred, tol, fw(tgt)):
+            elif _blended(bmz, bh, tgt, pred, btol, fw(tgt)):
                 rec["status"] = "blended"
             else:
                 rec["status"] = "absent"
@@ -1161,12 +1167,20 @@ def iso_ratio_ok(obs_ratio: float) -> bool:
 
 class LineGate:
     """One file's commit contract (`own_line_verdict`), built once per stage:
-    the class gate, the resolved height gate, the twin window (`twin_ppm`), the
-    width model, and -- read lazily, the first time a reading carries an
-    element -- the file's lines (`_peak_lines`: real picked peaks, artifact rows
-    out; the blend guard reads them too). `active` False (off an Orbitrap, on
-    the trace sample, no resolved gate): every verdict is 'untestable' (or
-    'none' with nothing to test), and the routes keep today's behaviour."""
+    the class gate, the resolved height gate, the search window, the width
+    model, and -- read lazily, the first time a reading carries an element --
+    the file's lines (`_peak_lines`: real picked peaks, artifact rows out; the
+    blend guard reads them too). `active` False (off an Orbitrap, on the trace
+    sample, no resolved gate): every verdict is 'untestable' (or 'none' with
+    nothing to test), and the routes keep today's behaviour.
+
+    The search window is the twin window (`twin_ppm`) floored at
+    ISO_POS_MIN_PPM: the parent's own line is where the envelope sweep reads it
+    (a weak 29Si / 30Si line pulled 1-2 ppm toward a taller fine-structure line
+    is seen, not 'absent'); the blend guard keeps the twin window as its
+    position tolerance. The width model is `resolution`, else the one the run stamped on
+    the cfg (cfg.width_model, assign.run), else the blend guard's conservative
+    fallback (`_fwhm_fn`)."""
 
     def __init__(self, ledger: pd.DataFrame, cfg=None, *, resolution=None):
         klass = getattr(cfg, "instrument_class", None) if cfg is not None else None
@@ -1178,7 +1192,10 @@ class LineGate:
             floor = None
         self.floor = floor if floor is not None and np.isfinite(floor) and floor > 0 else None
         self.active = klass == "orbitrap" and self.floor is not None
-        self.ppm = twin_ppm(cfg)
+        self.blend_ppm = twin_ppm(cfg)
+        self.ppm = max(ISO_POS_MIN_PPM, self.blend_ppm)
+        if resolution is None and cfg is not None:
+            resolution = getattr(cfg, "width_model", None)
         self.fwhm = _fwhm_fn(resolution)
         self._ledger = ledger
         self._lines = None
@@ -1201,7 +1218,7 @@ class LineGate:
                     "why": "no exact-offset test on this run (not Orbitrap-class, or no resolved height gate)"}
         (mz, h), (bmz, bh) = self._peaks()
         return own_line_verdict(mz, h, mz0, h0, nc, ic or None, self.floor, ppm=self.ppm, fwhm=self.fwhm,
-                                blend_mz=bmz, blend_h=bh)
+                                blend_mz=bmz, blend_h=bh, blend_ppm=self.blend_ppm)
 
     def row_verdict(self, ledger: pd.DataFrame, pid, neutral, ion=None) -> dict:
         """`verdict` at the ledger row of `pid` (its height times its

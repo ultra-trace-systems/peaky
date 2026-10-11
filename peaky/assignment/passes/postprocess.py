@@ -160,6 +160,71 @@ def _own_line_ok(obs_mz: float, obs_h: float, pmz: float, ph: float, dmass: floa
     return False
 
 
+def own_line_of(ion_formula, pmz: float, ph: float, obs_mz: float, obs_h: float, dmass: float, cfg, *,
+                wide: float, fallback_rel: float | None = None, cache: dict | None = None) -> bool:
+    """The envelope sweep's own-line test (`_own_line_ok`) for another stage:
+    is the line at (`obs_mz`, `obs_h`) the parent ion's own line near
+    +`dmass`? Read against the parent's envelope line (isotope_pattern, the
+    sweep's call) nearest `dmass` within ENVELOPE_MERGE_DA -- else the line
+    (`dmass`, `fallback_rel`), or True without one -- in the window
+    satellites.iso_position_ppm(cfg, the calibration sigma at the parent,
+    `wide`), against the resolved height gate. `cache` keeps each ion's
+    envelope and fine lines."""
+    cache = {} if cache is None else cache
+    key = str(ion_formula)
+    if key not in cache:
+        try:
+            env = [(d, r) for d, r, _lab in ISO.isotope_pattern(key, min_rel=0.06, max_shift=12.0,
+                                                                diag_min_rel=0.001)]
+        except Exception:  # noqa: BLE001 -- an unparseable ion: the fallback line alone
+            env = []
+        cache[key] = (env, _fine_lines(key))
+    env, fine = cache[key]
+    near = [(abs(d - dmass), d, r) for d, r in env if abs(d - dmass) <= ENVELOPE_MERGE_DA]
+    if near:
+        _dist, d, rel = min(near)
+    elif fallback_rel is not None:
+        d, rel = dmass, float(fallback_rel)
+    else:
+        return True
+    try:
+        floor = float(cfg.height_cutoff)
+    except Exception:  # noqa: BLE001 -- an unresolved gate: the 0.5x bound everywhere
+        floor = None
+    pos = SAT.iso_position_ppm(cfg, cal_sigma_at(cfg, pmz), wide)
+    return _own_line_ok(float(obs_mz), float(obs_h), float(pmz), float(ph), d, rel, fine, pos_ppm=pos, floor=floor)
+
+
+def scored_line_is_own(ledger: pd.DataFrame, parent_pid, child_pid, ion_formula, label, cfg, *,
+                       cache: dict | None = None) -> bool:
+    """A scorer-matched isotopologue line a COMMIT attaches (commit_winners'
+    iso children, pass 7's member lines): on a calibrated Orbitrap-class run a
+    heteroatom M+1 / M+2 line (`_strict_line`) is the parent's own only by the
+    envelope sweep's test (`own_line_of`) -- the scorer's own window took a
+    line 2.5-3.2 ppm off a certificate's 34S position as its 34S line, where
+    the sweep refuses the same line. True everywhere else: off an Orbitrap,
+    before the file is calibrated (passes 0 and 1: a scorer line there keeps
+    today's reading), for a carbon-only 13C / labelled-copy 14N / M+4+ line,
+    or without the two rows."""
+    if not SAT.orbitrap_class(cfg) or SAT.calibrated_sigma(cfg) is None:
+        return True
+    pi = ledger.index[ledger["peak_id"] == parent_pid]
+    ci = ledger.index[ledger["peak_id"] == child_pid]
+    if not len(pi) or not len(ci):
+        return True
+    try:
+        pmz, ph = float(ledger.at[pi[0], "mz"]), float(ledger.at[pi[0], "height"])
+        cmz, ch = float(ledger.at[ci[0], "mz"]), float(ledger.at[ci[0], "height"])
+    except (TypeError, ValueError):
+        return True
+    if not all(math.isfinite(v) for v in (pmz, ph, cmz, ch)) or ph <= 0 or ch <= 0:
+        return True
+    dm = cmz - pmz
+    if not _strict_line(dm, str(label).split("(")[0]) or not isinstance(ion_formula, str) or not ion_formula:
+        return True
+    return own_line_of(ion_formula, pmz, ph, cmz, ch, dm, cfg, wide=5.0, cache=cache)
+
+
 def complete_isotope_envelopes(
     ledger: pd.DataFrame,
     cfg: PassConfig,

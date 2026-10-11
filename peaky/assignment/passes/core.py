@@ -699,6 +699,20 @@ def commit_winners(
     rejected = {"nan_ppm": 0, "mass_gate": 0, "minor_channel": 0}
     gate = None            # the file's commit contract, built on the first heteroatom winner
     n_own_line = n_line_capped = 0
+    # the scorer's heteroatom lines are the parent's own only by the envelope
+    # sweep's test (postprocess.scored_line_is_own: a calibrated Orbitrap-class
+    # run; passes 0 and 1 run uncalibrated and keep the scorer's reading): a
+    # line that fails it is neither recorded on the parent nor attached to it
+    n_not_own = 0
+    if len(kids) and len(win) and SAT.orbitrap_class(cfg) and SAT.calibrated_sigma(cfg) is not None:
+        from .postprocess import scored_line_is_own
+        ion_of = dict(zip(win["peak_id"], win["ion_formula"]))
+        cache: dict = {}
+        keep = [scored_line_is_own(ledger, k["parent_peak_id"], k["peak_id"], ion_of.get(k["parent_peak_id"]),
+                                   k["iso_label"], cfg, cache=cache) for _, k in kids.iterrows()]
+        n_not_own = len(keep) - sum(keep)
+        if n_not_own:
+            kids = kids[pd.Series(keep, index=kids.index)]
     # series/GKA proposals and known-neutral completions carry structural
     # evidence by construction (chain membership / an already-assigned neutral)
     series_like = ("series" in method) or ("gka" in method) or ("completion" in method)
@@ -883,13 +897,16 @@ def commit_winners(
         rejected["own_line"] = n_own_line
     if n_line_capped:
         rejected["own_line_untestable_low"] = n_line_capped
-    return {
+    out = {
         "committed": len(committed),
         "locked": len(locked_ids),
         "iso_attached": n_iso_attached,
         "iso_displaced": n_displaced,
         "rejected": rejected,
     }
+    if n_not_own:
+        out["iso_not_own"] = n_not_own
+    return out
 
 
 _RI_CACHE: set | None = None

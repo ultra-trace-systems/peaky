@@ -88,7 +88,12 @@ whitelist (pass 0) — a gatekeeper that can only find what someone listed.
    dim or held by a taller line neither shows nor refuses. Two co-varying
    lines one H¹⁵NO₃ apart in a fluorinated forest had certified P / S / Cl
    readings whose ³⁴S / ³⁷Cl line was predicted at 2-4× the floor and absent
-   in every file; refused here, the lines are left to the late families.
+   in every file; refused here, the lines are left to the late families. A
+   committed certificate attaches a member's scored heteroatom line only where
+   the envelope sweep would read it as that member's own (within max(2 ppm,
+   3σ) of its position, at 0.5-2× its prediction; `iso_not_own` in the
+   summary): the scorer's window took a line 2.5-3.2 ppm off a P/S
+   certificate's ³⁴S position as its ³⁴S line.
 5. **Commit** (`method=certified:multi-channel`): the same certified neutral
    is committed onto *every* member peak under its own channel label — so the
    tier engine's cross-channel corroboration sees the certificate. Ladder

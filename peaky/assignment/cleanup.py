@@ -35,7 +35,7 @@ from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
 from peaky.assignment import solvent_clusters as SC
 
-__version__ = "0.7.0"   # + the isotope-gated recovery reads the candidate's own M+2 offset on an Orbitrap-class run; 0.6.2 the 15N cluster re-read judges a skeleton-capped row again (profile=); 0.6.1 the ion-only bucket skips a locked unexplained peak (an element-evidence clear)
+__version__ = "0.7.0"   # + the isotope-gated recovery reads the candidate's own M+2 offset, and reclaim_satellites holds a heteroatom line to the sweep's own-line test, on an Orbitrap-class run; 0.6.2 the 15N cluster re-read judges a skeleton-capped row again (profile=); 0.6.1 the ion-only bucket skips a locked unexplained peak (an element-evidence clear)
                         # 0.6.0: easyic cluster-vs-covalent dual note (case 4)
                         # (history) reclaim_satellites covers 15N/34S/29Si/30Si/18O
                         # (not just 13C/81Br/37Cl); v43-review fixes: ringing
@@ -239,10 +239,11 @@ def _own_pattern(near, mz, h, ion_formula, ppm):
     """(r2, r4, ok) of a candidate ION's own M+2 / M+4 lines on an Orbitrap-class
     run: each read at the ion's expected offset (the strongest predicted line
     near +2 / +4 Da: 37Cl, 81Br, their merged pair) within `ppm`, and `ok` when
-    the M+2 line is there at satellites.ISO_RATIO_BAND x its prediction (and the
-    M+4 too where the ion predicts one above a tenth of the M0). Read at the
-    81Br offset in a 6-mDa window, a 37Cl candidate took another ion's M0 5.6
-    mDa away as its line."""
+    the M+2 line is there at satellites.ISO_RATIO_BAND x its prediction. The M+4
+    is only read here: `_pattern_ok` judges it where it did before (the Br2
+    band), so a BrCl candidate needs no M+4 it never needed. Read at the 81Br
+    offset in a 6-mDa window, a 37Cl candidate took another ion's M0 5.6 mDa
+    away as its line."""
     from peaky.assignment import satellites as SAT
     from peaky.chem import isotopes as ISO
     try:
@@ -258,8 +259,8 @@ def _own_pattern(near, mz, h, ion_formula, ppm):
         rel, d = max(lines)
         p = near(mz + d, tol=(mz + d) * ppm * 1e-6)
         out.append(((p[1] / h) if (p is not None and h > 0) else 0.0, rel))
-    (r2, rel2), (r4, rel4) = out
-    ok = rel2 > 0 and SAT.iso_ratio_ok(r2 / rel2) and (rel4 < 0.1 or SAT.iso_ratio_ok(r4 / rel4))
+    (r2, rel2), (r4, _rel4) = out
+    ok = rel2 > 0 and SAT.iso_ratio_ok(r2 / rel2)
     return r2, r4, ok
 
 
@@ -510,7 +511,7 @@ def _ion_str(neutral, adduct):
     return C.format_formula(cnt)
 
 
-def reclaim_satellites(ledger: pd.DataFrame, *, ppm: float = 6.0, log=print) -> dict:
+def reclaim_satellites(ledger: pd.DataFrame, *, ppm: float = 6.0, cfg=None, log=print) -> dict:
     """Final sweep: attach an UNEXPLAINED peak that is a clean satellite of an
     assigned M0 (parent carries that element AND the intensity ratio is physically
     consistent) as an iso_child. Covers the full diagnostic set 13C / 15N / 81Br /
@@ -519,13 +520,26 @@ def reclaim_satellites(ledger: pd.DataFrame, *, ppm: float = 6.0, log=print) -> 
     leak is claimed here instead of floating free as a base peak a mass-coincidence
     phantom can grab. Touches only unexplained rows -- it can never demote a real
     M0. Every gate is atom-count-aware (ratio ~ n_atoms * per-atom abundance), so
-    it cannot mis-grab an unrelated neighbour at the satellite offset."""
+    it cannot mis-grab an unrelated neighbour at the satellite offset.
+
+    On an Orbitrap-class run (`cfg`) a heteroatom line (every label but 13C) is
+    also held to the envelope sweep's own-line test (postprocess._own_line_ok:
+    within satellites.iso_position_ppm of its position, at
+    satellites.ISO_RATIO_BAND x its prediction, from 0.3x under 4x the gate), so
+    the neighbour ion the sweep left unexplained -- 2.6-4.8 ppm off a predicted
+    34S / 18O position, or at 2-3x the ratio -- is not re-attached here. The
+    summary gains `not_own` where the test acted."""
     from peaky.chem import isotopes as ISO
+    from peaky.assignment import satellites as SAT
     m0 = ledger[ledger["role"] == L.ROLE_M0].dropna(subset=["mz"]).sort_values("mz")
     if not len(m0):
         return {"reclaimed": 0}
+    strict = SAT.orbitrap_class(cfg)
+    if strict:
+        from peaky.assignment.passes.postprocess import own_line_of
     mz = m0["mz"].to_numpy(); pid = m0["peak_id"].to_numpy()
     ionf = m0["ion_formula"].astype(str).to_numpy(); ph = m0["height"].to_numpy()
+    envelopes: dict = {}        # ion formula -> (its envelope lines, its fine-structure lines)
     # (delta-m, label, element, per-atom abundance). 13C first (most common), then
     # the heavy-halogen M+2 doublets, then the faint mono-heteroatom diagnostics.
     DELT = [
@@ -538,7 +552,7 @@ def reclaim_satellites(ledger: pd.DataFrame, *, ppm: float = 6.0, log=print) -> 
         (ISO.D_30SI, "30Si", "Si", ISO.R_30SI_PER_SI),
         (ISO.D_18O,  "18O",  "O",  ISO.R_18O_PER_O),
     ]
-    n = 0
+    n = n_not_own = 0
     for i in ledger.index[ledger["role"] == L.ROLE_UNEXPLAINED]:
         cmz = ledger.at[i, "mz"]; chh = ledger.at[i, "height"]
         if pd.isna(cmz):
@@ -566,6 +580,11 @@ def reclaim_satellites(ledger: pd.DataFrame, *, ppm: float = 6.0, log=print) -> 
                 ok = 0.3 * exp <= ratio <= 2.5 * exp and ratio < 1.0
             if not ok:
                 continue
+            if strict and label != "13C" and not own_line_of(
+                    ionf[best], float(mz[best]), float(ph[best]), cmz, chh, d, cfg, wide=ppm,
+                    fallback_rel=nel * per, cache=envelopes):
+                n_not_own += 1
+                continue
             try:
                 L.attach_isotopologue(ledger, ledger.at[i, "peak_id"], pid[best],
                                       iso_label=label)
@@ -576,8 +595,12 @@ def reclaim_satellites(ledger: pd.DataFrame, *, ppm: float = 6.0, log=print) -> 
             except L.LedgerError:
                 pass
             break
-    log(f"[cleanup] reclaimed {n} leaked isotopologue satellites")
-    return {"reclaimed": n}
+    log(f"[cleanup] reclaimed {n} leaked isotopologue satellites"
+        + (f" ({n_not_own} heteroatom line(s) not the parent's own)" if n_not_own else ""))
+    out = {"reclaimed": n}
+    if n_not_own:
+        out["not_own"] = n_not_own
+    return out
 
 
 def reclaim_envelope_tails(ledger: pd.DataFrame, *, ppm: float = 6.0, log=print) -> dict:
@@ -1966,7 +1989,7 @@ def run_cleanup(client, sample_id, ledger, profile, cfg, *, log=print) -> dict:
     rhc = relabel_reagent_halocarbons(ledger, reagent=getattr(cfg, "reagent_element", None),
                                       log=log)
     art = flag_ringing_artifacts(ledger, log=log)
-    sat = reclaim_satellites(ledger, log=log)
+    sat = reclaim_satellites(ledger, cfg=cfg, log=log)
     tails = reclaim_envelope_tails(ledger, log=log)   # deep poly-halogen envelope (k>=2)
     # NB: demote_unconfirmed_fluorine is NOT called here -- it must run AFTER
     # tiers.apply_tiers (which recomputes tier and would re-promote the F-monster).

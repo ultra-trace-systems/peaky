@@ -126,6 +126,63 @@ def test_the_gate_is_orbitrap_class_only():
     assert SAT.LineGate(led, _cfg()).row_verdict(led, "p", "C5H10O5", "C5H9O5-")["verdict"] == SAT.LG_NONE
 
 
+def _ledger(lines):
+    return L.new_ledger(pd.DataFrame(lines, columns=["peak_id", "mz", "height"]))
+
+
+def test_the_files_width_model_turns_a_possible_blend_into_a_refusal():
+    """34S predicted at 45x the gate, nothing within the window, a resolved neighbour 3 mDa away. With
+    the blend guard's fallback width (an Orbitrap at R(200) = 60k: ~4.5 mDa here) the neighbour could
+    hold the line -- untestable; with the file's own width model (R = 170k: 1.4 mDa) it cannot --
+    refused. Every route's gate reads the model assign.run stamps on the cfg (cfg.width_model, a
+    runtime field); an explicit resolution still wins."""
+    from peaky.chem.resolution import Resolution
+    nf, ion = "C10H10O5S", "C10H9O5S-"
+    mz0 = CH.ion_mz(nf, "[M-H]-")
+    led = _ledger([("p", mz0, 10000.0), ("nb", mz0 + S34 + 0.0030, 2000.0)])
+    cfg = _cfg(cal_sigma=0.3)
+    v = SAT.LineGate(led, cfg).row_verdict(led, "p", nf, ion)
+    assert v["verdict"] == SAT.LG_UNTESTABLE and "a neighbour could hold it" in v["why"], v
+    cfg.width_model = Resolution.from_r(170_000)
+    v = SAT.LineGate(led, cfg).row_verdict(led, "p", nf, ion)
+    assert v["verdict"] == SAT.LG_REFUSED and "no line within 2.00 ppm" in v["why"], v
+    assert SAT.LineGate(led, cfg, resolution=Resolution.from_r(60_000)).row_verdict(
+        led, "p", nf, ion)["verdict"] == SAT.LG_UNTESTABLE
+    assert "width_model" in P.PassConfig.RUNTIME_FIELDS
+    # the search window is floored at 2 ppm, the blend guard's position tolerance stays the twin
+    # window (1.2 ppm here): a neighbour 1.75 mDa off is outside 1.2 ppm + 0.94 FWHM -- refused
+    led = _ledger([("p", mz0, 10000.0), ("nb", mz0 + S34 + 0.00175, 2000.0)])
+    assert SAT.LineGate(led, cfg).row_verdict(led, "p", nf, ion)["verdict"] == SAT.LG_REFUSED
+
+
+def test_assign_run_stamps_its_width_model_on_the_cfg():
+    from tests.test_sidelobe_guard import ORB, _run, _run_table
+    cfg = P.PassConfig()
+    table, _ = _run_table(lobes=False)
+    _run(table, cfg=cfg)
+    assert cfg.width_model is ORB
+
+
+def test_a_pulled_si_line_is_seen_in_the_contracts_window():
+    """A cyclosiloxane [M+H]+ on a calibrated file (sigma 0.3: the twin window 1.2 ppm): its 29Si line
+    at its prediction but picked +1.5 ppm toward the 13C line, its 30Si line predicted at 3x the gate
+    and absent. Read in the twin window alone the 29Si line is 'blended' and the absent 30Si refuses
+    the reading; the contract's window is floored at the envelope sweep's 2 ppm, where the sweep
+    attaches the same line as the parent's own: shown."""
+    si, ion = "C6H18O3Si3", "C6H19O3Si3+"
+    mz0, h0 = CH.ion_mz(si, "[M+H]+"), 3000.0
+    p29, p30 = h0 * 3 * ISO.R_29SI_PER_SI, h0 * 3 * ISO.R_30SI_PER_SI
+    lines = [("p", mz0, h0), ("si", (mz0 + ISO.D_29SI) * (1 + 1.5e-6), p29),
+             ("c", mz0 + ISO.D_13C_EXACT, h0 * 6 * ISO.R_13C_PER_C)]
+    cfg = _cfg(height_cutoff_cps=p30 / 3.0, cal_sigma=0.3)
+    led = _ledger(lines)
+    assert SAT.LineGate(led, cfg).row_verdict(led, "p", si, ion)["verdict"] == SAT.LG_SHOWN
+    mz = np.array(sorted(m for _, m, _ in lines))
+    hh = np.array([{m: h for _, m, h in lines}[m] for m in mz])
+    assert SAT.own_line_verdict(mz, hh, mz0, h0, CH.parse_formula(si), None, p30 / 3.0,
+                                ppm=SAT.twin_ppm(cfg))["verdict"] == SAT.LG_REFUSED
+
+
 # --------------------------------------------------------------------------- commit_winners and pass 3
 def _arb(pid, mz, neutral=OS, ion=OS_ION, adduct="[M-H]-", score=0.85):
     w = pd.DataFrame([dict(peak_id=pid, raw_score=score, ppm_error=0.1, n_iso=0, tied=False, adduct=adduct,
@@ -369,6 +426,79 @@ def test_a_satellite_pulled_toward_a_taller_fine_line_is_still_the_parents():
     assert SAT.iso_position_ppm(_cfg("tof"), 0.3, 5.0) == 5.0
 
 
+def test_the_reclaim_holds_a_heteroatom_line_to_the_sweeps_own_line_test():
+    """The final satellite reclaim (6 ppm, 0.3-2.5x) re-attached the neighbour the sweep left
+    unexplained: an organosulfate's 34S position with a line 2.8 ppm off at 0.8x its prediction. On an
+    Orbitrap-class run it is held to the sweep's own-line test now -- left unexplained (`not_own`);
+    the line in place is reclaimed; a 13C line keeps the reclaim's own gate; off an Orbitrap the
+    6-ppm reading stands."""
+    pred = 3000.0 * ISO.R_34S_PER_S
+
+    def run(lines, cfg):
+        led = _ledger(lines)
+        L.commit_assignment(led, "p", neutral_formula=OS, adduct="[M-H]-", ion_formula=OS_ION, ion_score=0.9,
+                            ppm_error=0.1, pass_no=1, method="cheminfo+grid", confidence="Good",
+                            commentary="under test")
+        if cfg is not None:
+            cfg.cal_sigma = 0.3
+        return CU.reclaim_satellites(led, cfg=cfg, **NOLOG), led
+    c13 = ("c", (OS_MZ + ISO.D_13C) * (1 + 3e-6), 3000.0 * 5 * ISO.R_13C_PER_C)
+    off = [("p", OS_MZ, 3000.0), ("s", (OS_MZ + S34) * (1 - 2.8e-6), 0.8 * pred), c13]
+    out, led = run(off, _cfg())
+    assert L.role_of(led, "s") == L.ROLE_UNEXPLAINED and out == {"reclaimed": 1, "not_own": 1}, out
+    assert L.role_of(led, "c") == L.ROLE_ISO
+    out, led = run([("p", OS_MZ, 3000.0), ("s", OS_MZ + S34, 0.8 * pred)], _cfg())
+    assert out == {"reclaimed": 1} and led.set_index("peak_id").at["s", "iso_label"] == "34S", out
+    for cfg in (_cfg(None), None):
+        out, led = run(off, cfg)
+        assert out == {"reclaimed": 2} and L.role_of(led, "s") == L.ROLE_ISO, out
+
+
+def test_a_commits_scored_heteroatom_line_is_held_to_the_sweeps_test():
+    """The scorer's iso children of a commit: its '34S' line 3 ppm off the position (a neighbour ion)
+    is neither attached nor recorded on the parent on a calibrated Orbitrap-class run (`iso_not_own`);
+    the line in place is attached; before calibration (passes 0 and 1) and off an Orbitrap the
+    scorer's reading stands."""
+    pred = 3000.0 * ISO.R_34S_PER_S
+
+    def run(at, cfg):
+        led = _ledger([("p", OS_MZ, 3000.0), ("s", at, pred)])
+        arb = _arb("p", OS_MZ)
+        arb["iso_children"] = pd.DataFrame([dict(peak_id="s", parent_peak_id="p", iso_label="34S", iso_score=0.9)])
+        out = P.commit_winners(led, arb, pass_no=3, method="contaminant:organosulfate", context="ambient-air",
+                               cfg=cfg, lock=False, min_raw_score=0.7, claim_unexplained_only=True)
+        return out, led
+    off = (OS_MZ + S34) * (1 + 3e-6)
+    out, led = run(off, _cfg(cal_sigma=0.3))
+    assert out["committed"] == 1 and out["iso_not_own"] == 1 and L.role_of(led, "s") == L.ROLE_UNEXPLAINED, out
+    assert "\"s\"" not in str(led.set_index("peak_id").at["p", "isotopologues"])
+    out, led = run(OS_MZ + S34, _cfg(cal_sigma=0.3))
+    assert "iso_not_own" not in out and L.role_of(led, "s") == L.ROLE_ISO, out
+    for cfg in (_cfg(), _cfg(None, cal_sigma=0.3)):
+        out, led = run(off, cfg)
+        assert "iso_not_own" not in out and L.role_of(led, "s") == L.ROLE_ISO, out
+
+
+def test_a_certificates_scored_line_off_its_position_is_not_attached():
+    """Thioacetic acid's [M-H]- / [M+NO3]- certificate, its nitrate member's 34S line in place: committed.
+    The scorer's '34S' kid of the [M-H]- member sits 3 ppm off that member's 34S position: on a calibrated
+    run pass 7 leaves it unexplained (`iso_not_own`) and attaches the nitrate member's own line;
+    uncalibrated, as before, both are attached."""
+    mh, mn = CH.ion_mz(TAA, "[M-H]-"), CH.ion_mz(TAA, "[M+NO3]-")
+    members = [("h", "C2H3OS-", mh), ("n", "C2H4NO4S-", mn)]
+    hx, n34 = (mh + S34) * (1 + 3e-6), mn + S34
+    lines = [("h", mh, 4000.0), ("n", mn, 3000.0), ("hx", hx, 4000.0 * ISO.R_34S_PER_S),
+             ("n34", n34, 3000.0 * ISO.R_34S_PER_S)]
+    kids = [("hx", "C2H3OS-", "34S", hx), ("n34", "C2H4NO4S-", "34S", n34)]
+    led = _file(lines)
+    s, by = _p7(led, _scorer(TAA, members, kids), HN, cfg=_cfg(cal_sigma=0.3))
+    assert s["committed"] == 1 and s["iso_not_own"] == 1, s
+    assert by.loc["hx", "role"] == L.ROLE_UNEXPLAINED and by.loc["n34", "role"] == L.ROLE_ISO
+    led = _file(lines)
+    s, by = _p7(led, _scorer(TAA, members, kids), HN)
+    assert s["committed"] == 1 and "iso_not_own" not in s and by.loc["hx", "role"] == L.ROLE_ISO, s
+
+
 # --------------------------------------------------------------------------- the later routes
 def test_the_gate_refuse_helper_writes_why_once():
     led = _file([("p", OS_MZ, 3000.0)])
@@ -502,6 +632,60 @@ def test_the_known_species_cap_is_monotone():
     assert D.known_demands_corroboration("atmospheric", "H2SO4") and D.known_demands_corroboration("x", "H2O4S")
     assert not D.known_demands_corroboration("atmospheric", "HNO2")
     assert D.known_demands_corroboration("cyclosiloxane", "C14H42O7Si7")
+
+
+def _lock_over(nf, ad, family, recs, vote=("C8H16O6S", "[M-H]-")):
+    """A species confirmed in some files locking over the vote's 8-of-10-file reading at its m/z."""
+    mz = CH.ion_mz(nf, ad)
+    m = pd.DataFrame([dict(mz=mz, neutral_formula=vote[0], adduct=vote[1], tier="Assigned", ion_score=0.91,
+                           n_files=10, n_files_ion=8, n_files_winner=8, alternatives="", tier_reason=pd.NA,
+                           srcs=",".join("abcdefghij"), admitted_by="height", occurrence=1.0)])
+    g = AB.lock_known_species(m, [_rec(nf, ad, mz, family, src, why, **kw) for src, why, kw in recs],
+                              tol_ppm=6.0, log=lambda *a: None)
+    return m.iloc[0], g
+
+
+def test_a_species_locking_over_the_vote_needs_two_lines_whatever_its_family():
+    """The known-species decoy: a dimethylsilanediol trimer confirmed in 2 of 10 files -- one 29Si line
+    in one, exact mass in the other -- displaces an 8-file CHOS reading only at Candidate (the reading
+    moves, the tier does not), and so does a reactive-iodine ICl on one 37Cl line, a family whose own
+    rule is exact mass (where the vote already reads ICl it is not capped, above). Two lines -- a 34S
+    satellite and the row's own 13C -- lock at the confirming files' best tier. An exact-mass-only
+    species never locks."""
+    si = "C6H20O4Si3"
+    row, g = _lock_over(si, "[M-H]-", "contaminant:silanediol",
+                        [("a", "corroborated by a confirmed 29Si envelope (1 satellite)", dict(n_satellites=1)),
+                         ("b", AB.MASS_ONLY_ROUTE, {})])
+    assert g["locked"] == 1 and row["neutral_formula"] == si and row["tier"] == "Candidate", row.to_dict()
+    assert str(row["tier_reason"]).endswith("(vote 2 of 10 files); capped Candidate (one ion channel and one "
+                                            "satellite line in every confirming file: two independent lines are "
+                                            "needed for Assigned)"), row["tier_reason"]
+    assert row["alternatives"].startswith("C8H16O6S [M-H]- x8 Assigned 0.91")
+    icl, _ = _lock_over("ICl", "[M+^NO3]-", "reactive_iodine",
+                        [(s_, "corroborated by a confirmed 37Cl envelope (1 satellite)", dict(n_satellites=1))
+                         for s_ in "ab"], vote=("C2H2F2O4", "[M+^NO3]-"))
+    assert icl["neutral_formula"] == "ICl" and icl["tier"] == "Candidate", icl.to_dict()
+    mtbt, _ = _lock_over("C8H7NS2", "[M+H]+", "indoor_sulfur",
+                         [("a", "corroborated by a confirmed 34S envelope (1 satellite)",
+                           dict(n_satellites=1, n_c13=1))], vote=("C9H11NO2", "[M+H]+"))
+    assert mtbt["neutral_formula"] == "C8H7NS2" and mtbt["tier"] == "Assigned", mtbt.to_dict()
+    assert "capped" not in str(mtbt["tier_reason"])
+    mass, g = _lock_over(si, "[M-H]-", "contaminant:silanediol", [(s_, AB.MASS_ONLY_ROUTE, {}) for s_ in "ab"])
+    assert g["mass_only_outvoted"] == 1 and mass["neutral_formula"] == "C8H16O6S" and mass["tier"] == "Assigned"
+
+
+def test_the_cap_names_the_line_it_counted():
+    """One channel and the row's own 13C line alone in every confirming file: capped, and the note says
+    the 13C line, not 'one satellite line'. The silanediols' rule (their Si M+1 gate) puts them in the
+    cap's domain: an exact-mass-only pool the vote reads is capped like H2SO4's."""
+    c13 = _lock("C8H7NS2", "[M+H]+", 182.0093, "indoor_sulfur", n_c13=1,
+                why="corroborated by a second ion channel")
+    assert c13["tier"] == "Candidate" and "one ion channel and its own 13C line alone in every confirming file" \
+        in c13["tier_reason"], c13["tier_reason"]
+    si = _lock("C6H20O4Si3", "[M-H]-", 239.0597, "contaminant:silanediol")
+    assert si["tier"] == "Candidate" and "exact mass alone in every confirming file" in si["tier_reason"]
+    assert D.known_demands_corroboration("contaminant:silanediol", "C6H20O4Si3")
+    assert not D.known_demands_corroboration("reactive_iodine", "ICl")
 
 
 def test_known_evidence_records_the_rows_own_13c_line():
