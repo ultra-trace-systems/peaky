@@ -480,11 +480,10 @@ def demote_off_budget(ledger: pd.DataFrame, *, context,
     on an Orbitrap-class run (satellites.own_line_window_ppm), a formula whose
     every budget violation is a Cl / Br / S count (fluorine on a committed CF2
     step beside them) is KEPT when each such element's own 37Cl / 81Br / 34S
-    line is seen in the file (satellites.own_line: within max(1 ppm, 3 sigma)
-    of the exact offset, at 0.5-2x the first-order prediction, and -- on a
-    count above a non-zero cap, or beside the reagent's own halogen -- fitting
-    the full count better than the smaller one). The kept row says so in its
-    commentary. P, F and I have no line, Si keeps its ladder rule, and on a TOF
+    line is seen in the file (satellites.own_line: within 1 ppm of the exact
+    offset, at 0.5-2x the first-order prediction, fitting the ion's count --
+    the reagent's own halogen included -- better than one atom fewer and one
+    atom more). The kept row says so in its commentary. P, F and I have no line, Si keeps its ladder rule, and on a TOF
     or with no `cfg` nothing is confirmed (no `budget_iso_kept` count either).
     Demote-only; `context=None` is a no-op."""
     if not context:
@@ -575,9 +574,9 @@ def _own_lines_lift(ledger: pd.DataFrame, i, neutral: str, adduct, profile, line
         return None          # committed on a heavy isotopologue: its lines are not where we look
     seen = []
     for el in over:
-        cap = int(getattr(profile, f"max_{el}", 0))
-        fewer = int(ion.get(el, 0)) - int(nc.get(el, 0)) + cap
-        v = SAT.own_line(lines[0], lines[1], mz0, h0, ion, el, window_ppm=win, n_fewer=fewer)
+        # the line must show the ion's whole count, so a count one over the cap
+        # (or beside the reagent's own halogen) is read against the smaller one
+        v = SAT.own_line(lines[0], lines[1], mz0, h0, ion, el, window_ppm=win)
         if not v["confirmed"]:
             return None
         seen.append(f"{el}{nc[el]}: {v['why']}")

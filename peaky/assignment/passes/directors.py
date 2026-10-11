@@ -1634,23 +1634,40 @@ def run_pass2(
 _KEY_FROM_ADDUCTS = object()
 
 
-def _iso_gate_targets(ledger: pd.DataFrame, tgt: pd.DataFrame, fam: dict, element: str, profile,
+def _gate_floor(cfg) -> float | None:
+    """The file's floor an isotope-gated family judges testability against
+    (the resolved height gate), or None where it is unresolved."""
+    import math
+    try:
+        fl = float(cfg.height_cutoff)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+    return fl if math.isfinite(fl) and fl > 0 else None
+
+
+def _iso_gate_targets(ledger: pd.DataFrame, tgt: pd.DataFrame, fam_key: str, element: str, profile,
                       cfg: PassConfig) -> dict | None:
     """The peaks an isotope-gated family reads (contexts.family_iso_gate): the
     target peaks with a picked partner at `element`'s exact offset, within the
     own-line window (satellites.own_line_window_ppm), at a height the family's
-    counts allow (OWN_LINE_RATIO x 1..n_max atoms). None where no window exists
-    (not an Orbitrap-class run: the family is skipped). Returns {'mzs', 'pids',
-    'label', 'lines' (the file's real peak lines, sorted), 'window_ppm',
-    'element', 'profile' (the context with the element's cap lifted to the
-    family's)}."""
+    counts allow (OWN_LINE_RATIO x 1..n_max atoms) -- and, for a family that
+    commits an untestable reading (contexts.family_iso_gate_untestable), the
+    peaks whose one-atom line is predicted under the testable level
+    (satellites.own_line_testable): no partner could have shown there. None
+    where no window exists (not an Orbitrap-class run: the family is skipped).
+    Returns {'mzs', 'pids', 'label', 'lines' (the file's real peak lines,
+    sorted), 'window_ppm', 'element', 'floor', 'untestable_ok', 'profile' (the
+    context with the element's cap lifted to the family's where it is lower)}."""
     import dataclasses
     win = _SAT.own_line_window_ppm(cfg)
     if win is None:
         return None
+    fam = X.CONTAMINANT_FAMILIES[fam_key]
     delta, per, label = _SAT.TWIN_LINES[element][0]
     n_max = int(fam["add"][element][1])
     lo, hi = _SAT.OWN_LINE_RATIO
+    floor = _gate_floor(cfg)
+    untestable_ok = X.family_iso_gate_untestable(fam_key)
     lmz, lh = _SAT._peak_lines(ledger, artifacts=False)
     mzs, pids = [], []
     for pid, mz0, h0 in zip(tgt["peak_id"], pd.to_numeric(tgt["mz"], errors="coerce"),
@@ -1659,32 +1676,44 @@ def _iso_gate_targets(ledger: pd.DataFrame, tgt: pd.DataFrame, fam: dict, elemen
             continue
         tg = float(mz0) + delta
         j = _SAT._nearest(lmz, tg, tg * win * 1e-6)
-        if j is not None and lo * per <= float(lh[j]) / float(h0) <= hi * per * n_max:
+        if (j is not None and lo * per <= float(lh[j]) / float(h0) <= hi * per * n_max) or (
+                untestable_ok and not _SAT.own_line_testable(h0, {element: 1}, element, floor)):
             mzs.append(float(mz0))
             pids.append(pid)
-    lifted = dataclasses.replace(profile, **{f"max_{element}": n_max})
+    cap = int(getattr(profile, f"max_{element}", 0))
+    lifted = dataclasses.replace(profile, **{f"max_{element}": n_max}) if cap < n_max else profile
     return {"mzs": mzs, "pids": set(pids), "label": label, "lines": (lmz, lh), "window_ppm": win,
-            "element": element, "profile": lifted}
+            "element": element, "floor": floor, "untestable_ok": untestable_ok, "profile": lifted}
 
 
 def _iso_gate_winners(ledger: pd.DataFrame, arb: dict, gate: dict, *, log=print, fam_key: str = "") -> dict:
     """`arb` with only the winners of an isotope-gated family whose ION shows
     its own line of the gate element (satellites.own_line, on the winner's
-    peak in this file), and only those winners' isotope children."""
+    peak in this file) -- or, where the family commits an untestable reading
+    (`gate['untestable_ok']`), whose line is predicted under the testable level
+    (satellites.own_line_testable; the tier engine holds such a row at
+    Candidate) -- and only those winners' isotope children. A winner whose line
+    was testable and is not seen is refused."""
     from peaky.assignment.tiers import _ion_counts
     win = arb.get("winners", pd.DataFrame())
     if not len(win):
         return arb
     by_pid = ledger.drop_duplicates("peak_id").set_index("peak_id")
-    keep, refused = [], 0
+    el = gate["element"]
+    keep, refused, held = [], 0, 0
     for _, w in win.iterrows():
         pid = w["peak_id"]
         ion = _ion_counts(w["neutral"], w["adduct"])
         ok = False
         if pid in gate["pids"] and ion and pid in by_pid.index:
-            v = _SAT.own_line(gate["lines"][0], gate["lines"][1], by_pid.at[pid, "mz"], by_pid.at[pid, "height"],
-                              ion, gate["element"], window_ppm=gate["window_ppm"])
+            h0 = by_pid.at[pid, "height"]
+            v = _SAT.own_line(gate["lines"][0], gate["lines"][1], by_pid.at[pid, "mz"], h0,
+                              ion, el, window_ppm=gate["window_ppm"])
             ok = bool(v["confirmed"])
+            if not ok and gate.get("untestable_ok") and int(ion.get(el, 0) or 0) > 0 \
+                    and not _SAT.own_line_testable(h0, ion, el, gate.get("floor")):
+                ok = True
+                held += 1
         keep.append(ok)
         refused += int(not ok)
     win = win[pd.Series(keep, index=win.index, dtype=bool)]
@@ -1692,7 +1721,11 @@ def _iso_gate_winners(ledger: pd.DataFrame, arb: dict, gate: dict, *, log=print,
     if len(kids):
         kids = kids[kids["parent_peak_id"].isin(set(win["peak_id"]))]
     if refused:
-        log(f"[pass3:{fam_key}] {refused} winner(s) refused: no own {gate['label']} line at the ion's count")
+        log(f"[pass3:{fam_key}] {refused} winner(s) refused: no own {gate['label']} line at the ion's count"
+            + (" where one was testable" if gate.get("untestable_ok") else ""))
+    if held:
+        log(f"[pass3:{fam_key}] {held} winner(s) committed with their {gate['label']} line untestable "
+            "(the tier holds them at Candidate)")
     return {**arb, "winners": win, "iso_children": kids}
 
 
@@ -1722,7 +1755,10 @@ def run_pass3(
     ``curated`` runs the HX/I2 cluster resolution and the profile's own families,
     detects the GKA series structure, and hands it back in ``_carry`` WITHOUT
     opening anything. ``series`` runs later (after passes 4/5/7) and opens only
-    the evidence-backed families, on whatever residual is left.
+    the evidence-backed families, on whatever residual is left -- and then the
+    profile's ISOTOPE-GATED families (contexts.family_iso_gate: the positive
+    sources' organosulfur_34s and organochlorine), last of all, with or without
+    series evidence. ``all`` runs those last too.
 
     Why: pass 3 sits before the residual/completion/certified passes and claims
     from the same unexplained pool, so an evidence-opened family took peaks those
@@ -1731,6 +1767,10 @@ def run_pass3(
     the peaks freed by holding the family back reached it 48 % of the time. The
     detection is unchanged and still measured on the FULL residual (that is why
     the evidence is carried rather than re-detected); only the claim order moves.
+    The isotope-gated families are a new route for an element on a source that
+    otherwise never proposes it, and their box holds near-exact aliases of
+    better-evidenced readings (a cyclic siloxane [M+H]+ and an S2 reading of
+    it are 0.17 ppm apart), so they take only what everything else left.
 
     ``all`` is the original single-shot behaviour and stays the default.
     """
@@ -1777,7 +1817,10 @@ def run_pass3(
     # halide-CIMS: also try covalent organohalogens. The arbitration keeps the
     # complexity prior on the reagent element (its ion isotope can't prove
     # neutral ownership), so these only win with a real score margin.
-    families = [] if phase == "series" else list(profile.pass3_families)
+    # The profile's ISOTOPE-GATED families (contexts.family_iso_gate) claim last:
+    # in the series phase when the pass is split, else after every other family.
+    gated = [f for f in profile.pass3_families if X.family_iso_gate(f)]
+    families = [] if phase == "series" else [f for f in profile.pass3_families if f not in gated]
     if phase != "series":
         if reagent == "Br" and "bromo_organic" not in families:
             families.append("bromo_organic")
@@ -1797,9 +1840,11 @@ def run_pass3(
         # the reorder. Only the CLAIM is deferred, not the measurement.
         evidence = (carried or {}).get("evidence")
         fam_members = dict((carried or {}).get("fam_members") or {})
-        if evidence is None or evidence.empty:
+        if (evidence is None or evidence.empty) and not gated:
             log("[pass3:series] no carried series evidence; skipping")
             return {"committed": 0, "locked": 0, "iso_attached": 0}
+        if evidence is None:
+            evidence = pd.DataFrame(columns=["unit", "mass", "n_links", "significant", "action"])
     else:
         evidence = SD.detect_series(
             ledger, ppm=cfg.search_ppm, min_height=cfg.height_cutoff
@@ -1829,6 +1874,8 @@ def run_pass3(
         if opened:
             log(f"[pass3] GKA evidence held for the late series phase: "
                 f"{', '.join(opened)}")
+        if gated:
+            log(f"[pass3] isotope-gated families held for the late series phase: {', '.join(gated)}")
     else:
         for fam in SD.families_from_evidence(evidence):
             if fam not in families:
@@ -1838,6 +1885,8 @@ def run_pass3(
                     f"opened family: {fam} "
                     f"({len(fam_members.get(fam, []))} chain-member targets)"
                 )
+        # last of all: what every pass and family before left unexplained
+        families.extend(f for f in gated if f not in families)
     anchors_now = set(
         ledger.loc[ledger["role"] == L.ROLE_M0, "neutral_formula"].dropna()
     )
@@ -1850,13 +1899,15 @@ def run_pass3(
         # where the ion's own line is seen (`_iso_gate_targets` / `_iso_gate_winners`)
         gate = None
         if X.family_iso_gate(fam_key):
-            gate = _iso_gate_targets(ledger, tgt, fam, X.family_iso_gate(fam_key), profile, cfg)
+            gate = _iso_gate_targets(ledger, tgt, fam_key, X.family_iso_gate(fam_key), profile, cfg)
             if gate is None:
                 log(f"[pass3:{fam_key}] skipped: its {X.family_iso_gate(fam_key)} gate reads the ion's own "
                     "exact-offset line, an Orbitrap-class test")
                 continue
             if not gate["mzs"]:
-                log(f"[pass3:{fam_key}] no unexplained peak shows a {gate['label']} partner; skipping")
+                log(f"[pass3:{fam_key}] no unexplained peak shows a {gate['label']} partner"
+                    + (" or sits where it would be untestable" if gate["untestable_ok"] else "")
+                    + "; skipping")
                 continue
         try:
             ranges = build_ranges(

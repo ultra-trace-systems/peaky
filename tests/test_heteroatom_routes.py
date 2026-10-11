@@ -3,9 +3,12 @@
 * the element-budget demote keeps a commit whose every over-budget Cl / Br / S
   shows its own 37Cl / 81Br / 34S line (satellites.own_line), on an
   Orbitrap-class run;
-* the positive sources (uronium, EasyIC) open the organosulfur family and the
-  37Cl-gated organochlorine family, which reads only peaks with a 37Cl partner
-  and commits only on the ion's own 37Cl line;
+* the positive sources (uronium, EasyIC) open two isotope-gated families, both
+  claimed last (pass 3's late phase): organochlorine reads only peaks with a
+  37Cl partner and commits only on the ion's own 37Cl line; organosulfur_34s
+  refuses a reading whose 34S line was testable and is not seen, and commits
+  one whose line is untestable -- which the tier engine then holds at
+  Candidate, whatever else corroborates it;
 * DMMP and TCPP join the positive organophosphate list, behind its unchanged
   corroboration gate;
 * the carbon-cluster rule spares a formula whose O / N carry its unsaturation
@@ -20,7 +23,6 @@ Run: pytest tests/test_heteroatom_routes.py -q
 from __future__ import annotations
 
 import ast
-import dataclasses
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -63,33 +65,46 @@ def _lines(*pairs):
 
 
 # --------------------------------------------------------------------------- the own-line primitive
-def test_the_own_line_window_is_orbitrap_only():
+def test_the_own_line_window_is_a_flat_ppm_on_an_orbitrap_only():
+    """The line and its parent shift together, so the window does not widen with the file's
+    calibration sigma (the spec's ~1 ppm)."""
     assert SAT.own_line_window_ppm(None) is None
     assert SAT.own_line_window_ppm(TOF) is None
     assert SAT.own_line_window_ppm(SimpleNamespace(instrument_class="orbitrap", trace_sample=True)) is None
-    assert SAT.own_line_window_ppm(ORBI) == SAT.OWN_LINE_MIN_PPM                 # uncalibrated: 1 ppm
-    cal = SimpleNamespace(instrument_class="orbitrap", trace_sample=False, cal_sigma=0.5)
-    assert SAT.own_line_window_ppm(cal) == pytest.approx(1.5)                      # 3 sigma
-    tight = SimpleNamespace(instrument_class="orbitrap", trace_sample=False, cal_sigma=0.2)
-    assert SAT.own_line_window_ppm(tight) == SAT.OWN_LINE_MIN_PPM
+    assert SAT.own_line_window_ppm(ORBI) == SAT.OWN_LINE_PPM == 1.0
+    for sigma in (0.2, 0.6, 1.5):
+        cal = SimpleNamespace(instrument_class="orbitrap", trace_sample=False, cal_sigma=sigma)
+        assert SAT.own_line_window_ppm(cal) == SAT.OWN_LINE_PPM
 
 
-@pytest.mark.parametrize("ratio,ppm,n_ion,n_fewer,ok", [
-    (R37, 0.1, 1, 0, True),            # Cl1 at its prediction
-    (0.6 * R37, -0.3, 1, 0, True),     # low but in the band
-    (2 * R37, 0.0, 1, 0, False),       # a Cl2 line under a Cl1 reading: fits Cl2 as well
-    (0.3 * R37, 0.0, 1, 0, False),     # too low
-    (R37, 1.6, 1, 0, False),           # outside the 1-ppm window
-    (2 * R37, 0.0, 2, 0, True),        # Cl2 seen
-    (2 * R37, 0.0, 3, 2, False),       # a Cl3 reading over a cap of 2: the line shows Cl2
-    (3 * R37, 0.0, 3, 2, True),        # ... and here Cl3
+@pytest.mark.parametrize("ratio,ppm,n_ion,ok", [
+    (R37, 0.1, 1, True),               # Cl1 at its prediction
+    (0.6 * R37, -0.3, 1, True),        # low but in the band
+    (2 * R37, 0.0, 1, False),          # a Cl2 line under a Cl1 reading: fits Cl2 as well
+    (0.3 * R37, 0.0, 1, False),        # too low
+    (R37, 1.6, 1, False),              # outside the 1-ppm window
+    (R37, 1.2, 1, False),              # ... however the file is calibrated
+    (2 * R37, 0.0, 2, True),           # Cl2 seen
+    (R37, 0.0, 2, False),              # a Cl1 line under a Cl2 reading: 0.5x, in the band, fits Cl1
+    (0.65 * 2 * R37, 0.0, 2, False),   # ... and a little over it still reads Cl1 better
+    (2 * R37, 0.0, 3, False),          # a Cl3 reading under a Cl2 line (one atom fewer)
+    (3 * R37, 0.0, 3, True),           # ... and here Cl3
 ])
-def test_own_line_reads_the_count(ratio, ppm, n_ion, n_fewer, ok):
+def test_own_line_reads_the_count(ratio, ppm, n_ion, ok):
     m0, h0 = 250.0, 1e4
     tgt = m0 + ISO.D_37CL
     mz, h = _lines((m0, h0), (tgt * (1 + ppm * 1e-6), ratio * h0))
-    v = SAT.own_line(mz, h, m0, h0, {"C": 9, "Cl": n_ion}, "Cl", window_ppm=1.0, n_fewer=n_fewer)
+    v = SAT.own_line(mz, h, m0, h0, {"C": 9, "Cl": n_ion}, "Cl", window_ppm=SAT.OWN_LINE_PPM)
     assert v["confirmed"] is ok, v["why"]
+
+
+def test_a_line_is_testable_from_twice_the_floor():
+    assert SAT.OWN_LINE_TESTABLE_X == 2.0
+    assert SAT.own_line_testable(2 / R34 * 100.0 + 1, {"S": 1}, "S", 100.0)
+    assert not SAT.own_line_testable(2 / R34 * 100.0 - 1, {"S": 1}, "S", 100.0)
+    assert SAT.own_line_testable(2 / R34 * 100.0 / 2 + 1, {"S": 2}, "S", 100.0)     # two atoms, twice the line
+    assert not SAT.own_line_testable(1e9, {"S": 1}, "S", None)                       # no floor: never testable
+    assert not SAT.own_line_testable(1e9, {"C": 5}, "S", 100.0)                      # no atom of it
 
 
 def test_own_line_needs_a_line_and_a_window():
@@ -183,21 +198,29 @@ def test_the_stage_hands_the_runs_cfg_to_the_demote():
 
 
 # --------------------------------------------------------------------------- the positive families
-def test_the_positive_sources_open_organosulfur_and_the_gated_organochlorine():
+def test_the_positive_sources_open_the_two_gated_families_last():
     for prof in (URO, EIC):
-        assert {"organosulfur", "organochlorine"} <= set(prof.pass3_families)
-        assert prof.max_Cl == 0                                # the context budget is unchanged
+        assert prof.pass3_families[-2:] == ("organosulfur_34s", "organochlorine")   # after every other
+        assert "organosulfur" not in prof.pass3_families
+        assert prof.max_Cl == 0 and prof.max_S == 2            # the context budget is unchanged
     fam = X.CONTAMINANT_FAMILIES["organochlorine"]
     assert fam["add"] == {"Cl": (1, 3)} and X.family_iso_gate("organochlorine") == "Cl"
+    assert not X.family_iso_gate_untestable("organochlorine")             # its line or nothing
+    s34 = X.CONTAMINANT_FAMILIES["organosulfur_34s"]
+    assert s34["add"] == {"S": (1, 2)} and s34["adducts"] == ("[M+H]+",)
+    assert X.family_iso_gate("organosulfur_34s") == "S" and X.family_iso_gate_untestable("organosulfur_34s")
+    # the labelled-ammonium source keeps its ungated family, in its old place
+    nh4 = X.get_context("ammonium-15n")
+    assert nh4.pass3_families == ("amine", "organosulfur", "siloxane", "pdms", "glycol_peg", "phthalate")
     assert X.family_iso_gate("organosulfur") is None and X.family_iso_gate("nope") is None
-    assert "organochlorine" not in AIR.pass3_families
+    assert not set(AIR.pass3_families) & {"organochlorine", "organosulfur_34s"}
 
 
-def test_the_gated_family_opens_no_element_space():
-    """degeneracy / the evidence level: an iso-gated family raises no zero cap; organosulfur
+def test_the_gated_families_open_no_element_space():
+    """degeneracy / the evidence level: an iso-gated family raises no zero cap; the S family
     adds nothing on a source that already budgets S <= 2."""
     for prof in (URO, EIC):
-        assert DG.space_profiles(prof, ("organochlorine", "organosulfur")) == [prof]
+        assert DG.space_profiles(prof, ("organochlorine", "organosulfur_34s")) == [prof]
     assert len(DG.space_profiles(AIR, ("fluorinated",))) == 2              # an ordinary family still does
 
 
@@ -213,13 +236,12 @@ M_X = 300.0                                    # a peak whose 37Cl-offset partne
 def test_the_gate_reads_only_peaks_with_a_37cl_partner():
     led = _gate_ledger([("a", M_CL, 1e4), ("a37", M_CL + ISO.D_37CL, R37 * 1e4),
                         ("b", 250.0, 1e4), ("x", M_X, 1e4), ("x37", M_X + ISO.D_37CL, 2 * R37 * 1e4)])
-    fam = X.CONTAMINANT_FAMILIES["organochlorine"]
     tgt = led[led["peak_id"].isin(["a", "b", "x"])]
-    g = D._iso_gate_targets(led, tgt, fam, "Cl", URO, ORBI)
-    assert g["pids"] == {"a", "x"} and g["label"] == "37Cl"
+    g = D._iso_gate_targets(led, tgt, "organochlorine", "Cl", URO, ORBI)
+    assert g["pids"] == {"a", "x"} and g["label"] == "37Cl" and not g["untestable_ok"]
     assert g["profile"].max_Cl == 3 and URO.max_Cl == 0
     assert X.filter_by_profile(CL1, g["profile"])[0] and not X.filter_by_profile(CL1, URO)[0]
-    assert D._iso_gate_targets(led, tgt, fam, "Cl", URO, TOF) is None
+    assert D._iso_gate_targets(led, tgt, "organochlorine", "Cl", URO, TOF) is None
 
 
 def _winners(rows):
@@ -271,6 +293,162 @@ def test_pass3_skips_the_gated_family_off_an_orbitrap(monkeypatch):
         cfg.instrument_class = klass
         D.run_pass3(None, "s", led, URO, None, cfg, ["[M+H]+"], reagent=None, **QUIET)
     assert all(hi == 0 for _lo, hi in calls)                          # the other families ran, never Cl
+
+
+# --------------------------------------------------------------------------- the 34S gate
+S1 = "C9H10N2S"                                # a benzothiazole-amine-like thio-heterocycle
+S1B = "C7H11NS"
+S1C = "C10H12N2S"
+FLOOR = 100.0
+DIM = 1000.0                                    # 34S predicted at ~44 cps: under 2x the floor
+BRIGHT = 2e5                                    # 34S predicted at ~8860 cps: testable (its own line too)
+
+
+def _s_ledger(with_line: bool):
+    md, mb, mc = (C.ion_mz(f, "[M+H]+") for f in (S1, S1B, S1C))
+    rows = [("d", md, DIM), ("b", mb, BRIGHT), ("c", mc, BRIGHT)]
+    if with_line:
+        rows.append(("c34", mc + ISO.D_34S, R34 * BRIGHT))
+    return _gate_ledger(rows), (md, mb, mc)
+
+
+def _s_run(monkeypatch, led, prof=URO, *, phase="all", carried=None, klass="orbitrap"):
+    seen = {"S": [], "Cl": []}
+
+    def fake_enum(client, mzs, mech_ids, ranges, cfg, adducts, **kw):
+        for el in ("S", "Cl"):
+            if ranges[el][1] > 0:
+                seen[el].append(sorted(mzs))
+        return {S1, S1B, S1C} if ranges["S"][1] > 0 else set()
+
+    arb = {"winners": _winners([("d", S1, "[M+H]+", "C9H11N2S+"), ("b", S1B, "[M+H]+", "C7H12NS+"),
+                                ("c", S1C, "[M+H]+", "C10H13N2S+")]),
+           "iso_children": pd.DataFrame(columns=["peak_id", "parent_peak_id", "iso_label", "iso_score"])}
+    monkeypatch.setattr(D, "_enumerate", fake_enum)
+    monkeypatch.setattr(D, "_mech_ids_for", lambda client, adducts: [])
+    monkeypatch.setattr(D.IO, "score_candidates", lambda *a, **k: pd.DataFrame({"x": [1]}))
+    monkeypatch.setattr(D, "arbitrate", lambda scored, cfg, profile: arb)
+    cfg = P.PassConfig(height_cutoff_cps=FLOOR)
+    cfg.instrument_class = klass
+    out = D.run_pass3(None, "s", led, prof, None, cfg, ["[M+H]+", "[M+(CH4N2O)H]+", "[M+Na]+", "[M+NH4]+"],
+                      reagent=None, phase=phase, carried=carried, **QUIET)
+    return seen, out
+
+
+def test_the_34s_gate_refuses_a_testable_line_that_is_not_there(monkeypatch):
+    """A dim S1 reading (its 34S line predicted under 2x the floor) commits; a bright one whose
+    34S line is testable and absent is never even enumerated (no partner, no untestable line); a
+    bright one with its 34S line at the prediction commits."""
+    led, (md, mb, mc) = _s_ledger(with_line=True)
+    seen, _ = _s_run(monkeypatch, led)
+    assert seen["S"] == [sorted([md, mc])]
+    by = led.set_index("peak_id")
+    assert by.at["d", "neutral_formula"] == S1 and by.at["d", "method"] == "contaminant:organosulfur_34s"
+    assert by.at["c", "neutral_formula"] == S1C
+    assert by.at["b", "role"] == L.ROLE_UNEXPLAINED
+
+
+def test_the_34s_gate_refuses_a_winner_whose_testable_line_is_missing(monkeypatch):
+    """The winner check on its own: a bright peak admitted on a partner, whose winner's line
+    then does not fit its count, is refused."""
+    led, (md, mb, mc) = _s_ledger(with_line=False)
+    led = pd.concat([led, _gate_ledger([("c34", mc + ISO.D_34S, 0.3 * R34 * BRIGHT)])], ignore_index=True)
+    g = D._iso_gate_targets(led, led[led["peak_id"].isin(["d", "b", "c"])], "organosulfur_34s", "S", URO,
+                            SimpleNamespace(instrument_class="orbitrap", trace_sample=False,
+                                            height_cutoff=FLOOR))
+    assert g["pids"] == {"d"} and g["untestable_ok"] and g["floor"] == FLOOR
+    assert g["profile"] is URO                                    # S <= 2 already: nothing lifted
+    g["pids"] |= {"b", "c"}                                       # as if each had shown a partner
+    arb = {"winners": _winners([("d", S1, "[M+H]+", ""), ("b", S1B, "[M+H]+", ""), ("c", S1C, "[M+H]+", "")]),
+           "iso_children": pd.DataFrame({"peak_id": ["c34"], "parent_peak_id": ["c"]})}
+    out = D._iso_gate_winners(led, arb, g, log=lambda *a: None)
+    assert list(out["winners"]["peak_id"]) == ["d"] and not len(out["iso_children"])
+
+
+def test_the_gated_families_claim_in_the_late_phase(monkeypatch):
+    """Curated phase: no S / Cl reading is enumerated, the families are held; series phase: they
+    run with no series evidence at all, after whatever passes 4/5/7 left."""
+    led, (md, mb, mc) = _s_ledger(with_line=True)
+    seen, out = _s_run(monkeypatch, led, phase="curated")
+    assert seen == {"S": [], "Cl": []} and "_carry" in out
+    assert (led["role"] == L.ROLE_UNEXPLAINED).all()
+    carry = out["_carry"]
+    carry["evidence"] = carry["evidence"].iloc[0:0]               # no GKA structure at all
+    seen, out = _s_run(monkeypatch, led, phase="series", carried=carry)
+    assert seen["S"] == [sorted([md, mc])]
+    assert led.set_index("peak_id").at["d", "method"] == "contaminant:organosulfur_34s"
+
+
+def test_the_ungated_organosulfur_keeps_its_place_and_its_rule(monkeypatch):
+    """The labelled-ammonium source: organosulfur claims in the curated phase, every peak, no gate."""
+    led, (md, mb, mc) = _s_ledger(with_line=False)
+    seen, _ = _s_run(monkeypatch, led, X.get_context("ammonium-15n"), phase="curated")
+    assert seen["S"] == [sorted([md, mb, mc])]
+    by = led.set_index("peak_id")
+    assert by.at["b", "method"] == "contaminant:organosulfur"     # no 34S line, committed as before
+
+
+def test_the_gated_families_are_skipped_off_an_orbitrap(monkeypatch):
+    led, _ = _s_ledger(with_line=True)
+    seen, _ = _s_run(monkeypatch, led, klass="tof")
+    assert seen == {"S": [], "Cl": []} and (led["role"] == L.ROLE_UNEXPLAINED).all()
+
+
+# --------------------------------------------------------------------------- the tier hold
+def _tier_led(method, h, *, kid=True, line=False, neutral=S1):
+    """The reviewer's shape: one pass-3 [M+H]+ commit at height `h` (floor 1000 cps), with a
+    13C child (`kid`) and its 34S line at the prediction (`line`)."""
+    m0 = C.ion_mz(neutral, "[M+H]+")
+    peaks = [("A", m0, h)]
+    if kid:
+        peaks.append(("A13", m0 + ISO.D_13C_EXACT, 0.099 * h))
+    if line:
+        peaks.append(("A34", m0 + ISO.D_34S, R34 * h))
+    led = L.new_ledger(pd.DataFrame(peaks, columns=["peak_id", "mz", "height"]))
+    L.commit_assignment(led, "A", neutral_formula=neutral, adduct="[M+H]+",
+                        ion_formula="",
+                        ion_score=0.93, compound_score=0.93, eff_score=0.9, eff_margin=0.3, tied=False,
+                        ppm_error=0.2, pass_no=3, method=method, confidence="Good (organosulfur)",
+                        commentary="Pass 3",
+                        isotopologues=([{"label": "13C", "score": 0.9, "peak_id": "A13"}] if kid else []))
+    if kid:
+        L.attach_isotopologue(led, "A13", "A", iso_label="13C", iso_match_score=0.9)
+    return led
+
+
+def _tiers(led, klass="orbitrap"):
+    from peaky.assignment import tiers as T
+    cfg = P.PassConfig(height_cutoff_cps=1000.0, instrument_type="orbi")
+    cfg.instrument_class = klass
+    return T.compute_tiers(led, cfg=cfg, profile=URO).set_index("peak_id").loc["A"]
+
+
+def test_an_untestable_s_from_the_gated_route_stays_candidate_whatever_corroborates_it():
+    """34S predicted at 221 cps under a 1000-cps floor, a 13C child: before, Assigned
+    ('S count untested'); the 13C child pins the carbons, not the sulfur."""
+    from peaky.assignment import tiers as T
+    t = _tiers(_tier_led("contaminant:organosulfur_34s", 5000.0))
+    assert t["tier"] == T.TIER_CANDIDATE and t["tier_reason"].startswith(T.GATED_HOLD), t["tier_reason"]
+    assert "S1 proposed by the isotope-gated organosulfur_34s family" in t["tier_reason"]
+    # a re-arbitrated row of the route is held the same way ...
+    t = _tiers(_tier_led("rearb<-contaminant:organosulfur_34s", 5000.0))
+    assert t["tier"] == T.TIER_CANDIDATE
+    # ... but not once it carries no sulfur at all
+    t = _tiers(_tier_led("rearb<-contaminant:organosulfur_34s", 5000.0, neutral="C10H14N2O"))
+    assert not str(t["tier_reason"]).startswith(T.GATED_HOLD)
+    # the ungated family (the labelled-ammonium source) is read as before
+    t = _tiers(_tier_led("contaminant:organosulfur", 5000.0))
+    assert t["tier"] == T.TIER_ASSIGNED and "S count untested" in t["tier_reason"]
+
+
+def test_a_gated_s_on_its_own_line_is_assigned_and_says_so():
+    from peaky.assignment import tiers as T
+    t = _tiers(_tier_led("contaminant:organosulfur_34s", 1e5, line=True))
+    assert t["tier"] == T.TIER_ASSIGNED, t["tier_reason"]
+    assert "S1 on its own line (isotope-gated organosulfur_34s: 34S line at" in t["tier_reason"]
+    # off an Orbitrap-class run nothing is seen
+    t = _tiers(_tier_led("contaminant:organosulfur_34s", 1e5, line=True), klass="tof")
+    assert t["tier"] == T.TIER_CANDIDATE and t["tier_reason"].startswith(T.GATED_HOLD)
 
 
 # --------------------------------------------------------------------------- DMMP / TCPP
@@ -376,16 +554,25 @@ def test_enumeration_never_reads_a_reagent_profiles_ranges():
             prof = PR.resolve(name)
         except Exception:      # noqa: BLE001 -- a profile this build does not register
             continue
-        ctx = X.get_context(prof.context)
-        box = D.build_ranges(ctx, None, include_N=True)
+        box = D.build_ranges(X.get_context(prof.context), None, include_N=True)
         assert all(box[el] == (0, 0) for el in ("S", "P", "Si", "F", "Cl", "Br", "I")), (name, box)
-        wide = dataclasses.replace(prof, ranges="C0-99 H0-200 N0-9 O0-40 S0-9 Cl0-9 Br0-9 P0-9 F0-9")
-        assert D.build_ranges(X.get_context(wide.context), None, include_N=True) == box
-    # the only reader of the attribute is the profile module itself (composing a merged profile)
+    # the only reader of the field is the profile module itself (composing a merged profile, and
+    # its config loader's field list): an attribute read, a getattr(..., "ranges") or a
+    # ["ranges"] / .get("ranges") read anywhere else would be a consumer
     readers = set()
+
+    def _is_ranges(node):
+        return isinstance(node, ast.Constant) and node.value == "ranges"
+
     for py in (ROOT / "peaky").rglob("*.py"):
         for node in ast.walk(ast.parse(py.read_text())):
-            if (isinstance(node, ast.Attribute) and node.attr == "ranges" and isinstance(node.ctx, ast.Load)
-                    and not (isinstance(node.value, ast.Name) and node.value.id == "self")):
+            hit = (isinstance(node, ast.Attribute) and node.attr == "ranges" and isinstance(node.ctx, ast.Load)
+                   and not (isinstance(node.value, ast.Name) and node.value.id == "self"))
+            hit |= (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in ("getattr", "hasattr") and len(node.args) >= 2 and _is_ranges(node.args[1]))
+            hit |= isinstance(node, ast.Subscript) and _is_ranges(node.slice)
+            hit |= (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("get", "pop") and bool(node.args) and _is_ranges(node.args[0]))
+            if hit:
                 readers.add(py.relative_to(ROOT).as_posix())
     assert readers == {"peaky/chem/profiles.py"}, readers
