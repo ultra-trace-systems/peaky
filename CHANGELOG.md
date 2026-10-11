@@ -307,6 +307,33 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The lock model (`--mass-axis auto`) no longer steps a 15N-labelled batch's axis on its
+  ions' unlabelled aliases.** Its formula space held no `^N`, so a [M+^NO3]- / [M+H^N2O6]-
+  ion was invisible to the uniqueness tests while its 14N alias was not: ^N2 <-> N2 C3 H-2 O-2
+  is 0.45 mDa (1.8 ppm at m/z 250), and every ^N2 cluster read as a unique, 13C-consistent
+  CxHyN2Oz- seed. On a 15N-nitrate 128-600 batch the walk stalled at m/z ~250 (the [M+^NO3]-
+  family above it out of the space), restarted from those seeds and built a segment 1.2-2.0 ppm
+  under the axis (m/z 251-369, every lock a wrong formula), then a second one on a perfluoro
+  [M+^NO3]- band's aliases (501-533): a reported -1.5 ppm STEP the instrument never took, and
+  the window's true ions corrected ~1.5 ppm the wrong way. The run now hands the lock model the
+  reagent's label (`assign_batch.axis_reagent_elements`: `^N` for a channel holding a `^N`
+  adduct, beside the halogen), the space counts it as a nitrogen in every structural rule
+  (0-2 per ion, as a reagent's Br / I), and a `^N` formula locks only with its carbon number
+  measured (no line of its own confirms the label: unchecked, the bright reagent's satellites
+  locked as C4^N- / ^NO2- and pulled a steep low end off the curve). Replayed on the stored
+  15N-nitrate batches against an independent axis truth: 128-600 locks 184 -> 177 (45 wrong
+  -> 0) and 169 -> 143 (41 -> 0), no step, the model within 0.16 ppm of the truth over m/z
+  130-342 / 130-293 and uncorrected past it (its largest correction 0.5 / 0.65 ppm: `axis_ok`,
+  nothing applied, where 2.0 ppm residuals were applied before); 40-600 and 65-120 unchanged in
+  verdict and within 0.01 ppm in residual; unlabelled reagents bit-identical. Known limits: a
+  labelled space is ~3x larger and more crowded, so fewer calibration-free locks and a shorter
+  reach on a labelled batch (128-600: the model ends at m/z 342 / 293); with the false steps gone
+  the largest correction on these batches stays under the 1.0 ppm `axis_ok` bar, so a correct
+  0.3-0.65 ppm low-end correction is no longer applied either; a ^N3 ion family (trimer
+  clusters) stays outside the space; a fluorinated family can still alias uniquely (F formulas
+  are not walk rivals, and F > 13 is outside the space). Only a labelled anion reagent
+  ([M+^NO3]-) gets the label: 15N-ammonium ([M+^NH4]+) is unchanged until its positive-mode
+  family is validated against a measured axis.
 - **The `blended` separability class was 1.39x too wide.** `chem.resolution.d_crit_hwhm`, the
   separation at which two Gaussians of a given height ratio turn bimodal, converted its sigma table
   to HWHM by multiplying by sqrt(2 ln 2) where it divides: equal heights read 2.36 HWHM instead of

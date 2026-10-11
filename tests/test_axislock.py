@@ -472,7 +472,8 @@ def test_the_first_locks_past_a_step_do_not_bend_the_curve():
 
 
 @pytest.mark.parametrize("reagent,mode,want_pol,want_els", [
-    ("Ur", "locks", "+", ()), ("Br", "auto", "-", ("Br",)), ("NO3", "reference", "-", ())])
+    ("Ur", "locks", "+", ()), ("Br", "auto", "-", ("Br",)), ("NO3", "reference", "-", ()),
+    ("NO3_15N", "auto", "-", ("^N",))])
 def test_the_run_hands_measure_axis_its_mode_polarity_and_reagent(reagent, mode, want_pol, want_els,
                                                                   tmp_path, monkeypatch):
     seen = {}
@@ -1322,3 +1323,100 @@ def test_a_restart_above_a_segment_from_seeds_is_judged_against_it(seed):
     model, info = AL.fit(ts, polarity="-", log=_quiet)
     th, inside, resid = _residuals(model, tri, axis)
     assert inside.mean() > 0.8 and np.mean(np.abs(resid[inside]) <= 0.5) > 0.9, info.get("contested")
+
+
+# --- a labelled reagent: its ^N label in the space ------------------------------------
+
+def test_a_labelled_reagent_puts_its_label_in_the_space_as_a_nitrogen():
+    """'^N' (15N) is a nitrogen in every structural rule, in the space only for a reagent
+    that carries it; the unlabelled space is the one it always was."""
+    assert AL.name(AL.parse("C8H9N^NO7-")) == "C8H9N^NO7-"
+    assert abs(AL.exact_mz("^NO3-") - (15.0001088984 + 3 * AL.MASS["O"] + AL.ME)) < 1e-9
+    lab, plain = AL.FormulaSpace("-", reagent_elements=("^N",)), AL.FormulaSpace("-")
+    assert lab.valid(AL.parse("C7H9^N2O8-")) and not lab.valid(AL.parse("C7H10^N2O8-"))
+    assert lab.valid(AL.parse("C5H10N2^NO11-")) and not lab.valid(AL.parse("C5H10N3^NO11-"))
+    assert not plain.valid(AL.parse("C7H9^N2O8-"))
+    assert "C7H9^N2O8-" in set(lab.near(AL.exact_mz("C7H9^N2O8-"), 1.0).ion)
+    assert plain.els == ["C", "N", "O", "S", "F", "Cl"] and "^N" not in plain.ranges
+    assert [AB.axis_reagent_elements(a) for a in (
+        ["[M+^NO3]-", "[M-H]-"], ["[M+^NH4]+", "[M+H]+"], ["[M+NO3]-", "[M-H]-"], ["[M+Br]-", "[M-H]-"])] == [
+        ("^N",), (), (), ("Br",)]
+
+
+def test_an_n2_label_alias_is_unique_only_without_the_label():
+    """^N2 <-> N2 C3 H-2 O-2 is 0.45 mDa: a [M+H^N2O6]- ion's 14N alias sits 1.8 ppm off at
+    m/z 251 and is the only lockable formula there when the space has no ^N."""
+    ion, alias = "C7H9^N2O8-", "C10H7N2O6-"
+    mz = AL.exact_mz(ion)
+    assert abs(AL.exact_mz(alias) - mz) < 0.5e-3
+
+    def rivals(els):          # lockable, S / Cl ones aside (their absent lines strike them)
+        sp = AL.FormulaSpace("-", reagent_elements=els)
+        c = AL._walk_rivals(sp.near(mz, AL.LOCK_PPM), sp)
+        return {i for i in c.ion if not (AL.parse(i)["S"] or AL.parse(i)["Cl"])}
+
+    assert rivals(()) == {alias}
+    assert {ion, alias} <= rivals(("^N",))
+
+
+def test_a_label_lock_needs_its_carbon_number_measured():
+    """No line of its own confirms the label: a ^N formula locks only with a 13C line --
+    the bright reagent's satellites, carbon-free or 13C-less, locked as ^NO2- / C4^N-."""
+    sp = AL.FormulaSpace("-", reagent_elements=("^N",))
+    assert AL._confirmed(AL.parse("C5H8^NO7-"), _row(), sp)
+    assert not AL._confirmed(AL.parse("C5H8^NO7-"), _row(r13=np.nan), sp)
+    assert not AL._confirmed(AL.parse("^NO2-"), _row(r13=np.nan), sp)
+    assert AL._confirmed(AL.parse("NO2-"), _row(r13=np.nan), sp)
+
+
+def _labelled(seed, lo=250.0, hi=380.0):
+    """A labelled nitrate batch's cluster ions of closed-shell CcHhOo neutrals: [M+^NO3]-
+    (one ^N, m/z 140-450) and [M+H^N2O6]- (two, lo-hi)."""
+    rng = np.random.default_rng(seed + 31)
+    one, two = set(), set()
+    for c in range(3, 16):
+        for dbe in range(1, 6):
+            h = 2 * c + 2 - 2 * dbe
+            for o in range(2, 9):
+                if h < 2 or o > 2 * c + 2:
+                    continue
+                a = AL.name({"C": c, "H": h, "^N": 1, "O": o + 3})
+                b = AL.name({"C": c, "H": h + 1, "^N": 2, "O": o + 6})
+                if 140 < AL.exact_mz(a) < 450:
+                    one.add(a)
+                if lo < AL.exact_mz(b) < hi:
+                    two.add(b)
+    one = [i for i, k in zip(sorted(one), rng.random(len(one)) < 0.5) if k]
+    two = [i for i, k in zip(sorted(two), rng.random(len(two)) < 0.6) if k]
+    return one, two
+
+
+@pytest.mark.parametrize("step", [0.0, 1.5])
+def test_a_labelled_batch_builds_no_segment_on_its_ions_unlabelled_aliases(step):
+    """A 15N-nitrate batch (unlabelled [M-H]- below m/z 250, [M+^NO3]- and [M+H^N2O6]-
+    clusters above) on a smooth axis, or one with a +1.5 ppm step at m/z 330. With no ^N
+    in the space the [M+^NO3]- clusters are invisible, the walk stalls at ~250 and
+    restarts from the ^N2 clusters' unique 14N aliases (C10H7N2O6- for C7H9^N2O8-): a
+    seeded segment ~1.7 ppm under the axis, a STEP the instrument never took, ~300 true
+    ions moved the wrong way (a real 128-600 batch: -1.5 ppm at m/z 251-369). With the
+    reagent's label in the space no alias is unique, nothing locks off its formula and
+    the axis -- the real step included -- is followed."""
+    axis = lambda m: 1.5 + step * (np.asarray(m, float) > 330.0)        # noqa: E731
+    low = [i for i in _truth(0) if AL.exact_mz(i) < 250.0]
+    one, two = _labelled(0)
+    truth = low + one + two
+    ts, _ = _batch(axis, seed=0, truth=truth)
+    # the space the batch had: no label
+    _, old = AL.fit(ts, polarity="-", log=_quiet)
+    aliases = [r["ion"] for r in old["locks"] if r["ion"] not in truth]
+    assert len(aliases) > 50 and any(abs(s["ppm"] + 1.7) < 0.3 for s in old["steps"])
+    # the labelled reagent's space, as the run hands it
+    _, info, _ = AB.measure_axis(ts, "NO3_15N", "orbitrap",
+                                 reagent_elements=AB.axis_reagent_elements(["[M+^NO3]-", "[M-H]-"]), log=_quiet)
+    assert not [r["ion"] for r in info["_locks_table"].to_dict("records") if r["ion"] not in truth]
+    assert any("^N" in r for r in info["_locks_table"]["ion"])
+    assert info["applied"]           # the next check is vacuous on a model that is not applied
+    assert not _no_true_ion_made_worse(info, truth, axis)
+    steps = info["locks"]["steps"]
+    assert len(steps) == (1 if step else 0) and all(abs(s["ppm"] - step) < 0.3 for s in steps), steps
+
