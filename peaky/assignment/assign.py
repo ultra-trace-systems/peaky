@@ -392,7 +392,7 @@ def _stage_plausibility(st):
     # the run's own profile (its run-level switches: the NOx skeleton reading)
     return plausibility.demote_implausible(
         st.led, audit=st.plaus_audit, log=st.log, context=st.profile if label else None,
-        curated=_curated(st))
+        curated=_curated(st), cfg=st.cfg)
 
 
 def _curated(st) -> frozenset:
@@ -670,7 +670,7 @@ _STAGES = [
     # report tier, then the post-tier de-risking demotes (each gets the last word).
     _Stage("tiers", _stage_tiers, safe=False, store=False),
     _Stage("demote_fluorine",
-           lambda st: cleanup.demote_unconfirmed_fluorine(st.led, log=st.log),
+           lambda st: cleanup.demote_unconfirmed_fluorine(st.led, cfg=st.cfg, log=st.log),
            safe=False, store=False),
     _Stage("demote_carbon",
            lambda st: cleanup.demote_implausible_carbon(st.led, log=st.log),

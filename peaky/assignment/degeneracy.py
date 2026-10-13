@@ -89,7 +89,13 @@ SATURATION_DENSITY = 8   # beyond this the mass is not identifiable by mass alon
 # of each any context cap or contaminant family names -- a context that leaves a
 # cap at its 99 default must not open a 99-atom loop.
 _ELS = ("N", "O", "S", "P", "Si", "F", "Cl", "Br", "I")
-ELEMENT_CEILING = {"N": 8, "S": 2, "P": 1, "Si": 12, "F": 17, "Cl": 4, "Br": 2, "I": 2}
+ELEMENT_CEILING = {"N": 8, "S": 2, "P": 1, "Si": 12, "F": 25, "Cl": 4, "Br": 2, "I": 2}
+# ... and where a context leaves the cap at its default (no cap: food, wine,
+# none), the ceiling it is enumerated to unless an opened family names more
+# (space_profiles then adds the family's own profile): the fluorinated family's
+# F25 must not grow every uncapped context's space -- its degeneracy and levels
+# stay what they were with no fluorinated family open.
+UNCAPPED_CEILING = {"F": 17}
 # a halide reagent's own covalent-halogen family, which pass 3 opens on every file
 REAGENT_FAMILY = {"Br": "bromo_organic", "Cl": "chloro_organic"}
 _MH = C.M["H"]
@@ -133,15 +139,19 @@ def opened_families(profile, reagent=None, evidence=None, ledger=None) -> tuple[
 def space_profiles(context, families=()) -> list:
     """The element spaces a run commits from: the context profile, plus one per
     opened family that raises a cap the context sets to ZERO to that family's
-    ceiling (fluorine on ambient air). A family never lifts a non-zero context cap
-    -- the pass-3 box takes min(family, context) there (directors.build_ranges) and
-    the plausibility stage demotes anything over the budget."""
+    ceiling (fluorine on ambient air), or an uncapped one past the ceiling it is
+    enumerated to (UNCAPPED_CEILING: the fluorinated family's F25 on food). A
+    family never lifts a non-zero context cap -- the pass-3 box takes min(family,
+    context) there (directors.build_ranges) and the plausibility stage demotes
+    anything over the budget."""
     base = X.get_context(context) if isinstance(context, str) else context
     out = [base]
+    base_caps = _caps(base)
     for fam in families:
         add = (X.CONTAMINANT_FAMILIES.get(fam) or {}).get("add", {})
         kw = {f"max_{el}": int(hi) for el, (_lo, hi) in add.items()
-              if hasattr(base, f"max_{el}") and getattr(base, f"max_{el}") == 0}
+              if hasattr(base, f"max_{el}") and (getattr(base, f"max_{el}") == 0
+                                                 or (_uncapped(base, el) and int(hi) > base_caps.get(el, 0)))}
         if kw:
             prof = dataclasses.replace(base, **kw)
             if all(prof != p for p in out):
@@ -149,9 +159,16 @@ def space_profiles(context, families=()) -> list:
     return out
 
 
+def _uncapped(profile, el: str) -> bool:
+    """The profile leaves `el` at a cap above every ceiling (its 99 default)."""
+    return int(getattr(profile, f"max_{el}", 0) or 0) > ELEMENT_CEILING.get(el, 0)
+
+
 def _caps(profile) -> dict[str, int]:
     caps = {"O": int(getattr(profile, "grid_o_max", 30))}
     for el, ceiling in ELEMENT_CEILING.items():
+        if _uncapped(profile, el):
+            ceiling = UNCAPPED_CEILING.get(el, ceiling)
         caps[el] = max(0, min(int(getattr(profile, f"max_{el}", 0) or 0), ceiling))
     return caps
 

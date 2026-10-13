@@ -122,7 +122,11 @@ CONTAMINANT_FAMILIES: dict[str, dict] = {
                       "note": "long-chain polydimethylsiloxane / silicone bleed "
                               "(Si-O-Si(CH3)2 ladder, +C2H6OSi = +74.019); the "
                               "Si>6 oligomers the short siloxane family can't reach"},
-    "fluorinated":   {"add": {"F": (1, 17), "O": (0, 6)}, "adducts": ("[M-H]-",),
+    # F up to 25: the chain propagation stops at the first member over the
+    # family's ceiling (directors._family_ok), and at 17 a 15N-nitrate field
+    # batch's C14-C15 F18 ladder members could not be generated -- their
+    # C+8 H+1 F-5 alias (0.16 mDa) took the line instead.
+    "fluorinated":   {"add": {"F": (1, 25), "O": (0, 6)}, "adducts": ("[M-H]-",),
                       "note": "PFAS / CF2 series contaminant; O capped at "
                               "fluorochemical levels -- v16 audit: an open O "
                               "range gridded junk like C6H5F3O13 onto Br-"

@@ -132,10 +132,10 @@ def test_same_ion_readings_collapse():
 def test_space_profiles_raise_only_a_zero_cap():
     amb = X.get_context("ambient-air")
     profs = D.space_profiles(amb, ("fluorinated", "siloxane", "organosulfate"))
-    assert len(profs) == 2 and profs[1].max_F == 17 and profs[1].max_Si == amb.max_Si
+    assert len(profs) == 2 and profs[1].max_F == 25 and profs[1].max_Si == amb.max_Si   # the family's F25
     assert D.space_profiles(amb, ("siloxane",)) == [amb]                 # Si 1 binds on ambient
     ur = D.space_profiles("uronium", ("fluorinated",))
-    assert len(ur) == 2 and ur[1].max_F == 17
+    assert len(ur) == 2 and ur[1].max_F == 25
 
 
 def test_opened_families_reads_declared_reagent_evidence_and_commits():
