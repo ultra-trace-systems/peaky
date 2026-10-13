@@ -440,6 +440,27 @@ def test_a_full_ladder_stands_for_the_cf2_step_beside_an_own_line_chlorine():
         assert (out.get("budget_iso_kept", 0) >= 1) == kept
 
 
+def test_a_committed_cf2_step_stands_for_the_fluorine_beside_an_own_line_chlorine():
+    """The other half of the composed keep: the same ClF7 row with only its -CF2
+    neighbour committed (one step, a two-member chain, so no full ladder) and its
+    37Cl line in place is kept on that line; with the neighbour only a picked
+    line, or with the 37Cl line gone, it is a lead."""
+    cl = {"C5H4ClF5O2": 1000.0, "C6H4ClF7O2": 800.0}
+    row, step = "C6H4ClF7O2", "C5H4ClF5O2"
+    line = [("c37", _mz(row) + 1.99705, 0.3196 * 800.0)]
+    for committed, extra, kept in (({row, step}, line, True),
+                                   ({row}, line, False),
+                                   ({row, step}, [], False)):
+        led = L.ensure_flags(_ledger(cl, committed, extra=extra))
+        lad = FL.verdicts(led, cfg=_cfg()).get(row)
+        assert lad is None or not lad.full, (committed, extra)
+        out = PL.demote_off_budget(led, context="uronium", log=lambda *a: None, cfg=_cfg())
+        r = _row(led, row)
+        assert bool(r["tentative_lead"]) != kept, (committed, extra)
+        assert out["budget_iso_kept"] == int(kept), (committed, extra, out)
+        assert ("on its own isotope line" in str(r["commentary"])) == kept, (committed, extra)
+
+
 # =========================================================================== the F cap
 def test_the_fluorinated_family_reaches_f25_and_the_space_follows():
     add = X.CONTAMINANT_FAMILIES["fluorinated"]["add"]
