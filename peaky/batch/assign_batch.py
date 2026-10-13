@@ -64,7 +64,8 @@ from peaky.batch import label_twins as _LT
 from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sampling as SS
 
-__version__ = "0.11.0"  # + the merged-ledger isotopologue gate and the element-signature
+__version__ = "0.11.1"  # + tables/unexplained_blocked.csv (why the unexplained lines are unexplained, blocked.py)
+#                        0.11.0: the merged-ledger isotopologue gate and the element-signature
                         # removal (one curated exempt set, reconciled: 'parent removed';
                         # the per-file ledgers record both decisions -- the gate's lines,
                         # a removed reading released --, the parent's merged row lists
@@ -2604,6 +2605,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         for st_ in per_stats:
             if str(st_.get("sample_id")) == str(sid):
                 _recount_roles(st_, _led, _rw_summ["files"].get(sid), signature=_sg_summ["files"].get(sid))
+    # why the batch's unexplained lines are unexplained (blocked.py): the per-file
+    # ledgers as the merged-ledger gates left them, pooled by m/z at the merge's
+    # window (offset-corrected, as align does) -- a diagnostic table, read by nothing
+    from peaky.assignment import blocked as _BL
+    try:
+        _BL.batch_table(full_ledgers, tol_ppm=getattr(scale, "merge_ppm", DEFAULT_TOL_PPM),
+                        offsets=offsets).to_csv(os.path.join(TAB, "unexplained_blocked.csv"), index=False)
+    except Exception as e:  # noqa: BLE001 -- a diagnostic table never fails a finished batch
+        log(f"[assign_batch] WARNING tables/unexplained_blocked.csv not written: {type(e).__name__}: {e}")
     # the parent rows name the lines the gate gave them (one row per parent ion)
     merged = _IC.parent_lines(merged, res_m.get("isotopologue"))
     # the NOx-skeleton tier cap, said on the merged row: how many of the files that

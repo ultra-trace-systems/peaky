@@ -12,6 +12,7 @@ from peaky.chem import chemistry as C
 from peaky.chem import contexts as X
 from peaky.chem import isotopes as ISO
 from peaky.io import io_mascope as IO
+from peaky.assignment import blocked as BL
 from peaky.assignment import ledger as L
 from peaky.assignment import satellites as _SAT
 from peaky.assignment import series_gka as G
@@ -392,7 +393,11 @@ def _record_known_lead(ledger: pd.DataFrame, pid, *, formula: str, fam: str, lbl
     One JSON record per peak; a peak is one ion, so the
     first refused claim on it stands. The row itself is untouched otherwise --
     the grid may still assign it -- and the batch reads the record back
-    (assign_batch.known_evidence) to decide the species once, by evidence."""
+    (assign_batch.known_evidence) to decide the species once, by evidence.
+    Every refused claim is also noted as a blocked reading of the peak
+    (blocked.note; `pass0:<verdict>: <summary>`)."""
+    BL.note(pid, f"pass0:{verdict}: {BL.short(summary or why)}", neutral=formula, adduct=adduct,
+            ion=ion_formula, score=ion_score, ppm=ppm)
     if "known_lead" not in ledger.columns:
         ledger["known_lead"] = pd.NA
     idx = ledger.index[ledger["peak_id"] == pid]
@@ -498,6 +503,11 @@ def run_pass0_known(
         # -1.9 ppm) doesn't drop on-trend contaminants and hand the peak to an
         # off-trend CHO mass-fit (the silanediol-vs-C5H10O6 collision at -1.9 ppm).
         if ppm is None or pd.isna(ppm) or abs(float(ppm) - cfg.prior_offset) > cfg.pass0_ppm:
+            if BL.active() and ppm is not None and pd.notna(ppm):
+                BL.note(r["sample_peak_id"],
+                        f"pass0:ppm {abs(float(ppm) - cfg.prior_offset):.1f}>{cfg.pass0_ppm:.1f}",
+                        neutral=r["compound_formula"], adduct=_mech_to_adduct(r), ion=r["ion_formula"],
+                        score=r["ion_score"], ppm=ppm)
             continue
         pid = r["sample_peak_id"]
         try:
@@ -1444,7 +1454,7 @@ def _family_ok(formula: str, ranges: dict[str, tuple[int, int]]) -> bool:
     return True
 
 
-def _context_filter(formulas, context) -> list[str]:
+def _context_filter(formulas, context, rejected: dict | None = None) -> list[str]:
     """Context plausibility gate for the generic passes. ``context`` is the run's
     ContextProfile (its run-level switches: the NOx-skeleton reading) or a name.
 
@@ -1455,12 +1465,17 @@ def _context_filter(formulas, context) -> list[str]:
     through the curated pass-0 known-species list, which does not pass through here.
     Without that, the SERIES passes extrapolate off pass-0 anchors and invent them:
     the first iodide batch produced 8 covalent-organoiodine neutrals (CHIO2,
-    C2H3IO2, INO4, ...), each really an [acid-H+I2]- reagent cluster."""
+    C2H3IO2, INO4, ...), each really an [acid-H+I2]- reagent cluster.
+
+    ``rejected`` (a dict), when given, collects every refused formula with the
+    filter's reason -- what the passes note as blocked readings (blocked.py)."""
     out = []
     for f in formulas:
-        keep, _ = X.filter_by_context(f, context)
+        keep, why = X.filter_by_context(f, context)
         if keep:
             out.append(f)
+        elif rejected is not None:
+            rejected[f] = why
     return out
 
 
@@ -1539,7 +1554,15 @@ def run_pass1(
     # CHO-before-CHON preference, so no need for two separate sub-passes.
     ranges = build_ranges(profile, pre, include_N=True)
     formulas = _enumerate(client, mzs, mech_ids, ranges, cfg, adducts)
-    formulas = set(_context_filter(formulas, profile))
+    rejected = {} if BL.active() else None
+    kept = set(_context_filter(formulas, profile, rejected))
+    if rejected is not None:
+        # the exits of the grid: a target it gave no candidate (the box), and the
+        # candidates the context filter refused, on the targets they reach
+        gadducts = [a for a in adducts if a not in ABSTRACTION_ADDUCTS]
+        BL.note_grid(tgt, formulas, gadducts, cfg.search_ppm, f"{ranges_to_string(ranges)}, integer DBE")
+        BL.note_context(tgt, rejected, gadducts, cfg.search_ppm)
+    formulas = kept
     log(f"[pass1] {len(formulas)} context-plausible CHO/CHON candidate formulas")
     scored = IO.score_candidates(
         client, sample_id, sorted(formulas), mechanism_ids=cfg.mechanism_ids
@@ -1577,6 +1600,7 @@ def run_pass2(
         units = units + ("CF2",)
     total = {"committed": 0, "locked": 0, "iso_attached": 0}
     tried: set[str] = set()
+    noted: set[str] = set()      # context-refused proposals already noted (blocked.py)
     # Iterative GKA: each round, confirmed members (incl. last round's) act as
     # anchors, so homologous series are walked outward step by step.
     for it in range(cfg.series_max_iter):
@@ -1592,7 +1616,11 @@ def run_pass2(
                 mz, anchors, adducts, units=units, ppm=cfg.series_ppm, max_steps=1
             ):
                 proposals.add(p.neutral_formula)
-        proposals = set(_context_filter(proposals, profile)) - anchors - tried
+        rejected = {} if BL.active() else None
+        proposals = set(_context_filter(proposals, profile, rejected)) - anchors - tried
+        if rejected:
+            BL.note_context(tgt, {f: w for f, w in rejected.items() if f not in noted}, adducts, cfg.series_ppm)
+            noted |= set(rejected)
         if not proposals:
             log(f"[pass2.{it}] no new proposals; stopping")
             break
@@ -1849,7 +1877,10 @@ def run_pass3(
             if fam_key in fam_members:
                 formulas = {f for f in formulas if _family_ok(f, ranges)}
             else:
-                formulas = set(_context_filter(formulas, profile))
+                rejected = {} if BL.active() else None
+                formulas = set(_context_filter(formulas, profile, rejected))
+                # noted on the run's own (scored) channels only
+                BL.note_context(tgt, rejected, [a for a in fam_adducts if a in adducts], cfg.search_ppm)
             if fam_key in ("bromo_organic", "chloro_organic"):
                 # drop covalent-X aliases of anchor.HX clusters: if stripping
                 # one HX from X yields an existing anchor, the cluster reading

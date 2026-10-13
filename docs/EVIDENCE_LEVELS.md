@@ -195,6 +195,8 @@ side channel would open ends
 | 5a | `competitors left: <first six>` (+ ` (+<n> more)`); the lowconf ceiling (§4): `engine confidence Low/Suspect in every file: not established (5a ceiling; a file at Good or High lifts it), not refuted` |
 | 5b | `refuted: <reasons>`, or `nothing could be enumerated or tested` |
 | reagent | `reagent ion / reagent cluster (not levelled)` |
+| no level: no file calibrated | a pooled source none of whose files is calibrated: `no file of this source calibrated (needs ≥ 20 isotope-backed core rows)`; an uncalibrated file levelled alone (§10.1): `the file is not calibrated (needs ≥ 20 isotope-backed core rows)` -- the 20 is the tier engine's `CAL_MIN_N` |
+| no level: batch-level re-read | a merged row no pooled pair holds (§10.2): `batch-level re-read: the re-read pair is not levelled` |
 
 ### 2.5 `context_source`
 
@@ -741,7 +743,8 @@ the run's resolved gate (else the noise edge).
   profile) gets no level: evidence `no level · the run's reagent profile is
   unknown ...`.
 - An uncalibrated file levelled alone has no window (no run sigma to borrow):
-  no level, evidence `no level · the file is uncalibrated ...`, claim
+  no level, evidence `no level · the file is uncalibrated ...`, would_lift
+  `the file is not calibrated (needs ≥ 20 isotope-backed core rows)`, claim
   tentative.
 - The stage summary is `{levels, claims, n_levelled, n_pairs, instrument}`;
   the run's log line and `peaky assign` print the claim tally.
@@ -758,13 +761,16 @@ protected neutrals, the per-file gates and calibrations, the batch checks and
 the `--corroborate` partners (§10.3). `evidence.stamp_merged` joins the result
 onto the merged ledger by `(neutral_formula, adduct)` (one-to-one); a merged
 row no pooled pair holds (a batch-level re-read) gets no level, claim
-tentative and the evidence `no pooled pair: a batch-level re-read`. The
+tentative, the evidence `no pooled pair: a batch-level re-read` and the
+would_lift `batch-level re-read: the re-read pair is not levelled`. The
 per-file ledgers keep their own per-file levels (§10.1), so a merged row can
 read 4a where its per-file rows read 4b, and the other way round. A batch
 none of whose Orbitrap-class files is calibrated (a one-file batch of an
 uncalibrated file included) has no run window: every pooled pair gets no
-level, claim tentative and the evidence `no level · no file of the source is
-calibrated ...`; one calibrated file is enough to lend the others its sigma.
+level, claim tentative, the evidence `no level · no file of the source is
+calibrated ...` and the would_lift `no file of this source calibrated (needs ≥
+20 isotope-backed core rows)`; one calibrated file is enough to lend the others
+its sigma.
 
 `batch_summary.json` records:
 

@@ -8,6 +8,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Every unexplained row says why: `blocked_reading` / `blocked_by` on the per-file ledgers,
+  `tables/unexplained_blocked.csv` on a batch, and a `would_lift` on every row with no level.**
+  Every exit between enumeration and commit used to drop its candidate without a trace -- the
+  context filter discarded its reason, `commit_winners` skipped a sub-threshold winner with its
+  arbitration frame, the labelled rescue's gates and the pass-0 ppm gate only logged, and a
+  peak the grid box could not reach had no candidate at all -- so a bright line could sit as a
+  bare 'unexplained' row (on one field campaign's 15N-nitrate and uronium batches, 140 missed
+  truth lines at up to 80 kcps), and only an offline replay of every gate said why. The new
+  `assignment/blocked.py` keeps those exits during a run (the context filter of passes 1-4, the
+  commit gates of passes 1, 2, 3 and 5, pass 4's acceptance rule, the pass-0 mass gate and every
+  refused known-species claim, the labelled rescue's gates, every clear and the isotope lines it
+  releases, the pass-1 grid box, admission) and stamps two columns at the end of the run on every
+  unexplained row: the best reading a gate stopped (`<neutral> <adduct> (<ion>), score <s>, ppm
+  <+p>`; context-blocked readings are scored once at the stamp, local scorer only) and the gate
+  (`context:O/C 1.60>1.50`, `score<min_raw 0.62<0.70 (pass 1)`, `labeled:sibling`, `pass0:ppm
+  3.0>2.0`, `cleared:<reason>`, `no candidate in box (...)`, `not admitted (...)`). A batch
+  pools them per m/z cluster (file count, heights, the most frequent reading, gate counts). A
+  pair with no level now says what would lift it: `no file of this source calibrated (needs ≥ 20
+  isotope-backed core rows)` (and per file `the file is not calibrated ...`) and `batch-level
+  re-read: the re-read pair is not levelled`. Diagnostics only: no assignment, tier, level,
+  claim or other column moves (an offline run with the recorder off is byte-identical minus the
+  two columns); only `would_lift` on those no-level rows changes.
+
 - **Orbitrap isotope lines are read by peak area, against the file's own minor-line response
   (`PassConfig.iso_response`, `--iso-response {auto,area,off}` on assign / batch / pool).** An
   Orbitrap scan keeps a line only where it clears that scan's detection floor, and the whole-file

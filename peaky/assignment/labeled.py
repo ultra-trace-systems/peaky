@@ -16,6 +16,12 @@ reading against the real spectrum. A confident, chemically-plausible ¹⁵N read
 replaces the fit (or fills the residual). j ∈ 1..`label_max` (2 = mono/di-nitrate).
 
 Gated entirely on `profile.label_isotope`; a no-op for every unlabelled profile.
+
+Every gate that refuses a reading on an unexplained target notes it as the
+peak's blocked reading (blocked.py; a no-op outside a run): `labeled:context:`
+(the context windows on the folded formula), `labeled:score`, `labeled:off-cal`,
+`labeled:O<3x15N`, `labeled:O/C`, `labeled:sibling` (no matched non-M0 line),
+`labeled:degenerate`, `labeled:locked`.
 """
 from __future__ import annotations
 
@@ -24,9 +30,10 @@ import pandas as pd
 from peaky.chem import chemistry as C
 from peaky.chem import contexts as X
 from peaky.io import io_mascope as IO
+from peaky.assignment import blocked as BL
 from peaky.assignment import ledger as L
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"   # every refusing gate notes the blocked reading (blocked.py)
 
 DELTA_15N = C.M["^N"] - C.M["N"]        # 0.99703 Da
 # CHON(S) box for the labelled re-enumeration (organonitrate products); wider O
@@ -85,11 +92,13 @@ def rescue_labeled(client, sample_id, ledger, context_profile, cfg, *,
     # per-target: enumerate 15N candidate neutrals; union for ONE batched score.
     per: dict = {}          # peak_id -> {'mz','is_un','cur_score','cands':set}
     allf: set = set()
+    recording = BL.active()
     for i in targets:
         mz = ledger.at[i, "mz"]
         if pd.isna(mz):
             continue
         mz = float(mz)
+        note_ctx = recording and bool(is_un.get(i, False))
         cands: set = set()
         for a in adducts:
             if a not in C.ADDUCT_SHIFTS:
@@ -108,7 +117,11 @@ def rescue_labeled(client, sample_id, ledger, context_profile, cfg, *,
                         continue
                     if not C.dbe_ok(v)[0] or not C.oxygen_ok(v)[0]:
                         continue
-                    if not X.filter_by_profile(C.format_formula(C.fold_isotopes(v)), context_profile)[0]:
+                    ok_ctx, why_ctx = X.filter_by_profile(C.format_formula(C.fold_isotopes(v)), context_profile)
+                    if not ok_ctx:
+                        if note_ctx:
+                            BL.note_at(ledger.at[i, "peak_id"], "labeled:context:" + BL.compact_reason(why_ctx),
+                                       mz, neutral=C.format_formula(v), adduct=a, to_score=True)
                         continue
                     cands.add(C.format_formula(v))
         if cands:
@@ -150,11 +163,28 @@ def rescue_labeled(client, sample_id, ledger, context_profile, cfg, *,
             return abs(float(ppm)) <= 1.0
         return abs((float(ppm) - cal_mu) / cal_sigma) <= Z_TAIL
 
+    def _off_cal_text(ppm) -> str:
+        if ppm is None or pd.isna(ppm):
+            return "labeled:off-cal (no ppm)"
+        if cal_mu is None:
+            return f"labeled:off-cal |ppm|={abs(float(ppm)):.2f}>1.00"
+        return f"labeled:off-cal z={abs((float(ppm) - cal_mu) / cal_sigma):.1f}>{Z_TAIL:.1f}"
+
+    def _note(i, cr, gate):
+        """A refused reading of an unexplained target, as its blocked reading."""
+        if recording and per[i]["is_un"]:
+            BL.note(ledger.at[i, "peak_id"], gate, neutral=cr["compound_formula"], adduct=_adduct_of(cr, adducts),
+                    ion=cr.get("ion_formula"), score=cr["ion_score"], ppm=cr.get("ppm_error"))
+
     n_res = n_re = 0
     for i, info in per.items():
         mz = info["mz"]
-        sub = fr[(fr["sample_peak_mz"] - mz).abs() < mz * 2.0 * 1e-6]
-        sub = sub[sub["compound_formula"].isin(info["cands"]) & (sub["ion_score"] >= tau)]
+        near = fr[(fr["sample_peak_mz"] - mz).abs() < mz * 2.0 * 1e-6]
+        near = near[near["compound_formula"].isin(info["cands"])]
+        sub = near[near["ion_score"] >= tau]
+        if recording and info["is_un"]:
+            for _, cr in near[near["is_base"] & (near["ion_score"] < tau)].iterrows():
+                _note(i, cr, f"labeled:score {float(cr['ion_score']):.2f}<{tau:.2f}")
         if sub.empty:
             continue
         # discipline: on-calibration mass + organonitrate plausibility + isotope
@@ -162,20 +192,27 @@ def rescue_labeled(client, sample_id, ledger, context_profile, cfg, *,
         keep_idx = []
         for j, cr in sub[sub["is_base"]].iterrows():
             if not _on_cal(cr.get("ppm_error")):        # off instrument accuracy -> coincidence
+                _note(i, cr, _off_cal_text(cr.get("ppm_error")))
                 continue
             v = C.parse_formula(str(cr["compound_formula"]))
             n15 = v.get(label, 0)
             if v.get("O", 0) < 3 * n15:                 # each covalent nitrate carries >=3 O
+                _note(i, cr, "labeled:O<3x15N")
                 continue
             if C.fold_isotopes(v).get("O", 0) / max(v.get("C", 1), 1) > 1.3:  # O-monster
+                _note(i, cr, f"labeled:O/C {C.fold_isotopes(v).get('O', 0) / max(v.get('C', 1), 1):.2f}>1.30")
                 continue
             if int(corrob.get((cr["compound_formula"], cr["mechanism_id"]), 0)) < 1:
+                _note(i, cr, "labeled:sibling")
                 continue                                 # no matched isotopologue -> mass coincidence
             keep_idx.append((j, float(cr["ion_score"])))
         if not keep_idx:
             continue
         # mass-degeneracy: too many distinct plausible 15N readings -> not identifiable
         if len({sub.at[j, "compound_formula"] for j, _ in keep_idx}) > 2:
+            n_deg = len({sub.at[j, "compound_formula"] for j, _ in keep_idx})
+            for j, _ in keep_idx:
+                _note(i, sub.loc[j], f"labeled:degenerate ({n_deg} readings)")
             continue
         j_best = max(keep_idx, key=lambda t: t[1])[0]
         r = sub.loc[j_best]
@@ -190,6 +227,7 @@ def rescue_labeled(client, sample_id, ledger, context_profile, cfg, *,
         neutral = str(r["compound_formula"])
         adduct = _adduct_of(r, adducts)
         if ledger.at[i, "locked"]:
+            _note(i, r, "labeled:locked")
             continue
         note = (f"{label}-labelled product re-read: covalent {label} from the "
                 f"labelled reagent (organonitrate); light-isotope grid was "

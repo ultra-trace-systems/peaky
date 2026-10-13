@@ -8,6 +8,7 @@ import pandas as pd
 
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
+from peaky.assignment import blocked as BL
 from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
 from peaky.assignment import series_gka as G
@@ -677,7 +678,9 @@ def commit_winners(
 ) -> dict:
     """Commit arbitration winners + their isotope children into the ledger.
     Skips peaks that are locked or already own a better assignment. Returns a
-    summary dict."""
+    summary dict. A winner a gate refuses (the score floor, the calibrated mass
+    gate, the minor-channel corroboration, a Reject confidence) is noted as the
+    peak's blocked reading (blocked.note_winner; a no-op outside a run)."""
     win = arb.get("winners", pd.DataFrame())
     kids = arb.get("iso_children", pd.DataFrame())
     if len(win):
@@ -694,11 +697,14 @@ def commit_winners(
         if only_peaks is not None and pid not in only_peaks:
             continue  # evidence-scoped pass: only its own member peaks
         if w["raw_score"] is None or w["raw_score"] < min_raw_score:
+            if w["raw_score"] is not None and BL.active():
+                BL.note_winner(w, f"score<min_raw {w['raw_score']:.2f}<{min_raw_score:.2f} (pass {pass_no})")
             continue
         # A match with no mass error at all carries no mass evidence -- the 9
         # score-only bromides of v13 came through here. Never commit.
         if w["ppm_error"] is None or pd.isna(w["ppm_error"]):
             rejected["nan_ppm"] += 1
+            BL.note_winner(w, f"no ppm (pass {pass_no})")
             continue
         # Calibrated mass gate: judge the ppm error against the instrument's
         # real accuracy, not a fixed window. Pattern evidence (a Mascope-
@@ -709,6 +715,8 @@ def commit_winners(
             pattern = (w["n_iso"] or 0) >= 1 or series_like
             if z > cfg.cal_z_pattern or (z > cfg.cal_z_accept and not pattern):
                 rejected["mass_gate"] += 1
+                BL.note_winner(w, f"mass-gate z={z:.1f}>{cfg.cal_z_pattern if pattern else cfg.cal_z_accept:.1f}"
+                                  + ("" if pattern else " without pattern") + f" (pass {pass_no})")
                 continue
         # Minor-channel corroboration gate: a CO3-/O2-/M-. winner must be Good+
         # on raw score, or come from series evidence, or have its neutral
@@ -736,6 +744,7 @@ def commit_winners(
             ]
             if len(others) == 0:
                 rejected["minor_channel"] += 1
+                BL.note_winner(w, f"minor channel uncorroborated (pass {pass_no})")
                 continue
         # Reagent-halogen decomposition policy: covalent X(Br)[M-H]- and
         # Y.Br- / Y.HBr.Br- produce the IDENTICAL ion, so no spectral evidence
@@ -768,6 +777,7 @@ def commit_winners(
             mz=w.get("sample_peak_mz"),
         )
         if conf == "Reject":
+            BL.note_winner(w, f"confidence Reject {w['raw_score']:.2f}<{cfg.tau_suspect:.2f} (pass {pass_no})")
             continue
         commentary = _commentary(w, pass_no, method)
         try:
