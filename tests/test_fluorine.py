@@ -418,6 +418,28 @@ def test_the_budget_keeps_only_a_full_ladder_not_a_lifted_one(case, committed, l
     assert out["budget_demoted"] == demoted, case
 
 
+def test_a_full_ladder_stands_for_the_cf2_step_beside_an_own_line_chlorine():
+    """The element budget's own-line keep (an over-budget Cl shows its 37Cl line)
+    admits the fluorine beside it on a committed CF2 step -- or on a full CF2
+    ladder, which stands for that step in this demote. On the uronium budget (no
+    F, no Cl) a ClF7 row whose +-CF2 neighbours are only picked lines, with its
+    37Cl line in place: kept with its full ladder; a lead with the line gone, or
+    with the ladder only lifted (one committed member)."""
+    cl = {"C5H4ClF5O2": 1000.0, "C6H4ClF7O2": 800.0, "C7H4ClF9O2": 600.0, "C8H4ClF11O2": 400.0,
+          "C9H4ClF13O2": 300.0}
+    row = "C6H4ClF7O2"
+    line = [("c37", _mz(row) + 1.99705, 0.3196 * 800.0)]
+    for committed, extra, kept in (({row, "C8H4ClF11O2", "C9H4ClF13O2"}, line, True),
+                                   ({row, "C8H4ClF11O2", "C9H4ClF13O2"}, [], False),
+                                   ({row}, line, False)):
+        led = L.ensure_flags(_ledger(cl, committed, extra=extra))
+        lad = FL.verdicts(led, cfg=_cfg())[row]
+        assert lad.lift and lad.full == (len(committed) == 3)
+        out = PL.demote_off_budget(led, context="uronium", log=lambda *a: None, cfg=_cfg())
+        assert bool(_row(led, row)["tentative_lead"]) != kept, (committed, extra)
+        assert (out.get("budget_iso_kept", 0) >= 1) == kept
+
+
 # =========================================================================== the F cap
 def test_the_fluorinated_family_reaches_f25_and_the_space_follows():
     add = X.CONTAMINANT_FAMILIES["fluorinated"]["add"]
