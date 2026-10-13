@@ -1289,9 +1289,11 @@ def record_refusal(ledger: pd.DataFrame, pid, *, reading: str, route: str, why: 
 # ---------------------------------------------------------------------------
 # the element's OWN line, seen: a confirmation, never a refutation
 # ---------------------------------------------------------------------------
-# The tests above ask whether a heteroatom count is CONTRADICTED. Three places
-# need the other half -- a heteroatom the run's budget or grid does not admit,
-# admitted on the one evidence an isotope element can give:
+# `element_evidence` asks whether a heteroatom count is CONTRADICTED, and the
+# commit contract above whether a reading's own line is ABSENT where the file
+# would show it. Three places need the other half -- a heteroatom the run's
+# budget or grid does not admit, admitted on the one evidence an isotope
+# element can give:
 #
 #   * the element-budget demote (`plausibility.demote_off_budget`): a commit
 #     outside the budget is a tentative lead unless its own 37Cl / 81Br / 34S
@@ -1321,6 +1323,13 @@ def record_refusal(ledger: pd.DataFrame, pid, *, reading: str, route: str, why: 
 # chlorinated certificates: 95 % within 0.4 ppm). It is an Orbitrap-class
 # window (`own_line_window_ppm`): on a TOF the lines scatter by several ppm and
 # an M+2 cluster is one line, so nothing is confirmed there.
+#
+# A gated family's winner also commits through the commit contract
+# (`own_line_verdict`, at `commit_winners`), which reads the same line at the
+# tier's twin bar (>= TWIN_MIN_FRAC of the prediction where it is predicted at
+# >= TWIN_REFUTE_X_FLOOR x the floor): a line both tests see is the family's
+# evidence, so a 0.5-0.6x line there passes the gate and is refused at the
+# commit.
 #
 # Not `element_evidence`'s 'confirmed'. That predicate answers whether a
 # widened search's count is CONTRADICTED (`plausibility.gate_element_evidence`
