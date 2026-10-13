@@ -340,3 +340,20 @@ def test_a_row_with_no_re_read_note_stays_unlevelled():
                            tier_reason="something else")])
     r = EV.stamp_merged(m, _pairs()).iloc[0]
     assert r["evidence"] == EV.NO_POOLED_PAIR_TEXT and pd.isna(r["evidence_level"])
+
+
+def test_the_split_verdict_is_judged_in_the_ions_calibration(monkeypatch):
+    """The private split-aware call reads the calibration the ion's verdict read:
+    a lent (batch-pooled) window or none -- never the file's own core again."""
+    led = _isobar_ledger()
+    lent = T._Cal(0.2, 0.15, source=T.CAL_SOURCE_POOLED)
+    want = {c: T.compute_tiers(led, cal=c).set_index("peak_id").at["X", "tier_reason"]
+            for c in (None, lent)}
+
+    def _no_own_core(*a, **k):
+        raise AssertionError("an explicit cal must not be re-derived from the file's own core")
+
+    monkeypatch.setattr(T, "_calibrate", _no_own_core)
+    for c in (None, lent):
+        t = T.compute_tiers(led, cal=c).set_index("peak_id")
+        assert t.at["X", "tier_reason"] == want[c]

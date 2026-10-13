@@ -1299,7 +1299,10 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
         # tier never takes it. A row another rule holds the same way keeps its
         # reason word for word; a fixed count keeps its wording where both read
         # Assigned; otherwise the ion's reason gains the note.
-        split = compute_tiers(ledger, cfg=cfg, profile=profile,
+        # the same calibration as the ion's verdict (a lent pooled window, or
+        # none): a split verdict judged in another window would differ for a
+        # reason that is not the split
+        split = compute_tiers(ledger, cfg=cfg, profile=profile, cal=cal,
                               _split_rows=set(isobars)).set_index("peak_id")
         for k in out.index[out["peak_id"].isin(isobars)]:
             pid = out.at[k, "peak_id"]
