@@ -3,6 +3,7 @@ gate. Decoy control: recurrent-weak bins are admitted by occurrence, a cloud of
 transient noise bins is not, and mass-shifted decoys admit ~nothing; with
 occurrence_min=0 (or no batch context) the gate is exactly the height gate.
 Run: python3 tests/test_admission.py"""
+import re
 import sys
 from pathlib import Path
 
@@ -484,8 +485,11 @@ _via_helper = {
 check("five pass functions share directors._target_peaks (pass-1/2/3 + both pass-3 cluster resolvers)",
       _via_helper == {"run_pass1", "run_pass2", "run_pass3",
                       "_resolve_hx_clusters", "_resolve_acid_i2_clusters"}, _via_helper)
+# a call of admission.admissible (bare or qualified), not another name ending in it
+# (fluorine.alias_admissible)
+_call = re.compile(r"(?<![\w])admissible\(")
 _direct = sorted(f.relative_to(_PKG).as_posix() for f in _PKG.rglob("*.py")
-                 if f.name != "admission.py" and "admissible(" in f.read_text())
+                 if f.name != "admission.py" and _call.search(f.read_text()))
 check("the direct admissible() callers are exactly ladders / residual / siloxane / directors",
       _direct == ["ladders.py", "passes/directors.py", "residual.py", "siloxane.py"], _direct)
 # ...and the helper really passes a persistence-only peak through, so pass-2's
