@@ -61,7 +61,9 @@ from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
 from peaky.assignment import satellites as SAT
 
-__version__ = "0.10.0"  # + the NOx-skeleton tier cap (a skeleton-only reading is Candidate); 0.9.1 the twin test's exact-offset window on a calibrated Orbitrap-class run
+__version__ = "0.11.0"  # + the reagent-N isobar is an open split, never a tier cap (the tier reads the ion; REAGENT_N_OPEN_MARK);
+                       #   an isobar ion that is N-rich in every reading and has nothing but its mass stays Candidate (REAGENT_N_RICH_MARK)
+                       # 0.10.0: the NOx-skeleton tier cap (a skeleton-only reading is Candidate); 0.9.1 the twin test's exact-offset window on a calibrated Orbitrap-class run
                        # 0.9.0: source-solvent cluster cap (cluster:solvent -> Candidate)
                        # (history) mass-dependent z via masscal (range clamp; floor
                        # owned by PassConfig) + persistent-weak cap
@@ -151,6 +153,56 @@ BACKGROUND_CHANNELS = ("[M+CO3]-", "[M+HBr+CO3]-", "[M+O2]-", "[M]-.")
 # pair from EITHER side: the N-free neutral on the donor adduct, and the
 # protonated N-richer neutral whose same-ion alias sits on a donor adduct.
 N_DONOR_ADDUCTS = ("[M+NH4]+", "[M+(CH4N2O)H]+")
+#: The tier answers "is the ion right?"; a doubt about the neutral / adduct split
+#: or the ionization process is the evidence level's (its split step keeps the
+#: pair open) and never moves the tier. The two readings of a reagent-N pair are
+#: ONE ion, so the isobar no longer caps the tier, and the ion keeps its own
+#: corroboration (its isotope lines, a second channel of the neutral). The row
+#: says the split is open with this mark when the nitrogen count is not fixed;
+#: the merge vote's label stage reads the mark (`split_open`), so the label of a
+#: same-ion pair is still decided by the files that could fix the nitrogen count.
+#: Until 0.10 the isobar capped such a row at Candidate ("reagent-N isobar
+#: unresolved"): on a uronium Orbitrap field campaign it held about a quarter of
+#: the merged Candidates while the ion was established in most files.
+REAGENT_N_OPEN_MARK = "reagent-N split open"
+#: The ion's own bar the isobar rows still meet (an ion-level rule, independent of
+#: the split): where EVERY stored reading of the ion carries at least this many
+#: analyte nitrogens (`_poorest_n`: the winner's neutral and each same-ion
+#: alternative's) and the ion has no isotope line, second channel or series anchor,
+#: its composition is a mass-only claim in the nitrogen-rich formula space, and the
+#: row is Candidate (REAGENT_N_RICH_MARK) -- the bar the speculative-residual demote
+#: sets a residual fit (N >= 3 with no isotope corroboration). Measured on a uronium
+#: Orbitrap file whose mass axis was shifted by +9 and by -9 ppm (decoy arms, where
+#: every Assigned reading is wrong): of the rows the isobar no longer capped, those
+#: with an N-rich ion were 16 of the 26 on the shifted arms and 1 of the 161 on the
+#: unshifted file; on a uronium field campaign they were 133 per-file rows, none on a
+#: grade-A/B line of its synthetic truth set and 13 on a line of another ion.
+REAGENT_N_RICH_MIN = 3
+REAGENT_N_RICH_MARK = "nitrogen-rich ion on mass alone"
+
+
+def reagent_n_note(formula, adduct, flag, *, fixed: bool, how: str = "") -> str:
+    """The note a reagent-N isobar row carries (`flag` = _reagent_n_isobar's
+    tuple): the split open (`REAGENT_N_OPEN_MARK`, naming the same-ion alias and
+    what would fix the nitrogen count) or, `fixed`, how the count was fixed."""
+    if fixed:
+        return f"reagent-N isobar: nitrogen count fixed by {how}"
+    if flag[0] == "donor":
+        return (f"{REAGENT_N_OPEN_MARK}: {formula} {adduct} is the same ion as {flag[1]} {flag[2]}, a "
+                "protonated N-heavier neutral, and no N-free channel / joint NH4+urea / series anchor "
+                "fixes the nitrogen count (isotopes cannot — identical ion); a doubt about the split, "
+                "not the ion: the tier reads the ion, the split is the evidence level's to decide")
+    return (f"{REAGENT_N_OPEN_MARK}: {formula} {adduct} is the same ion as {flag[1]} {flag[2]} (the "
+            "N-poorer neutral on an N-donating reagent adduct), and no second channel / series anchor "
+            "fixes the nitrogen count (isotopes cannot — identical ion); a doubt about the split, not "
+            "the ion: the tier reads the ion, the split is the evidence level's to decide")
+
+
+def split_open(tier_reason) -> bool:
+    """Whether a row's tier_reason says its reagent-N split is open (the
+    nitrogen count not fixed in that file: `REAGENT_N_OPEN_MARK`)."""
+    return REAGENT_N_OPEN_MARK in _txt(tier_reason)
+
 
 # Honest cross-family mass degeneracy (degeneracy.measure_degeneracy, stamped as
 # degeneracy_density / degeneracy_note). The per-pass candidate_density only
@@ -557,6 +609,20 @@ def _reagent_n_isobar(row, alts_all: list[dict]):
     return None
 
 
+def _poorest_n(row, alts_all: list[dict]) -> int:
+    """The fewest analyte nitrogens any stored reading of the row's ion carries:
+    the winner's neutral and every same-ion alternative's (REAGENT_N_RICH_MIN
+    asks whether even the N-poorest reading is nitrogen-rich)."""
+    n = C.parse_formula(_txt(row.get("neutral_formula"))).get("N", 0)
+    ion0 = _ion_counts(row.get("neutral_formula"), row.get("adduct"))
+    if ion0 is None:
+        return n
+    for a in alts_all:
+        if _ion_counts(a.get("formula"), a.get("adduct")) == ion0:
+            n = min(n, C.parse_formula(_txt(a.get("formula"))).get("N", 0))
+    return n
+
+
 def _margin_density_tie(row, alts: list[dict], n_aliased: int,
                         n_stored: int) -> tuple[float | None, int, bool, bool]:
     """(margin to best real alternative, candidate density, capped?, tied?).
@@ -775,7 +841,8 @@ def _tof_floor_edge(cfg) -> tuple[float | None, str]:
 OWN_CAL = object()
 
 
-def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL) -> pd.DataFrame:
+def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
+                  _split_rows=None) -> pd.DataFrame:
     """One row per M0 peak: [peak_id, tier, tier_reason, candidate_density,
     density_capped]. Pure; does not mutate the ledger. `cfg` (a PassConfig)
     supplies cal_abs_floor_mda for the mass-error gate and tau_suspect for the
@@ -785,7 +852,15 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL) 
     skeleton-only row left as it was says so (NOX_SKELETON_NOTE). `cal`: the
     mass calibration the z-tail gate reads -- by default the ledger's own
     (`_calibrate`); None = uncalibrated; a _Cal from elsewhere (the batch's
-    pooled core, calpool.py), whose source the reasons name."""
+    pooled core, calpool.py), whose source the reasons name.
+
+
+    A reagent-N isobar row (`_reagent_n_isobar`) is tiered on its ION's
+    corroboration; the rules are run once more, split-aware, on those rows
+    (`_split_rows`: the private second call -- isotopes set aside, only the
+    channels that fix the nitrogen count counted, the isobar capping as it did
+    until 0.10), and where the two verdicts differ the row's tier_reason says
+    the split is open (`reagent_n_note`)."""
     m0 = ledger[ledger["role"] == L.ROLE_M0]
     # the skeleton cap (NOX_SKELETON_CAP_MARK): which rows the NOx-skeleton reading
     # changed, and how ({} when the profile reads no skeletons)
@@ -831,8 +906,11 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL) 
     # the twin test's window: the exact-offset one on an Orbitrap-class run
     twin_ppm = SAT.twin_ppm(cfg)
 
-    rows = []
+    split_aware = _split_rows is not None
+    rows, isobars = [], {}
     for _, r in m0.iterrows():
+        if split_aware and r["peak_id"] not in _split_rows:
+            continue
         formula = _txt(r.get("neutral_formula"))
         counts = C.parse_formula(formula)
         base = base_confidence(r.get("confidence"))
@@ -853,22 +931,37 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL) 
         has_anchor = pd.notna(r.get("anchor_peak_id")) or pd.notna(r.get("series_unit"))
         # reagent-N isobar (positive mode): the winner and a same-ion alias disagree
         # only on the nitrogen count, which isotopes and N-donating channels cannot
-        # settle. Downgrade the corroboration to what actually discriminates: an
-        # N-free sibling channel, the joint NH4+urea pair, or a series anchor.
+        # settle. That doubt is the SPLIT's, not the ion's (REAGENT_N_OPEN_MARK): the
+        # tier reads the ion's own corroboration. Only the split-aware call
+        # downgrades the corroboration to what fixes the nitrogen count: an N-free
+        # sibling channel, the joint NH4+urea pair, or a series anchor.
         reagent_n = _reagent_n_isobar(r, alts_all)
         nfree_sib = nh4_urea = second_chan = False
+        split_cross = cross_channel
         if reagent_n:
             adset = adducts_of.get(formula, set())
-            iso_ev = False                        # same ion => isotopes tell nothing
             if reagent_n[0] == "donor":
                 nfree_sib = any(a not in N_DONOR_ADDUCTS for a in adset)
                 nh4_urea = {"[M+NH4]+", "[M+(CH4N2O)H]+"}.issubset(adset)
-                cross_channel = nfree_sib or nh4_urea  # hollow N-only diversity doesn't count
+                split_cross = nfree_sib or nh4_urea  # hollow N-only diversity doesn't count
             else:
                 # the amine side: the N-poorer alias can present as THIS ion only,
                 # so any second channel of the protonated neutral discriminates
                 second_chan = len(adset) >= 2
-                cross_channel = second_chan
+                split_cross = second_chan
+            if split_aware:
+                iso_ev = False                    # same ion => isotopes tell nothing
+                cross_channel = split_cross
+            else:
+                isobars[r["peak_id"]] = (formula, r.get("adduct"), reagent_n, split_cross or has_anchor, (
+                    "an N-free sibling channel" if nfree_sib
+                    else "the joint [M+NH4]+/[M+urea·H]+ pair (unfakeable by one neutral)" if nh4_urea
+                    else "a second ionization channel of the protonated neutral" if second_chan
+                    else "series-anchor support"))
+        # the isobar caps (and words a fixed count) only in the split-aware call
+        cap_n = reagent_n if split_aware else None
+        # ...and the ion's own bar on such a row: the N-poorest reading's nitrogens
+        n_poor = _poorest_n(r, alts_all) if reagent_n else 0
         corroborated = iso_ev or cross_channel or has_anchor
         degen_density, mass_degenerate = _degeneracy(r)
         # admission provenance: a peak that was eligible for formula search only
@@ -1065,7 +1158,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL) 
                           f"two peaks of this height ratio separate only beyond {_dc:.2f}, so the "
                           "centroid is displaced and the fitted mass is not this ion's own; no "
                           "isotope / cross-channel / series corroboration")
-        elif reagent_n and not corroborated:
+        elif cap_n and not corroborated:
             # positive-mode reagent-N isobar with nothing to fix the nitrogen
             # count: the ion reads equally as an N-free neutral on an N-donating
             # reagent adduct or as the protonated N-heavier neutral, and there is
@@ -1082,6 +1175,15 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL) 
                           "N-poorer neutral on an N-donating reagent adduct), and no "
                           "second channel / series anchor fixes the nitrogen count "
                           "(isotopes cannot — identical ion)")
+        elif reagent_n and not corroborated and n_poor >= REAGENT_N_RICH_MIN:
+            # the ion's own bar where the isobar no longer caps (the split-aware call
+            # never gets here: its cap above takes the row first): every reading of
+            # this ion is nitrogen-rich and nothing but its mass supports it
+            tier = TIER_CANDIDATE
+            reason = (f"{REAGENT_N_RICH_MARK}: every stored reading of this ion carries "
+                      f">= {n_poor} analyte nitrogens and no isotope / cross-channel / series "
+                      "corroboration pins its composition; an N-rich composition on mass "
+                      "alone is speculative (Candidate for want of evidence, not against it)")
         elif tied and not (cross_channel or has_anchor):
             # a spectral eff-score tie cannot be broken by isotopes (they are
             # already in the score) -- only extra-spectral corroboration
@@ -1131,7 +1233,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL) 
                           "isotope / cross-channel / series corroboration to "
                           "break the tie — not identifiable from accurate mass "
                           "alone")
-        elif reagent_n:
+        elif cap_n:
             # resolved reagent-N isobar: nitrogen count IS pinned -- say how, and
             # do NOT claim 'unique in the window' (the same-ion N-heavier reading
             # exists; it is simply ruled out by the discriminating channel).
@@ -1190,8 +1292,28 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL) 
                     _HOP_NOTE if _skel in (_HOP_ANCHOR, _HOP_COMPLETION) else NOX_SKELETON_NOTE)
         rows.append({"peak_id": r["peak_id"], "tier": tier, "tier_reason": reason,
                      "candidate_density": density, "density_capped": capped})
-    return pd.DataFrame(rows, columns=["peak_id", "tier", "tier_reason",
-                                       "candidate_density", "density_capped"])
+    out = pd.DataFrame(rows, columns=["peak_id", "tier", "tier_reason",
+                                      "candidate_density", "density_capped"])
+    if isobars:
+        # the split-aware verdict of the reagent-N rows says what the doubt is; the
+        # tier never takes it. A row another rule holds the same way keeps its
+        # reason word for word; a fixed count keeps its wording where both read
+        # Assigned; otherwise the ion's reason gains the note.
+        split = compute_tiers(ledger, cfg=cfg, profile=profile,
+                              _split_rows=set(isobars)).set_index("peak_id")
+        for k in out.index[out["peak_id"].isin(isobars)]:
+            pid = out.at[k, "peak_id"]
+            s_tier, s_reason = split.at[pid, "tier"], split.at[pid, "tier_reason"]
+            tier, reason = out.at[k, "tier"], out.at[k, "tier_reason"]
+            if (s_tier, s_reason) == (tier, reason):
+                continue
+            if s_tier == tier == TIER_ASSIGNED:
+                out.at[k, "tier_reason"] = s_reason
+            else:
+                formula, adduct, flag, fixed, how = isobars[pid]
+                out.at[k, "tier_reason"] = ((reason + "; ") if reason else "") + reagent_n_note(
+                    formula, adduct, flag, fixed=fixed, how=how)
+    return out
 
 
 # ---------------------------------------------------------------------------

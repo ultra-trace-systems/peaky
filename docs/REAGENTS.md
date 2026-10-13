@@ -266,8 +266,10 @@ on the run's own polarity only. Nothing is opened by polarity.
   (`cleanup.prefer_amine_over_ammonium`, `merge_gates.amine` in
   `batch_summary.json`; SKILL.md *Reagent-aware chemistry*): it stays an
   ammonium adduct when it tracks its own `[M+H]⁺` / urea parent, else it is
-  re-read as the protonated amine at Candidate (a siloxane, a protected
-  identity or a valence-impossible amine keeps it). The evidence scale decides
+  re-read as the protonated amine (a siloxane, a protected identity or a
+  valence-impossible amine keeps it). The re-read is the same ion, so it keeps
+  the tier the merge vote gave the ion; the open split is the evidence level's
+  (a batch-level re-read takes the level of the pooled pair it replaced). The evidence scale decides
   a committed `[M+NH4]⁺` reading by the same gate alone; its NH4 admissibility
   rule (an ammonium reading of Y needs a uronium adduct ion of Y in the run)
   applies to the ammonium decompositions of committed `[M+H]⁺` readings, not
@@ -275,10 +277,11 @@ on the run's own polarity only. Nothing is opened by polarity.
   On a uronium Orbitrap batch 54 of the 78 merged Assigned ammonium readings
   tracked their own parent at r ≥ 0.7. The gate is a batch stage (it needs the
   batch time series); in every file, and so also in a single-sample
-  `peaky assign` run, the reagent-N isobar rule of the tier pass already holds
-  an ammonium reading at Candidate unless the same neutral is also read on
-  `[M+H]⁺` or on the urea adduct, or anchors a series
-  ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md), reagent-N isobar demotion).
+  `peaky assign` run, the reagent-N isobar rule of the tier pass marks an
+  ammonium reading's split open (`reagent-N split open`) unless the same
+  neutral is also read on `[M+H]⁺` or on the urea adduct, or anchors a series;
+  the tier reads the ion and stays with the other rules
+  ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md), reagent-N isobar).
 - **The opt-in.** `--side-channels ADDUCT ...` on `peaky assign`, `batch` and
   `pool` (`PassConfig.side_channels`; `pipeline.run_batch(side_channels=)`)
   opens exactly the channels named instead of the profile's;
@@ -371,9 +374,11 @@ on the run's own polarity only. Nothing is opened by polarity.
    - **CHO-via-N-cluster is isobaric with protonated CHON.** A CHO neutral seen as
      `[M+NH4]⁺` or `[M+(CH4N2O)H]⁺` yields the *same* ion formula as a CHON neutral
      seen as `[M+H]⁺` (e.g. `C12H14O4[M+NH4]⁺` and `C12H17NO4[M+H]⁺` are both
-     `C12H18NO4⁺`). Mass and isotopes cannot separate them — the tier layer demotes
-     such a commit to Candidate unless an extra-spectral discriminator corroborates
-     it. See the reagent-N isobar gate in
+     `C12H18NO4⁺`). Mass and isotopes cannot separate them — the split stays open
+     (the row says `reagent-N split open`; the evidence level decides it)
+     unless an extra-spectral discriminator fixes the nitrogen count; the tier
+     reads the ion (and holds an ion that is nitrogen-rich in every reading on
+     mass alone at Candidate). See the reagent-N isobar in
      [`ASSIGNMENT_DETAIL.md`](ASSIGNMENT_DETAIL.md) (tiers).
    - **A pure hydrocarbon "seen via an N-cluster" is re-read as an N-heterocycle.**
      A hydrocarbon has no site to bind `NH4⁺`/uronium and would show `[M+H]⁺`, so an

@@ -22,9 +22,11 @@ CLASS wins -- each ion takes the best per-file vote class of its readings
 (neutral backed > formula confirmed > unconfirmed; `evidence.vote_classes`,
 private to the vote and never a user-facing level) -- and among ions of one class the ion carried by the
 most files (tier and ion_score break ties); among that ion's labels -- the same
-ion read as C13H14O4 [M+NH4]+ or as C13H17NO4 [M+H]+ -- the one Assigned in the
-most files wins, because on such a pair Assigned means a discriminating channel
-was present and Candidate means the file had nothing to decide with. The losing
+ion read as C13H14O4 [M+NH4]+ or as C13H17NO4 [M+H]+ -- the one the most files
+could fix wins: it ranks by the vote's private tier (VOTE_TIER), which reads a
+file's Assigned reading as Candidate where the file left its reagent-N split open
+(the tier itself answers "is the ion right?", and a reagent-N pair is one ion).
+The merged tier is the best per-file tier of the winning ion. The losing
 readings stay on the merged row (`alternatives`, `n_files_ion`, `n_files_winner`,
 `ion_agree`) as well as in jitter.csv (with each file's own vote class).
 The two positive-mode re-reads that can change a reading -- the hydrocarbon-on-
@@ -64,8 +66,10 @@ from peaky.batch import label_twins as _LT
 from peaky.batch import neutral_pairs as _NP
 from peaky.batch import sampling as SS
 
-__version__ = "0.11.1"  # + tables/unexplained_blocked.csv (why the unexplained lines are unexplained, blocked.py)
-#                        0.11.0: the merged-ledger isotopologue gate and the element-signature
+__version__ = "0.12.0"  # + the vote ranks by `vote_tier` (a file's reagent-N reading with its split open
+                        # is Candidate to the label stage), the merged tier is the winning ion's best per-file tier
+                        # 0.11.1: + tables/unexplained_blocked.csv (why the unexplained lines are unexplained, blocked.py)
+                        # 0.11.0: the merged-ledger isotopologue gate and the element-signature
                         # removal (one curated exempt set, reconciled: 'parent removed';
                         # the per-file ledgers record both decisions -- the gate's lines,
                         # a removed reading released --, the parent's merged row lists
@@ -132,6 +136,15 @@ _M0_COLS = ["mz", "neutral_formula", "adduct", "tier", "ion_score",
 # silicon formula.
 VOTE_CLASS = "vote_class"
 _OWN_VOTE_CLASS = "__own_vote_class"   # a ledger's vote class carried through a merge (trace-first), never written
+# THE TIER THE VOTE RANKS BY (`_m0`, from the file's own tier and tier_reason; never
+# written to a ledger or the merged row): the reading's tier, but Candidate where
+# the file left the reading's reagent-N split open (tiers.split_open: the nitrogen
+# count not fixed). The tier answers "is the ion right?" and a reagent-N pair is one
+# ion, so such a reading is Assigned on its ion's evidence -- while the vote's label
+# stage asks which LABEL of the ion a file could fix, and the best-row pick keeps
+# the row it took before. The merged `tier` is the best per-file TIER of the winning
+# ion (any of its labels). Frames without the column vote on the tier exactly as before.
+VOTE_TIER = "vote_tier"
 
 
 def _evidence_class(level, axes) -> int:
@@ -247,13 +260,16 @@ def _vote(g: pd.DataFrame):
 
     2. WHICH LABEL of that ion -- the same ion read as C13H14O4 [M+NH4]+ or as
        C13H17NO4 [M+H]+ (the reagent-N isobar) -- is decided by corroboration,
-       not by count: the tier engine marks such a reading Assigned only when a
-       discriminating channel was present in that file (an N-free sibling, the
-       joint NH4+urea pair, a series anchor) and Candidate when it had nothing
-       to decide with, so counting Candidate files would be counting silence.
-       The label Assigned in the most files wins; file count and score break
-       ties. On the 15-file uronium run 16 of the 43 same-ion splits had a majority
-       label nobody had corroborated against a minority label some file had."""
+       not by count. The tier no longer says it (it reads the ion, and the pair
+       is one ion), so the stage ranks by the vote's tier (`_r`, VOTE_TIER):
+       Assigned only where the file's reading is Assigned AND its reagent-N
+       split was not left open (an N-free sibling, the joint NH4+urea pair or a
+       series anchor fixed the nitrogen count, or the file saw no same-ion
+       alias), Candidate where the file had nothing to decide with -- counting
+       those files would be counting silence. The label Assigned in the most
+       files wins; file count and score break ties. On the 15-file uronium run
+       16 of the 43 same-ion splits had a majority label nobody had corroborated
+       against a minority label some file had."""
     assigned = g["_r"] >= TIER_RANK[TIER_ASSIGNED]
     # the vote class of every per-file reading (0 everywhere when the frames
     # carry none: a pure `align()` caller without the parent's class)
@@ -272,12 +288,16 @@ def _vote(g: pd.DataFrame):
     # must not outvote the files that read the organonitrate.
     io = (g["ion_only_of"].notna() if "ion_only_of" in g.columns
           else pd.Series(False, index=g.index))
+    # the TIER (not the vote's tier, `_r`): what the losers' description prints
+    tiered = (g["_rt"] if "_rt" in g.columns else g["_r"]) >= TIER_RANK[TIER_ASSIGNED]
     gg = g.assign(_asrc=g["src"].where(assigned),       # the file, when Assigned there
+                  _tsrc=g["src"].where(tiered),
                   _reg=(~io).astype(int),                # 1 = a regular reading in this file
                   _cls=cls)
     lab = (gg.groupby(["_ion", "_nf", "_ad"], sort=True)  # text order = last key
              .agg(n_files=("src", "nunique"),
                   n_assigned=("_asrc", "nunique"),        # FILES at Assigned, not rows
+                  n_tier_assigned=("_tsrc", "nunique"),
                   best_ion=("ion_score", "max"), regular=("_reg", "max"),
                   best_cls=("_cls", "max"))
              .reset_index())
@@ -299,7 +319,7 @@ def _vote(g: pd.DataFrame):
 def _describe(r) -> str:
     """One losing reading for the merged row: 'C15H25N [M+H]+ x1 Candidate 0.97'
     (the best tier and score any file gave it)."""
-    tier = TIER_ASSIGNED if int(r["n_assigned"]) > 0 else "Candidate"
+    tier = TIER_ASSIGNED if int(r.get("n_tier_assigned", r["n_assigned"])) > 0 else "Candidate"
     score = "" if pd.isna(r["best_ion"]) else f" {float(r['best_ion']):.2f}"
     return f"{r['_nf']} {r['_ad']} x{int(r['n_files'])} {tier}{score}"
 
@@ -351,7 +371,7 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
     for src, df in per_file.items():
         if df is None or not len(df):
             continue
-        d = df[[c for c in _M0_COLS if c in df.columns]].dropna(subset=["mz"]).copy()
+        d = df[[c for c in (*_M0_COLS, VOTE_TIER) if c in df.columns]].dropna(subset=["mz"]).copy()
         d["src"] = src
         off = float(offsets.get(src, 0.0) or 0.0)
         d["_mz_adj"] = d["mz"] * (1.0 - off / 1e6)   # offset-corrected for alignment
@@ -371,7 +391,13 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
 
     merged_rows, jitter_rows = [], []
     for cid, g in allm.groupby("cluster"):
-        g = g.assign(_r=g["tier"].map(lambda t: TIER_RANK.get(str(t), 0)),
+        # `_r` = the vote's tier (VOTE_TIER where a file carries it: the label
+        # stage, the ion count's tie-break and the best-row pick read it), `_rt`
+        # = the tier itself (the merged tier and the losers' description)
+        _rt = g["tier"].map(lambda t: TIER_RANK.get(str(t), 0))
+        _vt = (g[VOTE_TIER].where(g[VOTE_TIER].notna(), g["tier"]) if VOTE_TIER in g.columns
+               else g["tier"])
+        g = g.assign(_r=_vt.map(lambda t: TIER_RANK.get(str(t), 0)), _rt=_rt,
                      _nf=g["neutral_formula"].map(_s), _ad=g["adduct"].map(_s))
         g["_ion"] = [_ion_key(a, b) for a, b in zip(g["_nf"], g["_ad"])]
         ions, lab = _vote(g)
@@ -411,10 +437,15 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
         same = lab[lab["_ion"] == win_ion["_ion"]]
         if len(same) > 1 and int(same["n_files"].max()) > int(win["n_files"]):
             big = same.iloc[1:].sort_values("n_files", ascending=False, kind="mergesort").iloc[0]
+            # where a file of this ion left its reagent-N split open, the label stage
+            # counted the files Assigned with the split not left open (VOTE_TIER)
+            gi = g[g["_ion"] == win_ion["_ion"]]
+            how = ("Assigned, nitrogen count not left open, in"
+                   if bool((gi["_r"] != gi["_rt"]).any()) else "Assigned in")
             notes.append(f"same ion {win_ion['_ion']} read two ways: kept {win['_nf']} "
-                         f"{win['_ad']} (Assigned in {int(win['n_assigned'])} of its "
+                         f"{win['_ad']} ({how} {int(win['n_assigned'])} of its "
                          f"{int(win['n_files'])} files) over the {int(big['n_files'])}-file "
-                         f"{big['_nf']} {big['_ad']} (Assigned in {int(big['n_assigned'])})")
+                         f"{big['_nf']} {big['_ad']} ({how} {int(big['n_assigned'])})")
         mz_raw = g["mz"].to_numpy(); mz_adj = g["_mz_adj"].to_numpy()
         def _spread(a):
             return float((a.max() - a.min()) / a.mean() * 1e6) if len(a) > 1 else 0.0
@@ -422,7 +453,13 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
         srcs = sorted(set(g["src"]))
         rec = dict(
             mz=float(g["mz"].mean()), neutral_formula=best["neutral_formula"],
-            adduct=best.get("adduct"), tier=best["tier"],
+            adduct=best.get("adduct"),
+            # the best per-file TIER of the winning ION, whichever label a file read
+            # it with (the tier answers "is the ion right?"): the best row's own
+            # unless the vote's tier set a file's reagent-N reading back, or a file
+            # Assigned the ion under the label the vote did not keep
+            tier=(TIER_ASSIGNED if int(g.loc[g["_ion"] == win_ion["_ion"], "_rt"].max())
+                  >= TIER_RANK[TIER_ASSIGNED] else best["tier"]),
             ion_score=best.get("ion_score"),
             admitted_by=best.get("admitted_by"), occurrence=best.get("occurrence"),
             ion_only_of=best.get("ion_only_of", pd.NA),
@@ -594,11 +631,17 @@ def _recount_roles(st: dict, ledger: pd.DataFrame, gate: dict | None = None, *,
 
 
 def _m0(ledger: pd.DataFrame) -> pd.DataFrame:
-    """Extract the M0 (assigned-compound) rows in the _M0_COLS schema."""
+    """Extract the M0 (assigned-compound) rows in the _M0_COLS schema, plus the
+    vote's private `VOTE_TIER` where the ledger carries tier and tier_reason."""
     role = ledger["role"] if "role" in ledger.columns else None
     m = ledger[role == "M0"] if role is not None else ledger
     cols = [c for c in _M0_COLS if c in m.columns]
-    return m[cols].copy()
+    out = m[cols].copy()
+    if {"tier", "tier_reason"} <= set(m.columns):
+        from peaky.assignment import tiers as _TI
+        out[VOTE_TIER] = [TIER_CANDIDATE if _TI.split_open(why) and _s(t) == TIER_ASSIGNED else t
+                          for t, why in zip(m["tier"], m["tier_reason"])]
+    return out
 
 
 # provenance prefixes whose neutral identity is established independently of the
@@ -2830,7 +2873,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # the stamped time series, the merged ledger (the NH4 rule's ion index), the
     # protected neutrals, the per-file gates and degeneracy calibrations, and the
     # batch checks' vetoes. Stamped on the merged ledger by (neutral, adduct); a
-    # merged row no pooled pair holds (a batch-level re-read) gets no level.
+    # merged row no pooled pair holds (a batch-level re-read) takes the level of the
+    # pooled pair it replaced, the same ion (4b with its split open, or 5a), and
+    # gets no level only where that pair is 5b or absent (evidence.stamp_merged).
     from peaky.assignment.levels import lists as _LS
     rl_context = _LS.reflists_context(reflists_active, rl_record)
     # the run-level switches of the batch's context profile, derived by the very

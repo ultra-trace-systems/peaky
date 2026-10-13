@@ -454,15 +454,21 @@ check("_reagent_n_isobar: negative mode / a different ion / an N-richer alias on
       and T._reagent_n_isobar({"neutral_formula": "C5H9NS", "adduct": "[M+H]+"},
                               [{"formula": "C5H12N2S", "adduct": "[M+H]+"}]) is None)
 _trn = T.compute_tiers(_rn).set_index("peak_id")
-check("amine-side winner with a single channel -> Candidate, the alias named on the row",
-      _trn.at["am", "tier"] == "Candidate"
-      and _trn.at["am", "tier_reason"] == ("reagent-N isobar unresolved: C5H12N2S [M+H]+ is the same "
-                                           "ion as C5H9NS [M+NH4]+ (the N-poorer neutral on an N-donating "
-                                           "reagent adduct), and no second channel / series anchor fixes "
-                                           "the nitrogen count (isotopes cannot — identical ion)"),
+# The tier answers "is the ion right?": both readings of the pair are ONE ion, so the
+# open split is a note (REAGENT_N_OPEN_MARK) and the tier follows the other rules --
+# here Assigned (no rival, nothing else holds it). Until 0.10 both rows were capped.
+check("amine-side winner with a single channel -> Assigned on its ion, the open split named on the row",
+      _trn.at["am", "tier"] == "Assigned"
+      and _trn.at["am", "tier_reason"].endswith(
+          "; reagent-N split open: C5H12N2S [M+H]+ is the same ion as C5H9NS [M+NH4]+ (the N-poorer "
+          "neutral on an N-donating reagent adduct), and no second channel / series anchor fixes the "
+          "nitrogen count (isotopes cannot — identical ion); a doubt about the split, not the ion: the "
+          "tier reads the ion, the split is the evidence level's to decide")
+      and T.split_open(_trn.at["am", "tier_reason"]),
       _trn.at["am", "tier_reason"])
-check("donor-side winner with a single channel -> Candidate, the wording unchanged",
-      _trn.at["dn", "tier"] == "Candidate" and "N-heavier" in _trn.at["dn", "tier_reason"],
+check("donor-side winner with a single channel -> Assigned on its ion, the N-heavier alias named",
+      _trn.at["dn", "tier"] == "Assigned" and "N-heavier" in _trn.at["dn", "tier_reason"]
+      and T.split_open(_trn.at["dn", "tier_reason"]),
       _trn.at["dn", "tier_reason"])
 # a second channel of the protonated neutral fixes the nitrogen count on the amine side
 L.commit_assignment(_rn, "am2", neutral_formula="C5H12N2S", adduct="[M+(CH4N2O)H]+",
@@ -475,6 +481,7 @@ check("amine-side winner with its urea channel too -> Assigned, the row says whi
       and _trn2.at["am", "tier_reason"] == ("reagent-N isobar: nitrogen count fixed by a second "
                                             "ionization channel of the protonated neutral"),
       _trn2.at["am", "tier_reason"])
+check("a fixed nitrogen count is no open split", not T.split_open(_trn2.at["am", "tier_reason"]))
 
 
 # ---- the diagnostic-satellite verdict on every committed Br / Cl / S row -------------

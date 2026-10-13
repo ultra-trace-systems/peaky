@@ -149,7 +149,8 @@ LEAD_BY = "lead_by"
 #: the codes `lead_by` names a lead's setter with: the reference-list dim rescue,
 #: the element-budget demote, the three speculative-residual reasons (N >= 3 with
 #: no isotope, a series gap-fill with no anchors, a sole minor channel), the
-#: uncorroborated radical anion and the reagent-N re-read
+#: uncorroborated radical anion and the reagent-N re-read (a lead until cleanup
+#: 0.7, which keeps its tier and writes no lead; the code stays for older ledgers)
 LEAD_SETTERS = ("reflist_dim", "off_budget", "spec_n3", "spec_gapfill", "spec_minor", "radical_anion",
                 "reagent_n")
 
