@@ -420,6 +420,20 @@ _ASSIGNMENT_FIELDS = {
     "anchor_peak_id": pd.NA, "series_unit": pd.NA,
     "alternatives": pd.NA, "isotopologues": pd.NA,
 }
+#: ... and the tier stage's columns that are not part of the canonical set,
+#: reset only where the ledger carries them (never created here): where the
+#: row's tier calibration came from (tiers.TIER_CALIBRATION)
+_TIER_STAGE_FIELDS = {"tier_calibration": pd.NA}
+
+
+def _reset_assignment(ledger: pd.DataFrame, i) -> None:
+    """Reset row `i`'s assignment fields and flags (clear / displace)."""
+    for col, na in _ASSIGNMENT_FIELDS.items():
+        ledger.at[i, col] = na
+    for col, na in _TIER_STAGE_FIELDS.items():
+        if col in ledger.columns:
+            ledger.at[i, col] = na
+    reset_flags(ledger, i)
 
 
 def clear_assignment(ledger: pd.DataFrame, peak_id, *, reason: str) -> pd.DataFrame:
@@ -443,9 +457,7 @@ def clear_assignment(ledger: pd.DataFrame, peak_id, *, reason: str) -> pd.DataFr
         ledger.at[ci, "iso_label"] = pd.NA
         ledger.at[ci, "iso_match_score"] = np.nan
     old = ledger.at[i, "commentary"]
-    for col, na in _ASSIGNMENT_FIELDS.items():
-        ledger.at[i, col] = na
-    reset_flags(ledger, i)
+    _reset_assignment(ledger, i)
     ledger.at[i, "role"] = ROLE_UNEXPLAINED
     ledger.at[i, "commentary"] = (f"CLEARED ({reason}). Was: {old}"
                                   if old is not pd.NA and pd.notna(old) else
@@ -478,9 +490,7 @@ def displace_to_isotopologue(
         glab = str(ledger.at[gi, "iso_label"])
         ledger.at[gi, "iso_label"] = "+".join(sorted(set(
             glab.split("+") + iso_label.split("+"))))
-    for col, na in _ASSIGNMENT_FIELDS.items():
-        ledger.at[ci, col] = na
-    reset_flags(ledger, ci)
+    _reset_assignment(ledger, ci)
     attach_isotopologue(ledger, child_peak_id, parent_peak_id,
                         iso_label=iso_label, iso_match_score=iso_match_score,
                         overwrite=True)

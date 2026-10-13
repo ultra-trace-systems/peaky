@@ -472,7 +472,11 @@ def family_union(win: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
 def run_windows(summary: dict, per_file: dict, *, catalog=None) -> dict:
     """The window record of every file: PRIMARY the persisted degeneracy-stage
     calibration (``per_file[i].degeneracy_cal`` = {mu, sigma} | null), else
-    the D10 fallback (`fit_windows`) for the files that lack it."""
+    the D10 fallback (`fit_windows`) for the files that lack it. A file the
+    batch calibrated on its pooled core (``per_file[i].tier_calibration`` =
+    'pooled', assignment/calpool.py) is marked ``pooled``: `window_table`
+    reads its window as its own, and the run window off it only when no file
+    calibrated alone."""
     stats = {p.get("sample_id"): p for p in (summary.get("per_file") or [])}
     out, missing = {}, {}
     for sid, led in per_file.items():
@@ -482,6 +486,8 @@ def run_windows(summary: dict, per_file: dict, *, catalog=None) -> dict:
             rec = dict(fams=file_families(summary, led), src="degeneracy_cal", n_m0=int((led["role"] == "M0").sum()))
             if cal:
                 rec.update(cal=(float(cal["mu"]), float(cal["sigma"])), fit=(float(cal["mu"]), float(cal["sigma"])))
+                if st.get("tier_calibration") == T.CAL_SOURCE_POOLED:
+                    rec["pooled"] = True
             else:
                 rec.update(cal=None, mu_stamp=mu_stamp(led))
             out[sid] = rec
@@ -493,9 +499,12 @@ def run_windows(summary: dict, per_file: dict, *, catalog=None) -> dict:
 
 def window_table(win: dict) -> tuple[dict, tuple[float, float]]:
     """({sid: (mu, sigma)}, run window): the run window is the median of the
-    calibrated files' (mu, sigma); an uncalibrated file takes (its mu_stamp,
-    else the run mu; the run sigma)."""
-    fitted = [w["fit"] for w in win.values() if w.get("fit")]
+    calibrated files' (mu, sigma) -- of the files that calibrated alone, the
+    batch's pooled windows (`pooled`) only when none did: a pooled window is
+    the batch's own core again, not one more file's; an uncalibrated file takes
+    (its mu_stamp, else the run mu; the run sigma)."""
+    fitted = ([w["fit"] for w in win.values() if w.get("fit") and not w.get("pooled")]
+              or [w["fit"] for w in win.values() if w.get("fit")])
     run_window = (float(np.median([f[0] for f in fitted])), float(np.median([f[1] for f in fitted]))) \
         if fitted else (float("nan"), float("nan"))
     windows = {}
