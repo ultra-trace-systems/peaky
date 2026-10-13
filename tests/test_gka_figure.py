@@ -37,6 +37,22 @@ check("_neutral_masses: drops non-M0 + F-monsters / dedups",
       len(fmass) == len(set(CH2_CHAIN + O_CHAIN + SI + PFCA))
       and not any(f in fmass for f in FL), len(fmass))
 
+# an F-monster the ledger did NOT refuse (read off its CF2 ladder: no below flag,
+# or Assigned, which a refused row never is) is drawn; a refused one is not
+LADDERED = pd.DataFrame([
+    dict(role="M0", neutral_formula="C6H5F7O2", tier="Candidate", below_assignability=False),   # lifted
+    dict(role="M0", neutral_formula="C7H5F9O2", tier="Assigned", below_assignability=False),    # full ladder
+    dict(role="M0", neutral_formula="C12H12F12", tier="Candidate", below_assignability=True),   # refused
+    dict(role="M0", neutral_formula="C14H12F8", tier="Candidate", below_assignability="True"),  # refused (csv)
+])
+_lm = GF._neutral_masses(LADDERED)
+check("_neutral_masses: draws an F-monster the ledger did not refuse, drops a refused one",
+      set(_lm) == {"C6H5F7O2", "C7H5F9O2"}, sorted(_lm))
+# the merged ledger carries the tier, not the flag: only an Assigned F-monster is drawn
+_mm = GF._neutral_masses(LADDERED.drop(columns=["role", "below_assignability"]))
+check("_neutral_masses: on a merged ledger an Assigned F-monster is drawn, a Candidate one is not",
+      set(_mm) == {"C7H5F9O2"}, sorted(_mm))
+
 # --- series detection ------------------------------------------------------
 ch2 = [s for s in GF.detect_series(fmass, units=["CH2"], min_len=3)]
 check("detect_series: finds the CH2 ladder", len(ch2) == 1 and ch2[0].length == 5,

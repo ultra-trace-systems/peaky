@@ -340,14 +340,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   merged Assigned rows went 4184 -> 4195 (+21, all 13 verifiable ones the truth's reading; -10,
   where the vote now picks the unflagged F reading of a line at Candidate), the verifiable
   precision 92.66 -> 92.76 %, and 4 of the 52 refused truth lines are Assigned in at least one
-  zone (13 line-zone pairs) -- without the hold 30 (73), at 15 more merged rows against the
-  truth's reading, 8 of them exactly the alias. The 13C term moved 262 per-file winners onto the
-  truth reading and none off it. On the finish-line runs no row's verdict moves (H1, H2 and H3
-  unchanged in the replay); the 15N-nitrate run's merged Assigned goes 641 -> 645 and the TOF
-  run's 785 -> 787 (F readings with full ladders: C2F5-, C3F7-, C4F9-), and the F25 ceiling
-  rewrites the degeneracy count and note of a labelled-nitrate run's heavier rows. The labelled
-  rescue (`labeled.rescue_labeled`) still re-reads a partially fluorinated fit as a 15N product
-  whatever its ladder.
+  zone (13 line-zone pairs) -- without the hold 30 (73), at 15 new merged rows against the
+  truth's reading compared with the code before (16 more than with the hold), 8 of them exactly
+  the alias. The 13C term moved 262 per-file winners onto the truth reading and none off it;
+  only pass 3's fluorinated arbitration reads it (pass 2's GKA and pass 4's deep-series
+  proposals settle the same aliases on the mass term). On the finish-line runs no row's verdict
+  moves (H1, H2 and H3 unchanged in the replay); the 15N-nitrate run's merged Assigned goes
+  641 -> 645 and the TOF run's 785 -> 787 (F readings with full ladders: C2F5-, C3F7-, C4F9-),
+  and the F25 ceiling rewrites the degeneracy count and note of a labelled-nitrate run's heavier
+  rows. The labelled rescue (`labeled.rescue_labeled`) still re-reads a partially fluorinated
+  fit as a 15N product whatever its ladder. The GKA figure (`reporting/gka_figure.py`) still
+  drops an unanchored F >= 4 neutral by formula, but now draws one the ledger did not refuse (no
+  below flag, or Assigned).
 
 ### Fixed
 

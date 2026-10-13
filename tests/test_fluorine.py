@@ -79,6 +79,22 @@ def test_a_ladder_counts_its_lines_and_its_committed_members():
     assert lad.committed == 3 and lad.full
 
 
+def test_a_committed_member_must_carry_the_ladders_own_composition():
+    """A line at a CF2 step committed as some OTHER reading is a ladder line, not
+    a committed member: the +1 and +2 lines read as a CHO ion leave the row with
+    one committed member (itself), lifted but not full, at Candidate."""
+    led = _ledger(SERIES, {"C6H5F7O2"})
+    for nf in ("C7H5F9O2", "C8H5F11O2"):
+        L.commit_assignment(led, nf, neutral_formula="C30H40O2", adduct=ADD, ion_formula="C30H39O2-",
+                            ion_score=0.9, compound_score=0.9, ppm_error=0.3, pass_no=1, method="cheminfo+grid",
+                            confidence="Good", commentary="Pass 1")
+    lad = FL.verdicts(led, cfg=_cfg())["C6H5F7O2"]
+    assert dict(lad.steps) == {-1: False, 1: False, 2: False}
+    assert lad.committed == 1 and lad.lift and not lad.full
+    tier, reason = _tier(led, "C6H5F7O2")
+    assert tier == "Candidate" and "Candidate until 3" in reason
+
+
 def test_a_lone_reading_and_a_one_neighbour_reading_are_not_lifted():
     led = _ledger({"C6H5F7O2": 800.0}, {"C6H5F7O2"})
     assert not FL.verdicts(led, cfg=_cfg())["C6H5F7O2"].lift
@@ -339,6 +355,21 @@ def test_a_13c_line_that_contradicts_the_carbon_count_refutes_the_ladder():
     assert FL.verdicts(led, cfg=_cfg(floor=5.0))["C8H5F11O2"].full
 
 
+def test_the_13c_veto_reads_no_other_rows_m0():
+    """The ladder veto is a refusal: it reads only the row's own 13C child or an
+    unexplained line. A line at +1.00336 that another reading commits as its M0
+    (a CHON fit here, reading ~C3 for the C8 row) refutes nothing."""
+    h0 = 400.0
+    led = _ledger(SERIES, {"C6H5F7O2", "C7H5F9O2", "C8H5F11O2"},
+                  extra=[("c13", _mz("C8H5F11O2") + FL.IR.D13C, h0 * 0.0107 * 3)])
+    assert FL.verdicts(led, cfg=_cfg(floor=5.0))["C8H5F11O2"].veto is not None     # unexplained: it refutes
+    L.commit_assignment(led, "c13", neutral_formula="C9H7N3O6", adduct=ADD, ion_formula="C9H6N3O6-",
+                        ion_score=0.8, compound_score=0.8, ppm_error=0.5, pass_no=1, method="cheminfo+grid",
+                        confidence="Good", commentary="Pass 1")
+    lad = FL.verdicts(led, cfg=_cfg(floor=5.0))["C8H5F11O2"]
+    assert lad.veto is None and lad.full
+
+
 def test_a_refuted_ladder_says_so_on_the_refusal():
     twin = ("twin", _mz("C6H5F7O2") - FL.D_15N, 16.0)
     led = _labelled(_ledger(SERIES, {"C6H5F7O2", "C7H5F9O2", "C8H5F11O2"}, extra=[twin]))
@@ -364,6 +395,27 @@ def test_the_budget_keeps_a_full_ladder_member_whose_steps_skip_a_member():
     led = L.ensure_flags(_ledger({"C6H5F7O2": 800.0, "C8H5F11O2": 400.0}, {"C6H5F7O2", "C8H5F11O2"}))
     out = PL.demote_off_budget(led, context="ambient-air", log=lambda *a: None, cfg=_cfg())
     assert bool(_row(led, "C6H5F7O2")["tentative_lead"]) and out["budget_demoted"] == 2
+
+
+@pytest.mark.parametrize("case, committed, labelled, floor, lead, demoted", [
+    ("two committed members", {"C6H5F7O2", "C8H5F11O2"}, False, 50.0, True, 2),
+    ("15N alias open", {"C6H5F7O2", "C8H5F11O2", "C9H5F13O2"}, True, 50.0, True, 1),
+    ("15N alias tested", {"C6H5F7O2", "C8H5F11O2", "C9H5F13O2"}, True, 5.0, False, 0),
+])
+def test_the_budget_keeps_only_a_full_ladder_not_a_lifted_one(case, committed, labelled, floor, lead, demoted):
+    """The budget's keep reads `full`, as the tiers and the demote do: a ladder
+    that only lifts the refusal -- two committed members, or three on a
+    15N-nitrate ledger whose alias is untested (its twin would read under the
+    floor) -- leaves the off-budget row a lead; tested, the same ladder is full
+    and kept. (The row's +1 neighbour is only a picked line, so the
+    committed-step rule does not keep it.)"""
+    led = _ledger(dict(SERIES, C9H5F13O2=300.0), committed)
+    led = L.ensure_flags(_labelled(led) if labelled else led)
+    lad = FL.verdicts(led, cfg=_cfg(floor=floor))["C6H5F7O2"]
+    assert lad.lift and lad.full != lead, case
+    out = PL.demote_off_budget(led, context="ambient-air", log=lambda *a: None, cfg=_cfg(floor=floor))
+    assert bool(_row(led, "C6H5F7O2")["tentative_lead"]) == lead, case
+    assert out["budget_demoted"] == demoted, case
 
 
 # =========================================================================== the F cap
@@ -427,12 +479,80 @@ def test_the_13c_term_stays_out_where_it_cannot_decide(line, cfg):
     assert not isinstance(w.get("_c13_note"), str)
 
 
-def test_the_13c_term_needs_an_alias_within_the_window():
+@pytest.mark.parametrize("mda, aliased", [(0.9, True), (1.5, False)])
+def test_the_13c_term_needs_an_alias_within_the_window(mda, aliased):
+    """Only readings within ALIAS_MDA (1 mDa) of the top one are aliases. Both
+    readings sit inside the calibration acceptance (centre 1.5 ppm, sigma 1), so
+    the mass term does not decide: at 0.9 mDa the line (C11.5) charges C20 and
+    C12 wins, at 1.5 mDa the term stays out and C20 keeps the peak."""
     s = _alias_scored()
-    s.loc[1, "ppm_error"] = 3.0                      # 1.5 mDa from the top: not an alias
-    w = P.arbitrate(s, _cfg(floor=60.0),
-                    c13_alias={"P": (2000.0, 2000.0 * 0.0107 * 11.5, None, None, None)})["winners"].iloc[0]
+    s.loc[1, "ppm_error"] = 0.1 + mda / 533.0218 * 1e3
+    cfg = _cfg(floor=60.0, sigma=1.0)
+    cfg.cal_mu = 1.5
+    line = (2000.0, 2000.0 * 0.0107 * 11.5, None, None, None)
+    pen, _note = FL.c13_alias_penalties(s, line, cfg)
+    assert pen == ({0: FL.C13_ALIAS_PENALTY} if aliased else {})
+    w = P.arbitrate(s, cfg, c13_alias={"P": line})["winners"].iloc[0]
+    assert w["neutral"] == ("C12H10F15O2" if aliased else "C20H9F10O2")
+
+
+def test_the_13c_term_is_testable_only_where_the_carbon_poor_alias_clears_the_floor():
+    """Testable means the 13C line of the alias with FEWEST carbons is predicted
+    above the floor: at h0 = 450 the C12 reading's line (~58 cps) is under a 60 cps
+    floor while the C20 reading's (~97) is above it -- a line that is missing or
+    weak could be either, so the term stays out, whatever the line reads."""
+    s = _alias_scored()
+    cfg = _cfg(floor=60.0)
+    assert 450.0 * FL.IR.R13C * 12 < 60.0 < 450.0 * FL.IR.R13C * 20
+    assert FL.c13_alias_penalties(s, (450.0, 450.0 * 0.0107 * 12, None, None, None), cfg) == ({}, None)
+    # brighter, the same reading is testable and charges C20
+    assert FL.c13_alias_penalties(s, (900.0, 900.0 * 0.0107 * 12, None, None, None), cfg)[0] == {
+        0: FL.C13_ALIAS_PENALTY}
+
+
+@pytest.mark.parametrize("n, read, h0, snr0, why", [
+    # the margin K x sigma: a read 2.5 C above C15 is 3 C nearer it than C23, under 2 x 2.15 C
+    (15, 2.5, 1e4, 200.0, "margin"),
+    # the line's own S/N: S/N ~3.4 on the 13C line (snr0 20) puts sigma at ~5 C, so 6 C is not enough
+    (15, 1.0, 1200.0, 20.0, "line S/N"),
+])
+def test_the_13c_term_charges_only_beyond_its_margin(n, read, h0, snr0, why):
+    s = _pair_scored(n).sort_values("ion_score", ascending=False)
+    assert FL.c13_alias_penalties(s, _line(n + read, h0=h0, snr0=snr0), _cfg(floor=60.0)) == ({}, None), why
+
+
+def _nitrate_alias_scored() -> pd.DataFrame:
+    """The 15N alias pair (C2F3 vs H2^NO4, 0.21 mDa): C6H5F7O2 [M-H]- against
+    C4H6F4O3 [M+^NO3]- on one peak, two carbons apart."""
+    return pd.DataFrame([
+        _iso_row(compound_formula="C6H5F7O2", ion_formula="C6H4F7O2-", ion_score=0.73, compound_score=0.73,
+                 ppm_error=0.1, sample_peak_mz=240.9999),
+        _iso_row(compound_formula="C4H6F4O3", ion_formula="C4H6F4^NO6-", ion_score=0.62, compound_score=0.62,
+                 ppm_error=0.97, sample_peak_mz=240.9999),
+    ])
+
+
+def test_the_13c_term_never_charges_under_two_carbons():
+    """C13_MIN_GAP: at C4 a bright line's 2 sigma is ~1 carbon, but an alias is
+    charged only >= 2 carbons farther off than the nearest -- a line read 0.3 C
+    above C4 (1.4 C nearer it than C6) charges neither reading of the 15N alias."""
+    s = _nitrate_alias_scored()
+    line = (1e4, 1e4 * FL.IR.R13C_RAW * 4.3, None, None, None)
+    assert FL.C13_K * FL.c13_sigma(4.3, line) < 1.4          # the sigma margin alone would charge C6
+    assert FL.c13_alias_penalties(s, line, _cfg(floor=60.0)) == ({}, None)
+
+
+def test_the_13c_note_is_dropped_when_the_charged_top_stays_top():
+    """The term charges C20 but C20 still outscores C12: the term did not decide
+    the peak, so the winner carries no 13C note."""
+    s = _alias_scored()
+    s.loc[0, ["ion_score", "compound_score"]] = 0.95
+    line = {"P": (2000.0, 2000.0 * 0.0107 * 11.5, None, None, None)}
+    assert FL.c13_alias_penalties(s, line["P"], _cfg(floor=60.0))[0] == {0: FL.C13_ALIAS_PENALTY}
+    w = P.arbitrate(s, _cfg(floor=60.0), c13_alias=line)["winners"].iloc[0]
     assert w["neutral"] == "C20H9F10O2"
+    assert not isinstance(w.get("_c13_note"), str)
+    assert "13C reads" not in P.core._commentary(w, 3, "contaminant:fluorinated:gka")
 
 
 def test_c13_lines_reads_the_line_above_each_unexplained_peak():
@@ -549,6 +669,16 @@ def test_the_stages_thread_the_files_cfg_into_the_fluorine_readers(monkeypatch):
     stage.fn(st)
     A._stage_plausibility(st)
     assert got["demote"]["cfg"] is cfg and got["plaus"]["cfg"] is cfg
+
+
+def test_demote_implausible_hands_the_cfg_on_to_the_budget(monkeypatch):
+    """The second hop: demote_implausible passes the file's cfg to
+    demote_off_budget (whose CF2 ladder reads its windows and floor)."""
+    got = {}
+    monkeypatch.setattr(PL, "demote_off_budget", lambda led, **kw: got.update(kw) or {})
+    cfg = _cfg()
+    PL.demote_implausible(_ledger(SERIES, {"C6H5F7O2"}), log=lambda *a: None, context="ambient-air", cfg=cfg)
+    assert got["cfg"] is cfg and got["context"] == "ambient-air"
 
 
 # =========================================================================== the uncapped contexts

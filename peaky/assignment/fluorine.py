@@ -104,9 +104,10 @@ ALIAS_SWAP = {"C": -2, "F": -3, "H": 2, "^N": 1, "O": 4}
 D_15N = C.M["^N"] - C.M["N"]               # 0.99703 Da
 ALIAS_TWIN_BAND = (0.5, 5.0)               # the twin reads within this x the alias's nominal share f
 #: an untested 15N alias holds a full ladder at Candidate (False: the ladder alone
-#: decides, as the first build did -- on the 15N-nitrate campaign below that made
-#: 366 more merged rows Assigned: 231 more the truth's reading, 16 more against
-#: it, 8 of those exactly the alias)
+#: decides, as the first build did -- on the 15N-nitrate campaign below, against
+#: the hold, that made 366 more merged rows Assigned: 231 more the truth's reading,
+#: 16 more against it; against the code before this module, 15 new rows against
+#: it, 8 of them exactly the alias)
 ALIAS_UNTESTED_HOLDS = True
 C13_PPM = 5.0                              # the 13C line's window where no exact-offset one holds (audit_sat_ppm)
 #: the 13C carbon-count term between sub-mDa aliases of the fluorinated family
