@@ -63,7 +63,38 @@ instead -- competitor counts, files). Gzipped because the privacy scanner reads
 a 16-letter neutral formula as an id. **`expected_vectors_v1.json`** holds the
 golden vectors, pairs per level in the order 3c/4a/4b/5a/5b/reagent/NA:
 `v1_nitrate` 1,850 = 10/186/289/472/892/1/0, `v1_uronium` 1,161 =
-17/75/913/125/31/0/0. Both are pinned until the user signs off the vectors; a
+17/75/913/125/31/0/0 when cut; now 9/186/299/491/864/1/0 and
+17/75/913/140/16/0/0 (the release fixes' lowconf ceiling, then the level space
+opening a family only on real evidence and without cross-family mixtures,
+`tests/test_levels_fixtures.py` names each step). The level-space step (D4)
+changes 288 `v1_nitrate` rows and no `v1_uronium` row (its run opens no family
+without evidence and has no mixture to drop, so it has no shadow space). All
+288 are CHO(N) readings: a committed reading carrying a heteroatom no own
+in-band line confirms (the F, Br, Cl, S and Si readings here) keeps the
+shadow's readings counted and does not move. On every one of the 288 the ions
+only the shadow space proposes (fluorine with chlorine or bromine: no halogen
+family is open on this ambient-air run) leave the counted set and are listed
+after `not counted (element family not open on evidence)`:
+- `evidence_level` / `claim` / `inpass_level` on 9 rows: CHO pairs left only an
+  F+Cl formula read 4b instead of 5a (a Br and a Cl reading in the same case
+  stay 5a: no own 81Br / 37Cl line confirms their halogen, so their uncounted
+  readings count);
+- `competitors_left`, `n_competitors` and `evidence` on all 288 (the counted
+  list and count drop; the ion text adds `<u> not counted`);
+- `n_excl_iso` on 136 (an uncounted reading the isotope tests exclude is no
+  longer counted among the excluded competitors);
+- `would_lift` / `inpass_why` on 157 (the competitors they name);
+- `tags` on 7: three pairs now 4b lose a tag only 5a prints (`tie` on
+  C12H20O5 [M+NO3]-, `suspect match` on C14H26O9 and C9H14O9 [M-H]-), and four
+  pairs whose level does not move count one series exclusion fewer
+  (`series exclusion x1` drops on C14H26O7 [M-H]-, C6H8O5 and C9H14O5
+  [M+NO3]-; x4 -> x3 on C9H12O4 [M+^NO3]-): the competitor it excluded is
+  now uncounted; `n_series_excl` moves on the same four;
+- one pair's counted list names a competitor ion by its level-space reading:
+  C12H16O5 [M+Br]- lists C10H18F2O2S [M+Br]-, the same ion as the mixture
+  C10H19BrF2O2S [M-H]- that stood for it before.
+
+Both are pinned until the user signs off the vectors; a
 change that moves them is a change of the scale and must say so. Regenerate
 from the fixtures in the repo with `build_fixtures.py --expected-only` (no run
 directory read); `--check` compares a fresh table with the repo's.

@@ -49,8 +49,10 @@ VECTOR_ORDER = "/".join([*SC.LEVELS, *SC.BUCKETS])
 GOLDEN = {
     # the lowconf ceiling (0.10.0 release fixes) moves 28 (nitrate) / 15 (uronium) pairs 5b -> 5a, and one nitrate 3c
     # (a reflist_dim lead certified by the list that rescued it) reads 4b; before: 10/186/289/472/892/1/0 and
-    # 17/75/913/125/31/0/0 (before the release fixes)
-    "v1_nitrate": (1850, "9/186/290/500/864/1/0"),
+    # 17/75/913/125/31/0/0 (before the release fixes). The level space without cross-family mixtures (D4) moves 9
+    # CHO nitrate pairs 5a -> 4b, each left only an F+Cl formula (no chlorine family open); a Br and a Cl reading
+    # left only such a formula stay 5a (no own 81Br / 37Cl line): before 9/186/290/500/864/1/0
+    "v1_nitrate": (1850, "9/186/299/491/864/1/0"),
     "v1_uronium": (1161, "17/75/913/140/16/0/0"),
 }
 

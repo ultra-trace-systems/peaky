@@ -709,7 +709,10 @@ _LEVEL_COLUMN_LEGEND = [
      "the named list entry, how the context lists were activated and the tags."),
     ("would_lift", "What the next level up needs (or, on 5a / 5b, what refuted or blocked the reading)."),
     ("competitors_left", "The competitor ions left in the calibrated window after the isotope "
-     "tests ('; '-joined; empty when none)."),
+     "tests and the series exclusion ('; '-joined); then, after ' || ' (or alone), 'not counted "
+     "(element family not open on evidence): ' and every ion only the wider space of the run's "
+     "unevidenced contaminant families and cross-family mixtures proposes -- listed, never a "
+     "competitor. Empty when none."),
     ("tags", "Facts that never unlock a level, joined by ' | ': routes, other-source partners, "
      "ladders, class-list entries, side channels locked, NH4 gate outcomes, a tentative lead. "
      "Routes, ladders and partners can anchor the series exclusion that lifts a pair out of 5a."),

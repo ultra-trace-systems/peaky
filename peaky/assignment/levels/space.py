@@ -4,7 +4,9 @@ adduct composition helpers the scale's steps share.
 `Space` is the run's element space exactly as the degeneracy audit builds it
 (the context profile + the opened contaminant families, plus the curated
 formulas: the pass-0 registry of the polarity and the active reference lists'
-closed-shell formulas), over the REAGENT PROFILE's adducts. It enumerates through
+closed-shell formulas), over the REAGENT PROFILE's adducts -- or, with
+``mixtures=False``, the LEVEL space: the same without cross-family mixtures
+(`level_profiles`, D4). It enumerates through
 `degeneracy.enumerate_window` with no truncation, answers "is this neutral a
 plausible decomposition" (`plausible_neutral`) and widens itself to admit a
 committed neutral the filter drops (`relaxed`, the D5 widening): same-class
@@ -81,6 +83,105 @@ def reagent_supply(adducts, el: str) -> int:
     return m
 
 
+def family_elements(family) -> frozenset:
+    """The heteroatoms a contaminant family brings beyond the CHO(N) core every
+    family sits on (``contexts.CONTAMINANT_FAMILIES[family]['add']``, N left
+    out): 'fluorinated' -> {F}, 'halogen_dbp' -> {Cl, Br}, 'nitrate' -> {}."""
+    add = (X.CONTAMINANT_FAMILIES.get(family) or {}).get("add", {})
+    return frozenset(el for el in add if el in DG.ELEMENT_CEILING and el != "N")
+
+
+def level_profiles(context, families=()) -> list:
+    """D4: the LEVEL space's element spaces -- `degeneracy.space_profiles`
+    without cross-family mixtures. The context profile is unchanged; a family's
+    profile (the one raising a cap the context sets to zero to the family's
+    ceiling) keeps another heteroatom of the context's budget only when an open
+    family brings that element too (N, the CHO(N) core, always). With
+    'fluorinated' open on a uronium run, a fluorine formula may carry Si
+    (siloxane / pdms are open) but not P or S, whose families are not: the
+    C15H32FPSi [M+H]+ alias of every CHO urea adduct is no competitor. A
+    curated formula is enumerated whatever its elements (as before). Each
+    family's profile is the degeneracy audit's own (`space_profiles` on that
+    family alone), so a family the audit adds no space for adds none here."""
+    base = X.get_context(context) if isinstance(context, str) else context
+    fams = tuple(families)
+    open_els = frozenset().union(*[family_elements(f) for f in fams]) if fams else frozenset()
+    out = [base]
+    for fam in fams:
+        profs = DG.space_profiles(base, (fam,))
+        if len(profs) < 2:
+            continue                 # the family raises no cap the context sets to zero
+        prof = profs[1]
+        own = family_elements(fam)
+        kw = {}
+        for el in DG.ELEMENT_CEILING:
+            key = f"max_{el}"
+            if el == "N" or el in own or el in open_els:
+                continue
+            cap = getattr(base, key, 0) or 0
+            if cap > 0 and (getattr(prof, key, 0) or 0) == cap:
+                kw[key] = 0          # the context's budget allows it, but no open family brings it
+        prof = dataclasses.replace(prof, **kw) if kw else prof
+        if all(prof != p for p in out):
+            out.append(prof)
+    return out
+
+
+def heteroatoms(neutral) -> frozenset:
+    """The neutral's heteroatoms beyond the CHO(N) core (the elements a
+    contaminant family or the context's budget brings: S, P, Si, F, Cl, Br, I);
+    empty when unreadable."""
+    try:
+        cnt = C.parse_formula(str(neutral))
+    except Exception:  # noqa: BLE001 -- an unreadable formula carries nothing
+        return frozenset()
+    return frozenset(el for el, v in cnt.items() if v and el in DG.ELEMENT_CEILING and el != "N")
+
+
+def own_heteroatoms(neutral, adduct) -> frozenset:
+    """The heteroatoms of ``neutral`` its ``adduct`` adds none of: a diagnostic
+    isotope line of one of them is the neutral's own (the 81Br line of a Br
+    reading as [M+Br]- is the adduct's as much as the neutral's); all of them
+    when the adduct is unknown or has no composition."""
+    dl = adduct_delta(str(adduct)) if isinstance(adduct, str) and adduct else None
+    return frozenset(el for el in heteroatoms(neutral) if not (dl and dl.get(el, 0) > 0))
+
+
+def _elements_fit(profiles, els) -> bool:
+    """One of ``profiles`` allows every element of ``els`` (a cap > 0)."""
+    return any(all((getattr(p, f"max_{el}", 0) or 0) > 0 for el in els) for p in profiles)
+
+
+def space_of(ctx, neutral) -> "Space":
+    """D4: the space a reading of ``neutral`` is levelled in -- the level space
+    (``ctx.space``) when it admits the neutral, else the SHADOW space
+    (``ctx.space_shadow``, the space before D4): a reading that needs a family
+    not open on evidence, a cross-family mixture, or one outside both spaces
+    (then D5-widened from the shadow, as before) meets its competitors,
+    decompositions and aliases exactly as before. A curated formula passes
+    every profile (`degeneracy._space_reason`), so it is judged by its
+    heteroatoms: one whose elements no level profile carries together and a
+    shadow profile does (a perfluoroacid on a run whose fluorine has no
+    evidence) is levelled in the shadow too. The narrower level space only
+    takes competitors away from the readings it admits."""
+    sp = ctx.space
+    sh = getattr(ctx, "space_shadow", None)
+    if sh is None or not isinstance(neutral, str) or not neutral:
+        return sp
+    if sp.space_reason(neutral) is not None:
+        return sh
+    if neutral in sp.curated:
+        memo = sp.__dict__.setdefault("_curated_shadow", {})
+        hit = memo.get(neutral)
+        if hit is None:
+            els = heteroatoms(neutral)
+            hit = memo[neutral] = bool(els) and not _elements_fit(sp.profiles, els) \
+                and _elements_fit(sh.profiles, els)
+        if hit:
+            return sh
+    return sp
+
+
 def decompositions(space: "Space", counts: dict, neutral, adduct, adducts) -> list[dict]:
     """The ion ``counts`` read as neutral + adduct over ``adducts`` and the
     pair's own ``adduct`` (ion-only channels and adducts without a composition
@@ -104,9 +205,11 @@ class Space(DG.EnumerationSpace):
     """The run's enumeration space: ``reagent`` (a profile name, its adducts
     are the channels), ``context`` (a context name), the run's active reference
     lists (``[(id, version), ...]``) and the opened contaminant ``families``.
-    ``context`` may be the run's own ContextProfile (its run-level switches)."""
+    ``context`` may be the run's own ContextProfile (its run-level switches).
+    ``mixtures=False``: the level space's profiles (`level_profiles`: no
+    cross-family mixtures); True (default): the degeneracy audit's own."""
 
-    def __init__(self, reagent: str, context, reflists_active, families, *, catalog=None):
+    def __init__(self, reagent: str, context, reflists_active, families, *, catalog=None, mixtures: bool = True):
         self.prof = PR.resolve(reagent)
         self.ctx = X.as_profile(context)
         self.adducts = list(self.prof.adducts)
@@ -117,7 +220,9 @@ class Space(DG.EnumerationSpace):
         curated = frozenset(passes.known_formulas(self.polarity, getattr(self.ctx, "label", None))) \
             | frozenset(RL.prior_formulas(act))
         self.families = tuple(families)
-        super().__init__(DG.space_profiles(self.ctx, self.families), curated)
+        self.mixtures = bool(mixtures)
+        profs = DG.space_profiles(self.ctx, self.families) if mixtures else level_profiles(self.ctx, self.families)
+        super().__init__(profs, curated)
         self._reason: dict = {}
         self.relaxed_note = ""
         self._relaxed: dict = {}

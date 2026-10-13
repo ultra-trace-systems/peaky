@@ -36,7 +36,12 @@ from peaky.assignment.levels import lists as LS
 from peaky.assignment.levels import routes as RT
 from peaky.assignment.levels import space as SP
 from peaky.assignment.levels import split as SPL
+from peaky.assignment.levels.competitors import UNCOUNTED
 from peaky.chem import chemistry as C
+
+# D4: the competitors only the shadow space proposes (competitors.UNCOUNTED rows) -- named after the counted ones
+# in `competitors_left` (the full list) and counted in the ion text, never a competitor (no level effect)
+UNCOUNTED_TEXT = "element family not open on evidence"
 
 # ---------------------------------------------------------------------------
 # step 0: the reagent bucket (hard-coded for the nitrate and uronium reagents; see BACKLOG)
@@ -298,7 +303,7 @@ def inpass(S: Prepared, partners=None) -> dict:
                     Y = RT.fsub(RT.fcounts(nn), L)
                     if not Y:
                         continue
-                    okY, _w = ctx.space.plausible_neutral(Y)
+                    okY, _w = SP.space_of(ctx, nn).plausible_neutral(Y)
                     yf = C.format_formula(Y)
                     if okY and yf in committed_nonrej:
                         al = f"{aname} alias {yf} (X - {C.format_formula(L)}) explains both route ions"
@@ -405,12 +410,18 @@ def inpass_texts(S: Prepared, res: dict) -> list[dict]:
     tags (O>=11, series exclusion, 5a's suspect match / tie, an open 4b's
     'list favours X') and its competitor list after series exclusion."""
     P = S.P
+    # D4: the competitors only the shadow space proposes (a family without real evidence, a cross-family mixture)
+    unc_of = defaultdict(list)
+    if S.comps is not None and len(S.comps):
+        for r in S.comps[S.comps["status"].astype(str) == UNCOUNTED].itertuples(index=False):
+            unc_of[(str(r.neutral_formula), str(r.adduct))].append(str(r.competitor))
     out = []
     for i, r in enumerate(P.itertuples(index=False)):
         L = res["level"][i]
         why = res["why"][i]
         nn, aa = str(r.neutral_formula), str(r.adduct)
         left = res["lefts"][i] or []
+        unc = unc_of.get((nn, aa), [])
         nser = len(res["excl_s"].get(i, {}))
         n_iso = int(pd.to_numeric(r.n_excl_iso, errors="coerce") or 0)
         ncomp = int(pd.to_numeric(r.n_competitors, errors="coerce") or 0)
@@ -426,6 +437,8 @@ def inpass_texts(S: Prepared, res: dict) -> list[dict]:
                 parts.append(f"series excludes {nser}")
             parts.append(f"{len(left)} left" if left else "none left")
             ion_txt = "; ".join(parts)
+        if unc and not _b(r.no_comp_info):
+            ion_txt += f"; {len(unc)} not counted ({UNCOUNTED_TEXT})"
         lines = _txt(r.committed_matched_lines)
         if lines:
             ion_txt += f"; own lines in band: {lines}"
@@ -461,8 +474,11 @@ def inpass_texts(S: Prepared, res: dict) -> list[dict]:
                    + (f" (+{len(left) - 6} more)" if len(left) > 6 else "")) if left else why
         else:
             blk = ""
+        comp_txt = "; ".join(c["name"] for c in left)
+        if unc:
+            comp_txt += (" || " if comp_txt else "") + f"not counted ({UNCOUNTED_TEXT}): " + "; ".join(unc)
         out.append(dict(ion_txt=ion_txt, blocked=blk, tags_pre=pre, tags_post=post,
-                        competitors_left="; ".join(c["name"] for c in left), n_left=len(left), n_series_excl=nser))
+                        competitors_left=comp_txt, n_left=len(left), n_series_excl=nser))
     return out
 
 
@@ -546,7 +562,7 @@ def records(S: Prepared, res: dict, texts: list[dict], lv: list[str]) -> pd.Data
                 Y = RT.fsub(RT.fcounts(nn), Lf)
                 if not Y:
                     continue
-                okY, _w = S.ctx.space.plausible_neutral(Y)
+                okY, _w = SP.space_of(S.ctx, nn).plausible_neutral(Y)
                 yf = C.format_formula(Y)
                 if not (okY and yf in committed_nonrej):
                     continue
