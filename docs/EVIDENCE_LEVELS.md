@@ -378,8 +378,9 @@ that refits it: the (mu, sigma) that reproduces the stored
 `degeneracy_density` values on a grid around the recomputed calibration
 (kept when it reproduces ≥ 99 % of them). A file the batch calibrated on its
 pooled core (`tier_calibration: pooled` in its stats, assignment/calpool.py;
-MERGE.md §3 step 1a) has its lent window -- its own centre, the pooled sigma --
-as its `degeneracy_cal` and takes it as its window; the run window is read off the files that calibrated
+MERGE.md §3 step 1a) has its lent window -- its own centre; the run sigma when
+any file calibrated alone, else the pooled sigma -- as its `degeneracy_cal` and
+takes it as its window; the run window is read off the files that calibrated
 alone, and off the pooled windows only when none did. An uncalibrated file in a
 batch takes (median of `ppm_error - ppm_error_cal`, the run sigma), the run
 sigma being the median of the per-file sigmas. The run window is the median of

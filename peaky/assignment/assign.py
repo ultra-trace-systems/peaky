@@ -172,9 +172,10 @@ def _stage_degeneracy(st):
     cal = tiers._calibrate(st.led[st.led["role"] == ledger.ROLE_M0],
                        st.led.loc[st.led["role"] == ledger.ROLE_ISO, "parent_peak_id"].value_counts())
     st.degeneracy_cal = None if cal is None else (float(cal[0]), float(cal[1]))
-    if cal is None:
+    if cal is None and getattr(st, "keep_pool_inputs", False):
         # the ledger as the degeneracy and tier stages see it: a batch that lends
-        # this file its pooled calibration re-runs both on it (calpool.apply_pool)
+        # this file its pooled calibration re-runs both on it (calpool.apply_pool);
+        # kept only when the caller asked for it (a batch's per-file run)
         st.at_tiers = st.led.copy(deep=True)
     degeneracy.apply_degeneracy(st.led, cal=cal, context=st.profile, adducts=st.adducts,
                                 families=families, curated=curated, log=st.log)
@@ -269,8 +270,11 @@ class _RunState:
     # the run inputs the `evidence` stage levelled the file with (a batch
     # re-levels an uncalibrated file in its pooled window: calpool.apply_pool)
     level_inputs: object = None
+    # keep what a batch-pooled tier calibration re-applies (`run(keep_pool_inputs=)`):
+    # a batch's per-file runs only; a single-sample run is never pooled
+    keep_pool_inputs: bool = False
     # an uncalibrated file's ledger as the degeneracy stage found it (None on a
-    # calibrated one): what a batch-pooled calibration re-tiers it on
+    # calibrated one, or when not kept): what a batch-pooled calibration re-tiers it on
     at_tiers: object = None
     summaries: dict = field(default_factory=dict)
     plaus_audit: list = field(default_factory=list)
@@ -820,7 +824,7 @@ def run(sample_id: str, context: str = "ambient-air", *,
         label_isotope=None, label_max=2, label_purity=None, occurrence=None,
         reagent_n_relabel: bool = True, peaks=None, corroborate=None,
         resolving_power=None, log=print, checkpoint_dir=None, scoring=None,
-        reagent_profile=None, reflists_context=None) -> dict:
+        reagent_profile=None, reflists_context=None, keep_pool_inputs: bool = False) -> dict:
     """Assign one sample. `peaks` (a DataFrame in the shape fetch_peaks returns:
     peak_id, mz, height, area ...) makes the run OFFLINE: the table is served
     as `sample_id` from memory, no server is contacted, the local scorer does
@@ -842,7 +846,12 @@ def run(sample_id: str, context: str = "ambient-air", *,
     to every file. `scoring` (offline runs only) is what the offline sample is
     judged at -- a measured sample's `pattern_scoring` snapshot, a
     `PatternScoring` or an instrument class (`io_mascope.register_offline_sample`);
-    None leaves an offline sample at the forgiving class fallback."""
+    None leaves an offline sample at the forgiving class fallback.
+    `keep_pool_inputs` (a batch's per-file runs): the result also carries
+    `pool_inputs` -- for a file its own core could not calibrate, what a
+    batch-pooled tier calibration re-applies (calpool.PoolInputs, with a copy of
+    the ledger as the degeneracy stage found it), else None. Off, the result has
+    no such key and no copy is taken."""
     cfg = cfg or passes.PassConfig()
     # the reagent bottle's isotopic purity (ReagentProfile.purity), published for
     # the two consumers that model a '^X' ion's unlabelled impurity line: the
@@ -1113,7 +1122,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
             reagent_halogen=reagent_halogen,
             reagent_profile=(getattr(reagent_profile, "name", None) or reagent_profile
                              or _profile_name_for(analyte_adducts)),
-            reflists_context=reflists_context, scoring=scoring_snapshot)
+            reflists_context=reflists_context, scoring=scoring_snapshot,
+            keep_pool_inputs=bool(keep_pool_inputs))
         restart = False
         for stg in _STAGES:
             if not stg.when(st):
@@ -1248,9 +1258,10 @@ def run(sample_id: str, context: str = "ambient-air", *,
             # 0.3 ppm and at 3, and a published run carries it into the store.
             "pattern_scoring": scoring_snapshot,
             "sample_id": sample_id,
-            # an uncalibrated file: what the steps a batch-pooled calibration
-            # re-applies read (calpool.apply_pool); None on a calibrated one
-            "pool_inputs": _pool_inputs(run_state)}
+            # a batch's per-file run (keep_pool_inputs) of an uncalibrated file:
+            # what the steps a batch-pooled calibration re-applies read
+            # (calpool.apply_pool); None on a calibrated one; no key otherwise
+            **({"pool_inputs": _pool_inputs(run_state)} if keep_pool_inputs else {})}
 
 
 def main(argv=None):

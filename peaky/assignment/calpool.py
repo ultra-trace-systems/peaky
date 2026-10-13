@@ -33,15 +33,25 @@ only -- its points come from different files, so no mass trend is fitted on
 them. Otherwise the batch stays uncalibrated, as before, and its record says
 why.
 
-What a file is lent (`lent_calibration`) is the pooled WIDTH about the file's
-OWN centre: the median ppm error of its Assigned M0 rows (the centre its tier
-stage already stamped as `ppm_error_cal`'s, `tiers.stamp_calibrated_ppm`), when
-it has at least CENTRE_MIN_ROWS of them, else the pooled mu. The files of one
+What a file is lent (`lent_calibration`) is a WIDTH about the file's OWN
+centre: the median ppm error of its Assigned M0 rows (the centre its tier stage
+already stamped as `ppm_error_cal`'s, `tiers.stamp_calibrated_ppm`), when it has
+at least CENTRE_MIN_ROWS of them, else the batch's centre. The files of one
 batch sit apart by up to a few tenths of a ppm (per-calibration offsets), as
 much as the pooled sigma itself: centred on the pool, a file 1 sigma off would
 put about 6 % of its correct uncorroborated rows past the z-tail instead of
-1 %. The evidence levels already window an uncalibrated file of a calibrated
-batch the same way (its centre, the run sigma).
+1 %. The width is the RUN sigma when any file of the batch calibrated alone
+(the median of those files' sigma, `Pool.run_window`; the batch's centre is
+then their median mu): a file-centred window wants a single file's width, which
+those files measure directly, while the pooled sigma also carries the spread
+between the files its ions came from. The evidence levels already window an
+uncalibrated file of a calibrated batch that way (its centre, the run sigma).
+With no file calibrated alone the pooled sigma (and mu) is all there is.
+
+A TOF-class batch is not pooled (`pool_calibration(klass='tof')`): a TOF file's
+own calibration fits a mass trend and its tier stage reads a TOF floor; the
+pooled core's constant model has not been tested there, so such a file stays
+uncalibrated, as before, and the record says why.
 
 `apply_pool` gives one finished, uncalibrated per-file ledger the pooled
 calibration WITHOUT re-running the file: no enumeration, no scoring, no winner
@@ -66,6 +76,10 @@ that copy for an uncalibrated file: `PoolInputs.at_tiers`):
      (`plausibility.demote_oxygen_monsters`);
   4. the file's own evidence level (`evidence.apply_levels`) in the pooled
      window.
+
+The NOx-skeleton cap's record (stats `nox_skeleton_gate`) is re-taken where the
+run takes it: on the tier-time ledger with the re-run tier stage's verdicts,
+before any later stage rewrote a row.
 
 Not re-applied (they would need the file re-run): the off-calibration
 re-arbitration (`passes.rearbitrate_offcal_degenerate`, which picks the
@@ -102,10 +116,13 @@ POOL_MIN_FILES = 2
 #: the core's m/z span, as a fraction of the batch's committed M0 m/z range
 POOL_MIN_SPAN_FRAC = 0.25
 #: a core line within this many ppm of a reagent-library ion is the reagent's
-#: (the reagent sweep's own window, reagents.reclaim_reagent_clusters)
+#: (the reagent sweep's own window, reagents.reclaim_reagent_clusters). Only a
+#: reagent with a cluster library has masses to test (halide, urea, ammonium,
+#: NO+: reagents.reagent_for_adducts); a nitrate set has none, and there C >= 1
+#: and the reagent-identity test are the reagent exclusions
 REAGENT_PPM = 12.0
-#: a file lent the pooled width is centred on its own Assigned M0 rows when it has
-#: at least this many (`lent_calibration`), else on the pooled mu
+#: a file lent the pooled calibration is centred on its own Assigned M0 rows when
+#: it has at least this many (`lent_calibration`), else on the batch's centre
 CENTRE_MIN_ROWS = 15
 
 CORE_COLUMNS = ["sid", "ion", "neutral_formula", "adduct", "mz", "ppm", "height"]
@@ -164,14 +181,34 @@ class Pool:
     mz_span: tuple = (float("nan"), float("nan"))     # the core's m/z span
     mz_range: tuple = (float("nan"), float("nan"))    # the batch's committed M0 m/z range
     core: pd.DataFrame = dataclasses.field(default_factory=lambda: pd.DataFrame(columns=CORE_COLUMNS))
+    #: (mu, sigma, n) -- the medians of the per-file calibrations of the files that
+    #: calibrated alone (n of them), set by the batch; None when none did. A
+    #: file is then lent the run sigma, not the pooled one (`lent_calibration`)
+    run_window: tuple | None = None
+
+    def lent_width(self) -> tuple[float, float, str] | None:
+        """(centre, sigma, 'run' | 'pool') a file is lent about its own centre
+        (the centre: a file with too few Assigned rows of its own); None
+        without a calibration."""
+        if self.cal is None:
+            return None
+        if self.run_window is not None:
+            return float(self.run_window[0]), float(self.run_window[1]), "run"
+        return float(self.cal[0]), float(self.cal[1]), "pool"
 
     def record(self) -> dict:
         """The batch_summary record (JSON-safe)."""
         def _f(x, nd=3):
             return None if x is None or not np.isfinite(x) else round(float(x), nd)
+        lw = self.lent_width()
         return {"used": self.cal is not None,
                 "mu": _f(self.cal[0], 4) if self.cal is not None else None,
                 "sigma": _f(self.cal[1], 4) if self.cal is not None else None,
+                # the width a file is lent (the run sigma when any file calibrated
+                # alone, else the pooled one) and where it came from
+                "lent_sigma": _f(lw[1], 4) if lw is not None else None,
+                "lent_width": lw[2] if lw is not None else None,
+                "n_files_calibrated": int(self.run_window[2]) if self.run_window is not None else 0,
                 "n_ions": int(self.n_ions), "n_candidate_ions": int(self.n_candidate_ions),
                 "n_files": int(self.n_files), "n_files_read": int(self.n_files_read),
                 "mz_span": [_f(self.mz_span[0], 4), _f(self.mz_span[1], 4)],
@@ -183,18 +220,24 @@ class Pool:
         """One log line."""
         if self.cal is None:
             return f"no pooled tier calibration: {self.reason}"
+        lw = self.lent_width()
+        lent = (f"; a file is lent the run sigma {lw[1]:.3f} ppm of the {int(self.run_window[2])} file(s) "
+                f"that calibrated alone" if lw[2] == "run" else "; a file is lent the pooled sigma")
         return (f"pooled tier calibration {self.cal[0]:+.3f} ± {self.cal[1]:.3f} ppm from {self.n_ions} distinct "
                 f"ions isotope-backed in >= {POOL_MIN_FILES} files ({self.n_files} of {self.n_files_read} files; "
                 f"m/z {self.mz_span[0]:.1f}-{self.mz_span[1]:.1f} of the committed {self.mz_range[0]:.1f}-"
-                f"{self.mz_range[1]:.1f})")
+                f"{self.mz_range[1]:.1f}){lent}")
 
 
 def pool_calibration(ledgers: dict, *, polarity: str = "negative", reagent_masses=(),
                      abs_floor_mda: float = MC.ABS_FLOOR_MDA, min_ions: int = POOL_MIN_IONS,
-                     min_files: int = POOL_MIN_FILES, min_span_frac: float = POOL_MIN_SPAN_FRAC) -> Pool:
+                     min_files: int = POOL_MIN_FILES, min_span_frac: float = POOL_MIN_SPAN_FRAC,
+                     klass: str | None = None) -> Pool:
     """The pooled core of a batch's per-file ledgers ({sid: ledger}, read in
-    sorted sid order) and its calibration (module note). Never raises on thin
-    data: a pool that cannot calibrate returns `cal` None and its reason."""
+    sorted sid order) and its calibration (module note). `klass`: the batch's
+    instrument class (PassConfig.instrument_class); a 'tof' batch gets the core
+    counted and no calibration (module note). Never raises on thin data: a pool
+    that cannot calibrate returns `cal` None and its reason."""
     sids = sorted(ledgers, key=str)
     parts = [core_rows(ledgers[s], polarity=polarity, reagent_masses=reagent_masses, sid=s) for s in sids]
     parts = [p for p in parts if len(p)]
@@ -223,6 +266,10 @@ def pool_calibration(ledgers: dict, *, polarity: str = "negative", reagent_masse
     pool.n_files = int(rows.loc[rows["ion"].isin(keep), "sid"].nunique())
     if len(best):
         pool.mz_span = (float(best["mz"].min()), float(best["mz"].max()))
+    if klass == "tof":
+        pool.reason = ("a TOF-class batch: the pooled core's constant model is not lent (a TOF file's own "
+                       "calibration fits a mass trend; not tested on TOF)")
+        return pool
     if len(best) < min_ions:
         pool.reason = (f"{len(best)} distinct carbon-bearing ions isotope-backed in >= {min_files} files "
                        f"({pool.n_candidate_ions} in any file); the pooled core needs {min_ions}")
@@ -257,16 +304,19 @@ class PoolInputs:
 
 def lent_calibration(pool: Pool, assigned_ppm=(), *, min_rows: int = CENTRE_MIN_ROWS):
     """(cal, centre) the pool lends one file: a tiers._Cal (source
-    CAL_SOURCE_POOLED) of the pooled sigma about the file's own centre -- the
-    median of `assigned_ppm`, the ppm errors of the M0 rows its own tier stage
-    made Assigned (the centre that stage stamped as `ppm_error_cal`'s), `centre`
-    'file' -- when there are at least `min_rows` of them, else about the pooled
-    mu (`centre` 'pool'). (None, None) when the pool has no calibration."""
-    if pool.cal is None:
+    CAL_SOURCE_POOLED) of the lent width (`Pool.lent_width`: the run sigma when
+    any file of the batch calibrated alone, else the pooled sigma) about the
+    file's own centre -- the median of `assigned_ppm`, the ppm errors of the M0
+    rows its own tier stage made Assigned (the centre that stage stamped as
+    `ppm_error_cal`'s), `centre` 'file' -- when there are at least `min_rows`
+    of them, else about the batch's centre (the run mu, else the pooled mu;
+    `centre` 'run' / 'pool'). (None, None) when the pool has no calibration."""
+    lw = pool.lent_width()
+    if lw is None:
         return None, None
     p = pd.to_numeric(pd.Series(list(assigned_ppm), dtype=object), errors="coerce").dropna()
-    mu, centre = (float(p.median()), "file") if len(p) >= min_rows else (float(pool.cal[0]), "pool")
-    return T._Cal(mu, float(pool.cal[1]), abs_floor_mda=getattr(pool.cal, "abs_floor_mda", MC.ABS_FLOOR_MDA),
+    mu, centre = (float(p.median()), "file") if len(p) >= min_rows else (lw[0], lw[2])
+    return T._Cal(mu, lw[1], abs_floor_mda=getattr(pool.cal, "abs_floor_mda", MC.ABS_FLOOR_MDA),
                   source=T.CAL_SOURCE_POOLED), centre
 
 
@@ -286,10 +336,12 @@ def apply_pool(ledger: pd.DataFrame, pool: Pool, inputs: PoolInputs, *, audit=No
     ledger as the file's degeneracy stage found it (read, never changed);
     `audit`: the file's plausibility audit list (the oxygen-monster demote
     appends to it). The calibration is the one the pool lends this file
-    (`lent_calibration`: the pooled sigma about the file's own centre). Returns
-    {cal, degeneracy, tiers, below, o_monster, levels} (`cal`: {mu, sigma,
-    centre}); {} when the pool has no calibration or there is no tier-time
-    ledger."""
+    (`lent_calibration`: the lent width about the file's own centre). Returns
+    {cal, degeneracy, tiers, nox_skeleton_gate, below, o_monster, levels}
+    (`cal`: {mu, sigma, centre, width}; `nox_skeleton_gate`: the NOx-skeleton
+    cap's record as the re-run tier stage leaves it, tiers.nox_skeleton_summary
+    on the tier-time ledger, None when the profile reads no skeletons); {} when
+    the pool has no calibration or there is no tier-time ledger."""
     from peaky.assignment import degeneracy as DG
     from peaky.assignment import evidence as EV
     from peaky.assignment import plausibility as PL
@@ -323,10 +375,15 @@ def apply_pool(ledger: pd.DataFrame, pool: Pool, inputs: PoolInputs, *, audit=No
         ledger.at[i, "degeneracy_density"] = dens[pid]
         ledger.at[i, "degeneracy_note"] = notes[pid]
     d = pd.to_numeric(am["degeneracy_density"], errors="coerce")
-    out = {"cal": {"mu": float(cal[0]), "sigma": float(cal[1]), "centre": centre},
+    out = {"cal": {"mu": float(cal[0]), "sigma": float(cal[1]), "centre": centre, "width": pool.lent_width()[2]},
            "degeneracy": {"measured": int(d.notna().sum()),
                           "degenerate": int(sum(T._degeneracy(r)[1] for _, r in am.iterrows()))}}
     out["tiers"] = T.retier_calibrated(ledger, base, new, source=T.CAL_SOURCE_POOLED)
+    # the skeleton cap's record where the run takes it (assign._stage_tiers):
+    # the tier stage's verdicts, before later stages rewrite rows
+    rec = at[["peak_id", "role"]].copy()
+    rec["tier_reason"] = rec["peak_id"].map(dict(zip(new["peak_id"], new["tier_reason"]))) if len(new) else pd.NA
+    out["nox_skeleton_gate"] = T.nox_skeleton_summary(rec, profile)
     # 3. the degeneracy-keyed flags on the finished ledger. The O >= 11 flag is
     # the tier stage's: only on a row still committing its tier-time reading (a
     # later re-read's commit resets the flags in a run, so its row has none);
@@ -349,7 +406,8 @@ def apply_pool(ledger: pd.DataFrame, pool: Pool, inputs: PoolInputs, *, audit=No
         s = EV.apply_levels(ledger, cfg=cfg, run_inputs=_level_inputs_with(inputs.level_inputs, cal))
         out["levels"] = {"n_levelled": int(s.get("n_levelled", 0)), "levels": s.get("levels")}
     t = out["tiers"]
-    log(f"[calpool]   window {cal[0]:+.3f} ± {cal[1]:.3f} ppm (centre: the {centre}'s); "
+    log(f"[calpool]   window {cal[0]:+.3f} ± {cal[1]:.3f} ppm (centre: the {centre}'s; "
+        f"width: the {out['cal']['width']}'s); "
         f"degeneracy measured on {out['degeneracy']['measured']} M0 rows "
         f"({out['degeneracy']['degenerate']} degenerate); tiers: {t['retiered']} re-tiered ({t['demoted']} "
         f"Assigned -> Candidate, {t['reworded']} reworded), {t['kept']} kept as a later stage left them; "

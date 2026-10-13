@@ -92,32 +92,48 @@ selected sample_ids (SAMPLING.md)
    `degeneracy_cal` null -- a small scan window) is lent the batch's pooled core.
    The pool is decided ONCE, the first time a stage returns such a file, from
    every per-file ledger assigned so far: the rows the file core takes
-   (`tiers.core_point`) with a carbon-bearing neutral, no reagent identity and no
-   reagent-library mass; one row per distinct ion (the tallest); an ion only where
-   it is isotope-backed in >= 2 files. It calibrates when it holds >= 15 distinct
-   ions spanning >= 0.25 of the committed m/z range ((mu, sigma) as the file
-   core's: median, scaled MAD, the 0.15-ppm floor; no mass trend). Such a file is
-   lent the pooled sigma about its OWN centre (`calpool.lent_calibration`: the
+   (`tiers.core_point`) with a carbon-bearing neutral and no reagent identity
+   (and, for a reagent with a cluster library -- halide, urea, ammonium, NO+ --
+   no line within 12 ppm of a library ion; a nitrate set has no library, so C >=
+   1 and the identity test are its reagent exclusions); one row per distinct ion
+   (the tallest); an ion only where it is isotope-backed in >= 2 files. It
+   calibrates when it holds >= 15 distinct ions spanning >= 0.25 of the committed
+   m/z range ((mu, sigma) as the file core's: median, scaled MAD, the 0.15-ppm
+   floor; no mass trend). A TOF-class batch is not pooled (a TOF file's own
+   calibration fits a mass trend; the constant model is untested there). Such a
+   file is lent a width about its OWN centre (`calpool.lent_calibration`: the
    median ppm error of the rows its tier stage made Assigned, when it has >= 15,
-   else the pooled mu): the files of one batch sit a few tenths of a ppm apart, as
-   much as the pooled sigma, and a window centred on the pool would push a
-   shifted file's correct rows past the z-tail. It is then re-tiered without a
-   re-run (`calpool.apply_pool`): the degeneracy audit
+   else the batch's centre): the files of one batch sit a few tenths of a ppm
+   apart, as much as the pooled sigma, and a window centred on the pool would
+   push a shifted file's correct rows past the z-tail. The width is the RUN sigma
+   (the median of the per-file sigmas, the centre fallback their median mu) when
+   any file of the batch calibrated alone -- the width the evidence levels already
+   lend such a file; the pooled sigma also carries the spread between the files
+   its ions came from -- and the pooled sigma (and mu) when none did. It is then
+   re-tiered without a re-run (`calpool.apply_pool`): the degeneracy audit
    and the tier stage again on the ledger as its degeneracy stage found it (the
-   run keeps that copy, `pool_inputs.at_tiers`), the verdicts carried onto every
+   batch's per-file run keeps that copy, `assign.run(keep_pool_inputs=True)`,
+   and the batch drops it right after the pooled step, before the fold; once the
+   batch's pool is known to lend nothing, later files keep none; a single-sample
+   run keeps none), the verdicts carried onto every
    finished row a later stage did not rewrite (a row a later stage only demoted
    takes the calibrated words and keeps its tier), the O >= 11 below-assignability
    flag and the oxygen-monster demote, and its own evidence level, all in the
-   pooled window. Its stats read `tier_calibration: pooled` and its lent window as
+   lent window. Its stats read `tier_calibration: pooled`, its lent window as
    `degeneracy_cal`, which the pooled levels take as its window (§3, the level
-   stage). Not re-run: the off-calibration re-arbitration (a winner choice) and
+   stage), and its NOx-skeleton cap record as the re-run tier stage left it. Not
+   re-run: the off-calibration re-arbitration (a winner choice) and
    the pass engine's scoring (a Low / Suspect confidence stays); a row a
-   post-tier re-read rewrote keeps its tier. A pool that falls short leaves the
-   files uncalibrated, and the `levels_not_assessed_reason` says why.
+   post-tier re-read rewrote keeps its tier. The re-tiered ledger is what the
+   merge vote reads (step 4): the degeneracy stamps and the O >= 11 flag move a
+   pooled file's vote classes, so a pooled file can change which reading wins a
+   line. A pool that falls short leaves the files uncalibrated (`none`): the log
+   says so as a WARNING, `tier_calibration.pool.reason` says why, and so does the
+   `levels_not_assessed_reason` when no file of the batch was levelled.
    `batch_summary['tier_calibration']` records the batch's weakest source in one
    word (`source`: `none` when any file stayed uncalibrated, else `pooled` when
    any was lent the pool, else `per_file`), the files per source and the pool;
-   each merged row's `tier_calibration` is that of the file whose row donated its
+   each merged row's `tier_calibration` is that of the row that donated its
    tier. The trace-first sample is not pooled (one averaged file); a pool is
    decided once, from the ledgers of the first stage that returns an
    uncalibrated file (and the stages before it).

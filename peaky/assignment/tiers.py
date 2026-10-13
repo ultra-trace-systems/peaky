@@ -1426,20 +1426,23 @@ def retier_calibrated(ledger: pd.DataFrame, base: pd.DataFrame, new: pd.DataFram
     the commentary) takes the new reason and keeps that tier; a row a later
     stage rewrote (a re-read, the ion-only bucket, a rescue committed after the
     tier stage) keeps what it has -- that stage had the last word in the run
-    and keeps it. Every M0 row's `tier_calibration` reads `source`. Returns
-    {rows, retiered, demoted, promoted, reworded, kept}."""
+    and keeps it. `tier_calibration` reads `source` on the rows the re-run
+    judged (the first two kinds); a kept row keeps its own (the uncalibrated
+    stage's 'none' its verdict was given in, or NA on a row committed after the
+    tier stage, as in a run that is not re-tiered). Returns {rows, retiered,
+    demoted, promoted, reworded, kept}."""
     _tier_columns(ledger)
     out = {"rows": 0, "retiered": 0, "demoted": 0, "promoted": 0, "reworded": 0, "kept": 0}
     b = base.set_index("peak_id") if len(base) else pd.DataFrame(columns=["tier", "tier_reason"])
     n = new.set_index("peak_id") if len(new) else pd.DataFrame(columns=["tier", "tier_reason"])
     for i in ledger.index[ledger["role"] == L.ROLE_M0]:
         pid = ledger.at[i, "peak_id"]
-        ledger.at[i, TIER_CALIBRATION] = source
         out["rows"] += 1
         stored = (_txt(ledger.at[i, "tier"]), _txt(ledger.at[i, "tier_reason"]))
         if pid not in b.index or pid not in n.index or stored[1] != _txt(b.at[pid, "tier_reason"]):
             out["kept"] += 1
             continue
+        ledger.at[i, TIER_CALIBRATION] = source
         verdict = (_txt(n.at[pid, "tier"]), _txt(n.at[pid, "tier_reason"]))
         if stored[0] != _txt(b.at[pid, "tier"]):
             verdict = (stored[0], verdict[1])      # a later stage's tier, the calibrated words

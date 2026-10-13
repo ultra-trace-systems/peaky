@@ -14,7 +14,9 @@ Synthetic ledgers only. Run: pytest tests/test_calpool.py -q
 
 from __future__ import annotations
 
+import gc
 import json
+import weakref
 
 import numpy as np
 import pandas as pd
@@ -171,6 +173,14 @@ def test_a_core_bunched_in_mz_is_not_used():
     assert pool.cal is None and pool.n_ions == 15 and "span" in pool.reason
 
 
+def test_a_tof_batch_is_counted_and_not_lent_a_pool():
+    """A TOF file's own calibration fits a mass trend; the pooled constant model is not lent there."""
+    pool = CP.pool_calibration(_batch(), klass="tof")
+    assert pool.cal is None and pool.n_ions == 16 and "TOF" in pool.reason
+    assert pool.record()["used"] is False and pool.record()["lent_sigma"] is None
+    assert CP.pool_calibration(_batch(), klass="orbitrap").cal is not None
+
+
 # --------------------------------------------------------------------------- the tier texts and the transfer
 def test_the_reasons_name_the_pooled_window():
     led = _batch(n_files=1)["s0"]
@@ -186,9 +196,10 @@ def test_the_reasons_name_the_pooled_window():
 
 
 def test_retier_moves_only_rows_still_holding_the_tier_stages_verdict():
-    led = pd.DataFrame({"peak_id": ["a", "b", "c", "d"], "role": ["M0"] * 4,
-                        "tier": ["Assigned", "Candidate", "Assigned", "Candidate"],
-                        "tier_reason": ["no rival", "a later re-read", "no rival", "no rival"]})
+    led = pd.DataFrame({"peak_id": ["a", "b", "c", "d", "e"], "role": ["M0"] * 5,
+                        "tier": ["Assigned", "Candidate", "Assigned", "Candidate", "Assigned"],
+                        "tier_reason": ["no rival", "a later re-read", "no rival", "no rival", "a later rescue"],
+                        T.TIER_CALIBRATION: [T.CAL_SOURCE_NONE] * 4 + [pd.NA]})
     base = pd.DataFrame({"peak_id": ["a", "b", "c", "d"], "tier": ["Assigned"] * 4, "tier_reason": ["no rival"] * 4,
                          "candidate_density": [1] * 4, "density_capped": [False] * 4})
     new = base.assign(tier=["Candidate", "Candidate", "Assigned", "Assigned"],
@@ -196,12 +207,15 @@ def test_retier_moves_only_rows_still_holding_the_tier_stages_verdict():
                                    "unique in the pooled window"])
     out = T.retier_calibrated(led, base, new)
     # a: re-tiered; b: a later stage rewrote it, kept; c: reworded; d: a later stage only demoted it --
-    # its tier stays, the tier stage's words are the calibrated ones
-    assert list(led["tier"]) == ["Candidate", "Candidate", "Assigned", "Candidate"]
+    # its tier stays, the tier stage's words are the calibrated ones; e: committed after the tier
+    # stage (not in its frames), kept
+    assert list(led["tier"]) == ["Candidate", "Candidate", "Assigned", "Candidate", "Assigned"]
     assert list(led["tier_reason"]) == ["mass error off", "a later re-read", "unique in the pooled window",
-                                        "unique in the pooled window"]
-    assert out == {"rows": 4, "retiered": 3, "demoted": 1, "promoted": 0, "reworded": 2, "kept": 1}
-    assert (led[T.TIER_CALIBRATION] == T.CAL_SOURCE_POOLED).all()
+                                        "unique in the pooled window", "a later rescue"]
+    assert out == {"rows": 5, "retiered": 3, "demoted": 1, "promoted": 0, "reworded": 2, "kept": 2}
+    # the source names the calibration the row's verdict was given in: the re-judged rows the pooled
+    # one; a kept row its own ('none', the uncalibrated stage's), a later commit none (NA, as unpooled)
+    assert list(led[T.TIER_CALIBRATION].fillna("NA")) == ["pooled", "none", "pooled", "pooled", "NA"]
 
 
 # --------------------------------------------------------------------------- one file, re-applied
@@ -235,7 +249,8 @@ def test_apply_pool_re_tiers_the_file_on_its_tier_time_ledger():
     assert by.at["u-3", "tier"] == "Candidate" and "batch-pooled calibrated window" in by.at["u-3", "tier_reason"]
     assert out["tiers"]["demoted"] == 1 and out["tiers"]["kept"] == 1
     m0 = led[led["role"] == "M0"]
-    assert (m0[T.TIER_CALIBRATION] == T.CAL_SOURCE_POOLED).all()
+    src = m0.set_index("peak_id")[T.TIER_CALIBRATION]
+    assert src["u-2"] == T.CAL_SOURCE_NONE and (src.drop("u-2") == T.CAL_SOURCE_POOLED).all()
     assert pd.to_numeric(m0["degeneracy_density"], errors="coerce").notna().all()
     # the file's own level, in the pooled window: no longer the no-window text
     assert out["levels"]["n_levelled"] == len(m0)
@@ -256,6 +271,17 @@ def test_the_lent_window_is_the_pooled_width_about_the_files_own_centre():
     cal, centre = CP.lent_calibration(pool, [0.6] * (CP.CENTRE_MIN_ROWS - 1))
     assert centre == "pool" and cal[0] == pool.cal[0]
     assert CP.lent_calibration(CP.Pool(), [0.6] * 20) == (None, None)
+    # files of the batch that calibrated alone: their median sigma is lent, their median mu the fallback centre
+    pool.run_window = (-0.2, 0.31, 3)
+    cal, centre = CP.lent_calibration(pool, [0.6] * CP.CENTRE_MIN_ROWS)
+    assert centre == "file" and cal[0] == pytest.approx(0.6) and cal[1] == pytest.approx(0.31)
+    cal, centre = CP.lent_calibration(pool, [])
+    assert centre == "run" and cal[0] == pytest.approx(-0.2) and cal[1] == pytest.approx(0.31)
+    rec = pool.record()
+    assert rec["lent_width"] == "run" and rec["lent_sigma"] == pytest.approx(0.31) and rec["n_files_calibrated"] == 3
+    assert rec["sigma"] == pytest.approx(T.CAL_SIGMA_FLOOR)            # the pool's own fit is still recorded
+    pool.run_window = None
+    assert pool.record()["lent_width"] == "pool" and pool.record()["n_files_calibrated"] == 0
     rows = [(nf, AD, 0.6 + 0.02 * ((k % 3) - 1), 1e5, False, "Good") for k, nf in enumerate(NEUTRALS[:16])]
     at = _file("o", rows, tier=False)
     led = at.copy(deep=True)
@@ -289,6 +315,40 @@ def test_the_o11_flag_falls_only_on_rows_still_committing_their_tier_time_readin
     assert "below-assignability" not in str(by.at["x-1", "tier_reason"])
 
 
+def test_the_skeleton_cap_record_is_taken_on_the_re_run_tier_stage(monkeypatch):
+    """stats nox_skeleton_gate is the tier stage's record (assign._stage_tiers): the pooled re-run's
+    verdicts on the tier-time ledger, not the finished ledger a later stage rewrote."""
+    seen = {}
+
+    def spy(led, profile):
+        seen.update(zip(led["peak_id"], led["tier_reason"]))
+        return {"capped": 0, "noted": 1}
+    monkeypatch.setattr(T, "nox_skeleton_summary", spy)
+    pool = CP.pool_calibration(_batch())
+    at = _file("k", [(nf, AD, 0.0, 1e5, False, "Good") for nf in NEUTRALS[:3]], tier=False)
+    led = at.copy(deep=True)
+    T.apply_tiers(led)
+    i0 = led.index[led["peak_id"] == "k-0"][0]
+    led.at[i0, "tier_reason"] = "a later stage's re-read"
+    out = CP.apply_pool(led, pool, _inputs_for(at, "k", levels=False), audit=[], log=lambda *a: None)
+    assert out["nox_skeleton_gate"] == {"capped": 0, "noted": 1}
+    assert "batch-pooled" in seen["k-0"] and seen["k-0"] != "a later stage's re-read"
+
+
+def test_clear_and_displace_reset_the_rows_tier_calibration():
+    """A row that stops being an M0 (cleared, displaced to an isotopologue) loses its tier's source,
+    as it loses its tier; a ledger that never had the column does not get one."""
+    led = _batch(n_files=1)["s0"]
+    L.clear_assignment(led, "s0-0", reason="a test")
+    L.displace_to_isotopologue(led, "s0-1", "s0-2", iso_label="13C")
+    by = led.set_index("peak_id")
+    assert by.loc[["s0-0", "s0-1"], T.TIER_CALIBRATION].isna().all()
+    assert by.at["s0-2", T.TIER_CALIBRATION] == T.CAL_SOURCE_NONE
+    bare = _file("z", [(NEUTRALS[0], AD, 0.0, 1e5, False, "Good")], tier=False)
+    L.clear_assignment(bare, "z-0", reason="a test")
+    assert T.TIER_CALIBRATION not in bare.columns
+
+
 def test_apply_pool_does_nothing_without_a_calibration_or_a_tier_time_ledger():
     led = _batch(n_files=1)["s0"]
     before = led.copy(deep=True)
@@ -317,7 +377,10 @@ def _batch_table(sids, mzs, height=500.0):
                               mz=float(mz), height=height) for i, s in enumerate(sids) for mz in mzs])
 
 
-def _run_batch(tmp_path, monkeypatch, *, iso_files=8, lines=None, calibrated=False):
+def _run_batch(tmp_path, monkeypatch, *, iso_files=8, lines=None, calibrated=False, refs=None):
+    """`calibrated`: True = every file calibrates alone; a set = the files (in the order they are
+    assigned) that do; False = none. `refs`: a list the uncalibrated files' PoolInputs are weakly
+    referenced into."""
     from peaky.batch import assign_batch as AB
     from peaky.io import io_mascope as IO
     sids = [f"f{i}" for i in range(4)]
@@ -335,16 +398,19 @@ def _run_batch(tmp_path, monkeypatch, *, iso_files=8, lines=None, calibrated=Fal
         ri = EV.file_run_inputs(sample_id=sid, reagent="Br", context="ambient-air", resolution=ORBI,
                                 height_gate_cps=10.0, degeneracy_cal=None)
         EV.apply_levels(led, run_inputs=ri)
-        if calibrated:
+        if calibrated is True or (calibrated and k in calibrated):
             return {"ledger": led, "plausibility_audit": [], "summaries": {}, "problems": [],
                     "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
                               "degeneracy_cal": {"mu": 0.0, "sigma": 0.3},
                               "tier_calibration": T.CAL_SOURCE_PER_FILE},
                     "pool_inputs": None}
+        inputs = CP.PoolInputs(at_tiers=at, adducts=[AD], level_inputs=ri)
+        if refs is not None:
+            refs.append(weakref.ref(inputs))
         return {"ledger": led, "plausibility_audit": [], "summaries": {}, "problems": [],
                 "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0, "degeneracy_cal": None,
                           "tier_calibration": T.CAL_SOURCE_NONE},
-                "pool_inputs": CP.PoolInputs(at_tiers=at, adducts=[AD], level_inputs=ri)}
+                "pool_inputs": inputs}
 
     monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
     monkeypatch.setattr(IO, "fetch_peaks", lambda client, sid, use_cache=True: pd.DataFrame(
@@ -365,6 +431,7 @@ def test_a_batch_of_uncalibrated_files_is_tiered_and_levelled_on_its_pooled_core
     assert n >= 2 and tc["files"] == {"per_file": 0, "pooled": n, "none": 0}
     pool = tc["pool"]
     assert pool["used"] is True and pool["n_ions"] == 16 and pool["reason"] is None
+    assert pool["lent_width"] == "pool" and pool["n_files_calibrated"] == 0
     assert set(pool["retiered_files"]) == {p["sample_id"] for p in summ["per_file"]}
     for p in summ["per_file"]:
         assert p["tier_calibration"] == "pooled"
@@ -386,8 +453,79 @@ def test_a_batch_of_uncalibrated_files_is_tiered_and_levelled_on_its_pooled_core
     assert T.TIER_CALIBRATION in merged.columns and (merged[T.TIER_CALIBRATION] == "pooled").all()
 
 
+def test_a_partly_calibrated_batch_lends_the_run_sigma(tmp_path, monkeypatch):
+    """One file calibrated alone (sigma 0.3): the others are lent that width about their own centres,
+    not the pooled sigma (which also carries the spread between files)."""
+    lines = []
+    _run_batch(tmp_path, monkeypatch, calibrated={0}, lines=lines)
+    summ = json.load(open(tmp_path / "batch_summary.json"))
+    tc = summ["tier_calibration"]
+    n = len(summ["per_file"])
+    assert tc["files"] == {"per_file": 1, "pooled": n - 1, "none": 0} and tc["source"] == "pooled"
+    pool = tc["pool"]
+    assert pool["used"] is True and pool["lent_width"] == "run" and pool["n_files_calibrated"] == 1
+    assert pool["lent_sigma"] == pytest.approx(0.3) and pool["sigma"] != pytest.approx(0.3)
+    pooled = [p for p in summ["per_file"] if p["tier_calibration"] == "pooled"]
+    assert len(pooled) == n - 1
+    for p in pooled:
+        assert p["degeneracy_cal"]["sigma"] == pytest.approx(0.3)
+        assert p["tier_pool"]["width"] == "run" and p["tier_pool"]["centre"] == "file"
+        assert p["tier_pool"]["demoted"] == 1
+    assert any("a file is lent the run sigma 0.300 ppm of the 1 file(s)" in ln for ln in lines)
+
+
+def test_the_merge_vote_reads_the_pooled_files_as_re_tiered(tmp_path, monkeypatch):
+    """The pool is applied before a stage's files are folded: the vote class of every pooled file is
+    read off its re-tiered ledger (the degeneracy stamps measured in the lent window, the off-calibration
+    row Candidate), so the pooled calibration feeds the merge vote too."""
+    seen = []
+    real = EV.vote_classes
+
+    def spy(trim_frame, **kw):
+        m0 = trim_frame[trim_frame["role"] == "M0"]
+        seen.append((bool(pd.to_numeric(m0["degeneracy_density"], errors="coerce").notna().all()),
+                     set(m0.loc[m0["neutral_formula"] == "C17H28O6", "tier"])))
+        return real(trim_frame, **kw)
+    monkeypatch.setattr(EV, "vote_classes", spy)
+    _run_batch(tmp_path, monkeypatch)
+    assert seen and all(measured and tiers == {"Candidate"} for measured, tiers in seen)
+
+
+def test_the_tier_time_copies_are_released_before_the_fold(tmp_path, monkeypatch):
+    """The pooled step is the only reader of a run's pool inputs (its tier-time ledger copy): by the
+    time the stage's files are folded (the vote class is read in the fold) none is still held."""
+    refs, alive = [], []
+    real = EV.vote_classes
+
+    def spy(trim_frame, **kw):
+        gc.collect()
+        alive.append(sum(r() is not None for r in refs))
+        return real(trim_frame, **kw)
+    monkeypatch.setattr(EV, "vote_classes", spy)
+    _run_batch(tmp_path, monkeypatch, refs=refs)
+    assert len(refs) >= 2 and alive and set(alive) == {0}
+
+
+def test_the_batch_worker_passes_the_keep_flag_to_the_run(monkeypatch):
+    """A worker run keeps the pool inputs unless the batch says its pool has nothing to lend."""
+    from peaky.batch import assign_batch as AB
+    seen = []
+
+    def fake(sid, context="ambient-air", **kw):
+        seen.append(kw.get("keep_pool_inputs"))
+        return {"ledger": pd.DataFrame(), "stats": {}}
+    monkeypatch.setattr(A, "run", fake)
+    monkeypatch.setattr(AB, "_W", {"context": "ambient-air", "reflists_active": None, "base_kw": {},
+                                   "ts_path": None, "ts": None}, raising=False)
+    AB._assign_one("w1")
+    AB._assign_one("w2", False)
+    assert seen == [True, False]
+
+
 def test_a_batch_whose_pool_falls_short_stays_unlevelled_and_says_why(tmp_path, monkeypatch):
-    _run_batch(tmp_path, monkeypatch, iso_files=1)
+    lines = []
+    _run_batch(tmp_path, monkeypatch, iso_files=1, lines=lines)
+    assert any(ln.startswith("[calpool] WARNING: ") and "the pooled core needs 15" in ln for ln in lines)
     summ = json.load(open(tmp_path / "batch_summary.json"))
     tc = summ["tier_calibration"]
     assert tc["files"]["pooled"] == 0 and tc["files"]["none"] == len(summ["per_file"]) and tc["source"] == "none"
@@ -411,9 +549,9 @@ def test_a_calibrated_batch_builds_no_pool(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- the per-file run's side
-def _run_one(monkeypatch, rows, sid):
+def _run_one(monkeypatch, rows, sid, *, keep=True):
     """assign.run on a synthetic peak table with the real degeneracy, tier and evidence stages after a
-    stand-in pass that commits `rows` (as in _file)."""
+    stand-in pass that commits `rows` (as in _file); `keep`: as a batch's per-file run (keep_pool_inputs)."""
     import pickle
     from peaky.io import io_mascope as IO
     led0 = _file(sid, rows, tier=False)
@@ -436,7 +574,7 @@ def _run_one(monkeypatch, rows, sid):
                                                                                             "evidence")]
     monkeypatch.setattr(A, "_STAGES", stages)
     try:
-        res = A.run(sid, adducts=[AD], peaks=peaks, log=lambda *a: None)
+        res = A.run(sid, adducts=[AD], peaks=peaks, log=lambda *a: None, keep_pool_inputs=keep)
     finally:
         IO.unregister_offline_sample(sid)
     return res, pickle.loads(pickle.dumps(res.get("pool_inputs")))
@@ -455,6 +593,16 @@ def test_an_uncalibrated_run_returns_its_pool_inputs_and_a_calibrated_one_none(m
     res, pin = _run_one(monkeypatch, rows, "pool-c")
     assert res["stats"]["degeneracy_cal"] is not None and pin is None
     assert res["stats"]["tier_calibration"] == T.CAL_SOURCE_PER_FILE
+
+
+def test_a_single_sample_run_keeps_no_pool_inputs(monkeypatch):
+    """Only a batch's per-file run asks for the pool inputs: a single-sample run (never pooled) returns
+    no such key, so its manifest (every result key but the ledger) carries none."""
+    rows = [(nf, AD, 0.0, 1e5, True, "Good") for nf in NEUTRALS[:6]]
+    res, _ = _run_one(monkeypatch, rows, "pool-single", keep=False)
+    assert res["stats"]["degeneracy_cal"] is None and "pool_inputs" not in res
+    manifest = json.dumps({k: v for k, v in res.items() if k != "ledger"}, default=str)   # as the CLI writes it
+    assert "pool_inputs" not in manifest and "PoolInputs" not in manifest
 
 
 def test_the_batch_word_is_the_weakest_files_source():

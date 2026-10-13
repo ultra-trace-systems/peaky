@@ -1084,11 +1084,13 @@ def _worker_init(context, reflists_active, base_kw, ts_path, reagents=None, axis
           "base_kw": base_kw, "ts_path": ts_path, "ts": None}
 
 
-def _assign_one(sid: str) -> dict:
+def _assign_one(sid: str, keep_pool_inputs: bool = True) -> dict:
     """Top-level (spawn-picklable) worker: assign ONE sample and return the
     picklable pieces the parent reduces. The parent writes the per-file CSV and
     computes the offset -- in sample order -- so all disk I/O and the align() input
-    order stay single-writer and deterministic."""
+    order stay single-writer and deterministic. `keep_pool_inputs`: the run keeps
+    what a batch-pooled tier calibration re-applies (assign.run; off once the
+    batch's pool is known to have no calibration)."""
     import copy
     from peaky.assignment import assign as A
     kw = dict(_W["base_kw"])
@@ -1100,7 +1102,7 @@ def _assign_one(sid: str) -> dict:
         kw["ts_peaks"] = _W["ts"]
     lines: list = []
     res = A.run(sid, context=_W["context"], reflists_active=_W["reflists_active"],
-                log=lines.append, **kw)
+                log=lines.append, keep_pool_inputs=keep_pool_inputs, **kw)
     return {"sid": sid, "ledger": res["ledger"],
             "plausibility_audit": res.get("plausibility_audit") or [],
             "stats": dict(res.get("stats", {})), "log": lines,
@@ -2048,7 +2050,15 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # first time a per-file stage returns a file its own core could not calibrate,
     # from every per-file ledger assigned so far; then lent to every such file
     pool_ledgers: dict = {}        # sid -> the per-file stages' ledgers, as their runs returned them
+    pool_cals: dict = {}           # sid -> (mu, sigma) of each file that calibrated alone
     pool_state: dict = {"pool": None, "files": {}}   # the Pool; sid -> what apply_pool did
+
+    def _keep_pool_inputs() -> bool:
+        """Whether a per-file run keeps what the pooled calibration re-applies
+        (assign.run keep_pool_inputs: an uncalibrated file's tier-time ledger
+        copy): until the batch's pool is decided, and after only when it has a
+        calibration to lend."""
+        return pool_state["pool"] is None or pool_state["pool"].cal is not None
 
     def _vote_class(led, stats):
         """The reading's vote class over one file's ledger AS ITS RUN RETURNED IT
@@ -2134,16 +2144,28 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         calibrate the tier engine (stats `degeneracy_cal` null) is given the
         batch's pooled calibration (calpool.apply_pool) when the pool has one --
         its degeneracy, tiers, degeneracy-keyed flags and its own evidence level
-        re-applied, its stats saying so (`tier_calibration` 'pooled', the pooled
-        `degeneracy_cal`, which the pooled levels then read as its window). A
-        calibrated file is untouched; with no uncalibrated file the pool is
-        never built."""
+        re-applied, its stats saying so (`tier_calibration` 'pooled', the lent
+        `degeneracy_cal`, which the pooled levels then read as its window). The
+        width lent is the run sigma of the files that calibrated alone, when any
+        did (`Pool.run_window`). A calibrated file is untouched; with no
+        uncalibrated file the pool is never built. Every run's `pool_inputs`
+        (the tier-time ledger copy) is released here, before the fold."""
+        try:
+            _pool_tiers_apply(runs)
+        finally:
+            for r in runs:
+                r["pool_inputs"] = None
+
+    def _pool_tiers_apply(runs: list) -> None:
         from peaky.assignment import calpool as _CP
         from peaky.assignment import ledger as _L
         from peaky.assignment import tiers as _TP
         from peaky.chem import reagents as _RGP
         for r in runs:
             pool_ledgers[r["sid"]] = r["ledger"]
+            _own = (r["stats"] or {}).get("degeneracy_cal")
+            if _own is not None:
+                pool_cals[r["sid"]] = (float(_own["mu"]), float(_own["sigma"]))
         need = [r for r in runs if "degeneracy_cal" in (r["stats"] or {}) and r["stats"]["degeneracy_cal"] is None]
         if not need:
             return
@@ -2152,9 +2174,17 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             _masses = [m for (_l, m, _f) in _RGP.build_library(_key)] if _key else []
             pool_state["pool"] = _CP.pool_calibration(
                 pool_ledgers, polarity="positive" if prof.polarity == "+" else "negative",
-                reagent_masses=_masses, abs_floor_mda=_TP._abs_floor(cfg))
-            log(f"[calpool] {len(need)} file(s) uncalibrated on their own core: "
-                f"{pool_state['pool'].describe()}")
+                reagent_masses=_masses, abs_floor_mda=_TP._abs_floor(cfg), klass=cfg.instrument_class)
+            if pool_cals:
+                # the files that calibrated alone measure one file's width directly
+                pool_state["pool"].run_window = (float(np.median([c[0] for c in pool_cals.values()])),
+                                                 float(np.median([c[1] for c in pool_cals.values()])),
+                                                 len(pool_cals))
+            log(f"[calpool] {'' if pool_state['pool'].cal is not None else 'WARNING: '}{len(need)} file(s) "
+                f"uncalibrated on their own core: {pool_state['pool'].describe()}")
+        elif pool_state["pool"].cal is None:
+            log(f"[calpool] WARNING: {len(need)} more file(s) uncalibrated on their own core; the batch's "
+                f"pool is not used: {pool_state['pool'].reason}")
         pool = pool_state["pool"]
         if pool.cal is None:
             return
@@ -2166,18 +2196,19 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 log(f"[calpool]   {r['sid']}: no pooled re-tier (its run kept no tier-time ledger)")
                 continue
             st_ = r["stats"]
-            # the window the file was lent: the pooled sigma about its own centre
+            # the window the file was lent: the lent width about its own centre
             st_["degeneracy_cal"] = {"mu": res_p["cal"]["mu"], "sigma": res_p["cal"]["sigma"]}
             st_["tier_calibration"] = _TP.CAL_SOURCE_POOLED
-            st_["tier_pool"] = {"centre": res_p["cal"]["centre"],
+            st_["tier_pool"] = {"centre": res_p["cal"]["centre"], "width": res_p["cal"]["width"],
                                 "retiered": res_p["tiers"]["retiered"], "demoted": res_p["tiers"]["demoted"],
                                 "kept": res_p["tiers"]["kept"], "below": res_p["below"],
                                 "o_monster": res_p["o_monster"],
                                 "degenerate": res_p["degeneracy"]["degenerate"]}
             st_["by_tier"] = _L.stats(r["ledger"]).get("by_tier", st_.get("by_tier"))
             if st_.get("nox_skeleton_gate") is not None:
-                # the skeleton cap as the pooled tier stage left it
-                st_["nox_skeleton_gate"] = _TP.nox_skeleton_summary(r["ledger"], r["pool_inputs"].profile)
+                # the skeleton cap as the pooled tier stage left it (taken where the
+                # run takes it: before later stages rewrote rows)
+                st_["nox_skeleton_gate"] = res_p["nox_skeleton_gate"]
             pool_state["files"][r["sid"]] = st_["tier_pool"]
 
     def _assign_files(ids: list, stage: str, n_jobs: int) -> None:
@@ -2208,11 +2239,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                 # smaller than cal_min_n -- so one shared object would gate file
                 # N+1's mass z-scores on file N's calibration.
                 kw = dict(assign_kw, cfg=copy.deepcopy(cfg))
-                res = A.run(sid, context=context, log=log,
-                            reflists_active=reflists_active, **kw)
+                res = A.run(sid, context=context, log=log, reflists_active=reflists_active,
+                            keep_pool_inputs=_keep_pool_inputs(), **kw)
                 runs.append({"sid": sid, "ledger": res["ledger"], "plaus": res.get("plausibility_audit") or [],
                              "stats": dict(res.get("stats", {})), "scoring": res.get("pattern_scoring"),
-                             "pool_inputs": res.get("pool_inputs")})
+                             "pool_inputs": res.pop("pool_inputs", None)})
                 # same line the parallel branch logs per completed future: it is what
                 # advances a progress reader's samples bar (peaky/progress.py)
                 log(f"[assign_batch] ({i}/{len(sample_ids)}) done {sid}")
@@ -2241,7 +2272,8 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                     initializer=_worker_init,
                     initargs=(context, reflists_active, base_kw, ts_path,
                               P.registry_extras(), axis_args)) as ex:
-                futs = {ex.submit(_assign_one, sid): sid for sid in ids}
+                keep = _keep_pool_inputs()
+                futs = {ex.submit(_assign_one, sid, keep): sid for sid in ids}
                 for done, fut in enumerate(as_completed(futs), offset + 1):
                     out = fut.result()
                     results[out["sid"]] = out
@@ -2254,7 +2286,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                     log(ln)
                 runs.append({"sid": sid, "ledger": out["ledger"], "plaus": out["plausibility_audit"],
                              "stats": out["stats"], "scoring": out.get("pattern_scoring"),
-                             "pool_inputs": out.get("pool_inputs")})
+                             "pool_inputs": out.pop("pool_inputs", None)})
         # the batch-pooled tier calibration for the files that could not calibrate
         # alone (calpool), then the fold, in sample_ids order either path
         _pool_tiers(runs)
