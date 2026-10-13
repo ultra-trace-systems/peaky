@@ -11,6 +11,7 @@ from peaky.chem import isotopes as ISO
 from peaky.assignment import blocked as BL
 from peaky.assignment import ledger as L
 from peaky.assignment import masscal as MC
+from peaky.assignment import satellites as SAT
 from peaky.assignment import series_gka as G
 
 
@@ -675,12 +676,22 @@ def commit_winners(
     confidence_suffix: str = "",
     claim_unexplained_only: bool = False,
     only_peaks: set | None = None,
+    line_gate: str | None = "refuse",
 ) -> dict:
     """Commit arbitration winners + their isotope children into the ledger.
     Skips peaks that are locked or already own a better assignment. Returns a
     summary dict. A winner a gate refuses (the score floor, the calibrated mass
     gate, the minor-channel corroboration, a Reject confidence) is noted as the
-    peak's blocked reading (blocked.note_winner; a no-op outside a run)."""
+    peak's blocked reading (blocked.note_winner; a no-op outside a run).
+
+    `line_gate` applies the commit contract (satellites.own_line_verdict) to a
+    winner whose neutral carries S / Cl / Br / Si: 'refuse' (the default) does
+    not commit one whose own line, predicted at >= COMMIT_LINE_X_FLOOR x the
+    resolved height gate, is absent -- the reason goes on the peak's row
+    (satellites.record_refusal) and into rejected['own_line'] -- and keeps
+    today's outcome where the line is untestable; 'strict' also commits an
+    untestable one at Low confidence at most (Candidate); None skips the
+    contract. Inert off an Orbitrap-class run (satellites.LineGate)."""
     win = arb.get("winners", pd.DataFrame())
     kids = arb.get("iso_children", pd.DataFrame())
     if len(win):
@@ -689,6 +700,22 @@ def commit_winners(
         win = win.sort_values("eff_score", ascending=False, na_position="last")
     committed, locked_ids = [], []
     rejected = {"nan_ppm": 0, "mass_gate": 0, "minor_channel": 0}
+    gate = None            # the file's commit contract, built on the first heteroatom winner
+    n_own_line = n_line_capped = 0
+    # the scorer's heteroatom lines are the parent's own only by the envelope
+    # sweep's test (postprocess.scored_line_is_own: a calibrated Orbitrap-class
+    # run; passes 0 and 1 run uncalibrated and keep the scorer's reading): a
+    # line that fails it is neither recorded on the parent nor attached to it
+    n_not_own = 0
+    if len(kids) and len(win) and SAT.orbitrap_class(cfg) and SAT.calibrated_sigma(cfg) is not None:
+        from .postprocess import scored_line_is_own
+        ion_of = dict(zip(win["peak_id"], win["ion_formula"]))
+        cache: dict = {}
+        keep = [scored_line_is_own(ledger, k["parent_peak_id"], k["peak_id"], ion_of.get(k["parent_peak_id"]),
+                                   k["iso_label"], cfg, cache=cache) for _, k in kids.iterrows()]
+        n_not_own = len(keep) - sum(keep)
+        if n_not_own:
+            kids = kids[pd.Series(keep, index=kids.index)]
     # series/GKA proposals and known-neutral completions carry structural
     # evidence by construction (chain membership / an already-assigned neutral)
     series_like = ("series" in method) or ("gka" in method) or ("completion" in method)
@@ -779,6 +806,19 @@ def commit_winners(
         if conf == "Reject":
             BL.note_winner(w, f"confidence Reject {w['raw_score']:.2f}<{cfg.tau_suspect:.2f} (pass {pass_no})")
             continue
+        if line_gate and any(C.parse_formula(str(w["neutral"])).get(el, 0)
+                             for el in SAT.COMMIT_LINE_ELEMENTS):
+            gate = gate or SAT.LineGate(ledger, cfg)
+            lv = gate.row_verdict(ledger, pid, str(w["neutral"]), w.get("ion_formula"))
+            if lv["verdict"] == SAT.LG_REFUSED:
+                n_own_line += 1
+                SAT.record_refusal(ledger, pid, reading=f"{w['neutral']} {w['adduct']}",
+                                   route=f"pass {pass_no} {method}", why=lv["why"])
+                continue
+            if lv["verdict"] == SAT.LG_UNTESTABLE and line_gate == "strict" \
+                    and not conf.startswith(("Low", "Suspect")):
+                conf = "Low" + conf[len(conf.split(" ")[0]):]
+                n_line_capped += 1
         commentary = _commentary(w, pass_no, method)
         try:
             L.commit_assignment(
@@ -862,13 +902,21 @@ def commit_winners(
                 continue
     if locked_ids:
         L.lock_peaks(ledger, locked_ids)
-    return {
+    # the contract's counts, only where it acted (a summary it never touched reads as before)
+    if n_own_line:
+        rejected["own_line"] = n_own_line
+    if n_line_capped:
+        rejected["own_line_untestable_low"] = n_line_capped
+    out = {
         "committed": len(committed),
         "locked": len(locked_ids),
         "iso_attached": n_iso_attached,
         "iso_displaced": n_displaced,
         "rejected": rejected,
     }
+    if n_not_own:
+        out["iso_not_own"] = n_not_own
+    return out
 
 
 _RI_CACHE: set | None = None

@@ -21,7 +21,7 @@ from peaky.assignment import series_gka as G
 from .config import PassConfig
 from .core import (ABSTRACTION_ADDUCTS, _f, _mech_to_adduct, arbitrate,
                    commit_winners, confidence_label)
-from .postprocess import _DBR, _peak_near, _si_m1_consistent
+from .postprocess import _DBR, _peak_near, _si_m1_consistent, scored_line_is_own
 
 __all__ = [
     "_silanediol_series",
@@ -341,6 +341,31 @@ _D37CL = 1.9970499
 # source produces in every spectrum. Formulas in peaky's canonical Hill order.
 _ATMOS_CORROBORATE = frozenset({"H2O4S", "CH4O3S"})
 
+#: the pass-0 families whose rule DEMANDS corroboration beyond the exact mass
+#: (a second ion channel, or the element's own envelope -- the silanediols'
+#: Si M+1 line at >= SI_M1_MIN_FRAC of its prediction, `_si_m1_consistent`);
+#: every other family commits on exact mass alone (the PFCAs, the
+#: nitroaromatics, the C0 acids, reactive iodine ...)
+CORROBORATED_KNOWN_FAMILIES = frozenset({"organophosphate", "organothiophosphate", "indoor_sulfur",
+                                         "cyclosiloxane", "chlorinated_paraffin",
+                                         "contaminant:silanediol"})
+
+
+def known_demands_corroboration(family, formula) -> bool:
+    """Whether the pass-0 rule of this known species asks for more than the
+    exact mass: its family is one of CORROBORATED_KNOWN_FAMILIES, or it is one
+    of the gated atmospheric species (`_ATMOS_CORROBORATE`, compared in
+    canonical Hill order whatever spelling the record carries). The batch's
+    known-species cap (assign_batch.lock_known_species) applies to these
+    species, and to them only."""
+    if str(family or "") in CORROBORATED_KNOWN_FAMILIES:
+        return True
+    try:
+        hill = C.format_formula(C.parse_formula(str(formula or "")))
+    except Exception:  # noqa: BLE001 -- an unparseable formula: not a gated species
+        return False
+    return hill in _ATMOS_CORROBORATE
+
 
 _RECOVERABLE_KNOWN_FAMS = {"chlorinated_paraffin"}
 
@@ -496,6 +521,8 @@ def run_pass0_known(
         ].unique()
     )
     mzs = ledger["mz"]
+    # the commit contract (satellites.own_line_verdict; Orbitrap-class, inert elsewhere)
+    line_gate = _SAT.LineGate(ledger, cfg)
     for _, r in base.iterrows():
         ppm = r["ppm_error"]
         # the known-list privilege still requires the MASS, but judged against the
@@ -679,6 +706,28 @@ def run_pass0_known(
                     # 29Si line alone, and the 30Si line) like every other refusal
                     _lead(**_twin_verdict(ledger, pid, _c0, cfg))
                     continue
+            # the commit contract: a known S / Cl / Br / Si species whose own line
+            # the file would show (predicted at >= COMMIT_LINE_X_FLOOR x the gate)
+            # and does not is not locked here. Its lead votes against the species
+            # at the batch only where the line was predicted at the twin test's
+            # own TWIN_REFUTE_X_FLOOR (a refutation); under it the lead is
+            # 'deferred' -- the per-file list censors such a line.
+            lv = line_gate.row_verdict(ledger, pid, r["compound_formula"], r["ion_formula"])
+            if lv["verdict"] == _SAT.LG_REFUSED:
+                xs = [rec["x"] for rec in lv["lines"] if rec["status"] in ("absent", "low")]
+                hard = bool(xs) and max(xs) >= _SAT.TWIN_REFUTE_X_FLOOR
+                out["line_refused"] = out.get("line_refused", 0) + 1
+                log(f"[pass0] skip {r['compound_formula']} @{float(r['sample_peak_mz']):.4f}: its own "
+                    f"line is absent where the file would show it ({lv['why']})")
+                _lead(verdict="refuted" if hard else "deferred",
+                      twin=next((el for el, ev in lv["elements"].items() if ev == _SAT.LG_REFUSED), None),
+                      why=lv["why"],
+                      summary=("own diagnostic line absent where predicted above the floor" if hard else
+                               f"own diagnostic line absent, predicted under {_SAT.TWIN_REFUTE_X_FLOOR:g}x "
+                               "the floor (censored)"))
+                _SAT.record_refusal(ledger, pid, reading=f"{r['compound_formula']} {_mech_to_adduct(r)}",
+                                    route=f"pass 0 known:{fam}", why=lv["why"])
+                continue
             conf = (
                 f"Good ({tag})"
                 if float(r["ion_score"]) >= 0.7 or n_kids >= 2
@@ -1908,10 +1957,17 @@ def run_pass3(
                 context=profile.label,
                 cfg=cfg,
                 lock=False,
-                min_raw_score=cfg.tau_suspect,
+                # pass 1's score bar: a family widens the element box, not the
+                # score bar (at tau_suspect, siloxane Si3 readings whose 29Si line
+                # no file showed took bright S lines under the pass-1 bar)
+                min_raw_score=cfg.tau_low,
                 confidence_suffix=fam_key,
                 claim_unexplained_only=True,
                 only_peaks=fam_members.get(fam_key),
+                # its own S / Cl / Br / Si line where the file would show it
+                # (satellites.own_line_verdict); a family declaring
+                # line_gate='strict' commits an untestable one Low at most
+                line_gate=fam.get("line_gate", "refuse"),
             )
         except Exception as e:
             log(f"[pass3:{fam_key}] FAILED: {type(e).__name__}: {e}")
@@ -2097,6 +2153,9 @@ def run_pass_certified(
     ee_ctx = (_SAT.evidence_context(ledger, klass="orbitrap", cal_sigma=getattr(cfg, "cal_sigma", None),
                                     resolution=resolving_power)
               if klass == "orbitrap" else None)
+    # the commit contract (satellites.own_line_verdict; Orbitrap-class, inert elsewhere)
+    line_gate = _SAT.LineGate(ledger, cfg, resolution=resolving_power)
+    own_cache: dict = {}       # the members' envelopes, for the own-line test of their scored lines
 
     # enumerate expanded-box candidates per certificate (off-grid P/S/Cl only:
     # plain CHON near the core is pass-1's territory and already lost there)
@@ -2203,6 +2262,23 @@ def run_pass_certified(
                 f"{'/'.join(sorted(h.adduct for h in cert.hits))} pair differs by the reagent acid "
                 f"(the ordinary cluster pattern) and {why}")
             continue
+        # the commit contract over the member ions: an element any member shows
+        # stands; one no member shows while a member's file would show it (its
+        # line predicted at >= COMMIT_LINE_X_FLOOR x the resolved gate, absent)
+        # refuses the certificate -- nothing committed, nothing displaced, the
+        # reason on the unexplained members' rows. An F reading the certificate
+        # box cannot offer is then left to the late families.
+        if own:
+            lv = _SAT.pool_line_verdicts(line_gate.row_verdict(ledger, h.peak_id, winner, member_ion.get(h.peak_id))
+                                         for h in cert.hits)
+            if lv["verdict"] == _SAT.LG_REFUSED:
+                out["line_refused"] = out.get("line_refused", 0) + 1
+                log(f"[pass7] {winner} @core {cert.core_mass:.4f} not committed: its own line is absent "
+                    f"where the file would show it ({lv['why']})")
+                for h in cert.hits:
+                    _SAT.record_refusal(ledger, h.peak_id, reading=f"{winner} {h.adduct}",
+                                        route="pass 7 certified", why=lv["why"])
+                continue
         # optional TS corroboration (guarded: fully optional)
         ts_note = ""
         if ts_peaks is not None and len(ts_peaks):
@@ -2315,6 +2391,14 @@ def run_pass_certified(
                 for _, k in kids[(kids["compound_formula"] == winner)
                                  & (kids["ion_formula"] == h_ion)
                                  & (kids["sample_peak_id"] != h.peak_id)].iterrows():
+                    # a heteroatom line is the member's own only by the envelope
+                    # sweep's test (calibrated Orbitrap-class run): the scorer's
+                    # window took a line 2.5-3.2 ppm off a P/S certificate's 34S
+                    # position as its 34S line
+                    if not scored_line_is_own(ledger, h.peak_id, k["sample_peak_id"], h_ion,
+                                              k["iso_label"], cfg, cache=own_cache):
+                        out["iso_not_own"] = out.get("iso_not_own", 0) + 1
+                        continue
                     try:
                         L.attach_isotopologue(ledger, k["sample_peak_id"], h.peak_id,
                                               iso_label=k["iso_label"],

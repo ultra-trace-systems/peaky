@@ -41,7 +41,8 @@ from peaky.assignment import solvent_clusters
 from peaky.assignment import tiers
 from peaky.batch import timeseries
 
-__version__ = "0.7.2"  # + every unexplained row says why (blocked.py: blocked_reading / blocked_by)
+__version__ = "0.7.2"  # + every unexplained row says why (blocked.py: blocked_reading / blocked_by);
+#                        + cfg.width_model: the run's width model for every stage's commit contract
 #                        0.7.1 the run profile into the tier stage (the NOx-skeleton cap, stats["nox_skeleton_gate"]); 0.7.0 the Orbitrap side-lobe guard before pass 0, the run's
 #                        context profile (the NOx-skeleton switches) and the
 #                        element_evidence stage (clears and locks a heteroatom
@@ -883,6 +884,9 @@ def run(sample_id: str, context: str = "ambient-air", *,
     raw = io_mascope.fetch_peaks(client, sample_id, use_cache=use_cache)
     led = ledger.new_ledger(raw)
     width_model = _width_model(resolving_power, client, sample_id, raw, log)
+    # every stage's commit contract reads the run's width model off the cfg
+    # (satellites.LineGate: the blend guard's reach is one FWHM of THIS file)
+    cfg.width_model = width_model
     # The sample's noise edge (p1 of its picked heights) anchors every height
     # gate in the passes (cfg.height_cutoff = x_edge * edge): absolute cps
     # thresholds do not transfer between instruments/modes (see passes.config).
