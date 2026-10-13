@@ -265,6 +265,41 @@ def test_the_labelled_rescue_notes_the_sibling_gate():
     assert b.gate == "labeled:sibling" and b.neutral == neu and b.score == pytest.approx(0.95)
 
 
+@pytest.mark.parametrize("context, family, adduct, neutral, gated", [
+    ("ambient-air", "organosulfate", "[M-H]-", "C5H10N2O8", False),     # O/C 1.60: a profile-default family
+    ("uronium", "organochlorine", "[M+H]+", "C5H9ClO8", True),          # the 37Cl-gated family, Cl lifted
+])
+def test_a_pass3_familys_context_rejection_is_the_peaks_blocked_reading(monkeypatch, context, family, adduct,
+                                                                        neutral, gated):
+    """Pass 3's context filter is an exit for every family: the reading it
+    rejects for an unexplained peak is the peak's blocked reading. An
+    isotope-gated family filters under the gate's profile (its element's cap
+    lifted), so its reading is refused for its O/C, not for its chlorine."""
+    import dataclasses
+    from peaky.chem import isotopes as ISO
+    prof = X.get_context(context)
+    mz = C.ion_mz(neutral, adduct)
+    rows = [("p", mz, 5e4)] + ([("p37", mz + ISO.D_37CL, ISO.R_37CL_PER_CL * 5e4)] if gated else [])
+    led = L.new_ledger(pd.DataFrame(rows, columns=["peak_id", "mz", "height"]))
+    assert X.family_iso_gate(family) == ("Cl" if gated else None)
+    assert not X.filter_by_profile(neutral, prof)[0]
+    monkeypatch.setattr(PD, "_enumerate", lambda client, mzs, mech_ids, ranges, cfg, adducts, **kw: {neutral})
+    monkeypatch.setattr(PD, "_mech_ids_for", lambda client, adducts: [])
+    monkeypatch.setattr(PD.IO, "score_candidates", lambda *a, **k: pd.DataFrame())
+    cfg = PCfg.PassConfig(height_cutoff_cps=10)
+    cfg.instrument_class = "orbitrap"
+    rec = BL.start()
+    PD.run_pass3(None, "s", led, dataclasses.replace(prof, pass3_families=(family,)), None, cfg, [adduct],
+                 reagent=None, log=lambda *a: None)
+    b = BL.best(rec.blocks.get("p"))
+    assert b is not None and b.neutral == neutral and b.adduct == adduct, b
+    BL.stamp(led, log=lambda *a: None)
+    by = led.set_index("peak_id")
+    assert L.role_of(led, "p") == L.ROLE_UNEXPLAINED
+    assert by.at["p", "blocked_by"] == "context:O/C 1.60>1.50", by.at["p", "blocked_by"]
+    assert by.at["p", "blocked_reading"].startswith(f"{neutral} {adduct}")
+
+
 # --------------------------------------------------------------------------- an offline run
 def _spectrum() -> pd.DataFrame:
     """CHO acids on the trend (commit, calibrate), an organonitrate the ambient
