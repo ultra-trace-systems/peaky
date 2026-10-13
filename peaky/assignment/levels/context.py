@@ -57,10 +57,12 @@ FAMILY_MIN_FILES = 2
 # that is Assigned, or whose own diagnostic isotope line the file committed (its iso child / isotopologue
 # record, the tier engine's bookkeeping). Fluorine has no minor isotope and a fluorinated row's Assigned tier
 # rests on mass alone, so 'fluorinated' needs a CF2-step chain of >= FAMILY_F_CHAIN_MIN Assigned F-bearing
-# readings (neutrals one CF2 apart on one adduct: the step plausibility.demote_off_budget accepts as fluorine
-# evidence). The context's declared pass-3 families and the reagent's own family are the context's space,
-# not an opening: kept. Before, Candidate junk rows in >= 2 files opened 'fluorinated' on a uronium run and
-# its competitors (C2H-6N2O2 == FPSi, 0.064 mDa) parked the CHO urea adducts at 5a.
+# readings: distinct neutrals one CF2 apart (the step plausibility.demote_off_budget accepts as fluorine
+# evidence), on any adduct -- a perfluoroacid series a file commits partly as [M-H]- and partly as a nitrate
+# cluster is one series (a neutral read on both counts once). The context's declared pass-3 families and the
+# reagent's own family are the context's space, not an opening: kept. Before, Candidate junk rows in >= 2 files
+# opened 'fluorinated' on a uronium run and its competitors (C2H-6N2O2 == FPSi, 0.064 mDa) parked the CHO urea
+# adducts at 5a.
 FAMILY_DIAG_LINES = {"S": ("34S",), "Si": ("29Si", "30Si"), "Cl": ("37Cl",), "Br": ("81Br",)}
 FAMILY_F_CHAIN_MIN = 3
 NMIN_FILES_ARM = 1            # a single-file source ("adapted" minima)
@@ -356,37 +358,39 @@ def file_families(summary: dict, led: pd.DataFrame) -> tuple[str, ...]:
     return DG.opened_families(ctx, reagent, None, led)
 
 
-def cf2_chain(readings) -> int:
-    """The longest CF2-step chain among ``readings`` ((neutral, adduct) pairs):
-    distinct neutrals on one adduct, each one CF2 from the next (0 when none)."""
-    by = defaultdict(set)
-    for n, a in readings:
+def cf2_chain(neutrals) -> int:
+    """The longest CF2-step chain among ``neutrals``: distinct neutral
+    formulas, each one CF2 from the next, whatever adduct each was read on (a
+    neutral read on two adducts counts once; 0 when none)."""
+    ns: set = set()
+    for n in neutrals:
         if isinstance(n, str) and n:
             try:
-                by[str(a)].add(C.format_formula({el: v for el, v in C.parse_formula(n).items() if v}))
+                f = C.format_formula({el: v for el, v in C.parse_formula(n).items() if v})
             except Exception:  # noqa: BLE001 -- an unreadable formula is no member
                 continue
+            if f:
+                ns.add(f)
     best = 0
-    for ns in by.values():
-        seen: set = set()
-        for n0 in ns:
-            if n0 in seen:
-                continue
-            comp, stack = {n0}, [n0]
-            while stack:
-                cnt = C.parse_formula(stack.pop())
-                for k in (-1, 1):
-                    c = dict(cnt)
-                    c["C"] = c.get("C", 0) + k
-                    c["F"] = c.get("F", 0) + 2 * k
-                    if c["C"] < 1 or c["F"] < 0:
-                        continue
-                    f = C.format_formula({el: v for el, v in c.items() if v})
-                    if f in ns and f not in comp:
-                        comp.add(f)
-                        stack.append(f)
-            seen |= comp
-            best = max(best, len(comp))
+    seen: set = set()
+    for n0 in ns:
+        if n0 in seen:
+            continue
+        comp, stack = {n0}, [n0]
+        while stack:
+            cnt = C.parse_formula(stack.pop())
+            for k in (-1, 1):
+                c = dict(cnt)
+                c["C"] = c.get("C", 0) + k
+                c["F"] = c.get("F", 0) + 2 * k
+                if c["C"] < 1 or c["F"] < 0:
+                    continue
+                f = C.format_formula({el: v for el, v in c.items() if v})
+                if f in ns and f not in comp:
+                    comp.add(f)
+                    stack.append(f)
+        seen |= comp
+        best = max(best, len(comp))
     return best
 
 
@@ -400,10 +404,10 @@ def _has_f(neutral) -> bool:
 def family_evidence(led: pd.DataFrame, family: str) -> str:
     """The file's real evidence for ``family`` in the level space ('' when
     none; D4): 'fluorinated', a CF2-step chain of >= FAMILY_F_CHAIN_MIN
-    Assigned F-bearing readings (`cf2_chain`, any route); any other family, an
-    Assigned ``contaminant:<family>`` M0 row, or such a row whose own
-    diagnostic line (FAMILY_DIAG_LINES of the family's elements) the file
-    committed as its isotope child or recorded in its ``isotopologues`` -- a
+    Assigned F-bearing neutrals (`cf2_chain`, any route, on any adduct); any
+    other family, an Assigned ``contaminant:<family>`` M0 row, or such a row
+    whose own diagnostic line (FAMILY_DIAG_LINES of the family's elements) the
+    file committed as its isotope child or recorded in its ``isotopologues`` -- a
     line of an element the row's NEUTRAL carries and its adduct adds none of
     (the 81Br line of an [M+Br]- reagent cluster is the adduct's, no evidence)."""
     if "role" not in led.columns or "neutral_formula" not in led.columns:
@@ -412,9 +416,8 @@ def family_evidence(led: pd.DataFrame, family: str) -> str:
     tier = m0["tier"].astype(str) if "tier" in m0.columns else pd.Series("", index=m0.index)
     els = SP.family_elements(family)
     if "F" in els:
-        ad = m0["adduct"] if "adduct" in m0.columns else pd.Series("", index=m0.index)
         ok = (tier == T.TIER_ASSIGNED) & m0["neutral_formula"].map(_has_f)
-        k = cf2_chain(zip(m0.loc[ok, "neutral_formula"], ad[ok]))
+        k = cf2_chain(m0.loc[ok, "neutral_formula"])
         return f"a CF2-step chain of {k} Assigned F readings" if k >= FAMILY_F_CHAIN_MIN else ""
     if "method" not in m0.columns:
         return ""
@@ -435,7 +438,7 @@ def family_evidence(led: pd.DataFrame, family: str) -> str:
     iso = own["isotopologues"] if "isotopologues" in own.columns else pd.Series(None, index=own.index)
     ad = own["adduct"] if "adduct" in own.columns else pd.Series("", index=own.index)
     for pid, n, a, cell in zip(own["peak_id"].astype(str), own["neutral_formula"], ad, iso):
-        want = {lab for el in _own_elements(n, a) & els for lab in FAMILY_DIAG_LINES.get(el, ())}
+        want = {lab for el in SP.own_heteroatoms(n, a) & els for lab in FAMILY_DIAG_LINES.get(el, ())}
         got = _diag_isotopes(set(T._iso_labels(cell)) | kids.get(pid, set())) & want
         if got:
             return f"its own {'/'.join(sorted(got))} line"
@@ -458,13 +461,6 @@ def _diag_isotopes(labels) -> set:
             else:
                 out.add(part)
     return out
-
-
-def _own_elements(neutral, adduct) -> frozenset:
-    """The heteroatoms of ``neutral`` its ``adduct`` adds none of (a diagnostic
-    line of one of them is the neutral's own)."""
-    dl = SP.adduct_delta(str(adduct)) if isinstance(adduct, str) and adduct else None
-    return frozenset(el for el in SP.heteroatoms(neutral) if not (dl and dl.get(el, 0) > 0))
 
 
 def evidenced_families(summary: dict, led: pd.DataFrame, fams=None) -> tuple[str, ...]:

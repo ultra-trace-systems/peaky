@@ -56,7 +56,8 @@ The scale, in the order the outcomes are tried (the first that applies):
              real evidence for, a cross-family mixture) is none: it is listed
              in competitors_left after ' || ', never counted -- unless the
              committed neutral carries a heteroatom (S, P, Si, F, Cl, Br, I)
-             none of its own in-band lines confirms: then it counts
+             none of its own in-band lines confirms (a line of an element its
+             adduct adds is not its own): then it counts
     4b       the channel reads the ion only
     3c       split pinned and a NAMED context-list entry names the neutral
     4a       split pinned and a positive fact (an own in-band isotope line of

@@ -317,7 +317,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   81Br in any of the ledger's spellings, of an element the row's neutral carries and its adduct
   does not) is committed;
   `fluorinated`, whose rows no isotope can confirm, needs a CF2-step chain of
-  3 Assigned F readings on one adduct (a perfluoroacid series counts); it must hold in two files,
+  3 Assigned F neutrals on any adduct (a perfluoroacid series counts, also split between [M-H]- and
+  a nitrate cluster); it must hold in two files,
   as before (`context.level_families`, `family_evidence`). The context's declared pass-3 families
   stay. A family's profile keeps another heteroatom of the context's budget only when an open
   family brings it (`space.level_profiles`): no F+P / F+S on a uronium run, no F+Cl / F+Br on
@@ -329,7 +330,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   perfluoroacid on a run whose fluorine has no evidence counts) is levelled in the former space
   exactly as before (`space.space_of`), so a fluorine reading meets its own family's
   competitors. A committed reading carrying a heteroatom (S, P, Si, F, Cl, Br, I) none of its own
-  in-band lines confirms takes no competitor away either (`competitors.unconfirmed_heteroatoms`):
+  in-band lines confirms (a line of an element its adduct adds is not its own) takes no competitor
+  away either (`competitors.unconfirmed_heteroatoms`):
   an Si2 reading of a CHO urea adduct (Si2H4 == CO3) beside an unevidenced fluorine reading stays
   5a. The former space is enumerated only where its profiles differ. `scripts/level_ledger.py`
   restates the record. The degeneracy audit and every tier are

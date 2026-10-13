@@ -24,8 +24,9 @@ Pass A (`q1_pass`), per pair:
 - `lines.q1_isotopes` on the committed reading, every competitor and every
   uncounted reading (tests (a), (b), (c), (k); the matched elements),
   `lines.isoline_competitors`. A committed neutral carrying a heteroatom
-  (S, P, Si, F, Cl, Br, I) none of its own in-band lines confirms takes no
-  competitor away: its uncounted readings count (`unconfirmed_heteroatoms`;
+  (S, P, Si, F, Cl, Br, I) none of its own in-band lines confirms (a line of
+  an element its adduct adds is no own line) takes no competitor away: its
+  uncounted readings count (`unconfirmed_heteroatoms`;
   D4 -- an Si2 reading whose silicon nothing confirms is no better evidenced
   than the fluorine reading beside it).
 
@@ -244,12 +245,15 @@ def slim_q1(c: dict, nmin: int) -> dict:
     return out
 
 
-def unconfirmed_heteroatoms(neutral, matched_els) -> frozenset:
+def unconfirmed_heteroatoms(neutral, matched_els, adduct=None) -> frozenset:
     """D4: the committed neutral's heteroatoms (`space.heteroatoms`) none of
     its own in-band isotope lines confirms (``matched_els``, the lines in band
-    in >= MATCH_FRAC of the testable files). F, P and I have no minor line, so
-    they are never confirmed."""
-    return SP.heteroatoms(neutral) - set(matched_els or ())
+    in >= MATCH_FRAC of the testable files). A line of an element ``adduct``
+    adds confirms nothing of the neutral's (`space.own_heteroatoms`, the rule
+    a family's evidence reads): the 81Br line of a Br reading as [M+Br]- is
+    there whatever the neutral carries. F, P and I have no minor line, so they
+    are never confirmed."""
+    return SP.heteroatoms(neutral) - (set(matched_els or ()) & SP.own_heteroatoms(neutral, adduct))
 
 
 def q1_pass(ctx, pairs: dict, nmin: int, *, progress=None) -> dict:
@@ -272,7 +276,7 @@ def q1_pass(ctx, pairs: dict, nmin: int, *, progress=None) -> dict:
             for c in cands + unc:
                 c.update(recs=[], a=[], b=[], c="", c_agree="", k="", matched_els=set(), matched_labels=[],
                          contradicted=False)
-        if unc and unconfirmed_heteroatoms(pr["key"][0], cands[0]["matched_els"]):
+        if unc and unconfirmed_heteroatoms(pr["key"][0], cands[0]["matched_els"], pr["key"][1]):
             # D4: a committed reading whose own heteroatom (S, P, Si, F, Cl, Br, I) no own in-band line confirms
             # takes no competitor away -- its family is no better evidenced than theirs: the readings only the
             # shadow space proposes count, as before (tested above with the rest)

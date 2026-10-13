@@ -138,6 +138,15 @@ def heteroatoms(neutral) -> frozenset:
     return frozenset(el for el, v in cnt.items() if v and el in DG.ELEMENT_CEILING and el != "N")
 
 
+def own_heteroatoms(neutral, adduct) -> frozenset:
+    """The heteroatoms of ``neutral`` its ``adduct`` adds none of: a diagnostic
+    isotope line of one of them is the neutral's own (the 81Br line of a Br
+    reading as [M+Br]- is the adduct's as much as the neutral's); all of them
+    when the adduct is unknown or has no composition."""
+    dl = adduct_delta(str(adduct)) if isinstance(adduct, str) and adduct else None
+    return frozenset(el for el in heteroatoms(neutral) if not (dl and dl.get(el, 0) > 0))
+
+
 def _elements_fit(profiles, els) -> bool:
     """One of ``profiles`` allows every element of ``els`` (a cap > 0)."""
     return any(all((getattr(p, f"max_{el}", 0) or 0) > 0 for el in els) for p in profiles)

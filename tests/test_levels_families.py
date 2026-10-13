@@ -4,15 +4,17 @@ evidence, and without cross-family mixtures.
 1. A family committed rows opened (`contaminant:<family>` M0 rows) counts for a
    file only when a row of it is Assigned or its own diagnostic isotope line
    (34S / 29Si / 30Si / 37Cl / 81Br) is committed; 'fluorinated' needs a
-   CF2-step chain of >= 3 Assigned F readings (`context.family_evidence`). The
-   context's declared pass-3 families and the reagent's family are kept.
+   CF2-step chain of >= 3 Assigned F neutrals, on any adduct
+   (`context.family_evidence`). It must hold in >= 2 files. The context's
+   declared pass-3 families and the reagent's family are kept.
 2. A family's profile carries another heteroatom of the context's budget only
    when an open family brings it (`space.level_profiles`): no C15H32FPSi alias.
 3. What only the shadow space (every opened family, with mixtures) proposes is
    listed in `competitors_left` as not counted, never a competitor -- unless the
    committed reading needs the family itself (a curated perfluoroacid on a run
    whose fluorine has no evidence: `space.space_of`) or carries a heteroatom no
-   own in-band line confirms (`competitors.unconfirmed_heteroatoms`).
+   own in-band line confirms (`competitors.unconfirmed_heteroatoms`; a line of
+   an element the adduct adds is not the neutral's own).
 
 Synthetic, offline."""
 import sys
@@ -76,17 +78,23 @@ class TestFamilyEvidence:
         assert CX.family_evidence(_ledger([JUNK_F] + PFCA[:2]), "fluorinated") == ""       # a chain of 2
         cand = [(p, f, a, "Candidate", m) for p, f, a, _t, m in PFCA]
         assert CX.family_evidence(_ledger([JUNK_F] + cand), "fluorinated") == ""            # Candidate members
+        # a series split between two adducts is one series (a file commits a perfluoroacid as [M-H]- or as a
+        # nitrate cluster); a neutral read on both counts once
         mixed = [PFCA[0], PFCA[1], (PFCA[2][0], PFCA[2][1], "[M+NO3]-", "Assigned", PFCA[2][4])]
-        assert CX.family_evidence(_ledger(mixed), "fluorinated") == ""                      # one adduct per chain
+        assert CX.family_evidence(_ledger(mixed), "fluorinated") == "a CF2-step chain of 3 Assigned F readings"
+        twice = [PFCA[0], PFCA[1], ("f3b", PFCA[1][1], "[M+NO3]-", "Assigned", PFCA[1][4])]
+        assert CX.family_evidence(_ledger(twice), "fluorinated") == ""                      # C2, C3 (twice): 2
         # one Assigned fluorinated row alone is no chain: its tier rests on mass alone
         one = ("j2", "C8HF15O2", "[M-H]-", "Assigned", "contaminant:fluorinated")
         assert CX.family_evidence(_ledger([one]), "fluorinated") == ""
 
-    def test_cf2_chain_is_the_longest_connected_run_on_one_adduct(self):
-        rows = [(f"C{k}HF{2 * k - 1}O2", "[M-H]-") for k in (2, 3, 4, 6, 7)]
-        assert CX.cf2_chain(rows) == 3
-        assert CX.cf2_chain(rows + [("C5HF9O2", "[M-H]-")]) == 6
-        assert CX.cf2_chain([]) == 0 and CX.cf2_chain([(None, "[M-H]-"), ("C2HF3O2", "[M-H]-")]) == 1
+    def test_cf2_chain_is_the_longest_connected_run_of_distinct_neutrals(self):
+        ns = [f"C{k}HF{2 * k - 1}O2" for k in (2, 3, 4, 6, 7)]
+        assert CX.cf2_chain(ns) == 3
+        assert CX.cf2_chain(ns + ["C5HF9O2"]) == 6
+        assert CX.cf2_chain(ns[:2] + ns[:2] + ["C2H1F3O2"]) == 2                 # distinct formulas, in any spelling
+        assert CX.cf2_chain([]) == 0 and CX.cf2_chain([None, "", "x?"]) == 0
+        assert CX.cf2_chain([None, "", "x?", "C2HF3O2"]) == 1
 
     def test_an_isotope_family_opens_on_an_assigned_row_or_its_own_line(self):
         dbp = ("h1", "C6H4Cl2O", "[M+H]+", "Candidate", "contaminant:halogen_dbp")
@@ -212,6 +220,40 @@ class TestRunContext:
         assert FPSI not in [c["name"] for c in cands[1:]]
         assert FPSI in [c["name"] for c in cands[0]["uncounted"]]
 
+    def test_evidence_in_one_file_of_two_opens_nothing(self):
+        """Both files opened `fluorinated` (a junk row each), but only one holds the CF2 chain: the family needs real
+        evidence in FAMILY_MIN_FILES files, as its opening does, so it stays out of the level space."""
+        rows = [("p1",) + CHO_UREA + ("Assigned", "cheminfo+grid"), JUNK_F]
+        pf = {"a": _ledger(rows + PFCA), "b": _ledger(rows)}
+        stats = [dict(sample_id=s, height_gate_cps=100.0, degeneracy_cal={"mu": 0.0, "sigma": 0.3}) for s in pf]
+        s = _summary(stats)
+        win = CX.run_windows(s, pf)
+        assert win["a"]["fams_ev"] == UR_FAMS + ("fluorinated",) and win["b"]["fams_ev"] == UR_FAMS
+        ctx = CX.build_run_context(s, pf, win, name="t")
+        assert ctx.families == UR_FAMS and ctx.families_unevidenced == ("fluorinated",)
+        cands = _cands(ctx, pf)
+        assert [c["name"] for c in cands[1:]] == []
+        assert [c["name"] for c in cands[0]["uncounted"]] == [FPSI]
+
+    def test_an_arm_file_in_a_main_runs_context_opens_only_its_evidenced_families(self):
+        """One file levelled in a main run's context (a decoy arm, a post-hoc re-level: `source.context_of`) follows
+        the same rule on its own ledger: its junk F row opens `fluorinated` in the shadow only, which lists the FPSi
+        alias as not counted."""
+        from peaky.assignment import evidence as EV
+        from peaky.assignment.levels import source as SRC
+        s, pf, main_ctx = _run([JUNK_F])
+        main = EV.source_from_frames(pf, run_inputs=SRC.RunInputs(summary=s), name="main")
+        main.ctx = main_ctx
+        arm = EV.source_from_frames({"a": pf["a"].copy()}, run_inputs=main.inputs, mode="adapted", name="arm",
+                                    main=main, arm="shift")
+        ctx = SRC.context_of(arm)
+        assert ctx is not main_ctx and list(ctx.files) == ["a"]
+        assert ctx.families == UR_FAMS and ctx.families_unevidenced == ("fluorinated",)
+        assert ctx.space_shadow is not None and ctx.space_shadow.families == UR_FAMS + ("fluorinated",)
+        cands = _cands(ctx, {"a": arm.per_file["a"]})
+        assert [c["name"] for c in cands[1:]] == []
+        assert [c["name"] for c in cands[0]["uncounted"]] == [FPSI]
+
     def test_no_opened_family_no_shadow(self):
         _s, pf, ctx = _run([])
         assert ctx.families == UR_FAMS and ctx.space_shadow is None and ctx.families_unevidenced == ()
@@ -281,6 +323,10 @@ class TestRunContext:
         assert ctx.space.space_reason("C4HF7O2") is None                         # the curated bypass ...
         assert SP.space_of(ctx, "C4HF7O2") is ctx.space_shadow                  # ... does not decide
         assert SP.space_of(ctx, "H2SO4") is ctx.space and SP.space_of(ctx, "C6H5NO3") is ctx.space
+        # a curated formula whose elements no profile of either space carries (iodine on ambient air): the shadow
+        # admits it no better, so it stays in the level space
+        assert "HIO3" in ctx.space.curated and not SP._elements_fit(ctx.space_shadow.profiles, {"I"})
+        assert SP.space_of(ctx, "HIO3") is ctx.space
         for led in pf.values():
             for pid in ("k1", "j1"):
                 led.loc[led["peak_id"] == pid, "alternatives"] = (
@@ -293,15 +339,18 @@ class TestRunContext:
 
 
 SI2 = ("C10H27NO3Si2", "[M+NH4]+")          # an Si2 reading: Si2H4 == CO3 (0.41 mDa) of a CHO urea adduct
+FAR_F = "C20H23F [M+H]+"                    # an F reading 3.9 ppm off the Si2 ion: outside every enumerated window
 
 
 def _q1_si2(monkeypatch, matched):
-    """The Si2 reading on a run whose fluorine has no evidence, a tied F reading beside it; its own isotope lines
-    confirm ``matched``."""
+    """The Si2 reading on a run whose fluorine has no evidence, two tied F readings beside it (one the shadow also
+    proposes by mass, one only the engine names: outside every window); its own isotope lines confirm ``matched``."""
     from peaky.assignment.levels import lines as LN
     _s, pf, ctx = _run([JUNK_F, ("s1",) + SI2 + ("Assigned", "cheminfo+grid")])
     for led in pf.values():
-        led.loc[led["peak_id"] == "s1", "alternatives"] = '[{"formula": "C17H24F2O", "adduct": "[M+H]+", "ppm": 0.1}]'
+        led.loc[led["peak_id"] == "s1", "alternatives"] = (
+            '[{"formula": "C17H24F2O", "adduct": "[M+H]+", "ppm": 0.1}, '
+            '{"formula": "C20H23F", "adduct": "[M+H]+", "ppm": 3.9}]')
         led.loc[led["peak_id"] == "s1", "tied"] = True
     real = LN.q1_isotopes
 
@@ -332,18 +381,62 @@ class TestUnconfirmedHeteroatom:
         assert ctx.space.space_reason(SI2[0]) is None and ctx.families_unevidenced == ("fluorinated",)
         names = {c["name"]: c["kind"] for c in q["cands"][1:]}
         assert "tie" in names.get("C17H24F2O [M+H]+", "")       # the shadow proposes it by mass, the engine tied it
+        assert names.get(FAR_F) == "tie+tie"                    # only the engine names it (both files): an alternative
         assert q["cands"][0]["uncounted"] == []
         before = copy.copy(ctx)
         before.space, before.space_shadow = ctx.space_shadow, None        # the scale's space before D4
         want = CP.q1_pass(before, pairs, 1)[SI2]
         key = (lambda c: (c["name"], c["kind"], c["win"], c["contradicted"]))
         assert sorted(map(key, q["cands"][1:])) == sorted(map(key, want["cands"][1:]))
-        assert q["n_alt"] == want["n_alt"]
+        assert q["n_alt"] == want["n_alt"] == 1                 # the engine-only reading, restored as an alternative
 
     def test_a_confirmed_si2_reading_keeps_the_f_reading_uncounted(self, monkeypatch):
         _ctx, q, _pairs = _q1_si2(monkeypatch, {"C", "Si"})
-        assert "C17H24F2O [M+H]+" not in [c["name"] for c in q["cands"][1:]]
-        assert "C17H24F2O [M+H]+" in [u["name"] for u in q["cands"][0]["uncounted"]]
+        names = [c["name"] for c in q["cands"][1:]]
+        assert "C17H24F2O [M+H]+" not in names and FAR_F not in names
+        assert {"C17H24F2O [M+H]+", FAR_F} <= {u["name"] for u in q["cands"][0]["uncounted"]}
+        assert q["n_alt"] == 0
+
+    def test_a_line_the_adduct_carries_confirms_nothing_of_the_neutral(self):
+        """As for a family's evidence: the 81Br line of a Br reading as [M+Br]- is the adduct's."""
+        assert SP.own_heteroatoms("C6H4BrClO", "[M+Br]-") == {"Cl"}
+        assert SP.own_heteroatoms("C6H4BrClO", "[M-H]-") == {"Br", "Cl"}
+        assert SP.own_heteroatoms("C6H4BrClO", None) == {"Br", "Cl"}
+        assert CP.unconfirmed_heteroatoms("C6H4BrClO", {"C", "Br", "Cl"}, "[M+Br]-") == {"Br"}
+        assert CP.unconfirmed_heteroatoms("C6H4BrClO", {"C", "Br", "Cl"}, "[M-H]-") == frozenset()
+        assert CP.unconfirmed_heteroatoms("C6H4BrClO", {"C", "Br", "Cl"}) == frozenset()     # no adduct known
+        assert CP.unconfirmed_heteroatoms("C10H17NO7S", {"S"}, "[M+HSO4]-") == {"S"}
+
+    def test_a_br_reading_on_a_bromide_cluster_keeps_its_uncounted_readings_counted(self, monkeypatch):
+        """On a bromide-reagent run whose fluorine has no evidence: a Br reading as [M-H]- whose 81Br line is in band
+        keeps the tied F reading uncounted; the same reading as [M+Br]- (the line is the adduct's) counts it."""
+        from peaky.assignment.levels import lines as LN
+        junk = ("j1", "C10H9F5O2", "[M-H]-", "Candidate", "contaminant:fluorinated")
+        rows = [junk] + [(f"b{i}", "C6H5BrO", a, "Assigned", "cheminfo+grid") for i, a in enumerate(("[M-H]-",
+                                                                                                    "[M+Br]-"))]
+        pf = {s: _ledger(rows) for s in ("a", "b")}
+        for led in pf.values():
+            led.loc[led["peak_id"].isin(["b0", "b1"]), "alternatives"] = (
+                '[{"formula": "C9H7F3O2", "adduct": "[M-H]-", "ppm": 0.1}]')
+            led.loc[led["peak_id"].isin(["b0", "b1"]), "tied"] = True
+        stats = [dict(sample_id=s, height_gate_cps=100.0, degeneracy_cal={"mu": 0.0, "sigma": 0.3}) for s in pf]
+        summ = _summary(stats, reagent="Br", context="ambient-air")
+        ctx = CX.build_run_context(summ, pf, CX.run_windows(summ, pf), name="t")
+        assert ctx.families_unevidenced == ("fluorinated",) and ctx.space.space_reason("C6H5BrO") is None
+        real = LN.q1_isotopes
+
+        def own_lines(ctx_, pair, cands, nmin):
+            out = real(ctx_, pair, cands, nmin)
+            cands[0]["matched_els"] = {"C", "Br"}
+            return out
+        monkeypatch.setattr(LN, "q1_isotopes", own_lines)
+        keys = [("C6H5BrO", "[M-H]-"), ("C6H5BrO", "[M+Br]-")]
+        facts = pd.DataFrame([dict(neutral_formula=n, adduct=a, mz=C.ion_mz(n, a), ion="", ppm=0.0) for n, a in keys])
+        q1 = CP.q1_pass(ctx, CX.pairs_from_files(pf, facts), 1)
+        alt = "C9H7F3O2 [M-H]-"
+        dep, clu = q1[keys[0]], q1[keys[1]]
+        assert alt in [u["name"] for u in dep["cands"][0]["uncounted"]] and alt not in [c["name"] for c in dep["cands"]]
+        assert alt in [c["name"] for c in clu["cands"][1:]] and clu["cands"][0]["uncounted"] == []
 
 
 # --------------------------------------------------------------------------- 3. the record
@@ -398,6 +491,62 @@ def test_an_uncounted_reading_still_vouches_for_its_lines_in_test_b(monkeypatch)
     assert com["uncounted"] == [dict(name=FPSI, neutral="C15H32FPSi", adduct="[M+H]+",
                                      ppm=pytest.approx(com["uncounted"][0]["ppm"]))]
     assert "lines" not in com["uncounted"][0]
+
+
+# the formate route alias of X (two routes): Y = X - CH2O2, committed. With X an F reading on a run whose fluorine
+# has no evidence, Y is an F reading too: plausible in the shadow only.
+ALIAS_X, ALIAS_Y = "C8H9F3O4", "C7H7F3O2"
+
+
+class _D4Ctx(TD._Ctx):
+    """test_levels_decide's context slice with a shadow; decompositions read the reading's own space, as
+    `RunContext.decompositions` does."""
+
+    def __init__(self, space, shadow):
+        super().__init__()
+        self.space, self.space_shadow = space, shadow
+
+    def decompositions(self, counts, n, a, adducts=None):
+        ads = self.decomp_adducts if adducts is None else adducts
+        return SP.decompositions(SP.space_of(self, n), counts, n, a, ads)
+
+
+def _alias_source(space, shadow):
+    S = TD._prepared([dict(neutral_formula=ALIAS_X, adduct="[M-H]-"), dict(neutral_formula=ALIAS_X, adduct="[M+NO3]-"),
+                      dict(neutral_formula=ALIAS_Y, adduct="[M-H]-")])
+    S.pf = {"f1": S.pf["f1"], "f2": S.pf["f1"].copy()}          # both route ions co-seen in two files
+    S.ctx = _D4Ctx(space, shadow)
+    return S
+
+
+@pytest.mark.parametrize("unlocked", [False, True], ids=["locked", "unlocked"])
+def test_route_aliases_read_the_readings_own_space(monkeypatch, unlocked):
+    """A committed reading the level space does not admit reads its route aliases in the shadow, as before D4
+    (`space.space_of` in `decide.inpass` and `decide.records`): its formate alias, an F reading too, is plausible
+    there. Locked (the default), the alias is a tag; unlocked, it explains the two routes away in the pass."""
+    from peaky.assignment import evidence as EV
+    if unlocked:
+        monkeypatch.setattr(EV, "UNLOCKED", frozenset({"formate"}))
+    level = SP.Space("NO3", "ambient-air", [], (), mixtures=False)
+    shadow = SP.Space("NO3", "ambient-air", [], ("fluorinated",))
+    assert level.space_reason(ALIAS_X) is not None and shadow.space_reason(ALIAS_Y) is None
+    assert not level.plausible_neutral(C.parse_formula(ALIAS_Y))[0]
+    got, before = _alias_source(level, shadow), _alias_source(shadow, None)      # D4; the scale before D4
+    i = 0                                                                         # X [M-H]-
+    ri, rb = DC.inpass(got)["route_info"][i], DC.inpass(before)["route_info"][i]
+    assert (ri["own"], ri["alias"]) == (rb["own"], rb["alias"])
+    tags, tags0 = TD._level(got).iloc[i].tags, TD._level(before).iloc[i].tags
+    assert tags == tags0
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import level_ledger as LL                                   # the executable reference reads the same space
+    cols = ["evidence_level", "anchor_kind", "anchor_why", "competitors_left"]
+    assert LL.decide(got)[cols].equals(LL.decide(before)[cols])
+    if unlocked:
+        assert [x[0] for x in ri["alias"]] == [("deprotonation", "nitrate cluster")] and not ri["own"]
+        assert f"formate alias {ALIAS_Y} (X - CH2O2) explains both route ions" in ri["alias"][0][1]
+    else:
+        assert ri["own"] == [("deprotonation", "nitrate cluster")] and not ri["alias"]
+        assert f"formate alias {ALIAS_Y} (X - CH2O2) would explain both route ions (side channel locked" in tags
 
 
 def test_the_executable_reference_restates_the_uncounted_list():

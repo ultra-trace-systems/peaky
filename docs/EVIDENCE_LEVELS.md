@@ -407,8 +407,10 @@ adduct.
   reagent cluster is the adduct's). Fluorine has no minor isotope and a
   fluorinated row's Assigned tier rests on mass alone, so `fluorinated` needs
   a CF2-step chain of at least `FAMILY_F_CHAIN_MIN` (3) Assigned F-bearing
-  readings in the file (neutrals one CF2 apart on one adduct, by any route: a
-  perfluoroacid series from the pass-0 registry counts). A family at least two
+  neutrals in the file (distinct neutrals one CF2 apart, on any adduct and by
+  any route: a perfluoroacid series from the pass-0 registry counts, also when
+  the file commits some members as [M-H]- and others as a nitrate cluster; a
+  neutral read on two adducts counts once). A family at least two
   files opened but fewer hold evidence for is kept on
   `RunContext.families_unevidenced`; a family one file alone opened, on
   `families_dropped`. Before, Candidate junk rows in two files opened
@@ -446,7 +448,9 @@ adduct.
   admits that carries a heteroatom (S, P, Si, F, Cl, Br, I) none of its own
   in-band isotope lines confirms (the committed reading's matched elements,
   §5.3: a line in band in at least half of its testable files, >= 3 on a
-  batch) takes no competitor away: the ions
+  batch; a line of an element its adduct adds is the adduct's, as for a
+  family's evidence: the 81Br line of a Br reading as [M+Br]- confirms
+  nothing) takes no competitor away: the ions
   only the shadow space proposes count for it, as before. F, P and I have no
   minor line, so a reading carrying them never qualifies. Without this, an
   Si2 reading of a CHO urea adduct (Si2H4 == CO3, 0.41 mDa; the CHO reading
