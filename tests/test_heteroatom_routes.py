@@ -270,7 +270,7 @@ def test_pass3_commits_a_gated_winner_only_on_its_own_37cl_line(monkeypatch):
     monkeypatch.setattr(D, "_enumerate", fake_enum)
     monkeypatch.setattr(D, "_mech_ids_for", lambda client, adducts: [])
     monkeypatch.setattr(D.IO, "score_candidates", lambda *a, **k: pd.DataFrame({"x": [1]}))
-    monkeypatch.setattr(D, "arbitrate", lambda scored, cfg, profile: arb)
+    monkeypatch.setattr(D, "arbitrate", lambda scored, cfg, profile, **kw: arb)
     cfg = P.PassConfig(height_cutoff_cps=1.0)
     cfg.instrument_class = "orbitrap"
     D.run_pass3(None, "s", led, URO, None, cfg, ["[M+H]+", "[M+(CH4N2O)H]+", "[M+Na]+", "[M+NH4]+"],
@@ -327,7 +327,7 @@ def _s_run(monkeypatch, led, prof=URO, *, phase="all", carried=None, klass="orbi
     monkeypatch.setattr(D, "_enumerate", fake_enum)
     monkeypatch.setattr(D, "_mech_ids_for", lambda client, adducts: [])
     monkeypatch.setattr(D.IO, "score_candidates", lambda *a, **k: pd.DataFrame({"x": [1]}))
-    monkeypatch.setattr(D, "arbitrate", lambda scored, cfg, profile: arb)
+    monkeypatch.setattr(D, "arbitrate", lambda scored, cfg, profile, **kw: arb)
     cfg = P.PassConfig(height_cutoff_cps=FLOOR)
     cfg.instrument_class = klass
     out = D.run_pass3(None, "s", led, prof, None, cfg, ["[M+H]+", "[M+(CH4N2O)H]+", "[M+Na]+", "[M+NH4]+"],
@@ -380,12 +380,17 @@ def test_the_gated_families_claim_in_the_late_phase(monkeypatch):
 
 
 def test_the_ungated_organosulfur_keeps_its_place_and_its_rule(monkeypatch):
-    """The labelled-ammonium source: organosulfur claims in the curated phase, every peak, no gate."""
+    """The labelled-ammonium source: organosulfur claims in the curated phase, every peak, no gate.
+    It is still a commit route under the commit contract (satellites.own_line_verdict): the dim
+    reading, whose 34S line is untestable, commits as before; the bright one, whose 34S line is
+    testable and absent, is refused at the commit."""
     led, (md, mb, mc) = _s_ledger(with_line=False)
     seen, _ = _s_run(monkeypatch, led, X.get_context("ammonium-15n"), phase="curated")
     assert seen["S"] == [sorted([md, mb, mc])]
     by = led.set_index("peak_id")
-    assert by.at["b", "method"] == "contaminant:organosulfur"     # no 34S line, committed as before
+    assert by.at["d", "method"] == "contaminant:organosulfur"     # no 34S line to test, committed as before
+    assert by.at["b", "role"] == L.ROLE_UNEXPLAINED
+    assert "REFUSED (own_line: " + S1B in str(by.at["b", "commentary"])
 
 
 def test_the_gated_families_are_skipped_off_an_orbitrap(monkeypatch):

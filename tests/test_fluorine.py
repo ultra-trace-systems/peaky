@@ -635,7 +635,7 @@ def test_pass3_hands_the_13c_lines_to_the_fluorinated_family_only(monkeypatch):
     seen = []
     monkeypatch.setattr(DIR, "_enumerate", lambda *a, **k: {"C6H5F7O2"})
     monkeypatch.setattr(DIR, "_mech_ids_for", lambda client, adducts: [])
-    monkeypatch.setattr(DIR, "_context_filter", lambda formulas, profile: set(formulas))
+    monkeypatch.setattr(DIR, "_context_filter", lambda formulas, profile, rejected=None: set(formulas))
     monkeypatch.setattr(IO, "score_candidates", lambda *a, **k: pd.DataFrame())
     monkeypatch.setattr(DIR, "arbitrate", lambda scored, cfg, profile=None, *, c13_alias=None:
                         seen.append(c13_alias) or {"winners": pd.DataFrame()})
