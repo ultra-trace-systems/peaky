@@ -1258,6 +1258,21 @@ def _apply_axis(ts, fit, info, where, log):
     return ts
 
 
+def axis_reagent_elements(adducts) -> tuple:
+    """What the reagent adds to the lock model's formula space (axislock.FormulaSpace):
+    its halogen ([M+Br]- ...), and the heavy label of a labelled anion reagent ('^N' for a
+    channel holding a '^N' anion adduct: [M+^NO3]-) -- a labelled batch's ions carry it, and
+    a space without it reads them as their unlabelled aliases. A labelled cation reagent
+    ([M+^NH4]+) is left out: its positive-mode family is not validated against a measured
+    axis, and the space's positive DBE rule does not admit all of it."""
+    from peaky.assignment import evidence as EV
+    halogen = EV.channel_halogen(adducts)
+    els = [halogen] if halogen else []
+    if any("^N" in str(a) and str(a).strip().endswith("-") for a in adducts or ()):
+        els.append("^N")
+    return tuple(els)
+
+
 def _lock_model(ts, polarity, reagent_elements, info, log):
     """axislock.fit on the batch and its verdict: (model to apply or None, done) --
     `done` False when the locks could not build a model at all (the caller may
@@ -1796,11 +1811,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         if hold is None and not IO._local_scoring_enabled():
             hold = ("server-side scoring (PEAKY_LOCAL_SCORING=0) scores the server's own "
                     "peaks, on the server's axis")
-        halogen = EV.channel_halogen(prof.adducts)
         ts_peaks, axis_info, axis_table = measure_axis(
             ts_peaks, prof.name, _axis_class(_instrument_of(rp)[0], _roster_class(peaks)),
             hold=hold, mode=mass_axis, polarity=prof.polarity,
-            reagent_elements=(halogen,) if halogen else (), log=log)
+            reagent_elements=axis_reagent_elements(prof.adducts), log=log)
         if axis_table is not None:
             axis_table.to_csv(os.path.join(TAB, "mass_axis.csv"), index=False)
         locks_table = axis_info.pop("_locks_table", None)

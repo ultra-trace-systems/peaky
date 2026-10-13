@@ -5,7 +5,10 @@ batch itself:
 
   * exact atomic masses and the electron's; even-electron ions of closed-shell
     neutrals ((H + halogens + N) odd, a ring/double-bond count >= 0) and an
-    oxygen ceiling;
+    oxygen ceiling; the reagent's own element (Br, I) or heavy label (^N, 15N) in
+    the space -- a labelled batch's ions carry it, and a space without it reads them
+    as unlabelled aliases that are unique there (^N2 <-> N2 C3 H-2 O-2, 0.45 mDa),
+    a ^N formula locking only with its carbon number measured;
   * natural isotope abundances: a 13C/12C ratio that must match the carbon
     number, and the 34S / 37Cl / 81Br line an S / Cl / Br formula must show;
   * a real ion recurs in most of the batch's spectra, noise does not;
@@ -98,8 +101,16 @@ __all__ = ["AxisModel", "FormulaSpace", "fit", "MASS", "UNITS"]
 ME = 0.00054857990946
 MASS = {"C": 12.0, "H": 1.00782503207, "N": 14.0030740048, "O": 15.99491461956,
         "S": 31.97207100, "F": 18.99840322, "Cl": 34.96885268, "Br": 78.9183376,
-        "I": 126.904473}
+        "I": 126.904473, "^N": 15.0001088984}
 HALOGENS = ("F", "Cl", "Br", "I")
+#: elements a reagent may add to the space, 0-2 per ion: its halogen, or the heavy label of a
+#: labelled reagent ('^N' = 15N: [M+^NO3]-, [M+^NH4]+; a nitrogen in every structural rule).
+#: Without the label in the space a labelled ion is invisible to the uniqueness tests while its
+#: 14N alias is not -- ^N2 <-> N2 C3 H-2 O-2 is 0.45 mDa (1.8 ppm at m/z 250), so every
+#: [M+H^N2O6]- / ^N-organonitrate.^NO3- ion reads as a unique, 13C-consistent CxHyN2Oz- lock,
+#: and a band of them puts a segment on a line of their own
+REAGENT_ELEMENTS = ("Br", "I", "^N")
+NITROGENS = ("N", "^N")
 D13C, R13 = 1.003354835, 0.010816                  # 13C - 12C; 13C/12C per carbon
 #: the line that confirms an element, and its height per atom relative to the parent
 HEAVY_LINES = {"S": (1.995796, 0.0447), "Cl": (1.997050, 0.320), "Br": (1.997954, 0.973)}
@@ -194,7 +205,7 @@ CACHE_PPM = 16.0       # the walk's candidate cache spans this around each bin (
 RANSAC_DRAWS = 2000
 RANSAC_MAX_SLOPE = 0.1  # ppm per Da; the steepest smooth stretch measured is ~0.07
 
-_TOK = re.compile(r"([A-Z][a-z]?)(\d*)")
+_TOK = re.compile(r"(\^?[A-Z][a-z]?)(\d*)")
 
 
 def parse(ion: str) -> collections.Counter:
@@ -202,8 +213,13 @@ def parse(ion: str) -> collections.Counter:
 
 
 def name(d, polarity: str = "-") -> str:
-    order = ["C", "H", "N", "O", "S", "F", "Cl", "Br", "I"]
+    order = ["C", "H", "N", "^N", "O", "S", "F", "Cl", "Br", "I"]
     return "".join(el + ("" if d[el] == 1 else str(d[el])) for el in order if d.get(el)) + polarity
+
+
+def n_nitrogen(d) -> int:
+    """Nitrogens of either isotope (a '^N' is a nitrogen in every structural rule)."""
+    return sum(int(d.get(e, 0)) for e in NITROGENS)
 
 
 def exact_mz(ion: str, polarity: str = "-") -> float:
@@ -214,24 +230,27 @@ def exact_mz(ion: str, polarity: str = "-") -> float:
 # the formula space: every closed-shell even-electron ion, no chemistry rules
 # --------------------------------------------------------------------------- #
 class FormulaSpace:
-    """C0-40 H0-84 N0-4 O0-30 S0-1 F0-13 Cl0-1 (+ the reagent's Br / I, 0-2), as ions of
-    `polarity`. Only structure constrains it: (H + halogens + N) odd (an
+    """C0-40 H0-84 N0-4 O0-30 S0-1 F0-13 Cl0-1 (+ the reagent's Br / I or its ^N label,
+    0-2), as ions of `polarity`. Only structure constrains it: (H + halogens + N) odd (an
     even-electron ion of a closed-shell neutral), a neutral ring/double-bond
-    count >= 0, O <= 2C + 3N + 4S + 2, F only on carbon, no Cl beside F."""
+    count >= 0, O <= 2C + 3N + 4S + 2, F only on carbon, no Cl beside F (N counts
+    both nitrogens)."""
 
     RANGES = {"C": 40, "H": 84, "N": 4, "O": 30, "S": 1, "F": 13, "Cl": 1}
 
     def __init__(self, polarity: str = "-", reagent_elements=()):
         self.polarity = polarity
-        self.reagent_elements = tuple(e for e in reagent_elements if e in ("Br", "I"))
+        self.reagent_elements = tuple(dict.fromkeys(e for e in reagent_elements if e in REAGENT_ELEMENTS))
         self.ranges = dict(self.RANGES, **{e: 2 for e in self.reagent_elements})
         els = [e for e in self.ranges if e != "H"]
         grids = np.meshgrid(*[np.arange(self.ranges[e] + 1) for e in els], indexing="ij")
         g = {e: a.ravel() for e, a in zip(els, grids)}
-        keep = ((g["O"] <= 2 * g["C"] + 3 * g["N"] + 4 * g["S"] + 2)
+        nn = sum(g[e] for e in NITROGENS if e in g)
+        keep = ((g["O"] <= 2 * g["C"] + 3 * nn + 4 * g["S"] + 2)
                 & ~((g["F"] > 0) & (g["C"] == 0)) & ~((g["Cl"] > 0) & (g["F"] > 0)))
         self.els = els
         self.g = {e: a[keep].astype(np.int16) for e, a in g.items()}
+        self.nn = sum(self.g[e] for e in NITROGENS if e in self.g)
         self.halo = sum(self.g[e] for e in els if e in HALOGENS)
         self.heavy = sum(self.g[e] * MASS[e] for e in els) + (ME if polarity == "-" else -ME)
         # the neutral's ring/double-bond count from the ion's: [M-H]- / [M+NO3]- read
@@ -243,7 +262,7 @@ class FormulaSpace:
         if any(d.get(e, 0) < 0 for e in d) or any(d.get(e, 0) > self.ranges.get(e, 0) for e in d if e != "_"):
             return False
         X = d.get("H", 0) + sum(d.get(e, 0) for e in HALOGENS)
-        n, c = d.get("N", 0), d.get("C", 0)
+        n, c = n_nitrogen(d), d.get("C", 0)
         return bool((X + n) % 2 == 1 and c - X / 2 + n / 2 + self.dbe_off >= 0
                     and d.get("O", 0) <= 2 * c + 3 * n + 4 * d.get("S", 0) + 2
                     and not (d.get("F", 0) and not c) and not (d.get("Cl", 0) and d.get("F", 0)))
@@ -259,8 +278,8 @@ class FormulaSpace:
             ppm = (mz_true - mz) / mz * 1e6
             X = h + self.halo
             ok = ((h >= 0) & (h <= self.ranges["H"]) & (np.abs(ppm) <= tol_ppm)
-                  & ((X + self.g["N"]) % 2 == 1)
-                  & (self.g["C"] - X / 2 + self.g["N"] / 2 + self.dbe_off >= 0))
+                  & ((X + self.nn) % 2 == 1)
+                  & (self.g["C"] - X / 2 + self.nn / 2 + self.dbe_off >= 0))
             for i in np.flatnonzero(ok):
                 d = collections.Counter({e: int(self.g[e][i]) for e in self.els})
                 d["H"] = int(h[i])
@@ -401,7 +420,15 @@ def _strike(cands: pd.DataFrame, b, bins: Bins) -> pd.DataFrame:
 
 
 def _confirmed(d, b, space: FormulaSpace) -> bool:
+    """A formula that may lock: confirmable (no F, no non-reagent I), its S / Cl / Br
+    lines seen at the predicted ratio, and -- a reagent's ^N label, which no line of its
+    own confirms -- a carbon number its measured 13C line fits (`_c13_ok`, the caller's).
+    The label puts a formula at nearly every nominal mass, where the unlabelled space is
+    sparse (low m/z, few carbons) too: unchecked, the bright reagent's satellites
+    locked as C4^N- / ^NO2- and pulled a steep, true low end off the curve."""
     if not space.confirmable(d):
+        return False
+    if d.get("^N") and not (d.get("C", 0) > 0 and np.isfinite(b.r13)):
         return False
     return all(not d.get(el) or _line_seen(b, el, d[el]) for el in HEAVY_LINES)
 
@@ -1132,7 +1159,7 @@ def fit(ts: pd.DataFrame, *, polarity: str = "-", reagent_elements=(), sample_co
             if B.at[i, "mz"] <= lo:
                 continue
             c = c[(c["ppm"] - level).abs() <= STEP_MAX_PPM]
-            if len(c) == 1 and c["N"].iloc[0] <= SEED_MAX_N and accept(B.loc[i], c["ion"].iloc[0]):
+            if len(c) == 1 and n_nitrogen(c.iloc[0]) <= SEED_MAX_N and accept(B.loc[i], c["ion"].iloc[0]):
                 out[i] = c["ion"].iloc[0]
         return out
 
