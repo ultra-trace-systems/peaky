@@ -830,7 +830,9 @@ def commit_winners(
             if lv["verdict"] == SAT.LG_REFUSED:
                 n_own_line += 1
                 SAT.record_refusal(ledger, pid, reading=f"{w['neutral']} {w['adduct']}",
-                                   route=f"pass {pass_no} {method}", why=lv["why"])
+                                   route=f"pass {pass_no} {method}", why=lv["why"],
+                                   ion=w.get("ion_formula"), score=w.get("raw_score"),
+                                   ppm=w.get("ppm_error"))
                 continue
             if lv["verdict"] == SAT.LG_UNTESTABLE and line_gate == "strict" \
                     and not conf.startswith(("Low", "Suspect")):

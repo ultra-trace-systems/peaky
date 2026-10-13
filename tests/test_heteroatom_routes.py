@@ -365,6 +365,30 @@ def test_the_34s_gate_refuses_a_winner_whose_testable_line_is_missing(monkeypatc
     assert list(out["winners"]["peak_id"]) == ["d"] and not len(out["iso_children"])
 
 
+def test_a_winner_the_gate_refuses_is_the_peaks_blocked_reading():
+    """A gated family's refusal is an exit: during a run the refused winner is the
+    peak's blocked reading, its gate the family's own-line verdict."""
+    from peaky.assignment import blocked as BL
+    led, (md, mb, mc) = _s_ledger(with_line=False)
+    g = D._iso_gate_targets(led, led[led["peak_id"].isin(["d", "b", "c"])], "organosulfur_34s", "S", URO,
+                            SimpleNamespace(instrument_class="orbitrap", trace_sample=False,
+                                            height_cutoff=FLOOR))
+    g["pids"] |= {"b"}
+    arb = {"winners": _winners([("d", S1, "[M+H]+", ""), ("b", S1B, "[M+H]+", "")]),
+           "iso_children": pd.DataFrame(columns=["peak_id", "parent_peak_id"])}
+    BL.start()
+    try:
+        out = D._iso_gate_winners(led, arb, g, log=lambda *a: None, fam_key="organosulfur_34s")
+        BL.stamp(led, log=lambda *a: None)
+    finally:
+        BL.stop()
+    assert list(out["winners"]["peak_id"]) == ["d"]
+    by = led.set_index("peak_id")
+    assert by.at["b", "blocked_by"].startswith("iso_gate:organosulfur_34s: no 34S line within")
+    assert BL.gate_class(by.at["b", "blocked_by"]) == "iso_gate:organosulfur_34s"
+    assert by.at["b", "blocked_reading"].startswith(f"{S1B} [M+H]+")
+
+
 def test_the_gated_families_claim_in_the_late_phase(monkeypatch):
     """Curated phase: no S / Cl reading is enumerated, the families are held; series phase: they
     run with no series evidence at all, after whatever passes 4/5/7 left."""

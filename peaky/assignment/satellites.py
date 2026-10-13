@@ -1243,7 +1243,8 @@ class LineGate:
         v = self.row_verdict(ledger, pid, neutral, ion)
         if v["verdict"] != LG_REFUSED:
             return False
-        record_refusal(ledger, pid, reading=reading, route=route, why=v["why"])
+        record_refusal(ledger, pid, reading=reading, route=route, why=v["why"],
+                       ion=ion if isinstance(ion, str) else None)
         return True
 
 
@@ -1257,16 +1258,24 @@ def _counts_of(formula) -> dict:
     return C.parse_formula(formula.strip())
 
 
-def record_refusal(ledger: pd.DataFrame, pid, *, reading: str, route: str, why: str) -> bool:
+def record_refusal(ledger: pd.DataFrame, pid, *, reading: str, route: str, why: str,
+                   ion=None, score=None, ppm=None) -> bool:
     """Write a refused commit's reason on the peak's row -- 'REFUSED (own_line:
     <reading> [<route>] -- <why>)' appended to its commentary -- when the peak
     is still unexplained (an M0 the route did not displace keeps its own
-    commentary); the same note once only. True when written."""
+    commentary); the same note once only. True when written. The refused
+    reading ('<neutral> <adduct>', with the route's `ion` / `score` / `ppm`
+    where it has them) is also the peak's blocked reading (blocked.note, gate
+    'own_line: <why> [<route>]'; a no-op outside a run)."""
     if ledger is None or "commentary" not in ledger.columns:
         return False
     idx = ledger.index[ledger["peak_id"] == pid]
     if not len(idx) or str(ledger.at[idx[0], "role"]) != L.ROLE_UNEXPLAINED:
         return False
+    from peaky.assignment import blocked as BL     # lazy: blocked reads the ledger module at stamp time
+    neutral, _, adduct = str(reading).partition(" ")
+    BL.note(pid, BL.short(f"{LINE_GATE_REASON}: {why} [{route}]"), neutral=neutral or None,
+            adduct=adduct or None, ion=ion, score=score, ppm=ppm)
     i = idx[0]
     note = f"REFUSED ({LINE_GATE_REASON}: {reading} [{route}] -- {why})"
     old = ledger.at[i, "commentary"]

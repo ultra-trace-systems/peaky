@@ -79,6 +79,8 @@ Every exit between enumeration and commit notes what it stopped, so an `unexplai
 | pass 0 | `pass0:ppm 3.0>2.0` (the known-species mass gate, before a lead is recorded); `pass0:deferred: <summary>` / `pass0:refuted: <summary>` (every refused claim, as `known_lead` records it) |
 | the labelled rescue | `labeled:context:<window>`, `labeled:score 0.72<0.80`, `labeled:off-cal z=3.1>2.6`, `labeled:O<3x15N`, `labeled:O/C 1.60>1.30`, `labeled:sibling` (no matched non-M0 line), `labeled:degenerate (3 readings)`, `labeled:locked` |
 | a clear (`ledger.clear_assignment`: the post-run audits, the element-evidence gate, a batch per-file rewrite) | `cleared:<reason>`; a released isotope line `released: a line of the cleared reading <neutral> <adduct>` |
+| the commit contract (§3.6c: `commit_winners`, pass 0, pass 7, pass 4, the ladder gap-fill, the reference-list and labelled rescues; `satellites.record_refusal`) | `own_line: <why> [<route>]`, e.g. `own_line: 34S predicted 133 cps (13.3x the 10-cps gate), no line within 2.00 ppm of +1.9958 [pass 3 contaminant:organosulfate]` |
+| an isotope-gated pass-3 family (§3.3: `organochlorine`, `organosulfur_34s`) | `iso_gate:<family>: <why>`, e.g. `iso_gate:organosulfur_34s: no 34S line within 1.00 ppm of +1.99580` |
 | the pass-1 grid box | `no candidate in box (<box>, integer DBE)`: a pass-1 target no grid formula reaches; `no candidate scored on the peak (pass 1)` when its candidates matched other peaks |
 | admission | `not admitted (below the height gate, not persistent)` |
 

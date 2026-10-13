@@ -704,3 +704,25 @@ def test_known_evidence_records_the_rows_own_13c_line():
     recs = {r["neutral"]: r for r in AB.known_evidence(led, src="f")}
     assert recs["C8H7NS2"]["n_c13"] == 1 and recs["C8H7NS2"]["n_satellites"] == 1
     assert recs["C6H15O4P"]["n_c13"] == 0
+
+
+def test_a_refused_commit_is_the_peaks_blocked_reading():
+    """The contract's refusal is an exit like any commit gate's: during a run the
+    refused reading is the peak's blocked reading, its gate the own-line reason."""
+    from peaky.assignment import blocked as BL
+    led = _file([("p", OS_MZ, 3000.0)])
+    BL.start()
+    try:
+        _cw(led, _cfg())
+        BL.stamp(led, **NOLOG)
+    finally:
+        BL.stop()
+    by = led.set_index("peak_id")
+    assert by.at["p", "blocked_by"].startswith("own_line: 34S ")
+    assert BL.gate_class(by.at["p", "blocked_by"]) == "own_line"
+    assert by.at["p", "blocked_reading"].startswith(f"{OS} [M-H]- ({OS_ION}), score 0.85")
+    # outside a run nothing is noted, and the refusal still writes its commentary
+    led = _file([("p", OS_MZ, 3000.0)])
+    _cw(led, _cfg())
+    assert "blocked_by" not in led.columns
+    assert "REFUSED (own_line:" in led.set_index("peak_id").at["p", "commentary"]

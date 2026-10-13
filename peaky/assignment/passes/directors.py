@@ -735,7 +735,8 @@ def run_pass0_known(
                                f"own diagnostic line absent, predicted under {_SAT.TWIN_REFUTE_X_FLOOR:g}x "
                                "the floor (censored)"))
                 _SAT.record_refusal(ledger, pid, reading=f"{r['compound_formula']} {_mech_to_adduct(r)}",
-                                    route=f"pass 0 known:{fam}", why=lv["why"])
+                                    route=f"pass 0 known:{fam}", why=lv["why"], ion=r.get("ion_formula"),
+                                    score=r.get("ion_score"), ppm=r.get("ppm_error"))
                 continue
             conf = (
                 f"Good ({tag})"
@@ -1783,17 +1784,22 @@ def _iso_gate_winners(ledger: pd.DataFrame, arb: dict, gate: dict, *, log=print,
         pid = w["peak_id"]
         ion = _ion_counts(w["neutral"], w["adduct"])
         ok = False
+        why = f"no {gate['label']} partner at the gate offset"
         if pid in gate["pids"] and ion and pid in by_pid.index:
             h0 = by_pid.at[pid, "height"]
             v = _SAT.own_line(gate["lines"][0], gate["lines"][1], by_pid.at[pid, "mz"], h0,
                               ion, el, window_ppm=gate["window_ppm"])
             ok = bool(v["confirmed"])
+            why = v["why"]
             if not ok and gate.get("untestable_ok") and int(ion.get(el, 0) or 0) > 0 \
                     and not _SAT.own_line_testable(h0, ion, el, gate.get("floor")):
                 ok = True
                 held += 1
         keep.append(ok)
         refused += int(not ok)
+        if not ok:
+            # the peak's blocked reading (blocked.py; a no-op outside a run)
+            BL.note_winner(w, BL.short(f"iso_gate:{fam_key}: {why}"))
     win = win[pd.Series(keep, index=win.index, dtype=bool)]
     kids = arb.get("iso_children", pd.DataFrame())
     if len(kids):
