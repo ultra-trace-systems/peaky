@@ -568,6 +568,46 @@ def test_a_reference_list_rescue_shows_its_own_line():
     assert out == {"rescued": 1, "tentative": 0}, out
 
 
+def test_the_labelled_rescue_shows_its_own_line():
+    """The labelled 15N rescue is a commit route under the contract: a confident on-cal
+    15N reading carrying S, its 13C sibling matched, at a 5e5-cps parent whose 34S line
+    is predicted far over the gate -- refused where that line is absent (the row stays
+    unexplained, says why, and the refusal is its blocked reading), rescued with the
+    line in place, and rescued as before off an Orbitrap."""
+    from peaky.assignment import blocked as BL
+    from peaky.assignment import labeled as LB
+    from peaky.chem import profiles as PR
+    neu, ion = "C8H15^NO7S", "C8H14^NO7S-"
+    mz = CH.ion_mz(neu, "[M-H]-")
+    prof = XC.get_context(PR.resolve("NO3_15N").context)
+
+    def score(client, sid, formulas, allow_partial=True, mechanism_ids=None):
+        return pd.DataFrame([_srow(neu, ion, "M0", "p", mz, base=True, score=0.95),
+                             _srow(neu, ion, "13C", "p13", mz + ISO.D_13C_EXACT, base=False, score=0.95)])
+
+    def run(lines, cfg):
+        led = L.new_ledger(pd.DataFrame(lines, columns=["peak_id", "mz", "height"]))
+        rec = BL.start()
+        try:
+            out = LB.rescue_labeled(None, "S", led, prof, cfg, adducts=["[M-H]-"], label_isotope="^N",
+                                    label_max=1, score_fn=score, **NOLOG)
+            BL.stamp(led, rec, **NOLOG)
+        finally:
+            BL.stop()
+        return out, led.set_index("peak_id")
+    out, by = run([("p", mz, 5e5)], _cfg())
+    assert out == {"rescued": 0, "reread": 0, "own_line_refused": 1}, out
+    assert by.at["p", "role"] == L.ROLE_UNEXPLAINED
+    assert f"REFUSED (own_line: {neu} [M-H]- [labeled:15N] -- 34S predicted" in by.at["p", "commentary"]
+    assert by.at["p", "blocked_by"].startswith("own_line: 34S ") and "[labeled:15N]" in by.at["p", "blocked_by"]
+    assert by.at["p", "blocked_reading"].startswith(f"{neu} [M-H]-")
+    out, by = run([("p", mz, 5e5), ("p34", mz + S34, 5e5 * ISO.R_34S_PER_S)], _cfg())
+    assert out == {"rescued": 1, "reread": 0}, out
+    assert by.at["p", "method"] == "labeled:15N" and by.at["p", "neutral_formula"] == neu
+    out, by = run([("p", mz, 5e5)], _cfg("tof"))
+    assert out == {"rescued": 1, "reread": 0}, out
+
+
 def test_the_offcal_rearbitration_never_swaps_to_a_refused_alternative():
     """The off-cal aromatic monster of the re-arbitration test, its on-cal alternative now a sulfur
     reading: with no 34S line where the file would show it the monster is kept (the tier engine
