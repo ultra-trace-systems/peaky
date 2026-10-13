@@ -363,7 +363,9 @@ def test_the_batch_writes_the_table(tmp_path, monkeypatch):
 
 # --------------------------------------------------------------------------- would_lift on no level
 def test_a_pair_with_no_level_says_what_would_lift_it():
-    assert EV.NO_RUN_WINDOW_LIFT == "no file of this source calibrated (needs ≥ 20 isotope-backed core rows)"
+    assert EV.NO_RUN_WINDOW_LIFT == ("no file of this source calibrated (needs ≥ 20 isotope-backed core rows "
+                                     "in a file, or a batch-pooled core of ≥ 15 distinct carbon-bearing ions "
+                                     "isotope-backed in ≥ 2 files)")
     assert EV.NO_POOLED_PAIR_LIFT == "batch-level re-read: the re-read pair is not levelled"
     merged = pd.DataFrame([dict(mz=300.0, neutral_formula="C9H99O9", adduct="[M-H]-", tier="Candidate")])
     out = EV.stamp_merged(merged, None)

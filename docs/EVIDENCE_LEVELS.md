@@ -210,7 +210,7 @@ side channel would open ends
 | 5a | `competitors left: <first six>` (+ ` (+<n> more)`); the lowconf ceiling (§4): `engine confidence Low/Suspect in every file: not established (5a ceiling; a file at Good or High lifts it), not refuted` |
 | 5b | `refuted: <reasons>`, or `nothing could be enumerated or tested` |
 | reagent | `reagent ion / reagent cluster (not levelled)` |
-| no level: no file calibrated | a pooled source none of whose files is calibrated: `no file of this source calibrated (needs ≥ 20 isotope-backed core rows)`; an uncalibrated file levelled alone (§10.1): `the file is not calibrated (needs ≥ 20 isotope-backed core rows)` -- the 20 is the tier engine's `CAL_MIN_N` |
+| no level: no file calibrated | a pooled source none of whose files is calibrated and whose batch-pooled core fell short: `no file of this source calibrated (needs ≥ 20 isotope-backed core rows in a file, or a batch-pooled core of ≥ 15 distinct carbon-bearing ions isotope-backed in ≥ 2 files)`; an uncalibrated file levelled alone (§10.1): `the file is not calibrated (needs ≥ 20 isotope-backed core rows)` -- the 20 is the tier engine's `CAL_MIN_N` |
 | no level: batch-level re-read | a merged row no pooled pair holds (§10.2): `batch-level re-read: the re-read pair is not levelled` |
 
 ### 2.5 `context_source`
@@ -874,8 +874,9 @@ none of whose Orbitrap-class files is calibrated (a one-file batch of an
 uncalibrated file included) and no pooled core (MERGE.md §3 step 1a) has no
 run window: every pooled pair gets no level, claim tentative, the evidence
 `no level · no file of the source is calibrated ...` and the would_lift `no
-file of this source calibrated (needs ≥ 20 isotope-backed core rows)`; one
-calibrated file is enough to lend the others its sigma.
+file of this source calibrated (needs ≥ 20 isotope-backed core rows in a file,
+or a batch-pooled core of ≥ 15 distinct carbon-bearing ions isotope-backed in
+≥ 2 files)`; one calibrated file is enough to lend the others its sigma.
 
 `batch_summary.json` records:
 

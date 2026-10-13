@@ -60,6 +60,7 @@ import pandas as pd
 from peaky import paths as PT
 from peaky.assignment.ledger import lead_setters
 from peaky.assignment.tiers import CAL_MIN_N as _CAL_MIN_N
+from peaky.assignment import calpool as _CP
 from peaky.assignment.levels import scale as SCALE
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
@@ -1231,10 +1232,14 @@ NO_RUN_WINDOW_TEXT = ("no level · no file of the source is calibrated (no calib
                       "in any file): no run window to enumerate competitors in")
 
 #: the `would_lift` of a pair with no level because no file is calibrated: what the
-#: calibration needs (tiers.CAL_MIN_N core rows, the degeneracy window's minimum) --
-#: on every pair of a pooled source none of whose files is calibrated, and on every
-#: committed row of an uncalibrated file levelled alone (NO_WINDOW_LIFT)
-NO_RUN_WINDOW_LIFT = f"no file of this source calibrated (needs ≥ {_CAL_MIN_N} isotope-backed core rows)"
+#: calibration needs (tiers.CAL_MIN_N core rows, the degeneracy window's minimum, in
+#: one file; or the batch-pooled core calpool.py lends when no file has them) -- on
+#: every pair of a pooled source none of whose files is calibrated and whose pooled
+#: core fell short, and on every committed row of an uncalibrated file levelled
+#: alone (NO_WINDOW_LIFT)
+NO_RUN_WINDOW_LIFT = (f"no file of this source calibrated (needs ≥ {_CAL_MIN_N} isotope-backed core rows in a file, "
+                      f"or a batch-pooled core of ≥ {_CP.POOL_MIN_IONS} distinct carbon-bearing ions isotope-backed "
+                      f"in ≥ {_CP.POOL_MIN_FILES} files)")
 NO_WINDOW_LIFT = f"the file is not calibrated (needs ≥ {_CAL_MIN_N} isotope-backed core rows)"
 
 #: why such a source, named by --corroborate, gives no other-source partners (the batch and

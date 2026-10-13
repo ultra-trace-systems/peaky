@@ -26,7 +26,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   3.0>2.0`, `cleared:<reason>`, `no candidate in box (...)`, `not admitted (...)`). A batch
   pools them per m/z cluster (file count, heights, the most frequent reading, gate counts). A
   pair with no level now says what would lift it: `no file of this source calibrated (needs ≥ 20
-  isotope-backed core rows)` (and per file `the file is not calibrated ...`) and `batch-level
+  isotope-backed core rows in a file, or a batch-pooled core of ≥ 15 distinct carbon-bearing ions
+  isotope-backed in ≥ 2 files)` (and per file `the file is not calibrated ...`) and `batch-level
   re-read: the re-read pair is not levelled`. Diagnostics only: no assignment, tier, level,
   claim or other column moves (an offline run with the recorder off is byte-identical minus the
   two columns); only `would_lift` on those no-level rows changes.
