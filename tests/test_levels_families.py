@@ -34,10 +34,12 @@ from peaky.assignment.levels import context as CX  # noqa: E402
 from peaky.assignment.levels import decide as DC  # noqa: E402
 from peaky.assignment.levels import space as SP  # noqa: E402
 from peaky.chem import chemistry as C  # noqa: E402
+from peaky.chem import contexts as X  # noqa: E402
 from peaky.chem.resolution import Resolution  # noqa: E402
 
 ORBI = Resolution(coef=0.002 / 200 ** 1.5, exponent=1.5, offset=0.0).as_dict()     # R(200) = 100 000
-UR_FAMS = ("amine", "siloxane", "pdms", "glycol_peg", "phthalate")                  # the uronium context's own
+UR_FAMS = tuple(X.get_context("uronium").pass3_families)                         # the uronium context's own
+F_MAX = X.CONTAMINANT_FAMILIES["fluorinated"]["add"]["F"][1]                       # the fluorinated family's F ceiling
 CHO_UREA = ("C16H22O", "[M+(CH4N2O)H]+")                                            # a CHO urea adduct ...
 FPSI = "C15H32FPSi [M+H]+"                                                          # ... and its 0.06 mDa alias
 
@@ -155,13 +157,27 @@ class TestLevelProfiles:
         old, new = DG.space_profiles("uronium", fams), SP.level_profiles("uronium", fams)
         assert new[0] == old[0] and len(new) == len(old) == 2                  # the context profile is unchanged
         f = new[1]
-        assert (f.max_F, f.max_N, f.max_Si, f.max_S, f.max_P) == (17, 5, 12, 0, 0)   # Si: siloxane / pdms open
+        assert (f.max_F, f.max_N, f.max_Si, f.max_S, f.max_P) == (F_MAX, 5, 12, 0, 0)   # Si: siloxane / pdms open
         assert (old[1].max_S, old[1].max_P) == (2, 1)
         g = SP.level_profiles("uronium", ("amine", "fluorinated"))[1]
-        assert (g.max_F, g.max_Si, g.max_S, g.max_P) == (17, 0, 0, 0)
+        assert (g.max_F, g.max_Si, g.max_S, g.max_P) == (F_MAX, 0, 0, 0)
         a = SP.level_profiles("ambient-air", ("organosulfate", "nitrate", "siloxane", "amine", "fluorinated"))[1]
-        assert (a.max_F, a.max_S, a.max_Si, a.max_Cl, a.max_Br) == (17, 1, 1, 0, 0)  # no Cl / Br family open
+        assert (a.max_F, a.max_S, a.max_Si, a.max_Cl, a.max_Br) == (F_MAX, 1, 1, 0, 0)  # no Cl / Br family open
         assert SP.level_profiles("uronium", UR_FAMS) == DG.space_profiles("uronium", UR_FAMS)
+
+    def test_an_isotope_gated_family_brings_no_element_to_another_familys_profile(self):
+        """The positive sources declare isotope-gated families (organosulfur_34s,
+        organochlorine): they admit S / Cl only on the ion's own line, so with
+        'fluorinated' open the F profile still carries neither -- as an ungated S
+        family would let it."""
+        gated = tuple(f for f in UR_FAMS if X.family_iso_gate(f))
+        assert set(gated) >= {"organosulfur_34s", "organochlorine"}
+        for ctx in ("uronium", "easyic"):
+            f = SP.level_profiles(ctx, UR_FAMS + ("fluorinated",))[1]
+            assert (f.max_F, f.max_S, f.max_Cl, f.max_P) == (F_MAX, 0, 0, 0), ctx
+            assert SP.level_profiles(ctx, gated) == [X.get_context(ctx)]          # no space of their own
+        u = SP.level_profiles("uronium", ("organosulfate", "fluorinated"))[1]     # an ungated S family does
+        assert u.max_S == X.get_context("uronium").max_S
 
     def test_a_family_the_audit_adds_no_space_for_adds_none_here(self, monkeypatch):
         """Each family's profile is the degeneracy audit's own: a family `space_profiles` skips is skipped."""

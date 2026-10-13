@@ -102,10 +102,16 @@ def level_profiles(context, families=()) -> list:
     C15H32FPSi [M+H]+ alias of every CHO urea adduct is no competitor. A
     curated formula is enumerated whatever its elements (as before). Each
     family's profile is the degeneracy audit's own (`space_profiles` on that
-    family alone), so a family the audit adds no space for adds none here."""
+    family alone), so a family the audit adds no space for adds none here. An
+    isotope-gated family (contexts.family_iso_gate: the positive sources'
+    organochlorine / organosulfur_34s) brings no element to another family's
+    profile either: it admits its element only on the ion's own line, which no
+    mass-only competitor shows (so with 'fluorinated' open on a uronium run an
+    F formula still carries no S)."""
     base = X.get_context(context) if isinstance(context, str) else context
     fams = tuple(families)
-    open_els = frozenset().union(*[family_elements(f) for f in fams]) if fams else frozenset()
+    bring = [family_elements(f) for f in fams if not X.family_iso_gate(f)]
+    open_els = frozenset().union(*bring) if bring else frozenset()
     out = [base]
     for fam in fams:
         profs = DG.space_profiles(base, (fam,))
