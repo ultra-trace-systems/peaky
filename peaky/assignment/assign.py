@@ -33,6 +33,7 @@ from peaky.chem import reagents
 from peaky.chem import resolution as RES
 from peaky.assignment import reflists
 from peaky.assignment import resolvability
+from peaky.assignment import selfcentre
 from peaky.assignment import sidelobe_guard
 from peaky.assignment import residual
 from peaky.assignment import siloxane
@@ -983,6 +984,8 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # this run fits its own (C42). A stand-in's inherited trend stays.
     io_mascope.reset_scoring_trend(sample_id)
     io_mascope.reset_iso_scoring(sample_id)
+    # ... and so is a self-centre (measured below, before pass 0)
+    io_mascope.reset_self_centre(sample_id)
     scoring = io_mascope.scoring_for_sample(client, sample_id, raw)
     scoring_snapshot = io_mascope.scoring_snapshot(client, sample_id, raw)
     log(f"[run] scoring {io_mascope.describe_scoring(scoring)}"
@@ -1077,6 +1080,24 @@ def run(sample_id: str, context: str = "ambient-air", *,
         io_mascope.set_iso_scoring(sample_id, col="area" if iso_area else "height")
         if iso_area:
             log(f"[run] isotope lines read by area ({'response fitted after calibrate' if iso_mode == 'auto' else 'no response'})")
+    # The SELF-CENTRE (assignment/selfcentre.py): an Orbitrap-class file with no centre
+    # of its own (no anchors, no batch axis correction: `assumed_zero`) measures it once,
+    # here, on a backbone chosen without the mass term, and every pass from pass 0 on --
+    # the isotope-response re-run included: the centre lives in the io registry, which
+    # the re-run's restore of led / cfg does not touch -- judges its lines against it,
+    # until a mass trend this run's calibration accepts (C42) takes over the centre.
+    # Reads the ledger, changes nothing in it or the cfg.
+    self_centre = None
+    why_not = selfcentre.eligibility(scoring_snapshot, cfg, inherited=inherited, local=local)
+    if why_not is None:
+        self_centre = selfcentre.measure(client, sample_id, led, profile, pre, cfg, adducts, log=log)
+        if self_centre["applied"]:
+            io_mascope.set_self_centre(sample_id, self_centre)
+            scoring = io_mascope.scoring_for_sample(client, sample_id, raw)
+            scoring_snapshot = io_mascope.scoring_snapshot(client, sample_id, raw)
+            log(f"[run] scoring {io_mascope.describe_scoring(scoring)} (self-centre)")
+    elif scoring_snapshot.get("mu_source") == "assumed_zero":
+        self_centre = {"applied": False, "why": why_not}
     while True:
         cfg.iso_response_fit, cfg.iso_area = iso_fit, iso_area
         # the exits of THIS pass through the stages (a re-run starts afresh):
@@ -1194,6 +1215,13 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # the TOF ion-M+2 test's counts (tiers.apply_tof_m2; `skipped` says why it did not run)
     st["tof_m2"] = summaries.get("tof_m2")
     st["snr_source"] = scoring_snapshot.get("snr_source")
+    # the centre the file's mass errors were judged at and where it came from
+    # ("fitted" anchors, the batch's "axis", the file's own "self"-centre, a "trend",
+    # "inherited", "assumed_zero"); `self_centre` the self-centre's measurement, or why
+    # it was not measured, on a file with no other centre (None elsewhere)
+    st["mu_source"] = scoring_snapshot.get("mu_source")
+    st["mu_ppm"] = scoring_snapshot.get("mu_ppm")
+    st["self_centre"] = self_centre
     st["height_gate_cps"] = cfg.height_cutoff     # RESOLVED gate (the knob is cfg.height_cutoff_cps)
     # the multiple the gate was resolved FROM (profile-supplied or the package
     # default) -- the gate in cps alone cannot be read back without it.

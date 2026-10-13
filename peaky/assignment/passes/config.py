@@ -262,6 +262,13 @@ class PassConfig:
     # offset. False: the run fits no scoring trend of its own (the pre-C42
     # behaviour); a trend a stand-in inherited with its snapshot still applies.
     score_at_trend: bool = True
+    # The SELF-CENTRE (assignment/selfcentre.py): an Orbitrap-class file scored locally
+    # with no centre of its own -- fewer than io_mascope.MIN_OFFSET_ANCHORS anchors and no
+    # batch axis correction, so its snapshot reads `mu_source` "assumed_zero" -- measures
+    # its centre before pass 0 on a backbone chosen without the mass term (bright, unique,
+    # 13C-confirmed CHO / CHON ions) and is scored at it (`mu_source` "self"). False: such
+    # a file is scored at zero (the behaviour before).
+    self_centre: bool = True
     # Isotope-line scoring on an Orbitrap-class run (assignment/iso_response.py): "auto" reads every line's
     # ratio by AREA and, once calibrate has run, fits the file's minor-line response on its committed
     # CHO / CHON rows (a 13C line near the scans' floor is under-read by the summed peak list) and re-runs

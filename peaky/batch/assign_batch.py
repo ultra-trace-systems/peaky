@@ -1175,6 +1175,16 @@ LOCK_MAX_CORRECTION_PPM = 7.0
 #: half their raw error: a raw median alone read a calibrated body with a stepped top as
 #: 'unpredictive' (raw 0.02 ppm) and left 2-3.5 ppm steps uncorrected
 LOCK_CV_OK_PPM = 0.3
+#: the lock model is applied once its largest correction (or the locks' raw median) reaches
+#: this (ppm): about 0.7x the Orbitrap score width (0.58 ppm), where a pattern-perfect M0
+#: already drops below Good. The reference ions' 1 ppm bar (massqc.ORBI_OFFSET_FLAT_PPM)
+#: left +0.5..+0.8 ppm plateaus uncorrected, and on a labelled-nitrate batch the whole
+#: correction hung on one lock reading 1.08 ppm against it
+LOCK_APPLY_PPM = 0.4
+#: a correction under massqc.ORBI_OFFSET_FLAT_PPM is applied only when the model predicts
+#: held-out locks to within this share of it: the predictive bar above would let a model
+#: with a 0.3 ppm held-out error correct a 0.4 ppm axis, i.e. add about as much as it removes
+LOCK_SMALL_CV_SHARE = 0.5
 
 
 def _roster_class(table) -> str | None:
@@ -1326,13 +1336,22 @@ def _lock_model(ts, polarity, reagent_elements, info, log):
     if cv is None or raw is None:
         info["verdict"] = "locks_unvalidated"
         return None, True
-    if peak is not None and peak < MQ.ORBI_OFFSET_FLAT_PPM and raw < MQ.ORBI_OFFSET_FLAT_PPM:
+    if peak is not None and peak < LOCK_APPLY_PPM and raw < LOCK_APPLY_PPM:
         info["verdict"] = "axis_ok"
-        log(f"[mass-axis] axis_ok: no lock reads {MQ.ORBI_OFFSET_FLAT_PPM:g} ppm off; nothing to correct")
+        log(f"[mass-axis] axis_ok: no lock reads {LOCK_APPLY_PPM:g} ppm off; nothing to correct")
         return None, True
     if cv > max(LOCK_CV_OK_PPM, 0.5 * raw):
         info["verdict"] = "locks_unpredictive"
         log("[mass-axis] the lock model does not predict held-out locks: not applied")
+        return None, True
+    small = peak is not None and peak < MQ.ORBI_OFFSET_FLAT_PPM and raw < MQ.ORBI_OFFSET_FLAT_PPM
+    if small and cv > LOCK_SMALL_CV_SHARE * peak:
+        # a sub-ppm correction its own held-out locks do not resolve: the axis is flat
+        # within what the model can tell
+        info["verdict"] = "axis_ok"
+        log(f"[mass-axis] axis_ok: the largest correction ({peak:g} ppm) is under "
+            f"{MQ.ORBI_OFFSET_FLAT_PPM:g} ppm and the model predicts held-out locks only to "
+            f"{cv:g} ppm (more than {LOCK_SMALL_CV_SHARE:g}x it); nothing to correct")
         return None, True
     info["verdict"] = "axis_steps" if li.get("steps") else "axis_trend"
     return model, True
@@ -1353,7 +1372,9 @@ def measure_axis(ts, reagent: str, klass: str | None, *, hold: str | None = None
     On an Orbitrap, 'auto' and 'locks' model the axis from the batch's own peaks
     (batch.axislock: calibration-free locks, a smoothing spline, the steps the
     instrument's axis takes); it is applied when it predicts held-out locks to
-    within half the raw error and some lock reads >= 1 ppm off. 'auto' falls back
+    within half the raw error and its largest correction (or the locks' raw
+    median) reaches LOCK_APPLY_PPM (0.4 ppm) -- a correction under 1 ppm only when
+    held-out locks sit within half of it (LOCK_SMALL_CV_SHARE). 'auto' falls back
     to the reagent's reference ions (batch.massqc, the instrument's own rules)
     only when the locks could not build a model; 'reference' goes there directly,
     and a TOF always does (it is measured there, never corrected).
@@ -1463,6 +1484,26 @@ def measure_axis(ts, reagent: str, klass: str | None, *, hold: str | None = None
              "axis is left as is")
     ts = _apply_axis(ts, fit, info, where, log)
     return ts, info, table
+
+
+def scoring_centres(scorings: dict) -> dict:
+    """batch_summary['scoring_centres'] from the per-file scoring snapshots
+    (`pattern_scoring`): `by_mu_source` (files per centre source: `fitted` anchors,
+    the batch's `axis`, a `self`-centre, a `trend`, `inherited`, `assumed_zero`;
+    `unrecorded` for a file with no snapshot) and `self` (`{sample id: centre ppm}`
+    of the files scored at their self-centre). A self-centred file whose own
+    calibration then accepted a mass trend was scored at the trend: it counts as
+    `trend` and is not listed (its per-file `self_centre` keeps the measurement).
+    The merge does not read the self-centre: it aligns the files on their
+    pre-calibration offset (`per_file.offset_ppm`, io_mascope.estimate_offset)."""
+    by: dict = {}
+    own: dict = {}
+    for sid, snap in (scorings or {}).items():
+        src = (snap or {}).get("mu_source") or "unrecorded"
+        by[src] = by.get(src, 0) + 1
+        if src == "self":
+            own[sid] = (snap or {}).get("mu_ppm")
+    return {"by_mu_source": dict(sorted(by.items())), "self": own}
 
 
 def _reparsed(frame: pd.DataFrame | None) -> pd.DataFrame | None:
@@ -1706,7 +1747,10 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     (PEAKY_LOCAL_SCORING=0), which scores the server's own peaks. A series that
     carries an earlier run's correction is restored first (`restore_axis`).
     batch_summary['mass_axis'] records the model and what moved (`offsets_ppm`
-    and the per-file scoring are then read on the corrected axis);
+    and the per-file scoring are then read on the corrected axis; a file with no
+    anchors the correction reached is scored at zero there, `mu_source` "axis",
+    and one it did not reach measures its own centre, "self":
+    batch_summary['scoring_centres'] counts the files per source);
     tables/mass_axis_locks.csv the locks, tables/mass_axis.csv the reference
     ions when probed. Trace-first keeps its own wave
     (batch.tracefirst) and 'off' reproduces a run without the step.
@@ -2877,6 +2921,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     if side_opened:
         log(f"[assign_batch] side channels opened: "
             + ", ".join(f"{a} ({side_files[a]} of {len(per_stats)} files)" for a in side_opened))
+    _centres = scoring_centres(scorings)
+    log("[assign_batch] scoring centres: "
+        + ", ".join(f"{n} {src}" for src, n in _centres["by_mu_source"].items())
+        + (f"; self-centred: " + ", ".join(f"{s} {v:+.2f} ppm" for s, v in _centres["self"].items()
+                                           if v is not None) if _centres["self"] else ""))
     summary = {
         "reagent": prof.name, "label": prof.label, "context": context,
         # the context profile's run-level switches ({} = the named context as is)
@@ -2930,6 +2979,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         # correction applied to it before the cover was picked (measure_axis)
         "mass_axis": axis_info,
         "pattern_scoring": scorings,
+        # where each file's scoring centre came from (its snapshot's mu_source),
+        # counted, and the files that measured their own (selfcentre.py)
+        "scoring_centres": _centres,
         # which scorer judged the candidates: 'local' (in-process, the default) or
         # 'server' (match_compounds; PEAKY_LOCAL_SCORING=0) -- the report's Methods name it
         "scorer": "local" if IO._local_scoring_enabled() else "server",
