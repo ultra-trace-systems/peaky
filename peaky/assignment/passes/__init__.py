@@ -8,7 +8,7 @@ from .core import *  # noqa: F401,F403
 from .postprocess import *  # noqa: F401,F403
 from .directors import *  # noqa: F401,F403
 
-__version__ = "0.14.0"  # + the commit contract (satellites.own_line_verdict: pass 0, commit_winners, pass 7, the off-cal re-arbitration), the pass-3 families at tau_low, the envelope sweep's own-line test (also on the scored lines a calibrated commit attaches); 0.13.2 the commit gates, the pass-0 ppm gate, the context filter and the grid box note what they stop (blocked.py); 0.13.1 a GKA-opened pass-3 family commits as contaminant:<family>:gka; 0.13.0 pass 7's element gate (the element-evidence predicate), the twin
+__version__ = "0.14.0"  # + the commit contract (satellites.own_line_verdict: pass 0, commit_winners, pass 7, the off-cal re-arbitration), the pass-3 families at tau_low, the envelope sweep's own-line test (also on the scored lines a calibrated commit attaches); + the isotope-gated pass-3 families (iso_gate: commit on the ion's own line; claimed in the late phase); 0.13.2 the commit gates, the pass-0 ppm gate, the context filter and the grid box note what they stop (blocked.py); 0.13.1 a GKA-opened pass-3 family commits as contaminant:<family>:gka; 0.13.0 pass 7's element gate (the element-evidence predicate), the twin
                         # tie-break on a skeleton-only reading, the siloxane channel restriction,
                         # the exact-offset twin window once the file is calibrated, a cleared
                         # peak only an envelope line; curated_formulas

@@ -38,7 +38,8 @@ SKEL_N3 = "C6H11N3O4"          # skeleton-only N3 (the deuterium-alias shape)
 SKEL_N2 = "C4H6N2O8"           # skeleton-only N2: no deuterium note
 SKEL_N1 = "C3H7NO5"            # skeleton-only N1
 OMON = "C4H7NO6"               # raw O/C 1.5: the O-monster demote's ratio, cleared by the skeleton
-CLUSTER = "C3H3NO8"            # a carbon cluster on its raw reading only (DBE/C 1.0 -> 0.67)
+CLUSTER = "C10H3NO2"           # a carbon cluster on its raw reading only (DBE/C 1.0 -> 0.9 as C10H4;
+#                                H/C 0.3, so the heteroatom exemption does not reach it)
 HETERO = "C3H8N2O4"            # implausible raw (heteroatom flag; O/C 1.33): no demote on a unique window
 REARB = "C8H11N3O8"            # implausible raw (heteroatom flag) only; admitted by the context filter
 RAW_OK = "C6H11NO5"            # an ordinary mononitrate: no skeleton involved
@@ -424,7 +425,7 @@ def test_a_completion_row_of_a_skeleton_admitted_neutral_is_capped():
 def test_the_15n_cluster_reread_judges_a_window_free_rows_parent_by_the_demotes():
     """A ladder row capped on the carbon-cluster leg: its cluster parent is judged by the
     demote legs alone (the ladder never read the windows)."""
-    led, x = _relabel_case("C4H4N2O7", LADDER, x_method="known:x")   # Y: raw DBE/C 1.0 cluster; X C4H3NO4 also
+    led, x = _relabel_case("C12H4N2O5", LADDER, x_method="known:x")  # Y: raw DBE/C 1.0 cluster; X C12H3NO2 also
     assert _y(led)["tier"] == T.TIER_CANDIDATE
     r = _reread(led)
     assert str(r["tier_reason"]).startswith(T.NOX_SKELETON_CAP_MARK)

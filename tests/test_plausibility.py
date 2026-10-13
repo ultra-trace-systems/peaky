@@ -285,13 +285,15 @@ def test_nitrate_run_scrutiny_flags():
 
 
 def test_nitrate_run_carbon_cluster_reads_the_skeleton_and_exempts_small_acids():
-    """Dinitrophenol C6H4N2O5 is DBE/C 1.0 raw (a 'carbon cluster') and phenol (0.67) on its
-    skeleton; acetylenedicarboxylic acid C4H2O4 (DBE/C 1.0) is a C3-C4 polycarbonyl acid the
-    small-acid band admits. Neither is demoted on the nitrate run; C24H2 still is."""
+    """Dinitrophenol C6H4N2O5 and acetylenedicarboxylic acid C4H2O4 (DBE/C 1.0) carry their
+    unsaturation on C=O / N=O, so they are no carbon cluster on any run (`hetero_unsaturated`);
+    the NOx skeleton spares an H-poor nitro fit the heteroatom exemption does not (C10H3NO2:
+    DBE/C 1.0 raw, C10H4 0.9 on its skeleton). Neither is demoted on the nitrate run; C24H2
+    still is."""
     prof = _nitrate_run()
     for f in ("C6H4N2O5", "C4H2O4", "C3H2O4"):
-        assert PL.is_carbon_cluster(cf(f))
-        assert not PL.is_carbon_cluster(cf(f), prof)
+        assert not PL.is_carbon_cluster(cf(f)) and not PL.is_carbon_cluster(cf(f), prof)
+    assert PL.is_carbon_cluster(cf("C10H3NO2")) and not PL.is_carbon_cluster(cf("C10H3NO2"), prof)
     assert PL.is_carbon_cluster(cf("C24H2"), prof)
     led = pd.DataFrame([dict(role="M0", mz=m, neutral_formula=f, tier="Assigned", commentary="",
                              below_assignability=False, isotopologues="[]")
@@ -317,11 +319,14 @@ def test_other_contexts_keep_the_raw_gates():
 
 
 def test_nitrate_run_judges_c1_c2_and_skeleton_free_formulas_raw():
-    """The skeleton reading needs Ceff >= 3, as the context filter's ratio test: C2H4N2O2 stays a
-    carbon cluster and CH3NO3 / C2H3NO4 stay oxygen monsters on the nitrate run. A formula with
-    no NOx skeleton at all (C4H13N3O5, DBE 0) keeps its raw heteroatom flag."""
+    """The skeleton reading needs Ceff >= 3, as the context filter's ratio test: C2H4N2O2 is read
+    as raw (no carbon cluster since its C=O / N=O carry the unsaturation, `hetero_unsaturated`;
+    C2N2O4, H-free, still one) and CH3NO3 / C2H3NO4 stay oxygen monsters on the nitrate run. A
+    formula with no NOx skeleton at all (C4H13N3O5, DBE 0) keeps its raw heteroatom flag."""
     prof = _nitrate_run()
-    assert PL.is_carbon_cluster(cf("C2H4N2O2"), prof)
+    for f in ("C2H4N2O2", "C2N2O4"):
+        assert PL.is_carbon_cluster(cf(f), prof) == PL.is_carbon_cluster(cf(f)), f
+    assert not PL.is_carbon_cluster(cf("C2H4N2O2"), prof) and PL.is_carbon_cluster(cf("C2N2O4"), prof)
     for f in ("CH3NO3", "C2H3NO4"):
         assert PL.is_oxygen_monster(cf(f), prof), f
     for f in ("C2H4N2O2", "CH3NO3", "C2H3NO4", "C4H13N3O5"):

@@ -63,7 +63,8 @@ from peaky.assignment import fluorine as FL
 from peaky.assignment import satellites as SAT
 
 __version__ = "0.11.0"  # + the reagent-N isobar is an open split, never a tier cap (the tier reads the ion; REAGENT_N_OPEN_MARK);
-                       #   an isobar ion that is N-rich in every reading and has nothing but its mass stays Candidate (REAGENT_N_RICH_MARK)
+                       #   an isobar ion that is N-rich in every reading and has nothing but its mass stays Candidate (REAGENT_N_RICH_MARK);
+                       #   the isotope-gated family hold (a gated route's heteroatom without its own line is Candidate)
                        # 0.10.0: the NOx-skeleton tier cap (a skeleton-only reading is Candidate); 0.9.1 the twin test's exact-offset window on a calibrated Orbitrap-class run
                        # 0.9.0: source-solvent cluster cap (cluster:solvent -> Candidate)
                        # (history) mass-dependent z via masscal (range clamp; floor
@@ -225,6 +226,13 @@ DEGEN_DEMOTE_DENSITY = 2
 
 _TRAILS_RE = re.compile(r"trails by ([0-9.]+)")
 
+
+#: The isotope-gated families' hold (compute_tiers): a row an isotope-gated
+#: pass-3 family committed (contexts.family_iso_gate) whose ion does not show
+#: its own line of the gate element (satellites.own_line) is Candidate, its
+#: `tier_reason` led by this mark -- the line is what the route admits the
+#: element on, and an untestable one commits only on organosulfur_34s.
+GATED_HOLD = "isotope-gated route, its own line unseen"
 
 #: The organonitrate-skeleton reading (contexts.nox_skeletons) widens the context
 #: and plausibility windows on the premise that the sample holds organonitrates
@@ -908,6 +916,11 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
     twin_ppm = SAT.twin_ppm(cfg)
     # fluorine by evidence: each F reading's CF2 ladder in this file (fluorine.py)
     f_ladder = FL.verdicts(ledger, cfg=cfg)
+    # the isotope-gated families' hold (GATED_HOLD): their own-line window (None
+    # off an Orbitrap-class run: nothing is seen) and the file's real lines,
+    # read once and only when such a row exists
+    own_win = SAT.own_line_window_ppm(cfg)
+    own_lines = None
 
     split_aware = _split_rows is not None
     rows, isobars = [], {}
@@ -994,6 +1007,22 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
                 _ion = _ion_counts(formula, r.get("adduct")) or counts
                 twin = SAT.twin_verdict(ledger, r["peak_id"], _ion, sat_floor, element=_el,
                                         masked_by=SAT.reagent_masks(_el, counts, _ion), ppm=twin_ppm)
+        # a heteroatom an isotope-gated pass-3 family proposed (contexts.family_iso_gate:
+        # the positive sources' organosulfur_34s / organochlorine) stands on its own
+        # line or not at all: read it again here (satellites.own_line)
+        gated = None
+        _bm = SAT.base_method(method)
+        if _bm.startswith("contaminant:"):
+            from peaky.chem import contexts as X
+            _gel = X.family_iso_gate(_bm.split(":")[1])
+            _gion = (_ion_counts(formula, r.get("adduct")) or counts) if _gel else {}
+            if _gel and int(_gion.get(_gel, 0) or 0) > 0:
+                if own_lines is None:
+                    own_lines = SAT._peak_lines(ledger, artifacts=False)
+                gated = SAT.own_line(own_lines[0], own_lines[1], r.get("mz"), r.get("height"), _gion, _gel,
+                                     window_ppm=own_win)
+                gated["family"] = _bm.split(":")[1]
+                gated["n"] = int(_gion[_gel])
         tier, reason = TIER_ASSIGNED, ""
         _h0 = r.get("height")
         _h0 = float(_h0) if pd.notna(_h0) else None
@@ -1061,6 +1090,17 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
             # or a series step cannot put back a line that is not there.
             tier = TIER_CANDIDATE
             reason = f"{twin['twin']} count refuted by its isotope envelope: {twin['why']}"
+        elif gated is not None and not gated["confirmed"]:
+            # the gated family admits the element on its own line alone (the context
+            # budgets none, or the grid never proposes it); where that line was
+            # untestable the reading committed, and nothing else tests the element: a
+            # 13C child pins the carbons, a second channel or a series step the
+            # neutral mass -- none of them the sulfur or the chlorine
+            tier = TIER_CANDIDATE
+            reason = (f"{GATED_HOLD}: {gated['element']}{gated['n']} proposed by the isotope-gated "
+                      f"{gated['family']} family without its own line ({gated['why']}); that line is the "
+                      "one evidence the route admits the element on, so no isotope / cross-channel / "
+                      "series corroboration lifts the reading past Candidate")
         elif persist_only and not corroborated:
             tier = TIER_CANDIDATE
             _occ = r.get("occurrence")
@@ -1284,6 +1324,9 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
                 parts.append(f"{twin['twin']} envelope line present in the spectrum")
             elif twin is not None and twin["kind"] == "untestable" and sat_floor is not None:
                 parts.append(f"{twin['twin']} count untested (its line predicted under the floor)")
+            if gated is not None:
+                parts.append(f"{gated['element']}{gated['n']} on its own line (isotope-gated "
+                             f"{gated['family']}: {gated['why']})")
             if resolv in ("blended", "unresolvable"):
                 parts.append(f"{resolv} peak ({_sep:.2f} HWHM from its neighbour), carried by "
                              "the corroboration")

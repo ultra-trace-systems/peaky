@@ -75,7 +75,7 @@ from peaky.chem import contexts as X
 from peaky.assignment import ledger as L
 from peaky.assignment import tiers as T
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"   # an isotope-gated family opens no element space
 
 K_SIGMA = 3.0        # calibrated half-window, in sigma
 MAX_ALTS = 6         # competitors listed in the note
@@ -143,11 +143,17 @@ def space_profiles(context, families=()) -> list:
     enumerated to (UNCAPPED_CEILING: the fluorinated family's F25 on food). A
     family never lifts a non-zero context cap -- the pass-3 box takes min(family,
     context) there (directors.build_ranges) and the plausibility stage demotes
-    anything over the budget."""
+    anything over the budget. An isotope-gated family (contexts.family_iso_gate:
+    the positive sources' organochlorine) opens no space: it commits only where
+    the ion's own 37Cl line is seen, and a rival reading from it would have to
+    show that line too -- which this count, by mass alone, does not test."""
+
     base = X.get_context(context) if isinstance(context, str) else context
     out = [base]
     base_caps = _caps(base)
     for fam in families:
+        if X.family_iso_gate(fam):
+            continue
         add = (X.CONTAMINANT_FAMILIES.get(fam) or {}).get("add", {})
         kw = {f"max_{el}": int(hi) for el, (_lo, hi) in add.items()
               if hasattr(base, f"max_{el}") and (getattr(base, f"max_{el}") == 0

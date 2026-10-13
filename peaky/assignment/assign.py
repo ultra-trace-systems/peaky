@@ -387,7 +387,9 @@ def _stage_plausibility(st):
     demote: a commit whose neutral lies outside the run context's element budget
     (contexts.element_budget) and that no curated list names -- the pass-0
     registry for this polarity/context or an active reference list -- is
-    Candidate + tentative_lead (plausibility.demote_off_budget)."""
+    Candidate + tentative_lead (plausibility.demote_off_budget), unless every
+    over-budget Cl / Br / S shows its own isotope line (an Orbitrap-class run:
+    the run's cfg)."""
     label = getattr(st.profile, "label", None)
     # the run's own profile (its run-level switches: the NOx skeleton reading)
     return plausibility.demote_implausible(
