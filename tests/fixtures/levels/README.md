@@ -94,6 +94,23 @@ after `not counted (element family not open on evidence)`:
   C12H16O5 [M+Br]- lists C10H18F2O2S [M+Br]-, the same ion as the mixture
   C10H19BrF2O2S [M-H]- that stood for it before.
 
+Two later steps move text columns only (no level, claim or vector):
+- the fluorinated family's F ceiling of 25: F18-F25 readings enter the level
+  space wherever fluorine is open, on 107 `v1_nitrate` rows (`competitors_left`,
+  `n_competitors`, `evidence`; `would_lift` / `inpass_why` on 21, `n_excl_iso`
+  on 11; two rows only re-name an ion's representative reading). Where such a
+  reading mixes fluorine with chlorine or bromine, the D4 rule above lists it as
+  not counted, so on 24 rows that carry both changes the count is the D4
+  count plus the new readings the level space admits;
+- the positive organophosphate known list: TCPP (C9H18Cl3O4P), a pass-0
+  registry formula, enters the `v1_uronium` level space, and the 5b pair
+  C11H14O15 [M+H]+ lists its urea adduct as a competitor, whose 37Cl line in
+  band also refutes the committed reading's count (`evidence`, `would_lift`,
+  `inpass_why`, `competitors_left`, `n_competitors`, `n_excl_iso`).
+
+Against the table before these three steps 372 rows differ (371 `v1_nitrate`,
+1 `v1_uronium`); every moved column is one of the classes above.
+
 Both are pinned until the user signs off the vectors; a
 change that moves them is a change of the scale and must say so. Regenerate
 from the fixtures in the repo with `build_fixtures.py --expected-only` (no run
