@@ -448,6 +448,16 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
                          f"{win['_ad']} ({how} {int(win['n_assigned'])} of its "
                          f"{int(win['n_files'])} files) over the {int(big['n_files'])}-file "
                          f"{big['_nf']} {big['_ad']} ({how} {int(big['n_assigned'])})")
+        # the best per-file TIER of the winning ION, whichever label a file read
+        # it with (the tier answers "is the ion right?"): the best row's own
+        # unless the vote's tier set a file's reagent-N reading back, or a file
+        # Assigned the ion under the label the vote did not keep -- then that
+        # file's row is the one the tier (and its calibration footing) comes from
+        gi_win = g[g["_ion"] == win_ion["_ion"]]
+        tier = (TIER_ASSIGNED if int(gi_win["_rt"].max()) >= TIER_RANK[TIER_ASSIGNED] else best["tier"])
+        tier_row = best if str(best["tier"]) == str(tier) else (
+            gi_win[gi_win["_rt"] == gi_win["_rt"].max()]
+            .sort_values(["ion_score", "src"], ascending=[False, True], kind="mergesort").iloc[0])
         mz_raw = g["mz"].to_numpy(); mz_adj = g["_mz_adj"].to_numpy()
         def _spread(a):
             return float((a.max() - a.min()) / a.mean() * 1e6) if len(a) > 1 else 0.0
@@ -456,12 +466,7 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
         rec = dict(
             mz=float(g["mz"].mean()), neutral_formula=best["neutral_formula"],
             adduct=best.get("adduct"),
-            # the best per-file TIER of the winning ION, whichever label a file read
-            # it with (the tier answers "is the ion right?"): the best row's own
-            # unless the vote's tier set a file's reagent-N reading back, or a file
-            # Assigned the ion under the label the vote did not keep
-            tier=(TIER_ASSIGNED if int(g.loc[g["_ion"] == win_ion["_ion"], "_rt"].max())
-                  >= TIER_RANK[TIER_ASSIGNED] else best["tier"]),
+            tier=tier,
             ion_score=best.get("ion_score"),
             admitted_by=best.get("admitted_by"), occurrence=best.get("occurrence"),
             ion_only_of=best.get("ion_only_of", pd.NA),
@@ -481,7 +486,7 @@ def align(per_file: dict, *, tol_ppm: float = DEFAULT_TOL_PPM,
         if "tier_calibration" in g.columns:
             # the tier's footing: where the calibration of the file whose row
             # donated it came from (its own core, the batch's pooled core, none)
-            rec["tier_calibration"] = best.get("tier_calibration", pd.NA)
+            rec["tier_calibration"] = tier_row.get("tier_calibration", pd.NA)
         rec.update(ion_agree=(len(ions) <= 1),
                    formula_agree=(len(forms) <= 1),
                    mz_jitter_ppm_raw=round(_spread(mz_raw), 3),

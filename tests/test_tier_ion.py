@@ -230,6 +230,28 @@ def test_the_merged_tier_is_the_winning_ions_whichever_label_a_file_read():
     assert (r["neutral_formula"], r["tier"]) == ("C13H14O4", "Assigned")
 
 
+def test_the_merged_tier_calibration_is_the_tier_donors():
+    """The merged `tier_calibration` (calpool) names the footing of the file whose
+    row the merged TIER came from: here the Assigned NH4 files (their own core),
+    not the label's Candidate amine files (a batch-pooled core)."""
+    def pf(rows, cal):
+        f = _pf(rows)
+        f["tier_calibration"] = cal
+        return f
+    files = {f"c{i}": pf([(252.1230 + 1e-4 * i, "C13H17NO4", "[M+H]+", "Candidate", 0.98, "x")], "pooled")
+             for i in range(4)}
+    files.update({f"a{i}": pf([(252.1230 + 1e-4 * i, "C13H14O4", "[M+NH4]+", "Assigned", 0.97,
+                                "isotopologue-confirmed; " + T.REAGENT_N_OPEN_MARK + ": ...")], "per_file")
+                  for i in range(2)})
+    r = AB.align(files, tol_ppm=6.0)[0].iloc[0]
+    assert (r["neutral_formula"], r["tier"], r["tier_calibration"]) == ("C13H17NO4", "Assigned", "per_file")
+    # where the best row's own tier is the merged tier, its file's footing stands
+    files = {"a": pf([(252.1230, "C13H14O4", "[M+NH4]+", "Assigned", 0.90, "fixed")], "pooled"),
+             "b": pf([(252.1231, "C13H14O4", "[M+NH4]+", "Assigned", 0.99, "fixed")], "per_file")}
+    r = AB.align(files, tol_ppm=6.0)[0].iloc[0]
+    assert (r["tier"], r["tier_calibration"]) == ("Assigned", "per_file")
+
+
 def test_the_best_row_pick_is_the_one_it_was():
     # the split-open file scores higher, but the fixed file's row donates as before
     files = {"a": _pf([(252.1230, "C13H14O4", "[M+NH4]+", "Assigned", 0.90, "fixed")]),
