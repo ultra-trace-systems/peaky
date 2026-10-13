@@ -365,6 +365,27 @@ def test_the_34s_gate_refuses_a_winner_whose_testable_line_is_missing(monkeypatc
     assert list(out["winners"]["peak_id"]) == ["d"] and not len(out["iso_children"])
 
 
+def test_a_gated_winner_is_still_under_the_commit_contract(monkeypatch):
+    """The gate admits a line at 0.5-2x its prediction; the commit contract
+    (satellites.own_line_verdict) then reads the same line at the tier's twin bar
+    (TWIN_MIN_FRAC of the prediction where the line is predicted at >=
+    TWIN_REFUTE_X_FLOOR x the floor). A bright S winner whose 34S line reads 0.55x
+    passes the gate and is refused at the commit; at 0.8x it commits."""
+    from peaky.assignment import satellites as SAT
+    assert SAT.OWN_LINE_RATIO[0] < 0.55 < SAT.TWIN_MIN_FRAC
+    for frac, committed in ((0.55, False), (0.8, True)):
+        md, mb, mc = (C.ion_mz(f, "[M+H]+") for f in (S1, S1B, S1C))
+        led = _gate_ledger([("d", md, DIM), ("b", mb, BRIGHT), ("c", mc, BRIGHT),
+                            ("c34", mc + ISO.D_34S, frac * R34 * BRIGHT)])
+        _s_run(monkeypatch, led)
+        by = led.set_index("peak_id")
+        if committed:
+            assert by.at["c", "method"] == "contaminant:organosulfur_34s", frac
+        else:
+            assert by.at["c", "role"] == L.ROLE_UNEXPLAINED, frac
+            assert "REFUSED (own_line: " + S1C in str(by.at["c", "commentary"])
+
+
 def test_a_winner_the_gate_refuses_is_the_peaks_blocked_reading():
     """A gated family's refusal is an exit: during a run the refused winner is the
     peak's blocked reading, its gate the family's own-line verdict."""
