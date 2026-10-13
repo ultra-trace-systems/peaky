@@ -127,19 +127,50 @@ def level_profiles(context, families=()) -> list:
     return out
 
 
+def heteroatoms(neutral) -> frozenset:
+    """The neutral's heteroatoms beyond the CHO(N) core (the elements a
+    contaminant family or the context's budget brings: S, P, Si, F, Cl, Br, I);
+    empty when unreadable."""
+    try:
+        cnt = C.parse_formula(str(neutral))
+    except Exception:  # noqa: BLE001 -- an unreadable formula carries nothing
+        return frozenset()
+    return frozenset(el for el, v in cnt.items() if v and el in DG.ELEMENT_CEILING and el != "N")
+
+
+def _elements_fit(profiles, els) -> bool:
+    """One of ``profiles`` allows every element of ``els`` (a cap > 0)."""
+    return any(all((getattr(p, f"max_{el}", 0) or 0) > 0 for el in els) for p in profiles)
+
+
 def space_of(ctx, neutral) -> "Space":
     """D4: the space a reading of ``neutral`` is levelled in -- the level space
     (``ctx.space``) when it admits the neutral, else the SHADOW space
     (``ctx.space_shadow``, the space before D4): a reading that needs a family
     not open on evidence, a cross-family mixture, or one outside both spaces
     (then D5-widened from the shadow, as before) meets its competitors,
-    decompositions and aliases exactly as before. The narrower level space only
+    decompositions and aliases exactly as before. A curated formula passes
+    every profile (`degeneracy._space_reason`), so it is judged by its
+    heteroatoms: one whose elements no level profile carries together and a
+    shadow profile does (a perfluoroacid on a run whose fluorine has no
+    evidence) is levelled in the shadow too. The narrower level space only
     takes competitors away from the readings it admits."""
     sp = ctx.space
     sh = getattr(ctx, "space_shadow", None)
-    if sh is None or not isinstance(neutral, str) or not neutral or sp.space_reason(neutral) is None:
+    if sh is None or not isinstance(neutral, str) or not neutral:
         return sp
-    return sh
+    if sp.space_reason(neutral) is not None:
+        return sh
+    if neutral in sp.curated:
+        memo = sp.__dict__.setdefault("_curated_shadow", {})
+        hit = memo.get(neutral)
+        if hit is None:
+            els = heteroatoms(neutral)
+            hit = memo[neutral] = bool(els) and not _elements_fit(sp.profiles, els) \
+                and _elements_fit(sh.profiles, els)
+        if hit:
+            return sh
+    return sp
 
 
 def decompositions(space: "Space", counts: dict, neutral, adduct, adducts) -> list[dict]:

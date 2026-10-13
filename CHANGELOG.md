@@ -314,20 +314,27 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   C2H-6N2O2 == FPSi alias (0.064 mDa) of every CHO urea adduct (C15H32FPSi [M+H]+ beside
   C16H22O·urea H+) parked hundreds of ions at 5a 'tentative'. A row-opened family now counts for
   a file only when a row of it is Assigned or its own diagnostic line (34S, 29Si / 30Si, 37Cl,
-  81Br) is committed; `fluorinated`, whose rows no isotope can confirm, needs a CF2-step chain of
+  81Br in any of the ledger's spellings, of an element the row's neutral carries and its adduct
+  does not) is committed;
+  `fluorinated`, whose rows no isotope can confirm, needs a CF2-step chain of
   3 Assigned F readings on one adduct (a perfluoroacid series counts); it must hold in two files,
   as before (`context.level_families`, `family_evidence`). The context's declared pass-3 families
   stay. A family's profile keeps another heteroatom of the context's budget only when an open
   family brings it (`space.level_profiles`): no F+P / F+S on a uronium run, no F+Cl / F+Br on
   ambient air. The ions only the former space proposes are listed in `competitors_left` as `not
-  counted (element family not open on evidence)` and counted in the evidence text, never a
-  competitor; they still vouch for their own isotope lines in test (b), so a refutation through
-  one stands. A committed reading the narrower space does not admit (it needs such a family, or
-  is such a mixture) is levelled in the former space exactly as before (`space.space_of`), so a
-  fluorine reading meets its own family's competitors. `scripts/level_ledger.py` restates the record. The degeneracy
-  audit and every tier are unchanged. On the labelled-nitrate level fixture 11 pairs read 4b
-  instead of 5a (an F+Cl mixture was their only competitor; the expected table and vector are
-  re-pinned); the uronium fixture does not move.
+  counted (element family not open on evidence)` (every one) and counted in the evidence text,
+  never a competitor; they still vouch for their own isotope lines in test (b), so a refutation
+  through one stands. A committed reading the narrower space does not admit (it needs such a
+  family, or is such a mixture; a curated formula is judged by its heteroatoms, so a registry
+  perfluoroacid on a run whose fluorine has no evidence counts) is levelled in the former space
+  exactly as before (`space.space_of`), so a fluorine reading meets its own family's
+  competitors. A committed reading carrying a heteroatom (S, P, Si, F, Cl, Br, I) none of its own
+  in-band lines confirms takes no competitor away either (`competitors.unconfirmed_heteroatoms`):
+  an Si2 reading of a CHO urea adduct (Si2H4 == CO3) beside an unevidenced fluorine reading stays
+  5a. The former space is enumerated only where its profiles differ. `scripts/level_ledger.py`
+  restates the record. The degeneracy audit and every tier are
+  unchanged. The labelled-nitrate level fixture's expected table and vector are re-pinned
+  (`tests/fixtures/levels/README.md` lists the diff); the uronium fixture does not move.
 - **The `blended` separability class was 1.39x too wide.** `chem.resolution.d_crit_hwhm`, the
   separation at which two Gaussians of a given height ratio turn bimodal, converted its sigma table
   to HWHM by multiplying by sqrt(2 ln 2) where it divides: equal heights read 2.36 HWHM instead of

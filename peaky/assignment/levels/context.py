@@ -403,7 +403,9 @@ def family_evidence(led: pd.DataFrame, family: str) -> str:
     Assigned F-bearing readings (`cf2_chain`, any route); any other family, an
     Assigned ``contaminant:<family>`` M0 row, or such a row whose own
     diagnostic line (FAMILY_DIAG_LINES of the family's elements) the file
-    committed as its isotope child or recorded in its ``isotopologues``."""
+    committed as its isotope child or recorded in its ``isotopologues`` -- a
+    line of an element the row's NEUTRAL carries and its adduct adds none of
+    (the 81Br line of an [M+Br]- reagent cluster is the adduct's, no evidence)."""
     if "role" not in led.columns or "neutral_formula" not in led.columns:
         return ""
     m0 = led[led["role"] == "M0"]
@@ -422,8 +424,7 @@ def family_evidence(led: pd.DataFrame, family: str) -> str:
         return ""
     if (tier.loc[own.index] == T.TIER_ASSIGNED).any():
         return "an Assigned row"
-    want = {lab for el in els for lab in FAMILY_DIAG_LINES.get(el, ())}
-    if not want:
+    if not any(FAMILY_DIAG_LINES.get(el) for el in els):
         return ""
     kids: dict = defaultdict(set)
     if "iso_label" in led.columns and "parent_peak_id" in led.columns:
@@ -432,11 +433,38 @@ def family_evidence(led: pd.DataFrame, family: str) -> str:
             if isinstance(lab, str):
                 kids[p].update(x for x in lab.split("+") if x)
     iso = own["isotopologues"] if "isotopologues" in own.columns else pd.Series(None, index=own.index)
-    for pid, cell in zip(own["peak_id"].astype(str), iso):
-        got = (set(T._iso_labels(cell)) | kids.get(pid, set())) & want
+    ad = own["adduct"] if "adduct" in own.columns else pd.Series("", index=own.index)
+    for pid, n, a, cell in zip(own["peak_id"].astype(str), own["neutral_formula"], ad, iso):
+        want = {lab for el in _own_elements(n, a) & els for lab in FAMILY_DIAG_LINES.get(el, ())}
+        got = _diag_isotopes(set(T._iso_labels(cell)) | kids.get(pid, set())) & want
         if got:
             return f"its own {'/'.join(sorted(got))} line"
     return ""
+
+
+def _diag_isotopes(labels) -> set:
+    """The heavy isotopes the label parts name, in the spelling of
+    FAMILY_DIAG_LINES: '37Cl2', '2x37Cl' and '37Cl(pair)' read 37Cl,
+    '81Br37Cl(pair)' both, either line of '81Br/37Cl(pair)' each
+    (`isotopes.parse_label_part`); an unreadable part as written."""
+    out: set = set()
+    for lab in labels:
+        for part in ISO.split_label(lab):
+            kind, v = ISO.parse_label_part(part)
+            if kind == "set":
+                out.update(v)
+            elif kind == "alt":
+                out.update(k for h in v for k in h)
+            else:
+                out.add(part)
+    return out
+
+
+def _own_elements(neutral, adduct) -> frozenset:
+    """The heteroatoms of ``neutral`` its ``adduct`` adds none of (a diagnostic
+    line of one of them is the neutral's own)."""
+    dl = SP.adduct_delta(str(adduct)) if isinstance(adduct, str) and adduct else None
+    return frozenset(el for el in SP.heteroatoms(neutral) if not (dl and dl.get(el, 0) > 0))
 
 
 def evidenced_families(summary: dict, led: pd.DataFrame, fams=None) -> tuple[str, ...]:
@@ -606,7 +634,9 @@ def level_spaces(summary: dict, fams, fams_open, *, catalog=None):
     as not counted -- or None when it enumerates the same profiles)."""
     args = run_space_args(summary)
     space = SP.Space(*args, fams, catalog=catalog, mixtures=False)
-    if tuple(fams) == tuple(fams_open) and DG.space_profiles(space.ctx, tuple(fams_open)) == space.profiles:
+    # the curated formulas are the same in both: equal profiles enumerate the same ions (a family the audit adds
+    # no profile for, unevidenced, is no shadow worth enumerating twice)
+    if DG.space_profiles(space.ctx, tuple(fams_open)) == space.profiles:
         return space, None
     return space, SP.Space(*args, fams_open, catalog=catalog)
 

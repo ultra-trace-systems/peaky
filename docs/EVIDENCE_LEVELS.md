@@ -115,7 +115,7 @@ empty.
 | `evidence_level` | `3c` `4a` `4b` `5a` `5b`, or a bucket `reagent` / `NA` (§1); empty when the row has no level |
 | `evidence` | the evidence string (§2.3): the level, the decisive facts and the tags, in one line |
 | `would_lift` | what the pair lacks for the next level up (§2.4) |
-| `competitors_left` | the competitor ions left in the calibrated window after the isotope and series exclusions, `"; "`-joined, full list; an isotope-line competitor reads `<label> line of <neutral> <adduct>`; then, after ` \|\| ` (or alone), `not counted (element family not open on evidence): <first six>` (+ ` (+<n> more)`) -- the ions only the shadow space proposes (§5.2), listed for transparency, never a competitor; empty when none |
+| `competitors_left` | the competitor ions left in the calibrated window after the isotope and series exclusions, `"; "`-joined, full list; an isotope-line competitor reads `<label> line of <neutral> <adduct>`; then, after ` \|\| ` (or alone), `not counted (element family not open on evidence): <every one>`, `"; "`-joined -- the ions only the shadow space proposes (§5.2), listed for transparency, never a competitor; empty when none |
 | `tags` | the tag texts (§9), `" \| "`-joined; empty when none |
 | `context` | the context-list entries that match the neutral (§7), named and class, `"; "`-joined: `reflist:<id> = <name>`, `registry:<family> = <label>` (named) or `reflist:<id>`, `registry:<family>` (class); empty when none |
 | `context_source` | how the lists that matched were activated; when nothing matched, how the run's lists were (§2.5) |
@@ -401,7 +401,10 @@ adduct.
   rows, whatever their tier or GKA suffix) counts for a file only when a row
   of it is Assigned, or the file committed that row's own diagnostic isotope
   line (34S; 29Si / 30Si; 37Cl; 81Br: an isotope child or an `isotopologues`
-  record, the tier engine's bookkeeping). Fluorine has no minor isotope and a
+  record, the tier engine's bookkeeping, in any of the ledger's spellings:
+  `37Cl2`, `2x37Cl`, `37Cl(pair)`, `81Br37Cl(pair)`) -- a line of an element the row's
+  neutral carries and its adduct adds none of (the 81Br line of an [M+Br]-
+  reagent cluster is the adduct's). Fluorine has no minor isotope and a
   fluorinated row's Assigned tier rests on mass alone, so `fluorinated` needs
   a CF2-step chain of at least `FAMILY_F_CHAIN_MIN` (3) Assigned F-bearing
   readings in the file (neutrals one CF2 apart on one adduct, by any route: a
@@ -432,9 +435,25 @@ adduct.
   fluorine has no evidence, a cross-family mixture, or a neutral outside both
   spaces, then D5-widened from the shadow) is levelled in the shadow space
   exactly as before: its own family's competitors count, and its
-  decompositions, the split and the route aliases read the shadow too. The
-  narrower level space only takes competitors away from the readings it
-  admits.
+  decompositions, the split and the route aliases read the shadow too. A
+  curated formula passes every profile, so it is judged by its heteroatoms:
+  one whose elements no level profile carries together and a shadow profile
+  does (a perfluoroacid from the pass-0 registry on a run whose fluorine has
+  no evidence) is levelled in the shadow as well. The narrower level space
+  only takes competitors away from the readings it admits.
+- **A reading whose own heteroatom is unconfirmed**
+  (`competitors.unconfirmed_heteroatoms`). A committed neutral the level space
+  admits that carries a heteroatom (S, P, Si, F, Cl, Br, I) none of its own
+  in-band isotope lines confirms (the committed reading's matched elements,
+  §5.3: a line in band in at least half of its testable files, >= 3 on a
+  batch) takes no competitor away: the ions
+  only the shadow space proposes count for it, as before. F, P and I have no
+  minor line, so a reading carrying them never qualifies. Without this, an
+  Si2 reading of a CHO urea adduct (Si2H4 == CO3, 0.41 mDa; the CHO reading
+  outside the calibrated window) whose only competitor was an unevidenced
+  fluorine reading read 4b 'ion: unique in the calibrated window' -- its
+  silicon no better evidenced than that fluorine. A CHO(N) reading, or one
+  whose every heteroatom an own line confirms, keeps the narrower space.
 
 A committed neutral the space drops is
 enumerated in the space widened to admit its class, so same-class competitors
@@ -951,10 +970,16 @@ release in `evidence.py`).
   neither a competitor nor listed; one that two files opened but fewer than
   two hold evidence for is recorded (`families_unevidenced`) and its ions are
   listed as not counted. A batch of one file keeps every family it holds
-  evidence for. A declared family (the context's pass-3 list) needs no
-  evidence: none of them raises a cap the built-in contexts set to zero, so
-  today only row-opened families (fluorine everywhere; halogens on the
-  uronium / EasyIC / 15N-ammonium contexts) widen the space. Mixtures inside
+  evidence for. A declared family (the context's pass-3 list and the
+  reagent's own family) needs no evidence. No context's pass-3 list raises a
+  cap the built-in contexts set to zero; the reagent's own family can: on a
+  halide reagent (Br-, Cl-) over the uronium / EasyIC / 15N-ammonium
+  contexts, `bromo_organic` / `chloro_organic` raises Br / Cl from 0, and its
+  profile follows the mixture rule like any family's (Br + Si where siloxane
+  is open, no Br + S / P), so the level space there differs from the
+  degeneracy audit's even with no row-opened family; no batch the scale was
+  measured on used such a reagent. Otherwise only row-opened families
+  (fluorine everywhere; halogens on those contexts) widen the space. Mixtures inside
   the context's own budget (P + S + Si on uronium, Cl + S on ambient air) are
   the context's space and stay. A committed neutral the level space's caps or
   filter drop is enumerated in the space widened to its own counts (§5.2, the

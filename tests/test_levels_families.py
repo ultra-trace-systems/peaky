@@ -9,7 +9,10 @@ evidence, and without cross-family mixtures.
 2. A family's profile carries another heteroatom of the context's budget only
    when an open family brings it (`space.level_profiles`): no C15H32FPSi alias.
 3. What only the shadow space (every opened family, with mixtures) proposes is
-   listed in `competitors_left` as not counted, never a competitor.
+   listed in `competitors_left` as not counted, never a competitor -- unless the
+   committed reading needs the family itself (a curated perfluoroacid on a run
+   whose fluorine has no evidence: `space.space_of`) or carries a heteroatom no
+   own in-band line confirms (`competitors.unconfirmed_heteroatoms`).
 
 Synthetic, offline."""
 import sys
@@ -102,6 +105,31 @@ class TestFamilyEvidence:
         assert CX.family_evidence(_child(_ledger([sil]), "s1", "29Si"), "siloxane") == "its own 29Si line"
         assert CX.family_evidence(_child(_ledger([sil]), "s1", "29Si"), "halogen_dbp") == ""
 
+    def test_a_line_the_adduct_carries_is_no_evidence_for_the_neutral(self):
+        """The 81Br line of a reagent cluster [M+Br]- is the adduct's: only a line of an element the NEUTRAL
+        carries, and its adduct adds none of, is the row's own."""
+        no_br = ("h1", "C6H5ClO", "[M+Br]-", "Candidate", "contaminant:halogen_dbp")
+        led = _ledger([no_br])
+        assert CX.family_evidence(_child(led, "h1", "81Br"), "halogen_dbp") == ""
+        assert CX.family_evidence(_child(led, "h1", "37Cl"), "halogen_dbp") == "its own 37Cl line"
+        both = ("h2", "C6H4BrClO", "[M+Br]-", "Candidate", "contaminant:halogen_dbp")
+        assert CX.family_evidence(_child(_ledger([both]), "h2", "81Br"), "halogen_dbp") == ""
+        own = ("h3", "C6H4BrClO", "[M-H]-", "Candidate", "contaminant:halogen_dbp")
+        assert CX.family_evidence(_child(_ledger([own]), "h3", "81Br"), "halogen_dbp") == "its own 81Br line"
+
+    def test_a_diagnostic_line_counts_in_every_label_spelling(self):
+        """The ledgers spell halogen lines several ways (`isotopes.parse_label_part`): each one is the line."""
+        dbp = ("h1", "C6H4Cl2O", "[M+H]+", "Candidate", "contaminant:halogen_dbp")
+        for lab in ("37Cl2", "2x37Cl", "37Cl(pair)", "13C+37Cl2"):
+            assert CX.family_evidence(_child(_ledger([dbp]), "h1", lab), "halogen_dbp") == "its own 37Cl line", lab
+        mix = ("h2", "C6H4BrClO", "[M-H]-", "Candidate", "contaminant:halogen_dbp")
+        assert CX.family_evidence(_child(_ledger([mix]), "h2", "81Br37Cl(pair)"), "halogen_dbp") == \
+            "its own 37Cl/81Br line"
+        assert CX.family_evidence(_child(_ledger([mix]), "h2", "81Br/37Cl(pair)"), "halogen_dbp") == \
+            "its own 37Cl/81Br line"
+        assert CX.family_evidence(_child(_ledger([dbp]), "h1", "M+2"), "halogen_dbp") == ""   # a generic line
+        assert CX._diag_isotopes(["81Br(pair)", "2x34S", "30Si+13C", "odd"]) == {"81Br", "34S", "30Si", "13C", "odd"}
+
     def test_evidenced_families_keep_the_contexts_declared_families(self):
         s = _summary([])
         led = _ledger([("p1",) + CHO_UREA + ("Assigned", "cheminfo+grid"), JUNK_F,
@@ -189,6 +217,19 @@ class TestRunContext:
         assert ctx.families == UR_FAMS and ctx.space_shadow is None and ctx.families_unevidenced == ()
         assert _cands(ctx, pf)[0]["uncounted"] == []
 
+    def test_an_unevidenced_family_that_adds_no_profile_builds_no_shadow(self):
+        """On ambient air the context's budget already holds Cl and Br, so the audit adds no profile for a
+        halogen family: refused for want of evidence, it changes nothing, and nothing is enumerated twice."""
+        rows = [("p1", "C10H16O4", "[M-H]-", "Assigned", "cheminfo+grid"),
+                ("h1", "C6H4Cl2O", "[M-H]-", "Candidate", "contaminant:halogen_dbp")]
+        pf = {s: _ledger(rows) for s in ("a", "b")}
+        stats = [dict(sample_id=s, height_gate_cps=100.0, degeneracy_cal={"mu": 0.0, "sigma": 0.3}) for s in pf]
+        s = _summary(stats, reagent="NO3", context="ambient-air")
+        ctx = CX.build_run_context(s, pf, CX.run_windows(s, pf), name="t")
+        assert ctx.families_unevidenced == ("halogen_dbp",) and ctx.space_shadow is None
+        assert DG.space_profiles(ctx.space.ctx, ctx.families + ("halogen_dbp",)) == ctx.space.profiles
+        assert _cands(ctx, pf, rows[0][1:3])[0]["uncounted"] == []
+
     def test_an_engine_alternative_only_the_shadow_admits_is_not_counted(self):
         _s, pf, ctx = _run([JUNK_F])
         for led in pf.values():
@@ -225,6 +266,85 @@ class TestRunContext:
         assert ctx.decompositions(cnt, *key) == before.decompositions(cnt, *key)
         assert all(d["ok"] for d in ctx.decompositions(cnt, *key) if d["adduct"] == key[1])
 
+    def test_a_curated_fluorine_reading_meets_its_own_familys_competitors(self):
+        """A curated formula passes every profile of the level space (the pass-0 registry), so `space_of` judges
+        it by its heteroatoms: a perfluoroacid on a run whose fluorine has no evidence (a CF2 chain of 1) is
+        levelled in the shadow, and its tied fluorine alternative counts, as for any fluorine reading. A curated
+        formula whose elements a level profile carries stays in the level space."""
+        junk = ("j1", "C10H9F5O2", "[M-H]-", "Candidate", "contaminant:fluorinated")
+        pfca = ("k1", "C4HF7O2", "[M-H]-", "Candidate", "known:perfluoroacid")
+        pf = {s: _ledger([junk, pfca]) for s in ("a", "b")}
+        stats = [dict(sample_id=s, height_gate_cps=100.0, degeneracy_cal={"mu": 0.0, "sigma": 0.3}) for s in pf]
+        summ = _summary(stats, reagent="NO3", context="ambient-air")
+        ctx = CX.build_run_context(summ, pf, CX.run_windows(summ, pf), name="t")
+        assert ctx.families_unevidenced == ("fluorinated",) and "C4HF7O2" in ctx.space.curated
+        assert ctx.space.space_reason("C4HF7O2") is None                         # the curated bypass ...
+        assert SP.space_of(ctx, "C4HF7O2") is ctx.space_shadow                  # ... does not decide
+        assert SP.space_of(ctx, "H2SO4") is ctx.space and SP.space_of(ctx, "C6H5NO3") is ctx.space
+        for led in pf.values():
+            for pid in ("k1", "j1"):
+                led.loc[led["peak_id"] == pid, "alternatives"] = (
+                    '[{"formula": "C7H3F5S", "adduct": "[M-H]-", "ppm": 0.1}]')
+                led.loc[led["peak_id"] == pid, "tied"] = True
+        for key in (pfca[1:3], junk[1:3]):
+            cands = _cands(ctx, pf, key)
+            assert "C7H3F5S [M-H]-" in [c["name"] for c in cands[1:]], key
+            assert cands[0]["uncounted"] == []
+
+
+SI2 = ("C10H27NO3Si2", "[M+NH4]+")          # an Si2 reading: Si2H4 == CO3 (0.41 mDa) of a CHO urea adduct
+
+
+def _q1_si2(monkeypatch, matched):
+    """The Si2 reading on a run whose fluorine has no evidence, a tied F reading beside it; its own isotope lines
+    confirm ``matched``."""
+    from peaky.assignment.levels import lines as LN
+    _s, pf, ctx = _run([JUNK_F, ("s1",) + SI2 + ("Assigned", "cheminfo+grid")])
+    for led in pf.values():
+        led.loc[led["peak_id"] == "s1", "alternatives"] = '[{"formula": "C17H24F2O", "adduct": "[M+H]+", "ppm": 0.1}]'
+        led.loc[led["peak_id"] == "s1", "tied"] = True
+    real = LN.q1_isotopes
+
+    def own_lines(ctx_, pair, cands, nmin):
+        out = real(ctx_, pair, cands, nmin)
+        cands[0]["matched_els"] = set(matched)
+        return out
+    monkeypatch.setattr(LN, "q1_isotopes", own_lines)
+    facts = pd.DataFrame([dict(neutral_formula=SI2[0], adduct=SI2[1], mz=C.ion_mz(*SI2), ion="", ppm=0.0)])
+    pairs = CX.pairs_from_files(pf, facts)
+    return ctx, CP.q1_pass(ctx, pairs, 1)[SI2], pairs
+
+
+class TestUnconfirmedHeteroatom:
+    def test_the_heteroatoms_no_own_line_confirms(self):
+        assert CP.unconfirmed_heteroatoms("C10H27NO3Si2", {"C"}) == {"Si"}
+        assert CP.unconfirmed_heteroatoms("C10H27NO3Si2", {"C", "Si"}) == frozenset()
+        assert CP.unconfirmed_heteroatoms("C12H31N4O4P", {"C", "N"}) == {"P"}          # P has no minor line
+        assert CP.unconfirmed_heteroatoms("C10H17NO7S", {"S"}) == frozenset()
+        assert CP.unconfirmed_heteroatoms("C16H22O", set()) == frozenset()              # CHO(N): nothing to confirm
+        assert SP.heteroatoms("C6H4BrClO") == {"Br", "Cl"} and SP.heteroatoms("x?") == frozenset()
+
+    def test_an_unconfirmed_si2_reading_takes_no_competitor_away(self, monkeypatch):
+        """Without an own Si line the Si2 reading is no better evidenced than the F reading beside it: the F
+        reading counts (as before D4), so D4 alone cannot lift the Si2 reading out of 5a."""
+        import copy
+        ctx, q, pairs = _q1_si2(monkeypatch, {"C"})
+        assert ctx.space.space_reason(SI2[0]) is None and ctx.families_unevidenced == ("fluorinated",)
+        names = {c["name"]: c["kind"] for c in q["cands"][1:]}
+        assert "tie" in names.get("C17H24F2O [M+H]+", "")       # the shadow proposes it by mass, the engine tied it
+        assert q["cands"][0]["uncounted"] == []
+        before = copy.copy(ctx)
+        before.space, before.space_shadow = ctx.space_shadow, None        # the scale's space before D4
+        want = CP.q1_pass(before, pairs, 1)[SI2]
+        key = (lambda c: (c["name"], c["kind"], c["win"], c["contradicted"]))
+        assert sorted(map(key, q["cands"][1:])) == sorted(map(key, want["cands"][1:]))
+        assert q["n_alt"] == want["n_alt"]
+
+    def test_a_confirmed_si2_reading_keeps_the_f_reading_uncounted(self, monkeypatch):
+        _ctx, q, _pairs = _q1_si2(monkeypatch, {"C", "Si"})
+        assert "C17H24F2O [M+H]+" not in [c["name"] for c in q["cands"][1:]]
+        assert "C17H24F2O [M+H]+" in [u["name"] for u in q["cands"][0]["uncounted"]]
+
 
 # --------------------------------------------------------------------------- 3. the record
 def _one(row, comps):
@@ -248,11 +368,12 @@ def test_uncounted_competitors_are_listed_and_never_level_5a():
     assert r.would_lift == "competitors left: C9H12N2O4 [M-H]-"
 
 
-def test_the_uncounted_list_is_capped():
+def test_the_uncounted_list_is_full():
+    """Every uncounted ion is named (the competitor table is not written out: the column is the record)."""
     comps = [("C10H16O4", "[M-H]-", f"C{k}H13FO3S", "[M-H]-", CP.UNCOUNTED) for k in range(5, 14)]
     r = _one(TD.ACID, comps)
-    assert r.competitors_left.endswith(f" (+{len(comps) - DC.UNCOUNTED_LIST} more)")
-    assert r.competitors_left.count("; ") == DC.UNCOUNTED_LIST - 1
+    assert r.competitors_left == f"not counted ({DC.UNCOUNTED_TEXT}): " + "; ".join(c[2] + " [M-H]-" for c in comps)
+    assert "more)" not in r.competitors_left
 
 
 def test_an_uncounted_reading_still_vouches_for_its_lines_in_test_b(monkeypatch):
@@ -283,8 +404,7 @@ def test_the_executable_reference_restates_the_uncounted_list():
     """scripts/level_ledger.py states the D4 record on its own: same text as the engine, never a competitor."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
     import level_ledger as LL
-    assert (LL.UNCOUNTED_STATUS, LL.UNCOUNTED_TEXT, LL.UNCOUNTED_LIST) == (CP.UNCOUNTED, DC.UNCOUNTED_TEXT,
-                                                                           DC.UNCOUNTED_LIST)
+    assert (LL.UNCOUNTED_STATUS, LL.UNCOUNTED_TEXT) == (CP.UNCOUNTED, DC.UNCOUNTED_TEXT)
     comps = [("C10H16O4", "[M-H]-", f"C{k}H13FO3S", "[M-H]-", CP.UNCOUNTED) for k in range(5, 14)]
     comps.append(("C10H16O4", "[M-H]-", "C9H12N2O4", "[M-H]-", "left"))
     S = TD._prepared([TD.ACID], comps=comps)

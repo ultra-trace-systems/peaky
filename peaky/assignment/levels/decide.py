@@ -40,9 +40,8 @@ from peaky.assignment.levels.competitors import UNCOUNTED
 from peaky.chem import chemistry as C
 
 # D4: the competitors only the shadow space proposes (competitors.UNCOUNTED rows) -- named after the counted ones
-# in `competitors_left` and counted in the ion text, never a competitor (no level effect)
+# in `competitors_left` (the full list) and counted in the ion text, never a competitor (no level effect)
 UNCOUNTED_TEXT = "element family not open on evidence"
-UNCOUNTED_LIST = 6
 
 # ---------------------------------------------------------------------------
 # step 0: the reagent bucket (hard-coded for the nitrate and uronium reagents; see BACKLOG)
@@ -477,8 +476,7 @@ def inpass_texts(S: Prepared, res: dict) -> list[dict]:
             blk = ""
         comp_txt = "; ".join(c["name"] for c in left)
         if unc:
-            comp_txt += (" || " if comp_txt else "") + f"not counted ({UNCOUNTED_TEXT}): " + "; ".join(
-                unc[:UNCOUNTED_LIST]) + (f" (+{len(unc) - UNCOUNTED_LIST} more)" if len(unc) > UNCOUNTED_LIST else "")
+            comp_txt += (" || " if comp_txt else "") + f"not counted ({UNCOUNTED_TEXT}): " + "; ".join(unc)
         out.append(dict(ion_txt=ion_txt, blocked=blk, tags_pre=pre, tags_post=post,
                         competitors_left=comp_txt, n_left=len(left), n_series_excl=nser))
     return out

@@ -19,10 +19,15 @@ Pass A (`q1_pass`), per pair:
   family, with mixtures: ``ctx.space_shadow``) proposes -- and an engine
   alternative only it admits -- are kept on the committed reading as
   ``uncounted``: listed in the record, never a competitor. A committed
-  neutral the level space does not admit is levelled in the shadow, as
-  before (`space.space_of`).
-- `lines.q1_isotopes` on the committed reading and every competitor (tests
-  (a), (b), (c), (k); the matched elements), `lines.isoline_competitors`.
+  neutral the level space does not admit (a curated one judged by its
+  heteroatoms) is levelled in the shadow, as before (`space.space_of`).
+- `lines.q1_isotopes` on the committed reading, every competitor and every
+  uncounted reading (tests (a), (b), (c), (k); the matched elements),
+  `lines.isoline_competitors`. A committed neutral carrying a heteroatom
+  (S, P, Si, F, Cl, Br, I) none of its own in-band lines confirms takes no
+  competitor away: its uncounted readings count (`unconfirmed_heteroatoms`;
+  D4 -- an Si2 reading whose silicon nothing confirms is no better evidenced
+  than the fluorine reading beside it).
 
 Pass B (`pass_b`): the competitor rows (excluded by isotopes, or left; the
 isotope-line competitors appended) and the fact columns (committed reading
@@ -128,20 +133,20 @@ def build_candidates(ctx, pair: dict, want_alts: bool = True):
                     found[ion] = _at_pooled(v, mz)
     # D4: the shadow space (every opened family, with cross-family mixtures) proposes more: listed, never counted
     # (the level space admits the committed neutral here, so the shadow, a superset, does too)
-    uncounted = {}
+    uncounted, unc_src = {}, {}
     if shadow is not None and sp_enum is not None:
-        for pmz, plo, phi, _src in probes:
+        for pmz, plo, phi, src in probes:
             for ion, v in shadow.enumerate(pmz, plo, phi, chans).items():
-                if ion not in found and ion not in uncounted and ion != committed["ion_key"]:
-                    uncounted[ion] = _at_pooled(v, mz)
+                if ion in found or ion == committed["ion_key"]:
+                    continue
+                unc_src.setdefault(ion, []).append(src)
+                if ion not in uncounted:
+                    uncounted[ion] = tuple(_at_pooled(v, mz))[:3] + ("mass",)
     comps = {}
     for ion, (cn, ca, ppm) in found.items():
         if ion == committed["ion_key"]:
             continue
-        w = win_src.get(ion, [])
-        comps[ion] = dict(neutral=cn, adduct=ca, ppm=ppm, src="mass", win=("run" if "run" in w else "") + (
-            f"{'+' if 'run' in w else ''}{sum(1 for x in w if x != 'run')} file windows"
-            if any(x != "run" for x in w) else ""))
+        comps[ion] = dict(neutral=cn, adduct=ca, ppm=ppm, src="mass", win=_win_text(win_src.get(ion, [])))
     n_alt_added = 0
     n_tie_same = 0
     if want_alts:
@@ -165,7 +170,10 @@ def build_candidates(ctx, pair: dict, want_alts: bool = True):
                     and shadow.space_reason(str(alt["formula"])) is None:
                 # D4: the engine's reading needs a family the level space (as enumerated for this pair: D5-widened
                 # when the committed neutral needed it) does not open, or a cross-family mixture
-                uncounted.setdefault(ion, (str(alt["formula"]), str(alt["adduct"]), ppm))
+                if ion not in uncounted:
+                    uncounted[ion] = (str(alt["formula"]), str(alt["adduct"]), ppm, "tie" if tied else "alt")
+                elif tied:            # as a counted competitor's src (one '+tie' per tied file)
+                    uncounted[ion] = uncounted[ion][:3] + (uncounted[ion][3] + "+tie",)
                 continue
             if tied or inwin:
                 comps[ion] = dict(neutral=str(alt["formula"]), adduct=str(alt["adduct"]), ppm=ppm,
@@ -187,19 +195,26 @@ def build_candidates(ctx, pair: dict, want_alts: bool = True):
     committed["relax_note"] = relax_note
     committed["enum_ok"] = sp_enum is not None
     unc = []
-    for ion, (cn, ca, ppm) in sorted(uncounted.items(), key=lambda kv: abs(kv[1][2] - mu)
-                                     if np.isfinite(kv[1][2]) else NO_KEY_ORDER):
+    for ion, (cn, ca, ppm, src) in sorted(uncounted.items(), key=lambda kv: abs(kv[1][2] - mu)
+                                          if np.isfinite(kv[1][2]) else NO_KEY_ORDER):
         if ion in comps:
             continue
         cnt = SP.ion_counts_of(cn, ca)
         if cnt and cnt == counts0:
             continue
         unc.append(dict(name=f"{cn} {ca}", neutral=cn, adduct=ca, counts=cnt, kind=UNCOUNTED, ion_key=ion, ppm=ppm,
-                        lines=ctx.lines(cnt, fw, 0.0) if cnt else []))
+                        src=src, win=_win_text(unc_src.get(ion, [])), lines=ctx.lines(cnt, fw, 0.0) if cnt else []))
     # the uncounted readings: still a hypothesis whose in-band line can refute another reading (test (b)),
-    # never a competitor (q1_pass)
+    # never a competitor -- unless the committed reading's own heteroatom is unconfirmed (q1_pass)
     committed["uncounted"] = unc
     return cands, n_alt_added, outside, n_tie_same
+
+
+def _win_text(w) -> str:
+    """Where an enumerated competitor was found: 'run', '<n> file windows' or both."""
+    return ("run" if "run" in w else "") + (
+        f"{'+' if 'run' in w else ''}{sum(1 for x in w if x != 'run')} file windows"
+        if any(x != "run" for x in w) else "")
 
 
 def _at_pooled(v, mz):
@@ -229,6 +244,14 @@ def slim_q1(c: dict, nmin: int) -> dict:
     return out
 
 
+def unconfirmed_heteroatoms(neutral, matched_els) -> frozenset:
+    """D4: the committed neutral's heteroatoms (`space.heteroatoms`) none of
+    its own in-band isotope lines confirms (``matched_els``, the lines in band
+    in >= MATCH_FRAC of the testable files). F, P and I have no minor line, so
+    they are never confirmed."""
+    return SP.heteroatoms(neutral) - set(matched_els or ())
+
+
 def q1_pass(ctx, pairs: dict, nmin: int, *, progress=None) -> dict:
     """Pass A over every pair: {(n, a): dict(cands = [slim candidates,
     committed first], n_alt, outside, n_tie_same, isolines, iso_explained =
@@ -241,14 +264,21 @@ def q1_pass(ctx, pairs: dict, nmin: int, *, progress=None) -> dict:
         # D4: an uncounted reading vouches for its lines in test (b) exactly as it did as a competitor; it is
         # never one (kept on the committed reading as a name only)
         unc = cands[0].pop("uncounted", [])
+        mu = ctx.run_window[0]
+        by_ppm = (lambda c: abs(c["ppm"] - mu) if np.isfinite(c["ppm"]) else NO_KEY_ORDER)
         if pr["obs"]:
-            mu = ctx.run_window[0]
-            LN.q1_isotopes(ctx, pr, cands[:1] + sorted(cands[1:] + unc, key=lambda c: abs(c["ppm"] - mu)
-                                                        if np.isfinite(c["ppm"]) else NO_KEY_ORDER), nmin)
+            LN.q1_isotopes(ctx, pr, cands[:1] + sorted(cands[1:] + unc, key=by_ppm), nmin)
         else:
-            for c in cands:
+            for c in cands + unc:
                 c.update(recs=[], a=[], b=[], c="", c_agree="", k="", matched_els=set(), matched_labels=[],
                          contradicted=False)
+        if unc and unconfirmed_heteroatoms(pr["key"][0], cands[0]["matched_els"]):
+            # D4: a committed reading whose own heteroatom (S, P, Si, F, Cl, Br, I) no own in-band line confirms
+            # takes no competitor away -- its family is no better evidenced than theirs: the readings only the
+            # shadow space proposes count, as before (tested above with the rest)
+            cands = cands[:1] + sorted(cands[1:] + [dict(u, kind=u["src"]) for u in unc], key=by_ppm)
+            n_alt += sum(1 for u in unc if not u["src"].startswith("mass"))
+            unc = []
         cands[0]["uncounted"] = [dict(name=u["name"], neutral=u["neutral"], adduct=u["adduct"], ppm=u["ppm"])
                                  for u in unc]
         isol, iso_expl = LN.isoline_competitors(ctx, pr, nmin) if pr["obs"] else ([], set())

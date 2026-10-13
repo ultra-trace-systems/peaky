@@ -54,7 +54,9 @@ The scale, in the order the outcomes are tried (the first that applies):
              isotope tests and the CH2 / CF2 series exclusion); an ion only
              the shadow space proposes (a contaminant family no file holds
              real evidence for, a cross-family mixture) is none: it is listed
-             in competitors_left after ' || ', never counted
+             in competitors_left after ' || ', never counted -- unless the
+             committed neutral carries a heteroatom (S, P, Si, F, Cl, Br, I)
+             none of its own in-band lines confirms: then it counts
     4b       the channel reads the ion only
     3c       split pinned and a NAMED context-list entry names the neutral
     4a       split pinned and a positive fact (an own in-band isotope line of
@@ -391,10 +393,9 @@ def _left(S, keys) -> dict:
     return out
 
 
-#: D4: the competitor rows only the shadow space proposes -- no competitor, the first UNCOUNTED_LIST named
+#: D4: the competitor rows only the shadow space proposes -- no competitor, every one named
 UNCOUNTED_STATUS = "uncounted"
 UNCOUNTED_TEXT = "element family not open on evidence"
-UNCOUNTED_LIST = 6
 
 
 def _uncounted(S, keys) -> dict:
@@ -414,8 +415,7 @@ def competitors_text(left, uncounted) -> str:
     """The competitors left, '; '-joined; then the uncounted ones after ' || ' (or alone)."""
     t = "; ".join(c["name"] for c in left)
     if uncounted:
-        more = f" (+{len(uncounted) - UNCOUNTED_LIST} more)" if len(uncounted) > UNCOUNTED_LIST else ""
-        t += (" || " if t else "") + f"not counted ({UNCOUNTED_TEXT}): " + "; ".join(uncounted[:UNCOUNTED_LIST]) + more
+        t += (" || " if t else "") + f"not counted ({UNCOUNTED_TEXT}): " + "; ".join(uncounted)
     return t
 
 
