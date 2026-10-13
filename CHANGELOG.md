@@ -312,27 +312,42 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   below assignability ("unconfirmed fluorine", hard 5b) whatever the spectrum showed -- on a
   15N-nitrate field batch's 128-600 window 52 truth lines sitting on CF2 ladders were refused
   that way. A reading whose ion +/- k CF2 (k <= 3, every member still fluorinated) shows as >= 2
-  picked lines of its file (at the row's own m/z +/- k x 49.99681, inside the exact-offset window
-  on a calibrated Orbitrap, at 1/30-30x its height) is no longer refused: it is Candidate, without
-  the flag, until >= 3 members of its ladder are committed, and then takes the tier the normal
-  rules give it; the element-budget demote keeps such a full ladder member as it keeps a committed
-  CF2 step. Two lines refute a ladder and the refusal then stands, saying why: on a 15N-nitrate
-  ledger the 14N twin of the reading's C2F3 -> H2^NO4 alias (0.21 mDa; a line 0.99703 Da below
-  at 0.5-5x the reagent's 14N share f, tested only on a reading that carries no ^N: a labelled
-  reading's own twin cannot be told from its alias's, it read up to 5x f on that batch), and the row's
-  own 13C line when it contradicts the carbon count. The `fluorinated` family's F ceiling is 25 (was 17: the
-  chain propagation stopped at the first F18 member, whose C+8 H+1 F-5 alias then took the line)
-  and the degeneracy / level space's F ceiling follows it. In pass 3's fluorinated arbitration the
-  readings within 1 mDa of the top one are aliases; where the peak's 13C line is testable and
-  contradicts some aliases' carbon count but not all, each contradicted one pays 0.30 effective
-  score (C12H9F15 against C20H8F10 had been settled by a 0.3-ppm mass term). Replayed offline on
-  that batch's stored per-file ledgers (the tier stages, the merge vote and the stored pass-3
-  alternatives; no re-scoring, so the F18 members are not in it): 30 of the 52 refused truth lines
-  are Assigned in at least one zone (73 line-zone pairs), the other 22 are Candidate without the
-  below flag; the merged Assigned rows went 4184 -> 4565 (+384, -3; of the new ones 243 the truth's
-  reading, 126 unverifiable, 12 against a tentative reading, 3 -- one line in three zones --
-  against a graded one; the verifiable precision 92.66 -> 92.81 %); the 13C term moved 272
-  per-file winners onto the truth reading and none off it. No finish-line row moves.
+  picked lines of its file, one of them a +/-1 neighbour (at the row's own m/z +/- k x 49.99681,
+  inside the exact-offset window on a calibrated Orbitrap, at 1/30-30x its height), is no longer
+  refused: it is Candidate, without the flag, until >= 3 members of its ladder are committed, and
+  then takes the tier the normal rules give it; the element-budget demote keeps such a full
+  ladder member as it keeps a committed CF2 step. Two lines refute a ladder and the refusal then
+  stands, saying why: on a 15N-nitrate ledger the 14N twin of the reading's C2F3 -> H2^NO4 alias
+  (0.21 mDa; a line 0.99703 Da below at 0.5-5x the reagent's 14N share f, tested only on a
+  reading that carries no ^N: a labelled reading's own twin cannot be told from its alias's, it
+  read up to 5x f on that batch), and the row's own 13C line when it contradicts the carbon
+  count. The 13C line cannot split that alias (the swap moves two carbons), so on a 15N-nitrate
+  ledger a ladder whose alias no line tested -- the reading carries ^N, or the alias's twin would
+  read under the floor -- stays Candidate however many members are committed
+  (`ALIAS_UNTESTED_HOLDS`); an alias that cannot exist (the swap lowers the DBE by one: a DBE-0
+  reading has none) is not held. The `fluorinated` family's F ceiling is 25 (was 17: the chain
+  propagation stopped at the first F18 member, whose C+8 H+1 F-5 alias then took the line) and
+  the degeneracy / level space's F ceiling follows it where the family opened; a context that
+  leaves max_F uncapped (food, none) is still enumerated to F17 until it does. In pass 3's
+  fluorinated arbitration the readings within 1 mDa of the top one are aliases; where the peak's
+  13C line (unexplained or an earlier pass's M0, never another row's isotope) is testable and its
+  carbon count sits clearly nearer one alias -- by >= max(2, 2 sigma) carbons, sigma 12 % of the
+  count plus the line's S/N -- each farther one pays 0.30 effective score (C12H9F15 against
+  C20H8F10 had been settled by a 0.3-ppm mass term; the comparison reaches C15 against C23, where
+  the audit's 0.35 n tolerance cannot). Replayed offline on that batch's stored per-file ledgers
+  (the tier stages, the merge vote and the stored pass-3 alternatives; no re-scoring, so the F18
+  members are not in it): 17,270 per-file F rows lose the below flag and 41 become Assigned; the
+  merged Assigned rows went 4184 -> 4195 (+21, all 13 verifiable ones the truth's reading; -10,
+  where the vote now picks the unflagged F reading of a line at Candidate), the verifiable
+  precision 92.66 -> 92.76 %, and 4 of the 52 refused truth lines are Assigned in at least one
+  zone (13 line-zone pairs) -- without the hold 30 (73), at 15 more merged rows against the
+  truth's reading, 8 of them exactly the alias. The 13C term moved 262 per-file winners onto the
+  truth reading and none off it. On the finish-line runs no row's verdict moves (H1, H2 and H3
+  unchanged in the replay); the 15N-nitrate run's merged Assigned goes 641 -> 645 and the TOF
+  run's 785 -> 787 (F readings with full ladders: C2F5-, C3F7-, C4F9-), and the F25 ceiling
+  rewrites the degeneracy count and note of a labelled-nitrate run's heavier rows. The labelled
+  rescue (`labeled.rescue_labeled`) still re-reads a partially fluorinated fit as a 15N product
+  whatever its ladder.
 
 ### Fixed
 

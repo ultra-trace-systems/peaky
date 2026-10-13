@@ -247,8 +247,12 @@ can't refute an off-grid P) standing in for the 2nd channel.
 `apply_tiers`) demotes F≥4 M0 that are not a PFCA and lack a Cl/Br/S anchor —
 ¹⁹F mass-coincidence "monsters" → Candidate + `below_assignability` — unless the
 reading sits on a CF₂ ladder (`assignment/fluorine.py`: ≥ 2 lines ± k·CF₂ in the
-file, not refuted by its ¹⁵N alias's ¹⁴N twin or its own ¹³C line): then it is
-Candidate without the flag, and keeps its tier once 3 ladder members are committed.
+file, one of them a ±1 neighbour, not refuted by its ¹⁵N alias's ¹⁴N twin or its own
+¹³C line): then it is Candidate without the flag, and keeps its tier once 3 ladder
+members are committed -- on a ¹⁵N-nitrate run only once its C₂F₃ ↔ H₂^NO₄ alias is
+tested (an ^N-free reading bright enough for the alias's ¹⁴N twin to show, and it
+does not) or cannot exist (a DBE-0 reading: the swap lowers the DBE by one); else
+it stays Candidate.
 
 - **Mass offset ("be aware of the −X ppm"):** the reported `ppm_error` stays RAW,
   but every quality gate is offset-aware. `io_mascope.estimate_offset` seeds a

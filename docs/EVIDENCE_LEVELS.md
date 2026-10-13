@@ -349,7 +349,8 @@ whole run.
   - a `below_assignability` setter of implausible chemistry: the O-monster,
     the carbon cluster, an implausibly carbon-rich skeleton, an implausible
     ionization, an off-calibration residual fit, unconfirmed fluorine (a
-    reading on an unrefuted CF2 ladder is not flagged: `assignment/fluorine.py`,
+    reading its CF2 ladder lifts -- >= 2 ladder lines, one a +/-1 neighbour,
+    none refuting it -- is not flagged: `assignment/fluorine.py`,
     ASSIGNMENT_DETAIL §4.2 / §5.6). The
     setter is read from the row's `tier_reason` / `commentary` text; a below
     flag no setter text explains is rejected too (`below: setter not found`).

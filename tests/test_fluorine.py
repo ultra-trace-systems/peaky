@@ -102,6 +102,19 @@ def test_a_ladder_line_must_sit_at_the_step_and_at_a_consistent_height():
     assert 1 in dict(FL.verdicts(led2, cfg=_cfg())["C6H5F7O2"].steps)
 
 
+def test_a_ladder_needs_an_adjacent_member():
+    """Lines at +2 and +3 CF2 only (the +1 member missing) do not lift the
+    refusal: one of the ladder lines must be a +/-1 CF2 neighbour."""
+    lines = {"C6H5F7O2": 800.0, "C8H5F11O2": 400.0, "C9H5F13O2": 300.0}
+    led = _ledger(lines, {"C6H5F7O2", "C8H5F11O2", "C9H5F13O2"})
+    lad = FL.verdicts(led, cfg=_cfg())["C6H5F7O2"]
+    assert dict(lad.steps) == {2: True, 3: True} and lad.lines == 3
+    assert not lad.lift and not lad.full
+    # the +1 member back: lifted
+    led = _ledger(dict(lines, C7H5F9O2=600.0), {"C6H5F7O2", "C8H5F11O2", "C9H5F13O2"})
+    assert FL.verdicts(led, cfg=_cfg())["C6H5F7O2"].full
+
+
 def test_the_window_is_the_exact_offset_one_on_a_calibrated_orbitrap_only():
     assert FL.window_ppm(_cfg(sigma=0.2)) == pytest.approx(1.0)
     assert FL.window_ppm(_cfg(sigma=0.5)) == pytest.approx(2.0)
@@ -195,25 +208,92 @@ def _labelled(led: pd.DataFrame) -> pd.DataFrame:
 
 @pytest.mark.parametrize("ratio, refuted", [(0.02, True), (0.012, True), (0.08, True), (0.2, False), (0.003, False)])
 def test_the_14n_twin_of_the_15n_alias_refutes_an_n_free_f_reading(ratio, refuted):
+    # floor 5: the alias's twin at the band's lower edge (0.5 f x 800 ~ 8 cps) is testable
     twin = ("twin", _mz("C6H5F7O2") - FL.D_15N, 800.0 * ratio)
     led = _labelled(_ledger(SERIES, {"C6H5F7O2", "C7H5F9O2", "C8H5F11O2"}, extra=[twin]))
-    lad = FL.verdicts(led, cfg=_cfg())["C6H5F7O2"]
+    lad = FL.verdicts(led, cfg=_cfg(floor=5.0))["C6H5F7O2"]
     assert (lad.veto is not None) == refuted
+    assert lad.alias_open is None                  # tested: refuted, or no twin in the band
     assert lad.full != refuted
     if refuted:
         assert "14N twin" in lad.veto
 
 
+def test_an_untested_15n_alias_keeps_a_full_ladder_at_candidate():
+    """On a 15N-nitrate ledger an N-free C>=2, F>=3 reading whose alias's 14N twin
+    would read under the floor has its alias UNTESTED: lifted, never full."""
+    led = _labelled(_ledger(SERIES, {"C6H5F7O2", "C7H5F9O2", "C8H5F11O2"}))
+    lad = FL.verdicts(led, cfg=_cfg(floor=50.0))["C6H5F7O2"]     # 0.5 f x 800 ~ 8 cps < 50
+    assert lad.veto is None and lad.lift and lad.committed == 3
+    assert not lad.full and "under the floor" in lad.alias_open
+    tier, reason = _tier(led, "C6H5F7O2", _cfg(floor=50.0))
+    assert tier == "Candidate" and "15N alias" in reason and "untested" in reason
+    T.apply_tiers(led, cfg=_cfg(floor=50.0))
+    led.loc[led["peak_id"] == "C6H5F7O2", "tier"] = "Assigned"     # as if another rule had passed it
+    CL.demote_unconfirmed_fluorine(led, cfg=_cfg(floor=50.0), log=lambda *a: None)
+    r = _row(led, "C6H5F7O2")
+    assert r["tier"] == "Candidate" and not bool(r["below_assignability"])
+    # no cfg: no floor, nothing testable -- the alias stays open
+    assert FL.verdicts(led)["C6H5F7O2"].alias_open
+    # the same bright reading with its alias tested and absent takes the normal tier rules
+    assert FL.verdicts(led, cfg=_cfg(floor=5.0))["C6H5F7O2"].full
+    # an alias needs C >= 2 and F >= 3: C1/F2 readings have none to test
+    assert FL._alias_twin({"C": 1, "H": 1, "F": 3}, 800.0, FL._Lines(led), 300.0, 1.0, 0.02, 50.0) == (None, None)
+    assert FL._alias_twin({"C": 4, "H": 5, "F": 2}, 800.0, FL._Lines(led), 300.0, 1.0, 0.02, 50.0) == (None, None)
+
+
+def test_the_hold_on_an_untested_alias_is_one_switch(monkeypatch):
+    """ALIAS_UNTESTED_HOLDS off: the ladder alone decides (the alias stays named
+    as open, but a full ladder takes the normal tier rules)."""
+    led = _labelled(_ledger(SERIES, {"C6H5F7O2", "C7H5F9O2", "C8H5F11O2"}))
+    assert not FL.verdicts(led, cfg=_cfg(floor=50.0))["C6H5F7O2"].full
+    monkeypatch.setattr(FL, "ALIAS_UNTESTED_HOLDS", False)
+    lad = FL.verdicts(led, cfg=_cfg(floor=50.0))["C6H5F7O2"]
+    assert lad.alias_open and lad.full
+    assert _tier(led, "C6H5F7O2", _cfg(floor=50.0))[0] == "Assigned"
+
+
+def test_a_saturated_reading_has_no_15n_alias_to_test():
+    """The C2F3 -> H2^NO4 swap lowers the DBE by one: a DBE-0 reading's alias has
+    DBE -1 and cannot exist, so there is nothing to test -- a full ladder takes
+    the normal tier rules on a 15N-nitrate ledger, and a line where the alias's
+    14N twin would sit refutes nothing."""
+    sat = {"C5H7F5O": 1000.0, "C6H7F7O": 800.0, "C7H7F9O": 600.0, "C8H7F11O": 400.0}
+    assert C.dbe("C6H7F7O") == 0 and not FL.alias_admissible(C.parse_formula("C6H7F7O"))
+    assert FL.alias_admissible(C.parse_formula("C6H5F7O2"))       # DBE 1: the alias (DBE 0) can exist
+    assert FL.alias_admissible(None) and FL.alias_admissible({"C": 1, "H": 1, "F": 3})
+    twin = ("twin", _mz("C6H7F7O") - FL.D_15N, 16.0)                # 0.02 of the line: in the band
+    led = _labelled(_ledger(sat, {"C6H7F7O", "C7H7F9O", "C8H7F11O"}, extra=[twin]))
+    lad = FL.verdicts(led, cfg=_cfg(floor=50.0))["C6H7F7O"]
+    assert lad.veto is None and lad.alias_open is None and lad.full
+    tier, _reason = _tier(led, "C6H7F7O", _cfg(floor=50.0))
+    assert tier == "Assigned"
+    # the DBE-1 series on the same ledger keeps its alias open
+    led = _labelled(_ledger(SERIES, {"C6H5F7O2", "C7H5F9O2", "C8H5F11O2"}))
+    assert FL.verdicts(led, cfg=_cfg(floor=50.0))["C6H5F7O2"].alias_open
+
+
 def test_the_twin_is_read_only_on_a_15n_nitrate_ledger():
     twin = ("twin", _mz("C6H5F7O2") - FL.D_15N, 16.0)
     led = _ledger(SERIES, {"C6H5F7O2", "C7H5F9O2", "C8H5F11O2"}, extra=[twin])
-    assert FL.verdicts(led, cfg=_cfg())["C6H5F7O2"].full
+    lad = FL.verdicts(led, cfg=_cfg())["C6H5F7O2"]
+    assert lad.full and lad.alias_open is None
+    # a 15N-AMMONIUM ledger ([M+^NH4]+) carries ^N but makes no C2F3 / H2^NO4 alias
+    amm = L.new_ledger(pd.DataFrame([dict(peak_id="am", mz=_mz("C8H18O5", "[M+^NH4]+"), height=5e4)]))
+    L.commit_assignment(amm, "am", neutral_formula="C8H18O5", adduct="[M+^NH4]+",
+                        ion_formula=_ion("C8H18O5", "[M+^NH4]+"), ion_score=0.97, compound_score=0.97,
+                        ppm_error=0.0, pass_no=1, method="cheminfo+grid", confidence="High", commentary="Pass 1")
+    assert not FL.labelled_nitrate(amm) and FL.labelled_nitrate(_labelled(led))
+    led = pd.concat([led, amm], ignore_index=True)
+    lad = FL.verdicts(led, cfg=_cfg())["C6H5F7O2"]
+    assert lad.full and lad.veto is None and lad.alias_open is None
 
 
-def test_an_f_reading_that_carries_15n_is_not_refuted_by_a_twin():
+def test_an_f_reading_that_carries_15n_has_its_alias_left_open():
     """[M+^NO3]- of an F neutral carries one ^N (its own twin ~ f), its alias two
     (~ 2f); the 14N share is not known well enough to tell f from 2f (the air's
-    14N nitrate adds to the reagent's impurity), so no twin refutes it."""
+    14N nitrate adds to the reagent's impurity), so no twin refutes it -- and
+    nothing tests its alias: lifted, never full."""
     f = (1 - ISO.label_purity()) / ISO.label_purity()
     series = {nf: h for nf, h in SERIES.items()}
     rows = [dict(peak_id=nf, mz=_mz(nf, "[M+^NO3]-"), height=h) for nf, h in series.items()]
@@ -225,8 +305,23 @@ def test_an_f_reading_that_carries_15n_is_not_refuted_by_a_twin():
                                 ion_formula=_ion(nf, "[M+^NO3]-"), ion_score=0.95, compound_score=0.95,
                                 ppm_error=0.1, pass_no=3, method="contaminant:fluorinated:gka",
                                 confidence="High (fluorinated)", commentary="Pass 3")
-        lad = FL.verdicts(led, cfg=_cfg())["C6H5F7O2"]
-        assert lad.veto is None and lad.full, (share, lad)
+        lad = FL.verdicts(led, cfg=_cfg(floor=5.0))["C6H5F7O2"]
+        assert lad.veto is None and lad.lift and not lad.full, (share, lad)
+        assert "carries ^N1" in lad.alias_open
+        tier, reason = _tier(led, "C6H5F7O2", _cfg(floor=5.0))
+        assert tier == "Candidate" and "untested" in reason
+
+
+@pytest.mark.parametrize("n", [3, 5, 8, 10, 14, 20])
+def test_the_13c_line_cannot_split_the_15n_alias(n):
+    """The C2F3 -> H2^NO4 swap moves two carbons: a perfect 13C line of the
+    reading never refutes its alias (contradicts' tolerance is >= 2.5 C)."""
+    h0 = 1e5
+    for n_true, n_other in ((n, n - 2), (n - 2, n)):
+        if n_true < 1 or n_other < 1:
+            continue
+        bad, _c = FL.IR.contradicts(None, n_other, h0=h0, h_sat=h0 * FL.IR.R13C_RAW * n_true)
+        assert not bad
 
 
 def test_a_13c_line_that_contradicts_the_carbon_count_refutes_the_ladder():
@@ -345,3 +440,123 @@ def test_c13_lines_reads_the_line_above_each_unexplained_peak():
     got = FL.c13_lines(led, _cfg())
     assert got["C6H5F7O2"][:2] == (800.0, 50.0)
     assert FL.c13_lines(led, None) == {}
+
+
+def _pair_scored(n: int) -> pd.DataFrame:
+    """C(n+8)H11F13O3 vs Cn H10F18O3 [M-H]- (the C8 / H1F5 alias) on one peak; the
+    carbon-rich reading scores higher."""
+    hi, lo = f"C{n + 8}H11F13O3", f"C{n}H10F18O3"
+    return pd.DataFrame([
+        _iso_row(compound_formula=hi, ion_formula=f"C{n + 8}H10F13O3-", ion_score=0.73, compound_score=0.73,
+                 ppm_error=0.1, sample_peak_mz=595.035),
+        _iso_row(compound_formula=lo, ion_formula=f"C{n}H9F18O3-", ion_score=0.62, compound_score=0.62,
+                 ppm_error=0.37, sample_peak_mz=595.035),
+    ])
+
+
+def _line(c_read: float, h0: float = 1e4, snr0: float = 200.0):
+    return (h0, h0 * FL.IR.R13C_RAW * c_read, None, None, snr0)
+
+
+@pytest.mark.parametrize("n", [14, 15])
+@pytest.mark.parametrize("read, winner", [
+    (0.0, "lo"),     # a precise line at the carbon-poor count: the C+8 alias pays
+    (1.5, "lo"),     # ~10 % high (noisy): still clearly nearer the carbon-poor count
+    (4.0, "hi"),     # half-way: neither alias is clearly farther -- the term stays out
+    (8.0, "hi"),     # the line reads the carbon-rich count: the carbon-poor alias pays
+])
+def test_the_13c_term_is_comparative_at_high_carbon(n, read, winner):
+    """C14/C22 and C15/C23: contradicts' tolerance (0.35 n) exceeds the 8-carbon
+    gap at C23, so an absolute test never charged the C+8 alias there; the
+    comparative term does, and never charges the alias the line reads."""
+    s = _pair_scored(n)
+    w = P.arbitrate(s, _cfg(floor=60.0), c13_alias={"P": _line(n + read)})["winners"].iloc[0]
+    want = f"C{n}H10F18O3" if winner == "lo" else f"C{n + 8}H11F13O3"
+    assert w["neutral"] == want, (n, read, w["neutral"])
+    pen, _note = FL.c13_alias_penalties(s.sort_values("ion_score", ascending=False), _line(n + read), _cfg(floor=60.0))
+    assert bool(pen) == (read != 4.0)
+
+
+def test_the_13c_term_reads_both_counts_where_the_run_reads_by_area():
+    """By area (or with a response) the raw height reading AND the corrected one
+    must both charge an alias: a line that reads the carbon-poor count by height
+    but the carbon-rich one by area charges neither."""
+    s = _pair_scored(15).sort_values("ion_score", ascending=False)
+    h0 = 1e4
+    agree = (h0, h0 * 0.0107 * 15, 100.0, 100.0 * FL.IR.R13C * 15, 200.0)
+    split = (h0, h0 * 0.0107 * 15, 100.0, 100.0 * FL.IR.R13C * 23, 200.0)
+    cfg = _cfg(floor=60.0, iso_area=True)
+    assert FL.c13_alias_penalties(s, agree, cfg)[0] == {0: FL.C13_ALIAS_PENALTY}
+    assert FL.c13_alias_penalties(s, split, cfg)[0] == {}
+    assert len(FL.c13_reads(split, None, True)) == 2 and len(FL.c13_reads(split)) == 1
+
+
+def test_c13_lines_reads_an_m0_line_but_not_another_rows_isotope():
+    """An F line's own 13C line is often committed as a CHON(F) fit before pass 3
+    reaches its parent: that line is read. A line another row claims as its
+    isotope is not."""
+    nf = "C6H5F7O2"
+    led = _ledger({nf: 800.0}, set(), extra=[("c13", _mz(nf) + FL.IR.D13C, 50.0)])
+    L.commit_assignment(led, "c13", neutral_formula="C9H7N3O6", adduct=ADD, ion_formula="C9H6N3O6-",
+                        ion_score=0.8, compound_score=0.8, ppm_error=0.5, pass_no=1, method="cheminfo+grid",
+                        confidence="Good", commentary="Pass 1")
+    assert FL.c13_lines(led, _cfg())[nf][:2] == (800.0, 50.0)
+    led2 = _ledger({nf: 800.0, "C8H5F11O2": 900.0}, {"C8H5F11O2"},
+                   extra=[("c13", _mz(nf) + FL.IR.D13C, 50.0)])
+    L.attach_isotopologue(led2, "c13", "C8H5F11O2", iso_label="34S")
+    assert nf not in FL.c13_lines(led2, _cfg())
+
+
+# =========================================================================== the wiring
+def test_pass3_hands_the_13c_lines_to_the_fluorinated_family_only(monkeypatch):
+    import dataclasses
+    from collections import defaultdict
+    from peaky.io import io_mascope as IO
+    seen = []
+    monkeypatch.setattr(DIR, "_enumerate", lambda *a, **k: {"C6H5F7O2"})
+    monkeypatch.setattr(DIR, "_mech_ids_for", lambda client, adducts: [])
+    monkeypatch.setattr(DIR, "_context_filter", lambda formulas, profile: set(formulas))
+    monkeypatch.setattr(IO, "score_candidates", lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(DIR, "arbitrate", lambda scored, cfg, profile=None, *, c13_alias=None:
+                        seen.append(c13_alias) or {"winners": pd.DataFrame()})
+    methods = []
+    monkeypatch.setattr(DIR, "commit_winners",
+                        lambda ledger, arb, **kw: methods.append(kw["method"]) or defaultdict(int))
+    prof = dataclasses.replace(X.get_context("ambient-air"), pass3_families=("fluorinated", "siloxane"))
+    led = _ledger({"C6H5F7O2": 800.0}, set(), extra=[("c13", _mz("C6H5F7O2") + FL.IR.D13C, 60.0)])
+    DIR.run_pass3(None, "s", led, prof, None, _cfg(), [ADD], reagent=None, log=lambda *a: None)
+    got = dict(zip(methods, seen))
+    assert set(got) == {"contaminant:fluorinated", "contaminant:siloxane"}, got
+    assert got["contaminant:fluorinated"] == FL.c13_lines(led, _cfg()) and got["contaminant:fluorinated"]
+    assert got["contaminant:siloxane"] is None
+
+
+def test_the_stages_thread_the_files_cfg_into_the_fluorine_readers(monkeypatch):
+    """Without cfg the ladder window widens to 2 ppm and the 13C veto and the
+    alias test are off: the demote and the element budget must get the file's."""
+    import types
+    from peaky.assignment import assign as A
+    got = {}
+    monkeypatch.setattr(A.cleanup, "demote_unconfirmed_fluorine",
+                        lambda led, **kw: got.setdefault("demote", kw) and {})
+    monkeypatch.setattr(A.plausibility, "demote_implausible",
+                        lambda led, **kw: got.setdefault("plaus", kw) and {})
+    monkeypatch.setattr(A, "_curated", lambda st: frozenset())
+    cfg = _cfg()
+    st = types.SimpleNamespace(led=pd.DataFrame(), cfg=cfg, log=lambda *a: None, plaus_audit=[],
+                               profile=X.get_context("ambient-air"))
+    stage = next(s for s in A._STAGES if s.name == "demote_fluorine")
+    stage.fn(st)
+    A._stage_plausibility(st)
+    assert got["demote"]["cfg"] is cfg and got["plaus"]["cfg"] is cfg
+
+
+# =========================================================================== the uncapped contexts
+def test_an_uncapped_context_keeps_f17_unless_the_family_opens():
+    """A context that leaves max_F at its default is enumerated to F17 as before;
+    the fluorinated family's F25 adds its own profile only where it opened."""
+    for name in ("food", "none"):
+        assert [DG._caps(p)["F"] for p in DG.space_profiles(name, ())] == [17]
+        assert [DG._caps(p)["F"] for p in DG.space_profiles(name, ("siloxane",))] == [17]
+        assert [DG._caps(p)["F"] for p in DG.space_profiles(name, ("fluorinated",))] == [17, 25]
+    assert [DG._caps(p)["F"] for p in DG.space_profiles("ambient-air", ("fluorinated",))] == [0, 25]
