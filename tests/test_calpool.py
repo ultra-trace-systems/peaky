@@ -7,7 +7,9 @@ in >= 2 files, the tallest row per ion, >= POOL_MIN_IONS of them spanning the
 committed m/z range. This file pins the core, the re-tier on the tier-time
 ledger (only rows still holding the uncalibrated tier stage's verdict move),
 the window the levels read, and the batch wiring (batch_summary
-`tier_calibration`, the per-file stats and rows, the levels assessed).
+`tier_calibration`, the per-file stats and rows, the levels assessed, the
+pool's polarity / reagent masses / instrument class, a later stage's files,
+the keep flag serial and through the workers).
 
 Synthetic ledgers only. Run: pytest tests/test_calpool.py -q
 """
@@ -96,6 +98,16 @@ def test_the_file_core_is_the_shared_row_test_and_estimator():
     assert T._calibrate(m0.iloc[1:], kids) is None
 
 
+def test_the_core_estimator_keeps_the_errors_within_2_ppm_of_their_median():
+    """robust_centre (the file's core and the pooled one): an error 1.5 ppm off the median is in the
+    core, one 2.5 ppm off is not -- unless fewer than `min_n` errors are within, then all are."""
+    ppms = [0.02 * ((k % 5) - 2) for k in range(18)] + [1.5, 2.5]
+    mu, sigma, keep = T.robust_centre(ppms, 15)
+    assert 18 in keep and 19 not in keep and len(keep) == 19
+    assert mu == pytest.approx(float(np.median(ppms[:19])))
+    assert T.robust_centre(ppms, 20)[2] == list(range(20))
+
+
 def test_apply_tiers_marks_where_the_tier_calibration_came_from():
     led = _batch(n_files=1)["s0"]
     m0 = led[led["role"] == "M0"]
@@ -144,6 +156,21 @@ def test_carbon_free_reagent_identity_and_reagent_mass_rows_stay_out():
         batch[sid] = _file(sid, rows)
     pool = CP.pool_calibration(batch)
     assert pool.n_ions == 15 and not pool.core["ion"].str.contains("N").any()
+    # carbon-free readings that are NO reagent identity (a nitrite cluster, an iodic acid line): core rows
+    # of the per-file test, isotope-backed in both files -- only the pool's C >= 1 keeps them out
+    from peaky.assignment.levels.decide import reagent_identity
+    cfree = [("HNO2", "[M+^NO3]-", 0.0, 5e6, True, "High"), ("HIO3", AD, 0.0, 5e6, True, "High")]
+    assert not any(reagent_identity(nf, ad, "negative") for nf, ad, *_ in cfree)
+    for sid in ("s0", "s1"):
+        batch[sid] = _file(sid, [(nf, AD, 0.0, 1e5, True, "Good") for nf in NEUTRALS[:15]] + extra + cfree)
+    led = batch["s0"]
+    kids = led.loc[led["role"] == "iso_child", "parent_peak_id"].value_counts()
+    m0 = led[led["role"] == "M0"].set_index("neutral_formula", drop=False)
+    assert all(T.core_point(m0.loc[nf], kids) is not None for nf, *_ in cfree)
+    assert not CP.core_rows(led, sid="s0")["neutral_formula"].isin(["HNO2", "HIO3"]).any()
+    pool = CP.pool_calibration(batch)
+    assert pool.n_ions == 15 and pool.n_candidate_ions == 15
+    assert not pool.core["neutral_formula"].isin(["HNO2", "HIO3"]).any()
     # a line on a reagent-library ion mass is the reagent's
     mz0 = C.ion_mz(NEUTRALS[0], AD)
     assert CP.pool_calibration(_batch(n_ions=15), reagent_masses=[mz0]).n_ions == 14
@@ -370,6 +397,22 @@ def test_a_pooled_window_is_the_files_own_and_the_run_window_only_when_no_file_c
         {"a": (0.1, 0.2), "u": (0.05, 0.2)}, (0.1, 0.2))
 
 
+def test_run_windows_marks_a_pooled_file_off_its_stats(monkeypatch):
+    """A file whose batch_summary stats say `tier_calibration` 'pooled' is marked: its lent window is
+    its own, and the run window is the file that calibrated alone."""
+    monkeypatch.setattr(CX, "fit_windows", lambda *a, **k: pytest.fail("the fallback ran"))
+    led = _file("w", [(nf, AD, 0.0, 1e5, False, "Good") for nf in NEUTRALS[:3]])
+    summary = {"reagent": "NO3", "context": "ambient-air", "reflists_active": [],
+               "per_file": [{"sample_id": "a", "degeneracy_cal": {"mu": 0.1, "sigma": 0.2},
+                             "tier_calibration": T.CAL_SOURCE_PER_FILE},
+                            {"sample_id": "p", "degeneracy_cal": {"mu": 0.0, "sigma": 0.9},
+                             "tier_calibration": T.CAL_SOURCE_POOLED}]}
+    win = CX.run_windows(summary, {"a": led, "p": led})
+    assert win["p"].get("pooled") is True and "pooled" not in win["a"]
+    windows, run = CX.window_table(win)
+    assert run == (0.1, 0.2) and windows["p"] == (0.0, 0.9)
+
+
 # --------------------------------------------------------------------------- the batch
 def _batch_table(sids, mzs, height=500.0):
     t0 = pd.Timestamp("2025-10-01 21:00:00", tz="UTC")
@@ -377,18 +420,67 @@ def _batch_table(sids, mzs, height=500.0):
                               mz=float(mz), height=height) for i, s in enumerate(sids) for mz in mzs])
 
 
-def _run_batch(tmp_path, monkeypatch, *, iso_files=8, lines=None, calibrated=False, refs=None):
+def _staged_table():
+    """A batch with two per-file stages: cover files a0-a2 / b0-b2 (an exclusive 20-bin block each pair, on a
+    shared 20-bin background, all at 500 cps) and z1 / z2, which the cover never picks, each bright (10x its
+    edge) on a bin no cover file holds. With k_max=2 the cover assigns a0, a1, the residual stage z1, z2."""
+    bg = {m: 500.0 for m in range(100, 120)}
+    spec = {}
+    for i in range(3):
+        blk = {m: 500.0 for m in range(200 + 20 * i, 220 + 20 * i)}
+        spec[f"a{i}"] = {**bg, **blk}
+        spec[f"b{i}"] = {**bg, **blk}
+    spec["z1"] = {**bg, 500: 5000.0, 501: 600.0, 502: 1000.0}
+    spec["z2"] = {**bg, 500: 1000.0, 501: 600.0, 502: 5000.0}
+    t0 = pd.Timestamp("2025-10-01 21:00:00", tz="UTC")
+    return pd.DataFrame([dict(sample_item_id=s, sample_item_name=f"n_{s}", datetime_utc=t0 + pd.Timedelta(minutes=10 * i),
+                              mz=float(mz), height=float(h)) for i, (s, mzh) in enumerate(spec.items())
+                         for mz, h in mzh.items()])
+
+
+class _InProcessPool:
+    """A ProcessPoolExecutor stand-in that runs the batch's real worker entry points (`_worker_init`,
+    `_assign_one`) in this process, so the stubbed assign.run is the one they call."""
+
+    def __init__(self, max_workers=None, mp_context=None, initializer=None, initargs=()):
+        initializer(*initargs)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def submit(self, fn, *args):
+        import concurrent.futures as cf
+        f = cf.Future()
+        f.set_result(fn(*args))
+        return f
+
+
+def _run_batch(tmp_path, monkeypatch, *, iso_files=8, lines=None, calibrated=False, refs=None,
+               staged=False, n_jobs=1, keeps=None, skeleton=None, reagent="Br"):
     """`calibrated`: True = every file calibrates alone; a set = the files (in the order they are
     assigned) that do; False = none. `refs`: a list the uncalibrated files' PoolInputs are weakly
-    referenced into."""
+    referenced into. `staged`: the two-stage batch (_staged_table: cover a0, a1; residual z1, z2), else
+    four files the cover assigns at once. `n_jobs` > 1: the worker path, in process. `keeps`: a dict the
+    keep_pool_inputs each file's run was called with is recorded into. `skeleton`: the NOx-skeleton cap
+    record (stats `nox_skeleton_gate`) every run returns. The stand-in run keeps its pool inputs as
+    assign.run does: only when asked (no `pool_inputs` key otherwise; None on a calibrated file)."""
+    import concurrent.futures as cf
     from peaky.batch import assign_batch as AB
     from peaky.io import io_mascope as IO
-    sids = [f"f{i}" for i in range(4)]
-    pk = _batch_table(sids, list(range(100, 140)))
+    if staged:
+        pk, k_min, k_max = _staged_table(), 2, 2
+    else:
+        pk, k_min, k_max = _batch_table([f"f{i}" for i in range(4)], list(range(100, 140))), 3, 4
     k_of = {}
 
     def fake_assign(sid, context="ambient-air", **kw):
         k = k_of.setdefault(sid, len(k_of))
+        keep = bool(kw.get("keep_pool_inputs", False))
+        if keeps is not None:
+            keeps[sid] = kw.get("keep_pool_inputs")
         rows = [(nf, AD, 0.05 * ((j % 5) - 2), 1e5 * (1 + j), k < iso_files, "Good")
                 for j, nf in enumerate(NEUTRALS[:16])]
         rows.append(("C17H28O6", AD, 2.5, 1e5, False, "Good"))     # off-calibration, uncorroborated
@@ -398,27 +490,32 @@ def _run_batch(tmp_path, monkeypatch, *, iso_files=8, lines=None, calibrated=Fal
         ri = EV.file_run_inputs(sample_id=sid, reagent="Br", context="ambient-air", resolution=ORBI,
                                 height_gate_cps=10.0, degeneracy_cal=None)
         EV.apply_levels(led, run_inputs=ri)
+        skel = {} if skeleton is None else {"nox_skeleton_gate": dict(skeleton)}
         if calibrated is True or (calibrated and k in calibrated):
             return {"ledger": led, "plausibility_audit": [], "summaries": {}, "problems": [],
                     "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0,
                               "degeneracy_cal": {"mu": 0.0, "sigma": 0.3},
-                              "tier_calibration": T.CAL_SOURCE_PER_FILE},
-                    "pool_inputs": None}
-        inputs = CP.PoolInputs(at_tiers=at, adducts=[AD], level_inputs=ri)
-        if refs is not None:
+                              "tier_calibration": T.CAL_SOURCE_PER_FILE, **skel},
+                    **({"pool_inputs": None} if keep else {})}
+        inputs = CP.PoolInputs(at_tiers=at, adducts=[AD], level_inputs=ri) if keep else None
+        if refs is not None and inputs is not None:
             refs.append(weakref.ref(inputs))
         return {"ledger": led, "plausibility_audit": [], "summaries": {}, "problems": [],
                 "stats": {"noise_edge_cps": 4.0, "height_gate_cps": 10.0, "degeneracy_cal": None,
-                          "tier_calibration": T.CAL_SOURCE_NONE},
-                "pool_inputs": inputs}
+                          "tier_calibration": T.CAL_SOURCE_NONE, **skel},
+                **({"pool_inputs": inputs} if keep else {})}
 
     monkeypatch.setattr(IO, "connect", lambda *a, **k: "CLIENT")
     monkeypatch.setattr(IO, "fetch_peaks", lambda client, sid, use_cache=True: pd.DataFrame(
         {"peak_id": ["A"], "mz": [200.1], "height": [1.0e5]}))
     monkeypatch.setattr(IO, "estimate_offset", lambda raw: 0.0)
     monkeypatch.setattr(A, "run", fake_assign)
-    return AB.run(peaks=pk, ts_peaks=pk, reagent="Br", batch="test batch", out_dir=str(tmp_path),
-                  k_min=3, k_max=4, min_gain=0.0, n_jobs=1, resolving_power=ORBI,
+    if n_jobs > 1:
+        monkeypatch.setattr(cf, "ProcessPoolExecutor", _InProcessPool)
+        monkeypatch.setattr(AB, "_W", {})
+        monkeypatch.setenv("PEAKY_MATCH_WORKERS", "2")
+    return AB.run(peaks=pk, ts_peaks=pk, reagent=reagent, batch="test batch", out_dir=str(tmp_path),
+                  k_min=k_min, k_max=k_max, min_gain=0.0, n_jobs=n_jobs, resolving_power=ORBI,
                   log=(lines.append if lines is not None else (lambda *a: None)))
 
 
@@ -536,6 +633,85 @@ def test_a_batch_whose_pool_falls_short_stays_unlevelled_and_says_why(tmp_path, 
     assert all(p["degeneracy_cal"] is None for p in summ["per_file"])
 
 
+@pytest.mark.parametrize("n_jobs", [1, 2])
+def test_a_later_stage_file_is_lent_the_pool_the_first_stage_built(tmp_path, monkeypatch, n_jobs):
+    """The pool is decided once, on the cover files; it has a calibration to lend, so the residual
+    stage's runs still keep their pool inputs and its uncalibrated files are re-tiered in it too."""
+    lines, keeps = [], {}
+    _run_batch(tmp_path, monkeypatch, staged=True, n_jobs=n_jobs, lines=lines, keeps=keeps)
+    summ = json.load(open(tmp_path / "batch_summary.json"))
+    assert {p["sample_id"]: p["stage"] for p in summ["per_file"]} == {
+        "a0": "cover", "a1": "cover", "z1": "residual", "z2": "residual"}
+    assert keeps == {"a0": True, "a1": True, "z1": True, "z2": True}
+    tc = summ["tier_calibration"]
+    assert tc["files"] == {"per_file": 0, "pooled": 4, "none": 0}
+    assert all(p["tier_calibration"] == "pooled" and p["tier_pool"]["demoted"] == 1 for p in summ["per_file"])
+    assert tc["pool"]["n_files_read"] == 2 and set(tc["pool"]["retiered_files"]) == {"a0", "a1", "z1", "z2"}
+    assert sum(ln.startswith("[calpool] ") and "uncalibrated on their own core" in ln for ln in lines) == 1
+    led = pd.read_csv(tmp_path / "per_file" / "z2_ledger.csv")
+    assert (led.loc[led["role"] == "M0", T.TIER_CALIBRATION] == "pooled").all()
+
+
+@pytest.mark.parametrize("n_jobs", [1, 2])
+def test_once_the_pool_falls_short_later_stages_keep_no_copy(tmp_path, monkeypatch, n_jobs):
+    """A pool decided on the cover files with nothing to lend: the residual stage's runs (serial, or
+    through the workers) are asked to keep no tier-time copy, and their files say why they stay
+    uncalibrated."""
+    lines, keeps = [], {}
+    _run_batch(tmp_path, monkeypatch, staged=True, iso_files=1, n_jobs=n_jobs, lines=lines, keeps=keeps)
+    summ = json.load(open(tmp_path / "batch_summary.json"))
+    assert keeps == {"a0": True, "a1": True, "z1": False, "z2": False}
+    tc = summ["tier_calibration"]
+    assert tc["files"] == {"per_file": 0, "pooled": 0, "none": 4} and tc["pool"]["used"] is False
+    assert any(ln.startswith("[calpool] WARNING: 2 more file(s) uncalibrated") for ln in lines)
+
+
+def test_a_tof_class_batch_keeps_its_files_uncalibrated(tmp_path, monkeypatch):
+    """The batch hands the pool its instrument class: a TOF-class batch counts the core and lends nothing."""
+    from peaky.batch import assign_batch as AB
+    monkeypatch.setattr(AB, "_axis_class", lambda measured, roster: "tof")
+    lines = []
+    _run_batch(tmp_path, monkeypatch, lines=lines)
+    summ = json.load(open(tmp_path / "batch_summary.json"))
+    tc = summ["tier_calibration"]
+    assert tc["pool"]["used"] is False and "TOF" in tc["pool"]["reason"] and tc["pool"]["n_ions"] == 16
+    assert tc["files"] == {"per_file": 0, "pooled": 0, "none": len(summ["per_file"])} and tc["source"] == "none"
+    assert any(ln.startswith("[calpool] WARNING: ") and "TOF" in ln for ln in lines)
+
+
+def test_the_batch_builds_the_pool_on_its_reagents_polarity_and_library(tmp_path, monkeypatch):
+    """The pool reads the batch reagent's polarity (the reagent-identity test) and its cluster library's
+    ion masses, and the batch's instrument class."""
+    seen = []
+    real = CP.pool_calibration
+
+    def spy(ledgers, **kw):
+        seen.append(kw)
+        return real(ledgers, **kw)
+    monkeypatch.setattr(CP, "pool_calibration", spy)
+    _run_batch(tmp_path, monkeypatch, reagent="Ur")
+    assert len(seen) == 1 and seen[0]["polarity"] == "positive" and seen[0]["klass"] == "orbitrap"
+    assert len(seen[0]["reagent_masses"]) > 0
+    seen.clear()
+    _run_batch(tmp_path / "neg", monkeypatch)
+    assert len(seen) == 1 and seen[0]["polarity"] == "negative"
+
+
+def test_a_pooled_files_skeleton_record_is_the_pooled_tier_stages(tmp_path, monkeypatch):
+    """stats `nox_skeleton_gate` of a pooled file is replaced by apply_pool's record (the re-run tier
+    stage's); a file that calibrated alone keeps its run's own; the batch totals add the replaced ones."""
+    own, pooled = {"capped": 0, "noted": 5}, {"capped": 2, "noted": 1}
+    monkeypatch.setattr(T, "nox_skeleton_summary", lambda led, profile: dict(pooled))
+    _run_batch(tmp_path, monkeypatch, calibrated={0}, skeleton=own)
+    summ = json.load(open(tmp_path / "batch_summary.json"))
+    src = [p["tier_calibration"] for p in summ["per_file"]]
+    assert src.count("per_file") == 1 and src.count("pooled") == len(src) - 1
+    for p in summ["per_file"]:
+        assert p["nox_skeleton_gate"] == (pooled if p["tier_calibration"] == "pooled" else own)
+    n = src.count("pooled")
+    assert (summ["nox_skeleton_gate"]["files_capped"], summ["nox_skeleton_gate"]["files_noted"]) == (2 * n, n + 5)
+
+
 def test_a_calibrated_batch_builds_no_pool(tmp_path, monkeypatch):
     """Every file calibrated alone: no pool is built, nothing is re-tiered."""
     lines = []
@@ -549,9 +725,11 @@ def test_a_calibrated_batch_builds_no_pool(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- the per-file run's side
-def _run_one(monkeypatch, rows, sid, *, keep=True):
+def _run_one(monkeypatch, rows, sid, *, keep=True, at_tiers=None):
     """assign.run on a synthetic peak table with the real degeneracy, tier and evidence stages after a
-    stand-in pass that commits `rows` (as in _file); `keep`: as a batch's per-file run (keep_pool_inputs)."""
+    stand-in pass that commits `rows` (as in _file); `keep`: as a batch's per-file run (keep_pool_inputs).
+    `at_tiers`: a list the run state's tier-time copy (st.at_tiers) is appended to, right after the
+    degeneracy stage."""
     import pickle
     from peaky.io import io_mascope as IO
     led0 = _file(sid, rows, tier=False)
@@ -572,6 +750,8 @@ def _run_one(monkeypatch, rows, sid, *, keep=True):
 
     stages = [A._Stage("pass1", commit, safe=False)] + [s for s in A._STAGES if s.name in ("degeneracy", "tiers",
                                                                                             "evidence")]
+    if at_tiers is not None:
+        stages.insert(2, A._Stage("spy", lambda st: at_tiers.append(st.at_tiers), safe=False, store=False))
     monkeypatch.setattr(A, "_STAGES", stages)
     try:
         res = A.run(sid, adducts=[AD], peaks=peaks, log=lambda *a: None, keep_pool_inputs=keep)
@@ -603,6 +783,20 @@ def test_a_single_sample_run_keeps_no_pool_inputs(monkeypatch):
     assert res["stats"]["degeneracy_cal"] is None and "pool_inputs" not in res
     manifest = json.dumps({k: v for k, v in res.items() if k != "ledger"}, default=str)   # as the CLI writes it
     assert "pool_inputs" not in manifest and "PoolInputs" not in manifest
+
+
+def test_the_tier_time_copy_is_taken_only_when_asked_and_only_uncalibrated(monkeypatch):
+    """The degeneracy stage copies the ledger (st.at_tiers) for an uncalibrated file of a run that asked
+    (keep_pool_inputs); a run that did not ask, and a calibrated file, hold no copy at all."""
+    rows = [(nf, AD, 0.0, 1e5, True, "Good") for nf in NEUTRALS[:6]]
+    seen = []
+    _run_one(monkeypatch, rows, "copy-kept", keep=True, at_tiers=seen)
+    _run_one(monkeypatch, rows, "copy-not-asked", keep=False, at_tiers=seen)
+    cal_rows = [(nf, AD, 0.0, 1e5, True, "High") for nf in NEUTRALS + ["C17H28O6", "C18H30O6"]]
+    _run_one(monkeypatch, cal_rows, "copy-calibrated", keep=True, at_tiers=seen)
+    assert len(seen) == 3 and isinstance(seen[0], pd.DataFrame)
+    assert set(seen[0].loc[seen[0]["role"] == "M0", "neutral_formula"]) == set(NEUTRALS[:6])
+    assert seen[1] is None and seen[2] is None
 
 
 def test_the_batch_word_is_the_weakest_files_source():
