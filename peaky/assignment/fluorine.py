@@ -56,6 +56,23 @@ file and hands the two refusals a verdict:
   C2F3 <-> H2^NO4 swap, and their twins were predicted at 1.7-10 cps against
   floors of 62-68.
 
+The series hold (`series_alias_holds`) is the same alias test turned on a series
+step. On a 15N-nitrate run C8S and H ^N O7 differ by 0.27 mDa (LABEL_ALIASES), so
+every organosulfur reading with C >= 8 has a same-ion reading with one more ^N --
+an [M-H]- organosulfur ion is the [M+^NO3]- cluster of its neutral minus C8S plus
+O4 -- and both swaps keep every CH2 / O / H2O / CF2 step: a homologous series
+reads the alias exactly as it reads the row. A series step or a ladder anchor
+(`anchor_peak_id` / `series_unit`) is therefore no corroboration of a reading
+whose F count (never testable) or S count (its 34S line neither seen nor
+refuted) its alias could be standing in for, while that alias can exist and is
+untested or its 14N twin is seen. The tier engine drops the row's series credit
+and appends the reason (SERIES_ALIAS_MARK); the evidence scale's `anchor` axis
+reads the mark, so the merge vote's class does not count the step either. On the
+15N-nitrate field batch above the 128-600 window had made seven C8S aliases of
+the truth's [M+^NO3]- readings Assigned that way (a pass-6 gap-fill or pass-4
+series step off a pass-3 organosulfate Candidate, class 1 in one file outvoting
+the truth's reading in 3-5 files at class 0).
+
 The ladder's 13C counterpart in arbitration -- a 13C carbon-count term between
 sub-mDa aliases of the fluorinated family (C8 vs H1F5, 0.16 mDa) -- is
 `c13_lines` + `c13_alias_penalties`, called by pass 3 (directors.run_pass3) and
@@ -98,9 +115,31 @@ LADDER_ADJACENT = 1                        # ... at least one of them this many 
 LADDER_MIN_COMMITTED = 3                   # committed members (the row included): the normal tier rules apply
 LADDER_PPM = 2.0                           # the step window where no exact-offset one holds (max with 2 x cfg.ppm)
 LADDER_HEIGHT_X = 30.0                     # a ladder line reads within 1/30..30x the row's height
-#: the 15N alias: C2F3 out, H2 ^N O4 in (0.21 mDa)
-ALIAS_OUT = {"C": 2, "F": 3}
-ALIAS_SWAP = {"C": -2, "F": -3, "H": 2, "^N": 1, "O": 4}
+
+
+class Alias(NamedTuple):
+    """A 15N alias: on a 15N-nitrate run the reading's `out` composition and
+    the ^N-carrying one the `swap` puts in its place weigh the same to a
+    fraction of a mDa, so every reading that carries `out` has a same-ion
+    reading with one more ^N."""
+    name: str           # the swap as the reasons print it
+    element: str        # the element the alias trades away: the count it stands in for
+    out: dict           # what a reading must carry for the alias to exist
+    swap: dict          # the alias's composition = the reading's + swap
+
+    @property
+    def mda(self) -> float:
+        """|the swap's mass| in mDa."""
+        return abs(sum(C.M[el] * n for el, n in self.swap.items())) * 1e3
+
+
+#: the 15N aliases: C2F3 out, H2 ^N O4 in (0.21 mDa) -- the ladder's (`verdicts`);
+#: C8S out, H ^N O7 in (0.27 mDa) -- an organosulfur reading's (`series_alias_holds`)
+ALIAS_C2F3 = Alias("C2F3 -> H2^NO4", "F", {"C": 2, "F": 3}, {"C": -2, "F": -3, "H": 2, "^N": 1, "O": 4})
+ALIAS_C8S = Alias("C8S -> H^NO7", "S", {"C": 8, "S": 1}, {"C": -8, "S": -1, "H": 1, "^N": 1, "O": 7})
+LABEL_ALIASES = (ALIAS_C2F3, ALIAS_C8S)
+ALIAS_OUT = ALIAS_C2F3.out
+ALIAS_SWAP = ALIAS_C2F3.swap
 D_15N = C.M["^N"] - C.M["N"]               # 0.99703 Da
 ALIAS_TWIN_BAND = (0.5, 5.0)               # the twin reads within this x the alias's nominal share f
 #: an untested 15N alias holds a full ladder at Candidate (False: the ladder alone
@@ -109,6 +148,13 @@ ALIAS_TWIN_BAND = (0.5, 5.0)               # the twin reads within this x the al
 #: 16 more against it; against the code before this module, 15 new rows against
 #: it, 8 of them exactly the alias)
 ALIAS_UNTESTED_HOLDS = True
+#: a series step or a ladder anchor does not corroborate a reading whose 15N alias
+#: is untested, or whose alias's 14N twin is seen (`series_alias_holds`; False: it
+#: does, as before -- see the module note for the batch it was measured on)
+ALIAS_SERIES_HOLDS = True
+#: the tier_reason mark of a row whose series credit the hold withheld: the tier
+#: engine writes it, the evidence scale's `anchor` axis reads it
+SERIES_ALIAS_MARK = "series step not counted"
 C13_PPM = 5.0                              # the 13C line's window where no exact-offset one holds (audit_sat_ppm)
 #: the 13C carbon-count term between sub-mDa aliases of the fluorinated family
 ALIAS_MDA = 1.0                            # aliases: ion masses within this of the arbitration's top reading
@@ -218,34 +264,42 @@ class _Lines:
         return None if best is None else (self.idx[best], float(self.h[best]))
 
 
-def alias_admissible(neutral: dict | None) -> bool:
-    """Can the reading's 15N alias exist? Its neutral (C2F3 out, H2 ^N O4 in)
-    must pass the closed-shell gate the grid and the labelled rescue apply
-    (chemistry.dbe_ok, oxygen_ok). The swap lowers the DBE by one, so a
-    saturated reading (DBE 0, e.g. a CnH(2n+2-f)Ff telomer chain) has no alias.
-    True where the neutral is unknown or lacks the C2F3 (nothing to rule out)."""
-    if not neutral or neutral.get("C", 0) < ALIAS_OUT["C"] or neutral.get("F", 0) < ALIAS_OUT["F"]:
+def _carries(counts: dict, alias: Alias) -> bool:
+    """`counts` hold the alias's `out` composition (the alias can be read off them)."""
+    return all(counts.get(el, 0) >= n for el, n in alias.out.items())
+
+
+def alias_admissible(neutral: dict | None, alias: Alias = ALIAS_C2F3) -> bool:
+    """Can the reading's 15N alias exist? Its neutral (`alias`: by default C2F3
+    out, H2 ^N O4 in) must pass the closed-shell gate the grid and the labelled
+    rescue apply (chemistry.dbe_ok, oxygen_ok). The C2F3 swap lowers the DBE by
+    one, so a saturated reading (DBE 0, e.g. a CnH(2n+2-f)Ff telomer chain) has
+    no alias; the C8S swap lowers it by eight. True where the neutral is unknown
+    or lacks the alias's composition (nothing to rule out)."""
+    if not neutral or not _carries(neutral, alias):
         return True
     a = dict(neutral)
-    for el, d in ALIAS_SWAP.items():
+    for el, d in alias.swap.items():
         a[el] = a.get(el, 0) + d
     a = {k: v for k, v in a.items() if v}
     return bool(C.dbe_ok(a)[0] and C.oxygen_ok(a)[0])
 
 
 def _alias_twin(ion: dict, h0: float, lines: _Lines, mz0: float, ppm: float, f: float,
-                floor: float | None = None, neutral: dict | None = None) -> tuple[str | None, str | None]:
-    """The reading's C2F3 -> H2^NO4 alias on a 15N-nitrate ledger (`f` > 0, the
-    reagent's 14N share): (veto, open). veto: a line one 15N-14N step below
-    inside ALIAS_TWIN_BAND of f -- the alias's 14N twin, where the reading
-    carries no ^N. open: why the alias is UNTESTED -- the reading carries ^N
-    (its own twin cannot be told from its alias's), or the alias's twin would
-    read under the detection floor at the band's lower edge. (None, None): no
-    alias (C < 2 or F < 3, an alias whose neutral cannot exist -- `neutral`,
-    alias_admissible --, or not a labelled ledger), or tested and absent."""
-    if ion.get("C", 0) < ALIAS_OUT["C"] or ion.get("F", 0) < ALIAS_OUT["F"] or not (f > 0):
+                floor: float | None = None, neutral: dict | None = None,
+                alias: Alias = ALIAS_C2F3) -> tuple[str | None, str | None]:
+    """The reading's 15N alias (`alias`: by default C2F3 -> H2^NO4) on a
+    15N-nitrate ledger (`f` > 0, the reagent's 14N share): (veto, open). veto:
+    a line one 15N-14N step below inside ALIAS_TWIN_BAND of f -- the alias's 14N
+    twin, where the reading carries no ^N. open: why the alias is UNTESTED --
+    the reading carries ^N (its own twin cannot be told from its alias's), or
+    the alias's twin would read under the detection floor at the band's lower
+    edge. (None, None): no alias (the ion short of the alias's composition, an
+    alias whose neutral cannot exist -- `neutral`, alias_admissible --, or not a
+    labelled ledger), or tested and absent."""
+    if not _carries(ion, alias) or not (f > 0):
         return None, None
-    if not alias_admissible(neutral):
+    if not alias_admissible(neutral, alias):
         return None, None
     if ion.get("^N", 0):
         return None, (f"the reading carries ^N{ion['^N']}: its own 14N twin (~{ion['^N']} f) "
@@ -253,7 +307,7 @@ def _alias_twin(ion: dict, h0: float, lines: _Lines, mz0: float, ppm: float, f: 
     lo, hi = ALIAS_TWIN_BAND
     hit = lines.near(mz0 - D_15N, ppm)
     if hit is not None and lo * f <= hit[1] / h0 <= hi * f:
-        return (f"the 14N twin of its 15N alias (C2F3 -> H2^NO4, ^N1) reads {hit[1] / h0:.3f} of the line "
+        return (f"the 14N twin of its 15N alias ({alias.name}, ^N1) reads {hit[1] / h0:.3f} of the line "
                 f"(the alias's share ~{f:.3f}) where the reading carries no ^N"), None
     if floor is None or lo * f * h0 < floor:
         return None, (f"its alias's 14N twin would read ~{lo * f * h0:.0f} cps, under the floor"
@@ -384,6 +438,76 @@ def lift_note(v: Ladder) -> str:
 def veto_note(v: Ladder) -> str:
     """The note a ladder that a line refutes adds to the refusal."""
     return f"its {v.text()} does not lift the refusal: {v.veto}"
+
+
+# ---------------------------------------------------------------------------
+# the series hold: a series step is the alias's step too
+# ---------------------------------------------------------------------------
+def _s_untestable(ledger: pd.DataFrame, i, ion: dict, neutral: dict | None, cfg) -> bool:
+    """The row's sulfur count is untestable in this file: the tier engine's own
+    34S verdict (satellites.twin_verdict at its floor and window) reads neither
+    a line that supports it nor one that refutes it."""
+    try:
+        floor = cfg.height_cutoff if cfg is not None else None
+    except RuntimeError:
+        floor = None
+    counts = {k: v for k, v in ion.items() if k != "^N"}
+    v = SAT.twin_verdict(ledger, ledger.at[i, "peak_id"], counts, floor, element="S",
+                         masked_by=SAT.reagent_masks("S", neutral or counts, counts), ppm=SAT.twin_ppm(cfg))
+    return v["kind"] == "untestable"
+
+
+def series_alias_holds(ledger: pd.DataFrame, *, cfg=None) -> dict:
+    """{peak_id: reason} of the committed M0 rows of a 15N-nitrate ledger whose
+    series credit (an `anchor_peak_id` or a `series_unit`: a pass-6 ladder fill,
+    a pass-4 series step) does not count. The row's ion carries a LABEL_ALIASES
+    composition whose element count nothing else tests -- fluorine (no minor
+    isotope), or sulfur whose 34S line the file can neither show nor refute
+    (`_s_untestable`) -- and its alias can exist (alias_admissible) and is
+    untested, or its 14N twin is seen (`_alias_twin`, the ladder's own test).
+    The swap keeps every CH2 / O / H2O / CF2 step, so a series reads the alias
+    exactly as it reads the row: the step corroborates neither. Each reason
+    starts with SERIES_ALIAS_MARK (the tier engine appends it to the row's
+    reason; the evidence scale's `anchor` axis reads it). Empty off a
+    15N-nitrate ledger, without the columns, or with ALIAS_SERIES_HOLDS off.
+    `cfg` (the file's PassConfig) supplies the floors and windows; without it
+    nothing is testable and every alias stays open."""
+    need = {"mz", "height", "peak_id", "role"}
+    if not ALIAS_SERIES_HOLDS or ledger is None or not len(ledger) or not need.issubset(ledger.columns):
+        return {}
+    credit = pd.Series(False, index=ledger.index)
+    for c in ("anchor_peak_id", "series_unit"):
+        if c in ledger.columns:
+            credit |= ledger[c].notna()
+    rows = ledger.index[(ledger["role"] == L.ROLE_M0) & credit]
+    if not len(rows) or not labelled_nitrate(ledger):
+        return {}
+    col = lambda i, c: ledger.at[i, c] if c in ledger.columns else None  # noqa: E731
+    f14 = (1.0 - ISO.label_purity()) / ISO.label_purity()
+    floor, ppm = _height_floor(cfg), window_ppm(cfg)
+    lines, out = None, {}
+    for i in rows:
+        mz0, h0 = _num(ledger.at[i, "mz"]), _num(ledger.at[i, "height"])
+        if mz0 is None or h0 is None or h0 <= 0:
+            continue
+        nf = col(i, "neutral_formula")
+        ion = _ion(col(i, "ion_formula"), nf, col(i, "adduct"))
+        neutral = C.parse_formula(nf) if isinstance(nf, str) and nf.strip() else None
+        for alias in LABEL_ALIASES:
+            if not _carries(ion, alias) or not alias_admissible(neutral, alias):
+                continue
+            if alias.element == "S" and not _s_untestable(ledger, i, ion, neutral, cfg):
+                continue
+            if lines is None:
+                lines = _Lines(ledger)
+            veto, open_ = _alias_twin(ion, h0, lines, mz0, ppm, f14, floor, neutral, alias)
+            if veto or open_:
+                out[ledger.at[i, "peak_id"]] = (
+                    f"{SERIES_ALIAS_MARK} for the {alias.element} count: its 15N alias ({alias.name}, "
+                    f"{alias.mda:.2f} mDa) takes the same series steps and "
+                    + (f"is untested -- {open_}" if open_ else f"is seen -- {veto}"))
+                break
+    return out
 
 
 # ---------------------------------------------------------------------------

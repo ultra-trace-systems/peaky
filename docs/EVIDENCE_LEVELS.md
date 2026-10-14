@@ -1088,6 +1088,14 @@ readings before the file count (`assign_batch._vote`, [MERGE.md](MERGE.md)
   `evidence outranks the count: kept X (formula confirmed in 2 of 11 files)
   over the 5-file Y (unconfirmed)`. `tables/jitter.csv` carries each file's
   reading's `vote_class` (0 / 1 / 2).
+- A series step the tier stage did not count is no `anchor` axis, for the
+  class or the level: on a 15N-nitrate ledger a row whose C8S or C2F3 count
+  has an untested 15N alias (C8S -> H^NO7, 0.27 mDa; C2F3 -> H2^NO4, 0.21 mDa)
+  takes the same series steps as that alias, and its tier_reason carries
+  `fluorine.SERIES_ALIAS_MARK` (`evidence.series_held`; `trim` carries it as
+  the `series_held` flag). Without it one file's gap-filled organosulfur alias
+  was "formula confirmed" and outvoted the truth's [M+^NO3]- reading in 3-5
+  files ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md), the series hold).
 - `--corroborate` feeds the class's cross set as it always did: the neutrals a
   source pins on its own (`vote_cross_neutrals`; a source with per-file ledgers
   is re-levelled by the vote's decision with no cross set). A merged-only

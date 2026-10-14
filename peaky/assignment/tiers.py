@@ -946,6 +946,10 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
     twin_ppm = SAT.twin_ppm(cfg)
     # fluorine by evidence: each F reading's CF2 ladder in this file (fluorine.py)
     f_ladder = FL.verdicts(ledger, cfg=cfg)
+    # the series hold (fluorine.series_alias_holds): on a 15N-nitrate ledger a row
+    # whose untested F / S count has an open 15N alias takes no series credit --
+    # the C2F3 -> H2^NO4 / C8S -> H^NO7 swap keeps every series step
+    alias_holds = FL.series_alias_holds(ledger, cfg=cfg)
     # the isotope-gated families' hold (GATED_HOLD): their own-line window (None
     # off an Orbitrap-class run: nothing is seen) and the file's real lines,
     # read once and only when such a row exists
@@ -975,6 +979,9 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
         iso_ev = (kids_of.get(r["peak_id"], 0) > 0) or bool(_alts(r.get("isotopologues")))
         cross_channel = int(chan_count.get(formula, 0)) >= 2
         has_anchor = pd.notna(r.get("anchor_peak_id")) or pd.notna(r.get("series_unit"))
+        alias_hold = alias_holds.get(r["peak_id"])
+        if alias_hold:
+            has_anchor = False
         # reagent-N isobar (positive mode): the winner and a same-ion alias disagree
         # only on the nitrogen count, which isotopes and N-donating channels cannot
         # settle. That doubt is the SPLIT's, not the ion's (REAGENT_N_OPEN_MARK): the
@@ -1361,6 +1368,10 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
                 parts.append(f"{resolv} peak ({_sep:.2f} HWHM from its neighbour), carried by "
                              "the corroboration")
             reason = "; ".join(parts)
+        if alias_hold:
+            # the series credit the hold withheld, and why (the evidence scale's
+            # `anchor` axis reads the mark: fluorine.SERIES_ALIAS_MARK)
+            reason = ((reason + "; ") if reason else "") + alias_hold
         _skel = skel_own.get(r["peak_id"]) or skel_curated.get(r["peak_id"])
         if _skel:
             # the skeleton reading (-ONO2 / -NO2 groups read off) presumes

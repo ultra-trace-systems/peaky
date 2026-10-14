@@ -58,6 +58,7 @@ import numpy as np
 import pandas as pd
 
 from peaky import paths as PT
+from peaky.assignment import fluorine as FL
 from peaky.assignment.ledger import lead_setters
 from peaky.assignment.tiers import CAL_MIN_N as _CAL_MIN_N
 from peaky.assignment import calpool as _CP
@@ -145,6 +146,23 @@ PREDICATE_COLUMNS = (
     # before it has no such column
     "lead_by",
 )
+#: the row's series credit was withheld by the tier stage (fluorine.series_alias_holds:
+#: its 15N alias takes the same series steps). `trim` carries it as this flag --
+#: read off the tier_reason mark, and only where a row carries one -- so the
+#: per-file frames a batch keeps hold no reason text
+SERIES_HELD = "series_held"
+
+
+def series_held(frame: pd.DataFrame) -> pd.Series:
+    """Per row: the tier stage withheld its series credit (the `anchor` axis
+    does not count it). Read off the SERIES_HELD flag a `trim` frame carries,
+    else off the tier_reason mark (fluorine.SERIES_ALIAS_MARK); False where
+    neither column is present."""
+    if SERIES_HELD in frame.columns:
+        return frame[SERIES_HELD].map(truthy).astype(bool)
+    if "tier_reason" in frame.columns:
+        return frame["tier_reason"].astype(str).str.contains(FL.SERIES_ALIAS_MARK, regex=False)
+    return pd.Series(False, index=frame.index, dtype=bool)
 
 # Natural abundance of the heavy isotope relative to the light one, for the
 # satellite the audit looks for. 13C is per carbon and computed from the ion.
@@ -596,7 +614,8 @@ def _measure(frame: pd.DataFrame, *, halogen: str | None, alien=None, fold=None,
     m0["__lowconf"] = m0["confidence"].map(first_word).isin(LOW_CONFIDENCE)
     m0["__deg"] = pd.to_numeric(m0["degeneracy_density"], errors="coerce")
     m0["__sat"] = m0["degeneracy_note"].astype(str).str.contains("MASS-SATURATED", regex=False)
-    m0["__anchor"] = m0["anchor_peak_id"].notna() | m0["series_unit"].notna()
+    # a series step or ladder anchor, unless the tier stage withheld its credit
+    m0["__anchor"] = (m0["anchor_peak_id"].notna() | m0["series_unit"].notna()) & ~series_held(m0)
     m0["__res"] = m0["resolvability"].map(
         lambda v: str(v).strip() if pd.notna(v) and str(v).strip() and str(v).strip().lower() != "nan" else "")
     m0["__mz"] = pd.to_numeric(m0["mz"], errors="coerce")
@@ -979,10 +998,15 @@ def _series_pooled(per_file: dict, *, cross=None, isomer_space=None, upair=None,
 def trim(ledger: pd.DataFrame) -> pd.DataFrame:
     """The M0 + isotope rows and the predicate columns of a ledger -- what the
     batch checks (iso_checks, label_twins, neutral_pairs) and the vote class
-    read per file (the rest of the ledger is on disk)."""
+    read per file (the rest of the ledger is on disk) -- plus the SERIES_HELD
+    flag where a row's tier_reason carries the series hold's mark."""
     role = _col(ledger, "role").astype(str)
     keep = ledger[role.isin(["M0", "iso_child"])]
-    return keep[[c for c in PREDICATE_COLUMNS if c in keep.columns]].copy()
+    out = keep[[c for c in PREDICATE_COLUMNS if c in keep.columns]].copy()
+    held = series_held(keep)
+    if held.any():
+        out[SERIES_HELD] = held.to_numpy()
+    return out
 
 
 # ---------------------------------------------------------------------------

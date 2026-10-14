@@ -315,8 +315,9 @@ columns** (no judgment calls at report time):
 - **Assigned** — the formula is unique in the calibrated mass window, *or* it's
   corroborated by independent evidence (confirmed isotopologues / attached
   satellites, the same neutral in a second ionization channel, or series-anchor
-  support), and nothing about the chemistry contradicts the validated sample
-  profile.
+  support -- on a 15N-nitrate run not for an F or S count whose sub-mDa 15N
+  alias takes the same series steps), and nothing about the chemistry
+  contradicts the validated sample profile.
 - **Candidate** — a plausible formula, honestly ambiguous: a low/suspect base
   confidence, an effective-score near-tie, undiscriminated close alternatives in
   the window, or a high cross-family mass-degeneracy density.

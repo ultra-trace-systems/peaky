@@ -710,6 +710,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   merged row changes; on six labelled-nitrate field batches (R ~175k) no line is a shadow and the
   table is unchanged; unlabelled and TOF batches are out of scope.
 
+- **A series step no longer corroborates an organosulfur or fluorinated reading that its 15N
+  alias could be standing in for (`fluorine.series_alias_holds`).** On a 15N-nitrate run C8S and
+  H ^N O7 differ by 0.27 mDa (as C2F3 and H2 ^N O4 do by 0.21 mDa), so every organosulfur reading
+  with C >= 8 has a same-ion reading with one more ^N -- the [M+^NO3]- cluster of its neutral
+  minus C8S plus O4 -- and the swap keeps every CH2 / O / H2O step. A pass-6 gap-fill or pass-4
+  series step off a pass-3 organosulfate Candidate made such a reading Assigned on the series
+  credit alone (its 34S line under the floor), and the merge vote's private class counted the
+  same step ("formula confirmed"), so one file's alias outvoted the truth's [M+^NO3]- reading in
+  3-5 files. On a 15N-nitrate ledger a row with series credit (`anchor_peak_id` / `series_unit`)
+  whose ion carries C8S -- its S count untestable: the 34S line neither seen nor refuted -- or
+  C2F3, and whose alias can exist and is untested, or has its 14N twin seen, by the ladder's own
+  test, now takes no series credit: the tier engine drops it and says why ("series step not
+  counted for the S count: its 15N alias (C8S -> H^NO7, 0.27 mDa) takes the same series steps and
+  is untested -- ..."), and the evidence scale's `anchor` axis reads that mark (a `trim` frame
+  carries it as `series_held`), so neither the level nor the vote class counts the step. The
+  C8S alias joins the alias table (`fluorine.LABEL_ALIASES`; `alias_admissible` and the twin
+  test take the alias); `ALIAS_SERIES_HOLDS` is the switch. Off a 15N-nitrate ledger nothing
+  changes. Replayed offline on the stored per-file ledgers of a 15N-nitrate field campaign (the
+  held rows' tier verdicts, then the merge vote as the batch casts it; the base replay gives
+  1390 of the 1392 stored merged rows of the 128-600 wind-zone batch): there 23 per-file rows
+  lose their series credit and 9 merged rows leave Assigned (649 -> 640), every one of them
+  wrong-ion or unverifiable -- the seven C8S aliases of the truth's readings among them. The
+  wrong-ion Assigned rows go 13 -> 5 (organosulfur 11 -> 3, C8S aliases 7 -> 0); three truth
+  lines take back the truth's reading (at Candidate, as its own files read it) and no line
+  Assigned before is lost. Either half alone falls short: the tier half leaves those three
+  lines to the alias (as Candidate), the evidence half leaves four alias rows Assigned. The
+  batch's zero-air run (2 per-file rows held), its 40-600 and 65-120 windows, the uronium and
+  NO+ batches, three finish-line runs (one of them 15N-nitrate: 0 rows held) and seven 14N
+  sentinel runs move no merged row.
 - **The `blended` separability class was 1.39x too wide.** `chem.resolution.d_crit_hwhm`, the
   separation at which two Gaussians of a given height ratio turn bimodal, converted its sigma table
   to HWHM by multiplying by sqrt(2 ln 2) where it divides: equal heights read 2.36 HWHM instead of
