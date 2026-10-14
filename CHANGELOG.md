@@ -307,6 +307,30 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A 14N line that is the 13C shadow of a brighter ion is no reading's own ion (rule K, labelled
+  nitrate, Orbitrap-class).** A 14N line CxHyNOz- sits 8.106 mDa (13C + H - N) below the 13C line of
+  P = C(x+1)H(y+1)Oz-. On a 15N-labelled nitrate benchmark batch (R ~125k at m/z 200) the
+  `[M+NO3]-` reading C10H18NO7- was Assigned although the line is a fixed 0.11x of the 13C line of
+  C11H19O7- above it (sd(log) 0.10, r 0.96 over 209 spectra) and its 15N cluster is read elsewhere;
+  rule K's cluster-k test read it as tracking its 15N twin (sd 0.14-0.17). `label_twins.measure`
+  now runs a 13C-shadow test on every 14N line whose P ion is committed (Orbitrap-class batches,
+  `klass`): over >= 50 spectra holding both lines, median ratio <= 1/3, sd(log) <= 0.15, r(log) >=
+  0.9, the +8.1 mDa line confirmed as P's 13C line by its ratio to P's 12C line (0.5-1.6x the
+  natural share), and a tighter fit to that 13C line than to its own 15N twin (the cluster-k sd,
+  else the raw sd of log(14N / 15N)). Such a line reads `line_verdict` `shadow`, which outranks
+  every other verdict: refuted (5b, `label_veto`) and alien, never untied, and out of the cluster-k
+  reference pool (the test is re-run without it). A veto alone leaves the merged tier, which is the
+  vote's, so a new merged-ledger gate (`label_twins.shadow_gate`, MERGE.md §3 step 6c) makes every
+  Assigned merged reading within the merge window of a shadow line Candidate, with no re-vote and a
+  `tier_reason` that names the parent. `tables/label_twins.csv` gains `shadow_parent`, `shadow_mz`,
+  `shadow_n`, `shadow_ratio`, `shadow_sd`, `shadow_r`, `shadow_c13`, `shadow_twin_sd` and `shadow`;
+  the summary gains `lines_shadow`; `batch_summary.json["merge_gates"]["label_shadow"]` records
+  `ran`, `lines`, `demoted` and `demoted_rows`. Replayed on the stored runs: on the benchmark
+  batch 2 lines are shadows (the reading above, now Candidate, and the uncommitted 14N line of a
+  C10H18O6 15N cluster, out of the reference pool: one other line goes consistent -> tracks), 1
+  merged row changes; on six labelled-nitrate field batches (R ~175k) no line is a shadow and the
+  table is unchanged; unlabelled and TOF batches are out of scope.
+
 - **The `blended` separability class was 1.39x too wide.** `chem.resolution.d_crit_hwhm`, the
   separation at which two Gaussians of a given height ratio turn bimodal, converted its sigma table
   to HWHM by multiplying by sqrt(2 ln 2) where it divides: equal heights read 2.36 HWHM instead of

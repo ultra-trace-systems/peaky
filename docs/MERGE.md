@@ -56,7 +56,9 @@ selected sample_ids (SAMPLING.md)
    │   another merged ion's isotope line at its expected ratio leaves (step 4c)
    ▼
  merged_ledger.csv  +  jitter.csv  +  batch_summary.json  →  _batch_ts.parquet stamp
-   ▼  batch isotope checks (iso_checks.csv); (Orbitrap-class) a REQ veto on an
+   ▼  rule K (label_twins.csv; labelled nitrate, Orbitrap-class): a reading on a
+   │   14N line that is the 13C shadow of the ion above it is Candidate (step 6c)
+   │  batch isotope checks (iso_checks.csv); (Orbitrap-class) a REQ veto on an
    │   element-signature line removes the reading, the series is re-stamped (step 6a)
    │  the isotopologue gate's lines recorded: per-file ledgers rewritten (the
    │   parent's iso_child, else unexplained), the parent rows' isotopologue_lines
@@ -572,6 +574,23 @@ selected sample_ids (SAMPLING.md)
    records `ran`, `req_demoted`, `known_demoted`, `doublet_demoted`,
    `doublet_exempt` (and `skipped` when it did not run).
 
+6c. **The 13C-shadow gate** (`label_twins.shadow_gate`; right after rule K's
+   table is measured on the stamped series, before step 6a; a 15N-labelled
+   nitrate channel on an Orbitrap-class batch). A 14N line CxHyNOz- sits 8.106 mDa
+   (13C + H - N) below the 13C line of P = C(x+1)H(y+1)Oz-; rule K calls it
+   `shadow` when P's ion is committed and the line is a fixed fraction of that
+   13C line rather than any ion of its own ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md)
+   §3.2 `label_veto`; the test in `batch/label_twins.py`). Its pooled pair is
+   rejected (5b), but the merged tier is the vote's, so every Assigned merged
+   reading within the merge window of a shadow line is Candidate, with **no
+   re-vote** (the winner and its reading stay; `tier_reason` names the parent and
+   the statistics). On a 15N-labelled nitrate benchmark batch one known-false
+   `[M+NO3]-` reading (C10H18NO7-, 0.11x the 13C line of C11H19O7-) leaves Assigned
+   and nothing else moves; on six labelled-nitrate field batches no line is a
+   shadow. `batch_summary.json["merge_gates"]["label_shadow"]` records `ran` (an
+   in-scope table), `lines`, `demoted` and `demoted_rows` (`skipped` without a
+   table).
+
 7. **Pool the plausibility audit + write artifacts.** Per-file plausibility
    demotes are pooled and written; `merged_ledger.csv` (root), `jitter.csv`
    (tables/), `selected_samples.csv`, and `batch_summary.json` are emitted.
@@ -660,7 +679,7 @@ All in `peaky/batch/assign_batch.py`.
 | `tables/isotopologue_rows.csv` | the isotopologue gate (step 4c): one row per merged row judged on a parent's isotope line — the row, its `verdict` (`isotopologue` / `mixed` / `exempt`) and `action` (`stripped` / `note`), the line `label` and `expected` share, the main parent and every parent read, the median area / height ratios over `n_both` spectra, `n_tail`, the per-file role votes; header only when nothing was found or the gate did not run ([OUTPUTS.md](OUTPUTS.md)) |
 | `tables/iso_checks.csv` | the batch isotope checks ([EVIDENCE_LEVELS.md](EVIDENCE_LEVELS.md) §3.2), plus one `SAT` row per row the isotopologue gate stripped; a `REQ` veto on an element-signature line is what step 6a reads |
 | `tables/residual_bins.csv` | the residual stage's targeted bins (`bin_mz`, `prevalence`, `max_cps`, `max_x_edge`, `sample_at_max`, `covered_by`); written when the stage is on |
-| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason; `residual` sub-block: the funnel, the floor, k, coverage_of_residual, stop_reason, sample_ids), `n_files_by_stage` / `merged_by_stage` when the stage is on, the resolved height gate (`height_cutoff_x_edge` + its source, and the `gate` derivation block), the `admission` block, the `traces` block (re-centred / collapsed counts, per-ion scatter, stamp window), per-file offsets + noise edges, merged tier counts and the claim tallies beside them (`claims`), agreement counts, and `merge_gates` (the known-species decision, the positive-mode gates, `reagent_water`: cores, window, segments, rungs by core, the stripped readings; `isotopologue` (step 4c) and `element_signature` (step 6a); `tof_m2` (step 6b)), `context_flags` (the run-level switches of the batch's context profile) and `warnings` |
+| `batch_summary.json` (run root) | reagent/context, the `selection` block (k, achieved coverage, stop reason; `residual` sub-block: the funnel, the floor, k, coverage_of_residual, stop_reason, sample_ids), `n_files_by_stage` / `merged_by_stage` when the stage is on, the resolved height gate (`height_cutoff_x_edge` + its source, and the `gate` derivation block), the `admission` block, the `traces` block (re-centred / collapsed counts, per-ion scatter, stamp window), per-file offsets + noise edges, merged tier counts and the claim tallies beside them (`claims`), agreement counts, and `merge_gates` (the known-species decision, the positive-mode gates, `reagent_water`: cores, window, segments, rungs by core, the stripped readings; `isotopologue` (step 4c) and `element_signature` (step 6a); `tof_m2` (step 6b); `label_shadow` (step 6c)), `context_flags` (the run-level switches of the batch's context profile) and `warnings` |
 | `jitter_report()` dict | `{offsets, by_formula, by_mz, summary}` — the standalone jitter analysis |
 
 ---
