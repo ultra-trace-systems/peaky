@@ -780,6 +780,10 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
     twin_ppm = SAT.twin_ppm(cfg)
     # fluorine by evidence: each F reading's CF2 ladder in this file (fluorine.py)
     f_ladder = FL.verdicts(ledger, cfg=cfg)
+    # the series hold (fluorine.series_alias_holds): on a 15N-nitrate ledger a row
+    # whose untested F / S count has an open 15N alias takes no series credit --
+    # the C2F3 -> H2^NO4 / C8S -> H^NO7 swap keeps every series step
+    alias_holds = FL.series_alias_holds(ledger, cfg=cfg)
 
     rows = []
     for _, r in m0.iterrows():
@@ -801,6 +805,9 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
         iso_ev = (kids_of.get(r["peak_id"], 0) > 0) or bool(_alts(r.get("isotopologues")))
         cross_channel = int(chan_count.get(formula, 0)) >= 2
         has_anchor = pd.notna(r.get("anchor_peak_id")) or pd.notna(r.get("series_unit"))
+        alias_hold = alias_holds.get(r["peak_id"])
+        if alias_hold:
+            has_anchor = False
         # reagent-N isobar (positive mode): the winner and a same-ion alias disagree
         # only on the nitrogen count, which isotopes and N-donating channels cannot
         # settle. Downgrade the corroboration to what actually discriminates: an
@@ -1133,6 +1140,10 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
                 parts.append(f"{resolv} peak ({_sep:.2f} HWHM from its neighbour), carried by "
                              "the corroboration")
             reason = "; ".join(parts)
+        if alias_hold:
+            # the series credit the hold withheld, and why (the evidence scale's
+            # `anchor` axis reads the mark: fluorine.SERIES_ALIAS_MARK)
+            reason = ((reason + "; ") if reason else "") + alias_hold
         _skel = skel_own.get(r["peak_id"]) or skel_curated.get(r["peak_id"])
         if _skel:
             # the skeleton reading (-ONO2 / -NO2 groups read off) presumes

@@ -132,7 +132,10 @@ selected sample_ids (SAMPLING.md)
      confirmed** — the formula or the ion pinned, the neutral not; **0 =
      unconfirmed** — exact mass alone or an assignment that argues with
      itself, or no class at all (a pure `align()` caller without the column:
-     every reading is 0 and the vote is the pure count). **The vote class is
+     every reading is 0 and the vote is the pure count). A series step the
+     file's tier stage did not count -- on a 15N-nitrate run, a row whose
+     C8S / C2F3 count has an untested 15N alias that takes the same steps
+     (`fluorine.series_alias_holds`) -- confirms nothing here either. **The vote class is
      not the evidence level and not the claim.** It is the decision peaky used
      before the evidence scale, kept private to the vote so that the scale —
      a reader's grade of the committed formula — never moves a reading; the
