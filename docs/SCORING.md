@@ -156,10 +156,17 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   C9-C12 hydrocarbons above it read 0.7 ppm off and fell out of Assigned). A
   model the batch applies through the sub-ppm branch (`assign_batch._lock_model`:
   its largest correction and the locks' raw median both under 1 ppm) therefore
-  CARRIES its correction at its first lock and at its last into the scoring centre
-  of every line up to `assign_batch.EDGE_CARRY_DA` (30 Da) below / above it
+  CARRIES the axis at its first lock and at its last into the scoring centre of
+  every line up to `assign_batch.EDGE_CARRY_DA` (30 Da) below / above it
   (`AxisModel.edge_carry_record`, `masscal.edge_carry_at`; the line's m/z is read
-  on the served axis, as the model's own inverse reads it):
+  on the served axis, as the model's own inverse reads it). Each end's value is
+  read off the END LOCKS: the model there plus the median residual of the end
+  segment's non-bright locks within `axislock.EDGE_LOCK_DA` (5 Da) of it, at least
+  `EDGE_LOCKS_MIN` (3) of them, else the model's own end value -- a spline's end
+  knot can leave its own locks (a uronium axis: -0.41 ppm at its first lock, its
+  locks there -0.15..-0.25, an independent axis -0.20; read -0.28), and a median of
+  three ignores one stray lock (2.5 % of the locks of a field campaign's lock models
+  read more than 0.5 ppm off their model):
   * the local scorer judges each MATCHED line at the file's centre plus the carry
     at that line's peak (`score_candidates_local(centre_offset=)`, per line: an M0
     in scope whose 13C line lies outside is judged on both axes as they are);
@@ -171,21 +178,35 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
     lent to an uncalibrated file, `calpool.apply_pool`, takes the file's carry too),
     the off-calibration re-arbitration (which reads the tier calibration) and the
     degeneracy window;
-  * calibrate and the tier calibration read a backbone row outside the scope on
-    the carried scale (its ppm less the carry), so the out-of-scope rows they
-    recover measure the same centre as the corrected ones.
+  * calibrate (its backbone and its mass-trend rows) and the tier calibration
+    read a backbone row outside the scope on the carried scale (its ppm less the
+    carry), so the out-of-scope rows they recover measure the same centre as the
+    corrected ones; so do the centres fitted on a file's own rows elsewhere: the
+    scorer's `mu` of a `fitted` file (an anchor past the edge, `sample_mass_errors
+    (carry=)`; `pattern_scoring.axis_edge_carry.anchors` counts them), an
+    uncalibrated file's display centre (`stamp_calibrated_ppm`: the Assigned rows'
+    median), and the batch-pooled calibration: its core (`calpool.pool_calibration
+    (carry=)`, the batch's record) and the file's own centre it lends a window about
+    (the Assigned rows' median, `apply_pool`).
 
-  The file's `mu`, its anchors, the ledger's m/z and every line in scope are
-  unchanged. Nothing is carried past the reach (measured against an independent
+  The ledger's m/z and every line in scope are unchanged. Nothing is carried past
+  the reach (measured against an independent
   axis: within 30 Da the edge's value is the axis to ~0.1 ppm on the flat NO+
   axes, while a curved labelled-nitrate axis bends 0.2-0.4 ppm away from it
   further out), in a gap or hole (a step there is unseen), or by a model applied
   at 1 ppm or more: those batches, which the reference bar corrected before the
   sub-ppm branch existed, run exactly as before, and their out-of-scope lines are
-  still judged against the in-scope centre. The record rides on the model
+  still judged against the in-scope centre. A line past the reach of a carried
+  model is judged at the file's centre as it stands, and that centre is now fitted
+  on the carried scale: it moves by the carried rows' weight in the fit (a few
+  hundredths of a ppm on a field campaign's batches), enough to take a line that
+  sat on a gate across it (z 1.99 -> 2.01). The record rides on the model
   (`mass_axis.wave.stats.edge_carry`, also `mass_axis.edge_carry`) to every
-  worker, on each file's snapshot (`pattern_scoring.axis_edge_carry`, with `share`,
-  the share of the file's peaks it reaches) and, as `PassConfig.axis_edge_carry`,
+  worker (each end `{mz, ppm, model_ppm, n_locks}`: the value carried, the model's
+  own end value, the locks it was read off), on each file's snapshot
+  (`pattern_scoring.axis_edge_carry`, with `share`, the share of the file's peaks it
+  reaches, and `anchors`, the anchors read on the carried scale) and, as
+  `PassConfig.axis_edge_carry`,
   on the file's run (`per_file.axis_edge_carry`: `reach_da`, `m0_carried`, the
   committed M0 rows it judged); a stand-in registered with that snapshot (a decoy
   arm) inherits it. The network scorer (`PEAKY_LOCAL_SCORING=0`) judges one

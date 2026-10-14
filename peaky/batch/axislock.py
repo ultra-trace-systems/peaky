@@ -201,6 +201,16 @@ JOIN_MAX_DA = 30.0     # a JOIN up to a segment from seeds bridges a gap no wide
                        # (SEG_SPAN_DA); wider, the axis in between is unseen: left uncorrected
 SCOPE_SLACK_PPM = 3.0  # a segment's domain: its extreme locks' MEASURED m/z, +- the bin width
                        # (20 ppm carried a correction across a step to a peak 17 ppm past the edge)
+EDGE_LOCK_DA = 5.0     # the edge carry's value at an end (edge_carry_record): the model there plus the
+                       # median residual of the end segment's non-bright locks within this many Da of
+                       # it. A spline's end knot can sit off its own end locks (a uronium axis: -0.41
+                       # ppm at its first lock, the locks there -0.15..-0.25, an independent axis
+                       # -0.20; read here -0.28). Measured on a field campaign's 44 lock-model ends:
+                       # the nearest 9 locks wherever they lie reach 44 Da into a sparse segment and
+                       # read a labelled-nitrate end 0.05 ppm further from its out-of-scope lines
+EDGE_LOCKS_MIN = 3     # fewer locks there: the model's own end value. A median of three ignores one
+                       # stray lock (2.5 % of those 44 models' locks read > 0.5 ppm off the model,
+                       # 0.8 % > 1 ppm); an end read off one or two would carry it 30 Da
 CACHE_PPM = 16.0       # the walk's candidate cache spans this around each bin (> MAX_ERR_PPM + NARROW_PPM)
 RANSAC_DRAWS = 2000
 RANSAC_MAX_SLOPE = 0.1  # ppm per Da; the steepest smooth stretch measured is ~0.07
@@ -560,18 +570,44 @@ class AxisModel:
         out.stats["max_abs_ppm"] = round(out.max_abs_ppm(), 3)
         return out
 
-    def edge_carry_record(self, reach_da: float) -> dict:
-        """The record of the model's EDGE CARRY (masscal.edge_carry_at): its correction
-        at its first lock (`below`) and at its last (`above`), each carried into the
-        scoring centre of the lines up to `reach_da` beyond it, with the domains' slack
-        the served-axis boundary is read at. Gaps and holes between segments are not in
-        it: a step there is unseen. Granted by assign_batch._lock_model (stats
-        'edge_carry'); peaks are never moved by it."""
+    def edge_carry_record(self, reach_da: float, locks=None) -> dict:
+        """The record of the model's EDGE CARRY (masscal.edge_carry_at): the axis at its
+        first lock (`below`) and at its last (`above`), each carried into the scoring
+        centre of the lines up to `reach_da` beyond it, with the domains' slack the
+        served-axis boundary is read at. Gaps and holes between segments are not in it:
+        a step there is unseen. Granted by assign_batch._lock_model (stats
+        'edge_carry'); peaks are never moved by it.
+
+        Each end's `ppm` is read off the END LOCKS (`locks`: the fit's lock table, rows
+        of mz / ppm / bright): the model at the edge plus the median residual of the
+        end segment's non-bright locks within EDGE_LOCK_DA of it (`_edge_value`), so a
+        spline whose end knot left its own end locks is put back on them; `model_ppm`
+        is the model's own end value, `n_locks` the locks read (0: no table, or fewer
+        than EDGE_LOCKS_MIN there -- the model's end value stands)."""
         first, last = self.segments[0], self.segments[-1]
-        lo, hi = float(first["lo"]), float(last["hi"])
         return {"reach_da": float(reach_da), "slack_ppm": float(SCOPE_SLACK_PPM),
-                "below": {"mz": lo, "ppm": float(self._eval(first, lo))},
-                "above": {"mz": hi, "ppm": float(self._eval(last, hi))}}
+                "below": self._edge_value(first, float(first["lo"]), locks),
+                "above": self._edge_value(last, float(last["hi"]), locks)}
+
+    def _edge_value(self, seg, edge: float, locks) -> dict:
+        """{mz, ppm, model_ppm, n_locks} of one end (edge_carry_record)."""
+        own = float(self._eval(seg, edge))
+        out = {"mz": float(edge), "ppm": own, "model_ppm": own, "n_locks": 0}
+        t = pd.DataFrame(locks) if locks is not None else None
+        if t is None or not len(t) or not {"mz", "ppm"} <= set(t.columns):
+            return out
+        m = pd.to_numeric(t["mz"], errors="coerce").to_numpy(dtype=float)
+        p = pd.to_numeric(t["ppm"], errors="coerce").to_numpy(dtype=float)
+        bright = (t["bright"].astype(str).str.strip().str.lower().eq("true").to_numpy(dtype=bool)
+                  if "bright" in t.columns else np.zeros(len(t), dtype=bool))
+        sel = np.isfinite(m) & np.isfinite(p) & ~bright
+        sel[sel] = self._domain(seg, m[sel]) & (np.abs(m[sel] - edge) <= EDGE_LOCK_DA)
+        if sel.sum() < EDGE_LOCKS_MIN:
+            return out
+        m, p = m[sel], p[sel]
+        out["ppm"] = own + float(np.median(p - self._eval(seg, m)))
+        out["n_locks"] = int(len(m))
+        return out
 
     @property
     def edge_carry(self) -> dict | None:

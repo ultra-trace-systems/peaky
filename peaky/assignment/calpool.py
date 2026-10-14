@@ -232,16 +232,22 @@ class Pool:
 def pool_calibration(ledgers: dict, *, polarity: str = "negative", reagent_masses=(),
                      abs_floor_mda: float = MC.ABS_FLOOR_MDA, min_ions: int = POOL_MIN_IONS,
                      min_files: int = POOL_MIN_FILES, min_span_frac: float = POOL_MIN_SPAN_FRAC,
-                     klass: str | None = None) -> Pool:
+                     klass: str | None = None, carry=None) -> Pool:
     """The pooled core of a batch's per-file ledgers ({sid: ledger}, read in
     sorted sid order) and its calibration (module note). `klass`: the batch's
     instrument class (PassConfig.instrument_class); a 'tof' batch gets the core
-    counted and no calibration (module note). Never raises on thin data: a pool
-    that cannot calibrate returns `cal` None and its reason."""
+    counted and no calibration (module note). `carry`: the batch axis model's edge
+    carry (`mass_axis.edge_carry`; masscal.edge_carry_at): a core row past the
+    model's edge is read on the carried scale -- its ppm less the model's edge
+    value, as the file's own tier calibration reads it -- and `core` keeps it so.
+    Never raises on thin data: a pool that cannot calibrate returns `cal` None and
+    its reason."""
     sids = sorted(ledgers, key=str)
     parts = [core_rows(ledgers[s], polarity=polarity, reagent_masses=reagent_masses, sid=s) for s in sids]
     parts = [p for p in parts if len(p)]
     rows = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=CORE_COLUMNS)
+    if carry and len(rows):
+        rows["ppm"] = rows["ppm"].astype(float) - MC.edge_carry_at(carry, rows["mz"].to_numpy(dtype=float))
     mzs = []
     for s in sids:
         led = ledgers[s]
@@ -355,7 +361,14 @@ def apply_pool(ledger: pd.DataFrame, pool: Pool, inputs: PoolInputs, *, audit=No
     base = T.compute_tiers(at, cfg=cfg, profile=profile, cal=None)
     # the window: the pooled width about the centre of the rows that stage made Assigned
     won = set(base.loc[base["tier"] == T.TIER_ASSIGNED, "peak_id"]) if len(base) else set()
-    cal, centre = lent_calibration(pool, at.loc[(at["role"] == L.ROLE_M0) & at["peak_id"].isin(won), "ppm_error"])
+    won_rows = at.loc[(at["role"] == L.ROLE_M0) & at["peak_id"].isin(won)]
+    won_ppm = pd.to_numeric(won_rows["ppm_error"], errors="coerce")
+    if getattr(cfg, "axis_edge_carry", None):
+        # the file's own centre on the carried scale: a row past the batch axis model's edge
+        # less the model's edge value (the scale the lent window adds it back on)
+        won_ppm = won_ppm - MC.edge_carry_at(
+            cfg.axis_edge_carry, pd.to_numeric(won_rows["mz"], errors="coerce").to_numpy(dtype=float))
+    cal, centre = lent_calibration(pool, won_ppm)
     if cal is not None and getattr(cfg, "axis_edge_carry", None):
         # the batch axis model's edge carry: the file's lines just outside the model's scope
         # are judged in the lent window at its centre plus the model's edge (degeneracy, tiers)

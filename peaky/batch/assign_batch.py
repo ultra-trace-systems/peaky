@@ -1315,8 +1315,9 @@ LOCK_APPLY_PPM = 0.4
 #: held-out locks to within this share of it: the predictive bar above would let a model
 #: with a 0.3 ppm held-out error correct a 0.4 ppm axis, i.e. add about as much as it removes
 LOCK_SMALL_CV_SHARE = 0.5
-#: a model applied through that sub-ppm branch carries its correction at its first and
-#: its last lock into the scoring centre of the lines up to this far (Da) beyond them
+#: a model applied through that sub-ppm branch carries the axis at its first and its last
+#: lock (the model there, put back on its end locks: axislock.EDGE_LOCK_DA) into the scoring
+#: centre of the lines up to this far (Da) beyond them
 #: (axislock.AxisModel.edge_carry_record; masscal.edge_carry_at). Peaks outside the
 #: scope keep their measured m/z while a file's centres are fitted on the corrected
 #: ones, so without it a line just past the last lock was judged against a centre read
@@ -1501,13 +1502,15 @@ def _lock_model(ts, polarity, reagent_elements, info, log):
         # the sub-ppm branch: its correction at the first and the last lock is carried
         # into the scoring centre of the lines up to EDGE_CARRY_DA beyond them (no m/z
         # moves); recorded on the model, so every worker and a re-read run judge alike
-        rec = model.edge_carry_record(EDGE_CARRY_DA)
+        # (the value at each end: the model there, put back on its end locks; axislock.EDGE_LOCK_DA)
+        rec = model.edge_carry_record(EDGE_CARRY_DA, locks=table)
         model.stats["edge_carry"] = rec
         info.update(wave=model.as_dict(), edge_carry=dict(rec))
         log(f"[mass-axis] edge carry: a line outside the model's scope within {EDGE_CARRY_DA:g} Da "
-            f"of its first / last lock is scored at the model's correction there (m/z "
-            f"{rec['below']['mz']:.1f}: {rec['below']['ppm']:+.2f} ppm; m/z {rec['above']['mz']:.1f}: "
-            f"{rec['above']['ppm']:+.2f} ppm); no m/z is moved, gaps carry nothing")
+            f"of its first / last lock is scored at the axis there, read off its end locks (m/z "
+            + "; m/z ".join(f"{e['mz']:.1f}: {e['ppm']:+.2f} ppm (the model {e['model_ppm']:+.2f}, "
+                            f"{e['n_locks']} locks)" for e in (rec["below"], rec["above"]))
+            + "); no m/z is moved, gaps carry nothing")
     return model, True
 
 
@@ -1529,7 +1532,7 @@ def measure_axis(ts, reagent: str, klass: str | None, *, hold: str | None = None
     within half the raw error and its largest correction (or the locks' raw
     median) reaches LOCK_APPLY_PPM (0.4 ppm) -- a correction under 1 ppm only when
     held-out locks sit within half of it (LOCK_SMALL_CV_SHARE), and such a model
-    carries its correction at its first / last lock into the scoring centre of the
+    carries the axis at its first / last lock (read off its end locks) into the scoring centre of the
     lines up to EDGE_CARRY_DA beyond them (`info['edge_carry']`; no m/z moves). 'auto' falls back
     to the reagent's reference ions (batch.massqc, the instrument's own rules)
     only when the locks could not build a model; 'reference' goes there directly,
@@ -2365,7 +2368,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             _masses = [m for (_l, m, _f) in _RGP.build_library(_key)] if _key else []
             pool_state["pool"] = _CP.pool_calibration(
                 pool_ledgers, polarity="positive" if prof.polarity == "+" else "negative",
-                reagent_masses=_masses, abs_floor_mda=_TP._abs_floor(cfg), klass=cfg.instrument_class)
+                reagent_masses=_masses, abs_floor_mda=_TP._abs_floor(cfg), klass=cfg.instrument_class,
+                # the batch axis model's edge carry: a core row past its edge on the carried scale
+                carry=axis_info.get("edge_carry"))
             if pool_cals:
                 # the files that calibrated alone measure one file's width directly
                 pool_state["pool"].run_window = (float(np.median([c[0] for c in pool_cals.values()])),
