@@ -1315,6 +1315,15 @@ LOCK_APPLY_PPM = 0.4
 #: held-out locks to within this share of it: the predictive bar above would let a model
 #: with a 0.3 ppm held-out error correct a 0.4 ppm axis, i.e. add about as much as it removes
 LOCK_SMALL_CV_SHARE = 0.5
+#: a model applied through that sub-ppm branch is refitted, after its verdict, without the
+#: locks that sit more than this (ppm) off a Theil-Sen line through their axislock.LOCAL_K
+#: nearest locks, dropped one at a time, the worst first (axislock.AxisModel.refit; spline
+#: segments only, every domain as built). A few co-located locks 0.6-0.9 ppm off their
+#: neighbours (a lock on a line blended with a brighter ion's 13C line, its labelled alias)
+#: bumped a labelled-nitrate batch's spline by +0.1..+0.15 ppm over m/z 261-269 -- +0.23 ppm
+#: of correction at a true cluster line that then fell out of Good in every file. 0.4 starves
+#: the GCV fit there (its smoothing collapsed 297 -> 47); 0.75 leaves the bump
+LOCK_REFIT_PPM = 0.5
 #: a model applied through that sub-ppm branch carries the axis at its first and its last
 #: lock (the model there, put back on its end locks: axislock.EDGE_LOCK_DA) into the scoring
 #: centre of the lines up to this far (Da) beyond them
@@ -1499,11 +1508,36 @@ def _lock_model(ts, polarity, reagent_elements, info, log):
         return None, True
     info["verdict"] = "axis_steps" if li.get("steps") else "axis_trend"
     if small:
-        # the sub-ppm branch: its correction at the first and the last lock is carried
-        # into the scoring centre of the lines up to EDGE_CARRY_DA beyond them (no m/z
-        # moves); recorded on the model, so every worker and a re-read run judge alike
-        # (the value at each end: the model there, put back on its end locks; axislock.EDGE_LOCK_DA)
-        rec = model.edge_carry_record(EDGE_CARRY_DA, locks=table)
+        # the sub-ppm branch: the verdict above is the as-built model's; the model applied is
+        # its splines refitted without the locks that disagree with their neighbours
+        # (LOCK_REFIT_PPM; a model that drops nothing is the as-built model)
+        built_peak = round(model.max_abs_ppm(), 3)
+        model, gone = model.refit(table, off_ppm=LOCK_REFIT_PPM, k=AL.LOCAL_K)
+        kept = table.drop(index=gone) if gone else table
+        dropped = [{"mz": float(table.at[i, "mz"]), "ion": str(table.at[i, "ion"]) if "ion" in table.columns else "",
+                    "ppm": float(table.at[i, "ppm"])} for i in gone]
+        if dropped:
+            off = {round(d["mz"], 5): d for d in dropped}
+            for seg in model.segments:
+                if seg.get("refit_dropped"):
+                    for d in off.values():
+                        if seg["lo"] - AL.REFIT_SEL_DA <= d["mz"] <= seg["hi"] + AL.REFIT_SEL_DA:
+                            d["off_ppm"] = round(abs(d["ppm"] - float(model._eval(seg, d["mz"]))), 3)
+        refit = {"off_ppm": LOCK_REFIT_PPM, "k": int(AL.LOCAL_K), "n_dropped": len(dropped), "dropped": dropped,
+                 "max_abs_ppm_built": built_peak, "max_abs_ppm": round(model.max_abs_ppm(), 3)}
+        model.stats["refit"] = refit
+        info["refit"] = refit
+        log(f"[mass-axis] refit (sub-ppm): {len(dropped)} lock(s) more than {LOCK_REFIT_PPM:g} ppm off their "
+            f"{AL.LOCAL_K} nearest dropped, worst first"
+            + (": " + ", ".join(f"m/z {d['mz']:.4f} {d['ion']} {d['ppm']:+.2f}" for d in dropped[:12])
+               + (" ..." if len(dropped) > 12 else "")
+               + f"; the spline refitted (largest correction {built_peak:g} -> {refit['max_abs_ppm']:g} ppm)"
+               if dropped else "; the model stands as built"))
+        # its correction at the first and the last lock is carried into the scoring centre
+        # of the lines up to EDGE_CARRY_DA beyond them (no m/z moves); recorded on the model,
+        # so every worker and a re-read run judge alike (the value at each end: the model
+        # there, put back on its kept end locks; axislock.EDGE_LOCK_DA)
+        rec = model.edge_carry_record(EDGE_CARRY_DA, locks=kept)
         model.stats["edge_carry"] = rec
         info.update(wave=model.as_dict(), edge_carry=dict(rec))
         log(f"[mass-axis] edge carry: a line outside the model's scope within {EDGE_CARRY_DA:g} Da "

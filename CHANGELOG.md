@@ -623,6 +623,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sulfoxide, a malathion transformation product) and drops one (sulfuric acid, Assigned only where no
   file showed its 34S line). The release acceptance rows touched by the contract (a chlorinated
   product, the D5 siloxane) show their lines.
+- **A sub-ppm lock model is applied without the locks that disagree with their neighbours.** A
+  smoothing spline (GCV) drawn through every lock bends towards a few co-located locks that read
+  0.6-0.9 ppm off their neighbours (a lock on a line blended with a brighter ion's 13C line, a
+  labelled alias): on a labelled-nitrate batch the sub-ppm branch applied a model that rose
+  +0.10..+0.15 ppm over m/z 261-269 and corrected a true cluster line by +0.23 ppm, out of Good in
+  all 7 files it was Good in before the branch existed. On that branch only, after the verdict
+  (which stays the as-built model's), each spline segment is refitted on its non-bright locks less
+  the ones more than `LOCK_REFIT_PPM` (0.5) off a Theil-Sen line through their 6 nearest, dropped
+  one at a time, the worst first (`axislock.AxisModel.refit`); line segments, domains and the grid
+  stay as built, a model that drops nothing is applied as built, and the edge carry is read off
+  the kept locks. Replayed with the built code on the stored as-built models: the labelled-nitrate
+  batch drops 12 of 297 locks (its correction at the line +0.227 -> +0.056 ppm), a positive
+  benchmark batch 26 of 634, a field campaign's five sub-ppm batches 0, 0, 0, 1 and 47 (the last a
+  uronium batch whose lower edge carry moves -0.277 -> -0.205 ppm toward an independent axis,
+  -0.199); held-out error on all segment locks 0.094 -> 0.090, 0.072 -> 0.064, 0.0705 -> 0.0623
+  ppm. `mass_axis.refit` records the dropped locks.
 
 - **A line just outside the batch axis model's scope is judged at the model's edge, not at a centre
   read off the corrected axis.** The lock model corrects peak m/z only inside its scope, but a
