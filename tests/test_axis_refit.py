@@ -45,18 +45,18 @@ def _axis(m):
     return 0.35 - 0.002 * (np.asarray(m, dtype=float) - 120.0)
 
 
-def _table(off=None, *, seed=3, n=160, lo=120.0, hi=400.0, bright=()):
+def _table(off=None, *, seed=3, n=160, lo=120.0, hi=400.0, bright=(), axis=_axis):
     """A lock table (axislock's rows: mz / ion / ppm / how / bright): `n` locks on the axis with
     0.05 ppm scatter, plus `off` {mz: ppm off the axis}; `bright` {mz: ppm off} bright locks."""
     rng = np.random.default_rng(seed)
     x = np.sort(rng.uniform(lo, hi, n))
-    y = _axis(x) + rng.normal(0.0, 0.05, n)
+    y = axis(x) + rng.normal(0.0, 0.05, n)
     rows = [dict(mz=float(a), ion=f"L{i}", ppm=float(b), how="unique +-5 ppm", bright=False)
             for i, (a, b) in enumerate(zip(x, y))]
     for k, (m, d) in enumerate((off or {}).items()):
-        rows.append(dict(mz=float(m), ion=f"X{k}", ppm=float(_axis(m) + d), how="unique +-5 ppm", bright=False))
+        rows.append(dict(mz=float(m), ion=f"X{k}", ppm=float(axis(m) + d), how="unique +-5 ppm", bright=False))
     for k, (m, d) in enumerate(dict(bright).items()):
-        rows.append(dict(mz=float(m), ion=f"B{k}", ppm=float(_axis(m) + d), how="unique +-5 ppm", bright=True))
+        rows.append(dict(mz=float(m), ion=f"B{k}", ppm=float(axis(m) + d), how="unique +-5 ppm", bright=True))
     t = pd.DataFrame(rows).sort_values("mz").reset_index(drop=True)
     t["mz"] = t["mz"].round(5)                   # as axislock._lock_table writes it
     t["ppm"] = t["ppm"].round(3)
@@ -124,6 +124,97 @@ def test_the_worst_lock_goes_first_so_a_good_neighbour_stays():
     assert list(x[~keep]) == [300.2, 300.7, 301.2]
 
 
+def test_locks_below_their_neighbours_go_like_the_ones_above():
+    """The distance off the local line counts both ways: the same cluster 0.6-0.9 ppm BELOW
+    its neighbours dips the as-built spline and is dropped exactly as the high one is."""
+    low = {m: -d for m, d in BUMP.items()}
+    table = _table(low)
+    built = _built(table)
+    assert float(built.predict([263.1])[0] - _axis(263.1)) < -0.2
+    model, dropped = built.refit(table, off_ppm=AB.LOCK_REFIT_PPM)
+    assert sorted(table.loc[dropped, "mz"]) == pytest.approx(sorted(low))
+    q = np.array([240.0, 255.0, 263.1, 265.0, 270.0, 290.0])
+    assert np.abs(model.predict(q) - _axis(q)).max() < 0.04
+
+
+def test_a_steep_true_stretch_loses_no_lock():
+    """An axis that falls 0.05 ppm/Da: the line through a lock's 6 nearest follows the slope.
+    A median of the neighbours would not -- at the ends of the stretch (all neighbours on one
+    side) and across its gaps it sits 0.5 ppm and more off true locks."""
+    table = _table(seed=2, n=28, lo=100.0, hi=200.0, axis=lambda m: 0.05 * (150.0 - np.asarray(m, dtype=float)))
+    built = _built(table)
+    model, dropped = built.refit(table, off_ppm=AB.LOCK_REFIT_PPM)
+    assert dropped == [] and json.dumps(model.as_dict()) == json.dumps(built.as_dict())
+
+
+def test_a_lock_beside_one_tight_group_is_judged_against_its_level():
+    """Dense lock groups, one per nominal mass (mass defects 0.16-0.22 Da), and one lock alone
+    at its nominal mass: its 6 nearest are one group 0.9 Da away, all within 0.06 Da of each
+    other. Pairs that close (< 0.5 Da) set no slope -- their 0.1 ppm scatter would read as
+    several ppm/Da and put the line 0.9 ppm off the lone lock. Every lock here is true."""
+    defects, offs = (0.16, 0.18, 0.19, 0.205, 0.215, 0.22), (-0.05, -0.02, -0.08, 0.03, -0.15, 0.02)
+    pts = [(250.12, -0.04)] + [(nm + d, o) for nm in range(230, 271) if nm != 250 for d, o in zip(defects, offs)]
+    x, y = (np.array(v) for v in zip(*sorted(pts)))
+    assert AL._worst_first(x, y, AB.LOCK_REFIT_PPM).all()
+    lone = int(np.flatnonzero(x == 250.12)[0])
+    assert AL._local_dev(x, y, AL.LOCAL_K)[lone] < 0.05
+
+
+def test_the_line_is_drawn_through_the_k_nearest_locks_only():
+    """A lock with its 4 nearest at its own level and the 6 beyond them 1 ppm higher: the line
+    through its 6 nearest sits at its level; one through 10 would be pulled 1 ppm up."""
+    x = np.arange(0.0, 21.0)
+    y = np.where(np.abs(x - 10.0) >= 3.0, 1.0, 0.0)
+    assert AL._local_dev(x, y, AL.LOCAL_K)[10] == pytest.approx(0.0)
+    assert AL._local_dev(x, y, AL.LOCAL_K + 4)[10] == pytest.approx(1.0)
+
+
+def test_a_lock_exactly_at_the_threshold_stays():
+    """The cut is 'more than off_ppm': a lock exactly 0.5 ppm off a flat run is kept."""
+    x = np.arange(200.0, 260.0, 2.0)
+    y = np.zeros(len(x))
+    y[15] = 0.5
+    assert AL._local_dev(x, y, AL.LOCAL_K)[15] == 0.5
+    assert AL._worst_first(x, y, 0.5).all()
+
+
+def test_a_segment_keeps_at_least_k_plus_one_locks():
+    """Nine locks, four of them 2 ppm off: dropping stops at LOCAL_K + 1 kept, the worst first."""
+    x = np.arange(200.0, 218.0, 2.0)
+    y = np.array([0.0, 2.0, 0.0, 2.0, 0.0, 2.0, 0.0, 2.0, 0.0])
+    keep = AL._worst_first(x, y, 0.5)
+    assert keep.sum() == AL.LOCAL_K + 1 and (y[~keep] == 2.0).all()
+
+
+def test_an_end_lock_rounded_past_its_domain_is_still_refitted():
+    """The domain's ends are the end locks' unrounded m/z; the lock table rounds m/z to 5
+    decimals, so the first lock can read just below lo and the last just above hi. Both stay
+    in the refit (REFIT_SEL_DA): every lock not dropped is counted."""
+    table = _table(BUMP)
+    unrounded = table.copy()
+    unrounded.loc[unrounded.index[0], "mz"] += 4e-6
+    unrounded.loc[unrounded.index[-1], "mz"] -= 4e-6
+    built = _built(unrounded)
+    seg0 = built.segments[0]
+    assert table["mz"].iloc[0] < seg0["lo"] and table["mz"].iloc[-1] > seg0["hi"]
+    model, dropped = built.refit(table, off_ppm=AB.LOCK_REFIT_PPM)
+    assert sorted(table.loc[dropped, "mz"]) == pytest.approx(sorted(BUMP))
+    assert model.segments[0]["n"] == seg0["n"] - len(BUMP)
+
+
+def test_the_refit_does_not_depend_on_the_tables_row_order():
+    """On a wavy axis (0.4 ppm, a 190 Da period) a lock's nearest locks are the ones beside it in
+    m/z, not in the table: the refit sorts them, and a shuffled table drops the same locks."""
+    wave = lambda m: 0.4 * np.sin((np.asarray(m, dtype=float) - 120.0) / 30.0)   # noqa: E731
+    table = _table(BUMP, axis=wave)
+    built = _built(table)
+    model, dropped = built.refit(table, off_ppm=AB.LOCK_REFIT_PPM)
+    assert sorted(table.loc[dropped, "mz"]) == pytest.approx(sorted(BUMP))
+    model2, dropped2 = built.refit(table.sample(frac=1.0, random_state=1), off_ppm=AB.LOCK_REFIT_PPM)
+    assert sorted(dropped2) == sorted(dropped)
+    assert json.dumps(model2.as_dict()) == json.dumps(model.as_dict())
+
+
 def test_a_model_with_nothing_to_drop_is_the_as_built_model():
     table = _table()
     built = _built(table)
@@ -165,6 +256,8 @@ def test_the_sub_ppm_branch_applies_the_refitted_model_under_the_as_built_verdic
     assert rec["off_ppm"] == AB.LOCK_REFIT_PPM and rec["k"] == AL.LOCAL_K and rec["n_dropped"] == len(BUMP)
     assert sorted(d["mz"] for d in rec["dropped"]) == pytest.approx(sorted(BUMP))
     assert all(d["off_ppm"] > AB.LOCK_REFIT_PPM for d in rec["dropped"])
+    for d in rec["dropped"]:                               # off the refitted model, as applied
+        assert d["off_ppm"] == pytest.approx(abs(d["ppm"] - float(applied.predict([d["mz"]])[0])), abs=1e-3)
     assert rec["max_abs_ppm_built"] == pytest.approx(round(built.max_abs_ppm(), 3))
     assert applied.stats["refit"] == rec
     assert any("[mass-axis] refit" in str(m) for m in logs)
