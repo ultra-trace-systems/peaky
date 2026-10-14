@@ -63,9 +63,11 @@ an [M-H]- organosulfur ion is the [M+^NO3]- cluster of its neutral minus C8S plu
 O4 -- and both swaps keep every CH2 / O / H2O / CF2 step: a homologous series
 reads the alias exactly as it reads the row. A series step or a ladder anchor
 (`anchor_peak_id` / `series_unit`) is therefore no corroboration of a reading
-whose F count (never testable) or S count (its 34S line neither seen nor
-refuted) its alias could be standing in for, while that alias can exist and is
-untested or its 14N twin is seen. The tier engine drops the row's series credit
+whose F count (never testable) or S count (its 34S line neither seen at its
+predicted ratio nor refuted) its alias could be standing in for, while that
+alias can exist and is untested or its 14N twin is seen. A line picked at the
+34S position far above the 34S line's prediction is another ion's and tests
+nothing (S_LINE_HIGH_X). The tier engine drops the row's series credit
 and appends the reason (SERIES_ALIAS_MARK); the evidence scale's `anchor` axis
 reads the mark, so the merge vote's class does not count the step either. On the
 15N-nitrate field batch above the 128-600 window had made seven C8S aliases of
@@ -155,6 +157,17 @@ ALIAS_SERIES_HOLDS = True
 #: the tier_reason mark of a row whose series credit the hold withheld: the tier
 #: engine writes it, the evidence scale's `anchor` axis reads it
 SERIES_ALIAS_MARK = "series step not counted"
+#: a line at the 34S position tests the S count only up to this multiple of the
+#: 34S line's predicted height -- the envelope predicate's own bound
+#: (satellites.EE_RATIO_HIGH: a taller line is another ion's). The 34S verdict
+#: (satellites.twin_verdict) takes any line picked there as support, one predicted
+#: under the refutation multiple with no upper bound. On the stored per-file
+#: ledgers of a 15N-nitrate field campaign the lines it took for an organosulfur
+#: reading with series credit sat at 0.91-0.97x their prediction (12: a bright
+#: C10 reading's own 34S line) or at 10.5-292x (28: other ions, at 0.47-12.9x the
+#: parent); of the lines it read for any S reading there and on the unlabelled
+#: runs beside them, none sat between 2.5x and 5x
+S_LINE_HIGH_X = SAT.EE_RATIO_HIGH
 C13_PPM = 5.0                              # the 13C line's window where no exact-offset one holds (audit_sat_ppm)
 #: the 13C carbon-count term between sub-mDa aliases of the fluorinated family
 ALIAS_MDA = 1.0                            # aliases: ion masses within this of the arbitration's top reading
@@ -443,18 +456,42 @@ def veto_note(v: Ladder) -> str:
 # ---------------------------------------------------------------------------
 # the series hold: a series step is the alias's step too
 # ---------------------------------------------------------------------------
-def _s_untestable(ledger: pd.DataFrame, i, ion: dict, neutral: dict | None, cfg) -> bool:
-    """The row's sulfur count is untestable in this file: the tier engine's own
-    34S verdict (satellites.twin_verdict at its floor and window) reads neither
-    a line that supports it nor one that refutes it."""
+def s_line_read(v: dict) -> dict:
+    """A 34S verdict (satellites.twin_verdict, element S) as the series hold
+    reads it. 'supported' only by lines above S_LINE_HIGH_X x their prediction
+    is 'untestable': another ion's line holds the position and no 34S line is
+    seen (`why` and `summary` say so; `untested`, the short form, for a reason
+    that names the count untested). Any other verdict is returned as it is."""
+    if v.get("kind") != "supported":
+        return v
+    seen = [ln for ln in v.get("lines") or [] if ln.get("obs_ratio") is not None and ln.get("pred_ratio")]
+    if not seen or any(ln["obs_ratio"] <= S_LINE_HIGH_X * ln["pred_ratio"] for ln in seen):
+        return v
+    ln = max(seen, key=lambda r: r["obs_ratio"] / r["pred_ratio"])
+    lab, obs, pred = ln["label"], ln["obs_ratio"], ln["pred_ratio"]
+    short = f"another ion's line holds its {lab} position, at {obs / pred:.0f}x the {lab} line's prediction"
+    return dict(v, verdict="deferred", kind="untestable", untested=short,
+                why=(f"no {lab} line at a ratio it can have: another ion's line holds the position "
+                     f"({obs:.2f}x the parent, {obs / pred:.0f}x the predicted {pred:.3f}, over "
+                     f"{S_LINE_HIGH_X:g}x)"),
+                summary=f"another ion's line holds the {lab} position")
+
+
+def _s_untested(ledger: pd.DataFrame, i, ion: dict, neutral: dict | None, cfg) -> tuple[bool, str]:
+    """(untested, note): is the row's sulfur count untested in this file? The
+    tier engine's own 34S verdict (satellites.twin_verdict at its floor and
+    window), read by `s_line_read`, finds neither a line that refutes the count
+    nor one that supports it at a ratio a 34S line can have. `note` names
+    another ion's line at the position (' (...)', for the hold's reason), else ''."""
     try:
         floor = cfg.height_cutoff if cfg is not None else None
     except RuntimeError:
         floor = None
     counts = {k: v for k, v in ion.items() if k != "^N"}
-    v = SAT.twin_verdict(ledger, ledger.at[i, "peak_id"], counts, floor, element="S",
-                         masked_by=SAT.reagent_masks("S", neutral or counts, counts), ppm=SAT.twin_ppm(cfg))
-    return v["kind"] == "untestable"
+    v0 = SAT.twin_verdict(ledger, ledger.at[i, "peak_id"], counts, floor, element="S",
+                          masked_by=SAT.reagent_masks("S", neutral or counts, counts), ppm=SAT.twin_ppm(cfg))
+    v = s_line_read(v0)
+    return v["kind"] == "untestable", ("" if v is v0 else f" ({v['untested']})")
 
 
 def series_alias_holds(ledger: pd.DataFrame, *, cfg=None) -> dict:
@@ -462,9 +499,10 @@ def series_alias_holds(ledger: pd.DataFrame, *, cfg=None) -> dict:
     series credit (an `anchor_peak_id` or a `series_unit`: a pass-6 ladder fill,
     a pass-4 series step) does not count. The row's ion carries a LABEL_ALIASES
     composition whose element count nothing else tests -- fluorine (no minor
-    isotope), or sulfur whose 34S line the file can neither show nor refute
-    (`_s_untestable`) -- and its alias can exist (alias_admissible) and is
-    untested, or its 14N twin is seen (`_alias_twin`, the ladder's own test).
+    isotope), or sulfur whose 34S line the file can neither show at its
+    predicted ratio nor refute (`_s_untested`) -- and its alias can exist
+    (alias_admissible) and is untested, or its 14N twin is seen (`_alias_twin`,
+    the ladder's own test).
     The swap keeps every CH2 / O / H2O / CF2 step, so a series reads the alias
     exactly as it reads the row: the step corroborates neither. Each reason
     starts with SERIES_ALIAS_MARK (the tier engine appends it to the row's
@@ -496,14 +534,17 @@ def series_alias_holds(ledger: pd.DataFrame, *, cfg=None) -> dict:
         for alias in LABEL_ALIASES:
             if not _carries(ion, alias) or not alias_admissible(neutral, alias):
                 continue
-            if alias.element == "S" and not _s_untestable(ledger, i, ion, neutral, cfg):
-                continue
+            note = ""
+            if alias.element == "S":
+                untested, note = _s_untested(ledger, i, ion, neutral, cfg)
+                if not untested:
+                    continue
             if lines is None:
                 lines = _Lines(ledger)
             veto, open_ = _alias_twin(ion, h0, lines, mz0, ppm, f14, floor, neutral, alias)
             if veto or open_:
                 out[ledger.at[i, "peak_id"]] = (
-                    f"{SERIES_ALIAS_MARK} for the {alias.element} count: its 15N alias ({alias.name}, "
+                    f"{SERIES_ALIAS_MARK} for the {alias.element} count{note}: its 15N alias ({alias.name}, "
                     f"{alias.mda:.2f} mDa) takes the same series steps and "
                     + (f"is untested -- {open_}" if open_ else f"is seen -- {veto}"))
                 break

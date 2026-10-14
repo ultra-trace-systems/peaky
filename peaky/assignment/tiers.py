@@ -1044,6 +1044,11 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
                 _ion = _ion_counts(formula, r.get("adduct")) or counts
                 twin = SAT.twin_verdict(ledger, r["peak_id"], _ion, sat_floor, element=_el,
                                         masked_by=SAT.reagent_masks(_el, counts, _ion), ppm=twin_ppm)
+                if alias_hold and _el == "S":
+                    # the series hold read the 34S position (fluorine.s_line_read): a
+                    # line far above the 34S line's prediction is another ion's, so
+                    # neither the hold nor the tier reads it as the S count's line
+                    twin = FL.s_line_read(twin)
         # a heteroatom an isotope-gated pass-3 family proposed (contexts.family_iso_gate:
         # the positive sources' organosulfur_34s / organochlorine) stands on its own
         # line or not at all: read it again here (satellites.own_line)
@@ -1360,7 +1365,8 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None, cal=OWN_CAL,
             if twin is not None and twin["kind"] == "supported":
                 parts.append(f"{twin['twin']} envelope line present in the spectrum")
             elif twin is not None and twin["kind"] == "untestable" and sat_floor is not None:
-                parts.append(f"{twin['twin']} count untested (its line predicted under the floor)")
+                parts.append(f"{twin['twin']} count untested "
+                             f"({twin.get('untested') or 'its line predicted under the floor'})")
             if gated is not None:
                 parts.append(f"{gated['element']}{gated['n']} on its own line (isotope-gated "
                              f"{gated['family']}: {gated['why']})")

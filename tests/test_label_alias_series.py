@@ -21,6 +21,7 @@ from peaky.assignment import evidence as EV
 from peaky.assignment import fluorine as FL
 from peaky.assignment import ledger as L
 from peaky.assignment import passes as P
+from peaky.assignment import satellites as SAT
 from peaky.assignment import tiers as T
 from peaky.batch import assign_batch as AB
 from peaky.chem import chemistry as C
@@ -159,6 +160,93 @@ def test_a_seen_34s_line_keeps_the_series_credit():
     assert tier == "Assigned" and "series-anchor support" in reason and "S envelope line present" in reason
 
 
+def _foreign(x_parent: float, h0: float = 300.0, read: str = S_READ) -> tuple:
+    """A picked line at the reading's 34S position at `x_parent` x its height."""
+    return ("x", _mz(read) + ISO.D_34S, x_parent * h0)
+
+
+@pytest.mark.parametrize("x_parent", [0.5, 1.0, 6.0])
+def test_another_ions_line_at_the_34s_position_does_not_test_the_s_count(x_parent):
+    """The 34S verdict takes any line picked at the 34S position as support (a
+    line predicted under the refutation multiple has no upper ratio bound). A
+    line at 0.5-6x the parent -- 11-135x the 34S line's 0.044 -- is another
+    ion's: the S count is still untested, and the series step is the alias's."""
+    led = _ledger(extra=[_foreign(x_parent)])
+    holds = FL.series_alias_holds(led, cfg=_cfg())
+    assert set(holds) == {"s"}, holds
+    assert "C8S -> H^NO7" in holds["s"] and "another ion's" in holds["s"] and "is untested" in holds["s"]
+    # nor does the tier read that line as the S envelope: the count is untested, nothing else supports it
+    tier, reason = _tier(led)
+    assert tier == "Candidate" and reason.startswith("S1 untestable at this intensity: no 34S line"), reason
+    assert FL.SERIES_ALIAS_MARK in reason and "series-anchor support" not in reason
+    assert "S envelope line present" not in reason
+    assert _classes(_ledger(extra=[_foreign(x_parent)]))["s"] == 0
+    # carried by its own isotopologue instead, it says why the count is untested
+    iso = _ledger(extra=[_foreign(x_parent)])
+    iso.loc[iso["peak_id"] == "s", "isotopologues"] = '[{"label": "13C"}]'
+    tier, reason = _tier(iso)
+    assert tier == "Assigned" and "isotopologue-confirmed" in reason, reason
+    assert "S count untested (another ion's line holds its 34S position" in reason
+    # off a labelled ledger nothing is held, and the tier reads the line as before
+    assert "S envelope line present" in _tier(_ledger(extra=[_foreign(x_parent)], cluster=NO3_14))[1]
+
+
+@pytest.mark.parametrize("x_pred, held", [(1.0, False), (0.9 * SAT.EE_RATIO_HIGH, False),
+                                          (1.2 * SAT.EE_RATIO_HIGH, True), (10.0, True)])
+def test_a_34s_line_tests_the_count_up_to_the_envelope_bound(x_pred, held):
+    """A line there tests the S count within satellites.EE_RATIO_HIGH x its
+    prediction (the envelope predicate's own bound: a taller line is another
+    ion's) -- censored low or not, never far above."""
+    h0 = 1000.0                                # the 34S line predicted at 44 cps: under 4x the 50-cps floor
+    led = _ledger(h=h0, extra=[("s34", _mz(S_READ) + ISO.D_34S, x_pred * ISO.R_34S_PER_S * h0)])
+    holds = FL.series_alias_holds(led, cfg=_cfg())
+    assert ("s" in holds) == held, holds
+    tier, reason = _tier(led)
+    assert ("series-anchor support" in reason) == (not held), reason
+
+
+def test_a_testable_line_far_above_its_prediction_leaves_the_alias_to_its_own_test():
+    """A bright reading: its 34S line testable (predicted above 4x the floor), a
+    line at the parent's height there -- 'present' to the 34S verdict, 23x the
+    prediction. The S count is untested, so the alias's own 14N-twin test, in
+    reach at this height, decides: the twin seen withholds the credit, the twin
+    absent (the alias tested and ruled out) keeps it."""
+    cfg = _cfg(floor=2.0)
+    twin = ("tw", _mz(S_READ) - FL.D_15N, 300.0 * F14)
+    seen = _ledger(extra=[_foreign(1.0), twin])
+    holds = FL.series_alias_holds(seen, cfg=cfg)
+    assert set(holds) == {"s"} and "is seen" in holds["s"] and "another ion's" in holds["s"], holds
+    tier, reason = _tier(seen, cfg=cfg)
+    assert FL.SERIES_ALIAS_MARK in reason and "series-anchor support" not in reason, reason
+    absent = _ledger(extra=[_foreign(1.0)])
+    assert FL.series_alias_holds(absent, cfg=cfg) == {}
+    tier, reason = _tier(absent, cfg=cfg)
+    assert tier == "Assigned" and "series-anchor support" in reason and FL.SERIES_ALIAS_MARK not in reason
+
+
+@pytest.mark.parametrize("unit, anchor", [("H2O", None), (None, "anc")])
+def test_either_series_credit_column_alone_is_held(unit, anchor):
+    """A pass-4 residual:series row carries a series_unit and no anchor_peak_id;
+    an anchored row without a unit is the other shape. Either column alone is
+    series credit, and the hold withholds it: Candidate, and no vote class."""
+    led = _ledger(unit=unit, anchor=anchor)
+    assert set(FL.series_alias_holds(led, cfg=_cfg())) == {"s"}
+    tier, reason = _tier(led)
+    assert tier == "Candidate" and FL.SERIES_ALIAS_MARK in reason, reason
+    assert _classes(_ledger(unit=unit, anchor=anchor))["s"] == 0
+    assert _classes(_ledger(unit=unit, anchor=anchor, cluster=NO3_14))["s"] == 1
+
+
+def test_a_reading_that_carries_both_aliases_is_held_once_on_the_first():
+    """A fluorinated organosulfur reading carries C2F3 and C8S: both aliases are
+    open, the reason names the table's first (fluorine: never testable)."""
+    led = _ledger(read="C20H15F3O3S")
+    holds = FL.series_alias_holds(led, cfg=_cfg())
+    assert set(holds) == {"s"}
+    assert "C2F3 -> H2^NO4" in holds["s"] and "C8S" not in holds["s"]
+    assert holds["s"].count(FL.SERIES_ALIAS_MARK) == 1
+
+
 def test_the_alias_twin_seen_withholds_the_credit():
     led = _ledger(extra=[("tw", _mz(S_READ) - FL.D_15N, 300.0 * 0.02)])
     holds = FL.series_alias_holds(led, cfg=_cfg())
@@ -211,8 +299,8 @@ def test_the_hold_is_one_switch(monkeypatch):
 
 
 # =========================================================================== the evidence scale and the vote
-def _classes(led):
-    T.apply_tiers(led, cfg=_cfg())
+def _classes(led, cfg=None):
+    T.apply_tiers(led, cfg=cfg or _cfg())
     vc = EV.vote_classes(EV.trim(led))
     pid = led.loc[vc.index, "peak_id"]
     return dict(zip(pid, vc))
