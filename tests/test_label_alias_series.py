@@ -175,14 +175,20 @@ def test_another_ions_line_at_the_34s_position_does_not_test_the_s_count(x_paren
     holds = FL.series_alias_holds(led, cfg=_cfg())
     assert set(holds) == {"s"}, holds
     assert "C8S -> H^NO7" in holds["s"] and "another ion's" in holds["s"] and "is untested" in holds["s"]
+    # nor does the tier read that line as the S envelope: the count is untested, nothing else supports it
     tier, reason = _tier(led)
-    assert FL.SERIES_ALIAS_MARK in reason and "series-anchor support" not in reason, reason
+    assert tier == "Candidate" and reason.startswith("S1 untestable at this intensity: no 34S line"), reason
+    assert FL.SERIES_ALIAS_MARK in reason and "series-anchor support" not in reason
+    assert "S envelope line present" not in reason
     assert _classes(_ledger(extra=[_foreign(x_parent)]))["s"] == 0
-    # on a degenerate mass (the shape of the field rows) the step was all that made it Assigned
-    deg = _ledger(extra=[_foreign(x_parent)])
-    deg.loc[deg["peak_id"] == "s", "degeneracy_density"] = 4
-    tier, reason = _tier(deg)
-    assert tier == "Candidate" and reason.startswith("mass-degenerate") and FL.SERIES_ALIAS_MARK in reason
+    # carried by its own isotopologue instead, it says why the count is untested
+    iso = _ledger(extra=[_foreign(x_parent)])
+    iso.loc[iso["peak_id"] == "s", "isotopologues"] = '[{"label": "13C"}]'
+    tier, reason = _tier(iso)
+    assert tier == "Assigned" and "isotopologue-confirmed" in reason, reason
+    assert "S count untested (another ion's line holds its 34S position" in reason
+    # off a labelled ledger nothing is held, and the tier reads the line as before
+    assert "S envelope line present" in _tier(_ledger(extra=[_foreign(x_parent)], cluster=NO3_14))[1]
 
 
 @pytest.mark.parametrize("x_pred, held", [(1.0, False), (0.9 * SAT.EE_RATIO_HIGH, False),
