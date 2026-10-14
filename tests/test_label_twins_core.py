@@ -476,8 +476,9 @@ def test_alias_only_ties_reads_only_tied_m0_nitrate_rows_with_an_alias():
 
 # =========================================================================== the table contract
 DOCUMENTED = ["neutral_formula", "adduct", "committed", "mz", "mz_partner", "n14", "n_codetected", "partner_share",
-              "h15_median", "reference", "k_ratio", "k_sd", "k_r", "k_n", "cluster_k", "line_verdict",
-              "alias_only_tie", "untie", "alien", "f", "E", "obs", "twin_verdict", "veto", "note"]
+              "h15_median", "reference", "k_ratio", "k_sd", "k_r", "k_n", "cluster_k", "shadow_parent", "shadow_mz",
+              "shadow_n", "shadow_ratio", "shadow_sd", "shadow_r", "shadow_c13", "shadow_twin_sd", "shadow",
+              "line_verdict", "alias_only_tie", "untie", "alien", "f", "E", "obs", "twin_verdict", "veto", "note"]
 
 
 def test_the_table_columns_are_the_documented_order():
@@ -557,11 +558,13 @@ def test_the_summary_funnel_counts_each_stage():
     assert LT.summary(t, LABEL) == {
         "in_scope": True, "f": pytest.approx(0.02 / 0.98), "lines": 14, "codetected": 10, "references": 10,
         "cluster_k": 8, "committed_lines": 5, "lines_tracks": 1, "lines_consistent": 1, "lines_excess": 1,
-        "lines_absent": 1, "lines_untestable": 1, "alien": 2, "untie": 1, "readings": 13, "testable": 12,
+        "lines_absent": 1, "lines_shadow": 0, "lines_untestable": 1, "alien": 2, "untie": 1, "readings": 13,
+        "testable": 12,
         "passes": 11, "refuted": 1, "lines_refuted": 2}
     assert list(LT.summary(t, LABEL)) == [
         "in_scope", "f", "lines", "codetected", "references", "cluster_k", "committed_lines", "lines_tracks",
-        "lines_consistent", "lines_excess", "lines_absent", "lines_untestable", "alien", "untie", "readings",
+        "lines_consistent", "lines_excess", "lines_absent", "lines_shadow", "lines_untestable", "alien", "untie",
+        "readings",
         "testable", "passes", "refuted", "lines_refuted"]
 
 

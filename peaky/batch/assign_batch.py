@@ -2855,8 +2855,14 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
     # rule K (label_untie / label_veto): on a 15N-labelled
     # nitrate channel the 14N and 15N lines of one cluster arbitrate each other's
     # reading on the same series; written for every run (empty out of scope)
-    twins_table = _LT.measure(ts_annot, level_frames, prof, alias_ties=alias_ties, log=log)
+    twins_table = _LT.measure(ts_annot, level_frames, prof, alias_ties=alias_ties,
+                              klass=_IC.batch_class(rp, cfg.instrument_class), log=log)
     twins_table.to_csv(os.path.join(TAB, "label_twins.csv"), index=False)
+    # ... and its 13C-shadow lines (Orbitrap-class): a 14N line that follows the 13C line
+    # of the committed ion 8.1 mDa above it is no reading's own ion -- every Assigned
+    # merged reading on it is Candidate (label_twins.shadow_gate; no re-vote, as the TOF
+    # gates below); the pooled pair's label veto alone leaves the vote's tier
+    merge_gates["label_shadow"] = _LT.shadow_gate(merged, twins_table, mass_scale=scale, log=log)
     # the isotope checks (iso_veto): rule C, REQ and HIGH read each committed
     # formula's isotope claims off the same stamped series (the instrument class
     # the batch resolved once, cfg.instrument_class: a TOF roster wins), rule H its exact halogen line (a lock,
