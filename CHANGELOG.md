@@ -382,8 +382,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Assigned before is lost. Either half alone falls short: the tier half leaves those three
   lines to the alias (as Candidate), the evidence half leaves four alias rows Assigned. The
   batch's zero-air run (2 per-file rows held), its 40-600 and 65-120 windows, the uronium and
-  NO+ batches, three finish-line runs (one of them 15N-nitrate: 0 rows held) and seven 14N
-  sentinel runs move no merged row.
+  NO+ batches and seven 14N sentinel runs move no merged row. On the finish-line runs no
+  truth-set row moves (H1 and H2 as before); the 15N-nitrate run built on the integrated code
+  holds one per-file row, a gap-filled C12H8OS [M-H]- outside the truth set, whose merged row
+  goes Assigned -> Candidate.
 - **The `blended` separability class was 1.39x too wide.** `chem.resolution.d_crit_hwhm`, the
   separation at which two Gaussians of a given height ratio turn bimodal, converted its sigma table
   to HWHM by multiplying by sqrt(2 ln 2) where it divides: equal heights read 2.36 HWHM instead of
