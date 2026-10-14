@@ -73,6 +73,7 @@ import pandas as pd
 from peaky.chem import chemistry as C
 from peaky.chem import contexts as X
 from peaky.assignment import ledger as L
+from peaky.assignment import masscal as MC
 from peaky.assignment import tiers as T
 
 __version__ = "0.2.0"
@@ -403,7 +404,9 @@ def measure_degeneracy(ledger: pd.DataFrame, *, cal: tuple[float, float] | None,
                        log=lambda *_: None) -> dict[str, dict]:
     """Return {peak_id: {density, note, alts, measured, lower_bound}} for every
     committed M0 peak. Pure; does not mutate the ledger. ``cal`` is (mu, sigma)
-    ppm from tiers._calibrate (None -> uncalibrated, returns {}). ``adducts`` are
+    ppm from tiers._calibrate (None -> uncalibrated, returns {}); its ``carry`` (the
+    batch axis model's edge carry) centres a line just outside the model's scope at
+    mu plus the model's edge value. ``adducts`` are
     the run's channels (None: the ledger's own committed channels); ``families``
     the contaminant families the file opened (``opened_families``); ``curated``
     the formulas a curated list names. ``density`` is NaN where not measured."""
@@ -412,6 +415,7 @@ def measure_degeneracy(ledger: pd.DataFrame, *, cal: tuple[float, float] | None,
         return {}
     mu, sigma = cal[0], cal[1]
     lo_ppm, hi_ppm = mu - k_sigma * sigma, mu + k_sigma * sigma
+    carry = getattr(cal, "carry", None)
     m0 = ledger[ledger["role"] == L.ROLE_M0]
     channels = [a for a in (list(adducts) if adducts else _ledger_adducts(m0)) if a in C.ADDUCT_SHIFTS]
     channels = list(dict.fromkeys(channels))
@@ -432,10 +436,17 @@ def measure_degeneracy(ledger: pd.DataFrame, *, cal: tuple[float, float] | None,
         mz = float(mz)
         nf, ad = str(r.get("neutral_formula") or ""), str(r.get("adduct") or "")
         chans = channels + ([ad] if ad in C.ADDUCT_SHIFTS and ad not in channels else [])
-        found = enumerate_window(mz, lo_ppm, hi_ppm, chans, space, centre=mu)
+        # the window at the line's own centre: a line outside the batch axis model's scope
+        # within its reach (the calibration's `carry`) sits the model's edge value off mu
+        c = float(MC.edge_carry_at(carry, mz)) if carry else 0.0
+        if c:
+            found = enumerate_window(mz, lo_ppm + c, hi_ppm + c, chans, space, centre=mu + c)
+        else:
+            found = enumerate_window(mz, lo_ppm, hi_ppm, chans, space, centre=mu)
+        centre_r = mu + c if c else mu
 
         assigned_ion = _canonical_ion(nf, ad) if ad in C.ADDUCT_SHIFTS else None
-        comp = sorted((v for k, v in found.items() if k != assigned_ion), key=lambda t: abs(t[2] - mu))
+        comp = sorted((v for k, v in found.items() if k != assigned_ion), key=lambda t: abs(t[2] - centre_r))
         alts = [f"{n} {a} ({p:+.2f} ppm)" for n, a, p in comp[:max_alts]]
         density: float = float(len(found))
         lower = False

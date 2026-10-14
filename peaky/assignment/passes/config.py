@@ -256,6 +256,15 @@ class PassConfig:
     cal_mz_lo: float | None = None
     cal_mz_hi: float | None = None
     cal_trend_n: int | None = None   # backbone points the accepted trend kept
+    # The batch axis model's EDGE CARRY (masscal.edge_carry_at; a sub-ppm lock model's
+    # record, io_mascope.axis_edge_carry): a line outside the model's scope within its
+    # reach of the first / last lock sits on the measured axis while the centres are
+    # fitted on the corrected one, so every calibrated centre at a line's m/z
+    # (cal_center, z_of, the direct cal_mu readers, the tier calibration, the
+    # degeneracy window) adds the model's correction there, and calibrate() fits on
+    # the carried scale. None = nothing carried (no axis correction, or one applied at
+    # 1 ppm or more). Runtime: assign.run stamps it per sample.
+    axis_edge_carry: dict | None = None
     # C42: once calibrate() accepts a mass trend, assign.run re-scores the file
     # from pass 0 with every candidate line judged against the trend's centre at
     # its own m/z (io_mascope.set_scoring_trend) instead of the one constant
@@ -385,6 +394,7 @@ class PassConfig:
         # and batch_summary.json still reports the per-file offsets).
         "cal_a", "cal_b", "cal_sigma_trend", "cal_mz_lo", "cal_mz_hi", "cal_trend_n",
         "cal_mu", "cal_sigma",
+        "axis_edge_carry",                                  # assign.run: the batch axis model's
         "occurrence_threshold", "occurrence_resolved",
         "iso_response_fit", "iso_area")
 

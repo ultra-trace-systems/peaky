@@ -25,6 +25,7 @@ from peaky.chem import chemistry as C
 from peaky.chem import contexts as X
 from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
+from peaky.assignment import masscal as MC
 
 __version__ = "0.1.0"
 
@@ -143,12 +144,16 @@ def rescue_labeled(client, sample_id, ledger, context_profile, cfg, *,
     cal_mu = getattr(cfg, "cal_mu", None)
     cal_sigma = getattr(cfg, "cal_sigma", None) or 0.5
     Z_TAIL = 2.6
-    def _on_cal(ppm):
+    carry = getattr(cfg, "axis_edge_carry", None)
+
+    def _on_cal(ppm, mz=None):
         if ppm is None or pd.isna(ppm):
             return False
         if cal_mu is None:
             return abs(float(ppm)) <= 1.0
-        return abs((float(ppm) - cal_mu) / cal_sigma) <= Z_TAIL
+        # at the line's m/z: a line just outside the batch axis model's scope is judged
+        # at the centre plus the model's edge (masscal.carried_centre)
+        return abs((float(ppm) - MC.carried_centre(carry, cal_mu, mz)) / cal_sigma) <= Z_TAIL
 
     n_res = n_re = 0
     for i, info in per.items():
@@ -161,7 +166,7 @@ def rescue_labeled(client, sample_id, ledger, context_profile, cfg, *,
         # corroboration + not mass-degenerate. Filter candidates BEFORE the winner.
         keep_idx = []
         for j, cr in sub[sub["is_base"]].iterrows():
-            if not _on_cal(cr.get("ppm_error")):        # off instrument accuracy -> coincidence
+            if not _on_cal(cr.get("ppm_error"), cr.get("sample_peak_mz")):   # off instrument accuracy
                 continue
             v = C.parse_formula(str(cr["compound_formula"]))
             n15 = v.get(label, 0)

@@ -204,6 +204,7 @@ def score_candidates_local(
     mechanisms: list[str] | None = None,
     scoring=None,
     centre=None,
+    centre_offset=None,
     purity: float | None = None,
     mz_col: str = "mz",
     intensity_col: str = "height",
@@ -230,6 +231,15 @@ def score_candidates_local(
     runs as 1/mz (+0.8 ppm at m/z 131, -0.2 at 400 on the labelled-nitrate run)
     otherwise has every low-mass ion judged ~1 sigma off a centre it does not
     sit at. None keeps the constant offset.
+
+    `centre_offset` is a callable mapping peak m/z (an array, the table's own
+    axis) to a ppm offset added to the centre of each MATCHED line at that
+    peak: the batch axis model's edge carry (io_mascope.axis_edge_carry,
+    masscal.edge_carry_at), under which a line just outside the model's scope,
+    still on the measured axis, is judged at the file's centre plus the model's
+    correction at the nearer end. Per line, so an M0 in scope with its 13C line
+    outside it is judged on both axes correctly. None, or an offset that is 0
+    at every matched line, leaves the score exactly as without it.
 
     Every row also carries `ion_score_massfree`: the same score with every
     matched line's mass error set to the centre, i.e. what the isotope pattern
@@ -291,6 +301,14 @@ def score_candidates_local(
         else None
     )
 
+    # the per-peak centre offset (the axis model's edge carry), once over the table;
+    # None where it is 0 at every peak
+    offs = None
+    if centre_offset is not None and len(mzs):
+        offs = np.asarray(centre_offset(mzs), dtype=float)
+        if not np.any(offs):
+            offs = None
+
     if mechanisms is not None:
         mechs = {m: utils.parse_ionization(m) for m in mechanisms}
     else:
@@ -339,6 +357,7 @@ def score_candidates_local(
             obs_snr = np.full(pred_mz.size, np.nan)
             obs_h = np.zeros_like(pred_mz)
             matched_pid: list = [None] * len(pred_mz)
+            line_off = np.zeros_like(pred_mz) if offs is not None else None
             base_int = None
             cand_ints, resp = ints, iso_response
             band_lo = None
@@ -366,6 +385,8 @@ def score_candidates_local(
                     obs_ppm[0] = line_ppm
                     obs_snr[0] = line_snr
                     matched_pid[0] = pids[k]
+                    if line_off is not None:
+                        line_off[0] = offs[k]
                     if resp:
                         # the file's own minor-line response (iso_response.py): a C / O line near the
                         # scans' floor reads anywhere from its censored share up to its natural share
@@ -394,6 +415,8 @@ def score_candidates_local(
                     obs_int_err[i] = ierr
                     obs_snr[i] = line_snr
                     matched_pid[i] = pids[k]
+                    if line_off is not None:
+                        line_off[i] = offs[k]
 
             if base_int is None:  # M0 not detected -> not a candidate at all
                 continue
@@ -402,6 +425,10 @@ def score_candidates_local(
                                               centre.mz_lo, centre.mz_hi)
             else:
                 line_centre = scoring.mu_ppm
+            if line_off is not None and np.any(line_off):
+                # the edge carry: each matched line outside the model's scope is judged at
+                # the centre plus the model's correction at its nearer end
+                line_centre = line_centre + line_off
             score = float(
                 score_pattern_v2(
                     obs_ppm - line_centre,

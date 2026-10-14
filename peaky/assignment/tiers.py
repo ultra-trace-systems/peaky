@@ -611,19 +611,22 @@ class _Cal(tuple):
     """(mu, sigma) of the ppm error -- a plain 2-tuple for every `mu, sigma = cal`
     consumer -- that also carries the mass trend (masscal) as attributes:
     `a`, `b`, `sigma_t`, `mz_lo`, `mz_hi` (ppm = a + b*1000/mz on the backbone's
-    m/z coverage; None = constant model) and `abs_floor_mda`, the absolute floor
-    on the trend sigma (from PassConfig.cal_abs_floor_mda)."""
+    m/z coverage; None = constant model), `abs_floor_mda`, the absolute floor
+    on the trend sigma (from PassConfig.cal_abs_floor_mda), and `carry`, the batch
+    axis model's edge carry the core was read under (PassConfig.axis_edge_carry;
+    None = none): `_cal_z` adds it at a line's m/z."""
     def __new__(cls, mu, sigma, a=None, b=None, sigma_t=None, mz_lo=None, mz_hi=None,
-                abs_floor_mda=MC.ABS_FLOOR_MDA):
+                abs_floor_mda=MC.ABS_FLOOR_MDA, carry=None):
         obj = super().__new__(cls, (mu, sigma))
         obj.a, obj.b, obj.sigma_t = a, b, sigma_t
         obj.mz_lo, obj.mz_hi = mz_lo, mz_hi
         obj.abs_floor_mda = abs_floor_mda
+        obj.carry = carry
         return obj
 
 
 def _calibrate(m0: pd.DataFrame, kids_of: pd.Series, *,
-               abs_floor_mda: float = MC.ABS_FLOOR_MDA) -> _Cal | None:
+               abs_floor_mda: float = MC.ABS_FLOOR_MDA, carry=None) -> _Cal | None:
     """(mu, sigma) of the ppm-error distribution from the corroborated CHO/CHON
     core (a _Cal, which also carries the masscal trend when accepted), or None
     if the core is too small. Robust (median + scaled MAD). The core is
@@ -631,7 +634,10 @@ def _calibrate(m0: pd.DataFrame, kids_of: pd.Series, *,
     isotopologue-backed -- the assignments we are most certain are correct, so
     their mass errors define the instrument's real accuracy for this run.
     `abs_floor_mda` is PassConfig.cal_abs_floor_mda (its default when the
-    caller has no cfg, e.g. a report-time re-tier)."""
+    caller has no cfg, e.g. a report-time re-tier). `carry` (PassConfig.axis_edge_carry)
+    puts a core row outside the batch axis model's scope within its reach on the
+    carried scale -- its ppm less the model's edge value (masscal.edge_carry_at) --
+    and rides on the result."""
     ppms = []
     mzs = []
     for _, r in m0.iterrows():
@@ -651,6 +657,8 @@ def _calibrate(m0: pd.DataFrame, kids_of: pd.Series, *,
         mzs.append(float(r.get("mz")) if r.get("mz") is not None and not pd.isna(r.get("mz")) else np.nan)
     if len(ppms) < CAL_MIN_N:
         return None
+    if carry:
+        ppms = list(np.asarray(ppms, dtype=float) - MC.edge_carry_at(carry, np.asarray(mzs, dtype=float)))
     s = pd.Series(ppms)
     # Outlier guard is RELATIVE to the robust median, not a 0-centered |ppm|<=2
     # window: an absolute window excludes the entire backbone of a source with a
@@ -670,25 +678,35 @@ def _calibrate(m0: pd.DataFrame, kids_of: pd.Series, *,
                             min_n=CAL_MIN_N, sigma_floor=CAL_SIGMA_FLOOR)
     if fit is not None:
         return _Cal(mu, sigma, fit.a, fit.b, fit.sigma, fit.mz_lo, fit.mz_hi,
-                    abs_floor_mda=abs_floor_mda)
-    return _Cal(mu, sigma, abs_floor_mda=abs_floor_mda)
+                    abs_floor_mda=abs_floor_mda, carry=carry)
+    return _Cal(mu, sigma, abs_floor_mda=abs_floor_mda, carry=carry)
 
 
 def _cal_z(cal, ppm, mz=None) -> float:
     """Signed z of a ppm error against the tier calibration; mass-dependent
     centre and sigma (masscal.centre / sigma_at, clamped to the backbone range)
-    when the fit exists and an m/z is given, else the constant ones."""
+    when the fit exists and an m/z is given, else the constant ones. A line
+    outside the batch axis model's scope within its reach (the calibration's
+    `carry`) is judged at that centre plus the model's edge value."""
     mu, sigma = cal[0], cal[1]
     b = getattr(cal, "b", None)
     if b is not None and mz is not None and not pd.isna(mz):
         mu = MC.centre(cal.a, b, mz, cal.mz_lo, cal.mz_hi)
         sigma = MC.sigma_at(cal.sigma_t or sigma, mz, cal.abs_floor_mda)
+    carry = getattr(cal, "carry", None)
+    if carry and mz is not None and not pd.isna(mz):
+        mu = MC.carried_centre(carry, mu, float(mz))
     return (float(ppm) - mu) / sigma
 
 
 def _abs_floor(cfg) -> float:
     """PassConfig.cal_abs_floor_mda, or its default when no cfg is given."""
     return float(getattr(cfg, "cal_abs_floor_mda", MC.ABS_FLOOR_MDA))
+
+
+def _carry(cfg):
+    """PassConfig.axis_edge_carry (the batch axis model's edge carry), or None."""
+    return getattr(cfg, "axis_edge_carry", None) if cfg is not None else None
 
 
 def lock_score_floor(cfg) -> float:
@@ -755,7 +773,7 @@ def compute_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFra
     adducts_of = m0.groupby("neutral_formula")["adduct"].agg(
         lambda s: set(s.dropna().astype(str)))
     # (mu, sigma) ppm [+ the masscal trend], or None when uncalibrated
-    cal = _calibrate(m0, kids_of, abs_floor_mda=_abs_floor(cfg))
+    cal = _calibrate(m0, kids_of, abs_floor_mda=_abs_floor(cfg), carry=_carry(cfg))
     # primary detected channels = adducts carrying the High pass-1 backbone
     # (the unambiguous real reagent ions). A background channel that shows up
     # here (a genuine CO3-CIMS run) is treated as primary, not demoted.
@@ -1275,7 +1293,7 @@ def apply_tof_m2(ledger: pd.DataFrame, *, cfg=None, resolving_power=None, scorin
     return out
 
 
-def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
+def stamp_calibrated_ppm(ledger: pd.DataFrame, *, carry=None) -> tuple[float, float] | None:
     """Q1: write `ppm_error_cal` = ppm_error − mu (OFFSET ONLY), where mu is the
     robust per-file mass offset the tier engine already fits from the corroborated
     CHO/CHON core (_calibrate; median + scaled MAD). The reported ppm_error is the
@@ -1296,13 +1314,18 @@ def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
     `_Cal` / `PassConfig` (`cal_a` / `cal_b` / `cal_mz_lo` / `cal_mz_hi`) and is
     applied per peak by `_cal_z` and `passes.core.z_of`.
 
+    `carry` (PassConfig.axis_edge_carry): a row outside the batch axis model's scope
+    within its reach has the model's edge value removed too -- its centre is mu plus
+    that value (masscal.edge_carry_at at the row's own m/z), so its displayed error sits
+    on the corrected rows' footing.
+
     Returns (mu, sigma) and stashes them in ledger.attrs, or None if uncalibrable."""
     if "ppm_error" not in ledger.columns:
         return None
     m0 = ledger[ledger["role"] == L.ROLE_M0]
     kids_of = ledger.loc[ledger["role"] == L.ROLE_ISO,
                          "parent_peak_id"].value_counts()
-    cal = _calibrate(m0, kids_of)
+    cal = _calibrate(m0, kids_of, carry=carry)
     if cal is not None:
         mu, sigma = cal
     else:
@@ -1314,6 +1337,9 @@ def stamp_calibrated_ppm(ledger: pd.DataFrame) -> tuple[float, float] | None:
         mu, sigma = float(assigned.median()), float("nan")
     ledger["ppm_error_cal"] = pd.to_numeric(ledger["ppm_error"],
                                             errors="coerce") - mu
+    if carry and "mz" in ledger.columns:
+        ledger["ppm_error_cal"] = ledger["ppm_error_cal"] - MC.edge_carry_at(
+            carry, pd.to_numeric(ledger["mz"], errors="coerce").to_numpy(dtype=float))
     ledger.attrs["cal_mu"] = mu
     ledger.attrs["cal_sigma"] = sigma
     return mu, sigma
@@ -1344,7 +1370,7 @@ def apply_tiers(ledger: pd.DataFrame, *, cfg=None, profile=None) -> pd.DataFrame
         ledger.at[i, "candidate_density"] = density_text(
             int(by_pid.at[pid, "candidate_density"]),
             bool(by_pid.at[pid, "density_capped"]))
-    stamp_calibrated_ppm(ledger)
+    stamp_calibrated_ppm(ledger, carry=_carry(cfg))
     flag_below_assignability(ledger)
     return ledger
 

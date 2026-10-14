@@ -1184,6 +1184,19 @@ LOCK_APPLY_PPM = 0.4
 #: held-out locks to within this share of it: the predictive bar above would let a model
 #: with a 0.3 ppm held-out error correct a 0.4 ppm axis, i.e. add about as much as it removes
 LOCK_SMALL_CV_SHARE = 0.5
+#: a model applied through that sub-ppm branch carries its correction at its first and
+#: its last lock into the scoring centre of the lines up to this far (Da) beyond them
+#: (axislock.AxisModel.edge_carry_record; masscal.edge_carry_at). Peaks outside the
+#: scope keep their measured m/z while a file's centres are fitted on the corrected
+#: ones, so without it a line just past the last lock was judged against a centre read
+#: off the other axis (an EasyIC batch: the C9-C12 hydrocarbons above it, 0.7 ppm off,
+#: out of Assigned). Measured against an independent axis: within 30 Da of the edge its
+#: value is the axis to ~0.1 ppm on the flat EasyIC axes; further out a curved
+#: labelled-nitrate axis bends away from it (0.2 -> 0.4 ppm), so past the reach, and in
+#: the gaps between segments, nothing is carried. A model at 1 ppm or more -- one the
+#: reference bar applied before the sub-ppm branch existed -- carries nothing: those
+#: batches run as before
+EDGE_CARRY_DA = 30.0
 
 
 def _roster_class(table) -> str | None:
@@ -1338,6 +1351,17 @@ def _lock_model(ts, polarity, reagent_elements, info, log):
             f"{cv:g} ppm (more than {LOCK_SMALL_CV_SHARE:g}x it); nothing to correct")
         return None, True
     info["verdict"] = "axis_steps" if li.get("steps") else "axis_trend"
+    if small:
+        # the sub-ppm branch: its correction at the first and the last lock is carried
+        # into the scoring centre of the lines up to EDGE_CARRY_DA beyond them (no m/z
+        # moves); recorded on the model, so every worker and a re-read run judge alike
+        rec = model.edge_carry_record(EDGE_CARRY_DA)
+        model.stats["edge_carry"] = rec
+        info.update(wave=model.as_dict(), edge_carry=dict(rec))
+        log(f"[mass-axis] edge carry: a line outside the model's scope within {EDGE_CARRY_DA:g} Da "
+            f"of its first / last lock is scored at the model's correction there (m/z "
+            f"{rec['below']['mz']:.1f}: {rec['below']['ppm']:+.2f} ppm; m/z {rec['above']['mz']:.1f}: "
+            f"{rec['above']['ppm']:+.2f} ppm); no m/z is moved, gaps carry nothing")
     return model, True
 
 
@@ -1358,7 +1382,9 @@ def measure_axis(ts, reagent: str, klass: str | None, *, hold: str | None = None
     instrument's axis takes); it is applied when it predicts held-out locks to
     within half the raw error and its largest correction (or the locks' raw
     median) reaches LOCK_APPLY_PPM (0.4 ppm) -- a correction under 1 ppm only when
-    held-out locks sit within half of it (LOCK_SMALL_CV_SHARE). 'auto' falls back
+    held-out locks sit within half of it (LOCK_SMALL_CV_SHARE), and such a model
+    carries its correction at its first / last lock into the scoring centre of the
+    lines up to EDGE_CARRY_DA beyond them (`info['edge_carry']`; no m/z moves). 'auto' falls back
     to the reagent's reference ions (batch.massqc, the instrument's own rules)
     only when the locks could not build a model; 'reference' goes there directly,
     and a TOF always does (it is measured there, never corrected).
@@ -2898,6 +2924,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         log(f"[assign_batch] side channels opened: "
             + ", ".join(f"{a} ({side_files[a]} of {len(per_stats)} files)" for a in side_opened))
     _centres = scoring_centres(scorings)
+    if axis_info.get("edge_carry"):
+        log(f"[assign_batch] axis edge carry: "
+            f"{sum(int((x.get('axis_edge_carry') or {}).get('m0_carried', 0)) for x in per_stats)} committed "
+            f"M0 rows outside the model's scope judged at its edge, in "
+            f"{sum(1 for x in per_stats if x.get('axis_edge_carry'))} of {len(per_stats)} files")
     log("[assign_batch] scoring centres: "
         + ", ".join(f"{n} {src}" for src, n in _centres["by_mu_source"].items())
         + (f"; self-centred: " + ", ".join(f"{s} {v:+.2f} ppm" for s, v in _centres["self"].items()

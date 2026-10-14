@@ -27,6 +27,7 @@ import os
 import warnings
 from dataclasses import dataclass
 
+from peaky.assignment import masscal as MC
 from peaky.chem import chemistry as C
 from peaky.chem import isotopes as ISO
 from peaky.paths import pkg_data
@@ -407,7 +408,10 @@ def rescue_unexplained_by_reflist(client, sample_id, ledger, profile, cfg, lists
         top = base.sort_values("ion_score", ascending=False).iloc[0]
         score = float(top["ion_score"])
         ppm = float(top["ppm_error"]) if pd.notna(top["ppm_error"]) else None
-        z = abs((ppm - mu) / sigma) if (mu is not None and ppm is not None) else 0.0
+        # at the peak's m/z: a peak just outside the batch axis model's scope is judged at
+        # the centre plus the model's edge (masscal.carried_centre)
+        z = (abs((ppm - MC.carried_centre(getattr(cfg, "axis_edge_carry", None), mu, mz)) / sigma)
+             if (mu is not None and ppm is not None) else 0.0)
         if score < floor or ppm is None or z > z_acc:
             continue                                   # poor mass match / off-cal -> leave
         # isotope confirmation: a confirmed satellite sits at the M+1/M+2 mass, not

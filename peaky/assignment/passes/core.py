@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+import numpy as np
 import pandas as pd
 
 from peaky.chem import chemistry as C
@@ -106,6 +107,15 @@ def calibrate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> tuple | No
         .astype(bool)
     )
     ppm = m0.loc[(score >= cfg.tau_good) & chon, "ppm_error"].astype(float)
+    # the batch axis model's edge carry: a backbone row outside its scope within reach
+    # sits on the measured axis; on the carried scale (its ppm less the model's edge
+    # value) it measures the same centre as the corrected rows
+    carry = getattr(cfg, "axis_edge_carry", None)
+    n_carried = 0
+    if carry:
+        shift = MC.edge_carry_at(carry, m0.loc[ppm.index, "mz"].astype(float).to_numpy())
+        n_carried = int(np.count_nonzero(shift))
+        ppm = ppm - shift
     if len(ppm) < cfg.cal_min_n:
         log(
             f"[calibrate] backbone too small (n={len(ppm)} < {cfg.cal_min_n}); "
@@ -120,6 +130,8 @@ def calibrate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> tuple | No
         f"-> accept |z|<={cfg.cal_z_accept} ({mu - cfg.cal_z_accept * sigma:+.2f}"
         f"..{mu + cfg.cal_z_accept * sigma:+.2f} ppm), pattern-evidence up to "
         f"|z|<={cfg.cal_z_pattern}"
+        + (f"; {n_carried} backbone rows outside the axis model's scope read on the carried "
+           "scale (the model's edge removed)" if n_carried else "")
     )
     # MASS-DEPENDENT centre (masscal): the Orbitrap's low-mass residual is an
     # absolute offset, i.e. ppm ~ 1/mz. Fitted on the same backbone; accepted
@@ -145,9 +157,12 @@ def calibrate(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> tuple | No
     kids = ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
     tested = m0["peak_id"].map(kids).fillna(0) >= 1
     trend_rows = m0.loc[(tsel >= cfg.tau_good) & chon & tested]
+    trend_mz = trend_rows["mz"].astype(float).to_numpy()
+    trend_ppm = trend_rows["ppm_error"].astype(float).to_numpy()
+    if carry:
+        trend_ppm = trend_ppm - MC.edge_carry_at(carry, trend_mz)
     fit = MC.fit_mass_trend(
-        trend_rows["mz"].astype(float).to_numpy(),
-        trend_rows["ppm_error"].astype(float).to_numpy(),
+        trend_mz, trend_ppm,
         min_n=cfg.cal_min_n, sigma_floor=cfg.cal_sigma_floor)
     if fit is not None:
         cfg.cal_a, cfg.cal_b, cfg.cal_sigma_trend = fit.a, fit.b, fit.sigma
@@ -178,13 +193,20 @@ def _has_trend_at(cfg: PassConfig, mz) -> bool:
 def cal_center(cfg: PassConfig, mz=None) -> float | None:
     """The calibrated ppm centre: mass-dependent at `mz` when the trend is fitted
     (masscal.centre, clamped to the backbone's m/z coverage), else the constant
-    cal_mu; None when uncalibrated."""
+    cal_mu; None when uncalibrated. At a line outside a sub-ppm batch axis model's
+    scope within its reach (cfg.axis_edge_carry) the model's correction at the
+    nearer end is added (masscal.carried_centre): that line was not corrected."""
     if cfg.cal_mu is None:
         return None
     if _has_trend_at(cfg, mz):
-        return MC.centre(cfg.cal_a, cfg.cal_b, mz,
-                         getattr(cfg, "cal_mz_lo", None), getattr(cfg, "cal_mz_hi", None))
-    return cfg.cal_mu
+        c = MC.centre(cfg.cal_a, cfg.cal_b, mz,
+                      getattr(cfg, "cal_mz_lo", None), getattr(cfg, "cal_mz_hi", None))
+    else:
+        c = cfg.cal_mu
+    carry = getattr(cfg, "axis_edge_carry", None)
+    if carry and mz is not None and not pd.isna(mz):
+        return MC.carried_centre(carry, c, float(mz))
+    return c
 
 
 def cal_sigma_at(cfg: PassConfig, mz=None) -> float | None:
