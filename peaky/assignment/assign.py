@@ -174,7 +174,8 @@ def _stage_degeneracy(st):
     # kept on the run state: the per-file evidence level's step-1 window is this
     # SAME (mu, sigma), and the run's stats persist it (`degeneracy_cal`)
     cal = tiers._calibrate(st.led[st.led["role"] == ledger.ROLE_M0],
-                       st.led.loc[st.led["role"] == ledger.ROLE_ISO, "parent_peak_id"].value_counts())
+                       st.led.loc[st.led["role"] == ledger.ROLE_ISO, "parent_peak_id"].value_counts(),
+                       carry=getattr(st.cfg, "axis_edge_carry", None))
     st.degeneracy_cal = None if cal is None else (float(cal[0]), float(cal[1]))
     if cal is None and getattr(st, "keep_pool_inputs", False):
         # the ledger as the degeneracy and tier stages see it: a batch that lends
@@ -1012,6 +1013,17 @@ def run(sample_id: str, context: str = "ambient-air", *,
     # systematic offset is invisible to pass 0.
     prior = io_mascope.estimate_offset(raw)
     cfg.prior_offset = prior if prior is not None else 0.0
+    # the batch axis model's edge carry (a sub-ppm lock model; io_mascope.axis_edge_carry):
+    # every calibrated centre at a line just outside the model's scope adds the model's
+    # correction at the nearer end (None: nothing carried). Before the C42 / isotope-
+    # response snapshot below, so a re-run keeps it.
+    cfg.axis_edge_carry = io_mascope.axis_edge_carry(sample_id)
+    if cfg.axis_edge_carry:
+        _ec = cfg.axis_edge_carry
+        log(f"[run] axis edge carry: a line outside the batch axis model's scope within "
+            f"{_ec['reach_da']:g} Da of m/z {_ec['below']['mz']:.1f} / {_ec['above']['mz']:.1f} is "
+            f"judged at the centre {_ec['below']['ppm']:+.2f} / {_ec['above']['ppm']:+.2f} ppm off "
+            "(peaks are not moved)")
     log(f"[run] {len(led)} unique peaks; context={profile.label}; "
         f"polarity={polarity}; prior_offset={cfg.prior_offset:+.2f} ppm; "
         f"adducts={adducts}; mechanisms={sorted(mech_map)}"
@@ -1262,6 +1274,14 @@ def run(sample_id: str, context: str = "ambient-air", *,
     st["mu_source"] = scoring_snapshot.get("mu_source")
     st["mu_ppm"] = scoring_snapshot.get("mu_ppm")
     st["self_centre"] = self_centre
+    # the batch axis model's edge carry (a sub-ppm model only; no key otherwise): its reach
+    # and the committed M0 rows it judged at the carried centre
+    if cfg.axis_edge_carry:
+        _m0 = led[led["role"] == ledger.ROLE_M0]
+        st["axis_edge_carry"] = {
+            "reach_da": cfg.axis_edge_carry["reach_da"],
+            "m0_carried": int((masscal.edge_carry_at(
+                cfg.axis_edge_carry, pd.to_numeric(_m0["mz"], errors="coerce").to_numpy(dtype=float)) != 0).sum())}
     st["height_gate_cps"] = cfg.height_cutoff     # RESOLVED gate (the knob is cfg.height_cutoff_cps)
     # the multiple the gate was resolved FROM (profile-supplied or the package
     # default) -- the gate in cps alone cannot be read back without it.

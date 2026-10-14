@@ -142,6 +142,36 @@ def axis_correction(sample_id: str):
     return _AXIS.get(str(sample_id))
 
 
+def axis_edge_carry(sample_id: str) -> dict | None:
+    """The EDGE CARRY this sample's lines are scored under (masscal.edge_carry_at): the
+    record its batch axis model carries (AxisModel.edge_carry, granted to a sub-ppm
+    model by assign_batch._lock_model), else -- a stand-in registered with a measured
+    sample's snapshot (a decoy arm) -- the one that snapshot recorded; None otherwise
+    (no axis correction, a reference wave, a model applied at 1 ppm or more)."""
+    sid = str(sample_id)
+    fit = _AXIS.get(sid)
+    if fit is not None:
+        rec = getattr(fit, "edge_carry", None)
+        return dict(rec) if rec else None
+    given = _OFFLINE_SCORING.get(sid) if sid in _OFFLINE else None
+    if isinstance(given, dict) and given.get("axis_edge_carry"):
+        return {k: v for k, v in given["axis_edge_carry"].items() if k != "share"}
+    return None
+
+
+def _carry_share(rec, peaks) -> float | None:
+    """The share of `peaks`' m/z whose scoring centre the edge carry moves, rounded."""
+    from peaky.assignment.masscal import edge_carry_at
+    if not rec or peaks is None or "mz" not in getattr(peaks, "columns", ()):
+        return None
+    if "peak_id" in peaks.columns:          # the raw table has one row per server match
+        peaks = peaks.drop_duplicates("peak_id")
+    mz = pd.to_numeric(peaks["mz"], errors="coerce").dropna().to_numpy(dtype=float)
+    if not len(mz):
+        return None
+    return round(float(np.mean(edge_carry_at(rec, mz) != 0)), 4)
+
+
 def set_self_centre(sample_id: str, record: dict) -> None:
     """Score this sample at its own centre from now on (`record["mu_ppm"]`, the
     self-centre measurement of assignment/selfcentre.py; the snapshot keeps the
@@ -984,7 +1014,10 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
         candidate. Below MIN_OFFSET_ANCHORS: zero on peaks the batch's axis
         correction moved (`mu_source` "axis"), else the sample's own self-centre
         when its run measured one (`set_self_centre`, "self"), else an assumed
-        zero.
+        zero. Under a sub-ppm batch axis model's edge carry (`axis_edge_carry`) a
+        line outside the model's scope within its reach is scored at this offset
+        plus the model's correction at the nearer end (`_score_candidates_local`);
+        the offset itself, and every line in scope, are unchanged.
       * the window a predicted line may be matched in, the instrument class's.
 
     Cached per sample: the passes score many batches against one sample, and the
@@ -1051,6 +1084,7 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
     # without the mass term (assignment/selfcentre.py: "self").
     mu_source = "fitted" if len(anchors) >= MIN_OFFSET_ANCHORS else "assumed_zero"
     axis_fit = _AXIS.get(str(sample_id))
+    carry = axis_edge_carry(sample_id)
     own = _SELF_CENTRE.get(str(sample_id))
     if mu_source == "assumed_zero" and axis_fit is not None:
         mu_source = "axis"
@@ -1086,6 +1120,10 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
         **({"axis_scope_share": _scope_share(axis_fit, raw)} if mu_source == "axis" else {}),
         **({"self_centre": {k: v for k, v in own.items() if k != "mu_ppm"}}
            if mu_source == "self" else {}),
+        # the batch axis model's edge carry (a sub-ppm model): a line outside its scope
+        # within `reach_da` of its first / last lock is scored at this centre plus the
+        # model's correction there; `share` the share of the file's peaks it reaches
+        **({"axis_edge_carry": {**carry, "share": _carry_share(carry, raw)}} if carry else {}),
         "fitted_anchors": len(anchors),
         "mz_tolerance_ppm": float(scoring.mz_tolerance_ppm),
         "abundance_floor": float(scoring.abundance_floor),
@@ -1185,6 +1223,9 @@ def _inherited_scoring(given, raw):
         "sigma_source": "inherited",
         "mu_source": "inherited",
         **({"trend": dict(src["trend"])} if src.get("trend") else {}),
+        # the measured sample's edge carry: the stand-in's lines are scored under it too
+        # (axis_edge_carry reads it back from the registered snapshot)
+        **({"axis_edge_carry": dict(src["axis_edge_carry"])} if src.get("axis_edge_carry") else {}),
         "inherited": {"sigma_source": src.get("sigma_source"), "mu_source": src.get("mu_source"),
                       "fitted_anchors": src.get("fitted_anchors"),
                       "has_signal_to_noise": src.get("has_signal_to_noise"),
@@ -1459,7 +1500,10 @@ def _score_candidates_local(client, sample_id, formulas, mechanism_ids):
     """Local, in-process scoring (no match_compounds round-trip) producing the same
     flat per-isotopologue schema as the backend path. Peaks from the cached
     fetch_peaks; channels from the reverse-mapped mechanism names; the sample's
-    own fitted width, offset and class window from `scoring_for_sample`."""
+    own fitted width, offset and class window from `scoring_for_sample`; a line
+    outside a sub-ppm batch axis model's scope within its reach judged at that
+    centre plus the model's edge (`axis_edge_carry`)."""
+    from peaky.assignment.masscal import edge_carry_at
     from peaky.io import local_scoring
 
     raw = fetch_peaks(client, sample_id)          # cached; mz/height/peak_id/snr
@@ -1469,10 +1513,12 @@ def _score_candidates_local(client, sample_id, formulas, mechanism_ids):
     # and nothing said it for the width the mass is then scored against.
     scoring = scoring_for_sample(client, sample_id, raw)
     iso = iso_scoring(sample_id) or {}
+    carry = axis_edge_carry(sample_id)
     out = local_scoring.score_candidates_local(
         peaks_for_scoring(sample_id, raw), formulas, mechanisms=mechs,
         scoring=scoring,
         centre=scoring_trend(sample_id),
+        centre_offset=(lambda m, _rec=carry: edge_carry_at(_rec, m)) if carry else None,
         intensity_col=iso.get("col") or "height",
         iso_response=iso.get("resp"),
     )

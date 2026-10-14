@@ -560,6 +560,27 @@ class AxisModel:
         out.stats["max_abs_ppm"] = round(out.max_abs_ppm(), 3)
         return out
 
+    def edge_carry_record(self, reach_da: float) -> dict:
+        """The record of the model's EDGE CARRY (masscal.edge_carry_at): its correction
+        at its first lock (`below`) and at its last (`above`), each carried into the
+        scoring centre of the lines up to `reach_da` beyond it, with the domains' slack
+        the served-axis boundary is read at. Gaps and holes between segments are not in
+        it: a step there is unseen. Granted by assign_batch._lock_model (stats
+        'edge_carry'); peaks are never moved by it."""
+        first, last = self.segments[0], self.segments[-1]
+        lo, hi = float(first["lo"]), float(last["hi"])
+        return {"reach_da": float(reach_da), "slack_ppm": float(SCOPE_SLACK_PPM),
+                "below": {"mz": lo, "ppm": float(self._eval(first, lo))},
+                "above": {"mz": hi, "ppm": float(self._eval(last, hi))}}
+
+    @property
+    def edge_carry(self) -> dict | None:
+        """The edge carry the batch granted this model (`edge_carry_record`, kept in
+        `stats` so it travels with as_dict / from_dict), or None: a model the batch
+        applied at 1 ppm or more, or one built before the record existed."""
+        rec = (self.stats or {}).get("edge_carry")
+        return dict(rec) if rec else None
+
     def max_abs_ppm(self) -> float:
         """The largest correction the model applies anywhere in its domains."""
         vals = [np.abs(self._eval(s, np.linspace(s["lo"], s["hi"], 400))).max() for s in self.segments]

@@ -145,19 +145,58 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   pass-1 calibration cannot see why — its backbone is what the zero-centred score
   let through. `PassConfig.self_centre = False` scores such a file at zero.
 
-  **Outside the axis model's scope nothing is moved.** The model corrects only
-  where its locks reach; below or above them, and in a gap or hole between its
-  segments, every sample's peaks keep the server's m/z, an anchored sample's
-  included, because nothing measured the axis there. An anchored sample's centre
-  is its anchors', measured on the corrected peaks: on a batch whose model leaves
-  part of the file uncorrected that centre can sit off the peaks the model did not
-  reach (an NO+ batch whose locks stop near m/z 129: its anchored files'
-  C9-C12 hydrocarbons above it read 0.6 ppm off and fall from Good). Moving them by
-  the model's in-scope correction at the file's anchors fixed that batch and broke
-  a curved one (a labelled-nitrate batch whose correction swings from -2.5 ppm at
-  m/z 45 through +0.9 at m/z 100 to +0.2 at its edge, m/z 173: the peaks above it
-  moved 0.25-0.36 ppm off their file's centre), and the files' own out-of-scope
-  anchors, 0-12 of them, scatter as widely as the shift; so no rule is applied.
+  **Outside the axis model's scope no m/z is moved; near its ends the centre
+  carries the model's edge.** The model corrects only where its locks reach;
+  below or above them, and in a gap or hole between its segments, every sample's
+  peaks keep the server's m/z, an anchored sample's included, because nothing
+  measured the axis there. A sample's centres are fitted on the mostly corrected
+  peaks -- the scorer's `mu` (the anchors' median, or zero for an `axis` file) and
+  calibrate's `cal_mu` -- so a peak the model did not reach was judged against a
+  centre read off the other axis (an NO+ batch whose locks stop near m/z 129: its
+  C9-C12 hydrocarbons above it read 0.7 ppm off and fell out of Assigned). A
+  model the batch applies through the sub-ppm branch (`assign_batch._lock_model`:
+  its largest correction and the locks' raw median both under 1 ppm) therefore
+  CARRIES its correction at its first lock and at its last into the scoring centre
+  of every line up to `assign_batch.EDGE_CARRY_DA` (30 Da) below / above it
+  (`AxisModel.edge_carry_record`, `masscal.edge_carry_at`; the line's m/z is read
+  on the served axis, as the model's own inverse reads it):
+  * the local scorer judges each MATCHED line at the file's centre plus the carry
+    at that line's peak (`score_candidates_local(centre_offset=)`, per line: an M0
+    in scope whose 13C line lies outside is judged on both axes as they are);
+  * every calibrated centre at a line's m/z adds it: `cal_center` / `z_of` (the
+    commit gate, the mass-gate audit, the residual and siloxane gates), the direct
+    `cal_mu` readers (the isotope-gated recovery, the speculative-residual demote,
+    the labelled rescue, the reference-list rescue), the tier calibration
+    (`tiers._calibrate` / `_cal_z`, and `ppm_error_cal`; a batch-pooled calibration
+    lent to an uncalibrated file, `calpool.apply_pool`, takes the file's carry too),
+    the off-calibration re-arbitration (which reads the tier calibration) and the
+    degeneracy window;
+  * calibrate and the tier calibration read a backbone row outside the scope on
+    the carried scale (its ppm less the carry), so the out-of-scope rows they
+    recover measure the same centre as the corrected ones.
+
+  The file's `mu`, its anchors, the ledger's m/z and every line in scope are
+  unchanged. Nothing is carried past the reach (measured against an independent
+  axis: within 30 Da the edge's value is the axis to ~0.1 ppm on the flat NO+
+  axes, while a curved labelled-nitrate axis bends 0.2-0.4 ppm away from it
+  further out), in a gap or hole (a step there is unseen), or by a model applied
+  at 1 ppm or more: those batches, which the reference bar corrected before the
+  sub-ppm branch existed, run exactly as before, and their out-of-scope lines are
+  still judged against the in-scope centre. The record rides on the model
+  (`mass_axis.wave.stats.edge_carry`, also `mass_axis.edge_carry`) to every
+  worker, on each file's snapshot (`pattern_scoring.axis_edge_carry`, with `share`,
+  the share of the file's peaks it reaches) and, as `PassConfig.axis_edge_carry`,
+  on the file's run (`per_file.axis_edge_carry`: `reach_da`, `m0_carried`, the
+  committed M0 rows it judged); a stand-in registered with that snapshot (a decoy
+  arm) inherits it. The network scorer (`PEAKY_LOCAL_SCORING=0`) judges one
+  constant offset, so there the carry reaches the gates only; the trace-first
+  sample is not under the batch's correction and carries nothing; the evidence
+  levels' per-file window (`degeneracy_cal`) stays one constant. Moving the
+  out-of-scope peaks instead, by the model's in-scope correction at the file's
+  anchors (an earlier build), fixed the NO+ batch and broke a curved one (a
+  labelled-nitrate batch whose correction swings from -2.5 ppm at m/z 45 through
+  +0.9 at m/z 100 to +0.2 at its edge, m/z 173: the peaks above it moved
+  0.25-0.36 ppm off their file's centre), and it moved the gaps too.
 
   **An offline sample has neither a record nor anchors.** A table served from
   memory (`register_offline_sample`: a scorecard decoy arm, the trace-first

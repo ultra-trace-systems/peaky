@@ -47,7 +47,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the corrected axis, which can sit off the peaks the model did not reach: on those NO+ batches,
   whose locks stop near m/z 129, the anchored files' C9-C12 hydrocarbons above it score under Good
   (nothing measured the axis there; a shift sized on the model's in-scope correction fixed them but
-  moved a curved axis's peaks away from their file's centre). (2) An Orbitrap-class file scored
+  moved a curved axis's peaks away from their file's centre; the edge carry under Fixed now judges
+  them at the model's edge without moving them). (2) An Orbitrap-class file scored
   locally whose snapshot still reads `assumed_zero` measures its centre before pass 0
   (`assignment/selfcentre.py`, `PassConfig.self_centre`): its bright unexplained peaks are
   enumerated as pass 1 enumerates them and judged by the pattern-only score; the median raw error
@@ -622,6 +623,40 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sulfoxide, a malathion transformation product) and drops one (sulfuric acid, Assigned only where no
   file showed its 34S line). The release acceptance rows touched by the contract (a chlorinated
   product, the D5 siloxane) show their lines.
+
+- **A line just outside the batch axis model's scope is judged at the model's edge, not at a centre
+  read off the corrected axis.** The lock model corrects peak m/z only inside its scope, but a
+  file's centres -- the scorer's `mu` (the anchors' median, or zero for an `axis` file) and
+  calibrate's `cal_mu` -- are fitted on the mostly corrected peaks, so a peak beyond the model's
+  first or last lock, still on the measured axis, was judged against a centre from the other axis:
+  on an EasyIC batch the sub-ppm bar newly corrects (locks up to m/z 129, -0.73 ppm there) the
+  C9-C12 hydrocarbons above it fell from 373 to 35 Assigned per-file rows. A model applied through
+  the sub-ppm branch (largest correction and the locks' raw median under 1 ppm) now CARRIES its
+  correction at its first and its last lock into the scoring centre of every line up to
+  `assign_batch.EDGE_CARRY_DA` (30 Da) beyond it (`AxisModel.edge_carry_record`,
+  `masscal.edge_carry_at`, `PassConfig.axis_edge_carry`): the local scorer judges each matched line
+  at the file's centre plus that value (`score_candidates_local(centre_offset=)`, per line), and
+  every calibrated centre at a line's m/z adds it -- `cal_center` / `z_of`, the isotope-gated
+  recovery, the speculative-residual demote, the labelled and reference-list rescues, the tier
+  calibration (`_calibrate`, `_cal_z`, `ppm_error_cal`), the off-calibration re-arbitration and the
+  degeneracy window -- while calibrate and the tier calibration read an out-of-scope backbone row
+  on the carried scale. No m/z moves. In
+  scope, in gaps and holes (a step there is unseen), past the reach (a curved labelled-nitrate axis
+  bends 0.2-0.4 ppm away from its edge value further out), and on every batch whose model is
+  applied at 1 ppm or more or by the reference ions, nothing changes: those batches run
+  byte-identically, their out-of-scope lines still judged against the in-scope centre. Records:
+  `mass_axis.edge_carry` (also on the model, `wave.stats.edge_carry`), `pattern_scoring.axis_edge_carry`
+  (with `share`), `per_file.axis_edge_carry` (`reach_da`, `m0_carried`); a stand-in inherits it
+  with the snapshot. Replayed offline through the built code on a field campaign's stored runs
+  (truth A/B M0 lines outside the scope, file x line rows passing score >= 0.70 and the mass gate):
+  on the five batches the carry reaches 2,570 -> 3,598 rows (main 1,816), 408 of the 447 rows lost
+  against main recovered (all 370 on the EasyIC field batch: 61 -> 437, main 404), 6 newly lost
+  (4 marginal z flips through calibrate's refit; one line 0.04 Da below a uronium model's first
+  lock, in 2 files, sits 0.7 ppm off the model's end value), 16 gains dropped; of those batches'
+  27,412 in-scope rows 2 change status (one gains through its 37Cl line outside the scope).
+  Batches with no carry (axis not applied, applied at 1 ppm or more, the stepped sentinel axes)
+  replay byte-identically: scored frames, calibration and tiers.
+
 - **The `blended` separability class was 1.39x too wide.** `chem.resolution.d_crit_hwhm`, the
   separation at which two Gaussians of a given height ratio turn bimodal, converted its sigma table
   to HWHM by multiplying by sqrt(2 ln 2) where it divides: equal heights read 2.36 HWHM instead of

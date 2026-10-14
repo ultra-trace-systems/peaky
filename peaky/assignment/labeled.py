@@ -32,6 +32,7 @@ from peaky.chem import contexts as X
 from peaky.io import io_mascope as IO
 from peaky.assignment import blocked as BL
 from peaky.assignment import ledger as L
+from peaky.assignment import masscal as MC
 
 __version__ = "0.2.0"  # + the commit contract (satellites.own_line_verdict); 0.1.1 every refusing gate notes the blocked reading (blocked.py)
 
@@ -156,19 +157,24 @@ def rescue_labeled(client, sample_id, ledger, context_profile, cfg, *,
     cal_mu = getattr(cfg, "cal_mu", None)
     cal_sigma = getattr(cfg, "cal_sigma", None) or 0.5
     Z_TAIL = 2.6
-    def _on_cal(ppm):
+    carry = getattr(cfg, "axis_edge_carry", None)
+
+    def _on_cal(ppm, mz=None):
         if ppm is None or pd.isna(ppm):
             return False
         if cal_mu is None:
             return abs(float(ppm)) <= 1.0
-        return abs((float(ppm) - cal_mu) / cal_sigma) <= Z_TAIL
+        # at the line's m/z: a line just outside the batch axis model's scope is judged
+        # at the centre plus the model's edge (masscal.carried_centre)
+        return abs((float(ppm) - MC.carried_centre(carry, cal_mu, mz)) / cal_sigma) <= Z_TAIL
 
-    def _off_cal_text(ppm) -> str:
+    def _off_cal_text(ppm, mz=None) -> str:
         if ppm is None or pd.isna(ppm):
             return "labeled:off-cal (no ppm)"
         if cal_mu is None:
             return f"labeled:off-cal |ppm|={abs(float(ppm)):.2f}>1.00"
-        return f"labeled:off-cal z={abs((float(ppm) - cal_mu) / cal_sigma):.1f}>{Z_TAIL:.1f}"
+        return (f"labeled:off-cal z={abs((float(ppm) - MC.carried_centre(carry, cal_mu, mz)) / cal_sigma):.1f}"
+                f">{Z_TAIL:.1f}")
 
     def _note(i, cr, gate):
         """A refused reading of an unexplained target, as its blocked reading."""
@@ -194,8 +200,8 @@ def rescue_labeled(client, sample_id, ledger, context_profile, cfg, *,
         # corroboration + not mass-degenerate. Filter candidates BEFORE the winner.
         keep_idx = []
         for j, cr in sub[sub["is_base"]].iterrows():
-            if not _on_cal(cr.get("ppm_error")):        # off instrument accuracy -> coincidence
-                _note(i, cr, _off_cal_text(cr.get("ppm_error")))
+            if not _on_cal(cr.get("ppm_error"), cr.get("sample_peak_mz")):   # off instrument accuracy
+                _note(i, cr, _off_cal_text(cr.get("ppm_error"), cr.get("sample_peak_mz")))
                 continue
             v = C.parse_formula(str(cr["compound_formula"]))
             n15 = v.get(label, 0)

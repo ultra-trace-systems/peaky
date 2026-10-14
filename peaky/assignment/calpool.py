@@ -356,6 +356,10 @@ def apply_pool(ledger: pd.DataFrame, pool: Pool, inputs: PoolInputs, *, audit=No
     # the window: the pooled width about the centre of the rows that stage made Assigned
     won = set(base.loc[base["tier"] == T.TIER_ASSIGNED, "peak_id"]) if len(base) else set()
     cal, centre = lent_calibration(pool, at.loc[(at["role"] == L.ROLE_M0) & at["peak_id"].isin(won), "ppm_error"])
+    if cal is not None and getattr(cfg, "axis_edge_carry", None):
+        # the batch axis model's edge carry: the file's lines just outside the model's scope
+        # are judged in the lent window at its centre plus the model's edge (degeneracy, tiers)
+        cal = T._with_carry(cal, cfg.axis_edge_carry)
     DG.apply_degeneracy(at, cal=cal, context=profile if profile is not None else "ambient-air",
                         adducts=list(inputs.adducts or []) or None, families=tuple(inputs.families or ()),
                         curated=frozenset(inputs.curated or ()), log=(lambda *_: None))

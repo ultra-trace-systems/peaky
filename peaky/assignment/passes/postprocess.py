@@ -1012,7 +1012,10 @@ def rearbitrate_offcal_degenerate(
     if not len(m0):
         return out
     kids_of = ledger.loc[ledger["role"] == L.ROLE_ISO, "parent_peak_id"].value_counts()
-    cal = T._calibrate(m0, kids_of, abs_floor_mda=cfg.cal_abs_floor_mda)
+    # the batch axis model's edge carry rides on the calibration: a winner just outside the
+    # model's scope is judged at the centre plus the model's edge (tiers._cal_z)
+    cal = T._calibrate(m0, kids_of, abs_floor_mda=cfg.cal_abs_floor_mda,
+                       carry=getattr(cfg, "axis_edge_carry", None))
     if cal is None:
         log("[rearbitrate] uncalibrated; off-cal winner re-arbitration skipped")
         return out

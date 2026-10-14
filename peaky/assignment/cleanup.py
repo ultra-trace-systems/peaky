@@ -33,6 +33,7 @@ from peaky.chem import chemistry as C
 from peaky.chem import contexts as X
 from peaky.assignment import degeneracy as D
 from peaky.assignment import fluorine as FL
+from peaky.assignment import masscal as MC
 from peaky.io import io_mascope as IO
 from peaky.assignment import ledger as L
 from peaky.assignment import solvent_clusters as SC
@@ -374,6 +375,7 @@ def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
                if SAT.orbitrap_class(cfg) else None)
     if own_ppm is not None and not np.isfinite(own_ppm):
         own_ppm = None                                # uncalibrated: the 6-mDa reading as before
+    carry = getattr(cfg, "axis_edge_carry", None)      # the batch axis model's edge carry
     pk = ledger.dropna(subset=["mz"]).sort_values("mz")
     mzs = pk["mz"].tolist(); hts = pk["height"].tolist()
     def near(t, tol=0.006):
@@ -426,7 +428,11 @@ def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
         if sub.empty:
             continue
         if mu is not None:
-            sub = sub[((sub["ppm_error"] - mu) / sigma).abs() <= z_max]
+            # at the line's own m/z: the batch axis model's edge carry moves the centre
+            # of a line just outside its scope (masscal.carried_centre)
+            c = (MC.carried_centre(carry, mu, pd.to_numeric(sub["sample_peak_mz"], errors="coerce").to_numpy())
+                 if carry else mu)
+            sub = sub[((sub["ppm_error"] - c) / sigma).abs() <= z_max]
         sub = sub[sub["ion_score"] >= score_floor]
         if sub.empty:
             continue
@@ -459,7 +465,7 @@ def recover_isotope_gated(client, sample_id, ledger, profile, cfg, *,
         if nc.get("N", 0) > 0 or nc.get("S", 0) > 0 or nc.get("P", 0) > 0:
             continue
         ppm = float(chosen["ppm_error"])
-        z = (ppm - mu) / sigma if mu is not None else 0.0
+        z = (ppm - MC.carried_centre(carry, mu, mz)) / sigma if mu is not None else 0.0
         replaced = ""
         if pid in twins:
             row = ledger.loc[ledger.peak_id == pid].iloc[0]
@@ -1913,6 +1919,8 @@ def demote_speculative_residual(ledger: pd.DataFrame, cfg=None, *, log=print) ->
     mu = getattr(cfg, "cal_mu", None)
     sigma = getattr(cfg, "cal_sigma", None) or 0.5
     zacc = getattr(cfg, "cal_z_accept", 2.0)
+    carry = getattr(cfg, "axis_edge_carry", None)      # the batch axis model's edge carry
+    has_mz = "mz" in ledger.columns
     has_ba = "below_assignability" in ledger.columns
     is_m0 = ledger["role"] == L.ROLE_M0 if "role" in ledger.columns else pd.Series(True, index=ledger.index)
     # neutrals with a primary-channel (non-minor) M0 assignment somewhere
@@ -1928,7 +1936,10 @@ def demote_speculative_residual(ledger: pd.DataFrame, cfg=None, *, log=print) ->
         ni = _iso_count(ledger.at[i, "isotopologues"]) if "isotopologues" in ledger.columns else 0
         ad = str(ledger.at[i, "adduct"]) if "adduct" in ledger.columns else ""
         ppm = ledger.at[i, "ppm_error"]
-        z = abs((float(ppm) - mu) / sigma) if (mu is not None and pd.notna(ppm)) else 0.0
+        # at the row's m/z: a row just outside the batch axis model's scope is judged at
+        # the centre plus the model's edge (masscal.carried_centre)
+        centre = MC.carried_centre(carry, mu, ledger.at[i, "mz"]) if carry and has_mz else mu
+        z = abs((float(ppm) - centre) / sigma) if (mu is not None and pd.notna(ppm)) else 0.0
         comm = str(ledger.at[i, "commentary"] or "")
         reason = None
         lead = None            # the lead's setter code (ledger.LEAD_SETTERS); None = hard
