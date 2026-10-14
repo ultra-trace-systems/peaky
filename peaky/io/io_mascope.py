@@ -155,8 +155,13 @@ def axis_edge_carry(sample_id: str) -> dict | None:
         return dict(rec) if rec else None
     given = _OFFLINE_SCORING.get(sid) if sid in _OFFLINE else None
     if isinstance(given, dict) and given.get("axis_edge_carry"):
-        return {k: v for k, v in given["axis_edge_carry"].items() if k != "share"}
+        # the record's own keys (the snapshot adds the sample's `share` and `anchors`)
+        return {k: v for k, v in given["axis_edge_carry"].items() if k in _CARRY_KEYS}
     return None
+
+
+#: the keys of an edge-carry record (axislock.AxisModel.edge_carry_record)
+_CARRY_KEYS = ("reach_da", "slack_ppm", "below", "above")
 
 
 def _carry_share(rec, peaks) -> float | None:
@@ -920,7 +925,7 @@ def detect_adducts(peaks: pd.DataFrame) -> list[str]:
 
 
 def sample_mass_errors(peaks: pd.DataFrame, *,
-                       max_abs_ppm: float = 10.0) -> list[float]:
+                       max_abs_ppm: float = 10.0, carry=None) -> list[float]:
     """The ppm mass errors of the sample's OWN server matches (base ions only).
 
     The sample's anchors: peaks Mascope already attributed to a known species,
@@ -933,14 +938,29 @@ def sample_mass_errors(peaks: pd.DataFrame, *,
     :param max_abs_ppm: Gross-outlier guard. The default is a compromise for the
         offset; a caller that knows the instrument class should pass its
         matching window, since an anchor outside that window is not a match.
+    :param carry: The batch axis model's edge carry (`axis_edge_carry`): an anchor
+        outside the model's scope within its reach sits on the measured axis while
+        the rest are corrected, so its error is read on the carried scale (less
+        the model's edge value, masscal.edge_carry_at) -- the scale the scorer adds
+        the carry back on. None: every error as measured.
     :return: The errors in ppm, in the frame's order.
     """
+    rows = _anchor_errors(peaks, max_abs_ppm)
+    if carry and rows:
+        from peaky.assignment.masscal import edge_carry_at
+        shift = edge_carry_at(carry, np.array([m for _, m in rows], dtype=float))
+        return [p - float(c) for (p, _), c in zip(rows, shift)]
+    return [p for p, _ in rows]
+
+
+def _anchor_errors(peaks: pd.DataFrame, max_abs_ppm: float) -> list[tuple[float, float]]:
+    """(ppm error, m/z) of each anchor `sample_mass_errors` reads, in the frame's order."""
     from peaky.chem import chemistry as C
     cols = {"target_compound_formula", "ionization_mechanism", "mz"}
     if peaks is None or not cols <= set(peaks.columns):
         return []
     iso_col = "target_isotope_formula" in peaks.columns
-    ppms: list[float] = []
+    ppms: list[tuple[float, float]] = []
     for r in peaks.dropna(subset=["target_compound_formula", "mz",
                                   "ionization_mechanism"]).itertuples():
         if iso_col and "[" in str(getattr(r, "target_isotope_formula", "") or ""):
@@ -954,7 +974,7 @@ def sample_mass_errors(peaks: pd.DataFrame, *,
             continue
         p = (float(r.mz) - theo) / theo * 1e6
         if abs(p) <= max_abs_ppm:
-            ppms.append(p)
+            ppms.append((p, float(r.mz)))
     return ppms
 
 
@@ -1070,8 +1090,15 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
     window = resolve_match_tolerance_ppm(kind)
     raw = fetch_peaks(client, sample_id) if peaks is None else peaks
     # An anchor outside the matching window is not a match at this instrument,
-    # so it is not evidence about its accuracy either.
-    anchors = sample_mass_errors(raw, max_abs_ppm=window)
+    # so it is not evidence about its accuracy either. Under the batch axis
+    # model's edge carry an anchor just outside the model's scope is read on the
+    # carried scale: the lines there are scored at this centre PLUS the carry.
+    carry = axis_edge_carry(sample_id)
+    anchors = sample_mass_errors(raw, max_abs_ppm=window, carry=carry)
+    n_carried = 0
+    if carry and anchors:          # the record: how many anchors the carry reached
+        n_carried = int(np.count_nonzero(np.asarray(anchors) != np.asarray(
+            sample_mass_errors(raw, max_abs_ppm=window))))
     mu, sigma = fit_mass_accuracy(anchors)
     if sigma is None and len(anchors) >= MIN_OFFSET_ANCHORS:
         # The fit reports no width and, with it, no offset. The width is
@@ -1084,7 +1111,6 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
     # without the mass term (assignment/selfcentre.py: "self").
     mu_source = "fitted" if len(anchors) >= MIN_OFFSET_ANCHORS else "assumed_zero"
     axis_fit = _AXIS.get(str(sample_id))
-    carry = axis_edge_carry(sample_id)
     own = _SELF_CENTRE.get(str(sample_id))
     if mu_source == "assumed_zero" and axis_fit is not None:
         mu_source = "axis"
@@ -1122,8 +1148,10 @@ def scoring_for_sample(client, sample_id: str, peaks: pd.DataFrame | None = None
            if mu_source == "self" else {}),
         # the batch axis model's edge carry (a sub-ppm model): a line outside its scope
         # within `reach_da` of its first / last lock is scored at this centre plus the
-        # model's correction there; `share` the share of the file's peaks it reaches
-        **({"axis_edge_carry": {**carry, "share": _carry_share(carry, raw)}} if carry else {}),
+        # model's correction there; `share` the share of the file's peaks it reaches,
+        # `anchors` how many of the anchors were read on the carried scale
+        **({"axis_edge_carry": {**carry, "share": _carry_share(carry, raw), "anchors": n_carried}}
+           if carry else {}),
         "fitted_anchors": len(anchors),
         "mz_tolerance_ppm": float(scoring.mz_tolerance_ppm),
         "abundance_floor": float(scoring.abundance_floor),

@@ -1317,7 +1317,8 @@ def stamp_calibrated_ppm(ledger: pd.DataFrame, *, carry=None) -> tuple[float, fl
     `carry` (PassConfig.axis_edge_carry): a row outside the batch axis model's scope
     within its reach has the model's edge value removed too -- its centre is mu plus
     that value (masscal.edge_carry_at at the row's own m/z), so its displayed error sits
-    on the corrected rows' footing.
+    on the corrected rows' footing; mu itself (the core's, or the Assigned rows' median
+    of an uncalibrated file) is read on that carried scale.
 
     Returns (mu, sigma) and stashes them in ledger.attrs, or None if uncalibrable."""
     if "ppm_error" not in ledger.columns:
@@ -1329,9 +1330,14 @@ def stamp_calibrated_ppm(ledger: pd.DataFrame, *, carry=None) -> tuple[float, fl
     if cal is not None:
         mu, sigma = cal
     else:
-        assigned = pd.to_numeric(
-            m0.loc[m0.get("tier") == TIER_ASSIGNED, "ppm_error"],
-            errors="coerce").dropna()
+        sel = m0.get("tier") == TIER_ASSIGNED
+        assigned = pd.to_numeric(m0.loc[sel, "ppm_error"], errors="coerce")
+        if carry and "mz" in m0.columns:
+            # on the carried scale, as the core above: a row past the model's scope
+            # less the model's edge value
+            assigned = assigned - MC.edge_carry_at(
+                carry, pd.to_numeric(m0.loc[sel, "mz"], errors="coerce").to_numpy(dtype=float))
+        assigned = assigned.dropna()
         if not len(assigned):
             return None
         mu, sigma = float(assigned.median()), float("nan")
