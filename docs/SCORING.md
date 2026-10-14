@@ -215,6 +215,36 @@ sample peaks (mz, height, peak_id)        candidate neutral formulas
   +0.9 at m/z 100 to +0.2 at its edge, m/z 173: the peaks above it moved
   0.25-0.36 ppm off their file's centre), and it moved the gaps too.
 
+  **A sub-ppm model is applied without the locks that disagree with their
+  neighbours.** The branch's verdict is the as-built model's (`_lock_model`: the
+  apply bar, the predictive bar and the half-the-correction cv test read the model
+  `axislock.fit` built); the model then APPLIED is its spline segments refitted
+  (`AxisModel.refit`, `assign_batch.LOCK_REFIT_PPM` = 0.5): each segment's
+  non-bright locks lose, one at a time and the worst first, the lock furthest
+  off a Theil-Sen line through its `axislock.LOCAL_K` (6) nearest locks while it
+  sits more than 0.5 ppm off, and the smoothing spline (GCV) is redrawn through the
+  rest on the segment's own grid. A smoothing spline drawn through a few
+  co-located locks that read 0.6-0.9 ppm off their neighbours -- a lock on a line
+  blended with a brighter ion's 13C line, its labelled alias -- bends towards them:
+  on a labelled-nitrate batch (cv 0.094 ppm, largest correction 0.90) it rose
+  +0.10..+0.15 ppm over m/z 261-269 and corrected a true cluster line by +0.23 ppm,
+  which then fell out of Good in all 7 files it was Good in before the branch
+  existed; the refit drops 12 of its 297 locks and corrects that line by +0.06.
+  Worst first, because judged all at once a cluster of high locks drags its good
+  neighbours' lines up with it (two good locks, +0.006 and -0.159 ppm, went that
+  way). Line (walk) segments, every domain, the grid and the verdict stay as
+  built; a segment that drops nothing, or whose refit would bend faster than
+  `SPLINE_MAX_SLOPE`, is the as-built segment, so a model that drops nothing is
+  applied byte for byte as built (on a field campaign's five sub-ppm batches: 0,
+  0, 0, 1 and 47 locks dropped). The edge carry is read off the KEPT locks. 0.4 ppm
+  starves the GCV fit (its smoothing parameter fell 297 -> 47 on that batch);
+  0.75 leaves the bump. `mass_axis.refit` (also `mass_axis.wave.stats.refit`)
+  records `off_ppm`, `k`, `n_dropped`, `dropped` (`mz`, `ion`, `ppm` and `off_ppm`,
+  how far off the refitted model each sat), `max_abs_ppm_built` and `max_abs_ppm`
+  (the refitted model's); `mass_axis.max_abs_ppm` stays the verdict's, and
+  `tables/mass_axis_locks.csv` keeps every lock the fit found. A model at 1 ppm or
+  more is never refitted.
+
   **An offline sample has neither a record nor anchors.** A table served from
   memory (`register_offline_sample`: a scorecard decoy arm, the trace-first
   synthetic sample, a test) has no server record to name its class and usually

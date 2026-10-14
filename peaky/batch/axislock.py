@@ -200,6 +200,8 @@ EDGE_LOCK_DA = 5.0     # the edge carry's value at an end (edge_carry_record): t
 EDGE_LOCKS_MIN = 3     # fewer locks there: the model's own end value. A median of three ignores one
                        # stray lock (2.5 % of those 44 models' locks read > 0.5 ppm off the model,
                        # 0.8 % > 1 ppm); an end read off one or two would carry it 30 Da
+REFIT_SEL_DA = 1e-4    # a lock table's row belongs to a segment within this of its domain's ends (Da): the
+                       # table rounds m/z to 5 decimals, the domains are the unrounded end locks
 CACHE_PPM = 16.0       # the walk's candidate cache spans this around each bin (> MAX_ERR_PPM + NARROW_PPM)
 RANSAC_DRAWS = 2000
 RANSAC_MAX_SLOPE = 0.1  # ppm per Da; the steepest smooth stretch measured is ~0.07
@@ -590,6 +592,45 @@ class AxisModel:
         rec = (self.stats or {}).get("edge_carry")
         return dict(rec) if rec else None
 
+    def refit(self, locks, off_ppm: float, k: int = LOCAL_K) -> tuple["AxisModel", list]:
+        """The model with each SPLINE segment refitted without the locks that disagree with
+        their neighbours (assign_batch._lock_model's sub-ppm branch, LOCK_REFIT_PPM): the
+        segment's non-bright locks of `locks` (the fit's lock table: mz / ppm / bright) lose,
+        one at a time and the worst first (`_worst_first`), the lock furthest off a Theil-Sen
+        line through its `k` nearest while that distance exceeds `off_ppm`; the smoothing
+        spline (GCV, `_Curve`) is refitted on the rest and resampled on the segment's own grid.
+        Line segments, every domain (lo / hi, holes) and the grid stay as built; a segment that
+        drops nothing -- or whose refit would bend faster than SPLINE_MAX_SLOPE -- is the
+        as-built segment, so a model that drops nothing is the as-built model. The refitted
+        segment's `n` counts the locks kept, `refit_dropped` those dropped. Returns (model,
+        the dropped rows' index labels in `locks`); `self` is not changed."""
+        t = pd.DataFrame(locks) if locks is not None else pd.DataFrame()
+        out = AxisModel(segments=[dict(s) for s in self.segments], n_locks=self.n_locks, stats=dict(self.stats))
+        if not len(t) or not {"mz", "ppm"} <= set(t.columns):
+            return out, []
+        m = pd.to_numeric(t["mz"], errors="coerce").to_numpy(dtype=float)
+        p = pd.to_numeric(t["ppm"], errors="coerce").to_numpy(dtype=float)
+        bright = (t["bright"].astype(str).str.strip().str.lower().eq("true").to_numpy(dtype=bool)
+                  if "bright" in t.columns else np.zeros(len(t), dtype=bool))
+        ok = np.isfinite(m) & np.isfinite(p) & ~bright
+        dropped = []
+        for si, seg in enumerate(out.segments):
+            if seg["kind"] != "spline":
+                continue
+            sel = np.flatnonzero(ok & (m >= seg["lo"] - REFIT_SEL_DA) & (m <= seg["hi"] + REFIT_SEL_DA))
+            sel = sel[np.argsort(m[sel], kind="stable")]
+            keep = _worst_first(m[sel], p[sel], off_ppm, k)
+            if keep.all():
+                continue
+            cur = _Curve(m[sel][keep], p[sel][keep])
+            if cur.max_slope()[0] > SPLINE_MAX_SLOPE:
+                continue
+            x = np.asarray(seg["x"], dtype=float)
+            out.segments[si] = dict(seg, y=np.asarray(cur(x), dtype=float), n=int(keep.sum()),
+                                    refit_dropped=int((~keep).sum()))
+            dropped += [t.index[i] for i in sel[~keep]]
+        return out, dropped
+
     def max_abs_ppm(self) -> float:
         """The largest correction the model applies anywhere in its domains."""
         vals = [np.abs(self._eval(s, np.linspace(s["lo"], s["hi"], 400))).max() for s in self.segments]
@@ -730,6 +771,41 @@ def _local_outliers(x, y, k: int = LOCAL_K) -> np.ndarray:
         icpt = float(np.median(ya - slope * xa))
         out[i] = abs(y[i] - (icpt + slope * x[i])) > OFF_CURVE_PPM
     return out
+
+
+def _local_dev(x, y, k: int) -> np.ndarray:
+    """|y - the Theil-Sen line through each lock's k nearest locks (itself left out)| (x sorted)."""
+    n = len(x)
+    dev = np.zeros(n)
+    for i in range(n):
+        # x sorted: the k nearest lie within k places either side
+        cand = np.r_[max(0, i - k):i, i + 1:min(n, i + k + 1)]
+        nb = cand[np.argsort(np.abs(x[cand] - x[i]), kind="stable")[:k]]
+        xa, ya = x[nb], y[nb]
+        dx = xa[:, None] - xa[None, :]
+        dy = ya[:, None] - ya[None, :]
+        ok = dx > 0.5
+        slope = float(np.median(dy[ok] / dx[ok])) if ok.any() else 0.0
+        dev[i] = abs(y[i] - (float(np.median(ya - slope * xa)) + slope * x[i]))
+    return dev
+
+
+def _worst_first(x, y, off_ppm: float, k: int = LOCAL_K) -> np.ndarray:
+    """The keep mask of AxisModel.refit: while the lock furthest off the Theil-Sen line
+    through its k nearest kept locks sits more than `off_ppm` off it, that one lock goes
+    (and no fewer than k + 1 stay). One per round: judged all at once, a cluster of high
+    locks drags its good neighbours' lines up and takes them out with it (on a labelled-
+    nitrate batch two good locks, +0.006 and -0.159 ppm, went with a +0.6..+0.9 cluster)."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    keep = np.ones(len(x), dtype=bool)
+    while keep.sum() > k + 1:
+        idx = np.flatnonzero(keep)
+        dev = _local_dev(x[idx], y[idx], k)
+        j = int(np.argmax(dev))
+        if dev[j] <= off_ppm:
+            break
+        keep[idx[j]] = False
+    return keep
 
 
 def _ransac(m, e, w, *, tol=SEG_TOL_PPM, seed=0):
