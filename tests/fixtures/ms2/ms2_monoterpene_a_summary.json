@@ -1,0 +1,153 @@
+{
+ "parent_peaks": [
+  137.1321,
+  155.1429,
+  155.1559
+ ],
+ "groups": [
+  {
+   "parent_peak_mz": 137.1321,
+   "activation": "hcd1.00",
+   "hcd_energy": [
+    4.05
+   ],
+   "scan_count": 7,
+   "t_min": 55.028905008316045,
+   "t_max": 70.74163613128661
+  },
+  {
+   "parent_peak_mz": 137.1321,
+   "activation": "hcd3.00",
+   "hcd_energy": [
+    4.4
+   ],
+   "scan_count": 5,
+   "t_min": 73.50115499305728,
+   "t_max": 83.97651395606994
+  },
+  {
+   "parent_peak_mz": 137.1321,
+   "activation": "hcd5.00",
+   "hcd_energy": [
+    4.76
+   ],
+   "scan_count": 9,
+   "t_min": 86.7376650314331,
+   "t_max": 107.68465194511415
+  },
+  {
+   "parent_peak_mz": 137.1321,
+   "activation": "hcd9.00",
+   "hcd_energy": [
+    5.46
+   ],
+   "scan_count": 6,
+   "t_min": 110.4446631412506,
+   "t_max": 123.53868398475649
+  },
+  {
+   "parent_peak_mz": 137.1321,
+   "activation": "hcd20.00",
+   "hcd_energy": [
+    7.41
+   ],
+   "scan_count": 6,
+   "t_min": 126.29998597908025,
+   "t_max": 139.3937469463348
+  },
+  {
+   "parent_peak_mz": 155.1429,
+   "activation": "hcd1.00",
+   "hcd_energy": [
+    4.07
+   ],
+   "scan_count": 11,
+   "t_min": 305.0691591243743,
+   "t_max": 331.2541740875244
+  },
+  {
+   "parent_peak_mz": 155.1429,
+   "activation": "hcd5.00",
+   "hcd_energy": [
+    4.87
+   ],
+   "scan_count": 7,
+   "t_min": 334.01426300811767,
+   "t_max": 349.7266970615387
+  },
+  {
+   "parent_peak_mz": 155.1429,
+   "activation": "hcd15.00",
+   "hcd_energy": [
+    6.87
+   ],
+   "scan_count": 5,
+   "t_min": 352.4862230758667,
+   "t_max": 362.96138295936584
+  },
+  {
+   "parent_peak_mz": 155.1559,
+   "activation": "hcd1.00",
+   "hcd_energy": [
+    4.07
+   ],
+   "scan_count": 7,
+   "t_min": 218.08550414848324,
+   "t_max": 233.79749092864992
+  },
+  {
+   "parent_peak_mz": 155.1559,
+   "activation": "hcd5.00",
+   "hcd_energy": [
+    4.87
+   ],
+   "scan_count": 5,
+   "t_min": 236.55777511405944,
+   "t_max": 247.03295097160336
+  },
+  {
+   "parent_peak_mz": 155.1559,
+   "activation": "hcd15.00",
+   "hcd_energy": [
+    6.87
+   ],
+   "scan_count": 4,
+   "t_min": 249.79294810104363,
+   "t_max": 257.6495700817108
+  },
+  {
+   "parent_peak_mz": 155.1559,
+   "activation": "hcd25.00",
+   "hcd_energy": [
+    8.88
+   ],
+   "scan_count": 6,
+   "t_min": 260.40965804862975,
+   "t_max": 273.50234994697576
+  }
+ ],
+ "hcd_energy_map": {
+  "137.1321": [
+   4.05,
+   4.4,
+   4.76,
+   5.46,
+   7.41
+  ],
+  "155.1429": [
+   4.07,
+   4.87,
+   6.87
+  ],
+  "155.1559": [
+   4.07,
+   4.87,
+   6.87,
+   8.88
+  ]
+ },
+ "isolation_width": 0.4,
+ "ms1_scan_count": 61,
+ "ms2_scan_count": 78,
+ "parent_peak_tolerance": 0.001
+}

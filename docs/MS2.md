@@ -9,6 +9,8 @@ Senior's rules — the arithmetic this module is built on).
 **Code:** `peaky/ms2/subformula.py` (public API re-exported by `peaky.ms2`), plus
 `chemistry.ion_mass`. Pure arithmetic: no Mascope, no I/O, no plotting. The input
 is an MS2 peak list and the window's ion formulas; the output is a long table.
+Where the peak lists come from — Mascope's MS2 endpoints read into energy-resolved
+tables by `peaky/ms2/sources.py` and `peaky ms2 list | extract` — is §10.
 
 > Keep this in sync with the code. Every threshold below is a named constant, a
 > default argument or a literal in `subformula.py`; if you change one there,
@@ -346,3 +348,207 @@ An unexplained row's full set of values is spelled out in §3, step 8.
 | `assign_fragments` | peaks × window ions → the long table |
 | `best_readings` | rank-1 rows + unexplained rows |
 | `chemistry.ion_mass` | exact m/z of a singly-charged ion from its own formula |
+
+---
+
+## 10. The Mascope source — `peaky ms2 list | extract`
+
+**Code:** `peaky/ms2/sources.py` — pure table builders on the server's payloads
+(`parse_activation`, `spectra_table`, `parents_table`, `window_table`,
+`inventory_row`, `hidden_tail_s`, `locate_precursor`) and two thin orchestrators
+(`list_sample`, `extract_sample`) that call only the fetchers in
+`peaky/io/io_mascope.py` (`fetch_ms2_summary`, `fetch_ms2_spectra`,
+`fetch_ms2_ms1`, `fetch_sample_record`), which stays the one module that talks to
+Mascope. Energy-resolved spectra need **Mascope ≥ 1.8** (mascope-sdk ≥ 2026.9.15,
+the first release with `by_activation` and the summary's groups); an older server
+is read and labelled energy-averaged. Read-only: nothing is written to the server.
+
+### 10.1 The payload contract
+
+| call (SDK) | what it answers | what the source reads |
+| --- | --- | --- |
+| `samples.ms2(id).get_summary()` | `parent_peaks`, `groups` — one per (parent, activation): `parent_peak_mz`, `activation` (`'hcd40.00'` = NCE 40), `hcd_energy` (VOLTS, a list, usually one value), `scan_count`, `t_min`, `t_max` — plus `hcd_energy_map`, `isolation_width`, `ms1_scan_count`, `ms2_scan_count`, `parent_peak_tolerance` | scan counts, times, volts, the isolation width, the MS2 count |
+| `get_averaged_centroids(by_activation=True, noise_threshold=3)` (`ms2 list`, which reads only the keys: the SDK's default 10) | one averaged centroid spectrum per group, keyed `'<parent>@<activation>'` (`'137.1321@hcd1.00'`): `parent_peak_mz`, `activation`, `mz`, `intensity`, `resolution`, `signal_to_noise` | the spectra |
+| `get_ms1_centroids(ppm=1)` | `mz`, `intensity`, `resolution`, `signal_to_noise` over the whole MS1 range | the isolation-window inventory |
+| the sample's listing row / `samples.get(id)` | name, `datetime_utc`, polarity, `instrument_type`, `t0`, `t1`, `length` | the hidden tail; a TOF sample is skipped |
+
+`get_timeseries` is not read yet (breakdown curves are a later stage). Parents are
+always the **server's keys** (`parent_mz`), never re-derived.
+
+### 10.2 Fallbacks
+
+| the server answers | the source | `status` |
+| --- | --- | --- |
+| an MS1-only sample: every summary key present, `ms2_scan_count` 0 | asks for nothing else; empty tables with their dtypes | `no MS2` |
+| … and the file runs past its last ingested scan | same, with the tail and the remedy in `note` | `MS2 may be hidden` |
+| `get_summary` HTTP 400 "Multiple isolation widths found for MS2 scans" (a known server defect; the centroids still work) | `io_mascope.MS2SummaryRefused` (never retried, the URL dropped); spectra from the centroid keys, parents and activations from those keys; `scan_count`, `t_min`, `t_max`, `hcd_v`, `isolation_width` NaN; the reason in every note; the window needs `--iso-width` | `summary refused: <reason>` |
+| a server older than 1.8: `by_activation` ignored, per-parent spectra with no `activation` / `parent_peak_mz` fields; a summary without `groups`, whose `hcd_energy_map` holds the scan-weighted MEAN volt of each parent (one per step of a stepped energy: 5.16 V for a parent measured at 4.05–7.41 V) | spectra keyed by parent, `activation` `''`, `nce` NaN, `hcd_v` the server's mean (`hcd_v_values` the step means, when several) with the note that it is a mean and not a voltage applied, `energy_resolved` False, and `server returns energy-averaged MS2 only (Mascope < 1.8): per-energy spectra and breakdown curves need a newer server`; the inventory's `hcd_v_min` / `hcd_v_max` stay NaN (a range of means is not the volts applied) | `energy-averaged server` |
+| a current server asked without `by_activation` (not what `peaky ms2` asks; the builders take it): one spectrum per parent, `activation` `''` | one row per parent, `nce` and `hcd_v` NaN, `hcd_v_values` the volts its groups span, `scan_count` / `t_min` / `t_max` over those groups; no per-group rows; `energy_resolved` False and said in the note | `ok` |
+| summary groups and centroid keys that disagree | a group no spectrum is keyed to keeps a row (`n_peaks` 0, the group's numbers, note "the summary lists this group but no centroid spectrum is keyed to it …") but is not counted in `n_spectra` / `nce`; a spectrum no group matches keeps its peaks, its summary-only fields NaN (note "no summary group matches …") | `ok` |
+| no summary at all (`None`) | the spectra if the centroids answer | `no summary` |
+| `ms2 extract` only: no summary, and the centroid call answers HTTP 400 "… No scans found matching the specified filters …" (no MS2 scan in the sample's ingested window: with no summary to count on, the centroid call is made, and the server answers that rather than an empty answer). `ms2 list` asks no centroids here and reads `no summary` | empty tables, no MS1 request, `NO_MS2_SCANS_NOTE`; with a hidden tail the status is `MS2 may be hidden` and the tail's note says why. After a REFUSED summary, with a summary that counts MS2 scans, or for any other error, it is raised as below | `no MS2` |
+| a summary that counts MS2 scans but groups none of them (the server groups a scan by parent and activation, and serves a spectrum for it, only when it can read the scan's event `ms2 <m/z>@<activation>`) | no spectrum can exist; the note gives the count and says no noise threshold brings one back | `MS2 unreadable` |
+| … groups some of them: the groups' `scan_count`s add up to less than `ms2_scan_count` | the note gives how many scans are in no group (and so in no spectrum) | `ok` |
+| groups, but an empty centroid answer | the note says the centroid answer holds no spectrum for the summary's groups (the S/N floor empties a spectrum's lists, never its key) | `ok` |
+| a TOF sample (its listing row's / record's `instrument_type`; the server reads MS2 from Orbitrap raw files only and answers anything else HTTP 500) | asks nothing after the record; empty tables | `not an Orbitrap sample` |
+| the MS1 centroid call fails for this sample (`is_sample_error`: its HTTP 400 "No scans found matching the specified filters" for a sample window that holds only the MS2 block, its own 504 "MS1 centroid extraction timed out after 120s") | the MS2 tables already read are kept and written; the window is empty, and a note gives the server's reason (`WINDOW_FAILED_NOTE`); `--no-window` skips that request. A server or connection failure on it stops the loop as below | unchanged (e.g. `ok`) |
+| one sample's failure (`io_mascope.is_sample_error`): an HTTP 400 / 404 / 409 / 422 / 500; the API's own 403 (`is_api_403`: its JSON answer, not a proxy's page — how the server answers an unknown or stale id); the MS2 endpoints' own 504 "… timed out after 120s for sample" (`is_ms2_compute_timeout`); an unreadable payload | peaky adds no retry of its own — except that the sample record (`samples.get`) retries a 500 with the back-off — but the SDK's transport has already re-sent a 504 up to four times (2 / 4 / 8 s), so a compute timeout costs about four 120-s server computations; that sample's row / console line, its message without the server's address, and a hint chosen by the HTTP status, never by the message's digits (a stale id: re-list the ids); the other samples go on, the `--out` CSV is written, and the command exits 1 naming the failed samples | `error: <exception type>` |
+| a 401 (raised at once, no back-off); a proxy's WAF 403, a 429, a gateway 502 / 503 / 504 / 521 / 522 (each retried with peaky's back-off, 2 / 4 / 8 s — and a 429 / 502 / 503 / 504 already re-sent up to four times by the SDK's transport underneath); or a server that cannot be reached (the SDK's `MascopeConnectionError` / `MascopeTimeoutError`, raised after the SDK's own four attempts and not retried again) | the loop stops there (asking on only extends a block, or waits on a server that is down); what was read is written; exit 1 says how many samples were not asked | `error: <exception type>` |
+| anything else | — | `ok` |
+
+### 10.3 Rules and constants
+
+All in `peaky/ms2/sources.py`.
+
+| constant | value | role |
+| --- | --- | --- |
+| `DEFAULT_NOISE_THRESHOLD` (`--noise-threshold`) | 3 | the server's S/N floor for the averaged MS2 centroids `ms2 extract` asks for, below the SDK's default of 10: on the 2026-09-11 monoterpene standard A the [M+H]⁺ window's spectra hold 19–21 peaks at S/N 10 and 25–30 at S/N 3, and ions the raw-file breakdown tracked at 300+ counts per scan (C4H9⁺ at NCE 5, C6H7⁺ at NCE 20) are only in the S/N 3 ones; at 0 the lists fill with noise centroids |
+| `ms1_ppm` (`--ms1-ppm`) | 1 | MS1 centroid binning for the window inventory |
+| `with_window` (`--no-window` turns it off) | True | ask for the MS1 centroids and build the window inventory |
+| `WINDOW_PAD_DA` | 0.005 Da | the inventory reaches ±(isolation_width/2 + pad) around the parent key |
+| `PRECURSOR_SEARCH_PPM` / `_MDA` | 10 ppm / 5 mDa | where the precursor is searched for around the key: `max(ppm·m/z·1e-6, mDa·1e-3)` |
+| `PRECURSOR_MIN_SHARE` | 0.10 | a candidate holds ≥ 10 % of the strongest peak in that search window |
+| `PRECURSOR_TRACK_PPM` / `_MDA` | 5 ppm / 0.5 mDa | how close a spectrum's peak must be to the located precursor |
+| `KEY_OFFSET_NOTE_MDA` | 1.0 mDa | a precursor this far from its key is noted |
+| `HIDDEN_TAIL_MIN_S` | 0.5 s | `length − t1` above it is reported |
+
+**The precursor** (`locate_precursor`): among the peaks within the search window
+of the key that hold ≥ `PRECURSOR_MIN_SHARE` of the strongest one, the nearest to
+the key (the stronger on a tie). It is located **once per parent**, in its
+lowest-NCE spectrum that holds a candidate, and each spectrum's `precursor_mz` /
+`precursor_intensity` is its peak within the tracking tolerance of that m/z — NaN
+where there is none (spent, or under the noise threshold), never a neighbour. Why
+both clauses: a key typed with two decimals (`137.13` on the 2026-09-11
+monoterpene standard B) sits 2.3 mDa below its C10H17⁺ precursor, with < 1 %
+satellites at −1.3 / −2.2 mDa NEARER to it — nearest-alone picks a satellite; and
+at NCE 5 in the 2026-09-10 file's 137.0572 window the co-isolate 2.2 mDa above the
+precursor is the stronger peak (19 % vs 13 %) — strongest-alone picks the
+co-isolate. The keys of the other 41 spectra in these files sat 0.02–0.35 mDa from
+their precursors, a precursor wanders ≤ 0.12 mDa across its energies, and the
+nearest other peak sat 1.9 mDa from one. The same rule marks `is_parent` in the
+MS1 window.
+
+### 10.4 Outputs
+
+`peaky ms2 extract --sample-id ID [ID ...]` writes, per sample, to
+`<out-dir>/ms2/<sample id>/` (`--out-dir`, else `$PEAKY_OUTPUT_DIR`, else
+`~/peaky-output`; a re-run overwrites the folder):
+
+| file | content |
+| --- | --- |
+| `ms2_spectra.parquet` + `.csv` | the long spectra table |
+| `ms2_parents.csv` | one row per spectrum |
+| `ms2_window.csv` | the MS1 isolation-window inventory (empty, with its header, when skipped) |
+| `ms2_manifest.json` | sample, `status`, `energy_resolved`, notes, the server's refusal reason, scan counts, `hidden_tail_s`, the parameters (incl. the isolation width used and where it came from), counts (`spectra` = the spectra the centroid answer holds; `parents_rows` = rows of `ms2_parents.csv`), each file's sha1, and the code identity (package / module versions, git, deps — `reporting.provenance`). No credentials, no server URL |
+
+A sample that fails writes nothing (its console line says why) and the others
+go on; the command then exits 1 naming it. A failed MS1 call fails only the
+window: the sample's MS2 tables are written, `ms2_window.csv` is empty and the
+manifest's notes give the server's reason. `--no-window` skips the window and
+its MS1 request.
+
+**Spectra** (`SPECTRA_COLUMNS`, one row per centroid; ordered by parent, NCE —
+none last — activation, then m/z): `sample_id`, `spectrum` (the server's key),
+`parent_mz` (the server's), `activation`, `kind` (`'hcd'`), `nce`, `hcd_v` (mean
+of the group's volts; NaN when unknown), `hcd_v_values` (`;`-joined, only when
+there is more than one value; for a current server's energy-averaged spectrum
+every volt its groups span), `scan_count`, `t_min`, `t_max` (s),
+`energy_resolved`, `mz`,
+`intensity`, `resolution`, `signal_to_noise`. From a server older than 1.8,
+`hcd_v` of the energy-averaged spectrum is the server's mean over all of the
+parent's scans (the note says so). One spectrum,
+`spectra[spectra.spectrum == key]`, is a peak list `assign_fragments` reads as it
+is; `mass_offset([(precursor_mz, ion)])` from the parents table recalibrates it.
+
+**Parents** (`PARENTS_COLUMNS`, one row per spectrum, plus one per summary group
+the centroid answer holds no spectrum for): the spectrum's metadata as above,
+`isolation_width` (the server's; NaN when refused), `n_peaks`, `tic` (summed
+intensity), `precursor_mz`, `precursor_intensity`, `energy_resolved`, `note`. No
+survival, E50 or other breakdown numbers — that is the next stage.
+
+**Window** (`WINDOW_COLUMNS`, per parent then m/z): `sample_id`, `parent_mz`,
+`mz`, `offset_da` (from the key), `intensity`, `share` (of the window's summed
+intensity), `resolution`, `signal_to_noise`, `is_parent`. Every centroid is kept
+whatever its S/N — the MS1 list carries noise centroids at S/N < 1; filter on
+`signal_to_noise`. Overlapping windows list a centroid under each parent (the
+2026-09-11 standard A's 155.1429 and 155.1559 windows hold each other's
+precursor: 155.1559 is 50 % of the 155.1429 window).
+
+`peaky ms2 list (--batch B [--dataset D] | --sample-id ID [ID ...]) [--out CSV]`
+prints one inventory row per sample (`INVENTORY_COLUMNS`, the CSV carries all of
+them): `sample_id`, `name`, `datetime_utc`, `polarity`, `ms1_scans`,
+`ms2_scans`, `n_parents`, `parents` (the server's keys, `;`-joined), `n_spectra`,
+`nce` (`;`-joined, of the spectra the row counts), `hcd_v_min` / `hcd_v_max`
+(the summary groups' volts; NaN from a server older than 1.8), `isolation_width`,
+`energy_resolved`, `hidden_tail_s`, `status`, `note`. It sends one summary
+request per sample, sequentially, plus the sample's record with `--sample-id`
+(a batch listing supplies the rows) and the centroids of a sample whose summary
+is refused (so its row still names parents and NCEs); a TOF sample costs none.
+It refuses more than `--max-samples` (100) samples — a long burst is what trips
+the server's WAF. A sample that fails gets an `error: <type>` row and the others
+go on (§10.2); `--out` is always written.
+
+### 10.5 Gotchas
+
+- **Count, never shape.** An MS1-only sample answers a full scaffold (every key,
+  empty lists); "no MS2" is `ms2_scan_count == 0`, and a scaffold-shaped answer
+  that counts scans is not "no MS2". With no summary at all, `ms2 extract` reads
+  it off the centroid call's HTTP 400 "No scans found" (never with a hidden tail,
+  which reads `MS2 may be hidden`).
+- **The parent is the server's key**, the method's isolation centre as typed, not
+  the measured precursor (`precursor_mz`). Query the server by the key: its
+  time-series endpoint returns nothing for 137.1321 on a sample keyed 137.13.
+- **Hidden tail.** An ingest that predates the server's MS2-window fix stops at
+  the MS1 block; MS2 scans recorded after it are missing until the sample is
+  reprocessed on the server. `hidden_tail_s = length − t1` when > 0.5 s (the
+  2026-09-11 standard B: 210.5 s); it is reported, never read as "no MS2".
+- **NCE and volts are both reported and never converted.** The volts one NCE
+  applies depend on the precursor m/z: NCE 1 is 4.05 V at m/z 136 and 4.28 V at
+  m/z 315 in the 2026-09-10 file.
+- **An older server's volts are means.** Before 1.8 the summary's
+  `hcd_energy_map` holds each parent's mean volt over all its scans, a number
+  the instrument never applied; it is reported as `hcd_v` with a note, never
+  as a range.
+- **`noise_threshold` is applied by the server** (S/N; `ms2 extract` asks for 3,
+  the SDK's default is 10); it is not a peaky filter, and the manifest records
+  the value used. A weak fragment missing from a spectrum may be under the floor:
+  re-extract lower before calling it absent.
+- **Energy-averaged spectra blend every step** of a stepped-energy acquisition;
+  they are labelled (`energy_resolved` False), never passed off as one energy.
+- **The window needs an isolation width.** A refused summary has none:
+  `--iso-width W` supplies it (and, when given, replaces the server's).
+- **The window is optional; the spectra are not.** The MS1 centroids feed the
+  window only, so a sample whose MS1 call fails keeps its MS2 tables (§10.2).
+- **Retries go by the HTTP status, never by the error's text.** The SDK
+  appends the URL, whose sample id can spell `403` or `500`; peaky adds no
+  retry to a sample's own failure (§10.2; the sample record retries a 500) and
+  retries a WAF block / rate limit / gateway error with back-off
+  (`_MS2_RETRY_STATUS`). A 403 is a WAF block only when it is a proxy's page:
+  the API's own 403 means this id (unknown, stale, or not the token's to
+  read). The console hint goes by the status too: a 500's `(ref: …)` can spell
+  `403`.
+- **The SDK retries underneath.** Its transport re-sends a 429 / 502 / 503 /
+  504 and a connection failure up to four times (2 / 4 / 8 s) before peaky
+  sees it, the MS2 endpoints' own compute-timeout 504 included: that answer
+  costs about four 120-s computations on the server (≈ 8 min), which peaky
+  cannot shorten without bypassing the SDK. A gateway error peaky retries
+  can reach the server up to 16 times.
+- **No server address in any output.** An error's message is kept without its
+  URL and without the host urllib3 names bare ("Failed to resolve '…'",
+  "Connection to … timed out") or the configured `MASCOPE_URL`'s
+  (`io_mascope.server_error_text`).
+
+### 10.6 Code map
+
+| function | role |
+| --- | --- |
+| `io_mascope.fetch_ms2_summary` | `get_summary`; the isolation-width 400 → `MS2SummaryRefused(reason)` |
+| `io_mascope.fetch_ms2_spectra` / `fetch_ms2_ms1` / `fetch_sample_record` | the centroids (`by_activation`, `noise_threshold`), the MS1 centroids, the sample record |
+| `io_mascope.server_error_text` / `is_sample_error` / `is_api_403` / `is_ms2_compute_timeout` | an error's message without the server's address; one sample's failure vs the server's or the connection's; the API's own 403 vs a proxy's; the server's compute timeout vs a gateway's |
+| `parse_activation` / `spectrum_key` / `is_energy_averaged` | `'hcd40.00'` → `('hcd', 40.0)`; the server's key; the < 1.8 answer |
+| `spectra_table` / `parents_table` / `window_table` | the three tables |
+| `locate_precursor` | the precursor rule (§10.3) |
+| `inventory_row` / `inventory_frame` / `hidden_tail_s` | the `ms2 list` row |
+| `skipped_row` / `error_row` / `is_tof` | the row of a TOF sample (asked nothing) and of a sample that failed |
+| `list_sample` / `extract_sample` | the orchestrators (client in, rows / `SampleMS2` out) |
+| `manifest` | the `ms2_manifest.json` record |

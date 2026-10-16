@@ -223,6 +223,11 @@ peaky batch ... --trace-first --resolving-power 6500
 peaky publish output/<run>/<sample>_<stamp>_ledger.csv --dry-run
 peaky publish output/<run>/<sample>_<stamp>_ledger.csv
 
+# MS2 (Mascope >= 1.8): what each sample holds, then energy-resolved spectra +
+# isolation-window tables per sample (docs/MS2.md §10)
+peaky ms2 list    --batch "<your batch>" --dataset "<your workspace>"
+peaky ms2 extract --sample-id <ID...> --out-dir ~/peaky-output
+
 # organise data — the write API (--dry-run previews, sends nothing; deletes need --yes)
 peaky curate tree --deep                                  # read the workspace/dataset/batch layout
 peaky curate new-dataset  --workspace "<ws>" --name "<name>"

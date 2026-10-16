@@ -14,6 +14,8 @@ Subcommands:
                  inspector, batch overview, verification loop)
   curate         organise data (write API): create/rename/copy/move workspaces,
                  datasets, batches, samples (--dry-run previews; deletes need --yes)
+  ms2            read MS2 from Mascope: `ms2 list` (what each sample holds),
+                 `ms2 extract` (energy-resolved spectra + window inventory tables)
   mcp            serve the pipeline over MCP (ChatGPT / Claude Desktop / Cursor)
 
 Run `peaky <cmd> --help` for each. Heavy work runs on the host Python
@@ -25,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,7 +54,12 @@ def _require_creds() -> None:
 
 def _friendly_server_error(e: Exception) -> str | None:
     """Map a raw SDK/HTTP exception to an actionable hint, or None if unrecognised."""
-    s = f"{type(e).__name__}: {e}".lower()
+    return _friendly_hint(f"{type(e).__name__}: {e}")
+
+
+def _friendly_hint(s: str) -> str | None:
+    """`_friendly_server_error` on an error's text ('<type>: <message>')."""
+    s = s.lower()
     if "403" in s or "attention required" in s or "cloudflare" in s:
         return ("Mascope is rate-limiting you (Cloudflare WAF 403). Wait 15-30 min "
                 "with NO traffic, then retry — polling extends the block.")
@@ -981,6 +989,196 @@ def _curate_rename(c, args):
     return c.update_batch(bid, name=args.name, description=args.desc)
 
 
+#: What `peaky ms2 list` prints (the --out CSV carries every inventory column).
+MS2_LIST_SHOWN = ("sample_id", "name", "ms2_scans", "n_parents", "n_spectra", "nce",
+                  "energy_resolved", "status")
+
+
+def cmd_ms2(args) -> None:
+    """MS2 from Mascope (peaky/ms2/sources.py): `list` (one inventory row per
+    sample) and `extract` (per-sample tables + manifest). Read-only."""
+    if args.ms2_verb == "list":
+        _ms2_list(args)
+    elif args.ms2_verb == "extract":
+        _ms2_extract(args)
+    else:
+        sys.exit(f"unknown ms2 verb {args.ms2_verb!r}")
+
+
+#: The requests `ms2 list` sends per sample, said wherever its cap is.
+MS2_LIST_REQUESTS = ("one summary request per sample, sequential (plus the sample's record "
+                     "with --sample-id, and its centroids when the server refuses its summary)")
+
+
+#: The hints of the two sample errors `_friendly_hint` would misread (a 403, a 504).
+MS2_API_403_HINT = ("the server refuses this sample: an unknown or stale id (ids change when a "
+                    "batch is re-created) or one your token may not read -- re-list the ids with "
+                    "`peaky list samples`")
+MS2_COMPUTE_TIMEOUT_HINT = ("the server timed out computing this sample's averaged spectra (a "
+                            "large file?); every request recomputes them from scratch, and the "
+                            "SDK has already sent this one up to four times")
+#: The HTTP statuses whose generic hint (`_friendly_hint`) `_ms2_hint` gives.
+_MS2_STATUS_HINTED = (401, 403, 404)
+
+
+def _ms2_hint(exc: Exception, text: str, IO) -> str | None:
+    """The hint for one sample's failure, chosen by its HTTP status when it has
+    one and never by the digits of its message: a 500's '(ref: <8 hex>)' and a
+    sample id can spell '401', '403' or '404'. Without a status (a connection
+    failure) only the message's words are read, its numbers masked (urllib3
+    quotes a memory address, '0x...')."""
+    status = getattr(exc, "status_code", None)
+    if IO.is_api_403(exc):
+        return MS2_API_403_HINT
+    if IO.is_ms2_compute_timeout(exc):
+        return MS2_COMPUTE_TIMEOUT_HINT
+    if status is not None:
+        return _friendly_hint(str(status)) if status in _MS2_STATUS_HINTED else None
+    return _friendly_hint(re.sub(r"\d", "#", f"{type(exc).__name__}: {text}"))
+
+
+def _ms2_failure(sid: str, exc: Exception, IO) -> bool:
+    """Print one sample's failure; True when the loop should go on. An error
+    about the sample (`is_sample_error`: an HTTP 400 / 404 / 500 answer, the
+    API's own 403 for an unknown or stale id, the MS2 compute timeout, an
+    unreadable payload) is that sample's; anything else (auth, WAF, gateway,
+    connection) would fail every next sample too, and asking on only extends a
+    WAF block -- the loop stops there. The message is printed without its URL;
+    the hint goes by the status (`_ms2_hint`)."""
+    text = IO.server_error_text(exc)
+    hint = _ms2_hint(exc, text, IO)
+    print(f"[ms2] {sid}: error: {type(exc).__name__}: {text}" + (f" ({hint})" if hint else ""))
+    return IO.is_sample_error(exc)
+
+
+def _ms2_list(args) -> None:
+    _require_creds()
+    from peaky.io import io_mascope as IO
+    from peaky.ms2 import sources as SRC
+
+    if args.dataset and not args.batch:
+        sys.exit("--dataset goes with --batch (a --sample-id is addressed directly)")
+    client = IO.connect()
+    if args.batch:
+        sl = IO.fetch_batch_samples(client, args.batch, dataset=args.dataset)
+        todo = [(str(r["sample_item_id"]), r) for _, r in sl.iterrows()]
+        what = f"batch {args.batch!r}"
+    else:
+        todo = [(sid, None) for sid in args.sample_id]
+        what = "the given samples"
+    if len(todo) > args.max_samples:
+        # back-to-back requests: a long burst is what trips the server's WAF
+        # (and a block outlasts the listing)
+        sys.exit(f"{what} holds {len(todo)} samples, above --max-samples "
+                 f"{args.max_samples}: raise it to list them all ({MS2_LIST_REQUESTS}), "
+                 "or list a subset with --sample-id")
+    print(f"[ms2] reading {len(todo)} MS2 summar{'y' if len(todo) == 1 else 'ies'} "
+          f"of {what}, one at a time")
+    rows, failed, stopped = [], [], False
+    for sid, row in todo:
+        try:
+            rows.append(SRC.list_sample(client, sid, sample_row=row))
+        except Exception as exc:                 # noqa: BLE001 -- one sample's row
+            rows.append(SRC.error_row(sid, exc, sample_row=row))
+            failed.append(sid)
+            if not _ms2_failure(sid, exc, IO):
+                stopped = True
+                break
+    df = SRC.inventory_frame(rows)
+    shown = df[list(MS2_LIST_SHOWN)]
+    print(shown.to_string(index=False) if len(df) else "(no samples)")
+    for r in rows:
+        if r["note"]:
+            print(f"  {r['sample_id']}: {r['note']}")
+    if args.out:
+        out = os.path.expanduser(args.out)
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        df.to_csv(out, index=False)
+        print(f"[ms2] wrote {out}")
+    _ms2_exit(failed, stopped, len(todo), len(rows))
+
+
+def _ms2_exit(failed: list, stopped: bool, n_todo: int, n_done: int) -> None:
+    """Exit 1 after a loop in which samples failed (their rows / folders say
+    why; the others are written)."""
+    if stopped:
+        sys.exit(f"[ms2] stopped at {failed[-1]}: the server or the connection failed, so "
+                 f"{n_todo - n_done} later sample(s) were not asked; re-run them later")
+    if failed:
+        sys.exit(f"[ms2] {len(failed)} of {n_todo} sample(s) could not be read: "
+                 + ", ".join(failed))
+
+
+def _ms2_extract(args) -> None:
+    _require_creds()
+    if args.iso_width is not None and not args.iso_width > 0:
+        sys.exit(f"--iso-width must be a positive width in Da, got {args.iso_width}")
+    if not args.noise_threshold >= 0:
+        sys.exit(f"--noise-threshold must be >= 0, got {args.noise_threshold}")
+    if args.ms1_ppm < 1:
+        sys.exit(f"--ms1-ppm must be a positive integer, got {args.ms1_ppm}")
+    for sid in args.sample_id:          # each id names its own output folder
+        if sid in ("", ".", "..") or Path(sid).name != sid or "\\" in sid:
+            sys.exit(f"--sample-id {sid!r} is not a sample id")
+    from peaky.io import io_mascope as IO
+    from peaky.ms2 import sources as SRC
+
+    client = IO.connect()
+    base = Path(resolve_out_dir(args.out_dir)) / "ms2"
+    failed, stopped, done = [], False, 0
+    for sid in args.sample_id:
+        done += 1
+        try:
+            res = SRC.extract_sample(client, sid, noise_threshold=args.noise_threshold,
+                                     ms1_ppm=args.ms1_ppm, iso_width=args.iso_width,
+                                     with_window=not args.no_window)
+        except Exception as exc:                 # noqa: BLE001 -- that sample's failure
+            failed.append(sid)
+            if not _ms2_failure(sid, exc, IO):
+                stopped = True
+                break
+            continue
+        out = base / sid
+        _write_ms2_outputs(res, out)
+        row = res.row
+        n_spec = int(row["n_spectra"])
+        mode = ((" (energy-resolved)" if row["energy_resolved"] else " (energy-averaged)")
+                if n_spec else "")
+        win = (f"{len(res.window)} window rows" if len(res.window)
+               else "no window inventory")
+        print(f"[ms2] {sid}: {row['status']}; {n_spec} spectra over {row['n_parents']} "
+              f"parents{mode}, {len(res.spectra)} peaks; {win} -> {out}")
+        for note in ([row["note"]] if row["note"] else []) + res.notes:
+            print(f"  note: {note}")
+    _ms2_exit(failed, stopped, len(args.sample_id), done)
+
+
+def _write_ms2_outputs(res, out: Path) -> dict:
+    """Write one extraction: ms2_spectra.parquet + .csv, ms2_parents.csv,
+    ms2_window.csv and ms2_manifest.json (sha1 of each file, the status, the
+    server's refusal, the parameters and the code identity; no credentials, no
+    server URL). A re-run overwrites the sample's folder."""
+    from peaky.ms2 import sources as SRC
+    from peaky.reporting import provenance as PV
+
+    out.mkdir(parents=True, exist_ok=True)
+    written = {
+        "ms2_spectra.parquet": lambda p: res.spectra.to_parquet(p, index=False),
+        "ms2_spectra.csv": lambda p: res.spectra.to_csv(p, index=False),
+        "ms2_parents.csv": lambda p: res.parents.to_csv(p, index=False),
+        "ms2_window.csv": lambda p: res.window.to_csv(p, index=False),
+    }
+    files = {}
+    for name, write in written.items():
+        write(out / name)
+        files[name] = PV.sha1_file(str(out / name))
+    man = SRC.manifest(res, files=files,
+                       created_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    with open(out / "ms2_manifest.json", "w", encoding="utf-8") as fh:
+        json.dump(man, fh, indent=2, default=str)
+    return files
+
+
 def cmd_mcp(args) -> None:
     """Launch the peaky MCP server (drive the pipeline from an MCP client:
     ChatGPT Developer Mode, Claude Desktop, Cursor, ...). Credentials stay
@@ -1568,6 +1766,46 @@ def build_parser() -> argparse.ArgumentParser:
     _add_dry(pcx)
 
     pc.set_defaults(func=cmd_curate)
+
+    p2 = sub.add_parser("ms2", help="read MS2 from Mascope (>= 1.8): list what each sample "
+                                    "holds, extract energy-resolved spectra (read-only)")
+    p2s = p2.add_subparsers(dest="ms2_verb", required=True)
+
+    p2l = p2s.add_parser("list", help="one row per sample: parents, NCEs, volts, scan counts, "
+                                      "and why a sample has no usable MS2")
+    who = p2l.add_mutually_exclusive_group(required=True)
+    who.add_argument("--batch", default=None, help="sample-batch name or id (every sample in it)")
+    who.add_argument("--sample-id", nargs="+", default=None, metavar="ID",
+                     help="one or more sample ids")
+    p2l.add_argument("--dataset", default=None, help="dataset that holds --batch")
+    p2l.add_argument("--max-samples", type=int, default=100,
+                     help="refuse to list more samples than this (default 100), to stay clear "
+                          "of the server's WAF: " + MS2_LIST_REQUESTS)
+    p2l.add_argument("--out", default=None, help="also write every inventory column to this CSV")
+
+    p2e = p2s.add_parser("extract", help="per sample: ms2_spectra.parquet/.csv, ms2_parents.csv, "
+                                         "ms2_window.csv, ms2_manifest.json under "
+                                         "<out-dir>/ms2/<sample id>/")
+    p2e.add_argument("--sample-id", nargs="+", required=True, metavar="ID",
+                     help="one or more sample ids")
+    p2e.add_argument("--out-dir", default=None,
+                     help="output base (else $PEAKY_OUTPUT_DIR, else ~/peaky-output); files go "
+                          "to <base>/ms2/<sample id>/ and a re-run overwrites them")
+    p2e.add_argument("--noise-threshold", type=float, default=3.0,
+                     help="the server's S/N floor for the averaged MS2 centroids (default 3, "
+                          "below the SDK's 10, which drops weak fragments a breakdown curve "
+                          "needs; 0 returns noise centroids too)")
+    p2e.add_argument("--ms1-ppm", type=int, default=1,
+                     help="MS1 centroid binning in ppm for the window inventory (default 1)")
+    p2e.add_argument("--iso-width", type=float, default=None, metavar="W",
+                     help="isolation width in Da for the window inventory; replaces the "
+                          "server's, and is the only way to get one when the server refuses "
+                          "the sample's MS2 summary")
+    p2e.add_argument("--no-window", action="store_true",
+                     help="skip the isolation-window inventory and its MS1 request (whose "
+                          "failure on a sample already skips the window only, keeping its MS2 "
+                          "tables)")
+    p2.set_defaults(func=cmd_ms2)
 
     pm = sub.add_parser("mcp", help="run peaky as an MCP server (ChatGPT Developer "
                                     "Mode / Claude Desktop / Cursor)")

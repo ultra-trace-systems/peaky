@@ -103,6 +103,11 @@ peaky report --run-dir <run-folder> --reagent <Br|Ur|...> --ts <ts.parquet>
 # (--dry-run translates + validates offline and sends nothing)
 peaky publish <run-folder>/<sample>_<stamp>_ledger.csv --dry-run
 peaky publish <run-folder>/<sample>_<stamp>_ledger.csv
+
+# MS2 (Mascope >= 1.8, read-only): list what each sample holds, then extract
+# energy-resolved spectra + parents + isolation-window tables (docs/MS2.md §10)
+peaky ms2 list --batch "<batch>" --dataset "<workspace>"   # or --sample-id <ID...>
+peaky ms2 extract --sample-id <ID...> [--iso-width 0.4]    # -> <out-dir>/ms2/<ID>/
 ```
 
 `peaky pool` pools every batch matching `--batches` (a REGEX over batch names, e.g.

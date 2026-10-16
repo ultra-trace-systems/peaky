@@ -1,0 +1,10 @@
+{
+ "sample_item_id": "SAMPLE1xxxxxxxxx",
+ "sample_item_name": "exploratory 15N-ammonium file",
+ "datetime_utc": "2026-09-10",
+ "polarity": "+",
+ "instrument_type": "orbi",
+ "t0": 6.486846,
+ "t1": 1047.526381,
+ "length": 1142.215925
+}

@@ -1,0 +1,9 @@
+{
+ "parent_peaks": [],
+ "groups": [],
+ "hcd_energy_map": {},
+ "isolation_width": null,
+ "ms1_scan_count": 120,
+ "ms2_scan_count": 0,
+ "parent_peak_tolerance": 0.001
+}
