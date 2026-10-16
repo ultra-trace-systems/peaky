@@ -96,6 +96,22 @@ check("[HNO4-H+I2]- ~ 331.7922 (the residual peak)",
 check("[M-H+I2]- of the acid == [M+I]- of its covalent-I alias (exact degeneracy)",
       approx(C.ion_mz("C2H4O2", "[M-H+I2]-"), C.ion_mz("C2H3IO2", "[M+I]-"), 1e-9))
 
+# --- ion_mass: an ion from its OWN formula (MS2 fragments have no neutral) ---
+check("ion_mass ^NO3- ~ 62.98540 (the 15N nitrate reagent ion)",
+      approx(C.ion_mass("^NO3", -1), 62.98540, 1e-5), C.ion_mass("^NO3", -1))
+check("ion_mass CH5N2O+ ~ 61.03964 (protonated urea)",
+      approx(C.ion_mass("CH5N2O", 1), 61.03964, 1e-5), C.ion_mass("CH5N2O", 1))
+check("ion_mass takes a counts dict",
+      C.ion_mass({"C": 2, "H": 3, "O": 1}, 1) == C.ion_mass("C2H3O", 1))
+check("ion_mass agrees with ion_mz on the same ion",
+      approx(C.ion_mass("C10H17", 1), C.ion_mz("C10H16", "[M+H]+"), 1e-9))
+for _bad in (0, 2, -2, True):
+    try:
+        C.ion_mass("C2H3O", _bad)
+        check(f"ion_mass refuses charge {_bad!r}", False)
+    except ValueError:
+        check(f"ion_mass refuses charge {_bad!r}", True)
+
 # --- DBE on the neutral ---
 check("DBE C10H16O4 == 3", C.dbe("C10H16O4") == 3, C.dbe("C10H16O4"))   # pinonic-ish
 check("DBE benzene C6H6 == 4", C.dbe("C6H6") == 4, C.dbe("C6H6"))

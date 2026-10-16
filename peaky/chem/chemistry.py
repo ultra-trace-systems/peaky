@@ -8,6 +8,7 @@ module builds on:
   * exact monoisotopic masses + electron mass
   * parse / format chemical formulas
   * neutral_mass(formula), ion_mz(neutral_mass, adduct)
+  * ion_mass(ion_formula, charge) -- an ion from its own formula (MS2 fragments)
   * dbe(formula)  -- Double Bond Equivalents of the NEUTRAL
   * odd_electron(formula) -- the one DBE-parity (radical) test
   * dbe_ok / seniors_ok -- the hard structural gates
@@ -274,6 +275,20 @@ def ion_mz(neutral: str | dict[str, int] | float, adduct: str) -> float:
         raise KeyError(f"unknown adduct {adduct!r}; known: {sorted(ADDUCT_SHIFTS)}")
     mass = neutral if isinstance(neutral, (int, float)) else neutral_mass(neutral)
     return mass + ADDUCT_SHIFTS[adduct]
+
+
+def ion_mass(formula: str | dict[str, int], charge: int) -> float:
+    """Exact m/z of a singly-charged ION given its own elemental formula.
+
+    `ion_mz` starts from a neutral and an adduct label; an MS2 fragment has no
+    neutral -- 'C2H3O+' is a sub-formula of the precursor ion -- so its mass is
+    the formula's atoms minus (cation) or plus (anion) one electron:
+    neutral_mass - charge * M_E. Only charge +1 / -1: CIMS ions are singly
+    charged, and a z = 2 reading would need m/z = mass / 2, which nothing here
+    models."""
+    if charge not in (1, -1) or isinstance(charge, bool):
+        raise ValueError(f"charge must be +1 or -1, got {charge!r}")
+    return neutral_mass(formula) - charge * M_E
 
 
 # ---------------------------------------------------------------------------
