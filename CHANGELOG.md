@@ -46,6 +46,58 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   constant-ppm offset; a fragment below ion DBE -0.5 (an ammonium or hydronium cluster of a
   saturated molecule) is never read, though a parent is never gated. `docs/MS2.md`,
   `tests/test_ms2_subformula.py`.
+- **MS2 from Mascope, energy-resolved: `peaky ms2 list` (one inventory row per sample) and
+  `peaky ms2 extract` (per sample `ms2_spectra.parquet`/`.csv`, `ms2_parents.csv`,
+  `ms2_window.csv`, `ms2_manifest.json`), built by `peaky.ms2.sources` on new io_mascope fetchers
+  (`fetch_ms2_summary`, `fetch_ms2_spectra`, `fetch_ms2_ms1`, `fetch_sample_record`).** Mascope 1.8
+  averages each (parent, activation) group into its own centroid spectrum; the spectra table pairs
+  each with its NCE (from the activation string, 'hcd40.00' = NCE 40) and its volts (from the
+  summary's group) and never converts one into the other -- NCE 1 is 4.05 V at m/z 136 and 4.28 V
+  at m/z 315 on the 2026-09-10 exploratory 15N-ammonium file, which reads as 29 spectra over 7
+  parents; a 2026-09-11 monoterpene standard reads as 12 over 3. One spectrum is a peak list
+  `assign_fragments` takes as it is: that file's C11H18^NO2+ at its highest NCE reads C11H15O2+
+  (loss H3^N) and C11H13O+ (H2O + H3^N). The server's own defects are worked around and said: an
+  MS1-only sample answers a full scaffold, so "no MS2" is the summary's `ms2_scan_count` 0, never
+  the response's shape; `get_summary` answers HTTP 400 "Multiple isolation widths found for MS2
+  scans" on some files while the centroids still serve every spectrum, so the second 2026-09-11
+  standard is built from the centroid keys (six activations of its one parent) with scan counts,
+  times, volts and isolation width left NaN and the reason recorded (`MS2SummaryRefused`, never
+  retried, the URL dropped); a server older than 1.8 ignores `by_activation`, and its spectra are
+  labelled energy-averaged, its summary's per-parent volt read as what it is -- the mean over every
+  scan of the parent (5.16 V for a parent measured at 4.05-7.41 V), reported as `hcd_v` with a note,
+  never as the volts spanned; a sample row whose `length` runs past `t1` (210.5 s on that standard)
+  may hide MS2 scans an old ingest stopped short of, and is reported with the remedy (reprocess the
+  sample on the server), never as "no MS2". The parent stays the server's key -- the method's
+  isolation centre, 137.13 there, 2.3 mDa below the C10H17+ precursor -- and the precursor is
+  located once per parent (the nearest peak to the key among those holding >= 10 % of the strongest
+  within max(10 ppm, 5 mDa)) and followed across the energies within max(5 ppm, 0.5 mDa): nearest
+  alone picks a < 1 % satellite there, strongest alone picks a co-isolate that outgrows the
+  precursor at NCE 5 in the exploratory file's 137.057 window. The window inventory lists every MS1
+  centroid within +-(width/2 + 5 mDa) of each parent with its share (`--iso-width` supplies a
+  width the server refused). `ms2 list` sends one summary request per sample, sequentially (plus
+  the record with `--sample-id` and the centroids of a refused summary), and refuses more than
+  `--max-samples` (100). `ms2 extract` asks the server for S/N >= 3 (`--noise-threshold`,
+  `DEFAULT_NOISE_THRESHOLD`), not the SDK's 10: on that monoterpene standard's [M+H]+ window the
+  spectra hold 25-30 peaks at S/N 3 against 19-21 at 10, and ions the raw-file breakdown tracked
+  at 300+ counts per scan (C4H9+ at NCE 5, C6H7+ at NCE 20) are only in the S/N 3 ones. An
+  MS1-only sample with no summary to count on answers `ms2 extract`'s centroid call HTTP 400 "No
+  scans found": that reads `no MS2` (`MS2 may be hidden` when the file runs past `t1`), and the
+  same 400 after a refused summary or a summary that counts MS2 scans is still an error. A TOF
+  sample is skipped on its instrument type. An error is retried by its
+  HTTP status, never by its text (whose URL quotes the sample id): a sample's own failure -- an HTTP
+  400 / 404 / 500, the API's own 403 for an unknown or stale id, the MS2 endpoints' 504 compute
+  timeout -- gets no retry of peaky's own (the SDK's transport has already re-sent a 504 up to four
+  times, so a compute timeout costs the server about four 120-s computations) and an `error:
+  <type>` row without the server's address (the URL, and the host urllib3 names bare in a DNS
+  failure or connect timeout), with a console hint chosen by the status, never by the message's
+  digits, while the others go on; a 401, a proxy's WAF 403, a gateway error or a server that cannot
+  be reached (the SDK's connection errors, after its own retries) stops the loop rather than extend
+  it; either way the command writes what it read and exits 1. A failed MS1 call fails only the
+  window: the sample's MS2 tables are kept and written, and `--no-window` skips that request. A
+  summary that counts MS2 scans but groups none of them by parent (the server could not read their
+  scan events) reads `MS2 unreadable`, never `ok`. Needs `mascope-sdk>=2026.9.15` (raised from
+  2026.8.12: the first release with `by_activation` and the summary's groups). `docs/MS2.md` §10,
+  `tests/test_ms2_sources.py`.
 - **Orbitrap isotope lines are read by peak area, against the file's own minor-line response
   (`PassConfig.iso_response`, `--iso-response {auto,area,off}` on assign / batch / pool).** An
   Orbitrap scan keeps a line only where it clears that scan's detection floor, and the whole-file

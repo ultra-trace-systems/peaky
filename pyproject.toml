@@ -26,9 +26,13 @@ classifiers = [
 dependencies = [
     # Keep at the LATEST release. peaky/io tracks the SDK's unified name-matching
     # contract (raw names match as literal substrings; only a compiled re.Pattern
-    # is a regex) -- 2026.8.12 is the release that unified it. When the SDK moves,
-    # upgrade and run tests/test_io_mascope.py rather than pinning back.
-    "mascope-sdk>=2026.8.12",
+    # is a regex) -- 2026.8.12 is the release that unified it -- and `peaky ms2`
+    # reads energy-resolved MS2: 2026.9.15 (Mascope 1.8) is the first release
+    # whose get_averaged_centroids takes by_activation and whose get_summary
+    # documents the per-(parent, activation) groups. When the SDK moves, upgrade
+    # and run tests/test_io_mascope.py and tests/test_ms2_sources.py rather than
+    # pinning back.
+    "mascope-sdk>=2026.9.15",
     # In-process scoring backend, now the DEFAULT (PEAKY_LOCAL_SCORING=0 falls back
     # to the network match_compounds path). See docs/MASCOPE_TOOLS_INTEGRATION.md.
     # 2026.9.30, the library Mascope 1.10 publishes, is the release that carries

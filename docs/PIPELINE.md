@@ -24,7 +24,7 @@ REPORTING    ledger → figures + PDF                 VANKREVELEN · GKA · QC_A
 
 | doc | module | transform |
 | --- | --- | --- |
-| [`DATA_IO.md`](DATA_IO.md) | `io/io_mascope.py` | the only Mascope I/O: pull + cache peaks / batch time series, detect adducts, estimate offset, flatten the score tree |
+| [`DATA_IO.md`](DATA_IO.md) | `io/io_mascope.py` | the only Mascope I/O: pull + cache peaks / batch time series, detect adducts, estimate offset, flatten the score tree; fetch one sample's MS2 payloads |
 | [`SCORING.md`](SCORING.md) | `io/local_scoring.py` | in-process IsoSpec + `score_pattern_v2` — a candidate `(neutral × adduct)` → a 0–1 match score at the sample's own mass width (default backend; `PEAKY_LOCAL_SCORING`) |
 
 ## 2. Chemistry — m/z → candidate formulas
@@ -34,7 +34,7 @@ REPORTING    ledger → figures + PDF                 VANKREVELEN · GKA · QC_A
 | [`CHEMISTRY.md`](CHEMISTRY.md) | `chem/chemistry.py` | exact masses, integer-DBE / Senior / oxygen-cap gates, the valence-legal formula grid, the complexity penalty |
 | [`ISOTOPES.md`](ISOTOPES.md) | `chem/isotopes.py` | isotopologue-envelope prediction + the prescan that shrinks the grid from satellite-pair evidence |
 | [`REAGENTS.md`](REAGENTS.md) | `chem/reagents.py` + `chem/profiles.py` | the reagent profile (the single mode switch) + the labeled reagent-ion cluster library |
-| [`MS2.md`](MS2.md) | `ms2/subformula.py` | MS2 peak m/z → sub-formulas of every isolation-window ion whose neutral loss splits into ≤ `k_max` (3) molecules; a composition test, pure arithmetic (no Mascope I/O) |
+| [`MS2.md`](MS2.md) | `ms2/subformula.py` + `ms2/sources.py` | MS2 peak m/z → sub-formulas of every isolation-window ion whose neutral loss splits into ≤ `k_max` (3) molecules; a composition test, pure arithmetic (no Mascope I/O). Its input: Mascope's MS2 endpoints → energy-resolved spectra / parents / MS1-window tables (`peaky ms2 list \| extract`, §10) |
 
 ## 3. Assignment — candidates → committed formulas
 

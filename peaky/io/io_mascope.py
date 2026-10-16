@@ -8,6 +8,9 @@ pipeline needs:
   * resolve_mechanism_ids()    -- ionization name -> id
   * query_candidates()         -- cheminfo formula enumerator for one m/z
   * score_candidates()         -- match_compounds -> flat per-isotopologue table
+  * fetch_ms2_summary/_spectra/_ms1(), fetch_sample_record() -- one sample's MS2
+                                  payloads (Mascope >= 1.8), read into tables by
+                                  peaky/ms2/sources.py
 
 The scoring oracle is Mascope: match_compounds returns a compound -> ion ->
 isotopologue tree, every node carrying its own match_score and (for isotopes)
@@ -22,11 +25,17 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import urlsplit
 
 import numpy as np
 import pandas as pd
 
-__version__ = "0.6.0"  # modern (datasets-based) servers only; a batch is settled
+__version__ = "0.7.0"  # + the MS2 fetchers (fetch_ms2_*; a refused summary is typed,
+#                          MS2SummaryRefused; an HTTP error is retried by its status
+#                          only: an MS2 500, the API's own 403 and the MS2 compute
+#                          504 are final) + server_error_text / is_sample_error /
+#                          is_api_403 / is_ms2_compute_timeout. 0.6.0: modern (datasets-based)
+#                          servers only; a batch is settled
 #                          ONCE (exact id > exact name > unique substring) and the
 #                          time series is loaded by that exact name (resolve_batch);
 #                          the peaks read carries signal_to_noise and the sample
@@ -523,6 +532,287 @@ def fetch_pooled_peaks(client, dataset: str, batches_regex: str, *,
     if save_path:
         peaks.to_parquet(os.path.expanduser(save_path))
     return peaks
+
+
+# ---------------------------------------------------------------------------
+# MS2 (the tables are built by peaky/ms2/sources.py; see docs/MS2.md §10)
+# ---------------------------------------------------------------------------
+# Thin and uncached: one sample's MS2 is a few small JSON answers, read once per
+# `peaky ms2` command. Every call goes through `_with_waf_retry`, but whether an
+# HTTP error is retried is decided by its STATUS (`_MS2_RETRY_STATUS`), never by
+# its text, whose URL quotes the sample id (an id can spell '403' or '500').
+
+#: Server refusals of an MS2 summary a source can work around, matched in the
+#: lower-cased error text. One known: on some files get_summary answers HTTP 400
+#: "Multiple isolation widths found for MS2 scans" while get_averaged_centroids
+#: still serves every spectrum (a 2026-09-11 monoterpene standard: six
+#: activations of its one parent).
+MS2_SUMMARY_REFUSALS = ("multiple isolation widths",)
+
+#: HTTP statuses the MS2 calls retry with `_with_waf_retry`'s back-off: a
+#: proxy's WAF block (403 -- not the API's own 403, `is_api_403`), a rate
+#: limit, a gateway or origin-down answer (not the MS2 endpoints' own compute
+#: timeout, `is_ms2_compute_timeout`). Every other HTTP answer is final. A 500
+#: is final on the MS2 endpoints: the server answers it for a sample it cannot
+#: read MS2 from (a non-Orbitrap file, an Orbitrap sample without its raw
+#: file), the same way on every try. The sample record (`samples.get`) also
+#: retries a 500, as every other peaky read does. Beneath this, the SDK's own
+#: transport (mascope_sdk's http_get) re-sends a 429, 502, 503 or 504 -- the
+#: MS2 compute timeout included -- and a connection failure up to four times
+#: (2 / 4 / 8 s) before peaky sees it; a 403, 521 or 522 only peaky retries.
+_MS2_RETRY_STATUS = (403, 429, 502, 503, 504, 521, 522)
+_RECORD_RETRY_STATUS = _MS2_RETRY_STATUS + (500,)
+
+#: HTTP statuses that answer for ONE sample (its request reached the server and
+#: was refused) -- `is_sample_error`; so do the API's own 403 and the MS2
+#: endpoints' compute timeout. Anything else (401, a proxy's 403, 429, a
+#: gateway 5xx, a timeout, a dropped connection) is about the server or the
+#: connection, and the next sample would fail the same way.
+_SAMPLE_ERROR_STATUS = (400, 404, 409, 422, 500)
+
+#: Signs of a proxy's HTML page (Cloudflare's WAF 'Attention Required', an
+#: nginx error page) in an error's message, as opposed to the API's own JSON
+#: answer, whose `error` text the SDK puts there.
+_PROXY_PAGE_SIGNS = ("<html", "<!doctype", "attention required", "cloudflare")
+
+_URL_SUFFIX = re.compile(r"\s*\(URL:.*\)\s*$", re.S)
+_ANY_URL = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s'\")]+", re.I)
+_HOST_ARG = re.compile(r"\bhost='[^']*'")
+#: urllib3 also names the host bare: "Failed to resolve '<host>'" (a DNS
+#: failure), "Connection to <host> timed out" (a connect timeout), "hostname
+#: '<host>' doesn't match" (TLS); and quotes the request path ("with url:
+#: /api/samples/<id>/...").
+_HOST_QUOTED = re.compile(r"\b(resolve|hostname)\s+'[^']*'", re.I)
+_CONNECTION_TO = re.compile(r"\b(connection to)\s+\S+?(?=\s+timed out)", re.I)
+_WITH_URL = re.compile(r"\b(with url:)\s*[^\s)]+", re.I)
+
+
+def _api_message(exc: Exception) -> str:
+    """The SDK's `message` (the API's own error text, or the start of a
+    proxy's page), lower-cased and stripped; '' when there is none."""
+    return str(getattr(exc, "message", None) or "").strip().lower()
+
+
+def _is_proxy_page(msg: str) -> bool:
+    return msg.startswith("<") or any(s in msg for s in _PROXY_PAGE_SIGNS)
+
+
+def is_api_403(exc: Exception) -> bool:
+    """True for an HTTP 403 the API itself answered (its JSON `error`, e.g.
+    'You do not have permission to perform this action.'): the token may not
+    read THIS sample, which is also how the server answers an unknown or stale
+    sample id (ids change when a batch is re-created). Final for that sample,
+    never retried. False for a proxy's HTML block page (Cloudflare's WAF
+    'Attention Required'), which clears with time, and for a 403 with no text
+    (the SDK's 'Unknown error'), which cannot be told apart from one."""
+    if getattr(exc, "status_code", None) != 403:
+        return False
+    msg = _api_message(exc)
+    return bool(msg) and not msg.startswith("unknown error") and not _is_proxy_page(msg)
+
+
+def is_ms2_compute_timeout(exc: Exception) -> bool:
+    """True for the MS2 endpoints' own HTTP 504 ('MS2 summary timed out after
+    120s for sample', 'MS1 centroid extraction timed out after 120s'): the
+    server gave up computing this sample's averages (a large file) and
+    recomputes them from scratch on every request, so peaky adds no retry of
+    its own and the answer is final for that sample. The SDK's transport has
+    already sent it up to four times (it re-sends every 504), so one such
+    answer can cost about four 120-s computations. False for a gateway's 504
+    page, which is retried."""
+    if getattr(exc, "status_code", None) != 504:
+        return False
+    msg = _api_message(exc)
+    return "timed out after" in msg and not _is_proxy_page(msg)
+
+
+def _connection_errors() -> tuple:
+    """The SDK's connection failures (a DNS failure, a refused connection, a
+    timeout -- `MascopeTimeoutError` subclasses `MascopeConnectionError`),
+    raised after the SDK's own retries; none of them is an OSError."""
+    from mascope_sdk.exceptions import MascopeConnectionError
+    return (MascopeConnectionError,)
+
+
+def _known_hosts(exc: Exception) -> set[str]:
+    """The server's host as `exc` and the environment name it: the URL every
+    SDK error carries (`url`) and the configured MASCOPE_URL."""
+    hosts = set()
+    for url in (getattr(exc, "url", None), os.environ.get("MASCOPE_URL")):
+        if not isinstance(url, str) or not url.strip():
+            continue
+        url = url.strip()
+        try:
+            host = urlsplit(url if "://" in url else f"//{url}").hostname
+        except ValueError:
+            host = None
+        if host and len(host) >= 3:
+            hosts.add(host)
+    return hosts
+
+
+def server_error_text(exc: Exception) -> str:
+    """`exc`'s message without the server's address: the SDK appends
+    '(URL: https://<host>/api/samples/<id>/...)' to every error, and a
+    connection error names the host in urllib3's words ("host='<host>'",
+    "Failed to resolve '<host>'", "Connection to <host> timed out") and quotes
+    the request path. '[HTTP 500] Failed to get ms2 summary. Unexpected error
+    (ref: ...)' is what is left -- safe to print and to write into a table."""
+    status = getattr(exc, "status_code", None)
+    msg = getattr(exc, "message", None)
+    if isinstance(msg, str) and msg:
+        text = f"[HTTP {status}] {msg}" if status else msg
+    else:
+        text = str(exc)
+    text = _URL_SUFFIX.sub("", text)
+    text = _ANY_URL.sub("<url>", text)
+    text = _HOST_ARG.sub("host='<host>'", text)
+    text = _HOST_QUOTED.sub(r"\1 '<host>'", text)
+    text = _CONNECTION_TO.sub(r"\1 <host>", text)
+    text = _WITH_URL.sub(r"\1 <path>", text)
+    for host in sorted(_known_hosts(exc), key=len, reverse=True):
+        text = re.sub(rf"(?<![\w-]){re.escape(host)}(?![\w-])", "<host>", text, flags=re.I)
+    return text.strip()
+
+
+def is_sample_error(exc: Exception) -> bool:
+    """True when `exc` is about one sample -- an HTTP 400 / 404 / 409 / 422 /
+    500 answer, the API's own 403 (`is_api_403`: an unknown or stale id), the
+    MS2 endpoints' compute timeout (`is_ms2_compute_timeout`), or a payload
+    that could not be read -- so a loop over samples can record it and go on.
+    False for 401, a proxy's 403, 429, a gateway 5xx, a timeout or a dropped
+    connection (the SDK's `MascopeConnectionError`, or an OSError): the server
+    or the connection failed, and asking for the next sample only extends a
+    WAF block or waits on a server that is down."""
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        return (status in _SAMPLE_ERROR_STATUS or is_api_403(exc)
+                or is_ms2_compute_timeout(exc))
+    return not isinstance(exc, (OSError, *_connection_errors()))
+
+
+class MS2SummaryRefused(RuntimeError):
+    """get_summary refused this sample with a known server defect
+    (`MS2_SUMMARY_REFUSALS`). `reason` is the server's message WITHOUT the URL,
+    which names the server's host and the sample -- safe to print and to write
+    into a manifest."""
+
+    def __init__(self, sample_id: str, reason: str):
+        self.sample_id = str(sample_id)
+        self.reason = reason
+        super().__init__(f"MS2 summary refused by the server: {reason}")
+
+
+def ms2_summary_refusal(exc: Exception) -> str | None:
+    """The refusal's reason when `exc` is a known MS2-summary refusal (an HTTP
+    400 whose text matches `MS2_SUMMARY_REFUSALS`), else None. The SDK raises
+    it as a ValidationError, str() '[HTTP 400] Failed to get ms2 summary.
+    Multiple isolation widths found for MS2 scans.. (URL: ...)'; the reason
+    keeps only 'Multiple isolation widths found for MS2 scans'."""
+    text = str(exc)
+    status = getattr(exc, "status_code", None)
+    if status != 400 and not text.startswith("[HTTP 400]"):
+        return None
+    msg = str(getattr(exc, "message", None) or text)
+    if not any(sign in msg.lower() for sign in MS2_SUMMARY_REFUSALS):
+        return None
+    msg = _URL_SUFFIX.sub("", msg)                       # host + sample id
+    msg = re.sub(r"^\[HTTP \d+\]\s*", "", msg)
+    msg = re.sub(r"^failed to get ms2 summary\.\s*", "", msg, flags=re.I)
+    return msg.strip().rstrip(".").strip() or "refused"
+
+
+class _Final(NamedTuple):
+    """An MS2 error handed out of the retry loop unretried (raised after it)."""
+    exc: Exception
+
+
+def _is_final(exc: Exception, retry_status: tuple) -> bool:
+    """True when `exc` must not be retried by peaky: an HTTP answer whose
+    status is not in `retry_status`, the API's own 403, the MS2 compute timeout
+    (which the SDK has already re-sent, as it does every 504), or an SDK
+    connection failure (the SDK has already made its own four attempts with
+    back-off, and another four would only wait on a server that is down)."""
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        return (status not in retry_status or is_api_403(exc)
+                or is_ms2_compute_timeout(exc))
+    return isinstance(exc, _connection_errors())
+
+
+def _ms2_call(fn, sample_id: str, *, summary: bool = False,
+              retry_status: tuple = _MS2_RETRY_STATUS):
+    """`fn()` under `_with_waf_retry`, except that a final answer (`_is_final`)
+    is handed back, not raised, so the retry loop never sees it -- and (for the
+    summary) a known refusal, typed `MS2SummaryRefused`. The retry loop reads
+    an error's text, which quotes the URL, whose sample id can spell a
+    transient sign ('403', '500'); handing every final answer out by its
+    status keeps an id from buying three useless retries."""
+    def _call():
+        try:
+            return fn()
+        except Exception as exc:                 # noqa: BLE001 -- typed below, else re-raised
+            reason = ms2_summary_refusal(exc) if summary else None
+            if reason is not None:
+                return _Final(MS2SummaryRefused(sample_id, reason))
+            if _is_final(exc, retry_status):
+                return _Final(exc)
+            raise
+
+    out = _with_waf_retry(_call)
+    if isinstance(out, _Final):
+        raise out.exc
+    return out
+
+
+def fetch_ms2_summary(client, sample_id: str) -> dict | None:
+    """`get_summary` of one sample: parents, one group per (parent, activation)
+    with scan count, time range and HCD volts, the isolation width and the
+    MS1 / MS2 scan counts (Mascope >= 1.8). An MS1-only sample answers a
+    scaffold with ms2_scan_count 0; None when the server answers nothing (the
+    SDK's "unavailable"). A known server refusal raises `MS2SummaryRefused`;
+    a WAF block, a rate limit or a gateway error is retried with back-off
+    (`_MS2_RETRY_STATUS`); any other error (an HTTP 400 / 401 / 404 / 500, the
+    API's own 403, the server's compute timeout, a connection failure) is
+    raised with no retry of peaky's own -- the SDK's transport has already
+    re-sent a 504 or a connection failure up to four times."""
+    return _ms2_call(lambda: client.samples.ms2(sample_id).get_summary(), sample_id,
+                     summary=True)
+
+
+def fetch_ms2_spectra(client, sample_id: str, *, by_activation: bool = True,
+                      noise_threshold: float = 10.0) -> dict:
+    """`get_averaged_centroids`: averaged MS2 centroid spectra, keyed
+    '<parent m/z>@<activation>' ('137.1321@hcd1.00') with `by_activation`, else
+    '<parent m/z>'. `noise_threshold` is the server's S/N floor (the SDK's
+    default, 10). A server older than Mascope 1.8 ignores `by_activation` and
+    answers per parent without 'activation' fields (sources.is_energy_averaged
+    tells). {} when the server answers nothing; errors as `fetch_ms2_summary`."""
+    out = _ms2_call(lambda: client.samples.ms2(sample_id).get_averaged_centroids(
+        noise_threshold=float(noise_threshold), by_activation=bool(by_activation)), sample_id)
+    return out or {}
+
+
+def fetch_ms2_ms1(client, sample_id: str, *, ppm: int = 1) -> dict:
+    """`get_ms1_centroids`: the sample's MS1 centroids over its whole range,
+    binned at `ppm` (mz / intensity / resolution / signal_to_noise lists) -- the
+    source of the isolation-window inventory. {} when the server answers
+    nothing; errors as `fetch_ms2_summary` (sources.extract_sample keeps a
+    sample's MS2 tables when this call fails for that sample)."""
+    out = _ms2_call(lambda: client.samples.ms2(sample_id).get_ms1_centroids(ppm=int(ppm)),
+                    sample_id)
+    return out or {}
+
+
+def fetch_sample_record(client, sample_id: str) -> dict:
+    """The sample's own record (`samples.get`): name, polarity, `datetime_utc`,
+    `instrument_type`, and the `t0` / `t1` / `length` the MS2 source reads a
+    hidden tail from. {} when the server answers nothing. Retried as the MS2
+    calls are, plus an HTTP 500 (`_RECORD_RETRY_STATUS`); an unknown or stale
+    id (the API's own 403, or a 404) is raised at once."""
+    out = _ms2_call(lambda: client.samples.get(sample_id), sample_id,
+                    retry_status=_RECORD_RETRY_STATUS)
+    return out if isinstance(out, dict) else {}
 
 
 # ---------------------------------------------------------------------------

@@ -20,9 +20,10 @@ package opens a socket.
 
 This is the boundary between Mascope (the system of record) and Peaky (the
 analysis layer). It does five jobs and **no chemistry**: connect to a server,
-pull peaks (single sample) or a whole-batch time series, infer which adducts the
-sample was ionized through, estimate a coarse mass offset, enumerate candidate
-neutral formulas for an m/z, and turn Mascope's score tree into a flat table. The
+pull peaks (single sample), a whole-batch time series or one sample's MS2
+payloads, infer which adducts the sample was ionized through, estimate a coarse
+mass offset, enumerate candidate neutral formulas for an m/z, and turn Mascope's
+score tree into a flat table. The
 one genuine *number* transform here is `flatten_match_tree` (tree → per-row ppm);
 the heavy scoring maths live in [`SCORING.md`](SCORING.md).
 
@@ -130,6 +131,39 @@ the heavy scoring maths live in [`SCORING.md`](SCORING.md).
    (`_reanchor_labelled_reagent`) off the phantom all-light M0 onto the real
    single-¹⁵N line (**`delta` 0.997035**, tolerance 0.01).
 
+9. **Fetch MS2 — one sample** (`fetch_ms2_summary`, `fetch_ms2_spectra`,
+   `fetch_ms2_ms1`, `fetch_sample_record`; Mascope ≥ 1.8). Thin, uncached,
+   WAF-retried wrappers of the SDK's `samples.ms2(id)` calls — `get_summary`,
+   `get_averaged_centroids(by_activation=True, noise_threshold=10)`,
+   `get_ms1_centroids(ppm=1)` — and `samples.get(id)`. The one transform:
+   `get_summary`'s known HTTP 400 "Multiple isolation widths found for MS2
+   scans" (`MS2_SUMMARY_REFUSALS`) becomes `MS2SummaryRefused(reason)`, the
+   reason without the URL (it names the host and the sample), handed out of
+   the retry loop unretried. Whether any other HTTP error is retried is decided
+   by its STATUS, never by its text (whose URL quotes the sample id, which can
+   spell `403`): a proxy's WAF 403, 429, 502 / 503 / 504, 521 / 522 are
+   retried with the usual back-off (`_MS2_RETRY_STATUS`; the record also
+   retries a 500, `_RECORD_RETRY_STATUS`); every other answer is raised with
+   no retry of peaky's own — a 401, an MS2 500 (the server's answer for a
+   sample it cannot read MS2 from: a TOF file, an Orbitrap sample without its
+   raw file), the API's own 403 (`is_api_403`: its JSON answer, how the server
+   answers an unknown or stale id), the MS2 endpoints' own 504 "… timed out
+   after 120s" (`is_ms2_compute_timeout`), and the SDK's
+   `MascopeConnectionError` / `MascopeTimeoutError`. Beneath peaky, the SDK's
+   transport re-sends a 429 / 502 / 503 / 504 and a connection failure up to
+   four times (2 / 4 / 8 s) before raising it: a compute-timeout 504 has so
+   cost the server about four 120-s computations, and a gateway error peaky
+   retries can reach it up to 16 times.
+   `server_error_text(exc)` is an error's message without the server's
+   address (the URL, and the host urllib3 names bare: "Failed to resolve
+   '…'", "Connection to … timed out", or the configured `MASCOPE_URL`'s);
+   `is_sample_error(exc)` tells an error about one sample (HTTP 400 / 404 /
+   409 / 422 / 500, the API's own 403, the MS2 compute timeout, an unreadable
+   payload) from one about the server or the connection (401, a proxy's 403,
+   429, a gateway 5xx, a timeout or dropped connection), after which a loop
+   over samples should stop. The tables are built by `peaky/ms2/sources.py`
+   (see [`MS2.md`](MS2.md) §10).
+
 ---
 
 ## 4. Constants reference
@@ -153,6 +187,11 @@ All in `peaky/io/io_mascope.py`.
 | `estimate_offset` `min_n` | 8 | min matches to trust an offset (else `None`) |
 | `estimate_offset` outlier guard | `\|ppm\| ≤ 10` | drops gross mismatches before the median |
 | `_reanchor_labelled_reagent` `delta` | 0.997035 | ¹⁴N→¹⁵N mass step (tol 0.01) |
+| `MS2_SUMMARY_REFUSALS` | `("multiple isolation widths",)` | an HTTP 400 on `get_summary` whose text matches is typed `MS2SummaryRefused` |
+| `fetch_ms2_spectra` `noise_threshold` / `fetch_ms2_ms1` `ppm` | 10.0 / 1 | the SDK's defaults: the server's S/N floor for MS2 centroids; MS1 binning |
+| `_MS2_RETRY_STATUS` | `(403, 429, 502, 503, 504, 521, 522)` | the HTTP statuses the MS2 fetchers retry (not the API's own 403, not the MS2 compute 504); any other gets no retry of peaky's own (the SDK's transport has already re-sent a 429 / 502 / 503 / 504 up to four times) |
+| `_RECORD_RETRY_STATUS` | `_MS2_RETRY_STATUS + (500,)` | the same for `fetch_sample_record` |
+| `_SAMPLE_ERROR_STATUS` | `(400, 404, 409, 422, 500)` | `is_sample_error`: statuses that answer for one sample (plus the API's own 403 and the MS2 compute 504) |
 
 ---
 
@@ -175,6 +214,7 @@ All in `peaky/io/io_mascope.py`.
 | raw peak table (`fetch_peaks`) | full multi-row-per-peak frame (peaks + Mascope's own matches); cached `~/.mascope-assign-cache/<sid>/peaks.parquet` |
 | batch time series (`fetch_batch_peaks`) | one row per (sample × peak): mz / height / `datetime_utc` / sample ids; optional `save_path` parquet |
 | per-sample table (`fetch_batch_samples`) | one row per sample: `sample_item_id` / name / `datetime_utc` / `tic` / polarity |
+| MS2 payloads (`fetch_ms2_summary` / `_spectra` / `_ms1`, `fetch_sample_record`) | the server's JSON as the SDK returns it (dicts). An empty answer: `fetch_ms2_summary` returns `None` (the SDK's "unavailable"; status `no summary`), the other three `{}`; tables in [`MS2.md`](MS2.md) §10 |
 | adduct list (`detect_adducts`) | the adduct labels the sample was ionized through (or `["[M-H]-"]`) |
 | offset (`estimate_offset`) | a single median-ppm float, or `None` |
 | candidate lists (`query_candidates*`) | neutral formulas per m/z |
@@ -236,6 +276,9 @@ All in `peaky/io/io_mascope.py`.
 | `fetch_peaks` | single-sample raw peaks (+ matches), cached parquet |
 | `fetch_batch_peaks` | whole-batch peak time series |
 | `fetch_batch_samples` | per-sample table (no peaks): the live id list + reagent detection for a batch run |
+| `fetch_ms2_summary` / `MS2SummaryRefused` / `ms2_summary_refusal` | one sample's MS2 summary; the known isolation-width refusal, typed |
+| `fetch_ms2_spectra` / `fetch_ms2_ms1` / `fetch_sample_record` | averaged MS2 centroids (per activation), MS1 centroids, the sample's record |
+| `server_error_text` / `is_sample_error` / `is_api_403` / `is_ms2_compute_timeout` | an error's message without the server's address; one sample's failure vs the server's or the connection's; the API's own 403 vs a proxy's; the server's compute timeout vs a gateway's |
 | `resolve_mechanism_ids` / `detect_adducts` | mechanism name↔id; infer adduct system |
 | `estimate_offset` | coarse median-ppm offset to seed pre-cal gates |
 | `query_candidates` / `query_candidates_bulk` | cheminfo neutral-formula enumeration |

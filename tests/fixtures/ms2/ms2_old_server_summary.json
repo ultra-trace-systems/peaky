@@ -1,0 +1,22 @@
+{
+ "parent_peaks": [
+  137.1321,
+  155.1429,
+  155.1559
+ ],
+ "hcd_energy_map": {
+  "137.1321": [
+   5.16
+  ],
+  "155.1429": [
+   4.92
+  ],
+  "155.1559": [
+   6.07
+  ]
+ },
+ "isolation_width": 0.4,
+ "ms1_scan_count": 61,
+ "ms2_scan_count": 78,
+ "parent_peak_tolerance": 0.001
+}

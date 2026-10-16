@@ -689,7 +689,7 @@ mcp = [
 
 [package.metadata]
 requires-dist = [
-    { name = "mascope-sdk", specifier = ">=2026.8.12" },
+    { name = "mascope-sdk", specifier = ">=2026.9.15" },
     { name = "mascope-tools", specifier = ">=2026.9.30" },
     { name = "matplotlib", specifier = ">=3.7" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },

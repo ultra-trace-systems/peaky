@@ -1,0 +1,10 @@
+{
+ "sample_item_id": "SAMPLE3xxxxxxxxx",
+ "sample_item_name": "monoterpene standard B",
+ "datetime_utc": "2026-09-11 15:01",
+ "polarity": "+",
+ "instrument_type": "orbi",
+ "t0": 5.955899,
+ "t1": 402.467147,
+ "length": 612.946205
+}

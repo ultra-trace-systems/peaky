@@ -1,0 +1,5 @@
+{
+ "status_code": 400,
+ "message": "Failed to get ms2 summary. Multiple isolation widths found for MS2 scans..",
+ "url": "https://server.example/api/samples/SAMPLE3xxxxxxxxx/ms2/summary"
+}
