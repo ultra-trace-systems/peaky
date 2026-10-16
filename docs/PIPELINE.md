@@ -34,6 +34,7 @@ REPORTING    ledger → figures + PDF                 VANKREVELEN · GKA · QC_A
 | [`CHEMISTRY.md`](CHEMISTRY.md) | `chem/chemistry.py` | exact masses, integer-DBE / Senior / oxygen-cap gates, the valence-legal formula grid, the complexity penalty |
 | [`ISOTOPES.md`](ISOTOPES.md) | `chem/isotopes.py` | isotopologue-envelope prediction + the prescan that shrinks the grid from satellite-pair evidence |
 | [`REAGENTS.md`](REAGENTS.md) | `chem/reagents.py` + `chem/profiles.py` | the reagent profile (the single mode switch) + the labeled reagent-ion cluster library |
+| [`MS2.md`](MS2.md) | `ms2/subformula.py` | MS2 peak m/z → sub-formulas of every isolation-window ion whose neutral loss splits into ≤ `k_max` (3) molecules; a composition test, pure arithmetic (no Mascope I/O) |
 
 ## 3. Assignment — candidates → committed formulas
 

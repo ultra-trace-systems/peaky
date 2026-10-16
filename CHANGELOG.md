@@ -8,6 +8,44 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **MS2 fragment assignment core (`peaky.ms2`): every MS2 peak is read as a sub-formula of every ion
+  in the isolation window, and kept only when the neutral loss it implies splits into molecules
+  (`assign_fragments`, `fragment_candidates`, `decompose_loss`, `mass_offset` / `apply_offset`;
+  `chemistry.ion_mass` for an ion from its own formula).** Pure arithmetic, no Mascope I/O. A
+  fragment of a singly-charged precursor is an element-wise sub-formula of the precursor ion; the
+  difference L is a loss only when it splits into at most `k_max` (3) closed-shell molecules --
+  library neutrals (43, `CLOSED_SHELL_LOSSES`) plus at most one unnamed remainder with integer
+  DBE >= 0 that passes Senior's second rule and carries an H or halogen (so the iodide reagent's
+  I3- -> I- reads as one unnamed I2) -- or, when the fragment's electron parity differs from the
+  parent's (`allow_radical`, default on), into exactly one radical piece (`RADICAL_LOSSES` or an
+  unnamed radical remainder) plus closed-shell ones. DBE(L) = DBE(parent) - DBE(fragment) + 1, so
+  k >= 1 - DBE(L) is checked before any search (H8 needs four H2 and is refused at 3). Why a
+  decomposition and not one neutral: MS2 fragments are often second-generation -- on the 2026-09-10
+  exploratory 15N-ammonium file the labelled-ammonium adducts decluster and then dehydrate
+  (C12H22^NO2+ -> C12H15+, loss H7^NO2 = H2O + H2O + H3^N, DBE -2). Why the H-or-halogen clause: on
+  the same file 88.0215 = C3H6NS+ fits C7H6NS+ minus C4 at -0.5 ppm, and is the co-isolated
+  C4H10NS2+ (13 % of the window signal) minus CH4S. The window is max(5 ppm, 0.3 mDa): that file's
+  sub-80 MS1 ions sat at -0.12 mDa, its C2H3O+ fragment read -3.8 / -4.1 ppm (-0.16 / -0.18 mDa)
+  after the precursor recalibration, and 5 ppm at m/z 43 is 0.21 mDa. Readings rank per (peak,
+  parent) -- closed-shell loss before radical, then fewer pieces, fewer unnamed pieces, smaller
+  |ppm| -- and never across parents: a peak two window ions can make keeps both readings
+  (`n_parents` 2). Loss names are formula decompositions in library order ('H2O + H3^N'), never
+  trivial names; a loss valid as one unnamed molecule is never split into named ones. The long table
+  has fixed dtypes and every input peak (an unexplained one as a single row). Re-reading that file's
+  seven precursors reproduces all 31 readings its exploratory script committed (same fragment and
+  loss formula) and reads nothing from the precursor at the 54 peaks it left unread; two monoterpene
+  standards measured on 2026-09-11 give C10H17+ -> C6H9+ (C4H8), C7H11+ (C3H6), C5H7+, C4H9+, C5H9+,
+  C9H11+ (H2 + CH4), and C10H20^N+ -> C10H17+ (H3^N). The decomposition is a search by size over the
+  library multisets that fit inside the loss, pruned by the same bound (tested to give exactly what
+  an unpruned enumeration gives), so `k_max` goes to 6 (`K_MAX_LIMIT`): a hexose's [M+^NH4]+ losing
+  ^NH3 and four waters (H11^NO4, DBE -4) needs five molecules and reads at `k_max=5`. Inputs are
+  checked rather than coerced: ion and loss strings parse strictly ('H2O-H2' raises, where
+  chemistry.parse_formula reads H4O), parents are ion formula strings, peaks are a DataFrame or a
+  1-D array (an (mz, intensity) array raises instead of being flattened into extra peaks), and an
+  oversize parent grid is refused before any peak. Known limits: singly charged ions only; one
+  constant-ppm offset; a fragment below ion DBE -0.5 (an ammonium or hydronium cluster of a
+  saturated molecule) is never read, though a parent is never gated. `docs/MS2.md`,
+  `tests/test_ms2_subformula.py`.
 - **Orbitrap isotope lines are read by peak area, against the file's own minor-line response
   (`PassConfig.iso_response`, `--iso-response {auto,area,off}` on assign / batch / pool).** An
   Orbitrap scan keeps a line only where it clears that scan's detection floor, and the whole-file
