@@ -10,7 +10,9 @@ Senior's rules — the arithmetic this module is built on).
 `chemistry.ion_mass`. Pure arithmetic: no Mascope, no I/O, no plotting. The input
 is an MS2 peak list and the window's ion formulas; the output is a long table.
 Where the peak lists come from — Mascope's MS2 endpoints read into energy-resolved
-tables by `peaky/ms2/sources.py` and `peaky ms2 list | extract` — is §10.
+tables by `peaky/ms2/sources.py` and `peaky ms2 list | extract` — is §10; what is
+built from them across collision energies — breakdown curves, E50s, fragment
+onsets and attributions, `peaky ms2 analyze` — is §11.
 
 > Keep this in sync with the code. Every threshold below is a named constant, a
 > default argument or a literal in `subformula.py`; if you change one there,
@@ -324,7 +326,9 @@ An unexplained row's full set of values is spelled out in §3, step 8.
   to −^NH3 −2 H2O; −3 H2O is 4 molecules, −4 H2O (C6H5O2⁺, loss H11^NO4,
   DBE −4) is 5 and −5 H2O is 6 — no library can do them in fewer. Pass
   `k_max=5` or `6`. The default stays 3 because every extra piece admits more
-  losses, and so more wrong formulas, at every peak.
+  losses, and so more wrong formulas, at every peak. `ms2 analyze` reads the
+  fourth piece only on a ladder (§11.2): −^NH3 −3 H2O when −^NH3 −2 H2O (or
+  −3 H2O) is read at some energy of the same window.
 - **`'^N'` is its own element.** A ¹⁵N-labelled reagent's losses (`H3^N`,
   `H^NO2`, `H^NO3`) are library pieces distinct from the ¹⁴N ones.
 - **The window is judged on `mz_cal`.** Pass `offset_ppm` from `mass_offset`;
@@ -372,8 +376,9 @@ is read and labelled energy-averaged. Read-only: nothing is written to the serve
 | `get_ms1_centroids(ppm=1)` | `mz`, `intensity`, `resolution`, `signal_to_noise` over the whole MS1 range | the isolation-window inventory |
 | the sample's listing row / `samples.get(id)` | name, `datetime_utc`, polarity, `instrument_type`, `t0`, `t1`, `length` | the hidden tail; a TOF sample is skipped |
 
-`get_timeseries` is not read yet (breakdown curves are a later stage). Parents are
-always the **server's keys** (`parent_mz`), never re-derived.
+`get_timeseries` is not read: breakdown curves are built from the per-energy
+spectra (§11), one point per (parent, activation) group. Parents are always the
+**server's keys** (`parent_mz`), never re-derived.
 
 ### 10.2 Fallbacks
 
@@ -464,7 +469,7 @@ is; `mass_offset([(precursor_mz, ion)])` from the parents table recalibrates it.
 the centroid answer holds no spectrum for): the spectrum's metadata as above,
 `isolation_width` (the server's; NaN when refused), `n_peaks`, `tic` (summed
 intensity), `precursor_mz`, `precursor_intensity`, `energy_resolved`, `note`. No
-survival, E50 or other breakdown numbers — that is the next stage.
+survival, E50 or other breakdown numbers — those are `ms2 analyze`'s (§11).
 
 **Window** (`WINDOW_COLUMNS`, per parent then m/z): `sample_id`, `parent_mz`,
 `mz`, `offset_da` (from the key), `intensity`, `share` (of the window's summed
@@ -552,3 +557,754 @@ go on (§10.2); `--out` is always written.
 | `skipped_row` / `error_row` / `is_tof` | the row of a TOF sample (asked nothing) and of a sample that failed |
 | `list_sample` / `extract_sample` | the orchestrators (client in, rows / `SampleMS2` out) |
 | `manifest` | the `ms2_manifest.json` record |
+
+---
+
+## 11. Across energies — `peaky ms2 analyze`
+
+**Code:** `peaky/ms2/readings.py` (`read_window`, `ladder_gate`, `gate_mode`),
+`peaky/ms2/attribute.py` (`peak_roles`, `merge_fragment_peaks`, `fragment_mz`,
+`fragment_compositions`, `candidates_across`, `shared_presence`,
+`intensity_matrices`, `intact_test`, `share_weights`,
+`attribute_fragments`, `branching`), `peaky/ms2/breakdown.py`
+(`survival`, `e50`, `e_cm`, `onset`, `ion_budget`) — pure, no I/O — and
+`peaky/ms2/analyze.py` (window ions, offsets, the orchestration, the figures and
+the manifest). **Offline:** it reads one `ms2 extract` sample folder and asks
+Mascope nothing; it needs no credentials.
+
+```
+ms2_spectra.parquet, ms2_parents.csv, ms2_window.csv, ms2_manifest.json   + the named ions
+        │  per parent key: window ions = named ions inside ±(width/2 + 5 mDa);
+        ▼  target = the named ion at the located precursor (±10 ppm)
+   offset_ppm = mass_offset([(precursor_mz at the lowest located NCE, target)])
+        │  every spectrum of the window, one axis
+        ▼
+   assign_fragments(k_max 4) per energy → ladder gate → ms2_readings.csv
+        │  per (spectrum, peak): precursor of X | fragment (candidates) | unexplained
+        │  fragment peaks merged across energies (m/z within tolerance, or one formula)
+        ▼
+   I_X(E), I_fragment(E), TIC(E) → attribution (composition, intact test, guard, weights)
+        ▼
+   F, F_lo, S per ion and energy → E50 (NCE, V, E_cm) → ms2_breakdown.csv, ms2_e50.csv
+   onsets, calls, weights → ms2_fragments.csv;  branching → ms2_branching.csv;  figures
+```
+
+### 11.1 Window ions, target, recalibration
+
+- **Named, never guessed.** `--ion MZ=FORMULA` (repeatable) or `--ions CSV` (a
+  `formula` column, `mz` optional). The typed m/z must lie within max(10 ppm,
+  5 mDa) of the formula's exact m/z (`ION_CHECK_*`, the precursor search window
+  of `ms2 extract`): a key typed with two decimals is fine, a formula from
+  another window is refused as a typo — in a CSV row as on the command line
+  (the row is named). `--ion` and `--ions` add up. A formula named twice
+  (also once by each), or both polarities, is refused.
+- **Window ions** of a parent key: the named ions whose exact m/z lies within
+  `isolation_width/2 + WINDOW_PAD_DA` of the key. The width: `--iso-width`, else
+  the one `ms2 extract` built its window inventory with (its manifest), else the
+  server's (the parents table). Unknown (a refused summary, no `--iso-width`):
+  only the target is read, and that is said. An `--iso-width` wider than the
+  extract's reaches co-isolates whose MS1 region `ms2 extract` never
+  inventoried (`ms2_window.csv` spans ±(its width/2 + its pad) of each key,
+  `inventory_half_width`): their MS1 share is **unknown**, not 0 (§11.5), and
+  the run says so.
+- **Target:** the named ion nearest the precursor `ms2 extract` located (the
+  parents table's `precursor_mz` at the lowest NCE where it was located),
+  within max(`TARGET_MATCH_PPM` 10 ppm, `tol_mda`). None: the window is
+  **skipped**, with the nearest named ion in the note. Measured: the located
+  precursors sat within 1.8 ppm of their formulas (2026-09-10: −0.1 to +0.7 ppm
+  over seven parents; 2026-09-11: −1.1 to −1.7 ppm), and the nearest other
+  named ion of a window 16 ppm away.
+- **Aliases are not both window ions** (`drop_aliases`). Two named ions whose
+  exact m/z lie within the reading tolerance of each other (max(`tol_ppm`,
+  `tol_mda`) at their m/z: the CHO / N^N or CO3 / ^NO3 aliases of a tied
+  ledger row) read the same precursor peak and every fragment both can make;
+  the window cannot tell them apart. Keeping both gave the peak to one and
+  left the other a phantom with I = 0 (F 0) that still took a share of every
+  fragment — on the 2026-09-10 file, naming C10H14NO^N⁺ (0.44 mDa above
+  C11H15O2⁺) moved C11H15O2⁺'s E50 from 21.1 to 29.6 (to 23.3 with the MS1
+  shares one-to-one, §11.5). The target is kept;
+  between two co-isolates, the one named first; the other is left out
+  (`left_out` in the manifest, and a note).
+- **Recalibration:** one constant-ppm offset per window, `mass_offset` on the
+  target's located precursor, applied to all the window's spectra (§3 step 2);
+  the target's precursor then reads 0 ppm in that spectrum. Recorded per window
+  in the manifest. The anchor is an **energy-resolved** spectrum's whenever one
+  located the precursor: an energy-averaged spectrum of the same parent sorts
+  after every NCE (on standard A's 137.1321 window its precursor would give
+  −1.2138 ppm instead of −1.0651, and every reading would move; tested).
+
+### 11.2 Readings across energies — and the ladder gate on a fourth piece
+
+Each spectrum of the window is read by `assign_fragments` against the window
+ions (target first, then the co-isolates by m/z), and stacked: one long table,
+`ms2_readings.csv` (`READINGS_COLUMNS`: `spectrum`, `parent_mz`, `nce`, `hcd_v`,
+every `OUTPUT_COLUMNS` column, `ladder_support`).
+
+**The ladder gate (default).** The window is read at `k_max` 4, and a reading
+whose loss needs a **fourth** piece is kept only when the **same window ion**
+shows, at **any energy** of the window, the step before it: a reading that is
+rank 1 among its ≤ 3-piece candidates (what `k_max` 3 would rank first) and
+whose loss is this loss minus **one named closed-shell library molecule**,
+whichever pieces the decomposition prints. `ladder_support` records that loss
+(the first printed piece, in the decomposition's order, that is one and finds
+one; else the first such step). The printed
+decomposition is one of several of the same loss — fewest pieces, then fewest
+unnamed, then library order — and need not hold the piece the ladder took:
+C9H22NO6⁺ → C8H11O⁺ loses CH11NO5, printed `H3N + CH4O + H2O2 + H2O2` (the
+decompositions with water need an unnamed piece), while C8H13O2⁺ (loss CH9NO4,
+`H2O + H2O + CH5NO2`) is read one H2O back; testing only the printed pieces
+left C8H11O⁺ unexplained whatever was read (tested, synthetic). One molecule
+means one named piece with no unnamed remainder and no radical: two waters, an
+unnamed remainder or OH• do not make a step — printed or not. A printed piece
+once counted whatever it was, so the gate followed what the printer happened
+to list: the hexose [M+NH4]⁺'s C6H8O3⁺ (loss H8NO3, printed
+`H2O + H2O + H3N + HO`) was kept on C6H9O4⁺ one OH• back, while a loss
+printed with HO2• (H8NO4) was refused the same step; and C5H5⁺ (loss CH11NO6,
+`H2O + H2O + H2O + CH5NO3`) was kept on C6H10NO3⁺ by its unnamed remainder.
+Both are unexplained now, as when alone (tested, synthetic). The losses are compared as
+**count vectors** on `subformula`'s fixed
+element axis, never as strings: `format_formula` sorts N and ^N by the same
+key and keeps their input order, so a formula built from a set followed the
+interpreter's hash seed, and for a loss holding both (a 15N-ammonium adduct
+of an N-containing molecule) about a third of runs dropped a supported step
+(tested across seeds, one process each). Unsupported four-piece readings are
+dropped and the table is **re-ranked**: `rank` and `n_candidates` within
+(spectrum, peak, parent) — so a peak two window ions read keeps a rank 1 for
+each — and `n_parents` within (spectrum, peak); a peak whose every reading
+was dropped becomes one unexplained row (§3 step 8). A four-piece reading
+never supports another.
+
+| option | mode (`gate`) | read at | what is kept |
+| --- | --- | --- | --- |
+| (default) | `ladder-k4` | `k_max` 4 | ≤ 3 pieces; 4 pieces on a ladder |
+| `--no-ladder-k4` | `strict-k3` | `k_max` 3 | ≤ 3 pieces (§3) |
+| `--k-max K` | `ungated` (`strict-k3` for K = 3) | `k_max` K | every reading of ≤ K pieces, no ladder test; the manifest's `gate_note` says so — more chance compositions than the default for K > 3, stricter for K < 3 |
+
+Why a ladder and not a blanket `k_max` 4: every extra piece lets more chance
+compositions read at every peak (§8). The fourth piece is what the ammonium
+adducts of polyols and oxygenated products need — [M+NH4]⁺ loses NH3 and then
+water step by step, and NH3 + 3 H2O (DBE −3) is four molecules whatever the
+library — and the gate admits such a chain only when its previous step is
+observed. Example: the hexose [M+NH4]⁺ C6H16NO6⁺ → C6H7O3⁺ (loss H9NO3,
+`H2O + H2O + H2O + H3N`) is read only when C6H9O4⁺ (loss H7NO2,
+`H2O + H2O + H3N`) or C6H10NO3⁺ (loss H6O3) is read in the same window. On our
+own 2026-09-10 and 2026-09-11 files no peak needs a fourth piece at all: the
+gate, the strict `k_max` 3 and even the ungated `k_max` 4 read exactly the same
+tables (tested).
+
+### 11.3 Breakdown — survival per window ion and energy
+
+Only energy-resolved spectra (a finite NCE) enter the breakdown, lowest NCE
+first (an energy-averaged spectrum is read but has no energy axis; said). A
+spectrum the server returned without peaks (`n_peaks` 0 in the parents table)
+measured nothing and is left out, said; a window of nothing else is skipped
+(`no spectrum with peaks`).
+**One activation kind per breakdown:** an NCE of CID is not an NCE of HCD, so
+a parent with spectra of several kinds is broken down on the kind with the
+most spectra (HCD on a tie); the others are read (`ms2_readings.csv`) but left
+out, said, and the manifest records the window's `activation_kind`.
+Every peak of a spectrum gets one **role** (`peak_roles`): the **precursor** of
+window ion X (its precursor reading — which wins over any fragment reading of
+the same peak; a peak two window ions both read as their precursor goes to
+the first in window order, and the window says so), a **fragment** (keyed by
+its rank-1 formula; when the window ions that read it read different
+formulas, the formulas joined by ` | `; its **candidates** are the window
+ions that read it, in window order), or **unexplained**.
+
+**One fragment across energies** (`merge_fragment_peaks`). The key above is
+one spectrum's, and the rank-1 formula of one peak can change between
+energies: where two compositions lie within the reading tolerance of each other
+— the N + ^N / C + O + H alias of 15N data, 0.443 mDa, 5.2 ppm at m/z 85, at
+the edge of 5 ppm; Cl against C2 + ^N − 4 H, 0.04 mDa — a sub-ppm jitter of the peak brings
+the second one in and the ranking may prefer it. Keyed per spectrum, one
+fragment became two rows: one with a late onset and `in_source` false, each
+with part of the intensity, and the second split with a co-isolate that could
+make it by composition (tested, synthetic: an organonitrate C10H21N^NO5⁺ whose
+C4H8N^N⁺ reads C5H9O⁺ at one energy, 0.3 ppm low — its F at that energy read
+0.82 instead of 0.70, its E50 17.6 instead of 16.7). So the window's fragment
+peaks, every spectrum, are linked when their calibrated m/z lie within the
+reading tolerance of each other (single linkage along the m/z axis) or when
+they share a rank-1 formula (two peaks of one formula may sit up to twice the
+tolerance apart), and each group is **named by every rank-1 formula read in
+it**, sorted and joined by ` | ` (`mz_theo` NaN then). Two peaks of one
+spectrum in a group are one fragment, summed. An unexplained peak is never a
+link. **Two resolved peaks are never one fragment:** two peaks of one spectrum
+more than the reading tolerance apart are two ions, and no chain of links joins
+them (a cannot-link; the links are tried shortest first, the formula links
+before the m/z ones). Single linkage alone let a weak centroid between two
+resolved fragments chain them: in a synthetic window at m/z 57, C2H4N^N⁺ (the
+target's only) and C3H5O⁺ (either ion's), 0.443 mDa apart and both in the NCE 20
+and 30 spectra, became one fragment through a 5-count centroid at NCE 1 midway —
+in-source, split 0.5 / 0.5, both E50s moved by 1–2 NCE and the target's
+branching flagged. A peak that reaches two groups which cannot be one joins
+neither: it keeps its own name (a peak read as one formula only is then that
+formula's fragment; one read as two is a fragment of its own), so a few counts
+never merge two fragments, and C2H4N^N⁺ stays the target's by composition
+(tested). Where the centroid joins, it still counts: read as C3H5O⁺ by both
+ions it makes C3H5O⁺ present at NCE 1, and the intact test does not run on a
+fragment present at the lowest energy (§11.5) — a presence has no intensity
+floor. Placed nearer C2H4N^N⁺, read as that only, it joins that fragment and
+every E50 is what it is without it (tested). On our own files no fragment
+changed its formula between energies, and no group holds two peaks of one
+spectrum beyond the tolerance: the tables are what per-spectrum keys gave
+(tested).
+
+- **I_X** — X's own precursor peak(s) (two centroids within tolerance are
+  summed; `n_precursor_peaks`).
+- **Fragments of X** — the fragments X is a candidate of. One only X can
+  make counts fully; a shared one by X's **weight** from the attribution
+  (§11.5): its MS2-survivor share, or 1 / 0 after a decisive intact test.
+- **F_X = I_X / (I_X + Σ w·I_fragment)** — the survival E50 is read off: a ratio
+  within one spectrum, so it holds whatever happened between the spectra of
+  two energies — a drift of the precursor supply (source, transmission,
+  isolation), space charge, an AGC misprediction scaling a spectrum as a whole.
+  Orbitrap intensities are reported **per unit injection time** (AGC fills the
+  trap to a target charge, so intensity × injection time is what stays
+  constant): the injection time itself moves nothing.
+- **F_lo** — the same with every fragment X can make by composition given to X
+  whole (w = 1, the intact test ignored): the lower bound over the observed
+  products. F_lo..F is the band — F_lo bounds F from below, but F is not an
+  upper bound: a survivor split can give an ion more of a shared fragment than
+  it made (§11.5, what the survivor split assumes).
+- **S_X = I_X(E) / I_X(E_min)** — reported as `s`: it compares spectra recorded
+  at different times, so it is a breakdown curve only with a **steady precursor
+  supply** across the energies (said in the manifest and on every S row of
+  `ms2_e50.csv`) — not a condition on the injection time, which the per-unit-time
+  intensities already absorb.
+- **Only observed products.** F, F_lo and every TIC fraction see only the peaks
+  the spectrum holds. A product **outside the observed m/z range** — below the
+  scan's low-mass limit, as the small reagent ion an adduct releases (an
+  ammonium adduct's NH4⁺, m/z 18) — is in no sum: F and F_lo read high (an ion
+  whose only channel is unobserved keeps F = 1 while S falls, tested), and the
+  TIC falls, inflating every fraction that stays (§11.5). S does not depend on
+  where the products go: with a steady supply it sees that loss.
+- 0/0 (no precursor and no fragment X can make at an energy) is NaN: the ion is
+  **unobserved** there — F, F_lo and S alike (an S of 0 there was read as a
+  crossing through a hole F calls a `gap`, tested), and its branching, gain and
+  loss there are NaN too (§11.5).
+- **Ion budget** per spectrum (`ion_budget`): `tic` (every peak's intensity),
+  `budget_explained` (precursor + fragment peaks of the window ions) and
+  `budget_unexplained` = 1 − explained, with the peak counts.
+
+### 11.4 E50 and the centre-of-mass energy
+
+`e50(nce, value, volts)`: linear interpolation at the **first downward
+crossing of 0.5** between two observed energies, on the NCE axis, and with the
+same fraction on the volts axis (NaN when the volts are unknown — a refused
+summary). `E_cm = V · m_gas / (m_gas + m/z)` with `m_gas` = 28.0061 (N2,
+`--gas-mass`): an **assumption** — the collision gas is not in the data Mascope
+serves — and a parameter; `m/z` is each window ion's own (a co-isolate's E_cm
+is not the target's). E50 is read from F, F_lo and S (`curve` F / F_lo / S).
+
+The volts E50 needs only the two spectra that bracket the crossing, so the
+`note` of `ms2_e50.csv` says what the volts were: `volts unknown` when no
+spectrum of the breakdown has volts (a refused summary); `volts known for
+k of n spectra` when some lack them (a summary group missing for one centroid
+key, §10.2) and the E50 on volts still stands; `volts unknown at the crossing
+(known for k of n spectra)` when a bracketing spectrum is one of those, and
+`e50_v` / `e50_ecm` are NaN. The manifest's `volts_known` is true only when
+every spectrum of the breakdown has volts (and the figure's volts axis is drawn
+only then).
+
+| `flag` | meaning | E50 |
+| --- | --- | --- |
+| `interpolated` | crossed between two neighbouring observed energies | the value |
+| `below_range` | already < 0.5 at the lowest observed energy (E50 below it) | NaN |
+| `above_range` | never below 0.5 (E50 above the highest energy) | NaN |
+| `single_energy` | one observed energy | NaN |
+| `gap` | the crossing lies across energies where the ion is unobserved: not interpolated across the hole (the 2026-09-10 file's 0.9 % co-isolate C8H10NO⁺ is seen at NCE 1 and next at 81; a line across would read 41) | NaN |
+| `no_data` | never observed | NaN |
+
+At the edges: exactly 0.5 is not below 0.5 (a curve starting at 0.5 crosses
+at its first energy, `interpolated`); a hole of one unobserved energy is a
+`gap` as much as a longer one; a spectrum with no NCE is not a point of the
+curve, nor of its span.
+
+`monotonic` False when the curve rises by more than `MONOTONIC_TOL` (0.02)
+between two observed energies; the first crossing is still the one reported.
+On our own files no window ion's F rose at all; an intact ion's precursor
+intensity (S) wanders by about ±2 % between steps.
+
+### 11.5 Fragments and attribution
+
+Per (window, fragment), `ms2_fragments.csv`: its **onset** (lowest NCE where
+present; `onset_v`), `in_source` (present at the window's lowest energy), the
+energy and value of its largest TIC fraction, its candidates and their losses,
+and the call.
+
+Its **candidates** (`candidates_across`) are the window ions that read it as
+one of the formulas it **can be where it sits**. Where it sits is its
+**signal-weighted m/z** (`fragment_mz`): the mean of its peaks' calibrated m/z
+over the energies, each weighted by the share of its spectrum's TIC it holds —
+a TIC fraction, not a raw intensity, so a spectrum scaled as a whole moves
+nothing (tested). The formulas it can be there (`fragment_compositions`) are
+those read in it (rank 1, by any window ion) whose exact m/z lies within the
+reading tolerance of that m/z: the tolerance every single peak is read with,
+applied to the best estimate of the peak's position. Which ions can make a
+fragment is a composition question, and one centroid answers it only as well
+as that centroid is placed — a peak of a few counts says little about where
+the ion is, and counted spectrum by spectrum it weighed as much as the
+strongest:
+
+- In the organonitrate case above a CHO co-isolate reads the merged fragment as
+  C5H9O⁺ in the one spectrum where the peak sat 0.3 ppm low. Weighted by the
+  signal the fragment sits 0.05 ppm below C4H8N^N⁺ and 5.16 ppm above C5H9O⁺,
+  beyond 5 ppm: the co-isolate is not a candidate (a candidate there took half
+  of a fragment it cannot make where it sits).
+- The mirror (tested, synthetic): the co-isolate makes C5H9O⁺, centroided
+  1.2 ppm high at NCE 10–30, the target never loses signal, and at NCE 1 a stray
+  centroid of 5 counts sits at the exact C4H8N^N⁺ m/z, which only the target can
+  read — within 5 ppm of the others, so it merges with them. Asking for a
+  reading in **every** spectrum let that centroid veto the co-isolate, which
+  reads the fragment in the three spectra holding 99.7 % of it: the target got
+  the fragment by composition, its F fell to 0.53 with its branching flagged at
+  every energy above NCE 1, and the co-isolate read no E50 (16.67 is its own).
+  Weighted, the fragment sits 1.2 ppm above C5H9O⁺ and 4.0 ppm below C4H8N^N⁺:
+  both ions are candidates, and the intact test decides (below).
+- When the jitter is where the signal is — the organonitrate's peak 0.3 ppm low
+  at NCE 10, 20 and 30 — the fragment sits 4.92 ppm above C5H9O⁺, inside the
+  tolerance of both formulas, and both ions are candidates (tested): the
+  spectra cannot tell which composition it is.
+
+An ion that reads it only as formulas beyond the tolerance of that m/z is left
+out, and `test_note` says so (`not a candidate: C15H22O3⁺ reads it only as
+C5H9O⁺ (+5.16 ppm) — beyond the reading tolerance of its signal-weighted m/z
+85.06523`); when no formula read in it lies within the tolerance (the readings
+disagree), every ion that reads it is a candidate, said. On our own files
+every fragment is read as one formula by the same ions in every spectrum: the
+rule changes none of their tables (tested).
+
+**An organic reading outranks a carbon-poor polyoxy one.** In 15N data
+C2F3 = H2^NO4 within 0.21 mDa, so CF3COO⁻ (C2F3O2⁻) reads as H2^NO6⁻ and
+C3H2F3O2⁻ as CH4^NO6⁻ — sub-formulas of every [M+^NO3]⁻ cluster, and the
+fragment gate (§3) admits them. When the formulas a fragment can be where it
+sits include a carbon-bearing one (more than `POLYOXY_MAX_C` 1 C) and a
+**carbon-poor polyoxy** one (`polyoxy_inorganic`: ≤ 1 C, ≥ `POLYOXY_MIN_O` 4 O,
+nothing but C, H, N, ^N and O — a cluster of inorganic pieces on a nitrate or
+carbonate core, never an organic fragment), an ion that can read it only as the
+latter is not a candidate, said (`not a candidate: C6H12^NO9⁻ reads it only as
+H2^NO6⁻ — a carbon-poor polyoxy composition, while C2F3O2⁻ (organic) is read
+there too`). Without that, a fluorinated co-isolate's in-source CF3COO⁻ was
+shared by survivors with the intact nitrate cluster, whose F fell below 1
+(tested, synthetic). The rule needs the organic reading: with no fluorinated
+ion named, nothing reads the peak as C2F3O2⁻ and the cluster takes it by
+composition (§11.9). And it needs an organic reader the **sample holds**: one
+in no MS2 spectrum of the window nor in the MS1 window (`absent_ions`,
+below) cannot have made the peak, so the polyoxy readers stay candidates,
+said (`C9H14F3O4⁻ reads it as C2F3O2⁻ (organic) but is absent from this
+sample: C6H12^NO9⁻, which reads it only as carbon-poor polyoxy, stays a
+candidate`). A shared ion list naming a fluorinated ion that falls inside
+another window where it is absent once handed that ion the cluster's fragment
+with weight 1 and moved the cluster's E50 from 16.67 to 21.8, while the window
+note said the absent ion weighs 0 (tested, synthetic).
+
+**A side lobe is not a fragment.** A peak list processed from Orbitrap profiles
+can carry weak centroids a few line widths beside a much brighter line that
+the profile does not hold (`chem.sidelobes`, the MS1 guard). Read against the
+window ions such a centroid is a sub-formula like any other — of a large O/N-rich
+ion almost anything is — and was given to that ion by composition: in a
+synthetic organonitrate window the target, which never fragments, read a
+"fragment" C7H14^NO3⁺ (loss C3H7NO2) from a 1 % centroid 2.2 mDa below its
+co-isolate's C11H13O⁺ (2.3 line widths at a resolving power of 170 000, where
+a negative side lobe sits); its F fell to 0.991 while it never lost a count,
+and its branching was flagged at every energy (tested). A fragment **every**
+peak of which, in every spectrum it is in, sits
+within `SATELLITE_FWHM` (5) line widths of a peak of the same spectrum that is
+at least `SATELLITE_RATIO` (50) times brighter is set aside
+(`satellite_fragments`): its peaks stay in the TIC as unexplained, it gets no
+row in `ms2_fragments.csv`, and the window says so (`side lobe: C7H14^NO3⁺: each
+of its 3 peaks (3 spectra) sits within 5 line widths of a peak >= 50x brighter
+…`).
+The width is the brighter line's m/z over the resolution its centroid reports;
+where a line reports none the peak is not tested (a run whose centroids carry
+no resolution is read as before). A fragment one of whose peaks clears the band
+or the ratio is an ion and is kept; the cost is a real fragment that is 50×
+weaker than a line within 5 widths at every energy it is seen — set aside,
+said. On our own three files no fragment is a side lobe (tested).
+
+- **A named ion the sample lacks decides nothing.** A candidate whose precursor
+  is in **no MS2 spectrum of the window** (at any energy — an ion located only
+  at a later energy, the target too, is not absent and keeps its fragments) and
+  whose MS1 share is a **measured** 0 (`absent_ions`) weighs 0 (below), is in
+  no curve (not even F_lo of a fragment it shares), and is **set aside before
+  the intact test and the guard**, said in `test_note` (`C12H19O⁺: in no MS2
+  spectrum of the window nor in the MS1 window (absent from this sample):
+  weight 0, set aside before the intact test`); the guard's bound counts a
+  fragment it shares as the other ion's own. Kept in the test it was never
+  excluded (absent at the lowest energy, it cannot be tested), so the test
+  left two candidates where it should leave one and the guard, which reads a
+  single call, was skipped: in the guard case below a third named ion this
+  sample lacks let the 1 % co-isolate take 100 % of C9H11⁺ — its E50 5.0
+  instead of 7.48, the main ion's F flat at 1 (tested, synthetic). Nor does
+  the intact test wait for it to read the fragment: the onset is where every
+  candidate the sample holds reads it. An absent CHO ion that reads an
+  organonitrate's fragment only where it sits at C5H9O⁺ (the 0.44 mDa CO /
+  N^N alias, at the tolerance edge), not at its C4H8N^N⁺ onset, once moved
+  the onset one energy later as a 'stray': a decisive intact-test call became
+  an ambiguous split with the co-isolate's branching flagged, or a survivor
+  split became a call — every weight, F and E50 the same now with and without
+  the name (tested, synthetic). A candidate
+  whose MS1 share is **unknown** (no window table, or beyond the inventoried
+  span) is not absent: it stays, untestable, and is split equally (below).
+- **One candidate** — or one the sample holds, the others set aside — → that
+  ion (`basis` `composition`), as if the absent ones were not named.
+- **Only absent candidates** → **no ion** (`call` `''`, `basis` `absent only`,
+  every weight 0, `weight_source` `none`, said in `test_note`): an ion the
+  sample lacks decides nothing, so it takes nothing either. The fragment is in
+  no curve (not in F_lo, which counts every composition candidate, either), so
+  the absent ion shows no breakdown — F, F_lo and S NaN, E50 `no_data` —
+  rather than an F of 0 read off a peak the sample's own ions cannot make; its
+  peaks count as unexplained in the ion budget, as without the name.
+- **Several** → the **intact test** on TIC-normalised precursor fractions: a
+  candidate whose fraction at the fragment's onset is ≥ `INTACT_FRACTION` (98 %)
+  of its fraction at the **lowest energy** — not at the step before the onset:
+  an ion that fell before the fragment appeared may still be the one making it,
+  and is not excluded for holding still since (tested: a shared fragment first
+  seen at the third energy stays ambiguous) — has lost nothing while the
+  fragment appeared, and is **excluded** — unless the fragment is in-source (an onset at
+  the lowest energy says nothing), a candidate is absent at the lowest energy
+  (it cannot be tested and stays), or every candidate would be excluded (none
+  is). The **onset** the test reads is the first energy at which **every**
+  candidate the sample holds reads the fragment (`shared_presence`; an ion
+  set aside as absent is not waited for) — when what some of them
+  read before it is a **stray**: at every earlier energy at most
+  `ONSET_STRAY_SHARE` (5 %) of the fragment's TIC fraction at that first
+  shared energy. A weak peak only some of them can read sits where the others
+  cannot make it, so it is not yet the fragment they share. In the mirror case
+  above the stray centroid (1.7 % of the fragment's fraction at NCE 10) made
+  the fragment 'in-source' and no test ran (an even split, the target's F
+  falling to 0.69, flagged); read from NCE 10, where both ions read it, the
+  target is still 100 % of its NCE 1 fraction and is excluded, and the
+  co-isolate is called — E50 16.67, the target's F 1, nothing flagged, the
+  same E50s as without the stray centroid (tested). A **larger** presence is
+  the fragment itself, placed by a sub-ppm jitter where only some candidates
+  read it, and its own onset stands — at the lowest energy: in-source, no
+  test. The reverse of the mirror (tested, synthetic): the target holds an
+  in-source C4H8N^N⁺ of 300 counts at every energy and never fragments, read
+  at NCE 1 by the target only, from NCE 10 on 0.5 ppm low, where the falling
+  co-isolate reads it as C5H9O⁺ too. Read at NCE 10 the target was intact and
+  excluded, and the co-isolate was called by `intact test` — with the 300
+  counts only the target can have made at NCE 1 — its E50 11.67 and the
+  target's F flat at 1, nothing flagged; the NCE 1 peak holds 1× the
+  fragment's fraction at NCE 10, so it is in-source and split by the
+  survivors (the co-isolate's E50 14.17; without the jitter the target's by
+  composition, 16.67). `test_note` says which rule applied: the onset moved (a
+  stray, with its share), the fragment's own onset kept (with its share), or
+  no spectrum holds a reading by every candidate (no onset: no test). Like F,
+  the intact test, the guard and the branching see only observed products:
+  when a window ion loses signal to a product outside the observed m/z range
+  (§11.3) the TIC falls, and a co-isolate that fragments can keep its TIC
+  fraction — excluded as intact, the shared fragment called the other's, and
+  nothing flagged (tested, synthetic: a 5 % loss of the co-isolate read 1.000 of
+  its lowest-energy fraction while the target lost 6 % unobserved). S sees it
+  (with a steady supply); a TIC that falls between energies says to look. One
+  candidate left → called (`intact test`) — unless the **mass-balance
+  guard** withdraws it: the fragment's TIC-fraction gain at some energy (every
+  energy is checked, not only the last) exceeds everything the called ion held
+  at the **lowest energy** (× `BRANCHING_FLAG`; not its largest share at any
+  energy: as the TIC falls a minor ion's share can rise without it holding more,
+  tested) — its precursor **plus the fragments only it can make** by
+  composition (`held_at_lowest`). Why the
+  guard: in the 2026-09-10 file's 179.107 window C9H11⁺ appears at NCE 5, where
+  C11H15O2⁺ is still 98.7 % of its NCE 1 fraction and the 0.55 % co-isolate
+  C11H16^NO⁺ lost 1132 counts against the fragment's 1118 — the onset is the
+  co-isolate's; but by NCE 10 C9H11⁺ has grown by 0.0083 of the TIC, past the
+  0.0055 that co-isolate held (it has no fragment of its own at NCE 1), and by
+  NCE 45 it holds 39k counts, 17× everything that co-isolate held, and is
+  C11H15O2⁺'s (−C2H4O2). One call per fragment cannot be both; the guard leaves
+  it ambiguous. Why the ion's own products count: a fragile ammonium adduct can
+  be mostly its in-source products at the lowest step (a ^N fragment only it
+  can make), and what those products go on to make — a second-generation
+  fragment another window ion could make by composition — is still carried by
+  it. A bound of its precursor alone withdrew such a correct call and handed
+  the fragment to an intact co-isolate, which then read a false E50 while the
+  adduct's branching went negative, unflagged (tested, synthetic). The guard
+  reads a call made at a moved onset as any other (tested: a co-isolate of
+  1/40 the size, called at the shared onset, cannot carry the growth — withdrawn,
+  both notes kept).
+- Else **`ambiguous`**, with **share weights** over the remaining candidates,
+  each candidate weighed by what is measured of **it** (`share_weights`) — one
+  candidate's missing number never changes how the others split:
+  - its lowest-energy MS2 survivor when it has one (> 0) — whatever the MS1
+    window holds: an ion in the MS2 spectrum is never given 0 for want of an
+    MS1 centroid;
+  - in neither the lowest-energy MS2 spectrum nor the MS1 window (an MS1 share
+    of 0, measured): weight **0**, and the others split as if it were not named
+    (it never reaches the split: set aside above; and an equal split is over
+    the candidates not absent, tested);
+  - no survivor but an MS1 share: that share put on the survivors' scale
+    (survivor per unit share of the candidates that have both), said in
+    `test_note`;
+  - no candidate with a survivor: the MS1 shares alone;
+  - a candidate with no survivor whose MS1 share is not known (no window table
+    for the parent, or beyond the span `ms2 extract` inventoried, §11.1), or no
+    candidate with both to set the scale: an equal split over the candidates
+    not absent from both, said.
+
+  `weight_source` is `ms2 survivors`, `ms2 survivors + ms1 window`, `ms1 window`
+  or `equal` (and `none` for a fragment only absent ions can make). Excluded candidates weigh 0. The MS1 shares are **one-to-one**:
+  each centroid goes to the named ion nearest it (within max(`TARGET_MATCH_PPM`,
+  `tol_mda`)), never to two; and a window ion the MS1 window holds no centroid
+  for has a **measured share of 0**, not a missing one — inside the inventoried
+  span; beyond it, NaN (said in a note when its precursor is in no MS2 spectrum
+  either). Two earlier rules failed an ion list shared across windows. An equal
+  split whenever a survivor was missing took half of every fragment a named but
+  absent ion could make from the target (a synthetic run's E50 16.7 read 21.8).
+  Then MS1 shares for **every** candidate whenever one lacked a survivor: on
+  standard A's adduct window, naming C11H23⁺ too (in no MS2 spectrum, 0.025 % of
+  the MS1 window) switched all five shared fragments from the survivor split
+  0.719 / 0.281 to 0.526 / 0.474 and moved the two E50s from 8.61 / 6.77 to
+  10.81 / 3.38. Weighed per candidate, it takes its 0.025 % and the E50s move by
+  < 0.005 NCE; without its MS1 centroid nothing moves at all (tested, with a
+  synthetic phantom too).
+
+**What the survivor split assumes.** Survivor weights are fixed: each
+candidate takes a shared fragment in proportion to its intensity at the lowest
+energy, at every energy — as if the window's ions fragmented alike. On the
+2026-09-11 standard A's adduct window (155.1559: C10H20^N⁺, with C10H19O⁺
+co-isolated 13 mDa below) every fragment is a sub-formula of both ions and
+C10H17⁺ and C6H9⁺ are already there at NCE 1, so all five are `ambiguous`,
+split 0.719 / 0.281 (tested):
+
+- When every fragment of a window is shared by all its ions and split by
+  survivors, every ion's F at the lowest energy is one number by construction:
+  F_X = I_X / (I_X + (I_X / ΣI) · ΣI_f) = 1 / (1 + ΣI_f / ΣI) — 0.713 for both
+  ions there. It says what the window holds, not how fragile each ion is.
+- The split breaks the per-ion balance while the window's holds. Its products
+  gain 0.996, 1.010 and 1.030 of what its two precursors lose at NCE 5, 15 and
+  25 (TIC fractions); but the adduct's branching sums to 1.415 at NCE 5 and
+  1.100 at NCE 15 (both flagged) and the co-isolate's to 0.566 and 0.835. The
+  co-isolate is the more fragile ion — its TIC fraction falls by 28 % by NCE 5,
+  the adduct's by 11 % — and the survivor split gives it less than it made. The
+  flag here says the split is off, not that a fragment is mis-attributed.
+
+The adduct's F E50 (8.61) carries that uncertainty, and F_lo..F does not bound
+it on both sides: F_lo, every shared fragment to the adduct, reads 6.14; a
+split by each ion's own TIC-fraction loss at each energy reads 10.11 for the
+adduct and 3.96 for the co-isolate (the survivor split: 8.61 and 6.77). That
+loss split is not used. It gives every ion the window's ratio of gain to loss,
+so the per-ion check could no longer fail for a shared fragment whatever the
+attribution; it is undefined at the lowest energy, where two of the five
+fragments are already present and nothing has yet been lost; and like the
+survivor split it divides every fragment alike. Nor is there a fit (below). So
+the survivor split stays and its breach is flagged: read the E50 of a window
+whose fragments are all shared together with its F_lo and its branching flags —
+on standard A's adduct the splits considered here span NCE 6.1–10.1.
+
+**One fragment, one call.** The merge cannot tell a peak that jitters across an
+alias from two fragments of the two compositions — 0.44 mDa apart, each strong
+at its own energies — and makes them one fragment with one call; its part
+where only some candidates read it goes with that call. On our own files no
+fragment reads as two compositions.
+
+The `losses` of `ms2_fragments.csv` follow its `candidates`, in window order,
+each candidate's loss taken from the lowest energy at which it reads the
+fragment as one of the formulas it can be where it sits (else at which it
+reads it at all).
+
+**Scale-free.** Every quantity of the attribution — the intact test, the guard,
+the branching — is a TIC fraction, and F and F_lo are ratios within one
+spectrum: a spectrum scaled as a whole (a drift of the precursor supply, space
+charge, an AGC misprediction) changes no call, weight, F, F_lo, E50 on them or
+branching; only S and the raw intensities move (tested at three energies and
+two factors; the intact test on raw counts made two calls ambiguous and moved
+both E50s by 3 NCE).
+
+No least-squares deconvolution: with two or three window ions and a handful of
+energies a fit has as many unknowns as points, and would hand back a number
+for a fragment the data cannot attribute.
+
+**Branching** (`ms2_branching.csv`): of X into fragment f at energy E,
+`w(X, f) · (φ_f(E) − φ_f(E0)) / (φ_X(E0) − φ_X(E))`, φ = intensity / TIC, E0 the
+lowest energy; NaN where X lost nothing; a fragment that fragments on counts
+negative; and at an energy where X is unobserved (no precursor, no fragment it
+can make) the ratio, the gain and the loss are all NaN — X was not seen there,
+it did not lose everything it held. Its sum per (X, E) is `branching_sum` in
+`ms2_breakdown.csv`, and a sum above `BRANCHING_FLAG` (1.05) is **flagged**
+(`branching_flag`, and a note) — never clipped: a precursor cannot give more
+than it lost, among the products the spectra hold. The flag reads the
+weighted gain against the loss (`branching_breach`), not the ratio: where X lost
+nothing or **gained** (the ratio is NaN) any growth of its products breaks the
+invariant worst of all, and is flagged too — the note gives the products' gain
+and X's own change there. On the 2026-09-10 file: C11H13O⁺ at NCE 11 (its
+products +0.0205 of the TIC while its own fraction rose by 0.0020) and C7H6NS⁺
+at NCE 61 (+0.0123, +0.0067), each a larger excess than the flagged sum 1.059
+of C7H6NS⁺ at NCE 81. Three causes, all
+said in the note: a fragment mis-attributed or a share weight off (the
+2026-09-10 file's 197.13 co-isolate C12H21O2⁺, 0.8 % of the window, gets 1.8 %
+of the adduct's in-source fragments by survivor share and barely fragments
+itself: sums 2–6); ions not named here losing signal; or products leaving the
+observed m/z range (§11.3) — the last two take signal out of what is named, and
+TIC normalisation turns that into a gain of every named fraction. The note
+gives, for each step it names (each value labelled with its NCE, in the order
+the steps are named), how far the unexplained share of the TIC moved from the
+lowest energy and the TIC against the lowest energy's: unnamed ions move the
+unexplained share; a TIC that falls while the unexplained share holds says
+products left the observed range (or the precursor supply fell). On the
+2026-09-11 standard A's
+[M+H]⁺ window (one window ion, so mass balance is exact) the sum at NCE 5 is
+1.173: an excess of 0.173 in branching units, which times the precursor's
+TIC-fraction loss (0.0664) is 0.0115 of the TIC — exactly what the unexplained
+share fell by. About half of that (0.0058) is the precursor's **own side
+lobes**: unexplained centroids within 4.6 mDa of it, three of them within
+1.6 mDa of one another, which no named ion can claim; the rest is unnamed
+signal elsewhere in the window.
+
+### 11.6 Constants
+
+| constant | value | role |
+| --- | --- | --- |
+| `readings.LADDER_K` | 4 | the piece count the ladder gate admits |
+| `analyze.TARGET_MATCH_PPM` | 10 ppm (floor `tol_mda`) | target = named ion nearest the located precursor |
+| `analyze.ION_CHECK_PPM` / `_MDA` | 10 ppm / 5 mDa | the typed m/z of `--ion` vs the formula |
+| `sources.WINDOW_PAD_DA` | 0.005 Da | window ions: ±(width/2 + pad) of the key |
+| `attribute.INTACT_FRACTION` | 0.98 | the intact test (an ion that has not started to fragment wanders ±2 %: the 2026-09-10 file's C7H6NS⁺ reads 82.2 % of its spectrum at NCE 1 and 83.9 % at 11) |
+| `attribute.BRANCHING_FLAG` | 1.05 | branching sum flag; the guard's margin |
+| `attribute.POLYOXY_MAX_C` / `POLYOXY_MIN_O` | 1 C / 4 O | a carbon-poor polyoxy H/N/O composition, outranked by an organic reading of the same fragment by an ion the sample holds (§11.5) |
+| `attribute.ONSET_STRAY_SHARE` | 0.05 | the intact test moves a fragment's onset to the first energy every candidate reads it only past a stray: ≤ this share of the fragment's TIC fraction there, at every earlier energy (§11.5) |
+| `attribute.SATELLITE_RATIO` / `SATELLITE_FWHM` | 50× / 5 line widths | a fragment every peak of which sits this close to a peak this much brighter is a side lobe, set aside (the MS1 side-lobe guard's ratio and band, `chem.sidelobes`; §11.5) |
+| `breakdown.E50_THRESHOLD` | 0.5 | E50 |
+| `breakdown.MONOTONIC_TOL` | 0.02 | non-monotonic flag |
+| `breakdown.N2_MASS` (`--gas-mass`) | 28.0061 Da | E_cm (an assumption) |
+| `analyze.FIGURE_TOP_FRAGMENTS` | 6 | fragments drawn in panel B |
+
+### 11.7 Outputs
+
+`peaky ms2 analyze --run-dir DIR --ion MZ=FORMULA [--ion ...] [--ions CSV]
+[--k-max K | --no-ladder-k4] [--tol-ppm 5] [--tol-mda 0.3] [--gas-mass 28.0061]
+[--iso-width W] [--no-figures] [--out-dir DIR]` writes into `--out-dir` (default:
+the run folder itself):
+
+| file | content |
+| --- | --- |
+| `ms2_readings.csv` | every reading of every spectrum (§11.2) |
+| `ms2_breakdown.csv` | per (window, spectrum, window ion): `nce`, `hcd_v`, `role` (target / co-isolate), `ion_mz`, `intensity` (I_X), `n_precursor_peaks`, `frac` (I_X / TIC), `frag_weighted`, `frag_all`, `f`, `f_lo`, `s` (S: valid with a steady precursor supply), `branching_sum`, `branching_flag`, `tic`, `budget_explained`, `budget_unexplained`, `n_peaks`, `n_unexplained` |
+| `ms2_e50.csv` | per (window, ion, curve F / F_lo / S): `role`, `ion_mz`, `e50_nce`, `e50_v`, `e50_ecm`, `flag`, `monotonic`, `n_energies`, `nce_min`, `nce_max`, `value_at_min`, `value_at_max`, `note` |
+| `ms2_fragments.csv` | per (window, fragment — one physical peak across the energies, named by every rank-1 formula read there): `mz_theo` (NaN for a name with ` \| `), `candidates`, `n_candidates` (how many: `candidates_across`, after the ions beyond the tolerance of where it sits and the polyoxy readings outranked are left out), `losses`, `call`, `basis`, `weights` (`ion=w;…`), `weight_source`, `excluded`, `test_note` (the candidates set aside as absent from the sample; the intact test's note — its onset, when every candidate reads the fragment only from a later energy, moved past a stray or kept — and the guard's, then `candidates_across`'s), `onset_nce`, `onset_v`, `in_source`, `max_frac`, `max_frac_nce`, `n_spectra` |
+| `ms2_branching.csv` | per (window, ion, fragment, energy above the lowest): `nce`, `hcd_v`, `weight`, `frag_gain`, `ion_loss`, `branching` (all three NaN where the ion is unobserved) |
+| `breakdown_<parent key>.png` | (A) F of every window ion vs NCE, the F_lo..F band, the target emphasised, E50 in the legend; (B) the target's top fragments' TIC fraction vs NCE with its own; one colour, one ion across both panels (the fragments take colours no window ion wears; past the palette, grey with distinct dashes); volts on a secondary top axis when known; legends below the panels |
+| `ms2_analyze_manifest.json` | the sample (from the extract manifest), the parameters (gate mode and its note, `k_max_read`, tolerances, gas mass, the isolation width and its source, the named ions, and every constant a call turns on: `intact_fraction`, `branching_flag`, `onset_stray_share`, `satellite_ratio` / `satellite_fwhm`, `polyoxy_max_c` / `polyoxy_min_o`, `e50_threshold`, `monotonic_tol`, `target_match_ppm`, `window_pad_da`), each window's status, `reason`, target, co-isolates, `left_out` (aliases), `activation_kind`, located precursor, offset, NCEs and notes, the counts (incl. `four_piece_readings`), the inputs' and outputs' sha1, the code identity. No credentials, no URL (the PNGs carry no `Software` key) |
+
+It prints one line per window (status, target, co-isolates, offset, the
+target's E50) and the notes. Each window has a **status** (and, when it has no
+breakdown, a `reason`, both in the manifest, with the counts `analysed`,
+`readings_only`, `skipped`):
+
+| status | `reason` | what was written |
+| --- | --- | --- |
+| `analysed` | — | readings, breakdown, E50s, fragments, branching, figure |
+| `readings only` | `no energy-resolved spectrum` | readings only: energy-averaged spectra (a server older than Mascope 1.8, or an averaged extract) have no energy axis |
+| `skipped` | `no named target` | nothing: no named ion at the located precursor (the note names the nearest) |
+| `skipped` | `no precursor located` / `no spectrum with peaks` | nothing |
+
+**Exit code:** 0 when a window was analysed, or when none was but some were
+read (`readings only`). When every window is readings-only that is all the
+folder holds, and it says so without `--ion` advice; when some windows are
+readings-only and others skipped, the summary names the readings-only windows
+(it never claims the folder has no energy axis: a skipped window was not
+looked at), gives the `--ion` hint for each window skipped with no named
+target, and lists any other skip reason. 1 when nothing was read: no MS2
+parent in the folder (an MS1-only sample), every window skipped for want of a
+named target (with the `--ion` hint), or for another reason (the reasons
+given).
+
+### 11.8 Known answers (our own data)
+
+- **2026-09-11 standard A, [M+H]⁺ C10H17⁺** (137.1321, alone in its window):
+  F E50 NCE 13.89 (6.33 V, E_cm 1.073 eV on N2). The raw-file breakdown of that
+  day (per-scan centroids; survival = precursor / (precursor + tracked ions))
+  read 13.8 (6.32 V); F agrees with its survival within 0.0013 at every step,
+  i.e. within 0.07 NCE at the crossing's slope.
+- **Standard A, the adduct C10H20^N⁺** (155.1559, C10H19O⁺ co-isolated 13 mDa
+  below): F E50 8.61 (5.59 V), F_lo 6.14. The raw-file value, 1.6 (4.19 V),
+  is a different definition: it put the co-isolate's intact peak and every
+  shared fragment against the adduct. Rebuilt from the API spectra that
+  definition reads 1.92 (rebuilt raw ≤ F_lo ≤ F at every energy; the raw
+  table itself sits 0.0027 above F_lo at NCE 25). The rebuilt and the raw
+  table differ by 0.0041 at NCE 1 and 0.0065 at NCE 5 (averaged S/N ≥ 3
+  spectra of one isolation centre, against per-scan centroids pooled over
+  both centres); at the table's slope there, 0.0147 per NCE, that bounds the
+  E50 difference by 0.0065 / 0.0147 = 0.44 NCE — it is 0.32 (1.92 against
+  1.61).
+- **Standard B, [M+H]⁺** (137.13, summary refused): F E50 15.82, NCE only (volts
+  and E_cm NaN, said); the raw-file breakdown read 16.3 (6.76 V). **Not** a
+  difference of definitions: the raw-file survival (precursor / (precursor +
+  the tracked ions)) rebuilt on the API spectra agrees with F within 0.0011 at
+  every step and exactly at the crossing's two steps (NCE 10 and 15, where
+  every fragment read is a tracked one), E50 15.821. The difference is in the
+  spectra: per precursor, the API spectra hold ×1.021 and ×1.037 the tracked
+  fragments the raw-file table does at NCE 10 and 15 (×0.963 at NCE 1). A
+  fragment / precursor ratio off by 1 + d moves F by about F (1 − F) d ≤ d / 4;
+  with every ratio within 4 %, F lies within 0.01 of the table and, at the
+  crossing's slope (0.0169 per NCE), the E50 within 0.59 NCE — it is 0.50.
+- **2026-09-10 exploratory file**, the seven parents with the co-isolates that
+  day's script settled: E50 C7H6NS⁺ above range (F 0.73 at NCE 91; its
+  co-isolate C4H10NS2⁺ 15.5, spent by NCE 41), C11H13O⁺ 35.3, C11H15O2⁺ 21.1,
+  C8H28^NO4Si4⁺ 1.78; the ammonium adducts C11H18^NO2⁺ and C12H22^NO2⁺ below
+  range (F 0.44 and 0.38 at NCE 1). 88.0215 C3H6NS⁺ is the co-isolated
+  C4H10NS2⁺'s by composition; C9H11⁺ in the 179.107 window is ambiguous (the
+  guard, §11.5). No reading needed a fourth piece.
+
+### 11.9 Gotchas
+
+- **E50 on NCE is not E50 on volts.** NCE 1 is a different voltage at every
+  m/z (§10.5); compare windows on `e50_v` / `e50_ecm` when the volts are known.
+- **F of a co-isolate depends on its weights.** A minor co-isolate that shares
+  big in-source fragments with the target gets their survivor share, which can
+  dwarf its own peak; the F_lo..F band and the branching flag say so — the
+  flag also where the co-isolate's own fraction never moved and its branching
+  ratio is NaN (§11.5). When every fragment is shared, the survivor split sets
+  every ion's F at the lowest energy to one number, and the E50 can lie above
+  F's as well as below it (standard A's adduct: 6.1–10.1 across the splits
+  considered, §11.5).
+- **TIC normalisation reads ions you did not name.** The branching sums and the
+  intact test are on TIC fractions; a co-isolate not named still moves them.
+  Name every co-isolate with a settled formula — but the precursor's own side
+  lobes (unexplained centroids a few mDa either side of it) move them too, and
+  no name removes those (standard A's [M+H]⁺: half the excess, §11.5). A side
+  lobe that reads as a sub-formula of a window ion is set aside as one only
+  where its line reports a resolution (§11.5).
+- **Name one formula of an alias pair.** Two named ions within the reading
+  tolerance are not both read (§11.1): the one left out is in `left_out`.
+- **One energy scale.** CID and HCD spectra of one parent are not one curve:
+  the kind with the most spectra is broken down, the rest only read (§11.3).
+- **S needs a steady precursor supply; F and F_lo need the products in the
+  spectrum.** Orbitrap intensities are per unit injection time, so S is not a
+  question of the injection time but of the supply (source, transmission,
+  isolation) across the energies. F and F_lo hold whatever the supply did, but
+  see only observed products (§11.3).
+- **Products outside the observed m/z range are invisible** to F, F_lo, every
+  TIC fraction, the intact test, the guard and the branching: an adduct whose
+  main channel releases an ion below the scan's low-mass limit reads a high F
+  (its E50 above S's), inflates every other fraction as the TIC falls (branching
+  sums above 1, flagged — the note gives the TIC ratio), and can keep a
+  fragmenting co-isolate's TIC fraction steady enough to be excluded as intact
+  (§11.5). Compare F's E50 with S's, and read the TIC across the energies.
+- **CF3COO⁻ reads as a nitrate-cluster fragment.** In 15N data C2F3 = H2^NO4
+  within 0.21 mDa: CF3COO⁻ is H2^NO6⁻ and C3H2F3O2⁻ is CH4^NO6⁻ to every
+  [M+^NO3]⁻ window ion, and the fragment gate admits both. Name the fluorinated
+  co-isolate: its organic reading then outranks the polyoxy one (§11.5) —
+  where the sample holds it. Unnamed, or absent from the sample, the cluster
+  takes the peak by composition.
+- **The ladder is per window ion and per window.** A step read by another
+  window ion, or in another window, is no support.
+- **A fragment name with ` | `** is one peak read as several compositions:
+  by two window ions, or at two energies (§11.3). Its readings are in
+  `ms2_readings.csv` under each formula; `mz_theo` is NaN.
+
+### 11.10 Code map
+
+| function | role |
+| --- | --- |
+| `readings.gate_mode` / `read_window` / `ladder_gate` / `rerank` | the gate mode and read-at k_max; one window's readings across energies; the ladder gate; the re-ranking after a drop |
+| `attribute.peak_roles` / `merge_fragment_peaks` / `intensity_matrices` | per (spectrum, peak) role; one fragment across energies; the I_X / I_fragment matrices |
+| `attribute.satellite_fragments` / `set_aside_fragments` | the fragments that are side lobes of a brighter line; their peaks made unexplained |
+| `attribute.fragment_mz` / `fragment_compositions` / `candidates_across` / `polyoxy_inorganic` / `shared_presence` | where a fragment sits (signal-weighted m/z); the formulas it can be there; its candidates (an organic reading outranks a carbon-poor polyoxy one); where every candidate the sample holds reads it (the intact test's onset) |
+| `attribute.absent_ions` / `live_candidates` / `intact_test` / `share_weights` / `held_at_lowest` / `attribute_fragments` | the named ions the sample lacks; each fragment's candidates the sample holds; the intact test; the weights, per candidate; the guard's bound (precursor + the ion's own fragments at the lowest energy); the call per fragment (absent ions set aside, the onset past a stray, the guard) |
+| `attribute.branching` / `branching_breach` | branching per energy; the mass-balance flag (also where the ratio is NaN) |
+| `breakdown.survival` / `e50` / `e_cm` / `onset` / `ion_budget` | F, F_lo, S; E50 and its flag; E_cm; onset; the per-spectrum budget |
+| `analyze.parse_ion_spec` / `read_ions_csv` / `collect_ions` | the named ions |
+| `analyze.load_run` / `isolation_width` / `inventory_half_width` / `window_ions` / `drop_aliases` | the extract folder; the width; how far the extract's MS1 inventory reaches; a window's target and co-isolates; the aliases left out |
+| `analyze.gate_note` | the manifest's words for the gate mode |
+| `analyze.analyze_window` / `analyze_run` | one window; every window of a folder |
+| `analyze.render_window` / `write_outputs` / `manifest` | the figure; the files; `ms2_analyze_manifest.json` |

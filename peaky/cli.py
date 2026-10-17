@@ -15,7 +15,9 @@ Subcommands:
   curate         organise data (write API): create/rename/copy/move workspaces,
                  datasets, batches, samples (--dry-run previews; deletes need --yes)
   ms2            read MS2 from Mascope: `ms2 list` (what each sample holds),
-                 `ms2 extract` (energy-resolved spectra + window inventory tables)
+                 `ms2 extract` (energy-resolved spectra + window inventory tables);
+                 `ms2 analyze` (offline: readings across energies, breakdown
+                 curves + E50, fragment onsets and attribution)
   mcp            serve the pipeline over MCP (ChatGPT / Claude Desktop / Cursor)
 
 Run `peaky <cmd> --help` for each. Heavy work runs on the host Python
@@ -996,11 +998,15 @@ MS2_LIST_SHOWN = ("sample_id", "name", "ms2_scans", "n_parents", "n_spectra", "n
 
 def cmd_ms2(args) -> None:
     """MS2 from Mascope (peaky/ms2/sources.py): `list` (one inventory row per
-    sample) and `extract` (per-sample tables + manifest). Read-only."""
+    sample) and `extract` (per-sample tables + manifest), read-only; and
+    `analyze` (peaky/ms2/analyze.py), which reads an `extract` folder and asks
+    Mascope nothing."""
     if args.ms2_verb == "list":
         _ms2_list(args)
     elif args.ms2_verb == "extract":
         _ms2_extract(args)
+    elif args.ms2_verb == "analyze":
+        _ms2_analyze(args)
     else:
         sys.exit(f"unknown ms2 verb {args.ms2_verb!r}")
 
@@ -1151,6 +1157,117 @@ def _ms2_extract(args) -> None:
         for note in ([row["note"]] if row["note"] else []) + res.notes:
             print(f"  note: {note}")
     _ms2_exit(failed, stopped, len(args.sample_id), done)
+
+
+def _ms2_analyze(args) -> None:
+    """`peaky ms2 analyze`: one `ms2 extract` sample folder -> readings across
+    energies, breakdown curves, E50s, fragments (peaky/ms2/analyze.py). Local:
+    no credentials, no server."""
+    import math as _m
+
+    from peaky.ms2 import analyze as AN
+    from peaky.ms2 import readings as RD
+    from peaky.ms2 import sources as SRC
+
+    for name, v in (("--tol-ppm", args.tol_ppm), ("--tol-mda", args.tol_mda)):
+        if not (_m.isfinite(v) and v >= 0):
+            sys.exit(f"{name} must be a finite number >= 0, got {v}")
+    if not (_m.isfinite(args.gas_mass) and args.gas_mass > 0):
+        sys.exit(f"--gas-mass must be a positive mass in Da, got {args.gas_mass}")
+    if args.iso_width is not None and not (_m.isfinite(args.iso_width) and args.iso_width > 0):
+        sys.exit(f"--iso-width must be a positive width in Da, got {args.iso_width}")
+    try:
+        if args.k_max is not None:
+            RD.gate_mode(args.k_max)
+        items = [AN.parse_ion_spec(x) for x in (args.ion or [])]
+        if args.ions:
+            items += AN.read_ions_csv(args.ions)
+        ions = AN.collect_ions(items)
+    except (ValueError, OSError) as exc:
+        sys.exit(f"[ms2] {exc}")
+    try:
+        tables = AN.load_run(args.run_dir)
+    except (FileNotFoundError, ValueError) as exc:
+        sys.exit(f"[ms2] {exc}")
+    res = AN.analyze_run(tables, ions, k_max=args.k_max, ladder=not args.no_ladder_k4,
+                         tol_ppm=args.tol_ppm, tol_mda=args.tol_mda, gas_mass=args.gas_mass,
+                         iso_width=args.iso_width)
+    out = Path(os.path.expanduser(args.out_dir or args.run_dir))
+    files = AN.write_outputs(res, tables, str(out), figures=not args.no_figures,
+                             created_utc=datetime.now(timezone.utc).strftime(
+                                 "%Y-%m-%dT%H:%M:%SZ"))
+    p = res.params
+    print(f"[ms2] {len(ions)} named ion(s); {p['gate_note']}; isolation width "
+          + (f"{p['isolation_width_used']:g} Da ({p['isolation_width_source']})"
+             if p["isolation_width_used"] else "unknown"))
+    for w in res.windows:
+        head = f"[ms2] parent {SRC.spectrum_key(w.parent_mz)}: {w.status}"
+        if w.target:
+            head += f"; target {w.target}"
+            if w.co_isolates:
+                head += " + " + ", ".join(w.co_isolates)
+            head += f"; offset {w.offset_ppm:+.2f} ppm"
+        if w.e50 is not None and len(w.e50):
+            r = w.e50[(w.e50["ion"] == w.target) & (w.e50["curve"] == "F")].iloc[0]
+            if r["flag"] == "interpolated":
+                head += f"; E50 NCE {r['e50_nce']:.1f}"
+                if _m.isfinite(r["e50_v"]):
+                    head += f" ({r['e50_v']:.2f} V, E_cm {r['e50_ecm']:.3f} eV)"
+            else:
+                head += f"; E50 {r['flag'].replace('_', ' ')}"
+        print(head)
+        for note in w.notes:
+            print(f"  note: {note}")
+    for note in res.notes:
+        print(f"  note: {note}")
+    # what write_outputs wrote: the tables, every figure drawn, the manifest
+    print(f"[ms2] wrote {', '.join([*files, 'ms2_analyze_manifest.json'])} -> {out}")
+    _ms2_analyze_exit(res.windows)
+
+
+def _ms2_analyze_exit(windows) -> None:
+    """Exit 0 when a window was analysed, or read without an energy axis
+    (energy-averaged spectra: the readings are written); exit 1 when nothing
+    was read, with the cause the windows give -- the --ion hint for every
+    window whose target was not named, also beside readings-only windows.
+    The summary speaks for the windows it names: in a folder where some
+    windows are readings-only and others skipped, it never says that no
+    window has an energy axis (a skipped window was never looked at)."""
+    from peaky.ms2 import analyze as AN
+    from peaky.ms2 import sources as SRC
+
+    status = [w.status for w in windows]
+    if "analysed" in status:
+        return
+    if not windows:
+        sys.exit("[ms2] no MS2 parent in this folder (an MS1-only sample, or no MS2 spectrum "
+                 "was extracted): nothing to analyse")
+    hint = ("name each window's target ion with --ion MZ=FORMULA (or --ions CSV)")
+    no_target = [SRC.spectrum_key(w.parent_mz) for w in windows if w.reason == AN.SKIP_NO_TARGET]
+    ro = [w for w in windows if w.status == "readings only"]
+    if ro:
+        if len(ro) == len(windows):
+            print("[ms2] no window has energy-resolved spectra (energy-averaged only: a server "
+                  "older than Mascope 1.8, or an averaged extract): the readings are written; "
+                  "there is no energy axis for a breakdown")
+            return
+        print(f"[ms2] no window was analysed: {len(ro)} of {len(windows)} windows ("
+              + ", ".join(SRC.spectrum_key(w.parent_mz) for w in ro)
+              + ") hold energy-averaged spectra only (a server older than Mascope 1.8, or an "
+              "averaged extract): their readings are written, with no energy axis for a "
+              "breakdown")
+        if no_target:
+            print(f"[ms2] skipped with no named ion at the located precursor: "
+                  f"{', '.join(no_target)} -- {hint}")
+        other = sorted({w.reason for w in windows
+                        if w.status == "skipped" and w.reason != AN.SKIP_NO_TARGET})
+        if other:
+            print("[ms2] other windows skipped: " + "; ".join(other))
+        return
+    if no_target:
+        sys.exit(f"[ms2] no window was analysed: no named ion is at a located precursor; {hint}")
+    sys.exit("[ms2] no window was analysed: "
+             + "; ".join(sorted({w.reason for w in windows if w.reason})))
 
 
 def _write_ms2_outputs(res, out: Path) -> dict:
@@ -1768,7 +1885,8 @@ def build_parser() -> argparse.ArgumentParser:
     pc.set_defaults(func=cmd_curate)
 
     p2 = sub.add_parser("ms2", help="read MS2 from Mascope (>= 1.8): list what each sample "
-                                    "holds, extract energy-resolved spectra (read-only)")
+                                    "holds, extract energy-resolved spectra (read-only); "
+                                    "analyze an extracted folder offline")
     p2s = p2.add_subparsers(dest="ms2_verb", required=True)
 
     p2l = p2s.add_parser("list", help="one row per sample: parents, NCEs, volts, scan counts, "
@@ -1805,6 +1923,37 @@ def build_parser() -> argparse.ArgumentParser:
                      help="skip the isolation-window inventory and its MS1 request (whose "
                           "failure on a sample already skips the window only, keeping its MS2 "
                           "tables)")
+    p2a = p2s.add_parser("analyze", help="offline, on one `ms2 extract` sample folder: "
+                                         "fragment readings across energies, breakdown curves "
+                                         "and E50, fragment onsets and attribution, figures")
+    p2a.add_argument("--run-dir", required=True, metavar="DIR",
+                     help="one `ms2 extract` sample folder (ms2_spectra.parquet, "
+                          "ms2_parents.csv, ms2_window.csv, ms2_manifest.json)")
+    p2a.add_argument("--ion", action="append", default=[], metavar="MZ=FORMULA",
+                     help="a window ion, e.g. 137.1323=C10H17+ (repeat it); a window's ions "
+                          "are the named ions inside its isolation window, its target the one "
+                          "at the located precursor -- never guessed")
+    p2a.add_argument("--ions", default=None, metavar="CSV",
+                     help="window ions from a CSV with a 'formula' column (and optionally 'mz')")
+    gate = p2a.add_mutually_exclusive_group()
+    gate.add_argument("--k-max", type=int, default=None, metavar="K",
+                      help="read every loss of up to K molecules, ungated (3 = the strict "
+                           "default of the core). Without it: k_max 4, a fourth piece kept "
+                           "only on a ladder (the same ion's previous step is read)")
+    gate.add_argument("--no-ladder-k4", action="store_true",
+                      help="strict k_max 3: no fourth loss piece, not even on a ladder")
+    p2a.add_argument("--tol-ppm", type=float, default=5.0, help="reading window, ppm (default 5)")
+    p2a.add_argument("--tol-mda", type=float, default=0.3,
+                     help="absolute floor of the reading window, mDa (default 0.3)")
+    p2a.add_argument("--gas-mass", type=float, default=28.0061,
+                     help="collision gas mass for E_cm, Da (default 28.0061, N2: an assumption)")
+    p2a.add_argument("--iso-width", type=float, default=None, metavar="W",
+                     help="isolation width in Da (replaces the one `ms2 extract` used; needed "
+                          "for co-isolates when the server refused the summary)")
+    p2a.add_argument("--no-figures", action="store_true",
+                     help="skip the per-window breakdown_<parent>.png")
+    p2a.add_argument("--out-dir", default=None, metavar="DIR",
+                     help="where to write (default: the --run-dir folder itself)")
     p2.set_defaults(func=cmd_ms2)
 
     pm = sub.add_parser("mcp", help="run peaky as an MCP server (ChatGPT Developer "

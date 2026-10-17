@@ -224,9 +224,11 @@ peaky publish output/<run>/<sample>_<stamp>_ledger.csv --dry-run
 peaky publish output/<run>/<sample>_<stamp>_ledger.csv
 
 # MS2 (Mascope >= 1.8): what each sample holds, then energy-resolved spectra +
-# isolation-window tables per sample (docs/MS2.md §10)
+# isolation-window tables per sample (docs/MS2.md §10); then, offline, breakdown
+# curves, E50s and fragment attributions for the window ions you name (§11)
 peaky ms2 list    --batch "<your batch>" --dataset "<your workspace>"
 peaky ms2 extract --sample-id <ID...> --out-dir ~/peaky-output
+peaky ms2 analyze --run-dir ~/peaky-output/ms2/<ID> --ion 137.1323=C10H17+
 
 # organise data — the write API (--dry-run previews, sends nothing; deletes need --yes)
 peaky curate tree --deep                                  # read the workspace/dataset/batch layout
