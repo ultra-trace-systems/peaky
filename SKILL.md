@@ -108,6 +108,10 @@ peaky publish <run-folder>/<sample>_<stamp>_ledger.csv
 # energy-resolved spectra + parents + isolation-window tables (docs/MS2.md §10)
 peaky ms2 list --batch "<batch>" --dataset "<workspace>"   # or --sample-id <ID...>
 peaky ms2 extract --sample-id <ID...> [--iso-width 0.4]    # -> <out-dir>/ms2/<ID>/
+# offline, no credentials: readings per energy, breakdown curves + E50, fragment
+# onsets + attributions for the NAMED window ions (docs/MS2.md §11); a fourth loss
+# piece only on a ladder (--no-ladder-k4 = strict 3, --k-max K = ungated)
+peaky ms2 analyze --run-dir <out-dir>/ms2/<ID> --ion MZ=FORMULA [--ion ...] [--iso-width 0.4]
 ```
 
 `peaky pool` pools every batch matching `--batches` (a REGEX over batch names, e.g.

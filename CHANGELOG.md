@@ -98,6 +98,129 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   scan events) reads `MS2 unreadable`, never `ok`. Needs `mascope-sdk>=2026.9.15` (raised from
   2026.8.12: the first release with `by_activation` and the summary's groups). `docs/MS2.md` §10,
   `tests/test_ms2_sources.py`.
+- **MS2 across collision energies, offline: `peaky ms2 analyze --run-dir DIR --ion MZ=FORMULA` reads
+  one `ms2 extract` folder into fragment readings per energy, precursor breakdown curves and E50s,
+  fragment onsets and attributions (`ms2_readings.csv`, `ms2_breakdown.csv`, `ms2_e50.csv`,
+  `ms2_fragments.csv`, `ms2_branching.csv`, `breakdown_<parent>.png`, `ms2_analyze_manifest.json`;
+  `peaky.ms2.readings`, `attribute`, `breakdown`, `analyze`).** No Mascope call and no credentials.
+  Window ions are named, never guessed: a parent's ions are the named ions inside its isolation
+  window, its target the one at the precursor `ms2 extract` located (within 10 ppm; the located
+  precursors of our own files sit within 1.8 ppm of their formulas), and a window with no named
+  target is skipped with a note; `--ion` and `--ions` add up, and a CSV row's m/z is checked as
+  `--ion`'s is. Two named ions within the reading tolerance of each other (the CHO / N^N or CO3 /
+  ^NO3 alias of a tied ledger row) are never both window ions: one peak reads as both, and keeping
+  both left a phantom ion with I = 0 that took a share of every fragment (on the 2026-09-10 file
+  C11H15O2+'s E50 read 29.6 instead of 21.1); the target, or the co-isolate named first, is kept and
+  the other is listed in the manifest's `left_out`. One constant-ppm offset per window from the
+  target's precursor at its lowest energy (never an energy-averaged spectrum's). One activation kind
+  per breakdown (an NCE of CID is not an NCE of HCD): the kind with the most spectra, the others
+  read and said. A loss of FOUR pieces is read only on a ladder (default; `--no-ladder-k4` = the
+  strict 3, an explicit `--k-max` = ungated, said in the manifest -- as stricter than the default
+  for K < 3): the window is read at `k_max` 4 and a four-piece reading is kept only when the same
+  window ion's previous step -- this loss minus ONE named closed-shell library molecule, printed
+  among its pieces or not -- is read at rank 1 among the <= 3-piece candidates at some energy
+  (`ladder_support`); the rest is re-ranked within each window ion. The printed decomposition is one
+  of several and need not hold the piece the ladder took (CH11NO5 prints H3N + CH4O + H2O2 + H2O2
+  while the step one H2O back is read: by its printed pieces alone the reading was dropped whatever
+  the data showed); nor is a printed unnamed remainder or radical a step (taken as one, a hexose
+  [M+NH4]+ kept C6H8O3+ on a step one OH* back because its loss printed HO, while a loss printed
+  with HO2 was refused the same step, and kept C5H5+ by an unnamed CH5NO3). The steps are compared as
+  count vectors, so a loss holding both N and ^N finds
+  its step whatever the interpreter's hash seed (as strings, ^N could be written before N and a
+  third of runs dropped a supported step). That is the ammonium adduct of a polyol losing NH3 and
+  then water step by step (a hexose [M+NH4]+ -> C6H7O3+, NH3 + 3 H2O, read when C6H9O4+ is), while a
+  blanket `k_max` 4 would let more chance compositions read at every peak; on our own 2026-09-10 and
+  2026-09-11 files no peak needs a fourth piece (gated, strict and ungated read the same tables).
+  Survival F = I / (I + weighted fragments) is a ratio within one spectrum, valid whatever the
+  precursor supply did between energies; F_lo gives every fragment the ion can make to it whole (the
+  band), and S = I(E) / I(E_min) (column `s`) compares spectra recorded at different times, so it is
+  said to need a steady precursor supply -- not a fixed injection time: Orbitrap intensities are per
+  unit injection time. F, F_lo and every TIC fraction see only the products the spectrum holds; a
+  product outside the observed m/z range (below the scan's low-mass limit, as the reagent ion an
+  adduct releases) makes F read high and the TIC fall, which the docs, the S note and the branching
+  note say. At an energy where an ion is unobserved (no precursor, no fragment it can make) F, F_lo
+  and S are NaN alike -- S's 0 there read as a crossing through a hole F called a `gap` -- and its
+  branching, gain and loss are NaN, not a loss of everything it held. E50 at the first downward
+  crossing of 0.5, on NCE and on volts, with E_cm on N2 (`--gas-mass`, an assumption) and a flag
+  (`interpolated`, `below_range`, `above_range`, `single_energy`, `gap` -- never a line across
+  energies where the ion is unobserved -- or `no_data`; non-monotonic curves flagged). A fragment is
+  one peak across the energies: its peaks are linked by calibrated m/z within the reading tolerance,
+  or by a shared rank-1 formula, and named by every formula read there -- in 15N data a sub-ppm
+  jitter can change a peak's rank-1 formula between energies (N + ^N against C + O + H, 0.44 mDa, at
+  the edge of 5 ppm near m/z 85), and keyed per spectrum one fragment became two rows, one with a
+  late onset, and a synthetic organonitrate's E50 read 17.6 instead of 16.7 -- but two peaks of one
+  spectrum more than the tolerance apart are never one fragment (a cannot-link: a 5-count centroid
+  midway between two resolved fragments at m/z 57 once chained them into one, split with the
+  co-isolate, both E50s moved by 1-2 NCE; a peak that reaches two such fragments joins neither
+  link); its candidates are the window ions that read it as a formula within the reading tolerance
+  of where it sits -- its signal-weighted m/z, each peak weighted by its share of its spectrum's TIC
+  -- so a sub-ppm jitter in a weak spectrum neither makes a candidate nor, asked of every spectrum,
+  vetoes one (a synthetic stray centroid of 5 counts that only the target could read gave the target
+  a co-isolate's fragment: its F fell to 0.53, flagged, and the co-isolate lost its E50 of 16.67);
+  an ion left out is said -- and so is one that can read it only as a carbon-poor polyoxy H/N/O
+  composition (<= 1 C, >= 4 O) when another reads it as an organic ion: in 15N data C2F3 = H2^NO4
+  within 0.21 mDa, so a fluorinated co-isolate's CF3COO- reads as H2^NO6-, a sub-formula of every
+  [M+^NO3]- cluster, and was shared with an intact one -- but only for an organic reader the sample
+  holds (an absent one named by a shared ion list took a cluster's fragment with weight 1 and moved
+  its E50 from 16.67 to 21.8 while the window note said it weighs 0). A fragment every peak of which
+  sits within 5 line widths of a peak >= 50x brighter in the same spectrum (the width from that
+  line's reported resolution; the MS1 side-lobe guard's ratio and band) is a side lobe: set aside,
+  its peaks unexplained, said -- read by composition, a synthetic intact organonitrate took one as
+  its fragment, its F 0.991 and its branching flagged; on our own files no fragment is one. A
+  fragment one window ion can make (or one the sample holds) is that ion's; several: the intact test
+  (a candidate still >= 98 % of its TIC fraction at the LOWEST energy -- not the step before the
+  onset -- where the fragment appears did not make it; its onset is the first energy at which every
+  candidate reads the fragment when what some read before it is a stray, <= 5 % of the fragment's
+  TIC fraction there -- a larger presence is the fragment's own onset: an in-source fragment that
+  only its maker read at the lowest energy, by a sub-ppm jitter, was handed by 'intact test' to a
+  falling co-isolate, its E50 11.67 instead of 14.17 and the maker's F flat at 1), guarded by mass
+  balance at every energy -- in the 2026-09-10 file's 179.107 window C9H11+ appears where only the
+  0.55 % co-isolate C11H16^NO+ lost signal, but grows to 17x all it ever held, so the onset call is
+  withdrawn; what the called ion held counts its precursor AND the fragments only it can make, at
+  the lowest energy (not its largest share: as the TIC falls a minor ion's share rises without it
+  holding more), so a fragile adduct that is mostly its in-source products keeps the
+  second-generation fragment they make (a bound of the precursor alone gave it to an intact
+  co-isolate, with a false E50) -- else ambiguous, split by share weights chosen per candidate: its
+  lowest-energy MS2 survivor; with none, its MS1 window share put on the survivors' scale (`ms2
+  survivors + ms1 window`, said); 0 when it is in neither (an MS1 share of 0 is measured -- one
+  centroid to one ion -- but only inside the span `ms2 extract` inventoried: beyond it, as with an
+  `--iso-width` wider than the extract's, the share is unknown, said); an equal split only where a
+  survivor is missing and no MS1 share is known (over the candidates not absent). So an ion list
+  naming an ion this sample lacks moves no other ion's weight and decides nothing: it is set aside
+  before the intact test and the guard, said (kept in, it was never excluded, the guard -- which
+  reads a single call -- was skipped, and a 1 % co-isolate took all of a fragment that grew to 21x
+  what it held), and the test's onset does not wait for it to read the fragment (an absent CHO ion
+  reading a synthetic organonitrate's fragment only where it sat at C5H9O+, not at its C4H8N^N+
+  onset, moved the onset one energy later and turned an intact-test call into an ambiguous split,
+  or a split into a call); one candidate without a survivor once switched every candidate to MS1
+  shares, and
+  on standard A's adduct window naming C11H23+ too (in no MS2 spectrum) moved the E50s from 8.61 /
+  6.77 to 10.81 / 3.38. A fragment only absent ions can make goes to no ion (`absent only`,
+  weight 0): an absent ion shows no curve rather than an F of 0. No least-squares deconvolution. Every quantity of the attribution is a TIC
+  fraction and F a ratio within one spectrum, so a spectrum scaled as a whole (a supply drift, space
+  charge) changes no call, weight, F or E50 -- only S. Branching per ion sums its fragments'
+  weighted TIC-fraction gains over its own loss (NaN where the ion lost nothing or grew) and a sum >
+  1.05 is flagged, never clipped -- as is any growth of its products where it lost nothing and the
+  ratio is NaN (on the 2026-09-10 file C11H13O+ at NCE 11 and C7H6NS+ at NCE 61, larger excesses
+  than a flagged 1.059) -- with, for each step named and labelled with its NCE, how much the
+  unexplained share of the TIC moved and the TIC against the lowest energy's (ions not named, the
+  precursor's own side lobes, and products outside the observed m/z range inflate every TIC
+  fraction). The E50 note says 'volts unknown' only when no spectrum has volts, and otherwise for
+  how many it has them (an E50 on volts needs only its two brackets). A window with no fragment at
+  all reads F = 1, above range. In the figure one colour names one ion across both panels (panel B's
+  fragments never wear a co-isolate's colour). Exit 0 when a window is analysed, or when
+  energy-averaged spectra (Mascope < 1.8) could only be read -- a folder mixing such windows with
+  windows skipped for want of a named target names which is which and gives the --ion hint, never
+  claiming that no window has an energy axis; exit 1 when nothing was read, with the cause (no MS2
+  parent, no named target, no precursor located); each window's status and reason are in the
+  manifest. A spectrum returned without peaks is left out of its window's breakdown, said. Known
+  answers on the two 2026-09-11 monoterpene standards: A's [M+H]+ E50 NCE 13.89 (6.33 V) against
+  13.8 (6.32 V) from that day's raw-file breakdown; B's 15.82 against 16.3 (no volts: its summary
+  was refused) -- the same definition on the API spectra reads 15.821, and the 0.5 NCE is the
+  spectra's (2-4 % more fragment per precursor at NCE 10-15); and A's ammonium adduct 8.61 (F_lo
+  6.14) where the raw-file 1.6 put the co-isolate and every shared fragment against it -- that
+  definition, rebuilt from the same API spectra, reads 1.92. `docs/MS2.md` §11,
+  `tests/test_ms2_breakdown.py`.
 - **Orbitrap isotope lines are read by peak area, against the file's own minor-line response
   (`PassConfig.iso_response`, `--iso-response {auto,area,off}` on assign / batch / pool).** An
   Orbitrap scan keeps a line only where it clears that scan's detection floor, and the whole-file
