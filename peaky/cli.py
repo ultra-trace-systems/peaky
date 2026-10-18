@@ -15,7 +15,11 @@ Subcommands:
   curate         organise data (write API): create/rename/copy/move workspaces,
                  datasets, batches, samples (--dry-run previews; deletes need --yes)
   ms2            read MS2 from Mascope: `ms2 list` (what each sample holds),
-                 `ms2 extract` (energy-resolved spectra + window inventory tables);
+                 `ms2 extract` (energy-resolved spectra + window inventory tables;
+                 `--per-scan` adds the scans behind each spectrum, `--file`
+                 rebuilds a raw file's MS2 from its per-scan metadata, e.g. a
+                 targeted-MS2 file the server cannot read); `ms2 files` (an
+                 instrument's raw files, `--check` reads the ones that need it);
                  `ms2 analyze` (offline: readings across energies, breakdown
                  curves + E50, fragment onsets and attribution)
   mcp            serve the pipeline over MCP (ChatGPT / Claude Desktop / Cursor)
@@ -991,20 +995,27 @@ def _curate_rename(c, args):
     return c.update_batch(bid, name=args.name, description=args.desc)
 
 
+#: `ms2 analyze` prints the windows no named ion matches one by one up to this
+#: many; beyond it they are summed up in one line (their notes stay in the manifest).
+MS2_ANALYZE_UNNAMED_SHOWN = 5
+
 #: What `peaky ms2 list` prints (the --out CSV carries every inventory column).
 MS2_LIST_SHOWN = ("sample_id", "name", "ms2_scans", "n_parents", "n_spectra", "nce",
                   "energy_resolved", "status")
 
 
 def cmd_ms2(args) -> None:
-    """MS2 from Mascope (peaky/ms2/sources.py): `list` (one inventory row per
-    sample) and `extract` (per-sample tables + manifest), read-only; and
+    """MS2 from Mascope (peaky/ms2/sources.py, peaky/ms2/scans.py): `list` (one
+    inventory row per sample), `extract` (per-sample or per-file tables +
+    manifest) and `files` (an instrument's raw files), read-only; and
     `analyze` (peaky/ms2/analyze.py), which reads an `extract` folder and asks
     Mascope nothing."""
     if args.ms2_verb == "list":
         _ms2_list(args)
     elif args.ms2_verb == "extract":
         _ms2_extract(args)
+    elif args.ms2_verb == "files":
+        _ms2_files(args)
     elif args.ms2_verb == "analyze":
         _ms2_analyze(args)
     else:
@@ -1023,19 +1034,29 @@ MS2_API_403_HINT = ("the server refuses this sample: an unknown or stale id (ids
 MS2_COMPUTE_TIMEOUT_HINT = ("the server timed out computing this sample's averaged spectra (a "
                             "large file?); every request recomputes them from scratch, and the "
                             "SDK has already sent this one up to four times")
+#: The hints of a RAW FILE's (`--file`, `ms2 files --check`) unknown or
+#: unreadable id: its ids come from the file listing, not from `peaky list`.
+MS2_FILE_RELIST = "list the raw-file ids with `peaky ms2 files --instrument NAME --since ISO`"
+MS2_FILE_403_HINT = ("the server refuses this raw file: an unknown id, or one your token may not "
+                     "read -- " + MS2_FILE_RELIST)
+MS2_FILE_404_HINT = "no such raw file on this server -- " + MS2_FILE_RELIST
 #: The HTTP statuses whose generic hint (`_friendly_hint`) `_ms2_hint` gives.
 _MS2_STATUS_HINTED = (401, 403, 404)
 
 
-def _ms2_hint(exc: Exception, text: str, IO) -> str | None:
-    """The hint for one sample's failure, chosen by its HTTP status when it has
-    one and never by the digits of its message: a 500's '(ref: <8 hex>)' and a
-    sample id can spell '401', '403' or '404'. Without a status (a connection
-    failure) only the message's words are read, its numbers masked (urllib3
-    quotes a memory address, '0x...')."""
+def _ms2_hint(exc: Exception, text: str, IO, *, raw_file: bool = False) -> str | None:
+    """The hint for one sample's (or, `raw_file`, one raw file's) failure,
+    chosen by its HTTP status when it has one and never by the digits of its
+    message: a 500's '(ref: <8 hex>)' and a sample id can spell '401', '403' or
+    '404'. Without a status (a connection failure) only the message's words
+    are read, its numbers masked (urllib3 quotes a memory address, '0x...').
+    A raw file's unknown id points to the file listing (`ms2 files`), never to
+    the sample listing."""
     status = getattr(exc, "status_code", None)
     if IO.is_api_403(exc):
-        return MS2_API_403_HINT
+        return MS2_FILE_403_HINT if raw_file else MS2_API_403_HINT
+    if raw_file and status == 404:
+        return MS2_FILE_404_HINT
     if IO.is_ms2_compute_timeout(exc):
         return MS2_COMPUTE_TIMEOUT_HINT
     if status is not None:
@@ -1043,16 +1064,17 @@ def _ms2_hint(exc: Exception, text: str, IO) -> str | None:
     return _friendly_hint(re.sub(r"\d", "#", f"{type(exc).__name__}: {text}"))
 
 
-def _ms2_failure(sid: str, exc: Exception, IO) -> bool:
-    """Print one sample's failure; True when the loop should go on. An error
-    about the sample (`is_sample_error`: an HTTP 400 / 404 / 500 answer, the
-    API's own 403 for an unknown or stale id, the MS2 compute timeout, an
-    unreadable payload) is that sample's; anything else (auth, WAF, gateway,
-    connection) would fail every next sample too, and asking on only extends a
-    WAF block -- the loop stops there. The message is printed without its URL;
-    the hint goes by the status (`_ms2_hint`)."""
+def _ms2_failure(sid: str, exc: Exception, IO, *, raw_file: bool = False) -> bool:
+    """Print one sample's (`raw_file`: one raw file's) failure; True when the
+    loop should go on. An error about the sample (`is_sample_error`: an HTTP
+    400 / 404 / 500 answer, the API's own 403 for an unknown or stale id, the
+    MS2 compute timeout, an unreadable payload) is that sample's; anything
+    else (auth, WAF, gateway, connection) would fail every next sample too,
+    and asking on only extends a WAF block -- the loop stops there. The
+    message is printed without its URL; the hint goes by the status
+    (`_ms2_hint`)."""
     text = IO.server_error_text(exc)
-    hint = _ms2_hint(exc, text, IO)
+    hint = _ms2_hint(exc, text, IO, raw_file=raw_file)
     print(f"[ms2] {sid}: error: {type(exc).__name__}: {text}" + (f" ({hint})" if hint else ""))
     return IO.is_sample_error(exc)
 
@@ -1104,48 +1126,109 @@ def _ms2_list(args) -> None:
     _ms2_exit(failed, stopped, len(todo), len(rows))
 
 
-def _ms2_exit(failed: list, stopped: bool, n_todo: int, n_done: int) -> None:
-    """Exit 1 after a loop in which samples failed (their rows / folders say
-    why; the others are written)."""
+def _ms2_exit(failed: list, stopped: bool, n_todo: int, n_done: int, *,
+              what: str = "sample(s)") -> None:
+    """Exit 1 after a loop in which samples (`what`: or raw files) failed
+    (their rows / folders say why; the others are written)."""
     if stopped:
         sys.exit(f"[ms2] stopped at {failed[-1]}: the server or the connection failed, so "
-                 f"{n_todo - n_done} later sample(s) were not asked; re-run them later")
+                 f"{n_todo - n_done} later {what} were not asked; re-run them later")
     if failed:
-        sys.exit(f"[ms2] {len(failed)} of {n_todo} sample(s) could not be read: "
+        sys.exit(f"[ms2] {len(failed)} of {n_todo} {what} could not be read: "
                  + ", ".join(failed))
 
 
-def _ms2_extract(args) -> None:
-    _require_creds()
-    if args.iso_width is not None and not args.iso_width > 0:
+#: The raw `/metadata` payload `--save-metadata` keeps beside the tables (as
+#: the server answered it: `--metadata-json` reads it back, no server asked).
+MS2_METADATA_FILE = "ms2_file_metadata.json"
+#: The flags only a raw file's extraction (`--file`) reads.
+_MS2_FILE_FLAGS = (("--inclusion-list", "inclusion_list"), ("--polarity", "polarity"),
+                   ("--metadata-json", "metadata_json"), ("--no-rule-check", "no_rule_check"))
+
+
+def _bad_id(x: str) -> bool:
+    """An id names its own output folder: no path, no '.', '..', ''."""
+    return x in ("", ".", "..") or Path(x).name != x or "\\" in x
+
+
+def _ms2_extract_checks(args) -> list:
+    """Every argument of `ms2 extract` checked before any request and before
+    anything is written; -> the inclusion lists, read (named by their file)."""
+    import math as _m
+    file_mode = bool(args.file)
+    # finite too: 'inf' parses as a float, and a --file run would fetch (and
+    # keep) every payload before the extraction refused it
+    if args.iso_width is not None and not (_m.isfinite(args.iso_width) and args.iso_width > 0):
         sys.exit(f"--iso-width must be a positive width in Da, got {args.iso_width}")
-    if not args.noise_threshold >= 0:
-        sys.exit(f"--noise-threshold must be >= 0, got {args.noise_threshold}")
+    if not (_m.isfinite(args.noise_threshold) and args.noise_threshold >= 0):
+        sys.exit(f"--noise-threshold must be >= 0 and finite, got {args.noise_threshold}")
     if args.ms1_ppm < 1:
         sys.exit(f"--ms1-ppm must be a positive integer, got {args.ms1_ppm}")
-    for sid in args.sample_id:          # each id names its own output folder
-        if sid in ("", ".", "..") or Path(sid).name != sid or "\\" in sid:
-            sys.exit(f"--sample-id {sid!r} is not a sample id")
+    for x in (args.file or args.sample_id):      # each id names its own output folder
+        if _bad_id(x):
+            sys.exit(f"--file {x!r} is not a file id" if file_mode
+                     else f"--sample-id {x!r} is not a sample id")
+    if not file_mode:
+        for flag, attr in _MS2_FILE_FLAGS:
+            if getattr(args, attr):
+                sys.exit(f"{flag} goes with --file (a raw file's MS2, rebuilt per scan)")
+        if args.save_metadata and not args.per_scan:
+            sys.exit("--save-metadata goes with --file or --per-scan (the per-scan metadata)")
+        return []
+    if args.per_scan:
+        sys.exit("--per-scan goes with --sample-id: a --file extraction is per scan already")
+    if args.metadata_json and len(args.file) > 1:
+        sys.exit("--metadata-json holds ONE file's payload: give one --file")
+    if args.metadata_json and args.save_metadata:
+        sys.exit("--save-metadata keeps a payload asked of the server; --metadata-json reads one "
+                 "already kept")
+    from peaky.ms2 import scans as SC
+    from peaky.reporting import provenance as PV
+    lists = []
+    for path in args.inclusion_list or []:
+        try:
+            f = SC.read_inclusion_list(path)
+            # the manifest names the list by its content (sha1, size), as the payload
+            full = os.path.expanduser(path)
+            f.attrs.update(name=os.path.basename(path), sha1=PV.sha1_file(full),
+                           bytes=int(os.path.getsize(full)))
+        except (OSError, ValueError) as exc:
+            sys.exit(f"[ms2] --inclusion-list {path}: {exc}")
+        lists.append(f)
+    return lists
+
+
+def _ms2_extract(args) -> None:
+    lists = _ms2_extract_checks(args)
     from peaky.io import io_mascope as IO
     from peaky.ms2 import sources as SRC
 
+    if args.file:
+        _ms2_extract_files(args, lists)
+        return
+    _require_creds()
     client = IO.connect()
     base = Path(resolve_out_dir(args.out_dir)) / "ms2"
     failed, stopped, done = [], False, 0
     for sid in args.sample_id:
         done += 1
+        out = base / sid
+        extra: dict = {}
+
+        def keep(meta, _out=out, _extra=extra):
+            _extra.update(_save_metadata(meta, _out))
         try:
             res = SRC.extract_sample(client, sid, noise_threshold=args.noise_threshold,
                                      ms1_ppm=args.ms1_ppm, iso_width=args.iso_width,
-                                     with_window=not args.no_window)
+                                     with_window=not args.no_window, per_scan=args.per_scan,
+                                     on_metadata=keep if args.save_metadata else None)
         except Exception as exc:                 # noqa: BLE001 -- that sample's failure
             failed.append(sid)
             if not _ms2_failure(sid, exc, IO):
                 stopped = True
                 break
             continue
-        out = base / sid
-        _write_ms2_outputs(res, out)
+        _write_ms2_outputs(res, out, extra=extra)
         row = res.row
         n_spec = int(row["n_spectra"])
         mode = ((" (energy-resolved)" if row["energy_resolved"] else " (energy-averaged)")
@@ -1154,9 +1237,311 @@ def _ms2_extract(args) -> None:
                else "no window inventory")
         print(f"[ms2] {sid}: {row['status']}; {n_spec} spectra over {row['n_parents']} "
               f"parents{mode}, {len(res.spectra)} peaks; {win} -> {out}")
+        if res.per_scan is not None and "skipped" not in res.per_scan:
+            ps = res.per_scan
+            print(f"  per-scan: {ps['scans']} scans ({ps['header_rows']} with a trailer row), "
+                  f"{ps['ms2_scans_mapped']} MS2 scans named by the spectra's time series, "
+                  f"{len(res.scan_peaks)} scan-peak rows; scans with no trailer row in no group: "
+                  f"{ps['headerless_in_no_group']}"
+                  + (f" ({ps['headerless_in_no_group_scans']})"
+                     if ps["headerless_in_no_group"] else ""))
         for note in ([row["note"]] if row["note"] else []) + res.notes:
             print(f"  note: {note}")
     _ms2_exit(failed, stopped, len(args.sample_id), done)
+
+
+def _save_metadata(meta: dict, out: Path) -> dict:
+    """Write the `/metadata` payload into the extraction's folder ->
+    {file name: sha1} for its manifest."""
+    from peaky.reporting import provenance as PV
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / MS2_METADATA_FILE
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, separators=(",", ":"))
+    return {MS2_METADATA_FILE: PV.sha1_file(str(path))}
+
+
+def _mapping_line(res) -> str:
+    """One console line on how a raw file's scans were mapped."""
+    from peaky.ms2 import scans as SC
+
+    m = res.per_scan["mapping"]
+    f, inf, rule = m["filters"], m.get("inference") or {}, m["rule"]
+    parts = [f"filters readable: {f['filters_readable']} ({f['filters_ok']} of "
+             f"{f['header_rows']} agree with their trailers)",
+             "precursors: " + (", ".join(f"{k} {n}" for k, n in m["precursor_sources"].items())
+                               or "none")]
+    fixed = sorted(int(e) for e, v in (rule.get("experiments") or {}).items()
+                   if v == SC.RULE_FIXED)
+    if rule.get("applies"):
+        parts.append("scan range follows the precursor"
+                     + (f" (max residual {rule['max_residual_mda']:.3g} mDa over "
+                        f"{rule['n_events']} events)" if rule.get("max_residual_mda") is not None
+                        else "")
+                     + (", except in experiment(s) " + ", ".join(map(str, fixed))
+                        + " (a fixed range)" if fixed else ""))
+    else:
+        parts.append("scan range: a fixed range in experiment(s) " + ", ".join(map(str, fixed))
+                     if fixed else "one scan range for every event")
+    if inf.get("headerless"):
+        parts.append(f"{inf['headerless']} scans with no trailer row: {inf['inferred']} placed by "
+                     f"the scan cycle, {inf['unassigned']} unassigned")
+    return "; ".join(parts)
+
+
+def _ms2_extract_files(args, lists: list) -> None:
+    """`ms2 extract --file ID ...`: each raw file's `/metadata` (asked, or read
+    from --metadata-json: then no server and no credentials) -> its MS2 rebuilt
+    scan by scan (sources.extract_file). A file whose scans cannot be mapped
+    as asked (a list that does not fit the method, no precursor source, an
+    unknown polarity) fails alone, with the reason; its payload, when
+    --save-metadata kept it, stays for a re-run with --metadata-json."""
+    from peaky.io import io_mascope as IO
+    from peaky.ms2 import sources as SRC
+
+    from peaky.reporting import provenance as PV
+
+    meta_given, given = None, None
+    if args.metadata_json:
+        path = Path(os.path.expanduser(args.metadata_json))
+        try:
+            with open(path, encoding="utf-8") as fh:
+                meta_given = json.load(fh)
+        except (OSError, ValueError) as exc:
+            sys.exit(f"[ms2] --metadata-json {args.metadata_json}: {exc}")
+        # the run's input, for its manifest: which payload, offline
+        given = {"name": path.name, "sha1": PV.sha1_file(str(path)),
+                 "bytes": path.stat().st_size, "offline": True}
+        client = None
+    else:
+        _require_creds()
+        client = IO.connect()
+    base = Path(resolve_out_dir(args.out_dir)) / "ms2"
+    failed, stopped, done = [], False, 0
+    for fid in args.file:
+        done += 1
+        out = base / fid
+        try:
+            meta = meta_given if meta_given is not None else IO.fetch_file_metadata(client, fid)
+        except Exception as exc:                 # noqa: BLE001 -- that file's failure
+            failed.append(fid)
+            if not _ms2_failure(fid, exc, IO, raw_file=True):
+                stopped = True
+                break
+            continue
+        extra = _save_metadata(meta, out) if args.save_metadata else {}
+        if given is not None and path.resolve() == (out / MS2_METADATA_FILE).resolve():
+            extra = {MS2_METADATA_FILE: given["sha1"]}      # the folder's own payload, read
+        try:
+            res = SRC.extract_file(None, fid, metadata=meta, inclusion_lists=lists,
+                                   polarity=args.polarity, noise_threshold=args.noise_threshold,
+                                   iso_width=args.iso_width, with_window=not args.no_window,
+                                   rule_check=not args.no_rule_check)
+        except ValueError as exc:   # ScanMapError, PolarityUnknown, DualPolarityError, bad payload
+            failed.append(fid)
+            kept = (f" (its payload is kept in {out / MS2_METADATA_FILE}: re-run with "
+                    "--metadata-json)" if extra else "")
+            print(f"[ms2] {fid}: cannot extract: {exc}{kept}")
+            continue
+        if given is not None:
+            res.params["metadata_json"] = given
+        _write_ms2_outputs(res, out, extra=extra)
+        row = res.row
+        n_spec = int(row["n_spectra"])
+        win = f"{len(res.window)} window rows" if len(res.window) else "no window inventory"
+        print(f"[ms2] {fid}: {row['status']}; {n_spec} spectra over {row['n_parents']} parents, "
+              f"{len(res.spectra)} peaks (S/N >= {args.noise_threshold:g}, averaged here from "
+              f"{res.per_scan['ms2_scans_in_spectra']} MS2 scans); polarity {row['polarity']} "
+              f"({res.params['polarity_source']}); {win} -> {out}")
+        print(f"  {_mapping_line(res)}")
+        for note in ([row["note"]] if row["note"] else []) + res.notes:
+            print(f"  note: {note}")
+    _ms2_exit(failed, stopped, len(args.file), done, what="raw file(s)")
+
+
+#: `ms2 files` prints every listed file up to this many; above it, only the
+#: files that need a check (the --out CSV always holds every one).
+MS2_FILES_SHOWN_MAX = 40
+MS2_FILES_SHOWN = ("sample_file_id", "filename", "datetime_utc", "length_s", "polarity",
+                   "processing_status", "needs_check")
+#: What one read of a raw file's `/metadata` costs -- said wherever one is
+#: read (`--per-scan`, `--check`), in these words. Measured on our own files:
+#: 89-100 kB per MS1 scan (1300-1500 centroids), 4-6 kB per MS2 scan --
+#: 6.7-19.8 MB for 140-434 scans. The whole raw file's, however few of its
+#: scans a sample holds.
+MS2_METADATA_COST = ("about 0.1 MB per MS1 scan and 5 kB per MS2 scan: 7 to 20 MB for our own "
+                     "files of a few hundred scans, hundreds of MB for an hour of MS1 scans")
+#: What one `--check` costs, said wherever its cap is.
+MS2_CHECK_COST = ("each check reads the file's per-scan metadata, every scan's trailer and "
+                  "centroids: " + MS2_METADATA_COST)
+
+
+def _iso_time(flag: str, value: str):
+    """`value` as a UTC timestamp, naive (the listing compares it with the
+    files' `datetime_utc`): a naive time is UTC already, one with an offset is
+    converted. The caller compares timestamps, never their text."""
+    import pandas as pd
+    try:
+        t = pd.Timestamp(value)
+    except (ValueError, TypeError):
+        t = pd.NaT
+    if pd.isna(t):
+        sys.exit(f"{flag} {value!r} is not an ISO date-time (e.g. 2026-09-11T10:00)")
+    return t.tz_convert("UTC").tz_localize(None) if t.tzinfo is not None else t
+
+
+#: `--check` without ids checks first the flagged files the server built no
+#: sample from (a processing status set and not 'done': a garbled tMS2 file
+#: reads 'needs_chemistry'), then the ones it did (a dual-polarity file reads
+#: '+-' and 'done', processed into two samples) or that carry no status;
+#: within each, the longest first (an MS2 run holds minutes of scans, a short
+#: composite or calibration file seconds), the newest among equals. Said
+#: wherever the cap leaves some unchecked.
+MS2_CHECK_ORDER = ("a processing status other than 'done' first, then the longest, then the "
+                   "newest")
+
+
+def _check_order(rows: list) -> list:
+    """`rows` in `MS2_CHECK_ORDER` (a file of unknown length last in its tier;
+    a file with no status is in the second tier, as one marked 'done')."""
+    from peaky.ms2 import sources as SRC
+
+    def unbuilt(r) -> bool:
+        st = str(r.get("processing_status") or "").strip()
+        return bool(st) and st != SRC.STATUS_DONE
+    newest = sorted(rows, key=lambda r: str(r.get("datetime_utc") or ""), reverse=True)
+    return sorted(newest, key=lambda r: (not unbuilt(r),
+                                         -(r["length_s"] if r["length_s"] == r["length_s"]
+                                           else -1.0)))
+
+
+def _ms2_files(args) -> None:
+    """`ms2 files`: an instrument's raw files in a time range, one row each
+    (sources.FILES_COLUMNS); `--check` reads the per-scan metadata of the
+    files that need it (sources.needs_check: a polarity that is not one sign,
+    a processing status set and other than 'done'; `MS2_CHECK_ORDER`) -- or
+    of the files it names, a named file outside the listed range marked so --
+    at most --max-check of them, and says what a per-scan extraction of each
+    would do (sources.check_file) and the command line for it. An empty
+    --instrument is refused (the server would list every instrument), the
+    listing's page cap is an error (io_mascope.FileListTruncated), and fewer
+    files than the server counts in the range are said."""
+    t_since = _iso_time("--since", args.since)
+    t_until = _iso_time("--until", args.until) if args.until else None
+    if t_until is not None and t_until <= t_since:
+        sys.exit(f"--until {args.until} is not after --since {args.since} (both in UTC: "
+                 f"{t_until.isoformat()} and {t_since.isoformat()})")
+    since = t_since.isoformat()
+    until = t_until.isoformat() if t_until is not None else None
+    if args.max_check < 0:
+        sys.exit(f"--max-check must be >= 0, got {args.max_check}")
+    if not str(args.instrument).strip():
+        # the server filters by instrument only when one is named: an empty
+        # name would list (and check) every instrument's files
+        sys.exit(f"--instrument {args.instrument!r} names no instrument: give its name as the "
+                 "server lists it (exactly, case included)")
+    for x in args.check or []:
+        if _bad_id(x):
+            sys.exit(f"--check {x!r} is not a file id")
+    _require_creds()
+    from peaky.io import io_mascope as IO
+    from peaky.ms2 import sources as SRC
+
+    client = IO.connect()
+    listed: dict = {}
+    try:
+        recs = IO.fetch_sample_files(client, instrument=args.instrument, since=since, until=until,
+                                     report=listed)
+    except Exception as exc:                     # noqa: BLE001 -- the one request failed
+        hint = _ms2_hint(exc, IO.server_error_text(exc), IO)
+        sys.exit(f"[ms2] the file listing failed: {type(exc).__name__}: "
+                 f"{IO.server_error_text(exc)}" + (f" ({hint})" if hint else ""))
+    rows = [SRC.file_row(r) for r in recs]
+    need = [r for r in rows if r["needs_check"]]
+    span = f"from {since}" + (f" to {until}" if until else "")
+    print(f"[ms2] {len(rows)} raw file(s) of {args.instrument} {span}; {len(need)} need a "
+          "per-scan check (a polarity that is not one sign, or a processing status set and "
+          f"other than '{SRC.STATUS_DONE}'; a file with no status is not flagged)")
+    total = listed.get("server_total")
+    if total is not None and total > len(rows):
+        print(f"[ms2] note: the server counts {total} file(s) in this range and its pages held "
+              f"{len(rows)}: a file recorded while the pages were read shifts the others across "
+              "a page edge -- re-run, or give --until")
+    if not rows:
+        print("  (no file: the instrument's name must be the server's, exactly -- case "
+              "included)")
+    failed, stopped, todo = [], False, []
+    if args.check is not None:
+        if args.check:
+            by_id = {r["sample_file_id"]: r for r in rows}
+            for fid in args.check:
+                if fid not in by_id:             # not in this range: checked all the same
+                    by_id[fid] = SRC.file_row({"sample_file_id": fid}, listed=False)
+                    rows.append(by_id[fid])
+                todo.append(by_id[fid])
+        else:
+            todo = _check_order(need)
+        if len(todo) > args.max_check:
+            left = todo[args.max_check:]
+            todo = todo[:args.max_check]
+            print(f"[ms2] checking {len(todo)} of {len(todo) + len(left)} file(s) (--max-check "
+                  f"{args.max_check}; {MS2_CHECK_COST}"
+                  + (f"; {MS2_CHECK_ORDER}" if not args.check else "") + "); not checked: "
+                  + ", ".join(r["sample_file_id"] for r in left))
+    done = 0
+    for r in todo:
+        done += 1
+        try:
+            meta = IO.fetch_file_metadata(client, r["sample_file_id"])
+        except Exception as exc:                 # noqa: BLE001 -- that file's failure
+            r["check_note"] = f"error: {type(exc).__name__}: {IO.server_error_text(exc)}"
+            failed.append(r["sample_file_id"])
+            if not _ms2_failure(r["sample_file_id"], exc, IO, raw_file=True):
+                stopped = True
+                break
+            continue
+        try:
+            r.update(SRC.check_file(meta, r))
+        except ValueError as exc:                # an unreadable payload: that file's
+            r["check_note"] = f"error: {exc}"
+            failed.append(r["sample_file_id"])
+            print(f"[ms2] {r['sample_file_id']}: error: {exc}")
+        del meta
+    df = SRC.files_frame(rows)
+    shown = df if len(df) <= MS2_FILES_SHOWN_MAX else df[df["needs_check"] != ""]
+    if len(shown):
+        print(shown[list(MS2_FILES_SHOWN)].to_string(index=False))
+    if len(shown) < len(df):
+        print(f"  ({len(df) - len(shown)} {'more ' if len(shown) else ''}file(s) need no check"
+              + ("; every one is in --out)" if args.out else ": --out lists every one)"))
+    for r in rows:
+        if not r["checked"]:
+            continue
+        name = f" ({r['filename']})" if r["filename"] else ""
+        line = (f"[ms2] check {r['sample_file_id']}{name}: {r['scans']:g} scans "
+                f"({r['header_rows']:g} with a trailer row, {r['headerless']:g} without); "
+                f"MS2 by trailer {r['ms2_by_trailer']:g}")
+        if r["ms2_by_trailer"]:
+            line += (f" over {r['events']:g} events, NCE {r['nce'] or '?'}, isolation width "
+                     f"{r['isolation_widths'] or '?'}; filters readable: "
+                     f"{r['filters_readable']}")
+            if r["scan_range_rule"]:
+                line += f"; scan range: {r['scan_range_rule']}"
+            if r["spectra"] == r["spectra"]:     # not NaN: a mapping without a list ran
+                line += (f"; without a list: {r['spectra']:g} spectra ({r['precursors']}), "
+                         f"{r['inferred']:g} headerless scans placed, {r['unassigned']:g} "
+                         "unassigned")
+        print(line)
+        if r["command"]:
+            print(f"  extract: {r['command']}")
+        if r["check_note"]:
+            print(f"  note: {r['check_note']}")
+    if args.out:
+        out = os.path.expanduser(args.out)
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        df.to_csv(out, index=False)
+        print(f"[ms2] wrote {out}")
+    _ms2_exit(failed, stopped, len(todo), done, what="raw file(s)")
 
 
 def _ms2_analyze(args) -> None:
@@ -1164,6 +1549,7 @@ def _ms2_analyze(args) -> None:
     energies, breakdown curves, E50s, fragments (peaky/ms2/analyze.py). Local:
     no credentials, no server."""
     import math as _m
+    import statistics
 
     from peaky.ms2 import analyze as AN
     from peaky.ms2 import readings as RD
@@ -1189,9 +1575,11 @@ def _ms2_analyze(args) -> None:
         tables = AN.load_run(args.run_dir)
     except (FileNotFoundError, ValueError) as exc:
         sys.exit(f"[ms2] {exc}")
+    if args.mass_offset_ppm is not None and not _m.isfinite(args.mass_offset_ppm):
+        sys.exit(f"--mass-offset-ppm must be a finite number, got {args.mass_offset_ppm}")
     res = AN.analyze_run(tables, ions, k_max=args.k_max, ladder=not args.no_ladder_k4,
                          tol_ppm=args.tol_ppm, tol_mda=args.tol_mda, gas_mass=args.gas_mass,
-                         iso_width=args.iso_width)
+                         iso_width=args.iso_width, mass_offset_ppm=args.mass_offset_ppm)
     out = Path(os.path.expanduser(args.out_dir or args.run_dir))
     files = AN.write_outputs(res, tables, str(out), figures=not args.no_figures,
                              created_utc=datetime.now(timezone.utc).strftime(
@@ -1199,8 +1587,28 @@ def _ms2_analyze(args) -> None:
     p = res.params
     print(f"[ms2] {len(ions)} named ion(s); {p['gate_note']}; isolation width "
           + (f"{p['isolation_width_used']:g} Da ({p['isolation_width_source']})"
-             if p["isolation_width_used"] else "unknown"))
+             if p["isolation_width_used"] else
+             ("per parent (" + ", ".join(f"{k}: {w:g} Da" for k, w in p["isolation_widths"].items())
+              + ")") if p.get("isolation_widths") else "unknown")
+          + (f"; m/z axis offset {p['mass_offset_ppm']:+.1f} ppm ({p['mass_offset_source']})"
+             if p.get("mass_offset_source") else ""))
+    # an inclusion-list folder holds dozens to hundreds of parents and the
+    # user names a few: the windows no named ion matches are summed up in one
+    # line (each one's note stays in the manifest), not printed one by one --
+    # apart from the windows whose named ion misses by an axis offset (within
+    # the reach one is read over: `offset_hint_ppm`), summed up apart with the
+    # offset they need
+    skipped = [w for w in res.windows
+               if w.status == "skipped" and w.reason == AN.SKIP_NO_TARGET]
+    near = [w for w in skipped if _m.isfinite(w.offset_hint_ppm)]
+    unnamed = [w for w in skipped if not _m.isfinite(w.offset_hint_ppm)]
+    fold = len(unnamed) > MS2_ANALYZE_UNNAMED_SHOWN
+    fold_near = len(near) > MS2_ANALYZE_UNNAMED_SHOWN
+    folded = ({id(w) for w in unnamed} if fold else set()) | (
+        {id(w) for w in near} if fold_near else set())
     for w in res.windows:
+        if id(w) in folded:
+            continue
         head = f"[ms2] parent {SRC.spectrum_key(w.parent_mz)}: {w.status}"
         if w.target:
             head += f"; target {w.target}"
@@ -1218,6 +1626,16 @@ def _ms2_analyze(args) -> None:
         print(head)
         for note in w.notes:
             print(f"  note: {note}")
+    if fold_near:
+        need = float(statistics.median([w.offset_hint_ppm for w in near]))
+        print(f"[ms2] {len(near)} of {len(res.windows)} parents skipped: each named ion lies off "
+              f"its located precursor by the folder's m/z axis offset (median {need:+.1f} ppm): "
+              f"pass --mass-offset-ppm {need:+.1f} (each window's note is in "
+              "ms2_analyze_manifest.json)")
+    if fold:
+        print(f"[ms2] {len(unnamed)} of {len(res.windows)} parents skipped: no named ion at "
+              "their located precursor (name them with --ion / --ions; each window's note "
+              "is in ms2_analyze_manifest.json)")
     for note in res.notes:
         print(f"  note: {note}")
     # what write_outputs wrote: the tables, every figure drawn, the manifest
@@ -1233,6 +1651,9 @@ def _ms2_analyze_exit(windows) -> None:
     The summary speaks for the windows it names: in a folder where some
     windows are readings-only and others skipped, it never says that no
     window has an energy axis (a skipped window was never looked at)."""
+    import math
+    from statistics import median
+
     from peaky.ms2 import analyze as AN
     from peaky.ms2 import sources as SRC
 
@@ -1242,7 +1663,16 @@ def _ms2_analyze_exit(windows) -> None:
     if not windows:
         sys.exit("[ms2] no MS2 parent in this folder (an MS1-only sample, or no MS2 spectrum "
                  "was extracted): nothing to analyse")
+    near = [w.offset_hint_ppm for w in windows
+            if w.reason == AN.SKIP_NO_TARGET and math.isfinite(w.offset_hint_ppm)]
     hint = ("name each window's target ion with --ion MZ=FORMULA (or --ions CSV)")
+    if near:
+        # the named ions miss by an axis offset: naming them again changes nothing
+        need = float(median(near))
+        hint = (f"{len(near)} window(s) miss their named ion by an m/z axis offset (median "
+                f"{need:+.1f} ppm): pass --mass-offset-ppm {need:+.1f}"
+                + ("; name the other windows' target ions with --ion MZ=FORMULA (or --ions CSV)"
+                   if len(near) < sum(w.reason == AN.SKIP_NO_TARGET for w in windows) else ""))
     no_target = [SRC.spectrum_key(w.parent_mz) for w in windows if w.reason == AN.SKIP_NO_TARGET]
     ro = [w for w in windows if w.status == "readings only"]
     if ro:
@@ -1265,16 +1695,27 @@ def _ms2_analyze_exit(windows) -> None:
             print("[ms2] other windows skipped: " + "; ".join(other))
         return
     if no_target:
-        sys.exit(f"[ms2] no window was analysed: no named ion is at a located precursor; {hint}")
+        sys.exit("[ms2] no window was analysed: "
+                 + ("" if near else "no named ion is at a located precursor; ") + hint)
     sys.exit("[ms2] no window was analysed: "
              + "; ".join(sorted({w.reason for w in windows if w.reason})))
 
 
-def _write_ms2_outputs(res, out: Path) -> dict:
+#: The per-scan tables an extraction writes beside the four (`--per-scan`,
+#: `--file`); a re-run without them removes stale ones.
+MS2_PER_SCAN_FILES = ("ms2_scans.csv", "ms2_scan_peaks.parquet")
+
+
+def _write_ms2_outputs(res, out: Path, extra: dict | None = None) -> dict:
     """Write one extraction: ms2_spectra.parquet + .csv, ms2_parents.csv,
-    ms2_window.csv and ms2_manifest.json (sha1 of each file, the status, the
-    server's refusal, the parameters and the code identity; no credentials, no
-    server URL). A re-run overwrites the sample's folder."""
+    ms2_window.csv, with the per-scan source ms2_scans.csv and
+    ms2_scan_peaks.parquet, and ms2_manifest.json (sha1 of each file -- and of
+    `extra`'s, already written: the kept /metadata payload -- the status, the
+    server's refusal, the parameters, the per-scan report and the code
+    identity; no credentials, no server URL). A re-run overwrites the folder
+    and removes what it neither writes nor reads: per-scan tables, and a
+    kept payload (`MS2_METADATA_FILE`) that is not in `extra`, so every file
+    of the folder is in its manifest."""
     from peaky.ms2 import sources as SRC
     from peaky.reporting import provenance as PV
 
@@ -1285,10 +1726,19 @@ def _write_ms2_outputs(res, out: Path) -> dict:
         "ms2_parents.csv": lambda p: res.parents.to_csv(p, index=False),
         "ms2_window.csv": lambda p: res.window.to_csv(p, index=False),
     }
+    if res.scans is not None:
+        written["ms2_scans.csv"] = lambda p: res.scans.to_csv(p, index=False)
+        written["ms2_scan_peaks.parquet"] = lambda p: res.scan_peaks.to_parquet(p, index=False)
+    else:
+        for name in MS2_PER_SCAN_FILES:
+            (out / name).unlink(missing_ok=True)
+    if MS2_METADATA_FILE not in (extra or {}):
+        (out / MS2_METADATA_FILE).unlink(missing_ok=True)
     files = {}
     for name, write in written.items():
         write(out / name)
         files[name] = PV.sha1_file(str(out / name))
+    files.update(extra or {})
     man = SRC.manifest(res, files=files,
                        created_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     with open(out / "ms2_manifest.json", "w", encoding="utf-8") as fh:
@@ -1885,8 +2335,10 @@ def build_parser() -> argparse.ArgumentParser:
     pc.set_defaults(func=cmd_curate)
 
     p2 = sub.add_parser("ms2", help="read MS2 from Mascope (>= 1.8): list what each sample "
-                                    "holds, extract energy-resolved spectra (read-only); "
-                                    "analyze an extracted folder offline")
+                                    "holds, extract energy-resolved spectra -- also per scan, "
+                                    "and from a raw file's per-scan metadata -- list an "
+                                    "instrument's raw files (read-only); analyze an extracted "
+                                    "folder offline")
     p2s = p2.add_subparsers(dest="ms2_verb", required=True)
 
     p2l = p2s.add_parser("list", help="one row per sample: parents, NCEs, volts, scan counts, "
@@ -1901,28 +2353,92 @@ def build_parser() -> argparse.ArgumentParser:
                           "of the server's WAF: " + MS2_LIST_REQUESTS)
     p2l.add_argument("--out", default=None, help="also write every inventory column to this CSV")
 
-    p2e = p2s.add_parser("extract", help="per sample: ms2_spectra.parquet/.csv, ms2_parents.csv, "
-                                         "ms2_window.csv, ms2_manifest.json under "
-                                         "<out-dir>/ms2/<sample id>/")
-    p2e.add_argument("--sample-id", nargs="+", required=True, metavar="ID",
-                     help="one or more sample ids")
+    p2e = p2s.add_parser("extract", help="per sample (--sample-id) or raw file (--file): "
+                                         "ms2_spectra.parquet/.csv, ms2_parents.csv, "
+                                         "ms2_window.csv, ms2_manifest.json (+ ms2_scans.csv, "
+                                         "ms2_scan_peaks.parquet per scan) under "
+                                         "<out-dir>/ms2/<id>/")
+    whose = p2e.add_mutually_exclusive_group(required=True)
+    whose.add_argument("--sample-id", nargs="+", default=None, metavar="ID",
+                       help="one or more sample ids: the server's averaged spectra")
+    whose.add_argument("--file", nargs="+", default=None, metavar="FILE_ID",
+                       help="one or more RAW FILE ids (`peaky ms2 files`): the MS2 rebuilt from "
+                            "the file's per-scan metadata -- trailers and centroids -- for a "
+                            "file the server's MS2 endpoints cannot read (e.g. a targeted-MS2 "
+                            "file whose scan filters it garbles)")
     p2e.add_argument("--out-dir", default=None,
                      help="output base (else $PEAKY_OUTPUT_DIR, else ~/peaky-output); files go "
-                          "to <base>/ms2/<sample id>/ and a re-run overwrites them")
+                          "to <base>/ms2/<id>/ and a re-run overwrites them")
     p2e.add_argument("--noise-threshold", type=float, default=3.0,
-                     help="the server's S/N floor for the averaged MS2 centroids (default 3, "
-                          "below the SDK's 10, which drops weak fragments a breakdown curve "
-                          "needs; 0 returns noise centroids too)")
+                     help="the S/N floor of the averaged MS2 centroids (default 3, below the "
+                          "SDK's 10, which drops weak fragments a breakdown curve needs; 0 "
+                          "returns noise centroids too): the server's with --sample-id, applied "
+                          "by peaky with --file")
     p2e.add_argument("--ms1-ppm", type=int, default=1,
-                     help="MS1 centroid binning in ppm for the window inventory (default 1)")
+                     help="MS1 centroid binning in ppm for the window inventory (default 1; "
+                          "--sample-id only: --file averages the file's MS1 scans)")
     p2e.add_argument("--iso-width", type=float, default=None, metavar="W",
                      help="isolation width in Da for the window inventory; replaces the "
-                          "server's, and is the only way to get one when the server refuses "
-                          "the sample's MS2 summary")
+                          "server's (or, with --file, the trailer's), and is the only way to "
+                          "get one when the server refuses the sample's MS2 summary")
     p2e.add_argument("--no-window", action="store_true",
                      help="skip the isolation-window inventory and its MS1 request (whose "
                           "failure on a sample already skips the window only, keeping its MS2 "
                           "tables)")
+    p2e.add_argument("--per-scan", action="store_true",
+                     help="with --sample-id: also read the scans behind every spectrum (the "
+                          "whole raw file's per-scan metadata, once per sample: "
+                          + MS2_METADATA_COST + "; and one time-series request per spectrum, "
+                          "1 s apart) -> ms2_scans.csv and ms2_scan_peaks.parquet (the server's "
+                          "peaks in every scan); the spectra stay the server's")
+    p2e.add_argument("--inclusion-list", nargs="+", action="extend", default=None, metavar="CSV",
+                     help="with --file: the method's inclusion list(s) (the Thermo mass-list "
+                          "CSV export, or a CSV / xlsx with a 'Precursor (m/z)', 'Mass [m/z]', "
+                          "'m/z' or 'mz' column): one list shared by every experiment, or one "
+                          "per experiment in event order. Checked against the method (events, "
+                          "Full Scan event, NCEs, scan ranges); without it the precursors come "
+                          "from readable filters or the scan-range rule")
+    p2e.add_argument("--polarity", choices=("+", "-"), default=None,
+                     help="with --file: the file's polarity, required when its scan filters are "
+                          "garbled (their signs are random). --file asks for no file record: "
+                          "`ms2 files --check` writes the listing's sign into the command it "
+                          "suggests when the listing has one -- a garbled file's listing reads "
+                          "'+-', so there pass the method's sign")
+    p2e.add_argument("--metadata-json", default=None, metavar="PATH",
+                     help="with one --file: read its /metadata payload from this file (e.g. "
+                          "kept by --save-metadata) -- no server, no credentials")
+    p2e.add_argument("--save-metadata", action="store_true",
+                     help="with --file or --per-scan: keep the /metadata payload as "
+                          "ms2_file_metadata.json in the output folder (also when the scans "
+                          "cannot be mapped: re-run with --metadata-json)")
+    p2e.add_argument("--no-rule-check", action="store_true",
+                     help="with --file: do not check the inclusion list against the scan-range "
+                          "rule (HighMass = 1.02 x (precursor + width/2) + 20), for a method "
+                          "that does not set its scan range by the precursor")
+    p2f = p2s.add_parser("files", help="an instrument's raw files in a time range (id, name, "
+                                       "length, polarity, processing status); --check reads the "
+                                       "per-scan metadata of the files that need it")
+    p2f.add_argument("--instrument", required=True, metavar="NAME",
+                     help="the instrument's name as the server lists it")
+    p2f.add_argument("--since", required=True, metavar="ISO",
+                     help="files recorded at or after this time, in UTC (ISO, e.g. "
+                          "2026-09-11T10:00; a time with an offset, e.g. +03:00, is converted "
+                          "to UTC)")
+    p2f.add_argument("--until", default=None, metavar="ISO",
+                     help="... and at or before this one, in UTC likewise (default: now)")
+    p2f.add_argument("--check", nargs="*", default=None, metavar="FILE_ID",
+                     help="read the per-scan metadata of the files that need it (a polarity "
+                          "that is not one sign, or a processing status set and other than "
+                          "'done'; a file with no status is not flagged), or of the files "
+                          "named here: MS2 scans by trailer, headerless scans, filters, events, "
+                          "NCEs, isolation widths, and the `ms2 extract` command line. Without "
+                          "ids the files the server built no sample from come first, and a "
+                          "routine file is never fetched; a file named here is read whatever "
+                          "the listing says")
+    p2f.add_argument("--max-check", type=int, default=5, metavar="N",
+                     help="check at most N files (default 5), named ones included: "
+                          + MS2_CHECK_COST)
+    p2f.add_argument("--out", default=None, help="also write every listed file to this CSV")
     p2a = p2s.add_parser("analyze", help="offline, on one `ms2 extract` sample folder: "
                                          "fragment readings across energies, breakdown curves "
                                          "and E50, fragment onsets and attribution, figures")
@@ -1950,6 +2466,11 @@ def build_parser() -> argparse.ArgumentParser:
     p2a.add_argument("--iso-width", type=float, default=None, metavar="W",
                      help="isolation width in Da (replaces the one `ms2 extract` used; needed "
                           "for co-isolates when the server refused the summary)")
+    p2a.add_argument("--mass-offset-ppm", type=float, default=None, metavar="PPM",
+                     help="the folder's m/z axis offset (negative: the axis reads low): the "
+                          "located precursors and the MS1 window are read through it before "
+                          "a named ion is matched (replaces the offset an `ms2 extract --file` "
+                          "manifest records; a server folder records none)")
     p2a.add_argument("--no-figures", action="store_true",
                      help="skip the per-window breakdown_<parent>.png")
     p2a.add_argument("--out-dir", default=None, metavar="DIR",

@@ -12,7 +12,9 @@ is an MS2 peak list and the window's ion formulas; the output is a long table.
 Where the peak lists come from — Mascope's MS2 endpoints read into energy-resolved
 tables by `peaky/ms2/sources.py` and `peaky ms2 list | extract` — is §10; what is
 built from them across collision energies — breakdown curves, E50s, fragment
-onsets and attributions, `peaky ms2 analyze` — is §11.
+onsets and attributions, `peaky ms2 analyze` — is §11; the scans behind the
+spectra, and a raw file's MS2 rebuilt from its per-scan metadata (`ms2 extract
+--per-scan | --file`, `ms2 files`), are §12.
 
 > Keep this in sync with the code. Every threshold below is a named constant, a
 > default argument or a literal in `subformula.py`; if you change one there,
@@ -376,8 +378,9 @@ is read and labelled energy-averaged. Read-only: nothing is written to the serve
 | `get_ms1_centroids(ppm=1)` | `mz`, `intensity`, `resolution`, `signal_to_noise` over the whole MS1 range | the isolation-window inventory |
 | the sample's listing row / `samples.get(id)` | name, `datetime_utc`, polarity, `instrument_type`, `t0`, `t1`, `length` | the hidden tail; a TOF sample is skipped |
 
-`get_timeseries` is not read: breakdown curves are built from the per-energy
-spectra (§11), one point per (parent, activation) group. Parents are always the
+`get_timeseries` is read only by `--per-scan` (§12), for the scan times that name
+each group's scans: breakdown curves are built from the per-energy spectra (§11),
+one point per (parent, activation) group. Parents are always the
 **server's keys** (`parent_mz`), never re-derived.
 
 ### 10.2 Fallbacks
@@ -414,6 +417,7 @@ All in `peaky/ms2/sources.py`.
 | `PRECURSOR_SEARCH_PPM` / `_MDA` | 10 ppm / 5 mDa | where the precursor is searched for around the key: `max(ppm·m/z·1e-6, mDa·1e-3)` |
 | `PRECURSOR_MIN_SHARE` | 0.10 | a candidate holds ≥ 10 % of the strongest peak in that search window |
 | `PRECURSOR_TRACK_PPM` / `_MDA` | 5 ppm / 0.5 mDa | how close a spectrum's peak must be to the located precursor |
+| `PRECURSOR_LOBE_RATIO` / `_FWHM` | 50× / 5 line widths | only for a raw file's spectra whose m/z axis offset is unknown (§12.4): a candidate this close to a peak this much brighter just outside the search window is that line's side lobe, refused at that energy |
 | `KEY_OFFSET_NOTE_MDA` | 1.0 mDa | a precursor this far from its key is noted |
 | `HIDDEN_TAIL_MIN_S` | 0.5 s | `length − t1` above it is reported |
 
@@ -431,7 +435,24 @@ precursor is the stronger peak (19 % vs 13 %) — strongest-alone picks the
 co-isolate. The keys of the other 41 spectra in these files sat 0.02–0.35 mDa from
 their precursors, a precursor wanders ≤ 0.12 mDa across its energies, and the
 nearest other peak sat 1.9 mDa from one. The same rule marks `is_parent` in the
-MS1 window.
+MS1 window (a `--file` folder marks the MS1 centroid at the precursor its MS2
+spectra located, §12.4; with its axis offset measured, a finely typed key there is
+searched within the tracking tolerance first). Two parents whose located
+precursors coincide are said on both rows. **The side-lobe guard** (`lobe_guard`) is for one case only: a raw
+file's own spectra (`ms2 extract --file`) whose m/z axis offset could not be
+measured (§12.4, "The m/z axis"). An Orbitrap peak list carries weak centroids a
+few line widths beside a much brighter line (`chem.sidelobes`); a precursor whose
+axis sits off its key has its line beyond the window and only its 0.1–0.7 % upper
+lobe inside. With the guard on, a winning candidate within `PRECURSOR_LOBE_FWHM`
+line widths of a peak `PRECURSOR_LOBE_RATIO` times brighter just OUTSIDE the
+search window is that line's lobe: refused at that energy and the next energy
+tried (a lobe keeps its share of its line at every energy); a parent refused at
+every energy is **ambiguous**, not located, and its rows say so ("precursor
+ambiguous, not located: …"). It is off on the server's spectra (calibrated, keyed
+by the isolation centre) and on a file whose offset is measured: there a weak
+precursor on its key beside a 50× brighter co-isolate 5 mDa – 5 widths away is
+the precursor (a server-style C10H15O4⁺ window with a co-isolate 8 mDa above at
+100×: located, F-E50 NCE 7.43). Without the peaks' resolutions the guard is off.
 
 ### 10.4 Outputs
 
@@ -610,10 +631,22 @@ ms2_spectra.parquet, ms2_parents.csv, ms2_window.csv, ms2_manifest.json   + the 
 - **Target:** the named ion nearest the precursor `ms2 extract` located (the
   parents table's `precursor_mz` at the lowest NCE where it was located),
   within max(`TARGET_MATCH_PPM` 10 ppm, `tol_mda`). None: the window is
-  **skipped**, with the nearest named ion in the note. Measured: the located
+  **skipped**, with the nearest named ion in the note — how far, in mDa and ppm,
+  and, when that is within `sources.AXIS_SEARCH_PPM` (50 ppm, the reach `ms2
+  extract` reads an axis offset over), the `--mass-offset-ppm` that would match
+  it; a named ion farther away is taken for another ion, and the note just says
+  to name this one. Measured: the located
   precursors sat within 1.8 ppm of their formulas (2026-09-10: −0.1 to +0.7 ppm
   over seven parents; 2026-09-11: −1.1 to −1.7 ppm), and the nearest other
   named ion of a window 16 ppm away.
+- **The folder's m/z axis** (`folder_axis_offset`): a folder whose spectra are
+  a raw file's own centroids (`ms2 extract --file`) can sit tens of ppm off its
+  formulas — beyond `TARGET_MATCH_PPM`. Its manifest records the offset the
+  extract measured (`parameters.ms2_axis_offset`, §12.4), and the target match
+  and the MS1 shares (§11.5) read the located precursor and the MS1 window
+  through it (m/z / (1 + offset)); `--mass-offset-ppm` replaces it (a server
+  folder records none: the server calibrates its spectra). The window's own
+  recalibration then follows as on any folder.
 - **Aliases are not both window ions** (`drop_aliases`). Two named ions whose
   exact m/z lie within the reading tolerance of each other (max(`tol_ppm`,
   `tol_mda`) at their m/z: the CHO / N^N or CO3 / ^NO3 aliases of a tied
@@ -1044,7 +1077,7 @@ said. On our own three files no fragment is a side lobe (tested).
   `weight_source` is `ms2 survivors`, `ms2 survivors + ms1 window`, `ms1 window`
   or `equal` (and `none` for a fragment only absent ions can make). Excluded candidates weigh 0. The MS1 shares are **one-to-one**:
   each centroid goes to the named ion nearest it (within max(`TARGET_MATCH_PPM`,
-  `tol_mda`)), never to two; and a window ion the MS1 window holds no centroid
+  `tol_mda`), its m/z read through the folder's axis offset, §11.1), never to two; and a window ion the MS1 window holds no centroid
   for has a **measured share of 0**, not a missing one — inside the inventoried
   span; beyond it, NaN (said in a note when its precursor is in no MS2 spectrum
   either). Two earlier rules failed an ion list shared across windows. An equal
@@ -1155,7 +1188,7 @@ signal elsewhere in the window.
 | constant | value | role |
 | --- | --- | --- |
 | `readings.LADDER_K` | 4 | the piece count the ladder gate admits |
-| `analyze.TARGET_MATCH_PPM` | 10 ppm (floor `tol_mda`) | target = named ion nearest the located precursor |
+| `analyze.TARGET_MATCH_PPM` | 10 ppm (floor `tol_mda`) | target = named ion nearest the located precursor (read through the folder's axis offset) |
 | `analyze.ION_CHECK_PPM` / `_MDA` | 10 ppm / 5 mDa | the typed m/z of `--ion` vs the formula |
 | `sources.WINDOW_PAD_DA` | 0.005 Da | window ions: ±(width/2 + pad) of the key |
 | `attribute.INTACT_FRACTION` | 0.98 | the intact test (an ion that has not started to fragment wanders ±2 %: the 2026-09-10 file's C7H6NS⁺ reads 82.2 % of its spectrum at NCE 1 and 83.9 % at 11) |
@@ -1172,8 +1205,8 @@ signal elsewhere in the window.
 
 `peaky ms2 analyze --run-dir DIR --ion MZ=FORMULA [--ion ...] [--ions CSV]
 [--k-max K | --no-ladder-k4] [--tol-ppm 5] [--tol-mda 0.3] [--gas-mass 28.0061]
-[--iso-width W] [--no-figures] [--out-dir DIR]` writes into `--out-dir` (default:
-the run folder itself):
+[--iso-width W] [--mass-offset-ppm PPM] [--no-figures] [--out-dir DIR]` writes into
+`--out-dir` (default: the run folder itself):
 
 | file | content |
 | --- | --- |
@@ -1183,10 +1216,19 @@ the run folder itself):
 | `ms2_fragments.csv` | per (window, fragment — one physical peak across the energies, named by every rank-1 formula read there): `mz_theo` (NaN for a name with ` \| `), `candidates`, `n_candidates` (how many: `candidates_across`, after the ions beyond the tolerance of where it sits and the polyoxy readings outranked are left out), `losses`, `call`, `basis`, `weights` (`ion=w;…`), `weight_source`, `excluded`, `test_note` (the candidates set aside as absent from the sample; the intact test's note — its onset, when every candidate reads the fragment only from a later energy, moved past a stray or kept — and the guard's, then `candidates_across`'s), `onset_nce`, `onset_v`, `in_source`, `max_frac`, `max_frac_nce`, `n_spectra` |
 | `ms2_branching.csv` | per (window, ion, fragment, energy above the lowest): `nce`, `hcd_v`, `weight`, `frag_gain`, `ion_loss`, `branching` (all three NaN where the ion is unobserved) |
 | `breakdown_<parent key>.png` | (A) F of every window ion vs NCE, the F_lo..F band, the target emphasised, E50 in the legend; (B) the target's top fragments' TIC fraction vs NCE with its own; one colour, one ion across both panels (the fragments take colours no window ion wears; past the palette, grey with distinct dashes); volts on a secondary top axis when known; legends below the panels |
-| `ms2_analyze_manifest.json` | the sample (from the extract manifest), the parameters (gate mode and its note, `k_max_read`, tolerances, gas mass, the isolation width and its source, the named ions, and every constant a call turns on: `intact_fraction`, `branching_flag`, `onset_stray_share`, `satellite_ratio` / `satellite_fwhm`, `polyoxy_max_c` / `polyoxy_min_o`, `e50_threshold`, `monotonic_tol`, `target_match_ppm`, `window_pad_da`), each window's status, `reason`, target, co-isolates, `left_out` (aliases), `activation_kind`, located precursor, offset, NCEs and notes, the counts (incl. `four_piece_readings`), the inputs' and outputs' sha1, the code identity. No credentials, no URL (the PNGs carry no `Software` key) |
+| `ms2_analyze_manifest.json` | the sample (from the extract manifest), the parameters (gate mode and its note, `k_max_read`, tolerances, gas mass, the isolation width and its source, the named ions, and every constant a call turns on: `intact_fraction`, `branching_flag`, `onset_stray_share`, `satellite_ratio` / `satellite_fwhm`, `polyoxy_max_c` / `polyoxy_min_o`, `e50_threshold`, `monotonic_tol`, `target_match_ppm`, `window_pad_da`, the m/z axis offset `mass_offset_ppm` and its `mass_offset_source`), each window's status, `reason`, target, co-isolates, `left_out` (aliases), `activation_kind`, located precursor, offset, NCEs and notes (and `offset_hint_ppm`, the
+`--mass-offset-ppm` a window skipped for want of a named target needs, when its
+nearest named ion is within the axis reach), the counts (incl. `four_piece_readings`), the inputs' and outputs' sha1, the code identity. No credentials, no URL (the PNGs carry no `Software` key) |
 
 It prints one line per window (status, target, co-isolates, offset, the
-target's E50) and the notes. Each window has a **status** (and, when it has no
+target's E50) and the notes — except, in a folder of many parents (an
+inclusion-list folder), the windows skipped for want of a named target: beyond
+`cli.MS2_ANALYZE_UNNAMED_SHOWN` (5) of them they are counted in one line, their
+notes kept in `ms2_analyze_manifest.json`. Those whose nearest named ion misses
+by an axis offset (within `sources.AXIS_SEARCH_PPM`: the window's
+`offset_hint_ppm`) are counted apart, the line naming the median
+`--mass-offset-ppm` they need; a run in which no window was analysed says to
+pass it rather than to name ions already named. Each window has a **status** (and, when it has no
 breakdown, a `reason`, both in the manifest, with the counts `analysed`,
 `readings_only`, `skipped`):
 
@@ -1308,3 +1350,543 @@ given).
 | `analyze.gate_note` | the manifest's words for the gate mode |
 | `analyze.analyze_window` / `analyze_run` | one window; every window of a folder |
 | `analyze.render_window` / `write_outputs` / `manifest` | the figure; the files; `ms2_analyze_manifest.json` |
+
+---
+
+## 12. Per scan — `peaky ms2 extract --per-scan | --file`, `peaky ms2 files`
+
+**Code:** `peaky/ms2/scans.py` — PURE: the scan table, the method layout, the
+precursor mapping, the headerless-scan inference, the averaging; and in
+`peaky/ms2/sources.py` the orchestrators `extract_sample(per_scan=True)` and
+`extract_file`, the polarity rule (`resolve_polarity`) and the file listing
+(`needs_check`, `check_file`), on three new fetchers in `peaky/io/io_mascope.py`
+(`fetch_file_metadata`, `fetch_sample_files`, `fetch_ms2_timeseries`). Read-only.
+
+### 12.1 What it is for
+
+The MS2 endpoints (§10) serve averaged spectra only, and only for the scans whose
+scan filter the server's raw reader can parse. A raw file's `/metadata` holds
+more: every scan's centroids and, for every scan the server reads as MS order
+`Ms`, the instrument's **trailer**. Two uses:
+
+1. **Targeted-MS2 files the server cannot read.** On an Orbitrap Exploris file
+   recorded with an inclusion-list (tMS2) method, the server's reader garbles
+   the scan filters: random analyzers, ionizations and polarities (`ITMS - c EI`,
+   `TQMS - c EI`, `SQMS + c FABI`, `Sector - c`), every MS2 scan read as
+   `Full ms [40.0000-<HighMass>]` with no `ms2 <m/z>@hcd<E>`. The listing reads
+   polarity `+-` and processing status `needs_chemistry`: no sample item, no MS2
+   endpoint, nothing §10 can read. The trailer is right on every row, so
+   `ms2 extract --file` rebuilds the MS2 from it.
+2. **The scans behind an ordinary file's spectra.** `ms2 extract --per-scan`
+   reads which scans each server spectrum averages and every server peak in each
+   of them: the basis for replicate statistics (scan counts, per-scan
+   intensities). The spectra stay the server's, so every known answer of §11
+   is unchanged.
+
+### 12.2 The payload
+
+`GET sample/files/{sample_file_id}/metadata` (the sample record's
+`sample_file_id`; 6.7 / 8.6 / 19.8 MB for our own files of 140 / 233 / 434
+scans, so a 300-s read timeout, `METADATA_TIMEOUT`):
+
+| key | what it holds |
+| --- | --- |
+| `num_of_scans` | N |
+| `stats_per_scan` | `{"<scan, 1-based>": row}` — a row ONLY for a scan the server reads as MS order `Ms`: on an ordinary MS2 file its MS1 scans (our 2026-09-11 monoterpene standard A: 61 rows of 140 scans; its 78 MS2 scans and the first scan have none); on a garbled file the MS2 scans too (their garbled order reads `Ms`), a fraction of the scans without |
+| row keys read | `ScanType` (the filter: never trusted), `LowMass`, `HighMass`, `TIC`, `Scan Event:`, `Scan Node:` (`Full Scan` / `tMS2` / `''`), `HCD Energy:` (the NCE; `''` on MS1), `HCD Energy V:`, `MS2 Isolation Width:`, `Ion Injection Time (ms):`, `Max. Ion Time (ms):`, `Micro Scan Count:`, `AGC Fill:`, `FT Resolution:`. `Monoisotopic M/Z:` is 0 on every row of these files: no precursor source |
+| `centroids_meta` | `time` (N starts, s) and `data` (N × `{mzs, intensities, noises, resolutions}`) |
+
+`GET sample/files?instrument=&datetime_min=&datetime_max=` lists an instrument's
+raw files: id, file name, `length`, `polarity`, `processing_status` (`done`, e.g.
+`needs_chemistry`, or none: our own server lists no status) and its detail. The
+times are UTC (compared with the files' `datetime_utc`; `--since` / `--until` with
+an offset are converted). The server filters by instrument only when one is
+named, so an empty `--instrument` is refused. It is asked page by page
+(`io_mascope.FILE_LIST_PAGE`, 500 files, sorted by the unique file id so no page
+skips or repeats one, `FILE_LIST_PAUSE_S` 1 s apart) until a page comes back
+short: asked whole, a busy instrument's day was one 3.5 MB answer. At
+`FILE_LIST_MAX_PAGES` (200) full pages the listing is an error
+(`FileListTruncated`: narrow the range) — the files beyond are anywhere in the
+range, the ids being random — and when the server counts more files in the range
+(its answer's `results`) than its pages held (a file recorded while they were
+read), `ms2 files` says so. The time series of a
+spectrum (`get_timeseries(parent key, activation=...)`) names its scans by their
+`time` (ISO strings from the epoch).
+
+### 12.3 The rules
+
+**The trailer, never the filter.** Each scan's MS order is its trailer's: MS2 when
+`HCD Energy:` is a number, MS1 when it is `''` on a `Full Scan` or `''` node. A
+row with no HCD energy on another node (e.g. a `tSIM` experiment) keeps its order
+unread: it is no Full Scan (not in the MS1 average) and no MS2 scan (in no
+spectrum), said in the mapping's notes, and the cycle walk never crosses it
+(below); its filter is checked as an MS1 one (`SIM ms`). A
+filter is used only where it agrees with its trailer (`filter_ok`: an Orbitrap
+analyzer, one polarity, the trailer's order and NCE, its scan range); the file's
+verdict is `yes` / `no` / `partly` (`filter_verdict`). Polarity is read off the
+filters only when every one agrees, with one sign; a garbled file's signs are
+random and its listing reads `+-`, so `--polarity` is required there
+(`resolve_polarity`: the explicit sign, checked against a one-sign record and
+readable filters; else the file record's; else the filters'; else refused).
+`ms2 extract --file` asks the server for the file's `/metadata` only, never its
+listing record, so there the record is not consulted: the polarity is
+`--polarity`'s or the readable filters'. `ms2 files --check` writes the
+listing's sign into the command it suggests when the listing has one sign; a
+garbled file's listing reads `+-` (and a file named with `--check` outside the
+listed range has no listing row), so there the command carries `--polarity <+|->`
+and the note asks for the method's sign. A file whose filters are all readable and
+carry both signs, with MS2 scans read by trailer, is a dual-polarity method: its
+spectra would average every MS2 scan and its window every MS1 scan whatever their
+sign, so it is refused whatever `--polarity` says (`DualPolarityError`; the check
+gives no command). An ordinary dual-polarity file (no MS2 trailer row) reads `MS2
+without trailer`.
+
+**The method layout.** On an Exploris inclusion-list method the MS2 experiments'
+events run from 1 in experiment order, one per list row: one shared list of n rows
+over K experiments (one NCE each) gives events 1..n, n+1..2n, …; the Full Scan
+is the last event, K·n + 1. Every event's trailer NCE is then its
+experiment's. Several lists = one per
+experiment, in event order. A list that does not fit is refused through the Full
+Scan event (it must be K·n + 1, or the lists' summed rows + 1: the refusal says how
+many MS2 events the method has and, from its NCE runs, the list that would fit),
+then through one NCE per experiment. A shared list whose row count only divides
+the method's (3 rows for a 6-row method passes both checks) splits each of the
+method's experiments in two: two of its experiments then carry one NCE and their
+scans alternate in time (their known scans overlap in time), and that is refused
+too — unless the scan range follows the precursor in both and the list fits the
+scan-range rule on every event of theirs seen: the rule has then checked the rows
+(a divisor list misses it by the spacing of its rows), and the two are two
+experiments of one NCE run in parallel (each cycle through one, then the other;
+noted). Where the range follows the precursor in both and the list misses the rule,
+the refusal names the events the rule puts off the list (its rows are wrong: two
+parallel experiments run with it would have fitted). On a fixed range nothing
+tells the two apart: refused, the message saying that a parallel method takes the
+list once per experiment (`--inclusion-list L.csv L.csv`, which maps it). Two experiments of one NCE that run one after the other,
+in either order, are valid (time order is free: the Full Scan, the last event,
+runs first). A list maps an inclusion-list method's numbering (the MS2 events
+from 1, the Full Scan last): a Full Scan numbered before the MS2 events is refused
+saying so, and a file with no MS2 trailer row at all (an ordinary MS2 file) has no
+event to fit a list to — the list is not used (noted) and the file reads `MS2
+without trailer`. The layout is **closed** only when a list and the Full Scan event pin every
+experiment's range. Without a list it never is: the experiments are then the NCE
+runs of the events seen (sized by the Full Scan event when it splits them evenly),
+and two adjacent experiments at one NCE read as one run, an experiment never seen
+as none — a 'one 8-row experiment' that a walk would wrap through where the method
+ran two 4-row ones. On an open layout the cycle walk is restricted (below).
+
+**Precursors**, per event, from: a readable filter (a scan's own readable
+filter wins: a data-dependent event names a new precursor each cycle — mapped scan
+by scan on a fixed range; where its scan range follows each precursor the event
+reads several ranges and is refused, one event being one scan range) > the list
+(event → row) > the scan-range rule (no list). The **scan-range rule** of a
+"define first mass" method: HighMass = 1.02 × (precursor + isolation width / 2) +
+20 Da, to a few hundredths of a mDa (the width term is the method's documented
+one, not a fit). The scan range is a setting of each
+experiment, so the rule is judged **per experiment** (`rule_verdicts`): it
+follows the precursor where two or more events were seen and their HighMass
+values differ, it is a fixed range where every event reads one HighMass, and an
+experiment with one event seen counts as following only when the file's HighMass
+values differ and no experiment reads a fixed range. Nothing is derived in a
+fixed-range experiment (its precursors would all coincide), nor for an event
+whose HighMass another event of its experiment shares: without a list that is a
+refusal naming the events ("pass the method's inclusion list"). A list is ALWAYS
+checked against the rule where it holds: a residual beyond 0.5 mDa
+(`RULE_TOL_MDA`, 20 × the largest measured) is an error naming the events — a list
+in the wrong order, the wrong list, a row missing. Where it does not hold, a list
+(or readable filters) is required, and is checked against the Full Scan event
+(when the method has one), the experiments' NCEs and any readable filters, not
+against the scan range; where it cannot be judged (one event seen), a misfit is
+noted, not refused. `--no-rule-check` skips the check for a method that does not
+set its range by the precursor. Precursors within 1 mDa are
+one parent, keyed by their median rounded to 4 decimals (the server's own
+grouping); the spectrum key is the server's, `<parent>@hcd<NCE:.2f>`.
+
+**Scans with no trailer row** are placed by walking the scan cycle
+(`infer_headerless`): inside an experiment's time block the instrument walks its
+events in order, cyclically; at a block switch the next block starts at its first
+event. The model is first checked on every pair of consecutive known scans (one
+pair it does not allow, or a block the known scans return to, and nothing is
+inferred). A run between two known scans takes the ONE walk the cycle allows;
+none or several (e.g. a block of one event at a switch) leaves it unassigned. A
+run across a block switch, and a leading or trailing run, are walked only on a
+closed layout whose every block has a known scan and with no trailer row of a scan
+of no block (below): a block of the list's experiments cannot hide in the run, but
+a trailer row with no MS order or no event shows an experiment outside the layout
+(e.g. a `tSIM` one) running in the file, and a block of it whose scans lost their
+rows could — such runs stay unassigned (`runs_beside_outside_scans`, said), runs
+inside one block are still placed. An experiment outside the layout none of whose
+scans keeps a row is invisible (§12.7);
+on a layout that is not closed only a run inside one block, straight from one
+known scan to the next (no wrap, exactly as many scans as events between them), is
+placed. A gap holding a scan of no block (a trailer row with no MS order or no
+event, e.g. a `tSIM` scan) is not walked: its headerless scans stay unassigned
+(`runs_blocked_by_header_rows`), and only scans with no trailer row are ever
+written. Every walked scan is checked against its event's LowMass / HighMass — a
+Full Scan's against the Full Scans' (a centroid outside it leaves the run
+unassigned); an event never seen with a
+trailer takes its experiment's range where that range is fixed (and keeps it),
+or — where the scan-range rule holds and is checked — the HighMass the rule
+predicts from its list row (a check only: the scan keeps no range it never
+recorded); else the run is unverifiable. A seeded fuzz of random methods (1–3
+experiments, shared or own lists, a Full Scan block or none, rows lost at random,
+events never seen, adjacent experiments at one NCE, an event skipped once, a short
+block hidden inside another — but not one whose length completes the cycle it
+interrupts, which nothing in a file can tell apart, §12.7) places no scan on
+another event or spectrum. Every
+headerless scan is counted, placed or not, and why. Nothing is inferred on an ordinary file (no MS2 event has a trailer row:
+a walk over its MS1 rows alone would call every MS2 scan a Full Scan).
+
+**The server's groups, scan by scan** (`--per-scan`). Each time of a spectrum's
+time series names one scan: on our own files the time and the scan's
+`centroids_meta.time` agree to < 1 ms on every MS2 scan (`TIME_MATCH_S`), none on
+an MS1 row, none claimed twice. Scans with no trailer row that no group holds are
+counted and noted — the first scan (dropped by the server's bad-first-scan rule)
+and, after the record's `t1`, a hidden tail's MS2 scans (§10.5), which have
+neither a trailer nor a group to name their precursor or energy. The server
+multiplies the m/z it serves by the file's calibration factor (the sample
+record's `mz_calibration.par.calibration_factor`), while `/metadata`'s centroids
+are the raw axis: each server peak is read in the scans at its m/z / factor and
+keeps the server's m/z (`sources.calibration_factor`; unmatched, a 3 ppm factor
+left 45 of standard A's 230 peaks with no centroid in any scan, 5 ppm 163). A
+server peak that still reads 0 in every scan of its spectrum is counted
+(`per_scan.peaks_all_zero`) and noted.
+
+### 12.4 Averaging (`--file`)
+
+A group's scans are pooled and clustered by m/z in two steps: a seed bin opens at
+every gap > 1 ppm (`SEED_PPM`), then adjacent seed bins merge where their gap is
+< 0.5 × the narrower FWHM (`MERGE_FWHM`; FWHM = m/z / the bin's intensity-weighted
+resolution). Per cluster: m/z and resolution intensity-weighted over the
+centroids; intensity the mean over the group's N scans, a scan without the peak
+counting 0 (two centroids of one scan in one cluster are one reading of that
+scan); S/N = the intensity-weighted mean per-scan S/N × n / √N (n the scans
+holding the peak); kept at S/N ≥ `--noise-threshold` (3). This reproduces the
+server's S/N-3 spectra of our own monoterpene standards A and B and the
+2026-09-10 exploratory file (47 spectra, 893 peaks): 892 matched, 2 extra (both at
+S/N 3.00–3.01), m/z identical (891 within 0.01 ppm), resolution identical, S/N
+1.005 × on the median (5–95 %: 1.001–1.010). A flat gap does worse (3 ppm joins
+side lobes to their line, 1 ppm splits jittered peaks). The intensity runs
+1.020 × the server's on the median peak (5–95 %: 1.000–1.07) — the server re-reads
+heights off an averaged profile the payload lacks; reported
+(`SERVER_HEIGHT_RATIO`), never corrected. Every scan's centroids carry a
+resolution of their own (measured, not the instrument's setting); the nominal
+R200 · √(200 / m/z) from `FT Resolution:` is used only where a payload has none
+(the centroids' own resolution reads 1.033 × the nominal on strong peaks and
+0.73 × it on S/N 3–10 ones) — the R200 of the scans being averaged (a group's
+trailer rows, else the MS2 scans'; the MS1 scans' for the MS1 average), never one
+for the whole file: a Full Scan and its tMS2 scans are often set apart (e.g.
+120000 / 60000). A payload where only some scans carry resolutions takes the
+nominal value for the others (noted): a seed bin with no resolution has no width
+and is joined to no neighbour. It is counted per average — the scans of the MS2
+spectra, and the MS1 scans apart — and a nominal value is recorded only where a
+scan of that average lacked resolutions: the manifest's
+`averaging.resolution_source` (with `scans_without_resolutions` and
+`nominal_r200`) says it for the MS2 spectra (`per-scan centroids`, `per-scan
+centroids; nominal (FT Resolution …) where a scan carries none`, `nominal: FT
+Resolution …`, or `none`, then noted: no peak is merged by width and the
+side-lobe rules are off), `averaging.ms1_resolution_source` (with
+`ms1_scans_without_resolutions`) for the MS1 average, each noted as its own MS
+order's (MS1 scans with none and no single FT Resolution on their rows: the
+window's peaks of theirs read NaN, said). The window inventory (§10.4) averages the file's MS1
+scans the same way (every cluster kept, no S/N floor, as the server's MS1
+centroids) at each parent's trailer width (`--iso-width` replaces it). The MS1
+scans are averaged only where they are read — the window, and the axis offset
+when the MS2 precursors read too few (below) — and never for a file with no MS2
+parent; every sum runs over the (cluster, scan) pairs that hold a centroid, so
+memory grows with the centroids, not clusters × scans (an MS1 average keeps every
+noise cluster, ~55 new ones per scan, and as a dense matrix it grew ~N^1.7 with the
+scans, over a GB for a few hundred MS1 scans).
+
+**One range per parent.** The scan range is per scan, and an experiment's first
+mass can differ from the others' (an automatic first mass in one block, the
+method's in the others): a product between the two reads as absent at that energy
+only, and its F jumps there. When a parent's spectra differ in the range their
+scans recorded (by more than `RANGE_CHECK_DA`), every spectrum of that parent is
+cut to the range all of them recorded — said on its rows ("scan range differs
+between this parent's energies (first mass 40.00 at NCE 5/30, 51.30 at NCE 15):
+every spectrum of it is cut to m/z 51.30–…"), the peaks removed counted in the
+manifest (`averaging.range_cuts`, every spectrum's range in
+`averaging.scan_ranges`).
+
+**The m/z axis.** A raw file's centroids are the instrument's own axis, which the
+server calibrates for the spectra it serves but nothing calibrates here: it can
+sit tens of ppm off the method's precursors, enough for the heavier parents'
+precursors to fall outside the search window of §10.3 and a side lobe to be taken
+for them. `sources.axis_offset` reads the offset off the file, against
+the method's TYPED precursors (the keys): per parent, at its lowest energy, the
+strongest centroid of its isolation window is its precursor when it lies within
+`AXIS_SEARCH_PPM` (50 ppm) of the key; the offset is the median over the parents
+(≥ `AXIS_MIN_PARENTS` 3; else the MS1 window's parents; else the few there are,
+said) — the median out-votes a parent whose window a co-isolate dominates. With
+two such few, nothing out-votes it (their median is their mean): a reading is kept
+only where every other reading parent's window bears it out — a precursor
+candidate (≥ 10 % of its window's strongest) within the track tolerance of its key
+× (1 + that reading); the others are dropped (`unconfirmed`, said), and with none
+borne out no offset is read (a synthetic two-parent file 12 ppm off, one window's
+co-isolate 4 mDa below its target outshining it: the mean of its −41 and −12 ppm
+readings, −26.4, left `ms2 analyze` matching neither window; the rule reads
+−11.6). A
+reading is **contested**, and dropped (`contested_keys`; the reading kept in
+`contested`), when its strongest centroid lies off the key while another precursor
+candidate (≥ 10 % of it) sits ON the key: a peak on the key is evidence against
+an axis shift. A one-parent file whose co-isolate, 29 ppm below the key, outshone
+the target at the lowest NCE read −29 ppm off it, its search was centred on the
+co-isolate, and `ms2 analyze` took the co-isolate for its target; contested, no
+offset is read (said), the target is located on its key. One parent cannot tell
+that from a file whose axis does sit off and whose key holds an unrelated ion:
+there the ion on the key is located — so the contested reading's ppm is quoted in
+the extraction's note and on that parent's rows ("if the m/z axis does sit … off,
+the ion on the key is a co-isolate"). **Only a key typed finely enough reads one** (`AXIS_KEY_PPM`, 2 ppm: half a
+unit of the key's last decimal over its m/z, `sources.key_rounding_ppm`). A key
+carries the precision it was typed with (a list row, or the precursor the rule
+derives from a HighMass that row set), and one typed with two decimals sits up to
+5 mDa from its ion by that alone: an on-axis synthetic file whose list read
+117.09 / 155.14 / 187.13 / 199.17 / 217.14 gave +8.5 / +19.2 / +15.3 / −3.1 /
++15.6 ppm — a "median offset" of +15.3 ppm that was the typing, and `ms2 analyze`
+then skipped every window (our own standard B's key 137.13 reads +16.6 ppm the
+same way). Such keys are counted (`coarse_keys`), never read: 4 decimals qualify
+from m/z 25, 3 from m/z 250 (a 4-decimal key ending in 0, 117.0910 → 117.091,
+reads as 3); with every key left out no offset is recorded, and the notes say so.
+On our own standard A (keys 137.1321, 155.1429, 155.1559) the offset reads
++0.5 ppm. The precursor search and the MS1 window's `is_parent` are centred on each
+key × (1 + offset); an offset of `AXIS_NOTE_PPM` (3 ppm) or more is noted on every
+parents row; the manifest records the offset (`parameters.ms2_axis_offset`), and
+`ms2 analyze` reads the folder through it (§11.1). On such a file the precursors
+and the E50s are then those of the same file with every m/z divided by
+(1 + offset). With the offset measured, a key typed finely enough looks within
+the track tolerance of its key × (1 + offset) first: its own ion there is the
+precursor, however much brighter a neighbouring list row's ion a few mDa away in
+the same window is (the wide search's 10 % share rule would drop the weak one and
+give both parents the bright ion); a key typed coarsely keeps the wide search.
+The key-offset note (`KEY_OFFSET_NOTE_MDA`) is read against the key × (1 +
+offset), and two parents whose located precursors coincide (their windows
+overlap, one ion read for both) are said on both rows, on any folder. The MS1
+window's `is_parent` is the MS1 centroid at the precursor the MS2 spectra located
+(within the track tolerance), none when the MS1 scans hold nothing there — said
+on that parent's rows (the MS1 scans did not see it: its MS1 share there is
+unseen, not measured absent), as is a window past the MS1 scans' recorded m/z
+range (not measured). The manifest's `per_scan` records that range
+(`ms1_scan_range`) and the MS1 and MS2 scans' time spans (`ms1_time_s`,
+`ms2_time_s`), and MS1 scans that all precede the MS2 scans are noted (the window
+inventory is the composition before the MS2 ran).
+Where no offset is measured, the side-lobe guard (§10.3) is on: a precursor whose
+only candidate is a lobe is not located.
+
+### 12.5 Commands and outputs
+
+```bash
+# the scans behind a sample's server spectra (+ one /metadata, + one time series per spectrum, 1 s apart)
+peaky ms2 extract --sample-id <ID> --per-scan [--save-metadata]
+# a raw file's MS2 rebuilt per scan (a garbled tMS2 file needs --polarity; its list checks the mapping)
+peaky ms2 extract --file <FILE_ID> --inclusion-list <list.csv> [<list2.csv> ...] --polarity + \
+    [--save-metadata] [--noise-threshold 3] [--iso-width W] [--no-window] [--no-rule-check]
+peaky ms2 extract --file <FILE_ID> --metadata-json <ms2_file_metadata.json> ...   # offline, no credentials
+# an instrument's raw files (times in UTC); --check reads the /metadata of the ones that need it,
+# the ones the server built no sample from first, then the longest (at most --max-check, 5)
+peaky ms2 files --instrument <NAME> --since 2026-09-11T10:00 [--until ...] [--check [FILE_ID ...]] [--out files.csv]
+# a --file folder whose m/z axis sits off: analyze reads the offset its manifest records, or
+peaky ms2 analyze --run-dir <folder> --ion MZ=FORMULA ... [--mass-offset-ppm PPM]
+```
+
+The folder (`<out-dir>/ms2/<sample or file id>/`) holds §10.4's four tables and
+manifest plus:
+
+| file | content |
+| --- | --- |
+| `ms2_scans.csv` | one row per scan (`scans.SCAN_COLUMNS`): `scan`, `t_s`, `has_header`, `order`, `event`, `node`, `nce`, `hcd_v`, `iso_width`, `low_mass`, `high_mass`, `inj_time_ms`, `max_inj_time_ms`, `microscans`, `agc_fill`, `tic`, `ft_resolution`, `filter` (as written), `filter_ok`, `filter_parent_mz`, `n_centroids`, `min_centroid_mz`, `max_centroid_mz`, `inferred`, `parent_mz`, `precursor_source` (`filter` / `inclusion list` / `scan-range rule` / `server`), `experiment`, `slot` (the list row, 1-based), `spectrum`, `note` |
+| `ms2_scan_peaks.parquet` | every kept peak in every scan of its spectrum (`scans.SCAN_PEAK_COLUMNS`): `spectrum`, `peak_mz`, `scan`, `t_s`, `intensity` (0 where the scan has none: the mean over a peak's rows is its spectrum's intensity with `--file`), `n_centroids` |
+| `ms2_file_metadata.json` | `--save-metadata`: the payload as the server answered it (kept also when the scans cannot be mapped: re-run with `--metadata-json`) |
+
+The manifest gains `source` (`server MS2 endpoints` / `… + the file's per-scan
+metadata` / `file metadata, per scan`) and `per_scan`: with `--per-scan` the
+matched and asked times per spectrum, the scans with no trailer row in no group
+and those of a hidden tail, the filter verdict, the calibration factor the
+server's peaks were matched through (`mz_calibration_factor`) and the peaks
+that read 0 in every scan (`peaks_all_zero`); with `--file` the layout, the
+experiments, the filter verdict, the rule fit (`slope`, `offset_da`,
+`max_residual_mda`, `events_off`), the inference counts, the precursor sources,
+the averaging rule and every tolerance (`scans.tolerances`). With `--file` its
+`server` block is null (nothing is the server's), `parameters` carries the
+polarity and where it came from, the lists (base name, rows, and the file's sha1
+and bytes: the list decides the mapping, so the run names it by its content),
+`rule_check`,
+the m/z axis offset (`ms2_axis_offset`: ppm, source, parents, spread, per parent,
+the keys typed too coarsely to read it, the readings contested by a candidate on
+their key (`contested`: key → ppm) and those no other parent's window bore out
+(`unconfirmed`)) and whether the side-lobe guard ran
+(`precursor_lobe.guard_on`: only where no offset was measured),
+the payload read with `--metadata-json` (`metadata_json`: its base name, sha1,
+bytes, `offline`), and the isolation width: the trailer's when it is one, else
+`null` with `isolation_widths` per parent — and `ms2 analyze` then reads each
+window at its own parent's width (`analyze.PER_PARENT_WIDTH`). `ms2 analyze`
+reads a `--file` folder as it is. Every file of the folder is in its manifest: a
+re-run removes the per-scan tables it does not write and a kept
+`ms2_file_metadata.json` it neither keeps (`--save-metadata`) nor reads
+(`--metadata-json` on that file, then listed among the files). The code identity
+names `scans_version` beside `sources_version` and `io_mascope_version`.
+
+`ms2 files` prints the listing (every file up to 40; beyond, the ones that need a
+check) and `--out` writes every file (`sources.FILES_COLUMNS`). A file needs a
+check when its polarity is not one sign or its processing status is set and not
+`done` (a file with no status is not flagged: our own server lists none).
+Without ids `--check` never fetches a routine file; a file it names is read
+whatever its listing says (`--max-check` caps both). Its own picks are, first, the
+flagged files the server built no sample from (a status other than `done`: a garbled tMS2
+file reads `needs_chemistry`), then the others (a dual-polarity file it processed
+reads `+-` and `done`) — within each the longest first (an MS2 run holds minutes
+of scans, a short composite or calibration file seconds), the newest among equals
+— at most `--max-check`, and says so where the cap leaves some unchecked: each
+check reads the whole raw file's `/metadata`, about 0.1 MB per MS1 scan and 5 kB per
+MS2 scan (our own files: 6.7–19.8 MB for 140–434 scans), so an hour of MS1 scans is
+hundreds of MB. A file named with
+`--check` that the listed range does not hold is checked all the same, its row
+marked `listed` False. A checked file gets its scans, trailer rows, MS2
+scans by trailer, headerless scans, filter verdict, events, NCEs, isolation
+widths, the scan-range rule's verdict (per experiment where they differ), what a
+mapping without a list gives, and the `ms2 extract --file` command line (with
+`--polarity` when its filters name none — the listing's sign when it has one, else
+`<+|->` and a note — and `--inclusion-list` when it is needed: required when a
+fixed range leaves events without a precursor, or for a file with headerless
+scans, whose layout only a list pins; advised for rule-derived precursors). A
+file refused for a reason no list lifts (a stepped energy, two MS1 events) gets no
+command, its reason in the note; an unreadable payload fails that file's check
+alone. An ordinary MS2 file reads `MS2 without trailer`: extract its sample with
+`--per-scan`. A raw file's failure (`--file`, `--check`) points to `ms2 files` for
+its id, never to the sample listing.
+
+### 12.6 Known answers (our own data)
+
+- **Standard A** (2026-09-11; fixture `ms2_monoterpene_a_metadata.json`): the
+  time series name 78 of its 78 MS2 scans, each group's count the server's; the
+  one scan with no trailer row in no group is scan 1. Our averages of those
+  groups reproduce all 230 peaks of the server's S/N-3 spectra (nothing extra),
+  m/z within 0.005 ppm, resolution identical, S/N 1.0015–1.011 ×, intensity 1.020 ×
+  on the median peak (0.93–1.12). The server's peaks read in every scan: 1517
+  rows, none all zero — and the same 1517 readings, bit for bit, when the
+  record carries a calibration factor (1 + 5, −13.5 or +28.6 ppm) and the served
+  m/z are scaled by it.
+- **Standard A as a tMS2 file** (semi-synthetic: its real centroids under tMS2
+  trailers, garbled MS2 filters, 22 trailer rows dropped inside their blocks, one
+  list per experiment): every scan placed (23 headerless: 22 by the cycle, the
+  first walked back into the Full Scan block), the list fits the rule to 0 mDa,
+  and the 12 spectra equal the time-series mapping's exactly. `ms2 analyze`:
+  C10H17⁺ F E50 NCE 13.82 against 13.88 from the server's S/N-3 spectra (13.89
+  from its S/N-10 ones, §11.8): F within 0.0016 at every NCE (at most, at NCE
+  20), which at the crossing's slope (0.018 per NCE) bounds the E50s' difference
+  by 0.09 NCE; it is 0.06. A list in the wrong order is refused by
+  the rule; an extra list by the Full Scan event. Without a list the scan range
+  names every precursor (its 56 MS2 scans with a row); its 23 headerless scans
+  stay unassigned (no list pins the layout).
+- **Standard B** (summary refused): 67 of 67 MS2 scans named; 81 scans with no
+  trailer row in no group — scan 1 and 154–233, the latter after `t1`: the hidden
+  tail (§10.5). **The 2026-09-10 exploratory file:** 213 of 213; 37 in no group,
+  36 of them the tail after scan 398.
+
+### 12.7 Limits and gotchas
+
+- **Polarity**: a garbled file's filters and listing name none; pass the
+  method's sign. Nothing splits a file by polarity: one whose readable filters
+  carry both signs and whose MS2 scans have trailer rows is refused.
+- **Inference is conservative.** A run the cycle allows several ways (a block of
+  one event at a block switch), a run no walk of its length fits (an event
+  skipped once), blocks that interleave in time, an experiment never seen with a
+  trailer (an acquisition stopped early), and — on a layout no list pins (no
+  list, or no Full Scan event) — any run that wraps, crosses a switch, leads or
+  trails: those scans stay unassigned, counted and noted — never guessed. The
+  method's list pins the layout. One case nothing in a file can tell: a short
+  block of another experiment, every scan of it without a trailer row, inside a
+  block's time, whose length completes that block's cycle (the block resuming at
+  its first row) — its scans are exactly what the block would have run, and are
+  placed as its own unless their centroids contradict those events' scan
+  ranges.
+- **An acquisition stopped inside an experiment** leaves that experiment's last
+  rows never scanned: the mapping report counts each experiment's
+  `rows_scanned` and lists `events_never_scanned`, a note names the experiment,
+  its rows never scanned and the file's last MS2 scan, and the parents with no
+  spectrum at its NCE (`missing_energies`) say so on their rows ("no spectrum at
+  NCE …: its event was never scanned"). Their breakdown in `ms2 analyze` spans
+  the energies they have (its `nce_max`, `n_energies`): an E50 "above range"
+  there is above that parent's highest NCE, not the method's. Other events never
+  scanned are noted too.
+- **An event seen only through scans the cycle placed** takes its experiment's
+  isolation width (`events_width_from_experiment`); noted only where the
+  trailers read more than one width.
+- **A data-dependent event** (readable filters naming a new precursor per cycle)
+  maps scan by scan on a fixed range; where its scan range follows each
+  precursor, its scans read several ranges and the file is refused.
+- **The isolation width is the trailer's**, not the list's `Q1 Resolution`
+  column (a row's own width is not always applied).
+- **A stepped collision energy** has no single NCE: refused.
+- **Heights**: per-scan averages run ~2 % above the server's (§12.4); a ratio of
+  peaks of one spectrum moves much less.
+- **An off-axis file** (§12.4, "The m/z axis"): the offset is measured from the
+  file's own precursors against keys typed finely enough, and the precursor
+  search, the MS1 window and `ms2 analyze` are centred on it. It assumes one
+  offset for the file (MS1 and MS2 alike) and that most parents' lowest-energy
+  windows are dominated by their precursor; with one or two parents nothing
+  out-votes a co-isolate, so a reading contradicted by a candidate on its key is
+  dropped, and of two readings only the one the other parent's window bears out
+  is kept. A one-parent file whose axis really sits off AND that holds an
+  unrelated ion (≥ 10 % of the target) on its key then reads no offset, and its
+  precursor search, left on the key, locates that ion: `ms2 analyze` reads it as
+  the target. Nothing in one parent tells the two apart; the dropped reading's
+  ppm is on the parent's rows and in the notes — check the window. Keys typed with two decimals measure
+  nothing: no offset is recorded, the search stays on the keys with its side-lobe
+  guard on — a parent whose only candidate is a side lobe is reported ambiguous,
+  never read as the precursor. A folder `ms2 analyze` cannot match ("no named ion
+  matches the precursor … pass --mass-offset-ppm X") takes the offset by hand.
+- **A calibrated sample's per-scan readings** (`--per-scan`) assume the record's
+  calibration factor is the one the server applied to the spectra; an axis it
+  does not explain leaves peaks reading 0 in every scan, counted and noted.
+- **A list whose rows divide the method's** is refused only when the experiments
+  it implies carry one NCE in pairs and alternate in time, and the scan-range rule
+  does not check their rows (where it does, they are two parallel experiments of
+  one NCE); on a fixed range such a parallel method takes the list once per
+  experiment. A list of the right length with the wrong rows on a fixed-range
+  method passes every check (nothing in the file names its precursors).
+- **A scan of no block** (a trailer row with no MS order or no event, e.g. a
+  `tSIM` experiment's): kept as read, in no spectrum and not in the MS1 average;
+  headerless scans in a gap beside it stay unassigned, and — since it shows an
+  experiment outside the layout — so do runs across a block switch and leading or
+  trailing runs anywhere in the file. An experiment outside the layout none of
+  whose scans keeps a trailer row is invisible: its row-less scans at a block
+  switch read as the next events of the block before them, unless their
+  centroids contradict those events' scan ranges.
+- **`/metadata` is large** — the whole raw file's, about 0.1 MB per MS1 scan and 5 kB
+  per MS2 scan: 7–20 MB for our own files of a few hundred scans, hundreds of MB for
+  an hour of MS1 scans. `--check` reads it only for the files that need it or that
+  it names, at most `--max-check`; `--per-scan` asks it once per sample, whatever
+  part of the file the sample holds.
+
+### 12.8 Constants and code map
+
+| constant (`scans.py`) | value | role |
+| --- | --- | --- |
+| `SEED_PPM` / `MERGE_FWHM` | 1 ppm / 0.5 | the two clustering steps |
+| `SERVER_HEIGHT_RATIO` | 1.020 | our intensity over the server's on the median peak (reported) |
+| `TIME_MATCH_S` | 1 ms | a time-series time and its scan |
+| `RANGE_CHECK_DA` | 0.01 Da | a walked scan's centroids inside its event's range; and a parent whose spectra's recorded ranges differ by more is cut to the range they share (§12.4) |
+| `RULE_SLOPE` / `RULE_OFFSET_DA` / `RULE_TOL_MDA` | 1.02 / 20 Da / 0.5 mDa | the scan-range rule and its check |
+| `RULE_DISTINCT_DA` | 1 mDa | HighMass values compared at this, per experiment: ≥ 2 seen events reading one value = a fixed range, values that differ = following the precursor, one seen event = unknown; an event whose value another of its experiment shares derives nothing; file-wide, < 2 distinct values derive nothing anywhere |
+| `FILTER_RANGE_TOL_DA` / `FILTER_NCE_TOL` | 1 mDa / 0.005 | a filter agrees with its trailer |
+| `SOURCE_MATCH_MDA` | 1 mDa | a list row and its event's readable filters must agree; an event's readable filters name one precursor (a scan of it with a garbled filter takes their median), else one per scan (such a scan has none). The rule is checked with `RULE_TOL_MDA` |
+| `PARENT_TOL_DA` | 1 mDa | precursors chained into one parent |
+| `RULE_DECIMALS` | 4 | a precursor derived from the rule is rounded to the decimals a method types |
+| `sources.TIMESERIES_PAUSE_S` | 1 s | between `--per-scan`'s time-series requests |
+| `sources.AXIS_SEARCH_PPM` / `AXIS_KEY_PPM` / `AXIS_MIN_PARENTS` / `AXIS_NOTE_PPM` | 50 ppm / 2 ppm / 3 / 3 ppm | the m/z axis offset: where a parent's precursor is read, how finely its key must be typed to read it, how many name it, when it is noted |
+| `sources.PRECURSOR_LOBE_RATIO` / `_FWHM` | 50× / 5 line widths | the precursor's side-lobe guard, where the axis offset is unknown (§10.3) |
+| `io_mascope.METADATA_TIMEOUT` | (15, 300) s | the `/metadata` request |
+| `io_mascope.FILE_LIST_PAGE` / `FILE_LIST_PAUSE_S` / `FILE_LIST_MAX_PAGES` | 500 / 1 s / 200 | the file listing, page by page; at the cap, `FileListTruncated` |
+
+| function | role |
+| --- | --- |
+| `scans.scan_table` / `filter_verdict` / `filter_polarity` / `parse_filter` | one row per scan off the trailer; the filters' verdict and polarity |
+| `scans.read_inclusion_list` / `method_layout` / `map_precursors` / `infer_headerless` | the lists; events → experiments (`Layout.closed`); precursors; the cycle walk |
+| `scans.rule_verdicts` / `rule_holds` / `rule_fit` / `rule_text` | the scan-range rule per experiment; its fit; in words |
+| `scans.assign_from_times` / `scan_peak_intensities` | the server's groups scan by scan; its peaks in every scan |
+| `scans.average_scans` / `build_spectra` / `ms1_average` / `window_inventory` / `extract_payload` | the averaging; the §10 tables; a payload end to end |
+| `sources.extract_sample(per_scan=True)` / `extract_file` / `resolve_polarity` / `dual_polarity` / `calibration_factor` | the orchestrators; the polarity rule, and the dual-polarity refusal; the record's m/z calibration factor (`--per-scan`) |
+| `sources.axis_offset` / `key_rounding_ppm` / `locate_precursor` | a raw file's m/z axis offset; how far a key's typing alone puts it; the precursor and its side-lobe guard |
+| `sources.needs_check` / `file_row` / `check_file` / `files_frame` | `ms2 files` |
+| `io_mascope.fetch_file_metadata` / `fetch_sample_files` / `fetch_ms2_timeseries` | the payload, the listing, a spectrum's time series |
+| `analyze.parent_widths` / `folder_axis_offset` / `offset_hint` | each window at its own parent's width; the folder's m/z axis offset (a `--file` folder); the `--mass-offset-ppm` a window skipped for want of a named target needs, within the axis reach |

@@ -6,8 +6,11 @@ implies; `readings` reads one window's spectra across energies (and gates a
 fourth loss piece on a ladder); `attribute` decides which window ion made each
 fragment; `breakdown` turns the window into survival curves, E50s and an ion
 budget. `sources` reads Mascope's MS2 endpoints into tables (`peaky ms2 list |
-extract`); `analyze` runs the core on one extracted folder (`peaky ms2
-analyze`). See docs/MS2.md.
+extract`); `scans` is the per-scan source -- a raw file's `/metadata` (every
+scan's trailer and centroids) -> scan events, precursors and spectra in the
+same tables (`peaky ms2 extract --per-scan | --file`, `peaky ms2 files`);
+`analyze` runs the core on one extracted folder (`peaky ms2 analyze`). See
+docs/MS2.md.
 """
 from peaky.ms2.attribute import (
     BRANCHING_FLAG,

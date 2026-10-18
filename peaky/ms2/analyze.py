@@ -14,6 +14,11 @@ a parent window's ions are the named ions whose exact m/z lies inside its
 isolation window (half the width + `sources.WINDOW_PAD_DA` around the server's
 key), and its target is the named ion nearest the precursor `ms2 extract`
 located -- within `TARGET_MATCH_PPM`, else the window is skipped with a note.
+On a folder whose m/z axis sits off (a raw file's own centroids, `ms2 extract
+--file`: its manifest's `ms2_axis_offset`; or `--mass-offset-ppm`), the
+located precursor and the MS1 window are read through that offset first
+(`folder_axis_offset`); the per-window recalibration then follows as on any
+folder.
 Two named ions within the reading tolerance of each other are never both
 window ions (`drop_aliases`), and one breakdown holds one activation kind.
 """
@@ -37,7 +42,10 @@ from peaky.ms2 import readings as RD
 from peaky.ms2 import sources as SRC
 from peaky.ms2 import subformula as SF
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"  # + per-parent isolation widths from the parents table (an
+#                          `ms2 extract --file` folder); the folder's m/z axis offset
+#                          (its manifest, or --mass-offset-ppm) in the target match
+#                          and the MS1 shares. 0.1.0: PR #80
 
 #: A named ion is a window's target when its exact m/z is within this of the
 #: precursor `ms2 extract` located (uncalibrated axis; the tol_mda floor
@@ -295,6 +303,21 @@ def isolation_width(tables: RunTables, explicit: float | None) -> tuple[float, s
     return math.nan, None
 
 
+#: `isolation_width`'s source when the parents table holds a different width
+#: per parent and nothing replaces them: an `ms2 extract --file` folder whose
+#: method isolated its precursors at different widths (the trailer's, per
+#: parent). Each window is then read at its own parent's width.
+PER_PARENT_WIDTH = "parents table, per parent"
+
+
+def parent_widths(tables: RunTables) -> dict[float, float]:
+    """Parent m/z (rounded to 1e-6) -> its own positive isolation width in the
+    parents table (the largest when its rows differ)."""
+    par = tables.parents[tables.parents["isolation_width"] > 0]
+    return {round(float(p), 6): float(g["isolation_width"].max())
+            for p, g in par.groupby("parent_mz")}
+
+
 # ---------------------------------------------------------------------------
 # one window
 # ---------------------------------------------------------------------------
@@ -316,6 +339,9 @@ class WindowResult:
     fragments: pd.DataFrame | None = None
     branching: pd.DataFrame | None = None
     notes: list = field(default_factory=list)
+    #: skipped for want of a named target, with the nearest named ion within
+    #: the axis reach (`offset_hint`): the --mass-offset-ppm that matches it
+    offset_hint_ppm: float = math.nan
 
     def manifest(self) -> dict:
         nce = ([] if self.breakdown is None or not len(self.breakdown) else
@@ -327,23 +353,71 @@ class WindowResult:
                 "left_out": list(self.left_out), "activation_kind": self.activation_kind,
                 "precursor_mz": None if math.isnan(self.precursor_mz) else self.precursor_mz,
                 "offset_ppm": None if math.isnan(self.offset_ppm) else round(self.offset_ppm, 4),
-                "nce": nce, "volts_known": bool(volts), "notes": list(self.notes)}
+                "nce": nce, "volts_known": bool(volts), "notes": list(self.notes),
+                "offset_hint_ppm": (None if math.isnan(self.offset_hint_ppm)
+                                    else round(self.offset_hint_ppm, 2))}
+
+
+def folder_axis_offset(tables: RunTables, explicit: float | None = None
+                       ) -> tuple[float, str | None]:
+    """(ppm, source): the m/z axis offset the folder's located precursors and
+    MS1 window are read through -- an explicit `--mass-offset-ppm`; else the
+    one `ms2 extract --file` measured and recorded (its manifest's
+    `parameters.ms2_axis_offset.ppm`); else 0 (a server folder: the server
+    calibrates the spectra it serves)."""
+    if explicit is not None:
+        return float(explicit), "explicit"
+    off = ((tables.manifest.get("parameters") or {}).get("ms2_axis_offset") or {}).get("ppm")
+    if off is not None and math.isfinite(float(off)):
+        return float(off), "extract manifest"
+    return 0.0, None
+
+
+def offset_hint(precursor_mz: float, ions: Mapping[str, float], axis_offset_ppm: float = 0.0
+                ) -> float:
+    """The --mass-offset-ppm that would match the named ion nearest the
+    located precursor (read through the folder's axis offset, as
+    `window_ions` reads it), when it is within the reach the file's own
+    offset is read over (`sources.AXIS_SEARCH_PPM`); NaN beyond it (a named
+    ion Da away is another ion, not this one off-axis) or with no named ion."""
+    if not ions:
+        return math.nan
+    seen = precursor_mz / (1.0 + axis_offset_ppm * 1e-6)
+    m = min(ions.values(), key=lambda v: abs(v - seen))
+    need = (precursor_mz - m) / m * 1e6
+    return float(need) if abs(need) <= SRC.AXIS_SEARCH_PPM else math.nan
 
 
 def window_ions(parent_mz: float, precursor_mz: float, ions: Mapping[str, float],
-                width: float, tol_mda: float) -> tuple[str | None, list[str], str]:
+                width: float, tol_mda: float, *, axis_offset_ppm: float = 0.0
+                ) -> tuple[str | None, list[str], str]:
     """(target, co-isolates by m/z, note). The target is the named ion nearest
-    the located precursor within max(`TARGET_MATCH_PPM`, tol_mda); the
-    co-isolates are the other named ions inside +-(width/2 +
-    `WINDOW_PAD_DA`) of the key -- none when the width is unknown (said)."""
-    tol = max(TARGET_MATCH_PPM * precursor_mz * 1e-6, tol_mda * 1e-3)
-    near = sorted(((abs(m - precursor_mz), f) for f, m in ions.items()
-                   if abs(m - precursor_mz) <= tol))
+    the located precursor -- read through the folder's m/z axis offset,
+    precursor / (1 + `axis_offset_ppm` 1e-6) -- within max(`TARGET_MATCH_PPM`,
+    tol_mda); the co-isolates are the other named ions inside +-(width/2 +
+    `WINDOW_PAD_DA`) of the key -- none when the width is unknown (said). A
+    window no named ion matches says how far the nearest one is and, when
+    that is within `sources.AXIS_SEARCH_PPM` (the reach `ms2 extract` reads an
+    axis offset over), the offset that would match it; a named ion farther
+    away is taken for another ion, and the note just says to name this one."""
+    seen = precursor_mz / (1.0 + axis_offset_ppm * 1e-6)
+    tol = max(TARGET_MATCH_PPM * seen * 1e-6, tol_mda * 1e-3)
+    near = sorted(((abs(m - seen), f) for f, m in ions.items() if abs(m - seen) <= tol))
     if not near:
-        nearest = min(ions.items(), key=lambda kv: abs(kv[1] - precursor_mz))
+        f, m = min(ions.items(), key=lambda kv: abs(kv[1] - seen))
+        # an axis offset is offered only within the reach the file's own offset
+        # is read over (`offset_hint`): a named ion Da away is another ion, not
+        # this one off-axis
+        need = offset_hint(precursor_mz, ions, axis_offset_ppm)
+        hint = ("; name it with --ion, or -- when the whole folder's m/z axis sits off its "
+                f"formulas -- pass --mass-offset-ppm {need:+.1f}"
+                if math.isfinite(need) else "; name it with --ion")
         return None, [], (f"skipped: no named ion matches the precursor located at "
-                          f"{precursor_mz:.5f} (nearest {nearest[0]} at {nearest[1]:.5f}, "
-                          f"{(nearest[1] - precursor_mz) * 1e3:+.1f} mDa); name it with --ion")
+                          f"{precursor_mz:.5f}"
+                          + (f" ({seen:.5f} through the folder's axis offset of "
+                             f"{axis_offset_ppm:+.1f} ppm)" if axis_offset_ppm else "")
+                          + f" (nearest {f} at {m:.5f}, {(m - seen) * 1e3:+.1f} mDa = "
+                          f"{(m - seen) / m * 1e6:+.1f} ppm)" + hint)
     target = near[0][1]
     if not (math.isfinite(width) and width > 0):
         return target, [], ("isolation width unknown (the server refused the summary and no "
@@ -409,20 +483,23 @@ def inventory_half_width(tables: RunTables, parent_mz: float, *, bound: bool = T
 
 
 def _ms1_shares(window: pd.DataFrame, parent_mz: float, ions: Mapping[str, float],
-                tol_mda: float, half_width: float = math.nan) -> dict[str, float]:
+                tol_mda: float, half_width: float = math.nan, *,
+                axis_offset_ppm: float = 0.0) -> dict[str, float]:
     """Each window ion's share of the MS1 isolation window: the centroid
     nearest it within max(`TARGET_MATCH_PPM`, tol_mda), one centroid to one
     ion only (the nearest pairs first: two ions never share one peak's
-    share). A window ion no centroid matches has share 0 -- the MS1 window was
-    measured and does not hold it -- when it lies inside the span `ms2
-    extract` inventoried (`half_width` either side of the key,
-    `inventory_half_width`); beyond it, NaN: not measured, not 0 (an analyze
-    width wider than the extract's). {} when the window table has no row for
-    this parent (unknown, not 0)."""
+    share); the centroids' m/z are read through the folder's axis offset
+    (m/z / (1 + `axis_offset_ppm` 1e-6)). A window ion no centroid matches has
+    share 0 -- the MS1 window was measured and does not hold it -- when it
+    lies inside the span `ms2 extract` inventoried (`half_width` either side
+    of the key, `inventory_half_width`); beyond it, NaN: not measured, not 0
+    (an analyze width wider than the extract's). {} when the window table has
+    no row for this parent (unknown, not 0)."""
     w = window[np.isclose(window["parent_mz"], parent_mz, rtol=0, atol=1e-6)]
     if not len(w):
         return {}
-    mz, share = w["mz"].to_numpy(dtype=float), w["share"].to_numpy(dtype=float)
+    mz = w["mz"].to_numpy(dtype=float) / (1.0 + axis_offset_ppm * 1e-6)
+    share = w["share"].to_numpy(dtype=float)
     pairs = sorted((abs(mz[i] - m), f, i) for f, m in ions.items() for i in range(len(mz))
                    if abs(mz[i] - m) <= max(TARGET_MATCH_PPM * m * 1e-6, tol_mda * 1e-3))
     out = {f: (math.nan if math.isfinite(half_width) and abs(m - parent_mz) > half_width
@@ -440,10 +517,13 @@ def _ms1_shares(window: pd.DataFrame, parent_mz: float, ions: Mapping[str, float
 def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float], *,
                    width: float, k_max: int | None = None, ladder: bool = True,
                    tol_ppm: float = 5.0, tol_mda: float = 0.3,
-                   gas_mass: float = BD.N2_MASS) -> WindowResult:
+                   gas_mass: float = BD.N2_MASS, axis_offset_ppm: float = 0.0) -> WindowResult:
     """Everything for one parent key: its ions, its offset, the readings across
     its spectra and -- when it has energy-resolved spectra -- the breakdown,
-    the E50s, the fragments and the branching."""
+    the E50s, the fragments and the branching. `axis_offset_ppm`: the
+    folder's m/z axis offset (`folder_axis_offset`), through which the target
+    is matched and the MS1 window read; the window's own offset (precursor
+    against target) is then measured as on any folder."""
     res = WindowResult(parent_mz=float(parent_mz), status="skipped")
     par = tables.parents[np.isclose(tables.parents["parent_mz"], parent_mz, rtol=0, atol=1e-6)]
     # an empty spectrum (ms2 extract writes a parent row with n_peaks 0 for a
@@ -467,11 +547,13 @@ def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float
         return res
     pmz = float(located.iloc[0])
     res.precursor_mz = pmz
-    target, co, note = window_ions(parent_mz, pmz, ions, width, tol_mda)
+    target, co, note = window_ions(parent_mz, pmz, ions, width, tol_mda,
+                                   axis_offset_ppm=axis_offset_ppm)
     if note:
         res.notes.append(note)
     if target is None:
         res.reason = SKIP_NO_TARGET
+        res.offset_hint_ppm = offset_hint(pmz, ions, axis_offset_ppm)
         return res
     co, res.left_out, alias_notes = drop_aliases(target, co, ions, tol_ppm=tol_ppm,
                                                  tol_mda=tol_mda)
@@ -542,7 +624,8 @@ def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float
     # composition candidates of every fragment, in window order: the ions
     # that read it as a formula it can be at its signal-weighted m/z
     half = inventory_half_width(tables, parent_mz)
-    shares = _ms1_shares(tables.window, parent_mz, {f: ions[f] for f in order}, tol_mda, half)
+    shares = _ms1_shares(tables.window, parent_mz, {f: ions[f] for f in order}, tol_mda, half,
+                         axis_offset_ppm=axis_offset_ppm)
     # the named ions this sample lacks (their precursor in no MS2 spectrum of
     # the window, an MS1 share of 0): they decide nothing
     absent = AT.absent_ions(order, ion_int.max().to_dict() if len(ion_int) else {}, shares)
@@ -787,14 +870,28 @@ class AnalyzeResult:
 
 def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | None = None,
                 ladder: bool = True, tol_ppm: float = 5.0, tol_mda: float = 0.3,
-                gas_mass: float = BD.N2_MASS, iso_width: float | None = None) -> AnalyzeResult:
-    """Every parent window of one `ms2 extract` folder (`load_run`)."""
+                gas_mass: float = BD.N2_MASS, iso_width: float | None = None,
+                mass_offset_ppm: float | None = None) -> AnalyzeResult:
+    """Every parent window of one `ms2 extract` folder (`load_run`).
+    `mass_offset_ppm`: the folder's m/z axis offset, replacing the one its
+    manifest records (`folder_axis_offset`)."""
     SF._check_tol(tol_ppm, tol_mda)
+    if mass_offset_ppm is not None and not math.isfinite(float(mass_offset_ppm)):
+        raise ValueError(f"mass_offset_ppm must be finite, got {mass_offset_ppm!r}")
+    axis, axis_src = folder_axis_offset(tables, mass_offset_ppm)
     BD.e_cm(1.0, 100.0, gas_mass)                   # checks the gas mass
     mode, k_read = RD.gate_mode(k_max, ladder=ladder)
     width, wsrc = isolation_width(tables, iso_width)
-    windows = [analyze_window(tables, p, ions, width=width, k_max=k_max, ladder=ladder,
-                              tol_ppm=tol_ppm, tol_mda=tol_mda, gas_mass=gas_mass)
+    # the parents table's widths, when they differ and nothing replaces them:
+    # each window at its own parent's (an `ms2 extract --file` folder)
+    own = parent_widths(tables) if wsrc == "server" else {}
+    per_parent = len(set(own.values())) > 1
+    if per_parent:
+        width, wsrc = math.nan, PER_PARENT_WIDTH
+    windows = [analyze_window(tables, p, ions,
+                              width=own.get(round(p, 6), math.nan) if per_parent else width,
+                              k_max=k_max, ladder=ladder, tol_ppm=tol_ppm, tol_mda=tol_mda,
+                              gas_mass=gas_mass, axis_offset_ppm=axis)
                for p in sorted({float(x) for x in tables.parents["parent_mz"]})]
 
     def cat(attr, spec):
@@ -816,7 +913,11 @@ def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | No
               "tol_mda": float(tol_mda), "gas_mass": float(gas_mass), "iso_width": iso_width,
               "isolation_width_used": None if math.isnan(width) else width,
               "isolation_width_source": wsrc, "window_pad_da": SRC.WINDOW_PAD_DA,
-              "target_match_ppm": TARGET_MATCH_PPM, "intact_fraction": AT.INTACT_FRACTION,
+              "isolation_widths": ({repr(p): w for p, w in sorted(own.items())}
+                                   if per_parent else None),
+              "target_match_ppm": TARGET_MATCH_PPM,
+              "mass_offset_ppm": axis, "mass_offset_source": axis_src,
+              "intact_fraction": AT.INTACT_FRACTION,
               "branching_flag": AT.BRANCHING_FLAG, "e50_threshold": BD.E50_THRESHOLD,
               "monotonic_tol": BD.MONOTONIC_TOL,
               # every other constant a call turns on, so a run can be re-read
