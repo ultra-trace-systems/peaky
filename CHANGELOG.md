@@ -348,6 +348,78 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hint is offered within `sources.AXIS_SEARCH_PPM` only. `ms2 files --check` says once that no
   list pins the layout.
   `docs/MS2.md` §11.7, §12, `tests/test_ms2_scans.py`, `tests/test_ms2_scan_source.py`.
+- **`peaky ms2 analyze` reads the per-scan tables: replicate statistics, an interval for every E50
+  (`--bootstrap N`, default 1000, 0 = none, else at least 100), and Orbitrap harmonic ghosts never
+  read (`peaky.ms2.replicates`; `breakdown.e50_many`; `readings.harmonic_ghosts`).** Why: the MS2
+  spectra are averages of a few scans each, and an E50 read off them had no uncertainty; and a
+  strong line's transient carries weak harmonics at 2f / 3f -- peaks at m/z / 4 and m/z / 9 that no
+  ion made (on our own 2026-09-10 file the 179.107 precursor's 2f ghost at m/z 44.7766, 0.08-0.10 %
+  of the line at NCE 1-15 in the server's S/N-3 spectra). With `ms2_scan_peaks.parquet`
+  (`ms2 extract --file` or `--per-scan`) the breakdown, decided once on the averaged spectra, is
+  re-read scan by scan with the same roles and share weights: `ms2_breakdown.csv` gains `n_scans`,
+  the precursor's CV (`intensity_cv`) and the scan-to-scan sd / sem of F, F_lo and S;
+  `ms2_replicates.csv` (new, only with the per-scan tables) every precursor's and fragment's
+  presence, mean, sd and CV per spectrum (an item one of whose peaks is held, a split peak's too, is
+  unmatched: `n_present` 0, presence / sd / CV NaN); `ms2_fragments.csv` the presence and CV at a fragment's
+  largest fraction. Each peak's per-scan readings are put on its averaged height's scale (a factor
+  of 1 on an `--file` folder; the server's heights on a `--per-scan` one), so F from the per-scan
+  means is the analysis's F exactly -- a ratio of means, not the mean of the per-scan F. A peak
+  whose factor lies outside 0.5-2 (`SCALE_BAND`; 0.85-1.14 on our own three files: one stray
+  centroid in one of n scans reads at about n, rows off another m/z axis at several) is held at its
+  averaged height, as one no scan reads, and named in a note; a curve only held peaks enter has no
+  spread (NaN, not a measured 0). The bootstrap draws each energy's scans with replacement (a scan's
+  precursor and fragments together; each resample's means from its scans' counts, so its memory is
+  resamples x (scans + peaks)), reads the same E50 rule off every resample (`e50_many`, tested equal
+  to `e50`) and reports the 16th / 84th percentiles of the resampled E50s on NCE, volts and E_cm
+  (`e50_*_lo` / `_hi`) and the share that cross (`boot_cross`). Every resample with an answer is
+  ranked as what it is known to be -- below the lowest energy, above the highest, or (crossing
+  across an unobserved energy) somewhere between the two energies about the hole; one whose draws at
+  the averaged curve's first (last) energy hold nothing of the ion does not observe it there, and
+  its reading at the first (last) energy it does observe puts its E50 only at or below (above) that
+  one: a hole at that end, `gap`, never an E50 beyond the energies; one its holes leave a single
+  observed energy is ranked by the side of 0.5 it reads there (below / above every energy only at
+  the averaged curve's own first / last energy, else such a hole), and one left none (S with no
+  precursor drawn at its reference) is a hole about every energy -- no resample drops out of the
+  ranking for its holes (tested on two-energy windows) -- and a bound that
+  falls among those is NaN, its side in `e50_lo_censor` / `e50_hi_censor` (`below`, `above`, `gap`)
+  and the note, whose shares add up to 100 %. The energies of fewer than two scans, or whose every
+  precursor / fragment peak is held, add no spread (`n_one_scan`, with the per-scan tables whatever
+  `--bootstrap`); where one of the two the averaged crossing lies between is such (or the curve has
+  no spread there: for S, whose resampled means count empty scans as 0, its precursor's CV decides)
+  -- or, for S, the lowest energy every resample's S is read against (one scan
+  there: the S band holds the true E50 in 21.6 % of synthetic datasets, 59.0 % with five) -- the
+  band holds none of its scatter -- too narrow, or of zero width with both (bounds equal to 1e-9 of
+  their size: `replicates.zero_width`, held readings' bounds differ in their last bits):
+  `one_scan_bracket` (0 with no band; the window note naming such energies stays), a note, and
+  `ms2 analyze` prints it with the band. Fewer than 100 resamples (`BOOTSTRAP_MIN`) are
+  refused: their percentiles rest on one or two of them. The band is a percentile bootstrap of a few
+  scans: on synthetic windows it holds the true E50 in 51 % of them at 2 scans per energy, 59 % at 5
+  and 66 % at 20 (not a 68 % band). Deterministic: each window has its own seed (`BOOTSTRAP_SEED`
+  and the parent key), the same whatever else the folder holds (tested on windows that do not sort
+  first) and under every hash seed. Known
+  answer: standard A's [M+H]+ C10H17+ F E50 NCE 13.89 (unchanged) has the band 13.84-13.94 NCE
+  (6.319-6.336 V) from its 5-9 scans per energy; two of its scans, averaged over the pairs, hold
+  every fragment of the median S/N-3 spectrum (the worst pair 50 % in one spectrum), and F from two
+  is within 0.0023 of F from all on the median spectrum; the worst pair moves a target's F by 0.009,
+  a co-isolate's by up to 0.019. A harmonic ghost -- of any line of the spectrum, not only the
+  precursor: within 40 ppm of m/z / 4 (2f, at most 0.5 % of the line) or m/z / 9 (3f, at most 8 %)
+  -- is read as no formula (`ms2_readings.csv` `harmonic` names the line), is in no fragment and no
+  survival sum, and is out of the TIC and `n_peaks` (counted in `n_harmonic` / `harmonic_intensity`,
+  the window notes and the manifest); `--keep-harmonics` reads it as before. A place the window
+  reads as an ion at some energy (`readings.harmonic_ions`: in no line's band there -- its line
+  gone, a ppm of jitter out of the band -- or above the cap of every line whose band holds it, at an
+  S/N of 10 or more, `HARMONIC_CLEAR_SN`: a ghost read near the floor reads high and clears nothing;
+  a place matched within the reading tolerance, max(5 ppm, 0.3 mDa); both pinned by tests)
+  is an ion's at every energy: a product in a harmonic band that is weak at its first energies is
+  read at all of them, never half erased, and the line's true ghost beside it is the ghost (tested
+  on a synthetic urea adduct whose protonated urea sits 14 ppm below m/z / 9, with the adduct beside
+  it at every energy and gone from the third on). On our own three files the rule flags those four
+  ghosts and nothing else; no ghost it flags was a reading before, so F and every E50 stay (the
+  179.107 window's branching sum at NCE 15 moves from 1.0506 to 1.0488 with the ghost out of the
+  TIC). Without per-scan tables, and where no peak is a ghost, every existing column and value is
+  unchanged (tested on every committed fixture); the new columns read 0 / NaN / '' and the run says
+  so. `ms2_readings.csv` gains `harmonic` after `ladder_support`. `docs/MS2.md` §11.11, §11.12,
+  `tests/test_ms2_replicates.py`, fixture `ms2_nh4_exploratory_179_sn3.json`.
 - **Orbitrap isotope lines are read by peak area, against the file's own minor-line response
   (`PassConfig.iso_response`, `--iso-response {auto,area,off}` on assign / batch / pool).** An
   Orbitrap scan keeps a line only where it clears that scan's detection floor, and the whole-file

@@ -21,6 +21,15 @@ located precursor and the MS1 window are read through that offset first
 folder.
 Two named ions within the reading tolerance of each other are never both
 window ions (`drop_aliases`), and one breakdown holds one activation kind.
+
+A folder with the per-scan tables (`ms2_scan_peaks.parquet`, `ms2_scans.csv`:
+`ms2 extract --file` or `--per-scan`) also gets replicate statistics: the
+averaged analysis's roles and weights re-read scan by scan (`replicates`),
+the scatter of F, F_lo and S, every item's presence and CV
+(`ms2_replicates.csv`), and a bootstrap interval of every E50. Without them
+every table is what it was, the new columns blank, and the run says so. A
+peak that is an Orbitrap harmonic ghost of a brighter line is read as no
+formula and kept out of the TIC (`readings.harmonic_ghosts`; counted).
 """
 from __future__ import annotations
 
@@ -39,10 +48,14 @@ from peaky.chem import chemistry as C
 from peaky.ms2 import attribute as AT
 from peaky.ms2 import breakdown as BD
 from peaky.ms2 import readings as RD
+from peaky.ms2 import replicates as RP
+from peaky.ms2 import scans as SC
 from peaky.ms2 import sources as SRC
 from peaky.ms2 import subformula as SF
 
-__version__ = "0.1.1"  # + per-parent isolation widths from the parents table (an
+__version__ = "0.2.0"  # + replicate statistics and the E50 bootstrap from the per-scan
+#                          tables; harmonic ghosts read as no formula, out of the TIC.
+#                          0.1.1: per-parent isolation widths from the parents table (an
 #                          `ms2 extract --file` folder); the folder's m/z axis offset
 #                          (its manifest, or --mass-offset-ppm) in the target match
 #                          and the MS1 shares. 0.1.0: PR #80
@@ -113,12 +126,31 @@ BREAKDOWN_COLUMNS = {
     "branching_sum": "float64", "branching_flag": "bool", "tic": "float64",
     "budget_explained": "float64", "budget_unexplained": "float64", "n_peaks": "int64",
     "n_unexplained": "int64",
+    # Orbitrap harmonic ghosts of the spectrum: out of the TIC and n_peaks
+    "n_harmonic": "int64", "harmonic_intensity": "float64",
+    # replicates (per-scan tables; else 0 / NaN): the spectrum's scans, the
+    # precursor's CV over them, and the scan-to-scan spread of F, F_lo, S
+    "n_scans": "int64", "intensity_cv": "float64", "f_sd": "float64", "f_sem": "float64",
+    "f_lo_sd": "float64", "f_lo_sem": "float64", "s_sd": "float64", "s_sem": "float64",
 }
 E50_COLUMNS = {
     "parent_mz": "float64", "ion": "str", "role": "str", "ion_mz": "float64", "curve": "str",
     "e50_nce": "float64", "e50_v": "float64", "e50_ecm": "float64", "flag": "str",
     "monotonic": "bool", "n_energies": "int64", "nce_min": "float64", "nce_max": "float64",
     "value_at_min": "float64", "value_at_max": "float64", "note": "str",
+    # the bootstrap interval (per-scan tables and --bootstrap > 0; else NaN / 0
+    # / ''): its bounds, where a NaN bound lies ('below' / 'above' the
+    # energies, 'gap': across an unobserved one), the resamples, the share
+    # that cross, and how many of the energies the band rests on add none to
+    # the curve (the two about the averaged crossing; for S its reference,
+    # the lowest energy, too); and, with the per-scan tables whatever
+    # --bootstrap (else 0), the window's energies that add no spread (fewer
+    # than two scans, or every precursor / fragment peak held)
+    "e50_nce_lo": "float64", "e50_nce_hi": "float64", "e50_v_lo": "float64",
+    "e50_v_hi": "float64", "e50_ecm_lo": "float64", "e50_ecm_hi": "float64",
+    "e50_lo_censor": "str", "e50_hi_censor": "str",
+    "boot_n": "int64", "boot_cross": "float64", "n_one_scan": "int64",
+    "one_scan_bracket": "int64",
 }
 FRAGMENT_COLUMNS = {
     "parent_mz": "float64", "fragment": "str", "mz_theo": "float64", "candidates": "str",
@@ -126,6 +158,8 @@ FRAGMENT_COLUMNS = {
     "weight_source": "str", "excluded": "str", "test_note": "str", "onset_nce": "float64",
     "onset_v": "float64", "in_source": "bool", "max_frac": "float64",
     "max_frac_nce": "float64", "n_spectra": "int64",
+    # replicates at its largest TIC fraction's spectrum (per-scan tables; else NaN)
+    "presence_at_max": "float64", "cv_at_max": "float64",
 }
 BRANCHING_COLUMNS = {
     "parent_mz": "float64", "ion": "str", "fragment": "str", "spectrum": "str",
@@ -210,6 +244,11 @@ def collect_ions(items: Iterable[tuple[str, float, float]]) -> dict[str, float]:
 # the run folder
 # ---------------------------------------------------------------------------
 RUN_FILES = ("ms2_spectra.parquet", "ms2_parents.csv", "ms2_window.csv", "ms2_manifest.json")
+#: The per-scan tables `ms2 extract --file | --per-scan` adds (read when present).
+PER_SCAN_FILES = ("ms2_scans.csv", "ms2_scan_peaks.parquet")
+#: The run note of a folder without them.
+NO_PER_SCAN_NOTE = ("no per-scan tables (ms2_scan_peaks.parquet; `ms2 extract --per-scan` or "
+                    "`--file` writes them): no replicate statistics, no E50 interval")
 
 
 @dataclass
@@ -220,6 +259,10 @@ class RunTables:
     manifest: dict
     inputs: dict = field(default_factory=dict)       # file -> sha1
     notes: list = field(default_factory=list)
+    #: the per-scan tables (`scans.SCAN_COLUMNS`, `scans.SCAN_PEAK_COLUMNS`);
+    #: None when the folder has none
+    scans: pd.DataFrame | None = None
+    scan_peaks: pd.DataFrame | None = None
 
 
 def _typed(df: pd.DataFrame, spec: dict[str, str]) -> pd.DataFrame:
@@ -281,10 +324,24 @@ def load_run(run_dir: str) -> RunTables:
     else:
         notes.append("no ms2_manifest.json: the isolation width comes from the parents table "
                      "or --iso-width")
+    scans = scan_peaks = None
+    kp = d / "ms2_scan_peaks.parquet"
+    if kp.exists():
+        scan_peaks = _typed(pd.read_parquet(kp), SC.SCAN_PEAK_COLUMNS)
+        inputs[kp.name] = PV.sha1_file(str(kp))
+        ks = d / "ms2_scans.csv"
+        if ks.exists():
+            scans = _typed(pd.read_csv(ks, keep_default_na=False, na_values=[""]),
+                           SC.SCAN_COLUMNS)
+            inputs[ks.name] = PV.sha1_file(str(ks))
+        if not len(scan_peaks):
+            notes.append("ms2_scan_peaks.parquet holds no row (the per-scan tables were skipped "
+                         "at extract): no replicate statistics, no E50 interval")
+            scan_peaks = None
     return RunTables(spectra=_typed(spectra, SRC.SPECTRA_COLUMNS),
                      parents=_typed(parents, SRC.PARENTS_COLUMNS),
                      window=_typed(window, SRC.WINDOW_COLUMNS), manifest=manifest,
-                     inputs=inputs, notes=notes)
+                     inputs=inputs, notes=notes, scans=scans, scan_peaks=scan_peaks)
 
 
 def isolation_width(tables: RunTables, explicit: float | None) -> tuple[float, str | None]:
@@ -338,10 +395,19 @@ class WindowResult:
     e50: pd.DataFrame | None = None
     fragments: pd.DataFrame | None = None
     branching: pd.DataFrame | None = None
+    replicates: pd.DataFrame | None = None   # `replicates.REPLICATE_COLUMNS` (per-scan tables)
     notes: list = field(default_factory=list)
     #: skipped for want of a named target, with the nearest named ion within
     #: the axis reach (`offset_hint`): the --mass-offset-ppm that matches it
     offset_hint_ppm: float = math.nan
+    #: peaks read as harmonic ghosts, by order ({'2f': n, '3f': n}), over every
+    #: spectrum of the window
+    harmonics: dict = field(default_factory=dict)
+    #: the breakdown's scans per energy (lowest NCE first; [] without
+    #: per-scan tables), and the energies that add no spread: fewer than two
+    #: scans (one, or no per-scan row), or every precursor / fragment peak held
+    scans_per_energy: list = field(default_factory=list)
+    one_scan_energies: int = 0
 
     def manifest(self) -> dict:
         nce = ([] if self.breakdown is None or not len(self.breakdown) else
@@ -355,7 +421,10 @@ class WindowResult:
                 "offset_ppm": None if math.isnan(self.offset_ppm) else round(self.offset_ppm, 4),
                 "nce": nce, "volts_known": bool(volts), "notes": list(self.notes),
                 "offset_hint_ppm": (None if math.isnan(self.offset_hint_ppm)
-                                    else round(self.offset_hint_ppm, 2))}
+                                    else round(self.offset_hint_ppm, 2)),
+                "harmonic_peaks": dict(self.harmonics),
+                "scans_per_energy": list(self.scans_per_energy),
+                "one_scan_energies": int(self.one_scan_energies)}
 
 
 def folder_axis_offset(tables: RunTables, explicit: float | None = None
@@ -517,13 +586,17 @@ def _ms1_shares(window: pd.DataFrame, parent_mz: float, ions: Mapping[str, float
 def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float], *,
                    width: float, k_max: int | None = None, ladder: bool = True,
                    tol_ppm: float = 5.0, tol_mda: float = 0.3,
-                   gas_mass: float = BD.N2_MASS, axis_offset_ppm: float = 0.0) -> WindowResult:
+                   gas_mass: float = BD.N2_MASS, axis_offset_ppm: float = 0.0,
+                   bootstrap: int = RP.BOOTSTRAP_B, harmonics: bool = True) -> WindowResult:
     """Everything for one parent key: its ions, its offset, the readings across
     its spectra and -- when it has energy-resolved spectra -- the breakdown,
     the E50s, the fragments and the branching. `axis_offset_ppm`: the
     folder's m/z axis offset (`folder_axis_offset`), through which the target
     is matched and the MS1 window read; the window's own offset (precursor
-    against target) is then measured as on any folder."""
+    against target) is then measured as on any folder. With the per-scan
+    tables (`tables.scan_peaks`): the replicate statistics and, with
+    `bootstrap` > 0 resamples, the E50 intervals (`_replicates`).
+    `harmonics`: read harmonic ghosts as no formula (`readings.read_window`)."""
     res = WindowResult(parent_mz=float(parent_mz), status="skipped")
     par = tables.parents[np.isclose(tables.parents["parent_mz"], parent_mz, rtol=0, atol=1e-6)]
     # an empty spectrum (ms2 extract writes a parent row with n_peaks 0 for a
@@ -569,12 +642,25 @@ def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float
         pk = tables.spectra[tables.spectra["spectrum"] == r["spectrum"]]
         meta = {"spectrum": r["spectrum"], "parent_mz": float(parent_mz), "nce": r["nce"],
                 "hcd_v": r["hcd_v"]}
-        spec_rows.append((meta, pk[["mz", "intensity"]].reset_index(drop=True)))
+        # the S/N goes with the peaks: a harmonic band's reading near the
+        # floor clears no place (`readings.harmonic_ions`)
+        cols = [c for c in ("mz", "intensity", "signal_to_noise") if c in pk]
+        spec_rows.append((meta, pk[cols].reset_index(drop=True)))
         if "resolution" in pk:
             resolution.update(((str(r["spectrum"]), i), float(v))
                               for i, v in enumerate(pk["resolution"].to_numpy(dtype=float)))
     res.readings = RD.read_window(spec_rows, labels, offset_ppm=off.offset_ppm,
-                                  tol_ppm=tol_ppm, tol_mda=tol_mda, k_max=k_max, ladder=ladder)
+                                  tol_ppm=tol_ppm, tol_mda=tol_mda, k_max=k_max, ladder=ladder,
+                                  harmonics=harmonics)
+    ghosts = res.readings[res.readings["harmonic"].fillna("") != ""]
+    if len(ghosts):
+        by = ghosts["harmonic"].str.extract(r"^(\d+f)")[0].value_counts()
+        res.harmonics = {k: int(by[k]) for k in sorted(by.index)}
+        res.notes.append(f"{len(ghosts)} peak(s) are Orbitrap harmonic ghosts of a brighter line "
+                         "of their spectrum ("
+                         + ", ".join(f"{k}: {v}" for k, v in res.harmonics.items())
+                         + "): read as no formula and kept out of the TIC (ms2_readings.csv "
+                         "`harmonic`)")
     res.status = "readings only"
     resolved = par[par["nce"].notna()]
     if not len(resolved):
@@ -693,20 +779,195 @@ def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float
                 "tic": tic[spec], "budget_explained": budget.loc[spec, "budget_explained"],
                 "budget_unexplained": budget.loc[spec, "budget_unexplained"],
                 "n_peaks": budget.loc[spec, "n_peaks"],
-                "n_unexplained": budget.loc[spec, "n_unexplained"]})
+                "n_unexplained": budget.loc[spec, "n_unexplained"],
+                "n_harmonic": budget.loc[spec, "n_harmonic"],
+                "harmonic_intensity": budget.loc[spec, "harmonic_intensity"],
+                "n_scans": 0, "intensity_cv": math.nan, "f_sd": math.nan, "f_sem": math.nan,
+                "f_lo_sd": math.nan, "f_lo_sem": math.nan, "s_sd": math.nan,
+                "s_sem": math.nan})
+    rep = None
+    if tables.scan_peaks is not None:
+        rep = _replicates(tables, float(parent_mz), specs, meta, roles, order,
+                          list(frag_int.columns), weights, cand_c, ion_int,
+                          {m["spectrum"]: pk for m, pk in spec_rows}, bootstrap=bootstrap)
+        res.scans_per_energy = [int(rep["n_scans"][sp]) for sp in specs]
+        # the energies that add no spread: fewer than two scans, or every
+        # precursor / fragment peak held (no scan's reading used)
+        res.one_scan_energies = sum(n <= 1 or sp in rep["held"]
+                                    for n, sp in zip(res.scans_per_energy, specs))
+        res.notes.extend(rep["notes"])
+        res.replicates = rep["table"]
+        for r in rows:
+            r.update(rep["breakdown"].get((r["spectrum"], r["ion"]), {}))
     res.breakdown = _frame(rows, BREAKDOWN_COLUMNS)
     flagged = res.breakdown[res.breakdown["branching_flag"]]
     for ion, g in flagged.groupby("ion", sort=False):
         res.notes.append(_breach_note(ion, g, gsum, lost, budget))
-    res.e50 = _e50_rows(res.breakdown, order, target, ions, gas_mass)
+    res.e50 = _e50_rows(res.breakdown, order, target, ions, gas_mass,
+                        boot=None if rep is None else rep["boot"],
+                        n_one=res.one_scan_energies, boot_n=0 if rep is None else rep["boot_n"],
+                        per_scan=rep is not None)
     res.fragments = _fragment_rows(parent_mz, att, roles, frag_int, tic, meta, cand_notes,
-                                   {k: v[1] for k, v in comps.items()})
+                                   {k: v[1] for k, v in comps.items()},
+                                   None if rep is None else rep["items"])
     br = br.assign(parent_mz=float(parent_mz), fragment=br["key"],
                    nce=[meta.loc[s, "nce"] for s in br["spectrum"]],
                    hcd_v=[meta.loc[s, "hcd_v"] for s in br["spectrum"]])
     res.branching = _frame(br, BRANCHING_COLUMNS)
     res.status = "analysed"
     return res
+
+
+def _replicates(tables: RunTables, parent_mz: float, specs: Sequence[str], meta: pd.DataFrame,
+                roles: pd.DataFrame, order: Sequence[str], keys: Sequence[str],
+                weights: Mapping[str, Mapping[str, float]],
+                cand: Mapping[str, Sequence[str]], ion_int: pd.DataFrame,
+                peaks: Mapping[str, pd.DataFrame], *, bootstrap: int) -> dict:
+    """The replicate statistics of one window's breakdown (`replicates`):
+    the averaged analysis's roles (`roles`, side lobes and harmonics set
+    aside), weights and composition candidates re-read in every scan of
+    every spectrum (`specs`, lowest energy first; `peaks` each spectrum's
+    peak list as read). A held peak (`replicates.spectrum_scans`: read in no
+    scan, or on another scale) reads its averaged height in every scan, so a
+    curve only held peaks enter scatters by nothing anyone measured: S has
+    no spread where its precursor is held, F (F_lo) none where something
+    entering it is held and nothing entering it -- the precursor, a
+    weighted (a composition-candidate) fragment -- is read. A spectrum of
+    two or more scans whose every precursor / fragment peak is held (`held`)
+    adds no spread, as one of one scan: the bootstrap draws its averaged
+    spectrum. -> {'n_scans': {spectrum: n}, 'held': set of spectra,
+    'breakdown': {(spectrum, ion): columns}, 'table': `REPLICATE_COLUMNS`
+    rows, 'items': {(spectrum, fragment): (presence, cv)}, 'boot': {(ion,
+    curve): `replicates.interval`} or None, 'boot_n', 'notes'}."""
+    sp = tables.scan_peaks
+    sel = sp[sp["spectrum"].isin(list(specs))]
+    by = {str(k): g for k, g in sel.groupby("spectrum", sort=False)}
+    notes = []
+    sc = {spec: RP.spectrum_scans(spec, peaks[spec]["mz"], peaks[spec]["intensity"],
+                                  by.get(spec, sel.iloc[0:0])) for spec in specs}
+    n_scans = {spec: len(sc[spec].scans) for spec in specs}
+    nce = meta.loc[list(specs), "nce"].to_numpy(dtype=float)
+    volts = meta.loc[list(specs), "hcd_v"].to_numpy(dtype=float)
+    none = [f"{x:g}" for spec, x in zip(specs, nce) if not n_scans[spec]]
+    if none:
+        notes.append(f"replicates: no per-scan row for the spectra at NCE {', '.join(none)}: held "
+                     "at their averaged spectrum (no spread)")
+    if tables.scans is not None and len(tables.scans):
+        named = tables.scans["spectrum"].value_counts()
+        off = [f"{x:g} ({n_scans[spec]} read, {int(named.get(spec, 0))} in ms2_scans.csv)"
+               for spec, x in zip(specs, nce) if n_scans[spec]
+               and int(named.get(spec, 0)) not in (0, n_scans[spec])]
+        if off:
+            notes.append("replicates: the per-scan peaks and the scan table name different scans "
+                         "for the spectra at NCE " + ", ".join(off))
+    used = roles["role"].isin(["precursor", "fragment"])
+    unread, rescaled, held = 0, [], set()
+    for spec in specs:
+        if not n_scans[spec]:
+            continue
+        p = roles.loc[used & (roles["spectrum"] == spec), "peak"].to_numpy(dtype=int)
+        out_p = ~sc[spec].matched[p]                    # held: no scan's reading used
+        fac = sc[spec].factor[p]
+        unread += int((out_p & ~np.isfinite(fac)).sum())
+        rescaled.extend(fac[out_p & np.isfinite(fac)].tolist())
+        if len(p) and out_p.all() and n_scans[spec] >= 2:
+            held.add(spec)
+    if unread:
+        notes.append(f"replicates: {unread} precursor / fragment peak(s) are read in no scan of "
+                     "their spectrum: held at their averaged height in every scan (their spread "
+                     "is not in the statistics; presence and CV NaN)")
+    if rescaled:
+        lo_f, hi_f = RP.SCALE_BAND
+        span = (f"{rescaled[0]:.3g}" if len(rescaled) == 1
+                else f"{min(rescaled):.3g} to {max(rescaled):.3g}")
+        notes.append(f"replicates: {len(rescaled)} precursor / fragment peak(s) are read in the "
+                     f"scans on another scale than their spectrum's (averaged height / per-scan "
+                     f"mean {span}, outside {lo_f:g}-{hi_f:g}: a stray centroid in a scan or "
+                     "two, or per-scan rows off another m/z axis than the spectra's?): held at "
+                     "their averaged height in every scan (their spread is not in the "
+                     "statistics; presence and CV NaN)")
+    # (with --bootstrap 0 there is no E50 interval to add nothing to)
+    tail = ", nothing to the E50 interval" if bootstrap > 0 else ""
+    one = [f"{x:g}" for spec, x in zip(specs, nce) if n_scans[spec] == 1]
+    if one:
+        notes.append(f"replicates: {len(one)} of {len(specs)} energies hold one scan (NCE "
+                     f"{', '.join(one)}): no spread there{tail}")
+    gone = [f"{x:g}" for spec, x in zip(specs, nce) if spec in held]
+    if gone:
+        notes.append("replicates: every precursor / fragment peak of the spectra at NCE "
+                     f"{', '.join(gone)} is held: no spread there{tail} "
+                     "(counted with the energies of one scan)")
+    mats = RP.window_scans(roles, sc, specs, order, keys)
+    w, c = RP._weights_matrix(weights, cand, order, keys)
+    ref = ion_int.iloc[0].reindex(list(order)).to_numpy(dtype=float)
+    bd, items, rows = {}, {}, []
+    for spec, x, v in zip(specs, nce, volts):
+        im, fm, ip, fp, ok_i, ok_f = mats[spec]
+        n = n_scans[spec]
+        cv_ = RP.spectrum_curves(im, fm, w, c, ref)
+        sds = {k: RP.spread(a)[:2] for k, a in cv_.items()}
+        isd = RP.spread(im)[0]
+        imean = im.mean(axis=1)
+        fsd = RP.spread(fm)[0] if len(fm) else np.zeros(0)
+        fmean = fm.mean(axis=1) if len(fm) else np.zeros(0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            icv = np.where(imean > 0, isd / imean, np.nan)
+            fcv = np.where(fmean > 0, fsd / fmean, np.nan)
+        # the items in this spectrum that a scan reads, and that are held
+        f_read, f_held = (fmean > 0) & ok_f, (fmean > 0) & ~ok_f
+        for i, f in enumerate(order):
+            real = n >= 1
+            i_read, i_held = imean[i] > 0 and ok_i[i], imean[i] > 0 and not ok_i[i]
+            # a curve's spread where something entering it is read, or
+            # nothing entering it is held (absent items read 0 in every scan)
+            has = {"s": not i_held}
+            for k, enter in (("f", w[:, i] > 0), ("f_lo", c[:, i] > 0)):
+                has[k] = (i_read or bool((f_read & enter).any())
+                          or not (i_held or bool((f_held & enter).any())))
+            bd[(spec, f)] = {
+                "n_scans": n,
+                "intensity_cv": float(icv[i]) if real and ok_i[i] else math.nan,
+                **{f"{k}_{m}": (float(sds[k][j][i]) if real and has[k] else math.nan)
+                   for k in ("f", "f_lo", "s") for j, m in enumerate(("sd", "sem"))}}
+            pres = float(ip[i].mean()) if real and ok_i[i] else math.nan
+            # unmatched (a peak of it held): n_present 0 as presence is NaN --
+            # never the scans of its other, read peak beside a NaN presence
+            rows.append({"parent_mz": parent_mz, "spectrum": spec, "nce": x, "hcd_v": v,
+                         "item": "precursor", "name": f, "n_scans": n,
+                         "n_present": int(ip[i].sum()) if real and ok_i[i] else 0,
+                         "presence": pres,
+                         "mean": float(imean[i]),
+                         "sd": float(isd[i]) if real and ok_i[i] else math.nan,
+                         "cv": float(icv[i]) if real and ok_i[i] else math.nan,
+                         "matched": bool(real and ok_i[i])})
+        for k, key in enumerate(keys):
+            if not fmean[k] > 0:
+                continue
+            real = n >= 1 and bool(ok_f[k])
+            pres = float(fp[k].mean()) if real else math.nan
+            items[(spec, key)] = (pres, float(fcv[k]) if real else math.nan)
+            rows.append({"parent_mz": parent_mz, "spectrum": spec, "nce": x, "hcd_v": v,
+                         "item": "fragment", "name": key, "n_scans": n,
+                         "n_present": int(fp[k].sum()) if real else 0, "presence": pres,
+                         "mean": float(fmean[k]), "sd": float(fsd[k]) if real else math.nan,
+                         "cv": float(fcv[k]) if real else math.nan, "matched": real})
+    boot, b_used = None, 0
+    if bootstrap > 0 and any(n_scans[s] >= 2 and s not in held for s in specs):
+        # a held spectrum's scans are all its averaged spectrum: drawn as one
+        # (as a spectrum with no per-scan row), exactly that
+        per = [(mats[s][0][:, :1], mats[s][1][:, :1]) if s in held else mats[s][:2]
+               for s in specs]
+        out = RP.bootstrap_e50(nce, volts, per, w, c, b=int(bootstrap),
+                               seed=RP.window_seed(parent_mz))
+        boot = {(f, name): RP.interval(out[col][0][i], out[col][1][i], out[col][2][i],
+                                       bracket=tuple(a[i] for a in out[col][3]))
+                for col, name in CURVES for i, f in enumerate(order)}
+        b_used = int(bootstrap)
+    elif bootstrap > 0:
+        notes.append("replicates: no energy holds two scans" + (" read" if held else "")
+                     + ": no E50 interval")
+    return {"n_scans": n_scans, "held": held, "breakdown": bd, "items": items, "boot": boot,
+            "boot_n": b_used, "table": _frame(rows, RP.REPLICATE_COLUMNS), "notes": notes}
 
 
 def _breach_note(ion: str, g: pd.DataFrame, gsum: pd.Series, lost: pd.Series,
@@ -771,8 +1032,120 @@ def _volts_note(hcd_v: pd.Series, e: BD.E50) -> str:
     return f"volts known for {known} of {n} spectra"
 
 
+#: Where a NaN bound of the E50 interval lies (`replicates.interval`).
+_BOUND_WHERE = {"below": "lies below the lowest energy", "above": "lies above the highest energy",
+                "gap": "lies across an unobserved energy"}
+
+
+def _boot_note(b: dict, n: int, e: BD.E50) -> str:
+    """The `note` of an E50 row's bootstrap interval, when the resamples
+    disagree with the averaged curve -- an E50 some resamples do not cross,
+    or a curve with no E50 some of them do (or cross across an unobserved
+    energy the averaged curve does not): how the resamples read -- the
+    shares add up to 100 % -- and on which side a NaN bound lies. '' when
+    they all agree."""
+    crossed = e.flag == BD.FLAG_INTERPOLATED
+    moved = b["cross"] + (b["gap"] if e.flag != BD.FLAG_GAP else 0.0)
+    if (crossed and b["cross"] >= 1.0) or (not crossed and moved <= 0.0):
+        return ""
+    shares = [f"below the lowest energy in {b['below']:.1%}",
+              f"above the highest in {b['above']:.1%}"]
+    if b["gap"] > 0:
+        shares.append(f"across an unobserved energy in {b['gap']:.1%}")
+    if b["none"] > 0:
+        shares.append(f"with one energy observed or none in {b['none']:.1%}")
+    parts = [f"bootstrap ({n}): crosses in {b['cross']:.1%} of resamples ({', '.join(shares)})"]
+    for side, word in (("lo", "lower"), ("hi", "upper")):
+        if b[f"{side}_where"]:
+            parts.append(f"the interval's {word} bound {_BOUND_WHERE[b[f'{side}_where']]}")
+    return "; ".join(parts)
+
+
+def _has_spread(g: pd.DataFrame, col: str) -> np.ndarray:
+    """Per breakdown row: does the curve `col` have a spread the bootstrap
+    draws there? F and F_lo (ratios within one spectrum): their `<col>_sd`
+    finite -- none with fewer than two scans, where only held peaks enter
+    it, or where fewer than two scans observe it (one scan alone holding
+    the ion reads the same ratio however often it is drawn). S (the
+    precursor over the lowest energy's): also where the precursor itself
+    has a CV (`intensity_cv` finite: two scans or more, matched, read in
+    one of them at least) -- a resample's S is its mean precursor, empty
+    scans 0, so it moves with the draws even where one scan alone reads the
+    precursor and the per-scan S has one finite value."""
+    def col_of(name):
+        return (g[name].to_numpy(dtype=float) if name in g else np.full(len(g), np.nan))
+    has = np.isfinite(col_of(f"{col}_sd"))
+    if col == "s":
+        has = has | np.isfinite(col_of("intensity_cv"))
+    return has
+
+
+def _crossing_scans(g: pd.DataFrame, col: str) -> list[tuple[float, int, bool]]:
+    """The two energies an averaged curve's first downward crossing lies
+    between (an interpolated one, or one across an unobserved energy), with
+    each one's scans (`n_scans`) and whether the curve has a spread there
+    (`_has_spread`); [] where the curve does not cross."""
+    _, _, code, (xa, xb, _, _) = BD.e50_many(g["nce"], g[col].to_numpy(dtype=float)[:, None],
+                                            bracket=True)
+    if BD.FLAGS[int(code[0])] not in (BD.FLAG_INTERPOLATED, BD.FLAG_GAP):
+        return []
+    nce = g["nce"].to_numpy(dtype=float)
+    has = _has_spread(g, col)
+    out = []
+    for x in (xa[0], xb[0]):
+        j = int(np.flatnonzero(np.isclose(nce, x))[0])
+        out.append((float(x), int(g["n_scans"].iloc[j]), bool(has[j])))
+    return out
+
+
+def _reference_scans(g: pd.DataFrame) -> tuple[float, int, bool]:
+    """S's reference: the breakdown's lowest energy (its first row; every
+    resample's S is read against its own mean precursor there,
+    `bootstrap_e50`), its scans and whether that mean has a spread there
+    (`_has_spread`: the precursor's `intensity_cv` finite -- none with
+    fewer than two scans, a held precursor, or no per-scan row; one read in
+    one of its scans alone has one)."""
+    return float(g["nce"].iloc[0]), int(g["n_scans"].iloc[0]), bool(_has_spread(g, "s")[0])
+
+
+def _bracket_note(thin: Sequence[tuple], zero_width: bool) -> str:
+    """The `note` of an E50 band next to an energy that adds no spread
+    (`thin`: (NCE, scans, is S's reference) of those of the two about the
+    averaged crossing -- and, for S, of the lowest energy it is read against
+    -- with fewer than two scans, or more with no spread of the curve there
+    (`_has_spread`): 'no spread'), or of zero width: the band holds no scatter of theirs -- it
+    is too narrow, and of zero width it is no measurement at all."""
+    def name(x, k):
+        return f"{x:g} ({k} scan{'' if k == 1 else 's'}{', no spread' if k >= 2 else ''})"
+    parts = []
+    near = [(x, k) for x, k, ref in thin if not ref]
+    if near:
+        names = " and ".join(name(x, k) for x, k in near)
+        parts.append(f"E50 band: NCE {names} about the crossing "
+                     f"{'adds' if len(near) == 1 else 'add'} no scatter to it (too narrow)")
+    parts.extend(f"E50 band: NCE {name(x, k)}, the lowest energy S is read against, adds no "
+                 "scatter to it (too narrow)" for x, k, ref in thin if ref)
+    if zero_width:
+        parts.append("the band has zero width: every resample reads the same E50 (no "
+                     "scatter at the crossing to draw), not a measured exactness")
+    return "; ".join(parts)
+
+
 def _e50_rows(bd: pd.DataFrame, order: Sequence[str], target: str, ions: Mapping[str, float],
-              gas_mass: float) -> pd.DataFrame:
+              gas_mass: float, *, boot: Mapping | None = None, n_one: int = 0,
+              boot_n: int = 0, per_scan: bool = False) -> pd.DataFrame:
+    """`ms2_e50.csv`'s rows of one window; with `boot` (`_replicates`) the
+    bootstrap interval of every curve's E50, `boot_n` resamples, `n_one`
+    energies that add no spread (the window's, with or without a band).
+    `per_scan` (the breakdown has `n_scans`) and a band: how many of the
+    energies the band rests on add none to the curve -- the two about the
+    averaged crossing and, for S, the lowest energy every resample's S is
+    read against (counted once where it is one of the two): fewer than two
+    scans, or no spread of the curve there (`_has_spread`: only held peaks
+    enter it, fewer than two scans observe a ratio; for S its precursor has
+    no CV) -- (`one_scan_bracket`; 0 with no band): the band holds no scatter of
+    theirs, said in the note, as is a band of zero width
+    (`replicates.zero_width`)."""
     rows = []
     for f in order:
         g = bd[bd["ion"] == f]
@@ -787,6 +1160,27 @@ def _e50_rows(bd: pd.DataFrame, order: Sequence[str], target: str, ions: Mapping
             v_note = _volts_note(g["hcd_v"], e)
             if v_note:
                 notes.append(v_note)
+            b = (boot or {}).get((f, name))
+            if b is not None:
+                b_note = _boot_note(b, boot_n, e)
+                if b_note:
+                    notes.append(b_note)
+            # the energies the band rests on that add no spread to it: none
+            # without a band (--bootstrap 0, no energy of two scans)
+            thin = []
+            if per_scan and b is not None:
+                about = _crossing_scans(g, col)
+                thin = [(x, k, False) for x, k, has in about if k < 2 or not has]
+                if name == "S" and about and len(g):
+                    x0, k0, has0 = _reference_scans(g)
+                    if (k0 < 2 or not has0) and not any(np.isclose(x0, x) for x, _, _ in about):
+                        thin.append((x0, k0, True))
+                k_note = _bracket_note(thin, RP.zero_width(b["nce_lo"], b["nce_hi"]))
+                if k_note:
+                    notes.append(k_note)
+
+            def ecm(v, _m=ions[f]):
+                return BD.e_cm(v, _m, gas_mass) if math.isfinite(v) else math.nan
             rows.append({
                 "parent_mz": float(g["parent_mz"].iloc[0]) if len(g) else math.nan,
                 "ion": f, "role": "target" if f == target else "co-isolate", "ion_mz": ions[f],
@@ -797,18 +1191,32 @@ def _e50_rows(bd: pd.DataFrame, order: Sequence[str], target: str, ions: Mapping
                 "nce_min": e.nce_min, "nce_max": e.nce_max,
                 "value_at_min": float(ok[col].iloc[0]) if len(ok) else math.nan,
                 "value_at_max": float(ok[col].iloc[-1]) if len(ok) else math.nan,
-                "note": "; ".join(notes)})
+                "note": "; ".join(notes),
+                "e50_nce_lo": b["nce_lo"] if b else math.nan,
+                "e50_nce_hi": b["nce_hi"] if b else math.nan,
+                "e50_v_lo": b["v_lo"] if b else math.nan,
+                "e50_v_hi": b["v_hi"] if b else math.nan,
+                "e50_ecm_lo": ecm(b["v_lo"]) if b else math.nan,
+                "e50_ecm_hi": ecm(b["v_hi"]) if b else math.nan,
+                "e50_lo_censor": b["lo_where"] if b else "",
+                "e50_hi_censor": b["hi_where"] if b else "",
+                "boot_n": boot_n if b else 0, "boot_cross": b["cross"] if b else math.nan,
+                "n_one_scan": int(n_one), "one_scan_bracket": len(thin)})
     return _frame(rows, E50_COLUMNS)
 
 
 def _fragment_rows(parent_mz: float, att: pd.DataFrame, roles: pd.DataFrame,
                    frag_int: pd.DataFrame, tic: pd.Series, meta: pd.DataFrame,
                    cand_notes: Mapping[str, str] | None = None,
-                   compositions: Mapping[str, Sequence[str]] | None = None) -> pd.DataFrame:
+                   compositions: Mapping[str, Sequence[str]] | None = None,
+                   replicates: Mapping[tuple[str, str], tuple[float, float]] | None = None
+                   ) -> pd.DataFrame:
     """`ms2_fragments.csv`'s rows of one window. `test_note` holds the
     intact test's note and, after it, `candidates_across`'s. `compositions`
     (`AT.fragment_compositions`): the formulas each fragment can be where it
-    sits; a candidate's loss is the one of its reading as one of them."""
+    sits; a candidate's loss is the one of its reading as one of them.
+    `replicates` ((spectrum, fragment) -> (presence, CV), `_replicates`):
+    read at the spectrum of its largest TIC fraction."""
     frac = frag_int.div(tic.replace(0, np.nan), axis=0)
     fr = roles[roles["role"] == "fragment"]
     # each candidate's loss, from the lowest energy at which it reads the
@@ -833,6 +1241,8 @@ def _fragment_rows(parent_mz: float, att: pd.DataFrame, roles: pd.DataFrame,
         i_on = int(np.argmax(present.to_numpy())) if present.any() else None
         imax = int(np.nanargmax(frac[a.key].to_numpy())) if present.any() else None
         formulas = a.key.split(" | ")
+        rep_at = ((replicates or {}).get((str(frag_int.index[imax]), a.key), (math.nan, math.nan))
+                  if imax is not None else (math.nan, math.nan))
         mine = {**any_of.get(a.key, {}), **loss_of.get(a.key, {})}
         losses = "; ".join(f"{c}: {mine[c]}" for c in a.candidates.split(";") if c in mine)
         rows.append({
@@ -849,7 +1259,8 @@ def _fragment_rows(parent_mz: float, att: pd.DataFrame, roles: pd.DataFrame,
             "in_source": bool(present.iloc[0]),
             "max_frac": float(frac[a.key].iloc[imax]) if imax is not None else math.nan,
             "max_frac_nce": nce[imax] if imax is not None else math.nan,
-            "n_spectra": int(present.sum())})
+            "n_spectra": int(present.sum()),
+            "presence_at_max": rep_at[0], "cv_at_max": rep_at[1]})
     return _frame(rows, FRAGMENT_COLUMNS)
 
 
@@ -866,16 +1277,26 @@ class AnalyzeResult:
     branching: pd.DataFrame
     params: dict
     notes: list = field(default_factory=list)
+    #: `replicates.REPLICATE_COLUMNS` (None: no per-scan tables)
+    replicates: pd.DataFrame | None = None
 
 
 def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | None = None,
                 ladder: bool = True, tol_ppm: float = 5.0, tol_mda: float = 0.3,
                 gas_mass: float = BD.N2_MASS, iso_width: float | None = None,
-                mass_offset_ppm: float | None = None) -> AnalyzeResult:
+                mass_offset_ppm: float | None = None, bootstrap: int = RP.BOOTSTRAP_B,
+                harmonics: bool = True) -> AnalyzeResult:
     """Every parent window of one `ms2 extract` folder (`load_run`).
     `mass_offset_ppm`: the folder's m/z axis offset, replacing the one its
-    manifest records (`folder_axis_offset`)."""
+    manifest records (`folder_axis_offset`). `bootstrap`: resamples of each
+    E50's interval (0: none; else at least `replicates.BOOTSTRAP_MIN`; needs
+    the per-scan tables). `harmonics` False reads harmonic ghosts as any peak
+    (a debugging switch)."""
     SF._check_tol(tol_ppm, tol_mda)
+    if (isinstance(bootstrap, bool) or int(bootstrap) != bootstrap or bootstrap < 0
+            or 0 < bootstrap < RP.BOOTSTRAP_MIN):
+        raise ValueError(f"bootstrap must be 0 (none) or a whole number of resamples >= "
+                         f"{RP.BOOTSTRAP_MIN}, got {bootstrap!r}")
     if mass_offset_ppm is not None and not math.isfinite(float(mass_offset_ppm)):
         raise ValueError(f"mass_offset_ppm must be finite, got {mass_offset_ppm!r}")
     axis, axis_src = folder_axis_offset(tables, mass_offset_ppm)
@@ -891,13 +1312,17 @@ def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | No
     windows = [analyze_window(tables, p, ions,
                               width=own.get(round(p, 6), math.nan) if per_parent else width,
                               k_max=k_max, ladder=ladder, tol_ppm=tol_ppm, tol_mda=tol_mda,
-                              gas_mass=gas_mass, axis_offset_ppm=axis)
+                              gas_mass=gas_mass, axis_offset_ppm=axis,
+                              bootstrap=int(bootstrap), harmonics=harmonics)
                for p in sorted({float(x) for x in tables.parents["parent_mz"]})]
 
     def cat(attr, spec):
         parts = [getattr(w, attr) for w in windows if getattr(w, attr) is not None]
         return _frame(pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(), spec)
     notes = list(tables.notes)
+    per_scan = tables.scan_peaks is not None
+    if not per_scan and not any("ms2_scan_peaks.parquet" in n for n in notes):
+        notes.append(NO_PER_SCAN_NOTE)
     if any(w.status == "analysed" for w in windows):
         notes.append(S_NOTE)
     if math.isfinite(width) and len(tables.window):
@@ -924,13 +1349,23 @@ def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | No
               "onset_stray_share": AT.ONSET_STRAY_SHARE,
               "satellite_ratio": AT.SATELLITE_RATIO, "satellite_fwhm": AT.SATELLITE_FWHM,
               "polyoxy_max_c": AT.POLYOXY_MAX_C, "polyoxy_min_o": AT.POLYOXY_MIN_O,
+              "harmonics": {"on": bool(harmonics), "orders": list(RD.HARMONIC_ORDERS),
+                            "ppm": RD.HARMONIC_PPM,
+                            "cap": {f"{n}f": c for n, c in RD.HARMONIC_CAP.items()},
+                            "clear_sn": RD.HARMONIC_CLEAR_SN},
+              "replicates": {"per_scan": per_scan, "bootstrap": int(bootstrap),
+                             "bootstrap_min": RP.BOOTSTRAP_MIN, "seed": RP.BOOTSTRAP_SEED,
+                             "percentiles": list(RP.BOOTSTRAP_PERCENTILES),
+                             "match_da": RP.MATCH_DA, "scale_band": list(RP.SCALE_BAND)},
               "ions": [{"formula": f, "mz": m} for f, m in ions.items()]}
     return AnalyzeResult(windows=windows,
                          readings=cat("readings", RD.READINGS_COLUMNS),
                          breakdown=cat("breakdown", BREAKDOWN_COLUMNS),
                          e50=cat("e50", E50_COLUMNS), fragments=cat("fragments", FRAGMENT_COLUMNS),
                          branching=cat("branching", BRANCHING_COLUMNS), params=params,
-                         notes=notes)
+                         notes=notes,
+                         replicates=(cat("replicates", RP.REPLICATE_COLUMNS) if per_scan
+                                     else None))
 
 
 # ---------------------------------------------------------------------------
@@ -1068,6 +1503,15 @@ def render_window(w: WindowResult, path: str, *, dpi: int = 150) -> str | None:
     return path
 
 
+def _by_order(windows) -> dict:
+    """Harmonic ghosts over the windows, by order ({'2f': n, ...})."""
+    out: dict[str, int] = {}
+    for w in windows:
+        for k, n in w.harmonics.items():
+            out[k] = out.get(k, 0) + int(n)
+    return dict(sorted(out.items()))
+
+
 def manifest(res: AnalyzeResult, tables: RunTables, *, files: dict, created_utc: str | None
              ) -> dict:
     """`ms2_analyze_manifest.json`: the sample, the parameters (gate mode,
@@ -1091,7 +1535,13 @@ def manifest(res: AnalyzeResult, tables: RunTables, *, files: dict, created_utc:
                    "readings_rows": int(len(res.readings)),
                    "breakdown_rows": int(len(res.breakdown)),
                    "fragments": int(len(res.fragments)),
-                   "four_piece_readings": int((res.readings["loss_pieces"] == 4).sum())},
+                   "four_piece_readings": int((res.readings["loss_pieces"] == 4).sum()),
+                   "harmonic_peaks": int((res.readings["harmonic"].fillna("") != "").sum()),
+                   "harmonic_by_order": _by_order(res.windows),
+                   "replicate_rows": (None if res.replicates is None
+                                      else int(len(res.replicates))),
+                   "one_scan_energies": sum(w.one_scan_energies for w in res.windows),
+                   "e50_intervals": int((res.e50["boot_n"] > 0).sum())},
         "inputs": dict(tables.inputs), "files": dict(files),
         "code": {"package_version": peaky.__version__, "analyze_version": __version__,
                  "git": PV.git_info(os.path.dirname(os.path.abspath(__file__))),
@@ -1102,15 +1552,22 @@ def manifest(res: AnalyzeResult, tables: RunTables, *, files: dict, created_utc:
 
 def write_outputs(res: AnalyzeResult, tables: RunTables, out_dir: str, *, figures: bool = True,
                   created_utc: str | None = None) -> dict:
-    """Write the four tables (+ ms2_branching.csv), the per-window figures and
-    the manifest into `out_dir`; -> {file name: sha1}."""
+    """Write the four tables (+ ms2_branching.csv; + ms2_replicates.csv when
+    the folder has per-scan tables), the per-window figures and the
+    manifest into `out_dir`; -> {file name: sha1}."""
     from peaky.reporting import provenance as PV
     out = Path(os.path.expanduser(out_dir))
     out.mkdir(parents=True, exist_ok=True)
     files = {}
     for name, df in (("ms2_readings.csv", res.readings), ("ms2_breakdown.csv", res.breakdown),
                      ("ms2_e50.csv", res.e50), ("ms2_fragments.csv", res.fragments),
-                     ("ms2_branching.csv", res.branching)):
+                     ("ms2_branching.csv", res.branching),
+                     ("ms2_replicates.csv", res.replicates)):
+        if df is None:
+            # a stale table of an earlier run with per-scan tables is not
+            # this run's: removed, so the folder holds what the manifest lists
+            (out / name).unlink(missing_ok=True)
+            continue
         df.to_csv(out / name, index=False)
         files[name] = PV.sha1_file(str(out / name))
     if figures:

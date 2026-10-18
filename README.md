@@ -232,6 +232,8 @@ peaky ms2 extract --sample-id <ID> --per-scan      # + the scans behind each spe
 peaky ms2 files   --instrument <NAME> --since 2026-09-11T10:00 --check   # raw files; tMS2 ones
 peaky ms2 extract --file <FILE_ID> --inclusion-list <list.csv> --polarity +   # rebuilt per scan
 peaky ms2 analyze --run-dir ~/peaky-output/ms2/<ID> --ion 137.1323=C10H17+
+# a folder with the per-scan tables also gets each curve's scan-to-scan spread and an
+# E50 interval (--bootstrap N, default 1000; §11.11)
 
 # organise data — the write API (--dry-run previews, sends nothing; deletes need --yes)
 peaky curate tree --deep                                  # read the workspace/dataset/batch layout

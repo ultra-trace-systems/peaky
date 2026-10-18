@@ -118,6 +118,9 @@ peaky ms2 extract --file <FILE_ID> --inclusion-list <list.csv> --polarity <+|->
 # piece only on a ladder (--no-ladder-k4 = strict 3, --k-max K = ungated)
 peaky ms2 analyze --run-dir <out-dir>/ms2/<ID> --ion MZ=FORMULA [--ion ...] [--iso-width 0.4]
 # a --file folder's m/z axis offset is read from its manifest (--mass-offset-ppm replaces it)
+# with the per-scan tables (--per-scan / --file): ms2_replicates.csv, each curve's scan-to-scan
+# spread and a 16-84 % E50 band (--bootstrap N, default 1000, 0 = none, else >= 100); 2f / 3f
+# Orbitrap harmonic ghosts (m/z / 4, / 9) are never read (--keep-harmonics to debug)
 ```
 
 `peaky pool` pools every batch matching `--batches` (a REGEX over batch names, e.g.

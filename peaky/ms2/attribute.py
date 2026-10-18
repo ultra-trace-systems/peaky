@@ -22,7 +22,9 @@ fragment the data cannot attribute.
     when the organic reader is in the sample.
   * A fragment every peak of which sits a few line widths beside a peak
     `SATELLITE_RATIO` times brighter is a side lobe of that line, not an ion
-    (`satellite_fragments`): set aside, unexplained.
+    (`satellite_fragments`): set aside, unexplained. A peak `read_window`
+    read as a harmonic ghost of a brighter line is no fragment either
+    (`peak_roles`: role 'harmonic', out of the TIC).
   * A named ion the sample lacks (`absent_ions`: its precursor in no MS2
     spectrum of the window, an MS1 share of 0) decides nothing: it weighs 0,
     is set aside before the intact test and the guard, and takes nothing --
@@ -161,11 +163,19 @@ def peak_roles(readings: pd.DataFrame, order: Sequence[str] | None = None) -> pd
     `order` is the window order (target first, then the co-isolates);
     without it, the order in which the window ions first appear in
     `readings`. The key is THIS spectrum's: `merge_fragment_peaks`
-    gives one physical fragment one name across the window's spectra."""
+    gives one physical fragment one name across the window's spectra. A peak
+    `read_window` read as a harmonic ghost of a brighter line (its
+    `harmonic` cell) is 'harmonic': no ion, no fragment, out of the TIC
+    (`breakdown.ion_budget`)."""
     cols = {"spectrum": [], "nce": [], "hcd_v": [], "peak": [], "mz": [], "mz_cal": [],
             "intensity": [], "role": [], "ion": [], "key": [], "candidates": [],
             "formulas": [], "losses": []}
     if len(readings):
+        # only the columns read here: a row of the whole table is slow to build
+        readings = readings[[c for c in ("spectrum", "peak", "nce", "hcd_v", "mz", "mz_cal",
+                                         "intensity", "rank", "parent", "is_precursor",
+                                         "formula", "loss_name", "harmonic")
+                             if c in readings.columns]]
         seen = list(dict.fromkeys(readings.loc[readings["parent"] != "", "parent"]))
         order = list(dict.fromkeys([*(order or []), *seen]))
         pos = {p: i for i, p in enumerate(order)}
@@ -175,7 +185,10 @@ def peak_roles(readings: pd.DataFrame, order: Sequence[str] | None = None) -> pd
             best = best.sort_values("parent", key=lambda s: s.map(pos), kind="stable")
             prec = best[best["is_precursor"]]
             role, ion, key, cands, forms, losses = "unexplained", "", "", "", "", ""
-            if len(prec):
+            h = r0.get("harmonic", "")
+            if isinstance(h, str) and h:
+                role = "harmonic"
+            elif len(prec):
                 role, ion = "precursor", str(prec["parent"].iloc[0])
                 cands = ";".join(dict.fromkeys(prec["parent"]))
             elif len(best):
@@ -412,9 +425,9 @@ def fragment_mz(roles: pd.DataFrame) -> dict[str, float]:
     raw intensity, so a spectrum scaled as a whole (a drift of the precursor
     supply, space charge) moves it not at all. A fragment whose
     peaks hold no intensity gets their plain mean; one with no finite m/z,
-    NaN. -> {fragment key: m/z}."""
+    NaN. A harmonic ghost is out of the TIC here too. -> {fragment key: m/z}."""
     r = roles.assign(intensity=roles["intensity"].fillna(0.0).clip(lower=0.0))
-    tic = r.groupby("spectrum", sort=False)["intensity"].sum()
+    tic = r[r["role"] != "harmonic"].groupby("spectrum", sort=False)["intensity"].sum()
     out: dict[str, float] = {}
     for key, g in r[r["role"] == "fragment"].groupby("key", sort=False):
         mz = g["mz_cal"].to_numpy(dtype=float)
