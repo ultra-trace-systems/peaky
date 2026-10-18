@@ -11,6 +11,10 @@ pipeline needs:
   * fetch_ms2_summary/_spectra/_ms1(), fetch_sample_record() -- one sample's MS2
                                   payloads (Mascope >= 1.8), read into tables by
                                   peaky/ms2/sources.py
+  * fetch_ms2_timeseries(), fetch_file_metadata(), fetch_sample_files() -- the
+                                  per-scan MS2 source's: a group's scan times, a
+                                  raw file's per-scan trailers and centroids, an
+                                  instrument's file listing (peaky/ms2/scans.py)
 
 The scoring oracle is Mascope: match_compounds returns a compound -> ion ->
 isotopologue tree, every node carrying its own match_score and (for isotopes)
@@ -30,7 +34,9 @@ from urllib.parse import urlsplit
 import numpy as np
 import pandas as pd
 
-__version__ = "0.7.0"  # + the MS2 fetchers (fetch_ms2_*; a refused summary is typed,
+__version__ = "0.8.0"  # + the per-scan MS2 fetchers: fetch_file_metadata (a raw
+#                          file's /metadata), fetch_sample_files (the file listing,
+#                          FileListTruncated at its page cap), fetch_ms2_timeseries. 0.7.0: + the MS2 fetchers (fetch_ms2_*; a refused summary is typed,
 #                          MS2SummaryRefused; an HTTP error is retried by its status
 #                          only: an MS2 500, the API's own 403 and the MS2 compute
 #                          504 are final) + server_error_text / is_sample_error /
@@ -806,13 +812,149 @@ def fetch_ms2_ms1(client, sample_id: str, *, ppm: int = 1) -> dict:
 
 def fetch_sample_record(client, sample_id: str) -> dict:
     """The sample's own record (`samples.get`): name, polarity, `datetime_utc`,
-    `instrument_type`, and the `t0` / `t1` / `length` the MS2 source reads a
-    hidden tail from. {} when the server answers nothing. Retried as the MS2
-    calls are, plus an HTTP 500 (`_RECORD_RETRY_STATUS`); an unknown or stale
-    id (the API's own 403, or a 404) is raised at once."""
+    `instrument_type`, `sample_file_id` (its raw file, for the per-scan
+    source), and the `t0` / `t1` / `length` the MS2 source reads a hidden
+    tail from. {} when the server answers nothing. Retried as the MS2 calls
+    are, plus an HTTP 500 (`_RECORD_RETRY_STATUS`); an unknown or stale id
+    (the API's own 403, or a 404) is raised at once."""
     out = _ms2_call(lambda: client.samples.get(sample_id), sample_id,
                     retry_status=_RECORD_RETRY_STATUS)
     return out if isinstance(out, dict) else {}
+
+
+def fetch_ms2_timeseries(client, sample_id: str, parent_mz: float, *, activation: str | None,
+                         noise_threshold: float = 10.0) -> dict:
+    """`get_timeseries` of one (parent, activation) group: its `time` list
+    (ISO strings from the epoch, '1970-01-01T00:00:55.028905008': one per
+    scan of the group), `mz_values` and `values`. The per-scan source reads
+    only the times, which name the group's scans (`ms2.scans.assign_from_times`).
+    `parent_mz` is the server's key (it answers nothing for a measured
+    precursor that is not its key). `activation` None or '' asks for every
+    activation of the parent (the SDK's default: the parameter is left out,
+    never sent as the text 'None'). {} when the server answers nothing;
+    errors as `fetch_ms2_summary`."""
+    act = None if activation is None or str(activation).strip() == "" else str(activation)
+    out = _ms2_call(lambda: client.samples.ms2(sample_id).get_timeseries(
+        float(parent_mz), activation=act, noise_threshold=float(noise_threshold)),
+        sample_id)
+    return out if isinstance(out, dict) else {}
+
+
+#: (connect, read) timeout of the `/metadata` request (s). The payload holds
+#: every scan's trailer row and centroid list -- 6.7 MB / 8.6 MB / 19.8 MB for
+#: our own Exploris 120 files of 140 / 233 / 434 scans -- and the server builds
+#: it from the raw file on each request.
+METADATA_TIMEOUT = (15, 300)
+#: The file listing's timeout (s): one JSON page of `FILE_LIST_PAGE` files.
+FILE_LIST_TIMEOUT = (15, 120)
+#: The file listing is asked page by page (`page` from 0, `limit`), sorted by
+#: the file id -- unique, so no file is skipped or repeated between pages as
+#: one sorted by time (ties) could be: asked whole, a busy instrument's day
+#: was one 3.5 MB answer, a month would be ~100 MB.
+FILE_LIST_PAGE = 500
+#: Between two pages (s), as between the per-scan time-series requests.
+FILE_LIST_PAUSE_S = 1.0
+#: At most this many pages (a server that ignores the paging answers the
+#: whole range on every page: the first page that adds no new file ends it).
+#: Every page full up to here means the range holds more files than were
+#: read -- and, the pages sorted by the (random) file id, the ones left out
+#: are anywhere in the range: `FileListTruncated`, never a silent subset.
+FILE_LIST_MAX_PAGES = 200
+
+
+class FileListTruncated(RuntimeError):
+    """The file listing stopped at `FILE_LIST_MAX_PAGES` full pages: the range
+    holds more files than were read, and the ones left out are anywhere in
+    it (the pages are sorted by the random file id, not by time)."""
+
+
+def _api_get(client, path: str, *, params: dict | None = None, timeout=FILE_LIST_TIMEOUT,
+             body: bool = False):
+    """GET `path` on the client's server with its token, through the SDK's
+    own transport (`mascope_sdk._http.http_get`: its error types, its retries
+    of a 429 / 502 / 503 / 504 and of a dropped connection) -> the answer's
+    `data` (the whole JSON body when it has none, or with `body`: the
+    listing's body also counts its files, `results`). For the server routes
+    the SDK has no method for: a raw file's listing and its `/metadata`."""
+    from mascope_sdk._http import http_get
+    kw = {}
+    if getattr(client, "_verify_ssl", None) is not None:
+        kw["verify_ssl"] = client._verify_ssl
+    if getattr(client, "_service_name", None):
+        kw["service_name"] = client._service_name
+    r = http_get(client.url, path, client.access_token, params=params, timeout=timeout, **kw)
+    out = r.json()
+    if body:
+        return out
+    return out.get("data", out) if isinstance(out, dict) else out
+
+
+def fetch_file_metadata(client, sample_file_id: str) -> dict:
+    """`GET sample/files/{id}/metadata` of one RAW FILE (not a sample item):
+    `num_of_scans`, `stats_per_scan` (the instrument's trailer row of every
+    scan the server reads as MS order 'Ms', keyed by the 1-based scan number),
+    `stats_per_file` and `centroids_meta` (every scan's start time and
+    centroids). The per-scan MS2 source (`peaky.ms2.scans`) is built on it.
+    Large and slow (`METADATA_TIMEOUT`); retried as the MS2 calls are, and a
+    final answer (an unknown file's 404, the API's own 403) is raised at once."""
+    out = _ms2_call(lambda: _api_get(client, f"sample/files/{sample_file_id}/metadata",
+                                     timeout=METADATA_TIMEOUT), sample_file_id)
+    return out if isinstance(out, dict) else {}
+
+
+def fetch_sample_files(client, *, instrument: str, since: str, until: str | None = None,
+                       report: dict | None = None) -> list[dict]:
+    """The raw files an instrument recorded in [since, until]
+    (`GET sample/files?instrument=&datetime_min=&datetime_max=`; ISO times
+    in UTC, compared with the files' `datetime_utc`): `sample_file_id`,
+    `filename`, `datetime_utc`, `length`, `polarity` ('+-' when the server's
+    reader found both -- e.g. a file whose scan filters it garbles),
+    `instrument_type`, `processing_status` ('done', or e.g. 'needs_chemistry'
+    for a file it could not build a sample from) and `processing_detail`.
+    Asked page by page (`FILE_LIST_PAGE` files, sorted by id, `page` from 0,
+    `FILE_LIST_PAUSE_S` apart) until a page comes back short or adds no new
+    file; each file once, ordered by `datetime_utc` (then id). Each page is
+    retried as the sample record is. `FILE_LIST_MAX_PAGES` full pages raise
+    `FileListTruncated` (narrow the range). `report` (a dict, when given)
+    receives `server_total` (the files the server counts in the range, its
+    answer's `results`; None when it says none), `files` (read) and `pages`:
+    fewer files than the server counts -- a file recorded while the pages
+    were read can shift one past a page edge -- is the caller's to say."""
+    base = {"instrument": str(instrument), "datetime_min": str(since)}
+    if until:
+        base["datetime_max"] = str(until)
+    seen: dict[str, dict] = {}
+    total = None
+    for page in range(FILE_LIST_MAX_PAGES):
+        if page:
+            time.sleep(FILE_LIST_PAUSE_S)
+        params = dict(base, sort="sample_file_id", order="asc", page=page, limit=FILE_LIST_PAGE)
+        out = _ms2_call(lambda p=params: _api_get(client, "sample/files", params=p,
+                                                  timeout=FILE_LIST_TIMEOUT, body=True),
+                        str(instrument), retry_status=_RECORD_RETRY_STATUS)
+        if isinstance(out, dict):
+            n = out.get("results")
+            total = int(n) if isinstance(n, (int, float)) and not isinstance(n, bool) else total
+            out = out.get("data")
+        rows = [r for r in (out or []) if isinstance(r, dict)]
+        new = 0
+        for r in rows:
+            k = str(r.get("sample_file_id") or "")
+            if k not in seen:
+                seen[k] = r
+                new += 1
+        if len(rows) < FILE_LIST_PAGE or not new:
+            break
+    else:
+        raise FileListTruncated(
+            f"the file listing of {instrument} reached {FILE_LIST_MAX_PAGES} full pages of "
+            f"{FILE_LIST_PAGE} files ({len(seen)} read"
+            + (f" of the {total} the server counts" if total is not None else "")
+            + "): the files left out lie anywhere in the range -- narrow --since / --until")
+    if report is not None:
+        report.update(server_total=total, files=len(seen), pages=page + 1)
+    return sorted(seen.values(), key=lambda r: (str(r.get("datetime_utc") or ""),
+                                                str(r.get("sample_file_id") or "")))
 
 
 # ---------------------------------------------------------------------------

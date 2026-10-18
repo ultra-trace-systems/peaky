@@ -10,9 +10,16 @@ split the way io_mascope is:
     `parse_activation`, `spectra_table`, `parents_table`, `window_table`,
     `inventory_row`, `hidden_tail_s` -- unit-tested offline on captured
     fixtures (tests/fixtures/ms2);
-  * two thin orchestrators, `list_sample` and `extract_sample`, that take a
-    client and call only io_mascope's fetchers (io_mascope stays the one module
-    that talks to Mascope).
+  * thin orchestrators, `list_sample`, `extract_sample` and `extract_file`,
+    that take a client and call only io_mascope's fetchers (io_mascope stays
+    the one module that talks to Mascope);
+  * the per-scan source (`peaky.ms2.scans` does the work): with `per_scan`,
+    `extract_sample` also reads the scans behind each server spectrum (the raw
+    file's `/metadata` and each spectrum's time-series times); `extract_file`
+    rebuilds a raw file's MS2 from its `/metadata` alone -- for a targeted-MS2
+    file whose scan filters the server's reader garbles, which never becomes a
+    sample item -- and `needs_check` / `check_file` read an instrument's file
+    listing (`peaky ms2 files`).
 
 What the server serves (read on the lab's own server, Mascope >= 1.8), and what
 each rule below answers:
@@ -59,12 +66,14 @@ from __future__ import annotations
 import math
 import os
 import re
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"  # + the per-scan source: extract_sample(per_scan=True), extract_file,
+#                          the raw-file listing (needs_check / check_file). 0.1.0: the MS2 endpoints
 
 #: The S/N floor `ms2 extract` asks the server for (`noise_threshold` of
 #: get_averaged_centroids), below the SDK's default of 10. A breakdown curve
@@ -113,6 +122,62 @@ PRECURSOR_TRACK_MDA = 0.5
 
 #: Notes a parent key this far (mDa) from the located precursor.
 KEY_OFFSET_NOTE_MDA = 1.0
+
+#: The side-lobe guard, for spectra whose m/z axis offset is unknown (a raw
+#: file's own centroids, `extract_file`, when `axis_offset` reads none): a
+#: search-window candidate within this many line widths of a peak at least
+#: `PRECURSOR_LOBE_RATIO` times brighter that lies OUTSIDE the window is that
+#: line's side lobe, not the precursor: the precursor is then ambiguous at
+#: that energy (the next energy is tried). An Orbitrap peak list carries weak
+#: centroids a few line widths beside a much brighter line (the rule of
+#: `chem.sidelobes` and of `attribute.SATELLITE_*`: 5 widths, 50x, the width
+#: being the brighter line's m/z / its resolution). On a raw file whose MS2
+#: axis sits tens of ppm off, the heavier parents' precursors fall outside the
+#: window, and a weak upper lobe a few widths above can be the only peak left
+#: inside -- to be taken for the precursor.
+#: Never on the server's spectra (calibrated, keyed by the isolation centre)
+#: nor on a file whose offset is measured (the search is centred on it): there
+#: a weak precursor on its key beside a 50x brighter co-isolate 5 mDa - 5
+#: widths away is the precursor, and the guard would refuse it.
+PRECURSOR_LOBE_RATIO = 50.0
+PRECURSOR_LOBE_FWHM = 5.0
+
+#: A raw file's own MS2 axis (`extract_file`: its centroids as the instrument
+#: wrote them) can sit tens of ppm off the method's precursors -- the server
+#: calibrates the spectra it serves, nothing calibrates these. `axis_offset`
+#: reads the offset off the file against the method's TYPED precursors (the
+#: keys): per parent, at its lowest energy, the strongest centroid of its
+#: isolation window, when it lies within this (ppm) of the key, is its
+#: precursor; the offset is the median over the parents whose keys are typed
+#: finely enough (`AXIS_KEY_PPM`). Where measured on off-axis files, the
+#: parents' offsets agreed to a fraction of a ppm around their median and the
+#: MS1 scans' to 1-2 ppm -- where a co-isolate does not outshine a parent's
+#: precursor, which the median out-votes (and, with too few parents, the
+#: cross-check of `axis_offset`); on our own standard A (keys 137.1321,
+#: 155.1429, 155.1559) the offset reads +0.5 ppm. Centred there, the precursors
+#: and the E50s are those of the same file with every m/z divided by
+#: (1 + offset).
+AXIS_SEARCH_PPM = 50.0
+#: A parent reads the offset only when the decimals its key carries bound the
+#: key's own rounding within this (ppm: half a unit of its last decimal over
+#: its m/z). A key carries the precision it was typed with -- a list row, or a
+#: precursor the scan-range rule derives from a HighMass that row set -- and
+#: a key typed with two decimals sits up to 5 mDa from its precursor by that
+#: alone: an on-axis file whose list read 117.09, 155.14, 187.13, 199.17 and
+#: 217.14 gave +8.5 / +19.2 / +15.3 / -3.1 / +15.6 ppm, a 'median offset' of
+#: +15.3 ppm that is the typing, not the axis (our own standard B's key 137.13:
+#: +16.6 ppm). 4 decimals qualify from m/z 25, 3 from m/z 250; a 4-decimal key
+#: whose last digit is 0 reads as 3 (117.0910 -> 117.091) and is left out
+#: below m/z 250 too. With every key left out no offset is recorded (said).
+AXIS_KEY_PPM = 2.0
+#: The MS2 spectra name the offset when at least this many parents read one;
+#: else the MS1 window's parents do; else the few that read one.
+AXIS_MIN_PARENTS = 3
+#: An offset at least this large (ppm) is noted on every parents row and in
+#: the extraction's notes: a key's own rounding counts at most `AXIS_KEY_PPM`.
+AXIS_NOTE_PPM = 3.0
+#: The isolation width `axis_offset` assumes for a parent with none (Da).
+AXIS_DEFAULT_WIDTH = 1.0
 
 #: length - t1 above this (s) is reported as a possibly hidden tail.
 HIDDEN_TAIL_MIN_S = 0.5
@@ -464,35 +529,297 @@ def _track_tol(mz: float) -> float:
     return max(PRECURSOR_TRACK_PPM * mz * 1e-6, PRECURSOR_TRACK_MDA * 1e-3)
 
 
-def locate_precursor(mz, intensity, parent_mz: float) -> int | None:
+def _locate(mz, intensity, centre: float, resolution=None, *, track_first: bool = False
+            ) -> tuple[int | None, str]:
+    """(index of the precursor around `centre`, or None; why it is ambiguous,
+    '' otherwise). `locate_precursor`'s rule, plus the side-lobe guard when
+    `resolution` is given (`PRECURSOR_LOBE_RATIO`, `PRECURSOR_LOBE_FWHM`):
+    the callers pass it only where the m/z axis offset is unknown. With
+    `track_first` (a measured axis offset and a key typed finely enough: the
+    precursor sits at `centre` within a ppm or so) the same rule runs first
+    over the peaks within `_track_tol` of `centre` -- a weak precursor there
+    is the precursor, whatever a brighter ion farther out in the wide window
+    (a neighbouring list row's) holds; the wide search only when none is."""
+    mz = np.asarray(mz, dtype=np.float64)
+    inten = np.nan_to_num(np.asarray(intensity, dtype=np.float64), nan=0.0)
+    tol = _search_tol(centre)
+    inside = np.abs(mz - centre) <= tol
+    idx = np.flatnonzero(inside)
+    if not idx.size:
+        return None, ""
+    if track_first:
+        near = idx[np.abs(mz[idx] - centre) <= _track_tol(centre)]
+        if near.size and inten[near].max() > 0:
+            idx = near
+    idx = idx[inten[idx] >= PRECURSOR_MIN_SHARE * inten[idx].max()]
+    order = np.lexsort((-inten[idx], np.abs(mz[idx] - centre)))
+    best = int(idx[order[0]])
+    if resolution is not None and inten[best] > 0:
+        res = np.asarray(resolution, dtype=np.float64)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            width = np.where(np.isfinite(res) & (res > 0), mz / res, np.nan)
+            d = np.abs(mz - mz[best])
+            lobe = (~inside & (inten >= PRECURSOR_LOBE_RATIO * inten[best])
+                    & (d <= PRECURSOR_LOBE_FWHM * width))
+        if lobe.any():
+            j = int(np.flatnonzero(lobe)[np.argmax(inten[lobe])])
+            return None, (f"the candidate near the key, {mz[best]:.4f}, sits "
+                          f"{d[j] / width[j]:.1f} line widths from {mz[j]:.4f}, a peak "
+                          f"{inten[j] / inten[best]:.3g}x brighter just outside the search window "
+                          f"({(mz[j] - centre) * 1e3:+.1f} mDa from its centre): a side lobe of "
+                          "that line, not the precursor (the m/z axis may sit off the key)")
+    return best, ""
+
+
+def locate_precursor(mz, intensity, parent_mz: float, *, resolution=None,
+                     track_first: bool = False) -> int | None:
     """Index of the precursor peak around the server's parent key, or None.
 
     Candidates: peaks within max(`PRECURSOR_SEARCH_PPM`, `PRECURSOR_SEARCH_MDA`)
     of the key holding >= `PRECURSOR_MIN_SHARE` of the strongest candidate;
-    the one nearest the key wins, the stronger on a tie. Used on an MS2
-    spectrum (`parents_table`) and on the MS1 window (`window_table`)."""
-    mz = np.asarray(mz, dtype=np.float64)
-    inten = np.nan_to_num(np.asarray(intensity, dtype=np.float64), nan=0.0)
-    idx = np.flatnonzero(np.abs(mz - parent_mz) <= _search_tol(parent_mz))
-    if not idx.size:
-        return None
-    idx = idx[inten[idx] >= PRECURSOR_MIN_SHARE * inten[idx].max()]
-    order = np.lexsort((-inten[idx], np.abs(mz[idx] - parent_mz)))
-    return int(idx[order[0]])
+    the one nearest the key wins, the stronger on a tie. With `resolution`
+    (the peaks' resolving power) a winner that is a side lobe of a much
+    brighter line just outside the window is refused (`_locate`): None --
+    the side-lobe guard, which `parents_table` / `window_table` turn on only
+    where the m/z axis offset is unknown (`lobe_guard`). `track_first`: the
+    track tolerance around the key first (`_locate`; a measured offset, a
+    finely typed key). Used on an MS2 spectrum and on the MS1 window,
+    centred on the key x (1 + the file's axis offset)."""
+    return _locate(mz, intensity, parent_mz, resolution, track_first=track_first)[0]
 
 
-def _anchors(recs: list[_Spectrum]) -> dict[float, float]:
-    """parent m/z -> the precursor m/z, located in the parent's lowest-energy
-    spectrum that holds a candidate (records are already in NCE order)."""
+def _track_first(parent_mz: float, measured: bool) -> bool:
+    """Look within the track tolerance of the corrected key first: the file's
+    axis offset is measured and the key typed finely enough to sit on its ion
+    (`key_rounding_ppm` <= `AXIS_KEY_PPM`; a key typed 137.13 can sit 5 mDa
+    from it, and keeps the wide search)."""
+    return bool(measured) and key_rounding_ppm(parent_mz) <= AXIS_KEY_PPM
+
+
+def _anchors(recs: list[_Spectrum], axis_offset_ppm: float = 0.0, lobe_guard: bool = False,
+             measured: bool = False) -> tuple[dict[float, float], dict[float, str]]:
+    """(parent m/z -> the precursor m/z, located in the parent's lowest-energy
+    spectrum that holds a candidate (records are already in NCE order);
+    parent m/z -> why its precursor is ambiguous). The search is centred on
+    the key x (1 + `axis_offset_ppm` 1e-6). With `lobe_guard` a candidate that
+    is a side lobe (`_locate`) is refused at that energy and the next energy
+    is tried -- a lobe keeps its share of its line at every energy, a weak
+    precursor beside a co-isolate that fragments faster does not; a parent
+    refused at every energy is ambiguous (the first energy's reason). With
+    the offset `measured`, a finely typed key looks within the track
+    tolerance first (`_track_first`)."""
     out: dict[float, float] = {}
+    ambiguous: dict[float, str] = {}
     for r in recs:
         p6 = round(r.parent_mz, 6)
         if p6 in out or not len(r.arrays["mz"]):
             continue
-        i = locate_precursor(r.arrays["mz"], r.arrays["intensity"], r.parent_mz)
-        if i is not None:
+        i, why = _locate(r.arrays["mz"], r.arrays["intensity"],
+                         r.parent_mz * (1.0 + axis_offset_ppm * 1e-6),
+                         r.arrays["resolution"] if lobe_guard else None,
+                         track_first=_track_first(r.parent_mz, measured))
+        if why:
+            ambiguous.setdefault(p6, why)
+        elif i is not None:
             out[p6] = float(r.arrays["mz"][i])
-    return out
+            ambiguous.pop(p6, None)
+    return out, ambiguous
+
+
+def key_rounding_ppm(key: float) -> float:
+    """Half a unit of the last decimal `key` carries, over its m/z (ppm): how
+    far its typing alone can put it from the ion (137.13 -> 36.5 ppm,
+    137.1321 -> 0.36 ppm). A key with more than 6 decimals counts 0."""
+    k = float(key)
+    if not (math.isfinite(k) and k > 0):
+        return math.inf
+    for d in range(7):
+        if abs(k - round(k, d)) <= 1e-9 * max(1.0, abs(k)):
+            return 0.5 * 10.0 ** -d / k * 1e6
+    return 0.0
+
+
+def axis_offset(centroids: dict | None, summary: dict | None = None, *,
+                widths: dict | None = None, ms1: dict | None = None) -> dict:
+    """The file's m/z axis offset from its method's typed precursors (ppm,
+    negative when it reads low), for spectra averaged from a raw file's own
+    centroids.
+
+    Per parent, in its lowest-energy spectrum with peaks: the strongest
+    centroid within its isolation window (`widths`, parent m/z rounded to
+    1e-6 -> width; else the summary's; else `AXIS_DEFAULT_WIDTH`) is its
+    precursor when it lies within `AXIS_SEARCH_PPM` of the key -- at the
+    lowest energy the precursor mostly dominates its window, and the median
+    over the parents out-votes one where a co-isolate or a lobe does. Only a
+    key typed finely enough reads one (`key_rounding_ppm` <= `AXIS_KEY_PPM`):
+    the others are counted (`coarse_keys`), never read -- a key typed 137.13
+    measures its own typing. A reading is contested, and dropped
+    (`contested_keys`; `contested`: key -> the reading), when that strongest
+    centroid lies off the key while another precursor candidate
+    (`PRECURSOR_MIN_SHARE` of it) sits ON the key (within `_track_tol`): a
+    peak on the key is evidence against an axis shift -- the strongest is a
+    co-isolate (a one-parent file read -29 ppm off its co-isolate, and `ms2
+    analyze` then took the co-isolate for its target). On a file whose axis
+    does sit off, the reading was right and the ion on the key is the
+    co-isolate: one parent cannot tell, so the reading is kept in the record
+    and said (`axis_unmeasured_note`, `parents_table`). The offset is the
+    median over the parents when at least `AXIS_MIN_PARENTS` read one; else
+    the same rule on the MS1 window (`ms1`, the MS1 centroids, or a callable
+    giving them: averaged only then); else the few there are (said) -- and
+    with two or more of those few, nothing out-votes a co-isolate off the
+    key, so a reading is kept only where every other reading parent's window
+    bears it out (a precursor candidate within `_track_tol` of its key x (1 +
+    that reading)); the others are dropped (`unconfirmed`: key -> reading),
+    and with none borne out no offset is read. -> {'ppm' (None when nothing
+    reads one), 'source', 'parents', 'mad_ppm', 'per_parent': {repr(key):
+    ppm}, 'coarse_keys', 'contested_keys', 'contested', 'unconfirmed'}."""
+    recs = _spectrum_records(centroids, summary)
+    coarse = {round(r.parent_mz, 6) for r in recs
+              if key_rounding_ppm(r.parent_mz) > AXIS_KEY_PPM}
+    iso = _num(_summary_dict(summary).get("isolation_width"))
+    widths = widths or {}
+
+    def width_of(p: float) -> float:
+        w = _num(widths.get(round(p, 6)))
+        return w if math.isfinite(w) and w > 0 else (
+            iso if math.isfinite(iso) and iso > 0 else AXIS_DEFAULT_WIDTH)
+
+    def window(mz, inten, p) -> tuple[np.ndarray, np.ndarray]:
+        mz = np.asarray(mz, dtype=np.float64)
+        inten = np.nan_to_num(np.asarray(inten, dtype=np.float64), nan=0.0)
+        sel = np.abs(mz - p) <= width_of(p) / 2.0
+        return mz[sel], inten[sel]
+
+    def read(mz, inten, p) -> tuple[float, bool] | None:
+        """(ppm, contested) of the parent's reading, None when it reads none.
+        Contested: the strongest centroid lies off the key while another
+        precursor candidate (`PRECURSOR_MIN_SHARE` of it) sits ON the key,
+        within `_track_tol` -- a co-isolate outshining the precursor, not
+        the axis."""
+        mz, inten = window(mz, inten, p)
+        if not mz.size or inten.max() <= 0:
+            return None
+        j = int(np.argmax(inten))
+        ppm = (mz[j] - p) / p * 1e6
+        if abs(ppm) > AXIS_SEARCH_PPM:
+            return None
+        tol = _track_tol(p)
+        on_key = (np.abs(mz - p) <= tol) & (inten >= PRECURSOR_MIN_SHARE * inten[j])
+        return float(ppm), bool(abs(mz[j] - p) > tol and on_key.any())
+
+    def bears_out(arrays, p, ppm) -> bool:
+        """`p`'s window (the arrays its reading came from) holds a precursor
+        candidate within `_track_tol` of its key x (1 + `ppm` 1e-6)."""
+        mz, inten = window(*arrays, p)
+        if not mz.size or inten.max() <= 0:
+            return False
+        centre = p * (1.0 + ppm * 1e-6)
+        return bool(((np.abs(mz - centre) <= _track_tol(centre))
+                     & (inten >= PRECURSOR_MIN_SHARE * inten.max())).any())
+
+    ms2: dict[float, float] = {}
+    ms2_arrays: dict[float, tuple] = {}
+    contested: dict[float, float] = {}
+    done: set = set()
+    for r in recs:
+        p6 = round(r.parent_mz, 6)
+        if p6 in done or p6 in coarse or not len(r.arrays["mz"]):
+            continue
+        done.add(p6)
+        v = read(r.arrays["mz"], r.arrays["intensity"], r.parent_mz)
+        if v is not None:
+            if v[1]:
+                contested[r.parent_mz] = v[0]
+            else:
+                ms2[r.parent_mz] = v[0]
+                ms2_arrays[r.parent_mz] = (r.arrays["mz"], r.arrays["intensity"])
+    ms1_vals: dict[float, float] = {}
+    ms1_arrays: dict[float, tuple] = {}
+    fine = sorted({r.parent_mz for r in recs if round(r.parent_mz, 6) not in coarse})
+    if len(ms2) < AXIS_MIN_PARENTS and fine and ms1:
+        ms1 = ms1() if callable(ms1) else ms1         # averaged only when it is read
+        for p in fine if len(ms1.get("mz") or []) else ():
+            v = read(ms1["mz"], ms1["intensity"], p)
+            if v is not None:
+                if v[1]:
+                    contested.setdefault(p, v[0])
+                else:
+                    ms1_vals[p] = v[0]
+                    ms1_arrays[p] = (ms1["mz"], ms1["intensity"])
+    unconfirmed: dict[float, float] = {}
+    if len(ms2) >= AXIS_MIN_PARENTS:
+        vals, source = ms2, "MS2 precursors"
+    elif len(ms1_vals) >= AXIS_MIN_PARENTS:
+        vals, source = ms1_vals, "MS1 window"
+    else:
+        vals, what, arrays = ((ms2, "MS2 precursors", ms2_arrays) if ms2 else
+                              (ms1_vals, "MS1 window", ms1_arrays))
+        if len(vals) >= 2:
+            # too few to out-vote a co-isolate: each reading must be borne out
+            # by every other reading parent's window
+            kept = {p: x for p, x in vals.items()
+                    if all(bears_out(arrays[q], q, x) for q in vals if q != p)}
+            unconfirmed = {p: x for p, x in vals.items() if p not in kept}
+            vals = kept
+        source = (f"{what} (only {len(vals)} parent(s) read one"
+                  + (f"; {len(unconfirmed)} reading(s) no other parent's window bears out, "
+                     "dropped" if unconfirmed else "") + ")")
+    read_keys = {round(float(p), 6) for p in vals}
+    rec = {"coarse_keys": len(coarse),
+           "contested_keys": len({round(p, 6) for p in contested} - read_keys),
+           "contested": {repr(float(p)): round(x, 3) for p, x in sorted(contested.items())
+                         if round(p, 6) not in read_keys},
+           "unconfirmed": {repr(float(p)): round(x, 3) for p, x in sorted(unconfirmed.items())}}
+    if not vals:
+        return {"ppm": None, "source": None, "parents": 0, "mad_ppm": None, "per_parent": {},
+                **rec}
+    v = np.asarray(list(vals.values()), dtype=float)
+    med = float(np.median(v))
+    return {"ppm": round(med, 3), "source": source, "parents": int(len(v)),
+            "mad_ppm": round(float(np.median(np.abs(v - med))), 3),
+            "per_parent": {repr(float(p)): round(x, 3) for p, x in sorted(vals.items())}, **rec}
+
+
+def axis_unmeasured_note(offset: dict | None) -> str:
+    """The extraction's note when no offset could be read because the keys
+    that might have read one are typed too coarsely, their readings are
+    contested by a candidate on the key, or the few readings disagree with
+    each other's windows; '' otherwise. A contested or unconfirmed reading's
+    ppm is quoted: if the axis sits there, it is the offset to pass."""
+    offset = offset or {}
+    coarse, contested = offset.get("coarse_keys"), offset.get("contested_keys")
+    unconfirmed = offset.get("unconfirmed") or {}
+    if offset.get("ppm") is not None or not (coarse or contested or unconfirmed):
+        return ""
+    why = []
+    if coarse:
+        why.append(f"{coarse} parent key(s) carry too few decimals to read it (a key's own "
+                   f"rounding over {AXIS_KEY_PPM:g} ppm: typed 137.13, it sits up to 5 mDa from "
+                   "its precursor by its typing alone)")
+    if contested:
+        reads = "/".join(f"{x:+.1f}" for x in (offset.get("contested") or {}).values())
+        why.append(f"{contested} parent(s) hold a precursor candidate on their key beside the "
+                   "stronger centroid off it (taken for a co-isolate, not the axis"
+                   + (f"; that centroid reads {reads} ppm: if the axis sits there, the ion on "
+                      "the key is the co-isolate" if reads else "") + ")")
+    if unconfirmed:
+        why.append(f"the readings of {len(unconfirmed)} parent(s) (" + "/".join(
+            f"{x:+.1f}" for x in unconfirmed.values()) + " ppm) disagree, none borne out by "
+                   "the other parents' windows")
+    return ("the m/z axis offset is not measured: " + "; ".join(why) + ", and no other key read "
+            "one -- the precursor search is centred on the keys, its side-lobe guard on; if the "
+            "axis sits off, pass `ms2 analyze --mass-offset-ppm`")
+
+
+def axis_note(offset: dict | None) -> str:
+    """The note on an axis offset of at least `AXIS_NOTE_PPM`, '' otherwise."""
+    ppm = (offset or {}).get("ppm")
+    if ppm is None or abs(ppm) < AXIS_NOTE_PPM:
+        return ""
+    return (f"the m/z axis sits {ppm:+.1f} ppm off the method's typed precursors (median over "
+            f"{offset['parents']} parent(s), {offset['source']}): the precursor search and the "
+            "MS1 window's is_parent are centred on each key x (1 + that offset), and `ms2 "
+            "analyze` matches its named ions through it")
 
 
 # ---------------------------------------------------------------------------
@@ -523,19 +850,48 @@ def spectra_table(sample_id: str, centroids: dict | None, summary: dict | None =
     return _frame(cols, SPECTRA_COLUMNS)
 
 
+#: What a parent key is, in the key-offset note: the server's (the endpoints'
+#: spectra), or -- for spectra averaged from a file's scans -- the precursor
+#: source that named it (`parents_table(key_origin=...)`).
+KEY_ORIGIN_SERVER = "the server's parent key (the method's isolation centre, by which the server is queried)"
+
+
 def parents_table(sample_id: str, centroids: dict | None, summary: dict | None = None, *,
-                  refusal: str | None = None) -> pd.DataFrame:
+                  refusal: str | None = None, key_origin=KEY_ORIGIN_SERVER,
+                  axis_offset: dict | None = None, lobe_guard: bool = False) -> pd.DataFrame:
     """One row per spectrum (and per summary group the centroid answer has no
     spectrum for): its metadata, `n_peaks`, `tic` (summed intensity), and the
     precursor peak -- located once per parent (`locate_precursor`, in its
-    lowest-energy spectrum) and followed across its energies within
-    max(`PRECURSOR_TRACK_PPM`, `PRECURSOR_TRACK_MDA`) of that m/z; NaN where a
-    spectrum has no peak there (spent, or under the noise threshold).
-    `isolation_width` is the summary's (NaN when it was refused). `refusal`,
-    the server's reason for refusing the summary, goes into every row's note.
+    lowest-energy spectrum that holds a candidate) and followed across its
+    energies within max(`PRECURSOR_TRACK_PPM`, `PRECURSOR_TRACK_MDA`) of that
+    m/z; NaN where a spectrum has no peak there (spent, or under the noise
+    threshold), and for every spectrum of a parent whose precursor is
+    ambiguous (noted). `lobe_guard` turns the side-lobe guard on
+    (`PRECURSOR_LOBE_*`, `_anchors`): for a raw file's spectra whose m/z
+    axis offset is unknown, never for the server's. `isolation_width` is the
+    summary's (NaN when it was refused). `refusal`, the server's reason for
+    refusing the summary, goes
+    into every row's note. `key_origin` names what a key is in the note on a
+    key far from its precursor: one text, or {parent m/z rounded to 1e-6:
+    text}. `axis_offset` (`axis_offset`'s answer, for spectra averaged from a
+    raw file's own centroids): the search is centred on the key x (1 + its
+    ppm), and an offset of `AXIS_NOTE_PPM` or more is noted on every row.
     No derived survival / breakdown numbers."""
     recs = _spectrum_records(centroids, summary)
-    anchors = _anchors(recs)
+    off_ppm = (axis_offset or {}).get("ppm")
+    measured = off_ppm is not None and math.isfinite(_num(off_ppm))
+    off_ppm = float(off_ppm) if measured else 0.0
+    anchors, ambiguous = _anchors(recs, off_ppm, lobe_guard, measured)
+    # two parents whose windows overlap can locate one ion: said on both
+    shared: dict[float, list] = {}
+    for p6, a in anchors.items():
+        for q6, b in anchors.items():
+            if q6 != p6 and abs(a - b) <= _track_tol(a):
+                shared.setdefault(p6, []).append(q6)
+    axis_text = axis_note(axis_offset)
+    # a reading a candidate on the key contested, where no offset is measured:
+    # one parent cannot tell an axis shift from a co-isolate -- said on its rows
+    contested = {} if measured else dict((axis_offset or {}).get("contested") or {})
     iso = _num(_summary_dict(summary).get("isolation_width"))
     cols: dict[str, list] = {c: [] for c in PARENTS_COLUMNS}
     for r in recs:
@@ -545,13 +901,33 @@ def parents_table(sample_id: str, centroids: dict | None, summary: dict | None =
             notes.append(f"summary refused ({refusal}): scan_count, t_min, t_max, hcd_v and "
                          "isolation width unknown")
         notes.extend(r.notes)
+        if axis_text:
+            notes.append(axis_text)
+        x = contested.get(repr(float(r.parent_mz)))
+        if x is not None:
+            notes.append(f"axis-offset reading contested: at its lowest energy this window's "
+                         f"strongest centroid sits {x:+.1f} ppm off its key while a precursor "
+                         "candidate sits on the key, so no offset is read and the precursor is "
+                         f"located on the key; if the m/z axis does sit {x:+.1f} ppm off, the "
+                         "ion on the key is a co-isolate and this parent's precursor is that "
+                         "stronger centroid -- check the window before reading its breakdown")
         pmz = pint = math.nan
         anchor = anchors.get(round(r.parent_mz, 6))
         if anchor is not None:
-            if abs(anchor - r.parent_mz) * 1e3 > KEY_OFFSET_NOTE_MDA:
+            # read against the key x (1 + the measured offset): the offset
+            # itself is noted once (`axis_note`), not as every key's distance
+            centre = r.parent_mz * (1.0 + off_ppm * 1e-6)
+            if abs(anchor - centre) * 1e3 > KEY_OFFSET_NOTE_MDA:
+                origin = (key_origin.get(round(r.parent_mz, 6), KEY_ORIGIN_SERVER)
+                          if isinstance(key_origin, dict) else key_origin)
                 notes.append(f"precursor measured at {anchor:.4f}, "
-                             f"{(anchor - r.parent_mz) * 1e3:+.1f} mDa from the server's parent "
-                             "key (the method's isolation centre, by which the server is queried)")
+                             f"{(anchor - centre) * 1e3:+.1f} mDa from {origin}"
+                             + (f", corrected for the m/z axis offset ({off_ppm:+.1f} ppm)"
+                                if off_ppm else ""))
+            for q6 in shared.get(round(r.parent_mz, 6), []):
+                notes.append(f"located precursor coincides with parent {q6:.4f}'s ({anchor:.4f}): "
+                             "their windows overlap and one ion is read for both -- the other "
+                             "parent's own ion is weak or absent here; read one breakdown, not two")
             if len(mz):
                 d = np.abs(mz - anchor)
                 i = int(np.argmin(d))
@@ -559,6 +935,9 @@ def parents_table(sample_id: str, centroids: dict | None, summary: dict | None =
                     pmz, pint = float(mz[i]), float(inten[i])
             if r.in_centroids and not math.isfinite(pmz):
                 notes.append("no peak at the precursor m/z (spent, or under the noise threshold)")
+        elif round(r.parent_mz, 6) in ambiguous:
+            notes.append("precursor ambiguous, not located: "
+                         + ambiguous[round(r.parent_mz, 6)])
         elif r.in_centroids:
             notes.append("precursor not found near the parent key in any spectrum of this parent")
         row = {"sample_id": str(sample_id), "spectrum": r.spectrum, "parent_mz": r.parent_mz,
@@ -574,28 +953,50 @@ def parents_table(sample_id: str, centroids: dict | None, summary: dict | None =
 
 
 def window_table(sample_id: str, ms1: dict | None, parent_mzs, isolation_width: float, *,
-                 pad_da: float = WINDOW_PAD_DA) -> pd.DataFrame:
+                 pad_da: float = WINDOW_PAD_DA, axis_offset_ppm: float = 0.0,
+                 lobe_guard: bool = False, anchors: dict | None = None,
+                 measured: bool = False) -> pd.DataFrame:
     """The isolation-window inventory from the MS1 centroids
     (`get_ms1_centroids`): for every parent, each centroid within
     +-(isolation_width/2 + pad_da) of the parent key, with its offset from the
     key, its `share` of the window's summed intensity and `is_parent` on the
-    one `locate_precursor` picks. Every centroid is kept, whatever its S/N
-    (filter on `signal_to_noise`); overlapping windows list a centroid under
-    each parent. Ordered by parent m/z, then m/z."""
+    one `locate_precursor` picks (its side-lobe guard on with `lobe_guard`,
+    as for `parents_table`). Every centroid is
+    kept, whatever its S/N (filter on `signal_to_noise`); overlapping windows
+    list a centroid under each parent. `axis_offset_ppm`: the m/z axis's
+    offset (`axis_offset`) -- the window and the search are centred on the key
+    x (1 + it); `offset_da` stays from the key. `anchors` (parent m/z rounded
+    to 1e-6 -> the precursor the MS2 spectra located; a raw file's spectra):
+    `is_parent` is the centroid nearest that ion within `_track_tol` of it,
+    none when the MS1 scans hold nothing there -- never a weaker neighbour
+    the wide search would reach; a parent with no anchor is searched for as
+    above (`measured`: the offset is, so a finely typed key looks within the
+    track tolerance first). Ordered by parent m/z, then m/z."""
     width = _num(isolation_width)
     if not (math.isfinite(width) and width > 0):
         raise ValueError(f"isolation_width must be a positive number, got {isolation_width!r}")
     ms1 = ms1 or {}
     a = _arrays("MS1", ms1) if ms1.get("mz") is not None else {n: np.zeros(0) for n in _ARRAYS}
     half = width / 2.0 + float(pad_da)
+    scale = 1.0 + float(axis_offset_ppm) * 1e-6
     cols: dict[str, list] = {c: [] for c in WINDOW_COLUMNS}
     for p in sorted({float(x) for x in parent_mzs}):
-        sel = np.flatnonzero(np.abs(a["mz"] - p) <= half)
+        sel = np.flatnonzero(np.abs(a["mz"] - p * scale) <= half)
         sel = sel[np.argsort(a["mz"][sel], kind="stable")]
         inten = a["intensity"][sel]
         total = float(np.nansum(inten))
         share = inten / total if total > 0 else np.full(len(sel), np.nan)
-        i_par = locate_precursor(a["mz"][sel], inten, p) if len(sel) else None
+        anchor = (anchors or {}).get(round(p, 6))
+        if not len(sel):
+            i_par = None
+        elif anchor is not None and math.isfinite(_num(anchor)):
+            d = np.abs(a["mz"][sel] - float(anchor))
+            k = int(np.argmin(d))
+            i_par = k if d[k] <= _track_tol(float(anchor)) else None
+        else:
+            i_par = locate_precursor(a["mz"][sel], inten, p * scale,
+                                     resolution=a["resolution"][sel] if lobe_guard else None,
+                                     track_first=_track_first(p, measured))
         n = len(sel)
         cols["sample_id"].extend([str(sample_id)] * n)
         cols["parent_mz"].extend([p] * n)
@@ -738,10 +1139,22 @@ def inventory_frame(rows: list[dict]) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # orchestration (the only part that needs a client; io_mascope's fetchers only)
 # ---------------------------------------------------------------------------
+#: Where an extraction's spectra come from (`SampleMS2.source`, the manifest's
+#: `source`): the server's MS2 endpoints (`extract_sample`; with `per_scan`,
+#: the scans behind each spectrum are read too), or a raw file's `/metadata`
+#: alone, its spectra averaged here (`extract_file`).
+SOURCE_SERVER = "server MS2 endpoints"
+SOURCE_SERVER_PER_SCAN = "server MS2 endpoints + the file's per-scan metadata"
+SOURCE_FILE = "file metadata, per scan"
+
+
 @dataclass
 class SampleMS2:
-    """`extract_sample`'s result: the three tables, the sample's inventory row
-    (`row`: status, counts, notes) and what was asked and used (`params`)."""
+    """`extract_sample`'s / `extract_file`'s result: the three tables, the
+    inventory row (`row`: status, counts, notes) and what was asked and used
+    (`params`); with the per-scan source also the scan table
+    (`scans.SCAN_COLUMNS`), every kept peak in every scan of its spectrum
+    (`scans.SCAN_PEAK_COLUMNS`) and the mapping report (`per_scan`)."""
     sample_id: str
     spectra: pd.DataFrame
     parents: pd.DataFrame
@@ -750,6 +1163,10 @@ class SampleMS2:
     params: dict
     refusal: str | None = None
     notes: list = field(default_factory=list)
+    scans: pd.DataFrame | None = None
+    scan_peaks: pd.DataFrame | None = None
+    per_scan: dict | None = None
+    source: str = SOURCE_SERVER
 
 
 def _summary_or_refusal(client, sample_id: str):
@@ -781,7 +1198,8 @@ def list_sample(client, sample_id: str, sample_row=None) -> dict:
 def extract_sample(client, sample_id: str, sample_row=None, *,
                    noise_threshold: float = DEFAULT_NOISE_THRESHOLD,
                    ms1_ppm: int = 1, iso_width: float | None = None,
-                   with_window: bool = True) -> SampleMS2:
+                   with_window: bool = True, per_scan: bool = False,
+                   metadata: dict | None = None, on_metadata=None) -> SampleMS2:
     """Fetch one sample's MS2 and build its tables.
 
     Calls, in order: the sample record (unless `sample_row` is given), the
@@ -797,7 +1215,13 @@ def extract_sample(client, sample_id: str, sample_row=None, *,
     reads 'no MS2' ('MS2 may be hidden' when the file runs past `t1`); after a
     refused summary, or with a summary that counts MS2 scans, it is raised. An explicit `iso_width` replaces the server's width. A failed
     MS1 call that is this sample's (`io_mascope.is_sample_error`) skips the
-    window only (`WINDOW_FAILED_NOTE`); any other error propagates."""
+    window only (`WINDOW_FAILED_NOTE`); any other error propagates.
+
+    `per_scan`: also read the scans behind every spectrum (`_sample_per_scan`:
+    the raw file's `/metadata` -- or `metadata`, already fetched; a fetched
+    one is handed to `on_metadata` -- and each spectrum's time-series times).
+    The spectra stay the server's; the result gains `scans` and `scan_peaks`
+    (the server's peaks read in every scan)."""
     from peaky.io import io_mascope as IO
     if iso_width is not None and not (math.isfinite(_num(iso_width)) and _num(iso_width) > 0):
         raise ValueError(f"iso_width must be a positive width in Da, got {iso_width!r}")
@@ -809,11 +1233,19 @@ def extract_sample(client, sample_id: str, sample_row=None, *,
               "window_pad_da": WINDOW_PAD_DA,
               "precursor_search": {"ppm": PRECURSOR_SEARCH_PPM, "mda": PRECURSOR_SEARCH_MDA,
                                    "min_share": PRECURSOR_MIN_SHARE},
-              "precursor_track": {"ppm": PRECURSOR_TRACK_PPM, "mda": PRECURSOR_TRACK_MDA}}
+              "precursor_track": {"ppm": PRECURSOR_TRACK_PPM, "mda": PRECURSOR_TRACK_MDA},
+              # the side-lobe guard is for a raw file's unknown axis only
+              "precursor_lobe": {"ratio": PRECURSOR_LOBE_RATIO, "fwhm": PRECURSOR_LOBE_FWHM,
+                                 "guard_on": False}}
+    if per_scan:
+        params["per_scan"] = True
     if is_tof(sample_row):
-        return SampleMS2(sample_id=str(sample_id), spectra=_frame({}, SPECTRA_COLUMNS),
-                         parents=_frame({}, PARENTS_COLUMNS), window=_frame({}, WINDOW_COLUMNS),
-                         row=skipped_row(sample_id, sample_row), params=params)
+        res = SampleMS2(sample_id=str(sample_id), spectra=_frame({}, SPECTRA_COLUMNS),
+                        parents=_frame({}, PARENTS_COLUMNS), window=_frame({}, WINDOW_COLUMNS),
+                        row=skipped_row(sample_id, sample_row), params=params)
+        if per_scan:
+            _attach_per_scan(res, *_no_per_scan("not an Orbitrap sample: no MS2 to map"))
+        return res
     summary, refusal = _summary_or_refusal(client, sample_id)
     summ = _summary_dict(summary)
     no_ms2 = bool(summ) and _num(summ.get("ms2_scan_count")) == 0
@@ -868,27 +1300,562 @@ def extract_sample(client, sample_id: str, sample_row=None, *,
                 notes.append("window inventory empty: no MS1 centroid inside any window")
     params.update(isolation_width_used=None if source is None else width,
                   isolation_width_source=source)
-    return SampleMS2(sample_id=str(sample_id), spectra=spectra, parents=parents, window=window,
-                     row=row, params=params, refusal=refusal, notes=notes)
+    res = SampleMS2(sample_id=str(sample_id), spectra=spectra, parents=parents, window=window,
+                    row=row, params=params, refusal=refusal, notes=notes)
+    if per_scan:
+        _attach_per_scan(res, *_sample_per_scan(client, sample_id, sample_row, spectra, parents,
+                                                centroids, noise_threshold=noise_threshold,
+                                                metadata=metadata, on_metadata=on_metadata))
+    return res
+
+
+# ---------------------------------------------------------------------------
+# the per-scan source (peaky/ms2/scans.py): a sample's scans, a raw file's MS2
+# ---------------------------------------------------------------------------
+#: `extract_sample(per_scan=True)` asks one time series per spectrum, one after
+#: the other with this pause between them (s): a sample of 29 spectra is 29
+#: requests, and a long back-to-back burst is what trips the server's WAF.
+TIMESERIES_PAUSE_S = 1.0
+#: The per-scan tables are an addition to a sample's MS2 tables: when the
+#: server refuses one of their requests for this sample
+#: (`io_mascope.is_sample_error`), the MS2 tables are kept and written, the
+#: per-scan tables are empty (with their headers) and the note
+#: 'per-scan tables skipped: ' + this gives the server's reason.
+PER_SCAN_FAILED_NOTE = ("the server could not serve this sample's per-scan data ({error}); "
+                        "the MS2 tables are kept")
+#: The scans behind a server spectrum: its time-series times (the server's
+#: own grouping, read back scan by scan).
+PER_SCAN_BY_TIMES = "the server's groups, by their time-series times"
+
+
+def calibration_factor(record) -> tuple[float, str]:
+    """(the m/z calibration factor the server applies to the spectra it
+    serves for this sample's file, a note) from the sample record's
+    `mz_calibration` (`par.calibration_factor`). The server multiplies the
+    averaged MS2 m/z (and their time series') by it; a file's `/metadata`
+    centroids are the raw axis. No calibration: 1.0. A calibration that
+    carries no factor (the server's failed-calibration marker has no `par`):
+    1.0, and the note says the peaks are matched as served."""
+    cal = _field(record, "mz_calibration")
+    if cal is None:
+        return 1.0, ""
+    par = cal.get("par") if isinstance(cal, dict) else None
+    f = _num(par.get("calibration_factor")) if isinstance(par, dict) else math.nan
+    if math.isfinite(f) and f > 0:
+        return f, ""
+    status = cal.get("status") if isinstance(cal, dict) else None
+    return 1.0, ("the sample record's m/z calibration holds no calibration factor"
+                 + (f" (status '{status}')" if status else "")
+                 + ": the server's peaks are matched to the scans' centroids as served")
+
+
+def _no_per_scan(reason: str):
+    """Empty per-scan tables (with their dtypes), the report and the note of a
+    sample whose scans are not read, for `reason`."""
+    from peaky.ms2 import scans as SC
+    return (SC._frame({}, SC.SCAN_COLUMNS), SC._frame({}, SC.SCAN_PEAK_COLUMNS),
+            {"mode": PER_SCAN_BY_TIMES, "skipped": reason}, [f"per-scan tables skipped: {reason}"])
+
+
+def _attach_per_scan(res: SampleMS2, scans, peaks, info: dict, notes: list) -> None:
+    res.scans, res.scan_peaks, res.per_scan = scans, peaks, info
+    res.notes.extend(notes)
+    res.source = SOURCE_SERVER_PER_SCAN
+
+
+def _sample_per_scan(client, sample_id: str, sample_row, spectra: pd.DataFrame,
+                     parents: pd.DataFrame, centroids: dict, *, noise_threshold: float,
+                     metadata: dict | None = None, on_metadata=None):
+    """The scans behind a sample's server spectra -> (scans, scan peaks,
+    report, notes).
+
+    Asks the raw file's `/metadata` (the record's `sample_file_id`; skipped
+    when `metadata` is given) and, per spectrum, its time series's `time` list
+    (`TIMESERIES_PAUSE_S` apart). Each time names one scan: on our own files
+    every MS2 scan of every group, < 1 ms apart (`scans.TIME_MATCH_S`), none an
+    MS1 row (`scans.assign_from_times`). Each server peak is then read in every
+    scan of its spectrum (`scans.scan_peak_intensities`) at its m/z over the
+    file's calibration factor (`calibration_factor`: the server serves a
+    calibrated axis, the scans' centroids are the raw one); the spectra
+    themselves are not touched. Counted and noted: times that match no scan,
+    a group whose server count its times do not reach, scans with no
+    trailer row that no group holds -- the bad first scan the server drops,
+    and the MS2 scans of a hidden tail (those after `t1`) -- and server peaks
+    that read 0 in every scan of their spectrum (an axis the factor does not
+    explain)."""
+    from peaky.io import io_mascope as IO
+    from peaky.ms2 import scans as SC
+    if not centroids:
+        return _no_per_scan("no MS2 spectrum to map scans to")
+    fid = str(_field(sample_row, "sample_file_id") or "")
+    if metadata is None and not fid:
+        return _no_per_scan("the sample record names no raw file (sample_file_id)")
+    times: dict[str, list] = {}
+    try:
+        meta = metadata
+        if meta is None:
+            meta = IO.fetch_file_metadata(client, fid)
+            if on_metadata is not None:
+                on_metadata(meta)
+        # an answer that holds no per-scan centroids (`data: null` reads {})
+        # is this sample's: its MS2 tables are kept, no time series asked
+        meta = SC.metadata_payload(meta)
+        for k, (key, entry) in enumerate(centroids.items()):
+            if k:
+                time.sleep(TIMESERIES_PAUSE_S)
+            parent, act = _parent_of(str(key), entry if isinstance(entry, dict) else {})
+            ts = IO.fetch_ms2_timeseries(client, sample_id, parent, activation=act or None,
+                                         noise_threshold=noise_threshold)
+            times[str(key)] = list(ts.get("time") or [])
+    except Exception as exc:                     # noqa: BLE001 -- sorted by is_sample_error
+        if not IO.is_sample_error(exc):
+            raise
+        return _no_per_scan(PER_SCAN_FAILED_NOTE.format(
+            error=f"{type(exc).__name__}: {IO.server_error_text(exc)}"))
+    scans, rep = SC.assign_from_times(SC.scan_table(meta), times)
+    factor, cal_note = calibration_factor(sample_row)
+    peaks = SC.scan_peak_intensities(meta, scans, spectra, mz_factor=factor)
+    notes = [f"per-scan: {n}" for n in rep["notes"]]
+    if cal_note:
+        notes.append(f"per-scan: {cal_note}")
+    tot = peaks.groupby(["spectrum", "peak_mz"], sort=False)["intensity"].sum()
+    zero = int((tot <= 0).sum())
+    if zero:
+        notes.append(f"per-scan: {zero} of the {len(tot)} server peaks read 0 in every scan of "
+                     "their spectrum: no centroid of its scans lies within half a line width of "
+                     f"them at m/z / {factor:.9g} (the file's calibration factor) -- their rows "
+                     "are zeros, not readings (an m/z axis the record's calibration does not "
+                     "explain?)")
+    counted = {r.spectrum: r.scan_count for r in parents.itertuples() if math.isfinite(r.scan_count)}
+    short = {k: (v["matched"], counted[k]) for k, v in rep["spectra"].items()
+             if k in counted and v["matched"] != counted[k]}
+    if short:
+        notes.append("per-scan: the time series name another number of scans than the server "
+                     "counts for " + ", ".join(f"{k} ({m} named, {n:g} counted)"
+                                               for k, (m, n) in short.items()))
+    free = scans[~scans["has_header"] & (scans["spectrum"] == "")]
+    t1 = _num(_field(sample_row, "t1"))
+    tail = free[free["t_s"] > t1] if math.isfinite(t1) else free.iloc[0:0]
+    if len(tail):
+        notes.append(f"per-scan: {len(tail)} of the {len(free)} scan(s) in no group lie after the "
+                     f"last ingested scan (t1 = {t1:.1f} s; scan(s) "
+                     f"{SC._runs_text(tail['scan'])}): the hidden tail's MS2 scans, with no "
+                     "trailer row and no group to name their precursor or energy")
+    info = {"mode": PER_SCAN_BY_TIMES, "sample_file_id": fid or None,
+            "scans": len(scans), "header_rows": int(scans["has_header"].sum()),
+            "ms2_scans_mapped": int((scans["spectrum"] != "").sum()),
+            "spectra": rep["spectra"], "unmatched_times": rep["unmatched_times"],
+            "claimed_twice": rep["claimed_twice"], "on_ms1_rows": rep["on_ms1_rows"],
+            "headerless_in_no_group": rep["headerless_in_no_group"],
+            "headerless_in_no_group_scans": rep["headerless_in_no_group_scans"],
+            "hidden_tail_scans": int(len(tail)),
+            "mz_calibration_factor": factor, "peaks_all_zero": zero,
+            "filters": SC.filter_verdict(scans), "tolerances": SC.tolerances(),
+            "timeseries_pause_s": TIMESERIES_PAUSE_S}
+    return scans, peaks, info, notes
+
+
+class PolarityUnknown(ValueError):
+    """The polarity of a raw file cannot be read and was not given: its scan
+    filters are garbled (their signs are random) and no file record says one
+    sign. The message says why and asks for `--polarity`."""
+
+
+class DualPolarityError(ValueError):
+    """A raw file whose readable scan filters carry both signs and whose MS2
+    scans are read by trailer: a dual-polarity method. The per-scan MS2 is
+    built from every MS2 scan and the window from every MS1 scan whatever
+    their sign, so a folder labelled with one sign would hold the other's
+    scans -- refused, whatever `--polarity` says (`dual_polarity`)."""
+
+
+def dual_polarity(scans: pd.DataFrame) -> str:
+    """Why `scans` (`scans.scan_table`) cannot be extracted under one sign
+    (`DualPolarityError`): every filter agrees with its trailer and they carry
+    both signs, and the file has MS2 scans by trailer; '' otherwise. A garbled
+    file's signs are random and its filters never readable (never this); a
+    file whose MS2 scans have no trailer row (an ordinary dual-polarity file)
+    reads 'MS2 without trailer' and is not this either."""
+    from peaky.ms2 import scans as SC
+    v = SC.filter_verdict(scans)
+    if (v["filters_readable"] != SC.FILTERS_YES or len(v["polarities_in_filters"]) < 2
+            or not (scans["order"] == 2).any()):
+        return ""
+    return (f"its scan filters are readable and carry both signs ('{v['polarities_in_filters']}'): "
+            "a dual-polarity method. The spectra would average every MS2 scan and the window "
+            "every MS1 scan whatever their sign, so a folder labelled with one sign would hold "
+            "the other's scans -- not extracted (no --polarity splits it)")
+
+
+def resolve_polarity(explicit: str | None, file_row, scans: pd.DataFrame) -> tuple[str, str]:
+    """(polarity, where it came from) for a raw file: `explicit` (checked
+    against the others), else the file record's when it is one sign, else the
+    scan filters' when every filter agrees with its trailer and they carry one
+    sign (`scans.filter_polarity`). A garbled file's filters carry random
+    signs, and its listing reads '+-' -- the server's reader saw both -- so
+    neither names it: `PolarityUnknown`. An explicit sign that contradicts a
+    one-sign record or readable filters is a ValueError."""
+    from peaky.ms2 import scans as SC
+    rec = str(_field(file_row, "polarity") or "").strip()
+    rec_one = rec if rec in ("+", "-") else None
+    filt = SC.filter_polarity(scans)
+    if explicit is not None:
+        if explicit not in ("+", "-"):
+            raise ValueError(f"polarity must be '+' or '-', got {explicit!r}")
+        for what, v in (("the file record", rec_one), ("the scan filters", filt)):
+            if v is not None and v != explicit:
+                raise ValueError(f"--polarity {explicit} contradicts {what}, which read '{v}'")
+        return explicit, "explicit"
+    if rec_one:
+        return rec_one, "file record"
+    if filt:
+        return filt, "scan filters"
+    v = SC.filter_verdict(scans)
+    readable = {SC.FILTERS_YES: "readable", SC.FILTERS_NO: "not readable",
+                SC.FILTERS_PARTLY: "only partly readable"}.get(v["filters_readable"],
+                                                               "absent (no trailer row)")
+    why = [f"its scan filters are {readable} ({v['filters_ok']} of {v['header_rows']} agree "
+           "with their trailers"
+           + (f", signs '{v['polarities_in_filters']}'" if v["polarities_in_filters"] else "")
+           + ")"]
+    if rec:
+        why.append(f"the file record reads '{rec}'")
+    raise PolarityUnknown("the polarity cannot be read off this file: " + "; ".join(why)
+                          + ". Pass --polarity + or -")
+
+
+def _list_frames(inclusion_lists) -> tuple[list, list]:
+    """Inclusion lists (paths, or `scans.read_inclusion_list` frames) -> (frames,
+    [{'name', 'rows', 'sha1', 'bytes'}]) for the manifest: a path's base name
+    only, and the file's sha1 and size -- the list decides the precursor
+    mapping, so a run names the list it read by its content, as it names
+    its payload. A frame carries them in its `attrs` (the CLI sets them from
+    the file it read); a frame without them is hashed by its rows (m/z and
+    name; `bytes` None: no file)."""
+    import hashlib
+
+    from peaky.ms2 import scans as SC
+    from peaky.reporting import provenance as PV
+    frames, info = [], []
+    for i, x in enumerate(inclusion_lists or []):
+        if isinstance(x, pd.DataFrame):
+            f, name = (x if set(SC.LIST_COLUMNS) <= set(x.columns)
+                       else SC.inclusion_list_frame(x)), str(x.attrs.get("name") or f"list {i + 1}")
+            sha1, size = x.attrs.get("sha1"), x.attrs.get("bytes")
+            if not sha1:
+                text = f[list(SC.LIST_COLUMNS)].to_csv(index=False, float_format="%.10g")
+                sha1, size = hashlib.sha1(text.encode("utf-8")).hexdigest(), None
+        else:
+            p = os.path.expanduser(str(x))
+            f, name = SC.read_inclusion_list(p), os.path.basename(p)
+            sha1, size = PV.sha1_file(p), int(os.path.getsize(p))
+        frames.append(f)
+        info.append({"name": name, "rows": int(len(f)), "sha1": sha1,
+                     "bytes": None if size is None else int(size)})
+    return frames, info
+
+
+#: `extract_file`'s status when the file has scans with no trailer row and no
+#: MS2 scan by trailer: an ordinary MS2 file, whose MS2 scans the server's
+#: `/metadata` gives no row (it reads them as MS order 'Ms' only on a garbled
+#: file). Their precursors and energies are the server's groups:
+#: `extract_sample(per_scan=True)` maps them.
+MS2_WITHOUT_TRAILER = "MS2 without trailer"
+MS2_WITHOUT_TRAILER_NOTE = ("{n:g} scan(s) carry no trailer row and none reads MS2 off its trailer: "
+                            "an ordinary MS2 file, whose MS2 scans the server reads and groups "
+                            "itself -- extract its sample with `peaky ms2 extract --sample-id ID "
+                            "--per-scan`")
+
+
+def extract_file(client, sample_file_id: str, *, metadata: dict | None = None, file_row=None,
+                 inclusion_lists=None, polarity: str | None = None,
+                 noise_threshold: float = DEFAULT_NOISE_THRESHOLD,
+                 iso_width: float | None = None, with_window: bool = True,
+                 rule_check: bool = True) -> SampleMS2:
+    """One RAW FILE's MS2 from its `/metadata` alone (`scans.extract_payload`):
+    for a file the server's MS2 endpoints cannot read -- a targeted-MS2
+    (inclusion-list) file whose scan filters its reader garbles never becomes
+    a sample item -- or to rebuild a file's spectra scan by scan.
+
+    `metadata`: the payload (`io_mascope.fetch_file_metadata`), else asked of
+    `client`; with it no server is needed. `inclusion_lists`: the method's
+    lists (paths or frames; one shared list, or one per experiment in event
+    order) -- without one the precursors come from readable filters or the
+    scan-range rule (`scans.map_precursors`; a `scans.ScanMapError` names the
+    events that do not fit). `polarity`: `resolve_polarity` (a garbled file
+    needs it). `noise_threshold`: OUR S/N floor on the averaged spectra (the
+    server's rule, reproduced: `scans.average_scans`). `iso_width` replaces the
+    trailer's isolation width for the window inventory; the MS1 scans of the
+    file are averaged for it (`with_window`). `rule_check=False` skips the
+    list's check against the scan-range rule (a method that does not set its
+    scan range by the precursor). The result's `row` is an inventory row
+    (`INVENTORY_COLUMNS`) keyed by the file id, `scans` / `scan_peaks` the
+    per-scan tables and `per_scan` the mapping report."""
+    from peaky.io import io_mascope as IO
+    from peaky.ms2 import scans as SC
+    if iso_width is not None and not (math.isfinite(_num(iso_width)) and _num(iso_width) > 0):
+        raise ValueError(f"iso_width must be a positive width in Da, got {iso_width!r}")
+    if not (math.isfinite(_num(noise_threshold)) and _num(noise_threshold) >= 0):
+        raise ValueError(f"noise_threshold must be >= 0, got {noise_threshold!r}")
+    frames, lists_info = _list_frames(inclusion_lists)
+    if metadata is None:
+        if client is None:
+            raise ValueError("extract_file needs the file's metadata or a client to ask for it")
+        metadata = IO.fetch_file_metadata(client, sample_file_id)
+    meta = SC.metadata_payload(metadata)
+    table = SC.scan_table(meta)
+    dual = dual_polarity(table)
+    if dual:
+        raise DualPolarityError(dual)
+    pol, pol_src = resolve_polarity(polarity, file_row, table)
+    res = SC.extract_payload(str(sample_file_id), meta, lists=frames or None,
+                             noise_threshold=float(noise_threshold), iso_width=iso_width,
+                             with_window=with_window, rule_check=rule_check)
+    par = res.parents
+    widths = sorted({round(w, 6) for w in res.widths.values()})
+    if iso_width is not None:
+        width, wsrc = float(iso_width), "explicit"
+    elif len(widths) == 1:
+        width, wsrc = widths[0], "trailer"
+    else:
+        # per parent (the parents table holds each one's): no single width
+        width, wsrc = None, ("trailer, per parent" if widths else None)
+    summary = {"parent_peaks": sorted({float(p) for p in par["parent_mz"]}),
+               "groups": [{"parent_peak_mz": float(r.parent_mz), "activation": r.activation,
+                           "hcd_energy": [float(r.hcd_v)] if math.isfinite(r.hcd_v) else [],
+                           "scan_count": r.scan_count, "t_min": r.t_min, "t_max": r.t_max}
+                          for r in par.itertuples()],
+               "isolation_width": widths[0] if len(widths) == 1 else math.nan,
+               "ms1_scan_count": res.report["ms1_scans"],
+               "ms2_scan_count": res.report["ms2_scans"]}
+    keys = {r.spectrum: {"parent_peak_mz": float(r.parent_mz), "activation": r.activation,
+                         "mz": []} for r in par.itertuples()}
+    row = inventory_row(str(sample_file_id), summary, sample_row=file_row or {}, centroids=keys)
+    row["polarity"] = pol
+    headerless = int((~res.scans["has_header"]).sum())
+    if res.report["ms2_scans"] == 0 and not len(par):
+        if headerless:
+            row["status"] = MS2_WITHOUT_TRAILER
+            row["note"] = MS2_WITHOUT_TRAILER_NOTE.format(n=headerless)
+        else:
+            row["status"], row["note"] = "no MS2", "no scan reads MS2 off its trailer"
+    elif not len(par):
+        row["status"] = "MS2 unmapped"
+        row["note"] = "no MS2 scan could be mapped to a precursor and an energy"
+    else:
+        row["status"], row["note"] = "ok", ""
+    mapping = res.report["mapping"]
+    params = {"source": SOURCE_FILE, "noise_threshold": float(noise_threshold),
+              "noise_threshold_applied_by": "peaky (the server's averaging rule, per scan)",
+              "iso_width": iso_width, "isolation_width_used": width,
+              "isolation_width_source": wsrc,
+              "isolation_widths": {repr(float(p)): float(w) for p, w in sorted(res.widths.items())},
+              "window_pad_da": WINDOW_PAD_DA,
+              "precursor_search": {"ppm": PRECURSOR_SEARCH_PPM, "mda": PRECURSOR_SEARCH_MDA,
+                                   "min_share": PRECURSOR_MIN_SHARE},
+              "precursor_track": {"ppm": PRECURSOR_TRACK_PPM, "mda": PRECURSOR_TRACK_MDA},
+              "polarity": pol, "polarity_source": pol_src,
+              "inclusion_lists": lists_info, "rule_check": bool(rule_check),
+              # the m/z axis offset the precursor search and the window were
+              # centred on; `ms2 analyze` matches its named ions through it
+              "ms2_axis_offset": res.report["averaging"]["axis_offset"],
+              "precursor_lobe": {"ratio": PRECURSOR_LOBE_RATIO, "fwhm": PRECURSOR_LOBE_FWHM,
+                                 "guard_on": res.report["averaging"]["axis_offset"]["ppm"] is None},
+              "axis_search_ppm": AXIS_SEARCH_PPM, "axis_key_ppm": AXIS_KEY_PPM}
+    info = {"mode": "file", "sample_file_id": str(sample_file_id),
+            "scans": res.report["scans"], "header_rows": res.report["header_rows"],
+            "ms1_scans": res.report["ms1_scans"], "ms2_scans": res.report["ms2_scans"],
+            "ms2_scans_in_spectra": res.report["ms2_scans_in_spectra"],
+            "ms1_scan_range": res.report["ms1_scan_range"],
+            "ms1_time_s": res.report["ms1_time_s"], "ms2_time_s": res.report["ms2_time_s"],
+            "mapping": mapping, "averaging": res.report["averaging"],
+            "tolerances": res.report["tolerances"]}
+    return SampleMS2(sample_id=str(sample_file_id), spectra=res.spectra, parents=par,
+                     window=res.window, row=row, params=params, notes=list(res.notes),
+                     scans=res.scans, scan_peaks=res.scan_peaks, per_scan=info,
+                     source=SOURCE_FILE)
+
+
+# ---------------------------------------------------------------------------
+# an instrument's raw files (`peaky ms2 files`)
+# ---------------------------------------------------------------------------
+#: One row per raw file of the listing; the check columns are filled for the
+#: files `--check` read the `/metadata` of (`check_file`), NaN / '' otherwise.
+FILES_COLUMNS: dict[str, str] = {
+    "sample_file_id": "str", "filename": "str", "datetime_utc": "str", "length_s": "float64",
+    "polarity": "str", "instrument_type": "str", "processing_status": "str",
+    "processing_detail": "str", "listed": "bool", "needs_check": "str", "checked": "bool",
+    "scans": "float64",
+    "header_rows": "float64", "ms2_by_trailer": "float64", "headerless": "float64",
+    "filters_readable": "str", "filters_ok": "float64", "events": "float64",
+    "experiments": "float64", "nce": "str", "isolation_widths": "str", "scan_range_rule": "str",
+    "spectra": "float64", "precursors": "str", "inferred": "float64", "unassigned": "float64",
+    "command": "str", "check_note": "str",
+}
+#: A listing's processing status for a file the server built its sample from.
+#: Any other set status (e.g. 'needs_chemistry', the server's word for a file
+#: whose filters it garbled into both polarities) marks the file for
+#: `--check`; a file with no status (our own server lists none) is not marked.
+STATUS_DONE = "done"
+#: `needs_check` of a file named with `--check` that the listed range does
+#: not hold: no listing row says its polarity or status.
+NOT_LISTED = "named with --check (not in the listed range)"
+
+
+def needs_check(file_row) -> str:
+    """Why a listed file is worth reading per scan ('' when it is not): a
+    polarity that is not one sign (the listing's '+-' -- the server's reader saw
+    both, as on a file whose scan filters it garbles; also a dual-polarity file
+    it processed), or a processing status set and other than 'done' (a file
+    with no status is not flagged). A routine MS1 file reads '': `ms2 files
+    --check` without ids never fetches it, but a file it names (`--check ID`)
+    is read whatever this says."""
+    pol = str(_field(file_row, "polarity") or "").strip()
+    st = str(_field(file_row, "processing_status") or "").strip()
+    why = []
+    if pol not in ("+", "-"):
+        why.append(f"polarity '{pol}'")
+    if st and st != STATUS_DONE:
+        why.append(f"status '{st}'")
+    return ", ".join(why)
+
+
+def file_row(rec, *, listed: bool = True) -> dict:
+    """A `FILES_COLUMNS` row from a listing record (`io_mascope.fetch_sample_files`),
+    its check columns blank. `listed=False`: a file named with `--check` that
+    the listed range does not hold -- no row says its polarity or status
+    (`NOT_LISTED`)."""
+    out = {c: (math.nan if t == "float64" else False if t == "bool" else "")
+           for c, t in FILES_COLUMNS.items()}
+    out.update(sample_file_id=str(_field(rec, "sample_file_id") or ""),
+               filename=str(_field(rec, "filename") or ""),
+               datetime_utc=str(_field(rec, "datetime_utc") or ""),
+               length_s=_num(_field(rec, "length")),
+               polarity=str(_field(rec, "polarity") or ""),
+               instrument_type=str(_field(rec, "instrument_type") or ""),
+               processing_status=str(_field(rec, "processing_status") or ""),
+               processing_detail=str(_field(rec, "processing_detail") or ""),
+               listed=bool(listed), needs_check=needs_check(rec) if listed else NOT_LISTED)
+    return out
+
+
+def files_frame(rows: list[dict]) -> pd.DataFrame:
+    return _frame({c: [r[c] for r in rows] for c in FILES_COLUMNS}, FILES_COLUMNS)
+
+
+def _fmt_set(values) -> str:
+    return "/".join(_fmt(v) for v in sorted({round(float(v), 4) for v in values
+                                             if math.isfinite(_num(v))}))
+
+
+def check_file(meta: dict, row: dict) -> dict:
+    """The check columns of one file (`FILES_COLUMNS`) from its `/metadata`:
+    scans, trailer rows, MS2 scans by trailer, headerless scans, whether its
+    filters are readable, its MS2 events, experiments, NCEs and isolation
+    widths, whether its scan range follows the precursor, what a mapping
+    without a list gives (spectra, precursor sources, inferred / unassigned
+    headerless scans) and the `ms2 extract` command line for it. Nothing is
+    averaged."""
+    from peaky.ms2 import scans as SC
+    scans = SC.scan_table(meta)
+    v = SC.filter_verdict(scans)
+    ms2 = scans[scans["order"] == 2]
+    headerless = int((~scans["has_header"]).sum())
+    cols = list(FILES_COLUMNS)
+    out = {c: (math.nan if FILES_COLUMNS[c] == "float64" else "")
+           for c in cols[cols.index("checked") + 1:]}
+    out.update({"checked": True, "scans": float(len(scans)), "header_rows": float(v["header_rows"]),
+           "ms2_by_trailer": float(len(ms2)), "headerless": float(headerless),
+           "filters_readable": v["filters_readable"], "filters_ok": float(v["filters_ok"]),
+           "events": float(ms2["event"].nunique()), "nce": _fmt_set(ms2["nce"]),
+           "isolation_widths": _fmt_set(ms2["iso_width"])})
+    fid = row.get("sample_file_id", "")
+    pol = row.get("polarity", "")
+    notes = []
+    if not len(ms2):
+        if headerless:
+            out["check_note"] = MS2_WITHOUT_TRAILER_NOTE.format(n=headerless)
+        else:
+            out["check_note"] = "no MS2 scan"
+        return out
+    cmd = f"peaky ms2 extract --file {fid}"
+    dual = dual_polarity(scans)
+    if dual:
+        notes.append(f"cannot be extracted as it is: {dual}")
+    elif SC.filter_polarity(scans) is None:
+        if pol in ("+", "-"):
+            cmd += f" --polarity {pol}"
+        else:
+            cmd += " --polarity <+|->"
+            notes.append(("the file is not in the listed range: no listing names its sign"
+                          if row.get("listed") is False else
+                          f"the listing reads polarity '{pol}'")
+                         + " and the filters name none: pass the method's sign")
+    try:
+        mapped, rep = SC.map_precursors(scans)
+    except SC.ScanMapError as exc:
+        out["experiments"] = math.nan
+        out["scan_range_rule"] = SC.rule_summary(scans)
+        if exc.needs_list and not dual:
+            # no precursor source for some events: the list is what is missing
+            out["command"] = cmd + " --inclusion-list <the method's list.csv>"
+            out["check_note"] = "; ".join([*notes, f"without a list: {exc}"])
+        else:
+            # refused for a reason no list lifts (or a dual-polarity file): no
+            # command would extract it
+            out["check_note"] = "; ".join([*notes, ("without a list: " if exc.needs_list else
+                                                    "cannot be extracted as it is: ") + str(exc)])
+        return out
+    inf = rep["inference"]
+    out.update(experiments=float(len(rep["experiments"])),
+               scan_range_rule=SC.rule_text(rep["rule"]),
+               spectra=float(mapped.loc[mapped["spectrum"] != "", "spectrum"].nunique()),
+               precursors="; ".join(f"{k} {n}" for k, n in rep["precursor_sources"].items()),
+               inferred=float(inf["inferred"]), unassigned=float(inf["unassigned"]))
+    if not rep["layout_closed"] and inf["headerless"]:
+        cmd += " --inclusion-list <the method's list.csv>"
+        # why the layout is open is the cycle walk's note (when it walked):
+        # said once, the advice here
+        said = any("event ranges are not pinned" in n for n in rep["notes"])
+        notes.append(("" if said else "without a list the experiments' event ranges are not "
+                      "pinned (only the method's list, sized by the Full Scan event, pins them): ")
+                     + "pass the method's list: without it, headerless scans at block edges and "
+                     "on a wrap stay unassigned")
+    elif SC.PRECURSOR_RULE in rep["precursor_sources"]:
+        cmd += " [--inclusion-list <the method's list.csv>]"
+        notes.append("precursors from the scan-range rule: the method's list checks them")
+    out["command"] = "" if dual else cmd
+    out["check_note"] = "; ".join(notes + [n for n in rep["notes"]])
+    return out
 
 
 def manifest(res: SampleMS2, *, files: dict | None = None, created_utc: str | None = None
              ) -> dict:
-    """The `ms2_manifest.json` record of one extraction: the sample, its status
-    and notes, the server's refusal, the parameters, the counts, the written
-    files' sha1 and the code identity (reporting.provenance). No credentials
-    and no server URL: the refusal reason is the server's message without it."""
+    """The `ms2_manifest.json` record of one extraction: the sample (or raw
+    file), its status, source and notes, the server's refusal, the parameters,
+    the counts, the written files' sha1, the code identity
+    (reporting.provenance) and, from the per-scan source, its report
+    (`per_scan`: the mapping, the rule fit, the inference counts, the
+    tolerances). No credentials and no server URL: the refusal reason is the
+    server's message without it."""
     import sys
 
     import peaky
     from peaky.io import io_mascope as IO
+    from peaky.ms2 import scans as SC
     from peaky.reporting import provenance as PV
 
     row = res.row
-    return {
+    counts = {"parents": int(res.parents["parent_mz"].nunique()),
+              "spectra": int(row["n_spectra"]), "parents_rows": int(len(res.parents)),
+              "peaks": int(len(res.spectra)), "window_rows": int(len(res.window))}
+    if res.scans is not None:
+        counts.update(scans=int(len(res.scans)),
+                      scan_peak_rows=int(len(res.scan_peaks)) if res.scan_peaks is not None else 0)
+    out = {
         "sample_id": res.sample_id, "name": row["name"], "datetime_utc": row["datetime_utc"],
         "polarity": row["polarity"], "status": row["status"],
-        "energy_resolved": bool(row["energy_resolved"]),
+        "energy_resolved": bool(row["energy_resolved"]), "source": res.source,
         "notes": (row["note"].split(NOTE_SEP) if row["note"] else []) + list(res.notes),
         "server": {"summary_refused": res.refusal,
                    "ms1_scans": None if math.isnan(row["ms1_scans"]) else row["ms1_scans"],
@@ -898,13 +1865,17 @@ def manifest(res: SampleMS2, *, files: dict | None = None, created_utc: str | No
                    "hidden_tail_s": (None if math.isnan(row["hidden_tail_s"])
                                      else round(row["hidden_tail_s"], 3))},
         "parameters": res.params,
-        "counts": {"parents": int(res.parents["parent_mz"].nunique()),
-                   "spectra": int(row["n_spectra"]), "parents_rows": int(len(res.parents)),
-                   "peaks": int(len(res.spectra)), "window_rows": int(len(res.window))},
+        "counts": counts,
         "files": dict(files or {}),
         "code": {"package_version": peaky.__version__, "sources_version": __version__,
-                 "io_mascope_version": IO.__version__,
+                 "scans_version": SC.__version__, "io_mascope_version": IO.__version__,
                  "git": PV.git_info(os.path.dirname(os.path.abspath(__file__))),
                  "python": sys.version.split()[0], "deps": PV.dep_versions()},
         "created_utc": created_utc,
     }
+    if res.source == SOURCE_FILE:
+        # nothing here is the server's: the counts are the trailers' (per_scan)
+        out["server"] = None
+    if res.per_scan is not None:
+        out["per_scan"] = res.per_scan
+    return out

@@ -108,10 +108,16 @@ peaky publish <run-folder>/<sample>_<stamp>_ledger.csv
 # energy-resolved spectra + parents + isolation-window tables (docs/MS2.md §10)
 peaky ms2 list --batch "<batch>" --dataset "<workspace>"   # or --sample-id <ID...>
 peaky ms2 extract --sample-id <ID...> [--iso-width 0.4]    # -> <out-dir>/ms2/<ID>/
+peaky ms2 extract --sample-id <ID> --per-scan              # + ms2_scans.csv, ms2_scan_peaks.parquet
+# a raw file the server cannot read (garbled tMS2 filters; listed '+-' / needs_chemistry):
+# find it, then rebuild its MS2 from the per-scan trailers + centroids (docs/MS2.md §12)
+peaky ms2 files --instrument <NAME> --since <ISO> [--until <ISO>] --check   # times in UTC
+peaky ms2 extract --file <FILE_ID> --inclusion-list <list.csv> --polarity <+|->
 # offline, no credentials: readings per energy, breakdown curves + E50, fragment
 # onsets + attributions for the NAMED window ions (docs/MS2.md §11); a fourth loss
 # piece only on a ladder (--no-ladder-k4 = strict 3, --k-max K = ungated)
 peaky ms2 analyze --run-dir <out-dir>/ms2/<ID> --ion MZ=FORMULA [--ion ...] [--iso-width 0.4]
+# a --file folder's m/z axis offset is read from its manifest (--mass-offset-ppm replaces it)
 ```
 
 `peaky pool` pools every batch matching `--batches` (a REGEX over batch names, e.g.
