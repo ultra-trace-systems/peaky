@@ -12,7 +12,9 @@ same tables (`peaky ms2 extract --per-scan | --file`, `peaky ms2 files`);
 `analyze` runs the core on one extracted folder (`peaky ms2 analyze`), and
 `replicates` re-reads its breakdown scan by scan where the folder holds the
 per-scan tables (the spread of every curve, a bootstrap interval of every
-E50). See docs/MS2.md.
+E50); `channels` reads each product against the ion's adduct (reagent ion,
+reagent loss, monomer shedding, skeletal) and gives each ion a heuristic
+binding class (adduct / cluster / covalent). See docs/MS2.md.
 """
 from peaky.ms2.attribute import (
     BRANCHING_FLAG,

@@ -183,6 +183,85 @@ ADDUCT_SHIFTS: dict[str, float] = {
     # corroborated on its own hydride channel, never enumerated directly.
     "[M+H-H2O]+": -(M["H"]) - M["O"] - M_E,
 }
+#: The labels written above, taken before any `register_adduct` call: the
+#: table every built-in form is checked against (`ADDUCT_GROUPS`). The live
+#: `ADDUCT_SHIFTS` grows at run time (a solvent cluster's rungs,
+#: `assignment/solvent_clusters.py`), so it is no fixed set to test against.
+BUILTIN_ADDUCTS: frozenset[str] = frozenset(ADDUCT_SHIFTS)
+
+# ---------------------------------------------------------------------------
+# Adduct / ion-form GROUPS: what each form adds to the neutral, as a formula
+# ---------------------------------------------------------------------------
+#: The group each ion form above adds to its neutral M, as SIGNED element
+#: counts: ion formula = M + group, so ion_mz(M, label) = neutral_mass(M) +
+#: neutral_mass(group) - charge x M_E, the shift above (tested on every
+#: label of `BUILTIN_ADDUCTS`). A removal is a negative count ('[M-H]-'
+#: {'H': -1}); a form that moves only an electron adds nothing ({}). The MS2
+#: product channels read a product against it (`peaky.ms2.channels`): what
+#: the ion loses on proton transfer, and whether a product still holds the
+#: reagent. Sodium and
+#: potassium are no elements of the formula layer, so their two forms have no
+#: group formula (`ADDUCT_NO_GROUP`); a form registered at run time
+#: (`register_adduct`) has a shift and no formula either.
+ADDUCT_GROUPS: dict[str, dict[str, int]] = {
+    # negative mode
+    "[M-H]-": {"H": -1},
+    "[M+Br]-": {"Br": 1},
+    "[M+Cl]-": {"Cl": 1},
+    "[M+I]-": {"I": 1},
+    "[M+I2]-": {"I": 2},
+    "[M+I3]-": {"I": 3},
+    "[M-H+I2]-": {"H": -1, "I": 2},
+    "[M+NO3]-": {"N": 1, "O": 3},
+    "[M+^NO3]-": {"^N": 1, "O": 3},
+    "[M+HSO4]-": {"H": 1, "S": 1, "O": 4},
+    "[M+CHO2]-": {"C": 1, "H": 1, "O": 2},
+    "[M+C2H3O2]-": {"C": 2, "H": 3, "O": 2},
+    "[M+CO3]-": {"C": 1, "O": 3},
+    "[M+O2]-": {"O": 2},
+    "[M]-.": {},
+    "[M+HBr+CO3]-": {"C": 1, "H": 1, "Br": 1, "O": 3},
+    "[M+Br2]-": {"Br": 2},
+    "[M+HBr+Br]-": {"H": 1, "Br": 2},
+    "[M+Br3]-": {"Br": 3},
+    "[M+HBr+Br2]-": {"H": 1, "Br": 3},
+    # positive mode
+    "[M+H]+": {"H": 1},
+    "[M+NH4]+": {"H": 4, "N": 1},
+    "[M+^NH4]+": {"H": 4, "^N": 1},
+    "[M+^NH4-H2O]+": {"H": 2, "^N": 1, "O": -1},
+    "[M+(CH4N2O)H]+": {"C": 1, "H": 5, "N": 2, "O": 1},
+    "[M]+.": {},
+    "[M-H]+": {"H": -1},
+    "[M-CH3]+": {"C": -1, "H": -3},
+    "[M+H-H2O]+": {"H": -1, "O": -1},
+}
+#: The built-in forms (`BUILTIN_ADDUCTS`) with no group formula: their added
+#: atom is no element of `M` (the formula layer has neither Na nor K).
+ADDUCT_NO_GROUP: tuple[str, ...] = ("[M+Na]+", "[M+K]+")
+
+
+def adduct_charge(label: str) -> int:
+    """+1 or -1: the sign an ion-form label ends in (its radical mark aside:
+    '[M]+.' is +1)."""
+    s = str(label).strip().rstrip(".")
+    if not s.endswith(("+", "-")):
+        raise ValueError(f"adduct {label!r}: no charge sign at its end")
+    return 1 if s.endswith("+") else -1
+
+
+def adduct_group(label: str) -> dict[str, int]:
+    """The signed element counts ion form `label` adds to its neutral
+    (`ADDUCT_GROUPS`, a copy). A label with no group formula -- sodium or
+    potassium, a form registered at run time, or no ion form at all --
+    raises ValueError naming the ones there are."""
+    if label in ADDUCT_GROUPS:
+        return dict(ADDUCT_GROUPS[label])
+    if label in ADDUCT_NO_GROUP:
+        raise ValueError(f"adduct {label!r} has no group formula (its added atom is no element "
+                         "of the formula layer)")
+    raise ValueError(f"adduct {label!r} has no group formula; known: "
+                     + ", ".join(ADDUCT_GROUPS))
 
 
 # ---------------------------------------------------------------------------

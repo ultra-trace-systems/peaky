@@ -1573,6 +1573,25 @@ def _ms2_band(r) -> str:
     return out + "]"
 
 
+def _ms2_adducts(args, ions) -> tuple[dict | None, list]:
+    """`ms2 analyze`'s adducts (`channels.assign_adducts`): the --ions CSV's
+    'adduct' column, else --adduct, else the --reagent profile's forms; (None,
+    []) when none of them is given (no channels, no classes)."""
+    from peaky.ms2 import analyze as AN
+    from peaky.ms2 import channels as CH
+    per_ion = AN.read_ions_adducts(args.ions) if args.ions else {}
+    if not (per_ion or args.adduct or args.reagent):
+        return None, []
+    reagent = None
+    if args.reagent:
+        if args.reagent.strip().lower() == "auto":
+            raise ValueError("--reagent auto reads a peak table, which `ms2 analyze` has none of: "
+                             "name the profile (e.g. NH4_15N, Ur, NO3)")
+        from peaky.chem import profiles as PR
+        reagent = PR.resolve(args.reagent)
+    return CH.assign_adducts(list(ions), per_ion, args.adduct, reagent)
+
+
 def _ms2_analyze(args) -> None:
     """`peaky ms2 analyze`: one `ms2 extract` sample folder -> readings across
     energies, breakdown curves, E50s, fragments (peaky/ms2/analyze.py). Local:
@@ -1598,8 +1617,9 @@ def _ms2_analyze(args) -> None:
         if args.ions:
             items += AN.read_ions_csv(args.ions)
         ions = AN.collect_ions(items)
-    except (ValueError, OSError) as exc:
-        sys.exit(f"[ms2] {exc}")
+        adducts, adduct_notes = _ms2_adducts(args, ions)
+    except (ValueError, OSError, KeyError) as exc:
+        sys.exit(f"[ms2] {exc.args[0] if isinstance(exc, KeyError) else exc}")
     try:
         tables = AN.load_run(args.run_dir)
     except (FileNotFoundError, ValueError) as exc:
@@ -1613,7 +1633,8 @@ def _ms2_analyze(args) -> None:
     res = AN.analyze_run(tables, ions, k_max=args.k_max, ladder=not args.no_ladder_k4,
                          tol_ppm=args.tol_ppm, tol_mda=args.tol_mda, gas_mass=args.gas_mass,
                          iso_width=args.iso_width, mass_offset_ppm=args.mass_offset_ppm,
-                         bootstrap=args.bootstrap, harmonics=not args.keep_harmonics)
+                         bootstrap=args.bootstrap, harmonics=not args.keep_harmonics,
+                         adducts=adducts, adduct_notes=adduct_notes)
     out = Path(os.path.expanduser(args.out_dir or args.run_dir))
     files = AN.write_outputs(res, tables, str(out), figures=not args.no_figures,
                              created_utc=datetime.now(timezone.utc).strftime(
@@ -1660,6 +1681,9 @@ def _ms2_analyze(args) -> None:
             else:
                 head += f"; E50 {r['flag'].replace('_', ' ')}"
         print(head)
+        if w.classes is not None and len(w.classes):
+            print("  class: " + "; ".join(f"{r['ion']} {r['adduct'] or '(no adduct)'} "
+                                           f"{r['class']}" for _, r in w.classes.iterrows()))
         for note in w.notes:
             print(f"  note: {note}")
     if fold_near:
@@ -2486,7 +2510,21 @@ def build_parser() -> argparse.ArgumentParser:
                           "are the named ions inside its isolation window, its target the one "
                           "at the located precursor -- never guessed")
     p2a.add_argument("--ions", default=None, metavar="CSV",
-                     help="window ions from a CSV with a 'formula' column (and optionally 'mz')")
+                     help="window ions from a CSV with a 'formula' column (and optionally 'mz' "
+                          "and 'adduct', the ion form it was made by, e.g. [M+NH4]+)")
+    p2a.add_argument("--adduct", default=None, metavar="LABEL",
+                     help="the ion form of every named ion with no 'adduct' cell, e.g. "
+                          "'[M+NH4]+' (an ion that cannot be it is left to --reagent, else read "
+                          "with no adduct, said). With an adduct the products are read as "
+                          "channels (ms2_channels.csv) and each ion gets a binding class "
+                          "(ms2_classes.csv)")
+    p2a.add_argument("--reagent", default=None, metavar="PROFILE",
+                     help="a reagent profile (e.g. NH4_15N, Ur, NO3_15N, NO3, Br; NO3+Br for a "
+                          "mix): each named ion with no adduct otherwise takes one of the "
+                          "profile's ion forms it can be -- a form that adds a reagent group "
+                          "first (the reagent's own adduct first), then one leaving a "
+                          "closed-shell M (said when it is [M+H]+ / [M-H]- by elimination); a "
+                          "profile or --adduct of the other charge is refused")
     gate = p2a.add_mutually_exclusive_group()
     gate.add_argument("--k-max", type=int, default=None, metavar="K",
                       help="read every loss of up to K molecules, ungated (3 = the strict "

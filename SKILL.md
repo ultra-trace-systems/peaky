@@ -121,6 +121,10 @@ peaky ms2 analyze --run-dir <out-dir>/ms2/<ID> --ion MZ=FORMULA [--ion ...] [--i
 # with the per-scan tables (--per-scan / --file): ms2_replicates.csv, each curve's scan-to-scan
 # spread and a 16-84 % E50 band (--bootstrap N, default 1000, 0 = none, else >= 100); 2f / 3f
 # Orbitrap harmonic ghosts (m/z / 4, / 9) are never read (--keep-harmonics to debug)
+# each ion's adduct (an 'adduct' column in --ions, else --adduct LABEL, else the --reagent
+# PROFILE's forms): product channels (ms2_channels.csv) and a heuristic binding class per ion --
+# adduct / cluster / covalent / mixed / unknown (ms2_classes.csv; docs/MS2.md §11.13)
+peaky ms2 analyze --run-dir <out-dir>/ms2/<ID> --ion MZ=FORMULA --reagent NH4_15N   # or --adduct '[M+NH4]+'
 ```
 
 `peaky pool` pools every batch matching `--batches` (a REGEX over batch names, e.g.
