@@ -30,7 +30,8 @@ parameter). The crossing is bracketed by measured points or it is not given:
 below 0.5), 'single_energy', 'gap' (the crossing falls across energies
 where the ion is unobserved), 'no_data'. A curve that climbs back by more
 than `MONOTONIC_TOL` is flagged non-monotonic, and its first crossing is
-still the one reported.
+still the one reported. `e50_many` reads the same rule off many curves on one
+energy axis at once (a bootstrap's resamples, `replicates`).
 """
 from __future__ import annotations
 
@@ -43,8 +44,8 @@ import pandas as pd
 
 __all__ = [
     "N2_MASS", "E50_THRESHOLD", "MONOTONIC_TOL", "FLAG_INTERPOLATED", "FLAG_BELOW",
-    "FLAG_ABOVE", "FLAG_SINGLE", "FLAG_NO_DATA", "FLAG_GAP", "E50", "e50", "e_cm", "survival",
-    "onset", "ion_budget",
+    "FLAG_ABOVE", "FLAG_SINGLE", "FLAG_NO_DATA", "FLAG_GAP", "FLAGS", "E50", "e50", "e50_many",
+    "observed_ends", "e_cm", "survival", "onset", "ion_budget",
 ]
 
 #: The collision gas's mass (Da) for the centre-of-mass energy: N2, 28.0061.
@@ -67,6 +68,8 @@ FLAG_ABOVE = "above_range"
 FLAG_SINGLE = "single_energy"
 FLAG_NO_DATA = "no_data"
 FLAG_GAP = "gap"
+#: The flags by code, as `e50_many` returns them (index = code).
+FLAGS = (FLAG_INTERPOLATED, FLAG_BELOW, FLAG_ABOVE, FLAG_SINGLE, FLAG_NO_DATA, FLAG_GAP)
 
 
 @dataclass(frozen=True)
@@ -135,6 +138,110 @@ def e50(nce: Sequence[float], value: Sequence[float], volts: Sequence[float] | N
     return E50(math.nan, math.nan, FLAG_ABOVE, mono, **span)
 
 
+def _axis(nce: Sequence[float], values, volts: Sequence[float] | None
+          ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(NCE, values energies x curves, volts) in `e50_many`'s order: a finite
+    NCE only, the points in stable NCE order."""
+    x = np.asarray(nce, dtype=float)
+    y = np.asarray(values, dtype=float)
+    if y.ndim == 1:
+        y = y[:, None]
+    v = np.full(len(x), np.nan) if volts is None else np.asarray(volts, dtype=float)
+    keep = np.isfinite(x)
+    x, y, v = x[keep], y[keep], v[keep]
+    order = np.argsort(x, kind="stable")
+    return x[order], y[order], v[order]
+
+
+def observed_ends(nce: Sequence[float], values, volts: Sequence[float] | None = None, *,
+                  with_values: bool = False) -> tuple:
+    """The first and the last energy at which each column of `values`
+    (energies x curves, NaN where a curve is unobserved) is observed, in
+    `e50_many`'s order: (NCE first, NCE last, volts first, volts last), NaN
+    for a column observed nowhere; `with_values` also the curve's value
+    there (value first, value last). A bootstrap resample observes only the
+    energies its averaged curve observes; one that misses the averaged
+    curve's first (last) one reads its 'below_range' ('above_range') at an
+    energy that is not the curve's end, and one left one energy reads its
+    E50 on the side of it its value lies (`replicates.bootstrap_e50`)."""
+    x, y, v = _axis(nce, values, volts)
+    n_e, n_c = y.shape
+    out = tuple(np.full(n_c, np.nan) for _ in range(6 if with_values else 4))
+    if not n_e:
+        return out
+    obs = np.isfinite(y)
+    seen = obs.any(axis=0)
+    first = np.argmax(obs, axis=0)
+    last = n_e - 1 - np.argmax(obs[::-1], axis=0)
+    for a, src, idx in zip(out[:4], (x, x, v, v), (first, last, first, last)):
+        a[seen] = src[idx[seen]]
+    if with_values:
+        cols = np.flatnonzero(seen)
+        out[4][cols] = y[first[cols], cols]
+        out[5][cols] = y[last[cols], cols]
+    return out
+
+
+def e50_many(nce: Sequence[float], values, volts: Sequence[float] | None = None, *,
+             threshold: float = E50_THRESHOLD, bracket: bool = False) -> tuple:
+    """`e50` of many curves on one energy axis at once (a bootstrap's
+    resamples): `values` is energies x curves, one column per curve, NaN
+    where a curve is unobserved. -> (E50 on NCE, on volts, flag code), one
+    per column; the code indexes `FLAGS`. The same rule, column by column,
+    as `e50`: the points in stable NCE order, a finite NCE only; 'no_data',
+    'single_energy', 'below_range' first, then the first downward crossing
+    between two observed energies -- 'gap' when unobserved ones lie between
+    them -- else 'above_range' (tested against `e50` on random curves with
+    holes). Vectorised over the columns: one pass over the energies.
+    `bracket`: also the two observed energies the crossing lies between, a
+    4th item (NCE before, NCE after, volts before, volts after; NaN where
+    the curve does not cross) -- where a 'gap' crossing's E50 lies, and the
+    energies whose scans an interpolated one rests on."""
+    x, y, v = _axis(nce, values, volts)
+    n_e, n_c = y.shape
+    obs = np.isfinite(y)
+    n_obs = obs.sum(axis=0)
+    code = np.full(n_c, FLAGS.index(FLAG_ABOVE), dtype=np.int64)
+    e = np.full(n_c, np.nan)
+    ev = np.full(n_c, np.nan)
+    first = np.argmax(obs, axis=0)
+    y_first = y[first, np.arange(n_c)] if n_e else np.full(n_c, np.nan)
+    done = n_obs < 2
+    code[n_obs == 0] = FLAGS.index(FLAG_NO_DATA)
+    code[n_obs == 1] = FLAGS.index(FLAG_SINGLE)
+    below = ~done & (y_first < threshold)
+    code[below] = FLAGS.index(FLAG_BELOW)
+    done = done | below
+    prev_i = np.full(n_c, -1, dtype=np.int64)
+    prev_y = np.full(n_c, np.nan)
+    xa, xb, va, vb = (np.full(n_c, np.nan) for _ in range(4))
+    for i in range(n_e):
+        o = obs[i]
+        yi = y[i]
+        with np.errstate(invalid="ignore"):
+            cross = o & ~done & (prev_i >= 0) & (prev_y >= threshold) & (yi < threshold)
+        gap = cross & (i - prev_i > 1)
+        code[gap] = FLAGS.index(FLAG_GAP)
+        if cross.any():
+            pc = prev_i[cross]
+            xa[cross], xb[cross], va[cross], vb[cross] = x[pc], x[i], v[pc], v[i]
+        hit = cross & ~gap
+        if hit.any():
+            pi = prev_i[hit]
+            t = (prev_y[hit] - threshold) / (prev_y[hit] - yi[hit])
+            e[hit] = x[pi] + t * (x[i] - x[pi])
+            with np.errstate(invalid="ignore"):
+                ev[hit] = v[pi] + t * (v[i] - v[pi])
+            code[hit] = FLAGS.index(FLAG_INTERPOLATED)
+        done = done | cross
+        prev_i = np.where(o, i, prev_i)
+        prev_y = np.where(o, yi, prev_y)
+    ev[~np.isfinite(ev)] = np.nan
+    if bracket:
+        return e, ev, code, (xa, xb, va, vb)
+    return e, ev, code
+
+
 def survival(ion_int: pd.DataFrame, frag_int: pd.DataFrame,
              weights: Mapping[str, Mapping[str, float]],
              candidates: Mapping[str, Sequence[str]]) -> dict[str, pd.DataFrame]:
@@ -179,14 +286,23 @@ def onset(nce: Sequence[float], present: Sequence[bool]) -> float:
 def ion_budget(roles: pd.DataFrame) -> pd.DataFrame:
     """Per spectrum: its TIC (summed intensity of every peak), the fraction
     the window ions and their readings explain (precursor + fragment peaks)
-    and the unexplained fraction, with the peak counts."""
+    and the unexplained fraction, with the peak counts. A peak read as an
+    Orbitrap harmonic of a brighter line (role 'harmonic', `readings`) is
+    that line seen again, no ion: out of the TIC and the peak counts, counted
+    apart (`n_harmonic`, `harmonic_intensity`)."""
     r = roles.assign(intensity=roles["intensity"].fillna(0.0))
-    r = r.assign(explained=np.where(r["role"] != "unexplained", r["intensity"], 0.0),
-                 unexp=(r["role"] == "unexplained").astype(int))
-    g = r.groupby("spectrum", sort=False).agg(tic=("intensity", "sum"),
+    harm = (r["role"] == "harmonic").to_numpy()
+    r = r.assign(counted=np.where(harm, 0.0, r["intensity"]),
+                 explained=np.where(~harm & (r["role"] != "unexplained"), r["intensity"], 0.0),
+                 unexp=(r["role"] == "unexplained").astype(int),
+                 n=(~harm).astype(int), harm=harm.astype(int),
+                 harm_i=np.where(harm, r["intensity"], 0.0))
+    g = r.groupby("spectrum", sort=False).agg(tic=("counted", "sum"),
                                               explained=("explained", "sum"),
-                                              n_peaks=("peak", "size"),
-                                              n_unexplained=("unexp", "sum"))
+                                              n_peaks=("n", "sum"),
+                                              n_unexplained=("unexp", "sum"),
+                                              n_harmonic=("harm", "sum"),
+                                              harmonic_intensity=("harm_i", "sum"))
     with np.errstate(invalid="ignore", divide="ignore"):
         g["budget_explained"] = np.where(g["tic"] > 0, g["explained"] / g["tic"], np.nan)
     g["budget_unexplained"] = 1.0 - g["budget_explained"]

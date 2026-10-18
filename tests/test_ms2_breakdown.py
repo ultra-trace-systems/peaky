@@ -587,7 +587,9 @@ def test_offsets_targets_and_the_ion_budget(nh4, mta):
 
 def test_tables_have_their_contract(nh4):
     assert list(nh4.readings.columns) == list(RD.READINGS_COLUMNS)
-    assert list(nh4.readings.columns[4:-1]) == list(SF.OUTPUT_COLUMNS)
+    # the spectrum's four, assign_fragments', then ladder_support and harmonic
+    assert list(nh4.readings.columns[4:-2]) == list(SF.OUTPUT_COLUMNS)
+    assert list(nh4.readings.columns[-2:]) == ["ladder_support", "harmonic"]
     for df, spec in ((nh4.readings, RD.READINGS_COLUMNS), (nh4.breakdown, AN.BREAKDOWN_COLUMNS),
                      (nh4.e50, AN.E50_COLUMNS), (nh4.fragments, AN.FRAGMENT_COLUMNS),
                      (nh4.branching, AN.BRANCHING_COLUMNS)):
@@ -1011,7 +1013,7 @@ def test_read_window_is_deterministic_and_typed():
     assert list(a["spectrum"].unique()) == ["198.0972@hcd1.00", "198.0972@hcd10.00"]
     # one spectrum's rows are exactly assign_fragments' at k_max 4 (nothing to gate there)
     one = assign_fragments(steps[0][1], {"hex": HEX}, k_max=4)
-    first = a[a["spectrum"] == "198.0972@hcd1.00"].iloc[:, 4:-1].reset_index(drop=True)
+    first = a[a["spectrum"] == "198.0972@hcd1.00"].iloc[:, 4:-2].reset_index(drop=True)
     assert first.equals(one)
     empty = RD.read_window([], {"hex": HEX})
     assert len(empty) == 0 and list(empty.columns) == list(RD.READINGS_COLUMNS)

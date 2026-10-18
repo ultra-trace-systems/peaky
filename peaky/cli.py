@@ -1544,6 +1544,35 @@ def _ms2_files(args) -> None:
     _ms2_exit(failed, stopped, len(todo), done, what="raw file(s)")
 
 
+#: How `ms2 analyze` prints a NaN bound of an E50 band, by where it lies
+#: (`ms2_e50.csv` `e50_lo_censor` / `e50_hi_censor`).
+_MS2_BOUND_WHERE = {"below": "below range", "above": "above range", "gap": "in a gap"}
+
+
+def _ms2_band(r) -> str:
+    """An E50 row's 16-84 % band as `ms2 analyze` prints it: a NaN bound by
+    the side it lies on, and the band's caveats -- energies about the
+    crossing that add no spread (fewer than two scans, or only held peaks:
+    their scatter is not in it), zero width
+    (`replicates.zero_width`: bounds a few ULP apart are of zero width too)."""
+    import math as _m
+
+    from peaky.ms2 import replicates as _RP
+
+    def bound(v, where):
+        return f"{v:.2f}" if _m.isfinite(v) else _MS2_BOUND_WHERE.get(where, "n/a")
+    lo, hi = r["e50_nce_lo"], r["e50_nce_hi"]
+    out = (f"[16-84 %: {bound(lo, r['e50_lo_censor'])} to {bound(hi, r['e50_hi_censor'])}, "
+           f"{int(r['boot_n'])} resamples")
+    k = int(r["one_scan_bracket"])
+    if k > 0:
+        verb = "adds" if k == 1 else "add"
+        out += f"; {k} of the 2 energies about the crossing {verb} no spread"
+    if _RP.zero_width(lo, hi):
+        out += "; zero width"
+    return out + "]"
+
+
 def _ms2_analyze(args) -> None:
     """`peaky ms2 analyze`: one `ms2 extract` sample folder -> readings across
     energies, breakdown curves, E50s, fragments (peaky/ms2/analyze.py). Local:
@@ -1577,9 +1606,14 @@ def _ms2_analyze(args) -> None:
         sys.exit(f"[ms2] {exc}")
     if args.mass_offset_ppm is not None and not _m.isfinite(args.mass_offset_ppm):
         sys.exit(f"--mass-offset-ppm must be a finite number, got {args.mass_offset_ppm}")
+    from peaky.ms2 import replicates as RP
+    if args.bootstrap < 0 or 0 < args.bootstrap < RP.BOOTSTRAP_MIN:
+        sys.exit(f"--bootstrap must be 0 (none) or a number of resamples >= {RP.BOOTSTRAP_MIN}, "
+                 f"got {args.bootstrap}")
     res = AN.analyze_run(tables, ions, k_max=args.k_max, ladder=not args.no_ladder_k4,
                          tol_ppm=args.tol_ppm, tol_mda=args.tol_mda, gas_mass=args.gas_mass,
-                         iso_width=args.iso_width, mass_offset_ppm=args.mass_offset_ppm)
+                         iso_width=args.iso_width, mass_offset_ppm=args.mass_offset_ppm,
+                         bootstrap=args.bootstrap, harmonics=not args.keep_harmonics)
     out = Path(os.path.expanduser(args.out_dir or args.run_dir))
     files = AN.write_outputs(res, tables, str(out), figures=not args.no_figures,
                              created_utc=datetime.now(timezone.utc).strftime(
@@ -1621,6 +1655,8 @@ def _ms2_analyze(args) -> None:
                 head += f"; E50 NCE {r['e50_nce']:.1f}"
                 if _m.isfinite(r["e50_v"]):
                     head += f" ({r['e50_v']:.2f} V, E_cm {r['e50_ecm']:.3f} eV)"
+                if r["boot_n"] > 0:
+                    head += " " + _ms2_band(r)
             else:
                 head += f"; E50 {r['flag'].replace('_', ' ')}"
         print(head)
@@ -2471,6 +2507,15 @@ def build_parser() -> argparse.ArgumentParser:
                           "located precursors and the MS1 window are read through it before "
                           "a named ion is matched (replaces the offset an `ms2 extract --file` "
                           "manifest records; a server folder records none)")
+    p2a.add_argument("--bootstrap", type=int, default=1000, metavar="N",
+                     help="resamples of each E50's interval, drawn over the scans within each "
+                          "energy (default 1000; 0 = none; else at least 100). Needs the "
+                          "per-scan tables "
+                          "(`ms2 extract --per-scan` or `--file`): without them the folder "
+                          "is analysed as before, with no replicate statistics")
+    p2a.add_argument("--keep-harmonics", action="store_true",
+                     help="debugging: read Orbitrap harmonic ghosts (a line's 2f / 3f images at "
+                          "m/z / 4, m/z / 9) as any peak instead of as no formula")
     p2a.add_argument("--no-figures", action="store_true",
                      help="skip the per-window breakdown_<parent>.png")
     p2a.add_argument("--out-dir", default=None, metavar="DIR",

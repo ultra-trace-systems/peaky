@@ -590,8 +590,12 @@ go on (§10.2); `--out` is always written.
 `attribute_fragments`, `branching`), `peaky/ms2/breakdown.py`
 (`survival`, `e50`, `e_cm`, `onset`, `ion_budget`) — pure, no I/O — and
 `peaky/ms2/analyze.py` (window ions, offsets, the orchestration, the figures and
-the manifest). **Offline:** it reads one `ms2 extract` sample folder and asks
-Mascope nothing; it needs no credentials.
+the manifest), and `peaky/ms2/replicates.py` (the breakdown re-read scan by
+scan, the E50 bootstrap: §11.11). **Offline:** it reads one `ms2 extract`
+sample folder and asks Mascope nothing; it needs no credentials. A folder with
+the per-scan tables (`ms2 extract --per-scan` or `--file`, §12) also gets the
+replicate statistics and an interval for every E50 (§11.11); a peak that is an
+Orbitrap harmonic ghost of a brighter line is read as no formula (§11.12).
 
 ```
 ms2_spectra.parquet, ms2_parents.csv, ms2_window.csv, ms2_manifest.json   + the named ions
@@ -671,7 +675,10 @@ ms2_spectra.parquet, ms2_parents.csv, ms2_window.csv, ms2_manifest.json   + the 
 Each spectrum of the window is read by `assign_fragments` against the window
 ions (target first, then the co-isolates by m/z), and stacked: one long table,
 `ms2_readings.csv` (`READINGS_COLUMNS`: `spectrum`, `parent_mz`, `nce`, `hcd_v`,
-every `OUTPUT_COLUMNS` column, `ladder_support`).
+every `OUTPUT_COLUMNS` column, `ladder_support`, `harmonic`). A harmonic ghost
+of a brighter line of the spectrum (§11.12) is read as no formula before the
+gate — one unexplained-like row whose `harmonic` names the line — so it is
+neither a fragment nor a ladder step.
 
 **The ladder gate (default).** The window is read at `k_max` 4, and a reading
 whose loss needs a **fourth** piece is kept only when the **same window ion**
@@ -742,7 +749,9 @@ the same peak; a peak two window ions both read as their precursor goes to
 the first in window order, and the window says so), a **fragment** (keyed by
 its rank-1 formula; when the window ions that read it read different
 formulas, the formulas joined by ` | `; its **candidates** are the window
-ions that read it, in window order), or **unexplained**.
+ions that read it, in window order), **unexplained**, or **harmonic** (a ghost,
+§11.12: in no fragment, and out of the TIC and `n_peaks`, counted apart in
+`n_harmonic` / `harmonic_intensity`).
 
 **One fragment across energies** (`merge_fragment_peaks`). The key above is
 one spectrum's, and the rank-1 formula of one peak can change between
@@ -1200,37 +1209,52 @@ signal elsewhere in the window.
 | `breakdown.MONOTONIC_TOL` | 0.02 | non-monotonic flag |
 | `breakdown.N2_MASS` (`--gas-mass`) | 28.0061 Da | E_cm (an assumption) |
 | `analyze.FIGURE_TOP_FRAGMENTS` | 6 | fragments drawn in panel B |
+| `replicates.BOOTSTRAP_B` (`--bootstrap`) | 1000 | resamples of each E50's interval (0 = none; §11.11) |
+| `replicates.BOOTSTRAP_MIN` | 100 | the fewest resamples a band is read off (fewer are refused: the percentiles of a few rest on one or two of them) |
+| `replicates.BOOTSTRAP_SEED` | 20261018 | the resampling seed, with the parent key per window |
+| `replicates.BOOTSTRAP_PERCENTILES` | 16 / 84 % | the interval: those percentiles of the resampled E50s (what the band holds: §11.11) |
+| `replicates.MATCH_DA` | 1e-6 Da | a spectrum's peak and its per-scan rows are one peak |
+| `replicates.SCALE_BAND` | 0.5–2 | the factor (averaged height / per-scan mean) a peak's per-scan readings may be scaled by; outside it the peak is held (§11.11) |
+| `replicates.ZERO_WIDTH_REL` | 1e-9 | an E50 band whose bounds agree to this share of their size is of zero width |
+| `readings.HARMONIC_ORDERS` | 2f, 3f | the harmonics read (at m/z / 4, m/z / 9; §11.12) |
+| `readings.HARMONIC_PPM` | 40 ppm | how far a ghost may sit from m/z / n² |
+| `readings.HARMONIC_CAP` | 2f 0.5 %, 3f 8 % | the most a ghost holds of its line in the same spectrum |
+| `readings.HARMONIC_CLEAR_SN` | 10 | the S/N a reading above the cap needs to make its place an ion's at every energy (§11.12) |
 
 ### 11.7 Outputs
 
 `peaky ms2 analyze --run-dir DIR --ion MZ=FORMULA [--ion ...] [--ions CSV]
 [--k-max K | --no-ladder-k4] [--tol-ppm 5] [--tol-mda 0.3] [--gas-mass 28.0061]
-[--iso-width W] [--mass-offset-ppm PPM] [--no-figures] [--out-dir DIR]` writes into
-`--out-dir` (default: the run folder itself):
+[--iso-width W] [--mass-offset-ppm PPM] [--bootstrap N] [--keep-harmonics] [--no-figures]
+[--out-dir DIR]` writes into `--out-dir` (default: the run folder itself):
 
 | file | content |
 | --- | --- |
 | `ms2_readings.csv` | every reading of every spectrum (§11.2) |
-| `ms2_breakdown.csv` | per (window, spectrum, window ion): `nce`, `hcd_v`, `role` (target / co-isolate), `ion_mz`, `intensity` (I_X), `n_precursor_peaks`, `frac` (I_X / TIC), `frag_weighted`, `frag_all`, `f`, `f_lo`, `s` (S: valid with a steady precursor supply), `branching_sum`, `branching_flag`, `tic`, `budget_explained`, `budget_unexplained`, `n_peaks`, `n_unexplained` |
-| `ms2_e50.csv` | per (window, ion, curve F / F_lo / S): `role`, `ion_mz`, `e50_nce`, `e50_v`, `e50_ecm`, `flag`, `monotonic`, `n_energies`, `nce_min`, `nce_max`, `value_at_min`, `value_at_max`, `note` |
-| `ms2_fragments.csv` | per (window, fragment — one physical peak across the energies, named by every rank-1 formula read there): `mz_theo` (NaN for a name with ` \| `), `candidates`, `n_candidates` (how many: `candidates_across`, after the ions beyond the tolerance of where it sits and the polyoxy readings outranked are left out), `losses`, `call`, `basis`, `weights` (`ion=w;…`), `weight_source`, `excluded`, `test_note` (the candidates set aside as absent from the sample; the intact test's note — its onset, when every candidate reads the fragment only from a later energy, moved past a stray or kept — and the guard's, then `candidates_across`'s), `onset_nce`, `onset_v`, `in_source`, `max_frac`, `max_frac_nce`, `n_spectra` |
+| `ms2_breakdown.csv` | per (window, spectrum, window ion): `nce`, `hcd_v`, `role` (target / co-isolate), `ion_mz`, `intensity` (I_X), `n_precursor_peaks`, `frac` (I_X / TIC), `frag_weighted`, `frag_all`, `f`, `f_lo`, `s` (S: valid with a steady precursor supply), `branching_sum`, `branching_flag`, `tic`, `budget_explained`, `budget_unexplained`, `n_peaks`, `n_unexplained` (`tic` and `n_peaks` without the harmonic ghosts), `n_harmonic`, `harmonic_intensity` (the ghosts left out, §11.12); with the per-scan tables (§11.11; else 0 / NaN) `n_scans` (the spectrum's), `intensity_cv` (the precursor's CV over them), `f_sd`, `f_sem`, `f_lo_sd`, `f_lo_sem`, `s_sd`, `s_sem` (the scan-to-scan spread of F, F_lo, S: sd, ddof 1, and sd / √n) |
+| `ms2_e50.csv` | per (window, ion, curve F / F_lo / S): `role`, `ion_mz`, `e50_nce`, `e50_v`, `e50_ecm`, `flag`, `monotonic`, `n_energies`, `nce_min`, `nce_max`, `value_at_min`, `value_at_max`, `note`; the bootstrap interval (§11.11; else NaN / 0 / '') `e50_nce_lo`, `e50_nce_hi`, `e50_v_lo`, `e50_v_hi`, `e50_ecm_lo`, `e50_ecm_hi` (16th / 84th percentiles of the resampled E50s; NaN where the percentile lies past the measured energies or across an unobserved one), `e50_lo_censor`, `e50_hi_censor` (where a NaN bound lies: `below` the lowest energy, `above` the highest, `gap` across an unobserved energy — between two observed ones, at an end of the energies that resamples do not observe, or about every energy where a resample observes none; '' for a measured bound), `boot_n` (resamples), `boot_cross` (the share that cross), `one_scan_bracket` (how many of the energies the band rests on add none to the curve — the two the averaged crossing lies between and, for S, the lowest energy every resample's S is read against, once where it is one of the two — fewer than two scans, or no spread of the curve there: 1 to 3, the band holds no scatter of theirs and the note says so; 0 where none is, with no crossing, or with no band); with the per-scan tables whatever `--bootstrap` (else 0) `n_one_scan` (the window's energies of fewer than two scans — one, or no per-scan row — or whose every precursor / fragment peak is held: they add no spread) |
+| `ms2_fragments.csv` | per (window, fragment — one physical peak across the energies, named by every rank-1 formula read there): `mz_theo` (NaN for a name with ` \| `), `candidates`, `n_candidates` (how many: `candidates_across`, after the ions beyond the tolerance of where it sits and the polyoxy readings outranked are left out), `losses`, `call`, `basis`, `weights` (`ion=w;…`), `weight_source`, `excluded`, `test_note` (the candidates set aside as absent from the sample; the intact test's note — its onset, when every candidate reads the fragment only from a later energy, moved past a stray or kept — and the guard's, then `candidates_across`'s), `onset_nce`, `onset_v`, `in_source`, `max_frac`, `max_frac_nce`, `n_spectra`, `presence_at_max`, `cv_at_max` (its presence and CV over the scans of the spectrum of its largest TIC fraction, §11.11; NaN without the per-scan tables) |
+| `ms2_replicates.csv` | only with the per-scan tables (§11.11): per (window, spectrum, item) — `item` `precursor` (a window ion's) or `fragment`, `name` (the ion, or the fragment as `ms2_fragments.csv` names it) — `nce`, `hcd_v`, `n_scans`, `n_present` (scans in which a peak of it is read; 0 where none is, or where it is not matched), `presence` (their share), `mean` (on the averaged spectrum's scale: the averaged intensity), `sd`, `cv` (absence = 0), `matched` (False: a peak of it is held — read in no scan, or on another scale than its spectrum's, `SCALE_BAND` — whether or not another peak of it is read: `n_present` 0; presence, sd and CV NaN) |
 | `ms2_branching.csv` | per (window, ion, fragment, energy above the lowest): `nce`, `hcd_v`, `weight`, `frag_gain`, `ion_loss`, `branching` (all three NaN where the ion is unobserved) |
 | `breakdown_<parent key>.png` | (A) F of every window ion vs NCE, the F_lo..F band, the target emphasised, E50 in the legend; (B) the target's top fragments' TIC fraction vs NCE with its own; one colour, one ion across both panels (the fragments take colours no window ion wears; past the palette, grey with distinct dashes); volts on a secondary top axis when known; legends below the panels |
 | `ms2_analyze_manifest.json` | the sample (from the extract manifest), the parameters (gate mode and its note, `k_max_read`, tolerances, gas mass, the isolation width and its source, the named ions, and every constant a call turns on: `intact_fraction`, `branching_flag`, `onset_stray_share`, `satellite_ratio` / `satellite_fwhm`, `polyoxy_max_c` / `polyoxy_min_o`, `e50_threshold`, `monotonic_tol`, `target_match_ppm`, `window_pad_da`, the m/z axis offset `mass_offset_ppm` and its `mass_offset_source`), each window's status, `reason`, target, co-isolates, `left_out` (aliases), `activation_kind`, located precursor, offset, NCEs and notes (and `offset_hint_ppm`, the
 `--mass-offset-ppm` a window skipped for want of a named target needs, when its
-nearest named ion is within the axis reach), the counts (incl. `four_piece_readings`), the inputs' and outputs' sha1, the code identity. No credentials, no URL (the PNGs carry no `Software` key) |
+nearest named ion is within the axis reach), the counts (incl. `four_piece_readings`, `harmonic_peaks` and `harmonic_by_order`, `replicate_rows`, `one_scan_energies`, `e50_intervals`; per window `harmonic_peaks`, `scans_per_energy`, `one_scan_energies`; the parameters' `harmonics` (on, orders, ppm, caps, `clear_sn`) and `replicates` (`per_scan`, `bootstrap`, `bootstrap_min`, `seed`, `percentiles`, `match_da`, `scale_band`)), the inputs' (the per-scan tables among them) and outputs' sha1, the code identity. No credentials, no URL (the PNGs carry no `Software` key) |
 
-It prints one line per window (status, target, co-isolates, offset, the
-target's E50) and the notes — except, in a folder of many parents (an
-inclusion-list folder), the windows skipped for want of a named target: beyond
+It prints one line per window (status, target, co-isolates, offset, the target's
+E50 and, with the per-scan tables, its 16–84 % band: a NaN bound by its side —
+`below range`, `above range`, `in a gap` — and its caveats, how many of the two
+energies about the crossing add no spread and a zero width) and the
+notes — except, in a folder of many parents (an inclusion-list folder), the
+windows skipped for want of a named target: beyond
 `cli.MS2_ANALYZE_UNNAMED_SHOWN` (5) of them they are counted in one line, their
 notes kept in `ms2_analyze_manifest.json`. Those whose nearest named ion misses
 by an axis offset (within `sources.AXIS_SEARCH_PPM`: the window's
 `offset_hint_ppm`) are counted apart, the line naming the median
 `--mass-offset-ppm` they need; a run in which no window was analysed says to
-pass it rather than to name ions already named. Each window has a **status** (and, when it has no
-breakdown, a `reason`, both in the manifest, with the counts `analysed`,
-`readings_only`, `skipped`):
+pass it rather than to name ions already named. Each window has a **status**
+(and, when it has no breakdown, a `reason`, both in the manifest, with the
+counts `analysed`, `readings_only`, `skipped`):
 
 | status | `reason` | what was written |
 | --- | --- | --- |
@@ -1279,6 +1303,13 @@ given).
   fragment / precursor ratio off by 1 + d moves F by about F (1 − F) d ≤ d / 4;
   with every ratio within 4 %, F lies within 0.01 of the table and, at the
   crossing's slope (0.0169 per NCE), the E50 within 0.59 NCE — it is 0.50.
+- **Standard A, per scan** (its server spectra read in every scan of their
+  groups, `ms2 extract --per-scan`; 5–9 scans per energy): C10H17⁺ F E50 13.89
+  as above, its 16–84 % band **13.84–13.94 NCE** (6.319–6.336 V, E_cm
+  1.0716–1.0745 eV), every one of 1000 resamples crossing; the precursor's CV
+  per spectrum 1.3–4.3 %, F's scatter from scan to scan 0.002–0.004 (§11.11).
+  Rebuilt as a tMS2 file (`--file`, §12.6): its own E50 13.82 with a band about
+  it.
 - **2026-09-10 exploratory file**, the seven parents with the co-isolates that
   day's script settled: E50 C7H6NS⁺ above range (F 0.73 at NCE 91; its
   co-isolate C4H10NS2⁺ 15.5, spent by NCE 41), C11H13O⁺ 35.3, C11H15O2⁺ 21.1,
@@ -1333,6 +1364,24 @@ given).
 - **A fragment name with ` | `** is one peak read as several compositions:
   by two window ions, or at two energies (§11.3). Its readings are in
   `ms2_readings.csv` under each formula; `mz_theo` is NaN.
+- **The E50 band is the scans' scatter, not the method's error.** It says how
+  far the E50 moves with another draw of the same scans; it holds nothing of
+  the roles and weights (decided once, on the averaged spectra), the gas mass,
+  the volts calibration, or a co-isolate not named. An energy of fewer than two
+  scans, or whose every precursor / fragment peak is held, adds nothing to it
+  (counted: `n_one_scan`); one of the two the crossing lies between (or one
+  where only held peaks enter the curve) leaves the band too narrow, two leave
+  it of zero width (`one_scan_bracket`, the note). Read off a few scans per
+  energy, the band holds the true E50 less often than a 68 % band would
+  (§11.11).
+- **A real ion at m/z / 4 or m/z / 9 of a brighter line, holding less than the
+  cap of it at every energy, is taken for its ghost** (§11.12): `--keep-harmonics`
+  reads every peak as before. One that goes above the cap at some energy (at
+  an S/N of `HARMONIC_CLEAR_SN` or more), or that some energy holds where no
+  line's band does (its line gone there, or a ppm of jitter out of the band),
+  is read at all of them; so is a true ghost that lands within the reading
+  tolerance of such a product (as without the rule). One above the cap only
+  near the S/N floor is read only where it is above the cap.
 
 ### 11.10 Code map
 
@@ -1350,6 +1399,293 @@ given).
 | `analyze.gate_note` | the manifest's words for the gate mode |
 | `analyze.analyze_window` / `analyze_run` | one window; every window of a folder |
 | `analyze.render_window` / `write_outputs` / `manifest` | the figure; the files; `ms2_analyze_manifest.json` |
+| `readings.harmonic_ions` / `harmonic_ghosts` | the places a window reads as ions (in no line's band at some energy, or above the cap there clear of the S/N floor); the harmonic ghosts of one spectrum (§11.12) |
+| `breakdown.e50_many` / `observed_ends` | `e50` of many curves at once (the bootstrap's resamples), with the two energies each crossing lies between; the first and last energy each curve is observed at (a resample's holes at an end) |
+| `replicates.spectrum_scans` / `window_scans` / `spectrum_curves` / `spread` | a spectrum's peaks in its scans, on its averaged scale (a factor outside `SCALE_BAND`: held); a window's ion and fragment matrices per scan; F, F_lo, S per scan; sd and sem |
+| `replicates.bootstrap_e50` / `window_seed` / `interval` / `zero_width` | the resampled E50s (and where each crossing, or each hole at an end, lies); a window's seed; the 16–84 % band and on which side a censored bound lies; a band of zero width |
+| `analyze._replicates` | one window's replicate statistics and intervals |
+
+### 11.11 Replicates and the E50 interval (`replicates.py`)
+
+**When.** The folder holds the per-scan tables (§12.5): `ms2_scan_peaks.parquet`
+— every kept peak of every spectrum read in every scan of its group, 0 where
+a scan has none — and `ms2_scans.csv`. `ms2 extract --file` writes them for a
+raw file's MS2, `ms2 extract --per-scan` for a sample's server spectra. Without
+them `ms2 analyze` is what it was: every table and value as before, the new
+columns blank (0 / NaN), no `ms2_replicates.csv`, and the run's notes say so
+(`analyze.NO_PER_SCAN_NOTE`; tested on every committed fixture). Per-scan
+tables that hold no row (skipped at extract) are noted and read as none.
+
+**Decided once, re-read per scan.** The breakdown is decided on the averaged
+spectra, exactly as §11.3–§11.5 say: which peak is which window ion's precursor,
+which fragment (merged across energies, side lobes and harmonic ghosts set
+aside), every fragment's composition candidates and share weights. Then the same
+roles and weights are read in every scan j of every spectrum
+(`window_scans`, `spectrum_curves`):
+
+- I_X,j — X's precursor peak(s) in scan j; a fragment's intensity likewise
+  (its peaks summed, absence = 0);
+- F_j = I_X,j / (I_X,j + Σ w·I_frag,j), F_lo_j with every composition
+  candidate's fragment given whole, S_j = I_X,j / I_X(E_min) with I_X(E_min) the
+  averaged lowest-energy precursor; 0/0 is NaN, as in `survival`.
+
+`ms2_breakdown.csv` gets each spectrum's `n_scans`, the precursor's CV over
+them (`intensity_cv`), and the scan-to-scan spread of the three curves (`f_sd`,
+`f_sem`, `f_lo_sd`, `f_lo_sem`, `s_sd`, `s_sem`; sd with ddof 1 over the scans
+where the curve is observed, sem = sd / √n; NaN with fewer than two).
+`ms2_replicates.csv` holds every item of every spectrum — each window ion's
+precursor, each fragment the averaged spectrum holds — with its scans, how
+many hold it, its presence (their share), mean, sd and CV (absence = 0);
+`ms2_fragments.csv` the presence and CV of each fragment at the spectrum of its
+largest TIC fraction (`presence_at_max`, `cv_at_max`).
+
+**A ratio of means, not a mean of ratios.** The averaged F is F of the per-scan
+MEANS — the averaged spectrum — not the mean of the per-scan F (which differs at
+the third digit where the scans scatter; tested). Every peak's per-scan readings
+x are put on its averaged height's scale, x · I_avg / mean(x)
+(`spectrum_scans`): on an `--file` folder that factor is 1 (each spectrum IS the
+mean of its scans, tested to 1e-12); on a `--per-scan` folder it carries the
+server's height, which runs about 2 % below the per-scan mean on the median peak
+(the per-scan mean is `scans.SERVER_HEIGHT_RATIO`, 1.020, times it) and varies
+by peak: the factor is 0.89–1.01 on standard A's S/N-10 spectra, median 0.979
+(tested). In both, the per-scan means are the analysed spectrum, and F rebuilt
+from them is the analysis's F (tested). A spectrum's peak and its per-scan rows
+are one peak when their m/z agree within `MATCH_DA` (1e-6 Da: the per-scan table
+carries the spectra table's m/z, the same float; two peaks of one spectrum are
+never that close). A peak no scan reads (or that reads 0 in every scan) is held
+at its averaged height in every scan — its spread is not in the statistics — and
+counted (`matched` False, in no scan: `n_present` 0, presence and CV NaN; a
+window note) — and so is an item read over two peaks (a split peak, summed) one
+of which is held: unmatched as a whole, `n_present` 0 though its other peak is
+read (tested). So is a peak whose factor lies outside `SCALE_BAND` (0.5–2, both
+ends in; a window note names the factors): its rows are not that peak read scan
+by scan — one stray centroid in one of n scans reads it at a factor of about n,
+and so scaled it would fake a CV of √n; per-scan rows read off another m/z axis
+than the spectra's read a few peaks partly, at factors of several — while on our
+own three files' S/N-3 spectra, the server's peaks read scan by scan, the factor
+is 0.85–1.14 (tested, synthetic: a stray centroid's factor of 3.16 is held). A
+curve that only held peaks enter scatters by nothing anyone measured: S has no
+spread (NaN) where its precursor is held, F and F_lo none where something
+entering them is held and nothing entering them — the precursor, a weighted
+fragment (for F_lo a composition candidate's) — is read; one held peak among
+read ones leaves the spread of those. A spectrum with no per-scan row at all is
+held at its averaged spectrum (a window note), and counts among the energies
+that add no spread; so does a spectrum of two or more scans whose every
+precursor / fragment peak is held (a window note; the bootstrap draws its
+averaged spectrum, as it does one with no row: the same band, tested). A
+parent whose energies recorded different scan ranges is cut to the range all of
+them recorded at extract (§12.4): its per-scan rows are those of the cut
+spectra, so no product is read at one energy and unrecorded at another here
+either (checked on cut parents: every per-scan row is a peak of its cut
+spectrum).
+
+**The E50 interval** (`bootstrap_e50`, `interval`). `--bootstrap N` resamples
+(default `BOOTSTRAP_B` = 1000; 0 = none; fewer than `BOOTSTRAP_MIN`, 100, are
+refused — the 16th / 84th percentiles of a few resamples rest on one or two of
+them: of one, the 'band' is that resample's E50, of zero width and not holding
+the averaged one; on standard A the bounds scatter between seeds by 0.017 NCE
+at 10 resamples, 0.006 at 100 and 0.002 at 1000): each resample draws every
+energy's
+scans with replacement, as many as it has — all of a spectrum's peaks from the
+same draw, a scan's precursor and its fragments together — rebuilds the curves
+from the resampled means (S against the resample's own lowest energy) and reads
+the same E50 rule off each (`breakdown.e50_many`: `e50` column by column,
+vectorised over the resamples; tested equal to `e50` on random curves with
+holes, every flag met). `e50_nce_lo` / `_hi` are the 16th / 84th percentiles of
+the resampled E50s (`BOOTSTRAP_PERCENTILES`), on volts likewise (`e50_v_lo` /
+`_hi`, when every crossing's volts are known) and E_cm from those; `boot_cross`
+is the share of resamples that cross. Every resample with an answer is ranked,
+each as what it is known to be: an interpolated E50 itself; one already below
+0.5 at the lowest energy an E50 below every energy, one never below 0.5 one
+above every energy; one that crosses across an unobserved energy (`gap`) an E50
+somewhere between the two energies about the hole. A resample observes only the
+energies the averaged curve observes, and where every scan it draws at the
+curve's first energy holds nothing of the ion (no precursor, nothing it makes)
+it does not observe it there: below 0.5 at the first energy it does observe,
+its E50 is known only to lie at or below that one — a hole at that end, `gap`
+too, never an E50 below every energy; the mirror at the last energy (tested,
+synthetic: a co-isolate read in one of the two scans at the first energy, and
+one whose fragment alone is read in one of the two at the last — a quarter of
+the resamples are such holes, and both bounds are NaN, `gap`, not a bound read
+off the crossing resamples; the ends are the averaged curve's own, not the
+axis's: a curve the averaged spectrum does not observe at the first energy is
+no hole there). A resample its holes leave ONE observed energy (a curve the
+averaged spectrum observes at two energies, a hole at one of them) still
+reads which side of 0.5 it lies on there, and is ranked as that: below 0.5 at
+the averaged curve's first energy, below every energy; below 0.5 at a later
+one, a hole in [−∞, that energy]; at or above 0.5 at the last, above every
+energy; at an earlier one, a hole in [that energy, +∞]. One left no observed
+energy (S, read against a lowest energy whose draws hold no precursor, is
+nowhere) is a hole about every energy, [−∞, +∞]. So no resample drops out of
+the ranking for its holes (tested: the two-energy versions of the windows
+above read NaN, `gap`, on both sides — not the crossings' band, nor one of zero
+width; and resample by resample on synthetic draws); the share 'with one
+energy observed or none' is that of a curve the averaged spectrum itself
+observes at fewer than two energies. A percentile that falls among
+the resamples beyond the energies or the holes is NaN, and `e50_lo_censor` / `e50_hi_censor` say on which side — `below`
+the lowest energy, `above` the highest (a lower bound can lie there too, when
+most resamples stay above 0.5), or `gap` — never a bound read off the other
+resamples alone; one that falls on an interpolated E50 whose rank a few hole
+resamples could move is the outer of the two readings (the band widened, never
+narrowed). A note is written where the resamples disagree with the averaged
+curve (an E50 some of them do not cross, or a curve without one that some of
+them do): the shares — crossing, below, above, across a hole, and with one
+energy observed or none — add up to 100 %, and each NaN bound is named by its
+side. An energy of **fewer than two scans** (one, or no per-scan row), or
+whose every precursor / fragment peak is held, has nothing to draw from: it adds
+no spread (`n_one_scan`; a window note naming the NCE of each one-scan energy,
+another those with no row, another those held); a window with no energy of two
+scans read has no interval (said). Where it is one of the two energies the
+averaged crossing lies between — or the curve has no spread there (only held
+peaks enter it, named 'no spread') — the band holds none of its scatter — too
+narrow; with both, every resample reads the averaged curve there and the band
+has zero width, no measurement: `one_scan_bracket` counts them, the note names
+them and flags a zero-width band, and `ms2 analyze` prints both with the band.
+S is read against each resample's own lowest energy, so its band rests on that
+energy too: where it adds no spread (fewer than two scans, its precursor held,
+no per-scan row), every resample's S shares one reference and the S band holds
+none of its scatter — counted in S's `one_scan_bracket` (once, where it is one
+of the two about the crossing) and named in its note as the energy S is read
+against (tested). Whether S has a spread at an energy is its precursor's
+(`intensity_cv` finite), not the per-scan S's: a precursor read in one of its
+scans alone, the others empty, gives one finite S per scan (`s_sd` NaN), yet a
+resample's S is its mean precursor, the empty scans 0, and moves with the draws
+— no note calls that band too narrow (tested, at the reference and at an energy
+about the crossing; F there, a ratio within the one scan that holds the ion,
+does not move, and its note says so). On synthetic windows (NCE 1 / 10 / 20, 10 % scan-to-scan
+scatter, five scans at NCE 10 and 20, 2000 datasets, 1000 resamples) the S band
+holds the true E50 in 21.6 % of them with one scan at NCE 1, 48.2 % with two and
+59.0 % with five; F, a ratio within one spectrum, does not rest on it (59–62 %
+in all three). With no band (`--bootstrap 0`, or no energy of two scans)
+`one_scan_bracket` is 0 and no E50 note names those energies; `n_one_scan`, a
+fact of the window's scans, is kept, and so is the window note naming the
+energies without spread (with `--bootstrap 0` without its 'nothing to the E50
+interval': there is none; tested). A
+band is of zero width when its bounds agree to `ZERO_WIDTH_REL` (1e-9) of their
+size (`zero_width`), not only when their floats are equal: bounds read off
+resamples of held readings differ in their last bits (6.810663806263728 against
+…729; a resample's counts / n do not add up to exactly 1). Each
+window draws from its own stream (`window_seed`: `BOOTSTRAP_SEED` and the parent
+key), so its interval is the same on every run, whatever other windows the
+folder holds or their order, and under every string-hash seed (tested: the two
+standard-A windows that sort after the first read the same bands without it;
+one process per seed). On standard A 1000 resamples scatter the bounds by
+0.002–0.003 NCE between seeds about a band 0.10 NCE wide; a window's resamples
+cost a millisecond or two (the analysis of a folder of a hundred-odd windows
+takes seconds, the bootstrap a fraction of one). A resample's means are its
+scans' counts times the scans' intensities: its memory is resamples × (scans +
+peaks), never an array of every scan of every resample (tested).
+
+**What the band holds.** A percentile bootstrap of a few scans: drawing n of n
+scans with replacement spreads an energy's mean by √((n − 1) / n) of its
+standard error, and the scatter itself is read off those few scans. So at a few
+scans per energy the band holds the true E50 less often than a 68 % band would:
+on synthetic windows (3 energies, 10 % scan-to-scan scatter of the precursor and
+its fragment, 4000 datasets each, 1000 resamples) it holds the true E50 in 51 %
+of them at 2 scans per energy, 54 % at 3, 59 % at 5, 62 % at 7 and 66 % at 20.
+Read it as the scans' scatter at that many scans, not as a confidence interval.
+
+**Measured (our own data).** Standard A per scan (§11.8; 4–11 scans per
+spectrum): two scans of a spectrum, averaged over its pairs, hold every fragment
+of its S/N-3 spectrum on the median spectrum (95.5 % at the 10th percentile; the
+worst pair 67.5 % there, 50 % in one spectrum); F from two scans is within
+0.0023 of F from all of them on the median spectrum (over its pairs and window
+ions; 0.0018 for the targets alone), and the worst pair moves a target's F by
+0.009, a co-isolate's by up to 0.019 (a co-isolate's F of 0.71 in the 155.143
+window at NCE 1); the precursor's CV per spectrum is 4.1 % on the median
+spectrum, its top fragment's 3.4 %.
+
+### 11.12 Harmonic ghosts (`readings.harmonic_ghosts`)
+
+An Orbitrap reads m/z off an ion's axial frequency f (m/z ∝ 1/f², to the
+calibration's higher terms), and the transient of a strong line carries weak
+**harmonics** at 2f and 3f: peaks at about m/z / 4 and m/z / 9 that no ion
+made. Read against the window ions they are sub-formulas like any other peak.
+Our own 2026-09-10 exploratory file shows one: the 179.107 window's precursor
+C11H15O2⁺ (179.1068) carries its 2f ghost at m/z 44.7766 in the server's S/N-3
+spectra at NCE 1, 5, 10 and 15 — −1.9 to −2.7 ppm of m/z / 4, 0.098 / 0.098 /
+0.094 / 0.081 % of the line while the line falls from 3.21e5 to 2.49e5 (the
+committed S/N-10 spectra do not hold it; fixture
+`ms2_nh4_exploratory_179_sn3.json`). A 3f ghost holds a few per cent of its line
+and shows wherever m/z / 9 lies above the scan's first mass; 4f (m/z / 16) was
+not seen. How far a ghost sits off m/z / n² depends on the calibration and on
+the m/z (tens of ppm on some files, of either sign).
+
+**The rule.** In each spectrum, for every line L (not only the precursor: a
+co-isolate's and a strong fragment's ghosts are as real) and each order n of
+`HARMONIC_ORDERS` (2f, 3f), the peaks within `HARMONIC_PPM` (40 ppm) of m/z(L) /
+n² that hold at most `HARMONIC_CAP` of L's intensity in the same spectrum (2f:
+0.5 %, five times our own ghost's; 3f: 8 %, a few per cent with room for a ghost
+read near the S/N floor, where only the noise's upswings are seen) — of several,
+the brightest (one line, one ghost per order; a second, weaker peak in the band
+is something else). Above the cap a peak is an ion, whatever its place (real
+ions at m/z / 4 of a line hold a few % to tens of % of it) — and at every energy
+of the window. A ghost exists only beside its line and holds a constant share of
+it, so a place some spectrum of the window reads as an ion (`harmonic_ions`) is
+an ion's in all of them, and a peak within the reading tolerance of it is no
+candidate in any spectrum (the tolerance as `subformula` reads it, max(5 ppm,
+0.3 mDa): below m/z 60 — every 2f place of a line under m/z 240 — the 0.3 mDa
+floor; tested, synthetic: C2H5O⁺, 24 ppm below m/z / 4 of C11H18NO⁺, read 6 ppm
+high at 0.3 % of the line at one energy and above the cap at the others, is one
+place, read at every energy). A spectrum reads a place as an ion where no line's
+band holds it there (its line gone at that energy — a fragile precursor whose
+products are the spectrum at the higher energies —, a product that a ppm of
+jitter puts just out of the band, a spectrum of that peak alone), or where it
+holds more than the cap of every line whose band does, read at an S/N of
+`HARMONIC_CLEAR_SN` (10) or more (or none known). Near the S/N floor a peak is
+seen only where the noise lifts it, read up to about two noise sd high — its
+share of its line up to s / (s − 2) of the true one at S/N s: twice it at 4, 1.25
+times at 10 — and that is where a true ghost reads above the cap (at the highest
+energies, its line fallen); such a reading clears nothing, else one noisy energy
+would switch the rule off for the ghost at every energy (tested, synthetic:
+C15H26NO4⁺'s 2f ghost at 0.3 % of its line at three energies and 0.6 % at S/N
+3.4 at the fourth stays a ghost at the three; at S/N 24 it is read at all four;
+and the threshold itself: read at S/N 7.1 it stays a ghost, at S/N 12 it is
+read at all four).
+A product that grows from under the cap at its first energies to above it later,
+or whose line is gone at the later ones, is so read at all of them — never half
+erased, its onset, in-source flag and the intact test those of the reading
+without the rule — and of the band's other peaks the brightest is the ghost, not
+the product where it outshines the line's true ghost (tested, synthetic: a urea
+adduct [M + urea + H]⁺ at 549.365 whose protonated urea CH5N2O⁺ sits 14 ppm
+below m/z / 9 and holds 1 % and 4 % of it at the two lowest energies — with the
+adduct beside it at every energy, and gone from the third on; a product 39.6 ppm
+off m/z / 4 at one energy and 40.4 / 40.6 ppm at the others; its m/z moving by
+a ppm between energies; a product just above the cap at one energy only). The
+m/z are a ratio
+within one spectrum: the axis offset cancels. A ghost is **never read**: its
+rows in `ms2_readings.csv` become one unexplained-like row whose `harmonic`
+names the line, order, offset and share, before the ladder gate (no ladder step
+either); its role is `harmonic` — in no fragment, no attribution, no survival
+sum, and **out of the TIC** (the line seen again, not an ion: counting it counts
+the line twice), counted in `n_harmonic` / `harmonic_intensity`, a window note
+and the manifest (`harmonic_peaks`, `harmonic_by_order`). `--keep-harmonics`
+reads every peak as before (debugging). The energies only ever clear a place,
+never confirm a ghost (a ghost's share of its line holds while the line falls,
+0.098 → 0.081 % above, but a confirmation across energies would miss the ghost
+of an energy that alone shows it): the band and the cap flag nothing off a
+file's ghost band on any file checked, and no ghost flagged there sits where
+another energy holds a peak above the cap. What the clearing costs: a true ghost
+within the reading tolerance of a product that another energy reads as an ion is
+read as that product at every energy, as it was without the rule; and a product
+in a line's band that is above the cap only near the S/N floor is read only
+where it is above the cap (a true ghost and it read alike there).
+
+**What it changes, and what it costs.** A ghost's mass defect is its line's
+over n², and rarely any formula's: no ghost on any file the rule was checked
+on was read as a formula before, and no reading was flagged. So F, F_lo and
+every E50 stay as they were there; what moves are the TIC fractions — the
+intact test's, the branching sums', `frac` — by the ghost's share (in the
+179.107 window C11H15O2⁺'s branching sum at NCE 15 drops from 1.0506 to
+1.0488, under the flag). Where a ghost does land on a sub-formula it would have
+been a fragment — tested, synthetic: C15H26NO4⁺'s 2f ghost 34 ppm above m/z / 4
+reads C4H7O⁺ (−4.5 ppm), an "in-source fragment" of 0.3 % that set F 0.997
+where nothing fragments; read as a ghost, F is 1. Of 1152 even-electron ions
+C6–21 H O0–7 N0–1 (a synthetic search), one has a sub-formula read at exactly
+m/z / 4 or m/z / 9, and 90 one somewhere inside the ±40 ppm band. The band is
+also what lets a real weak ion be taken for a ghost: one at m/z / 4 or m/z / 9
+of a line it holds less than the cap of at every energy of the window. On our
+own three files the rule flags the four ghosts above and nothing else.
 
 ---
 
@@ -1379,9 +1715,9 @@ more: every scan's centroids and, for every scan the server reads as MS order
    `ms2 extract --file` rebuilds the MS2 from it.
 2. **The scans behind an ordinary file's spectra.** `ms2 extract --per-scan`
    reads which scans each server spectrum averages and every server peak in each
-   of them: the basis for replicate statistics (scan counts, per-scan
-   intensities). The spectra stay the server's, so every known answer of §11
-   is unchanged.
+   of them: the basis of `ms2 analyze`'s replicate statistics and E50 intervals
+   (§11.11). The spectra stay the server's, so every known answer of §11 is
+   unchanged.
 
 ### 12.2 The payload
 
@@ -1694,7 +2030,7 @@ manifest plus:
 | file | content |
 | --- | --- |
 | `ms2_scans.csv` | one row per scan (`scans.SCAN_COLUMNS`): `scan`, `t_s`, `has_header`, `order`, `event`, `node`, `nce`, `hcd_v`, `iso_width`, `low_mass`, `high_mass`, `inj_time_ms`, `max_inj_time_ms`, `microscans`, `agc_fill`, `tic`, `ft_resolution`, `filter` (as written), `filter_ok`, `filter_parent_mz`, `n_centroids`, `min_centroid_mz`, `max_centroid_mz`, `inferred`, `parent_mz`, `precursor_source` (`filter` / `inclusion list` / `scan-range rule` / `server`), `experiment`, `slot` (the list row, 1-based), `spectrum`, `note` |
-| `ms2_scan_peaks.parquet` | every kept peak in every scan of its spectrum (`scans.SCAN_PEAK_COLUMNS`): `spectrum`, `peak_mz`, `scan`, `t_s`, `intensity` (0 where the scan has none: the mean over a peak's rows is its spectrum's intensity with `--file`), `n_centroids` |
+| `ms2_scan_peaks.parquet` | every kept peak in every scan of its spectrum (`scans.SCAN_PEAK_COLUMNS`): `spectrum`, `peak_mz`, `scan`, `t_s`, `intensity` (0 where the scan has none: the mean over a peak's rows is its spectrum's intensity with `--file`), `n_centroids`; `ms2 analyze` reads it (§11.11) |
 | `ms2_file_metadata.json` | `--save-metadata`: the payload as the server answered it (kept also when the scans cannot be mapped: re-run with `--metadata-json`) |
 
 The manifest gains `source` (`server MS2 endpoints` / `… + the file's per-scan
