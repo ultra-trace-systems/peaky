@@ -237,6 +237,8 @@ peaky ms2 analyze --run-dir ~/peaky-output/ms2/<ID> --ion 137.1323=C10H17+
 # with each ion's adduct, its product channels (ms2_channels.csv) and a heuristic binding
 # class -- adduct, cluster, covalent (ms2_classes.csv; §11.13)
 peaky ms2 analyze --run-dir ~/peaky-output/ms2/<ID> --ion 155.1559=C10H20^N+ --reagent NH4_15N  # or --adduct '[M+^NH4]+'
+# formulas MS1 cannot tell apart: which one the products support (ms2_arbitration.csv; §11.14)
+peaky ms2 analyze --run-dir ~/peaky-output/ms2/<ID> --rival 315.106=C8H28^NO4Si4+,C10H20^NO10+
 
 # organise data — the write API (--dry-run previews, sends nothing; deletes need --yes)
 peaky curate tree --deep                                  # read the workspace/dataset/batch layout

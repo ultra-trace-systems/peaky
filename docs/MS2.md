@@ -598,7 +598,10 @@ replicate statistics and an interval for every E50 (§11.11); a peak that is an
 Orbitrap harmonic ghost of a brighter line is read as no formula (§11.12). Given
 each ion's adduct (`--ions` CSV `adduct` column, `--adduct`, `--reagent`),
 `peaky/ms2/channels.py` names every product's channel against it and gives each
-ion a heuristic binding class — adduct, cluster, covalent (§11.13).
+ion a heuristic binding class — adduct, cluster, covalent (§11.13). Given
+rival formulas of one ion (`--rival MZ=F1,F2`, the `--ions` CSV's `group`
+column), `peaky/ms2/arbitrate.py` reads its window once per rival and on
+decoys, and says which rival the products support (§11.14).
 
 ```
 ms2_spectra.parquet, ms2_parents.csv, ms2_window.csv, ms2_manifest.json   + the named ions
@@ -624,8 +627,13 @@ ms2_spectra.parquet, ms2_parents.csv, ms2_window.csv, ms2_manifest.json   + the 
   5 mDa) of the formula's exact m/z (`ION_CHECK_*`, the precursor search window
   of `ms2 extract`): a key typed with two decimals is fine, a formula from
   another window is refused as a typo — in a CSV row as on the command line
-  (the row is named). `--ion` and `--ions` add up. A formula named twice
-  (also once by each), or both polarities, is refused.
+  (the row is named). A missing `mz` cell (empty, R's `NA`, `#N/A`, `nan`)
+  checks nothing; one that is no number is refused, its row named. `--ion`
+  and `--ions` add up. A formula named twice
+  (also once by each), or both polarities, is refused. Rows sharing a
+  `group` cell (or, with none, an `mz` cell) and `--rival MZ=F1,F2` name
+  RIVAL formulas of one ion (a `--rival` formula `--ion` / `--ions` names
+  is that ion): §11.14.
 - **Window ions** of a parent key: the named ions whose exact m/z lies within
   `isolation_width/2 + WINDOW_PAD_DA` of the key. The width: `--iso-width`, else
   the one `ms2 extract` built its window inventory with (its manifest), else the
@@ -1287,7 +1295,8 @@ signal elsewhere in the window.
 `peaky ms2 analyze --run-dir DIR --ion MZ=FORMULA [--ion ...] [--ions CSV]
 [--k-max K | --no-ladder-k4] [--tol-ppm 5] [--tol-mda 0.3] [--gas-mass 28.0061]
 [--iso-width W] [--mass-offset-ppm PPM] [--bootstrap N] [--keep-harmonics]
-[--adduct LABEL] [--reagent PROFILE] [--no-figures] [--out-dir DIR]` writes into
+[--adduct LABEL] [--reagent PROFILE] [--rival MZ=F1,F2 ...] [--rival-ppm PPM]
+[--pick-supported] [--no-figures] [--out-dir DIR]` writes into
 `--out-dir` (default: the run folder itself):
 
 | file | content |
@@ -1300,10 +1309,11 @@ signal elsewhere in the window.
 | `ms2_branching.csv` | per (window, ion, fragment, energy above the lowest): `nce`, `hcd_v`, `weight`, `frag_gain`, `ion_loss`, `branching` (all three NaN where the ion is unobserved) |
 | `ms2_channels.csv` | only with an adduct given (§11.13): per (window, spectrum, window ion, channel) — `intact`, then `reagent ion`, `reagent loss`, `reagent loss + small losses`, `monomer shedding`, `reagent loss + split`, `skeletal`, `another ion's product`, `unexplained` (or `product` alone for an ion with no adduct) — `e_cm`, `adduct`, `intensity` (weighted), `share` (of the ion's products), `n_products`, `products`, `halves`, `n_scans`, `share_sd` (NaN where none of the ion's products there is read in a scan) |
 | `ms2_classes.csv` | only with an adduct given (§11.13): per (window, window ion) its `adduct` and source, `reagent_neutral`, `reagent_ion`, `class` (`adduct`, `cluster`, `covalent`, `mixed`, `unknown`), the class window and its channel shares (`share_split`, `share_other` among them), `monomer_pop`, `halves`, the E50 it read (`e50_curve`, `e50_nce`, `e50_ecm`, `e50_flag`, the band of the curve it read), `evidence`, `note` |
+| `ms2_arbitration.csv` | only with rival formulas given (§11.14): per (window, rival) its verdict (`supported`, `outscored`, `contradicted`, `undecided`), the window's verdict and winner, whether the other tables read the window with it (`analysed`), its explained share of the products and its decoys' (`chance`, `chance_max`), its lead over the best other rival and the decoys' (`lead_chance`), its products and diagnostic products (named with their losses), the readings' quality (`named_share`, `mean_abs_ppm`, `uncredited_share`), the precursor's error under it (`precursor_ppm`; `ms1_ppm` at the MS1 centroid at the precursor), the rival whose calibration its scores are read on (`read_on`), the elements it holds that another rival lacks and their `signature`, `evidence`, `note` |
 | `breakdown_<parent key>.png` | (A) F of every window ion vs NCE, the F_lo..F band, the target emphasised, E50 in the legend; (B) the target's top fragments' TIC fraction vs NCE with its own; one colour, one ion across both panels (the fragments take colours no window ion wears; past the palette, grey with distinct dashes); volts on a secondary top axis when known; legends below the panels |
-| `ms2_analyze_manifest.json` | the sample (from the extract manifest), the parameters (gate mode and its note, `k_max_read`, tolerances, gas mass, the isolation width and its source, the named ions, and every constant a call turns on: `intact_fraction`, `branching_flag`, `onset_stray_share`, `satellite_ratio` / `satellite_fwhm`, `polyoxy_max_c` / `polyoxy_min_o`, `e50_threshold`, `monotonic_tol`, `target_match_ppm`, `window_pad_da`, the m/z axis offset `mass_offset_ppm` and its `mass_offset_source`; `channels` — on, and the class constants of §11.13 —, and with an adduct given each named ion's `adduct` and `adduct_source`), each window's status, `reason`, target, co-isolates, `left_out` (aliases), `activation_kind`, located precursor, offset, NCEs and notes (and `offset_hint_ppm`, the
+| `ms2_analyze_manifest.json` | the sample (from the extract manifest), the parameters (gate mode and its note, `k_max_read`, tolerances, gas mass, the isolation width and its source, the named ions, and every constant a call turns on: `intact_fraction`, `branching_flag`, `onset_stray_share`, `satellite_ratio` / `satellite_fwhm`, `polyoxy_max_c` / `polyoxy_min_o`, `e50_threshold`, `monotonic_tol`, `target_match_ppm`, `window_pad_da`, the m/z axis offset `mass_offset_ppm` and its `mass_offset_source`; `channels` — on, and the class constants of §11.13 —, and with an adduct given each named ion's `adduct` and `adduct_source`; `arbitration` — on, the constants of §11.14, `rival_ppm`, `pick_supported`, the decoy shifts and each rival group with the rival the tables read —, and with rivals each named ion's `rival_group`), each window's status, `reason`, target, co-isolates, `left_out` (aliases), `activation_kind`, located precursor, offset, NCEs and notes (and `offset_hint_ppm`, the
 `--mass-offset-ppm` a window skipped for want of a named target needs, when its
-nearest named ion is within the axis reach), the counts (incl. `four_piece_readings`, `harmonic_peaks` and `harmonic_by_order`, `replicate_rows`, `one_scan_energies`, `e50_intervals`, `channel_rows` and `classes` (per class; null with no adduct); per window `harmonic_peaks`, `scans_per_energy`, `one_scan_energies`; the parameters' `harmonics` (on, orders, ppm, caps, `clear_sn`) and `replicates` (`per_scan`, `bootstrap`, `bootstrap_min`, `seed`, `percentiles`, `match_da`, `scale_band`)), the inputs' (the per-scan tables among them) and outputs' sha1, the code identity. No credentials, no URL (the PNGs carry no `Software` key) |
+nearest named ion is within the axis reach), the counts (incl. `four_piece_readings`, `harmonic_peaks` and `harmonic_by_order`, `replicate_rows`, `one_scan_energies`, `e50_intervals`, `channel_rows` and `classes` (per class; null with no adduct), `arbitration` (windows, supported, undecided, rivals by verdict; null with no rival; per window with a rival group its `rival_group` and `arbitration`); per window `harmonic_peaks`, `scans_per_energy`, `one_scan_energies`; the parameters' `harmonics` (on, orders, ppm, caps, `clear_sn`) and `replicates` (`per_scan`, `bootstrap`, `bootstrap_min`, `seed`, `percentiles`, `match_da`, `scale_band`)), the inputs' (the per-scan tables among them) and outputs' sha1, the code identity. No credentials, no URL (the PNGs carry no `Software` key) |
 
 It prints one line per window (status, target, co-isolates, offset, the target's
 E50 and, with the per-scan tables, its 16–84 % band: a NaN bound by its side —
@@ -1469,6 +1479,7 @@ given).
 | `replicates.bootstrap_e50` / `window_seed` / `interval` / `zero_width` | the resampled E50s (and where each crossing, or each hole at an end, lies); a window's seed; the 16–84 % band and on which side a censored bound lies; a band of zero width |
 | `analyze._replicates` | one window's replicate statistics and intervals |
 | `channels.ion_adduct` / `assign_adducts` / `product_channel` / `window_channels` / `classify` | an ion read as its adduct; each ion's adduct (CSV, --adduct, --reagent); one product's channel; one window's channel rows; one ion's binding class (§11.13) |
+| `arbitrate.check_group` / `non_products` / `product_table` / `rival_scores` / `decide` / `score_window`; `analyze._arbitrate_window` / `_cross_reads` | a rival group checked; the peaks that are no rival's product; a window's products per rival; their scores; the verdict; the rows; the reads, the reads on each other rival's calibration, the decoys and the wiring (§11.14) |
 
 ### 11.11 Replicates and the E50 interval (`replicates.py`)
 
@@ -1769,7 +1780,8 @@ much energy it takes — not a structure.
 `[M+NH4]+`, `[M+^NH4]+`, `[M+(CH4N2O)H]+`, `[M+NO3]-`, `[M+^NO3]-`, `[M-H]-`,
 `[M+Br]-`, `[M+I]-`, …), from, in this order: the `--ions` CSV's `adduct`
 column (an ion that cannot be its label — it does not hold the group, or the
-charge differs — is refused, as a typo, its row named); else `--adduct LABEL` (an ion that
+charge differs — is refused, as a typo, its row named; a blank cell, or a
+missing value such as R's `NA`, gives none); else `--adduct LABEL` (an ion that
 cannot be it is left to the next, the reason said); else `--reagent PROFILE`.
 A reagent's forms are tried in this order (`reagent_adducts`): its diagnostic
 adduct (`detect_adduct`; each component's, in name order, for a `+`-composed
@@ -2083,6 +2095,409 @@ NCE axis, and a bound off one energy with volts);
 `analyze._channels` / `_first_mass` / `_unnamed_ms1` (the wiring: presence,
 the scan range, the co-isolate notes); `analyze.read_ions_adducts` (the CSV
 column).
+
+### 11.14 Rival formulas of one precursor (`arbitrate.py`)
+
+**What it answers.** MS1 often leaves two or more formulas within its
+tolerance for one ion: a cyclic-siloxane ion and an O-rich organic of the same
+nominal mass a few ppm apart, an organosulfate and a nitrooxy organic, a 15N
+label and a 13C / CO3 reading, a fluorinated and a nitrate-cluster reading.
+`ms2 analyze` reads ONE formula per named ion; which one the products support
+was a judgement made by hand. `arbitrate` reads the window once per rival and
+says which of the rivals NAMED its MS2 products support — never that an
+unnamed formula could not do better, and never by the precursor's m/z (every
+rival is read on every rival's calibration — see *Why every calibration* —;
+its MS1 / MS2 errors are reported, not weighed).
+
+**Input.** `--rival MZ=F1,F2[,…]` (repeatable; MZ is checked against the
+rivals' span — from the lightest formula's exact m/z to the heaviest's —
+widened by max(10 ppm, 5 mDa), as `--ion` checks one formula: a typo
+otherwise; how far apart the rivals may lie is the group check's), or, in the
+`--ions` CSV, rows sharing a `group` cell — or rows with no group cell sharing
+one `mz` cell (the same text) — name rival formulas of one ion (a missing
+value — R's `NA`, `nan`, `#N/A` — is no cell, and an `mz` cell that is no
+finite number names no m/z, as the ion reader takes it: it checks no m/z
+there, and refuses a cell that is no number, its row named; tested); each
+rival is a named ion, a full ion formula with its sign, optionally with its
+`adduct` (§11.13). A `--rival` formula that `--ion` / `--ions` already names
+is that ion — its CSV `adduct` cell kept — and a rival of the group (said in
+the run's notes). A `--rival` group is named by its m/z text as typed,
+before the `=` (so 1000.006 and 1000.014 stay two groups, and 315.1060 keeps
+its four decimals), a CSV group by its label (or its shared `mz` cell).
+Refused, said: a group of one formula, a formula in two groups, two groups
+of one name (most likely the rivals of ONE ion split in two — typed apart,
+one window would read one group and leave the other unarbitrated: the
+refusal says to name them in one group first, and to type each its own m/z
+only if they are two ions), rivals of both polarities, and two rivals
+farther apart than the reading tolerance (max(`--tol-ppm`, `--tol-mda`) at
+their m/z: then MS1 tells them apart, they are two ions) — unless
+`--rival-ppm PPM` states a wider window for an axis known to read worse (at
+most `RIVAL_PPM_MAX`, 50 ppm, the reach `ms2 extract` reads an axis offset
+over; the refusal offers the `--rival-ppm` that would do only up to that cap).
+The Python API refuses the same (`arbitrate.check_groups`, `check_group`).
+
+**Which window.** The window whose located precursor (through the folder's
+axis offset) has a group's rival as its nearest named ion — of all of them,
+every rival included — within the target match (§11.1). The run's other
+tables read ONE rival per group: the one named first, or with
+`--pick-supported` the one the arbitration supports (in every window of the
+group that reaches a verdict; windows supporting different rivals keep the
+first, said); the group's other rivals are window ions nowhere (no alias, no
+co-isolate). They read the window as the run with that rival alone named
+does — its target matched, never forced: a first rival beyond the target
+match of the located precursor leaves the window skipped there (or read with
+the named ion it does match), said in the window's notes, and no rival is
+`analysed`; the arbitration still reads every rival. Where the window is
+skipped there while another rival matches the located precursor, its note
+says what reads it, keyed on the verdict (`_rival_skip`): the arbitration
+supports the rival the tables read — the folder's axis is the likely cause,
+and the `--mass-offset-ppm` hint stands; it supports the matching rival —
+`--pick-supported` (or naming it first) reads the tables with it, and no
+offset is offered (it would read the outscored rival on an axis that many
+ppm wrong) — unless the group's windows support different rivals: then
+`--pick-supported` keeps the first rival, given or not, and naming the
+matching one first reads the other windows with a rival they do not support
+where their located precursors match it (and skips them where they do not),
+so the note says the windows disagree, naming each one's (tested); it
+supports another rival, or none — both remedies are said, and naming a rival
+first is said with the windows of the group that support another (tested).
+The run's exit gives the same advice, never the `--ion` hint (tested, both
+ways). With no rival given
+nothing of this runs and every table is what it was (tested on the
+committed fixtures); with rivals, every table is the run with the analysed
+rival alone named (tested, also with that rival beyond the target match).
+So the tables read the analysed rival recalibrated on ITS OWN precursor,
+while the arbitration scores it on the calibration it is credited with the
+most on (`read_on`, *Why every calibration*): where that is another rival's,
+the tables may not show the products it is credited with — said in the
+window's notes and that rival's `note`, with the share it is credited with on
+its own calibration (`explained_own`), and, for a pick, in
+`--pick-supported`'s run note (tested: rivals 5.0 ppm apart, the precursor on
+the one the products are not, and every product 1 ppm low; the other,
+`supported` on 100 % read on the first's calibration, is credited with 13 % on
+its own — one shared product misread —, and the tables, with it named first
+or picked, read that misreading alone).
+
+**The reads.** Each rival is read as the window's target (`analyze_window(...,
+target=)`), the window's other named ions fixed, recalibrated on that
+rival's own precursor, with the same readings, ladder gate, harmonic rule and
+attribution as any window (§11.2–§11.5). Each rival is read again on each
+other rival's CALIBRATION (`RivalRead.cross`, `_cross_reads`): a whole read —
+the same gate, harmonic rule, other ions and attribution — of the window
+with its peaks, but the precursors and harmonic ghosts, moved by the two
+calibrations' ratio ((1 + its offset) / (1 + the other's), `_on_calibration`),
+so that, recalibrated on its own precursor as any read, it reads the
+products where the other rival's recalibration puts them. The window's PRODUCTS are its peaks
+in the energy-resolved spectra that no read takes for a window ion's
+precursor or a harmonic ghost, less the NON-PRODUCTS (`non_products`): a
+peak above the located precursor less an H atom (`H_ATOM`, the lightest loss,
+plus the reading tolerance: no singly charged product of any rival lies
+there — an unnamed ion co-isolated in the window, an isotopologue of the
+precursor), and a fragment every rival's read gives wholly to named
+co-isolates (their products: no rival can claim them). One set for all
+rivals and calibrations. Each rival is scored on the calibration it is
+credited with the most on (`read_on`; its own on a tie). A rival is CREDITED
+with a product's intensity times its attribution
+weight (1 for a fragment only it makes, its share of one it shares with a
+named co-isolate), where it reads the product with a CREDIBLE loss: one
+whose unnamed remainder, if any, is no carbon-poor polyoxy composition (≤
+`POLYOXY_MAX_C` C, ≥ `POLYOXY_MIN_O` O, only C/H/N/^N/O) that no merge of
+real neutrals makes up (`implausible_remainder`). The decomposer prints the
+fewest pieces, so a reagent's neutral lost with common ones prints as ONE
+unnamed piece: a nitrate cluster's [M−H−H2O]⁻ and [M−H−CO2]⁻ as losses of
+H3^NO4 and CH^NO5, an ammonium adduct's ^NH3 + CO2 + H2O2 as CH5^NO4. Such
+a remainder is undone — at most `REAGENT_NEUTRALS_MAX` of the ion's own
+polarity's `REAGENT_NEUTRALS` (^NH3, NH3, urea for a cation; H^NO3, HNO3
+for an anion: never nitric acid off an ammonium adduct), then at most
+`MERGED_MAX` (3) of `MERGED_NEUTRALS` (H2O, CO2, H2O2, CO) and one O2 — and,
+made up whole, credited; common neutrals alone too: an O-rich acid's CO2 +
+2 H2O prints as one unnamed CH4O4, a nitrate cluster's H^NO3 + CO2 + 2 H2O
+as one CH5^NO7 (tested: refused, the true O-rich adduct — or acid, while
+`MERGED_MAX` was 2, its CO2 + 2 H2O — lost those products to the siloxane
+alias that reads them as Si2 / CO3H−4 twins through Si–H remainders, and
+the siloxane was supported; credited, the two read the same products,
+undecided, in both polarities — and a nitrate cluster is supported over its
+C2F3 alias). What no such merge makes up — O beyond what the merged
+neutrals and one O2 hold: H2O6, CH5^NO7 on an ammonium adduct (nitric acid
+is no neutral it sheds) — the core accepts (an integer DBE, Senior's rule, an H), but it is an
+oxygen chain, no molecule, and an O-rich rival reads a co-isolated ion's
+organic products through it (tested, synthetic); what the attribution gave
+it only that way is `uncredited_share`. A rival that reads a fragment only
+that way — on its own calibration and every other rival's — is no
+candidate for it among the non-products: a named co-isolate's product it
+"shares" only through an oxygen chain is the co-isolate's (tested: the
+siloxane, twice outweighed by an organic co-isolate whose C9 products the
+O-rich rival reads only so, is supported as without them).
+
+**Scores** (per rival, over the window's energies): `explained` — its share
+of the products' intensity; `n_products`; DIAGNOSTIC products — called its
+own by the attribution (no co-isolate shares them) and read credibly by no
+other rival, on its own calibration or any other rival's, ≥
+`DIAGNOSTIC_FLOOR` each — their count, share and the strongest three named
+with their losses; `named_share` (credited intensity read with fully named
+closed-shell losses) and `mean_abs_ppm` (the readings' rank quality);
+`precursor_ppm` (the located precursor's error under the rival on the
+folder's axis) and `ms1_ppm` (the error of the MS1 window centroid AT the
+located precursor — one centroid for every rival, so a rival MS1 resolves
+reads its error there, never at a weaker neighbour of its own); and, per
+element the rival holds that another lacks, its SIGNATURE — the share of
+what it is credited with that it reads with the element shown: in the
+product, or leaving whole in named library neutrals (`shows`: none of it in
+the unnamed remainder), or in a remainder a merge of real neutrals makes up
+as `implausible_remainder` undoes it — a reading credited through such a
+merge is never also counted as the element absent (a credited reading whose
+remainder is no polyoxy merge can be: that is how `contradicted` fires): a
+nitrate cluster's [M−H−CO2−H2O]⁻, H^NO3 + CO2 + H2O
+printed as one CH3^NO6, shows its ^N (tested: the true cluster is no longer
+contradicted on its own ^N when that product dominates, in either order;
+its C2F3 alias still is). For a reagent's element (`REAGENT_ELEMENTS`: N, ^N —
+ammonium, urea, nitrate) also when ONE closed-shell library neutral takes
+all of it out of the remainder next to a skeletal piece (a valid one of more
+than `POLYOXY_MAX_C` C, or a library neutral): the decomposer prints the
+fewest pieces, so an ammonium adduct's ^NH3 lost with a skeletal C4H8 prints
+as one unnamed C4H11^N, and its ^N still leaves whole (tested: a true ^NH4⁺
+adduct whose products are all skeletal is no longer contradicted). For O
+(`SKELETAL_ELEMENTS`) also when the remainder is ONE valid skeletal piece of
+more than `POLYOXY_MAX_C` C made of a skeleton's C–O neutrals and at most
+one reagent neutral: its N or ^N all in ONE of the ion's own polarity's
+`REAGENT_NEUTRALS` (an NH3, an HNO3), the rest C, H and O only, with at most
+`SKELETAL_O_OVER_C` (1) O beyond its C. A skeleton's O leaves in its C–O
+neutrals, which the decomposer merges with the reagent's and an alkene —
+the ammonium adduct of an O4 acid ending in C7H9⁺ prints its loss as H2O +
+C2H7NO3 (NH3 + C2H4O3) (tested: that true adduct, its hydrocarbon ions
+dominating the high energies, is not contradicted on its own O — read as the
+O absent, those pieces left it contradicted, its O at 27 % —, while its S +
+Si + H4 alias still is on S and Si). A piece holding more N than one reagent
+neutral (a whole N2O5 group) or an oxygen chain (C2H2O9) is no skeletal
+loss and shows no O (tested on such pieces): no skeleton loses its O so,
+and an alias formula that reads products through them would be shown its O.
+A skeleton's own heteroatoms (Si, S, P, a halogen) are read as printed: an
+alias formula reads O-rich products through mixed remainders (S + Si + H4
+for O4) that one library neutral would split as well (tested) — but for an
+H-free neutral the library lacks (`BARE_NEUTRALS`: CS, which the remainder
+rule refuses as a piece of its own): a thiazole's ring S leaving as CS next
+to one closed-shell library neutral is shown (protonated benzothiazole's
+C6H5S⁺ → C5H5⁺ at high energy: HCN + CS printed as one unnamed C2HNS;
+tested — the true thiazole is no longer contradicted on its own S when
+C5H5⁺ dominates its products, whatever the energy mix).
+A carbon-poor product (≤ `POLYOXY_MAX_C` C: the reagent ion of a cluster
+that shed its skeleton whole, as one neutral — ^NO3⁻ from a nitrate cluster
+of a perfluorinated acid, its F all in the acid shed) that does not show the
+element says nothing of it and is not judged (out of the numerator and the
+denominator; tested). A signature judged on less than `SIGNATURE_EXPECT` of
+the products is none (`n/a`): a cluster whose reagent ion holds nearly every
+product says nothing of its skeleton's elements (tested).
+
+**Why every calibration.** Each rival's own read is recalibrated on its own
+precursor, so the rivals' ppm gap moves every product between their reads —
+and which calibration holds the true axis is an MS1 matter. Read on its own
+calibration alone, the rival the precursor sits off read its own products
+at the tolerance's edge, and lost them, while the other read its own: on a
+composition tie (two rivals 5.0 ppm apart, two products of its own on
+either side, the rest shared) a 1 ppm move of every product against the
+precursor made the rival the precursor sat on `supported` "on products
+they cannot read". So every rival is read on every rival's calibration: its
+scores are those of the calibration it is credited with the most on
+(`read_on`), and a product is one another rival "cannot read" only where
+that rival reads it on none (tested: the tie stays undecided with the
+precursor on either rival and the products 1 ppm low, on it or 1 ppm high;
+11.5 ppm apart — `--rival-ppm` —, where the far rival reads nothing on its
+own calibration, the same). The decoys are read so too. A rival far off the
+precursor is scored where it reads: the diamine of the known answers below,
+read on the adduct's calibration, reads the skeletal products with both its
+N in an unnamed remainder — contradicted.
+
+**The chance control.** Every product peak of the window moved by
+`DECOY_SHIFTS_MDA` (±7, 11, 15, 19 mDa: the mass-shift decoy the ladder gate
+was checked with, PR #80) — scaled up, for a product where the smallest
+shift is under `DECOY_TOL_FACTOR` (2) times its reading tolerance (above
+m/z 700 at 5 ppm, or at a wider `--tol-ppm`), by the one factor that brings
+it there, so a moved product lands beyond any reading of itself (at
+`--tol-ppm 10` a 7 mDa shift of an m/z 741 product stayed inside its
+tolerance and read the real product as itself; tested) —, the precursors,
+harmonic ghosts and non-products
+kept (a co-isolate's own products stay its own: moved, the co-isolate could
+not take them back and a rival would read them at full weight), and read
+again by every rival, on every rival's calibration: what a rival "explains"
+there it explains by chance. `chance` / `chance_max` are its decoys' mean /
+largest explained share, `lead_chance` the decoys' mean of its lead over the
+best other rival, `diagnostic_decoy` their mean count of diagnostic products.
+A shift on an alias spacing (Si for CO, 18.0 mDa; CO for N2, 11.2) lands a
+real product on its alias, and a rival rich in those atoms reads it there:
+the chance is a mean over eight shifts, never one — and the decoys raise the
+bar a lead must clear, never lower it (a decoy lead in the other rival's
+favour, its products shifted onto the first's aliases, is no chance the real
+lead has; tested).
+
+**The verdict** (`decide`), per window and rival:
+
+| verdict | when |
+| --- | --- |
+| `contradicted` | the rival holds an element another rival lacks, is credited with ≥ `SIGNATURE_EXPECT` of the products, and shows that element in ≤ `SIGNATURE_MIN` of what it is credited with, judged on ≥ `SIGNATURE_EXPECT` of them: a siloxane's products keep Si or lose it in a named neutral; a formula that reads them only as Si-free fragments of Si-bearing remainders is no siloxane |
+| `supported` | the leader — the rival not contradicted explaining the most — beats every other rival: its lead less the decoys' mean lead (none when that is negative) ≥ `SHARE_MARGIN`, on ≥ `DIAGNOSTIC_MIN` products of its own (≥ `DIAGNOSTIC_FLOOR` each) the other cannot read credibly on any rival's calibration; and its explained share beats its own decoys' mean by `EXCESS_MIN` |
+| `outscored` | beaten by the supported rival (or by the leader, where the leader beats some rivals and not others) |
+| `undecided` | none of these; `evidence` says why: `reads the same products as …` (aliases), a lead the decoys reach, too few products of its own the other cannot read (and how many more it shares with a named co-isolate), short of `EXCESS_MIN` beyond its decoys — `no better than chance` where their mean reaches `CHANCE_SAID` (half) of its share, else `too little of the products, though above chance` (product peaks no rival reads — an unnamed ion's products, noise — dilute every share; tested) —, no energy-resolved spectrum, no product |
+
+A rival contradicted does not make another supported: support is earned
+against every rival, the contradicted ones included (a window of organic
+products that a siloxane formula reads, every one, only through Si-bearing
+remainders leaves the siloxane `contradicted` and the organic rival
+`undecided`; with products of its own the siloxane cannot read, the organic
+rival can be `supported`). `window_verdict` is `supported` or
+`undecided`; `winner` the supported rival.
+
+| constant | value | why |
+| --- | --- | --- |
+| `SHARE_MARGIN` | 0.10 | the lead over each rival beyond the decoys' mean lead (or beyond 0) |
+| `DIAGNOSTIC_MIN` / `DIAGNOSTIC_FLOOR` | 2 / 0.01 | one product is a coin a decoy can toss |
+| `EXCESS_MIN` | 0.35 | the leader's explained share beyond its own chance (0.2 while the products held the non-products) |
+| `SIGNATURE_MIN` / `SIGNATURE_EXPECT` | 0.3 / 0.05 | an element shown in under a third of what a rival reads, where it reads — and is judged on — enough to expect it |
+| `CHANCE_SAID` | 0.5 | a leader short of `EXCESS_MIN` is no better than chance where its decoys' mean reaches this share of what it explains; else it explains too little of the products |
+| `DECOY_SHIFTS_MDA` | ±7, 11, 15, 19 | the ladder gate's mass-shift decoy (PR #80) |
+| `DECOY_TOL_FACTOR` | 2 | a decoy moves a product by at least this many reading tolerances |
+| `REAGENT_NEUTRALS` (`_MAX`) / `MERGED_NEUTRALS` (`MERGED_MAX`) | ^NH3, NH3, urea (+) or H^NO3, HNO3 (−), ≤ 2 / H2O, CO2, H2O2, CO, ≤ 3, and one O2 | the neutrals a carbon-poor polyoxy remainder is undone into (CO2 + 2 H2O is three; with `POLYOXY_MAX_C` 1 the remainder rule's DBE ≥ 0 leaves room for at most two of H2O / H2O2 / NH3 and one CO / CO2, so three is every printable merge, no filter — tested; three HNO3 print, refused, two credited) |
+| `BARE_NEUTRALS` | S: CS | an H-free neutral the library lacks that shows its element |
+| `SKELETAL_ELEMENTS` / `SKELETAL_O_OVER_C` | O / 1 | an element shown when one valid skeletal piece (> `POLYOXY_MAX_C` C) holds all of it: its N only in one reagent neutral of the ion's polarity, the rest C, H, O with O ≤ C + 1 |
+| `RIVAL_PPM_MAX` | 50 | the widest `--rival-ppm` |
+| `H_ATOM` | 1.007825 Da | no product lies above the precursor less an H atom |
+| `REAGENT_ELEMENTS` | N, ^N | a reagent's atoms leave as one library neutral next to a skeletal loss |
+
+The first four are set on decoy windows read as real — each decoy scored
+against the other seven, where any support is false — and on known answers
+(ions read against every formula within the reading tolerance of them,
+mostly alias swaps such as Si2 / CO3H−4, CS / OSi, C2F3 / H2^NO4). With one
+diagnostic product, or a smaller excess over chance, markedly more decoy
+windows are called supported — a decoy window whose products one reagent
+ion dominates (a shift lands it on another composition) is the hardest
+case —; three products, or a wider margin, lose known answers' supports.
+Out of the products, the non-products dilute no share: every share, and every
+decoy's, reads larger, and `EXCESS_MIN` 0.35 (0.2 before) keeps decoy windows
+read as real about as rarely supported as before, with more known answers
+supported.
+Read as real, a decoy window is still supported now and then: none of the 32
+of the committed fixtures' four windows, but 9 of the 72 decoys of the
+synthetic windows the tests pin (tested; 6 while each rival was read on its
+own calibration only) — a shift on an alias spacing (−11 mDa: CO for N2,
+11.2; ±19: about Si for CO, 18.0; +11 / +15: an ^NH3 loss for an H2O loss,
+13.0, read on another rival's calibration) lands a window's few
+products on a rival's compositions, at times on the rival the window itself
+does not support (an O-rich adduct's products on its siloxane alias, a
+nitrate cluster's on its C2F3 alias, a C10 adduct's on the diamine it
+outscores). `SIGNATURE_MIN`: a true ion's products keep its skeleton's
+elements or lose them whole in library neutrals (or in a `BARE_NEUTRALS`
+piece) — in the windows tested its signature sits above 0.3; an element a
+true ion loses in a neutral `shows` does not know reads as not shown —,
+while a siloxane formula read against a window of O-poor organic products
+shows Si in none of them (tested).
+
+**Known answers (our own data).** The 2026-09-10 exploratory file's 315.106
+window — the ^NH4 adduct of a cyclic siloxane, C8H28^NO4Si4⁺, whose one
+product is its ^NH3 loss C8H25O4Si4⁺: against C10H20^NO10⁺ (−2.6 ppm) both
+read that peak (as C10H17O10⁺ the same ^NH3 loss: Si4 = C2O6H−8, twice the
+0.41 mDa swap) — `undecided`, the same products; against C14H19O8⁺ (+4.5 ppm,
+no ^N, reads nothing) the siloxane leads by 83 % on ONE product — `undecided`
+(`DIAGNOSTIC_MIN`). The precursor reads +0.03 ppm as the siloxane and +2.63
+ppm as C10H20^NO10⁺: reported, not weighed. The 136.021 window: C7H6NS⁺ and
+C6H6NOSi⁺ (1.7 ppm below) read the same three products — `undecided`; the
+co-isolated dithiocarbamate's own products are no products there (each reads
+75 % of the rest). Standard A's 155.156 window: C10H20^N⁺ against a
+protonated diamine C9H19N2⁺ (−11.5 ppm, `--rival-ppm 12`): C10H20^N⁺
+explains 71 % of the products (the in-window survivors of unnamed ions are
+none); the diamine reads none on its own calibration — its precursor 9.8 ppm
+off (the formulas 11.5 ppm apart) — but on C10H20^N⁺'s it reads the skeletal
+products (19 %), both its N in an unnamed remainder — `contradicted`, N 0 % —,
+and the rest the co-isolate C10H19O⁺ can make: none is C10H20^N⁺'s own —
+`undecided`, said. No decoy window of these, read as real,
+is supported (tested).
+
+**Outputs.** `ms2_arbitration.csv` (`ARBITRATION_COLUMNS`), one row per
+(window, rival): `group`, `rival`, `rival_mz`, `order` (1 = named first),
+`analysed` (the rival the other tables read the window with, as their
+target; none where they do not read it with a rival), `window_verdict`,
+`winner`, `verdict`, `explained`, `chance`, `chance_max`, `lead`,
+`lead_chance` (signed: the decoys' mean), `n_products`, `n_diagnostic`,
+`diagnostic_share`, `diagnostic_products`, `diagnostic_decoy`, `named_share`,
+`mean_abs_ppm`, `uncredited_share`, `precursor_ppm`, `ms1_ppm`, `read_on`
+(the rival whose calibration its scores are read on), `explained_own` (the
+share it is credited with on its own calibration, as the other tables read
+it; `explained` where `read_on` is itself), `elements`,
+`signature`, `product_intensity`, `n_spectra`, `n_decoys`, `evidence` (one
+sentence: what it explains against chance, its diagnostic products, the
+verdict and why) and `note`: every rival of the group and the window's
+co-isolates named, an MS1 centroid no named ion matches, at S/N
+`ARBITRATION_NOTE_SN` (3, `ms2 extract`'s floor) or more — or with no S/N
+known (NaN: no noise to call it so; tested) —, holding more of
+the isolation window than the precursor — or the precursor not seen in the
+MS1 window (with such a centroid, or "MS1 does not see the precursor"); with
+no MS1 window row, the same from the lowest-energy MS2 spectrum (the peaks
+in the isolation window no read takes for a named ion's precursor against
+the precursor's): the products may be another ion's, read through each
+rival's formula; and, on the rival the tables read, where it is scored on
+another rival's calibration, that the tables read it on its own (see
+*Which window*). Written only with rivals (a stale one is removed). The
+console prints each arbitrated window's line (`rivals [group]: ` —
+`undecided -- ` when no rival is supported — then each rival's verdict with
+its explained share, its decoys' and its diagnostic count, and the rival the
+tables read, or none); a rival group's window is never folded into the
+"skipped" summary. The manifest records the constants and groups
+(`parameters.arbitration`: `on`, `rival_ppm`, `pick_supported`,
+`decoy_shifts_mda`, `decoy_tol_factor`, the verdict constants and
+`chance_said`, the neutrals a polyoxy remainder is undone into
+(`reagent_neutrals`, `merged_neutrals` and their maxima), `bare_neutrals`,
+`skeletal_elements`, `skeletal_o_over_c`,
+`note_min_sn`, each group's
+rivals, source and `analysed_with`), each
+named ion's `rival_group`, per window `rival_group` and `arbitration`
+(verdict, winner, analysed_with, each rival's verdict, and `hint`: what
+reads a group's window the tables skip, `_rival_skip`), and the counts
+(`arbitration`: windows, supported, undecided, rivals by verdict; null
+without rivals). `analyze` 0.4.0.
+
+**Gotchas.** Aliases within the reading tolerance — Si2 for CO3H−4 (0.41
+mDa), so an Si4 formula and its Si-free C2O6H−8 twin; S + Si + H4 for O4
+(0.64 mDa) — read a product that holds the swapped atoms in numbers the
+swap can trade (an even number of Si, against an Si-free twin) as each
+other's: on such products alone they stay `undecided` (`same products`) —
+MS2 composition cannot split them there (an MS1 isotope pattern can: 29Si /
+30Si, 34S). Products the swap cannot trade — one or three Si against an
+Si-free twin — are what can decide the pair: at least `DIAGNOSTIC_MIN` of
+them, of `DIAGNOSTIC_FLOOR` or more each, with the share margins — the
+siloxane adduct whose four odd-Si products only it reads is `supported` over
+its C2O6H−8 twin; with one such product next to its ^NH3 loss, `undecided`
+(both tested). An alias that reads the products only through remainders
+holding its swapped atoms is `contradicted` (the S + Si + H4 alias of an
+O-rich adduct, tested), which supports no rival by itself: the other must
+still beat it on products it cannot read (support never by elimination);
+where both read the same products, the window stays `undecided` (tested).
+The signature is pooled over the energies: a true ion holding S, Si, P or a
+halogen whose high energies are hydrocarbon ions — the element in a
+skeletal loss, read as printed — can be `contradicted` on it though its
+low energies show it (tested: the S + Si + H4 ion built as the O4 adduct
+is, its −NH3 product at low energies, contradicted on S and Si); its
+energies are in `ms2_readings.csv`. A large formula rich in H, O or Si reads many products by
+chance (its decoys say how many); its `chance` is the measure, its explained
+share alone is not. Products of an unnamed co-isolate are read through every
+rival's formula: name it (`--ion`), the `note` says when the MS1 window — or,
+without one, the lowest-energy MS2 spectrum — suggests one; a named one's
+own products are no products. A window with one product decides nothing (`DIAGNOSTIC_MIN`). The MS1 / MS2
+precursor errors are reported, never weighed: an axis off by a few ppm moves
+both. Cost: a group's window is read (1 + `len(DECOY_SHIFTS_MDA)`) × the
+rivals² times — each rival on each rival's calibration, whole reads (the
+decoys on the window's own spectra only, no per-scan statistics); with `--pick-supported`, a pick other than the first
+rival reads the whole folder once more (the verdicts are the first pass's).
+
+**Code map.** `arbitrate.RivalGroup` / `parse_rival_spec` /
+`read_rival_groups` / `check_group` / `check_groups` (the input);
+`implausible_remainder` (`_undone`) / `shows` (`_leaves_whole`,
+`_leaves_skeletal`, `_leaves_bare`) (one reading); `non_products` /
+`product_table` (`_reads_of`, `_read_rows`, `_readable`) / `rival_scores` (a
+window's scores); `decide` (the verdict); `score_window` / `undecided_rows` /
+`frame` (the rows); `analyze.read_rival_groups_csv`, `located_precursor`,
+`_group_window`, `_base_ions`, `_window_tables`, `_shifted`,
+`_on_calibration`, `_kept`, `_cross_reads`, `_arbitrate_window`, `_ms1_ppm`,
+`_arbitration_notes`, `_ms2_window_note`, `_group_winners`, `_elsewhere`,
+`_calibration_note`, `_picks`, `_rival_skip` (the wiring); `cli._ms2_rival_line` (the console), `cli._ms2_analyze_exit` (a
+skipped group window's advice).
 
 ---
 

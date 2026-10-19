@@ -995,6 +995,10 @@ def _curate_rename(c, args):
     return c.update_batch(bid, name=args.name, description=args.desc)
 
 
+#: The widest `ms2 analyze --rival-ppm` (`arbitrate.RIVAL_PPM_MAX`; the parser
+#: is built without importing the MS2 modules, and a test pins the two).
+AR_RIVAL_PPM_MAX = 50.0
+
 #: `ms2 analyze` prints the windows no named ion matches one by one up to this
 #: many; beyond it they are summed up in one line (their notes stay in the manifest).
 MS2_ANALYZE_UNNAMED_SHOWN = 5
@@ -1592,6 +1596,27 @@ def _ms2_adducts(args, ions) -> tuple[dict | None, list]:
     return CH.assign_adducts(list(ions), per_ion, args.adduct, reagent)
 
 
+def _ms2_rival_line(group: str, a) -> str:
+    """One window's arbitration as `ms2 analyze` prints it: the verdict, each
+    rival's explained share (and its decoys'), and the rival the other
+    tables read."""
+    import math as _m
+
+    def pct(v):
+        return f"{v:.0%}" if _m.isfinite(v) else "n/a"
+    win = str(a["winner"].iloc[0])
+    used = next((str(r) for r, x in zip(a["rival"], a["analysed"]) if x), "")
+    parts = [f"{r['rival']} {r['verdict']} ({pct(r['explained'])} of the products, decoys "
+             f"{pct(r['chance'])}" + (f", {int(r['n_diagnostic'])} diagnostic"
+                                       if r["n_diagnostic"] else "") + ")"
+             for _, r in a.iterrows()]
+    head = f"rivals [{group}]: " + ("" if win else "undecided -- ")
+    if not used:
+        return head + "; ".join(parts) + "; the tables read none of them (see the notes)"
+    return (head + "; ".join(parts) + f"; the tables read {used}"
+            + (" (named first)" if used == str(a["rival"].iloc[0]) else " (--pick-supported)"))
+
+
 def _ms2_analyze(args) -> None:
     """`peaky ms2 analyze`: one `ms2 extract` sample folder -> readings across
     energies, breakdown curves, E50s, fragments (peaky/ms2/analyze.py). Local:
@@ -1600,6 +1625,7 @@ def _ms2_analyze(args) -> None:
     import statistics
 
     from peaky.ms2 import analyze as AN
+    from peaky.ms2 import arbitrate as AR
     from peaky.ms2 import readings as RD
     from peaky.ms2 import sources as SRC
 
@@ -1614,9 +1640,36 @@ def _ms2_analyze(args) -> None:
         if args.k_max is not None:
             RD.gate_mode(args.k_max)
         items = [AN.parse_ion_spec(x) for x in (args.ion or [])]
+        groups, rival_notes = [], []
         if args.ions:
             items += AN.read_ions_csv(args.ions)
+            groups += AN.read_rival_groups_csv(args.ions)
+        named = {f for f, *_ in items}
+        for spec in (args.rival or []):
+            typed, forms = AR.parse_rival_spec(spec, check_ppm=AN.ION_CHECK_PPM,
+                                               check_mda=AN.ION_CHECK_MDA)
+            # a rival --ion / --ions already names is that ion (its CSV
+            # adduct cell kept), a rival of this group; a formula in two
+            # groups is refused below
+            both = [f for f in forms if f in named]
+            items += [(f, typed, AN.ion_mz(f)) for f in forms if f not in named]
+            named |= set(forms)
+            # the group is named by its m/z AS TYPED: a format of the number
+            # (6 significant digits) named two groups 8 mDa apart above m/z
+            # 1000 alike, and dropped the precision typed
+            name = spec.partition("=")[0].strip()
+            groups.append(AR.RivalGroup(name=name, rivals=tuple(forms), source="--rival"))
+            if both:
+                rival_notes.append(f"{', '.join(both)} named by --ion / --ions and by --rival "
+                                   f"{spec}: one ion, a rival of group {name}")
         ions = AN.collect_ions(items)
+        AR.check_groups(groups)
+        for g in groups:
+            AR.check_group(g, tol_ppm=args.tol_ppm, tol_mda=args.tol_mda,
+                           rival_ppm=args.rival_ppm)
+        if (args.rival_ppm is not None or args.pick_supported) and not groups:
+            raise ValueError("--rival-ppm / --pick-supported need rival formulas: --rival "
+                             "MZ=F1,F2 or an --ions CSV 'group' column")
         adducts, adduct_notes = _ms2_adducts(args, ions)
     except (ValueError, OSError, KeyError) as exc:
         sys.exit(f"[ms2] {exc.args[0] if isinstance(exc, KeyError) else exc}")
@@ -1634,7 +1687,9 @@ def _ms2_analyze(args) -> None:
                          tol_ppm=args.tol_ppm, tol_mda=args.tol_mda, gas_mass=args.gas_mass,
                          iso_width=args.iso_width, mass_offset_ppm=args.mass_offset_ppm,
                          bootstrap=args.bootstrap, harmonics=not args.keep_harmonics,
-                         adducts=adducts, adduct_notes=adduct_notes)
+                         adducts=adducts, adduct_notes=adduct_notes, rivals=groups,
+                         rival_ppm=args.rival_ppm, pick_supported=args.pick_supported,
+                         rival_notes=rival_notes)
     out = Path(os.path.expanduser(args.out_dir or args.run_dir))
     files = AN.write_outputs(res, tables, str(out), figures=not args.no_figures,
                              created_utc=datetime.now(timezone.utc).strftime(
@@ -1652,9 +1707,11 @@ def _ms2_analyze(args) -> None:
     # line (each one's note stays in the manifest), not printed one by one --
     # apart from the windows whose named ion misses by an axis offset (within
     # the reach one is read over: `offset_hint_ppm`), summed up apart with the
-    # offset they need
+    # offset they need. A rival group's window is never folded: its
+    # arbitration line is printed, whatever the tables read there
     skipped = [w for w in res.windows
-               if w.status == "skipped" and w.reason == AN.SKIP_NO_TARGET]
+               if w.status == "skipped" and w.reason == AN.SKIP_NO_TARGET
+               and w.arbitration is None]
     near = [w for w in skipped if _m.isfinite(w.offset_hint_ppm)]
     unnamed = [w for w in skipped if not _m.isfinite(w.offset_hint_ppm)]
     fold = len(unnamed) > MS2_ANALYZE_UNNAMED_SHOWN
@@ -1684,6 +1741,8 @@ def _ms2_analyze(args) -> None:
         if w.classes is not None and len(w.classes):
             print("  class: " + "; ".join(f"{r['ion']} {r['adduct'] or '(no adduct)'} "
                                            f"{r['class']}" for _, r in w.classes.iterrows()))
+        if w.arbitration is not None and len(w.arbitration):
+            print("  " + _ms2_rival_line(w.rival_group, w.arbitration))
         for note in w.notes:
             print(f"  note: {note}")
     if fold_near:
@@ -1710,7 +1769,11 @@ def _ms2_analyze_exit(windows) -> None:
     window whose target was not named, also beside readings-only windows.
     The summary speaks for the windows it names: in a folder where some
     windows are readings-only and others skipped, it never says that no
-    window has an energy axis (a skipped window was never looked at)."""
+    window has an energy axis (a skipped window was never looked at). A
+    rival group's window the tables skip while another rival matches its
+    precursor gives its own advice (`WindowResult.rival_hint`): never the
+    --ion hint, and an axis offset only where the arbitration supports the
+    rival the tables read (then it is summed up with the others)."""
     import math
     from statistics import median
 
@@ -1723,8 +1786,14 @@ def _ms2_analyze_exit(windows) -> None:
     if not windows:
         sys.exit("[ms2] no MS2 parent in this folder (an MS1-only sample, or no MS2 spectrum "
                  "was extracted): nothing to analyse")
-    near = [w.offset_hint_ppm for w in windows
-            if w.reason == AN.SKIP_NO_TARGET and math.isfinite(w.offset_hint_ppm)]
+    # a rival group's window the tables skip while another rival matches its
+    # precursor says what reads it (`analyze._rival_skip`): no --ion hint, and
+    # an axis offset only where the arbitration supports the rival they read
+    rival = list(dict.fromkeys(w.rival_hint for w in windows
+                               if w.reason == AN.SKIP_NO_TARGET and getattr(w, "rival_hint", "")))
+    plain = [w for w in windows
+             if w.reason == AN.SKIP_NO_TARGET and not getattr(w, "rival_hint", "")]
+    near = [w.offset_hint_ppm for w in plain if math.isfinite(w.offset_hint_ppm)]
     hint = ("name each window's target ion with --ion MZ=FORMULA (or --ions CSV)")
     if near:
         # the named ions miss by an axis offset: naming them again changes nothing
@@ -1732,8 +1801,10 @@ def _ms2_analyze_exit(windows) -> None:
         hint = (f"{len(near)} window(s) miss their named ion by an m/z axis offset (median "
                 f"{need:+.1f} ppm): pass --mass-offset-ppm {need:+.1f}"
                 + ("; name the other windows' target ions with --ion MZ=FORMULA (or --ions CSV)"
-                   if len(near) < sum(w.reason == AN.SKIP_NO_TARGET for w in windows) else ""))
-    no_target = [SRC.spectrum_key(w.parent_mz) for w in windows if w.reason == AN.SKIP_NO_TARGET]
+                   if len(near) < len(plain) else ""))
+    no_target = [SRC.spectrum_key(w.parent_mz) for w in plain]
+    what = ("rival group window(s) skipped, the located precursor matching a rival other than "
+            "the one the tables read: " + "; ".join(rival)) if rival else ""
     ro = [w for w in windows if w.status == "readings only"]
     if ro:
         if len(ro) == len(windows):
@@ -1749,14 +1820,17 @@ def _ms2_analyze_exit(windows) -> None:
         if no_target:
             print(f"[ms2] skipped with no named ion at the located precursor: "
                   f"{', '.join(no_target)} -- {hint}")
+        if rival:
+            print(f"[ms2] {what}")
         other = sorted({w.reason for w in windows
                         if w.status == "skipped" and w.reason != AN.SKIP_NO_TARGET})
         if other:
             print("[ms2] other windows skipped: " + "; ".join(other))
         return
-    if no_target:
-        sys.exit("[ms2] no window was analysed: "
-                 + ("" if near else "no named ion is at a located precursor; ") + hint)
+    if no_target or rival:
+        sys.exit("[ms2] no window was analysed: " + "; ".join(
+            ([("" if near else "no named ion is at a located precursor; ") + hint]
+             if no_target else []) + ([what] if rival else [])))
     sys.exit("[ms2] no window was analysed: "
              + "; ".join(sorted({w.reason for w in windows if w.reason})))
 
@@ -2510,8 +2584,27 @@ def build_parser() -> argparse.ArgumentParser:
                           "are the named ions inside its isolation window, its target the one "
                           "at the located precursor -- never guessed")
     p2a.add_argument("--ions", default=None, metavar="CSV",
-                     help="window ions from a CSV with a 'formula' column (and optionally 'mz' "
-                          "and 'adduct', the ion form it was made by, e.g. [M+NH4]+)")
+                     help="window ions from a CSV with a 'formula' column (and optionally 'mz', "
+                          "'adduct', the ion form it was made by, e.g. [M+NH4]+, and 'group': "
+                          "rows sharing a group cell -- or, with none, an 'mz' cell -- are rival "
+                          "formulas of one ion, see --rival)")
+    p2a.add_argument("--rival", action="append", default=[], metavar="MZ=F1,F2",
+                     help="rival formulas of ONE ion, e.g. 315.106=C8H28^NO4Si4+,C10H20^NO10+ "
+                          "(repeat for another ion; or rows sharing a 'group' cell of the "
+                          "--ions CSV; a formula --ion / --ions names is that ion): MS1 cannot "
+                          "tell them apart, so its window is read once per rival and on decoys, "
+                          "and ms2_arbitration.csv says which one the MS2 products support. The "
+                          "other tables read the one named first")
+    p2a.add_argument("--rival-ppm", type=float, default=None, metavar="PPM",
+                     help="rivals may lie this far apart (default: within the reading "
+                          "tolerance, --tol-ppm / --tol-mda; at most "
+                          f"{AR_RIVAL_PPM_MAX:g} ppm): for an m/z axis known to read worse")
+    p2a.add_argument("--pick-supported", action="store_true",
+                     help="read every table with the rival the arbitration supports (in every "
+                          "window of its group that reaches a verdict) instead of the one "
+                          "named first -- as the run with it alone named, recalibrated on its "
+                          "own precursor: where its support is read on another rival's "
+                          "calibration (read_on), the tables may not show its products (said)")
     p2a.add_argument("--adduct", default=None, metavar="LABEL",
                      help="the ion form of every named ion with no 'adduct' cell, e.g. "
                           "'[M+NH4]+' (an ion that cannot be it is left to --reagent, else read "

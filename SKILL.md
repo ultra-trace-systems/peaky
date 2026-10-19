@@ -125,6 +125,11 @@ peaky ms2 analyze --run-dir <out-dir>/ms2/<ID> --ion MZ=FORMULA [--ion ...] [--i
 # PROFILE's forms): product channels (ms2_channels.csv) and a heuristic binding class per ion --
 # adduct / cluster / covalent / mixed / unknown (ms2_classes.csv; docs/MS2.md §11.13)
 peaky ms2 analyze --run-dir <out-dir>/ms2/<ID> --ion MZ=FORMULA --reagent NH4_15N   # or --adduct '[M+NH4]+'
+# rival formulas of one ion (--rival MZ=F1,F2, or rows sharing a 'group' cell in --ions): its
+# window read per rival and on mass-shifted decoys -> supported / outscored / contradicted /
+# undecided per rival (ms2_arbitration.csv; --pick-supported reads the tables with the winner;
+# docs/MS2.md §11.14)
+peaky ms2 analyze --run-dir <out-dir>/ms2/<ID> --rival MZ=F1,F2 [--rival-ppm PPM] [--pick-supported]
 ```
 
 `peaky pool` pools every batch matching `--batches` (a REGEX over batch names, e.g.
