@@ -53,9 +53,11 @@ fragment the data cannot attribute.
     candidate the onset excluded. Else 'ambiguous', split by share weights,
     chosen per candidate (`share_weights`): its intensity at the lowest energy
     (its MS2 survivor); a candidate with none, its share of the MS1 isolation
-    window put on the survivors' scale; 0 for a named ion in neither (an MS1
-    share of 0 is measured, not missing) -- so naming an ion the sample lacks
-    moves no other candidate's weight. Excluded candidates weigh 0.
+    window put on the survivors' scale, else its precursor where it is first
+    seen; 0 for a named ion absent from the sample (no precursor at any
+    energy, an MS1 share of 0: measured, not missing) -- so naming an ion the
+    sample lacks moves no other candidate's weight. Excluded candidates
+    weigh 0.
 
     Why the guard: in the 2026-09-10 file's 179.107 window C9H11+ (119.085)
     appears at NCE 5, where C11H15O2+ is still 98.7 % of its NCE 1 fraction
@@ -132,14 +134,16 @@ BASIS_AMBIGUOUS = "ambiguous"
 #: window ion takes it (call '', every weight 0), so an absent ion never shows
 #: a breakdown curve built from a peak the ions the sample holds cannot make.
 BASIS_ABSENT = "absent only"
-#: Where a fragment's weights came from: one candidate, the intact test, the
-#: candidates' lowest-energy MS2 survivors, those survivors with the MS1 window
-#: shares of the candidates that have none put on their scale, the MS1 window
-#: shares alone (no candidate has a survivor), an equal split (a candidate
-#: with no survivor and no known MS1 share), or none (`BASIS_ABSENT`) -- said,
-#: not hidden.
+#: Where a fragment's weights came from: one candidate, the intact test, or
+#: the parts of a split (`share_weights`) -- the candidates' lowest-energy MS2
+#: survivors, the precursor where first seen of those not at the lowest energy
+#: whose MS1 share cannot weigh them, the MS1 window shares (put on the
+#: survivors' scale, or alone when no candidate has a survivor) -- an equal
+#: split (a candidate in no MS2 spectrum whose MS1 share is not known or has
+#: no scale), or none (`BASIS_ABSENT`) -- said, not hidden.
 WEIGHT_SOURCES = ("composition", "intact test", "ms2 survivors", "ms2 survivors + ms1 window",
-                  "ms1 window", "equal", "none")
+                  "ms2 survivors + ms2 first seen", "ms2 survivors + ms2 first seen + ms1 window",
+                  "ms2 first seen", "ms1 window", "equal", "none")
 
 
 def fragment_key(formulas: Sequence[str]) -> str:
@@ -650,8 +654,9 @@ def absent_ions(ions: Sequence[str], survivors: Mapping[str, float],
     from this sample' (`attribute_fragments`, `analyze`) `survivors` is each
     ion's precursor at ANY energy of the window (its maximum): an ion located
     only at a later energy is not absent. `share_weights` passes the lowest-
-    energy survivors, which is what its split reads. An unknown MS1 share (NaN, or
-    no entry) is not 0: such an ion is not absent. In `ions` order.
+    energy survivors and, for an ion not there, its precursor where first
+    seen: the same rule. An unknown MS1 share (NaN, or no entry) is not 0:
+    such an ion is not absent. In `ions` order.
 
     Such an ion weighs 0 in every fragment it shares (`share_weights`), is
     set aside before the intact test and the mass-balance guard
@@ -668,40 +673,65 @@ def absent_ions(ions: Sequence[str], survivors: Mapping[str, float],
 
 
 def share_weights(candidates: Sequence[str], survivors: Mapping[str, float],
-                  ms1_shares: Mapping[str, float] | None = None
+                  ms1_shares: Mapping[str, float] | None = None,
+                  first_seen: Mapping[str, tuple[str, float]] | None = None
                   ) -> tuple[dict[str, float], str, str]:
     """Split a shared fragment among `candidates`, each by what is measured of
-    IT -- one candidate's missing number never changes how the others split.
+    IT -- one candidate's missing number never changes how the others split,
+    except where nothing at all is measured of it (the equal split below: a
+    prior, said).
 
     A candidate's survivor is its precursor intensity in the window's lowest
-    energy MS2 spectrum (> 0: there); its MS1 share, its share of the MS1
+    energy MS2 spectrum (> 0: there); `first_seen`, for one not there, the
+    spectrum in which its precursor is first seen and its intensity there
+    (omitted: in no later spectrum either); its MS1 share, its share of the MS1
     isolation window (0: measured, and not there; NaN or missing: not known).
 
-      * In neither (no survivor, an MS1 share of 0): weight 0 -- an ion list
-        naming an ion the sample lacks takes nothing, and moves nothing.
-      * Every other candidate has a survivor: split by the survivors
-        ('ms2 survivors'). An ion in the MS2 spectrum keeps its survivor
-        whatever the MS1 window holds.
-      * Some have a survivor, the rest only an MS1 share: the survivors as
-        they are, the rest put on their scale through the MS1 shares (survivor
-        per unit share, from the candidates that have both)
-        ('ms2 survivors + ms1 window').
-      * None has a survivor: the MS1 shares ('ms1 window').
-      * Else -- a candidate with no survivor whose MS1 share is not known, or
-        no candidate with both to set the scale -- an equal split over the
-        candidates not absent from both ('equal').
+      * Absent -- no precursor at ANY energy and an MS1 share of 0
+        (`absent_ions`): weight 0 -- an ion list naming an ion the sample
+        lacks takes nothing, and moves nothing. An ion first seen at a later
+        energy is not absent.
+      * A survivor: split by it ('ms2 survivors'). An ion in the lowest-energy
+        MS2 spectrum keeps its survivor whatever the MS1 window holds.
+      * No survivor, an MS1 share (> 0) and candidates with both to set the
+        scale: the share put on the survivors' scale (survivor per unit share)
+        ('ms1 window') -- the MS1 window was read before any activation, a
+        later precursor after some.
+      * No survivor and no MS1 share that can weigh it (0, not known, or no
+        scale), but a precursor at a later energy: that precursor where it is
+        first seen, as read ('ms2 first seen') -- a lower bound (it may be
+        fragmenting there already), on the intensity scale the energies share
+        (a steady supply, as S assumes).
+      * No candidate has a survivor and every one has an MS1 share: the MS1
+        shares alone ('ms1 window').
+      * Else -- a candidate in no MS2 spectrum whose MS1 share is not known or
+        has no scale -- an equal split over the candidates not absent
+        ('equal'): a prior, said.
 
-    -> ({candidate: weight}, source, note): the note names every candidate
-    whose weight came from another source than the survivors, and why."""
-    cands = list(candidates)
+    A measured MS1 share of 0 cannot weigh; any share above 0 does: an ion
+    first seen at a later energy weighs by its precursor there with a share of
+    0 and by its share with a faint one -- a step at 0, kept (the MS1 window is
+    read before any activation).
+
+    -> ({candidate: weight}, source, note). The source names the parts used,
+    in this order: 'ms2 survivors', 'ms2 first seen', 'ms1 window' (joined by
+    ' + '), or 'equal'; the note names every candidate whose weight came from
+    another source than its survivor, and why."""
+    cands = list(dict.fromkeys(candidates))
     ms1 = ms1_shares or {}
+    later = first_seen or {}
     s = {c: float(survivors.get(c, math.nan)) for c in cands}
     m = {c: float(ms1.get(c, math.nan)) for c in cands}
-    alive = {c for c in cands if math.isfinite(s[c]) and s[c] > 0}
-    absent = absent_ions(cands, survivors, ms1)
+    alive = [c for c in cands if math.isfinite(s[c]) and s[c] > 0]
+    seen = {c: (str(later[c][0]), float(later[c][1])) for c in cands
+            if c not in alive and c in later and math.isfinite(float(later[c][1]))
+            and float(later[c][1]) > 0}
+    # absent = no precursor at ANY energy and a measured MS1 share of 0: the
+    # rule `attribute_fragments` sets ions aside by
+    absent = absent_ions(cands, {**{c: s[c] for c in alive},
+                                 **{c: v for c, (_, v) in seen.items()}}, ms1)
     live = [c for c in cands if c not in absent]
     rest = [c for c in live if c not in alive]
-    known = [c for c in rest if math.isfinite(m[c])]
 
     def norm(v: Mapping[str, float]) -> dict[str, float]:
         tot = sum(v.values())
@@ -711,28 +741,54 @@ def share_weights(candidates: Sequence[str], survivors: Mapping[str, float],
         pool = live or cands
         return {c: (1.0 / len(pool) if c in pool else 0.0) for c in cands}, "equal", why
 
+    def has_ms1(c: str) -> bool:
+        return math.isfinite(m[c]) and m[c] > 0
+
     if not live:
-        return equal("every candidate is in neither the lowest-energy MS2 spectrum nor the "
-                     "MS1 window: an equal split")
+        return equal("every candidate is in no MS2 spectrum of the window nor in the MS1 "
+                     "window: an equal split")
     if not rest:
         return norm({c: s[c] for c in alive}), "ms2 survivors", ""
-    if len(known) < len(rest):
-        miss = ", ".join(c for c in rest if c not in known)
-        return equal(f"{miss}: no MS2 survivor at the lowest energy and no MS1 share known: "
-                     "an equal split")
-    if not alive:
-        return norm({c: m[c] for c in rest}), "ms1 window", ""
-    both = [c for c in cands if c in alive and math.isfinite(m[c]) and m[c] > 0]
-    if not both:
-        return equal(f"{', '.join(rest)}: no MS2 survivor at the lowest energy, and no "
-                     "candidate with a survivor has an MS1 share to set the scale: an equal "
-                     "split")
-    k = sum(s[c] for c in both) / sum(m[c] for c in both)
-    w = norm({**{c: s[c] for c in alive}, **{c: m[c] * k for c in rest}})
-    said = ", ".join(f"{c} (share {m[c]:.4g})" for c in rest)
-    return w, "ms2 survivors + ms1 window", (
-        f"no MS2 survivor at the lowest energy for {said}: weighed by its MS1 window share "
-        f"on the survivors' scale ({k:.4g} per unit share, from {', '.join(both)})")
+    if not alive and all(has_ms1(c) for c in rest):
+        said = ", ".join(f"{c} (share {m[c]:.4g})" for c in rest)
+        return norm({c: m[c] for c in rest}), "ms1 window", (
+            f"no candidate has an MS2 survivor at the lowest energy: split by the MS1 window "
+            f"shares alone, {said}")
+    both = [c for c in alive if has_ms1(c)]
+    k = sum(s[c] for c in both) / sum(m[c] for c in both) if both else math.nan
+    by_ms1 = [c for c in rest if has_ms1(c) and bool(both)]
+    by_seen = [c for c in rest if c not in by_ms1 and c in seen]
+    unknown = [c for c in rest if c not in by_ms1 and c not in by_seen]
+    if unknown:
+        miss = [c for c in unknown if not math.isfinite(m[c])]
+        noscale = [c for c in unknown if c not in miss]
+        why = [f"{', '.join(miss)}: in no MS2 spectrum of the window and no MS1 share known"
+               ] if miss else []
+        if noscale:
+            why.append(f"{', '.join(noscale)}: in no MS2 spectrum of the window, and no "
+                       "candidate with a survivor has an MS1 share to set the scale")
+        return equal("; ".join(why) + ": an equal split")
+    w = norm({**{c: s[c] for c in alive}, **{c: m[c] * k for c in by_ms1},
+              **{c: seen[c][1] for c in by_seen}})
+    parts, notes = (["ms2 survivors"] if alive else []), []
+    if by_seen:
+        parts.append("ms2 first seen")
+
+        def share(c: str) -> str:
+            return ("unknown" if not math.isfinite(m[c]) else "0" if m[c] <= 0
+                    else f"{m[c]:.4g}, no scale")
+        said = ", ".join(f"{c} ({seen[c][1]:.4g} at {seen[c][0]}; MS1 share {share(c)})"
+                         for c in by_seen)
+        notes.append(f"no MS2 survivor at the lowest energy and no MS1 share that can weigh it "
+                     f"for {said}: weighed by its precursor where first seen, as read (a lower "
+                     "bound: it may be fragmenting there already)")
+    if by_ms1:
+        parts.append("ms1 window")
+        said = ", ".join(f"{c} (share {m[c]:.4g})" for c in by_ms1)
+        notes.append(f"no MS2 survivor at the lowest energy for {said}: weighed by its MS1 "
+                     f"window share on the survivors' scale ({k:.4g} per unit share, from "
+                     f"{', '.join(both)})")
+    return w, " + ".join(parts), "; ".join(notes)
 
 
 def intact_test(candidates: Sequence[str], frac: pd.DataFrame, present: pd.Series
@@ -846,6 +902,15 @@ def attribute_fragments(ion_int: pd.DataFrame, frag_int: pd.DataFrame, tic: pd.S
     # -- is no absent ion, and keeps its own fragments
     gone = absent_ions(named, ion_int.max().to_dict() if len(ion_int) else {}, ms1_shares)
     live = live_candidates(candidates, gone)
+    # where each ion's precursor is first seen, and its intensity there: the
+    # split weighs one missing at the lowest energy by it when its MS1 share
+    # cannot (`share_weights`)
+    first = {}
+    for c in ion_int.columns:
+        on = (ion_int[c] > 0).to_numpy()
+        if on.any():
+            i = int(np.argmax(on))
+            first[c] = (str(ion_int.index[i]), float(ion_int[c].iloc[i]))
     rows = []
     for key in frag_int.columns:
         cands = list(candidates[key])
@@ -900,7 +965,7 @@ def attribute_fragments(ion_int: pd.DataFrame, frag_int: pd.DataFrame, tic: pd.S
                 w = {c: float(c == left[0]) for c in cands}
             else:
                 call, basis = BASIS_AMBIGUOUS, BASIS_AMBIGUOUS
-                w_left, src, w_note = share_weights(left, survivors, ms1_shares)
+                w_left, src, w_note = share_weights(left, survivors, ms1_shares, first)
                 w = {c: w_left.get(c, 0.0) for c in cands}
                 note = "; ".join(t for t in (note, w_note) if t)
             note = "; ".join(t for t in (aside_note, note) if t)

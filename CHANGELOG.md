@@ -486,8 +486,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   40, or a lower peak: an ammonium adduct's NH4+ -- not a uronium, nitrate or bromide ion, which a
   scan range holds), else `unknown`; mostly unexplained products, an ion absent from the sample or
   never seen as a precursor and given only slivers of another ion's fragments (an equal split,
-  nothing known of its share -- up to the whole fragment where it is left the only candidate --,
-  counts for none), or whose products mostly its own hold at most half of what it is given in its
+  nothing known of its share -- at most half a fragment --, counts for none), or whose products
+  mostly its own hold at most half of what it is given in its
   class window: `unknown`. Each class row carries its shares, the
   energy it read and that curve's band, an `evidence` sentence and its caveats -- and says when an
   MS1 centroid no named ion matches holds more of the isolation window than the ion (its m/z through
@@ -799,6 +799,37 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   threads) share it. Trace-first keeps its own wave.
 
 ### Fixed
+
+- **`ms2 analyze` splits a shared fragment by absence at any energy, as the attribution sets ions
+  aside.** `attribute.share_weights` read a candidate as absent when its precursor was missing
+  from the window's LOWEST-energy spectrum and its MS1 share was 0, while `attribute_fragments`
+  reads absence at any energy. So an ion first seen at a later energy with no MS1 centroid weighed
+  0, unsaid, in a fragment it shares (a synthetic two-ion window: Y first seen at NCE 10 with 500
+  counts took 0 of an in-source fragment beside X's 1000); and where no candidate was at the lowest
+  energy, one in no MS2 spectrum at all but in the MS1 window took the fragment whole (`ms1
+  window`, weight 1) while the ion the spectra do hold took nothing. Absence is now the one rule
+  (no precursor at any energy AND a measured MS1 share of 0). A candidate missing at the lowest
+  energy keeps its MS1 share on the survivors' scale where it has one with a scale (the MS1 window
+  is read before any activation); else it is weighed by its precursor where first seen, as read
+  -- a lower bound, said in `test_note` -- (`weight_source` gains `ms2 first seen`, its parts
+  joined in the order `ms2 survivors + ms2 first seen + ms1 window`): Y = 0.333 in the first case.
+  A candidate in no MS2 spectrum whose MS1 share is unknown or has no scale still forces an equal
+  split, in `ms2 analyze` at most 1/2: 0.5 / 0.5 in the second case. Known limits, documented: a
+  measured MS1 share of 0 cannot weigh and any share above 0 does, so a faint MS1 centroid for a
+  later-seen ion weighs it by that share instead (a step at 0); with an MS1 share above 0 for
+  every candidate and no survivor, the MS1 shares alone still decide, so the ion seen in no MS2
+  spectrum can still take nearly all (as before); and an ion given a share of a fragment the
+  lowest energy holds while its own precursor is not there reads F = 0 there, its curve rising
+  after (E50 non-monotonic, branching flagged, said). The window notes for a co-isolate in no MS2
+  spectrum with an unknown MS1 share (or no MS1 window table) promised 'split equally' whatever
+  the split gave; they, a new one for such a co-isolate with an MS1 share above 0, and one for a
+  window ion not in the lowest-energy spectrum now name the weight and `weight_source` each
+  fragment it can make gave it. The split with only an MS1 window to go by now says so in
+  `test_note`. The committed fixtures do not move (every split there is `ms2 survivors`):
+  standard A's C10H17+ F E50 NCE 13.89 and the adduct C10H20^N+ F 8.61, every output table
+  identical, one window note added. In a binding-class test where a never-seen ion of unknown
+  share took a fragment whole by an 'equal' split of 1, it now takes 0.5 and the ion first seen
+  at NCE 10 the other half -- that ion's class reads as with the never-seen one not named.
 
 - **The lock model (`--mass-axis auto`) no longer steps a 15N-labelled batch's axis on its
   ions' unlabelled aliases.** Its formula space held no `^N`, so a [M+^NO3]- / [M+H^N2O6]-
