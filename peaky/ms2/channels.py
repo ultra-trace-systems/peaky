@@ -793,8 +793,8 @@ FIRST_MASS_MIN = 40.0
 #: product of its own elsewhere on the ladder tells nothing of what it turns
 #: into first. An equal split (`attribute.share_weights` 'equal': nothing is
 #: known of its share) is a prior, no observation, and never counts -- it is
-#: 1 / the fragment's live candidates, up to 1 (a candidate left alone where
-#: the others are read absent at the lowest energy), not at most 1/2.
+#: 1 / the fragment's live candidates, at most 1/2 (a split needs two
+#: candidates the sample holds: absence is read at any energy).
 OWN_WEIGHT = 0.5
 
 CLASS_COLUMNS: dict[str, str] = {

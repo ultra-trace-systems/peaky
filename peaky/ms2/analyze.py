@@ -359,8 +359,8 @@ def load_run(run_dir: str) -> RunTables:
         inputs[wp.name] = PV.sha1_file(str(wp))
     else:
         window = pd.DataFrame()
-        notes.append("no ms2_window.csv: shared fragments fall back from MS2 survivors to an "
-                     "equal split, never to MS1 shares")
+        notes.append("no ms2_window.csv: shared fragments fall back from MS2 survivors to the "
+                     "precursor where first seen, else an equal split, never to MS1 shares")
     mp = d / "ms2_manifest.json"
     manifest = {}
     if mp.exists():
@@ -770,8 +770,20 @@ def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float
     comps = AT.fragment_compositions(roles, tol_ppm=tol_ppm, tol_mda=tol_mda)
     cand, cand_notes = AT.candidates_across(roles, order, tol_ppm=tol_ppm, tol_mda=tol_mda,
                                             absent=absent)
-    for f in co:
+    # where every candidate the sample holds reads each fragment: an absent
+    # ion is not waited for (it is set aside before the intact test)
+    att = AT.attribute_fragments(ion_int, frag_int, tic, cand, shares,
+                                 shared=AT.shared_presence(roles, cand, specs, absent=absent))
+    for f in order:
+        # a window ion the lowest-energy spectrum does not hold: what the
+        # split gave it, as given (`attribute.share_weights`), never a guess
         if ion_int[f].sum() > 0:
+            if ion_int[f].iloc[0] <= 0:
+                at = ion_int.index[int(np.argmax((ion_int[f] > 0).to_numpy()))]
+                res.notes.append(f"{f}'s precursor is not in the lowest-energy MS2 spectrum, "
+                                 f"first seen at {at}: {_given(att, f)}")
+            continue
+        if f not in co:
             continue
         if shares:
             if shares[f] == 0:
@@ -784,16 +796,15 @@ def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float
                 res.notes.append(f"{f} is named inside the window, but no MS2 spectrum holds its "
                                  f"precursor and it lies {ions[f] - parent_mz:+.3f} Da from the "
                                  "key, beyond the MS1 window ms2 extract inventoried (+-"
-                                 f"{half:.3f} Da): its MS1 share is unknown, not 0, so a fragment "
-                                 "it shares is split equally with it (weight_source 'equal')")
+                                 f"{half:.3f} Da): its MS1 share is unknown, not 0; "
+                                 f"{_given(att, f)}")
+            else:
+                res.notes.append(f"{f} is named inside the window, but no MS2 spectrum holds its "
+                                 f"precursor; its MS1 window share is {shares[f]:.4g}: "
+                                 f"{_given(att, f)}")
         else:
             res.notes.append(f"{f} is named inside the window, but no MS2 spectrum holds its "
-                             "precursor and there is no MS1 window table: a fragment it shares "
-                             "is split equally with it (weight_source 'equal')")
-    # where every candidate the sample holds reads each fragment: an absent
-    # ion is not waited for (it is set aside before the intact test)
-    att = AT.attribute_fragments(ion_int, frag_int, tic, cand, shares,
-                                 shared=AT.shared_presence(roles, cand, specs, absent=absent))
+                             f"precursor and there is no MS1 window table: {_given(att, f)}")
     weights = {r.key: r.weights for r in att.itertuples()}
     # a fragment only absent ions can make is no ion's: not in any curve
     # (F_lo counts every composition candidate, so it is taken off there too)
@@ -1174,6 +1185,16 @@ def _replicates(tables: RunTables, parent_mz: float, specs: Sequence[str], meta:
     return {"n_scans": n_scans, "held": held, "breakdown": bd, "items": items, "boot": boot,
             "boot_n": b_used, "table": _frame(rows, RP.REPLICATE_COLUMNS), "notes": notes,
             "mats": mats}
+
+
+def _given(att: pd.DataFrame, ion: str) -> str:
+    """What the attribution gave `ion` of each fragment it can make
+    (`AT.attribute_fragments` rows): its weight (3 significant figures;
+    `ms2_fragments.csv` holds 6) and the `weight_source`: 'it is given C7H11+
+    0.5 (equal), ...', or 'it reads no fragment'."""
+    got = [f"{r.key} {float(r.weights.get(ion, 0.0)):.3g} ({r.weight_source})"
+           for r in att.itertuples() if ion in str(r.candidates).split(";")]
+    return f"it is given {', '.join(got)}" if got else "it reads no fragment"
 
 
 def _breach_note(ion: str, g: pd.DataFrame, gsum: pd.Series, lost: pd.Series,

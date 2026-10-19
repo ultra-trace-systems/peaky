@@ -2110,15 +2110,18 @@ def test_another_ions_product_never_makes_a_never_seen_ions_own():
         assert r["class"] == CH.CLASS_UNKNOWN and said in r["evidence"], (sb, rb)
 
 
-def test_an_equal_split_of_one_candidate_is_no_product_of_its_own():
-    """An equal split is 1 / its live candidates -- up to 1, not at most 1/2:
-    x is seen only from NCE 10 with no MS1 share, and z, never seen, lies
-    beyond the inventoried MS1 span (its share unknown), so z alone is left
-    to split C11H7O2+ at NCE 1 equally with ('equal', weight 1;
-    `attribute.share_weights` reads candidates at the lowest energy). A
-    prior, no observation: z's products mostly its own hold 0 % of its
-    class window, no class (counting the equal split would class it on
-    x's fragment)."""
+def test_an_equal_split_is_no_product_of_its_own():
+    """An equal split is 1 / the fragment's live candidates -- at most 1/2,
+    since a split needs two candidates the sample holds: x is seen only from
+    NCE 10 with no MS1 share, and z, never seen, lies beyond the inventoried
+    MS1 span (its share unknown), so they split C11H7O2+ equally ('equal',
+    0.5 each). x is no absent ion (`attribute.share_weights` reads absence
+    at any energy, as the attribution does): read at the lowest energy alone
+    it weighed 0 and z, seen nowhere, took the fragment whole. A prior, no
+    observation: z's products mostly its own hold 0 % of its class window,
+    no class. x reads its class as it does with z not named (at NCE 1
+    C11H7O2+ is its only product, whatever its weight there); the window
+    note names what each was given."""
     x, z = "C11H12NO3+", "C12H16NO2+"
     rl, sm, zown = "C11H9O3+", "C11H7O2+", "C12H14NO+"
     p = round(_mz(x), 4)
@@ -2131,7 +2134,16 @@ def test_an_equal_split_of_one_candidate_is_no_product_of_its_own():
     t.window = _ms1(p, [(p - 0.011, 1.0)])
     res = AN.analyze_run(t, _ions(x, z), iso_width=0.4, adducts=_adducts((x, z), "[M+NH4]+"))
     fr = res.fragments.set_index("fragment").loc[sm]
-    assert fr["weight_source"] == "equal" and f"{z}=1" in fr["weights"]
+    assert fr["weight_source"] == "equal" and fr["weights"] == f"{x}=0.5;{z}=0.5"
     r = _cls(res, z)
     assert r["class"] == CH.CLASS_UNKNOWN
     assert "the products mostly its own hold 0 % of what it is given" in r["evidence"]
+    alone = AN.analyze_run(t, _ions(x), iso_width=0.4, adducts=_adducts((x,), "[M+NH4]+"))
+    a, b = _cls(res, x), _cls(alone, x)
+    assert (a["class"], a["evidence"]) == (b["class"], b["evidence"])
+    notes = res.windows[0].notes
+    assert any(n.startswith(f"{z} is named inside the window") and n.endswith(
+        f"its MS1 share is unknown, not 0; it is given {sm} 0.5 (equal), {zown} 1 "
+        "(composition)") for n in notes)
+    assert any(n.startswith(f"{x}'s precursor is not in the lowest-energy MS2 spectrum") and
+               n.endswith(f"it is given {sm} 0.5 (equal), {rl} 1 (composition)") for n in notes)

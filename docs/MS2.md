@@ -798,7 +798,7 @@ spectrum beyond the tolerance: the tables are what per-spectrum keys gave
   summed; `n_precursor_peaks`).
 - **Fragments of X** — the fragments X is a candidate of. One only X can
   make counts fully; a shared one by X's **weight** from the attribution
-  (§11.5): its MS2-survivor share, or 1 / 0 after a decisive intact test.
+  (§11.5): its share-weight split, or 1 / 0 after a decisive intact test.
 - **F_X = I_X / (I_X + Σ w·I_fragment)** — the survival E50 is read off: a ratio
   within one spectrum, so it holds whatever happened between the spectra of
   two energies — a drift of the precursor supply (source, transmission,
@@ -990,7 +990,8 @@ said. On our own three files no fragment is a side lobe (tested).
   split became a call — every weight, F and E50 the same now with and without
   the name (tested, synthetic). A candidate
   whose MS1 share is **unknown** (no window table, or beyond the inventoried
-  span) is not absent: it stays, untestable, and is split equally (below).
+  span) is not absent: it stays, untestable, and is weighed by its precursor
+  where first seen, or split equally when no MS2 spectrum holds it (below).
 - **One candidate** — or one the sample holds, the others set aside — → that
   ion (`basis` `composition`), as if the absent ones were not named.
 - **Only absent candidates** → **no ion** (`call` `''`, `basis` `absent only`,
@@ -1073,21 +1074,54 @@ said. On our own three files no fragment is a side lobe (tested).
   - its lowest-energy MS2 survivor when it has one (> 0) — whatever the MS1
     window holds: an ion in the MS2 spectrum is never given 0 for want of an
     MS1 centroid;
-  - in neither the lowest-energy MS2 spectrum nor the MS1 window (an MS1 share
-    of 0, measured): weight **0**, and the others split as if it were not named
-    (it never reaches the split: set aside above; and an equal split is over
-    the candidates not absent, tested);
+  - absent from the sample — its precursor in **no MS2 spectrum at any
+    energy** and an MS1 share of 0 (measured), the rule above: weight **0**, and
+    the others split as if it were not named (it never reaches the split: set
+    aside above; and an equal split is over the candidates not absent,
+    tested). An ion first seen at a later energy is not absent;
   - no survivor but an MS1 share: that share put on the survivors' scale
     (survivor per unit share of the candidates that have both), said in
-    `test_note`;
-  - no candidate with a survivor: the MS1 shares alone;
-  - a candidate with no survivor whose MS1 share is not known (no window table
-    for the parent, or beyond the span `ms2 extract` inventoried, §11.1), or no
-    candidate with both to set the scale: an equal split over the candidates
-    not absent from both, said.
+    `test_note` — also when its precursor turns up at a later energy: the MS1
+    window was read before any activation, a later precursor after some
+    (tested: 0.25 / 0.75 by MS1 shares where its NCE 10 precursor would read
+    0.77 / 0.23);
+  - no survivor and no MS1 share that can weigh it (0, unknown, or no
+    candidate with both to set the scale), but a precursor at a later energy:
+    that precursor **where first seen**, as read, said in `test_note`
+    (`… for C10H19O⁺ (500 at …@hcd10.00; MS1 share 0): weighed by its
+    precursor where first seen, as read (a lower bound: …)`) — a lower bound,
+    since it may be fragmenting there already, on the intensity scale the
+    energies share (a steady supply, as S assumes). A measured MS1 share of 0
+    cannot weigh; any share above 0 does, so a faint MS1 centroid for that ion
+    weighs it by its share instead (a step at 0, kept: tested). Given a share of
+    a fragment the lowest energy holds while its own precursor is not there, it
+    reads **F = 0** at the lowest energy — as an ion that alone can make such a
+    fragment does — and its curve rises after: its E50 reads non-monotonic and
+    its branching is flagged at every later energy, said (tested, synthetic);
+  - no candidate with a survivor and every one with an MS1 share: the MS1
+    shares alone, said — also when one of them is in no MS2 spectrum and the
+    other is seen only later: a faint MS1 centroid for the later one lets the
+    one seen nowhere in MS2 take nearly all (tested: 0.9999);
+  - a candidate in no MS2 spectrum whose MS1 share is not known (no window
+    table for the parent, or beyond the span `ms2 extract` inventoried, §11.1)
+    or has no scale (no candidate with both a survivor and an MS1 share): an
+    equal split over the candidates not absent, said — in `ms2 analyze` at
+    most 1/2, since a split needs two candidates the sample holds (one is a
+    `composition` call). This is the one place a candidate's missing number
+    moves the others: nothing at all is measured of it, so every candidate
+    takes the prior.
 
-  `weight_source` is `ms2 survivors`, `ms2 survivors + ms1 window`, `ms1 window`
-  or `equal` (and `none` for a fragment only absent ions can make). Excluded candidates weigh 0. The MS1 shares are **one-to-one**:
+  `weight_source` names the parts a split used, in this order — `ms2
+  survivors`, `ms2 first seen`, `ms1 window`, joined by ` + ` (`ms2 survivors +
+  ms1 window`, `ms2 survivors + ms2 first seen`, …) — or `equal` (and `none` for
+  a fragment only absent ions can make; `composition` and `intact test` for a
+  call). A window ion not in the lowest-energy spectrum, and a co-isolate in no
+  MS2 spectrum that is not absent (an MS1 share above 0, unknown, or no MS1
+  window table), get a window note naming what each fragment it can make gave
+  it (`C10H19O⁺'s
+  precursor is not in the lowest-energy MS2 spectrum, first seen at
+  …@hcd10.00: it is given C7H11⁺ 0.333 (ms2 survivors + ms2 first seen)`).
+  Excluded candidates weigh 0. The MS1 shares are **one-to-one**:
   each centroid goes to the named ion nearest it (within max(`TARGET_MATCH_PPM`,
   `tol_mda`), its m/z read through the folder's axis offset, §11.1), never to two; and a window ion the MS1 window holds no centroid
   for has a **measured share of 0**, not a missing one — inside the inventoried
@@ -1101,7 +1135,21 @@ said. On our own three files no fragment is a side lobe (tested).
   0.719 / 0.281 to 0.526 / 0.474 and moved the two E50s from 8.61 / 6.77 to
   10.81 / 3.38. Weighed per candidate, it takes its 0.025 % and the E50s move by
   < 0.005 NCE; without its MS1 centroid nothing moves at all (tested, with a
-  synthetic phantom too).
+  synthetic phantom too). A third read absence at the lowest energy alone,
+  where the attribution reads it at any energy: an ion first seen at NCE 10
+  with no MS1 centroid weighed 0, unsaid, in an in-source fragment it shares
+  (now 0.333 by its NCE 10 precursor, X 1000 / Y 500); and where no candidate
+  was at the lowest energy, one in no MS2 spectrum at all but in the MS1
+  window took that fragment whole (`ms1 window`, weight 1) from the ion the
+  spectra do hold, whose MS1 share of 0 made it absent (now an equal split,
+  said; with an MS1 share above 0 for both, the MS1 shares alone, as before);
+  a window note promised such an
+  ion 'split equally' where the split gave it everything (tested, synthetic).
+  The fixture windows never met it — every split there is `ms2 survivors`,
+  every candidate at the lowest energy — and no number in them moves (std A
+  C10H17⁺ F E50 13.891, the adduct's 8.606, every table identical; one window
+  note is added, on the 2026-09-10 file's C9H14^N⁺, in no MS2 spectrum with an
+  MS1 share of 0.024).
 
 **What the survivor split assumes.** Survivor weights are fixed: each
 candidate takes a shared fragment in proportion to its intensity at the lowest
@@ -1803,9 +1851,9 @@ products are all held has no spread — NaN, not 0).
    seen as a precursor and given no product mostly its own (no weight above
    `OWN_WEIGHT` 0.5: its shares are slivers of another ion's fragments read
    through its formula; an equal split — `weight_source` `equal`, nothing
-   known of its share, 1 / the fragment's live candidates: 1/2 with two, up
-   to 1 for a candidate left alone where the others are read absent at the
-   lowest energy — is a prior and counts for none — tested, synthetic), or
+   known of its share, 1 / the fragment's live candidates: at most 1/2, a
+   split needs two candidates the sample holds — is a prior and counts for
+   none — tested, synthetic), or
    never seen so and its products mostly its own (none it reads as `another
    ion's product`, whatever its weight — tested, synthetic) hold at most
    `OWN_WEIGHT` of what it is given in its class window (its lowest energy: a

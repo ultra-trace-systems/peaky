@@ -2000,19 +2000,21 @@ def test_intact_test_and_share_weights():
                            "its MS1 window share on the survivors' scale (15 per unit share, "
                            "from a)")
     w, src, note = AT.share_weights(["a", "b"], {"a": 0.0, "b": 0.0}, {"a": 0.2, "b": 0.6})
-    assert (w, src, note) == (pytest.approx({"a": 0.25, "b": 0.75}), "ms1 window", "")
+    assert (w, src) == (pytest.approx({"a": 0.25, "b": 0.75}), "ms1 window")
+    assert note == ("no candidate has an MS2 survivor at the lowest energy: split by the MS1 "
+                    "window shares alone, a (share 0.2), b (share 0.6)")
     w, src, note = AT.share_weights(["a", "b"], {"a": 3.0}, {"a": 0.2})
     assert (w, src) == ({"a": 0.5, "b": 0.5}, "equal")
-    assert note == "b: no MS2 survivor at the lowest energy and no MS1 share known: an equal split"
+    assert note == "b: in no MS2 spectrum of the window and no MS1 share known: an equal split"
     # the equal split is over the candidates NOT absent from both: P (no
     # survivor, a measured MS1 share of 0) takes nothing beside the unknown Z
     w, src, note = AT.share_weights(["X", "Z", "P"], {"X": 1000.0}, {"X": 0.5, "Z": NAN, "P": 0.0})
     assert (w, src) == ({"X": 0.5, "Z": 0.5, "P": 0.0}, "equal")
-    assert note.startswith("Z: no MS2 survivor") and "P" not in note
+    assert note.startswith("Z: in no MS2 spectrum") and "P" not in note
     # ... and on the other equal branch (no candidate with both to set the scale)
     w, src, note = AT.share_weights(["X", "Z", "P"], {"X": 1000.0}, {"X": NAN, "Z": 0.4, "P": 0.0})
     assert (w, src) == ({"X": 0.5, "Z": 0.5, "P": 0.0}, "equal")
-    assert note.startswith("Z: no MS2 survivor at the lowest energy, and no candidate with a "
+    assert note.startswith("Z: in no MS2 spectrum of the window, and no candidate with a "
                            "survivor has an MS1 share")
     # every candidate absent: an equal split over them all, said
     w, src, note = AT.share_weights(["Z", "P"], {}, {"Z": 0.0, "P": 0.0})
@@ -2025,7 +2027,9 @@ def test_share_weights_come_from_the_lowest_energy():
     in-source fragment comes from the MS1 window, on X's survivor scale (X
     1000 at 0.25 of the window: Y's 0.75 is 3000 -- X 0.25, Y 0.75).
     Survivors taken at another energy would read 'ms2 survivors' 0.77 / 0.23
-    instead."""
+    instead. Y's precursor where first seen (NCE 10) weighs it only where
+    its MS1 share cannot (0, unknown, or no scale): the MS1 window was read
+    before any activation."""
     steps = [(1, {X: 1000.0, "C7H11+": 50.0}), (10, {X: 600.0, Y: 300.0, "C7H11+": 450.0}),
              (20, {X: 300.0, Y: 300.0, "C7H11+": 750.0})]
     t = _synthetic(round(_mz(X), 4), steps)
@@ -2036,6 +2040,123 @@ def test_share_weights_come_from_the_lowest_energy():
         ("ambiguous", True, "ms2 survivors + ms1 window")
     assert _weights(r["weights"]) == pytest.approx({X: 0.25, Y: 0.75})
     assert f"no MS2 survivor at the lowest energy for {Y} (share 0.75)" in r["test_note"]
+
+
+def test_an_ion_first_seen_at_a_later_energy_is_weighed_where_first_seen():
+    """Y is not in the lowest-energy MS2 spectrum, appears at NCE 10 (500)
+    and has no MS1 centroid (a measured share of 0). It is no absent ion --
+    absence is no precursor at ANY energy and an MS1 share of 0, the rule the
+    attribution sets ions aside by -- so the in-source C7H11+ is not X's
+    whole: Y is weighed by its precursor where first seen (X 1000 / Y 500:
+    0.667 / 0.333), said in the fragment's note and the window's. Read at the
+    lowest energy alone Y weighed 0 and nothing said so. Given a share of a
+    fragment the lowest energy holds where its own precursor is not, Y reads
+    F = 0 there -- as an ion that alone can make such a fragment does -- and
+    its curve then rises: said by its branching flags, not hidden."""
+    steps = [(1, {X: 1000.0, "C7H11+": 100.0}), (10, {X: 600.0, Y: 500.0, "C7H11+": 450.0}),
+             (20, {X: 300.0, Y: 400.0, "C7H11+": 750.0})]
+    t = _synthetic(round(_mz(X), 4), steps)
+    p = float(t.parents["parent_mz"].iloc[0])
+    t.window = _window_rows(p, [(_mz(X) + 0.0001, 1.0)])
+    res = AN.analyze_run(t, _ions(X, Y))
+    r = res.fragments.set_index("fragment").loc["C7H11+"]
+    assert (r["call"], r["in_source"], r["weight_source"]) == \
+        ("ambiguous", True, "ms2 survivors + ms2 first seen")
+    assert _weights(r["weights"]) == pytest.approx({X: 2 / 3, Y: 1 / 3}, abs=1e-6)
+    spec = f"{p:.4f}@hcd10.00"
+    assert (f"no MS2 survivor at the lowest energy and no MS1 share that can weigh it for {Y} "
+            f"(500 at {spec}; MS1 share 0): weighed by its precursor where first seen"
+            ) in r["test_note"]
+    assert (f"{Y}'s precursor is not in the lowest-energy MS2 spectrum, first seen at {spec}: "
+            "it is given C7H11+ 0.333 (ms2 survivors + ms2 first seen)") in res.windows[0].notes
+    _, f, g = _curve(res, p, Y)
+    assert f[0] == 0.0 and f[1] > 0.5
+    assert g["branching_flag"].iloc[1:].all()
+
+
+def test_a_later_seen_ion_with_no_ms1_share_is_not_made_absent():
+    """X (the key) is first seen at NCE 10 with no MS1 centroid; Y is in no
+    MS2 spectrum but holds the MS1 window. Read at the lowest energy alone X
+    was 'absent' and Y, never seen in MS2, took the in-source C7H11+ whole
+    ('ms1 window', Y = 1). Now X is present, and no candidate has both a
+    survivor and an MS1 share to put Y's share on an MS2 scale: an equal
+    split, said, in the fragment's note and the window's. The known limit:
+    give X a faint MS1 centroid and every candidate has an MS1 share and none
+    a survivor -- the MS1 shares alone decide (Y 0.9999, as before the fix),
+    said."""
+    steps = [(1, {"C7H11+": 100.0}), (10, {X: 600.0, "C7H11+": 450.0}),
+             (20, {X: 300.0, "C7H11+": 750.0})]
+    t = _synthetic(round(_mz(X), 4), steps)
+    p = float(t.parents["parent_mz"].iloc[0])
+    t.window = _window_rows(p, [(_mz(Y) - 0.0001, 1.0)])
+    res = AN.analyze_run(t, _ions(X, Y))
+    r = res.fragments.set_index("fragment").loc["C7H11+"]
+    assert (r["call"], r["weight_source"]) == ("ambiguous", "equal")
+    assert _weights(r["weights"]) == {X: 0.5, Y: 0.5}
+    assert r["test_note"].endswith(f"{Y}: in no MS2 spectrum of the window, and no candidate "
+                                   "with a survivor has an MS1 share to set the scale: an equal "
+                                   "split")
+    assert any(n.startswith(f"{X}'s precursor is not in the lowest-energy MS2 spectrum") and
+               n.endswith("it is given C7H11+ 0.5 (equal)") for n in res.windows[0].notes)
+    assert (f"{Y} is named inside the window, but no MS2 spectrum holds its precursor; its "
+            "MS1 window share is 1: it is given C7H11+ 0.5 (equal)") in res.windows[0].notes
+    t.window = _window_rows(p, [(_mz(Y) - 0.0001, 0.9999), (_mz(X) + 0.0001, 0.0001)])
+    r = AN.analyze_run(t, _ions(X, Y)).fragments.set_index("fragment").loc["C7H11+"]
+    assert r["weight_source"] == "ms1 window"
+    assert _weights(r["weights"]) == pytest.approx({X: 0.0001, Y: 0.9999})
+    assert r["test_note"].endswith("split by the MS1 window shares alone, "
+                                   f"{X} (share 0.0001), {Y} (share 0.9999)")
+
+
+def test_share_weights_read_absence_at_any_energy():
+    """`share_weights` per candidate, with `first_seen` (where a candidate
+    missing at the lowest energy is first seen, and its precursor there)."""
+    e2, e3 = ("e2", 1.0), ("e3", 3.0)
+    # an MS1 share of 0 and a later precursor: weighed by it, not 0
+    w, src, note = AT.share_weights(["a", "b"], {"a": 3.0}, {"a": 0.2, "b": 0.0}, {"b": e2})
+    assert (w, src) == (pytest.approx({"a": 0.75, "b": 0.25}), "ms2 survivors + ms2 first seen")
+    assert note == ("no MS2 survivor at the lowest energy and no MS1 share that can weigh it "
+                    "for b (1 at e2; MS1 share 0): weighed by its precursor where first seen, "
+                    "as read (a lower bound: it may be fragmenting there already)")
+    # a faint MS1 share instead of 0: the share weighs it (a step at 0, kept)
+    w, src, _ = AT.share_weights(["a", "b"], {"a": 3.0}, {"a": 0.2, "b": 1e-4}, {"b": e2})
+    assert (w["b"], src) == (pytest.approx(1e-4 * 15 / (3 + 1e-4 * 15)),
+                             "ms2 survivors + ms1 window")
+    # a candidate named twice counts once
+    assert AT.share_weights(["a", "b", "a"], {"a": 3.0}, {"a": 0.2})[:2] == \
+        ({"a": 0.5, "b": 0.5}, "equal")
+    # ... and without it: absent, weight 0 (an ion list naming an ion the
+    # sample lacks moves nothing)
+    assert AT.share_weights(["a", "b"], {"a": 3.0}, {"a": 0.2, "b": 0.0})[:2] == \
+        ({"a": 1.0, "b": 0.0}, "ms2 survivors")
+    # an MS1 share with a scale: still the MS1 share (read before activation)
+    w, src, _ = AT.share_weights(["a", "b"], {"a": 3.0}, {"a": 0.2, "b": 0.6}, {"b": e2})
+    assert (w, src) == (pytest.approx({"a": 0.25, "b": 0.75}), "ms2 survivors + ms1 window")
+    # an MS1 share with no scale, or none known: the later precursor (was equal)
+    for ms1, said in (({"a": NAN, "b": 0.6}, "MS1 share 0.6, no scale"),
+                      ({"a": 0.2}, "MS1 share unknown")):
+        w, src, note = AT.share_weights(["a", "b"], {"a": 3.0}, ms1, {"b": e2})
+        assert (w, src) == (pytest.approx({"a": 0.75, "b": 0.25}),
+                            "ms2 survivors + ms2 first seen") and said in note
+    # no survivor at all: the later precursors alone
+    w, src, _ = AT.share_weights(["a", "b"], {}, {"a": 0.0, "b": 0.0}, {"a": e3, "b": e2})
+    assert (w, src) == (pytest.approx({"a": 0.75, "b": 0.25}), "ms2 first seen")
+    # one seen later (MS1 0), one in no MS2 spectrum with an MS1 share: no
+    # common scale -- an equal split, never the whole to the one never seen
+    w, src, note = AT.share_weights(["a", "b"], {}, {"a": 0.0, "b": 0.6}, {"a": e3})
+    assert (w, src) == ({"a": 0.5, "b": 0.5}, "equal")
+    assert note.startswith("b: in no MS2 spectrum of the window, and no candidate with a "
+                           "survivor has an MS1 share")
+    # every candidate with an MS1 share and none with a survivor: the MS1
+    # shares alone, a later precursor or not
+    w, src, _ = AT.share_weights(["a", "b"], {}, {"a": 0.2, "b": 0.6}, {"a": e3})
+    assert (w, src) == (pytest.approx({"a": 0.25, "b": 0.75}), "ms1 window")
+    # all three parts, each named in order; c (in no MS2 spectrum, MS1 0) absent
+    w, src, note = AT.share_weights(["a", "b", "d", "c"], {"a": 3.0},
+                                    {"a": 0.2, "b": 0.6, "d": 0.0, "c": 0.0}, {"d": e2})
+    assert src == "ms2 survivors + ms2 first seen + ms1 window"
+    assert w == pytest.approx({"a": 3 / 13, "b": 9 / 13, "d": 1 / 13, "c": 0.0})
+    assert note.index("for d (1 at e2") < note.index("for b (share 0.6)")
 
 
 def test_a_missing_survivor_falls_back_to_the_ms1_window():
