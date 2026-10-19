@@ -595,7 +595,10 @@ scan, the E50 bootstrap: §11.11). **Offline:** it reads one `ms2 extract`
 sample folder and asks Mascope nothing; it needs no credentials. A folder with
 the per-scan tables (`ms2 extract --per-scan` or `--file`, §12) also gets the
 replicate statistics and an interval for every E50 (§11.11); a peak that is an
-Orbitrap harmonic ghost of a brighter line is read as no formula (§11.12).
+Orbitrap harmonic ghost of a brighter line is read as no formula (§11.12). Given
+each ion's adduct (`--ions` CSV `adduct` column, `--adduct`, `--reagent`),
+`peaky/ms2/channels.py` names every product's channel against it and gives each
+ion a heuristic binding class — adduct, cluster, covalent (§11.13).
 
 ```
 ms2_spectra.parquet, ms2_parents.csv, ms2_window.csv, ms2_manifest.json   + the named ions
@@ -1220,13 +1223,24 @@ signal elsewhere in the window.
 | `readings.HARMONIC_PPM` | 40 ppm | how far a ghost may sit from m/z / n² |
 | `readings.HARMONIC_CAP` | 2f 0.5 %, 3f 8 % | the most a ghost holds of its line in the same spectrum |
 | `readings.HARMONIC_CLEAR_SN` | 10 | the S/N a reading above the cap needs to make its place an ion's at every energy (§11.12) |
+| `channels.MONOMER_MIN_C` | 6 C | both halves of a monomer split hold at least this many carbons (§11.13) |
+| `channels.FRAG_MIN` | 0.1 | the class window ends at the first energy where the ion's own products hold this share of ion + own products (`another ion's product` left out) |
+| `channels.DOMINANT` | 0.5 | a channel group dominates the window's explained products |
+| `channels.CLUSTER_POP` | 0.4 | a cluster's monomer · reagent ions hold at least this share of ion + own products (`another ion's product` left out) at some energy the precursor is seen at (else `mixed`) |
+| `channels.UNEXPLAINED_MAX` | 0.5 | most of the ion's own products in the window unexplained (`another ion's product` left out, of the denominator too): class `unknown` |
+| `channels.COVALENT_ECM` | 1.1 eV | an ion holding half its signal past this E_cm (read off its curves) is no adduct (reads one way only) |
+| `channels.SKELETAL_ECM` | 0.75 eV | skeletal products the majority: `covalent` only where the ion is known to hold half its signal to this E_cm (`unknown` where it falls to half below it, or is not known to reach it) |
+| `channels.NO_MONOMER` | 0.05 | an adduct whose M could split sheds no monomer when its monomer · reagent ions hold at most this share of ion + own products (`another ion's product` left out) |
+| `channels.FIRST_MASS_MIN` | m/z 40 | the lowest first mass an MS2 scan of ours is set to: a reagent ion below it is unobservable (`ms2_scans.csv` `low_mass` read instead where recorded) |
+| `channels.OWN_WEIGHT` | 0.5 | an ion never seen as a precursor gets a class only where a product is mostly its own (weight above this; an equal split, `weight_source` `equal`, counts for none, as does a product it reads as `another ion's product`); and those products must hold more than this share of what it is given at its lowest energy (the class window) |
 
 ### 11.7 Outputs
 
 `peaky ms2 analyze --run-dir DIR --ion MZ=FORMULA [--ion ...] [--ions CSV]
 [--k-max K | --no-ladder-k4] [--tol-ppm 5] [--tol-mda 0.3] [--gas-mass 28.0061]
-[--iso-width W] [--mass-offset-ppm PPM] [--bootstrap N] [--keep-harmonics] [--no-figures]
-[--out-dir DIR]` writes into `--out-dir` (default: the run folder itself):
+[--iso-width W] [--mass-offset-ppm PPM] [--bootstrap N] [--keep-harmonics]
+[--adduct LABEL] [--reagent PROFILE] [--no-figures] [--out-dir DIR]` writes into
+`--out-dir` (default: the run folder itself):
 
 | file | content |
 | --- | --- |
@@ -1236,10 +1250,12 @@ signal elsewhere in the window.
 | `ms2_fragments.csv` | per (window, fragment — one physical peak across the energies, named by every rank-1 formula read there): `mz_theo` (NaN for a name with ` \| `), `candidates`, `n_candidates` (how many: `candidates_across`, after the ions beyond the tolerance of where it sits and the polyoxy readings outranked are left out), `losses`, `call`, `basis`, `weights` (`ion=w;…`), `weight_source`, `excluded`, `test_note` (the candidates set aside as absent from the sample; the intact test's note — its onset, when every candidate reads the fragment only from a later energy, moved past a stray or kept — and the guard's, then `candidates_across`'s), `onset_nce`, `onset_v`, `in_source`, `max_frac`, `max_frac_nce`, `n_spectra`, `presence_at_max`, `cv_at_max` (its presence and CV over the scans of the spectrum of its largest TIC fraction, §11.11; NaN without the per-scan tables) |
 | `ms2_replicates.csv` | only with the per-scan tables (§11.11): per (window, spectrum, item) — `item` `precursor` (a window ion's) or `fragment`, `name` (the ion, or the fragment as `ms2_fragments.csv` names it) — `nce`, `hcd_v`, `n_scans`, `n_present` (scans in which a peak of it is read; 0 where none is, or where it is not matched), `presence` (their share), `mean` (on the averaged spectrum's scale: the averaged intensity), `sd`, `cv` (absence = 0), `matched` (False: a peak of it is held — read in no scan, or on another scale than its spectrum's, `SCALE_BAND` — whether or not another peak of it is read: `n_present` 0; presence, sd and CV NaN) |
 | `ms2_branching.csv` | per (window, ion, fragment, energy above the lowest): `nce`, `hcd_v`, `weight`, `frag_gain`, `ion_loss`, `branching` (all three NaN where the ion is unobserved) |
+| `ms2_channels.csv` | only with an adduct given (§11.13): per (window, spectrum, window ion, channel) — `intact`, then `reagent ion`, `reagent loss`, `reagent loss + small losses`, `monomer shedding`, `reagent loss + split`, `skeletal`, `another ion's product`, `unexplained` (or `product` alone for an ion with no adduct) — `e_cm`, `adduct`, `intensity` (weighted), `share` (of the ion's products), `n_products`, `products`, `halves`, `n_scans`, `share_sd` (NaN where none of the ion's products there is read in a scan) |
+| `ms2_classes.csv` | only with an adduct given (§11.13): per (window, window ion) its `adduct` and source, `reagent_neutral`, `reagent_ion`, `class` (`adduct`, `cluster`, `covalent`, `mixed`, `unknown`), the class window and its channel shares (`share_split`, `share_other` among them), `monomer_pop`, `halves`, the E50 it read (`e50_curve`, `e50_nce`, `e50_ecm`, `e50_flag`, the band of the curve it read), `evidence`, `note` |
 | `breakdown_<parent key>.png` | (A) F of every window ion vs NCE, the F_lo..F band, the target emphasised, E50 in the legend; (B) the target's top fragments' TIC fraction vs NCE with its own; one colour, one ion across both panels (the fragments take colours no window ion wears; past the palette, grey with distinct dashes); volts on a secondary top axis when known; legends below the panels |
-| `ms2_analyze_manifest.json` | the sample (from the extract manifest), the parameters (gate mode and its note, `k_max_read`, tolerances, gas mass, the isolation width and its source, the named ions, and every constant a call turns on: `intact_fraction`, `branching_flag`, `onset_stray_share`, `satellite_ratio` / `satellite_fwhm`, `polyoxy_max_c` / `polyoxy_min_o`, `e50_threshold`, `monotonic_tol`, `target_match_ppm`, `window_pad_da`, the m/z axis offset `mass_offset_ppm` and its `mass_offset_source`), each window's status, `reason`, target, co-isolates, `left_out` (aliases), `activation_kind`, located precursor, offset, NCEs and notes (and `offset_hint_ppm`, the
+| `ms2_analyze_manifest.json` | the sample (from the extract manifest), the parameters (gate mode and its note, `k_max_read`, tolerances, gas mass, the isolation width and its source, the named ions, and every constant a call turns on: `intact_fraction`, `branching_flag`, `onset_stray_share`, `satellite_ratio` / `satellite_fwhm`, `polyoxy_max_c` / `polyoxy_min_o`, `e50_threshold`, `monotonic_tol`, `target_match_ppm`, `window_pad_da`, the m/z axis offset `mass_offset_ppm` and its `mass_offset_source`; `channels` — on, and the class constants of §11.13 —, and with an adduct given each named ion's `adduct` and `adduct_source`), each window's status, `reason`, target, co-isolates, `left_out` (aliases), `activation_kind`, located precursor, offset, NCEs and notes (and `offset_hint_ppm`, the
 `--mass-offset-ppm` a window skipped for want of a named target needs, when its
-nearest named ion is within the axis reach), the counts (incl. `four_piece_readings`, `harmonic_peaks` and `harmonic_by_order`, `replicate_rows`, `one_scan_energies`, `e50_intervals`; per window `harmonic_peaks`, `scans_per_energy`, `one_scan_energies`; the parameters' `harmonics` (on, orders, ppm, caps, `clear_sn`) and `replicates` (`per_scan`, `bootstrap`, `bootstrap_min`, `seed`, `percentiles`, `match_da`, `scale_band`)), the inputs' (the per-scan tables among them) and outputs' sha1, the code identity. No credentials, no URL (the PNGs carry no `Software` key) |
+nearest named ion is within the axis reach), the counts (incl. `four_piece_readings`, `harmonic_peaks` and `harmonic_by_order`, `replicate_rows`, `one_scan_energies`, `e50_intervals`, `channel_rows` and `classes` (per class; null with no adduct); per window `harmonic_peaks`, `scans_per_energy`, `one_scan_energies`; the parameters' `harmonics` (on, orders, ppm, caps, `clear_sn`) and `replicates` (`per_scan`, `bootstrap`, `bootstrap_min`, `seed`, `percentiles`, `match_da`, `scale_band`)), the inputs' (the per-scan tables among them) and outputs' sha1, the code identity. No credentials, no URL (the PNGs carry no `Software` key) |
 
 It prints one line per window (status, target, co-isolates, offset, the target's
 E50 and, with the per-scan tables, its 16–84 % band: a NaN bound by its side —
@@ -1404,6 +1420,7 @@ given).
 | `replicates.spectrum_scans` / `window_scans` / `spectrum_curves` / `spread` | a spectrum's peaks in its scans, on its averaged scale (a factor outside `SCALE_BAND`: held); a window's ion and fragment matrices per scan; F, F_lo, S per scan; sd and sem |
 | `replicates.bootstrap_e50` / `window_seed` / `interval` / `zero_width` | the resampled E50s (and where each crossing, or each hole at an end, lies); a window's seed; the 16–84 % band and on which side a censored bound lies; a band of zero width |
 | `analyze._replicates` | one window's replicate statistics and intervals |
+| `channels.ion_adduct` / `assign_adducts` / `product_channel` / `window_channels` / `classify` | an ion read as its adduct; each ion's adduct (CSV, --adduct, --reagent); one product's channel; one window's channel rows; one ion's binding class (§11.13) |
 
 ### 11.11 Replicates and the E50 interval (`replicates.py`)
 
@@ -1686,6 +1703,338 @@ m/z / 4 or m/z / 9, and 90 one somewhere inside the ±40 ppm band. The band is
 also what lets a real weak ion be taken for a ghost: one at m/z / 4 or m/z / 9
 of a line it holds less than the cap of at every energy of the window. On our
 own three files the rule flags the four ghosts above and nothing else.
+
+### 11.13 Product channels and a binding class (`channels.py`)
+
+**What it answers.** A CIMS ion's MS2 says what holds it together. A reagent
+adduct falls apart by losing the reagent (the neutral by proton transfer, or
+the reagent ion with M whole); a loosely bound cluster of two neutrals with the
+reagent sheds a WHOLE neutral, the reagent staying on the other half; a
+covalently bound ion keeps its reagent (or has none to lose) and fragments its
+skeleton. `ms2 analyze` already reads every product, gives it to window ions by
+weight and reads each ion's breakdown; given each ion's ADDUCT, `channels`
+names every product's channel and gives each ion a class. **Heuristic**: a
+class says which channel dominates what the ion turns into first, and how
+much energy it takes — not a structure.
+
+**The adduct.** Per named ion, its ion form, a peaky label (`[M+H]+`,
+`[M+NH4]+`, `[M+^NH4]+`, `[M+(CH4N2O)H]+`, `[M+NO3]-`, `[M+^NO3]-`, `[M-H]-`,
+`[M+Br]-`, `[M+I]-`, …), from, in this order: the `--ions` CSV's `adduct`
+column (an ion that cannot be its label — it does not hold the group, or the
+charge differs — is refused, as a typo, its row named); else `--adduct LABEL` (an ion that
+cannot be it is left to the next, the reason said); else `--reagent PROFILE`.
+A reagent's forms are tried in this order (`reagent_adducts`): its diagnostic
+adduct (`detect_adduct`; each component's, in name order, for a `+`-composed
+profile such as `NO3+Br`, which has none of its own) first, then its analyte
+channels — and of these every form that adds a reagent group before the ones
+that add none (`[M+H]+`, `[M-H]-`, a charge transfer fit nearly any ion of
+their charge). So the uronium profile, whose first channel is `[M+H]+`,
+still reads an ion holding urea as the urea adduct, `NO3+Br` reads a bromide
+adduct as `[M+Br]-`, and the ¹⁵N-ammonium profile reads C10H17⁺ as `[M+H]+`.
+Of the forms an ion can be, one that adds a group wins, then one whose M is
+closed-shell (an integer DBE: C10H17⁺ is no `[M]+.` of a radical C10H17), then
+one whose M holds none of the reagent's own element (A⁻·I2 is `[M-H+I2]-`, not
+`[M+I]-` of an iodo-M), then one whose M holds the fewer isotope-labelled atoms
+(`_labelled`: only the reagent carries ^N — an M holding it would be a covalent
+¹⁵N product clustered with the minor ¹⁴N reagent ion, so a ¹⁴N organonitrate or
+nitro compound with ^NO3⁻ reads `[M+^NO3]-` under `NO3+NO3_15N` and
+`NO3_15N+NO3` alike); a radical M stays possible where no closed-shell one
+fits (RO2·NO3⁻). Said in the run notes: an ion read as a form that adds no
+group by elimination while the reagent has forms that do (its class is then
+`covalent`: an NH4⁺ adduct in urea data reads so — give its adduct in the
+CSV), and an ion two group forms fit equally well. An `--adduct` label or a
+`--reagent` profile with no form of the named ions' charge is refused (it can
+fit none of them). An ion with none is still analysed: its products are one
+channel, `product`, and its class `unknown` (said). With no adduct given at
+all, nothing of this runs, `ms2_channels.csv` / `ms2_classes.csv` are not
+written (a stale one is removed), and every other table is exactly what it
+was (tested on the committed fixtures). `chemistry.ADDUCT_GROUPS` holds each
+label's GROUP as signed element counts (ion = M + group; `[M-H]-` is
+{H: −1}); every built-in label's group gives its `ADDUCT_SHIFTS` mass shift
+(tested on `BUILTIN_ADDUCTS`, the table before any form is registered at run
+time — a solvent cluster's rungs add shifts with no formula), all but sodium
+and potassium (no element of the formula layer: `ADDUCT_NO_GROUP`). An in-source form is read as its reagent's adduct of M
+less the in-source loss (`channels.IN_SOURCE`: `[M+^NH4-H2O]+` is the ^NH4
+adduct of M − H2O, so it loses ^NH3 as `[M+^NH4]+` does). From the group G:
+the body M = ion − G; the **reagent neutral** R the ion leaves as by proton
+transfer, X − [M+H]⁺ = G − H for a cation (NH3, ^NH3, urea), X − [M−H]⁻ =
+G + H for an anion (HNO3, H^NO3, HBr, HI, H2SO4, I2 of `[M-H+I2]-`; the
+radicals HO2 of superoxide and CHO3 of carbonate — their [M−H]⁻ is a reagent
+loss too); the **reagent ion**, G as an ion when every count is positive (NH4⁺,
+CH5N2O⁺, ^NO3⁻, Br⁻). `[M+H]+`, `[M-H]-` and the charge transfers add **no
+reagent group** (only the charge carrier).
+
+**Channels of one product P** of ion X (`product_channel`; the first that
+applies), read on the formula the ion reads the fragment as (at the lowest
+energy at which it is one of the formulas the fragment can be where it sits —
+the rule `ms2_fragments.csv`'s losses follow):
+
+| channel | P is | meaning |
+| --- | --- | --- |
+| `reagent ion` | made of G's atoms alone (P ≤ G: NH4⁺ or protonated HNCO of urea, ^NO2⁻ of nitrate), or G with none of M's carbon (G + H2O, HO2⁻, …), or G with whole reagent neutrals and none of M's carbon besides theirs (Ur2H⁺ of the uronium adduct, HCOO⁻·HCOOH of formate, CH3COO⁻·CH3COOH of acetate) | the charge stayed on the reagent, nothing of M's skeleton (also the C2F3 = H2^NO4 alias of CF3COO⁻ in ¹⁵N data, §11.5: H2^NO6⁻ is no product of a nitrate cluster's skeleton; an analyte clustered with the urea dimer ion can only be read as the urea adduct of M + urea, and its Ur2H⁺ is its reagent ion) |
+| `reagent loss` | [M+H]⁺ / [M−H]⁻ (= X − R); or, for a form whose group is a neutral molecule of its own (an integer DBE: O2 of superoxide, Br2, I2), M itself | the reagent neutral left by proton transfer; or the group left whole by electron transfer (O2⁻·M → M⁻ + O2, M's electron affinity the larger), M intact |
+| `monomer shedding` | Y + G, Y and M − Y both plausible closed-shell neutrals: integer DBE ≥ 0, Senior's second rule, an H, ≥ `MONOMER_MIN_C` (6) carbons each and, when M holds O, an O each — and P no [Y′+H]⁺ / [Y′−H]⁻ of two such halves as well (below) | a cluster of two neutrals that split; both halves named (`halves`: kept + shed). Read before the small losses. Y · G is monomer shedding alone only where the shed half M − Y cannot have given up the reagent neutral R (M − Y − R is no plausible half: it lacks R's atoms, or is too small): an organonitrate · NO3⁻ or an amide · NH4⁺ beside an N-free shed half, an organobromide · Br⁻. Two N in a ¹⁴N product (its half's own beside the reagent's) are a sure sign only where M holds one N; a ¹⁴N cluster whose two halves both hold R's atoms (two organonitrates in nitrate data, two amides in ammonium data) reads `reagent loss + split` whichever half it sheds (tested, synthetic) |
+| `reagent loss + small losses` | [M+H]⁺ / [M−H]⁻ − L, L a SMALL closed-shell loss — fewer than `MONOMER_MIN_C` carbons in all — `subformula` splits (library pieces, at most one unnamed remainder) | the same, then H2O, CO, … (a loss of six carbons or more could be a whole neutral) |
+| `reagent loss + split` | [Y+H]⁺ / [Y−H]⁻, Y and M − Y plausible halves as above | the reagent's neutral gone and M split in two: a cluster's monomer shed with the reagent's proton, or a covalent dimer's [M+H]⁺ cleaved after it lost the reagent — composition cannot tell; the class counts it in neither the reagent channels nor monomer shedding; both halves named. Where M holds the reagent neutral's atoms (a ¹⁴N amide or organonitrate half, an organobromide half), the other half's monomer · reagent ion is as well the first half protonated / deprotonated (Y·G = [Y′+H]⁺, Y′ = Y + the reagent neutral: C12H12O2·NH4⁺ = [C12H15NO2+H]⁺): read here, both readings named (`Y′ + M−Y′ or Y + M−Y`), said in the class note; a ¹⁵N label breaks the tie (tested, synthetic) |
+| `skeletal` | holds all of G and atoms M alone cannot supply (P is no sub-formula of M), none of these | a covalent fragment that kept the reagent ([M+NH4−H2O]⁺, −CO, …) |
+| `another ion's product` | none of these, while another named window ion given a share of the same fragment reads it in a channel of its own | most likely that ion's, given to this one by the survivor split (§11.5): out of the class's reading altogether — the class window, `UNEXPLAINED_MAX` (its denominator too), the explained products, `monomer_pop`, the energy test (F read on the ion's own products; said in the class note) and, for a never-seen ion, the products mostly its own (`OWN_WEIGHT`) |
+| `unexplained` | none of these | part of the reagent kept ([M+UrH−NH3]⁺), a radical loss, a deep fragment of [M+H]⁺; a product M's own atoms make whole, which holds a group of M's elements — O2 or CHO2 in an oxygenated M, NH4 in an N-compound — by count only (no evidence it kept the reagent) |
+
+An ion with no reagent group reads every product as `skeletal`: a dimer ion
+shedding a monomer cannot be told by composition from a skeletal split
+(an ester's [M+H]⁺ cleaved at its ester bond reads as two halves of six
+carbons or more just as well). `MONOMER_MIN_C` 6: below it a shed neutral and
+a skeletal loss look alike — standard A's C10H17⁺ makes C5H7⁺ with C5H10, two
+closed-shell C5 halves of a skeletal split; at 6, no ion of fewer than 12 C
+reads as a cluster. A channel's **intensity** at one energy is the sum of its
+products', each times the ion's attribution weight (§11.5: 1 for a fragment
+only it can make, its share of a shared one); its **share** that over all the
+ion's products there — the products add up to the breakdown's `frag_weighted`
+(tested). With the per-scan tables (§11.11) each share is re-read scan by scan
+on the same weights (`share_sd`, ddof 1, where two scans or more are read and
+at least one of the ion's products there is read in them: a held peak enters
+every scan at its averaged height, as in F's spread, so a spectrum whose
+products are all held has no spread — NaN, not 0).
+
+**The class** (`classify`, in this order):
+
+1. no adduct → `unknown`. The ion not observed → `unknown`: absent from this
+   sample (no MS2 precursor, no MS1 centroid: `attribute.absent_ions`), never
+   seen as a precursor and given no product mostly its own (no weight above
+   `OWN_WEIGHT` 0.5: its shares are slivers of another ion's fragments read
+   through its formula; an equal split — `weight_source` `equal`, nothing
+   known of its share, 1 / the fragment's live candidates: 1/2 with two, up
+   to 1 for a candidate left alone where the others are read absent at the
+   lowest energy — is a prior and counts for none — tested, synthetic), or
+   never seen so and its products mostly its own (none it reads as `another
+   ion's product`, whatever its weight — tested, synthetic) hold at most
+   `OWN_WEIGHT` of what it is given in its class window (its lowest energy: a
+   product of its own higher on the ladder tells nothing of what it turns into
+   first — tested, synthetic; its E50, read off its products, is kept: an
+   upper bound), or F and S without data. A form with no reagent group
+   (`[M+H]+`, `[M-H]-`) → `covalent` (nothing to lose but its skeleton).
+2. **The window**: the energies from the lowest up to the first at which the
+   ion's OWN products — all but `another ion's product` — hold `FRAG_MIN` (0.1)
+   of ion + own products (1 − F, less another ion's, ≥ 0.1) — what the ion
+   turns into FIRST; another ion's products open no window — and never past
+   the last energy its precursor is seen at (a product that shows only after
+   the precursor is gone shows what became of its products). Why not every
+   energy: a product goes on to
+   fragment, and its channel moves with it — a cluster's monomer · reagent ion
+   loses the reagent neutral at higher energies and reads there as reagent
+   loss + split (tested, synthetic). On our own files every ^NH4 adduct is
+   past 0.1 at its lowest energy (standard A's limonene adduct 0.29 at NCE 1;
+   the 2026-09-10 file's 0.20 or more).
+3. **Never past the window** (it barely fragments while it is seen):
+   `covalent` when it holds half its signal past `COVALENT_ECM` (it survives);
+   `adduct` when S falls to half by it, its products (if any) are no
+   non-reagent majority, and the reagent ion lies below the scan range — the
+   scans' recorded first mass (`ms2_scans.csv` `low_mass`), else
+   `FIRST_MASS_MIN` (40), or a lower peak the spectra hold: it left as the
+   reagent ion, M whole (an ammonium adduct's NH4⁺, m/z 18, is below every
+   scan's first mass: seen only as the precursor's fall; a uronium, nitrate or
+   bromide ion, m/z 61–79, lies inside a scan range, and unseen it argues
+   against this); else `unknown` (said when its products show only after the
+   precursor is gone).
+4. Most of its own products in the window **unexplained** (≥
+   `UNEXPLAINED_MAX` 0.5 of all but `another ion's product`) → `unknown`. So a
+   class never rests on a sliver beside another ion's products: the
+   explained products it reads are at least half the ion's own, which hold
+   `FRAG_MIN` of ion + own products at the window's last energy (a weak
+   co-isolate whose own products are 96 % unexplained beside a strong
+   ion's shared fragment is `unknown`, named or not — tested, synthetic).
+5. Of the **explained** products (pooled over the window; all but
+   `unexplained` and `another ion's product`): monomer shedding ≥ `DOMINANT`
+   (0.5) → `cluster` when its products hold ≥ `CLUSTER_POP` (0.4) of ion + own
+   products at some energy the precursor is seen at (the most they hold:
+   one more low energy on the ladder does not turn a cluster `mixed`), else
+   `mixed` (a cluster beside a covalent ion of the same formula: a few of the
+   isolated ions shed monomers, the rest hold to energies where they lose the
+   reagent); the reagent channels (reagent ion, reagent loss, + small losses)
+   ≥ 0.5 → `adduct`, unless the ion holds half its signal past `COVALENT_ECM`
+   → `covalent` (a covalent ion that releases its reagent at that energy — a
+   protonated amide losing NH3 is an ammonium adduct's formula twin — or an
+   adduct bound unusually strongly); skeletal ≥ 0.5 → `covalent` where the ion
+   is KNOWN to hold half its signal to `SKELETAL_ECM` (0.75 eV), else
+   `unknown`: it falls to half below it (it falls apart as easily as an adduct
+   while its products keep the reagent: a co-isolate's or background
+   products?), or nothing read shows it reaches it — a crossing at or below
+   the lowest energy, or a one-energy F below half (bounds from above only), a
+   crossing across an unobserved energy, no volts (the bound is said);
+   `reagent loss + split` ≥ 0.5 → `unknown` (a cluster's or a covalent
+   dimer's halves); else `mixed`.
+
+**The energy test** reads the earlier of F's and S's crossing (§11.4),
+on the ion's own products: where `another ion's product` is given to it, F
+is re-read as precursor / (precursor + its own products), by §11.4's rule,
+its E_cm off the spectra's (volts linear in NCE: the same value), and the
+class row's E50 is that crossing — not `ms2_e50.csv`'s F, which counts every
+product given, and with no band (the bootstrap's is of that F); said in the
+note (a co-isolate's fragment, given in part to a surviving ion, would
+otherwise cross its F early and turn `covalent` into `adduct` — tested,
+synthetic). The two curves are
+compared on NCE — both lie on the window's one NCE axis, along which the
+ion's E_cm rises, so a crossing whose volts are unknown is ranked where it
+lies: F holds only the products the spectra hold and reads high when one
+leaves the observed range (an ammonium adduct's NH4⁺); S sees that loss but
+needs a steady supply (the class says when S decided). Each curve's E50 is a
+bracket (`_readings`): a crossing below the lowest energy bounds it from
+above only (its E_cm is the lowest spectrum's), as does a one-energy F below
+half (`e50_flag` `single_energy`, at or below that energy); a crossing across
+an unobserved energy lies between the last energy the curve is seen at half
+or more and the first it is seen below (`gap`: `e50_nce` / `e50_ecm` the
+latter, the former said). Where the volts at an energy are unknown — between
+two spectra, or a spectrum at the bottom or top of the ladder with none (a
+one-scan spectrum of a scan with no trailer row) — its E_cm is read off the
+NCE axis: between the spectra with volts, or on the straight line through
+them when two energies or more have volts (HCD volts are linear in NCE at one
+m/z; said). With volts at ONE energy only, the E_cm of another is not read but
+bounded by it (E_cm rises with NCE): a crossing's E_cm is that of the nearest
+spectrum with volts above it (an upper bound: it falls to half by it at the
+latest), a held energy's that of the nearest below it (a lower bound: `at least
+E_cm x eV (a bound: NCE n's …)`); both said, and the note says the energy tests
+decide only where that bound settles them (tested, synthetic). Whether the
+ion **holds half its signal past** an energy is read
+off the curves, never off a missing crossing (`_holds`): an interpolated
+crossing; the highest energy a curve that never falls to half is seen at
+(`nce_max`, not an energy where the ion is not seen); a one-energy F's
+energy when it is half or more there (below half: nothing held); the last
+energy a curve is seen at half or more before it falls across an unobserved
+one; no data, nothing — the lowest over F and S (S beyond its reference
+energy). `COVALENT_ECM` 1.1 eV reads **one way**: holding past it rules an
+adduct out, breaking below it makes none. Own data: every ^NH4 adduct falls to half by E_cm 0.38–0.86 eV
+(the limonene adduct 0.855; the 2026-09-10 file's 0.38–0.80, its C9H14^N⁺
+read at one energy, below half there: by 0.69); the [M+H]⁺ ions of the same
+files whose F crosses between two energies do so at 0.80–1.66 (C10H19O⁺ 0.80
+— 0.799 in the 155.1559 window, 0.800 in the 155.1429 one: a protonated
+alcohol loses water easily —, C10H17⁺ 1.073, C4H10NS2⁺ 1.126,
+C11H15O2⁺ 1.183, C11H13O⁺ 1.661); of the others C8H9O2⁺ and C7H6NS⁺ never
+fall to half on F, C8H10NO⁺ crosses across an unobserved energy, and
+C12H21O2⁺ is below half at its lowest energy (0.51 eV) only because a 50-fold
+stronger co-isolated adduct's fragments are shared with it. `SKELETAL_ECM`
+0.75 eV lies below the lowest of those crossings: a covalent skeleton breaks
+no more easily than a protonated alcohol loses water. Generic chemistry the
+constants sit between: reagent adducts lose the reagent neutral (then H2O, …)
+and fall to half by about 1 eV or below (our own ^NH4⁺ adducts: 0.38–0.86 eV); loosely bound clusters shed a whole
+neutral, most of their population at the lowest energies, at lower energies
+still; a covalent dimer of the same formula keeps its neutral whole and loses
+the reagent ("sheds no monomer": its monomer · reagent ions at most
+`NO_MONOMER`, 5 %, of ion + own products at every energy it is seen at — read
+on ion + own products as `CLUSTER_POP` is: a share of the products alone rises
+with every other product gone —, said in the evidence of an adduct whose M
+could split, with the halves split after the reagent's loss when they hold
+more; a split in the window that is as well a monomer · reagent ion (the tie
+above) is said as both — `no product reads only as a monomer · reagent ion`
+—, never `sheds no monomer`);
+covalently bound ions hold beyond 1 eV. `DOMINANT` 0.5 is a majority; on our
+own files the closest call is the 2026-09-10 file's C12H22^NO2⁺: 58 % reagent
+loss + small losses (−^NH3 −H2O) against 42 % of its in-source
+[M+^NH4−H2O]⁺ and [M+^NH4−2H2O]⁺. `CLUSTER_POP` 0.4 lies between a loosely
+bound cluster's population shed at the lowest energies (more than half) and a
+cluster-plus-covalent mixture's (a third or less).
+
+**An unnamed co-isolate.** Every product of the window is read against the
+NAMED ions only (§11.5): a co-isolate not named — a cluster beside a weak
+target — makes products the target reads as its own (its monomer · reagent
+ions read as the target's skeletal fragments). The class row says so when an
+MS1 centroid no named ion matches holds more of the isolation window
+(`ms2_window.csv`) than the ion itself, naming its m/z through the folder's
+axis offset (the one `--ion` takes); it says when the ion is not seen in the
+MS1 window (its 0 is weighed against nothing) and when the window table holds
+no row for the key (a co-isolate is unknown). Naming the co-isolate (`--ion`)
+helps but does not make its products its own: a fragment both ions can make
+is split by their survivor weights (§11.5), so a far stronger co-isolate
+takes most of it, and a fragment only the other ion explains reads as
+`another ion's product` rather than unexplained.
+
+**Known answers (our own data).** Standard A: C10H17⁺ `covalent` ([M+H]⁺; its
+products skeletal, C6H9⁺ −C4H8 and C5H7⁺ among them); C10H20^N⁺ `adduct` in both
+windows (target at 155.1559: at NCE 1 its products are 89.6 % ^NH3 loss →
+C10H17⁺ and 10.4 % ^NH3 + C4H8 → C6H9⁺, 29 % of ion + products; falls to half
+by E_cm 0.855 eV on F); C10H19O⁺ `covalent`; C9H14^N⁺, named in the 137.13
+window, is never seen there as a precursor and given 0.2 % of C10H17⁺'s
+fragments: `unknown` (tested). The 2026-09-10 file: all eight ^NH4 adducts
+(the targets C4H10^NO4⁺, C11H18^NO2⁺ — its 197.130 → 179.107 → 161.096
+cascade read as reagent loss, then + H2O —, C12H22^NO2⁺, C8H28^NO4Si4⁺, and
+the co-isolates C5H14^NO3⁺, C6H18^NO2⁺, C9H14^N⁺, C11H16^NO⁺) `adduct`, the
+latest falling to half by 0.80 eV (C4H10^NO4⁺, on S; C9H14^N⁺ is read at one
+energy, below half there: it falls to half by 0.69 eV, an upper bound); its
+[M+H]⁺ ions `covalent`. With no MS1 window table, standard A's C9H14^N⁺ is
+given an equal half of C10H17⁺'s fragments: a prior, no class either
+(tested). No cluster of our own has an MS2
+yet: standard B's protonated monoterpene dimer C20H33⁺ (273.258) stands at
+0.85× its [M+H]⁺ in the MS1 scans, but only 137.13 was isolated — and as an
+`[M+H]+` ion it would read `covalent` (no reagent group), whatever it sheds.
+
+**Outputs.** `ms2_channels.csv` — per (window, spectrum, window ion, channel):
+`parent_mz`, `spectrum`, `nce`, `hcd_v`, `e_cm` (the ion's), `ion`, `role`,
+`adduct`, `channel` (`intact` — the precursor, share NaN — then the eight
+product channels, or `product` alone with no adduct), `intensity`, `share`
+(of the ion's attributed products), `n_products`, `products` (largest first),
+`halves` (each monomer split's or `reagent loss + split`'s, same order; a split
+that is as well a monomer · reagent ion names both, `split or monomer`),
+`n_scans`, `share_sd` (per-scan tables; else 0 / NaN). `ms2_classes.csv` —
+per (window, window ion): `ion_mz`, `adduct`, `adduct_source` (`ions csv`,
+`--adduct`, `--reagent NAME`), `reagent_neutral`, `reagent_ion`, `class`, the
+window (`nce_lo`, `nce_hi`, `ecm_hi`, `n_energies`, `frag` = the ion's own
+products' share of ion + own products at its last energy: 1 − F less another
+ion's products), the channels' shares pooled over it — of all its products, as
+in `ms2_channels.csv` (`share_reagent_ion`,
+`share_reagent_loss`, `share_reagent_loss_small`, `share_monomer`,
+`share_split`, `share_skeletal`, `share_other`, `share_unexplained`; NaN with
+no product there), `monomer_pop` (monomer shedding's largest share of ion + own
+products at an energy the precursor is seen at), `halves` (the largest
+split), the energy it falls to half by (`e50_curve` F / S / '' — none
+crossed —, `e50_nce`, `e50_ecm`, `e50_flag`; F on the ion's own products
+where another ion's product is given to it; an upper bound for a
+`below_range`, `single_energy` or `gap` crossing, and with volts at one
+energy only, whatever the flag, `e50_ecm` is the E_cm of the nearest spectrum
+with volts at or above the crossing — an upper bound, said in the note, for an ion
+with no adduct too) and that curve's band (`e50_ecm_lo`, `e50_ecm_hi`,
+§11.11; NaN for F read on the ion's own products), `evidence` (what decided, with the
+numbers) and `note` (the caveats: S's steady supply, E_cm off the NCE axis or a
+bound off one energy, no volts or volts at one energy only, another named ion's
+products left out — of the energy test too —, a split that is as well a monomer · reagent ion, an unnamed
+co-isolate, an ion not seen in MS1, no MS1 rows). The
+console prints each window's classes after its line; the manifest records the
+constants (`parameters.channels`), each ion's adduct and its source
+(`parameters.ions`), and the counts (`channel_rows`, `classes`).
+
+**Gotchas.** The class is a heuristic and only as good as the named ions and
+their attribution (§11.5). Formula twins: a 14N ammonium adduct is the [M+H]⁺
+of an N-compound (amine, amide) of the same formula — the channels read the
+label you give; the energy test catches the twins that survive (a protonated
+amide), not those that fragment easily (read `skeletal` products for what they
+are). A large covalent ion that cleaves into two C6+ oxygenated halves keeping
+the reagent (an ester's adduct) reads as monomer shedding. A dimer whose only
+products are [Y+H]⁺ halves reads `unknown` (cluster or covalent dimer:
+composition cannot tell) — and so does a dimer one of whose halves holds
+the reagent neutral's atoms (a ¹⁴N amide or organonitrate, an
+organobromide), whose other half · reagent ion is as well the first half
+protonated / deprotonated: a real cluster that sheds only that way reads
+`unknown`, not `cluster`; that half · reagent ion tells only where the
+other half cannot give up the reagent neutral (holds none of its atoms). A
+¹⁴N cluster whose two halves both hold them (two organonitrates in nitrate
+data, two amides in ammonium data) reads `unknown` whatever it sheds; a ¹⁵N
+reagent tells. Small clusters (halves under six carbons) read as
+skeletal. An analyte clustered with the urea dimer ion has no label of its own
+(two ureas): it is read as the urea adduct of M + urea, its Ur2H⁺ as the
+reagent ion, its UrH⁺ cluster as the reagent loss. Products outside the observed m/z range are in no channel; the
+unseen-reagent-ion rule reads them only through S. With no volts (a refused
+summary), the energy test is not read (said).
+
+**Code map.** `chemistry.ADDUCT_GROUPS` / `adduct_group` / `adduct_charge`
+(the group table); `channels.IN_SOURCE` (in-source forms); `channels.ion_adduct`
+/ `fits` / `reagent_adducts` / `assign_adducts` (an ion's adduct, its
+precedence); `channels.product_channel` (one product);
+`channels.fragment_formulas` / `window_channels` (one window's rows);
+`channels._labelled` (the isotope label is the reagent's);
+`channels.classify` / `_readings` / `_crossing` / `_holds` / `_ecm_at` /
+`_ecm_bound` (one ion's class: the E50 brackets, compared on NCE, E_cm off the
+NCE axis, and a bound off one energy with volts);
+`analyze._channels` / `_first_mass` / `_unnamed_ms1` (the wiring: presence,
+the scan range, the co-isolate notes); `analyze.read_ions_adducts` (the CSV
+column).
 
 ---
 

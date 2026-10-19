@@ -234,6 +234,9 @@ peaky ms2 extract --file <FILE_ID> --inclusion-list <list.csv> --polarity +   # 
 peaky ms2 analyze --run-dir ~/peaky-output/ms2/<ID> --ion 137.1323=C10H17+
 # a folder with the per-scan tables also gets each curve's scan-to-scan spread and an
 # E50 interval (--bootstrap N, default 1000; §11.11)
+# with each ion's adduct, its product channels (ms2_channels.csv) and a heuristic binding
+# class -- adduct, cluster, covalent (ms2_classes.csv; §11.13)
+peaky ms2 analyze --run-dir ~/peaky-output/ms2/<ID> --ion 155.1559=C10H20^N+ --reagent NH4_15N  # or --adduct '[M+^NH4]+'
 
 # organise data — the write API (--dry-run previews, sends nothing; deletes need --yes)
 peaky curate tree --deep                                  # read the workspace/dataset/batch layout

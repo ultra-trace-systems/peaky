@@ -30,6 +30,15 @@ the scatter of F, F_lo and S, every item's presence and CV
 every table is what it was, the new columns blank, and the run says so. A
 peak that is an Orbitrap harmonic ghost of a brighter line is read as no
 formula and kept out of the TIC (`readings.harmonic_ghosts`; counted).
+
+Given each named ion's adduct (`--ions` CSV 'adduct' column, `--adduct`,
+`--reagent`: `channels.assign_adducts`), every analysed window's products
+are read as channels of the ion's adduct -- the reagent ion, its loss, a
+monomer shed, a skeletal fragment -- per ion and energy
+(`ms2_channels.csv`), and each ion gets a heuristic binding class (adduct,
+cluster, covalent, mixed, unknown: `ms2_classes.csv`), both from
+`channels`. With no adduct given neither is written, and every other table
+is what it was.
 """
 from __future__ import annotations
 
@@ -47,13 +56,16 @@ import pandas as pd
 from peaky.chem import chemistry as C
 from peaky.ms2 import attribute as AT
 from peaky.ms2 import breakdown as BD
+from peaky.ms2 import channels as CH
 from peaky.ms2 import readings as RD
 from peaky.ms2 import replicates as RP
 from peaky.ms2 import scans as SC
 from peaky.ms2 import sources as SRC
 from peaky.ms2 import subformula as SF
 
-__version__ = "0.2.0"  # + replicate statistics and the E50 bootstrap from the per-scan
+__version__ = "0.3.0"  # + product channels against each ion's adduct, a binding class
+#                          per ion (ms2_channels.csv, ms2_classes.csv). 0.2.0: replicate
+#                          statistics and the E50 bootstrap from the per-scan
 #                          tables; harmonic ghosts read as no formula, out of the TIC.
 #                          0.1.1: per-parent isolation widths from the parents table (an
 #                          `ms2 extract --file` folder); the folder's m/z axis offset
@@ -212,7 +224,8 @@ def _checked(formula: str, typed: float, what: str) -> tuple[str, float, float]:
 
 
 def read_ions_csv(path: str) -> list[tuple[str, float, float]]:
-    """A CSV with a `formula` column and optionally `mz` (checked as for --ion)."""
+    """A CSV with a `formula` column and optionally `mz` (checked as for --ion)
+    and `adduct` (read by `read_ions_adducts`)."""
     df = pd.read_csv(os.path.expanduser(path), dtype=str, keep_default_na=False)
     if "formula" not in df.columns:
         raise ValueError(f"{path}: needs a 'formula' column (and optionally 'mz')")
@@ -222,6 +235,32 @@ def read_ions_csv(path: str) -> list[tuple[str, float, float]]:
             continue
         typed = float(r["mz"]) if "mz" in df.columns and str(r["mz"]).strip() else math.nan
         out.append(_checked(str(r["formula"]).strip(), typed, f"{path} row {i + 2}"))
+    return out
+
+
+def read_ions_adducts(path: str) -> dict[str, str]:
+    """The `--ions` CSV's optional 'adduct' column: ion formula (normalised as
+    `read_ions_csv` writes it) -> its ion-form label ({} without the column;
+    a blank cell is left out). A label with no group formula
+    (`chemistry.ADDUCT_GROUPS`), or one the row's ion cannot be (it does not
+    hold the group, or the charge differs: `channels.ion_adduct`, the test
+    `channels.assign_adducts` makes again for an API caller), is refused,
+    its row named."""
+    df = pd.read_csv(os.path.expanduser(path), dtype=str, keep_default_na=False)
+    if "adduct" not in df.columns or "formula" not in df.columns:
+        return {}
+    out = {}
+    for i, r in df.iterrows():
+        f, lab = str(r["formula"]).strip(), str(r["adduct"]).strip()
+        if not f or not lab:
+            continue
+        try:
+            C.adduct_group(lab)
+            counts, charge = SF.parse_ion(f)
+            CH.ion_adduct(SF.format_ion(counts, charge), lab)
+        except ValueError as exc:
+            raise ValueError(f"{path} row {i + 2}: {exc}") from None
+        out[SF.format_ion(counts, charge)] = lab
     return out
 
 
@@ -246,6 +285,12 @@ def collect_ions(items: Iterable[tuple[str, float, float]]) -> dict[str, float]:
 RUN_FILES = ("ms2_spectra.parquet", "ms2_parents.csv", "ms2_window.csv", "ms2_manifest.json")
 #: The per-scan tables `ms2 extract --file | --per-scan` adds (read when present).
 PER_SCAN_FILES = ("ms2_scans.csv", "ms2_scan_peaks.parquet")
+#: The run note of a run that reads product channels and binding classes.
+CHANNELS_NOTE = ("product channels (ms2_channels.csv) are read against each ion's adduct; the "
+                 "binding class (ms2_classes.csv) is a heuristic read off the lowest energies "
+                 "and the energy the ion falls to half by (docs/MS2.md §11.13): it is only as "
+                 "good as the named window ions -- an unnamed co-isolate's products are read "
+                 "as theirs")
 #: The run note of a folder without them.
 NO_PER_SCAN_NOTE = ("no per-scan tables (ms2_scan_peaks.parquet; `ms2 extract --per-scan` or "
                     "`--file` writes them): no replicate statistics, no E50 interval")
@@ -408,6 +453,10 @@ class WindowResult:
     #: scans (one, or no per-scan row), or every precursor / fragment peak held
     scans_per_energy: list = field(default_factory=list)
     one_scan_energies: int = 0
+    #: `channels.CHANNEL_COLUMNS` / `channels.CLASS_COLUMNS` rows (None: no
+    #: adduct given for any ion of the run)
+    channels: pd.DataFrame | None = None
+    classes: pd.DataFrame | None = None
 
     def manifest(self) -> dict:
         nce = ([] if self.breakdown is None or not len(self.breakdown) else
@@ -587,7 +636,8 @@ def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float
                    width: float, k_max: int | None = None, ladder: bool = True,
                    tol_ppm: float = 5.0, tol_mda: float = 0.3,
                    gas_mass: float = BD.N2_MASS, axis_offset_ppm: float = 0.0,
-                   bootstrap: int = RP.BOOTSTRAP_B, harmonics: bool = True) -> WindowResult:
+                   bootstrap: int = RP.BOOTSTRAP_B, harmonics: bool = True,
+                   adducts: Mapping[str, "CH.IonAdduct | None"] | None = None) -> WindowResult:
     """Everything for one parent key: its ions, its offset, the readings across
     its spectra and -- when it has energy-resolved spectra -- the breakdown,
     the E50s, the fragments and the branching. `axis_offset_ppm`: the
@@ -596,7 +646,9 @@ def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float
     against target) is then measured as on any folder. With the per-scan
     tables (`tables.scan_peaks`): the replicate statistics and, with
     `bootstrap` > 0 resamples, the E50 intervals (`_replicates`).
-    `harmonics`: read harmonic ghosts as no formula (`readings.read_window`)."""
+    `harmonics`: read harmonic ghosts as no formula (`readings.read_window`).
+    `adducts` (named ion -> `channels.IonAdduct` or None): the window's
+    product channels and binding classes (`_channels`); None reads none."""
     res = WindowResult(parent_mz=float(parent_mz), status="skipped")
     par = tables.parents[np.isclose(tables.parents["parent_mz"], parent_mz, rtol=0, atol=1e-6)]
     # an empty spectrum (ms2 extract writes a parent row with n_peaks 0 for a
@@ -814,8 +866,161 @@ def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float
                    nce=[meta.loc[s, "nce"] for s in br["spectrum"]],
                    hcd_v=[meta.loc[s, "hcd_v"] for s in br["spectrum"]])
     res.branching = _frame(br, BRANCHING_COLUMNS)
+    if adducts is not None:
+        _channels(res, adducts, tables, specs, meta, order, ions, roles, comps, ion_int,
+                  frag_int, weights, shares, rep, {m["spectrum"]: pk for m, pk in spec_rows},
+                  gas_mass=gas_mass, tol_mda=tol_mda, axis_offset_ppm=axis_offset_ppm,
+                  absent=absent, sources=dict(zip(att["key"], att["weight_source"])))
     res.status = "analysed"
     return res
+
+
+def _channels(res: WindowResult, adducts: Mapping[str, "CH.IonAdduct | None"],
+              tables: RunTables, specs: Sequence[str], meta: pd.DataFrame,
+              order: Sequence[str], ions: Mapping[str, float], roles: pd.DataFrame,
+              comps: Mapping, ion_int: pd.DataFrame, frag_int: pd.DataFrame,
+              weights: Mapping[str, Mapping[str, float]], shares: Mapping[str, float],
+              rep: dict | None, peaks: Mapping[str, pd.DataFrame], *, gas_mass: float,
+              tol_mda: float, axis_offset_ppm: float, absent: Sequence[str] = (),
+              sources: Mapping[str, str] | None = None) -> None:
+    """One analysed window's product channels and binding classes
+    (`channels`): `res.channels`, `res.classes`. The class reads the
+    window's F and S E50s (`res.e50`); the m/z below which a reagent ion is
+    unobserved -- the scans' recorded first mass (`ms2_scans.csv` `low_mass`
+    of the window's spectra), else `channels.FIRST_MASS_MIN`, or a lower
+    peak the spectra hold; whether the ion was observed (absent from the
+    sample, `attribute.absent_ions`; or never seen as a precursor and given
+    no product mostly its own, `channels.OWN_WEIGHT` -- a weight of an equal
+    split, `sources` (fragment key -> `weight_source`) 'equal', is a prior and
+    counts for none --, or whose products mostly its own hold at most
+    `OWN_WEIGHT` of what it is given in its class window (its lowest energy):
+    per spectrum, the weighted intensity of the products mostly its own --
+    none of an equal split, and none it reads as 'another ion's product'
+    (another ion's whatever its weight) --, which `classify` reads there);
+    and, per ion, whether
+    an MS1 centroid no named ion matches holds more of the isolation window
+    than the ion itself (its products are then read as the named ions':
+    said) -- or the ion has no MS1 share to weigh (not seen there, or no MS1
+    window rows: said)."""
+    forms = CH.fragment_formulas(roles, specs, {k: v[1] for k, v in comps.items()})
+    res.channels = CH.window_channels(
+        res.parent_mz, specs, meta, order, ions, res.target, ion_int, frag_int, weights,
+        forms, {f: adducts.get(f) for f in order}, gas_mass=gas_mass,
+        scans=(None if rep is None else
+               {s: (rep["mats"][s][1], rep["n_scans"][s], rep["mats"][s][5]) for s in specs}))
+    floor, what = _first_mass(tables, specs, peaks)
+    unnamed = _unnamed_ms1(tables.window, res.parent_mz, {f: ions[f] for f in order}, tol_mda,
+                           axis_offset_ppm=axis_offset_ppm)
+    rows = []
+    for f in order:
+        presence = ""
+        mostly = None
+        if f in absent:
+            presence = ("absent from this sample: no MS2 spectrum holds its precursor and the MS1 "
+                        "window no centroid at it -- it decides nothing (no class)")
+        elif float(ion_int[f].sum()) <= 0:
+            given = [(float((weights.get(k) or {}).get(f, 0.0)), (sources or {}).get(k, ""))
+                     for k in frag_int.columns if float(frag_int[k].sum()) > 0]
+            given = [(w, src) for w, src in given if w > 0]
+            # an equal split is a prior -- nothing is known of the ion's
+            # share --, no observation that a product is its own
+            measured = [w for w, src in given if src != "equal"]
+            own = max(measured, default=0.0)
+            # per spectrum, the weighted intensity of the products mostly its
+            # own: the class reads them in its window (`channels.classify`).
+            # A product it reads as another ion's is no product of its own,
+            # whatever the weight it is given
+            ch = res.channels
+            theirs = {k for t in ch.loc[(ch["ion"] == f) & (ch["channel"] == CH.OTHER_ION),
+                                        "products"]
+                      for k in str(t).split("; ") if k}
+            mine = [k for k in frag_int.columns
+                    if float((weights.get(k) or {}).get(f, 0.0)) > CH.OWN_WEIGHT
+                    and (sources or {}).get(k, "") != "equal" and k not in theirs]
+            mostly = {s: sum(float(weights[k][f]) * float(frag_int.loc[s, k]) for k in mine)
+                      for s in specs}
+            if not given:
+                presence = ("never seen as a precursor in the window, and given no product: it "
+                            "decides nothing (no class)")
+            elif not measured:
+                presence = ("never seen as a precursor in the window, and every product it is "
+                            "given is an equal split (weight_source 'equal': nothing is known of "
+                            "its share -- a prior, no observation): its shares are another "
+                            "ion's fragments read through its formula (no class)")
+            elif own <= CH.OWN_WEIGHT:
+                presence = (f"never seen as a precursor in the window, and no product it is "
+                            f"given is mostly its own (its largest weight {own:.3g}, at most "
+                            f"{CH.OWN_WEIGHT:g}): its shares are slivers of another ion's "
+                            "fragments read through its formula (no class)")
+        r = CH.classify(res.channels[res.channels["ion"] == f], res.e50[res.e50["ion"] == f],
+                        adducts.get(f), floor_mz=floor, floor_what=what, ion_mz=ions[f],
+                        presence=presence, curves=res.breakdown[res.breakdown["ion"] == f],
+                        own_products=mostly)
+        own = float(shares.get(f, math.nan)) if shares else math.nan
+        said = ""
+        if not shares:
+            said = ("the MS1 window table holds no row for this key: whether an unnamed "
+                    "co-isolate shares the isolation window is unknown")
+        elif own == 0:
+            said = (f"{f} is not seen in the MS1 window (no centroid at it): its share cannot "
+                    "be weighed against an unnamed co-isolate's")
+        elif unnamed is not None and math.isfinite(own) and unnamed[1] > own:
+            said = (f"an MS1 centroid no named ion matches, at m/z {unnamed[0]:.4f}, holds "
+                    f"{unnamed[1]:.0%} of the isolation window, more than {f} ({own:.0%}): its "
+                    "products may be read as the named ions' -- name it (--ion): a fragment "
+                    "both can make is then split by their survivor weights, and one only it "
+                    "explains reads as another ion's product")
+        if said:
+            r["note"] = "; ".join(t for t in (r["note"], said) if t)
+        rows.append(r)
+    res.classes = CH._frame(rows, CH.CLASS_COLUMNS)
+
+
+def _first_mass(tables: RunTables, specs: Sequence[str],
+                peaks: Mapping[str, pd.DataFrame]) -> tuple[float, str]:
+    """(m/z, what) below which a reagent ion of the window is unobserved: the
+    lowest first mass the per-scan table records for the window's spectra
+    (`low_mass`), else `channels.FIRST_MASS_MIN` (no MS2 scan of ours starts
+    lower) -- or a lower peak the spectra hold."""
+    low = math.nan
+    sc = tables.scans
+    if sc is not None and len(sc) and "low_mass" in sc:
+        v = sc.loc[sc["spectrum"].isin(list(specs)), "low_mass"].to_numpy(dtype=float)
+        v = v[np.isfinite(v)]
+        if len(v):
+            low = float(v.min())
+    if math.isfinite(low):
+        floor, what = low, "the scans' first mass"
+    else:
+        floor, what = CH.FIRST_MASS_MIN, ("the lowest first mass an MS2 scan is set to "
+                                          "(FIRST_MASS_MIN)")
+    peak = min((float(peaks[s]["mz"].min()) for s in specs if len(peaks[s])), default=math.nan)
+    if math.isfinite(peak) and peak < floor:
+        floor, what = peak, "the lowest peak the spectra hold"
+    return floor, what
+
+
+def _unnamed_ms1(window: pd.DataFrame, parent_mz: float, ions: Mapping[str, float],
+                 tol_mda: float, *, axis_offset_ppm: float = 0.0) -> tuple[float, float] | None:
+    """(m/z, share) of the largest MS1 centroid of the window (`ms2_window.csv`)
+    that no named window ion matches -- within max(`TARGET_MATCH_PPM`,
+    `tol_mda`) of none of them, read through the folder's axis offset, as
+    `_ms1_shares` reads them, and its m/z given so (the one to name with
+    --ion); None with no window table or no such centroid."""
+    if not len(window):
+        return None
+    w = window[np.isclose(window["parent_mz"], parent_mz, rtol=0, atol=1e-6)]
+    if not len(w):
+        return None
+    mz = w["mz"].to_numpy(dtype=float) / (1.0 + axis_offset_ppm * 1e-6)
+    share = w["share"].to_numpy(dtype=float)
+    named = np.zeros(len(mz), dtype=bool)
+    for m in ions.values():
+        named |= np.abs(mz - m) <= max(TARGET_MATCH_PPM * m * 1e-6, tol_mda * 1e-3)
+    if named.all():
+        return None
+    i = int(np.flatnonzero(~named)[np.argmax(share[~named])])
+    return float(mz[i]), float(share[i])
 
 
 def _replicates(tables: RunTables, parent_mz: float, specs: Sequence[str], meta: pd.DataFrame,
@@ -967,7 +1172,8 @@ def _replicates(tables: RunTables, parent_mz: float, specs: Sequence[str], meta:
         notes.append("replicates: no energy holds two scans" + (" read" if held else "")
                      + ": no E50 interval")
     return {"n_scans": n_scans, "held": held, "breakdown": bd, "items": items, "boot": boot,
-            "boot_n": b_used, "table": _frame(rows, RP.REPLICATE_COLUMNS), "notes": notes}
+            "boot_n": b_used, "table": _frame(rows, RP.REPLICATE_COLUMNS), "notes": notes,
+            "mats": mats}
 
 
 def _breach_note(ion: str, g: pd.DataFrame, gsum: pd.Series, lost: pd.Series,
@@ -1279,19 +1485,29 @@ class AnalyzeResult:
     notes: list = field(default_factory=list)
     #: `replicates.REPLICATE_COLUMNS` (None: no per-scan tables)
     replicates: pd.DataFrame | None = None
+    #: `channels.CHANNEL_COLUMNS` / `channels.CLASS_COLUMNS` (None: no adduct
+    #: given for any ion)
+    channels: pd.DataFrame | None = None
+    classes: pd.DataFrame | None = None
 
 
 def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | None = None,
                 ladder: bool = True, tol_ppm: float = 5.0, tol_mda: float = 0.3,
                 gas_mass: float = BD.N2_MASS, iso_width: float | None = None,
                 mass_offset_ppm: float | None = None, bootstrap: int = RP.BOOTSTRAP_B,
-                harmonics: bool = True) -> AnalyzeResult:
+                harmonics: bool = True,
+                adducts: Mapping[str, "CH.IonAdduct | None"] | None = None,
+                adduct_notes: Sequence[str] = ()) -> AnalyzeResult:
     """Every parent window of one `ms2 extract` folder (`load_run`).
     `mass_offset_ppm`: the folder's m/z axis offset, replacing the one its
     manifest records (`folder_axis_offset`). `bootstrap`: resamples of each
     E50's interval (0: none; else at least `replicates.BOOTSTRAP_MIN`; needs
     the per-scan tables). `harmonics` False reads harmonic ghosts as any peak
-    (a debugging switch)."""
+    (a debugging switch). `adducts` (named ion -> `channels.IonAdduct` or
+    None, `channels.assign_adducts`; its `adduct_notes` go to the run's
+    notes): every analysed window's product channels and binding classes
+    (`channels`); None (the default) reads none, and every other table is
+    what it was."""
     SF._check_tol(tol_ppm, tol_mda)
     if (isinstance(bootstrap, bool) or int(bootstrap) != bootstrap or bootstrap < 0
             or 0 < bootstrap < RP.BOOTSTRAP_MIN):
@@ -1313,7 +1529,7 @@ def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | No
                               width=own.get(round(p, 6), math.nan) if per_parent else width,
                               k_max=k_max, ladder=ladder, tol_ppm=tol_ppm, tol_mda=tol_mda,
                               gas_mass=gas_mass, axis_offset_ppm=axis,
-                              bootstrap=int(bootstrap), harmonics=harmonics)
+                              bootstrap=int(bootstrap), harmonics=harmonics, adducts=adducts)
                for p in sorted({float(x) for x in tables.parents["parent_mz"]})]
 
     def cat(attr, spec):
@@ -1333,6 +1549,9 @@ def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | No
             notes.append(f"the isolation width used here ({width:g} Da, {wsrc}) reaches past the "
                          f"MS1 window ms2 extract inventoried (+-{min(reach):.3f} Da around a "
                          "key): a co-isolate beyond it has no MS1 share (unknown, not 0)")
+    if adducts is not None:
+        notes.extend(adduct_notes)
+        notes.append(CHANNELS_NOTE)
     params = {"k_max": k_max, "ladder": bool(ladder), "gate": mode, "k_max_read": k_read,
               "gate_note": gate_note(mode, k_read), "tol_ppm": float(tol_ppm),
               "tol_mda": float(tol_mda), "gas_mass": float(gas_mass), "iso_width": iso_width,
@@ -1357,7 +1576,17 @@ def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | No
                              "bootstrap_min": RP.BOOTSTRAP_MIN, "seed": RP.BOOTSTRAP_SEED,
                              "percentiles": list(RP.BOOTSTRAP_PERCENTILES),
                              "match_da": RP.MATCH_DA, "scale_band": list(RP.SCALE_BAND)},
-              "ions": [{"formula": f, "mz": m} for f, m in ions.items()]}
+              "channels": {"on": adducts is not None, "monomer_min_c": CH.MONOMER_MIN_C,
+                           "frag_min": CH.FRAG_MIN, "dominant": CH.DOMINANT,
+                           "cluster_pop": CH.CLUSTER_POP,
+                           "unexplained_max": CH.UNEXPLAINED_MAX,
+                           "covalent_ecm": CH.COVALENT_ECM, "skeletal_ecm": CH.SKELETAL_ECM,
+                           "no_monomer": CH.NO_MONOMER, "first_mass_min": CH.FIRST_MASS_MIN,
+                           "own_weight": CH.OWN_WEIGHT},
+              "ions": [{"formula": f, "mz": m,
+                        **({"adduct": (adducts.get(f).label if adducts.get(f) else ""),
+                            "adduct_source": (adducts.get(f).source if adducts.get(f) else "")}
+                           if adducts is not None else {})} for f, m in ions.items()]}
     return AnalyzeResult(windows=windows,
                          readings=cat("readings", RD.READINGS_COLUMNS),
                          breakdown=cat("breakdown", BREAKDOWN_COLUMNS),
@@ -1365,7 +1594,11 @@ def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | No
                          branching=cat("branching", BRANCHING_COLUMNS), params=params,
                          notes=notes,
                          replicates=(cat("replicates", RP.REPLICATE_COLUMNS) if per_scan
-                                     else None))
+                                     else None),
+                         channels=(cat("channels", CH.CHANNEL_COLUMNS) if adducts is not None
+                                   else None),
+                         classes=(cat("classes", CH.CLASS_COLUMNS) if adducts is not None
+                                  else None))
 
 
 # ---------------------------------------------------------------------------
@@ -1541,7 +1774,11 @@ def manifest(res: AnalyzeResult, tables: RunTables, *, files: dict, created_utc:
                    "replicate_rows": (None if res.replicates is None
                                       else int(len(res.replicates))),
                    "one_scan_energies": sum(w.one_scan_energies for w in res.windows),
-                   "e50_intervals": int((res.e50["boot_n"] > 0).sum())},
+                   "e50_intervals": int((res.e50["boot_n"] > 0).sum()),
+                   "channel_rows": None if res.channels is None else int(len(res.channels)),
+                   "classes": (None if res.classes is None else
+                               {c: int((res.classes["class"] == c).sum())
+                                for c in CH.CLASSES})},
         "inputs": dict(tables.inputs), "files": dict(files),
         "code": {"package_version": peaky.__version__, "analyze_version": __version__,
                  "git": PV.git_info(os.path.dirname(os.path.abspath(__file__))),
@@ -1553,8 +1790,9 @@ def manifest(res: AnalyzeResult, tables: RunTables, *, files: dict, created_utc:
 def write_outputs(res: AnalyzeResult, tables: RunTables, out_dir: str, *, figures: bool = True,
                   created_utc: str | None = None) -> dict:
     """Write the four tables (+ ms2_branching.csv; + ms2_replicates.csv when
-    the folder has per-scan tables), the per-window figures and the
-    manifest into `out_dir`; -> {file name: sha1}."""
+    the folder has per-scan tables; + ms2_channels.csv and ms2_classes.csv
+    when the run read adducts), the per-window figures and the manifest into
+    `out_dir`; -> {file name: sha1}."""
     from peaky.reporting import provenance as PV
     out = Path(os.path.expanduser(out_dir))
     out.mkdir(parents=True, exist_ok=True)
@@ -1562,10 +1800,12 @@ def write_outputs(res: AnalyzeResult, tables: RunTables, out_dir: str, *, figure
     for name, df in (("ms2_readings.csv", res.readings), ("ms2_breakdown.csv", res.breakdown),
                      ("ms2_e50.csv", res.e50), ("ms2_fragments.csv", res.fragments),
                      ("ms2_branching.csv", res.branching),
-                     ("ms2_replicates.csv", res.replicates)):
+                     ("ms2_replicates.csv", res.replicates),
+                     ("ms2_channels.csv", res.channels), ("ms2_classes.csv", res.classes)):
         if df is None:
-            # a stale table of an earlier run with per-scan tables is not
-            # this run's: removed, so the folder holds what the manifest lists
+            # a stale table of an earlier run with per-scan tables (or with
+            # adducts) is not this run's: removed, so the folder holds what
+            # the manifest lists
             (out / name).unlink(missing_ok=True)
             continue
         df.to_csv(out / name, index=False)

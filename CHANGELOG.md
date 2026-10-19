@@ -420,6 +420,87 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   unchanged (tested on every committed fixture); the new columns read 0 / NaN / '' and the run says
   so. `ms2_readings.csv` gains `harmonic` after `ladder_support`. `docs/MS2.md` §11.11, §11.12,
   `tests/test_ms2_replicates.py`, fixture `ms2_nh4_exploratory_179_sn3.json`.
+- **`peaky ms2 analyze` reads each product against the ion's adduct: product channels
+  (`ms2_channels.csv`) and a heuristic binding class per ion -- adduct, cluster, covalent, mixed,
+  unknown (`ms2_classes.csv`) -- (`peaky.ms2.channels`; `chemistry.ADDUCT_GROUPS`).** Why: a CIMS
+  ion's MS2 says what holds it together -- a reagent adduct loses the reagent (its neutral by proton
+  transfer, or the reagent ion with M whole), a loosely bound cluster of two neutrals sheds a whole
+  neutral and keeps the reagent on the other, a covalent ion keeps its reagent (or has none) and
+  fragments its skeleton -- and `ms2 analyze` read every product but never against the reagent. The
+  adduct comes from the `--ions` CSV's new `adduct` column (an ion that cannot be its label is
+  refused, its row named), else `--adduct LABEL`, else `--reagent PROFILE`: of the profile's forms
+  the ion can be (its diagnostic adduct first -- each component's for a `+`-composed profile --,
+  every form that adds a reagent group before `[M+H]+` / `[M-H]-` / a charge transfer), one that
+  adds a group, then one whose M is closed-shell, then one whose M holds none of the reagent's own
+  element (A-.I2 is `[M-H+I2]-`), then one whose M holds the fewer 15N-labelled atoms (the label is
+  the reagent's: a 14N organonitrate . ^NO3- reads `[M+^NO3]-` under `NO3+NO3_15N` and
+  `NO3_15N+NO3` alike); an ion read as a group-less form by elimination, or fitting two
+  group forms equally, is said; a label or profile of the other charge than the named ions is
+  refused; an ion with none is analysed, its products one `product` channel, its class `unknown`.
+  `chemistry.ADDUCT_GROUPS` gives every label's group as signed element counts, tested against every
+  built-in mass shift (`chemistry.BUILTIN_ADDUCTS`, the table before a solvent cluster's rungs are
+  registered at run time; all but sodium and potassium, no element of the formula layer); an
+  in-source form is read as its reagent's adduct of M less the loss (`[M+^NH4-H2O]+` loses ^NH3).
+  Each product the ion is given (times its attribution weight) is `reagent ion` (the group's atoms,
+  or the group with none of M's carbon -- which also keeps the C2F3 = H2^NO4 alias of CF3COO- off a
+  nitrate cluster's skeleton --, or with whole reagent neutrals and none of M's carbon besides
+  theirs: the urea dimer ion, HCOO-.HCOOH), `reagent loss` ([M+H]+ / [M-H]-, whatever the neutral:
+  the radicals HO2 and HCO3 of superoxide and carbonate too; and M itself for a form whose group is
+  a neutral molecule of its own, O2-.M -> M- + O2), `monomer shedding` (the group kept, both halves
+  plausible closed-shell neutrals of >= 6 C and, when M holds O, an O each: named; read before the
+  small losses), `reagent loss + small losses` (fewer than 6 C lost in all), `reagent loss + split`
+  ([Y+H]+ / [Y-H]- of two such halves: a cluster's or a covalent dimer's, composition cannot tell;
+  also a monomer . reagent ion that is as well a protonated / deprotonated half -- where a half of M
+  holds the reagent neutral's atoms (a 14N amide or organonitrate, an organobromide) and the shed
+  half could have given that neutral up: both readings named, said, no cluster decided on it, and a
+  14N cluster of two such halves reads `unknown` whatever it sheds), `skeletal` (the group kept,
+  and atoms M alone cannot supply: a product M's own atoms make holds a group of M's elements by
+  count only, and is `unexplained`), `another ion's product` (unexplained for this ion, read in a
+  channel of its own by another named ion given a share of it: left out of the class's reading --
+  its window, its unexplained share, its population, the energy test (F read on the ion's own
+  products, the class row's E50 that one's, no band) and a never-seen ion's products of its own
+  --, said) or `unexplained`; an ion form with no
+  reagent group ([M+H]+, [M-H]-) reads every product `skeletal`. Shares per ion and energy add to 1
+  and the intensities to the breakdown's `frag_weighted`; with the per-scan tables each share's
+  scan-to-scan sd (NaN where none of the ion's products there is read in a scan). The class is read
+  off the lowest energies -- up to the first where its own products hold 0.1 of ion + own products, never
+  past the last energy the precursor is seen at (a product goes on to fragment, and its channel with
+  it: a cluster's monomer . reagent ion reads as reagent loss + split at higher energies) -- and the
+  earlier of F's and S's E50, compared on NCE (the one axis both lie on), each a bracket where not
+  interpolated (at or below the lowest energy, or a one-energy F's; across an unobserved energy),
+  its E_cm read off the NCE axis where the volts are unknown (on the line through the spectra with
+  volts at the ends of the ladder; with volts at one energy only, a bound off it, worded as one and
+  said, for an ion with no adduct too): monomer shedding the majority and its products >= 0.4 of
+  ion + own products at some energy
+  the ion is seen at: `cluster` (else `mixed`); the reagent channels the
+  majority: `adduct`, unless the ion holds half its signal past 1.1 eV (`covalent`: a protonated
+  amide, the ammonium adduct's formula twin, loses NH3 too) -- read off the curves (a crossing, the
+  highest energy a curve that never falls to half is seen at, a one-energy F of half or more, the
+  last energy at half or more before a hole), never off a missing crossing; skeletal the majority:
+  `covalent` only where the ion is known to hold half its signal to 0.75 eV (`unknown` where it
+  falls to half below it -- an adduct whose products are another ion's? -- or is not known to reach
+  it: a bound from above, a crossing across an unobserved energy, no volts); split halves the
+  majority: `unknown`; no channel the majority: `mixed`; an ion that barely fragments: `covalent`
+  when it survives past 1.1 eV, `adduct` when S falls below it with no non-reagent majority of
+  products while the reagent ion lies below the scan range (the scans' recorded first mass, else m/z
+  40, or a lower peak: an ammonium adduct's NH4+ -- not a uronium, nitrate or bromide ion, which a
+  scan range holds), else `unknown`; mostly unexplained products, an ion absent from the sample or
+  never seen as a precursor and given only slivers of another ion's fragments (an equal split,
+  nothing known of its share -- up to the whole fragment where it is left the only candidate --,
+  counts for none), or whose products mostly its own hold at most half of what it is given in its
+  class window: `unknown`. Each class row carries its shares, the
+  energy it read and that curve's band, an `evidence` sentence and its caveats -- and says when an
+  MS1 centroid no named ion matches holds more of the isolation window than the ion (its m/z through
+  the folder's axis offset), when the ion is not seen in the MS1 window, and when the window has no
+  MS1 rows. Known answers, own data: standard A's C10H17+ covalent, C10H20^N+ an adduct (89.6 % ^NH3
+  loss and 10.4 % ^NH3 + C4H8 at NCE 1, half gone by E_cm 0.855 eV), C10H19O+ covalent; all eight
+  ^NH4 adducts of the 2026-09-10 file adducts (the latest half gone by 0.80 eV, C9H14^N+ read at one
+  energy by 0.69 eV; the closest call C12H22^NO2+, 58 % reagent loss against 42 % of its in-source
+  [M+^NH4-H2O]+), its [M+H]+ ions covalent. With no adduct given nothing of this runs: neither table
+  is written (a stale one is removed) and every other table is unchanged (tested on the committed
+  fixtures). The manifest records the constants, each ion's adduct and source, and the class counts;
+  the console prints each window's classes. `analyze` 0.3.0. `docs/MS2.md` §11.13,
+  `tests/test_ms2_channels.py`.
 - **Orbitrap isotope lines are read by peak area, against the file's own minor-line response
   (`PassConfig.iso_response`, `--iso-response {auto,area,off}` on assign / batch / pool).** An
   Orbitrap scan keeps a line only where it clears that scan's detection floor, and the whole-file
