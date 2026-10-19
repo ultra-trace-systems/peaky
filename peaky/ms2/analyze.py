@@ -39,6 +39,13 @@ monomer shed, a skeletal fragment -- per ion and energy
 cluster, covalent, mixed, unknown: `ms2_classes.csv`), both from
 `channels`. With no adduct given neither is written, and every other table
 is what it was.
+
+Given RIVAL formulas of one ion (`--ions` CSV 'group' column -- or rows
+sharing an 'mz' cell --, `--rival MZ=F1,F2`), the window whose target they
+are is read once per rival and on decoys, and `arbitrate` says which one
+its products support (`ms2_arbitration.csv`); the other tables read one
+rival per group -- the one named first, or the supported one with
+`--pick-supported` -- never two. With no rival given nothing of this runs.
 """
 from __future__ import annotations
 
@@ -48,12 +55,13 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
 
 from peaky.chem import chemistry as C
+from peaky.ms2 import arbitrate as AR
 from peaky.ms2 import attribute as AT
 from peaky.ms2 import breakdown as BD
 from peaky.ms2 import channels as CH
@@ -63,8 +71,10 @@ from peaky.ms2 import scans as SC
 from peaky.ms2 import sources as SRC
 from peaky.ms2 import subformula as SF
 
-__version__ = "0.3.0"  # + product channels against each ion's adduct, a binding class
-#                          per ion (ms2_channels.csv, ms2_classes.csv). 0.2.0: replicate
+__version__ = "0.4.0"  # + arbitration between rival formulas of one precursor
+#                          (ms2_arbitration.csv). 0.3.0: product channels against
+#                          each ion's adduct, a binding class per ion
+#                          (ms2_channels.csv, ms2_classes.csv). 0.2.0: replicate
 #                          statistics and the E50 bootstrap from the per-scan
 #                          tables; harmonic ghosts read as no formula, out of the TIC.
 #                          0.1.1: per-parent isolation widths from the parents table (an
@@ -224,8 +234,10 @@ def _checked(formula: str, typed: float, what: str) -> tuple[str, float, float]:
 
 
 def read_ions_csv(path: str) -> list[tuple[str, float, float]]:
-    """A CSV with a `formula` column and optionally `mz` (checked as for --ion)
-    and `adduct` (read by `read_ions_adducts`)."""
+    """A CSV with a `formula` column and optionally `mz` (checked as for --ion;
+    a missing value -- empty, R's NA, '#N/A', 'nan', `arbitrate.MISSING_CELLS`
+    -- or a non-finite number checks nothing; a cell that is no number is
+    refused, its row named) and `adduct` (read by `read_ions_adducts`)."""
     df = pd.read_csv(os.path.expanduser(path), dtype=str, keep_default_na=False)
     if "formula" not in df.columns:
         raise ValueError(f"{path}: needs a 'formula' column (and optionally 'mz')")
@@ -233,15 +245,34 @@ def read_ions_csv(path: str) -> list[tuple[str, float, float]]:
     for i, r in df.iterrows():
         if not str(r["formula"]).strip():
             continue
-        typed = float(r["mz"]) if "mz" in df.columns and str(r["mz"]).strip() else math.nan
+        cell = str(r["mz"]).strip() if "mz" in df.columns else ""
+        # a missing value (R's NA, a spreadsheet's #N/A, 'nan':
+        # `arbitrate.MISSING_CELLS`) or a number that is not finite: no m/z
+        if AR._no_mz(cell):
+            typed = math.nan
+        else:
+            try:
+                typed = float(cell)
+            except ValueError:
+                raise ValueError(f"{path} row {i + 2}: the mz cell {cell!r} is no m/z "
+                                 "(a number, or empty / NA for none)") from None
         out.append(_checked(str(r["formula"]).strip(), typed, f"{path} row {i + 2}"))
     return out
+
+
+def read_rival_groups_csv(path: str) -> list[AR.RivalGroup]:
+    """The `--ions` CSV's rival groups (`arbitrate.read_rival_groups`): rows
+    sharing a `group` cell, or with no group cell sharing one `mz` cell, are
+    rival formulas of one ion. [] when none."""
+    df = pd.read_csv(os.path.expanduser(path), dtype=str, keep_default_na=False)
+    return AR.read_rival_groups(df, str(path))
 
 
 def read_ions_adducts(path: str) -> dict[str, str]:
     """The `--ions` CSV's optional 'adduct' column: ion formula (normalised as
     `read_ions_csv` writes it) -> its ion-form label ({} without the column;
-    a blank cell is left out). A label with no group formula
+    a blank cell, or a missing value -- R's NA, `arbitrate.MISSING_CELLS` --,
+    is left out: no adduct). A label with no group formula
     (`chemistry.ADDUCT_GROUPS`), or one the row's ion cannot be (it does not
     hold the group, or the charge differs: `channels.ion_adduct`, the test
     `channels.assign_adducts` makes again for an API caller), is refused,
@@ -252,7 +283,9 @@ def read_ions_adducts(path: str) -> dict[str, str]:
     out = {}
     for i, r in df.iterrows():
         f, lab = str(r["formula"]).strip(), str(r["adduct"]).strip()
-        if not f or not lab:
+        # a missing value (R's NA for a missing string, 'nan', '#N/A':
+        # `arbitrate.MISSING_CELLS`) is a blank cell: no adduct
+        if not f or AR._missing(lab):
             continue
         try:
             C.adduct_group(lab)
@@ -457,23 +490,45 @@ class WindowResult:
     #: adduct given for any ion of the run)
     channels: pd.DataFrame | None = None
     classes: pd.DataFrame | None = None
+    #: the rival group whose ion is this window's target ('' : none), and its
+    #: `arbitrate.ARBITRATION_COLUMNS` rows (None: no rival group here)
+    rival_group: str = ""
+    arbitration: pd.DataFrame | None = None
+    #: a rival group's window the tables skip, another rival matching its
+    #: located precursor: what reads it, keyed on the verdict ('' : the
+    #: axis offset `offset_hint_ppm` -- the arbitration supports the rival
+    #: the tables read --, or no such window; `_rival_skip`)
+    rival_hint: str = ""
 
     def manifest(self) -> dict:
         nce = ([] if self.breakdown is None or not len(self.breakdown) else
                sorted({float(x) for x in self.breakdown["nce"]}))
         volts = (self.breakdown is not None and len(self.breakdown)
                  and bool(np.isfinite(self.breakdown["hcd_v"]).all()))
-        return {"parent_mz": self.parent_mz, "status": self.status, "reason": self.reason,
-                "target": self.target, "co_isolates": list(self.co_isolates),
-                "left_out": list(self.left_out), "activation_kind": self.activation_kind,
-                "precursor_mz": None if math.isnan(self.precursor_mz) else self.precursor_mz,
-                "offset_ppm": None if math.isnan(self.offset_ppm) else round(self.offset_ppm, 4),
-                "nce": nce, "volts_known": bool(volts), "notes": list(self.notes),
-                "offset_hint_ppm": (None if math.isnan(self.offset_hint_ppm)
-                                    else round(self.offset_hint_ppm, 2)),
-                "harmonic_peaks": dict(self.harmonics),
-                "scans_per_energy": list(self.scans_per_energy),
-                "one_scan_energies": int(self.one_scan_energies)}
+        out = {"parent_mz": self.parent_mz, "status": self.status, "reason": self.reason,
+               "target": self.target, "co_isolates": list(self.co_isolates),
+               "left_out": list(self.left_out), "activation_kind": self.activation_kind,
+               "precursor_mz": None if math.isnan(self.precursor_mz) else self.precursor_mz,
+               "offset_ppm": None if math.isnan(self.offset_ppm) else round(self.offset_ppm, 4),
+               "nce": nce, "volts_known": bool(volts), "notes": list(self.notes),
+               "offset_hint_ppm": (None if math.isnan(self.offset_hint_ppm)
+                                   else round(self.offset_hint_ppm, 2)),
+               "harmonic_peaks": dict(self.harmonics),
+               "scans_per_energy": list(self.scans_per_energy),
+               "one_scan_energies": int(self.one_scan_energies)}
+        if self.arbitration is not None:
+            # a rival group's window (`arbitrate`): its verdict, the rival the
+            # tables read, each rival's verdict
+            a = self.arbitration
+            out["rival_group"] = self.rival_group
+            out["arbitration"] = {
+                "verdict": str(a["window_verdict"].iloc[0]) if len(a) else "",
+                "winner": str(a["winner"].iloc[0]) if len(a) else "",
+                "analysed_with": next((str(r) for r, x in zip(a["rival"], a["analysed"]) if x),
+                                      ""),
+                "rivals": {str(r): str(v) for r, v in zip(a["rival"], a["verdict"])},
+                "hint": self.rival_hint}
+        return out
 
 
 def folder_axis_offset(tables: RunTables, explicit: float | None = None
@@ -507,8 +562,8 @@ def offset_hint(precursor_mz: float, ions: Mapping[str, float], axis_offset_ppm:
 
 
 def window_ions(parent_mz: float, precursor_mz: float, ions: Mapping[str, float],
-                width: float, tol_mda: float, *, axis_offset_ppm: float = 0.0
-                ) -> tuple[str | None, list[str], str]:
+                width: float, tol_mda: float, *, axis_offset_ppm: float = 0.0,
+                target: str | None = None) -> tuple[str | None, list[str], str]:
     """(target, co-isolates by m/z, note). The target is the named ion nearest
     the located precursor -- read through the folder's m/z axis offset,
     precursor / (1 + `axis_offset_ppm` 1e-6) -- within max(`TARGET_MATCH_PPM`,
@@ -517,10 +572,16 @@ def window_ions(parent_mz: float, precursor_mz: float, ions: Mapping[str, float]
     window no named ion matches says how far the nearest one is and, when
     that is within `sources.AXIS_SEARCH_PPM` (the reach `ms2 extract` reads an
     axis offset over), the offset that would match it; a named ion farther
-    away is taken for another ion, and the note just says to name this one."""
+    away is taken for another ion, and the note just says to name this one.
+    `target` (a named ion): the window's target is that one, matched by the
+    caller (a rival of a group, `arbitrate`: each rival is read as the
+    target in turn)."""
     seen = precursor_mz / (1.0 + axis_offset_ppm * 1e-6)
     tol = max(TARGET_MATCH_PPM * seen * 1e-6, tol_mda * 1e-3)
-    near = sorted(((abs(m - seen), f) for f, m in ions.items() if abs(m - seen) <= tol))
+    if target is not None:
+        near = [(abs(ions[target] - seen), target)]
+    else:
+        near = sorted(((abs(m - seen), f) for f, m in ions.items() if abs(m - seen) <= tol))
     if not near:
         f, m = min(ions.items(), key=lambda kv: abs(kv[1] - seen))
         # an axis offset is offered only within the reach the file's own offset
@@ -632,12 +693,55 @@ def _ms1_shares(window: pd.DataFrame, parent_mz: float, ions: Mapping[str, float
     return out
 
 
+def located_precursor(tables: RunTables, parent_mz: float) -> float:
+    """The precursor `ms2 extract` located for a parent key, as
+    `analyze_window` takes it: at the lowest energy of a spectrum with peaks
+    where it was located (energy-resolved before energy-averaged); NaN when
+    none was."""
+    par = _window_parents(tables, parent_mz)[0]
+    located = par["precursor_mz"].dropna()
+    return float(located.iloc[0]) if len(located) else math.nan
+
+
+def _window_parents(tables: RunTables, parent_mz: float) -> tuple[pd.DataFrame, int]:
+    """(the parent's spectra with peaks, lowest NCE first and energy-averaged
+    last; how many spectra without peaks were left out)."""
+    par = tables.parents[np.isclose(tables.parents["parent_mz"], parent_mz, rtol=0, atol=1e-6)]
+    n_empty = int((par["n_peaks"] <= 0).sum())
+    par = par[par["n_peaks"] > 0]
+    par = par.assign(_nan=par["nce"].isna()).sort_values(["_nan", "nce", "activation"],
+                                                         kind="stable")
+    return par, n_empty
+
+
+def _spectrum_rows(tables: RunTables, par: pd.DataFrame, parent_mz: float
+                   ) -> tuple[list, dict[tuple[str, int], float]]:
+    """`readings.read_window`'s input for a parent's spectra `par`: (meta,
+    peaks) per spectrum -- a peak's index its place among the spectrum's
+    rows -- and (spectrum, peak) -> resolving power."""
+    spec_rows = []
+    resolution: dict[tuple[str, int], float] = {}       # (spectrum, peak) -> resolving power
+    for _, r in par.iterrows():
+        pk = tables.spectra[tables.spectra["spectrum"] == r["spectrum"]]
+        meta = {"spectrum": r["spectrum"], "parent_mz": float(parent_mz), "nce": r["nce"],
+                "hcd_v": r["hcd_v"]}
+        # the S/N goes with the peaks: a harmonic band's reading near the
+        # floor clears no place (`readings.harmonic_ions`)
+        cols = [c for c in ("mz", "intensity", "signal_to_noise") if c in pk]
+        spec_rows.append((meta, pk[cols].reset_index(drop=True)))
+        if "resolution" in pk:
+            resolution.update(((str(r["spectrum"]), i), float(v))
+                              for i, v in enumerate(pk["resolution"].to_numpy(dtype=float)))
+    return spec_rows, resolution
+
+
 def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float], *,
                    width: float, k_max: int | None = None, ladder: bool = True,
                    tol_ppm: float = 5.0, tol_mda: float = 0.3,
                    gas_mass: float = BD.N2_MASS, axis_offset_ppm: float = 0.0,
                    bootstrap: int = RP.BOOTSTRAP_B, harmonics: bool = True,
-                   adducts: Mapping[str, "CH.IonAdduct | None"] | None = None) -> WindowResult:
+                   adducts: Mapping[str, "CH.IonAdduct | None"] | None = None,
+                   target: str | None = None) -> WindowResult:
     """Everything for one parent key: its ions, its offset, the readings across
     its spectra and -- when it has energy-resolved spectra -- the breakdown,
     the E50s, the fragments and the branching. `axis_offset_ppm`: the
@@ -648,16 +752,14 @@ def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float
     `bootstrap` > 0 resamples, the E50 intervals (`_replicates`).
     `harmonics`: read harmonic ghosts as no formula (`readings.read_window`).
     `adducts` (named ion -> `channels.IonAdduct` or None): the window's
-    product channels and binding classes (`_channels`); None reads none."""
+    product channels and binding classes (`_channels`); None reads none.
+    `target` (a named ion): read the window with it as the target, matched
+    by the caller (`window_ions`; a rival group's window, `arbitrate`)."""
     res = WindowResult(parent_mz=float(parent_mz), status="skipped")
-    par = tables.parents[np.isclose(tables.parents["parent_mz"], parent_mz, rtol=0, atol=1e-6)]
     # an empty spectrum (ms2 extract writes a parent row with n_peaks 0 for a
     # spectrum the server returned without peaks) measured nothing: not a
     # point of any curve, so it is left out -- said
-    n_empty = int((par["n_peaks"] <= 0).sum())
-    par = par[par["n_peaks"] > 0]
-    par = par.assign(_nan=par["nce"].isna()).sort_values(["_nan", "nce", "activation"],
-                                                         kind="stable")
+    par, n_empty = _window_parents(tables, parent_mz)
     if not len(par):
         res.reason = SKIP_NO_PEAKS
         res.notes.append("skipped: no spectrum with peaks")
@@ -673,7 +775,7 @@ def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float
     pmz = float(located.iloc[0])
     res.precursor_mz = pmz
     target, co, note = window_ions(parent_mz, pmz, ions, width, tol_mda,
-                                   axis_offset_ppm=axis_offset_ppm)
+                                   axis_offset_ppm=axis_offset_ppm, target=target)
     if note:
         res.notes.append(note)
     if target is None:
@@ -688,19 +790,7 @@ def analyze_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float
     labels = {f: f for f in order}
     off = SF.mass_offset([(pmz, target)])
     res.offset_ppm = off.offset_ppm
-    spec_rows = []
-    resolution: dict[tuple[str, int], float] = {}       # (spectrum, peak) -> resolving power
-    for _, r in par.iterrows():
-        pk = tables.spectra[tables.spectra["spectrum"] == r["spectrum"]]
-        meta = {"spectrum": r["spectrum"], "parent_mz": float(parent_mz), "nce": r["nce"],
-                "hcd_v": r["hcd_v"]}
-        # the S/N goes with the peaks: a harmonic band's reading near the
-        # floor clears no place (`readings.harmonic_ions`)
-        cols = [c for c in ("mz", "intensity", "signal_to_noise") if c in pk]
-        spec_rows.append((meta, pk[cols].reset_index(drop=True)))
-        if "resolution" in pk:
-            resolution.update(((str(r["spectrum"]), i), float(v))
-                              for i, v in enumerate(pk["resolution"].to_numpy(dtype=float)))
+    spec_rows, resolution = _spectrum_rows(tables, par, parent_mz)
     res.readings = RD.read_window(spec_rows, labels, offset_ppm=off.offset_ppm,
                                   tol_ppm=tol_ppm, tol_mda=tol_mda, k_max=k_max, ladder=ladder,
                                   harmonics=harmonics)
@@ -1001,12 +1091,14 @@ def _first_mass(tables: RunTables, specs: Sequence[str],
 
 
 def _unnamed_ms1(window: pd.DataFrame, parent_mz: float, ions: Mapping[str, float],
-                 tol_mda: float, *, axis_offset_ppm: float = 0.0) -> tuple[float, float] | None:
+                 tol_mda: float, *, axis_offset_ppm: float = 0.0,
+                 min_sn: float = -math.inf) -> tuple[float, float] | None:
     """(m/z, share) of the largest MS1 centroid of the window (`ms2_window.csv`)
     that no named window ion matches -- within max(`TARGET_MATCH_PPM`,
     `tol_mda`) of none of them, read through the folder's axis offset, as
     `_ms1_shares` reads them, and its m/z given so (the one to name with
-    --ion); None with no window table or no such centroid."""
+    --ion) -- of S/N `min_sn` or more (a NaN S/N passes; none by default);
+    None with no window table or no such centroid."""
     if not len(window):
         return None
     w = window[np.isclose(window["parent_mz"], parent_mz, rtol=0, atol=1e-6)]
@@ -1017,6 +1109,9 @@ def _unnamed_ms1(window: pd.DataFrame, parent_mz: float, ions: Mapping[str, floa
     named = np.zeros(len(mz), dtype=bool)
     for m in ions.values():
         named |= np.abs(mz - m) <= max(TARGET_MATCH_PPM * m * 1e-6, tol_mda * 1e-3)
+    if math.isfinite(min_sn) and "signal_to_noise" in w:
+        sn = w["signal_to_noise"].to_numpy(dtype=float)
+        named |= np.isfinite(sn) & (sn < min_sn)          # noise: no ion to name
     if named.all():
         return None
     i = int(np.flatnonzero(~named)[np.argmax(share[~named])])
@@ -1471,6 +1566,471 @@ def _fragment_rows(parent_mz: float, att: pd.DataFrame, roles: pd.DataFrame,
 
 
 # ---------------------------------------------------------------------------
+# rival formulas of one precursor (`arbitrate`)
+# ---------------------------------------------------------------------------
+#: The run note of a run that arbitrates rival formulas.
+ARBITRATION_NOTE = ("rival formulas are arbitrated on the MS2 products (ms2_arbitration.csv, "
+                    "docs/MS2.md §11.14): each rival read as the window's target, the other "
+                    "named ions fixed, on every rival's calibration (scored on the one it is "
+                    "credited with the most on: where the precursor sits between the rivals "
+                    "decides nothing), and on decoys whose products are shifted by a few mDa; a "
+                    "product counts for one rival against another only where the other cannot "
+                    "read it on any rival's calibration; a verdict says which of the rivals "
+                    "named the products support, never that an unnamed formula could not do "
+                    "better. The other tables read one rival per group (the one named first, "
+                    "unless --pick-supported), as the run with it alone named does")
+
+
+def _group_window(tables: RunTables, parent_mz: float, ions: Mapping[str, float],
+                  groups: Sequence[AR.RivalGroup], *, tol_mda: float,
+                  axis_offset_ppm: float = 0.0) -> AR.RivalGroup | None:
+    """The rival group whose ion is this window's target: the group holding
+    the named ion -- of every named ion, every rival included -- nearest the
+    located precursor (read through the folder's axis offset), within the
+    target match (max(`TARGET_MATCH_PPM`, `tol_mda`)); None otherwise."""
+    pmz = located_precursor(tables, parent_mz)
+    if not (math.isfinite(pmz) and ions):
+        return None
+    seen = pmz / (1.0 + axis_offset_ppm * 1e-6)
+    tol = max(TARGET_MATCH_PPM * seen * 1e-6, tol_mda * 1e-3)
+    f, m = min(ions.items(), key=lambda kv: (abs(kv[1] - seen), kv[0]))
+    if abs(m - seen) > tol:
+        return None
+    return next((g for g in groups if f in g.rivals), None)
+
+
+def _base_ions(ions: Mapping[str, float], groups: Sequence[AR.RivalGroup],
+               pick: Mapping[str, str]) -> dict[str, float]:
+    """The named ions the run's tables read: each group's picked rival, none
+    of its others."""
+    out_ = {r for g in groups for r in g.rivals if r != pick[g.name]}
+    return {f: m for f, m in ions.items() if f not in out_}
+
+
+def _window_tables(tables: RunTables, parent_mz: float) -> RunTables:
+    """The folder restricted to one parent key (its spectra, parent rows and
+    MS1 window rows; no per-scan tables): what a rival's read needs."""
+    par = tables.parents[np.isclose(tables.parents["parent_mz"], parent_mz, rtol=0, atol=1e-6)]
+    sp = tables.spectra[tables.spectra["spectrum"].isin(set(par["spectrum"]))]
+    win = tables.window
+    if len(win):
+        win = win[np.isclose(win["parent_mz"], parent_mz, rtol=0, atol=1e-6)]
+    return RunTables(spectra=sp.reset_index(drop=True), parents=par.reset_index(drop=True),
+                     window=win.reset_index(drop=True), manifest=tables.manifest)
+
+
+def _shifted(small: RunTables, specs: Sequence[str], keep: set, shift_da: float, *,
+             tol_ppm: float = 0.0, tol_mda: float = 0.0,
+             min_shift_da: float | None = None) -> RunTables:
+    """`small` with every peak of the energy-resolved spectra `specs` moved
+    by `shift_da`, except the (spectrum, peak) pairs in `keep` (the window
+    ions' precursors, the harmonic ghosts, the non-products): one decoy. A
+    peak where the smallest shift of the set (`min_shift_da`, default
+    |`shift_da`|) is under `arbitrate.DECOY_TOL_FACTOR` times its reading
+    tolerance (max(`tol_ppm`, `tol_mda`) at its m/z) is moved by `shift_da`
+    scaled up by the factor that brings that smallest shift there -- every
+    shift of the set by one factor, so they stay distinct. A peak's index is
+    its place among its spectrum's rows, as `analyze_window` numbers it."""
+    sp = small.spectra.copy()
+    mz = sp["mz"].to_numpy(dtype=float).copy()
+    least = abs(shift_da) if min_shift_da is None else abs(float(min_shift_da))
+    for s in specs:
+        idx = np.flatnonzero((sp["spectrum"] == s).to_numpy())
+        for j, i in enumerate(idx):
+            if (s, j) not in keep:
+                need = AR.DECOY_TOL_FACTOR * SF._tolerance_da(mz[i], tol_ppm, tol_mda)
+                mz[i] += shift_da * (max(1.0, need / least) if least > 0 else 1.0)
+    sp["mz"] = mz
+    return RunTables(spectra=sp, parents=small.parents, window=small.window,
+                     manifest=small.manifest)
+
+
+def _on_calibration(t: RunTables, specs: Sequence[str], keep: set, factor: float) -> RunTables:
+    """`t` with every peak of the energy-resolved spectra `specs` but the
+    (spectrum, peak) pairs in `keep` (the window ions' precursors, the
+    harmonic ghosts) multiplied by `factor`: read with one rival's
+    recalibration, its products sit where another rival's puts them
+    (`_cross_reads`). A peak's index is its place among its spectrum's rows,
+    as `analyze_window` numbers it."""
+    sp = t.spectra.copy()
+    mz = sp["mz"].to_numpy(dtype=float).copy()
+    for s in specs:
+        idx = np.flatnonzero((sp["spectrum"] == s).to_numpy())
+        moved = np.array([(s, j) not in keep for j in range(len(idx))], dtype=bool)
+        mz[idx[moved]] *= factor
+    sp["mz"] = mz
+    return RunTables(spectra=sp, parents=t.parents, window=t.window, manifest=t.manifest)
+
+
+def _rival_read(w: WindowResult, rival: str) -> AR.RivalRead:
+    return AR.RivalRead(rival=rival, roles=w.roles, readings=w.readings, fragments=w.fragments,
+                        offset_ppm=w.offset_ppm, co_isolates=tuple(w.co_isolates))
+
+
+def _kept(reads: Mapping[str, AR.RivalRead]) -> set[tuple[str, int]]:
+    """The (spectrum, peak) pairs any read takes for a window ion's precursor
+    or a harmonic ghost."""
+    out = set()
+    for rr in reads.values():
+        if rr.roles is not None:
+            m = rr.roles["role"].isin(["precursor", "harmonic"]).to_numpy()
+            out |= {(s, int(p)) for s, p in zip(rr.roles.loc[m, "spectrum"],
+                                                 rr.roles.loc[m, "peak"])}
+    return out
+
+
+def _cross_reads(t: RunTables, reads: Mapping[str, AR.RivalRead],
+                 read: Callable[[RunTables, str], WindowResult], *, specs: Sequence[str],
+                 keep: set, offsets: Mapping[str, float]) -> dict[str, AR.RivalRead]:
+    """Every rival read again on each other rival's calibration
+    (`arbitrate.RivalRead.cross`): the window's peaks but `keep` (the
+    precursors, the harmonic ghosts) moved by the two calibrations' ratio,
+    (1 + its offset) / (1 + the other's) (`offsets`: each rival's
+    recalibration on its own precursor, the window's), and read as any read
+    (`read`: recalibrated on its own precursor, the window's other named ions
+    fixed, the same gate, harmonic rule and attribution) -- its products
+    read, and given by the attribution, where the other rival reads them."""
+    out = {}
+    for R, rr in reads.items():
+        cross = {}
+        if rr.roles is not None and math.isfinite(offsets.get(R, math.nan)):
+            for A in reads:
+                if A == R or reads[A].roles is None or not math.isfinite(
+                        offsets.get(A, math.nan)):
+                    continue
+                f = (1.0 + offsets[R] * 1e-6) / (1.0 + offsets[A] * 1e-6)
+                cross[A] = _rival_read(read(_on_calibration(t, specs, keep, f), R), R)
+        out[R] = AR.RivalRead(rival=rr.rival, roles=rr.roles, readings=rr.readings,
+                              fragments=rr.fragments, offset_ppm=rr.offset_ppm,
+                              co_isolates=rr.co_isolates, cross=cross)
+    return out
+
+
+def _arbitrate_window(tables: RunTables, parent_mz: float, group: AR.RivalGroup,
+                      base: Mapping[str, float], main: WindowResult, chosen: str, *,
+                      width: float, shifts: Sequence[float], k_max: int | None, ladder: bool,
+                      tol_ppm: float, tol_mda: float, gas_mass: float, axis_offset_ppm: float,
+                      harmonics: bool) -> pd.DataFrame:
+    """One rival group's window: every rival read as its target -- the
+    window's other named ions fixed, recalibrated on its own precursor --
+    and again on each other rival's calibration (`_cross_reads`), the same
+    on each decoy (`_shifted`: the product peaks moved; the precursors,
+    harmonic ghosts and non-products kept, `arbitrate.non_products`), and
+    `arbitrate.score_window`. `main`: the window as the run's other tables
+    read it, as the run with `chosen` alone named does (its target matched,
+    never forced); its read is the chosen rival's when that is its target,
+    else the chosen rival is read on its own, and no rival is `analysed`. A
+    window read with no energy axis, or not read at all, is undecided
+    (said)."""
+    others = {f: m for f, m in base.items() if f != chosen}
+    small = _window_tables(tables, parent_mz)
+    kw = dict(width=width, k_max=k_max, ladder=ladder, tol_ppm=tol_ppm, tol_mda=tol_mda,
+              gas_mass=gas_mass, axis_offset_ppm=axis_offset_ppm, bootstrap=0,
+              harmonics=harmonics, adducts=None)
+
+    def read(t, R):
+        return analyze_window(t, parent_mz, {**others, R: ion_mz(R)}, target=R, **kw)
+    pmz = main.precursor_mz
+    seen = pmz / (1.0 + axis_offset_ppm * 1e-6) if math.isfinite(pmz) else math.nan
+    prec = {R: ((seen - ion_mz(R)) / ion_mz(R) * 1e6 if math.isfinite(seen) else math.nan)
+            for R in group.rivals}
+    ms1 = _ms1_ppm(tables.window, parent_mz, group.rivals, tol_mda, precursor_mz=pmz,
+                   axis_offset_ppm=axis_offset_ppm)
+    analysed = main.target if main.target in group.rivals else ""
+    first = main if analysed == chosen else read(small, chosen)
+    note = _arbitration_notes(tables, parent_mz, first, group, tol_mda, axis_offset_ppm,
+                              width=width)
+    notes = {R: note for R in group.rivals} if note else {}
+    if first.roles is None:
+        why = {SKIP_NO_PEAKS: "no spectrum with peaks",
+               SKIP_NOT_LOCATED: "no precursor located",
+               NOT_RESOLVED: "no energy-resolved spectrum (the attribution reads the energy "
+                             "axis)"}.get(first.reason, first.reason or first.status)
+        return AR.frame(AR.undecided_rows(parent_mz, group, analysed=analysed, why=why,
+                                          precursor_ppm=prec, ms1_ppm=ms1, notes=notes))
+    specs = list(dict.fromkeys(first.roles["spectrum"]))
+    own = {R: _rival_read(first if R == chosen else read(small, R), R) for R in group.rivals}
+    offsets = {R: rr.offset_ppm for R, rr in own.items()}
+    kept = _kept(own)
+    reads = _cross_reads(small, own, read, specs=specs, keep=kept, offsets=offsets)
+    # no singly charged product lies above the precursor less an H atom
+    ceiling = (pmz - AR.H_ATOM + SF._tolerance_da(pmz, tol_ppm, tol_mda)
+               if math.isfinite(pmz) else math.nan)
+    exclude = AR.non_products(reads, group.rivals, ceiling_mz=ceiling)
+    keep = kept | set(exclude)
+    least = min((abs(float(d)) for d in shifts), default=0.0) * 1e-3
+    decoys = []
+    for d in shifts:
+        t2 = _shifted(small, specs, keep, float(d) * 1e-3, tol_ppm=tol_ppm, tol_mda=tol_mda,
+                      min_shift_da=least)
+        decoys.append(_cross_reads(t2, {R: _rival_read(read(t2, R), R) for R in group.rivals},
+                                   read, specs=specs, keep=keep, offsets=offsets))
+    rows = AR.score_window(parent_mz, group, reads, decoys, analysed=analysed,
+                           precursor_ppm=prec, ms1_ppm=ms1, notes=notes, exclude=exclude)
+    return AR.frame(rows)
+
+
+def _ms1_ppm(window: pd.DataFrame, parent_mz: float, rivals: Sequence[str], tol_mda: float,
+             *, precursor_mz: float = math.nan, axis_offset_ppm: float = 0.0
+             ) -> dict[str, float]:
+    """Each rival's error (ppm) at the MS1 window centroid AT THE LOCATED
+    PRECURSOR -- the centroid nearest `precursor_mz` within
+    max(`TARGET_MATCH_PPM`, `tol_mda`), both read through the folder's axis
+    offset: one centroid for every rival, so a rival MS1 resolves from the
+    precursor reads its error there, never at a weaker neighbour of its own;
+    NaN for every rival where there is none (no MS1 row, no located
+    precursor, no centroid within reach)."""
+    out = {R: math.nan for R in rivals}
+    if not len(window) or not math.isfinite(precursor_mz):
+        return out
+    w = window[np.isclose(window["parent_mz"], parent_mz, rtol=0, atol=1e-6)]
+    if not len(w):
+        return out
+    mz = w["mz"].to_numpy(dtype=float) / (1.0 + axis_offset_ppm * 1e-6)
+    seen = precursor_mz / (1.0 + axis_offset_ppm * 1e-6)
+    i = int(np.argmin(np.abs(mz - seen)))
+    if abs(mz[i] - seen) > max(TARGET_MATCH_PPM * seen * 1e-6, tol_mda * 1e-3):
+        return out
+    return {R: float((mz[i] - ion_mz(R)) / ion_mz(R) * 1e6) for R in rivals}
+
+
+#: The S/N an MS1 centroid needs for the arbitration's `note` to name it as
+#: an ion the products may come from: `ms2 extract`'s own floor
+#: (`sources.DEFAULT_NOISE_THRESHOLD`). The window inventory keeps every
+#: centroid, whatever its S/N: one below the floor is noise, no ion. A
+#: centroid with no S/N (NaN) is kept.
+ARBITRATION_NOTE_SN = SRC.DEFAULT_NOISE_THRESHOLD
+
+
+def _arbitration_notes(tables: RunTables, parent_mz: float, read: WindowResult,
+                       group: AR.RivalGroup, tol_mda: float, axis_offset_ppm: float, *,
+                       width: float = math.nan) -> str:
+    """The caveat every rival row of the window carries ('' : none). Named:
+    every rival of the group and the window's co-isolates (`read`: the
+    chosen rival's read). From the MS1 window table: a centroid no named ion
+    matches, at S/N `ARBITRATION_NOTE_SN` or more -- or with no S/N known
+    (NaN) --, holding more of the isolation window than the precursor (the
+    largest share at a rival) -- or the precursor not seen there, with such
+    a centroid or without (MS1 does not see it). With no MS1 row for the
+    window: the same from the lowest-energy MS2 spectrum
+    (`_ms2_window_note`)."""
+    named = {f: ion_mz(f) for f in dict.fromkeys([*group.rivals, *read.co_isolates]) if f}
+    shares = (_ms1_shares(tables.window, parent_mz, named, tol_mda,
+                          axis_offset_ppm=axis_offset_ppm) if len(tables.window) else {})
+    if not shares:
+        return _ms2_window_note(read, parent_mz, width, group)
+    at = [shares[R] for R in group.rivals if math.isfinite(shares.get(R, math.nan))]
+    own = max(at) if at else math.nan
+    unnamed = _unnamed_ms1(tables.window, parent_mz, named, tol_mda,
+                           axis_offset_ppm=axis_offset_ppm, min_sn=ARBITRATION_NOTE_SN)
+    if own == 0 and unnamed is None:
+        return ("the MS1 window holds no centroid at the precursor, nor one no named ion "
+                f"matches above S/N {ARBITRATION_NOTE_SN:g}: MS1 does not see the precursor")
+    if own == 0:
+        return (f"the MS1 window holds no centroid at the precursor, and one no named ion "
+                f"matches, at m/z {unnamed[0]:.4f}, holds {unnamed[1]:.0%} of it: the products "
+                "may be another ion's, read through each rival's formula")
+    if unnamed is not None and math.isfinite(own) and unnamed[1] > own:
+        return (f"an MS1 centroid no named ion matches, at m/z {unnamed[0]:.4f}, holds "
+                f"{unnamed[1]:.0%} of the isolation window, more than the precursor ({own:.0%}): "
+                "the products may be another ion's, read through each rival's formula -- name "
+                "it (--ion)")
+    return ""
+
+
+def _ms2_window_note(read: WindowResult, parent_mz: float, width: float,
+                     group: AR.RivalGroup) -> str:
+    """With no MS1 window row: in the lowest-energy MS2 spectrum of `read`,
+    the peaks inside the isolation window (`width`/2 + `sources.WINDOW_PAD_DA`
+    of the key) that no read takes for a named ion's precursor (nor a
+    harmonic ghost), against the precursor's peaks there -- said when they
+    hold more ('' otherwise, or with no width or no energy axis)."""
+    r = read.roles
+    if r is None or not len(r) or not (math.isfinite(width) and width > 0):
+        return ""
+    nce = r["nce"].to_numpy(dtype=float)
+    if not np.isfinite(nce).any():
+        return ""
+    low = float(np.nanmin(nce))
+    spec = str(r.loc[nce == low, "spectrum"].iloc[0])
+    s0 = r[r["spectrum"] == spec]
+    s0 = s0[np.abs(s0["mz"].to_numpy(dtype=float) - parent_mz) <= width / 2 + SRC.WINDOW_PAD_DA]
+    total = float(s0["intensity"].sum())
+    prec = float(s0.loc[(s0["role"] == "precursor") & s0["ion"].isin(group.rivals),
+                        "intensity"].sum())
+    other = s0[~s0["role"].isin(["precursor", "harmonic"])]
+    if total <= 0 or not len(other) or float(other["intensity"].sum()) <= prec:
+        return ""
+    top = other.loc[other["intensity"].idxmax()]
+    return (f"the MS1 window table holds no row for this window; in the lowest-energy MS2 "
+            f"spectrum (NCE {low:g}) peaks no named ion matches hold "
+            f"{float(other['intensity'].sum()) / total:.0%} of the isolation window, more than "
+            f"the precursor ({prec / total:.0%}), the largest at m/z {float(top['mz']):.4f}: the "
+            "products may be another ion's, read through each rival's formula -- name it "
+            "(--ion)")
+
+
+def _group_winners(windows: Sequence[WindowResult], group: AR.RivalGroup
+                   ) -> list[tuple[float, str]]:
+    """(parent key, supported rival) of every window of `group` whose
+    arbitration reaches a verdict, in window order."""
+    return [(w.parent_mz, str(w.arbitration["winner"].iloc[0])) for w in windows
+            if w.rival_group == group.name and w.arbitration is not None
+            and len(w.arbitration) and w.arbitration["winner"].iloc[0]]
+
+
+def _rival_skip(w: WindowResult, group: AR.RivalGroup, pick: str, ions: Mapping[str, float],
+                *, axis_offset_ppm: float, winners: Sequence[tuple[float, str]] = ()) -> None:
+    """A rival group's window the run's tables skip: the rival they read
+    (`pick`) beyond the target match of the located precursor, which another
+    rival matches (`_group_window`: the nearest named ion is a rival). The
+    skip's own note -- no named ion matches, name it or pass
+    --mass-offset-ppm -- is replaced: a rival does match, and the offset
+    would read the window with `pick` whatever the arbitration says. Keyed on
+    the verdict: where it supports `pick`, the folder's axis is the likely
+    cause and the offset hint stands; where it supports the matching rival,
+    --pick-supported (or naming it first) reads the tables with it, and the
+    hint is cleared (the offset would read the outscored rival on an axis
+    that many ppm wrong) -- unless the group's windows (`winners`,
+    `_group_winners`) support different rivals: then --pick-supported keeps
+    the first rival (`_picks`), whether given or not, and naming this one
+    first reads the others with a rival they do not support where their
+    precursors match it (and skips them where they do not), so that is said
+    instead; where it supports another rival, or none, the remedies are said
+    and the hint cleared -- naming a rival first said with the windows that
+    support another (`winners`). -> `w.rival_hint` ('' where the offset hint
+    stands: the exit sums it up with the axis-offset windows)."""
+    pmz = w.precursor_mz
+    if not math.isfinite(pmz) or w.arbitration is None or not len(w.arbitration):
+        return
+    seen = pmz / (1.0 + axis_offset_ppm * 1e-6)
+    m = min(ions.items(), key=lambda kv: (abs(kv[1] - seen), kv[0]))[0]
+    if m not in group.rivals or m == pick:
+        return
+
+    def off(R):
+        return (seen - ions[R]) / ions[R] * 1e6
+    win = str(w.arbitration["winner"].iloc[0])
+    split = ("" if len({x for _, x in winners}) <= 1 else
+             "the group's windows support different rivals ("
+             + "; ".join(f"{x} at parent {SRC.spectrum_key(p)}" for p, x in winners) + ")")
+    need = offset_hint(pmz, {pick: ions[pick]}, axis_offset_ppm)
+    head = (f"skipped: the located precursor at {pmz:.5f} matches {m} ({off(m):+.1f} ppm), a "
+            f"rival of group {group.name!r}, not {pick}, the one the tables read "
+            f"({off(pick):+.1f} ppm, beyond the target match); ")
+    axis = (f"-- if the folder's m/z axis sits off its formulas -- pass --mass-offset-ppm "
+            f"{need:+.1f}" if math.isfinite(need) else "")
+    if win == pick and axis:
+        w.offset_hint_ppm = need
+        advice, w.rival_hint = f"the arbitration supports {pick}: {axis}", ""
+    else:
+        w.offset_hint_ppm = math.nan
+        if win == m and split:
+            advice = (f"the arbitration supports {m} here, but {split}: no one rival reads "
+                      f"every window's tables -- --pick-supported keeps {pick}, named first, and "
+                      f"naming {m} first reads the other windows with it where their located "
+                      "precursors match it (and skips them where they do not)")
+        elif win == m:
+            advice = (f"the arbitration supports {m}: --pick-supported reads the tables with it "
+                      "(or name it first)")
+        elif win == pick:
+            advice = (f"the arbitration supports {pick}, beyond the reach an axis offset is read "
+                      "over (see ms2_arbitration.csv)")
+        elif win:
+            nw = offset_hint(pmz, {win: ions[win]}, axis_offset_ppm)
+            advice = (f"the arbitration supports {win}, which the located precursor does not "
+                      f"match either ({off(win):+.1f} ppm): name it first"
+                      + (f", and -- if the folder's m/z axis sits off its formulas -- pass "
+                         f"--mass-offset-ppm {nw:+.1f}" if math.isfinite(nw) else "")
+                      + (f" (but {split})" if split else ""))
+        else:
+            # naming m first reads every window of the group with m: said
+            # where another window supports another rival
+            other = [(p, x) for p, x in winners if x != m]
+            advice = (f"the arbitration supports none of the rivals: name {m} first to read the "
+                      "tables with the rival the precursor matches"
+                      + (f", or {axis} to read {pick}" if axis else "")
+                      + (" (but " + "; ".join(f"parent {SRC.spectrum_key(p)} supports {x}"
+                                              for p, x in other)
+                         + f": naming {m} first reads those windows with a rival they do not "
+                         "support, where their located precursors match it)" if other else ""))
+        w.rival_hint = f"parent {SRC.spectrum_key(w.parent_mz)}: {advice}"
+    w.notes = [n for n in w.notes if not n.startswith("skipped: no named ion matches")]
+    w.notes.append(head + advice)
+
+
+def _elsewhere(w: WindowResult, rival: str) -> tuple[str, float, float] | None:
+    """(the rival whose calibration `rival`'s scores are read on, its share
+    there, its share on its own calibration) in `w`'s arbitration, where
+    that is another rival's (`arbitrate.product_table`); else None."""
+    a = w.arbitration
+    if a is None or not len(a) or rival not in set(a["rival"]):
+        return None
+    r = a[a["rival"] == rival].iloc[0]
+    on = str(r["read_on"])
+    if on in ("", rival):
+        return None
+    return on, float(r["explained"]), float(r["explained_own"])
+
+
+def _calibration_note(w: WindowResult) -> str:
+    """Where the rival the tables read (`analysed`) is scored on another
+    rival's calibration (`read_on`): the tables -- the run with it alone
+    named, recalibrated on its own precursor -- may not show the products
+    the arbitration credits it with (a rival credited with every product on
+    the other's calibration, 5 ppm away, was credited with 13 % on its own --
+    one product, misread: tested). Said, with the share it is credited with
+    on its own ('' where it is scored on its own, or the tables read no
+    rival)."""
+    a = w.arbitration
+    if a is None or not len(a) or not a["analysed"].any():
+        return ""
+    R = str(a.loc[a["analysed"].to_numpy(dtype=bool), "rival"].iloc[0])
+    got = _elsewhere(w, R)
+    if got is None:
+        return ""
+    on, there, mine = got
+    return (f"the tables read {R} recalibrated on its own precursor, where it is credited with "
+            f"{mine:.0%} of the products; the arbitration credits it with {there:.0%} read on "
+            f"{on}'s calibration (read_on): the tables may not show the products it is credited "
+            "with there")
+
+
+def _picks(windows: Sequence[WindowResult], groups: Sequence[AR.RivalGroup]
+           ) -> tuple[dict[str, str], list[str]]:
+    """--pick-supported: per group, the rival its windows support (every
+    window that reaches a verdict supports the same one); else its first
+    rival. -> ({group: rival}, notes: a pick other than the first rival
+    said, and where its support is read on another rival's calibration --
+    the tables read it on its own, `_calibration_note`)."""
+    picks, notes = {}, []
+    for g in groups:
+        ws = list(dict.fromkeys(x for _, x in _group_winners(windows, g)))
+        if len(ws) == 1:
+            picks[g.name] = ws[0]
+            if ws[0] != g.rivals[0]:
+                off = [(w.parent_mz, *x) for w in windows if w.rival_group == g.name
+                       for x in [_elsewhere(w, ws[0])] if x is not None]
+                notes.append(f"rival group {g.name!r}: --pick-supported reads every table with "
+                             f"{ws[0]}, which the arbitration supports (named first: "
+                             f"{g.rivals[0]})"
+                             + ("; the tables read it recalibrated on its own precursor, while "
+                                "its support is read on another rival's calibration at "
+                                + "; ".join(f"parent {SRC.spectrum_key(p)} ({on}'s: {there:.0%} "
+                                            f"of the products, {mine:.0%} on its own)"
+                                            for p, on, there, mine in off)
+                                + " -- the tables may not show the products it is credited "
+                                "with (the windows' notes)" if off else ""))
+        else:
+            picks[g.name] = g.rivals[0]
+            if len(ws) > 1:
+                notes.append(f"rival group {g.name!r}: its windows support different rivals ("
+                             + ", ".join(ws) + f"): --pick-supported keeps {g.rivals[0]}, "
+                             "named first")
+    return picks, notes
+
+
+# ---------------------------------------------------------------------------
 # the whole folder
 # ---------------------------------------------------------------------------
 @dataclass
@@ -1489,6 +2049,8 @@ class AnalyzeResult:
     #: given for any ion)
     channels: pd.DataFrame | None = None
     classes: pd.DataFrame | None = None
+    #: `arbitrate.ARBITRATION_COLUMNS` (None: no rival group given)
+    arbitration: pd.DataFrame | None = None
 
 
 def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | None = None,
@@ -1497,7 +2059,11 @@ def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | No
                 mass_offset_ppm: float | None = None, bootstrap: int = RP.BOOTSTRAP_B,
                 harmonics: bool = True,
                 adducts: Mapping[str, "CH.IonAdduct | None"] | None = None,
-                adduct_notes: Sequence[str] = ()) -> AnalyzeResult:
+                adduct_notes: Sequence[str] = (),
+                rivals: Sequence[AR.RivalGroup] = (), rival_ppm: float | None = None,
+                pick_supported: bool = False,
+                decoy_shifts_mda: Sequence[float] = AR.DECOY_SHIFTS_MDA,
+                rival_notes: Sequence[str] = ()) -> AnalyzeResult:
     """Every parent window of one `ms2 extract` folder (`load_run`).
     `mass_offset_ppm`: the folder's m/z axis offset, replacing the one its
     manifest records (`folder_axis_offset`). `bootstrap`: resamples of each
@@ -1507,7 +2073,20 @@ def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | No
     None, `channels.assign_adducts`; its `adduct_notes` go to the run's
     notes): every analysed window's product channels and binding classes
     (`channels`); None (the default) reads none, and every other table is
-    what it was."""
+    what it was.
+
+    `rivals` (`arbitrate.RivalGroup`, every rival a named ion of `ions`;
+    checked by `arbitrate.check_groups` -- no two of one name, no formula in
+    two -- and `arbitrate.check_group` with `rival_ppm`): the window whose
+    located precursor a group's rival is the nearest named ion of
+    (`_group_window`) is read once per rival and once per rival on each
+    decoy (`decoy_shifts_mda`), and arbitrated (`arbitrate.score_window`,
+    `ms2_arbitration.csv`). Every other table reads one rival per group: the
+    one named first -- or, with `pick_supported`, the rival the arbitration
+    supports (in every window of the group that reaches a verdict; said) --
+    as the run with it alone named does (its target matched, never forced),
+    and the group's other rivals are window ions nowhere. `rival_notes` go to
+    the run's notes. With no group the run is what it was."""
     SF._check_tol(tol_ppm, tol_mda)
     if (isinstance(bootstrap, bool) or int(bootstrap) != bootstrap or bootstrap < 0
             or 0 < bootstrap < RP.BOOTSTRAP_MIN):
@@ -1525,12 +2104,75 @@ def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | No
     per_parent = len(set(own.values())) > 1
     if per_parent:
         width, wsrc = math.nan, PER_PARENT_WIDTH
-    windows = [analyze_window(tables, p, ions,
-                              width=own.get(round(p, 6), math.nan) if per_parent else width,
-                              k_max=k_max, ladder=ladder, tol_ppm=tol_ppm, tol_mda=tol_mda,
-                              gas_mass=gas_mass, axis_offset_ppm=axis,
-                              bootstrap=int(bootstrap), harmonics=harmonics, adducts=adducts)
-               for p in sorted({float(x) for x in tables.parents["parent_mz"]})]
+    groups = list(rivals or ())
+    AR.check_groups(groups)
+    for g in groups:
+        AR.check_group(g, tol_ppm=tol_ppm, tol_mda=tol_mda, rival_ppm=rival_ppm)
+        missing = [f for f in g.rivals if f not in ions]
+        if missing:
+            raise ValueError(f"rival group {g.name!r}: {', '.join(missing)} is not a named ion")
+    chosen = {g.name: g.rivals[0] for g in groups}
+    keys = sorted({float(x) for x in tables.parents["parent_mz"]})
+    kw = dict(k_max=k_max, ladder=ladder, tol_ppm=tol_ppm, tol_mda=tol_mda, gas_mass=gas_mass,
+              axis_offset_ppm=axis, harmonics=harmonics)
+
+    def w_of(p):
+        return own.get(round(p, 6), math.nan) if per_parent else width
+    where = {p: _group_window(tables, p, ions, groups, tol_mda=tol_mda, axis_offset_ppm=axis)
+             for p in keys} if groups else {}
+
+    def run_windows(pick: Mapping[str, str], arbitrate: bool) -> list[WindowResult]:
+        base = _base_ions(ions, groups, pick)
+        out = []
+        for p in keys:
+            g = where.get(p)
+            # the window as the run with the picked rival alone named reads
+            # it: its target matched, never forced
+            w = analyze_window(tables, p, base, width=w_of(p), bootstrap=int(bootstrap),
+                               adducts=adducts, **kw)
+            if g is not None:
+                w.rival_group = g.name
+                if w.target != pick[g.name]:
+                    w.notes.append(
+                        f"rival group {g.name!r}: the other tables do not read this window "
+                        f"with {pick[g.name]} -- as in the run with it alone named, "
+                        + (f"its located precursor matches {w.target} first"
+                           if w.target else "no named ion matches its located precursor")
+                        + " -- while the arbitration reads every rival of the group")
+                if arbitrate:
+                    w.arbitration = _arbitrate_window(tables, p, g, base, w, pick[g.name],
+                                                      width=w_of(p), shifts=decoy_shifts_mda,
+                                                      **kw)
+            out.append(w)
+        return out
+    windows = run_windows(chosen, True)
+    arb_notes = []
+    if groups and pick_supported:
+        picks, arb_notes = _picks(windows, groups)
+        changed = {k: v for k, v in picks.items() if v != chosen[k]}
+        if changed:
+            first = {w.parent_mz: w.arbitration for w in windows}
+            chosen.update(changed)
+            windows = run_windows(chosen, False)
+            for w in windows:
+                a = first.get(w.parent_mz)
+                if a is not None:
+                    w.arbitration = a.assign(analysed=a["rival"] == (w.target or ""))
+    # the rival the tables read scored on another rival's calibration: said
+    for w in windows:
+        note = _calibration_note(w)
+        if note:
+            w.notes.append(f"rival group {w.rival_group!r}: {note}")
+            a = w.arbitration
+            m = a["analysed"].to_numpy(dtype=bool)
+            a.loc[m, "note"] = [f"{n}; {note}" if n else note for n in a.loc[m, "note"]]
+
+    for w in windows:
+        if (w.arbitration is not None and w.status == "skipped"
+                and w.reason == SKIP_NO_TARGET):
+            g = next(x for x in groups if x.name == w.rival_group)
+            _rival_skip(w, g, chosen[g.name], ions, axis_offset_ppm=axis,
+                        winners=_group_winners(windows, g))
 
     def cat(attr, spec):
         parts = [getattr(w, attr) for w in windows if getattr(w, attr) is not None]
@@ -1552,6 +2194,14 @@ def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | No
     if adducts is not None:
         notes.extend(adduct_notes)
         notes.append(CHANNELS_NOTE)
+    if groups:
+        notes.append(ARBITRATION_NOTE)
+        notes.extend(rival_notes)
+        notes.extend(arb_notes)
+        for g in groups:
+            if not any(w.rival_group == g.name for w in windows):
+                notes.append(f"rival group {g.name!r} ({', '.join(g.rivals)}): no window's "
+                             "located precursor is nearest one of its rivals -- not arbitrated")
     params = {"k_max": k_max, "ladder": bool(ladder), "gate": mode, "k_max_read": k_read,
               "gate_note": gate_note(mode, k_read), "tol_ppm": float(tol_ppm),
               "tol_mda": float(tol_mda), "gas_mass": float(gas_mass), "iso_width": iso_width,
@@ -1583,10 +2233,34 @@ def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | No
                            "covalent_ecm": CH.COVALENT_ECM, "skeletal_ecm": CH.SKELETAL_ECM,
                            "no_monomer": CH.NO_MONOMER, "first_mass_min": CH.FIRST_MASS_MIN,
                            "own_weight": CH.OWN_WEIGHT},
+              "arbitration": {"on": bool(groups), "rival_ppm": rival_ppm,
+                              "pick_supported": bool(pick_supported),
+                              "decoy_shifts_mda": [float(x) for x in decoy_shifts_mda],
+                              "decoy_tol_factor": AR.DECOY_TOL_FACTOR,
+                              "share_margin": AR.SHARE_MARGIN,
+                              "diagnostic_min": AR.DIAGNOSTIC_MIN,
+                              "diagnostic_floor": AR.DIAGNOSTIC_FLOOR,
+                              "excess_min": AR.EXCESS_MIN, "chance_said": AR.CHANCE_SAID,
+                              "signature_min": AR.SIGNATURE_MIN,
+                              "signature_expect": AR.SIGNATURE_EXPECT,
+                              "reagent_neutrals": {("+" if q > 0 else "-"): list(v) for q, v
+                                                   in AR.REAGENT_NEUTRALS.items()},
+                              "reagent_neutrals_max": AR.REAGENT_NEUTRALS_MAX,
+                              "merged_neutrals": list(AR.MERGED_NEUTRALS),
+                              "merged_max": AR.MERGED_MAX,
+                              "bare_neutrals": {e: list(v) for e, v in AR.BARE_NEUTRALS.items()},
+                              "skeletal_elements": list(AR.SKELETAL_ELEMENTS),
+                              "skeletal_o_over_c": AR.SKELETAL_O_OVER_C,
+                              "note_min_sn": ARBITRATION_NOTE_SN,
+                              "groups": [{"name": g.name, "rivals": list(g.rivals),
+                                          "source": g.source, "analysed_with": chosen[g.name]}
+                                         for g in groups]},
               "ions": [{"formula": f, "mz": m,
                         **({"adduct": (adducts.get(f).label if adducts.get(f) else ""),
                             "adduct_source": (adducts.get(f).source if adducts.get(f) else "")}
-                           if adducts is not None else {})} for f, m in ions.items()]}
+                           if adducts is not None else {}),
+                        **({"rival_group": next((g.name for g in groups if f in g.rivals), "")}
+                           if groups else {})} for f, m in ions.items()]}
     return AnalyzeResult(windows=windows,
                          readings=cat("readings", RD.READINGS_COLUMNS),
                          breakdown=cat("breakdown", BREAKDOWN_COLUMNS),
@@ -1598,7 +2272,9 @@ def analyze_run(tables: RunTables, ions: Mapping[str, float], *, k_max: int | No
                          channels=(cat("channels", CH.CHANNEL_COLUMNS) if adducts is not None
                                    else None),
                          classes=(cat("classes", CH.CLASS_COLUMNS) if adducts is not None
-                                  else None))
+                                  else None),
+                         arbitration=(cat("arbitration", AR.ARBITRATION_COLUMNS) if groups
+                                      else None))
 
 
 # ---------------------------------------------------------------------------
@@ -1745,6 +2421,16 @@ def _by_order(windows) -> dict:
     return dict(sorted(out.items()))
 
 
+def _arbitration_counts(a: pd.DataFrame) -> dict:
+    """The manifest's arbitration counts: windows arbitrated, by window
+    verdict, and rivals by verdict."""
+    win = a.drop_duplicates("parent_mz")
+    return {"windows": int(len(win)),
+            "supported": int((win["window_verdict"] == AR.SUPPORTED).sum()),
+            "undecided": int((win["window_verdict"] == AR.UNDECIDED).sum()),
+            "rivals": {v: int((a["verdict"] == v).sum()) for v in AR.VERDICTS}}
+
+
 def manifest(res: AnalyzeResult, tables: RunTables, *, files: dict, created_utc: str | None
              ) -> dict:
     """`ms2_analyze_manifest.json`: the sample, the parameters (gate mode,
@@ -1778,7 +2464,9 @@ def manifest(res: AnalyzeResult, tables: RunTables, *, files: dict, created_utc:
                    "channel_rows": None if res.channels is None else int(len(res.channels)),
                    "classes": (None if res.classes is None else
                                {c: int((res.classes["class"] == c).sum())
-                                for c in CH.CLASSES})},
+                                for c in CH.CLASSES}),
+                   "arbitration": (None if res.arbitration is None else
+                                   _arbitration_counts(res.arbitration))},
         "inputs": dict(tables.inputs), "files": dict(files),
         "code": {"package_version": peaky.__version__, "analyze_version": __version__,
                  "git": PV.git_info(os.path.dirname(os.path.abspath(__file__))),
@@ -1791,7 +2479,8 @@ def write_outputs(res: AnalyzeResult, tables: RunTables, out_dir: str, *, figure
                   created_utc: str | None = None) -> dict:
     """Write the four tables (+ ms2_branching.csv; + ms2_replicates.csv when
     the folder has per-scan tables; + ms2_channels.csv and ms2_classes.csv
-    when the run read adducts), the per-window figures and the manifest into
+    when the run read adducts; + ms2_arbitration.csv when it arbitrated
+    rival formulas), the per-window figures and the manifest into
     `out_dir`; -> {file name: sha1}."""
     from peaky.reporting import provenance as PV
     out = Path(os.path.expanduser(out_dir))
@@ -1801,7 +2490,8 @@ def write_outputs(res: AnalyzeResult, tables: RunTables, out_dir: str, *, figure
                      ("ms2_e50.csv", res.e50), ("ms2_fragments.csv", res.fragments),
                      ("ms2_branching.csv", res.branching),
                      ("ms2_replicates.csv", res.replicates),
-                     ("ms2_channels.csv", res.channels), ("ms2_classes.csv", res.classes)):
+                     ("ms2_channels.csv", res.channels), ("ms2_classes.csv", res.classes),
+                     ("ms2_arbitration.csv", res.arbitration)):
         if df is None:
             # a stale table of an earlier run with per-scan tables (or with
             # adducts) is not this run's: removed, so the folder holds what
