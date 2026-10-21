@@ -1096,12 +1096,15 @@ def _post(client, sample_id: str, body: dict, timeout) -> dict:
     """POST one import request and return the state record from its envelope."""
     from mascope_sdk._http import http_post
 
+    from peaky.io.io_mascope import transport_kwargs
+
     response = http_post(
         client.url,
         f"peak-assignments/sample/{sample_id}/runs/import",
         client.access_token,
         _sanitize(body),
         timeout=timeout,
+        **transport_kwargs(client),
     )
     payload = response.json() or {}
     data = payload.get("data") or []
@@ -1599,6 +1602,8 @@ def publish_batch(
     """
     from mascope_sdk._http import http_get, http_post
 
+    from peaky.io.io_mascope import transport_kwargs
+
     if len(rows) > MAX_BATCH_ROWS:
         raise PublishError(
             f"{len(rows)} rows is more than one batch import carries "
@@ -1618,6 +1623,7 @@ def publish_batch(
             client.access_token,
             _sanitize(body),
             timeout=timeout,
+            **transport_kwargs(client),
         )
     except Exception as exc:  # noqa: BLE001 - every refusal is reported the same way
         raise PublishError(_batch_failure_message(exc, None)) from exc
@@ -1639,6 +1645,7 @@ def publish_batch(
                 f"batch-peaks/batch/{batch_id}/runs",
                 client.access_token,
                 timeout=timeout,
+                **transport_kwargs(client),
             ).json() or {}
         except Exception as exc:  # noqa: BLE001 - a poll may hit a transient
             log(f"[publish-batch] poll failed ({exc}); retrying")

@@ -6,7 +6,45 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **mascope-sdk >= 2026.10.20 (Mascope 1.13).** The earlier SDKs cannot read a stitched sample's
+  peaks from a server of Mascope 1.12 or later: the peak listing names the sample's scan ranges
+  (`segments`) beside its peaks, and every `samples.get_peaks` / `load_peaks` of such a sample
+  raised `ValueError: All arrays must be of the same length`. The new SDK puts each peak's scan
+  range in a `segment` column and the ranges (label, scans, microscans) in
+  `df.attrs['segments']`; peaky's fetchers return both as the SDK gives them (the cached peak table
+  keeps the column and, in its parquet, the attrs), and nothing downstream reads them yet. Read
+  against raw per-scan centroids of stitched four-range files, `get_peaks` and the default
+  (`average=True`) `load_peaks` heights agree with the per-scan means within 6 %;
+  `average=False` is the sum, the mean times the scans of the peak's range.
+- **A batch time-series load is whole or refused.** The SDK reads a batch's samples concurrently
+  (8 at a time by default) and, when some of those reads fail, returns the others; the earlier SDKs said so
+  only in a log line, so a burst refused by a proxy left samples silently missing from the time
+  series. The SDK now marks such a frame (`attrs['complete']`, `attrs['failures']`), and
+  `fetch_batch_peaks` / `fetch_pooled_peaks` re-read the samples whose failure was transient (a
+  proxy's block page, a gateway 5xx, a timeout) up to three times with back-off, and raise
+  `IncompleteLoad` naming the samples still missing, or at once for any other failure.
+  `$PEAKY_LOAD_WORKERS` sets the concurrency (unset: the SDK's 8).
+- **`peaky curate` writes with the API token where Mascope allows it.** Mascope 1.13 opened
+  dataset create / rename / move / delete, batch rename / copy / delete, sample copy / move /
+  update and raw-file delete to API tokens (`curate.TOKEN_WRITES`); those no longer need a session
+  cookie. Workspace writes, batch create and import, rematch, sample delete and file reprocess
+  still do, and are refused without one before anything is sent; a token write that an older
+  server refuses (401) says to pass a cookie.
+
+### Fixed
+
+- **Renaming a batch keeps its target collections.** The batch PATCH requires
+  `target_collection_ids` and replaces the batch's collections with them; `update_batch` sent
+  none, so the server refused the rename. It now reads the batch's current collections and sends
+  them back, unless `target_collection_ids=` is given.
+
 ### Added
+
+- **AI Agent tokens.** `$MASCOPE_SERVICE_NAME` (e.g. `ai-agent`, the service of a Mascope 1.13
+  AI Agent token) is the `X-Service-Name` every request presents: the SDK client, the raw reads,
+  the publish uploads and the curation client. Unset, it stays `mascope_sdk`.
 
 - **MS2 fragment assignment core (`peaky.ms2`): every MS2 peak is read as a sub-formula of every ion
   in the isolation window, and kept only when the neutral loss it implies splits into molecules

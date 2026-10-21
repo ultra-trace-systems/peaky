@@ -689,7 +689,7 @@ mcp = [
 
 [package.metadata]
 requires-dist = [
-    { name = "mascope-sdk", specifier = ">=2026.9.15" },
+    { name = "mascope-sdk", specifier = ">=2026.10.20" },
     { name = "mascope-tools", specifier = ">=2026.9.30" },
     { name = "matplotlib", specifier = ">=3.7" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2" },
@@ -707,18 +707,19 @@ provides-extras = ["dev", "compress", "mcp", "local-scoring"]
 
 [[package]]
 name = "mascope-sdk"
-version = "2026.9.30"
+version = "2026.10.20"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "loguru" },
     { name = "pandas" },
+    { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "requests" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/26/c6/23001dd41e9ae80da01ce8570a9470c35b8ab35cd9e9d1897fb3a252d16c/mascope_sdk-2026.9.30.tar.gz", hash = "sha256:81a42a7168b8e0eb4ae4db2f5a19b166e0a67ba4c93103754a56d6973dc2bf70", size = 95955, upload-time = "2026-09-30T07:43:48.594Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3c/30/2d8e7a8c89dd611a9014abc2cebb31ca0b6a378243b3cefd1408586df39c/mascope_sdk-2026.10.20.tar.gz", hash = "sha256:9c44ee5c22e03f4f5a0251fce9a1fe8f7cbbc4ccceb38b1592358b5d7e326779", size = 142895, upload-time = "2026-10-20T18:58:04.208Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/30/80/de4aef32ee81a633ebab87556bbe711cc34a50235d0220d070872ea33f4b/mascope_sdk-2026.9.30-py3-none-any.whl", hash = "sha256:1069db5653d8b5dac10f41649bc5726ae789f015192e38012e96e96e83d3f47f", size = 108909, upload-time = "2026-09-30T07:43:47.585Z" },
+    { url = "https://files.pythonhosted.org/packages/05/d1/11d476dcc826d2495821f7a79f3388972044293ae453d93cc141e48a6b9c/mascope_sdk-2026.10.20-py3-none-any.whl", hash = "sha256:a4d7350a5f5a20d545d8ce345680b7cabe81fa3f8ecb0c81501934c79999db67", size = 149856, upload-time = "2026-10-20T18:58:03.062Z" },
 ]
 
 [[package]]
@@ -1611,8 +1612,8 @@ name = "uvicorn"
 version = "0.50.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click", marker = "sys_platform != 'emscripten'" },
-    { name = "h11", marker = "sys_platform != 'emscripten'" },
+    { name = "click" },
+    { name = "h11" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9f/f6/cc9aadc0e481344a42095d222bfa764122fb8cfba708d1922917bd8bfb01/uvicorn-0.50.2.tar.gz", hash = "sha256:b92bf03509b82bcb9d49e7335b4fd364518ad021c2dc18b4e6a2fec8c955a0bb", size = 93716, upload-time = "2026-07-06T10:38:31.984Z" }
 wheels = [

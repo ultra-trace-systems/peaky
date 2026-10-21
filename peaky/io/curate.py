@@ -2,10 +2,12 @@
 
 `io_mascope` is the read boundary (peaks, matches, listings). This module is its
 mutating counterpart: create / rename / copy / move / delete of **workspaces,
-datasets, batches and sample items**, plus reagent-match re-runs. None of these
-endpoints are in `mascope-sdk` (which is read-only + `match_compounds`); they were
-reverse-engineered from the Mascope web app's own API calls and validated live
-(see `docs/DATA_CURATION.md` for the endpoint spec + how it was derived).
+datasets, batches and sample items**, plus reagent-match re-runs. The endpoints
+were first reverse-engineered from the Mascope web app's own API calls and
+validated live (see `docs/DATA_CURATION.md` for the endpoint spec). Mascope 1.13
+opened a set of them to API tokens (`TOKEN_WRITES`, as its
+`security/pentest/token_writes.json` lists them) and mascope-sdk 2026.10.20 wraps
+the same routes; the rest still need a logged-in session cookie.
 
 Design, mirroring `io_mascope`:
 
@@ -31,6 +33,7 @@ lives in the calling session, not here.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -38,12 +41,38 @@ import requests
 
 from peaky.io import io_mascope as IO
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Methods that change server state. dry-run plans these; reads always execute.
 _MUTATING = frozenset({"POST", "PATCH", "PUT", "DELETE"})
 # Mascope polarity tokens (batch create field is `sample_batch_polarity`).
 POLARITIES = ("+", "-", "+-")
+
+#: The writes of this client a bearer API token may send (Mascope >= 1.13,
+#: which opened them one route at a time; its `security/pentest/token_writes.json`
+#: is the authoritative list). Every other write -- workspace create / update /
+#: delete, batch create and import, batch rematch, sample delete, file reprocess --
+#: still needs a logged-in session cookie. An older server refuses a token write
+#: with 401, and the error says to pass a cookie.
+TOKEN_WRITES = tuple((m, re.compile(p)) for m, p in (
+    ("POST", r"workspaces/[^/]+/datasets"),
+    ("PATCH", r"workspaces/[^/]+/datasets/[^/]+"),
+    ("DELETE", r"workspaces/[^/]+/datasets/[^/]+"),
+    ("POST", r"workspaces/[^/]+/datasets/[^/]+/move"),
+    ("PATCH", r"sample/batches/[^/]+"),
+    ("DELETE", r"sample/batches/[^/]+"),
+    ("POST", r"sample/batches/[^/]+/copy"),
+    ("POST", r"sample/items/copy"),
+    ("POST", r"sample/items/move"),
+    ("PATCH", r"sample/items/[^/]+"),
+    ("POST", r"sample/files/delete"),
+))
+
+
+def token_writable(method: str, path: str) -> bool:
+    """True when Mascope (>= 1.13) accepts this write with an API token alone."""
+    path = path.strip("/")
+    return any(m == method.upper() and rx.fullmatch(path) for m, rx in TOKEN_WRITES)
 
 
 class CurationError(RuntimeError):
@@ -89,15 +118,19 @@ class CurationClient:
     cookie: str | None = None       # session cookie for WRITE endpoints (see below)
     actions: list[Action] = field(default_factory=list)
 
-    # NOTE on AUTH (validated 2026-07-15): the bearer API token authorizes the
-    # READ endpoints + match_compounds, but the Mascope server gates the
-    # WRITE/curation endpoints (create/copy/move/rename/delete) behind an
-    # interactive SESSION COOKIE — the web app sends requests with
-    # ``withCredentials:true`` and no Bearer at all. A token-only write returns
-    # 401 "Please sign in to the Mascope". So to actually mutate, pass ``cookie=``
-    # (or set ``MASCOPE_SESSION_COOKIE``): the full ``Cookie:`` header value copied
-    # from a logged-in browser session (DevTools → Network → any /api request →
+    # NOTE on AUTH: the bearer API token authorizes the READ endpoints, and on
+    # Mascope >= 1.13 the writes in `TOKEN_WRITES` (dataset create / rename /
+    # move / delete, batch rename / copy / delete, sample copy / move / update,
+    # file delete), with the role each needs. The other writes (workspaces,
+    # batch create and import, rematch, sample delete, file reprocess) are still
+    # gated behind an interactive SESSION COOKIE, as every write was before 1.13
+    # (validated 2026-07-15: a token-only write answered 401 "Please sign in to
+    # the Mascope"). For those, pass ``cookie=`` (or set
+    # ``MASCOPE_SESSION_COOKIE``): the full ``Cookie:`` header value copied from
+    # a logged-in browser session (DevTools → Network → any /api request →
     # Request Headers → Cookie). The bearer is still sent alongside (harmless).
+    # ``service_name`` is the `X-Service-Name` the token was minted for
+    # (``$MASCOPE_SERVICE_NAME``: `mascope_sdk`, or `ai-agent` for an AI Agent token).
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -119,7 +152,7 @@ class CurationClient:
                 "Fill the repo-root .env (or ~/.mascope/.env), set $MASCOPE_ENV, or "
                 "export the two variables.")
         return cls(url=url.rstrip("/"), token=tok, verify_ssl=verify_ssl,
-                   dry_run=dry_run,
+                   dry_run=dry_run, service_name=IO.service_name(),
                    cookie=cookie or os.environ.get("MASCOPE_SESSION_COOKIE") or None)
 
     # -- the one HTTP boundary ----------------------------------------------
@@ -145,11 +178,13 @@ class CurationClient:
                    "X-Service-Name": self.service_name}
         if self.cookie:                 # session auth — required by write endpoints
             headers["Cookie"] = self.cookie
-        if mutating and not self.cookie:
+        by_token = mutating and not self.cookie
+        if by_token and not token_writable(method, path):
             raise CurationError(
-                "This is a WRITE endpoint; the Mascope server requires a logged-in "
-                "session cookie for it (the bearer token only authorizes reads + "
-                "match_compounds). Pass cookie=... / set $MASCOPE_SESSION_COOKIE with "
+                f"{method} /{path} is a WRITE the Mascope server takes only with a "
+                "logged-in session cookie (an API token may send the dataset, batch "
+                "rename/copy/delete, sample copy/move/update and file-delete writes, "
+                "Mascope >= 1.13). Pass cookie=... / set $MASCOPE_SESSION_COOKIE with "
                 "the Cookie header from a logged-in browser session, or build the "
                 "client with dry_run=True to preview without sending.")
 
@@ -157,6 +192,13 @@ class CurationClient:
             r = requests.request(method, full, headers=headers, json=json,
                                  params=params, timeout=self.timeout,
                                  verify=self.verify_ssl)
+            if by_token and r.status_code == 401:
+                raise CurationError(
+                    f"HTTP 401 on {method} {full}: the server refused this write with "
+                    "the API token. A server before Mascope 1.13 takes writes only with "
+                    "a session cookie (cookie=... / $MASCOPE_SESSION_COOKIE); a token "
+                    "minted for another service needs $MASCOPE_SERVICE_NAME (e.g. "
+                    "'ai-agent').")
             self._raise_for_status(r)
             return r
 
@@ -335,15 +377,30 @@ class CurationClient:
                   "target_collection_ids": list(target_collection_ids or [])},
             note=f"name={name!r} pol={polarity} ds={dataset_id}")
 
+    def batch_collection_ids(self, sample_batch_id: str) -> list[str]:
+        """The target collections associated with a batch (ids, in server order)."""
+        rows = self._get("target/associations/target_collections_in_sample_batch",
+                         sample_batch_id=sample_batch_id) or []
+        return [str(r["target_collection_id"]) for r in rows
+                if isinstance(r, dict) and r.get("target_collection_id")]
+
     def update_batch(self, sample_batch_id: str, *, name: str | None = None,
-                     description: str | None = None) -> dict:
-        body: dict = {"sample_batch_id": sample_batch_id}
+                     description: str | None = None,
+                     target_collection_ids: list | None = None) -> dict:
+        """Rename a batch / change its description. The route REQUIRES
+        `target_collection_ids` and REPLACES the batch's collections with them, so
+        when none are given the batch's current ones are read and sent back (a
+        bare rename keeps its target lists)."""
+        if target_collection_ids is None:
+            target_collection_ids = self.batch_collection_ids(sample_batch_id)
+        body: dict = {"target_collection_ids": list(target_collection_ids)}
         if name is not None:
             body["sample_batch_name"] = name
         if description is not None:
             body["sample_batch_description"] = description
         return self._request("PATCH", f"sample/batches/{sample_batch_id}",
-                             op="update_batch", json=body, note=f"name={name!r}")
+                             op="update_batch", json=body,
+                             note=f"name={name!r} collections={len(body['target_collection_ids'])}")
 
     def delete_batch(self, sample_batch_id: str, *, confirm: bool = False) -> dict:
         self._guard_delete("batch", sample_batch_id, confirm)
