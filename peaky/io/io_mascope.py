@@ -251,8 +251,36 @@ _ISO_TOKEN = re.compile(r"\[(\d+[A-Z][a-z]?)\](\d*)")
 # ---------------------------------------------------------------------------
 # Connection
 # ---------------------------------------------------------------------------
+#: The service an API token is presented as (the `X-Service-Name` header). The
+#: server checks it against the service the token was minted for: a Jupyter
+#: Notebooks token is `mascope_sdk`, an AI Agent token (Mascope >= 1.13, Settings
+#: -> API Access Tokens) is `ai-agent`. Set $MASCOPE_SERVICE_NAME beside the token
+#: in the .env; a token presented under another service's name answers 401.
+DEFAULT_SERVICE_NAME = "mascope_sdk"
+
+
+def service_name() -> str:
+    """The service name every request presents ($MASCOPE_SERVICE_NAME, else
+    `mascope_sdk`). Read after the .env is loaded."""
+    return (os.environ.get("MASCOPE_SERVICE_NAME") or "").strip() or DEFAULT_SERVICE_NAME
+
+
+def transport_kwargs(client) -> dict:
+    """The keyword arguments a raw `mascope_sdk._http` call needs to present the
+    client's own connection settings: its SSL verification and its service name
+    (an `ai-agent` token sent as `mascope_sdk` answers 401)."""
+    kw = {}
+    if getattr(client, "_verify_ssl", None) is not None:
+        kw["verify_ssl"] = client._verify_ssl
+    if getattr(client, "_service_name", None):
+        kw["service_name"] = client._service_name
+    return kw
+
+
 def connect(env_path: str | None = None, workspace: str | None = None):
-    """Build a MascopeClient from the .env (MASCOPE_URL, MASCOPE_ACCESS_TOKEN).
+    """Build a MascopeClient from the .env (MASCOPE_URL, MASCOPE_ACCESS_TOKEN,
+    and MASCOPE_SERVICE_NAME for a token minted for another service than
+    `mascope_sdk`, e.g. an AI Agent token: `ai-agent`).
     Searches a project-local .env (repo root or cwd) then the home locations, or
     $MASCOPE_ENV, unless env_path is given. Process env vars of the same name also
     work directly. The Mascope WORKSPACE is selected by `workspace` (name /
@@ -271,7 +299,7 @@ def connect(env_path: str | None = None, workspace: str | None = None):
     ws = workspace or os.environ.get("MASCOPE_WORKSPACE") or None
     from mascope_sdk import MascopeClient
     try:
-        return MascopeClient(url=url, access_token=tok, workspace=ws)
+        return MascopeClient(url=url, access_token=tok, workspace=ws, service_name=service_name())
     except Exception as e:                       # noqa: BLE001 — friendlier guidance
         if not ws and "workspace" in str(e).lower():
             raise RuntimeError(
@@ -317,7 +345,7 @@ def list_workspaces() -> pd.DataFrame:
     if not url or not tok:
         raise RuntimeError("MASCOPE_URL / MASCOPE_ACCESS_TOKEN not found "
                            "(see `peaky setup`).")
-    r = http_get(url, "workspaces", tok, timeout=(15, 60))
+    r = http_get(url, "workspaces", tok, timeout=(15, 60), service_name=service_name())
     data = (r.json() or {}).get("data", []) or []
     if not data:
         raise RuntimeError("no workspaces returned (check MASCOPE_URL / token)")
@@ -469,7 +497,8 @@ def _with_waf_retry(fn, *, tries: int = 4, base_delay: float = 2.0):
         try:
             return fn()
         except Exception as exc:
-            if not _is_transient(exc) or attempt == tries - 1:
+            # IncompleteLoad has already re-read its failed samples; it is final
+            if isinstance(exc, IncompleteLoad) or not _is_transient(exc) or attempt == tries - 1:
                 raise
             delay = base_delay * (2 ** attempt)
             try:
@@ -480,6 +509,89 @@ def _with_waf_retry(fn, *, tries: int = 4, base_delay: float = 2.0):
             except Exception:
                 pass
             time.sleep(delay)
+
+
+class IncompleteLoad(RuntimeError):
+    """A batch load the SDK marks as not whole (`attrs['complete']` False) after
+    peaky re-read the samples it names: the time series would silently lack them."""
+
+
+#: Concurrent sample reads of one SDK batch load ($PEAKY_LOAD_WORKERS; unset =
+#: the SDK's own default, 8). Lower it for a server behind a WAF that blocks bursts.
+def _load_workers() -> dict:
+    v = (os.environ.get("PEAKY_LOAD_WORKERS") or "").strip()
+    return {"max_workers": max(1, int(v))} if v.isdigit() else {}
+
+
+def _failures_text(fails: list, n: int = 5) -> str:
+    """The first `n` failure records of an SDK load as one line each."""
+    out = []
+    for f in fails[:n]:
+        who = f.get("sample_item_name") or f.get("sample_item_id") or "?"
+        out.append(f"{who}: {f.get('error_type', 'error')}: {str(f.get('error', ''))[:200]}")
+    more = f" (+{len(fails) - n} more)" if len(fails) > n else ""
+    return "; ".join(out) + more
+
+
+def _load_peaks_whole(client, *, dataset: str, batches, what: str, tries: int = 3,
+                      base_delay: float = 2.0):
+    """`client.load_peaks` for `batches`, made whole.
+
+    The SDK reads a batch's samples concurrently and, when some of those reads
+    fail, returns the rest with `attrs['complete']` False and the failures in
+    `attrs['failures']` (mascope-sdk >= 2026.10.20; an older SDK returned the
+    same partial frame with only a log warning). A transient failure (a WAF
+    page, a gateway 5xx, a timeout) is re-read for the failed samples only, up
+    to `tries` times with back-off; anything else, or a sample that still fails,
+    raises `IncompleteLoad` naming them. `batches` is an exact batch name (str)
+    or a compiled pattern (the pooled load)."""
+    kw = dict(confirm_above=None, **_load_workers())
+    if isinstance(batches, str):
+        frame = client.load_peaks(dataset=dataset, batches=batches, exact=True, **kw)
+        batch_pat = re.compile(rf"^{re.escape(batches)}$", re.IGNORECASE)
+    else:
+        frame = client.load_peaks(dataset=dataset, batches=batches, **kw)
+        batch_pat = batches
+    for attempt in range(tries + 1):
+        if frame is None or frame.attrs.get("complete", True):
+            return frame
+        fails = list(frame.attrs.get("failures") or [])
+        if attempt == tries or not fails or not all(
+                f.get("sample_item_id") and _is_transient(Exception(str(f.get("error", ""))))
+                for f in fails):
+            break
+        ids = {f["sample_item_id"] for f in fails}
+        names = sorted({str(f.get("sample_item_name") or "") for f in fails} - {""})
+        if not names:
+            break
+        time.sleep(base_delay * (2 ** attempt))
+        try:
+            from loguru import logger
+            logger.warning(f"{what}: {len(fails)} sample read(s) failed transiently; "
+                           f"re-reading them ({attempt + 1}/{tries})")
+        except Exception:
+            pass
+        sample_pat = re.compile("^(?:" + "|".join(re.escape(n) for n in names) + ")$")
+        again = client.load_peaks(dataset=dataset, batches=batch_pat, samples=sample_pat, **kw)
+        got = (again[again["sample_item_id"].isin(ids)]
+               if again is not None and len(again) and "sample_item_id" in again else None)
+        still = ([f for f in (again.attrs.get("failures") or []) if f.get("sample_item_id") in ids]
+                 if again is not None else fails)
+        seen = set(got["sample_item_id"]) if got is not None else set()
+        still += [f for f in fails if f["sample_item_id"] not in seen
+                  and f["sample_item_id"] not in {g.get("sample_item_id") for g in still}]
+        attrs = dict(frame.attrs)
+        if got is not None and len(got):
+            frame = pd.concat([frame, got], ignore_index=True)
+            seg = dict(attrs.get("segments") or {})
+            seg.update({k: v for k, v in (again.attrs.get("segments") or {}).items() if k in ids})
+            attrs["segments"] = seg
+        attrs["failures"] = still
+        attrs["complete"] = not still
+        frame.attrs = attrs
+    fails = list(frame.attrs.get("failures") or [])
+    raise IncompleteLoad(f"{what}: {len(fails)} sample(s) could not be read -- "
+                         f"{_failures_text(fails)}")
 
 
 def fetch_batch_peaks(client, dataset: str, batch: str, *, save_path: str | None = None
@@ -500,12 +612,13 @@ def fetch_batch_peaks(client, dataset: str, batch: str, *, save_path: str | None
             "by name, so this batch's peaks cannot be isolated -- rename one of them, "
             "or pass the batch time series as a parquet (--ts)")
     # confirm_above=None: never prompt (non-interactive; batches can exceed 100
-    # samples). exact=True: the name must EQUAL the batch's, not merely occur in
-    # it. WAF-retry so a burst 521/403 doesn't kill a long batch load;
-    # non-transient errors propagate unmasked.
+    # samples; mascope-sdk >= 2026.10.20 raises rather than load unasked). The
+    # name must EQUAL the batch's, not merely occur in it. WAF-retry so a burst
+    # 521/403 doesn't kill a long batch load; a load the SDK marks incomplete is
+    # made whole or refused (`_load_peaks_whole`); non-transient errors propagate.
     peaks = _with_waf_retry(
-        lambda: client.load_peaks(dataset=dataset, batches=rb.name, exact=True,
-                                  confirm_above=None))
+        lambda: _load_peaks_whole(client, dataset=dataset, batches=rb.name,
+                                  what=f"batch {rb.name!r}"))
     if peaks is None or len(peaks) == 0:
         raise RuntimeError(f"no peaks for batch {rb.name!r} (id {rb.id}) "
                            f"in dataset {dataset!r}")
@@ -525,9 +638,9 @@ def fetch_pooled_peaks(client, dataset: str, batches_regex: str, *,
     pattern keeps its regex meaning. WAF-retried; confirm_above=None so a large
     pool never prompts."""
     peaks = _with_waf_retry(
-        lambda: client.load_peaks(dataset=dataset,
+        lambda: _load_peaks_whole(client, dataset=dataset,
                                   batches=re.compile(batches_regex, re.IGNORECASE),
-                                  confirm_above=None))
+                                  what=f"pooled batches /{batches_regex}/"))
     if peaks is None or len(peaks) == 0:
         raise RuntimeError(
             f"no peaks matched /{batches_regex}/ in dataset {dataset!r}")
@@ -877,12 +990,8 @@ def _api_get(client, path: str, *, params: dict | None = None, timeout=FILE_LIST
     listing's body also counts its files, `results`). For the server routes
     the SDK has no method for: a raw file's listing and its `/metadata`."""
     from mascope_sdk._http import http_get
-    kw = {}
-    if getattr(client, "_verify_ssl", None) is not None:
-        kw["verify_ssl"] = client._verify_ssl
-    if getattr(client, "_service_name", None):
-        kw["service_name"] = client._service_name
-    r = http_get(client.url, path, client.access_token, params=params, timeout=timeout, **kw)
+    r = http_get(client.url, path, client.access_token, params=params, timeout=timeout,
+                 **transport_kwargs(client))
     out = r.json()
     if body:
         return out

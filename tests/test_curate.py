@@ -241,6 +241,84 @@ except CU.CurationError as e:
     check("HTTP error carries server message", "bad polarity" in str(e), str(e))
 
 
+# ---------- token writes (Mascope >= 1.13 opened these routes to API tokens) ----------
+calls = []
+c = client(calls, cookie=None)
+c.copy_samples(["s1"], "B2")
+c.copy_batch("B1", "D2", name="Campaign")
+c.update_sample("s1", sample_item_name="x")
+check("token-writable routes send without a cookie",
+      len(calls) == 3 and all("Cookie" not in k["headers"] for k in calls), calls)
+check("token write carries bearer + service name",
+      calls[0]["headers"].get("Authorization") == "Bearer t"
+      and calls[0]["headers"].get("X-Service-Name") == "mascope_sdk", calls[0]["headers"])
+check("token_writable: dataset create yes, batch create no, sample delete no",
+      CU.token_writable("POST", "workspaces/W1/datasets")
+      and not CU.token_writable("POST", "sample/batches")
+      and not CU.token_writable("POST", "sample/items/delete")
+      and not CU.token_writable("POST", "sample/batches/B1/import"))
+calls = []
+c = client(calls, cookie=None)
+try:
+    c.create_batch("D1", "NoCookieBatch", "-")
+    check("cookie-only write refused without cookie", False)
+except CU.CurationError as e:
+    check("cookie-only write refused without cookie", "session cookie" in str(e).lower(), str(e))
+check("refused cookie-only write sent nothing", len(calls) == 0)
+
+# an older server refuses a token write with 401 -> the error names the cause
+c = CU.CurationClient(url="https://x.test", token="t")
+
+
+def _r401(*a, **k):
+    r = FakeResp(status=401)
+    r.request.method = "POST"
+    return r
+
+
+CU.requests.request = _r401  # type: ignore[attr-defined]
+try:
+    c.move_samples(["s1"], "B9")
+    check("401 on a token write explained", False)
+except CU.CurationError as e:
+    check("401 on a token write explained", "1.13" in str(e) and "cookie" in str(e), str(e))
+
+# the service name comes from $MASCOPE_SERVICE_NAME (an AI Agent token is 'ai-agent')
+import os  # noqa: E402
+import tempfile  # noqa: E402
+with tempfile.TemporaryDirectory() as td:
+    envp = Path(td) / ".env"
+    envp.write_text("MASCOPE_URL=https://x.test\nMASCOPE_ACCESS_TOKEN=t\nMASCOPE_SERVICE_NAME=ai-agent\n")
+    saved = {k: os.environ.pop(k, None) for k in ("MASCOPE_URL", "MASCOPE_ACCESS_TOKEN", "MASCOPE_SERVICE_NAME")}
+    try:
+        cc = CU.CurationClient.from_env(str(envp))
+        check("from_env takes MASCOPE_SERVICE_NAME", cc.service_name == "ai-agent", cc.service_name)
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+# ---------- batch rename keeps the batch's target collections ----------
+calls = []
+c = client(calls, data=[{"target_collection_id": "TC1"}, {"target_collection_id": "TC2"}])
+c.update_batch("B5", name="renamed")
+check("update_batch reads the batch's collections first",
+      calls[0]["method"] == "GET"
+      and calls[0]["url"].endswith("/api/target/associations/target_collections_in_sample_batch")
+      and calls[0]["params"] == {"sample_batch_id": "B5"}, calls[0])
+check("update_batch sends them back with the new name",
+      calls[-1]["method"] == "PATCH" and calls[-1]["url"].endswith("/api/sample/batches/B5")
+      and calls[-1]["body"] == {"target_collection_ids": ["TC1", "TC2"], "sample_batch_name": "renamed"},
+      calls[-1]["body"])
+calls = []
+c = client(calls)
+c.update_batch("B6", description="d", target_collection_ids=["TC9"])
+check("update_batch with explicit collections sends no read",
+      len(calls) == 1 and calls[0]["body"] == {"target_collection_ids": ["TC9"], "sample_batch_description": "d"},
+      calls)
+
+
 assert FAIL == 0, f"{FAIL} checks failed"
 
 if __name__ == "__main__":

@@ -44,36 +44,47 @@ Re-derive after a server/UI upgrade: re-fetch the JS bundle and re-grep for
 | **match** | `POST /match/rematch/batch/{id}?full_remove=&force=` · `/match/rematch/batches` | — |
 
 **Gotchas.** Batch-create polarity field is `sample_batch_polarity` (∈ `"+" "-"
-"+-"`), *not* the `polarity` seen in list responses. PATCH bodies echo the id.
+"+-"`), *not* the `polarity` seen in list responses. PATCH bodies echo the id. A
+batch PATCH **requires** `target_collection_ids` and **replaces** the batch's
+collections with them: `update_batch` reads the current ones
+(`target/associations/target_collections_in_sample_batch`) and sends them back
+unless you pass `target_collection_ids=`, so a rename keeps the batch's target lists.
 `sample/items/copy`/`move` target a batch by `sample_batch_id`. Copy/move/delete of
 sample items take id **lists**.
 
-## Authorization — reads use the token, WRITES need a session cookie
+## Authorization — the token for reads and the opened writes, a cookie for the rest
 
-Validated 2026-07-15: the bearer **API token authorizes the READ endpoints +
-`match_compounds`**, but the server **gates every WRITE/curation endpoint behind an
-interactive logged-in SESSION** — the web app sends requests with
-`withCredentials:true` (cookie auth) and no Bearer at all. A token-only write returns
-`401 {"error":"Authorization failed. Please sign in to the Mascope."}` (while
-`match_compounds`, also a POST, passes auth → 422 on a bad body, proving the token
-itself can POST). So:
+Mascope 1.13 opened a set of write routes to API tokens, one route at a time (its
+`security/pentest/token_writes.json` is the list), and mascope-sdk 2026.10.20 wraps
+them. `curate.TOKEN_WRITES` holds the ones this client sends:
 
+- **With the API token alone** (Mascope >= 1.13, with the role each route needs):
+  dataset create / rename / move / delete; batch rename / copy / delete; sample copy /
+  move / update; raw-file delete. Merging daily batches into one campaign batch is a
+  `copy_batch` of the first followed by `copy_samples` of the others into it.
+- **Still behind a logged-in session cookie**: workspace create / rename / delete,
+  batch create, batch import, batch rematch, sample delete, file reprocess. Pass
+  `CurationClient.from_env(cookie=…)`, `$MASCOPE_SESSION_COOKIE` or
+  `peaky curate … --cookie …`: the full `Cookie:` header copied from a logged-in
+  browser request (DevTools → Network → any `/api/…` request → Request Headers →
+  Cookie). Without it such a write **fails fast with a clear message** (it never
+  sends a doomed request); `dry_run=True` needs no cookie.
 - **Reads / listings / name-resolution** → the bearer token is enough.
-- **Any mutation** → pass a **session cookie**: `CurationClient.from_env(cookie=…)`
-  or `$MASCOPE_SESSION_COOKIE` or `peaky curate … --cookie …`. The value is the full
-  `Cookie:` header copied from a logged-in browser request (DevTools → Network → any
-  `/api/…` request → Request Headers → Cookie). Without it, a write **fails fast with
-  a clear message** (it never sends a doomed request); `dry_run=True` needs no cookie.
 
-(Alternative if the account supports it: ask your Mascope provider for a write-scoped token. As of
-this validation the mutation routes are session-only.)
+A server before 1.13 refuses every token write with
+`401 {"error":"Authorization failed. Please sign in to the Mascope."}` (validated
+2026-07-15, when every write was session-only); the client's error then says to pass
+a cookie. A token is presented under the service it was minted for
+(`X-Service-Name`): a Jupyter Notebooks token is `mascope_sdk`, an AI Agent token
+(Settings → API Access Tokens, Mascope >= 1.13) is `ai-agent` — set
+`$MASCOPE_SERVICE_NAME` beside it, or every request answers 401.
 
 ## The engine — `peaky.io.curate.CurationClient`
 
 ```python
 from peaky.io import curate
-c = curate.CurationClient.from_env()                     # reads (bearer token)
-c = curate.CurationClient.from_env(cookie="…")           # + writes (session cookie)
+c = curate.CurationClient.from_env()                     # reads + the token writes (Mascope >= 1.13)
+c = curate.CurationClient.from_env(cookie="…")           # + the session-only writes
 c = curate.CurationClient.from_env(dry_run=True)          # PLAN mutations, send nothing (no cookie needed)
 ```
 
