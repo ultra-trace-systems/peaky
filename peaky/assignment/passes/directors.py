@@ -6,6 +6,7 @@ from __future__ import annotations
 import functools
 import json
 
+import numpy as np
 import pandas as pd
 
 from peaky.chem import chemistry as C
@@ -1538,8 +1539,8 @@ def run_pass1(
     # single CHO+CHON enumeration; arbitration's complexity penalty handles the
     # CHO-before-CHON preference, so no need for two separate sub-passes.
     ranges = build_ranges(profile, pre, include_N=True)
-    formulas = _enumerate(client, mzs, mech_ids, ranges, cfg, adducts)
-    formulas = set(_context_filter(formulas, profile))
+    grid = _enumerate(client, mzs, mech_ids, ranges, cfg, adducts)
+    formulas = set(_context_filter(grid, profile))
     log(f"[pass1] {len(formulas)} context-plausible CHO/CHON candidate formulas")
     scored = IO.score_candidates(
         client, sample_id, sorted(formulas), mechanism_ids=cfg.mechanism_ids
@@ -1557,7 +1558,92 @@ def run_pass1(
         min_raw_score=cfg.tau_low,
     )
     log(f"[pass1] {summary}")
+    summary["outcomes"] = record_pass1_outcomes(
+        ledger, tgt, grid, formulas, scored, cfg, adducts, profile=profile, log=log)
     return summary
+
+
+PASS1_COL = "pass1_outcome"
+
+
+def record_pass1_outcomes(ledger, tgt, grid, formulas, scored, cfg, adducts, *,
+                          profile=None, log=print) -> dict:
+    """Why pass 1 left each of its target peaks without a commit, in the
+    ledger's ``pass1_outcome`` column (created here, NA elsewhere; a later pass
+    that commits the peak leaves it standing as the pass-1 record). A peak no
+    pass ever explains otherwise keeps an empty row, and the four ways out of
+    pass 1 are told apart only here:
+
+      no-grid      no CHO/CHON formula within +-search_ppm under any enumerated adduct
+      context      grid formulas in the window, every one refused by the context
+                   filter (the first refusal's reason is quoted)
+      unscored     context-plausible formulas, none matched (no M0 line inside the
+                   scorer's class window)
+      below-tau    best raw score < tau_low (the best reading is quoted)
+      not-committed  a reading >= tau_low that commit_winners skipped (mass gate,
+                   minor channel, Reject confidence, a conflict)
+
+    Returns the count per outcome (also logged)."""
+    if PASS1_COL not in ledger.columns:
+        ledger[PASS1_COL] = pd.NA
+    out = {"no-grid": 0, "context": 0, "unscored": 0, "below-tau": 0, "not-committed": 0}
+    if tgt is None or not len(tgt):
+        return out
+    gadducts = [a for a in adducts if a in C.ADDUCT_SHIFTS and a not in ABSTRACTION_ADDUCTS]
+
+    def _ions(fs):
+        rows = []
+        for f in fs:
+            for a in gadducts:
+                try:
+                    rows.append((C.ion_mz(f, a), f, a))
+                except Exception:
+                    continue
+        rows.sort()
+        return np.array([r[0] for r in rows], float), rows
+
+    g_mz, g_rows = _ions(grid)
+    c_mz, _ = _ions(formulas)
+    best = {}
+    if scored is not None and len(scored) and {"is_base", "sample_peak_id"} <= set(scored.columns):
+        base = scored[scored["is_base"] & scored["sample_peak_id"].notna()
+                      & scored["ion_score"].notna()].copy()
+        if len(base):
+            base["raw"] = base[["ion_score", "compound_score"]].min(axis=1, skipna=True)
+            for pid, grp in base.groupby("sample_peak_id"):
+                top = grp.sort_values("raw", ascending=False).iloc[0]
+                best[pid] = (float(top["raw"]), str(top["compound_formula"]),
+                             str(top.get("adduct_label", "")), len(grp))
+    tol = cfg.search_ppm * 1e-6
+    for i, r in tgt.iterrows():
+        if i not in ledger.index or str(ledger.at[i, "role"]) != L.ROLE_UNEXPLAINED:
+            continue
+        mz = float(r["mz"])
+        lo, hi = mz * (1 - tol), mz * (1 + tol)
+        n_grid = int(np.searchsorted(g_mz, hi, "right") - np.searchsorted(g_mz, lo, "left"))
+        n_ctx = int(np.searchsorted(c_mz, hi, "right") - np.searchsorted(c_mz, lo, "left"))
+        b = best.get(r["peak_id"])
+        if n_grid == 0 and b is None:
+            k, why = "no-grid", f"no CHO/CHON grid formula within +-{cfg.search_ppm:g} ppm under {gadducts}"
+        elif n_ctx == 0 and b is None:
+            j0 = int(np.searchsorted(g_mz, lo, "left"))
+            f0, a0 = g_rows[j0][1], g_rows[j0][2]
+            _, reason = X.filter_by_context(f0, profile) if profile is not None else (False, None)
+            k, why = "context", (f"{n_grid} grid formula(s) in the window, all refused by the "
+                                 f"context filter (e.g. {f0} {a0}: {reason})")
+        elif b is None:
+            k, why = "unscored", (f"{n_ctx} context-plausible formula(s) in the window, none "
+                                  f"matched an M0 line in the scorer's window")
+        elif b[0] < cfg.tau_low:
+            k, why = "below-tau", (f"best {b[1]} {b[2]} raw {b[0]:.2f} < tau_low {cfg.tau_low:g} "
+                                   f"({b[3]} reading(s) scored)")
+        else:
+            k, why = "not-committed", (f"best {b[1]} {b[2]} raw {b[0]:.2f} >= tau_low, skipped by "
+                                       f"commit (mass gate / minor channel / Reject / conflict)")
+        ledger.at[i, PASS1_COL] = f"pass1 {k}: {why}"
+        out[k] += 1
+    log(f"[pass1] uncommitted target peaks by outcome: {out}")
+    return out
 
 
 def run_pass2(
