@@ -774,7 +774,9 @@ def carbon_counts(ctx: RunContext, iso_tab: pd.DataFrame | None, facts: pd.DataF
         res_ = x1 - rr * x0
         se = (np.sqrt(used / max(used - 1, 1) * (res_ ** 2).sum()) / x0.sum() / wf / IC.R13C) if used > 1 else np.nan
         cpool = ((rr / wf - oth) / IC.R13C) / (1 + bias)
-        if k in src_ts and np.isfinite(src_ts[k]["c"]):
+        if k in src_ts and np.isfinite(src_ts[k]["c"]) and src_ts[k]["c"] > 0:
+            # rule C can read a zero 13C area over the whole series (no 13C line at all, a wrong formula):
+            # no relative deviation exists against a zero carbon count
             for c_, x_ in zip(cf, xs):
                 per_file_dev.append((x_, c_ / src_ts[k]["c"] - 1.0, src_ts[k]["c"], cpool))
         if k not in out and used >= nmin and occ <= IC.C_OCC_MAX * used:
