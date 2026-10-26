@@ -15,7 +15,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cleared ~330 readings per NH4+ file on lines no spectrum could show, 46 MS2-confirmed ions among
   them. It now also needs the line's predicted S/N >= `PassConfig.audit_min_snr13` (10; a
   CHO/CHON 13C line is present 94-99 % of the time from 7-10, 0-5 % below 3). TOF runs, trace
-  samples and rows without an S/N keep the height gate only.
+  samples and rows without an S/N keep the height gate only. The batch's rule C (`iso_checks`,
+  `C_MIN_SNR13`) and the evidence scale's line test (`levels.lines.DET_SNR`) count a spectrum / file
+  the same way: without it the restored readings, their 13C lines under their window's floor, read
+  0 C and pulled rule C's pooled bias to -0.84, so every reading's carbon count came out x6 and 790
+  of the NH4+ composite's pairs were refuted (5b) against 221 before.
 - **The amine gate keeps a multifunctional oxygenate's `[M+NH4]+` reading.** It re-read every
   unconfirmed `[M+NH4]+` of X as `[M+H]+` of the amine X+NH3. Against MS2 on a 2026 chamber campaign, X
   with >= 2 O were NH4+ adducts 117:4 (NH4+ CIMS) and 35:8 (Ur+ side channel), X with <= 1 O

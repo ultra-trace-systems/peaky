@@ -250,6 +250,15 @@ C_HETERO = ("F", "S", "Si", "Cl", "P", "I", "Br")
 #: rule C reads the +1 line as 13C only where 13C makes at least this share of it
 #: (a Si-rich ion's +1 line is mostly 29Si, 3.8 mDa lower: 2026-09-27 decision)
 C_MIN_13C_SHARE = 0.5
+#: ... and counts a spectrum only where the line's PREDICTED S/N (the M0's own S/N x the
+#: natural 13C share) reaches this, beside C_KDL x the spectrum's edge: the edge is one
+#: number per spectrum (its 1st-percentile height), a composite file's windows report down
+#: to floors 2-14x apart, and a 13C line under its own window's floor reads 0 C. With the
+#: per-file 13C audit no longer clearing such readings (PassConfig.audit_min_snr13, the
+#: same number), they made the pooled bias below -0.84 on an NH4+ composite and every
+#: reading's carbon count x6. The server S/N is per window; a series without it keeps
+#: the edge test alone.
+C_MIN_SNR13 = 10.0
 #: the other light-element contributions to an ion's +1 line, per atom relative to its all-light line
 _M1_OTHER = {"H": 0.000115 / 0.999885, "N": 0.00364 / 0.99636, "O": 0.00038 / 0.99757,
              "S": 0.0075 / 0.9499, "Si": 0.04685 / 0.92223}
@@ -451,6 +460,10 @@ class _Series:
         self.mz = t["mz"].to_numpy(float)
         self.h = t["height"].to_numpy(float)
         self.a = t["area"].to_numpy(float)
+        if "signal_to_noise" not in t.columns:
+            t["signal_to_noise"] = np.nan
+        t["signal_to_noise"] = pd.to_numeric(t["signal_to_noise"], errors="coerce")
+        self.snr = t["signal_to_noise"].to_numpy(float)
         self.role = t["role"].to_numpy()
         #: a stamped artifact (a side lobe or ringing a per-file stage marked): no line
         self.artifact = self.role == "artifact"
@@ -588,7 +601,8 @@ def _rule_c(S: _Series, pooled: pd.DataFrame, prof) -> pd.DataFrame:
         oth = ic.get("O", 0) * R17O
         h0, a0 = g["height"].to_numpy(float), g["area"].to_numpy(float)
         e = S.edge[codes]
-        u = h0 * nC * R13C >= C_KDL * e
+        snr13 = g["signal_to_noise"].to_numpy(float) * nC * R13C
+        u = (h0 * nC * R13C >= C_KDL * e) & (~np.isfinite(snr13) | (snr13 >= C_MIN_SNR13))
         n = int(u.sum())
         share, other = c13_share(ic)
         rec = dict(neutral_formula=k[0], adduct=k[1], ion=ion, mz=mzm, n_spectra=int(len(g)), n_used=n,

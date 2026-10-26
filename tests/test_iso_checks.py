@@ -223,6 +223,32 @@ def test_rule_c_bias_is_level_free_over_heteroatom_free_pairs():
     assert _get(t, "C", x)["verdict"] == "contradict"
 
 
+def test_rule_c_counts_a_spectrum_only_where_the_13c_line_would_clear_s_n_10():
+    """A composite file's windows report down to floors far above the spectrum's one edge: pairs whose
+    13C line sits under its own window's floor (no line, predicted 13C S/N ~5) read 0 C. Counted, seven
+    of them drag the pooled bias to -1 and the correct C12 reading contradicts; with the server S/N
+    they are untestable and the bias stays the references'."""
+    x = "C12H20O4"
+    cens = ["C10H18O3", "C11H18O3", "C9H16O3", "C12H22O3", "C10H14O3", "C11H16O3", "C13H22O3"]
+    pairs = [(n, H) for n in REFS] + [(x, H)] + [(n, H) for n in cens]
+
+    def build(i):
+        rows = _refs(i) + _c13(i, x, H)
+        return rows + [_row(i, C.ion_mz(n, H), 1e4 * _wave(i), role="M0", nf=n, ad=H, ion=_ion(n, H)) for n in cens]
+    ts = _series(build)
+    no_snr = _measure(ts, pairs)
+    assert _get(no_snr, "C", x)["bias_area"] < -0.5 and _get(no_snr, "C", x)["verdict"] == "contradict"
+    ts["signal_to_noise"] = ts["height"] / FILL * 3.0                 # bright lines: S/N far above 10
+    is_cens = ts["neutral_formula"].isin(cens)
+    ts.loc[is_cens, "signal_to_noise"] = 45.0                          # 45 x ~10 C x 0.0108 = ~5 < 10
+    t = _measure(ts, pairs)
+    r = _get(t, "C", x)
+    assert r["bias_area"] == pytest.approx(0.0, abs=1e-6) and r["verdict"] == "agree"
+    for n in cens:
+        c = _get(t, "C", n)
+        assert c["verdict"] == "untestable" and c["n_used"] == 0 and not c["veto"]
+
+
 def test_rule_c_too_many_with_an_occupied_slot_is_untestable():
     y = "C8H14O4"                                                   # 8 C, reads 14: 'too many'
     pairs = [(n, H) for n in REFS] + [(y, H)]

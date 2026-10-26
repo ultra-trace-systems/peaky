@@ -22,6 +22,10 @@ from peaky.batch import iso_checks as IC
 from peaky.chem import isotopes as ISO
 
 DET_X = 3.0                   # detectable: predicted height >= 3 x the file's height gate
+# ... and, where the file's row carries the server S/N, a predicted line S/N >= DET_SNR: the gate is one number
+# per file and a composite file's windows report down to floors 2-14x apart, so a line "3x the gate" can sit
+# under its own window's floor (the per-file 13C audit's PassConfig.audit_min_snr13 and rule C's C_MIN_SNR13)
+DET_SNR = 10.0
 DET_X_MINOR = 5.0             # composite lines (>= 2 substitutions) and the light 15N / 18O lines need 5 x the gate
 DET_SINGLE_ISO = frozenset({"13C", "37Cl", "81Br", "34S", "29Si", "30Si"})   # single substitutions that keep DET_X
 BAND = (0.5, 2.0)             # a line is in band at 0.5 - 2 x its predicted height
@@ -216,6 +220,9 @@ def eval_candidate(ctx, cand: dict, obs: list, pairkey: str, collect=False, pair
             eff = min([ctx.eff.get(e, 1.0) for e in L["elements"]] or [1.0])
             exp_h = o["h"] * L["ratio"] * eff
             det = exp_h >= det_x * ctx.gates[o["sid"]]
+            sn = o.get("snr", np.nan)
+            if det and np.isfinite(sn) and o["h"] > 0:
+                det = sn * exp_h / o["h"] >= DET_SNR
             tol = ctx.tol_da(o["mz"], exp_h)
             span = (o["mz"] + min(L["span"][0], L["d"]), o["mz"] + max(L["span"][1], L["d"]))
             if not fa.in_scan(span[0] - tol, span[1] + tol):

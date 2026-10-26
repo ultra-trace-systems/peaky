@@ -277,6 +277,8 @@ def pairs_from_files(files_led: dict, facts: pd.DataFrame) -> dict:
         m0 = led[led["role"] == "M0"].copy()
         m0["hh"] = pd.to_numeric(m0["height"], errors="coerce")
         m0["aa"] = pd.to_numeric(m0["area"], errors="coerce") if "area" in m0.columns else m0["hh"]
+        m0["sn"] = pd.to_numeric(m0["signal_to_noise"], errors="coerce") if "signal_to_noise" in m0.columns \
+            else np.nan
         m0 = m0.sort_values("hh", ascending=False, kind="mergesort")
         seen = set()
         for r in m0.itertuples(index=False):
@@ -292,6 +294,7 @@ def pairs_from_files(files_led: dict, facts: pd.DataFrame) -> dict:
             seen.add(k)
             obs[k].append(dict(sid=sid, mz=float(r.mz), h=float(r.hh) if np.isfinite(r.hh) else 0.0,
                                area=float(r.aa) if np.isfinite(r.aa) else 0.0, pid=str(r.peak_id),
+                               snr=float(r.sn) if np.isfinite(r.sn) else np.nan,
                                ppm=float(pd.to_numeric(getattr(r, "ppm_error", np.nan), errors="coerce"))))
     out = {}
     for r in facts.itertuples(index=False):

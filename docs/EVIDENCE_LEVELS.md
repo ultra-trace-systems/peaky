@@ -418,7 +418,10 @@ merged within the width model's FWHM) and probed in every file the pair was
 seen in:
 
 - a line is **testable** at ≥ 3× the file's height gate (`DET_X`); ≥ 5× for
-  the light 15N / 18O lines and composite lines (`DET_X_MINOR`);
+  the light 15N / 18O lines and composite lines (`DET_X_MINOR`); where the
+  file's row carries the server S/N, also at a predicted line S/N ≥ 10
+  (`DET_SNR`): the gate is one number per file, and a composite file's windows
+  report down to floors 2-14× apart;
 - it is **present (in band)** at 0.5–2× its predicted height (`BAND`); a line
   within 0.5 Da of the file's first / last peak is untestable (`SCAN_MARGIN`);
   a 37Cl-bearing line is probed at its exact position, the resolution taken
@@ -864,6 +867,7 @@ release in `evidence.py`).
 | `K_SIGMA` | 3 | the calibrated half-window, in sigma |
 | `NMIN_FILES` / `NMIN_FILES_ARM` | 3 / 1 | testable files for an isotope test (batch / one file) |
 | `DET_X` / `DET_X_MINOR` | 3 / 5 × the height gate | a line is testable |
+| `DET_SNR` | 10 | ... and, with the row's server S/N, a predicted line S/N at least this (the per-file 13C audit's `audit_min_snr13`, rule C's `C_MIN_SNR13`) |
 | `BAND` | 0.5–2 × predicted | a line is present |
 | `ABSENT_FRAC` | 0.8 | tests (a), (b), (k) |
 | `MATCH_FRAC` | 0.5 | a line matched in band |

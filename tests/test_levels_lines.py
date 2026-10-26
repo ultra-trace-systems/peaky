@@ -108,6 +108,19 @@ def test_line_in_band_is_matched_and_absent_line_refutes():
     assert LN.contradiction_a(recs2, 3) == ["37Cl (0.32x) absent in 3/3 files"]
 
 
+def test_an_absent_line_whose_predicted_s_n_is_under_10_is_not_detectable():
+    """The height gate is one number per file; with the row's server S/N a line also needs a predicted S/N
+    >= DET_SNR to count as detectable (a composite window's floor sits far above the file's gate)."""
+    _m0, rows = _own_lines(CL, CLA, skip=("37Cl",))
+    m0 = C.ion_mz(CL, CLA)
+    ctx = _ctx(_t(rows + _edges()))
+    cand = dict(lines=LN.cand_lines(SP.ion_counts_of(CL, CLA), ctx.fwhm(m0), 0.0, 0.98))
+    for snr, n_det in ((20.0, 0), (100.0, 3), (float("nan"), 3)):   # 37Cl at 0.32x: predicted S/N 6.4 / 32 / no S/N
+        obs = [dict(o, snr=snr) for o in _obs(m0)]
+        r = _rec(LN.eval_candidate(ctx, cand, obs, f"{CL}|{CLA}"), "37Cl")
+        assert r["n_det"] == n_det and r["n_abs"] == n_det, snr
+
+
 def test_line_too_high_counts_only_on_an_own_iso_child():
     m0, rows = _own_lines(PH, PHA)
     hi = [(p, m, h * 5 if lab == "13C" else h, r, par, n, a, lab) for p, m, h, r, par, n, a, lab in rows]
