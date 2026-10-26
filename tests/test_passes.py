@@ -1861,6 +1861,39 @@ check("audit sat search: 25 ppm finds it, sweeps it up as the 13C child, nothing
       L.role_of(led, "Nt") == L.ROLE_M0 and L.role_of(led, "Kt") == L.ROLE_ISO
       and s["c13_missing"] == 0 and s["c13_attached"] == 1, s)
 
+# ---------- audit predicted 13C S/N (PassConfig.audit_min_snr13): on an Orbitrap-class
+# spectrum a missing 13C line is evidence only when its predicted S/N clears the knob --
+# a composite file's window floors sit far above the one per-file height gate
+def _snr_led(pid, snr):
+    led = mk_ledger([(pid, 168.9505, 10300.0)])      # C3: predicted 13C 330 cps
+    commit(led, pid, "C3H6O3", "C3H6BrO3-")
+    led.loc[led.peak_id == pid, "signal_to_noise"] = snr
+    return led
+ORBI = P.PassConfig(height_cutoff_cps=100.0, instrument_class="orbitrap")
+led = _snr_led("Sa", 150.0)                           # predicted 13C S/N 4.8
+s = P.audit_isotopes(led, ORBI, log=lambda *a: None)
+check("audit S/N: Orbitrap, predicted 13C S/N 4.8 < 10 -> absence is no evidence, kept",
+      L.role_of(led, "Sa") == L.ROLE_M0 and s["c13_missing"] == 0, s)
+led = _snr_led("Sb", 1000.0)                          # predicted 13C S/N 32
+s = P.audit_isotopes(led, ORBI, log=lambda *a: None)
+check("audit S/N: Orbitrap, predicted 13C S/N 32 -> cleared as before",
+      L.role_of(led, "Sb") == L.ROLE_UNEXPLAINED and s["c13_missing"] == 1, s)
+led = _snr_led("Sc", 150.0)
+s = P.audit_isotopes(led, P.PassConfig(height_cutoff_cps=100.0, instrument_class="tof"),
+                     log=lambda *a: None)
+check("audit S/N: a TOF ignores the S/N knob (height gate only) -> cleared",
+      L.role_of(led, "Sc") == L.ROLE_UNEXPLAINED and s["c13_missing"] == 1, s)
+led = _snr_led("Sd", 150.0)
+s = P.audit_isotopes(led, P.PassConfig(height_cutoff_cps=100.0, instrument_class="orbitrap",
+                                       audit_min_snr13=None), log=lambda *a: None)
+check("audit S/N: audit_min_snr13=None restores the height-gate-only audit -> cleared",
+      L.role_of(led, "Sd") == L.ROLE_UNEXPLAINED and s["c13_missing"] == 1, s)
+led = _snr_led("Se", 150.0)
+s = P.audit_isotopes(led, P.PassConfig(height_cutoff_cps=100.0, instrument_class="orbitrap",
+                                       trace_sample=True), log=lambda *a: None)
+check("audit S/N: a trace sample (batch-mean heights) keeps the height gate only -> cleared",
+      L.role_of(led, "Se") == L.ROLE_UNEXPLAINED and s["c13_missing"] == 1, s)
+
 
 
 # --- pass 3 split: evidence-opened families claim LAST ----------------------
