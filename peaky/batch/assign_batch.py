@@ -2323,7 +2323,7 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             # MERGED level where cross-channel corroboration is complete.
             merge_gates["amine"] = cleanup.prefer_amine_over_ammonium(
                 merged, ts_peaks=ts_peaks, r_min=amine_r_min,
-                protected=protected_neutrals, log=log)
+                protected=protected_neutrals, nh4_main=(prof.detect_adduct == "[M+NH4]+"), log=log)
             # urea adducts of hydrocarbons / N-rich neutrals: the same ion as a protonated N-richer compound
             merge_gates["urea"] = cleanup.cap_implausible_urea_adducts(merged, log=log)
         # Sidelobe-contaminated CHANNELS: an assigned ion whose m/z lands on the ringing

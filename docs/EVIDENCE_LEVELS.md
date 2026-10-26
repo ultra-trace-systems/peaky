@@ -585,9 +585,13 @@ every `[M+NH4]+` reading in the grid, in the engine's order:
    refuted were all weak Y, 9 of them at 4a).
 4. **Otherwise** a multifunctional Y (≥ 2 O on ≥ 5 C) keeps its NH4 reading,
    open (`adduct-default`): NH4+ adducts of such oxygenates are the rule (MS2:
-   117:4 in NH4+ CIMS, 35:8 on the Ur+ side channel). A weak Y is re-read as
-   the amine Y + NH3 `[M+H]+`, unless that amine is valence-impossible: the NH4
-   reading is then kept, unconfirmed.
+   117:4 in NH4+ CIMS, 35:8 on the Ur+ side channel). Where `[M+NH4]+` is a
+   side channel (a uronium run), Y's parent channels absent from the time
+   series still refute it (a real Y shows its urea cluster); on an NH4+ run
+   (the profile's own adduct, `nh4_main`) many oxygenates show no other
+   channel, so that absence says nothing. A weak Y, and a refuted one, is
+   re-read as the amine Y + NH3 `[M+H]+`, unless that amine is
+   valence-impossible: the NH4 reading is then kept, unconfirmed.
 
 Without a time series (a single file, a decoy arm) the gate takes its
 no-time-series path: steps 1, 2 and the valence exception only.

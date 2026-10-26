@@ -472,8 +472,10 @@ selected sample_ids (SAMPLING.md)
      same ion) as `[M+H]⁺` of the `+NH3` amine unless the adduct's trace tracks
      its parent; a weak X that tracks keeps the reading capped Candidate (the
      amide tracks too), and a multifunctional X (≥ 2 O on ≥ 5 C) keeps its
-     adduct reading by default — done at the **merged** level where
-     cross-channel corroboration is complete.
+     adduct reading by default -- except on a side channel (uronium), where X's
+     parent channels absent from the time series still refute the adduct
+     (`nh4_main`: `[M+NH4]⁺` is the profile's own adduct) — done at the
+     **merged** level where cross-channel corroboration is complete.
    - `cleanup.cap_implausible_urea_adducts(merged)` caps Candidate an Assigned
      `[M+(CH4N2O)H]⁺` of a pure hydrocarbon or of an X with ≥ 2 N (the same ion
      as protonated X + urea).

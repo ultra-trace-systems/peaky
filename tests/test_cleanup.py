@@ -186,22 +186,32 @@ leda = pd.DataFrame([
     dict(peak_id="e", mz=999.0, neutral_formula=None, adduct=None,
          role=L.ROLE_ISO, tier="Assigned", tier_reason=""),
 ])
+leda_main = leda.copy()
 outa = CU.prefer_amine_over_ammonium(leda, log=lambda *a, **k: None)
-check("amine no-TS: a multifunctional oxygenate (C10H16O2) keeps its [M+NH4]+ reading, tier kept",
-      leda.loc[0, "neutral_formula"] == "C10H16O2" and leda.loc[0, "adduct"] == "[M+NH4]+"
-      and leda.loc[0, "tier"] == "Assigned" and "kept by default" in str(leda.loc[0, "tier_reason"]),
-      leda.loc[0].to_dict())
+check("amine no-TS (side channel): an absent parent still refutes a multifunctional X's adduct -> CHON",
+      leda.loc[0, "neutral_formula"] == "C10H19NO2" and leda.loc[0, "adduct"] == "[M+H]+"
+      and leda.loc[0, "tier"] == "Candidate", leda.loc[0].to_dict())
 check("amine no-TS: presence alone does NOT keep a weak X's ammonium adduct -> CHON",
       leda.loc[1, "neutral_formula"] == "C9H19NO" and leda.loc[1, "adduct"] == "[M+H]+"
       and leda.loc[1, "tier"] == "Candidate", leda.loc[1].to_dict())
-check("amine no-TS: a multifunctional amine-impossible X keeps its NH4 reading (tier kept)",
+check("amine no-TS (side channel): amine-impossible X -> NH4 kept but capped Candidate",
       leda.loc[3, "neutral_formula"] == "C6H14O4" and leda.loc[3, "adduct"] == "[M+NH4]+"
-      and leda.loc[3, "tier"] == "Assigned")
-check("amine no-TS: summary counts",
-      outa == {"relabeled": 1, "kept_covary": 0, "kept_protected": 0,
-               "kept_si": 0, "forced_nh4": 0, "kept_covary_weak": 0, "kept_default": 2}, outa)
+      and leda.loc[3, "tier"] == "Candidate")
+check("amine no-TS (side channel): summary counts",
+      outa == {"relabeled": 2, "kept_covary": 0, "kept_protected": 0,
+               "kept_si": 0, "forced_nh4": 1, "kept_covary_weak": 0, "kept_default": 0}, outa)
 check("amine no-TS: CHON reading noted in tier_reason",
-      "protonated CHON" in str(leda.loc[1, "tier_reason"]))
+      "protonated CHON" in str(leda.loc[0, "tier_reason"]))
+outm = CU.prefer_amine_over_ammonium(leda_main, nh4_main=True, log=lambda *a, **k: None)
+check("amine no-TS (NH4+ run): a multifunctional X (C10H16O2) keeps its [M+NH4]+ reading, tier kept",
+      leda_main.loc[0, "neutral_formula"] == "C10H16O2" and leda_main.loc[0, "adduct"] == "[M+NH4]+"
+      and leda_main.loc[0, "tier"] == "Assigned" and "kept by default" in str(leda_main.loc[0, "tier_reason"]),
+      leda_main.loc[0].to_dict())
+check("amine no-TS (NH4+ run): the weak X is still re-read; the amine-impossible X keeps its NH4 reading",
+      leda_main.loc[1, "neutral_formula"] == "C9H19NO" and leda_main.loc[3, "adduct"] == "[M+NH4]+"
+      and leda_main.loc[3, "tier"] == "Assigned"
+      and outm == {"relabeled": 1, "kept_covary": 0, "kept_protected": 0,
+                   "kept_si": 0, "forced_nh4": 0, "kept_covary_weak": 0, "kept_default": 2}, outm)
 ledw = pd.DataFrame([dict(peak_id="w", mz=100.0, neutral_formula="C4H8O", adduct="[M+NH4]+",
                           role=L.ROLE_M0, tier="Assigned", tier_reason="")])
 CU.prefer_amine_over_ammonium(ledw, log=lambda *a, **k: None)
@@ -301,11 +311,11 @@ check("amine 3way: Si-bearing NH4 kept as adduct (guard), Assigned",
 check("amine 3way: PROTECTED neutral kept as adduct despite r<=0.2, Assigned",
       _row("prot_n")["adduct"] == "[M+NH4]+" and _row("prot_n")["neutral_formula"] == PROT
       and _row("prot_n")["tier"] == "Assigned", _row("prot_n").to_dict())
-check("amine 3way: multifunctional amine-impossible NH4 kept, tier kept",
-      _row("forced_n")["adduct"] == "[M+NH4]+" and _row("forced_n")["tier"] == "Assigned")
+check("amine 3way: amine-impossible NH4 with absent parents (side channel) kept but capped Candidate",
+      _row("forced_n")["adduct"] == "[M+NH4]+" and _row("forced_n")["tier"] == "Candidate")
 check("amine 3way: summary counts",
-      outb == {"relabeled": 2, "kept_covary": 1, "kept_protected": 1, "kept_si": 1, "forced_nh4": 0,
-               "kept_covary_weak": 1, "kept_default": 4}, outb)
+      outb == {"relabeled": 2, "kept_covary": 1, "kept_protected": 1, "kept_si": 1, "forced_nh4": 1,
+               "kept_covary_weak": 1, "kept_default": 3}, outb)
 
 # --- urea adducts of hydrocarbon / N-rich neutrals: the same ion as protonated X+urea --------
 ledu = pd.DataFrame([

@@ -20,7 +20,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   unconfirmed `[M+NH4]+` of X as `[M+H]+` of the amine X+NH3. Against MS2 on a 2026 chamber campaign, X
   with >= 2 O were NH4+ adducts 117:4 (NH4+ CIMS) and 35:8 (Ur+ side channel), X with <= 1 O
   amines/amides as often or more. Now only a weak X (<= 1 O or <= 4 C, `cleanup.nh4_weak_neutral`)
-  is re-read; a weak X that tracks its parent keeps the reading capped Candidate and no longer
+  is re-read (and, on a side channel such as uronium's, an X whose parent channels are absent from
+  the time series; not on an NH4+ run, `nh4_main`); a weak X that tracks its parent keeps the reading capped Candidate and no longer
   earns 4a (its source-made amide tracks the carbonyl too: the 15 tracked readings MS2 refuted were
   all weak), and the evidence scale's `AmineGate` mirrors both (split open).
 - **The merge vote gives an aromatic-heteroatom neutral at the dimer mass no evidence class**

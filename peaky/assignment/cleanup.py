@@ -1959,7 +1959,7 @@ def nh4_weak_neutral(X) -> bool:
 def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
                                r_min: float = 0.6, r_reject: float = 0.2,
                                min_overlap: int = 12, protected=None,
-                               log=print) -> dict:
+                               nh4_main: bool = False, log=print) -> dict:
     """Uronium / positive urea-CIMS: a [M+NH4]+ adduct of a CHO neutral X is mass-
     AND isotope-identical to [M+H]+ of the amine X+NH3 (the SAME ion formula), so
     the accurate mass + isotope pattern CANNOT distinguish an ammonium adduct of X
@@ -1979,6 +1979,11 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
       * a multifunctional X (>= 2 O on >= 5 C) that is not confirmed stays the
         [M+NH4]+ adduct (tier unchanged): NH4+ adducts of such oxygenates are the
         rule, in NH4+ CIMS and on the Ur+ side channel alike (see AMINE_WEAK_*).
+        One exception: where [M+NH4]+ is a SIDE channel (`nh4_main` False, the
+        uronium run), X's parent channels absent from the time series still
+        refute the adduct (a real X would show its urea cluster) and X is
+        re-read; on an NH4+ run (`nh4_main`, the profile's own adduct) many
+        oxygenates show no other channel, so their absence says nothing.
       * OTHERWISE (a weak X) default to [M+H]+ of the protonated CHON (amine
         X+NH3), at Candidate tier: independent time trace (r <= r_reject), only
         weak tracking (r_reject<r<r_min), a flat unconfirmable parent, or a
@@ -2069,7 +2074,7 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
         why = _WHY.get(v, "unconfirmed")
         if v in ("reject", "ambiguous"):
             why += f" (r={r:.2f})"
-        if not weak:                                      # multifunctional oxygenate: the adduct is the rule
+        if not weak and (nh4_main or v != "presence-reread"):   # multifunctional oxygenate: the adduct is the rule
             _note(ledger, i, f"[M+NH4]+ kept by default: {X} is a multifunctional oxygenate "
                   f"(>= {AMINE_WEAK_MAX_O + 1} O, >= {AMINE_WEAK_MAX_C + 1} C), unconfirmed ({why})")
             counts["kept_default"] += 1

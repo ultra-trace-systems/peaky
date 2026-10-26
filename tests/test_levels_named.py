@@ -93,7 +93,7 @@ NOISE = 1e4 * (1.5 + np.cos(np.arange(40) * 2.3 + 0.7) * np.sin(np.arange(40) * 
 
 
 def _case(rows, run="nitrate", *, merged=(), per_file=(), ts=None, protected=(), context=None, labelled=None,
-          alien=(), comps=(), with_gate=None, partners=None, n_files=1):
+          alien=(), comps=(), with_gate=None, partners=None, n_files=1, nh4_main=False):
     """Level ``rows`` (pair facts over ROW) on a synthetic source of ``run`` (``n_files`` copies of the per-file
     ledger; ``partners`` = other-source partners as ``evidence.partners_from`` gives them)."""
     R = RUNS[run]
@@ -110,7 +110,7 @@ def _case(rows, run="nitrate", *, merged=(), per_file=(), ts=None, protected=(),
     gate = None
     if with_gate if with_gate is not None else R["pol"] == "positive":
         mf = pd.DataFrame([dict(neutral_formula=n, adduct=a) for n, a in merged], columns=["neutral_formula", "adduct"])
-        gate = SPL.AmineGate(mf, ts, set(protected), R["scan"], per_file=pf)
+        gate = SPL.AmineGate(mf, ts, set(protected), R["scan"], per_file=pf, nh4_main=nh4_main)
     lists = LS.ContextLists(R["pol"], context or R["context"], ACTIVE, activation=ACTIVATION)
     S = DC.Prepared(name="t", P=P, comps=cm, pf=pf, ctx=ctx, lists=lists, ts=None, tol_ppm=1.0, pol=R["pol"],
                     run_classes=DC.run_classes_of(R["engine"]), below={}, alien=frozenset(alien), arm=False,
@@ -229,11 +229,12 @@ def test_gate_keep_leaves_the_amine_reading_open_and_contested(x, y):
              per_file=[(y, "[M+(CH4N2O)H]+")])
     assert r.evidence_level == "4b" and not r.split_pinned
     assert r.nh4_gate == "NH4 kept"
+    # a hydrocarbon Y is weak (cleanup.nh4_weak_neutral): kept, but its tracking pins nothing
     assert r.split_how.startswith(f"NH4 reading kept by the amine gate: {y} [M+NH4]+ (tracks its own [M+H]+/urea "
-                                  f"parent, r 1.00 over 40 2-h bins) -- the committed [M+H]+ (amine) reading is "
-                                  f"contested")
+                                  f"parent (r 1.00 over 40 2-h bins), but X is small or mono-oxygenated")
+    assert "-- the committed [M+H]+ (amine) reading is contested" in r.split_how
     assert {"NH4 reading kept by the gate"} <= _kinds(r)
-    assert r.nh4_gate_detail.startswith(f"{y}: keep (tracks its own [M+H]+/urea parent")
+    assert r.nh4_gate_detail.startswith(f"{y}: keep-weak (tracks its own [M+H]+/urea parent")
 
 
 @pytest.mark.parametrize("x,y", [("C8H15N", "C8H12"), ("C9H13N", "C9H10")])
@@ -592,10 +593,22 @@ def test_a_committed_nh4_whose_amine_is_valence_impossible_is_kept_pinned_and_it
 
 
 def test_valence_impossible_mutant_a_neutral_whose_amine_is_possible_is_the_open_amine_default():
-    r = _one(dict(neutral_formula="C6H12O4", adduct="[M+NH4]+", **C13), "uronium", ts=None)
+    """A weak X (C6H12O, one O) whose amine is possible: the open amine default."""
+    r = _one(dict(neutral_formula="C6H12O", adduct="[M+NH4]+", **C13), "uronium", ts=None)
     assert r.evidence_level == "4b" and not r.split_pinned and r.nh4_gate == "amine default"
     assert r.split_how == ("amine default (NH4 reading unconfirmed: no time series: nothing can be confirmed; the "
-                           "engine's gate reads this ion as C6H15NO4 [M+H]+)")
+                           "engine's gate reads this ion as C6H15NO [M+H]+)")
+
+
+def test_a_multifunctional_neutral_whose_amine_is_possible_keeps_its_nh4_reading_open():
+    """X = C6H12O4 (>= 2 O on >= 5 C) on an NH4+ run: the engine keeps the adduct reading by default; the split
+    stays open. (On the uronium side channel its absent parents still refute it: the amine default.)"""
+    side = _one(dict(neutral_formula="C6H12O4", adduct="[M+NH4]+", **C13), "uronium", ts=None)
+    assert side.nh4_gate == "amine default"
+    r = _one(dict(neutral_formula="C6H12O4", adduct="[M+NH4]+", **C13), "uronium", ts=None, nh4_main=True)
+    assert r.evidence_level == "4b" and not r.split_pinned and r.nh4_gate == "NH4 kept, open"
+    assert r.split_how == ("NH4 adduct reading kept, split open (multifunctional oxygenate kept as the NH4 adduct "
+                           "by default (no time series: nothing can be confirmed))")
 
 
 def _nh4_parent_ts(X, *, track=True):
@@ -614,12 +627,31 @@ def test_a_committed_nh4_that_tracks_its_parent_is_kept_and_tracking_is_the_posi
 
 
 def test_tracking_mutant_an_independent_trace_is_the_open_amine_default():
-    X = "C6H12O3"
+    X = "C6H12O"                                     # weak: one O
     r = _one(dict(neutral_formula=X, adduct="[M+NH4]+"), "uronium", ts=_nh4_parent_ts(X, track=False),
              merged=[(X, "[M+H]+"), (X, "[M+NH4]+")])
     assert r.evidence_level == "4b" and not r.split_pinned and r.nh4_gate == "amine default"
     assert r.positive_fact == "" and r.split_how.startswith("amine default (NH4 reading unconfirmed: independent "
                                                             "time trace, r ")
+
+
+def test_tracking_mutant_a_multifunctional_neutral_with_an_independent_trace_keeps_its_nh4_reading_open():
+    X = "C6H12O3"
+    r = _one(dict(neutral_formula=X, adduct="[M+NH4]+"), "uronium", ts=_nh4_parent_ts(X, track=False),
+             merged=[(X, "[M+H]+"), (X, "[M+NH4]+")])
+    assert r.evidence_level == "4b" and not r.split_pinned and r.nh4_gate == "NH4 kept, open"
+    assert r.positive_fact == "" and r.split_how.startswith(
+        "NH4 adduct reading kept, split open (multifunctional oxygenate kept as the NH4 adduct by default "
+        "(independent time trace, r ")
+
+
+def test_a_weak_neutral_that_tracks_its_parent_earns_no_4a():
+    """C5H8O [M+NH4]+ tracks its own [M+H]+, but its source-made amide C5H11NO would too: open, no positive fact."""
+    X = "C5H8O"
+    r = _one(dict(neutral_formula=X, adduct="[M+NH4]+"), "uronium", ts=_nh4_parent_ts(X),
+             merged=[(X, "[M+H]+"), (X, "[M+NH4]+")])
+    assert r.evidence_level == "4b" and not r.split_pinned and r.nh4_gate == "NH4 kept, open"
+    assert r.positive_fact == "" and "but X is small or mono-oxygenated" in r.split_how
 
 
 # =========================================================================== the run's amine_r_min decides the gate
@@ -652,8 +684,10 @@ def test_the_level_gate_reads_the_runs_recorded_amine_r_min(r_min, noise_sd, kep
         assert r.evidence_level == "4a" and r.nh4_gate == "committed NH4"
         assert r.positive_fact == "NH4 adduct tracks its parent"
     else:
-        assert r.evidence_level == "4b" and r.nh4_gate == "amine default" and r.positive_fact == ""
-        assert r.split_how.startswith("amine default (NH4 reading unconfirmed: only weak tracking, r 0.")
+        # C6H12O3 is multifunctional: the untracked reading stays the NH4 adduct, open
+        assert r.evidence_level == "4b" and r.nh4_gate == "NH4 kept, open" and r.positive_fact == ""
+        assert r.split_how.startswith("NH4 adduct reading kept, split open (multifunctional oxygenate kept as the "
+                                      "NH4 adduct by default (only weak tracking, r 0.")
 
 
 # =========================================================================== one file levelled alone: isotope minimum 1
