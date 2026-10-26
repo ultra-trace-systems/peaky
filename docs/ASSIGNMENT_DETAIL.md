@@ -324,7 +324,7 @@ Isotope pairs + series chains, DBE-only plausibility (no `match_compounds`, just
 - **Br-doublet repair**: two M0s 1.9980–1.9988 apart at height ratio 0.6–1.45 — one is the 81Br isotopologue. If the lighter carries Br → attach the heavier as `81Br` child. If **neither** carries Br → **clear both, ONLY if `cfg.reagent_element == "Br"`** (lines 1424–1440). On non-Br reagents (e.g. 15NO3-) unrelated CHON pairs routinely sit 1.998 apart; clearing both there destroyed 54 real `[M+15NO3]-` M0s (fixed ed2001a).
 - **13C sweeper**: attaches obvious unclaimed 13C satellites. Includes twin-satellite fallback (a 13C+81Br satellite counts as carbon evidence, lines 1487–1497) and cross-channel fallback (same neutral assigned High/Good on another channel spares a missing-13C clear, lines 1498–1510).
 - **13C carbon-clamp**: same threshold as `demote_carbon_inconsistent`; only fires on a 13C satellite `≥ height_cutoff` (line 1475); Si-bearing skipped.
-- **13C completeness**: formula predicting a bright 13C with no peak → cleared.
+- **13C completeness**: formula predicting a bright 13C with no peak → cleared. "Bright" = ≥ 1.5× the height gate AND, on an Orbitrap-class spectrum (not a trace sample), a predicted 13C S/N ≥ `PassConfig.audit_min_snr13` (10): the S/N is per window, the height gate one number per file, and a composite file's window floors sit 2-14× apart.
 
 **`audit_mass_gate`** (in passes/postprocess.py): applies the calibrated mass gate to pre-calibration (pass-1) commits. Clears (never rewrites) M0s with `z > cal_z_pattern (4.0)`, or `cal_z_accept (2.0) < z ≤ 4.0` with no pattern evidence. No-op when uncalibrated. Returns `{cleared_z, cleared_z_noiso, cleared_nan}`.
 
@@ -507,7 +507,7 @@ Soft and provenance-tagged (every commit records the source list); only `ROLE_UN
 
 ### 5.7 Amine re-read (cleanup.py, uronium-only)
 
-`prefer_amine_over_ammonium(ts_peaks=None, r_min=0.7)`: `[M+NH4]+` of CHO neutral X is mass/isotope-identical to `[M+H]+` of amine X+NH3. Re-reads as the protonated amine UNLESS (1) X is corroborated — present as `[M+H]+` or `[M+(CH4N2O)H]+`, or time-series log-Pearson `r ≥ 0.7` co-variation (≥6 points) — OR (2) the amine is valence-impossible (negative DBE → NH4 forced). Touches only `neutral_formula`/`adduct`.
+`prefer_amine_over_ammonium(ts_peaks=None, r_min=0.7)`: `[M+NH4]+` of CHO neutral X is mass/isotope-identical to `[M+H]+` of amine X+NH3. A multifunctional X (≥ 2 O on ≥ 5 C) keeps its adduct reading; a weak X (≤ 1 O or ≤ 4 C) re-reads as the protonated amine UNLESS (1) X is corroborated — present as `[M+H]+` or `[M+(CH4N2O)H]+`, or time-series log-Pearson `r ≥ 0.7` co-variation (≥6 points) — OR (2) the amine is valence-impossible (negative DBE → NH4 forced). Touches only `neutral_formula`/`adduct`.
 
 ---
 

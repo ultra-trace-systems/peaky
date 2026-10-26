@@ -76,7 +76,7 @@ peaky list datasets
 peaky list samples --batch "<batch>" --dataset "<workspace>"
 
 # one sample
-peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto> \
+peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|NH4_14N|auto> \
     [--height-cutoff-x-edge 2.5] [--ts-batch "<batch>" --occurrence-min auto] \
     --output-dir ~/peaky-output/<name>
 
@@ -365,8 +365,11 @@ pipeline assigns a **presence-cover subset and merges by m/z**:
 file otherwise falls back to `[M-H]-` = wrong polarity). For positive urea-CIMS,
 **`cleanup.prefer_amine_over_ammonium(ledger, ts_peaks=, r_min=0.6, protected=)`** resolves
 the exact-mass degeneracy `[M+NH4]+` of X ≡ `[M+H]+` of the amine X+NH3 by TIME: a real
-ammonium adduct must TRACK X's own `[M+H]+`/urea parent (2 h-binned log-corr). THREE-WAY
-per neutral — **keep** the adduct (Assigned) when it tracks a shaped parent (r≥`r_min`);
+ammonium adduct must TRACK X's own `[M+H]+`/urea parent (2 h-binned log-corr), and only a
+WEAK X (≤1 O or ≤4 C, `nh4_weak_neutral`) is ever re-read: a multifunctional X (≥2 O on ≥5 C)
+keeps its adduct reading by default, and a weak X that tracks is kept capped Candidate (its
+source-made amide tracks too). For a weak X, THREE-WAY
+per neutral — **keep** the adduct when it tracks a shaped parent (r≥`r_min`);
 **re-read** to the amine when it fails to track a shaped parent (r≤0.2) OR the parent
 channels are absent from the TS (their absence refutes the ammonium reading); **cap at
 Candidate** (keep the adduct but demote) when the pairing is weak (0.2<r<`r_min`) or the

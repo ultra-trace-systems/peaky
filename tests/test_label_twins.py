@@ -769,3 +769,32 @@ def test_the_labelled_nitrate_golden_set_with_its_label_twin_table(tmp_path):
     assert len(m) == len(core) == len(ref)
     assert (m["evidence_level"] == m["level"]).all()
 
+
+
+def test_a_refuted_reading_is_capped_candidate_in_the_merged_ledger():
+    table = pd.DataFrame([
+        dict(neutral_formula="C10H18O4", adduct="[M+NO3]-", veto=True,
+             note="the 14N line runs 6.2x its cluster share of the 15N line; cluster or organonitrate undecided"),
+        dict(neutral_formula="C9H14O4", adduct="[M+^NO3]-", veto=True, note="14N twin absent"),
+        dict(neutral_formula="C8H12O6", adduct="[M+NO3]-", veto=False, note=""),
+        dict(neutral_formula="C2HF3O2", adduct="[M+NO3]-", veto=True, note="x"),
+    ])
+    merged = pd.DataFrame([
+        dict(neutral_formula="C10H18O4", adduct="[M+NO3]-", tier="Assigned", tier_reason="vote"),
+        dict(neutral_formula="C9H14O4", adduct="[M+^NO3]-", tier="Assigned", tier_reason=pd.NA),
+        dict(neutral_formula="C8H12O6", adduct="[M+NO3]-", tier="Assigned", tier_reason=pd.NA),
+        dict(neutral_formula="C2HF3O2", adduct="[M+NO3]-", tier="Assigned", tier_reason=pd.NA),   # curated: exempt
+        dict(neutral_formula="C10H18O4", adduct="[M+^NO3]-", tier="Assigned", tier_reason=pd.NA),  # other adduct
+    ])
+    out = LT.demote_vetoed(merged, table, exempt={"C2HF3O2"}, log=lambda *a: None)
+    assert list(merged["tier"]) == ["Candidate", "Candidate", "Assigned", "Assigned", "Assigned"]
+    assert out == {"capped": 2}
+    assert "C10H19NO7 [M-H]-" in merged.at[0, "tier_reason"] and merged.at[0, "tier_reason"].startswith("vote | ")
+    assert "14N twin absent" in merged.at[1, "tier_reason"]
+
+
+def test_no_table_changes_nothing():
+    merged = pd.DataFrame([dict(neutral_formula="C10H18O4", adduct="[M+NO3]-", tier="Assigned")])
+    assert LT.demote_vetoed(merged, None, log=lambda *a: None) == {"capped": 0}
+    assert LT.demote_vetoed(merged, LT._empty(), log=lambda *a: None) == {"capped": 0}
+    assert merged.at[0, "tier"] == "Assigned"

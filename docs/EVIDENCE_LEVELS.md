@@ -577,11 +577,17 @@ every `[M+NH4]+` reading in the grid, in the engine's order:
 3. **The verdict.** The `[M+NH4]+` trace tracks the best of Y's own `[M+H]+` /
    urea-cluster parent traces with r ≥ 0.6 (`amine_r_min`; the run's own value
    when it set one) over ≥ 12 two-hour bins: kept, and **NH4 adduct tracks its
-   parent** is a positive fact. (A confound: a protonated amine that loses NH3
-   in the source also "tracks".)
-4. **Otherwise** the engine re-reads the ion as the amine Y + NH3 `[M+H]+`,
-   unless that amine is valence-impossible: the NH4 reading is then kept,
-   unconfirmed.
+   parent** is a positive fact -- for a multifunctional Y only. A **weak** Y
+   (`cleanup.nh4_weak_neutral`: ≤ 1 O or ≤ 4 C) is kept but the split stays
+   open and the engine caps it Candidate: the source makes the amide / imine
+   Y + NH3 from a small carbonyl, and that amide tracks the carbonyl by
+   construction (MS2, 2026 chamber campaign: the 15 tracked `[M+NH4]+` readings MS2
+   refuted were all weak Y, 9 of them at 4a).
+4. **Otherwise** a multifunctional Y (≥ 2 O on ≥ 5 C) keeps its NH4 reading,
+   open (`adduct-default`): NH4+ adducts of such oxygenates are the rule (MS2:
+   117:4 in NH4+ CIMS, 35:8 on the Ur+ side channel). A weak Y is re-read as
+   the amine Y + NH3 `[M+H]+`, unless that amine is valence-impossible: the NH4
+   reading is then kept, unconfirmed.
 
 Without a time series (a single file, a decoy arm) the gate takes its
 no-time-series path: steps 1, 2 and the valence exception only.
@@ -606,9 +612,10 @@ How the gate's result sets the split:
 
 | committed reading | NH4 reading | split |
 |---|---|---|
-| X `[M+NH4]+` | kept: tracks its parent | PINNED, `NH4 adduct tracks its parent (r, bins)`; a 4a positive fact |
+| X `[M+NH4]+` | kept: tracks its parent (multifunctional X) | PINNED, `NH4 adduct tracks its parent (r, bins)`; a 4a positive fact |
+| X `[M+NH4]+` | kept: tracks, but X weak / multifunctional X unconfirmed | open: `NH4 adduct reading kept, split open (<how>)`; no positive fact |
 | X `[M+NH4]+` | kept by an exception (Si, protected, amine impossible) | PINNED, the exception named; no positive fact |
-| X `[M+NH4]+` | not kept | open: `amine default (NH4 reading unconfirmed: <why>; ...)` |
+| X `[M+NH4]+` | not kept (a weak X) | open: `amine default (NH4 reading unconfirmed: <why>; ...)` |
 | X `[M+H]+` | Y inadmissible | Y leaves the set; the usual rules decide (typically `NH4 reading inadmissible: no uronium adduct of Y (...); only decomposition`) |
 | X `[M+H]+` | Y admissible, not kept | open: `amine default (NH4 reading unconfirmed: Y -- <why>)` |
 | X `[M+H]+` | Y admissible, kept | open: `NH4 reading kept by the amine gate: Y ... -- the committed [M+H]+ (amine) reading is contested` |

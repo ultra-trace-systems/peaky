@@ -8,6 +8,39 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The 13C completeness check reads a missing line by its predicted S/N on Orbitrap-class
+  spectra.** The clear needed the predicted 13C height >= 1.5x the per-file height gate, one
+  number per file; a composite file's windows report down to floors 2-14x apart (a 2026 chamber campaign's
+  NH4+ composite: its 131-436 window nothing below ~510 cps against a ~43 cps file edge), so the audit
+  cleared ~330 readings per NH4+ file on lines no spectrum could show, 46 MS2-confirmed ions among
+  them. It now also needs the line's predicted S/N >= `PassConfig.audit_min_snr13` (10; a
+  CHO/CHON 13C line is present 94-99 % of the time from 7-10, 0-5 % below 3). TOF runs, trace
+  samples and rows without an S/N keep the height gate only.
+- **The amine gate keeps a multifunctional oxygenate's `[M+NH4]+` reading.** It re-read every
+  unconfirmed `[M+NH4]+` of X as `[M+H]+` of the amine X+NH3. Against MS2 on a 2026 chamber campaign, X
+  with >= 2 O were NH4+ adducts 117:4 (NH4+ CIMS) and 35:8 (Ur+ side channel), X with <= 1 O
+  amines/amides as often or more. Now only a weak X (<= 1 O or <= 4 C, `cleanup.nh4_weak_neutral`)
+  is re-read; a weak X that tracks its parent keeps the reading capped Candidate and no longer
+  earns 4a (its source-made amide tracks the carbonyl too: the 15 tracked readings MS2 refuted were
+  all weak), and the evidence scale's `AmineGate` mirrors both (split open).
+- **The merge vote gives an aromatic-heteroatom neutral at the dimer mass no evidence class**
+  (`plausibility.aromatic_heteroatom`: C >= 20, DBE/C >= 0.5, N/S/P). Its isotope "confirmation"
+  in a few files outvoted an oxygenated dimer read in more: C28H30O7S `[M-H]-` sits 0.27 mDa from
+  C20H30O11 `[M+^NO3]-` (C8 S = H ^N O7), and MS2 read the dimer.
+- **A reading the label twins refute is capped Candidate** (`label_twins.demote_vetoed`,
+  `merge_gates.label_veto`), not only rejected at 5b: 5 of the 6 14N organonitrates MS2 read as
+  `[X'-H]-` sat Assigned as `[X+NO3]-` clusters.
+- **Urea adducts of hydrocarbons and N-rich neutrals are capped Candidate**
+  (`cleanup.cap_implausible_urea_adducts`, `merge_gates.urea`): the same ion as protonated X+urea.
+
+### Added
+
+- **`NH4_14N`, the unlabelled ammonium profile** (`[M+NH4]+` / `[M+H]+`, TIC, the uronium
+  context), until now a `--reagent-config` JSON of a 2026 chamber campaign.
+- **`pass1_outcome`**: pass 1 records on each target peak it left unexplained why (no grid
+  formula / context refusal with its reason / unscored / best reading under tau_low /
+  not committed), and logs the counts.
+
 - **mascope-sdk >= 2026.10.20 (Mascope 1.13).** The earlier SDKs cannot read a stitched sample's
   peaks from a server of Mascope 1.12 or later: the peak listing names the sample's scan ranges
   (`segments`) beside its peaks, and every `samples.get_peaks` / `load_peaks` of such a sample

@@ -183,10 +183,26 @@ class AmineGate:
             g = dict(kept=True, track=False, verdict="protected", r=np.nan, ov=0,
                      how="protected identity (reflist-rescue / known / certified)")
         else:
+            from peaky.assignment import cleanup as CU
             v, r, ov = self.verdict(X)
-            if v == "keep":
+            weak = CU.nh4_weak_neutral(X)
+            if v == "keep" and weak:
+                # the engine keeps the reading capped Candidate: a source-made amide of a small or
+                # mono-oxygenated carbonyl tracks it too, so tracking pins nothing
+                g = dict(kept=True, track=False, pin=False, verdict="keep-weak", r=r, ov=ov,
+                         how=f"tracks its own [M+H]+/urea parent (r {r:.2f} over {ov} 2-h bins), but X is "
+                             f"small or mono-oxygenated: its amide X+NH3 [M+H]+ tracks it too")
+            elif v == "keep":
                 g = dict(kept=True, track=True, verdict=v, r=r, ov=ov,
                          how=f"tracks its own [M+H]+/urea parent, r {r:.2f} over {ov} 2-h bins")
+            elif not weak:
+                why = GATE_WHY.get(v, "unconfirmed") + (
+                    f", r {r:.2f}" if v in ("reject", "ambiguous") and np.isfinite(r) else "")
+                if not self.has_ts and v.startswith("presence"):
+                    why = NO_TS_WHY
+                # the engine keeps a multifunctional oxygenate's adduct reading by default (unpinned)
+                g = dict(kept=True, track=False, pin=False, verdict="adduct-default", r=r, ov=ov,
+                         how=f"multifunctional oxygenate kept as the NH4 adduct by default ({why})")
             else:
                 am = dict(cnt)
                 am["N"] = am.get("N", 0) + 1
@@ -344,6 +360,10 @@ def split_core(S, r, ads):
             # admissibility rule does not apply (as built; see BACKLOG)
             g = gate(n)
             gi.update(kind="committed NH4", nh4=[(n, g)], track=g["track"])
+            if g["kept"] and not g.get("pin", True):
+                # kept as the NH4 adduct, but neither its trace nor the default pins the split
+                gi["kind"] = "NH4 kept, open"
+                return False, ("NH4 adduct reading kept, split open (" + g["how"] + ")"), plaus, False, gi
             if g["kept"]:
                 how = ("NH4 adduct tracks its parent (" + g["how"] + ")") if g["track"] else \
                     ("NH4 adduct kept by the amine gate: " + g["how"])

@@ -90,7 +90,10 @@ peaks  ──► resolve('auto', peaks)              name/alias ──► resolv
    `purity 0.98`, `label_isotope='^N'`, `label_max=2`), **`IODIDE`**
    (I⁻, neg, normalise on reagent; adducts `[M+I]⁻`/`[M-H]⁻`/`[M+I2]⁻`/
    `[M-H+I2]⁻`), **`NH4_15N`** (¹⁵N-labelled ammonium, pos, TIC, `purity 0.98`,
-   adducts `[M+^NH4]⁺`/`[M+H]⁺`, `label_isotope=None`).
+   adducts `[M+^NH4]⁺`/`[M+H]⁺`, `label_isotope=None`), **`NH4_14N`** (unlabelled
+   ammonium, pos, TIC, adducts `[M+NH4]⁺`/`[M+H]⁺`, the `uronium` context: every
+   main-channel commit is the reagent-N isobar of the amine X+NH3, settled by the
+   batch's amine gate -- `cleanup.prefer_amine_over_ammonium`).
 
    > **Iodide is a soft adduct source with a monoisotopic reagent.** Most analytes
    > appear as the `[M+I]⁻` cluster; strong acids also deprotonate to `[M-H]⁻` (both
@@ -411,6 +414,7 @@ on the run's own polarity only. Nothing is opened by polarity.
 | `NO3_15N.purity` | 0.98 | ~98 % ¹⁵N reagent. Published by `assign.run` via `isotopes.set_label_purity`; read by BOTH the local scorer's `predict_isotopes` call and peaky's own envelope predictor (`isotopes.isotope_pattern`). `isotopes.LABEL_PURITY_15N` is only the fallback default |
 | `IODIDE.ranges` | `C0-40 H0-80 N0-3 O0-20 S0-2 Cl0-1` | iodide grid box (**no I** — covalent iodine is monoisotopic, off-grid) |
 | `NH4_15N.ranges` | `C0-40 H0-90 N0-6 O0-15 S0-2` | ¹⁵N-ammonium grid box (uronium-like positive box) |
+| `NH4_14N.ranges` | `C0-40 H0-90 N0-6 O0-15 S0-2` | unlabelled-ammonium grid box (as `NH4_15N`) |
 | `NH4_15N.purity` | 0.98 | ¹⁵N fraction of the ammonium reagent — measured 0.018–0.021 ¹⁴N/¹⁵N on the 2026-09-10 file (= nominal 98 atom %). Same two consumers as `NO3_15N.purity` |
 | `_AMMONIUM_15N_KEY` | `ammonium15N` | cluster-library key for `[M+^NH4]+` sources: `[(^NH3)n+H]+` n≤4, hydrates k≤3, + the ¹⁴N monomer twin |
 | `relabel_ammonium_dehydration` `ppm` / `own_adduct_max` / ceiling | 4.0 / 0.5 / 1.5× | dehydration-site match window; the alkene reading is re-read only while its OWN `[M+^NH4]+` is < 0.5× its `[M+H]+` (or, when it has no `[M+H]+` at all, ≤ 0.5× the parent's adduct), and never when the product is brighter than 1.5× the parent's strongest form |

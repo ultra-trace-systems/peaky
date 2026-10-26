@@ -443,3 +443,43 @@ def summary(table: pd.DataFrame | None, prof) -> dict:
             "passes": int((t15["twin_verdict"] == "passes").sum()),
             "refuted": int(t15["veto"].map(_truth).sum()),
             "lines_refuted": int(c14["veto"].map(_truth).sum())}
+
+
+def demote_vetoed(merged: pd.DataFrame, table: pd.DataFrame | None, *, exempt=(), log=print) -> dict:
+    """Rule K's refutation reaches the TIER, not only the level. A reading the
+    label twins refute (`veto`: an [X+NO3]- whose 14N line exceeds its cluster
+    share or has no 15N partner, an [Y+^NO3]- whose 14N twin is absent) was
+    rejected at 5b while the merge vote kept it Assigned: on a 2026 chamber campaign's
+    15NO3- composite 5 of the 6 14N organonitrates MS2 read as [X'-H]- (C10H19NO7 ...)
+    sat Assigned as C10H18O4 [M+NO3]- etc., and no Assigned reading MS2 confirmed
+    was refuted. Such an Assigned row is capped Candidate, the note naming the
+    alternative (X + HNO3 [M-H]- for a 14N line); `exempt` = neutral formulas a
+    curated list stands behind. Mutates `merged`; returns counts."""
+    out = {"capped": 0}
+    vt = veto(table)
+    if not vt or merged is None or not len(merged) or "tier" not in merged.columns:
+        return out
+    if "tier_reason" not in merged.columns:
+        merged["tier_reason"] = pd.NA
+    exempt = {str(x) for x in (exempt or ())}
+    for i in merged.index:
+        key = (str(merged.at[i, "neutral_formula"]), str(merged.at[i, "adduct"]))
+        if key not in vt or str(merged.at[i, "tier"]) != "Assigned" or key[0] in exempt:
+            continue
+        n, a = key
+        alt = ""
+        if a == NO3:
+            cnt = C.parse_formula(n)
+            cnt["H"] = cnt.get("H", 0) + 1
+            cnt["N"] = cnt.get("N", 0) + 1
+            cnt["O"] = cnt.get("O", 0) + 3
+            alt = f" (the organonitrate {C.format_formula(cnt)} [M-H]- is the same ion)"
+        msg = f"label twin: {vt[key] or 'refuted'}{alt}; capped Candidate"
+        prev = merged.at[i, "tier_reason"]
+        prev = "" if prev is None or (isinstance(prev, float) and np.isnan(prev)) or prev is pd.NA else str(prev)
+        merged.at[i, "tier_reason"] = f"{prev} | {msg}" if prev else msg
+        merged.at[i, "tier"] = "Candidate"
+        out["capped"] += 1
+    if out["capped"]:
+        log(f"[label_twins] {out['capped']} Assigned readings the label twins refute capped Candidate")
+    return out

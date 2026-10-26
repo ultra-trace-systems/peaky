@@ -919,11 +919,12 @@ try:
               list(res["merged"].columns))
         check("run: batch_summary records the merged-level gates (the known-species decision, "
               "the reagent-water ladder, the isotopologue rows, the element-signature removal and the "
-              "TOF ion-M+2 gates always -- nothing pooled, no rung or signature veto here, the "
-              "isotopologue gate skipped on a height-only series, the TOF gates skipped on an "
-              "Orbitrap-class batch; no polarity gate in negative mode)",
+              "TOF ion-M+2 gates and the label-twin tier cap always -- nothing pooled, no rung or "
+              "signature veto here, the isotopologue gate skipped on a height-only series, the TOF gates "
+              "skipped on an Orbitrap-class batch; no polarity gate in negative mode)",
               set(summ.get("merge_gates", {})) == {"known", "reagent_water", "isotopologue",
-                                                    "element_signature", "tof_m2"}
+                                                    "element_signature", "label_veto", "tof_m2"}
+              and summ["merge_gates"]["label_veto"] == {"capped": 0}
               and summ["merge_gates"]["isotopologue"]["ran"] is False
               and "no peak areas" in summ["merge_gates"]["isotopologue"]["skipped"]
               and summ["merge_gates"]["element_signature"] == {"removed": 0, "pairs": []}
@@ -1660,6 +1661,22 @@ check("a batch without a time series merges as before (label NA, no crash)",
 
 def test_all():
     assert FAIL == 0, f"{FAIL} checks failed"
+
+
+# --- the vote gives an aromatic-heteroatom neutral at the dimer mass no class ---------------
+# C28H30O7S [M-H]- sits 0.27 mDa from C20H30O11 [M+^NO3]- (C8 S = H ^N O7); the S formula's isotope
+# fit "confirmed" it in 2 files and outvoted the oxygenated dimer read in 6 (a 2026 campaign's 15NO3- composite; MS2: the dimer)
+arom = {**_filese(2, 509.1640, "C28H30O7S", "[M-H]-", "Assigned", 0.95, "4b", "iso"),
+        **_filese(6, 509.1640, "C20H30O11", "[M+^NO3]-", "Candidate", 0.99, "5a", "", start=2)}
+ma, _ = AB.align(arom, tol_ppm=6.0)
+check("vote: an aromatic S neutral (C28, DBE/C 0.5) gets no class -> the 6-file C20H30O11 [M+^NO3]- wins",
+      len(ma) == 1 and ma.iloc[0]["neutral_formula"] == "C20H30O11" and ma.iloc[0]["adduct"] == "[M+^NO3]-"
+      and ma.iloc[0]["tier"] == "Candidate", ma.to_dict("records"))
+plain = {**_filese(2, 509.1640, "C21H34O12S", "[M-H]-", "Assigned", 0.95, "4b", "iso"),
+         **_filese(6, 509.1640, "C20H30O11", "[M+^NO3]-", "Candidate", 0.99, "5a", "", start=2)}
+mpl, _ = AB.align(plain, tol_ppm=6.0)
+check("vote: a non-aromatic S neutral keeps its class -> the confirmed 2-file reading still wins",
+      mpl.iloc[0]["neutral_formula"] == "C21H34O12S", mpl.to_dict("records"))
 
 
 if __name__ == "__main__":

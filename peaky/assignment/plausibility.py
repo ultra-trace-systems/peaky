@@ -19,6 +19,7 @@ flagged set is small and defensible (the clear coincidences), not a dragnet.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 
 import numpy as np
@@ -36,6 +37,16 @@ OC_HIGH = 1.0       # ...O/C >= this  -> high-heteroatom coincidence
 N_VERY_HIGH = 4     # N>=4 combined with...
 O_HIGH = 8          # ...O>= this
 HC_FLOOR = 0.35     # H/C below this -> implausibly carbon-rich (F-FREE formulas only)
+# An AROMATIC-HETEROATOM neutral at the dimer mass: C >= AROM_MIN_C, DBE/C >=
+# AROM_MIN_DBE_PER_C and N, S or P in the neutral. On a labelled-nitrate channel
+# such a formula's [M-H]- (or cluster) sits sub-ppm on an oxygenated dimer's
+# [M+^NO3]- (C8 S = H ^N O7, 0.27 mDa): C28H30O7S [M-H]- is C20H30O11 [M+^NO3]-.
+# The isotope fit that "confirms" it in a few files is no evidence over a CHO
+# reading of the same peak (2026 alpha-pinene chamber campaign: 14 Assigned on the 15NO3-
+# composite, 3 refuted by MS2), so the merge vote gives it no class
+# (assign_batch._vote) and the file count decides.
+AROM_MIN_C = 20
+AROM_MIN_DBE_PER_C = 0.5
 F_HIGH = 4          # F>=this -> heavily fluorinated; F is monoisotopic, so the fit
                     # has NO isotope twin to confirm it (a fluorine mass coincidence).
                     # Flagged with the RIGHT reason: low H/C here is F displacing H
@@ -733,3 +744,17 @@ def write_audit(audit: list, path: str) -> int:
         df = df.sort_values(["mz", "neutral_formula"], na_position="last").reset_index(drop=True)
     df.to_csv(path, index=False)
     return len(df)
+
+
+@functools.lru_cache(maxsize=65536)
+def aromatic_heteroatom(formula: str) -> bool:
+    """A neutral the merge vote gives no evidence class: C >= AROM_MIN_C,
+    DBE/C >= AROM_MIN_DBE_PER_C, and N, S or P in it (see AROM_MIN_C)."""
+    try:
+        cnt = C.parse_formula(str(formula))
+    except Exception:
+        return False
+    nc = cnt.get("C", 0)
+    if nc < AROM_MIN_C or not (cnt.get("N", 0) + cnt.get("S", 0) + cnt.get("P", 0)):
+        return False
+    return C.dbe(cnt) / nc >= AROM_MIN_DBE_PER_C

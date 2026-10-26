@@ -132,7 +132,13 @@ selected sample_ids (SAMPLING.md)
      confirmed** — the formula or the ion pinned, the neutral not; **0 =
      unconfirmed** — exact mass alone or an assignment that argues with
      itself, or no class at all (a pure `align()` caller without the column:
-     every reading is 0 and the vote is the pure count). **The vote class is
+     every reading is 0 and the vote is the pure count). An **aromatic-heteroatom**
+     neutral at the dimer mass (`plausibility.aromatic_heteroatom`: C ≥ 20,
+     DBE/C ≥ 0.5, N/S/P in the neutral) is class 0 whatever its file said: on a
+     labelled-nitrate channel its `[M-H]-` sits sub-ppm on an oxygenated dimer's
+     `[M+^NO3]-` (C8 S = H ^N O7, 0.27 mDa) and its isotope "confirmation" is no
+     evidence over that reading (2026 chamber campaign: C28H30O7S `[M-H]-` was C20H30O11
+     `[M+^NO3]-` by MS2). **The vote class is
      not the evidence level and not the claim.** It is the decision peaky used
      before the evidence scale, kept private to the vote so that the scale —
      a reader's grade of the committed formula — never moves a reading; the
@@ -461,12 +467,22 @@ selected sample_ids (SAMPLING.md)
      (C15H22 `[M+NH4]⁺` in 14 files, C15H25N `[M+H]⁺` in the 15th) — a phantom
      disagreement, and a phantom minority for the vote.
    - `cleanup.prefer_amine_over_ammonium(merged, ts_peaks, r_min = amine_r_min
-     (0.6))` re-reads uncorroborated `[M+NH4]⁺` as `[M+H]⁺` of the `+NH3` amine
-     (mass/isotope-identical, simpler in an N-rich source) unless the adduct's
-     trace tracks its parent — done at the **merged** level where cross-channel
-     corroboration is complete.
-   `batch_summary.json["merge_gates"]` records both gates' counts beside the
+     (0.6))` re-reads an uncorroborated `[M+NH4]⁺` of a **weak** X (≤ 1 O or
+     ≤ 4 C: a small or mono-oxygenated carbonyl, whose source-made amide is the
+     same ion) as `[M+H]⁺` of the `+NH3` amine unless the adduct's trace tracks
+     its parent; a weak X that tracks keeps the reading capped Candidate (the
+     amide tracks too), and a multifunctional X (≥ 2 O on ≥ 5 C) keeps its
+     adduct reading by default — done at the **merged** level where
+     cross-channel corroboration is complete.
+   - `cleanup.cap_implausible_urea_adducts(merged)` caps Candidate an Assigned
+     `[M+(CH4N2O)H]⁺` of a pure hydrocarbon or of an X with ≥ 2 N (the same ion
+     as protonated X + urea).
+   `batch_summary.json["merge_gates"]` records the gates' counts beside the
    known-species decision's.
+   After the label twins are measured (15N-labelled nitrate),
+   `label_twins.demote_vetoed` caps Candidate every Assigned reading rule K
+   refutes (`merge_gates.label_veto`): the level was already 5b, now the tier
+   follows.
 
 6. **The residual stage** (`residual=True`, the default; [`SAMPLING.md`](SAMPLING.md)
    §3b). After the cover's merge and stamp, the universe bins in **no assigned

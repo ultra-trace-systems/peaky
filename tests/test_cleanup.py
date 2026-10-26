@@ -170,10 +170,10 @@ check("envelope-tail: count == 2", rest["tails"] == 2, rest)
 check("envelope-tail: isolated peak untouched", L.role_of(ledt, "far") == L.ROLE_UNEXPLAINED)
 check("envelope-tail: ledger valid", L.validate(ledt) == [])
 
-# --- prefer_amine_over_ammonium: default-to-CHON policy, no-TS (single-sample) ----
-# Ammonium adducts are rare; the burden of proof is on the adduct. Without a time
-# series nothing can be confirmed, so EVERY non-Si/protected [M+NH4]+ defaults to the
-# protonated CHON (amine X+NH3), Candidate tier -- even a presence-corroborated one.
+# --- prefer_amine_over_ammonium, no-TS (single-sample) ----------------------------
+# Without a time series nothing can be confirmed. A WEAK X (<= 1 O or <= 4 C) defaults
+# to the protonated CHON (amine X+NH3), Candidate tier -- even a presence-corroborated
+# one; a multifunctional oxygenate (>= 2 O, >= 5 C) keeps its adduct reading.
 leda = pd.DataFrame([
     dict(peak_id="a", mz=186.15, neutral_formula="C10H16O2", adduct="[M+NH4]+",
          role=L.ROLE_M0, tier="Assigned", tier_reason=""),   # -> protonated CHON
@@ -187,20 +187,26 @@ leda = pd.DataFrame([
          role=L.ROLE_ISO, tier="Assigned", tier_reason=""),
 ])
 outa = CU.prefer_amine_over_ammonium(leda, log=lambda *a, **k: None)
-check("amine no-TS: NH4 defaults to protonated CHON [M+H]+, capped Candidate",
-      leda.loc[0, "neutral_formula"] == "C10H19NO2" and leda.loc[0, "adduct"] == "[M+H]+"
-      and leda.loc[0, "tier"] == "Candidate", leda.loc[0].to_dict())
-check("amine no-TS: presence alone does NOT keep the ammonium adduct -> CHON",
+check("amine no-TS: a multifunctional oxygenate (C10H16O2) keeps its [M+NH4]+ reading, tier kept",
+      leda.loc[0, "neutral_formula"] == "C10H16O2" and leda.loc[0, "adduct"] == "[M+NH4]+"
+      and leda.loc[0, "tier"] == "Assigned" and "kept by default" in str(leda.loc[0, "tier_reason"]),
+      leda.loc[0].to_dict())
+check("amine no-TS: presence alone does NOT keep a weak X's ammonium adduct -> CHON",
       leda.loc[1, "neutral_formula"] == "C9H19NO" and leda.loc[1, "adduct"] == "[M+H]+"
       and leda.loc[1, "tier"] == "Candidate", leda.loc[1].to_dict())
-check("amine no-TS: amine-impossible X -> NH4 kept but capped Candidate",
+check("amine no-TS: a multifunctional amine-impossible X keeps its NH4 reading (tier kept)",
       leda.loc[3, "neutral_formula"] == "C6H14O4" and leda.loc[3, "adduct"] == "[M+NH4]+"
-      and leda.loc[3, "tier"] == "Candidate")
+      and leda.loc[3, "tier"] == "Assigned")
 check("amine no-TS: summary counts",
-      outa == {"relabeled": 2, "kept_covary": 0, "kept_protected": 0,
-               "kept_si": 0, "forced_nh4": 1}, outa)
+      outa == {"relabeled": 1, "kept_covary": 0, "kept_protected": 0,
+               "kept_si": 0, "forced_nh4": 0, "kept_covary_weak": 0, "kept_default": 2}, outa)
 check("amine no-TS: CHON reading noted in tier_reason",
-      "protonated CHON" in str(leda.loc[0, "tier_reason"]))
+      "protonated CHON" in str(leda.loc[1, "tier_reason"]))
+ledw = pd.DataFrame([dict(peak_id="w", mz=100.0, neutral_formula="C4H8O", adduct="[M+NH4]+",
+                          role=L.ROLE_M0, tier="Assigned", tier_reason="")])
+CU.prefer_amine_over_ammonium(ledw, log=lambda *a, **k: None)
+check("amine no-TS: a weak X (C4H8O) -> protonated amide C4H11NO, Candidate",
+      ledw.loc[0, "neutral_formula"] == "C4H11NO" and ledw.loc[0, "tier"] == "Candidate", ledw.loc[0].to_dict())
 
 # --- amine gate: Si guard (siloxane NH4 adducts are real; aminosiloxanes are not)
 leds = pd.DataFrame([
@@ -228,7 +234,10 @@ _dt = [_base + pd.Timedelta(hours=2 * int(k)) for k in _kk]       # 2 h spacing 
 
 REAL, REJ, AMB, FLATP, ABSENT, PROT = \
     "C7H12O4", "C10H16O2", "C9H14O5", "C10H18O5", "C4H4O", "C6H8O2"
+WREAL, WREJ = "C5H8O", "C6H10O"                                  # weak X: mono-oxygenated
 _chan = [                                                        # (neutral, adduct, trace)
+    (WREAL, "[M+H]+", _shp), (WREAL, "[M+NH4]+", _shp * 0.3),
+    (WREJ,  "[M+H]+", _shp), (WREJ, "[M+NH4]+", _shp[::-1]),
     (REAL,  "[M+H]+", _shp), (REAL, "[M+(CH4N2O)H]+", _shp), (REAL, "[M+NH4]+", _shp * 0.2),
     (REJ,   "[M+H]+", _shp),                                  (REJ, "[M+NH4]+", _shp[::-1]),
     (AMB,   "[M+(CH4N2O)H]+", _shp),                          (AMB, "[M+NH4]+", _amb),
@@ -259,22 +268,31 @@ ledb = pd.DataFrame([
     _nh4_row("prot_n", PROT),   _parent_row("prot_p", PROT, "[M+H]+"),
     _nh4_row("si_n", "C3H9NOSi"),                           # Si guard
     _nh4_row("forced_n", "C6H14O4"),                        # amine impossible
+    _nh4_row("wreal_n", WREAL), _parent_row("wreal_p", WREAL, "[M+H]+"),
+    _nh4_row("wrej_n", WREJ),   _parent_row("wrej_p", WREJ, "[M+H]+"),
 ])
 outb = CU.prefer_amine_over_ammonium(ledb, ts_peaks=tsb, r_min=0.6, r_reject=0.2,
                                      protected={PROT}, log=lambda *a, **k: None)
 def _row(pid): return ledb.loc[ledb.peak_id == pid].iloc[0]
-check("amine 3way: TRACKING NH4 (r>=0.6) is the ONLY way to keep the adduct, Assigned",
+check("amine 3way: a multifunctional X whose NH4 TRACKS (r>=0.6) keeps the adduct, Assigned",
       _row("real_n")["adduct"] == "[M+NH4]+" and _row("real_n")["neutral_formula"] == REAL
       and _row("real_n")["tier"] == "Assigned", _row("real_n").to_dict())
-check("amine 3way: shaped NON-tracking NH4 (r<=0.2) -> protonated CHON, Candidate",
-      _row("rej_n")["adduct"] == "[M+H]+" and _row("rej_n")["neutral_formula"] == "C10H19NO2"
-      and _row("rej_n")["tier"] == "Candidate", _row("rej_n").to_dict())
-check("amine 3way: weak-tracking NH4 (0.2<r<0.6) -> DEFAULT to protonated CHON, Candidate",
-      _row("amb_n")["adduct"] == "[M+H]+" and _row("amb_n")["neutral_formula"] == "C9H17NO5"
-      and _row("amb_n")["tier"] == "Candidate", _row("amb_n").to_dict())
-check("amine 3way: FLAT present parent (unconfirmable) -> DEFAULT to protonated CHON",
-      _row("flat_n")["adduct"] == "[M+H]+" and _row("flat_n")["neutral_formula"] == "C10H21NO5"
-      and _row("flat_n")["tier"] == "Candidate", _row("flat_n").to_dict())
+check("amine 3way: multifunctional X, shaped NON-tracking NH4 (r<=0.2) -> adduct kept by default",
+      _row("rej_n")["adduct"] == "[M+NH4]+" and _row("rej_n")["neutral_formula"] == REJ
+      and _row("rej_n")["tier"] == "Assigned", _row("rej_n").to_dict())
+check("amine 3way: multifunctional X, weak-tracking NH4 (0.2<r<0.6) -> adduct kept by default",
+      _row("amb_n")["adduct"] == "[M+NH4]+" and _row("amb_n")["neutral_formula"] == AMB
+      and _row("amb_n")["tier"] == "Assigned", _row("amb_n").to_dict())
+check("amine 3way: multifunctional X, FLAT parent -> adduct kept by default",
+      _row("flat_n")["adduct"] == "[M+NH4]+" and _row("flat_n")["neutral_formula"] == FLATP
+      and _row("flat_n")["tier"] == "Assigned", _row("flat_n").to_dict())
+check("amine 3way: weak X (C6H10O), shaped NON-tracking NH4 -> protonated amide C6H13NO, Candidate",
+      _row("wrej_n")["adduct"] == "[M+H]+" and _row("wrej_n")["neutral_formula"] == "C6H13NO"
+      and _row("wrej_n")["tier"] == "Candidate", _row("wrej_n").to_dict())
+check("amine 3way: weak X (C5H8O) that TRACKS -> NH4 reading kept but capped Candidate",
+      _row("wreal_n")["adduct"] == "[M+NH4]+" and _row("wreal_n")["neutral_formula"] == WREAL
+      and _row("wreal_n")["tier"] == "Candidate" and "tracks it too" in str(_row("wreal_n")["tier_reason"]),
+      _row("wreal_n").to_dict())
 check("amine 3way: parent ABSENT from TS -> protonated CHON, Candidate",
       _row("abs_n")["adduct"] == "[M+H]+" and _row("abs_n")["neutral_formula"] == "C4H7NO"
       and _row("abs_n")["tier"] == "Candidate", _row("abs_n").to_dict())
@@ -283,11 +301,25 @@ check("amine 3way: Si-bearing NH4 kept as adduct (guard), Assigned",
 check("amine 3way: PROTECTED neutral kept as adduct despite r<=0.2, Assigned",
       _row("prot_n")["adduct"] == "[M+NH4]+" and _row("prot_n")["neutral_formula"] == PROT
       and _row("prot_n")["tier"] == "Assigned", _row("prot_n").to_dict())
-check("amine 3way: amine-impossible NH4 kept but capped Candidate",
-      _row("forced_n")["adduct"] == "[M+NH4]+" and _row("forced_n")["tier"] == "Candidate")
+check("amine 3way: multifunctional amine-impossible NH4 kept, tier kept",
+      _row("forced_n")["adduct"] == "[M+NH4]+" and _row("forced_n")["tier"] == "Assigned")
 check("amine 3way: summary counts",
-      outb == {"relabeled": 4, "kept_covary": 1, "kept_protected": 1,
-               "kept_si": 1, "forced_nh4": 1}, outb)
+      outb == {"relabeled": 2, "kept_covary": 1, "kept_protected": 1, "kept_si": 1, "forced_nh4": 0,
+               "kept_covary_weak": 1, "kept_default": 4}, outb)
+
+# --- urea adducts of hydrocarbon / N-rich neutrals: the same ion as protonated X+urea --------
+ledu = pd.DataFrame([
+    dict(peak_id="hc", neutral_formula="C8H14", adduct="[M+(CH4N2O)H]+", role=L.ROLE_M0, tier="Assigned", tier_reason=""),
+    dict(peak_id="n2", neutral_formula="C2H6N2O", adduct="[M+(CH4N2O)H]+", role=L.ROLE_M0, tier="Assigned", tier_reason=""),
+    dict(peak_id="n1", neutral_formula="C5H9NO", adduct="[M+(CH4N2O)H]+", role=L.ROLE_M0, tier="Assigned", tier_reason=""),
+    dict(peak_id="cho", neutral_formula="C10H16O3", adduct="[M+(CH4N2O)H]+", role=L.ROLE_M0, tier="Assigned", tier_reason=""),
+    dict(peak_id="si", neutral_formula="C8H24N2OSi2", adduct="[M+(CH4N2O)H]+", role=L.ROLE_M0, tier="Assigned", tier_reason=""),
+])
+outu = CU.cap_implausible_urea_adducts(ledu, log=lambda *a: None)
+_tu = dict(zip(ledu.peak_id, ledu.tier))
+check("urea cap: hydrocarbon and N2 neutrals capped Candidate; N1 amide, CHO and Si untouched",
+      _tu == {"hc": "Candidate", "n2": "Candidate", "n1": "Assigned", "cho": "Assigned", "si": "Assigned"}
+      and outu == {"capped": 2}, (_tu, outu))
 
 # ---------- demote_unconfirmed_fluorine (F-monster curb) ----------
 ledf = pd.DataFrame([
