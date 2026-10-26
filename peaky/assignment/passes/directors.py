@@ -1612,8 +1612,11 @@ def record_pass1_outcomes(ledger, tgt, grid, formulas, scored, cfg, adducts, *,
             base["raw"] = base[["ion_score", "compound_score"]].min(axis=1, skipna=True)
             for pid, grp in base.groupby("sample_peak_id"):
                 top = grp.sort_values("raw", ascending=False).iloc[0]
-                best[pid] = (float(top["raw"]), str(top["compound_formula"]),
-                             str(top.get("adduct_label", "")), len(grp))
+                try:                                   # the adduct as arbitrate labels it
+                    ad = str(top["adduct_label"]) if "adduct_label" in top.index else str(_mech_to_adduct(top))
+                except Exception:  # noqa: BLE001 -- a row the label map cannot read: no adduct named
+                    ad = ""
+                best[pid] = (float(top["raw"]), str(top["compound_formula"]), ad, len(grp))
     tol = cfg.search_ppm * 1e-6
     for i, r in tgt.iterrows():
         if i not in ledger.index or str(ledger.at[i, "role"]) != L.ROLE_UNEXPLAINED:
