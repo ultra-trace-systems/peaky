@@ -19,7 +19,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `C_MIN_SNR13`) and the evidence scale's line test (`levels.lines.DET_SNR`) count a spectrum / file
   the same way: without it the restored readings, their 13C lines under their window's floor, read
   0 C and pulled rule C's pooled bias to -0.84, so every reading's carbon count came out x6 and 790
-  of the NH4+ composite's pairs were refuted (5b) against 221 before.
+  of the NH4+ composite's pairs were refuted (5b) against 221 before. The line test's S/N condition
+  binds its contradictions only: the positive fact (an own in-band isotope line, `matched_elements`)
+  still counts every file at 3x the gate, so a line seen under its window's S/N 10 confirms as before
+  (with the condition on both, 14 MS2-right Ur+ readings fell from 4a to 4b).
 - **The amine gate keeps a multifunctional oxygenate's `[M+NH4]+` reading.** It re-read every
   unconfirmed `[M+NH4]+` of X as `[M+H]+` of the amine X+NH3. Against MS2 on a 2026 chamber campaign, X
   with >= 2 O were NH4+ adducts 117:4 (NH4+ CIMS) and 35:8 (Ur+ side channel), X with <= 1 O

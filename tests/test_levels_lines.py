@@ -119,6 +119,19 @@ def test_an_absent_line_whose_predicted_s_n_is_under_10_is_not_detectable():
         obs = [dict(o, snr=snr) for o in _obs(m0)]
         r = _rec(LN.eval_candidate(ctx, cand, obs, f"{CL}|{CLA}"), "37Cl")
         assert r["n_det"] == n_det and r["n_abs"] == n_det, snr
+        assert (r["n_test_x"], r["n_ok_x"]) == (3, 0), snr       # the match count keeps the missing line
+
+
+def test_a_line_seen_under_s_n_10_still_counts_for_the_match_but_cannot_refute():
+    """Below DET_SNR a missing line says nothing (test (a)), but the positive fact keeps the 3x-gate count:
+    the line seen in band still matches."""
+    m0, rows = _own_lines(CL, CLA)
+    ctx = _ctx(_t(rows + _edges()))
+    cand = dict(lines=LN.cand_lines(SP.ion_counts_of(CL, CLA), ctx.fwhm(m0), 0.0, 0.98))
+    recs = LN.eval_candidate(ctx, cand, [dict(o, snr=20.0) for o in _obs(m0)], f"{CL}|{CLA}")
+    r = _rec(recs, "37Cl")                                        # 37Cl predicted S/N 6.4
+    assert (r["n_det"], r["n_test"], r["n_test_x"], r["n_ok_x"]) == (0, 0, 3, 3)
+    assert "Cl" in LN.matched_elements(recs, 3)[0] and LN.contradiction_a(recs, 3) == []
 
 
 def test_line_too_high_counts_only_on_an_own_iso_child():

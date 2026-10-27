@@ -24,7 +24,9 @@ from peaky.chem import isotopes as ISO
 DET_X = 3.0                   # detectable: predicted height >= 3 x the file's height gate
 # ... and, where the file's row carries the server S/N, a predicted line S/N >= DET_SNR: the gate is one number
 # per file and a composite file's windows report down to floors 2-14x apart, so a line "3x the gate" can sit
-# under its own window's floor (the per-file 13C audit's PassConfig.audit_min_snr13 and rule C's C_MIN_SNR13)
+# under its own window's floor (the per-file 13C audit's PassConfig.audit_min_snr13 and rule C's C_MIN_SNR13).
+# A file under DET_SNR cannot refute (test (a)); the positive fact (matched_elements) keeps the 3x-gate count,
+# where such a file's missing line still counts against the match
 DET_SNR = 10.0
 DET_X_MINOR = 5.0             # composite lines (>= 2 substitutions) and the light 15N / 18O lines need 5 x the gate
 DET_SINGLE_ISO = frozenset({"13C", "37Cl", "81Br", "34S", "29Si", "30Si"})   # single substitutions that keep DET_X
@@ -191,10 +193,33 @@ def probe_exact_37cl(ctx, sid: str, span, tol: float, anchor_pid: str, own=(), h
     return "free", float(fa.h[best]), best
 
 
+
+def _outcome(st: str, hobs: float, exp_h: float, exp_lo: float, ok: bool, high_ok: bool, major: bool) -> str | None:
+    """One detectable file's result for a line (not the labelled reagent's 14N line): 'ok', 'occ' (an occupant
+    in band: the line is there, not bad, not matched), 'abs', 'hi', 'lo' or None (untestable there)."""
+    if st == "shadowed":
+        return None
+    if st == "occupied":
+        if hobs > BAND[1] * exp_h:
+            return None       # an occupant above the band: another reading's peak can only ADD height
+        if hobs >= BAND[0] * exp_lo:
+            return "occ"
+        return "lo" if major else None   # a too-small occupant is too low; a minor line tests by its absence only
+    if st == "free" and not ok and hobs > BAND[1] * exp_h and not high_ok:
+        return None           # too high on an unexplained peak (or a minor line): untestable
+    if st == "free" and not ok and not major:
+        return None           # a minor line tests by its absence only
+    if ok:
+        return "ok"
+    if st == "absent":
+        return "abs"
+    return "hi" if hobs > BAND[1] * exp_h else "lo"
+
 def eval_candidate(ctx, cand: dict, obs: list, pairkey: str, collect=False, pair=None) -> list[dict]:
     """Every testable line of one candidate over the pair's files (``obs``: per
     file dicts sid, mz, h, area, pid). One record per line: L, n_det, n_test,
-    n_ok, n_bad, n_abs, n_hi, n_lo, n_occ and ``per`` = one (status, h_obs,
+    n_ok, n_bad, n_abs, n_hi, n_lo, n_occ (files at DET_X and DET_SNR), n_test_x
+    and n_ok_x (the same at DET_X alone) and ``per`` = one (status, h_obs,
     exp_h, detectable, ok, peak index) per file.
 
     A line is detectable at L['det_x'] x the gate; an OCCUPIED line whose
@@ -212,17 +237,18 @@ def eval_candidate(ctx, cand: dict, obs: list, pairkey: str, collect=False, pair
     for L in lines:
         if not L["testable"]:
             continue
-        n_det = n_test = n_ok = n_hi = n_lo = n_abs = n_occ = 0
+        n_det = 0
+        cnt = dict(ok=0, occ=0, abs=0, hi=0, lo=0)
+        n_test_x = n_ok_x = 0
         per = []
         det_x = L.get("det_x", DET_X)
         for o in obs:
             fa = ctx.files[o["sid"]]
             eff = min([ctx.eff.get(e, 1.0) for e in L["elements"]] or [1.0])
             exp_h = o["h"] * L["ratio"] * eff
-            det = exp_h >= det_x * ctx.gates[o["sid"]]
+            at_x = exp_h >= det_x * ctx.gates[o["sid"]]
             sn = o.get("snr", np.nan)
-            if det and np.isfinite(sn) and o["h"] > 0:
-                det = sn * exp_h / o["h"] >= DET_SNR
+            det = at_x and not (np.isfinite(sn) and o["h"] > 0 and sn * exp_h / o["h"] < DET_SNR)
             tol = ctx.tol_da(o["mz"], exp_h)
             span = (o["mz"] + min(L["span"][0], L["d"]), o["mz"] + max(L["span"][1], L["d"]))
             if not fa.in_scan(span[0] - tol, span[1] + tol):
@@ -244,58 +270,29 @@ def eval_candidate(ctx, cand: dict, obs: list, pairkey: str, collect=False, pair
                 ok = st == "free" and exp_h > 0 and hobs >= BAND[0] * exp_lo and fa.role[j] in ("iso_child", "M0")
                 occ_ok = st in ("occupied", "free") and exp_h > 0 and hobs >= BAND[0] * exp_lo
                 per.append((st, hobs, exp_h, det, ok, j))
-                if det and st != "shadowed":
-                    n_det += 1
-                    n_test += 1
-                    if ok:
-                        n_ok += 1
-                    elif occ_ok:
-                        n_occ += 1
-                    elif st == "absent":
-                        n_abs += 1
-                    else:
-                        n_lo += 1
-                continue
-            ok = (st == "free" and exp_h > 0 and BAND[0] * exp_lo <= hobs <= BAND[1] * exp_h)
-            # a too-high line counts against the reading only where the engine itself hung that peak on this
-            # parent (an iso child of the anchor); an unexplained peak may carry a coincident compound
-            major = L["ratio"] >= MAJOR_RATIO
-            high_ok = st == "free" and exp_h > 0 and hobs / exp_h > BAND[1] and fa.role[j] == "iso_child" \
-                and L["mode"] == "full" and major
-            per.append((st, hobs, exp_h, det, ok, j))
-            if not det:
-                continue
-            n_det += 1
-            if st == "shadowed":
-                continue
-            if st == "occupied":
-                if hobs > BAND[1] * exp_h:
-                    continue      # an occupant above the band: another reading's peak can only ADD height
-                if hobs >= BAND[0] * exp_lo:
-                    n_test += 1   # an occupant in band: the line is there, not bad, not matched
-                    n_occ += 1
+                if st == "shadowed":
                     continue
-                if not major:
-                    continue      # a minor line tests by its absence only
-                n_test += 1
-                n_lo += 1         # a too-small occupant: the line is too low
-                continue
-            if st == "free" and not ok and hobs > BAND[1] * exp_h and not high_ok:
-                continue          # too high on an unexplained peak (or a minor line): untestable
-            if st == "free" and not ok and not major:
-                continue          # a minor line tests by its absence only
-            n_test += 1
-            if ok:
-                n_ok += 1
-            elif st == "absent":
-                n_abs += 1
-            elif hobs > BAND[1] * exp_h:
-                n_hi += 1
+                kind = "ok" if ok else "occ" if occ_ok else "abs" if st == "absent" else "lo"
             else:
-                n_lo += 1
-        n_bad = n_abs + n_lo + n_hi
-        recs.append(dict(L=L, n_det=n_det, n_test=n_test, n_ok=n_ok, n_bad=n_bad, n_abs=n_abs, n_hi=n_hi, n_lo=n_lo,
-                         n_occ=n_occ, per=per))
+                ok = (st == "free" and exp_h > 0 and BAND[0] * exp_lo <= hobs <= BAND[1] * exp_h)
+                # a too-high line counts against the reading only where the engine itself hung that peak on this
+                # parent (an iso child of the anchor); an unexplained peak may carry a coincident compound
+                major = L["ratio"] >= MAJOR_RATIO
+                high_ok = st == "free" and exp_h > 0 and hobs / exp_h > BAND[1] and fa.role[j] == "iso_child" \
+                    and L["mode"] == "full" and major
+                per.append((st, hobs, exp_h, det, ok, j))
+                kind = _outcome(st, hobs, exp_h, exp_lo, ok, high_ok, major)
+            if at_x and kind:
+                n_test_x += 1
+                n_ok_x += kind == "ok"
+            if det:
+                n_det += 1
+                if kind:
+                    cnt[kind] += 1
+        n_test = sum(cnt.values())
+        n_bad = cnt["abs"] + cnt["lo"] + cnt["hi"]
+        recs.append(dict(L=L, n_det=n_det, n_test=n_test, n_ok=cnt["ok"], n_bad=n_bad, n_abs=cnt["abs"],
+                         n_hi=cnt["hi"], n_lo=cnt["lo"], n_occ=cnt["occ"], n_test_x=n_test_x, n_ok_x=n_ok_x, per=per))
     return recs
 
 
@@ -332,12 +329,14 @@ def contradiction_a(recs: list, nmin: int) -> list[str]:
 
 def matched_elements(recs: list, nmin: int) -> tuple[set, list]:
     """(elements, labels) of the lines in band in >= MATCH_FRAC of their >=
-    ``nmin`` testable files. The 14N reagent line is a route marker, not an
-    element's isotope line: its label counts, its element does not."""
+    ``nmin`` testable files, counted at DET_X alone (a file under DET_SNR
+    whose line is missing counts against the match). The 14N reagent line is a
+    route marker, not an element's isotope line: its label counts, its element
+    does not."""
     els = set()
     labs = []
     for r in recs:
-        if r["n_test"] >= nmin and r["n_ok"] / r["n_test"] >= MATCH_FRAC:
+        if r["n_test_x"] >= nmin and r["n_ok_x"] / r["n_test_x"] >= MATCH_FRAC:
             if r["L"]["mode"] != "reagent14N":
                 els.update(r["L"]["elements"])
             labs.append(r["L"]["label"])

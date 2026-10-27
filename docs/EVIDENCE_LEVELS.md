@@ -421,7 +421,10 @@ seen in:
   the light 15N / 18O lines and composite lines (`DET_X_MINOR`); where the
   file's row carries the server S/N, also at a predicted line S/N ≥ 10
   (`DET_SNR`): the gate is one number per file, and a composite file's windows
-  report down to floors 2-14× apart;
+  report down to floors 2-14× apart. The S/N condition binds the
+  contradictions only: the matched elements below count every file at `DET_X`,
+  where a file under `DET_SNR` whose line is missing counts against the match
+  and one whose line is in band counts for it;
 - it is **present (in band)** at 0.5–2× its predicted height (`BAND`); a line
   within 0.5 Da of the file's first / last peak is untestable (`SCAN_MARGIN`);
   a 37Cl-bearing line is probed at its exact position, the resolution taken
@@ -460,8 +463,8 @@ The tests, per candidate:
 A candidate is **contradicted** when (a), (b), (c) or (k) holds. A
 contradicted competitor is excluded. A contradicted committed reading is a
 step-0 rejection. A line **matched in band** in ≥ 50 % (`MATCH_FRAC`) of ≥ 3
-testable files gives its element as a matched element — the positive fact of
-§8 when the neutral contains it.
+testable files (at `DET_X`, with no S/N condition) gives its element as a
+matched element — the positive fact of §8 when the neutral contains it.
 
 ### 5.4 Series exclusion and the outcome
 
@@ -867,7 +870,7 @@ release in `evidence.py`).
 | `K_SIGMA` | 3 | the calibrated half-window, in sigma |
 | `NMIN_FILES` / `NMIN_FILES_ARM` | 3 / 1 | testable files for an isotope test (batch / one file) |
 | `DET_X` / `DET_X_MINOR` | 3 / 5 × the height gate | a line is testable |
-| `DET_SNR` | 10 | ... and, with the row's server S/N, a predicted line S/N at least this (the per-file 13C audit's `audit_min_snr13`, rule C's `C_MIN_SNR13`) |
+| `DET_SNR` | 10 | ... and, with the row's server S/N, a predicted line S/N at least this for the contradictions (the per-file 13C audit's `audit_min_snr13`, rule C's `C_MIN_SNR13`); the matched elements count at `DET_X` alone |
 | `BAND` | 0.5–2 × predicted | a line is present |
 | `ABSENT_FRAC` | 0.8 | tests (a), (b), (k) |
 | `MATCH_FRAC` | 0.5 | a line matched in band |
