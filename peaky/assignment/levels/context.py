@@ -32,6 +32,7 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 
+from peaky.assignment import cleanup as CL
 from peaky.assignment import degeneracy as DG
 from peaky.assignment import tiers as T
 from peaky.assignment.levels import lines as LN
@@ -189,7 +190,9 @@ class FileArr:
         row or another parent's iso child is 'occupied'. An artifact row (a
         side lobe, ringing) is no line: the pick is the tallest OTHER peak
         within tol, and a span only artifacts hold is 'shadowed' (untestable)
-        -- a lobe beside a line neither occupies it nor empties it."""
+        -- a lobe beside a line neither occupies it nor empties it. A missing
+        line in the ringing zone of a much brighter peak (cleanup's RING_* rule)
+        is 'shadowed' too."""
         lo_t, hi_t = span
         lo = np.searchsorted(self.mz, lo_t - tol_da, "left")
         hi = np.searchsorted(self.mz, hi_t + tol_da, "right")
@@ -221,6 +224,15 @@ class FileArr:
                 lo2 = np.searchsorted(self.mz, lo_t - shadow_da, "left")
                 hi2 = np.searchsorted(self.mz, hi_t + shadow_da, "right")
                 if hi2 > lo2 and float(self.h[lo2:hi2].max()) >= LN.SHADOW_FRAC * h_exp:
+                    return "shadowed", 0.0, -1
+            if h_exp > 0:
+                # inside a saturating line's ringing zone (cleanup.flag_ringing_artifacts: >= MIN_RING_PARENT cps,
+                # >= RING_FACTOR x this line, within RING_DMZ) a missing line says nothing: the picker drops weak
+                # peaks there and cleanup marks the ones it keeps as artifacts (an NH4+ composite's pinonic-acid
+                # 2x13C / 18O lines, 9-12 mDa under the C10H18O3 [M+NH4]+ M0 at 1.6 M cps)
+                lo3 = np.searchsorted(self.mz, lo_t - CL.RING_DMZ, "left")
+                hi3 = np.searchsorted(self.mz, hi_t + CL.RING_DMZ, "right")
+                if hi3 > lo3 and float(self.h[lo3:hi3].max()) >= max(CL.MIN_RING_PARENT, CL.RING_FACTOR * h_exp):
                     return "shadowed", 0.0, -1
             return "absent", 0.0, -1
         best = lo + int(np.argmax(np.where(self.art[lo:hi], -np.inf, self.h[lo:hi])))
@@ -712,7 +724,9 @@ def carbon_counts(ctx: RunContext, iso_tab: pd.DataFrame | None, facts: pd.DataF
     C's pooled time-series reading (tables/iso_checks.csv) where it is testable
     (>= C_NMIN spectra, occupancy <= C_OCC_MAX; scan_edge / exempt_14N kept as
     NaN), else the same reading over the per-file ledgers (>= ``nmin`` used
-    files, occupancy <= C_OCC_MAX x used). Also returns the per-file deviations
+    files, occupancy <= C_OCC_MAX x used; a file counts where rule C would count
+    its spectrum: the 13C line >= C_KDL x the edge and, with the row's server
+    S/N, a predicted 13C S/N >= IC.C_MIN_SNR13). Also returns the per-file deviations
     from rule C that `se_model` reads."""
     truthy = _ev().truthy
     out = {}
@@ -754,6 +768,9 @@ def carbon_counts(ctx: RunContext, iso_tab: pd.DataFrame | None, facts: pd.DataF
             fa = ctx.files[o["sid"]]
             if not (o["h"] * nC * IC.R13C >= IC.C_KDL * fa.edge):
                 continue
+            sn = o.get("snr", np.nan)
+            if np.isfinite(sn) and sn * nC * IC.R13C < IC.C_MIN_SNR13:
+                continue          # rule C's own S/N condition: under its window's floor the 13C line reads 0 C
             t = o["mz"] + IC.D13C
             lo, hi = fa.window(t, IC.C_TOL_PPM * t * 1e-6)
             a1 = 0.0

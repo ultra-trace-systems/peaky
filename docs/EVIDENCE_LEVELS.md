@@ -454,8 +454,10 @@ The tests, per candidate:
 - **(b)** another candidate's observed in-band line this one predicts nothing
   comparable at (> 4× what it predicts there, `B_FACTOR`);
 - **(c)** the observed carbon count (the batch's rule-C reading where it is
-  testable, else the per-file 13C line) differs from the candidate's by more
-  than max(1.5, 0.25 nC, 3 se) (`C_TOL_*`);
+  testable, else the per-file 13C line, counted in the files where rule C would
+  count the spectrum: a 13C line ≥ 5× the edge and, with the server S/N, a
+  predicted 13C S/N ≥ 10) differs from the candidate's by more than
+  max(1.5, 0.25 nC, 3 se) (`C_TOL_*`);
 - **(k)** on a labelled-nitrate run, a reading that can only be a 14N
   `[M+NO3]-` cluster implies its 15N twin at +0.99703 Da (`D15N_TWIN`) at the
   file's twin ratio; absent or too low in ≥ 80 % of the testable files.

@@ -8,6 +8,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Test (c)'s per-file carbon count takes rule C's S/N condition.** Where rule C cannot test a pair the
+  evidence scale reads the carbon count from the per-file 13C lines; that fallback kept the 5x-edge test alone,
+  so with rule C gated on predicted 13C S/N >= 10 (below) the pairs rule C now leaves untestable fell to the
+  fallback and read the hidden lines as 0 C: on an NH4+ composite of a 2026 chamber campaign 371 pairs were
+  rejected (5b) by "13C reads -0.2 C for 10 (per-file 13C, ...)" against 63 before, 79 of them readings MS2
+  confirms. A file now counts there only at a predicted 13C S/N >= `iso_checks.C_MIN_SNR13`; 5b fell to 7
+  pairs of the MS2 set (3 right), 4a rose to 120 (118 right).
+- **A missing isotope line in a bright peak's ringing zone is untestable, not absent.** cleanup's ringing
+  rule marks an unexplained peak within `RING_DMZ` (12 mDa) of a peak >= `MIN_RING_PARENT` cps and
+  >= `RING_FACTOR` x brighter as an artifact, and the levels' line probe already read such an artifact as no
+  line; a line the picker did not keep at all there still counted as absent. Pinonic acid's `[M+NH4]+`
+  (C10H20NO3+, MS2-confirmed) was rejected on "2x13C absent in 6/6 files": its 2x13C and 18O lines sit 9-12
+  mDa under the C10H18O3 `[M+NH4]+` M0 (0.4-2.3 M cps), were flagged as ringing in 19 of 26 files (the 18O
+  line tracks pinonic acid, slope 0.93 +- 0.04, not the neighbour) and not picked in the other 7. The probe
+  now reads a missing line there as 'shadowed'. `cleanup.RING_DMZ` names the zone for both.
 - **The 13C completeness check reads a missing line by its predicted S/N on Orbitrap-class
   spectra.** The clear needed the predicted 13C height >= 1.5x the per-file height gate, one
   number per file; a composite file's windows report down to floors 2-14x apart (a 2026 chamber campaign's

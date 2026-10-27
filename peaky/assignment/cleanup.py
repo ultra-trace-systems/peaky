@@ -56,10 +56,11 @@ C13 = 1.003355
 # at 43x and 2.3% -- physics runs backwards, v43 review H4).
 MIN_RING_PARENT = 50000.0   # cps; below this a peak is too weak to ring
 RING_FACTOR = 100.0         # parent must be >= this x brighter (=> satellite <1%)
+RING_DMZ = 0.012            # Da; the ringing zone around such a parent (also the evidence levels' masked lines)
 
 
 def flag_ringing_artifacts(ledger: pd.DataFrame, *, factor: float = RING_FACTOR,
-                           dmz: float = 0.012, min_parent: float = MIN_RING_PARENT,
+                           dmz: float = RING_DMZ, min_parent: float = MIN_RING_PARENT,
                            log=print) -> dict:
     """Mark an unexplained peak as 'artifact' when a SATURATING peak (>= min_parent
     cps) that is >=`factor`x brighter sits within `dmz`. The tight dmz + the
