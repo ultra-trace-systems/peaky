@@ -2613,6 +2613,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         merge_gates["isotopologue"]["per_file"] = _rw_summ
     if merge_gates["element_signature"].get("removed"):
         merge_gates["element_signature"]["per_file"] = _sg_summ
+    # ... then cleanup's ringing flags that the batch series shows to be a committed reading's isotope line
+    # (iso_checks.release_ringing_lines: the line follows its reading's M0, not the ringing parent) become that
+    # reading's iso_child; those ledgers are saved, re-levelled and re-stamped with the rest
+    _rl, merge_gates["ringing_lines"] = _IC.release_ringing_lines(full_ledgers, ts_peaks, rp, log=log)
+    _rewritten = set(_rewritten) | _rl
     for sid in sorted(_rewritten):
         _led = full_ledgers[sid]
         _led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)

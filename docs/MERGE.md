@@ -542,6 +542,29 @@ selected sample_ids (SAMPLING.md)
    Orbitrap-class batch). This is the batch half of the per-file
    element-evidence gate ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §3.6b).
 
+6a'. **Ringing flags on isotope lines** (`iso_checks.release_ringing_lines`; right
+   after the two rewrites above, before the levels and the re-stamp). cleanup's
+   ringing rule marks an unexplained peak within `cleanup.RING_DMZ` (12 mDa) of a
+   peak ≥ 50 000 cps and ≥ 100× brighter as an artifact, and one spectrum cannot
+   tell a lobe from a real line there. Every such artifact that sits on a
+   predicted isotope line of a committed M0 of its file (the evidence scale's
+   line model, within max(1 mDa, 2 ppm), at 0.3–3.5× the predicted height) is
+   judged over the batch series against that M0 and against its ringing parent
+   (the brightest peak within the zone). It becomes the M0's `iso_child`
+   (`ledger.attach_isotopologue`, the line's label; the commentary says so) when,
+   over ≥ 20 spectra holding all three, it is not locked to the parent (ratio cv
+   ≥ 0.08, `timeseries.flag_sidelobe_channels`' test), its ratio to the M0 has
+   cv ≤ 0.30 and ≤ 0.7× its cv against the parent, and the median ratio is
+   0.5–2× the predicted share; anything else stays an artifact. The ledgers it
+   changes join the rewritten set: saved, re-levelled, recounted and re-stamped.
+   Measured on an NH4⁺ composite of a 2026 chamber campaign: the ringing flag sat
+   on 544 predicted lines of committed readings, mostly M+2 lines 9–12 mDa under
+   a +H2 homologue's M0 (pinonic acid's 2×¹³C and ¹⁸O under C10H18O3 `[M+NH4]+`);
+   202 were released (2×¹³C 97, ¹⁸O 77, ²H 25, ¹³C 3). With the predicted
+   positions shifted 5 mDa the same rule releases 0 of 243.
+   `batch_summary.json["merge_gates"]["ringing_lines"]` records `ran`, `checked`,
+   `released`, `by_label` and `files`.
+
 6b. **The TOF ion-M+2 gates** (`iso_checks.tof_m2_gates`; after the stamp and
    the batch isotope checks, TOF-class batches only -- the batch's resolved
    `cfg.instrument_class`, else a width model under the Orbitrap class's

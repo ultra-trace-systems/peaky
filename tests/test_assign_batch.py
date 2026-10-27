@@ -919,12 +919,15 @@ try:
               list(res["merged"].columns))
         check("run: batch_summary records the merged-level gates (the known-species decision, "
               "the reagent-water ladder, the isotopologue rows, the element-signature removal and the "
-              "TOF ion-M+2 gates and the label-twin tier cap always -- nothing pooled, no rung or "
+              "TOF ion-M+2 gates, the label-twin tier cap and the ringing-line release always -- nothing "
+              "pooled, no rung or "
               "signature veto here, the isotopologue gate skipped on a height-only series, the TOF gates "
               "skipped on an Orbitrap-class batch; no polarity gate in negative mode)",
               set(summ.get("merge_gates", {})) == {"known", "reagent_water", "isotopologue",
-                                                    "element_signature", "label_veto", "tof_m2"}
+                                                    "element_signature", "label_veto", "tof_m2",
+                                                    "ringing_lines"}
               and summ["merge_gates"]["label_veto"] == {"capped": 0}
+              and summ["merge_gates"]["ringing_lines"]["released"] == 0
               and summ["merge_gates"]["isotopologue"]["ran"] is False
               and "no peak areas" in summ["merge_gates"]["isotopologue"]["skipped"]
               and summ["merge_gates"]["element_signature"] == {"removed": 0, "pairs": []}

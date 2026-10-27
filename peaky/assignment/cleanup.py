@@ -57,6 +57,7 @@ C13 = 1.003355
 MIN_RING_PARENT = 50000.0   # cps; below this a peak is too weak to ring
 RING_FACTOR = 100.0         # parent must be >= this x brighter (=> satellite <1%)
 RING_DMZ = 0.012            # Da; the ringing zone around such a parent (also the evidence levels' masked lines)
+RING_LABEL = "FT ringing/sidelobe of"   # the commentary prefix of a ringing artifact (iso_checks.release_ringing_lines)
 
 
 def flag_ringing_artifacts(ledger: pd.DataFrame, *, factor: float = RING_FACTOR,
@@ -109,7 +110,7 @@ def flag_ringing_artifacts(ledger: pd.DataFrame, *, factor: float = RING_FACTOR,
                     hit = (mzs[i], hts[i])
         if hit is not None:
             L.mark_artifact(ledger, pid,
-                            f"FT ringing/sidelobe of {hit[0]:.4f} "
+                            f"{RING_LABEL} {hit[0]:.4f} "
                             f"({hit[1]:.0f} cps, {hit[1] / h:.0f}x brighter, "
                             f"Δ{(hit[0] - mz) * 1000:+.0f} mDa, satellite "
                             f"{100 * h / hit[1]:.1f}% of parent)")

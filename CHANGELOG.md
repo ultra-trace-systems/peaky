@@ -8,6 +8,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The batch releases ringing flags that sit on a reading's isotope line** (`iso_checks.release_ringing_lines`,
+  merge-gate key `ringing_lines`). cleanup's ringing rule is geometric (a weak peak within 12 mDa of a
+  >= 100x brighter one), so it also marks real M+2 lines that sit under a +H2 homologue's M0. Over the batch
+  series a lobe keeps a constant ratio to its ringing parent and a line to its own ion: a flagged row on a
+  predicted line of a committed reading that follows that reading (ratio cv <= 0.30 and <= 0.7x its cv against
+  the parent, 0.5-2x the predicted share, >= 20 spectra) becomes its iso_child in the per-file ledger. On an
+  NH4+ composite of a 2026 chamber campaign 202 of 544 such rows were released, 0 of 243 with the predicted
+  positions shifted 5 mDa; the levels change little (three readings gain a matched line, no level moves),
+  because a line in the ringing zone already reads untestable rather than absent.
 - **Test (c)'s per-file carbon count takes rule C's S/N condition.** Where rule C cannot test a pair the
   evidence scale reads the carbon count from the per-file 13C lines; that fallback kept the 5x-edge test alone,
   so with rule C gated on predicted 13C S/N >= 10 (below) the pairs rule C now leaves untestable fell to the
