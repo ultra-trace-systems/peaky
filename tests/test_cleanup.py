@@ -664,3 +664,11 @@ def test_all():
 if __name__ == "__main__":
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
+
+
+def test_nh4_weak_tracked_keeps_the_cap_on_small_or_hydrocarbon_x_only():
+    from peaky.assignment import cleanup as CU
+    assert CU.nh4_weak_neutral("C10H14O") and not CU.nh4_weak_tracked("C10H14O")   # C10 mono-oxygenate: tracking pins
+    assert CU.nh4_weak_tracked("C5H8O") and CU.nh4_weak_tracked("C6H10O")          # <= 6 C: the amide tracks too
+    assert CU.nh4_weak_tracked("C12H20")                                           # a hydrocarbon holds no NH4+
+    assert not CU.nh4_weak_neutral("C10H16O3") and not CU.nh4_weak_tracked("C10H16O3")

@@ -8,6 +8,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Unconfirmed fluorine is a 5a ceiling, not a 5b rejection.** 19F is monoisotopic, so MS1 can never confirm
+  the F count of a reading `demote_unconfirmed_fluorine` flags; the evidence scale read that flag as a rejection.
+  Alone (with or without lowconf) it now caps the pair at 5a, "not established, not refuted", like the lowconf
+  ceiling (`levels.decide.CEILING_REASONS`); beside any other rejection the pair stays 5b. On a 2026 chamber
+  campaign's labelled-nitrate batch the flag alone held 43 of the 49 MS2-confirmed 5b readings.
+- **A tracking [M+NH4]+ of a mono-oxygenate with >= 7 C is confirmed.** The amine gate capped every tracking weak
+  X (<= 1 O or <= 4 C) at Candidate with its split open; against MS2 the tracked weak X were adducts 10:13 at
+  <= 6 C and 9:1 at >= 7 C (the one wrong a hydrocarbon). The cap now keeps X with <= 6 C
+  (`cleanup.AMINE_WEAK_TRACKED_MAX_C`) or no O (`cleanup.nh4_weak_tracked`), in the merge gate and the levels' gate.
 - **The batch releases ringing flags that sit on a reading's isotope line** (`iso_checks.release_ringing_lines`,
   merge-gate key `ringing_lines`). cleanup's ringing rule is geometric (a weak peak within 12 mDa of a
   >= 100x brighter one), so it also marks real M+2 lines that sit under a +H2 homologue's M0. Over the batch

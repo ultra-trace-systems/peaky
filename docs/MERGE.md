@@ -471,7 +471,8 @@ selected sample_ids (SAMPLING.md)
      ≤ 4 C: a small or mono-oxygenated carbonyl, whose source-made amide is the
      same ion) as `[M+H]⁺` of the `+NH3` amine unless the adduct's trace tracks
      its parent; a weak X that tracks keeps the reading capped Candidate (the
-     amide tracks too), and a multifunctional X (≥ 2 O on ≥ 5 C) keeps its
+     amide tracks too) when it has ≤ 6 C or no O (`nh4_weak_tracked`; a tracking
+     mono-oxygenate of ≥ 7 C is confirmed), and a multifunctional X (≥ 2 O on ≥ 5 C) keeps its
      adduct reading by default -- except on a side channel (uronium), where X's
      parent channels absent from the time series still refute the adduct
      (`nh4_main`: `[M+NH4]⁺` is the profile's own adduct) — done at the

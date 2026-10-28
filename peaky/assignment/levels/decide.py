@@ -200,6 +200,14 @@ def run_classes_of(engine_channels) -> set:
 LOWCONF_REASON = "lowconf"
 LOWCONF_CEILING_WHY = ("engine confidence Low/Suspect in every file: not established (5a ceiling; a file at "
                        "Good or High lifts it), not refuted")
+#  * unconfirmed fluorine ALONE (cleanup.demote_unconfirmed_fluorine's below flag, possibly with lowconf) is the
+#    same 5a ceiling: 19F is monoisotopic, so MS1 can never confirm the F count -- the reading is not established,
+#    and nothing refutes it. A 2026 chamber campaign's labelled-nitrate MS2 set confirmed 43 of the 49 right
+#    readings this flag alone held at 5b (the user's ruling, 2026-10-28).
+FLUORINE_REASON = "below: unconfirmed fluorine"
+FLUORINE_CEILING_WHY = ("fluorine count unconfirmable in MS1 (19F has no isotope line): not established "
+                        "(5a ceiling), not refuted")
+CEILING_REASONS = frozenset({LOWCONF_REASON, FLUORINE_REASON})
 LEAD_RESCUE_SETTER = "reflist_dim"
 LIFT_3C_WITHHELD = ("3c withheld: the named entry is on the list that rescued this reading -- an independent named "
                     "list, or MS2 / standards")
@@ -263,8 +271,11 @@ def inpass(S: Prepared, partners=None) -> dict:
     listed = np.array([bool(h) for h in hits], dtype=bool)
     # C47: the list that rescued a dim reading may not certify it at 3c
     lead_reflist = np.array([lead_rescued(S.lead_by.get(k, "")) for k in keys], dtype=bool)
-    # C47: lowconf alone is a 5a ceiling -- the pair is still no anchor for others (rej stays)
+    # C47: lowconf alone is a 5a ceiling -- the pair is still no anchor for others (rej stays); so is unconfirmed
+    # fluorine alone, with or without lowconf
+    ceiling_only = np.array([bool(x) and all(y in CEILING_REASONS for y in x) for x in rej], dtype=bool)
     lowconf_only = np.array([bool(x) and all(y == LOWCONF_REASON for y in x) for x in rej], dtype=bool)
+    fluorine_ceiling = np.array([bool(c) and FLUORINE_REASON in x for c, x in zip(ceiling_only, rej)], dtype=bool)
     # ---- routes (in-pass anchors; tags in the record) ----
     rejected_mask = np.array([bool(x) for x in rej], dtype=bool)
     nonrej = ~rejected_mask & ~no_info & np.array([not x for x in reag], dtype=bool)
@@ -347,7 +358,7 @@ def inpass(S: Prepared, partners=None) -> dict:
         """The internal pass's natural (level, why) of pair i."""
         if reag[i]:
             return "reagent", "reagent identity (" + reag[i] + ")"
-        if rej[i] and not lowconf_only[i]:
+        if rej[i] and not ceiling_only[i]:
             return "5b", "rejected: " + "; ".join(rej[i])
         # a tentative lead has no level effect (the lead gate is off)
         if no_info[i]:
@@ -375,9 +386,9 @@ def inpass(S: Prepared, partners=None) -> dict:
             left = [c for c in left_of.get(i, []) if c["name"] not in excl_s.get(i, {})]
             lefts[i] = left
             lv[i], why[i] = inpass_level(i, left, homo)
-            if lowconf_only[i] and lv[i] not in ("reagent", "5b", "5a"):
+            if ceiling_only[i] and lv[i] not in ("reagent", "5b", "5a"):
                 # C47: the ceiling -- its step-1/2 facts stand, the level reads 5a
-                lv[i], why[i] = "5a", LOWCONF_CEILING_WHY
+                lv[i], why[i] = "5a", (FLUORINE_CEILING_WHY if fluorine_ceiling[i] else LOWCONF_CEILING_WHY)
         return lv, why, lefts
 
     excl_s, homo = {}, {}
@@ -396,7 +407,7 @@ def inpass(S: Prepared, partners=None) -> dict:
             break
     return dict(level=lv, why=why, lefts=lefts, excl_s=excl_s, homo=homo, routes2=routes2, route_info=route_info,
                 sp=sp, pinned=pinned, posfact=posfact, listed=listed, hits=hits, reag=reag, rej=rej,
-                lead_reflist=lead_reflist, lowconf_only=lowconf_only,
+                lead_reflist=lead_reflist, lowconf_only=lowconf_only, fluorine_ceiling=fluorine_ceiling,
                 o11_note=o11_note, iterations=it, nfiles=nfiles, br_own=br_own, br_cross=br_cross)
 
 
@@ -667,6 +678,9 @@ def records(S: Prepared, res: dict, texts: list[dict], lv: list[str]) -> pd.Data
             # C47: lowconf alone -- the ceiling, printed whether or not it bit
             tags.append("engine confidence Low/Suspect in every file: 5a ceiling (not established, not refuted)")
             tagk.append("lowconf 5a ceiling")
+        if res["fluorine_ceiling"][i] and L == "5a":
+            tags.append("fluorine count unconfirmable: 5a ceiling (not established, not refuted)")
+            tagk.append("fluorine 5a ceiling")
         if _b(r["lead_fact"]):
             lb = S.lead_by.get((nn, aa), "")
             tags.append(f"lead: {lb} ({LEAD_TAG})" if lb else f"lead ({LEAD_TAG})")

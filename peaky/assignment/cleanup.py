@@ -1958,6 +1958,19 @@ def nh4_weak_neutral(X) -> bool:
     return cnt.get("O", 0) <= AMINE_WEAK_MAX_O or cnt.get("C", 0) <= AMINE_WEAK_MAX_C
 
 
+# ... but a TRACKING verdict settles a larger mono-oxygenate: the same MS2 set had the tracked weak X with
+# >= 7 C right as [M+NH4]+ adducts 9:1 (C7H10O ... C13H22O; the one wrong a pure hydrocarbon, C12H20), against
+# 10:13 for C <= 6. The tracking cap keeps C <= AMINE_WEAK_TRACKED_MAX_C and hydrocarbons only (user, 2026-10-28).
+AMINE_WEAK_TRACKED_MAX_C = 6
+
+
+def nh4_weak_tracked(X) -> bool:
+    """A weak X (`nh4_weak_neutral`) whose tracking [M+NH4]+ trace still pins nothing: <= AMINE_WEAK_TRACKED_MAX_C
+    C, or no O at all (a hydrocarbon has nothing to hold NH4+)."""
+    cnt = C.parse_formula(str(X))
+    return nh4_weak_neutral(X) and (cnt.get("C", 0) <= AMINE_WEAK_TRACKED_MAX_C or cnt.get("O", 0) == 0)
+
+
 def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
                                r_min: float = 0.6, r_reject: float = 0.2,
                                min_overlap: int = 12, protected=None,
@@ -2063,7 +2076,7 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
             continue
         v, r, ov = verdict(X)
         weak = nh4_weak_neutral(X)
-        if v == "keep" and weak:                          # tracks, but so would its source-made amide
+        if v == "keep" and nh4_weak_tracked(X):           # tracks, but so would its source-made amide
             _cap_tier(i)
             _note(ledger, i, f"[M+NH4]+ tracks parent (r={r:.2f}), but {X} is small or "
                   f"mono-oxygenated: its amide {X}+NH3 [M+H]+ tracks it too; capped Candidate")

@@ -189,7 +189,7 @@ class AmineGate:
             from peaky.assignment import cleanup as CU
             v, r, ov = self.verdict(X)
             weak = CU.nh4_weak_neutral(X)
-            if v == "keep" and weak:
+            if v == "keep" and CU.nh4_weak_tracked(X):
                 # the engine keeps the reading capped Candidate: a source-made amide of a small or
                 # mono-oxygenated carbonyl tracks it too, so tracking pins nothing
                 g = dict(kept=True, track=False, pin=False, verdict="keep-weak", r=r, ov=ov,
