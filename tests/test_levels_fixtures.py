@@ -49,8 +49,9 @@ VECTOR_ORDER = "/".join([*SC.LEVELS, *SC.BUCKETS])
 GOLDEN = {
     # the lowconf ceiling (0.10.0 release fixes) moves 28 (nitrate) / 15 (uronium) pairs 5b -> 5a, and one nitrate 3c
     # (a reflist_dim lead certified by the list that rescued it) reads 4b; before: 10/186/289/472/892/1/0 and
-    # 17/75/913/125/31/0/0 (before the release fixes)
-    "v1_nitrate": (1850, "9/186/290/500/864/1/0"),
+    # 17/75/913/125/31/0/0 (before the release fixes). The fluorine ceiling (user's ruling, 2026-10-28) moves 388
+    # nitrate pairs 5b -> 5a: before it 9/186/290/500/864/1/0; signed off by the user 2026-10-28
+    "v1_nitrate": (1850, "9/186/290/888/476/1/0"),
     "v1_uronium": (1161, "17/75/913/140/16/0/0"),
 }
 

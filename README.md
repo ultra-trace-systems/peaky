@@ -201,12 +201,12 @@ peaky list batches  --dataset "<your workspace>"
 peaky list samples  --batch "<your batch>" --dataset "<your workspace>"
 
 # one sample
-peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto> \
+peaky assign --sample-id <ID> --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|NH4_14N|auto> \
     --output-dir ~/peaky-output/<name>
 
 # a whole batch (presence-cover subset -> merge -> clusters -> Van Krevelen -> PDF)
 peaky batch  --batch "<your batch>" --dataset "<your workspace>" \
-    --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|auto> --out-dir ~/peaky-output --jobs 6 --progress
+    --reagent <Br|Ur|NO3|NO3_15N|I|EasyIC|NH4_15N|NH4_14N|auto> --out-dir ~/peaky-output --jobs 6 --progress
 
 # measure a batch's mass axis against formula-certain reference ions BEFORE assigning
 # (offset / trend / drift / blending, with the remedy each implies; --ts = offline)

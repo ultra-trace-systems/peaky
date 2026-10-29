@@ -56,10 +56,12 @@ C13 = 1.003355
 # at 43x and 2.3% -- physics runs backwards, v43 review H4).
 MIN_RING_PARENT = 50000.0   # cps; below this a peak is too weak to ring
 RING_FACTOR = 100.0         # parent must be >= this x brighter (=> satellite <1%)
+RING_DMZ = 0.012            # Da; the ringing zone around such a parent (also the evidence levels' masked lines)
+RING_LABEL = "FT ringing/sidelobe of"   # the commentary prefix of a ringing artifact (iso_checks.release_ringing_lines)
 
 
 def flag_ringing_artifacts(ledger: pd.DataFrame, *, factor: float = RING_FACTOR,
-                           dmz: float = 0.012, min_parent: float = MIN_RING_PARENT,
+                           dmz: float = RING_DMZ, min_parent: float = MIN_RING_PARENT,
                            log=print) -> dict:
     """Mark an unexplained peak as 'artifact' when a SATURATING peak (>= min_parent
     cps) that is >=`factor`x brighter sits within `dmz`. The tight dmz + the
@@ -108,7 +110,7 @@ def flag_ringing_artifacts(ledger: pd.DataFrame, *, factor: float = RING_FACTOR,
                     hit = (mzs[i], hts[i])
         if hit is not None:
             L.mark_artifact(ledger, pid,
-                            f"FT ringing/sidelobe of {hit[0]:.4f} "
+                            f"{RING_LABEL} {hit[0]:.4f} "
                             f"({hit[1]:.0f} cps, {hit[1] / h:.0f}x brighter, "
                             f"Δ{(hit[0] - mz) * 1000:+.0f} mDa, satellite "
                             f"{100 * h / hit[1]:.1f}% of parent)")
@@ -1938,10 +1940,41 @@ def run_cleanup(client, sample_id, ledger, profile, cfg, *, log=print) -> dict:
             "envelope_tails": tails["tails"]}
 
 
+# Which X the time trace can speak for. NH4+ binds a MULTIFUNCTIONAL oxygenate
+# (>= 2 O on >= 5 C) as an adduct; a small or mono-oxygenated carbonyl binds it
+# weakly, and the source makes its amide / imine X+NH3 from it, which then tracks
+# the carbonyl by construction. MS2 on a 2026 chamber campaign (NH4+ composite and the Ur+
+# side channel, 2026-10): X with >= 2 O were [M+NH4]+ adducts 117:4 and 35:8; X
+# with <= 1 O were protonated amines/amides 18:16 and 22:16; the 15 tracked
+# [M+NH4]+ readings MS2 refuted (C4H6O, C5H8O, C3H4O2, CH3NO ...) are all weak.
+AMINE_WEAK_MAX_O = 1      # X with at most this many O is weak ...
+AMINE_WEAK_MAX_C = 4      # ... and so is X with at most this many C
+
+
+def nh4_weak_neutral(X) -> bool:
+    """X whose [M+NH4]+ reading neither its time trace nor a default can settle
+    against the protonated amide/amine X+NH3 (AMINE_WEAK_MAX_O / _MAX_C)."""
+    cnt = C.parse_formula(str(X))
+    return cnt.get("O", 0) <= AMINE_WEAK_MAX_O or cnt.get("C", 0) <= AMINE_WEAK_MAX_C
+
+
+# ... but a TRACKING verdict settles a larger mono-oxygenate: the same MS2 set had the tracked weak X with
+# >= 7 C right as [M+NH4]+ adducts 9:1 (C7H10O ... C13H22O; the one wrong a pure hydrocarbon, C12H20), against
+# 10:13 for C <= 6. The tracking cap keeps C <= AMINE_WEAK_TRACKED_MAX_C and hydrocarbons only (user, 2026-10-28).
+AMINE_WEAK_TRACKED_MAX_C = 6
+
+
+def nh4_weak_tracked(X) -> bool:
+    """A weak X (`nh4_weak_neutral`) whose tracking [M+NH4]+ trace still pins nothing: <= AMINE_WEAK_TRACKED_MAX_C
+    C, or no O at all (a hydrocarbon has nothing to hold NH4+)."""
+    cnt = C.parse_formula(str(X))
+    return nh4_weak_neutral(X) and (cnt.get("C", 0) <= AMINE_WEAK_TRACKED_MAX_C or cnt.get("O", 0) == 0)
+
+
 def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
                                r_min: float = 0.6, r_reject: float = 0.2,
                                min_overlap: int = 12, protected=None,
-                               log=print) -> dict:
+                               nh4_main: bool = False, log=print) -> dict:
     """Uronium / positive urea-CIMS: a [M+NH4]+ adduct of a CHO neutral X is mass-
     AND isotope-identical to [M+H]+ of the amine X+NH3 (the SAME ion formula), so
     the accurate mass + isotope pattern CANNOT distinguish an ammonium adduct of X
@@ -1949,17 +1982,27 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
     adduct of X must track X's own [M+H]+/urea parent trace, because it is the same
     molecule ionised two ways.
 
-    POLICY -- ammonium adducts are rare, so the burden of proof is on the ADDUCT
-    reading; the protonated CHON wins by default. Per [M+NH4]+-mass neutral X, with a
-    batch time series (2 h-binned log-correlation r of the [M+NH4]+ trace vs the best
-    of X's [M+H]+ / [M+(CH4N2O)H]+ parent traces):
+    POLICY -- per [M+NH4]+-mass neutral X, with a batch time series (2 h-binned
+    log-correlation r of the [M+NH4]+ trace vs the best of X's [M+H]+ /
+    [M+(CH4N2O)H]+ parent traces):
 
-      * KEEP as [M+NH4]+ adduct (Assigned) ONLY when it TRACKS a shaped parent
-        (r >= r_min, overlap >= min_overlap) -- confirmed same molecule.
-      * OTHERWISE default to [M+H]+ of the protonated CHON (amine X+NH3), at
-        Candidate tier: independent time trace (r <= r_reject), only weak tracking
-        (r_reject<r<r_min), a flat unconfirmable parent, or a parent absent from the
-        TS. We do NOT assert an ammonium adduct we cannot confirm.
+      * KEEP as [M+NH4]+ adduct when it TRACKS a shaped parent (r >= r_min,
+        overlap >= min_overlap) -- confirmed same molecule. A WEAK X
+        (`nh4_weak_neutral`: <= 1 O or <= 4 C) is kept but capped Candidate:
+        its source-made amide tracks the carbonyl too, so tracking cannot tell
+        the two apart.
+      * a multifunctional X (>= 2 O on >= 5 C) that is not confirmed stays the
+        [M+NH4]+ adduct (tier unchanged): NH4+ adducts of such oxygenates are the
+        rule, in NH4+ CIMS and on the Ur+ side channel alike (see AMINE_WEAK_*).
+        One exception: where [M+NH4]+ is a SIDE channel (`nh4_main` False, the
+        uronium run), X's parent channels absent from the time series still
+        refute the adduct (a real X would show its urea cluster) and X is
+        re-read; on an NH4+ run (`nh4_main`, the profile's own adduct) many
+        oxygenates show no other channel, so their absence says nothing.
+      * OTHERWISE (a weak X) default to [M+H]+ of the protonated CHON (amine
+        X+NH3), at Candidate tier: independent time trace (r <= r_reject), only
+        weak tracking (r_reject<r<r_min), a flat unconfirmable parent, or a
+        parent absent from the TS.
 
     Overriding exceptions (keep [M+NH4]+):
       * X contains Si: ammonium adducts of siloxanes are real contaminant chemistry;
@@ -1972,11 +2015,13 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
         ammonium reading is the only valid one, kept but capped Candidate.
 
     Without a time series (single-sample run) nothing can be confirmed, so every
-    non-Si/protected [M+NH4]+ defaults to the protonated CHON (Candidate).
+    non-Si/protected [M+NH4]+ of a weak X defaults to the protonated CHON
+    (Candidate); a multifunctional X keeps its adduct reading.
 
     A re-read changes neutral_formula + adduct and caps the tier at Candidate (the
     ion/m-z/score/ppm are identical). Mutates in place; returns a summary."""
-    keys = ["relabeled", "kept_covary", "kept_protected", "kept_si", "forced_nh4"]
+    keys = ["relabeled", "kept_covary", "kept_protected", "kept_si", "forced_nh4",
+            "kept_covary_weak", "kept_default"]
     if not {"neutral_formula", "adduct"} <= set(ledger.columns):
         return {k: 0 for k in keys}
     protected = {str(p) for p in (protected or ())}
@@ -2030,6 +2075,13 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
             counts["kept_protected"] += 1
             continue
         v, r, ov = verdict(X)
+        weak = nh4_weak_neutral(X)
+        if v == "keep" and nh4_weak_tracked(X):           # tracks, but so would its source-made amide
+            _cap_tier(i)
+            _note(ledger, i, f"[M+NH4]+ tracks parent (r={r:.2f}), but {X} is small or "
+                  f"mono-oxygenated: its amide {X}+NH3 [M+H]+ tracks it too; capped Candidate")
+            counts["kept_covary_weak"] += 1
+            continue
         if v == "keep":                                   # tracks a shaped parent -> real adduct
             _note(ledger, i, f"[M+NH4]+ confirmed: tracks parent (r={r:.2f})")
             counts["kept_covary"] += 1
@@ -2037,14 +2089,54 @@ def prefer_amine_over_ammonium(ledger: pd.DataFrame, *, ts_peaks=None,
         why = _WHY.get(v, "unconfirmed")
         if v in ("reject", "ambiguous"):
             why += f" (r={r:.2f})"
-        _reread(i, X, why=why)                            # DEFAULT: protonated CHON, Candidate
+        if not weak and (nh4_main or v != "presence-reread"):   # multifunctional oxygenate: the adduct is the rule
+            _note(ledger, i, f"[M+NH4]+ kept by default: {X} is a multifunctional oxygenate "
+                  f"(>= {AMINE_WEAK_MAX_O + 1} O, >= {AMINE_WEAK_MAX_C + 1} C), unconfirmed ({why})")
+            counts["kept_default"] += 1
+            continue
+        _reread(i, X, why=why)                            # DEFAULT for a weak X: protonated CHON, Candidate
 
     mode = "co-variation" if ts_peaks is not None else "presence"
     log(f"[uronium-amine] ({mode}) default->CHON: {counts['relabeled']} read as "
         f"protonated CHON (Candidate); {counts['kept_covary']} kept as [M+NH4]+ adduct "
-        f"(tracks parent); {counts['kept_protected']} protected + {counts['kept_si']} Si "
+        f"(tracks parent) + {counts['kept_covary_weak']} tracking but weak (capped Candidate); "
+        f"{counts['kept_default']} multifunctional oxygenates kept as [M+NH4]+ by default; "
+        f"{counts['kept_protected']} protected + {counts['kept_si']} Si "
         f"kept; {counts['forced_nh4']} amine-impossible kept-NH4")
     return counts
+
+
+def cap_implausible_urea_adducts(ledger: pd.DataFrame, *, log=print) -> dict:
+    """Positive urea-CIMS: an [M+(CH4N2O)H]+ reading of X is the same ion as
+    [M+H]+ of X+urea, so the isotopes cannot separate them. Two kinds of X make
+    the adduct the weaker reading -- a pure hydrocarbon (no heteroatom to hold
+    the urea; relabel_reagent_n_adducts re-reads those unless the hydrocarbon
+    has its own [M+H]+ row) and an X that already carries >= 2 N (a urea-like
+    neutral, whose X+urea is a protonated N4 compound as often). MS2 on a 2026 chamber
+    campaign's Ur+ composite: [C8H14+UrH]+ was C9H18N2O [M+H]+, [C2H6N2O+UrH]+ was
+    C3H10N4O2 [M+H]+; the N1 amide adducts (C3H7NO, C5H9NO ...) were right.
+    Such rows keep the reading and are capped Candidate. Mutates in place."""
+    out = {"capped": 0}
+    if not {"neutral_formula", "adduct", "tier"} <= set(ledger.columns):
+        return out
+    is_m0 = (ledger["role"] == L.ROLE_M0) if "role" in ledger.columns \
+        else pd.Series(True, index=ledger.index)
+    for i in ledger.index[is_m0 & (ledger["adduct"] == "[M+(CH4N2O)H]+")]:
+        X = str(ledger.at[i, "neutral_formula"] or "")
+        if not X or X == "nan" or str(ledger.at[i, "tier"]) != "Assigned":
+            continue
+        cnt = C.parse_formula(X)
+        hydrocarbon = set(cnt) <= {"C", "H"}
+        n_rich = cnt.get("N", 0) >= 2
+        if not (hydrocarbon or n_rich) or cnt.get("Si"):
+            continue
+        ledger.at[i, "tier"] = "Candidate"
+        _note(ledger, i, f"urea adduct of {'a hydrocarbon' if hydrocarbon else 'an N-rich neutral'} "
+              f"{X}: the same ion as protonated {X}+CH4N2O; capped Candidate")
+        out["capped"] += 1
+    if out["capped"]:
+        log(f"[urea-adduct] {out['capped']} urea adducts of hydrocarbon / N-rich neutrals capped Candidate")
+    return out
 
 
 def _is_na(v) -> bool:

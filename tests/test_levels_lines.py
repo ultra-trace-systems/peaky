@@ -108,6 +108,32 @@ def test_line_in_band_is_matched_and_absent_line_refutes():
     assert LN.contradiction_a(recs2, 3) == ["37Cl (0.32x) absent in 3/3 files"]
 
 
+def test_an_absent_line_whose_predicted_s_n_is_under_10_is_not_detectable():
+    """The height gate is one number per file; with the row's server S/N a line also needs a predicted S/N
+    >= DET_SNR to count as detectable (a composite window's floor sits far above the file's gate)."""
+    _m0, rows = _own_lines(CL, CLA, skip=("37Cl",))
+    m0 = C.ion_mz(CL, CLA)
+    ctx = _ctx(_t(rows + _edges()))
+    cand = dict(lines=LN.cand_lines(SP.ion_counts_of(CL, CLA), ctx.fwhm(m0), 0.0, 0.98))
+    for snr, n_det in ((20.0, 0), (100.0, 3), (float("nan"), 3)):   # 37Cl at 0.32x: predicted S/N 6.4 / 32 / no S/N
+        obs = [dict(o, snr=snr) for o in _obs(m0)]
+        r = _rec(LN.eval_candidate(ctx, cand, obs, f"{CL}|{CLA}"), "37Cl")
+        assert r["n_det"] == n_det and r["n_abs"] == n_det, snr
+        assert (r["n_test_x"], r["n_ok_x"]) == (3, 0), snr       # the match count keeps the missing line
+
+
+def test_a_line_seen_under_s_n_10_still_counts_for_the_match_but_cannot_refute():
+    """Below DET_SNR a missing line says nothing (test (a)), but the positive fact keeps the 3x-gate count:
+    the line seen in band still matches."""
+    m0, rows = _own_lines(CL, CLA)
+    ctx = _ctx(_t(rows + _edges()))
+    cand = dict(lines=LN.cand_lines(SP.ion_counts_of(CL, CLA), ctx.fwhm(m0), 0.0, 0.98))
+    recs = LN.eval_candidate(ctx, cand, [dict(o, snr=20.0) for o in _obs(m0)], f"{CL}|{CLA}")
+    r = _rec(recs, "37Cl")                                        # 37Cl predicted S/N 6.4
+    assert (r["n_det"], r["n_test"], r["n_test_x"], r["n_ok_x"]) == (0, 0, 3, 3)
+    assert "Cl" in LN.matched_elements(recs, 3)[0] and LN.contradiction_a(recs, 3) == []
+
+
 def test_line_too_high_counts_only_on_an_own_iso_child():
     m0, rows = _own_lines(PH, PHA)
     hi = [(p, m, h * 5 if lab == "13C" else h, r, par, n, a, lab) for p, m, h, r, par, n, a, lab in rows]
@@ -502,3 +528,36 @@ def test_q1_pass_end_to_end_on_a_small_source():
     assert all("lines" not in c and "recs" not in c for c in q1[(n, a)]["cands"])
     rows_b, comps = CP.pass_b(ctx, facts, pairs, q1)
     assert rows_b.iloc[0]["n_competitors"] == len(comps) == len(q1[(n, a)]["cands"]) - 1
+
+
+def test_per_file_carbon_count_skips_a_13c_line_under_s_n_10():
+    """Test (c)'s per-file fallback counts a file where rule C would count the spectrum: a 13C line predicted
+    under S/N 10 (the composite window's floor can hide it) reads no carbon count, not 0 C."""
+    n, a = "C10H16O4", "[M-H]-"
+    m0 = C.ion_mz(n, a)
+    rows = [("p1", m0, 1e5, "M0", None, n, a, None)] + _edges()   # no 13C line in any file
+
+    def run(snr):
+        t = _t(rows).assign(signal_to_noise=[snr, 10.0, 10.0])
+        ctx = _ctx(t)
+        led = {s: t.copy() for s in SIDS}
+        facts = pd.DataFrame([dict(neutral_formula=n, adduct=a, mz=m0, ion="C10H15O4", ppm=0.0)])
+        out, _dev = CX.carbon_counts(ctx, None, facts, led, 3, ("[M-H]-", "[M+NO3]-"), 0.0)
+        return out.get((n, a))
+
+    loud = run(1000.0)                       # 13C predicted at S/N 107: the missing line reads ~0 C
+    assert loud is not None and loud["c"] < 1.0 and loud["n"] == 3
+    assert run(50.0) is None                 # 13C predicted at S/N 5.4: untestable, no reading
+
+
+def test_a_missing_line_in_a_bright_peaks_ringing_zone_is_untestable():
+    """A line missing within cleanup's ringing zone (RING_DMZ) of a peak >= RING_FACTOR x its prediction and
+    >= MIN_RING_PARENT cps is 'shadowed', not absent: the picker drops weak peaks there."""
+    m0, rows = _own_lines(PH, PHA, skip=("13C",))
+    cand = dict(lines=LN.cand_lines(SP.ion_counts_of(PH, PHA), 0.001, 0.0, 0.98))
+    l13 = m0 + _line(cand["lines"], "13C")["d"]
+    big = [("big", l13 + 0.009, 1e8, "M0", None, "C6H5NO", "[M-H]-", None)]   # 9 mDa above, >> 100 x 6.5e4
+    r_alone = _rec(LN.eval_candidate(_ctx(_t(rows + _edges())), cand, _obs(m0), ""), "13C")
+    r_ring = _rec(LN.eval_candidate(_ctx(_t(rows + big + _edges())), cand, _obs(m0), ""), "13C")
+    assert r_alone["n_abs"] == 3
+    assert (r_ring["n_abs"], r_ring["n_test"]) == (0, 0)

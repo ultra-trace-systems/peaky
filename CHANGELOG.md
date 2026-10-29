@@ -8,6 +8,80 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Unconfirmed fluorine is a 5a ceiling, not a 5b rejection.** 19F is monoisotopic, so MS1 can never confirm
+  the F count of a reading `demote_unconfirmed_fluorine` flags; the evidence scale read that flag as a rejection.
+  Alone (with or without lowconf) it now caps the pair at 5a, "not established, not refuted", like the lowconf
+  ceiling (`levels.decide.CEILING_REASONS`); beside any other rejection the pair stays 5b. On a 2026 chamber
+  campaign's labelled-nitrate batch the flag alone held 43 of the 49 MS2-confirmed 5b readings.
+- **A tracking [M+NH4]+ of a mono-oxygenate with >= 7 C is confirmed.** The amine gate capped every tracking weak
+  X (<= 1 O or <= 4 C) at Candidate with its split open; against MS2 the tracked weak X were adducts 10:13 at
+  <= 6 C and 9:1 at >= 7 C (the one wrong a hydrocarbon). The cap now keeps X with <= 6 C
+  (`cleanup.AMINE_WEAK_TRACKED_MAX_C`) or no O (`cleanup.nh4_weak_tracked`), in the merge gate and the levels' gate.
+- **The batch releases ringing flags that sit on a reading's isotope line** (`iso_checks.release_ringing_lines`,
+  merge-gate key `ringing_lines`). cleanup's ringing rule is geometric (a weak peak within 12 mDa of a
+  >= 100x brighter one), so it also marks real M+2 lines that sit under a +H2 homologue's M0. Over the batch
+  series a lobe keeps a constant ratio to its ringing parent and a line to its own ion: a flagged row on a
+  predicted line of a committed reading that follows that reading (ratio cv <= 0.30 and <= 0.7x its cv against
+  the parent, 0.5-2x the predicted share, >= 20 spectra) becomes its iso_child in the per-file ledger. On an
+  NH4+ composite of a 2026 chamber campaign 202 of 544 such rows were released, 0 of 243 with the predicted
+  positions shifted 5 mDa; the levels change little (three readings gain a matched line, no level moves),
+  because a line in the ringing zone already reads untestable rather than absent.
+- **Test (c)'s per-file carbon count takes rule C's S/N condition.** Where rule C cannot test a pair the
+  evidence scale reads the carbon count from the per-file 13C lines; that fallback kept the 5x-edge test alone,
+  so with rule C gated on predicted 13C S/N >= 10 (below) the pairs rule C now leaves untestable fell to the
+  fallback and read the hidden lines as 0 C: on an NH4+ composite of a 2026 chamber campaign 371 pairs were
+  rejected (5b) by "13C reads -0.2 C for 10 (per-file 13C, ...)" against 63 before, 79 of them readings MS2
+  confirms. A file now counts there only at a predicted 13C S/N >= `iso_checks.C_MIN_SNR13`; 5b fell to 7
+  pairs of the MS2 set (3 right), 4a rose to 120 (118 right).
+- **A missing isotope line in a bright peak's ringing zone is untestable, not absent.** cleanup's ringing
+  rule marks an unexplained peak within `RING_DMZ` (12 mDa) of a peak >= `MIN_RING_PARENT` cps and
+  >= `RING_FACTOR` x brighter as an artifact, and the levels' line probe already read such an artifact as no
+  line; a line the picker did not keep at all there still counted as absent. Pinonic acid's `[M+NH4]+`
+  (C10H20NO3+, MS2-confirmed) was rejected on "2x13C absent in 6/6 files": its 2x13C and 18O lines sit 9-12
+  mDa under the C10H18O3 `[M+NH4]+` M0 (0.4-2.3 M cps), were flagged as ringing in 19 of 26 files (the 18O
+  line tracks pinonic acid, slope 0.93 +- 0.04, not the neighbour) and not picked in the other 7. The probe
+  now reads a missing line there as 'shadowed'. `cleanup.RING_DMZ` names the zone for both.
+- **The 13C completeness check reads a missing line by its predicted S/N on Orbitrap-class
+  spectra.** The clear needed the predicted 13C height >= 1.5x the per-file height gate, one
+  number per file; a composite file's windows report down to floors 2-14x apart (a 2026 chamber campaign's
+  NH4+ composite: its 131-436 window nothing below ~510 cps against a ~43 cps file edge), so the audit
+  cleared ~330 readings per NH4+ file on lines no spectrum could show, 46 MS2-confirmed ions among
+  them. It now also needs the line's predicted S/N >= `PassConfig.audit_min_snr13` (10; a
+  CHO/CHON 13C line is present 94-99 % of the time from 7-10, 0-5 % below 3). TOF runs, trace
+  samples and rows without an S/N keep the height gate only. The batch's rule C (`iso_checks`,
+  `C_MIN_SNR13`) and the evidence scale's line test (`levels.lines.DET_SNR`) count a spectrum / file
+  the same way: without it the restored readings, their 13C lines under their window's floor, read
+  0 C and pulled rule C's pooled bias to -0.84, so every reading's carbon count came out x6 and 790
+  of the NH4+ composite's pairs were refuted (5b) against 221 before. The line test's S/N condition
+  binds its contradictions only: the positive fact (an own in-band isotope line, `matched_elements`)
+  still counts every file at 3x the gate, so a line seen under its window's S/N 10 confirms as before
+  (with the condition on both, 14 MS2-right Ur+ readings fell from 4a to 4b).
+- **The amine gate keeps a multifunctional oxygenate's `[M+NH4]+` reading.** It re-read every
+  unconfirmed `[M+NH4]+` of X as `[M+H]+` of the amine X+NH3. Against MS2 on a 2026 chamber campaign, X
+  with >= 2 O were NH4+ adducts 117:4 (NH4+ CIMS) and 35:8 (Ur+ side channel), X with <= 1 O
+  amines/amides as often or more. Now only a weak X (<= 1 O or <= 4 C, `cleanup.nh4_weak_neutral`)
+  is re-read (and, on a side channel such as uronium's, an X whose parent channels are absent from
+  the time series; not on an NH4+ run, `nh4_main`); a weak X that tracks its parent keeps the reading capped Candidate and no longer
+  earns 4a (its source-made amide tracks the carbonyl too: the 15 tracked readings MS2 refuted were
+  all weak), and the evidence scale's `AmineGate` mirrors both (split open).
+- **The merge vote gives an aromatic-heteroatom neutral at the dimer mass no evidence class**
+  (`plausibility.aromatic_heteroatom`: C >= 20, DBE/C >= 0.5, N/S/P). Its isotope "confirmation"
+  in a few files outvoted an oxygenated dimer read in more: C28H30O7S `[M-H]-` sits 0.27 mDa from
+  C20H30O11 `[M+^NO3]-` (C8 S = H ^N O7), and MS2 read the dimer.
+- **A reading the label twins refute is capped Candidate** (`label_twins.demote_vetoed`,
+  `merge_gates.label_veto`), not only rejected at 5b: 5 of the 6 14N organonitrates MS2 read as
+  `[X'-H]-` sat Assigned as `[X+NO3]-` clusters.
+- **Urea adducts of hydrocarbons and N-rich neutrals are capped Candidate**
+  (`cleanup.cap_implausible_urea_adducts`, `merge_gates.urea`): the same ion as protonated X+urea.
+
+### Added
+
+- **`NH4_14N`, the unlabelled ammonium profile** (`[M+NH4]+` / `[M+H]+`, TIC, the uronium
+  context), until now a `--reagent-config` JSON of a 2026 chamber campaign.
+- **`pass1_outcome`**: pass 1 records on each target peak it left unexplained why (no grid
+  formula / context refusal with its reason / unscored / best reading under tau_low /
+  not committed), and logs the counts.
+
 - **mascope-sdk >= 2026.10.20 (Mascope 1.13).** The earlier SDKs cannot read a stitched sample's
   peaks from a server of Mascope 1.12 or later: the peak listing names the sample's scan ranges
   (`segments`) beside its peaks, and every `samples.get_peaks` / `load_peaks` of such a sample

@@ -638,6 +638,9 @@ def audit_isotopes(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> dict:
     # the satellite detection floor: the height gate for a spectrum, or the
     # caller's per-spectrum floor for a derived table (see PassConfig.audit_floor_cps)
     floor = cfg.audit_floor_cps if cfg.audit_floor_cps is not None else cfg.height_cutoff
+    # ... and, on one Orbitrap-class spectrum, the line's own predicted S/N (PassConfig.audit_min_snr13)
+    min_snr13 = (cfg.audit_min_snr13 if getattr(cfg, "instrument_class", None) == "orbitrap"
+                 and not getattr(cfg, "trace_sample", False) else None)
     kids = ledger[ledger["role"] == L.ROLE_ISO]
     resp = getattr(cfg, "iso_response_fit", None)
     for _, r in ledger[ledger["role"] == L.ROLE_M0].iterrows():
@@ -653,6 +656,8 @@ def audit_isotopes(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> dict:
         snr0 = _num(r.get("signal_to_noise"))
         x13 = math.log10(snr0 * _R13C * n_c) if snr0 and snr0 > 0 else None
         expected = natural * (IR.scale(resp, x13) if resp else 1.0)
+        # the 13C line's predicted S/N: its absence is evidence only above min_snr13 (Orbitrap)
+        snr13 = snr0 * _R13C * n_c * (expected / natural) if snr0 and snr0 > 0 and natural > 0 else None
         k = kids[
             (kids["parent_peak_id"] == r["peak_id"])
             & (kids["iso_label"].astype(str) == "13C")
@@ -701,6 +706,7 @@ def audit_isotopes(ledger: pd.DataFrame, cfg: PassConfig, *, log=print) -> dict:
                     pass
         elif (
             expected >= 1.5 * floor
+            and (min_snr13 is None or snr13 is None or snr13 >= min_snr13)
             and _peak_near(mzs, r["mz"] + _D13C, ppm=cfg.audit_sat_ppm) is None
         ):
             # twin-satellite fallback: when the peak has a halogen isotope

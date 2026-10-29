@@ -337,6 +337,29 @@ NH4_15N = ReagentProfile(
     ),
 )
 
+# UNLABELLED ammonium CIMS ('NH4+' ionisation mode, server mechanism '[M+NH4]+'):
+# a 2026 chamber campaign's NH4+ composite (Orbitrap), until then a --reagent-config JSON.
+# Here [M+NH4]+ of X IS [M+H]+ of the amine X+NH3 (same ion formula), so every
+# main-channel commit goes through the reagent-N isobar gate (tiers.N_DONOR_ADDUCTS)
+# and the batch's amine gate (cleanup.prefer_amine_over_ammonium), which keeps a
+# multifunctional oxygenate's adduct reading and gives a small or mono-oxygenated
+# X to its amide (the gate's MS2 numbers are on AMINE_WEAK_MAX_O). The context is
+# the uronium one: the source shares the urea module (urea adducts and UrH+ in
+# the NH4+ files) and the same N-donor chemistry; an ammonium context of its own
+# does not exist yet (contexts.py refuses the bare 'ammonium' spellings).
+NH4_14N = ReagentProfile(
+    name="NH4_14N",
+    label="NH4+ CIMS (14N)",
+    polarity="+",
+    adducts=["[M+NH4]+", "[M+H]+"],
+    normaliser="tic",
+    reagent_ion_re=None,
+    ranges="C0-40 H0-90 N0-6 O0-15 S0-2",
+    detect_adduct="[M+NH4]+",
+    context="uronium",
+    aliases=("nh4_14n", "nh4-14n", "14nh4"),
+)
+
 PROFILES: dict[str, ReagentProfile] = {
     BR.name: BR,
     UR.name: UR,
@@ -345,6 +368,7 @@ PROFILES: dict[str, ReagentProfile] = {
     IODIDE.name: IODIDE,
     EASYIC.name: EASYIC,
     NH4_15N.name: NH4_15N,
+    NH4_14N.name: NH4_14N,
 }
 _BY_ALIAS = {a: p for p in PROFILES.values() for a in (p.name.lower(), *p.aliases)}
 # the registry as the package ships it: what a freshly imported module holds

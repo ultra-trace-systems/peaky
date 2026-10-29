@@ -250,6 +250,15 @@ C_HETERO = ("F", "S", "Si", "Cl", "P", "I", "Br")
 #: rule C reads the +1 line as 13C only where 13C makes at least this share of it
 #: (a Si-rich ion's +1 line is mostly 29Si, 3.8 mDa lower: 2026-09-27 decision)
 C_MIN_13C_SHARE = 0.5
+#: ... and counts a spectrum only where the line's PREDICTED S/N (the M0's own S/N x the
+#: natural 13C share) reaches this, beside C_KDL x the spectrum's edge: the edge is one
+#: number per spectrum (its 1st-percentile height), a composite file's windows report down
+#: to floors 2-14x apart, and a 13C line under its own window's floor reads 0 C. With the
+#: per-file 13C audit no longer clearing such readings (PassConfig.audit_min_snr13, the
+#: same number), they made the pooled bias below -0.84 on an NH4+ composite and every
+#: reading's carbon count x6. The server S/N is per window; a series without it keeps
+#: the edge test alone.
+C_MIN_SNR13 = 10.0
 #: the other light-element contributions to an ion's +1 line, per atom relative to its all-light line
 _M1_OTHER = {"H": 0.000115 / 0.999885, "N": 0.00364 / 0.99636, "O": 0.00038 / 0.99757,
              "S": 0.0075 / 0.9499, "Si": 0.04685 / 0.92223}
@@ -451,6 +460,10 @@ class _Series:
         self.mz = t["mz"].to_numpy(float)
         self.h = t["height"].to_numpy(float)
         self.a = t["area"].to_numpy(float)
+        if "signal_to_noise" not in t.columns:
+            t["signal_to_noise"] = np.nan
+        t["signal_to_noise"] = pd.to_numeric(t["signal_to_noise"], errors="coerce")
+        self.snr = t["signal_to_noise"].to_numpy(float)
         self.role = t["role"].to_numpy()
         #: a stamped artifact (a side lobe or ringing a per-file stage marked): no line
         self.artifact = self.role == "artifact"
@@ -588,7 +601,8 @@ def _rule_c(S: _Series, pooled: pd.DataFrame, prof) -> pd.DataFrame:
         oth = ic.get("O", 0) * R17O
         h0, a0 = g["height"].to_numpy(float), g["area"].to_numpy(float)
         e = S.edge[codes]
-        u = h0 * nC * R13C >= C_KDL * e
+        snr13 = g["signal_to_noise"].to_numpy(float) * nC * R13C
+        u = (h0 * nC * R13C >= C_KDL * e) & (~np.isfinite(snr13) | (snr13 >= C_MIN_SNR13))
         n = int(u.sum())
         share, other = c13_share(ic)
         rec = dict(neutral_formula=k[0], adduct=k[1], ion=ion, mz=mzm, n_spectra=int(len(g)), n_used=n,
@@ -2684,3 +2698,131 @@ def parent_lines(merged: pd.DataFrame, table: pd.DataFrame | None) -> pd.DataFra
     for k, v in lines.items():
         out.iloc[k, out.columns.get_loc(SAT_LINES_COLUMN)] = "; ".join(v)
     return out
+
+
+# --------------------------------------------------------------------------- ringing flags on isotope lines
+#: cleanup.flag_ringing_artifacts marks an unexplained peak within RING_DMZ of a >= RING_FACTOR x brighter,
+#: >= MIN_RING_PARENT cps peak as an artifact: one spectrum cannot tell a ringing lobe from a real line there
+#: (its own docstring). The batch series can: a lobe keeps a constant ratio to its ringing parent
+#: (timeseries.flag_sidelobe_channels' test), an isotope line to its own ion. On an NH4+ composite of a 2026
+#: chamber campaign the flag sat on 538 predicted isotope lines of committed readings (M+2 lines 9-12 mDa under a
+#: +H2 homologue's M0); with the predicted positions shifted 5 mDa, 243 -- and the test below releases 202 of
+#: the first and none of the second.
+RING_LINE_CV_MAX = 0.30      # the line's ratio to the reading's M0 over the series: cv at most this ...
+RING_LINE_CV_K = 0.7         # ... and at most this x its cv against the ringing parent
+RING_LINE_LOCK_CV = 0.08     # a cv against the parent under this is locked to it (timeseries.SIDELOBE_CV)
+RING_LINE_BAND = (0.5, 2.0)  # the median ratio within this x the line's predicted share
+RING_LINE_MIN_N = 20         # spectra holding the line, the M0 and the parent (timeseries.SIDELOBE_MIN_PAIRS)
+RING_LINE_ATTACH = (0.3, 3.5)    # the file's own line height against its prediction (the envelope sweep's band)
+RING_LINE_TOL_DA = 8e-4      # the line's series window (half-width); the M0 and the parent take TRACE_TOL_DA
+RING_TRACE_TOL_DA = 1.2e-3
+
+
+def release_ringing_lines(ledgers: dict, ts_peaks: pd.DataFrame | None, resolution, *,
+                          purity: float = ISO.LABEL_PURITY_15N, log=print) -> tuple[set, dict]:
+    """Release FT-ringing artifacts that are a committed reading's isotope line (in place).
+
+    In every per-file ledger, an `artifact` row carrying cleanup's ringing label that sits on a predicted line
+    of a committed M0 of the same file -- the evidence scale's line model (`levels.lines.cand_lines`), within
+    max(1 mDa, 2 ppm), at RING_LINE_ATTACH x the predicted height -- is judged over the batch series against
+    that M0 and against its ringing parent (the brightest peak of the file within cleanup.RING_DMZ). It becomes
+    the M0's iso_child (`ledger.attach_isotopologue`, its label the line's) when, over >= RING_LINE_MIN_N
+    spectra holding all three, it is not locked to the parent (cv >= RING_LINE_LOCK_CV), its ratio to the M0
+    has cv <= RING_LINE_CV_MAX and <= RING_LINE_CV_K x its cv against the parent, and the median of that ratio
+    is RING_LINE_BAND x the predicted share. Anything else stays an artifact. Without a series or a width
+    model nothing runs. Returns (the sids whose ledger changed, a summary)."""
+    from peaky.assignment import cleanup as CL
+    from peaky.assignment import ledger as L
+    from peaky.assignment.levels import lines as LN
+    from peaky.assignment.levels import space as SP
+    summ = {"ran": False, "checked": 0, "released": 0, "by_label": {}, "files": {}}
+    if not ledgers or ts_peaks is None or not len(ts_peaks) or resolution is None \
+            or not {"mz", "sample_item_id"} <= set(ts_peaks.columns):
+        return set(), summ
+    vcol = "area" if "area" in ts_peaks.columns and ts_peaks["area"].notna().mean() > 0.9 else "height"
+    if vcol not in ts_peaks.columns:
+        return set(), summ
+    ts = ts_peaks[["sample_item_id", "mz", vcol]].dropna().sort_values("mz", kind="mergesort")
+    tmz = ts["mz"].to_numpy(dtype=float)
+    cache: dict = {}
+
+    def trace(mz: float, tol: float) -> pd.Series:
+        key = (round(mz, 4), tol)
+        if key not in cache:
+            i0, i1 = np.searchsorted(tmz, [mz - tol, mz + tol])
+            cache[key] = ts.iloc[i0:i1].groupby("sample_item_id")[vcol].max()
+        return cache[key]
+
+    summ["ran"] = True
+    changed = set()
+    for sid, led in ledgers.items():
+        if led is None or not len(led) or "commentary" not in led.columns:
+            continue
+        art = led[(led["role"] == L.ROLE_ARTIFACT) & led["commentary"].fillna("").astype(str).str.startswith(CL.RING_LABEL)]
+        if not len(art):
+            continue
+        m0 = led[(led["role"] == L.ROLE_M0) & led["neutral_formula"].notna() & led["adduct"].notna()]
+        preds = []
+        for r in m0.itertuples(index=False):
+            try:
+                cnt = SP.ion_counts_of(str(r.neutral_formula), str(r.adduct))
+                lines = LN.cand_lines(cnt, resolution.fwhm(float(r.mz)), 0.0, purity) if cnt else []
+            except Exception:  # noqa: BLE001 -- a reading the line model cannot read has no line here
+                continue
+            for ln in lines:
+                if ln.get("mode") == "reagent14N" or ln["d"] <= 0.5 or ln["ratio"] <= 0:
+                    continue
+                preds.append((float(r.mz) + ln["d"], float(r.height) * ln["ratio"], ln["label"], r.peak_id,
+                              float(r.mz), float(ln["ratio"]), f"{r.neutral_formula} {r.adduct}"))
+        if not preds:
+            continue
+        preds.sort()
+        pm = np.array([p[0] for p in preds])
+        pk = led.dropna(subset=["mz"]).sort_values("mz", kind="mergesort")
+        pk_mz, pk_h = pk["mz"].to_numpy(dtype=float), pk["height"].to_numpy(dtype=float)
+        for a in art.itertuples(index=False):
+            amz, ah = float(a.mz), float(a.height)
+            tol = max(1e-3, 2e-6 * amz)
+            i = int(np.searchsorted(pm, amz))
+            best = None
+            for j in (i - 1, i):
+                if 0 <= j < len(preds) and abs(pm[j] - amz) <= tol and preds[j][1] > 0 \
+                        and RING_LINE_ATTACH[0] <= ah / preds[j][1] <= RING_LINE_ATTACH[1]:
+                    if best is None or abs(pm[j] - amz) < abs(pm[best] - amz):
+                        best = j
+            if best is None:
+                continue
+            _p_mz, _p_h, lab, ppid, m0mz, ratio, who = preds[best]
+            j0, j1 = np.searchsorted(pk_mz, [amz - CL.RING_DMZ, amz + CL.RING_DMZ])
+            near = [(pk_h[q], pk_mz[q]) for q in range(j0, j1) if abs(pk_mz[q] - amz) > 1e-4]
+            if not near:
+                continue
+            src = max(near)[1]
+            summ["checked"] += 1
+            tl, t0, tp = trace(amz, RING_LINE_TOL_DA), trace(m0mz, RING_TRACE_TOL_DA), trace(src, RING_TRACE_TOL_DA)
+            k = tl.index.intersection(t0.index).intersection(tp.index)
+            if len(k) < RING_LINE_MIN_N:
+                continue
+            ri, rp_ = (tl[k] / t0[k]).replace([np.inf, -np.inf], np.nan).dropna(), \
+                (tl[k] / tp[k]).replace([np.inf, -np.inf], np.nan).dropna()
+            if len(ri) < RING_LINE_MIN_N or len(rp_) < RING_LINE_MIN_N or ri.mean() <= 0 or rp_.mean() <= 0:
+                continue
+            cv_i, cv_p = float(ri.std() / ri.mean()), float(rp_.std() / rp_.mean())
+            rel = float(ri.median() / ratio)
+            if not (cv_p >= RING_LINE_LOCK_CV and cv_i <= RING_LINE_CV_MAX and cv_i <= RING_LINE_CV_K * cv_p
+                    and RING_LINE_BAND[0] <= rel <= RING_LINE_BAND[1]):
+                continue
+            L.attach_isotopologue(led, a.peak_id, ppid, iso_label=lab)
+            ci = led.index[led["peak_id"] == a.peak_id][0]
+            led.at[ci, "commentary"] = (
+                f"released from the ringing flag ({str(a.commentary)[:60]}...): the {lab} line of {who} -- "
+                f"over {len(k)} spectra its ratio to the M0 has cv {cv_i:.2f} at {rel:.2f}x the predicted share, "
+                f"against cv {cv_p:.2f} to the ringing parent {src:.4f}")
+            changed.add(sid)
+            summ["released"] += 1
+            summ["by_label"][lab] = summ["by_label"].get(lab, 0) + 1
+            summ["files"][sid] = summ["files"].get(sid, 0) + 1
+    if summ["checked"]:
+        log(f"[iso_checks] ringing flags on isotope lines: {summ['released']} of {summ['checked']} released to "
+            f"their reading over the batch series ({summ['by_label']})")
+    return changed, summ

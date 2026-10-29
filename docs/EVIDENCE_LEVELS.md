@@ -192,7 +192,7 @@ side channel would open ends
 | 4b, pinned | `4a needs a positive fact (an own in-band isotope line of the neutral's elements, the 15N label, or NH4 tracking)` (+ `; 3c needs a named context-list entry` when none matched) |
 | 4b, open | `split not pinned: <split text>` |
 | 4b, ion-only | `ion-only channel: the neutral and the process stay open` |
-| 5a | `competitors left: <first six>` (+ ` (+<n> more)`); the lowconf ceiling (§4): `engine confidence Low/Suspect in every file: not established (5a ceiling; a file at Good or High lifts it), not refuted` |
+| 5a | `competitors left: <first six>` (+ ` (+<n> more)`); the lowconf ceiling (§4): `engine confidence Low/Suspect in every file: not established (5a ceiling; a file at Good or High lifts it), not refuted`; the fluorine ceiling (§4): `fluorine count unconfirmable in MS1 (19F has no isotope line): not established (5a ceiling), not refuted` |
 | 5b | `refuted: <reasons>`, or `nothing could be enumerated or tested` |
 | reagent | `reagent ion / reagent cluster (not levelled)` |
 
@@ -348,9 +348,10 @@ whole run.
   - the committed reading is contradicted by its own isotope lines (§5.3);
   - a `below_assignability` setter of implausible chemistry: the O-monster,
     the carbon cluster, an implausibly carbon-rich skeleton, an implausible
-    ionization, an off-calibration residual fit, unconfirmed fluorine. The
+    ionization, an off-calibration residual fit. The
     setter is read from the row's `tier_reason` / `commentary` text; a below
     flag no setter text explains is rejected too (`below: setter not found`).
+    Unconfirmed fluorine is no rejection on its own: see the ceilings below.
   - "O≥11 on a mass-saturated window" alone is not a rejection: it is a tag
     (`O>=11 on a mass-saturated window (degeneracy statement, not a rejection)`).
 - **Untestable (5b).** An ion with no composition, or a committed neutral
@@ -366,6 +367,16 @@ whole run.
   chemistry (the mass-dependent recentring alone moved 40 pairs out of it and 13 in); on
   the two Orbitrap runs the scale was validated on it was the only reason of
   86 (labelled nitrate) and 174 (uronium) 5b pairs.
+- **The fluorine ceiling (5a).** Unconfirmed fluorine alone
+  (`cleanup.demote_unconfirmed_fluorine`'s below flag, F ≥ 4 with no confirming
+  heavy line; with or without `lowconf`) is the same ceiling: ¹⁹F is
+  monoisotopic, so MS1 can never confirm the F count, and nothing refutes it.
+  The pair reads at most **5a**, `fluorine count unconfirmable in MS1 (19F has no
+  isotope line): not established (5a ceiling), not refuted` (tag kind `fluorine
+  5a ceiling`), and anchors nothing. With any other rejection (a veto, own
+  isotopes, another setter) it stays 5b. On a 2026 chamber campaign's
+  labelled-nitrate batch this flag alone held 43 of the 49 MS2-confirmed
+  readings at 5b.
 
 ## 5. Step 1 — the ion formula → else 5a
 
@@ -418,7 +429,13 @@ merged within the width model's FWHM) and probed in every file the pair was
 seen in:
 
 - a line is **testable** at ≥ 3× the file's height gate (`DET_X`); ≥ 5× for
-  the light 15N / 18O lines and composite lines (`DET_X_MINOR`);
+  the light 15N / 18O lines and composite lines (`DET_X_MINOR`); where the
+  file's row carries the server S/N, also at a predicted line S/N ≥ 10
+  (`DET_SNR`): the gate is one number per file, and a composite file's windows
+  report down to floors 2-14× apart. The S/N condition binds the
+  contradictions only: the matched elements below count every file at `DET_X`,
+  where a file under `DET_SNR` whose line is missing counts against the match
+  and one whose line is in band counts for it;
 - it is **present (in band)** at 0.5–2× its predicted height (`BAND`); a line
   within 0.5 Da of the file's first / last peak is untestable (`SCAN_MARGIN`);
   a 37Cl-bearing line is probed at its exact position, the resolution taken
@@ -448,8 +465,10 @@ The tests, per candidate:
 - **(b)** another candidate's observed in-band line this one predicts nothing
   comparable at (> 4× what it predicts there, `B_FACTOR`);
 - **(c)** the observed carbon count (the batch's rule-C reading where it is
-  testable, else the per-file 13C line) differs from the candidate's by more
-  than max(1.5, 0.25 nC, 3 se) (`C_TOL_*`);
+  testable, else the per-file 13C line, counted in the files where rule C would
+  count the spectrum: a 13C line ≥ 5× the edge and, with the server S/N, a
+  predicted 13C S/N ≥ 10) differs from the candidate's by more than
+  max(1.5, 0.25 nC, 3 se) (`C_TOL_*`);
 - **(k)** on a labelled-nitrate run, a reading that can only be a 14N
   `[M+NO3]-` cluster implies its 15N twin at +0.99703 Da (`D15N_TWIN`) at the
   file's twin ratio; absent or too low in ≥ 80 % of the testable files.
@@ -457,8 +476,8 @@ The tests, per candidate:
 A candidate is **contradicted** when (a), (b), (c) or (k) holds. A
 contradicted competitor is excluded. A contradicted committed reading is a
 step-0 rejection. A line **matched in band** in ≥ 50 % (`MATCH_FRAC`) of ≥ 3
-testable files gives its element as a matched element — the positive fact of
-§8 when the neutral contains it.
+testable files (at `DET_X`, with no S/N condition) gives its element as a
+matched element — the positive fact of §8 when the neutral contains it.
 
 ### 5.4 Series exclusion and the outcome
 
@@ -577,11 +596,23 @@ every `[M+NH4]+` reading in the grid, in the engine's order:
 3. **The verdict.** The `[M+NH4]+` trace tracks the best of Y's own `[M+H]+` /
    urea-cluster parent traces with r ≥ 0.6 (`amine_r_min`; the run's own value
    when it set one) over ≥ 12 two-hour bins: kept, and **NH4 adduct tracks its
-   parent** is a positive fact. (A confound: a protonated amine that loses NH3
-   in the source also "tracks".)
-4. **Otherwise** the engine re-reads the ion as the amine Y + NH3 `[M+H]+`,
-   unless that amine is valence-impossible: the NH4 reading is then kept,
-   unconfirmed.
+   parent** is a positive fact -- for a multifunctional Y, and for a weak Y
+   (≤ 1 O or ≤ 4 C) with ≥ 7 C and at least one O. A tracking weak Y with ≤ 6 C
+   (`cleanup.AMINE_WEAK_TRACKED_MAX_C`), or a hydrocarbon, is kept but the split
+   stays open and the engine caps it Candidate (`cleanup.nh4_weak_tracked`): the
+   source makes the amide / imine Y + NH3 from a small carbonyl, and that amide
+   tracks the carbonyl by construction (MS2, 2026 chamber campaign: the tracked
+   weak Y were NH4+ adducts 10:13 at ≤ 6 C and 9:1 at ≥ 7 C, the one wrong a
+   hydrocarbon).
+4. **Otherwise** a multifunctional Y (≥ 2 O on ≥ 5 C) keeps its NH4 reading,
+   open (`adduct-default`): NH4+ adducts of such oxygenates are the rule (MS2:
+   117:4 in NH4+ CIMS, 35:8 on the Ur+ side channel). Where `[M+NH4]+` is a
+   side channel (a uronium run), Y's parent channels absent from the time
+   series still refute it (a real Y shows its urea cluster); on an NH4+ run
+   (the profile's own adduct, `nh4_main`) many oxygenates show no other
+   channel, so that absence says nothing. A weak Y, and a refuted one, is
+   re-read as the amine Y + NH3 `[M+H]+`, unless that amine is
+   valence-impossible: the NH4 reading is then kept, unconfirmed.
 
 Without a time series (a single file, a decoy arm) the gate takes its
 no-time-series path: steps 1, 2 and the valence exception only.
@@ -606,9 +637,10 @@ How the gate's result sets the split:
 
 | committed reading | NH4 reading | split |
 |---|---|---|
-| X `[M+NH4]+` | kept: tracks its parent | PINNED, `NH4 adduct tracks its parent (r, bins)`; a 4a positive fact |
+| X `[M+NH4]+` | kept: tracks its parent (multifunctional X) | PINNED, `NH4 adduct tracks its parent (r, bins)`; a 4a positive fact |
+| X `[M+NH4]+` | kept: tracks, but X weak / multifunctional X unconfirmed | open: `NH4 adduct reading kept, split open (<how>)`; no positive fact |
 | X `[M+NH4]+` | kept by an exception (Si, protected, amine impossible) | PINNED, the exception named; no positive fact |
-| X `[M+NH4]+` | not kept | open: `amine default (NH4 reading unconfirmed: <why>; ...)` |
+| X `[M+NH4]+` | not kept (a weak X) | open: `amine default (NH4 reading unconfirmed: <why>; ...)` |
 | X `[M+H]+` | Y inadmissible | Y leaves the set; the usual rules decide (typically `NH4 reading inadmissible: no uronium adduct of Y (...); only decomposition`) |
 | X `[M+H]+` | Y admissible, not kept | open: `amine default (NH4 reading unconfirmed: Y -- <why>)` |
 | X `[M+H]+` | Y admissible, kept | open: `NH4 reading kept by the amine gate: Y ... -- the committed [M+H]+ (amine) reading is contested` |
@@ -853,6 +885,7 @@ release in `evidence.py`).
 | `K_SIGMA` | 3 | the calibrated half-window, in sigma |
 | `NMIN_FILES` / `NMIN_FILES_ARM` | 3 / 1 | testable files for an isotope test (batch / one file) |
 | `DET_X` / `DET_X_MINOR` | 3 / 5 × the height gate | a line is testable |
+| `DET_SNR` | 10 | ... and, with the row's server S/N, a predicted line S/N at least this for the contradictions (the per-file 13C audit's `audit_min_snr13`, rule C's `C_MIN_SNR13`); the matched elements count at `DET_X` alone |
 | `BAND` | 0.5–2 × predicted | a line is present |
 | `ABSENT_FRAC` | 0.8 | tests (a), (b), (k) |
 | `MATCH_FRAC` | 0.5 | a line matched in band |
@@ -867,7 +900,7 @@ release in `evidence.py`).
 | `ROUTE_COFILES` | 2 (1 on one file) | two routes: co-seen in ≥ 2 files |
 | `LADDER_MIN_FILES`, `CROSS_MIN_FILES`, `HOMO_MIN_ANCHORS` | 2, 2, 2 | ladder, partner, anchored chain |
 | `FAMILY_MIN_FILES` | 2 (1 on one file) | a contaminant family opens the run's space (§5.2) |
-| `LOWCONF_REASON`, `LOWCONF_CEILING_WHY`, `LEAD_RESCUE_SETTER`, `LIFT_3C_WITHHELD` | §4, §7 | the lowconf ceiling; 3c withheld |
+| `LOWCONF_REASON`, `LOWCONF_CEILING_WHY`, `FLUORINE_REASON`, `FLUORINE_CEILING_WHY`, `CEILING_REASONS`, `LEAD_RESCUE_SETTER`, `LIFT_3C_WITHHELD` | §4, §7 | the 5a ceilings; 3c withheld |
 | `LADDER_UNITS` | CH2, CF2 | ladders and series exclusion |
 | `MAX_PASSES` | 20 | series exclusion / ladder iteration |
 | `AMINE_R_MIN`, `AMINE_R_REJECT`, `AMINE_MIN_OVERLAP` | 0.6 (the run's `amine_r_min` when set), 0.2, 12 two-hour bins | the amine gate |

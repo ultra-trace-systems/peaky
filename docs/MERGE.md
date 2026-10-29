@@ -132,7 +132,13 @@ selected sample_ids (SAMPLING.md)
      confirmed** — the formula or the ion pinned, the neutral not; **0 =
      unconfirmed** — exact mass alone or an assignment that argues with
      itself, or no class at all (a pure `align()` caller without the column:
-     every reading is 0 and the vote is the pure count). **The vote class is
+     every reading is 0 and the vote is the pure count). An **aromatic-heteroatom**
+     neutral at the dimer mass (`plausibility.aromatic_heteroatom`: C ≥ 20,
+     DBE/C ≥ 0.5, N/S/P in the neutral) is class 0 whatever its file said: on a
+     labelled-nitrate channel its `[M-H]-` sits sub-ppm on an oxygenated dimer's
+     `[M+^NO3]-` (C8 S = H ^N O7, 0.27 mDa) and its isotope "confirmation" is no
+     evidence over that reading (2026 chamber campaign: C28H30O7S `[M-H]-` was C20H30O11
+     `[M+^NO3]-` by MS2). **The vote class is
      not the evidence level and not the claim.** It is the decision peaky used
      before the evidence scale, kept private to the vote so that the scale —
      a reader's grade of the committed formula — never moves a reading; the
@@ -461,12 +467,25 @@ selected sample_ids (SAMPLING.md)
      (C15H22 `[M+NH4]⁺` in 14 files, C15H25N `[M+H]⁺` in the 15th) — a phantom
      disagreement, and a phantom minority for the vote.
    - `cleanup.prefer_amine_over_ammonium(merged, ts_peaks, r_min = amine_r_min
-     (0.6))` re-reads uncorroborated `[M+NH4]⁺` as `[M+H]⁺` of the `+NH3` amine
-     (mass/isotope-identical, simpler in an N-rich source) unless the adduct's
-     trace tracks its parent — done at the **merged** level where cross-channel
-     corroboration is complete.
-   `batch_summary.json["merge_gates"]` records both gates' counts beside the
+     (0.6))` re-reads an uncorroborated `[M+NH4]⁺` of a **weak** X (≤ 1 O or
+     ≤ 4 C: a small or mono-oxygenated carbonyl, whose source-made amide is the
+     same ion) as `[M+H]⁺` of the `+NH3` amine unless the adduct's trace tracks
+     its parent; a weak X that tracks keeps the reading capped Candidate (the
+     amide tracks too) when it has ≤ 6 C or no O (`nh4_weak_tracked`; a tracking
+     mono-oxygenate of ≥ 7 C is confirmed), and a multifunctional X (≥ 2 O on ≥ 5 C) keeps its
+     adduct reading by default -- except on a side channel (uronium), where X's
+     parent channels absent from the time series still refute the adduct
+     (`nh4_main`: `[M+NH4]⁺` is the profile's own adduct) — done at the
+     **merged** level where cross-channel corroboration is complete.
+   - `cleanup.cap_implausible_urea_adducts(merged)` caps Candidate an Assigned
+     `[M+(CH4N2O)H]⁺` of a pure hydrocarbon or of an X with ≥ 2 N (the same ion
+     as protonated X + urea).
+   `batch_summary.json["merge_gates"]` records the gates' counts beside the
    known-species decision's.
+   After the label twins are measured (15N-labelled nitrate),
+   `label_twins.demote_vetoed` caps Candidate every Assigned reading rule K
+   refutes (`merge_gates.label_veto`): the level was already 5b, now the tier
+   follows.
 
 6. **The residual stage** (`residual=True`, the default; [`SAMPLING.md`](SAMPLING.md)
    §3b). After the cover's merge and stamp, the universe bins in **no assigned
@@ -523,6 +542,29 @@ selected sample_ids (SAMPLING.md)
    ledger-invariant failure) when a row was removed (`skipped` off an
    Orbitrap-class batch). This is the batch half of the per-file
    element-evidence gate ([ASSIGNMENT_DETAIL.md](ASSIGNMENT_DETAIL.md) §3.6b).
+
+6a'. **Ringing flags on isotope lines** (`iso_checks.release_ringing_lines`; right
+   after the two rewrites above, before the levels and the re-stamp). cleanup's
+   ringing rule marks an unexplained peak within `cleanup.RING_DMZ` (12 mDa) of a
+   peak ≥ 50 000 cps and ≥ 100× brighter as an artifact, and one spectrum cannot
+   tell a lobe from a real line there. Every such artifact that sits on a
+   predicted isotope line of a committed M0 of its file (the evidence scale's
+   line model, within max(1 mDa, 2 ppm), at 0.3–3.5× the predicted height) is
+   judged over the batch series against that M0 and against its ringing parent
+   (the brightest peak within the zone). It becomes the M0's `iso_child`
+   (`ledger.attach_isotopologue`, the line's label; the commentary says so) when,
+   over ≥ 20 spectra holding all three, it is not locked to the parent (ratio cv
+   ≥ 0.08, `timeseries.flag_sidelobe_channels`' test), its ratio to the M0 has
+   cv ≤ 0.30 and ≤ 0.7× its cv against the parent, and the median ratio is
+   0.5–2× the predicted share; anything else stays an artifact. The ledgers it
+   changes join the rewritten set: saved, re-levelled, recounted and re-stamped.
+   Measured on an NH4⁺ composite of a 2026 chamber campaign: the ringing flag sat
+   on 544 predicted lines of committed readings, mostly M+2 lines 9–12 mDa under
+   a +H2 homologue's M0 (pinonic acid's 2×¹³C and ¹⁸O under C10H18O3 `[M+NH4]+`);
+   202 were released (2×¹³C 97, ¹⁸O 77, ²H 25, ¹³C 3). With the predicted
+   positions shifted 5 mDa the same rule releases 0 of 243.
+   `batch_summary.json["merge_gates"]["ringing_lines"]` records `ran`, `checked`,
+   `released`, `by_label` and `files`.
 
 6b. **The TOF ion-M+2 gates** (`iso_checks.tof_m2_gates`; after the stamp and
    the batch isotope checks, TOF-class batches only -- the batch's resolved

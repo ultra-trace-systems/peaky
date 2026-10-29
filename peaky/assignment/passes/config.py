@@ -169,6 +169,18 @@ class PassConfig:
     # 180) from the 13C position, so a 5 ppm search misses satellites that are
     # plainly there and clears the formula. Set it to the instrument's M+1 blend.
     audit_sat_ppm: float = 5.0
+    # Orbitrap-class: the 13C completeness check counts a missing satellite as
+    # evidence only when the line's PREDICTED S/N (the parent's own S/N x the
+    # natural 13C share x the response) reaches this. The height gate it also
+    # needs is ONE number per file (the 1st percentile of all picked heights),
+    # but a composite file's windows have floors 2-14x apart: on a 2026 chamber campaign's
+    # NH4+ composite the 131-436 window reports nothing below ~510 cps against a
+    # 43 cps file edge, so a 13C line "10x the edge" is under that window's
+    # floor and its absence says nothing. The S/N is local by construction (the
+    # server's per-segment noise): over 3 campaign batches a CHO/CHON 13C line
+    # is there 94-99 % of the time from a predicted S/N of 7-10, 0-5 % below 3
+    # (the picker's floor). None = height gate only (TOF S/N is not usable).
+    audit_min_snr13: float | None = 10.0
     # Persistence path of the admission gate (assignment/admission.py). This is
     # the KNOB: "auto" (default) = Otsu's split of the batch's (bimodal)
     # bin-occurrence distribution, 0.40-0.55 on every instrument measured; a

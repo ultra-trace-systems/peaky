@@ -117,3 +117,22 @@ class TestFamilyUnion:
 
     def test_the_minimum_is_the_scales_two_file_minimum(self):
         assert CX.FAMILY_MIN_FILES == 2 == RT.ROUTE_COFILES == RT.LADDER_MIN_FILES
+
+
+# --------------------------------------------------------------------------- unconfirmed fluorine (2026-10-28)
+class TestFluorineCeiling:
+    K = ("C10H16O4", "[M-H]-")
+
+    def test_unconfirmed_fluorine_alone_reads_5a_not_5b(self):
+        below = {self.K: dict(setters=["unconfirmed fluorine"])}
+        r = TD._one(dict(TD.ACID, below=True), below=below)
+        assert r.evidence_level == "5a" and r.would_lift == DC.FLUORINE_CEILING_WHY
+        assert "fluorine 5a ceiling" in r.tag_kinds.split("|")
+        r = TD._one(dict(TD.ACID, below=True, lowconf=True), below=below)      # with lowconf: still the ceiling
+        assert r.evidence_level == "5a" and r.would_lift == DC.FLUORINE_CEILING_WHY
+
+    def test_with_a_veto_or_another_setter_it_is_still_refuted(self):
+        below = {self.K: dict(setters=["unconfirmed fluorine"])}
+        assert TD._one(dict(TD.ACID, below=True, iso_veto=True), below=below).evidence_level == "5b"
+        both = {self.K: dict(setters=["carbon cluster", "unconfirmed fluorine"])}
+        assert TD._one(dict(TD.ACID, below=True), below=both).evidence_level == "5b"

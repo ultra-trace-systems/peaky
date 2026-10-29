@@ -249,7 +249,7 @@ def test_a_labelled_ammonium_run_keeps_the_ammonium_and_sodium_channels_closed_e
 
 
 # --------------------------------------------------------------------------- the batch: summary + amine gate
-REAL, REJ = "C7H12O4", "C10H16O2"        # an ammonium adduct that tracks its parent / one that does not
+REAL, REJ = "C7H12O4", "C10H16O"         # an ammonium adduct that tracks its parent / a weak one that does not
 _N = 24
 _K = np.arange(_N)
 _SHP = 10.0 ** (0.5 + 2.5 * _K / (_N - 1))          # a shaped trace (cv ~ 1.4)
@@ -328,11 +328,12 @@ def test_the_batch_records_the_side_channels_and_the_amine_gate_acts_on_their_re
     # THE AMINE GATE on the side channel's readings, at the merge: the reading that tracks its own
     # [M+H]+ / urea parent stays [M+NH4]+; the one that does not is re-read as the protonated amine
     assert summ["merge_gates"]["amine"] == {"relabeled": 1, "kept_covary": 1, "kept_protected": 0,
-                                            "kept_si": 0, "forced_nh4": 0}
+                                            "kept_si": 0, "forced_nh4": 0, "kept_covary_weak": 0,
+                                            "kept_default": 0}
     merged = pd.read_csv(tmp_path / "merged_ledger.csv")
     real = merged[(merged.neutral_formula == REAL) & (merged.adduct == NH4)]
     assert len(real) == 1 and real.tier.iloc[0] == "Assigned"
-    amine = merged[(merged.neutral_formula == "C10H19NO2") & (merged.adduct == "[M+H]+")]
+    amine = merged[(merged.neutral_formula == "C10H19NO") & (merged.adduct == "[M+H]+")]
     assert len(amine) == 1 and amine.tier.iloc[0] == "Candidate"
     assert "not confirmed (independent time trace" in str(amine.tier_reason.iloc[0])
     assert merged[(merged.neutral_formula == REJ) & (merged.adduct == NH4)].empty

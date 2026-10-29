@@ -231,6 +231,11 @@ def _vote(g: pd.DataFrame):
        files is a measurement of persistence. The first says which reading is
        right, the second how often it was seen -- and a reading no file could
        establish does not become right by being fitted in more of them.
+       One exception to the class: an aromatic-heteroatom neutral at the dimer
+       mass (plausibility.aromatic_heteroatom: C >= 20, DBE/C >= 0.5, N/S/P)
+       counts as class 0, because its "confirmation" is an isotope fit on a
+       sub-ppm alias of an oxygenated dimer cluster (C28H30O7S [M-H]- on
+       C20H30O11 [M+^NO3]-).
 
        Nothing is exempt from the count. A known-species identity (the pass-0
        list) used to be -- an ion carrying one ranked first once its label had
@@ -258,6 +263,12 @@ def _vote(g: pd.DataFrame):
         cls = pd.to_numeric(g[VOTE_CLASS], errors="coerce").fillna(0).astype(int)
     else:
         cls = pd.Series(0, index=g.index)
+    # an aromatic-heteroatom neutral at the dimer mass carries no class: its isotope
+    # "confirmation" is no evidence over the oxygenated reading it aliases
+    # (plausibility.aromatic_heteroatom), so the count decides between them
+    if "_nf" in g.columns:
+        from peaky.assignment import plausibility as _PL
+        cls = cls.where(~g["_nf"].astype(str).map(_PL.aromatic_heteroatom).astype(bool), 0)
     # an ION-ONLY reading (the `ion_only` stage: the acid's own composition as
     # a radical anion, committed beside its [M-H]- parent with an `ion_only_of`
     # link) is a bucket kept apart from the tiers, and it must not MOVE a
@@ -2312,7 +2323,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
             # MERGED level where cross-channel corroboration is complete.
             merge_gates["amine"] = cleanup.prefer_amine_over_ammonium(
                 merged, ts_peaks=ts_peaks, r_min=amine_r_min,
-                protected=protected_neutrals, log=log)
+                protected=protected_neutrals, nh4_main=(prof.detect_adduct == "[M+NH4]+"), log=log)
+            # urea adducts of hydrocarbons / N-rich neutrals: the same ion as a protonated N-richer compound
+            merge_gates["urea"] = cleanup.cap_implausible_urea_adducts(merged, log=log)
         # Sidelobe-contaminated CHANNELS: an assigned ion whose m/z lands on the ringing
         # sidelobe of a saturating neighbour keeps its formula (the neutral is usually
         # corroborated on another channel) but its HEIGHT is the neighbour's, not the
@@ -2576,6 +2589,9 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
                                                         merge_gates["element_signature"].get("pairs"), log=log)
     if isinstance(merge_gates.get("isotopologue"), dict):
         merge_gates["isotopologue"]["n_parent_removed"] = _n_orph
+    # rule K's refutation also caps the TIER (label_twins.demote_vetoed): a reading the
+    # twins refute is 5b and no longer the vote's Assigned
+    merge_gates["label_veto"] = _LT.demote_vetoed(merged, twins_table, exempt=curated, log=log)
     # ... and the per-file ledgers RECORD the decision (iso_checks.reconcile_per_file):
     # a stripped reading's M0 row in a file becomes the parent's iso_child where that
     # file commits the parent (a reagent parent's: a reagent isotopologue), else --
@@ -2597,6 +2613,11 @@ def run(peaks=None, *, batch: str | None = None, dataset: str | None = None,
         merge_gates["isotopologue"]["per_file"] = _rw_summ
     if merge_gates["element_signature"].get("removed"):
         merge_gates["element_signature"]["per_file"] = _sg_summ
+    # ... then cleanup's ringing flags that the batch series shows to be a committed reading's isotope line
+    # (iso_checks.release_ringing_lines: the line follows its reading's M0, not the ringing parent) become that
+    # reading's iso_child; those ledgers are saved, re-levelled and re-stamped with the rest
+    _rl, merge_gates["ringing_lines"] = _IC.release_ringing_lines(full_ledgers, ts_peaks, rp, log=log)
+    _rewritten = set(_rewritten) | _rl
     for sid in sorted(_rewritten):
         _led = full_ledgers[sid]
         _led.to_csv(os.path.join(pfdir, f"{sid}_ledger.csv"), index=False)

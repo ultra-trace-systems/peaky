@@ -388,12 +388,18 @@ def prepared(src: Source):
     if pol == "positive":
         rec = src.summary.get("amine_r_min")          # the run's own value when it recorded one (0.0 included)
         r_min = SPL.AMINE_R_MIN if rec is None else float(rec)
+        try:                                          # [M+NH4]+ is the reagent's own adduct (an NH4+ run)
+            nh4_main = PR.resolve(str(src.summary.get("reagent") or "")).detect_adduct == "[M+NH4]+"
+        except Exception:  # noqa: BLE001 -- an unknown or custom profile name: a side channel
+            nh4_main = False
         ri = src.inputs
         prot = ri.protected if (ri.protected is not None and src.main is None) else SPL.protected_neutrals(src.per_file)
         if src.main is None and ri.merged is not None:
-            gate = SPL.AmineGate(ri.merged, ri.ts, prot, scan_of(src), per_file=src.per_file, r_min=r_min)
+            gate = SPL.AmineGate(ri.merged, ri.ts, prot, scan_of(src), per_file=src.per_file, r_min=r_min,
+                                  nh4_main=nh4_main)
         else:
-            gate = SPL.AmineGate(P, None, prot, scan_of(src), per_file=src.per_file, r_min=r_min)
+            gate = SPL.AmineGate(P, None, prot, scan_of(src), per_file=src.per_file, r_min=r_min,
+                                  nh4_main=nh4_main)
     return DC.Prepared(name=src.name, P=P, comps=comps, pf=src.per_file, ctx=ctx, lists=lists_of(src),
                        ts=RT.ts_groups(src.inputs.ts) if src.main is None else None, tol_ppm=tol_ppm, pol=pol,
                        run_classes=DC.run_classes_of(ctx.engine_channels), below=DC.below_classes(src.per_file),

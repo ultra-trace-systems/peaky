@@ -121,12 +121,15 @@ class AmineGate:
     one-file source); ``ts_peaks`` = the batch time series (None: the presence
     path); ``protected`` = the neutrals the gate never re-reads; ``scan`` =
     (first, last) m/z of the run's peaks; ``per_file`` = {sid: ledger} (their
-    M0 rows join the ion index)."""
+    M0 rows join the ion index); ``nh4_main`` = [M+NH4]+ is the run's own reagent adduct
+    (the engine's `nh4_main`)."""
 
-    def __init__(self, ledger, ts_peaks, protected, scan=None, per_file=None, *, r_min: float = AMINE_R_MIN):
+    def __init__(self, ledger, ts_peaks, protected, scan=None, per_file=None, *, r_min: float = AMINE_R_MIN,
+                 nh4_main: bool = False):
         from peaky.assignment import cleanup as CU
         self.verdict = CU._covariation_verdict(ledger, ts_peaks, r_min, AMINE_R_REJECT, AMINE_MIN_OVERLAP)
         self.protected = set(protected)
+        self.nh4_main = bool(nh4_main)          # [M+NH4]+ is the reagent's own adduct (an NH4+ run)
         self.has_ts = ts_peaks is not None
         self.memo: dict = {}
         self.parents = {ad: {_canon(z) for z in ledger.loc[ledger["adduct"] == ad, "neutral_formula"].dropna().astype(str)}
@@ -183,8 +186,16 @@ class AmineGate:
             g = dict(kept=True, track=False, verdict="protected", r=np.nan, ov=0,
                      how="protected identity (reflist-rescue / known / certified)")
         else:
+            from peaky.assignment import cleanup as CU
             v, r, ov = self.verdict(X)
-            if v == "keep":
+            weak = CU.nh4_weak_neutral(X)
+            if v == "keep" and CU.nh4_weak_tracked(X):
+                # the engine keeps the reading capped Candidate: a source-made amide of a small or
+                # mono-oxygenated carbonyl tracks it too, so tracking pins nothing
+                g = dict(kept=True, track=False, pin=False, verdict="keep-weak", r=r, ov=ov,
+                         how=f"tracks its own [M+H]+/urea parent (r {r:.2f} over {ov} 2-h bins), but X is "
+                             f"small or mono-oxygenated: its amide X+NH3 [M+H]+ tracks it too")
+            elif v == "keep":
                 g = dict(kept=True, track=True, verdict=v, r=r, ov=ov,
                          how=f"tracks its own [M+H]+/urea parent, r {r:.2f} over {ov} 2-h bins")
             else:
@@ -199,6 +210,11 @@ class AmineGate:
                 if not ok:
                     g = dict(kept=True, track=False, verdict="amine-impossible", r=r, ov=ov,
                              how=f"amine {C.format_formula(am)} valence-impossible (kept unconfirmed; {why})")
+                elif not weak and (self.nh4_main or v != "presence-reread"):
+                    # the engine keeps a multifunctional oxygenate's adduct reading by default (unpinned); on a
+                    # side channel (uronium) X's absent parents still refute it
+                    g = dict(kept=True, track=False, pin=False, verdict="adduct-default", r=r, ov=ov,
+                             how=f"multifunctional oxygenate kept as the NH4 adduct by default ({why})")
                 else:
                     g = dict(kept=False, track=False, verdict=v, r=r, ov=ov, how=why, amine=C.format_formula(am))
         self.memo[X] = g
@@ -344,6 +360,10 @@ def split_core(S, r, ads):
             # admissibility rule does not apply (as built; see BACKLOG)
             g = gate(n)
             gi.update(kind="committed NH4", nh4=[(n, g)], track=g["track"])
+            if g["kept"] and not g.get("pin", True):
+                # kept as the NH4 adduct, but neither its trace nor the default pins the split
+                gi["kind"] = "NH4 kept, open"
+                return False, ("NH4 adduct reading kept, split open (" + g["how"] + ")"), plaus, False, gi
             if g["kept"]:
                 how = ("NH4 adduct tracks its parent (" + g["how"] + ")") if g["track"] else \
                     ("NH4 adduct kept by the amine gate: " + g["how"])

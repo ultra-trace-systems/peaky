@@ -481,8 +481,14 @@ LEFT_SHOWN = 6                  # the competitors a 5a would-lift names
 
 
 def lowconf_alone(rejected) -> bool:
-    """C47: the pair's only rejection is `lowconf` -- a 5a ceiling, not a rejection."""
-    return bool(rejected) and all(x == DC.LOWCONF_REASON for x in rejected)
+    """C47: the pair's only rejections are ceiling reasons (`lowconf`, unconfirmed fluorine) -- a 5a ceiling,
+    not a rejection."""
+    return bool(rejected) and all(x in DC.CEILING_REASONS for x in rejected)
+
+
+def ceiling_why(rejected) -> str:
+    """The 5a ceiling's text: the fluorine one when unconfirmed fluorine is among the reasons."""
+    return DC.FLUORINE_CEILING_WHY if DC.FLUORINE_REASON in (rejected or []) else DC.LOWCONF_CEILING_WHY
 
 
 def level_of(f: dict) -> str:
@@ -514,7 +520,7 @@ def would_lift(level: str, f: dict) -> str:
             if f["rejected"] and not lowconf_alone(f["rejected"]) else LIFT["untestable"]
     if level == "5a":
         if not f["left"] and lowconf_alone(f["rejected"]):
-            return DC.LOWCONF_CEILING_WHY
+            return ceiling_why(f["rejected"])
         names = [c["name"] for c in f["left"]]
         return "competitors left: " + "; ".join(names[:LEFT_SHOWN]) + (
             f" (+{len(names) - LEFT_SHOWN} more)" if len(names) > LEFT_SHOWN else "")
@@ -591,7 +597,7 @@ def decide(S, partners=None) -> pd.DataFrame:
         for i in range(n):
             lv, why = _inpass(i, f, lefts[i], routes, homo, lmin)
             if f["lowconf_only"][i] and lv not in ("reagent", "5b", "5a"):
-                lv, why = "5a", DC.LOWCONF_CEILING_WHY            # C47: the ceiling
+                lv, why = "5a", ceiling_why(f["rej"][i])          # C47: the ceiling
             inp.append((lv, why))
         return inp, lefts
 
